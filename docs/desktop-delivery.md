@@ -1,6 +1,6 @@
 # FundsTrace 独立桌面候选
 
-状态：2026-10-15，本地开发候选。已增加独立 Electron 壳、Python sidecar、原生构建入口和 Windows x64 脚本；**Windows 尚未构建或运行，真实 Analytix 尚未接入，未签名或发布**。原目录、业务数据及 Analytix 保持不动，不上传 GitHub。常驻工作区重排见 [graph-workspace-plan.md](graph-workspace-plan.md)。
+状态：2026-10-15，MIT 开源预览候选。源码已同步到 [Eysn0130/FundsTrace](https://github.com/Eysn0130/FundsTrace)，首次 [Windows 原生 Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38722219634) 已手动启动。当前执行结果以运行页为准；真实 Analytix 尚未接入，未签名。原目录与业务数据不随源码上传，Analytix 保持不动。常驻工作区重排见 [graph-workspace-plan.md](graph-workspace-plan.md)。
 
 ## 运行与数据边界
 
@@ -53,11 +53,11 @@ Windows x64 本地 PowerShell 7 入口如下；脚本核对 Node／Python 进程
 
 脚本校对包内 manifest 与每项静态资源，再以中文／空格临时资源路径启动包内程序，验证未激活入口、强制终止持有的子进程、同一空库重开和 stdin EOF 正常退出。它不读业务库、不继承测试外的授权材料，不宣称空库重开等于导入恢复。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅记录版本、相对产物文件名、内容哈希和检查范围；中途失败不会生成新的 passed 报告。
 
-本地候选 [windows-candidate.yml](../.github/workflows/windows-candidate.yml) 只允许手动触发：单 Windows job、中文源码目录、16 项现有 source 进程／恢复回归、上述原生构建入口、3 天产物留存。不使用业务数据、真实授权、签名、Release 或仓库写权限；仅显式保留 `win-unpacked` 和证据文件，不能上传整个 build／运行目录。当前没有远端仓库或 Actions 运行；获准上传并把工作流放到默认分支后，才可手动运行。[GitHub 手动运行条件](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+[windows-candidate.yml](../.github/workflows/windows-candidate.yml) 只允许手动触发：单 Windows job、中文源码目录、16 项现有 source 进程／恢复回归、上述原生构建入口、3 天产物留存。选择 `installer=true` 生成未签名 NSIS。工作流不用业务数据、真实授权、签名、Release 或仓库写权限；仅显式保留 `win-unpacked`、可选安装器和证据文件，不能上传整个 build／运行目录。预览发布由维护者核对成功运行、候选 SHA 和产物哈希后单独执行。[GitHub 手动运行条件](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
 
 ## Windows 实机验收顺序
 
-本机为 macOS arm64，未发现可用的 Windows 主机、VM 或 PowerShell，因此下面各项目前均为 **NOT_EXECUTED（Windows）**。首次只跑一轮基础流程；新缺陷修复后复测受影响项，不反复重跑全部矩阵。
+本机为 macOS arm64，无交互式 Windows 主机或 VM。Windows 原生构建和 sidecar 检查由 Actions 承担；下表 GUI、系统 DPI、安装／卸载与原生保存交互保持 **NOT_EXECUTED（Windows GUI）**，不作为本次预览发布的通过标记。以后具备实机时按受影响流程补充，避免反复重跑全部矩阵。
 
 | 顺序 | 实机步骤与通过条件 | 证据边界 |
 | --- | --- | --- |
@@ -67,7 +67,7 @@ Windows x64 本地 PowerShell 7 入口如下；脚本核对 Node／Python 进程
 | 4. 退出与恢复 | 隔离测试用户下，导入进行中结束该测试实例及其归属服务后重开；中断任务显示错误、没有部分写入，重新预览确认后仅写一次；另查完成回执重读不重复导入 | 源码 `--synthetic` 每次创建新临时目录，不能用于跨启动保留任务的验收。封装业务页须具备维护者批准的隔离合成数据及测试授权；缺少时只验激活页，其余保持未执行。不得强杀按名称猜到的其他 Python 进程。 |
 | 5. 安装与离线 | 有目录候选证据后，才按需生成 NSIS；干净测试用户安装、断网启动、卸载保留合成数据、重装重开；有第二版本时再验升级。混合 DPI 拖窗在具备双屏设备时执行 | 不安装到现有业务用户环境；不把当前未签名候选当公开发行，升级无候选时保持未执行。 |
 
-Main 现在按目标显示器 `workArea` 的 DIP 限制初始窗口、最小宽高和居中位置，修复小逻辑工作区可能被 1440×940／最小 960×640 撑出屏幕的问题；不再次乘除 `scaleFactor`。这只覆盖窗口创建，运行中切换 DPI／移动显示器仍需上表实测。保留系统及应用缩放；10 px 密集表格若在目标设备确实难读，再按结果调整，不盲目继续减小字体。[Electron screen](https://www.electronjs.org/docs/latest/api/screen)、[Display 工作区单位](https://www.electronjs.org/docs/latest/api/structures/display)
+Main 现在按目标显示器 `workArea` 的 DIP 限制初始窗口、最小宽高和居中位置，修复小逻辑工作区可能被 1440×940／最小 960×640 撑出屏幕的问题；不再次乘除 `scaleFactor`。这只覆盖窗口创建，运行中切换 DPI／移动显示器仍需上表实测。保留系统及应用缩放；本轮表格字体提升到 11 px，提供行距与完整文本显示选项，不继续靠缩小字号压缩。[Electron screen](https://www.electronjs.org/docs/latest/api/screen)、[Display 工作区单位](https://www.electronjs.org/docs/latest/api/structures/display)
 
 ## 当前证据与待验收
 
