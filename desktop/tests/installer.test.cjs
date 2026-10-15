@@ -9,7 +9,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 
 const desktop = path.resolve(__dirname, '..');
-const installer = fs.readFileSync(path.join(desktop, 'installer.nsh'), 'utf8');
+const installer = fs.readFileSync(path.join(desktop, 'installer.nsh'), 'utf8').replace(/\r\n/g, '\n');
 const helper = path.join(desktop, 'installer-processes.ps1');
 const processes = fs.readFileSync(helper, 'utf8');
 const templates = path.join(desktop, 'node_modules/app-builder-lib/templates/nsis');
