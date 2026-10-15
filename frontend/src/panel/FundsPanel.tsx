@@ -1,0 +1,111 @@
+import { useEffect, useState, useRef, type FormEvent } from 'react';
+import type { CaseStats, Flow, FlowPage, ImportSession } from '../../../contracts/api-v1';
+import { formatMoney, displayTime } from '../lib/format';
+import { Modal } from '../components/Modal';
+import { ImportDialog } from '../features/ImportDialog';
+import { ImportHistoryDialog } from '../features/ImportHistoryDialog';
+import { FlowSources } from '../features/FlowSources';
+import { FUNDS_PANEL_VERSION, type FundsPanelHostV1, type FundsPanelSessionV1 } from './host';
+import { linkAbortSignal, runUnlessAborted } from './cancellation';
+
+type Filters = { account: string; kw: string; page: number };
+const emptyFilters: Filters = { account: '', kw: '', page: 1 };
+
+export function FundsPanel({ host }: { host: FundsPanelHostV1 }) {
+  const session = host.session;
+  const binding = session?.client.binding;
+  const valid = host.version === FUNDS_PANEL_VERSION && session && binding?.caseId === session.context.caseId && binding.scopeKey === session.scopeKey && binding.generation === session.generation;
+  return <div className="funds-trace funds-panel">{valid ? <SessionBoundary key={JSON.stringify([session.context.caseId, session.scopeKey, session.generation])} session={session} />
+    : <section className="main-workspace"><div className="empty-state"><h2>{session ? '案件会话绑定无效' : '未选择案件'}</h2><p>请由宿主提供当前案件会话。</p></div></section>}</div>;
+}
+
+function SessionBoundary({ session }: { session: FundsPanelSessionV1 }) {
+  const [revoked, setRevoked] = useState(session.signal.aborted);
+  useEffect(() => {
+    const abort = () => setRevoked(true);
+    if (session.signal.aborted) abort();
+    session.signal.addEventListener('abort', abort, { once: true });
+    return () => session.signal.removeEventListener('abort', abort);
+  }, [session.signal]);
+  return revoked || session.signal.aborted ? <section className="main-workspace"><div className="empty-state"><h2>案件会话已撤销</h2><p>请由宿主重新绑定当前案件。</p></div></section> : <BoundFundsPanel session={session} />;
+}
+
+function BoundFundsPanel({ session }: { session: FundsPanelSessionV1 }) {
+  const { context, client, actions } = session;
+  const [error, setError] = useState('');
+  const [reload, setReload] = useState(0);
+  const [stats, setStats] = useState<CaseStats | null>(null);
+  const [page, setPage] = useState<FlowPage | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [filters, setFilters] = useState<Filters>(emptyFilters);
+  const [accountDraft, setAccountDraft] = useState('');
+  const [keywordDraft, setKeywordDraft] = useState('');
+  const [selectedFlow, setSelectedFlow] = useState<Flow | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [resumeSession, setResumeSession] = useState<ImportSession | undefined>();
+  const [returnToHistory, setReturnToHistory] = useState(false);
+  const [graphError, setGraphError] = useState('');
+  const [graphBusy, setGraphBusy] = useState(false);
+  const lifetime = useRef(new AbortController());
+  useEffect(() => {
+    if (lifetime.current.signal.aborted) lifetime.current = new AbortController();
+    const controller = lifetime.current;
+    const unlink = linkAbortSignal(session.signal, controller);
+    return () => { unlink(); controller.abort(); };
+  }, [session.signal]);
+  useEffect(() => {
+    const controller = new AbortController(); let active = true;
+    const unlink = linkAbortSignal(session.signal, controller);
+    if (controller.signal.aborted) return unlink;
+    setPage(null); setStats(null); setSelectedFlow(null); setLoading(true); setError('');
+    Promise.all([runUnlessAborted(controller.signal, () => client.stats(controller.signal)), runUnlessAborted(controller.signal, () => client.flows(filters, controller.signal))])
+      .then(([nextStats, nextPage]) => {
+        if (!active || controller.signal.aborted) return;
+        if (nextStats.case_id !== context.caseId || nextPage.case_id !== context.caseId || nextPage.items.some(row => row.case_id !== context.caseId)) throw new Error('返回的案件与当前案件不一致，请重新加载。');
+        setStats(nextStats); setPage(nextPage);
+      }).catch(reason => { if (active && !controller.signal.aborted && reason.name !== 'AbortError') setError(reason.message); })
+      .finally(() => { if (active && !controller.signal.aborted) setLoading(false); });
+    return () => { active = false; unlink(); controller.abort(); };
+  }, [client, context.caseId, filters, reload, session.signal]);
+  const openImport = () => { setImportOpen(true); setResumeSession(undefined); setReturnToHistory(false); setHistoryOpen(false); };
+  const closeImport = () => {
+    if (returnToHistory) setHistoryOpen(true);
+    setImportOpen(false); setResumeSession(undefined); setReturnToHistory(false); setReload(value => value + 1);
+  };
+  const search = (event: FormEvent) => { event.preventDefault(); setFilters({ account: accountDraft.trim(), kw: keywordDraft.trim(), page: 1 }); };
+  const openGraph = async () => {
+    if (!actions?.openGraph) return;
+    const signal = lifetime.current.signal;
+    if (signal.aborted || session.signal.aborted) return;
+    setGraphBusy(true); setGraphError('');
+    try { await actions.openGraph(signal); }
+    catch (reason) { if (!signal.aborted) setGraphError((reason as Error).message); }
+    finally { if (!signal.aborted) setGraphBusy(false); }
+  };
+  const totals = stats?.amount_totals || [];
+  const totalPages = page ? Math.max(1, Math.ceil(page.total / page.page_size)) : 1;
+  return <>
+    <section className="main-workspace" aria-label="资金流水面板">
+
+      <div className="topline"><span>案件工作区 <span className="breadcrumb">/</span> 流水核对</span><span className="local-label">本地数据</span></div>
+      <header className="workspace-heading"><div><p className="eyebrow">流水核对</p><h1>{context.name}</h1><p className="description">核对交易明细，再进入关系图谱追踪资金流向。</p></div><div className="heading-actions"><button className="button secondary" onClick={() => setHistoryOpen(true)}>导入记录</button><button className="button secondary" disabled={!actions?.openGraph || graphBusy} onClick={() => void openGraph()}>打开 G6 图谱 <span aria-hidden="true">↗</span></button><button className="button primary" onClick={openImport}><span aria-hidden="true">＋</span> 导入流水</button></div></header>
+      {!actions?.openGraph && <p className="muted">宿主未提供图谱导航能力。</p>}
+      {error && <div role="alert" className="error-banner">{error}<button onClick={() => setReload(value => value + 1)}>重新加载</button></div>}
+      {graphError && <div role="alert" className="error-banner">{graphError}</div>}
+      <section className="case-facts" aria-label="案件汇总"><div><span>流水笔数</span><strong>{stats ? stats.flows.toLocaleString('zh-CN') : '—'}</strong></div><div><span>涉及账户</span><strong>{stats ? stats.accounts.toLocaleString('zh-CN') : '—'}</strong></div><div><span>导入批次</span><strong>{stats ? stats.batches.toLocaleString('zh-CN') : '—'}</strong></div><div className="money-fact"><span>交易金额合计 <small>按币种</small></span><strong>{!stats ? '—' : !totals.length ? '0.00' : totals.map(total => <span key={total.currency} className="currency-total">{formatMoney(total.amount)} <small>{total.currency || '未标注币种'}</small></span>)}</strong></div></section>
+      <section className="transactions" aria-label="流水明细">
+        <div className="table-heading"><h2>交易明细 <span>{page?.total.toLocaleString('zh-CN') ?? '—'}</span></h2><span className="muted">原始流水口径</span></div>
+        <form className="filters" onSubmit={search}><label><span className="sr-only">账号筛选</span><input aria-label="账号筛选" placeholder="付款或收款账号" value={accountDraft} onChange={event => setAccountDraft(event.target.value)} /></label><label className="keyword-filter"><span className="sr-only">摘要或流水号</span><input aria-label="摘要或流水号" placeholder="搜索摘要或流水号…" value={keywordDraft} onChange={event => setKeywordDraft(event.target.value)} /></label><button className="button secondary" disabled={loading}>查询</button>{(filters.account || filters.kw) && <button type="button" className="text-button" onClick={() => { setAccountDraft(''); setKeywordDraft(''); setFilters(emptyFilters); }}>清除筛选</button>}</form>
+        <div className="table-scroll" tabIndex={0} aria-label="可横向滚动的流水明细" aria-busy={loading}><table className="flow-table"><thead><tr><th>交易时间</th><th>付款方</th><th className="flow-arrow" aria-label="流向" /><th>收款方</th><th className="align-right">交易金额</th><th>摘要</th><th><span className="sr-only">核对</span></th></tr></thead><tbody>{page?.items.map(row => <tr key={row.id}><td className="mono time-cell">{displayTime(row.trade_time)}<small>{row.trade_no || '无流水号'}</small></td><td>{row.payer_name || '未标注户名'}<small className="mono">{row.payer_account}</small></td><td className="flow-arrow" aria-hidden="true">→</td><td>{row.payee_name || '未标注户名'}<small className="mono">{row.payee_account}</small></td><td className="align-right money-cell mono">{formatMoney(row.amount)}<small>{row.currency || '未标注币种'}</small></td><td className="summary-cell" title={row.summary}>{row.summary || '—'}</td><td><button className="row-action" aria-label={`核对流水 ${row.trade_no || row.id}`} onClick={() => setSelectedFlow(row)}>核对 <span aria-hidden="true">↗</span></button></td></tr>)}</tbody></table>
+        {loading ? <div role="status" className="empty-state"><span className="loading-mark" />正在加载当前案件流水…</div> : page && !page.items.length ? <div className="empty-state"><span className="empty-symbol" aria-hidden="true">▤</span><h3>{filters.account || filters.kw ? '没有符合筛选条件的流水' : '当前案件还没有流水'}</h3><p>{filters.account || filters.kw ? '调整账号或关键词后重新查询。' : '导入银行或支付机构流水，先检查字段映射和金额预览。'}</p>{!filters.account && !filters.kw && <button className="button primary" onClick={openImport}>导入第一份流水</button>}</div> : null}</div>
+        <footer className="table-footer"><span>{page ? `显示 ${page.total ? (page.page - 1) * page.page_size + 1 : 0}–${Math.min(page.page * page.page_size, page.total)} 笔，共 ${page.total.toLocaleString('zh-CN')} 笔` : '等待加载'}</span><div><button className="page-button" aria-label="上一页" disabled={loading || filters.page <= 1} onClick={() => setFilters(value => ({ ...value, page: value.page - 1 }))}>←</button><span>第 {filters.page} / {totalPages} 页</span><button className="page-button" aria-label="下一页" disabled={loading || filters.page >= totalPages} onClick={() => setFilters(value => ({ ...value, page: value.page + 1 }))}>→</button></div></footer>
+      </section>
+      <footer className="workspace-footnote">金额保留原始精度，图谱展示去重与本页流水统计分别计算。</footer>
+
+    </section>
+    {historyOpen && <ImportHistoryDialog target={context} client={client} scopeSignal={session.signal} actions={actions} onClose={() => { setHistoryOpen(false); setReload(value => value + 1); }} onOpen={session => { setImportOpen(true); setResumeSession(session); setReturnToHistory(true); setHistoryOpen(false); }} />}
+    {importOpen && <ImportDialog key={resumeSession?.import_id ?? 'new'} target={context} client={client} scopeSignal={session.signal} resume={resumeSession} onClose={closeImport} onImported={() => setReload(value => value + 1)} />}
+    {selectedFlow && <Modal title="流水核对" onClose={() => setSelectedFlow(null)}><dl className="flow-details">{Object.entries({ '所属案件': context.name, '流水 ID': selectedFlow.id, '批次 ID': selectedFlow.batch_id, '交易流水号': selectedFlow.trade_no, '交易时间': displayTime(selectedFlow.trade_time), '付款户名': selectedFlow.payer_name, '付款账号': selectedFlow.payer_account, '收款户名': selectedFlow.payee_name, '收款账号': selectedFlow.payee_account, '交易金额': `${formatMoney(selectedFlow.amount)} ${selectedFlow.currency}`, '交易后余额': selectedFlow.balance === null ? '未提供' : formatMoney(selectedFlow.balance), '摘要': selectedFlow.summary, '渠道': selectedFlow.channel }).map(([label, value]) => <div key={label}><dt>{label}</dt><dd className={label.includes('金额') || label.includes('ID') || label.includes('账号') ? 'mono' : ''}>{value || '—'}</dd></div>)}</dl><FlowSources key={`${selectedFlow.case_id}:${selectedFlow.id}`} caseId={selectedFlow.case_id} flowId={selectedFlow.id} client={client} scopeSignal={session.signal} actions={actions} /><footer className="modal-footer"><button className="button primary" onClick={() => setSelectedFlow(null)}>核对完成</button></footer></Modal>}
+  </>;
+}

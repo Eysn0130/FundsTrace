@@ -1,0 +1,130 @@
+"""Case-scoped queries with lossless storage-to-JSON conversion."""
+import datetime
+import json
+from decimal import Decimal
+
+import duckdb
+
+from app import db
+
+
+class ServiceError(Exception):
+    def __init__(self, status: int, code: str, message: str):
+        self.status = status
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+def raw_query(sql, params=None):
+    # Services calculate with Decimal; both HTTP surfaces encode money as text.
+    return db.q_raw(sql, params)
+
+
+def require_case(case_id: str):
+    # Current storage is INTEGER; avoid exposing a DuckDB conversion exception
+    # when a syntactically valid but oversized identifier is requested.
+    if len(case_id) > 10 or int(case_id) > 2_147_483_647:
+        raise ServiceError(404, "case_not_found", "案件不存在，请重新选择案件")
+    if not raw_query("select id from cases where id = ?", [int(case_id)]):
+        raise ServiceError(404, "case_not_found", "案件不存在，请重新选择案件")
+    return int(case_id)
+
+
+def timestamp(value):
+    return value.isoformat(sep=" ") if isinstance(value, datetime.datetime) else value
+
+
+def amount(value):
+    if not isinstance(value, Decimal):
+        raise ValueError("Expected a decimal amount at the API boundary")
+    return format(value, ".2f")
+
+
+def case_json(row):
+    return {"id": str(row["id"]), "name": row["name"], "created_at": timestamp(row["created_at"])}
+
+
+def list_cases():
+    return {"items": [case_json(row) for row in raw_query("select id,name,created_at from cases order by id")]}
+
+
+def create_case(name):
+    try:
+        with db.transaction():
+            row = raw_query("insert into cases(name) values (?) returning id,name,created_at", [name])[0]
+    except duckdb.ConstraintException:
+        raise ServiceError(409, "case_name_exists", "案件名已存在，请使用其他名称") from None
+    return case_json(row)
+
+
+def stats(case_id):
+    with db._lock:
+        cid = require_case(case_id)
+        row = raw_query("""
+            select (select count(*) from flows where case_id=?) flows,
+              (select count(distinct account) from (
+                select payer_account account from flows where case_id=?
+                union all select payee_account from flows where case_id=?
+              ) where account is not null and account <> '') accounts,
+              (select count(*) from batches where case_id=?) batches
+        """, [cid] * 4)[0]
+        totals = raw_query("""select coalesce(currency, '') currency,
+                            coalesce(sum(amount), 0::decimal(18,2)) amount
+                            from flows where case_id=? group by coalesce(currency, '') order by currency""", [cid])
+    return {"case_id": case_id, **row,
+            "amount_total": amount(totals[0]["amount"]) if len(totals) == 1 else ("0.00" if not totals else None),
+            "currency": totals[0]["currency"] if len(totals) == 1 else None,
+            "amount_totals": [{"currency": total["currency"], "amount": amount(total["amount"])} for total in totals]}
+
+
+TEXT_FIELDS = ("trade_no", "payer_name", "payer_account", "payer_bank", "payee_name", "payee_account",
+               "payee_bank", "currency", "summary", "channel", "self_account", "self_name")
+
+
+def preview_flow(row):
+    return {**{field: row.get(field) or "" for field in TEXT_FIELDS},
+            "trade_time": timestamp(row.get("trade_time")), "amount": amount(row["amount"]),
+            "balance": amount(row["balance"]) if row.get("balance") is not None else None}
+
+
+def flows(case_id, account, kw, page, page_size):
+    with db._lock:
+        cid = require_case(case_id)
+        conditions, params = ["case_id=?"], [cid]
+        if account.strip():
+            conditions.append("(payer_account ilike ? or payee_account ilike ?)")
+            params += [f"%{account.strip()}%"] * 2
+        if kw.strip():
+            conditions.append("(summary ilike ? or trade_no ilike ?)")
+            params += [f"%{kw.strip()}%"] * 2
+        where = " and ".join(conditions)
+        total = raw_query(f"select count(*) total from flows where {where}", params)[0]["total"]
+        rows = raw_query(f"select * from flows where {where} order by trade_time desc nulls last, id desc limit ? offset ?",
+                         params + [page_size, (page - 1) * page_size])
+    return {"case_id": case_id, "total": total, "page": page, "page_size": page_size,
+            "items": [{**preview_flow(row), "id": str(row["id"]), "case_id": str(row["case_id"]),
+                       "batch_id": str(row["batch_id"]) if row["batch_id"] is not None else None} for row in rows]}
+
+
+def flow_sources(case_id, flow_id, page=1, page_size=50):
+    from .imports import source_is_available
+
+    with db._lock:
+        cid = require_case(case_id)
+        if len(flow_id) > 19 or int(flow_id) > 9_223_372_036_854_775_807 or not raw_query(
+                "select id from flows where case_id=? and id=?", [cid, int(flow_id)]):
+            raise ServiceError(404, "flow_not_found", "流水不存在或不属于当前案件")
+        total = raw_query("select count(*) n from flow_sources where case_id=? and flow_id=?", [cid, int(flow_id)])[0]["n"]
+        rows = raw_query("""select s.*,f.source_row,f.disposition from flow_sources f
+                            join import_sources s on s.source_id=f.source_id and s.case_id=f.case_id
+                            where f.case_id=? and f.flow_id=? order by s.imported_at,s.source_id,f.source_row
+                            limit ? offset ?""",
+                         [cid, int(flow_id), page_size, (page - 1) * page_size])
+        items = []
+        for row in rows:
+            items.append({key: row[key] for key in ("source_id", "filename", "sha256", "size_bytes", "mode", "sheet",
+                                                   "row_kind", "source_row", "parser_version", "disposition", "origin")})
+            items[-1].update(mapping=json.loads(row["mapping_json"]), imported_at=row["imported_at"].isoformat(timespec="seconds") + "Z",
+                             source_available=source_is_available(case_id, row["source_id"]))
+    return {"case_id": case_id, "flow_id": flow_id, "items": items, "total": total, "page": page, "page_size": page_size}

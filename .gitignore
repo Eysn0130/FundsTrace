@@ -1,0 +1,43 @@
+# Private runtime state (do not whitelist files from a business data directory).
+/data/
+/private/
+/backups/
+/backup-*/
+/wal-*/
+*.duckdb
+*.duckdb.*
+*.wal
+*.quarantine
+*.fundcase
+license.dat
+.env
+.env.*
+!.env.example
+
+# Environments, generated files and packaging.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+/build/
+/dist/
+/mpl-cache/
+/tests/_pkg/
+*.egg-info/
+*.log
+/运行日志.txt
+/.cache/
+/artifacts/
+.DS_Store
+
+# Frontend build outputs; source fixtures remain explicitly reviewable.
+node_modules/
+/web/dist/
+/frontend/dist/
+*.tsbuildinfo
+playwright-report/
+test-results/
+/.playwright-cli/
+/output/

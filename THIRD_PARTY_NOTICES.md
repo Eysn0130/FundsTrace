@@ -1,0 +1,37 @@
+# Third-party notices and source provenance
+
+FundsTrace is maintained in this repository by Eysn0130 and contributors. It continues a pre-existing colleague-developed application; the initial repository import is a maintenance snapshot and does not assert sole authorship of that earlier work. Existing author and copyright notices are retained. The project license is MIT, as selected by its maintainer.
+
+## G6
+
+The retained G6 4.8.19 browser bundle is maintained with one documented local validation patch. Copyright (c) 2018 Alipay.inc; MIT. The complete notice is in `static/vendor/G6-LICENSE`; patch scope and exact local hashes are in `static/vendor/G6-PATCH.md`. This notice does not identify the local pre-patch file as an independently verified upstream tarball.
+
+## React and React DOM
+
+The React pilot bundles React and React DOM. Their exact versions are fixed in `frontend/package-lock.json`. Both carry the following MIT notice:
+
+MIT License
+
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## Python, Electron and build dependencies
+
+Python runtime dependency versions and distribution hashes are recorded in `requirements-desktop.lock`. Native backend builds recursively retain installed runtime distribution metadata and their supplied license files. Bundled fonts retain their upstream notices. Electron distributions retain `LICENSE` and `LICENSES.chromium.html`. Build and test dependencies keep their own licenses; the FundsTrace MIT license does not replace those licenses. No project authorization secret or business dataset is part of the distribution.

@@ -1,0 +1,200 @@
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { StrictMode } from 'react';
+import type { CaseStats, Flow, FlowPage, ImportJob, ImportSession } from '../../../contracts/api-v1';
+import { FundsPanel } from './FundsPanel';
+import { FUNDS_PANEL_VERSION, type FundsCaseClientV1, type FundsHostActionsV1, type FundsPanelSessionV1 } from './host';
+
+const stats = (id: string): CaseStats => ({ case_id: id, flows: 1, accounts: 2, batches: 1, amount_total: '9999999999999999.99', currency: 'CNY', amount_totals: [{ currency: 'CNY', amount: '9999999999999999.99' }] });
+const flow = (id: string, tradeNo = `HOST-${id}`): Flow => ({ case_id: id, id: '9007199254740993', batch_id: '9007199254740994', trade_no: tradeNo, trade_time: '2026-01-01 10:00:00', payer_account: '000HOST-A', payer_name: 'Synthetic host sender', payer_bank: '', payee_account: '000HOST-B', payee_name: 'Synthetic host recipient', payee_bank: '', amount: '9999999999999999.99', balance: null, currency: 'CNY', summary: 'Synthetic host record', channel: '', self_account: '', self_name: '' });
+const page = (id: string, tradeNo?: string): FlowPage => ({ case_id: id, items: [flow(id, tradeNo)], total: 1, page: 1, page_size: 50 });
+const mapping = { trade_time: '交易时间', payer_account: '付款账号', payee_account: '收款账号', amount: '金额' };
+const record = (id: string, stage: ImportSession['stage'] = 'importing', surface: ImportSession['surface'] = 'v1'): ImportSession => ({ case_id: id, import_id: '0123456789abcdef0123456789abcdef', surface, filename: 'host-synthetic.csv', mode: 'A', mapping, stage, source_state: 'retained', created_at: '2026-01-01T10:00:00Z', expires_at: null, error_code: null, attempt: 1, source_available: true, recoverable: true, request: { mode: 'A', mapping, mark_accounts: [], self_accounts: [] }, result: null });
+
+function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason: Error) => void; const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
+
+function session(id = '1', scopeKey = 'host-scope-one', generation = 0, overrides: Partial<FundsCaseClientV1> = {}, actions: FundsHostActionsV1 = {}) {
+  const controller = new AbortController();
+  const client: FundsCaseClientV1 = {
+    binding: { caseId: id, scopeKey, generation }, stats: async () => stats(id), flows: async () => page(id),
+    preview: async () => ({ case_id: id, import_id: record(id).import_id, filename: 'host-synthetic.csv', mode: 'A', columns: Object.values(mapping), mapping, stats: { total: 1, ok: 1, skipped: 0 }, preview: [flow(id)], self_accounts_in_file: [] }),
+    repreview: async () => { throw new Error('Synthetic preview not requested'); },
+    commit: async () => ({ case_id: id, import_id: record(id).import_id, started: true }),
+    job: async () => ({ case_id: id, import_id: record(id).import_id, stage: 'importing', done: 0, total: 1, message: '处理中', result: null, error: null }),
+    imports: async () => ({ case_id: id, items: [] }),
+    sources: async (flowId, page = 1) => ({ case_id: id, flow_id: flowId, items: [], total: 0, page, page_size: 50 }),
+    cleanup: async dryRun => ({ dry_run: dryRun, eligible: 0, deleted: 0, missing: 0, failed: 0, protected: 0, queued: 0 }),
+    ...overrides,
+  };
+  const value: FundsPanelSessionV1 = { context: { caseId: id, name: `合成宿主案件${id}` }, scopeKey, generation, signal: controller.signal, client, actions };
+  return { value, client, controller };
+}
+const host = (value: FundsPanelSessionV1 | null) => ({ version: FUNDS_PANEL_VERSION, session: value });
+
+describe('FundsPanel host isolation', () => {
+  it('uses only the injected current-case client and does not change standalone URL state', async () => {
+    const before = window.location.href;
+    const fetch = vi.spyOn(globalThis, 'fetch');
+    const bound = session(); const statistics = vi.spyOn(bound.client, 'stats');
+    const { container } = render(<FundsPanel host={host(bound.value)} />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    expect(statistics).toHaveBeenCalledWith(expect.any(AbortSignal));
+    expect(container.querySelector('.funds-trace.funds-panel > section.main-workspace')).toBeTruthy();
+    expect(container.querySelector('main')).toBeNull();
+    expect(container.querySelector('.sidebar')).toBeNull();
+    expect(screen.queryByRole('button', { name: '新建案件' })).toBeNull();
+    fireEvent.change(screen.getByLabelText('账号筛选'), { target: { value: '000HOST-A' } });
+    fireEvent.click(screen.getByRole('button', { name: '查询' }));
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    expect(window.location.href).toBe(before);
+    expect(fetch).not.toHaveBeenCalled();
+    fetch.mockRestore();
+  });
+
+  it.each([{ scopeKey: 'host-scope-two', generation: 0 }, { scopeKey: 'host-scope-one', generation: 1 }])('clears dialogs and late responses when the same case is rebound to %o', async next => {
+    const oldStats = deferred<CaseStats>(); const oldPage = deferred<FlowPage>();
+    const oldSignals: AbortSignal[] = [];
+    const first = session('1', 'host-scope-one', 0, {
+      stats: signal => { oldSignals.push(signal!); return oldStats.promise; },
+      flows: (_filters, signal) => { oldSignals.push(signal!); return oldPage.promise; },
+    });
+    const second = session('1', next.scopeKey, next.generation, { flows: async () => page('1', 'NEW-SCOPE') });
+    const { rerender } = render(<FundsPanel host={host(first.value)} />);
+    fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
+    expect(screen.getByRole('dialog', { name: '导入流水' })).toBeTruthy();
+    rerender(<FundsPanel host={host(second.value)} />);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(oldSignals.every(signal => signal.aborted)).toBe(true);
+    await screen.findByRole('button', { name: '核对流水 NEW-SCOPE' });
+    await act(async () => { oldStats.resolve(stats('1')); oldPage.resolve(page('1', 'OLD-SCOPE')); });
+    expect(screen.queryByRole('button', { name: '核对流水 OLD-SCOPE' })).toBeNull();
+    expect(screen.getByRole('button', { name: '核对流水 NEW-SCOPE' })).toBeTruthy();
+  });
+
+  it('clears data and dialogs when the host revokes the current context signal', async () => {
+    const bound = session(); const { container } = render(<FundsPanel host={host(bound.value)} />);
+    fireEvent.click(await screen.findByRole('button', { name: '核对流水 HOST-1' }));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    await act(async () => bound.controller.abort());
+    expect(screen.getByRole('heading', { name: '案件会话已撤销' })).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(container.textContent).not.toContain('999,999,999');
+  });
+
+  it('aborts in-flight progress and stops polling on context removal without claiming server cancellation', async () => {
+    const pending = deferred<ImportJob>(); const signals: AbortSignal[] = [];
+    const job = vi.fn((_id: string, signal?: AbortSignal) => { signals.push(signal!); return pending.promise; });
+    const bound = session('1', 'poll-scope', 0, { imports: async () => ({ case_id: '1', items: [record('1')] }), job });
+    const { rerender } = render(<FundsPanel host={host(bound.value)} />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    fireEvent.click(screen.getByRole('button', { name: '导入记录' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看进度' }));
+    await waitFor(() => expect(job).toHaveBeenCalledOnce());
+    rerender(<FundsPanel host={host(null)} />);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(signals[0].aborted).toBe(true);
+    await act(async () => { pending.resolve({ case_id: '1', import_id: record('1').import_id, stage: 'importing', done: 1, total: 2, message: '仍在服务端运行', result: null, error: null }); await new Promise(resolve => setTimeout(resolve, 350)); });
+    expect(job).toHaveBeenCalledOnce();
+    expect(screen.getByRole('heading', { name: '未选择案件' })).toBeTruthy();
+    expect(screen.queryByText('仍在服务端运行')).toBeNull();
+  });
+
+  it('does not start polling after an old in-flight commit returns following unmount', async () => {
+    const pending = deferred<{ case_id: string; import_id: string; started: boolean }>();
+    let commitSignal: AbortSignal | undefined;
+    const job = vi.fn();
+    const bound = session('1', 'write-scope', 0, { commit: (_id, _body, signal) => { commitSignal = signal; return pending.promise; }, job });
+    const { unmount } = render(<FundsPanel host={host(bound.value)} />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
+    fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'host-synthetic.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: '确认导入' }));
+    await waitFor(() => expect(commitSignal).toBeTruthy());
+    unmount(); expect(commitSignal?.aborted).toBe(true);
+    await act(async () => { pending.resolve({ case_id: '1', import_id: record('1').import_id, started: true }); });
+    expect(job).not.toHaveBeenCalled();
+  });
+
+  it('disables missing host navigation and download capabilities with an explanation', async () => {
+    const bound = session('1', 'no-actions', 0, {
+      imports: async () => ({ case_id: '1', items: [record('1', 'error', 'legacy')] }),
+      sources: async flowId => ({ case_id: '1', flow_id: flowId, total: 1, page: 1, page_size: 50, items: [{ source_id: '0123456789abcdef0123456789abcdef', filename: 'host-original.csv', sha256: 'a'.repeat(64), size_bytes: 10, mode: 'A', mapping, sheet: '', row_kind: 'csv_record', source_row: 2, parser_version: 'synthetic', disposition: 'imported', origin: 'upload', imported_at: '2026-01-01T10:00:00Z', source_available: true }] }),
+    });
+    render(<FundsPanel host={host(bound.value)} />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    expect((screen.getByRole('button', { name: /打开 G6 图谱/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('宿主未提供图谱导航能力。')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '导入记录' }));
+    const legacy = await screen.findByRole('button', { name: /在 G6 工作区查看/ });
+    expect((legacy as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('宿主未提供旧版工作区导航。')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '返回流水核对' }));
+    fireEvent.click(await screen.findByRole('button', { name: '核对流水 HOST-1' }));
+    const download = await screen.findByRole('button', { name: /下载原始文件/ });
+    expect((download as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('宿主未提供原件下载能力。')).toBeTruthy();
+  });
+
+  it('shows host action errors but discards a late error after the case changes', async () => {
+    const pending = deferred<void>();
+    const first = session('1', 'actions-one', 0, {}, { openGraph: () => pending.promise });
+    const second = session('2', 'actions-two');
+    const { rerender } = render(<FundsPanel host={host(first.value)} />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    fireEvent.click(screen.getByRole('button', { name: /打开 G6 图谱/ }));
+    rerender(<FundsPanel host={host(second.value)} />);
+    await act(async () => pending.reject(new Error('旧宿主导航错误')));
+    expect(screen.queryByText('旧宿主导航错误')).toBeNull();
+    const failing = session('2', 'actions-three', 0, {}, { openGraph: async () => { throw new Error('当前宿主导航失败'); } });
+    rerender(<FundsPanel host={host(failing.value)} />);
+    fireEvent.click(screen.getByRole('button', { name: /打开 G6 图谱/ }));
+    expect((await screen.findByRole('alert')).textContent).toContain('当前宿主导航失败');
+  });
+
+  it('immediately aborts the signal supplied to a non-HTTP host action before React cleanup', async () => {
+    const gate = deferred<void>(); let received: AbortSignal | undefined; let sideEffects = 0;
+    const openGraph = vi.fn((signal?: AbortSignal) => {
+      received = signal;
+      return gate.promise.then(() => { if (!signal?.aborted) sideEffects += 1; });
+    });
+    const bound = session('1', 'non-http-host', 0, {}, { openGraph });
+    const { unmount } = render(<StrictMode><FundsPanel host={host(bound.value)} /></StrictMode>);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    const button = screen.getByRole('button', { name: /打开 G6 图谱/ });
+    fireEvent.click(button);
+    expect(received?.aborted).toBe(false);
+    await act(async () => {
+      bound.controller.abort();
+      // No await/rerender/cleanup between host revocation and this assertion.
+      expect(received?.aborted).toBe(true);
+      button.click();
+      expect(openGraph).toHaveBeenCalledOnce();
+      gate.resolve();
+      await Promise.resolve();
+    });
+    expect(sideEffects).toBe(0);
+    unmount(); button.click(); expect(openGraph).toHaveBeenCalledOnce();
+  });
+
+  it('does not dispatch the next host query when revocation happens inside the preceding query', async () => {
+    const flows = vi.fn(async () => page('1'));
+    const bound = session('1', 'query-revocation', 0, { flows });
+    let received: AbortSignal | undefined;
+    bound.client.stats = async signal => { received = signal; bound.controller.abort(); return stats('1'); };
+    render(<FundsPanel host={host(bound.value)} />);
+    await screen.findByRole('heading', { name: '案件会话已撤销' });
+    expect(received?.aborted).toBe(true);
+    expect(flows).not.toHaveBeenCalled();
+  });
+
+  it('does not dispatch an enabled captured UI action after revocation or unmount', async () => {
+    const openGraph = vi.fn(); const bound = session('1', 'old-handler', 0, {}, { openGraph });
+    const { unmount } = render(<FundsPanel host={host(bound.value)} />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    const button = screen.getByRole('button', { name: /打开 G6 图谱/ });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    act(() => { bound.controller.abort(); button.click(); });
+    expect(openGraph).not.toHaveBeenCalled();
+    unmount(); button.click(); expect(openGraph).not.toHaveBeenCalled();
+  });
+});

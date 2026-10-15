@@ -1,0 +1,77 @@
+name: Windows candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      installer:
+        description: Build an unsigned NSIS preview installer
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-candidate:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: 源码 FundsTrace
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out candidate into a Chinese and space path
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: 源码 FundsTrace
+          persist-credentials: false
+      - name: Set up Node x64
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.1'
+          architecture: x64
+          package-manager-cache: false
+      - name: Set up Python x64
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - name: Install pinned uv
+        run: |
+          python -m pip install --disable-pip-version-check uv==0.11.5
+          if ($LASTEXITCODE -ne 0) { throw "uv installation failed." }
+      - name: Run focused source process and recovery regressions
+        run: |
+          uv venv --python 3.11 .venv
+          if ($LASTEXITCODE -ne 0) { throw "Test environment creation failed." }
+          uv pip sync --python .venv/Scripts/python.exe --require-hashes requirements-dev.lock
+          if ($LASTEXITCODE -ne 0) { throw "Test dependency sync failed." }
+          & .venv/Scripts/python.exe -m pytest tests/test_desktop_backend.py tests/test_import_process_recovery.py -q
+          if ($LASTEXITCODE -ne 0) { throw "Focused source process regressions failed." }
+      - name: Build unsigned Windows directory candidate and native backend evidence
+        env:
+          BUILD_INSTALLER: ${{ inputs.installer }}
+        run: |
+          if ($env:BUILD_INSTALLER -eq 'true') { ./scripts/build-windows.ps1 -Installer }
+          else { ./scripts/build-windows.ps1 }
+      - name: Retain explicit candidate and safe evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fundstrace-windows-x64-candidate-${{ github.run_id }}
+          retention-days: 3
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            源码 FundsTrace/build/desktop/electron/win-unpacked/
+            源码 FundsTrace/build/desktop/electron/*-windows-x64-unsigned.exe
+            源码 FundsTrace/build/desktop/backend/funds-trace-backend/build-manifest.json
+            源码 FundsTrace/build/desktop/native-backend-smoke.json
+            源码 FundsTrace/build/desktop/windows-candidate.json
+            源码 FundsTrace/build/desktop/windows-candidate.sha256

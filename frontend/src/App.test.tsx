@@ -1,0 +1,278 @@
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import type { Case, CaseStats, Flow, FlowPage, ImportPreview, ImportJob, ImportSession, ImportSessionList, FlowSource, FlowSourceList } from '../../contracts/api-v1';
+import { App } from './App';
+import type { FundsApi } from './lib/api';
+
+const cases: Case[] = [{ id: '1', name: '合成案件甲', created_at: null }, { id: '2', name: '合成案件乙', created_at: null }];
+const stats = (id: string): CaseStats => ({ case_id: id, flows: 1, accounts: 2, batches: 1, amount_total: '9999999999999999.99', currency: 'CNY', amount_totals: [{ currency: 'CNY', amount: '9999999999999999.99' }] });
+const row = (id: string): Flow => ({ id: '9007199254740993', case_id: id, batch_id: '9007199254740994', trade_no: `SYN-${id}`, trade_time: '2026-01-01 10:00:00', payer_name: `Synthetic ${id}`, payer_account: '000SYN-A', payer_bank: '', payee_name: 'Synthetic recipient', payee_account: '000SYN-B', payee_bank: '', amount: '9999999999999999.99', balance: null, currency: 'CNY', summary: 'Synthetic transfer', channel: '', self_account: '', self_name: '' });
+const page = (id: string, items: Flow[] = [row(id)]): FlowPage => ({ case_id: id, items, total: items.length, page: 1, page_size: 50 });
+const preview: ImportPreview = { case_id: '1', import_id: '0123456789ab', filename: 'synthetic.csv', mode: 'A', columns: ['交易时间', '付款账号', '收款账号', '交易金额'], mapping: { trade_time: '交易时间', payer_account: '付款账号', payee_account: '收款账号', amount: '交易金额' }, stats: { total: 1, ok: 1, skipped: 0 }, preview: [row('1')], self_accounts_in_file: [] };
+const completed: ImportJob = { case_id: '1', import_id: preview.import_id, stage: 'done', done: 1, total: 1, message: '完成', error: null, result: { total: 1, ok: 1, skipped: 0, rows_dup: 0, batch_id: '10', bad_examples: [], self_accounts: [], self_accounts_count: 0, main_matched: [], accounts_in_batch: 2, main_detected: [] } };
+const session = (overrides: Partial<ImportSession> = {}): ImportSession => ({ case_id: '1', import_id: preview.import_id, surface: 'v1', filename: preview.filename, mode: preview.mode, mapping: preview.mapping, stage: 'error', source_state: 'retained', created_at: '2026-01-01 10:00:00', expires_at: '2026-02-01 10:00:00', error_code: 'interrupted', attempt: 1, source_available: true, recoverable: true, request: { mode: preview.mode, mapping: preview.mapping, mark_accounts: [], self_accounts: ['SYN-DECLARED'] }, result: null, ...overrides });
+const source = (overrides: Partial<FlowSource> = {}): FlowSource => ({ source_id: '0123456789abcdef0123456789abcdef', filename: 'source.csv', sha256: 'a'.repeat(64), size_bytes: 128, mode: 'A', mapping: preview.mapping, sheet: '', row_kind: 'csv_record', source_row: 6, parser_version: 'synthetic-v1', disposition: 'imported', origin: 'upload', imported_at: '2026-01-01 10:00:00', source_available: true, ...overrides });
+
+function fakeApi(): FundsApi {
+  return {
+    cases: async () => ({ items: cases }), createCase: async name => ({ id: '3', name, created_at: null }),
+    stats: async id => stats(id), flows: async id => page(id),
+    preview: async () => preview, repreview: async () => preview,
+    commit: async () => ({ case_id: '1', import_id: preview.import_id, started: true }), job: async () => completed,
+    imports: async id => ({ case_id: id, items: [] }),
+    sources: async (id, flowId, page = 1) => ({ case_id: id, flow_id: flowId, items: [], total: 0, page, page_size: 50 }),
+    downloadSource: async () => {},
+    cleanup: async (_id, dryRun = true) => ({ dry_run: dryRun, eligible: 0, deleted: 0, missing: 0, failed: 0, protected: 0, queued: 0 }),
+  };
+}
+
+function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
+
+describe('FundsTrace case workspace', () => {
+  it('displays exact money and bigint identity in the verification dialog', async () => {
+    render(<App api={fakeApi()} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(screen.getByRole('button', { name: '核对流水 SYN-1' }));
+    const dialog = screen.getByRole('dialog', { name: '流水核对' });
+    expect(within(dialog).getByText('9007199254740993')).toBeTruthy();
+    expect(within(dialog).getByText('9007199254740994')).toBeTruthy();
+    expect(within(dialog).getByText('9,999,999,999,999,999.99 CNY')).toBeTruthy();
+    expect(within(dialog).getByText('未提供')).toBeTruthy();
+  });
+
+  it('discards a previous case response even when the transport ignores cancellation', async () => {
+    const oldStats = deferred<CaseStats>(); const oldPage = deferred<FlowPage>();
+    const api = fakeApi();
+    api.stats = id => id === '1' ? oldStats.promise : Promise.resolve(stats(id));
+    api.flows = id => id === '1' ? oldPage.promise : Promise.resolve(page(id));
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: /合成案件乙/ });
+    fireEvent.click(screen.getByRole('button', { name: /合成案件乙/ }));
+    await screen.findByRole('button', { name: '核对流水 SYN-2' });
+    await act(async () => { oldStats.resolve(stats('1')); oldPage.resolve(page('1')); });
+    expect(screen.queryByRole('button', { name: '核对流水 SYN-1' })).toBeNull();
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('合成案件乙');
+    expect(new URLSearchParams(window.location.search).get('case_id')).toBe('2');
+  });
+
+  it('rejects a mismatched case result rather than displaying its rows', async () => {
+    const api = fakeApi(); api.flows = async () => page('2');
+    render(<App api={api} />);
+    expect((await screen.findByRole('alert')).textContent).toContain('返回的案件与当前案件不一致');
+    expect(screen.queryByRole('button', { name: '核对流水 SYN-2' })).toBeNull();
+  });
+
+  it('rejects a foreign-case row even when its page envelope has the current case ID', async () => {
+    const api = fakeApi(); api.flows = async () => page('1', [row('2')]);
+    render(<App api={api} />);
+    expect((await screen.findByRole('alert')).textContent).toContain('返回的案件与当前案件不一致');
+    expect(screen.queryByRole('button', { name: '核对流水 SYN-2' })).toBeNull();
+  });
+
+  it('creates a case through an HTML dialog without native prompt', async () => {
+    const api = fakeApi(); const create = vi.spyOn(api, 'createCase');
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: /合成案件甲/ });
+    fireEvent.click(screen.getByRole('button', { name: '新建案件' }));
+    fireEvent.change(screen.getByRole('textbox', { name: '案件名称' }), { target: { value: '合成案件丙' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建案件' }));
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('合成案件丙'));
+    expect(create).toHaveBeenCalledWith('合成案件丙', expect.any(AbortSignal));
+    expect(new URLSearchParams(window.location.search).get('case_id')).toBe('3');
+  });
+
+  it('creates a fresh scope when the standalone host actions are replaced for the same case', async () => {
+    const api = fakeApi(); const firstGraph = vi.fn(); const nextGraph = vi.fn();
+    const firstActions = () => ({ openGraph: firstGraph }); const nextActions = () => ({ openGraph: nextGraph });
+    const { rerender } = render(<App api={api} actionsForCase={firstActions} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入流水' }));
+    expect(screen.getByRole('dialog', { name: '导入流水' })).toBeTruthy();
+    rerender(<App api={api} actionsForCase={nextActions} />);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(screen.getByRole('button', { name: /打开 G6 图谱/ }));
+    await waitFor(() => expect(nextGraph).toHaveBeenCalledOnce());
+    expect(firstGraph).not.toHaveBeenCalled();
+    expect(screen.queryByRole('heading', { name: '案件会话已撤销' })).toBeNull();
+  });
+
+  it('requires a fresh preview after mapping changes and commits only the bound case', async () => {
+    const api = fakeApi(); const commit = vi.spyOn(api, 'commit'); const repreview = vi.spyOn(api, 'repreview');
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入流水' }));
+    fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } });
+    await screen.findByText('synthetic.csv');
+    const select = screen.getByLabelText('映射付款账号');
+    fireEvent.change(select, { target: { value: '收款账号' } });
+    expect((screen.getByRole('button', { name: '确认导入' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '按当前映射重新预览' }));
+    await waitFor(() => expect((screen.getByRole('button', { name: '确认导入' }) as HTMLButtonElement).disabled).toBe(false));
+    expect(repreview).toHaveBeenCalledWith('1', preview.import_id, expect.objectContaining({ mapping: expect.objectContaining({ payer_account: '收款账号' }) }), expect.any(AbortSignal));
+    fireEvent.click(screen.getByRole('button', { name: '确认导入' }));
+    await screen.findByText('流水已写入当前案件');
+    expect(commit).toHaveBeenCalledWith('1', preview.import_id, expect.objectContaining({ mark_accounts: [] }), expect.any(AbortSignal));
+  });
+
+  it.each(['A', 'B'] as const)('removes incompatible mapping keys when switching from mode %s', async initialMode => {
+    const api = fakeApi();
+    const mapping = initialMode === 'A' ? preview.mapping : { trade_time: '交易时间', amount: '交易金额', self_account: '付款账号', counter_account: '收款账号', direction: '交易金额' };
+    api.preview = async () => ({ ...preview, mode: initialMode, mapping });
+    const repreview = vi.spyOn(api, 'repreview');
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入流水' }));
+    fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } });
+    await screen.findByText('synthetic.csv');
+    const next = initialMode === 'A' ? 'B' : 'A';
+    fireEvent.change(screen.getByLabelText('流水文件类型'), { target: { value: next } });
+    fireEvent.click(screen.getByRole('button', { name: '按当前映射重新预览' }));
+    await waitFor(() => expect(repreview).toHaveBeenCalledOnce());
+    const submitted = repreview.mock.calls[0][2];
+    expect(submitted.mode).toBe(next);
+    for (const key of next === 'A' ? ['counter_account', 'direction'] : ['payer_account', 'payee_account']) expect(submitted.mapping).not.toHaveProperty(key);
+    expect(submitted.mapping).toHaveProperty('trade_time', '交易时间');
+  });
+
+  it('allows clearing an automatically detected supplementary time column', async () => {
+    const api = fakeApi();
+    api.preview = async () => ({ ...preview, columns: [...preview.columns, '时分'], mapping: { ...preview.mapping, _time2: '时分' } });
+    const repreview = vi.spyOn(api, 'repreview');
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入流水' }));
+    fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } });
+    await screen.findByText('synthetic.csv');
+    fireEvent.change(screen.getByLabelText('映射时间补充'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: '按当前映射重新预览' }));
+    await waitFor(() => expect(repreview).toHaveBeenCalledWith('1', preview.import_id, expect.objectContaining({ mapping: expect.objectContaining({ _time2: '' }) }), expect.any(AbortSignal)));
+  });
+
+  it('resumes only after preview and preserves frozen empty marks and declared accounts', async () => {
+    const api = fakeApi(); api.imports = async id => ({ case_id: id, items: [session()] });
+    api.repreview = async () => ({ ...preview, self_accounts_in_file: [{ account: 'SYN-MAIN', name: 'Synthetic main', count: 1 }] });
+    const commit = vi.spyOn(api, 'commit'); const repreview = vi.spyOn(api, 'repreview');
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入记录' }));
+    fireEvent.click(await screen.findByRole('button', { name: '继续导入 synthetic.csv' }));
+    const checkbox = await screen.findByRole('checkbox', { name: /Synthetic main/ }) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    expect(commit).not.toHaveBeenCalled();
+    expect(repreview).toHaveBeenCalledWith('1', preview.import_id, { mode: preview.mode, mapping: preview.mapping }, expect.any(AbortSignal));
+    fireEvent.change(screen.getByLabelText('映射付款账号'), { target: { value: '收款账号' } });
+    fireEvent.click(screen.getByRole('button', { name: '按当前映射重新预览' }));
+    await waitFor(() => expect(repreview).toHaveBeenCalledTimes(2));
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '确认导入' }));
+    await screen.findByText('流水已写入当前案件');
+    expect(commit).toHaveBeenCalledWith('1', preview.import_id, expect.objectContaining({ mark_accounts: [], self_accounts: ['SYN-DECLARED'] }), expect.any(AbortSignal));
+  });
+
+  it('discards late import history after switching cases', async () => {
+    const api = fakeApi(); const oldHistory = deferred<ImportSessionList>();
+    api.imports = id => id === '1' ? oldHistory.promise : Promise.resolve({ case_id: id, items: [session({ case_id: id, filename: 'case-two.csv' })] });
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入记录' }));
+    fireEvent.click(screen.getByRole('button', { name: /合成案件乙/ }));
+    await screen.findByRole('button', { name: '核对流水 SYN-2' });
+    fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入记录' }));
+    await screen.findByText('case-two.csv');
+    await act(async () => { oldHistory.resolve({ case_id: '1', items: [session({ filename: 'late-case-one.csv' })] }); });
+    expect(screen.queryByText('late-case-one.csv')).toBeNull();
+    expect(screen.getByText('case-two.csv')).toBeTruthy();
+  });
+
+  it('offers an explicit retry when restoring a preview fails without automatically importing', async () => {
+    const api = fakeApi(); api.imports = async id => ({ case_id: id, items: [session()] });
+    let attempts = 0;
+    api.repreview = async () => { if (++attempts === 1) throw new Error('合成预览错误'); return preview; };
+    const commit = vi.spyOn(api, 'commit');
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入记录' }));
+    fireEvent.click(await screen.findByRole('button', { name: '继续导入 synthetic.csv' }));
+    await screen.findByText('合成预览错误');
+    fireEvent.click(screen.getByRole('button', { name: '重试恢复预览' }));
+    await screen.findByRole('button', { name: '确认导入' });
+    expect(attempts).toBe(2);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('pages source records without pretending package metadata has a downloadable file', async () => {
+    const api = fakeApi();
+    api.sources = async (id, flowId, page = 1) => ({ case_id: id, flow_id: flowId, total: 52, page, page_size: 50, items: page === 1 ? [source()] : [source({ filename: 'package.xlsx', sheet: 'Synthetic sheet', row_kind: 'worksheet_row', origin: 'package', source_available: true, disposition: 'duplicate' }), source({ source_id: 'abcdef0123456789abcdef0123456789', filename: 'unavailable.csv', source_available: false })] });
+    const sources = vi.spyOn(api, 'sources'); const downloadSource = vi.spyOn(api, 'downloadSource');
+    render(<App api={api} />);
+    fireEvent.click(await screen.findByRole('button', { name: '核对流水 SYN-1' }));
+    const download = await screen.findByRole('button', { name: /下载原始文件/ });
+    fireEvent.click(download);
+    await waitFor(() => expect(downloadSource).toHaveBeenCalledWith('1', '0123456789abcdef0123456789abcdef', 'source.csv', expect.any(AbortSignal)));
+    expect(screen.getByText('CSV 第 6 条逻辑记录（含表头和空记录）')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '来源下一页' }));
+    await screen.findByText('package.xlsx');
+    expect(screen.getByText('工作表「Synthetic sheet」 · 第 6 行')).toBeTruthy();
+    expect(screen.getByText('重复记录关联')).toBeTruthy();
+    expect(screen.getByText('案件包携带的来源元数据；包内不含原始上传文件。')).toBeTruthy();
+    expect(screen.getByText('原始上传文件当前不可用，保留来源元数据。')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /下载原始文件/ })).toBeNull();
+    expect(sources).toHaveBeenLastCalledWith('1', '9007199254740993', 2, expect.any(AbortSignal));
+  });
+
+  it('discards a late source response when a different case opens its ledger', async () => {
+    const api = fakeApi(); const oldSources = deferred<FlowSourceList>();
+    api.sources = (id, flowId) => id === '1' ? oldSources.promise : Promise.resolve({ case_id: id, flow_id: flowId, items: [], total: 0, page: 1, page_size: 50 });
+    render(<App api={api} />);
+    fireEvent.click(await screen.findByRole('button', { name: '核对流水 SYN-1' }));
+    fireEvent.click(screen.getByRole('button', { name: /合成案件乙/ }));
+    fireEvent.click(await screen.findByRole('button', { name: '核对流水 SYN-2' }));
+    await screen.findByText('未记录来源。历史流水无法据此还原原始文件或源行位置。');
+    await act(async () => { oldSources.resolve({ case_id: '1', flow_id: row('1').id, items: [source({ filename: 'late-source.csv' })], total: 1, page: 1, page_size: 50 }); });
+    expect(screen.queryByText('late-source.csv')).toBeNull();
+    expect(screen.queryByRole('button', { name: /下载原始文件/ })).toBeNull();
+  });
+
+  it('previews cleanup and requires a separate explicit action to execute it for this case', async () => {
+    const api = fakeApi(); api.cleanup = async (_id, dryRun = true) => ({ dry_run: dryRun, eligible: 1, deleted: dryRun ? 0 : 1, missing: 0, failed: 0, protected: 2, queued: 0 });
+    const cleanup = vi.spyOn(api, 'cleanup');
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入记录' }));
+    fireEvent.click(screen.getByRole('button', { name: '预览清理' }));
+    await screen.findByText('可清理 1 个 · 受保护 2 个 · 待处理 0 个');
+    expect(cleanup).toHaveBeenCalledExactlyOnceWith('1', true, expect.any(AbortSignal));
+    fireEvent.click(screen.getByRole('button', { name: '确认清理本案到期文件' }));
+    await screen.findByText('已清理 1 个 · 已缺失 0 个 · 失败 0 个');
+    expect(cleanup).toHaveBeenLastCalledWith('1', false, expect.any(AbortSignal));
+  });
+
+  it('routes legacy import records to the same-case G6 surface', async () => {
+    const api = fakeApi(); api.imports = async id => ({ case_id: id, items: [session({ surface: 'legacy' })] });
+    const repreview = vi.spyOn(api, 'repreview'); const commit = vi.spyOn(api, 'commit'); const navigate = vi.fn();
+    render(<App api={api} actionsForCase={context => ({ openLegacyImport: importId => navigate(context.caseId, importId) })} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入记录' }));
+    const button = await screen.findByRole('button', { name: /在 G6 工作区查看/ });
+    fireEvent.click(button);
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('1', preview.import_id));
+    expect(screen.queryByRole('button', { name: '继续导入 synthetic.csv' })).toBeNull();
+    expect(repreview).not.toHaveBeenCalled(); expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('opens an active task as progress without automatically committing again', async () => {
+    const api = fakeApi(); api.imports = async id => ({ case_id: id, items: [session({ stage: 'importing' })] });
+    const pending = deferred<ImportJob>(); api.job = () => pending.promise;
+    const commit = vi.spyOn(api, 'commit');
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入记录' }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看进度' }));
+    expect(screen.getByRole('button', { name: '关闭进度' })).toBeTruthy();
+    expect(commit).not.toHaveBeenCalled();
+    await act(async () => { pending.resolve(completed); });
+    await screen.findByText('流水已写入当前案件');
+    expect(commit).not.toHaveBeenCalled();
+  });
+});

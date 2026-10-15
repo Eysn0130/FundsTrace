@@ -1,0 +1,13 @@
+.funds-host-preview { display:grid; grid-template-columns:220px minmax(0,1fr); min-height:100dvh; background:#eef1f4; font:14px/1.5 system-ui,sans-serif; color:#24354b; }
+.funds-host-preview * { box-sizing:border-box; }
+.funds-host-preview .fixture-sidebar { padding:24px 16px; background:#e3e8ee; }
+.funds-host-preview .fixture-sidebar button { display:block; width:100%; padding:10px; text-align:left; margin:10px 0; font:inherit; color:inherit; border:1px solid #a8b5c5; border-radius:4px; background:#fff; cursor:pointer; }
+.funds-host-preview .fixture-sidebar button[aria-pressed=true] { border-color:#315f9c; background:#edf4ff; }
+.funds-host-preview .fixture-sidebar label { display:block; margin:16px 0; }
+.funds-host-preview .fixture-sidebar p { font-size:12px; color:#53647a; }
+.funds-host-preview .fixture-content { padding:20px; min-width:0; }
+.funds-host-preview .fixture-content > header h1 { font-size:20px; margin:0; }
+.funds-host-preview .fixture-controls { margin:20px 0; padding:12px; border:1px dashed #8d9bad; }
+.funds-host-preview .fixture-slot { border:1px solid #c4cedb; min-width:0; }
+.funds-host-preview .fixture-slot > .funds-panel { min-width:0; }
+@media(max-width:720px) { .funds-host-preview { grid-template-columns:1fr; } .funds-host-preview .fixture-sidebar { display:flex; gap:8px; flex-wrap:wrap; } .funds-host-preview .fixture-sidebar button { width:auto; margin:0; } }

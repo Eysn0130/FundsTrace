@@ -1,0 +1,113 @@
+'use strict';
+
+const { app, BrowserWindow, Menu, dialog, session, screen } = require('electron');
+const path = require('node:path');
+const os = require('node:os');
+const fs = require('node:fs/promises');
+const { randomUUID } = require('node:crypto');
+const { launchConfig, HEADER, pageAllowed, popupKind, requestAllowed, downloadAllowed, windowBounds } = require('./host-policy.cjs');
+const { startBackend } = require('./backend.cjs');
+
+app.setName('FundsTrace');
+app.setAppUserModelId('com.eysn.fundstrace');
+const synthetic = process.argv.includes('--synthetic');
+let backend, temporaryRoot, quitting = false, shutdownComplete = false, fatalShown = false;
+const owned = new Set();
+const windows = new Set();
+
+async function fail(message) {
+  if (quitting || fatalShown) return;
+  fatalShown = true;
+  dialog.showErrorBox('FundsTrace', message);
+  app.quit();
+}
+if (!app.requestSingleInstanceLock()) app.quit();
+else {
+  app.on('second-instance', () => {
+    const win = [...windows][0]; if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+  });
+  app.on('before-quit', event => {
+    if (shutdownComplete) return;
+    event.preventDefault(); if (quitting) return; quitting = true;
+    void (async () => {
+      try { await backend?.stop(); if (temporaryRoot) await fs.rm(temporaryRoot, { recursive: true, force: true }); }
+      finally { shutdownComplete = true; app.quit(); }
+    })();
+  });
+  app.on('window-all-closed', () => app.quit());
+  app.whenReady().then(async () => {
+    try {
+      if (synthetic && app.isPackaged) throw new Error('Synthetic mode is unavailable in installed builds.');
+      const dataDir = synthetic
+        ? path.join(temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'funds-trace-desktop-')), 'data')
+        : path.join(app.getPath('userData'), 'data');
+      await fs.mkdir(dataDir, { recursive: true });
+      const config = launchConfig({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, repoRoot: path.resolve(__dirname, '..'), python: process.env.FUNDS_TRACE_PYTHON, dataDir, synthetic });
+      backend = startBackend(config, { onExit: () => void fail('FundsTrace 数据服务已停止。请关闭后重新打开应用；未完成的任务会在下次启动时识别。') });
+      const { origin, token } = await backend.ready;
+      if (quitting) return;
+      const localSession = session.fromPartition(`funds-trace-${randomUUID()}`, { cache: false });
+      localSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+      localSession.setPermissionCheckHandler(() => false);
+      localSession.webRequest.onBeforeRequest((details, callback) => {
+        callback({ cancel: !requestAllowed(details.url, origin, details.webContentsId, owned) });
+      });
+      localSession.webRequest.onBeforeSendHeaders((details, callback) => {
+        const headers = { ...details.requestHeaders };
+        for (const key of Object.keys(headers)) if (key.toLowerCase() === HEADER.toLowerCase()) delete headers[key];
+        if (requestAllowed(details.url, origin, details.webContentsId, owned)) headers[HEADER] = token;
+        callback({ requestHeaders: headers });
+      });
+      localSession.on('will-download', (event, item, webContents) => {
+        if (!webContents || !owned.has(webContents.id) || !downloadAllowed(item.getURL(), origin)) { event.preventDefault(); return; }
+        item.once('done', (_event, state) => {
+          if (state === 'completed' || quitting) return;
+          const owner = webContents.isDestroyed() ? null : BrowserWindow.fromWebContents(webContents);
+          const options = { type: state === 'cancelled' ? 'info' : 'warning', title: 'FundsTrace 下载', message: state === 'cancelled' ? '下载已取消，文件未保存。' : '下载未完成，请重新导出并选择保存位置。' };
+          void (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options));
+        });
+        // Do not setSavePath: Electron presents the normal Save dialog.
+      });
+      function createWindow() {
+        const owner = [...windows][0];
+        const display = owner ? screen.getDisplayMatching(owner.getBounds()) : screen.getPrimaryDisplay();
+        const win = new BrowserWindow({ title: 'FundsTrace', ...windowBounds(display.workArea), show: false,
+          webPreferences: { session: localSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, spellcheck: false } });
+        const contents = win.webContents;
+        const contentsId = contents.id;
+        windows.add(win); owned.add(contentsId);
+        win.on('closed', () => { windows.delete(win); owned.delete(contentsId); });
+        contents.on('will-attach-webview', event => event.preventDefault());
+        contents.on('will-navigate', (event, url) => {
+          if (pageAllowed(url, origin)) return;
+          event.preventDefault();
+          // Older retained pages also use attachment links. Preserve only
+          // their explicit export routes without navigating to an API document.
+          if (popupKind(url, origin) === 'download') contents.downloadURL(url);
+        });
+        contents.on('will-redirect', (event, url) => { if (!pageAllowed(url, origin)) event.preventDefault(); });
+        contents.on('render-process-gone', () => void fail('FundsTrace 页面进程已停止，请重新打开应用。'));
+        contents.setWindowOpenHandler(({ url }) => {
+          const kind = popupKind(url, origin);
+          if (kind === 'download') { contents.downloadURL(url); return { action: 'deny' }; }
+          if (kind !== 'page') return { action: 'deny' };
+          // Own the new window instead of substituting a WebContents into
+          // Electron's guest-window factory (which has a separate ownership
+          // contract in current Electron versions).
+          const child = createWindow();
+          void child.loadURL(url).catch(() => void fail('FundsTrace 分析页面无法打开，请重试。'));
+          return { action: 'deny' };
+        });
+        win.once('ready-to-show', () => win.show());
+        return win;
+      }
+      Menu.setApplicationMenu(Menu.buildFromTemplate([
+        ...(process.platform === 'darwin' ? [{ label: 'FundsTrace', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] }] : []),
+        { label: '文件', submenu: [{ label: '资金图谱', click: () => [...windows][0]?.loadURL(`${origin}/`) }, { label: '案件与导入', click: () => [...windows][0]?.loadURL(`${origin}/workspace/`) }, { type: 'separator' }, { role: 'quit' }] },
+        { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
+        { label: '显示', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] }
+      ]));
+      await createWindow().loadURL(`${origin}/`);
+    } catch { await fail('FundsTrace 启动失败。请确认本机后端与应用资源完整，或在开发环境完成依赖安装后重试。'); }
+  });
+}

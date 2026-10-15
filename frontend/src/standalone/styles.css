@@ -1,0 +1,282 @@
+/* Document-wide reset belongs only to the standalone entry. */
+
+
+body {
+  margin: 0
+}
+
+.funds-trace.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 226px minmax(0,1fr)
+}
+
+:where(.funds-trace) .sidebar {
+  background: #182b44;
+  color: #d1dbe9;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 30px 17px 20px;
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh
+}
+
+:where(.funds-trace) .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 5px 34px;
+  color: #fff;
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: -.6px
+}
+
+:where(.funds-trace) .brand svg {
+  width: 35px;
+  height: 35px;
+  flex-shrink: 0
+}
+
+:where(.funds-trace) .brand svg path {
+  stroke: #92b5f2;
+  stroke-width: 2;
+  fill: none
+}
+
+:where(.funds-trace) .brand svg circle {
+  fill: #e4edff
+}
+
+:where(.funds-trace) .brand small {
+  display: block;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 2.6px;
+  color: #91a6c1;
+  margin-top: 3px
+}
+
+:where(.funds-trace) .nav-section {
+  display: block;
+  color: #8397b2;
+  font-size: 10px;
+  letter-spacing: 2px;
+  padding: 0 13px 10px
+}
+
+:where(.funds-trace) .nav-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 13px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #b9c8dd;
+  text-align: left;
+  margin-bottom: 5px;
+  font-size: 13px;
+  white-space: nowrap
+}
+
+:where(.funds-trace) .nav-item>span:first-child {
+  flex: 0 0 auto;
+  font-size: 19px;
+  width: 18px;
+  text-align: center;
+  font-weight: 400
+}
+
+:where(.funds-trace) .nav-item:hover {
+  background: #213b5b;
+  color: #fff
+}
+
+:where(.funds-trace) .nav-item.active {
+  background: #2a4567;
+  color: #fff
+}
+
+:where(.funds-trace) .nav-external {
+  margin-left: auto;
+  color: #90a6c0
+}
+
+:where(.funds-trace) .nav-item.disabled {
+  pointer-events: none;
+  opacity: .45
+}
+
+:where(.funds-trace) .case-section {
+  margin-top: 34px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1
+}
+
+:where(.funds-trace) .section-heading {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 10px 10px;
+  color: #a5b5ca;
+  font-size: 12px
+}
+
+:where(.funds-trace) .case-filter {
+  width: 100%;
+  background: #14263c;
+  border: 1px solid #2b405c;
+  color: #dce6f5;
+  font-size: 12px;
+  padding: 9px 10px;
+  margin-bottom: 13px
+}
+
+:where(.funds-trace) .case-filter::placeholder {
+  color: #7189a6
+}
+
+:where(.funds-trace) .case-list {
+  overflow-y: auto;
+  margin: 0 -5px
+}
+
+:where(.funds-trace) .case-item {
+  display: flex;
+  gap: 9px;
+  align-items: start;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: #aebed3;
+  font-size: 12px;
+  text-align: left;
+  margin-bottom: 4px;
+  word-break: break-word
+}
+
+:where(.funds-trace) .case-item:hover {
+  background: #213a58
+}
+
+:where(.funds-trace) .case-item.selected {
+  background: #254262;
+  color: #eef5ff
+}
+
+:where(.funds-trace) .case-glyph {
+  flex: 0 0 auto;
+  font-size: 17px;
+  line-height: 1.1;
+  color: #8fa9c9
+}
+
+:where(.funds-trace) .sidebar-hint {
+  font-size: 12px;
+  padding: 12px;
+  color: #8ea4bf
+}
+
+:where(.funds-trace) .sidebar-footer {
+  font-size: 11px;
+  color: #b5c5db;
+  border-top: 1px solid #31415b;
+  padding: 18px 9px 0
+}
+
+:where(.funds-trace) .sidebar-footer>span:last-child {
+  display: block;
+  font-size: 10px;
+  margin-top: 5px;
+  color: #7289a5
+}
+
+:where(.funds-trace) .local-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: #7dbaa3;
+  border-radius: 50%;
+  margin-right: 5px
+}
+
+@media(max-width:1120px) {
+
+.funds-trace.app-shell {
+  grid-template-columns: 195px minmax(0,1fr)
+}
+
+:where(.funds-trace) .sidebar {
+  padding: 25px 12px 17px
+}
+
+:where(.funds-trace) .brand {
+  font-size: 19px
+}
+}
+
+@media(max-width:760px) {
+
+.funds-trace.app-shell {
+  grid-template-columns: 1fr
+}
+
+:where(.funds-trace) .sidebar {
+  position: static;
+  height: auto;
+  min-height: 0;
+  padding: 17px;
+  display: block
+}
+
+:where(.funds-trace) .brand {
+  padding: 0 0 13px;
+  font-size: 21px
+}
+
+:where(.funds-trace) .workspace-nav,:where(.funds-trace) .sidebar-footer,:where(.funds-trace) .case-filter,:where(.funds-trace) .section-heading {
+  display: none
+}
+
+:where(.funds-trace) .case-section {
+  margin-top: 0
+}
+
+:where(.funds-trace) .case-list {
+  display: flex;
+  gap: 5px;
+  overflow-x: auto
+}
+
+:where(.funds-trace) .case-item {
+  min-width: 125px;
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  padding: 8px;
+  white-space: nowrap
+}
+}
+
+.funds-trace.app-shell > main { min-width: 0; }
+
+/* Case creation stays reachable in a narrow standalone window. */
+@media (max-width: 760px) {
+  :where(.funds-trace) .section-heading { display: flex; padding-inline: 0; }
+}
+
+@media (max-width: 760px) {
+  .funds-trace.app-shell { grid-template-columns: minmax(0, 1fr); }
+  :where(.funds-trace) .sidebar { min-width: 0; }
+  :where(.funds-trace) .case-list { min-width: 0; }
+}

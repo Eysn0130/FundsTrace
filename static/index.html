@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/static/favicon.svg">
+<title>FundsTrace · 资金流水追踪与关联分析</title>
+<link rel="stylesheet" href="/static/style.css?v=workspace-1">
+<script src="/static/vendor/g6.min.js"></script>
+</head>
+<body>
+<header id="topbar">
+  <div class="brand"><img src="/static/logo.svg" alt="" class="topbar-logo"><div class="logo">FundsTrace</div></div>
+  <div class="case-box">
+    <label for="caseSelect">案件</label><select id="caseSelect" aria-label="当前案件"></select>
+    <button class="btn small" id="btnCaseActions" data-action-dialog="caseActions" aria-haspopup="dialog">案件管理</button>
+  </div>
+  <div class="stats" id="statLine">加载中…</div>
+  <nav class="workspace-actions" aria-label="案件数据与分析">
+    <button class="btn small primary" id="btnImport">导入流水</button>
+    <button class="btn small" id="btnDataActions" data-action-dialog="dataActions" aria-haspopup="dialog">数据工具</button>
+    <a class="btn small analysis-link" id="analysisLink" href="/analysis" target="_blank" rel="noopener" title="图结构/统计算法分析与分析报告导出">智能分析 ↗</a>
+    <button class="btn small" id="btnExportActions" data-action-dialog="exportActions" aria-haspopup="dialog">导出</button>
+  </nav>
+</header>
+<main>
+  <aside id="left">
+    <div class="tabs">
+      <div class="tab active" data-tab="search">流水查询</div>
+      <div class="tab" data-tab="batches">导入批次</div>
+    </div>
+    <div id="tab-search" class="tab-body">
+      <div class="query-controls">
+      <div class="form-grid query-fields">
+        <label class="query-field" for="fAccount">账号 / 卡号<input id="fAccount" placeholder="付款或收款账号"></label>
+        <label class="query-field" for="fName">户名<input id="fName" placeholder="付款或收款户名"></label>
+        <label class="query-field" for="fCounter">交易对手<input id="fCounter" placeholder="对手户名 / 账号"></label>
+        <label class="query-field" for="fKw">关键词<input id="fKw" placeholder="摘要 / 流水号"></label>
+        <div class="query-field query-wide"><label for="fMin">金额区间</label><div class="range"><input id="fMin" type="number" aria-label="最小金额" placeholder="最小"><span>—</span><input id="fMax" type="number" aria-label="最大金额" placeholder="最大"></div></div>
+        <div class="query-field query-wide"><label for="fFrom">时间区间</label><div class="range"><input id="fFrom" type="date" aria-label="开始日期"><span>—</span><input id="fTo" type="date" aria-label="结束日期"></div></div>
+      </div>
+      <div class="query-actions">
+        <label class="el-ck" title="只显示当前画布已上图的流水"><input type="checkbox" id="fTracked">仅已上图</label>
+        <button class="btn small" id="btnReset">重置</button><button class="btn small primary" id="btnSearch">查询</button>
+      </div>
+      <div class="result-info" id="resultInfo"></div>
+      <div id="bulkTrackBar">
+        <div class="bulk-selection"><label class="el-ck"><input type="checkbox" id="flowCkAll">全选本页</label><span class="muted" id="flowCkCount">已勾选 0 笔</span></div>
+        <div class="bulk-options">
+          <label class="sr-only" for="bulkDir">追踪方向</label><select id="bulkDir" title="去向：以收款方为主账号追踪后续转出；来源：以付款方为主账号追踪此前转入">
+            <option value="target">去向 · 收款方后续转出</option><option value="source">来源 · 付款方此前转入</option>
+          </select>
+          <label for="bulkX">最近</label><input id="bulkX" type="number" min="1" max="50" value="5" aria-label="追踪笔数"><span title="含本笔交易">笔</span>
+          <button class="btn small primary" id="btnBulkTrack" title="勾选流水后一键追踪来源或去向，笔数包含当前交易">追踪上图</button>
+        </div>
+      </div>
+      </div>
+      <p class="flow-table-hint" id="flowTableHint">↔ 拖动底部滚条查看完整列 · 空格勾选，Enter 详情</p>
+      <div class="tbl-wrap flow-table-scroll" id="flowTableScroll" tabindex="0" role="region" aria-label="流水查询结果表格" aria-describedby="flowTableHint">
+        <table class="tbl" id="flowTable">
+          <thead><tr><th scope="col" aria-label="勾选"></th><th scope="col">交易<br>时间</th><th scope="col">付款方</th><th scope="col">收款方</th><th scope="col">金额</th><th scope="col">摘要</th><th scope="col">操作</th></tr></thead>
+          <tbody id="flowTbody"></tbody>
+        </table>
+      </div>
+      <div class="flow-horizontal-scroll" role="group" aria-label="流水表格水平滚动">
+        <button class="btn small" id="flowScrollLeft" type="button" aria-label="流水表格向左滚动">←</button>
+        <input id="flowHorizontalPosition" type="range" min="0" max="0" value="0" step="1" disabled aria-label="流水表格水平位置" aria-controls="flowTableScroll">
+        <button class="btn small" id="flowScrollRight" type="button" aria-label="流水表格向右滚动">→</button>
+      </div>
+      <div class="pager">
+        <button class="btn small" id="btnPrev">上一页</button>
+        <span id="pageInfo"></span>
+        <button class="btn small" id="btnNext">下一页</button>
+      </div>
+    </div>
+    <div id="tab-batches" class="tab-body" style="display:none">
+      <div id="batchList"></div>
+    </div>
+  </aside>
+
+  <section id="canvasWrap">
+    <div id="legend">
+      <div class="graph-legend" aria-label="账户角色图例"><span class="lg" title="只转出（源头）"><i class="dot src"></i>源头</span><span class="lg"><i class="dot mid"></i>中转</span><span class="lg" title="只转入（沉淀）"><i class="dot sink"></i>沉淀</span><span class="lg"><i class="dot main"></i>主账号</span><span class="lg"><i class="dot samename"></i>同户名</span></div>
+      <output id="graphViewStatus" aria-live="polite"></output>
+    </div>
+    <div id="graphToolbar" aria-label="图谱工作区工具">
+      <div class="graph-tool-row graph-primary-tools">
+        <div class="tool-group"><label for="canvasSel">画布</label><select id="canvasSel"><option value="0">默认画布</option></select><button class="btn small" id="btnCanvasSave" title="保存节点位置、线型、折点、标注和重点展示">保存形态</button><button class="btn small" id="btnCanvasActions" data-action-dialog="canvasActions" aria-haspopup="dialog">画布管理</button></div>
+        <div class="tool-group"><label for="layoutSel">布局</label><select id="layoutSel" title="只改变几何位置，不判定账户业务角色"><option value="force">力导向</option><option value="structural">主节点与叶子铺开</option><option value="dagre">层次（自上而下）</option></select><button class="btn small" id="btnRelayout">重新布局</button><button class="btn small" id="btnFit">适应画布</button></div>
+        <div class="tool-group"><button class="btn small" id="btnDisplayActions" data-action-dialog="displayActions" aria-haspopup="dialog">图谱显示</button><button class="btn small" id="btnMainActions" data-action-dialog="mainActions" aria-haspopup="dialog">主账号</button></div>
+      </div>
+      <div class="graph-tool-row graph-explorer" aria-label="图谱邻域">
+        <label for="neighborAccount">中心账号</label><input id="neighborAccount" placeholder="输入完整账号" autocomplete="off">
+        <select id="neighborDirection" aria-label="邻域方向"><option value="both">双向邻居</option><option value="in">转入来源</option><option value="out">转出去向</option></select>
+        <button class="btn small" id="btnNeighborhood" disabled>查看邻域</button><button class="btn small" id="btnExpandNeighbors" disabled>再展开 50 个</button><button class="btn small" id="btnGraphOverview" disabled>返回全图</button><button class="btn small" id="btnMinimap" aria-pressed="true">缩略图</button>
+        <label for="graphLabelMode">标签</label><select id="graphLabelMode"><option value="auto">自动分级</option><option value="focus">仅关注邻域</option><option value="all">全部标签</option></select>
+      </div>
+    </div>
+    <div id="graphLayoutStatus" role="status" aria-live="polite" hidden></div>
+    <div id="graphContainer"></div>
+    <aside id="graphMinimapPanel" aria-label="图谱缩略图">
+      <span>概览 · 点击或拖动定位</span>
+      <canvas id="graphMinimap" width="180" height="112" aria-label="当前图谱概览，键盘可使用下方平移按钮"></canvas>
+      <div class="minimap-actions" aria-label="平移视窗"><button class="btn small" data-pan="left" aria-label="向左平移">←</button><button class="btn small" data-pan="up" aria-label="向上平移">↑</button><button class="btn small" data-pan="down" aria-label="向下平移">↓</button><button class="btn small" data-pan="right" aria-label="向右平移">→</button></div>
+    </aside>
+    <div id="emptyHint" style="display:none">
+      <div class="card">
+        <div class="h">本案件暂无流水数据</div>
+        <p>导入银行/支付机构流水（CSV / Excel）到当前案件，或先生成一批演示数据体验完整追踪流程。各案件数据完全隔离。</p>
+        <div class="btn-row center">
+          <button class="btn primary" id="btnSample2">生成演示数据</button>
+          <button class="btn" id="btnImport2">导入流水文件</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <aside id="drawer">
+    <div class="drawer-head"><span id="drawerTitle">详情</span><button class="btn small" id="btnCloseDrawer">✕ 关闭</button></div>
+    <div id="drawerBody"></div>
+  </aside>
+</main>
+
+<!-- 低频业务动作按任务归组；左侧查询与顶部工具始终常驻。 -->
+<dialog id="caseActions" class="action-dialog" aria-labelledby="caseActionsTitle">
+  <div class="action-dialog-head"><h2 id="caseActionsTitle">案件管理</h2><button class="btn small" data-dialog-close aria-label="关闭案件管理">关闭</button></div>
+  <p class="action-dialog-context" data-current-case></p>
+  <div class="action-list"><button class="btn" id="btnNewCase" data-dialog-action>新建案件</button><button class="btn" id="btnImportCase" data-dialog-action title="合入为新案件，不影响已有案件">导入案件包</button><button class="btn" id="btnExportCase" data-dialog-action title="包含流水、画布、主账号、身份证与照片">导出当前案件包</button></div>
+  <div class="action-danger"><p>删除会移除当前案件及其全部数据。</p><button class="btn danger" id="btnDelCase" data-dialog-action>删除当前案件</button></div>
+</dialog>
+<dialog id="dataActions" class="action-dialog" aria-labelledby="dataActionsTitle">
+  <div class="action-dialog-head"><h2 id="dataActionsTitle">数据工具</h2><button class="btn small" data-dialog-close aria-label="关闭数据工具">关闭</button></div>
+  <p class="action-dialog-context" data-current-case></p>
+  <div class="action-list"><button class="btn" id="btnImportIds" data-dialog-action title="支持含卡号/账号与身份证号列的 Excel / CSV">导入账号身份证对照表</button><button class="btn" id="btnIdTpl" data-dialog-action>下载身份证对照表模板</button><button class="btn" id="btnSample" data-dialog-action>生成演示数据</button></div>
+</dialog>
+<dialog id="exportActions" class="action-dialog" aria-labelledby="exportActionsTitle">
+  <div class="action-dialog-head"><h2 id="exportActionsTitle">导出</h2><button class="btn small" data-dialog-close aria-label="关闭导出">关闭</button></div>
+  <p class="action-dialog-context" data-current-case></p>
+  <div class="export-graph-options"><label for="exportFmt">图谱格式</label><select id="exportFmt"><option value="png">PNG 图像</option><option value="html">HTML 可拖拽图谱</option><option value="pdf">PDF 文档</option></select><button class="btn primary" id="btnExportPng" data-dialog-action>导出图谱</button></div>
+  <div class="action-list"><button class="btn" id="btnExportXlsx" data-dialog-action>导出追踪流水 Excel</button></div>
+</dialog>
+<dialog id="canvasActions" class="action-dialog" aria-labelledby="canvasActionsTitle">
+  <div class="action-dialog-head"><h2 id="canvasActionsTitle">画布管理</h2><button class="btn small" data-dialog-close aria-label="关闭画布管理">关闭</button></div>
+  <p class="action-dialog-context" data-current-case></p>
+  <div class="action-list"><button class="btn primary" id="btnCanvasNew" data-dialog-action>新建空白画布</button><button class="btn" id="btnCanvasClone" data-dialog-action>当前画布另存为</button><button class="btn" id="btnCanvasRename" data-dialog-action>重命名当前画布</button></div>
+  <div class="action-danger"><button class="btn danger" id="btnClearGraph" data-dialog-action title="仅清空当前画布的上图流水，其他画布不受影响">清空当前图谱</button><button class="btn danger" id="btnCanvasDel" data-dialog-action>删除当前画布</button></div>
+</dialog>
+<dialog id="displayActions" class="action-dialog" aria-labelledby="displayActionsTitle">
+  <div class="action-dialog-head"><h2 id="displayActionsTitle">图谱显示</h2><button class="btn small" data-dialog-close aria-label="关闭图谱显示">完成</button></div>
+  <div class="display-options"><label for="edgeTypeSel">关系线型</label><select id="edgeTypeSel"><option value="quadratic">曲线</option><option value="line">直线（可加折点）</option><option value="polyline">折线（直角，可加折点）</option></select>
+    <label>关系标注</label><span class="el-group" id="edgeLabelGroup"><label class="el-ck"><input type="checkbox" class="edge-ck" data-em="money">金额</label><label class="el-ck"><input type="checkbox" class="edge-ck" data-em="time">时间</label><label class="el-ck"><input type="checkbox" class="edge-ck" data-em="summary">备注</label><label class="el-ck"><input type="checkbox" class="edge-ck" data-em="currency" title="非人民币交易在金额前显示币种代码">币种</label></span>
+    <span>账户信息</span><div class="tool-group"><label class="el-ck"><input type="checkbox" id="showIdCk" checked>显示身份证</label><label class="el-ck"><input type="checkbox" id="showPhotoCk" checked>显示照片</label></div>
+  </div>
+</dialog>
+<dialog id="mainActions" class="action-dialog" aria-labelledby="mainActionsTitle">
+  <div class="action-dialog-head"><h2 id="mainActionsTitle">主账号</h2><button class="btn small" data-dialog-close aria-label="关闭主账号工具">关闭</button></div>
+  <p class="action-dialog-context" data-current-case></p><p class="muted">也可选择图谱账户，在详情中手动标记。</p>
+  <div class="action-list"><button class="btn" id="btnAutoMain" data-dialog-action>自动识别主账号</button><button class="btn danger" id="btnClearAutoMain" data-dialog-action title="手动标记保留">清除自动主账号标记</button></div>
+</dialog>
+<input type="file" id="casePkgFile" accept=".fundcase,.zip" hidden><input type="file" id="idFile" accept=".xlsx,.xls,.csv,.tsv,.txt" hidden>
+
+<!-- 交易上下文弹窗：对手在该笔交易前后的 X 笔流水 -->
+<div class="modal" id="ctxModal" style="display:none">
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <div>
+        <div class="t">交易上下文（对手前后流水）</div>
+        <div class="anchor-line" id="ctxAnchor"></div>
+      </div>
+      <button class="btn small" id="ctxClose">✕ 关闭</button>
+    </div>
+    <div class="ctx-ctrl">
+      <div class="side-tabs" id="ctxTabs">
+        <div class="stab active" data-side="payee">收款方视角</div>
+        <div class="stab" data-side="payer">付款方视角</div>
+      </div>
+      <label>前后各</label>
+      <input id="ctxX" type="number" min="1" max="50" value="5" style="width:60px">
+      <label>笔</label>
+      <span class="muted" id="ctxPos"></span>
+      <div class="spacer"></div>
+      <label>流水归属</label>
+      <select id="ctxBook" style="background:#23272f;color:#dfe3ea;border:1px solid #333945;border-radius:6px;padding:4px 6px;font-size:12px">
+        <option value="all">全部</option>
+        <option value="self">仅本方(锚点)流水</option>
+        <option value="counter">仅对手方流水</option>
+      </select>
+      <button class="btn primary" id="ctxTrack">所选加入图谱</button>
+    </div>
+    <div id="ctxSuggest"></div>
+    <div class="tbl-wrap tall">
+      <table class="tbl">
+        <thead><tr><th></th><th>相对</th><th>方向</th><th>时间</th><th>金额</th><th>余额</th><th>对手方</th><th>摘要</th></tr></thead>
+        <tbody id="ctxTbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- 通用文本输入弹窗（画布命名等，不依赖浏览器原生 prompt） -->
+<div class="modal" id="textInputModal" style="display:none">
+  <div class="modal-box" style="max-width:380px">
+    <div class="modal-head">
+      <div class="t" id="tiTitle">输入名称</div>
+      <button class="btn small" id="tiCancel">✕ 取消</button>
+    </div>
+    <div style="padding:6px 0">
+      <input id="tiInput" class="ipt" style="width:100%" placeholder="请输入名称" maxlength="60">
+    </div>
+    <div class="btn-row" style="justify-content:flex-end">
+      <button class="btn primary" id="tiOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 照片预览裁剪弹窗 -->
+<div class="modal" id="photoCropModal" style="display:none">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div class="t">照片预览与裁剪 <span class="muted" style="font-size:11px">拖动圆圈选择头像范围，滑杆调整范围大小</span></div>
+      <button class="btn small" id="pcClose">✕ 取消</button>
+    </div>
+    <div style="text-align:center;background:#14161a;border:1px solid #2a2e37;border-radius:6px;padding:10px">
+      <div id="pcStage" style="position:relative;display:inline-block;line-height:0">
+        <img id="pcImg" alt="" style="max-width:560px;max-height:440px;display:block">
+        <div id="pcCircle" style="position:absolute;border:2px solid #ffd700;border-radius:50%;cursor:move;box-shadow:0 0 0 9999px rgba(0,0,0,.55);touch-action:none"></div>
+      </div>
+    </div>
+    <div class="btn-row" style="margin-top:10px;align-items:center">
+      <label>范围大小</label>
+      <input id="pcZoom" type="range" min="20" max="100" value="40" style="flex:1">
+      <button class="btn primary" id="pcConfirm">确认并上传</button>
+    </div>
+  </div>
+</div>
+
+<!-- 导入弹窗 -->
+<div class="modal" id="importModal" style="display:none">
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <div class="t">导入流水文件 <span class="tag" id="impCaseTag"></span></div>
+      <button class="btn small" id="impClose">✕ 关闭</button>
+    </div>
+    <div id="impStep1">
+      <p class="muted">流水将导入到<b id="impCaseName">当前案件</b>，与其他案件完全隔离。支持 CSV（UTF-8 / GBK）与 Excel（.xlsx），系统自动识别表头与列名，导入前可预览并手动调整映射。</p>
+      <input type="file" id="impFile" accept=".csv,.txt,.tsv,.xlsx,.xls">
+    </div>
+    <div class="pbar" id="impPbar" style="display:none">
+      <div class="pfill" id="impPfill"></div>
+      <span class="ptext" id="impPtext">准备导入…</span>
+    </div>
+    <div id="impStep2" style="display:none">
+      <div class="imp-meta" id="impMeta"></div>
+      <div class="imp-mode">
+        <label><input type="radio" name="impMode" value="A"> 双边流水（含付款方与收款方列）</label>
+        <label><input type="radio" name="impMode" value="B"> 单账户流水（本方账号 + 对手 + 收支标志）</label>
+      </div>
+      <div id="impMainSelWrap" style="display:none">
+        <div class="imp-cols-title" id="impMainTitle">本文件的本方账号（勾选要标为主账号的）</div>
+        <div id="impMainSel" class="mainsel-grid"></div>
+      </div>
+      <div class="imp-selfline">
+        <label>补充本方账号（可选，逗号分隔）</label>
+        <input id="impSelfAccts" placeholder="文件无本方账号列时手动填写，导入后标为主账号">
+      </div>
+      <div class="imp-cols-title">列映射（已识别字段已高亮，可调整后重新识别）</div>
+      <div class="mapping-grid" id="impMapping"></div>
+      <div class="btn-row">
+        <button class="btn" id="impRe">按当前映射重新识别</button>
+        <button class="btn primary" id="impCommit">确认导入</button>
+      </div>
+      <div class="imp-cols-title">数据预览（前 8 行，规范化后）</div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>交易时间</th><th>付款方</th><th>收款方</th><th>金额</th><th>摘要</th></tr></thead>
+          <tbody id="impTbody"></tbody>
+        </table>
+      </div>
+      <div class="muted" id="impStats"></div>
+      <div id="impBad"></div>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+<script src="/static/money.js?v=1"></script>
+<script src="/static/graph-layout.js?v=1"></script>
+<script src="/static/graph-view.js?v=1"></script>
+<script src="/static/graph-labels.js?v=1"></script>
+<script src="/static/graph-viewport.js?v=1"></script>
+<script src="/static/graph-minimap.js?v=1"></script>
+<script src="/static/app.js?v=workspace-1"></script>
+</body>
+</html>

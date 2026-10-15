@@ -1,0 +1,1345 @@
+
+
+/* FundsTrace pilot: a quiet, dense ledger surface with one blue action color. */
+
+.funds-trace {
+  font-family: var(--funds-font-family, "SF Pro Text",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif);
+  color: var(--funds-text, #253449);
+  background: var(--funds-background, #f6f8fb);
+  font-synthesis: none;
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.5;
+  --accent: var(--funds-accent, #3267d6);
+  --border: var(--funds-border, #e4e9f0);
+  --muted: var(--funds-muted, #586a81)
+}
+
+:where(.funds-trace),:where(.funds-trace) * {
+  box-sizing: border-box
+}
+
+:where(.funds-trace) button,:where(.funds-trace) input,:where(.funds-trace) select {
+  font: inherit
+}
+
+:where(.funds-trace) button,:where(.funds-trace) a,:where(.funds-trace) input,:where(.funds-trace) select,:where(.funds-trace) summary {
+  -webkit-tap-highlight-color: transparent
+}
+
+:where(.funds-trace) button,:where(.funds-trace) a {
+  touch-action: manipulation
+}
+
+:where(.funds-trace) button {
+  cursor: pointer
+}
+
+:where(.funds-trace) button:disabled {
+  cursor: default;
+  opacity: .45
+}
+
+:where(.funds-trace) a {
+  color: inherit;
+  text-decoration: none
+}
+
+:where(.funds-trace) button:focus-visible,:where(.funds-trace) a:focus-visible,:where(.funds-trace) summary:focus-visible {
+  outline: 3px solid #90b3ff;
+  outline-offset: 3px
+}
+
+:where(.funds-trace) input,:where(.funds-trace) select {
+  border: 1px solid #dce2ea;
+  border-radius: 6px;
+  background: #fff;
+  color: #26374c;
+  padding: 9px 11px;
+  min-width: 0
+}
+
+:where(.funds-trace) input:focus,:where(.funds-trace) select:focus {
+  outline: 2px solid #b4c9f6;
+  outline-offset: 0;
+  border-color: #6b93e5
+}
+
+:where(.funds-trace) input::placeholder {
+  color: #9ca6b5
+}
+
+:where(.funds-trace) h1,:where(.funds-trace) h2,:where(.funds-trace) h3,:where(.funds-trace) p {
+  margin: 0
+}
+
+:where(.funds-trace) .mono {
+  font-family: "SFMono-Regular",Consolas,"Liberation Mono",monospace;
+  font-variant-numeric: tabular-nums
+}
+
+:where(.funds-trace) .muted {
+  color: var(--muted);
+  font-size: 12px
+}
+
+:where(.funds-trace) .align-right {
+  text-align: right!important
+}
+
+:where(.funds-trace) .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border: 0
+}
+
+:where(.funds-trace) .icon-button {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 22px;
+  line-height: 1;
+  border-radius: 4px;
+  padding: 4px 6px
+}
+
+:where(.funds-trace) .icon-button:hover {
+  background: #ffffff12
+}
+
+:where(.funds-trace) .main-workspace {
+  min-width: 0;
+  padding: 0 38px 28px
+}
+
+:where(.funds-trace) .topline {
+  height: 63px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  color: #8490a0;
+  font-size: 11px
+}
+
+:where(.funds-trace) .breadcrumb {
+  padding: 0 12px;
+  color: #bac3d0
+}
+
+:where(.funds-trace) .local-label {
+  font-size: 10px;
+  color: #8794a6;
+  border: 1px solid #dce3ed;
+  border-radius: 4px;
+  padding: 3px 7px
+}
+
+:where(.funds-trace) .workspace-heading {
+  padding: 33px 0 29px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px
+}
+
+:where(.funds-trace) .eyebrow {
+  font-size: 11px;
+  color: #6c7f99;
+  letter-spacing: 1px;
+  margin-bottom: 8px
+}
+
+:where(.funds-trace) h1 {
+  font-size: 26px;
+  line-height: 1.3;
+  font-weight: 640;
+  letter-spacing: -.6px;
+  overflow-wrap: anywhere
+}
+
+:where(.funds-trace) .description {
+  margin-top: 10px;
+  color: #8b96a5;
+  font-size: 12px
+}
+
+:where(.funds-trace) .heading-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+  max-width: 100%;
+  min-width: 0
+}
+
+:where(.funds-trace) .button {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 9px 14px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  min-height: 37px;
+  flex: 0 0 auto
+}
+
+:where(.funds-trace) .button.primary {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 3px #2458bd10
+}
+
+:where(.funds-trace) .button.primary:hover {
+  background: #285bc4
+}
+
+:where(.funds-trace) .button.secondary {
+  background: #fff;
+  border-color: #dce3ed;
+  color: #4c5f77
+}
+
+:where(.funds-trace) .button.secondary:hover {
+  background: #f2f5fa
+}
+
+:where(.funds-trace) .button[aria-disabled=true] {
+  pointer-events: none;
+  opacity: .45
+}
+
+:where(.funds-trace) .case-facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 2fr;
+  padding: 0 0 29px;
+  gap: 18px
+}
+
+:where(.funds-trace) .case-facts>div {
+  border-right: 1px solid #e1e6ee;
+  padding-right: 18px
+}
+
+:where(.funds-trace) .case-facts>div:last-child {
+  border: 0
+}
+
+:where(.funds-trace) .case-facts>div>span {
+  font-size: 11px;
+  color: #8692a3;
+  display: block;
+  margin-bottom: 7px
+}
+
+:where(.funds-trace) .case-facts strong {
+  font-size: 24px;
+  font-weight: 550;
+  letter-spacing: -.5px;
+  font-variant-numeric: tabular-nums
+}
+
+:where(.funds-trace) .case-facts small {
+  font-size: 10px;
+  color: #92a0b2;
+  font-weight: 400;
+  letter-spacing: 0
+}
+
+:where(.funds-trace) .money-fact strong {
+  font-family: "SFMono-Regular",Consolas,monospace;
+  font-size: 22px;
+  overflow-wrap: anywhere
+}
+
+:where(.funds-trace) .currency-total {
+  display: block
+}
+
+:where(.funds-trace) .transactions {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+  overflow: hidden
+}
+
+:where(.funds-trace) .table-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 19px 20px 0
+}
+
+:where(.funds-trace) h2 {
+  font-size: 14px;
+  font-weight: 600
+}
+
+:where(.funds-trace) .table-heading h2>span {
+  display: inline-block;
+  font-size: 10px;
+  color: #8593a8;
+  background: #f1f4f8;
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  font-weight: 500
+}
+
+:where(.funds-trace) .filters {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  padding: 18px 20px
+}
+
+:where(.funds-trace) .filters label {
+  max-width: 230px;
+  flex: 1;
+  min-width: 0
+}
+
+:where(.funds-trace) .filters input {
+  width: 100%;
+  font-size: 12px;
+  padding: 8px 11px
+}
+
+:where(.funds-trace) .filters .keyword-filter {
+  max-width: 310px
+}
+
+:where(.funds-trace) .filters .button {
+  padding: 7px 16px;
+  min-height: 35px
+}
+
+:where(.funds-trace) .text-button {
+  border: 0;
+  background: none;
+  color: #58739a;
+  font-size: 11px;
+  white-space: nowrap
+}
+
+:where(.funds-trace) .table-scroll {
+  overflow-x: auto;
+  position: relative;
+  min-height: 340px
+}
+
+:where(.funds-trace) .flow-table,:where(.funds-trace) .preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 12px
+}
+
+:where(.funds-trace) .flow-table {
+  min-width: 720px
+}
+
+:where(.funds-trace) .flow-table th,:where(.funds-trace) .preview-table th {
+  background: #f7f9fc;
+  border-top: 1px solid #e9edf3;
+  border-bottom: 1px solid #e9edf3;
+  color: #8794a6;
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+  padding: 11px 13px
+}
+
+:where(.funds-trace) .flow-table td,:where(.funds-trace) .preview-table td {
+  border-bottom: 1px solid #eef1f6;
+  padding: 17px 13px;
+  vertical-align: top
+}
+
+:where(.funds-trace) .flow-table th:first-child,:where(.funds-trace) .flow-table td:first-child {
+  padding-left: 20px
+}
+
+:where(.funds-trace) .flow-table tbody tr:hover {
+  background: #fafcff
+}
+
+:where(.funds-trace) .flow-table small,:where(.funds-trace) .preview-table small {
+  display: block;
+  color: #91a0b1;
+  margin-top: 5px;
+  font-size: 10px;
+  line-height: 1.4
+}
+
+:where(.funds-trace) .flow-table td:nth-child(2),:where(.funds-trace) .flow-table td:nth-child(4) {
+  min-width: 140px;
+  max-width: 220px;
+  overflow-wrap: anywhere
+}
+
+:where(.funds-trace) .time-cell {
+  white-space: nowrap;
+  font-size: 10px;
+  color: #66788f
+}
+
+:where(.funds-trace) .flow-arrow {
+  width: 20px!important;
+  color: #b6c2d1;
+  padding-left: 0!important;
+  padding-right: 0!important
+}
+
+:where(.funds-trace) .money-cell {
+  font-size: 12px;
+  white-space: nowrap;
+  color: #334b6e
+}
+
+:where(.funds-trace) .summary-cell {
+  max-width: 170px;
+  color: #8895a6;
+  font-size: 11px;
+  overflow-wrap: anywhere
+}
+
+:where(.funds-trace) .row-action {
+  border: 0;
+  background: none;
+  color: #6480a9;
+  white-space: nowrap;
+  font-size: 11px;
+  padding: 0
+}
+
+:where(.funds-trace) .row-action:hover {
+  color: #2a62cf
+}
+
+:where(.funds-trace) .table-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 15px 20px;
+  color: #8e9bab;
+  font-size: 10px;
+  border-top: 1px solid #eef1f6
+}
+
+:where(.funds-trace) .table-footer>div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  white-space: nowrap
+}
+
+:where(.funds-trace) .page-button {
+  flex: 0 0 auto;
+  border: 1px solid #e3e9f1;
+  background: #fff;
+  color: #7185a1;
+  width: 26px;
+  height: 26px;
+  border-radius: 5px
+}
+
+:where(.funds-trace) .workspace-footnote {
+  font-size: 10px;
+  color: #98a5b5;
+  padding-top: 17px
+}
+
+:where(.funds-trace) .empty-state {
+  min-height: 295px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  color: #8a99ab;
+  text-align: center;
+  padding: 30px;
+  gap: 11px
+}
+
+:where(.funds-trace) .empty-state h3 {
+  font-size: 14px;
+  color: #5f728d;
+  font-weight: 500
+}
+
+:where(.funds-trace) .empty-state p {
+  font-size: 11px;
+  max-width: 330px
+}
+
+:where(.funds-trace) .empty-symbol {
+  font-size: 31px;
+  color: #bccadd;
+  margin-bottom: 3px
+}
+
+:where(.funds-trace) .empty-state .button {
+  margin-top: 5px
+}
+
+:where(.funds-trace) .loading-mark {
+  height: 18px;
+  width: 18px;
+  border: 2px solid #d8e4f8;
+  border-top-color: #5f8cdb;
+  border-radius: 50%;
+  animation: funds-trace-spin .8s linear infinite
+}
+
+@keyframes funds-trace-spin {
+
+to {
+  transform: rotate(360deg)
+}
+}
+
+:where(.funds-trace) .modal {
+  border: 1px solid #e5eaf2;
+  border-radius: 12px;
+  padding: 0;
+  box-shadow: 0 20px 90px #142b4b33;
+  width: min(800px,calc(100vw - 36px));
+  max-height: 90vh;
+  overflow: auto;
+  color: #2d3f58
+}
+
+:where(.funds-trace) .modal::backdrop {
+  background: #12233b66;
+  backdrop-filter: blur(3px)
+}
+
+:where(.funds-trace) .modal-heading {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 21px 25px;
+  border-bottom: 1px solid var(--border)
+}
+
+:where(.funds-trace) .modal-heading h2 {
+  font-size: 17px;
+  min-width: 0;
+  overflow-wrap: anywhere
+}
+
+:where(.funds-trace) .modal-heading .icon-button {
+  color: #9aa7b8
+}
+
+:where(.funds-trace) .modal-context {
+  padding: 15px 25px;
+  color: #8592a4;
+  font-size: 11px;
+  background: #fafbfd
+}
+
+:where(.funds-trace) .modal-context strong {
+  color: #3c5579;
+  margin-left: 6px;
+  font-weight: 500
+}
+
+:where(.funds-trace) .modal-context span {
+  float: right;
+  color: #9ba7b6
+}
+
+:where(.funds-trace) .import-steps {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  padding: 20px 25px;
+  margin: 0;
+  border-bottom: 1px solid #edf0f5;
+  color: #b1bdcc;
+  font-size: 12px;
+  gap: 28px
+}
+
+:where(.funds-trace) .import-steps li {
+  display: flex;
+  align-items: center;
+  gap: 7px
+}
+
+:where(.funds-trace) .import-steps li.active {
+  color: #3566be;
+  font-weight: 600
+}
+
+:where(.funds-trace) .import-steps li.done {
+  color: #718cad
+}
+
+:where(.funds-trace) .file-drop {
+  margin: 28px 25px;
+  min-height: 210px;
+  border: 1px dashed #bacce6;
+  background: #f8fbff;
+  border-radius: 9px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  font-size: 11px;
+  color: #98a6bb
+}
+
+:where(.funds-trace) .file-drop strong {
+  font-size: 14px;
+  color: #5d7596;
+  font-weight: 500
+}
+
+:where(.funds-trace) .file-drop input {
+  font-size: 11px;
+  border: 0;
+  background: none;
+  padding: 12px;
+  max-width: 100%
+}
+
+:where(.funds-trace) .upload-symbol {
+  font-size: 28px;
+  color: #7096d2
+}
+
+:where(.funds-trace) .modal-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 19px 25px;
+  border-top: 1px solid #e9edf4;
+  margin-top: 20px
+}
+
+:where(.funds-trace) .file-summary {
+  padding: 20px 25px 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px
+}
+
+:where(.funds-trace) .file-summary strong {
+  color: #4d6483;
+  font-weight: 500;
+  overflow-wrap: anywhere
+}
+
+:where(.funds-trace) .file-summary span {
+  color: #92a0b2;
+  white-space: nowrap
+}
+
+:where(.funds-trace) .mode-field {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 15px;
+  align-items: center;
+  font-size: 11px;
+  color: #8c9bae;
+  padding: 4px 25px 14px
+}
+
+:where(.funds-trace) .mode-field select {
+  font-size: 11px;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 240px
+}
+
+:where(.funds-trace) .mapping {
+  padding: 0 25px;
+  font-size: 11px;
+  color: #637995
+}
+
+:where(.funds-trace) .mapping summary {
+  cursor: pointer;
+  padding: 8px 0
+}
+
+:where(.funds-trace) .mapping summary span {
+  color: #a2aebe;
+  font-size: 10px;
+  margin-left: 12px
+}
+
+:where(.funds-trace) .mapping-grid {
+  display: grid;
+  grid-template-columns: repeat(3,minmax(0,1fr));
+  gap: 12px 15px;
+  padding: 13px 0 20px
+}
+
+:where(.funds-trace) .mapping-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 10px
+}
+
+:where(.funds-trace) .mapping-grid select {
+  width: 100%;
+  font-size: 11px;
+  padding: 7px
+}
+
+:where(.funds-trace) .mapping+.button {
+  margin: 10px 25px
+}
+
+:where(.funds-trace) .preview-wrap {
+  margin: 14px 25px;
+  overflow: auto;
+  border: 1px solid #e6ebf3;
+  border-radius: 6px
+}
+
+:where(.funds-trace) .preview-table {
+  min-width: 520px;
+  font-size: 11px
+}
+
+:where(.funds-trace) .preview-table caption {
+  background: #fafbfd;
+  text-align: left;
+  padding: 10px 13px;
+  color: #8d9db1;
+  font-size: 10px
+}
+
+:where(.funds-trace) .preview-table th {
+  border-top: 0
+}
+
+:where(.funds-trace) .preview-table td {
+  padding: 12px
+}
+
+:where(.funds-trace) .main-accounts {
+  border: 0;
+  margin: 12px 25px;
+  padding: 0;
+  font-size: 11px;
+  color: #7c8ea6
+}
+
+:where(.funds-trace) .main-accounts legend {
+  margin-bottom: 8px
+}
+
+:where(.funds-trace) .main-accounts label {
+  display: block;
+  margin-top: 5px
+}
+
+:where(.funds-trace) .main-accounts input {
+  margin-right: 8px;
+  accent-color: var(--accent)
+}
+
+:where(.funds-trace) .main-accounts .mono {
+  color: #9dabbc;
+  font-size: 10px;
+  margin-left: 5px
+}
+
+:where(.funds-trace) .import-progress {
+  padding: 10px 25px;
+  color: #718baa;
+  font-size: 11px
+}
+
+:where(.funds-trace) .import-progress progress {
+  display: block;
+  width: 100%;
+  height: 5px;
+  margin-bottom: 8px;
+  accent-color: var(--accent)
+}
+
+:where(.funds-trace) .import-complete {
+  padding: 40px 25px;
+  text-align: center
+}
+
+:where(.funds-trace) .import-complete h3 {
+  font-size: 18px;
+  font-weight: 550;
+  margin: 15px 0 12px
+}
+
+:where(.funds-trace) .import-complete p {
+  color: #8495ad;
+  font-size: 12px;
+  margin-top: 7px
+}
+
+:where(.funds-trace) .success-symbol {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  background: #edf5f2;
+  color: #5d9f88;
+  border-radius: 50%;
+  font-size: 22px
+}
+
+:where(.funds-trace) .error-banner {
+  padding: 12px 15px;
+  background: #fff4f2;
+  border: 1px solid #f1d4ce;
+  border-radius: 6px;
+  color: #a95e50;
+  font-size: 12px;
+  margin-bottom: 15px
+}
+
+:where(.funds-trace) .modal>.error-banner {
+  margin: 15px 25px
+}
+
+:where(.funds-trace) .error-banner a,:where(.funds-trace) .error-banner button {
+  color: #9c4d3e;
+  text-decoration: underline;
+  background: none;
+  border: 0;
+  font-size: 12px;
+  margin-left: 10px
+}
+
+:where(.funds-trace) .create-case-form>label {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 25px;
+  color: #7f91a8;
+  font-size: 12px
+}
+
+:where(.funds-trace) .create-case-form>.error-banner {
+  margin: 0 25px
+}
+
+:where(.funds-trace) .create-case-form .modal-footer {
+  margin-top: 0
+}
+
+:where(.funds-trace) .flow-details {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 25px;
+  padding: 0 25px;
+  font-size: 12px
+}
+
+:where(.funds-trace) .flow-details>div {
+  padding: 13px 0;
+  border-bottom: 1px solid #edf0f5;
+  overflow-wrap: anywhere
+}
+
+:where(.funds-trace) .flow-details dt {
+  font-size: 10px;
+  color: #9aa7b8;
+  margin-bottom: 5px
+}
+
+:where(.funds-trace) .flow-details dd {
+  margin: 0;
+  color: #536c8e
+}
+
+:where(.funds-trace) .history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 25px
+}
+
+:where(.funds-trace) .import-history {
+  padding: 0 25px;
+  max-height: 43vh;
+  overflow: auto
+}
+
+:where(.funds-trace) .history-record {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 17px 0;
+  border-bottom: 1px solid var(--border)
+}
+
+:where(.funds-trace) .history-description {
+  min-width: 0
+}
+
+:where(.funds-trace) .history-description strong,:where(.funds-trace) .source-record-heading strong {
+  font-size: 12px;
+  font-weight: 550;
+  overflow-wrap: anywhere
+}
+
+:where(.funds-trace) .history-description p {
+  font-size: 11px;
+  color: #8191a7;
+  margin-top: 6px
+}
+
+:where(.funds-trace) .history-action {
+  flex-shrink: 0
+}
+
+:where(.funds-trace) .cleanup-section {
+  border-top: 1px solid var(--border);
+  margin-top: 20px;
+  padding: 20px 25px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px
+}
+
+:where(.funds-trace) .cleanup-section h3,:where(.funds-trace) .source-heading h3 {
+  font-size: 13px;
+  font-weight: 550;
+  margin-bottom: 4px
+}
+
+:where(.funds-trace) .cleanup-section>div:first-child {
+  flex: 1;
+  min-width: 180px
+}
+
+:where(.funds-trace) .cleanup-result {
+  width: 100%;
+  font-size: 11px;
+  color: #6d809b;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  flex-wrap: wrap
+}
+
+:where(.funds-trace) .cleanup-section+.modal-footer {
+  margin-top: 0
+}
+
+:where(.funds-trace) .source-section {
+  margin: 24px 25px 0;
+  border-top: 1px solid var(--border);
+  padding-top: 20px
+}
+
+:where(.funds-trace) .source-heading,:where(.funds-trace) .source-record-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px
+}
+
+:where(.funds-trace) .source-record {
+  padding: 17px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: #6e829e
+}
+
+:where(.funds-trace) .source-record>p {
+  margin-top: 7px
+}
+
+:where(.funds-trace) .status-label {
+  font-size: 10px;
+  white-space: nowrap;
+  color: #6a83a7;
+  background: #f0f4fa;
+  padding: 3px 7px;
+  border-radius: 4px
+}
+
+:where(.funds-trace) .source-digest {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 11px;
+  font-size: 9px;
+  color: #9aa8bb
+}
+
+:where(.funds-trace) .source-digest code {
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  color: #7d8da3;
+  min-width: 0
+}
+
+:where(.funds-trace) .source-note {
+  font-size: 11px!important;
+  color: #9a8c77!important
+}
+
+:where(.funds-trace) .source-download {
+  display: inline-block;
+  margin-top: 10px;
+  font-size: 11px;
+  color: #376dc9
+}
+
+:where(.funds-trace) .source-empty {
+  font-size: 12px;
+  color: #8d9bb0;
+  padding: 18px 0
+}
+
+:where(.funds-trace) .source-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 15px;
+  font-size: 11px;
+  color: #8a9bb0;
+  margin-top: 15px
+}
+
+:where(.funds-trace) .resume-summary {
+  padding: 28px 25px;
+  font-size: 13px
+}
+
+:where(.funds-trace) .resume-summary p {
+  margin-top: 10px
+}
+
+:where(.funds-trace) .import-history .error-banner {
+  margin-top: 12px
+}
+
+@container funds-panel (min-width:1550px) {
+
+:where(.funds-trace) .main-workspace {
+  padding-left: 54px;
+  padding-right: 54px
+}
+
+:where(.funds-trace) .workspace-heading {
+  padding-top: 44px;
+  padding-bottom: 36px
+}
+
+:where(.funds-trace) .case-facts {
+  padding-bottom: 36px
+}
+
+:where(.funds-trace) .table-scroll {
+  min-height: 430px
+}
+
+:where(.funds-trace) .flow-table td {
+  padding-top: 20px;
+  padding-bottom: 20px
+}
+}
+
+@container funds-panel (max-width:900px) {
+
+:where(.funds-trace) .main-workspace {
+  padding-left: 24px;
+  padding-right: 24px
+}
+
+:where(.funds-trace) .workspace-heading {
+  align-items: flex-start
+}
+
+:where(.funds-trace) .heading-actions {
+  flex-direction: column;
+  align-items: stretch
+}
+
+:where(.funds-trace) .case-facts {
+  gap: 12px
+}
+
+:where(.funds-trace) .case-facts strong {
+  font-size: 22px
+}
+
+:where(.funds-trace) .money-fact strong {
+  font-size: 17px
+}
+
+:where(.funds-trace) .description {
+  max-width: 300px
+}
+
+:where(.funds-trace) .summary-cell {
+  max-width: 120px
+}
+}
+
+@container funds-panel (max-width:640px) {
+
+:where(.funds-trace) .main-workspace {
+  padding: 0 16px 20px
+}
+
+:where(.funds-trace) .topline {
+  height: 43px
+}
+
+:where(.funds-trace) .workspace-heading {
+  padding: 24px 0;
+  gap: 15px;
+  flex-wrap: wrap
+}
+
+:where(.funds-trace) .heading-actions {
+  flex-direction: row
+}
+
+:where(.funds-trace) .case-facts {
+  grid-template-columns: repeat(3,1fr);
+  row-gap: 18px
+}
+
+:where(.funds-trace) .case-facts>div:nth-child(3) {
+  border: 0
+}
+
+:where(.funds-trace) .case-facts .money-fact {
+  grid-column: 1/-1;
+  padding-top: 10px;
+  border-top: 1px solid var(--border)
+}
+
+:where(.funds-trace) .case-facts strong,:where(.funds-trace) .money-fact strong {
+  font-size: 22px
+}
+
+:where(.funds-trace) .filters {
+  flex-wrap: wrap;
+  padding: 14px
+}
+
+:where(.funds-trace) .filters label {
+  max-width: none;
+  min-width: 130px
+}
+
+:where(.funds-trace) .table-heading {
+  padding: 16px 14px 0
+}
+
+:where(.funds-trace) .table-footer {
+  padding: 12px 14px;
+  align-items: flex-start
+}
+
+:where(.funds-trace) .table-footer>div {
+  gap: 9px
+}
+
+:where(.funds-trace) .mapping-grid {
+  grid-template-columns: repeat(2,minmax(0,1fr))
+}
+
+:where(.funds-trace) .modal-context span {
+  display: none
+}
+
+:where(.funds-trace) .file-summary {
+  flex-direction: column
+}
+
+:where(.funds-trace) .flow-details {
+  grid-template-columns: 1fr
+}
+
+:where(.funds-trace) .import-steps {
+  gap: 16px;
+  padding: 16px 20px
+}
+
+:where(.funds-trace) .import-steps li {
+  font-size: 10px
+}
+
+:where(.funds-trace) h1 {
+  font-size: 23px
+}
+}
+
+@container funds-panel (max-width:640px) {
+
+:where(.funds-trace) .heading-actions {
+  flex-wrap: wrap
+}
+
+:where(.funds-trace) .history-toolbar {
+  align-items: flex-start
+}
+
+:where(.funds-trace) .history-record {
+  align-items: flex-start;
+  gap: 12px;
+  flex-direction: column
+}
+
+:where(.funds-trace) .source-record-heading {
+  align-items: flex-start;
+  flex-wrap: wrap
+}
+
+:where(.funds-trace) .source-digest {
+  flex-direction: column;
+  gap: 4px
+}
+
+:where(.funds-trace) .source-pagination {
+  gap: 9px
+}
+
+:where(.funds-trace) .history-action .button {
+  min-height: 33px
+}
+}
+
+@media(prefers-reduced-motion:reduce) {
+
+:where(.funds-trace),:where(.funds-trace) *,:where(.funds-trace) *::before,:where(.funds-trace) *::after {
+  animation: none!important;
+  scroll-behavior: auto!important
+}
+}
+
+/* The embedding slot owns its dimensions; the panel responds to the slot. */
+.funds-trace.funds-panel {
+  container: funds-panel / inline-size;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+:where(.funds-trace) .topline,
+:where(.funds-trace) .local-label,
+:where(.funds-trace) .description,
+:where(.funds-trace) .case-facts > div > span,
+:where(.funds-trace) .case-facts small,
+:where(.funds-trace) .table-heading h2 > span,
+:where(.funds-trace) .flow-table th,
+:where(.funds-trace) .flow-table small,
+:where(.funds-trace) .summary-cell,
+:where(.funds-trace) .table-footer,
+:where(.funds-trace) .workspace-footnote,
+:where(.funds-trace) .modal-context,
+:where(.funds-trace) .modal-context span,
+:where(.funds-trace) .flow-details dt,
+:where(.funds-trace) .history-description p,
+:where(.funds-trace) .source-digest,
+:where(.funds-trace) .source-digest code,
+:where(.funds-trace) .source-empty,
+:where(.funds-trace) .source-pagination,
+:where(.funds-trace) .empty-state,
+:where(.funds-trace) .file-drop,
+:where(.funds-trace) .file-summary span,
+:where(.funds-trace) .mode-field,
+:where(.funds-trace) .mapping summary span,
+:where(.funds-trace) .preview-table caption,
+:where(.funds-trace) .preview-table th,
+:where(.funds-trace) .preview-table small,
+:where(.funds-trace) .import-complete p {
+  color: var(--muted);
+}
+
+:where(.funds-trace) input::placeholder { color: var(--muted); }
+:where(.funds-trace) .flow-table { font-size: 13px; }
+:where(.funds-trace) .flow-table th,
+:where(.funds-trace) .flow-table small,
+:where(.funds-trace) .time-cell,
+:where(.funds-trace) .summary-cell,
+:where(.funds-trace) .table-footer,
+:where(.funds-trace) .workspace-footnote,
+:where(.funds-trace) .flow-details dt,
+:where(.funds-trace) .source-digest code { font-size: 12px; }
+:where(.funds-trace) .row-action { padding: 6px 2px; min-height: 32px; font-size: 12px; color: #315e9d; }
+:where(.funds-trace) .page-button { min-width: 32px; min-height: 32px; }
+:where(.funds-trace) .icon-button { min-width: 32px; min-height: 32px; }
+:where(.funds-trace) .source-note { color: #725e3c !important; }
+:where(.funds-trace) .status-label { color: #506783; }
+:where(.funds-trace) .source-download { border: 0; background: transparent; padding: 6px 0; cursor: pointer; }
+:where(.funds-trace) .modal {
+  max-height: calc(100dvh - 40px);
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+:where(.funds-trace) .modal:focus { outline: none; }
+:where(.funds-trace) .modal-heading {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fff;
+}
+:where(.funds-trace) .modal-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: #fff;
+}
+:where(.funds-trace) .heading-actions { flex-wrap: wrap; }
+:where(.funds-trace) .capability-note { color: var(--muted); font-size: 12px; padding-top: 8px; }
+:where(.funds-trace) .context-empty { padding: 32px 24px; }
+:where(.funds-trace) .table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+@container funds-panel (max-width: 640px) {
+  :where(.funds-trace) .heading-actions { width: 100%; gap: 8px; }
+  :where(.funds-trace) .heading-actions .button { flex: 1 0 auto; }
+  :where(.funds-trace) .case-facts strong { font-size: 20px; }
+  :where(.funds-trace) .money-fact strong { font-size: 20px; }
+  :where(.funds-trace) .modal-context { display: flex; flex-wrap: wrap; gap: 6px; }
+}
+
+@container funds-panel (max-width: 380px) {
+  :where(.funds-trace) .heading-actions .button { padding-inline: 9px; }
+  :where(.funds-trace) .case-facts { column-gap: 8px; }
+  :where(.funds-trace) .case-facts > div { padding-right: 8px; }
+  :where(.funds-trace) .table-footer { flex-wrap: wrap; }
+}
+
+:where(.funds-trace) .workspace-heading + .muted { margin-bottom: 18px; }
+:where(.funds-trace) .mapping-grid label,
+:where(.funds-trace) .mapping-grid select,
+:where(.funds-trace) .main-accounts,
+:where(.funds-trace) .source-record,
+:where(.funds-trace) .history-description p { font-size: 12px; }

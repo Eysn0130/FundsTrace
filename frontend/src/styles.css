@@ -1,0 +1,3 @@
+/* Standalone entry: embedded hosts import panel/index instead. */
+@import './panel/styles.css';
+@import './standalone/styles.css';

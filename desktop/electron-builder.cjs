@@ -1,0 +1,19 @@
+'use strict';
+const path = require('node:path');
+const fs = require('node:fs');
+const backend = path.resolve(__dirname, '../build/desktop/backend/funds-trace-backend');
+module.exports = {
+  appId: 'com.eysn.fundstrace', productName: 'FundsTrace',
+  directories: { output: '../build/desktop/electron' },
+  files: ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs'],
+  asar: true,
+  extraResources: [{ from: backend, to: 'backend', filter: ['**/*'] }],
+  beforePack: async context => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(backend, 'build-manifest.json'), 'utf8'));
+    const architectures = ['ia32', 'x64', 'armv7l', 'arm64', 'universal'];
+    if (manifest.protocol !== 1 || manifest.platform !== context.electronPlatformName || manifest.arch !== architectures[context.arch]) throw new Error('Build the backend natively for the exact Electron platform and architecture first');
+  },
+  win: { target: [{ target: 'nsis', arch: ['x64'] }], signAndEditExecutable: false },
+  nsis: { oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true, deleteAppDataOnUninstall: false, artifactName: 'FundsTrace-${version}-windows-${arch}-unsigned.${ext}' },
+  publish: null
+};

@@ -1,0 +1,53 @@
+# 源码与私有数据边界
+
+## 交接方式
+
+接管时通过明确的文件白名单建立 `funds-trace` 源码候选。原工作目录没有改名、搬移或清理；候选没有连接原数据库。原 Git 历史和远端尚未取得，不凭空补造作者或发布历史。
+
+| 分类 | 本轮处理 | 后续要求 |
+| --- | --- | --- |
+| `app/*.py`、`static` 文本源码、本地 G6、启动入口 | 复制到候选；文本统一 UTF-8/LF | 按业务职责逐步维护；确认来源与许可证 |
+| 原数据库、uploads、photos、license.dat | 留在原目录，不复制 | 私有存储、访问控制和备份；测试使用合成数据 |
+| backup、WAL 恢复副本、隔离文件 | 留在原目录，不复制 | 后续恢复需独立任务和副本，不能当测试样本 |
+| 旧 tests 的诊断/修补脚本、输出和打包副本 | 不复制 | 按实际需要迁移可复现行为，不批量执行 |
+| build、dist、运行日志和缓存 | 不复制 | 构建生成；正式分发须另验包内内容 |
+| 授权生成器、内嵌签名材料 | 不复制签名值及生成器 | 真实材料由维护者在受保护运行环境管理 |
+| 原单位图标、标识及模板身份示例 | 不复制图片；文本改为中性品牌及合成示例 | 公开前确认所有资源来源与使用权 |
+
+新 SVG 标识由本次源码直接绘制。已有 `static/vendor/g6.min.js` 保留为本地锁定的 G6 4.8.19 及校验补丁，来源与哈希见 [G6-PATCH.md](../static/vendor/G6-PATCH.md)；固定上游完整 MIT 文本已保留为 `static/vendor/G6-LICENSE` 并列入桌面资源。补丁前本地文件与上游分发包的完整对应、其他依赖／资源通知仍未全部核验，不能据此宣称整个候选已具备开源条件。
+
+## 运行目录
+
+`app/paths.py` 定义数据根，`FUND_DATA_DIR` 同时适用于数据库、上传、照片、授权、日志及缓存。默认 `data/` 被 `.gitignore` 排除。私有目录可以位于源码外部；不要对原业务目录直接进行升级试验。
+
+`.gitignore` 是提交边界的一部分，不能替代已跟踪文件或历史检查，也不能阻止应用读写被指定的目录。公开导入只包含维护源码、合成测试、锁文件和文档；原目录、Git 历史、运行数据、旧包及本地验收输出不随之上传。
+
+案件删除清理该案件的数据库记录和照片。注册上传按待确认 7 天、完成／失败 30 天留存，并提供案件内清理预览及确认；活动任务、来源引用和队列重试边界见 [import-lifecycle.md](import-lifecycle.md)。这些规则不等于删除案件时擦除运行目录中的所有原件，也不授权扫描未知文件。
+
+数据库事务与文件补偿覆盖本轮测试的可处理异常。它们不是数据库和文件系统之间的断电原子事务；进程被强杀、磁盘不可写或恢复操作本身失败时，仍需恢复策略和专项故障验证。
+
+## 授权兼容边界
+
+候选继续验证原 HMAC 授权码的结构和机器绑定，签名值改从 `FUNDS_TRACE_LICENSE_SECRET` 获取。缺少配置时签发失败、校验失败，产品保持未激活。授权文件改随 `FUND_DATA_DIR` 隔离。
+
+旧授权是否可继续使用，取决于维护者是否提供与原部署一致的配置；本轮没有读取、迁移、生成或轮换真实材料，也没有读取旧授权记录。测试仅使用公开标注的合成配置。共享 HMAC 密钥随客户端发行的设计需在公开发行前另行决定；可选择移除商业授权门槛，或改为仅客户端持公钥的签名方案，均不在本轮擅自实施。
+
+## 许可与发行边界
+
+1. 维护者已在本次任务授权公开 `Eysn0130/FundsTrace`，并明确选用 MIT；现有原作者及第三方版权继续保留。
+2. 本仓库从源码维护快照开始，来源记于 `THIRD_PARTY_NOTICES.md`；未导入原历史，不冒称初始快照作者独创全部原代码。
+3. 核对 G6、图标、字体及未来引入组件的具体来源、版本、许可证和通知要求。
+4. 审查全部待提交文件及后续取得的历史，确保没有业务数据、授权材料或私有环境信息。
+5. 独立验证 Windows 分发、安装后数据目录、升级/恢复和断网用户入口后，再判定发行条件。
+
+## GitHub 与轻量治理
+
+2026-10-15，维护者已授权创建公开 [Eysn0130/FundsTrace](https://github.com/Eysn0130/FundsTrace)、采用 MIT、手动运行 Windows Actions 并尝试发布未签名预览。该授权替代此前“先私有”的建议；源码公开与二进制预览发布分别记录，不以 Windows GUI 已验收为标记。原目录及业务数据仍在上传边界之外。[GitHub 许可说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository)
+
+本地仅准备一个手动 Windows 候选工作流，复用既有脚本和锁文件，固定 Action 完整 SHA、只读 token、取消过时运行、限制超时与产物留存；不调用真实 Provider、不注入授权材料、不自动发布。工作流和合成回归不能替代 Windows 的真实 DPI、系统保存和任务恢复 UI 验收。[手动触发要求](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[Actions 权限与依赖固定](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions)
+
+治理参考及适用取舍：
+
+- [OpenAI Codex 工作流策略](https://github.com/openai/codex/blob/main/.github/workflows/README.md) 将快速反馈与较昂贵的跨平台验证分开；[repo-checks.yml](https://github.com/openai/codex/blob/main/.github/workflows/repo-checks.yml) 复用脚本。FundsTrace 后续 PR 默认使用现有定向检查，Windows 打包先手动运行，避免每次改文档都完整封装。
+- [Anthropic Python SDK CI](https://github.com/anthropics/anthropic-sdk-python/blob/main/.github/workflows/ci.yml) 明确检查职责并取消过时任务；[贡献说明](https://github.com/anthropics/anthropic-sdk-python/blob/main/CONTRIBUTING.md) 提供可复现命令。本项目沿用 README／AGENTS／锁文件维护这些入口，不复制 SDK 生成、API 兼容或自动发布链。
+- 维护者先用单一主分支和小范围改动；有真实协作者后再设必要的分支保护及 owner。暂不增加 CLA、固定双审、复杂工作流框架或额外架构层。接受外部贡献前明确维护范围，补真实可用的私密问题报告渠道；不冒用上游的安全邮箱或赏金承诺。[OpenAI 当前贡献政策](https://github.com/openai/codex/blob/main/docs/contributing.md)
