@@ -73,10 +73,12 @@ function Assert-Installed([string]$Version) {
     $Found = $false
     foreach ($Record in @(Get-InstallRecords)) {
         if (-not $Record.HasInstall -and -not $Record.HasUninstall) { continue }
-        if (-not $Record.HasInstall -or -not $Record.HasUninstall -or $Record.Name -ne 'FundsTrace' -or
-            $Record.Version -cne $Version -or
-            [System.IO.Path]::GetFullPath($Record.Location).TrimEnd('\') -ine $InstallRoot.TrimEnd('\')) {
-            throw 'Installed identity/version mismatch.'
+        if (-not $Record.HasInstall -or -not $Record.HasUninstall) { throw 'INSTALL_REGISTRY_PAIR_MISSING' }
+        # electron-builder 26.15.3 defaults UNINSTALL_DISPLAY_NAME to productName + version.
+        if ($Record.Name -cne "FundsTrace $Version") { throw 'INSTALL_DISPLAY_NAME_MISMATCH' }
+        if ($Record.Version -cne $Version) { throw 'INSTALL_VERSION_MISMATCH' }
+        if ([System.IO.Path]::GetFullPath($Record.Location).TrimEnd('\') -ine $InstallRoot.TrimEnd('\')) {
+            throw 'INSTALL_LOCATION_MISMATCH'
         }
         $Found = $true
     }
