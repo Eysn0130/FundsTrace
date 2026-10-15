@@ -93,10 +93,13 @@ def test_routing_errors_use_v1_shape_and_legacy_errors_remain_compatible(client)
     assert legacy.status_code == 404 and legacy.json() == {"detail": "Not Found"}
 
 
-def test_license_gate_preserves_v1_error_shape(client, monkeypatch):
+def test_unactivated_state_allows_both_api_versions(client, monkeypatch, make_case):
     monkeypatch.setattr(licensing, "is_activated", lambda: False)
-    assert_error(client.get("/api/v1/cases"), 403, "not_activated")
-    assert client.get("/api/cases").json() == {"detail": "系统未激活"}
+    cid = make_case("Synthetic optional license")
+    versioned, legacy = client.get("/api/v1/cases"), client.get("/api/cases")
+    assert versioned.status_code == legacy.status_code == 200
+    assert any(item["id"] == str(cid) for item in versioned.json()["items"])
+    assert any(item["id"] == cid for item in legacy.json())
 
 
 def test_precise_identifiers_amounts_stats_filters_and_stable_pagination(client, database, make_case):

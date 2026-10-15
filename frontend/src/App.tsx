@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { Case } from '../../contracts/api-v1';
-import { api as defaultApi, type FundsApi, ApiError } from './lib/api';
+import { api as defaultApi, type FundsApi } from './lib/api';
 import { Modal } from './components/Modal';
 import { createHttpFundsSession } from './adapters/http';
 import { createBrowserFundsActions } from './standalone/browserActions';
@@ -13,7 +13,6 @@ export function App({ api = defaultApi, actionsForCase }: { api?: FundsApi; acti
   const [casesLoading, setCasesLoading] = useState(true);
   const [caseSearch, setCaseSearch] = useState('');
   const [error, setError] = useState('');
-  const [activationRequired, setActivationRequired] = useState(false);
   const [listReload, setListReload] = useState(0);
   const [creating, setCreating] = useState(false);
   const [caseName, setCaseName] = useState('');
@@ -54,10 +53,10 @@ export function App({ api = defaultApi, actionsForCase }: { api?: FundsApi; acti
         const requested = new URLSearchParams(window.location.search).get('case_id');
         return result.items.find(item => item.id === requested)?.id || result.items[0]?.id || '';
       });
-      setError(''); setActivationRequired(false);
+      setError('');
     }).catch(reason => {
       if (!active || reason.name === 'AbortError') return;
-      setError(reason.message); setActivationRequired(reason instanceof ApiError && reason.code === 'not_activated');
+      setError(reason.message);
     }).finally(() => { if (active) setCasesLoading(false); });
     return () => { active = false; controller.abort(); };
   }, [api, listReload]);
@@ -81,11 +80,11 @@ export function App({ api = defaultApi, actionsForCase }: { api?: FundsApi; acti
       <a className="brand" href="/workspace/" aria-label="FundsTrace 工作台"><svg viewBox="0 0 36 36" aria-hidden="true"><path d="m8 27 10-19 11 17Z" /><circle cx="8" cy="27" r="4" /><circle cx="18" cy="8" r="4" /><circle cx="29" cy="25" r="4" /></svg><span>FundsTrace<small>资金流水追踪</small></span></a>
       <div className="workspace-nav"><span className="nav-section">工作台</span><button className="nav-item active" onClick={() => selected && selectCase(selected.id)}><span aria-hidden="true">▤</span> 流水核对</button><a className={`nav-item ${!selected ? 'disabled' : ''}`} href={graphHref} aria-disabled={!selected}><span aria-hidden="true">◇</span> 关系图谱 <span className="nav-external">↗</span></a></div>
       <div className="case-section"><div className="section-heading"><span>案件</span><button className="icon-button" aria-label="新建案件" onClick={() => { setCreating(true); setCreateError(''); }}>＋</button></div><input className="case-filter" aria-label="筛选案件" placeholder="查找案件…" value={caseSearch} onChange={event => setCaseSearch(event.target.value)} /><div className="case-list" aria-label="案件列表">{casesLoading ? <p className="sidebar-hint">正在加载案件…</p> : cases.filter(item => item.name.toLowerCase().includes(caseSearch.toLowerCase())).map(item => <button key={item.id} className={`case-item ${selectedId === item.id ? 'selected' : ''}`} aria-pressed={selectedId === item.id} onClick={() => selectCase(item.id)}><span className="case-glyph" aria-hidden="true">▱</span><span>{item.name}</span></button>)}{!casesLoading && !cases.length && <p className="sidebar-hint">新建案件后开始核对。</p>}</div></div>
-      <div className="sidebar-footer"><span className="local-dot" /> 本地工作区<span>按案件独立核对与追踪</span><a href="/license">激活与许可</a></div>
+      <div className="sidebar-footer"><span className="local-dot" /> 本地工作区<span>按案件独立核对与追踪</span><a href="/license">版本与许可</a></div>
 
     </aside>
     <main className="standalone-main">
-      {error && <div role="alert" className="error-banner">{error}{activationRequired ? <a href="/license">前往激活</a> : <button onClick={() => setListReload(value => value + 1)}>重新加载案件</button>}</div>}
+      {error && <div role="alert" className="error-banner">{error}<button onClick={() => setListReload(value => value + 1)}>重新加载案件</button></div>}
       <FundsPanel host={{ version: FUNDS_PANEL_VERSION, session }} />
     </main>
     {creating && <Modal title="新建案件" busy={createBusy} onClose={() => setCreating(false)}><form onSubmit={event => void create(event)} className="create-case-form"><label>案件名称<input autoFocus aria-label="案件名称" maxLength={200} value={caseName} onChange={event => setCaseName(event.target.value)} placeholder="输入便于识别的案件名称" /></label>{createError && <p role="alert" className="error-banner">{createError}</p>}<footer className="modal-footer"><button type="button" className="button secondary" disabled={createBusy} onClick={() => setCreating(false)}>取消</button><button className="button primary" disabled={createBusy || !caseName.trim()}>{createBusy ? '正在创建…' : '创建案件'}</button></footer></form></Modal>}

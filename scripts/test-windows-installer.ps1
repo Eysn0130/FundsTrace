@@ -1,0 +1,319 @@
+#Requires -Version 7.0
+param(
+    [Parameter(Mandatory = $true)][string]$InstallerPath,
+    [Parameter(Mandatory = $true)][string]$ReportPath
+)
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+Set-StrictMode -Version Latest
+# This is a destructive test of a disposable hosted user's own installation only.
+# Reject local/other-platform invocation before writing reports, downloading or inspecting user state.
+if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows) -or
+    [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne 'X64' -or
+    $env:GITHUB_ACTIONS -cne 'true') {
+    [Console]::Error.WriteLine('Installer lifecycle requires native Windows x64 GitHub Actions.')
+    exit 1
+}
+
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
+# Existing appId com.eysn.fundstrace, UUIDv5 in electron-builder's unchanged namespace.
+$InstallKey = 'Software\b56dd6f8-a8a1-5427-b970-3e6cc301a2c0'
+$UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\b56dd6f8-a8a1-5427-b970-3e6cc301a2c0'
+$SentinelContent = "FundsTrace synthetic installer lifecycle v1`n"
+$Stage = 'ciFreshUser'
+$Report = [ordered]@{
+    schemaVersion = 1; status = 'running'; priorVersion = $null; currentVersion = $null; failedCheck = $null
+    checks = [ordered]@{
+        ciFreshUser = 'not-run'; priorInstallerDigest = 'not-run'; priorInstalled = 'not-run'
+        syntheticDataSeeded = 'not-run'; upgradedSameIdentity = 'not-run'; installedResourceIntegrity = 'not-run'
+        installedBackendWithoutActivation = 'not-run'; installedBackendAuthentication = 'not-run'
+        syntheticCaseCreatedAndReopened = 'not-run'; eofShutdown = 'not-run'
+        uninstallRegistrationRemoved = 'not-run'; installedExecutableRemoved = 'not-run'
+        syntheticDataRetained = 'not-run'; cleanup = 'not-run'
+    }
+    limits = [ordered]@{ gui = $false; importRecovery = $false }
+}
+$OwnUserData = $false
+$OwnTemporary = $false
+$MayHaveInstalled = $false
+$ReportReady = $false
+$Failed = $false
+$TemporaryRoot = $null
+$InstallRoot = $null
+$UserRoot = $null
+$script:TimedOutProcesses = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
+
+function Get-Sha256([string]$File) {
+    (Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+function Get-InstallRecords {
+    foreach ($View in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
+        $Base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $View)
+        $Install = $null; $Uninstall = $null
+        try {
+            $Install = $Base.OpenSubKey($InstallKey, $false)
+            $Uninstall = $Base.OpenSubKey($UninstallKey, $false)
+            [pscustomobject]@{
+                HasInstall = $null -ne $Install; HasUninstall = $null -ne $Uninstall
+                Location = $(if ($null -ne $Install) { [string]$Install.GetValue('InstallLocation', '') } else { '' })
+                Version = $(if ($null -ne $Uninstall) { [string]$Uninstall.GetValue('DisplayVersion', '') } else { '' })
+                Name = $(if ($null -ne $Uninstall) { [string]$Uninstall.GetValue('DisplayName', '') } else { '' })
+            }
+        } finally {
+            if ($null -ne $Install) { $Install.Dispose() }
+            if ($null -ne $Uninstall) { $Uninstall.Dispose() }
+            $Base.Dispose()
+        }
+    }
+}
+function Assert-Installed([string]$Version) {
+    $Found = $false
+    foreach ($Record in @(Get-InstallRecords)) {
+        if (-not $Record.HasInstall -and -not $Record.HasUninstall) { continue }
+        if (-not $Record.HasInstall -or -not $Record.HasUninstall -or $Record.Name -ne 'FundsTrace' -or
+            $Record.Version -cne $Version -or
+            [System.IO.Path]::GetFullPath($Record.Location).TrimEnd('\') -ine $InstallRoot.TrimEnd('\')) {
+            throw 'Installed identity/version mismatch.'
+        }
+        $Found = $true
+    }
+    if (-not $Found -or -not (Test-Path -LiteralPath (Join-Path $InstallRoot 'FundsTrace.exe') -PathType Leaf)) {
+        throw 'Installed application is missing.'
+    }
+}
+function Test-Removed {
+    $Registered = @(@(Get-InstallRecords) | Where-Object { $_.HasInstall -or $_.HasUninstall }).Count -gt 0
+    return -not $Registered -and -not (Test-Path -LiteralPath (Join-Path $InstallRoot 'FundsTrace.exe'))
+}
+function Wait-Removed {
+    $Deadline = [DateTime]::UtcNow.AddSeconds(60)
+    do {
+        if (Test-Removed) { return }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $Deadline)
+    throw 'Uninstall did not remove the application and registration.'
+}
+function Invoke-Native {
+    param([string]$FileName, [string[]]$Arguments = @(), [string]$RawArguments = '',
+        [hashtable]$Environment = @{}, [int]$TimeoutSeconds = 180)
+    $Start = [System.Diagnostics.ProcessStartInfo]::new()
+    $Start.FileName = $FileName; $Start.WorkingDirectory = $ProjectRoot
+    $Start.UseShellExecute = $false; $Start.CreateNoWindow = $true
+    $Start.RedirectStandardOutput = $true; $Start.RedirectStandardError = $true
+    if ($RawArguments) { $Start.Arguments = $RawArguments }
+    else { foreach ($Argument in $Arguments) { $Start.ArgumentList.Add($Argument) } }
+    foreach ($Name in @($Start.Environment.Keys)) {
+        if ($Name.StartsWith('FUND_', [StringComparison]::OrdinalIgnoreCase) -or
+            $Name.StartsWith('FUNDS_TRACE_', [StringComparison]::OrdinalIgnoreCase) -or
+            $Name.StartsWith('PYTHON', [StringComparison]::OrdinalIgnoreCase)) { [void]$Start.Environment.Remove($Name) }
+    }
+    foreach ($Name in $Environment.Keys) { $Start.Environment[$Name] = [string]$Environment[$Name] }
+    $Process = [System.Diagnostics.Process]::new(); $Process.StartInfo = $Start
+    $TimedOut = $false
+    try {
+        if (-not $Process.Start()) { throw 'Native process could not start.' }
+        $Output = $Process.StandardOutput.ReadToEndAsync()
+        $Errors = $Process.StandardError.ReadToEndAsync()
+        if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+            $TimedOut = $true
+            $script:TimedOutProcesses.Add($Process)
+            # Do not kill an installer or discover processes by executable name.
+            [void]$Process.CloseMainWindow()
+            throw 'Native process timed out.'
+        }
+        $Process.WaitForExit()
+        $Text = $Output.GetAwaiter().GetResult()
+        [void]$Errors.GetAwaiter().GetResult()
+        if ($Process.ExitCode -ne 0) { throw 'Native process failed.' }
+        return $Text
+    } finally { if (-not $TimedOut) { $Process.Dispose() } }
+}
+function Invoke-Uninstall {
+    $Uninstaller = Join-Path $InstallRoot 'Uninstall FundsTrace.exe'
+    if (-not (Test-Path -LiteralPath $Uninstaller -PathType Leaf)) { throw 'Owned uninstaller is missing.' }
+    # _?= keeps the real uninstaller in the waited process; NSIS requires this last and unquoted.
+    [void](Invoke-Native -FileName $Uninstaller -RawArguments "/S _?=$InstallRoot" -TimeoutSeconds 180)
+    Wait-Removed
+}
+function Assert-Sentinel {
+    if ([System.IO.File]::ReadAllText((Join-Path $UserRoot 'installer-lifecycle-sentinel.txt')) -cne $SentinelContent) {
+        throw 'Synthetic data sentinel changed.'
+    }
+}
+
+try {
+    if (-not [System.IO.Path]::IsPathRooted($InstallerPath) -or -not [System.IO.Path]::IsPathRooted($ReportPath)) {
+        throw 'Absolute candidate and report paths are required.'
+    }
+    $InstallerPath = [System.IO.Path]::GetFullPath($InstallerPath)
+    $ReportPath = [System.IO.Path]::GetFullPath($ReportPath)
+    if (-not (Test-Path -LiteralPath (Split-Path -Parent $ReportPath) -PathType Container)) { throw 'Report directory is missing.' }
+    $ReportReady = $true
+    $Report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding utf8
+    $CandidateRoot = Join-Path $ProjectRoot 'build/desktop/electron/win-unpacked'
+    $NativeManifest = Join-Path $ProjectRoot 'build/desktop/backend/funds-trace-backend/build-manifest.json'
+    $PythonExe = Join-Path $ProjectRoot '.venv/Scripts/python.exe'
+    $NodeExe = (Get-Command node.exe -CommandType Application).Source
+    foreach ($Required in @($InstallerPath, $NativeManifest, $PythonExe, (Join-Path $CandidateRoot 'FundsTrace.exe'))) {
+        if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) { throw 'Required candidate input is missing.' }
+    }
+    $IdentityCode = "const b=require('./desktop/electron-builder.cjs');const p=require('./desktop/package.json');if(b.appId!=='com.eysn.fundstrace'||b.nsis.guid!==undefined||p.version!=='0.1.0')process.exit(1);"
+    [void](Invoke-Native -FileName $NodeExe -Arguments @('-e', $IdentityCode) -TimeoutSeconds 15)
+    $ApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+    if (-not $ApplicationData -or -not [System.IO.Path]::IsPathRooted($ApplicationData) -or
+        -not $env:APPDATA -or [System.IO.Path]::GetFullPath($env:APPDATA) -ine [System.IO.Path]::GetFullPath($ApplicationData)) {
+        throw 'Default user AppData is unavailable.'
+    }
+    $UserRoot = Join-Path $ApplicationData 'FundsTrace'
+    if ((Test-Path -LiteralPath $UserRoot) -or @(@(Get-InstallRecords) | Where-Object { $_.HasInstall -or $_.HasUninstall }).Count -gt 0) {
+        throw 'The CI user already has FundsTrace state.'
+    }
+    $Report.checks.ciFreshUser = 'passed'
+    $TemporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("FundsTrace 安装 生命周期 " + [guid]::NewGuid().ToString('N'))
+    [void](New-Item -ItemType Directory -Path $TemporaryRoot)
+    $OwnTemporary = $true
+    $InstallRoot = Join-Path $TemporaryRoot '应用 安装路径'
+    $PriorInstaller = Join-Path $TemporaryRoot 'prior-alpha3.exe'
+
+    $Stage = 'priorInstallerDigest'
+    Invoke-WebRequest -Uri 'https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.0-alpha.3/FundsTrace-0.1.0-alpha.3-windows-x64-unsigned.exe' -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
+    if ((Get-Sha256 $PriorInstaller) -cne '0e0454af6907912cfd628849bced6740f02f333f9ad5350e14466cc4f4e22e20') {
+        throw 'The prior installer digest differs from the pinned release.'
+    }
+    $Report.checks.priorInstallerDigest = 'passed'
+    $Stage = 'priorInstalled'
+    $MayHaveInstalled = $true
+    # /D is NSIS syntax: absolute path, last argument, deliberately no quotes even with spaces.
+    [void](Invoke-Native -FileName $PriorInstaller -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
+    Assert-Installed '0.1.0-alpha.3'
+    $Report.priorVersion = '0.1.0-alpha.3'; $Report.checks.priorInstalled = 'passed'
+
+    $Stage = 'syntheticDataSeeded'
+    # The earlier absence check establishes ownership; never redirect or reuse a maintainer's data.
+    if (Test-Path -LiteralPath $UserRoot) { throw 'Unexpected data appeared before synthetic seeding.' }
+    [void](New-Item -ItemType Directory -Path $UserRoot)
+    $OwnUserData = $true
+    [System.IO.File]::WriteAllText((Join-Path $UserRoot 'installer-lifecycle-sentinel.txt'), $SentinelContent)
+    $DataDirectory = Join-Path $UserRoot 'data'
+    [void](New-Item -ItemType Directory -Path $DataDirectory)
+    $PythonEnvironment = @{ FUND_DATA_DIR = $DataDirectory; PYTHONUTF8 = '1'; PYTHONDONTWRITEBYTECODE = '1'; PYTHONNOUSERSITE = '1' }
+    $SeedCode = @'
+from app import db
+try:
+    db._start_ckpt = lambda: None
+    with db.transaction():
+        db.q("insert into cases(name) values (?) returning id", ["SYN alpha3 installer lifecycle case"])
+    db.con().execute("checkpoint")
+finally:
+    if db._con is not None:
+        db._con.close()
+        db._con = None
+'@
+    [void](Invoke-Native -FileName $PythonExe -Arguments @('-c', $SeedCode) -Environment $PythonEnvironment -TimeoutSeconds 60)
+    if (-not (Test-Path -LiteralPath (Join-Path $DataDirectory 'fund.duckdb') -PathType Leaf)) { throw 'Synthetic database was not created.' }
+    $Report.checks.syntheticDataSeeded = 'passed'
+
+    $Stage = 'upgradedSameIdentity'
+    [void](Invoke-Native -FileName $InstallerPath -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
+    Assert-Installed '0.1.0'
+    Assert-Sentinel
+    $Report.currentVersion = '0.1.0'; $Report.checks.upgradedSameIdentity = 'passed'
+
+    $Stage = 'installedResourceIntegrity'
+    foreach ($Relative in @('FundsTrace.exe', 'resources/app.asar', 'resources/backend/funds-trace-backend.exe',
+        'resources/backend/build-manifest.json', 'resources/licenses/Analytix-Apache-2.0.txt')) {
+        if ((Get-Sha256 (Join-Path $InstallRoot $Relative)) -cne (Get-Sha256 (Join-Path $CandidateRoot $Relative))) {
+            throw 'Installed candidate content differs from win-unpacked.'
+        }
+    }
+    $InstalledBackend = Join-Path $InstallRoot 'resources/backend'
+    if ((Get-Sha256 (Join-Path $InstalledBackend 'build-manifest.json')) -cne (Get-Sha256 $NativeManifest)) {
+        throw 'Installed backend manifest differs from the native build.'
+    }
+    $Manifest = Get-Content -Raw -LiteralPath $NativeManifest | ConvertFrom-Json
+    if ($Manifest.protocol -ne 1 -or $Manifest.platform -cne 'win32' -or $Manifest.arch -cne 'x64') {
+        throw 'Unexpected native manifest identity.'
+    }
+    $InternalRoot = [System.IO.Path]::GetFullPath((Join-Path $InstalledBackend '_internal')) + [System.IO.Path]::DirectorySeparatorChar
+    foreach ($Resource in $Manifest.resources.PSObject.Properties) {
+        $ResourcePath = [System.IO.Path]::GetFullPath((Join-Path $InternalRoot $Resource.Name))
+        if (-not $ResourcePath.StartsWith($InternalRoot, [StringComparison]::OrdinalIgnoreCase) -or
+            $Resource.Value -cnotmatch '^[0-9a-f]{64}$' -or (Get-Sha256 $ResourcePath) -cne $Resource.Value) {
+            throw 'Installed resource differs from the native manifest.'
+        }
+    }
+    $Report.checks.installedResourceIntegrity = 'passed'
+
+    $Stage = 'installedBackendWithoutActivation'
+    $HelperJson = Invoke-Native -FileName $NodeExe -Arguments @((Join-Path $ProjectRoot 'desktop/tests/installed-data-smoke.cjs'), $InstallRoot) -TimeoutSeconds 210
+    $Helper = $HelperJson | ConvertFrom-Json
+    $ExpectedHelperChecks = @('defaultUserData', 'seededCaseRead', 'activationFree', 'desktopAuthentication', 'caseCreatedAndReopened', 'eofShutdown', 'noLicenseFileGenerated')
+    if (@($Helper.PSObject.Properties).Count -ne $ExpectedHelperChecks.Count) { throw 'Unexpected installed backend report.' }
+    foreach ($Name in $ExpectedHelperChecks) {
+        if ($Helper.$Name -isnot [bool] -or -not $Helper.$Name) { throw 'Installed backend did not satisfy its check.' }
+    }
+    $Report.checks.installedBackendWithoutActivation = 'passed'
+    $Report.checks.installedBackendAuthentication = 'passed'
+    $Report.checks.syntheticCaseCreatedAndReopened = 'passed'
+    $Report.checks.eofShutdown = 'passed'
+
+    $Stage = 'uninstallRegistrationRemoved'
+    Invoke-Uninstall
+    $MayHaveInstalled = $false
+    $Report.checks.uninstallRegistrationRemoved = 'passed'
+    $Report.checks.installedExecutableRemoved = 'passed'
+    $Stage = 'syntheticDataRetained'
+    Assert-Sentinel
+    $VerifyCode = @'
+import os
+from pathlib import Path
+import duckdb
+source = Path(os.environ["FUND_DATA_DIR"])
+assert not (source / "license.dat").exists()
+connection = duckdb.connect(str(source / "fund.duckdb"), read_only=True)
+try:
+    names = {row[0] for row in connection.execute("select name from cases").fetchall()}
+    assert {"SYN alpha3 installer lifecycle case", "SYN current installer lifecycle case"} <= names
+finally:
+    connection.close()
+'@
+    [void](Invoke-Native -FileName $PythonExe -Arguments @('-c', $VerifyCode) -Environment $PythonEnvironment -TimeoutSeconds 60)
+    $Report.checks.syntheticDataRetained = 'passed'
+} catch {
+    $Failed = $true
+    $Report.failedCheck = $Stage
+    if ($Report.checks.Contains($Stage)) { $Report.checks[$Stage] = 'failed' }
+} finally {
+    try {
+        # Always attempt normal uninstall of this test's own installation, including on failure.
+        if ($MayHaveInstalled -and $null -ne $InstallRoot) {
+            if (Test-Path -LiteralPath (Join-Path $InstallRoot 'Uninstall FundsTrace.exe') -PathType Leaf) { Invoke-Uninstall }
+            elseif (-not (Test-Removed)) { throw 'Partial installation needs normal cleanup.' }
+        }
+        foreach ($Process in $script:TimedOutProcesses) {
+            if (-not $Process.HasExited) { throw 'Owned timed-out process is still running.' }
+            $Process.Dispose()
+        }
+        if ($OwnTemporary -and -not (Test-Removed)) { throw 'Installed state remains after cleanup.' }
+        if ($OwnUserData -and (Test-Path -LiteralPath $UserRoot)) {
+            if (((Get-Item -LiteralPath $UserRoot).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Owned data root changed.' }
+            Remove-Item -LiteralPath $UserRoot -Recurse -Force
+        }
+        if ($OwnTemporary -and (Test-Path -LiteralPath $TemporaryRoot)) { Remove-Item -LiteralPath $TemporaryRoot -Recurse -Force }
+        $Report.checks.cleanup = 'passed'
+    } catch {
+        $Failed = $true; $Report.checks.cleanup = 'failed'
+        if ($null -eq $Report.failedCheck) { $Report.failedCheck = 'cleanup' }
+    }
+    $Report.status = $(if ($Failed) { 'failed' } else { 'passed' })
+    if ($ReportReady) {
+        try { $Report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding utf8 }
+        catch { $Failed = $true }
+    }
+}
+if ($Failed) {
+    [Console]::Error.WriteLine("Installer lifecycle failed at $($Report.failedCheck). No raw diagnostics were emitted.")
+    exit 1
+}
+Write-Host 'Native installer lifecycle passed: pinned alpha3 upgrade, activation-free installed data, EOF and uninstall retention. GUI and import recovery were not tested.'
+exit 0

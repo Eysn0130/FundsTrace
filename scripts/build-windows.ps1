@@ -1,5 +1,6 @@
 #Requires -Version 7.0
-param([switch]$Installer)
+param([switch]$Installer, [switch]$VerifyInstallerLifecycle)
+if ($VerifyInstallerLifecycle -and -not $Installer) { throw "Installer lifecycle verification requires -Installer." }
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) { throw "Run this pipeline natively on Windows x64." }
@@ -20,11 +21,6 @@ try {
     Invoke-Checked { uv pip sync --python $PythonExe --require-hashes requirements-desktop.lock }
     Push-Location frontend
     try { Invoke-Checked { npm.cmd ci }; Invoke-Checked { npm.cmd run build } } finally { Pop-Location }
-    if ($env:FUNDS_TRACE_LICENSE_PUBLIC_KEY) {
-        $PublicKeyPath = Join-Path $ProjectRoot "activation-public-key.pem"
-        if (Test-Path -LiteralPath $PublicKeyPath) { throw "Use only one activation public key source." }
-        [System.IO.File]::WriteAllText($PublicKeyPath, $env:FUNDS_TRACE_LICENSE_PUBLIC_KEY, [System.Text.UTF8Encoding]::new($false))
-    }
     Invoke-Checked { & $PythonExe scripts/build_desktop_backend.py }
     Push-Location desktop
     try {
@@ -32,8 +28,6 @@ try {
         Invoke-Checked { npm.cmd test }
         if ($Installer) { Invoke-Checked { npm.cmd run pack:win } }
         else { Invoke-Checked { npm.cmd run pack -- --win --x64 } }
-        if ($Installer) { Invoke-Checked { npm.cmd run pack:issuer:win } }
-        else { Invoke-Checked { npm.cmd run pack:issuer:win -- --dir } }
     } finally { Pop-Location }
 
     # Evidence contains only versions, relative candidate filenames and content hashes.
@@ -56,14 +50,11 @@ try {
         $InstallerPath = Join-Path $EvidenceRoot "electron/FundsTrace-$Version-windows-x64-unsigned.exe"
         if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) { throw "The unsigned installer candidate is missing." }
         $CandidateFiles += Get-Item -LiteralPath $InstallerPath
-        $IssuerInstaller = Join-Path $EvidenceRoot "issuer/FundsTrace-Issuer-$Version-windows-x64-unsigned.exe"
-        if (-not (Test-Path -LiteralPath $IssuerInstaller -PathType Leaf)) { throw "The independent issuer installer is missing." }
-        $CandidateFiles += Get-Item -LiteralPath $IssuerInstaller
     }
-    $IssuerDir = Join-Path $EvidenceRoot "issuer/win-unpacked"
-    if (-not (Test-Path -LiteralPath (Join-Path $IssuerDir "FundsTrace Issuer.exe") -PathType Leaf)) { throw "The independent issuer directory is missing." }
-    # Independent app resources contain only reviewed issuer source and public notices.
-    $CandidateFiles += @(Get-ChildItem -LiteralPath $IssuerDir -File -Recurse)
+    $InstallerReport = Join-Path $EvidenceRoot "native-installer-smoke.json"
+    if ($VerifyInstallerLifecycle) {
+        Invoke-Checked { & "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $InstallerPath -ReportPath $InstallerReport }
+    }
     $Files = @($CandidateFiles | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = [System.IO.Path]::GetRelativePath($ProjectRoot, $_.FullName).Replace('\', '/'); bytes = $_.Length; sha256 = Get-Sha256 $_.FullName }
     })
@@ -77,8 +68,9 @@ try {
         lockSha256 = $Locks
         nativeManifestSha256 = Get-Sha256 $NativeManifest
         smokeReportSha256 = Get-Sha256 $SmokeReport
-        checks = [ordered]@{ desktopNodeTests = "passed"; nativeBackendSmoke = "passed" }
+        checks = [ordered]@{ desktopNodeTests = "passed"; nativeBackendSmoke = "passed"; installerLifecycle = $(if ($VerifyInstallerLifecycle) { "passed" } else { "not-run" }) }
         limits = [ordered]@{ guiAcceptance = $false; installedAcceptance = $false; signed = $false; published = $false }
+        installerReportSha256 = $(if ($VerifyInstallerLifecycle) { Get-Sha256 $InstallerReport } else { $null })
         files = $Files
     }
     $ManifestPath = Join-Path $EvidenceRoot "windows-candidate.json"
@@ -88,6 +80,9 @@ try {
         $Relative = [System.IO.Path]::GetRelativePath($ProjectRoot, $File).Replace('\', '/')
         $Sums += "$(Get-Sha256 $File)  $Relative"
     }
+    if ($VerifyInstallerLifecycle) {
+        $Sums += "$(Get-Sha256 $InstallerReport)  build/desktop/native-installer-smoke.json"
+    }
     $Sums | Set-Content -LiteralPath (Join-Path $EvidenceRoot "windows-candidate.sha256") -Encoding utf8
-    Write-Host "Unsigned local candidate and safe manifest/SHA-256 evidence created under build/desktop. Windows GUI/install acceptance and release authorization remain separate."
+    Write-Host "Unsigned local candidate and safe manifest/SHA-256 evidence created under build/desktop. Windows GUI acceptance and release publication remain separate."
 } finally { Pop-Location }

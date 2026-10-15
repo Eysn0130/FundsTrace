@@ -1,4 +1,4 @@
-"""The copied source must fail closed and keep runtime files in temporary state."""
+"""Historical verification fails closed; normal startup keeps temporary runtime state."""
 import os
 from pathlib import Path
 import subprocess
@@ -10,12 +10,15 @@ from app import license as licensing
 from app.main import app
 
 
-def test_unconfigured_signing_material_never_activates(database, monkeypatch):
+def test_unconfigured_signing_material_does_not_block_normal_startup(database, monkeypatch):
     key = licensing.issue("SYNTHETIC-MACHINE")
     monkeypatch.delenv("FUNDS_TRACE_LICENSE_SECRET", raising=False)
     assert licensing.verify(key, "SYNTHETIC-MACHINE") is None
     with TestClient(app) as client:
-        assert client.get("/api/cases").status_code == 403
+        assert client.get("/api/cases").status_code == 200
+        info = client.get("/api/license/info").json()
+        assert info["activated"] is False
+        assert info["activation_required"] is False
         assert client.get("/license").status_code == 200
 
 

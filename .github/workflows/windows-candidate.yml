@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       installer:
-        description: Build an unsigned NSIS preview installer
+        description: Build unsigned NSIS installer and verify isolated lifecycle
         type: boolean
         default: false
 
@@ -58,9 +58,8 @@ jobs:
       - name: Build unsigned Windows directory candidate and native backend evidence
         env:
           BUILD_INSTALLER: ${{ inputs.installer }}
-          FUNDS_TRACE_LICENSE_PUBLIC_KEY: ${{ vars.FUNDS_TRACE_LICENSE_PUBLIC_KEY }}
         run: |
-          if ($env:BUILD_INSTALLER -eq 'true') { ./scripts/build-windows.ps1 -Installer }
+          if ($env:BUILD_INSTALLER -eq 'true') { ./scripts/build-windows.ps1 -Installer -VerifyInstallerLifecycle }
           else { ./scripts/build-windows.ps1 }
       - name: Retain explicit candidate and safe evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -71,8 +70,8 @@ jobs:
           compression-level: 0
           path: |
             ${{ inputs.installer && '源码 FundsTrace/build/desktop/electron/*-windows-x64-unsigned.exe' || '源码 FundsTrace/build/desktop/electron/win-unpacked/' }}
-            ${{ inputs.installer && '源码 FundsTrace/build/desktop/issuer/*-windows-x64-unsigned.exe' || '源码 FundsTrace/build/desktop/issuer/win-unpacked/' }}
             源码 FundsTrace/build/desktop/backend/funds-trace-backend/build-manifest.json
             源码 FundsTrace/build/desktop/native-backend-smoke.json
+            源码 FundsTrace/build/desktop/native-installer-smoke.json
             源码 FundsTrace/build/desktop/windows-candidate.json
             源码 FundsTrace/build/desktop/windows-candidate.sha256

@@ -35,3 +35,7 @@ SOFTWARE.
 ## Python, Electron and build dependencies
 
 Python runtime dependency versions and distribution hashes are recorded in `requirements-desktop.lock`. Native backend builds recursively retain installed runtime distribution metadata and their supplied license files. Bundled fonts retain their upstream notices. Electron distributions retain `LICENSE` and `LICENSES.chromium.html`. Build and test dependencies keep their own licenses; the FundsTrace MIT license does not replace those licenses. No project authorization secret or business dataset is part of the distribution.
+
+## Analytix Windows installer flow
+
+`desktop/installer.nsh` adapts installation-root process scoping and installer lifecycle hooks from Analytix `build/standard-win-installer.nsh` at commit `c7d2a370855a8d371c61c32cc2422515b9404ef2` (https://github.com/Eysn0130/analytix). Copyright 2026 Guoqin He (GitHub: Eysn0130); Apache License 2.0, reproduced in `desktop/licenses/Apache-2.0.txt` and distributed as `resources/licenses/Analytix-Apache-2.0.txt`. FundsTrace modifications dated 2026-10-15 retain its per-user installation identity and default data retention, display the installed version, and request normal window closing rather than forcing process termination. FundsTrace does not use Analytix registry keys, update feeds or signing identity.

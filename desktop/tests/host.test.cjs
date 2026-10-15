@@ -147,7 +147,10 @@ test('distribution manifest prevents cross-platform packaging and includes only 
   assert.equal(builder.publish, null);
   assert.equal(builder.nsis.deleteAppDataOnUninstall, false);
   assert.equal(builder.win.signAndEditExecutable, false);
-  assert.equal(builder.extraResources.length, 1);
+  assert.deepEqual(builder.extraResources, [
+    { from: path.resolve(__dirname, '../../build/desktop/backend/funds-trace-backend'), to: 'backend', filter: ['**/*'] },
+    { from: path.resolve(__dirname, '../licenses/Apache-2.0.txt'), to: 'licenses/Analytix-Apache-2.0.txt' }
+  ]);
   // Missing native backend must fail rather than create an Electron-only package.
   if (!fs.existsSync(path.join(builder.extraResources[0].from, 'build-manifest.json'))) {
     await assert.rejects(builder.beforePack({ electronPlatformName: 'win32', arch: 1 }));

@@ -40,10 +40,8 @@ def database(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def client(database, monkeypatch):
-    # Authenticate the real middleware using a synthetic, machine-bound license.
-    monkeypatch.setattr(licensing, "machine_code", lambda: "SYNTHETIC-TEST-MACHINE")
-    licensing.save_key(licensing.issue(licensing.machine_code()))
+def client(database):
+    # Exercise normal startup without writing a product license.
     with TestClient(app) as test_client:
         yield test_client
 

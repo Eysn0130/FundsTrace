@@ -2,18 +2,18 @@
 
 本地资金流水追踪与关联分析工具。Python/FastAPI、DuckDB，React＋TypeScript＋Vite 案件／导入／流水核对界面、保留的 JavaScript/G6 图谱，以及独立 Electron 宿主。导入由统一 Python 服务管理任务、回执、来源与上传清理。项目采用 [MIT](LICENSE)，第三方许可与维护来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。当前为预览阶段。
 
-[下载 Windows x64 预览 v0.1.0-alpha.3](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0-alpha.3)：包含 FundsTrace 客户端、独立 FundsTrace Issuer、公开公钥及检查清单。客户端已内置分发公钥，普通用户只需提供机器码并输入授权码；维护者使用 Issuer 加载私钥签发。两个安装器未签名，Windows GUI／DPI／安装交互尚未实机验收。
+[下载 FundsTrace v0.1.0 · Windows x64](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0)：在对应 Release 的 Assets 下载 `.exe`，安装后直接启动，**无需公钥或授权码**。安装器支持当前用户安装、覆盖升级及 Windows 卸载入口；卸载默认保留案件数据。安装包未签名，Windows GUI／DPI／原生保存交互尚未实机验收，不作为发布通过标记。实现与原生验证范围见 [桌面交付](docs/desktop-delivery.md)。
 
 ## 当前边界
 
 - 本目录只维护源码、合成测试和项目文档；原 `fund-tracker` 工作目录及业务数据保留在原位置。
 - 没有迁移或连接原数据库，没有复制授权记录、上传文件、照片、恢复副本和旧安装包。
-- 独立版保留激活；新版 FT2 由独立 Electron 签发工具持私钥签发、客户端持公钥验签。旧 HMAC 仅在明确配置时兼容；安装客户端后仍需输入有效授权码。
+- 已发布 alpha.3 使用 FT2 公钥验签和独立签发工具；当前 `v0.1.x` 暂不要求授权码。现有密钥、签发工具和历史兼容记录保留。
 - 维护者已授权公开本源码维护快照；原工作目录与历史不随本次导入上传，签发私钥、口令和真实授权记录不进入仓库。详见 [源码与私有数据边界](docs/source-boundaries.md)。
 
 ## 可重复安装和测试
 
-完整回归的开发基线为 macOS arm64、Python 3.11 与 Node 22.22.1；入口也需要 Node：`tests/test_legacy_navigation.py` 会运行无额外 npm 依赖的 `node --test` 合成导航回归。[alpha.3 Windows x64 Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38733405640) 已在源码 `d0d569fe415d7798584f3207d0e8817a7916c75f` 完成 53 项定向 Python、16 项桌面 Node、前端类型检查／构建、双安装器构建、24 项资源校验和 10 项包内后端烟测。新增检查确认首次启动／重开识别包内公钥模式与指纹；合成 FT2 激活／重开及错误机器码／更换公钥拒绝仍通过。不代表生产授权、Windows GUI 或业务导入恢复验收，其他版本不作支持保证。
+开发基线为 macOS arm64、Python 3.11 与 Node 22.22.1；完整回归入口也需要 Node。Windows x64 原生构建及包内后端／静默安装生命周期由手动 [Windows Actions](.github/workflows/windows-candidate.yml) 执行；实际结果和限制记录在 [桌面交付](docs/desktop-delivery.md)。日常协作按 [CONTRIBUTING.md](CONTRIBUTING.md) 选择受影响层的最小充分验证，不默认重复全套。
 
 ```sh
 uv venv --python 3.11
@@ -67,11 +67,11 @@ npm --prefix desktop test
 npm --prefix desktop run synthetic
 ```
 
-须先完成上述 React 构建。Electron 44 的运行时会在首次运行时下载；安装 NPM 包本身不证明二进制已安装。普通桌面启动为 `npm --prefix desktop start`，数据由宿主管理到自身 `userData/data`；源码启动不会自动获得预构建包的公钥，仍需维护者配置公钥并输入合法授权码。Windows x64 原生构建使用 `scripts/build-windows.ps1`，加 `-Installer` 生成客户端与独立签发工具两个未签名 NSIS 候选；当前没有 Windows GUI 实机通过证据。详见 [桌面交付与运行](docs/desktop-delivery.md)。
+须先完成上述 React 构建。Electron 44 的运行时会在首次运行时下载；安装 NPM 包本身不证明二进制已安装。普通桌面启动为 `npm --prefix desktop start`，数据位于自身 `userData/data`，无需配置产品授权。Windows x64 原生构建使用 PowerShell 7 执行 `scripts/build-windows.ps1`，加 `-Installer` 生成一个未签名 NSIS 客户端；签发工具源码保留为维护用途，不再随普通用户安装包构建或分发。
 
-Windows 构建脚本要求 PowerShell 7，并对实际目录候选内的 backend 做中文／空格路径、空库强制退出／重开、合成 FT2 激活及 EOF 烟测。[Windows Actions](.github/workflows/windows-candidate.yml) 仅手动触发，`installer=true` 可生成两个未签名 NSIS 预览安装器。原生构建、后端烟测与 Windows GUI 体验分开记录，预览发布不使用 GUI 通过标记。[治理依据与取舍](docs/source-boundaries.md#github-与轻量治理) 参考 OpenAI／Anthropic 官方仓库，并保持现有脚本为唯一执行入口。
+[Windows Actions](.github/workflows/windows-candidate.yml) 只手动触发，`installer=true` 构建客户端并在隔离 runner 用户验证旧版安装 → 0.1.0 覆盖升级 → 卸载保留合成案件。包内后端另检中文／空格路径、无授权正常访问、桌面 token 拒绝、合成案件崩溃后重开及 EOF 退出。GUI、DPI、原生保存与导入任务恢复分别记录，不能从静默脚本推断通过。[治理依据](docs/source-boundaries.md#github-与轻量治理) 参考 OpenAI／Anthropic 官方仓库，保留现有脚本为唯一构建入口。
 
-**alpha.3 预构建客户端内置公钥指纹为 `FEF434964FE89178`，普通用户无需配置公钥。** 维护者在独立 **FundsTrace Issuer** 加载对应私钥，按用户机器码签发授权码；私钥和口令不随安装器分发。源码或自行构建仍可通过 Actions 非秘密变量 `FUNDS_TRACE_LICENSE_PUBLIC_KEY`、本地构建公钥文件，或绝对路径 `FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE` 配置验证公钥；缺少配置时保持未激活。旧 HMAC 环境继续显式使用 `FUNDS_TRACE_LICENSE_SECRET`；不要把共享秘密或私钥发给用户或提交仓库。[授权配置与签发操作](docs/license-activation.md)
+已发布的 alpha.3 仍需其历史授权；升级后无需重新签发。FT2／HMAC 验签、私钥和独立 Issuer 继续保留，后续需要时再单独维护。详见 [历史授权配置](docs/license-activation.md)。
 
 ```sh
 FUND_DATA_DIR=/absolute/path/to/private-runtime .venv/bin/python run.py

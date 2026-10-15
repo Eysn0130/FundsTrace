@@ -22,7 +22,7 @@ from typing import List, Literal, Optional
 
 import pandas as pd
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
@@ -57,7 +57,7 @@ except Exception as e:  # pragma: no cover
     print("[警告] 智能分析模块加载失败：", ANALYSIS_ERR)
 
 
-# ---------------- 授权门卫（未激活仅放行激活页面） ----------------
+# ---------------- 可选的历史授权兼容接口 ----------------
 
 class ActivateIn(BaseModel):
     key: str
@@ -70,7 +70,7 @@ def license_page():
 
 @app.get("/api/license/info")
 def license_info():
-    return lic.status()
+    return {**lic.status(), "activation_required": False}
 
 
 @app.post("/api/license/activate")
@@ -84,18 +84,6 @@ def license_activate(body: ActivateIn):
     return {"ok": True, "expiry": "永久" if exp == "0" else exp}
 
 
-@app.middleware("http")
-async def license_gate(request, call_next):
-    path = request.url.path
-    allowed = (path == "/license" or path.startswith("/api/license")
-               or path in ("/favicon.ico", "/static/logo.svg", "/static/favicon.svg", "/static/license.js"))
-    if not allowed and not lic.is_activated():
-        if path == "/api/v1" or path.startswith("/api/v1/"):
-            return JSONResponse(status_code=403, content={"error": {"code": "not_activated", "message": "系统未激活"}})
-        if path.startswith("/api/"):
-            return JSONResponse(status_code=403, content={"detail": "系统未激活"})
-        return RedirectResponse("/license")
-    return await call_next(request)
 if getattr(sys, "frozen", False):
     STATIC_DIR = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "static"
 else:

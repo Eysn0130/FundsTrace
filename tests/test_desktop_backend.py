@@ -1,4 +1,4 @@
-"""Desktop front door: unguessable ownership, no license bypass, EOF recovery."""
+"""Desktop session ownership stays required during activation-free startup."""
 import io
 import json
 import os
@@ -66,17 +66,23 @@ def test_desktop_front_door_rejects_missing_duplicate_cross_origin_and_wrong_hos
             "protocol": 1, "service": "FundsTrace", "ready": True}
 
 
-def test_desktop_session_does_not_replace_product_activation(database, monkeypatch):
+def test_activation_free_desktop_still_requires_owned_session(database, tmp_path, monkeypatch):
     from app.main import app
     monkeypatch.delenv("FUNDS_TRACE_LICENSE_SECRET", raising=False)
+    monkeypatch.setenv("FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE", str(tmp_path / "absent.pem"))
     with TestClient(DesktopBoundary(app, TOKEN, 14321), base_url="http://127.0.0.1:14321") as client:
         assert client.get("/__desktop/health", headers=HEADER).status_code == 200
-        assert client.get("/api/cases", headers=HEADER).status_code == 403
-        assert client.get("/license", headers=HEADER).status_code == 200
+        for path in ("/", "/analysis", "/api/cases", "/api/v1/cases"):
+            assert client.get(path, headers=HEADER, follow_redirects=False).status_code == 200
+            assert client.get(path, headers={}).status_code == 403
+            assert client.get(path, headers={"X-FundsTrace-Desktop": "b" * 64}).status_code == 403
+        info = client.get("/api/license/info", headers=HEADER).json()
+        assert info["activation_required"] is False and info["activated"] is False
+        assert "无需激活" in client.get("/license", headers=HEADER).text
         script = client.get("/static/license.js", headers=HEADER, follow_redirects=False)
         assert script.status_code == 200
         assert "javascript" in script.headers["content-type"]
-        assert "btnCopyMc" in script.text
+        assert "location.replace('/')" in script.text
 
 
 @pytest.mark.parametrize("synthetic", [False, True])
@@ -89,6 +95,7 @@ def test_owned_process_reports_real_listener_and_exits_on_parent_eof(tmp_path, s
     env = dict(os.environ, FUND_DATA_DIR=str(ignored), PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1",
                PYTHONIOENCODING="cp1252")  # Frozen Windows pipes need an explicit UTF-8 protocol.
     env.pop("FUNDS_TRACE_LICENSE_SECRET", None)
+    env["FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE"] = str(tmp_path / "absent-public-key.pem")
     child = subprocess.Popen([sys.executable, str(root / "desktop_backend.py")], cwd=working,
                              env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True, encoding="utf-8")
@@ -108,9 +115,12 @@ def test_owned_process_reports_real_listener_and_exits_on_parent_eof(tmp_path, s
             return urllib.request.urlopen(urllib.request.Request(origin + path, headers=headers), timeout=10)
 
         assert json.load(get("/__desktop/health"))["ready"] is True
-        with pytest.raises(urllib.error.HTTPError) as unauthorized:
-            get("/api/cases", {})
-        assert unauthorized.value.code == 403
+        for path in ("/", "/analysis", "/api/cases", "/api/v1/cases"):
+            assert get(path).status == 200
+            for headers in ({}, {"X-FundsTrace-Desktop": "b" * 64}):
+                with pytest.raises(urllib.error.HTTPError) as unauthorized:
+                    get(path, headers)
+                assert unauthorized.value.code == 403
         if synthetic:
             cases = json.load(get("/api/cases"))
             assert {case["name"] for case in cases} >= {"合成演示 · 流水核对", "合成演示 · 同账号隔离对照"}
@@ -118,8 +128,11 @@ def test_owned_process_reports_real_listener_and_exits_on_parent_eof(tmp_path, s
             assert (len(graph["nodes"]), len(graph["edges"])) == (200, 199)
             assert any(t["amount"] == "9999999999999999.99" for e in graph["edges"] for t in e["amount_totals"])
         else:
-            assert json.load(get("/api/license/info"))["activated"] is False
-            assert b'license.js' in get("/license").read()
+            info = json.load(get("/api/license/info"))
+            assert info["activated"] is False and info["activation_required"] is False
+            assert info["verification_mode"] == "unconfigured"
+            assert "无需激活" in get("/license").read().decode("utf-8")
+            assert not data.joinpath("license.dat").exists()
         assert not ignored.exists()
         child.stdin.close()
         child.wait(timeout=15)

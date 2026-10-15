@@ -1,10 +1,11 @@
-"""Real activation HTTP front door, using only the public RFC test seed."""
+"""Activation-free product entry and optional historical issuer compatibility."""
 from pathlib import Path
 import subprocess
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
+import pytest
 
 from app import license as licensing
 from app.main import app
@@ -25,6 +26,36 @@ process.stdout.write(issueCode(key,{machineCode:process.argv[2],expires:'0'}));
     return subprocess.check_output(['node', '-e', source, SEED, machine], cwd=root, text=True)
 
 
+@pytest.mark.parametrize('saved', [None, b'not-a-valid-license', b'\xff\xfe'])
+def test_normal_entry_needs_no_key_or_license(database, tmp_path, monkeypatch, saved):
+    monkeypatch.delenv('FUNDS_TRACE_LICENSE_SECRET', raising=False)
+    monkeypatch.setenv('FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE', str(tmp_path / 'absent.pem'))
+    license_path = Path(licensing.LICENSE_PATH)
+    if saved is not None:
+        license_path.write_bytes(saved)
+    with TestClient(app) as client:
+        for path in ('/', '/analysis', '/api/cases', '/api/v1/cases'):
+            response = client.get(path, follow_redirects=False)
+            assert response.status_code == 200, path
+            assert 'location' not in response.headers
+        info = client.get('/api/license/info').json()
+        assert info['activation_required'] is False
+        assert info['activated'] is False
+        assert info['verification_mode'] == 'unconfigured'
+        legacy_entry = client.get('/license')
+        assert legacy_entry.status_code == 200
+        assert '无需激活' in legacy_entry.text
+        assert 'href="/"' in legacy_entry.text
+        # The ordinary API also supports writes without manufacturing a license.
+        created = client.post('/api/v1/cases', json={'name': 'Synthetic unlicensed case'})
+        assert created.status_code == 201
+        assert created.json()['name'] == 'Synthetic unlicensed case'
+    if saved is None:
+        assert not license_path.exists()
+    else:
+        assert license_path.read_bytes() == saved
+
+
 def test_issuer_code_activates_only_matching_machine_and_persists(database, tmp_path, monkeypatch):
     monkeypatch.delenv('FUNDS_TRACE_LICENSE_SECRET', raising=False)
     monkeypatch.setattr(licensing, 'machine_code', lambda: MACHINE)
@@ -33,8 +64,10 @@ def test_issuer_code_activates_only_matching_machine_and_persists(database, tmp_
     public_file.write_bytes(private.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
     monkeypatch.setenv('FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE', str(public_file))
     with TestClient(app) as client:
-        assert client.get('/api/cases').status_code == 403
-        assert client.get('/api/license/info').json()['verification_mode'] == 'public-key'
+        assert client.get('/api/cases').status_code == 200
+        info = client.get('/api/license/info').json()
+        assert info['verification_mode'] == 'public-key'
+        assert info['activation_required'] is False and info['activated'] is False
         assert client.post('/api/license/activate', json={'key': issued_code('0000-0000-0000-0000')}).status_code == 400
         assert client.get('/api/license/info').json()['activated'] is False
         code = issued_code(MACHINE)
@@ -45,7 +78,8 @@ def test_issuer_code_activates_only_matching_machine_and_persists(database, tmp_
         assert reopened.get('/api/license/info').json()['activated'] is True
         assert reopened.get('/api/cases').status_code == 200
         public_file.unlink()
-        assert reopened.get('/api/cases').status_code == 403
+        assert reopened.get('/api/license/info').json()['activated'] is False
+        assert reopened.get('/api/cases').status_code == 200
 
 
 def test_missing_verification_key_has_actionable_error_and_no_activation(database, tmp_path, monkeypatch):
@@ -55,5 +89,7 @@ def test_missing_verification_key_has_actionable_error_and_no_activation(databas
     with TestClient(app) as client:
         result = client.post('/api/license/activate', json={'key': issued_code(MACHINE)})
         assert result.status_code == 400 and '公钥' in result.json()['detail']
-        assert client.get('/api/license/info').json()['verification_mode'] == 'unconfigured'
-        assert client.get('/api/cases').status_code == 403
+        info = client.get('/api/license/info').json()
+        assert info['verification_mode'] == 'unconfigured'
+        assert info['activation_required'] is False and info['activated'] is False
+        assert client.get('/api/cases').status_code == 200
