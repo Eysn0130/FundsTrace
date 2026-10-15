@@ -7,6 +7,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { launchConfig, HEADER } = require('../host-policy.cjs');
 const { startBackend } = require('../backend.cjs');
+let stage = 'arguments'; // Only fixed stage names and safe error codes enter CI logs.
 
 async function waitForExit(exited) {
   let timer;
@@ -55,6 +56,7 @@ async function checkUnactivated({ origin, token }) {
   const dataDir = path.join(temporary, '运行数据 含空格');
   const owned = [];
   try {
+    stage = 'resource-link';
     await fs.mkdir(resources);
     await fs.symlink(source, path.join(resources, 'backend'), process.platform === 'win32' ? 'junction' : 'dir');
     // Do not read or inherit a maintainer's license configuration into this empty test instance.
@@ -75,18 +77,23 @@ async function checkUnactivated({ origin, token }) {
       return instance;
     }
     const first = boot();
+    stage = 'first-boot-and-unactivated-http';
     await checkUnactivated(await first.backend.ready);
+    stage = 'database-at-requested-path';
     assert.equal((await fs.stat(path.join(dataDir, 'fund.duckdb'))).isFile(), true);
     report.checks.unactivatedFirstBoot = true;
+    stage = 'owned-child-forced-exit';
     assert.equal(first.child.kill('SIGKILL'), true);
     await waitForExit(first.exited);
     report.checks.ownedChildForcedExit = true;
 
     const reopened = boot(); // The same data directory, after the held child has exited.
+    stage = 'reopen-and-unactivated-http';
     const ready = await reopened.backend.ready;
     await checkUnactivated(ready);
     report.checks.sameEmptyDatabaseReopened = true;
     report.checks.unactivatedAfterReopen = true;
+    stage = 'eof-shutdown';
     await reopened.backend.stop();
     assert.deepEqual(await waitForExit(reopened.exited), { code: 0, signal: null });
     await assert.rejects(fetch(`${ready.origin}/__desktop/health`, { signal: AbortSignal.timeout(10000) }));
@@ -101,4 +108,8 @@ async function checkUnactivated({ origin, token }) {
   report.status = 'passed';
   if (reportPath) await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
   console.log('Native packaged backend: unactivated empty-state crash/reopen, Chinese/space paths and EOF shutdown passed.');
-})().catch(() => { console.error('Native packaged backend smoke failed.'); process.exitCode = 1; });
+})().catch(error => {
+  const code = typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code) ? error.code : 'ERROR';
+  console.error(`Native packaged backend smoke failed at ${stage} (${code}).`);
+  process.exitCode = 1;
+});

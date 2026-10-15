@@ -12,8 +12,8 @@
     "start": "electron .",
     "synthetic": "electron . --synthetic",
     "test": "node --test tests/*.test.cjs",
-    "pack": "electron-builder --dir --config electron-builder.cjs",
-    "pack:win": "electron-builder --win nsis --x64 --config electron-builder.cjs"
+    "pack": "electron-builder --dir --config electron-builder.cjs --publish never",
+    "pack:win": "electron-builder --win nsis --x64 --config electron-builder.cjs --publish never"
   },
   "devDependencies": {
     "electron": "44.7.2",

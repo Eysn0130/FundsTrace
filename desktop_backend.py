@@ -90,6 +90,9 @@ class DesktopBoundary:
 def main():
     # Configure state before importing any application module. No CWD discovery,
     # browser opener, fixed port, or connection to an already-running service.
+    # Node writes UTF-8 bytes; frozen Python ignores PYTHONUTF8 and Windows pipes
+    # otherwise inherit the locale encoding, corrupting Chinese data directories.
+    sys.stdin.reconfigure(encoding="utf-8", errors="strict")
     bootstrap = read_bootstrap(sys.stdin)
     protocol_output = sys.stdout
     sys.stdout = sys.stderr

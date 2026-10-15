@@ -86,7 +86,8 @@ def test_owned_process_reports_real_listener_and_exits_on_parent_eof(tmp_path, s
     working = tmp_path / "中文 工作目录"
     working.mkdir()
     ignored = tmp_path / "must-not-be-used"
-    env = dict(os.environ, FUND_DATA_DIR=str(ignored), PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
+    env = dict(os.environ, FUND_DATA_DIR=str(ignored), PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1",
+               PYTHONIOENCODING="cp1252")  # Frozen Windows pipes need an explicit UTF-8 protocol.
     env.pop("FUNDS_TRACE_LICENSE_SECRET", None)
     child = subprocess.Popen([sys.executable, str(root / "desktop_backend.py")], cwd=working,
                              env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -94,7 +95,7 @@ def test_owned_process_reports_real_listener_and_exits_on_parent_eof(tmp_path, s
     ready_queue = queue.Queue()
     threading.Thread(target=lambda: ready_queue.put(child.stdout.readline()), daemon=True).start()
     try:
-        child.stdin.write(json.dumps({"protocol": 1, "token": TOKEN, "dataDir": str(data), "synthetic": synthetic}) + "\n")
+        child.stdin.write(json.dumps({"protocol": 1, "token": TOKEN, "dataDir": str(data), "synthetic": synthetic}, ensure_ascii=False) + "\n")
         child.stdin.flush()
         line = ready_queue.get(timeout=40)
         ready = json.loads(line)
