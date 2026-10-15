@@ -180,7 +180,7 @@ try {
         throw 'The CI user already has FundsTrace state.'
     }
     $Report.checks.ciFreshUser = 'passed'
-    if ($PreflightOnly) { return }
+    if (-not $PreflightOnly) {
     $Stage = 'candidateInputs'
     foreach ($Required in @($InstallerPath, $NativeManifest, $PythonExe, (Join-Path $CandidateRoot 'FundsTrace.exe'))) {
         if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) { throw 'Required candidate input is missing.' }
@@ -296,6 +296,7 @@ finally:
 '@
     [void](Invoke-Native -FileName $PythonExe -Arguments @('-c', $VerifyCode) -Environment $PythonEnvironment -TimeoutSeconds 60)
     $Report.checks.syntheticDataRetained = 'passed'
+    }
 } catch {
     $Failed = $true
     $Report.failedCheck = $Stage
@@ -335,5 +336,6 @@ if ($Failed) {
     [Console]::Error.WriteLine("Installer lifecycle failed at $($Report.failedCheck), native step $($Report.failedNativeStep), type $($Report.failureType), id $($Report.failureId).")
     exit 1
 }
-Write-Host 'Native installer lifecycle passed: pinned alpha3 upgrade, activation-free installed data, EOF and uninstall retention. GUI and import recovery were not tested.'
+if ($PreflightOnly) { Write-Host 'Native installer preflight passed; no installation was attempted.' }
+else { Write-Host 'Native installer lifecycle passed: pinned alpha3 upgrade, activation-free installed data, EOF and uninstall retention. GUI and import recovery were not tested.' }
 exit 0
