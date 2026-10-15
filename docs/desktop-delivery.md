@@ -58,7 +58,9 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 当前工作树的查询折叠、流水全览、画布历史及流程修复属于新的源码候选；见 [设计验收](../design-qa.md) 和 [使用指南](workspace-guide.md)。静态资源白名单已加入六个工作台脚本和24个本地 Tabler SVG及许可；本机资源检查通过。
 
-本轮没有触发 Windows Actions、生成新 EXE、改变版本或发布 Release。下方 v0.1.0 的原生绿色记录不覆盖本轮候选；后续选定版本后，仍须按该候选 SHA 运行原生构建、包内资源／后端和安装生命周期检查。Windows GUI／DPI／原生保存取消仍按未执行记录，不从浏览器视口或资源测试推断。
+[Windows目录候选 38784969693](https://github.com/Eysn0130/FundsTrace/actions/runs/38784969693) 已成功，绑定源码 `02b6c303d8a4d9f0cf0b390999969a482efdb771`，非安装器模式。56项定向Python、22项桌面Node、React类型检查／构建、54项资源记录及11项包内后端检查通过。54条资源与本地对照：25项原字节、29项仅Windows检出CRLF；报告和锁文件摘要均核对。CI为1542个产物文件生成摘要，本机仅分段读取安全报告，没有重新下载／核验整个目录。
+
+本轮没有生成新安装器、改变版本、打Tag或发布Release。`installerLifecycle:not-run`、`guiAcceptance:false`、`installedAcceptance:false`、`published:false`。下方 v0.1.0 的绿色记录不覆盖本轮UI；后续选定版本后须绑定对应候选执行安装生命周期。Windows GUI／DPI／原生保存取消仍未执行。此后仅补文档记录，不改变此次原生构建所用运行源码与资源。
 
 ## v0.1.0 交付记录
 

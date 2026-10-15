@@ -71,9 +71,17 @@ final result: passed
 
 `git diff HEAD -- static/app.js 'static/graph-*.js' static/vendor`为空；七个冻结SHA-256与接管基线一致，另记录benchmark hash。未读取原业务数据、未调用Provider、未改Analytix或原始fund-tracker。
 
+## Windows 原生目录候选补充证据
+
+[Actions 38784969693](https://github.com/Eysn0130/FundsTrace/actions/runs/38784969693) 成功，严格绑定运行源码 `02b6c303d8a4d9f0cf0b390999969a482efdb771`，`installer=false`。Windows x64定向Python56项、桌面Node22项（无skip）、React类型检查／构建和原生PyInstaller sidecar通过；11项包内后端检查覆盖无授权启动、token拒绝、中文／空格路径、一个合成案件崩溃重开及EOF退出。
+
+安全报告经artifact分段读取核对：54个资源记录全部与本地相符，其中25项逐字节相同，29项仅为已确认的Windows检出CRLF；源码入口与三个锁文件也相符。后端manifest、smoke和candidate JSON摘要与校验文件一致，两个manifest副本摘要相同。CI列出1542个产物文件；本机只读取安全报告，未独立下载并重新核验整个目录。artifact约550MB、保留3天，安全报告已另存交付证据。
+
+报告保持 `installerLifecycle:not-run`、`guiAcceptance:false`、`installedAcceptance:false`、`signed:false`、`published:false`。没有新安装器、版本、Tag或Release。后续提交只补本文等文档记录，不改变这次构建的运行源码或资源；不把文档提交号写成原生构建SHA。
+
 ## 未执行与停止边界
 
-- **NOT_EXECUTED：** Windows本候选构建／安装／升级／卸载、GUI／DPI、原生保存／取消、触屏实机、125%/150%真实浏览器缩放。IAB快捷键未改变zoom，因此没有用CSS／pinch替代证据。
+- **NOT_EXECUTED：** 本候选Windows安装／升级／卸载、GUI／DPI、原生保存／取消、触屏实机、125%/150%真实浏览器缩放。IAB快捷键未改变zoom，因此没有用CSS／pinch替代证据。
 - **已知冻结限制：** 密集G6拓扑仍可能标签重叠；本轮按授权冻结节点／关系／标签／布局实现。此次没有性能基准或任意拓扑可读性结论。
 - 案件包、删除事务和进程恢复等由合成API／进程回归覆盖；本轮未实际执行浏览器删除案件／画布或Windows活动导入恢复，不把自动检查泛称所有GUI路径验收。
 - 新版本号、Windows构建与公开发行仍需绑定后续具体候选。此处passed只表示当前工作台源码范围的发现已关闭，不代表安装包或发行完成。
