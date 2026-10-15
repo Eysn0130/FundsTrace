@@ -25,7 +25,7 @@ $Stage = 'inputPaths'
 $script:NativeStep = $null
 $Report = [ordered]@{
     schemaVersion = 1; status = 'running'; priorVersion = $null; currentVersion = $null; failedCheck = $null
-    failureType = $null; failureId = $null; failedNativeStep = $null
+    failureType = $null; failureId = $null; failedNativeStep = $null; nativeErrorCode = $null
     checks = [ordered]@{
         ciFreshUser = 'not-run'; priorInstallerDigest = 'not-run'; priorInstalled = 'not-run'
         syntheticDataSeeded = 'not-run'; upgradedSameIdentity = 'not-run'; installedResourceIntegrity = 'not-run'
@@ -164,7 +164,10 @@ try {
     $NativeManifest = Join-Path $ProjectRoot 'build/desktop/backend/funds-trace-backend/build-manifest.json'
     $PythonExe = Join-Path $ProjectRoot '.venv/Scripts/python.exe'
     $Stage = 'nodeLookup'
-    $NodeExe = (Get-Command node.exe -CommandType Application).Source
+    $NodeExe = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Path
+    if (-not [System.IO.File]::Exists($NodeExe)) { throw 'Node executable is unavailable.' }
+    $Stage = 'workingDirectory'
+    if (-not [System.IO.Directory]::Exists($ProjectRoot)) { throw 'Source working directory is unavailable.' }
     $Stage = 'candidateIdentity'
     $IdentityCode = "const b=require('./desktop/electron-builder.cjs');const p=require('./desktop/package.json');if(b.appId!=='com.eysn.fundstrace'||b.nsis.guid!==undefined||p.version!=='0.1.0')process.exit(1);"
     [void](Invoke-Native -FileName $NodeExe -Arguments @('-e', $IdentityCode) -TimeoutSeconds 15)
@@ -303,6 +306,14 @@ finally:
     $Report.failureType = $_.Exception.GetType().FullName
     $Report.failureId = $(if ($_.FullyQualifiedErrorId -cmatch '^[A-Za-z0-9_.,:+-]{1,120}$') { $_.FullyQualifiedErrorId } else { 'UNCLASSIFIED' })
     $Report.failedNativeStep = $script:NativeStep
+    $NativeException = $_.Exception
+    while ($null -ne $NativeException) {
+        if ($NativeException -is [System.ComponentModel.Win32Exception]) {
+            $Report.nativeErrorCode = $NativeException.NativeErrorCode
+            break
+        }
+        $NativeException = $NativeException.InnerException
+    }
     if ($Report.checks.Contains($Stage)) { $Report.checks[$Stage] = 'failed' }
 } finally {
     try {
@@ -333,7 +344,7 @@ finally:
     }
 }
 if ($Failed) {
-    [Console]::Error.WriteLine("Installer lifecycle failed at $($Report.failedCheck), native step $($Report.failedNativeStep), type $($Report.failureType), id $($Report.failureId).")
+    [Console]::Error.WriteLine("Installer lifecycle failed at $($Report.failedCheck), native step $($Report.failedNativeStep), type $($Report.failureType), id $($Report.failureId), native error $($Report.nativeErrorCode).")
     exit 1
 }
 if ($PreflightOnly) { Write-Host 'Native installer preflight passed; no installation was attempted.' }
