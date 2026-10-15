@@ -1,7 +1,8 @@
 #Requires -Version 7.0
 param(
     [Parameter(Mandatory = $true)][string]$InstallerPath,
-    [Parameter(Mandatory = $true)][string]$ReportPath
+    [Parameter(Mandatory = $true)][string]$ReportPath,
+    [switch]$PreflightOnly
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -20,9 +21,11 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $InstallKey = 'Software\b56dd6f8-a8a1-5427-b970-3e6cc301a2c0'
 $UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\b56dd6f8-a8a1-5427-b970-3e6cc301a2c0'
 $SentinelContent = "FundsTrace synthetic installer lifecycle v1`n"
-$Stage = 'ciFreshUser'
+$Stage = 'inputPaths'
+$script:NativeStep = $null
 $Report = [ordered]@{
     schemaVersion = 1; status = 'running'; priorVersion = $null; currentVersion = $null; failedCheck = $null
+    failureType = $null; failureId = $null; failedNativeStep = $null
     checks = [ordered]@{
         ciFreshUser = 'not-run'; priorInstallerDigest = 'not-run'; priorInstalled = 'not-run'
         syntheticDataSeeded = 'not-run'; upgradedSameIdentity = 'not-run'; installedResourceIntegrity = 'not-run'
@@ -96,12 +99,14 @@ function Wait-Removed {
 function Invoke-Native {
     param([string]$FileName, [string[]]$Arguments = @(), [string]$RawArguments = '',
         [hashtable]$Environment = @{}, [int]$TimeoutSeconds = 180)
+    $script:NativeStep = 'configure'
     $Start = [System.Diagnostics.ProcessStartInfo]::new()
     $Start.FileName = $FileName; $Start.WorkingDirectory = $ProjectRoot
     $Start.UseShellExecute = $false; $Start.CreateNoWindow = $true
     $Start.RedirectStandardOutput = $true; $Start.RedirectStandardError = $true
     if ($RawArguments) { $Start.Arguments = $RawArguments }
     else { foreach ($Argument in $Arguments) { $Start.ArgumentList.Add($Argument) } }
+    $script:NativeStep = 'environment'
     foreach ($Name in @($Start.Environment.Keys)) {
         if ($Name.StartsWith('FUND_', [StringComparison]::OrdinalIgnoreCase) -or
             $Name.StartsWith('FUNDS_TRACE_', [StringComparison]::OrdinalIgnoreCase) -or
@@ -111,9 +116,11 @@ function Invoke-Native {
     $Process = [System.Diagnostics.Process]::new(); $Process.StartInfo = $Start
     $TimedOut = $false
     try {
+        $script:NativeStep = 'start'
         if (-not $Process.Start()) { throw 'Native process could not start.' }
         $Output = $Process.StandardOutput.ReadToEndAsync()
         $Errors = $Process.StandardError.ReadToEndAsync()
+        $script:NativeStep = 'wait'
         if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
             $TimedOut = $true
             $script:TimedOutProcesses.Add($Process)
@@ -124,7 +131,9 @@ function Invoke-Native {
         $Process.WaitForExit()
         $Text = $Output.GetAwaiter().GetResult()
         [void]$Errors.GetAwaiter().GetResult()
+        $script:NativeStep = 'exit'
         if ($Process.ExitCode -ne 0) { throw 'Native process failed.' }
+        $script:NativeStep = $null
         return $Text
     } finally { if (-not $TimedOut) { $Process.Dispose() } }
 }
@@ -147,28 +156,36 @@ try {
     }
     $InstallerPath = [System.IO.Path]::GetFullPath($InstallerPath)
     $ReportPath = [System.IO.Path]::GetFullPath($ReportPath)
+    $Stage = 'reportLocation'
     if (-not (Test-Path -LiteralPath (Split-Path -Parent $ReportPath) -PathType Container)) { throw 'Report directory is missing.' }
     $ReportReady = $true
     $Report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding utf8
     $CandidateRoot = Join-Path $ProjectRoot 'build/desktop/electron/win-unpacked'
     $NativeManifest = Join-Path $ProjectRoot 'build/desktop/backend/funds-trace-backend/build-manifest.json'
     $PythonExe = Join-Path $ProjectRoot '.venv/Scripts/python.exe'
+    $Stage = 'nodeLookup'
     $NodeExe = (Get-Command node.exe -CommandType Application).Source
-    foreach ($Required in @($InstallerPath, $NativeManifest, $PythonExe, (Join-Path $CandidateRoot 'FundsTrace.exe'))) {
-        if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) { throw 'Required candidate input is missing.' }
-    }
+    $Stage = 'candidateIdentity'
     $IdentityCode = "const b=require('./desktop/electron-builder.cjs');const p=require('./desktop/package.json');if(b.appId!=='com.eysn.fundstrace'||b.nsis.guid!==undefined||p.version!=='0.1.0')process.exit(1);"
     [void](Invoke-Native -FileName $NodeExe -Arguments @('-e', $IdentityCode) -TimeoutSeconds 15)
+    $Stage = 'defaultAppData'
     $ApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
     if (-not $ApplicationData -or -not [System.IO.Path]::IsPathRooted($ApplicationData) -or
         -not $env:APPDATA -or [System.IO.Path]::GetFullPath($env:APPDATA) -ine [System.IO.Path]::GetFullPath($ApplicationData)) {
         throw 'Default user AppData is unavailable.'
     }
+    $Stage = 'ciFreshUser'
     $UserRoot = Join-Path $ApplicationData 'FundsTrace'
     if ((Test-Path -LiteralPath $UserRoot) -or @(@(Get-InstallRecords) | Where-Object { $_.HasInstall -or $_.HasUninstall }).Count -gt 0) {
         throw 'The CI user already has FundsTrace state.'
     }
     $Report.checks.ciFreshUser = 'passed'
+    if ($PreflightOnly) { return }
+    $Stage = 'candidateInputs'
+    foreach ($Required in @($InstallerPath, $NativeManifest, $PythonExe, (Join-Path $CandidateRoot 'FundsTrace.exe'))) {
+        if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) { throw 'Required candidate input is missing.' }
+    }
+    $Stage = 'createTemporary'
     $TemporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("FundsTrace 安装 生命周期 " + [guid]::NewGuid().ToString('N'))
     [void](New-Item -ItemType Directory -Path $TemporaryRoot)
     $OwnTemporary = $true
@@ -282,6 +299,9 @@ finally:
 } catch {
     $Failed = $true
     $Report.failedCheck = $Stage
+    $Report.failureType = $_.Exception.GetType().FullName
+    $Report.failureId = $(if ($_.FullyQualifiedErrorId -cmatch '^[A-Za-z0-9_.,:+-]{1,120}$') { $_.FullyQualifiedErrorId } else { 'UNCLASSIFIED' })
+    $Report.failedNativeStep = $script:NativeStep
     if ($Report.checks.Contains($Stage)) { $Report.checks[$Stage] = 'failed' }
 } finally {
     try {
@@ -305,14 +325,14 @@ finally:
         $Failed = $true; $Report.checks.cleanup = 'failed'
         if ($null -eq $Report.failedCheck) { $Report.failedCheck = 'cleanup' }
     }
-    $Report.status = $(if ($Failed) { 'failed' } else { 'passed' })
+    $Report.status = $(if ($Failed) { 'failed' } elseif ($PreflightOnly) { 'preflight-passed' } else { 'passed' })
     if ($ReportReady) {
         try { $Report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding utf8 }
         catch { $Failed = $true }
     }
 }
 if ($Failed) {
-    [Console]::Error.WriteLine("Installer lifecycle failed at $($Report.failedCheck). No raw diagnostics were emitted.")
+    [Console]::Error.WriteLine("Installer lifecycle failed at $($Report.failedCheck), native step $($Report.failedNativeStep), type $($Report.failureType), id $($Report.failureId).")
     exit 1
 }
 Write-Host 'Native installer lifecycle passed: pinned alpha3 upgrade, activation-free installed data, EOF and uninstall retention. GUI and import recovery were not tested.'
