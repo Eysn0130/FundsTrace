@@ -55,7 +55,7 @@ Windows x64 本地 PowerShell 7 入口如下；脚本核对 Node／Python 进程
 
 首轮原生 CI 完成编译和 NSIS，但包内后端烟测失败。排查发现 Node 向 stdin 写 UTF-8 JSON，而冻结 Python 忽略 `PYTHONUTF8`；Windows 管道的本地编码会破坏中文数据目录。现于读取启动参数前明确配置 stdin UTF-8；现有进程回归改用 cp1252 管道和未转义中文，修复前两例失败、修复后两例通过。烟测仅增加固定阶段名和错误码，仍不输出 token、路径或子进程 stderr。打包命令明确 `--publish never`，发布继续独立执行。[PyInstaller 解释器选项](https://pyinstaller.org/en/stable/spec-files.html#specifying-python-interpreter-options)
 
-[windows-candidate.yml](../.github/workflows/windows-candidate.yml) 只允许手动触发：单 Windows job、中文源码目录、16 项现有 source 进程／恢复回归、上述原生构建入口、3 天产物留存。选择 `installer=true` 生成未签名 NSIS。工作流不用业务数据、真实授权、签名、Release 或仓库写权限；仅显式保留 `win-unpacked`、可选安装器和证据文件，不能上传整个 build／运行目录。预览发布由维护者核对成功运行、候选 SHA 和产物哈希后单独执行。[GitHub 手动运行条件](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+[windows-candidate.yml](../.github/workflows/windows-candidate.yml) 只允许手动触发：单 Windows job、中文源码目录、16 项现有 source 进程／恢复回归、上述原生构建入口、3 天产物留存。选择 `installer=true` 生成并留存未签名 NSIS；默认保留 `win-unpacked` 目录。工作流不用业务数据、真实授权、签名、Release 或仓库写权限；只上传所选候选和证据文件，避免重复保留安装器与解包目录，也不能上传整个 build／运行目录。预览发布由维护者核对成功运行、候选 SHA 和产物哈希后单独执行。[GitHub 手动运行条件](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
 
 ## Windows 实机验收顺序
 

@@ -69,8 +69,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           path: |
-            源码 FundsTrace/build/desktop/electron/win-unpacked/
-            源码 FundsTrace/build/desktop/electron/*-windows-x64-unsigned.exe
+            ${{ inputs.installer && '源码 FundsTrace/build/desktop/electron/*-windows-x64-unsigned.exe' || '源码 FundsTrace/build/desktop/electron/win-unpacked/' }}
             源码 FundsTrace/build/desktop/backend/funds-trace-backend/build-manifest.json
             源码 FundsTrace/build/desktop/native-backend-smoke.json
             源码 FundsTrace/build/desktop/windows-candidate.json
