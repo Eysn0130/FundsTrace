@@ -2,18 +2,18 @@
 
 本地资金流水追踪与关联分析工具。Python/FastAPI、DuckDB，React＋TypeScript＋Vite 案件／导入／流水核对界面、保留的 JavaScript/G6 图谱，以及独立 Electron 宿主。导入由统一 Python 服务管理任务、回执、来源与上传清理。项目采用 [MIT](LICENSE)，第三方许可与维护来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。当前为预览阶段。
 
-[下载 Windows x64 预览 v0.1.0-alpha.1](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0-alpha.1)：未签名 NSIS，附 SHA-256、资源清单及原生后端检查报告。已通过原生构建与包内 sidecar 烟测，未宣称 Windows GUI／DPI／安装交互已验收；现有激活机制仍保留。
+[下载 Windows x64 预览 v0.1.0-alpha.2](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0-alpha.2)：包含 FundsTrace 客户端与维护者专用 FundsTrace Issuer 两个未签名 NSIS 安装器，以及 SHA-256、资源清单和原生后端检查报告。已通过原生构建与包内后端烟测；Windows GUI／DPI／安装交互尚未实机验收。首次部署须由维护者配置验证公钥，用户再输入签发的授权码。
 
 ## 当前边界
 
 - 本目录只维护源码、合成测试和项目文档；原 `fund-tracker` 工作目录及业务数据保留在原位置。
 - 没有迁移或连接原数据库，没有复制授权记录、上传文件、照片、恢复副本和旧安装包。
 - 独立版保留激活；新版 FT2 由独立 Electron 签发工具持私钥签发、客户端持公钥验签。旧 HMAC 仅在明确配置时兼容，未配置时保持未激活。
-- 维护者已授权公开本源码维护快照；原工作目录与历史不随本次导入上传。产品激活兼容与未来公钥授权另行演进。详见 [源码与私有数据边界](docs/source-boundaries.md)。
+- 维护者已授权公开本源码维护快照；原工作目录与历史不随本次导入上传，签发私钥和生产授权配置不进入仓库。详见 [源码与私有数据边界](docs/source-boundaries.md)。
 
 ## 可重复安装和测试
 
-完整回归的开发基线为 macOS arm64、Python 3.11 与 Node 22.22.1；入口也需要 Node：`tests/test_legacy_navigation.py` 会运行无额外 npm 依赖的 `node --test` 合成导航回归。[Windows x64 Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38723128489) 已完成 16 项定向 Python 回归、10 项桌面 Node 回归、前端类型检查／构建与原生安装器构建。Windows GUI／系统 DPI 尚未实机验收，其他版本不作支持保证。
+完整回归的开发基线为 macOS arm64、Python 3.11 与 Node 22.22.1；入口也需要 Node：`tests/test_legacy_navigation.py` 会运行无额外 npm 依赖的 `node --test` 合成导航回归。[alpha.2 Windows x64 Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38729411673) 已在源码 `c66e64bc65809b496b4d6f84beb1071034100529` 完成 53 项定向 Python、16 项桌面 Node、前端类型检查／构建、双安装器构建、23 项资源校验和 9 项包内后端烟测。合成 FT2 激活／重开及错误机器码／更换公钥拒绝已验证；不代表生产授权、Windows GUI 或业务导入恢复验收，其他版本不作支持保证。
 
 ```sh
 uv venv --python 3.11
@@ -67,11 +67,11 @@ npm --prefix desktop test
 npm --prefix desktop run synthetic
 ```
 
-须先完成上述 React 构建。Electron 44 的运行时会在首次运行时下载；安装 NPM 包本身不证明二进制已安装。普通桌面启动为 `npm --prefix desktop start`，数据由宿主管理到自身 `userData/data`，激活仍需合法配置。Windows x64 原生构建使用 `scripts/build-windows.ps1`，加 `-Installer` 生成未签名 NSIS 候选；当前没有 Windows 实机通过证据。详见 [桌面交付与运行](docs/desktop-delivery.md)。
+须先完成上述 React 构建。Electron 44 的运行时会在首次运行时下载；安装 NPM 包本身不证明二进制已安装。普通桌面启动为 `npm --prefix desktop start`，数据由宿主管理到自身 `userData/data`，激活仍需合法配置。Windows x64 原生构建使用 `scripts/build-windows.ps1`，加 `-Installer` 生成客户端与独立签发工具两个未签名 NSIS 候选；当前没有 Windows GUI 实机通过证据。详见 [桌面交付与运行](docs/desktop-delivery.md)。
 
-Windows 构建脚本要求 PowerShell 7，并对实际目录候选内的 backend 做中文／空格路径、空库强制退出／重开及 EOF 烟测。[Windows Actions](.github/workflows/windows-candidate.yml) 仅手动触发，`installer=true` 可生成未签名 NSIS 预览安装器。原生构建、后端烟测与 Windows GUI 体验分开记录，预览发布不使用 GUI 通过标记。[治理依据与取舍](docs/source-boundaries.md#github-与轻量治理) 参考 OpenAI／Anthropic 官方仓库，并保持现有脚本为唯一执行入口。
+Windows 构建脚本要求 PowerShell 7，并对实际目录候选内的 backend 做中文／空格路径、空库强制退出／重开、合成 FT2 激活及 EOF 烟测。[Windows Actions](.github/workflows/windows-candidate.yml) 仅手动触发，`installer=true` 可生成两个未签名 NSIS 预览安装器。原生构建、后端烟测与 Windows GUI 体验分开记录，预览发布不使用 GUI 通过标记。[治理依据与取舍](docs/source-boundaries.md#github-与轻量治理) 参考 OpenAI／Anthropic 官方仓库，并保持现有脚本为唯一执行入口。
 
-首次部署先用独立 **FundsTrace Issuer** 创建并保管签发私钥，将导出的公钥配置给客户端；普通用户只输入维护者签发的授权码。公钥可通过 Actions 的非秘密变量 `FUNDS_TRACE_LICENSE_PUBLIC_KEY` 随构建加入，或由维护者为已安装版配置绝对路径 `FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE`。旧 HMAC 环境继续显式使用 `FUNDS_TRACE_LICENSE_SECRET`；不要把共享秘密或私钥发给用户或提交仓库。[授权配置与签发操作](docs/license-activation.md)
+首次部署先用独立 **FundsTrace Issuer** 创建并保管签发私钥，将导出的公钥配置给客户端；普通用户只安装 FundsTrace，提供机器码并输入维护者签发的授权码。**本轮两个安装器均未预置生产公钥或私钥，客户端在未配置时保持未激活。** 公钥可通过 Actions 的非秘密变量 `FUNDS_TRACE_LICENSE_PUBLIC_KEY` 随构建加入，或由维护者为已安装版配置绝对路径 `FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE`，完全退出后重开并核对公钥指纹。旧 HMAC 环境继续显式使用 `FUNDS_TRACE_LICENSE_SECRET`；不要把共享秘密或私钥发给用户或提交仓库。[授权配置与签发操作](docs/license-activation.md)
 
 ```sh
 FUND_DATA_DIR=/absolute/path/to/private-runtime .venv/bin/python run.py
@@ -107,6 +107,7 @@ FUND_DATA_DIR=/absolute/path/to/private-runtime .venv/bin/python run.py
 | `frontend/src/panel/`、`frontend/src/adapters/` | 案件内共享 React 面板、绑定会话与独立 HTTP adapter |
 | `frontend/src/App.tsx` | 独立案件外壳与面板组装 |
 | `desktop/`、`desktop_backend.py` | 独立 Electron 窗口、受控下载与归属明确的 Python 服务 |
+| `desktop/issuer/` | 独立离线维护者签发工具；加密私钥与 FT2 签发，不连接案件数据 |
 | `contracts/` | 从 Python schema 生成的 OpenAPI 与 TypeScript |
 | `tests/`、`frontend/src/*.test.tsx` | 合成数据的后端与界面回归 |
 | `benchmarks/`、`scripts/` | 基准、隔离测试、契约导出和合成预览入口 |

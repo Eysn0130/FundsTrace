@@ -1,8 +1,8 @@
-# FundsTrace 独立桌面候选
+# FundsTrace 独立桌面交付
 
-状态：2026-10-15，MIT 开源 [v0.1.0-alpha.1 预览已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0-alpha.1)。[最终 Windows 原生 Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38723128489) 已通过，发布绑定源码 `8177ca5e7a009e75a20a3b1c2778fe63941861d0`；随后只补充文档。未签名，Windows GUI 未实机验收，真实 Analytix 尚未接入。原目录与业务数据不随源码上传，Analytix 保持不动。常驻工作区重排见 [graph-workspace-plan.md](graph-workspace-plan.md)。
+状态：2026-10-15，MIT 开源 [v0.1.0-alpha.2 预览已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0-alpha.2)。[Windows 原生 Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38729411673) 与发布标签绑定源码 `c66e64bc65809b496b4d6f84beb1071034100529`，包含客户端与独立 Issuer 两个未签名 x64 安装器；后续仅更新交付文档。Windows GUI 未实机验收，真实 Analytix 尚未接入。原目录与业务数据不随源码上传，Analytix 保持不动。常驻工作区重排见 [graph-workspace-plan.md](graph-workspace-plan.md)。
 
-本轮源码准备 `0.1.0-alpha.2`：增加独立 Electron Issuer 和 FT2 公钥验签，复用同一 Windows 脚本同时构建两个安装器。32 项授权回归、2 项跨语言 HTTP 激活／持久化回归、16 项桌面 Node 检查已通过；源码 macOS 签发窗口及加载取消已检查。Windows 原生结果待本轮 Actions，不沿用 alpha.1 的绿灯。私钥不进入 Actions 或客户端，首次公钥配置见 [授权操作](license-activation.md)。下表保留 alpha.1 的历史交付证据。
+本轮增加独立 Electron Issuer 和 FT2 公钥验签，复用同一 Windows 脚本。该候选的 53 项定向 Python、16 项桌面 Node、前端类型检查／构建、23 项包内资源校验与 9 项原生后端烟测均通过；包含合成 FT2 激活重开、错误机器码和更换公钥拒绝。macOS 源码签发 GUI 仅检查窗口加载和取消，不代表 Windows GUI。两个产品均未预置生产公钥或私钥，首次部署须先配置公钥，见 [授权操作](license-activation.md)。[alpha.1 预览](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0-alpha.1) 及其当时的证据作为历史保留，不替代本轮结果。
 
 ## 运行与数据边界
 
@@ -15,6 +15,8 @@
 正常运行的数据位于 Electron 自身 `userData/data`，不写安装资源，也不使用 Analytix 数据根。Main 通过 stdin EOF 请求自己的 sidecar 停止，超时仅终止持有句柄的子进程；服务崩溃显示故障，不自动重放导入。后台持久任务恢复仍由 Python 服务负责，退出 hook 不能代替断电／Windows 注销恢复。[app 生命周期](https://www.electronjs.org/docs/latest/api/app)
 
 FT2 签发私钥仅由独立 Issuer 管理，客户端仅包含或读取公开验签材料；旧 HMAC 只在正常模式的受保护配置中兼容。缺少配置保持未激活，显示激活页并拒绝业务 API；桌面运行认证不是产品激活许可。激活脚本位于 `static/license.js` 以适配脚本 CSP。不在包内埋入共享 HMAC 秘密。
+
+普通用户只安装 FundsTrace；维护者安装独立 FundsTrace Issuer，创建并保管加密私钥，导出 SPKI 公钥后配置客户端。构建时可设置 Actions 非秘密变量 `FUNDS_TRACE_LICENSE_PUBLIC_KEY`；已安装版可由维护者设置绝对路径 `FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE`，完全退出后重开并核对指纹，再按用户机器码签发授权码。本轮公开候选未配置生产公钥，首次启动保持未激活，不能直接使用合成测试授权码。私钥和口令不进入客户端或 Actions。
 
 ## 本地开发
 
@@ -42,7 +44,7 @@ node desktop/tests/backend-smoke.cjs build/desktop/backend/funds-trace-backend
 npm --prefix desktop run pack
 ```
 
-此前 macOS arm64 已生成并启动未签名 `.app` 目录候选，另有 21 项资源版本的原生后端增强烟测。本次开源增加根许可和第三方通知后为 23 项资源，Windows Actions 会重新构建并检查；没有为证明 Windows 而再次封装 Mac 应用。旧 `.app` 不能证明当前源码或 Windows 候选。
+此前 macOS arm64 已生成并启动未签名 `.app` 目录候选，另有 21 项资源版本的原生后端增强烟测。增加根许可和第三方通知后为 23 项资源，本轮 Windows Actions 已重新构建并检查；没有为证明 Windows 而再次封装 Mac 应用。旧 `.app` 不能证明当前源码或 Windows 候选。
 
 Windows x64 本地 PowerShell 7 入口如下；脚本核对 Node／Python 进程为 x64，准备独立构建环境、按哈希锁同步、构建前端与原生 sidecar、运行桌面测试并生成目录候选，随后对**包内** backend 运行烟测。需已安装 Node 22.22.1、uv 与可用的 Python 3.11，目标用户安装运行不要求系统 Python。
 
@@ -51,15 +53,15 @@ Windows x64 本地 PowerShell 7 入口如下；脚本核对 Node／Python 进程
 .\scripts\build-windows.ps1 -Installer
 ```
 
-输出在 `build/desktop/electron`；默认是未签名目录，`-Installer` 明确生成名称含 `unsigned` 的本地 NSIS 安装候选，普通用户安装且卸载保留应用数据。未配置签名或更新服务。PyInstaller 不是跨操作系统编译器，必须在 Windows 原生构建 Windows sidecar；macOS 的脚本检查／包目录不能证明 Windows 可运行。[PyInstaller 平台约束](https://pyinstaller.org/en/stable/index.html)、[electron-builder v26](https://www.electron.build/v26/docs/features/multi-platform-build/)
+客户端输出在 `build/desktop/electron`，独立签发工具输出在 `build/desktop/issuer`；默认是两个未签名目录，`-Installer` 明确生成名称含 `unsigned` 的两个 NSIS 安装候选，普通用户安装且卸载保留各自应用数据。签发工具具有独立 appId／运行目录，不包含 Python 后端或案件数据。未配置签名或更新服务。PyInstaller 不是跨操作系统编译器，必须在 Windows 原生构建 Windows sidecar；macOS 的脚本检查／包目录不能证明 Windows 可运行。[PyInstaller 平台约束](https://pyinstaller.org/en/stable/index.html)、[electron-builder v26](https://www.electron.build/v26/docs/features/multi-platform-build/)
 
-脚本校对包内 manifest 与每项静态资源，再以中文／空格临时资源路径启动包内程序，验证未激活入口、强制终止持有的子进程、同一空库重开和 stdin EOF 正常退出。它不读业务库、不继承测试外的授权材料，不宣称空库重开等于导入恢复。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅记录版本、相对产物文件名、内容哈希和检查范围；中途失败不会生成新的 passed 报告。
+脚本校对包内 manifest 与每项静态资源，再以中文／空格临时资源路径启动包内程序，验证未激活入口、强制终止持有的子进程、同一空库重开和 stdin EOF 正常退出；使用公开 RFC 测试材料验证 FT2 激活／重开、错误机器码及更换公钥拒绝。测试公钥只写入隔离临时状态，不作为客户端默认公钥。它不读业务库、不继承测试外的授权材料，不宣称空库重开等于导入恢复。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅记录版本、相对产物文件名、内容哈希和检查范围；中途失败不会生成新的 passed 报告。
 
 清单记录 Windows 实际检出／封装字节。`.gitattributes` 未强制 LF 的许可证、SVG 和锁文件可能由 Windows `core.autocrlf` 转为 CRLF，不能直接拿 macOS 工作区文件哈希判为源码漂移；本轮逐项确认这些差异仅为既定检出换行，安装器与随附清单仍按实际字节严格核对。
 
 首轮原生 CI 完成编译和 NSIS，但包内后端烟测失败。排查发现 Node 向 stdin 写 UTF-8 JSON，而冻结 Python 忽略 `PYTHONUTF8`；Windows 管道的本地编码会破坏中文数据目录。现于读取启动参数前明确配置 stdin UTF-8；现有进程回归改用 cp1252 管道和未转义中文，修复前两例失败、修复后两例通过。烟测仅增加固定阶段名和错误码，仍不输出 token、路径或子进程 stderr。打包命令明确 `--publish never`，发布继续独立执行。[PyInstaller 解释器选项](https://pyinstaller.org/en/stable/spec-files.html#specifying-python-interpreter-options)
 
-[windows-candidate.yml](../.github/workflows/windows-candidate.yml) 只允许手动触发：单 Windows job、中文源码目录、16 项现有 source 进程／恢复回归、上述原生构建入口、3 天产物留存。选择 `installer=true` 生成并留存未签名 NSIS；默认保留 `win-unpacked` 目录。工作流不用业务数据、真实授权、签名、Release 或仓库写权限；只上传所选候选和证据文件，避免重复保留安装器与解包目录，也不能上传整个 build／运行目录。预览发布由维护者核对成功运行、候选 SHA 和产物哈希后单独执行。[GitHub 手动运行条件](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+[windows-candidate.yml](../.github/workflows/windows-candidate.yml) 只允许手动触发：单 Windows job、中文源码目录、53 项定向 source 进程／恢复／授权／资源回归、上述原生构建入口、3 天产物留存。选择 `installer=true` 生成并留存两个未签名 NSIS；默认保留两个 `win-unpacked` 目录。工作流可接收非秘密验证公钥，不接收签发私钥或口令；不用业务数据、真实授权、签名、Release 或仓库写权限。只上传所选候选和证据文件，避免重复保留安装器与解包目录，也不能上传整个 build／运行目录。预览发布由维护者核对成功运行、候选 SHA 和产物哈希后单独执行。[GitHub 手动运行条件](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
 
 ## Windows 实机验收顺序
 
@@ -71,7 +73,7 @@ Windows x64 本地 PowerShell 7 入口如下；脚本核对 Node／Python 进程
 | 2. DPI 与密集表格 | 首先在 100% 系统缩放完成查询、勾选、前后流水、上图、邻域；再看 150%／200%，125% 在确有目标设备时补测。记录分辨率、系统缩放、应用缩放；确认底部滑轨、分页、焦点和完整金额可达，文字实际可辨 | 系统 DPI 与应用菜单缩放分别记录；CSS 视口、DPR 模拟或尺寸计算测试不替代 Windows 字体／Canvas 实测。 |
 | 3. 原生保存／取消 | 合成 XLSX 和图像保存到中文／空格目录，XLSX 回读金额与币种，图像可打开；分别取消保存，不产生新文件并显示取消反馈 | React／G6、分析 HTML 和案件包各用其真实入口；不把“开始下载”当落盘完成，不上传导出文件或完整用户目录。 |
 | 4. 退出与恢复 | 隔离测试用户下，导入进行中结束该测试实例及其归属服务后重开；中断任务显示错误、没有部分写入，重新预览确认后仅写一次；另查完成回执重读不重复导入 | 源码 `--synthetic` 每次创建新临时目录，不能用于跨启动保留任务的验收。封装业务页须具备维护者批准的隔离合成数据及测试授权；缺少时只验激活页，其余保持未执行。不得强杀按名称猜到的其他 Python 进程。 |
-| 5. 安装与离线 | 有目录候选证据后，才按需生成 NSIS；干净测试用户安装、断网启动、卸载保留合成数据、重装重开；有第二版本时再验升级。混合 DPI 拖窗在具备双屏设备时执行 | 不安装到现有业务用户环境；不把当前未签名候选当公开发行，升级无候选时保持未执行。 |
+| 5. 安装与离线 | 有目录候选证据后，才按需生成 NSIS；干净测试用户安装、断网启动、卸载保留合成数据、重装重开；有第二版本时再验升级。混合 DPI 拖窗在具备双屏设备时执行 | 不安装到现有业务用户环境；未签名预览不代表正式版验收，升级无候选时保持未执行。 |
 
 Main 现在按目标显示器 `workArea` 的 DIP 限制初始窗口、最小宽高和居中位置，修复小逻辑工作区可能被 1440×940／最小 960×640 撑出屏幕的问题；不再次乘除 `scaleFactor`。这只覆盖窗口创建，运行中切换 DPI／移动显示器仍需上表实测。保留系统及应用缩放；本轮表格字体提升到 11 px，提供行距与完整文本显示选项，不继续靠缩小字号压缩。[Electron screen](https://www.electronjs.org/docs/latest/api/screen)、[Display 工作区单位](https://www.electronjs.org/docs/latest/api/structures/display)
 
@@ -79,13 +81,21 @@ Main 现在按目标显示器 `workArea` 的 DIP 限制初始窗口、最小宽�
 
 | 证据层 | 已有结果 | 明确限制 |
 | --- | --- | --- |
-| 本轮定向回归 | Windows CI：16 项 source 进程／恢复、10 项桌面 Node、前端类型检查／构建通过；macOS：旧版 Node 62 项、cp1252 管道中文启动修复前两例失败／修复后两例通过 | Python 283 和 React 37 为此前全套结果，本轮不重复全套；未改 React、G6 金额／导出契约。 |
-| 本轮 Windows 原生后端 | Windows x64、Python 3.11.9、Node 22.22.1：23 项资源与源码哈希相符；包内后端中文／空格路径、认证、未激活入口、持有子进程强制退出、同空库重开及 EOF 正常停服通过 | 只检查未激活空库；不是 GUI、业务导入或任意断电恢复保证。 |
+| 本轮定向回归 | alpha.2 Windows CI：53 项 Python、16 项桌面 Node、前端类型检查／构建通过 | Python 283、React 37、旧版 Node 62 及 cp1252 中文启动回归属于此前候选，本轮不重复全套；未改 React、G6 金额／导出契约。 |
+| 本轮 Windows 原生后端 | Windows x64、Python 3.11.9、Node 22.22.1：23 项资源与源码哈希相符；9 项烟测通过，包含中文／空格路径、未激活入口、归属子进程强制退出、同空库重开、EOF、合成 FT2 激活重开及错误机器／换公钥拒绝 | 不是 GUI、生产授权、业务导入或任意断电恢复保证。 |
+| 本轮源码 Issuer GUI | macOS 源码窗口加载与原生对话框取消已检查 | 不证明 Windows GUI、真实密钥创建或生产签发。 |
 | 此前 macOS 后端／源码 Electron | 21 项资源版本后端烟测、合成 200／199 G6 和密集表格加载、正常退出；此前分析、React、原生保存及取消 | 仅为各自当时的候选，不代表当前 Windows GUI。Worker 专项成功与回退仍未独立区分。 |
 | 上轮 macOS `.app` 目录 | 上一候选 20 项资源和壳代码已核对，独立启动／激活 JS／退出通过 | 不是本轮新增许可资源与窗口规则后的包；本轮不为证明 Windows 而重复封装 Mac 应用。缺授权未解锁业务，未做签名、公证或 Windows 验收。 |
-| Windows 安装器 | 最终 Actions 原生生成 `FundsTrace-0.1.0-alpha.1-windows-x64-unsigned.exe`，包内资源校验与 sidecar 烟测通过 | 未签名；GUI、系统 DPI、实际安装／卸载／升级、系统保存交互与已激活业务恢复仍未实机验收。 |
+| 本轮 Windows 双安装器 | Actions 原生生成 `FundsTrace-0.1.0-alpha.2-windows-x64-unsigned.exe` 与 `FundsTrace-Issuer-0.1.0-alpha.2-windows-x64-unsigned.exe`；发布后 GitHub 资产摘要和大小均相符 | 未签名、未预置生产公钥或私钥；GUI、系统 DPI、实际安装／卸载／升级、系统保存交互与已激活业务恢复仍未实机验收。 |
 
-发布前已下载核对 Actions ZIP 摘要、23 项资源、后端入口、锁文件、安装器及四份证据；上传后再次核对 GitHub 记录的五项资产摘要和大小，确认发布标签指向上述提交。安装器为 165,395,860 字节，SHA-256 为 `6017bd860db92ea263ae33de72104ec1cf3f388806905df9c0490672f9955688`。构建报告中的 `published=false` 表示构建脚本未执行发布；GitHub 预览由维护者在核对后单独发布，报告保持原样。
+本轮已下载核对 Actions ZIP 摘要、23 项资源与六份发布资产：两个安装器、`build-manifest.json`、`native-backend-smoke.json`、`windows-candidate.json` 和 `windows-candidate.sha256`。本地严格核对其中五条校验记录；解包目录的 1586 条摘要记录由 CI 生成，未在 macOS 重新下载解包目录复核。两个安装器的实际摘要如下：
+
+| 安装器 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| FundsTrace 0.1.0-alpha.2 x64 | 168294288 | `08ad445ae986b951d1bd78379ad874e04c908f18d75cb9aa3d9f974a3c41d8a1` |
+| FundsTrace Issuer 0.1.0-alpha.2 x64 | 111159316 | `b68e8f1518555ec5dff9b4be7a73cb4e9b04c99a53cae1bef66220e942499002` |
+
+上传后已逐项核对 GitHub 记录的六项资产摘要、大小与上传完成状态，并确认发布标签指向上述源码提交。构建报告中的 `published=false` 表示构建脚本未执行发布；GitHub 预览由维护者核对后单独发布，报告保持原样。alpha.1 的已发布安装器及摘要仅属于其历史候选，不作为本轮证据。
 
 下载保存须区分服务生成成功和磁盘落盘完成；Electron 使用原生保存对话框，并处理取消／中断，不允许任意远程 URL 或自动打开下载的 HTML。[DownloadItem](https://www.electronjs.org/docs/latest/api/download-item)
 
