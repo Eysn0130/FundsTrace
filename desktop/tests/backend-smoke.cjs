@@ -20,7 +20,7 @@ async function waitForExit(exited) {
   } finally { clearTimeout(timer); }
 }
 
-async function checkUnactivated({ origin, token }) {
+async function checkUnactivated({ origin, token }, bundledPublicKeyFingerprint) {
   const get = (endpoint, options = {}) => fetch(`${origin}${endpoint}`, { ...options, signal: AbortSignal.timeout(10000) });
   assert.equal((await get('/__desktop/health')).status, 403);
   const headers = { [HEADER]: token };
@@ -38,7 +38,12 @@ async function checkUnactivated({ origin, token }) {
   assert.match(script.headers.get('content-type'), /javascript/);
   const info = await get('/api/license/info', { headers });
   assert.equal(info.status, 200);
-  assert.equal((await info.json()).activated, false);
+  const licenseInfo = await info.json();
+  assert.equal(licenseInfo.activated, false);
+  if (bundledPublicKeyFingerprint) {
+    assert.equal(licenseInfo.verification_mode, 'public-key');
+    assert.equal(licenseInfo.public_key_fingerprint, bundledPublicKeyFingerprint);
+  }
   assert.equal((await get('/api/cases', { headers })).status, 403);
 }
 
@@ -58,6 +63,17 @@ async function checkUnactivated({ origin, token }) {
   const dataDir = path.join(temporary, '运行数据 含空格');
   const owned = [];
   try {
+    stage = 'bundled-public-key';
+    let bundledPublicKeyFingerprint;
+    try {
+      const pem = await fs.readFile(path.join(source, '_internal', 'activation-public-key.pem'));
+      const publicKey = crypto.createPublicKey({ key: pem, format: 'pem', type: 'spki' });
+      assert.equal(publicKey.asymmetricKeyType, 'ed25519');
+      const der = publicKey.export({ format: 'der', type: 'spki' });
+      bundledPublicKeyFingerprint = crypto.createHash('sha256').update(der).digest('hex').slice(0, 16).toUpperCase();
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
     stage = 'resource-link';
     await fs.mkdir(resources);
     await fs.symlink(source, path.join(resources, 'backend'), process.platform === 'win32' ? 'junction' : 'dir');
@@ -80,7 +96,7 @@ async function checkUnactivated({ origin, token }) {
     }
     const first = boot();
     stage = 'first-boot-and-unactivated-http';
-    await checkUnactivated(await first.backend.ready);
+    await checkUnactivated(await first.backend.ready, bundledPublicKeyFingerprint);
     stage = 'database-at-requested-path';
     assert.equal((await fs.stat(path.join(dataDir, 'fund.duckdb'))).isFile(), true);
     report.checks.unactivatedFirstBoot = true;
@@ -92,7 +108,8 @@ async function checkUnactivated({ origin, token }) {
     const reopened = boot(); // The same data directory, after the held child has exited.
     stage = 'reopen-and-unactivated-http';
     const ready = await reopened.backend.ready;
-    await checkUnactivated(ready);
+    await checkUnactivated(ready, bundledPublicKeyFingerprint);
+    if (bundledPublicKeyFingerprint) report.checks.bundledPublicKeyRecognized = true;
     report.checks.sameEmptyDatabaseReopened = true;
     report.checks.unactivatedAfterReopen = true;
     stage = 'eof-shutdown';
