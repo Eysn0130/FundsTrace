@@ -2,6 +2,8 @@
 
 本地资金流水追踪与关联分析工具。Python/FastAPI、DuckDB，React＋TypeScript＋Vite 案件／导入／流水核对界面、保留的 JavaScript/G6 图谱，以及独立 Electron 宿主。导入由统一 Python 服务管理任务、回执、来源与上传清理。项目采用 [MIT](LICENSE)，第三方许可与维护来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。当前为预览阶段。
 
+[下载 Windows x64 预览 v0.1.0-alpha.1](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0-alpha.1)：未签名 NSIS，附 SHA-256、资源清单及原生后端检查报告。已通过原生构建与包内 sidecar 烟测，未宣称 Windows GUI／DPI／安装交互已验收；现有激活机制仍保留。
+
 ## 当前边界
 
 - 本目录只维护源码、合成测试和项目文档；原 `fund-tracker` 工作目录及业务数据保留在原位置。
@@ -11,7 +13,7 @@
 
 ## 可重复安装和测试
 
-当前验证环境为 macOS arm64、Python 3.11 与 Node 22.22.1。完整回归入口也需要 Node：`tests/test_legacy_navigation.py` 会运行无额外 npm 依赖的 `node --test` 合成导航回归。Windows 和其他 Python／Node 版本尚未取得运行证据。
+完整回归的开发基线为 macOS arm64、Python 3.11 与 Node 22.22.1；入口也需要 Node：`tests/test_legacy_navigation.py` 会运行无额外 npm 依赖的 `node --test` 合成导航回归。[Windows x64 Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38723128489) 已完成 16 项定向 Python 回归、10 项桌面 Node 回归、前端类型检查／构建与原生安装器构建。Windows GUI／系统 DPI 尚未实机验收，其他版本不作支持保证。
 
 ```sh
 uv venv --python 3.11
@@ -111,6 +113,6 @@ FUND_DATA_DIR=/absolute/path/to/private-runtime .venv/bin/python run.py
 
 保留 `FUND_DATA_DIR`、`FUND_PORT`、数据库文件名和 `.fundcase` 扩展名。新案件包格式 2 保留来源元数据／关联，**不带原始上传文件、导入会话、任务或回执**；仍接受格式 1，无来源的旧数据不能补造。导入重映射来源和流水 ID，包来源不冒认本地原件。损坏或关联不完整的案件包会被拒绝。批次删除请求必须同时提供 `case_id`。
 
-CSV/XLSX 是当前回归覆盖的导入格式。旧 `.xls` 入口、可选 PDF 优化依赖、Windows 安装包及真实案件性能仍须专项验证。[性能记录](docs/performance.md) 保留的是本次持久任务／来源改造前的合成基线，不代表当前候选同等性能。初始化 checkpoint 和导入进程恢复回归也不是磁盘损坏／任意断电保证；业务备份应在一致状态下包含完整运行数据。
+CSV/XLSX 是当前回归覆盖的导入格式。旧 `.xls` 入口、可选 PDF 优化依赖、Windows 实机安装／DPI／系统保存及真实案件性能仍须专项验证。[性能记录](docs/performance.md) 保留的是本次持久任务／来源改造前的合成基线，不代表当前候选同等性能。初始化 checkpoint 和导入进程恢复回归也不是磁盘损坏／任意断电保证；业务备份应在一致状态下包含完整运行数据。
 
 当前常驻区域压缩、高密度七列表格与图谱面积见 [工作区交付](docs/graph-workspace-plan.md)，Electron 运行、Windows 原生构建及后续单导航项接入见 [桌面交付](docs/desktop-delivery.md)。旧 G6/API 与 React 共用 [精确金额契约](docs/money-contract.md)。首绘补丁、透明标签／碰撞及上一尺寸下的交替基准见 [首绘与标签记录](docs/graph-render.md)，不能当作新布局或桌面性能保证。视窗裁剪、结构布局及缩略图的历史记录见 [图谱视窗](docs/graph-viewport.md)。当前导入行为见 [导入生命周期](docs/import-lifecycle.md)，12 个版本化操作见 [API 契约](docs/api-contract.md)。共享面板接口和业务覆盖缺口见 [前端宿主适配](docs/frontend-host-adaptation.md)。[Analytix 整合建议](docs/analytix-integration.md) 与 [Windows／插件研究](docs/windows-and-plugin-plan.md) 保留宿主契约边界：当前 UI port 使用独立 DTO，真实 Host 及受保护显示尚未接入；没有修改 Analytix。命名与技术选型见 [演进建议](docs/evolution.md)，接管历史见 [接管记录](docs/takeover.md)。

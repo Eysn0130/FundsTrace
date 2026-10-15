@@ -1,6 +1,6 @@
 # FundsTrace 独立桌面候选
 
-状态：2026-10-15，MIT 开源预览候选。源码已同步到 [Eysn0130/FundsTrace](https://github.com/Eysn0130/FundsTrace)，首次 [Windows 原生 Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38722219634) 已手动启动。当前执行结果以运行页为准；真实 Analytix 尚未接入，未签名。原目录与业务数据不随源码上传，Analytix 保持不动。常驻工作区重排见 [graph-workspace-plan.md](graph-workspace-plan.md)。
+状态：2026-10-15，MIT 开源 [v0.1.0-alpha.1 预览已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0-alpha.1)。[最终 Windows 原生 Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38723128489) 已通过，发布绑定源码 `8177ca5e7a009e75a20a3b1c2778fe63941861d0`；随后只补充文档。未签名，Windows GUI 未实机验收，真实 Analytix 尚未接入。原目录与业务数据不随源码上传，Analytix 保持不动。常驻工作区重排见 [graph-workspace-plan.md](graph-workspace-plan.md)。
 
 ## 运行与数据边界
 
@@ -40,7 +40,7 @@ node desktop/tests/backend-smoke.cjs build/desktop/backend/funds-trace-backend
 npm --prefix desktop run pack
 ```
 
-上一轮 macOS arm64 已生成并启动未签名 `.app` 目录候选。本轮只重建原生后端、核对新增许可等 21 项资源并执行增强烟测，另检查源码 Electron 的窗口启动；不重复封装 Mac 应用。源码／资源修改后的旧 `.app` 不能证明新候选。目录启动与正式安装／发行验收分别记录，均未签名或发布。
+此前 macOS arm64 已生成并启动未签名 `.app` 目录候选，另有 21 项资源版本的原生后端增强烟测。本次开源增加根许可和第三方通知后为 23 项资源，Windows Actions 会重新构建并检查；没有为证明 Windows 而再次封装 Mac 应用。旧 `.app` 不能证明当前源码或 Windows 候选。
 
 Windows x64 本地 PowerShell 7 入口如下；脚本核对 Node／Python 进程为 x64，准备独立构建环境、按哈希锁同步、构建前端与原生 sidecar、运行桌面测试并生成目录候选，随后对**包内** backend 运行烟测。需已安装 Node 22.22.1、uv 与可用的 Python 3.11，目标用户安装运行不要求系统 Python。
 
@@ -52,6 +52,8 @@ Windows x64 本地 PowerShell 7 入口如下；脚本核对 Node／Python 进程
 输出在 `build/desktop/electron`；默认是未签名目录，`-Installer` 明确生成名称含 `unsigned` 的本地 NSIS 安装候选，普通用户安装且卸载保留应用数据。未配置签名或更新服务。PyInstaller 不是跨操作系统编译器，必须在 Windows 原生构建 Windows sidecar；macOS 的脚本检查／包目录不能证明 Windows 可运行。[PyInstaller 平台约束](https://pyinstaller.org/en/stable/index.html)、[electron-builder v26](https://www.electron.build/v26/docs/features/multi-platform-build/)
 
 脚本校对包内 manifest 与每项静态资源，再以中文／空格临时资源路径启动包内程序，验证未激活入口、强制终止持有的子进程、同一空库重开和 stdin EOF 正常退出。它不读业务库、不继承测试外的授权材料，不宣称空库重开等于导入恢复。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅记录版本、相对产物文件名、内容哈希和检查范围；中途失败不会生成新的 passed 报告。
+
+清单记录 Windows 实际检出／封装字节。`.gitattributes` 未强制 LF 的许可证、SVG 和锁文件可能由 Windows `core.autocrlf` 转为 CRLF，不能直接拿 macOS 工作区文件哈希判为源码漂移；本轮逐项确认这些差异仅为既定检出换行，安装器与随附清单仍按实际字节严格核对。
 
 首轮原生 CI 完成编译和 NSIS，但包内后端烟测失败。排查发现 Node 向 stdin 写 UTF-8 JSON，而冻结 Python 忽略 `PYTHONUTF8`；Windows 管道的本地编码会破坏中文数据目录。现于读取启动参数前明确配置 stdin UTF-8；现有进程回归改用 cp1252 管道和未转义中文，修复前两例失败、修复后两例通过。烟测仅增加固定阶段名和错误码，仍不输出 token、路径或子进程 stderr。打包命令明确 `--publish never`，发布继续独立执行。[PyInstaller 解释器选项](https://pyinstaller.org/en/stable/spec-files.html#specifying-python-interpreter-options)
 
@@ -75,11 +77,13 @@ Main 现在按目标显示器 `workArea` 的 DIP 限制初始窗口、最小宽�
 
 | 证据层 | 已有结果 | 明确限制 |
 | --- | --- | --- |
-| 本轮定向回归 | macOS：中文 cwd／数据根的 source sidecar、新库／升级库异常退出、真实应用启动恢复、案件外 HTTP 404 与回执幂等，16 项通过；窗口／宿主 Node 10 项通过 | Python 283、前端 37、旧版 Node 60 为上一轮结果，本轮不重复全套；未改 React、G6 业务逻辑或金额契约。 |
-| 本轮 macOS 原生后端 | PyInstaller 构建，21 项资源与源码哈希相符；中文／空格目录、认证与未激活入口、持有子进程强制退出、同空库重开及 EOF 正常停服通过 | 报告为 `darwin/arm64`，不是 Windows、导入任务或解锁业务验收。 |
-| 源码 Electron | 本轮新窗口规则下启动、合成 200／199 G6 与密集表格加载、正常退出通过；此前已验证分析、React、原生保存及取消 | 此前 XLSX 回读／下载证据仍限原候选；本轮未重复，不把它们当 Windows 结果。Worker 专项成功与回退仍未独立区分。 |
+| 本轮定向回归 | Windows CI：16 项 source 进程／恢复、10 项桌面 Node、前端类型检查／构建通过；macOS：旧版 Node 62 项、cp1252 管道中文启动修复前两例失败／修复后两例通过 | Python 283 和 React 37 为此前全套结果，本轮不重复全套；未改 React、G6 金额／导出契约。 |
+| 本轮 Windows 原生后端 | Windows x64、Python 3.11.9、Node 22.22.1：23 项资源与源码哈希相符；包内后端中文／空格路径、认证、未激活入口、持有子进程强制退出、同空库重开及 EOF 正常停服通过 | 只检查未激活空库；不是 GUI、业务导入或任意断电恢复保证。 |
+| 此前 macOS 后端／源码 Electron | 21 项资源版本后端烟测、合成 200／199 G6 和密集表格加载、正常退出；此前分析、React、原生保存及取消 | 仅为各自当时的候选，不代表当前 Windows GUI。Worker 专项成功与回退仍未独立区分。 |
 | 上轮 macOS `.app` 目录 | 上一候选 20 项资源和壳代码已核对，独立启动／激活 JS／退出通过 | 不是本轮新增许可资源与窗口规则后的包；本轮不为证明 Windows 而重复封装 Mac 应用。缺授权未解锁业务，未做签名、公证或 Windows 验收。 |
-| Windows／发行 | 已有原生 x64 脚本与资源校验 | 尚未构建、运行、安装、签名或发布。需中文／空格路径、离线、DPI、保存取消、异常退出／恢复及升级证据。 |
+| Windows 安装器 | 最终 Actions 原生生成 `FundsTrace-0.1.0-alpha.1-windows-x64-unsigned.exe`，包内资源校验与 sidecar 烟测通过 | 未签名；GUI、系统 DPI、实际安装／卸载／升级、系统保存交互与已激活业务恢复仍未实机验收。 |
+
+发布前已下载核对 Actions ZIP 摘要、23 项资源、后端入口、锁文件、安装器及四份证据；上传后再次核对 GitHub 记录的五项资产摘要和大小，确认发布标签指向上述提交。安装器为 165,395,860 字节，SHA-256 为 `6017bd860db92ea263ae33de72104ec1cf3f388806905df9c0490672f9955688`。构建报告中的 `published=false` 表示构建脚本未执行发布；GitHub 预览由维护者在核对后单独发布，报告保持原样。
 
 下载保存须区分服务生成成功和磁盘落盘完成；Electron 使用原生保存对话框，并处理取消／中断，不允许任意远程 URL 或自动打开下载的 HTML。[DownloadItem](https://www.electronjs.org/docs/latest/api/download-item)
 

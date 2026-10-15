@@ -1,6 +1,6 @@
 # Electron 开发壳与 Analytix 接入边界
 
-> **当前状态更新（2026-10-15）：** 独立 Electron／Python sidecar 本地候选现已施工，运行、原生构建、Windows 脚本及证据层级以 [desktop-delivery.md](desktop-delivery.md) 为准。下面保留此前研究上下文；“未增加壳／未安装”等表述仅描述当时阶段。Windows 尚未运行，Analytix 未修改或接入。
+> **当前状态更新（2026-10-15）：** 独立 Electron／Python sidecar 已施工，Windows x64 原生安装器构建及包内后端烟测已通过，运行与证据层级以 [desktop-delivery.md](desktop-delivery.md) 为准。下面保留此前研究上下文；“未增加壳／未安装”等表述仅描述当时阶段。Windows GUI 未实机验收，Analytix 未修改或接入。
 
 状态：**Electron 路线为 Reference／研究建议；FundsTrace 共享面板为本地源码候选**。Analytix 源码核对日期：2026-10-14。没有修改、启动或构建 Analytix，没有安装 Electron 或制作安装包。本文补充 [analytix-integration.md](analytix-integration.md)，不代表宿主接入已经完成。
 

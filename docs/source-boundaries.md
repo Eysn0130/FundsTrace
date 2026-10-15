@@ -14,7 +14,7 @@
 | 授权生成器、内嵌签名材料 | 不复制签名值及生成器 | 真实材料由维护者在受保护运行环境管理 |
 | 原单位图标、标识及模板身份示例 | 不复制图片；文本改为中性品牌及合成示例 | 公开前确认所有资源来源与使用权 |
 
-新 SVG 标识由本次源码直接绘制。已有 `static/vendor/g6.min.js` 保留为本地锁定的 G6 4.8.19 及校验补丁，来源与哈希见 [G6-PATCH.md](../static/vendor/G6-PATCH.md)；固定上游完整 MIT 文本已保留为 `static/vendor/G6-LICENSE` 并列入桌面资源。补丁前本地文件与上游分发包的完整对应、其他依赖／资源通知仍未全部核验，不能据此宣称整个候选已具备开源条件。
+新 SVG 标识由本次源码直接绘制。已有 `static/vendor/g6.min.js` 保留为本地锁定的 G6 4.8.19 及校验补丁，来源与哈希见 [G6-PATCH.md](../static/vendor/G6-PATCH.md)；完整 MIT 文本保留为 `static/vendor/G6-LICENSE` 并列入桌面资源。补丁前本地文件未被冒认为已独立核验的上游分发包。公开维护快照的来源和第三方通知统一记于 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)，后续新增依赖须继续保留通知。
 
 ## 运行目录
 
@@ -30,7 +30,7 @@
 
 候选继续验证原 HMAC 授权码的结构和机器绑定，签名值改从 `FUNDS_TRACE_LICENSE_SECRET` 获取。缺少配置时签发失败、校验失败，产品保持未激活。授权文件改随 `FUND_DATA_DIR` 隔离。
 
-旧授权是否可继续使用，取决于维护者是否提供与原部署一致的配置；本轮没有读取、迁移、生成或轮换真实材料，也没有读取旧授权记录。测试仅使用公开标注的合成配置。共享 HMAC 密钥随客户端发行的设计需在公开发行前另行决定；可选择移除商业授权门槛，或改为仅客户端持公钥的签名方案，均不在本轮擅自实施。
+旧授权是否可继续使用，取决于维护者是否提供与原部署一致的配置；本轮没有读取、迁移、生成或轮换真实材料，也没有读取旧授权记录。测试仅使用公开标注的合成配置。公开安装器不含共享 HMAC 密钥，缺配置仍未激活；面向无需维护者配置的公开使用，应另行决定移除激活门槛或迁移为公钥验签，不在本轮擅自改变兼容行为。
 
 ## 许可与发行边界
 
@@ -38,13 +38,13 @@
 2. 本仓库从源码维护快照开始，来源记于 `THIRD_PARTY_NOTICES.md`；未导入原历史，不冒称初始快照作者独创全部原代码。
 3. 核对 G6、图标、字体及未来引入组件的具体来源、版本、许可证和通知要求。
 4. 审查全部待提交文件及后续取得的历史，确保没有业务数据、授权材料或私有环境信息。
-5. 独立验证 Windows 分发、安装后数据目录、升级/恢复和断网用户入口后，再判定发行条件。
+5. 稳定发行前补充 Windows 安装后数据目录、升级／恢复和断网用户入口证据；本次未签名预览单独记录原生构建及 sidecar 检查，不使用 Windows GUI 已验收标记。
 
 ## GitHub 与轻量治理
 
 2026-10-15，维护者已授权创建公开 [Eysn0130/FundsTrace](https://github.com/Eysn0130/FundsTrace)、采用 MIT、手动运行 Windows Actions 并尝试发布未签名预览。该授权替代此前“先私有”的建议；源码公开与二进制预览发布分别记录，不以 Windows GUI 已验收为标记。原目录及业务数据仍在上传边界之外。[GitHub 许可说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository)
 
-本地仅准备一个手动 Windows 候选工作流，复用既有脚本和锁文件，固定 Action 完整 SHA、只读 token、取消过时运行、限制超时与产物留存；不调用真实 Provider、不注入授权材料、不自动发布。工作流和合成回归不能替代 Windows 的真实 DPI、系统保存和任务恢复 UI 验收。[手动触发要求](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[Actions 权限与依赖固定](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions)
+仓库采用一个手动 Windows 候选工作流，复用既有脚本和锁文件，固定 Action 完整 SHA、只读 token、取消过时运行、限制超时与产物留存；不调用真实 Provider、不注入授权材料、不自动发布。运行与预览发布记录见 [桌面交付](desktop-delivery.md)。工作流和合成回归不能替代 Windows 的真实 DPI、系统保存和任务恢复 UI 验收。[手动触发要求](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[Actions 权限与依赖固定](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions)
 
 治理参考及适用取舍：
 
