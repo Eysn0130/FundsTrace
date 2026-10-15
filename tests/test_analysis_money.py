@@ -189,6 +189,111 @@ def test_run_and_report_wire_existing_path_controls_with_exact_cents(client, dat
     assert json.loads(encoded.group(1))["results"]["paths"] == paths
 
 
+def test_selected_algorithms_run_and_report_share_scope_without_executing_others(client, database, make_case, monkeypatch):
+    from app import analytics
+
+    case = make_case("Synthetic selected analysis")
+    insert_flow(database, case, "IN", "HUB", "9999999999999999.99")
+    insert_flow(database, case, "HUB", "OUT", "9999999999999999.99", minute=1)
+
+    def unselected(*args, **kwargs):
+        raise AssertionError("An unselected algorithm was executed")
+
+    monkeypatch.setattr(analytics, "find_cycles", unselected)
+    monkeypatch.setattr(analytics, "account_outliers", unselected)
+    monkeypatch.setattr(analytics, "_trace_paths", unselected)
+    params = {"algorithms": ["fast_flows"], "ff_tolerance": 0}
+    results = run(client, case, **params)
+    assert results["algorithms"] == ["fast_flows"]
+    assert not {"cycles", "outliers", "paths"} & results.keys()
+    response = client.post("/api/analysis/report", json={"case_id": case, "params": params})
+    assert response.status_code == 200
+    encoded = re.search(r'<script type="application/json" id="funds-trace-report-data">(.*?)</script>', response.text, re.S)
+    snapshot = json.loads(encoded.group(1))["results"]
+    assert snapshot == results
+    assert snapshot["fast_flows"]["pairs"][0]["in_flow"]["amount"] == "9999999999999999.99"
+    assert "本次分析范围：</b>快进快出金额守恒配对" in response.text
+    assert "CNY 9,999,999,999,999,999.99" in response.text
+    for omitted in ("资金回流环路", "交易行为离群账户", "多跳资金路径追踪", "未发现资金闭环"):
+        assert omitted not in response.text
+
+
+def test_paths_only_scope_retains_exact_snapshot_without_global_no_findings_conclusion(client, database, make_case):
+    case = make_case()
+    insert_flow(database, case, "A", "B", "9999999999999999.99")
+    insert_flow(database, case, "B", "C", "0.02", minute=1)
+    params = {"algorithms": ["paths"], "path_src": "A", "path_dst": "C", "path_max_hops": 2}
+    results = run(client, case, **params)
+    assert results["algorithms"] == ["paths"]
+    assert not {"cycles", "fast_flows", "outliers"} & results.keys()
+    response = client.post("/api/analysis/report", json={"case_id": case, "params": params})
+    assert response.status_code == 200
+    assert "本次分析范围：</b>多跳资金路径追踪" in response.text
+    assert "找到 1 条同币种资金路径" in response.text
+    assert "本次分析未发现显著异常资金模式" not in response.text
+    assert "CNY 10,000,000,000,000,000.01" in response.text
+    encoded = re.search(r'<script type="application/json" id="funds-trace-report-data">(.*?)</script>', response.text, re.S)
+    assert json.loads(encoded.group(1))["results"] == results
+
+
+def test_zero_selected_result_is_scoped_and_legacy_defaults_remain(client, database, make_case):
+    case = make_case()
+    insert_flow(database, case, "IN", "HUB", "1000.01")
+    insert_flow(database, case, "HUB", "OUT", "1000.01", minute=1)
+    legacy = run(client, case)
+    assert legacy["algorithms"] == ["cycles", "fast_flows", "outliers"]
+    assert legacy["fast_flows"]["count"] == 1
+    params = {"algorithms": ["cycles"]}
+    response = client.post("/api/analysis/report", json={"case_id": case, "params": params})
+    assert response.status_code == 200
+    assert "本次分析范围：</b>资金回流环路检测" in response.text
+    assert "未发现符合本次所选算法及参数的结果" in response.text
+    assert "快进快出金额守恒配对" not in response.text
+    assert "行为离群账户" not in response.text
+
+
+@pytest.mark.parametrize("algorithms", [[], None, "cycles", {}, ["unknown"], [" cycles"],
+                                         ["cycles", "cycles"], [1], [True], [["cycles"]]])
+@pytest.mark.parametrize("endpoint", ["run", "report"])
+def test_analysis_rejects_empty_unknown_or_malformed_algorithm_selection(client, make_case, algorithms, endpoint):
+    response = client.post(f"/api/analysis/{endpoint}", json={
+        "case_id": make_case(), "params": {"algorithms": algorithms}})
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("endpoint", ["run", "report"])
+def test_selected_paths_require_valid_origin_and_destination(client, make_case, endpoint):
+    case = make_case()
+    for params in ({"algorithms": ["paths"]}, {"algorithms": ["paths"], "path_src": "A"},
+                   {"algorithms": ["paths"], "path_src": "A", "path_dst": "  "}):
+        response = client.post(f"/api/analysis/{endpoint}", json={"case_id": case, "params": params})
+        assert response.status_code == 422
+
+
+@pytest.mark.parametrize(("parameter", "minimum", "maximum", "algorithm", "result_key", "default"), [
+    ("cycle_window_days", 1, 365, "cycles", "window_days", 7),
+    ("ff_window_minutes", 5, 1440, "fast_flows", "window_minutes", 30),
+])
+@pytest.mark.parametrize("endpoint", ["run", "report"])
+def test_exposed_analysis_windows_require_bounded_integers(client, make_case, parameter, minimum,
+                                                         maximum, algorithm, result_key, default, endpoint):
+    case = make_case()
+    for value in (minimum - 1, maximum + 1, -1, minimum + 0.5, True, False, str(minimum), None):
+        response = client.post(f"/api/analysis/{endpoint}", json={
+            "case_id": case, "params": {parameter: value}})
+        assert response.status_code == 422, (parameter, value)
+    for value in (None, minimum, maximum):
+        params = {} if value is None else {parameter: value}
+        response = client.post(f"/api/analysis/{endpoint}", json={"case_id": case, "params": params})
+        assert response.status_code == 200
+        if endpoint == "run":
+            results = response.json()
+        else:
+            encoded = re.search(r'<script type="application/json" id="funds-trace-report-data">(.*?)</script>', response.text, re.S)
+            results = json.loads(encoded.group(1))["results"]
+        assert results[algorithm][result_key] == (default if value is None else value)
+
+
 @pytest.mark.parametrize("params", [
     {"path_src": "A"}, {"path_src": " ", "path_dst": "B"},
     {"path_src": "A", "path_dst": "B", "path_max_hops": 0},

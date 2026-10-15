@@ -14,6 +14,7 @@ from .money import money_decimal
 
 ZERO = Decimal("0.00")
 CENT = Decimal("0.01")
+ALGORITHMS = ("cycles", "fast_flows", "outliers", "paths")
 MONEY_CONTRACT = {
     "version": "funds-money.v1",
     "amounts": "exact decimal strings with two fractional digits",
@@ -403,6 +404,11 @@ def _account_outliers(flows, sigma, top, subjects):
 
 def run_all(case_id, params=None):
     p = params or {}
+    algorithms = p.get("algorithms")
+    if algorithms is None:
+        algorithms = list(ALGORITHMS[:3])
+        if p.get("path_src") and p.get("path_dst"):
+            algorithms.append("paths")
     subjects = p.get("subjects") or []
     if isinstance(subjects, str):
         subjects = [x.strip() for x in re.split(r"[,，;；\n\r\s]+", subjects) if x.strip()]
@@ -410,17 +416,20 @@ def run_all(case_id, params=None):
     # report overview counts. The pure helpers only read these row dictionaries.
     flows = load_flows(case_id)
     accounts = {flow[key] for flow in flows for key in ("payer_account", "payee_account") if flow[key]}
-    out = {"case_id": case_id, "subjects": subjects, "money_contract": MONEY_CONTRACT,
+    out = {"case_id": case_id, "subjects": subjects, "algorithms": list(algorithms), "money_contract": MONEY_CONTRACT,
            "source_snapshot": {"flows": len(flows), "accounts": len(accounts)}}
-    out["cycles"] = find_cycles(case_id, max_len=p.get("cycle_max_len", 4), max_cycles=p.get("cycle_max", 30),
-                                window_days=p.get("cycle_window_days", 7), min_total=p.get("cycle_min_total", 0),
-                                subjects=subjects, _flows=flows)
-    out["fast_flows"] = match_fast_flows(
-        case_id, window_minutes=p.get("ff_window_minutes", 30),
-        tolerance=p.get("ff_tolerance", 0.25), min_amount=p.get("ff_min_amount", 1000),
-        max_pairs=p.get("ff_max_pairs", 60), subjects=subjects, _flows=flows)
-    out["outliers"] = account_outliers(case_id, sigma=p.get("out_sigma", 2.5), subjects=subjects, _flows=flows)
-    if p.get("path_src") and p.get("path_dst"):
+    if "cycles" in algorithms:
+        out["cycles"] = find_cycles(case_id, max_len=p.get("cycle_max_len", 4), max_cycles=p.get("cycle_max", 30),
+                                    window_days=p.get("cycle_window_days", 7), min_total=p.get("cycle_min_total", 0),
+                                    subjects=subjects, _flows=flows)
+    if "fast_flows" in algorithms:
+        out["fast_flows"] = match_fast_flows(
+            case_id, window_minutes=p.get("ff_window_minutes", 30),
+            tolerance=p.get("ff_tolerance", 0.25), min_amount=p.get("ff_min_amount", 1000),
+            max_pairs=p.get("ff_max_pairs", 60), subjects=subjects, _flows=flows)
+    if "outliers" in algorithms:
+        out["outliers"] = account_outliers(case_id, sigma=p.get("out_sigma", 2.5), subjects=subjects, _flows=flows)
+    if "paths" in algorithms:
         out["paths"] = _grouped(flows, _trace_paths, "paths", src=p["path_src"], dst=p["path_dst"],
                                 max_hops=p.get("path_max_hops", 4), max_paths=p.get("path_max_paths", 50),
                                 neighbor_limit=20)

@@ -6,6 +6,10 @@ FundsTrace is maintained in this repository by Eysn0130 and contributors. It con
 
 The retained G6 4.8.19 browser bundle is maintained with one documented local validation patch. Copyright (c) 2018 Alipay.inc; MIT. The complete notice is in `static/vendor/G6-LICENSE`; patch scope and exact local hashes are in `static/vendor/G6-PATCH.md`. This notice does not identify the local pre-patch file as an independently verified upstream tarball.
 
+## Tabler Icons
+
+The workspace uses 24 outline SVGs from `@tabler/icons` 3.35.0, downloaded from the npm registry with the published SHA-512 integrity verified. Copyright (c) 2020–2025 Paweł Kuna; MIT. Their source files and complete notice are retained in `static/ui-icons/`. The 2026-10-15 workspace refinement changes only `chevron-down.svg` stroke color to `#bbcada` so the same licensed arrow is readable as a local select background; other icon paths are unchanged. Upstream: https://github.com/tabler/tabler-icons. These are local resources; rendering does not request an external icon service.
+
 ## React and React DOM
 
 The React pilot bundles React and React DOM. Their exact versions are fixed in `frontend/package-lock.json`. Both carry the following MIT notice:

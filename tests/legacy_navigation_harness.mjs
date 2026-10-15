@@ -10,7 +10,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const response = payload => ({ ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => payload, text: async () => JSON.stringify(payload), blob: async () => new Blob(['synthetic']) });
 
-function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extras = {}) {
+export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extras = {}) {
   const elements = new Map(), downloads = [], objectUrls = [], requests = [], storage = new Map([['fund_case', stored]]);
   const timers = [], frames = [];
   let document;

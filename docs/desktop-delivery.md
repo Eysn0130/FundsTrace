@@ -54,6 +54,12 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 具备设备后只补受影响流程：查询／勾选／上图／邻域和完整金额可读；中文目录 XLSX／图像保存及取消；活动导入退出与回执重开；离线启动与混合 DPI。只用专用合成测试用户，不能连接原业务实例或按名称猜测终止进程。
 
+## 2026-10-15 工作台源码候选
+
+当前工作树的查询折叠、流水全览、画布历史及流程修复属于新的源码候选；见 [设计验收](../design-qa.md) 和 [使用指南](workspace-guide.md)。静态资源白名单已加入六个工作台脚本和24个本地 Tabler SVG及许可；本机资源检查通过。
+
+本轮没有触发 Windows Actions、生成新 EXE、改变版本或发布 Release。下方 v0.1.0 的原生绿色记录不覆盖本轮候选；后续选定版本后，仍须按该候选 SHA 运行原生构建、包内资源／后端和安装生命周期检查。Windows GUI／DPI／原生保存取消仍按未执行记录，不从浏览器视口或资源测试推断。
+
 ## v0.1.0 交付记录
 
 2026-10-15：[Release v0.1.0](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0) 与 [Windows Actions 38746367500](https://github.com/Eysn0130/FundsTrace/actions/runs/38746367500) 绑定源码 `d7547734f91546fb3b81b30a7e4993b644b77154`。Tag 指向该成功候选，后续仅补交付文档。

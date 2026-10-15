@@ -36,6 +36,17 @@ def _params(params):
     """Validate exact thresholds before computing any result or report."""
     result = dict(params)
     try:
+        if "algorithms" in result:
+            algorithms = result["algorithms"]
+            if (not isinstance(algorithms, list) or not algorithms
+                    or any(not isinstance(name, str) or name not in analytics.ALGORITHMS for name in algorithms)
+                    or len(set(algorithms)) != len(algorithms)):
+                raise ValueError("algorithms 必须是非空、不重复的算法名称列表：cycles、fast_flows、outliers、paths")
+        for name, minimum, maximum in (("cycle_window_days", 1, 365), ("ff_window_minutes", 5, 1440)):
+            if name in result:
+                value = result[name]
+                if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                    raise ValueError(f"{name} must be an integer between {minimum} and {maximum}")
         for name in ("ff_min_amount", "cycle_min_total"):
             if name in result:
                 result[name] = money_decimal(result[name])
@@ -49,7 +60,8 @@ def _params(params):
             if not tolerance.is_finite() or not 0 <= tolerance <= 1:
                 raise ValueError("ff_tolerance must be a finite ratio between 0 and 1")
             result["ff_tolerance"] = tolerance
-        if any(name in result for name in ("path_src", "path_dst", "path_max_hops", "path_max_paths")):
+        if ("paths" in result.get("algorithms", [])
+                or any(name in result for name in ("path_src", "path_dst", "path_max_hops", "path_max_paths"))):
             for name in ("path_src", "path_dst"):
                 value = result.get(name)
                 if not isinstance(value, str) or not value.strip():

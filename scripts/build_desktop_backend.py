@@ -17,11 +17,21 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build" / "desktop"
+UI_ICON_NAMES = (
+    "device-floppy", "file-plus", "file-export", "arrow-back-up", "arrow-forward-up",
+    "layout-distribute-horizontal", "arrows-maximize", "refresh", "chevron-left",
+    "chevron-right", "chevron-up", "chevron-down", "trash", "settings", "upload",
+    "download", "user-search", "copy", "pencil", "search", "filter", "x",
+    "layout-sidebar-left-collapse", "layout-sidebar-left-expand",
+)
 STATIC_NAMES = (
     "index.html", "analysis.html", "license.html", "license.js", "app.js",
     "analysis.js", "style.css", "money.js", "graph-view.js", "graph-layout.js",
     "graph-labels.js", "graph-viewport.js", "graph-minimap.js", "logo.svg", "favicon.svg",
     "vendor/g6.min.js", "vendor/G6-PATCH.md", "vendor/G6-LICENSE",
+    "workspace-shell.js", "canvas-history.js", "canvas-editor.js",
+    "table-workspace.js", "ui-dialogs.js", "workflow-ui.js", "ui-icons/LICENSE",
+    *(f"ui-icons/{name}.svg" for name in UI_ICON_NAMES),
 )
 
 
