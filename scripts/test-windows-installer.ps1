@@ -171,7 +171,9 @@ try {
     $Stage = 'workingDirectory'
     if (-not [System.IO.Directory]::Exists($ProjectRoot)) { throw 'Source working directory is unavailable.' }
     $Stage = 'candidateIdentity'
-    $IdentityCode = "const b=require('./desktop/electron-builder.cjs');const p=require('./desktop/package.json');if(b.appId!=='com.eysn.fundstrace'||b.nsis.guid!==undefined||p.version!=='0.1.0')process.exit(1);"
+    $CurrentVersion = (Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot 'desktop/package.json') | ConvertFrom-Json).version
+    if ($CurrentVersion -cnotmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') { throw 'INVALID_CANDIDATE_VERSION' }
+    $IdentityCode = "const b=require('./desktop/electron-builder.cjs');if(b.appId!=='com.eysn.fundstrace'||b.nsis.guid!==undefined)process.exit(1);"
     [void](Invoke-Native -FileName $NodeExe -Arguments @('-e', $IdentityCode) -TimeoutSeconds 15)
     $Stage = 'defaultAppData'
     $ApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
@@ -237,9 +239,9 @@ finally:
 
     $Stage = 'upgradedSameIdentity'
     [void](Invoke-Native -FileName $InstallerPath -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
-    Assert-Installed '0.1.0'
+    Assert-Installed $CurrentVersion
     Assert-Sentinel
-    $Report.currentVersion = '0.1.0'; $Report.checks.upgradedSameIdentity = 'passed'
+    $Report.currentVersion = $CurrentVersion; $Report.checks.upgradedSameIdentity = 'passed'
 
     $Stage = 'installedResourceIntegrity'
     foreach ($Relative in @('FundsTrace.exe', 'resources/app.asar', 'resources/backend/funds-trace-backend.exe',
