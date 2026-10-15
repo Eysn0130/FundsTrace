@@ -1329,3 +1329,56 @@ test('dense flow rows retain native columns, complete date and seconds, exact mo
   assert.match(html,/class="btn tiny primary act-track">上图/);
   assert.match(html,/aria-label="查看前后 X 笔流水">前后<\/button>/);
 });
+
+test('flow display choices apply without replacing selections and retain all source text and exact money after rendering', () => {
+  const h=harness('app.js');h.bindApp();
+  const viewport=h.element('#flowTableScroll'),density=h.element('#flowTableDensity'),wrap=h.element('#flowTableWrap');
+  assert.equal(viewport.dataset.flowDensity,'compact');assert.equal(viewport.dataset.flowWrap,'wrap');
+  h.run(`globalThis.longFlow={id:17,trade_time:'2026-10-15 08:09:07',payer_name:'合成付款单位完整名称甲乙丙丁',payer_account:'0000123456789012345678901234567890',payee_name:'合成收款单位完整名称戊己庚辛',payee_account:'SYNTHETIC-ACCOUNT-00000000000000000001',amount:'9999999999999999.99',currency:'USD',summary:'合成摘要第一段完整文字，包含核查依据与完整流水编号 SYNTHETIC-20261015-000000001。第二段也必须完整显示。'};renderFlows([longFlow]);`);
+  const original=h.element('#flowTbody').innerHTML;
+  density.value='comfortable';density.onchange();wrap.value='single';wrap.onchange();
+  assert.equal(viewport.dataset.flowDensity,'comfortable');assert.equal(viewport.dataset.flowWrap,'single');
+  assert.equal(h.element('#flowTbody').innerHTML,original,'display changes preserve existing checkboxes and row focus');
+  h.run('renderFlows([longFlow])');
+  assert.equal(viewport.dataset.flowDensity,'comfortable');assert.equal(viewport.dataset.flowWrap,'single');
+  const html=h.element('#flowTbody').innerHTML;
+  assert.equal((html.match(/<td(?:\s|>)/g)||[]).length,7);
+  assert.match(html,/>合成付款单位完整名称甲乙丙丁<\/span>/);
+  assert.match(html,/>0000123456789012345678901234567890<\/span>/);
+  assert.match(html,/>SYNTHETIC-ACCOUNT-00000000000000000001<\/span>/);
+  assert.match(html,/<span class="flow-summary">合成摘要第一段完整文字，包含核查依据与完整流水编号 SYNTHETIC-20261015-000000001。第二段也必须完整显示。<\/span>/);
+  assert.match(html,/USD 9,999,999,999,999,999\.99/);
+  wrap.value='wrap';wrap.onchange();density.value='compact';density.onchange();
+  assert.equal(viewport.dataset.flowDensity,'compact');assert.equal(viewport.dataset.flowWrap,'wrap');
+  assert.equal(h.element('#flowTbody').innerHTML,html);
+  assert.equal(h.requests.length,0,'display preferences do not query or mutate business data');
+});
+
+test('query and reset clear page selection and its master state while display choices preserve the selected row', async () => {
+  const h=harness('app.js');h.run('globalThis.originalSearch=doSearch');h.bindApp();h.run(`doSearch=originalSearch;
+    globalThis.pageCheckboxes=[];
+    const body=document.querySelector('#flowTbody'),queryAll=document.querySelectorAll;
+    Object.defineProperty(body,'innerHTML',{get(){return this.renderedHtml||''},set(html){
+      this.renderedHtml=html;
+      pageCheckboxes=[...html.matchAll(/class="flow-ck" data-id="([^"]+)"/g)].map(match=>({checked:false,dataset:{id:match[1]}}));
+    }});
+    document.querySelectorAll=selector=>selector==='#flowTbody .flow-ck'?pageCheckboxes:queryAll(selector);`);
+  h.network(()=>response({page:1,total:1,size:100,rows:[{id:23,amount:'123.45',currency:'USD'}]}));
+  await h.element('#btnSearch').onclick();
+  const master=h.element('#flowCkAll');
+  const selectPage=()=>{master.checked=true;master.onchange({target:master});master.indeterminate=true;};
+  selectPage();assert.equal(h.element('#flowCkCount').textContent,'已勾选 1 笔');
+  const density=h.element('#flowTableDensity'),wrap=h.element('#flowTableWrap');
+  density.value='comfortable';density.onchange();wrap.value='single';wrap.onchange();
+  assert.equal(h.run('pageCheckboxes[0].checked'),true);assert.equal(master.checked,true);
+  assert.equal(h.element('#flowCkCount').textContent,'已勾选 1 笔');
+  await h.element('#btnSearch').onclick();
+  assert.equal(h.run('pageCheckboxes[0].checked'),false);assert.equal(master.checked,false);assert.equal(master.indeterminate,false);
+  assert.equal(h.element('#flowCkCount').textContent,'已勾选 0 笔');
+  selectPage();h.element('#btnReset').onclick();await flush();
+  assert.equal(h.run('pageCheckboxes[0].checked'),false);assert.equal(master.checked,false);assert.equal(master.indeterminate,false);
+  assert.equal(h.element('#flowCkCount').textContent,'已勾选 0 笔');
+  selectPage();h.run('selectCase(2)');
+  assert.equal(h.run('pageCheckboxes.length'),0);assert.equal(master.checked,false);assert.equal(master.indeterminate,false);
+  assert.equal(h.element('#flowCkCount').textContent,'已勾选 0 笔');
+});

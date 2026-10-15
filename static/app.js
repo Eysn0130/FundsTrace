@@ -112,6 +112,7 @@ function selectCase(caseId) {
   $('#canvasSel').innerHTML = '<option value="0">默认画布</option>';
   $('#canvasSel').value = '0';
   $('#flowCkAll').checked = false;
+  $('#flowCkAll').indeterminate = false;
   syncFlowCkCount();
   $('#caseSelect').value = String(state.caseId);
   if (state.graph) { state.graph.clear(); state.graphInited = false; }
@@ -264,6 +265,19 @@ function partyCell(name, acct) {
 let syncFlowTableScroll = () => {};
 let unbindFlowTableScroll = () => {};
 
+function bindFlowTableView() {
+  const viewport = $('#flowTableScroll'), density = $('#flowTableDensity'), wrap = $('#flowTableWrap');
+  if (!viewport || !density || !wrap) return;
+  const apply = () => {
+    viewport.dataset.flowDensity = density.value === 'comfortable' ? 'comfortable' : 'compact';
+    viewport.dataset.flowWrap = wrap.value === 'single' ? 'single' : 'wrap';
+    syncFlowTableScroll();
+  };
+  density.onchange = apply;
+  wrap.onchange = apply;
+  apply();
+}
+
 function bindFlowTableScroll() {
   unbindFlowTableScroll();
   const viewport = $('#flowTableScroll'), range = $('#flowHorizontalPosition');
@@ -329,6 +343,9 @@ function renderFlows(rows) {
       </span></td>
     </tr>`).join('')
     : '<tr><td colspan="7" class="muted" style="text-align:center;padding:20px">无数据</td></tr>';
+  $('#flowCkAll').checked = false;
+  $('#flowCkAll').indeterminate = false;
+  syncFlowCkCount();
   syncFlowTableScroll();
 }
 
@@ -2232,6 +2249,7 @@ function bindWorkspaceActions() {
 
 function bindUI() {
   bindWorkspaceActions();
+  bindFlowTableView();
   bindFlowTableScroll();
   // 左侧 tab
   $$('.tab').forEach(t => t.onclick = () => switchTab(t.dataset.tab));

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/static/favicon.svg">
 <title>FundsTrace · 资金流水追踪与关联分析</title>
-<link rel="stylesheet" href="/static/style.css?v=workspace-1">
+<link rel="stylesheet" href="/static/style.css?v=workspace-2">
 <script src="/static/vendor/g6.min.js"></script>
 </head>
 <body>
@@ -32,7 +32,7 @@
     <div id="tab-search" class="tab-body">
       <div class="query-controls">
       <div class="form-grid query-fields">
-        <label class="query-field" for="fAccount">账号 / 卡号<input id="fAccount" placeholder="付款或收款账号"></label>
+        <label class="query-field" for="fAccount">账号/卡号<input id="fAccount" placeholder="付款或收款账号"></label>
         <label class="query-field" for="fName">户名<input id="fName" placeholder="付款或收款户名"></label>
         <label class="query-field" for="fCounter">交易对手<input id="fCounter" placeholder="对手户名 / 账号"></label>
         <label class="query-field" for="fKw">关键词<input id="fKw" placeholder="摘要 / 流水号"></label>
@@ -43,20 +43,24 @@
         <label class="el-ck" title="只显示当前画布已上图的流水"><input type="checkbox" id="fTracked">仅已上图</label>
         <button class="btn small" id="btnReset">重置</button><button class="btn small primary" id="btnSearch">查询</button>
       </div>
-      <div class="result-info" id="resultInfo"></div>
       <div id="bulkTrackBar">
         <div class="bulk-selection"><label class="el-ck"><input type="checkbox" id="flowCkAll">全选本页</label><span class="muted" id="flowCkCount">已勾选 0 笔</span></div>
         <div class="bulk-options">
-          <label class="sr-only" for="bulkDir">追踪方向</label><select id="bulkDir" title="去向：以收款方为主账号追踪后续转出；来源：以付款方为主账号追踪此前转入">
-            <option value="target">去向 · 收款方后续转出</option><option value="source">来源 · 付款方此前转入</option>
+          <label for="bulkDir">方向</label><select id="bulkDir" title="去向：以收款方为主账号追踪后续转出；来源：以付款方为主账号追踪此前转入">
+            <option value="target">去向·收款方</option><option value="source">来源·付款方</option>
           </select>
           <label for="bulkX">最近</label><input id="bulkX" type="number" min="1" max="50" value="5" aria-label="追踪笔数"><span title="含本笔交易">笔</span>
           <button class="btn small primary" id="btnBulkTrack" title="勾选流水后一键追踪来源或去向，笔数包含当前交易">追踪上图</button>
         </div>
       </div>
       </div>
-      <p class="flow-table-hint" id="flowTableHint">↔ 拖动底部滚条查看完整列 · 空格勾选，Enter 详情</p>
-      <div class="tbl-wrap flow-table-scroll" id="flowTableScroll" tabindex="0" role="region" aria-label="流水查询结果表格" aria-describedby="flowTableHint">
+      <div class="flow-table-tools" role="group" aria-label="流水表格显示">
+        <div class="result-info" id="resultInfo"></div>
+        <label for="flowTableDensity">行距</label><select id="flowTableDensity"><option value="compact">紧凑</option><option value="comfortable">舒展</option></select>
+        <label for="flowTableWrap">文本</label><select id="flowTableWrap"><option value="wrap">完整换行</option><option value="single">完整单行</option></select>
+      </div>
+      <p class="flow-table-hint" id="flowTableHint">底部横滚查看全部 7 列 · 空格勾选，Enter 详情</p>
+      <div class="tbl-wrap flow-table-scroll" id="flowTableScroll" data-flow-density="compact" data-flow-wrap="wrap" tabindex="0" role="region" aria-label="流水查询结果表格" aria-describedby="flowTableHint">
         <table class="tbl" id="flowTable">
           <thead><tr><th scope="col" aria-label="勾选"></th><th scope="col">交易<br>时间</th><th scope="col">付款方</th><th scope="col">收款方</th><th scope="col">金额</th><th scope="col">摘要</th><th scope="col">操作</th></tr></thead>
           <tbody id="flowTbody"></tbody>
@@ -289,6 +293,6 @@
 <script src="/static/graph-labels.js?v=1"></script>
 <script src="/static/graph-viewport.js?v=1"></script>
 <script src="/static/graph-minimap.js?v=1"></script>
-<script src="/static/app.js?v=workspace-1"></script>
+<script src="/static/app.js?v=workspace-2"></script>
 </body>
 </html>
