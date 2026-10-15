@@ -1,8 +1,8 @@
 # FundsTrace 独立桌面交付
 
-状态：2026-10-15，MIT 开源 [v0.1.0-alpha.2 预览已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0-alpha.2)。[Windows 原生 Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38729411673) 与发布标签绑定源码 `c66e64bc65809b496b4d6f84beb1071034100529`，包含客户端与独立 Issuer 两个未签名 x64 安装器；后续仅更新交付文档。Windows GUI 未实机验收，真实 Analytix 尚未接入。原目录与业务数据不随源码上传，Analytix 保持不动。常驻工作区重排见 [graph-workspace-plan.md](graph-workspace-plan.md)。
+状态：2026-10-15，MIT 开源 [v0.1.0-alpha.3 预览已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0-alpha.3)。 [Windows 原生 Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38733405640) 与发布标签绑定源码 `d0d569fe415d7798584f3207d0e8817a7916c75f`，包含客户端与独立 Issuer 两个未签名 x64 安装器；后续仅更新交付文档。Windows GUI 未实机验收，真实 Analytix 尚未接入。原目录与业务数据不随源码上传，Analytix 保持不动。常驻工作区重排见 [graph-workspace-plan.md](graph-workspace-plan.md)。
 
-本轮增加独立 Electron Issuer 和 FT2 公钥验签，复用同一 Windows 脚本。该候选的 53 项定向 Python、16 项桌面 Node、前端类型检查／构建、23 项包内资源校验与 9 项原生后端烟测均通过；包含合成 FT2 激活重开、错误机器码和更换公钥拒绝。macOS 源码签发 GUI 仅检查窗口加载和取消，不代表 Windows GUI。两个产品均未预置生产公钥或私钥，首次部署须先配置公钥，见 [授权操作](license-activation.md)。[alpha.1 预览](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0-alpha.1) 及其当时的证据作为历史保留，不替代本轮结果。
+本轮客户端内置分发公钥，公开指纹为 **`FEF434964FE89178`**。该候选的 53 项定向 Python、16 项桌面 Node、前端类型检查／构建、24 项包内资源校验与 10 项原生后端烟测均通过；新增 `bundledPublicKeyRecognized` 检查首次启动／重开时的公钥模式与指纹，合成 FT2 激活重开、错误机器码和更换公钥拒绝仍通过。macOS 源码签发 GUI 仅检查窗口加载和取消，不代表 Windows GUI；公钥识别也不证明生产授权已验收。[alpha.2 预览](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0-alpha.2) 未内置生产公钥，其证据仅属于历史候选。
 
 ## 运行与数据边界
 
@@ -16,7 +16,7 @@
 
 FT2 签发私钥仅由独立 Issuer 管理，客户端仅包含或读取公开验签材料；旧 HMAC 只在正常模式的受保护配置中兼容。缺少配置保持未激活，显示激活页并拒绝业务 API；桌面运行认证不是产品激活许可。激活脚本位于 `static/license.js` 以适配脚本 CSP。不在包内埋入共享 HMAC 秘密。
 
-普通用户只安装 FundsTrace；维护者安装独立 FundsTrace Issuer，创建并保管加密私钥，导出 SPKI 公钥后配置客户端。构建时可设置 Actions 非秘密变量 `FUNDS_TRACE_LICENSE_PUBLIC_KEY`；已安装版可由维护者设置绝对路径 `FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE`，完全退出后重开并核对指纹，再按用户机器码签发授权码。本轮公开候选未配置生产公钥，首次启动保持未激活，不能直接使用合成测试授权码。私钥和口令不进入客户端或 Actions。
+普通用户安装 alpha.3 预构建 FundsTrace 后，无需设置公钥，只需提供激活页机器码并输入维护者签发的授权码。维护者使用独立 FundsTrace Issuer 加载对应加密私钥，再按机器码签发；私钥与口令不进入客户端或 Actions。源码和自行构建不自动获得此配置：可设置 Actions 非秘密变量 `FUNDS_TRACE_LICENSE_PUBLIC_KEY`、本地构建公钥文件，或由维护者设置绝对路径 `FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE`，完全退出后重开并核对指纹。未配置时仍保持未激活，合成测试授权码不能用于正式分发公钥。[配置与换钥操作](license-activation.md)
 
 ## 本地开发
 
@@ -30,7 +30,7 @@ npm --prefix desktop ci
 npm --prefix desktop run synthetic
 ```
 
-`synthetic` 只在源码开发模式创建一次性目录：两组各 200 节点／199 条关系及空案件，正常退出后删除。该模式不继承业务数据根或真实授权配置，冻结后端和已封装壳都拒绝此模式。正常运行用 `npm --prefix desktop start`，不会自动激活或种入示例；开发 Python 可通过绝对路径 `FUNDS_TRACE_PYTHON` 指定。
+`synthetic` 只在源码开发模式创建一次性目录：两组各 200 节点／199 条关系及空案件，正常退出后删除。该模式不继承业务数据根或真实授权配置，冻结后端和已封装壳都拒绝此模式。正常运行用 `npm --prefix desktop start`，不会自动激活或种入示例，也不因预构建包已内置公钥而自动配置源码环境；开发 Python 可通过绝对路径 `FUNDS_TRACE_PYTHON` 指定。
 
 本机 Electron 下载曾遇官方 GitHub TLS 失败，维护者按官方安装方式临时使用镜像并保留 Electron 内嵌官方校验和校验；未关闭 TLS／checksum 或修改系统代理。此为本机安装记录，不是默认镜像依赖或未来网络保证。[官方安装说明](https://www.electronjs.org/docs/latest/tutorial/installation)
 
@@ -44,7 +44,7 @@ node desktop/tests/backend-smoke.cjs build/desktop/backend/funds-trace-backend
 npm --prefix desktop run pack
 ```
 
-此前 macOS arm64 已生成并启动未签名 `.app` 目录候选，另有 21 项资源版本的原生后端增强烟测。增加根许可和第三方通知后为 23 项资源，本轮 Windows Actions 已重新构建并检查；没有为证明 Windows 而再次封装 Mac 应用。旧 `.app` 不能证明当前源码或 Windows 候选。
+此前 macOS arm64 已生成并启动未签名 `.app` 目录候选，另有 21 项资源版本的原生后端增强烟测。增加根许可和第三方通知后为 23 项资源，alpha.3 再加入分发公钥后为 24 项，本轮 Windows Actions 已重新构建并检查；没有为证明 Windows 而再次封装 Mac 应用。旧 `.app` 不能证明当前源码或 Windows 候选。
 
 Windows x64 本地 PowerShell 7 入口如下；脚本核对 Node／Python 进程为 x64，准备独立构建环境、按哈希锁同步、构建前端与原生 sidecar、运行桌面测试并生成目录候选，随后对**包内** backend 运行烟测。需已安装 Node 22.22.1、uv 与可用的 Python 3.11，目标用户安装运行不要求系统 Python。
 
@@ -55,9 +55,9 @@ Windows x64 本地 PowerShell 7 入口如下；脚本核对 Node／Python 进程
 
 客户端输出在 `build/desktop/electron`，独立签发工具输出在 `build/desktop/issuer`；默认是两个未签名目录，`-Installer` 明确生成名称含 `unsigned` 的两个 NSIS 安装候选，普通用户安装且卸载保留各自应用数据。签发工具具有独立 appId／运行目录，不包含 Python 后端或案件数据。未配置签名或更新服务。PyInstaller 不是跨操作系统编译器，必须在 Windows 原生构建 Windows sidecar；macOS 的脚本检查／包目录不能证明 Windows 可运行。[PyInstaller 平台约束](https://pyinstaller.org/en/stable/index.html)、[electron-builder v26](https://www.electron.build/v26/docs/features/multi-platform-build/)
 
-脚本校对包内 manifest 与每项静态资源，再以中文／空格临时资源路径启动包内程序，验证未激活入口、强制终止持有的子进程、同一空库重开和 stdin EOF 正常退出；使用公开 RFC 测试材料验证 FT2 激活／重开、错误机器码及更换公钥拒绝。测试公钥只写入隔离临时状态，不作为客户端默认公钥。它不读业务库、不继承测试外的授权材料，不宣称空库重开等于导入恢复。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅记录版本、相对产物文件名、内容哈希和检查范围；中途失败不会生成新的 passed 报告。
+脚本校对包内 manifest 与每项静态资源，再以中文／空格临时资源路径启动包内程序，验证包内公钥模式和指纹、未激活入口、强制终止持有的子进程、同一空库重开和 stdin EOF 正常退出；使用公开 RFC 测试材料验证 FT2 激活／重开、错误机器码及更换公钥拒绝。测试公钥只写入隔离临时状态，不替换分发公钥。它不读业务库、不继承测试外的私钥或口令，不宣称公钥识别等于生产授权验收、空库重开等于导入恢复。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅记录版本、相对产物文件名、内容哈希和检查范围；中途失败不会生成新的 passed 报告。
 
-清单记录 Windows 实际检出／封装字节。`.gitattributes` 未强制 LF 的许可证、SVG 和锁文件可能由 Windows `core.autocrlf` 转为 CRLF，不能直接拿 macOS 工作区文件哈希判为源码漂移；本轮逐项确认这些差异仅为既定检出换行，安装器与随附清单仍按实际字节严格核对。
+清单记录 Windows 实际检出／封装字节。`.gitattributes` 未强制 LF 的许可证、SVG 和锁文件可能由 Windows `core.autocrlf` 转为 CRLF，不能直接拿 macOS 工作区文件哈希判为源码漂移；本轮已逐项验证差异仅为既定检出换行，安装器与随附清单按实际字节严格核对。
 
 首轮原生 CI 完成编译和 NSIS，但包内后端烟测失败。排查发现 Node 向 stdin 写 UTF-8 JSON，而冻结 Python 忽略 `PYTHONUTF8`；Windows 管道的本地编码会破坏中文数据目录。现于读取启动参数前明确配置 stdin UTF-8；现有进程回归改用 cp1252 管道和未转义中文，修复前两例失败、修复后两例通过。烟测仅增加固定阶段名和错误码，仍不输出 token、路径或子进程 stderr。打包命令明确 `--publish never`，发布继续独立执行。[PyInstaller 解释器选项](https://pyinstaller.org/en/stable/spec-files.html#specifying-python-interpreter-options)
 
@@ -81,21 +81,21 @@ Main 现在按目标显示器 `workArea` 的 DIP 限制初始窗口、最小宽�
 
 | 证据层 | 已有结果 | 明确限制 |
 | --- | --- | --- |
-| 本轮定向回归 | alpha.2 Windows CI：53 项 Python、16 项桌面 Node、前端类型检查／构建通过 | Python 283、React 37、旧版 Node 62 及 cp1252 中文启动回归属于此前候选，本轮不重复全套；未改 React、G6 金额／导出契约。 |
-| 本轮 Windows 原生后端 | Windows x64、Python 3.11.9、Node 22.22.1：23 项资源与源码哈希相符；9 项烟测通过，包含中文／空格路径、未激活入口、归属子进程强制退出、同空库重开、EOF、合成 FT2 激活重开及错误机器／换公钥拒绝 | 不是 GUI、生产授权、业务导入或任意断电恢复保证。 |
+| 本轮定向回归 | alpha.3 Windows CI：53 项 Python、16 项桌面 Node、前端类型检查／构建通过 | Python 283、React 37、旧版 Node 62 及 cp1252 中文启动回归属于此前候选，本轮不重复全套；未改 React、G6 金额／导出契约。 |
+| 本轮 Windows 原生后端 | Windows x64、Python 3.11.9、Node 22.22.1：24 项资源经 CI 校对；10 项烟测通过，包括首次启动／重开识别包内公钥模式与指纹，以及中文／空格路径、未激活入口、归属子进程强制退出、同空库重开、EOF、合成 FT2 激活重开及错误机器／换公钥拒绝 | 不是 GUI、生产授权、业务导入或任意断电恢复保证。 |
 | 本轮源码 Issuer GUI | macOS 源码窗口加载与原生对话框取消已检查 | 不证明 Windows GUI、真实密钥创建或生产签发。 |
 | 此前 macOS 后端／源码 Electron | 21 项资源版本后端烟测、合成 200／199 G6 和密集表格加载、正常退出；此前分析、React、原生保存及取消 | 仅为各自当时的候选，不代表当前 Windows GUI。Worker 专项成功与回退仍未独立区分。 |
 | 上轮 macOS `.app` 目录 | 上一候选 20 项资源和壳代码已核对，独立启动／激活 JS／退出通过 | 不是本轮新增许可资源与窗口规则后的包；本轮不为证明 Windows 而重复封装 Mac 应用。缺授权未解锁业务，未做签名、公证或 Windows 验收。 |
-| 本轮 Windows 双安装器 | Actions 原生生成 `FundsTrace-0.1.0-alpha.2-windows-x64-unsigned.exe` 与 `FundsTrace-Issuer-0.1.0-alpha.2-windows-x64-unsigned.exe`；发布后 GitHub 资产摘要和大小均相符 | 未签名、未预置生产公钥或私钥；GUI、系统 DPI、实际安装／卸载／升级、系统保存交互与已激活业务恢复仍未实机验收。 |
+| 本轮 Windows 双安装器 | Actions 原生生成 `FundsTrace-0.1.0-alpha.3-windows-x64-unsigned.exe` 与 `FundsTrace-Issuer-0.1.0-alpha.3-windows-x64-unsigned.exe`；客户端已内置分发公钥，发布后 GitHub 资产摘要和大小均相符 | 未签名、无私钥或口令；GUI、系统 DPI、实际安装／卸载／升级、系统保存交互与生产授权／已激活业务恢复仍未实机验收。 |
 
-本轮已下载核对 Actions ZIP 摘要、23 项资源与六份发布资产：两个安装器、`build-manifest.json`、`native-backend-smoke.json`、`windows-candidate.json` 和 `windows-candidate.sha256`。本地严格核对其中五条校验记录；解包目录的 1586 条摘要记录由 CI 生成，未在 macOS 重新下载解包目录复核。两个安装器的实际摘要如下：
+本轮已下载核对 Actions ZIP 摘要、24 项资源、两个安装器与四份清单；额外公开的 `activation-public-key.pem` 与包内公钥摘要及指纹一致，共七份发布资产。本地严格核对五条校验记录；解包目录的 1587 条摘要由 CI 生成，未在 macOS 下载解包目录复核。两个安装器摘要如下：
 
 | 安装器 | 字节数 | SHA-256 |
 | --- | ---: | --- |
-| FundsTrace 0.1.0-alpha.2 x64 | 168294288 | `08ad445ae986b951d1bd78379ad874e04c908f18d75cb9aa3d9f974a3c41d8a1` |
-| FundsTrace Issuer 0.1.0-alpha.2 x64 | 111159316 | `b68e8f1518555ec5dff9b4be7a73cb4e9b04c99a53cae1bef66220e942499002` |
+| FundsTrace 0.1.0-alpha.3 x64 | 168295048 | `0e0454af6907912cfd628849bced6740f02f333f9ad5350e14466cc4f4e22e20` |
+| FundsTrace Issuer 0.1.0-alpha.3 x64 | 111159382 | `6cc8b5bd416a629eee31404a19e3b5f0b4382ca70cd2143738ebeba900abae69` |
 
-上传后已逐项核对 GitHub 记录的六项资产摘要、大小与上传完成状态，并确认发布标签指向上述源码提交。构建报告中的 `published=false` 表示构建脚本未执行发布；GitHub 预览由维护者核对后单独发布，报告保持原样。alpha.1 的已发布安装器及摘要仅属于其历史候选，不作为本轮证据。
+已逐项核对 GitHub 七项资产的上传完成状态、摘要和大小，发布标签指向上述 green 源码。构建报告中的 `published=false` 表示构建脚本未执行发布；GitHub 预览由维护者核对后单独发布，报告保持原样。
 
 下载保存须区分服务生成成功和磁盘落盘完成；Electron 使用原生保存对话框，并处理取消／中断，不允许任意远程 URL 或自动打开下载的 HTML。[DownloadItem](https://www.electronjs.org/docs/latest/api/download-item)
 
