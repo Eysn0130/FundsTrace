@@ -13,7 +13,7 @@
 
 ## 可重复安装和测试
 
-开发基线为 macOS arm64、Python 3.11 与 Node 22.22.1；完整回归入口也需要 Node。Windows x64 原生构建及包内后端／静默安装生命周期由手动 [Windows Actions](.github/workflows/windows-candidate.yml) 执行；实际结果和限制记录在 [桌面交付](docs/desktop-delivery.md)。日常协作按 [CONTRIBUTING.md](CONTRIBUTING.md) 选择受影响层的最小充分验证，不默认重复全套。
+开发基线为 macOS arm64、Python 3.11 与 Node 22.22.1；完整回归入口也需要 Node。[v0.1.0 Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38746367500) 已完成 56 项定向 Python、22 项桌面 Node、23 项资源、11 项包内后端及 14 项静默安装生命周期检查；源码／Tag 为 `d7547734f91546fb3b81b30a7e4993b644b77154`。结果和限制见 [桌面交付](docs/desktop-delivery.md)。日常协作按 [CONTRIBUTING.md](CONTRIBUTING.md) 选择受影响层的最小充分验证，不默认重复全套。
 
 ```sh
 uv venv --python 3.11

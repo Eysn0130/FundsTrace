@@ -2,7 +2,7 @@
 
 ## v0.1.x 发布规则
 
-FundsTrace v0.1.0 正常启动**无需公钥或授权码**。每个实际版本 Tag 对应 GitHub Release，附 Windows x64 NSIS `.exe`，从 [Releases](https://github.com/Eysn0130/FundsTrace/releases) 下载并安装。当前候选尚待本轮 Windows Actions 和发布核对，最终运行链接及摘要随后补记；Windows GUI 验收不作为发布标记。安装包未签名，不能声称完成代码签名或 Windows 全面兼容验收。
+FundsTrace v0.1.0 正常启动**无需公钥或授权码**。每个实际版本 Tag 对应 GitHub Release，附 Windows x64 NSIS `.exe`，从 [Releases](https://github.com/Eysn0130/FundsTrace/releases) 下载并安装。[v0.1.0 已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0)，原生构建和安装结果见下文交付记录；Windows GUI 验收不作为发布标记。安装包未签名，不能声称完成代码签名或 Windows 全面兼容验收。
 
 Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activation_required:false`，如实保留历史 `activated` 状态；`/license` 可直接进入系统。没有公钥、没有授权文件或存在损坏的历史授权都不阻塞业务，不生成测试授权来解锁。FT2／HMAC 验签接口、独立 `desktop/issuer/` 工具和已有材料保留，见 [历史授权维护](license-activation.md)。已发布 alpha.3 不随源码改变。
 
@@ -48,11 +48,24 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 ## 当前证据与尚未执行的边界
 
-本轮源码候选：新增免激活回归在修复前遇到 307 失败，修复后通过；全量 Python 初跑 322 通过、1 条新测试的空案件预期不符（数据库会创建默认案件），修正为核对合成案件后相关 21 条 API 回归通过；此前 49 条免激活／历史验签／桌面回归通过。API 契约检查保持同步，React 构建和 37 条测试通过。源码浏览器已从 `/license` 点击进入业务，控制台零错误。实际计数及 Windows Actions 结果以本轮交付记录补记为准，不沿用 alpha.3 的结果证明新候选。
+源码 API 21 条、React 37 条、前端构建及 API 契约检查通过；免激活新增回归在修复前失败、修复后通过，源码浏览器从 `/license` 进入业务成功。当前 Windows 候选的定向 Python 56 条和桌面 Node 22 条均通过，包括 Windows 原生进程范围测试。完整结果以对应版本的 Actions 和报告为准。
 
 本机 macOS arm64，无交互式 Windows 主机。Windows GUI、系统 100%／150%／200% DPI、密集表格实际字体、原生保存／取消、运行中安装器正常关窗和导入任务中断恢复仍为 **NOT_EXECUTED（Windows GUI）**。静默安装报告不把这些标成通过，也不作为 GUI 发布标签。
 
 具备设备后只补受影响流程：查询／勾选／上图／邻域和完整金额可读；中文目录 XLSX／图像保存及取消；活动导入退出与回执重开；离线启动与混合 DPI。只用专用合成测试用户，不能连接原业务实例或按名称猜测终止进程。
+
+## v0.1.0 交付记录
+
+2026-10-15：[Release v0.1.0](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0) 与 [Windows Actions 38746367500](https://github.com/Eysn0130/FundsTrace/actions/runs/38746367500) 绑定源码 `d7547734f91546fb3b81b30a7e4993b644b77154`。Tag 指向该成功候选，后续仅补交付文档。
+
+- Windows x64：56 项定向 Python、22 项桌面 Node、React 类型检查／构建通过。
+- 23 项包内资源与 11 项后端检查通过：无授权访问、token 拒绝、中文／空格路径、合成案件崩溃重开、无授权文件生成、EOF 停止。
+- 14 项安装生命周期检查通过：固定 alpha.3 安装 → 0.1.0 覆盖升级 → 安装后真实 backend 读写和重开 → 静默卸载；注册入口与程序移除，保留的两个合成案件及哨兵可回读。测试结束后仅清理该 runner 自建状态。
+- 发布包含一个 EXE 与五份报告／校验文件；GitHub 六项资产的上传完成状态、字节数和 SHA-256 已核对。Actions ZIP 摘要、五条下载文件记录及源码资源／锁文件已核对；解包目录的 1513 个文件摘要由 CI 生成，未在 macOS 下载整个目录重新核验。
+
+`FundsTrace-0.1.0-windows-x64-unsigned.exe`：168295250 字节，SHA-256 `c57e357e8f76f4b4badecfe437a3943b116a71738b5d5a7ff6413a83cbe019fc`。
+
+报告中 `installerLifecycle:passed` 限于上述静默流程；`guiAcceptance:false`／`installedAcceptance:false` 保留完整 GUI 和安装体验未验收的限制，`published:false` 表示构建脚本未执行发布。安装器未签名；DPI、原生保存／取消、标准控制面板交互和活动导入的 Windows 桌面恢复未验收，本次发布不使用 GUI 通过标记。
 
 ## 历史交付记录
 
