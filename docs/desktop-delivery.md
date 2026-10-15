@@ -2,6 +2,8 @@
 
 状态：2026-10-15，MIT 开源 [v0.1.0-alpha.1 预览已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0-alpha.1)。[最终 Windows 原生 Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38723128489) 已通过，发布绑定源码 `8177ca5e7a009e75a20a3b1c2778fe63941861d0`；随后只补充文档。未签名，Windows GUI 未实机验收，真实 Analytix 尚未接入。原目录与业务数据不随源码上传，Analytix 保持不动。常驻工作区重排见 [graph-workspace-plan.md](graph-workspace-plan.md)。
 
+本轮源码准备 `0.1.0-alpha.2`：增加独立 Electron Issuer 和 FT2 公钥验签，复用同一 Windows 脚本同时构建两个安装器。32 项授权回归、2 项跨语言 HTTP 激活／持久化回归、16 项桌面 Node 检查已通过；源码 macOS 签发窗口及加载取消已检查。Windows 原生结果待本轮 Actions，不沿用 alpha.1 的绿灯。私钥不进入 Actions 或客户端，首次公钥配置见 [授权操作](license-activation.md)。下表保留 alpha.1 的历史交付证据。
+
 ## 运行与数据边界
 
 [desktop/main.cjs](../desktop/main.cjs) 只负责窗口、受限导航／下载和自己创建的服务；无 preload、无通用 IPC。G6 `/` 保留完整业务界面，`/analysis` 为分析，`/workspace/` 为共享 React 试点；React 尚未覆盖所有旧功能，不因桌面化删除旧入口。
@@ -12,7 +14,7 @@
 
 正常运行的数据位于 Electron 自身 `userData/data`，不写安装资源，也不使用 Analytix 数据根。Main 通过 stdin EOF 请求自己的 sidecar 停止，超时仅终止持有句柄的子进程；服务崩溃显示故障，不自动重放导入。后台持久任务恢复仍由 Python 服务负责，退出 hook 不能代替断电／Windows 注销恢复。[app 生命周期](https://www.electronjs.org/docs/latest/api/app)
 
-授权签名材料只允许正常模式从外部受保护环境提供，不打包。缺少配置保持未激活，显示激活页并拒绝业务 API；桌面运行认证不是产品激活许可。激活脚本已移入 `static/license.js` 以适配脚本 CSP。公开离线授权若迁移到公钥验签，应另作兼容任务，不在包内埋入共享 HMAC 秘密。
+FT2 签发私钥仅由独立 Issuer 管理，客户端仅包含或读取公开验签材料；旧 HMAC 只在正常模式的受保护配置中兼容。缺少配置保持未激活，显示激活页并拒绝业务 API；桌面运行认证不是产品激活许可。激活脚本位于 `static/license.js` 以适配脚本 CSP。不在包内埋入共享 HMAC 秘密。
 
 ## 本地开发
 

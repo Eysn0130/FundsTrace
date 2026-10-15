@@ -8,7 +8,7 @@
 
 - 本目录只维护源码、合成测试和项目文档；原 `fund-tracker` 工作目录及业务数据保留在原位置。
 - 没有迁移或连接原数据库，没有复制授权记录、上传文件、照片、恢复副本和旧安装包。
-- 旧 HMAC 授权格式暂时保留；内嵌签名材料已移除。未配置时保持未激活，不自动绕过授权。
+- 独立版保留激活；新版 FT2 由独立 Electron 签发工具持私钥签发、客户端持公钥验签。旧 HMAC 仅在明确配置时兼容，未配置时保持未激活。
 - 维护者已授权公开本源码维护快照；原工作目录与历史不随本次导入上传。产品激活兼容与未来公钥授权另行演进。详见 [源码与私有数据边界](docs/source-boundaries.md)。
 
 ## 可重复安装和测试
@@ -71,7 +71,7 @@ npm --prefix desktop run synthetic
 
 Windows 构建脚本要求 PowerShell 7，并对实际目录候选内的 backend 做中文／空格路径、空库强制退出／重开及 EOF 烟测。[Windows Actions](.github/workflows/windows-candidate.yml) 仅手动触发，`installer=true` 可生成未签名 NSIS 预览安装器。原生构建、后端烟测与 Windows GUI 体验分开记录，预览发布不使用 GUI 通过标记。[治理依据与取舍](docs/source-boundaries.md#github-与轻量治理) 参考 OpenAI／Anthropic 官方仓库，并保持现有脚本为唯一执行入口。
 
-在受保护的运行环境配置 `FUNDS_TRACE_LICENSE_SECRET`，由维护者提供相应机器的兼容授权码。不要把真实材料写入源码、命令示例或终端历史。当前 HMAC 方案不是最终公开发行方案。
+首次部署先用独立 **FundsTrace Issuer** 创建并保管签发私钥，将导出的公钥配置给客户端；普通用户只输入维护者签发的授权码。公钥可通过 Actions 的非秘密变量 `FUNDS_TRACE_LICENSE_PUBLIC_KEY` 随构建加入，或由维护者为已安装版配置绝对路径 `FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE`。旧 HMAC 环境继续显式使用 `FUNDS_TRACE_LICENSE_SECRET`；不要把共享秘密或私钥发给用户或提交仓库。[授权配置与签发操作](docs/license-activation.md)
 
 ```sh
 FUND_DATA_DIR=/absolute/path/to/private-runtime .venv/bin/python run.py

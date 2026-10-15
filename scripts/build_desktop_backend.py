@@ -9,6 +9,7 @@ import hashlib
 import importlib.metadata
 import json
 import platform
+import re
 from pathlib import Path
 import subprocess
 import struct
@@ -38,6 +39,23 @@ def native_arch() -> str:
 def resource_files() -> list[tuple[Path, str]]:
     resources = [(ROOT / name, name) for name in ("LICENSE", "THIRD_PARTY_NOTICES.md")]
     resources += [(ROOT / "static" / name, str(Path("static") / name)) for name in STATIC_NAMES]
+    public_key = ROOT / "activation-public-key.pem"
+    if public_key.exists():
+        from cryptography.exceptions import UnsupportedAlgorithm
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        if public_key.is_symlink() or not public_key.is_file() or public_key.stat().st_size > 4096:
+            raise SystemExit("Invalid activation public key file")
+        pem = public_key.read_bytes().strip()
+        if not re.fullmatch(rb"-----BEGIN PUBLIC KEY-----\r?\n(?:[A-Za-z0-9+/=]+\r?\n)+-----END PUBLIC KEY-----", pem):
+            raise SystemExit("Activation resource must contain only one public key and no extra content")
+        try:
+            key = serialization.load_pem_public_key(pem)
+        except (ValueError, TypeError, UnsupportedAlgorithm):
+            raise SystemExit("Activation configuration must contain an Ed25519 public key, never a private key")
+        if not isinstance(key, Ed25519PublicKey):
+            raise SystemExit("Only an Ed25519 activation public key is supported")
+        resources.append((public_key, "activation-public-key.pem"))
     dist = ROOT / "frontend" / "dist"
     if not (dist / "index.html").is_file():
         raise SystemExit("Build frontend/dist before packaging the desktop backend")
@@ -75,7 +93,7 @@ def main() -> None:
             "--collect-all", "duckdb", "--collect-all", "uvicorn", "--collect-data", "matplotlib",
             "--hidden-import", "app.analysis_routes", "--hidden-import", "openpyxl",
             "--exclude-module", "desktop_synthetic", "--exclude-module", "scripts.preview_synthetic"]
-    for package in ("duckdb", "fastapi", "uvicorn", "pandas", "openpyxl", "python-multipart", "matplotlib"):
+    for package in ("duckdb", "fastapi", "uvicorn", "pandas", "openpyxl", "python-multipart", "matplotlib", "cryptography"):
         args.extend(["--recursive-copy-metadata", package])
     for source, relative in resources:
         destination = str(Path(relative).parent)

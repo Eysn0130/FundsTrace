@@ -4,6 +4,7 @@ import os
 
 def seed():
     os.environ["FUNDS_TRACE_LICENSE_SECRET"] = "synthetic-desktop-only-not-for-use"
+    os.environ.pop("FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE", None)
     from app import db, importer, license as licensing
     from scripts.preview_synthetic import graph_fixture_rows
 

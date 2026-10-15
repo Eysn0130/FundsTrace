@@ -14,6 +14,7 @@ def main():
         env["MPLCONFIGDIR"] = str(Path(temporary) / "matplotlib")
         # Public synthetic fixture configuration, never an inherited real key.
         env["FUNDS_TRACE_LICENSE_SECRET"] = "synthetic-regression-key-not-for-use"
+        env.pop("FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE", None)
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         return subprocess.call(
             [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *sys.argv[1:]],

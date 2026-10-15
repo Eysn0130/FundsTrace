@@ -170,6 +170,7 @@ def main():
         os.environ["FUND_DATA_DIR"] = str(directory / "data")
         os.environ["MPLCONFIGDIR"] = str(directory / "matplotlib")
         os.environ["FUNDS_TRACE_LICENSE_SECRET"] = "synthetic-preview-key-not-for-use"
+        os.environ.pop("FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE", None)
         from app import db, importer, license as licensing
         from app.main import app
         import uvicorn

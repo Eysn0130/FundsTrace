@@ -34,6 +34,7 @@ h1 { text-align: center; font-size: 20px; margin: 10px 0 2px; }
 #key:focus { border-color: #3d7bff; }
 #msg { min-height: 20px; font-size: 12px; margin: 8px 0; }
 #msg.err { color: #eda1a1; } #msg.ok { color: #9fdcae; }
+#verification { color: #a8b4c6; font-size: 12px; margin: 12px 0; overflow-wrap: anywhere; }
 .wm { text-align: center; color: #555; font-size: 11px; margin-top: 18px; }
 </style>
 </head>
@@ -42,6 +43,7 @@ h1 { text-align: center; font-size: 20px; margin: 10px 0 2px; }
   <div class="logo"><img src="/static/logo.svg" alt=""></div>
   <h1>FundsTrace <small style="color:#ffd700;font-size:12px">本地分析</small></h1>
   <div class="sub">FundsTrace · 系统激活</div>
+  <p id="verification" role="status">正在检查授权配置…</p>
 
   <div class="step">
     <div class="n">1</div>
@@ -64,6 +66,6 @@ h1 { text-align: center; font-size: 20px; margin: 10px 0 2px; }
   <div id="msg"></div>
   <div class="wm">FundsTrace · FundsTrace</div>
 </div>
-<script src="/static/license.js?v=1"></script>
+<script src="/static/license.js?v=2"></script>
 </body>
 </html>

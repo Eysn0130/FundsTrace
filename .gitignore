@@ -10,6 +10,11 @@
 *.quarantine
 *.fundcase
 license.dat
+activation-public-key.pem
+*.pem
+*.key
+*.p12
+*.pfx
 .env
 .env.*
 !.env.example

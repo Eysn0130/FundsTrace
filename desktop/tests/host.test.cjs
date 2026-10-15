@@ -56,7 +56,7 @@ test('source launch isolates runtime and Python settings, preserving only normal
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'funds-trace-launch-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const python = path.join(directory, 'python'); fs.writeFileSync(python, 'not executed');
-  const env = { PATH: 'preserved', FUND_DATA_DIR: '/unrelated/data', PYTHONPATH: '/injected', FUNDS_TRACE_PYTHON: '/wrong/python', FUNDS_TRACE_LICENSE_SECRET: 'test-only-value' };
+  const env = { PATH: 'preserved', FUND_DATA_DIR: '/unrelated/data', PYTHONPATH: '/injected', FUNDS_TRACE_PYTHON: '/wrong/python', FUNDS_TRACE_LICENSE_SECRET: 'test-only-value', FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE: path.join(directory, 'public.pem') };
   const normal = launchConfig({ packaged: false, repoRoot: directory, python, dataDir: path.join(directory, 'data'), env });
   assert.equal(normal.command, python);
   assert.deepEqual(normal.args, [path.join(directory, 'desktop_backend.py')]);
@@ -64,8 +64,11 @@ test('source launch isolates runtime and Python settings, preserving only normal
   assert.equal(normal.env.PYTHONPATH, undefined);
   assert.equal(normal.env.FUNDS_TRACE_PYTHON, undefined);
   assert.equal(normal.env.FUNDS_TRACE_LICENSE_SECRET, 'test-only-value');
+  assert.equal(normal.env.FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE, env.FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE);
   assert.equal(normal.env.PYTHONUTF8, '1');
   assert.equal(launchConfig({ packaged: false, repoRoot: directory, python, dataDir: directory, synthetic: true, env }).env.FUNDS_TRACE_LICENSE_SECRET, undefined);
+  assert.equal(launchConfig({ packaged: false, repoRoot: directory, python, dataDir: directory, synthetic: true, env }).env.FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE, undefined);
+  assert.throws(() => launchConfig({ packaged: false, repoRoot: directory, python, dataDir: directory, env: { FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE: 'relative.pem' } }), /absolute/);
   assert.throws(() => launchConfig({ packaged: false, repoRoot: directory, python: 'python', dataDir: directory }), /absolute/);
 });
 

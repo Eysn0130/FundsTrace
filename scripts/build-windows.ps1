@@ -20,6 +20,11 @@ try {
     Invoke-Checked { uv pip sync --python $PythonExe --require-hashes requirements-desktop.lock }
     Push-Location frontend
     try { Invoke-Checked { npm.cmd ci }; Invoke-Checked { npm.cmd run build } } finally { Pop-Location }
+    if ($env:FUNDS_TRACE_LICENSE_PUBLIC_KEY) {
+        $PublicKeyPath = Join-Path $ProjectRoot "activation-public-key.pem"
+        if (Test-Path -LiteralPath $PublicKeyPath) { throw "Use only one activation public key source." }
+        [System.IO.File]::WriteAllText($PublicKeyPath, $env:FUNDS_TRACE_LICENSE_PUBLIC_KEY, [System.Text.UTF8Encoding]::new($false))
+    }
     Invoke-Checked { & $PythonExe scripts/build_desktop_backend.py }
     Push-Location desktop
     try {
@@ -27,6 +32,8 @@ try {
         Invoke-Checked { npm.cmd test }
         if ($Installer) { Invoke-Checked { npm.cmd run pack:win } }
         else { Invoke-Checked { npm.cmd run pack -- --win --x64 } }
+        if ($Installer) { Invoke-Checked { npm.cmd run pack:issuer:win } }
+        else { Invoke-Checked { npm.cmd run pack:issuer:win -- --dir } }
     } finally { Pop-Location }
 
     # Evidence contains only versions, relative candidate filenames and content hashes.
@@ -49,7 +56,14 @@ try {
         $InstallerPath = Join-Path $EvidenceRoot "electron/FundsTrace-$Version-windows-x64-unsigned.exe"
         if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) { throw "The unsigned installer candidate is missing." }
         $CandidateFiles += Get-Item -LiteralPath $InstallerPath
+        $IssuerInstaller = Join-Path $EvidenceRoot "issuer/FundsTrace-Issuer-$Version-windows-x64-unsigned.exe"
+        if (-not (Test-Path -LiteralPath $IssuerInstaller -PathType Leaf)) { throw "The independent issuer installer is missing." }
+        $CandidateFiles += Get-Item -LiteralPath $IssuerInstaller
     }
+    $IssuerDir = Join-Path $EvidenceRoot "issuer/win-unpacked"
+    if (-not (Test-Path -LiteralPath (Join-Path $IssuerDir "FundsTrace Issuer.exe") -PathType Leaf)) { throw "The independent issuer directory is missing." }
+    # Independent app resources contain only reviewed issuer source and public notices.
+    $CandidateFiles += @(Get-ChildItem -LiteralPath $IssuerDir -File -Recurse)
     $Files = @($CandidateFiles | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = [System.IO.Path]::GetRelativePath($ProjectRoot, $_.FullName).Replace('\', '/'); bytes = $_.Length; sha256 = Get-Sha256 $_.FullName }
     })

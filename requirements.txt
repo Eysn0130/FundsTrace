@@ -5,3 +5,4 @@ pandas>=2.0
 openpyxl>=3.1
 python-multipart>=0.0.9
 matplotlib>=3.8
+cryptography>=50.0.2,<51

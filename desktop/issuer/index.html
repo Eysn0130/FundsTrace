@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'none'; font-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>FundsTrace Issuer</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="renderer.js" defer></script>
+</head>
+<body>
+  <header><div><span class="brand">FundsTrace</span><span class="edition">Issuer</span></div><span class="offline">本机离线签发</span></header>
+  <main>
+    <section class="keys" aria-labelledby="keys-title">
+      <div class="section-heading"><h1 id="keys-title">签发密钥</h1><span id="key-status" class="state">未加载</span></div>
+      <p class="hint">仅供维护者使用。私钥和口令请妥善保管；用户只需收到授权码。</p>
+      <label for="passphrase">私钥口令</label>
+      <input id="passphrase" type="password" autocomplete="off" spellcheck="false" maxlength="4096" placeholder="新建时至少 12 个字符">
+      <div class="actions"><button id="load">加载私钥</button><button id="create">创建密钥对</button></div>
+      <p class="hint small">新建私钥采用加密 PKCS8 PEM。加载已有未加密私钥时，口令可留空。导出的公钥需配置到客户端或 Windows Actions；私钥不可随客户端发布。</p>
+      <div class="key-details"><label for="fingerprint">公钥指纹</label><output id="fingerprint">—</output>
+        <label for="public-key">验证公钥</label><textarea id="public-key" rows="4" readonly spellcheck="false" placeholder="加载密钥后显示 SPKI 公钥"></textarea>
+        <div class="actions"><button id="copy-public" data-key>复制公钥</button><button id="export" data-key>导出公钥</button></div>
+      </div>
+      <button id="clear" class="quiet" data-key>清除内存中的密钥</button>
+    </section>
+    <section class="issue" aria-labelledby="issue-title">
+      <h2 id="issue-title">生成授权码</h2>
+      <label for="machine">用户机器码</label>
+      <input id="machine" type="text" autocomplete="off" spellcheck="false" maxlength="19" placeholder="ABCD-1234-5678-90EF">
+      <div class="expiry"><div><label for="expires">有效期至</label><input id="expires" type="date"></div><label class="check"><input id="permanent" type="checkbox">永久授权</label></div>
+      <p class="hint small">日期授权有效至所选日期当天结束，以用户本机日期为准。</p>
+      <button id="issue" class="primary" data-key>签发授权码</button>
+      <div class="result"><div class="section-heading"><label for="code">授权码</label><button id="copy-code" class="quiet" disabled>复制授权码</button></div>
+        <textarea id="code" rows="7" readonly spellcheck="false" placeholder="签发后，将完整授权码交给用户在 FundsTrace 中输入。"></textarea>
+      </div>
+      <p id="feedback" role="status" aria-live="polite">请选择签发私钥，或创建新的密钥对。</p>
+    </section>
+  </main>
+  <footer>私钥不会写入应用配置。退出后需重新加载。</footer>
+</body>
+</html>

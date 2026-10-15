@@ -3,8 +3,15 @@ function setMsg(t, ok) { const m = $('#msg'); m.textContent = t; m.className = o
 
 async function load() {
   try {
-    const info = await (await fetch('/api/license/info')).json();
+    const response = await fetch('/api/license/info');
+    if (!response.ok) throw new Error('暂时无法读取授权状态');
+    const info = await response.json();
     $('#mc').textContent = info.machine_code;
+    $('#verification').textContent = info.public_key_fingerprint
+      ? `已配置验签公钥 · 指纹 ${info.public_key_fingerprint}。输入管理员签发的授权码即可激活。`
+      : info.verification_mode === 'legacy-hmac'
+        ? '当前使用兼容授权配置。请输入管理员提供的兼容授权码。'
+        : '尚未配置验签公钥。请管理员先完成公钥配置，再输入签发工具生成的授权码。';
     if (info.activated) { location.href = '/'; return; }
   } catch (e) { setMsg('读取授权状态失败：' + e.message, false); }
 }

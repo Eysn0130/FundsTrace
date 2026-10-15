@@ -52,6 +52,10 @@ function launchConfig({ packaged, platform = process.platform, arch = process.ar
   if (!fs.statSync(command).isFile()) throw new Error('Backend executable is missing');
   const cleanEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('FUND_') && !key.startsWith('FUNDS_TRACE_') && !key.startsWith('PYTHON')));
   if (!synthetic && env.FUNDS_TRACE_LICENSE_SECRET) cleanEnv.FUNDS_TRACE_LICENSE_SECRET = env.FUNDS_TRACE_LICENSE_SECRET;
+  if (!synthetic && env.FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE) {
+    if (!path.isAbsolute(env.FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE)) throw new Error('License public key path must be absolute');
+    cleanEnv.FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE = env.FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE;
+  }
   cleanEnv.PYTHONNOUSERSITE = '1'; cleanEnv.PYTHONDONTWRITEBYTECODE = '1'; cleanEnv.PYTHONUNBUFFERED = '1'; cleanEnv.PYTHONUTF8 = '1';
   return { command, args, cwd, env: cleanEnv, dataDir, synthetic };
 }

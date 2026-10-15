@@ -53,11 +53,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Test environment creation failed." }
           uv pip sync --python .venv/Scripts/python.exe --require-hashes requirements-dev.lock
           if ($LASTEXITCODE -ne 0) { throw "Test dependency sync failed." }
-          & .venv/Scripts/python.exe -m pytest tests/test_desktop_backend.py tests/test_import_process_recovery.py -q
+          & .venv/Scripts/python.exe -m pytest tests/test_desktop_backend.py tests/test_import_process_recovery.py tests/test_license_v2.py tests/test_license_activation.py tests/test_desktop_resources.py -q
           if ($LASTEXITCODE -ne 0) { throw "Focused source process regressions failed." }
       - name: Build unsigned Windows directory candidate and native backend evidence
         env:
           BUILD_INSTALLER: ${{ inputs.installer }}
+          FUNDS_TRACE_LICENSE_PUBLIC_KEY: ${{ vars.FUNDS_TRACE_LICENSE_PUBLIC_KEY }}
         run: |
           if ($env:BUILD_INSTALLER -eq 'true') { ./scripts/build-windows.ps1 -Installer }
           else { ./scripts/build-windows.ps1 }
@@ -70,6 +71,7 @@ jobs:
           compression-level: 0
           path: |
             ${{ inputs.installer && '源码 FundsTrace/build/desktop/electron/*-windows-x64-unsigned.exe' || '源码 FundsTrace/build/desktop/electron/win-unpacked/' }}
+            ${{ inputs.installer && '源码 FundsTrace/build/desktop/issuer/*-windows-x64-unsigned.exe' || '源码 FundsTrace/build/desktop/issuer/win-unpacked/' }}
             源码 FundsTrace/build/desktop/backend/funds-trace-backend/build-manifest.json
             源码 FundsTrace/build/desktop/native-backend-smoke.json
             源码 FundsTrace/build/desktop/windows-candidate.json

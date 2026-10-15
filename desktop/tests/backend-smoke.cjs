@@ -7,6 +7,8 @@ const path = require('node:path');
 const os = require('node:os');
 const { launchConfig, HEADER } = require('../host-policy.cjs');
 const { startBackend } = require('../backend.cjs');
+const crypto = require('node:crypto');
+const { issueCode } = require('../issuer/core.cjs');
 let stage = 'arguments'; // Only fixed stage names and safe error codes enter CI logs.
 
 async function waitForExit(exited) {
@@ -48,7 +50,7 @@ async function checkUnactivated({ origin, token }) {
   const report = {
     schemaVersion: 1, status: 'running', platform: process.platform, arch: process.arch,
     node: process.versions.node, testState: 'new-empty-database',
-    checks: {}, limits: { gui: false, importRecovery: false, productActivation: false },
+    checks: {}, limits: { gui: false, importRecovery: false, productionActivation: false },
   };
   if (reportPath) await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'FundsTrace 封装烟测 '));
@@ -65,9 +67,9 @@ async function checkUnactivated({ origin, token }) {
       if (!key.toUpperCase().startsWith('FUNDS_TRACE_LICENSE')) env[key] = process.env[key];
     }
     const config = launchConfig({ packaged: true, resourcesPath: resources, dataDir, env });
-    function boot() {
+    function boot(configuration = config) {
       let child, exited;
-      const backend = startBackend(config, { spawnProcess: (...input) => {
+      const backend = startBackend(configuration, { spawnProcess: (...input) => {
         child = spawn(...input);
         exited = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
         return child;
@@ -99,6 +101,30 @@ async function checkUnactivated({ origin, token }) {
     await assert.rejects(fetch(`${ready.origin}/__desktop/health`, { signal: AbortSignal.timeout(10000) }));
     report.checks.eofShutdown = true;
     report.checks.chineseAndSpacePaths = true;
+
+    // Public RFC 8032 TEST 1 seed: intentionally synthetic, never a deployment key.
+    stage = 'synthetic-ft2-activation';
+    const privateKey = crypto.createPrivateKey({ format: 'der', type: 'pkcs8', key: Buffer.from('302e020100300506032b6570042204209d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60', 'hex') });
+    const publicFile = path.join(temporary, '合成验签公钥.pem');
+    await fs.writeFile(publicFile, crypto.createPublicKey(privateKey).export({ format: 'pem', type: 'spki' }));
+    const signedConfig = launchConfig({ packaged: true, resourcesPath: resources, dataDir: path.join(temporary, '合成授权 数据'), env: { ...env, FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE: publicFile } });
+    const signed = boot(signedConfig), signedReady = await signed.backend.ready;
+    const request = (ready, endpoint, options = {}) => fetch(`${ready.origin}${endpoint}`, { ...options, headers: { [HEADER]: ready.token, ...options.headers }, signal: AbortSignal.timeout(10000) });
+    const info = await (await request(signedReady, '/api/license/info')).json();
+    assert.equal(info.activated, false); assert.equal(info.verification_mode, 'public-key');
+    const activate = code => request(signedReady, '/api/license/activate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: code }) });
+    assert.equal((await activate(issueCode(privateKey, { machineCode: info.machine_code === '0000-0000-0000-0000' ? '1111-1111-1111-1111' : '0000-0000-0000-0000', expires: '0' }))).status, 400);
+    assert.equal((await request(signedReady, '/api/cases')).status, 403);
+    assert.equal((await activate(issueCode(privateKey, { machineCode: info.machine_code, expires: '0' }))).status, 200);
+    assert.equal((await request(signedReady, '/api/cases')).status, 200);
+    await signed.backend.stop(); assert.deepEqual(await waitForExit(signed.exited), { code: 0, signal: null });
+    const signedReopen = boot(signedConfig), persisted = await signedReopen.backend.ready;
+    assert.equal((await (await request(persisted, '/api/license/info')).json()).activated, true);
+    await fs.writeFile(publicFile, crypto.createPublicKey({ format: 'der', type: 'spki', key: Buffer.from('302a300506032b65700321003d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c', 'hex') }).export({ format: 'pem', type: 'spki' }));
+    assert.equal((await request(persisted, '/api/cases')).status, 403);
+    await signedReopen.backend.stop(); assert.deepEqual(await waitForExit(signedReopen.exited), { code: 0, signal: null });
+    report.checks.syntheticFt2ActivationAndReopen = true;
+    report.checks.wrongMachineAndChangedPublicKeyRejected = true;
   } finally {
     await Promise.all(owned.map(instance => instance.backend.stop()));
     await fs.unlink(path.join(resources, 'backend')).catch(error => { if (error.code !== 'ENOENT') throw error; });
@@ -107,7 +133,7 @@ async function checkUnactivated({ origin, token }) {
   report.checks.temporaryStateRemoved = true;
   report.status = 'passed';
   if (reportPath) await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
-  console.log('Native packaged backend: unactivated empty-state crash/reopen, Chinese/space paths and EOF shutdown passed.');
+  console.log('Native packaged backend: unactivated crash/reopen, Chinese paths, EOF and synthetic FT2 activation/reopen passed.');
 })().catch(error => {
   const code = typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code) ? error.code : 'ERROR';
   console.error(`Native packaged backend smoke failed at ${stage} (${code}).`);

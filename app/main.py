@@ -77,6 +77,8 @@ def license_info():
 def license_activate(body: ActivateIn):
     exp = lic.verify(body.key, lic.machine_code())
     if exp is None:
+        if body.key.strip().startswith("FT2.") and not lic.status().get("public_key_fingerprint"):
+            raise HTTPException(400, "管理员尚未配置有效的验签公钥，请完成公钥配置后再输入授权码")
         raise HTTPException(400, "授权码无效：请核对机器码与授权码是否匹配、是否已过期")
     lic.save_key(body.key)
     return {"ok": True, "expiry": "永久" if exp == "0" else exp}
