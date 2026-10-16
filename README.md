@@ -24,7 +24,7 @@
 
 [下载 31 秒完整演示（MP4）](docs/media/fundstrace-demo.mp4?raw=1) · [合成样例与复现步骤](docs/examples/harbor-path/README.md)
 
-当前为预览版。已发布 [v0.1.2](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.2)，支持 Windows x64，安装后无需授权码；安装包未签名，Windows GUI、DPI 与原生保存交互尚未实机验收。[安装与验证范围](docs/desktop-delivery.md)
+当前为预览版。已发布 [v0.1.3](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.3)，支持 Windows x64，安装后无需授权码；普通账户、中文路径与程序出站阻断已在 Windows Server 验证，Win10／11 系统 DPI、原生保存等仍待实机验收。安装包未签名。[安装与验证范围](docs/desktop-delivery.md)
 
 ## 从一份流水，到可复查的结果
 

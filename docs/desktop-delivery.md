@@ -2,7 +2,7 @@
 
 ## v0.1.x 发布规则
 
-FundsTrace v0.1.2 正常启动**无需公钥或授权码**。每个实际版本 Tag 对应 GitHub Release，附 Windows x64 NSIS `.exe`，从 [Releases](https://github.com/Eysn0130/FundsTrace/releases) 下载并安装。[v0.1.2 已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.2)，原生构建和安装结果见下文交付记录；Windows GUI 验收不作为发布标记。安装包未签名，不能声称完成代码签名或 Windows 全面兼容验收。
+FundsTrace v0.1.3 正常启动**无需公钥或授权码**。每个实际版本 Tag 对应 GitHub Release，附 Windows x64 NSIS `.exe`，从 [Releases](https://github.com/Eysn0130/FundsTrace/releases) 下载并安装。[v0.1.3 已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.3)，原生构建和安装结果见下文交付记录；Windows GUI 验收不作为发布标记。安装包未签名，不能声称完成代码签名或 Windows 全面兼容验收。
 
 Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activation_required:false`，如实保留历史 `activated` 状态；`/license` 可直接进入系统。没有公钥、没有授权文件或存在损坏的历史授权都不阻塞业务，不生成测试授权来解锁。FT2／HMAC 验签接口、独立 `desktop/issuer/` 工具和已有材料保留，见 [历史授权维护](license-activation.md)。已发布 alpha.3 不随源码改变。
 
@@ -66,11 +66,36 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 ## 当前证据与尚未执行的边界
 
-v0.1.2 的 [PR CI](https://github.com/Eysn0130/FundsTrace/actions/runs/38840211625) 完成 Python／G6 392 项、React 37 项和 Windows 桌面 Node 27 项；[Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38840226553) 绑定发布源码 `d19a238a935f5169d830bc8cab2df6e7f6303576`，完成57项定向Python、27项Node、55条资源、13项包内后端、17项安装生命周期和11项安装后应用检查。旧版本的检查和限制保留在对应交付记录中，不能替代新候选。
+v0.1.3 的 [PR CI](https://github.com/Eysn0130/FundsTrace/actions/runs/38845930019) 完成 Python／G6 394 项及108个子测试、React 38项和 Windows 桌面 Node 34项；[Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38845925970) 绑定源码 `2b8eda98bb6a3dae8c8fa0b91ade36a5e6342ef5`，完成59项定向Python、34项Node、55条资源和13项包内后端检查。维护者与普通账户各完成18项安装生命周期、46项实际EXE应用检查（内含27组CSS视口／DPR）、15项冻结后端导入中断恢复，普通账户另有11项环境和清理检查。旧版证据保留在各版本记录中。
 
-本机 macOS arm64，无 Win10／11 交互式主机。Server 2022 上的安装后 renderer／单实例／退出自动化已执行；Win10／11 普通用户、系统 100%／150%／200% DPI、密集表格实际字体、原生保存／取消、运行中安装器正常关窗和导入任务中断恢复仍为 **NOT_EXECUTED（Win10／11 实机）**。这些边界不因自动化通过而改为 GUI 发布标签。
+本机 macOS arm64，无 Win10／11 交互式主机。Server 2022 上真实非管理员账户、中文profile／安装路径、程序外网阻断、安装后renderer／单实例／退出及包内导入进程恢复已执行；Win10／11实际系统100%／150%／200% DPI与跨屏、密集表格字体、交互安装向导、原生保存／取消、运行中安装器关窗和安装版任务中断后的人工恢复仍为 **NOT_EXECUTED（Win10／11 实机）**。程序出站阻断不等于整台主机物理断网，CSS／DPR模拟不等于系统缩放验收。
 
-具备设备后只补受影响流程：查询／勾选／上图／邻域和完整金额可读；中文目录 XLSX／图像保存及取消；活动导入退出与回执重开；离线启动与混合 DPI。只用专用合成测试用户，不能连接原业务实例或按名称猜测终止进程。
+具备设备后只补上述受影响流程，使用专用合成用户；不连接业务实例，不按名称猜测终止进程。当前未签名，SmartScreen／SAC仍须实机验证，不使用Windows GUI全面验收标记。
+
+## v0.1.3 交付记录
+
+2026-10-15：[Release v0.1.3](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.3)、[PR #6](https://github.com/Eysn0130/FundsTrace/pull/6) 与上述 Windows Actions 绑定源码 `2b8eda98bb6a3dae8c8fa0b91ade36a5e6342ef5`。main 合并提交 `5660812a819d4c52d7a2b4ac355c5fbd27f85c54` 包含该候选且仓库tree完全一致，之后仅补发布说明；Tag固定成功构建的原SHA。
+
+- 修复G6重载／重开后的持久导入接续，以及导入历史跳转丢任务ID。恢复同案原件、映射与账号选项，保留显式空主账号选择；活动／完成任务只读进度，重新预览后仍须用户确认。没有新队列、依赖或数据格式，详见[导入生命周期](import-lifecycle.md)。
+- 初次上传先解析内存内容再写原件，新增两项真实进程退出回归；连同既有新库／升级库的写入中与回执后退出，共6项过程回归。不保证文件与数据库之间任意断电、迁移断电或磁盘损坏恢复。
+- 空案隐藏无数据的图例和缩略图，保留跨案缩略图偏好；工作区变化、跨屏、拔屏、退出最大化／全屏时按DIP调整越界窗口，仍在工作区内的尺寸不重置。
+- 普通账户由CI新建，确认token非管理员、中文用户目录与自己的AppData；复用固定SHA-256的v0.1.2安装升级，安装根为中文空格路径。执行前核实三个有效防火墙profile启用，对安装版Electron和backend出站阻断，保留loopback。安装与数据路径检查、页面导航、恢复、退出、卸载留数据均通过；结束后由创建者清理私有临时目录，再移除profile／账户、规则并恢复防火墙设置。工具仅在Windows Actions运行，不进入安装包。
+- 两账户实际安装EXE均渲染G6、React与分析子窗；每页执行960×500、960×640、1280×640与DPR1／1.5／2的9组模拟，共每账户27组。真实指针点击导入／分析导航，确认单实例、正常关窗和backend端口释放。已检查[合成安装版renderer截图](https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.3/native-installed-app.png)，不覆盖系统原生边框和对话框。
+- 冻结后端以公开HTTP导入20,003行合成数据，观察活动后终止测试持有的进程；重开识别中断，核对无部分批次／流水／来源，再明确重新预览和提交。完成后20,000笔唯一流水、3笔重复，总额1,240,000.00；来源原件、源行与完成回执重开均核对，未重放写入。普通账户另复测同链；此证据是安装包后端，不是Windows人工恢复UI验收。
+- macOS隔离源码Electron实际完成中文文件上传→导入历史→G6恢复同一任务→重新预览保留空主账号选择→手动确认，仅写1笔123.45；九组CSS／DPR下空态按钮可命中、图例／缩略图不遮挡，偏好跨案保持，无页面异常。源码UI证据不替代Windows交互实机。
+- 下载的EXE、报告、截图和native manifest均重新计算SHA-256，与候选清单的完整相对路径核对。55条资源中23项与本地字节相同、29项仅有已核实的Windows检出CRLF转换、3项React生成物也与本地锁定构建摘要相同。完整win-unpacked目录由CI核对，未在macOS另行下载执行。
+
+| 文件总字节 | v0.1.2 | v0.1.3 |
+| --- | ---: | ---: |
+| 安装器 | 159802454 | 159805306 |
+| 安装后文件 | 500075954 | 500082615 |
+| Electron语言资源 | 1762536（3个） | 1762536（3个） |
+
+安装器仅增加2,852字节、安装后文件增加6,661字节，保留上版裁剪结果；文件总量不是磁盘分配空间。PE FileVersion为`0.1.3`，ProductVersion为`0.1.3.0`。同runner单次观测backend首次就绪1243ms、重开1092ms；安装EXE启动后工作区就绪维护者2822ms、普通账户1925ms。这些流程此前已启动过包内backend，不能作为冷启动或用户机器时限保证，也不能据此声明相对旧版提速。
+
+EXE SHA-256：`62755d8018e4516f8e0a0a5a264fec235ab1a767943d780903b3a408575bc729`。
+
+Release除原生报告外，提供[普通账户证据ZIP](https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.3/standard-user-compatibility.zip)，包含6份已核对的报告／截图；ZIP是维护者对这6份原件的封装，其成员摘要仍对应候选清单。构建报告`published:false`仅表示脚本本身不发布。v0.1.2记录中的空态遮挡已由本版修复，其他实机边界继续保留。
 
 ## v0.1.2 交付记录
 
