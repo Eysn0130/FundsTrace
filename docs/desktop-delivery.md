@@ -27,6 +27,24 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 下载使用原生保存对话框，处理取消／中断，拒绝任意远程 URL；服务生成成功和磁盘落盘完成分别处理，不自动打开下载 HTML。[DownloadItem](https://www.electronjs.org/docs/latest/api/download-item)
 
+## Windows 10／11 安装与启动边界
+
+当前目标是 Windows 10／11 **x64**。锁定的 [Electron 44.7.2](https://github.com/electron/electron/blob/v44.7.2/README.md#platform-support) 支持 Windows 10 及以后，Electron 44 已移除 Windows 32 位；本仓库不发布 32 位或原生 ARM64 包，也不凭上游声明推断最低 Win10 build 或任意机器兼容。
+
+| 链路 | 本项目处理与实际验证边界 |
+| --- | --- |
+| 下载与安装 | 单个 NSIS EXE，当前用户范围，不要求另装 Python、配置公钥或授权码；使用相同安装身份覆盖升级。Windows hosted runner 是管理员且关闭 UAC，因此不能用 CI 证明普通无管理员用户的全部交互路径。 |
+| 安全系统拦截 | 当前仍未签名。SmartScreen 可能告警；Win11 Smart App Control 还可能阻止没有信誉的未签名安装器或 backend。它与业务激活无关，不要求用户关闭系统防护来获得通过标记。签名和信誉需独立处理。 |
+| 启动反馈 | 先显示不含业务数据或脚本的本地启动提示，后端健康后同窗进入业务；准备中关闭会取消并清理本次归属服务，二次双击聚焦同一窗口。超时给出安全错误说明，不输出 token 或内部异常。 |
+| 首次报告 | 普通启动、案件和分析入口不再提前初始化 Matplotlib；首次报告才加载。实际报告附件仍由源码回归和包内请求验证，不通过删除依赖制造启动收益。 |
+| 体积 | 保留 Python onedir、Electron asar 和宿主文件白名单；Electron 语言资源保留 en-US、zh-CN、zh-TW。构建报告区分安装器字节、安装后字节、backend／语言资源与最大文件，不凭依赖名称裁剪动态模块。 |
+| 运行中升级 | 只向已核对路径的本应用请求正常关闭；疑似本应用进程路径不可读时返回检查失败，不能静默当空闲或按名称强杀。 |
+| 安装后启用 | 自动链使用固定摘要的 v0.1.1 作为旧版，升级后启动真正的 FundsTrace.exe，检查业务 DOM、新选择模块、免激活、单实例、正常关闭和端口释放，再卸载回读合成数据。实际执行结果绑定候选 SHA 记录。 |
+
+安装后 EXE 烟测仅在 Actions 专用合成用户运行，以 Electron 原生 loopback 调试接口观察自身页面；不增加生产 IPC、测试开关或共享授权。安全报告只含检查名与耗时，可保存的图片是 renderer 表面截图。它扩大了“直接启动 backend”的旧证据，但仍不是 Win10／11 普通账户、SmartScreen／SAC、断网首次使用、100%／150%／200% DPI、触屏或原生保存取消的实机验收。`guiAcceptance:false` 等限制继续保留。
+
+依据：[Windows Server 2022 runner](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)、[hosted runner 管理员权限](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)、[Microsoft SmartScreen／SAC](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)、[PyInstaller onedir／onefile](https://pyinstaller.org/en/stable/operating-mode.html)、[Electron 性能建议](https://www.electronjs.org/docs/latest/tutorial/performance)。
+
 ## 可重复 Windows 构建与验证
 
 Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
@@ -40,9 +58,9 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 未签名构建使用 `signExecutable:false` 保留应用EXE版本资源编辑；构建会读取PE文件属性并核对产品版本及文件主／次／补丁版本。脚本校对实际包内 manifest 与资源，再用包内程序验证中文／空格资源和数据路径、无授权访问业务、无 token 拒绝、一个合成案件崩溃后重开、无 `license.dat` 生成和 EOF 正常退出。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅含版本、相对产物文件名、内容哈希及检查范围，不含业务数据或 token。
 
-[Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以已公开且固定 SHA-256 的 v0.1.0 客户端作为旧版本，验证静默安装 → 当前候选版覆盖升级 → 安装后后端读取合成案件 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json`。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
+[Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以已公开且固定 SHA-256 的 v0.1.1 客户端作为旧版本，验证静默安装 → 当前候选版覆盖升级 → 安装后后端读取合成案件 → 真正 EXE 启动／单实例／正常关闭 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json` 和 `native-installed-app-smoke.json`。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
 
-工作流只有仓库读取权限，不接收生产授权／私钥，不执行 Release 写入。所选 EXE 或目录及安全报告仅留存 3 天，不上传整个 build 或运行目录。维护者核对成功运行、源码 SHA、产物摘要后单独发布。发布包与 Tag 必须绑定同一 green 源码；构建报告的 `published:false` 表示构建脚本本身没有发布。
+工作流只有仓库读取权限，不接收生产授权／私钥，不执行 Release 写入。所选 EXE 或目录、安全报告及合成窗口截图仅留存 3 天，不上传整个 build 或运行目录。维护者核对成功运行、源码 SHA、产物摘要后单独发布。发布包与 Tag 必须绑定同一 green 源码；构建报告的 `published:false` 表示构建脚本本身没有发布。
 
 清单记录 Windows 实际检出字节。未强制 LF 的许可证、SVG、锁文件可能由 `core.autocrlf` 转 CRLF；本地对照须只允许已核实的检出换行转换，安装器和报告按实际字节严格核对。
 

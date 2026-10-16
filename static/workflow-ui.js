@@ -289,9 +289,9 @@
         if (!current()) return;
         const graphNode = state.lastGraph.nodes.find(value => value.account === account);
         if (graphNode) graphNode.id_no = value || null;
+        toast(value ? '身份证号已保存并更新到图谱' : '已清除该账号身份证号');
         renderGraph();
         if (!current()) return;
-        toast(value ? '身份证号已保存并更新到图谱' : '已清除该账号身份证号');
         await showNodeDrawer(account, item);
       });
       action('#ndPhotoClr', '清除失败', async current => {
@@ -316,11 +316,16 @@
 
     for (const [name, original] of [['showNodeDrawer', showNodeDrawer], ['showEdgeDrawer', showEdgeDrawer]]) {
       const wrapped = async function (...args) {
+        if (name === 'showNodeDrawer') args[1] = state.graph?.findById?.(args[0]) || args[1];
         const previous = drawerBinding;
         const focus = name === 'showNodeDrawer' && previous?.account === args[0]
-          && previous.token === drawerRequest && isCurrentCase(previous.context) ? captureDrawerFocus(previous) : null;
+          && isCurrentCase(previous.context)
+          && (previous.token === drawerRequest || previous.preserveFocus && implicitFocus(document.activeElement))
+          ? captureDrawerFocus(previous) : null;
+        if (previous) previous.preserveFocus = false;
         const token = ++drawerRequest, context = caseContext();
-        const binding = drawerBinding = { token, context, account: args[0], item: args[1], profile: null, busy: false };
+        const binding = drawerBinding = { token, context, account: args[0], item: args[1], profile: null, busy: false,
+          focusIntent: focus, preserveFocus: false };
         try {
           const result = await original.apply(this, args);
           if (name === 'showNodeDrawer' && token === drawerRequest && isCurrentCase(context)) {
@@ -336,7 +341,18 @@
       if (name === 'showNodeDrawer') showNodeDrawer = wrapped; else showEdgeDrawer = wrapped;
     }
     const originalClose = closeDrawer;
-    closeDrawer = function (...args) { drawerRequest += 1; return originalClose.apply(this, args); };
+    closeDrawer = function (...args) {
+      const binding = drawerBinding;
+      if (binding) {
+        const preserve = args[0] === false && binding.token === drawerRequest && isCurrentCase(binding.context);
+        binding.focusIntent = preserve ? captureDrawerFocus(binding) : null;
+        // A graph redraw removes the focused control before the same account is
+        // reopened. Only that next request may carry its implicit blur forward.
+        binding.preserveFocus = preserve && !!binding.focusIntent;
+      }
+      drawerRequest += 1;
+      return originalClose.apply(this, args);
+    };
     $('#btnCloseDrawer').onclick = closeDrawer;
 
     const originalContext = loadContext;

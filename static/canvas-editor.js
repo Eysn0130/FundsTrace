@@ -1,5 +1,5 @@
 /* Classic script loaded after app.js. Its shared lexical bindings are the command
- * adapter boundary; app.js, the G6 renderer and graph interaction code stay frozen.
+ * adapter boundary; transient selection stays outside persistent history.
  * History contains IDs, display choices and geometry only, never graph facts/photos. */
 (function () {
   'use strict';
@@ -184,6 +184,7 @@
 
   async function restore(target, expected) {
     const context = caseContext();
+    const selectedIds = new Set(state.graphSelection?.ids || []);
     if (!state.caseId || state.graphLoading) return false;
     try { await replaceTracked(context, expected.trackedIds, target.trackedIds); }
     catch (error) {
@@ -227,6 +228,8 @@
       state.forceFit = false; state.justAdded = null; state.forceRebuild = true;
       renderGraph(); state.forceRebuild = false;
       state.graph?.get?.('group')?.setMatrix?.(copy(target.camera));
+      state.graphSelection?.rebind(selectedIds);
+      state.graphSelection?.refresh();
       state.graph?.paint(); scheduleGraphViewport(); scheduleGraphLabels();
       syncControls(); saveEdgeLabels();
       localStorage.setItem('fund_edge_type', state.edgeType);
@@ -483,10 +486,13 @@
 
   const geometry = snapshot => JSON.stringify([snapshot.positions, snapshot.edgeLabelPos, snapshot.edgeBendPos, snapshot.edgeSnapshotLabels]);
   function startGesture(event) {
+    // Node gestures are captured only after crossing the drag threshold. A
+    // selection click must not traverse the entire graph or create undo work.
     if (event.button !== undefined && event.button !== 0) return;
     if (history.status().busy || state.graphLoading || layoutJob) {
       event.preventDefault(); event.stopImmediatePropagation(); return;
     }
+    if (state.graphSelection && event.type === 'mousedown') return;
     gesture = { context: caseContext(), before: capture() };
   }
   function endGesture(label = '调整节点或连线') {
@@ -544,12 +550,21 @@
         if (geometry(before) !== geometry(after)) history.record('调整连线折点', before, after);
       });
     }, true);
-    window.addEventListener('mouseup', () => { Promise.resolve().then(() => endGesture()); });
+    window.addEventListener('mouseup', () => {
+      // Window listeners registered at pointer-down run after this listener.
+      // Let the selection controller commit its preview before ending history.
+      if (state.graphSelection?.status?.()?.dragging) return;
+      Promise.resolve().then(() => endGesture());
+    });
+    window.addEventListener('funds:selection-drag-start', startGesture);
+    window.addEventListener('funds:edge-drag-start', startGesture);
+    window.addEventListener('funds:selection-drag-end', () => endGesture('移动选中节点'));
     window.addEventListener('keydown', event => {
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.defaultPrevented) return;
       const target = event.target;
       if (target?.closest?.('input,select,textarea,[contenteditable]:not([contenteditable="false"])')) return;
       if ($$('.modal,dialog,[role="dialog"]').some(node => node.open || (!node.hidden && node.style.display !== 'none' && node.getClientRects().length))) return;
+      if (state.graphSelection && !$('#graphContainer').contains(document.activeElement)) return;
       const key = event.key.toLowerCase();
       if (key !== 'z' && key !== 'y') return;
       event.preventDefault(); travel(key === 'y' || event.shiftKey);

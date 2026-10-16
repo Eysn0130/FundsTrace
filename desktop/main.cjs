@@ -8,10 +8,13 @@ const { randomUUID } = require('node:crypto');
 const { launchConfig, HEADER, pageAllowed, popupKind, requestAllowed, downloadAllowed, windowBounds } = require('./host-policy.cjs');
 const { startBackend } = require('./backend.cjs');
 
+// Fixed, script-free content has no backend token, network access or business data.
+const startupUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>FundsTrace 正在启动</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f7fb;color:#202b3c;font:16px/1.7 system-ui,"Microsoft YaHei",sans-serif}main{padding:32px;max-width:440px}h1{font-size:26px;margin:0 0 12px}p{margin:8px 0;color:#526078}</style><main role="status"><h1>正在启动 FundsTrace</h1><p>正在准备工作区，首次启动可能需要一点时间。</p><p>可关闭此窗口取消启动。</p></main></html>`);
+
 app.setName('FundsTrace');
 app.setAppUserModelId('com.eysn.fundstrace');
 const synthetic = process.argv.includes('--synthetic');
-let backend, temporaryRoot, quitting = false, shutdownComplete = false, fatalShown = false;
+let backend, preparation, temporaryRoot, quitting = false, shutdownComplete = false, fatalShown = false;
 const owned = new Set();
 const windows = new Set();
 
@@ -30,7 +33,7 @@ else {
     if (shutdownComplete) return;
     event.preventDefault(); if (quitting) return; quitting = true;
     void (async () => {
-      try { await backend?.stop(); if (temporaryRoot) await fs.rm(temporaryRoot, { recursive: true, force: true }); }
+      try { await preparation?.catch(() => {}); await backend?.stop(); if (temporaryRoot) await fs.rm(temporaryRoot, { recursive: true, force: true }); }
       finally { shutdownComplete = true; app.quit(); }
     })();
   });
@@ -38,19 +41,13 @@ else {
   app.whenReady().then(async () => {
     try {
       if (synthetic && app.isPackaged) throw new Error('Synthetic mode is unavailable in installed builds.');
-      const dataDir = synthetic
-        ? path.join(temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'funds-trace-desktop-')), 'data')
-        : path.join(app.getPath('userData'), 'data');
-      await fs.mkdir(dataDir, { recursive: true });
-      const config = launchConfig({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, repoRoot: path.resolve(__dirname, '..'), python: process.env.FUNDS_TRACE_PYTHON, dataDir, synthetic });
-      backend = startBackend(config, { onExit: () => void fail('FundsTrace 数据服务已停止。请关闭后重新打开应用；未完成的任务会在下次启动时识别。') });
-      const { origin, token } = await backend.ready;
-      if (quitting) return;
+      let origin, token;
       const localSession = session.fromPartition(`funds-trace-${randomUUID()}`, { cache: false });
       localSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
       localSession.setPermissionCheckHandler(() => false);
       localSession.webRequest.onBeforeRequest((details, callback) => {
-        callback({ cancel: !requestAllowed(details.url, origin, details.webContentsId, owned) });
+        const startup = !origin && details.url === startupUrl && details.resourceType === 'mainFrame' && owned.has(details.webContentsId);
+        callback({ cancel: !startup && !requestAllowed(details.url, origin, details.webContentsId, owned) });
       });
       localSession.webRequest.onBeforeSendHeaders((details, callback) => {
         const headers = { ...details.requestHeaders };
@@ -98,16 +95,38 @@ else {
           void child.loadURL(url).catch(() => void fail('FundsTrace 分析页面无法打开，请重试。'));
           return { action: 'deny' };
         });
-        win.once('ready-to-show', () => win.show());
+        win.once('ready-to-show', () => { if (!quitting && !win.isDestroyed()) win.show(); });
         return win;
       }
+      Menu.setApplicationMenu(null);
+      const primary = createWindow();
+      await primary.loadURL(startupUrl);
+      if (quitting || primary.isDestroyed()) return;
+      primary.show();
+      preparation = (async () => {
+        const dataDir = synthetic
+          ? path.join(temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'funds-trace-desktop-')), 'data')
+          : path.join(app.getPath('userData'), 'data');
+        await fs.mkdir(dataDir, { recursive: true });
+        if (quitting || primary.isDestroyed()) return;
+        const config = launchConfig({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, repoRoot: path.resolve(__dirname, '..'), python: process.env.FUNDS_TRACE_PYTHON, dataDir, synthetic });
+        backend = startBackend(config, { onExit: () => void fail('FundsTrace 数据服务已停止。请关闭后重新打开应用；未完成的任务会在下次启动时识别。') });
+      })();
+      await preparation;
+      if (!backend || quitting || primary.isDestroyed()) return;
+      ({ origin, token } = await backend.ready);
+      if (quitting || primary.isDestroyed()) return;
       Menu.setApplicationMenu(Menu.buildFromTemplate([
         ...(process.platform === 'darwin' ? [{ label: 'FundsTrace', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] }] : []),
         { label: '文件', submenu: [{ label: '资金图谱', click: () => [...windows][0]?.loadURL(`${origin}/`) }, { label: '案件与导入', click: () => [...windows][0]?.loadURL(`${origin}/workspace/`) }, { type: 'separator' }, { role: 'quit' }] },
         { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
         { label: '显示', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] }
       ]));
-      await createWindow().loadURL(`${origin}/`);
-    } catch { await fail('FundsTrace 启动失败。请确认本机后端与应用资源完整，或在开发环境完成依赖安装后重试。'); }
+      await primary.loadURL(`${origin}/`);
+    } catch (error) {
+      await fail(error?.message === 'FundsTrace backend startup timed out'
+        ? 'FundsTrace 启动超时。请关闭后重新打开应用；若仍无法启动，请检查可用磁盘空间，或重新安装当前版本。已有案件保留在用户数据目录。'
+        : 'FundsTrace 无法完成启动。请关闭后重新打开应用；若仍失败，请重新安装当前版本并确认用户数据目录可写。重新安装不会主动删除已有案件。');
+    }
   });
 }

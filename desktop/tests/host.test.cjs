@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const http = require('node:http');
+const vm = require('node:vm');
 const { launchConfig, sameOrigin, pageAllowed, popupKind, requestAllowed, downloadAllowed, HEADER, windowBounds } = require('../host-policy.cjs');
 const { startBackend, verifyHealth } = require('../backend.cjs');
 
@@ -156,4 +157,133 @@ test('distribution manifest prevents cross-platform packaging and includes only 
   if (!fs.existsSync(path.join(builder.extraResources[0].from, 'build-manifest.json'))) {
     await assert.rejects(builder.beforePack({ electronPlatformName: 'win32', arch: 1 }));
   }
+});
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+// Exercise the real Main entry and Electron lifecycle events without a business server.
+function mainHarness({ mkdir = async () => {}, synthetic = false } = {}) {
+  const app = new EventEmitter();
+  const state = { windows: [], errors: [], backendStarts: 0, backendStops: 0, quitCount: 0, removed: [] };
+  const ready = deferred();
+  app.isPackaged = false;
+  app.setName = app.setAppUserModelId = () => {};
+  app.requestSingleInstanceLock = () => true;
+  app.whenReady = () => Promise.resolve();
+  app.getPath = () => path.join(os.tmpdir(), 'FundsTrace synthetic user');
+  app.quit = () => {
+    let prevented = false;
+    app.emit('before-quit', { preventDefault: () => { prevented = true; } });
+    if (!prevented) state.quitCount++;
+  };
+  class Window extends EventEmitter {
+    constructor(options) {
+      super(); this.options = options; this.loads = []; this.shown = 0; this.focused = 0;
+      this.webContents = new EventEmitter(); this.webContents.id = state.windows.length + 1;
+      this.webContents.setWindowOpenHandler = handler => { this.popup = handler; };
+      this.webContents.isDestroyed = () => this.destroyed;
+      state.windows.push(this);
+    }
+    async loadURL(url) { this.loads.push(url); this.emit('ready-to-show'); }
+    show() { this.shown++; }
+    focus() { this.focused++; }
+    isMinimized() { return true; }
+    restore() { this.restored = true; }
+    isDestroyed() { return Boolean(this.destroyed); }
+    getBounds() { return { x: 0, y: 0, width: 1440, height: 940 }; }
+    close() {
+      this.destroyed = true; this.emit('closed');
+      if (state.windows.every(win => win.destroyed)) app.emit('window-all-closed');
+    }
+  }
+  const localSession = new EventEmitter();
+  localSession.setPermissionRequestHandler = handler => { state.permission = handler; };
+  localSession.setPermissionCheckHandler = handler => { state.permissionCheck = handler; };
+  localSession.webRequest = {
+    onBeforeRequest: handler => { state.request = handler; },
+    onBeforeSendHeaders: handler => { state.headers = handler; },
+  };
+  const electron = { app, BrowserWindow: Window, session: { fromPartition: () => localSession },
+    screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }) },
+    Menu: { buildFromTemplate: value => value, setApplicationMenu: () => {} },
+    dialog: { showErrorBox: (_title, message) => state.errors.push(message) } };
+  const policy = { ...require('../host-policy.cjs'), launchConfig: input => input };
+  const filesystem = { mkdir, mkdtemp: async () => path.join(os.tmpdir(), 'FundsTrace owned temporary'),
+    rm: async root => { state.removed.push(root); } };
+  const source = fs.readFileSync(path.join(__dirname, '../main.cjs'), 'utf8');
+  vm.runInNewContext(source, { require: name => {
+    if (name === 'electron') return electron;
+    if (name === './host-policy.cjs') return policy;
+    if (name === 'node:fs/promises') return filesystem;
+    if (name === './backend.cjs') return { startBackend: (_config, options) => {
+      state.backendStarts++; state.backendOptions = options;
+      return { ready: ready.promise, stop: async () => { state.backendStops++; } };
+    } };
+    return require(name);
+  }, __dirname: path.resolve(__dirname, '..'), process: { argv: ['FundsTrace', ...(synthetic ? ['--synthetic'] : [])], env: {}, platform: 'win32' } });
+  return { app, state, ready, flush: async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); } };
+}
+
+test('Main shows a restricted startup window before backend readiness and focuses it on a second launch', async () => {
+  const harness = mainHarness(); await harness.flush();
+  const { state } = harness;
+  assert.equal(state.backendStarts, 1);
+  assert.equal(state.windows.length, 1, 'slow backend must still have a visible application window');
+  const win = state.windows[0];
+  assert.ok(win.shown > 0);
+  assert.match(decodeURIComponent(win.loads[0]), /正在启动/);
+  assert.match(decodeURIComponent(win.loads[0]), /default-src 'none'/);
+  assert.equal(win.options.webPreferences.sandbox, true);
+  assert.equal(win.options.webPreferences.contextIsolation, true);
+  assert.equal(win.options.webPreferences.nodeIntegration, false);
+  let response;
+  const request = { url: win.loads[0], resourceType: 'mainFrame', webContentsId: win.webContents.id };
+  state.request(request, value => { response = value; }); assert.equal(response.cancel, false);
+  state.request({ ...request, url: 'https://example.com/' }, value => { response = value; }); assert.equal(response.cancel, true);
+  state.headers({ ...request, requestHeaders: { [HEADER]: 'renderer-supplied' } }, value => { response = value; });
+  assert.equal(response.requestHeaders[HEADER], undefined);
+  harness.app.emit('second-instance'); assert.equal(win.focused, 1); assert.equal(win.restored, true);
+  harness.ready.resolve({ origin, token: 'main-only-test-token' }); await harness.flush();
+  assert.deepEqual(win.loads.slice(1), [`${origin}/`]);
+  state.request(request, value => { response = value; }); assert.equal(response.cancel, true, 'startup document is unavailable after readiness');
+  state.headers({ ...request, url: `${origin}/api/cases`, requestHeaders: {} }, value => { response = value; });
+  assert.equal(response.requestHeaders[HEADER], 'main-only-test-token');
+  assert.ok(!win.loads[0].includes('main-only-test-token'));
+  win.close(); await harness.flush(); assert.equal(state.backendStops, 1); assert.equal(state.quitCount, 1);
+});
+
+test('closing during preparation removes owned temporary state and never launches a late backend', async () => {
+  const directory = deferred();
+  const harness = mainHarness({ mkdir: () => directory.promise, synthetic: true }); await harness.flush();
+  assert.equal(harness.state.windows.length, 1);
+  harness.state.windows[0].close(); await harness.flush();
+  assert.equal(harness.state.quitCount, 0, 'quit waits for preparation cleanup');
+  directory.resolve(); await harness.flush();
+  assert.equal(harness.state.backendStarts, 0);
+  assert.equal(harness.state.removed.length, 1);
+  assert.equal(harness.state.quitCount, 1);
+});
+
+test('closing a startup window stops its backend and ignores readiness arriving after close', async () => {
+  const harness = mainHarness(); await harness.flush();
+  const win = harness.state.windows[0]; assert.ok(win, 'startup window exists before readiness');
+  win.close(); await harness.flush(); assert.equal(harness.state.backendStops, 1);
+  harness.ready.resolve({ origin, token: 'never-rendered' }); await harness.flush();
+  assert.equal(win.loads.length, 1); assert.equal(harness.state.windows.length, 1);
+  assert.deepEqual(harness.state.errors, []);
+});
+
+test('a startup failure reports a safe recovery message and stops the owned backend', async () => {
+  const harness = mainHarness(); await harness.flush();
+  harness.ready.reject(new Error('FundsTrace backend startup timed out')); await harness.flush();
+  assert.equal(harness.state.errors.length, 1);
+  assert.match(harness.state.errors[0], /启动超时/);
+  assert.match(harness.state.errors[0], /重新打开/);
+  assert.equal(harness.state.backendStops, 1);
+  assert.equal(harness.state.windows[0].loads.length, 1);
+  assert.equal(harness.state.quitCount, 1);
 });

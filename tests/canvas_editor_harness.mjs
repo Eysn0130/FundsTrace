@@ -519,6 +519,45 @@ test('mouse gestures record geometry, exclude camera-only movement and capture d
   await f.h.element('#btnUndo').onclick(); assert.equal(f.state.edgeBendPos['SYN-A=>SYN-B'][0].x, 7);
 });
 
+test('group preview commits after mouseup and records exactly one geometry undo', async () => {
+  const f = editor(); let dragging = true;
+  f.state.graphSelection = { status: () => ({ dragging }) };
+  f.event('funds:selection-drag-start');
+  f.event('mouseup'); await flush();
+  assert.equal(f.history.status().count, 0, 'preview has not committed its geometry yet');
+  f.models[0].x += 40; f.models[1].x += 40;
+  dragging = false; f.event('funds:selection-drag-end');
+  assert.equal(f.history.status().count, 1);
+  assert.equal(f.history.status().undoLabel, '移动选中节点');
+  f.event('mouseup'); await flush();
+  assert.equal(f.history.status().count, 1, 'the later native event cannot add another history entry');
+});
+
+test('selection capture optimization still blocks native graph gestures while history or layout is busy', async () => {
+  const f = editor(); f.state.graphSelection = { status: () => ({ dragging: false }) };
+  const gate = deferred(), busy = f.history.run('合成等待', () => gate.promise);
+  let prevented = 0, stopped = 0;
+  const attempt = () => f.gesture('mousedown', { type: 'mousedown', button: 0,
+    preventDefault() { prevented += 1; }, stopImmediatePropagation() { stopped += 1; } });
+  attempt();
+  assert.equal(prevented, 1); assert.equal(stopped, 1);
+  gate.resolve(); await busy;
+  f.h.run('layoutJob = { requestId: 1 }'); attempt();
+  assert.equal(prevented, 2); assert.equal(stopped, 2);
+  f.h.run('layoutJob = null'); attempt();
+  assert.equal(prevented, 2, 'an idle selection click bypasses the geometry snapshot');
+});
+
+test('custom graph gesture cancellation receives the original event during a busy command', async () => {
+  const f = editor(), gate = deferred(), busy = f.history.run('合成等待', () => gate.promise);
+  for (const type of ['funds:selection-drag-start', 'funds:edge-drag-start']) {
+    let cancelled = false;
+    assert.doesNotThrow(() => f.event(type, { type, preventDefault() { cancelled = true; }, stopImmediatePropagation() {} }));
+    assert.equal(cancelled, true);
+  }
+  gate.resolve(); await busy;
+});
+
 test('keyboard shortcuts skip native edit controls and active dialogs', async () => {
   const f = editor(); await f.h.run('trackFlows([2])');
   let prevented = 0;

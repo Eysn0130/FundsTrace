@@ -7,6 +7,7 @@ module.exports = {
   directories: { output: '../build/desktop/electron' },
   files: ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs'],
   asar: true,
+  electronLanguages: ['en-US', 'zh-CN', 'zh-TW'],
   extraResources: [
     { from: backend, to: 'backend', filter: ['**/*'] },
     { from: path.join(__dirname, 'licenses/Apache-2.0.txt'), to: 'licenses/Analytix-Apache-2.0.txt' }

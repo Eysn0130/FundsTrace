@@ -13,7 +13,7 @@ import tempfile
 from urllib.parse import unquote, urlsplit
 
 
-GRAPH_ASSET_FILES = ("index.html", "app.js", "graph-view.js", "graph-layout.js", "graph-benchmark.js",
+GRAPH_ASSET_FILES = ("index.html", "app.js", "graph-view.js", "graph-layout.js", "graph-selection.js", "graph-benchmark.js",
                      "style.css", "vendor/g6.min.js", "money.js", "logo.svg", "favicon.svg")
 
 
