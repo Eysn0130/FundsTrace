@@ -1,0 +1,2 @@
+# Keep the public CSV checksum stable across platform checkouts.
+*.csv text eol=lf

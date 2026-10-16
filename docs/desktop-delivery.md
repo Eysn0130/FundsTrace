@@ -68,18 +68,21 @@ v0.1.1源码完整回归375项通过；[Windows Actions](https://github.com/Eysn
 
 安装器未签名；Windows GUI／DPI、原生保存取消、触屏及活动导入GUI恢复未实机验收。报告中的 `installerLifecycle:passed` 限于上述静默链；`guiAcceptance:false`／`installedAcceptance:false`保留；`published:false`表示构建脚本未执行GitHub发布，实际公开Release另行核对。
 
+品牌展示支线新增的 Logo／桌面图标仅为后续源码候选，未包含在此 Tag 或已发布的 v0.1.1 安装器中；集成到后续安装包仍需另行构建与验证。
+
 ## 2026-10-15 工作台源码候选阶段（发布前记录）
 
-以下记录发布前的工作台源码候选；查询折叠、流水全览、画布历史及流程修复；见 [设计验收](../design-qa.md) 和 [使用指南](workspace-guide.md)。静态资源白名单已加入六个工作台脚本和24个本地 Tabler SVG及许可；本机资源检查通过。
+以下是发布前的工作台源码候选记录，涉及查询折叠、流水全览、画布历史及流程修复；见 [设计验收](../design-qa.md) 和 [使用指南](workspace-guide.md)。静态资源白名单已加入六个工作台脚本和24个本地 Tabler SVG及许可；本机资源检查通过。
 
 [Windows目录候选 38784969693](https://github.com/Eysn0130/FundsTrace/actions/runs/38784969693) 已成功，绑定源码 `02b6c303d8a4d9f0cf0b390999969a482efdb771`，非安装器模式。56项定向Python、22项桌面Node、React类型检查／构建、54项资源记录及11项包内后端检查通过。54条资源与本地对照：25项原字节、29项仅Windows检出CRLF；报告和锁文件摘要均核对。CI为1542个产物文件生成摘要，本机仅分段读取安全报告，没有重新下载／核验整个目录。
 
-本轮没有生成新安装器、改变版本、打Tag或发布Release。`installerLifecycle:not-run`、`guiAcceptance:false`、`installedAcceptance:false`、`published:false`。下方 v0.1.0 的绿色记录不覆盖本轮UI；后续选定版本后须绑定对应候选执行安装生命周期。Windows GUI／DPI／原生保存取消仍未执行。此后仅补文档记录，不改变此次原生构建所用运行源码与资源。
+该阶段未生成新安装器、改变版本、打 Tag 或发布 Release，报告为 `installerLifecycle:not-run`、`guiAcceptance:false`、`installedAcceptance:false`、`published:false`。当时的 v0.1.0 绿色记录不覆盖这批 UI；后续 v0.1.1 已以新的源码 SHA 和安装器单独完成静默生命周期，见上文。该目录候选本身的 Windows GUI／DPI／原生保存取消仍未执行，后续文档不改变其原生构建所用源码与资源。
 
 ## v0.1.0 交付记录
 
 2026-10-15：[Release v0.1.0](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0) 与 [Windows Actions 38746367500](https://github.com/Eysn0130/FundsTrace/actions/runs/38746367500) 绑定源码 `d7547734f91546fb3b81b30a7e4993b644b77154`。Tag 指向该成功候选，后续仅补交付文档。
 
+- 该阶段源码 API 21 条、React 37 条、前端构建及 API 契约检查通过；免激活回归在修复前失败、修复后通过，源码浏览器从 `/license` 进入业务成功。
 - Windows x64：56 项定向 Python、22 项桌面 Node、React 类型检查／构建通过。
 - 23 项包内资源与 11 项后端检查通过：无授权访问、token 拒绝、中文／空格路径、合成案件崩溃重开、无授权文件生成、EOF 停止。
 - 14 项安装生命周期检查通过：固定 alpha.3 安装 → 0.1.0 覆盖升级 → 安装后真实 backend 读写和重开 → 静默卸载；注册入口与程序移除，保留的两个合成案件及哨兵可回读。测试结束后仅清理该 runner 自建状态。
