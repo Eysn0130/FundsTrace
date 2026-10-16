@@ -7,6 +7,14 @@ on:
         description: Build unsigned NSIS installer and verify isolated lifecycle
         type: boolean
         default: false
+      transfer_run_id:
+        description: Transfer a successful existing candidate to an empty draft; do not rebuild
+        type: string
+        default: ''
+      draft_tag:
+        description: Existing draft tag pointing to the selected candidate commit
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -17,6 +25,7 @@ concurrency:
 
 jobs:
   windows-candidate:
+    if: ${{ inputs.transfer_run_id == '' }}
     runs-on: windows-2022
     timeout-minutes: 45
     defaults:
@@ -106,3 +115,24 @@ jobs:
             源码 FundsTrace/build/desktop/native-installed-app-smoke.json
             源码 FundsTrace/build/desktop/native-import-recovery-smoke.json
             源码 FundsTrace/build/desktop/standard-user/
+
+  transfer-verified-candidate:
+    if: ${{ inputs.transfer_run_id != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+      - name: Verify existing native evidence and upload exact files to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.transfer_run_id }}
+          DRAFT_TAG: ${{ inputs.draft_tag }}
+        run: python scripts/transfer_windows_candidate.py --run-id "$CANDIDATE_RUN" --tag "$DRAFT_TAG"
