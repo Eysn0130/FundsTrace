@@ -9,11 +9,20 @@
 
 **[下载 Windows 版](https://github.com/Eysn0130/FundsTrace/releases/latest)** · [使用指南](docs/workspace-guide.md) · [开发贡献](CONTRIBUTING.md)
 
-[![FundsTrace 真实工作台：合成流水从云杉工坊经三路分流，在远帆供应归集；点击观看操作演示](docs/media/workspace-hero.png)](docs/media/fundstrace-demo.mp4)
+[![FundsTrace 真实工作台：合成流水从云杉工坊经三路分流，在远帆供应归集；点击查看原图](docs/media/workspace-hero.png)](docs/media/workspace-hero.png)
 
 <sub>真实工作台 · 12 笔合成流水 / 7 个虚构账户。录制基于 v0.1.1 源码及本支线品牌资源；新标识尚未进入已发布安装包。[查看原图](docs/media/workspace-hero.png)</sub>
 
-**[▶ 观看 31 秒短演示：导入 → 追踪 → 整理 → 导出](docs/media/fundstrace-demo.mp4)**　·　[下载合成样例并跟做](docs/examples/harbor-path/README.md)
+<details>
+<summary><strong>▶ 观看操作预览：导入 → 追踪 → 整理 → 导出</strong></summary>
+
+![12 秒真实操作节选：导入、追踪、整理与导出](docs/media/fundstrace-preview.gif)
+
+12 秒操作节选，全部为合成数据。[下载 31 秒完整演示（MP4）](docs/media/fundstrace-demo.mp4?raw=1) · [下载样例并跟做](docs/examples/harbor-path/README.md)
+
+</details>
+
+[下载 31 秒完整演示（MP4）](docs/media/fundstrace-demo.mp4?raw=1) · [合成样例与复现步骤](docs/examples/harbor-path/README.md)
 
 当前为预览版。已发布 [v0.1.1](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.1)，支持 Windows x64，安装后无需授权码；安装包未签名，Windows GUI、DPI 与原生保存交互尚未实机验收。[安装与验证范围](docs/desktop-delivery.md)
 

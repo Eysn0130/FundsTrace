@@ -4,7 +4,7 @@
 
 **名称、账号、交易、日期和业务背景全部虚构。** `SYN-` 账号不是可用银行账号，每笔摘要均标明“合成示例”。样例展示账单之间的时间与往来关系，不证明资金用途或交易性质。
 
-[样例 CSV](fundstrace-synthetic.csv) · [样例 XLSX](fundstrace-synthetic.xlsx) · [完整短演示](../../media/fundstrace-demo.mp4) · [真实工作台](../../media/workspace-hero.png)
+[样例 CSV](fundstrace-synthetic.csv) · [样例 XLSX](fundstrace-synthetic.xlsx) · [完整演示下载](../../media/fundstrace-demo.mp4?raw=1) · [真实工作台](../../media/workspace-hero.png)
 
 ## 样例中的路径
 
