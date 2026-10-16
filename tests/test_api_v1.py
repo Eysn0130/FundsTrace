@@ -234,7 +234,9 @@ def test_upload_and_mapping_errors_are_actionable_and_failed_upload_is_cleaned(c
     response = client.post(base, files={"file": ("/private/synthetic/bad.csv", b"cannot,identify\none,two")})
     assert_error(response, 400, "invalid_import_file")
     assert "/private" not in response.text
-    assert list((database.DATA_DIR / "uploads").iterdir()) == []
+    # Invalid input is now parsed before creating its storage directory.
+    uploads = database.DATA_DIR / "uploads"
+    assert not uploads.exists() or list(uploads.iterdir()) == []
     assert_error(client.post(base), 422)
     preview = upload(client, cid)
     route = f"/api/v1/cases/{cid}/imports/{preview['import_id']}"
