@@ -100,20 +100,43 @@ try {
     [Console]::Error.WriteLine("Standard-user compatibility failed at $Stage.")
 } finally {
     try {
+        $Stage = 'removeFirewallRules'
         foreach ($Name in $RuleNames) { Remove-NetFirewallRule -Name $Name }
+        $Report.checks.firewallRulesRemoved = $true
+        $Stage = 'restoreFirewallProfiles'
         foreach ($Profile in $Profiles) { Set-NetFirewallProfile -Name $Profile.Name -Enabled $Profile.Enabled }
+        $Report.checks.firewallProfilesRestored = $true
+        $Stage = 'releaseTestProcess'
         if ($null -ne $Child -and -not $Child.HasExited) { throw 'Owned test process remains active; do not delete its profile.' }
+        if ($null -ne $Child) { $Child.Dispose(); $Child = $null }
+        $Report.checks.testProcessClosed = $true
         if ($null -ne $User) {
-            $Profile = Get-CimInstance Win32_UserProfile -Filter ("SID='" + $User.SID.Value + "'")
+            $Stage = 'unloadTestProfile'
+            $Deadline = [DateTime]::UtcNow.AddSeconds(60)
+            do {
+                $Profile = Get-CimInstance Win32_UserProfile -Filter ("SID='" + $User.SID.Value + "'")
+                if ($null -eq $Profile -or -not $Profile.Loaded) { break }
+                # Profile service cleanup can finish after the final process exits.
+                # Wait for that owned SID; never force-unload a hive or kill by name.
+                Start-Sleep -Milliseconds 500
+            } while ([DateTime]::UtcNow -lt $Deadline)
             if ($null -ne $Profile) {
                 if ($Profile.Loaded) { throw 'Owned test profile remains loaded.' }
                 $Profile | Remove-CimInstance
             }
+            $Report.checks.testProfileRemoved = $true
+            $Stage = 'removeTestAccount'
             Remove-LocalUser -SID $User.SID
+            $Report.checks.testAccountRemoved = $true
         }
+        $Stage = 'removeTestTemporary'
         if ($RootOwned) { Remove-Item -LiteralPath $StageRoot -Recurse -Force }
+        $Report.checks.testTemporaryRemoved = $true
         $Report.checks.cleanup = $true
-    } catch { $Failed = $true; if (-not $Report.failedCheck) { $Report.failedCheck = 'cleanup' } }
+    } catch {
+        $Failed = $true; if (-not $Report.failedCheck) { $Report.failedCheck = $Stage }
+        $Report.cleanupFailureType = $_.Exception.GetType().FullName
+    }
     if ($null -ne $Child) { $Child.Dispose() }
     $Report.status = $(if ($Failed) { 'failed' } else { 'passed' })
     $Report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ReportDirectory 'compatibility.json') -Encoding utf8
