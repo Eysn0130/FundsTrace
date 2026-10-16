@@ -1,9 +1,40 @@
-"""Distribution boundary: a public-key file must contain no secret tail."""
+"""Distribution resources must cover runtime pages and contain no secret tail."""
+from html.parser import HTMLParser
+from urllib.parse import urlsplit
+
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from scripts import build_desktop_backend as builder
+
+
+def test_resource_boundary_includes_runtime_html_scripts(tmp_path, monkeypatch):
+    class ScriptSources(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            if tag == 'script':
+                source = dict(attrs).get('src')
+                if source:
+                    references.add(urlsplit(source).path.lstrip('/'))
+
+    references = set()
+    for page in ('index.html', 'analysis.html', 'license.html'):
+        parser = ScriptSources()
+        parser.feed((builder.ROOT / 'static' / page).read_text(encoding='utf-8'))
+        parser.close()
+    assert references
+    assert all(name.startswith('static/') for name in references)
+    # Exercise the actual resource collector with synthetic files, so this does
+    # not read local activation material or require an existing frontend build.
+    names = {'LICENSE', 'THIRD_PARTY_NOTICES.md', 'frontend/dist/index.html',
+             *('static/' + name for name in builder.STATIC_NAMES), *references}
+    for name in names:
+        file = tmp_path / name
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text('synthetic resource', encoding='utf-8')
+    monkeypatch.setattr(builder, 'ROOT', tmp_path)
+    packaged = {relative.replace('\\', '/') for _, relative in builder.resource_files()}
+    assert references <= packaged, f'Runtime scripts missing from desktop resources: {sorted(references - packaged)}'
 
 
 @pytest.mark.parametrize('tail,accepted', [

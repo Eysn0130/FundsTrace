@@ -80,6 +80,8 @@ jobs:
             源码 FundsTrace/build/desktop/backend/funds-trace-backend/build-manifest.json
             源码 FundsTrace/build/desktop/native-backend-smoke.json
             源码 FundsTrace/build/desktop/native-installer-smoke.json
+            源码 FundsTrace/build/desktop/native-installed-app-smoke.json
+            源码 FundsTrace/build/desktop/native-installed-app.png
             源码 FundsTrace/build/desktop/windows-candidate.json
             源码 FundsTrace/build/desktop/windows-candidate.sha256
       - name: Retain safe failure diagnostics
@@ -92,3 +94,4 @@ jobs:
           path: |
             源码 FundsTrace/build/desktop/native-installer-preflight.json
             源码 FundsTrace/build/desktop/native-installer-smoke.json
+            源码 FundsTrace/build/desktop/native-installed-app-smoke.json

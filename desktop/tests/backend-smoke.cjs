@@ -20,7 +20,7 @@ async function waitForExit(exited) {
 
 function request({ origin, token }, endpoint, options = {}) {
   return fetch(`${origin}${endpoint}`, { ...options, headers: { [HEADER]: token, ...options.headers },
-    redirect: 'manual', signal: AbortSignal.timeout(10000) });
+    redirect: 'manual', signal: options.signal || AbortSignal.timeout(10000) });
 }
 
 async function checkNormalStartup(ready) {
@@ -37,7 +37,15 @@ async function checkNormalStartup(ready) {
     const page = await request(ready, endpoint);
     assert.equal(page.status, 200, endpoint);
     assert.match(page.headers.get('content-type'), /text\/html/, endpoint);
-    await page.arrayBuffer();
+    const html = await page.text();
+    for (const match of html.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["']/gi)) {
+      const url = new URL(match[1], `${ready.origin}${endpoint}`);
+      assert.equal(url.origin, ready.origin, 'entry scripts must remain local');
+      const script = await request(ready, `${url.pathname}${url.search}`);
+      assert.equal(script.status, 200, 'packaged entry script must be served');
+      assert.match(script.headers.get('content-type'), /javascript/);
+      await script.arrayBuffer();
+    }
   }
   const legacy = await request(ready, '/api/cases');
   assert.equal(legacy.status, 200);
@@ -63,7 +71,7 @@ async function checkNormalStartup(ready) {
   const report = {
     schemaVersion: 1, status: 'running', platform: process.platform, arch: process.arch,
     node: process.versions.node, testState: 'temporary-database-with-one-synthetic-case',
-    checks: {}, limits: { gui: false, importRecovery: false, productionActivation: false },
+    checks: {}, timings: {}, limits: { gui: false, importRecovery: false, productionActivation: false },
   };
   if (reportPath) await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'FundsTrace 封装烟测 '));
@@ -91,9 +99,11 @@ async function checkNormalStartup(ready) {
       owned.push(instance);
       return instance;
     }
+    const firstStarted = performance.now();
     const first = boot();
     stage = 'first-boot-without-activation';
     const firstReady = await first.backend.ready;
+    report.timings.firstBackendReadyMs = Math.round(performance.now() - firstStarted);
     await checkNormalStartup(firstReady);
     stage = 'database-at-requested-path';
     assert.equal((await fs.stat(path.join(dataDir, 'fund.duckdb'))).isFile(), true);
@@ -107,14 +117,35 @@ async function checkNormalStartup(ready) {
     assert.match(createdCase.id, /^[1-9]\d*$/);
     assert.equal(createdCase.name, 'Synthetic packaged smoke case');
     report.checks.syntheticCaseCreatedWithoutActivation = true;
+    stage = 'packaged-report-after-lazy-import';
+    const reportStarted = performance.now();
+    const reportResponse = await request(firstReady, '/api/analysis/report', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ case_id: createdCase.id, params: { algorithms: ['cycles'] } }),
+      signal: AbortSignal.timeout(60000),
+    });
+    assert.equal(reportResponse.status, 200);
+    assert.match(reportResponse.headers.get('content-type'), /text\/html/);
+    assert.match(reportResponse.headers.get('content-disposition'), /attachment/);
+    const reportHtml = await reportResponse.text();
+    const snapshot = reportHtml.match(/<script\b[^>]*id="funds-trace-report-data"[^>]*>([\s\S]*?)<\/script>/);
+    assert.ok(snapshot, 'report must retain its machine-readable snapshot');
+    const reportData = JSON.parse(snapshot[1]);
+    assert.equal(reportData.schema_version, 'funds-report.v1');
+    assert.equal(reportData.case_id, createdCase.id);
+    report.timings.firstReportMs = Math.round(performance.now() - reportStarted);
+    report.checks.packagedReportAfterLazyImport = true;
+    report.checks.localEntryScriptsServed = true;
     stage = 'owned-child-forced-exit';
     assert.equal(first.child.kill('SIGKILL'), true);
     await waitForExit(first.exited);
     report.checks.ownedChildForcedExit = true;
 
+    const reopenStarted = performance.now();
     const reopened = boot(); // The same data directory, after the held child has exited.
     stage = 'reopen-without-activation';
     const ready = await reopened.backend.ready;
+    report.timings.reopenedBackendReadyMs = Math.round(performance.now() - reopenStarted);
     const { legacyCases, versionedCases } = await checkNormalStartup(ready);
     assert.ok(legacyCases.some(item => String(item.id) === createdCase.id && item.name === createdCase.name));
     assert.ok(versionedCases.some(item => item.id === createdCase.id && item.name === createdCase.name));

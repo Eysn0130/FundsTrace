@@ -40,7 +40,15 @@ try {
 
     function Get-InstalledProcesses {
         @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | Where-Object {
-            if ($_.ProcessId -eq $InstallerProcessId -or -not $_.ExecutablePath) { return $false }
+            if ($_.ProcessId -eq $InstallerProcessId) { return $false }
+            if ([string]::IsNullOrWhiteSpace($_.ExecutablePath)) {
+                # A name is never authority to close a process. It can only
+                # establish that missing path access makes an idle check unsafe.
+                if ($_.Name -in @('FundsTrace.exe', 'funds-trace-backend.exe')) {
+                    throw 'A possible FundsTrace process path could not be checked.'
+                }
+                return $false
+            }
             $executable = [System.IO.Path]::GetFullPath($_.ExecutablePath)
             $executable.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
         })

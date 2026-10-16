@@ -76,6 +76,33 @@ function checkDirectory(directory, excludedPid = process.pid, rejectInstallerInI
   });
 }
 
+test('Windows process gate treats an unreadable possible FundsTrace path as check failure without guessing ownership', { skip: !powershell }, t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'FundsTrace unreadable gate '));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  // Replace only WMI enumeration. Run the actual installer helper, including
+  // its failure exit code, with fixed synthetic process records and no real PID.
+  function inspect(records) {
+    const command = `function Get-CimInstance { [CmdletBinding()] param([string]$ClassName) ConvertFrom-Json $env:FUNDS_TRACE_TEST_PROCESSES }; & $env:FUNDS_TRACE_TEST_HELPER -InstallDirectory $env:FUNDS_TRACE_TEST_ROOT -InstallerProcessId 123 -TimeoutSeconds 0; exit $LASTEXITCODE`;
+    return spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+      env: { ...process.env, FUNDS_TRACE_TEST_HELPER: helper, FUNDS_TRACE_TEST_ROOT: directory, FUNDS_TRACE_TEST_PROCESSES: JSON.stringify(records) },
+      encoding: 'utf8', timeout: 15000, windowsHide: true,
+    });
+  }
+  for (const name of ['FundsTrace.exe', 'funds-trace-backend.exe', 'FUNDSTRACE.EXE']) {
+    const result = inspect([{ ProcessId: 456, Name: name, ExecutablePath: null }]);
+    assert.equal(result.status, 3, result.stderr || result.stdout);
+    assert.match(result.stdout, /process state could not be checked/);
+  }
+  for (const records of [
+    [{ ProcessId: 456, Name: 'unrelated.exe', ExecutablePath: null }],
+    [{ ProcessId: 123, Name: 'FundsTrace.exe', ExecutablePath: null }],
+    [{ ProcessId: 456, Name: 'FundsTrace.exe', ExecutablePath: path.join(`${directory}-other`, 'FundsTrace.exe') }],
+  ]) {
+    const result = inspect(records);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  }
+});
+
 test('Windows process gate rejects unsafe roots and allows an idle Unicode/space directory', { skip: !powershell }, t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'FundsTrace 安装 gate '));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

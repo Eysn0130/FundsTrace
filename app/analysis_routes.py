@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from . import analytics, db, report
+from . import analytics, db
 from .money import money_decimal, wire_money
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -99,6 +99,8 @@ def download_report(body: RunIn):
     results = analytics.run_all(body.case_id, _params(body.params))
     case_name = db.q("select name from cases where id = ?", [body.case_id])[0]["name"]
     stats = results["source_snapshot"]
+    from . import report
+
     content = report.build_report(body.case_id, results, {"case_name": case_name, "stats": stats})
     fname = urllib.parse.quote(f"资金分析报告_{case_name}.html")
     return Response(content, media_type="text/html; charset=utf-8",

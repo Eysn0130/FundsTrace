@@ -36,6 +36,8 @@ try {
     $SmokeReport = Join-Path $EvidenceRoot "native-backend-smoke.json"
     $CandidateDir = Join-Path $EvidenceRoot "electron/win-unpacked"
     if (-not (Test-Path -LiteralPath (Join-Path $CandidateDir "FundsTrace.exe") -PathType Leaf)) { throw "The Windows directory candidate is missing." }
+    $LocaleNames = @(Get-ChildItem -LiteralPath (Join-Path $CandidateDir 'locales') -Filter '*.pak' -File | Sort-Object Name | ForEach-Object { $_.Name })
+    if (($LocaleNames -join ',') -cne 'en-US.pak,zh-CN.pak,zh-TW.pak') { throw 'The packaged language fallback set differs from the candidate policy.' }
     $Version = (Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot "desktop/package.json") | ConvertFrom-Json).version
     $ExpectedVersion = [version](($Version -split '[-+]', 2)[0])
     $ExecutableInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $CandidateDir "FundsTrace.exe"))
@@ -60,12 +62,22 @@ try {
         $CandidateFiles += Get-Item -LiteralPath $InstallerPath
     }
     $InstallerReport = Join-Path $EvidenceRoot "native-installer-smoke.json"
+    $InstalledAppReport = Join-Path $EvidenceRoot "native-installed-app-smoke.json"
     if ($VerifyInstallerLifecycle) {
         Invoke-Checked { & "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $InstallerPath -ReportPath $InstallerReport }
     }
     $Files = @($CandidateFiles | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = [System.IO.Path]::GetRelativePath($ProjectRoot, $_.FullName).Replace('\', '/'); bytes = $_.Length; sha256 = Get-Sha256 $_.FullName }
     })
+    $InstalledFiles = @($Files | Where-Object { $_.path.StartsWith('build/desktop/electron/win-unpacked/') })
+    $Sizes = [ordered]@{
+        installedBytes = ($InstalledFiles | ForEach-Object { [long]$_.bytes } | Measure-Object -Sum).Sum
+        backendBytes = ($InstalledFiles | Where-Object { $_.path.Contains('/resources/backend/') } | ForEach-Object { [long]$_.bytes } | Measure-Object -Sum).Sum
+        localeBytes = ($InstalledFiles | Where-Object { $_.path.Contains('/locales/') } | ForEach-Object { [long]$_.bytes } | Measure-Object -Sum).Sum
+        localeFiles = $LocaleNames
+        installerBytes = $(if ($Installer) { (Get-Item -LiteralPath $InstallerPath).Length } else { $null })
+        largestFiles = @($InstalledFiles | Sort-Object { $_.bytes } -Descending | Select-Object -First 10)
+    }
     $Locks = [ordered]@{}
     foreach ($File in @("requirements-desktop.lock", "frontend/package-lock.json", "desktop/package-lock.json")) { $Locks[$File] = Get-Sha256 (Join-Path $ProjectRoot $File) }
     $Manifest = [ordered]@{
@@ -78,8 +90,10 @@ try {
         nativeManifestSha256 = Get-Sha256 $NativeManifest
         smokeReportSha256 = Get-Sha256 $SmokeReport
         checks = [ordered]@{ desktopNodeTests = "passed"; nativeBackendSmoke = "passed"; installerLifecycle = $(if ($VerifyInstallerLifecycle) { "passed" } else { "not-run" }) }
+        sizes = $Sizes
         limits = [ordered]@{ guiAcceptance = $false; installedAcceptance = $false; signed = $false; published = $false }
         installerReportSha256 = $(if ($VerifyInstallerLifecycle) { Get-Sha256 $InstallerReport } else { $null })
+        installedAppReportSha256 = $(if ($VerifyInstallerLifecycle) { Get-Sha256 $InstalledAppReport } else { $null })
         files = $Files
     }
     $ManifestPath = Join-Path $EvidenceRoot "windows-candidate.json"
@@ -91,6 +105,7 @@ try {
     }
     if ($VerifyInstallerLifecycle) {
         $Sums += "$(Get-Sha256 $InstallerReport)  build/desktop/native-installer-smoke.json"
+        $Sums += "$(Get-Sha256 $InstalledAppReport)  build/desktop/native-installed-app-smoke.json"
     }
     $Sums | Set-Content -LiteralPath (Join-Path $EvidenceRoot "windows-candidate.sha256") -Encoding utf8
     Write-Host "Unsigned local candidate and safe manifest/SHA-256 evidence created under build/desktop. Windows GUI acceptance and release publication remain separate."

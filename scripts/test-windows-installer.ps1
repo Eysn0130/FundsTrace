@@ -31,6 +31,8 @@ $Report = [ordered]@{
         syntheticDataSeeded = 'not-run'; upgradedSameIdentity = 'not-run'; installedResourceIntegrity = 'not-run'
         installedBackendWithoutActivation = 'not-run'; installedBackendAuthentication = 'not-run'
         syntheticCaseCreatedAndReopened = 'not-run'; eofShutdown = 'not-run'
+        installedApplicationStarted = 'not-run'; installedApplicationSingleInstance = 'not-run'
+        installedApplicationNormalClose = 'not-run'
         uninstallRegistrationRemoved = 'not-run'; installedExecutableRemoved = 'not-run'
         syntheticDataRetained = 'not-run'; cleanup = 'not-run'
     }
@@ -200,8 +202,8 @@ try {
     $PriorInstaller = Join-Path $TemporaryRoot 'prior-stable.exe'
 
     $Stage = 'priorInstallerDigest'
-    Invoke-WebRequest -Uri 'https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.0/FundsTrace-0.1.0-windows-x64-unsigned.exe' -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
-    if ((Get-Sha256 $PriorInstaller) -cne 'c57e357e8f76f4b4badecfe437a3943b116a71738b5d5a7ff6413a83cbe019fc') {
+    Invoke-WebRequest -Uri 'https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.1/FundsTrace-0.1.1-windows-x64-unsigned.exe' -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
+    if ((Get-Sha256 $PriorInstaller) -cne '81f0e720dc35fa7ed902388cbbd17208881425d6828ae395195135cfcdb35b8d') {
         throw 'The prior installer digest differs from the pinned release.'
     }
     $Report.checks.priorInstallerDigest = 'passed'
@@ -209,8 +211,8 @@ try {
     $MayHaveInstalled = $true
     # /D is NSIS syntax: absolute path, last argument, deliberately no quotes even with spaces.
     [void](Invoke-Native -FileName $PriorInstaller -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
-    Assert-Installed '0.1.0'
-    $Report.priorVersion = '0.1.0'; $Report.checks.priorInstalled = 'passed'
+    Assert-Installed '0.1.1'
+    $Report.priorVersion = '0.1.1'; $Report.checks.priorInstalled = 'passed'
 
     $Stage = 'syntheticDataSeeded'
     # The earlier absence check establishes ownership; never redirect or reuse a maintainer's data.
@@ -280,6 +282,23 @@ finally:
     $Report.checks.installedBackendAuthentication = 'passed'
     $Report.checks.syntheticCaseCreatedAndReopened = 'passed'
     $Report.checks.eofShutdown = 'passed'
+
+    $Stage = 'installedApplicationStarted'
+    $AppReportPath = Join-Path (Split-Path -Parent $ReportPath) 'native-installed-app-smoke.json'
+    $AppScreenshotPath = Join-Path (Split-Path -Parent $ReportPath) 'native-installed-app.png'
+    $AppJson = Invoke-Native -FileName $NodeExe -Arguments @(
+        (Join-Path $ProjectRoot 'desktop/tests/installed-app-smoke.cjs'), $InstallRoot,
+        '--report', $AppReportPath, '--screenshot', $AppScreenshotPath
+    ) -TimeoutSeconds 210
+    $AppHelper = $AppJson | ConvertFrom-Json
+    if ($AppHelper.status -cne 'passed') { throw 'Installed application did not reach a usable workspace.' }
+    foreach ($Name in @('installedExecutableStarted', 'authenticatedWorkspaceLoaded', 'nodeSelectionModuleLoaded',
+        'activationFree', 'singleInstance', 'normalClose', 'backendReleasedAfterClose')) {
+        if ($AppHelper.checks.$Name -isnot [bool] -or -not $AppHelper.checks.$Name) { throw 'Installed application did not satisfy its check.' }
+    }
+    $Report.checks.installedApplicationStarted = 'passed'
+    $Report.checks.installedApplicationSingleInstance = 'passed'
+    $Report.checks.installedApplicationNormalClose = 'passed'
 
     $Stage = 'uninstallRegistrationRemoved'
     Invoke-Uninstall
@@ -352,5 +371,5 @@ if ($Failed) {
     exit 1
 }
 if ($PreflightOnly) { Write-Host 'Native installer preflight passed; no installation was attempted.' }
-else { Write-Host 'Native installer lifecycle passed: pinned 0.1.0 upgrade, activation-free installed data, EOF and uninstall retention. GUI and import recovery were not tested.' }
+else { Write-Host 'Native installer lifecycle passed: pinned 0.1.1 upgrade, installed application startup/single-instance/close, activation-free data, EOF and uninstall retention. Win10/11 interactive acceptance and import recovery were not tested.' }
 exit 0
