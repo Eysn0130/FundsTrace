@@ -250,11 +250,14 @@ async function portClosed(port) {
       const item = { sessionId, ready: false };
       if (targetInfo.type === 'page') sessions.set(targetInfo.targetId, item);
       void (async () => {
+        // A newly created renderer is paused before its execution context
+        // exists. Resume it before awaiting Runtime.enable, which otherwise
+        // waits for the same paused renderer to initialize.
+        await cdp.send('Runtime.runIfWaitingForDebugger', {}, sessionId);
         if (targetInfo.type === 'page') {
           await cdp.send('Runtime.enable', {}, sessionId);
           await cdp.send('Page.enable', {}, sessionId);
         }
-        await cdp.send('Runtime.runIfWaitingForDebugger', {}, sessionId);
         item.ready = true;
       })().catch(() => { instrumentationFailed = true; });
     });
@@ -363,8 +366,8 @@ async function portClosed(port) {
     await readyDocument(`location.pathname === '/' && typeof state === 'object' && !state.graphLoading
       && state.graphInited && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(CREATED_CASE)}`);
   });
-  await check('installedAnalysisLinkOpened', async () => {
-    await clickElement(`document.querySelector('#analysisLink')`);
+  await check('analysisLinkClicked', () => clickElement(`document.querySelector('#analysisLink')`));
+  await check('installedAnalysisWindowAttached', async () => {
     analysisPage = await until(async () => {
       assert.ok(!primary.done && !instrumentationFailed);
       const { targetInfos } = await cdp.send('Target.getTargets');
@@ -379,6 +382,8 @@ async function portClosed(port) {
       const session = target && sessions.get(target.targetId);
       return session?.ready ? { ...session, targetId: target.targetId, origin: page.origin } : false;
     }, 20000);
+  });
+  await check('installedAnalysisLinkOpened', async () => {
     await readyDocument(`location.pathname === '/analysis' && !!document.querySelector('#panel')
       && !!document.querySelector('#results .card') && !!document.querySelector('#caseSel')?.options.length
       && document.querySelector('#caseStats')?.textContent.includes('流水')`, analysisPage);
