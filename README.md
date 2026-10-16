@@ -69,7 +69,7 @@ npm --prefix desktop run synthetic
 
 须先完成上述 React 构建。Electron 44 的运行时会在首次运行时下载；安装 NPM 包本身不证明二进制已安装。普通桌面启动为 `npm --prefix desktop start`，数据位于自身 `userData/data`，无需配置产品授权。Windows x64 原生构建使用 PowerShell 7 执行 `scripts/build-windows.ps1`，加 `-Installer` 生成一个未签名 NSIS 客户端；签发工具源码保留为维护用途，不再随普通用户安装包构建或分发。
 
-[Windows Actions](.github/workflows/windows-candidate.yml) 只手动触发，`installer=true` 构建客户端并在隔离 runner 用户验证旧版安装 → 0.1.0 覆盖升级 → 卸载保留合成案件。包内后端另检中文／空格路径、无授权正常访问、桌面 token 拒绝、合成案件崩溃后重开及 EOF 退出。GUI、DPI、原生保存与导入任务恢复分别记录，不能从静默脚本推断通过。[治理依据](docs/source-boundaries.md#github-与轻量治理) 参考 OpenAI／Anthropic 官方仓库，保留现有脚本为唯一构建入口。
+[Windows Actions](.github/workflows/windows-candidate.yml) 只手动触发，`installer=true` 构建客户端并在隔离 runner 用户验证固定 v0.1.0 安装 → 当前候选版覆盖升级 → 卸载保留合成案件。包内后端另检中文／空格路径、无授权正常访问、桌面 token 拒绝、合成案件崩溃后重开及 EOF 退出。GUI、DPI、原生保存与导入任务恢复分别记录，不能从静默脚本推断通过。[治理依据](docs/source-boundaries.md#github-与轻量治理) 参考 OpenAI／Anthropic 官方仓库，保留现有脚本为唯一构建入口。
 
 已发布的 alpha.3 仍需其历史授权；升级后无需重新签发。FT2／HMAC 验签、私钥和独立 Issuer 继续保留，后续需要时再单独维护。详见 [历史授权配置](docs/license-activation.md)。
 
@@ -116,4 +116,6 @@ FUND_DATA_DIR=/absolute/path/to/private-runtime .venv/bin/python run.py
 
 CSV/XLSX 是当前回归覆盖的导入格式。旧 `.xls` 入口、可选 PDF 优化依赖、Windows 实机安装／DPI／系统保存及真实案件性能仍须专项验证。[性能记录](docs/performance.md) 保留的是本次持久任务／来源改造前的合成基线，不代表当前候选同等性能。初始化 checkpoint 和导入进程恢复回归也不是磁盘损坏／任意断电保证；业务备份应在一致状态下包含完整运行数据。
 
-当前常驻区域压缩、高密度七列表格与图谱面积见 [工作区交付](docs/graph-workspace-plan.md)，Electron 运行、Windows 原生构建及后续单导航项接入见 [桌面交付](docs/desktop-delivery.md)。旧 G6/API 与 React 共用 [精确金额契约](docs/money-contract.md)。首绘补丁、透明标签／碰撞及上一尺寸下的交替基准见 [首绘与标签记录](docs/graph-render.md)，不能当作新布局或桌面性能保证。视窗裁剪、结构布局及缩略图的历史记录见 [图谱视窗](docs/graph-viewport.md)。当前导入行为见 [导入生命周期](docs/import-lifecycle.md)，12 个版本化操作见 [API 契约](docs/api-contract.md)。共享面板接口和业务覆盖缺口见 [前端宿主适配](docs/frontend-host-adaptation.md)。[Analytix 整合建议](docs/analytix-integration.md) 与 [Windows／插件研究](docs/windows-and-plugin-plan.md) 保留宿主契约边界：当前 UI port 使用独立 DTO，真实 Host 及受保护显示尚未接入；没有修改 Analytix。命名与技术选型见 [演进建议](docs/evolution.md)，接管历史见 [接管记录](docs/takeover.md)。
+当前源码候选新增查询表单独立折叠、流水全览与勾选即时上图，并修复快速操作、导入恢复、异步抽屉和分析选择一致性。侧栏锚点与全览上图状态分别表示批量追踪起点和当前画布事实；使用方法见 [工作台指南](docs/workspace-guide.md)，验收与未执行项目见 [设计验收](design-qa.md)。本轮源码尚未构建或发布新的 Windows 安装包，已发布 v0.1.0 不包含这些改动。
+
+石墨色编辑器、独立折叠／紧凑工具区、画布撤销／重做及七列表格见 [工作区交付](docs/graph-workspace-plan.md)，Electron 运行、Windows 原生构建及后续单导航项接入见 [桌面交付](docs/desktop-delivery.md)。旧 G6/API 与 React 共用 [精确金额契约](docs/money-contract.md)。首绘补丁、透明标签／碰撞及上一尺寸下的交替基准见 [首绘与标签记录](docs/graph-render.md)，不能当作新布局或桌面性能保证。视窗裁剪、结构布局及缩略图的历史记录见 [图谱视窗](docs/graph-viewport.md)。当前导入行为见 [导入生命周期](docs/import-lifecycle.md)，12 个版本化操作见 [API 契约](docs/api-contract.md)。共享面板接口和业务覆盖缺口见 [前端宿主适配](docs/frontend-host-adaptation.md)。[Analytix 整合建议](docs/analytix-integration.md) 与 [Windows／插件研究](docs/windows-and-plugin-plan.md) 保留宿主契约边界：当前 UI port 使用独立 DTO，真实 Host 及受保护显示尚未接入；没有修改 Analytix。命名与技术选型见 [演进建议](docs/evolution.md)，接管历史见 [接管记录](docs/takeover.md)。

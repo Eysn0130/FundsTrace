@@ -38,9 +38,9 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 脚本准备独立构建环境，以锁文件哈希同步依赖，构建 React 与原生 PyInstaller sidecar、执行桌面 Node 回归。客户端输出在 `build/desktop/electron`；默认生成目录候选，`-Installer` 生成一个名称含 `unsigned` 的客户端 NSIS。目标用户不需要安装系统 Python。独立 Issuer 不再默认构建或分发；按需另行维护。PyInstaller 必须在 Windows 原生构建 Windows 后端。[平台约束](https://pyinstaller.org/en/stable/index.html)
 
-脚本校对实际包内 manifest 与资源，再用包内程序验证中文／空格资源和数据路径、无授权访问业务、无 token 拒绝、一个合成案件崩溃后重开、无 `license.dat` 生成和 EOF 正常退出。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅含版本、相对产物文件名、内容哈希及检查范围，不含业务数据或 token。
+未签名构建使用 `signExecutable:false` 保留应用EXE版本资源编辑；构建会读取PE文件属性并核对产品版本及文件主／次／补丁版本。脚本校对实际包内 manifest 与资源，再用包内程序验证中文／空格资源和数据路径、无授权访问业务、无 token 拒绝、一个合成案件崩溃后重开、无 `license.dat` 生成和 EOF 正常退出。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅含版本、相对产物文件名、内容哈希及检查范围，不含业务数据或 token。
 
-[Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以已公开且固定 SHA-256 的 alpha.3 客户端作为旧版本，验证静默安装 → 0.1.0 覆盖升级 → 安装后后端读取合成案件 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json`。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
+[Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以已公开且固定 SHA-256 的 v0.1.0 客户端作为旧版本，验证静默安装 → 当前候选版覆盖升级 → 安装后后端读取合成案件 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json`。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
 
 工作流只有仓库读取权限，不接收生产授权／私钥，不执行 Release 写入。所选 EXE 或目录及安全报告仅留存 3 天，不上传整个 build 或运行目录。维护者核对成功运行、源码 SHA、产物摘要后单独发布。发布包与 Tag 必须绑定同一 green 源码；构建报告的 `published:false` 表示构建脚本本身没有发布。
 
@@ -53,6 +53,14 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 本机 macOS arm64，无交互式 Windows 主机。Windows GUI、系统 100%／150%／200% DPI、密集表格实际字体、原生保存／取消、运行中安装器正常关窗和导入任务中断恢复仍为 **NOT_EXECUTED（Windows GUI）**。静默安装报告不把这些标成通过，也不作为 GUI 发布标签。
 
 具备设备后只补受影响流程：查询／勾选／上图／邻域和完整金额可读；中文目录 XLSX／图像保存及取消；活动导入退出与回执重开；离线启动与混合 DPI。只用专用合成测试用户，不能连接原业务实例或按名称猜测终止进程。
+
+## 2026-10-15 工作台源码候选
+
+当前工作树的查询折叠、流水全览、画布历史及流程修复属于新的源码候选；见 [设计验收](../design-qa.md) 和 [使用指南](workspace-guide.md)。静态资源白名单已加入六个工作台脚本和24个本地 Tabler SVG及许可；本机资源检查通过。
+
+[Windows目录候选 38784969693](https://github.com/Eysn0130/FundsTrace/actions/runs/38784969693) 已成功，绑定源码 `02b6c303d8a4d9f0cf0b390999969a482efdb771`，非安装器模式。56项定向Python、22项桌面Node、React类型检查／构建、54项资源记录及11项包内后端检查通过。54条资源与本地对照：25项原字节、29项仅Windows检出CRLF；报告和锁文件摘要均核对。CI为1542个产物文件生成摘要，本机仅分段读取安全报告，没有重新下载／核验整个目录。
+
+本轮没有生成新安装器、改变版本、打Tag或发布Release。`installerLifecycle:not-run`、`guiAcceptance:false`、`installedAcceptance:false`、`published:false`。下方 v0.1.0 的绿色记录不覆盖本轮UI；后续选定版本后须绑定对应候选执行安装生命周期。Windows GUI／DPI／原生保存取消仍未执行。此后仅补文档记录，不改变此次原生构建所用运行源码与资源。
 
 ## v0.1.0 交付记录
 

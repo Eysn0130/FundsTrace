@@ -77,11 +77,16 @@ function collectParams() {
   const toleranceText = $('#ffTol').value.trim();
   const tolerance = toleranceText === '' ? 0.25 : Number(toleranceText);
   if (!Number.isFinite(tolerance) || tolerance < 0 || tolerance > 1) throw new Error('配对金额容差须在 0 至 1 之间');
+  const cycleText = $('#cycDays').value.trim(), cycleDays = cycleText === '' ? 7 : Number(cycleText);
+  if (!Number.isInteger(cycleDays) || cycleDays < 1 || cycleDays > 365) throw new Error('环流时限须为 1 至 365 天的整数');
+  const windowText = $('#ffWin').value.trim(), windowMinutes = windowText === '' ? 30 : Number(windowText);
+  if (!Number.isInteger(windowMinutes) || windowMinutes < 5 || windowMinutes > 1440) throw new Error('快进快出窗口须为 5 至 1440 分钟的整数');
   const params = {
+    algorithms: algs,
     subjects,
-    ff_window_minutes: Number($('#ffWin').value) || 30,
+    ff_window_minutes: windowMinutes,
     ff_tolerance: tolerance,
-    cycle_window_days: Number($('#cycDays').value) || 7,
+    cycle_window_days: cycleDays,
   };
   if (algs.includes('paths')) {
     const src = $('#pSrc').value.trim(), dst = $('#pDst').value.trim();
@@ -146,7 +151,7 @@ function render(res, algs) {
   const out = [];
   if (algs.includes('cycles') && res.cycles) {
     const c = res.cycles;
-    out.push(card(`环路检测（资金回流 · ${c.window_days ?? 7} 天内完成）${res.subjects && res.subjects.length ? ' · 对象：' + res.subjects.join('、') : ''}`,
+    out.push(card(`环路检测（资金回流 · ${c.window_days ?? 7} 天内完成）${res.subjects && res.subjects.length ? ' · 对象：' + esc(res.subjects.join('、')) : ''}`,
       '资金从账户出发经若干账户回到起点，且环上全部交易在时限内完成——短窗闭环是跑分团伙制造资金流假象、对敲刷流水的典型特征（跨月的闭环更可能是正常经营往来），可作为主观"明知"的佐证。',
       c.cycles.length ? tbl(['#', '环路路径', '跳数', '环路金额', '时间跨度', '明细'],
         c.cycles.map((x, k) => {
@@ -169,7 +174,7 @@ function render(res, algs) {
   }
   if (algs.includes('fast_flows') && res.fast_flows) {
     const f = res.fast_flows;
-    out.push(card(`快进快出金额守恒配对（${f.window_minutes} 分钟内 ±${(f.tolerance * 100).toFixed(0)}%）${res.subjects && res.subjects.length ? ' · 对象：' + res.subjects.join('、') : ''}`,
+    out.push(card(`快进快出金额守恒配对（${f.window_minutes} 分钟内 ±${(f.tolerance * 100).toFixed(0)}%）${res.subjects && res.subjects.length ? ' · 对象：' + esc(res.subjects.join('、')) : ''}`,
       '账户收到大额资金后短窗内转出且金额守恒——代收代付/过账行为的量化证据。',
       f.pairs.length ? tbl(['过账账户', '转入', '短窗内转出', '转出合计/差额', '最大延迟', '明细'],
         f.pairs.map(p => {
@@ -185,14 +190,14 @@ function render(res, algs) {
   }
   if (algs.includes('outliers') && res.outliers) {
     const o = res.outliers;
-    out.push(card(`离群账户画像（偏离 > ${o.sigma}σ）${res.subjects && res.subjects.length ? ' · 对象：' + res.subjects.join('、') : ''}`,
+    out.push(card(`离群账户画像（偏离 > ${o.sigma}σ）${res.subjects && res.subjects.length ? ' · 对象：' + esc(res.subjects.join('、')) : ''}`,
       '对每个账户提取行为特征（笔数/总额/深夜占比/整额占比/对手数/单笔均额）与案件基准对比，金额按币种分别计算；均额按分舍入，Z 分数及占比为近似统计值，离群仅供人工复核。',
       o.outliers.length ? tbl(['账户', '异常维度', '数值', 'Z 分数'],
         o.outliers.map(x => `<tr><td>${esc(x.name || '')}<br><span class="mono">${esc(x.account)}</span></td>
           <td>${esc(x.explain)}</td><td>${dimensionValue(x)}</td><td><b>${x.z}</b></td></tr>`)) : '<div class="empty">未发现离群账户</div>',
       o.count));
   }
-  if (res.paths) {
+  if (algs.includes('paths') && res.paths) {
     const p = res.paths;
     out.push(card(`路径追踪：${esc(p.src_name || p.src)} → ${esc(p.dst_name || p.dst)}`,
       `最大 ${p.max_hops} 跳，按币种分别排列交易边金额合计；多跳合计不代表去重本金。`,

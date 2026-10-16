@@ -16,7 +16,7 @@ module.exports = {
     const architectures = ['ia32', 'x64', 'armv7l', 'arm64', 'universal'];
     if (manifest.protocol !== 1 || manifest.platform !== context.electronPlatformName || manifest.arch !== architectures[context.arch]) throw new Error('Build the backend natively for the exact Electron platform and architecture first');
   },
-  win: { target: [{ target: 'nsis', arch: ['x64'] }], signAndEditExecutable: false },
+  win: { target: [{ target: 'nsis', arch: ['x64'] }], signExecutable: false },
   nsis: { oneClick: false, perMachine: false, allowElevation: false, allowToChangeInstallationDirectory: true, deleteAppDataOnUninstall: false, include: path.join(__dirname, 'installer.nsh'), artifactName: 'FundsTrace-${version}-windows-${arch}-unsigned.${ext}' },
   publish: null
 };

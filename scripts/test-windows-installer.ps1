@@ -197,11 +197,11 @@ try {
     [void](New-Item -ItemType Directory -Path $TemporaryRoot)
     $OwnTemporary = $true
     $InstallRoot = Join-Path $TemporaryRoot '应用 安装路径'
-    $PriorInstaller = Join-Path $TemporaryRoot 'prior-alpha3.exe'
+    $PriorInstaller = Join-Path $TemporaryRoot 'prior-stable.exe'
 
     $Stage = 'priorInstallerDigest'
-    Invoke-WebRequest -Uri 'https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.0-alpha.3/FundsTrace-0.1.0-alpha.3-windows-x64-unsigned.exe' -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
-    if ((Get-Sha256 $PriorInstaller) -cne '0e0454af6907912cfd628849bced6740f02f333f9ad5350e14466cc4f4e22e20') {
+    Invoke-WebRequest -Uri 'https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.0/FundsTrace-0.1.0-windows-x64-unsigned.exe' -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
+    if ((Get-Sha256 $PriorInstaller) -cne 'c57e357e8f76f4b4badecfe437a3943b116a71738b5d5a7ff6413a83cbe019fc') {
         throw 'The prior installer digest differs from the pinned release.'
     }
     $Report.checks.priorInstallerDigest = 'passed'
@@ -209,8 +209,8 @@ try {
     $MayHaveInstalled = $true
     # /D is NSIS syntax: absolute path, last argument, deliberately no quotes even with spaces.
     [void](Invoke-Native -FileName $PriorInstaller -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
-    Assert-Installed '0.1.0-alpha.3'
-    $Report.priorVersion = '0.1.0-alpha.3'; $Report.checks.priorInstalled = 'passed'
+    Assert-Installed '0.1.0'
+    $Report.priorVersion = '0.1.0'; $Report.checks.priorInstalled = 'passed'
 
     $Stage = 'syntheticDataSeeded'
     # The earlier absence check establishes ownership; never redirect or reuse a maintainer's data.
@@ -226,7 +226,7 @@ from app import db
 try:
     db._start_ckpt = lambda: None
     with db.transaction():
-        db.q("insert into cases(name) values (?) returning id", ["SYN alpha3 installer lifecycle case"])
+        db.q("insert into cases(name) values (?) returning id", ["SYN prior installer lifecycle case"])
     db.con().execute("checkpoint")
 finally:
     if db._con is not None:
@@ -297,7 +297,7 @@ assert not (source / "license.dat").exists()
 connection = duckdb.connect(str(source / "fund.duckdb"), read_only=True)
 try:
     names = {row[0] for row in connection.execute("select name from cases").fetchall()}
-    assert {"SYN alpha3 installer lifecycle case", "SYN current installer lifecycle case"} <= names
+    assert {"SYN prior installer lifecycle case", "SYN current installer lifecycle case"} <= names
 finally:
     connection.close()
 '@
@@ -352,5 +352,5 @@ if ($Failed) {
     exit 1
 }
 if ($PreflightOnly) { Write-Host 'Native installer preflight passed; no installation was attempted.' }
-else { Write-Host 'Native installer lifecycle passed: pinned alpha3 upgrade, activation-free installed data, EOF and uninstall retention. GUI and import recovery were not tested.' }
+else { Write-Host 'Native installer lifecycle passed: pinned 0.1.0 upgrade, activation-free installed data, EOF and uninstall retention. GUI and import recovery were not tested.' }
 exit 0

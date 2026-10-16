@@ -100,6 +100,10 @@ def build_report(case_id, results, case_info):
                 .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
     cases = _escape_text(results)
     case_info = _escape_text(case_info)
+    names = {"cycles": "资金回流环路检测", "fast_flows": "快进快出金额守恒配对",
+             "outliers": "交易行为离群账户", "paths": "多跳资金路径追踪"}
+    algorithms = cases.get("algorithms", [name for name in names if name in cases])
+    scope = "、".join(names[name] for name in algorithms)
     sec = []
     add = sec.append
 
@@ -109,9 +113,11 @@ def build_report(case_id, results, case_info):
     <div class="meta">
       <div><b>案件名称：</b>{case_info.get('case_name', case_id)}</div>
       <div><b>流水总量：</b>{stats.get('flows', 0):,} 笔　<b>账户数：</b>{stats.get('accounts', 0):,} 个</div>
+      <div><b>本次分析范围：</b>{scope}</div>
       <div><b>生成时间：</b>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}　<b>生成工具：</b>FundsTrace</div>
     </div>
     <p class="note">本报告由 FundsTrace 自动生成，基于当前案件已导入的全部流水数据。
+    仅执行上列分析项目；未选项目未分析，不作“未发现”的结论。
     各项结果均为算法辅助判断，供侦查参考，最终定案以人工核实为准。</p>
     <p class="note">金额按币种分别分析，不自动换汇。金额和交易边合计精确到分；路径及环路合计是各条交易边之和，
     不代表去重后的实际本金。单笔均额按十进制计算并以四舍六入五成双保留两位；Z 分数、时间跨度和图表坐标为近似统计或展示值。
@@ -119,7 +125,7 @@ def build_report(case_id, results, case_info):
 
     # ---------- 路径追踪 ----------
     paths = cases.get("paths")
-    if paths is not None:
+    if "paths" in algorithms and paths is not None:
         rows = ""
         for index, item in enumerate(paths["paths"]):
             currency = item.get("currency") or "未标明币种"
@@ -128,7 +134,7 @@ def build_report(case_id, results, case_info):
                 f"{currency} {money_display(step['amount'])}（{step['time']}）" for step in item["path"])
             rows += (f"<tr><td>{index + 1}</td><td>{steps}</td><td>{item['hops']} 跳</td>"
                      f"<td>{currency} {money_display(item['total'])}</td></tr>")
-        add(f"""<h3>1. 多跳资金路径追踪</h3>
+        add(f"""<h3>多跳资金路径追踪</h3>
         <p>起点 <span class="mono">{paths['src']}</span> → 终点 <span class="mono">{paths['dst']}</span>；
         最多 {paths['max_hops']} 跳，共发现 {paths['count']} 条同币种路径。各边金额合计不等于守恒本金。</p>""")
         if rows:
@@ -138,22 +144,22 @@ def build_report(case_id, results, case_info):
 
     # ---------- 环路 ----------
     cyc = cases.get("cycles", {})
-    if cyc.get("count"):
+    if "cycles" in algorithms and cyc.get("count"):
         rows = "".join(
             f"<tr><td>{k + 1}</td><td>{' → '.join(c['accounts_names'])}</td>"
             f"<td>{c['len']} 跳</td><td>{c.get('currency') or '未标明币种'} {money_display(c['total'])}</td>"
             f"<td>{c.get('span_days', '—')} 天</td></tr>" for k, c in enumerate(cyc["cycles"]))
         sub_txt = "、".join(cases.get("subjects") or []) or "全案件"
-        add(f"""<h3>2. 资金回流环路检测（闭环对敲，{cyc.get('window_days', 7)} 天内完成）—— 分析对象：{sub_txt}</h3>
+        add(f"""<h3>资金回流环路检测（闭环对敲，{cyc.get('window_days', 7)} 天内完成）—— 分析对象：{sub_txt}</h3>
         <p>原理：资金从账户出发经若干账户<b>回到起点</b>，且环上全部交易在时限内完成——"跑分"团伙制造资金流假象、
         对敲刷流水的典型特征，可作为主观"明知"的佐证。共发现 <b>{cyc['count']} 个环路</b>。</p>
         <table><tr><th>#</th><th>资金闭环路径</th><th>跳数</th><th>环路金额合计</th><th>时间跨度</th></tr>{rows}</table>""")
-    else:
-        add("<h3>2. 资金回流环路检测</h3><p>未发现资金闭环（当前追踪范围内）。</p>")
+    elif "cycles" in algorithms:
+        add("<h3>资金回流环路检测</h3><p>未发现符合本次环路参数的资金闭环。</p>")
 
     # ---------- 快进快出配对 ----------
     ff = cases.get("fast_flows", {})
-    if ff.get("count"):
+    if "fast_flows" in algorithms and ff.get("count"):
         rows = ""
         for p in ff["pairs"][:40]:
             currency = p.get('currency') or '未标明币种'
@@ -164,39 +170,43 @@ def build_report(case_id, results, case_info):
                      f"<br><span class='small'>差额 {money_display(p['diff'])}</span></td>"
                      f"<td>{p['max_delay_min']} 分钟</td></tr>")
         sub_txt2 = "、".join(ff.get("subjects") or []) if isinstance(ff.get("subjects"), list) else ""
-        add(f"""<h3>4. 快进快出金额守恒配对—— 分析对象：{sub_txt2 or '全案件'}</h3>
+        add(f"""<h3>快进快出金额守恒配对—— 分析对象：{sub_txt2 or '全案件'}</h3>
         <p>原理：账户收到大额资金后 {ff['window_minutes']} 分钟内转出，且转出合计与转入金额
         误差在 ±{ff['tolerance']:.0%} 内（<b>金额守恒</b>）——"代收代付/过账"行为的量化证据。
         共配对成功 <b>{ff['count']} 组</b>。</p>
         <table><tr><th>过账账户</th><th>转入</th><th>短窗内转出</th><th>转出合计/差额</th><th>最大延迟</th></tr>{rows}</table>""")
+    elif "fast_flows" in algorithms:
+        add("<h3>快进快出金额守恒配对</h3><p>未发现符合本次快进快出参数的配对。</p>")
 
     # ---------- 离群画像 ----------
     ol = cases.get("outliers", {})
-    if ol.get("count"):
+    if "outliers" in algorithms and ol.get("count"):
         rows = "".join(
             f"<tr><td>{o['name'] or ''}<br><span class='mono'>{o['account']}</span></td>"
             f"<td>{o['explain']}</td><td>"
             f"{(o.get('currency') or '未标明币种') + ' ' + money_display(o['value']) if o['dim'] in ('total', 'avg_amount') else format(o['value'], ',')}"
             f"</td><td><b>{o['z']}</b></td></tr>"
             for o in ol["outliers"])
-        add(f"""<h3>5. 交易行为离群账户</h3>
+        add(f"""<h3>交易行为离群账户</h3>
         <p>原理：对每个账户提取行为特征（交易笔数、总额、深夜交易占比、整数金额占比、对手数量、单笔均额），
         与案件全体账户的基准分布对比，偏离超过 {ol['sigma']} 个标准差的账户标记为离群——
         其行为模式与正常经营明显不符。</p>
         <table><tr><th>账户</th><th>异常维度</th><th>数值</th><th>Z 分数</th></tr>{rows}</table>""")
+    elif "outliers" in algorithms:
+        add("<h3>交易行为离群账户</h3><p>未发现超过本次离群阈值的账户。</p>")
 
     # ---------- 总结 ----------
     summary = []
-    if cyc.get("count"):
+    if "paths" in algorithms and paths and paths.get("count"):
+        summary.append(f"找到 {paths['count']} 条同币种资金路径")
+    if "cycles" in algorithms and cyc.get("count"):
         summary.append(f"发现 {cyc['count']} 个资金回流环路")
-    if ff.get("count"):
+    if "fast_flows" in algorithms and ff.get("count"):
         summary.append(f"{ff['count']} 组金额守恒的快进快出配对")
-    if ol.get("count"):
+    if "outliers" in algorithms and ol.get("count"):
         summary.append(f"{ol['count']} 个行为离群账户")
-    concl = "；".join(summary) + "。" if summary else "本次分析未发现显著异常资金模式。"
-    add(f"""<h2>分析结论</h2><p class="concl">{concl}
-    建议按以下顺序推进：① 对环路及快进快出配对涉及的资金接收方发调取函，补充其上游流水；
-    ② 对离群账户逐一核查开户资料与实际控制人。""" + ('"' if False else "") + """</p>""")
+    concl = "；".join(summary) + "。" if summary else "未发现符合本次所选算法及参数的结果。"
+    add(f"<h2>分析结论</h2><p class=\"concl\">在本次分析范围（{scope}）内，{concl}</p>")
 
     css = """
     body{font-family:"Microsoft YaHei",sans-serif;max-width:960px;margin:24px auto;padding:0 16px;color:#222;line-height:1.6}

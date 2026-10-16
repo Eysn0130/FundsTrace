@@ -36,6 +36,15 @@ try {
     $SmokeReport = Join-Path $EvidenceRoot "native-backend-smoke.json"
     $CandidateDir = Join-Path $EvidenceRoot "electron/win-unpacked"
     if (-not (Test-Path -LiteralPath (Join-Path $CandidateDir "FundsTrace.exe") -PathType Leaf)) { throw "The Windows directory candidate is missing." }
+    $Version = (Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot "desktop/package.json") | ConvertFrom-Json).version
+    $ExpectedVersion = [version](($Version -split '[-+]', 2)[0])
+    $ExecutableInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $CandidateDir "FundsTrace.exe"))
+    if ($ExecutableInfo.FileMajorPart -ne $ExpectedVersion.Major -or $ExecutableInfo.FileMinorPart -ne $ExpectedVersion.Minor -or
+        $ExecutableInfo.FileBuildPart -ne $ExpectedVersion.Build -or $ExecutableInfo.ProductMajorPart -ne $ExpectedVersion.Major -or
+        $ExecutableInfo.ProductMinorPart -ne $ExpectedVersion.Minor -or $ExecutableInfo.ProductBuildPart -ne $ExpectedVersion.Build) {
+        throw "Packaged executable version metadata differs from the candidate version."
+    }
+    $ExecutableVersion = [ordered]@{ fileVersion = $ExecutableInfo.FileVersion; productVersion = $ExecutableInfo.ProductVersion }
     $PackagedBackend = Join-Path $CandidateDir "resources/backend"
     if ((Get-Sha256 (Join-Path $PackagedBackend "build-manifest.json")) -ne (Get-Sha256 $NativeManifest)) { throw "The packaged backend manifest differs from the native build." }
     $Resources = (Get-Content -Raw -LiteralPath $NativeManifest | ConvertFrom-Json).resources
@@ -46,7 +55,6 @@ try {
     Invoke-Checked { node desktop/tests/backend-smoke.cjs $PackagedBackend --report $SmokeReport }
     $CandidateFiles = @(Get-ChildItem -LiteralPath $CandidateDir -File -Recurse)
     if ($Installer) {
-        $Version = (Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot "desktop/package.json") | ConvertFrom-Json).version
         $InstallerPath = Join-Path $EvidenceRoot "electron/FundsTrace-$Version-windows-x64-unsigned.exe"
         if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) { throw "The unsigned installer candidate is missing." }
         $CandidateFiles += Get-Item -LiteralPath $InstallerPath
@@ -64,6 +72,7 @@ try {
         schemaVersion = 1
         candidate = $(if ($Installer) { "unsigned-installer" } else { "unsigned-directory" })
         platform = "win32"; arch = "x64"
+        executableVersion = $ExecutableVersion
         toolchain = [ordered]@{ node = $NodeInfo.version; python = $PythonInfo.version; uv = $UvVersion; powershell = $PSVersionTable.PSVersion.ToString() }
         lockSha256 = $Locks
         nativeManifestSha256 = Get-Sha256 $NativeManifest

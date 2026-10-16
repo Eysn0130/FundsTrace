@@ -102,6 +102,13 @@ class TrackIn(BaseModel):
     canvas_id: int = 0   # 目标画布（0 = 默认）
 
 
+class TrackStateIn(BaseModel):
+    case_id: int
+    expected_ids: List[int]
+    desired_ids: List[int]
+    canvas_id: int = 0
+
+
 class CaseIn(BaseModel):
     name: str
 
@@ -736,6 +743,30 @@ def untrack(body: TrackIn):
         return {"ok": True}
 
 
+@app.put("/api/track/state")
+def restore_track_state(body: TrackStateIn):
+    """按预期集合原子恢复当前画布追踪；过期历史不得覆盖新的追踪操作。"""
+    with _case_transaction(body.case_id):
+        _require_canvas(body.case_id, body.canvas_id)
+        current = {row["flow_id"] for row in db.q(
+            "select flow_id from tracked_flows where case_id=? and canvas_id=?",
+            [body.case_id, body.canvas_id])}
+        if current != set(body.expected_ids):
+            raise HTTPException(409, "画布追踪已变更，请刷新后重试")
+        desired = set(_require_flows(body.case_id, body.desired_ids))
+        removed, added = sorted(current - desired), sorted(desired - current)
+        if removed:
+            marks = ",".join("?" for _ in removed)
+            db.x(f"delete from tracked_flows where case_id=? and canvas_id=? and flow_id in ({marks})",
+                 [body.case_id, body.canvas_id, *removed])
+        if added:
+            marks = ",".join("?" for _ in added)
+            db.x(f"insert into tracked_flows(case_id,flow_id,canvas_id) "
+                 f"select ?,id,? from flows where case_id=? and id in ({marks})",
+                 [body.case_id, body.canvas_id, body.case_id, *added])
+        return {"ok": True, "tracked_ids": sorted(desired)}
+
+
 @app.delete("/api/graph")
 def clear_graph(case_id: int, canvas_id: int = 0):
     """清空图谱：只清当前画布的追踪（不影响其他画布）"""
@@ -750,6 +781,7 @@ class BulkTrackIn(BaseModel):
     direction: str          # source=追踪资金来源 / target=追踪资金去向
     x: int = 5              # 每笔锚点取最近 X 笔
     canvas_id: int = 0
+    expected_ids: Optional[List[int]] = None
 
 
 @app.post("/api/track/bulk")
@@ -760,6 +792,12 @@ def track_bulk(body: BulkTrackIn):
     对应方不是主账号 → 该锚点拒绝追踪并在 skipped 中说明（本笔仍上图）。"""
     with _case_transaction(body.case_id):
         _require_canvas(body.case_id, body.canvas_id)
+        if body.expected_ids is not None:
+            current = {row["flow_id"] for row in db.q(
+                "select flow_id from tracked_flows where case_id=? and canvas_id=?",
+                [body.case_id, body.canvas_id])}
+            if current != set(body.expected_ids):
+                raise HTTPException(409, "画布追踪已变更，请刷新后重试")
         _require_flows(body.case_id, body.flow_ids)
         if not body.flow_ids:
             raise HTTPException(404, "未找到所选流水")
@@ -821,8 +859,11 @@ def track_bulk(body: BulkTrackIn):
             db.x(f"insert or ignore into tracked_flows(case_id, flow_id, canvas_id) "
                  f"select ?, id, ? from flows where case_id = ? and id in ({ids2})",
                  [body.case_id, body.canvas_id, body.case_id])
+        tracked_ids = [row["flow_id"] for row in db.q(
+            "select flow_id from tracked_flows where case_id=? and canvas_id=? order by flow_id",
+            [body.case_id, body.canvas_id])]
         return {"ok": True, "tracked": len(pick_ids), "anchors": len(anchors),
-                "detail": detail, "skipped_not_main": skipped_main}
+                "detail": detail, "skipped_not_main": skipped_main, "tracked_ids": tracked_ids}
 
 @app.get("/api/context/{flow_id}")
 def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", case_id: int = 1):
