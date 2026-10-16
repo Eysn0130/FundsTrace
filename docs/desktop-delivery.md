@@ -2,7 +2,7 @@
 
 ## v0.1.x 发布规则
 
-FundsTrace v0.1.0 正常启动**无需公钥或授权码**。每个实际版本 Tag 对应 GitHub Release，附 Windows x64 NSIS `.exe`，从 [Releases](https://github.com/Eysn0130/FundsTrace/releases) 下载并安装。[v0.1.0 已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0)，原生构建和安装结果见下文交付记录；Windows GUI 验收不作为发布标记。安装包未签名，不能声称完成代码签名或 Windows 全面兼容验收。
+FundsTrace v0.1.1 正常启动**无需公钥或授权码**。每个实际版本 Tag 对应 GitHub Release，附 Windows x64 NSIS `.exe`，从 [Releases](https://github.com/Eysn0130/FundsTrace/releases) 下载并安装。[v0.1.1 已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.1)，原生构建和安装结果见下文交付记录；Windows GUI 验收不作为发布标记。安装包未签名，不能声称完成代码签名或 Windows 全面兼容验收。
 
 Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activation_required:false`，如实保留历史 `activated` 状态；`/license` 可直接进入系统。没有公钥、没有授权文件或存在损坏的历史授权都不阻塞业务，不生成测试授权来解锁。FT2／HMAC 验签接口、独立 `desktop/issuer/` 工具和已有材料保留，见 [历史授权维护](license-activation.md)。已发布 alpha.3 不随源码改变。
 
@@ -48,15 +48,29 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 ## 当前证据与尚未执行的边界
 
-源码 API 21 条、React 37 条、前端构建及 API 契约检查通过；免激活新增回归在修复前失败、修复后通过，源码浏览器从 `/license` 进入业务成功。当前 Windows 候选的定向 Python 56 条和桌面 Node 22 条均通过，包括 Windows 原生进程范围测试。完整结果以对应版本的 Actions 和报告为准。
+v0.1.1源码完整回归375项通过；[Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38827843574) 对发布源码 `e7be2f5675dcd2dc896a20d6d644d5aa05125a73` 完成56项定向Python、22项桌面Node、React类型检查／构建、54条资源记录、11项包内后端及14项静默安装生命周期检查。旧版本的检查和限制保留在对应交付记录中，不能替代新候选。
 
 本机 macOS arm64，无交互式 Windows 主机。Windows GUI、系统 100%／150%／200% DPI、密集表格实际字体、原生保存／取消、运行中安装器正常关窗和导入任务中断恢复仍为 **NOT_EXECUTED（Windows GUI）**。静默安装报告不把这些标成通过，也不作为 GUI 发布标签。
 
 具备设备后只补受影响流程：查询／勾选／上图／邻域和完整金额可读；中文目录 XLSX／图像保存及取消；活动导入退出与回执重开；离线启动与混合 DPI。只用专用合成测试用户，不能连接原业务实例或按名称猜测终止进程。
 
-## 2026-10-15 工作台源码候选
+## v0.1.1 交付记录
 
-当前工作树的查询折叠、流水全览、画布历史及流程修复属于新的源码候选；见 [设计验收](../design-qa.md) 和 [使用指南](workspace-guide.md)。静态资源白名单已加入六个工作台脚本和24个本地 Tabler SVG及许可；本机资源检查通过。
+2026-10-15：[Release v0.1.1](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.1) 与 [Windows Actions 38827843574](https://github.com/Eysn0130/FundsTrace/actions/runs/38827843574) 绑定源码 `e7be2f5675dcd2dc896a20d6d644d5aa05125a73`。[PR #1](https://github.com/Eysn0130/FundsTrace/pull/1) 已合并，Tag指向该成功构建；之后只补交付文档。
+
+- 包含查询独立折叠、流水全览即时上图／撤销及流程修复，详见 [使用指南](workspace-guide.md)。原G6节点／边／标签／布局源码保留。
+- 桌面版本0.1.1，应用PE文件属性为FileVersion `0.1.1`、ProductVersion `0.1.1.0`。只禁用签名，保留版本资源编辑；安装后EXE摘要与已验证目录候选相同。
+- 375项源码、Windows定向Python56项、桌面Node22项、React类型检查／构建、54条资源与11项后端检查通过。
+- 14项安装生命周期检查通过：固定摘要的v0.1.0安装 → 0.1.1覆盖升级 → 安装后backend读写／重开合成案件 → 静默卸载移除注册入口、保留两个合成案件及哨兵。测试仅使用runner新建状态。
+- 下载并核对一个EXE与五份安全报告／校验文件；EXE和报告的SHA-256、源码入口、资源与锁文件均匹配。CI为1544个目录／安装器文件生成摘要，本机未独立下载并重验整个win-unpacked目录。
+
+`FundsTrace-0.1.1-windows-x64-unsigned.exe`：168336906字节，SHA-256 `81f0e720dc35fa7ed902388cbbd17208881425d6828ae395195135cfcdb35b8d`。
+
+安装器未签名；Windows GUI／DPI、原生保存取消、触屏及活动导入GUI恢复未实机验收。报告中的 `installerLifecycle:passed` 限于上述静默链；`guiAcceptance:false`／`installedAcceptance:false`保留；`published:false`表示构建脚本未执行GitHub发布，实际公开Release另行核对。
+
+## 2026-10-15 工作台源码候选阶段（发布前记录）
+
+以下记录发布前的工作台源码候选；查询折叠、流水全览、画布历史及流程修复；见 [设计验收](../design-qa.md) 和 [使用指南](workspace-guide.md)。静态资源白名单已加入六个工作台脚本和24个本地 Tabler SVG及许可；本机资源检查通过。
 
 [Windows目录候选 38784969693](https://github.com/Eysn0130/FundsTrace/actions/runs/38784969693) 已成功，绑定源码 `02b6c303d8a4d9f0cf0b390999969a482efdb771`，非安装器模式。56项定向Python、22项桌面Node、React类型检查／构建、54项资源记录及11项包内后端检查通过。54条资源与本地对照：25项原字节、29项仅Windows检出CRLF；报告和锁文件摘要均核对。CI为1542个产物文件生成摘要，本机仅分段读取安全报告，没有重新下载／核验整个目录。
 

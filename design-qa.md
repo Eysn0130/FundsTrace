@@ -81,7 +81,7 @@ final result: passed
 
 ## 未执行与停止边界
 
-- **NOT_EXECUTED：** 本候选Windows安装／升级／卸载、GUI／DPI、原生保存／取消、触屏实机、125%/150%真实浏览器缩放。IAB快捷键未改变zoom，因此没有用CSS／pinch替代证据。
+- **目录候选阶段 NOT_EXECUTED（后续安装器补证见文末）：** Windows安装／升级／卸载、GUI／DPI、原生保存／取消、触屏实机、125%/150%真实浏览器缩放。IAB快捷键未改变zoom，因此没有用CSS／pinch替代证据。
 - **已知冻结限制：** 密集G6拓扑仍可能标签重叠；本轮按授权冻结节点／关系／标签／布局实现。此次没有性能基准或任意拓扑可读性结论。
 - 案件包、删除事务和进程恢复等由合成API／进程回归覆盖；本轮未实际执行浏览器删除案件／画布或Windows活动导入恢复，不把自动检查泛称所有GUI路径验收。
 - 新版本号、Windows构建与公开发行仍需绑定后续具体候选。此处passed只表示当前工作台源码范围的发现已关闭，不代表安装包或发行完成。
@@ -98,3 +98,7 @@ final result: passed
 ## Follow-up Polish
 
 系统字体抗锯齿、真实浏览器125%／150%缩放、Windows GUI／DPI与触屏在对应环境补验。密集图标签属于另行授权的渲染范围；不为本轮风格精修改动被冻结的实现。
+
+## 后续 v0.1.1 发布补证
+
+[Release v0.1.1](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.1) 已公开，绑定发布源码 `e7be2f5675dcd2dc896a20d6d644d5aa05125a73` 及 [Windows安装器构建](https://github.com/Eysn0130/FundsTrace/actions/runs/38827843574)。发布源码完整回归375项、Windows定向Python56项、桌面Node22项、54条资源／11项后端及14项静默安装生命周期通过。EXE实际版本资源正确，升级基线为固定v0.1.0。安装包摘要、源码和报告已核对；原先目录候选记录保持其原SHA范围。安装器未签名，Windows GUI／DPI与其他未执行项不变。此次发布是后续交付动作，不将源码设计passed改称GUI或全面兼容验收。

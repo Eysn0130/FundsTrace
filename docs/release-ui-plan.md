@@ -213,4 +213,10 @@ S6：交付源码候选、使用说明、截图与验收说明，保留临时合
 
 原生目录候选补证：[Actions 38784969693](https://github.com/Eysn0130/FundsTrace/actions/runs/38784969693) 对源码 `02b6c303d8a4d9f0cf0b390999969a482efdb771` 成功运行 `installer=false`，Windows定向Python56、桌面Node22、54资源记录与11后端检查通过，详细摘要核对与限制见 `design-qa.md`。原生证据属于该SHA，后续只追加文档记录，不冒称文档新HEAD已重建。
 
-Windows GUI/DPI、安装生命周期、触屏实机、125%/150%真实浏览器缩放、系统原生保存／取消仍 **NOT_EXECUTED**。当前 IAB 的缩放快捷键未改变浏览器 zoom，因此不以 CSS 缩放、CDP pinch 或视口宽度冒充。已有密集 G6 标签可能重叠，属于本轮明确冻结的图形渲染范围，不宣称任意拓扑可读性或性能改善。
+目录候选阶段：Windows GUI/DPI、安装生命周期、触屏实机、125%/150%真实浏览器缩放、系统原生保存／取消仍 **NOT_EXECUTED**；后续安装器补证见第10节。当前 IAB 的缩放快捷键未改变浏览器 zoom，因此不以 CSS 缩放、CDP pinch 或视口宽度冒充。已有密集 G6 标签可能重叠，属于本轮明确冻结的图形渲染范围，不宣称任意拓扑可读性或性能改善。
+
+## 10. v0.1.1 发布交付
+
+后续发布指令已授权Commit、push、安装器封装与公开发行。版本改为0.1.1，保留免激活、认证、appId与数据目录；未签名开关仅关闭签名，Windows构建读取PE版本资源。升级基线改为已公开且固定摘要的0.1.0。
+
+PR #1已合并；发布源码 `e7be2f5675dcd2dc896a20d6d644d5aa05125a73` 通过375项完整回归及 [Windows安装器构建](https://github.com/Eysn0130/FundsTrace/actions/runs/38827843574) 的56项Python、22项Node、54资源／11后端和14项静默安装生命周期。下载EXE与五份报告并核对摘要后，Tag与 [Release v0.1.1](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.1) 绑定同一成功源码；随后仅补文档。Windows GUI／DPI／触屏及真实125%／150%浏览器缩放仍未执行，不以公开Release改写这些限制。

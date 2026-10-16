@@ -2,7 +2,7 @@
 
 本地资金流水追踪与关联分析工具。Python/FastAPI、DuckDB，React＋TypeScript＋Vite 案件／导入／流水核对界面、保留的 JavaScript/G6 图谱，以及独立 Electron 宿主。导入由统一 Python 服务管理任务、回执、来源与上传清理。项目采用 [MIT](LICENSE)，第三方许可与维护来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。当前为预览阶段。
 
-[下载 FundsTrace v0.1.0 · Windows x64](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.0)：在对应 Release 的 Assets 下载 `.exe`，安装后直接启动，**无需公钥或授权码**。安装器支持当前用户安装、覆盖升级及 Windows 卸载入口；卸载默认保留案件数据。安装包未签名，Windows GUI／DPI／原生保存交互尚未实机验收，不作为发布通过标记。实现与原生验证范围见 [桌面交付](docs/desktop-delivery.md)。
+[下载 FundsTrace v0.1.1 · Windows x64](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.1)：在对应 Release 的 Assets 下载 `.exe`，安装后直接启动，**无需公钥或授权码**。安装器支持当前用户安装、覆盖升级及 Windows 卸载入口；卸载默认保留案件数据。安装包未签名，Windows GUI／DPI／原生保存交互尚未实机验收，不作为发布通过标记。实现与原生验证范围见 [桌面交付](docs/desktop-delivery.md)。
 
 ## 当前边界
 
@@ -13,7 +13,7 @@
 
 ## 可重复安装和测试
 
-开发基线为 macOS arm64、Python 3.11 与 Node 22.22.1；完整回归入口也需要 Node。[v0.1.0 Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38746367500) 已完成 56 项定向 Python、22 项桌面 Node、23 项资源、11 项包内后端及 14 项静默安装生命周期检查；源码／Tag 为 `d7547734f91546fb3b81b30a7e4993b644b77154`。结果和限制见 [桌面交付](docs/desktop-delivery.md)。日常协作按 [CONTRIBUTING.md](CONTRIBUTING.md) 选择受影响层的最小充分验证，不默认重复全套。
+开发基线为 macOS arm64、Python 3.11 与 Node 22.22.1；完整回归入口也需要 Node。[v0.1.1 Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38827843574) 绑定源码／Tag `e7be2f5675dcd2dc896a20d6d644d5aa05125a73`：375项完整源码回归、Windows定向Python56项、桌面Node22项、54条资源记录、11项包内后端及14项静默安装生命周期检查通过；真实GUI／DPI等限制见 [桌面交付](docs/desktop-delivery.md)。日常协作按 [CONTRIBUTING.md](CONTRIBUTING.md) 选择受影响层的最小充分验证，不默认重复全套。
 
 ```sh
 uv venv --python 3.11
@@ -116,6 +116,6 @@ FUND_DATA_DIR=/absolute/path/to/private-runtime .venv/bin/python run.py
 
 CSV/XLSX 是当前回归覆盖的导入格式。旧 `.xls` 入口、可选 PDF 优化依赖、Windows 实机安装／DPI／系统保存及真实案件性能仍须专项验证。[性能记录](docs/performance.md) 保留的是本次持久任务／来源改造前的合成基线，不代表当前候选同等性能。初始化 checkpoint 和导入进程恢复回归也不是磁盘损坏／任意断电保证；业务备份应在一致状态下包含完整运行数据。
 
-当前源码候选新增查询表单独立折叠、流水全览与勾选即时上图，并修复快速操作、导入恢复、异步抽屉和分析选择一致性。侧栏锚点与全览上图状态分别表示批量追踪起点和当前画布事实；使用方法见 [工作台指南](docs/workspace-guide.md)，验收与未执行项目见 [设计验收](design-qa.md)。本轮源码尚未构建或发布新的 Windows 安装包，已发布 v0.1.0 不包含这些改动。
+v0.1.1新增查询表单独立折叠、流水全览与勾选即时上图，并修复快速操作、导入恢复、异步抽屉和分析选择一致性。侧栏锚点与全览上图状态分别表示批量追踪起点和当前画布事实；使用方法见 [工作台指南](docs/workspace-guide.md)，验收与未执行项目见 [设计验收](design-qa.md)。该工作台已随 v0.1.1 Windows 安装包发布；历史 v0.1.0 附件不被替换。
 
 石墨色编辑器、独立折叠／紧凑工具区、画布撤销／重做及七列表格见 [工作区交付](docs/graph-workspace-plan.md)，Electron 运行、Windows 原生构建及后续单导航项接入见 [桌面交付](docs/desktop-delivery.md)。旧 G6/API 与 React 共用 [精确金额契约](docs/money-contract.md)。首绘补丁、透明标签／碰撞及上一尺寸下的交替基准见 [首绘与标签记录](docs/graph-render.md)，不能当作新布局或桌面性能保证。视窗裁剪、结构布局及缩略图的历史记录见 [图谱视窗](docs/graph-viewport.md)。当前导入行为见 [导入生命周期](docs/import-lifecycle.md)，12 个版本化操作见 [API 契约](docs/api-contract.md)。共享面板接口和业务覆盖缺口见 [前端宿主适配](docs/frontend-host-adaptation.md)。[Analytix 整合建议](docs/analytix-integration.md) 与 [Windows／插件研究](docs/windows-and-plugin-plan.md) 保留宿主契约边界：当前 UI port 使用独立 DTO，真实 Host 及受保护显示尚未接入；没有修改 Analytix。命名与技术选型见 [演进建议](docs/evolution.md)，接管历史见 [接管记录](docs/takeover.md)。
