@@ -182,10 +182,14 @@ def _find_cycles(flows, max_len, max_cycles, min_total, window_days, budget, sta
     node_out = {x: sum((a for (_, a, _f) in adj[x]), ZERO) for x in adj}
     candidates = [x for x in adj if indeg.get(x, 0) >= 1 and node_out[x] > 0]
     candidates.sort(key=lambda x: -node_out[x])
+    # Subject and start-count controls choose search origins only. A closed
+    # path can still pass through every eligible account in this currency.
+    eligible = set(candidates)
     if subjects:
         sub = {x.strip() for x in subjects if x.strip()}
         candidates = [x for x in candidates if x in sub or names.get(x, "") in sub]
-    candidates = candidates[:start_top]
+    else:
+        candidates = candidates[:start_top]
 
     cycles = []
     seen = set()
@@ -221,7 +225,7 @@ def _find_cycles(flows, max_len, max_cycles, min_total, window_days, budget, sta
                 if len(cycles) >= max_cycles:
                     return
                 continue
-            if nxt in nodes_seq or nxt not in candidates or depth + 1 > max_len:
+            if nxt in nodes_seq or nxt not in eligible or depth + 1 > max_len:
                 continue
             dfs(start, nxt, nodes_seq + [nxt], edges_seq + [
                 {"id": f["id"], "from": node, "to": nxt, "amount": amt, "time": f["trade_time"], "currency": f["currency"]}], depth + 1, total + amt)
@@ -290,7 +294,9 @@ def _match_fast_flows(flows, window_minutes, tolerance, min_amount, max_pairs, s
             acc, chosen = ZERO, []
             for k in range(lo, hi):   # 只扫窗口内的转出
                 fo = d["out"][k]
-                if fo["id"] in used:
+                # A self-transfer occurs in both lists, but one source record
+                # cannot be evidence for both legs of a pass-through pair.
+                if fo["id"] == fid or fo["id"] in used:
                     continue
                 if acc >= amt * (1 + tolerance):
                     break
@@ -324,18 +330,29 @@ def account_outliers(case_id, sigma=2.5, top=30, subjects=None, *, _flows=None):
     基准分布也取自这些账户之间的对比。"""
     if not 0 < float(sigma) < float("inf"):
         raise ValueError("out_sigma must be positive and finite")
-    return _grouped(load_flows(case_id) if _flows is None else _flows, _account_outliers, "outliers", sigma=float(sigma),
-                    top=top, subjects=subjects)
+    flows = load_flows(case_id) if _flows is None else _flows
+    selected = None
+    if subjects:
+        sub = {x.strip() for x in subjects if x.strip()}
+        # Resolve identity from the complete case snapshot before grouping by
+        # currency. Historical aliases and blank names must not discard any
+        # transactions of an account selected by a matching name elsewhere.
+        selected = {f[account] for f in flows
+                    for account, name in (("payer_account", "payer_name"), ("payee_account", "payee_name"))
+                    if f[account] and (f[account] in sub or (f.get(name) or "") in sub)}
+    return _grouped(flows, _account_outliers, "outliers", sigma=float(sigma),
+                    top=top, subjects=selected)
 
 
 def _account_outliers(flows, sigma, top, subjects):
-    sub = {x.strip() for x in (subjects or []) if x.strip()}
+    # None means all accounts; an empty resolved set means no matching subject.
+    sub = subjects
     feats = defaultdict(lambda: {"cnt": 0, "total": ZERO, "night": 0, "round": 0,
                                  "counter": set(), "amts": []})
     for f in flows:
         a = f["amount"] or ZERO
         parties = (f["payer_account"], f["payee_account"])
-        if sub:
+        if sub is not None:
             parties = tuple(x for x in parties if x in sub)
         for acct in parties:
             if not acct:

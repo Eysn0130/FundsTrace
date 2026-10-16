@@ -50,7 +50,7 @@ def test_graph_profile_context_and_excel_keep_cents_without_currency_mixing(clie
     cid, amounts, ids = seed(database, make_case, flow_row)
     # Same parties/amount/time but another currency must not be graph-deduplicated.
     importer.commit_rows("synthetic-usd.csv", "A", [flow_row(trade_no="USD-1", currency="USD",
-        amount=Decimal(amounts[0]), balance=None, self_account="SYN-B")], case_id=cid)
+        amount=Decimal(amounts[0]), balance=None, self_account="SYN-A")], case_id=cid)
     ids = [row["id"] for row in database.q("select id from flows where case_id=? order by id", [cid])]
     assert client.post("/api/track", json={"case_id": cid, "flow_ids": ids}).status_code == 200
     graph = client.get("/api/graph", params={"case_id": cid}).json()

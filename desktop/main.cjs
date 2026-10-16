@@ -1,12 +1,13 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, dialog, session, screen } = require('electron');
+const { app, BrowserWindow, Menu, dialog, session, screen, ipcMain } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
 const { launchConfig, HEADER, pageAllowed, popupKind, requestAllowed, downloadAllowed, windowBounds } = require('./host-policy.cjs');
 const { startBackend } = require('./backend.cjs');
+const { CHANNEL, preferenceStore, preferenceRequest } = require('./preferences.cjs');
 
 // Fixed, script-free content has no backend token, network access or business data.
 const startupUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>FundsTrace 正在启动</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f7fb;color:#202b3c;font:16px/1.7 system-ui,"Microsoft YaHei",sans-serif}main{padding:32px;max-width:440px}h1{font-size:26px;margin:0 0 12px}p{margin:8px 0;color:#526078}</style><main role="status"><h1>正在启动 FundsTrace</h1><p>正在准备工作区，首次启动可能需要一点时间。</p><p>可关闭此窗口取消启动。</p></main></html>`);
@@ -69,7 +70,7 @@ else {
         const owner = [...windows][0];
         const display = owner ? screen.getDisplayMatching(owner.getBounds()) : screen.getPrimaryDisplay();
         const win = new BrowserWindow({ title: 'FundsTrace', ...windowBounds(display.workArea), show: false,
-          webPreferences: { session: localSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, spellcheck: false } });
+          webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: localSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, spellcheck: false } });
         const contents = win.webContents;
         const contentsId = contents.id;
         windows.add(win); owned.add(contentsId);
@@ -145,6 +146,10 @@ else {
       if (!backend || quitting || primary.isDestroyed()) return;
       ({ origin, token } = await backend.ready);
       if (quitting || primary.isDestroyed()) return;
+      const preferences = preferenceStore(app.getPath('userData'));
+      ipcMain.on(CHANNEL, (event, operation, key, value) => {
+        event.returnValue = preferenceRequest(preferences, event, origin, owned, operation, key, value);
+      });
       Menu.setApplicationMenu(Menu.buildFromTemplate([
         ...(process.platform === 'darwin' ? [{ label: 'FundsTrace', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] }] : []),
         { label: '文件', submenu: [{ label: '资金图谱', click: () => [...windows][0]?.loadURL(`${origin}/`) }, { label: '案件与导入', click: () => [...windows][0]?.loadURL(`${origin}/workspace/`) }, { type: 'separator' }, { role: 'quit' }] },

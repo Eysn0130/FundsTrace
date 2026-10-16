@@ -5,6 +5,7 @@
 """
 import base64
 import datetime
+from collections import deque
 from contextlib import asynccontextmanager, contextmanager
 from html import escape
 import shutil
@@ -508,27 +509,50 @@ def graph(case_id: int, canvas_id: int = 0):
         return _graph(case_id, canvas_id)
 
 
+def _graph_mirror_duplicate_ids(case_id: int, canvas_id: int):
+    """Pair each tracked row with at most one oldest compatible ledger mirror."""
+    rows = db.q_raw("""
+        select f.id, f.payer_account, f.payee_account, f.amount,
+               coalesce(f.currency, '') as currency, coalesce(f.self_account, '') as self_account,
+               date_trunc('second', f.trade_time) as mirror_time
+        from flows f join tracked_flows tf on tf.flow_id = f.id
+        where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?
+        order by f.trade_time, f.id
+    """, [case_id, canvas_id, case_id])
+    pending, duplicate_ids = {}, []
+    tolerance = datetime.timedelta(seconds=120)
+    for row in rows:
+        if any(row[field] is None for field in ("payer_account", "payee_account", "amount", "mirror_time")):
+            continue  # NULL values could not match in the previous SQL rule either.
+        key = (row["payer_account"], row["payee_account"], row["amount"], row["currency"])
+        queue = pending.setdefault(key, deque())
+        while queue and row["mirror_time"] - queue[0][0] > tolerance:
+            queue.popleft()
+        # All unmatched rows in a group share one declared self_account: a
+        # different/undeclared ledger immediately consumes its oldest partner.
+        # Truncated seconds preserve the existing date_diff('second') boundary.
+        if queue and not (row["self_account"] and row["self_account"] == queue[0][1]):
+            queue.popleft()
+            duplicate_ids.append(row["id"])
+        else:
+            queue.append((row["mirror_time"], row["self_account"]))
+    return duplicate_ids
+
+
 def _graph(case_id: int, canvas_id: int):
     # 统计口径修正（两处历史问题）：
     # 1) 双方流水都导入时，同一笔交易会以两份记录入库（时间差秒级、余额/摘要/流水号不同，
     #    不满足全列去重）→ 同 付款方+收款方+金额 且时间相差 ≤120 秒、且「本方账号声明不同
-    #    （或未声明）」的多行只计一笔（is_dup，保留最早一行）。同一 self_account 的连续
-    #    多笔（如拆分转账）是真实交易，不合并。
+    #    （或未声明）」的两行配对只计一笔（is_dup，保留较早一行）。每条记录最多配对一次，
+    #    不能让已配对的镜像吞掉后续真实交易。同一 self_account 的连续多笔不相互合并。
     # 2) main_accounts 的 OR 连接（账号或户名匹配）在同户名多账号时会把行数放大数倍，
     #    导致笔数/金额虚增 → 改用 EXISTS 子查询，只做标记、不复制行。
     # 画布维度：只统计当前画布追踪的流水（canvas_id 0 = 默认画布）。
+    dedup_params = [case_id, canvas_id, case_id, _graph_mirror_duplicate_ids(case_id, canvas_id)]
     dedup_cte = """
         with t as (select f.* from flows f join tracked_flows tf on tf.flow_id = f.id
                    where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?),
-        nd as (select f.*, exists(
-                   select 1 from t g
-                   where g.payer_account = f.payer_account and g.payee_account = f.payee_account
-                     and g.amount = f.amount and coalesce(g.currency, '') = coalesce(f.currency, '')
-                     and (g.trade_time < f.trade_time
-                          or (g.trade_time = f.trade_time and g.id < f.id))
-                     and date_diff('second', g.trade_time, f.trade_time) <= 120
-                     and not (coalesce(f.self_account, '') <> '' and f.self_account = g.self_account)
-               ) as is_dup
+        nd as (select f.*, f.id in (select unnest(?::bigint[])) as is_dup
                from t f)
     """
     nodes = db.q(dedup_cte + """
@@ -552,7 +576,7 @@ def _graph(case_id: int, canvas_id: int):
         left join account_ids ai on ai.case_id = ? and ai.account = t2.account
         left join account_photos ap on ap.case_id = ? and ap.account = t2.account
         group by t2.account
-    """, [case_id, canvas_id, case_id, case_id, case_id, case_id, case_id])
+    """, [*dedup_params, case_id, case_id, case_id, case_id])
     edges = db.q(dedup_cte + """
         select payer_account as source, max(payer_name) as source_name,
                payee_account as target, max(payee_name) as target_name,
@@ -563,12 +587,12 @@ def _graph(case_id: int, canvas_id: int):
                list(distinct currency) filter (currency is not null and currency <> '' and currency <> 'CNY') as currencies,
                list(id) as ids
         from nd group by payer_account, payee_account
-    """, [case_id, canvas_id, case_id])
+    """, dedup_params)
     amounts = db.q_raw(dedup_cte + """
         select payer_account as source, payee_account as target, coalesce(currency, '') currency,
                sum(amount) amount
         from nd where not is_dup group by payer_account, payee_account, coalesce(currency, '') order by currency
-    """, [case_id, canvas_id, case_id])
+    """, dedup_params)
     by_pair, by_node = {}, {}
     for row in amounts:
         total = {"currency": row["currency"], "amount": money_string(row["amount"])}
@@ -1460,6 +1484,13 @@ def _tracked_workbook(case_id, rows, pending):
         df.to_excel(w, index=False, sheet_name="追踪流水")
         # 第二张表：待调取账号（当前画布图谱中出现、但尚未导入其本人流水的对手账户）
         pending.to_excel(w, index=False, sheet_name="待调取账号")
+        # openpyxl otherwise interprets user strings beginning '=' as formulas
+        # (and strings such as '#N/A' as errors). Preserve their literal value.
+        for sheet in w.sheets.values():
+            for row in sheet:
+                for cell in row:
+                    if isinstance(cell.value, str):
+                        cell.data_type = "s"
     fname = f"追踪流水_案件{case_id}.xlsx"
     return Response(
         buf.getvalue(),
@@ -1469,8 +1500,12 @@ def _tracked_workbook(case_id, rows, pending):
 
 def _pending_accounts(case_id: int, canvas_id: int = 0) -> "pd.DataFrame":
     """待调取账号清单：当前画布图谱中出现、但未导入其本人流水的账户。
-    排除口径：账号已在 main_accounts 中（即某次导入以其为本方账号）。同币种内按交易总额降序。"""
-    mains = {r["account"] for r in db.q("select account from main_accounts where case_id = ?", [case_id])}
+    排除口径：本案仍有以该账号为 self_account 的流水。主账号角色不代表已取得账簿。
+    本方流水不限当前画布；同币种内按交易总额降序。"""
+    ledgers = {r["account"] for r in db.q("""
+        select distinct self_account as account from flows
+        where case_id = ? and self_account is not null and self_account <> ''
+    """, [case_id])}
     nodes = db.q_raw("""
         with t as (select f.* from flows f join tracked_flows tf on tf.flow_id = f.id
                    where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?)
@@ -1489,7 +1524,7 @@ def _pending_accounts(case_id: int, canvas_id: int = 0) -> "pd.DataFrame":
         ) x
         group by x.account, coalesce(x.currency, '')
     """, [case_id, canvas_id, case_id, case_id, case_id])
-    pending = [n for n in nodes if n["account"] not in mains]
+    pending = [n for n in nodes if n["account"] not in ledgers]
     pending.sort(key=lambda x: (x["currency"], -((x["out_amt"] or 0) + (x["in_amt"] or 0)), x["account"]))
     if not pending:
         return pd.DataFrame([{"序号": 1, "户名": "（无待调取账号：图谱中的对手账户均已导入流水）"}])

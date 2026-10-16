@@ -5,7 +5,7 @@ const backend = path.resolve(__dirname, '../build/desktop/backend/funds-trace-ba
 module.exports = {
   appId: 'com.eysn.fundstrace', productName: 'FundsTrace',
   directories: { output: '../build/desktop/electron' },
-  files: ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs'],
+  files: ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs'],
   asar: true,
   electronLanguages: ['en-US', 'zh-CN', 'zh-TW'],
   extraResources: [

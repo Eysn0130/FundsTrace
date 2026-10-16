@@ -93,7 +93,7 @@ test('canvas editor snapshots include only IDs, geometry and display choices', (
   const snapshot = f.snapshot(), text = JSON.stringify(snapshot);
   assert.equal(snapshot.positions['SYN-A'].x, 44);
   assert.doesNotMatch(text, /PRIVATE|amount|photo|999999/);
-  assert.deepEqual(Object.keys(snapshot).sort(), ['camera','edgeBendPos','edgeLabelPos','edgeLabels','edgeSnapshotLabels','edgeType','graphView','layout','positions','showIds','showPhotos','trackedIds'].sort());
+  assert.deepEqual(Object.keys(snapshot).sort(), ['edgeTypes','camera','edgeBendPos','edgeLabelPos','edgeLabels','edgeSnapshotLabels','edgeType','graphView','layout','positions','showIds','showPhotos','trackedIds'].sort());
 });
 
 test('tracking, undo and redo preserve checked rows, filters, page and camera', async () => {
@@ -139,6 +139,123 @@ test('membership latest unsent intent coalesces without a write or history entry
   assert.deepEqual(f.tracked.get('1:0'), [1]); assert.equal(f.history.status().count, 0);
   assert.equal(f.h.requests.filter(item => item.path === '/api/track/state').length, 0);
   assert.deepEqual([...f.membership.snapshot().pendingIds], []);
+});
+
+for (const offscreen of [false, true]) {
+  test(`membership addition ${offscreen ? 'fits endpoints outside the camera' : 'keeps the camera when endpoints are visible'}`, async () => {
+    const f = editor(); let fits = 0;
+    f.matrix = [1,0,0,0,1,0,offscreen ? -2000 : 100,100,1];
+    const before = [...f.matrix];
+    f.state.graph.findById = id => f.state.graph.getNodes().find(node => node.getModel().id === id);
+    f.state.graph.getCanvasByPoint = (x,y) => ({x:x*f.matrix[0]+f.matrix[6],y:y*f.matrix[4]+f.matrix[7]});
+    f.state.graph.getZoom = () => f.matrix[0];
+    f.env.fitGraph = () => { fits++; f.matrix = [1,0,0,0,1,0,450,300,1]; };
+    f.intercept(path => path.startsWith('/api/graph') ? response({
+      tracked_ids:[...f.tracked.get('1:0')], nodes:[{account:'SYN-A'},{account:'SYN-B'}],
+      edges:f.tracked.get('1:0').includes(2) ? [{source:'SYN-A',target:'SYN-B',ids:[2]}] : [],
+    }) : null);
+    assert.equal((await f.membership.set([2], true)).status, 'confirmed');
+    assert.equal(fits, offscreen ? 1 : 0);
+    const after = [...f.matrix];
+    await f.h.element('#btnUndo').onclick(); assert.deepEqual(f.matrix, before);
+    await f.h.element('#btnRedo').onclick(); assert.deepEqual(f.matrix, after);
+    assert.equal((await f.membership.set([2], false)).status, 'confirmed');
+    assert.equal(fits, offscreen ? 1 : 0, 'removing membership never fits the camera');
+  });
+}
+
+test('membership additions reveal endpoints in a neighborhood and undo restores its display scope', async () => {
+  const f = editor();
+  f.state.graphView.visibleIds = new Set(['SYN-A']); f.state.graphView.root = 'SYN-A';
+  f.env.renderGraph();
+  const camera = [...f.matrix];
+  f.intercept(path => path.startsWith('/api/graph') ? response({
+    tracked_ids: [...f.tracked.get('1:0')],
+    nodes: [{account:'SYN-A'}, {account:'SYN-B'}, ...(f.tracked.get('1:0').includes(2) ? [{account:'SYN-C'}] : [])],
+    edges: f.tracked.get('1:0').includes(2) ? [{source:'SYN-A',target:'SYN-C',ids:[2]}] : [],
+  }) : null);
+  assert.equal((await f.membership.set(['2'], true)).status, 'confirmed');
+  assert.deepEqual(f.models.map(node => node.id), ['SYN-A', 'SYN-C']);
+  assert.deepEqual(f.matrix, camera);
+  await f.h.element('#btnUndo').onclick();
+  assert.deepEqual([...f.state.graphView.visibleIds], ['SYN-A']);
+  await f.h.element('#btnRedo').onclick();
+  assert.deepEqual([...f.state.graphView.visibleIds], ['SYN-A', 'SYN-C']);
+});
+
+test('failed graph publication rolls back the neighborhood along with tracked membership', async () => {
+  const f = editor();
+  f.state.graphView.visibleIds = new Set(['SYN-A']); f.state.graphView.root = 'SYN-A';
+  f.env.renderGraph();
+  f.intercept(path => path.startsWith('/api/graph') ? response({tracked_ids:[1,2],
+    nodes:[{account:'SYN-A'},{account:'SYN-B'},{account:'SYN-C'}],
+    edges:[{source:'SYN-A',target:'SYN-C',ids:[2]}]}) : null);
+  const render = f.env.renderGraph; let fail = true;
+  f.env.renderGraph = () => {
+    if (fail) { fail = false; assert.ok(f.state.graphView.visibleIds.has('SYN-C')); throw new Error('synthetic drawing failure'); }
+    render();
+  };
+  assert.equal((await f.membership.set([2], true)).status, 'failed');
+  assert.deepEqual(f.tracked.get('1:0'), [1]);
+  assert.deepEqual([...f.state.graphView.visibleIds], ['SYN-A']);
+  assert.deepEqual(f.models.map(node => node.id), ['SYN-A']);
+  assert.equal(f.history.status().count, 0);
+});
+
+test('tracking waits for a superseding same-canvas read before confirming or compensating', async () => {
+  const f = editor(), first = deferred(), latest = deferred(), started = deferred(); let reads = 0;
+  f.intercept(path => {
+    if (!path.startsWith('/api/graph')) return null;
+    if (++reads === 1) { started.resolve(); return first.promise; }
+    return latest.promise;
+  });
+  const track = f.h.run('trackFlows([2])'); await started.promise;
+  const refresh = f.h.run('loadGraph()');
+  first.resolve(response({tracked_ids:[1,2],nodes:[{account:'SYN-A'},{account:'SYN-B'}],edges:[]}));
+  await flush(); await flush();
+  assert.equal(f.h.requests.filter(item => item.path === '/api/track/state').length, 1, 'an obsolete read is not a failed mutation');
+  latest.resolve(response({tracked_ids:[1,2],nodes:[{account:'SYN-A'},{account:'SYN-B'}],edges:[]}));
+  await Promise.all([track, refresh]);
+  assert.deepEqual(f.tracked.get('1:0'), [1,2]); assert.deepEqual([...f.state.tracked], [1,2]);
+  assert.equal(f.history.status().count, 1);
+});
+
+test('undo revokes older graph reads so they cannot restore the removed membership', async () => {
+  const f = editor(); await f.h.run('trackFlows([2])');
+  const old = deferred(), started = deferred(); let reads = 0;
+  f.intercept(path => {
+    if (!path.startsWith('/api/graph') || ++reads > 1) return null;
+    started.resolve(); return old.promise;
+  });
+  const refresh = f.h.run('loadGraph()'); await started.promise;
+  await f.h.element('#btnUndo').onclick();
+  assert.deepEqual(f.tracked.get('1:0'), [1]);
+  old.resolve(response({tracked_ids:[1,2],nodes:[{account:'SYN-A'},{account:'SYN-B'}],edges:[]}));
+  await refresh;
+  assert.deepEqual([...f.state.tracked], [1]);
+  assert.equal(f.history.status().canUndo, false); assert.equal(f.history.status().canRedo, true);
+});
+
+test('a superseding read with a drawing failure cannot confirm an unrendered tracking command', async () => {
+  const f = editor(), first = deferred(), latest = deferred(), started = deferred(); let reads = 0;
+  f.intercept(path => {
+    if (!path.startsWith('/api/graph')) return null;
+    if (++reads === 1) { started.resolve(); return first.promise; }
+    return latest.promise;
+  });
+  const render = f.env.renderGraph;
+  f.env.renderGraph = () => {
+    if (f.state.tracked.has(2)) throw new Error('synthetic drawing failure');
+    render();
+  };
+  const track = f.h.run('trackFlows([2])'); await started.promise;
+  const refresh = f.h.run('loadGraph()').then(() => null, error => error.message);
+  first.resolve(response({tracked_ids:[1,2],nodes:[{account:'SYN-A'},{account:'SYN-B'}],edges:[]}));
+  latest.resolve(response({tracked_ids:[1,2],nodes:[{account:'SYN-A'},{account:'SYN-B'}],edges:[]}));
+  await Promise.all([track, refresh]);
+  assert.deepEqual(f.tracked.get('1:0'), [1]); assert.deepEqual([...f.state.tracked], [1]);
+  assert.equal(f.history.status().count, 0);
+  assert.ok(f.messages.some(value => /synthetic drawing failure/.test(value.message)));
 });
 
 test('membership rapid in-flight reversals serialize latest intent and retain other pending rows', async () => {
@@ -364,6 +481,8 @@ for (const operation of ['track', 'untrack', 'bulk', 'clear']) {
   test(`${operation} compensates a committed write after both graph refresh attempts fail`, async () => {
     const f = editor(); f.h.element('#showPhotoCk').checked = false;
     await f.h.element('#showPhotoCk').onchange({ target: f.h.element('#showPhotoCk') });
+    f.state.edgeTypes = { 'SYN-A=>SYN-B': 'polyline' };
+    f.state.edgeBendPos = { 'SYN-A=>SYN-B': [{ x: 7, y: 8 }] };
     const before = JSON.stringify(f.snapshot()), historyCount = f.history.status().count;
     let reads = 0;
     f.intercept(path => {
@@ -375,6 +494,7 @@ for (const operation of ['track', 'untrack', 'bulk', 'clear']) {
       : await f.h.element(operation === 'bulk' ? '#btnBulkTrack' : '#btnClearGraph').onclick();
     assert.equal(result, false); assert.equal(reads, 2);
     assert.deepEqual(f.tracked.get('1:0'), [1]); assert.equal(JSON.stringify(f.snapshot()), before);
+    assert.equal(f.state.edgeTypes['SYN-A=>SYN-B'], 'polyline');
     assert.equal(f.history.status().count, historyCount); assert.equal(f.history.status().busy, false);
     assert.equal(f.state.graphLoading, false);
     const writes = f.h.requests.filter(request => request.path === '/api/track/state').map(request => JSON.parse(request.options.body));
@@ -472,6 +592,38 @@ test('a layout timeout after graph publication compensates tracking and redraws 
   assert.deepEqual(f.tracked.get('1:0'), [1]); assert.equal(JSON.stringify(f.snapshot()), before);
   assert.equal(f.models[0].x, 3); assert.equal(f.history.status().count, 0); assert.equal(f.state.graphLoading, false);
 });
+
+for (const phase of ['before', 'during']) {
+  test(`a graph read started ${phase} compensation cannot republish reverted membership`, async () => {
+    const f = editor(), render = f.env.renderGraph, late = deferred(), readStarted = deferred();
+    const rollback = deferred(), rollbackStarted = deferred(); let writes = 0, reads = 0, first = true;
+    f.h.run('globalThis.syntheticNow = 0; Date.now = () => syntheticNow;');
+    f.env.renderGraph = () => {
+      render(); if (first) { first = false; f.h.run('layoutJob = {requestId:9}'); }
+    };
+    f.intercept((path, options) => {
+      if (path === '/api/track/state' && ++writes === 2 && phase === 'during') {
+        rollbackStarted.resolve(); return rollback.promise.then(() => {
+          f.tracked.set('1:0', [1]); return response({tracked_ids:[1]});
+        });
+      }
+      if (path.startsWith('/api/graph') && ++reads > 1) { readStarted.resolve(); return late.promise; }
+      return null;
+    });
+    const pending = f.h.run('trackFlows([2])'); await flush();
+    let refresh;
+    if (phase === 'before') { refresh = f.h.run('loadGraph()'); await readStarted.promise; }
+    f.h.run('syntheticNow = 30001; graphMetric("layout")');
+    if (phase === 'during') {
+      await rollbackStarted.promise; refresh = f.h.run('loadGraph()'); await readStarted.promise; rollback.resolve();
+    }
+    assert.equal(await pending, false);
+    late.resolve(response({tracked_ids:[1,2],nodes:[{account:'SYN-A'},{account:'SYN-B'}],edges:[]}));
+    await refresh;
+    assert.deepEqual(f.tracked.get('1:0'), [1]); assert.deepEqual([...f.state.tracked], [1]);
+    assert.equal(f.history.status().count, 0);
+  });
+}
 
 test('late tracking responses cannot load or record into another case or same-case generation', async () => {
   const f = editor(), gate = deferred();
@@ -574,4 +726,23 @@ test('keyboard shortcuts skip native edit controls and active dialogs', async ()
   assert.equal(prevented, 1); assert.equal(f.history.status().canRedo, true);
   f.event('keydown', { ctrlKey: true, key: 'y', target: { closest: () => null }, preventDefault() { prevented += 1; } });
   await new Promise(resolve => setTimeout(resolve, 5)); assert.equal(f.history.status().canUndo, true);
+});
+
+test('changing global edge type can undo and redo restored per-edge types without transaction facts', async () => {
+  const f=editor();f.state.edgeTypes={'SYN-A=>SYN-B':'line','SYN-B=>SYN-A':'polyline'};
+  f.h.element('#edgeTypeSel').value='line';await f.h.element('#edgeTypeSel').onchange({target:f.h.element('#edgeTypeSel')});
+  assert.deepEqual(Object.keys(f.state.edgeTypes),[]);
+  await f.h.element('#btnUndo').onclick();
+  assert.equal(f.state.edgeTypes['SYN-A=>SYN-B'],'line');assert.equal(f.state.edgeTypes['SYN-B=>SYN-A'],'polyline');
+  assert.equal(f.h.element('#edgeTypeSel').value,'saved');
+  await f.h.element('#btnRedo').onclick();assert.deepEqual(Object.keys(f.state.edgeTypes),[]);
+  assert.equal(f.h.element('#edgeTypeSel').value,'line');
+});
+
+test('clear canvas removes restored edge types and undo restores their geometry', async () => {
+  const f=editor();f.state.edgeTypes={'SYN-A=>SYN-B':'polyline'};f.state.edgeBendPos={'SYN-A=>SYN-B':[{x:7,y:8}]};
+  await f.h.element('#btnClearGraph').onclick();assert.deepEqual(Object.keys(f.state.edgeTypes),[]);
+  await f.h.element('#btnUndo').onclick();assert.equal(f.state.edgeTypes['SYN-A=>SYN-B'],'polyline');
+  assert.deepEqual(JSON.parse(JSON.stringify(f.state.edgeBendPos['SYN-A=>SYN-B'])),[{x:7,y:8}]);
+  await f.h.element('#btnRedo').onclick();assert.deepEqual(Object.keys(f.state.edgeTypes),[]);
 });
