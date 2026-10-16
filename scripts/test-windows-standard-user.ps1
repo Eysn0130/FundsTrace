@@ -142,7 +142,7 @@ try {
             $Report.checks.testAccountRemoved = $true
         }
         $Stage = 'removeTestTemporary'
-        if ($RootOwned) { Remove-Item -LiteralPath $StageRoot -Recurse -Force }
+        if ($RootOwned -and (Test-Path -LiteralPath $StageRoot)) { Remove-Item -LiteralPath $StageRoot -Recurse -Force }
         $Report.checks.testTemporaryRemoved = $true
         $Report.checks.cleanup = $true
     } catch {
