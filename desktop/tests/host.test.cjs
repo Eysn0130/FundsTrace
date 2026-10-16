@@ -146,7 +146,8 @@ test('distribution manifest prevents cross-platform packaging and includes only 
   assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs']);
   assert.equal(builder.publish, null);
   assert.equal(builder.nsis.deleteAppDataOnUninstall, false);
-  assert.equal(builder.win.signAndEditExecutable, false);
+  assert.equal(builder.win.signExecutable, false);
+  assert.notEqual(builder.win.signAndEditExecutable, false, 'unsigned packaging must retain executable version resources');
   assert.deepEqual(builder.extraResources, [
     { from: path.resolve(__dirname, '../../build/desktop/backend/funds-trace-backend'), to: 'backend', filter: ['**/*'] },
     { from: path.resolve(__dirname, '../licenses/Apache-2.0.txt'), to: 'licenses/Analytix-Apache-2.0.txt' }

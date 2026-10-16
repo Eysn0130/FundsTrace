@@ -7,7 +7,7 @@ const path = require('node:path');
 const { launchConfig, HEADER } = require('../host-policy.cjs');
 const { startBackend } = require('../backend.cjs');
 
-const SEED_CASE = 'SYN alpha3 installer lifecycle case';
+const SEED_CASE = 'SYN prior installer lifecycle case';
 const CREATED_CASE = 'SYN current installer lifecycle case';
 let stage = 'ci-guard';
 

@@ -69,7 +69,7 @@ npm --prefix desktop run synthetic
 
 须先完成上述 React 构建。Electron 44 的运行时会在首次运行时下载；安装 NPM 包本身不证明二进制已安装。普通桌面启动为 `npm --prefix desktop start`，数据位于自身 `userData/data`，无需配置产品授权。Windows x64 原生构建使用 PowerShell 7 执行 `scripts/build-windows.ps1`，加 `-Installer` 生成一个未签名 NSIS 客户端；签发工具源码保留为维护用途，不再随普通用户安装包构建或分发。
 
-[Windows Actions](.github/workflows/windows-candidate.yml) 只手动触发，`installer=true` 构建客户端并在隔离 runner 用户验证旧版安装 → 0.1.0 覆盖升级 → 卸载保留合成案件。包内后端另检中文／空格路径、无授权正常访问、桌面 token 拒绝、合成案件崩溃后重开及 EOF 退出。GUI、DPI、原生保存与导入任务恢复分别记录，不能从静默脚本推断通过。[治理依据](docs/source-boundaries.md#github-与轻量治理) 参考 OpenAI／Anthropic 官方仓库，保留现有脚本为唯一构建入口。
+[Windows Actions](.github/workflows/windows-candidate.yml) 只手动触发，`installer=true` 构建客户端并在隔离 runner 用户验证固定 v0.1.0 安装 → 当前候选版覆盖升级 → 卸载保留合成案件。包内后端另检中文／空格路径、无授权正常访问、桌面 token 拒绝、合成案件崩溃后重开及 EOF 退出。GUI、DPI、原生保存与导入任务恢复分别记录，不能从静默脚本推断通过。[治理依据](docs/source-boundaries.md#github-与轻量治理) 参考 OpenAI／Anthropic 官方仓库，保留现有脚本为唯一构建入口。
 
 已发布的 alpha.3 仍需其历史授权；升级后无需重新签发。FT2／HMAC 验签、私钥和独立 Issuer 继续保留，后续需要时再单独维护。详见 [历史授权配置](docs/license-activation.md)。
 

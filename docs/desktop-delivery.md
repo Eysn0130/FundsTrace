@@ -38,9 +38,9 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 脚本准备独立构建环境，以锁文件哈希同步依赖，构建 React 与原生 PyInstaller sidecar、执行桌面 Node 回归。客户端输出在 `build/desktop/electron`；默认生成目录候选，`-Installer` 生成一个名称含 `unsigned` 的客户端 NSIS。目标用户不需要安装系统 Python。独立 Issuer 不再默认构建或分发；按需另行维护。PyInstaller 必须在 Windows 原生构建 Windows 后端。[平台约束](https://pyinstaller.org/en/stable/index.html)
 
-脚本校对实际包内 manifest 与资源，再用包内程序验证中文／空格资源和数据路径、无授权访问业务、无 token 拒绝、一个合成案件崩溃后重开、无 `license.dat` 生成和 EOF 正常退出。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅含版本、相对产物文件名、内容哈希及检查范围，不含业务数据或 token。
+未签名构建使用 `signExecutable:false` 保留应用EXE版本资源编辑；构建会读取PE文件属性并核对产品版本及文件主／次／补丁版本。脚本校对实际包内 manifest 与资源，再用包内程序验证中文／空格资源和数据路径、无授权访问业务、无 token 拒绝、一个合成案件崩溃后重开、无 `license.dat` 生成和 EOF 正常退出。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅含版本、相对产物文件名、内容哈希及检查范围，不含业务数据或 token。
 
-[Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以已公开且固定 SHA-256 的 alpha.3 客户端作为旧版本，验证静默安装 → 0.1.0 覆盖升级 → 安装后后端读取合成案件 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json`。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
+[Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以已公开且固定 SHA-256 的 v0.1.0 客户端作为旧版本，验证静默安装 → 当前候选版覆盖升级 → 安装后后端读取合成案件 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json`。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
 
 工作流只有仓库读取权限，不接收生产授权／私钥，不执行 Release 写入。所选 EXE 或目录及安全报告仅留存 3 天，不上传整个 build 或运行目录。维护者核对成功运行、源码 SHA、产物摘要后单独发布。发布包与 Tag 必须绑定同一 green 源码；构建报告的 `published:false` 表示构建脚本本身没有发布。
 
