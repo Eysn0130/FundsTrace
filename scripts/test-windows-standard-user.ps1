@@ -79,7 +79,14 @@ try {
     $env:CI = 'true'; $env:GITHUB_ACTIONS = 'true'
     @{ standardToken = $true; unicodeProfile = $true; ownAppData = $true } | ConvertTo-Json | Set-Content -LiteralPath __ENV_REPORT__ -Encoding utf8
     & __LIFECYCLE__ -InstallerPath __INSTALLER__ -ReportPath __REPORT__ -CiTemporaryRoot __LIFECYCLE_ROOT__
-    exit $LASTEXITCODE
+    $Result = $LASTEXITCODE
+    if ($Result -eq 0) {
+        # Installer-private temp files belong to this token. Clean them before
+        # the parent removes this account, without widening their ACLs.
+        Remove-Item -LiteralPath $env:TEMP -Recurse -Force
+        @{ standardToken = $true; unicodeProfile = $true; ownAppData = $true; ownTemporaryRemoved = $true } | ConvertTo-Json | Set-Content -LiteralPath __ENV_REPORT__ -Encoding utf8
+    }
+    exit $Result
 } catch { [Console]::Error.WriteLine('Standard-user compatibility child failed.'); exit 1 }
 '@
     $Replacements = @{
@@ -96,7 +103,7 @@ try {
     if (-not $Child.WaitForExit(900000)) { throw 'Standard-user lifecycle timed out.' }
     if ($Child.ExitCode -ne 0) { throw 'Standard-user lifecycle failed.' }
     $Environment = Get-Content -Raw -LiteralPath (Join-Path $ReportDirectory 'standard-user-environment.json') | ConvertFrom-Json
-    foreach ($Name in @('standardToken', 'unicodeProfile', 'ownAppData')) { if ($Environment.$Name -ne $true) { throw 'Standard-user environment check failed.' } }
+    foreach ($Name in @('standardToken', 'unicodeProfile', 'ownAppData', 'ownTemporaryRemoved')) { if ($Environment.$Name -ne $true) { throw 'Standard-user environment check failed.' } }
     $Lifecycle = Get-Content -Raw -LiteralPath (Join-Path $ReportDirectory 'native-installer-smoke.json') | ConvertFrom-Json
     if ($Lifecycle.status -cne 'passed') { throw 'Standard-user installation checks failed.' }
     $Report.checks.standardUserLifecycle = $true
