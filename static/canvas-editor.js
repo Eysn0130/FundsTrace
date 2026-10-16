@@ -34,7 +34,8 @@
     for (const [id, values] of Object.entries(state.edgeBendPos)) edgeBendPos[id] = values.map(point).filter(Boolean);
     const matrix = state.graph?.get?.('group')?.getMatrix?.();
     const view = state.graphView;
-    return { trackedIds: [...state.tracked].sort(order), positions, edgeLabelPos, edgeBendPos, edgeSnapshotLabels,
+    const edgeTypes = Object.fromEntries(Object.entries(state.edgeTypes).filter(([, type]) => ['line', 'polyline', 'quadratic', 'loop'].includes(type)));
+    return { trackedIds: [...state.tracked].sort(order), positions, edgeLabelPos, edgeBendPos, edgeSnapshotLabels, edgeTypes,
       layout: state.layout, edgeType: state.edgeType, edgeLabels: [...state.edgeLabels].sort(order),
       showIds: state.showIds, showPhotos: state.showPhotos,
       graphView: { visibleIds: view.visibleIds ? [...view.visibleIds].sort(order) : null,
@@ -43,7 +44,8 @@
   }
 
   function syncControls() {
-    for (const [selector, value] of [['#layoutSel', state.layout], ['#edgeTypeSel', state.edgeType],
+    syncEdgeTypeControl();
+    for (const [selector, value] of [['#layoutSel', state.layout],
       ['#graphLabelMode', state.graphView.labelMode], ['#neighborAccount', state.graphView.root || ''],
       ['#neighborDirection', state.graphView.direction]]) {
       const node = $(selector); if (node) node.value = value;
@@ -104,10 +106,36 @@
     }
   }
 
+  function revealMembership(ids) {
+    const graph = state.graph;
+    if (!ids.size || !graph?.getCanvasByPoint) return;
+    const accounts = new Set();
+    for (const edge of state.lastGraph.edges) {
+      if ((edge.ids || []).some(id => ids.has(id))) { accounts.add(edge.source); accounts.add(edge.target); }
+    }
+    const container = $('#graphContainer'), width = container.clientWidth || 900, height = container.clientHeight || 600;
+    for (const account of accounts) {
+      const model = graph.findById(account)?.getModel();
+      if (!model) continue;
+      const p = graph.getCanvasByPoint(model.x, model.y);
+      const margin = Math.max(20, (model.size || 28) * (graph.getZoom() || 1) / 2);
+      if (p.x < margin || p.x > width - margin || p.y < margin || p.y > height - margin) {
+        fitGraph(); return;
+      }
+    }
+  }
+
   function trackedWrite(context, write) {
     const record = { context, promise: null };
     // Retain the sent operation independently of any open table or history binding.
-    record.promise = Promise.resolve().then(write);
+    record.promise = Promise.resolve().then(() => {
+      if (isCurrentCase(context)) revokeGraphReads();
+      return write();
+    }).finally(() => {
+      // Includes compensation writes: no read taken before or during the
+      // transaction may restore membership that it has just replaced.
+      if (isCurrentCase(context)) revokeGraphReads();
+    });
     trackedWrites.add(record);
     return record.promise.finally(() => { trackedWrites.delete(record); });
   }
@@ -159,10 +187,15 @@
       // Failed reads leave the old drawing intact; layout/render failure can
       // occur after publication, so that case also redraws the old geometry.
       const published = state.lastGraph !== previous.lastGraph;
-      for (const key of ['positions', 'edgeLabelPos', 'edgeBendPos', 'edgeSnapshotLabels']) state[key] = copy(before[key]);
+      for (const key of ['positions', 'edgeLabelPos', 'edgeBendPos', 'edgeSnapshotLabels', 'edgeTypes']) state[key] = copy(before[key]);
       Object.assign(state, previous);
       state.tracked = new Set(before.trackedIds);
       state.graphView.fullIndex = FundsGraphView.createIndex(previous.lastGraph);
+      const view = state.graphView, saved = before.graphView;
+      view.visibleIds = saved.visibleIds ? new Set(saved.visibleIds) : null;
+      view.root = saved.root; view.direction = saved.direction; view.labelMode = saved.labelMode;
+      const adjacent = view.direction === 'in' ? view.fullIndex.incoming : view.direction === 'out' ? view.fullIndex.outgoing : view.fullIndex.neighbors;
+      view.remaining = view.visibleIds ? [...(adjacent.get(view.root) || [])].filter(id => !view.visibleIds.has(id)).length : 0;
       if (published) {
         try {
           cancelGraphLayout(); state.forceFit = false; state.justAdded = null; state.forceRebuild = true;
@@ -192,8 +225,11 @@
       throw error;
     }
     if (!isCurrentCase(context)) return false;
-    let graph;
-    try { graph = await api(`/api/graph?case_id=${context.caseId}&canvas_id=${context.canvasId || 0}`); }
+    let read;
+    try {
+      do { read = await readGraphData(false, context); }
+      while (read && isCurrentCase(context) && read.sequence !== graphRequestSequence);
+    }
     catch (error) {
       if (isCurrentCase(context)) {
         try {
@@ -206,6 +242,8 @@
       throw error;
     }
     if (!isCurrentCase(context)) return false;
+    if (!read) return false;
+    const graph = read.graph;
     if (!Array.isArray(graph.tracked_ids)
       || JSON.stringify([...graph.tracked_ids].sort(order)) !== JSON.stringify([...target.trackedIds].sort(order))) {
       uncertain(context);
@@ -216,7 +254,7 @@
       state.lastGraph = graph; state.tracked = new Set(graph.tracked_ids);
       state.mainAccounts = new Set(graph.main_accounts || []);
       state.focusNodes = new Map((graph.focus_nodes || []).map(value => [value.account, value.scale || 1.6]));
-      for (const key of ['positions', 'edgeLabelPos', 'edgeBendPos', 'edgeSnapshotLabels']) state[key] = copy(target[key]);
+      for (const key of ['positions', 'edgeLabelPos', 'edgeBendPos', 'edgeSnapshotLabels', 'edgeTypes']) state[key] = copy(target[key] || {});
       for (const key of ['layout', 'edgeType', 'showIds', 'showPhotos']) state[key] = target[key];
       state.edgeLabels = new Set(target.edgeLabels);
       const view = state.graphView, saved = target.graphView;
@@ -232,10 +270,11 @@
       state.graphSelection?.refresh();
       state.graph?.paint(); scheduleGraphViewport(); scheduleGraphLabels();
       syncControls(); saveEdgeLabels();
-      localStorage.setItem('fund_edge_type', state.edgeType);
-      localStorage.setItem('fund_show_ids', state.showIds ? '1' : '0');
-      localStorage.setItem('fund_show_photos', state.showPhotos ? '1' : '0');
+      preferenceStorage.setItem('fund_edge_type', state.edgeType);
+      preferenceStorage.setItem('fund_show_ids', state.showIds ? '1' : '0');
+      preferenceStorage.setItem('fund_show_photos', state.showPhotos ? '1' : '0');
       updateHeader(); updateGraphViewStatus();
+      publishedGraphSequence = read.sequence;
       await refreshRows(context);
       return isCurrentCase(context);
     } catch (error) {
@@ -335,13 +374,14 @@
               return replaceTracked(context, expected, [...desired].sort(order));
             }, () => {
               state.positions = copy(before.positions);
-              // justAdded also requests a fit in the frozen renderer. Membership
-              // feedback belongs to the table, while this command retains the view.
+              // Keep the camera for ordinary checks. After restoring it, reveal
+              // endpoints only if they would otherwise remain outside the view.
               state.forceFit = false; state.justAdded = null;
             });
             if (!result || token !== membershipToken || !isCurrentCase(context)) return;
             try {
               state.graph?.get?.('group')?.setMatrix?.(copy(before.camera));
+              revealMembership(new Set(batch.filter(([, intent]) => intent.included).map(([id]) => Number(id))));
               state.graph?.paint(); scheduleGraphViewport(); scheduleGraphLabels();
             } catch (error) { uncertain(context); throw error; }
             for (const [id, intent] of batch) {
@@ -517,7 +557,9 @@
       const direction = $('#bulkDir').value, x = Math.max(1, Math.min(50, Number($('#bulkX').value) || 5));
       return command('批量追踪', async context => {
         const result = await mutateTracked(context, before => trackedWrite(context, () => api('/api/track/bulk', { method: 'POST', ...jsonOpts({ case_id: context.caseId,
-          canvas_id: context.canvasId || 0, flow_ids: ids, direction, x, expected_ids: before }) })), () => { state.forceFit = true; });
+          canvas_id: context.canvasId || 0, flow_ids: ids, direction, x, expected_ids: before }) })), () => {
+          state.justAdded = new Set(ids); state.forceFit = true;
+        });
         if (result && isCurrentCase(context)) {
           const dirLabel = direction === 'source' ? '来源' : '去向';
           const notMain = (result.skipped_not_main || []).length;
@@ -534,7 +576,7 @@
       if (!confirm(`清空${where}的全部追踪（已上图流水）？其他画布不受影响。`)) return Promise.resolve(false);
       return command('清空画布', async context => {
         const result = await mutateTracked(context, before => replaceTracked(context, before, []), () => {
-          state.positions = {}; state.edgeLabelPos = {}; state.edgeBendPos = {}; state.edgeSnapshotLabels = {};
+          state.positions = {}; state.edgeLabelPos = {}; state.edgeBendPos = {}; state.edgeSnapshotLabels = {}; state.edgeTypes = {};
         });
         if (result && isCurrentCase(context)) toast(`${where}已清空`);
       });

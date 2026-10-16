@@ -7,6 +7,7 @@ const fs = require('node:fs/promises');
 const net = require('node:net');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
+const { runInstalledGraphJourney } = require('./installed-graph-journey.cjs');
 
 const SENTINEL = 'FundsTrace synthetic installer lifecycle v1\n';
 const SEED_CASE = 'SYN prior installer lifecycle case';
@@ -15,6 +16,7 @@ const VIEWPORTS = [[960, 500], [960, 640], [1280, 640]], DEVICE_SCALES = [1, 1.5
 const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, failedCheck: null,
   limits: { windowsServerAutomationOnly: true, windows10And11Interactive: false,
     dpi: false, importRecovery: false, screenshotIsRendererSurface: true,
+    nativeGraphExportSaveDialog: false,
     simulatedCssViewportOnly: true, actualSystemDpiValidated: false,
     offlineEnforcement: 'not-measured-by-this-helper; see standard-user compatibility report',
     simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
@@ -337,18 +339,29 @@ async function portClosed(port) {
       await fs.writeFile(config.screenshot, bytes, { flag: 'wx' });
     }
   });
+  await runInstalledGraphJourney({ cdp, page, evaluate, clickElement, until, check,
+    createdCase: CREATED_CASE, seedCase: SEED_CASE,
+    captureGraph: config.screenshot ? () => check('installedGraphScreenshot', async () => {
+      const result = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true,
+        captureBeyondViewport: false }, page.sessionId);
+      assert.ok(typeof result.data === 'string' && result.data.length < 24 * 1024 * 1024);
+      const bytes = Buffer.from(result.data, 'base64');
+      assert.ok(bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])));
+      await fs.writeFile(`${config.screenshot.slice(0, -4)}.graph.png`, bytes, { flag: 'wx' });
+    }) : null,
+  });
   await check('installedReactWorkspaceOpened', async () => {
     // The shipped root has no workspace anchor. Navigate the actual installed
     // BrowserWindow to its public route; do not fetch HTML as rendering evidence.
     await cdp.send('Page.navigate', { url: `${page.origin}/workspace/` }, page.sessionId);
     await readyDocument(`location.pathname === '/workspace/' && !!document.querySelector('.funds-trace .case-list')
-      && [...document.querySelectorAll('.case-item')].some(item => item.textContent.includes(${JSON.stringify(CREATED_CASE)}))`);
-    await clickElement(`[...document.querySelectorAll('.case-item')].find(item => item.textContent.includes(${JSON.stringify(CREATED_CASE)}))`);
-    await readyDocument(`document.querySelector('.workspace-heading h1')?.textContent === ${JSON.stringify(CREATED_CASE)}
+      && [...document.querySelectorAll('.case-item')].some(item => item.textContent.includes(${JSON.stringify(SEED_CASE)}))`);
+    await clickElement(`[...document.querySelectorAll('.case-item')].find(item => item.textContent.includes(${JSON.stringify(SEED_CASE)}))`);
+    await readyDocument(`document.querySelector('.workspace-heading h1')?.textContent === ${JSON.stringify(SEED_CASE)}
       && !!document.querySelector('.empty-state h3') && !document.querySelector('[role="alert"]')`);
   });
   await viewportMatrix('reactWorkspaceLayout', page, `!!document.querySelector('.main-workspace[aria-label="资金流水面板"]')
-    && document.querySelector('.workspace-heading h1')?.textContent === ${JSON.stringify(CREATED_CASE)}
+    && document.querySelector('.workspace-heading h1')?.textContent === ${JSON.stringify(SEED_CASE)}
     && !document.querySelector('[role="alert"]')`, [
     `document.querySelector('.heading-actions .button.primary')`,
   ], [
@@ -364,7 +377,8 @@ async function portClosed(port) {
   await check('workspaceGraphLinkOpened', async () => {
     await clickElement(`document.querySelector('.workspace-nav a[href^="/?case_id="]')`);
     await readyDocument(`location.pathname === '/' && typeof state === 'object' && !state.graphLoading
-      && state.graphInited && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(CREATED_CASE)}`);
+      && state.graphInited && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(SEED_CASE)}
+      && state.stats.flows === 0 && state.lastGraph.nodes.length === 0`);
   });
   await check('analysisLinkClicked', () => clickElement(`document.querySelector('#analysisLink')`));
   await check('installedAnalysisWindowAttached', async () => {

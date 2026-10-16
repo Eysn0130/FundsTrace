@@ -17,7 +17,7 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 ## 运行与数据边界
 
-[desktop/main.cjs](../desktop/main.cjs) 只负责窗口、受限导航／下载和自己创建的服务；无 preload、无通用 IPC。G6 `/` 保留完整业务，`/analysis` 为分析，`/workspace/` 为共享 React 试点。用户数据在 Electron 自身 `userData/data`，不写安装资源，不打开 Analytix 数据根。保留单实例和原有按显示器 DIP 工作区创建窗口的规则。
+[desktop/main.cjs](../desktop/main.cjs) 负责窗口、受限导航／下载和自己创建的服务。受 sandbox 和 contextIsolation 保护的 [preload](../desktop/preload.cjs) 仅暴露展示偏好 get/set/remove；Main 校验窗口归属、主框架及当前精确 origin，只将案件选择、线型、标签、证件／照片显示开关写入 `userData/preferences.json`。随机端口和临时 session 不变；不持久化 token、流水、快照或任意 renderer 键，不提供通用 IPC。G6 `/` 保留完整业务，`/analysis` 为分析，`/workspace/` 为共享 React 试点。业务数据在 Electron 自身 `userData/data`，不写安装资源，不打开 Analytix 数据根。保留单实例和原有按显示器 DIP 工作区创建窗口的规则。
 
 [desktop_backend.py](../desktop_backend.py) 从 stdin 读取严格的 `{protocol:1, token, dataDir, synthetic}` 后才导入应用。随机 token 只经父进程管道和 Main 持有的精确 origin 请求头传递，不进入 URL、argv、renderer、日志或导出。后端绑定 `127.0.0.1:0`，Main 健康检查后才加载页面；冻结后端拒绝 source-only synthetic 模式。
 

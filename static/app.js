@@ -1,6 +1,8 @@
 /* 资金追踪分析系统 — 前端逻辑 */
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
+const preferenceStorage = window.FundsDesktopPreferences || localStorage;
+let cancelGraphImageExport = null;
 
 const state = {
   caseId: null,
@@ -21,13 +23,14 @@ const state = {
   layout: 'force',
   edgeLabels: new Set(['money']),
   edgeLabelPos: {},   // 边标签沿线位置 { 'source=>target': t(0~1) }
-  edgeType: localStorage.getItem('fund_edge_type') || 'quadratic',   // line/polyline/quadratic
+  edgeType: preferenceStorage.getItem('fund_edge_type') || 'quadratic',   // line/polyline/quadratic
   edgeSnapshotLabels: {},
+  edgeTypes: {},   // 每条边已保存的线型；全局线型操作会清除此覆盖
   edgeBendPos: {},    // 折线折点 { 'source=>target': [{x,y}] }
   mainAccounts: new Set(),
   focusNodes: new Map(),   // 重点展示 { 账号: 放大倍数 1.1~4 }
-  showIds: localStorage.getItem('fund_show_ids') !== '0',   // 画布显示身份证号（默认开）
-  showPhotos: localStorage.getItem('fund_show_photos') !== '0',   // 画布显示节点照片（默认开）
+  showIds: preferenceStorage.getItem('fund_show_ids') !== '0',   // 画布显示身份证号（默认开）
+  showPhotos: preferenceStorage.getItem('fund_show_photos') !== '0',   // 画布显示节点照片（默认开）
   forceRebuild: false,   // 照片上传/清除/开关后整图重建（G6 对已有节点改 type 渲染不可靠）
   forceFit: true,   // 案件切换/清空后需要重新适应画布；平时上图不改变用户视图
   canvasId: 0,   // 当前画布 id（0 = 默认画布；每张画布有独立的追踪集合）
@@ -93,7 +96,7 @@ function selectCase(caseId) {
   revokePhotoCrop();
   state.positions = {};
   state.edgeLabelPos = {};
-  state.edgeBendPos = {};
+  state.edgeBendPos = {}; state.edgeTypes = {}; syncEdgeTypeControl();
   state.edgeSnapshotLabels = {};
   state.ctx = null;
   state.imp = null;
@@ -118,7 +121,7 @@ function selectCase(caseId) {
   syncFlowCkCount();
   $('#caseSelect').value = String(state.caseId);
   if (state.graph) { state.graph.clear(); state.graphInited = false; }
-  localStorage.setItem('fund_case', state.caseId);
+  preferenceStorage.setItem('fund_case', state.caseId);
   const url = new URL(window.location.href);
   url.searchParams.set('case_id', String(state.caseId));
   window.history.replaceState(null, '', url);
@@ -190,21 +193,21 @@ async function refreshAll() {
 function initEdgeLabels() {
   let arr = null;
   try {
-    const raw = localStorage.getItem('fund_edge_labels');
+    const raw = preferenceStorage.getItem('fund_edge_labels');
     if (raw) arr = JSON.parse(raw);
     else {
-      const legacy = localStorage.getItem('fund_edge_label');  // 旧版单选值迁移
+      const legacy = preferenceStorage.getItem('fund_edge_label');  // 旧版单选值迁移
       if (legacy) arr = legacy === 'all' ? ['money', 'time', 'summary'] : [legacy];
     }
   } catch (e) { arr = null; }
   if (!Array.isArray(arr) || !arr.length) arr = ['money'];
-  state.edgeLabels = new Set(arr.filter(x => ['money', 'time', 'summary'].includes(x)));
+  state.edgeLabels = new Set(arr.filter(x => ['money', 'time', 'summary', 'currency'].includes(x)));
   if (!state.edgeLabels.size) state.edgeLabels.add('money');
 }
 
 function saveEdgeLabels() {
-  localStorage.setItem('fund_edge_labels', JSON.stringify([...state.edgeLabels]));
-  localStorage.removeItem('fund_edge_label');  // 清掉旧版键
+  preferenceStorage.setItem('fund_edge_labels', JSON.stringify([...state.edgeLabels]));
+  preferenceStorage.removeItem('fund_edge_label');  // 清掉旧版键
 }
 
 /* ---------------- 案件 ---------------- */
@@ -213,7 +216,7 @@ async function loadCases() {
   const sel = $('#caseSelect');
   sel.innerHTML = state.cases.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   const requested = new URLSearchParams(window.location.search).get('case_id');
-  const saved = requested || localStorage.getItem('fund_case');
+  const saved = requested || preferenceStorage.getItem('fund_case');
   selectCase((saved && state.cases.some(c => c.id == saved)) ? Number(saved) : state.cases[0].id);
 }
 
@@ -394,6 +397,7 @@ function newGraphView(labelMode) {
     drawnNodes: 0, drawnEdges: 0, exportDepth: 0 };
 }
 function resetGraphView() {
+  cancelGraphImageExport?.();
   state.graphSelection?.destroy(); state.graphSelection = null;
   revokeZoomOptimization();
   clearTimeout(state.graphView.labelTimer);
@@ -411,7 +415,8 @@ function activateCanvas(id) {
   state.graphLoading = true;
   state.lastGraph = { nodes: [], edges: [], tracked_ids: [] };
   state.tracked = new Set(); state.mainAccounts = new Set(); state.focusNodes = new Map();
-  state.positions = {}; state.edgeLabelPos = {}; state.edgeBendPos = {}; state.edgeSnapshotLabels = {};
+  state.positions = {}; state.edgeLabelPos = {}; state.edgeBendPos = {}; state.edgeTypes = {}; state.edgeSnapshotLabels = {};
+  syncEdgeTypeControl();
   state.justAdded = null; state.forceFit = true;
   if (state.graph) state.graph.clear();
   state.graphInited = false;
@@ -836,6 +841,7 @@ function initGraph() {
   initEdgeBendDrag(graph);
   const resize = () => {
     if (state.graph !== graph || !c.clientWidth || !c.clientHeight) return;
+    cancelGraphImageExport?.();
     try { graph.changeSize(c.clientWidth, c.clientHeight); scheduleGraphViewport(); state.graphSelection?.refresh(); } catch (_) { /* graph may be disposing */ }
   };
   if (typeof ResizeObserver !== 'undefined') { state.graphResizeObserver = new ResizeObserver(resize); state.graphResizeObserver.observe(c); }
@@ -901,7 +907,7 @@ function initEdgeBendDrag(graph) {
   let bend = null;   // { edge, key, pts, idx }
 
   graph.on('edge:mousedown', e => {
-    if (state.edgeType !== 'polyline' && state.edgeType !== 'line') return;
+    if (!e.item || !['polyline', 'line'].includes(e.item.getModel().type || graphEdgeType(e.item.getModel()))) return;
     if (isLabelShape(e.target)) return;            // 标签拖拽交给标签逻辑
     if (e.item && e.item.getModel().type === 'loop') return;
     window.dispatchEvent(new CustomEvent('funds:edge-drag-start'));
@@ -951,7 +957,7 @@ function initEdgeBendDrag(graph) {
       state.edgeBendPos[bend.key] = bend.pts.map(q => ({ x: q.x, y: q.y }));
       // 直线模式下拖出的边按需转为折线（只影响该条边），其余边保持直线
       const upd = { controlPoints: state.edgeBendPos[bend.key] };
-      if (state.edgeType === 'line') upd.type = 'polyline';
+      upd.type = graphEdgeType(bend.edge.getModel());
       try { graph.updateItem(bend.edge, upd); } catch (err) { /* 忽略 */ }
     } catch (err) { /* 忽略 */ }
   };
@@ -961,7 +967,7 @@ function initEdgeBendDrag(graph) {
   state.graphDisposers.push(() => { bend = null; window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); });
 
   graph.on('edge:dblclick', e => {
-    if (state.edgeType !== 'polyline' && state.edgeType !== 'line') return;
+    if (!e.item || !['polyline', 'line'].includes(e.item.getModel().type || graphEdgeType(e.item.getModel()))) return;
     if (isLabelShape(e.target)) return;
     const key = edgeKey(e.item.getModel());
     const cps = state.edgeBendPos[key];
@@ -979,7 +985,7 @@ function initEdgeBendDrag(graph) {
         try { graph.updateItem(e.item, { controlPoints: cps }); } catch (err) { /* 忽略 */ }
       } else {
         delete state.edgeBendPos[key];
-        try { graph.updateItem(e.item, { controlPoints: [], type: state.edgeType }); } catch (err) { /* 忽略 */ }
+        try { graph.updateItem(e.item, { controlPoints: [], type: graphEdgeType(e.item.getModel()) }); } catch (err) { /* 忽略 */ }
       }
     }
   });
@@ -987,6 +993,15 @@ function initEdgeBendDrag(graph) {
 
 /* ---------------- 边标签拖拽（沿线上平移） ---------------- */
 function edgeKey(m) { return m.source + '=>' + m.target; }
+function graphEdgeType(edge) {
+  if (edge.source === edge.target) return 'loop';
+  const type = state.edgeTypes[edgeKey(edge)] || state.edgeType;
+  return type === 'line' && state.edgeBendPos[edgeKey(edge)]?.length ? 'polyline' : type;
+}
+function syncEdgeTypeControl() {
+  const control = $('#edgeTypeSel');
+  if (control) control.value = Object.keys(state.edgeTypes).length ? 'saved' : state.edgeType;
+}
 
 function findEdgeShapes(edge) {
   const kids = edge.getContainer().get('children') || [];
@@ -1212,12 +1227,13 @@ function applyCanvasSnapshot(snap) {
   state.positions = {};
   for (const n of (snap.nodes || [])) state.positions[n.id] = { x: n.x, y: n.y };
   state.edgeLabelPos = {};
-  state.edgeBendPos = {};
+  state.edgeBendPos = {}; state.edgeTypes = {};
   state.edgeSnapshotLabels = {};
   for (const e of (snap.edges || [])) {
     const k = e.source + '=>' + e.target;
     if (e.lx != null && e.ly != null) state.edgeSnapshotLabels[k] = { lx:e.lx, ly:e.ly, bw:e.bw, bh:e.bh };
-    if (e.controlPoints && e.controlPoints.length) state.edgeBendPos[k] = e.controlPoints;
+    if (e.controlPoints && e.controlPoints.length) state.edgeBendPos[k] = e.controlPoints.map(p => ({x:p.x,y:p.y}));
+    if (['line', 'polyline', 'quadratic', 'loop'].includes(e.type)) state.edgeTypes[k] = e.type;
   }
   state.forceRebuild = true;
   renderGraph();
@@ -1268,7 +1284,7 @@ function bindCanvases() {
     state.canvasName = v ? (e.target.selectedOptions[0] || {}).textContent || '' : '';
     state.positions = {};
     state.edgeLabelPos = {};
-    state.edgeBendPos = {};
+    state.edgeBendPos = {}; state.edgeTypes = {};
     state.edgeSnapshotLabels = {};
     state.forceFit = true;
     state.forceRebuild = true;
@@ -1305,8 +1321,9 @@ function bindCanvases() {
     if (!isCurrentCase(context)) return;
     if (name === null || !name) return;
     try {
-      const snap = (await window.__collectSnapshot({ scope: 'all' })) || { nodes: [], edges: [] };
+      const snap = await window.__collectSnapshot({ scope: 'all' });
       if (!isCurrentCase(context)) return;
+      if (!snap) return toast('图谱已变化，请重新另存为', 'err');
       const r = await api('/api/canvases/clone', { method: 'POST',
         ...jsonOpts({ case_id: state.caseId, from_canvas: state.canvasId || 0, name, snapshot: snap }) });
       if (!isCurrentCase(context)) return;
@@ -1333,6 +1350,7 @@ function bindCanvases() {
     try {
       const snap = await window.__collectSnapshot({ scope: 'all' });
       if (!isCurrentCase(context)) return;
+      if (!snap) return toast('图谱已变化，请重新保存', 'err');
       const r = await api('/api/canvases/save', { method: 'POST',
         ...jsonOpts({ case_id: state.caseId, canvas_id: state.canvasId, name: name || state.canvasName, snapshot: snap }) });
       if (!isCurrentCase(context)) return;
@@ -1356,7 +1374,7 @@ function bindCanvases() {
       state.canvasName = r.name;
       state.positions = {};
       state.edgeLabelPos = {};
-      state.edgeBendPos = {};
+      state.edgeBendPos = {}; state.edgeTypes = {};
       state.edgeSnapshotLabels = {};
       state.forceFit = true;
       state.forceRebuild = true;
@@ -1404,29 +1422,70 @@ function bindCanvases() {
   setTimeout(syncCanvasBtns, 0);   // 初始按当前画布刷新按钮可用性
 }
 
-async function loadGraph(retry = true, context = caseContext()) {
-  if (!isCurrentCase(context)) return;
-  graphMetric('request', { reason: 'load' });
-  let g;
-  try {
-    g = await api(`/api/graph?case_id=${context.caseId}&canvas_id=${context.canvasId || 0}`);
-  } catch (e) {
-    if (!isCurrentCase(context)) return;
-    if (retry) {          // 服务重启窗口期请求可能失败，自动重试一次
-      await new Promise(r => setTimeout(r, 1500));
-      return loadGraph(false, context);
+let graphRequestSequence = 0;
+let latestGraphRead = null, publishedGraphSequence = 0;
+function revokeGraphReads() {
+  latestGraphRead = { sequence: ++graphRequestSequence, promise: Promise.resolve(null) };
+}
+async function readGraphData(retry = true, context = caseContext()) {
+  if (!isCurrentCase(context)) return null;
+  const read = { sequence: ++graphRequestSequence, promise: null };
+  const current = () => isCurrentCase(context) && read.sequence === graphRequestSequence;
+  read.promise = (async () => {
+    graphMetric('request', { reason: 'load' });
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const graph = await api(`/api/graph?case_id=${context.caseId}&canvas_id=${context.canvasId || 0}`);
+        return current() ? graph : null;
+      } catch (e) {
+        if (!current()) return null;
+        if (!retry || attempt > 0) throw e;
+        // A retry belongs to its original read, never a newer generation.
+        await new Promise(r => setTimeout(r, 1500));
+        if (!current()) return null;
+      }
     }
-    throw e;
+  })();
+  latestGraphRead = read;
+  let latest = read, graph = await read.promise;
+  // A superseded mutation refresh must wait for the replacement read rather
+  // than compensating a committed write against still-stale client state.
+  while (isCurrentCase(context) && latest.sequence !== graphRequestSequence) {
+    latest = latestGraphRead;
+    graph = await latest.promise;
   }
-  if (!isCurrentCase(context)) return;
+  return isCurrentCase(context) && graph ? { graph, sequence: latest.sequence } : null;
+}
+
+async function loadGraph(retry = true, context = caseContext()) {
+  let read;
+  do { read = await readGraphData(retry, context); }
+  while (read && isCurrentCase(context) && read.sequence !== graphRequestSequence);
+  if (!read || !isCurrentCase(context) || read.sequence <= publishedGraphSequence) return;
+  const g = read.graph;
+  const view = state.graphView;
+  view.fullIndex = FundsGraphView.createIndex(g);
+  if (view.visibleIds) {
+    // A neighborhood filters display, not subsequent tracing. Reveal exactly
+    // the added/explicitly requested flows, without expanding unrelated facts.
+    const added = new Set((g.tracked_ids || []).filter(id => !state.tracked.has(id)));
+    for (const id of state.justAdded || []) added.add(id);
+    view.visibleIds = new Set([...view.visibleIds].filter(id => view.fullIndex.nodeIds.has(id)));
+    for (const edge of g.edges) {
+      if (!(edge.ids || []).some(id => added.has(id))) continue;
+      for (const id of [edge.source, edge.target]) if (view.fullIndex.nodeIds.has(id)) view.visibleIds.add(id);
+    }
+    const adjacent = view.direction === 'in' ? view.fullIndex.incoming : view.direction === 'out' ? view.fullIndex.outgoing : view.fullIndex.neighbors;
+    view.remaining = [...(adjacent.get(view.root) || [])].filter(id => !view.visibleIds.has(id)).length;
+  }
   state.lastGraph = g;
   state.graphLoading = false;
-  state.graphView.fullIndex = FundsGraphView.createIndex(g);
   state.tracked = new Set(g.tracked_ids);
   state.mainAccounts = new Set(g.main_accounts || []);
   state.focusNodes = new Map((g.focus_nodes || []).map(f => [f.account, f.scale || 1.6]));
   renderGraph();
   updateHeader();
+  publishedGraphSequence = read.sequence;
 }
 
 function nodeStyle(n) {
@@ -1490,7 +1549,9 @@ function edgeLabel(e) {
 }
 
 function renderGraph() {
+  syncEdgeTypeControl();
   if (!state.graph) return;
+  cancelGraphLayout();
   const selectedIds = new Set(state.graphSelection?.ids || []);
   const detail = _selItem && $('#drawer').classList.contains('open') ? {
     node: !_selItem.getModel().source, id: _selItem.getModel().id, key: edgeKey(_selItem.getModel()),
@@ -1500,7 +1561,6 @@ function renderGraph() {
   if (_selItem) closeDrawer(false);
   revokeZoomOptimization();
   restoreGraphClipping();
-  cancelGraphLayout();
   const renderContext = caseContext();
   const view = state.graphView;
   view.revision += 1;
@@ -1549,8 +1609,7 @@ function renderGraph() {
     return {
       source: e.source, target: e.target, data: e,
       // 直线模式下被拖出过折点的边按折线渲染；其余随全局线型
-      type: e.source === e.target ? 'loop'
-        : (state.edgeType === 'line' && bent ? 'polyline' : state.edgeType),
+      type: graphEdgeType(e),
       fundsLabel: edgeLabel(e),
       style: denseEdgeStyle(dense),
       controlPoints: bent ? state.edgeBendPos[bk] : undefined,
@@ -1710,6 +1769,7 @@ function layoutStatus(message = '') {
   if (node) { node.textContent = message; node.hidden = !message; }
 }
 function cancelGraphLayout() {
+  cancelGraphImageExport?.();
   layoutSequence += 1;
   if (layoutJob) { layoutJob.cancelled = true; layoutJob.worker?.terminate(); layoutJob = null; }
   layoutStatus();
@@ -2047,6 +2107,7 @@ async function showNodeDrawer(account, item) {
     // 清空全部筛选条件，只保留目标账号——否则残留的金额/时间/关键词会过滤掉大部分流水
     ['#fAccount', '#fName', '#fCounter', '#fKw', '#fMin', '#fMax', '#fFrom', '#fTo']
       .forEach(id => $(id).value = '');
+    $('#fTracked').checked = false;
     $('#fAccount').value = account;
     doSearch(1);
   };
@@ -2061,6 +2122,7 @@ async function showNodeDrawer(account, item) {
   };
   $('#drawerBody').querySelectorAll('tr[data-acct]').forEach(tr => tr.onclick = () => {
     closeDrawer(); switchTab('search');
+    $('#fTracked').checked = false;
     $('#fAccount').value = account; $('#fCounter').value = tr.dataset.acct;
     doSearch(1);
   });
@@ -2561,7 +2623,7 @@ function bindUI() {
     idCk.checked = state.showIds;
     idCk.onchange = () => {
       state.showIds = idCk.checked;
-      localStorage.setItem('fund_show_ids', state.showIds ? '1' : '0');
+      preferenceStorage.setItem('fund_show_ids', state.showIds ? '1' : '0');
       renderGraph();
     };
   }
@@ -2571,7 +2633,7 @@ function bindUI() {
     phCk.checked = state.showPhotos;
     phCk.onchange = () => {
       state.showPhotos = phCk.checked;
-      localStorage.setItem('fund_show_photos', state.showPhotos ? '1' : '0');
+      preferenceStorage.setItem('fund_show_photos', state.showPhotos ? '1' : '0');
       state.forceRebuild = true;   // 照片节点与圆点互切需整图重建
       renderGraph();
     };
@@ -2608,10 +2670,12 @@ function bindUI() {
       idFile.value = '';
     };
   }
-  $('#edgeTypeSel').value = state.edgeType;
+  syncEdgeTypeControl();
   $('#edgeTypeSel').onchange = e => {
+    if (!['line', 'polyline', 'quadratic'].includes(e.target.value)) return;
     state.edgeType = e.target.value;
-    localStorage.setItem('fund_edge_type', state.edgeType);
+    state.edgeTypes = {};
+    preferenceStorage.setItem('fund_edge_type', state.edgeType);
     renderGraph();
   };
   $('#btnRelayout').onclick = () => relayout(true);
@@ -2638,7 +2702,7 @@ function bindUI() {
     if (!confirm(`清空${where}的全部追踪（已上图流水）？其他画布不受影响。`)) return;
     await api(`/api/graph?case_id=${state.caseId}&canvas_id=${state.canvasId || 0}`, { method: 'DELETE' });
     state.positions = {};
-    state.edgeLabelPos = {};
+    state.edgeLabelPos = {}; state.edgeBendPos = {}; state.edgeSnapshotLabels = {}; state.edgeTypes = {};
     toast(`${where}已清空`);
     await loadGraph();
   };
@@ -2659,29 +2723,54 @@ function bindUI() {
     }
   };
 
-  function exportHiResPng(scale = 2, current = () => true) {
-    return new Promise(resolve => {
-      const c = $('#graphContainer');
-      const W = c.clientWidth, H = c.clientHeight;
-      const graph = state.graph;
-      const view = state.graphView;
-      view.exportDepth += 1;
+  // PNG and PDF share one mutable G6 canvas. Queue only the sampling step;
+  // each job owns its dimensions/camera and relinquishes them before the next.
+  const imageExportQueue = [];
+  let imageExportActive = false;
+  function drainImageExports() {
+    if (imageExportActive || !imageExportQueue.length) return;
+    const { scale, current, resolve } = imageExportQueue.shift();
+    if (!current()) { resolve(null); return drainImageExports(); }
+    imageExportActive = true;
+    const c = $('#graphContainer'), W = c.clientWidth, H = c.clientHeight;
+    const graph = state.graph, view = state.graphView;
+    let camera = null, finished = false, timer;
+    const done = url => {
+      if (finished) return;
+      finished = true; clearTimeout(timer);
+      if (cancelGraphImageExport === cancel) cancelGraphImageExport = null;
+      const owned = current();
+      view.exportDepth = Math.max(0, view.exportDepth - 1);
+      if (owned) {
+        try { graph.changeSize(W, H); } catch (_) { /* Release ownership even if G6 restoration fails. */ }
+        if (camera) {
+          try { graph.get('group').setMatrix(camera); graph.paint(); } catch (_) { /* The graph may be disposing. */ }
+          try { applyGraphViewport(); applyGraphLabels(); } catch (_) { /* Keep the queue usable. */ }
+        } else { try { fitGraph(1.1); } catch (_) { /* Older host adapters have no camera API. */ } }
+      }
+      imageExportActive = false;
+      resolve(owned ? url : null);
+      Promise.resolve().then(drainImageExports);
+    };
+    const cancel = () => done(null);
+    cancelGraphImageExport = cancel;
+    view.exportDepth += 1;
+    try {
+      const matrix = graph.get?.('group')?.getMatrix?.();
+      camera = matrix ? Array.from(matrix) : null;
       restoreGraphClipping(view);
-      const done = url => {
-        view.exportDepth = Math.max(0,view.exportDepth-1);
-        if (graph === state.graph) { try { graph.changeSize(W, H); if (current()) fitGraph(1.1); } catch (err) { /* 忽略 */ } }
-        resolve(current() ? url : null);
-      };
       graph.changeSize(W * scale, H * scale);
       graph.fitView(60);
       applyGraphLabels();
-      setTimeout(() => {
+      timer = setTimeout(() => {
+        if (finished) return;
         if (!current()) return done(null);
-        let url = null;
-        try { url = graph.toDataURL(); } catch (err) { url = null; }
-        done(url);
+        try { done(graph.toDataURL()); } catch (_) { done(null); }
       }, 400);
-    });
+    } catch (_) { done(null); }
+  }
+  function exportHiResPng(scale = 2, current = () => true) {
+    return new Promise(resolve => { imageExportQueue.push({ scale, current, resolve }); drainImageExports(); });
   }
 
   function downloadBlob(blob, name) {
@@ -2694,9 +2783,10 @@ function bindUI() {
 
   // 采集当前画布快照：节点坐标/样式、边线型/折点、标注内容及其拖动位置（所见即所得导出用）
   async function collectGraphSnapshot(options = {}) {
-    const g = state.graph, context = caseContext(), revision = layoutSequence;
-    const current = () => isCurrentCase(context) && state.graph === g && layoutSequence === revision;
-    if (!g || !state.graphInited || !g.getNodes().length) return null;
+    const g = state.graph, context = caseContext(), revision = layoutSequence, view = state.graphView, viewRevision = view.revision;
+    const current = () => isCurrentCase(context) && state.graph === g && layoutSequence === revision
+      && view === state.graphView && viewRevision === view.revision;
+    if (!g || !state.graphInited || state.graphLoading) return null;
     const sel = $('#caseSelect');
     const caseName = sel?.selectedOptions?.[0]?.textContent
       || state.cases.find(item => item.id === context.caseId)?.name || '';
@@ -2734,7 +2824,7 @@ function bindUI() {
     const edges = edgeSources.map(source => {
       const item = edgeItems.get(edgeKey(source));
       const m = item?.getModel() || { ...source, label: edgeLabel(source), data: source,
-        type: source.source === source.target ? 'loop' : state.edgeType,
+        type: graphEdgeType(source),
         controlPoints: state.edgeBendPos[edgeKey(source)] };
       const children = item?.getContainer?.()?.get('children') || [];
       const text = children.find(child => child.get('name') === 'text-shape');
@@ -2777,7 +2867,7 @@ function bindUI() {
     const context = caseContext();
     const snap = await window.__collectSnapshot();
     if (!isCurrentCase(context)) return;
-    if (!snap) return toast('图谱为空', 'err');
+    if (!snap || !snap.nodes.length) return toast('图谱为空', 'err');
     try {
       const res = await fetch('/api/export/graph.html', { method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2794,8 +2884,9 @@ function bindUI() {
 
   $('#btnExportPng').onclick = async () => {
     if (!state.lastGraph.nodes.length) return toast('图谱为空', 'err');
-    const context = caseContext(), graph = state.graph, view = state.graphView, revision = view.revision;
-    const current = () => isCurrentCase(context) && graph === state.graph && view === state.graphView && revision === view.revision;
+    const context = caseContext(), graph = state.graph, view = state.graphView, revision = view.revision, layoutRevision = layoutSequence;
+    const current = () => isCurrentCase(context) && graph === state.graph && view === state.graphView
+      && revision === view.revision && layoutRevision === layoutSequence;
     const suffix = view.visibleIds ? `_邻域${graph.getNodes().length}-${state.lastGraph.nodes.length}` : '';
     const filename = `资金图谱_案件${context.caseId}${suffix}`;
     const fmt = $('#exportFmt').value;
@@ -2818,7 +2909,7 @@ function bindUI() {
         if (!current()) return;
         downloadBlob(blob, `${filename}.pdf`);
         toast('PDF 已导出');
-      } catch (e) { toast('PDF 导出失败：' + e.message, 'err'); }
+      } catch (e) { if (current()) toast('PDF 导出失败：' + e.message, 'err'); }
     } else {
       // Use the same Blob download path as HTML/PDF. Large data: URLs can be
       // generated successfully while the browser declines their navigation.

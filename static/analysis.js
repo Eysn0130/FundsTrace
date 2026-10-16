@@ -1,4 +1,5 @@
 /* 智能分析页面逻辑 */
+const preferenceStorage = window.FundsDesktopPreferences || localStorage;
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -22,7 +23,7 @@ function selectAnalysisCase(id) {
   $('#btnReport').disabled = true;
   $('#btnRun').disabled = false;
   $('#pbar').style.display = 'none';
-  localStorage.setItem('fund_case', caseId);
+  preferenceStorage.setItem('fund_case', caseId);
   const url = new URL(window.location.href);
   url.searchParams.set('case_id', String(caseId));
   window.history.replaceState(null, '', url);
@@ -58,7 +59,7 @@ async function api(path, body) {
 async function loadCases() {
   const cases = await (await fetch('/api/cases')).json();
   $('#caseSel').innerHTML = cases.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
-  const saved = new URLSearchParams(window.location.search).get('case_id') || localStorage.getItem('fund_case');
+  const saved = new URLSearchParams(window.location.search).get('case_id') || preferenceStorage.getItem('fund_case');
   const savedCase = cases.find(c => String(c.id) === saved);
   const pick = savedCase || cases[0];
   if (pick) { selectAnalysisCase(pick.id); await showStats(); }

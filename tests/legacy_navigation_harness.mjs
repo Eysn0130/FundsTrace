@@ -65,6 +65,15 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
   };
 }
 
+test('all available edge label preferences survive initialization, including currency', () => {
+  const h = harness('app.js');
+  h.storage.set('fund_edge_labels', '["money","time","summary","currency"]');
+  h.run('initEdgeLabels()');
+  assert.deepEqual(Array.from(h.run('[...state.edgeLabels]')), ['money','time','summary','currency']);
+  h.run('saveEdgeLabels(); state.edgeLabels.clear(); initEdgeLabels()');
+  assert.deepEqual(Array.from(h.run('[...state.edgeLabels]')), ['money','time','summary','currency']);
+});
+
 test('G6 deep link remains the selected case in analysis navigation', async () => {
   const h = harness('app.js', 'http://127.0.0.1:8300/?case_id=2', '1');
   await h.run('loadCases()');
@@ -471,6 +480,69 @@ test('public neighborhood controls bound a 1000-account graph without changing t
   assert.equal(h.run('state.graph.getNodes().find(item=>item.getModel().id==="SYN-00998").getModel().x'), 872);
   assert.equal(h.run('JSON.stringify(state.lastGraph)===originalGraphFacts'), true);
   assert.equal(h.requests.length, writes);
+});
+
+test('graph refresh reveals newly tracked endpoints inside an existing neighborhood only', async () => {
+  const h = harness('app.js'); h.run('globalThis.actualGraphLoader = loadGraph'); installSyntheticHub(h, 120);
+  h.run('loadGraph = actualGraphLoader; exploreNeighborhood("SYN-HUB", true)');
+  const updated = JSON.parse(h.run('JSON.stringify(state.lastGraph)'));
+  updated.nodes.push({ account: 'SYN-NEW-A', in_cnt: 0, out_cnt: 1 }, { account: 'SYN-NEW-B', in_cnt: 1, out_cnt: 0 });
+  updated.edges.push({ source: 'SYN-NEW-A', target: 'SYN-NEW-B', ids: [121], cnt: 1, total: '0.01' });
+  updated.tracked_ids.push(121);
+  h.network(() => response(updated)); await h.run('loadGraph()');
+  const visible = Array.from(h.run('state.graph.getNodes().map(item => item.getModel().id)'));
+  assert.equal(visible.length, 53);
+  assert.ok(visible.includes('SYN-NEW-A')); assert.ok(visible.includes('SYN-NEW-B'));
+  assert.ok(!visible.includes('SYN-00118'), 'unrelated previously hidden accounts stay hidden');
+  assert.equal(h.run('state.graphView.root'), 'SYN-HUB');
+  assert.equal(h.run('state.graphView.remaining'), 69);
+  assert.deepEqual(JSON.parse(h.run('JSON.stringify(state.lastGraph)')), updated);
+});
+
+test('explicit tracking reveals an already tracked hidden endpoint without duplicating facts', async () => {
+  const h = harness('app.js'); h.run('globalThis.actualGraphLoader = loadGraph'); installSyntheticHub(h, 120);
+  h.run('loadGraph = actualGraphLoader; exploreNeighborhood("SYN-HUB", true); state.justAdded = new Set([120])');
+  const graph = JSON.parse(h.run('JSON.stringify(state.lastGraph)'));
+  h.network(() => response(graph)); await h.run('loadGraph()');
+  assert.ok(h.run('state.graphView.visibleIds.has("SYN-00118")'));
+  assert.equal(h.run('state.graph.getNodes().length'), 52);
+  assert.equal(h.run('state.tracked.size'), 120);
+  assert.equal(h.run('state.graphView.remaining'), 68);
+});
+
+test('graph refresh prunes removed neighborhood endpoints and updates remaining neighbors', async () => {
+  const h = harness('app.js'); h.run('globalThis.actualGraphLoader = loadGraph'); installSyntheticHub(h, 120);
+  h.run('loadGraph = actualGraphLoader; exploreNeighborhood("SYN-HUB", true)');
+  const graph = JSON.parse(h.run('JSON.stringify(state.lastGraph)'));
+  graph.nodes = graph.nodes.filter(node => node.account !== 'SYN-00000' && node.account !== 'SYN-00118');
+  graph.edges = graph.edges.filter(edge => edge.target !== 'SYN-00000' && edge.target !== 'SYN-00118');
+  graph.tracked_ids = graph.tracked_ids.filter(id => ![1, 2, 120].includes(id));
+  h.network(() => response(graph)); await h.run('loadGraph()');
+  assert.equal(h.run('state.graphView.visibleIds.has("SYN-00000")'), false);
+  assert.equal(h.run('state.graphView.remaining'), 68);
+});
+
+test('an older graph response cannot replace a newer same-canvas graph', async () => {
+  const h = harness('app.js'); h.run('state.caseId = 1; renderGraph = () => {}');
+  const old = deferred(), latest = deferred(); let calls = 0;
+  h.network(() => ++calls === 1 ? old.promise : latest.promise);
+  const first = h.run('loadGraph()'), second = h.run('loadGraph()');
+  latest.resolve(response({nodes:[{account:'SYN-NEW'}],edges:[],tracked_ids:[1,2]})); await second;
+  old.resolve(response({nodes:[{account:'SYN-OLD'}],edges:[],tracked_ids:[1]})); await first;
+  assert.deepEqual(Array.from(h.run('state.tracked')), [1,2]);
+  assert.equal(h.run('state.lastGraph.nodes[0].account'), 'SYN-NEW');
+});
+
+test('an older graph retry cannot supersede a newer successful read', async () => {
+  const h = harness('app.js'); h.run('state.caseId = 1; renderGraph = () => {}');
+  let calls = 0;
+  h.network(() => ++calls === 1 ? Promise.reject(new Error('synthetic offline'))
+    : response({nodes:[{account:'SYN-NEW'}],edges:[],tracked_ids:[1,2]}));
+  const first = h.run('loadGraph()'); await flush();
+  await h.run('loadGraph()');
+  h.timers.find(timer => timer.delay === 1500).callback(); await first;
+  assert.equal(calls, 2);
+  assert.deepEqual(Array.from(h.run('state.tracked')), [1,2]);
 });
 
 test('G6 label visibility keeps canonical money intact through selection and hover', () => {
@@ -1381,4 +1453,153 @@ test('query and reset clear page selection and its master state while display ch
   selectPage();h.run('selectCase(2)');
   assert.equal(h.run('pageCheckboxes.length'),0);assert.equal(master.checked,false);assert.equal(master.indeterminate,false);
   assert.equal(h.element('#flowCkCount').textContent,'已勾选 0 笔');
+});
+
+// Audit regression: a valid empty canvas is different from an invalidated capture.
+test('empty initialized canvases can be saved and cloned without inventing a revoked snapshot', async () => {
+  for (const action of ['#btnCanvasSave','#btnCanvasClone']) {
+    const h=harness('app.js');installCanvasControls(h);
+    h.run('state.lastGraph={nodes:[],edges:[],tracked_ids:[]};state.graph.clear();state.graphInited=true');
+    h.network(path=>response(path==='/api/canvases/clone'?{canvas_id:20,name:'Empty',copied:0}:path==='/api/canvases/save'?{canvas_id:10,name:'Empty'}:{nodes:[],edges:[],tracked_ids:[]}));
+    await h.element(action).onclick();
+    const request=h.requests.find(item=>item.path=== (action.includes('Clone')?'/api/canvases/clone':'/api/canvases/save'));
+    assert.ok(request);const snapshot=JSON.parse(request.options.body).snapshot;
+    assert.deepEqual(snapshot.nodes,[]);assert.deepEqual(snapshot.edges,[]);
+  }
+});
+
+test('photo-delayed save and clone abort after redraw or binding A-B-A changes', async () => {
+  for (const action of ['#btnCanvasSave','#btnCanvasClone']) for (const transition of [
+    "state.edgeType='line';renderGraph()",'selectCase(2);selectCase(1)','activateCanvas(20);activateCanvas(10)',
+  ]) {
+    const h=harness('app.js');installCanvasControls(h);
+    h.run('state.lastGraph.nodes[0].photo_at=123;renderGraph()');
+    const photo=deferred();h.network(path=>String(path).includes('account-photos')?photo.promise:response([]));
+    const pending=h.element(action).onclick();await flush();
+    assert.ok(h.requests.some(item=>String(item.path).includes('account-photos')));
+    h.run(transition);photo.resolve(response({}));await pending;
+    assert.equal(h.requests.filter(item=>item.options.method==='POST').length,0,`${action} must not persist an invalidated snapshot (${transition})`);
+  }
+});
+
+test('saved mixed edge types, bends and label geometry survive redraw and full snapshot collection', async () => {
+  const h=harness('app.js');installSyntheticHub(h,5);
+  h.run(`globalThis.savedInitGraph=initGraph;initGraph=()=>{};
+    state.lastGraph.edges.push({...state.lastGraph.edges[0],source:'SYN-HUB',target:'SYN-HUB'});
+    applyCanvasSnapshot({nodes:state.graph.getNodes().map(item=>item.getModel()),edges:[
+      {source:'SYN-HUB',target:'SYN-00000',type:'line',lx:123.25,ly:98.5,bw:40,bh:10},
+      {source:'SYN-HUB',target:'SYN-00001',type:'polyline',controlPoints:[{x:7,y:8}]},
+      {source:'SYN-HUB',target:'SYN-00002',type:'quadratic'},
+      {source:'SYN-HUB',target:'SYN-HUB',type:'loop'}]});renderGraph();`);
+  assert.equal(h.element('#edgeTypeSel').value, 'saved');
+  let snapshot=await h.run('window.__collectSnapshot({scope:"all"})');
+  assert.deepEqual(Array.from(snapshot.edges,edge=>edge.type),['line','polyline','quadratic','quadratic','loop']);
+  assert.deepEqual(JSON.parse(JSON.stringify(snapshot.edges[1].controlPoints)),[{x:7,y:8}]);
+  assert.equal(snapshot.edges[0].lx,123.25);assert.equal(snapshot.edges[0].label,'2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+  h.element('#edgeTypeSel').onchange({target:{value:'line'}});
+  assert.equal(h.element('#edgeTypeSel').value, 'line');
+  snapshot=await h.run('window.__collectSnapshot({scope:"all"})');
+  assert.deepEqual(Array.from(snapshot.edges,edge=>edge.type),['line','polyline','line','line','loop']);
+  h.run('activateCanvas(20)');assert.deepEqual(Object.keys(h.run('state.edgeTypes')),[]);
+});
+
+function samplingGraph(h) {
+  installSyntheticHub(h,5);
+  h.run(`globalThis.sampleSizes=[];globalThis.sampled=[];globalThis.sampleSize=[1000,700];
+    state.graph.changeSize=(w,h)=>{sampleSize=[w,h];sampleSizes.push([w,h])};
+    state.graph.toDataURL=()=>{sampled.push([...sampleSize]);return 'data:image/png;base64,c3ludGhldGlj'};`);
+}
+async function finishSample(h) {
+  const timer=h.timers.findLast(timer=>timer.delay===400&&!timer.ran);
+  assert.ok(timer,'one capture is pending');timer.ran=true;timer.callback();await flush();
+}
+
+test('overlapping PNG and PDF exports serialize their 2x and 3x sampling', async () => {
+  for (const formats of [['png','png'],['png','pdf'],['pdf','png']]) {
+    const h=harness('app.js');samplingGraph(h);h.network(()=>response({}));
+    h.element('#exportFmt').value=formats[0];const a=h.element('#btnExportPng').onclick();
+    h.element('#exportFmt').value=formats[1];const b=h.element('#btnExportPng').onclick();
+    assert.equal(h.run('state.graphView.exportDepth'),1);
+    assert.equal(h.timers.filter(timer=>timer.delay===400).length,1);
+    await finishSample(h);await finishSample(h);await Promise.all([a,b]);
+    assert.deepEqual(JSON.parse(h.run('JSON.stringify(sampled)')),formats.map(fmt=>fmt==='pdf'?[3000,2100]:[2000,1400]));
+    assert.equal(h.run('state.graphView.exportDepth'),0);assert.equal(h.downloads.length,2);
+    assert.deepEqual(JSON.parse(h.run('JSON.stringify(sampleSize)')),[1000,700]);
+  }
+});
+
+test('sampling failures release export state and permit the next export', async () => {
+  for (const phase of ['changeSize','fitView','toDataURL']) {
+    const h=harness('app.js');samplingGraph(h);
+    h.run(`globalThis.originalSampleMethod=state.graph.${phase};globalThis.failSample=true;
+      state.graph.${phase}=(...args)=>{if(failSample){failSample=false;throw new Error('synthetic ${phase} failure')};return originalSampleMethod(...args)}`);
+    h.element('#exportFmt').value='png';const a=h.element('#btnExportPng').onclick();
+    await flush();if(h.timers.some(timer=>timer.delay===400&&!timer.ran))await finishSample(h);await a;
+    assert.equal(h.run('state.graphView.exportDepth'),0,phase);
+    const b=h.element('#btnExportPng').onclick();await finishSample(h);await b;
+    assert.equal(h.run('state.graphView.exportDepth'),0);assert.equal(h.downloads.length,1);
+  }
+});
+
+test('stale image capture never restores over a redraw or a new case/canvas binding', async () => {
+  for (const transition of ['renderGraph()','selectCase(2);selectCase(1)','activateCanvas(7);activateCanvas(0)']) {
+    const h=harness('app.js');samplingGraph(h);h.element('#exportFmt').value='png';
+    const pending=h.element('#btnExportPng').onclick();const stale=h.timers.findLast(timer=>timer.delay===400);
+    h.run(transition);const writes=h.run('sampleSizes.length');stale.callback();await pending;
+    assert.equal(h.run('sampleSizes.length'),writes);assert.equal(h.downloads.length,0);
+    assert.equal(h.run('state.graphView.exportDepth'),0);
+  }
+});
+
+test('node browse clears tracked-only and all residual search filters', async () => {
+  const h=harness('app.js');h.run('globalThis.realSearch=doSearch');installSyntheticHub(h,5);
+  h.network(path=>response(path.startsWith('/api/main-accounts')?[]:{}));
+  await h.run('showNodeDrawer("SYN-HUB")');
+  for (const selector of ['#fAccount','#fName','#fCounter','#fKw','#fMin','#fMax','#fFrom','#fTo'])h.element(selector).value='residual';
+  h.element('#fTracked').checked=true;
+  h.run('doSearch=realSearch;renderFlows=()=>{}');h.network(()=>response({page:1,size:50,total:0,rows:[]}));
+  h.element('#ndBrowse').onclick();await flush();
+  assert.equal(h.element('#fTracked').checked,false);
+  const query=new URL(h.requests.at(-1).path,'http://synthetic.local').searchParams;
+  assert.equal(query.get('account'),'SYN-HUB');assert.equal(query.get('tracked'),null);
+  for(const key of ['name','counter','keyword','min_amount','max_amount','date_from','date_to'])assert.equal(query.get(key),null);
+});
+
+test('queued capture cancellation cannot resize or restore the camera of a newer export', async () => {
+  const h=harness('app.js');samplingGraph(h);
+  h.run(`globalThis.sampleCamera=[1,0,0,0,1,0,12,15,1];
+    globalThis.cameraGroup={getMatrix:()=>sampleCamera,setMatrix:matrix=>{sampleCamera=[...matrix]}};
+    state.graph.get=key=>key==='group'?cameraGroup:null;
+    globalThis.originalFit=state.graph.fitView;
+    state.graph.fitView=(...args)=>{sampleCamera=[2,0,0,0,2,0,100,100,1];return originalFit(...args)};`);
+  h.element('#exportFmt').value='png';const a=h.element('#btnExportPng').onclick();
+  h.element('#exportFmt').value='pdf';const b=h.element('#btnExportPng').onclick();
+  const old=h.timers.findLast(timer=>timer.delay===400);
+  h.run('renderGraph()');await flush();
+  assert.deepEqual(JSON.parse(h.run('JSON.stringify(sampleCamera)')),[1,0,0,0,1,0,12,15,1]);
+  h.element('#exportFmt').value='png';const c=h.element('#btnExportPng').onclick();
+  const before=h.run('sampleSizes.length');old.callback();assert.equal(h.run('sampleSizes.length'),before);
+  await finishSample(h);await Promise.all([a,b,c]);
+  assert.equal(h.downloads.length,1);assert.equal(h.run('state.graphView.exportDepth'),0);
+  assert.deepEqual(JSON.parse(h.run('JSON.stringify(sampleCamera)')),[1,0,0,0,1,0,12,15,1]);
+});
+
+test('full neighborhood snapshots retain saved line types for edges outside the current view', async () => {
+  const h=harness('app.js');installSyntheticHub(h,120);
+  h.run(`initGraph=()=>{};applyCanvasSnapshot({nodes:[],edges:[
+    {source:'SYN-HUB',target:'SYN-00118',type:'polyline',controlPoints:[{x:23,y:45}],lx:44,ly:55,bw:20,bh:10}]});
+    exploreNeighborhood('SYN-HUB',true)`);
+  const snapshot=await h.run('window.__collectSnapshot({scope:"all"})');
+  const edge=snapshot.edges.find(edge=>edge.target==='SYN-00118');
+  assert.equal(edge.type,'polyline');assert.equal(edge.lx,44);
+  assert.deepEqual(JSON.parse(JSON.stringify(edge.controlPoints)),[{x:23,y:45}]);
+});
+
+test('a rejected PDF request cannot publish an error after its binding is revoked', async () => {
+  const h=harness('app.js');samplingGraph(h);
+  h.run('globalThis.exportNotices=[];toast=(...args)=>exportNotices.push(args)');
+  let rejectPdf;h.network(()=>new Promise((_,reject)=>{rejectPdf=reject}));
+  h.element('#exportFmt').value='pdf';const pending=h.element('#btnExportPng').onclick();await finishSample(h);
+  h.run('selectCase(2);selectCase(1)');rejectPdf(new Error('synthetic expired request'));await pending;
+  assert.equal(h.downloads.length,0);assert.equal(h.run('exportNotices.length'),0);
 });

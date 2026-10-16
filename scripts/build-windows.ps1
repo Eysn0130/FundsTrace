@@ -36,6 +36,8 @@ try {
     $SmokeReport = Join-Path $EvidenceRoot "native-backend-smoke.json"
     $CandidateDir = Join-Path $EvidenceRoot "electron/win-unpacked"
     if (-not (Test-Path -LiteralPath (Join-Path $CandidateDir "FundsTrace.exe") -PathType Leaf)) { throw "The Windows directory candidate is missing." }
+    $HostResourceReport = Join-Path $EvidenceRoot 'packaged-host-resources.json'
+    Invoke-Checked { node desktop/tests/package-resources.cjs $CandidateDir $HostResourceReport }
     $LocaleNames = @(Get-ChildItem -LiteralPath (Join-Path $CandidateDir 'locales') -Filter '*.pak' -File | Sort-Object Name | ForEach-Object { $_.Name })
     if (($LocaleNames -join ',') -cne 'en-US.pak,zh-CN.pak,zh-TW.pak') { throw 'The packaged language fallback set differs from the candidate policy.' }
     $Version = (Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot "desktop/package.json") | ConvertFrom-Json).version
@@ -91,6 +93,7 @@ try {
         toolchain = [ordered]@{ node = $NodeInfo.version; python = $PythonInfo.version; uv = $UvVersion; powershell = $PSVersionTable.PSVersion.ToString() }
         lockSha256 = $Locks
         nativeManifestSha256 = Get-Sha256 $NativeManifest
+        hostResourcesReportSha256 = Get-Sha256 $HostResourceReport
         smokeReportSha256 = Get-Sha256 $SmokeReport
         checks = [ordered]@{ desktopNodeTests = "passed"; nativeBackendSmoke = "passed"; installerLifecycle = $(if ($VerifyInstallerLifecycle) { "passed" } else { "not-run" }) }
         sizes = $Sizes
@@ -104,7 +107,7 @@ try {
     $ManifestPath = Join-Path $EvidenceRoot "windows-candidate.json"
     $Manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ManifestPath -Encoding utf8
     $Sums = @($Files | ForEach-Object { "$($_.sha256)  $($_.path)" })
-    foreach ($File in @($NativeManifest, $SmokeReport, $ManifestPath)) {
+    foreach ($File in @($NativeManifest, $HostResourceReport, $SmokeReport, $ManifestPath)) {
         $Relative = [System.IO.Path]::GetRelativePath($ProjectRoot, $File).Replace('\', '/')
         $Sums += "$(Get-Sha256 $File)  $Relative"
     }
@@ -112,6 +115,7 @@ try {
         $Sums += "$(Get-Sha256 $InstallerReport)  build/desktop/native-installer-smoke.json"
         $Sums += "$(Get-Sha256 $InstalledAppReport)  build/desktop/native-installed-app-smoke.json"
         $Sums += "$(Get-Sha256 (Join-Path $EvidenceRoot 'native-installed-app.png'))  build/desktop/native-installed-app.png"
+        $Sums += "$(Get-Sha256 (Join-Path $EvidenceRoot 'native-installed-app.graph.png'))  build/desktop/native-installed-app.graph.png"
         $Sums += "$(Get-Sha256 $ImportRecoveryReport)  build/desktop/native-import-recovery-smoke.json"
         foreach ($File in @(Get-ChildItem -LiteralPath $CompatibilityDirectory -File)) {
             $Relative = [IO.Path]::GetRelativePath($ProjectRoot, $File.FullName).Replace('\', '/')

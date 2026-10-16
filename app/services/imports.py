@@ -180,10 +180,15 @@ def _preview_result(session, parsed, legacy=False):
 
 async def _upload(case_id, file, surface):
     cid = _cid(case_id) if case_id is not None else None
-    filename = Path((file.filename or "transactions.csv").replace("\\", "/")).name[:240]
-    suffix = Path(filename).suffix.lower() or ".csv"
+    filename = Path((file.filename or "transactions.csv").replace("\\", "/")).name
+    extension = Path(filename).suffix
+    suffix = extension.lower() or ".csv"
     if suffix not in _extensions:
         raise ServiceError(400, "unsupported_file_type", "请上传 CSV、TXT、TSV 或 Excel 流水文件")
+    # Decide the parser before shortening the display name, and never remove
+    # the real extension (including an unsupported one) by truncation.
+    filename = (filename[:-len(extension)][:240 - len(extension)] + extension
+                if extension else filename[:240])
     content = await file.read(_max_upload + 1)
     if len(content) > _max_upload:
         raise ServiceError(400, "file_too_large", "文件超过 300MB，请拆分后重新上传")

@@ -58,7 +58,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Test environment creation failed." }
           uv pip sync --python .venv/Scripts/python.exe --require-hashes requirements-dev.lock
           if ($LASTEXITCODE -ne 0) { throw "Test dependency sync failed." }
-          & .venv/Scripts/python.exe -m pytest tests/test_desktop_backend.py tests/test_import_process_recovery.py tests/test_license_v2.py tests/test_license_activation.py tests/test_desktop_resources.py -q
+          & .venv/Scripts/python.exe -m pytest tests/test_desktop_backend.py tests/test_import_process_recovery.py tests/test_license_v2.py tests/test_license_activation.py tests/test_desktop_resources.py tests/test_import_integrity.py tests/test_analysis_regressions.py tests/test_export_integrity.py tests/test_graph_mirror_dedup.py tests/test_graph_interaction.py tests/test_canvas_editor.py -q
           if ($LASTEXITCODE -ne 0) { throw "Focused source process regressions failed." }
       - name: Check isolated installer environment before building
         if: ${{ inputs.installer }}
@@ -83,10 +83,12 @@ jobs:
           path: |
             ${{ inputs.installer && '源码 FundsTrace/build/desktop/electron/*-windows-x64-unsigned.exe' || '源码 FundsTrace/build/desktop/electron/win-unpacked/' }}
             源码 FundsTrace/build/desktop/backend/funds-trace-backend/build-manifest.json
+            源码 FundsTrace/build/desktop/packaged-host-resources.json
             源码 FundsTrace/build/desktop/native-backend-smoke.json
             源码 FundsTrace/build/desktop/native-installer-smoke.json
             源码 FundsTrace/build/desktop/native-installed-app-smoke.json
             源码 FundsTrace/build/desktop/native-installed-app.png
+            源码 FundsTrace/build/desktop/native-installed-app.graph.png
             源码 FundsTrace/build/desktop/native-import-recovery-smoke.json
             源码 FundsTrace/build/desktop/standard-user/
             源码 FundsTrace/build/desktop/windows-candidate.json
