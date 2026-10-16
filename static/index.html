@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/static/favicon.svg">
 <title>FundsTrace · 资金流水追踪与关联分析</title>
-<link rel="stylesheet" href="/static/style.css?v=release-ui-1">
+<link rel="stylesheet" href="/static/style.css?v=selection-1">
 <script src="/static/vendor/g6.min.js"></script>
 </head>
 <body>
@@ -160,7 +160,8 @@
         <label for="graphLabelMode">标签</label><select id="graphLabelMode"><option value="auto">自动分级</option><option value="focus">仅关注邻域</option><option value="all">全部标签</option></select>
       </div>
     <div id="graphLayoutStatus" role="status" aria-live="polite" hidden></div>
-    <div id="graphContainer"></div>
+    <div id="graphContainer" tabindex="0" role="region" aria-label="关系图谱" aria-describedby="graphSelectionHelp"></div>
+    <span id="graphSelectionHelp" class="sr-only">单击查看账户；Ctrl 或 Command 点击多选，Ctrl 或 Command 加 A 全选当前图谱；拖动移动选中节点；Escape 取消选择。</span>
     <output id="graphViewStatus" aria-live="polite"></output>
     <div id="legend">
       <div class="graph-legend" aria-label="账户角色图例"><span class="lg" title="只转出（源头）"><i class="dot src"></i>源头</span><span class="lg"><i class="dot mid"></i>中转</span><span class="lg" title="只转入（沉淀）"><i class="dot sink"></i>沉淀</span><span class="lg"><i class="dot main"></i>主账号</span><span class="lg"><i class="dot samename"></i>同户名</span></div>
@@ -353,10 +354,11 @@
 <script src="/static/graph-labels.js?v=1"></script>
 <script src="/static/graph-viewport.js?v=1"></script>
 <script src="/static/graph-minimap.js?v=1"></script>
+<script src="/static/graph-selection.js?v=1"></script>
 <script src="/static/workspace-shell.js?v=1"></script>
-<script src="/static/app.js?v=workspace-3"></script>
+<script src="/static/app.js?v=selection-1"></script>
 <script src="/static/canvas-history.js?v=1"></script>
-<script src="/static/canvas-editor.js?v=1"></script>
+<script src="/static/canvas-editor.js?v=selection-1"></script>
 <script src="/static/table-workspace.js?v=1"></script>
 <script src="/static/ui-dialogs.js?v=1"></script>
 <script src="/static/workflow-ui.js?v=1"></script>

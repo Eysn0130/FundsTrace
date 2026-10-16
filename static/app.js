@@ -12,6 +12,8 @@ const state = {
   graph: null,
   graphResizeObserver: null,
   graphResizeHandler: null,
+  graphDisposers: [],
+  graphSelection: null,
   minimap: null,
   graphInited: false,
   graphLoading: false,
@@ -384,6 +386,7 @@ function newGraphView(labelMode) {
     drawnNodes: 0, drawnEdges: 0, exportDepth: 0 };
 }
 function resetGraphView() {
+  state.graphSelection?.destroy(); state.graphSelection = null;
   revokeZoomOptimization();
   clearTimeout(state.graphView.labelTimer);
   if (state.graphView.viewportFrame != null) cancelAnimationFrame(state.graphView.viewportFrame);
@@ -425,6 +428,7 @@ function updateGraphViewStatus() {
   const labels = (view.policy?.nodeIds.size || 0) + (view.policy?.edgeKeys.size || 0);
   const status = $('#graphViewStatus');
   if (status) status.textContent = `${view.visibleIds ? '邻域' : '全图'} ${count}/${full.nodes.length} 个账户 · ${edges}/${full.edges.length} 条关系 · ${labels} 个标签`
+    + (state.graphSelection?.ids.size ? ` · 已选 ${state.graphSelection.ids.size} 个账户${state.graphSelection.ids.size > 10 ? '（静态）' : ''}` : '')
     + (view.clipIndex ? ` · 视窗绘制 ${view.drawnNodes} 个账户` : '')
     + (view.edgeDensityMode ? ' · 密集概览，悬停查看方向' : '')
     + (view.visibleIds ? ` · 当前中心尚有 ${view.remaining} 个邻居未展开；图谱导出仅含当前视图` : '');
@@ -659,6 +663,7 @@ function rebuildGraphViewport() {
   view.clipResult = null;
   state.minimap?.setData({nodes});
   applyGraphViewport(false);
+  state.graphSelection?.refresh();
 }
 function applyGraphViewport(labels = false) {
   const graph = state.graph, view = state.graphView;
@@ -734,6 +739,8 @@ function initGraph() {
     return;
   }
   // 可重入：销毁旧实例（整图重建时彻底清画布，避免 G6 clear() 在 canvas 上留残影）
+  state.graphSelection?.destroy(); state.graphSelection = null;
+  for (const dispose of state.graphDisposers.splice(0)) dispose();
   if (state.graph) {
     state.minimap?.destroy(); state.minimap = null;
     try { state.graph.destroy(); } catch (e) { /* 忽略 */ }
@@ -751,7 +758,7 @@ function initGraph() {
     modes: { default: [
       { type: 'drag-canvas', enableOptimize: true },
       { type: 'zoom-canvas', enableOptimize: true, optimizeZoom: 0.001 },
-      'drag-node',
+      ...(typeof FundsGraphSelection === 'undefined' ? ['drag-node'] : []),
     ] },
     plugins: [],
     fitView: false,
@@ -777,7 +784,7 @@ function initGraph() {
         style: { fill: '#dfe3ea', fontSize: 10, lineHeight: 14, background: { fill: 'transparent', padding: [2, 5, 2, 5] } },
       },
     },
-    nodeStateStyles: { selected: { stroke: '#f5a623', lineWidth: 3 } },
+    nodeStateStyles: { selected: { stroke: '#66d9ef', lineWidth: 3 }, recent: { lineDash: [4, 3] } },
     edgeStateStyles: { selected: { stroke: '#f5a623', lineWidth: 2.6 } },
   });
   state.graph = graph;
@@ -798,9 +805,16 @@ function initGraph() {
   graph.on('wheelzoom', () => graphMetric('viewport', { action: 'zoom' }));
   graph.on('node:mouseenter', event => { state.graphView.hoveredAccount = event.item.getModel().id; scheduleGraphLabels(); });
   graph.on('node:mouseleave', () => { state.graphView.hoveredAccount = null; scheduleGraphLabels(); });
-  graph.on('node:dblclick', event => exploreNeighborhood(event.item.getModel().id));
-  graph.on('node:click', ev => { savePositions(); showNodeDrawer(ev.item.getModel().id, ev.item); });
-  graph.on('edge:click', ev => { savePositions(); showEdgeDrawer(ev.item.getModel(), ev.item); });
+  graph.on('node:dblclick', event => {
+    const source = event.originalEvent || event;
+    if (!source.ctrlKey && !source.metaKey) exploreNeighborhood(event.item.getModel().id);
+  });
+  initGraphSelection(graph, c);
+  if (typeof FundsGraphSelection === 'undefined') graph.on('node:click', ev => { void showNodeDrawer(ev.item.getModel().id, ev.item); });
+  graph.on('edge:click', ev => {
+    c.focus?.({ preventScroll: true });
+    void showEdgeDrawer(ev.item.getModel(), ev.item).catch(() => {});
+  });
   // 拖拽节点后立即保存位置，后续刷新/上图不会把节点弹回原位
   graph.on('node:dragstart', () => {captureEdgeLabelRatios();cancelGraphLayout();});
   graph.on('node:mousedown', () => cancelGraphLayout());
@@ -809,15 +823,66 @@ function initGraph() {
   graph.on('canvas:drag', () => graphMetric('canvas-drag'));
   graph.on('canvas:dragend', () => { scheduleGraphLabels(); graphMetric('canvas-drag'); });
   graph.on('node:dragend', () => savePositions());
-  graph.on('canvas:click', () => { if (_selItem) closeDrawer(); });
+  if (!state.graphSelection) graph.on('canvas:click', () => { if (_selItem) closeDrawer(); });
   initEdgeLabelDrag(graph);
   initEdgeBendDrag(graph);
   const resize = () => {
     if (state.graph !== graph || !c.clientWidth || !c.clientHeight) return;
-    try { graph.changeSize(c.clientWidth, c.clientHeight); scheduleGraphViewport(); } catch (_) { /* graph may be disposing */ }
+    try { graph.changeSize(c.clientWidth, c.clientHeight); scheduleGraphViewport(); state.graphSelection?.refresh(); } catch (_) { /* graph may be disposing */ }
   };
   if (typeof ResizeObserver !== 'undefined') { state.graphResizeObserver = new ResizeObserver(resize); state.graphResizeObserver.observe(c); }
   else { state.graphResizeHandler = resize; window.addEventListener('resize', resize); }
+}
+
+function initGraphSelection(graph = state.graph, c = $('#graphContainer')) {
+  if (typeof FundsGraphSelection !== 'undefined') {
+    const context = caseContext();
+    state.graphSelection = FundsGraphSelection.create({ graph, container: c, context,
+      isCurrent: binding => graph === state.graph && isCurrentCase(binding) && !state.graphLoading,
+      canInteract: () => !window.FundsCanvasEditor?.history.status().busy,
+      onPrimary: item => { void showNodeDrawer(item.getModel().id, item).catch(() => {}); },
+      onChange: ({ ids }) => {
+        closeDrawer(false);
+        state.graphView.selectedAccount = ids.size <= 10 ? [...ids].at(-1) || null : null;
+        scheduleGraphLabels(); updateGraphViewStatus();
+      },
+      onMoveStart: () => {
+        cancelGraphLayout(); captureEdgeLabelRatios();
+        window.dispatchEvent(new CustomEvent('funds:selection-drag-start'));
+      },
+      onBeforeMove: ({ ids, dx, dy }) => translateSelectedBends(ids, dx, dy),
+      onMoveEnd: result => {
+        if (result.moved || result.cancelled) {
+          restoreEdgeLabelPositions(); savePositions(); rebuildGraphViewport(); scheduleGraphLabels();
+          graphMetric('node-drag');
+        }
+        window.dispatchEvent(new CustomEvent('funds:selection-drag-end', { detail: result }));
+      },
+    });
+  }
+}
+
+// A manual bend belongs to the whole relationship. Move it only when both
+// endpoints move together; boundary relationships retain their anchored bends.
+function translateSelectedBends(ids, dx, dy) {
+  const selected = ids instanceof Set ? ids : new Set(ids);
+  const affected = new Set();
+  for (const id of selected) {
+    const node = state.graphView.nodeItems.get(id);
+    for (const edge of node?.getEdges?.() || []) affected.add(edge);
+  }
+  for (const item of affected) {
+    const key = edgeKey(item.getModel());
+    const model = item.getModel(), points = state.edgeBendPos[key];
+    if (!points || !selected.has(model.source) || !selected.has(model.target)) continue;
+    const moved = points.map(p => ({ x: p.x + dx, y: p.y + dy }));
+    state.edgeBendPos[key] = moved; model.controlPoints = moved;
+  }
+}
+
+function isCurrentGraphGesture(gesture, graph) {
+  return graph === state.graph && isCurrentCase(gesture.context)
+    && gesture.view === state.graphView && gesture.revision === state.graphView.revision;
 }
 
 /* ---------------- 折线折点：拖动添加/移动折点，双击折点删除 ----------------
@@ -831,7 +896,8 @@ function initEdgeBendDrag(graph) {
     if (state.edgeType !== 'polyline' && state.edgeType !== 'line') return;
     if (isLabelShape(e.target)) return;            // 标签拖拽交给标签逻辑
     if (e.item && e.item.getModel().type === 'loop') return;
-    drag = null;                                    // 防止与标签平移冲突
+    window.dispatchEvent(new CustomEvent('funds:edge-drag-start'));
+    const binding = { context: caseContext(), view: state.graphView, revision: state.graphView.revision };
     const m = e.item.getModel();
     const key = edgeKey(m);
     const cps = (state.edgeBendPos[key] || []).map(p => ({ x: p.x, y: p.y }));
@@ -839,10 +905,10 @@ function initEdgeBendDrag(graph) {
     // 命中已有折点 → 移动模式
     let hit = -1;
     for (let i = 0; i < cps.length; i++) {
-      if ((cps[i].x - anchor.x) ** 2 + (cps[i].y - anchor.y) ** 2 <= 10 * 10) { hit = i; break; }
+      if (((cps[i].x - anchor.x) ** 2 + (cps[i].y - anchor.y) ** 2) * (graph.getZoom?.() || 1) ** 2 <= 10 * 10) { hit = i; break; }
     }
     if (hit >= 0) {
-      bend = { edge: e.item, key, pts: cps, idx: hit };
+      bend = { ...binding, edge: e.item, key, pts: cps, idx: hit };
       e.preventDefault && e.preventDefault();
       return;
     }
@@ -864,12 +930,13 @@ function initEdgeBendDrag(graph) {
     const idx = seg - 1;
     const pts = cps.slice();
     pts.splice(idx, 0, { x: anchor.x, y: anchor.y });
-    bend = { edge: e.item, key, pts, idx };
+    bend = { ...binding, edge: e.item, key, pts, idx };
     e.preventDefault && e.preventDefault();
   });
 
-  window.addEventListener('mousemove', e => {
+  const move = e => {
     if (!bend) return;
+    if (!isCurrentGraphGesture(bend, graph)) { bend = null; return; }
     try {
       const p = graph.getPointByClient(e.clientX, e.clientY);
       bend.pts[bend.idx] = { x: p.x, y: p.y };
@@ -879,9 +946,11 @@ function initEdgeBendDrag(graph) {
       if (state.edgeType === 'line') upd.type = 'polyline';
       try { graph.updateItem(bend.edge, upd); } catch (err) { /* 忽略 */ }
     } catch (err) { /* 忽略 */ }
-  });
+  };
 
-  window.addEventListener('mouseup', () => { if (bend && graph===state.graph) {savePositions();rebuildGraphViewport();} bend = null; });
+  const up = () => { if (bend && isCurrentGraphGesture(bend, graph)) {savePositions();rebuildGraphViewport();} bend = null; };
+  window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+  state.graphDisposers.push(() => { bend = null; window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); });
 
   graph.on('edge:dblclick', e => {
     if (state.edgeType !== 'polyline' && state.edgeType !== 'line') return;
@@ -895,7 +964,7 @@ function initEdgeBendDrag(graph) {
       const d = (p.x - anchor.x) ** 2 + (p.y - anchor.y) ** 2;
       if (d < bd) { bd = d; bi = i; }
     });
-    if (bi >= 0 && bd <= 20 * 20) {
+    if (bi >= 0 && bd * (graph.getZoom?.() || 1) ** 2 <= 20 * 20) {
       cps.splice(bi, 1);
       if (cps.length) {
         state.edgeBendPos[key] = cps;
@@ -1057,22 +1126,26 @@ function initEdgeLabelDrag(graph) {
     if (!isLabelShape(e.target)) return;
     const P = edgePts(e.item);
     if (!P) return;
-    drag = { edge: e.item, P };
+    window.dispatchEvent(new CustomEvent('funds:edge-drag-start'));
+    drag = { edge: e.item, P, context: caseContext(), view: state.graphView, revision: state.graphView.revision };
     e.preventDefault && e.preventDefault();
   });
 
   // 拖动中用原生事件（鼠标可能离开边线，仍需跟随投影）
-  window.addEventListener('mousemove', e => {
+  const move = e => {
     if (!drag) return;
+    if (!isCurrentGraphGesture(drag, graph)) { drag = null; return; }
     try {
       const p = graph.getPointByClient(e.clientX, e.clientY);
       const r = nearestRatio(drag.P, p.x, p.y);
       placeEdgeLabel(drag.edge, ptAtRatio(drag.P, r));
       state.edgeLabelPos[edgeKey(drag.edge.getModel())] = r;
-    } catch (err) { window.__dbgMoveErr = String(err).slice(0, 200); }
-  });
+    } catch (_) { /* binding may have been revoked */ }
+  };
 
-  window.addEventListener('mouseup', () => { if (drag && graph===state.graph) {savePositions();rebuildGraphViewport();} drag = null; });
+  const up = () => { if (drag && isCurrentGraphGesture(drag, graph)) {savePositions();rebuildGraphViewport();} drag = null; };
+  window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+  state.graphDisposers.push(() => { drag = null; window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); });
 
   // 悬停标签时显示可拖动光标
   const canvasEl = graph.get('canvas') && graph.get('canvas').get('canvas');
@@ -1410,6 +1483,13 @@ function edgeLabel(e) {
 
 function renderGraph() {
   if (!state.graph) return;
+  const selectedIds = new Set(state.graphSelection?.ids || []);
+  const detail = _selItem && $('#drawer').classList.contains('open') ? {
+    node: !_selItem.getModel().source, id: _selItem.getModel().id, key: edgeKey(_selItem.getModel()),
+  } : null;
+  const camera = state.graph.get?.('group')?.getMatrix?.();
+  const savedCamera = camera ? Array.from(camera) : null;
+  if (_selItem) closeDrawer(false);
   revokeZoomOptimization();
   restoreGraphClipping();
   cancelGraphLayout();
@@ -1548,13 +1628,16 @@ function renderGraph() {
       }
     }
   }
+  if (savedCamera && !needFit) graph.get?.('group')?.setMatrix?.(savedCamera);
+  if (!state.graphSelection) initGraphSelection(graph);
+  state.graphSelection?.rebind(selectedIds);
   rebuildGraphViewport();
   applyGraphLabels(false);
   graph.setAutoPaint(true);
   graph.paint();
   graphMetric('paint');
   if (needsFirstLayout) void relayout(needFit);
-  // 新上图流水涉及的高亮反馈：先清旧高亮，再标出本次新增涉及的账户
+  // Recent additions are feedback, never user selection or animation authority.
   if (state.justAdded && state.justAdded.size) {
     const added = state.justAdded;
     state.justAdded = null;
@@ -1562,11 +1645,19 @@ function renderGraph() {
     for (const e of g.edges) if ((e.ids || []).some(x => added.has(x))) { involved.add(e.source); involved.add(e.target); }
     setTimeout(() => {
       if (!isCurrentCase(renderContext) || graph !== state.graph) return;
-      try { graph.clearItemStates(); } catch (err) { /* 忽略 */ }
-      graph.getNodes().forEach(n => {
-        if (involved.has(n.getModel().id)) { try { graph.setItemState(n, 'selected', true); } catch (err) { /* 忽略 */ } }
-      });
+      graph.setAutoPaint(false);
+      for (const node of graph.getNodes()) {
+        graph.setItemState(node, 'recent', involved.has(node.getModel().id));
+      }
+      graph.setAutoPaint(true); graph.paint();
     }, 80);
+  }
+  if (detail) {
+    const item = detail.node ? graph.findById(detail.id) : state.graphView.edgeItems.get(detail.key);
+    if (item && (!detail.node || (state.graphSelection?.ids.size === 1 && state.graphSelection.ids.has(detail.id)))) {
+      if (detail.node) void showNodeDrawer(detail.id, item);
+      else void showEdgeDrawer(item.getModel(), item);
+    }
   }
   state.forceFit = false;
   setTimeout(() => {
@@ -1688,18 +1779,37 @@ function cacheEdgeLabel(item) {
 
 /* ---------------- 右侧抽屉 ---------------- */
 let _selItem = null;
+let drawerSequence = 0;
 function selectItem(item) {
-  if (_selItem) { try { state.graph.setItemState(_selItem, 'selected', false); } catch (e) { /* 忽略 */ } }
+  if (_selItem?.getModel?.().source || !state.graphSelection) {
+    if (_selItem) { try { state.graph.setItemState(_selItem, 'selected', false); } catch (_) { /* disposed */ } }
+  }
+  if (state.graphSelection && item) {
+    const model = item.getModel();
+    if (model.source) state.graphSelection.clear();
+    else if (state.graphSelection.ids.size !== 1 || !state.graphSelection.ids.has(model.id)) state.graphSelection.select(model.id);
+  }
   _selItem = item || null;
-  state.graphView.selectedAccount = _selItem?.getModel?.().id || null;
+  state.graphView.selectedAccount = !_selItem?.getModel?.().source ? _selItem?.getModel?.().id || null : null;
   state.graphView.selectedEdge = _selItem?.getModel?.().source ? edgeKey(_selItem.getModel()) : null;
-  if (_selItem) { try { state.graph.setItemState(_selItem, 'selected', true); } catch (e) { /* 忽略 */ } }
+  if (_selItem && (!state.graphSelection || _selItem.getModel().source)) {
+    try { state.graph.setItemState(_selItem, 'selected', true); } catch (_) { /* disposed */ }
+  }
   scheduleGraphLabels();
 }
 
-function closeDrawer() {
+function closeDrawer(clearSelection = true) {
+  drawerSequence += 1;
   $('#drawer').classList.remove('open');
-  selectItem(null);
+  $('#drawerBody').innerHTML = '';
+  if (clearSelection) selectItem(null);
+  else {
+    if (_selItem?.getModel?.().source) {
+      try { state.graph?.setItemState(_selItem, 'selected', false); } catch (_) { /* disposed */ }
+    }
+    _selItem = null; state.graphView.selectedEdge = null;
+  }
+  if (clearSelection) state.graphSelection?.clear();
 }
 
 /* ---------------- 照片预览裁剪弹窗 ---------------- */
@@ -1785,7 +1895,7 @@ function bindPhotoCrop() {
       state.forceRebuild = true;   // 照片节点与圆点互切需整图重建
       await loadGraph();
       if (!isCurrentCase(binding.context)) return;
-      if (pcState.item) showNodeDrawer(pcState.account, pcState.item);
+      // renderGraph rebinds the selected account and refreshes its drawer.
     } catch (e) { if (!current()) return; toast('上传失败：' + e.message, 'err'); }
   };
 }
@@ -1793,8 +1903,10 @@ function bindPhotoCrop() {
 async function showNodeDrawer(account, item) {
   const context = caseContext();
   const view = state.graphView, revision = view.revision;
-  const current = () => isCurrentCase(context) && view === state.graphView && revision === view.revision;
+  item = state.graph?.findById?.(account) || item;
   selectItem(item);
+  const request = ++drawerSequence;
+  const current = () => request === drawerSequence && isCurrentCase(context) && view === state.graphView && revision === view.revision;
   $('#drawerTitle').textContent = '账户详情';
   $('#drawer').classList.add('open');
   $('#drawerBody').innerHTML = '<div class="muted">加载中…</div>';
@@ -1869,22 +1981,22 @@ async function showNodeDrawer(account, item) {
   $('#ndFocusApply').onclick = async () => {
     const scale = Number($('#ndFocusScale').value) || 1;
     try {
-      const r = await api('/api/focus-nodes/set', { method: 'POST', ...jsonOpts({ case_id: state.caseId, account, on: scale > 1, scale }) });
+      const r = await api('/api/focus-nodes/set', { method: 'POST', ...jsonOpts({ case_id: context.caseId, account, on: scale > 1, scale }) });
+      if (!current()) return;
       toast(r.on ? `该节点已重点展示（放大 ${r.scale} 倍）` : '已取消重点展示，节点恢复正常大小');
       state.forceRebuild = true;   // 尺寸变化走整图重建，避免渲染残留
-      await loadGraph();
-      showNodeDrawer(account, item);
+      await loadGraph(true, context);
     } catch (e) { toast('设置失败：' + e.message, 'err'); }
   };
   $('#ndIdSave').onclick = async () => {
     const v = $('#ndIdInput').value.trim();
     try {
-      await api('/api/account-ids/set', { method: 'POST', ...jsonOpts({ case_id: state.caseId, account, id_no: v }) });
+      await api('/api/account-ids/set', { method: 'POST', ...jsonOpts({ case_id: context.caseId, account, id_no: v }) });
+      if (!current()) return;
       const gn2 = state.lastGraph.nodes.find(n => n.account === account);
       if (gn2) gn2.id_no = v || null;
       renderGraph();
       toast(v ? '身份证号已保存并更新到图谱' : '已清除该账号身份证号');
-      showNodeDrawer(account, item);
     } catch (e) { toast('保存失败：' + e.message, 'err'); }
   };
   $('#ndPhotoUp').onclick = async () => {
@@ -1902,24 +2014,25 @@ async function showNodeDrawer(account, item) {
   };
   $('#ndPhotoClr').onclick = async () => {
     try {
-      await api('/api/account-photos/clear', { method: 'POST', ...jsonOpts({ case_id: state.caseId, account }) });
+      await api('/api/account-photos/clear', { method: 'POST', ...jsonOpts({ case_id: context.caseId, account }) });
+      if (!current()) return;
       toast('已清除照片，节点恢复圆点');
       state.forceRebuild = true;   // 照片节点与圆点互切需整图重建
-      await loadGraph();
-      showNodeDrawer(account, item);
+      await loadGraph(true, context);
     } catch (e) { toast('清除失败：' + e.message, 'err'); }
   };
   $('#ndToggleMain').onclick = async () => {
     const name = prof.name || gn.name || '';
     if (isMain) {
-      await api('/api/main-accounts', { method: 'DELETE', ...jsonOpts({ case_id: state.caseId, account, name }) });
+      await api('/api/main-accounts', { method: 'DELETE', ...jsonOpts({ case_id: context.caseId, account, name }) });
+      if (!current()) return;
       toast('已取消主账号标记');
     } else {
-      await api('/api/main-accounts', { method: 'POST', ...jsonOpts({ case_id: state.caseId, account, name }) });
+      await api('/api/main-accounts', { method: 'POST', ...jsonOpts({ case_id: context.caseId, account, name }) });
+      if (!current()) return;
       toast('已标记为主账号，同户名的其他账号也会自动带标');
     }
-    await loadGraph();
-    showNodeDrawer(account, item);   // 刷新抽屉内容
+    await loadGraph(true, context);
   };
   $('#ndBrowse').onclick = () => {
     closeDrawer(); switchTab('search');
@@ -1943,16 +2056,26 @@ async function showNodeDrawer(account, item) {
     $('#fAccount').value = account; $('#fCounter').value = tr.dataset.acct;
     doSearch(1);
   });
+  for (const selector of ['#ndFocusApply', '#ndIdSave', '#ndPhotoUp', '#ndPhotoFile', '#ndPhotoRe', '#ndPhotoClr', '#ndToggleMain', '#ndBrowse', '#ndNeighborhood', '#ndRemove']) {
+    const element = $(selector);
+    for (const name of ['onclick', 'onchange']) {
+      const action = element?.[name];
+      if (typeof action === 'function') element[name] = (...args) => current() ? action.apply(element, args) : undefined;
+    }
+  }
+
 }
 
 async function showEdgeDrawer(m, item) {
   const context = caseContext();
   selectItem(item);
+  const request = ++drawerSequence, view = state.graphView, revision = view.revision;
+  const current = () => request === drawerSequence && isCurrentCase(context) && view === state.graphView && revision === view.revision;
   $('#drawerTitle').textContent = '资金流向';
   $('#drawer').classList.add('open');
   $('#drawerBody').innerHTML = '<div class="muted">加载中…</div>';
   const r = await api(`/api/flows?case_id=${context.caseId}&ids=` + (m.ids || m.data.ids).join(',') + '&size=500');
-  if (!isCurrentCase(context)) return;
+  if (!current()) return;
   const d = m.data;
   $('#drawerBody').innerHTML = `
     <div class="kv"><label>付款方</label><div>${esc(d.source_name || '')}<br><span class="mono wrap">${esc(d.source)}</span></div></div>
@@ -1976,8 +2099,8 @@ async function showEdgeDrawer(m, item) {
           </td>
         </tr>`).join('')}</tbody>
     </table></div>`;
-  $('#drawerBody').querySelectorAll('.ctx-btn').forEach(b => b.onclick = () => openContext(Number(b.dataset.id)));
-  $('#drawerBody').querySelectorAll('.del-btn').forEach(b => b.onclick = () => untrackFlows([Number(b.dataset.id)]));
+  $('#drawerBody').querySelectorAll('.ctx-btn').forEach(b => b.onclick = () => { if (current()) openContext(Number(b.dataset.id)); });
+  $('#drawerBody').querySelectorAll('.del-btn').forEach(b => b.onclick = () => { if (current()) untrackFlows([Number(b.dataset.id)]); });
 }
 
 /* ---------------- 交易上下文（对手前后 X 笔） ---------------- */

@@ -12,8 +12,8 @@ const preview = id => ({ import_id: id, filename: `${id}.csv` });
 const done = () => response({ stage: 'done', result: { ok: 2, rows_dup: 1 } });
 
 function harness() {
-  const nodes = new Map(), events = new Map(), timers = [], uploads = [], requests = [], notices = [], rendered = [], contextRows = [];
-  let fetcher = () => { throw new Error('Unexpected request'); }, tracker = async () => true, refreshes = 0, graphReads = 0, paints = 0;
+  const nodes = new Map(), events = new Map(), timers = [], uploads = [], requests = [], notices = [], rendered = [], contextRows = [], photoOpens = [];
+  let fetcher = () => { throw new Error('Unexpected request'); }, tracker = async () => true, graphLoader = null, graphRenderer = null, refreshes = 0, graphReads = 0, paints = 0;
   let document;
   function element(id) {
     id = id.replace(/^#/, '');
@@ -77,9 +77,12 @@ function harness() {
     setPbarBusy: message => { element('impPbar').style.display = 'block'; element('impPtext').textContent = message; },
     fmtCount: value => String(value), toast: (message, type) => notices.push({ message, type }),
     fmtTime: String, esc: String, nodePhotoUrl: () => '', totalsHtml: () => '', moneyHtml: String,
+    drawerSequence: 0, _selItem: null,
     selectItem() {}, renderCtxRows: value => contextRows.push(value), renderSuggestions() {}, isSystemAccount: () => false,
+    openPhotoCrop: (...args) => photoOpens.push(args),
     trackFlows: ids => tracker(ids),
-    loadGraph: async () => { graphReads += 1; }, renderGraph: () => { paints += 1; },
+    loadGraph: async () => { graphReads += 1; if (graphLoader) await graphLoader(); },
+    renderGraph: () => { paints += 1; graphRenderer?.(); },
     api: async (path, options) => { const result = await fetch(path, options); if (!result.ok) throw new Error('合成读取失败'); return result.json(); },
     refreshAll: async () => { refreshes += 1; },
     setTimeout: (callback, delay) => { timers.push({ callback, delay }); },
@@ -93,18 +96,20 @@ function harness() {
     },
   });
   const app = readFileSync(new URL('../static/app.js', import.meta.url), 'utf8');
-  for (const [start, end] of [['function closeDrawer()', '/* ---------------- 照片预览裁剪'],
+  for (const [start, end] of [['function closeDrawer(', '/* ---------------- 照片预览裁剪'],
     ['async function showNodeDrawer(', '/* ---------------- 交易上下文'],
     ['async function loadContext()', '/* ---------------- 智能推荐']]) {
     vm.runInContext(app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start))), context);
   }
   vm.runInContext(source, context, { filename: 'workflow-ui.js' });
   events.get('DOMContentLoaded')();
-  return { element, state, uploads, requests, notices, rendered, timers, contextRows, document,
+  return { element, state, uploads, requests, notices, rendered, timers, contextRows, document, photoOpens,
     get refreshes() { return refreshes; },
     get graphReads() { return graphReads; }, get paints() { return paints; },
     network(handler) { fetcher = handler; },
     track(handler) { tracker = handler; },
+    onGraphLoad(handler) { graphLoader = handler; },
+    onGraphRender(handler) { graphRenderer = handler; },
     run(code) { return vm.runInContext(code, context); },
     open() { element('btnImport').onclick(); }, close() { element('impClose').onclick(); },
     upload(name) { element('impFile').files = [{ name }]; return element('impFile').onchange(); },
@@ -260,7 +265,7 @@ test('a pending edge drawer cannot overwrite a node drawer or reopen a closed dr
   await h.run("showNodeDrawer('SYN-B', {})");
   h.run('closeDrawer()');
   edge.resolve(response({ rows: [] })); await old;
-  assert.match(h.element('drawerBody').innerHTML, /合成乙/);
+  assert.equal(h.element('drawerBody').innerHTML, '', 'closing revokes the old detail DOM and late responses cannot refill it');
   assert.equal(h.element('drawer').classList.contains('open'), false);
 });
 
@@ -370,6 +375,89 @@ test('drawer rebuilds restore implicit blur without stealing deliberate focus or
   reload = h.run("showNodeDrawer('SYN-B', {})"); h.switchCase(2); h.element('btnImport').focus();
   pending.resolve(profile()); await reload;
   assert.equal(h.document.activeElement, h.element('btnImport'), 'a later case binding revokes focus restoration');
+});
+
+test('graph-rebuild drawer refresh restores the saved action focus and binds photo actions to the replacement item', async () => {
+  const h = harness();
+  h.network((path, options) => options?.method === 'POST' ? response({})
+    : path.includes('/profile?') ? response({ name: '合成甲', top_counterparties: [] }) : response([]));
+  h.run("globalThis.currentNodeItem = { generation: 1 }; globalThis.previousNodeItem = currentNodeItem; state.graph = { findById: () => currentNodeItem };");
+  await h.run("showNodeDrawer('SYN-A', previousNodeItem)");
+  h.onGraphLoad(async () => {
+    // renderGraph revokes the old drawer before rebuilding G6 items, then
+    // reopens the selected account after the binding-scoped graph publication.
+    h.run('closeDrawer(false); state.graphView.revision += 1; currentNodeItem = { generation: 2 };');
+    await h.run("showNodeDrawer('SYN-A', previousNodeItem)");
+  });
+  const oldButton = h.element('ndPhotoClr'); oldButton.focus();
+  await oldButton.onclick();
+  assert.equal(h.document.activeElement, h.element('ndPhotoClr'), 'the action remains reachable after the graph replaces its drawer DOM');
+  assert.notEqual(h.element('ndPhotoClr'), oldButton);
+  assert.equal(h.graphReads, 1);
+  assert.equal(h.requests.filter(request => request.path.includes('/profile?')).length, 2, 'the revoked write adapter must not reopen a third drawer');
+  h.element('ndPhotoFile').files = [{ name: 'synthetic.png' }];
+  h.element('ndPhotoUp').onclick();
+  assert.equal(h.photoOpens.at(-1)[2], h.run('currentNodeItem'), 'photo callbacks use the live G6 item');
+  assert.notEqual(h.photoOpens.at(-1)[2], h.run('previousNodeItem'));
+});
+
+test('opening node details resolves the current graph item before installing photo callbacks', async () => {
+  const h = harness();
+  h.network(path => path.includes('/profile?') ? response({ name: '合成甲', top_counterparties: [] }) : response([]));
+  h.run("globalThis.currentNodeItem = { generation: 2 }; globalThis.previousNodeItem = { generation: 1 }; state.graph = { findById: () => currentNodeItem };");
+  await h.run("showNodeDrawer('SYN-A', previousNodeItem)");
+  h.element('ndPhotoFile').files = [{ name: 'synthetic.png' }]; h.element('ndPhotoUp').onclick();
+  assert.equal(h.photoOpens.at(-1)[2], h.run('currentNodeItem'));
+});
+
+test('identity save retains success feedback and focus when renderGraph refreshes the drawer', async () => {
+  const h = harness(); let reopened;
+  h.state.lastGraph.nodes = [{ account: 'SYN-A' }];
+  h.network((path, options) => options?.method === 'POST' ? response({})
+    : path.includes('/profile?') ? response({ name: '合成甲', top_counterparties: [] }) : response([]));
+  await h.run("showNodeDrawer('SYN-A', {})");
+  h.onGraphRender(() => {
+    h.run('closeDrawer(false); state.graphView.revision += 1;');
+    reopened = h.run("showNodeDrawer('SYN-A', {})");
+  });
+  h.element('ndIdInput').value = 'SYN-ID'; h.element('ndIdSave').focus();
+  await h.element('ndIdSave').onclick(); await reopened;
+  assert.equal(h.state.lastGraph.nodes[0].id_no, 'SYN-ID');
+  assert.equal(h.document.activeElement, h.element('ndIdSave'));
+  assert.equal(h.notices.length, 1); assert.match(h.notices[0].message, /身份证号已保存/);
+  assert.equal(h.requests.filter(request => request.path.includes('/profile?')).length, 2);
+});
+
+test('graph-rebuild focus restoration respects a deliberate move to the graph or another control', async () => {
+  for (const target of ['graphContainer', 'btnImport']) {
+    const h = harness(), profile = deferred(); let reloading = false;
+    h.network((path, options) => options?.method === 'POST' ? response({})
+      : path.includes('/profile?') ? reloading ? profile.promise : response({ name: '合成甲', top_counterparties: [] }) : response([]));
+    await h.run("showNodeDrawer('SYN-A', {})");
+    h.onGraphLoad(async () => {
+      h.run('closeDrawer(false); state.graphView.revision += 1;');
+      reloading = true;
+      await h.run("showNodeDrawer('SYN-A', {})");
+    });
+    h.element('ndFocusApply').focus();
+    const pending = h.element('ndFocusApply').onclick(); await flush();
+    h.element(target).focus();
+    profile.resolve(response({ name: '合成甲', top_counterparties: [] })); await pending;
+    assert.equal(h.document.activeElement, h.element(target), `${target} retains intentional focus during graph refresh`);
+  }
+});
+
+test('a graph-refresh focus marker cannot survive explicit close, another account, or a new case binding', async () => {
+  for (const navigation of ["closeDrawer()", "showNodeDrawer('SYN-B', {})", 'select another case']) {
+    const h = harness();
+    h.network(path => path.includes('/profile?') ? response({ name: '合成账户', top_counterparties: [] }) : response([]));
+    await h.run("showNodeDrawer('SYN-A', {})");
+    h.element('ndIdInput').focus(); h.run('closeDrawer(false)');
+    if (navigation === 'select another case') { h.switchCase(2); h.switchCase(1); }
+    else await h.run(navigation);
+    await h.run("showNodeDrawer('SYN-A', {})");
+    assert.equal(h.document.activeElement, h.document.body, navigation);
+  }
 });
 
 test('context read failures expose an explicit retry in the existing table', async () => {
