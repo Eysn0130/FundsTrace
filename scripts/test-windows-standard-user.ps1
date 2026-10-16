@@ -49,7 +49,12 @@ try {
     $Report.checks.standardAccount = $true
     $Stage = 'offlineRules'
     $Profiles = @(Get-NetFirewallProfile | Select-Object Name, Enabled)
-    foreach ($Profile in $Profiles) { if (-not $Profile.Enabled) { Set-NetFirewallProfile -Name $Profile.Name -Enabled True } }
+    foreach ($Profile in $Profiles) { Set-NetFirewallProfile -Name $Profile.Name -Enabled True }
+    $ActiveProfiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore)
+    if ($ActiveProfiles.Count -ne 3 -or @($ActiveProfiles | Where-Object { [string]$_.Enabled -cne 'True' }).Count -gt 0) {
+        throw 'All effective firewall profiles must be enabled for isolation.'
+    }
+    $Report.checks.firewallProfilesEnabled = $true
     foreach ($Program in @((Join-Path $InstallRoot 'FundsTrace.exe'), (Join-Path $InstallRoot 'resources/backend/funds-trace-backend.exe'))) {
         $Name = 'FundsTrace-CI-' + $RunId + '-' + $RuleNames.Count
         [void](New-NetFirewallRule -Name $Name -DisplayName $Name -Direction Outbound -Action Block -Program $Program -Profile Any)
