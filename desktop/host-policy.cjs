@@ -7,11 +7,13 @@ const HEADER = 'X-FundsTrace-Desktop';
 const PAGES = new Set(['/', '/analysis', '/license', '/workspace', '/workspace/']);
 
 // Electron work areas and BrowserWindow bounds both use DIP, including at 200% DPI.
-function windowBounds(workArea) {
-  const width = Math.min(1440, workArea.width), height = Math.min(940, workArea.height);
+function windowBounds(workArea, current) {
+  const width = Math.min(current?.width ?? 1440, workArea.width), height = Math.min(current?.height ?? 940, workArea.height);
+  const x = current?.x ?? workArea.x + Math.floor((workArea.width - width) / 2);
+  const y = current?.y ?? workArea.y + Math.floor((workArea.height - height) / 2);
   return { width, height, minWidth: Math.min(960, width), minHeight: Math.min(640, height),
-    x: workArea.x + Math.floor((workArea.width - width) / 2),
-    y: workArea.y + Math.floor((workArea.height - height) / 2) };
+    x: Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - width)),
+    y: Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - height)) };
 }
 
 function sameOrigin(url, origin) {

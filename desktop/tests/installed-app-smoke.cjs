@@ -11,11 +11,15 @@ const { performance } = require('node:perf_hooks');
 const SENTINEL = 'FundsTrace synthetic installer lifecycle v1\n';
 const SEED_CASE = 'SYN prior installer lifecycle case';
 const CREATED_CASE = 'SYN current installer lifecycle case';
+const VIEWPORTS = [[960, 500], [960, 640], [1280, 640]], DEVICE_SCALES = [1, 1.5, 2];
 const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, failedCheck: null,
   limits: { windowsServerAutomationOnly: true, windows10And11Interactive: false,
-    dpi: false, importRecovery: false, screenshotIsRendererSurface: true } };
+    dpi: false, importRecovery: false, screenshotIsRendererSurface: true,
+    simulatedCssViewportOnly: true, actualSystemDpiValidated: false,
+    offlineEnforcement: 'not-measured-by-this-helper; see standard-user compatibility report',
+    simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
 const timings = report.timings, owned = [];
-let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page;
+let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage;
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function bounded(promise, ms) {
@@ -131,10 +135,65 @@ async function connect(url) {
     close() { listener = () => {}; rejectPending(); socket.close(); },
   };
 }
-async function evaluate(expression) {
-  const result = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, page.sessionId);
+async function evaluate(expression, target = page) {
+  const result = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, target.sessionId);
   assert.ok(!result.exceptionDetails);
   return result.result?.value;
+}
+// Runtime is used only to inspect/layout the DOM. Product actions use actual CDP
+// pointer input; navigation uses existing links or Page.navigate where no link exists.
+async function clickElement(expression, target = page) {
+  const point = await evaluate(`(() => {
+    const element = ${expression}; if (!element || element.disabled) return null;
+    element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const rect = element.getBoundingClientRect(), x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+    if (rect.width <= 0 || rect.height <= 0 || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return null;
+    const hit = document.elementFromPoint(x, y); return hit && (hit === element || element.contains(hit)) ? { x, y } : null;
+  })()`, target);
+  assert.ok(point);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 }, target.sessionId);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 }, target.sessionId);
+}
+function visibleControl(expression) {
+  return `(() => {
+    const element = ${expression}; if (!element || element.disabled) return false;
+    const rect = element.getBoundingClientRect(), style = getComputedStyle(element);
+    if (style.visibility !== 'visible' || style.display === 'none' || Number(style.opacity) === 0
+      || rect.width < 16 || rect.height < 16 || rect.left < -1 || rect.top < -1
+      || rect.right > innerWidth + 1 || rect.bottom > innerHeight + 1) return false;
+    return [[.5,.5],[.2,.2],[.8,.2],[.2,.8],[.8,.8]].every(([rx, ry]) => {
+      const hit = document.elementFromPoint(rect.x + rect.width * rx, rect.y + rect.height * ry);
+      return hit && (hit === element || element.contains(hit));
+    });
+  })()`;
+}
+async function readyDocument(expression, target = page) {
+  await until(async () => {
+    try { return await evaluate(`document.readyState === 'complete' && (${expression})`, target); }
+    catch { return false; } // An actual navigation may replace the execution context.
+  }, 20000);
+}
+async function viewportMatrix(name, target, inspect, controls, reachableControls = []) {
+  // Chromium emulation checks the shipped renderer at CSS sizes and emulated
+  // DPRs. It does not change Windows display scaling or establish real DPI evidence.
+  for (const [width, height] of VIEWPORTS) for (const deviceScaleFactor of DEVICE_SCALES) {
+    await check(`${name}Css${width}x${height}Dpr${String(deviceScaleFactor).replace('.', '_')}`, async () => {
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor,
+        mobile: false, screenWidth: width, screenHeight: height }, target.sessionId);
+      await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`, target);
+      assert.equal(await evaluate(`innerWidth === ${width} && innerHeight === ${height}
+        && devicePixelRatio === ${deviceScaleFactor}
+        && document.documentElement.scrollWidth <= innerWidth + 1 && (${inspect})`, target), true);
+      for (const control of controls) assert.equal(await evaluate(visibleControl(control), target), true);
+      for (const control of reachableControls) {
+        // React is an ordinary vertically scrolling document. Check the empty
+        // case entry after bringing it into view, including overlay hit tests.
+        await evaluate(`(${control}).scrollIntoView({ block: 'center', inline: 'nearest' })`, target);
+        assert.equal(await evaluate(visibleControl(control), target), true);
+      }
+      await evaluate(`window.scrollTo(0, 0)`, target);
+    });
+  }
 }
 async function portClosed(port) {
   return new Promise(resolve => {
@@ -256,6 +315,17 @@ async function portClosed(port) {
     await until(() => evaluate(`!state.graphLoading && state.graphInited && state.graphSelection
       && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(CREATED_CASE)}
       && state.lastGraph.nodes.length === 0 && state.lastGraph.edges.length === 0`), 15000);
+  });
+  await viewportMatrix('graphLayout', page, `(() => {
+    const graph = document.querySelector('#graphContainer')?.getBoundingClientRect();
+    return graph && graph.width > 100 && graph.height > 80 && graph.left >= 0 && graph.top >= 0
+      && graph.right <= innerWidth + 1 && graph.bottom <= innerHeight + 1
+      && !!document.querySelector('#graphContainer canvas, #graphContainer svg');
+  })()`, [`document.querySelector('#btnImport')`, `document.querySelector('#btnImport2')`]);
+  await check('minimalCssViewportScreenshot', async () => {
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 960, height: 500, deviceScaleFactor: 1,
+      mobile: false, screenWidth: 960, screenHeight: 500 }, page.sessionId);
+    await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
     if (config.screenshot) {
       const result = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false }, page.sessionId);
       assert.ok(typeof result.data === 'string' && result.data.length < 24 * 1024 * 1024);
@@ -263,6 +333,68 @@ async function portClosed(port) {
       assert.ok(bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])));
       await fs.writeFile(config.screenshot, bytes, { flag: 'wx' });
     }
+  });
+  await check('installedReactWorkspaceOpened', async () => {
+    // The shipped root has no workspace anchor. Navigate the actual installed
+    // BrowserWindow to its public route; do not fetch HTML as rendering evidence.
+    await cdp.send('Page.navigate', { url: `${page.origin}/workspace/` }, page.sessionId);
+    await readyDocument(`location.pathname === '/workspace/' && !!document.querySelector('.funds-trace .case-list')
+      && [...document.querySelectorAll('.case-item')].some(item => item.textContent.includes(${JSON.stringify(CREATED_CASE)}))`);
+    await clickElement(`[...document.querySelectorAll('.case-item')].find(item => item.textContent.includes(${JSON.stringify(CREATED_CASE)}))`);
+    await readyDocument(`document.querySelector('.workspace-heading h1')?.textContent === ${JSON.stringify(CREATED_CASE)}
+      && !!document.querySelector('.empty-state h3') && !document.querySelector('[role="alert"]')`);
+  });
+  await viewportMatrix('reactWorkspaceLayout', page, `!!document.querySelector('.main-workspace[aria-label="资金流水面板"]')
+    && document.querySelector('.workspace-heading h1')?.textContent === ${JSON.stringify(CREATED_CASE)}
+    && !document.querySelector('[role="alert"]')`, [
+    `document.querySelector('.heading-actions .button.primary')`,
+  ], [
+    `document.querySelector('.empty-state .button.primary')`,
+  ]);
+  await check('reactEmptyCaseImportEntry', async () => {
+    await clickElement(`document.querySelector('.empty-state .button.primary')`);
+    await readyDocument(`!!document.querySelector('dialog[open] input[type="file"]')`);
+    assert.equal(await evaluate(visibleControl(`document.querySelector('dialog[open] input[type="file"]')`)), true);
+    await clickElement(`[...document.querySelectorAll('dialog[open] button')].find(item => item.textContent.trim() === '取消')`);
+    await readyDocument(`!document.querySelector('dialog[open]')`);
+  });
+  await check('workspaceGraphLinkOpened', async () => {
+    await clickElement(`document.querySelector('.workspace-nav a[href^="/?case_id="]')`);
+    await readyDocument(`location.pathname === '/' && typeof state === 'object' && !state.graphLoading
+      && state.graphInited && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(CREATED_CASE)}`);
+  });
+  await check('installedAnalysisLinkOpened', async () => {
+    await clickElement(`document.querySelector('#analysisLink')`);
+    analysisPage = await until(async () => {
+      assert.ok(!primary.done && !instrumentationFailed);
+      const { targetInfos } = await cdp.send('Target.getTargets');
+      const pageCount = targetInfos.filter(target => target.type === 'page').length;
+      assert.ok(pageCount <= 2);
+      if (pageCount !== 2) return false;
+      const target = targetInfos.find(target => {
+        if (target.type !== 'page' || target.targetId === page.targetId) return false;
+        try { const url = new URL(target.url); return url.origin === page.origin && url.pathname === '/analysis'; }
+        catch { return false; }
+      });
+      const session = target && sessions.get(target.targetId);
+      return session?.ready ? { ...session, targetId: target.targetId, origin: page.origin } : false;
+    }, 20000);
+    await readyDocument(`location.pathname === '/analysis' && !!document.querySelector('#panel')
+      && !!document.querySelector('#results .card') && !!document.querySelector('#caseSel')?.options.length
+      && document.querySelector('#caseStats')?.textContent.includes('流水')`, analysisPage);
+  });
+  await viewportMatrix('analysisLayout', analysisPage, `!!document.querySelector('#panel')
+    && !!document.querySelector('#results .card') && document.querySelector('#caseStats')?.textContent.includes('流水')`, [
+    `document.querySelector('#caseSel')`, `document.querySelector('#backToGraph')`,
+  ]);
+  await check('analysisControlsReachable', async () => {
+    await evaluate(`document.querySelector('#btnRun').scrollIntoView({ block: 'center' })`, analysisPage);
+    assert.equal(await evaluate(visibleControl(`document.querySelector('#btnRun')`), analysisPage), true);
+    await cdp.send('Page.close', {}, analysisPage.sessionId);
+    await until(async () => {
+      const { targetInfos } = await cdp.send('Target.getTargets');
+      return !targetInfos.some(target => target.targetId === analysisPage.targetId);
+    }, 10000);
   });
   await check('singleInstance', async () => {
     const second = boot(executable, config.installRoot, env, false);
@@ -292,6 +424,7 @@ async function portClosed(port) {
   // Best effort graceful close, then only handles spawned above. No process-name
   // discovery, user-data removal, or termination of unrelated installations.
   if (cdp && owned.some(instance => !instance.done)) {
+    if (analysisPage) await cdp.send('Page.close', {}, analysisPage.sessionId, 3000).catch(() => {});
     if (page) await cdp.send('Page.close', {}, page.sessionId, 3000).catch(() => {});
     await Promise.all(owned.filter(instance => !instance.done).map(instance => bounded(instance.exited, 5000).catch(() => {})));
   }

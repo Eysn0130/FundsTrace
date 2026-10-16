@@ -63,8 +63,11 @@ try {
     }
     $InstallerReport = Join-Path $EvidenceRoot "native-installer-smoke.json"
     $InstalledAppReport = Join-Path $EvidenceRoot "native-installed-app-smoke.json"
+    $ImportRecoveryReport = Join-Path $EvidenceRoot 'native-import-recovery-smoke.json'
+    $CompatibilityDirectory = Join-Path $EvidenceRoot 'standard-user'
     if ($VerifyInstallerLifecycle) {
         Invoke-Checked { & "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $InstallerPath -ReportPath $InstallerReport }
+        Invoke-Checked { & "$PSScriptRoot/test-windows-standard-user.ps1" -InstallerPath $InstallerPath -ReportDirectory $CompatibilityDirectory }
     }
     $Files = @($CandidateFiles | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = [System.IO.Path]::GetRelativePath($ProjectRoot, $_.FullName).Replace('\', '/'); bytes = $_.Length; sha256 = Get-Sha256 $_.FullName }
@@ -94,6 +97,8 @@ try {
         limits = [ordered]@{ guiAcceptance = $false; installedAcceptance = $false; signed = $false; published = $false }
         installerReportSha256 = $(if ($VerifyInstallerLifecycle) { Get-Sha256 $InstallerReport } else { $null })
         installedAppReportSha256 = $(if ($VerifyInstallerLifecycle) { Get-Sha256 $InstalledAppReport } else { $null })
+        importRecoveryReportSha256 = $(if ($VerifyInstallerLifecycle) { Get-Sha256 $ImportRecoveryReport } else { $null })
+        standardUserCompatibilitySha256 = $(if ($VerifyInstallerLifecycle) { Get-Sha256 (Join-Path $CompatibilityDirectory 'compatibility.json') } else { $null })
         files = $Files
     }
     $ManifestPath = Join-Path $EvidenceRoot "windows-candidate.json"
@@ -106,6 +111,11 @@ try {
     if ($VerifyInstallerLifecycle) {
         $Sums += "$(Get-Sha256 $InstallerReport)  build/desktop/native-installer-smoke.json"
         $Sums += "$(Get-Sha256 $InstalledAppReport)  build/desktop/native-installed-app-smoke.json"
+        $Sums += "$(Get-Sha256 $ImportRecoveryReport)  build/desktop/native-import-recovery-smoke.json"
+        foreach ($File in @(Get-ChildItem -LiteralPath $CompatibilityDirectory -File)) {
+            $Relative = [IO.Path]::GetRelativePath($ProjectRoot, $File.FullName).Replace('\', '/')
+            $Sums += "$(Get-Sha256 $File.FullName)  $Relative"
+        }
     }
     $Sums | Set-Content -LiteralPath (Join-Path $EvidenceRoot "windows-candidate.sha256") -Encoding utf8
     Write-Host "Unsigned local candidate and safe manifest/SHA-256 evidence created under build/desktop. Windows GUI acceptance and release publication remain separate."

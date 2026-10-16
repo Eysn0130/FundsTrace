@@ -2,6 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$InstallerPath,
     [Parameter(Mandatory = $true)][string]$ReportPath,
+    [string]$CiTemporaryRoot,
     [switch]$PreflightOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -33,6 +34,7 @@ $Report = [ordered]@{
         syntheticCaseCreatedAndReopened = 'not-run'; eofShutdown = 'not-run'
         installedApplicationStarted = 'not-run'; installedApplicationSingleInstance = 'not-run'
         installedApplicationNormalClose = 'not-run'
+        installedImportRecovery = 'not-run'
         uninstallRegistrationRemoved = 'not-run'; installedExecutableRemoved = 'not-run'
         syntheticDataRetained = 'not-run'; cleanup = 'not-run'
     }
@@ -196,14 +198,21 @@ try {
     }
     $Stage = 'createTemporary'
     $TemporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("FundsTrace 安装 生命周期 " + [guid]::NewGuid().ToString('N'))
+    if ($CiTemporaryRoot) {
+        $RequestedRoot = [System.IO.Path]::GetFullPath($CiTemporaryRoot)
+        if (-not [System.IO.Path]::IsPathRooted($CiTemporaryRoot) -or
+            (Split-Path -Parent $RequestedRoot).TrimEnd('\') -ine ([System.IO.Path]::GetTempPath()).TrimEnd('\') -or
+            (Test-Path -LiteralPath $RequestedRoot)) { throw 'CI temporary root must be a new direct child of the test temp directory.' }
+        $TemporaryRoot = $RequestedRoot
+    }
     [void](New-Item -ItemType Directory -Path $TemporaryRoot)
     $OwnTemporary = $true
     $InstallRoot = Join-Path $TemporaryRoot '应用 安装路径'
     $PriorInstaller = Join-Path $TemporaryRoot 'prior-stable.exe'
 
     $Stage = 'priorInstallerDigest'
-    Invoke-WebRequest -Uri 'https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.1/FundsTrace-0.1.1-windows-x64-unsigned.exe' -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
-    if ((Get-Sha256 $PriorInstaller) -cne '81f0e720dc35fa7ed902388cbbd17208881425d6828ae395195135cfcdb35b8d') {
+    Invoke-WebRequest -Uri 'https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.2/FundsTrace-0.1.2-windows-x64-unsigned.exe' -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
+    if ((Get-Sha256 $PriorInstaller) -cne '667fbc6941f7f848d790f599ea0a73c837b46a46580b49b1942b60f340d12bbf') {
         throw 'The prior installer digest differs from the pinned release.'
     }
     $Report.checks.priorInstallerDigest = 'passed'
@@ -211,8 +220,8 @@ try {
     $MayHaveInstalled = $true
     # /D is NSIS syntax: absolute path, last argument, deliberately no quotes even with spaces.
     [void](Invoke-Native -FileName $PriorInstaller -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
-    Assert-Installed '0.1.1'
-    $Report.priorVersion = '0.1.1'; $Report.checks.priorInstalled = 'passed'
+    Assert-Installed '0.1.2'
+    $Report.priorVersion = '0.1.2'; $Report.checks.priorInstalled = 'passed'
 
     $Stage = 'syntheticDataSeeded'
     # The earlier absence check establishes ownership; never redirect or reuse a maintainer's data.
@@ -282,6 +291,16 @@ finally:
     $Report.checks.installedBackendAuthentication = 'passed'
     $Report.checks.syntheticCaseCreatedAndReopened = 'passed'
     $Report.checks.eofShutdown = 'passed'
+
+    $Stage = 'installedImportRecovery'
+    $ImportReportPath = Join-Path (Split-Path -Parent $ReportPath) 'native-import-recovery-smoke.json'
+    $ImportJson = Invoke-Native -FileName $NodeExe -Arguments @(
+        (Join-Path $ProjectRoot 'desktop/tests/import-recovery-smoke.cjs'), $InstalledBackend, '--report', $ImportReportPath
+    ) -TimeoutSeconds 240
+    $ImportHelper = $ImportJson | ConvertFrom-Json
+    if ($ImportHelper.status -cne 'passed') { throw 'Installed backend import recovery failed.' }
+    $Report.checks.installedImportRecovery = 'passed'
+    $Report.limits.importRecovery = 'installed-backend-public-api-process-restart; not Windows interactive task recovery'
 
     $Stage = 'installedApplicationStarted'
     $AppReportPath = Join-Path (Split-Path -Parent $ReportPath) 'native-installed-app-smoke.json'
@@ -371,5 +390,5 @@ if ($Failed) {
     exit 1
 }
 if ($PreflightOnly) { Write-Host 'Native installer preflight passed; no installation was attempted.' }
-else { Write-Host 'Native installer lifecycle passed: pinned 0.1.1 upgrade, installed application startup/single-instance/close, activation-free data, EOF and uninstall retention. Win10/11 interactive acceptance and import recovery were not tested.' }
+else { Write-Host 'Native installer lifecycle passed: pinned 0.1.2 upgrade, installed application startup/single-instance/close, activation-free data, EOF and uninstall retention. Win10/11 interactive acceptance remains separate.' }
 exit 0

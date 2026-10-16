@@ -321,6 +321,7 @@ tr.detail-row td { background: #15181e; }
 #graphMinimapPanel { position: absolute; right: 16px; bottom: 15px; z-index: 12; width: 204px; padding: 9px; border: 1px solid #3a506a; border-radius: 4px; background: #121e2be8; color: #a9bdd5; font-size: 12px; }
 #graphMinimapPanel > span { display: block; margin-bottom: 5px; }
 #graphMinimapPanel[hidden] { display: none; }
+#canvasWrap.case-empty #graphMinimapPanel, #canvasWrap.case-empty #legend { display: none; }
 #graphMinimap { display: block; width: 184px; height: 112px; max-width: 100%; touch-action: none; cursor: crosshair; border: 1px solid #3c5571; background: #172639; }
 .minimap-actions { display: flex; justify-content: flex-end; gap: 5px; margin-top: 5px; }
 .minimap-actions .btn { min-height: 26px; padding: 0 8px; }

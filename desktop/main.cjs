@@ -73,7 +73,36 @@ else {
         const contents = win.webContents;
         const contentsId = contents.id;
         windows.add(win); owned.add(contentsId);
-        win.on('closed', () => { windows.delete(win); owned.delete(contentsId); });
+        let displayId = display.id, fitting = false;
+        const fitWorkArea = () => {
+          if (fitting || win.isDestroyed()) return;
+          fitting = true;
+          try {
+            const current = win.getBounds(), nextDisplay = screen.getDisplayMatching(current);
+            displayId = nextDisplay.id;
+            const { minWidth, minHeight, ...bounds } = windowBounds(nextDisplay.workArea, current);
+            const [minimumWidth, minimumHeight] = win.getMinimumSize();
+            if (minimumWidth !== minWidth || minimumHeight !== minHeight) win.setMinimumSize(minWidth, minHeight);
+            // The window manager owns maximized/fullscreen bounds (including frame margins).
+            if (win.isMaximized() || win.isFullScreen()) return;
+            if (['x', 'y', 'width', 'height'].some(key => bounds[key] !== current[key])) win.setBounds(bounds);
+          } finally { fitting = false; }
+        };
+        const movedDisplay = () => {
+          // Do not trap a drag at the old display edge before it can cross to the next one.
+          if (!win.isDestroyed() && screen.getDisplayMatching(win.getBounds()).id !== displayId) fitWorkArea();
+        };
+        win.on('move', movedDisplay);
+        const normalBoundsEvents = ['restore', 'unmaximize', 'leave-full-screen'];
+        for (const event of normalBoundsEvents) win.on(event, fitWorkArea);
+        screen.on('display-metrics-changed', fitWorkArea);
+        screen.on('display-removed', fitWorkArea);
+        win.on('closed', () => {
+          win.removeListener('move', movedDisplay);
+          for (const event of normalBoundsEvents) win.removeListener(event, fitWorkArea);
+          screen.removeListener('display-metrics-changed', fitWorkArea); screen.removeListener('display-removed', fitWorkArea);
+          windows.delete(win); owned.delete(contentsId);
+        });
         contents.on('will-attach-webview', event => event.preventDefault());
         contents.on('will-navigate', (event, url) => {
           if (pageAllowed(url, origin)) return;

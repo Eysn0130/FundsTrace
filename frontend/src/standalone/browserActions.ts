@@ -6,7 +6,7 @@ export function createBrowserFundsActions(context: FundsCaseContextV1, transport
   const graphPath = `/?case_id=${encodeURIComponent(context.caseId)}`;
   return {
     openGraph: () => { window.location.assign(graphPath); },
-    openLegacyImport: () => { window.location.assign(graphPath); },
+    openLegacyImport: importId => { window.location.assign(`${graphPath}&import_id=${encodeURIComponent(importId)}`); },
     downloadSource: (source, signal) => transport.downloadSource(context.caseId, source.sourceId, source.filename, signal),
   };
 }
