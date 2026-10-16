@@ -4,6 +4,9 @@
   'use strict';
 
   let active = null, serial = 0;
+  // Capture the original navigation before case selection rewrites its URL.
+  const navigation = new URLSearchParams(window.location.search || '');
+  let restored = false;
   const inCase = session => isCurrentCase(session.context, false);
   const ownsView = session => active === session && inCase(session);
   const visible = session => ownsView(session) && !session.closed && $('#importModal').style.display !== 'none';
@@ -74,6 +77,78 @@
     $('#importModal').style.display = 'none';
   }
 
+  function accountSelection() {
+    return { self_accounts: $('#impSelfAccts').value.trim().split(/[,，;；\s]+/).filter(Boolean),
+      mark_accounts: $$('#impMainSel .mk-acct').filter(node => node.checked).map(node => node.value) };
+  }
+
+  function restoreAccounts(selection) {
+    if (!selection) return;
+    if (Array.isArray(selection.self_accounts)) $('#impSelfAccts').value = selection.self_accounts.join(',');
+    // [] is the user's explicit choice to mark none. Only null/missing retains
+    // the preview's default, which is to select the detected source accounts.
+    if (Array.isArray(selection.mark_accounts)) {
+      const selected = new Set(selection.mark_accounts);
+      $$('#impMainSel .mk-acct').forEach(node => { node.checked = selected.has(node.value); });
+    }
+  }
+
+  async function restore() {
+    if (restored) return;
+    restored = true;
+    const importId = navigation.get('import_id'), requestedCase = navigation.get('case_id');
+    if (importId) {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get('import_id') === importId) {
+        url.searchParams.delete('import_id');
+        window.history.replaceState(null, '', url);
+      }
+    }
+    const context = caseContext(), intent = serial;
+    if (importId && requestedCase !== String(context.caseId)) return;
+    const current = () => isCurrentCase(context, false) && serial === intent;
+    let session = null;
+    try {
+      const result = await request('/api/v1/cases/' + encodeURIComponent(context.caseId) + '/imports');
+      if (!current()) return;
+      if (result.case_id !== String(context.caseId)) throw new Error('导入记录与当前案件不匹配');
+      const items = result.items.filter(item => item.case_id === String(context.caseId) && item.surface === 'legacy');
+      const item = importId ? items.find(item => item.import_id === importId)
+        : items.find(item => ['parsing', 'importing'].includes(item.stage)
+          || item.stage === 'error' && item.error_code === 'import_interrupted');
+      if (!item) {
+        if (importId) { session = newSession(); recovery(session, '无法恢复这条导入记录，请在当前案件的导入记录中核对后重试。'); }
+        return;
+      }
+      session = newSession(); session.importId = item.import_id;
+      if (['parsing', 'importing', 'done'].includes(item.stage)) {
+        setPbarBusy('正在读取已提交任务的进度…');
+        await poll(session);
+        return;
+      }
+      if (!item.source_available) throw new Error('原上传文件已清理或不存在，请重新选择文件');
+      session.previewing = true; controls(session); setPbarBusy('正在恢复原文件预览，请核对后确认导入…');
+      const saved = item.request || item;
+      const preview = await request('/api/import/repreview', { method: 'POST', ...jsonOpts({
+        case_id: context.caseId, import_id: item.import_id, mode: saved.mode, mapping: saved.mapping }) });
+      if (!visible(session)) return;
+      if (preview.import_id !== item.import_id) throw new Error('预览回执与导入记录不匹配');
+      session.preview = preview; state.imp = preview; renderImport(preview); restoreAccounts(item.request); hidePbar();
+      recovery(session, '已恢复原文件和上次提交选项。请核对映射与主账号，确认后才会再次导入。');
+    } catch (error) {
+      if (session) {
+        if (visible(session)) { hidePbar(); recovery(session, '无法恢复导入：' + text(error)); }
+      } else if (current()) {
+        if (importId) { session = newSession(); recovery(session, '无法恢复导入：' + text(error)); }
+        else toast('无法读取导入恢复记录：' + text(error), 'err');
+      }
+    } finally {
+      if (session && ownsView(session)) { session.previewing = false; controls(session); }
+    }
+  }
+
+  window.FundsImportWorkflow = Object.freeze({ restore });
+
   async function upload() {
     const session = active;
     const file = $('#impFile').files[0];
@@ -115,13 +190,13 @@
   async function repreview() {
     const session = active;
     if (!session || !visible(session) || !session.preview || pending(session) || session.previewing) return;
-    const sequence = ++session.request, { mode, mapping } = collectMapping();
+    const sequence = ++session.request, { mode, mapping } = collectMapping(), selection = accountSelection();
     session.previewing = true; controls(session); recovery(session, '');
     try {
       const result = await request('/api/import/repreview', { method: 'POST', ...jsonOpts({
         import_id: session.preview.import_id, mode, mapping, case_id: session.context.caseId }) });
       if (!visible(session) || sequence !== session.request) return;
-      session.preview = result; state.imp = result; renderImport(result);
+      session.preview = result; state.imp = result; renderImport(result); restoreAccounts(selection);
     } catch (error) {
       if (visible(session) && sequence === session.request) recovery(session, '重新识别失败：' + text(error) + '。请检查映射后重试。');
     } finally {

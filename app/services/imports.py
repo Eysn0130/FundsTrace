@@ -187,6 +187,10 @@ async def _upload(case_id, file, surface):
     content = await file.read(_max_upload + 1)
     if len(content) > _max_upload:
         raise ServiceError(400, "file_too_large", "文件超过 300MB，请拆分后重新上传")
+    # Preview parsing can be lengthy. Keep its already-buffered input in memory
+    # until it succeeds, so exiting during parsing cannot orphan an original.
+    with io.BytesIO(content) as source:
+        parsed = _parse(source, suffix=suffix)
     import_id = uuid.uuid4().hex
     directory = _directory(create=True)
     path = directory / f"{import_id}{suffix}"
@@ -195,8 +199,6 @@ async def _upload(case_id, file, surface):
         with path.open("xb") as stream:
             created = True
             stream.write(content)
-        with io.BytesIO(content) as source:
-            parsed = _parse(source, suffix=suffix)
         now = _now()
         session = {"case_id": cid, "import_id": import_id, "filename": filename}
         with db.transaction():

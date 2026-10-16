@@ -11,7 +11,7 @@ const response = (value, status = 200) => ({ ok: status === 200, status,
 const preview = id => ({ import_id: id, filename: `${id}.csv` });
 const done = () => response({ stage: 'done', result: { ok: 2, rows_dup: 1 } });
 
-function harness() {
+function harness(search = '') {
   const nodes = new Map(), events = new Map(), timers = [], uploads = [], requests = [], notices = [], rendered = [], contextRows = [], photoOpens = [];
   let fetcher = () => { throw new Error('Unexpected request'); }, tracker = async () => true, graphLoader = null, graphRenderer = null, refreshes = 0, graphReads = 0, paints = 0;
   let document;
@@ -60,8 +60,12 @@ function harness() {
   document = { createElement: () => element(`created-${nodes.size}`), getElementById: id => nodes.get(id) || null,
     body: element('body'), documentElement: element('html') };
   document.activeElement = document.body;
+  const location = { search, href: 'http://synthetic.local/' + search };
   const context = vm.createContext({
-    state, window: { addEventListener: (name, handler) => events.set(name, handler) },
+    state, window: { location, history: { replaceState(_state, _title, url) {
+      location.href = String(url); location.search = new URL(url).search;
+    } }, addEventListener: (name, handler) => events.set(name, handler) },
+    URL, URLSearchParams,
     document,
     $: element, $$: selector => selector === '#impMainSel .mk-acct' ? [Object.assign(element('main-account'), { value: 'SYN-A' })]
       : selector === '#ctxTbody .ctx-ck' ? [Object.assign(element('context-check'), { dataset: { id: '17' } })]
@@ -71,7 +75,8 @@ function harness() {
       && (!canvas || binding.canvasId === state.canvasId && binding.canvasGeneration === state.canvasGeneration),
     jsonOpts: body => ({ headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
     collectMapping: () => ({ mode: 'A', mapping: { amount: '合成金额' } }),
-    renderImport: result => { rendered.push(result); element('impStep1').style.display = 'none'; element('impStep2').style.display = 'block'; },
+    renderImport: result => { rendered.push(result); element('impStep1').style.display = 'none'; element('impStep2').style.display = 'block';
+      element('main-account').checked = true; },
     hidePbar: () => { element('impPbar').style.display = 'none'; },
     setPbar: (_fraction, message) => { element('impPbar').style.display = 'block'; element('impPtext').textContent = message; },
     setPbarBusy: message => { element('impPbar').style.display = 'block'; element('impPtext').textContent = message; },
@@ -111,6 +116,8 @@ function harness() {
     onGraphLoad(handler) { graphLoader = handler; },
     onGraphRender(handler) { graphRenderer = handler; },
     run(code) { return vm.runInContext(code, context); },
+    restore() { return vm.runInContext('window.FundsImportWorkflow.restore()', context); },
+    get search() { return location.search; },
     open() { element('btnImport').onclick(); }, close() { element('impClose').onclick(); },
     upload(name) { element('impFile').files = [{ name }]; return element('impFile').onchange(); },
     commit() { return element('impCommit').onclick(); },
@@ -121,6 +128,93 @@ function harness() {
 async function ready(h, id = 'SYN-IMPORT') {
   h.open(); const result = h.upload(`${id}.csv`); h.uploads.at(-1).finish(preview(id)); await result;
 }
+
+const history = (overrides = {}) => ({ case_id: '1', import_id: 'SYN-RECOVERY', surface: 'legacy',
+  filename: 'synthetic-recovery.csv', mode: 'A', mapping: { amount: '合成金额' }, stage: 'error',
+  error_code: 'import_interrupted', source_available: true,
+  request: { mode: 'A', mapping: { amount: '合成金额' }, self_accounts: ['SYN-DECLARED'], mark_accounts: [] }, ...overrides });
+const sessions = items => response({ case_id: '1', items });
+
+test('reloading G6 restores an interrupted legacy session and preserves explicit empty main-account selection', async () => {
+  const h = harness('?case_id=1');
+  h.network(path => path.includes('/api/v1/cases/1/imports') ? sessions([history()])
+    : path === '/api/import/repreview' ? response(preview('SYN-RECOVERY')) : done());
+  await h.restore();
+  assert.equal(h.state.imp.import_id, 'SYN-RECOVERY');
+  assert.equal(h.element('impSelfAccts').value, 'SYN-DECLARED');
+  assert.equal(h.element('main-account').checked, false);
+  assert.equal(h.element('impCommit').disabled, false);
+  assert.equal(h.requests.filter(item => item.path === '/api/import/commit').length, 0);
+  assert.deepEqual(JSON.parse(h.requests[1].options.body), {
+    case_id: 1, import_id: 'SYN-RECOVERY', mode: 'A', mapping: { amount: '合成金额' },
+  });
+  await h.element('impRe').onclick();
+  assert.equal(h.element('main-account').checked, false, 'repreview must retain an explicit empty selection');
+  h.network(path => path === '/api/import/commit' ? response({ import_id: 'SYN-RECOVERY', started: true }) : done());
+  await h.commit();
+  const body = JSON.parse(h.requests.find(item => item.path === '/api/import/commit').options.body);
+  assert.equal(body.self_accounts, 'SYN-DECLARED'); assert.equal(body.mark_accounts, '');
+});
+
+test('explicit history navigation restores ready or failed sessions and consumes only its import selector', async () => {
+  for (const stage of ['ready', 'error']) {
+    const h = harness('?case_id=1&import_id=SYN-SELECTED&keep=synthetic');
+    h.network(path => path.includes('/api/v1/') ? sessions([history(), history({ import_id: 'SYN-SELECTED', stage })])
+      : response(preview('SYN-SELECTED')));
+    await h.restore();
+    assert.equal(h.state.imp.import_id, 'SYN-SELECTED');
+    assert.equal(h.search, '?case_id=1&keep=synthetic');
+    assert.equal(h.requests.filter(item => item.path === '/api/import/commit').length, 0);
+  }
+});
+
+test('ordinary ready and failed previews do not open on every G6 reload', async () => {
+  const h = harness('?case_id=1');
+  h.network(() => sessions([history({ stage: 'ready', error_code: null }), history({ error_code: 'import_failed' })]));
+  await h.restore();
+  assert.equal(h.rendered.length, 0); assert.equal(h.element('importModal').style.display, 'none');
+  assert.equal(h.requests.length, 1);
+});
+
+test('active and completed history navigation reads progress without replaying preview or commit', async () => {
+  for (const stage of ['parsing', 'importing', 'done']) {
+    const h = harness('?case_id=1&import_id=SYN-RECOVERY');
+    h.network(path => path.includes('/api/v1/') ? sessions([history({ stage })]) : done());
+    await h.restore();
+    assert.equal(h.requests.length, 2); assert.match(h.requests[1].path, /\/api\/import\/progress\?import_id=SYN-RECOVERY&case_id=1$/);
+    assert.equal(h.requests.filter(item => item.options?.method === 'POST').length, 0);
+    assert.equal(h.element('impCommit').disabled, true); assert.equal(h.refreshes, 1);
+  }
+});
+
+test('startup recovery rejects a foreign case, foreign surface, and unknown selector', async () => {
+  const foreignCase = harness('?case_id=2&import_id=SYN-RECOVERY');
+  await foreignCase.restore();
+  assert.equal(foreignCase.requests.length, 0); assert.equal(foreignCase.state.imp, null);
+  assert.equal(foreignCase.search, '?case_id=2');
+  for (const items of [[], [history({ surface: 'v1' })], [history({ case_id: '2' })]]) {
+    const h = harness('?case_id=1&import_id=SYN-RECOVERY'); h.network(() => sessions(items));
+    await h.restore();
+    assert.equal(h.requests.length, 1); assert.equal(h.rendered.length, 0); assert.equal(h.state.imp, null);
+    assert.match(h.element('impRecoveryText').textContent, /无法恢复/);
+  }
+});
+
+test('late startup list and repreview replies cannot replace user intent or an A-B-A case binding', async () => {
+  for (const phase of ['list', 'preview']) {
+    for (const navigation of ['new import', 'A-B-A']) {
+      const h = harness('?case_id=1&import_id=SYN-RECOVERY'), delayed = deferred();
+      h.network(path => phase === 'list' || path === '/api/import/repreview' ? delayed.promise : sessions([history()]));
+      const restore = h.restore(); await flush();
+      if (navigation === 'A-B-A') { h.switchCase(2); h.switchCase(1); }
+      h.close(); h.open();
+      delayed.resolve(phase === 'list' ? sessions([history()]) : response(preview('SYN-STALE')));
+      await restore;
+      assert.equal(h.state.imp, null, `${phase}: ${navigation}`); assert.equal(h.rendered.length, 0);
+      assert.equal(h.element('impStep2').style.display, 'none');
+    }
+  }
+});
 
 test('reopening clears supplementary accounts and a late file A cannot replace file B', async () => {
   const h = harness(); h.open(); h.element('impSelfAccts').value = 'SYN-OLD';

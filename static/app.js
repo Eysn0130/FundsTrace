@@ -172,6 +172,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   bindUI();
   initGraph();
   await loadCases();
+  void window.FundsImportWorkflow?.restore();
   await refreshStats();
   await loadGraph();
   await refreshCanvasList(null).catch(() => {});
@@ -227,7 +228,14 @@ function updateHeader() {
   const s = state.stats || {};
   $('#statLine').innerHTML =
     `流水 <b>${fmtCount(s.flows || 0)}</b> 笔 · 账户 <b>${fmtCount(s.accounts || 0)}</b> 个 · 已上图 <b>${state.tracked.size}</b> 笔`;
-  $('#emptyHint').style.display = (s.flows || 0) === 0 ? 'flex' : 'none';
+  const empty = (s.flows || 0) === 0;
+  $('#emptyHint').style.display = empty ? 'flex' : 'none';
+  $('#canvasWrap').classList.toggle('case-empty', empty);
+  const minimapButton = $('#btnMinimap');
+  if (minimapButton) {
+    minimapButton.disabled = empty;
+    minimapButton.setAttribute('aria-pressed', String(!empty && !$('#graphMinimapPanel').hidden));
+  }
 }
 
 /* ---------------- 流水查询（当前案件） ---------------- */

@@ -94,6 +94,49 @@ db._con.close()
 db._con=None
 '''
 
+PREVIEW_CRASH = r'''
+import asyncio,io,os
+from fastapi import UploadFile
+from app import db
+from app.services import imports
+db._start_ckpt=lambda:None
+cid=db.q("insert into cases(name) values ('Synthetic preview interruption') returning id")[0]['id']
+def interrupted_parse(*args,**kwargs):
+    os._exit(81)
+imports._parse=interrupted_parse
+file=UploadFile(file=io.BytesIO(b'synthetic in-memory upload'),filename='synthetic.csv')
+asyncio.run(imports.legacy_upload(file,cid) if os.environ['UPLOAD_SURFACE']=='legacy' else imports.upload(str(cid),file))
+raise AssertionError('Synthetic parser interruption did not occur')
+'''
+
+REOPEN_PREVIEW = r'''
+import json
+from app import db
+from app.services import imports
+db._start_ckpt=lambda:None
+assert imports.recover_interrupted()=={'recovered':0}
+assert db.q('select count(*) n from import_sessions')[0]['n']==0
+assert not list((db.DATA_DIR/'uploads').glob('*')), 'Parser interruption left an unregistered original upload'
+for table in ('flows','batches','main_accounts','import_sources','flow_sources'):
+    assert db.q(f'select count(*) n from {table}')[0]['n']==0,table
+db._con.close()
+db._con=None
+'''
+
+
+@pytest.mark.parametrize("surface", ["v1", "legacy"])
+def test_preview_parser_process_exit_never_persists_an_unregistered_original(tmp_path, surface):
+    env = {**os.environ, "FUND_DATA_DIR": str(tmp_path / "synthetic-preview-exit"),
+           "MPLCONFIGDIR": str(tmp_path / "mpl"), "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUTF8": "1",
+           "UPLOAD_SURFACE": surface}
+    root = Path(__file__).resolve().parents[1]
+    crashed = subprocess.run([sys.executable, "-c", PREVIEW_CRASH], cwd=root, env=env,
+                             capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert crashed.returncode == 81, crashed.stdout + crashed.stderr
+    reopened = subprocess.run([sys.executable, "-c", REOPEN_PREVIEW], cwd=root, env=env,
+                              capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert reopened.returncode == 0, reopened.stdout + reopened.stderr
+
 
 @pytest.mark.parametrize("phase,exit_code,initial", [("during_write", 79, "error"), ("after_receipt", 80, "done")])
 @pytest.mark.parametrize("legacy_schema", [False, True], ids=["fresh", "upgraded"])

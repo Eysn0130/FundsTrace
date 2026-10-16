@@ -26,6 +26,15 @@ test('initial window and minimum sizes fit a small logical work area without dou
     {x:0,y:0,width:960,height:500,minWidth:960,minHeight:500});
 });
 
+test('existing bounds retain a user size and position, fitting only outside the current work area', () => {
+  const area = { x: -1280, y: 24, width: 1280, height: 696 };
+  assert.deepEqual(windowBounds(area, { x: -1200, y: 60, width: 1100, height: 650 }),
+    { x: -1200, y: 60, width: 1100, height: 650, minWidth: 960, minHeight: 640 });
+  assert.deepEqual(windowBounds({ x: 1920, y: 20, width: 960, height: 500 },
+    { x: 2100, y: 100, width: 1200, height: 760 }),
+  { x: 1920, y: 20, width: 960, height: 500, minWidth: 960, minHeight: 500 });
+});
+
 test('host denies remote/credential origins, documents and arbitrary popups', () => {
   assert.equal(sameOrigin(`${origin}/api`, origin), true);
   for (const url of ['http://127.0.0.1:54322/', 'http://localhost:54321/', 'file:///etc/passwd', 'https://example.com', 'http://name:pass@127.0.0.1:54321/', 'javascript:alert(1)']) {
@@ -170,6 +179,9 @@ function mainHarness({ mkdir = async () => {}, synthetic = false } = {}) {
   const app = new EventEmitter();
   const state = { windows: [], errors: [], backendStarts: 0, backendStops: 0, quitCount: 0, removed: [] };
   const ready = deferred();
+  const screen = new EventEmitter();
+  state.display = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
+  screen.getPrimaryDisplay = screen.getDisplayMatching = () => state.display;
   app.isPackaged = false;
   app.setName = app.setAppUserModelId = () => {};
   app.requestSingleInstanceLock = () => true;
@@ -183,6 +195,8 @@ function mainHarness({ mkdir = async () => {}, synthetic = false } = {}) {
   class Window extends EventEmitter {
     constructor(options) {
       super(); this.options = options; this.loads = []; this.shown = 0; this.focused = 0;
+      this.bounds = { x: options.x, y: options.y, width: options.width, height: options.height };
+      this.minimum = [options.minWidth, options.minHeight]; this.boundsChanges = [];
       this.webContents = new EventEmitter(); this.webContents.id = state.windows.length + 1;
       this.webContents.setWindowOpenHandler = handler => { this.popup = handler; };
       this.webContents.isDestroyed = () => this.destroyed;
@@ -194,7 +208,15 @@ function mainHarness({ mkdir = async () => {}, synthetic = false } = {}) {
     isMinimized() { return true; }
     restore() { this.restored = true; }
     isDestroyed() { return Boolean(this.destroyed); }
-    getBounds() { return { x: 0, y: 0, width: 1440, height: 940 }; }
+    getBounds() { return { ...this.bounds }; }
+    getMinimumSize() { return [...this.minimum]; }
+    setMinimumSize(width, height) { this.minimum = [width, height]; }
+    setBounds(bounds) {
+      assert.ok(bounds.width >= this.minimum[0] && bounds.height >= this.minimum[1], 'minimum must be lowered before fitting bounds');
+      this.bounds = { ...bounds }; this.boundsChanges.push(bounds); this.emit('move');
+    }
+    isMaximized() { return Boolean(this.maximized); }
+    isFullScreen() { return Boolean(this.fullscreen); }
     close() {
       this.destroyed = true; this.emit('closed');
       if (state.windows.every(win => win.destroyed)) app.emit('window-all-closed');
@@ -207,8 +229,7 @@ function mainHarness({ mkdir = async () => {}, synthetic = false } = {}) {
     onBeforeRequest: handler => { state.request = handler; },
     onBeforeSendHeaders: handler => { state.headers = handler; },
   };
-  const electron = { app, BrowserWindow: Window, session: { fromPartition: () => localSession },
-    screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }) },
+  const electron = { app, BrowserWindow: Window, session: { fromPartition: () => localSession }, screen,
     Menu: { buildFromTemplate: value => value, setApplicationMenu: () => {} },
     dialog: { showErrorBox: (_title, message) => state.errors.push(message) } };
   const policy = { ...require('../host-policy.cjs'), launchConfig: input => input };
@@ -225,8 +246,101 @@ function mainHarness({ mkdir = async () => {}, synthetic = false } = {}) {
     } };
     return require(name);
   }, __dirname: path.resolve(__dirname, '..'), process: { argv: ['FundsTrace', ...(synthetic ? ['--synthetic'] : [])], env: {}, platform: 'win32' } });
-  return { app, state, ready, flush: async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); } };
+  return { app, state, ready, screen, flush: async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); } };
 }
+
+test('Main adapts existing windows after DPI/work-area changes while retaining bounds that still fit', async () => {
+  const harness = mainHarness(); await harness.flush();
+  const win = harness.state.windows[0];
+  win.bounds = { x: 200, y: 100, width: 1100, height: 750 };
+  harness.state.display = { id: 1, workArea: { x: 0, y: 0, width: 960, height: 500 } };
+  harness.screen.emit('display-metrics-changed', {}, harness.state.display, ['scaleFactor', 'workArea']);
+  assert.deepEqual(win.minimum, [960, 500]);
+  assert.deepEqual(win.bounds, { x: 0, y: 0, width: 960, height: 500 });
+  assert.equal(win.boundsChanges.length, 1);
+  harness.state.display = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
+  win.bounds = { x: 50, y: 70, width: 1200, height: 760 };
+  harness.screen.emit('display-metrics-changed', {}, harness.state.display, ['workArea']);
+  assert.deepEqual(win.minimum, [960, 640]);
+  assert.deepEqual(win.bounds, { x: 50, y: 70, width: 1200, height: 760 });
+  assert.equal(win.boundsChanges.length, 1, 'a valid user size and position must not be reset');
+  win.close(); await harness.flush();
+  assert.equal(harness.screen.listenerCount('display-metrics-changed'), 0);
+  assert.equal(harness.screen.listenerCount('display-removed'), 0);
+});
+
+test('Main fits a new display or removed-display recovery without trapping movement inside the old display', async () => {
+  const harness = mainHarness(); await harness.flush();
+  const win = harness.state.windows[0];
+  win.bounds = { x: 1000, y: 60, width: 1200, height: 760 };
+  win.emit('move');
+  assert.equal(win.boundsChanges.length, 0, 'normal dragging must reach the next display');
+  harness.state.display = { id: 2, workArea: { x: 1920, y: 20, width: 960, height: 500 } };
+  win.bounds = { x: 2100, y: 100, width: 1200, height: 760 };
+  win.emit('move');
+  assert.deepEqual(win.minimum, [960, 500]);
+  assert.deepEqual(win.bounds, { x: 1920, y: 20, width: 960, height: 500 });
+  harness.state.display = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
+  harness.screen.emit('display-removed', {}, { id: 2 });
+  assert.deepEqual(win.bounds, { x: 960, y: 20, width: 960, height: 500 });
+  const changes = win.boundsChanges.length;
+  win.maximized = true;
+  win.bounds = { x: -8, y: -8, width: 1936, height: 1056 };
+  harness.screen.emit('display-metrics-changed', {}, harness.state.display, ['workArea']);
+  assert.equal(win.boundsChanges.length, changes, 'the window manager owns maximized bounds');
+  win.maximized = false;
+  win.emit('unmaximize');
+  assert.deepEqual(win.bounds, { x: 0, y: 0, width: 1920, height: 1040 }, 'restoring normal bounds rechecks the current work area');
+  win.fullscreen = true;
+  win.bounds = { x: -8, y: -8, width: 1936, height: 1056 };
+  harness.screen.emit('display-metrics-changed', {}, harness.state.display, ['workArea']);
+  assert.equal(win.boundsChanges.length, changes + 1, 'the window manager owns fullscreen bounds');
+  win.fullscreen = false;
+  win.emit('leave-full-screen');
+  assert.deepEqual(win.bounds, { x: 0, y: 0, width: 1920, height: 1040 });
+  win.close(); await harness.flush();
+  assert.equal(win.listenerCount('move'), 0);
+  assert.equal(win.listenerCount('unmaximize'), 0);
+});
+
+test('empty-case minimap suppression preserves the user preference and rejects stale case statistics', async () => {
+  const nodes = new Map();
+  const node = selector => {
+    if (!nodes.has(selector)) {
+      const classes = new Set();
+      nodes.set(selector, { style: {}, hidden: false, disabled: false, attributes: {},
+        classList: { toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name), remove: name => classes.delete(name), contains: name => classes.has(name) },
+        setAttribute(name, value) { this.attributes[name] = value; } });
+    }
+    return nodes.get(selector);
+  };
+  const stats = deferred();
+  const context = vm.createContext({ document: { querySelector: node, querySelectorAll: () => [] },
+    window: { location: { href: `${origin}/?case_id=1`, search: '?case_id=1' }, history: { replaceState() {} }, addEventListener() {} },
+    localStorage: { getItem: () => null, setItem() {} }, FundsMoney: { count: String }, URL, URLSearchParams, clearTimeout, setTimeout,
+    fetch: async () => ({ ok: true, headers: { get: () => 'application/json' }, json: () => stats.promise }) });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../static/app.js'), 'utf8'), context);
+  const run = source => vm.runInContext(source, context);
+  run('selectCase(1); state.stats = { flows: 3 }; updateHeader();');
+  const panel = node('#graphMinimapPanel'), button = node('#btnMinimap'), wrap = node('#canvasWrap');
+  assert.equal(wrap.classList.contains('case-empty'), false);
+  assert.equal(button.disabled, false);
+  const pending = run('refreshStats()');
+  run('selectCase(2)');
+  assert.equal(wrap.classList.contains('case-empty'), true, 'case selection suppresses an old minimap before statistics arrive');
+  assert.equal(button.disabled, true);
+  assert.equal(panel.hidden, false, 'temporary suppression must not change the visibility preference');
+  stats.resolve({ flows: 3 }); await pending;
+  assert.equal(wrap.classList.contains('case-empty'), true, 'late results from the old case cannot restore its minimap');
+  run('state.stats = { flows: 2 }; updateHeader();');
+  assert.equal(wrap.classList.contains('case-empty'), false);
+  assert.equal(button.disabled, false);
+  assert.equal(button.attributes['aria-pressed'], 'true');
+  panel.hidden = true;
+  run('selectCase(1); state.stats = { flows: 3 }; updateHeader();');
+  assert.equal(panel.hidden, true, 'a minimap hidden by the user stays hidden across empty and populated cases');
+  assert.equal(button.attributes['aria-pressed'], 'false');
+});
 
 test('Main shows a restricted startup window before backend readiness and focuses it on a second launch', async () => {
   const harness = mainHarness(); await harness.flush();
