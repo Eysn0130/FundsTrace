@@ -126,11 +126,44 @@ Windows 将 Python 路径换为 `.venv\Scripts\python`。需要看界面时，�
 
 ## 分工和 PR
 
-- `main` 保持可交付；从最新 `main` 建短分支，每个 PR 完成一个可说明、可验证的行为变化，合并后结束该分支。
+- `main` 保持可交付；从最新 `origin/main` 建短分支，每个 PR 完成一个可说明、可验证的行为变化，合并后结束该分支。简单修复直接开 PR；较大功能、数据迁移或公共契约变更先明确方案和验收，不要求所有修改额外建立 Issue 或计划文件。
 - 开始前在 Issue、PR 或团队任务中写清问题、验收行为和认领的模块／文件。多人并行时独占写入范围，保留他人修改；尤其避免同时编辑大文件 `app/main.py` 和 `static/app.js`。确需交叉修改时先协调顺序，再由后一位接续最新改动。
 - 修缺陷先给最小合成复现，说明步骤、预期和实际结果。可行时用公共行为回归覆盖原问题，确认修复前失败、修复后通过；期望值来自独立合成样例。
 - 做最小完整修改，连同必要调用方、测试和文档一起交付。新增抽象、依赖或兼容路径须有当前需求；无关重构另开任务，不用临时绕过、弱化断言或重复实现掩盖缺陷。
-- PR 说明问题、行为变化、实际验证及兼容／数据影响，使用仓库模板。真实协作者到位后，由维护者按模块安排一位相关 reviewer，并设置必要的 required checks；当前不虚构 owner，不要求固定双审或每个 PR 默认跑全套。
+- 一个提交表达一个完整意图，形成可审查进展后 push；未完成可使用 Draft PR。PR 使用仓库模板说明问题、行为变化、实际验证及兼容／数据影响。作者对完整交付负责，Eysn0130 审核后合并；合并不自动触发封装或发布。
+
+### 不同 Agent Harness 共用同一流程
+
+- 仓库约定以 [AGENTS.md](AGENTS.md) 和本文为准。Codex 读取 AGENTS；Claude 的 [CLAUDE.md](CLAUDE.md) 仅以 `@AGENTS.md` 导入同一份内容；其他 Harness 在任务开始显式读取这两份文件。不要为每种工具复制一套开发规则或把机器、凭据及个人设置提交进仓库。
+- 每个任务使用独立分支；同机并行使用独立 clone 或 Git worktree，安装目录、临时数据和生成物也独立。不要让多个 Harness 共同切换同一个 checkout 的分支或操作同一个 Git index。换工具接续同一任务时，先交接分支／SHA、已改文件、检查结果和剩余工作，无需再开重复 PR。
+- 团队成员使用自己的 GitHub 身份，一般贡献者先 fork 后提 PR；不共享 Eysn0130 的账号或 token。需要上游写权限时由维护者单独授予，仍遵守 main 保护。Harness、模型和自动审查都不增加成员权限。
+- Agent 默认交付到待审 PR，汇报当前 head SHA 和检查结果；没有 Eysn0130 对该版本的明确授权，不自行合并、开启自动合并、打 Tag 或发布。修改了已审版本后，新增差异需要重新审阅；历史同意不覆盖新内容。
+
+### main 门槛与单维护者阶段
+
+main 要求 PR、稳定的 `PR required` 检查、同步最新 main 和解决阻塞讨论，并禁止强推／删除；规则也覆盖管理员。先让检查产生实际成功结果，再将其设为 required，避免配置不存在的检查名。失败应修复或通过修复 PR 处理，不临时关闭保护绕过检查。
+
+[CODEOWNERS](.github/CODEOWNERS) 将审阅路由到真实维护者 `@Eysn0130`。当前仓库仅有该维护身份，而 GitHub 不允许作者批准自己的 PR；因此现在的技术门槛不强制另一账号批准。以 Eysn0130 身份创建的 Agent PR 必须由 Eysn0130 人工查看差异、检查结果后操作合并，Agent 不代替这次审核；GitHub 无法区分同一账号背后的人工与自动操作。
+
+成员开始通过独立身份稳定提交后，由 Eysn0130 启用 **1 个批准＋必须由 Code Owner 批准＋新代码提交撤销旧批准**。届时其他成员的 PR 由 Eysn0130 批准；Eysn0130 自己发起的 PR 则需要另一位有写权限的真实 Code Owner，或改为由独立贡献者提交供其审核。不要制造自我批准、机器人代批或默认双审来满足门槛。审批流程、Code Owner 和凭据访问权限是不同层，AGENTS 不是权限隔离机制。
+
+已合并缺陷通过修复或 revert PR 处理，不重写 main 或移动已发布 Tag。涉及数据库／文件格式时另有兼容与恢复方案，Git revert 不能恢复运行数据。
+
+工具机制依据：[Codex 项目指令](https://learn.chatgpt.com/docs/agent-configuration/agents-md)、[Claude 共用 AGENTS](https://code.claude.com/docs/en/memory#share-one-file-with-other-coding-tools)、[GitHub 作者不能自批](https://docs.github.com/en/pull-requests/how-tos/review-pull-requests/approving-a-pull-request-with-required-reviews)。仓库规则不能识别同一账号背后是谁在操作，因此独立身份和维护者人工审核仍是必要边界。
+
+### 自动 PR 检查
+
+[Pull request checks](.github/workflows/pull-request.yml) 使用只读 token、完整 SHA 固定的 Actions 和合成材料，不读取业务环境、调用 Provider、打包或发布。它在 PR 的合并候选上运行，按 `scripts/ci.py` 中少量目录规则选择：
+
+| 检查组 | 自动验证及边界 |
+| --- | --- |
+| Python／G6 | 现有合成回归、API 生成契约和固定 G6 校验；Node 也安装在该组以运行旧界面 harness |
+| React | 锁定依赖安装、包含类型检查的 build、前端测试；共享 API／契约变更同时验证调用方 |
+| Desktop | Windows 上的桌面 Node 检查，不下载 Electron；相关 sidecar／资源变更同时验证 Python。它不是包内或安装后验收 |
+
+纯说明文档免业务测试，但仍检查 CI 判定逻辑和差异格式；文档下的脚本、配置及样例数据不能冒充纯文档。共享配置和未知源码路径保守扩大检查，不维护逐测试文件依赖图。独立 `PR required` 始终回报结果：选中的组必须成功，只有明确无关的组可跳过；计划失败、取消或意外跳过均不能通过。Fork PR 使用 `pull_request`，不使用带发布权限的 `pull_request_target` 执行贡献者代码。
+
+本地按下表选择最小充分检查；CI 对所选组执行固定可复现集合，不要求作者本机重复 CI 已有的同候选证据。目录判定及汇总可独立检查：`python -m unittest discover -s tests -p test_ci.py -v`。
 
 ## 按影响选择最小充分验证
 
@@ -162,4 +195,4 @@ Node 依赖同步所属目录的 `package.json` 和 `package-lock.json`，使用
 
 Issue、PR、测试、日志和截图只使用合成数据；不上传案件、真实账户／身份／交易、授权记录、凭据或签名材料。公开报告用合成复现和必要环境信息，不粘贴原始业务日志。不要读取原 `fund-tracker` 业务目录，不在普通测试中访问真实数据、现有服务或真实签名配置，也不要运行历史修补、恢复或终止进程脚本。
 
-桌面版本仅由维护者按当前授权打 Tag、手动触发 [Windows Actions](.github/workflows/windows-candidate.yml) 并发布；提交 PR 本身不触发发版。每个 `v0.1.x` Tag 对应带 Windows x64 `.exe` 的 Release，具体策略及未验收边界以 [桌面交付](docs/desktop-delivery.md) 为准。Git 提交、push、打包和外部写入仍遵守当前任务授权。
+桌面版本由 Eysn0130 决定发布时间并按当前授权执行：可积累多个已合并 PR，再选定不可变候选 SHA，手动运行 [Windows Actions](.github/workflows/windows-candidate.yml)，核对该 SHA 的版本、安装包、清单、哈希与检查结果后发布。每个 `v0.1.x` Tag 指向对应候选并有附带 Windows x64 `.exe` 的 Release；不移动旧 Tag、不以旧候选的绿色检查证明新候选。失败时保留现有发布版本，修复后重新选择候选。具体策略及未验收边界以 [桌面交付](docs/desktop-delivery.md) 为准；普通 PR 不要求封装最新版。Git 提交、push、打包和外部写入仍遵守当前任务授权。

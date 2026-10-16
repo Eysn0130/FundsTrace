@@ -46,10 +46,10 @@
 
 2026-10-15，维护者已授权创建公开 [Eysn0130/FundsTrace](https://github.com/Eysn0130/FundsTrace)、采用 MIT、手动运行 Windows Actions 并尝试发布未签名预览。该授权替代此前“先私有”的建议；源码公开与二进制预览发布分别记录，不以 Windows GUI 已验收为标记。原目录及业务数据仍在上传边界之外。[GitHub 许可说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository)
 
-仓库采用一个手动 Windows 候选工作流，复用既有脚本和锁文件，固定 Action 完整 SHA、只读 token、取消过时运行、限制超时与产物留存；不调用真实 Provider、不注入授权材料、不自动发布。运行与预览发布记录见 [桌面交付](desktop-delivery.md)。工作流和合成回归不能替代 Windows 的真实 DPI、系统保存和任务恢复 UI 验收。[手动触发要求](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[Actions 权限与依赖固定](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions)
+仓库将自动 PR 源码检查与手动 Windows 候选工作流分开，复用既有脚本和锁文件，固定 Action 完整 SHA、只读 token、取消过时运行并限制超时；不调用真实 Provider、不注入授权材料、不自动发布。跨 Harness 分工、main 保护与 Eysn0130 审阅边界统一见 [开发与贡献](../CONTRIBUTING.md#分工和-pr)，运行与预览发布记录见 [桌面交付](desktop-delivery.md)。工作流和合成回归不能替代 Windows 的真实 DPI、系统保存和任务恢复 UI 验收。[手动触发要求](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[Actions 权限与依赖固定](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions)
 
 治理参考及适用取舍：
 
 - [OpenAI Codex 工作流策略](https://github.com/openai/codex/blob/main/.github/workflows/README.md) 将快速反馈与较昂贵的跨平台验证分开；[repo-checks.yml](https://github.com/openai/codex/blob/main/.github/workflows/repo-checks.yml) 复用脚本。FundsTrace 后续 PR 默认使用现有定向检查，Windows 打包先手动运行，避免每次改文档都完整封装。
 - [Anthropic Python SDK CI](https://github.com/anthropics/anthropic-sdk-python/blob/main/.github/workflows/ci.yml) 明确检查职责并取消过时任务；[贡献说明](https://github.com/anthropics/anthropic-sdk-python/blob/main/CONTRIBUTING.md) 提供可复现命令。本项目沿用 README／AGENTS／锁文件维护这些入口，不复制 SDK 生成、API 兼容或自动发布链。
-- 维护者先用单一主分支和小范围改动；有真实协作者后再设必要的分支保护及 owner。暂不增加 CLA、固定双审、复杂工作流框架或额外架构层。接受外部贡献前明确维护范围，补真实可用的私密问题报告渠道；不冒用上游的安全邮箱或赏金承诺。[OpenAI 当前贡献政策](https://github.com/openai/codex/blob/main/docs/contributing.md)
+- 维护者采用单一 main、短分支与小范围 PR，由 Eysn0130 审阅后合并；先启用 PR／自动检查保护，有独立贡献身份后再启用强制 Code Owner 批准。暂不增加 CLA、固定双审、复杂工作流框架或额外架构层。接受外部贡献前明确维护范围，补真实可用的私密问题报告渠道；不冒用上游的安全邮箱或赏金承诺。[OpenAI 当前贡献政策](https://github.com/openai/codex/blob/main/docs/contributing.md)

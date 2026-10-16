@@ -1,0 +1,128 @@
+name: Pull request checks
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pull-request-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.plan.outputs.python }}
+      react: ${{ steps.plan.outputs.react }}
+      desktop: ${{ steps.plan.outputs.desktop }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+      - name: Check CI decisions and patch whitespace
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python -m unittest discover -s tests -p test_ci.py -v
+          git diff --check "$BASE_SHA...$HEAD_SHA"
+      - name: Select affected checks
+        id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python scripts/ci.py plan --base "$BASE_SHA" --head "$HEAD_SHA"
+
+  python:
+    needs: plan
+    if: needs.plan.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.1'
+          package-manager-cache: false
+      - name: Install locked Python dependencies
+        run: |
+          python -m pip install --disable-pip-version-check uv==0.11.5
+          uv venv --python 3.11
+          uv pip sync --python .venv/bin/python --require-hashes requirements-dev.lock
+      - name: Run synthetic Python and G6 regressions
+        run: .venv/bin/python scripts/test.py -q
+      - name: Check generated API and pinned G6
+        run: |
+          .venv/bin/python scripts/export_api_contract.py --check
+          .venv/bin/python scripts/patch_g6_validation.py --check
+
+  react:
+    needs: plan
+    if: needs.plan.outputs.react == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.1'
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  desktop:
+    needs: plan
+    if: needs.plan.outputs.desktop == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.1'
+          package-manager-cache: false
+      - name: Install locked test dependencies without downloading Electron
+        run: npm ci --ignore-scripts
+      - run: npm test
+
+  required:
+    name: PR required
+    if: ${{ always() }}
+    needs: [plan, python, react, desktop]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+      - name: Require every selected check to succeed
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python scripts/ci.py gate
