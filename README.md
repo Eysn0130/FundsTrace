@@ -11,7 +11,7 @@
 
 [![FundsTrace 真实工作台：合成流水从云杉工坊经三路分流，在远帆供应归集；点击查看原图](docs/media/workspace-hero.png)](docs/media/workspace-hero.png)
 
-<sub>真实工作台 · 12 笔合成流水 / 7 个虚构账户。录制基于 v0.1.1 源码及本支线品牌资源；新标识尚未进入已发布安装包。[查看原图](docs/media/workspace-hero.png)</sub>
+<sub>真实工作台 · 12 笔合成流水 / 7 个虚构账户。录制基于 v0.1.1 源码与现用品牌资源；新标识已随 v0.1.2 安装包发布。[查看原图](docs/media/workspace-hero.png)</sub>
 
 <details>
 <summary><strong>▶ 观看操作预览：导入 → 追踪 → 整理 → 导出</strong></summary>
@@ -24,7 +24,7 @@
 
 [下载 31 秒完整演示（MP4）](docs/media/fundstrace-demo.mp4?raw=1) · [合成样例与复现步骤](docs/examples/harbor-path/README.md)
 
-当前为预览版。已发布 [v0.1.1](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.1)，支持 Windows x64，安装后无需授权码；安装包未签名，Windows GUI、DPI 与原生保存交互尚未实机验收。[安装与验证范围](docs/desktop-delivery.md)
+当前为预览版。已发布 [v0.1.2](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.2)，支持 Windows x64，安装后无需授权码；安装包未签名，Windows GUI、DPI 与原生保存交互尚未实机验收。[安装与验证范围](docs/desktop-delivery.md)
 
 ## 从一份流水，到可复查的结果
 
@@ -34,7 +34,7 @@
 
 ### 顺着往来，整理路径
 
-选一笔交易作为锚点，追踪主账号此前的收入或此后的转出。把相关流水加入画布，用布局、节点拖动、金额标注和邻域视图整理关系；画布可保存、另存，编辑支持撤销与重做。
+选一笔交易作为锚点，追踪主账号此前的收入或此后的转出。把相关流水加入画布，用布局、节点拖动、金额标注和邻域视图整理关系；画布可保存、另存，编辑支持撤销与重做。Ctrl／Command 点击可多选并整组移动；1–10 个选中节点用呼吸光圈定位，更多选择保持静态。
 
 追踪按已导入账单与时间关系延伸。图上的连线不代替资金用途、交易性质或法律事实认定。
 

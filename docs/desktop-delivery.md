@@ -2,7 +2,7 @@
 
 ## v0.1.x 发布规则
 
-FundsTrace v0.1.1 正常启动**无需公钥或授权码**。每个实际版本 Tag 对应 GitHub Release，附 Windows x64 NSIS `.exe`，从 [Releases](https://github.com/Eysn0130/FundsTrace/releases) 下载并安装。[v0.1.1 已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.1)，原生构建和安装结果见下文交付记录；Windows GUI 验收不作为发布标记。安装包未签名，不能声称完成代码签名或 Windows 全面兼容验收。
+FundsTrace v0.1.2 正常启动**无需公钥或授权码**。每个实际版本 Tag 对应 GitHub Release，附 Windows x64 NSIS `.exe`，从 [Releases](https://github.com/Eysn0130/FundsTrace/releases) 下载并安装。[v0.1.2 已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.2)，原生构建和安装结果见下文交付记录；Windows GUI 验收不作为发布标记。安装包未签名，不能声称完成代码签名或 Windows 全面兼容验收。
 
 Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activation_required:false`，如实保留历史 `activated` 状态；`/license` 可直接进入系统。没有公钥、没有授权文件或存在损坏的历史授权都不阻塞业务，不生成测试授权来解锁。FT2／HMAC 验签接口、独立 `desktop/issuer/` 工具和已有材料保留，见 [历史授权维护](license-activation.md)。已发布 alpha.3 不随源码改变。
 
@@ -66,11 +66,36 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 ## 当前证据与尚未执行的边界
 
-v0.1.1源码完整回归375项通过；[Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38827843574) 对发布源码 `e7be2f5675dcd2dc896a20d6d644d5aa05125a73` 完成56项定向Python、22项桌面Node、React类型检查／构建、54条资源记录、11项包内后端及14项静默安装生命周期检查。旧版本的检查和限制保留在对应交付记录中，不能替代新候选。
+v0.1.2 的 [PR CI](https://github.com/Eysn0130/FundsTrace/actions/runs/38840211625) 完成 Python／G6 392 项、React 37 项和 Windows 桌面 Node 27 项；[Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38840226553) 绑定发布源码 `d19a238a935f5169d830bc8cab2df6e7f6303576`，完成57项定向Python、27项Node、55条资源、13项包内后端、17项安装生命周期和11项安装后应用检查。旧版本的检查和限制保留在对应交付记录中，不能替代新候选。
 
-本机 macOS arm64，无交互式 Windows 主机。Windows GUI、系统 100%／150%／200% DPI、密集表格实际字体、原生保存／取消、运行中安装器正常关窗和导入任务中断恢复仍为 **NOT_EXECUTED（Windows GUI）**。静默安装报告不把这些标成通过，也不作为 GUI 发布标签。
+本机 macOS arm64，无 Win10／11 交互式主机。Server 2022 上的安装后 renderer／单实例／退出自动化已执行；Win10／11 普通用户、系统 100%／150%／200% DPI、密集表格实际字体、原生保存／取消、运行中安装器正常关窗和导入任务中断恢复仍为 **NOT_EXECUTED（Win10／11 实机）**。这些边界不因自动化通过而改为 GUI 发布标签。
 
 具备设备后只补受影响流程：查询／勾选／上图／邻域和完整金额可读；中文目录 XLSX／图像保存及取消；活动导入退出与回执重开；离线启动与混合 DPI。只用专用合成测试用户，不能连接原业务实例或按名称猜测终止进程。
+
+## v0.1.2 交付记录
+
+2026-10-15：[Release v0.1.2](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.2)、[PR #4](https://github.com/Eysn0130/FundsTrace/pull/4) 与 [Windows Actions 38840226553](https://github.com/Eysn0130/FundsTrace/actions/runs/38840226553) 绑定源码 `d19a238a935f5169d830bc8cab2df6e7f6303576`。main 合并提交 `dab01c307a1aa0bce0bdecf81761631483141392` 包含该候选且仓库 tree 完全一致；Tag 固定成功构建的原 SHA，后续仅补发布文档。
+
+- 集成 Ctrl／Command 多选、1–10 个呼吸／更多静态、50 个起整体预览和撤销／切换修复；[交互证据](graph-interaction.md) 的46项可执行／样式资源指纹匹配，仅两项品牌 SVG 随已合并品牌更新变化。该浏览器证据不等于 Windows 交互验收。
+- 修复桌面白名单漏 `graph-selection.js`；实际HTML引用回归先失败后通过。报告绘图库延迟加载有独立进程真实HTTP回归，报告附件和精确金额保持。
+- 新启动提示先于后端准备，准备中取消和二次双击有回归；路径不可读的疑似本应用进程返回检查失败，未扩大终止权限。
+- Windows包内55条资源中，52项源码资源与本地候选逐项核对，仅接受已知Windows检出CRLF；3项React生成产物由同候选锁定构建及安装后摘要核对。13项包内后端检查还实际请求本地脚本和延迟报告附件。
+- 17项安装生命周期从固定摘要v0.1.1升级至0.1.2，包含实际安装EXE启动、免激活和新模块可用、单实例、正常关闭及后端端口释放，再卸载保留两个合成案件及哨兵；安装应用安全报告11项全通过。[合成安装版renderer截图](https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.2/native-installed-app.png) 为1008×663，不覆盖原生边框、系统保存或Win10／11普通用户验收。
+- PE FileVersion `0.1.2`、ProductVersion `0.1.2.0`。EXE、三份smoke报告、native manifest与候选摘要已在本机重新计算SHA-256；完整win-unpacked目录由CI核对，未在macOS另行下载执行。
+
+| 文件总字节 | v0.1.1 | v0.1.2 |
+| --- | ---: | ---: |
+| 安装器 | 168336906 | 159802454 |
+| 安装后文件 | 548923669 | 500075954 |
+| Electron语言资源 | 50643501（55个） | 1762536（3个） |
+
+安装器减少8534452字节（约5.1%），安装后文件减少48847715字节（约8.9%）。文件总字节不是磁盘分配空间。新包backend约164.1MB；最大项仍为Electron主体、DuckDB与数值运行库，不以删除所需DLL／许可文件或改onefile进一步压缩。
+
+该runner单次观测：首次backend健康1561ms、同目录重开1210ms、首次空案报告742ms；安装版进程启动后工作区就绪2639ms，正常关闭499ms。没有旧版同条件启动基线，也没有真实Win10／11冷机样本，不能声明全体用户启动上限或相对旧版的提速幅度。
+
+`FundsTrace-0.1.2-windows-x64-unsigned.exe` SHA-256：`667fbc6941f7f848d790f599ea0a73c837b46a46580b49b1942b60f340d12bbf`。
+
+安装器仍未签名；SmartScreen／SAC、普通用户与DPI／原生保存等实机项保留未验收状态。另在上述窄窗口空案截图观察到缩略图占用部分引导文字区域，顶部导入入口可用；这是后续空态布局改进项，不据此宣称启动失败或全界面已验收。构建报告 `published:false` 仍仅表示脚本本身不发布，实际Release由维护者另行上传。
 
 ## v0.1.1 交付记录
 
