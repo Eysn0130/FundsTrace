@@ -1,6 +1,6 @@
 # 工作台使用指南
 
-本文对应已随v0.1.1发布的工作台。Windows GUI、DPI与真实浏览器缩放尚未实机验收；源码、浏览器与原生安装检查分别记录。使用说明之外的证据见 [设计验收](../design-qa.md) 和 [桌面交付](desktop-delivery.md)。
+本文对应已随 [v0.1.1](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.1) 发布的工作台，发布源码为 `e7be2f5675dcd2dc896a20d6d644d5aa05125a73`。Windows GUI、DPI与真实浏览器缩放尚未实机验收；源码、浏览器与原生安装检查分别记录。使用说明之外的证据见 [设计验收](../design-qa.md) 和 [桌面交付](desktop-delivery.md)。
 
 ## 查询与空间调整
 

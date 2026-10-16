@@ -1,0 +1,17 @@
+{
+  "syntheticOnly": true,
+  "fileChecks": "passed",
+  "transactions": 12,
+  "accounts": 7,
+  "directedRelations": 8,
+  "transactionAmountSumByCurrency": {
+    "CNY": "1832503.00"
+  },
+  "expectedFirstAnchorTrackedCount": 5,
+  "sha256": {
+    "fundstrace-synthetic.csv": "ae8791ec2d6f43000ae03460df0e3f411518dceb305208e3cbb13af01d42e976",
+    "fundstrace-synthetic.xlsx": "bbc1c061795f549f732c872804f0cc1b818c16778b8e2f87290b9f44f50d9bce",
+    "exports/tracked-flows.xlsx": "20dc05e884a2245a0bb39d6581ca10e697848e247f0717a8b3488923690d0d82",
+    "exports/traced-graph.png": "9ab76dfb3940102105c072565ee248149defad2addafcec6054edce01207582b"
+  }
+}
