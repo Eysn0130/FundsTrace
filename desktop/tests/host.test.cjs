@@ -153,7 +153,7 @@ test('health checks status, protocol and exact service using main-only authoriza
 test('distribution manifest prevents cross-platform packaging and includes only host source', async t => {
   const builder = require('../electron-builder.cjs');
   assert.equal(builder.appId, 'com.eysn.fundstrace');
-  assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs']);
+  assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs']);
   assert.equal(builder.publish, null);
   assert.equal(builder.nsis.deleteAppDataOnUninstall, false);
   assert.equal(builder.win.signExecutable, false);
@@ -229,7 +229,7 @@ function mainHarness({ mkdir = async () => {}, synthetic = false } = {}) {
     onBeforeRequest: handler => { state.request = handler; },
     onBeforeSendHeaders: handler => { state.headers = handler; },
   };
-  const electron = { app, BrowserWindow: Window, session: { fromPartition: () => localSession }, screen,
+  const electron = { app, ipcMain: new EventEmitter(), BrowserWindow: Window, session: { fromPartition: () => localSession }, screen,
     Menu: { buildFromTemplate: value => value, setApplicationMenu: () => {} },
     dialog: { showErrorBox: (_title, message) => state.errors.push(message) } };
   const policy = { ...require('../host-policy.cjs'), launchConfig: input => input };
@@ -239,6 +239,9 @@ function mainHarness({ mkdir = async () => {}, synthetic = false } = {}) {
   vm.runInNewContext(source, { require: name => {
     if (name === 'electron') return electron;
     if (name === './host-policy.cjs') return policy;
+    if (name === './preferences.cjs') return { ...require('../preferences.cjs'), preferenceStore: () => ({
+      getItem: () => null, setItem: () => true, removeItem: () => true,
+    }) };
     if (name === 'node:fs/promises') return filesystem;
     if (name === './backend.cjs') return { startBackend: (_config, options) => {
       state.backendStarts++; state.backendOptions = options;
@@ -310,6 +313,7 @@ test('empty-case minimap suppression preserves the user preference and rejects s
       const classes = new Set();
       nodes.set(selector, { style: {}, hidden: false, disabled: false, attributes: {},
         classList: { toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name), remove: name => classes.delete(name), contains: name => classes.has(name) },
+        querySelectorAll: () => [],
         setAttribute(name, value) { this.attributes[name] = value; } });
     }
     return nodes.get(selector);

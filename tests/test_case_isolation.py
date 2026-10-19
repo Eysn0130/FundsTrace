@@ -155,7 +155,7 @@ def test_background_import_main_account_failure_rolls_back_batch_and_flows(clien
     body = {**uploaded_import(client), "case_id": cid}
     original = database.x
     def fail_mark(sql, params=None):
-        if sql.startswith("insert or replace into main_accounts"):
+        if sql.startswith("insert into main_accounts"):
             # The real nested importer has already written the batch and row.
             assert database.q("select count(*) n from flows where case_id=?", [cid])[0]["n"] == 1
             raise RuntimeError("synthetic main account failure")

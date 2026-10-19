@@ -136,7 +136,7 @@ function harness() {
   const toggle = add(tab, 'btnQueryToggle', 'button'); toggle.setAttribute('aria-expanded', 'true'); add(toggle, '', 'img');
   add(tab, 'querySummary');
   for (const id of ['fAccount', 'fName', 'fCounter', 'fKw', 'fMin', 'fMax', 'fFrom', 'fTo', 'fTracked']) add(query, id, 'input');
-  add(query, 'btnReset', 'button');
+  add(query, 'btnReset', 'button'); add(query, 'btnSearch', 'button');
   add(tab, 'flowCkAll', 'input'); add(tab, 'flowCkCount');
   const tools = add(tab, 'flowTools', 'div', 'flow-table-tools');
   add(tools, 'resultInfo'); add(tools, 'btnFlowOverview', 'button');
@@ -206,6 +206,7 @@ function harness() {
     search: (...args) => context.doSearch(...args),
     render: values => context.renderFlows(values),
     network(fn) { fetchFlows = fn; }, graph(fn) { graphRead = fn; },
+    locator(value) { sandbox.window.FundsGraphLocator = value; },
     setStatus(value) { status = { ...status, ...value }; publish(); },
     open() { element('btnFlowOverview').click(); }, close() { element('btnCloseFlowOverview').click(); },
     toggleAnchor(id, checked) { const box = this.box(id); box.checked = checked; box.fire('change'); },
@@ -381,4 +382,95 @@ test('case A-B-A rejects old reads and graph completions without republishing an
   oldRead.resolve({ page: 1, size: 50, total: 1, rows: [flow(99)] }); assert.equal(await oldQuery, false);
   assert.equal(f.requests.length, count); assert.deepEqual(f.rows().map(row => row.dataset.id), ['101']);
   assert.equal(f.state.caseId, 1); assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
+});
+
+test('only explicit query button and non-IME Enter preview frozen account fields, preserving leading zeroes', async () => {
+  const f = harness(), previews = [], captures = [];
+  f.locator({ capture() { const token = { sequence: captures.length + 1 }; captures.push(token); return token; },
+    async previewFields(fields, options) { previews.push(JSON.parse(JSON.stringify({ fields, options }))); } });
+  f.element('fAccount').value = ' 00000123 '; f.element('fName').value = '合成户名'; f.element('fCounter').value = '00000456';
+  await f.element('btnSearch').onclick();
+  assert.deepEqual(previews[0], { fields: { account: '00000123', name: '合成户名', counterparty: '00000456' }, options: { binding: { sequence: 1 } } });
+  const requests = f.requests.length;
+  f.element('fAccount').fire('keydown', { key: 'Enter', isComposing: true });
+  f.element('fAccount').fire('keydown', { key: 'Enter', keyCode: 229 });
+  await flush(); assert.equal(f.requests.length, requests); assert.equal(previews.length, 1);
+  f.element('fAccount').fire('keydown', { key: 'Enter' }); await flush();
+  assert.equal(previews.length, 2); assert.equal(captures.length, 2);
+});
+
+test('implicit searches, reset and binding readiness refresh never capture or preview the camera', async () => {
+  const f = harness(), calls = [];
+  f.locator({ capture() { calls.push('capture'); return {}; }, previewFields() { calls.push('preview'); } });
+  f.element('fAccount').value = '00001'; await f.search(1); await f.search(2);
+  await f.element('btnReset').onclick();
+  f.context.activateCanvas(7); await f.context.loadGraph();
+  assert.deepEqual(calls, []); assert.ok(f.requests.length >= 4);
+});
+
+test('explicit date, amount and summary-only queries do not capture or interrupt the camera', async () => {
+  const f = harness(), calls = [];
+  f.locator({ capture() { calls.push('capture'); return {}; }, previewFields() { calls.push('preview'); } });
+  f.element('fFrom').value = '2026-10-01'; f.element('fTo').value = '2026-10-18';
+  f.element('fMin').value = '0.01'; f.element('fMax').value = '9999999999999999.99'; f.element('fKw').value = '合成摘要';
+  await f.element('btnSearch').onclick();
+  f.element('fMin').fire('keydown', { key: 'Enter' }); await flush();
+  assert.deepEqual(calls, []); assert.equal(f.requests.length, 2);
+  assert.equal(f.element('resultInfo').textContent, '共 2 笔');
+});
+
+test('input changes during a query revoke its preview even when the original text is restored', async () => {
+  const f = harness(), result = deferred(), previews = [];
+  f.locator({ capture: () => ({}), previewFields: fields => previews.push(fields) });
+  f.element('fAccount').value = '00001'; f.network(() => result.promise);
+  const search = f.search(1, { locate: true });
+  f.element('fAccount').value = '00002'; f.element('fAccount').fire('input');
+  f.element('fAccount').value = '00001'; f.element('fAccount').fire('input');
+  result.resolve({ page: 1, size: 50, total: 1, rows: [flow(1)] });
+  assert.equal(await search, true); assert.deepEqual(previews, []);
+  assert.equal(f.element('resultInfo').textContent, '共 1 笔');
+});
+
+test('programmatic draft changes also prevent preview and never substitute the newer input into the old request', async () => {
+  const f = harness(), result = deferred(), previews = [];
+  f.locator({ capture: () => ({}), previewFields: fields => previews.push(fields) });
+  f.element('fAccount').value = '00001'; f.network(() => result.promise);
+  const search = f.search(1, { locate: true }); f.element('fAccount').value = '00002';
+  result.resolve({ page: 1, size: 50, total: 1, rows: [flow(1)] }); await search;
+  assert.deepEqual(previews, []); assert.match(f.requests[0], /account=00001/);
+  assert.match(f.element('querySummary').textContent, /待查询 · 账号 00002/);
+});
+
+test('only the newest successful explicit query may preview; failures keep existing results', async () => {
+  const f = harness(), first = deferred(), second = deferred(), previews = []; let count = 0;
+  f.locator({ capture: () => ({}), previewFields: fields => previews.push(JSON.parse(JSON.stringify(fields))) });
+  f.network(() => (++count === 1 ? first : second).promise);
+  f.element('fAccount').value = '00001'; const old = f.search(1, { locate: true });
+  f.element('fAccount').value = '00002'; const latest = f.search(1, { locate: true });
+  second.resolve({ page: 1, size: 50, total: 1, rows: [flow(2)] }); assert.equal(await latest, true);
+  first.resolve({ page: 1, size: 50, total: 1, rows: [flow(1)] }); assert.equal(await old, false);
+  assert.deepEqual(previews.map(fields => fields.account), ['00002']);
+  f.network(async () => { throw new Error('Synthetic query failure'); });
+  assert.equal(await f.search(1, { locate: true }), false); assert.equal(previews.length, 1);
+});
+
+test('switching canvas or case A-B-A rejects a delayed explicit query preview', async () => {
+  for (const change of [f => f.context.activateCanvas(7), f => { f.context.selectCase(2); f.context.selectCase(1); }]) {
+    const f = harness(), result = deferred(), previews = [];
+    f.locator({ capture: () => ({}), previewFields: fields => previews.push(fields) });
+    f.element('fAccount').value = '00001'; f.network(() => result.promise);
+    const search = f.search(1, { locate: true }); change(f);
+    result.resolve({ page: 1, size: 50, total: 1, rows: [flow(1)] });
+    assert.equal(await search, false); assert.deepEqual(previews, []);
+  }
+});
+
+test('missing, throwing and rejected camera adapters cannot turn a successful query into failure', async () => {
+  for (const locator of [undefined, { capture() { throw new Error('Synthetic capture failure'); } },
+    { capture: () => ({}), async previewFields() { throw new Error('Synthetic preview failure'); } }]) {
+    const f = harness(); f.locator(locator); f.element('fAccount').value = '00001';
+    assert.equal(await f.search(1, { locate: true }), true);
+    assert.equal(f.element('resultInfo').textContent, '共 2 笔'); assert.equal(f.rows().length, 2);
+    assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
+  }
 });

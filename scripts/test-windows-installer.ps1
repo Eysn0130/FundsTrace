@@ -34,6 +34,7 @@ $Report = [ordered]@{
         syntheticCaseCreatedAndReopened = 'not-run'; eofShutdown = 'not-run'
         installedApplicationStarted = 'not-run'; installedApplicationSingleInstance = 'not-run'
         installedApplicationNormalClose = 'not-run'
+        installedGraphJourney = 'not-run'
         installedImportRecovery = 'not-run'
         uninstallRegistrationRemoved = 'not-run'; installedExecutableRemoved = 'not-run'
         syntheticDataRetained = 'not-run'; cleanup = 'not-run'
@@ -211,8 +212,8 @@ try {
     $PriorInstaller = Join-Path $TemporaryRoot 'prior-stable.exe'
 
     $Stage = 'priorInstallerDigest'
-    Invoke-WebRequest -Uri 'https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.2/FundsTrace-0.1.2-windows-x64-unsigned.exe' -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
-    if ((Get-Sha256 $PriorInstaller) -cne '667fbc6941f7f848d790f599ea0a73c837b46a46580b49b1942b60f340d12bbf') {
+    Invoke-WebRequest -Uri 'https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.4/FundsTrace-0.1.4-windows-x64-unsigned.exe' -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
+    if ((Get-Sha256 $PriorInstaller) -cne '57f48737807473d67fe030571fe26d359361353cd977f5cfd8ad6709ebca8fbb') {
         throw 'The prior installer digest differs from the pinned release.'
     }
     $Report.checks.priorInstallerDigest = 'passed'
@@ -220,8 +221,8 @@ try {
     $MayHaveInstalled = $true
     # /D is NSIS syntax: absolute path, last argument, deliberately no quotes even with spaces.
     [void](Invoke-Native -FileName $PriorInstaller -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
-    Assert-Installed '0.1.2'
-    $Report.priorVersion = '0.1.2'; $Report.checks.priorInstalled = 'passed'
+    Assert-Installed '0.1.4'
+    $Report.priorVersion = '0.1.4'; $Report.checks.priorInstalled = 'passed'
 
     $Stage = 'syntheticDataSeeded'
     # The earlier absence check establishes ownership; never redirect or reuse a maintainer's data.
@@ -308,16 +309,22 @@ finally:
     $AppJson = Invoke-Native -FileName $NodeExe -Arguments @(
         (Join-Path $ProjectRoot 'desktop/tests/installed-app-smoke.cjs'), $InstallRoot,
         '--report', $AppReportPath, '--screenshot', $AppScreenshotPath
-    ) -TimeoutSeconds 210
+    ) -TimeoutSeconds 360
     $AppHelper = $AppJson | ConvertFrom-Json
     if ($AppHelper.status -cne 'passed') { throw 'Installed application did not reach a usable workspace.' }
     foreach ($Name in @('installedExecutableStarted', 'authenticatedWorkspaceLoaded', 'nodeSelectionModuleLoaded',
-        'activationFree', 'singleInstance', 'normalClose', 'backendReleasedAfterClose')) {
+        'activationFree', 'singleInstance', 'normalClose', 'backendReleasedAfterClose',
+        'installedGraphModulesLoaded', 'installedCsvPreviewMapping', 'installedCsvCommittedExact',
+        'installedQueryExact', 'installedFirstTrackExact', 'installedSecondTrackVisible',
+        'installedContextTrackedConsistent', 'installedNeighborhoodTrackVisible',
+        'installedCanvasCloneExact', 'installedCanvasSaveRestoreTypes',
+        'installedCanvasUndoRedoTypes', 'installedCaseIsolationAndReturn', 'installedGraphScreenshot')) {
         if ($AppHelper.checks.$Name -isnot [bool] -or -not $AppHelper.checks.$Name) { throw 'Installed application did not satisfy its check.' }
     }
     $Report.checks.installedApplicationStarted = 'passed'
     $Report.checks.installedApplicationSingleInstance = 'passed'
     $Report.checks.installedApplicationNormalClose = 'passed'
+    $Report.checks.installedGraphJourney = 'passed'
 
     $Stage = 'uninstallRegistrationRemoved'
     Invoke-Uninstall
@@ -390,5 +397,5 @@ if ($Failed) {
     exit 1
 }
 if ($PreflightOnly) { Write-Host 'Native installer preflight passed; no installation was attempted.' }
-else { Write-Host 'Native installer lifecycle passed: pinned 0.1.2 upgrade, installed application startup/single-instance/close, activation-free data, EOF and uninstall retention. Win10/11 interactive acceptance remains separate.' }
+else { Write-Host 'Native installer lifecycle passed: pinned 0.1.4 upgrade, installed application startup/single-instance/close, activation-free data, EOF and uninstall retention. Win10/11 interactive acceptance remains separate.' }
 exit 0

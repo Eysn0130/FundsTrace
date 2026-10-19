@@ -37,6 +37,31 @@ def test_resource_boundary_includes_runtime_html_scripts(tmp_path, monkeypatch):
     assert references <= packaged, f'Runtime scripts missing from desktop resources: {sorted(references - packaged)}'
 
 
+def test_all_retained_html_dependencies_are_packaged():
+    from html.parser import HTMLParser
+    from urllib.parse import unquote, urlsplit
+
+    required = set()
+
+    class Dependencies(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            for key, value in attrs:
+                if key in {"src", "href"} and value and value.startswith("/static/"):
+                    required.add(unquote(urlsplit(value).path.removeprefix("/static/")))
+
+    for page in (builder.ROOT / "static").glob("*.html"):
+        Dependencies().feed(page.read_text(encoding="utf-8"))
+    assert "graph-selection.js" in required
+    # This worker is launched from app.js rather than an HTML script element.
+    required.add("graph-layout-worker.js")
+    worker = (builder.ROOT / "static" / "graph-layout-worker.js").read_text(encoding="utf-8")
+    for kernel in ("graph-layout.js", "graph-layout-quality.js", "graph-routing.js"):
+        assert f"/static/{kernel}?v=" in worker
+        required.add(kernel)
+    assert required <= set(builder.STATIC_NAMES), f"Unpackaged UI dependencies: {required - set(builder.STATIC_NAMES)}"
+    assert all((builder.ROOT / "static" / name).is_file() for name in required)
+
+
 @pytest.mark.parametrize('tail,accepted', [
     (b'', True),
     (b'\nnot-a-public-key', False),

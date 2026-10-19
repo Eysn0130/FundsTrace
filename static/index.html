@@ -5,81 +5,296 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/static/favicon.svg">
 <title>FundsTrace · 资金流水追踪与关联分析</title>
-<link rel="stylesheet" href="/static/style.css?v=selection-1">
+<link rel="stylesheet" href="/static/style.css?v=release-0.1.5">
 <script src="/static/vendor/g6.min.js"></script>
 </head>
 <body>
 <header id="topbar">
   <div class="brand"><img src="/static/logo.svg" alt="" class="topbar-logo"><div class="logo">FundsTrace</div></div>
-  <div class="case-box">
-    <label for="caseSelect">案件</label><select id="caseSelect" aria-label="当前案件"></select>
-    <button class="btn small" id="btnCaseActions" data-action-dialog="caseActions" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/settings.svg" alt="">案件管理</button>
-  </div>
+  <div class="case-box"><label for="caseSelect">案件</label><select id="caseSelect" aria-label="当前案件"></select><label for="canvasSel">画布</label><select id="canvasSel" aria-label="当前画布"><option value="0">默认画布</option></select></div>
+  <div class="ribbon-quick" role="group" aria-label="保存与历史">
+  <button type="button" class="btn ribbon-action" id="btnCanvasSave" aria-label="保存画布" title="保存完整画布及显示设置"><img class="ui-icon" src="/static/ui-icons/device-floppy.svg" alt=""><span>保存</span></button>
+  <button type="button" class="btn ribbon-action" id="btnUndo" aria-label="撤销" title="暂无可撤销的画布编辑" disabled><img class="ui-icon" src="/static/ui-icons/arrow-back-up.svg" alt=""><span>撤销</span></button>
+  <button type="button" class="btn ribbon-action" id="btnRedo" aria-label="重做" title="暂无可重做的画布编辑" disabled><img class="ui-icon" src="/static/ui-icons/arrow-forward-up.svg" alt=""><span>重做</span></button></div>
   <nav class="workspace-actions" aria-label="案件数据与分析">
-    <button class="btn small primary" id="btnImport"><img class="ui-icon" src="/static/ui-icons/upload.svg" alt="">导入流水</button>
-    <button class="btn small" id="btnDataActions" data-action-dialog="dataActions" aria-haspopup="dialog">数据工具</button>
-    <a class="btn small analysis-link" id="analysisLink" href="/analysis" target="_blank" rel="noopener" title="图结构/统计算法分析与分析报告导出">智能分析 ↗</a>
-    <button class="btn small" id="btnExportActions" data-action-dialog="exportActions" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/file-export.svg" alt="">导出</button>
-  </nav>
-  <div class="stats" id="statLine">加载中…</div>
+    <button type="button" class="btn small primary" id="btnImport" aria-label="导入流水" title="导入流水"><img class="ui-icon" src="/static/ui-icons/upload.svg" alt=""><span class="header-action-label">导入流水</span></button>
+    <button type="button" class="btn small" id="btnExportActions" aria-label="导出" title="导出当前画布或流水" data-action-dialog="exportActions" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/file-export.svg" alt=""><span class="header-action-label">导出</span></button>
+    <a class="btn small analysis-link" id="analysisLink" aria-label="全案分析（新窗口）" href="/analysis" target="_blank" rel="noopener" title="全案原始流水的独立分析页，与当前图内筛选分开"><img class="ui-icon" src="/static/ui-icons/network.svg" alt=""><span class="header-action-label">全案分析 ↗</span></a>
+    <button type="button" class="btn small" id="btnCaseActions" aria-label="案件管理" title="案件管理" data-action-dialog="caseActions" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/settings.svg" alt=""><span class="header-action-label">案件管理</span></button>
+  </nav><div class="stats" id="statLine">加载中…</div>
 </header>
-<section id="editorToolbar" class="workspace-toolbar" aria-label="画布编辑器">
+<section id="editorToolbar" class="workspace-toolbar funds-ribbon" aria-label="画布编辑器">
   <div id="graphToolbar" role="group" aria-label="图谱编辑工具">
-    <div class="editor-group editor-file" role="group" aria-labelledby="fileGroupLabel">
-      <div class="editor-group-controls">
-        <select id="canvasSel" aria-label="当前画布"><option value="0">默认画布</option></select>
-        <button class="btn editor-action toolbar-secondary" id="btnCanvasNew" title="新建空白画布"><img class="ui-icon" src="/static/ui-icons/file-plus.svg" alt=""><span>新建</span></button>
-        <button class="btn editor-action" id="btnCanvasSave" title="保存节点位置、线型、折点、标注和重点展示"><img class="ui-icon" src="/static/ui-icons/device-floppy.svg" alt=""><span>保存</span></button>
-        <button class="btn editor-action toolbar-secondary" id="btnCanvasClone" title="当前画布另存为"><img class="ui-icon" src="/static/ui-icons/copy.svg" alt=""><span>另存为</span></button>
-        <button class="btn editor-action" id="btnCanvasActions" data-action-dialog="canvasActions" aria-haspopup="dialog" title="重命名或删除当前画布"><img class="ui-icon" src="/static/ui-icons/settings.svg" alt=""><span>管理</span></button>
+    <div class="ribbon-tabbar">
+      <div role="tablist" aria-label="画布功能区" id="ribbonTabs">
+        <button type="button" role="tab" id="ribbonTab-common" aria-controls="ribbonPanel-common" aria-selected="true" tabindex="0" data-ribbon-tab="common">常用</button>
+        <button type="button" role="tab" id="ribbonTab-trace" aria-controls="ribbonPanel-trace" aria-selected="false" tabindex="-1" data-ribbon-tab="trace">追踪分析</button>
+        <button type="button" role="tab" id="ribbonTab-style" aria-controls="ribbonPanel-style" aria-selected="false" tabindex="-1" data-ribbon-tab="style">图形样式</button>
+        <button type="button" role="tab" id="ribbonTab-view" aria-controls="ribbonPanel-view" aria-selected="false" tabindex="-1" data-ribbon-tab="view">视图</button>
       </div>
-      <span class="editor-group-label" id="fileGroupLabel">画布文件</span>
+      <output id="ribbonSelectionStatus" aria-live="polite">未选择节点</output>
+      <button type="button" class="btn small ribbon-inspect" data-ribbon-command="inspectSelection" aria-controls="drawer" title="查看所选对象详情 · Enter" disabled><img class="ui-icon" src="/static/ui-icons/list.svg" alt=""><span>查看详情</span></button>
+      <button type="button" class="btn ribbon-collapse-button" data-ribbon-collapse="true">收起功能区<img class="ui-icon" src="/static/ui-icons/chevron-up.svg" alt=""></button>
     </div>
-    <div class="editor-group editor-edit" role="group" aria-labelledby="editGroupLabel">
-      <div class="editor-group-controls">
-        <button class="btn editor-action" id="btnUndo" title="暂无可撤销的画布编辑" disabled><img class="ui-icon" src="/static/ui-icons/arrow-back-up.svg" alt=""><span>撤销</span></button>
-        <button class="btn editor-action" id="btnRedo" title="暂无可重做的画布编辑" disabled><img class="ui-icon" src="/static/ui-icons/arrow-forward-up.svg" alt=""><span>重做</span></button>
+    <div id="ribbonPanels">
+      <div class="ribbon-panel" id="ribbonPanel-common" role="tabpanel" aria-labelledby="ribbonTab-common">
+        <div class="ribbon-group" role="group" aria-label="画布文件">
+          <div class="ribbon-group-body">
+            <button type="button" class="btn ribbon-action" id="btnCanvasNew" ><img class="ui-icon" src="/static/ui-icons/file-plus.svg" alt=""><span>新建画布</span></button>
+            <button type="button" class="btn ribbon-action" id="btnCanvasClone" ><img class="ui-icon" src="/static/ui-icons/copy.svg" alt=""><span>另存为</span></button>
+            <button type="button" class="btn ribbon-action" id="btnCanvasActions" data-toolbar-menu="canvasActions" aria-controls="canvasActions" aria-expanded="false" aria-haspopup="menu"><img class="ui-icon" src="/static/ui-icons/settings.svg" alt=""><span>画布管理<img class="ui-icon toolbar-menu-chevron" src="/static/ui-icons/chevron-down.svg" alt=""></span></button>
+          </div>
+          <span class="ribbon-group-label">画布文件</span></div>
+        <div class="ribbon-group" role="group" aria-label="选择与查找">
+          <div class="ribbon-group-body">
+            <button type="button" class="btn ribbon-action" data-ribbon-command="selectAll" ><img class="ui-icon" src="/static/ui-icons/selection.svg" alt=""><span>选择全部</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="clearSelection" ><img class="ui-icon" src="/static/ui-icons/selection-clear.svg" alt=""><span>取消选择</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="invertSelection" ><img class="ui-icon" src="/static/ui-icons/swap.svg" alt=""><span>反选</span></button>
+            <div class="ribbon-slot" data-ribbon-slot="find"></div>
+          </div>
+          <span class="ribbon-group-label">选择与查找</span></div>
+        <div class="ribbon-group" role="group" aria-label="数据与账户">
+          <div class="ribbon-group-body">
+            <button type="button" class="btn ribbon-action" data-ribbon-proxy="btnImport" ><img class="ui-icon" src="/static/ui-icons/upload.svg" alt=""><span>导入流水</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-proxy="btnFlowOverview" ><img class="ui-icon" src="/static/ui-icons/list.svg" alt=""><span>流水全览</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="accountDetails" ><img class="ui-icon" src="/static/ui-icons/user-search.svg" alt=""><span>账户资料</span></button>
+            <button type="button" class="btn ribbon-action" id="btnDataActions" data-toolbar-menu="dataActions" aria-controls="dataActions" aria-expanded="false" aria-haspopup="menu"><img class="ui-icon" src="/static/ui-icons/settings.svg" alt=""><span>数据工具<img class="ui-icon toolbar-menu-chevron" src="/static/ui-icons/chevron-down.svg" alt=""></span></button>
+          </div>
+          <span class="ribbon-group-label">数据与账户</span></div>
+        <div class="ribbon-group" role="group" aria-label="节点组织">
+          <div class="ribbon-group-body">
+            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/group.svg" alt=""><span>新建分组</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/link.svg" alt=""><span>加入分组</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/layers.svg" alt=""><span>分组管理</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+          </div>
+          <span class="ribbon-group-label">节点组织</span></div>
+        <div class="ribbon-group" role="group" aria-label="输出与管理">
+          <div class="ribbon-group-body">
+            <button type="button" class="btn ribbon-action" data-ribbon-proxy="btnExportActions" ><img class="ui-icon" src="/static/ui-icons/file-export.svg" alt=""><span>导出</span></button>
+            <div class="ribbon-slot" data-ribbon-slot="main"></div>
+            <button type="button" class="btn ribbon-action" id="btnClearGraph" title="仅清空当前画布的上图流水，其他画布不受影响"><img class="ui-icon" src="/static/ui-icons/trash.svg" alt=""><span>清空当前画布</span></button>
+          </div>
+          <span class="ribbon-group-label">输出与管理</span></div>
       </div>
-      <span class="editor-group-label" id="editGroupLabel">编辑</span>
-    </div>
-    <div class="editor-group editor-layout" role="group" aria-labelledby="layoutGroupLabel">
-      <div class="editor-group-controls">
-        <label for="layoutSel" class="compact-label">布局</label><select id="layoutSel" title="只改变几何位置，不判定账户业务角色"><option value="force">力导向</option><option value="structural">主节点与叶子铺开</option><option value="dagre">层次（自上而下）</option></select>
-        <button class="btn editor-action" id="btnRelayout"><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt=""><span>重新布局</span></button>
-        <button class="btn editor-action" id="btnFit"><img class="ui-icon" src="/static/ui-icons/arrows-maximize.svg" alt=""><span>适应画布</span></button>
+      <div class="ribbon-panel" id="ribbonPanel-trace" role="tabpanel" aria-labelledby="ribbonTab-trace" hidden>
+        <div class="ribbon-group" role="group" aria-label="图内条件 · 当前画布显示">
+          <div class="ribbon-group-body">
+            <div class="ribbon-slot" data-ribbon-slot="relations"></div>
+          </div>
+          <span class="ribbon-group-label">图内条件 · 当前画布显示</span></div>
+        <div class="ribbon-group" role="group" aria-label="邻域追踪">
+          <div class="ribbon-group-body">
+            <div class="ribbon-slot" data-ribbon-slot="neighborhood"></div>
+          </div>
+          <span class="ribbon-group-label">邻域追踪</span></div>
+        <div class="ribbon-group" role="group" aria-label="关系核查">
+          <div class="ribbon-group-body">
+            <button type="button" class="btn ribbon-action" data-ribbon-command="viewFlows" ><img class="ui-icon" src="/static/ui-icons/list.svg" alt=""><span>查流水</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="focusSelection" ><img class="ui-icon" src="/static/ui-icons/target.svg" alt=""><span>聚焦选中</span></button>
+          </div>
+          <span class="ribbon-group-label">关系核查</span></div>
+        <div class="ribbon-group" role="group" aria-label="全案算法 · 独立分析页">
+          <div class="ribbon-group-body">
+            <a class="btn ribbon-action" data-analysis-algorithm="paths" href="/analysis" target="_blank" rel="noopener"><img class="ui-icon" src="/static/ui-icons/link.svg" alt=""><span>关联路径 ↗</span></a>
+            <a class="btn ribbon-action" data-analysis-algorithm="cycles" href="/analysis" target="_blank" rel="noopener"><img class="ui-icon" src="/static/ui-icons/network.svg" alt=""><span>环路检测 ↗</span></a>
+            <a class="btn ribbon-action" data-analysis-algorithm="fast_flows" href="/analysis" target="_blank" rel="noopener"><img class="ui-icon" src="/static/ui-icons/swap.svg" alt=""><span>快进快出 ↗</span></a>
+            <a class="btn ribbon-action" data-analysis-algorithm="outliers" href="/analysis" target="_blank" rel="noopener"><img class="ui-icon" src="/static/ui-icons/chart.svg" alt=""><span>离群画像 ↗</span></a>
+          </div>
+          <span class="ribbon-group-label">全案算法 · 独立分析页</span></div>
+        <div class="ribbon-group" role="group" aria-label="时序探索">
+          <div class="ribbon-group-body">
+            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/route.svg" alt=""><span>图内找路径</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/play.svg" alt=""><span>时间播放</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+          </div>
+          <span class="ribbon-group-label">时序探索</span></div>
       </div>
-      <span class="editor-group-label" id="layoutGroupLabel">布局</span>
-    </div>
-    <div class="editor-group editor-display" role="group" aria-labelledby="displayGroupLabel">
-      <div class="editor-group-controls">
-        <select id="edgeTypeSel" aria-label="关系线型"><option value="quadratic">曲线</option><option value="line">直线（可加折点）</option><option value="polyline">折线（直角，可加折点）</option></select>
-        <span class="el-group" id="edgeLabelGroup" role="group" aria-label="关系标注">
-          <label class="el-ck"><input type="checkbox" class="edge-ck" data-em="money">金额</label><label class="el-ck"><input type="checkbox" class="edge-ck" data-em="time">时间</label>
-          <span class="toolbar-display-extra tool-popover" id="toolbarDisplayExtra">
-            <label class="el-ck"><input type="checkbox" class="edge-ck" data-em="summary">备注</label><label class="el-ck"><input type="checkbox" class="edge-ck" data-em="currency" title="非人民币交易在金额前显示币种代码">币种</label>
-            <label class="el-ck"><input type="checkbox" id="showIdCk" checked>证件</label><label class="el-ck"><input type="checkbox" id="showPhotoCk" checked>照片</label>
-          </span>
-        </span>
-        <button class="btn small compact-more" id="btnDisplayActions" type="button" aria-expanded="false" aria-controls="toolbarDisplayExtra">显示<img class="ui-icon" src="/static/ui-icons/chevron-down.svg" alt=""></button>
+      <div class="ribbon-panel" id="ribbonPanel-style" role="tabpanel" aria-labelledby="ribbonTab-style" hidden>
+        <div class="ribbon-group" role="group" aria-label="文字 · 所选对象">
+          <div class="ribbon-group-body">
+            <div class="ribbon-slot" data-ribbon-slot="text"></div>
+          </div>
+          <span class="ribbon-group-label">文字 · 所选对象</span></div>
+        <div class="ribbon-group" role="group" aria-label="节点外观">
+          <div class="ribbon-group-body">
+            <button type="button" class="btn ribbon-action" data-ribbon-command="emphasize" ><img class="ui-icon" src="/static/ui-icons/star.svg" alt=""><span>重点展示</span></button>
+            <div class="ribbon-small-stack">
+              <button type="button" class="btn ribbon-action" id="btnNodeBorder" data-ribbon-popover="nodeBorderPopover" aria-controls="nodeBorderPopover" aria-expanded="false" aria-haspopup="dialog" disabled><img class="ui-icon" src="/static/ui-icons/selection.svg" alt=""><span>节点边框</span></button>
+              <button type="button" class="btn ribbon-action" id="btnNodeSize" data-ribbon-popover="nodeSizePopover" aria-controls="nodeSizePopover" aria-expanded="false" aria-haspopup="dialog" disabled><img class="ui-icon" src="/static/ui-icons/arrows-maximize.svg" alt=""><span>大小</span></button>
+              <div id="nodeBorderPopover" class="ribbon-popover" role="dialog" aria-label="所选节点边框" hidden><label class="ribbon-color" title="所选节点边框颜色"><input type="color" id="nodeBorderColor" aria-label="节点边框颜色" value="#9bd6bf" data-ribbon-command="nodeBorderColor"></label><select id="nodeBorderWidth" aria-label="节点边框粗细" data-ribbon-command="nodeBorderWidth"><option value="0.5">边框 0.5</option><option value="1">边框 1</option><option value="1.5">边框 1.5</option><option value="2">边框 2</option><option value="2.8">边框 2.8</option><option value="3">边框 3</option><option value="4">边框 4</option><option value="5">边框 5</option></select></div>
+              <div id="nodeSizePopover" class="ribbon-popover" role="dialog" aria-label="所选节点大小" hidden><select id="nodeSize" aria-label="节点基础大小" title="照片至少40；重点展示在基础大小上按倍数放大" data-ribbon-command="nodeSize"><option value="auto">自动大小</option><option value="24">24</option><option value="28">28</option><option value="32">32</option><option value="40">40</option><option value="48">48</option><option value="64">64</option><option value="80">80</option><option value="96">96</option></select></div>
+            </div>
+            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/shape.svg" alt=""><span>形状</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/photo.svg" alt=""><span>图标</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+          </div>
+          <span class="ribbon-group-label">节点外观</span></div>
+        <div class="ribbon-group" role="group" aria-label="关系线">
+          <div class="ribbon-group-body">
+            <div class="ribbon-slot" data-ribbon-slot="edge"></div>
+          </div>
+          <span class="ribbon-group-label">关系线</span></div>
+        <div class="ribbon-group" role="group" aria-label="排列">
+          <div class="ribbon-group-body">
+            <button type="button" class="btn ribbon-action" data-ribbon-command="alignLeft" ><img class="ui-icon" src="/static/ui-icons/align-left.svg" alt=""><span>左对齐</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="alignTop" ><img class="ui-icon" src="/static/ui-icons/align-top.svg" alt=""><span>顶对齐</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="distributeHorizontal" ><img class="ui-icon" src="/static/ui-icons/layout-distribute-horizontal.svg" alt=""><span>水平分布</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="distributeVertical" ><img class="ui-icon" src="/static/ui-icons/distribute-vertical.svg" alt=""><span>垂直分布</span></button>
+            <div class="ribbon-small-stack">
+              <button type="button" class="btn ribbon-action planned" disabled data-planned="true" data-planned-feature="fixLayout" title="规划功能，尚未实现"><img class="ui-icon" src="/static/ui-icons/lock.svg" alt=""><span>布局时固定</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+              <button type="button" class="btn ribbon-action planned" disabled data-planned="true" data-planned-feature="unfixLayout" title="规划功能，尚未实现"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""><span>解除固定</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+            </div>
+          </div>
+          <span class="ribbon-group-label">排列</span></div>
+        <div class="ribbon-group" role="group" aria-label="样式预设">
+          <div class="ribbon-group-body">
+            <div class="ribbon-small-stack">
+              <button type="button" class="btn ribbon-action planned" disabled data-planned="true" data-planned-feature="presetDefault" title="规划功能，尚未实现"><img class="ui-icon" src="/static/ui-icons/settings.svg" alt=""><span>默认</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+              <button type="button" class="btn ribbon-action planned" disabled data-planned="true" data-planned-feature="presetReport" title="规划功能，尚未实现"><img class="ui-icon" src="/static/ui-icons/list.svg" alt=""><span>汇报阅读</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+            </div>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="styleReset" ><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt=""><span>恢复样式</span></button>
+          </div>
+          <span class="ribbon-group-label">样式预设</span></div>
       </div>
-      <span class="editor-group-label" id="displayGroupLabel">显示</span>
+      <div class="ribbon-panel" id="ribbonPanel-view" role="tabpanel" aria-labelledby="ribbonTab-view" hidden>
+        <div class="ribbon-group" role="group" aria-label="布局">
+          <div class="ribbon-group-body">
+            <div class="ribbon-slot" data-ribbon-slot="layout"></div>
+          </div>
+          <span class="ribbon-group-label">布局</span></div>
+        <div class="ribbon-group" role="group" aria-label="缩放与定位">
+          <div class="ribbon-group-body">
+            <button type="button" class="btn ribbon-action" data-ribbon-command="fitSelection" ><img class="ui-icon" src="/static/ui-icons/focus.svg" alt=""><span>适应选择</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="zoomOut" ><img class="ui-icon" src="/static/ui-icons/zoom-out.svg" alt=""><span>缩小</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="zoomReset" ><img class="ui-icon" src="/static/ui-icons/zoom-reset.svg" alt=""><span>100%</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="zoomIn" ><img class="ui-icon" src="/static/ui-icons/zoom-in.svg" alt=""><span>放大</span></button>
+          </div>
+          <span class="ribbon-group-label">缩放与定位</span></div>
+        <div class="ribbon-group" role="group" aria-label="标注与资料">
+          <div class="ribbon-group-body">
+            <div class="ribbon-slot" data-ribbon-slot="labels"></div>
+          </div>
+          <span class="ribbon-group-label">标注与资料</span></div>
+        <div class="ribbon-group" role="group" aria-label="可见范围">
+          <div class="ribbon-group-body">
+            <button type="button" class="btn ribbon-action" data-ribbon-command="hideSelection" ><img class="ui-icon" src="/static/ui-icons/eye-off.svg" alt=""><span>隐藏选中</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="showOnlySelection" ><img class="ui-icon" src="/static/ui-icons/eye.svg" alt=""><span>只看选中</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="restoreHidden" ><img class="ui-icon" src="/static/ui-icons/eye-restore.svg" alt=""><span>恢复隐藏</span></button>
+          </div>
+          <span class="ribbon-group-label">可见范围</span></div>
+        <div class="ribbon-group" role="group" aria-label="工作区">
+          <div class="ribbon-group-body">
+            <button type="button" class="btn ribbon-action" data-ribbon-command="toggleLegend" aria-pressed="true"><img class="ui-icon" src="/static/ui-icons/legend.svg" alt=""><span>图例</span></button>
+            <button type="button" class="btn ribbon-action" id="btnMinimap" aria-pressed="true"><img class="ui-icon" src="/static/ui-icons/map.svg" alt=""><span>缩略图</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="toggleSidebar" aria-pressed="true"><img class="ui-icon" src="/static/ui-icons/search.svg" alt=""><span>查询区</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="focusCanvas" ><img class="ui-icon" src="/static/ui-icons/focus.svg" alt=""><span>专注画布</span></button>
+          </div>
+          <span class="ribbon-group-label">工作区</span></div>
+      </div>
     </div>
-    <div class="editor-group editor-main" role="group" aria-labelledby="mainGroupLabel">
-      <div class="editor-group-controls">
-        <div class="toolbar-main-actions tool-popover" id="toolbarMainActions">
-          <button class="btn editor-action" id="btnAutoMain" title="按流水关系自动识别主账号"><img class="ui-icon" src="/static/ui-icons/user-search.svg" alt=""><span>识别主账号</span></button>
-          <button class="btn editor-action" id="btnClearAutoMain" title="清除自动主账号标记，保留手动标记"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""><span>清除标记</span></button>
+    <div id="ribbonCompact" aria-label="常用快捷工具带" hidden>
+      <button type="button" class="btn small ribbon-inspect" data-ribbon-command="inspectSelection" aria-controls="drawer" title="查看所选对象详情 · Enter" disabled><img class="ui-icon" src="/static/ui-icons/list.svg" alt=""><span>查看详情</span></button>
+      <div class="ribbon-slot" data-ribbon-slot="layout"></div>
+      <div class="ribbon-divider"></div>
+      <div class="ribbon-slot" data-ribbon-slot="labels"></div>
+      <div class="ribbon-divider"></div>
+      <div class="ribbon-slot" data-ribbon-slot="relations"></div>
+      <div class="ribbon-divider"></div>
+      <div class="ribbon-slot" data-ribbon-slot="neighborhood"></div>
+      <button type="button" class="btn ribbon-action" data-ribbon-command="viewFlows" ><img class="ui-icon" src="/static/ui-icons/list.svg" alt=""><span>查流水</span></button>
+      <div class="ribbon-divider"></div>
+      <div class="ribbon-slot" data-ribbon-slot="text"></div>
+      <div class="ribbon-slot" data-ribbon-slot="edge"></div>
+      <button type="button" class="btn ribbon-action" id="btnRibbonMore" data-ribbon-popover="ribbonMore" aria-controls="ribbonMore" aria-expanded="false" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/layers.svg" alt=""><span>更多</span></button>
+      <button type="button" class="btn ribbon-expand-button" data-ribbon-collapse="false"><img class="ui-icon" src="/static/ui-icons/layers.svg" alt="">展开功能区<img class="ui-icon" src="/static/ui-icons/chevron-down.svg" alt=""></button>
+    </div>
+    <div id="ribbonStorage" hidden>
+      <div id="ribbonLayoutControls" class="ribbon-bundle ribbon-layout" data-ribbon-bundle="layout" data-ribbon-home="view"><select id="layoutSel" aria-label="布局算法" title="只改变几何位置，不判定账户业务角色"><option value="auto">智能布局</option><option value="dagre">资金流向分层</option><option value="partition">复杂图分区</option><option value="structural">主叶铺开</option><option value="force">力导向</option></select>
+        <button type="button" class="btn ribbon-action" id="btnRelayout" ><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt=""><span>重新布局</span></button>
+        <button type="button" class="btn ribbon-action" id="btnFit" ><img class="ui-icon" src="/static/ui-icons/arrows-maximize.svg" alt=""><span>适应画布</span></button>
+      </div>
+      <div id="ribbonLabels" class="ribbon-bundle ribbon-labels" data-ribbon-bundle="labels" data-ribbon-home="view"><span class="el-group" id="edgeLabelGroup" role="group" aria-label="关系标注"><label class="el-ck"><input type="checkbox" class="edge-ck" data-em="money">金额</label><label class="el-ck"><input type="checkbox" class="edge-ck" data-em="time">时间</label><span id="toolbarDisplayExtra" class="ribbon-popover ribbon-adaptive-popover" role="dialog" aria-label="标注与资料显示"><label class="el-ck"><input type="checkbox" class="edge-ck" data-em="summary">备注</label><label class="el-ck"><input type="checkbox" class="edge-ck" data-em="currency">币种</label><label class="el-ck"><input type="checkbox" id="showIdCk" checked>证件</label><label class="el-ck"><input type="checkbox" id="showPhotoCk" checked>照片</label><label class="ribbon-field" for="graphLabelMode">标签<select id="graphLabelMode"><option value="auto">自动分级</option><option value="focus">仅关注邻域</option><option value="all">全部标签</option></select></label></span></span>
+        <button type="button" class="btn ribbon-action" id="btnDisplayActions" data-ribbon-popover="toolbarDisplayExtra" aria-controls="toolbarDisplayExtra" aria-expanded="false" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/eye.svg" alt=""><span>显示</span></button>
+      </div>
+      <div id="ribbonRelations" class="ribbon-bundle" data-ribbon-bundle="relations" data-ribbon-home="trace">
+        <button type="button" class="btn ribbon-action" id="btnRelationFilter" data-toolbar-menu="relationFilterPopover" aria-controls="relationFilterPopover" aria-expanded="false" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/filter.svg" alt=""><span>关系筛选<img class="ui-icon toolbar-menu-chevron" src="/static/ui-icons/chevron-down.svg" alt=""></span></button>
+        <section id="relationFilterPopover" class="toolbar-menu relation-filter-popover" data-toolbar-panel="form" role="dialog" aria-labelledby="relationFilterTitle" aria-describedby="relationFilterScope" hidden inert>
+          <header class="relation-filter-head"><h2 id="relationFilterTitle">关系筛选</h2><span id="relationFilterScope">当前画布 · 已追踪关系</span><button type="button" id="btnRelationClose" class="btn relation-filter-close" aria-label="关闭关系筛选"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></header>
+          <p id="relationAppliedSummary" class="relation-filter-applied">已应用：全部关系</p>
+          <div class="relation-filter-body">
+            <div class="relation-filter-fields">
+              <label for="relationCurrency">币种<select id="relationCurrency" aria-describedby="relationCurrencyError"><option value="all">全部币种（不筛选）</option></select></label><p id="relationCurrencyError" class="relation-filter-error" hidden></p>
+              <div class="relation-filter-range">
+                <div><label for="relationMin">最低累计金额<input id="relationMin" inputmode="decimal" maxlength="40" placeholder="不限" autocomplete="off" aria-describedby="relationMinError relationAmountHint"></label><p id="relationMinError" class="relation-filter-error" hidden></p></div>
+                <div><label for="relationMax">最高累计金额<input id="relationMax" inputmode="decimal" maxlength="40" placeholder="不限" autocomplete="off" aria-describedby="relationMaxError relationAmountHint"></label><p id="relationMaxError" class="relation-filter-error" hidden></p></div>
+              </div><p id="relationAmountHint" class="relation-filter-hint">留空不限 · 包含边界</p>
+            </div>
+            <aside class="relation-filter-preview" aria-label="筛选预计结果"><h3>预计显示</h3><div class="relation-filter-metrics" aria-live="polite"><div><output id="relationPreviewEdges">—</output><span>条关系</span></div><div><output id="relationPreviewNodes">—</output><span>个账户</span></div></div><p id="relationCurrentCounts"></p><span id="relationDraftState">已应用</span></aside>
+          </div>
+          <p id="relationFilterBusy" class="relation-filter-feedback" role="status" hidden></p><output id="relationFilterStatus" role="status" aria-live="polite"></output>
+          <footer class="relation-filter-footer"><button type="button" class="btn small" id="btnRelationClear" disabled><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt="">清除关系筛选</button><span>按有向关系的单币种累计金额</span><button type="button" class="btn small primary" id="btnRelationApply" disabled>应用筛选</button></footer>
+        </section>
+        <label class="ribbon-field ribbon-width-currency" for="widthCurrency">币种<select id="widthCurrency" aria-label="线宽映射币种"><option>CNY</option><option>USD</option><option>EUR</option><option>HKD</option><option>JPY</option><option>GBP</option></select></label><label class="el-ck ribbon-switch" title="按指定币种的关系累计金额映射线宽，不合并币种"><input type="checkbox" id="amountWidthCk"><span>金额→线宽</span></label>
+        <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/calendar.svg" alt=""><span>时间窗口</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+      </div>
+      <div id="ribbonNeighborhood" class="ribbon-bundle" data-ribbon-bundle="neighborhood" data-ribbon-home="trace">
+        <button type="button" class="btn ribbon-action" id="btnNeighborActions" data-toolbar-menu="neighborPopover" data-toolbar-menu-kind="form" aria-controls="neighborPopover" aria-expanded="false" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/target.svg" alt=""><span>邻域追踪<img class="ui-icon toolbar-menu-chevron" src="/static/ui-icons/chevron-down.svg" alt=""></span></button>
+        <section id="neighborPopover" class="toolbar-menu neighborhood-popover" data-toolbar-panel="form" role="dialog" aria-labelledby="neighborTitle" aria-describedby="neighborScope" hidden inert>
+          <header class="neighborhood-head"><h2 id="neighborTitle">邻域追踪</h2><p id="neighborScope">当前画布 · 已追踪账户<span>每次最多展开 50 个一跳邻居</span></p><button type="button" class="btn neighborhood-close" id="btnNeighborClose" aria-label="关闭邻域追踪"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></header>
+          <div class="neighborhood-body">
+            <div class="neighborhood-draft"><h3>待应用条件</h3>
+              <div class="neighborhood-field"><label for="neighborAccount">中心账号</label><div class="neighborhood-input"><div class="neighborhood-search"><input id="neighborAccount" placeholder="卡号 / 账号 / 户名" autocomplete="off" spellcheck="false" aria-describedby="neighborResolvedName neighborSearchCount neighborStatus"><button type="button" class="btn" id="btnNeighborSearch" aria-label="搜索并定位中心账户" title="搜索并定位中心账户"><img class="ui-icon" src="/static/ui-icons/search.svg" alt=""></button></div><p id="neighborResolvedName" class="neighborhood-resolved" hidden></p><p id="neighborSearchCount" class="neighborhood-hint" role="status" hidden></p><div id="neighborSearchResults" class="neighborhood-results" aria-label="匹配的中心账户" hidden></div></div></div>
+              <div class="neighborhood-field"><span id="neighborDirectionLabel">追踪方向</span><div class="neighborhood-input"><select id="neighborDirection" hidden aria-label="追踪方向"><option value="both">双向邻居</option><option value="in">转入来源</option><option value="out">转出去向</option></select><div class="neighborhood-directions" role="group" aria-labelledby="neighborDirectionLabel"><button type="button" id="neighborDirectionIn" aria-pressed="false"><img class="ui-icon" src="/static/ui-icons/arrow-back-up.svg" alt="">转入来源</button><button type="button" id="neighborDirectionBoth" aria-pressed="true"><img class="ui-icon" src="/static/ui-icons/swap.svg" alt="">双向邻居</button><button type="button" id="neighborDirectionOut" aria-pressed="false"><img class="ui-icon" src="/static/ui-icons/arrow-forward-up.svg" alt="">转出去向</button></div><p class="neighborhood-hint">从已追踪账户中查找一跳邻居，保留账户间关系</p></div></div>
+              <div class="neighborhood-field neighborhood-preview"><span>预计结果</span><div class="neighborhood-input"><span id="neighborDraftState" data-state="draft">待选择</span><p><output id="neighborPreviewNodes">—</output> 个账户 <span aria-hidden="true">·</span> <output id="neighborPreviewEdges">—</output> 条关系</p></div></div>
+            </div>
+            <aside class="neighborhood-current" aria-labelledby="neighborCurrentTitle"><h3 id="neighborCurrentTitle">当前邻域</h3><dl><div><dt>中心账号</dt><dd><p id="neighborAppliedAccount" class="neighborhood-account">尚未查看邻域</p><p id="neighborAppliedName" class="neighborhood-hint">当前显示完整追踪图</p></dd></div><div><dt>追踪方向</dt><dd id="neighborAppliedDirection">—</dd></div><div><dt>当前规模</dt><dd><p><output id="neighborAppliedNodes">0</output> 个账户 <span aria-hidden="true">·</span> <output id="neighborAppliedEdges">0</output> 条关系</p><p class="neighborhood-hint">已展开 <output id="neighborExpandedCount">0</output> 个邻居 <span aria-hidden="true">·</span> 剩余 <output id="neighborRemainingCount">0</output> 个</p></dd></div></dl><button type="button" class="btn" id="btnExpandNeighbors" disabled><img class="ui-icon" src="/static/ui-icons/network.svg" alt="">继续展开 50 个</button><p id="neighborExpandHint" class="neighborhood-hint">查看邻域后可继续展开</p></aside>
+          </div>
+          <footer class="neighborhood-footer"><output id="neighborStatus" role="status" aria-live="polite">输入完整账号，或搜索卡号、账号、户名</output><button type="button" class="btn primary" id="btnNeighborhood" disabled>查看邻域</button></footer>
+        </section>
+        <button type="button" class="btn ribbon-action" id="btnGraphOverview" disabled><img class="ui-icon" src="/static/ui-icons/focus.svg" alt=""><span>返回全图</span></button>
+      </div>
+      <div id="ribbonTextStyle" class="ribbon-bundle" data-ribbon-bundle="text" data-ribbon-home="style">
+        <button type="button" class="btn ribbon-action" id="btnTextStyle" data-ribbon-popover="textStylePopover" aria-controls="textStylePopover" aria-expanded="false" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/font-text.svg" alt=""><span>文字</span></button>
+        <div id="textStylePopover" class="ribbon-popover ribbon-adaptive-popover" role="dialog" aria-label="所选对象文字样式">
+          <div class="ribbon-stack">
+            <div class="ribbon-inline"><select id="labelFontFamily" aria-label="字体" data-ribbon-command="labelFontFamily"><option value="Microsoft YaHei">微软雅黑</option><option value="PingFang SC">苹方</option><option value="SimSun">宋体</option><option value="SimHei">黑体</option><option value="Arial">Arial</option><option value="system-ui">系统字体</option><option value="sans-serif">无衬线</option></select><select id="labelFontSize" aria-label="字号" data-ribbon-command="labelFontSize"><option value="8">8</option><option value="10">10</option><option value="11">11</option><option value="12" selected>12</option><option value="14">14</option><option value="16">16</option><option value="18">18</option><option value="20">20</option><option value="24">24</option><option value="28">28</option><option value="32">32</option></select></div>
+            <div class="ribbon-inline">
+              <button type="button" class="btn ribbon-type-button" id="labelBold" data-ribbon-command="labelBold" aria-pressed="false" aria-label="粗体"><b>B</b></button>
+              <button type="button" class="btn ribbon-type-button" id="labelItalic" data-ribbon-command="labelItalic" aria-pressed="false" aria-label="斜体"><i>I</i></button>
+              <button type="button" class="btn ribbon-type-button" id="labelUnderline" disabled data-planned="true" title="规划功能，尚未实现" data-ribbon-command="labelUnderline" aria-pressed="false" aria-label="下划线"><u>U</u></button>
+              <label class="ribbon-color" title="文字颜色">A<input type="color" id="labelColor" value="#e8eef6" aria-label="文字颜色" data-ribbon-command="labelColor"></label></div>
+          </div>
         </div>
-        <button class="btn small compact-more" id="btnMainActions" type="button" aria-expanded="false" aria-controls="toolbarMainActions">主账号<img class="ui-icon" src="/static/ui-icons/chevron-down.svg" alt=""></button>
       </div>
-      <span class="editor-group-label" id="mainGroupLabel">主账号</span>
+      <div id="ribbonEdgeStyle" class="ribbon-bundle" data-ribbon-bundle="edge" data-ribbon-home="style">
+        <button type="button" class="btn ribbon-action" id="btnEdgeStyle" data-ribbon-popover="edgeStylePopover" aria-controls="edgeStylePopover" aria-expanded="false" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/route.svg" alt=""><span>关系样式</span></button>
+        <div id="edgeStylePopover" class="ribbon-popover ribbon-adaptive-popover" role="dialog" aria-label="关系线样式"><select id="edgeTypeSel" aria-label="所选关系线型" disabled><option value="saved" hidden disabled>已保存线型</option><option value="quadratic">曲线</option><option value="line">直线</option><option value="polyline">折线</option></select><label class="ribbon-color" title="所选关系线颜色"><input type="color" id="edgeColor" value="#62a0ea" aria-label="关系线颜色" data-ribbon-command="edgeColor"></label><select id="edgeWidth" aria-label="关系线宽" data-ribbon-command="edgeWidth"><option value="1">线宽 1</option><option value="1.4">线宽 1.4</option><option value="1.5">线宽 1.5</option><option value="2" selected>线宽 2</option><option value="3">线宽 3</option><option value="4">线宽 4</option><option value="6">线宽 6</option><option value="7">线宽 7</option></select><select id="edgeDash" aria-label="关系线样式" data-ribbon-command="edgeDash"><option value="solid">实线</option><option value="dashed">虚线</option><option value="dotted">点线</option></select></div>
+      </div>
+      <div id="ribbonMain" class="ribbon-bundle" data-ribbon-bundle="main" data-ribbon-home="common">
+        <button type="button" class="btn ribbon-action" id="btnMainActions" aria-controls="mainAccountsDialog" aria-expanded="false" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/user-search.svg" alt=""><span>主账号</span></button>
+      </div>
+      <div id="ribbonFind" class="ribbon-bundle" data-ribbon-bundle="find" data-ribbon-home="common">
+        <button type="button" class="btn ribbon-action" id="btnFindNode" data-toolbar-menu="findNodePopover" aria-controls="findNodePopover" aria-expanded="false" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/search.svg" alt=""><span>查找定位</span></button>
+        <section id="findNodePopover" class="toolbar-menu find-popover" data-toolbar-panel="form" role="dialog" aria-labelledby="graphFindTitle" hidden>
+          <header class="find-head"><h2 id="graphFindTitle">查找定位</h2><p id="graphFindScope">当前显示范围 · 0 个账户</p><button type="button" class="btn find-icon-button" id="btnGraphFindClose" aria-label="关闭查找定位"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></header>
+          <div class="find-search"><img class="ui-icon" src="/static/ui-icons/search.svg" alt=""><label class="sr-only" for="graphFindInput">卡号、账号或户名</label><input id="graphFindInput" type="search" placeholder="卡号、账号或户名" autocomplete="off" spellcheck="false" aria-controls="graphFindResults"><button type="button" class="btn find-icon-button" id="btnGraphFindClear" aria-label="清空查找内容"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button><button type="button" class="btn primary" id="btnGraphFindSearch" aria-label="查找并定位"><img class="ui-icon" src="/static/ui-icons/search.svg" alt=""></button></div>
+          <div class="find-results-head"><p id="graphFindCount">查找当前画布中的账户</p><output id="graphFindStatus" role="status" aria-live="polite"></output></div>
+          <div class="find-results-scroll"><div id="graphFindResults" class="find-results" role="group" aria-label="匹配账户，点击定位"></div><button type="button" class="btn find-more" id="btnGraphFindMore" hidden>显示更多</button></div>
+          <footer class="find-footer"><button type="button" class="btn" id="btnGraphFindNew" title="定位当前显示范围内最近新增的账户"><img class="ui-icon" src="/static/ui-icons/target.svg" alt="">定位新增 · <span id="graphFindNewCount">0</span></button><div><button type="button" class="btn" id="btnGraphFindSelect" title="将匹配结果替换为当前选择">选中结果</button><button type="button" class="btn primary" id="btnGraphFindAll">定位全部</button></div></footer>
+        </section>
+      </div>
     </div>
-    <div class="editor-group editor-clear" role="group" aria-label="清理当前画布">
-      <div class="editor-group-controls"><button class="btn editor-action danger" id="btnClearGraph" title="仅清空当前画布的上图流水，其他画布不受影响"><img class="ui-icon" src="/static/ui-icons/trash.svg" alt=""><span>清空图谱</span></button></div>
-      <span class="editor-group-label">清理</span>
+    <div id="ribbonMore" class="ribbon-popover" role="dialog" aria-label="更多画布操作" hidden>
+      <button type="button" class="btn ribbon-action" id="btnArrangeLabels"><img class="ui-icon" src="/static/ui-icons/layout-distribute-horizontal.svg" alt=""><span>按文字整理布局</span></button>
+      <button type="button" class="btn ribbon-action" data-ribbon-command="selectAll" ><img class="ui-icon" src="/static/ui-icons/selection.svg" alt=""><span>选择全部</span></button>
+      <button type="button" class="btn ribbon-action" data-ribbon-command="clearSelection" ><img class="ui-icon" src="/static/ui-icons/selection-clear.svg" alt=""><span>取消选择</span></button>
+      <button type="button" class="btn ribbon-action" data-ribbon-command="invertSelection" ><img class="ui-icon" src="/static/ui-icons/swap.svg" alt=""><span>反选</span></button>
+      <button type="button" class="btn ribbon-action" data-ribbon-command="accountDetails" ><img class="ui-icon" src="/static/ui-icons/user-search.svg" alt=""><span>账户资料</span></button>
+      <button type="button" class="btn ribbon-action" data-ribbon-command="fitSelection" ><img class="ui-icon" src="/static/ui-icons/focus.svg" alt=""><span>适应选择</span></button>
+      <button type="button" class="btn ribbon-action" data-ribbon-command="restoreHidden" ><img class="ui-icon" src="/static/ui-icons/eye-restore.svg" alt=""><span>恢复隐藏</span></button>
+      <button type="button" class="btn ribbon-action" data-ribbon-command="toggleSidebar" ><img class="ui-icon" src="/static/ui-icons/search.svg" alt=""><span>查询区</span></button>
+      <button type="button" class="btn ribbon-action" data-ribbon-command="toggleLegend" ><img class="ui-icon" src="/static/ui-icons/legend.svg" alt=""><span>图例</span></button>
+      <button type="button" class="btn small" data-ribbon-expand-tab="common">画布、查找与主账号工具</button>
     </div>
   </div>
-  <div class="toolbar-edge" aria-hidden="true"></div>
   <button class="workspace-collapse" id="btnToolbarToggle" type="button" aria-label="收起顶部工具带" aria-expanded="true" aria-controls="graphToolbar" title="收起顶部工具带"><img class="ui-icon" src="/static/ui-icons/chevron-up.svg" alt=""></button>
 </section>
 <main id="workspace">
@@ -148,21 +363,18 @@
       </div>
     </div>
     <div id="tab-batches" class="tab-body" style="display:none">
-      <div id="batchList"></div>
+      <header class="batch-heading"><div><h2>导入批次</h2><span id="batchCount" class="muted"></span></div><button class="btn primary" id="btnBatchImport" type="button"><img class="ui-icon" src="/static/ui-icons/upload.svg" alt="">导入流水</button></header>
+      <div class="batch-feedback" id="batchFeedback" role="status" aria-live="polite" hidden><span id="batchMessage"></span><button class="btn small" id="batchRetry" type="button" hidden>重新读取</button></div>
+      <div id="batchListScroll" class="batch-list-scroll" tabindex="0" role="region" aria-label="导入批次表格" hidden><table id="batchTable"><thead><tr><th scope="col">文件</th><th scope="col">导入</th><th scope="col">跳过</th><th scope="col">重复</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead><tbody id="batchList"></tbody></table></div>
+      <div class="flow-horizontal-scroll batch-horizontal-scroll" id="batchHorizontalScroll" role="group" aria-label="批次表格水平滚动" hidden><button class="btn small" id="batchScrollLeft" type="button" aria-label="批次表格向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><input id="batchHorizontalPosition" type="range" min="0" max="0" value="0" step="1" disabled aria-label="批次表格水平位置" aria-controls="batchListScroll"><button class="btn small" id="batchScrollRight" type="button" aria-label="批次表格向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div>
+      <div class="batch-menu" id="batchMenu" role="menu" aria-label="批次操作" hidden><button id="batchDelete" type="button" role="menuitem"><img class="ui-icon" src="/static/ui-icons/trash.svg" alt="">删除批次</button></div>
     </div>
   </aside>
 
   <section id="canvasWrap">
-      <div class="graph-tool-row graph-explorer" aria-label="图谱邻域">
-        <label for="neighborAccount">中心账号</label><input id="neighborAccount" placeholder="输入完整账号" autocomplete="off">
-        <select id="neighborDirection" aria-label="邻域方向"><option value="both">双向邻居</option><option value="in">转入来源</option><option value="out">转出去向</option></select>
-        <button class="btn small" id="btnNeighborhood" disabled>查看邻域</button><button class="btn small" id="btnExpandNeighbors" disabled>再展开 50 个</button><button class="btn small" id="btnGraphOverview" disabled>返回全图</button><button class="btn small" id="btnMinimap" aria-pressed="true">缩略图</button>
-        <label for="graphLabelMode">标签</label><select id="graphLabelMode"><option value="auto">自动分级</option><option value="focus">仅关注邻域</option><option value="all">全部标签</option></select>
-      </div>
     <div id="graphLayoutStatus" role="status" aria-live="polite" hidden></div>
     <div id="graphContainer" tabindex="0" role="region" aria-label="关系图谱" aria-describedby="graphSelectionHelp"></div>
-    <span id="graphSelectionHelp" class="sr-only">单击查看账户；Ctrl 或 Command 点击多选，Ctrl 或 Command 加 A 全选当前图谱；拖动移动选中节点；Escape 取消选择。</span>
-    <output id="graphViewStatus" aria-live="polite"></output>
+    <span id="graphSelectionHelp" class="sr-only">单击选中节点或连线；Enter 查看详情；Ctrl 或 Command 点击多选，Ctrl 或 Command 加 A 全选当前图谱；拖动移动选中节点；双击节点展开邻域，双击连线折点删除折点；Escape 取消选择。</span>
     <div id="legend">
       <div class="graph-legend" aria-label="账户角色图例"><span class="lg" title="只转出（源头）"><i class="dot src"></i>源头</span><span class="lg"><i class="dot mid"></i>中转</span><span class="lg" title="只转入（沉淀）"><i class="dot sink"></i>沉淀</span><span class="lg"><i class="dot main"></i>主账号</span><span class="lg"><i class="dot samename"></i>同户名</span></div>
     </div>
@@ -183,11 +395,18 @@
     </div>
   </section>
 
-  <aside id="drawer">
-    <div class="drawer-head"><span id="drawerTitle">详情</span><button class="btn small" id="btnCloseDrawer"><img class="ui-icon" src="/static/ui-icons/x.svg" alt="">关闭</button></div>
+  <aside id="drawer" aria-hidden="true" inert>
+    <div class="drawer-head"><div><span id="drawerTitle">详情</span><span id="drawerContext" class="muted" hidden></span></div><button class="btn small icon-button" id="btnCloseDrawer" type="button" aria-label="关闭详情"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></div>
     <div id="drawerBody"></div>
+    <div class="batch-menu edge-menu" id="edgeMenu" role="menu" aria-label="流水操作" hidden><button id="edgeRemove" type="button" role="menuitem"><img class="ui-icon" src="/static/ui-icons/x.svg" alt="">移出图谱</button></div>
+    <div class="batch-menu node-menu" id="nodePhotoMenu" role="menu" aria-label="照片操作" hidden><button id="ndPhotoRe" type="button" role="menuitem">重新裁剪</button><button id="ndPhotoClr" type="button" role="menuitem">移除照片</button></div>
+    <div class="batch-menu node-menu" id="nodeMenu" role="menu" aria-label="账户操作" hidden><button id="ndRemove" type="button" role="menuitem">从图谱移出</button></div>
   </aside>
 </main>
+<dialog id="nodeConfirm" class="action-dialog node-confirm" aria-labelledby="ndConfirmTitle" aria-describedby="ndConfirmMessage">
+  <div class="action-dialog-head"><h2 id="ndConfirmTitle">确认操作</h2><button id="ndConfirmClose" class="btn small icon-button" type="button" aria-label="关闭确认"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></div>
+  <p id="ndConfirmMessage" class="action-dialog-context"></p><div class="btn-row node-confirm-actions"><button id="ndConfirmCancel" class="btn" type="button">继续编辑</button><button id="ndConfirmAccept" class="btn primary" type="button">确定</button></div>
+</dialog>
 
 <div class="modal flow-overview" id="flowOverview" style="display:none" role="dialog" aria-modal="true" aria-labelledby="flowOverviewTitle" aria-describedby="flowOverviewHelp">
   <section class="modal-box flow-overview-box">
@@ -199,67 +418,134 @@
 </div>
 
 <!-- 低频管理保持明确入口；日常画布编辑直接呈现在工具带。 -->
-<dialog id="caseActions" class="action-dialog" aria-labelledby="caseActionsTitle">
-  <div class="action-dialog-head"><h2 id="caseActionsTitle">案件管理</h2><button class="btn small" data-dialog-close aria-label="关闭案件管理">关闭</button></div>
-  <p class="action-dialog-context" data-current-case></p>
-  <div class="action-list"><button class="btn" id="btnNewCase" data-dialog-action>新建案件</button><button class="btn" id="btnImportCase" data-dialog-action title="合入为新案件，不影响已有案件">导入案件包</button><button class="btn" id="btnExportCase" data-dialog-action title="包含流水、画布、主账号、身份证与照片">导出当前案件包</button></div>
-  <div class="action-danger"><p>删除会移除当前案件及其全部数据。</p><button class="btn danger" id="btnDelCase" data-dialog-action>删除当前案件</button></div>
+<dialog id="caseActions" class="action-dialog case-dialog" data-phase="idle" aria-labelledby="caseActionsTitle" aria-describedby="caseContext">
+  <header class="case-dialog-head">
+    <div class="case-dialog-title"><h2 id="caseActionsTitle">案件管理</h2><button class="btn small icon-button case-close" id="caseClose" type="button" aria-label="关闭案件管理"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></div>
+    <div class="case-context-row"><p id="caseContext"></p><p id="caseCounts"></p></div>
+  </header>
+  <div class="case-dialog-body">
+    <section id="caseHome" class="case-home">
+      <div class="case-action-list">
+        <button class="btn case-action-row" id="btnNewCase" type="button"><span class="case-action-icon" style="--case-action-mask:url('/static/ui-icons/file-plus.svg')" aria-hidden="true"></span><span class="case-action-copy"><span class="case-action-title">新建案件</span><span class="case-action-description">创建空白案件，开始新的分析。</span></span><img class="ui-icon case-action-chevron" src="/static/ui-icons/chevron-right.svg" alt=""></button>
+        <button class="btn case-action-row" id="btnImportCase" type="button"><span class="case-action-icon" style="--case-action-mask:url('/static/ui-icons/upload.svg')" aria-hidden="true"></span><span class="case-action-copy"><span class="case-action-title">导入案件包</span><span class="case-action-description">导入为新案件，不影响当前案件。</span></span><img class="ui-icon case-action-chevron" src="/static/ui-icons/chevron-right.svg" alt=""></button>
+        <button class="btn case-action-row case-action-export" id="btnExportCase" type="button"><span class="case-action-icon" style="--case-action-mask:url('/static/ui-icons/file-export.svg')" aria-hidden="true"></span><span class="case-action-copy"><span class="case-action-title">导出案件包</span><span class="case-action-description">完整案件与已保存画布（不含原始上传文件），导出为 .fundcase 格式。</span></span><img class="ui-icon case-action-chevron" src="/static/ui-icons/chevron-right.svg" alt=""></button>
+      </div>
+    </section>
+    <section id="caseDetail" class="case-detail" hidden>
+      <h3 id="caseDetailTitle"></h3><p id="caseDetailHelp" class="case-detail-help"></p>
+      <div class="case-field" id="caseNameGroup" hidden><label for="caseName" class="case-required">案件名称 <span aria-hidden="true">*</span></label><input id="caseName" type="text" maxlength="120" required autocomplete="off" placeholder="请输入案件名称"></div>
+      <div class="case-field" id="caseFileGroup" hidden><span class="case-field-label">案件包</span><div class="case-file-picker"><button class="btn" id="caseChooseFile" type="button"><img class="ui-icon" src="/static/ui-icons/upload.svg" alt="">选择案件包</button><span id="caseFileName">尚未选择文件</span></div><p class="case-field-note">支持 .fundcase 或 .zip 案件包。</p></div>
+      <div class="case-export-group" id="caseExportGroup" hidden><p class="case-export-note">未保存的账户资料不会写入案件包。</p><label class="case-check"><input id="caseSaveCanvas" type="checkbox">先保存当前画布形态</label><div class="case-field" id="caseCanvasNameGroup" hidden><label for="caseCanvasName" class="case-required">画布名称 <span aria-hidden="true">*</span></label><input id="caseCanvasName" type="text" aria-required="true" maxlength="120" autocomplete="off" placeholder="请输入画布名称"><p class="case-field-note">默认画布将另存为命名画布。</p></div></div>
+      <div class="case-delete-summary" id="caseDeleteGroup" hidden><p id="caseDeleteScope">删除当前案件及其全部数据。</p></div>
+      <section class="case-result" id="caseResult" hidden><p id="caseResultText"></p><button class="btn primary" id="caseOpenResult" type="button">打开案件</button></section>
+    </section>
+  </div>
+  <div class="case-status"><p id="caseFeedback" role="status" aria-live="polite" aria-atomic="true"></p><p id="caseError" role="alert" hidden></p><p class="case-busy" id="caseBusy" hidden><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt=""><span>正在处理…</span></p></div>
+  <footer class="case-dialog-footer case-home-footer" id="caseHomeFooter"><button class="btn case-delete-action" id="btnDelCase" type="button"><span class="case-delete-icon" aria-hidden="true"></span><span><span class="case-delete-title">删除当前案件</span><span class="case-delete-description">删除整个案件及全部数据。</span></span></button><button class="btn" id="caseCloseFooter" type="button">关闭</button></footer>
+  <footer class="case-dialog-footer case-detail-footer" id="caseDetailFooter" hidden><button class="btn" id="caseBack" type="button">返回</button><button class="btn primary" id="caseSubmit" type="button"><span id="caseSubmitLabel">继续</span></button></footer>
 </dialog>
-<dialog id="dataActions" class="action-dialog" aria-labelledby="dataActionsTitle">
-  <div class="action-dialog-head"><h2 id="dataActionsTitle">数据工具</h2><button class="btn small" data-dialog-close aria-label="关闭数据工具">关闭</button></div>
-  <p class="action-dialog-context" data-current-case></p>
-  <div class="action-list"><button class="btn" id="btnImportIds" data-dialog-action title="支持含卡号/账号与身份证号列的 Excel / CSV">导入账号身份证对照表</button><button class="btn" id="btnIdTpl" data-dialog-action>下载身份证对照表模板</button><button class="btn" id="btnSample" data-dialog-action>生成演示数据</button></div>
+<div id="dataActions" class="toolbar-menu" role="menu" aria-label="数据工具" hidden inert>
+  <button class="toolbar-menu-item" id="btnImportIds" type="button" role="menuitem" tabindex="-1"><img class="ui-icon" src="/static/ui-icons/upload.svg" alt=""><span>导入账号身份证对照表…</span></button>
+  <button class="toolbar-menu-item" id="btnIdTpl" type="button" role="menuitem" tabindex="-1"><img class="ui-icon" src="/static/ui-icons/download.svg" alt=""><span>下载对照表模板</span></button>
+  <div class="toolbar-menu-separator" role="separator"></div>
+  <button class="toolbar-menu-item" id="btnSample" type="button" role="menuitem" tabindex="-1"><img class="ui-icon" src="/static/ui-icons/file-plus.svg" alt=""><span>生成演示数据…</span></button>
+</div>
+<dialog id="mainAccountsDialog" class="main-accounts-dialog" aria-labelledby="maTitle" aria-describedby="maScope" aria-busy="false">
+  <header class="main-accounts-head"><div><button id="maBack" class="btn icon-button" type="button" aria-label="返回主账号列表" hidden><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><h2 id="maTitle">主账号管理</h2></div><button id="maClose" class="btn icon-button" type="button" aria-label="关闭主账号管理"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></header>
+  <div class="main-accounts-context"><p id="maScope"><span id="maCase"></span><span>本案件全部画布</span></p><button id="maSearchAdd" class="btn primary" type="button"><img class="ui-icon" src="/static/ui-icons/search.svg" alt="">搜索添加主账号</button></div>
+  <section id="maListScreen">
+    <div id="maFilters" class="main-accounts-filters" role="tablist" aria-label="标记来源"><button type="button" role="tab" data-ma-filter="all" aria-selected="true" aria-controls="maLedger">全部 <span id="maAllCount">0</span></button><button type="button" role="tab" data-ma-filter="auto" aria-selected="false" aria-controls="maLedger" tabindex="-1">自动 <span id="maAutoCount">0</span></button><button type="button" role="tab" data-ma-filter="manual" aria-selected="false" aria-controls="maLedger" tabindex="-1">手动 <span id="maManualCount">0</span></button></div>
+    <div id="maLedger" class="main-accounts-ledger" role="tabpanel" aria-label="主账号列表"><table><thead><tr><th scope="col">主账号 / 账号</th><th scope="col">标记来源</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead><tbody id="maRows"></tbody></table><p id="maListEmpty" class="main-accounts-empty" hidden></p></div>
+    <p class="main-accounts-note">手动设置会保留，取消仅影响当前账号的主账号标记。</p>
+    <footer class="main-accounts-footer"><button id="btnAutoMain" class="btn" type="button"><img class="ui-icon main-accounts-auto-icon" src="/static/ui-icons/refresh.svg" alt="">自动识别…</button><button id="btnClearAutoMain" class="main-accounts-clear" type="button"><img class="ui-icon" src="/static/ui-icons/x.svg" alt="">清除自动标记…</button></footer>
+  </section>
+  <section id="maSearchScreen" hidden><form id="maSearchForm" class="main-accounts-search"><label class="sr-only" for="maQuery">搜索本案件账号或户名</label><img class="ui-icon" src="/static/ui-icons/search.svg" alt=""><input type="search" id="maQuery" placeholder="搜索本案件账号或户名" autocomplete="off"><button class="btn" type="submit">搜索</button></form><p class="main-accounts-note">包含尚未上图的账号；相同户名按账号分别设置。</p><div class="main-accounts-ledger main-accounts-candidates"><table><thead><tr><th scope="col">户名 / 账号</th><th scope="col">操作</th></tr></thead><tbody id="maCandidates"></tbody></table><p id="maSearchEmpty" class="main-accounts-empty" hidden></p></div><div class="main-accounts-pagination"><span id="maSearchTotal"></span><div><button class="btn small" id="maPrev" type="button" aria-label="上一页账号"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><span id="maPage"></span><button class="btn small" id="maNext" type="button" aria-label="下一页账号"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div></div></section>
+  <section id="maConfirmScreen" class="main-accounts-confirm" hidden><h3 id="maConfirmTitle"></h3><p id="maConfirmAccount" class="main-accounts-confirm-account" hidden></p><p id="maConfirmText"></p><footer><button class="btn" id="maConfirmCancel" type="button">取消</button><button class="btn primary" id="maConfirmSubmit" type="button">确认</button></footer></section>
+  <p id="maFeedback" class="main-accounts-feedback" role="status" aria-live="polite" hidden></p><div id="maErrorBlock" class="main-accounts-error" hidden><p id="maError" role="alert"></p><div><button class="btn small" id="maRetry" type="button">重新读取</button><button class="btn small" id="maReconcile" type="button" hidden>读取当前标记</button><button class="btn small" id="maAcknowledge" type="button" hidden>已核对，结束操作</button></div></div>
+  <div id="maRowMenu" class="toolbar-menu main-accounts-row-menu" role="menu" aria-label="主账号操作" hidden inert><button class="toolbar-menu-item" id="maConvert" type="button" role="menuitem" tabindex="-1"><img class="ui-icon" src="/static/ui-icons/user-search.svg" alt=""><span>改为手动设置</span></button><div id="maRowSeparator" class="toolbar-menu-separator" role="separator"></div><button class="toolbar-menu-item toolbar-menu-danger" id="maRemove" type="button" role="menuitem" tabindex="-1"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""><span>取消主账号标记…</span></button></div>
 </dialog>
-<dialog id="exportActions" class="action-dialog" aria-labelledby="exportActionsTitle">
-  <div class="action-dialog-head"><h2 id="exportActionsTitle">导出</h2><button class="btn small" data-dialog-close aria-label="关闭导出">关闭</button></div>
-  <p class="action-dialog-context" data-current-case></p>
-  <div class="export-graph-options"><label for="exportFmt">图谱格式</label><select id="exportFmt"><option value="png">PNG 图像</option><option value="html">HTML 可拖拽图谱</option><option value="pdf">PDF 文档</option></select><button class="btn primary" id="btnExportPng" data-dialog-action>导出图谱</button></div>
-  <div class="action-list"><button class="btn" id="btnExportXlsx" data-dialog-action>导出追踪流水 Excel</button></div>
+<dialog id="dtDialog" class="data-tools-dialog" aria-labelledby="dtTitle" aria-describedby="dtScope" aria-busy="false">
+  <form id="dtForm">
+    <header class="data-tools-head"><h2 id="dtTitle">导入身份证对照表</h2><button class="btn icon-button" id="dtClose" type="button" aria-label="关闭数据工具"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></header>
+    <section id="dtImportBody">
+      <div class="data-tools-file"><img class="ui-icon data-tools-file-icon" src="/static/ui-icons/list.svg" alt=""><div><strong id="dtFilename">尚未选择文件</strong><span id="dtFilesize">XLSX、CSV、TSV、TXT</span></div><button class="btn" id="dtChoose" type="button">选择文件</button></div>
+      <div class="data-tools-columns"><p>需包含以下列 <span>（<i aria-hidden="true">*</i> 为必需）</span></p><div><span class="data-tools-required"><i aria-hidden="true">*</i> 账号/卡号</span><span class="data-tools-required"><i aria-hidden="true">*</i> 身份证号</span><span>户名（可选，不更新）</span></div></div>
+      <p class="data-tools-formats">支持 .xlsx / .csv / .tsv / .txt；旧版 .xls 请另存为 .xlsx。</p>
+    </section>
+    <section id="dtDemoBody" hidden><p class="data-tools-demo-text">将演示流水加入当前案件，现有流水保留。重复数据会跳过，不会自动上图。</p></section>
+    <dl class="data-tools-scope" id="dtScope"><div><dt>目标案件</dt><dd id="dtCase"></dd></div><div><dt>生效范围</dt><dd id="dtRange">本案件全部画布</dd></div><div class="data-tools-overwrite" id="dtOverwrite"><dt>已有身份证</dt><dd>同账号更新</dd></div></dl>
+    <div id="dtProgress" class="data-tools-progress" role="status" aria-live="polite" hidden><span><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt=""></span><strong id="dtProgressText"></strong></div>
+    <dl id="dtResult" class="data-tools-result" hidden><div><dt>已处理账号</dt><dd><span id="dtImported">0</span> 个</dd></div><div><dt>格式无效</dt><dd><span id="dtInvalid">0</span> 行</dd></div><div><dt>空账号</dt><dd><span id="dtBlank">0</span> 行</dd></div></dl>
+    <p id="dtDemoResult" class="data-tools-demo-result" hidden></p><p id="dtError" class="data-tools-error" role="alert" hidden></p><ul id="dtReconcileList" class="data-tools-reconcile-list" hidden></ul>
+    <footer class="data-tools-footer"><button class="data-tools-template" id="dtTemplate" type="button"><img class="ui-icon" src="/static/ui-icons/download.svg" alt=""><span>下载对照表模板</span></button><div><button class="btn" id="dtCancel" type="button">取消</button><button class="btn" id="dtReconcile" type="button" hidden>读取当前资料</button><button class="btn" id="dtAcknowledge" type="button" hidden>已核对，结束操作</button><button class="btn primary" id="dtSubmit" type="submit">导入并更新</button></div></footer>
+  </form>
 </dialog>
-<dialog id="canvasActions" class="action-dialog" aria-labelledby="canvasActionsTitle">
-  <div class="action-dialog-head"><h2 id="canvasActionsTitle">画布管理</h2><button class="btn small" data-dialog-close aria-label="关闭画布管理">关闭</button></div>
-  <p class="action-dialog-context" data-current-case></p>
-  <div class="action-list"><button class="btn" id="btnCanvasRename" data-dialog-action>重命名当前画布</button></div>
-  <div class="action-danger"><button class="btn danger" id="btnCanvasDel" data-dialog-action>删除当前画布</button></div>
+<dialog id="exportActions" class="action-dialog export-dialog" data-phase="idle" aria-labelledby="exportActionsTitle" aria-describedby="exportContext">
+  <header class="export-dialog-head">
+    <div class="export-dialog-title"><h2 id="exportActionsTitle">导出</h2><button class="btn small icon-button export-close" id="btnExportClose" type="button" aria-label="关闭导出"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></div>
+    <p class="action-dialog-context" id="exportContext" data-current-case></p>
+  </header>
+  <div class="export-dialog-body">
+    <fieldset class="export-formats"><legend class="sr-only">导出格式</legend>
+      <label class="export-format-row"><input class="export-format-input" type="radio" name="exportFormat" value="png" checked><span class="export-format-icon" style="--export-format-mask:url('/static/ui-icons/photo.svg')" aria-hidden="true"></span><span class="export-format-copy"><span class="export-format-title">PNG 图像</span><span class="export-format-description">2× 采样，包含全部标签</span></span></label>
+      <label class="export-format-row"><input class="export-format-input" type="radio" name="exportFormat" value="html"><span class="export-format-icon" style="--export-format-mask:url('/static/ui-icons/network.svg')" aria-hidden="true"></span><span class="export-format-copy"><span class="export-format-title">HTML 可拖拽图谱</span><span class="export-format-description">单文件 · 离线浏览</span></span></label>
+      <label class="export-format-row"><input class="export-format-input" type="radio" name="exportFormat" value="pdf"><span class="export-format-icon" style="--export-format-mask:url('/static/ui-icons/file-export.svg')" aria-hidden="true"></span><span class="export-format-copy"><span class="export-format-title">PDF 文档</span><span class="export-format-description">单页文档，3× 采样</span></span></label>
+      <label class="export-format-row"><input class="export-format-input" type="radio" name="exportFormat" value="xlsx"><span class="export-format-icon" style="--export-format-mask:url('/static/ui-icons/list.svg')" aria-hidden="true"></span><span class="export-format-copy"><span class="export-format-title">Excel 追踪流水</span><span class="export-format-description">当前画布全部已追踪流水及待调取账号</span></span></label>
+    </fieldset>
+    <dl class="export-summary">
+      <div><dt>范围</dt><dd id="exportScope">当前图谱范围</dd></div>
+      <div><dt>内容</dt><dd id="exportContents">当前画布账户与关系</dd></div>
+      <div><dt>保留</dt><dd id="exportPreserves">布局、样式与全部标签</dd></div>
+    </dl>
+  </div>
+  <div class="export-status">
+      <p id="exportFeedback" role="status" aria-live="polite" aria-atomic="true"></p>
+      <p id="exportError" role="alert" hidden></p>
+    <p class="export-busy" id="exportBusy" hidden><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt=""><span>正在准备导出…</span></p>
+  </div>
+  <footer class="export-dialog-footer"><button class="btn" id="btnExportCancel" type="button">取消</button><button class="btn primary" id="btnExportSubmit" type="button"><img class="ui-icon" src="/static/ui-icons/file-export.svg" alt=""><span id="exportSubmitLabel">导出 PNG</span></button></footer>
+  <select id="exportFmt" hidden aria-hidden="true" tabindex="-1"><option value="png">PNG 图像</option><option value="html">HTML 可拖拽图谱</option><option value="pdf">PDF 文档</option></select>
+  <button id="btnExportPng" type="button" hidden>导出图谱</button><button id="btnExportXlsx" type="button" hidden>导出追踪流水 Excel</button>
 </dialog>
-<input type="file" id="casePkgFile" accept=".fundcase,.zip" hidden><input type="file" id="idFile" accept=".xlsx,.xls,.csv,.tsv,.txt" hidden>
+<div id="canvasActions" class="toolbar-menu" role="menu" aria-label="画布管理" hidden inert>
+  <button type="button" class="toolbar-menu-item" id="btnCanvasRename" role="menuitem" tabindex="-1" aria-disabled="true"><img class="ui-icon" src="/static/ui-icons/pencil.svg" alt=""><span>重命名画布…</span></button>
+  <button type="button" class="toolbar-menu-item" id="btnCanvasMenuClone" role="menuitem" tabindex="-1"><img class="ui-icon" src="/static/ui-icons/copy.svg" alt=""><span>另存为新画布…</span></button>
+  <div class="toolbar-menu-separator" role="separator"></div>
+  <button type="button" class="toolbar-menu-item toolbar-menu-danger" id="btnCanvasDel" role="menuitem" tabindex="-1" aria-disabled="true"><img class="ui-icon" src="/static/ui-icons/trash.svg" alt=""><span>删除画布…</span></button>
+</div>
+<dialog id="canvasActionForm" class="toolbar-form" aria-labelledby="canvasActionTitle" aria-busy="false">
+  <form id="canvasNameForm">
+    <h2 id="canvasActionTitle">画布</h2>
+    <label id="canvasNameField" class="toolbar-form-field" for="canvasActionName">画布名称<input id="canvasActionName" type="text" autocomplete="off" required></label>
+    <p id="canvasDeleteText" hidden></p>
+    <p id="canvasActionProgress" role="status" aria-live="polite" hidden></p>
+    <p id="canvasActionError" role="alert" hidden></p>
+    <ul id="canvasReconcileList" hidden></ul>
+    <footer><button id="canvasActionCancel" class="btn" type="button">取消</button><button id="canvasActionReconcile" class="btn" type="button" hidden>读取画布列表</button><button id="canvasActionAcknowledge" class="btn" type="button" hidden>已核对，结束操作</button><button id="canvasActionSubmit" class="btn primary" type="submit">保存</button></footer>
+  </form>
+</dialog>
+<input type="file" id="casePkgFile" accept=".fundcase,.zip" hidden>
 
 <!-- 交易上下文弹窗：对手在该笔交易前后的 X 笔流水 -->
-<div class="modal" id="ctxModal" style="display:none">
-  <div class="modal-box wide">
-    <div class="modal-head">
-      <div>
-        <div class="t">交易上下文（对手前后流水）</div>
-        <div class="anchor-line" id="ctxAnchor"></div>
-      </div>
-      <button class="btn small" id="ctxClose"><img class="ui-icon" src="/static/ui-icons/x.svg" alt="">关闭</button>
+<div class="modal context-modal" id="ctxModal" style="display:none" aria-busy="false">
+  <section class="modal-box context-dialog">
+    <header class="context-heading"><div><h2 id="ctxTitle">前后流水</h2><span class="muted" id="ctxCaseName"></span></div><button class="btn icon-button" id="ctxClose" type="button" aria-label="关闭前后流水"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></header>
+    <div class="context-anchor" id="ctxAnchor"></div>
+    <div class="context-body">
+      <section class="context-ledger" aria-label="前后流水明细">
+        <div class="context-controls">
+          <div class="side-tabs" id="ctxTabs" role="group" aria-label="账户视角"><button type="button" class="stab active" data-side="payee" aria-pressed="true">收款方视角</button><button type="button" class="stab" data-side="payer" aria-pressed="false">付款方视角</button></div>
+          <div class="context-window"><label for="ctxX">前后各</label><input id="ctxX" type="number" min="1" max="50" step="1" value="5"><span>笔</span></div>
+          <div class="context-book"><label for="ctxBook">流水归属</label><select id="ctxBook"><option value="all">全部</option><option value="self">仅本方（锚点）流水</option><option value="counter">仅对手方流水</option></select></div>
+          <p class="context-position" id="ctxPos"></p>
+        </div>
+        <div class="context-table-scroll" id="ctxTableScroll" tabindex="0" role="region" aria-label="前后流水表格，可水平滚动"><table class="tbl" id="ctxTable"><thead><tr><th scope="col"><span class="sr-only">选择或上图状态</span></th><th scope="col">相对</th><th scope="col">方向</th><th scope="col">时间</th><th scope="col" class="amt">金额</th><th scope="col" class="amt">余额</th><th scope="col">对手方</th><th scope="col">摘要</th></tr></thead><tbody id="ctxTbody"></tbody></table></div>
+        <div class="flow-horizontal-scroll context-horizontal-scroll" role="group" aria-label="前后流水表格水平滚动"><button class="btn small" id="ctxScrollLeft" type="button" aria-label="前后流水向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><input id="ctxHorizontalPosition" type="range" min="0" max="0" value="0" step="1" disabled aria-label="前后流水水平位置" aria-controls="ctxTableScroll"><button class="btn small" id="ctxScrollRight" type="button" aria-label="前后流水向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div>
+      </section>
+      <aside class="context-matches" aria-labelledby="ctxMatchesTitle"><h3 id="ctxMatchesTitle">匹配线索</h3><div id="ctxSuggest"></div><p class="context-score-note">评分仅供匹配参考</p></aside>
     </div>
-    <div class="ctx-ctrl">
-      <div class="side-tabs" id="ctxTabs">
-        <button type="button" class="stab active" data-side="payee">收款方视角</button>
-        <button type="button" class="stab" data-side="payer">付款方视角</button>
-      </div>
-      <label for="ctxX">前后各</label>
-      <input id="ctxX" type="number" min="1" max="50" value="5" style="width:60px">
-      <label>笔</label>
-      <span class="muted" id="ctxPos"></span>
-      <div class="spacer"></div>
-      <label for="ctxBook">流水归属</label>
-      <select id="ctxBook" style="background:#23272f;color:#dfe3ea;border:1px solid #333945;border-radius:6px;padding:4px 6px;font-size:12px">
-        <option value="all">全部</option>
-        <option value="self">仅本方(锚点)流水</option>
-        <option value="counter">仅对手方流水</option>
-      </select>
-      <button class="btn primary" id="ctxTrack">所选加入图谱</button>
-    </div>
-    <div id="ctxSuggest"></div>
-    <div class="tbl-wrap tall">
-      <table class="tbl">
-        <thead><tr><th></th><th>相对</th><th>方向</th><th>时间</th><th>金额</th><th>余额</th><th>对手方</th><th>摘要</th></tr></thead>
-        <tbody id="ctxTbody"></tbody>
-      </table>
-    </div>
-  </div>
+    <footer class="context-footer"><div class="context-selection"><span id="ctxSelected">已选 0 笔</span><span class="muted" id="ctxTrackedCount">已上图 0 笔</span><span id="ctxTrackStatus" class="workflow-status" role="status" aria-live="polite"></span></div><div class="context-actions"><button class="btn" id="ctxCancel" type="button">取消</button><button class="btn primary" id="ctxTrack" type="button" disabled><img class="ui-icon" src="/static/ui-icons/network.svg" alt=""><span id="ctxTrackLabel">加入图谱</span></button></div></footer>
+  </section>
 </div>
 
 <!-- 通用文本输入弹窗（画布命名等，不依赖浏览器原生 prompt） -->
@@ -296,71 +582,86 @@
       <input id="pcZoom" type="range" min="20" max="100" value="40" style="flex:1">
       <button class="btn primary" id="pcConfirm">确认并上传</button>
     </div>
+    <p id="pcStatus" class="muted" role="status" aria-live="polite"></p>
   </div>
 </div>
 
-<!-- 导入弹窗 -->
-<div class="modal" id="importModal" style="display:none">
-  <div class="modal-box wide">
-    <div class="modal-head">
-      <div class="t">导入流水文件 <span class="tag" id="impCaseTag"></span></div>
-      <button class="btn small" id="impClose"><img class="ui-icon" src="/static/ui-icons/x.svg" alt="">关闭</button>
+<!-- Import task: shared field matrix, case-bound progress and persistent receipt. -->
+<div class="modal import-modal" id="importModal" style="display:none" aria-busy="false">
+  <section class="modal-box import-dialog">
+    <header class="import-dialog-head">
+      <div class="import-heading"><h2 id="importModalTitle">导入流水</h2><span id="impCaseTag" class="import-case"></span></div>
+      <button class="btn icon-button" id="impClose" type="button" aria-label="关闭导入流水"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button>
+    </header>
+    <ol class="import-steps" aria-label="导入进度">
+      <li id="impFlowFile" data-state="current" aria-current="step"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span>文件</span></li>
+      <li id="impFlowFields" data-state="pending"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span>字段</span></li>
+      <li id="impFlowConfirm" data-state="pending"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span>确认</span></li>
+    </ol>
+    <div class="import-dialog-content" id="impContent">
+      <div id="impStep1" class="import-file-stage">
+        <img class="import-file-icon ui-icon" src="/static/ui-icons/upload.svg" alt="">
+        <h3>选择流水文件</h3><p class="muted">CSV、TXT、TSV 或 Excel · 导入到<span id="impCaseName">当前案件</span></p>
+        <label class="btn primary import-file-picker" for="impFile">选择文件<input type="file" id="impFile" accept=".csv,.txt,.tsv,.xlsx,.xls" aria-label="选择流水文件"></label>
+      </div>
+      <div class="pbar" id="impPbar" style="display:none"><div class="pfill" id="impPfill"></div><span class="ptext" id="impPtext">准备导入</span></div>
+      <div id="impStep2" style="display:none">
+        <div class="import-file-toolbar"><div class="imp-meta" id="impMeta"></div><button class="btn import-change-file" id="impChangeFile" type="button">更换文件</button><fieldset class="imp-mode" aria-label="流水模式"><label><input type="radio" name="impMode" value="A">双边流水</label><label><input type="radio" name="impMode" value="B">单账户流水</label></fieldset></div>
+        <section class="import-mapping-section" aria-labelledby="impMappingTitle"><h3 id="impMappingTitle">字段映射</h3><div id="impMapping"></div></section>
+        <div class="import-account-options">
+          <div class="imp-selfline"><label for="impSelfAccts">补充本方账号</label><input id="impSelfAccts" placeholder="可选，逗号分隔"></div>
+          <div id="impMainSelWrap" style="display:none"><div class="imp-cols-title" id="impMainTitle">本文件的本方账号</div><div id="impMainSel" class="mainsel-grid"></div></div>
+        </div>
+        <section class="import-preview-section" aria-labelledby="impPreviewTitle">
+          <div class="import-section-head"><h3 id="impPreviewTitle">数据预览</h3><span id="impPreviewNote" class="muted">前 8 行 · 规范化后</span></div>
+          <div class="tbl-wrap flow-table-scroll import-preview-scroll" id="impPreviewScroll" tabindex="0" role="region" aria-label="导入数据预览，可水平滚动"><table class="tbl import-preview-table" id="impPreviewTable"><thead id="impPreviewHead"></thead><tbody id="impTbody"></tbody></table></div>
+          <div class="flow-horizontal-scroll import-horizontal-scroll" role="group" aria-label="导入预览表格水平滚动">
+            <button class="btn small" id="impScrollLeft" type="button" aria-label="导入预览向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button>
+            <input id="impHorizontalPosition" type="range" min="0" max="0" value="0" step="1" disabled aria-label="导入预览水平位置" aria-controls="impPreviewScroll">
+            <button class="btn small" id="impScrollRight" type="button" aria-label="导入预览向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button>
+          </div><div id="impBad"></div>
+        </section>
+      </div>
+      <section class="import-result" id="impResult" hidden aria-labelledby="impResultTitle"><span class="import-result-mark" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><h3 id="impResultTitle">导入完成</h3><p id="impResultText"></p></section>
     </div>
-    <div id="impStep1">
-      <p class="muted">流水将导入到<b id="impCaseName">当前案件</b>，与其他案件完全隔离。支持 CSV（UTF-8 / GBK）与 Excel（.xlsx），系统自动识别表头与列名，导入前可预览并手动调整映射。</p>
-      <input type="file" id="impFile" accept=".csv,.txt,.tsv,.xlsx,.xls">
-    </div>
-    <div class="pbar" id="impPbar" style="display:none">
-      <div class="pfill" id="impPfill"></div>
-      <span class="ptext" id="impPtext">准备导入…</span>
-    </div>
-    <div id="impStep2" style="display:none">
-      <div class="imp-meta" id="impMeta"></div>
-      <div class="imp-mode">
-        <label><input type="radio" name="impMode" value="A"> 双边流水（含付款方与收款方列）</label>
-        <label><input type="radio" name="impMode" value="B"> 单账户流水（本方账号 + 对手 + 收支标志）</label>
-      </div>
-      <div id="impMainSelWrap" style="display:none">
-        <div class="imp-cols-title" id="impMainTitle">本文件的本方账号（勾选要标为主账号的）</div>
-        <div id="impMainSel" class="mainsel-grid"></div>
-      </div>
-      <div class="imp-selfline">
-        <label>补充本方账号（可选，逗号分隔）</label>
-        <input id="impSelfAccts" placeholder="文件无本方账号列时手动填写，导入后标为主账号">
-      </div>
-      <div class="imp-cols-title">列映射（已识别字段已高亮，可调整后重新识别）</div>
-      <div class="mapping-grid" id="impMapping"></div>
-      <div class="btn-row">
-        <button class="btn" id="impRe">按当前映射重新识别</button>
-        <button class="btn primary" id="impCommit">确认导入</button>
-      </div>
-      <div class="imp-cols-title">数据预览（前 8 行，规范化后）</div>
-      <div class="tbl-wrap">
-        <table class="tbl">
-          <thead><tr><th>交易时间</th><th>付款方</th><th>收款方</th><th>金额</th><th>摘要</th></tr></thead>
-          <tbody id="impTbody"></tbody>
-        </table>
-      </div>
-      <div class="muted" id="impStats"></div>
-      <div id="impBad"></div>
-    </div>
-  </div>
+    <footer class="import-dialog-footer"><div class="import-footer-status"><span id="impStats"></span><span id="impFlowStatus" role="status" aria-live="polite"></span></div><div class="import-footer-actions"><button class="btn" id="impRe" type="button"><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt="">重新识别</button><button class="btn" id="impCancel" type="button">取消</button><button class="btn primary" id="impCommit" type="button">确认导入</button></div></footer>
+  </section>
 </div>
 
 <div id="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
 <script src="/static/money.js?v=1"></script>
-<script src="/static/graph-layout.js?v=1"></script>
+<script src="/static/graph-layout.js?v=layout-pipeline-1"></script>
+<script src="/static/graph-layout-quality.js?v=quality-1"></script>
+<script src="/static/graph-routing.js?v=compact-arcs-1"></script>
+<script src="/static/graph-route-quality.js?v=compact-arcs-1"></script>
 <script src="/static/graph-view.js?v=1"></script>
 <script src="/static/graph-labels.js?v=1"></script>
 <script src="/static/graph-viewport.js?v=1"></script>
 <script src="/static/graph-minimap.js?v=1"></script>
-<script src="/static/graph-selection.js?v=1"></script>
-<script src="/static/workspace-shell.js?v=1"></script>
-<script src="/static/app.js?v=selection-1"></script>
+<script src="/static/graph-selection.js?v=main-accounts-1"></script>
+<script src="/static/workspace-shell.js?v=workspace-camera-2"></script>
+<script src="/static/graph-relations.js?v=relation-filter-1"></script>
+<script src="/static/graph-presentation.js?v=1"></script>
+<script src="/static/graph-label-geometry.js?v=compact-arcs-1"></script>
+<script src="/static/table-scroll.js?v=1"></script>
+<script src="/static/graph-export-geometry.js?v=export-workspace-1"></script>
+<script src="/static/case-workspace.js?v=case-management-1"></script>
+<script src="/static/toolbar-menu.js?v=relation-filter-1"></script>
+<script src="/static/relation-filter.js?v=1"></script>
+<script src="/static/neighborhood.js?v=1"></script>
+<script src="/static/node-finder.js?v=1"></script>
+<script src="/static/canvas-workspace.js?v=1"></script>
+<script src="/static/workspace-camera.js?v=neighborhood-search-1"></script>
+<script src="/static/data-tools.js?v=1"></script>
+<script src="/static/main-accounts.js?v=1"></script>
+<script src="/static/main-accounts-view.js?v=neighborhood-search-1"></script>
+<script src="/static/app.js?v=release-0.1.5"></script>
 <script src="/static/canvas-history.js?v=1"></script>
-<script src="/static/canvas-editor.js?v=selection-1"></script>
-<script src="/static/table-workspace.js?v=1"></script>
-<script src="/static/ui-dialogs.js?v=1"></script>
-<script src="/static/workflow-ui.js?v=1"></script>
+<script src="/static/canvas-editor.js?v=neighborhood-search-1"></script>
+<script src="/static/table-workspace.js?v=neighborhood-search-1"></script>
+<script src="/static/ui-dialogs.js?v=export-workspace-1"></script>
+<script src="/static/workflow-ui.js?v=main-accounts-1"></script>
+<script src="/static/ribbon-commands.js?v=release-0.1.5"></script>
+<script src="/static/ribbon.js?v=release-0.1.5"></script>
 </body>
 </html>

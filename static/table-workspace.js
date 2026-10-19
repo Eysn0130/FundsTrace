@@ -2,7 +2,7 @@
  * Graph writes belong exclusively to the canvas editor's binding-scoped commands. */
 (function () {
   'use strict';
-  let rows = [], request = 0, anchors = new Set(), applied = '', draft = false;
+  let rows = [], request = 0, anchors = new Set(), applied = '', draft = false, inputRevision = 0;
   let open = false, mounted = false, binding = 0, membership = null, rendering = false, refreshBinding = null;
   let scrolls = { sidebar: [0, 0], overview: [0, 0] }, slots = [];
   const id = value => String(value);
@@ -101,9 +101,13 @@
 
   // The public query entry replaces the old unsequenced implementation. There is
   // still one API, renderer and result model; late responses never publish.
-  doSearch = async function (page = 1) {
+  doSearch = async function (page = 1, options = {}) {
     const context = caseContext(), generation = binding, sequence = ++request;
     const parameters = searchParams(page), requestedSummary = summary();
+    const revision = inputRevision, locator = window.FundsGraphLocator;
+    const preview = { account: parameters.get('account') || '', name: parameters.get('name') || '', counterparty: parameters.get('counter') || '' };
+    let previewBinding;
+    try { if (options?.locate === true && Object.values(preview).some(Boolean)) previewBinding = locator?.capture?.(); } catch (_) { /* Preview availability cannot reject a transaction query. */ }
     if (!context.caseId) return false;
     if (mounted) { $('#flowTableScroll').setAttribute('aria-busy', 'true'); $('#resultInfo').textContent = '查询中…'; }
     try {
@@ -115,7 +119,11 @@
       $('#resultInfo').textContent = `共 ${fmtCount(result.total)} 笔`;
       $('#pageInfo').textContent = `第 ${result.page} / ${pages} 页`;
       $('#btnPrev').disabled = result.page <= 1; $('#btnNext').disabled = result.page >= pages;
-      updateSummary(); return true;
+      updateSummary();
+      if (previewBinding != null && revision === inputRevision && !draft) {
+        try { await locator?.previewFields?.(preview, { binding: previewBinding }); } catch (_) { /* A camera preview cannot turn a successful query into a failure. */ }
+      }
+      return true;
     } catch (error) {
       if (generation !== binding || sequence !== request || !isCurrentCase(context)) return false;
       $('#resultInfo').textContent = rows.length ? '查询失败 · 保留上次结果' : '查询失败 · 请重试';
@@ -203,9 +211,10 @@
     $('#flowCkAll').onchange = event => {
       selectedRows().forEach(box => { box.checked = event.target.checked; }); rememberAnchors(); anchorStatus();
     };
-    $('#queryFields').addEventListener('input', () => { draft = summary() !== (applied || '全部流水'); updateSummary(); });
+    $('#btnSearch').onclick = () => doSearch(1, { locate: true });
+    $('#queryFields').addEventListener('input', () => { inputRevision++; draft = summary() !== (applied || '全部流水'); updateSummary(); });
     $('#queryFields').addEventListener('keydown', event => {
-      if (event.key === 'Enter' && event.target.matches('input') && !event.isComposing) { event.preventDefault(); doSearch(1); }
+      if (event.key === 'Enter' && event.target.matches('input') && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); doSearch(1, { locate: true }); }
     });
     $('#btnReset').onclick = () => {
       fields.forEach(([key]) => { $('#' + key).value = ''; }); $('#fTracked').checked = false; doSearch(1);

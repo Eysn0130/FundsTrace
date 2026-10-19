@@ -24,7 +24,7 @@ from . import db
 _fmt_cache = {"time": None}
 _re_amt_strip = re.compile(r"[^0-9.\-]")
 _CENT = decimal.Decimal("0.01")
-PARSER_VERSION = "funds-trace-table-v3"
+PARSER_VERSION = "funds-trace-table-v4"
 
 
 class ImportError(Exception):
@@ -90,7 +90,9 @@ def _norm(h):
 
 def _tkey(t):
     if isinstance(t, datetime.datetime):
-        return t.strftime("%Y-%m-%d %H:%M:%S")
+        # Preserve the full precision stored by DuckDB while retaining the
+        # whole-second representation used by existing commit_rows callers.
+        return t.strftime("%Y-%m-%d %H:%M:%S.%f" if t.microsecond else "%Y-%m-%d %H:%M:%S")
     return t
 
 
@@ -586,6 +588,8 @@ def build_rows(df, mode, mapping=None):
             reason = "交易时间无法解析"
         elif amount is None or amount <= 0:
             reason = "金额无效"
+        elif mode == "B" and direction is None:
+            reason = "收支方向无法确定"
         if reason:
             skipped += 1
             if len(examples) < 3:
@@ -655,7 +659,9 @@ def _provenance_metadata(provenance, filename, mode, rows):
     source = dict(provenance)
     source.setdefault("row_kind", rows[0].get("_source_row_kind") if rows else "unknown")
     mapping = source.get("mapping")
-    suffix = Path(filename).suffix.lower() if isinstance(filename, str) else ""
+    # Extensionless uploads use CSV in the service; preserve that same format
+    # contract without inventing an extension in the recorded source name.
+    suffix = (Path(filename).suffix.lower() or ".csv") if isinstance(filename, str) else ""
     if (not isinstance(source.get("source_id"), str)
             or not re.fullmatch(r"[0-9a-f]{12,32}", source["source_id"])
             or not isinstance(source.get("sha256"), str)

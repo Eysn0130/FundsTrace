@@ -73,6 +73,22 @@ test('collapsing a focused sidebar preserves focus on its external toggle', () =
   assert.match(h.nodes.get('btnSidebarToggle').image.src, /chevron-right\.svg$/);
 });
 
+test('sidebar preparation precedes geometry changes and reduced motion completes in the same action', () => {
+  const h = harness(), phases = [], dispatch = h.window.dispatchEvent;
+  h.window.matchMedia = () => ({ matches: true });
+  h.window.dispatchEvent = event => {
+    phases.push({ phase: event.detail.phase, target: event.detail.sidebarCollapsed,
+      collapsed: h.nodes.get('workspace').classList.contains('sidebar-collapsed') });
+    dispatch(event);
+  };
+  h.shell.setSidebarCollapsed(true);
+  assert.deepEqual(phases, [
+    { phase: 'prepare', target: true, collapsed: false },
+    { phase: 'start', target: true, collapsed: true },
+    { phase: 'end', target: true, collapsed: true },
+  ]);
+});
+
 test('pointer and keyboard resizing clamp width and preserve it across collapse', () => {
   const h = harness();
   const handle = h.nodes.get('workspaceSidebarResize');
@@ -88,6 +104,38 @@ test('pointer and keyboard resizing clamp width and preserve it across collapse'
   assert.equal(h.nodes.get('workspace').style.getPropertyValue('--sidebar-width'), '710px');
   assert.ok(h.events.every(event => event.type === 'fundstrace:workspace-resize'));
   assert.equal(h.events.at(-1).detail.reason, 'sidebar');
+});
+
+test('collapsing during a resize ends capture so the collapse can animate and late moves cannot change width', () => {
+  const h = harness();
+  const workspace = h.nodes.get('workspace'), handle = h.nodes.get('workspaceSidebarResize');
+  const captured = new Set();
+  handle.setPointerCapture = id => captured.add(id);
+  handle.hasPointerCapture = id => captured.has(id);
+  handle.releasePointerCapture = id => captured.delete(id);
+  handle.fire('pointerdown', { button: 0, pointerId: 1, clientX: 560 });
+  handle.fire('pointermove', { pointerId: 1, clientX: 600 });
+  assert.equal(workspace.style.getPropertyValue('--sidebar-width'), '600px');
+  h.shell.setSidebarCollapsed(true);
+  assert.equal(captured.size, 0);
+  assert.equal(workspace.classList.contains('is-resizing'), false);
+  assert.equal(h.doc.body.classList.contains('workspace-resizing'), false);
+  handle.fire('pointermove', { pointerId: 1, clientX: 720 });
+  handle.fire('pointerup', { pointerId: 1 });
+  h.shell.setSidebarCollapsed(false);
+  assert.equal(workspace.style.getPropertyValue('--sidebar-width'), '600px');
+  assert.equal(h.events.filter(event => event.detail.reason === 'sidebar-width' && event.detail.phase === 'end').length, 0);
+});
+
+test('a second pointer cannot take over an active sidebar resize', () => {
+  const h = harness();
+  const handle = h.nodes.get('workspaceSidebarResize');
+  handle.fire('pointerdown', { button: 0, pointerId: 1, clientX: 560 });
+  handle.fire('pointerdown', { button: 0, pointerId: 2, clientX: 1000, isPrimary: false });
+  handle.fire('pointermove', { pointerId: 2, clientX: 1100 });
+  assert.equal(h.nodes.get('workspace').style.getPropertyValue('--sidebar-width'), '');
+  handle.fire('pointermove', { pointerId: 1, clientX: 600 });
+  assert.equal(h.nodes.get('workspace').style.getPropertyValue('--sidebar-width'), '600px');
 });
 
 test('narrow windows retain a readable sidebar width and a canvas edge', () => {
@@ -132,48 +180,6 @@ test('unmodified sidebar width keeps CSS responsive defaults while respecting av
   workspace.width = h.window.innerWidth = 1440;
   h.windowEvents.fire('resize');
   assert.equal(h.nodes.get('left').getBoundingClientRect().width, 560);
-});
-
-test('compact popovers reuse controls and close on Escape or outside click', () => {
-  const h = harness();
-  const button = h.nodes.get('btnDisplayActions'), panel = h.nodes.get('toolbarDisplayExtra');
-  h.shell.setToolbarCollapsed(true);
-  assert.equal(panel.inert, true);
-  button.fire('click');
-  assert.equal(panel.inert, false);
-  assert.equal(panel.classList.contains('is-open'), true);
-  assert.equal(button.getAttribute('aria-expanded'), 'true');
-  h.documentEvents.fire('keydown', { key: 'Escape' });
-  assert.equal(panel.inert, true);
-  assert.equal(h.doc.activeElement, button);
-  button.fire('click');
-  h.documentEvents.fire('pointerdown', { target: h.nodes.get('left') });
-  assert.equal(button.getAttribute('aria-expanded'), 'false');
-  h.shell.setToolbarCollapsed(false);
-  assert.equal(panel.inert, false);
-  assert.equal(panel.getAttribute('aria-hidden'), 'false');
-});
-
-test('automatically closing a compact popover restores internal focus to its valid trigger only', () => {
-  const h = harness();
-  const button = h.nodes.get('btnDisplayActions'), panel = h.nodes.get('toolbarDisplayExtra');
-  h.shell.setToolbarCollapsed(true);
-  button.fire('click');
-  h.doc.activeElement = { id: 'showIdCk', parent: panel };
-  h.windowEvents.fire('resize');
-  assert.equal(panel.classList.contains('is-open'), false);
-  assert.equal(panel.inert, true);
-  assert.equal(h.doc.activeElement, button);
-  button.fire('click');
-  const outside = h.nodes.get('left');
-  h.doc.activeElement = outside;
-  h.nodes.get('graphToolbar').fire('scroll');
-  assert.equal(h.doc.activeElement, outside);
-  button.fire('click');
-  h.doc.activeElement = { id: 'showIdCk', parent: panel };
-  button.disabled = true;
-  h.windowEvents.fire('resize');
-  assert.notEqual(h.doc.activeElement, button);
 });
 
 test('mount is idempotent and transition receipts contain chrome state only', () => {

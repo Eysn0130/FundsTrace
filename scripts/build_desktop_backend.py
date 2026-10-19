@@ -22,14 +22,21 @@ UI_ICON_NAMES = (
     "layout-distribute-horizontal", "arrows-maximize", "refresh", "chevron-left",
     "chevron-right", "chevron-up", "chevron-down", "trash", "settings", "upload",
     "download", "user-search", "copy", "pencil", "search", "filter", "x",
-    "layout-sidebar-left-collapse", "layout-sidebar-left-expand",
+    "layout-sidebar-left-collapse", "layout-sidebar-left-expand", "check", "dots",
+    "network", "selection", "selection-clear", "swap", "list", "group", "link",
+    "layers", "chart", "route", "play", "star", "shape", "photo", "align-left",
+    "align-top", "distribute-vertical", "lock", "focus", "zoom-out", "zoom-in",
+    "zoom-reset", "eye", "eye-off", "eye-restore", "legend", "map", "calendar",
+    "target", "font-text",
 )
 STATIC_NAMES = (
     "index.html", "analysis.html", "license.html", "license.js", "app.js",
-    "analysis.js", "style.css", "money.js", "graph-view.js", "graph-layout.js",
+    "analysis.js", "analysis.css", "case-workspace.js", "table-scroll.js", "style.css", "money.js", "graph-view.js", "graph-layout.js", "graph-layout-worker.js", "graph-layout-quality.js", "graph-routing.js", "graph-route-quality.js",
     "graph-labels.js", "graph-viewport.js", "graph-minimap.js", "graph-selection.js", "logo.svg", "favicon.svg",
     "vendor/g6.min.js", "vendor/G6-PATCH.md", "vendor/G6-LICENSE",
     "workspace-shell.js", "canvas-history.js", "canvas-editor.js",
+    "graph-relations.js", "graph-presentation.js", "graph-label-geometry.js", "graph-export-geometry.js", "ribbon.js", "ribbon-commands.js",
+    "toolbar-menu.js", "relation-filter.js", "neighborhood.js", "node-finder.js", "canvas-workspace.js", "data-tools.js", "workspace-camera.js", "main-accounts.js", "main-accounts-view.js",
     "table-workspace.js", "ui-dialogs.js", "workflow-ui.js", "ui-icons/LICENSE",
     *(f"ui-icons/{name}.svg" for name in UI_ICON_NAMES),
 )

@@ -124,3 +124,77 @@ test('5000 separated rectangles remain complete and frozen input and geometry re
   result.nodeIds.clear();
   assert.equal(labels.select(input).nodeIds.size, 5000, 'returned sets do not alter a retained module cache');
 });
+
+test('labels avoid every node body and return the first usable screen-space placement', () => {
+  const result = labels.select([
+    candidate('edge', box(0, 0, 20, 10), { kind: 'edge', placements: [
+      { bounds: box(0, 0, 20, 10), dx: 0, dy: 0 },
+      { bounds: box(0, 30, 20, 40), dx: 0, dy: 30 },
+    ] }),
+  ], { obstacles: [{ key: 'THIRD-NODE', bounds: box(5, -5, 15, 15) }], padding: 0 });
+  assert.ok(result.edgeKeys.has('edge'));
+  assert.equal(result.edgePlacements.get('edge').dy, 30);
+  assert.equal(result.edgePlacements.get('edge').index, 1);
+  assert.equal(result.conflicts, 0);
+});
+
+test('required labels try alternatives before retaining a conflicting position with explicit statistics', () => {
+  const result = labels.select([
+    candidate('a', box(0, 0, 20, 20), { required: true }),
+    candidate('b', box(0, 0, 20, 20), { required: true, placements: [
+      { bounds: box(0, 0, 20, 20), dx: 0, dy: 0 },
+      { bounds: box(40, 0, 60, 20), dx: 40, dy: 0 },
+    ] }),
+    candidate('c', box(0, 0, 20, 20), { required: true }),
+  ], { padding: 0 });
+  assert.equal(result.nodeIds.size, 3);
+  assert.equal(result.nodePlacements.get('b').dx, 40);
+  assert.equal(result.nodePlacements.get('b').conflicted, false);
+  assert.equal(result.nodePlacements.get('c').conflicted, true);
+  assert.equal(result.conflicts, 1);
+  assert.equal(result.unplaced, 0);
+});
+
+test('retainAll keeps all and export semantics while still attempting collision avoidance', () => {
+  const result = labels.select([
+    candidate('a', box(0, 0, 10, 10)),
+    candidate('b', box(0, 0, 10, 10), { placements: [{ bounds: box(30, 0, 40, 10), dx: 30, dy: 0 }] }),
+    candidate('c', box(0, 0, 10, 10)),
+    candidate('d', null),
+  ], { retainAll: true, padding: 0 });
+  assert.equal(result.nodeIds.size, 4);
+  assert.equal(result.nodePlacements.get('b').dx, 30);
+  assert.equal(result.conflicts, 1);
+  assert.equal(result.unknownGeometry, 1);
+  assert.equal(result.rejected, 0);
+});
+
+test('viewport candidates and explicit own-body exclusions are checked without mutating inputs', () => {
+  const input = [candidate('a', box(0, 0, 10, 10), { ignoreObstacleKeys: ['a'], placements: [
+    { bounds: box(-5, 0, 5, 10), dx: -5, dy: 0 },
+    { bounds: box(0, 0, 10, 10), dx: 0, dy: 0 },
+  ] }), candidate('b', box(200, 200, 210, 210))];
+  const before = JSON.stringify(input);
+  const result = labels.select(input, { padding: 0, viewport: box(0, 0, 100, 100),
+    obstacles: [{ key: 'a', bounds: box(0, 0, 10, 10) }] });
+  assert.deepEqual([...result.nodeIds], ['a']);
+  assert.equal(result.nodePlacements.get('a').index, 1);
+  assert.equal(result.unplaced, 1);
+  assert.equal(JSON.stringify(input), before);
+});
+
+test('a manually pinned required label stays at its only position and reports body conflicts', () => {
+  const result = labels.select([
+    candidate('manual', box(0, 0, 20, 10), { kind: 'edge', required: true }),
+    candidate('ordinary', box(0, 0, 20, 10)),
+    candidate('unknown-required', null, { required: true }),
+  ], { obstacles: [{ key: 'THIRD', bounds: box(5, 0, 15, 10) }], padding: 0, obstaclePadding: 0 });
+  assert.deepEqual([...result.edgeKeys], ['manual']);
+  assert.equal(result.edgePlacements.get('manual').dx, 0);
+  assert.equal(result.edgePlacements.get('manual').dy, 0);
+  assert.equal(result.edgePlacements.get('manual').conflicted, true);
+  assert.equal(result.conflicts, 1);
+  assert.equal(result.unknownGeometry, 1);
+  assert.equal(result.unplaced, 1);
+  assert.equal(result.rejected, 1);
+});

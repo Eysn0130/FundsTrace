@@ -2,7 +2,9 @@
 import datetime
 import io
 import json
+import math
 import os
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import re
 import shutil
@@ -44,6 +46,7 @@ _TYPES = {
     "crop_cy": "double", "crop_r": "double", "scale": "double",
     "source_row": "bigint", "size_bytes": "bigint",
 }
+_BIGINT_MIN, _BIGINT_MAX = -(2**63), 2**63 - 1
 
 
 def photo_name(value):
@@ -88,6 +91,87 @@ def export_package(case_id):
 
 def _invalid(message):
     raise HTTPException(400, f"案件包无效：{message}")
+
+
+def _check_integer_columns(check, path, table, cols):
+    """Reject lossy numeric casts while allowing nullable legacy counters/references."""
+    fields = [field for field in cols if _TYPES.get(field) == "bigint"]
+    if not fields:
+        return
+    cursor = check.execute(f"select {','.join(fields)} from read_parquet(?)", [str(path)])
+    while rows := cursor.fetchmany(1024):
+        for row in rows:
+            for field, value in zip(fields, row):
+                if value is None:
+                    continue
+                try:
+                    integer = Decimal(str(value))
+                    valid = (not isinstance(value, bool) and integer.is_finite()
+                             and _BIGINT_MIN <= integer <= _BIGINT_MAX
+                             and integer == integer.to_integral_value())
+                except (InvalidOperation, ValueError, TypeError):
+                    valid = False
+                if not valid:
+                    _invalid(f"{table}.{field} 须为 BIGINT 范围内的整数")
+
+
+def _canvas_snapshot(value, flow_ids, mapping=None):
+    """Keep display geometry, validating the fields its public consumer iterates.
+
+    Legacy empty/metadata-free snapshots remain valid. Stored transaction metadata
+    can outlive deleted batches; discard those missing IDs, rather than rejecting
+    an otherwise valid package. The live graph is rebuilt from the imported DB.
+    """
+    if not isinstance(value, str):
+        _invalid("画布快照无效")
+    snapshot = json.loads(value)
+    if not isinstance(snapshot, dict):
+        _invalid("画布快照无效")
+
+    def point(item):
+        return (isinstance(item, dict)
+                and all(type(item.get(axis)) in (int, float) and math.isfinite(item[axis])
+                        for axis in ("x", "y")))
+
+    for field in ("nodes", "edges"):
+        if field not in snapshot:
+            continue
+        entries = snapshot[field]
+        if not isinstance(entries, list):
+            _invalid(f"画布快照 {field} 须为数组")
+        for item in entries:
+            keys = ("id",) if field == "nodes" else ("source", "target")
+            if (not isinstance(item, dict)
+                    or any(not isinstance(item.get(key), str) or not item[key] for key in keys)):
+                _invalid(f"画布快照 {field} 对象标识无效")
+            if field == "nodes":
+                if not point(item):
+                    _invalid("画布快照节点坐标无效")
+                continue
+            points = item.get("controlPoints")
+            if points is not None and (not isinstance(points, list) or not all(point(p) for p in points)):
+                _invalid("画布快照关系控制点无效")
+            data = item.get("data")
+            if data is None:
+                continue
+            if not isinstance(data, dict):
+                _invalid("画布快照关系元数据无效")
+            if "ids" not in data:
+                continue
+            if not isinstance(data["ids"], list):
+                _invalid("画布快照流水标识须为数组")
+            kept = []
+            for flow_id in data["ids"]:
+                if not (type(flow_id) is int or isinstance(flow_id, str) and re.fullmatch(r"[0-9]+", flow_id)):
+                    _invalid("画布快照流水标识须为整数")
+                old_id = int(flow_id)
+                if not 0 < old_id <= _BIGINT_MAX:
+                    _invalid("画布快照流水标识超出 BIGINT 范围")
+                if old_id in flow_ids:
+                    new_id = mapping[old_id] if mapping is not None else old_id
+                    kept.append(str(new_id) if isinstance(flow_id, str) else new_id)
+            data["ids"] = kept
+    return json.dumps(snapshot, ensure_ascii=False)
 
 
 def _validate_package(content, directory):
@@ -136,6 +220,7 @@ def _validate_package(content, directory):
                 actual = [r[0] for r in check.execute("describe select * from read_parquet(?)", [str(path)]).fetchall()]
                 if len(actual) != len(cols) or set(actual) != set(cols):
                     _invalid(f"{table} 列不符合格式")
+                _check_integer_columns(check, path, table, cols)
                 if table in PROVENANCE_PKG_COLS:
                     integral_fields = ("source_row", "flow_id") if table == "flow_sources" else ("size_bytes",)
                     for field in integral_fields:
@@ -189,9 +274,10 @@ def _validate_package(content, directory):
                 if bad_canvas:
                     _invalid("追踪引用了不存在的画布")
             if "canvases" in paths:
-                for (snapshot,) in check.execute("select snapshot from canvases").fetchall():
-                    if not isinstance(snapshot, str) or not isinstance(json.loads(snapshot), dict):
-                        _invalid("画布快照无效")
+                flow_ids = {row[0] for row in check.execute("select id from flows").fetchall()}
+                for canvas_id, snapshot in check.execute("select id,snapshot from canvases").fetchall():
+                    checked = _canvas_snapshot(snapshot, flow_ids)
+                    check.execute("update canvases set snapshot=? where id=?", [checked, canvas_id])
             referenced = set()
             if "account_photos" in paths:
                 for (name,) in check.execute("select fname from account_photos").fetchall():
@@ -242,6 +328,13 @@ def import_package(content):
                             con.execute(f"create temp table {mapping}(old_id bigint, new_id bigint)")
                     for table in ("batches", "canvases"):
                         if table in paths:
+                            if table == "canvases":
+                                flow_mapping = dict(con.execute(f"select old_id,new_id from {mappings['flows']}").fetchall())
+                                rows = con.execute(f"select m.new_id,p.name,p.snapshot,p.updated_at from read_parquet(?) p join {mappings[table]} m on p.id=m.old_id", [str(paths[table])]).fetchall()
+                                for canvas_id, canvas_name, snapshot, updated_at in rows:
+                                    remapped = _canvas_snapshot(snapshot, flow_mapping, flow_mapping)
+                                    con.execute("insert into canvases(id,case_id,name,snapshot,updated_at) values (?,?,?,?,?)", [canvas_id, new_cid, canvas_name, remapped, updated_at])
+                                continue
                             cols = [c.strip() for c in CASE_PKG_COLS[table].split(",") if c.strip() != "id"]
                             con.execute(f"insert into {table}(id,case_id,{','.join(cols)}) select m.new_id,?,{','.join('p.'+c for c in cols)} from read_parquet(?) p join {mappings[table]} m on p.id=m.old_id", [new_cid, str(paths[table])])
                     cols = [c.strip() for c in CASE_PKG_COLS["flows"].split(",") if c.strip() not in ("id", "batch_id")]
