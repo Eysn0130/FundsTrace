@@ -90,6 +90,16 @@ def _escape_text(value):
     return value
 
 
+def _search_note(result):
+    search = result.get("search", {})
+    limits = []
+    if search.get("complete") is False:
+        limits.append("搜索受预算、邻居数或起点数限制，可能还有未发现的结果")
+    if search.get("result_limited"):
+        limits.append("仅显示候选中的前若干项")
+    return "结果按币种分别排序，顺序限于本次有界搜索候选。" + "；".join(limits) + ("。" if limits else "")
+
+
 def build_report(case_id, results, case_info):
     """组装自包含 HTML 报告，返回 bytes"""
     # application/json is still a raw-text HTML element: escape script-closing
@@ -126,19 +136,34 @@ def build_report(case_id, results, case_info):
     # ---------- 路径追踪 ----------
     paths = cases.get("paths")
     if "paths" in algorithms and paths is not None:
+        time_order = paths.get("order") == "time"
         rows = ""
         for index, item in enumerate(paths["paths"]):
             currency = item.get("currency") or "未标明币种"
             steps = "<br>".join(
                 f"{step['from_name'] or step['from']} → {step['to_name'] or step['to']}："
                 f"{currency} {money_display(step['amount'])}（{step['time']}）" for step in item["path"])
+            timing = ""
+            if time_order:
+                span = f"{item.get('start_time') or '—'} → {item.get('end_time') or '—'}"
+                timing = f"<td>{span}{'（时序连续）' if item.get('continuous') else '（时序不连续）'}</td>"
             rows += (f"<tr><td>{index + 1}</td><td>{steps}</td><td>{item['hops']} 跳</td>"
-                     f"<td>{currency} {money_display(item['total'])}</td></tr>")
+                     f"<td>{currency} {money_display(item['total'])}</td>{timing}</tr>")
+
+        def endpoint(label, matched):
+            """Expand a name entry point to the accounts it resolved to."""
+            if len(matched) > 1:
+                return f"{label}（户名匹配 {len(matched)} 个账号：{'、'.join(matched)}）"
+            return label
+
+        order_note = "按首跳时间排序，时序连续的路径排在前面。" if time_order else ""
         add(f"""<h3>多跳资金路径追踪</h3>
-        <p>起点 <span class="mono">{paths['src']}</span> → 终点 <span class="mono">{paths['dst']}</span>；
-        最多 {paths['max_hops']} 跳，共发现 {paths['count']} 条同币种路径。各边金额合计不等于守恒本金。</p>""")
+        <p>起点 <span class="mono">{endpoint(paths['src'], paths.get('src_accounts') or [])}</span> → 终点 <span class="mono">{endpoint(paths['dst'], paths.get('dst_accounts') or [])}</span>；
+        最多 {paths['max_hops']} 跳，本次返回 {paths['count']} 条同币种路径。{order_note}各边金额合计不等于守恒本金。
+        {_search_note(paths)}</p>""")
         if rows:
-            add(f"<table><tr><th>#</th><th>交易路径及金额</th><th>跳数</th><th>各边金额合计</th></tr>{rows}</table>")
+            timing_head = "<th>首跳 → 末跳</th>" if time_order else ""
+            add(f"<table><tr><th>#</th><th>交易路径及金额</th><th>跳数</th><th>各边金额合计</th>{timing_head}</tr>{rows}</table>")
         else:
             add("<p>当前搜索范围内未找到同币种可达路径。</p>")
 
@@ -146,16 +171,21 @@ def build_report(case_id, results, case_info):
     cyc = cases.get("cycles", {})
     if "cycles" in algorithms and cyc.get("count"):
         rows = "".join(
-            f"<tr><td>{k + 1}</td><td>{' → '.join(c['accounts_names'])}</td>"
+            f"<tr><td>{k + 1}</td><td>{' → '.join(c.get('loop_names') or c['accounts_names'] + c['accounts_names'][:1])}</td>"
             f"<td>{c['len']} 跳</td><td>{c.get('currency') or '未标明币种'} {money_display(c['total'])}</td>"
-            f"<td>{c.get('span_days', '—')} 天</td></tr>" for k, c in enumerate(cyc["cycles"]))
+            f"<td>{'—' if c.get('return_ratio') is None else format(c['return_ratio'] * 100, '.1f') + '%'}</td>"
+            f"<td>{c.get('start_time', '—')} → {c.get('end_time', '—')}（{c.get('span_days', '—')} 天）</td></tr>"
+            for k, c in enumerate(cyc["cycles"]))
         sub_txt = "、".join(cases.get("subjects") or []) or "全案件"
-        add(f"""<h3>资金回流环路检测（闭环对敲，{cyc.get('window_days', 7)} 天内完成）—— 分析对象：{sub_txt}</h3>
-        <p>原理：资金从账户出发经若干账户<b>回到起点</b>，且环上全部交易在时限内完成——"跑分"团伙制造资金流假象、
-        对敲刷流水的典型特征，可作为主观"明知"的佐证。共发现 <b>{cyc['count']} 个环路</b>。</p>
-        <table><tr><th>#</th><th>资金闭环路径</th><th>跳数</th><th>环路金额合计</th><th>时间跨度</th></tr>{rows}</table>""")
+        add(f"""<h3>资金回流环路检测（闭环对敲，{cyc.get('window_days', 7)} 天内按时序走完）—— 分析对象：{sub_txt}</h3>
+        <p>原理：交易方向构成<b>回到起点</b>的闭环，环上全部交易在时限内完成，且<b>每一跳都不早于上一跳</b>。
+        分析对象筛选包含该账户的闭环，展示从实际时序起点开始；同一账户环保留本次候选中回转比例最接近 100% 的交易组合。
+        <b>回转比例（近似值）</b> = 最后一笔回流 ÷ 第一笔转出，结果按该比例接近 100% 的程度排序。
+        时序和比例仅作为复核线索，不证明同一笔本金流转或交易异常性质。
+        本次返回 <b>{cyc['count']} 个环路</b>。{_search_note(cyc)}</p>
+        <table><tr><th>#</th><th>资金闭环路径</th><th>跳数</th><th>环路金额合计</th><th>回转比例</th><th>时序（起 → 止）</th></tr>{rows}</table>""")
     elif "cycles" in algorithms:
-        add("<h3>资金回流环路检测</h3><p>未发现符合本次环路参数的资金闭环。</p>")
+        add(f"<h3>资金回流环路检测</h3><p>本次搜索未发现符合环路参数的资金闭环。{_search_note(cyc)}</p>")
 
     # ---------- 快进快出配对 ----------
     ff = cases.get("fast_flows", {})

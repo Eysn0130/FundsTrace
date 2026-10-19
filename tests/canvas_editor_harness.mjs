@@ -935,6 +935,18 @@ test('keyboard shortcuts skip native edit controls and active dialogs', async ()
   await new Promise(resolve => setTimeout(resolve, 5)); assert.equal(f.history.status().canUndo, true);
 });
 
+test('keyboard undo does not require the graph container to hold focus', async () => {
+  const f = editor(); await f.h.run('trackFlows([2])');
+  // 选择控制器存在，但焦点在图谱之外（刚点过功能区／侧栏后的情形）。
+  f.state.graphSelection = { ids: new Set(), status: () => ({ dragging: false }), rebind() {}, refresh() {}, clear() {}, destroy() {} };
+  f.env.document.activeElement = { tagName: 'BUTTON' };
+  let prevented = 0;
+  f.event('keydown', { ctrlKey: true, key: 'z', target: { closest: () => null }, preventDefault() { prevented += 1; } });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(prevented, 1, 'Ctrl+Z must still undo when focus left the graph');
+  assert.equal(f.history.status().canRedo, true);
+});
+
 test('selected-edge type undo and redo retain other overrides, the default and source facts', async () => {
   const f=editor({relationships:[{source:'SYN-A',target:'SYN-B'},{source:'SYN-B',target:'SYN-A'}]});
   const draw=f.env.renderGraph;f.env.renderGraph=()=>{draw();f.h.run('syncEdgeTypeControl()');};

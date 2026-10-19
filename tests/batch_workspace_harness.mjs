@@ -171,6 +171,7 @@ function harness() {
   });
   vm.runInContext(money, context);
   vm.runInContext(section('function esc(', 'function toast('), context);
+  vm.runInContext(section('let pendingCanvasId = 0;', 'async function loadCases()'), context);
   vm.runInContext(section('function caseContext()', '/* ---------------- 初始化'), context);
   vm.runInContext(section('async function refreshAll()', '/* ---------------- 线标注'), context);
   vm.runInContext(section('async function loadBatches()', '/* ---------------- 事件绑定'), context);

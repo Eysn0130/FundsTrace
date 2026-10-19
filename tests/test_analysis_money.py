@@ -309,3 +309,253 @@ def test_analysis_missing_case_is_not_another_case(client, endpoint):
     if endpoint == "paths":
         body.update(src="A", dst="B")
     assert client.post(f"/api/analysis/{endpoint}", json=body).status_code == 404
+
+
+def test_paths_accept_account_names_and_expand_shared_names_to_every_account(client, database, make_case):
+    case = make_case("Synthetic paths by name")
+    insert_flow(database, case, "A", "B", "10.00", minute=1, payer_name="张三", payee_name="李四")
+    insert_flow(database, case, "A2", "B", "20.00", minute=5, payer_name="张三", payee_name="李四")
+    insert_flow(database, case, "B", "C", "30.00", minute=9, payee_name="王五")
+
+    by_name = client.post("/api/analysis/paths", json={"case_id": case, "src": "张三", "dst": "王五"}).json()
+    assert by_name["src_accounts"] == ["A", "A2"]
+    assert by_name["dst_accounts"] == ["C"]
+    assert by_name["count"] == 2
+    # Both A and A2 are start candidates; the shared name is never narrowed silently.
+    assert {item["path"][0]["from"] for item in by_name["paths"]} == {"A", "A2"}
+    # Default order is unchanged: largest currency-isolated total first.
+    assert [item["total"] for item in by_name["paths"]] == ["50.00", "40.00"]
+
+    by_account = client.post("/api/analysis/paths", json={"case_id": case, "src": "A", "dst": "C"}).json()
+    assert by_account["count"] == 1 and by_account["src_accounts"] == ["A"]
+
+    missing = client.post("/api/analysis/paths", json={"case_id": case, "src": "查无此人", "dst": "C"}).json()
+    assert missing["count"] == 0 and missing["src_accounts"] == []
+    assert "没有匹配到账户" in missing["note"]
+    assert client.post("/api/analysis/paths",
+                       json={"case_id": case, "src": "张三", "dst": "C", "order": "recent"}).status_code == 422
+
+
+def test_time_order_sorts_by_first_leg_and_flags_chronological_continuity(client, database, make_case):
+    case = make_case("Synthetic paths by time")
+    insert_flow(database, case, "X", "Y", "1.00", minute=1, payer_name="共同")
+    insert_flow(database, case, "Y", "Z", "1.00", minute=2)
+    # Same start name, later first leg, and the second leg happened earlier.
+    insert_flow(database, case, "W", "V", "1.00", minute=5, payer_name="共同")
+    insert_flow(database, case, "V", "Z", "1.00", minute=0)
+
+    timed = client.post("/api/analysis/paths",
+                        json={"case_id": case, "src": "共同", "dst": "Z", "order": "time"}).json()
+    assert timed["order"] == "time" and timed["count"] == 2
+    assert [item["start_time"] for item in timed["paths"]] == ["2026-01-01 10:01:00", "2026-01-01 10:05:00"]
+    assert [item["continuous"] for item in timed["paths"]] == [True, False]
+    assert [(item["start_time"], item["end_time"]) for item in timed["paths"]] == [
+        ("2026-01-01 10:01:00", "2026-01-01 10:02:00"),
+        ("2026-01-01 10:05:00", "2026-01-01 10:00:00")]
+
+    # The same query must stay byte-identical when no order is requested.
+    default = client.post("/api/analysis/paths", json={"case_id": case, "src": "共同", "dst": "Z"}).json()
+    assert default["order"] == "amount"
+    assert sorted(item["total"] for item in default["paths"]) == ["2.00", "2.00"]
+
+    results = run(client, case, algorithms=["paths"], path_src="共同", path_dst="Z", path_order="time")
+    assert results["paths"]["order"] == "time"
+    assert results["paths"]["paths"][0]["continuous"] is True
+def test_cycle_needs_a_start_account_where_every_hop_follows_in_time(client, database, make_case):
+    """闭环必须能按时间走完：存在某个起点，使每一跳都不早于上一跳。"""
+    # 从 B 起算 10:03 → 10:05 → 10:06 递增；从 A 起算 10:06 → 10:03 是倒流。
+    rotated = make_case("Synthetic cycle chronological start")
+    insert_flow(database, rotated, "A", "B", "1.00", minute=6)
+    insert_flow(database, rotated, "B", "C", "1.00", minute=3)
+    insert_flow(database, rotated, "C", "A", "1.00", minute=5)
+    found = run(client, rotated, algorithms=["cycles"])["cycles"]
+    assert found["count"] == 1
+    cycle = found["cycles"][0]
+    # 环路径按资金实际流动的时间顺序展示，起点是真正的时序起点 B。
+    assert cycle["accounts"] == ["B", "C", "A"]
+    assert (cycle["start_time"], cycle["end_time"]) == ("2026-01-01 10:03:00", "2026-01-01 10:06:00")
+    assert cycle["span_days"] == 0.0  # 3 分钟按 0.1 天精度取整
+
+    # 两处倒流：任何起点都读不出时间顺序，不得报为闭环（跨度仅 7 分钟，远小于 7 天）。
+    broken = make_case("Synthetic cycle backwards twice")
+    insert_flow(database, broken, "A", "B", "1.00", minute=0)
+    insert_flow(database, broken, "B", "C", "1.00", minute=5)
+    insert_flow(database, broken, "C", "D", "1.00", minute=2)
+    insert_flow(database, broken, "D", "A", "1.00", minute=7)
+    assert run(client, broken, algorithms=["cycles"])["cycles"]["cycles"] == []
+
+    # 同一时刻完成不算倒流（非降序即可），2 跳闭环同样保留。
+    instant = make_case("Synthetic cycle same instant")
+    insert_flow(database, instant, "A", "B", "1.00", minute=3)
+    insert_flow(database, instant, "B", "C", "1.00", minute=3)
+    insert_flow(database, instant, "C", "A", "1.00", minute=3)
+    assert run(client, instant, algorithms=["cycles"])["cycles"]["count"] == 1
+    two_hop = make_case("Synthetic two hop chronological")
+    insert_flow(database, two_hop, "A", "B", "1.00", minute=0)
+    insert_flow(database, two_hop, "B", "A", "1.00", minute=1)
+    pair = run(client, two_hop, algorithms=["cycles"])["cycles"]["cycles"][0]
+    assert (pair["len"], pair["accounts"]) == (2, ["A", "B"])
+
+def test_cycle_closes_visually_and_ranks_by_return_ratio(client, database, make_case):
+    """闭环路径末尾重复起点；回转比例（末笔回流 ÷ 首笔转出）接近 1 的优先。"""
+    case = make_case("Synthetic cycle return ratio")
+    # 三组独立闭环，回转比例分别为 100%、50%、200%（都在 7 天窗口内、时序递增）。
+    insert_flow(database, case, "P1", "Q1", "100.00", minute=0)
+    insert_flow(database, case, "Q1", "P1", "100.00", minute=1)
+    insert_flow(database, case, "P2", "Q2", "100.00", minute=0)
+    insert_flow(database, case, "Q2", "P2", "50.00", minute=1)
+    insert_flow(database, case, "P3", "Q3", "100.00", minute=0)
+    insert_flow(database, case, "Q3", "P3", "200.00", minute=1)
+
+    cycles = run(client, case, algorithms=["cycles"])["cycles"]["cycles"]
+    assert [round(c["return_ratio"], 4) for c in cycles] == [1.0, 0.5, 2.0]
+    assert cycles[0]["accounts_names"] == ["P1", "Q1"]
+    # 闭环展示：末尾重复起点，读起来是"出去又回来"。
+    assert cycles[0]["loop_names"] == ["P1", "Q1", "P1"]
+    assert (cycles[0]["first_outflow"], cycles[0]["last_inflow"]) == ("100.00", "100.00")
+
+    # 比例相同的两档按金额合计降序；首笔为 0 时无从比较，比例为空且排最后。
+    tie = make_case("Synthetic cycle ratio tie")
+    insert_flow(database, tie, "A", "B", "100.00", minute=0)
+    insert_flow(database, tie, "B", "A", "200.00", minute=1)
+    insert_flow(database, tie, "C", "D", "300.00", minute=0)
+    insert_flow(database, tie, "D", "C", "600.00", minute=1)
+    # 首笔为 0 的闭环：起点仍要有其他转出才会成为候选，比例因此为空。
+    insert_flow(database, tie, "E", "F", "0.00", minute=0)
+    insert_flow(database, tie, "F", "E", "10.00", minute=1)
+    insert_flow(database, tie, "E", "G", "5.00", minute=2)
+    ranked = run(client, tie, algorithms=["cycles"])["cycles"]["cycles"]
+    assert [c["total"] for c in ranked[:2]] == ["900.00", "300.00"]
+    assert ranked[2]["return_ratio"] is None
+    assert ranked[2]["loop_names"][0] == ranked[2]["loop_names"][-1]
+
+
+def test_path_names_use_all_alias_evidence_before_currency_grouping(client, database, make_case):
+    case = make_case("Synthetic later path names")
+    insert_flow(database, case, "A", "X", "1.00", minute=0)
+    database.x("update flows set payer_name = null where case_id=?", [case])
+    insert_flow(database, case, "A", "D", "2.00", minute=1, payer_name="合成户名", payee_name="合成终点")
+    insert_flow(database, case, "A", "D", "3.00", minute=2, currency="USD", payer_name="旧名", payee_name="旧终点")
+    response = client.post("/api/analysis/paths", json={"case_id": case, "src": "合成户名", "dst": "合成终点"})
+    assert response.status_code == 200
+    named = response.json()
+    assert named["src_accounts"] == ["A"] and named["dst_accounts"] == ["D"]
+    assert [(item["currency"], item["total"]) for item in named["paths"]] == [("CNY", "2.00"), ("USD", "3.00")]
+    alias = client.post("/api/analysis/paths", json={"case_id": case, "src": "旧名", "dst": "旧终点"}).json()
+    assert alias["paths"] == named["paths"]
+    # An exact account token wins even when another account uses it as a name.
+    insert_flow(database, case, "OTHER", "D", "4.00", minute=3, payer_name="A")
+    exact = client.post("/api/analysis/paths", json={"case_id": case, "src": "A", "dst": "D"}).json()
+    assert exact["src_accounts"] == ["A"]
+
+
+def test_path_limit_is_applied_after_time_ranking_across_direct_and_shared_starts(client, database, make_case):
+    case = make_case("Synthetic bounded path ranking")
+    insert_flow(database, case, "Z", "MID", "1.00", minute=0, payer_name="合成共同")
+    insert_flow(database, case, "MID", "D", "1.00", minute=1)
+    insert_flow(database, case, "Z", "D", "9.00", minute=5, payer_name="合成共同")
+    insert_flow(database, case, "A", "D", "8.00", minute=6, payer_name="合成共同")
+    timed = client.post("/api/analysis/paths", json={
+        "case_id": case, "src": "合成共同", "dst": "D", "order": "time", "max_paths": 1}).json()
+    assert timed["paths"][0]["start_time"] == "2026-01-01 10:00:00"
+    assert timed["paths"][0]["hops"] == 2
+    assert timed["search"]["complete"] is True
+    assert timed["search"]["result_limited"] is True and timed["truncated"] is True
+    assert timed["search"]["matches_considered"] == 3
+    amount = run(client, case, algorithms=["paths"], path_src="合成共同", path_dst="D", path_max_paths=1)["paths"]
+    assert amount["paths"][0]["total"] == "9.00"
+
+
+def test_cycle_subject_can_be_inside_the_chronological_loop_and_max_len_is_exact(client, database, make_case):
+    case = make_case("Synthetic rotated subject cycle")
+    insert_flow(database, case, "B", "C", "1.00", minute=3)
+    insert_flow(database, case, "C", "A", "1.00", minute=5, payee_name="合成对象")
+    insert_flow(database, case, "A", "B", "1.00", minute=6)
+    for subject in ("A", "合成对象"):
+        params = {"algorithms": ["cycles"], "subjects": [subject], "cycle_max_len": 3}
+        result = run(client, case, **params)["cycles"]
+        assert result["count"] == 1
+        assert result["cycles"][0]["accounts"] == ["B", "C", "A"]
+        assert run(client, case, **{**params, "cycle_max_len": 2})["cycles"]["cycles"] == []
+
+
+def test_cycle_ranking_keeps_best_transaction_representative_before_result_limit(client, database, make_case):
+    case = make_case("Synthetic best cycle representative")
+    insert_flow(database, case, "A", "B", "100.00", minute=0)
+    insert_flow(database, case, "B", "A", "20.00", minute=1)
+    insert_flow(database, case, "B", "A", "100.00", minute=2)
+    insert_flow(database, case, "C", "D", "50.00", minute=0)
+    insert_flow(database, case, "D", "C", "50.00", minute=1)
+    result = run(client, case, algorithms=["cycles"], cycle_max=1)["cycles"]
+    assert result["count"] == 1
+    cycle = result["cycles"][0]
+    assert cycle["accounts"] == ["A", "B"]
+    assert cycle["return_ratio"] == 1.0 and cycle["last_inflow"] == "100.00"
+    assert cycle["end_time"] == "2026-01-01 10:02:00"
+    assert result["search"]["complete"] is True
+    assert result["search"]["result_limited"] is True and result["truncated"] is True
+
+
+def test_bounded_path_and_cycle_search_report_partial_negative_results(client, database, make_case, monkeypatch):
+    from app import analytics
+
+    case = make_case("Synthetic search receipts")
+    insert_flow(database, case, "A", "B", "1.00", minute=0)
+    insert_flow(database, case, "B", "C", "1.00", minute=1)
+    insert_flow(database, case, "C", "A", "1.00", minute=2)
+    monkeypatch.setattr(analytics, "PATH_SEARCH_BUDGET", 1)
+    paths = client.post("/api/analysis/paths", json={"case_id": case, "src": "A", "dst": "C"}).json()
+    assert paths["count"] == 0 and paths["truncated"] is True
+    assert paths["search"]["complete"] is False and paths["search"]["budget_exhausted"] is True
+    cycles = analytics.find_cycles(case, budget=1)
+    assert cycles["count"] == 0 and cycles["truncated"] is True
+    assert cycles["search"]["complete"] is False and cycles["search"]["budget_exhausted"] is True
+
+
+def test_time_order_changes_neighbor_discovery_and_reports_pruning(client, database, make_case):
+    case = make_case("Synthetic time neighbors")
+    for minute in range(21):
+        insert_flow(database, case, "S", f"N{minute:02d}", f"{minute + 1}.00", minute=minute)
+        insert_flow(database, case, f"N{minute:02d}", "D", "1.00", minute=30)
+    result = client.post("/api/analysis/paths", json={
+        "case_id": case, "src": "S", "dst": "D", "order": "time", "max_paths": 1}).json()
+    assert result["paths"][0]["path"][0]["to"] == "N00"
+    assert result["search"]["neighbor_pruned"] is True
+    assert result["search"]["complete"] is False and result["truncated"] is True
+    assert result["search"]["steps"] <= result["search"]["budget"]
+
+
+def test_search_receipts_aggregate_incomplete_currency_and_start_limits(client, database, make_case, monkeypatch):
+    from app import analytics
+
+    case = make_case("Synthetic currency search receipts")
+    insert_flow(database, case, "A", "D", "1.00", minute=0)
+    insert_flow(database, case, "A", "B", "1.00", minute=0, currency="USD")
+    insert_flow(database, case, "B", "D", "1.00", minute=1, currency="USD")
+    monkeypatch.setattr(analytics, "PATH_SEARCH_BUDGET", 1)
+    result = client.post("/api/analysis/paths", json={"case_id": case, "src": "A", "dst": "D"}).json()
+    assert result["count"] == 1 and result["truncated"] is True
+    assert result["by_currency"][0]["search"]["complete"] is True
+    assert result["by_currency"][1]["search"]["complete"] is False
+    assert result["search"]["complete"] is False and result["search"]["budget_exhausted"] is True
+    assert result["search"]["steps"] == result["search"]["budget"] == 2
+
+    limited = make_case("Synthetic cycle start limit")
+    insert_flow(database, limited, "A", "B", "10.00", minute=0)
+    insert_flow(database, limited, "B", "A", "10.00", minute=1)
+    insert_flow(database, limited, "C", "D", "1.00", minute=0)
+    insert_flow(database, limited, "D", "C", "1.00", minute=1)
+    cycles = analytics.find_cycles(limited, start_top=1)
+    assert cycles["count"] == 1 and cycles["truncated"] is True
+    assert cycles["search"]["start_pruned"] is True and cycles["search"]["complete"] is False
+
+
+def test_cycle_ranking_uses_exact_money_before_rounding_the_display_ratio(client, database, make_case):
+    case = make_case("Synthetic precise cycle ranking")
+    insert_flow(database, case, "A", "B", "100000.00", minute=0)
+    insert_flow(database, case, "B", "A", "100001.00", minute=1)
+    insert_flow(database, case, "C", "D", "200000.00", minute=0)
+    insert_flow(database, case, "D", "C", "200004.00", minute=1)
+    cycles = run(client, case, algorithms=["cycles"])["cycles"]["cycles"]
+    assert [cycle["return_ratio"] for cycle in cycles] == [1.0, 1.0]
+    assert [cycle["accounts"] for cycle in cycles] == [["A", "B"], ["C", "D"]]

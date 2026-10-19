@@ -91,12 +91,12 @@
 
   function update(status = history.status()) {
     const unavailable = status.busy || state.graphLoading || !state.caseId || !!layoutJob || !!gesture || mainAccountsBlocked();
-    for (const [selector, available, label, name] of [
-      ['#btnUndo', status.canUndo, status.undoLabel, '撤销'], ['#btnRedo', status.canRedo, status.redoLabel, '重做'],
+    for (const [selector, available, label, name, shortcut] of [
+      ['#btnUndo', status.canUndo, status.undoLabel, '撤销', 'Ctrl+Z'], ['#btnRedo', status.canRedo, status.redoLabel, '重做', 'Ctrl+Shift+Z'],
     ]) {
       const node = $(selector); if (!node) continue;
       node.disabled = unavailable || !available;
-      node.title = `${name}${label ? '：' + label : ''}${status.message ? '；' + status.message : ''}`;
+      node.title = `${name}（${shortcut}）${label ? '：' + label : ''}${status.message ? '；' + status.message : ''}`;
     }
     if (!bound) { publishMembership(); return; }
     $$(controls).forEach(node => { node.disabled = unavailable; });
@@ -645,7 +645,10 @@
       const target = event.target;
       if (target?.closest?.('input,select,textarea,[contenteditable]:not([contenteditable="false"])')) return;
       if ($$('.modal,dialog,[role="dialog"]').some(node => node.open || (!node.hidden && node.style.display !== 'none' && node.getClientRects().length))) return;
-      if (state.graphSelection && !$('#graphContainer').contains(document.activeElement)) return;
+      // 焦点在图谱容器上只是常见情形，不是必要条件：文档承诺"对话框关闭且焦点不在
+      // 输入控件内"即可撤销。原先额外要求容器持有焦点，会让刚点过功能区或侧栏后
+      // 按下的 Ctrl+Z 静默失效（例如双击进邻域后焦点落到按钮上就撤不回去）。
+      // 文本编辑与打开的对话框仍由上面的两个判断保留原生键盘行为。
       const key = event.key.toLowerCase();
       if (key !== 'z' && key !== 'y') return;
       event.preventDefault(); travel(key === 'y' || event.shiftKey);

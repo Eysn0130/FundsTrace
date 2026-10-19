@@ -184,6 +184,7 @@ function harness() {
   });
   vm.runInContext(money, context);
   vm.runInContext(section('function esc(', 'function toast('), context);
+  vm.runInContext(section('let pendingCanvasId = 0;', 'async function loadCases()'), context);
   vm.runInContext(section('function caseContext()', '/* ---------------- 初始化'), context);
   vm.runInContext(section('function edgeKey(', 'function graphEdgeType('), context);
   // Include the account/crop lifecycle dependencies used by closeDrawer and

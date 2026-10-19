@@ -232,6 +232,8 @@ function harness() {
   });
   vm.runInContext(money, context);
   vm.runInContext(section('function esc(', 'function toast('), context);
+  vm.runInContext(section('let pendingCanvasId = 0;', 'async function loadCases()'), context);
+  vm.runInContext(section('async function applyPendingFocusEdge()', 'async function refreshStats()'), context);
   vm.runInContext(section('function caseContext()', '/* ---------------- 初始化'), context);
   vm.runInContext(section('function activateCanvas(id)', 'function graphMetric('), context);
   vm.runInContext(section('function edgeKey(', 'function graphEdgeType('), context);

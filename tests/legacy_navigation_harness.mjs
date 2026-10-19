@@ -72,7 +72,7 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
   const window = { location, history: { replaceState(_state, _title, value) { location.href = new URL(value, location).href; } }, addEventListener() {},removeEventListener(){},dispatchEvent(){},
     requestAnimationFrame:requestFrame,cancelAnimationFrame:cancelFrame };
   const sandbox = { window, document, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)), removeItem: key => storage.delete(key) },
-    ...extras, URL: TestURL, URLSearchParams, Blob, performance, CustomEvent: class { constructor(type) { this.type = type; } }, atob:globalThis.atob,console,requestAnimationFrame:requestFrame,cancelAnimationFrame:cancelFrame,
+    ...extras, URL: TestURL, URLSearchParams, Blob, Event, performance, CustomEvent: class { constructor(type) { this.type = type; } }, atob:globalThis.atob,console,requestAnimationFrame:requestFrame,cancelAnimationFrame:cancelFrame,
     setTimeout(callback, delay = 0) { timers.push({ callback, delay, cancelled: false }); return timers.length; },
     clearTimeout(id) { if (timers[id - 1]) timers[id - 1].cancelled = true; },
     confirm: () => true, prompt: () => 'Synthetic new', alert() {},
@@ -217,6 +217,72 @@ test('G6 deep link remains the selected case in analysis navigation', async () =
   assert.equal(h.run('state.caseId'), 2);
   assert.equal(new URL(h.element('#analysisLink').href, h.location).searchParams.get('case_id'), '2');
   assert.equal(h.storage.get('fund_case'), '2');
+});
+
+test('a delayed deep-link canvas switch is revoked by a case A-B-A switch and consumes its URL target', async () => {
+  const h = harness('app.js', 'http://127.0.0.1:8300/?case_id=1&canvas_id=7&focus_edge=17');
+  await h.run('loadCases()');
+  let dispatched = 0;
+  h.element('#canvasSel').dispatchEvent = () => { dispatched += 1; };
+  h.network(() => response([{id:7,name:'Synthetic dedicated loop'}]));
+  await h.run('refreshCanvasList()');
+  const opening = h.timers.findLast(timer => timer.delay === 0 && !timer.cancelled);
+  assert.ok(opening, 'canvas opening is deferred until its selector is ready');
+  h.run('selectCase(2);selectCase(1)'); opening.callback();
+  assert.equal(dispatched, 0, 'an old case generation cannot dispatch a canvas change');
+  assert.equal(h.run('pendingFocusEdge'), 0);
+  assert.equal(h.location.searchParams.has('canvas_id'), false);
+  assert.equal(h.location.searchParams.has('focus_edge'), false);
+});
+
+test('a cycle focus link selects its relationship and focuses both endpoint positions', async () => {
+  const h = harness('app.js', 'http://127.0.0.1:8300/?case_id=1&focus_edge=1');
+  await h.run('loadCases()'); installSyntheticHub(h, 3);
+  h.run(`
+    globalThis.deepLinkFocusCalls=[];
+    state.graphLoading=false;
+    state.graph.findById=id=>[...state.graph.getNodes(),...state.graph.getEdges()].find(item=>item.getModel().id===id);
+    for(const item of state.graph.getNodes())item.getContainer().getCanvasBBox=()=>item.getKeyShape().getCanvasBBox();
+    state.graphCamera={focus:async(point,options)=>{deepLinkFocusCalls.push({point,bounds:options.bounds});return {ok:true}}};
+  `);
+  assert.equal(await h.run('applyPendingFocusEdge()'), true);
+  assert.equal(h.run('state.graphView.selectedEdge'), 'SYN-HUB=>SYN-00000');
+  assert.equal(h.run('deepLinkFocusCalls.length'), 1, 'edge models have no x/y, so focus must use their endpoint nodes');
+  const bounds = h.run('deepLinkFocusCalls[0].bounds');
+  for (const point of h.run('state.graph.getNodes().slice(0,2).map(item=>item.getModel())')) {
+    assert.ok(bounds.minX <= point.x && bounds.maxX >= point.x);
+    assert.ok(bounds.minY <= point.y && bounds.maxY >= point.y, JSON.stringify({bounds, point}));
+  }
+  assert.equal(h.run('pendingFocusEdge'), 0);
+  assert.equal(h.location.searchParams.has('focus_edge'), false);
+});
+
+test('a cycle focus link waits for the initial layout coordinates and its final fit', async () => {
+  const tasks = [];
+  class SyntheticWorker {
+    postMessage(message) { tasks.push({worker:this, message}); }
+    terminate() {}
+  }
+  const h = harness('app.js', 'http://127.0.0.1:8300/?case_id=1&focus_edge=1', '1', {Worker:SyntheticWorker});
+  await h.run('loadCases()'); installSyntheticHub(h, 3);
+  h.run(`
+    globalThis.layoutFocusCalls=[];state.graphLoading=false;
+    state.graph.findById=id=>[...state.graph.getNodes(),...state.graph.getEdges()].find(item=>item.getModel().id===id);
+    for(const item of state.graph.getNodes())item.getContainer().getCanvasBBox=()=>item.getKeyShape().getCanvasBBox();
+    state.graphCamera={resize(){},focus:async(point,options)=>{
+      layoutFocusCalls.push({point,bounds:options.bounds,phase:layoutJob?.phase||'idle'});return {ok:true}}};
+  `);
+  await h.run('relayout()');
+  assert.equal(await h.run('applyPendingFocusEdge()'), false);
+  assert.equal(h.run('layoutFocusCalls.length'), 0);
+  const task = tasks.at(-1);
+  const nodes = h.run('state.graph.getNodes().map((item,index)=>({id:item.getModel().id,x:100+index*300,y:200}))');
+  task.worker.onmessage({data:layoutWorkerResponse(h, task.message, nodes)});
+  await waitForLayoutCommit(h);
+  assert.equal(h.run('layoutFocusCalls.length'), 1);
+  assert.equal(h.run('layoutFocusCalls[0].phase'), 'idle');
+  assert.equal(h.run('pendingFocusEdge'), 0);
+  assert.equal(h.run('state.graphView.selectedEdge'), 'SYN-HUB=>SYN-00000');
 });
 
 test('G6 selection updates its URL and rejects a late previous-case query', async () => {
