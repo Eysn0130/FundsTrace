@@ -2,6 +2,7 @@
 // CI-only compatibility fixture created by the actual prior installed backend.
 // Tokens and HTTP bodies remain in memory; stdout contains fixed check names only.
 const assert = require('node:assert/strict');
+const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -196,8 +197,29 @@ async function main() {
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(FUND_|FUNDS_TRACE_|PYTHON|NODE_OPTIONS$)/i.test(name)));
   const config = launchConfig({ packaged: true, resourcesPath: path.join(args.installRoot, 'resources'), dataDir, env });
   const owned = []; let current;
-  const boot = async () => { current = startBackend(config); owned.push(current); return current.ready; };
-  const stop = async () => { await current.stop(); await assert.rejects(fetch(`${(await current.ready).origin}/__desktop/health`, { signal: AbortSignal.timeout(10000) })); };
+  const boot = async () => {
+    const instance = {};
+    instance.backend = startBackend(config, { spawnProcess: (...values) => {
+      const child = spawn(...values);
+      instance.exited = new Promise(resolve => {
+        child.once('exit', (code, signal) => resolve({ code, signal }));
+        child.once('error', () => resolve({ code: null, signal: null }));
+      });
+      return child;
+    } });
+    current = instance; owned.push(instance); return instance.backend.ready;
+  };
+  const stop = async () => {
+    await current.backend.stop();
+    let timer;
+    try {
+      const exit = await Promise.race([current.exited, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('EOF_TIMEOUT')), 15000);
+      })]);
+      assert.deepEqual(exit, { code: 0, signal: null });
+    } finally { clearTimeout(timer); }
+    await assert.rejects(fetch(`${(await current.backend.ready).origin}/__desktop/health`, { signal: AbortSignal.timeout(10000) }));
+  };
   const checks = {};
   try {
     stage = `${args.mode}BackendReady`; let ready = await boot();
@@ -240,7 +262,7 @@ async function main() {
       await verifyOriginal(ready, stored, dataDir); await stop();
       stage = 'upgradedEofReopen'; ready = await boot(); await verifyOriginal(ready, stored, dataDir); await stop(); checks.upgradedEofReopened = true;
     }
-  } finally { for (const instance of owned) await instance.stop(); }
+  } finally { for (const instance of owned) await instance.backend.stop(); }
   process.stdout.write(`${JSON.stringify(checks)}\n`);
 }
 if (require.main === module) main().catch(() => {
