@@ -17,7 +17,7 @@ GRAPH_CHECKS = (
     "installedGraphModulesLoaded", "installedCsvPreviewMapping", "installedCsvCommittedExact",
     "installedQueryExact", "installedFirstTrackExact", "installedSecondTrackVisible",
     "installedContextTrackedConsistent", "installedNeighborhoodTrackVisible", "installedCanvasCloneExact",
-    "installedCanvasSaveRestoreTypes", "installedCanvasUndoRedoTypes", "installedCaseIsolationAndReturn",
+    "installedCanvasSaveRestoreTypes", "installedCanvasUndoRedoTypes", "installedKeyboardUndoRedoOutsideGraph", "installedCaseIsolationAndReturn",
 )
 
 
@@ -110,8 +110,15 @@ def main():
             assert app["status"] == "passed" and all(value is True for value in app["checks"].values())
             assert all(app["checks"][name] is True for name in GRAPH_CHECKS)
             installer = data(folder / "native-installer-smoke.json")
-            assert installer["status"] == "passed" and installer["priorVersion"] == "0.1.4"
+            assert installer["status"] == "passed" and installer["priorVersion"] == "0.1.5"
             assert installer["currentVersion"] == args.tag[1:] and all(value == "passed" for value in installer["checks"].values())
+            assert all(installer["priorDataChecks"][name] is True for name in (
+                "priorBackendSeeded", "priorExactMoneyAndCurrency", "priorCanvasAndTracking",
+                "priorPackageExported", "priorEofReopened"))
+            assert all(installer["upgradedDataChecks"][name] is True for name in (
+                "upgradedFactsUnchanged", "upgradedCanvasAndTracking", "legacyPackageRoundTrip",
+                "upgradedAnalysisPaths", "upgradedAnalysisCycles", "upgradedAtomicCanvas",
+                "upgradedEofReopened", "upgradedSourceFilesUnchanged"))
         for key, file in (
             ("nativeManifestSha256", manifest_path), ("hostResourcesReportSha256", host_path),
             ("smokeReportSha256", base / "native-backend-smoke.json"),

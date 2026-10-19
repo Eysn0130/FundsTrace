@@ -101,7 +101,8 @@ test('per-relationship styling rejects changes to another relationship or a miss
 });
 
 test('installed journey reports fixed, distinct mandatory behavior checks', () => {
-  assert.equal(new Set(REQUIRED_CHECKS).size, 12);
+  assert.equal(new Set(REQUIRED_CHECKS).size, 13);
+  assert.ok(REQUIRED_CHECKS.includes('installedKeyboardUndoRedoOutsideGraph'));
   assert.ok(REQUIRED_CHECKS.includes('installedSecondTrackVisible'));
   assert.ok(REQUIRED_CHECKS.includes('installedNeighborhoodTrackVisible'));
   assert.ok(REQUIRED_CHECKS.includes('installedCanvasSaveRestoreTypes'));
