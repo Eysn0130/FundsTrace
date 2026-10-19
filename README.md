@@ -9,7 +9,7 @@
 
 <p align="center"><strong>让资金往来，清晰可见。</strong></p>
 
-<p align="center">本地资金流水追踪与关联分析工具。<br>按案件核对数据、探索交易路径，整理成图谱、明细与报告。</p>
+<p align="center">本地资金流水追踪与关联分析工具。<br>按案件核对流水，整理图谱、明细与报告。</p>
 
 <p align="center">
   <a href="https://github.com/Eysn0130/FundsTrace/releases/latest"><img src="https://img.shields.io/github/v/release/Eysn0130/FundsTrace?style=flat-square&amp;color=087D65&amp;label=release" alt="GitHub 最新发布版本"></a>
