@@ -21,10 +21,12 @@ class RunIn(BaseModel):
 
 class PathsIn(BaseModel):
     case_id: int = Field(gt=0, le=2_147_483_647)
+    # 账号或户名：户名会展开成全部同名账号（同名账户不丢弃）。
     src: str
     dst: str
     max_hops: int = Field(default=4, ge=1, le=12)
     max_paths: int = Field(default=50, ge=1, le=500)
+    order: str = "amount"
 
 
 def _require_case(case_id):
@@ -61,17 +63,22 @@ def _params(params):
                 raise ValueError("ff_tolerance must be a finite ratio between 0 and 1")
             result["ff_tolerance"] = tolerance
         if ("paths" in result.get("algorithms", [])
-                or any(name in result for name in ("path_src", "path_dst", "path_max_hops", "path_max_paths"))):
+                or any(name in result for name in ("path_src", "path_dst", "path_max_hops", "path_max_paths",
+                                                   "path_order"))):
             for name in ("path_src", "path_dst"):
                 value = result.get(name)
                 if not isinstance(value, str) or not value.strip():
-                    raise ValueError("资金路径必须同时指定非空起点和终点账号")
+                    raise ValueError("资金路径必须同时指定非空起点和终点（账号或户名）")
                 result[name] = value.strip()
             for name, default, maximum in (("path_max_hops", 4, 12), ("path_max_paths", 50, 500)):
                 value = result.get(name, default)
                 if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
                     raise ValueError(f"{name} must be an integer between 1 and {maximum}")
                 result[name] = value
+            order = result.get("path_order", "amount")
+            if order not in analytics.PATH_ORDERS:
+                raise ValueError("path_order must be amount or time")
+            result["path_order"] = order
     except (ValueError, InvalidOperation, TypeError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return result
@@ -88,8 +95,11 @@ def run_analysis(body: RunIn):
 def trace_paths(body: PathsIn):
     """Currency-isolated multi-hop paths; totals sum their transaction legs."""
     _require_case(body.case_id)
+    if body.order not in analytics.PATH_ORDERS:
+        raise HTTPException(status_code=422, detail="order 必须是 amount 或 time")
     return wire_money(analytics.trace_paths(body.case_id, body.src, body.dst,
-                                           max_hops=body.max_hops, max_paths=body.max_paths))
+                                           max_hops=body.max_hops, max_paths=body.max_paths,
+                                           order=body.order))
 
 
 @router.post("/report")

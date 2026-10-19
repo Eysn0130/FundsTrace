@@ -629,3 +629,83 @@ test('fractional fast-flow tolerance preserves its submitted percent in the comp
     await h.element('resultTab-fast_flows').click(); assert.ok(h.element('results').querySelector('h2').textContent.includes('±' + entered + '%'));
   }
 });
+
+const cycleResult = () => ({
+  case_id: 1, algorithms: ['cycles'], subjects: [], source_snapshot: { flows: 3, accounts: 3 },
+  cycles: { count: 1, window_days: 7, cycles: [{
+    accounts: ['SYN-A', 'SYN-B', 'SYN-C'],
+    accounts_names: ['合成甲', '合成乙', '合成丙'],
+    loop_names: ['合成甲', '合成乙', '合成丙', '合成甲'],
+    len: 3, total: '300.00', currency: 'CNY',
+    start_time: '2026-01-01 10:00:00', end_time: '2026-01-01 12:00:00', span_days: 0.1,
+    first_outflow: '100.00', last_inflow: '98.76', return_ratio: 0.9876,
+    edges: [
+      { id: 17, from: 'SYN-A', to: 'SYN-B', amount: '100.00', time: '2026-01-01 10:00:00', currency: 'CNY' },
+      { id: 18, from: 'SYN-B', to: 'SYN-C', amount: '101.24', time: '2026-01-01 11:00:00', currency: 'CNY' },
+      { id: 19, from: 'SYN-C', to: 'SYN-A', amount: '98.76', time: '2026-01-01 12:00:00', currency: 'CNY' },
+    ],
+  }] },
+});
+
+test('a detected cycle opens on its own canvas instead of appending to the default one', async () => {
+  const h = harness(); await h.ready(); await finishedRun(h, cycleResult());
+  const button = h.element('results').querySelector('.btn-track');
+  assert.ok(button, '每条闭环都应有一键上图入口');
+  assert.match(button.dataset.canvas, /环流 /);
+  h.network(path => {
+    if (path.startsWith('/api/canvases?')) return response([]);
+    if (path === '/api/canvases/save') return response({ ok: true, canvas_id: 41, name: '环流' });
+    if (path === '/api/track') return response({ ok: true, added: 3 });
+    return response({});
+  });
+  await button.click(); await flush();
+  const save = h.requests.find(item => item.path === '/api/canvases/save'); assert.ok(save, feedback(h));
+  const saved = JSON.parse(save.options.body);
+  assert.equal(saved.case_id, 1);
+  assert.match(saved.name, /^环流 /);
+  assert.deepEqual(saved.snapshot.nodes, []);
+  const track = h.requests.find(item => item.path === '/api/track'); assert.ok(track);
+  assert.deepEqual(JSON.parse(track.options.body), { case_id: 1, flow_ids: [17, 18, 19], canvas_id: 41 });
+  const bodies = h.requests.filter(item => item.options?.body).map(item => JSON.parse(item.options.body));
+  assert.equal(bodies.some(body => body.canvas_id === 0), false, '不得写默认画布');
+  assert.equal(button.textContent, '已上图 3 笔');
+  const link = h.element('results').querySelector('.btn-graph');
+  assert.equal(link?.getAttribute('href'), '/?case_id=1&canvas_id=41&focus_edge=17');
+  assert.equal(link?.getAttribute('target'), '_blank', '画布必须新窗口打开，保住分析结果');
+  assert.equal(link?.getAttribute('rel'), 'noopener');
+});
+
+test('an existing cycle canvas is reused instead of duplicated', async () => {
+  const h = harness(); await h.ready(); await finishedRun(h, cycleResult());
+  const button = h.element('results').querySelector('.btn-track');
+  const name = button.dataset.canvas;
+  h.network(path => {
+    if (path.startsWith('/api/canvases?')) return response([{ id: 7, name }]);
+    if (path === '/api/track') return response({ ok: true, added: 0 });
+    return response({});
+  });
+  await button.click(); await flush();
+  assert.equal(h.requests.some(item => item.path === '/api/canvases/save'), false, '已有同名画布时不再新建');
+  const track = h.requests.find(item => item.path === '/api/track'); assert.ok(track);
+  assert.equal(JSON.parse(track.options.body).canvas_id, 7);
+  assert.equal(button.textContent, '已在本画布');
+});
+
+test('a failed cycle tracking request rolls back the new canvas and restores the button', async () => {
+  const h = harness(); await h.ready(); await finishedRun(h, cycleResult());
+  const button = h.element('results').querySelector('.btn-track');
+  h.network(path => {
+    if (path.startsWith('/api/canvases?')) return response([]);
+    if (path === '/api/canvases/save') return response({ ok: true, canvas_id: 42, name: '环流' });
+    if (path === '/api/track') return response({ detail: '合成上图失败' }, 503);
+    return response({ ok: true });
+  });
+  await button.click(); await flush();
+  assert.equal(button.textContent, '一键上图');
+  assert.equal(button.disabled, false);
+  assert.match(h.element('analysisError').textContent, /合成上图失败/);
+  assert.equal(h.element('results').querySelector('.btn-graph'), null);
+  const rollback = h.requests.find(item => item.path === '/api/canvases/42?case_id=1');
+  assert.ok(rollback, '失败的画布必须删除，避免留下空画布');
+  assert.equal(rollback.options.method, 'DELETE');
+});

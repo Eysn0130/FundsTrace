@@ -29,7 +29,7 @@ function analysisContext() { return { caseId, generation: caseGeneration }; }
 function isCurrentAnalysis(context) { return !!context && context.caseId === caseId && context.generation === caseGeneration; }
 function draftFingerprint() {
   return JSON.stringify({ algorithms: $$('.alg').filter(input => input.checked).map(input => input.value),
-    fields: ['subjects', 'cycDays', 'ffWin', 'ffTol', 'pSrc', 'pDst', 'pHops'].map(id => $('#' + id).value) });
+    fields: ['subjects', 'cycDays', 'ffWin', 'ffTol', 'pSrc', 'pDst', 'pHops', 'pOrder'].map(id => $('#' + id).value) });
 }
 function hasAnalysisDraft() { return !!draftBaseline && draftFingerprint() !== draftBaseline; }
 function analysisBusy() { return analysisPhase === 'running' || reportPending; }
@@ -103,6 +103,7 @@ function selectAnalysisCase(id) {
   lastResults = lastRun = renderedResults = null; renderedAlgorithms = []; activeResult = null; currentStats = null; reportPending = false;
   $('#caseSel').value = caseId == null ? '' : String(caseId);
   for (const id of ['subjects', 'pSrc', 'pDst']) $('#' + id).value = '';
+  $('#pOrder').value = 'amount';
   for (const input of $$('#analysisParams [aria-invalid]')) input.removeAttribute('aria-invalid');
   $('#caseStats').textContent = caseId ? '正在读取统计…' : '暂无案件'; $('#statsRetry').hidden = true;
   $('#reportStatus').textContent = ''; analysisError(); $('#analysisScopeNote').textContent = '';
@@ -190,8 +191,9 @@ function collectParams() {
   }
   if (algs.includes('paths')) {
     const src = $('#pSrc').value.trim(), dst = $('#pDst').value.trim();
-    if (!src || !dst) parameterError('路径追踪需要填写起点账号与终点账号', !src ? 'pSrc' : 'pDst');
+    if (!src || !dst) parameterError('路径追踪需要填写起点与终点的账号或户名', !src ? 'pSrc' : 'pDst');
     params.path_src = src; params.path_dst = dst; params.path_max_hops = integerParameter('pHops', 4, 1, 12, '路径跳数');
+    params.path_order = $('#pOrder').value === 'time' ? 'time' : 'amount';
   }
   return { algs, params };
 }
@@ -266,10 +268,20 @@ function renderResultCategory(name) {
   const subjects = res.subjects?.length && name !== 'paths' ? ` · 对象：${esc(res.subjects.join('、'))}` : '';
   $('#analysisScopeNote').textContent = name === 'paths' ? '按交易边累加，非去重本金。' : '';
   let content = '';
-  if (name === 'cycles') content = card(`环路检测 · ${esc(value.window_days ?? 7)} 天内${subjects}`, '有界搜索中的资金闭环线索，需结合原始流水核实。',
-    value.cycles.length ? tbl(['序号', '环路路径', '跳数', '交易边金额合计', '时间跨度', '明细'], value.cycles.map((item, index) => {
+  if (name === 'cycles') content = card(`环路检测 · ${esc(value.window_days ?? 7)} 天内按时序走完${subjects}`, '资金按时间连续回到起点的闭环：每跳不早于上一跳；回转比例越接近 100% 越像原样回流，需结合原始流水核实。',
+    value.cycles.length ? tbl(['序号', '环路路径', '跳数', '交易边金额合计', '回转比例', '时序（起 → 止）', '明细'], value.cycles.map((item, index) => {
       const ids = item.edges.map(edge => String(edge.id)).join(',');
-      return `<tr data-ids="${esc(ids)}"><td class="analysis-sequence">${index + 1}</td><td>${esc(item.accounts_names.join(' → '))}</td><td class="analysis-hops">${esc(item.len)} 跳</td><td class="amt">${money(item.total, item.currency)}</td><td>${item.span_days != null ? esc(item.span_days) + ' 天' : '—'}</td><td class="analysis-table-action"><button class="btn small btn-detail" type="button" aria-expanded="false">查看明细</button></td></tr>`;
+      const closed = item.loop_names || [...item.accounts_names, item.accounts_names[0]];
+      const ratio = typeof item.return_ratio === 'number' ? `${(item.return_ratio * 100).toFixed(1)}%` : '—';
+      const ratioTitle = item.first_outflow != null && item.last_inflow != null
+        ? `首笔转出 ${money(item.first_outflow, item.currency)} → 末笔回流 ${money(item.last_inflow, item.currency)}`
+        : '';
+      const timing = item.start_time && item.end_time
+        ? `${esc(item.start_time)} → ${esc(item.end_time)}${item.span_days != null ? `（${esc(item.span_days)} 天）` : ''}`
+        : item.span_days != null ? `${esc(item.span_days)} 天` : '—';
+      const canvasName = `环流 ${closed.join('→')}`.slice(0, 60);
+      const firstFlow = Number(item.edges?.[0]?.id || 0);
+      return `<tr data-ids="${esc(ids)}" data-first="${esc(firstFlow)}"><td class="analysis-sequence">${index + 1}</td><td>${esc(closed.join(' → '))}</td><td class="analysis-hops">${esc(item.len)} 跳</td><td class="amt">${money(item.total, item.currency)}</td><td class="amt" title="${esc(ratioTitle)}">${ratio}</td><td>${timing}</td><td class="analysis-table-action"><button class="btn small btn-detail" type="button" aria-expanded="false">查看明细</button><button class="btn small btn-track" type="button" data-canvas="${esc(canvasName)}" title="把这条闭环的 ${esc(item.len)} 笔流水放到独立画布（不与已有上图混在一起）">一键上图</button></td></tr>`;
     }).join(''), '环路检测') : '<div class="analysis-empty">当前参数下未发现资金闭环</div>', value.count);
   if (name === 'fast_flows') content = card(`快进快出 · ${esc(value.window_minutes)} 分钟内 ±${esc(percent(value.tolerance))}${subjects}`, '短窗口内按币种配对转入与转出，差额与时间仅作为复核线索。',
     value.pairs.length ? tbl(['过账账户', '转入', '短窗内转出', '转出合计 / 差额', '最大延迟', '明细'], value.pairs.map(item => {
@@ -278,8 +290,16 @@ function renderResultCategory(name) {
     }).join(''), '快进快出') : '<div class="analysis-empty">当前参数下未发现快进快出配对</div>', value.count);
   if (name === 'outliers') content = card(`离群画像 · 偏离 > ${esc(value.sigma)}σ${subjects}`, '按币种比较账户与案件基准；均值与 Z 分数为近似统计值。',
     value.outliers.length ? tbl(['账户', '币种', '异常维度', '数值', 'Z 分数（近似）'], value.outliers.map(item => `<tr><td>${esc(item.name || '')}<br><span class="mono">${esc(item.account)}</span></td><td>${esc(item.currency || '未知币种')}</td><td>${esc(dimensionLabel(item))}</td><td>${dimensionValue(item)}</td><td>${esc(item.z)}</td></tr>`).join(''), '离群画像') : '<div class="analysis-empty">当前参数下未发现离群账户</div>', value.count);
-  if (name === 'paths') content = card(`${esc(value.src_name || value.src)} → ${esc(value.dst_name || value.dst)} · 最大 ${esc(value.max_hops)} 跳`, '',
-    value.paths.length ? tbl(['序号', '交易边金额合计', '跳数', '路径'], value.paths.map((item, index) => `<tr><td class="analysis-sequence">${String(index + 1).padStart(2, '0')}</td><td class="amt">${money(item.total, item.currency)}</td><td class="analysis-hops">${esc(item.hops)} 跳</td><td>${item.path.map(leg => `<span class="analysis-path-leg">${esc(leg.from_name || leg.from)}<span class="hint"> —${money(leg.amount, leg.currency)}→ </span>${esc(leg.to_name || leg.to)}</span>`).join('')}</td></tr>`).join(''), '路径追踪') : '<div class="analysis-empty">当前跳数与参数下未找到可达路径</div>');
+  if (name === 'paths') {
+    const timeOrder = value.order === 'time';
+    const matched = (label, accounts) => accounts && accounts.length > 1
+      ? `${esc(label)}（户名匹配 ${esc(accounts.length)} 个账号）` : esc(label);
+    content = card(`${matched(value.src_name || value.src, value.src_accounts)} → ${matched(value.dst_name || value.dst, value.dst_accounts)} · 最大 ${esc(value.max_hops)} 跳 · ${timeOrder ? '时间优先' : '金额优先'}`, '',
+      value.paths.length ? tbl(['序号', '交易边金额合计', '跳数', '首跳 → 末跳', '路径'], value.paths.map((item, index) => {
+        const span = `${esc(item.start_time || '—')} → ${esc(item.end_time || '—')}${timeOrder ? (item.continuous ? '（时序连续）' : '（时序不连续）') : ''}`;
+        return `<tr><td class="analysis-sequence">${String(index + 1).padStart(2, '0')}</td><td class="amt">${money(item.total, item.currency)}</td><td class="analysis-hops">${esc(item.hops)} 跳</td><td>${span}</td><td>${item.path.map(leg => `<span class="analysis-path-leg">${esc(leg.from_name || leg.from)}<span class="hint"> —${money(leg.amount, leg.currency)}→ </span>${esc(leg.to_name || leg.to)}</span>`).join('')}</td></tr>`;
+      }).join(''), '路径追踪') : '<div class="analysis-empty">当前跳数与参数下未找到可达路径</div>');
+  }
   $('#results').innerHTML = content; $('#results').setAttribute('aria-labelledby', 'resultTab-' + name);
   renderResultTabs(); bindResultTables();
 }
@@ -375,7 +395,59 @@ $('#resultTabs').onkeydown = event => {
   const next = event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs.at(-1) : tabs[(index + (event.key === 'ArrowLeft' ? -1 : 1) + tabs.length) % tabs.length];
   event.preventDefault(); renderResultCategory(next.dataset.algorithm); $('#resultTab-' + activeResult).focus();
 };
-document.addEventListener('click', event => { const button = event.target.closest('.btn-detail'); if (button) void toggleAnalysisDetail(button); });
+/* One click opens the closed loop on its own canvas: the analysis page has no
+   canvas binding, and appending to the default canvas would mix this loop with
+   whatever is already tracked there. A canvas with the same name is reused so
+   repeated clicks do not pile up empty copies. */
+const cycleCanvasSnapshot = () => ({ nodes: [], edges: [], display: { layout: 'auto', edgeType: 'quadratic', labelMode: 'auto' } });
+async function trackCycle(button) {
+  if (!caseId || analysisBusy()) return;
+  const row = button.closest('tr');
+  const ids = String(row?.dataset?.ids || '').split(',')
+    .map(value => Number(value)).filter(value => Number.isInteger(value) && value > 0);
+  if (!ids.length) return;
+  const name = String(button.dataset?.canvas || '环流').slice(0, 60);
+  const label = button.textContent;
+  let created = 0;
+  button.disabled = true; button.textContent = '建画布中…';
+  try {
+    const list = await getJson(`/api/canvases?case_id=${caseId}`);
+    const existing = (Array.isArray(list) ? list : []).find(item => item.name === name);
+    let canvasId = existing ? Number(existing.id) : 0;
+    if (!canvasId) {
+      const saved = await api('/api/canvases/save', { case_id: caseId, name, snapshot: cycleCanvasSnapshot() });
+      canvasId = Number(saved?.canvas_id || 0);
+      created = canvasId;
+      if (!canvasId) throw new Error('独立画布创建失败');
+    }
+    const result = await api('/api/track', { case_id: caseId, flow_ids: ids, canvas_id: canvasId });
+    const added = Number(result?.added || 0);
+    button.disabled = false;
+    button.textContent = added ? `已上图 ${count(added)} 笔` : '已在本画布';
+    if (row && !row.querySelector('.btn-graph') && typeof button.after === 'function') {
+      const link = document.createElement('a');
+      link.className = 'btn small btn-graph';
+      const firstFlow = Number(row?.dataset?.first || 0);
+      link.setAttribute('href', `/?case_id=${caseId}&canvas_id=${canvasId}` + (firstFlow ? `&focus_edge=${firstFlow}` : ''));
+      // 新窗口打开：分析结果留在原页面，回到原窗口不需要重新计算。
+      link.textContent = '打开独立画布';
+      link.setAttribute('title', '在新窗口打开，保留当前分析结果');
+      link.setAttribute('target', '_blank');
+      link.setAttribute('rel', 'noopener');
+      button.after(link);
+    }
+    analysisError();
+  } catch (error) {
+    button.disabled = false; button.textContent = label;
+    analysisError(`上图失败：${error.message || '请求未成功'}`);
+    // Roll the new canvas back so a failed click leaves no empty canvas behind.
+    if (created) void fetch(`/api/canvases/${created}?case_id=${caseId}`, { method: 'DELETE' }).catch(() => {});
+  }
+}
+document.addEventListener('click', event => {
+  const track = event.target.closest('.btn-track'); if (track) { void trackCycle(track); return; }
+  const button = event.target.closest('.btn-detail'); if (button) void toggleAnalysisDetail(button);
+});
 function analysisDraftChanged(event) {
   if (analysisBusy() || confirmation || !$('#analysisParams').contains(event.target)) return;
   event.target.removeAttribute('aria-invalid'); syncAlgorithmFields();

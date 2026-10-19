@@ -198,6 +198,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   void window.FundsImportWorkflow?.restore();
   await refreshStats();
   await loadGraph();
+  await applyPendingFocusEdge();
   await refreshCanvasList(null).catch(() => {});
   doSearch(1);
 });
@@ -235,14 +236,43 @@ function saveEdgeLabels() {
 }
 
 /* ---------------- 案件 ---------------- */
+/* 一次性画布目标：分析页等入口用 ?canvas_id=... 打开指定画布，避免落回默认画布。 */
+let pendingCanvasId = 0;
+/* 一次性聚焦目标：?focus_edge=<流水 id> 在出图后立刻选中该笔资金流向。 */
+let pendingFocusEdge = 0;
+/* URL 请求的目标画布；聚焦必须等它真的激活，否则会选中默认画布里的同名流水。 */
+let requestedCanvasId = 0;
 async function loadCases() {
   state.cases = await api('/api/cases');
   const sel = $('#caseSelect');
   sel.innerHTML = state.cases.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
-  const requested = new URLSearchParams(window.location.search).get('case_id');
+  const params = new URLSearchParams(window.location.search);
+  const requested = params.get('case_id');
+  pendingCanvasId = Number(params.get('canvas_id') || 0) || 0;
+  requestedCanvasId = pendingCanvasId;
+  pendingFocusEdge = Number(params.get('focus_edge') || 0) || 0;
   const saved = requested || preferenceStorage.getItem('fund_case');
   selectCase((saved && state.cases.some(c => c.id == saved)) ? Number(saved) : state.cases[0].id);
 }
+
+/* 出图后把第一笔资金流向选中并拉进视野：不改追踪事实，只动选择与相机。 */
+async function applyPendingFocusEdge() {
+  const flowId = pendingFocusEdge;
+  if (!flowId || !state.graph || !state.caseId) return false;
+  // 还停在默认画布（目标画布尚未激活）时先不消费聚焦请求。
+  if (requestedCanvasId && state.canvasId !== requestedCanvasId) return false;
+  // 用接口返回的图谱数据定位这条流水所属的关系边，再取它的 G6 图元；
+  // 边模型不一定带 ids，直接读模型会漏。
+  const edge = (state.lastGraph.edges || []).find(item => (item.ids || []).includes(flowId));
+  if (!edge) return false;
+  const item = state.graphView.edgeItems.get(edgeKey(edge)) || state.graph.findById(edgeKey(edge));
+  if (!item) return false;
+  pendingFocusEdge = 0;
+  closeDrawer(false); selectItem(item); refreshSelectedEdgeAppearance();
+  await focusGraphItems([item], { allowHistoryBusy: true });
+  return true;
+}
+// 聚焦在「画布切换完成」之后调用：applyCanvasSnapshot 会重置视图，先选中会被清掉。
 
 async function refreshStats() {
   const context = caseContext();
@@ -2032,12 +2062,25 @@ async function refreshCanvasList(keepId) {
   const lst = await api(`/api/canvases?case_id=${context.caseId}`);
   if (!isCurrentCase(context)) return;
   const sel = $('#canvasSel');
-  const cur = keepId != null ? keepId : (state.canvasId || 0);
+  const cur = keepId != null ? keepId : (pendingCanvasId || state.canvasId || 0);
+  const wanted = pendingCanvasId;
+  pendingCanvasId = 0;
   sel.innerHTML = '<option value="0">默认画布</option>' +
     lst.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   const has = Number(cur) === 0 || lst.some(c => c.id === Number(cur));
   sel.value = has ? String(cur) : '0';
   const resolvedId = Number(sel.value) || 0;
+  if (wanted && resolvedId === wanted && resolvedId !== state.canvasId) {
+    // ?canvas_id=... 走与用户在下拉里切换完全一致的路径：激活画布、应用快照并重载图谱。
+    // 直接 activateCanvas 只会清空图面，不会重新取数。
+    setTimeout(() => {
+      const node = $('#canvasSel');
+      if (!node || String(state.caseId) === '') return;
+      node.value = String(wanted);
+      node.dispatchEvent(new Event('change'));
+    }, 0);
+    return;
+  }
   if (resolvedId !== state.canvasId) activateCanvas(resolvedId);
   state.canvasName = state.canvasId
     ? (lst.find(c => c.id === state.canvasId) || {}).name || '' : '';
@@ -2208,6 +2251,7 @@ function bindCanvases() {
       await loadGraph(true, activated);
       if (!isCurrentCase(activated)) return;
       if (snapshot) applyCanvasSnapshot(snapshot);
+      await applyPendingFocusEdge();
     } catch (_) { if (isCurrentCase(activated)) toast('画布未能载入，请重新调阅', 'err'); }
     finally { actions.sync(); }
   };

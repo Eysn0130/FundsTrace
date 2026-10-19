@@ -21,7 +21,7 @@ MONEY_CONTRACT = {
     "currency": "independent groups; no implicit conversion or cross-currency pairing",
     "totals": "exact sum of the displayed transaction legs, not conserved principal",
     "avg_amount": "decimal mean rounded to cents using ROUND_HALF_EVEN",
-    "approximate_metrics": ["z", "sigma", "span_days", "max_delay_min", "tolerance"],
+    "approximate_metrics": ["z", "sigma", "span_days", "max_delay_min", "tolerance", "return_ratio"],
 }
 
 
@@ -99,41 +99,90 @@ def build_adjacency(flows):
 
 # ================= 1. 多跳资金路径追踪 =================
 
-def trace_paths(case_id, src, dst, max_hops=4, max_paths=50, neighbor_limit=20):
-    """枚举同币种 src 到 dst 的资金路径。total 为各条边的金额合计。"""
-    return _grouped(load_flows(case_id), _trace_paths, "paths", src=src, dst=dst,
-                    max_hops=max_hops, max_paths=max_paths, neighbor_limit=neighbor_limit)
+PATH_ORDERS = ("amount", "time")
 
 
-def _trace_paths(flows, src, dst, max_hops, max_paths, neighbor_limit):
+def resolve_endpoints(token, names):
+    """起点／终点输入解析：账号精确匹配优先，其次按户名精确匹配全部账号。
+
+    户名可能对应多个账号（同名账户）；调用方按集合处理，不丢成员。
+    """
+    token = str(token or "").strip()
+    if not token:
+        return set()
+    if token in names:
+        return {token}
+    return {account for account, name in names.items() if name.strip() == token}
+
+
+def _path_options(flows, src, dst, order):
+    """一次解析两个端点，供 trace_paths 与 run_all 共用（各币种共用同一集合）。"""
+    order = order if order in PATH_ORDERS else "amount"
+    _adj, _radj, names = build_adjacency(flows)
+    src_token, dst_token = str(src or "").strip(), str(dst or "").strip()
+    return {"order": order,
+            "src_accounts": sorted(resolve_endpoints(src_token, names)),
+            "dst_accounts": sorted(resolve_endpoints(dst_token, names)),
+            "src_name": names.get(src_token, ""), "dst_name": names.get(dst_token, "")}
+
+
+def trace_paths(case_id, src, dst, max_hops=4, max_paths=50, neighbor_limit=20, order="amount"):
+    """枚举同币种 src 到 dst 的资金路径；两端均可写账号或户名。
+
+    order="amount" 保持既有金额降序；order="time" 按首跳时间升序，时序连续的
+    路径排在前面。两端解析在整个案件上完成一次，避免各币种分组解析出不同集合。
+    """
+    flows = load_flows(case_id)
+    options = _path_options(flows, src, dst, order)
+    return _grouped(flows, _trace_paths, "paths", src=src, dst=dst, max_hops=max_hops,
+                    max_paths=max_paths, neighbor_limit=neighbor_limit, **options)
+
+
+def _trace_paths(flows, src, dst, max_hops, max_paths, neighbor_limit, order="amount",
+                 src_accounts=None, dst_accounts=None, src_name="", dst_name=""):
     adj, radj, names = build_adjacency(flows)
-    # 反向可达集剪枝：只扩展能到达 dst 的节点
-    reach = {dst}
-    q = deque([dst])
+    srcs = set(src_accounts) if src_accounts is not None else resolve_endpoints(src, names)
+    dsts = set(dst_accounts) if dst_accounts is not None else resolve_endpoints(dst, names)
+    result = {"src": src, "dst": dst, "src_name": src_name, "dst_name": dst_name,
+              "src_accounts": sorted(srcs), "dst_accounts": sorted(dsts), "order": order,
+              "max_hops": max_hops, "paths": [], "count": 0}
+    if not srcs:
+        return {**result, "note": "起点账号或户名在当前案件中没有匹配到账户"}
+    if not dsts:
+        return {**result, "note": "终点账号或户名在当前案件中没有匹配到账户"}
+    # 多终点反向可达集剪枝：只扩展能到达任一终点的节点
+    reach = set(dsts)
+    q = deque(dsts)
     while q:
         u = q.popleft()
         for v, _a, _f in radj.get(u, []):
             if v not in reach:
                 reach.add(v)
                 q.append(v)
-    if src not in reach:
-        return {"src": src, "dst": dst, "max_hops": max_hops, "paths": [], "count": 0,
-                "note": "起点无法到达终点"}
+    reached = [s for s in sorted(srcs) if s in reach]
+    if not reached:
+        return {**result, "note": "起点无法到达终点"}
 
     results = []
 
     def dfs(node, path, total, visited):
         if len(results) >= max_paths:
             return
-        if node == dst and path:
-            results.append({"path": list(path), "total": round(total, 2), "hops": len(path)})
+        if path and node in dsts:
+            steps = list(path)
+            times = [step["time"] or "" for step in steps]
+            results.append({
+                "path": steps, "total": round(total, 2), "hops": len(steps),
+                "start_time": times[0], "end_time": times[-1],
+                # 时序连续：每跳时间都不早于上一跳；单跳路径自然连续。
+                "continuous": all(a and b and a <= b for a, b in zip(times, times[1:]))})
             return
         if len(path) >= max_hops:
             return
         all_outs = adj.get(node, [])
         # 剪枝：终点直连边强制保留，其余按金额取前 N
-        dst_outs = [x for x in all_outs if x[0] == dst]
-        others = sorted((x for x in all_outs if x[0] != dst), key=lambda x: -(x[1] or 0))[:neighbor_limit]
+        dst_outs = [x for x in all_outs if x[0] in dsts]
+        others = sorted((x for x in all_outs if x[0] not in dsts), key=lambda x: -(x[1] or 0))[:neighbor_limit]
         for nxt, amt, f in dst_outs + others:
             if nxt in visited:
                 continue
@@ -148,14 +197,14 @@ def _trace_paths(flows, src, dst, max_hops, max_paths, neighbor_limit):
             path.pop()
             visited.discard(nxt)
 
-    dfs(src, [], ZERO, {src})
-    results.sort(key=lambda x: -x["total"])
-    for r in results:
-        for step in r["path"]:
-            step.setdefault("from_name", names.get(step["from"], ""))
-            step.setdefault("to_name", names.get(step["to"], ""))
-    return {"src": src, "src_name": names.get(src, ""), "dst": dst, "dst_name": names.get(dst, ""),
-            "max_hops": max_hops, "count": len(results), "paths": results[:max_paths]}
+    for start in reached:
+        dfs(start, [], ZERO, {start})
+    if order == "time":
+        # 连续的路径优先，其次首跳早者优先；同一时间的仍按金额降序。
+        results.sort(key=lambda x: (0 if x["continuous"] else 1, x["start_time"] or "~", -x["total"]))
+    else:
+        results.sort(key=lambda x: -x["total"])
+    return {**result, "count": len(results), "paths": results[:max_paths]}
 
 
 # ================= 2. 环路检测（资金回流） =================
@@ -163,8 +212,10 @@ def _trace_paths(flows, src, dst, max_hops, max_paths, neighbor_limit):
 def find_cycles(case_id, max_len=4, max_cycles=30, min_total=0, window_days=7,
                 budget=1_500_000, start_top=300, subjects=None, *, _flows=None):
     """检测资金闭环（对敲/回流特征）。只考虑进出均有的账户，环规范化去重。
-    时间约束：环上全部交易须在 window_days 天内完成——刻意对敲通常短窗完成，
-    跨月才凑成的闭环更可能是正常经营往来。
+    时间约束：环上全部交易须在 window_days 天内完成，且必须能按时间顺序走完
+    （每一跳不早于上一跳；首尾相接 + 时间顺序才构成真实资金链）。刻意对敲通常
+    短窗完成，跨月才凑成的闭环更可能是正常经营往来。结果按"回转比例"（最后一笔
+    回流 / 第一笔转出）接近 1 的程度排序，其次按金额合计降序。
     subjects：自定义分析对象（账号或户名列表）。给定后只从这些账户发起环路搜索。
     性能保护：无 subjects 时只从金额最大的前 start_top 个账户发起，DFS 探索受 budget 限制。"""
     min_total = money_decimal(min_total)
@@ -200,16 +251,20 @@ def _find_cycles(flows, max_len, max_cycles, min_total, window_days, budget, sta
         k = nodes_seq.index(min(nodes_seq))
         return tuple(nodes_seq[k:] + nodes_seq[:k])
 
-    def dfs(start, node, nodes_seq, edges_seq, depth, total):
+    def dfs(start, node, nodes_seq, edges_seq, depth, total, last_time):
         budget_left[0] -= 1
         if budget_left[0] <= 0 or len(cycles) >= max_cycles:
             return
         for nxt, amt, f in adj.get(node, []):
+            # 时间顺序在遍历时就剪枝：早于上一跳的流水不可能出现在同一条
+            # 按时间走完的资金链上，直接跳过（比事后拒绝整个环快得多）。
+            if f["trade_time"] < last_time:
+                continue
             if nxt == start and depth >= 2:
                 total_c = total + amt
                 if total_c < min_total:
                     continue
-                # 时间约束：环上全部交易的时间跨度 ≤ window_days
+                # 时间跨度仍须落在 window_days 内；单调性已由遍历顺序保证。
                 times = [_pt(e["time"]) for e in edges_seq] + [_pt(f["trade_time"])]
                 span_days = (max(times) - min(times)).total_seconds() / 86400
                 if span_days > window_days:
@@ -218,28 +273,45 @@ def _find_cycles(flows, max_len, max_cycles, min_total, window_days, budget, sta
                 if key in seen:
                     continue
                 seen.add(key)
-                cycles.append({"accounts": list(key), "edges": edges_seq + [
+                # accounts follows the chronological traversal (the accepted start),
+                # so the displayed path matches start_time → end_time. canon() is
+                # only the rotation-invariant dedupe key.
+                first_out = edges_seq[0]["amount"]
+                cycles.append({"accounts": list(nodes_seq), "edges": edges_seq + [
                     {"id": f["id"], "from": node, "to": nxt, "amount": amt, "time": f["trade_time"], "currency": f["currency"]}],
                     "total": total_c, "len": len(edges_seq) + 1,
-                    "span_days": round(span_days, 1)})
+                    "start_time": edges_seq[0]["time"], "end_time": f["trade_time"],
+                    "span_days": round(span_days, 1),
+                    # 回转比例 = 最后一笔回流 / 第一笔转出（近似值，见 money_contract）。
+                    # 1.0 表示原样回流，最像对敲；首笔为 0 时无从比较，返回 None。
+                    "first_outflow": first_out, "last_inflow": amt,
+                    "return_ratio": round(float(amt / first_out), 4) if first_out else None})
                 if len(cycles) >= max_cycles:
                     return
                 continue
             if nxt in nodes_seq or nxt not in eligible or depth + 1 > max_len:
                 continue
             dfs(start, nxt, nodes_seq + [nxt], edges_seq + [
-                {"id": f["id"], "from": node, "to": nxt, "amount": amt, "time": f["trade_time"], "currency": f["currency"]}], depth + 1, total + amt)
+                {"id": f["id"], "from": node, "to": nxt, "amount": amt, "time": f["trade_time"], "currency": f["currency"]}],
+                depth + 1, total + amt, f["trade_time"])
             if len(cycles) >= max_cycles or budget_left[0] <= 0:
                 return
 
     for s in candidates:
         if len(cycles) >= max_cycles or budget_left[0] <= 0:
             break
-        dfs(s, s, [s], [], 1, ZERO)
+        dfs(s, s, [s], [], 1, ZERO, "")
 
-    cycles.sort(key=lambda c: -c["total"])
+    def closeness(cycle):
+        """回转比例越接近 1 越像原样回流，先排；无比例时排最后，再按金额降序。"""
+        ratio = cycle["return_ratio"]
+        return (0, abs(1 - ratio), -cycle["total"]) if ratio is not None else (1, 0.0, -cycle["total"])
+
+    cycles.sort(key=closeness)
     for c in cycles:
         c["accounts_names"] = [names.get(a, a) for a in c["accounts"]]
+        # 闭环展示：末尾重复起点，读起来才是"出去又回来"。
+        c["loop_names"] = c["accounts_names"] + c["accounts_names"][:1]
     return {"count": len(cycles), "max_len": max_len, "window_days": window_days, "cycles": cycles[:max_cycles]}
 
 
@@ -449,5 +521,6 @@ def run_all(case_id, params=None):
     if "paths" in algorithms:
         out["paths"] = _grouped(flows, _trace_paths, "paths", src=p["path_src"], dst=p["path_dst"],
                                 max_hops=p.get("path_max_hops", 4), max_paths=p.get("path_max_paths", 50),
-                                neighbor_limit=20)
+                                neighbor_limit=20,
+                                **_path_options(flows, p["path_src"], p["path_dst"], p.get("path_order", "amount")))
     return out
