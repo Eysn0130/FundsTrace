@@ -5,71 +5,76 @@
 
 **导入资金流水，追踪往来关系。**
 
-在本地按案件核对流水，从一笔交易延伸往来路径，整理成图谱、明细与报告。
+本地资金流水追踪与关联分析工具。按案件核对数据、探索交易路径，整理成图谱、明细与报告。
 
-**[下载 Windows 版](https://github.com/Eysn0130/FundsTrace/releases/latest)** · [使用指南](docs/workspace-guide.md) · [开发贡献](CONTRIBUTING.md)
+**[下载 Windows 版](https://github.com/Eysn0130/FundsTrace/releases/latest)** · [三步上手](#三步走完一次分析) · [操作演示](#看看实际操作) · [使用指南](docs/workspace-guide.md)
 
-[![FundsTrace 真实工作台：合成流水从云杉工坊经三路分流，在远帆供应归集；点击查看原图](docs/media/workspace-hero.png)](docs/media/workspace-hero.png)
+[![FundsTrace v0.1.5 真实工作台：12 笔合成流水经三路分流，在远帆供应归集；点击查看原图](docs/media/showcase/hero.png)](docs/media/showcase/workspace-focus.png)
 
-<sub>真实工作台 · 12 笔合成流水 / 7 个虚构账户。录制基于 v0.1.1 源码与现用品牌资源；新标识已随 v0.1.2 安装包发布。[查看原图](docs/media/workspace-hero.png)</sub>
+<sub>真实界面 · v0.1.5 源码 · 12 笔合成流水 / 7 个虚构账户。截图来自 macOS Chrome 合成预览，Windows 安装验证范围见[桌面交付](docs/desktop-delivery.md)。</sub>
+
+## 三步走完一次分析
+
+[![业务流程：导入并核对，分析与追踪，整理并导出。原始流水形成带来源的案件数据，再形成图谱与可复查的明细。](docs/media/fundstrace-workflow.svg)](docs/media/fundstrace-workflow.png)
+
+1. **导入数据**：新建案件，选择 CSV / XLSX，核对字段与本方账号。
+2. **分析追踪**：筛选交易并追踪来源、去向；按需要运行全案分析。
+3. **整理导出**：调整布局与标注，保存画布，导出图谱、流水或报告。
+
+[下载合成样例 CSV](docs/examples/harbor-path/fundstrace-synthetic.csv?raw=1) · [XLSX](docs/examples/harbor-path/fundstrace-synthetic.xlsx?raw=1) · [跟做步骤与示例结果](docs/examples/harbor-path/README.md)
+
+## 看看实际操作
+
+### 数据导入：先核对，再入库
+
+选择文件、确认字段、检查预览，再提交导入。导入记录与来源关联保留在当前案件中。
+
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/media/showcase/import-poster.png">
+  <img alt="数据导入 GIF：选择合成文件，核对字段和 12 行预览，确认导入，显示新增 12 笔、重复 0 笔。" src="docs/media/showcase/import-demo.gif" width="1080">
+</picture>
+
+[查看静态封面](docs/media/showcase/import-poster.png) · [原始界面](docs/media/showcase/import-mapping.png)
+
+### 数据分析：从参数，到可复查的路径
+
+支持环路检测、快进快出、离群画像与路径追踪。下面选择起终点、查看路径，再生成 HTML 报告。
+
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/media/showcase/analysis-poster.png">
+  <img alt="数据分析 GIF：设置云杉工坊至远帆供应、最大 3 跳，得到 6 条交易路径，生成 HTML 分析报告。" src="docs/media/showcase/analysis-demo.gif" width="1080">
+</picture>
+
+[查看静态封面](docs/media/showcase/analysis-poster.png) · [完整分析界面](docs/media/showcase/analysis-results.png) · [下载示例报告](docs/examples/harbor-path/exports/analysis-report.html?raw=1)
+
+<sub>两段 GIF 直接由本次真实界面截图生成，按步骤停留展示，全部为合成数据。路径金额按交易边累加，非去重本金；分析结果需人工复核，不能据此认定资金用途或交易性质。</sub>
+
+### 图谱整理与结果交付
+
+用布局、拖动、邻域与标注整理关系；多画布保存、撤销与重做帮助逐步推敲。图谱导出 PNG / HTML / PDF，当前画布追踪流水导出 Excel，案件迁移使用 `.fundcase`。
+
+[完整工作台](docs/media/showcase/workspace.png) · [示例图谱](docs/examples/harbor-path/exports/traced-graph.png) · [示例流水 Excel](docs/examples/harbor-path/exports/tracked-flows.xlsx?raw=1) · [各类导出的范围](docs/workspace-guide.md#分析与导出范围)
+
+## 本机运行，职责清楚
+
+[![FundsTrace 本机架构：Electron Main 管理自己的 Python sidecar 和请求认证；G6 工作台与 React 试点共用 FastAPI 服务；案件数据存入 DuckDB，原件文件独立存储。](docs/media/fundstrace-architecture.svg)](docs/media/fundstrace-architecture.png)
+
+G6 承载追踪图谱，React / TypeScript 提供案件、导入与流水核对试点；Python / FastAPI 共用业务服务，DuckDB 管理案件数据。金额通过十进制字符串契约保留分位与币种。
+
+[架构与演进](docs/evolution.md) · [金额契约](docs/money-contract.md) · [代码地图](CONTRIBUTING.md#代码地图与兼容性) · [开发贡献](CONTRIBUTING.md)
+
+## 下载与开始使用
+
+从 [GitHub Releases](https://github.com/Eysn0130/FundsTrace/releases/latest) 下载 Windows x64 `.exe`，安装后直接启动，当前 v0.1.x 无需授权码。新版 EXE 支持覆盖安装；卸载默认保留案件数据。当前没有应用内自动更新器。
+
+当前为**未签名预览版**。Win10 / 11 实机 DPI、跨屏与原生保存等仍待人工验收；具体已执行检查以[对应版本报告](docs/desktop-delivery.md)为准。
+
+案件包不含原始上传文件、导入任务或回执；备份应在一致状态下包含完整运行目录。反馈问题时请使用合成复现，避免上传真实案件、身份、账号、照片或授权材料。[数据边界](docs/source-boundaries.md) · [导入与恢复](docs/import-lifecycle.md)
 
 <details>
-<summary><strong>▶ 观看操作预览：导入 → 追踪 → 整理 → 导出</strong></summary>
+<summary><strong>从源码运行一次性合成预览</strong></summary>
 
-![12 秒真实操作节选：导入、追踪、整理与导出](docs/media/fundstrace-preview.gif)
-
-12 秒操作节选，全部为合成数据。[下载 31 秒完整演示（MP4）](docs/media/fundstrace-demo.mp4?raw=1) · [下载样例并跟做](docs/examples/harbor-path/README.md)
-
-</details>
-
-[下载 31 秒完整演示（MP4）](docs/media/fundstrace-demo.mp4?raw=1) · [合成样例与复现步骤](docs/examples/harbor-path/README.md)
-
-当前源码版本为 **v0.1.5**，Windows x64 安装包以 [Releases](https://github.com/Eysn0130/FundsTrace/releases/latest) 为准，安装后无需授权码。新版统一顶栏菜单与浮层，改进查找定位、资料编辑和导入交互，移除画布右上角说明文字；既有案件和桌面安装身份保留。各版本的原生安装检查见对应发布报告；Win10／11 实机 DPI、原生保存等仍待人工验收。安装包未签名。[安装与验证范围](docs/desktop-delivery.md)
-
-## 从一份流水，到可复查的结果
-
-### 找到要看的交易
-
-导入 CSV / XLSX，先核对预览、字段映射和本方账号。按账号、户名、对手、金额与日期查询；展开流水全览，逐笔核对完整账号与金额。导入回执和来源记录保留在案件内。
-
-### 顺着往来，整理路径
-
-选一笔交易作为锚点，追踪主账号此前的收入或此后的转出。把相关流水加入画布，用布局、节点拖动、金额标注和邻域视图整理关系；画布可保存、另存，编辑支持撤销与重做。Ctrl／Command 点击可多选并整组移动；1–10 个选中节点用呼吸光圈定位，更多选择保持静态。
-
-追踪按已导入账单与时间关系延伸。图上的连线不代替资金用途、交易性质或法律事实认定。
-
-### 带走图谱，也带走明细
-
-导出当前图谱 PNG、可拖拽 HTML 或 PDF，或导出当前画布的追踪流水 Excel。需要迁移案件时使用 `.fundcase` 案件包；分析页按所选算法生成结果与 HTML 报告。各入口的导出范围见 [使用指南](docs/workspace-guide.md#分析与导出范围)。
-
-## 用一份合成样例走完流程
-
-[云杉项目样例](docs/examples/harbor-path/README.md) 包含 CSV、XLSX、操作步骤及实际导出文件。全部名称、账号、交易与业务背景均为虚构。
-
-1. **导入**：新建专用演示案件，选择样例，确认单账户流水映射。
-2. **追踪**：查询 `SYN-PATH-001`，选为锚点，按“去向·收款方”追踪；再在全览中加入完整样例。
-3. **整理**：选择布局，调整节点与标注，保存具名画布。
-4. **导出**：保存图谱与追踪流水，核对生成文件。
-
-[样例 CSV](docs/examples/harbor-path/fundstrace-synthetic.csv)　/　[样例 XLSX](docs/examples/harbor-path/fundstrace-synthetic.xlsx)　/　[导出的追踪流水](docs/examples/harbor-path/exports/tracked-flows.xlsx)
-
-## 安装与数据
-
-从 [GitHub Releases](https://github.com/Eysn0130/FundsTrace/releases/latest) 的 Assets 下载 Windows x64 `.exe`。使用新版 EXE 覆盖安装；卸载默认保留 `%APPDATA%\FundsTrace` 中的案件数据。当前没有应用内自动更新器。
-
-案件数据由本机 Python 服务与 DuckDB 管理。请在一致状态下备份完整运行目录；案件包不包含原始上传文件、导入任务或回执。不要把真实案件、账号、身份、照片或授权材料提交到公开仓库和问题反馈中。[数据与源码边界](docs/source-boundaries.md) · [导入与恢复](docs/import-lifecycle.md)
-
-## 开发与架构
-
-| 层 | 当前实现 |
-| --- | --- |
-| 案件与流水 | Python / FastAPI 统一业务与持久导入服务，DuckDB 保存案件数据 |
-| 追踪工作台 | JavaScript / G6 图谱；React / TypeScript 案件、导入与流水核对试点 |
-| 桌面运行 | 独立 Electron 宿主与所属 Python sidecar，保留本机服务请求认证 |
-
-独立桌面与浏览器共享业务服务；React 共享面板的宿主接入仍属研究，尚未接入 Analytix。金额通过十进制字符串契约保留分位与币种，显示和导出范围各自明确。[金额契约](docs/money-contract.md) · [代码地图与兼容性](CONTRIBUTING.md#代码地图与兼容性)
-
-使用 **Python 3.11、Node 22.22.1**。首次设置按 [贡献指南](CONTRIBUTING.md#环境安装与测试入口) 安装依赖；构建后可启动一次性合成预览：
+使用 Python 3.11、Node 22.22.1；完整环境与测试入口见[贡献指南](CONTRIBUTING.md#环境安装与测试入口)。
 
 ```sh
 uv venv --python 3.11
@@ -79,12 +84,14 @@ npm --prefix frontend run build
 .venv/bin/python scripts/preview_synthetic.py
 ```
 
-预览打印随机本地地址，退出后清除临时数据。普通运行、Electron 开发、测试与契约检查见 [开发与贡献](CONTRIBUTING.md)；Windows 构建和发布边界见 [桌面交付](docs/desktop-delivery.md)。
+预览打印随机本地地址，退出后清除临时数据。普通运行、Electron 开发、测试与契约检查见[开发与贡献](CONTRIBUTING.md)。
+
+</details>
 
 ## 文档与参与
 
-[工作台指南](docs/workspace-guide.md) · [导入生命周期](docs/import-lifecycle.md) · [API 契约](docs/api-contract.md) · [设计验收](design-qa.md) · [性能记录](docs/performance.md) · [品牌资产](docs/brand/README.md) · [展示素材与核验](docs/showcase-validation.md)
+[使用指南](docs/workspace-guide.md) · [API 契约](docs/api-contract.md) · [桌面交付](docs/desktop-delivery.md) · [设计验收](design-qa.md) · [性能记录](docs/performance.md) · [品牌与展示素材](docs/brand/README.md) · [素材核验](docs/showcase-validation.md)
 
-欢迎提交带合成复现步骤的 [Issue](https://github.com/Eysn0130/FundsTrace/issues) 或范围清楚的 PR。开发规范、主题文档索引与历史接管记录见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+欢迎提交带合成复现步骤的 [Issue](https://github.com/Eysn0130/FundsTrace/issues) 或范围清楚的 PR。
 
 [MIT License](LICENSE) · [第三方许可与来源](THIRD_PARTY_NOTICES.md)

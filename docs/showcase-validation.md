@@ -1,71 +1,65 @@
-# 品牌与开源展示 · 交付核验
+# 主页展示与素材核验
 
-本记录对应 `codex/brand-showcase` 的 README、品牌资源、合成样例和真实演示。工作台运行代码基于 v0.1.1 发布源码 `e7be2f5675dcd2dc896a20d6d644d5aa05125a73`，叠加本支线品牌资源；发布文档已对照 `origin/main` 的 `9e900d5` 更新。本文不把品牌源码就绪视为新安装包已发布。
+本轮在 `codex/homepage-showcase` 隔离工作树制作，仅修改 README、展示素材、合成样例及其说明。运行界面来自已合并 v0.1.5 源码 `ddc9ef0305e9bbfedd8329a84538ce36b2af32c8`，采集日期为 2026-10-18（America/Los_Angeles）。没有修改业务、图谱渲染、桌面身份或发布配置。
 
-## 可查看的成果
+## 设计与内容
 
-| 内容 | 入口 |
+主页依次回答：是什么 → 看得到的结果 → 三步怎么做 → 两段实际操作 → 本机架构 → 下载与文档。保留现有 FundsTrace 标识，统一纸白、石墨与玉绿；用真实界面作主视觉，用原生矢量示意图解释业务和架构。
+
+研究参考了 [Linear](https://linear.app/) 的定位与产品界面顺序、[PowerToys README](https://github.com/microsoft/PowerToys#readme) 的简短导航与渐进展开、[DuckDB README](https://github.com/duckdb/duckdb#readme) 的最小可用示例。仅参考信息组织，没有复制其品牌、图片或宣传能力。GitHub 内容遵循[官方 README 说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes)。
+
+## 当前素材
+
+| 内容 | 入口与规格 |
 | --- | --- |
-| 产品介绍与使用入口 | [README](../README.md) |
-| 原生品牌源、深浅字标、PNG 与 ICO | [品牌目录](brand/README.md) |
-| 真实工作台主视觉 | [1600 × 1000 PNG](media/workspace-hero.png) |
-| 操作预览与完整演示 | [12 秒 GIF 节选](media/fundstrace-preview.gif)、[31 秒 MP4 下载](media/fundstrace-demo.mp4?raw=1) |
-| 分享封面 | [PNG](media/fundstrace-social.png)、[可复用 SVG](media/fundstrace-social.svg) |
-| 可下载样例及复现步骤 | [云杉项目](examples/harbor-path/README.md) |
-| 实际导出 | [Excel](examples/harbor-path/exports/tracked-flows.xlsx)、[图谱 PNG](examples/harbor-path/exports/traced-graph.png) |
-| 文件核对 | [verify.py](examples/harbor-path/verify.py)、[结果与 SHA-256](examples/harbor-path/verification.json) |
+| 产品主视觉 | [展示版 PNG](media/showcase/hero.png)，1600 × 1180；[原始工作台](media/showcase/workspace-focus.png)，1600 × 1000 |
+| 业务逻辑 | [SVG](media/fundstrace-workflow.svg)／[2× PNG](media/fundstrace-workflow.png)，导入核对 → 分析追踪 → 整理导出 |
+| 本机架构 | [SVG](media/fundstrace-architecture.svg)／[2× PNG](media/fundstrace-architecture.png)，界面、所属后端与两类存储 |
+| 数据导入 GIF | [11.4 秒 / 4 个步骤](media/showcase/import-demo.gif)，1200 × 886，252,535 B |
+| 数据分析 GIF | [9 秒 / 3 个步骤](media/showcase/analysis-demo.gif)，1200 × 886，170,319 B |
+| 静态替代 | [导入封面](media/showcase/import-poster.png)／[分析封面](media/showcase/analysis-poster.png)，与相应 GIF 首帧一致 |
+| 可复现样例与实际导出 | [样例说明](examples/harbor-path/README.md)、[CSV](examples/harbor-path/fundstrace-synthetic.csv)、[XLSX](examples/harbor-path/fundstrace-synthetic.xlsx)、[图谱](examples/harbor-path/exports/traced-graph.png)、[追踪流水](examples/harbor-path/exports/tracked-flows.xlsx)、[分析报告](examples/harbor-path/exports/analysis-report.html) |
 
-## 实际操作证据
+GIF 直接由本次真实 PNG 截图编码，是带阶段字幕的步骤演示，不称连续录屏；没有 MP4 输入、转换或新视频产物。仅对截图等比缩放，字幕、边框与进度放在产品画面之外，没有重画控件、节点或内部状态。GIF 调色压缩不改变业务内容。README 不再引用旧视频。
 
-使用本支线 Python 3.11.15、Node 22.22.1，在 macOS arm64 上启动 `scripts/preview_synthetic.py`。入口创建一次性数据根、随机 loopback 端口；没有连接主工作树服务或真实业务数据。通过隔离 Chrome 上下文、正常 UI 输入与点击操作，未调用种子接口代替演示导入。
+业务与架构图是逻辑示意，文字已转路径，不含脚本、外部字体或远程资源。架构明确 React 为案件／导入／核对试点，G6 仍承载图谱；没有把 Rust、AI、云端或其他宿主接入画成已实现能力。生成入口见[品牌说明](brand/README.md#主页业务展示图)。
 
-| 操作 | 实际观察 |
+## 本次实际操作
+
+在 macOS arm64、Python 3.11、Node 22.22.1 与隔离 Chrome 上下文中运行 `scripts/preview_synthetic.py`，仅使用它创建的临时数据库与公开合成样例，不访问原业务目录或已有服务。
+
+| 行为 | 本次观察 |
 | --- | --- |
-| CSV 导入 | 自动识别单账户流水；12 行可导入，跳过 0；完成后 12 笔／7 个账户 |
-| XLSX 导入 | 在另一个专用案件导入同内容 XLSX；相同预览和完成数。短片记录此流程；仅选星桥商贸为主账号 |
-| 锚点追踪 | 关键词 `SYN-PATH-001` 得到 1 笔；去向追踪后，锚点及后续 4 笔共 5 笔上图 |
-| 完整样例上图 | 重置查询，流水全览“本页全部上图”；12/12 笔，图谱显示 7 个账户／8 条有向关系 |
-| 整理与保存 | 使用已有层次布局、全部标签、金额显示、节点拖动与查询折叠；保存具名画布“分流与归集 · 合成路径” |
-| Excel 导出 | 等待真实浏览器 download 并保存；文件无下载失败。含“追踪流水”12 行与“待调取账号”工作表 |
-| 图谱 PNG | 从正常导出入口选择 PNG，等待 download 并落盘；文件可解码，画面与当前全图相符 |
-| 导出事实核对 | CSV 与 XLSX 输入逐格相同；导出按流水号逐笔核对日期、付款／收款户名、账号、金额字符串、币种、摘要，全部通过 |
+| CSV 导入 | 新建“合成演示 · 云杉项目”，正常选择文件与确认映射；新增 12 笔、重复 0、跳过 0，共 7 个账户 |
+| XLSX 导入 | 在独立空白合成案件正常选择文件；可导入 12 行，完成新增 12 笔、重复 0、跳过 0；最终 GIF 的四帧来自同一“导入核对”案件 |
+| 主账号 | 两种格式均只保留星桥商贸 `SYN-B001`，其余主账号取消 |
+| 锚点追踪 | 查询 `SYN-PATH-001` 得到 1 笔，按去向、最近 5 笔追踪后，5 笔上图 |
+| 完整样例与画布 | 流水全览“本页全部上图”后 12/12；图谱 7 个账户、8 条关系。选择资金流向分层、全部标签，保存“分流与归集 · 合成路径”，收起查询区采集主视觉 |
+| 全案分析 | 仅选路径追踪，`SYN-A001 → SYN-F001`、最大 3 跳，得到 6 条路径 |
+| 实际导出 | 从界面下载 PNG、Excel 与重新计算的 HTML 分析报告，落盘后检查，不以点击按钮代替下载完成 |
+| 事实核对 | 运行现有 `docs/examples/harbor-path/verify.py`：CSV/XLSX 逐格相同；导出 12 笔的时间、完整账号、金额字符串、币种与摘要逐笔一致 |
 
-金额逐笔合计 `1,832,503.00 CNY` 是跨环节流水相加，包含多次转手；不是项目资金规模或净流入。样例、截图和导出均保留完整账号与分位金额。运行时案件／画布 ID 仅为临时环境标识。
+6 条路径的独立解释：青禾支路的两笔入边 × 两笔出边形成 4 种组合，其余两支各 1 种。路径算法是交易边的有界拓扑组合；金额按边累加，非去重本金，也不保证交易时间递增。截图保留页面上的金额口径与“需人工复核”。全部名称、账号、交易和业务背景均虚构。
 
-## 媒体真实性与处理
+## 渲染与检查
 
-- [工作台主图](media/workspace-hero.png)、导入预览、锚点结果和流水全览均为实际浏览器视口截图；未重绘控件、节点、边或内部状态。
-- MP4 来自同一次真实交互录制，保留“导入—追踪—整理—导出”。剪去操作间空等候，操作片段以 0.8 倍速呈现以便阅读，末尾停留主图。产品画面外增加阶段字幕；没有旁白或伪造的系统保存窗口。时长约 31.32 秒，1600 × 1100、25fps、H.264，无音轨。
-- 已逐段解码、检查连续操作与关键帧；画面只含本应用及合成内容，没有凭据、真实账号、用户桌面、原业务路径或文件选择器的系统路径。
-- 分享封面使用真实主图的图谱区域裁切及外部品牌排版。SVG 内嵌的是该裁切截图；标识与字标仍为原生矢量。未用 AI 生成产品画面。
-- README 媒体与品牌资产使用仓库相对路径。MP4 约 2.7 MiB、主图约 281 KiB。真实 GitHub 分支检查发现 MP4 文件页只显示二进制下载，因此 README 使用可展开的 12 秒 GIF 节选（约 1.4 MiB、960 × 660、36 帧），并提供带 `?raw=1` 的完整 MP4 下载；没有依赖 GitHub 不支持的内嵌播放器。GIF 取自四段实际操作，明确标为节选。
+README 使用 GitHub 原生 Markdown、`picture/source/img`、`details/summary` 与简短说明；没有自定义 CSS、脚本或内嵌播放器。GitHub Markdown API 已保留深浅字标与 `prefers-reduced-motion` 静态图片来源；静态封面亦有普通链接。
 
-## GitHub 兼容与视觉复核
+本地预览只用于检查候选内容。它使用 GitHub Markdown API 的返回 HTML 和近似 GitHub 的本地排版，不是已经更新的 GitHub 主页。
 
-README 仅使用 Markdown、`picture/source/img`、`details/summary` 和简短 `sub`；没有脚本、动画 SVG、嵌入 iframe 或自定义 CSS。图标、品牌板与正式字标 SVG 均无脚本或外部字体依赖；README 字标文字已转轮廓。
+已执行：
 
-已调用 GitHub Markdown API 以 GFM 和本仓库 context 渲染当前 README，确认主题图片、相对图片、链接和结构被保留。在同日 GitHub 仓库页面的原生 README 容器和样式内装入该渲染结果，模拟深／浅主题与 1440px／390px 视口；仅替换本地候选图片源，未发布到远端。主题检查显式选择对应的字标源，避免隔离预览中 GitHub 页面原先主题组件的缓存状态。
+- 前端可重复安装与 TypeScript／Vite 构建通过；用于启动本轮合成预览，不代表新增业务改动。
+- 实际查看 1440px 桌面、390px 窄屏的深／浅主题；页面宽度与 scrollWidth 相同，六张主图均成功解码。
+- 浏览器启用减少动态效果后，两个 GIF 的 currentSrc 均变为对应 PNG；深浅字标也按主题切换。
+- 113 个相对文件引用存在；主页 MP4 引用为 0。两张 SVG 可解析、带 title／desc、无脚本／外部位图／字体请求。
+- 两段 GIF 逐帧解码通过，帧数、时长及尺寸与上表一致；静态封面与首帧像素一致。已查看各步骤原始画面与渲染结果。
+- 合成输入／当前 Excel 导出逐笔校验通过；Node 生成脚本语法和 git diff --check 通过。当前候选仅涉及文档与展示素材，未重复运行全仓业务回归。
 
-| 视口 | 内容宽度／滚动宽度 | 结果 |
-| --- | --- | --- |
-| 1440px 深／浅 | 838px / 838px | 品牌、入口、主视觉和字幕可见；图片加载成功 |
-| 390px 深／浅 | 324px / 324px | 页面宽度 390px，无整体横向溢出；三个主入口同排，无落单字 |
+本地检查不能代替合并后 GitHub 页面的实际展示与缓存行为。本节记录候选素材的本地验证；提交与合并状态以关联 PR 和 main 为准。
 
-已保留四份 README 兼容预览及真实分支截图于本任务交付目录。提交推送后另查 [真实 GitHub 分支](https://github.com/Eysn0130/FundsTrace/tree/codex/brand-showcase) 的图片加载与演示入口，PR 为 [#2](https://github.com/Eysn0130/FundsTrace/pull/2)。本轮只创建 PR，未合并 main；兼容预览与真实远端截图分开标记。窄屏主图保留整体路径，可通过原图链接检查金额与账号；没有为缩略图隐藏数据或虚构移动端产品适配。
+## 证据与交付边界
 
-[GitHub README 官方说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes) 用于相对链接与文档分层核对。[Excalidraw](https://github.com/excalidraw/excalidraw) 和 [Penpot](https://github.com/penpot/penpot) 仅参考信息层级，没有复制其资产或文案。
+这些素材证明所述合成界面路径和导出结果，不代替安装包、Windows 实机 DPI、真实案件性能或完整可访问性验收。下载入口指向真实 Releases；未签名预览及各环境已执行范围见[桌面交付](desktop-delivery.md)。案件包不含原始上传、导入任务或回执。
 
-## 资源、许可与适用检查
-
-- `npm --prefix frontend ci` 与 `npm --prefix frontend run build` 通过，使用锁定依赖构建合成预览；没有修改前端源码、依赖或锁文件。
-- `npm --prefix desktop ci` 后 `npm --prefix desktop test`：19 通过，3 项 Windows 专属检查在 macOS 跳过，0 失败。初次缺依赖的检查没有作为通过证据；安装本支线锁定依赖后才完成上述检查。
-- electron-builder 26.15.3 实际读取配置并通过 schema 校验；`win.icon` 指向本支线 ICO。桌面配置只改该字段，产品名、appId、版本、数据根和安装生命周期没有改变。
-- 品牌与静态标识共 12 份 SVG 可解析；正式资产没有脚本、外链、事件或字体加载依赖。8 档图标 PNG 为 RGBA，尺寸正确；ICO 含 16–256px 六档，逐档可解码。静态应用 SVG 和桌面 ICO 与品牌源一致。
-- 字体 Manrope 与 Noto Sans SC 使用固定来源及 SHA-256，完整 SIL OFL 1.1 通知保留在品牌目录；图形和排版源随项目 MIT 提供。见 [品牌说明](brand/README.md) 与 [第三方通知](../THIRD_PARTY_NOTICES.md)。
-- 已核对 136 个相对路径／锚点，以及公开下载链接和候选差异；按本轮影响执行检查，没有因纯说明文档重新运行全仓业务回归。
-
-## 公开包与后续集成
-
-已核实 [公开 v0.1.1 Release](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.1)、源码 Tag 和 [成功 Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38827843574)。公开 EXE 为 `FundsTrace-0.1.1-windows-x64-unsigned.exe`，168336906 字节，SHA-256 `81f0e720dc35fa7ed902388cbbd17208881425d6828ae395195135cfcdb35b8d`；详细已发布证据来自该版本的交付记录。
-
-**本支线没有重打包或替换它。** 新 Logo、favicon、ICO 及其配置只在源码候选中就绪。后续安装包需要独立构建并检查 EXE、安装器、任务栏及系统缩放下的图标表现。当前合成浏览器与资产检查不覆盖 Windows GUI、DPI、原生保存取消、安装中正常关窗或活动导入恢复；这些边界继续以 [桌面交付](desktop-delivery.md) 为准。
+历史 v0.1.1 展示资源与 PR #2 已合并的记录仍属于历史；本轮不再使用旧视频、旧 GIF 或旧截图作为当前主页演示。本轮没有重打包、修改 Release 资产或宣称新版安装包已包含本次文档素材。
