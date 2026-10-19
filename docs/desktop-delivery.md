@@ -4,6 +4,10 @@
 
 FundsTrace v0.1.x 正常启动**无需公钥或授权码**。每个实际版本 Tag 对应 GitHub Release，附 Windows x64 NSIS `.exe`，从 [Releases](https://github.com/Eysn0130/FundsTrace/releases/latest) 下载并安装。原生构建与安装结果以对应版本的候选清单和发布报告为准；下方历史记录仅对应各自源码。安装包未签名，不能声称完成代码签名或 Windows 全面兼容验收。
 
+新版 Release 下载区仅上传 Windows `.exe`；Source code ZIP／tar.gz 由 GitHub 自动提供。验证报告、摘要清单和合成截图保存到本仓库专用证据分支 `codex/release-evidence` 的 `releases/<tag>/`，Release 正文链接到归档的不可变 Git 提交，并保留安装包名称、字节数、SHA-256、更新说明和兼容性限制。整理既有 Release 时，先核对长期归档，再移除非 EXE 附件；原安装包及版本 Tag 保持不变。
+
+v0.1.6 已按此方式整理：[长期验证归档](https://github.com/Eysn0130/FundsTrace/tree/31c83a6baee8ff0a818f1c427babb526d3422a25/releases/v0.1.6) 保留原 12 个验证附件及整理前 Release 元数据。原 EXE 附件仍为 160013027 字节、SHA-256 `fc9c6513079b0ac456b0dabe47b0f8a175eaf9b3b62eceda77a8abddaf6776aa`，Tag 仍指向 `835d526f08901c03fb1d55c48791faeb8d4bea48`；整理没有重新构建或上传安装包。
+
 Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activation_required:false`，如实保留历史 `activated` 状态；`/license` 可直接进入系统。没有公钥、没有授权文件或存在损坏的历史授权都不阻塞业务，不生成测试授权来解锁。FT2／HMAC 验签接口、独立 `desktop/issuer/` 工具和已有材料保留，见 [历史授权维护](license-activation.md)。已发布 alpha.3 不随源码改变。
 
 ## 安装、升级与卸载
@@ -62,7 +66,11 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 旧数据验证使用一次性的公开合成样例，包含超出 JavaScript 安全整数范围的带分金额、独立 CNY／USD 流水、同账号跨案隔离、具名画布快照和追踪成员。升级前案件包由旧安装版导出，升级后导入为新案件并按流水号比较事实及重映射后的关联；新增路径、时序环路与原子上图在导入副本验证。它证明这些具体旧数据结构和流程的兼容性，不代表已读取或验证维护者的真实案件库。
 
-构建 job 只有仓库读取权限，不接收生产授权／私钥，不执行 Release 写入。所选 EXE 或目录、安全报告及合成窗口截图仅留存 3 天，不上传整个 build 或运行目录。维护者核对成功运行、源码 SHA 和产物摘要后，可显式调度独立 transfer job；该 job 核对 Tag 和全部报告后，仅向已存在的空草稿上传原候选资产，不重新构建或公开发布。维护者重新核对上传摘要后单独发布。发布包与 Tag 必须绑定同一 green 源码；构建报告的 `published:false` 表示构建脚本本身没有发布。
+构建 job 只有仓库读取权限，不接收生产授权／私钥，不执行 Release 写入。Actions 中的所选 EXE 或目录、安全报告及合成窗口截图仅留存 3 天，不上传整个 build 或运行目录。维护者核对成功运行、源码 SHA 和产物摘要后，可显式调度独立 transfer job；该 job 核对 Tag、候选资源及全部报告，先创建并核对长期证据归档，再仅向已存在的空草稿上传原候选 EXE，并在正文写入不可变归档链接。该流程不重新构建或公开发布；归档失败不上传 EXE。维护者重新核对上传摘要后单独发布。发布包与 Tag 必须绑定同一 green 源码；构建报告的 `published:false` 表示构建脚本本身没有发布。
+
+长期归档按版本保存原验证附件，包括后端／安装／应用／导入恢复报告、候选和资源清单、SHA-256 文件、两张合成 renderer 截图及普通账户证据 ZIP；`manifest.json` 记录来源运行、候选源码、Tag、安装包摘要及归档文件的大小和 SHA-256，`README.md` 说明范围与验收限制。整理既有 Release 时另保留 `release.original.json`，记录移除附件前的公开 Release 元数据。原安装包继续从 Release 下载，无需在证据分支重复保存。
+
+证据分支只追加新版本，使用 fast-forward 更新，不 force push、不覆盖已有同版本目录，也不合并到产品 `main`。归档后重新读取 Git 提交中的文件并逐项核对摘要；Release 正文使用该提交的永久链接，避免后续分支变化影响追溯。Actions 的短期工件用于传递候选，不能替代该长期归档。安装、升级、旧案件兼容和其他原有检查继续完整执行，下载区简化不减少验收范围。
 
 清单记录 Windows 实际检出字节。未强制 LF 的许可证、SVG、锁文件可能由 `core.autocrlf` 转 CRLF；本地对照须只允许已核实的检出换行转换，安装器和报告按实际字节严格核对。
 
