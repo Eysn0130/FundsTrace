@@ -26,7 +26,7 @@ const REQUIRED_CHECKS = Object.freeze([
   'installedQueryExact', 'installedFirstTrackExact', 'installedSecondTrackVisible',
   'installedContextTrackedConsistent', 'installedNeighborhoodTrackVisible',
   'installedCanvasCloneExact', 'installedCanvasSaveRestoreTypes',
-  'installedCanvasUndoRedoTypes', 'installedCaseIsolationAndReturn',
+  'installedCanvasUndoRedoTypes', 'installedKeyboardUndoRedoOutsideGraph', 'installedCaseIsolationAndReturn',
 ]);
 
 function fixtureCsv() {
@@ -379,19 +379,26 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'polyline'`), true);
     });
     await check('installedCanvasUndoRedoTypes', async () => {
-      redoneTypes = await type('line'); step = 'history-undo'; await clickElement(`document.querySelector('#btnUndo')`);
-      await until(async () => {
-        try { const snapshot = await evaluate(GRAPH_PROBE); assert.equal(snapshot.ready, true); assertEdgeTypes(snapshot, savedTypes); return true; }
-        catch { return false; }
-      }, 15000);
-      assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'polyline'`), true);
-      await graph(3, flowIds); step = 'history-redo'; await clickElement(`document.querySelector('#btnRedo')`);
-      await until(async () => {
-        try { const snapshot = await evaluate(GRAPH_PROBE); assert.equal(snapshot.ready, true); assertEdgeTypes(snapshot, redoneTypes); return true; }
-        catch { return false; }
-      }, 15000);
-      assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'line'`), true);
-      await graph(3, flowIds);
+      await check('installedKeyboardUndoRedoOutsideGraph', async () => {
+        redoneTypes = await type('line'); step = 'history-undo';
+        await clickElement(`document.querySelector('#ribbonTab-view')`);
+        assert.equal(await evaluate(`document.activeElement === document.querySelector('#ribbonTab-view')`), true);
+        await key('z', 'KeyZ', 90, 2);
+        await until(async () => {
+          try { const snapshot = await evaluate(GRAPH_PROBE); assert.equal(snapshot.ready, true); assertEdgeTypes(snapshot, savedTypes); return true; }
+          catch { return false; }
+        }, 15000);
+        assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'polyline'`), true);
+        await graph(3, flowIds); step = 'history-redo';
+        await clickElement(`document.querySelector('#ribbonTab-view')`);
+        await key('Z', 'KeyZ', 90, 10);
+        await until(async () => {
+          try { const snapshot = await evaluate(GRAPH_PROBE); assert.equal(snapshot.ready, true); assertEdgeTypes(snapshot, redoneTypes); return true; }
+          catch { return false; }
+        }, 15000);
+        assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'line'`), true);
+        await graph(3, flowIds);
+      });
     });
     await check('installedCaseIsolationAndReturn', async () => {
       step = 'case-empty';

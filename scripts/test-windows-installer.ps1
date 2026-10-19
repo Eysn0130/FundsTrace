@@ -29,7 +29,10 @@ $Report = [ordered]@{
     failureType = $null; failureId = $null; failedNativeStep = $null; nativeErrorCode = $null
     checks = [ordered]@{
         ciFreshUser = 'not-run'; priorInstallerDigest = 'not-run'; priorInstalled = 'not-run'
-        syntheticDataSeeded = 'not-run'; upgradedSameIdentity = 'not-run'; installedResourceIntegrity = 'not-run'
+        syntheticDataSeeded = 'not-run'; priorCaseDataWrittenByInstalledBackend = 'not-run'
+        upgradedSameIdentity = 'not-run'; installedResourceIntegrity = 'not-run'
+        upgradedExistingCaseData = 'not-run'; legacyCasePackageCompatible = 'not-run'
+        upgradedAnalysisAndAtomicCanvas = 'not-run'
         installedBackendWithoutActivation = 'not-run'; installedBackendAuthentication = 'not-run'
         syntheticCaseCreatedAndReopened = 'not-run'; eofShutdown = 'not-run'
         installedApplicationStarted = 'not-run'; installedApplicationSingleInstance = 'not-run'
@@ -212,8 +215,8 @@ try {
     $PriorInstaller = Join-Path $TemporaryRoot 'prior-stable.exe'
 
     $Stage = 'priorInstallerDigest'
-    Invoke-WebRequest -Uri 'https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.4/FundsTrace-0.1.4-windows-x64-unsigned.exe' -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
-    if ((Get-Sha256 $PriorInstaller) -cne '57f48737807473d67fe030571fe26d359361353cd977f5cfd8ad6709ebca8fbb') {
+    Invoke-WebRequest -Uri 'https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.5/FundsTrace-0.1.5-windows-x64-unsigned.exe' -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
+    if ((Get-Sha256 $PriorInstaller) -cne 'f5c337e37adb30dc30c8cb895722703c91461ed0de49acee8dd487d454d8f1fc') {
         throw 'The prior installer digest differs from the pinned release.'
     }
     $Report.checks.priorInstallerDigest = 'passed'
@@ -221,8 +224,8 @@ try {
     $MayHaveInstalled = $true
     # /D is NSIS syntax: absolute path, last argument, deliberately no quotes even with spaces.
     [void](Invoke-Native -FileName $PriorInstaller -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
-    Assert-Installed '0.1.4'
-    $Report.priorVersion = '0.1.4'; $Report.checks.priorInstalled = 'passed'
+    Assert-Installed '0.1.5'
+    $Report.priorVersion = '0.1.5'; $Report.checks.priorInstalled = 'passed'
 
     $Stage = 'syntheticDataSeeded'
     # The earlier absence check establishes ownership; never redirect or reuse a maintainer's data.
@@ -233,21 +236,18 @@ try {
     $DataDirectory = Join-Path $UserRoot 'data'
     [void](New-Item -ItemType Directory -Path $DataDirectory)
     $PythonEnvironment = @{ FUND_DATA_DIR = $DataDirectory; PYTHONUTF8 = '1'; PYTHONDONTWRITEBYTECODE = '1'; PYTHONNOUSERSITE = '1' }
-    $SeedCode = @'
-from app import db
-try:
-    db._start_ckpt = lambda: None
-    with db.transaction():
-        db.q("insert into cases(name) values (?) returning id", ["SYN prior installer lifecycle case"])
-    db.con().execute("checkpoint")
-finally:
-    if db._con is not None:
-        db._con.close()
-        db._con = None
-'@
-    [void](Invoke-Native -FileName $PythonExe -Arguments @('-c', $SeedCode) -Environment $PythonEnvironment -TimeoutSeconds 60)
+    $UpgradeFixture = Join-Path $TemporaryRoot 'upgrade-fixture'
+    $UpgradeHelper = Join-Path $ProjectRoot 'desktop/tests/upgrade-data-smoke.cjs'
+    $PriorData = (Invoke-Native -FileName $NodeExe -Arguments @(
+        $UpgradeHelper, $InstallRoot, '--mode', 'seed', '--fixture', $UpgradeFixture
+    ) -TimeoutSeconds 180) | ConvertFrom-Json
+    foreach ($Name in @('priorBackendSeeded', 'priorExactMoneyAndCurrency', 'priorCanvasAndTracking', 'priorPackageExported', 'priorEofReopened')) {
+        if ($PriorData.$Name -isnot [bool] -or -not $PriorData.$Name) { throw 'Old installed backend did not create the compatibility fixture.' }
+    }
+    $Report.priorDataChecks = $PriorData
     if (-not (Test-Path -LiteralPath (Join-Path $DataDirectory 'fund.duckdb') -PathType Leaf)) { throw 'Synthetic database was not created.' }
     $Report.checks.syntheticDataSeeded = 'passed'
+    $Report.checks.priorCaseDataWrittenByInstalledBackend = 'passed'
 
     $Stage = 'upgradedSameIdentity'
     [void](Invoke-Native -FileName $InstallerPath -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
@@ -279,6 +279,19 @@ finally:
         }
     }
     $Report.checks.installedResourceIntegrity = 'passed'
+
+    $Stage = 'upgradedExistingCaseData'
+    $UpgradedData = (Invoke-Native -FileName $NodeExe -Arguments @(
+        $UpgradeHelper, $InstallRoot, '--mode', 'verify', '--fixture', $UpgradeFixture
+    ) -TimeoutSeconds 240) | ConvertFrom-Json
+    foreach ($Name in @('upgradedFactsUnchanged', 'upgradedCanvasAndTracking', 'legacyPackageRoundTrip',
+        'upgradedAnalysisPaths', 'upgradedAnalysisCycles', 'upgradedAtomicCanvas', 'upgradedEofReopened', 'upgradedSourceFilesUnchanged')) {
+        if ($UpgradedData.$Name -isnot [bool] -or -not $UpgradedData.$Name) { throw 'Existing data did not survive upgrade or package migration.' }
+    }
+    $Report.upgradedDataChecks = $UpgradedData
+    $Report.checks.upgradedExistingCaseData = 'passed'
+    $Report.checks.legacyCasePackageCompatible = 'passed'
+    $Report.checks.upgradedAnalysisAndAtomicCanvas = 'passed'
 
     $Stage = 'installedBackendWithoutActivation'
     $HelperJson = Invoke-Native -FileName $NodeExe -Arguments @((Join-Path $ProjectRoot 'desktop/tests/installed-data-smoke.cjs'), $InstallRoot) -TimeoutSeconds 210
@@ -318,7 +331,7 @@ finally:
         'installedQueryExact', 'installedFirstTrackExact', 'installedSecondTrackVisible',
         'installedContextTrackedConsistent', 'installedNeighborhoodTrackVisible',
         'installedCanvasCloneExact', 'installedCanvasSaveRestoreTypes',
-        'installedCanvasUndoRedoTypes', 'installedCaseIsolationAndReturn', 'installedGraphScreenshot')) {
+        'installedCanvasUndoRedoTypes', 'installedKeyboardUndoRedoOutsideGraph', 'installedCaseIsolationAndReturn', 'installedGraphScreenshot')) {
         if ($AppHelper.checks.$Name -isnot [bool] -or -not $AppHelper.checks.$Name) { throw 'Installed application did not satisfy its check.' }
     }
     $Report.checks.installedApplicationStarted = 'passed'
@@ -335,18 +348,55 @@ finally:
     Assert-Sentinel
     $VerifyCode = @'
 import os
+import hashlib
+import json
+import re
+import sys
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 import duckdb
 source = Path(os.environ["FUND_DATA_DIR"])
+fixture = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert not (source / "license.dat").exists()
 connection = duckdb.connect(str(source / "fund.duckdb"), read_only=True)
 try:
     names = {row[0] for row in connection.execute("select name from cases").fetchall()}
     assert {"SYN prior installer lifecycle case", "SYN current installer lifecycle case"} <= names
+    fields = ("id", "case_id", "batch_id", "trade_no", "trade_time", "payer_name", "payer_account", "payer_bank",
+              "payee_name", "payee_account", "payee_bank", "amount", "balance", "currency", "summary",
+              "channel", "self_account", "self_name")
+    def wire(value, key):
+        if key in ("id", "case_id", "batch_id"):
+            return None if value is None else str(value)
+        if key in ("amount", "balance"):
+            return None if value is None else format(value, ".2f")
+        if key == "trade_time":
+            return value.isoformat(sep=" ") if isinstance(value, datetime) else value
+        return value or ""
+    for previous in (fixture["original"], fixture["isolated"]):
+        cid = int(previous["caseId"])
+        rows = connection.execute("select " + ",".join(fields) + " from flows where case_id=? order by trade_no", [cid]).fetchall()
+        assert [{key: wire(value, key) for key, value in zip(fields, row)} for row in rows] == previous["rows"]
+        tracked = lambda canvas: sorted(str(row[0]) for row in connection.execute(
+            "select flow_id from tracked_flows where case_id=? and canvas_id=?", [cid, canvas]).fetchall())
+        assert tracked(0) == previous["defaultTrackedIds"]
+        canvases = connection.execute("select id,name,snapshot from canvases where case_id=? order by name", [cid]).fetchall()
+        assert [{"id": str(row[0]), "name": row[1], "snapshot": json.loads(row[2]), "trackedIds": tracked(row[0])}
+                for row in canvases] == previous["canvases"]
+        mains = connection.execute("select account,name,source from main_accounts where case_id=? order by marked_at,account", [cid]).fetchall()
+        assert [dict(zip(("account", "name", "source"), row)) for row in mains] == previous["mains"]
+        identities = connection.execute("select account,id_no from account_ids where case_id=? order by account", [cid]).fetchall()
+        assert [dict(zip(("account", "id_no"), row)) for row in identities] == previous["identities"]
+    for entry in fixture["sources"]:
+        assert re.fullmatch(r"uploads/[0-9a-f]{32}\.csv", entry["relative"])
+        original = source / entry["relative"]
+        assert not original.is_symlink() and original.resolve().is_relative_to(source.resolve())
+        assert hashlib.sha256(original.read_bytes()).hexdigest() == entry["sha256"]
 finally:
     connection.close()
 '@
-    [void](Invoke-Native -FileName $PythonExe -Arguments @('-c', $VerifyCode) -Environment $PythonEnvironment -TimeoutSeconds 60)
+    [void](Invoke-Native -FileName $PythonExe -Arguments @('-c', $VerifyCode, (Join-Path $UpgradeFixture 'snapshot.json')) -Environment $PythonEnvironment -TimeoutSeconds 60)
     $Report.checks.syntheticDataRetained = 'passed'
     }
 } catch {

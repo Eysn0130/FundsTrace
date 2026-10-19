@@ -12,6 +12,8 @@ const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-gr
 const SENTINEL = 'FundsTrace synthetic installer lifecycle v1\n';
 const SEED_CASE = 'SYN prior installer lifecycle case';
 const CREATED_CASE = 'SYN current installer lifecycle case';
+const COMPATIBILITY_CASES = ['SYN prior compatibility populated case', 'SYN prior compatibility isolated case',
+  'SYN prior compatibility populated case(导入1)'];
 const VIEWPORTS = [[960, 500], [960, 640], [1280, 640]], DEVICE_SCALES = [1, 1.5, 2];
 const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, failedCheck: null,
   limits: { windowsServerAutomationOnly: true, windows10And11Interactive: false,
@@ -297,7 +299,7 @@ async function portClosed(port) {
     // Return booleans only; never ask CDP for network headers or Main state.
     assert.equal(await evaluate(`(async () => {
       const response = await fetch('/api/v1/cases'); if (!response.ok) return false;
-      const value = await response.json(), allowed = new Set(${JSON.stringify([SEED_CASE, CREATED_CASE])});
+      const value = await response.json(), allowed = new Set(${JSON.stringify([SEED_CASE, CREATED_CASE, ...COMPATIBILITY_CASES])});
       return Array.isArray(value.items) && value.items.some(item => item.name === ${JSON.stringify(SEED_CASE)})
         && value.items.some(item => item.name === ${JSON.stringify(CREATED_CASE)})
         && value.items.every(item => item.id === '1' || allowed.has(item.name));
