@@ -33,13 +33,16 @@ function expectedEdges(flowIds, count) {
   return AMOUNTS.slice(0, count).map((amount, i) => ({ source: ACCOUNTS[i], target: ACCOUNTS[i + 1],
     ids: [flowIds[i]], total: amount, cnt: 1, amount_totals: [{ currency: 'CNY', amount }] }));
 }
-function assertGraph(snapshot, flowIds, count, visibleAccounts = ACCOUNTS.slice(0, count + 1)) {
+function assertTrackedGraph(snapshot, flowIds, count) {
   assert.ok(snapshot && snapshot.ready);
   assert.deepEqual(sorted(snapshot.accounts), sorted(ACCOUNTS.slice(0, count + 1)));
   assert.deepEqual(sorted(snapshot.trackedIds), sorted(flowIds.slice(0, count)));
   const facts = snapshot.edges.map(edge => ({ source: edge.source, target: edge.target,
     ids: sorted(edge.ids), total: edge.total, cnt: edge.cnt, amount_totals: edge.amount_totals }));
   assert.deepEqual(facts.sort((a, b) => a.source.localeCompare(b.source)), expectedEdges(flowIds, count));
+}
+function assertGraph(snapshot, flowIds, count, visibleAccounts = ACCOUNTS.slice(0, count + 1)) {
+  assertTrackedGraph(snapshot, flowIds, count);
   assert.deepEqual(sorted(snapshot.renderedNodes.map(node => node.id)), sorted(visibleAccounts));
   const expectedVisible = expectedEdges(flowIds, count).filter(edge => visibleAccounts.includes(edge.source) && visibleAccounts.includes(edge.target));
   assert.deepEqual(sorted(snapshot.renderedEdges.map(edge => `${edge.source}=>${edge.target}`)),
@@ -59,6 +62,16 @@ function renderedEdgeTypes(snapshot) {
 }
 function assertEdgeTypes(snapshot, expected) {
   assert.deepEqual(renderedEdgeTypes(snapshot), expected);
+}
+function assertImportCompletion(receipt) {
+  assert.equal(receipt.open, true);
+  assert.equal(receipt.busy, false);
+  assert.equal(receipt.resultVisible, true);
+  assert.equal(receipt.commitHidden, true);
+  assert.equal(receipt.action, '完成');
+  assert.equal(receipt.status, '导入完成');
+  assert.deepEqual(receipt.steps, ['complete', 'complete', 'complete']);
+  assert.equal(receipt.summary, '新增 3 笔 · 重复 0 笔 · 跳过 0 行');
 }
 
 // No calls to trackFlows, renderGraph, snapshots, history travel or other product
@@ -112,7 +125,32 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     await until(() => evaluate(`(() => { const node = document.querySelector(${JSON.stringify(selector)});
       return ${byText ? 'node.selectedOptions[0]?.textContent' : 'node.value'} === ${JSON.stringify(String(value))}; })()`), 10000);
   }
-  async function graph(count, ids, visible) {
+  async function graph(count, ids, visible = ACCOUNTS.slice(0, count + 1), { frame = true } = {}) {
+    if (frame) {
+      // Tracking deliberately preserves the camera. Find > Locate all is the
+      // user's explicit framing action, without changing selection or members.
+      await until(async () => {
+        try { assertTrackedGraph(await evaluate(GRAPH_PROBE), ids, count); return true; }
+        catch { return false; }
+      }, 20000);
+      const selectionProbe = `({ nodes: [...state.graphSelection.ids].map(String).sort(), edge: state.graphView.selectedEdge })`;
+      const selection = await evaluate(selectionProbe);
+      await clickElement(`document.querySelector('#ribbonTab-common')`);
+      await clickElement(`document.querySelector('#btnFindNode')`);
+      await until(() => evaluate(`!document.querySelector('#findNodePopover').hidden`), 10000);
+      await fill('#graphFindInput', 'SYN-INST-');
+      await clickElement(`document.querySelector('#btnGraphFindSearch')`);
+      await until(() => evaluate(`document.querySelectorAll('#graphFindResults .find-result').length === ${visible.length}
+        && !document.querySelector('#btnGraphFindAll').disabled`), 10000);
+      await clickElement(`document.querySelector('#btnGraphFindAll')`);
+      await until(() => evaluate(`document.querySelector('#graphFindStatus').dataset.state === 'done'
+        && document.querySelector('#findNodePopover').getAttribute('aria-busy') === 'false'
+        && document.querySelector('#graphFindStatus').textContent === ${JSON.stringify(`已定位全部 ${visible.length} 个账户`)}`), 15000);
+      await clickElement(`document.querySelector('#btnGraphFindClose')`);
+      await until(() => evaluate(`document.querySelector('#findNodePopover').hidden`), 10000);
+      assert.deepEqual(await evaluate(selectionProbe), selection);
+      assertTrackedGraph(await evaluate(GRAPH_PROBE), ids, count);
+    }
     await until(async () => {
       try { assertGraph(await evaluate(GRAPH_PROBE), ids, count, visible); return true; }
       catch { return false; }
@@ -172,6 +210,20 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     await clickElement(`document.querySelector('#canvasActionSubmit')`);
     await until(() => evaluate(`!document.querySelector('#canvasActionForm[open]')`), 15000);
   }
+  async function rowAction(flowId, action) {
+    // The seven-column sidebar keeps row actions at its right edge. Use its
+    // visible scrollbar control rather than clicking a clipped table button.
+    if (await evaluate(`document.querySelector('#flowTableScroll').scrollWidth
+      > document.querySelector('#flowTableScroll').clientWidth + 1`)) {
+      await clickElement(`document.querySelector('#flowHorizontalPosition')`);
+      await key('End', 'End', 35);
+      await until(() => evaluate(`(() => {
+        const viewport = document.querySelector('#flowTableScroll');
+        return viewport.scrollLeft >= viewport.scrollWidth - viewport.clientWidth - 1;
+      })()`), 10000);
+    }
+    await clickElement(`document.querySelector('#flowTbody tr[data-id="${flowId}"] .${action}')`);
+  }
 
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'funds-trace-installed-graph-'));
   try {
@@ -181,7 +233,9 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       assert.equal(await evaluate(`typeof FundsGraphSelection?.create === 'function'
         && !!state.graphSelection && !state.graphSelection.status().destroyed
         && typeof FundsCanvasEditor?.history.undo === 'function'
-        && typeof window.FundsDesktopPreferences?.getItem === 'function'`), true);
+        && typeof window.FundsDesktopPreferences?.getItem === 'function'
+        && typeof window.FundsNodeFinder?.create === 'function'
+        && typeof window.FundsNodeFinderActions?.getState === 'function'`), true);
     });
     const csvFile = path.join(directory, 'synthetic-installed-chain.csv');
     await fs.writeFile(csvFile, fixtureCsv(), { flag: 'wx' });
@@ -201,12 +255,31 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
             document.querySelector('#impMapping select[data-field="' + field + '"]')?.value === mapping[field])
           && state.imp.preview.length === 3 && state.imp.preview.every((row,i) =>
             row.amount === expected[i] && row.summary === summaries[i] && row.currency === 'CNY')
-          && document.querySelectorAll('#impTbody tr').length === 3;
+          && document.querySelectorAll('#impTbody tr').length === 3
+          && [...document.querySelectorAll('#impTbody tr')].every((row, i) =>
+            row.children[3].textContent.replaceAll(',', '') === '¥' + expected[i]
+            && row.children[4].textContent === summaries[i] && row.children[5].textContent === 'CNY');
       })()`), true);
     });
     let flowIds;
     await check('installedCsvCommittedExact', async () => {
       await clickElement(`document.querySelector('#impCommit')`);
+      const receipt = () => evaluate(`({
+        open: document.querySelector('#importModal').style.display === 'flex',
+        busy: document.querySelector('#importModal').getAttribute('aria-busy') !== 'false',
+        resultVisible: !document.querySelector('#impResult').hidden,
+        commitHidden: document.querySelector('#impCommit').hidden,
+        action: document.querySelector('#impCancel').textContent,
+        status: document.querySelector('#impFlowStatus').textContent,
+        steps: ['impFlowFile','impFlowFields','impFlowConfirm'].map(id => document.getElementById(id).dataset.state),
+        summary: document.querySelector('#impResultText').textContent,
+      })`);
+      await until(async () => {
+        try { assertImportCompletion(await receipt()); return true; }
+        catch { return false; }
+      }, 45000);
+      assertImportCompletion(await receipt());
+      await clickElement(`document.querySelector('#impCancel')`);
       await until(() => evaluate(`document.querySelector('#importModal').style.display === 'none'
         && state.search.total === 3 && state.stats.flows === 3 && document.querySelectorAll('#flowTbody tr[data-id]').length === 3`), 45000);
       flowIds = await evaluate(`(() => {
@@ -227,18 +300,18 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       await clickElement(`document.querySelector('#btnReset')`);
       await until(() => evaluate(`state.search.total === 3 && document.querySelectorAll('#flowTbody tr[data-id]').length === 3`), 10000);
     });
-    const track = index => clickElement(`document.querySelector('#flowTbody tr[data-id="${flowIds[index]}"] .act-track')`);
+    const track = index => rowAction(flowIds[index], 'act-track');
     await check('installedFirstTrackExact', async () => { await track(0); await graph(1, flowIds); });
     await check('installedSecondTrackVisible', async () => { await track(1); await graph(2, flowIds); });
     await check('installedContextTrackedConsistent', async () => {
-      await clickElement(`document.querySelector('#flowTbody tr[data-id="${flowIds[1]}"] .act-ctx')`);
+      await rowAction(flowIds[1], 'act-ctx');
       await until(() => evaluate(`document.querySelector('#ctxModal').style.display === 'flex'
         && String(state.ctx?.data?.anchor?.id) === ${JSON.stringify(flowIds[1])}
         && !!document.querySelector('#ctxTbody tr.anchor .ctx-on')`), 10000);
       assert.equal(await evaluate(`state.tracked.has(Number(${JSON.stringify(flowIds[1])}))
         && document.querySelector('#ctxTbody tr.anchor .ctx-on').textContent === '已上图'
         && document.querySelector('#ctxTbody tr.anchor td.amt').textContent.replaceAll(',', '') === ${JSON.stringify('¥' + AMOUNTS[1])}`), true);
-      await graph(2, flowIds); await clickElement(`document.querySelector('#ctxClose')`);
+      await graph(2, flowIds, undefined, { frame: false }); await clickElement(`document.querySelector('#ctxClose')`);
     });
     await check('installedNeighborhoodTrackVisible', async () => {
       await clickElement(`document.querySelector('#ribbonTab-trace')`);
@@ -250,9 +323,12 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
         && document.querySelector('#btnNeighborSearch').getAttribute('aria-busy') === 'false'
         && !document.querySelector('#btnNeighborhood').disabled`), 10000);
       await clickElement(`document.querySelector('#btnNeighborhood')`);
-      await graph(2, flowIds, ACCOUNTS.slice(0, 2));
+      await until(() => evaluate(`state.graphView.root === ${JSON.stringify(ACCOUNTS[0])}
+        && document.querySelector('#neighborDraftState').dataset.state === 'applied'
+        && document.querySelector('#neighborPopover').getAttribute('aria-busy') === 'false'`), 15000);
       await clickElement(`document.querySelector('#btnNeighborClose')`);
       await until(() => evaluate(`document.querySelector('#neighborPopover').hidden`), 10000);
+      await graph(2, flowIds, ACCOUNTS.slice(0, 2));
       await track(2); await graph(3, flowIds);
       assert.equal(await evaluate(`state.graphView.root === ${JSON.stringify(ACCOUNTS[0])}
         && state.graphView.visibleIds.has(${JSON.stringify(ACCOUNTS[2])})
@@ -309,4 +385,4 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
   }
 }
 
-module.exports = { ACCOUNTS, AMOUNTS, SUMMARIES, REQUIRED_CHECKS, fixtureCsv, assertGraph, assertEdgeTypes, runInstalledGraphJourney };
+module.exports = { ACCOUNTS, AMOUNTS, SUMMARIES, REQUIRED_CHECKS, fixtureCsv, assertGraph, assertEdgeTypes, assertImportCompletion, runInstalledGraphJourney };

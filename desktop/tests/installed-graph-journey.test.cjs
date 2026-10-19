@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { fixtureCsv, assertGraph, assertEdgeTypes, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
+const { fixtureCsv, assertGraph, assertEdgeTypes, assertImportCompletion, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
 
 function observed() {
   // Independent two-transfer observation with exact decimal strings. The
@@ -34,6 +34,21 @@ test('installed fixture is three separate chain transfers with exact cents and r
     ['SYN-INST-A', 'SYN-INST-B', '12345678901234.01'],
     ['SYN-INST-B', 'SYN-INST-C', '0.02'], ['SYN-INST-C', 'SYN-INST-D', '345.67'],
   ]);
+});
+
+test('import acceptance requires the visible completed receipt with all three committed transfers', () => {
+  const receipt = () => ({ open: true, busy: false, resultVisible: true, commitHidden: true,
+    action: '完成', status: '导入完成', steps: ['complete', 'complete', 'complete'],
+    summary: '新增 3 笔 · 重复 0 笔 · 跳过 0 行' });
+  assert.doesNotThrow(() => assertImportCompletion(receipt()));
+  for (const mutate of [
+    value => { value.open = false; }, value => { value.busy = true; },
+    value => { value.resultVisible = false; }, value => { value.commitHidden = false; },
+    value => { value.action = '关闭'; }, value => { value.steps[2] = 'working'; },
+    value => { value.summary = '新增 2 笔 · 重复 0 笔 · 跳过 1 行'; },
+  ]) {
+    const value = receipt(); mutate(value); assert.throws(() => assertImportCompletion(value));
+  }
 });
 
 test('graph acceptance compares IDs, endpoints and full decimal amounts', () => {
