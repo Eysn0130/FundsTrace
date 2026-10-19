@@ -11,7 +11,7 @@
   "sha256": {
     "fundstrace-synthetic.csv": "ae8791ec2d6f43000ae03460df0e3f411518dceb305208e3cbb13af01d42e976",
     "fundstrace-synthetic.xlsx": "bbc1c061795f549f732c872804f0cc1b818c16778b8e2f87290b9f44f50d9bce",
-    "exports/tracked-flows.xlsx": "20dc05e884a2245a0bb39d6581ca10e697848e247f0717a8b3488923690d0d82",
-    "exports/traced-graph.png": "9ab76dfb3940102105c072565ee248149defad2addafcec6054edce01207582b"
+    "exports/tracked-flows.xlsx": "407e2056952334958b84d1d6f22e425f7c8f5e9464cc50cb566f92b9f9f6eec7",
+    "exports/traced-graph.png": "32b011d0b1decc74b72869c4effda34983f6b970b84a0ca22e2ce5c2173279e8"
   }
 }

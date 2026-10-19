@@ -56,3 +56,18 @@ NotoSansSC.ttf  a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da
 ## 桌面集成边界
 
 `desktop/electron-builder.cjs` 仅增加 `win.icon`，指向 `desktop/assets/icon.ico`。appId、产品名、版本、数据目录、安装和卸载行为没有更改。图标资源已进入本支线源码候选；已公开的 **v0.1.1 二进制不包含本轮新品牌资产**。本轮没有重打包、替换 Release 文件或验证新图标在 Windows 安装器、任务栏、系统缩放中的实际表现。后续正式包需在其自身构建和 Windows 安装证据中核对图标。
+
+## 主页业务展示图
+
+主页沿用现有品牌，新增可复用的[业务流程 SVG](../media/fundstrace-workflow.svg)／[2× PNG](../media/fundstrace-workflow.png)与[本机架构 SVG](../media/fundstrace-architecture.svg)／[2× PNG](../media/fundstrace-architecture.png)。它们是逻辑示意，产品主视觉与 GIF 均使用真实合成预览截图；具体来源和验证见[素材核验](../showcase-validation.md)。
+
+[render-showcase-figures.mjs](render-showcase-figures.mjs) 仅重建这两张图，需要 `@napi-rs/canvas 0.1.100`、`sharp 0.35.5` 与本地可用的拉丁／中文字体。通过 `SHOWCASE_CANVAS_PATH`、`SHOWCASE_SHARP_PATH` 可指定已有库路径，用 `--latin-font FILE --cjk-font FILE` 指定字体。SVG 字体转为路径，无外部字体请求；字体文件不随图分发。当前成图使用 macOS Avenir Next／PingFang。
+
+[render-showcase-media.py](render-showcase-media.py) 需要 Pillow 12.3.0，读取 `docs/media/showcase/` 内已采集的 PNG，生成首屏展示图、导入／分析 GIF 及静态封面。截图只等比缩放，字幕、边框和进度在产品画面之外；没有 MP4 中间文件。可用 `--font FILE` 指定中文字体，当前成图使用 macOS STHeiti Light。
+
+```sh
+node docs/brand/render-showcase-figures.mjs --latin-font /path/to/latin.ttf --cjk-font /path/to/cjk.ttf
+python docs/brand/render-showcase-media.py --font /path/to/cjk.ttf
+```
+
+这些脚本不重建应用图标、不修改业务或桌面资源，也不生成安装包。
