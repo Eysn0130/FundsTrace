@@ -91,7 +91,7 @@
       });
       dialog.addEventListener('click', event => {
         const r = dialog.getBoundingClientRect();
-        if (down && event.target === dialog && (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom)) dialog.close();
+        if (down && !dialog.hasAttribute('data-capture-locked') && event.target === dialog && (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom)) dialog.close();
         down = false;
       });
     }
@@ -105,12 +105,13 @@
     const suggestions = document.querySelector('#ctxSuggest');
     new MutationObserver(() => {
       for (const item of suggestions.querySelectorAll('.sg-item')) {
+        if (item.tagName === 'BUTTON') continue;
         item.tabIndex = 0; item.setAttribute('role', 'button');
         item.setAttribute('aria-label', `勾选推荐流水：${item.querySelector('.sg-main')?.textContent || ''}`);
       }
     }).observe(suggestions, { childList: true });
     suggestions.addEventListener('keydown', event => {
-      if (event.target.matches('.sg-item') && ['Enter', ' '].includes(event.key)) {
+      if (event.target.matches('.sg-item') && event.target.tagName !== 'BUTTON' && ['Enter', ' '].includes(event.key)) {
         event.preventDefault(); event.target.click();
       }
     });
@@ -124,7 +125,7 @@
     }
     document.querySelector('#pcCircle').addEventListener('keydown', event => {
       const delta = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
-      if (!delta) return;
+      if (!delta || pcState.binding?.busy) return;
       event.preventDefault();
       const step = event.shiftKey ? .05 : .01;
       pcState.cx = Math.max(0, Math.min(1, pcState.cx + delta[0] * step));

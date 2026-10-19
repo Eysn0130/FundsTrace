@@ -2,7 +2,7 @@
 
 ## v0.1.x 发布规则
 
-FundsTrace v0.1.3 正常启动**无需公钥或授权码**。每个实际版本 Tag 对应 GitHub Release，附 Windows x64 NSIS `.exe`，从 [Releases](https://github.com/Eysn0130/FundsTrace/releases) 下载并安装。[v0.1.3 已发布](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.3)，原生构建和安装结果见下文交付记录；Windows GUI 验收不作为发布标记。安装包未签名，不能声称完成代码签名或 Windows 全面兼容验收。
+FundsTrace v0.1.x 正常启动**无需公钥或授权码**。每个实际版本 Tag 对应 GitHub Release，附 Windows x64 NSIS `.exe`，从 [Releases](https://github.com/Eysn0130/FundsTrace/releases/latest) 下载并安装。原生构建与安装结果以对应版本的候选清单和发布报告为准；下方历史记录仅对应各自源码。安装包未签名，不能声称完成代码签名或 Windows 全面兼容验收。
 
 Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activation_required:false`，如实保留历史 `activated` 状态；`/license` 可直接进入系统。没有公钥、没有授权文件或存在损坏的历史授权都不阻塞业务，不生成测试授权来解锁。FT2／HMAC 验签接口、独立 `desktop/issuer/` 工具和已有材料保留，见 [历史授权维护](license-activation.md)。已发布 alpha.3 不随源码改变。
 
@@ -17,7 +17,7 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 ## 运行与数据边界
 
-[desktop/main.cjs](../desktop/main.cjs) 只负责窗口、受限导航／下载和自己创建的服务；无 preload、无通用 IPC。G6 `/` 保留完整业务，`/analysis` 为分析，`/workspace/` 为共享 React 试点。用户数据在 Electron 自身 `userData/data`，不写安装资源，不打开 Analytix 数据根。保留单实例和原有按显示器 DIP 工作区创建窗口的规则。
+[desktop/main.cjs](../desktop/main.cjs) 负责窗口、受限导航／下载和自己创建的服务。受 sandbox 和 contextIsolation 保护的 [preload](../desktop/preload.cjs) 仅暴露展示偏好 get/set/remove；Main 校验窗口归属、主框架及当前精确 origin，只将案件选择、线型、标签、证件／照片显示开关写入 `userData/preferences.json`。随机端口和临时 session 不变；不持久化 token、流水、快照或任意 renderer 键，不提供通用 IPC。G6 `/` 保留完整业务，`/analysis` 为分析，`/workspace/` 为共享 React 试点。业务数据在 Electron 自身 `userData/data`，不写安装资源，不打开 Analytix 数据根。保留单实例和原有按显示器 DIP 工作区创建窗口的规则。
 
 [desktop_backend.py](../desktop_backend.py) 从 stdin 读取严格的 `{protocol:1, token, dataDir, synthetic}` 后才导入应用。随机 token 只经父进程管道和 Main 持有的精确 origin 请求头传递，不进入 URL、argv、renderer、日志或导出。后端绑定 `127.0.0.1:0`，Main 健康检查后才加载页面；冻结后端拒绝 source-only synthetic 模式。
 
@@ -39,7 +39,7 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 | 首次报告 | 普通启动、案件和分析入口不再提前初始化 Matplotlib；首次报告才加载。实际报告附件仍由源码回归和包内请求验证，不通过删除依赖制造启动收益。 |
 | 体积 | 保留 Python onedir、Electron asar 和宿主文件白名单；Electron 语言资源保留 en-US、zh-CN、zh-TW。构建报告区分安装器字节、安装后字节、backend／语言资源与最大文件，不凭依赖名称裁剪动态模块。 |
 | 运行中升级 | 只向已核对路径的本应用请求正常关闭；疑似本应用进程路径不可读时返回检查失败，不能静默当空闲或按名称强杀。 |
-| 安装后启用 | 自动链使用固定摘要的 v0.1.1 作为旧版，升级后启动真正的 FundsTrace.exe，检查业务 DOM、新选择模块、免激活、单实例、正常关闭和端口释放，再卸载回读合成数据。实际执行结果绑定候选 SHA 记录。 |
+| 安装后启用 | 自动链使用固定摘要的 v0.1.4 作为旧版，升级后启动真正的 FundsTrace.exe，检查业务 DOM、新选择模块、免激活、单实例、正常关闭和端口释放，再卸载回读合成数据。实际执行结果绑定候选 SHA 记录。 |
 
 安装后 EXE 烟测仅在 Actions 专用合成用户运行，以 Electron 原生 loopback 调试接口观察自身页面；不增加生产 IPC、测试开关或共享授权。安全报告只含检查名与耗时，可保存的图片是 renderer 表面截图。它扩大了“直接启动 backend”的旧证据，但仍不是 Win10／11 普通账户、SmartScreen／SAC、断网首次使用、100%／150%／200% DPI、触屏或原生保存取消的实机验收。`guiAcceptance:false` 等限制继续保留。
 
@@ -58,9 +58,9 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 未签名构建使用 `signExecutable:false` 保留应用EXE版本资源编辑；构建会读取PE文件属性并核对产品版本及文件主／次／补丁版本。脚本校对实际包内 manifest 与资源，再用包内程序验证中文／空格资源和数据路径、无授权访问业务、无 token 拒绝、一个合成案件崩溃后重开、无 `license.dat` 生成和 EOF 正常退出。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅含版本、相对产物文件名、内容哈希及检查范围，不含业务数据或 token。
 
-[Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以已公开且固定 SHA-256 的 v0.1.1 客户端作为旧版本，验证静默安装 → 当前候选版覆盖升级 → 安装后后端读取合成案件 → 真正 EXE 启动／单实例／正常关闭 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json` 和 `native-installed-app-smoke.json`。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
+[Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以已公开且固定 SHA-256 的 v0.1.4 客户端作为旧版本，验证静默安装 → 当前候选版覆盖升级 → 安装后后端读取合成案件 → 真正 EXE 启动／单实例／正常关闭 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json` 和 `native-installed-app-smoke.json`。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
 
-工作流只有仓库读取权限，不接收生产授权／私钥，不执行 Release 写入。所选 EXE 或目录、安全报告及合成窗口截图仅留存 3 天，不上传整个 build 或运行目录。维护者核对成功运行、源码 SHA、产物摘要后单独发布。发布包与 Tag 必须绑定同一 green 源码；构建报告的 `published:false` 表示构建脚本本身没有发布。
+构建 job 只有仓库读取权限，不接收生产授权／私钥，不执行 Release 写入。所选 EXE 或目录、安全报告及合成窗口截图仅留存 3 天，不上传整个 build 或运行目录。维护者核对成功运行、源码 SHA 和产物摘要后，可显式调度独立 transfer job；该 job 核对 Tag 和全部报告后，仅向已存在的空草稿上传原候选资产，不重新构建或公开发布。维护者重新核对上传摘要后单独发布。发布包与 Tag 必须绑定同一 green 源码；构建报告的 `published:false` 表示构建脚本本身没有发布。
 
 清单记录 Windows 实际检出字节。未强制 LF 的许可证、SVG、锁文件可能由 `core.autocrlf` 转 CRLF；本地对照须只允许已核实的检出换行转换，安装器和报告按实际字节严格核对。
 

@@ -9,7 +9,7 @@ const response = (value, status = 200) => ({ ok: status === 200, status,
   headers: { get: () => 'application/json' }, json: async () => value, text: async () => JSON.stringify(value) });
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 
-function editor() {
+function editor({ relationships = [] } = {}) {
   const h = harness('app.js'), env = h.run('globalThis'), state = h.run('state');
   const events = new Map(), elementEvents = new Map(), messages = [], searches = [], boxes = [1, 2].map(id => ({ dataset: { id: String(id) }, checked: true }));
   env.setTimeout = (callback, delay = 0) => setTimeout(callback, delay === 1500 ? 0 : delay); env.clearTimeout = clearTimeout;
@@ -33,21 +33,27 @@ function editor() {
   // The table-workspace renderer owns stable anchor selection. The editor must
   // not replace its result with a checkbox snapshot captured before a request.
   env.renderFlows = () => {};
-  let matrix = [1, 0, 0, 0, 1, 0, 12, 15, 1], models = [];
+  let matrix = [1, 0, 0, 0, 1, 0, 12, 15, 1], models = [], edgeItems = [];
   const group = { getMatrix: () => matrix, setMatrix: value => { matrix = [...value]; } };
-  state.graph = { getNodes: () => models.map(model => ({ getModel: () => model })), getEdges: () => [],
-    get: name => name === 'group' ? group : null, paint() {}, clear() { models = []; } };
+  state.graph = { getNodes: () => models.map(model => ({ getModel: () => model })), getEdges: () => edgeItems,
+    get: name => name === 'group' ? group : null, paint() {}, setItemState() {}, clear() { models = []; edgeItems = []; } };
   env.renderGraph = () => {
     models = state.lastGraph.nodes.filter(node => !state.graphView.visibleIds || state.graphView.visibleIds.has(node.account))
       .map(node => ({ id: node.account, x: state.positions[node.account]?.x || 0, y: state.positions[node.account]?.y || 0,
         data: { amount: '9999999999999999.99', photo: 'SYNTHETIC-PHOTO' } }));
+    edgeItems = state.lastGraph.edges.map(edge => {
+      const model = { ...edge, type: env.graphEdgeType(edge) }, shapes = { get: () => [] };
+      return { getModel: () => model, getContainer: () => shapes, getKeyShape: () => ({ attr: () => null }) };
+    });
+    state.graphView.edgeItems = new Map(edgeItems.map(item => [env.edgeKey(item.getModel()), item]));
     state.graphInited = true;
   };
   for (const name of ['scheduleGraphViewport', 'scheduleGraphLabels', 'updateGraphViewStatus', 'updateHeader']) env[name] = () => {};
   state.caseId = 1; state.graphLoading = false; state.graphInited = true;
   state.positions = { 'SYN-A': { x: 3, y: 4 }, 'SYN-B': { x: 5, y: 6 } };
   const tracked = new Map([['1:0', [1]], ['2:0', [90]], ['1:7', [70]]]);
-  const graph = ids => ({ tracked_ids: [...ids], nodes: ids.length ? [{ account: 'SYN-A' }, { account: 'SYN-B' }] : [], edges: [], main_accounts: [], focus_nodes: [] });
+  const graph = ids => ({ tracked_ids: [...ids], nodes: ids.length ? [{ account: 'SYN-A' }, { account: 'SYN-B' }] : [],
+    edges: ids.length ? relationships.map(edge => ({ ...edge })) : [], main_accounts: [], focus_nodes: [] });
   state.lastGraph = graph([1]); state.tracked = new Set([1]); env.renderGraph();
   let intercept = null, conflict = false;
   h.network(async (path, options) => {
@@ -86,14 +92,60 @@ function editor() {
     gesture(type, event = {}) { for (const fn of elementEvents.get(type) || []) fn({ preventDefault() {}, stopImmediatePropagation() {}, ...event }); } };
 }
 
+function cameraChrome(f, { left = 560, top = 180, bounds } = {}) {
+  f.h.run(source('workspace-camera.js'));
+  const box = { left, top, width: 1440 - left, height: 900 - top };
+  const group = f.state.graph.get('group');
+  f.state.graph.get = name => name === 'group' ? group : box[name];
+  f.state.graph.changeSize = () => {};
+  f.state.graph.translate = (x, y) => {
+    const next = [...f.matrix]; next[6] += x; next[7] += y; f.matrix = next;
+  };
+  const container = { get clientWidth() { return box.width; }, get clientHeight() { return box.height; }, getBoundingClientRect: () => box };
+  f.state.graphCamera = f.env.window.FundsWorkspaceCamera.create({ graph: f.state.graph, container,
+    getContentBounds: () => bounds, canCompose: () => !f.history.status().busy });
+  return {
+    move(nextLeft, nextTop = box.top, sample = true) {
+      box.width += box.left - nextLeft; box.height += box.top - nextTop;
+      box.left = nextLeft; box.top = nextTop;
+      if (sample) f.state.graphCamera.resize();
+    },
+    screen(model = f.models[0]) { return { x: box.left + model.x * f.matrix[0] + f.matrix[6],
+      y: box.top + model.y * f.matrix[4] + f.matrix[7] }; },
+  };
+}
+
 test('canvas editor snapshots include only IDs, geometry and display choices', () => {
   const f = editor();
   f.state.edgeSnapshotLabels = { 'SYN-A=>SYN-B': { lx: 1, ly: 2, bw: 3, bh: 4, label: 'PRIVATE-SYNTHETIC', amount: '12.34' } };
   f.models[0].x = 44;
   const snapshot = f.snapshot(), text = JSON.stringify(snapshot);
   assert.equal(snapshot.positions['SYN-A'].x, 44);
-  assert.doesNotMatch(text, /PRIVATE|amount|photo|999999/);
-  assert.deepEqual(Object.keys(snapshot).sort(), ['camera','edgeBendPos','edgeLabelPos','edgeLabels','edgeSnapshotLabels','edgeType','graphView','layout','positions','showIds','showPhotos','trackedIds'].sort());
+  assert.doesNotMatch(text, /PRIVATE|"(?:amount|photo|total|amount_totals)"|999999/);
+  assert.deepEqual(Object.keys(snapshot).sort(), ['autoRoutes','edgeTypes','camera','cameraOffset','cameraTransform','edgeBendPos','edgeLabelPos','edgeLabels','edgeSnapshotLabels','edgeType','graphView','layout','positions','showIds','showPhotos','trackedIds','presentation'].sort());
+});
+
+test('canvas editor snapshots sanitize automatic route geometry and reject nonfinite routes', () => {
+  const f = editor();
+  f.state.graphView.autoRoutes = {
+    'SYN-A=>SYN-B': {
+      source: { x: 3, y: 4, extra: 'PRIVATE-SYNTHETIC' }, target: { x: 5, y: 6, photo: 'PRIVATE-PHOTO' },
+      controlPoints: [{ x: 17, y: 18, extra: 'PRIVATE-CONTROL' }], curvePolicy: 'obstacle-aware',
+      disallowedbusiness: { amount: 'PRIVATE-AMOUNT', photo: 'PRIVATE-PHOTO' },
+    },
+    'invalid-source': { source: { x: NaN, y: 4 }, target: { x: 5, y: 6 }, controlPoints: [{ x: 7, y: 8 }] },
+    'invalid-target': { source: { x: 3, y: 4 }, target: { x: 5, y: Infinity }, controlPoints: [{ x: 7, y: 8 }] },
+    'invalid-control': { source: { x: 3, y: 4 }, target: { x: 5, y: 6 }, controlPoints: [{ x: Infinity, y: 8 }] },
+  };
+  const original = f.state.graphView.autoRoutes['SYN-A=>SYN-B'];
+  const snapshot = f.snapshot(), routes = JSON.parse(JSON.stringify(snapshot.autoRoutes));
+  assert.deepEqual(routes, { 'SYN-A=>SYN-B': {
+    source: { x: 3, y: 4 }, target: { x: 5, y: 6 }, controlPoints: [{ x: 17, y: 18 }], curvePolicy: 'obstacle-aware',
+  } });
+  assert.doesNotMatch(JSON.stringify(snapshot), /PRIVATE|disallowedbusiness|"(?:extra|amount|photo|total|amount_totals)"|999999/);
+  assert.equal(original.source.extra, 'PRIVATE-SYNTHETIC', 'capture must not mutate the live route cache');
+  original.controlPoints[0].x = 99;
+  assert.equal(snapshot.autoRoutes['SYN-A=>SYN-B'].controlPoints[0].x, 17, 'history must own its geometry copy');
 });
 
 test('tracking, undo and redo preserve checked rows, filters, page and camera', async () => {
@@ -108,6 +160,110 @@ test('tracking, undo and redo preserve checked rows, filters, page and camera', 
   await f.h.element('#btnRedo').onclick(); assert.deepEqual(f.tracked.get('1:0'), [1, 2]);
   assert.equal(f.boxes[0].checked, true); assert.equal(f.boxes[1].checked, false);
   assert.equal(f.state.search.page, 3); assert.ok(f.searches.every(path => path.includes('account=SYN-FILTER') && path.includes('page=3')));
+});
+
+test('undo and redo preserve zoom, selection and screen camera across sidebar and toolbar transitions', async () => {
+  const f = editor(), chrome = cameraChrome(f);
+  f.matrix = [2.5, 0, 0, 0, 2.5, 0, 20, -40, 1];
+  const selected = new Set(['SYN-A']);
+  const selection = { ids: selected, rebind(ids) { selected.clear(); for (const id of ids) selected.add(id); },
+    refresh() {}, clear() { selected.clear(); }, destroy() { selected.clear(); } };
+  f.state.graphSelection = selection;
+  const render = f.env.renderGraph;
+  f.env.renderGraph = () => { render(); f.state.graphSelection = selection; };
+  const before = chrome.screen();
+  f.event('funds:selection-drag-start'); f.models[0].x = 83; f.models[0].y = 44;
+  f.event('funds:selection-drag-end');
+  const after = chrome.screen();
+  assert.equal(f.history.status().count, 1);
+  for (const left of [420.5, 180.25, 0]) chrome.move(left, 90);
+  assert.deepEqual(chrome.screen(), after);
+  assert.equal(f.history.status().count, 1, 'shell transitions never add geometry history');
+  assert.equal(await f.h.element('#btnUndo').onclick(), true);
+  assert.deepEqual(chrome.screen(), before); assert.deepEqual([...selected], ['SYN-A']);
+  assert.equal(f.models[0].x, 3); assert.equal(f.models[0].y, 4); assert.equal(f.matrix[0], 2.5);
+  assert.equal(await f.h.element('#btnRedo').onclick(), true);
+  assert.deepEqual(chrome.screen(), after); assert.deepEqual([...selected], ['SYN-A']);
+  chrome.move(560, 180);
+  assert.deepEqual(chrome.screen(), after);
+  assert.equal(await f.h.element('#btnUndo').onclick(), true);
+  assert.deepEqual(chrome.screen(), before);
+  assert.equal(f.state.positions['SYN-A'].x, 3); assert.equal(f.state.positions['SYN-A'].y, 4);
+});
+
+test('a membership response cannot undo shell expansion performed while its graph read was pending', async () => {
+  const f = editor(), chrome = cameraChrome(f), read = deferred(), started = deferred();
+  f.matrix = [1.75, 0, 0, 0, 1.75, 0, -60, 70, 1];
+  const before = chrome.screen();
+  f.intercept(path => { if (path.startsWith('/api/graph')) { started.resolve(); return read.promise; } return null; });
+  const operation = f.membership.set([2], true); await started.promise;
+  chrome.move(0); assert.deepEqual(chrome.screen(), before);
+  read.resolve(response({ tracked_ids: [1, 2], nodes: [{ account: 'SYN-A' }, { account: 'SYN-B' }], edges: [] }));
+  assert.equal((await operation).status, 'confirmed');
+  assert.deepEqual(chrome.screen(), before); assert.equal(f.matrix[0], 1.75);
+  assert.deepEqual(f.tracked.get('1:0'), [1, 2]);
+});
+
+test('rollback after a failed graph publication restores geometry without undoing pending shell compensation', async () => {
+  const f = editor(), chrome = cameraChrome(f), read = deferred(), started = deferred(), render = f.env.renderGraph;
+  f.matrix = [0.65, 0, 0, 0, 0.65, 0, 160, 90, 1];
+  const before = chrome.screen();
+  f.intercept(path => { if (path.startsWith('/api/graph')) { started.resolve(); return read.promise; } return null; });
+  f.env.renderGraph = () => { if (f.state.tracked.has(2)) throw new Error('synthetic publication failure'); render(); };
+  const operation = f.membership.set([2], true); await started.promise;
+  chrome.move(0, 90);
+  read.resolve(response({ tracked_ids: [1, 2], nodes: [{ account: 'SYN-A' }, { account: 'SYN-B' }], edges: [] }));
+  assert.equal((await operation).status, 'failed');
+  assert.deepEqual(chrome.screen(), before); assert.equal(f.matrix[0], 0.65);
+  assert.deepEqual(f.tracked.get('1:0'), [1]); assert.equal(f.history.status().count, 0);
+});
+
+test('history snapshots without camera offset remain restorable after shell movement', async () => {
+  const f = editor(), chrome = cameraChrome(f), before = f.snapshot();
+  f.models[0].x = 80;
+  const after = f.snapshot(); delete before.cameraOffset; delete after.cameraOffset; delete before.cameraTransform; delete after.cameraTransform;
+  assert.equal(f.history.record('合成旧格式几何', before, after), true);
+  const target = chrome.screen({ x: 3, y: 4 });
+  chrome.move(0);
+  assert.equal(await f.h.element('#btnUndo').onclick(), true);
+  assert.deepEqual(chrome.screen(), target);
+});
+
+test('history capture consumes shell movement that preceded its ResizeObserver delivery', () => {
+  const f = editor(), chrome = cameraChrome(f), before = chrome.screen();
+  chrome.move(200, 100, false);
+  const snapshot = f.snapshot();
+  assert.deepEqual(chrome.screen(), before);
+  assert.deepEqual({ ...snapshot.cameraOffset }, { x: 360, y: 80 });
+  assert.equal(snapshot.camera[6], 372); assert.equal(snapshot.camera[7], 95);
+  assert.equal(f.history.status().count, 0);
+});
+
+test('geometry undo and redo retain automatic sidebar zoom without recording a shell history entry', async () => {
+  const f = editor(), chrome = cameraChrome(f, { bounds: { minX: 0, minY: 0, maxX: 200, maxY: 100 } });
+  f.matrix = [2, 0, 0, 0, 2, 0, 200, 100, 1];
+  const original = [...f.matrix];
+  f.gesture('mousedown', { button: 0 }); f.models[0].x = 83; f.event('mouseup'); await flush();
+  f.state.graphCamera.beginSidebar({ collapsed: true }); chrome.move(0); f.state.graphCamera.endSidebar();
+  const composed = [...f.matrix];
+  assert.ok(composed[0] > original[0]); assert.equal(f.history.status().count, 1);
+  assert.equal(await f.h.element('#btnUndo').onclick(), true);
+  assert.equal(f.models[0].x, 3);
+  for (const i of [0, 4, 6, 7]) assert.ok(Math.abs(f.matrix[i] - composed[i]) < 1e-8);
+  assert.equal(await f.h.element('#btnRedo').onclick(), true); assert.equal(f.models[0].x, 83);
+  for (const i of [0, 4, 6, 7]) assert.ok(Math.abs(f.matrix[i] - composed[i]) < 1e-8);
+});
+
+test('a geometry edit captured while composed restores through its inverse affine after an uninterrupted expansion', async () => {
+  const f = editor(), chrome = cameraChrome(f, { bounds: { minX: 0, minY: 0, maxX: 200, maxY: 100 } });
+  f.matrix = [2, 0, 0, 0, 2, 0, 200, 100, 1];
+  const original = [...f.matrix];
+  f.state.graphCamera.beginSidebar({ collapsed: true }); chrome.move(0); f.state.graphCamera.endSidebar();
+  f.gesture('mousedown', { button: 0 }); f.models[0].x = 83; f.event('mouseup'); await flush();
+  f.state.graphCamera.beginSidebar({ collapsed: false }); chrome.move(560); f.state.graphCamera.endSidebar();
+  assert.equal(f.history.status().count, 1);
+  assert.equal(await f.h.element('#btnUndo').onclick(), true); assert.equal(f.models[0].x, 3);
+  for (const i of [0, 4, 6, 7]) assert.ok(Math.abs(f.matrix[i] - original[i]) < 1e-8);
 });
 
 test('write refresh leaves the table renderer latest anchor selection intact', async () => {
@@ -139,6 +295,124 @@ test('membership latest unsent intent coalesces without a write or history entry
   assert.deepEqual(f.tracked.get('1:0'), [1]); assert.equal(f.history.status().count, 0);
   assert.equal(f.h.requests.filter(item => item.path === '/api/track/state').length, 0);
   assert.deepEqual([...f.membership.snapshot().pendingIds], []);
+});
+
+for (const offscreen of [false, true]) {
+  test(`membership addition keeps the camera even when endpoints are ${offscreen ? 'outside' : 'inside'} the current view`, async () => {
+    const f = editor(); let fits = 0;
+    f.matrix = [1,0,0,0,1,0,offscreen ? -2000 : 100,100,1];
+    const before = [...f.matrix];
+    f.state.graph.findById = id => f.state.graph.getNodes().find(node => node.getModel().id === id);
+    f.state.graph.getCanvasByPoint = (x,y) => ({x:x*f.matrix[0]+f.matrix[6],y:y*f.matrix[4]+f.matrix[7]});
+    f.state.graph.getZoom = () => f.matrix[0];
+    f.env.fitGraph = () => { fits++; f.matrix = [1,0,0,0,1,0,450,300,1]; };
+    f.intercept(path => path.startsWith('/api/graph') ? response({
+      tracked_ids:[...f.tracked.get('1:0')], nodes:[{account:'SYN-A'},{account:'SYN-B'}],
+      edges:f.tracked.get('1:0').includes(2) ? [{source:'SYN-A',target:'SYN-B',ids:[2]}] : [],
+    }) : null);
+    assert.equal((await f.membership.set([2], true)).status, 'confirmed');
+    assert.equal(fits, 0, 'adding tracked flows never requests a global fit or shrinks the camera');
+    const after = [...f.matrix];
+    assert.deepEqual(after, before, 'incremental publication retains both the existing zoom and camera center');
+    await f.h.element('#btnUndo').onclick(); assert.deepEqual(f.matrix, before);
+    await f.h.element('#btnRedo').onclick(); assert.deepEqual(f.matrix, after);
+    assert.equal((await f.membership.set([2], false)).status, 'confirmed');
+    assert.equal(fits, 0, 'removing membership never fits the camera');
+  });
+}
+
+test('membership additions reveal endpoints in a neighborhood and undo restores its display scope', async () => {
+  const f = editor();
+  f.state.graphView.visibleIds = new Set(['SYN-A']); f.state.graphView.root = 'SYN-A';
+  f.env.renderGraph();
+  const camera = [...f.matrix];
+  f.intercept(path => path.startsWith('/api/graph') ? response({
+    tracked_ids: [...f.tracked.get('1:0')],
+    nodes: [{account:'SYN-A'}, {account:'SYN-B'}, ...(f.tracked.get('1:0').includes(2) ? [{account:'SYN-C'}] : [])],
+    edges: f.tracked.get('1:0').includes(2) ? [{source:'SYN-A',target:'SYN-C',ids:[2]}] : [],
+  }) : null);
+  assert.equal((await f.membership.set(['2'], true)).status, 'confirmed');
+  assert.deepEqual(f.models.map(node => node.id), ['SYN-A', 'SYN-C']);
+  assert.deepEqual(f.matrix, camera);
+  await f.h.element('#btnUndo').onclick();
+  assert.deepEqual([...f.state.graphView.visibleIds], ['SYN-A']);
+  await f.h.element('#btnRedo').onclick();
+  assert.deepEqual([...f.state.graphView.visibleIds], ['SYN-A', 'SYN-C']);
+});
+
+test('failed graph publication rolls back the neighborhood along with tracked membership', async () => {
+  const f = editor();
+  f.state.graphView.visibleIds = new Set(['SYN-A']); f.state.graphView.root = 'SYN-A';
+  f.env.renderGraph();
+  f.intercept(path => path.startsWith('/api/graph') ? response({tracked_ids:[1,2],
+    nodes:[{account:'SYN-A'},{account:'SYN-B'},{account:'SYN-C'}],
+    edges:[{source:'SYN-A',target:'SYN-C',ids:[2]}]}) : null);
+  const render = f.env.renderGraph; let fail = true;
+  f.env.renderGraph = () => {
+    if (fail) { fail = false; assert.ok(f.state.graphView.visibleIds.has('SYN-C')); throw new Error('synthetic drawing failure'); }
+    render();
+  };
+  assert.equal((await f.membership.set([2], true)).status, 'failed');
+  assert.deepEqual(f.tracked.get('1:0'), [1]);
+  assert.deepEqual([...f.state.graphView.visibleIds], ['SYN-A']);
+  assert.deepEqual(f.models.map(node => node.id), ['SYN-A']);
+  assert.equal(f.history.status().count, 0);
+});
+
+test('tracking waits for a superseding same-canvas read before confirming or compensating', async () => {
+  const f = editor(), first = deferred(), latest = deferred(), started = deferred(); let reads = 0;
+  f.intercept(path => {
+    if (!path.startsWith('/api/graph')) return null;
+    if (++reads === 1) { started.resolve(); return first.promise; }
+    return latest.promise;
+  });
+  const track = f.h.run('trackFlows([2])'); await started.promise;
+  const refresh = f.h.run('loadGraph()');
+  first.resolve(response({tracked_ids:[1,2],nodes:[{account:'SYN-A'},{account:'SYN-B'}],edges:[]}));
+  await flush(); await flush();
+  assert.equal(f.h.requests.filter(item => item.path === '/api/track/state').length, 1, 'an obsolete read is not a failed mutation');
+  latest.resolve(response({tracked_ids:[1,2],nodes:[{account:'SYN-A'},{account:'SYN-B'}],edges:[]}));
+  await Promise.all([track, refresh]);
+  assert.deepEqual(f.tracked.get('1:0'), [1,2]); assert.deepEqual([...f.state.tracked], [1,2]);
+  assert.equal(f.history.status().count, 1);
+});
+
+test('undo revokes older graph reads so they cannot restore the removed membership', async () => {
+  const f = editor(); await f.h.run('trackFlows([2])');
+  const old = deferred(), started = deferred(); let reads = 0;
+  f.intercept(path => {
+    if (!path.startsWith('/api/graph') || ++reads > 1) return null;
+    started.resolve(); return old.promise;
+  });
+  const refresh = f.h.run('loadGraph()'); await started.promise;
+  await f.h.element('#btnUndo').onclick();
+  assert.deepEqual(f.tracked.get('1:0'), [1]);
+  old.resolve(response({tracked_ids:[1,2],nodes:[{account:'SYN-A'},{account:'SYN-B'}],edges:[]}));
+  await refresh;
+  assert.deepEqual([...f.state.tracked], [1]);
+  assert.equal(f.history.status().canUndo, false); assert.equal(f.history.status().canRedo, true);
+});
+
+test('a superseding read with a drawing failure cannot confirm an unrendered tracking command', async () => {
+  const f = editor(), first = deferred(), latest = deferred(), started = deferred(); let reads = 0;
+  f.intercept(path => {
+    if (!path.startsWith('/api/graph')) return null;
+    if (++reads === 1) { started.resolve(); return first.promise; }
+    return latest.promise;
+  });
+  const render = f.env.renderGraph;
+  f.env.renderGraph = () => {
+    if (f.state.tracked.has(2)) throw new Error('synthetic drawing failure');
+    render();
+  };
+  const track = f.h.run('trackFlows([2])'); await started.promise;
+  const refresh = f.h.run('loadGraph()').then(() => null, error => error.message);
+  first.resolve(response({tracked_ids:[1,2],nodes:[{account:'SYN-A'},{account:'SYN-B'}],edges:[]}));
+  latest.resolve(response({tracked_ids:[1,2],nodes:[{account:'SYN-A'},{account:'SYN-B'}],edges:[]}));
+  await Promise.all([track, refresh]);
+  assert.deepEqual(f.tracked.get('1:0'), [1]); assert.deepEqual([...f.state.tracked], [1]);
+  assert.equal(f.history.status().count, 0);
+  assert.ok(f.messages.some(value => /synthetic drawing failure/.test(value.message)));
 });
 
 test('membership rapid in-flight reversals serialize latest intent and retain other pending rows', async () => {
@@ -364,6 +638,8 @@ for (const operation of ['track', 'untrack', 'bulk', 'clear']) {
   test(`${operation} compensates a committed write after both graph refresh attempts fail`, async () => {
     const f = editor(); f.h.element('#showPhotoCk').checked = false;
     await f.h.element('#showPhotoCk').onchange({ target: f.h.element('#showPhotoCk') });
+    f.state.edgeTypes = { 'SYN-A=>SYN-B': 'polyline' };
+    f.state.edgeBendPos = { 'SYN-A=>SYN-B': [{ x: 7, y: 8 }] };
     const before = JSON.stringify(f.snapshot()), historyCount = f.history.status().count;
     let reads = 0;
     f.intercept(path => {
@@ -375,6 +651,7 @@ for (const operation of ['track', 'untrack', 'bulk', 'clear']) {
       : await f.h.element(operation === 'bulk' ? '#btnBulkTrack' : '#btnClearGraph').onclick();
     assert.equal(result, false); assert.equal(reads, 2);
     assert.deepEqual(f.tracked.get('1:0'), [1]); assert.equal(JSON.stringify(f.snapshot()), before);
+    assert.equal(f.state.edgeTypes['SYN-A=>SYN-B'], 'polyline');
     assert.equal(f.history.status().count, historyCount); assert.equal(f.history.status().busy, false);
     assert.equal(f.state.graphLoading, false);
     const writes = f.h.requests.filter(request => request.path === '/api/track/state').map(request => JSON.parse(request.options.body));
@@ -473,6 +750,38 @@ test('a layout timeout after graph publication compensates tracking and redraws 
   assert.equal(f.models[0].x, 3); assert.equal(f.history.status().count, 0); assert.equal(f.state.graphLoading, false);
 });
 
+for (const phase of ['before', 'during']) {
+  test(`a graph read started ${phase} compensation cannot republish reverted membership`, async () => {
+    const f = editor(), render = f.env.renderGraph, late = deferred(), readStarted = deferred();
+    const rollback = deferred(), rollbackStarted = deferred(); let writes = 0, reads = 0, first = true;
+    f.h.run('globalThis.syntheticNow = 0; Date.now = () => syntheticNow;');
+    f.env.renderGraph = () => {
+      render(); if (first) { first = false; f.h.run('layoutJob = {requestId:9}'); }
+    };
+    f.intercept((path, options) => {
+      if (path === '/api/track/state' && ++writes === 2 && phase === 'during') {
+        rollbackStarted.resolve(); return rollback.promise.then(() => {
+          f.tracked.set('1:0', [1]); return response({tracked_ids:[1]});
+        });
+      }
+      if (path.startsWith('/api/graph') && ++reads > 1) { readStarted.resolve(); return late.promise; }
+      return null;
+    });
+    const pending = f.h.run('trackFlows([2])'); await flush();
+    let refresh;
+    if (phase === 'before') { refresh = f.h.run('loadGraph()'); await readStarted.promise; }
+    f.h.run('syntheticNow = 30001; graphMetric("layout")');
+    if (phase === 'during') {
+      await rollbackStarted.promise; refresh = f.h.run('loadGraph()'); await readStarted.promise; rollback.resolve();
+    }
+    assert.equal(await pending, false);
+    late.resolve(response({tracked_ids:[1,2],nodes:[{account:'SYN-A'},{account:'SYN-B'}],edges:[]}));
+    await refresh;
+    assert.deepEqual(f.tracked.get('1:0'), [1]); assert.deepEqual([...f.state.tracked], [1]);
+    assert.equal(f.history.status().count, 0);
+  });
+}
+
 test('late tracking responses cannot load or record into another case or same-case generation', async () => {
   const f = editor(), gate = deferred();
   f.intercept(path => path === '/api/track/state' ? gate.promise : null);
@@ -483,25 +792,39 @@ test('late tracking responses cannot load or record into another case or same-ca
   f.h.run('activateCanvas(7)'); assert.equal(f.history.status().count, 0);
 });
 
-test('layout handlers remain busy until the existing worker job actually completes', async () => {
+for (const layout of ['dagre', 'auto', 'partition']) test(`layout ${layout} remains busy until the existing worker job completes and survives undo and redo`, async () => {
   const f = editor();
+  const initialLayout = f.state.layout;
   f.env.relayout = () => { f.h.run('layoutJob = { requestId: 1 }'); return Promise.resolve(); };
-  f.h.element('#layoutSel').value = 'dagre';
+  f.h.element('#layoutSel').value = layout;
   const change = f.h.element('#layoutSel').onchange({ target: f.h.element('#layoutSel') }); await flush();
   assert.equal(f.history.status().busy, true); assert.equal(f.history.status().count, 0);
   f.models[0].x = 100; f.state.positions['SYN-A'].x = 100;
   f.h.run('layoutJob = null; graphMetric("layout")'); await change;
   assert.equal(f.history.status().busy, false); assert.equal(f.history.status().count, 1);
-  await f.h.element('#btnUndo').onclick(); assert.equal(f.models[0].x, 3); assert.equal(f.state.layout, 'force');
-  await f.h.element('#btnRedo').onclick(); assert.equal(f.models[0].x, 100); assert.equal(f.state.layout, 'dagre');
+  await f.h.element('#btnUndo').onclick(); assert.equal(f.models[0].x, 3); assert.equal(f.state.layout, initialLayout);
+  await f.h.element('#btnRedo').onclick(); assert.equal(f.models[0].x, 100); assert.equal(f.state.layout, layout);
+  assert.equal(f.h.element('#layoutSel').value, layout, 'redo synchronizes the existing layout control');
 });
 
 test('display handlers restore original choices and command failures do not add history', async () => {
-  const f = editor(); f.h.element('#showPhotoCk').checked = false;
+  const f = editor({ relationships: [{ source: 'SYN-A', target: 'SYN-B' }] }); f.h.element('#showPhotoCk').checked = false;
+  const draw = f.env.renderGraph;
+  // The production renderer synchronizes the type control during the busy
+  // command. Its completion must synchronize it again before another edit.
+  f.env.renderGraph = () => { draw(); f.h.run('syncEdgeTypeControl()'); };
   await f.h.element('#showPhotoCk').onchange({ target: f.h.element('#showPhotoCk') });
   assert.equal(f.state.showPhotos, false); await f.h.element('#btnUndo').onclick(); assert.equal(f.state.showPhotos, true);
+  const defaultType = f.state.edgeType;
+  f.h.run('selectItem(state.graph.getEdges()[0])');
   f.h.element('#edgeTypeSel').value = 'line'; await f.h.element('#edgeTypeSel').onchange({ target: f.h.element('#edgeTypeSel') });
-  assert.equal(f.state.edgeType, 'line'); assert.equal(f.history.status().canRedo, false);
+  assert.equal(f.state.edgeTypes['SYN-A=>SYN-B'], 'line'); assert.equal(f.state.edgeType, defaultType);
+  assert.equal(f.history.status().count, 1); assert.equal(f.history.status().undoLabel, '修改所选关系线型');
+  assert.equal(f.history.status().canRedo, false);
+  assert.equal(f.h.element('#edgeTypeSel').disabled, false);
+  f.h.element('#edgeTypeSel').value = 'polyline'; await f.h.element('#edgeTypeSel').onchange({ target: f.h.element('#edgeTypeSel') });
+  assert.equal(f.state.edgeTypes['SYN-A=>SYN-B'], 'polyline'); assert.equal(f.state.edgeType, defaultType);
+  assert.equal(f.history.status().count, 2); assert.equal(f.h.element('#edgeTypeSel').disabled, false);
   const count = f.history.status().count;
   f.intercept(path => path === '/api/track/state' ? response({ detail: 'synthetic failure' }, 500) : null);
   await f.h.run('trackFlows([2])'); assert.equal(f.history.status().count, count); assert.equal(f.history.status().busy, false);
@@ -533,7 +856,7 @@ test('group preview commits after mouseup and records exactly one geometry undo'
   assert.equal(f.history.status().count, 1, 'the later native event cannot add another history entry');
 });
 
-test('selection capture optimization still blocks native graph gestures while history or layout is busy', async () => {
+test('selection capture blocks history and commit gestures while computing preserves native camera starts', async () => {
   const f = editor(); f.state.graphSelection = { status: () => ({ dragging: false }) };
   const gate = deferred(), busy = f.history.run('合成等待', () => gate.promise);
   let prevented = 0, stopped = 0;
@@ -542,10 +865,46 @@ test('selection capture optimization still blocks native graph gestures while hi
   attempt();
   assert.equal(prevented, 1); assert.equal(stopped, 1);
   gate.resolve(); await busy;
-  f.h.run('layoutJob = { requestId: 1 }'); attempt();
+  f.h.run('layoutJob = { requestId: 1, phase: "committing" }'); attempt();
   assert.equal(prevented, 2); assert.equal(stopped, 2);
+  f.h.run('layoutJob = { requestId: 1, phase: "computing" }'); attempt();
+  assert.equal(prevented, 2, 'the capture listener must let native canvas pan reach G6 while a worker computes');
+  assert.equal(stopped, 2);
+  for (const type of ['funds:selection-drag-start', 'funds:edge-drag-start']) {
+    let cancelled = false;
+    f.event(type, { type, preventDefault() { cancelled = true; }, stopImmediatePropagation() {} });
+    assert.equal(cancelled, true, 'geometry ownership remains locked during computation');
+  }
   f.h.run('layoutJob = null'); attempt();
   assert.equal(prevented, 2, 'an idle selection click bypasses the geometry snapshot');
+});
+
+test('a pending layout command separates computing camera permission from atomic commit and edit history', async () => {
+  const f = editor(), before = f.snapshot();
+  f.state.graphSelection = { ids: new Set(), status: () => ({ dragging: false }), rebind() {}, refresh() {}, clear() {}, destroy() {} };
+  f.env.relayout = () => { f.h.run('layoutJob = { requestId: 7, phase: "computing" }; graphMetric("layout-phase")'); return Promise.resolve(); };
+  const pending = f.h.element('#btnRelayout').onclick(); await flush();
+  assert.equal(f.history.status().busy, true); assert.equal(f.history.status().count, 0);
+  assert.equal(f.h.element('#graphContainer').style.pointerEvents, '', 'the old complete canvas receives camera events during calculation');
+  assert.equal(f.h.run('graphCameraInteractionAllowed()'), true);
+  let prevented = 0;
+  f.gesture('mousedown', { type: 'mousedown', button: 0, preventDefault() { prevented++; }, stopImmediatePropagation() {} });
+  assert.equal(prevented, 0, 'native camera gestures bypass geometry history capture during calculation');
+  assert.equal(await f.h.element('#btnUndo').onclick(), false, 'history cannot travel through an unfinished layout transaction');
+  assert.equal(f.h.element('#btnBulkTrack').disabled, true, 'membership controls cannot change layout input while its transaction owns the graph');
+  assert.deepEqual(f.tracked.get('1:0'), [1]); assert.equal(f.history.status().count, 0);
+  f.h.run('layoutJob.phase = "committing"; graphMetric("layout-phase")');
+  assert.equal(f.h.run('graphCameraInteractionAllowed()'), false);
+  assert.equal(f.h.element('#graphContainer').style.pointerEvents, 'none');
+  f.gesture('mousedown', { type: 'mousedown', button: 0, preventDefault() { prevented++; }, stopImmediatePropagation() {} });
+  assert.equal(prevented, 1, 'the short atomic commit cannot receive native geometry or camera gestures');
+  f.models[0].x = 120; f.state.positions['SYN-A'].x = 120;
+  f.h.run('layoutJob = null; graphMetric("layout")'); await pending;
+  assert.equal(f.history.status().busy, false); assert.equal(f.history.status().count, 1);
+  assert.equal(f.h.element('#graphContainer').style.pointerEvents, '');
+  const undone=await f.h.element('#btnUndo').onclick();assert.notEqual(undone,false,JSON.stringify(f.messages));
+  assert.deepEqual(f.snapshot().positions, before.positions);
+  await f.h.element('#btnRedo').onclick(); assert.equal(f.models[0].x, 120);
 });
 
 test('custom graph gesture cancellation receives the original event during a busy command', async () => {
@@ -574,4 +933,49 @@ test('keyboard shortcuts skip native edit controls and active dialogs', async ()
   assert.equal(prevented, 1); assert.equal(f.history.status().canRedo, true);
   f.event('keydown', { ctrlKey: true, key: 'y', target: { closest: () => null }, preventDefault() { prevented += 1; } });
   await new Promise(resolve => setTimeout(resolve, 5)); assert.equal(f.history.status().canUndo, true);
+});
+
+test('selected-edge type undo and redo retain other overrides, the default and source facts', async () => {
+  const f=editor({relationships:[{source:'SYN-A',target:'SYN-B'},{source:'SYN-B',target:'SYN-A'}]});
+  const draw=f.env.renderGraph;f.env.renderGraph=()=>{draw();f.h.run('syncEdgeTypeControl()');};
+  f.state.edgeTypes={'SYN-A=>SYN-B':'line','SYN-B=>SYN-A':'polyline'};
+  f.env.renderGraph();
+  const defaultType=f.state.edgeType,sourceBefore=JSON.stringify(f.state.lastGraph),camera=[...f.matrix];
+  f.h.run('selectItem(state.graph.getEdges()[0])');
+  assert.equal(f.h.element('#edgeTypeSel').value,'line');
+  f.h.element('#edgeTypeSel').value='quadratic';await f.h.element('#edgeTypeSel').onchange({target:f.h.element('#edgeTypeSel')});
+  assert.equal(f.state.edgeTypes['SYN-A=>SYN-B'],'quadratic');assert.equal(f.state.edgeTypes['SYN-B=>SYN-A'],'polyline');
+  assert.equal(f.state.edgeType,defaultType);assert.equal(f.history.status().count,1);
+  assert.equal(f.h.element('#edgeTypeSel').value,'quadratic');
+  assert.equal(f.h.element('#edgeTypeSel').disabled,false);
+  await f.h.element('#btnUndo').onclick();
+  assert.equal(f.state.edgeTypes['SYN-A=>SYN-B'],'line');assert.equal(f.state.edgeTypes['SYN-B=>SYN-A'],'polyline');
+  assert.equal(f.state.edgeType,defaultType);assert.equal(f.h.element('#edgeTypeSel').disabled,true);
+  f.h.run('selectItem(state.graph.getEdges()[0])');
+  assert.equal(f.h.element('#edgeTypeSel').value,'line');
+  await f.h.element('#btnRedo').onclick();
+  assert.equal(f.state.edgeTypes['SYN-A=>SYN-B'],'quadratic');assert.equal(f.state.edgeTypes['SYN-B=>SYN-A'],'polyline');
+  assert.equal(f.state.edgeType,defaultType);assert.equal(f.h.element('#edgeTypeSel').disabled,true);
+  f.h.run('selectItem(state.graph.getEdges()[0])');assert.equal(f.h.element('#edgeTypeSel').value,'quadratic');
+  assert.equal(f.h.element('#edgeTypeSel').disabled,false);
+  f.h.element('#edgeTypeSel').value='line';await f.h.element('#edgeTypeSel').onchange({target:f.h.element('#edgeTypeSel')});
+  assert.equal(f.state.edgeTypes['SYN-A=>SYN-B'],'line');assert.equal(f.state.edgeTypes['SYN-B=>SYN-A'],'polyline');
+  assert.equal(f.state.edgeType,defaultType);assert.equal(f.history.status().count,2);
+  assert.equal(f.h.element('#edgeTypeSel').disabled,false);assert.equal(f.h.element('#edgeTypeSel').value,'line');
+  f.h.run('selectItem(state.graph.getEdges()[1])');assert.equal(f.h.element('#edgeTypeSel').value,'polyline');
+  assert.deepEqual(f.matrix,camera);assert.equal(JSON.stringify(f.state.lastGraph),sourceBefore);
+  assert.doesNotMatch(JSON.stringify(f.snapshot()),/"(?:amount|photo|total|amount_totals)"|999999/);
+});
+
+test('clear canvas removes restored edge types and undo restores their geometry', async () => {
+  const f=editor();f.state.edgeTypes={'SYN-A=>SYN-B':'polyline'};f.state.edgeBendPos={'SYN-A=>SYN-B':[{x:7,y:8}]};
+  const automaticRoute={source:{x:3,y:4},target:{x:5,y:6},controlPoints:[{x:17,y:18}],curvePolicy:'obstacle-aware'};
+  f.state.graphView.autoRoutes={'SYN-B=>SYN-A':automaticRoute};
+  await f.h.element('#btnClearGraph').onclick();assert.deepEqual(Object.keys(f.state.edgeTypes),[]);
+  assert.deepEqual(Object.keys(f.state.graphView.autoRoutes),[]);
+  await f.h.element('#btnUndo').onclick();assert.equal(f.state.edgeTypes['SYN-A=>SYN-B'],'polyline');
+  assert.deepEqual(JSON.parse(JSON.stringify(f.state.edgeBendPos['SYN-A=>SYN-B'])),[{x:7,y:8}]);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.state.graphView.autoRoutes)),{'SYN-B=>SYN-A':automaticRoute});
+  await f.h.element('#btnRedo').onclick();assert.deepEqual(Object.keys(f.state.edgeTypes),[]);
+  assert.deepEqual(Object.keys(f.state.graphView.autoRoutes),[]);
 });

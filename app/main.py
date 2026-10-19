@@ -5,6 +5,7 @@
 """
 import base64
 import datetime
+from collections import deque
 from contextlib import asynccontextmanager, contextmanager
 from html import escape
 import shutil
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 import pandas as pd
+import duckdb
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -31,6 +33,7 @@ from .case_packages import CASE_PKG_TABLES, CASE_PKG_COLS, delete_package_case, 
 from . import license as lic
 from .services import imports as import_service
 from .services.cases import ServiceError
+from .services.main_accounts import mark_automatic
 from .money import money_decimal, money_string, money_display
 
 @asynccontextmanager
@@ -187,8 +190,8 @@ def create_case(body: CaseIn):
     try:
         with db.transaction():
             return db.q("insert into cases(name) values (?) returning id,name,created_at", [name])[0]
-    except Exception:
-        raise HTTPException(400, "案件名已存在")
+    except duckdb.ConstraintException as exc:
+        raise HTTPException(400, "案件名已存在") from exc
 
 
 @app.delete("/api/cases/{case_id}")
@@ -396,41 +399,40 @@ def _directional_money(rows):
 
 def _auto_detect_main(batch_id: int, case_id: int):
     """从批次流水中自动识别主账号。两级策略：
-    1) 声明优先：批次流水中 self_account 列去重后恰有一个账号（导入时映射/手填的声明）；
+    1) 声明优先：批次流水中的各个 self_account（导入时映射/手填的声明）；
     2) 占比后备：无声明时，统计各账号出现占比 ≥ 90% 即户主（单账户流水特征）。"""
-    total = db.q("select count(*) c from flows where batch_id = ?", [batch_id])[0]["c"]
+    total = db.q("select count(*) c from flows where batch_id = ? and case_id = ?", [batch_id, case_id])[0]["c"]
     if not total:
         return None
     # 1) 声明优先（含被去重的行无法追溯，此处按已入库行统计声明）
     declared = db.q("""
-        select self_account acct, max(self_name) nm, count(*) c
-        from flows where batch_id = ?
-          and self_account is not null and self_account <> ''
-        group by self_account order by c desc
-    """, [batch_id])
+        select trim(self_account) acct, max(self_name) nm, count(*) c
+        from flows where batch_id = ? and case_id = ?
+          and self_account is not null and trim(self_account) <> ''
+        group by trim(self_account) order by c desc, acct
+    """, [batch_id, case_id])
     if declared:
         marked = []
         for d in declared:
-            db.x("insert or replace into main_accounts(case_id, account, name, source) values (?,?,?, 'auto')",
-                 [case_id, d["acct"], d["nm"] or ""])
-            marked.append({"account": d["acct"], "name": d["nm"] or "", "flows": d["c"]})
+            marked.append({**mark_automatic(case_id, d["acct"], d["nm"]), "flows": d["c"], "total": total})
         return {"accounts": marked, "account": marked[0]["account"], "name": marked[0]["name"],
                 "flows": total, "total": total}
     # 2) 占比后备
-    cand = db.q("""
-        select acct, count(*) c, max(nm) nm from (
-            select payer_account acct, payer_name nm from flows
-              where batch_id = ? and payer_account is not null and payer_account <> ''
+    candidates = db.q("""
+        select acct, count(distinct id) c, max(nm) nm from (
+            select id, trim(payer_account) acct, payer_name nm from flows
+              where batch_id = ? and case_id = ? and payer_account is not null and trim(payer_account) <> ''
             union all
-            select payee_account, payee_name from flows
-              where batch_id = ? and payee_account is not null and payee_account <> ''
-        ) group by acct order by c desc limit 1
-    """, [batch_id, batch_id])[0]
-    if cand["c"] < total * 0.9:
+            select id, trim(payee_account), payee_name from flows
+              where batch_id = ? and case_id = ? and payee_account is not null and trim(payee_account) <> ''
+        ) group by acct order by c desc, acct limit 2
+    """, [batch_id, case_id, batch_id, case_id])
+    if not candidates or candidates[0]["c"] < total * 0.9:
         return None   # 双边流水/多户混合批次，无法可靠识别
-    db.x("insert or replace into main_accounts(case_id, account, name, source) values (?,?,?, 'auto')",
-         [case_id, cand["acct"], cand["nm"] or ""])
-    return {"account": cand["acct"], "name": cand["nm"] or "", "flows": cand["c"], "total": total}
+    cand = candidates[0]
+    if len(candidates) > 1 and candidates[1]["c"] == cand["c"]:
+        return None  # 同等占比没有可辨别的本方，不按字母顺序任意选一个。
+    return {**mark_automatic(case_id, cand["acct"], cand["nm"]), "flows": cand["c"], "total": total}
 
 
 @app.post("/api/main-accounts/auto")
@@ -441,15 +443,63 @@ def auto_detect_all(case_id_in: CaseIdIn):
         detected, seen = [], set()
         for b in batches:
             d = _auto_detect_main(b["id"], case_id_in.case_id)
-            if d and d["account"] not in seen:
-                seen.add(d["account"])
-                detected.append({**d, "batch": b["filename"]})
-        return {"detected": detected, "batches_scanned": len(batches)}
+            for account in (d.get("accounts", [d]) if d else []):
+                if account["account"] not in seen:
+                    seen.add(account["account"])
+                    detected.append({**account, "batch": b["filename"]})
+        return {"detected": detected, "batches_scanned": len(batches),
+                "added_count": sum(item["added"] for item in detected),
+                "manual_preserved": sum(item["source"] == "manual" for item in detected),
+                "existing_auto_count": sum(item["source"] == "auto" and not item["added"] for item in detected)}
+
+
+_CASE_ACCOUNTS_SQL = """
+    with account_rows as (
+        select trim(payer_account) as account, trim(coalesce(payer_name, '')) as name
+        from flows where case_id=? and payer_account is not null
+        union all
+        select trim(payee_account), trim(coalesce(payee_name, ''))
+        from flows where case_id=? and payee_account is not null
+    ), accounts as (
+        select account, max(name) as name from account_rows where account<>'' group by account
+    )
+"""
+
+
+@app.get("/api/main-accounts/candidates")
+def main_account_candidates(case_id: int, q: str = "", exact: bool = False, page: int = Query(1, ge=1),
+                            page_size: int = Query(30, ge=1, le=100)):
+    """Search accounts, rather than a truncated page of transaction matches."""
+    with _case_transaction(case_id):
+        keyword = q.strip()
+        if exact:
+            criterion, search_params = "a.account=?", [keyword]
+        else:
+            criterion = """contains(lower(a.account), ?) or exists (
+                select 1 from account_rows names
+                where names.account=a.account and contains(lower(names.name), ?)
+            ) or contains(lower(coalesce(m.name,'')), ?)"""
+            search_params = [keyword.lower()] * 3
+        matching = _CASE_ACCOUNTS_SQL + """
+            , matching as (
+                select a.account, coalesce(nullif(m.name,''), a.name) as name,
+                       m.account is not null as is_main,
+                       case when m.account is null then null when m.source='auto' then 'auto' else 'manual' end as source
+                from accounts a left join main_accounts m on m.case_id=? and m.account=a.account
+                where """ + criterion + """
+            )
+        """
+        params = [case_id, case_id, case_id, *search_params]
+        total = db.q(matching + "select count(*) total from matching", params)[0]["total"]
+        items = db.q(matching + "select * from matching order by account limit ? offset ?",
+                     [*params, page_size, (page - 1) * page_size])
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 @app.get("/api/main-accounts")
 def list_main_accounts(case_id: int = 1):
-    return db.q("select case_id, account, name, source, marked_at from main_accounts where case_id = ? order by marked_at",
-                [case_id])
+    with _case_transaction(case_id):
+        return db.q("select case_id, account, name, source, marked_at from main_accounts where case_id = ? order by marked_at, account",
+                    [case_id])
 
 
 @app.post("/api/main-accounts/clear-auto")
@@ -486,18 +536,24 @@ def mark_main_account(body: MainAccountIn):
         acct = body.account.strip()
         if not acct:
             raise HTTPException(400, "账号不能为空")
+        existing_account = db.q(_CASE_ACCOUNTS_SQL + "select name from accounts where account=?",
+                                [body.case_id, body.case_id, acct])
+        existing_mark = db.q("select name from main_accounts where case_id=? and account=?", [body.case_id, acct])
+        if not existing_account and not existing_mark:
+            raise HTTPException(404, "账号不存在或不属于当前案件")
+        name = (body.name.strip() or (existing_mark[0]["name"] if existing_mark else "")
+                or (existing_account[0]["name"] if existing_account else "") or "")
         db.x("insert or replace into main_accounts(case_id, account, name, source) values (?,?,?, 'manual')",
-             [body.case_id, acct, body.name])
-        return {"ok": True, "account": acct}
+             [body.case_id, acct, name])
+        return {"ok": True, "account": acct, "name": name, "source": "manual"}
 
 @app.delete("/api/main-accounts")
 def unmark_main_account(body: MainAccountIn):
     with _case_transaction(body.case_id):
         acct = body.account.strip()
-        name = (body.name or "").strip()
-        # 联动删除：该账号的标记行，以及同户名的标记行（户名匹配带来的标记一并取消）
-        db.x("delete from main_accounts where case_id = ? and (account = ? or (name <> '' and name = ?))",
-             [body.case_id, acct, name])
+        if not acct:
+            raise HTTPException(400, "账号不能为空")
+        db.x("delete from main_accounts where case_id = ? and account = ?", [body.case_id, acct])
         return {"ok": True}
 
 # ---------------- 图谱 / 追踪 ----------------
@@ -508,27 +564,50 @@ def graph(case_id: int, canvas_id: int = 0):
         return _graph(case_id, canvas_id)
 
 
+def _graph_mirror_duplicate_ids(case_id: int, canvas_id: int):
+    """Pair each tracked row with at most one oldest compatible ledger mirror."""
+    rows = db.q_raw("""
+        select f.id, f.payer_account, f.payee_account, f.amount,
+               coalesce(f.currency, '') as currency, coalesce(f.self_account, '') as self_account,
+               date_trunc('second', f.trade_time) as mirror_time
+        from flows f join tracked_flows tf on tf.flow_id = f.id
+        where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?
+        order by f.trade_time, f.id
+    """, [case_id, canvas_id, case_id])
+    pending, duplicate_ids = {}, []
+    tolerance = datetime.timedelta(seconds=120)
+    for row in rows:
+        if any(row[field] is None for field in ("payer_account", "payee_account", "amount", "mirror_time")):
+            continue  # NULL values could not match in the previous SQL rule either.
+        key = (row["payer_account"], row["payee_account"], row["amount"], row["currency"])
+        queue = pending.setdefault(key, deque())
+        while queue and row["mirror_time"] - queue[0][0] > tolerance:
+            queue.popleft()
+        # All unmatched rows in a group share one declared self_account: a
+        # different/undeclared ledger immediately consumes its oldest partner.
+        # Truncated seconds preserve the existing date_diff('second') boundary.
+        if queue and not (row["self_account"] and row["self_account"] == queue[0][1]):
+            queue.popleft()
+            duplicate_ids.append(row["id"])
+        else:
+            queue.append((row["mirror_time"], row["self_account"]))
+    return duplicate_ids
+
+
 def _graph(case_id: int, canvas_id: int):
     # 统计口径修正（两处历史问题）：
     # 1) 双方流水都导入时，同一笔交易会以两份记录入库（时间差秒级、余额/摘要/流水号不同，
     #    不满足全列去重）→ 同 付款方+收款方+金额 且时间相差 ≤120 秒、且「本方账号声明不同
-    #    （或未声明）」的多行只计一笔（is_dup，保留最早一行）。同一 self_account 的连续
-    #    多笔（如拆分转账）是真实交易，不合并。
+    #    （或未声明）」的两行配对只计一笔（is_dup，保留较早一行）。每条记录最多配对一次，
+    #    不能让已配对的镜像吞掉后续真实交易。同一 self_account 的连续多笔不相互合并。
     # 2) main_accounts 的 OR 连接（账号或户名匹配）在同户名多账号时会把行数放大数倍，
     #    导致笔数/金额虚增 → 改用 EXISTS 子查询，只做标记、不复制行。
     # 画布维度：只统计当前画布追踪的流水（canvas_id 0 = 默认画布）。
+    dedup_params = [case_id, canvas_id, case_id, _graph_mirror_duplicate_ids(case_id, canvas_id)]
     dedup_cte = """
         with t as (select f.* from flows f join tracked_flows tf on tf.flow_id = f.id
                    where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?),
-        nd as (select f.*, exists(
-                   select 1 from t g
-                   where g.payer_account = f.payer_account and g.payee_account = f.payee_account
-                     and g.amount = f.amount and coalesce(g.currency, '') = coalesce(f.currency, '')
-                     and (g.trade_time < f.trade_time
-                          or (g.trade_time = f.trade_time and g.id < f.id))
-                     and date_diff('second', g.trade_time, f.trade_time) <= 120
-                     and not (coalesce(f.self_account, '') <> '' and f.self_account = g.self_account)
-               ) as is_dup
+        nd as (select f.*, f.id in (select unnest(?::bigint[])) as is_dup
                from t f)
     """
     nodes = db.q(dedup_cte + """
@@ -552,7 +631,7 @@ def _graph(case_id: int, canvas_id: int):
         left join account_ids ai on ai.case_id = ? and ai.account = t2.account
         left join account_photos ap on ap.case_id = ? and ap.account = t2.account
         group by t2.account
-    """, [case_id, canvas_id, case_id, case_id, case_id, case_id, case_id])
+    """, [*dedup_params, case_id, case_id, case_id, case_id])
     edges = db.q(dedup_cte + """
         select payer_account as source, max(payer_name) as source_name,
                payee_account as target, max(payee_name) as target_name,
@@ -563,12 +642,12 @@ def _graph(case_id: int, canvas_id: int):
                list(distinct currency) filter (currency is not null and currency <> '' and currency <> 'CNY') as currencies,
                list(id) as ids
         from nd group by payer_account, payee_account
-    """, [case_id, canvas_id, case_id])
+    """, dedup_params)
     amounts = db.q_raw(dedup_cte + """
         select payer_account as source, payee_account as target, coalesce(currency, '') currency,
                sum(amount) amount
         from nd where not is_dup group by payer_account, payee_account, coalesce(currency, '') order by currency
-    """, [case_id, canvas_id, case_id])
+    """, dedup_params)
     by_pair, by_node = {}, {}
     for row in amounts:
         total = {"currency": row["currency"], "amount": money_string(row["amount"])}
@@ -683,6 +762,8 @@ def canvas_clone(body: CanvasCloneIn):
 @app.post("/api/canvases/rename")
 def canvas_rename(body: CanvasRenameIn):
     with _case_transaction(body.case_id):
+        if body.canvas_id <= 0:
+            raise HTTPException(400, "默认画布不可重命名，请另存为命名画布")
         _require_canvas(body.case_id, body.canvas_id)
         name = body.name.strip()
         if not name:
@@ -694,6 +775,8 @@ def canvas_rename(body: CanvasRenameIn):
 @app.delete("/api/canvases/{canvas_id}")
 def canvas_delete(canvas_id: int, case_id: int = 1):
     with _case_transaction(case_id):
+        if canvas_id <= 0:
+            raise HTTPException(400, "默认画布不可删除")
         _require_canvas(case_id, canvas_id)
         db.x("delete from canvases where id = ? and case_id = ?", [canvas_id, case_id])
         # 画布删除时连同该画布的追踪记录一起清理
@@ -1119,6 +1202,8 @@ async def account_ids_import(case_id: int = Form(...), file: UploadFile = File(.
     """批量导入账号-身份证对照表（xlsx/csv，自动识别「账号」「身份证」列）"""
     require_case(case_id)
     suffix = Path(file.filename or "").suffix.lower() or ".csv"
+    if suffix == ".xls":
+        raise HTTPException(400, "旧版 .xls 请另存为 .xlsx 后导入")
     upload_dir = db.DATA_DIR / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     import_id = uuid.uuid4().hex[:12]
@@ -1317,15 +1402,66 @@ def account_photo_img(case_id: int, account: str, ring: str = "#4caf7d"):
 
 # ---------------- 导出 ----------------
 
+class GraphRelationFilter(BaseModel):
+    """A display-only aggregate relation filter; never combines currencies."""
+    currency: str = Field(max_length=32, strict=True)
+    min: Optional[str] = Field(default=None, max_length=40, strict=True)
+    max: Optional[str] = Field(default=None, max_length=40, strict=True)
+
+    @model_validator(mode="after")
+    def validate_amounts(self):
+        if self.min == "":
+            self.min = None
+        if self.max == "":
+            self.max = None
+        bounds = []
+        for value in (self.min, self.max):
+            if value is None:
+                bounds.append(None)
+                continue
+            if not re.fullmatch(r"\d+(?:\.\d{1,2})?", value):
+                raise ValueError("relation filter amounts must be non-negative decimal strings")
+            bounds.append(money_decimal(value))
+        if bounds[0] is not None and bounds[1] is not None and bounds[0] > bounds[1]:
+            raise ValueError("relation filter minimum cannot exceed maximum")
+        return self
+
+
+class GraphAmountWidth(BaseModel):
+    """The full tracked graph's exact single-currency visual encoding range."""
+    currency: str = Field(max_length=32, strict=True)
+    min_amount: Optional[str] = Field(default=None, max_length=40, strict=True)
+    max_amount: Optional[str] = Field(default=None, max_length=40, strict=True)
+    missing_edges: int = Field(ge=0, le=2_147_483_647, strict=True)
+    invalid_edges: int = Field(ge=0, le=2_147_483_647, strict=True)
+    scale: Literal["full-graph"]
+    transform: Literal["sqrt"]
+    min_width: Literal[1.5]
+    max_width: Literal[7]
+
+    @model_validator(mode="after")
+    def validate_range(self):
+        if (self.min_amount is None) != (self.max_amount is None):
+            raise ValueError("amount width range must have both bounds or neither")
+        for value in (self.min_amount, self.max_amount):
+            if value is not None and not re.fullmatch(r"\d+(?:\.\d{1,2})?", value):
+                raise ValueError("amount width bounds must be non-negative decimal strings")
+        if self.min_amount is not None and money_decimal(self.min_amount) > money_decimal(self.max_amount):
+            raise ValueError("amount width minimum cannot exceed maximum")
+        return self
+
+
 class GraphExportView(BaseModel):
     """Display scope only; hiding a neighborhood never deletes tracked facts."""
     scope: Literal["visible", "all"]
-    mode: Literal["overview", "neighborhood"]
+    mode: Literal["overview", "neighborhood", "filtered"]
     total_nodes: int = Field(ge=0, le=2_147_483_647, strict=True)
     total_edges: int = Field(ge=0, le=2_147_483_647, strict=True)
     visible_nodes: int = Field(ge=0, le=2_147_483_647, strict=True)
     visible_edges: int = Field(ge=0, le=2_147_483_647, strict=True)
     label_mode: Literal["auto", "all", "focus"]
+    relation_filter: Optional[GraphRelationFilter] = None
+    amount_width: Optional[GraphAmountWidth] = None
 
     @model_validator(mode="after")
     def validate_counts(self):
@@ -1360,7 +1496,21 @@ def export_graph_html(body: GraphHtmlIn):
     """按前端画布快照导出可交互 HTML：与原图完全一致，节点可拖拽（自包含单文件）"""
     g6 = (STATIC_DIR / "vendor" / "g6.min.js").read_text(encoding="utf-8")
     g6 = g6.replace("</script", "<\\/script")
-    payload = json.dumps(body.model_dump(), ensure_ascii=False)
+    presentation = (STATIC_DIR / "graph-presentation.js").read_text(encoding="utf-8")
+    presentation = re.sub(r"</script", r"<\\/script", presentation, flags=re.I)
+    label_geometry = (STATIC_DIR / "graph-label-geometry.js").read_text(encoding="utf-8")
+    label_geometry = re.sub(r"</script", r"<\\/script", label_geometry, flags=re.I)
+    graph_routing = (STATIC_DIR / "graph-routing.js").read_text(encoding="utf-8")
+    graph_routing = re.sub(r"</script", r"<\\/script", graph_routing, flags=re.I)
+    route_quality = (STATIC_DIR / "graph-route-quality.js").read_text(encoding="utf-8")
+    route_quality = re.sub(r"</script", r"<\\/script", route_quality, flags=re.I)
+    data = body.model_dump()
+    # Keep older export payloads unchanged when optional display metadata is absent.
+    if body.view is not None:
+        for key in ("relation_filter", "amount_width"):
+            if getattr(body.view, key) is None:
+                data["view"].pop(key, None)
+    payload = json.dumps(data, ensure_ascii=False)
     payload = payload.replace("</", "<\\/")   # 防止 JSON 中的字符串提前闭合 script
     if body.view is None:
         scope_text = f"导出图谱 {len(body.nodes)} 个账户 · {len(body.edges)} 条关系"
@@ -1369,20 +1519,48 @@ def export_graph_html(body: GraphHtmlIn):
         if view.scope == "all":
             scope_text = f"全部图谱 {view.total_nodes} 个账户 · {view.total_edges} 条关系"
         else:
-            name = "当前邻域视图" if view.mode == "neighborhood" else "当前图谱视图"
+            name = {"neighborhood": "当前邻域视图", "filtered": "当前筛选视图"}.get(view.mode, "当前图谱视图")
             scope_text = (f"{name} {view.visible_nodes} / {view.total_nodes} 个账户 · "
                           f"{view.visible_edges} / {view.total_edges} 条关系；"
                           "图谱仅显示当前视图，追踪数据未删除")
+        if view.relation_filter is not None:
+            rule = view.relation_filter
+            currency = rule.currency or "未标注币种"
+            conditions = []
+            if rule.min is not None:
+                conditions.append(f"不少于 {rule.min}")
+            if rule.max is not None:
+                conditions.append(f"不高于 {rule.max}")
+            amount_range = "、".join(conditions) if conditions else "不限金额"
+            prefix = "当前视图筛选设置" if view.scope == "all" else "筛选条件"
+            scope_text += f"；{prefix}：按 {currency} 聚合关系金额，{amount_range}（不同币种不相加）"
         labels = {"auto": "自动分级", "all": "全部", "focus": "仅重点"}
         scope_text += f" · 标签：{labels[view.label_mode]}"
+    amount_legend = ""
+    if body.view is not None and body.view.amount_width is not None:
+        width = body.view.amount_width
+        extent = (f"{width.min_amount} — {width.max_amount}"
+                  if width.min_amount is not None else "无可编码金额")
+        text = (f"{width.currency or '未标注币种'} 金额→线宽 · {extent} · 全图统一比例 · "
+                "平方根映射 sqrt（1.5–7px）")
+        if width.missing_edges:
+            text += f" · {width.missing_edges} 条无该币种，使用普通线宽"
+        if width.invalid_edges:
+            text += f" · {width.invalid_edges} 条金额无效，未编码"
+        amount_legend = f'<span id="amountWidthLegend">{escape(text, quote=True)}</span>'
     replacements = {
         "__DATA__": payload,
         "__G6__": g6,
+        "__PRESENTATION__": presentation,
+        "__LABEL_GEOMETRY__": label_geometry,
+        "__GRAPH_ROUTING__": graph_routing,
+        "__ROUTE_QUALITY__": route_quality,
+        "__AMOUNT_WIDTH__": amount_legend,
         "__CASE__": escape(body.case_name or "资金图谱", quote=True),
         "__VIEW__": escape(scope_text, quote=True),
     }
     # One pass preserves literal marker text inside case names and graph data.
-    html = re.sub(r"__(?:DATA|G6|CASE|VIEW)__", lambda match: replacements[match.group()], HTML_TEMPLATE)
+    html = re.sub(r"__(?:DATA|G6|PRESENTATION|LABEL_GEOMETRY|GRAPH_ROUTING|ROUTE_QUALITY|AMOUNT_WIDTH|CASE|VIEW)__", lambda match: replacements[match.group()], HTML_TEMPLATE)
     fname = urllib.parse.quote(f"{body.case_name or '资金图谱'}_图谱.html")
     return Response(html, media_type="text/html; charset=utf-8",
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fname}"})
@@ -1460,6 +1638,13 @@ def _tracked_workbook(case_id, rows, pending):
         df.to_excel(w, index=False, sheet_name="追踪流水")
         # 第二张表：待调取账号（当前画布图谱中出现、但尚未导入其本人流水的对手账户）
         pending.to_excel(w, index=False, sheet_name="待调取账号")
+        # openpyxl otherwise interprets user strings beginning '=' as formulas
+        # (and strings such as '#N/A' as errors). Preserve their literal value.
+        for sheet in w.sheets.values():
+            for row in sheet:
+                for cell in row:
+                    if isinstance(cell.value, str):
+                        cell.data_type = "s"
     fname = f"追踪流水_案件{case_id}.xlsx"
     return Response(
         buf.getvalue(),
@@ -1469,8 +1654,12 @@ def _tracked_workbook(case_id, rows, pending):
 
 def _pending_accounts(case_id: int, canvas_id: int = 0) -> "pd.DataFrame":
     """待调取账号清单：当前画布图谱中出现、但未导入其本人流水的账户。
-    排除口径：账号已在 main_accounts 中（即某次导入以其为本方账号）。同币种内按交易总额降序。"""
-    mains = {r["account"] for r in db.q("select account from main_accounts where case_id = ?", [case_id])}
+    排除口径：本案仍有以该账号为 self_account 的流水。主账号角色不代表已取得账簿。
+    本方流水不限当前画布；同币种内按交易总额降序。"""
+    ledgers = {r["account"] for r in db.q("""
+        select distinct self_account as account from flows
+        where case_id = ? and self_account is not null and self_account <> ''
+    """, [case_id])}
     nodes = db.q_raw("""
         with t as (select f.* from flows f join tracked_flows tf on tf.flow_id = f.id
                    where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?)
@@ -1489,7 +1678,7 @@ def _pending_accounts(case_id: int, canvas_id: int = 0) -> "pd.DataFrame":
         ) x
         group by x.account, coalesce(x.currency, '')
     """, [case_id, canvas_id, case_id, case_id, case_id])
-    pending = [n for n in nodes if n["account"] not in mains]
+    pending = [n for n in nodes if n["account"] not in ledgers]
     pending.sort(key=lambda x: (x["currency"], -((x["out_amt"] or 0) + (x["in_amt"] or 0)), x["account"]))
     if not pending:
         return pd.DataFrame([{"序号": 1, "户名": "（无待调取账号：图谱中的对手账户均已导入流水）"}])
@@ -1557,28 +1746,34 @@ body{margin:0;background:#14161a;font:13px/1.5 "Microsoft YaHei",sans-serif;colo
 #topbar .tip{margin-left:auto;color:#8a94a2;font-size:11px}
 #viewScope{padding:6px 14px 8px;color:#bbc4d0;font-size:12px;border-bottom:1px solid #2a2e37}
 #mount{position:absolute;top:90px;left:0;right:0;bottom:0}
-#legend{position:fixed;left:12px;bottom:10px;z-index:9;display:flex;gap:14px;align-items:center;
+#legend{position:fixed;left:12px;bottom:10px;z-index:9;display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;max-width:calc(100vw - 48px);
 background:rgba(27,30,36,.82);border:1px solid #2a2e37;border-radius:6px;padding:6px 12px;
 font-size:11px;color:#aeb6c2;pointer-events:none}
 #legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:-1px}
+#amountWidthLegend{flex-basis:100%;color:#c7d3dc;overflow-wrap:anywhere}
 .wm{position:fixed;right:14px;bottom:10px;color:rgba(255,255,255,.14);font-size:12px;z-index:9;pointer-events:none}
 #watermark{position:fixed;inset:0;z-index:8;pointer-events:none;background-repeat:repeat}
 </style></head>
 <body>
-<header id="exportHeader"><div id="topbar"><b>资金图谱</b><span class="sub">__CASE__ · FundsTrace · FundsTrace</span>
+<header id="exportHeader"><div id="topbar"><b>资金图谱</b><span class="sub">__CASE__ · FundsTrace</span>
 <span class="tip">节点可拖拽 · 滚轮缩放 · 拖动空白平移 · 双击节点恢复视图</span></div>
 <div id="viewScope" role="note">__VIEW__</div></header>
 <div id="mount"></div>
 <div id="legend">
-<span><i style="background:#e25656"></i>只转出(源头)</span>
-<span><i style="background:#4caf7d"></i>中转</span>
-<span><i style="background:#4a86e8"></i>只转入(沉淀)</span>
-<span style="color:#ffd700">★ 主账号</span>
-<span style="color:#4a9fe8">◆ 同户名账号</span>
+<span><i style="background:#d77d79"></i>只转出(源头)</span>
+<span><i style="background:#63b69d"></i>中转</span>
+<span><i style="background:#7ca6d5"></i>只转入(沉淀)</span>
+<span style="color:#e8c46a">★ 主账号</span>
+<span style="color:#a79be0">◆ 同户名账号</span>
+__AMOUNT_WIDTH__
 </div>
 <div class="wm">FundsTrace</div>
 <div id="watermark"></div>
 <script>__G6__</script>
+<script id="graph-presentation">__PRESENTATION__</script>
+<script id="graph-label-geometry">__LABEL_GEOMETRY__</script>
+<script id="graph-routing">__GRAPH_ROUTING__</script>
+<script id="graph-route-quality">__ROUTE_QUALITY__</script>
 <script>
 var DATA = __DATA__;
 function buildWM(){
@@ -1592,15 +1787,41 @@ function buildWM(){
 }
 buildWM();
 (function(){
+  var presentation=window.FundsGraphPresentation,labelGeometry=window.FundsGraphLabelGeometry,routing=window.FundsGraphRouting;
+  var routeQuality=typeof FundsGraphRouteQuality==='undefined'?null:FundsGraphRouteQuality;
+  function finite(value){return typeof value==='number'&&isFinite(value);}
+  function point(value){return value&&finite(value.x)&&finite(value.y)?{x:value.x,y:value.y}:null;}
+  function ratio(value){return finite(value)&&value>=0&&value<=1?value:null;}
+  function color(value){return typeof value==='string'&&/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value)?value:null;}
+  function nodeStyle(node){
+    if(node.img)return {};
+    var input=node.style||{},data=node.data||{},role=data.out_cnt>0?(data.in_cnt>0?'mid':'src'):'sink';
+    return {fill:color(input.fill)||{src:'#d77d79',mid:'#63b69d',sink:'#7ca6d5'}[role],
+      stroke:color(input.stroke)||(data.is_main===1?'#e8c46a':data.is_same_name===1?'#a79be0':{src:'#e7a19a',mid:'#9bd6bf',sink:'#b0c8e5'}[role]),
+      lineWidth:finite(input.lineWidth)&&input.lineWidth>=.5&&input.lineWidth<=5?input.lineWidth:data.is_main===1?2.8:1.5,
+      shadowColor:'rgba(0,0,0,.22)',shadowBlur:5};
+  }
+  function edgeStyle(input){
+    var safe=presentation.sanitizeEdge(input),stroke=safe.stroke||'#7f8b99';
+    return Object.assign({stroke:stroke,lineWidth:1.4,lineDash:[],lineCap:'round',lineJoin:'round',lineAppendWidth:8},safe,
+      {endArrow:{path:'M 0,0 L 10,5 L 10,-5 Z',fill:stroke}});
+  }
   var nodes=DATA.nodes.map(function(n){
-    var o={id:n.id,x:n.x,y:n.y,label:n.label,size:n.size,style:n.style,data:n.data,labelVisible:n.labelVisible,
-    labelCfg:{position:'bottom',offset:6,style:{fill:'#dfe3ea',fontSize:11,background:{fill:'rgba(16,18,22,.8)',padding:[2,5,2,5]}}}};
+    var o={id:n.id,x:n.x,y:n.y,label:n.label,size:n.size,style:nodeStyle(n),data:n.data,labelVisible:n.labelVisible,
+      labelOffset:point(n.labelOffset),photoBorder:presentation.sanitizeNode(n.photoBorder),
+      labelCfg:{position:'bottom',offset:6,style:presentation.effectiveLabel('node',n.labelStyle)}};
     if(n.img){o.type='image';o.img=n.img;}
     return o;});
+  var simpleGraph=labelGeometry.isSimpleGraph({nodes:DATA.nodes,edges:DATA.edges});
   var edges=DATA.edges.map(function(e){return {source:e.source,target:e.target,type:e.type,
     controlPoints:(e.controlPoints&&e.controlPoints.length)?e.controlPoints:undefined,
-    label:(e.label==null?'':e.label),data:e.data,labelVisible:e.labelVisible,
-    labelCfg:{style:{fill:'#dfe3ea',fontSize:11,background:{fill:'transparent',padding:[2,4,2,4]}}}};});
+    label:(e.label==null?'':e.label),data:e.data,labelVisible:e.labelVisible,style:edgeStyle(e.style),
+    lx:finite(e.lx)?e.lx:null,ly:finite(e.ly)?e.ly:null,labelRatio:ratio(e.labelRatio),
+    labelManual:e.labelManual===true,labelPlacement:e.labelPlacement==='above'?'above':e.labelPlacement==='inline'?'inline':null,
+    curvePolicy:['compact-arc','screen-right','obstacle-aware'].indexOf(e.curvePolicy)>=0?e.curvePolicy:null,
+    routeManual:typeof e.routeManual==='boolean'?e.routeManual:undefined,
+    routeAutoEligible:typeof e.routeAutoEligible==='boolean'?e.routeAutoEligible:undefined,
+    labelCfg:{autoRotate:false,style:presentation.effectiveLabel('edge',e.labelStyle)}};});
   function graphHeight(){
     var top=document.getElementById('exportHeader').getBoundingClientRect().height;
     document.getElementById('mount').style.top=top+'px';
@@ -1608,43 +1829,276 @@ buildWM();
   }
   var graph=new G6.Graph({container:'mount',width:window.innerWidth,height:graphHeight(),
     modes:{default:['drag-canvas','zoom-canvas','drag-node']},
-    defaultNode:{type:'circle',size:32,labelCfg:{position:'bottom',offset:6,
-      style:{fill:'#dfe3ea',fontSize:11,background:{fill:'rgba(16,18,22,.8)',padding:[2,5,2,5]}}}},
-    defaultEdge:{type:'quadratic',style:{stroke:'#7f8b99',lineWidth:1.4,
-      endArrow:{path:'M 0,0 L 10,5 L 10,-5 Z',fill:'#7f8b99'}}},
-    nodeStateStyles:{selected:{stroke:'#ffd700',lineWidth:3}}});
+    defaultNode:{type:'circle',size:32,labelCfg:{position:'bottom',offset:6,style:presentation.effectiveLabel('node')}},
+    defaultEdge:{type:'quadratic',style:edgeStyle(),labelCfg:{autoRotate:false,style:presentation.effectiveLabel('edge')}}});
   graph.data({nodes:nodes,edges:edges});
   graph.render();
-  // Keep canonical model labels/data; the exported view controls only shapes.
-  graph.setAutoPaint(false);
-  graph.getNodes().concat(graph.getEdges()).forEach(function(item){
-    if(item.getModel().labelVisible!==false)return;
-    (item.getContainer().get('children')||[]).forEach(function(shape){
-      var name=shape.get('name');
-      if(name==='text-shape'||name==='text-bg-shape')shape.hide();
+  // Accepted obstacle-aware routes keep their saved drawing and follow later
+  // endpoint drags. Automatic default arcs migrate to the compact policy below.
+  var routeFrames=new WeakMap();
+  function routeFrame(item,positions){
+    var m=item.getModel(),source=point(positions.get(m.source)),target=point(positions.get(m.target));
+    var controls=m.controlPoints;
+    if(!source||!target||!Array.isArray(controls)||!controls.length||!controls.every(point))return null;
+    return {source:source,target:target,controls:controls.map(point)};
+  }
+  var originalPositions=new Map(graph.getNodes().map(function(item){var m=item.getModel();return [m.id,m];}));
+  graph.getEdges().forEach(function(item){var frame=routeFrame(item,originalPositions);if(frame)routeFrames.set(item,frame);});
+  function children(item){var group=item.getContainer();return group.get('children')||[];}
+  function named(item,name){return children(item).find(function(shape){return shape.get('name')===name;});}
+  function textPoint(item){var text=named(item,'text-shape');return text?point({x:text.attr('x'),y:text.attr('y')}):null;}
+  function clearOffsets(item){
+    children(item).forEach(function(shape){var saved=shape._fundsExportOffset;if(!saved)return;
+      if(shape.attr('x')===saved.x&&shape.attr('y')===saved.y)shape.attr({x:saved.baseX,y:saved.baseY});
+      delete shape._fundsExportOffset;
     });
-  });
-  graph.setAutoPaint(true);
-  graph.paint();
-  // 按原图位置还原连线标注（含用户拖动过的位置）
-  (DATA.edges||[]).forEach(function(d){
-    if(d.lx==null)return;
-    var es=graph.getEdges(),edge=null;
-    for(var i=0;i<es.length;i++){var m=es[i].getModel();if(m.source===d.source&&m.target===d.target){edge=es[i];break;}}
-    if(!edge)return;
-    var kids=edge.getContainer().get('children')||[];
-    for(var j=0;j<kids.length;j++){
-      var k=kids[j],nm=k.get('name');
-      if(nm==='text-shape'){k.attr({x:d.lx,y:d.ly});}
-      else if(nm==='text-bg-shape'&&d.bw){k.attr({x:d.lx-d.bw/2,y:d.ly-d.bh/2});}
+  }
+  function offsetLabel(item,dx,dy){
+    children(item).forEach(function(shape){
+      if(shape.get('name')!=='text-shape')return;
+      var base=point({x:shape.attr('x'),y:shape.attr('y')});if(!base)return;
+      shape.attr({x:base.x+dx,y:base.y+dy});
+      shape._fundsExportOffset={baseX:base.x,baseY:base.y,x:base.x+dx,y:base.y+dy};
+    });
+  }
+  function pathAt(item,value){
+    var shape=item.getKeyShape&&item.getKeyShape();if(!shape||typeof shape.getPoint!=='function')return null;
+    // Convert the same geometric path into a bounded arc-length ratio, including curves/loops.
+    var points=[],lengths=[0],total=0;
+    for(var i=0;i<=64;i++){
+      var p=point(shape.getPoint(i/64));if(!p)return null;points.push(p);
+      if(i){total+=Math.hypot(p.x-points[i-1].x,p.y-points[i-1].y);lengths.push(total);}
     }
-  });
-  var refit=function(){try{graph.fitView(40);}catch(e){}};
+    if(!total)return points[0];
+    var target=value*total;
+    for(var j=1;j<points.length;j++)if(lengths[j]>=target){
+      var t=(target-lengths[j-1])/(lengths[j]-lengths[j-1]||1);
+      return {x:points[j-1].x+(points[j].x-points[j-1].x)*t,y:points[j-1].y+(points[j].y-points[j-1].y)*t};
+    }
+    return points[points.length-1];
+  }
+  function decoration(item,name,kind,attrs){
+    var existing=named(item,name),group=item.getContainer();
+    if(!attrs){if(existing&&existing.remove)existing.remove();return;}
+    if(existing)existing.attr(attrs);
+    else if(typeof group.addShape==='function')existing=group.addShape(kind,{name:name,capture:false,attrs:attrs});
+  }
+  function identity(item){
+    var m=item.getModel(),data=m.data||{},size=Array.isArray(m.size)?Math.max.apply(Math,m.size):m.size||32;
+    var stroke=data.is_main===1?'#e8c46a':data.is_same_name===1?'#a79be0':null;
+    decoration(item,'funds-identity-ring','circle',stroke?{x:0,y:0,r:size/2+2.5,stroke:stroke,lineWidth:1.2,fill:null,shadowBlur:0}:null);
+    var border=m.photoBorder||{};
+    decoration(item,'funds-photo-border','circle',m.type==='image'&&(border.stroke||border.lineWidth)?
+      {x:0,y:0,r:size/2,stroke:border.stroke||stroke||'#7ca6d5',lineWidth:border.lineWidth||1.5,fill:null}:null);
+  }
+  function applyGeometry(){
+    graph.setAutoPaint(false);
+    graph.getNodes().concat(graph.getEdges()).forEach(function(item){
+      labelGeometry.plain(item);
+      clearOffsets(item);
+      var m=item.getModel(),isEdge=m.source!==undefined,base=textPoint(item),visible=m.labelVisible!==false;
+      var text=named(item,'text-shape');if(text){if(!visible)text.hide();else if(text.show)text.show();}
+      if(isEdge){
+        var key=item.getKeyShape&&item.getKeyShape();
+        // Automatic labels belong to the actual parameter midpoint. Only an
+        // explicit manual path ratio retains a user-selected path position.
+        var anchor=m.labelManual&&m.labelRatio!==null?pathAt(item,m.labelRatio)
+          :key&&typeof key.getPoint==='function'?point(key.getPoint(.5)):base;
+        var before=key&&typeof key.getPoint==='function'?point(key.getPoint(.49)):null;
+        var after=key&&typeof key.getPoint==='function'?point(key.getPoint(.51)):null;
+        var horizontal=before&&after&&Math.abs(after.y-before.y)<=Math.abs(after.x-before.x)*.12;
+        var above=simpleGraph&&m.routeAutoEligible!==false&&m.labelPlacement!=='inline'&&horizontal;
+        labelGeometry.placeEdge(item,{anchor:anchor,above:above,gap:4,style:m.style,visible:visible});
+      }else{
+        labelGeometry.placeNode(item,{zoom:graph.getZoom?graph.getZoom():1});
+        identity(item);
+      }
+    });
+    graph.setAutoPaint(true);graph.paint();
+  }
+  function automaticRoute(m){
+    return m.routeManual!==true&&m.type==='quadratic'&&(m.routeManual===false
+      ||['compact-arc','screen-right','obstacle-aware'].indexOf(m.curvePolicy)>=0
+      ||!Array.isArray(m.controlPoints)||!m.controlPoints.length);
+  }
+  function updateCurves(event,initial,eligible){
+    var positions=new Map(graph.getNodes().map(function(item){var m=item.getModel();return [m.id,m];}));
+    var moved=event&&event.item&&event.item.getModel&&event.item.getModel().id;
+    graph.getEdges().forEach(function(item){
+      var m=item.getModel();
+      if(!automaticRoute(m)||eligible&&!eligible.has(item))return;
+      if(!initial&&(moved==null||m.source!==moved&&m.target!==moved))return;
+      var source=point(positions.get(m.source)),target=point(positions.get(m.target));if(!source||!target)return;
+      var controls,policy=m.curvePolicy;
+      // Partial exports lack the complete source topology. Preserve their saved
+      // geometry instead of inventing a new automatic route from fewer facts.
+      var compactRoute=completeTopology&&m.routeAutoEligible!==false&&m.curvePolicy!=='obstacle-aware'
+        &&(initial||m.curvePolicy==='compact-arc');
+      if(compactRoute){
+        // A self-relation or temporarily coincident endpoints has no directed
+        // chord. Retain its drawing rather than collapsing it into a point.
+        if(m.source===m.target||Math.hypot(target.x-source.x,target.y-source.y)<1e-9)return;
+        var control=labelGeometry.compactControlPoint(source,target);if(!control)return;
+        controls=[control];policy='compact-arc';
+      }else{
+        if(initial)return;
+        var frame=routeFrames.get(item);if(!frame)return;
+        controls=routing.rebase(frame.controls,frame.source,frame.target,source,target);
+      }
+      if(JSON.stringify(m.controlPoints||[])!==JSON.stringify(controls)||m.curvePolicy!==policy){
+        if(typeof graph.updateItem==='function')graph.updateItem(item,{type:'quadratic',curvePolicy:policy,controlPoints:controls});
+        else {m.type='quadratic';m.curvePolicy=policy;m.controlPoints=controls;}
+      }
+      if(compactRoute){var next=routeFrame(item,positions);if(next)routeFrames.set(item,next);}
+    });
+  }
+  var completeTopology=!DATA.view||DATA.view.scope==='all'
+    ||DATA.view.total_nodes===DATA.nodes.length&&DATA.view.total_edges===DATA.edges.length;
+  var gatePositions=new Map(graph.getNodes().map(function(item){var m=item.getModel();return [m.id,point(m)];}));
+  function worldBox(shape){
+    if(!shape||typeof shape.getCanvasBBox!=='function'||typeof graph.getPointByCanvas!=='function')return null;
+    var box;try{box=shape.getCanvasBBox();}catch(_){return null;}
+    if(!box||![box.minX,box.minY,box.maxX,box.maxY].every(finite))return null;
+    var corners=[[box.minX,box.minY],[box.minX,box.maxY],[box.maxX,box.minY],[box.maxX,box.maxY]];
+    var values;try{values=corners.map(function(p){return point(graph.getPointByCanvas(p[0],p[1]));});}catch(_){return null;}
+    if(!values.every(Boolean))return null;
+    return {minX:Math.min.apply(Math,values.map(function(p){return p.x;})),
+      minY:Math.min.apply(Math,values.map(function(p){return p.y;})),
+      maxX:Math.max.apply(Math,values.map(function(p){return p.x;})),
+      maxY:Math.max.apply(Math,values.map(function(p){return p.y;}))};
+  }
+  function actualScene(eligible){
+    var scene={nodes:[],edges:[],qualityEdges:[],items:new Map()},boxes=[],valid=true,workLeft=120000,segmentsLeft=36000;
+    function label(item){
+      var m=item.getModel();if(m.labelVisible===false||!m.label)return null;
+      var box=worldBox(named(item,'text-shape'));if(!box)valid=false;else boxes.push(box);return box;
+    }
+    graph.getNodes().forEach(function(item){
+      var m=item.getModel(),p=point(m),body=worldBox(item.getKeyShape&&item.getKeyShape()),text=label(item);
+      if(!p||!body){valid=false;return;}boxes.push(body);
+      scene.nodes.push({id:m.id,x:p.x,y:p.y,body:body,label:text});
+    });
+    graph.getEdges().forEach(function(item,index){
+      if(!valid)return;
+      var m=item.getModel(),id=String(index),key=item.getKeyShape&&item.getKeyShape(),path=key&&key.attr('path');
+      var sampled=routeQuality.sample(path,{steps:24,maxSegments:Math.max(1,Math.min(4096,segmentsLeft)),
+        maxWork:Math.max(1,workLeft)}),text=label(item);
+      workLeft-=sampled.work;segmentsLeft-=sampled.segments.length;
+      if(!sampled.valid||sampled.truncated||workLeft<0||segmentsLeft<0){valid=false;return;}boxes.push(sampled.bounds);
+      scene.items.set(id,item);
+      scene.qualityEdges.push({id:id,source:m.source,target:m.target,path:path,label:text});
+      scene.edges.push({id:id,source:m.source,target:m.target,type:m.type,controlPoints:m.controlPoints||[],
+        manual:!eligible.has(item),sampledPoints:sampled.points,
+        labelWidth:text?text.maxX-text.minX:0,labelHeight:text?text.maxY-text.minY:0,
+        labelRatio:m.labelManual?m.labelRatio:null,labelAnchor:text?{x:(text.minX+text.maxX)/2,y:(text.minY+text.maxY)/2}:null});
+    });
+    if(!valid||!boxes.length)return null;
+    scene.bounds={minX:Math.min.apply(Math,boxes.map(function(b){return b.minX;})),
+      minY:Math.min.apply(Math,boxes.map(function(b){return b.minY;})),
+      maxX:Math.max.apply(Math,boxes.map(function(b){return b.maxX;})),
+      maxY:Math.max.apply(Math,boxes.map(function(b){return b.maxY;}))};
+    return scene;
+  }
+  function measure(scene){
+    return scene&&routeQuality.evaluate({nodes:scene.nodes,edges:scene.qualityEdges,maxChecks:120000,steps:24});
+  }
+  function noWorse(before,after){
+    if(!before||!after||!before.valid||!after.valid||!before.coverage.complete||!after.coverage.complete)return false;
+    var kinds=['edgeNode','labelNode','edgeNodeLabel','edgeLabel','labelOverlap','collinearOverlap','crossings'];
+    if(kinds.some(function(key){return after.counts[key]>before.counts[key];}))return false;
+    var prior=before.collisionKeys,next=after.collisionKeys;
+    // This self-contained export embeds the matching evaluator. Missing or
+    // incomplete identities cannot certify that a different label stayed clear.
+    if(!prior||!next)return false;
+    return kinds.every(function(kind){
+      var oldKeys=prior[kind],newKeys=next[kind];
+      if(!Array.isArray(oldKeys)||!Array.isArray(newKeys)||oldKeys.length!==before.counts[kind]
+        ||newKeys.length!==after.counts[kind]||!oldKeys.concat(newKeys).every(function(key){return typeof key==='string';}))return false;
+      var known=new Set(oldKeys),current=new Set(newKeys);
+      return known.size===oldKeys.length&&current.size===newKeys.length
+        &&newKeys.every(function(key){return known.has(key);});
+    });
+  }
+  function improveRoutes(event,initial){
+    var moved=event&&event.item&&event.item.getModel&&event.item.getModel().id;
+    if(!initial){
+      var node=graph.getNodes().find(function(item){return item.getModel().id===moved;}),next=node&&point(node.getModel()),last=gatePositions.get(moved);
+      if(!next||last&&next.x===last.x&&next.y===last.y)return;
+      gatePositions.set(moved,next);
+    }
+    if(!completeTopology){graph._fundsRouteQuality={accepted:false,reason:'partial-topology'};return;}
+    if(!routeQuality||!routing){graph._fundsRouteQuality={accepted:false,reason:'missing-quality'};return;}
+    if(graph.getEdges().length>1500||graph.getNodes().length>3000){
+      graph._fundsRouteQuality={accepted:false,reason:'obstacle-budget'};return;}
+    var eligible=new Set(graph.getEdges().filter(function(item){
+      var m=item.getModel();return automaticRoute(m)&&m.routeAutoEligible!==false&&m.source!==m.target
+        &&(!initial||m.curvePolicy!=='obstacle-aware')&&(initial||m.source===moved||m.target===moved);
+    }));
+    if(!eligible.size)return;
+    if(eligible.size>320){graph._fundsRouteQuality={accepted:false,reason:'route-budget'};return;}
+    var beforeScene=actualScene(eligible),before=measure(beforeScene);
+    if(!beforeScene||!before||!before.valid||!before.coverage.complete){
+      graph._fundsRouteQuality={before:before,accepted:false,reason:beforeScene?'quality-budget':'missing-geometry'};return;}
+    var saved=new Map(),positions=new Map(graph.getNodes().map(function(item){var m=item.getModel();return [m.id,m];}));
+    eligible.forEach(function(item){var m=item.getModel();saved.set(item,{type:m.type,curvePolicy:m.curvePolicy,
+      controlPoints:(m.controlPoints||[]).map(point),frame:routeFrames.get(item)});});
+    function restore(){
+      saved.forEach(function(prior,item){
+        graph.updateItem(item,{type:prior.type,curvePolicy:prior.curvePolicy,controlPoints:prior.controlPoints});
+        if(prior.frame)routeFrames.set(item,prior.frame);else routeFrames.delete(item);
+      });applyGeometry();
+    }
+    try{
+      if(initial){updateCurves(null,true,eligible);applyGeometry();}
+      var proposalScene=actualScene(eligible);
+      if(!proposalScene)throw new Error('missing-geometry');
+      var proposal=routing.plan({nodes:proposalScene.nodes,edges:proposalScene.edges,conservative:true,
+        routingBounds:beforeScene.bounds,maxChecks:120000,maxEdges:320,maxObstacleEdges:1500,maxObstacleSegments:36000});
+      if(proposal.stats.limited)throw new Error('quality-budget');
+      proposal.routes.forEach(function(route){
+        var item=proposalScene.items.get(route.id);if(!eligible.has(item))return;
+        graph.updateItem(item,{type:'quadratic',curvePolicy:'obstacle-aware',controlPoints:route.controlPoints});
+      });applyGeometry();
+      var afterScene=actualScene(eligible),after=measure(afterScene),box=beforeScene.bounds;
+      var changed=Array.from(saved).filter(function(entry){var m=entry[0].getModel(),prior=entry[1];
+        return m.curvePolicy!==prior.curvePolicy||JSON.stringify(m.controlPoints||[])!==JSON.stringify(prior.controlPoints);});
+      var within=afterScene&&changed.every(function(entry){
+        var item=entry[0],data=afterScene.qualityEdges.find(function(edge){return afterScene.items.get(edge.id)===item;});
+        if(!data)return false;var sampled=routeQuality.sample(data.path,{steps:24,maxSegments:4096});
+        return sampled.valid&&!sampled.truncated&&sampled.points.every(function(p){return p.x>=box.minX-1e-6
+          &&p.x<=box.maxX+1e-6&&p.y>=box.minY-1e-6&&p.y<=box.maxY+1e-6;})
+          &&(!data.label||data.label.minX>=box.minX-1e-6&&data.label.maxX<=box.maxX+1e-6
+            &&data.label.minY>=box.minY-1e-6&&data.label.maxY<=box.maxY+1e-6);
+      });
+      var accepted=within&&noWorse(before,after);
+      if(!accepted)restore();
+      else changed.forEach(function(entry){var frame=routeFrame(entry[0],positions);if(frame)routeFrames.set(entry[0],frame);});
+      graph._fundsRouteQuality={before:before,after:accepted?after:before,proposed:accepted?null:after,
+        accepted:accepted,changed:accepted?changed.length:0,planner:proposal.stats,
+        reason:accepted?'actual-quality-retained':'actual-quality-regression'};
+    }catch(error){restore();graph._fundsRouteQuality={before:before,after:before,accepted:false,reason:error.message||'route-recovery'};}
+  }
+  function afterDrag(event){
+    simpleGraph=labelGeometry.isSimpleGraph({
+      nodes:graph.getNodes().map(function(item){return item.getModel();}),
+      edges:graph.getEdges().map(function(item){return item.getModel();})});
+    updateCurves(event);applyGeometry();
+  }
+  applyGeometry();
+  graph.on('node:drag',afterDrag);
+  graph.on('node:dragend',function(event){afterDrag(event);improveRoutes(event,false);});
+  graph.on('viewportchange',applyGeometry);
+  var refit=function(){try{
+    var legend=document.getElementById('legend'),bounds=legend&&typeof legend.getBoundingClientRect==='function'?legend.getBoundingClientRect():null;
+    var height=bounds&&finite(bounds.height)?bounds.height:legend&&finite(legend.offsetHeight)?legend.offsetHeight:0;
+    graph.fitView([40,40,Math.max(40,height+28),40]);
+  }catch(e){}};
   refit();
+  improveRoutes(null,true);
   setTimeout(refit,150);
   window.__g=graph;
   window.addEventListener('resize',function(){try{graph.changeSize(window.innerWidth,graphHeight());refit();}catch(e){}});
-  graph.on('node:dblclick',function(){try{graph.fitView(40);}catch(e){}});
+  graph.on('node:dblclick',refit);
 })();
 </script></body></html>"""
 

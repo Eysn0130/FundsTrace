@@ -5,6 +5,9 @@ import subprocess
 
 def test_canvas_editor_behavior():
     root = Path(__file__).resolve().parents[1]
+    # The shared synthetic navigation fixture now also runs its full suite.
+    # Shared CI runners need a larger process watchdog; product timing assertions
+    # inside the harness remain unchanged.
     result = subprocess.run(["node", "--test", str(root / "tests/canvas_editor_harness.mjs")],
-                            cwd=root, capture_output=True, text=True, timeout=30)
+                            cwd=root, capture_output=True, text=True, timeout=90)
     assert result.returncode == 0, result.stdout + result.stderr

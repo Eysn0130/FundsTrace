@@ -295,3 +295,126 @@ def test_delete_database_failure_restores_original_photo_directory(client, datab
     assert database.q("select id from cases where id=?", [source])
     assert database.q("select count(*) n from flows where case_id=?", [source])[0]["n"] == 2
     assert (database.DATA_DIR / "photos" / f"c{source}" / "avatar.png").read_bytes() == b"synthetic-photo-bytes"
+
+
+@pytest.mark.parametrize("format_version", [1, 2])
+def test_package_remaps_nonempty_snapshot_flow_references_without_changing_accounts(client, database, make_case, flow_row, format_version):
+    source = populated_case(database, make_case, flow_row)
+    ids = [row["id"] for row in database.q("select id from flows where case_id=? order by id", [source])]
+    # BIGINT identities remain exact above JavaScript's safe-integer boundary.
+    large_id = 9_007_199_254_740_993
+    database.x("update flows set id=? where id=?", [large_id, ids[0]])
+    database.x("update tracked_flows set flow_id=? where flow_id=?", [large_id, ids[0]])
+    snapshot = {"nodes": [{"id": "SYN-A", "x": 10, "y": 20}, {"id": "SYN-B", "x": 100, "y": 20}],
+                "edges": [{"source": "SYN-A", "target": "SYN-B", "type": "polyline",
+                           "controlPoints": [{"x": 50, "y": 40}],
+                           "data": {"ids": [large_id, str(ids[1])], "total": "246.90"}}],
+                "display": {"showPhotos": False}, "legacy_extra": {"retained": True}}
+    canvas = database.q("select id from canvases where case_id=? order by id", [source])[0]["id"]
+    database.x("update canvases set snapshot=? where id=?", [json.dumps(snapshot), canvas])
+    entries = members(exported(client, source))
+    if format_version == 1:
+        meta = json.loads(entries["meta.json"])
+        meta["format"] = 1
+        meta.pop("source_files")
+        entries["meta.json"] = json.dumps(meta).encode()
+        entries.pop("import_sources.parquet")
+        entries.pop("flow_sources.parquet")
+    response = import_package(client, archive_of(entries))
+    assert response.status_code == 200, response.text
+    imported = response.json()["case_id"]
+    canvases = client.get(f"/api/canvases?case_id={imported}").json()
+    restored = client.get(f"/api/canvases/{next(c['id'] for c in canvases if c['name'] == 'Canvas 0')}?case_id={imported}").json()["snapshot"]
+    new_ids = {row["id"] for row in database.q("select id from flows where case_id=?", [imported])}
+    snapshot_ids = restored["edges"][0]["data"]["ids"]
+    assert {int(value) for value in snapshot_ids} == new_ids
+    assert type(snapshot_ids[0]) is int and isinstance(snapshot_ids[1], str)
+    assert restored["nodes"] == snapshot["nodes"]
+    assert restored["edges"][0]["controlPoints"] == snapshot["edges"][0]["controlPoints"]
+    assert restored["edges"][0]["data"]["total"] == "246.90"
+    assert restored["display"] == snapshot["display"] and restored["legacy_extra"] == snapshot["legacy_extra"]
+    assert json.loads(database.q("select snapshot from canvases where id=?", [canvas])[0]["snapshot"]) == snapshot
+
+
+def test_package_drops_deleted_flow_metadata_but_preserves_saved_geometry(client, database, make_case, flow_row):
+    source = populated_case(database, make_case, flow_row)
+    flow = database.q("select id,batch_id from flows where case_id=? order by id", [source])[0]
+    snapshot = {"nodes": [{"id": "SYN-A", "x": 10, "y": 20}],
+                "edges": [{"source": "SYN-A", "target": "SYN-B", "data": {"ids": [flow["id"]]}}]}
+    canvas = database.q("select id from canvases where case_id=? order by id", [source])[0]["id"]
+    database.x("update canvases set snapshot=? where id=?", [json.dumps(snapshot), canvas])
+    assert client.delete(f"/api/batches/{flow['batch_id']}?case_id={source}").status_code == 200
+    # Deleting a batch intentionally leaves its historical display geometry.
+    assert json.loads(database.q("select snapshot from canvases where id=?", [canvas])[0]["snapshot"]) == snapshot
+    response = import_package(client, exported(client, source))
+    assert response.status_code == 200, response.text
+    imported = response.json()["case_id"]
+    assert response.json()["flows"] == 0
+    restored = json.loads(database.q("select snapshot from canvases where case_id=? and name='Canvas 0'", [imported])[0]["snapshot"])
+    assert restored["nodes"] == snapshot["nodes"]
+    assert restored["edges"][0]["source"] == "SYN-A"
+    assert restored["edges"][0]["data"]["ids"] == []
+    assert (database.DATA_DIR / "photos" / f"c{imported}" / "avatar.png").read_bytes() == b"synthetic-photo-bytes"
+
+
+@pytest.mark.parametrize("snapshot", [
+    {"nodes": {}, "edges": []}, {"nodes": [], "edges": {}},
+    {"nodes": [None]}, {"nodes": [{"x": 1, "y": 2}]},
+    {"nodes": [{"id": "SYN-A", "x": float("nan"), "y": 2}]},
+    {"edges": ["broken"]}, {"edges": [{"source": "SYN-A"}]},
+    {"edges": [{"source": "SYN-A", "target": "SYN-B", "controlPoints": {"x": 1}}]},
+    {"edges": [{"source": "SYN-A", "target": "SYN-B", "controlPoints": [None]}]},
+    {"edges": [{"source": "SYN-A", "target": "SYN-B", "data": {"ids": {}}}]},
+    *[{"edges": [{"source": "SYN-A", "target": "SYN-B", "data": {"ids": [value]}}]}
+      for value in (True, 1.4, "1.4", float("inf"), 2**63)],
+])
+def test_invalid_snapshot_cannot_create_case_or_photos(client, database, make_case, flow_row, tmp_path, snapshot):
+    source = populated_case(database, make_case, flow_row)
+    entries = members(exported(client, source))
+    # Only the archived snapshot is damaged; the source remains untouched.
+    path = tmp_path / "snapshot.parquet"
+    path.write_bytes(entries["canvases.parquet"])
+    target = tmp_path / "invalid-snapshot.parquet"
+    with duckdb.connect() as connection:
+        connection.execute("create table rows as select * from read_parquet(?)", [str(path)])
+        connection.execute("update rows set snapshot=?", [json.dumps(snapshot)])
+        connection.table("rows").write_parquet(str(target))
+    entries["canvases.parquet"] = target.read_bytes()
+    before = {t: database.q(f"select count(*) n from {t}")[0]["n"] for t in ["cases", *main.CASE_PKG_TABLES]}
+    response = import_package(client, archive_of(entries))
+    assert response.status_code == 400, response.text
+    assert {t: database.q(f"select count(*) n from {t}")[0]["n"] for t in before} == before
+    assert [path.name for path in (database.DATA_DIR / "photos").iterdir()] == [f"c{source}"]
+
+
+@pytest.mark.parametrize("table,field,value", [
+    ("flows", "id", "1.4"), ("flows", "batch_id", "1.4"),
+    ("tracked_flows", "flow_id", "1.4"), ("tracked_flows", "canvas_id", "1.4"),
+    ("canvases", "id", "1.4"), ("batches", "rows_total", "1.4"),
+    ("batches", "rows_imported", "NaN"), ("batches", "rows_skipped", "Infinity"),
+    ("batches", "rows_dup", "-Infinity"), ("flows", "id", "9223372036854775808"),
+])
+def test_package_rejects_nonintegral_and_out_of_range_integer_fields(client, database, make_case, flow_row, tmp_path, table, field, value):
+    source = populated_case(database, make_case, flow_row)
+    entries = members(exported(client, source))
+    # VARCHAR preserves the input's exact fractional or out-of-range value.
+    rewrite_parquet(entries, table, f"alter table rows alter column {field} type varchar; update rows set {field}='{value}' where rowid=(select min(rowid) from rows)", tmp_path)
+    before = database.q("select count(*) n from cases")
+    response = import_package(client, archive_of(entries))
+    assert response.status_code == 400, response.text
+    assert database.q("select count(*) n from cases") == before
+    assert [path.name for path in (database.DATA_DIR / "photos").iterdir()] == [f"c{source}"]
+
+
+@pytest.mark.parametrize("snapshot", [{}, {"nodes": [], "edges": []}, {
+    "nodes": [{"id": "SYN-A", "x": 1, "y": 2}],
+    "edges": [{"source": "SYN-A", "target": "SYN-B"},
+              {"source": "SYN-B", "target": "SYN-A", "data": {}}]},
+])
+def test_legacy_snapshot_without_flow_metadata_remains_readable(client, database, make_case, flow_row, snapshot):
+    source = populated_case(database, make_case, flow_row)
+    database.x("update canvases set snapshot=? where case_id=?", [json.dumps(snapshot), source])
+    response = import_package(client, exported(client, source))
+    assert response.status_code == 200, response.text
+    restored = database.q("select snapshot from canvases where case_id=?", [response.json()["case_id"]])
+    assert [json.loads(row["snapshot"]) for row in restored] == [snapshot, snapshot]

@@ -91,22 +91,33 @@
     const level = zoom < 0.6 ? 'overview' : zoom < 1 ? 'names' : 'detail';
     if (mode === 'all' || (mode === 'auto' && index.nodeIds.size <= 20)) {
       return { nodeIds: new Set([...index.nodeIds].filter(id => eligible.has(id))), edgeKeys: new Set(index.edgeKeys),
-        level: 'detail', nodeCap: index.nodeIds.size, edgeCap: index.edgeKeys.size };
+        level: 'detail', nodeCap: index.nodeIds.size, edgeCap: index.edgeKeys.size, budgetHiddenNodes: 0 };
     }
     const nodeCap = level === 'overview' ? 20 : level === 'names' ? 80 : 160;
     const edgeCap = level === 'overview' ? 1 : level === 'names' ? 40 : 80;
-    const nodeIds = new Set(), edgeKeys = new Set(), roots = [];
+    const nodeIds = new Set(), edgeKeys = new Set(), roots = [], rootIds = new Set();
     const selectedKey = typeof options.selectedEdge === 'string' ? options.selectedEdge
       : options.selectedEdge ? edgeKey(options.selectedEdge) : null;
     const selectedEdge = index.edgeByKey.get(selectedKey);
     const addRoot = id => {
-      if (index.nodeById.has(id) && !roots.includes(id)) roots.push(id);
+      if (index.nodeById.has(id) && !rootIds.has(id)) { rootIds.add(id); roots.push(id); }
     };
-    addRoot(options.selectedAccount); addRoot(options.hoveredAccount);
+    // Hover, the selected relationship and the drawer's primary account retain
+    // priority within the same budget. The full selection then contributes
+    // stable roots without making a dense select-all create thousands of labels.
+    addRoot(options.hoveredAccount);
     if (selectedEdge) { addRoot(selectedEdge.source); addRoot(selectedEdge.target); edgeKeys.add(selectedKey); }
+    addRoot(options.selectedAccount);
+    const selectedIds = options.selectedIds;
+    if (selectedIds && typeof selectedIds !== 'string' && typeof selectedIds[Symbol.iterator] === 'function') {
+      for (const id of [...selectedIds].filter(id => index.nodeById.has(id)).sort(compareId)) addRoot(id);
+    }
+    const eligibleRoots = roots.filter(id => eligible.has(id)), activeRoots = eligibleRoots.slice(0, nodeCap);
+    const budgetHiddenNodes = Math.max(0, eligibleRoots.length - activeRoots.length);
     const addNode = id => { if (nodeIds.size < nodeCap && eligible.has(id)) nodeIds.add(id); };
-    roots.forEach(addNode);
-    for (const root of roots) {
+    activeRoots.forEach(addNode);
+    for (const root of activeRoots) {
+      if (nodeIds.size >= nodeCap) break;
       for (const id of orderedAdjacent(index, root)) {
         if (nodeIds.size >= nodeCap) break;
         addNode(id);
@@ -124,7 +135,8 @@
       }
     }
     if (level !== 'overview') {
-      for (const root of roots) {
+      for (const root of activeRoots) {
+        if (edgeKeys.size >= edgeCap) break;
         for (const key of orderedIncident(index, root)) {
           if (edgeKeys.size >= edgeCap) break;
           edgeKeys.add(key);
@@ -137,7 +149,7 @@
         }
       }
     }
-    return { nodeIds, edgeKeys, level, nodeCap, edgeCap };
+    return { nodeIds, edgeKeys, level, nodeCap, edgeCap, budgetHiddenNodes };
   }
 
   global.FundsGraphView = Object.freeze({ createIndex, neighborhood, labels });

@@ -93,6 +93,63 @@ test('focus labels contain only active one-hop neighborhoods, all is an explicit
   assert.equal(all.nodeIds.size, 1002); assert.equal(all.edgeKeys.size, 1000); assert.equal(all.level, 'detail');
 });
 
+test('focus labels retain eighteen selected roots and report excess roots beyond the overview budget', () => {
+  const graph = { nodes: Array.from({ length: 35 }, (_, i) => ({ account: account(i) })), edges: [] };
+  const index = view.createIndex(graph), selectedIds = new Set(graph.nodes.slice(0, 30).map(node => node.account));
+  const eighteen = new Set([...selectedIds].slice(0, 18));
+  const complete = view.labels(index, { mode: 'focus', zoom: 0.1, selectedIds: eighteen, selectedAccount: null });
+  assert.deepEqual(sorted(complete.nodeIds), sorted(eighteen));
+  assert.equal(complete.budgetHiddenNodes, 0);
+  const focus = view.labels(index, { mode: 'focus', zoom: 0.1, selectedIds, selectedAccount: null });
+  assert.deepEqual(sorted(focus.nodeIds), sorted([...selectedIds].slice(0, 20)));
+  assert.equal(focus.nodeCap, 20, 'explicit multi-selection does not remove the density budget');
+  assert.equal(focus.budgetHiddenNodes, 10);
+  assert.equal(selectedIds.size, 30);
+});
+
+test('five-thousand-node selection remains bounded with hover, edge and primary priority and explicit all override', () => {
+  const graph = star(4999), index = view.createIndex(graph);
+  const selectedIds = new Set(['FOREIGN', ...[...index.nodeIds].reverse()]);
+  const options = { selectedIds, hoveredAccount: account(4998), selectedAccount: account(4997),
+    selectedEdge: { source: 'ROOT', target: account(4996) } };
+  const before = [...selectedIds];
+  let neighborReads = 0;
+  const originalNeighbors = index.neighbors.get.bind(index.neighbors);
+  index.neighbors.get = key => { neighborReads += 1; return originalNeighbors(key); };
+  for (const mode of ['auto', 'focus']) for (const [zoom, cap] of [[0.1, 20], [0.8, 80], [2, 160]]) {
+    const result = view.labels(index, { ...options, mode, zoom });
+    assert.equal(result.nodeIds.size, cap); assert.equal(result.nodeCap, cap);
+    assert.equal(result.budgetHiddenNodes, 5000-cap, 'only valid eligible roots count as budget-hidden');
+    for (const id of ['ROOT', account(4998), account(4997), account(4996)]) assert.ok(result.nodeIds.has(id), `${id} stays in the priority budget`);
+    assert.ok(result.edgeKeys.has(`ROOT=>${account(4996)}`));
+    const reordered = view.labels(index, { ...options, mode, zoom, selectedIds: new Set([...selectedIds].reverse()) });
+    assert.deepEqual(sorted(reordered.nodeIds), sorted(result.nodeIds), 'selection insertion order does not change stable label membership');
+  }
+  assert.equal(neighborReads, 0, 'a full root budget never enumerates unused one-hop neighbors');
+  const all = view.labels(index, { ...options, mode: 'all', zoom: 0.01 });
+  assert.equal(all.nodeIds.size, 5000); assert.equal(all.edgeKeys.size, 4999); assert.equal(all.budgetHiddenNodes, 0);
+  assert.deepEqual([...selectedIds], before, 'sorting does not mutate the caller-owned selection');
+
+  const disconnected = view.createIndex({ nodes: graph.nodes, edges: [] });
+  let incidentReads = 0;
+  const originalIncident = disconnected.incidentEdges.get.bind(disconnected.incidentEdges);
+  disconnected.incidentEdges.get = key => { incidentReads += 1; return originalIncident(key); };
+  view.labels(disconnected, { mode: 'focus', zoom: 0.8, selectedIds });
+  assert.ok(incidentReads <= 80, 'edge-label work only visits roots admitted by the node budget');
+});
+
+test('multi-selection combines legacy, hover and selected-edge roots without foreign IDs', () => {
+  const index = view.createIndex({ nodes: ['A', 'B', 'C', 'D', 'E', 'N', 'OTHER'].map(account => ({ account })),
+    edges: [{ source: 'A', target: 'N' }, { source: 'D', target: 'E' }] });
+  const result = view.labels(index, { mode: 'focus', zoom: 2, selectedIds: ['A', 'B', 'MISSING', 'A'],
+    selectedAccount: 'C', hoveredAccount: 'N', selectedEdge: 'D=>E' });
+  assert.deepEqual(sorted(result.nodeIds), ['A', 'B', 'C', 'D', 'E', 'N']);
+  assert.deepEqual(sorted(result.edgeKeys), ['A=>N', 'D=>E']);
+  const restricted = view.labels(index, { mode: 'focus', selectedIds: new Set(['A', 'B']), eligibleNodeIds: new Set(['B']) });
+  assert.deepEqual([...restricted.nodeIds], ['B']);
+  assert.equal(restricted.budgetHiddenNodes, 0, 'viewport-ineligible roots are not reported as hidden by a budget');
+});
+
 test('small graphs preserve every label and deterministic order is independent of input order', () => {
   const graph = star(19), index = view.createIndex(graph);
   const labels = view.labels(index, { zoom: 0.1 });

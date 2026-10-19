@@ -13,12 +13,9 @@
     if (workspace.fundsWorkspaceShell) return workspace.fundsWorkspaceShell;
 
     const state = { sidebarCollapsed: false, toolbarCollapsed: false };
-    const popovers = [
-      { button: doc.getElementById('btnDisplayActions'), panel: doc.getElementById('toolbarDisplayExtra') },
-      { button: doc.getElementById('btnMainActions'), panel: doc.getElementById('toolbarMainActions') },
-    ].filter(item => item.button && item.panel);
     let drag = null;
     let preferredSidebarWidth = null;
+    let sidebarEndTimer = null;
 
     function emitResize(reason, phase = 'start') {
       root.dispatchEvent(new root.CustomEvent('fundstrace:workspace-resize', {
@@ -34,26 +31,14 @@
       if (image) image.src = `/static/ui-icons/${icon}.svg`;
     }
 
-    function closePopovers(returnFocus = false) {
-      for (const { button, panel } of popovers) {
-        const wasOpen = panel.classList.contains('is-open');
-        const restoreFocus = state.toolbarCollapsed && wasOpen && (returnFocus || panel.contains(doc.activeElement));
-        // Move focus before making its current container inert. Resize and scroll
-        // close these panels too, and must not leave their focused controls hidden.
-        if (restoreFocus && button.isConnected !== false && !button.disabled && !button.inert &&
-            (!button.getClientRects || button.getClientRects().length)) button.focus();
-        panel.classList.remove('is-open');
-        button.setAttribute('aria-expanded', 'false');
-        panel.inert = state.toolbarCollapsed;
-        panel.setAttribute('aria-hidden', String(state.toolbarCollapsed));
-      }
-    }
-
     function setSidebarCollapsed(collapsed) {
       collapsed = Boolean(collapsed);
       if (collapsed === state.sidebarCollapsed) return;
+      if (drag) endResize({ pointerId: drag.pointerId }, false);
       if (collapsed && sidebar.contains(doc.activeElement)) sidebarToggle.focus();
       state.sidebarCollapsed = collapsed;
+      // Camera reads the starting geometry before CSS changes the sidebar.
+      emitResize('sidebar', 'prepare');
       workspace.classList.toggle('sidebar-collapsed', collapsed);
       sidebar.inert = collapsed;
       sidebar.setAttribute('aria-hidden', String(collapsed));
@@ -61,6 +46,15 @@
       updateToggle(sidebarToggle, !collapsed, collapsed ? '展开查询区' : '收起查询区', collapsed ? 'chevron-right' : 'chevron-left');
       updateSidebarBounds('sidebar', false);
       emitResize('sidebar');
+      root.clearTimeout?.(sidebarEndTimer);
+      const reduced = root.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      const durations = (root.getComputedStyle?.(sidebar).transitionDuration || '0.22s').split(',').map(value => {
+        const amount = Number.parseFloat(value) || 0;
+        return value.trim().endsWith('ms') ? amount : amount * 1000;
+      });
+      const duration = Math.max(...durations);
+      if (reduced || duration === 0) finishSidebarTransition();
+      else sidebarEndTimer = root.setTimeout?.(finishSidebarTransition, duration + 34);
     }
 
     function setToolbarCollapsed(collapsed) {
@@ -68,7 +62,6 @@
       if (collapsed === state.toolbarCollapsed) return;
       state.toolbarCollapsed = collapsed;
       toolbar.classList.toggle('is-collapsed', collapsed);
-      closePopovers();
       updateToggle(toolbarToggle, !collapsed, collapsed ? '展开顶部工具带' : '收起顶部工具带', collapsed ? 'chevron-down' : 'chevron-up');
       emitResize('toolbar');
     }
@@ -106,16 +99,20 @@
     toolbarToggle.addEventListener('click', () => setToolbarCollapsed(!state.toolbarCollapsed));
     sidebar.addEventListener('transitionend', event => {
       if (event.target === sidebar && event.propertyName === 'width') {
-        updateSidebarBounds('sidebar', false);
-        emitResize('sidebar', 'end');
+        finishSidebarTransition();
       }
     });
+    function finishSidebarTransition() {
+      root.clearTimeout?.(sidebarEndTimer); sidebarEndTimer = null;
+      updateSidebarBounds('sidebar', false);
+      emitResize('sidebar', 'end');
+    }
     toolbar.addEventListener('transitionend', event => {
       if (event.target === toolbar && event.propertyName === 'height') emitResize('toolbar', 'end');
     });
 
     resizeHandle.addEventListener('pointerdown', event => {
-      if (state.sidebarCollapsed || event.button !== 0) return;
+      if (drag || state.sidebarCollapsed || event.button !== 0 || event.isPrimary === false) return;
       drag = { pointerId: event.pointerId, startX: event.clientX, startWidth: sidebar.getBoundingClientRect().width };
       resizeHandle.setPointerCapture(event.pointerId);
       workspace.classList.add('is-resizing');
@@ -126,12 +123,14 @@
       if (!drag || event.pointerId !== drag.pointerId) return;
       setSidebarWidth(drag.startWidth + event.clientX - drag.startX);
     });
-    function endResize(event) {
+    function endResize(event, notify = true) {
       if (!drag || event.pointerId !== drag.pointerId) return;
+      const pointerId = drag.pointerId;
       drag = null;
       workspace.classList.remove('is-resizing');
       doc.body.classList.remove('workspace-resizing');
-      emitResize('sidebar-width', 'end');
+      if (resizeHandle.hasPointerCapture?.(pointerId)) resizeHandle.releasePointerCapture(pointerId);
+      if (notify) emitResize('sidebar-width', 'end');
     }
     resizeHandle.addEventListener('pointerup', endResize);
     resizeHandle.addEventListener('pointercancel', endResize);
@@ -145,35 +144,7 @@
     });
     updateSidebarBounds('mount', false);
 
-    for (const item of popovers) {
-      const { button, panel } = item;
-      button.addEventListener('click', () => {
-        const opening = !panel.classList.contains('is-open');
-        closePopovers();
-        if (!state.toolbarCollapsed || !opening) return;
-        panel.inert = false;
-        panel.setAttribute('aria-hidden', 'false');
-        panel.classList.add('is-open');
-        button.setAttribute('aria-expanded', 'true');
-        const rect = button.getBoundingClientRect();
-        const panelWidth = panel.getBoundingClientRect().width;
-        panel.style.left = `${Math.max(12, Math.min(rect.left, root.innerWidth - panelWidth - 12))}px`;
-        panel.style.top = `${rect.bottom + 8}px`;
-      });
-    }
-    doc.addEventListener('pointerdown', event => {
-      if (!popovers.some(({ button, panel }) => button.contains(event.target) || panel.contains(event.target))) closePopovers();
-    });
-    doc.addEventListener('keydown', event => {
-      if (event.key === 'Escape' && popovers.some(({ panel }) => panel.classList.contains('is-open'))) {
-        event.preventDefault(); closePopovers(true);
-      }
-    });
-    root.addEventListener('resize', () => {
-      closePopovers();
-      updateSidebarBounds('window');
-    });
-    doc.getElementById('graphToolbar')?.addEventListener('scroll', () => closePopovers());
+    root.addEventListener('resize', () => updateSidebarBounds('window'));
 
     const controller = {
       setSidebarCollapsed,

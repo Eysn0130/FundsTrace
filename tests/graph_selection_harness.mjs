@@ -60,7 +60,10 @@ function fixture(count = 12, options = {}) {
     const values = { styles: { selected: { fill: '#fff', stroke: '#123', lineWidth: 2 } } }, attrs = { ...model.style, img: model.img };
     const shapes = [];
     const group = { shapes, addShape(type, config) {
-      const shape = { type, ...config, remove() { const i = shapes.indexOf(this); if (i >= 0) shapes.splice(i, 1); } };
+      const shape = { type, ...config, visible: true, destroyed: false,
+        attr(patch) { if (typeof patch === 'string') return this.attrs[patch]; Object.assign(this.attrs, patch); },
+        show() { this.visible = true; }, hide() { this.visible = false; },
+        remove() { this.destroyed = true; const i = shapes.indexOf(this); if (i >= 0) shapes.splice(i, 1); } };
       shapes.push(shape); return shape;
     } };
     const edges = [];
@@ -133,7 +136,9 @@ test('selection preserves role fill and shadow, image and source facts', () => {
   model.style.fill = '#e25656'; f.graph.nodes = [f.makeItem(model)]; f.api.rebind();
   const before = JSON.stringify(model); f.click(0);
   assert.equal(f.graph.nodes[0].attrs.fill, '#e25656'); assert.equal(f.graph.nodes[0].attrs.shadowBlur, 16);
-  assert.equal(f.graph.nodes[0].attrs.img, '/synthetic-avatar.png'); assert.equal(f.graph.nodes[0].attrs.stroke, '#66d9ef');
+  assert.equal(f.graph.nodes[0].attrs.img, '/synthetic-avatar.png'); assert.equal(f.graph.nodes[0].attrs.stroke, '#ffd700');
+  const [outline] = f.graph.nodes[0].getContainer().shapes;
+  assert.equal(outline.attrs.stroke, '#66d9ef'); assert.equal(outline.capture, false);
   assert.equal(JSON.stringify(model), before); f.api.clear();
   assert.equal(f.graph.nodes[0].attrs.stroke, '#ffd700'); assert.equal(f.graph.nodes[0].get('styles').selected.fill, '#fff');
 });
@@ -152,13 +157,15 @@ test('keyboard select-all includes offscreen graph nodes and excludes edges, for
   assert.equal(f.key({ key: 'Escape' }).prevented, true); assert.equal(f.api.ids.size, 0);
 });
 
-test('ten selections breathe and eleven selections leave no animated or halo elements', () => {
+test('ten selections breathe and eleven selections retain independent static Canvas rings', () => {
   const f = fixture();
   for (let i = 0; i < 10; i++) f.api.select(`SYN-${i}`, { toggle: true });
   assert.equal(f.api.status().haloCount, 10); assert.equal(f.api.status().animatedCount, 10);
   f.api.select('SYN-10', { toggle: true });
   assert.equal(f.api.status().haloCount, 0); assert.equal(f.api.status().animatedCount, 0);
   assert.equal(f.container.children[0].children.length, 0); assert.equal(f.selected.size, 11);
+  assert.equal(f.api.status().outlineCount, 11);
+  assert.ok(f.graph.nodes.slice(0, 11).every(item => item.getContainer().shapes.length === 1 && item.attrs.stroke === '#ffd700'));
   f.api.select('SYN-10', { toggle: true }); assert.equal(f.api.status().animatedCount, 10);
   f.media.matches = true; f.media.emit('change'); assert.equal(f.api.status().animatedCount, 0); assert.equal(f.api.status().haloCount, 10);
   f.media.matches = false; f.media.emit('change'); assert.equal(f.api.status().animatedCount, 10);
@@ -181,8 +188,40 @@ test('pending IDs survive an empty graph and explicit rebind reapplies styles to
   const model = { id: 'SYN-0', x: 60, y: 60, size: 64, style: { fill: '#abc' } };
   f.graph.nodes = [f.makeItem(model)]; f.api.rebind(new Set(['SYN-0', 'missing']));
   assert.deepEqual(sorted(f.api.ids), ['SYN-0']); assert.equal(f.graph.nodes[0].attrs.fill, '#abc'); assert.equal(f.api.status().haloCount, 1);
-  const replacement = f.makeItem({ ...model, x: 200 }); f.graph.nodes = [replacement]; f.api.rebind();
-  assert.equal(replacement.attrs.stroke, '#66d9ef'); assert.equal(f.container.children[0].children[0].style.left, '200px');
+  const replacement = f.makeItem({ ...model, x: 200, style: { ...model.style, stroke: '#e3b45a', lineWidth: 3.5 } }); f.graph.nodes = [replacement]; f.api.rebind();
+  assert.equal(replacement.attrs.stroke, '#e3b45a'); assert.equal(replacement.attrs.lineWidth, 3.5);
+  assert.equal(replacement.getContainer().shapes.length, 1); assert.equal(f.container.children[0].children[0].style.left, '200px');
+});
+
+test('business-role refresh patches deselected models before restoring the same selection without notifying a selection change', () => {
+  const f = fixture(2), item = f.graph.nodes[0], model = f.allModels[0];
+  f.api.select('SYN-0');
+  const notifications = f.changes.length, geometry = f.allModels.map(node => [node.x, node.y]);
+  const originalSelectedStyle = { ...item.get('styles').selected };
+  let patched = 0;
+  f.api.rebind(f.api.ids, () => {
+    patched++;
+    assert.equal(f.selected.has('SYN-0'), false, 'business updates run outside the active selected-state cache');
+    assert.equal(item.getContainer().shapes.length, 0);
+    model.style = { fill: '#ee6677', stroke: '#a79be0', lineWidth: 1.5, shadowBlur: 5 };
+    Object.assign(item.attrs, model.style);
+  });
+  assert.equal(patched, 1); assert.deepEqual(sorted(f.api.ids), ['SYN-0']);
+  assert.equal(f.changes.length, notifications, 'role changes do not report a different selection');
+  assert.equal(item.attrs.stroke, '#a79be0'); assert.equal(item.attrs.fill, '#ee6677');
+  assert.equal(item.get('styles').selected.stroke, '#a79be0');
+  assert.equal(item.getContainer().shapes.length, 1); assert.deepEqual(f.allModels.map(node => [node.x, node.y]), geometry);
+  f.api.clear();
+  assert.equal(item.attrs.stroke, '#a79be0', 'clearing selection cannot resurrect the previous main-account border');
+  assert.deepEqual(item.get('styles').selected, { fill: '#fff', stroke: '#123', lineWidth: 2 });
+  assert.notEqual(originalSelectedStyle.stroke, item.attrs.stroke);
+});
+
+test('an expired binding cannot invoke a business-role rebind callback', () => {
+  const f = fixture(2); f.api.select('SYN-0'); f.stale();
+  let patched = false;
+  f.api.rebind(['SYN-0'], () => { patched = true; });
+  assert.equal(patched, false);
 });
 
 test('four screen pixels start a live group drag, updating only its items and incremental bend deltas', () => {
@@ -200,6 +239,94 @@ test('four screen pixels start a live group drag, updating only its items and in
   assert.equal(f.window.events.has('mousemove'), false); f.graph.emit('canvas:click', {}); assert.equal(f.api.ids.size, 2);
 });
 
+for (const zoom of [0.4, 1, 2]) for (const count of [1, 2, 50]) {
+  test(`a released-button move finishes ${count} dragged nodes at zoom ${zoom} without rolling them back`, () => {
+    const f = fixture(Math.max(3, count)); f.camera(zoom, 25, -15);
+    if (count === 1) f.click(0);
+    else if (count === 50) f.key({ ctrlKey: true });
+    else { f.click(0); f.click(1, { ctrlKey: true }); }
+    const original = f.allModels.map(model => [model.x, model.y]);
+    f.down(0);
+    f.pointer('mousemove', { clientX: 84, clientY: 90 });
+    // A mouseup outside the browser can be missed. The next move only reports
+    // that the button is no longer held; its location is not a new drag point.
+    f.pointer('mousemove', { clientX: 140, clientY: 150, buttons: 0 });
+    const expected = original.map((point, i) => [point[0] + (i < count ? 4 / zoom : 0), point[1]]);
+    assert.deepEqual(f.allModels.map(model => [model.x, model.y]), expected);
+    assert.equal(f.ends.length, 1); assert.equal(f.ends[0].committed, true);
+    assert.equal(f.ends[0].cancelled, false); assert.equal(f.api.status().dragging, false);
+    const completed = JSON.stringify(f.allModels), commits = f.api.status().commitCount;
+    f.pointer('mouseup', { clientX: 140, clientY: 150, buttons: 0 });
+    f.pointer('mousemove', { clientX: 150, clientY: 160, buttons: 0 });
+    assert.equal(JSON.stringify(f.allModels), completed);
+    assert.equal(f.api.status().commitCount, commits); assert.equal(f.ends.length, 1);
+    assert.equal(f.window.events.has('mousemove'), false);
+  });
+}
+
+test('releasing a pending sub-threshold gesture creates no movement or history', () => {
+  const f = fixture(3); f.click(0); f.down(0);
+  const original = JSON.stringify(f.allModels);
+  f.pointer('mousemove', { clientX: 83, clientY: 90 });
+  f.pointer('mousemove', { clientX: 140, clientY: 150, buttons: 0 });
+  f.pointer('mouseup', { clientX: 140, clientY: 150, buttons: 0 });
+  assert.equal(JSON.stringify(f.allModels), original);
+  assert.equal(f.starts.length, 0); assert.equal(f.ends.length, 0);
+  assert.equal(f.api.status().commitCount, 0);
+});
+
+const leaveSurface = (f, terminal) => {
+  if (terminal === 'hidden') { f.document.hidden = true; f.document.emit('visibilitychange'); }
+  else f.window.emit(terminal === 'exit' ? 'mouseout' : 'blur', terminal === 'exit' ? { relatedTarget: null } : {});
+};
+
+for (const terminal of ['blur', 'exit', 'hidden']) for (const zoom of [0.4, 1, 2]) for (const count of [1, 2, 50]) {
+  test(`${terminal} completes ${count} dragged nodes at zoom ${zoom} exactly once`, () => {
+    const f = fixture(Math.max(3, count)); f.camera(zoom, 25, -15);
+    if (count === 1) f.click(0);
+    else if (count === 50) f.key({ ctrlKey: true });
+    else { f.click(0); f.click(1, { ctrlKey: true }); }
+    const original = f.allModels.map(model => [model.x, model.y]);
+    f.down(0);
+    const lateMove = [...f.window.events.get('mousemove')][0], lateUp = [...f.window.events.get('mouseup')][0];
+    f.pointer('mousemove', { clientX: 84, clientY: 90 });
+    leaveSurface(f, terminal);
+    const expected = original.map((point, i) => [point[0] + (i < count ? 4 / zoom : 0), point[1]]);
+    assert.deepEqual(f.allModels.map(model => [model.x, model.y]), expected);
+    assert.equal(f.ends.length, 1); assert.equal(f.ends[0].committed, true);
+    assert.equal(f.ends[0].cancelled, false); assert.equal(f.api.status().dragging, false);
+    const completed = JSON.stringify(f.allModels), commits = f.api.status().commitCount;
+    lateMove({ clientX: 140, clientY: 150, buttons: 1 });
+    lateUp({ clientX: 140, clientY: 150, buttons: 0 });
+    leaveSurface(f, terminal);
+    assert.equal(JSON.stringify(f.allModels), completed);
+    assert.equal(f.api.status().commitCount, commits); assert.equal(f.ends.length, 1);
+    assert.equal(f.window.events.has('mousemove'), false); assert.equal(f.window.events.has('mouseup'), false);
+  });
+}
+
+for (const terminal of ['blur', 'exit', 'hidden']) {
+  test(`${terminal} before the drag threshold does not move or create history`, () => {
+    const f = fixture(3); f.click(0); const original = JSON.stringify(f.allModels);
+    f.down(0); f.pointer('mousemove', { clientX: 83, clientY: 90 });
+    leaveSurface(f, terminal);
+    assert.equal(JSON.stringify(f.allModels), original);
+    assert.equal(f.starts.length, 0); assert.equal(f.ends.length, 0); assert.equal(f.api.status().commitCount, 0);
+    assert.equal(f.window.events.has('mousemove'), false);
+  });
+
+  test(`${terminal} never commits a revoked binding or accepts its late pointer events`, () => {
+    const f = fixture(50); f.key({ ctrlKey: true }); const original = JSON.stringify(f.allModels);
+    f.down(0); f.pointer('mousemove');
+    const lateMove = [...f.window.events.get('mousemove')][0], lateUp = [...f.window.events.get('mouseup')][0];
+    f.stale(); leaveSurface(f, terminal);
+    lateMove({ clientX: 140, clientY: 150, buttons: 1 }); lateUp({ clientX: 140, clientY: 150 });
+    assert.equal(JSON.stringify(f.allModels), original);
+    assert.equal(f.ends.length, 0); assert.equal(f.api.status().commitCount, 0);
+    assert.equal(f.container.children[0].children.length, 0);
+  });
+}
+
 test('the click trailing the same drag gesture does not select, open details or add movement history', () => {
   const f = fixture(3); f.click(0); f.down(0); f.pointer('mousemove'); f.pointer('mouseup');
   const notifications = f.changes.length;
@@ -208,6 +335,38 @@ test('the click trailing the same drag gesture does not select, open details or 
   assert.equal(f.changes.length, notifications); assert.equal(f.starts.length, 1); assert.equal(f.ends.length, 1);
   assert.equal(f.api.status().commitCount, 1);
 });
+
+for (const clickTarget of ['node', 'canvas']) for (const zoom of [0.4, 1, 2]) for (const count of [1, 2, 50]) {
+  test(`G6 ${clickTarget}:click before window mouseup cannot cancel ${count} dragged nodes at zoom ${zoom}`, () => {
+    const f = fixture(Math.max(3, count)); f.camera(zoom, 25, -15);
+    if (count === 1) f.click(0);
+    else if (count === 50) f.key({ ctrlKey: true });
+    else { f.click(0); f.click(1, { ctrlKey: true }); }
+    const original = f.allModels.map(model => [model.x, model.y]);
+    const selected = sorted(f.api.ids), primary = [...f.primary], notifications = f.changes.length;
+    f.down(0);
+    f.pointer('mousemove', { clientX: 84, clientY: 90 });
+    f.pointer('mousemove', { clientX: 86, clientY: 92 });
+    // G6's click distance threshold exceeds the controller's four-screen-pixel
+    // threshold. Its canvas mouseup handler emits this before window mouseup.
+    if (clickTarget === 'node') f.click(0);
+    else f.graph.emit('canvas:click', {});
+    assert.equal(f.api.status().dragging, true); assert.equal(f.ends.length, 0);
+    assert.deepEqual(sorted(f.api.ids), selected); assert.deepEqual(f.primary, primary);
+    assert.equal(f.changes.length, notifications);
+    f.pointer('mouseup', { clientX: 86, clientY: 92, buttons: 0 });
+    const expected = original.map((point, i) => [point[0] + (i < count ? 6 / zoom : 0), point[1] + (i < count ? 2 / zoom : 0)]);
+    assert.deepEqual(f.allModels.map(model => [model.x, model.y]), expected);
+    assert.equal(f.ends.length, 1); assert.equal(f.ends[0].committed, true); assert.equal(f.ends[0].cancelled, false);
+    assert.deepEqual(sorted(f.api.ids), selected); assert.deepEqual(f.primary, primary);
+    const completed = JSON.stringify(f.allModels), commits = f.api.status().commitCount;
+    f.pointer('mouseup', { clientX: 100, clientY: 110, buttons: 0 });
+    f.click(0); f.graph.emit('canvas:click', {});
+    assert.equal(JSON.stringify(f.allModels), completed);
+    assert.equal(f.api.status().commitCount, commits); assert.equal(f.ends.length, 1);
+    assert.deepEqual(sorted(f.api.ids), selected); assert.deepEqual(f.primary, primary);
+  });
+}
 
 for (const action of [
   { name: 'Ctrl node toggle', modifiers: { ctrlKey: true }, selected: ['SYN-0', 'SYN-1'], opened: ['SYN-0'] },
@@ -264,14 +423,14 @@ test('one selected leaf in 5000 nodes updates one item and shared group edges re
   assert.equal(f.metrics().nodeScans, scans); assert.equal(f.metrics().nodeUpdates, 2); assert.equal(f.metrics().edgeRefreshes, 2);
   assert.equal(f.metrics().geometryRefreshes, 0); assert.equal(f.api.status().commitCount, 1); assert.ok(f.api.status().lastCommitMs >= 0);
   f.window.emit('blur'); f.api.select('SYN-4999'); f.down(4999); f.pointer('mousemove');
-  assert.equal(f.metrics().nodeUpdates, 5); assert.equal(f.metrics().edgeRefreshes, 5); assert.equal(f.metrics().nodeScans, scans);
+  assert.equal(f.metrics().nodeUpdates, 3); assert.equal(f.metrics().edgeRefreshes, 3); assert.equal(f.metrics().nodeScans, scans);
 });
 
-test('blur and leaving the window cancel preview and restore an active small-group move', () => {
+test('Escape explicitly cancels preview and restores an active small-group move', () => {
   const small = fixture(2); small.click(0); small.down(0); small.pointer('mousemove'); assert.equal(small.allModels[0].x, 70);
-  small.window.emit('blur'); assert.equal(small.allModels[0].x, 60); assert.equal(small.ends[0].cancelled, true); assert.equal(small.ends[0].committed, false);
+  small.key({ key: 'Escape' }); assert.equal(small.allModels[0].x, 60); assert.equal(small.ends[0].cancelled, true); assert.equal(small.ends[0].committed, false);
   assert.deepEqual(small.before.map(change => [change.dx, change.dy]), [[10, 10], [-10, -10]]);
-  const large = fixture(50); large.key({ ctrlKey: true }); large.down(0); large.pointer('mousemove'); large.window.emit('mouseout', { relatedTarget: null });
+  const large = fixture(50); large.key({ ctrlKey: true }); large.down(0); large.pointer('mousemove'); large.key({ key: 'Escape' });
   assert.equal(large.metrics().geometryRefreshes, 0); assert.equal(large.container.children[0].children.length, 0); assert.equal(large.window.events.has('mousemove'), false);
   assert.equal(large.ends[0].cancelled, true);
 });
@@ -313,10 +472,64 @@ test('photos keep a static non-interactive selection outline above ten and relea
   const [outline] = photo.getContainer().shapes;
   assert.equal(outline.type, 'circle'); assert.equal(outline.capture, false);
   assert.equal(outline.attrs.fill, null); assert.equal(outline.attrs.shadowBlur, 0);
+  assert.equal(f.api.status().outlineCount, 12); assert.equal(photo.attrs.stroke, '#ffd700');
   assert.equal(f.allModels[0].img, 'SYNTHETIC-PHOTO');
   f.api.rebind(); assert.equal(photo.getContainer().shapes.length, 1);
   f.click(0, { metaKey: true }); assert.equal(photo.getContainer().shapes.length, 0);
   f.key({ metaKey: true }); f.api.destroy(); assert.equal(photo.getContainer().shapes.length, 0);
+});
+
+test('selection keeps custom role borders and refreshes the independent ring after size changes', () => {
+  const f = fixture(1), model = f.allModels[0];
+  Object.assign(model.style, { stroke: '#e3b45a', lineWidth: 3.5, lineDash: [6, 4], strokeOpacity: 0.8 });
+  f.graph.nodes = [f.makeItem(model)]; f.api.rebind();
+  const before = JSON.stringify(model); f.click(0);
+  const item = f.graph.nodes[0], [outline] = item.getContainer().shapes;
+  assert.equal(item.attrs.stroke, '#e3b45a'); assert.equal(item.attrs.lineWidth, 3.5);
+  assert.deepEqual(plain(item.attrs.lineDash), [6, 4]); assert.equal(item.attrs.strokeOpacity, 0.8);
+  assert.equal(outline.attrs.r, 19.75); assert.equal(outline.attrs.lineWidth, 2);
+  assert.equal(JSON.stringify(model), before);
+  model.size = 64; f.api.refresh();
+  assert.equal(outline.attrs.r, 35.75); assert.equal(item.getContainer().shapes.length, 1);
+  model.size = [80, 60]; f.graph.emit('afterlayout'); assert.equal(outline.attrs.r, 43.75);
+  f.api.clear(); assert.equal(item.getContainer().shapes.length, 0);
+  assert.equal(item.attrs.stroke, '#e3b45a'); assert.equal(item.attrs.shadowBlur, 16);
+});
+
+test('export visual suspension preserves selection and notifications, then restores current geometry', () => {
+  const f = fixture(3); f.click(0); f.click(1, { ctrlKey: true });
+  const ids = sorted(f.api.ids), notifications = f.changes.length, stateCalls = f.calls.filter(call => call[0] === 'state').length;
+  const facts = JSON.stringify(f.allModels), layer = f.container.children[0];
+  assert.equal(f.api.setVisualsVisible(false), true);
+  assert.equal(f.api.setVisualsVisible(false), true);
+  assert.equal(f.api.status().visualsVisible, false); assert.equal(f.api.status().haloCount, 0);
+  assert.equal(layer.hidden, true); assert.equal(layer.style.visibility, 'hidden');
+  assert.ok(f.graph.nodes.slice(0, 2).every(item => item.getContainer().shapes[0].visible === false));
+  f.graph.emit('viewportchange'); f.media.emit('change');
+  assert.deepEqual(sorted(f.api.ids), ids); assert.equal(f.changes.length, notifications);
+  assert.equal(f.calls.filter(call => call[0] === 'state').length, stateCalls);
+  assert.equal(JSON.stringify(f.allModels), facts); assert.equal(f.api.status().commitCount, 0);
+  f.allModels[0].size = 80; f.api.refresh();
+  assert.equal(f.api.setVisualsVisible(true), true);
+  assert.equal(f.api.status().visualsVisible, true); assert.equal(f.api.status().haloCount, 2);
+  assert.equal(f.api.status().animatedCount, 2); assert.equal(layer.hidden, false);
+  const [outline] = f.graph.nodes[0].getContainer().shapes;
+  assert.equal(outline.visible, true); assert.equal(outline.attrs.r, 43);
+  assert.deepEqual(sorted(f.api.ids), ids); assert.equal(f.changes.length, notifications);
+});
+
+test('visual suspension survives item replacement but never restores revoked or destroyed bindings', () => {
+  const f = fixture(1); f.click(0); const oldItem = f.graph.nodes[0];
+  f.api.setVisualsVisible(false);
+  const replacement = f.makeItem({ ...f.allModels[0], size: 48 }); f.graph.nodes = [replacement]; f.api.rebind();
+  assert.equal(oldItem.getContainer().shapes.length, 0);
+  assert.equal(replacement.getContainer().shapes[0].visible, false);
+  assert.equal(f.api.setVisualsVisible(true), true); assert.equal(replacement.getContainer().shapes[0].visible, true);
+  f.api.setVisualsVisible(false); f.stale();
+  assert.equal(f.api.setVisualsVisible(true), false); f.api.refresh();
+  assert.equal(replacement.getContainer().shapes.length, 0); assert.equal(f.api.status().haloCount, 0);
+  assert.equal(f.api.status().visualsVisible, false);
+  f.api.destroy(); assert.equal(f.api.setVisualsVisible(true), false); assert.equal(f.container.children.length, 0);
 });
 
 test('busy history blocks new input while still permitting geometry rebind and refresh', () => {
@@ -328,6 +541,25 @@ test('busy history blocks new input while still permitting geometry rebind and r
   assert.equal(f.primary.length, 0); assert.equal(f.starts.length, 0);
   assert.equal(f.api.status().haloCount, 1);
   busy = false; f.key({ metaKey: true }); assert.equal(f.api.ids.size, 12);
+});
+
+test('geometry refresh between G6 item disposal and rebind never reads a destroyed model', () => {
+  const f = fixture(); f.click(0);
+  const removed = f.graph.nodes[0];
+  removed.destroyed = true; removed.getModel = () => { throw new TypeError('disposed G6 model'); };
+  f.graph.nodes = f.graph.nodes.slice(1);
+  assert.doesNotThrow(() => f.graph.emit('aftergraphrefreshposition', {}));
+  assert.doesNotThrow(() => f.api.rebind());
+  assert.equal(f.api.ids.size, 0); assert.equal(f.api.status().haloCount, 0);
+});
+
+test('selection preserves the configured text weight instead of G6 selected weight', () => {
+  const f = fixture();
+  f.allModels[0].labelCfg = {style:{fontWeight:'bold'}};
+  f.click(0);
+  assert.equal(f.graph.nodes[0].get('styles').selected['text-shape'].fontWeight, 'bold');
+  f.click(1);
+  assert.equal(f.graph.nodes[1].get('styles').selected['text-shape'].fontWeight, 'normal');
 });
 
 for (const nextEvent of ['mousemove', 'mouseup']) test(`a pending node gesture cannot start on ${nextEvent} after history becomes busy`, () => {

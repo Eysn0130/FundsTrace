@@ -8,3 +8,10 @@ def test_graph_label_collision_behavior():
     result = subprocess.run(["node", "--test", str(root / "tests/graph_label_collision_harness.mjs")],
                             cwd=root, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_graph_label_geometry_behavior():
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(["node", "--test", str(root / "tests/graph_label_geometry_harness.mjs")],
+                            cwd=root, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr

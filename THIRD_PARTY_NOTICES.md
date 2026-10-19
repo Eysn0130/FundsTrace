@@ -10,6 +10,14 @@ The retained G6 4.8.19 browser bundle is maintained with one documented local va
 
 The workspace uses 24 outline SVGs from `@tabler/icons` 3.35.0, downloaded from the npm registry with the published SHA-512 integrity verified. Copyright (c) 2020–2025 Paweł Kuna; MIT. Their source files and complete notice are retained in `static/ui-icons/`. The 2026-10-15 workspace refinement changes only `chevron-down.svg` stroke color to `#bbcada` so the same licensed arrow is readable as a local select background; other icon paths are unchanged. Upstream: https://github.com/tabler/tabler-icons. These are local resources; rendering does not request an external icon service.
 
+The import workflow also retains the unmodified `check.svg` from Tabler Icons v3.35.0 (`icons/outline/check.svg`, https://github.com/tabler/tabler-icons/tree/v3.35.0), under the same MIT notice in `static/ui-icons/LICENSE`. It is a bundled local resource.
+
+The import-batch table uses the unmodified `dots.svg` from the same Tabler Icons v3.35.0 source (`icons/outline/dots.svg`) under that MIT notice, bundled locally.
+
+## FundsTrace ribbon icons
+
+The additional compact ribbon icons in `static/ui-icons/` (`network`, `selection`, `selection-clear`, `swap`, `list`, `group`, `link`, `layers`, `chart`, `route`, `play`, `star`, `shape`, `photo`, `align-left`, `align-top`, `distribute-vertical`, `lock`, `focus`, `zoom-out`, `zoom-in`, `zoom-reset`, `eye`, `eye-off`, `eye-restore`, `legend`, `map`, `calendar`, `target`, and `font-text`) were drawn for FundsTrace on 2026-10-16. They use the project MIT license and the same 24px outline grammar as the retained Tabler controls. No external icon service or runtime dependency is used.
+
 ## React and React DOM
 
 The React pilot bundles React and React DOM. Their exact versions are fixed in `frontend/package-lock.json`. Both carry the following MIT notice:

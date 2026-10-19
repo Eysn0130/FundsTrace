@@ -3,10 +3,13 @@
 (function () {
   'use strict';
 
-  let active = null, serial = 0;
-  // Capture the original navigation before case selection rewrites its URL.
-  const navigation = new URLSearchParams(window.location.search || '');
+  let active = null, serial = 0, previewScroll = null;
+  // Preserve the deep link before case selection updates its URL.
+  const navigation = new URL(window.location.href).searchParams;
   let restored = false;
+  // A case switch or a new view session cannot revoke a submitted server job.
+  // Leases are per attempt so an old read cannot release a later retry.
+  const importLeases = new Set();
   const inCase = session => isCurrentCase(session.context, false);
   const ownsView = session => active === session && inCase(session);
   const visible = session => ownsView(session) && !session.closed && $('#importModal').style.display !== 'none';
@@ -18,54 +21,115 @@
     if (!response.ok) {
       let message = await response.text();
       try { message = JSON.parse(message).detail || message; } catch (_) { /* plain text */ }
-      const error = new Error(String(message).slice(0, 200));
-      error.status = response.status;
-      throw error;
+      const error = new Error(String(message).slice(0, 200)); error.status = response.status; throw error;
     }
     return response.json();
   }
 
+  function releaseSettledLease(lease) {
+    // A live same-case completion still owns its list/graph publication. A
+    // detached callback cannot publish and needs only its terminal receipt.
+    if (lease?.terminal && !(inCase(lease.session) && (lease.session.committing || lease.session.polling))) importLeases.delete(lease);
+  }
+
+  function releaseTerminal(lease, progress) {
+    if (!lease || !['done', 'error'].includes(progress?.stage)
+      || progress.import_id && progress.import_id !== lease.importId) return false;
+    lease.terminal = true; releaseSettledLease(lease); return true;
+  }
+
+  async function canWrite(context) {
+    if (context?.caseId == null) return false;
+    const leases = [...importLeases].filter(lease => String(lease.context.caseId) === String(context.caseId));
+    for (const lease of leases) {
+      if (!importLeases.has(lease)) continue;
+      // Progress may still report the old ready state while POST is arriving.
+      // An unsettled commit must never be unlocked by that read.
+      if (lease.requestPending) return false;
+      if (lease.terminal) {
+        releaseSettledLease(lease);
+        if (importLeases.has(lease)) return false;
+        continue;
+      }
+      try {
+        if (!lease.probe) lease.probe = request('/api/import/progress?import_id=' + encodeURIComponent(lease.importId)
+          + '&case_id=' + encodeURIComponent(lease.context.caseId)).then(progress => {
+          releaseTerminal(lease, progress);
+        }).finally(() => { lease.probe = null; });
+        await lease.probe;
+      } catch (_) { return false; }
+      if (importLeases.has(lease)) return false;
+    }
+    return ![...importLeases].some(lease => String(lease.context.caseId) === String(context.caseId));
+  }
+  window.FundsImportWorkflow = Object.freeze({ canWrite, restore });
+
   function recovery(session, message, retry = false) {
     if (!visible(session)) return;
-    $('#impRecovery').hidden = !message;
-    $('#impRecoveryText').textContent = message || '';
+    $('#impRecovery').hidden = !message; $('#impRecoveryText').textContent = message || '';
     $('#impRetryProgress').hidden = !retry;
+  }
+
+  function flow(session) {
+    const working = !session.result && (session.previewing || session.committing || session.polling);
+    let values = ['current', 'pending', 'pending'], status = '选择流水文件';
+    if (session.preview || session.phase !== 'file') { values = ['complete', 'current', 'pending']; status = '核对字段与数据预览'; }
+    if (session.phase === 'confirm') { values = ['complete', 'complete', working ? 'working' : 'current']; status = '正在导入'; }
+    if (session.previewing) { values[session.phase === 'file' ? 0 : 1] = 'working'; status = session.phase === 'file' ? '正在上传或解析文件' : '正在重新识别字段'; }
+    if (session.dirty && !working) status = '字段已修改，重新识别后可导入';
+    if (session.errorStage) { values[{ file: 0, fields: 1, confirm: 2 }[session.errorStage]] = 'error'; status = session.errorStage === 'fields' ? '重新识别未完成' : session.errorStage === 'file' ? '文件未就绪' : '导入未完成'; }
+    if (session.recovering && !session.polling && !session.committing) { values[2] = 'warning'; status = '结果待确认，重新读取进度'; }
+    if (session.result) { values = ['complete', 'complete', 'complete']; status = '导入完成'; }
+    const labels = ['文件', '字段', '确认'], names = { pending: '未开始', current: '待核对', working: '处理中', complete: '已完成', error: '未完成', warning: '结果待确认' };
+    ['impFlowFile', 'impFlowFields', 'impFlowConfirm'].forEach((id, index) => {
+      const node = $('#' + id), value = values[index];
+      node.setAttribute('data-state', value); node.setAttribute('aria-label', labels[index] + '：' + names[value]);
+      if (['current', 'working', 'error', 'warning'].includes(value)) node.setAttribute('aria-current', 'step');
+      else node.removeAttribute('aria-current');
+    });
+    $('#impFlowStatus').textContent = status;
+    $('#importModal').setAttribute('aria-busy', String(working));
   }
 
   function controls(session) {
     if (!ownsView(session)) return;
-    const busy = pending(session) || session.previewing;
-    $('#impCommit').disabled = busy || !session.preview;
+    const busy = !session.result && (pending(session) || session.previewing), complete = !!session.result;
+    $('#impCommit').disabled = busy || !session.preview || session.dirty || session.preview.stats?.ok === 0;
     $('#impRe').disabled = busy || !session.preview;
+    $('#impRe').hidden = !session.preview || complete; $('#impCommit').hidden = !session.preview || complete;
     $$('#impMapping select,input[name=impMode],#impMainSel .mk-acct,#impSelfAccts').forEach(node => { node.disabled = busy; });
+    $('#impFile').disabled = !!pending(session); $('#impChangeFile').disabled = busy;
     $('#impRetryProgress').disabled = session.polling;
+    $('#impCancel').textContent = complete ? '完成' : busy ? '关闭' : '取消';
+    $('#impResult').hidden = !complete;
+    if (complete) {
+      $('#impStep1').style.display = 'none'; $('#impStep2').style.display = 'none'; $('#impStats').textContent = '';
+      $('#impResultText').textContent = `新增 ${fmtCount(session.result.ok)} 笔 · 重复 ${fmtCount(session.result.rows_dup || 0)} 笔 · 跳过 ${fmtCount(session.result.skipped || 0)} 行`;
+    }
+    if (session.dirty) $('#impPreviewNote').textContent = '映射已变更 · 预览待更新';
+    flow(session); previewScroll?.sync();
   }
 
   function newSession() {
-    const session = { id: ++serial, context: caseContext(), closed: false, preview: null,
-      request: 0, previewing: false, committing: false, polling: false, recovering: false, importId: null };
-    active = session;
-    state.imp = null;
-    $('#impSelfAccts').value = '';
-    $('#impFile').value = '';
-    $('#impStep1').style.display = 'block';
-    $('#impStep2').style.display = 'none';
-    hidePbar();
+    const session = { id: ++serial, context: caseContext(), closed: false, preview: null, result: null, mappingDraft: {},
+      request: 0, phase: 'file', dirty: false, errorStage: null,
+      previewing: false, committing: false, polling: false, recovering: false, importId: null };
+    active = session; state.imp = null;
+    $('#impSelfAccts').value = ''; $('#impFile').value = ''; $('#impStats').textContent = '';
+    $('#impMapping').innerHTML = ''; $('#impMainSel').innerHTML = '';
+    $('#impPreviewScroll').scrollLeft = 0; $('#impContent').scrollTop = 0;
+    $('#impStep1').style.display = 'block'; $('#impStep2').style.display = 'none'; hidePbar();
     const current = state.cases.find(item => item.id === session.context.caseId);
-    $('#impCaseTag').textContent = `导入到案件：${current?.name || session.context.caseId}`;
-    $('#impCaseName').textContent = current ? `「${current.name}」` : '当前案件';
-    $('#importModal').style.display = 'flex';
-    recovery(session, ''); controls(session);
-    return session;
+    $('#impCaseTag').textContent = current?.name || String(session.context.caseId);
+    $('#impCaseName').textContent = current?.name || '当前案件';
+    $('#importModal').style.display = 'flex'; recovery(session, ''); controls(session); return session;
   }
 
   function open() {
-    // Closing a submitted task only hides its view. Reopening restores the same
-    // read-only progress/recovery controls instead of permitting a second write.
-    if (active && inCase(active) && pending(active)) {
-      active.closed = false;
-      $('#importModal').style.display = 'flex';
-      controls(active);
+    // A submitted or uncertain task retains its identity. Completion remains
+    // visible until explicitly dismissed so the check transition is observable.
+    if (active && inCase(active) && (pending(active) || active.result) && !active.dismissed) {
+      active.closed = false; $('#importModal').style.display = 'flex'; controls(active);
       if (active.recovering) recovery(active, '进度暂不可用，导入可能仍在进行。请重新读取进度；此操作不会再次提交导入。', true);
       return;
     }
@@ -73,13 +137,8 @@
   }
 
   function close() {
-    if (active) active.closed = true;
+    if (active) { active.closed = true; if (active.result) active.dismissed = true; }
     $('#importModal').style.display = 'none';
-  }
-
-  function accountSelection() {
-    return { self_accounts: $('#impSelfAccts').value.trim().split(/[,，;；\s]+/).filter(Boolean),
-      mark_accounts: $$('#impMainSel .mk-acct').filter(node => node.checked).map(node => node.value) };
   }
 
   function restoreAccounts(selection) {
@@ -122,18 +181,22 @@
       }
       session = newSession(); session.importId = item.import_id;
       if (['parsing', 'importing', 'done'].includes(item.stage)) {
+        session.phase = 'confirm';
+        session.lease = { context: { ...context }, session, importId: item.import_id, requestPending: false, probe: null };
+        importLeases.add(session.lease);
         setPbarBusy('正在读取已提交任务的进度…');
         await poll(session);
         return;
       }
       if (!item.source_available) throw new Error('原上传文件已清理或不存在，请重新选择文件');
-      session.previewing = true; controls(session); setPbarBusy('正在恢复原文件预览，请核对后确认导入…');
+      session.phase = 'fields'; session.previewing = true; controls(session); setPbarBusy('正在恢复原文件预览，请核对后确认导入…');
       const saved = item.request || item;
       const preview = await request('/api/import/repreview', { method: 'POST', ...jsonOpts({
         case_id: context.caseId, import_id: item.import_id, mode: saved.mode, mapping: saved.mapping }) });
       if (!visible(session)) return;
       if (preview.import_id !== item.import_id) throw new Error('预览回执与导入记录不匹配');
-      session.preview = preview; state.imp = preview; renderImport(preview); restoreAccounts(item.request); hidePbar();
+      session.preview = preview; session.mappingDraft = { ...preview.mapping }; session.dirty = false;
+      state.imp = preview; renderImport(preview); restoreAccounts(item.request); hidePbar();
       recovery(session, '已恢复原文件和上次提交选项。请核对映射与主账号，确认后才会再次导入。');
     } catch (error) {
       if (session) {
@@ -147,16 +210,13 @@
     }
   }
 
-  window.FundsImportWorkflow = Object.freeze({ restore });
-
   async function upload() {
-    const session = active;
-    const file = $('#impFile').files[0];
+    const session = active, file = $('#impFile').files[0];
     if (!session || !visible(session) || pending(session) || !file) return;
     const sequence = ++session.request;
+    session.phase = 'file'; session.errorStage = null; session.result = null; session.dirty = false;
     session.previewing = true; session.preview = null; state.imp = null;
-    controls(session); recovery(session, '');
-    setPbarBusy('正在上传并解析文件…');
+    controls(session); recovery(session, ''); setPbarBusy('正在上传并解析文件…');
     const current = () => visible(session) && sequence === session.request;
     try {
       const result = await new Promise((resolve, reject) => {
@@ -168,8 +228,7 @@
           else setPbar(event.loaded / event.total, `上传文件 ${Math.round(event.loaded / event.total * 100)}%`);
         };
         xhr.onload = () => {
-          let result;
-          try { result = JSON.parse(xhr.responseText); } catch (_) { /* invalid receipt */ }
+          let result; try { result = JSON.parse(xhr.responseText); } catch (_) { /* invalid receipt */ }
           if (xhr.status === 200 && result) resolve(result);
           else reject(new Error(result?.detail || `解析失败（HTTP ${xhr.status}）`));
         };
@@ -178,112 +237,125 @@
         const form = new FormData(); form.append('file', file); xhr.send(form);
       });
       if (!current()) return;
-      session.preview = result; state.imp = result;
-      renderImport(result); hidePbar();
+      session.preview = result; session.mappingDraft = { ...result.mapping }; state.imp = result; session.phase = 'fields'; renderImport(result); hidePbar();
     } catch (error) {
-      if (current()) { hidePbar(); recovery(session, '文件预览失败：' + text(error) + '。可重新选择文件。'); }
+      if (current()) { session.errorStage = 'file'; hidePbar(); recovery(session, '文件预览失败：' + text(error) + '。可重新选择文件。'); }
     } finally {
       if (current()) { session.previewing = false; controls(session); }
     }
   }
 
+  function mappingChanged(modeChanged = false) {
+    const session = active;
+    if (!session || !visible(session) || !session.preview || pending(session) || session.previewing) return;
+    session.dirty = true; session.errorStage = null; session.phase = 'fields';
+    const { mode } = collectMapping();
+    $$('#impMapping select').forEach(node => { session.mappingDraft[node.dataset.field] = node.value; });
+    if (modeChanged) {
+      const marked = new Set($$('#impMainSel .mk-acct').filter(node => node.checked).map(node => node.value));
+      renderImport({ ...session.preview, mode, mapping: session.mappingDraft });
+      $$('#impMainSel .mk-acct').forEach(node => { node.checked = marked.has(node.value); });
+    } else if (typeof refreshImportMappingState === 'function') refreshImportMappingState();
+    recovery(session, ''); controls(session);
+  }
+
   async function repreview() {
     const session = active;
     if (!session || !visible(session) || !session.preview || pending(session) || session.previewing) return;
-    const sequence = ++session.request, { mode, mapping } = collectMapping(), selection = accountSelection();
-    session.previewing = true; controls(session); recovery(session, '');
+    const sequence = ++session.request, { mode, mapping } = collectMapping();
+    const marked = new Map($$('#impMainSel .mk-acct').map(node => [node.value, node.checked]));
+    session.phase = 'fields'; session.errorStage = null; session.dirty = true; session.previewing = true;
+    controls(session); recovery(session, ''); setPbarBusy('正在重新识别字段…');
     try {
       const result = await request('/api/import/repreview', { method: 'POST', ...jsonOpts({
         import_id: session.preview.import_id, mode, mapping, case_id: session.context.caseId }) });
       if (!visible(session) || sequence !== session.request) return;
-      session.preview = result; state.imp = result; renderImport(result); restoreAccounts(selection);
+      session.preview = result; session.mappingDraft = { ...session.mappingDraft, ...result.mapping };
+      session.dirty = false; state.imp = result; renderImport(result);
+      $$('#impMainSel .mk-acct').forEach(node => { if (marked.has(node.value)) node.checked = marked.get(node.value); });
     } catch (error) {
-      if (visible(session) && sequence === session.request) recovery(session, '重新识别失败：' + text(error) + '。请检查映射后重试。');
+      if (visible(session) && sequence === session.request) {
+        session.errorStage = 'fields'; recovery(session, '重新识别失败：' + text(error) + '。请检查映射后重试。');
+      }
     } finally {
-      if (ownsView(session) && sequence === session.request) { session.previewing = false; controls(session); }
+      if (ownsView(session) && sequence === session.request) { session.previewing = false; hidePbar(); controls(session); }
     }
   }
 
   async function poll(session) {
     if (session.polling || !inCase(session)) return;
-    session.polling = true; session.recovering = false;
+    session.polling = true; session.recovering = false; session.errorStage = null; session.phase = 'confirm';
     recovery(session, ''); controls(session);
     try {
       while (inCase(session)) {
         const progress = await request('/api/import/progress?import_id=' + encodeURIComponent(session.importId)
           + '&case_id=' + encodeURIComponent(session.context.caseId));
+        releaseTerminal(session.lease, progress);
         if (!inCase(session)) return;
         if (progress.stage === 'done') {
           const result = progress.result;
-          if (visible(session)) setPbar(1, `导入完成：新增 ${fmtCount(result.ok)} 笔`);
+          if (!result || result.ok == null) throw new Error('导入完成回执不完整，请重新读取进度');
+          session.result = result; session.preview = null;
           let message = `导入完成：新增 ${fmtCount(result.ok)} 笔，跳过 ${fmtCount(result.skipped || 0)} 行，重复 ${fmtCount(result.rows_dup || 0)} 笔`;
           if (result.main_detected?.length) message += `；已标记本方主账号：${result.main_detected.map(item => item.name || item.account.slice(-6)).join('、')}`;
-          else if (result.main_matched?.length) message += `；保留 ${result.main_matched.length} 个已有主账号标记`;
+          if (visible(session)) { hidePbar(); $('#impResultText').textContent = message; controls(session); }
           toast(message);
-          session.preview = null;
-          // This delayed close cannot dismiss a later import or another case.
-          setTimeout(() => { if (visible(session)) { hidePbar(); close(); } }, 700);
-          await refreshAll();
+          // Refresh failures cannot relabel a durable completed import as failed.
+          try { await refreshAll(); } catch (_) { if (visible(session)) recovery(session, '导入已完成，列表刷新失败。关闭后可重新查询。'); }
           return;
         }
         if (progress.stage === 'error') {
-          if (visible(session)) {
-            hidePbar();
-            recovery(session, '导入失败：' + (progress.error || '任务未完成') + '。请检查文件或映射后，手动确认重试。');
-          }
-          if (inCase(session)) toast(progress.error || '导入失败', 'err');
-          return;
+          session.errorStage = 'confirm';
+          if (visible(session)) { hidePbar(); recovery(session, '导入失败：' + (progress.error || '任务未完成') + '。请检查文件或映射后，手动确认重试。'); }
+          if (inCase(session)) toast(progress.error || '导入失败', 'err'); return;
         }
         if (visible(session)) {
-          if (progress.stage === 'parsing') setPbar(0.05, progress.message || '解析文件…');
-          else if (progress.stage === 'importing') setPbar(progress.total ? progress.done / progress.total : 0.1,
-            `写入数据库 ${fmtCount(progress.done)} / ${fmtCount(progress.total)} 笔`);
+          if (progress.stage === 'importing' && progress.total) setPbar(progress.done / progress.total, `写入流水 ${fmtCount(progress.done)} / ${fmtCount(progress.total)} 笔`);
+          else setPbarBusy(progress.message || '正在解析文件…');
         }
         await new Promise(resolve => setTimeout(resolve, 300));
       }
     } catch (error) {
       if (!inCase(session)) return;
       session.recovering = error.status !== 404;
-      if (visible(session)) {
-        hidePbar();
-        recovery(session, session.recovering
-          ? '进度读取失败：' + text(error) + '。导入可能仍在进行，请重新读取进度；不会再次提交导入。'
-          : '未找到已启动的导入任务：' + text(error) + '。请检查文件或映射后，手动确认重试。', session.recovering);
-      }
-    } finally {
-      session.polling = false; controls(session);
-    }
+      if (!session.recovering) session.errorStage = 'confirm';
+      if (visible(session)) { hidePbar(); recovery(session, session.recovering
+        ? '进度读取失败：' + text(error) + '。导入可能仍在进行，请重新读取进度；不会再次提交导入。'
+        : '未找到已启动的导入任务：' + text(error) + '。请检查文件或映射后，手动确认重试。', session.recovering); }
+    } finally { session.polling = false; releaseSettledLease(session.lease); controls(session); }
   }
 
   async function commit() {
     const session = active;
-    if (!session || !visible(session) || !session.preview || pending(session) || session.previewing) return;
+    if (!session || !visible(session) || !session.preview || session.dirty || session.preview.stats?.ok === 0 || pending(session) || session.previewing) return;
+    if (window.FundsDataToolsActions?.blocked(session.context) || window.FundsMainAccountsActions?.blocked(session.context)) {
+      recovery(session, '该案件的资料更新尚未结束。请先完成或核对数据工具、主账号标记操作，再提交流水导入。');
+      return;
+    }
     const { mode, mapping } = collectMapping();
     const payload = { import_id: session.preview.import_id, mode, mapping, case_id: session.context.caseId,
       self_accounts: $('#impSelfAccts').value.trim(),
       mark_accounts: $$('#impMainSel .mk-acct').filter(node => node.checked).map(node => node.value).join(',') };
-    session.committing = true; session.importId = payload.import_id;
+    session.committing = true; session.phase = 'confirm'; session.errorStage = null; session.importId = payload.import_id;
+    const lease = session.lease = { context: { ...session.context }, session, importId: payload.import_id, requestPending: true, probe: null };
+    importLeases.add(lease);
     controls(session); recovery(session, ''); setPbarBusy('正在提交导入…');
     try {
       const result = await request('/api/import/commit', { method: 'POST', ...jsonOpts(payload) });
+      lease.requestPending = false;
       if (!inCase(session)) return;
       if (result.import_id !== session.importId) throw new Error('导入回执不匹配，请重新读取进度确认');
-      if (visible(session)) setPbar(0.02, result.started === false ? '导入进行中…' : '解析文件…');
       await poll(session);
     } catch (error) {
+      lease.requestPending = false;
+      if (error.status >= 400 && error.status < 500) importLeases.delete(lease);
       if (!inCase(session)) return;
-      // A lost receipt can follow a committed write. Recovery only reads the
-      // known import ID; it never silently retries a mutation.
       session.recovering = !error.status || error.status >= 500;
-      if (visible(session)) {
-        hidePbar();
-        recovery(session, session.recovering
-          ? '导入提交结果暂无法确认：' + text(error) + '。请重新读取进度；不会再次提交导入。'
-          : '导入未提交：' + text(error) + '。请检查文件或映射后重试。', session.recovering);
-      }
-    } finally {
-      session.committing = false; controls(session);
-    }
+      if (!session.recovering) session.errorStage = 'confirm';
+      if (visible(session)) { hidePbar(); recovery(session, session.recovering
+        ? '导入提交结果暂无法确认：' + text(error) + '。请重新读取进度；不会再次提交导入。'
+        : '导入未提交：' + text(error) + '。请检查文件或映射后重试。', session.recovering); }
+    } finally { lease.requestPending = false; session.committing = false; releaseSettledLease(lease); controls(session); }
   }
 
   function bindDetailRequests() {
@@ -322,6 +394,8 @@
     };
 
     function bindNodeActions(binding) {
+      // The account workspace owns its writes, draft and photo lock together.
+      if (typeof nodeWorkspace !== 'undefined' && nodeWorkspace) return;
       const { context, account, item, profile } = binding;
       const current = () => binding === drawerBinding && binding.token === drawerRequest && isCurrentCase(context);
       const node = state.lastGraph.nodes.find(value => value.account === account) || {};
@@ -410,7 +484,7 @@
         }
         catch (error) {
           if (error === stale || token !== drawerRequest || !isCurrentCase(context)) return;
-          $('#drawerBody').textContent = '详情加载失败：' + text(error) + '。请重新选择该节点或连线重试。';
+          $('#drawerBody').textContent = '详情加载失败：' + text(error) + '。请再次查看详情重试。';
         }
       };
       if (name === 'showNodeDrawer') showNodeDrawer = wrapped; else showEdgeDrawer = wrapped;
@@ -428,45 +502,52 @@
       drawerRequest += 1;
       return originalClose.apply(this, args);
     };
-    $('#btnCloseDrawer').onclick = closeDrawer;
+    $('#btnCloseDrawer').onclick = () => {
+      closeDrawer(false, { keepSelection: true });
+      $('#graphContainer').focus({ preventScroll: true });
+    };
 
     const originalContext = loadContext;
     loadContext = async function (...args) {
-      if (!state.ctx) return;
-      // The frozen reader already compares object identity before publication.
-      // Give each side/window request its own identity, including recursive
-      // system-account corrections, rather than mutating one shared request.
+      if (!state.ctx || state.ctx.closed || state.ctx.phase === 'tracking') return;
       const context = caseContext(), selection = state.ctx = { ...state.ctx };
-      $('#ctxTrack').disabled = false; status.textContent = '';
       try { return await originalContext.apply(this, args); }
       catch (error) {
-        if (!isCurrentCase(context) || state.ctx !== selection || $('#ctxModal').style.display === 'none') return;
+        if (!contextIsCurrent(selection, context)) return;
+        selection.phase = 'error';
         const row = document.createElement('tr'), cell = document.createElement('td');
-        cell.colSpan = 7; cell.textContent = '流水明细加载失败：' + text(error) + '。';
+        cell.colSpan = 8; cell.className = 'context-empty'; cell.textContent = '流水明细加载失败：' + text(error) + '。';
         const retry = document.createElement('button');
         retry.type = 'button'; retry.className = 'btn small'; retry.textContent = '重新加载明细';
-        retry.onclick = () => loadContext(); cell.append(retry); row.append(cell);
-        $('#ctxTbody').replaceChildren(row);
+        retry.onclick = () => { if (contextIsCurrent(selection, context)) return loadContext(); };
+        cell.append(retry); row.append(cell); $('#ctxTbody').replaceChildren(row);
+        $('#ctxPos').textContent = '流水明细读取失败';
+        $('#ctxSuggest').textContent = '匹配线索暂不可用';
+        syncContextSelection();
       }
     };
 
-    const status = document.createElement('span');
-    status.id = 'ctxTrackStatus'; status.className = 'workflow-status'; status.setAttribute('role', 'status');
-    $('#ctxTrack').after(status);
+    const status = $('#ctxTrackStatus');
     $('#ctxTrack').onclick = async () => {
-      const context = caseContext(), selection = state.ctx;
-      const ids = $$('#ctxTbody .ctx-ck').filter(node => node.checked).map(node => Number(node.dataset.id));
-      if (!ids.length) { status.textContent = '请先勾选要上图的流水'; return; }
-      $('#ctxTrack').disabled = true; status.textContent = '正在上图…';
+      const selection = state.ctx, context = selection?.context || caseContext();
+      if (!contextIsCurrent(selection, context) || selection.phase !== 'ready' || selection.submission) return;
+      const ids = $$('#ctxTbody .ctx-ck').filter(node => node.checked && !node.disabled).map(node => Number(node.dataset.id));
+      if (!ids.length) { syncContextSelection(); return; }
+      const submission = selection.submission = {};
+      const current = () => contextIsCurrent(selection, context) && selection.submission === submission;
+      selection.phase = 'tracking'; status.textContent = '正在上图…'; syncContextSelection();
       try {
         const applied = await trackFlows(ids);
-        if (!isCurrentCase(context) || state.ctx !== selection) return;
-        if (applied === true) { status.textContent = ''; $('#ctxModal').style.display = 'none'; }
+        if (!current()) return;
+        if (applied === true) { closeContext(); }
         else status.textContent = '本次上图未完成，已保留勾选。请等待当前画布操作完成后重试。';
       } catch (error) {
-        if (isCurrentCase(context) && state.ctx === selection) status.textContent = '上图失败：' + text(error) + '。勾选已保留，可重试。';
+        if (current()) status.textContent = '上图失败：' + text(error) + '。勾选已保留，可重试。';
       } finally {
-        if (isCurrentCase(context) && state.ctx === selection) $('#ctxTrack').disabled = false;
+        if (current()) {
+          selection.phase = 'ready'; selection.submission = null; syncContextSelection();
+          if (document.activeElement === document.body) $('#ctxTrack').focus();
+        }
       }
     };
   }
@@ -481,8 +562,13 @@
     retry.onclick = () => { if (active?.recovering) return poll(active); };
     notice.append(message, retry); $('#impPbar').after(notice);
     $('#btnImport').onclick = open; $('#btnImport2').onclick = open;
-    $('#impClose').onclick = close;
+    $('#impClose').onclick = close; $('#impCancel').onclick = close;
     $('#impFile').onchange = upload; $('#impRe').onclick = repreview; $('#impCommit').onclick = commit;
+    $('#impChangeFile').onclick = () => { if (active && !pending(active) && !active.previewing) { newSession(); $('#impFile').click(); } };
+    $('#impMapping').addEventListener('change', () => mappingChanged());
+    $$('input[name=impMode]').forEach(input => { input.onchange = () => mappingChanged(true); });
+    if (typeof bindTableHorizontalScroll === 'function') previewScroll = bindTableHorizontalScroll({
+      viewport: $('#impPreviewScroll'), range: $('#impHorizontalPosition'), left: $('#impScrollLeft'), right: $('#impScrollRight'), table: $('#impPreviewTable') });
     // The shared modal layer owns focus, Escape and genuine backdrop gestures.
     bindDetailRequests();
   });

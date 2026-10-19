@@ -3,7 +3,11 @@
   'use strict';
   const finite = value => typeof value === 'number' && Number.isFinite(value);
   const asIds = values => new Set(Array.from(values || [], String));
-  const modelOf = item => item?.getModel?.();
+  const modelOf = item => {
+    // G6 can emit geometry events after removal but before the host rebinds.
+    if (!item || item.destroyed) return undefined;
+    try { return item.getModel?.(); } catch (_) { return undefined; }
+  };
   const itemId = item => modelOf(item)?.id == null ? null : String(modelOf(item).id);
 
   function create(options) {
@@ -20,8 +24,9 @@
     const oldTabindex = container.getAttribute('tabindex');
     if (oldTabindex === null) container.setAttribute('tabindex', '0');
     const media = global.matchMedia?.('(prefers-reduced-motion: reduce)');
-    const halos = new Map(), styled = new Map(), photoOutlines = new Map(), graphEvents = [];
-    let nodes = new Map(), drag = null, destroyed = false, notifying = false, suppressUntil = 0, commitCount = 0, lastCommitMs = 0;
+    const halos = new Map(), styled = new Map(), outlines = new Map(), graphEvents = [];
+    let nodes = new Map(), drag = null, destroyed = false, notifying = false, visualsVisible = true,
+      suppressUntil = 0, commitCount = 0, lastCommitMs = 0;
 
     function notify() {
       if (notifying) return;
@@ -33,7 +38,7 @@
     }
     function node(id) { return nodes.get(String(id)); }
     function focus() { try { container.focus?.({ preventScroll: true }); } catch (_) { container.focus?.(); } }
-    function motionAllowed() { return !media?.matches && !document.hidden; }
+    function motionAllowed() { return visualsVisible && !media?.matches && !document.hidden; }
     function modalOpen() {
       return [...(document.querySelectorAll?.('.modal, [role="dialog"], dialog[open]') || [])].some(element => {
         if (element.hidden || element.getAttribute?.('aria-hidden') === 'true' || element.style?.display === 'none') return false;
@@ -57,29 +62,50 @@
         if (!styled.has(item)) styled.set(item, styles);
         const model = modelOf(item), attrs = item.getKeyShape?.()?.attr?.() || {};
         const preserved = {};
-        for (const key of ['fill', 'shadowColor', 'shadowBlur', 'shadowOffsetX', 'shadowOffsetY', 'img', 'opacity', 'fillOpacity']) {
+        for (const key of ['fill', 'stroke', 'lineWidth', 'lineDash', 'strokeOpacity',
+          'shadowColor', 'shadowBlur', 'shadowOffsetX', 'shadowOffsetY', 'img', 'opacity', 'fillOpacity']) {
           if (attrs[key] !== undefined) preserved[key] = attrs[key];
           if (model?.style?.[key] !== undefined) preserved[key] = model.style[key];
         }
         item.set?.('styles', { ...styles, selected: { ...styles.selected, ...preserved,
+          'text-shape': { ...styles.selected?.['text-shape'], fontWeight: model.labelCfg?.style?.fontWeight || 'normal' },
           shadowBlur: preserved.shadowBlur ?? 0, shadowColor: preserved.shadowColor ?? 'transparent',
           shadowOffsetX: preserved.shadowOffsetX ?? 0, shadowOffsetY: preserved.shadowOffsetY ?? 0,
-          stroke: '#66d9ef', lineWidth: 3 } });
-        // Canvas Image does not draw its stroke. A single static shape in the
-        // node group keeps photos visibly selected even above the pulse budget.
-        if (model?.type === 'image' && !photoOutlines.has(item)) {
-          const size = sizeOf(model);
-          const outline = item.getContainer?.()?.addShape?.('circle', { name: 'funds-selection-outline', capture: false,
-            attrs: { x: 0, y: 0, r: Math.max(size.width, size.height) / 2 + 2, stroke: '#66d9ef',
-              lineWidth: 2, fill: null, shadowBlur: 0 } });
-          if (outline) photoOutlines.set(item, outline);
-        }
+          stroke: preserved.stroke ?? 'transparent', lineWidth: preserved.lineWidth ?? 0 } });
       }
       graph.setItemState?.(item, 'selected', selected);
-      if (!selected) {
-        photoOutlines.get(item)?.remove?.(); photoOutlines.delete(item);
+      if (selected) syncOutline(item);
+      else {
+        removeOutline(item);
         if (styled.has(item)) { item.set?.('styles', styled.get(item)); styled.delete(item); }
       }
+    }
+    function removeOutline(item) {
+      const outline = outlines.get(item)?.shape;
+      if (outline && !outline.destroyed) outline.remove?.();
+      outlines.delete(item);
+    }
+    function syncOutline(item) {
+      const model = modelOf(item);
+      if (!model) { const existed = outlines.has(item); removeOutline(item); return existed; }
+      const size = sizeOf(model), border = model.style?.lineWidth ?? item.getKeyShape?.()?.attr?.()?.lineWidth ?? 0;
+      const radius = Math.max(size.width, size.height) / 2 + Math.max(3, (finite(border) ? border : 0) / 2 + 2);
+      let outline = outlines.get(item), changed = false;
+      if (outline?.shape.destroyed) { outlines.delete(item); outline = null; }
+      if (!outline) {
+        // The same static outer ring handles circles and Canvas images. It is
+        // independent of the role border and remains visible above ten selected.
+        const shape = item.getContainer?.()?.addShape?.('circle', { name: 'funds-selection-outline', capture: false,
+          attrs: { x: 0, y: 0, r: radius, stroke: '#66d9ef', lineWidth: 2, fill: null, shadowBlur: 0 } });
+        if (!shape) return false;
+        outline = { shape, radius, visible: true }; outlines.set(item, outline); changed = true;
+      }
+      if (outline.radius !== radius) { outline.shape.attr?.({ r: radius }); outline.radius = radius; changed = true; }
+      if (outline.visible !== visualsVisible) {
+        if (visualsVisible) outline.shape.show?.(); else outline.shape.hide?.();
+        outline.visible = visualsVisible; changed = true;
+      }
+      return changed;
     }
     function withPaint(work) {
       const previous = graph.get?.('autoPaint');
@@ -116,8 +142,16 @@
     function project(x, y) { return graph.getCanvasByPoint?.(x, y) || { x, y }; }
     function dimensions() { return { width: container.clientWidth || 0, height: container.clientHeight || 0 }; }
     function refresh() {
-      if (!current()) { cancelDrag(true); removeHalos(); return; }
-      if (ids.size < 1 || ids.size > 10) { removeHalos(); return; }
+      if (!current()) {
+        cancelDrag(true); removeHalos();
+        for (const item of outlines.keys()) removeOutline(item);
+        return;
+      }
+      let outlineChanged = false;
+      for (const [item] of outlines) if (!ids.has(itemId(item))) { removeOutline(item); outlineChanged = true; }
+      for (const id of ids) outlineChanged = syncOutline(node(id)) || outlineChanged;
+      if (outlineChanged) graph.paint?.();
+      if (!visualsVisible || ids.size < 1 || ids.size > 10) { removeHalos(); return; }
       const zoom = Math.abs(graph.getZoom?.() || 1), { width, height } = dimensions();
       for (const [id, halo] of halos) if (!ids.has(id)) { halo.remove(); halos.delete(id); }
       for (const id of ids) {
@@ -140,6 +174,16 @@
         halo.firstElementChild.style.setProperty?.('--graph-breathe-scale', String(1 + 4 / (Math.max(size.width, size.height) + 8)));
       }
       pauseMotion();
+    }
+    function setVisualsVisible(visible) {
+      if (!current()) return false;
+      const next = Boolean(visible);
+      if (visualsVisible === next) return true;
+      visualsVisible = next;
+      layer.hidden = !next; layer.style.visibility = next ? '' : 'hidden';
+      withPaint(() => { for (const id of ids) syncOutline(node(id)); });
+      refresh();
+      return true;
     }
     function replace(next, openItem, cancelPending = true) {
       if (!current()) return false;
@@ -165,13 +209,16 @@
       if (!changed && current()) notify();
       return changed;
     }
-    function rebind(nextIds = ids) {
+    function rebind(nextIds = ids, updateModels) {
       if (!current()) { cancelDrag(true); removeHalos(); return; }
       cancelDrag(false);
       if (!current()) return;
       const next = asIds(nextIds), previous = new Set(ids);
       withPaint(() => {
         for (const item of styled.keys()) setSelected(item, false);
+        // Refresh business-role styles between removing and restoring the
+        // selection decoration, so its base-style cache cannot revive old roles.
+        if (typeof updateModels === 'function') updateModels();
         nodes = getNodes(); ids.clear();
         for (const id of next) if (nodes.has(id)) { ids.add(id); setSelected(node(id), true); }
       });
@@ -214,6 +261,7 @@
         }
         if (active.preview) graph.refreshPositions?.();
         else for (const edge of edges) if (!edge.destroyed) edge.refresh?.();
+        options.onAfterMove?.({ ids: new Set(active.ids), preview: active.preview });
       });
       if (!current()) return false;
       commitCount += 1; lastCommitMs = Math.max(0, (global.performance?.now?.() ?? Date.now()) - startTime);
@@ -277,7 +325,10 @@
     }
     function cancelDrag(stale) { finishDrag(true, stale); }
     function onMouseMove(event) {
-      if (event.buttons === 0) { cancelDrag(false); return; }
+      // The browser can miss mouseup when the pointer is released outside its
+      // surface. A later move without the primary button is a completed drag,
+      // not an explicit cancellation: retain the last held-button position.
+      if (typeof event.buttons === 'number' && !(event.buttons & 1)) { finishDrag(false); return; }
       updateDrag(event);
     }
     function onMouseUp(event) {
@@ -285,8 +336,11 @@
       if (drag && current()) updateDrag(event);
       finishDrag(false);
     }
-    function onWindowBlur() { cancelDrag(false); }
-    function onWindowExit(event) { if (event.relatedTarget === null) cancelDrag(false); }
+    // Losing pointer delivery is completion at the last valid drag position.
+    // Only an explicit cancellation restores geometry; a revoked binding is
+    // still rejected inside finishDrag before any preview can be committed.
+    function onWindowBlur() { finishDrag(false); }
+    function onWindowExit(event) { if (event.relatedTarget === null) finishDrag(false); }
     function onContainerMouseDown(event) {
       if (!current() || !interactive() || (event.button != null && event.button !== 0) || editing(event.target) || modalOpen()) return;
       // A fresh native gesture cannot be the previous drag's generated click.
@@ -307,11 +361,13 @@
     }
     function suppressClick() { return Date.now() < suppressUntil; }
     function onNodeClick(event) {
-      if (!current() || !interactive() || suppressClick() || editing(eventSource(event).target) || modalOpen()) return;
+      // G6 may emit click from canvas mouseup before our window mouseup, with
+      // a larger movement threshold. The active drag owns that whole gesture.
+      if (drag?.started || !current() || !interactive() || suppressClick() || editing(eventSource(event).target) || modalOpen()) return;
       focus(); select(itemId(event.item), { toggle: modifier(event), open: !modifier(event) });
     }
     function onCanvasClick(event) {
-      if (!current() || !interactive() || suppressClick() || editing(eventSource(event).target) || modalOpen()) return;
+      if (drag?.started || !current() || !interactive() || suppressClick() || editing(eventSource(event).target) || modalOpen()) return;
       focus(); clear();
     }
     function onKeyDown(event) {
@@ -322,7 +378,7 @@
         stop(event); nodes = getNodes(); replace(new Set(nodes.keys()));
       } else if (event.key === 'Escape') { stop(event); clear(); }
     }
-    function onVisibility() { if (document.hidden) cancelDrag(false); pauseMotion(); }
+    function onVisibility() { if (document.hidden) finishDrag(false); pauseMotion(); }
     function onGraph(name, handler) { graph.on?.(name, handler); graphEvents.push([name, handler]); }
     onGraph('node:click', onNodeClick); onGraph('canvas:click', onCanvasClick); onGraph('node:mousedown', onMouseDown);
     for (const name of ['viewportchange', 'afterlayout', 'afterrender', 'node:drag', 'aftergraphrefreshposition', 'afterrefreshpositions']) onGraph(name, refresh);
@@ -351,11 +407,12 @@
       if (!media?.removeEventListener) media?.removeListener?.(pauseMotion);
       global.removeEventListener?.('resize', refresh);
       if (oldTabindex === null) container.removeAttribute('tabindex');
-      for (const outline of photoOutlines.values()) if (!outline.destroyed) outline.remove?.();
-      photoOutlines.clear(); removeHalos(); layer.remove(); styled.clear(); nodes.clear(); ids.clear();
+      for (const item of outlines.keys()) removeOutline(item);
+      removeHalos(); layer.remove(); styled.clear(); nodes.clear(); ids.clear();
     }
-    return Object.freeze({ ids, select, clear, rebind, refresh, destroy,
+    return Object.freeze({ ids, select, clear, rebind, refresh, setVisualsVisible, destroy,
       status: () => ({ count: ids.size, haloCount: halos.size, animatedCount: [...halos.values()].filter(halo => halo.firstElementChild.classList.contains('graph-selection-breathe')).length,
+        outlineCount: outlines.size, visualsVisible,
         dragging: !!drag?.started, preview: !!drag?.preview, commitCount, lastCommitMs, destroyed }) });
   }
   global.FundsGraphSelection = Object.freeze({ create });

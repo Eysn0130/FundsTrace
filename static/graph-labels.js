@@ -30,34 +30,44 @@
 
   function select(candidates, options = {}) {
     const nodeIds = new Set(), edgeKeys = new Set(), ranked = [];
+    const nodePlacements = new Map(), edgePlacements = new Map();
     const padding = finite(options.padding) ? Math.max(0, options.padding) : 3;
-    let rejected = 0;
+    const obstaclePadding = finite(options.obstaclePadding) ? Math.max(0, options.obstaclePadding) : 2;
+    const viewport = paddedBounds(options.viewport, 0);
+    let rejected = 0, conflicts = 0, unknownGeometry = 0, unplaced = 0;
     for (const candidate of Array.isArray(candidates) ? candidates : []) {
       if (!candidate || typeof candidate.key !== 'string' || !['node', 'edge'].includes(candidate.kind)) {
         rejected += 1; continue;
       }
       ranked.push({ key: candidate.key, kind: candidate.kind, required: candidate.required === true,
-        priority: finite(candidate.priority) ? candidate.priority : 0, bounds: candidate.bounds });
+        priority: finite(candidate.priority) ? candidate.priority : 0, bounds: candidate.bounds,
+        placements: candidate.placements, ignoreObstacleKeys: candidate.ignoreObstacleKeys });
     }
     ranked.sort((a, b) => Number(b.required) - Number(a.required) || b.priority - a.priority
       || compare(a.key, b.key) || compare(a.kind, b.kind));
 
-    const grid = new Map(), oversized = [], accepted = [], seen = new Set();
-    const conflicts = (bounds, keys) => {
-      if (!keys) return accepted.some(other => intersects(bounds, other));
-      for (const index of oversized) if (intersects(bounds, accepted[index])) return true;
+    // Node bodies and accepted text share one spatial grid. Each candidate
+    // visits nearby cells, rather than scanning every node for every label.
+    const grid = new Map(), oversized = [], occupied = [], seen = new Set();
+    const collides = (bounds, keys, ignored) => {
+      const hits = index => {
+        const other = occupied[index];
+        return !(other.obstacle && ignored.has(other.key)) && intersects(bounds, other.bounds);
+      };
+      if (!keys) return occupied.some((_, index) => hits(index));
+      for (const index of oversized) if (hits(index)) return true;
       const visited = new Set();
       for (const key of keys) {
         for (const index of grid.get(key) || []) {
           if (visited.has(index)) continue;
           visited.add(index);
-          if (intersects(bounds, accepted[index])) return true;
+          if (hits(index)) return true;
         }
       }
       return false;
     };
-    const insert = (bounds, keys) => {
-      const index = accepted.length; accepted.push(bounds);
+    const insert = (bounds, keys, metadata = {}) => {
+      const index = occupied.length; occupied.push({ bounds, ...metadata });
       if (!keys) { oversized.push(index); return; }
       for (const key of keys) {
         if (!grid.has(key)) grid.set(key, []);
@@ -65,27 +75,55 @@
       }
     };
 
+    for (const obstacle of Array.isArray(options.obstacles) ? options.obstacles : []) {
+      const bounds = paddedBounds(obstacle?.bounds, obstaclePadding);
+      if (bounds) insert(bounds, cells(bounds), { obstacle: true, key: obstacle.key });
+    }
+
     for (const candidate of ranked) {
       const identity = candidate.kind + '\0' + candidate.key;
       if (seen.has(identity)) { rejected += 1; continue; }
       seen.add(identity);
-      if (options.disabled === true) {
-        (candidate.kind === 'node' ? nodeIds : edgeKeys).add(candidate.key); continue;
+      const ignored = new Set(candidate.ignoreObstacleKeys && typeof candidate.ignoreObstacleKeys !== 'string'
+        && typeof candidate.ignoreObstacleKeys[Symbol.iterator] === 'function' ? candidate.ignoreObstacleKeys : []);
+      // placements is an ordered, complete list in screen coordinates. Offsets
+      // are relative to the caller's original position and never mutate facts.
+      const inputs = Array.isArray(candidate.placements) && candidate.placements.length
+        ? candidate.placements : [{ bounds: candidate.bounds, dx: 0, dy: 0 }];
+      const base = paddedBounds(candidate.bounds, 0), placements = [];
+      for (let index = 0; index < inputs.length; index += 1) {
+        const input = inputs[index], bounds = paddedBounds(input?.bounds, 0);
+        if (!bounds) continue;
+        placements.push({ bounds, dx: finite(input.dx) ? input.dx : base ? bounds.minX - base.minX : 0,
+          dy: finite(input.dy) ? input.dy : base ? bounds.minY - base.minY : 0, index });
       }
-      const bounds = paddedBounds(candidate.bounds, padding);
-      // A selected/required label must survive missing geometry. Without bounds
-      // it cannot safely block other labels; ordinary unknown bounds fail closed.
-      if (!bounds) {
-        if (candidate.required) (candidate.kind === 'node' ? nodeIds : edgeKeys).add(candidate.key);
-        else rejected += 1;
+      let placement = null;
+      for (const option of placements) {
+        const bounds = paddedBounds(option.bounds, padding);
+        const fitsViewport = !viewport || (option.bounds.minX >= viewport.minX && option.bounds.maxX <= viewport.maxX
+          && option.bounds.minY >= viewport.minY && option.bounds.maxY <= viewport.maxY);
+        if (options.disabled === true || (fitsViewport && !collides(bounds, cells(bounds), ignored))) {
+          placement = { ...option, conflicted: false }; break;
+        }
+      }
+      if (!placement && (candidate.required || options.retainAll === true || options.disabled === true)) {
+        placement = placements.length ? { ...placements[0], conflicted: options.disabled !== true }
+          : { bounds: null, dx: 0, dy: 0, index: -1, conflicted: true };
+        if (placement.bounds) { if (placement.conflicted) conflicts += 1; }
+        else unknownGeometry += 1;
+      }
+      if (!placement) {
+        rejected += 1; unplaced += 1;
         continue;
       }
-      const keys = cells(bounds);
-      if (!candidate.required && conflicts(bounds, keys)) { rejected += 1; continue; }
       (candidate.kind === 'node' ? nodeIds : edgeKeys).add(candidate.key);
-      insert(bounds, keys);
+      (candidate.kind === 'node' ? nodePlacements : edgePlacements).set(candidate.key, placement);
+      if (placement.bounds && options.disabled !== true) {
+        const bounds = paddedBounds(placement.bounds, padding);
+        insert(bounds, cells(bounds));
+      }
     }
-    return { nodeIds, edgeKeys, rejected };
+    return { nodeIds, edgeKeys, rejected, nodePlacements, edgePlacements, conflicts, unknownGeometry, unplaced };
   }
 
   global.FundsGraphLabels = Object.freeze({ select });
