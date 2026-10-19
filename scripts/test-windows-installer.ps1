@@ -244,9 +244,13 @@ try {
     $PythonEnvironment = @{ FUND_DATA_DIR = $DataDirectory; PYTHONUTF8 = '1'; PYTHONDONTWRITEBYTECODE = '1'; PYTHONNOUSERSITE = '1' }
     $UpgradeFixture = Join-Path $TemporaryRoot 'upgrade-fixture'
     $UpgradeHelper = Join-Path $ProjectRoot 'desktop/tests/upgrade-data-smoke.cjs'
+    # .NET and Node can resolve different Windows temp roots. Bind both helpers to
+    # the same root that this lifecycle has already checked and used for ownership.
+    $CompatibilityTemp = [System.IO.Path]::GetTempPath()
+    $CompatibilityEnvironment = @{ TEMP = $CompatibilityTemp; TMP = $CompatibilityTemp }
     $PriorData = (Invoke-Native -FileName $NodeExe -Arguments @(
         $UpgradeHelper, $InstallRoot, '--mode', 'seed', '--fixture', $UpgradeFixture
-    ) -TimeoutSeconds 180) | ConvertFrom-Json
+    ) -Environment $CompatibilityEnvironment -TimeoutSeconds 180) | ConvertFrom-Json
     foreach ($Name in @('priorBackendSeeded', 'priorExactMoneyAndCurrency', 'priorCanvasAndTracking', 'priorPackageExported', 'priorEofReopened')) {
         if ($PriorData.$Name -isnot [bool] -or -not $PriorData.$Name) { throw 'Old installed backend did not create the compatibility fixture.' }
     }
@@ -289,7 +293,7 @@ try {
     $Stage = 'upgradedExistingCaseData'
     $UpgradedData = (Invoke-Native -FileName $NodeExe -Arguments @(
         $UpgradeHelper, $InstallRoot, '--mode', 'verify', '--fixture', $UpgradeFixture
-    ) -TimeoutSeconds 240) | ConvertFrom-Json
+    ) -Environment $CompatibilityEnvironment -TimeoutSeconds 240) | ConvertFrom-Json
     foreach ($Name in @('upgradedFactsUnchanged', 'upgradedCanvasAndTracking', 'legacyPackageRoundTrip',
         'upgradedAnalysisPaths', 'upgradedAnalysisCycles', 'upgradedAtomicCanvas', 'upgradedEofReopened', 'upgradedSourceFilesUnchanged')) {
         if ($UpgradedData.$Name -isnot [bool] -or -not $UpgradedData.$Name) { throw 'Existing data did not survive upgrade or package migration.' }
