@@ -8,6 +8,8 @@
 
 研究参考了 [Linear](https://linear.app/) 的定位与产品界面顺序、[PowerToys README](https://github.com/microsoft/PowerToys#readme) 的简短导航与渐进展开、[DuckDB README](https://github.com/duckdb/duckdb#readme) 的最小可用示例。仅参考信息组织，没有复制其品牌、图片或宣传能力。GitHub 内容遵循[官方 README 说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes)。
 
+首屏进一步参考 [Ponytail](https://github.com/DietrichGebert/ponytail) 的品牌标题、短口号、状态徽章与 About 组织：使用原有路径标识、原生 `FundsTrace` 主标题及“让资金往来，清晰可见。”，展示真实 Release、Windows x64、MIT 和 Stars。动态信息由 Shields.io 读取公开仓库数据；徽章点击可到达对应发布、许可或说明。未确认 FundsTrace 的 Trendshift 条目或排名，因此没有借用其他仓库的排名徽章。
+
 ## 当前素材
 
 | 内容 | 入口与规格 |
@@ -52,7 +54,7 @@ README 使用 GitHub 原生 Markdown、`picture/source/img`、`details/summary` 
 - 前端可重复安装与 TypeScript／Vite 构建通过；用于启动本轮合成预览，不代表新增业务改动。
 - 实际查看 1440px 桌面、390px 窄屏的深／浅主题；页面宽度与 scrollWidth 相同，六张主图均成功解码。
 - 浏览器启用减少动态效果后，两个 GIF 的 currentSrc 均变为对应 PNG；深浅字标也按主题切换。
-- 113 个相对文件引用存在；主页 MP4 引用为 0。两张 SVG 可解析、带 title／desc、无脚本／外部位图／字体请求。
+- 相对文件引用均存在；主页 MP4 引用为 0。两张 SVG 可解析、带 title／desc、无脚本／外部位图／字体请求。
 - 两段 GIF 逐帧解码通过，帧数、时长及尺寸与上表一致；静态封面与首帧像素一致。已查看各步骤原始画面与渲染结果。
 - 合成输入／当前 Excel 导出逐笔校验通过；Node 生成脚本语法和 git diff --check 通过。当前候选仅涉及文档与展示素材，未重复运行全仓业务回归。
 

@@ -1,13 +1,24 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/fundstrace-wordmark-dark.svg">
-  <img alt="FundsTrace · 资金流水追踪与关联分析" src="docs/brand/fundstrace-wordmark-light.svg" width="1080">
-</picture>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/fundstrace-mark.svg">
+    <img alt="FundsTrace 追踪路径标识" src="docs/brand/fundstrace-mark-light.svg" width="64" height="64">
+  </picture>
+</p>
 
-**导入资金流水，追踪往来关系。**
+<h1 align="center">FundsTrace</h1>
 
-本地资金流水追踪与关联分析工具。按案件核对数据、探索交易路径，整理成图谱、明细与报告。
+<p align="center"><strong>让资金往来，清晰可见。</strong></p>
 
-**[下载 Windows 版](https://github.com/Eysn0130/FundsTrace/releases/latest)** · [三步上手](#三步走完一次分析) · [操作演示](#看看实际操作) · [使用指南](docs/workspace-guide.md)
+<p align="center">本地资金流水追踪与关联分析工具。<br>按案件核对数据、探索交易路径，整理成图谱、明细与报告。</p>
+
+<p align="center">
+  <a href="https://github.com/Eysn0130/FundsTrace/releases/latest"><img src="https://img.shields.io/github/v/release/Eysn0130/FundsTrace?style=flat-square&amp;color=087D65&amp;label=release" alt="GitHub 最新发布版本"></a>
+  <a href="docs/desktop-delivery.md"><img src="https://img.shields.io/badge/Windows-x64-151A1E?style=flat-square" alt="平台：Windows x64"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Eysn0130/FundsTrace?style=flat-square&amp;color=151A1E" alt="许可证：MIT"></a>
+  <a href="https://github.com/Eysn0130/FundsTrace/stargazers"><img src="https://img.shields.io/github/stars/Eysn0130/FundsTrace?style=flat-square&amp;color=151A1E&amp;label=stars" alt="GitHub 实时 Stars"></a>
+</p>
+
+<p align="center"><strong><a href="https://github.com/Eysn0130/FundsTrace/releases/latest">下载 Windows 版</a></strong> · <a href="#三步走完一次分析">三步上手</a> · <a href="#看看实际操作">操作演示</a> · <a href="docs/workspace-guide.md">使用指南</a></p>
 
 [![FundsTrace v0.1.5 真实工作台：12 笔合成流水经三路分流，在远帆供应归集；点击查看原图](docs/media/showcase/hero.png)](docs/media/showcase/workspace-focus.png)
 
