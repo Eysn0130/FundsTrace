@@ -1121,11 +1121,44 @@ test('canvas A-B-A activation revokes neighborhood, crop and stale label work ev
   assert.equal(h.run('graphPaints'), paints); assert.equal(h.run('labelShapeWrites'), shapes);
 });
 
-function installCanvasControls(h) {
+function installCanvasControls(h, size = 1000) {
   h.run('globalThis.realCanvasBinder=bindCanvases;globalThis.realCanvasLoader=loadGraph');
-  installSyntheticHub(h);
+  installSyntheticHub(h, size);
   h.run('loadGraph=realCanvasLoader;realCanvasBinder();state.canvasId=10;state.canvasName="Canvas A"');
 }
+
+test('cloning a formatted selected edge loads the named canvas after G6 retires its old label geometry', async () => {
+  const h = harness('app.js'); installCanvasControls(h, 4);
+  h.run('relayout=async()=>{};selectItem(state.graph.getEdges()[0])');
+  await h.element('#edgeTypeSel').onchange({target:{value:'line'}});
+  const oldEdge = h.run('_selItem'), graph = h.run('state.graph'), clear = graph.clear.bind(graph);
+  assert.ok(oldEdge, 'formatting retains the selected relationship for the following clone');
+  assert.equal(oldEdge.getModel().type, 'line');
+  let retired = false, retiredGeometryReads = 0;
+  // G6 clear can retire a path before its Item model/destroyed flag changes.
+  // A later label cleanup must not ask that path to recompute its geometry.
+  oldEdge.getKeyShape = () => {
+    if (retired) { retiredGeometryReads++; throw new TypeError('Synthetic retired G6 label path'); }
+    return null;
+  };
+  graph.clear = () => { clear(); retired = true; };
+  h.network(path => response(path === '/api/canvases/clone'
+    ? {canvas_id:20,name:'Selected edge clone',copied:4}
+    : h.run('JSON.parse(JSON.stringify(syntheticFullGraph))')));
+  assert.equal(await h.element('#btnCanvasClone').onclick(), true);
+  const request = JSON.parse(h.requests.find(item => item.path === '/api/canvases/clone').options.body);
+  assert.equal(request.from_canvas, 10); assert.equal(request.snapshot.nodes.length, 4);
+  assert.equal(request.snapshot.edges[0].type, 'line', 'the committed clone retains the selected edge formatting');
+  assert.equal(h.run('state.canvasId'), 20); assert.equal(h.run('state.canvasName'), 'Selected edge clone');
+  assert.equal(h.run('state.graphLoading'), false); assert.equal(h.run('state.graphInited'), true);
+  assert.equal(h.run('state.lastGraph.nodes.length'), 4); assert.equal(h.run('state.graph.getNodes().length'), 4);
+  assert.equal(h.run('state.graph.getEdges()[0].getModel().type'), 'line');
+  assert.equal(h.run('_selItem'), null); assert.equal(h.run('state.graphView.selectedEdge'), null);
+  assert.equal(h.run('window.FundsCanvasActions.status().pending'), false);
+  assert.equal(h.run('window.FundsCanvasActions.status().unknown'), false);
+  assert.equal(oldEdge.getModel().type, 'line', 'a readable old model does not imply live rendering geometry');
+  assert.equal(retiredGeometryReads, 0);
+});
 
 test('a pending canvas switch revokes the old graph before neighborhood, export or save actions', async () => {
   const h = harness('app.js'); installCanvasControls(h);

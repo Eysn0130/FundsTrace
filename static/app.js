@@ -450,6 +450,9 @@ function activateCanvas(id) {
   resetNodeWorkspace();
   cancelGraphLayout();
   revokeZoomOptimization();
+  // Selection cleanup redraws edge labels. Release it while the old graph's
+  // paths and view are still live, before clear retires their geometry.
+  closeDrawer();
   // Revoke the prior graph before any request can yield. Its data must never
   // acquire the new canvas ID while the replacement graph is still loading.
   state.graphLoading = true;
@@ -462,7 +465,7 @@ function activateCanvas(id) {
   state.justAdded = null; state.forceFit = true;
   if (state.graph) state.graph.clear();
   state.graphInited = false;
-  state.canvasId = id; state.canvasGeneration += 1; resetGraphView(); revokePhotoCrop(true); closeDrawer();
+  state.canvasId = id; state.canvasGeneration += 1; resetGraphView(); revokePhotoCrop(true);
   updateHeader(); updateGraphViewStatus();
 }
 function graphMetric(phase, extra = {}) {

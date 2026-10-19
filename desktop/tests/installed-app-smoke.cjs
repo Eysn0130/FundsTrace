@@ -7,7 +7,7 @@ const fs = require('node:fs/promises');
 const net = require('node:net');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
-const { runInstalledGraphJourney } = require('./installed-graph-journey.cjs');
+const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
 
 const SENTINEL = 'FundsTrace synthetic installer lifecycle v1\n';
 const SEED_CASE = 'SYN prior installer lifecycle case';
@@ -437,8 +437,10 @@ async function portClosed(port) {
   });
   await check('backendReleasedAfterClose', () => until(() => portClosed(Number(new URL(page.origin).port)), 15000));
   report.status = 'passed';
-})().catch(() => {
+})().catch(error => {
   report.status = 'failed'; report.failedCheck = stage; process.exitCode = 1;
+  const detail = safeJourneyFailure(error);
+  if (detail) report.failureDetail = detail;
 }).finally(async () => {
   // Best effort graceful close, then only handles spawned above. No process-name
   // discovery, user-data removal, or termination of unrelated installations.

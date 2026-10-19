@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { fixtureCsv, assertGraph, assertEdgeTypes, assertImportCompletion, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
+const { fixtureCsv, assertGraph, assertEdgeTypes, assertImportCompletion, safeJourneyFailure, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
 
 function observed() {
   // Independent two-transfer observation with exact decimal strings. The
@@ -106,4 +106,14 @@ test('installed journey reports fixed, distinct mandatory behavior checks', () =
   assert.ok(REQUIRED_CHECKS.includes('installedNeighborhoodTrackVisible'));
   assert.ok(REQUIRED_CHECKS.includes('installedCanvasSaveRestoreTypes'));
   assert.ok(REQUIRED_CHECKS.every(name => /^installed[A-Z][A-Za-z]+$/.test(name)));
+});
+
+test('failure diagnostics retain only known step and failure enums', () => {
+  const error = new Error('private URL and business content must not leave the helper');
+  error.installedGraphDiagnostic = { step: 'canvas-submit', kind: 'timeout', payload: error.message };
+  assert.deepEqual(safeJourneyFailure(error), { step: 'canvas-submit', kind: 'timeout' });
+  for (const detail of [{ step: error.message, kind: 'timeout' }, { step: 'canvas-submit', kind: error.message }]) {
+    assert.equal(safeJourneyFailure({ installedGraphDiagnostic: detail }), null);
+  }
+  assert.equal(safeJourneyFailure(error.message), null);
 });

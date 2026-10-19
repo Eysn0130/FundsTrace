@@ -12,6 +12,15 @@ const SUMMARIES = Object.freeze(['SYN installed chain first', 'SYN installed cha
 const MAPPING = Object.freeze({ trade_no: '交易流水号', trade_time: '交易时间', payer_name: '付款户名',
   payer_account: '付款账号', payee_name: '收款户名', payee_account: '收款账号', amount: '交易金额', currency: '币种', summary: '摘要' });
 const CANVAS = 'SYN installed saved graph';
+const JOURNEY_STEPS = new Set(['graph-facts', 'finder-open', 'finder-query', 'finder-locate', 'finder-close',
+  'graph-visible', 'edge-pointer', 'style-tab', 'style-select', 'style-confirm', 'canvas-open', 'canvas-fill',
+  'canvas-submit', 'canvas-closed', 'canvas-activated', 'canvas-clone-verify', 'canvas-default', 'canvas-restored',
+  'history-undo', 'history-redo', 'case-empty', 'case-return']);
+function safeJourneyFailure(error) {
+  const detail = error?.installedGraphDiagnostic;
+  return detail && JOURNEY_STEPS.has(detail.step) && ['assertion', 'timeout', 'runtime'].includes(detail.kind)
+    ? { step: detail.step, kind: detail.kind } : null;
+}
 const REQUIRED_CHECKS = Object.freeze([
   'installedGraphModulesLoaded', 'installedCsvPreviewMapping', 'installedCsvCommittedExact',
   'installedQueryExact', 'installedFirstTrackExact', 'installedSecondTrackVisible',
@@ -101,6 +110,7 @@ const GRAPH_PROBE = `(() => {
 })()`;
 
 async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, until, check, createdCase, seedCase, captureGraph }) {
+  let step = null;
   const key = async (name, code, virtual, modifiers = 0) => {
     for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', {
       type, key: name, code, windowsVirtualKeyCode: virtual, nativeVirtualKeyCode: virtual, modifiers,
@@ -129,28 +139,34 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     if (frame) {
       // Tracking deliberately preserves the camera. Find > Locate all is the
       // user's explicit framing action, without changing selection or members.
+      step = 'graph-facts';
       await until(async () => {
         try { assertTrackedGraph(await evaluate(GRAPH_PROBE), ids, count); return true; }
         catch { return false; }
       }, 20000);
       const selectionProbe = `({ nodes: [...state.graphSelection.ids].map(String).sort(), edge: state.graphView.selectedEdge })`;
       const selection = await evaluate(selectionProbe);
+      step = 'finder-open';
       await clickElement(`document.querySelector('#ribbonTab-common')`);
       await clickElement(`document.querySelector('#btnFindNode')`);
       await until(() => evaluate(`!document.querySelector('#findNodePopover').hidden`), 10000);
+      step = 'finder-query';
       await fill('#graphFindInput', 'SYN-INST-');
       await clickElement(`document.querySelector('#btnGraphFindSearch')`);
       await until(() => evaluate(`document.querySelectorAll('#graphFindResults .find-result').length === ${visible.length}
         && !document.querySelector('#btnGraphFindAll').disabled`), 10000);
+      step = 'finder-locate';
       await clickElement(`document.querySelector('#btnGraphFindAll')`);
       await until(() => evaluate(`document.querySelector('#graphFindStatus').dataset.state === 'done'
         && document.querySelector('#findNodePopover').getAttribute('aria-busy') === 'false'
         && document.querySelector('#graphFindStatus').textContent === ${JSON.stringify(`已定位全部 ${visible.length} 个账户`)}`), 15000);
+      step = 'finder-close';
       await clickElement(`document.querySelector('#btnGraphFindClose')`);
       await until(() => evaluate(`document.querySelector('#findNodePopover').hidden`), 10000);
       assert.deepEqual(await evaluate(selectionProbe), selection);
       assertTrackedGraph(await evaluate(GRAPH_PROBE), ids, count);
     }
+    step = 'graph-visible';
     await until(async () => {
       try { assertGraph(await evaluate(GRAPH_PROBE), ids, count, visible); return true; }
       catch { return false; }
@@ -159,6 +175,7 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
   }
   const editedEdge = `${ACCOUNTS[0]}=>${ACCOUNTS[1]}`;
   async function selectEdge() {
+    step = 'edge-pointer';
     // Read the live G6 path, then let Chromium deliver an actual pointer click.
     // Ratios away from the label gap also avoid either account's hit area.
     const points = await evaluate(`(() => {
@@ -186,12 +203,13 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
   async function type(value) {
     const expected = renderedEdgeTypes(await evaluate(GRAPH_PROBE));
     await selectEdge();
+    step = 'style-tab';
     await clickElement(`document.querySelector('#ribbonTab-style')`);
-    // Expanded styling is inline; the compact ribbon exposes the real popover.
-    await clickElement(`document.querySelector('.ribbon-tabbar [data-ribbon-collapse="true"]')`);
-    await clickElement(`document.querySelector('#btnEdgeStyle')`);
+    // The expanded style tab exposes this select inline.
+    step = 'style-select';
     await select('#edgeTypeSel', value);
     expected[editedEdge] = value;
+    step = 'style-confirm';
     await until(async () => {
       const snapshot = await evaluate(GRAPH_PROBE);
       try { assert.equal(snapshot.ready, true); assertEdgeTypes(snapshot, expected); return true; }
@@ -199,15 +217,17 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     }, 15000);
     assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === ${JSON.stringify(value)}
       && state.graphView.selectedEdge === ${JSON.stringify(editedEdge)}`), true);
-    await clickElement(`document.querySelector('#btnEdgeStyle')`);
-    await clickElement(`document.querySelector('#ribbonCompact [data-ribbon-collapse="false"]')`);
     return expected;
   }
   async function prompt(selector, name) {
+    step = 'canvas-open';
     await clickElement(`document.querySelector(${JSON.stringify(selector)})`);
     await until(() => evaluate(`!!document.querySelector('#canvasActionForm[open]')`), 10000);
+    step = 'canvas-fill';
     await fill('#canvasActionName', name);
+    step = 'canvas-submit';
     await clickElement(`document.querySelector('#canvasActionSubmit')`);
+    step = 'canvas-closed';
     await until(() => evaluate(`!document.querySelector('#canvasActionForm[open]')`), 15000);
   }
   async function rowAction(flowId, action) {
@@ -340,28 +360,32 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       clonedTypes = await type('line');
       await clickElement(`document.querySelector('#ribbonTab-common')`);
       await prompt('#btnCanvasClone', CANVAS);
+      step = 'canvas-activated';
       await until(() => evaluate(`state.canvasId > 0 && state.canvasName === ${JSON.stringify(CANVAS)} && !state.graphLoading`), 15000);
       await graph(3, flowIds);
+      step = 'canvas-clone-verify';
       assertEdgeTypes(await evaluate(GRAPH_PROBE), clonedTypes);
       assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'line'`), true);
     });
     await check('installedCanvasSaveRestoreTypes', async () => {
       savedTypes = await type('polyline'); await prompt('#btnCanvasSave', CANVAS);
       await until(() => evaluate(`[...document.querySelectorAll('#toasts .toast')].some(node => node.textContent.includes('形态已保存'))`), 10000);
+      step = 'canvas-default';
       await select('#canvasSel', '0'); await graph(3, flowIds);
-      await type('quadratic');
+      await type('line');
+      step = 'canvas-restored';
       await select('#canvasSel', CANVAS, true); await graph(3, flowIds);
       assertEdgeTypes(await evaluate(GRAPH_PROBE), savedTypes);
       assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'polyline'`), true);
     });
     await check('installedCanvasUndoRedoTypes', async () => {
-      redoneTypes = await type('line'); await clickElement(`document.querySelector('#btnUndo')`);
+      redoneTypes = await type('line'); step = 'history-undo'; await clickElement(`document.querySelector('#btnUndo')`);
       await until(async () => {
         try { const snapshot = await evaluate(GRAPH_PROBE); assert.equal(snapshot.ready, true); assertEdgeTypes(snapshot, savedTypes); return true; }
         catch { return false; }
       }, 15000);
       assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'polyline'`), true);
-      await graph(3, flowIds); await clickElement(`document.querySelector('#btnRedo')`);
+      await graph(3, flowIds); step = 'history-redo'; await clickElement(`document.querySelector('#btnRedo')`);
       await until(async () => {
         try { const snapshot = await evaluate(GRAPH_PROBE); assert.equal(snapshot.ready, true); assertEdgeTypes(snapshot, redoneTypes); return true; }
         catch { return false; }
@@ -370,19 +394,26 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       await graph(3, flowIds);
     });
     await check('installedCaseIsolationAndReturn', async () => {
+      step = 'case-empty';
       await select('#caseSelect', seedCase, true);
       await until(() => evaluate(`!state.graphLoading && !layoutJob && state.stats.flows === 0
         && state.search.total === 0 && state.lastGraph.nodes.length === 0 && state.tracked.size === 0
         && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(seedCase)}`), 15000);
+      step = 'case-return';
       await select('#caseSelect', createdCase, true);
       await until(() => evaluate(`state.stats.flows === 3 && state.search.total === 3 && state.canvasId === 0
         && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(createdCase)}`), 15000);
       await graph(3, flowIds);
     });
+  } catch (error) {
+    const failure = new Error('INSTALLED_GRAPH_JOURNEY_FAILED');
+    failure.installedGraphDiagnostic = { step, kind: error?.code === 'ERR_ASSERTION' ? 'assertion'
+      : error?.message === 'TIMEOUT' ? 'timeout' : 'runtime' };
+    throw failure;
   } finally {
     // The sole deletion target is this operation's fresh temporary CSV folder.
     await fs.rm(directory, { recursive: true, force: true });
   }
 }
 
-module.exports = { ACCOUNTS, AMOUNTS, SUMMARIES, REQUIRED_CHECKS, fixtureCsv, assertGraph, assertEdgeTypes, assertImportCompletion, runInstalledGraphJourney };
+module.exports = { ACCOUNTS, AMOUNTS, SUMMARIES, REQUIRED_CHECKS, fixtureCsv, assertGraph, assertEdgeTypes, assertImportCompletion, safeJourneyFailure, runInstalledGraphJourney };
