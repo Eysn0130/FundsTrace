@@ -695,6 +695,13 @@ class CanvasRenameIn(BaseModel):
     name: str
 
 
+class CanvasFromFlowsIn(BaseModel):
+    case_id: int = Field(gt=0)
+    name: str = Field(min_length=1, max_length=60)
+    flow_ids: List[int]
+    snapshot: dict
+
+
 @app.get("/api/canvases")
 def canvases_list(case_id: int = 1):
     """画布列表（不含快照体，避免大响应）"""
@@ -721,6 +728,42 @@ def canvas_save(body: CanvasSaveIn):
         r = db.q("insert into canvases(case_id, name, snapshot) values (?,?,?) returning id",
                  [body.case_id, name, snap])[0]
         return {"ok": True, "canvas_id": r["id"], "name": name}
+
+
+@app.post("/api/canvases/from-flows")
+def canvas_from_flows(body: CanvasFromFlowsIn):
+    """Create a dedicated analysis canvas and its membership as one operation.
+
+    Retries reuse only marked canvases with the exact current flow set. Display
+    names are not identifiers; user canvases and modified sets remain untouched.
+    The marker contains no IDs, so case-package remapping stays lossless.
+    """
+    with _case_transaction(body.case_id):
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "画布名称不能为空")
+        ids = sorted(_require_flows(body.case_id, body.flow_ids))
+        if not ids:
+            raise HTTPException(400, "请选择需要上图的流水")
+        candidates = db.q(
+            "select id,name from canvases where case_id=? "
+            "and json_extract_string(snapshot, '$.analysisOrigin')='cycle.v1' order by id",
+            [body.case_id])
+        for candidate in candidates:
+            tracked = [row["flow_id"] for row in db.q(
+                "select flow_id from tracked_flows where case_id=? and canvas_id=? order by flow_id",
+                [body.case_id, candidate["id"]])]
+            if tracked == ids:
+                return {"ok": True, "canvas_id": candidate["id"], "name": candidate["name"], "added": 0}
+        snapshot = {**body.snapshot, "analysisOrigin": "cycle.v1"}
+        canvas_id = db.q("insert into canvases(case_id,name,snapshot) values (?,?,?) returning id",
+                         [body.case_id, name, json.dumps(snapshot, ensure_ascii=False)])[0]["id"]
+        marks = ",".join("?" for _ in ids)
+        db.x(f"insert into tracked_flows(case_id,flow_id,canvas_id) "
+             f"select ?,id,? from flows where case_id=? and id in ({marks})",
+             [body.case_id, canvas_id, body.case_id, *ids])
+        return {"ok": True, "canvas_id": canvas_id, "name": name, "added": len(ids)}
+
 
 @app.get("/api/canvases/{canvas_id}")
 def canvas_load(canvas_id: int, case_id: int = 1):

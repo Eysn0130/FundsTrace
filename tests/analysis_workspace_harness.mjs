@@ -653,19 +653,17 @@ test('a detected cycle opens on its own canvas instead of appending to the defau
   assert.ok(button, '每条闭环都应有一键上图入口');
   assert.match(button.dataset.canvas, /环流 /);
   h.network(path => {
-    if (path.startsWith('/api/canvases?')) return response([]);
-    if (path === '/api/canvases/save') return response({ ok: true, canvas_id: 41, name: '环流' });
-    if (path === '/api/track') return response({ ok: true, added: 3 });
+    if (path === '/api/canvases/from-flows') return response({ ok: true, canvas_id: 41, name: '环流', added: 3 });
     return response({});
   });
   await button.click(); await flush();
-  const save = h.requests.find(item => item.path === '/api/canvases/save'); assert.ok(save, feedback(h));
+  const save = h.requests.find(item => item.path === '/api/canvases/from-flows'); assert.ok(save, feedback(h));
   const saved = JSON.parse(save.options.body);
   assert.equal(saved.case_id, 1);
   assert.match(saved.name, /^环流 /);
   assert.deepEqual(saved.snapshot.nodes, []);
-  const track = h.requests.find(item => item.path === '/api/track'); assert.ok(track);
-  assert.deepEqual(JSON.parse(track.options.body), { case_id: 1, flow_ids: [17, 18, 19], canvas_id: 41 });
+  assert.deepEqual(saved.flow_ids, ['17', '18', '19']);
+  assert.equal(h.requests.some(item => item.path === '/api/track' || item.path === '/api/canvases/save'), false);
   const bodies = h.requests.filter(item => item.options?.body).map(item => JSON.parse(item.options.body));
   assert.equal(bodies.some(body => body.canvas_id === 0), false, '不得写默认画布');
   assert.equal(button.textContent, '已上图 3 笔');
@@ -675,29 +673,25 @@ test('a detected cycle opens on its own canvas instead of appending to the defau
   assert.equal(link?.getAttribute('rel'), 'noopener');
 });
 
-test('an existing cycle canvas is reused instead of duplicated', async () => {
+test('each cycle click asks the atomic service to recheck its dedicated canvas', async () => {
   const h = harness(); await h.ready(); await finishedRun(h, cycleResult());
   const button = h.element('results').querySelector('.btn-track');
-  const name = button.dataset.canvas;
   h.network(path => {
-    if (path.startsWith('/api/canvases?')) return response([{ id: 7, name }]);
-    if (path === '/api/track') return response({ ok: true, added: 0 });
+    if (path === '/api/canvases/from-flows') return response({ ok: true, canvas_id: 7, added: 0 });
     return response({});
   });
   await button.click(); await flush();
-  assert.equal(h.requests.some(item => item.path === '/api/canvases/save'), false, '已有同名画布时不再新建');
-  const track = h.requests.find(item => item.path === '/api/track'); assert.ok(track);
-  assert.equal(JSON.parse(track.options.body).canvas_id, 7);
+  await button.click(); await flush();
+  assert.equal(h.requests.filter(item => item.path === '/api/canvases/from-flows').length, 2);
+  assert.equal(h.requests.some(item => item.path.startsWith('/api/canvases?')), false, 'display names are not canvas identity');
   assert.equal(button.textContent, '已在本画布');
 });
 
-test('a failed cycle tracking request rolls back the new canvas and restores the button', async () => {
+test('an atomic cycle request failure restores its button and retries without compensating deletion', async () => {
   const h = harness(); await h.ready(); await finishedRun(h, cycleResult());
   const button = h.element('results').querySelector('.btn-track');
   h.network(path => {
-    if (path.startsWith('/api/canvases?')) return response([]);
-    if (path === '/api/canvases/save') return response({ ok: true, canvas_id: 42, name: '环流' });
-    if (path === '/api/track') return response({ detail: '合成上图失败' }, 503);
+    if (path === '/api/canvases/from-flows') return response({ detail: '合成上图失败' }, 503);
     return response({ ok: true });
   });
   await button.click(); await flush();
@@ -705,7 +699,66 @@ test('a failed cycle tracking request rolls back the new canvas and restores the
   assert.equal(button.disabled, false);
   assert.match(h.element('analysisError').textContent, /合成上图失败/);
   assert.equal(h.element('results').querySelector('.btn-graph'), null);
-  const rollback = h.requests.find(item => item.path === '/api/canvases/42?case_id=1');
-  assert.ok(rollback, '失败的画布必须删除，避免留下空画布');
-  assert.equal(rollback.options.method, 'DELETE');
+  assert.equal(h.requests.some(item => item.options?.method === 'DELETE'), false);
+  h.network(() => response({ ok: true, canvas_id: 42, added: 0 }));
+  await button.click(); await flush();
+  assert.equal(button.textContent, '已在本画布');
+  assert.equal(h.element('results').querySelector('.btn-graph')?.getAttribute('href'), '/?case_id=1&canvas_id=42&focus_edge=17');
+});
+
+test('cycle writes stay on their original case and a late A-B-A reply cannot change current feedback', async () => {
+  const h = harness(); await h.ready(); await finishedRun(h, cycleResult());
+  const button = h.element('results').querySelector('.btn-track'), pending = deferred();
+  h.network(path => path.startsWith('/api/stats?') ? response({flows: 3, accounts: 3}) : pending.promise);
+  await button.click(); await flush();
+  await button.click(); await flush();
+  await h.select(2); await h.select(1);
+  h.run("analysisError('当前案件的新提示')");
+  pending.resolve(response({ ok: true, canvas_id: 41, added: 3 })); await flush();
+  const writes = h.requests.filter(item => item.options?.method === 'POST' && !item.path.startsWith('/api/analysis/'));
+  assert.equal(writes.length, 1, 'one in-flight click issues exactly one complete mutation');
+  assert.equal(JSON.parse(writes[0].options.body).case_id, 1);
+  assert.equal(h.element('analysisError').textContent, '当前案件的新提示');
+  assert.equal(h.element('results').querySelector('.btn-graph'), null);
+});
+
+test('changing result categories revokes a late cycle write failure', async () => {
+  const h = harness(); await h.ready();
+  const value = {...cycleResult(), algorithms: ['cycles', 'outliers'], outliers: {count: 0, outliers: [], sigma: 2.5}};
+  await finishedRun(h, value);
+  const button = h.element('results').querySelector('.btn-track'), pending = deferred();
+  h.network(() => pending.promise); await button.click(); await flush();
+  await h.element('resultTab-outliers').click();
+  pending.resolve(response({detail: '旧结果失败'}, 503)); await flush();
+  assert.equal(h.element('analysisError').textContent, '');
+  assert.equal(h.requests.some(item => item.options?.method === 'DELETE'), false);
+});
+
+test('path ordering is disabled during its analysis request and when paths are unselected', async () => {
+  const h = harness(); await h.ready();
+  assert.equal(h.element('pOrder').disabled, true);
+  await h.algorithms(['paths']); await h.edit('pSrc', '合成甲'); await h.edit('pDst', '合成乙');
+  assert.equal(h.element('pOrder').disabled, false);
+  const pending = deferred(); h.network(() => pending.promise); const running = h.run('run()');
+  assert.equal(h.element('pOrder').disabled, true);
+  pending.resolve(emptyResult(['paths'])); await running;
+  assert.equal(h.element('pOrder').disabled, false);
+});
+
+test('bounded cycle and path searches disclose limits even when they return no findings', async () => {
+  const h = harness(); await h.ready();
+  for (const algorithm of ['cycles', 'paths']) {
+    const value = emptyResult([algorithm]); value[algorithm].truncated = true;
+    h.run(`render(${JSON.stringify(value)},${JSON.stringify([algorithm])})`);
+    assert.match(h.element('results').textContent, /搜索或显示已达上限/);
+    assert.match(h.element('results').textContent, /有界搜索未返回/);
+    assert.match(h.element('results').textContent, /未显示结果不代表不存在/);
+  }
+});
+
+test('cycle details span their seven-column result table', async () => {
+  const h = harness(); await h.ready(); await finishedRun(h, cycleResult());
+  h.network(() => response({rows: [], total: 0}));
+  await h.element('results').querySelector('.btn-detail').click(); await flush();
+  assert.equal(h.element('results').querySelector('.detail-row td')?.getAttribute('colspan'), '7');
 });

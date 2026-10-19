@@ -96,6 +96,7 @@ function isCurrentCase(context, canvas = true) {
     && (!canvas || (context.canvasId === state.canvasId && context.canvasGeneration === state.canvasGeneration));
 }
 function selectCase(caseId) {
+  revokePendingGraphTarget();
   window.FundsMainAccountsActions?.revoke();
   window.FundsDataToolsActions?.revoke();
   window.FundsCanvasActions?.revoke();
@@ -242,35 +243,53 @@ let pendingCanvasId = 0;
 let pendingFocusEdge = 0;
 /* URL 请求的目标画布；聚焦必须等它真的激活，否则会选中默认画布里的同名流水。 */
 let requestedCanvasId = 0;
+let pendingGraphContext = null;
+function revokePendingGraphTarget() {
+  pendingCanvasId = requestedCanvasId = pendingFocusEdge = 0; pendingGraphContext = null;
+  const url = new URL(window.location.href);
+  url.searchParams.delete('canvas_id'); url.searchParams.delete('focus_edge');
+  window.history.replaceState(null, '', url);
+}
 async function loadCases() {
   state.cases = await api('/api/cases');
   const sel = $('#caseSelect');
   sel.innerHTML = state.cases.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   const params = new URLSearchParams(window.location.search);
   const requested = params.get('case_id');
-  pendingCanvasId = Number(params.get('canvas_id') || 0) || 0;
-  requestedCanvasId = pendingCanvasId;
-  pendingFocusEdge = Number(params.get('focus_edge') || 0) || 0;
+  const canvasId = Number(params.get('canvas_id') || 0) || 0;
+  const focusEdge = /^[1-9]\d*$/.test(params.get('focus_edge') || '') ? params.get('focus_edge') : 0;
   const saved = requested || preferenceStorage.getItem('fund_case');
   selectCase((saved && state.cases.some(c => c.id == saved)) ? Number(saved) : state.cases[0].id);
+  // A missing requested case cannot grant its canvas/focus target to a fallback.
+  if (!requested || String(state.caseId) === requested) {
+    pendingCanvasId = requestedCanvasId = canvasId; pendingFocusEdge = focusEdge;
+    if (canvasId || focusEdge) pendingGraphContext = { ...caseContext(), ready: false };
+  }
 }
 
 /* 出图后把第一笔资金流向选中并拉进视野：不改追踪事实，只动选择与相机。 */
 async function applyPendingFocusEdge() {
   const flowId = pendingFocusEdge;
-  if (!flowId || !state.graph || !state.caseId) return false;
+  const context = pendingGraphContext;
+  if (!flowId || !context || !isCurrentCase(context, false) || !state.graph || !state.caseId || state.graphLoading) return false;
   // 还停在默认画布（目标画布尚未激活）时先不消费聚焦请求。
   if (requestedCanvasId && state.canvasId !== requestedCanvasId) return false;
+  context.ready = true;
+  // Initial layout owns the final coordinates. Its completion retries this
+  // pending focus instead of allowing its camera fit to overwrite the target.
+  if (layoutJob) return false;
   // 用接口返回的图谱数据定位这条流水所属的关系边，再取它的 G6 图元；
   // 边模型不一定带 ids，直接读模型会漏。
-  const edge = (state.lastGraph.edges || []).find(item => (item.ids || []).includes(flowId));
+  const edge = (state.lastGraph.edges || []).find(item => (item.ids || []).some(id => String(id) === String(flowId)));
   if (!edge) return false;
   const item = state.graphView.edgeItems.get(edgeKey(edge)) || state.graph.findById(edgeKey(edge));
   if (!item) return false;
-  pendingFocusEdge = 0;
+  const endpoints = [state.graph.findById(edge.source), state.graph.findById(edge.target)].filter(Boolean);
+  if (!endpoints.length) return false;
+  revokePendingGraphTarget();
   closeDrawer(false); selectItem(item); refreshSelectedEdgeAppearance();
-  await focusGraphItems([item], { allowHistoryBusy: true });
-  return true;
+  const result = await focusGraphItems(endpoints, { allowHistoryBusy: true });
+  return !!result?.ok;
 }
 // 聚焦在「画布切换完成」之后调用：applyCanvasSnapshot 会重置视图，先选中会被清掉。
 
@@ -474,6 +493,7 @@ function resetGraphView() {
   graphMetric('reset');
 }
 function activateCanvas(id) {
+  if (pendingGraphContext && requestedCanvasId !== id) revokePendingGraphTarget();
   window.FundsCanvasActions?.revoke();
   caseWorkspace?.revoke();
   exportWorkspace?.revoke();
@@ -2064,6 +2084,7 @@ async function refreshCanvasList(keepId) {
   const sel = $('#canvasSel');
   const cur = keepId != null ? keepId : (pendingCanvasId || state.canvasId || 0);
   const wanted = pendingCanvasId;
+  const target = pendingGraphContext;
   pendingCanvasId = 0;
   sel.innerHTML = '<option value="0">默认画布</option>' +
     lst.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
@@ -2075,12 +2096,13 @@ async function refreshCanvasList(keepId) {
     // 直接 activateCanvas 只会清空图面，不会重新取数。
     setTimeout(() => {
       const node = $('#canvasSel');
-      if (!node || String(state.caseId) === '') return;
+      if (!node || node !== sel || pendingGraphContext !== target || !isCurrentCase(context) || node.value !== String(wanted)) return;
       node.value = String(wanted);
       node.dispatchEvent(new Event('change'));
     }, 0);
     return;
   }
+  if (wanted && resolvedId !== wanted) revokePendingGraphTarget();
   if (resolvedId !== state.canvasId) activateCanvas(resolvedId);
   state.canvasName = state.canvasId
     ? (lst.find(c => c.id === state.canvasId) || {}).name || '' : '';
@@ -2929,6 +2951,7 @@ async function relayout(fit = true, reserveLabels = false, previousLayout = stat
     if(failed){state.layout=previousLayout;window.FundsCanvasEditor?.syncControls?.();}
     layoutStatus(message);
     graphMetric('layout',{outcome:failed?'retained':'committed',attempts:job.attempts.length});
+    if (pendingGraphContext?.ready && isCurrentCase(context)) void applyPendingFocusEdge();
   }
   function fail() {
     if(!current())return;

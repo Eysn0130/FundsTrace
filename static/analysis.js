@@ -55,9 +55,9 @@ function syncAlgorithmFields() {
 }
 function syncAnalysisControls() {
   const busy = analysisBusy(), blocked = busy || !caseId || casesLoading || !!confirmation;
-  for (const input of $$('#analysisParams input, #analysisParams textarea')) input.disabled = blocked;
+  for (const input of $$('#analysisParams input, #analysisParams textarea, #analysisParams select')) input.disabled = blocked;
   for (const [id, algorithms] of [['cycDays', ['cycles']], ['ffWin', ['fast_flows']], ['ffTol', ['fast_flows']], ['subjects', ['cycles', 'fast_flows', 'outliers']],
-    ['pSrc', ['paths']], ['pDst', ['paths']], ['pHops', ['paths']]]) {
+    ['pSrc', ['paths']], ['pDst', ['paths']], ['pHops', ['paths']], ['pOrder', ['paths']]]) {
     $('#' + id).disabled = blocked || !$$('.alg').some(input => input.checked && algorithms.includes(input.value));
   }
   $('#caseSel').disabled = casesLoading || !analysisCases.length;
@@ -268,7 +268,8 @@ function renderResultCategory(name) {
   const subjects = res.subjects?.length && name !== 'paths' ? ` · 对象：${esc(res.subjects.join('、'))}` : '';
   $('#analysisScopeNote').textContent = name === 'paths' ? '按交易边累加，非去重本金。' : '';
   let content = '';
-  if (name === 'cycles') content = card(`环路检测 · ${esc(value.window_days ?? 7)} 天内按时序走完${subjects}`, '资金按时间连续回到起点的闭环：每跳不早于上一跳；回转比例越接近 100% 越像原样回流，需结合原始流水核实。',
+  const boundedScope = value.truncated ? '搜索或显示已达上限；排序仅覆盖本次找到的有界候选，未显示结果不代表不存在。' : '排序仅覆盖本次有界搜索返回的候选。';
+  if (name === 'cycles') content = card(`环路检测 · ${esc(value.window_days ?? 7)} 天内按时序走完${subjects}`, `时序相容的闭环线索：每跳不早于上一跳；回转比例为近似值，时序与比例不证明同一笔本金或异常性质。${boundedScope}`,
     value.cycles.length ? tbl(['序号', '环路路径', '跳数', '交易边金额合计', '回转比例', '时序（起 → 止）', '明细'], value.cycles.map((item, index) => {
       const ids = item.edges.map(edge => String(edge.id)).join(',');
       const closed = item.loop_names || [...item.accounts_names, item.accounts_names[0]];
@@ -280,9 +281,9 @@ function renderResultCategory(name) {
         ? `${esc(item.start_time)} → ${esc(item.end_time)}${item.span_days != null ? `（${esc(item.span_days)} 天）` : ''}`
         : item.span_days != null ? `${esc(item.span_days)} 天` : '—';
       const canvasName = `环流 ${closed.join('→')}`.slice(0, 60);
-      const firstFlow = Number(item.edges?.[0]?.id || 0);
+      const firstFlow = String(item.edges?.[0]?.id || '');
       return `<tr data-ids="${esc(ids)}" data-first="${esc(firstFlow)}"><td class="analysis-sequence">${index + 1}</td><td>${esc(closed.join(' → '))}</td><td class="analysis-hops">${esc(item.len)} 跳</td><td class="amt">${money(item.total, item.currency)}</td><td class="amt" title="${esc(ratioTitle)}">${ratio}</td><td>${timing}</td><td class="analysis-table-action"><button class="btn small btn-detail" type="button" aria-expanded="false">查看明细</button><button class="btn small btn-track" type="button" data-canvas="${esc(canvasName)}" title="把这条闭环的 ${esc(item.len)} 笔流水放到独立画布（不与已有上图混在一起）">一键上图</button></td></tr>`;
-    }).join(''), '环路检测') : '<div class="analysis-empty">当前参数下未发现资金闭环</div>', value.count);
+    }).join(''), '环路检测') : '<div class="analysis-empty">当前有界搜索未返回资金闭环线索</div>', value.count);
   if (name === 'fast_flows') content = card(`快进快出 · ${esc(value.window_minutes)} 分钟内 ±${esc(percent(value.tolerance))}${subjects}`, '短窗口内按币种配对转入与转出，差额与时间仅作为复核线索。',
     value.pairs.length ? tbl(['过账账户', '转入', '短窗内转出', '转出合计 / 差额', '最大延迟', '明细'], value.pairs.map(item => {
       const ids = [item.in_flow.id, ...item.out_flows.map(flow => flow.id)].map(String).join(',');
@@ -294,11 +295,11 @@ function renderResultCategory(name) {
     const timeOrder = value.order === 'time';
     const matched = (label, accounts) => accounts && accounts.length > 1
       ? `${esc(label)}（户名匹配 ${esc(accounts.length)} 个账号）` : esc(label);
-    content = card(`${matched(value.src_name || value.src, value.src_accounts)} → ${matched(value.dst_name || value.dst, value.dst_accounts)} · 最大 ${esc(value.max_hops)} 跳 · ${timeOrder ? '时间优先' : '金额优先'}`, '',
+    content = card(`${matched(value.src_name || value.src, value.src_accounts)} → ${matched(value.dst_name || value.dst, value.dst_accounts)} · 最大 ${esc(value.max_hops)} 跳 · ${timeOrder ? '时间优先' : '金额优先'}`, boundedScope,
       value.paths.length ? tbl(['序号', '交易边金额合计', '跳数', '首跳 → 末跳', '路径'], value.paths.map((item, index) => {
         const span = `${esc(item.start_time || '—')} → ${esc(item.end_time || '—')}${timeOrder ? (item.continuous ? '（时序连续）' : '（时序不连续）') : ''}`;
         return `<tr><td class="analysis-sequence">${String(index + 1).padStart(2, '0')}</td><td class="amt">${money(item.total, item.currency)}</td><td class="analysis-hops">${esc(item.hops)} 跳</td><td>${span}</td><td>${item.path.map(leg => `<span class="analysis-path-leg">${esc(leg.from_name || leg.from)}<span class="hint"> —${money(leg.amount, leg.currency)}→ </span>${esc(leg.to_name || leg.to)}</span>`).join('')}</td></tr>`;
-      }).join(''), '路径追踪') : '<div class="analysis-empty">当前跳数与参数下未找到可达路径</div>');
+      }).join(''), '路径追踪') : '<div class="analysis-empty">当前有界搜索未返回可达路径</div>');
   }
   $('#results').innerHTML = content; $('#results').setAttribute('aria-labelledby', 'resultTab-' + name);
   renderResultTabs(); bindResultTables();
@@ -324,19 +325,20 @@ async function toggleAnalysisDetail(button) {
   const run = lastRun, revision = resultRevision, context = analysisContext();
   const current = () => isCurrentAnalysis(context) && lastRun === run && resultRevision === revision && row.isConnected && analysisPhase === 'done';
   const ids = [...new Set((row.dataset.ids || '').split(',').filter(Boolean))];
+  const columns = row.children.length;
   const detail = document.createElement('tr'); detail.className = 'detail-row';
-  detail.innerHTML = '<td colspan="6" class="analysis-detail-cell">正在读取流水…</td>'; row.after(detail);
+  detail.innerHTML = `<td colspan="${columns}" class="analysis-detail-cell">正在读取流水…</td>`; row.after(detail);
   button.disabled = true; button.setAttribute('aria-expanded', 'true');
   try {
     const query = new URLSearchParams({ ids: ids.join(','), case_id: String(context.caseId), size: '500' });
     const result = await getJson('/api/flows?' + query);
     if (!current()) return;
     if (!Array.isArray(result.rows)) throw new Error('流水明细格式不正确');
-    detail.innerHTML = `<td colspan="6" class="analysis-detail-cell"><div class="analysis-detail-heading"><span>本次分析相关流水</span><span>已显示 ${count(result.rows.length)} / ${count(result.total ?? ids.length)} 笔 · 最多读取 500 笔</span></div>${result.rows.length ? tableShell(detailTable(result.rows), '相关流水明细') : '<span class="muted">流水已不存在</span>'}</td>`;
+    detail.innerHTML = `<td colspan="${columns}" class="analysis-detail-cell"><div class="analysis-detail-heading"><span>本次分析相关流水</span><span>已显示 ${count(result.rows.length)} / ${count(result.total ?? ids.length)} 笔 · 最多读取 500 笔</span></div>${result.rows.length ? tableShell(detailTable(result.rows), '相关流水明细') : '<span class="muted">流水已不存在</span>'}</td>`;
     button.textContent = '收起明细'; bindResultTables(detail);
   } catch (error) {
     if (!current()) return;
-    detail.dataset.state = 'error'; detail.innerHTML = `<td colspan="6" class="analysis-detail-cell analysis-detail-error" role="alert">明细读取未完成：${esc(error.message)}</td>`; button.textContent = '重试明细';
+    detail.dataset.state = 'error'; detail.innerHTML = `<td colspan="${columns}" class="analysis-detail-cell analysis-detail-error" role="alert">明细读取未完成：${esc(error.message)}</td>`; button.textContent = '重试明细';
   } finally { if (current()) button.disabled = false; }
 }
 async function generateAnalysisReport() {
@@ -395,40 +397,33 @@ $('#resultTabs').onkeydown = event => {
   const next = event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs.at(-1) : tabs[(index + (event.key === 'ArrowLeft' ? -1 : 1) + tabs.length) % tabs.length];
   event.preventDefault(); renderResultCategory(next.dataset.algorithm); $('#resultTab-' + activeResult).focus();
 };
-/* One click opens the closed loop on its own canvas: the analysis page has no
-   canvas binding, and appending to the default canvas would mix this loop with
-   whatever is already tracked there. A canvas with the same name is reused so
-   repeated clicks do not pile up empty copies. */
+/* The service creates/reuses a dedicated canvas and tracks the complete loop
+   in one transaction. Display names never establish a canvas's ownership. */
 const cycleCanvasSnapshot = () => ({ nodes: [], edges: [], display: { layout: 'auto', edgeType: 'quadratic', labelMode: 'auto' } });
 async function trackCycle(button) {
-  if (!caseId || analysisBusy()) return;
+  if (button.disabled || !caseId || analysisBusy() || confirmation || !lastRun || !isCurrentAnalysis(lastRun) || analysisPhase !== 'done') return;
   const row = button.closest('tr');
-  const ids = String(row?.dataset?.ids || '').split(',')
-    .map(value => Number(value)).filter(value => Number.isInteger(value) && value > 0);
+  if (!row || !$('#results').contains(row)) return;
+  const context = analysisContext(), run = lastRun, revision = resultRevision;
+  const current = () => isCurrentAnalysis(context) && lastRun === run && revision === resultRevision && row.isConnected && analysisPhase === 'done';
+  const ids = [...new Set(String(row.dataset.ids || '').split(',').filter(value => /^[1-9]\d*$/.test(value)))];
   if (!ids.length) return;
   const name = String(button.dataset?.canvas || '环流').slice(0, 60);
   const label = button.textContent;
-  let created = 0;
   button.disabled = true; button.textContent = '建画布中…';
   try {
-    const list = await getJson(`/api/canvases?case_id=${caseId}`);
-    const existing = (Array.isArray(list) ? list : []).find(item => item.name === name);
-    let canvasId = existing ? Number(existing.id) : 0;
-    if (!canvasId) {
-      const saved = await api('/api/canvases/save', { case_id: caseId, name, snapshot: cycleCanvasSnapshot() });
-      canvasId = Number(saved?.canvas_id || 0);
-      created = canvasId;
-      if (!canvasId) throw new Error('独立画布创建失败');
-    }
-    const result = await api('/api/track', { case_id: caseId, flow_ids: ids, canvas_id: canvasId });
+    const result = await api('/api/canvases/from-flows', { case_id: context.caseId, name, flow_ids: ids, snapshot: cycleCanvasSnapshot() });
+    if (!current()) return;
+    const canvasId = String(result?.canvas_id || '');
+    if (!/^[1-9]\d*$/.test(canvasId)) throw new Error('独立画布创建结果未确认，请重试');
     const added = Number(result?.added || 0);
     button.disabled = false;
     button.textContent = added ? `已上图 ${count(added)} 笔` : '已在本画布';
-    if (row && !row.querySelector('.btn-graph') && typeof button.after === 'function') {
-      const link = document.createElement('a');
+    if (typeof button.after === 'function') {
+      const link = row.querySelector('.btn-graph') || document.createElement('a');
       link.className = 'btn small btn-graph';
-      const firstFlow = Number(row?.dataset?.first || 0);
-      link.setAttribute('href', `/?case_id=${caseId}&canvas_id=${canvasId}` + (firstFlow ? `&focus_edge=${firstFlow}` : ''));
+      const firstFlow = ids.includes(row.dataset.first) ? row.dataset.first : ids[0];
+      link.setAttribute('href', `/?case_id=${context.caseId}&canvas_id=${canvasId}&focus_edge=${firstFlow}`);
       // 新窗口打开：分析结果留在原页面，回到原窗口不需要重新计算。
       link.textContent = '打开独立画布';
       link.setAttribute('title', '在新窗口打开，保留当前分析结果');
@@ -438,10 +433,9 @@ async function trackCycle(button) {
     }
     analysisError();
   } catch (error) {
+    if (!current()) return;
     button.disabled = false; button.textContent = label;
     analysisError(`上图失败：${error.message || '请求未成功'}`);
-    // Roll the new canvas back so a failed click leaves no empty canvas behind.
-    if (created) void fetch(`/api/canvases/${created}?case_id=${caseId}`, { method: 'DELETE' }).catch(() => {});
   }
 }
 document.addEventListener('click', event => {

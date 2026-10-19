@@ -1,7 +1,9 @@
 """Canvas commands preserve source transactions and independent tracking scopes."""
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
-from test_cases import insert_flow
+from test_cases import exported, import_package, insert_flow
 
 
 def create_canvas(client, case_id, name, snapshot=None):
@@ -175,3 +177,96 @@ def test_canvas_commands_reject_a_canvas_from_another_case(
         "id": canvas_id, "name": "Second canvas", "snapshot": snapshot,
     }
     assert tracking(database, second, canvas_id) == [flow_id]
+
+
+def cycle_canvas(client, case_id, flow_ids, name="Synthetic loop"):
+    return client.post("/api/canvases/from-flows", json={
+        "case_id": case_id, "flow_ids": flow_ids, "name": name,
+        "snapshot": {"nodes": [], "edges": [], "display": {"layout": "auto"}},
+    })
+
+
+def test_cycle_canvas_is_atomic_and_retries_reuse_exact_membership(
+        client, database, make_case, flow_row):
+    case = make_case()
+    ids = [insert_flow(database, case, flow_row, trade_no=f"SYN-{i}") for i in range(3)]
+    ordinary = create_canvas(client, case, "Synthetic loop")
+    track(database, case, ordinary, ids[2])
+    first = cycle_canvas(client, case, ids[:2])
+    assert first.status_code == 200, first.text
+    canvas = first.json()["canvas_id"]
+    assert canvas != ordinary
+    assert first.json()["added"] == 2
+    assert tracking(database, case, canvas) == ids[:2]
+    assert tracking(database, case, ordinary) == ids[2:]
+    assert tracking(database, case, 0) == []
+    retry = cycle_canvas(client, case, [ids[1], ids[0], ids[0]])
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["canvas_id"] == canvas and retry.json()["added"] == 0
+    # Identical display names do not identify different sets of evidence.
+    second = cycle_canvas(client, case, ids[1:]).json()["canvas_id"]
+    assert second not in (canvas, ordinary)
+    assert tracking(database, case, second) == ids[1:]
+    # A user-modified canvas is left alone on retry, even with the origin marker.
+    track(database, case, canvas, ids[2])
+    replacement = cycle_canvas(client, case, ids[:2]).json()["canvas_id"]
+    assert replacement not in (canvas, ordinary, second)
+    assert tracking(database, case, canvas) == ids
+
+
+def test_cycle_canvas_rejects_foreign_or_missing_flows_without_leaving_a_canvas(
+        client, database, make_case, flow_row):
+    first, second = make_case("First"), make_case("Second")
+    own = insert_flow(database, first, flow_row)
+    foreign = insert_flow(database, second, flow_row)
+    for ids in ([own, foreign], [own, 2147483647], []):
+        response = cycle_canvas(client, first, ids)
+        assert response.status_code in (400, 404), response.text
+    assert client.get(f"/api/canvases?case_id={first}").json() == []
+    assert tracking(database, first, 0) == []
+
+
+def test_cycle_canvas_rolls_back_when_tracking_write_fails(
+        client, database, make_case, flow_row, monkeypatch):
+    case = make_case()
+    flow = insert_flow(database, case, flow_row)
+    write = database.x
+
+    def fail_tracking(sql, params=None):
+        if sql.startswith("insert into tracked_flows"):
+            raise RuntimeError("synthetic tracking failure")
+        return write(sql, params)
+
+    monkeypatch.setattr(database, "x", fail_tracking)
+    with pytest.raises(RuntimeError, match="synthetic tracking failure"):
+        cycle_canvas(client, case, [flow])
+    assert client.get(f"/api/canvases?case_id={case}").json() == []
+    assert tracking(database, case, 0) == []
+
+
+def test_concurrent_cycle_clicks_create_one_complete_canvas(client, database, make_case, flow_row):
+    case = make_case()
+    flow = insert_flow(database, case, flow_row)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        responses = list(pool.map(lambda _: cycle_canvas(client, case, [flow]), range(8)))
+    assert all(response.status_code == 200 for response in responses)
+    ids = {response.json()["canvas_id"] for response in responses}
+    assert len(ids) == 1
+    assert tracking(database, case, ids.pop()) == [flow]
+    assert len(client.get(f"/api/canvases?case_id={case}").json()) == 1
+
+
+def test_cycle_canvas_package_round_trip_reuses_remapped_flow_set(client, database, make_case, flow_row):
+    case = make_case()
+    ids = [insert_flow(database, case, flow_row, trade_no=f"SYN-{i}") for i in range(2)]
+    original = cycle_canvas(client, case, ids).json()["canvas_id"]
+    response = import_package(client, exported(client, case))
+    assert response.status_code == 200, response.text
+    imported_case = response.json()["case_id"]
+    imported_canvas = client.get(f"/api/canvases?case_id={imported_case}").json()[0]["id"]
+    imported_ids = tracking(database, imported_case, imported_canvas)
+    assert set(imported_ids).isdisjoint(ids)
+    retry = cycle_canvas(client, imported_case, imported_ids)
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["canvas_id"] == imported_canvas
+    assert tracking(database, case, original) == ids
