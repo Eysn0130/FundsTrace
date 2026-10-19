@@ -110,6 +110,7 @@ function Invoke-Native {
     param([string]$FileName, [string[]]$Arguments = @(), [string]$RawArguments = '',
         [hashtable]$Environment = @{}, [int]$TimeoutSeconds = 180)
     $script:NativeStep = 'configure'
+    $script:NativeDiagnostic = $null
     $Start = [System.Diagnostics.ProcessStartInfo]::new()
     $Start.FileName = $FileName; $Start.WorkingDirectory = $ProjectRoot
     $Start.UseShellExecute = $false; $Start.CreateNoWindow = $true
@@ -140,9 +141,14 @@ function Invoke-Native {
         }
         $Process.WaitForExit()
         $Text = $Output.GetAwaiter().GetResult()
-        [void]$Errors.GetAwaiter().GetResult()
+        $ErrorText = $Errors.GetAwaiter().GetResult()
         $script:NativeStep = 'exit'
-        if ($Process.ExitCode -ne 0) { throw 'Native process failed.' }
+        if ($Process.ExitCode -ne 0) {
+            if ($ErrorText -cmatch '\AUpgrade data smoke failed at ([A-Za-z]{1,80}) line ([0-9]{1,5})\.\r?\n\z') {
+                $script:NativeDiagnostic = "upgrade-data:$($Matches[1]):$($Matches[2])"
+            }
+            throw 'Native process failed.'
+        }
         $script:NativeStep = $null
         return $Text
     } finally { if (-not $TimedOut) { $Process.Dispose() } }
@@ -405,6 +411,7 @@ finally:
     $Report.failureType = $_.Exception.GetType().FullName
     $Report.failureId = $(if ($_.FullyQualifiedErrorId -cmatch '^[A-Za-z0-9_.,:+-]{1,120}$') { $_.FullyQualifiedErrorId } else { 'UNCLASSIFIED' })
     $Report.failedNativeStep = $script:NativeStep
+    $Report.nativeDiagnostic = $script:NativeDiagnostic
     $NativeException = $_.Exception
     while ($null -ne $NativeException) {
         if ($NativeException -is [System.ComponentModel.Win32Exception]) {

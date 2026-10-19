@@ -265,7 +265,9 @@ async function main() {
   } finally { for (const instance of owned) await instance.backend.stop(); }
   process.stdout.write(`${JSON.stringify(checks)}\n`);
 }
-if (require.main === module) main().catch(() => {
-  process.stderr.write(`Upgrade data smoke failed at ${stage}.\n`); process.exitCode = 1;
+if (require.main === module) main().catch(error => {
+  // Keep assertion bodies, process diagnostics and local paths out of CI logs.
+  const line = String(error.stack || '').match(/upgrade-data-smoke\.cjs:(\d+):/)?.[1] || '0';
+  process.stderr.write(`Upgrade data smoke failed at ${stage} line ${line}.\n`); process.exitCode = 1;
 });
 module.exports = { fixtureCsv, facts, normalizeSnapshot, canvasSnapshot };
