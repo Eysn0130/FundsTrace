@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "priorVersion": "0.1.5",
+  "currentVersion": "0.1.6",
+  "failedCheck": null,
+  "failureType": null,
+  "failureId": null,
+  "failedNativeStep": null,
+  "nativeErrorCode": null,
+  "checks": {
+    "ciFreshUser": "passed",
+    "priorInstallerDigest": "passed",
+    "priorInstalled": "passed",
+    "syntheticDataSeeded": "passed",
+    "priorCaseDataWrittenByInstalledBackend": "passed",
+    "upgradedSameIdentity": "passed",
+    "installedResourceIntegrity": "passed",
+    "upgradedExistingCaseData": "passed",
+    "legacyCasePackageCompatible": "passed",
+    "upgradedAnalysisAndAtomicCanvas": "passed",
+    "installedBackendWithoutActivation": "passed",
+    "installedBackendAuthentication": "passed",
+    "syntheticCaseCreatedAndReopened": "passed",
+    "eofShutdown": "passed",
+    "installedApplicationStarted": "passed",
+    "installedApplicationSingleInstance": "passed",
+    "installedApplicationNormalClose": "passed",
+    "installedGraphJourney": "passed",
+    "installedImportRecovery": "passed",
+    "uninstallRegistrationRemoved": "passed",
+    "installedExecutableRemoved": "passed",
+    "syntheticDataRetained": "passed",
+    "cleanup": "passed"
+  },
+  "limits": {
+    "gui": false,
+    "importRecovery": "installed-backend-public-api-process-restart; not Windows interactive task recovery"
+  },
+  "priorDataChecks": {
+    "priorBackendSeeded": true,
+    "priorExactMoneyAndCurrency": true,
+    "priorCanvasAndTracking": true,
+    "priorPackageExported": true,
+    "priorEofReopened": true
+  },
+  "upgradedDataChecks": {
+    "upgradedFactsUnchanged": true,
+    "upgradedCanvasAndTracking": true,
+    "upgradedSourceFilesUnchanged": true,
+    "legacyPackageRoundTrip": true,
+    "upgradedAnalysisPaths": true,
+    "upgradedAnalysisCycles": true,
+    "upgradedAtomicCanvas": true,
+    "upgradedEofReopened": true
+  }
+}
