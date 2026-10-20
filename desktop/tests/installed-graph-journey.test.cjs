@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { fixtureCsv, assertGraph, assertEdgeTypes, assertAutomaticLeafLabel, assertImportCompletion, safeJourneyFailure, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
+const { fixtureCsv, assertGraph, assertEdgeTypes, assertAutomaticLeafLabel, assertPartialViewportLabels, assertImportCompletion, safeJourneyFailure, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
 
 function observed() {
   // Independent two-transfer observation with exact decimal strings. The
@@ -121,6 +121,40 @@ test('neighborhood may hide an endpoint while retaining the full graph and exact
   assert.throws(() => assertGraph(snapshot, ['71', '72', '73'], 2, ['SYN-INST-A', 'SYN-INST-B']));
 });
 
+test('partial viewport acceptance requires settled unforced labels on every retained chain node', () => {
+  function snapshot() {
+    const value = observed();
+    value.viewport = { width: 900, height: 600 };
+    value.labelContext = { mode: 'auto', selectedIds: [], previewIds: [], selectedAccount: null,
+      hoveredAccount: null, selectedEdge: null, exportDepth: 0 };
+    value.labelsSettled = true; value.clipFull = false; value.clipNodeIds = ['SYN-INST-B','SYN-INST-C'];
+    for (const [index,id] of ['SYN-INST-B','SYN-INST-C'].entries()) {
+      const x = 100 + 300 * index, text = `SYN account ${id}`;
+      Object.assign(value.renderedNodes.find(node => node.id === id), { fundsLabel: text, label: text,
+        bodyBounds: { minX: x, minY: 100, maxX: x + 40, maxY: 140 },
+        labelShape: { text, drawn: true, bounds: { minX: x - 20, minY: 150, maxX: x + 60, maxY: 180 } } });
+    }
+    Object.assign(value.renderedNodes.find(node => node.id === 'SYN-INST-A'), { drawnInContainer: false,
+      bodyBounds: { minX: -240, minY: 100, maxX: -200, maxY: 140 } });
+    return value;
+  }
+  assert.doesNotThrow(() => assertPartialViewportLabels(snapshot(), ['71','72','73']));
+  for (const mutate of [
+    value => { for (const node of value.renderedNodes) { node.label = undefined; node.labelShape = null; } },
+    value => { value.renderedNodes.find(node => node.id === 'SYN-INST-B').labelShape.drawn = false; },
+    value => { value.clipNodeIds.push('SYN-INST-A'); },
+    value => { value.clipFull = true; },
+    value => { value.renderedNodes.find(node => node.id === 'SYN-INST-A').drawnInContainer = true; },
+    value => { value.renderedNodes.find(node => node.id === 'SYN-INST-C').bodyBounds.minX = -1; },
+    value => { value.labelsSettled = false; },
+    value => { value.labelContext.hoveredAccount = 'SYN-INST-A'; },
+    value => { value.edges[1].total = '12345678901234.00'; },
+  ]) {
+    const value = snapshot(); mutate(value);
+    assert.throws(() => assertPartialViewportLabels(value, ['71','72','73']));
+  }
+});
+
 test('per-relationship styling rejects changes to another relationship or a missing saved edge', () => {
   const snapshot = observed(); snapshot.renderedEdges[0].type = 'polyline';
   const expected = { 'SYN-INST-A=>SYN-INST-B': 'polyline', 'SYN-INST-B=>SYN-INST-C': 'quadratic' };
@@ -132,10 +166,11 @@ test('per-relationship styling rejects changes to another relationship or a miss
 });
 
 test('installed journey reports fixed, distinct mandatory behavior checks', () => {
-  assert.equal(new Set(REQUIRED_CHECKS).size, 14);
+  assert.equal(new Set(REQUIRED_CHECKS).size, 15);
   assert.ok(REQUIRED_CHECKS.includes('installedKeyboardUndoRedoOutsideGraph'));
   assert.ok(REQUIRED_CHECKS.includes('installedSecondTrackVisible'));
   assert.ok(REQUIRED_CHECKS.includes('installedAutomaticNodeLabelRecovery'));
+  assert.ok(REQUIRED_CHECKS.includes('installedPartialViewportNodeLabels'));
   assert.ok(REQUIRED_CHECKS.includes('installedNeighborhoodTrackVisible'));
   assert.ok(REQUIRED_CHECKS.includes('installedCanvasSaveRestoreTypes'));
   assert.ok(REQUIRED_CHECKS.every(name => /^installed[A-Z][A-Za-z]+$/.test(name)));
@@ -147,6 +182,8 @@ test('failure diagnostics retain only known step and failure enums', () => {
   assert.deepEqual(safeJourneyFailure(error), { step: 'canvas-submit', kind: 'timeout' });
   assert.deepEqual(safeJourneyFailure({ installedGraphDiagnostic: { step: 'node-label-pan-return', kind: 'assertion' } }),
     { step: 'node-label-pan-return', kind: 'assertion' });
+  assert.deepEqual(safeJourneyFailure({ installedGraphDiagnostic: { step: 'node-label-partial-leave', kind: 'assertion' } }),
+    { step: 'node-label-partial-leave', kind: 'assertion' });
   for (const detail of [{ step: error.message, kind: 'timeout' }, { step: 'canvas-submit', kind: error.message }]) {
     assert.equal(safeJourneyFailure({ installedGraphDiagnostic: detail }), null);
   }

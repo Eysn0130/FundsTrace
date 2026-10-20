@@ -17,6 +17,7 @@ GRAPH_CHECKS = (
     "installedGraphModulesLoaded", "installedCsvPreviewMapping", "installedCsvCommittedExact",
     "installedQueryExact", "installedFirstTrackExact", "installedSecondTrackVisible",
     "installedAutomaticNodeLabelRecovery",
+    "installedPartialViewportNodeLabels",
     "installedContextTrackedConsistent", "installedNeighborhoodTrackVisible", "installedCanvasCloneExact",
     "installedCanvasSaveRestoreTypes", "installedCanvasUndoRedoTypes", "installedKeyboardUndoRedoOutsideGraph", "installedCaseIsolationAndReturn",
 )

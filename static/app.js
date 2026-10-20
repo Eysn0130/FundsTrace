@@ -474,7 +474,7 @@ function newGraphView(labelMode) {
     fullIndex: null, index: null, visibleIds: null, root: null, direction: 'both', remaining: 0,
     selectedAccount: null, hoveredAccount: null, selectedEdge: null, previewAccounts: new Set(), policy: null,
     revision: 0, labelTimer: null, zoomSettling: false, fitZoom: 1, viewportFrame: null,
-    clipIndex: null, clipped: new Set(), nodeItems: new Map(), edgeItems: new Map(), bodyWorld: null,
+    clipIndex: null, clipped: new Set(), nodeItems: new Map(), edgeItems: new Map(),
     labeledNodes: new Set(), labeledEdges: new Set(), mutedEdges: new Set(), edgeDensityMode: false,
     drawnNodes: 0, drawnEdges: 0, exportDepth: 0, amountWidths: null, recentNodeIds: new Set(), autoRoutes: {} };
 }
@@ -704,16 +704,12 @@ function graphBodyWorld(item, unproject) {
 }
 function graphScreenBodies() {
   const view=state.graphView;
-  if(!view.bodyWorld) {
-    const unproject=graphUnprojector();
-    view.bodyWorld=new Map([...view.nodeItems].map(([id,item])=>[id,graphBodyWorld(item,unproject)]));
-  }
   const bodies=new Map(),eligible=view.exportDepth?view.nodeItems.keys():(view.clipResult?.nodeIds||view.nodeItems.keys());
   for(const id of eligible) {
-    const b=view.bodyWorld.get(id);if(!b)continue;
-    const a=state.graph.getCanvasByPoint?.(b.minX,b.minY)||{x:b.minX,y:b.minY};
-    const c=state.graph.getCanvasByPoint?.(b.maxX,b.maxY)||{x:b.maxX,y:b.maxY};
-    bodies.set(id,{minX:Math.min(a.x,c.x),minY:Math.min(a.y,c.y),maxX:Math.max(a.x,c.x),maxY:Math.max(a.y,c.y)});
+    // G6 shadows occupy fixed screen pixels. Reprojecting a cached world bbox
+    // scales that padding again, so a label can collide with its own node.
+    const bounds=graphNodeBodyBounds(view.nodeItems.get(id));
+    if(bounds)bodies.set(id,bounds);
   }
   return bodies;
 }
@@ -1110,7 +1106,6 @@ function rebuildGraphViewport() {
   view.nodeItems = new Map(graph.getNodes().map(n => [n.getModel().id,n]));
   view.edgeItems = new Map(graph.getEdges().map(e => [edgeKey(e.getModel()),e]));
   const unproject=graphUnprojector();
-  view.bodyWorld=new Map([...view.nodeItems].map(([id,item])=>[id,graphBodyWorld(item,unproject)]));
   const nodes = [...view.nodeItems.values()].map(n => { const m=n.getModel(); return {id:m.id,x:m.x,y:m.y,size:m.size,isMain:m.data?.is_main===1,bounds:graphIndexedBounds(n,'node',unproject)}; });
   const edges = [...view.edgeItems.values()].map(e => {const m=e.getModel();return {source:m.source,target:m.target,
     controlPoints:m.controlPoints,bounds:graphIndexedBounds(e,'edge',unproject),...state.edgeSnapshotLabels[edgeKey(m)]};});
@@ -2463,7 +2458,7 @@ function renderGraph() {
   view.viewportFrame=null;
   // changeData disposes removed items before emitting geometry notifications.
   // Revoke drawing caches first; rebuild them from the replacement items below.
-  view.clipIndex=null; view.clipResult=null; view.nodeItems=new Map(); view.edgeItems=new Map(); view.bodyWorld=null;
+  view.clipIndex=null; view.clipResult=null; view.nodeItems=new Map(); view.edgeItems=new Map();
   view.revision += 1;
   const full = state.lastGraph;
   const scoped = view.visibleIds ? {
@@ -2987,7 +2982,6 @@ async function relayout(fit = true, reserveLabels = false, previousLayout = stat
       graph.setAutoPaint(false);captureEdgeLabelRatios();view.autoRoutes={...view.autoRoutes};
       for(const item of graph.getEdges())delete view.autoRoutes[edgeKey(item.getModel())];
       writePositions(positions);
-      view.bodyWorld=null;
       refreshGraphRoutesAndLabels(undefined,{labels:false});restoreEdgeLabelPositions();
       // A newer user pan/zoom owns the camera even if its initial layout is
       // still computing. An explicit later Fit remains available.

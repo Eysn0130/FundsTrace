@@ -358,6 +358,7 @@ try {
         'installedGraphModulesLoaded', 'installedCsvPreviewMapping', 'installedCsvCommittedExact',
         'installedQueryExact', 'installedFirstTrackExact', 'installedSecondTrackVisible',
         'installedAutomaticNodeLabelRecovery',
+        'installedPartialViewportNodeLabels',
         'installedContextTrackedConsistent', 'installedNeighborhoodTrackVisible',
         'installedCanvasCloneExact', 'installedCanvasSaveRestoreTypes',
         'installedCanvasUndoRedoTypes', 'installedKeyboardUndoRedoOutsideGraph', 'installedCaseIsolationAndReturn', 'installedGraphScreenshot')) {
