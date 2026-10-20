@@ -14,6 +14,7 @@ const MAPPING = Object.freeze({ trade_no: '交易流水号', trade_time: '交易
 const CANVAS = 'SYN installed saved graph';
 const JOURNEY_STEPS = new Set(['graph-facts', 'finder-open', 'finder-query', 'finder-locate', 'finder-close',
   'graph-visible', 'node-label-auto', 'node-label-pan-out', 'node-label-pan-return',
+  'node-label-partial-zoom', 'node-label-partial', 'node-label-partial-leave', 'node-label-partial-return',
   'edge-pointer', 'style-tab', 'style-select', 'style-confirm', 'canvas-open', 'canvas-fill',
   'canvas-submit', 'canvas-closed', 'canvas-activated', 'canvas-clone-verify', 'canvas-default', 'canvas-restored',
   'history-undo', 'history-redo', 'case-empty', 'case-return']);
@@ -26,6 +27,7 @@ const REQUIRED_CHECKS = Object.freeze([
   'installedGraphModulesLoaded', 'installedCsvPreviewMapping', 'installedCsvCommittedExact',
   'installedQueryExact', 'installedFirstTrackExact', 'installedSecondTrackVisible',
   'installedAutomaticNodeLabelRecovery',
+  'installedPartialViewportNodeLabels',
   'installedContextTrackedConsistent', 'installedNeighborhoodTrackVisible',
   'installedCanvasCloneExact', 'installedCanvasSaveRestoreTypes',
   'installedCanvasUndoRedoTypes', 'installedKeyboardUndoRedoOutsideGraph', 'installedCaseIsolationAndReturn',
@@ -74,13 +76,12 @@ function renderedEdgeTypes(snapshot) {
 function assertEdgeTypes(snapshot, expected) {
   assert.deepEqual(renderedEdgeTypes(snapshot), expected);
 }
-function assertAutomaticLeafLabel(snapshot, id) {
+function assertAutomaticNodeLabel(snapshot, id) {
   assert.equal(snapshot.ready, true);
   assert.deepEqual(snapshot.labelContext, { mode: 'auto', selectedIds: [], previewIds: [],
     selectedAccount: null, hoveredAccount: null, selectedEdge: null, exportDepth: 0 });
   const node = snapshot.renderedNodes.find(item => item.id === id);
   assert.ok(node && node.drawnInContainer);
-  assert.equal(snapshot.edges.filter(edge => edge.source === id || edge.target === id).length, 1);
   assert.ok(typeof node.fundsLabel === 'string' && node.fundsLabel.length > 0);
   assert.equal(node.label, node.fundsLabel);
   assert.equal(node.labelShape?.text, node.fundsLabel);
@@ -97,6 +98,25 @@ function assertAutomaticLeafLabel(snapshot, id) {
   // label which normal collision policy is allowed to suppress.
   assert.equal(snapshot.renderedNodes.some(item => intersects(item.bodyBounds)), false);
   assert.equal(snapshot.renderedEdges.some(item => intersects(item.labelBounds)), false);
+}
+function assertAutomaticLeafLabel(snapshot, id) {
+  assertAutomaticNodeLabel(snapshot, id);
+  assert.equal(snapshot.edges.filter(edge => edge.source === id || edge.target === id).length, 1);
+}
+function assertPartialViewportLabels(snapshot, flowIds) {
+  assertTrackedGraph(snapshot, flowIds, 2);
+  assert.equal(snapshot.labelsSettled, true);
+  assert.equal(snapshot.clipFull, false);
+  assert.deepEqual(sorted(snapshot.clipNodeIds), sorted(ACCOUNTS.slice(1, 3)));
+  assert.deepEqual(sorted(snapshot.renderedNodes.map(node => node.id)), sorted(ACCOUNTS.slice(0, 3)));
+  const outside = snapshot.renderedNodes.find(node => node.id === ACCOUNTS[0]);
+  assert.equal(outside.drawnInContainer, false);
+  for (const id of ACCOUNTS.slice(1, 3)) {
+    assertAutomaticNodeLabel(snapshot, id);
+    const body = snapshot.renderedNodes.find(node => node.id === id).bodyBounds;
+    assert.ok(body && body.minX >= 4 && body.minY >= 4
+      && body.maxX <= snapshot.viewport.width - 4 && body.maxY <= snapshot.viewport.height - 4);
+  }
 }
 function assertImportCompletion(receipt) {
   assert.equal(receipt.open, true);
@@ -126,6 +146,9 @@ const GRAPH_PROBE = `(() => {
   return { ready: !state.graphLoading && state.graphInited && !layoutJob
       && !window.FundsCanvasEditor.history.status().busy,
     viewport: { width: box.width, height: box.height },
+    zoom: state.graph.getZoom(),
+    labelsSettled: state.graphView.viewportFrame == null && state.graphView.labelTimer == null && !state.graphView.zoomSettling,
+    clipNodeIds: [...state.graphView.clipResult?.nodeIds || []].map(String), clipFull: state.graphView.clipResult?.full === true,
     camera: Array.from(state.graph.get('group').getMatrix() || [1,0,0,0,1,0,0,0,1]),
     labelContext: { mode: state.graphView.labelMode, selectedIds: [...state.graphSelection.ids].map(String).sort(),
       previewIds: [...state.graphView.previewAccounts].map(String).sort(), selectedAccount: state.graphView.selectedAccount,
@@ -216,6 +239,19 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     }, 20000);
     assertGraph(await evaluate(GRAPH_PROBE), ids, count, visible);
   }
+  async function dragCanvas(from, to) {
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...from }, page.sessionId);
+    await evaluate(`new Promise(resolve => requestAnimationFrame(resolve))`);
+    assert.equal(await evaluate(`state.graphView.hoveredAccount === null`), true);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...from, button: 'left', buttons: 1, clickCount: 1 }, page.sessionId);
+    for (let i = 1; i <= 12; i += 1) {
+      const point = { x: from.x + (to.x - from.x) * i / 12, y: from.y + (to.y - from.y) * i / 12 };
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point, button: 'left', buttons: 1 }, page.sessionId);
+      await evaluate(`new Promise(resolve => requestAnimationFrame(resolve))`);
+      assert.equal(await evaluate(`state.graphView.hoveredAccount === null`), true);
+    }
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...to, button: 'left', buttons: 0, clickCount: 1 }, page.sessionId);
+  }
   async function automaticNodeLabelRecovery(ids) {
     const id = ACCOUNTS[2]; // The newly appended endpoint, with only one relationship.
     step = 'node-label-auto';
@@ -261,17 +297,6 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       return null;
     })()`);
     assert.ok(strip, 'the installed graph must have a reachable blank canvas drag strip');
-    async function drag(from, to) {
-      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...from }, page.sessionId);
-      assert.equal(await evaluate(`state.graphView.hoveredAccount === null`), true);
-      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...from, button: 'left', buttons: 1, clickCount: 1 }, page.sessionId);
-      for (let i = 1; i <= 12; i += 1) {
-        const point = { x: from.x + (to.x - from.x) * i / 12, y: from.y + (to.y - from.y) * i / 12 };
-        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point, button: 'left', buttons: 1 }, page.sessionId);
-        assert.equal(await evaluate(`state.graphView.hoveredAccount === null`), true);
-      }
-      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...to, button: 'left', buttons: 0, clickCount: 1 }, page.sessionId);
-    }
     step = 'node-label-pan-out';
     const start = strip.sign > 0 ? strip.low : strip.high, end = strip.sign > 0 ? strip.high : strip.low;
     const capacity = Math.abs(end[strip.axis] - start[strip.axis]), gestures = [];
@@ -279,7 +304,7 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     // delta while leaving an 80-pixel margin beyond the visible canvas.
     for (let remaining = strip.distance * 12 / 11; remaining > 0;) {
       const amount = Math.min(capacity, remaining), to = { ...start, [strip.axis]: start[strip.axis] + strip.sign * amount };
-      gestures.push({ from: start, to }); await drag(start, to); remaining -= amount;
+      gestures.push({ from: start, to }); await dragCanvas(start, to); remaining -= amount;
     }
     await until(() => evaluate(`(() => {
       const item = state.graph.findById(${JSON.stringify(id)}), model = item.getModel();
@@ -289,7 +314,7 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     })()`), 10000);
     assertTrackedGraph(await evaluate(GRAPH_PROBE), ids, 2);
     step = 'node-label-pan-return';
-    for (const gesture of gestures.reverse()) await drag(gesture.to, gesture.from);
+    for (const gesture of gestures.reverse()) await dragCanvas(gesture.to, gesture.from);
     await until(async () => {
       try { assertAutomaticLeafLabel(await evaluate(GRAPH_PROBE), id); return true; }
       catch { return false; }
@@ -305,6 +330,174 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     // identical zoom/rotation and no perpendicular camera movement.
     const dragStep = capacity / 12, translation = strip.axis === 'x' ? 6 : 7;
     after.camera.forEach((value, i) => assert.ok(Math.abs(value - before.camera[i]) <= (i === translation ? dragStep + 1 : .01)));
+  }
+  async function partialViewportNodeLabels(ids, appendZoom) {
+    step = 'node-label-partial-zoom';
+    // Normal public Fit establishes a useful reading frame. The wheel target
+    // also exceeds the zoom at which the append originally built its geometry,
+    // so shrinking and rebuilding cannot mask a cached screen-shadow defect.
+    await clickElement(`document.querySelector('#ribbonTab-view')`);
+    await clickElement(`document.querySelector('#btnFit')`);
+    await until(() => evaluate(`!layoutJob && state.graphView.viewportFrame == null
+      && state.graphView.labelTimer == null && !state.graphView.zoomSettling`), 10000);
+    const before = await evaluate(GRAPH_PROBE);
+    assertGraph(before, ids, 2);
+    for (const id of ACCOUNTS.slice(0, 3)) assertAutomaticNodeLabel(before, id);
+    const envelopesBeforeWheel = await evaluate(`Object.fromEntries(state.graph.getNodes().map(item => {
+      const bounds = item.getContainer().getCanvasBBox();
+      const a = state.graph.getPointByCanvas(bounds.minX,bounds.minY), b = state.graph.getPointByCanvas(bounds.maxX,bounds.maxY);
+      return [item.getModel().id,{ minX: a.x, minY: a.y, maxX: b.x, maxY: b.y }];
+    }))`);
+    const positions = snapshot => snapshot.renderedNodes.map(node => [node.id,node.x,node.y]);
+    const unchanged = snapshot => {
+      assertTrackedGraph(snapshot, ids, 2);
+      assert.deepEqual(positions(snapshot), positions(before));
+    };
+    const targetZoom = Math.max(appendZoom, before.zoom) * 1.4;
+    assert.ok(Number.isFinite(targetZoom) && targetZoom <= 4, 'the wheel regression needs a reading frame below the maximum zoom');
+    // Anchor near the retained leaf, in blank space. Scaling away from this
+    // point leaves that end of the chain readable while the remote end moves
+    // towards the viewport boundary. No node is hovered to force its label.
+    const anchor = await evaluate(`(() => {
+      const container = document.querySelector('#graphContainer'), box = container.getBoundingClientRect();
+      const item = state.graph.findById(${JSON.stringify(ACCOUNTS[0])}), model = item.getModel();
+      const center = state.graph.getClientByPoint(model.x,model.y);
+      const bounds = state.graph.getNodes().flatMap(node => node.getContainer().get('children')
+        .map(shape => shape.getCanvasBBox?.())).filter(Boolean);
+      for (const [dx,dy] of [[0,-48],[0,48],[-48,0],[48,0],[0,-96],[0,96]]) {
+        const point = { x: Math.round(center.x + dx), y: Math.round(center.y + dy) };
+        const x = point.x - box.left, y = point.y - box.top;
+        if (x < 24 || x > box.width - 24 || y < 24 || y > box.height - 24
+          || bounds.some(bound => x >= bound.minX - 8 && x <= bound.maxX + 8 && y >= bound.minY - 8 && y <= bound.maxY + 8)) continue;
+        const hit = document.elementFromPoint(point.x,point.y);
+        if (hit?.tagName === 'CANVAS' && container.contains(hit)) return point;
+      }
+      return null;
+    })()`);
+    assert.ok(anchor, 'the retained leaf must have a reachable blank wheel anchor');
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...anchor }, page.sessionId);
+    for (let i = 0; i < 12 && (await evaluate(`state.graph.getZoom()`)) < targetZoom; i += 1) {
+      const previousZoom = await evaluate(`state.graph.getZoom()`);
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...anchor, deltaX: 0, deltaY: -120 }, page.sessionId);
+      await until(() => evaluate(`state.graph.getZoom() > ${previousZoom}
+        && state.graphView.viewportFrame == null && state.graphView.labelTimer == null && !state.graphView.zoomSettling`), 10000);
+      assert.equal(await evaluate(`state.graphView.hoveredAccount === null`), true);
+    }
+    const zoomed = await evaluate(GRAPH_PROBE);
+    assert.ok(zoomed.zoom >= targetZoom);
+    assert.equal(zoomed.labelsSettled, true);
+    unchanged(zoomed);
+    for (const id of ACCOUNTS.slice(0, 2)) assertAutomaticNodeLabel(zoomed, id);
+    // The original A/B transfer has the long amount label and enough spacing
+    // to clip A while retaining B/C. Only accept a pan which sends A beyond
+    // the 120-pixel clipping margin and keeps complete B/C labels in the canvas.
+    // A monotonic translation between these bounds retains them for the whole
+    // gesture, rather than briefly showing them only after all nodes return.
+    const plan = await evaluate(`(() => {
+      const container = document.querySelector('#graphContainer'), box = container.getBoundingClientRect();
+      const items = state.graph.getNodes(), envelopes = [...items,...state.graph.getEdges()]
+        .flatMap(item => item.getContainer().get('children').map(shape => shape.getCanvasBBox?.()))
+        .filter(bound => bound && [bound.minX,bound.minY,bound.maxX,bound.maxY].every(Number.isFinite));
+      const references = ${JSON.stringify(envelopesBeforeWheel)};
+      const completeEnvelope = id => {
+        const actual = state.graph.findById(id).getContainer().getCanvasBBox(), reference = references[id];
+        const a = state.graph.getCanvasByPoint(reference.minX,reference.minY), b = state.graph.getCanvasByPoint(reference.maxX,reference.maxY);
+        // A label already released after zoom must still reserve its complete
+        // pre-wheel envelope when planning how to bring it back into view.
+        return { minX: Math.min(actual.minX,a.x,b.x), minY: Math.min(actual.minY,a.y,b.y),
+          maxX: Math.max(actual.maxX,a.x,b.x), maxY: Math.max(actual.maxY,a.y,b.y) };
+      };
+      const retained = ${JSON.stringify(ACCOUNTS.slice(1, 3))}.map(completeEnvelope);
+      const target = completeEnvelope(${JSON.stringify(ACCOUNTS[0])});
+      const bounds = { minX: Math.min(...retained.map(b => b.minX)), maxX: Math.max(...retained.map(b => b.maxX)),
+        minY: Math.min(...retained.map(b => b.minY)), maxY: Math.max(...retained.map(b => b.maxY)) };
+      const choices = [
+        { axis: 'x', delta: Math.max(24,box.width + 160 - target.minX), min: 4 - bounds.minX, max: box.width - 4 - bounds.maxX },
+        { axis: 'x', delta: -Math.max(24,target.maxX + 160), min: 4 - bounds.minX, max: box.width - 4 - bounds.maxX },
+        { axis: 'y', delta: Math.max(24,box.height + 160 - target.minY), min: 4 - bounds.minY, max: box.height - 4 - bounds.maxY },
+        { axis: 'y', delta: -Math.max(24,target.maxY + 160), min: 4 - bounds.minY, max: box.height - 4 - bounds.maxY },
+      ].map(choice => ({ ...choice, delta: choice.delta * 12 / 11 }))
+        .filter(choice => choice.delta >= choice.min && choice.delta <= choice.max)
+        .sort((a,b) => Math.abs(a.delta) - Math.abs(b.delta));
+      for (const choice of choices) {
+        const horizontal = choice.axis === 'x', length = horizontal ? box.width : box.height;
+        const crossLength = horizontal ? box.height : box.width;
+        for (const cross of [24,crossLength - 24,56,crossLength - 56]) {
+          if (envelopes.some(bound => horizontal ? cross >= bound.minY - 12 && cross <= bound.maxY + 12
+            : cross >= bound.minX - 12 && cross <= bound.maxX + 12)) continue;
+          const low = { x: Math.round(box.left + (horizontal ? length * .2 : cross)),
+            y: Math.round(box.top + (horizontal ? cross : length * .2)) };
+          const high = { x: Math.round(box.left + (horizontal ? length * .8 : cross)),
+            y: Math.round(box.top + (horizontal ? cross : length * .8)) };
+          if ([low,high].every(point => document.elementFromPoint(point.x,point.y)?.tagName === 'CANVAS'
+            && container.contains(document.elementFromPoint(point.x,point.y)))) return { ...choice, low, high };
+        }
+      }
+      return null;
+    })()`);
+    assert.ok(plan, 'the fitted chain must permit clipping only A while B/C retain room for their labels');
+    step = 'node-label-partial';
+    const from = plan.delta > 0 ? plan.low : plan.high, end = plan.delta > 0 ? plan.high : plan.low;
+    const capacity = Math.abs(end[plan.axis] - from[plan.axis]), gestures = [];
+    for (let remaining = Math.abs(plan.delta); remaining > 0;) {
+      const amount = Math.min(capacity,remaining), to = { ...from, [plan.axis]: from[plan.axis] + Math.sign(plan.delta) * amount };
+      gestures.push({ from, to }); await dragCanvas(from,to); remaining -= amount;
+    }
+    await until(() => evaluate(`state.graphView.viewportFrame == null && state.graphView.labelTimer == null && !state.graphView.zoomSettling`), 10000);
+    // The clipping index also reserves a conservative envelope for missing
+    // text. If that extends past the measured pre-wheel group, advance through
+    // bounded real gestures while independently preserving both retained labels.
+    for (let i = 0; i < 8 && await evaluate(`state.graphView.clipResult?.nodeIds.has(${JSON.stringify(ACCOUNTS[0])})`); i += 1) {
+      const current = await evaluate(GRAPH_PROBE), delta = Math.sign(plan.delta) * 40;
+      unchanged(current);
+      assert.equal(current.zoom, zoomed.zoom);
+      for (const id of ACCOUNTS.slice(1, 3)) {
+        assertAutomaticNodeLabel(current, id);
+        const node = current.renderedNodes.find(item => item.id === id);
+        for (const bounds of [node.bodyBounds,node.labelShape.bounds]) {
+          const dx = plan.axis === 'x' ? delta : 0, dy = plan.axis === 'y' ? delta : 0;
+          assert.ok(bounds.minX + dx >= 4 && bounds.minY + dy >= 4
+            && bounds.maxX + dx <= current.viewport.width - 4 && bounds.maxY + dy <= current.viewport.height - 4,
+          'a clipping correction must keep both retained bodies and labels inside the viewport');
+        }
+      }
+      const to = { ...from, [plan.axis]: from[plan.axis] + delta };
+      gestures.push({ from, to }); await dragCanvas(from,to);
+      await until(() => evaluate(`state.graphView.viewportFrame == null && state.graphView.labelTimer == null && !state.graphView.zoomSettling`), 10000);
+    }
+    await until(() => evaluate(`!state.graphView.clipResult?.nodeIds.has(${JSON.stringify(ACCOUNTS[0])})
+      && state.graphView.viewportFrame == null && state.graphView.labelTimer == null && !state.graphView.zoomSettling`), 10000);
+    const partial = await evaluate(GRAPH_PROBE);
+    assertPartialViewportLabels(partial, ids); unchanged(partial);
+    assert.equal(partial.zoom, zoomed.zoom);
+    const translation = plan.axis === 'x' ? 6 : 7;
+    partial.camera.forEach((value,i) => { if (i !== translation) assert.ok(Math.abs(value - zoomed.camera[i]) < .01); });
+    step = 'node-label-partial-leave';
+    const leafCenter = await evaluate(`(() => { const model = state.graph.findById(${JSON.stringify(ACCOUNTS[2])}).getModel();
+      return state.graph.getClientByPoint(model.x,model.y); })()`);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...leafCenter }, page.sessionId);
+    await until(() => evaluate(`state.graphView.hoveredAccount === ${JSON.stringify(ACCOUNTS[2])}`), 10000);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...from }, page.sessionId);
+    await until(() => evaluate(`state.graphView.hoveredAccount === null && state.graphView.viewportFrame == null
+      && state.graphView.labelTimer == null && !state.graphView.zoomSettling`), 10000);
+    const left = await evaluate(GRAPH_PROBE);
+    assertPartialViewportLabels(left, ids); unchanged(left);
+    assert.deepEqual(left.camera, partial.camera);
+    step = 'node-label-partial-return';
+    for (const gesture of gestures.reverse()) await dragCanvas(gesture.to,gesture.from);
+    await until(() => evaluate(`state.graphView.viewportFrame == null && state.graphView.labelTimer == null && !state.graphView.zoomSettling`), 10000);
+    const returned = await evaluate(GRAPH_PROBE);
+    unchanged(returned);
+    assert.equal(returned.zoom, zoomed.zoom);
+    returned.camera.forEach((value,i) => assert.ok(Math.abs(value - zoomed.camera[i]) <= (i === translation ? capacity / 12 + 1 : .01)));
+    for (const id of ACCOUNTS.slice(0, 2)) assertAutomaticNodeLabel(returned, id);
+    // Leave the following journeys at the same ordinary Fit reading frame.
+    await clickElement(`document.querySelector('#btnFit')`);
+    await graph(2,ids,undefined,{ frame: false });
+    const restored = await evaluate(GRAPH_PROBE);
+    unchanged(restored);
+    for (const id of ACCOUNTS.slice(0, 3)) assertAutomaticNodeLabel(restored, id);
+    assert.ok(Number.isFinite(restored.zoom) && restored.zoom > 0 && restored.zoom <= 1.6);
   }
   const editedEdge = `${ACCOUNTS[0]}=>${ACCOUNTS[1]}`;
   async function selectEdge() {
@@ -455,8 +648,10 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     });
     const track = index => rowAction(flowIds[index], 'act-track');
     await check('installedFirstTrackExact', async () => { await track(0); await graph(1, flowIds); });
+    const appendZoom = await evaluate(`state.graph.getZoom()`);
     await check('installedSecondTrackVisible', async () => { await track(1); await graph(2, flowIds); });
     await check('installedAutomaticNodeLabelRecovery', async () => { await automaticNodeLabelRecovery(flowIds); });
+    await check('installedPartialViewportNodeLabels', async () => { await partialViewportNodeLabels(flowIds,appendZoom); });
     await check('installedContextTrackedConsistent', async () => {
       await rowAction(flowIds[1], 'act-ctx');
       await until(() => evaluate(`document.querySelector('#ctxModal').style.display === 'flex'
@@ -557,4 +752,4 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
   }
 }
 
-module.exports = { ACCOUNTS, AMOUNTS, SUMMARIES, REQUIRED_CHECKS, fixtureCsv, assertGraph, assertEdgeTypes, assertAutomaticLeafLabel, assertImportCompletion, safeJourneyFailure, runInstalledGraphJourney };
+module.exports = { ACCOUNTS, AMOUNTS, SUMMARIES, REQUIRED_CHECKS, fixtureCsv, assertGraph, assertEdgeTypes, assertAutomaticLeafLabel, assertPartialViewportLabels, assertImportCompletion, safeJourneyFailure, runInstalledGraphJourney };
