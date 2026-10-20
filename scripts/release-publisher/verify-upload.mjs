@@ -34,7 +34,7 @@ export function observeTransport(client, report, profile) {
 
 // A manual diagnostic, using the real latest installer and existing GET/PUT prefix only.
 // Never write release metadata, promote latest, prewarm, delete or request wider permissions.
-export async function verifyFreshUpload({ client, selected, bytes, run, report = () => {},
+export async function verifyFreshUpload({ client, uploadClient = client, selected, bytes, run, report = () => {},
   assertLatest = async () => {}, requestTimeout = 90000, profileTimeout = 5 * 60000 }) {
   if (!/^\d{1,20}-\d{1,5}$/.test(run)) throw new Error('Invalid verification run identity');
   const manifest = manifestFor(selected, bytes);
@@ -45,11 +45,11 @@ export async function verifyFreshUpload({ client, selected, bytes, run, report =
     const key = `${prefix}/_verification/${run}/${profile}/${selected.asset.name}`;
     // A rerun must use a new attempt. A cached object must never count as an upload pass.
     if (await object(client, key)) throw new Error('Verification object already exists');
-    const restore = observeTransport(client, report, profile);
+    const restore = observeTransport(uploadClient, report, profile);
     const started = Date.now();
     report({ stage: 'upload.verification', event: 'begin', profile });
     try {
-      await uploadInstaller(client, key, bytes, { partSize: partMiB * 1024 * 1024, timeout: requestTimeout,
+      await uploadInstaller(uploadClient, key, bytes, { partSize: partMiB * 1024 * 1024, timeout: requestTimeout,
         progress: async () => {
           if (Date.now() - started > profileTimeout)
             throw Object.assign(new Error('Verification deadline exceeded'), { code: 'ETIMEDOUT' });

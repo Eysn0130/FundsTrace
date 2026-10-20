@@ -13,9 +13,9 @@ function release(version = '0.1.7', installer = bytes) {
     assets: [{ id: 456, name, size: installer.length, digest: `sha256:${sha(installer)}`, browser_download_url: `https://github.com/Eysn0130/FundsTrace/releases/download/v${version}/${name}` }] };
 }
 function store(seed = []) {
-  const objects = new Map(seed), puts = [], uploads = [], cancellations = [];
+  const objects = new Map(seed), gets = [], puts = [], uploads = [], cancellations = [];
   const client = {
-    async get(key) { const content = objects.get(key); if (!content) throw Object.assign(new Error(), { code: 'NoSuchKey' }); return { content, res: { headers: { etag: sha(content) } } }; },
+    async get(key) { gets.push(key); const content = objects.get(key); if (!content) throw Object.assign(new Error(), { code: 'NoSuchKey' }); return { content, res: { headers: { etag: sha(content) } } }; },
     async put(key, data, options) {
       const before = objects.get(key), headers = options.headers;
       if (headers['x-oss-forbid-overwrite'] && before) throw new Error('Conditional put rejected');
@@ -28,7 +28,7 @@ function store(seed = []) {
     },
     cancel(...args) { cancellations.push(args); },
   };
-  return { client, objects, puts, uploads, cancellations };
+  return { client, objects, gets, puts, uploads, cancellations };
 }
 
 function multipartStore(seed, fault) {
@@ -279,6 +279,29 @@ test('the locked SDK uploads Buffers in bounded parts and preserves immutable he
   assert.equal(h.requests.length, requestCount, 'same-version edits must not retransmit any part');
   assert.equal(h.uploads.length, 1);
   assert.ok(h.objects.get(`${prefix}/0.1.8/manifest.json`).equals(immutable));
+  assert.equal(h.cancellations.length, 0);
+});
+
+test('a separate upload client receives only installer multipart while the regional client verifies bytes and publishes metadata', async () => {
+  const installer = Buffer.alloc(8 * 1024 * 1024 + 321, 0x5a);
+  const selected = selectRelease(release('0.1.8', installer)), h = multipartStore([]);
+  const client = { get: h.client.get, put: h.client.put,
+    async multipartUpload() { assert.fail('regional requests must not upload installer parts'); },
+    cancel() { assert.fail('only the actual uploader may be cancelled'); } };
+  const uploadClient = { multipartUpload: h.client.multipartUpload, cancel: h.client.cancel,
+    async get() { assert.fail('installer reads must use the regional endpoint'); },
+    async put() { assert.fail('metadata writes must use the regional endpoint'); } };
+  const result = await publish({ client, uploadClient, selected, bytes: installer });
+  const installerKey = `${prefix}/0.1.8/${selected.asset.name}`;
+  assert.deepEqual(h.uploads, [installerKey]);
+  assert.deepEqual(h.puts, [`${prefix}/0.1.8/manifest.json`, pointer]);
+  assert.deepEqual(h.gets, [pointer, `${prefix}/0.1.8/manifest.json`, installerKey, installerKey, pointer, pointer]);
+  assert.ok(h.objects.get(installerKey).equals(installer));
+  assert.equal(result.checksumSha256, sha(installer));
+  assert.equal(result.sha512, createHash('sha512').update(installer).digest('base64'));
+  assert.equal(JSON.parse(h.objects.get(pointer)).checksumSha256, sha(installer));
+  assert.equal(h.requests[0].subres, 'uploads');
+  assert.equal(h.requests.at(-1).subres.uploadId, 'synthetic-upload');
   assert.equal(h.cancellations.length, 0);
 });
 
