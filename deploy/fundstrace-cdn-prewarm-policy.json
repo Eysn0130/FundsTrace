@@ -1,0 +1,8 @@
+{
+  "Version": "1",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["cdn:PushObjectCache"],
+    "Resource": ["acs:cdn:*:1949926624984020:domain/download.analytix.top"]
+  }]
+}
