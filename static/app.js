@@ -2189,6 +2189,16 @@ function bindCanvases() {
     view.onState(status);
     const unavailable = !ready() || status.pending || status.unknown;
     for (const id of ['btnCanvasNew', 'btnCanvasClone', 'btnCanvasSave']) $('#' + id).disabled = unavailable;
+    // 删除画布对默认画布不可用：默认画布是案件数据的落点，需先“另存为”再删。
+    const removeCanvas = $('#btnCanvasRemove');
+    if (removeCanvas) {
+      const removeDisabled = unavailable || !named();
+      removeCanvas.disabled = removeDisabled;
+      removeCanvas.title = removeDisabled
+        ? (state.canvasId === missingCanvasId ? '画布已不存在，请在顶栏选择其他画布'
+          : !named() ? '默认画布不可删除；如需分离请先“另存为”' : '画布正在处理或结果待核对')
+        : `删除画布「${state.canvasName || '当前画布'}」`;
+    }
     for (const id of ['btnCanvasRename', 'btnCanvasDel', 'btnCanvasMenuClone']) {
       const row = $('#' + id);
       const disabled = unavailable || (id !== 'btnCanvasMenuClone' && !named());
@@ -2247,7 +2257,7 @@ function bindCanvases() {
   view.attach(actions);
   window.FundsCanvasActions = actions;
   for (const [id, action] of [['btnCanvasNew','new'], ['btnCanvasClone','clone'], ['btnCanvasSave','save'],
-    ['btnCanvasRename','rename'], ['btnCanvasDel','delete'], ['btnCanvasMenuClone','clone']]) {
+    ['btnCanvasRemove','delete'], ['btnCanvasRename','rename'], ['btnCanvasDel','delete'], ['btnCanvasMenuClone','clone']]) {
     $('#' + id).onclick = event => actions.run(action, id === 'btnCanvasMenuClone' || id === 'btnCanvasRename' || id === 'btnCanvasDel'
       ? $('#btnCanvasActions') : event?.currentTarget || $('#' + id));
   }
@@ -4929,6 +4939,23 @@ function bindUI() {
 
   // PNG and PDF share one mutable G6 canvas. Queue only the sampling step;
   // each job owns its dimensions/camera and relinquishes them before the next.
+  /* 打印样式：导出的 PNG/PDF 统一白底黑字（省墨、便于打印）。
+     只把文字改成黑墨，节点/关系颜色仍保留原有业务含义；逐项记住原值以便还原屏幕主题。 */
+  const PRINT_PAPER = '#ffffff', PRINT_INK = '#111111', PRINT_RULE = '#c9c9c9';
+  function applyPrintInk(items) {
+    const saved = [];
+    for (const item of items) {
+      for (const shape of item?.getContainer?.()?.get?.('children') || []) {
+        if (shape?.get?.('name') === 'funds-edge-selection-outline') continue;
+        if (shape?.get?.('type') !== 'text' || !shape.attr) continue;
+        const before = shape.attr('fill');
+        if (before == null || before === PRINT_INK) continue;
+        saved.push([shape, before]);
+        shape.attr('fill', PRINT_INK);
+      }
+    }
+    return () => { for (const [shape, value] of saved) shape.attr('fill', value); };
+  }
   const imageExportQueue = [];
   let imageExportActive = false;
   function drainImageExports() {
@@ -4957,12 +4984,14 @@ function bindUI() {
       wrapped.push(row);
     }
     const footerHeight=(wrapped.length*18+24)*scale;
-    let footer=null,exportGeometry=null,camera = null, finished = false, timer;
+    let footer=null,exportGeometry=null,camera = null, finished = false, timer, restorePrintInk = null;
     const done = url => {
       if (finished) return;
       finished = true; clearTimeout(timer);
       if (cancelGraphImageExport === cancel) cancelGraphImageExport = null;
       const owned = current();
+      // 打印墨色必须在下一次上屏绘制之前还原，屏幕主题保持原样。
+      try{restorePrintInk?.();restorePrintInk = null;}catch(_){/* disposed sampling canvas */}
       try{footer?.remove?.();exportGeometry?.restore();}catch(_){/* disposed canvas */}
       if (samplingZoom) { try { graph.set('maxZoom', originalMaxZoom); } catch (_) { /* disposed sampling graph */ } }
       view.exportDepth = Math.max(0, view.exportDepth - 1);view.exportFooterHeight=0;delete view.exportLabelScale;
@@ -5017,14 +5046,18 @@ function bindUI() {
       });
       footer=graph.get?.('canvas')?.addGroup?.({name:'funds-export-legend',capture:false});
       if(footer) {
-        footer.addShape('rect',{capture:false,attrs:{x:0,y:H*scale-footerHeight,width:W*scale,height:footerHeight,fill:'#111c26'}});
-        footer.addShape('text',{capture:false,attrs:{x:16*scale,y:H*scale-footerHeight+12*scale,text:wrapped.join('\n'),fontSize:12*scale,lineHeight:18*scale,fontFamily:'Arial',fill:'#c3d2df',textBaseline:'top'}});
+        // 打印版页脚：白底黑字，与图纸同底色，省墨。
+        footer.addShape('rect',{capture:false,attrs:{x:0,y:H*scale-footerHeight,width:W*scale,height:footerHeight,fill:PRINT_PAPER}});
+        footer.addShape('path',{capture:false,attrs:{path:[['M',0,H*scale-footerHeight],['L',W*scale,H*scale-footerHeight]],stroke:PRINT_RULE,lineWidth:Math.max(1,scale)}});
+        footer.addShape('text',{capture:false,attrs:{x:16*scale,y:H*scale-footerHeight+12*scale,text:wrapped.join('\n'),fontSize:12*scale,lineHeight:18*scale,fontFamily:'Arial',fill:PRINT_INK,textBaseline:'top'}});
         graph.paint();
       }
+      restorePrintInk = applyPrintInk([...(graph.getNodes?.() || []), ...(graph.getEdges?.() || [])]);
+      if (footer) graph.paint();
       timer = setTimeout(() => {
         if (finished) return;
         if (!current()) return done(null);
-        try { done(graph.toDataURL('image/png','#111a23')); } catch (_) { done(null); }
+        try { done(graph.toDataURL('image/png', PRINT_PAPER)); } catch (_) { done(null); }
       }, 400);
     } catch (_) { done(null); }
   }
