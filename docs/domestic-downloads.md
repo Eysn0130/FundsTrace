@@ -14,6 +14,16 @@
 - 分片初始化、上传和完成均使用现有 `oss:PutObject`，读回使用 `oss:GetObject`，不调用分片列举或云端 Abort。上传失败只取消本地传输流；已完成分片可能留存并产生存储费用，下次运行重新上传，不提供跨运行断点续传。清理残片需要维护者另行授权；发布器不增加 `oss:AbortMultipartUpload` 或 Bucket 生命周期权限，也不自动配置清理规则。[初始化权限](https://www.alibabacloud.com/help/en/oss/developer-reference/initiatemultipartupload)、[上传权限](https://www.alibabacloud.com/help/en/oss/developer-reference/uploadpart)、[完成权限](https://www.alibabacloud.com/help/en/oss/developer-reference/completemultipartupload)、[中止与残片](https://www.alibabacloud.com/help/en/oss/developer-reference/abortmultipartupload)。
 - 所有发布必须通过同一个不取消的 GitHub concurrency group。OSS PutObject 不提供此处可依赖的 If-Match CAS，禁止另起并发手动发布器。脚本在切换前复核当前 ETag、GitHub 最新资产与说明，发现外部改动停止。
 
+### 全新安装包上传诊断
+
+2026-10-20 的两次 Actions 上传分别在单次 PutObject、8 MiB 分片的首批传输处约 600 秒超时。分片初始化成功、首批分片没有完成；已有日志不能确定发送停滞的底层原因。人工暂存 v0.1.8 后的成功运行跳过了安装包上传，不能作为自动上传恢复的证据。
+
+在受保护 `main` 手动运行同一工作流、选中 `verify_upload`，会下载并校验 GitHub 当前真实安装器，依次按 8 MiB、1 MiB（均 3 片并行）上传到 `_verification/<run-id>-<attempt>/<profile>/`。每个对象必须原先不存在；完成后完整读回核对大小、SHA-256 和 SHA-512，不能复用已存在的生产对象冒充成功。测试不写 manifest/latest、不预热、不删除；测试对象及失败残片保留，需要维护者另行清理授权。新运行或 rerun 使用新 run/attempt，不手动覆盖测试对象。
+
+诊断将单请求超时缩为 90 秒，在进度回调处检查每组 5 分钟预算，另受现有 25 分钟 job 上限约束；生产默认 8 MiB 和 600 秒不变。小分片是[OSS 官方超时处理建议](https://www.alibabacloud.com/help/en/oss/network-connection-timeout-handling)中的对比条件，尚不等于已证明根因或选定修复。记录请求发送时间、连接复用、累计 socket 字节和 TLS 状态；这些不能替代 OSS 成功响应及整包读回。至少一组成功仅表示该组完成验证，两组结果需分别读取，不能直接宣称生产自动同步恢复。
+
+工作流通过 `run.mjs` 启动发布器子进程，只转发固定 schema 的 IPC 诊断。锁定 urllib 在重复回调时会直接输出原始 URL/异常，绕过普通 reporter；父进程不转发依赖 stdout/stderr，并关闭 DEBUG 类日志，避免诊断输出认证信息或任意原始异常。不更换 SDK、代理、agent 或 TLS 验证策略。
+
 ## 阿里云与 GitHub 接线
 
 沿用已有私有 OSS bucket、中国内地 CDN、`analytix.top` 和 `download.analytix.top`，不需要 ECS、数据库或新购服务器。检查官网回源目录仍为 `releases/windows/site/`，下载域名可访问新产品前缀。最新版记录必须不缓存或短缓存，安装包长期缓存、支持 Range。
@@ -47,6 +57,8 @@ NSIS + `electron-updater`，固定 HTTPS feed，关闭自动下载、退出自�
 ## 验收与费用
 
 必须分别记录：发布器中断/降级/同版本替换回归；官网产品入口与实际下载哈希；Windows 安装后真实检查→下载→保存提示→sidecar 正常退出→NSIS→重启后新版本，并核对合成案件、画布、偏好与旧资源清除。低磁盘、断网重试、多窗口、普通退出和失败安装也需覆盖。UI/源检查不能冒充已安装 Windows 更新证据。
+
+2026-10-20 官网 v0.1.8 下载对照：同一受控 Chrome profile、同一线上 Windows 按钮，网站代码及浏览器安全、权限设置均未改变；前次未预先登记下载事件时出现 `ERR_BLOCKED_BY_CLIENT`，点击前先注册正式的 `playwright.waitForEvent('download')` 后，实际下载完成，文件为 160,337,859 字节，SHA-256 为 `7c568bc4ca8f0cd4fa9f86ebeb876e234ab46f5aa51f5d1f92a1245f4190ba0e`。该对照支持操作或工具下载处理差异这一解释，不能确定内部具体拦截机制，也不能保证所有 Chrome 用户的结果；此次无需改变网站下载代码或浏览器安全设置。官网浏览器下载验收必须等待实际下载完成并核对文件大小、SHA-256，不能以页面跳转、单独的错误页或 curl 下载成功替代。
 
 按当前约 160 MB 安装包，100 次完整下载约 16 GB/月；复用现有资源只增加存储、CDN 流量、请求和少量回源。实际价格及流量包以当前账号控制台为准。100 次是预算模型，不是服务强制限额；配置费用提醒与 CDN 带宽告警后仍可能产生超额费用，不能承诺固定月费。HTTPS 证书续期、发布失败告警、当前/上一版保留和人工修复入口需要持续维护。
 
