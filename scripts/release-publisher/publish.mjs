@@ -124,6 +124,13 @@ async function main() {
         || latest.asset.digest !== selected.asset.digest) throw new Error('GitHub latest release changed during upload');
   } });
   console.log(`FundsTrace ${manifest.version}: GitHub bytes verified; domestic installer and shared latest pointer verified.`);
+  const { cdnAdapter, prewarm } = await import('./prewarm.mjs');
+  const receipt = await prewarm({ client, manifest, submit: cdnAdapter({
+    accessKeyId: process.env.ALIBABA_CLOUD_ACCESS_KEY_ID,
+    accessKeySecret: process.env.ALIBABA_CLOUD_ACCESS_KEY_SECRET,
+    securityToken: process.env.ALIBABA_CLOUD_SECURITY_TOKEN,
+  }) });
+  console.log(`Domestic CDN prewarm submitted: task ${receipt.taskId}. Edge propagation is asynchronous.`);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
-  main().catch(() => { console.error('FundsTrace download publication failed; inspect the job stage and retry. Existing published files were retained.'); process.exitCode = 1; });
+  main().catch(() => { console.error('FundsTrace download publication or CDN prewarm failed; inspect the last successful stage and retry. Verified published files were retained.'); process.exitCode = 1; });
