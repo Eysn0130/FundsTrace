@@ -47,4 +47,6 @@ NSIS + `electron-updater`，固定 HTTPS feed，关闭自动下载、退出自�
 
 按当前约 160 MB 安装包，100 次完整下载约 16 GB/月；复用现有资源只增加存储、CDN 流量、请求和少量回源。实际价格及流量包以当前账号控制台为准。100 次是预算模型，不是服务强制限额；配置费用提醒与 CDN 带宽告警后仍可能产生超额费用，不能承诺固定月费。HTTPS 证书续期、发布失败告警、当前/上一版保留和人工修复入口需要持续维护。
 
+官网新安装与应用内更新都计入下载流量：若有 100 次官网完整下载，另有 100 次应用完整更新，合计约 32 GB，不能只算前一半。预热也会产生 OSS 回源流量和请求。不要用会拒绝空 Referer 的防盗链规则保护费用，否则会误伤桌面更新器和直接下载；先用费用/流量异常告警，出现真实滥用再评估针对性限制。当前完整安装包更新不对移动计费网络静默自动下载，用户点击后才下载。
+
 参考：[electron-builder v26 更新](https://www.electron.build/v26/docs/features/auto-update/)、[阿里云官方 OIDC Action](https://github.com/aliyun/configure-aliyun-credentials-action)、[OSS PutObject](https://help.aliyun.com/zh/oss/developer-reference/putobject)。
