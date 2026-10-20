@@ -5,7 +5,7 @@ const backend = path.resolve(__dirname, '../build/desktop/backend/funds-trace-ba
 module.exports = {
   appId: 'com.eysn.fundstrace', productName: 'FundsTrace',
   directories: { output: '../build/desktop/electron' },
-  files: ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs'],
+  files: ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs'],
   asar: true,
   electronLanguages: ['en-US', 'zh-CN', 'zh-TW'],
   extraResources: [
@@ -19,5 +19,5 @@ module.exports = {
   },
   win: { icon: path.join(__dirname, 'assets/icon.ico'), target: [{ target: 'nsis', arch: ['x64'] }], signExecutable: false },
   nsis: { oneClick: false, perMachine: false, allowElevation: false, allowToChangeInstallationDirectory: true, deleteAppDataOnUninstall: false, include: path.join(__dirname, 'installer.nsh'), artifactName: 'FundsTrace-${version}-windows-${arch}-unsigned.${ext}' },
-  publish: null
+  publish: { provider: 'generic', url: 'https://analytix.top/fundstrace/' }
 };

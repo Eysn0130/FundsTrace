@@ -46,6 +46,18 @@ def variants(value):
     return values
 
 
+def verify_host_report(host, version, package, source_file):
+    """Bind every packaged host entry to this candidate, including its updater."""
+    assert host["status"] == "passed" and host["version"] == version
+    assert all(value is True for value in host["checks"].values())
+    expected = {"main.cjs", "backend.cjs", "host-policy.cjs", "preferences.cjs", "preload.cjs"}
+    if package.get("dependencies", {}).get("electron-updater"):
+        expected.add("updates.cjs")
+    assert set(host["hostFiles"]) == expected
+    for name, sha in host["hostFiles"].items():
+        assert sha in variants(source_file(name))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
@@ -93,11 +105,9 @@ def main():
 
         host_path = base / "packaged-host-resources.json"
         host = data(host_path)
-        assert host["status"] == "passed" and host["version"] == args.tag[1:]
-        assert all(value is True for value in host["checks"].values())
-        assert set(host["hostFiles"]) == {"main.cjs", "backend.cjs", "host-policy.cjs", "preferences.cjs", "preload.cjs"}
-        for name, sha in host["hostFiles"].items():
-            assert sha in variants(subprocess.check_output(["git", "show", f"{source}:desktop/{name}"]))
+        package = json.loads(subprocess.check_output(["git", "show", f"{source}:desktop/package.json"]))
+        verify_host_report(host, args.tag[1:], package,
+                           lambda name: subprocess.check_output(["git", "show", f"{source}:desktop/{name}"]))
 
         reports = {name: data(base / name) for name in (
             "native-backend-smoke.json", "native-installer-smoke.json", "native-installed-app-smoke.json",

@@ -18,6 +18,10 @@ The import-batch table uses the unmodified `dots.svg` from the same Tabler Icons
 
 The additional compact ribbon icons in `static/ui-icons/` (`network`, `selection`, `selection-clear`, `swap`, `list`, `group`, `link`, `layers`, `chart`, `route`, `play`, `star`, `shape`, `photo`, `align-left`, `align-top`, `distribute-vertical`, `lock`, `focus`, `zoom-out`, `zoom-in`, `zoom-reset`, `eye`, `eye-off`, `eye-restore`, `legend`, `map`, `calendar`, `target`, and `font-text`) were drawn for FundsTrace on 2026-10-16. They use the project MIT license and the same 24px outline grammar as the retained Tabler controls. No external icon service or runtime dependency is used.
 
+## Windows updater and release publisher
+
+The desktop host includes `electron-updater` 6.8.9 (electron-builder contributors, MIT); its locked production dependencies and their license files are bundled by electron-builder. The cloud publication tool uses Alibaba Cloud's `ali-oss` 6.23.0 SDK (Alibaba Group, MIT) only in the release job; it is not included in installers. Exact versions, transitive dependencies and registry integrity hashes are retained in `desktop/package-lock.json` and `scripts/release-publisher/package-lock.json`.
+
 ## React and React DOM
 
 The React pilot bundles React and React DOM. Their exact versions are fixed in `frontend/package-lock.json`. Both carry the following MIT notice:

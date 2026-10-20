@@ -35,16 +35,18 @@ function startBackend(config, { spawnProcess = spawn, health = verifyHealth, rea
     if (stopPromise) return stopPromise;
     stopped = true;
     stopPromise = (async () => {
-      if (exited) return;
+      if (exited) return true;
       child.stdin.end();
       let timer;
       const timeout = new Promise(resolve => { timer = setTimeout(resolve, stopTimeout); });
       await Promise.race([didExit, timeout]); clearTimeout(timer);
+      const graceful = exited;
       if (!exited) { child.kill();
         const forceTimer = setTimeout(() => { if (!exited) child.kill('SIGKILL'); }, 1000);
         let finalTimer;
         await Promise.race([didExit, new Promise(resolve => { finalTimer = setTimeout(resolve, 1500); })]); clearTimeout(forceTimer); clearTimeout(finalTimer);
       }
+      return graceful;
     })();
     return stopPromise;
   }
