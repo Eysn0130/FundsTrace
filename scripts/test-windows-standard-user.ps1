@@ -82,9 +82,11 @@ try {
     $env:TEMP = __STAGE__; $env:TMP = $env:TEMP
     $env:CI = 'true'; $env:GITHUB_ACTIONS = 'true'
     @{ standardToken = $true; unicodeProfile = $true; ownAppData = $true } | ConvertTo-Json | Set-Content -LiteralPath __ENV_REPORT__ -Encoding utf8
-    & __LIFECYCLE__ -InstallerPath __INSTALLER__ -ReportPath __REPORT__ -CiTemporaryRoot __LIFECYCLE_ROOT__ -PriorVersion __PRIOR_VERSION__ -NextInstaller __NEXT_INSTALLER__ -NextUnpacked __NEXT_UNPACKED__ -TrustedCertificateFixture __CERTIFICATE_FIXTURE__
-    $Result = $LASTEXITCODE
-    if ($Result -eq 0) {
+    $Result = 1
+    try {
+        & __LIFECYCLE__ -InstallerPath __INSTALLER__ -ReportPath __REPORT__ -CiTemporaryRoot __LIFECYCLE_ROOT__ -PriorVersion __PRIOR_VERSION__ -NextInstaller __NEXT_INSTALLER__ -NextUnpacked __NEXT_UNPACKED__ -TrustedCertificateFixture __CERTIFICATE_FIXTURE__
+        $Result = $LASTEXITCODE
+    } finally {
         # Installer-private temp files belong to this token. Clean them before
         # the parent removes this account, without widening their ACLs.
         Remove-Item -LiteralPath $env:TEMP -Recurse -Force

@@ -6,9 +6,11 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
 const net = require('node:net');
 const path = require('node:path');
+const os = require('node:os');
 const { performance } = require('node:perf_hooks');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
 const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
+const { FAILURE_CODES } = require('../updates.cjs');
 
 const SENTINEL = 'FundsTrace synthetic installer lifecycle v1\n';
 const SEED_CASE = 'SYN prior installer lifecycle case';
@@ -147,7 +149,7 @@ async function evaluate(expression, target = page) {
   assert.ok(!result.exceptionDetails);
   return result.result?.value;
 }
-// Runtime is used only to inspect/layout the DOM. Product actions use actual CDP
+// Runtime inspects/layouts the DOM and reads the published update status. Product actions use actual CDP
 // pointer input; navigation uses existing links or Page.navigate where no link exists.
 async function clickElement(expression, target = page) {
   const point = await evaluate(`(() => {
@@ -446,9 +448,23 @@ async function portClosed(port) {
   });
   await check('backendReleasedAfterClose', () => until(() => portClosed(Number(new URL(page.origin).port)), 15000));
   report.status = 'passed';
-})().catch(error => {
+})().catch(async error => {
   report.status = 'failed'; report.failedCheck = stage; process.exitCode = 1;
-  if (updateFixture) report.updateFixtureDiagnostics = { ...updateFixture.requests, lastPhase: updateFixture.lastPhase || 'not-started' };
+  if (updateFixture) {
+    let errorCode = 'UNAVAILABLE';
+    // Read the published status only; do not inspect Main or request headers.
+    try {
+      const status = await evaluate('window.FundsDesktopUpdates.state()');
+      if (FAILURE_CODES.includes(status?.errorCode) || status?.errorCode === 'UNKNOWN') errorCode = status.errorCode;
+    } catch {}
+    const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+    const cache = path.join(local, 'fundstrace-updater');
+    report.updateFixtureDiagnostics = { ...updateFixture.requests, lastPhase: updateFixture.lastPhase || 'not-started', errorCode,
+      cacheUnderOwnProfile: within(os.homedir(), cache),
+      cacheDirectoryPresent: await fs.stat(cache).then(value => value.isDirectory(), () => false),
+      cachePendingPresent: await fs.stat(path.join(cache, 'pending')).then(value => value.isDirectory(), () => false),
+    };
+  }
   const detail = safeJourneyFailure(error) || (['UPDATE_DIALOG_TIMEOUT','UPDATE_DIALOG_FAILED','UPDATE_JOURNEY_TIMEOUT'].includes(error?.message)
     ? { step: 'update', kind: error.message } : null);
   if (detail) report.failureDetail = detail;

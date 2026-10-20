@@ -60,6 +60,17 @@ test('failed or interrupted downloads cannot be installed and can be retried', a
   await controller.action('install'); assert.deepEqual(calls, ['check']);
   assert.equal((await controller.action('check')).phase, 'available');
 });
+test('update failure diagnostics expose fixed categories and clear on retry without leaking exception details', async () => {
+  for (const code of ['EACCES', 'ENOSPC', 'private-exception-value']) {
+    const { updater, controller } = fixture();
+    await controller.action('check');
+    updater.downloadUpdate = async () => { throw Object.assign(new Error('private path and request details'), { code }); };
+    const state = await controller.action('download');
+    assert.equal(state.errorCode, code === 'private-exception-value' ? 'UNKNOWN' : code);
+    assert.ok(!JSON.stringify(state).includes('private'));
+    assert.equal((await controller.action('check')).errorCode, '');
+  }
+});
 test('multiple windows cannot duplicate a download; cancelling restart retains the ready update', async () => {
   let finish; const { updater, controller, calls } = fixture({ restart: async () => false });
   await controller.action('check'); updater.downloadUpdate = () => new Promise(resolve => { finish = resolve; calls.push('download'); });

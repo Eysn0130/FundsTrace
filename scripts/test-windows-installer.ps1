@@ -490,5 +490,5 @@ if ($Failed) {
     exit 1
 }
 if ($PreflightOnly) { Write-Host 'Native installer preflight passed; no installation was attempted.' }
-else { Write-Host 'Native installer lifecycle passed: pinned 0.1.5 upgrade, prior-version case compatibility, installed application startup/single-instance/close, activation-free data, EOF and uninstall retention. Win10/11 interactive acceptance remains separate.' }
+else { Write-Host "Native installer lifecycle passed: pinned $PriorVersion upgrade, prior-version case compatibility, installed application startup/single-instance/close, activation-free data, EOF and uninstall retention. Win10/11 interactive acceptance remains separate." }
 exit 0
