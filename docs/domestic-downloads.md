@@ -10,7 +10,7 @@
 - GitHub Release 发布或修改说明后触发 `Domestic Windows downloads`；`workflow_dispatch` 可补同步已有最新版或重试。只同步当前最新稳定版；旧版的说明修改不切换下载入口。Draft、prerelease、没有 GitHub SHA-256 digest 的资产和旧版本均拒绝。
 - Release 事件读取该标签中的 workflow 配置；`v0.1.8` 等已发布旧标签没有 `edited` 监听，修正其说明后需在 `main` 手动运行同一 `workflow_dispatch`，不能移动旧标签。后续新标签包含监听后，发布与说明修改均可自动同步。[GitHub 触发规则](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows)。
 - 上传前校验 GitHub 的字节数和 SHA-256，上传后从 OSS 读回完整文件再次校验，然后用一次 PutObject 切换共同记录。失败保留旧指针和旧安装包；同版本安装包或版本清单改变必须提升版本。修正当前版说明只更新 latest 的 `releaseNotes`，不重写不可变版本清单或 EXE；其余元数据必须完全一致。无自动删除旧包。
-- 安装器通过锁定的 ali-oss 6.23.0 `multipartUpload` 直接传入已校验 Buffer，每片 8 MiB、最多 3 片并行，不增加自动重试或延长请求超时。初始化保留 `application/octet-stream` 与一年 immutable 缓存头，初始化及完成阶段都保留 `x-oss-forbid-overwrite: true`；完成后仍执行整包读回校验。SDK 仅对小于 100 KiB 的文件回退到 PutObject，实际 Windows 安装器走分片。[SDK 实现](https://github.com/ali-sdk/ali-oss/blob/v6.23.0/lib/managed-upload.js)、[完成阶段头处理](https://github.com/ali-sdk/ali-oss/blob/v6.23.0/lib/common/multipart.js#L175-L207)。
+- 安装器通过锁定的 ali-oss 6.23.0 `multipartUpload` 直接传入已校验 Buffer，每片 8 MiB、最多 3 片并行、单请求 600 秒，不增加自动重试或延长请求超时。仅安装器的分片初始化、传片和完成使用固定官方 `https://oss-accelerate.aliyuncs.com`，同一 bucket、`oss-cn-heyuan` 和当前 STS 凭据不变；普通读取、整包读回、版本 manifest、latest 和预热回执仍用区域端点，CDN 流程保持原有配置。不自动切换端点。初始化保留 `application/octet-stream` 与一年 immutable 缓存头，初始化及完成阶段都保留 `x-oss-forbid-overwrite: true`；完成后仍执行整包读回校验。SDK 仅对小于 100 KiB 的文件回退到 PutObject，实际 Windows 安装器走分片。[SDK 实现](https://github.com/ali-sdk/ali-oss/blob/v6.23.0/lib/managed-upload.js)、[完成阶段头处理](https://github.com/ali-sdk/ali-oss/blob/v6.23.0/lib/common/multipart.js#L175-L207)、[Node.js endpoint 配置](https://www.alibabacloud.com/help/en/oss/user-guide/access-oss-via-bucket-domain-name)。
 - 分片初始化、上传和完成均使用现有 `oss:PutObject`，读回使用 `oss:GetObject`，不调用分片列举或云端 Abort。上传失败只取消本地传输流；已完成分片可能留存并产生存储费用，下次运行重新上传，不提供跨运行断点续传。清理残片需要维护者另行授权；发布器不增加 `oss:AbortMultipartUpload` 或 Bucket 生命周期权限，也不自动配置清理规则。[初始化权限](https://www.alibabacloud.com/help/en/oss/developer-reference/initiatemultipartupload)、[上传权限](https://www.alibabacloud.com/help/en/oss/developer-reference/uploadpart)、[完成权限](https://www.alibabacloud.com/help/en/oss/developer-reference/completemultipartupload)、[中止与残片](https://www.alibabacloud.com/help/en/oss/developer-reference/abortmultipartupload)。
 - 所有发布必须通过同一个不取消的 GitHub concurrency group。OSS PutObject 不提供此处可依赖的 If-Match CAS，禁止另起并发手动发布器。脚本在切换前复核当前 ETag、GitHub 最新资产与说明，发现外部改动停止。
 
@@ -18,9 +18,11 @@
 
 2026-10-20 的两次 Actions 上传分别在单次 PutObject、8 MiB 分片的首批传输处约 600 秒超时。分片初始化成功、首批分片没有完成；已有日志不能确定发送停滞的底层原因。人工暂存 v0.1.8 后的成功运行跳过了安装包上传，不能作为自动上传恢复的证据。
 
+随后诊断运行 `39465539844` 使用普通区域端点：8 MiB 首批三片约 90 秒超时，TLS 验证成功、无 `Expect`，但未记录请求 `finish`；累计 socket 写入字节不能证明 OSS 已收到整片。1 MiB 组在 300.038 秒预算终止前收到 22 片 HTTP 200，终止后另有两片返回 200，合计 24 片；没有完成合并或整包读回。160,337,859 字节需要 153 个 1 MiB 分片，按预算内样本速率外推上传约 34.76 分钟，已超过 25 分钟 job 与 30 分钟 STS，尚未包含合并和读回。该外推只描述此次样本，不能认定恒定带宽或 MTU 等底层根因。
+
 在受保护 `main` 手动运行同一工作流、选中 `verify_upload`，会下载并校验 GitHub 当前真实安装器，依次按 8 MiB、1 MiB（均 3 片并行）上传到 `_verification/<run-id>-<attempt>/<profile>/`。每个对象必须原先不存在；完成后完整读回核对大小、SHA-256 和 SHA-512，不能复用已存在的生产对象冒充成功。测试不写 manifest/latest、不预热、不删除；测试对象及失败残片保留，需要维护者另行清理授权。新运行或 rerun 使用新 run/attempt，不手动覆盖测试对象。
 
-诊断将单请求超时缩为 90 秒，在进度回调处检查每组 5 分钟预算，另受现有 25 分钟 job 上限约束；生产默认 8 MiB 和 600 秒不变。小分片是[OSS 官方超时处理建议](https://www.alibabacloud.com/help/en/oss/network-connection-timeout-handling)中的对比条件，尚不等于已证明根因或选定修复。记录请求发送时间、连接复用、累计 socket 字节和 TLS 状态；这些不能替代 OSS 成功响应及整包读回。至少一组成功仅表示该组完成验证，两组结果需分别读取，不能直接宣称生产自动同步恢复。
+诊断两组都使用同一实际加速 uploader，存在性检查和完整读回仍用区域 client；传输观察器挂在实际 uploader 上。诊断将单请求超时缩为 90 秒，在进度回调处检查每组 5 分钟预算，另受现有 25 分钟 job 上限约束；生产默认 8 MiB 和 600 秒不变。小分片是[OSS 官方超时处理建议](https://www.alibabacloud.com/help/en/oss/network-connection-timeout-handling)中的对比条件，尚不等于已证明根因或选定修复。记录请求发送时间、连接复用、累计 socket 字节和 TLS 状态；这些不能替代 OSS 成功响应及整包读回。至少一组成功仅表示该组完成验证，两组结果需分别读取。默认 8 MiB 组必须实际完成全新对象上传、合并、区域端点完整读回，大小及 SHA-256/SHA-512 与 GitHub 原包相同，且原 latest 指针不变，才能作为默认上传路径的通过证据；只有 1 MiB 成功不够。稳定性还需独立新 run/key 再次通过。本候选尚未执行真实加速端点验收，不能宣称自动上传已恢复。
 
 工作流通过 `run.mjs` 启动发布器子进程，只转发固定 schema 的 IPC 诊断。锁定 urllib 在重复回调时会直接输出原始 URL/异常，绕过普通 reporter；父进程不转发依赖 stdout/stderr，并关闭 DEBUG 类日志，避免诊断输出认证信息或任意原始异常。不更换 SDK、代理、agent 或 TLS 验证策略。
 
@@ -29,6 +31,8 @@
 沿用已有私有 OSS bucket、中国内地 CDN、`analytix.top` 和 `download.analytix.top`，不需要 ECS、数据库或新购服务器。检查官网回源目录仍为 `releases/windows/site/`，下载域名可访问新产品前缀。最新版记录必须不缓存或短缓存，安装包长期缓存、支持 Range。
 
 使用 GitHub OIDC 的临时 STS 凭据，不向 GitHub 存放阿里云长期 AccessKey。创建/扩大 RAM 信任关系前由维护者确认具体权限。
+
+使用加速端点前，维护者必须取得用户对开启传输加速及其流量费用的明确授权，并确认同一 bucket 已开通且生效，最长可能需要 30 分钟。开启本身不收费，通过加速端点上传会产生额外加速流量费用；当前候选不会开通云功能。开启需要单独的 `oss:PutBucketTransferAcceleration` 管理权限，不授予发布角色；安装器上传仍仅需原前缀的 `oss:PutObject`，读回仍仅需 `oss:GetObject`，不扩大前缀、凭据或权限。[官方机制与费用](https://help.aliyun.com/zh/oss/user-guide/transfer-acceleration)、[开启 API 权限](https://www.alibabacloud.com/help/en/oss/developer-reference/putbuckettransferacceleration)。
 
 1. OIDC issuer `https://token.actions.githubusercontent.com`；audience `sts.aliyuncs.com`。
 2. RAM 信任策略 Action 为 `sts:AssumeRole`；通过 OIDC 调用 STS 的接口名称并不是此处的 Action。此仓库启用了 GitHub 不可变 subject，当前精确值为 `repo:Eysn0130@103180203/FundsTrace@1420540807:environment:production-downloads`。使用 `gh api repos/Eysn0130/FundsTrace/actions/oidc/customization/sub` 核对当前前缀，不能凭仓库名称猜测 subject。同时限制 issuer、audience 和 subject，禁止通配其他仓库。

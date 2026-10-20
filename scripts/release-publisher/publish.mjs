@@ -136,7 +136,7 @@ export async function uploadInstaller(client, key, bytes, options = {}) {
 // Upload exact published bytes first. A single OSS PutObject then
 // promotes the JSON document (also valid YAML) used by BOTH site and updater.
 // No CDN/ECS upload credentials ever enter a desktop installer or renderer.
-export async function publish({ client, selected, bytes, assertLatest = async () => {}, report }) {
+export async function publish({ client, uploadClient = client, selected, bytes, assertLatest = async () => {}, report }) {
   const stage = createDiagnostics(report);
   const manifest = await stage('installer.integrity', () => manifestFor(selected, bytes));
   const serialized = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
@@ -164,7 +164,7 @@ export async function publish({ client, selected, bytes, assertLatest = async ()
     return priorInstaller;
   });
   if (!priorInstaller) {
-    await stage('oss.upload-installer', () => uploadInstaller(client, installerKey, bytes));
+    await stage('oss.upload-installer', () => uploadInstaller(uploadClient, installerKey, bytes));
     await stage('oss.verify-installer', async () => {
       const uploaded = await object(client, installerKey);
       if (!uploaded || uploaded.bytes.length !== bytes.length || hash(uploaded.bytes) !== manifest.checksumSha256)
@@ -203,17 +203,20 @@ async function main() {
     if (!response.ok) throw Object.assign(new Error('GitHub installer download failed'), { status: response.status });
     return Buffer.from(await response.arrayBuffer());
   });
-  const client = new OSS({ region: 'oss-cn-heyuan', bucket: 'analytix-hub-downloads-prod', secure: true,
+  const clientOptions = { region: 'oss-cn-heyuan', bucket: 'analytix-hub-downloads-prod', secure: true,
     accessKeyId: process.env.ALIBABA_CLOUD_ACCESS_KEY_ID, accessKeySecret: process.env.ALIBABA_CLOUD_ACCESS_KEY_SECRET,
-    stsToken: process.env.ALIBABA_CLOUD_SECURITY_TOKEN, timeout: 10 * 60 * 1000 });
+    stsToken: process.env.ALIBABA_CLOUD_SECURITY_TOKEN, timeout: 10 * 60 * 1000 };
+  const client = new OSS(clientOptions);
+  // Only installer multipart traffic uses acceleration. Reads and metadata retain the regional endpoint.
+  const uploadClient = new OSS({ ...clientOptions, endpoint: 'https://oss-accelerate.aliyuncs.com' });
   if (process.env.VERIFY_FRESH_UPLOAD === 'true') {
     const { verifyFreshUpload } = await import('./verify-upload.mjs');
-    await verifyFreshUpload({ client, selected, bytes, report,
+    await verifyFreshUpload({ client, uploadClient, selected, bytes, report,
       run: `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
       assertLatest: async () => assertReleaseSnapshot(selected, await githubLatest()) });
     return;
   }
-  const manifest = await publish({ client, selected, bytes, report,
+  const manifest = await publish({ client, uploadClient, selected, bytes, report,
     assertLatest: async () => assertReleaseSnapshot(selected, await githubLatest()) });
   console.log(`FundsTrace ${manifest.version}: GitHub bytes verified; domestic installer and shared latest pointer verified.`);
   const receipt = await stage('cdn.prewarm', async () => {

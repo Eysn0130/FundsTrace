@@ -21,11 +21,11 @@ const etagFor = value => `"${digest(value, 'md5')}"`;
 
 // Exercise the unmodified SDK request, signing, multipart streams and urllib
 // against an owned loopback server. No live OSS account or credential is used.
-async function localOss(t, { failProfiles = [], corruptProfiles = [] } = {}) {
+async function localOss(t, { failProfiles = [], corruptProfiles = [], separateUpload = false } = {}) {
   const objects = new Map([[pointer, Buffer.from(currentBytes)]]), requests = [], uploads = new Map();
-  const completed = [], serverErrors = [], transport = [], sockets = new Set();
+  const completed = [], serverErrors = [], transport = [], sockets = new Set(), servers = [];
   let nextUpload = 0;
-  const server = createServer(async (request, response) => {
+  const handleRequest = endpoint => async (request, response) => {
     const send = (status, body, headers = {}) => {
       response.writeHead(status, { 'Content-Type': 'application/xml', 'x-oss-request-id': 'synthetic-request', ...headers });
       response.end(body);
@@ -38,7 +38,7 @@ async function localOss(t, { failProfiles = [], corruptProfiles = [] } = {}) {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const body = Buffer.concat(chunks);
-      const record = { method: request.method, key, profile, query: [...url.searchParams.keys()].sort(),
+      const record = { endpoint, method: request.method, key, profile, query: [...url.searchParams.keys()].sort(),
         contentLength: request.headers['content-length'], bytes: body.length };
       requests.push(record);
       if (request.method === 'GET' && !url.search) {
@@ -86,20 +86,29 @@ async function localOss(t, { failProfiles = [], corruptProfiles = [] } = {}) {
       serverErrors.push(error);
       if (!response.headersSent) fail(500, 'InternalError'); else response.destroy();
     }
-  });
-  server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  };
+  const listen = async endpoint => {
+    const server = createServer(handleRequest(endpoint));
+    server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    servers.push(server);
+    return server;
+  };
+  const server = await listen('regional');
   const agent = new Agent({ keepAlive: true });
-  const client = new OSS({ endpoint: `http://127.0.0.1:${server.address().port}`, secure: false,
+  const makeClient = server => new OSS({ endpoint: `http://127.0.0.1:${server.address().port}`, secure: false,
     bucket: 'synthetic-verification', accessKeyId: 'synthetic-only-key', accessKeySecret: 'synthetic-only-secret',
     agent, retryMax: 0, timeout: 5000 });
-  const upstream = client.urllib;
+  const client = makeClient(server);
+  const uploadClient = separateUpload ? makeClient(await listen('upload')) : client;
+  const upstream = client.urllib, uploadUpstream = uploadClient.urllib;
   t.after(async () => {
     agent.destroy();
     for (const socket of sockets) socket.destroy();
-    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await Promise.all(servers.map(server => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))));
   });
   const verify = (run = '12345-1', options = {}) => verifyFreshUpload({ client, selected, bytes, run,
+    ...(separateUpload ? { uploadClient } : {}),
     report: event => transport.push(event), requestTimeout: 5000, profileTimeout: 15000, ...options });
   const assertReadWriteBoundary = () => {
     assert.deepEqual(serverErrors, [], 'the synthetic OSS server accepted the real SDK protocol');
@@ -115,14 +124,17 @@ async function localOss(t, { failProfiles = [], corruptProfiles = [] } = {}) {
     }
     assert.ok(objects.get(pointer).equals(currentBytes), 'the original download entry bytes remain unchanged');
     assert.equal(client.urllib, upstream, 'the transport observer restores the SDK HTTP implementation');
+    assert.equal(uploadClient.urllib, uploadUpstream, 'the uploader transport observer is restored');
     assert.equal(client.agent, agent, 'the observer never replaces the configured agent');
+    assert.equal(uploadClient.agent, agent);
     assert.equal(client.request, OSS.prototype.request, 'uploads retain the real SDK request implementation');
+    assert.equal(uploadClient.request, OSS.prototype.request);
     const logs = JSON.stringify(transport);
     assert.equal(logs.includes('synthetic-only-key'), false);
     assert.equal(logs.includes('synthetic-only-secret'), false);
     assert.equal(logs.includes('127.0.0.1'), false, 'timing events do not expose signed request URLs');
   };
-  return { client, objects, requests, completed, transport, verify, assertReadWriteBoundary };
+  return { client, uploadClient, objects, requests, completed, transport, verify, assertReadWriteBoundary };
 }
 
 test('fresh verification uploads both profiles through real OSS HTTP multipart and verifies complete bytes without moving latest', async t => {
@@ -152,6 +164,27 @@ test('fresh verification uploads both profiles through real OSS HTTP multipart a
   const writes = h.requests.filter(item => item.method !== 'GET').length;
   await assert.rejects(h.verify('12345-1'), /already exists/);
   assert.equal(h.requests.filter(item => item.method !== 'GET').length, writes, 'an existing run cannot be mistaken for a fresh upload');
+  h.assertReadWriteBoundary();
+});
+
+test('both diagnostic profiles upload through the separate real HTTP uploader and read complete bytes from the regional endpoint', async t => {
+  const h = await localOss(t, { separateUpload: true });
+  assert.deepEqual(await h.verify(), [{ profile: '8MiB', verified: true }, { profile: '1MiB', verified: true }]);
+  const writes = h.requests.filter(item => item.method !== 'GET');
+  assert.ok(writes.length > 0);
+  assert.ok(writes.every(item => item.endpoint === 'upload'), 'only multipart traffic reaches the upload endpoint');
+  assert.ok(h.requests.filter(item => item.method === 'GET').every(item => item.endpoint === 'regional'),
+    'pointer, existence checks and full readback retain the regional endpoint');
+  assert.equal(h.requests.filter(item => item.endpoint === 'upload' && item.query.includes('uploads')).length, 2);
+  for (const profile of ['8MiB', '1MiB']) {
+    assert.equal(h.requests.filter(item => item.endpoint === 'regional' && item.method === 'GET'
+      && item.key === keyFor('12345-1', profile)).length, 2, 'each profile is checked absent then fully read back');
+    assert.ok(h.objects.get(keyFor('12345-1', profile)).equals(bytes));
+    assert.ok(h.transport.some(event => event.stage === 'upload.transport' && event.profile === profile
+      && event.operation === 'part' && event.status === 200), 'the observer follows the actual uploader');
+  }
+  assert.equal(h.transport.some(event => event.stage === 'upload.transport' && event.operation === 'read'), false,
+    'the uploader observer does not replace or instrument regional reads');
   h.assertReadWriteBoundary();
 });
 
