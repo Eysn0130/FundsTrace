@@ -61,7 +61,7 @@ test('failed or interrupted downloads cannot be installed and can be retried', a
   assert.equal((await controller.action('check')).phase, 'available');
 });
 test('update failure diagnostics expose fixed categories and clear on retry without leaking exception details', async () => {
-  for (const code of ['EACCES', 'ENOSPC', 'private-exception-value']) {
+  for (const code of ['EACCES', 'EPERM', 'ENOSPC', 'private-exception-value']) {
     const { updater, controller } = fixture();
     await controller.action('check');
     updater.downloadUpdate = async () => { throw Object.assign(new Error('private path and request details'), { code }); };

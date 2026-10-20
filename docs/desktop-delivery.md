@@ -72,6 +72,8 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 ## 当前证据与尚未执行的边界
 
+普通账户夹具显式绑定新建账户自己的 `LocalAppData`，并用一次性文件验证缓存基目录可写，避免带着调用者的环境访问其他用户的缓存目录。该准备只适用于 Windows Actions 新建的合成账户，随后仍由真实安装版创建和使用自己的更新缓存；失败时也由原账户清理私有临时文件，再移除测试 profile 和账户。
+
 v0.1.3 的 [PR CI](https://github.com/Eysn0130/FundsTrace/actions/runs/38845930019) 完成 Python／G6 394 项及108个子测试、React 38项和 Windows 桌面 Node 34项；[Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38845925970) 绑定源码 `2b8eda98bb6a3dae8c8fa0b91ade36a5e6342ef5`，完成59项定向Python、34项Node、55条资源和13项包内后端检查。维护者与普通账户各完成18项安装生命周期、46项实际EXE应用检查（内含27组CSS视口／DPR）、15项冻结后端导入中断恢复，普通账户另有11项环境和清理检查。旧版证据保留在各版本记录中。
 
 本机 macOS arm64，无 Win10／11 交互式主机。Server 2022 上真实非管理员账户、中文profile／安装路径、程序外网阻断、安装后renderer／单实例／退出及包内导入进程恢复已执行；Win10／11实际系统100%／150%／200% DPI与跨屏、密集表格字体、交互安装向导、原生保存／取消、运行中安装器关窗和安装版任务中断后的人工恢复仍为 **NOT_EXECUTED（Win10／11 实机）**。程序出站阻断不等于整台主机物理断网，CSS／DPR模拟不等于系统缩放验收。
