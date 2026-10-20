@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   windows-candidate:
-    if: ${{ inputs.transfer_run_id == '' && inputs.published_target_sha256 == '' }}
+    if: ${{ inputs.transfer_run_id == '' && inputs.published_target_sha256 == '' && inputs.published_target_bytes == '' }}
     runs-on: windows-2022
     timeout-minutes: 45
     defaults:
@@ -125,7 +125,7 @@ jobs:
             源码 FundsTrace/build/desktop/standard-user/
 
   transfer-verified-candidate:
-    if: ${{ inputs.transfer_run_id != '' && inputs.published_target_sha256 == '' }}
+    if: ${{ inputs.transfer_run_id != '' && inputs.published_target_sha256 == '' && inputs.published_target_bytes == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -146,7 +146,7 @@ jobs:
         run: python scripts/transfer_windows_candidate.py --run-id "$CANDIDATE_RUN" --tag "$DRAFT_TAG"
 
   published-upgrade:
-    if: ${{ inputs.published_target_sha256 != '' && inputs.transfer_run_id == '' }}
+    if: ${{ inputs.published_target_sha256 != '' || inputs.published_target_bytes != '' }}
     runs-on: windows-2022
     timeout-minutes: 35
     defaults:
@@ -161,6 +161,20 @@ jobs:
         with:
           path: 源码 FundsTrace
           persist-credentials: false
+      - name: Reject mixed build, transfer and published-upgrade modes
+        env:
+          BUILD_INSTALLER: ${{ inputs.installer }}
+          TRANSFER_RUN_ID: ${{ inputs.transfer_run_id }}
+          DRAFT_TAG: ${{ inputs.draft_tag }}
+          TARGET_SHA256: ${{ inputs.published_target_sha256 }}
+          TARGET_BYTES: ${{ inputs.published_target_bytes }}
+        run: |
+          if ($env:BUILD_INSTALLER -eq 'true' -or $env:TRANSFER_RUN_ID -or $env:DRAFT_TAG) {
+            throw 'Published upgrade verification cannot build or transfer release assets.'
+          }
+          if ($env:TARGET_SHA256 -cnotmatch '^[0-9a-f]{64}$' -or $env:TARGET_BYTES -cnotmatch '^[1-9][0-9]{0,18}$') {
+            throw 'Published upgrade verification requires a complete frozen digest and byte count.'
+          }
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22.22.1'
