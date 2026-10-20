@@ -37,7 +37,20 @@ else {
     event.preventDefault(); if (quitting) return; quitting = true;
     clearInterval(updateTimer);
     void (async () => {
-      try { await preparation?.catch(() => {}); await backend?.stop(); if (temporaryRoot) await fs.rm(temporaryRoot, { recursive: true, force: true }); }
+      try {
+        await preparation?.catch(() => {});
+        const graceful = await backend?.stop();
+        if (installUpdate && graceful !== true) {
+          installUpdate = false;
+          dialog.showErrorBox('FundsTrace 更新', '数据服务未能正常退出，本次未启动安装。请重新打开应用，确认导入和导出已完成后重试更新。');
+        }
+        if (temporaryRoot) await fs.rm(temporaryRoot, { recursive: true, force: true });
+      } catch {
+        if (installUpdate) {
+          installUpdate = false;
+          dialog.showErrorBox('FundsTrace 更新', '退出数据服务时发生错误，本次未启动安装。请重新打开应用后重试更新。');
+        }
+      }
       finally {
         shutdownComplete = true;
         if (installUpdate) updateService.install();

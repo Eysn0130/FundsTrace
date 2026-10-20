@@ -117,7 +117,7 @@ test('backend bootstrap sends token only over stdin, requires health, EOF stop i
   child.stdout.write('{"protocol":1,'); child.stdout.write('"port":54321}\n');
   const result = await instance.ready; assert.equal(result.origin, origin); assert.equal(healthCalls, 1);
   assert.equal(result.token, bootstrap.token);
-  await Promise.all([instance.stop(), instance.stop()]); assert.deepEqual(child.kills, []);
+  assert.deepEqual(await Promise.all([instance.stop(), instance.stop()]), [true, true]); assert.deepEqual(child.kills, []);
 });
 
 test('malformed, oversized and wrong-service readiness fail without exposing child output', async () => {
@@ -137,7 +137,7 @@ test('malformed, oversized and wrong-service readiness fail without exposing chi
 test('backend timeout and kill fallback affect only the held child', async () => {
   const child = fakeChild();
   const instance = startBackend(config, { spawnProcess: () => child, readyTimeout: 10, stopTimeout: 10 });
-  await assert.rejects(instance.ready, /timed out/); await instance.stop(); assert.deepEqual(child.kills, ['SIGTERM']);
+  await assert.rejects(instance.ready, /timed out/); assert.equal(await instance.stop(), false); assert.deepEqual(child.kills, ['SIGTERM']);
 });
 
 test('health checks status, protocol and exact service using main-only authorization', async t => {
@@ -175,7 +175,7 @@ function deferred() {
 }
 
 // Exercise the real Main entry and Electron lifecycle events without a business server.
-function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopBackend = async () => {}, restartResponse = 0 } = {}) {
+function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopBackend = async () => true, restartResponse = 0 } = {}) {
   const app = new EventEmitter();
   const state = { windows: [], errors: [], backendStarts: 0, backendStops: 0, quitCount: 0, removed: [] };
   const ready = deferred();
@@ -251,7 +251,7 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
     if (name === 'node:fs/promises') return filesystem;
     if (name === './backend.cjs') return { startBackend: (_config, options) => {
       state.backendStarts++; state.backendOptions = options;
-      return { ready: ready.promise, stop: async () => { state.backendStops++; await stopBackend(); } };
+      return { ready: ready.promise, stop: async () => { state.backendStops++; return await stopBackend(); } };
     } };
     return require(name);
   }, clearInterval, setInterval, setImmediate, __dirname: path.resolve(__dirname, '..'), process: { argv: ['FundsTrace', ...(synthetic ? ['--synthetic'] : [])], env: {}, platform: 'win32' } });
@@ -413,7 +413,7 @@ test('a startup failure reports a safe recovery message and stops the owned back
 });
 
 test('installed update stops the owned backend before running NSIS and ordinary quit never installs', async () => {
-  for (const update of [false, true]) {
+  for (const { update, graceful } of [{ update: false, graceful: true }, { update: true, graceful: true }, { update: true, graceful: false }]) {
     const updater = new EventEmitter(), installed = [], stopped = deferred();
     const info = { product: 'com.eysn.fundstrace', version: '0.1.8', files: [{
       url: 'https://download.analytix.top/releases/fundstrace/windows/0.1.8/FundsTrace-0.1.8-windows-x64-unsigned.exe',
@@ -422,7 +422,7 @@ test('installed update stops the owned backend before running NSIS and ordinary 
     updater.checkForUpdates = async () => ({ updateInfo: info });
     updater.downloadUpdate = async () => ['main-owned-cache-file'];
     updater.quitAndInstall = (...args) => { installed.push(args); harness.app.quit(); };
-    const harness = mainHarness({ updater, stopBackend: () => stopped.promise, restartResponse: 1 });
+    const harness = mainHarness({ updater, stopBackend: async () => { await stopped.promise; return graceful; }, restartResponse: 1 });
     await harness.flush(); harness.ready.resolve({ origin: 'http://127.0.0.1:55123', token: 'synthetic-only-token' }); await harness.flush();
     const sender = harness.state.windows[0].webContents;
     const event = { sender, senderFrame: sender.mainFrame };
@@ -431,8 +431,9 @@ test('installed update stops the owned backend before running NSIS and ordinary 
     if (update) await harness.state.updateRequest(event, 'install'); else harness.app.quit();
     await harness.flush(); assert.equal(harness.state.backendStops, 1); assert.deepEqual(installed, []);
     stopped.resolve(); await harness.flush();
-    assert.equal(installed.length, update ? 1 : 0);
-    if (update) assert.deepEqual(installed[0], [false, true]);
+    assert.equal(installed.length, update && graceful ? 1 : 0);
+    if (update && graceful) assert.deepEqual(installed[0], [false, true]);
+    if (update && !graceful) assert.ok(harness.state.errors.some(message => message.includes('本次未启动安装')));
     assert.equal(harness.state.quitCount, 1);
   }
 });
