@@ -1,12 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { selectRelease, manifestFor, publish, pointer, prefix } from './publish.mjs';
+import { selectRelease, manifestFor, publish, pointer, prefix, normalizeReleaseNotes,
+  assertReleaseSnapshot, createDiagnostics } from './publish.mjs';
 const bytes = Buffer.from('Synthetic installer bytes; never executed.');
 const sha = data => createHash('sha256').update(data).digest('hex');
 function release(version = '0.1.7') {
   const name = `FundsTrace-${version}-windows-x64-unsigned.exe`;
   return { id: 123, tag_name: `v${version}`, published_at: '2026-10-19T12:00:00Z', draft: false, prerelease: false,
+    body: '  修复节点标签显示。\r\n\r\n优化更新体验。\r\n',
     assets: [{ id: 456, name, size: bytes.length, digest: `sha256:${sha(bytes)}`, browser_download_url: `https://github.com/Eysn0130/FundsTrace/releases/download/v${version}/${name}` }] };
 }
 function store(seed = []) {
@@ -29,6 +31,10 @@ test('published installer is checked before upload and site/updater switch toget
   const current = JSON.parse(objects.get(pointer));
   assert.equal(current.product, 'com.eysn.fundstrace'); assert.equal(current.checksumSha256, sha(bytes));
   assert.equal(current.files[0].url, 'https://download.analytix.top/releases/fundstrace/windows/0.1.7/FundsTrace-0.1.7-windows-x64-unsigned.exe');
+  assert.equal(current.releaseNotes, '修复节点标签显示。\n\n优化更新体验。');
+  const immutable = JSON.parse(objects.get(`${prefix}/0.1.7/manifest.json`));
+  assert.equal(Object.hasOwn(immutable, 'releaseNotes'), false);
+  assert.deepEqual(immutable, manifestFor(selected, bytes));
   assert.equal(result.version, current.version);
   const count = puts.length; await publish({ client, selected, bytes }); assert.equal(puts.length, count);
 });
@@ -62,4 +68,151 @@ test('downgrades, replacing existing version bytes and corrupt uploads fail clos
   third.client.put = async (...args) => { await put(...args); third.objects.set(args[0], Buffer.from('corrupt')); };
   await assert.rejects(publish({ client: third.client, selected: selectRelease(release()), bytes }), /integrity/);
   assert.equal(third.objects.has(pointer), false);
+});
+
+test('release notes preserve Markdown content with normalized newlines and a UTF-8 byte limit', () => {
+  assert.equal(normalizeReleaseNotes(' \r\n- **修复**\r第二项\r\n '), '- **修复**\n第二项');
+  assert.equal(normalizeReleaseNotes(null), '');
+  const legacy = release(); delete legacy.body;
+  assert.equal(selectRelease(legacy).releaseNotes, '');
+  assert.equal(normalizeReleaseNotes('a'.repeat(16 * 1024)).length, 16 * 1024);
+  assert.throws(() => normalizeReleaseNotes('a'.repeat(16 * 1024 + 1)), /16 KiB/);
+  assert.throws(() => normalizeReleaseNotes('界'.repeat(6000)), /16 KiB/);
+  assert.throws(() => selectRelease({ ...release(), body: {} }), /notes/);
+});
+
+test('same-version notes corrections update only latest and leave immutable bytes untouched', async () => {
+  const original = release(), selected = selectRelease(original), h = store();
+  await publish({ ...h, selected, bytes });
+  const installerKey = `${prefix}/0.1.7/${selected.asset.name}`;
+  const manifestKey = `${prefix}/0.1.7/manifest.json`;
+  const installer = Buffer.from(h.objects.get(installerKey)), manifest = Buffer.from(h.objects.get(manifestKey));
+  const count = h.puts.length;
+  const corrected = selectRelease({ ...original, body: '修复节点标签显示。\n改善稳定性。' });
+  const result = await publish({ ...h, selected: corrected, bytes });
+  assert.deepEqual(h.puts.slice(count), [pointer]);
+  assert.ok(h.objects.get(installerKey).equals(installer));
+  assert.ok(h.objects.get(manifestKey).equals(manifest));
+  assert.equal(result.releaseNotes, corrected.releaseNotes);
+  assert.deepEqual(JSON.parse(h.objects.get(pointer)), result);
+  const correctedCount = h.puts.length;
+  await publish({ ...h, selected: corrected, bytes });
+  assert.equal(h.puts.length, correctedCount);
+});
+
+test('legacy latest without notes supports a notes correction or a newer release', async () => {
+  const selected = selectRelease(release());
+  const binary = manifestFor(selected, bytes);
+  const serialized = Buffer.from(JSON.stringify(binary, null, 2) + '\n');
+  for (const version of ['0.1.7', '0.1.8']) {
+    const h = store([[pointer, serialized], [`${prefix}/0.1.7/manifest.json`, serialized],
+      [`${prefix}/0.1.7/${selected.asset.name}`, bytes]]);
+    await publish({ ...h, selected: selectRelease(release(version)), bytes });
+    const current = JSON.parse(h.objects.get(pointer));
+    assert.equal(current.version, version);
+    assert.equal(current.releaseNotes, selected.releaseNotes);
+    assert.ok(h.objects.get(`${prefix}/0.1.7/manifest.json`).equals(serialized));
+    if (version === '0.1.7') assert.deepEqual(h.puts, [pointer]);
+  }
+});
+
+test('same-version metadata changes beyond release notes cannot be promoted', async () => {
+  const selected = selectRelease(release()), manifest = manifestFor(selected, bytes);
+  const mutations = [
+    value => { value.githubReleaseId++; },
+    value => { value.githubAssetId++; },
+    value => { value.releaseDate = '2026-10-19T13:00:00Z'; },
+    value => { value.checksumSha256 = 'a'.repeat(64); },
+    value => { value.files[0].size++; },
+    value => { value.sha512 = value.files[0].sha512 = Buffer.alloc(64, 1).toString('base64'); },
+    value => { value.unexpectedMetadata = 'cannot be dropped'; },
+  ];
+  for (const mutate of mutations) {
+    const value = structuredClone(manifest); mutate(value);
+    const before = Buffer.from(JSON.stringify(value));
+    const h = store([[pointer, before]]);
+    await assert.rejects(publish({ ...h, selected, bytes }), /immutable/);
+    assert.equal(h.puts.length, 0);
+    assert.ok(h.objects.get(pointer).equals(before));
+  }
+});
+
+test('a release notes edit during upload fails the final GitHub snapshot check before promotion', async () => {
+  const old = Buffer.from(JSON.stringify(manifestFor(selectRelease(release()), bytes)));
+  const h = store([[pointer, old]]), selected = selectRelease(release('0.1.8')), events = [];
+  const edited = selectRelease({ ...release('0.1.8'), body: '上传期间修正的说明。' });
+  await assert.rejects(publish({ ...h, selected, bytes, report: event => events.push(event),
+    assertLatest: async () => assertReleaseSnapshot(selected, edited) }), /changed during upload/);
+  assert.ok(h.objects.get(pointer).equals(old));
+  assert.equal(h.puts.includes(pointer), false);
+  assert.equal(events.at(-1).stage, 'github.recheck');
+  assert.equal(events.at(-1).event, 'failed');
+  assert.doesNotThrow(() => assertReleaseSnapshot(selected, structuredClone(selected)));
+  const downloaded = structuredClone(selected); downloaded.asset.download_count = 1;
+  assert.doesNotThrow(() => assertReleaseSnapshot(selected, downloaded));
+  for (const mutate of [value => { value.releaseDate = '2026-10-19T13:00:00Z'; },
+    value => { value.asset.size++; }, value => { value.asset.id++; }, value => { value.releaseId++; },
+    value => { value.asset.digest = `sha256:${'a'.repeat(64)}`; }]) {
+    const changed = structuredClone(selected); mutate(changed);
+    assert.throws(() => assertReleaseSnapshot(selected, changed), /changed during upload/);
+  }
+});
+
+test('fixed diagnostic stages expose only elapsed time and safe error code/status metadata', async () => {
+  const marker = 'SENSITIVE_TOKEN_IN_URL_AND_ERROR';
+  const errors = [
+    { value: Object.assign(new Error(`https://signed.invalid/${marker}`), { code: 'ETIMEDOUT', statusCode: 503 }), code: 'ETIMEDOUT', status: 503 },
+    { value: Object.assign(new Error(marker), { code: marker, status: marker }), code: 'UNKNOWN' },
+    { value: Object.assign(new Error(marker), { name: 'TimeoutError' }), code: 'TIMEOUT' },
+    { value: Object.assign(new Error(marker), { cause: { code: 'ECONNRESET', message: marker } }), code: 'ECONNRESET' },
+  ];
+  for (const stage of ['github.metadata', 'github.download', 'cdn.prewarm']) {
+    for (const { value, code, status } of errors) {
+      const events = []; let clock = 10;
+      const run = createDiagnostics(event => events.push(event), () => clock += 5);
+      await assert.rejects(run(stage, async () => { throw value; }), error => error === value);
+      assert.deepEqual(events, [{ stage, event: 'begin' },
+        { stage, event: 'failed', elapsedMs: 5, code, ...(status ? { status } : {}) }]);
+      assert.equal(JSON.stringify(events).includes(marker), false);
+      assert.equal(JSON.stringify(events).includes('signed.invalid'), false);
+    }
+  }
+  const events = [], run = createDiagnostics(event => events.push(event));
+  assert.equal(await run('github.metadata', async () => 42), 42);
+  assert.equal(events.at(-1).event, 'done');
+  await assert.rejects(run(`https://signed.invalid/${marker}`, async () => {}), /Unknown publication stage/);
+  assert.equal(events.length, 2);
+});
+
+test('OSS transport failures identify the exact stage without leaking errors or promoting latest', async () => {
+  const old = Buffer.from(JSON.stringify(manifestFor(selectRelease(release()), bytes)));
+  const selected = selectRelease(release('0.1.8')), marker = 'SENSITIVE_OSS_REQUEST_TOKEN';
+  const installerKey = `${prefix}/0.1.8/${selected.asset.name}`;
+  for (const expectedStage of ['oss.read-installer', 'oss.upload-installer', 'oss.verify-installer', 'oss.promote']) {
+    const h = store([[pointer, old]]), events = [], get = h.client.get, put = h.client.put;
+    let installerReads = 0;
+    const failure = Object.assign(new Error(`https://oss.invalid/?token=${marker}`), { code: 'ETIMEDOUT', status: 504 });
+    h.client.get = async key => {
+      if (key === installerKey) {
+        installerReads++;
+        if (expectedStage === 'oss.read-installer' || (expectedStage === 'oss.verify-installer' && installerReads === 2)) throw failure;
+      }
+      return get(key);
+    };
+    h.client.put = async (key, ...args) => {
+      if ((expectedStage === 'oss.upload-installer' && key === installerKey)
+          || (expectedStage === 'oss.promote' && key === pointer)) throw failure;
+      return put(key, ...args);
+    };
+    await assert.rejects(publish({ ...h, selected, bytes, report: event => events.push(event) }), error => error === failure);
+    assert.ok(h.objects.get(pointer).equals(old));
+    assert.equal(events.at(-1).stage, expectedStage);
+    assert.equal(events.at(-1).event, 'failed');
+    assert.equal(events.at(-1).code, 'ETIMEDOUT');
+    assert.equal(events.at(-1).status, 504);
+    assert.equal(JSON.stringify(events).includes(marker), false);
+    assert.equal(JSON.stringify(events).includes('oss.invalid'), false);
+    for (const event of events.filter(event => event.event === 'done'))
+      assert.ok(events.some(begin => begin.stage === event.stage && begin.event === 'begin'));
+  }
 });
