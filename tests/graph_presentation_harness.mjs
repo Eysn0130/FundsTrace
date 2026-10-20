@@ -17,7 +17,7 @@ const sorted = iterable => [...iterable].sort();
 test('defaults are pure JSON and UMD/CommonJS provide the same API', () => {
   const expected = { version: 1, relationFilter: { currency: null, min: '', max: '', active: false },
     amountWidth: { enabled: false, currency: null }, nodeLabels: {}, nodeStyles: {}, edgeLabels: {}, edgeStyles: {},
-    hiddenAccounts: [], onlyAccounts: null };
+    hiddenAccounts: [], onlyAccounts: null, annotations: [] };
   assert.deepEqual(presentation.create(), expected);
   assert.deepEqual(presentation.create(null), expected);
   const root = fileURLToPath(new URL('../', import.meta.url)), sandbox = {};
@@ -75,7 +75,7 @@ test('persistent state drops transaction facts, photos, HTML and arbitrary field
   assert.deepEqual(state, { version: 1, relationFilter: { currency: 'CNY', min: '1.00', max: '100.00', active: true },
     amountWidth: { enabled: true, currency: 'CNY' }, nodeLabels: { A: { fontSize: 12 } }, nodeStyles: {},
     edgeLabels: { 'A=>B': { fill: '#123' } }, edgeStyles: { 'A=>B': { stroke: '#fed' } },
-    hiddenAccounts: ['A', 'B'], onlyAccounts: ['B', 'C'] });
+    hiddenAccounts: ['A', 'B'], onlyAccounts: ['B', 'C'], annotations: [] });
   const serialized = JSON.stringify(state);
   for (const secret of ['secret', 'SECRET', 'trackedIds', 'amount_totals', '999999999', '<script>', 'photo', 'ids']) {
     assert.equal(serialized.includes(secret), false);
@@ -174,4 +174,24 @@ test('effective node and relationship labels always discard legacy backplates, b
     assert.equal(style.labelLeader,undefined);assert.equal(style.fontSize,16);assert.equal(style.lineHeight,22);
     assert.equal(style.fontFamily,'Microsoft YaHei');
   }
+});
+
+test('node annotations keep only anchored, bounded text', () => {
+  const presentation = require('../static/graph-presentation.js');
+  const kept = presentation.create({
+    annotations: [
+      { id: 'SYN-A', text: '  实际控制人  ', anchor: 'above', dx: 20, dy: -8, size: 15 },
+      { id: 'SYN-B', text: '文字下方', anchor: 'sideways' },
+      { id: 'SYN-C', text: '   ' },
+      { text: '没有主体', anchor: 'above' },
+      { id: 'SYN-D', text: '越界偏移', dx: 9999, dy: -9999 },
+    ],
+  }).annotations;
+  assert.deepEqual(kept, [
+    { id: 'SYN-A', text: '实际控制人', anchor: 'above', dx: 20, dy: -8, size: 15 },
+    { id: 'SYN-B', text: '文字下方', anchor: 'below', dx: 0, dy: 0, size: 13 },
+    { id: 'SYN-D', text: '越界偏移', anchor: 'below', dx: 400, dy: -400, size: 13 },
+  ]);
+  // 旧快照没有标注字段时保持空数组，不报错。
+  assert.deepEqual(presentation.create({ version: 1 }).annotations, []);
 });

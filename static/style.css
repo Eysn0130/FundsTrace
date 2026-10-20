@@ -1584,3 +1584,10 @@ tr.detail-row td { background: #15181e; }
   .neighborhood-current dl > div { grid-template-columns: 74px minmax(0,1fr); }
   .neighborhood-current #btnExpandNeighbors { width: 100%; margin-left: 0; }
 }
+
+/* 自定义标注：输入框与起始位置选择 */
+.toolbar-form textarea { width: 100%; min-height: 74px; resize: vertical; font: inherit; font-size: 13px; line-height: 1.5; padding: 8px; border-radius: var(--control-radius); background: var(--surface); color: var(--text-primary); border: 1px solid var(--border, #2d4056); }
+.toolbar-form fieldset { border: 0; padding: 0; margin: 12px 0 0; }
+.toolbar-form legend { color: var(--muted); font-size: 12px; padding: 0; margin-bottom: 6px; }
+.annotation-anchor-field label { display: inline-flex; align-items: center; gap: 6px; margin-right: 16px; color: var(--text-primary); font-size: 13px; }
+.toolbar-form-hint { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 8px 0 0; }

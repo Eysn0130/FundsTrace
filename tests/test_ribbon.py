@@ -46,7 +46,7 @@ def test_ribbon_has_four_tabs_and_preserves_single_business_controls():
     assert [tab['data-ribbon-tab'] for tab in page.tabs] == ['common', 'trace', 'style', 'view']
     assert len(page.panels) == 4
     assert sum('hidden' not in panel for panel in page.panels) == 1
-    for key in ('btnCanvasNew', 'btnCanvasRemove', 'btnCanvasSave', 'btnUndo', 'btnRedo', 'btnRelayout', 'btnFit', 'neighborAccount',
+    for key in ('btnCanvasNew', 'btnCanvasRemove', 'btnCanvasSave', 'btnAnnotation', 'btnUndo', 'btnRedo', 'btnRelayout', 'btnFit', 'neighborAccount',
                 'neighborDirection', 'btnNeighborhood', 'btnExpandNeighbors', 'btnGraphOverview',
                 'btnMinimap', 'graphLabelMode', 'relationCurrency', 'relationMin', 'relationMax',
                 'btnRelationApply', 'btnRelationClear', 'amountWidthCk', 'widthCurrency'):

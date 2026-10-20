@@ -75,6 +75,27 @@
     return Array.isArray(input) ? [...new Set(input.filter(value => typeof value === 'string' && value !== ''))] : [];
   }
 
+  // 主体标注锚定在节点上：anchor 只在“图形正上方”和“文字下方”之间取，dx/dy 是相对锚点的微调。
+  function annotations(input) {
+    if (!Array.isArray(input)) return [];
+    const out = [];
+    for (const item of input.slice(0, 200)) {
+      if (!object(item)) continue;
+      const text = typeof item.text === 'string' ? item.text.trim().slice(0, 200) : '';
+      const id = typeof item.id === 'string' && item.id ? item.id.slice(0, 80) : '';
+      if (!text || !id) continue;
+      const size = Number(item.size);
+      const dx = Number(item.dx), dy = Number(item.dy);
+      out.push({
+        id, text,
+        anchor: item.anchor === 'above' ? 'above' : 'below',
+        dx: Number.isFinite(dx) ? Math.max(-400, Math.min(400, dx)) : 0,
+        dy: Number.isFinite(dy) ? Math.max(-400, Math.min(400, dy)) : 0,
+        size: Number.isFinite(size) ? Math.min(40, Math.max(9, size)) : 13,
+      });
+    }
+    return out;
+  }
   function create(input) {
     const source = object(input) ? input : {};
     const checked = relations && typeof relations.validateFilter === 'function'
@@ -91,6 +112,7 @@
       edgeStyles: styleMap(source.edgeStyles, sanitizeEdge),
       hiddenAccounts: accounts(source.hiddenAccounts),
       onlyAccounts: Array.isArray(source.onlyAccounts) ? accounts(source.onlyAccounts) : null,
+      annotations: annotations(source.annotations),
     };
   }
 

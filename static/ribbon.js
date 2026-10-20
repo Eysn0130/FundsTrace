@@ -108,7 +108,7 @@
     function sendCommand(command, value) {
       doc.dispatchEvent(new root.CustomEvent('funds:ribbon-command', { detail: { command, value } }));
     }
-    const selectionCommands = new Set(['clearSelection','invertSelection','inspectSelection','accountDetails','viewFlows','fitSelection','focusSelection','hideSelection','showOnlySelection','alignLeft','alignTop','distributeHorizontal','distributeVertical','emphasize']);
+    const selectionCommands = new Set(['clearSelection','invertSelection','inspectSelection','accountDetails','viewFlows','fitSelection','focusSelection','hideSelection','showOnlySelection','alignLeft','alignTop','distributeHorizontal','distributeVertical','emphasize','annotateSelection']);
     const edgeSelectionCommands = new Set(['clearSelection','inspectSelection','viewFlows','fitSelection','focusSelection']);
     const cameraCommands=new Set(['zoomIn','zoomOut','zoomReset','fitSelection','focusSelection','locateNew']);
     function refreshAvailability() {

@@ -195,6 +195,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   installNeighborhood();
   installNodeFinder();
   initGraph();
+  installAnnotationDialog();
   await loadCases();
   void window.FundsImportWorkflow?.restore();
   await refreshStats();
@@ -436,7 +437,7 @@ function newGraphPresentation(value) {
   return typeof FundsGraphPresentation !== 'undefined' ? FundsGraphPresentation.create(value) : {
     version: 1, relationFilter: { currency: null, min: '', max: '', active: false },
     amountWidth: { enabled: false, currency: null }, nodeLabels: {}, nodeStyles: {}, edgeLabels: {}, edgeStyles: {},
-    hiddenAccounts: [], onlyAccounts: null,
+    hiddenAccounts: [], onlyAccounts: null, annotations: [],
   };
 }
 function graphViewIsFiltered() {
@@ -1336,6 +1337,7 @@ function initGraph() {
     if (!source.ctrlKey && !source.metaKey) exploreNeighborhood(event.item.getModel().id);
   });
   initGraphSelection(graph, c);
+  installAnnotationDrag(c);
   if (typeof FundsGraphSelection === 'undefined') graph.on('node:click', ev => {
     if (!layoutJob && !state.graphLoading && !window.FundsCanvasEditor?.history.status().busy) {
       closeDrawer(false); selectItem(ev.item);
@@ -2678,6 +2680,7 @@ function renderGraph() {
     }
   }
   state.forceFit = false;
+  renderNodeAnnotations();
   const fitRevision = view.revision, fitIntent = state.graphCamera?.getIntent?.();
   setTimeout(() => {
     if (!isCurrentCase(renderContext) || graph !== state.graph || view !== state.graphView || fitRevision !== view.revision
@@ -2686,6 +2689,151 @@ function renderGraph() {
   }, 0);
 }
 
+/* ---------------- 主体标注：锚定在节点上，随节点移动 ----------------
+   只改变“看见什么”，不动追踪集合、金额或关系事实。
+   起始位置二选一：图形正上方（above）或节点文字下方（below）；dx/dy 是相对锚点的微调。 */
+let annotationShapes = [];
+const annotationDrag = { active: false, pointerId: null, note: null, start: null, dx0: 0, dy0: 0 };
+
+function annotationList() {
+  return Array.isArray(state.presentation?.annotations) ? state.presentation.annotations : [];
+}
+function annotationFor(id) {
+  return annotationList().find(note => note.id === id) || null;
+}
+function annotationAnchorY(item, note) {
+  const model = item.getModel?.() || {};
+  const size = Number(model.size) || 32;
+  const data = model.data || {};
+  const text = model.fundsLabel ?? nodeLabel(data) ?? model.label ?? '';
+  const labelHeight = graphTextSize(String(text), effectiveGraphLabelStyle('node', model.id)).height || 18;
+  return note.anchor === 'above' ? -(size / 2) - 10 : size / 2 + labelHeight + 10;
+}
+function annotationNoteStyle(note) {
+  return { fontSize: note.size || 13, fontFamily: 'Arial', fontWeight: 'normal', fontStyle: 'normal' };
+}
+function renderNodeAnnotations() {
+  const graph = state.graph;
+  if (!graph) return;
+  for (const shape of annotationShapes) { try { shape.remove?.(); } catch (_) { /* canvas disposed */ } }
+  annotationShapes = [];
+  for (const note of annotationList()) {
+    const item = graph.findById?.(note.id);
+    if (!item || !item.getContainer) continue;
+    const container = item.getContainer();
+    if (!container?.addShape) continue;
+    const anchorY = annotationAnchorY(item, note);
+    const shape = container.addShape('text', {
+      name: 'funds-node-annotation',
+      attrs: {
+        x: note.dx || 0, y: anchorY + (note.dy || 0), text: note.text,
+        fontSize: note.size || 13, fontFamily: 'Arial', fill: '#e3a12b',
+        textAlign: 'center', textBaseline: note.anchor === 'above' ? 'bottom' : 'top',
+      },
+    });
+    shape.__fundsNote = note;
+    annotationShapes.push(shape);
+  }
+  graph.paint?.();
+}
+function annotationAt(point) {
+  const graph = state.graph;
+  for (const note of annotationList()) {
+    const item = graph?.findById?.(note.id);
+    const model = item?.getModel?.() || {};
+    if (!Number.isFinite(model.x) || !Number.isFinite(model.y)) continue;
+    const style = annotationNoteStyle(note);
+    const width = graphTextSize(String(note.text), style).width;
+    const height = Math.max(style.fontSize * 1.4, (style.fontSize + 4) * String(note.text).split('\n').length);
+    const offsetY = annotationAnchorY(item, note) + (note.dy || 0);
+    const top = model.y + offsetY - (note.anchor === 'above' ? height : 0);
+    const left = model.x + (note.dx || 0) - width / 2;
+    if (point.x >= left - 6 && point.x <= left + width + 6 && point.y >= top - 6 && point.y <= top + height + 6) return note;
+  }
+  return null;
+}
+function openAnnotationEditor() {
+  const ids = [...(state.graphSelection?.ids || [])];
+  if (ids.length !== 1) { toast('请先选中一个账户再添加标注', 'err'); return false; }
+  const dialog = $('#annotationDialog'), input = $('#annotationText');
+  if (!dialog || !input) return false;
+  const note = annotationFor(ids[0]);
+  dialog.dataset.node = ids[0];
+  input.value = note ? note.text : '';
+  const anchor = note?.anchor === 'above' ? 'above' : 'below';
+  for (const radio of dialog.querySelectorAll('input[name="annotationAnchor"]')) radio.checked = radio.value === anchor;
+  $('#annotationDelete').disabled = !note;
+  dialog.showModal();
+  input.focus();
+  return true;
+}
+function closeAnnotationEditor() { $('#annotationDialog')?.close(); }
+function saveAnnotationEditor() {
+  const dialog = $('#annotationDialog'), input = $('#annotationText');
+  const id = dialog?.dataset?.node;
+  if (!id || !dialog) return false;
+  const text = String(input?.value || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  const existing = annotationFor(id);
+  const picked = [...dialog.querySelectorAll('input[name="annotationAnchor"]')].find(radio => radio.checked)?.value;
+  const notes = annotationList().filter(note => note.id !== id);
+  if (text) notes.push({ id, text, anchor: picked === 'above' ? 'above' : 'below',
+    dx: existing ? existing.dx : 0, dy: existing ? existing.dy : 0, size: 13 });
+  state.presentation.annotations = notes;
+  renderNodeAnnotations();
+  dialog.close();
+  return true;
+}
+function deleteAnnotation() {
+  const dialog = $('#annotationDialog');
+  const id = dialog?.dataset?.node;
+  if (!id) return false;
+  state.presentation.annotations = annotationList().filter(note => note.id !== id);
+  renderNodeAnnotations();
+  dialog.close();
+  return true;
+}
+/* 标注微调：拖动只改相对锚点的偏移，节点移动时标注仍然跟着走。 */
+function installAnnotationDrag(container) {
+  if (!container) return;
+  const toModel = event => {
+    const rect = container.getBoundingClientRect();
+    return state.graph.getPointByCanvas(event.clientX - rect.left, event.clientY - rect.top);
+  };
+  container.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || !state.graph) return;
+    const note = annotationAt(toModel(event));
+    if (!note) return;
+    event.preventDefault(); event.stopPropagation();
+    annotationDrag.active = true;
+    annotationDrag.pointerId = event.pointerId;
+    annotationDrag.note = note;
+    annotationDrag.start = toModel(event);
+    annotationDrag.dx0 = note.dx || 0;
+    annotationDrag.dy0 = note.dy || 0;
+    try { container.setPointerCapture(event.pointerId); } catch (_) { /* older host */ }
+  }, true);
+  container.addEventListener('pointermove', event => {
+    if (!annotationDrag.active || !annotationDrag.note) return;
+    const point = toModel(event);
+    annotationDrag.note.dx = Math.round(annotationDrag.dx0 + (point.x - annotationDrag.start.x));
+    annotationDrag.note.dy = Math.round(annotationDrag.dy0 + (point.y - annotationDrag.start.y));
+    event.preventDefault(); event.stopPropagation();
+    renderNodeAnnotations();
+  }, true);
+  container.addEventListener('pointerup', event => {
+    if (!annotationDrag.active) return;
+    annotationDrag.active = false; annotationDrag.note = null; annotationDrag.pointerId = null;
+    event.preventDefault(); event.stopPropagation();
+  }, true);
+}
+function installAnnotationDialog() {
+  const dialog = $('#annotationDialog');
+  if (!dialog) return;
+  $('#annotationCancel')?.addEventListener('click', closeAnnotationEditor);
+  $('#annotationDelete')?.addEventListener('click', deleteAnnotation);
+  $('#annotationForm')?.addEventListener('submit', event => { event.preventDefault(); saveAnnotationEditor(); });
+}
+function syncGraphAnnotationsAfterReset() { renderNodeAnnotations(); }
 function applyPendingGraphRecent(view,graph) {
   if(view.exportDepth || !view.pendingRecent)return;
   const involved=view.pendingRecent;view.pendingRecent=null;
