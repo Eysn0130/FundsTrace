@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "tag": "v0.1.7",
+  "sourceCommit": "9b100dc88a35bbe66788e2c7220e466f504b0496",
+  "sourceRun": "39356447583",
+  "installer": {
+    "name": "FundsTrace-0.1.7-windows-x64-unsigned.exe",
+    "bytes": 160011997,
+    "sha256": "52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a"
+  },
+  "files": [
+    {
+      "path": "evidence/build-manifest.json",
+      "bytes": 11445,
+      "sha256": "30d55fc143a18c8964e36e7587db868c1300a06303f1d7ccc583ab008253f4af"
+    },
+    {
+      "path": "evidence/native-backend-smoke.json",
+      "bytes": 908,
+      "sha256": "508946fc0e49eccc78fa4542752e6b8ab859ae75ed361cd20dde3f50dea9f815"
+    },
+    {
+      "path": "evidence/native-import-recovery-smoke.json",
+      "bytes": 1594,
+      "sha256": "cc7361be88c651fdefcf1e223c766b4e021b2242f102f7bf4fe6479d97c6a244"
+    },
+    {
+      "path": "evidence/native-installed-app-smoke.json",
+      "bytes": 5669,
+      "sha256": "55f48b0c1ad21dbb1650caa6ac6379eee41712a6628db92eee14639cba38d56f"
+    },
+    {
+      "path": "evidence/native-installed-app.graph.png",
+      "bytes": 158731,
+      "sha256": "0cf9c91d0c430cdebde5c67fd3cdab56dd0376c9c87264e21917eda188b77ac9"
+    },
+    {
+      "path": "evidence/native-installed-app.png",
+      "bytes": 79254,
+      "sha256": "f687856df2ed54287f500e4c1c62fcd93b8d42c8060bde9058cc925dc14413a8"
+    },
+    {
+      "path": "evidence/native-installer-smoke.json",
+      "bytes": 1932,
+      "sha256": "abf69cf3e37efeb338306352fb0e1e4f3f972d66b32a792cac7661b0a2ec9232"
+    },
+    {
+      "path": "evidence/packaged-host-resources.json",
+      "bytes": 768,
+      "sha256": "0585a7f8f8df50a55b29719d9907726e85b5f73e624061b818c450a06093c935"
+    },
+    {
+      "path": "evidence/release-verification.json",
+      "bytes": 646,
+      "sha256": "37048253ed7614cb04760376b5b23037ead0f91dec7b9e5255bbe713daec30f7"
+    },
+    {
+      "path": "evidence/standard-user-compatibility.zip",
+      "bytes": 233622,
+      "sha256": "76c8709c1d87444bc50af4da8aa9a264a85d94d0388a83ab6672ce7002a12751"
+    },
+    {
+      "path": "evidence/windows-candidate.json",
+      "bytes": 370461,
+      "sha256": "16b4e72eadb880ab69b2a75dfff87228dd771b8ecef414462bc4a9944e7f2c96"
+    },
+    {
+      "path": "evidence/windows-candidate.sha256",
+      "bytes": 257212,
+      "sha256": "d56e683e79d26629ea08e7c240db834d94002f99291d3745532e40339ae6e6fd"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "version": "0.1.7",
+  "checks": {
+    "exactHostAllowlist": true,
+    "packageIdentity": true,
+    "sourceHashes": true,
+    "preferencesAndPreloadIncluded": true
+  },
+  "hostFiles": {
+    "main.cjs": "ac2b7bdc371b7856611b26483a0c8f8a000de19533367a0a12ad977b85963298",
+    "backend.cjs": "faddb653855ebcf1db2c96ef2d8d399512c939264c5a1debded9aed7d622781e",
+    "host-policy.cjs": "ce3e4304c16360ac59ac6b23251cab1bc99ddbc4ee8f4c504fd4e27714c94115",
+    "preferences.cjs": "22886b804768d5aebd17024c7f9dba3ccbb09645da278f9b75e2d0f5643ae5cd",
+    "preload.cjs": "443896f379fda7b188aa4e7c4a1a7117d1525c3352a42cb466fc8f7a0c4e8ed8"
+  },
+  "appArchiveSha256": "504f48be8c7fa85f6f60611559609835c3e3a46cc28e5b06f573a346acf3f488"
+}

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "sourceCommit": "9b100dc88a35bbe66788e2c7220e466f504b0496",
+  "sourceRun": "39356447583",
+  "tag": "v0.1.7",
+  "installer": {
+    "path": "build/desktop/electron/FundsTrace-0.1.7-windows-x64-unsigned.exe",
+    "bytes": 160011997,
+    "sha256": "52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a"
+  },
+  "resourceCount": 109,
+  "hostFileCount": 6,
+  "sourceResourcesIndependentlyChecked": 106,
+  "installedAppChecks": 61,
+  "standardAppChecks": 61,
+  "standardUserArchiveSha256": "76c8709c1d87444bc50af4da8aa9a264a85d94d0388a83ab6672ce7002a12751",
+  "publicReleasePublished": false
+}
