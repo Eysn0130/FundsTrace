@@ -24,7 +24,7 @@ async function verifyHostArchive(archive, source = path.resolve(__dirname, '..')
     const local = path.join(source, name);
     const stat = await fs.stat(local);
     if (stat.isDirectory()) continue;
-    assert.equal(digest(asar.extractFile(archive, name)), digest(await fs.readFile(local)), `Packaged dependency drift: ${name}`);
+    assert.equal(digest(asar.extractFile(archive, path.normalize(name))), digest(await fs.readFile(local)), `Packaged dependency drift: ${name}`);
   }
   for (const name of ['node_modules/electron-updater/package.json', 'node_modules/electron-updater/out/main.js'])
     assert.ok(entries.includes(name), `Missing update runtime: ${name}`);

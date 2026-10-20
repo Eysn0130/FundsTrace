@@ -4,6 +4,12 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { releaseInfo, allowed, updateController, CDN } = require('../updates.cjs');
 const info = (version = '0.1.8') => ({ product: 'com.eysn.fundstrace', version, files: [{ url: `${CDN}${version}/FundsTrace-${version}-windows-x64-unsigned.exe`, sha512: Buffer.alloc(64, 1).toString('base64'), size: 160000000 }] });
+test('the shared JSON document is valid update YAML and retains the product binding', () => {
+  const { parseUpdateInfo } = require('electron-updater/out/providers/Provider');
+  const parsed = parseUpdateInfo(JSON.stringify(info()), 'latest.yml', new URL('https://analytix.top/fundstrace/latest.yml'));
+  assert.equal(releaseInfo(parsed).version, '0.1.8');
+  assert.equal(releaseInfo(parsed).file.url, info().files[0].url);
+});
 function fixture(options = {}) {
   const updater = new EventEmitter();
   const calls = [];
