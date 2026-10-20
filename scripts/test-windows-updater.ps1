@@ -31,7 +31,7 @@ if (($PrivateVersion.Split('.')[0..2] -join '.') -cne $NextVersion) {
     throw 'Private fixture version mismatch.'
 }
 $FixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('FundsTrace private updater ' + [guid]::NewGuid().ToString('N'))
-$RootCert = $null; $LeafCert = $null; $RootTrusted = $false; $Report = $null; $Failed = $false; $Relaunched = $null
+$RootCert = $null; $LeafCert = $null; $PublicRoot = $null; $RootTrusted = $false; $Report = $null; $Failed = $false; $Relaunched = $null
 $Stage = 'privateCertificate'
 try {
     [void](New-Item -ItemType Directory -Path $FixtureRoot)
@@ -45,7 +45,14 @@ try {
         -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.1') -NotAfter ([DateTime]::UtcNow.AddDays(1))
     $RootFile = Join-Path $FixtureRoot 'root.cer'
     [void](Export-Certificate -Cert $RootCert -FilePath $RootFile)
-    [void](Import-Certificate -FilePath $RootFile -CertStoreLocation 'Cert:\CurrentUser\Root'); $RootTrusted = $true
+    # An empty CI user's Root store need not have a Certificate-provider path.
+    # Open the native current-user store explicitly, adding only the public CA.
+    $PublicRoot = [Security.Cryptography.X509Certificates.X509Certificate2]::new([IO.File]::ReadAllBytes($RootFile))
+    $RootStore = [Security.Cryptography.X509Certificates.X509Store]::new('Root',[Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+    try {
+        $RootStore.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        $RootStore.Add($PublicRoot); $RootTrusted = $true
+    } finally { $RootStore.Dispose() }
     $Passphrase = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
     $Pfx = Join-Path $FixtureRoot 'fixture.pfx'
     [void](Export-PfxCertificate -Cert $LeafCert -FilePath $Pfx -CryptoAlgorithmOption AES256_SHA256 -Password (ConvertTo-SecureString $Passphrase -AsPlainText -Force))
@@ -101,7 +108,14 @@ try {
             [void]$Relaunched.CloseMainWindow()
             if (-not $Relaunched.WaitForExit(30000)) { throw 'Owned updated application remains active.' }
         }
-        if ($RootTrusted) { Remove-Item -LiteralPath ('Cert:\CurrentUser\Root\' + $RootCert.Thumbprint) }
+        if ($RootTrusted) {
+            $RootStore = [Security.Cryptography.X509Certificates.X509Store]::new('Root',[Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+            try {
+                $RootStore.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+                $RootStore.Remove($PublicRoot)
+            } finally { $RootStore.Dispose() }
+        }
+        if ($null -ne $PublicRoot) { $PublicRoot.Dispose() }
         foreach ($Certificate in @($LeafCert,$RootCert)) {
             if ($null -ne $Certificate) { Remove-Item -LiteralPath ('Cert:\CurrentUser\My\' + $Certificate.Thumbprint) -DeleteKey }
         }
