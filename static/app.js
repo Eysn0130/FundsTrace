@@ -2709,8 +2709,17 @@ function annotationAnchorY(item, note) {
   const labelHeight = graphTextSize(String(text), effectiveGraphLabelStyle('node', model.id)).height || 18;
   return note.anchor === 'above' ? -(size / 2) - 10 : size / 2 + labelHeight + 10;
 }
+// 标注支持多行：统一换行符、去掉行尾空白与多余空行，最多 6 行、200 字。
+function normalizeAnnotationText(value) {
+  return String(value ?? '').replace(/\r\n?/g, '\n')
+    .split('\n').map(line => line.trim()).join('\n')
+    .replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '')
+    .split('\n').slice(0, 6).join('\n').slice(0, 200);
+}
 function annotationNoteStyle(note) {
-  return { fontSize: note.size || 13, fontFamily: note.fontFamily || 'Arial', fontWeight: 'normal', fontStyle: 'normal' };
+  const size = note.size || 13;
+  return { fontSize: size, lineHeight: Math.round(size * 1.4), fontFamily: note.fontFamily || 'Arial',
+    fontWeight: 'normal', fontStyle: 'normal' };
 }
 const ANNOTATION_COLORS = ['#e3a12b', '#e05252', '#4f9c86', '#66d9ef', '#c084fc', '#dfe3ea'];
 function renderNodeAnnotations() {
@@ -2728,7 +2737,8 @@ function renderNodeAnnotations() {
       name: 'funds-node-annotation',
       attrs: {
         x: note.dx || 0, y: anchorY + (note.dy || 0), text: note.text,
-        fontSize: note.size || 13, fontFamily: note.fontFamily || 'Arial', fill: note.color || '#e3a12b',
+        fontSize: note.size || 13, lineHeight: Math.round((note.size || 13) * 1.4),
+        fontFamily: note.fontFamily || 'Arial', fill: note.color || '#e3a12b',
         textAlign: 'center', textBaseline: note.anchor === 'above' ? 'bottom' : 'top',
       },
     });
@@ -2745,7 +2755,7 @@ function annotationAt(point) {
     if (!Number.isFinite(model.x) || !Number.isFinite(model.y)) continue;
     const style = annotationNoteStyle(note);
     const width = graphTextSize(String(note.text), style).width;
-    const height = Math.max(style.fontSize * 1.4, (style.fontSize + 4) * String(note.text).split('\n').length);
+    const height = style.lineHeight * String(note.text).split('\n').length;
     const offsetY = annotationAnchorY(item, note) + (note.dy || 0);
     const top = model.y + offsetY - (note.anchor === 'above' ? height : 0);
     const left = model.x + (note.dx || 0) - width / 2;
@@ -2777,7 +2787,7 @@ function saveAnnotationEditor() {
   const dialog = $('#annotationDialog'), input = $('#annotationText');
   const id = dialog?.dataset?.node;
   if (!id || !dialog) return false;
-  const text = String(input?.value || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  const text = normalizeAnnotationText(input?.value);
   const existing = annotationFor(id);
   const picked = [...dialog.querySelectorAll('input[name="annotationAnchor"]')].find(radio => radio.checked)?.value;
   const sizeInput = Number($('#annotationSize')?.value);

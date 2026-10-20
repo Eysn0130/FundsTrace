@@ -87,7 +87,11 @@
     const out = [];
     for (const item of input.slice(0, 200)) {
       if (!object(item)) continue;
-      const text = typeof item.text === 'string' ? item.text.trim().slice(0, 200) : '';
+      // 多行标注：统一换行符、逐行去首尾空白、最多 6 行、200 字。
+      const text = typeof item.text === 'string'
+        ? item.text.replace(/\r\n?/g, '\n').split('\n').map(line => line.trim()).join('\n')
+          .replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '').split('\n').slice(0, 6).join('\n').slice(0, 200)
+        : '';
       const id = typeof item.id === 'string' && item.id ? item.id.slice(0, 80) : '';
       if (!text || !id) continue;
       const size = Number(item.size);

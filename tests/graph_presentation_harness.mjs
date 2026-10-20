@@ -200,3 +200,14 @@ test('node annotations keep only anchored, bounded text with safe styling', () =
   assert.equal(clamped.fontFamily, 'Arial');
   assert.equal(clamped.color, '#e3a12b');
 });
+test('annotations keep multiple lines within six rows', () => {
+  const presentation = require('../static/graph-presentation.js');
+  const multiline = presentation.create({
+    annotations: [{ id: 'SYN-A', text: '第一行\r\n  第二行  \n\n\n\n第三行\n四\n五\n六\n七\n八' }],
+  }).annotations[0];
+  // CRLF 归一、逐行去空白、连续空行压成一个空行、超过 6 行截断。
+  assert.equal(multiline.text, '第一行\n第二行\n\n第三行\n四\n五');
+  assert.equal(multiline.text.split('\n').length, 6);
+  const collapsed = presentation.create({ annotations: [{ id: 'SYN-B', text: '\n\n只有一行\n\n' }] }).annotations[0];
+  assert.equal(collapsed.text, '只有一行');
+});

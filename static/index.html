@@ -514,7 +514,7 @@
 <dialog id="annotationDialog" class="toolbar-form" aria-labelledby="annotationTitle">
   <form id="annotationForm">
     <h2 id="annotationTitle">自定义标注</h2>
-    <label class="toolbar-form-field" for="annotationText">显示在图上的文字<textarea id="annotationText" rows="3" maxlength="200" placeholder="例如：实际控制人 / 已核实 / 与 SYN-B001 同一人"></textarea></label>
+    <label class="toolbar-form-field" for="annotationText">显示在图上的文字<textarea id="annotationText" rows="4" maxlength="200" placeholder="例如：实际控制人 / 已核实 / 与 SYN-B001 同一人"></textarea></label>
     <fieldset class="toolbar-form-field annotation-anchor-field">
       <legend>起始位置</legend>
       <label><input type="radio" name="annotationAnchor" value="below" checked> 节点文字下方</label>
@@ -531,7 +531,7 @@
         <input type="color" id="annotationColor" value="#e3a12b">
       </label>
     </div>
-    <p id="annotationHint" class="toolbar-form-hint">标注贴着节点，拖动节点时一起移动；按住标注可以微调位置，随画布保存。</p>
+    <p id="annotationHint" class="toolbar-form-hint">支持多行：直接回车换行（最多 6 行 / 200 字）。标注贴着节点，拖动节点时一起移动；按住标注可以微调位置，随画布保存。</p>
     <footer><button class="btn" id="annotationCancel" type="button">取消</button><button class="btn" id="annotationDelete" type="button" disabled>删除标注</button><button class="btn primary" id="annotationSave" type="submit">保存标注</button></footer>
   </form>
 </dialog><div id="canvasActions" class="toolbar-menu" role="menu" aria-label="画布管理" hidden inert>
