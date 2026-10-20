@@ -16,6 +16,7 @@ REPO = "Eysn0130/FundsTrace"
 GRAPH_CHECKS = (
     "installedGraphModulesLoaded", "installedCsvPreviewMapping", "installedCsvCommittedExact",
     "installedQueryExact", "installedFirstTrackExact", "installedSecondTrackVisible",
+    "installedAutomaticNodeLabelRecovery",
     "installedContextTrackedConsistent", "installedNeighborhoodTrackVisible", "installedCanvasCloneExact",
     "installedCanvasSaveRestoreTypes", "installedCanvasUndoRedoTypes", "installedKeyboardUndoRedoOutsideGraph", "installedCaseIsolationAndReturn",
 )

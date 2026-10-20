@@ -665,8 +665,13 @@ function graphLabelBounds(item, kind, measured = true) {
   const width=measuredText.width*zoom,height=measuredText.height*zoom;
   let anchor;
   if(kind==='node') {
-    const size=Array.isArray(m.size)?Math.max(...m.size):m.size||32;
-    anchor={x:m.x,y:m.y+size/2+6/zoom+height/zoom/2};
+    // Lazy labels must use the same rendered body and screen-space gap as
+    // placeNode. Nominal size misses stroke/shadow/photo bounds and can make
+    // an absent label collide with its own node forever, until hover forces it.
+    const body=graphNodeBodyBounds(item);
+    if(!body)return null;
+    const x=(body.minX+body.maxX)/2, y=body.maxY+6*(state.graphView.exportLabelScale||1);
+    return {minX:x-width/2,minY:y,maxX:x+width/2,maxY:y+height};
   } else {
     const saved=state.edgeSnapshotLabels[edgeKey(m)], ratio=state.edgeLabelPos[edgeKey(m)];
     const path=ratio!=null?edgePts(item):null;
