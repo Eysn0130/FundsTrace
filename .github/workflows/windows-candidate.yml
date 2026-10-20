@@ -16,6 +16,10 @@ on:
         description: Exercise installed update with a disposable private HTTPS fixture
         type: boolean
         default: false
+      update_crypto_probe:
+        description: Run only the bounded disposable TLS preparation diagnostic
+        type: boolean
+        default: false
       transfer_run_id:
         description: Transfer a successful existing candidate to an empty draft; do not rebuild
         type: string
@@ -33,8 +37,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  update-crypto-probe:
+    if: ${{ inputs.update_crypto_probe == true }}
+    runs-on: windows-2022
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Bound certificate preparation to 30 seconds
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'fundstrace-update-crypto-probe'
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          $start = [Diagnostics.ProcessStartInfo]::new()
+          $start.FileName = Join-Path $PSHOME 'pwsh.exe'
+          $start.UseShellExecute = $false
+          $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+          foreach ($arg in @('-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path (Get-Location) 'scripts/test-windows-updater.ps1'),'-PrepareOnly','-ReportPath',(Join-Path $directory 'native-crypto-probe.json'))) { $start.ArgumentList.Add($arg) }
+          $child = [Diagnostics.Process]::Start($start)
+          $output = $child.StandardOutput.ReadToEndAsync(); $errors = $child.StandardError.ReadToEndAsync()
+          if (-not $child.WaitForExit(30000)) {
+            # Only this held, certificate-only probe; it never runs an installer.
+            $child.Kill($true); $child.WaitForExit()
+            Get-Content -Raw (Join-Path $directory 'native-update-preparation.json')
+            throw 'Certificate-only probe timed out; inspect its fixed preparation stage.'
+          }
+          if ($child.ExitCode -ne 0) { throw 'Certificate-only probe failed; inspect its safe report.' }
+          Get-Content -Raw (Join-Path $directory 'native-crypto-probe.json')
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: fundstrace-update-crypto-${{ github.run_id }}
+          retention-days: 3
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/fundstrace-update-crypto-probe/*.json
   windows-candidate:
-    if: ${{ inputs.transfer_run_id == '' }}
+    if: ${{ inputs.update_crypto_probe != true && inputs.transfer_run_id == '' }}
     runs-on: windows-2022
     timeout-minutes: 45
     defaults:

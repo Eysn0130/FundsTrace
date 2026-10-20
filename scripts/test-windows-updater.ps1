@@ -1,9 +1,10 @@
 #Requires -Version 7.0
-param([Parameter(Mandatory=$true)][string]$InstallRoot,
-    [Parameter(Mandatory=$true)][string]$NextInstaller,
-    [Parameter(Mandatory=$true)][string]$NextUnpacked,
+param([string]$InstallRoot,
+    [string]$NextInstaller,
+    [string]$NextUnpacked,
     [Parameter(Mandatory=$true)][string]$ReportPath,
-    [Parameter(Mandatory=$true)][string]$ScreenshotPath)
+    [string]$ScreenshotPath,
+    [switch]$PrepareOnly)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 trap {
@@ -16,6 +17,11 @@ trap {
 }
 if (-not $IsWindows -or $env:GITHUB_ACTIONS -cne 'true' -or $env:CI -cne 'true') { throw 'Disposable Windows CI only.' }
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+function Write-PreparationStage([string]$Name) {
+    @{status='running'; stage=$Name} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $ReportPath) 'native-update-preparation.json') -Encoding utf8
+}
+if (-not [IO.Path]::IsPathRooted($ReportPath)) { throw 'Absolute CI report path required.' }
+if (-not $PrepareOnly) {
 $UserRoot = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'FundsTrace'
 if ([IO.File]::ReadAllText((Join-Path $UserRoot 'installer-lifecycle-sentinel.txt')) -cne "FundsTrace synthetic installer lifecycle v1`n") {
     throw 'Synthetic installation ownership is required.'
@@ -23,26 +29,32 @@ if ([IO.File]::ReadAllText((Join-Path $UserRoot 'installer-lifecycle-sentinel.tx
 foreach ($Value in @($InstallRoot,$NextInstaller,$NextUnpacked,$ReportPath,$ScreenshotPath)) {
     if (-not [IO.Path]::IsPathRooted($Value)) { throw 'Absolute CI fixture paths required.' }
 }
+}
 $Version = (Get-Content -Raw (Join-Path $ProjectRoot 'desktop/package.json') | ConvertFrom-Json).version
 $Parts = $Version.Split('.')
 $NextVersion = "$($Parts[0]).$($Parts[1]).$([int]$Parts[2] + 1)"
+if (-not $PrepareOnly) {
 $PrivateVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $NextUnpacked 'FundsTrace.exe')).ProductVersion
 if (($PrivateVersion.Split('.')[0..2] -join '.') -cne $NextVersion) {
     throw 'Private fixture version mismatch.'
+}
 }
 $FixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('FundsTrace private updater ' + [guid]::NewGuid().ToString('N'))
 $RootCert = $null; $LeafCert = $null; $PublicRoot = $null; $RootTrusted = $false; $Report = $null; $Failed = $false; $Relaunched = $null
 $Stage = 'privateCertificate'
 try {
     [void](New-Item -ItemType Directory -Path $FixtureRoot)
+    Write-PreparationStage 'createRoot'
     $RootCert = New-SelfSignedCertificate -Type Custom -Subject 'CN=SYN FundsTrace disposable update root' `
         -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 `
         -KeyUsage CertSign,CRLSign,DigitalSignature -KeyExportPolicy Exportable `
         -TextExtension @('2.5.29.19={critical}{text}ca=true') -NotAfter ([DateTime]::UtcNow.AddDays(2))
+    Write-PreparationStage 'createLeaf'
     $LeafCert = New-SelfSignedCertificate -Type Custom -DnsName 'analytix.top','download.analytix.top' -Signer $RootCert `
         -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 `
         -KeyUsage DigitalSignature,KeyEncipherment -KeyExportPolicy Exportable `
         -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.1') -NotAfter ([DateTime]::UtcNow.AddDays(1))
+    Write-PreparationStage 'exportRoot'
     $RootFile = Join-Path $FixtureRoot 'root.cer'
     [void](Export-Certificate -Cert $RootCert -FilePath $RootFile)
     # An empty CI user's Root store need not have a Certificate-provider path.
@@ -50,16 +62,23 @@ try {
     $PublicRoot = [Security.Cryptography.X509Certificates.X509Certificate2]::new([IO.File]::ReadAllBytes($RootFile))
     $RootStore = [Security.Cryptography.X509Certificates.X509Store]::new('Root',[Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
     try {
+        Write-PreparationStage 'openRootStore'
         $RootStore.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        Write-PreparationStage 'addRootTrust'
         $RootStore.Add($PublicRoot); $RootTrusted = $true
     } finally { $RootStore.Dispose() }
     $Passphrase = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
     $Pfx = Join-Path $FixtureRoot 'fixture.pfx'
+    Write-PreparationStage 'exportPfx'
     [void](Export-PfxCertificate -Cert $LeafCert -FilePath $Pfx -CryptoAlgorithmOption AES256_SHA256 -Password (ConvertTo-SecureString $Passphrase -AsPlainText -Force))
+    if ($PrepareOnly) {
+        $Report=@{status='passed';checks=@{certificatePrepared=$true}}
+    } else {
     $Fixture = Join-Path $FixtureRoot 'fixture.json'
     @{ version=$NextVersion; installer=$NextInstaller; pfx=$Pfx; passphrase=$Passphrase } |
         ConvertTo-Json | Set-Content -LiteralPath $Fixture -Encoding utf8
     $Stage = 'installedUpdateJourney'
+    Write-PreparationStage 'installedUpdateJourney'
     $Output = & node.exe (Join-Path $ProjectRoot 'desktop/tests/installed-app-smoke.cjs') $InstallRoot `
         --report $ReportPath --screenshot $ScreenshotPath --update-fixture $Fixture
     if ($LASTEXITCODE -ne 0) { throw 'Installed update journey failed.' }
@@ -92,6 +111,7 @@ try {
     $Stage = 'updatedNormalClose'
     if (-not $Relaunched.CloseMainWindow() -or -not $Relaunched.WaitForExit(30000)) { throw 'Updated application did not close normally.' }
     $Report.checks['installedUpdateRelaunchNormalClose'] = $true
+    }
 } catch {
     $Failed = $true
     if ($null -eq $Report -and (Test-Path -LiteralPath $ReportPath)) { $Report = Get-Content -Raw -LiteralPath $ReportPath | ConvertFrom-Json -AsHashtable }
