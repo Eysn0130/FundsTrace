@@ -176,22 +176,27 @@ test('effective node and relationship labels always discard legacy backplates, b
   }
 });
 
-test('node annotations keep only anchored, bounded text', () => {
+test('node annotations keep only anchored, bounded text with safe styling', () => {
   const presentation = require('../static/graph-presentation.js');
   const kept = presentation.create({
     annotations: [
-      { id: 'SYN-A', text: '  实际控制人  ', anchor: 'above', dx: 20, dy: -8, size: 15 },
+      { id: 'SYN-A', text: '  实际控制人  ', anchor: 'above', dx: 20, dy: -8, size: 15, fontFamily: 'SimHei', color: '#FF0000' },
       { id: 'SYN-B', text: '文字下方', anchor: 'sideways' },
       { id: 'SYN-C', text: '   ' },
       { text: '没有主体', anchor: 'above' },
-      { id: 'SYN-D', text: '越界偏移', dx: 9999, dy: -9999 },
+      { id: 'SYN-D', text: '越界偏移', dx: 9999, dy: -9999, fontFamily: 'Comic Sans MS', color: 'red' },
     ],
   }).annotations;
   assert.deepEqual(kept, [
-    { id: 'SYN-A', text: '实际控制人', anchor: 'above', dx: 20, dy: -8, size: 15 },
-    { id: 'SYN-B', text: '文字下方', anchor: 'below', dx: 0, dy: 0, size: 13 },
-    { id: 'SYN-D', text: '越界偏移', anchor: 'below', dx: 400, dy: -400, size: 13 },
+    { id: 'SYN-A', text: '实际控制人', anchor: 'above', dx: 20, dy: -8, size: 15, fontFamily: 'SimHei', color: '#ff0000' },
+    { id: 'SYN-B', text: '文字下方', anchor: 'below', dx: 0, dy: 0, size: 13, fontFamily: 'Arial', color: '#e3a12b' },
+    { id: 'SYN-D', text: '越界偏移', anchor: 'below', dx: 400, dy: -400, size: 13, fontFamily: 'Arial', color: '#e3a12b' },
   ]);
   // 旧快照没有标注字段时保持空数组，不报错。
   assert.deepEqual(presentation.create({ version: 1 }).annotations, []);
+  // 字号被夹在 9..40，且只接受白名单字体与 #RRGGBB 颜色。
+  const clamped = presentation.create({ annotations: [{ id: 'SYN-E', text: '字号', size: 99 }] }).annotations[0];
+  assert.equal(clamped.size, 40);
+  assert.equal(clamped.fontFamily, 'Arial');
+  assert.equal(clamped.color, '#e3a12b');
 });

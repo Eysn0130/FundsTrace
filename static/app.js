@@ -2710,8 +2710,9 @@ function annotationAnchorY(item, note) {
   return note.anchor === 'above' ? -(size / 2) - 10 : size / 2 + labelHeight + 10;
 }
 function annotationNoteStyle(note) {
-  return { fontSize: note.size || 13, fontFamily: 'Arial', fontWeight: 'normal', fontStyle: 'normal' };
+  return { fontSize: note.size || 13, fontFamily: note.fontFamily || 'Arial', fontWeight: 'normal', fontStyle: 'normal' };
 }
+const ANNOTATION_COLORS = ['#e3a12b', '#e05252', '#4f9c86', '#66d9ef', '#c084fc', '#dfe3ea'];
 function renderNodeAnnotations() {
   const graph = state.graph;
   if (!graph) return;
@@ -2727,7 +2728,7 @@ function renderNodeAnnotations() {
       name: 'funds-node-annotation',
       attrs: {
         x: note.dx || 0, y: anchorY + (note.dy || 0), text: note.text,
-        fontSize: note.size || 13, fontFamily: 'Arial', fill: '#e3a12b',
+        fontSize: note.size || 13, fontFamily: note.fontFamily || 'Arial', fill: note.color || '#e3a12b',
         textAlign: 'center', textBaseline: note.anchor === 'above' ? 'bottom' : 'top',
       },
     });
@@ -2762,6 +2763,10 @@ function openAnnotationEditor() {
   input.value = note ? note.text : '';
   const anchor = note?.anchor === 'above' ? 'above' : 'below';
   for (const radio of dialog.querySelectorAll('input[name="annotationAnchor"]')) radio.checked = radio.value === anchor;
+  const size = $('#annotationSize'), font = $('#annotationFont'), color = $('#annotationColor');
+  if (size) size.value = String(note?.size || 13);
+  if (font) font.value = note?.fontFamily || 'Arial';
+  if (color) color.value = note?.color || '#e3a12b';
   $('#annotationDelete').disabled = !note;
   dialog.showModal();
   input.focus();
@@ -2775,9 +2780,13 @@ function saveAnnotationEditor() {
   const text = String(input?.value || '').replace(/\s+/g, ' ').trim().slice(0, 200);
   const existing = annotationFor(id);
   const picked = [...dialog.querySelectorAll('input[name="annotationAnchor"]')].find(radio => radio.checked)?.value;
+  const sizeInput = Number($('#annotationSize')?.value);
   const notes = annotationList().filter(note => note.id !== id);
   if (text) notes.push({ id, text, anchor: picked === 'above' ? 'above' : 'below',
-    dx: existing ? existing.dx : 0, dy: existing ? existing.dy : 0, size: 13 });
+    dx: existing ? existing.dx : 0, dy: existing ? existing.dy : 0,
+    size: Number.isFinite(sizeInput) ? sizeInput : 13,
+    fontFamily: $('#annotationFont')?.value || 'Arial',
+    color: $('#annotationColor')?.value || '#e3a12b' });
   state.presentation.annotations = notes;
   renderNodeAnnotations();
   dialog.close();
@@ -5095,6 +5104,8 @@ function bindUI() {
     for (const item of items) {
       for (const shape of item?.getContainer?.()?.get?.('children') || []) {
         if (shape?.get?.('name') === 'funds-edge-selection-outline') continue;
+        // 标注的颜色是用户显式选择，打印样式不强行转黑。
+        if (shape?.get?.('name') === 'funds-node-annotation') continue;
         if (shape?.get?.('type') !== 'text' || !shape.attr) continue;
         const before = shape.attr('fill');
         if (before == null || before === PRINT_INK) continue;

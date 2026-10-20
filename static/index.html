@@ -520,6 +520,17 @@
       <label><input type="radio" name="annotationAnchor" value="below" checked> 节点文字下方</label>
       <label><input type="radio" name="annotationAnchor" value="above"> 图形正上方</label>
     </fieldset>
+    <div class="annotation-style-row">
+      <label class="toolbar-form-field" for="annotationSize">字号
+        <select id="annotationSize"><option value="10">10</option><option value="12">12</option><option value="13" selected>13</option><option value="16">16</option><option value="20">20</option><option value="24">24</option><option value="28">28</option><option value="32">32</option></select>
+      </label>
+      <label class="toolbar-form-field" for="annotationFont">字体
+        <select id="annotationFont"><option value="Arial">默认</option><option value="Microsoft YaHei">微软雅黑</option><option value="SimSun">宋体</option><option value="SimHei">黑体</option><option value="KaiTi">楷体</option><option value="FangSong">仿宋</option></select>
+      </label>
+      <label class="toolbar-form-field" for="annotationColor">颜色
+        <input type="color" id="annotationColor" value="#e3a12b">
+      </label>
+    </div>
     <p id="annotationHint" class="toolbar-form-hint">标注贴着节点，拖动节点时一起移动；按住标注可以微调位置，随画布保存。</p>
     <footer><button class="btn" id="annotationCancel" type="button">取消</button><button class="btn" id="annotationDelete" type="button" disabled>删除标注</button><button class="btn primary" id="annotationSave" type="submit">保存标注</button></footer>
   </form>

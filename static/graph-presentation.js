@@ -75,7 +75,13 @@
     return Array.isArray(input) ? [...new Set(input.filter(value => typeof value === 'string' && value !== ''))] : [];
   }
 
-  // 主体标注锚定在节点上：anchor 只在“图形正上方”和“文字下方”之间取，dx/dy 是相对锚点的微调。
+  // 标注可选字体限定在系统常见中文字体，避免随意字符串进入渲染与导出。
+  const ANNOTATION_FONTS = new Set(['Arial', 'Microsoft YaHei', 'SimSun', 'SimHei', 'KaiTi', 'FangSong']);
+  const ANNOTATION_DEFAULT_COLOR = '#e3a12b';
+  const ANNOTATION_COLOR = /^#[0-9a-f]{6}$/i;
+
+  // 主体标注锚定在节点上：anchor 只在“图形正上方”和“文字下方”之间取，dx/dy 是相对锚点的微调；
+  // size/fontFamily/color 决定标注自身的外观，非法值回落到默认。
   function annotations(input) {
     if (!Array.isArray(input)) return [];
     const out = [];
@@ -92,6 +98,8 @@
         dx: Number.isFinite(dx) ? Math.max(-400, Math.min(400, dx)) : 0,
         dy: Number.isFinite(dy) ? Math.max(-400, Math.min(400, dy)) : 0,
         size: Number.isFinite(size) ? Math.min(40, Math.max(9, size)) : 13,
+        fontFamily: ANNOTATION_FONTS.has(item.fontFamily) ? item.fontFamily : 'Arial',
+        color: typeof item.color === 'string' && ANNOTATION_COLOR.test(item.color) ? item.color.toLowerCase() : ANNOTATION_DEFAULT_COLOR,
       });
     }
     return out;
