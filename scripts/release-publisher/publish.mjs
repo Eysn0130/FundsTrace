@@ -15,7 +15,7 @@ const stages = new Set(['github.metadata', 'github.download', 'installer.integri
   'oss.verify-promotion', 'cdn.prewarm']);
 const safeCodes = new Set(['ABORT_ERR', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'EAI_AGAIN',
   'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
-  'RequestTimeout', 'ConnectionTimeoutError', 'AccessDenied', 'InvalidAccessKeyId',
+  'RequestTimeout', 'ResponseTimeoutError', 'ConnectionTimeoutError', 'AccessDenied', 'InvalidAccessKeyId',
   'SecurityTokenExpired', 'InvalidSecurityToken', 'SignatureDoesNotMatch', 'RequestTimeTooSkewed',
   'NoSuchKey', 'PreconditionFailed']);
 
@@ -30,9 +30,9 @@ export function createDiagnostics(report = () => {}, now = Date.now) {
       report({ stage, event: 'done', elapsedMs: elapsed() });
       return result;
     } catch (error) {
-      const candidate = error?.code || error?.cause?.code;
-      const code = safeCodes.has(candidate) ? candidate
-        : error?.name === 'TimeoutError' ? 'TIMEOUT' : error?.name === 'AbortError' ? 'ABORTED' : 'UNKNOWN';
+      const candidate = [error?.code, error?.cause?.code, error?.name].find(value => safeCodes.has(value));
+      const code = candidate
+        || (error?.name === 'TimeoutError' ? 'TIMEOUT' : error?.name === 'AbortError' ? 'ABORTED' : 'UNKNOWN');
       const status = error?.status || error?.statusCode || error?.res?.status;
       report({ stage, event: 'failed', elapsedMs: elapsed(), code,
         ...(Number.isInteger(status) && status >= 100 && status <= 599 ? { status } : {}) });
@@ -152,8 +152,17 @@ export async function publish({ client, selected, bytes, assertLatest = async ()
     return priorInstaller;
   });
   if (!priorInstaller) {
-    await stage('oss.upload-installer', () => client.put(installerKey, bytes, { headers: { 'Content-Type': 'application/octet-stream',
-      'Cache-Control': 'public, max-age=31536000, immutable', 'x-oss-forbid-overwrite': 'true' } }));
+    await stage('oss.upload-installer', async () => {
+      try {
+        await client.multipartUpload(installerKey, bytes, { parallel: 3, partSize: 8 * 1024 * 1024,
+          mime: 'application/octet-stream', headers: { 'Content-Type': 'application/octet-stream',
+            'Cache-Control': 'public, max-age=31536000, immutable', 'x-oss-forbid-overwrite': 'true' } });
+      } catch (error) {
+        // No abort argument: stop local streams without requiring cloud DELETE permissions.
+        client.cancel();
+        throw error;
+      }
+    });
     await stage('oss.verify-installer', async () => {
       const uploaded = await object(client, installerKey);
       if (!uploaded || uploaded.bytes.length !== bytes.length || hash(uploaded.bytes) !== manifest.checksumSha256)
