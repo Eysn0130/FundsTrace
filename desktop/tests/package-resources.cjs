@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const asar = require('@electron/asar');
+const { createTransformer } = require('app-builder-lib/out/fileTransformer');
 const builder = require('../electron-builder.cjs');
 
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -20,11 +21,14 @@ async function verifyHostArchive(archive, source = path.resolve(__dirname, '..')
   // Dependencies are packaged by electron-builder in addition to files. Every
   // included dependency byte must match this candidate's locked npm install.
   const dependencyFiles = entries.filter(name => name.startsWith('node_modules/'));
+  const transform = createTransformer(source, builder);
   for (const name of dependencyFiles) {
     const local = path.join(source, name);
     const stat = await fs.stat(local);
     if (stat.isDirectory()) continue;
-    assert.equal(digest(asar.extractFile(archive, path.normalize(name))), digest(await fs.readFile(local)), `Packaged dependency drift: ${name}`);
+    const transformed = await transform(local);
+    const expectedBytes = transformed == null ? await fs.readFile(local) : Buffer.from(transformed);
+    assert.equal(digest(asar.extractFile(archive, path.normalize(name))), digest(expectedBytes), `Packaged dependency drift: ${name}`);
   }
   for (const name of ['node_modules/electron-updater/package.json', 'node_modules/electron-updater/out/main.js'])
     assert.ok(entries.includes(name), `Missing update runtime: ${name}`);
@@ -48,5 +52,5 @@ if (require.main === module) {
     const result = await verifyHostArchive(path.join(candidate, 'resources', 'app.asar'));
     await fs.writeFile(report, JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
     console.log('Packaged host allowlist, identity, preload/preferences and source hashes verified.');
-  })().catch(() => { console.error('Packaged host resource integrity failed.'); process.exitCode = 1; });
+  })().catch(error => { console.error(`Packaged host resource integrity failed: ${String(error.message).slice(0, 1000)}`); process.exitCode = 1; });
 }
