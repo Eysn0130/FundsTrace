@@ -6,6 +6,14 @@ param([Parameter(Mandatory=$true)][string]$InstallRoot,
     [Parameter(Mandatory=$true)][string]$ScreenshotPath)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+trap {
+    if ($IsWindows -and $env:GITHUB_ACTIONS -ceq 'true' -and [IO.Path]::IsPathRooted($ReportPath)) {
+        @{ status='failed'; failedCheck='privateFixturePreflight'; failureType=$_.Exception.GetType().FullName;
+            failureLine=$_.InvocationInfo.ScriptLineNumber } | ConvertTo-Json | Set-Content -LiteralPath $ReportPath -Encoding utf8
+    }
+    [Console]::Error.WriteLine('Native update cycle failed at privateFixturePreflight.')
+    exit 1
+}
 if (-not $IsWindows -or $env:GITHUB_ACTIONS -cne 'true' -or $env:CI -cne 'true') { throw 'Disposable Windows CI only.' }
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $UserRoot = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'FundsTrace'
@@ -80,7 +88,12 @@ try {
 } catch {
     $Failed = $true
     if ($null -eq $Report -and (Test-Path -LiteralPath $ReportPath)) { $Report = Get-Content -Raw -LiteralPath $ReportPath | ConvertFrom-Json -AsHashtable }
-    if ($null -ne $Report) { $Report.status='failed'; $Report.failedCheck=$Stage }
+    if ($null -eq $Report) { $Report=@{ status='failed'; failedCheck=$Stage } }
+    if ($Report.status -cne 'failed') { $Report.status='failed'; $Report.failedCheck=$Stage }
+    $Report['wrapperFailedCheck']=$Stage
+    $Report['failureType']=$_.Exception.GetType().FullName
+    $Report['failureLine']=$_.InvocationInfo.ScriptLineNumber
+    $Report['failureId']=$(if ($_.FullyQualifiedErrorId -cmatch '^[A-Za-z0-9_.,:+-]{1,160}$') { $_.FullyQualifiedErrorId } else { 'UNCLASSIFIED' })
     [Console]::Error.WriteLine("Native update cycle failed at $Stage.")
 } finally {
     try {

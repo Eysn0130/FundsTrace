@@ -448,6 +448,7 @@ async function portClosed(port) {
   report.status = 'passed';
 })().catch(error => {
   report.status = 'failed'; report.failedCheck = stage; process.exitCode = 1;
+  if (updateFixture) report.updateFixtureDiagnostics = { ...updateFixture.requests };
   const detail = safeJourneyFailure(error);
   if (detail) report.failureDetail = detail;
 }).finally(async () => {

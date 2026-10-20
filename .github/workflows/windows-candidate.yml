@@ -114,6 +114,21 @@ jobs:
             源码 FundsTrace/build/desktop/standard-user/
             源码 FundsTrace/build/desktop/windows-candidate.json
             源码 FundsTrace/build/desktop/windows-candidate.sha256
+      - name: Retain reviewable native evidence without the installer
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fundstrace-windows-evidence-${{ github.run_id }}
+          retention-days: 3
+          if-no-files-found: ignore
+          path: |
+            源码 FundsTrace/build/desktop/backend/funds-trace-backend/build-manifest.json
+            源码 FundsTrace/build/desktop/packaged-host-resources.json
+            源码 FundsTrace/build/desktop/native-*.json
+            源码 FundsTrace/build/desktop/native-*.png
+            源码 FundsTrace/build/desktop/windows-candidate.json
+            源码 FundsTrace/build/desktop/windows-candidate.sha256
+            源码 FundsTrace/build/desktop/standard-user/
       - name: Retain safe failure diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

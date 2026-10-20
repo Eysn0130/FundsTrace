@@ -34,7 +34,7 @@ async function createUpdateFixture(filename) {
   const metadata = { schemaVersion: 1, product: 'com.eysn.fundstrace', version: config.version,
     files: [{ url, sha512, size }], path: url, sha512, releaseDate: new Date().toISOString() };
   let mode = 'truncate';
-  const requests = { manifest: 0, truncate: 0, corrupt: 0, valid: 0 };
+  const requests = { manifest: 0, truncate: 0, corrupt: 0, valid: 0, rejected: 0, tlsFailures: 0 };
   const server = https.createServer({ pfx: await fsp.readFile(config.pfx), passphrase: config.passphrase }, (req, res) => {
     req.on('error', () => {}); res.on('error', () => {});
     if (req.method !== 'GET') { res.writeHead(405).end(); return; }
@@ -44,7 +44,7 @@ async function createUpdateFixture(filename) {
       res.writeHead(200, { 'Content-Type': 'application/yaml', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(metadata)); return;
     }
-    if (req.headers.host !== 'download.analytix.top' || pathname !== installerPath) { res.writeHead(404).end(); return; }
+    if (req.headers.host !== 'download.analytix.top' || pathname !== installerPath) { requests.rejected++; res.writeHead(404).end(); return; }
     const selected = mode; requests[selected === 'good' ? 'valid' : selected]++;
     res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': size, 'Cache-Control': 'no-store' });
     let first = true, transferred = 0;
@@ -62,7 +62,7 @@ async function createUpdateFixture(filename) {
     res.on('close', () => { source.destroy(); throttle.destroy(); });
     source.pipe(throttle).pipe(res);
   });
-  server.on('tlsClientError', () => {});
+  server.on('tlsClientError', () => { requests.tlsFailures++; });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(443, '127.0.0.1', resolve); });
   return { version: config.version, sha256, requests, setMode(value) { mode = value; },
     close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
