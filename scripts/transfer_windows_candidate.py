@@ -12,6 +12,11 @@ import subprocess
 import tempfile
 import zipfile
 
+if __package__:
+    from .upgrade_baseline import parse_baseline, validate_installer_identity
+else:
+    from upgrade_baseline import parse_baseline, validate_installer_identity
+
 REPO = "Eysn0130/FundsTrace"
 GRAPH_CHECKS = (
     "installedGraphModulesLoaded", "installedCsvPreviewMapping", "installedCsvCommittedExact",
@@ -62,6 +67,10 @@ def main():
     release = json.loads(gh("release", "view", args.tag, "--repo", REPO, "--json", "isDraft,assets"))
     assert release["isDraft"] and not release["assets"], "Only a new empty draft may receive assets"
     subprocess.run(["git", "fetch", "--no-tags", "origin", source], check=True)
+    source_package = json.loads(subprocess.check_output(["git", "show", f"{source}:desktop/package.json"]))
+    assert source_package["version"] == args.tag[1:]
+    baseline = parse_baseline(subprocess.check_output(
+        ["git", "show", f"{source}:desktop/upgrade-baseline.json"]), source_package["version"])
 
     with tempfile.TemporaryDirectory(prefix="fundstrace-verified-transfer-") as temporary:
         root = Path(temporary)
@@ -76,6 +85,10 @@ def main():
         assert all(value == "passed" for value in candidate["checks"].values())
         assert all(str(candidate["executableVersion"][key]).split(".")[:3] == args.tag[1:].split(".")
                    for key in ("fileVersion", "productVersion"))
+        installer_name = f"FundsTrace-{args.tag[1:]}-windows-x64-unsigned.exe"
+        installer_records = [item for item in candidate["files"] if item["path"].endswith("/" + installer_name)]
+        assert len(installer_records) == 1
+        expected = installer_records[0]
         manifest_path = base / "backend/funds-trace-backend/build-manifest.json"
         manifest = data(manifest_path)
         assert manifest["platform"] == "win32" and manifest["arch"] == "x64" and manifest["protocol"] == 1
@@ -111,12 +124,22 @@ def main():
             assert app["status"] == "passed" and all(value is True for value in app["checks"].values())
             assert all(app["checks"][name] is True for name in GRAPH_CHECKS)
             installer = data(folder / "native-installer-smoke.json")
-            assert installer["status"] == "passed" and installer["priorVersion"] == "0.1.5"
+            validate_installer_identity(installer, baseline, expected["sha256"], expected["bytes"])
+            assert installer["status"] == "passed"
             assert installer["currentVersion"] == args.tag[1:] and all(value == "passed" for value in installer["checks"].values())
+            assert all(installer["checks"][name] == "passed" for name in (
+                "upgradeBaseline", "presentationPreferencesSeeded", "obsoleteInstalledFileRemoved",
+                "upgradedPresentationPreferences", "sameVersionReinstalled", "reinstalledResourceIntegrity",
+                "reinstalledDataFilesUnchanged", "reinstalledExistingCaseData",
+                "reinstalledPresentationPreferences", "presentationPreferencesRetained"))
             assert all(installer["priorDataChecks"][name] is True for name in (
                 "priorBackendSeeded", "priorExactMoneyAndCurrency", "priorCanvasAndTracking",
                 "priorPackageExported", "priorEofReopened"))
             assert all(installer["upgradedDataChecks"][name] is True for name in (
+                "upgradedFactsUnchanged", "upgradedCanvasAndTracking", "legacyPackageRoundTrip",
+                "upgradedAnalysisPaths", "upgradedAnalysisCycles", "upgradedAtomicCanvas",
+                "upgradedEofReopened", "upgradedSourceFilesUnchanged"))
+            assert all(installer["reinstalledDataChecks"][name] is True for name in (
                 "upgradedFactsUnchanged", "upgradedCanvasAndTracking", "legacyPackageRoundTrip",
                 "upgradedAnalysisPaths", "upgradedAnalysisCycles", "upgradedAtomicCanvas",
                 "upgradedEofReopened", "upgradedSourceFilesUnchanged"))
@@ -131,11 +154,9 @@ def main():
             assert digest(file) == candidate[key]
         for file in root.rglob("*"):
             assert not file.is_symlink()
-        installer_name = f"FundsTrace-{args.tag[1:]}-windows-x64-unsigned.exe"
         installers = list(root.rglob(installer_name))
         assert len(installers) == 1
         installer = installers[0]
-        expected = next(item for item in candidate["files"] if item["path"].endswith("/" + installer_name))
         assert installer.stat().st_size == expected["bytes"] and digest(installer) == expected["sha256"]
         with installer.open("rb") as stream:
             assert stream.read(2) == b"MZ"
@@ -155,6 +176,7 @@ def main():
                 archive.write(file, file.name)
         summary = {"schemaVersion": 1, "status": "passed", "sourceCommit": source,
             "sourceRun": args.run_id, "tag": args.tag, "installer": expected,
+            "upgradeBaseline": baseline,
             "resourceCount": len(manifest["resources"]), "hostFileCount": len(host["hostFiles"]) + 1,
             "sourceResourcesIndependentlyChecked": sources_checked,
             "installedAppChecks": len(reports["native-installed-app-smoke.json"]["checks"]),

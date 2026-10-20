@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "targetVersion": "0.1.7",
+  "prior": {
+    "version": "0.1.6",
+    "sha256": "fc9c6513079b0ac456b0dabe47b0f8a175eaf9b3b62eceda77a8abddaf6776aa",
+    "bytes": 160013027
+  }
+}

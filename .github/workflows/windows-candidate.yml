@@ -7,6 +7,14 @@ on:
         description: Build unsigned NSIS installer and verify isolated lifecycle
         type: boolean
         default: false
+      published_target_sha256:
+        description: Verify the already published target EXE at this frozen SHA-256; do not build
+        type: string
+        default: ''
+      published_target_bytes:
+        description: Byte length paired with published_target_sha256
+        type: string
+        default: ''
       transfer_run_id:
         description: Transfer a successful existing candidate to an empty draft; do not rebuild
         type: string
@@ -25,7 +33,7 @@ concurrency:
 
 jobs:
   windows-candidate:
-    if: ${{ inputs.transfer_run_id == '' }}
+    if: ${{ inputs.transfer_run_id == '' && inputs.published_target_sha256 == '' }}
     runs-on: windows-2022
     timeout-minutes: 45
     defaults:
@@ -67,7 +75,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Test environment creation failed." }
           uv pip sync --python .venv/Scripts/python.exe --require-hashes requirements-dev.lock
           if ($LASTEXITCODE -ne 0) { throw "Test dependency sync failed." }
-          & .venv/Scripts/python.exe -m pytest tests/test_desktop_backend.py tests/test_import_process_recovery.py tests/test_license_v2.py tests/test_license_activation.py tests/test_desktop_resources.py tests/test_import_integrity.py tests/test_analysis_regressions.py tests/test_export_integrity.py tests/test_graph_mirror_dedup.py tests/test_graph_interaction.py tests/test_canvas_editor.py -q
+          & .venv/Scripts/python.exe -m pytest tests/test_upgrade_baseline.py tests/test_desktop_backend.py tests/test_import_process_recovery.py tests/test_license_v2.py tests/test_license_activation.py tests/test_desktop_resources.py tests/test_import_integrity.py tests/test_analysis_regressions.py tests/test_export_integrity.py tests/test_graph_mirror_dedup.py tests/test_graph_interaction.py tests/test_canvas_editor.py -q
           if ($LASTEXITCODE -ne 0) { throw "Focused source process regressions failed." }
       - name: Check isolated installer environment before building
         if: ${{ inputs.installer }}
@@ -117,7 +125,7 @@ jobs:
             源码 FundsTrace/build/desktop/standard-user/
 
   transfer-verified-candidate:
-    if: ${{ inputs.transfer_run_id != '' }}
+    if: ${{ inputs.transfer_run_id != '' && inputs.published_target_sha256 == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -136,3 +144,68 @@ jobs:
           CANDIDATE_RUN: ${{ inputs.transfer_run_id }}
           DRAFT_TAG: ${{ inputs.draft_tag }}
         run: python scripts/transfer_windows_candidate.py --run-id "$CANDIDATE_RUN" --tag "$DRAFT_TAG"
+
+  published-upgrade:
+    if: ${{ inputs.published_target_sha256 != '' && inputs.transfer_run_id == '' }}
+    runs-on: windows-2022
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: 源码 FundsTrace
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: 源码 FundsTrace
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.1'
+          architecture: x64
+          package-manager-cache: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - name: Prepare test dependencies without building an application
+        run: |
+          foreach ($file in @('scripts/test-windows-published-upgrade.ps1', 'scripts/test-windows-installer.ps1', 'scripts/test-windows-standard-user.ps1')) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $file), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) { throw "PowerShell parse failed: $file" }
+          }
+          python -m pip install --disable-pip-version-check uv==0.11.5
+          if ($LASTEXITCODE -ne 0) { throw 'uv installation failed.' }
+          uv venv --python 3.11 .venv
+          if ($LASTEXITCODE -ne 0) { throw 'Test environment creation failed.' }
+          uv pip sync --python .venv/Scripts/python.exe --require-hashes requirements-dev.lock
+          if ($LASTEXITCODE -ne 0) { throw 'Test dependency sync failed.' }
+          npm.cmd --prefix desktop ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop test dependency install failed.' }
+          & .venv/Scripts/python.exe -m pytest tests/test_upgrade_baseline.py -q
+          if ($LASTEXITCODE -ne 0) { throw 'Upgrade baseline regressions failed.' }
+          node --test desktop/tests/upgrade-preferences.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Installed preference reader regressions failed.' }
+      - name: Verify frozen published installers and run both isolated user lifecycles
+        env:
+          TARGET_SHA256: ${{ inputs.published_target_sha256 }}
+          TARGET_BYTES: ${{ inputs.published_target_bytes }}
+        run: ./scripts/test-windows-published-upgrade.ps1 -TargetSha256 $env:TARGET_SHA256 -TargetBytes $env:TARGET_BYTES
+      - name: Retain only safe upgrade reports and synthetic renderer screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fundstrace-published-upgrade-${{ github.run_id }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            源码 FundsTrace/build/desktop/published-upgrade-inputs.json
+            源码 FundsTrace/build/desktop/native-installer-smoke.json
+            源码 FundsTrace/build/desktop/native-installed-app-smoke.json
+            源码 FundsTrace/build/desktop/native-installed-app.png
+            源码 FundsTrace/build/desktop/native-installed-app.graph.png
+            源码 FundsTrace/build/desktop/native-import-recovery-smoke.json
+            源码 FundsTrace/build/desktop/standard-user/
