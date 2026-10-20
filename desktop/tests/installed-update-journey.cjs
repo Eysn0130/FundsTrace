@@ -97,7 +97,12 @@ async function runInstalledUpdateJourney({ fixture, primary, evaluate, clickElem
     fixture.lastPhase = ['idle','checking','available','downloading','error','ready','installing','current'].includes(current) ? current : 'unknown';
     return current === value;
   }, ms);
-  const click = () => clickElement(button);
+  const click = async () => {
+    // Native modal dialogs can leave the owner inactive. A real user first
+    // activates it; a CDP pointer alone does not activate an Electron window.
+    await cdp.send('Page.bringToFront', {}, page.sessionId);
+    await clickElement(button);
+  };
   async function screenshotPhase(name) {
     if (!screenshot) return;
     const value = await cdp.send('Page.captureScreenshot', { format: 'png' }, page.sessionId);
@@ -127,12 +132,16 @@ async function runInstalledUpdateJourney({ fixture, primary, evaluate, clickElem
     assert.ok(fixture.requests.valid > 0 && fixture.requests.validCompleted > 0); await screenshotPhase('ready');
   });
   await check('installedUpdateLaterRetainsApplication', async () => {
-    await click(); await nativeButton(primary.child.pid, 'later'); await waitPhase('ready');
+    const before = fixture.requests.manifest;
+    await click(); await until(() => fixture.requests.manifest > before);
+    await nativeButton(primary.child.pid, 'later'); await waitPhase('ready');
     assert.ok(!primary.done);
     assert.equal(await evaluate(`document.readyState === 'complete' && !!document.querySelector('#graphContainer')`), true);
   });
   await check('installedUpdateConfirmedRestart', async () => {
-    await click(); await nativeButton(primary.child.pid, 'restart');
+    const before = fixture.requests.manifest;
+    await click(); await until(() => fixture.requests.manifest > before);
+    await nativeButton(primary.child.pid, 'restart');
     await until(() => primary.done, 30000);
     assert.deepEqual(await primary.exited, { code: 0, signal: null });
   });
