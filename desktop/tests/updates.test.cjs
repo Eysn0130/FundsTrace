@@ -31,7 +31,7 @@ test('check, explicit download, progress and explicit restart preserve the updat
   assert.ok(states.some(value => value.phase === 'downloading' && value.percent === 41.25));
   assert.equal((await controller.action('install')).phase, 'installing');
   assert.deepEqual(calls, ['check', 'download', 'check', 'shutdown']);
-  controller.install(); assert.deepEqual(calls.at(-1), ['install', false, true]);
+  controller.install(); assert.deepEqual(calls.at(-1), ['install', true, true]);
 });
 test('malformed feeds, foreign products and external executables never become downloadable', async () => {
   for (const mutate of [v => { v.product = 'Analytix'; }, v => { v.files[0].url = 'https://evil.test/app.exe'; },
@@ -60,6 +60,17 @@ test('failed or interrupted downloads cannot be installed and can be retried', a
   await controller.action('install'); assert.deepEqual(calls, ['check']);
   assert.equal((await controller.action('check')).phase, 'available');
 });
+test('update failure diagnostics expose fixed categories and clear on retry without leaking exception details', async () => {
+  for (const code of ['EACCES', 'EPERM', 'ENOSPC', 'private-exception-value']) {
+    const { updater, controller } = fixture();
+    await controller.action('check');
+    updater.downloadUpdate = async () => { throw Object.assign(new Error('private path and request details'), { code }); };
+    const state = await controller.action('download');
+    assert.equal(state.errorCode, code === 'private-exception-value' ? 'UNKNOWN' : code);
+    assert.ok(!JSON.stringify(state).includes('private'));
+    assert.equal((await controller.action('check')).errorCode, '');
+  }
+});
 test('multiple windows cannot duplicate a download; cancelling restart retains the ready update', async () => {
   let finish; const { updater, controller, calls } = fixture({ restart: async () => false });
   await controller.action('check'); updater.downloadUpdate = () => new Promise(resolve => { finish = resolve; calls.push('download'); });
@@ -87,4 +98,21 @@ test('a superseded or changed cached release is not installed after download', a
     assert.equal((await controller.action('install')).phase, 'error');
     assert.deepEqual(calls, ['check', 'download']);
   }
+});
+
+test('confirmed restart uses the real NSIS adapter in silent mode and forces relaunch', () => {
+  const { NsisUpdater } = require('electron-updater');
+  const launched = [];
+  const native = { installerPath: 'C:\\synthetic\\FundsTrace-next.exe',
+    installDirectory: 'C:\\synthetic\\FundsTrace', downloadedUpdateHelper: {},
+    spawnLog: async (file, args) => { launched.push({ file, args }); },
+    dispatchError: () => assert.fail('NSIS adapter rejected the update') };
+  const { controller, updater } = fixture();
+  updater.quitAndInstall = (isSilent, isForceRunAfter) =>
+    NsisUpdater.prototype.doInstall.call(native, { isSilent, isForceRunAfter });
+  controller.install();
+  assert.equal(launched.length, 1);
+  assert.ok(launched[0].args.includes('/S'), 'Restart must not leave an installer finish page requiring another click');
+  assert.ok(launched[0].args.includes('--updated'));
+  assert.ok(launched[0].args.includes('--force-run'), 'The updated application must reopen');
 });

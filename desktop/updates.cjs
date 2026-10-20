@@ -4,6 +4,11 @@ const { pageAllowed } = require('./host-policy.cjs');
 const CHANNEL = 'funds-trace:updates';
 const FEED = 'https://analytix.top/fundstrace/';
 const CDN = 'https://download.analytix.top/releases/fundstrace/windows/';
+const FAILURE_CODES = Object.freeze(['EACCES', 'EPERM', 'ENOSPC', 'EROFS', 'ENOENT', 'ENOTDIR',
+  'ERR_FAILED', 'ERR_ABORTED', 'ERR_CONNECTION_REFUSED', 'ERR_CONNECTION_RESET', 'ERR_CONNECTION_CLOSED',
+  'ERR_NAME_NOT_RESOLVED', 'ERR_INTERNET_DISCONNECTED', 'ERR_CONTENT_LENGTH_MISMATCH',
+  'ERR_CERT_AUTHORITY_INVALID', 'ERR_CERT_COMMON_NAME_INVALID', 'ERR_CERT_DATE_INVALID',
+  'ERR_SHA512_CHECKSUM_MISMATCH', 'ERR_UPDATER_INVALID_SIGNATURE']);
 
 function releaseInfo(info) {
   if (!info || !/^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(info.version) || info.product !== 'com.eysn.fundstrace'
@@ -24,11 +29,17 @@ function allowed(event, origin, owned) {
 // Main owns the feed, cached installer and install command. Renderer messages
 // contain only an action, never a URL, path, token or executable argument.
 function updateController({ updater, version, enabled, notify = () => {}, restart = async () => false }) {
-  let state = { phase: enabled ? 'idle' : 'unavailable', currentVersion: version, version: '', percent: 0 };
+  let state = { phase: enabled ? 'idle' : 'unavailable', currentVersion: version, version: '', percent: 0, errorCode: '' };
   let operation, accepted, installing = false;
   const snapshot = () => ({ ...state });
   const set = next => { state = { ...state, ...next }; notify(snapshot()); };
-  const failed = () => { accepted = undefined; set({ phase: 'error', percent: 0 }); };
+  const failed = error => {
+    accepted = undefined;
+    const code = FAILURE_CODES.includes(error?.code) ? error.code
+      : FAILURE_CODES.find(value => error?.message === `net::${value}`) || 'UNKNOWN';
+    // Fixed categories only; never return exception messages, paths or URLs.
+    set({ phase: 'error', percent: 0, errorCode: code });
+  };
   if (enabled) {
     updater.autoDownload = false;
     updater.autoInstallOnAppQuit = false;
@@ -55,7 +66,7 @@ function updateController({ updater, version, enabled, notify = () => {}, restar
       if (!enabled) return snapshot();
       if (action === 'check' && !['ready', 'installing'].includes(state.phase)) await run(async () => {
         accepted = undefined;
-        set({ phase: 'checking', version: '', percent: 0 });
+        set({ phase: 'checking', version: '', percent: 0, errorCode: '' });
         const result = await updater.checkForUpdates();
         if (!result?.updateInfo) throw new Error('No update response');
         const info = releaseInfo(result.updateInfo);
@@ -83,14 +94,14 @@ function updateController({ updater, version, enabled, notify = () => {}, restar
           if (!accepted || latest.version !== accepted.version || latest.file.sha512 !== accepted.file.sha512
               || latest.file.size !== accepted.file.size) throw new Error('Downloaded release is no longer current');
           if (await restart()) set({ phase: 'installing' });
-        } catch { failed(); }
+        } catch (error) { failed(error); }
         finally { installing = false; }
       }
       return snapshot();
     },
     // Called only after the owned backend has finished its normal shutdown.
-    install() { updater.quitAndInstall(false, true); },
+    install() { updater.quitAndInstall(true, true); },
   };
 }
 
-module.exports = { CHANNEL, FEED, CDN, releaseInfo, allowed, updateController };
+module.exports = { CHANNEL, FEED, CDN, FAILURE_CODES, releaseInfo, allowed, updateController };

@@ -3,6 +3,10 @@ param(
     [Parameter(Mandatory = $true)][string]$InstallerPath,
     [Parameter(Mandatory = $true)][string]$ReportPath,
     [string]$CiTemporaryRoot,
+    [ValidateSet('0.1.5', '0.1.7')][string]$PriorVersion = '0.1.5',
+    [string]$NextInstaller,
+    [string]$NextUnpacked,
+    [string]$TrustedCertificateFixture,
     [switch]$PreflightOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -221,8 +225,12 @@ try {
     $PriorInstaller = Join-Path $TemporaryRoot 'prior-stable.exe'
 
     $Stage = 'priorInstallerDigest'
-    Invoke-WebRequest -Uri 'https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.5/FundsTrace-0.1.5-windows-x64-unsigned.exe' -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
-    if ((Get-Sha256 $PriorInstaller) -cne 'f5c337e37adb30dc30c8cb895722703c91461ed0de49acee8dd487d454d8f1fc') {
+    $PriorDigests = @{
+        '0.1.5' = 'f5c337e37adb30dc30c8cb895722703c91461ed0de49acee8dd487d454d8f1fc'
+        '0.1.7' = '52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a'
+    }
+    Invoke-WebRequest -Uri "https://github.com/Eysn0130/FundsTrace/releases/download/v$PriorVersion/FundsTrace-$PriorVersion-windows-x64-unsigned.exe" -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
+    if ((Get-Sha256 $PriorInstaller) -cne $PriorDigests[$PriorVersion]) {
         throw 'The prior installer digest differs from the pinned release.'
     }
     $Report.checks.priorInstallerDigest = 'passed'
@@ -230,8 +238,9 @@ try {
     $MayHaveInstalled = $true
     # /D is NSIS syntax: absolute path, last argument, deliberately no quotes even with spaces.
     [void](Invoke-Native -FileName $PriorInstaller -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
-    Assert-Installed '0.1.5'
-    $Report.priorVersion = '0.1.5'; $Report.checks.priorInstalled = 'passed'
+    Assert-Installed $PriorVersion
+    $Report.priorVersion = $PriorVersion; $Report.priorInstallerSha256 = $PriorDigests[$PriorVersion]
+    $Report.checks.priorInstalled = 'passed'
 
     $Stage = 'syntheticDataSeeded'
     # The earlier absence check establishes ownership; never redirect or reuse a maintainer's data.
@@ -329,10 +338,19 @@ try {
     $Stage = 'installedApplicationStarted'
     $AppReportPath = Join-Path (Split-Path -Parent $ReportPath) 'native-installed-app-smoke.json'
     $AppScreenshotPath = Join-Path (Split-Path -Parent $ReportPath) 'native-installed-app.png'
+    if ($NextInstaller) {
+    if (-not $NextUnpacked -or -not $TrustedCertificateFixture) { throw 'Private update candidate or certificate fixture is missing.' }
+    $AppJson = Invoke-Native -FileName (Join-Path $PSHOME 'pwsh.exe') -Arguments @(
+        '-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'test-windows-updater.ps1'),
+        '-InstallRoot',$InstallRoot,'-NextInstaller',$NextInstaller,'-NextUnpacked',$NextUnpacked,
+        '-ReportPath',$AppReportPath,'-ScreenshotPath',$AppScreenshotPath,'-TrustedCertificateFixture',$TrustedCertificateFixture
+    ) -TimeoutSeconds 600
+    } else {
     $AppJson = Invoke-Native -FileName $NodeExe -Arguments @(
         (Join-Path $ProjectRoot 'desktop/tests/installed-app-smoke.cjs'), $InstallRoot,
         '--report', $AppReportPath, '--screenshot', $AppScreenshotPath
     ) -TimeoutSeconds 360
+    }
     $AppHelper = $AppJson | ConvertFrom-Json
     if ($AppHelper.status -cne 'passed') { throw 'Installed application did not reach a usable workspace.' }
     foreach ($Name in @('installedExecutableStarted', 'authenticatedWorkspaceLoaded', 'nodeSelectionModuleLoaded',
@@ -349,6 +367,19 @@ try {
     $Report.checks.installedApplicationSingleInstance = 'passed'
     $Report.checks.installedApplicationNormalClose = 'passed'
     $Report.checks.installedGraphJourney = 'passed'
+    if ($NextInstaller) {
+        foreach ($Name in @('installedUpdateAvailableFromTrustedPrivateHttps','installedInterruptedUpdateRejected',
+            'installedCorruptUpdateRejected','installedUpdateProgressAndReady','installedUpdateLaterRetainsApplication',
+            'installedUpdateConfirmedRestart','installedUpdateAutoRelaunch','installedUpdateExactResources','installedUpdateRelaunchNormalClose')) {
+            if ($AppHelper.checks.$Name -isnot [bool] -or -not $AppHelper.checks.$Name) { throw 'Installed update cycle did not satisfy its check.' }
+        }
+        $AfterUpdate = (Invoke-Native -FileName $NodeExe -Arguments @(
+            $UpgradeHelper,$InstallRoot,'--mode','verify','--fixture',$UpgradeFixture
+        ) -Environment $CompatibilityEnvironment -TimeoutSeconds 240) | ConvertFrom-Json
+        foreach ($Property in $AfterUpdate.PSObject.Properties) { if ($Property.Value -isnot [bool] -or -not $Property.Value) { throw 'Native update changed existing synthetic case data.' } }
+        $Report.inAppUpdateDataChecks = $AfterUpdate
+        $Report.checks.installedInAppUpdate = 'passed'
+    }
 
     $Stage = 'uninstallRegistrationRemoved'
     Invoke-Uninstall
@@ -459,5 +490,5 @@ if ($Failed) {
     exit 1
 }
 if ($PreflightOnly) { Write-Host 'Native installer preflight passed; no installation was attempted.' }
-else { Write-Host 'Native installer lifecycle passed: pinned 0.1.5 upgrade, prior-version case compatibility, installed application startup/single-instance/close, activation-free data, EOF and uninstall retention. Win10/11 interactive acceptance remains separate.' }
+else { Write-Host "Native installer lifecycle passed: pinned $PriorVersion upgrade, prior-version case compatibility, installed application startup/single-instance/close, activation-free data, EOF and uninstall retention. Win10/11 interactive acceptance remains separate." }
 exit 0

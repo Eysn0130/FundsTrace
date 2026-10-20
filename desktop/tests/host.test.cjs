@@ -432,7 +432,7 @@ test('installed update stops the owned backend before running NSIS and ordinary 
     await harness.flush(); assert.equal(harness.state.backendStops, 1); assert.deepEqual(installed, []);
     stopped.resolve(); await harness.flush();
     assert.equal(installed.length, update && graceful ? 1 : 0);
-    if (update && graceful) assert.deepEqual(installed[0], [false, true]);
+    if (update && graceful) assert.deepEqual(installed[0], [true, true]);
     if (update && !graceful) assert.ok(harness.state.errors.some(message => message.includes('本次未启动安装')));
     assert.equal(harness.state.quitCount, 1);
   }
