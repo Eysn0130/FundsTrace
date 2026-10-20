@@ -34,7 +34,8 @@ async function createUpdateFixture(filename) {
   const metadata = { schemaVersion: 1, product: 'com.eysn.fundstrace', version: config.version,
     files: [{ url, sha512, size }], path: url, sha512, releaseDate: new Date().toISOString() };
   let mode = 'truncate';
-  const requests = { manifest: 0, truncate: 0, corrupt: 0, valid: 0, rejected: 0, tlsFailures: 0 };
+  const requests = { manifest: 0, truncate: 0, corrupt: 0, valid: 0, rejected: 0, tlsFailures: 0,
+    transferredBytes: 0, corruptCompleted: 0, validCompleted: 0 };
   const server = https.createServer({ pfx: await fsp.readFile(config.pfx), passphrase: config.passphrase }, (req, res) => {
     req.on('error', () => {}); res.on('error', () => {});
     if (req.method !== 'GET') { res.writeHead(405).end(); return; }
@@ -48,18 +49,26 @@ async function createUpdateFixture(filename) {
     const selected = mode; requests[selected === 'good' ? 'valid' : selected]++;
     res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': size, 'Cache-Control': 'no-store' });
     let first = true, transferred = 0;
-    const source = fs.createReadStream(config.installer, { highWaterMark: 65536 });
+    const source = fs.createReadStream(config.installer, { highWaterMark: 262144 });
     const throttle = new Transform({ transform(chunk, _encoding, callback) {
       transferred += chunk.length;
+      requests.transferredBytes += chunk.length;
       if (selected === 'corrupt' && first) { chunk = Buffer.from(chunk); chunk[0] ^= 1; }
       first = false;
       if (selected === 'truncate' && transferred > 1048576) {
         source.destroy(); res.destroy(); callback(); return;
       }
-      setTimeout(() => callback(null, chunk), 2);
+      // Slow only the successful download enough to observe real progress.
+      // Windows timer granularity must not delay every corrupt-file chunk.
+      if (selected === 'good') setTimeout(() => callback(null, chunk), 2);
+      else callback(null, chunk);
     } });
     source.on('error', () => res.destroy()); throttle.on('error', () => res.destroy());
     res.on('close', () => { source.destroy(); throttle.destroy(); });
+    res.on('finish', () => {
+      if (selected === 'corrupt') requests.corruptCompleted++;
+      if (selected === 'good') requests.validCompleted++;
+    });
     source.pipe(throttle).pipe(res);
   });
   server.on('tlsClientError', () => { requests.tlsFailures++; });
@@ -83,7 +92,11 @@ async function nativeButton(pid, choice) {
 async function runInstalledUpdateJourney({ fixture, primary, evaluate, clickElement, cdp, page, check, screenshot }) {
   const button = `document.querySelector('funds-desktop-update .funds-update-capsule')`;
   const phase = () => evaluate(`${button}?.dataset.phase`);
-  const waitPhase = value => until(async () => await phase() === value);
+  const waitPhase = (value, ms = 30000) => until(async () => {
+    const current = await phase();
+    fixture.lastPhase = ['idle','checking','available','downloading','error','ready','installing','current'].includes(current) ? current : 'unknown';
+    return current === value;
+  }, ms);
   const click = () => clickElement(button);
   async function screenshotPhase(name) {
     if (!screenshot) return;
@@ -100,8 +113,8 @@ async function runInstalledUpdateJourney({ fixture, primary, evaluate, clickElem
     await click(); await waitPhase('available');
   });
   await check('installedCorruptUpdateRejected', async () => {
-    fixture.setMode('corrupt'); await click(); await waitPhase('error');
-    assert.ok(!primary.done && fixture.requests.corrupt > 0);
+    fixture.setMode('corrupt'); await click(); await waitPhase('error', 120000);
+    assert.ok(!primary.done && fixture.requests.corrupt > 0 && fixture.requests.corruptCompleted > 0);
     await click(); await waitPhase('available');
   });
   await check('installedUpdateProgressAndReady', async () => {
@@ -110,8 +123,8 @@ async function runInstalledUpdateJourney({ fixture, primary, evaluate, clickElem
       const label = await evaluate(`${button}.textContent`);
       return /^(?:[1-9]|[1-9][0-9])%$/.test(label.trim());
     });
-    await screenshotPhase('downloading'); await waitPhase('ready');
-    assert.ok(fixture.requests.valid > 0); await screenshotPhase('ready');
+    await screenshotPhase('downloading'); await waitPhase('ready', 120000);
+    assert.ok(fixture.requests.valid > 0 && fixture.requests.validCompleted > 0); await screenshotPhase('ready');
   });
   await check('installedUpdateLaterRetainsApplication', async () => {
     await click(); await nativeButton(primary.child.pid, 'later'); await waitPhase('ready');
