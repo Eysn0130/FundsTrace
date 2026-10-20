@@ -2260,8 +2260,11 @@ function bindCanvases() {
   window.FundsCanvasActions = actions;
   for (const [id, action] of [['btnCanvasNew','new'], ['btnCanvasClone','clone'], ['btnCanvasSave','save'],
     ['btnCanvasRemove','delete'], ['btnCanvasRename','rename'], ['btnCanvasDel','delete'], ['btnCanvasMenuClone','clone']]) {
-    $('#' + id).onclick = event => actions.run(action, id === 'btnCanvasMenuClone' || id === 'btnCanvasRename' || id === 'btnCanvasDel'
-      ? $('#btnCanvasActions') : event?.currentTarget || $('#' + id));
+    const button = $('#' + id);
+    // 旧宿主/测试桩可能还没有新按钮，缺元素时跳过而不是抛错。
+    if (!button) continue;
+    button.onclick = event => actions.run(action, id === 'btnCanvasMenuClone' || id === 'btnCanvasRename' || id === 'btnCanvasDel'
+      ? $('#btnCanvasActions') : event?.currentTarget || button);
   }
   $('#canvasSel').onchange = async event => {
     const context = caseContext(), v = Number(event.target.value) || 0;
