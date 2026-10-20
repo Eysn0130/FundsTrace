@@ -83,7 +83,7 @@ test('sandbox preload exposes only the narrow preferences API', () => {
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../preload.cjs'), 'utf8'), {
     require(name) {
       assert.equal(name, 'electron');
-      return { contextBridge: { exposeInMainWorld(name, value) { assert.equal(name, 'FundsDesktopPreferences'); exposed = value; } },
+      return { contextBridge: { exposeInMainWorld(name, value) { assert.ok(['FundsDesktopPreferences', 'FundsDesktopUpdates'].includes(name)); if (name === 'FundsDesktopPreferences') exposed = value; } },
         ipcRenderer: { sendSync(...args) { calls.push(args); return args[1] === 'get' ? '2' : true; } } };
     },
   });

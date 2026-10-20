@@ -1,0 +1,8 @@
+{
+  "name": "fundstrace-release-publisher",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test *.test.mjs" },
+  "dependencies": { "ali-oss": "6.23.0" }
+}

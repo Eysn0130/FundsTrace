@@ -16,6 +16,10 @@ test('actual ASAR inspection detects omitted preload, unexpected files and stale
     const directory = path.join(root, name), file = path.join(root, name + '.asar');
     await fs.mkdir(directory);
     for (const entry of builder.files) await fs.copyFile(path.join(source, entry), path.join(directory, entry));
+    for (const entry of ['node_modules/electron-updater/package.json', 'node_modules/electron-updater/out/main.js']) {
+      await fs.mkdir(path.dirname(path.join(directory, entry)), { recursive: true });
+      await fs.copyFile(path.join(source, entry), path.join(directory, entry));
+    }
     if (change) await change(directory);
     await asar.createPackage(directory, file);
     return file;
@@ -25,4 +29,6 @@ test('actual ASAR inspection detects omitted preload, unexpected files and stale
   await assert.rejects(verifyHostArchive(await archive('omitted', dir => fs.unlink(path.join(dir, 'preload.cjs')))), /exactly the reviewed files/);
   await assert.rejects(verifyHostArchive(await archive('unexpected', dir => fs.writeFile(path.join(dir, 'license.dat'), 'synthetic-only'))), /exactly the reviewed files/);
   await assert.rejects(verifyHostArchive(await archive('stale', dir => fs.appendFile(path.join(dir, 'main.cjs'), '\n// synthetic drift\n'))), /Packaged host drift/);
+  await assert.rejects(verifyHostArchive(await archive('missing-updater', dir => fs.unlink(path.join(dir, 'node_modules/electron-updater/out/main.js')))), /Missing update runtime/);
+  await assert.rejects(verifyHostArchive(await archive('stale-updater', dir => fs.appendFile(path.join(dir, 'node_modules/electron-updater/out/main.js'), '\n// drift'))), /Packaged dependency drift/);
 });

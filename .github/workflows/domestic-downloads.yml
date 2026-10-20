@@ -1,0 +1,76 @@
+name: Domestic Windows downloads
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published latest stable release to mirror (for retry/bootstrap)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One writer for the shared latest document. Never interrupt a promotion.
+concurrency:
+  group: fundstrace-domestic-download-publisher
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    if: ${{ github.repository == 'Eysn0130/FundsTrace' && (github.event_name == 'workflow_dispatch' || (!github.event.release.draft && !github.event.release.prerelease)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production-downloads
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.1'
+          package-manager-cache: false
+      - name: Install locked publisher and run isolated publication regressions
+        run: |
+          npm ci --prefix scripts/release-publisher --ignore-scripts --no-audit --no-fund
+          npm test --prefix scripts/release-publisher
+      - name: Require configured limited OIDC role
+        env:
+          ROLE: ${{ vars.FUNDS_TRACE_DOWNLOAD_ROLE_ARN }}
+          PROVIDER: ${{ vars.FUNDS_TRACE_DOWNLOAD_OIDC_PROVIDER_ARN }}
+        run: |
+          test -n "$ROLE" && test -n "$PROVIDER"
+      - name: Obtain temporary OSS credentials
+        id: cloud
+        uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ vars.FUNDS_TRACE_DOWNLOAD_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.FUNDS_TRACE_DOWNLOAD_OIDC_PROVIDER_ARN }}
+          audience: sts.aliyuncs.com
+          role-session-name: fundstrace-downloads-${{ github.run_id }}
+          role-session-expiration: 1800
+      - name: Verify exact GitHub asset, upload and atomically promote site and updater
+        env:
+          DOWNLOAD_RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ steps.cloud.outputs.aliyun-access-key-id }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ steps.cloud.outputs.aliyun-access-key-secret }}
+          ALIBABA_CLOUD_SECURITY_TOKEN: ${{ steps.cloud.outputs.aliyun-security-token }}
+        run: node scripts/release-publisher/publish.mjs
+      - name: Verify public latest document
+        run: |
+          node --input-type=module - <<'NODE'
+          import { validateCurrent } from './scripts/release-publisher/publish.mjs';
+          const result = await fetch(`https://analytix.top/fundstrace/latest.yml?verify=${process.env.GITHUB_RUN_ID}`, { signal: AbortSignal.timeout(30000) });
+          if (!result.ok) throw new Error('Public latest document is unavailable');
+          const value = validateCurrent(await result.json());
+          if (`v${value.version}` !== process.env.EXPECTED_TAG) throw new Error('Public CDN latest version differs');
+          console.log(`Public FundsTrace ${value.version} feed verified`);
+          NODE
+        env:
+          EXPECTED_TAG: ${{ inputs.tag || github.event.release.tag_name }}
