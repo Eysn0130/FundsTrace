@@ -6,6 +6,7 @@ param(
     [ValidateSet('0.1.5', '0.1.7')][string]$PriorVersion = '0.1.5',
     [string]$NextInstaller,
     [string]$NextUnpacked,
+    [string]$TrustedCertificateFixture,
     [switch]$PreflightOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -338,11 +339,11 @@ try {
     $AppReportPath = Join-Path (Split-Path -Parent $ReportPath) 'native-installed-app-smoke.json'
     $AppScreenshotPath = Join-Path (Split-Path -Parent $ReportPath) 'native-installed-app.png'
     if ($NextInstaller) {
-    if (-not $NextUnpacked) { throw 'Private update candidate directory is missing.' }
+    if (-not $NextUnpacked -or -not $TrustedCertificateFixture) { throw 'Private update candidate or certificate fixture is missing.' }
     $AppJson = Invoke-Native -FileName (Join-Path $PSHOME 'pwsh.exe') -Arguments @(
         '-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'test-windows-updater.ps1'),
         '-InstallRoot',$InstallRoot,'-NextInstaller',$NextInstaller,'-NextUnpacked',$NextUnpacked,
-        '-ReportPath',$AppReportPath,'-ScreenshotPath',$AppScreenshotPath
+        '-ReportPath',$AppReportPath,'-ScreenshotPath',$AppScreenshotPath,'-TrustedCertificateFixture',$TrustedCertificateFixture
     ) -TimeoutSeconds 600
     } else {
     $AppJson = Invoke-Native -FileName $NodeExe -Arguments @(

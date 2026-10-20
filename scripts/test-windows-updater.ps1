@@ -4,6 +4,7 @@ param([string]$InstallRoot,
     [string]$NextUnpacked,
     [Parameter(Mandatory=$true)][string]$ReportPath,
     [string]$ScreenshotPath,
+    [string]$TrustedCertificateFixture,
     [switch]$PrepareOnly)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -17,6 +18,7 @@ trap {
 }
 if (-not $IsWindows -or $env:GITHUB_ACTIONS -cne 'true' -or $env:CI -cne 'true') { throw 'Disposable Windows CI only.' }
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'windows-update-certificate.ps1')
 function Write-PreparationStage([string]$Name) {
     @{status='running'; stage=$Name} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $ReportPath) 'native-update-preparation.json') -Encoding utf8
 }
@@ -26,7 +28,7 @@ $UserRoot = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'FundsTr
 if ([IO.File]::ReadAllText((Join-Path $UserRoot 'installer-lifecycle-sentinel.txt')) -cne "FundsTrace synthetic installer lifecycle v1`n") {
     throw 'Synthetic installation ownership is required.'
 }
-foreach ($Value in @($InstallRoot,$NextInstaller,$NextUnpacked,$ReportPath,$ScreenshotPath)) {
+foreach ($Value in @($InstallRoot,$NextInstaller,$NextUnpacked,$ReportPath,$ScreenshotPath,$TrustedCertificateFixture)) {
     if (-not [IO.Path]::IsPathRooted($Value)) { throw 'Absolute CI fixture paths required.' }
 }
 }
@@ -40,42 +42,17 @@ if (($PrivateVersion.Split('.')[0..2] -join '.') -cne $NextVersion) {
 }
 }
 $FixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('FundsTrace private updater ' + [guid]::NewGuid().ToString('N'))
-$RootCert = $null; $LeafCert = $null; $PublicRoot = $null; $RootTrusted = $false; $Report = $null; $Failed = $false; $Relaunched = $null
+$PreparedCertificate = $null; $Report = $null; $Failed = $false; $Relaunched = $null
 $Stage = 'privateCertificate'
 try {
     [void](New-Item -ItemType Directory -Path $FixtureRoot)
-    Write-PreparationStage 'createRoot'
-    $RootCert = New-SelfSignedCertificate -Type Custom -Subject 'CN=SYN FundsTrace disposable update root' `
-        -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 `
-        -KeyUsage CertSign,CRLSign,DigitalSignature -KeyExportPolicy Exportable `
-        -TextExtension @('2.5.29.19={critical}{text}ca=true') -NotAfter ([DateTime]::UtcNow.AddDays(2))
-    Write-PreparationStage 'createLeaf'
-    $LeafCert = New-SelfSignedCertificate -Type Custom -DnsName 'analytix.top','download.analytix.top' -Signer $RootCert `
-        -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 `
-        -KeyUsage DigitalSignature,KeyEncipherment -KeyExportPolicy Exportable `
-        -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.1') -NotAfter ([DateTime]::UtcNow.AddDays(1))
-    Write-PreparationStage 'exportRoot'
-    $RootFile = Join-Path $FixtureRoot 'root.cer'
-    [void](Export-Certificate -Cert $RootCert -FilePath $RootFile)
-    # An empty CI user's Root store need not have a Certificate-provider path.
-    # Open the native current-user store explicitly, adding only the public CA.
-    $PublicRoot = [Security.Cryptography.X509Certificates.X509Certificate2]::new([IO.File]::ReadAllBytes($RootFile))
-    $RootStore = [Security.Cryptography.X509Certificates.X509Store]::new('Root',[Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
-    try {
-        Write-PreparationStage 'openRootStore'
-        $RootStore.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-        Write-PreparationStage 'addRootTrust'
-        $RootStore.Add($PublicRoot); $RootTrusted = $true
-    } finally { $RootStore.Dispose() }
-    $Passphrase = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
-    $Pfx = Join-Path $FixtureRoot 'fixture.pfx'
-    Write-PreparationStage 'exportPfx'
-    [void](Export-PfxCertificate -Cert $LeafCert -FilePath $Pfx -CryptoAlgorithmOption AES256_SHA256 -Password (ConvertTo-SecureString $Passphrase -AsPlainText -Force))
     if ($PrepareOnly) {
+        $PreparedCertificate = New-FundsTraceUpdateCertificate (Join-Path $FixtureRoot 'crypto') { param($name) Write-PreparationStage $name }
         $Report=@{status='passed';checks=@{certificatePrepared=$true}}
     } else {
+    $SharedCertificate = Get-Content -Raw -LiteralPath $TrustedCertificateFixture | ConvertFrom-Json
     $Fixture = Join-Path $FixtureRoot 'fixture.json'
-    @{ version=$NextVersion; installer=$NextInstaller; pfx=$Pfx; passphrase=$Passphrase } |
+    @{ version=$NextVersion; installer=$NextInstaller; pfx=$SharedCertificate.pfx; passphrase=$SharedCertificate.passphrase } |
         ConvertTo-Json | Set-Content -LiteralPath $Fixture -Encoding utf8
     $Stage = 'installedUpdateJourney'
     Write-PreparationStage 'installedUpdateJourney'
@@ -128,17 +105,7 @@ try {
             [void]$Relaunched.CloseMainWindow()
             if (-not $Relaunched.WaitForExit(30000)) { throw 'Owned updated application remains active.' }
         }
-        if ($RootTrusted) {
-            $RootStore = [Security.Cryptography.X509Certificates.X509Store]::new('Root',[Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
-            try {
-                $RootStore.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-                $RootStore.Remove($PublicRoot)
-            } finally { $RootStore.Dispose() }
-        }
-        if ($null -ne $PublicRoot) { $PublicRoot.Dispose() }
-        foreach ($Certificate in @($LeafCert,$RootCert)) {
-            if ($null -ne $Certificate) { Remove-Item -LiteralPath ('Cert:\CurrentUser\My\' + $Certificate.Thumbprint) -DeleteKey }
-        }
+        if ($null -ne $PreparedCertificate) { Remove-FundsTraceUpdateCertificate $PreparedCertificate }
         if (Test-Path -LiteralPath $FixtureRoot) { Remove-Item -LiteralPath $FixtureRoot -Recurse -Force }
     } catch { $Failed=$true; if ($null -ne $Report) { $Report.status='failed'; $Report.failedCheck='privateFixtureCleanup' } }
     if ($null -ne $Report) { $Report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $ReportPath -Encoding utf8 }

@@ -8,6 +8,8 @@ Set-StrictMode -Version Latest
 if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) { throw "Run this pipeline natively on Windows x64." }
 if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne "X64") { throw "This candidate targets Windows x64." }
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'windows-update-certificate.ps1')
+$SharedUpdateCertificate = $null
 function Invoke-Checked([scriptblock]$Command) { & $Command; if ($LASTEXITCODE -ne 0) { throw "Build command failed (exit $LASTEXITCODE)." } }
 function Get-Sha256([string]$File) { (Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash.ToLowerInvariant() }
 Push-Location $ProjectRoot
@@ -79,9 +81,14 @@ try {
             Invoke-Checked { & node_modules/.bin/electron-builder.cmd --win nsis --x64 --config electron-builder.cjs --publish never `
                 "--config.extraMetadata.version=$NextVersion" "--config.directories.output=$NextRoot" }
         } finally { Pop-Location }
+        $SharedUpdateCertificate = New-FundsTraceUpdateCertificate (Join-Path $NextRoot 'crypto')
+        $CertificateFixture = Join-Path $SharedUpdateCertificate.Directory 'fixture.json'
+        @{ pfx=$SharedUpdateCertificate.Pfx; passphrase=$SharedUpdateCertificate.Passphrase } |
+            ConvertTo-Json | Set-Content -LiteralPath $CertificateFixture -Encoding utf8
         $UpdateArguments = @{
             NextInstaller = (Join-Path $NextRoot "FundsTrace-$NextVersion-windows-x64-unsigned.exe")
             NextUnpacked = (Join-Path $NextRoot 'win-unpacked')
+            TrustedCertificateFixture = $CertificateFixture
         }
     }
     if ($VerifyInstallerLifecycle) {
@@ -146,4 +153,7 @@ try {
     }
     $Sums | Set-Content -LiteralPath (Join-Path $EvidenceRoot "windows-candidate.sha256") -Encoding utf8
     Write-Host "Unsigned local candidate and safe manifest/SHA-256 evidence created under build/desktop. Windows GUI acceptance and release publication remain separate."
-} finally { Pop-Location }
+} finally {
+    try { if ($null -ne $SharedUpdateCertificate) { Remove-FundsTraceUpdateCertificate $SharedUpdateCertificate } }
+    finally { Pop-Location }
+}
