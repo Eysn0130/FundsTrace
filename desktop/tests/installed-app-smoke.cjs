@@ -449,7 +449,8 @@ async function portClosed(port) {
 })().catch(error => {
   report.status = 'failed'; report.failedCheck = stage; process.exitCode = 1;
   if (updateFixture) report.updateFixtureDiagnostics = { ...updateFixture.requests, lastPhase: updateFixture.lastPhase || 'not-started' };
-  const detail = safeJourneyFailure(error);
+  const detail = safeJourneyFailure(error) || (['UPDATE_DIALOG_TIMEOUT','UPDATE_DIALOG_FAILED','UPDATE_JOURNEY_TIMEOUT'].includes(error?.message)
+    ? { step: 'update', kind: error.message } : null);
   if (detail) report.failureDetail = detail;
 }).finally(async () => {
   // Best effort graceful close, then only handles spawned above. No process-name

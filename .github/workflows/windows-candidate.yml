@@ -16,10 +16,11 @@ on:
         description: Exercise installed update with a disposable private HTTPS fixture
         type: boolean
         default: false
-      update_crypto_probe:
-        description: Run only the bounded disposable TLS preparation diagnostic
-        type: boolean
-        default: false
+      update_fixture_probe:
+        description: Run an isolated update fixture diagnostic without building an installer
+        type: choice
+        options: ['none', 'tls', 'dialog']
+        default: 'none'
       transfer_run_id:
         description: Transfer a successful existing candidate to an empty draft; do not rebuild
         type: string
@@ -37,8 +38,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  update-crypto-probe:
-    if: ${{ inputs.update_crypto_probe == true }}
+  update-fixture-probe:
+    if: ${{ inputs.update_fixture_probe != 'none' }}
     runs-on: windows-2022
     timeout-minutes: 3
     steps:
@@ -46,6 +47,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Bound certificate preparation to 30 seconds
+        if: ${{ inputs.update_fixture_probe == 'tls' }}
         shell: pwsh
         run: |
           $directory = Join-Path $env:RUNNER_TEMP 'fundstrace-update-crypto-probe'
@@ -65,15 +67,31 @@ jobs:
           }
           if ($child.ExitCode -ne 0) { throw 'Certificate-only probe failed; inspect its safe report.' }
           Get-Content -Raw (Join-Path $directory 'native-crypto-probe.json')
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.4.0
+        if: ${{ inputs.update_fixture_probe == 'dialog' }}
+        with:
+          node-version: '22.22.1'
+      - name: Install the real Electron native-dialog runtime
+        if: ${{ inputs.update_fixture_probe == 'dialog' }}
+        shell: pwsh
+        run: npm.cmd --prefix desktop ci
+      - name: Verify native confirmation results without an installer or backend
+        if: ${{ inputs.update_fixture_probe == 'dialog' }}
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'fundstrace-update-crypto-probe'
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          node desktop/tests/windows-update-dialog-probe.cjs (Join-Path $directory 'native-dialog-probe.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Native confirmation probe failed; inspect its safe report.' }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: fundstrace-update-crypto-${{ github.run_id }}
+          name: fundstrace-update-fixture-${{ github.run_id }}
           retention-days: 3
           if-no-files-found: ignore
           path: ${{ runner.temp }}/fundstrace-update-crypto-probe/*.json
   windows-candidate:
-    if: ${{ inputs.update_crypto_probe != true && inputs.transfer_run_id == '' }}
+    if: ${{ inputs.update_fixture_probe == 'none' && inputs.transfer_run_id == '' }}
     runs-on: windows-2022
     timeout-minutes: 45
     defaults:
