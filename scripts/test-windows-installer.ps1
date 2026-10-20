@@ -4,6 +4,8 @@ param(
     [Parameter(Mandatory = $true)][string]$ReportPath,
     [string]$CiTemporaryRoot,
     [ValidateSet('0.1.5', '0.1.7')][string]$PriorVersion = '0.1.5',
+    [string]$NextInstaller,
+    [string]$NextUnpacked,
     [switch]$PreflightOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -335,10 +337,19 @@ try {
     $Stage = 'installedApplicationStarted'
     $AppReportPath = Join-Path (Split-Path -Parent $ReportPath) 'native-installed-app-smoke.json'
     $AppScreenshotPath = Join-Path (Split-Path -Parent $ReportPath) 'native-installed-app.png'
+    if ($NextInstaller) {
+    if (-not $NextUnpacked) { throw 'Private update candidate directory is missing.' }
+    $AppJson = Invoke-Native -FileName (Join-Path $PSHOME 'pwsh.exe') -Arguments @(
+        '-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'test-windows-updater.ps1'),
+        '-InstallRoot',$InstallRoot,'-NextInstaller',$NextInstaller,'-NextUnpacked',$NextUnpacked,
+        '-ReportPath',$AppReportPath,'-ScreenshotPath',$AppScreenshotPath
+    ) -TimeoutSeconds 600
+    } else {
     $AppJson = Invoke-Native -FileName $NodeExe -Arguments @(
         (Join-Path $ProjectRoot 'desktop/tests/installed-app-smoke.cjs'), $InstallRoot,
         '--report', $AppReportPath, '--screenshot', $AppScreenshotPath
     ) -TimeoutSeconds 360
+    }
     $AppHelper = $AppJson | ConvertFrom-Json
     if ($AppHelper.status -cne 'passed') { throw 'Installed application did not reach a usable workspace.' }
     foreach ($Name in @('installedExecutableStarted', 'authenticatedWorkspaceLoaded', 'nodeSelectionModuleLoaded',
@@ -355,6 +366,19 @@ try {
     $Report.checks.installedApplicationSingleInstance = 'passed'
     $Report.checks.installedApplicationNormalClose = 'passed'
     $Report.checks.installedGraphJourney = 'passed'
+    if ($NextInstaller) {
+        foreach ($Name in @('installedUpdateAvailableFromTrustedPrivateHttps','installedInterruptedUpdateRejected',
+            'installedCorruptUpdateRejected','installedUpdateProgressAndReady','installedUpdateLaterRetainsApplication',
+            'installedUpdateConfirmedRestart','installedUpdateAutoRelaunch','installedUpdateExactResources','installedUpdateRelaunchNormalClose')) {
+            if ($AppHelper.checks.$Name -isnot [bool] -or -not $AppHelper.checks.$Name) { throw 'Installed update cycle did not satisfy its check.' }
+        }
+        $AfterUpdate = (Invoke-Native -FileName $NodeExe -Arguments @(
+            $UpgradeHelper,$InstallRoot,'--mode','verify','--fixture',$UpgradeFixture
+        ) -Environment $CompatibilityEnvironment -TimeoutSeconds 240) | ConvertFrom-Json
+        foreach ($Property in $AfterUpdate.PSObject.Properties) { if ($Property.Value -isnot [bool] -or -not $Property.Value) { throw 'Native update changed existing synthetic case data.' } }
+        $Report.inAppUpdateDataChecks = $AfterUpdate
+        $Report.checks.installedInAppUpdate = 'passed'
+    }
 
     $Stage = 'uninstallRegistrationRemoved'
     Invoke-Uninstall

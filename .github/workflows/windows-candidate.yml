@@ -12,6 +12,10 @@ on:
         type: choice
         options: ['0.1.5', '0.1.7']
         default: '0.1.5'
+      in_app_update:
+        description: Exercise installed update with a disposable private HTTPS fixture
+        type: boolean
+        default: false
       transfer_run_id:
         description: Transfer a successful existing candidate to an empty draft; do not rebuild
         type: string
@@ -63,7 +67,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "uv installation failed." }
       - name: Run focused source process and recovery regressions
         run: |
-          foreach ($file in @('scripts/build-windows.ps1', 'scripts/test-windows-installer.ps1', 'scripts/test-windows-standard-user.ps1', 'desktop/installer-processes.ps1')) {
+          foreach ($file in @('scripts/build-windows.ps1', 'scripts/test-windows-installer.ps1', 'scripts/test-windows-standard-user.ps1', 'scripts/test-windows-updater.ps1', 'scripts/click-windows-update-dialog.ps1', 'desktop/installer-processes.ps1')) {
             $tokens = $null; $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $file), [ref]$tokens, [ref]$errors)
             if ($errors.Count -gt 0) { throw "PowerShell parse failed: $file" }
@@ -85,8 +89,9 @@ jobs:
         env:
           BUILD_INSTALLER: ${{ inputs.installer }}
           PRIOR_VERSION: ${{ inputs.prior_version }}
+          IN_APP_UPDATE: ${{ inputs.in_app_update }}
         run: |
-          if ($env:BUILD_INSTALLER -eq 'true') { ./scripts/build-windows.ps1 -Installer -VerifyInstallerLifecycle -PriorVersion $env:PRIOR_VERSION }
+          if ($env:BUILD_INSTALLER -eq 'true') { ./scripts/build-windows.ps1 -Installer -VerifyInstallerLifecycle -PriorVersion $env:PRIOR_VERSION -VerifyInAppUpdate:($env:IN_APP_UPDATE -eq 'true') }
           else { ./scripts/build-windows.ps1 }
       - name: Retain explicit candidate and safe evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -104,6 +109,7 @@ jobs:
             源码 FundsTrace/build/desktop/native-installed-app-smoke.json
             源码 FundsTrace/build/desktop/native-installed-app.png
             源码 FundsTrace/build/desktop/native-installed-app.graph.png
+            源码 FundsTrace/build/desktop/native-installed-app.update-*.png
             源码 FundsTrace/build/desktop/native-import-recovery-smoke.json
             源码 FundsTrace/build/desktop/standard-user/
             源码 FundsTrace/build/desktop/windows-candidate.json

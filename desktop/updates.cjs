@@ -89,7 +89,7 @@ function updateController({ updater, version, enabled, notify = () => {}, restar
       return snapshot();
     },
     // Called only after the owned backend has finished its normal shutdown.
-    install() { updater.quitAndInstall(false, true); },
+    install() { updater.quitAndInstall(true, true); },
   };
 }
 

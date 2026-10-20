@@ -2,7 +2,9 @@
 param(
     [Parameter(Mandatory = $true)][string]$InstallerPath,
     [Parameter(Mandatory = $true)][string]$ReportDirectory,
-    [ValidateSet('0.1.5', '0.1.7')][string]$PriorVersion = '0.1.5'
+    [ValidateSet('0.1.5', '0.1.7')][string]$PriorVersion = '0.1.5',
+    [string]$NextInstaller = '',
+    [string]$NextUnpacked = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -79,7 +81,7 @@ try {
     $env:TEMP = __STAGE__; $env:TMP = $env:TEMP
     $env:CI = 'true'; $env:GITHUB_ACTIONS = 'true'
     @{ standardToken = $true; unicodeProfile = $true; ownAppData = $true } | ConvertTo-Json | Set-Content -LiteralPath __ENV_REPORT__ -Encoding utf8
-    & __LIFECYCLE__ -InstallerPath __INSTALLER__ -ReportPath __REPORT__ -CiTemporaryRoot __LIFECYCLE_ROOT__ -PriorVersion __PRIOR_VERSION__
+    & __LIFECYCLE__ -InstallerPath __INSTALLER__ -ReportPath __REPORT__ -CiTemporaryRoot __LIFECYCLE_ROOT__ -PriorVersion __PRIOR_VERSION__ -NextInstaller __NEXT_INSTALLER__ -NextUnpacked __NEXT_UNPACKED__
     $Result = $LASTEXITCODE
     if ($Result -eq 0) {
         # Installer-private temp files belong to this token. Clean them before
@@ -95,6 +97,7 @@ try {
         '__LIFECYCLE__' = (Join-Path $PSScriptRoot 'test-windows-installer.ps1'); '__INSTALLER__' = $InstallerPath
         '__REPORT__' = (Join-Path $ReportDirectory 'native-installer-smoke.json'); '__LIFECYCLE_ROOT__' = $LifecycleRoot
         '__PRIOR_VERSION__' = $PriorVersion
+        '__NEXT_INSTALLER__' = $NextInstaller; '__NEXT_UNPACKED__' = $NextUnpacked
     }
     foreach ($Key in $Replacements.Keys) { $Template = $Template.Replace($Key, (Quote-Literal $Replacements[$Key])) }
     $Tokens = $null; $ParseErrors = $null

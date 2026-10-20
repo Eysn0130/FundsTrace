@@ -31,7 +31,7 @@ test('check, explicit download, progress and explicit restart preserve the updat
   assert.ok(states.some(value => value.phase === 'downloading' && value.percent === 41.25));
   assert.equal((await controller.action('install')).phase, 'installing');
   assert.deepEqual(calls, ['check', 'download', 'check', 'shutdown']);
-  controller.install(); assert.deepEqual(calls.at(-1), ['install', false, true]);
+  controller.install(); assert.deepEqual(calls.at(-1), ['install', true, true]);
 });
 test('malformed feeds, foreign products and external executables never become downloadable', async () => {
   for (const mutate of [v => { v.product = 'Analytix'; }, v => { v.files[0].url = 'https://evil.test/app.exe'; },
@@ -87,4 +87,21 @@ test('a superseded or changed cached release is not installed after download', a
     assert.equal((await controller.action('install')).phase, 'error');
     assert.deepEqual(calls, ['check', 'download']);
   }
+});
+
+test('confirmed restart uses the real NSIS adapter in silent mode and forces relaunch', () => {
+  const { NsisUpdater } = require('electron-updater');
+  const launched = [];
+  const native = { installerPath: 'C:\\synthetic\\FundsTrace-next.exe',
+    installDirectory: 'C:\\synthetic\\FundsTrace', downloadedUpdateHelper: {},
+    spawnLog: async (file, args) => { launched.push({ file, args }); },
+    dispatchError: () => assert.fail('NSIS adapter rejected the update') };
+  const { controller, updater } = fixture();
+  updater.quitAndInstall = (isSilent, isForceRunAfter) =>
+    NsisUpdater.prototype.doInstall.call(native, { isSilent, isForceRunAfter });
+  controller.install();
+  assert.equal(launched.length, 1);
+  assert.ok(launched[0].args.includes('/S'), 'Restart must not leave an installer finish page requiring another click');
+  assert.ok(launched[0].args.includes('--updated'));
+  assert.ok(launched[0].args.includes('--force-run'), 'The updated application must reopen');
 });

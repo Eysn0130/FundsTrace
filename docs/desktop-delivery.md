@@ -68,6 +68,8 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 手动 Windows Actions 的 `prior_version` 可明确选择固定摘要的 `0.1.5`（历史默认）或 `0.1.7`。该值贯穿管理员与普通账户的真实安装生命周期，并写入 `windows-candidate.json` 的 `installerUpgradeFrom`；转存草稿时两个账户的报告必须与该值一致，`0.1.7` 还必须携带已发布安装器的固定 SHA-256。选择输入本身不代表升级通过，仍以对应运行的安装、旧数据和资源完整性报告为准。此 EXE 覆盖安装验收也不代表已完成软件内下载／重启更新循环。
 
+`in_app_update=true` 另在这两个隔离账户运行真实安装版的更新胶囊：中断下载、损坏校验、重试、圆圈进度、稍后、确认重启、NSIS 静默安装和自动重新打开，再检查安装资源与原有案件。仅在 CI 内构建下一补丁号的私有测试安装器，通过当前测试用户临时信任的本地 CA 和进程级 DNS 规则承接程序固定 HTTPS 地址；不关闭 TLS 验证，不修改生产 feed、系统 hosts 或客户端源码中的地址。临时证书、私钥、服务及私有安装器不作为 Release 资产。该结果须标明私有 HTTPS 测试环境，不能代替国内 CDN 的实际下载验证或未来公开版本的发布链验收。
+
 ## 当前证据与尚未执行的边界
 
 v0.1.3 的 [PR CI](https://github.com/Eysn0130/FundsTrace/actions/runs/38845930019) 完成 Python／G6 394 项及108个子测试、React 38项和 Windows 桌面 Node 34项；[Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38845925970) 绑定源码 `2b8eda98bb6a3dae8c8fa0b91ade36a5e6342ef5`，完成59项定向Python、34项Node、55条资源和13项包内后端检查。维护者与普通账户各完成18项安装生命周期、46项实际EXE应用检查（内含27组CSS视口／DPR）、15项冻结后端导入中断恢复，普通账户另有11项环境和清理检查。旧版证据保留在各版本记录中。

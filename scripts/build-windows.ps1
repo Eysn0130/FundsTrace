@@ -1,7 +1,8 @@
 #Requires -Version 7.0
-param([switch]$Installer, [switch]$VerifyInstallerLifecycle,
+param([switch]$Installer, [switch]$VerifyInstallerLifecycle, [switch]$VerifyInAppUpdate,
     [ValidateSet('0.1.5', '0.1.7')][string]$PriorVersion = '0.1.5')
 if ($VerifyInstallerLifecycle -and -not $Installer) { throw "Installer lifecycle verification requires -Installer." }
+if ($VerifyInAppUpdate -and -not $VerifyInstallerLifecycle) { throw 'In-app update verification requires installer lifecycle verification.' }
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) { throw "Run this pipeline natively on Windows x64." }
@@ -68,9 +69,24 @@ try {
     $InstalledAppReport = Join-Path $EvidenceRoot "native-installed-app-smoke.json"
     $ImportRecoveryReport = Join-Path $EvidenceRoot 'native-import-recovery-smoke.json'
     $CompatibilityDirectory = Join-Path $EvidenceRoot 'standard-user'
+    $UpdateArguments = @{}
+    if ($VerifyInAppUpdate) {
+        $NextParts = $Version.Split('.')
+        $NextVersion = "$($NextParts[0]).$($NextParts[1]).$([int]$NextParts[2] + 1)"
+        $NextRoot = Join-Path $EvidenceRoot 'private-update-fixture'
+        Push-Location desktop
+        try {
+            Invoke-Checked { & node_modules/.bin/electron-builder.cmd --win nsis --x64 --config electron-builder.cjs --publish never `
+                "--config.extraMetadata.version=$NextVersion" "--config.directories.output=$NextRoot" }
+        } finally { Pop-Location }
+        $UpdateArguments = @{
+            NextInstaller = (Join-Path $NextRoot "FundsTrace-$NextVersion-windows-x64-unsigned.exe")
+            NextUnpacked = (Join-Path $NextRoot 'win-unpacked')
+        }
+    }
     if ($VerifyInstallerLifecycle) {
-        Invoke-Checked { & "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $InstallerPath -ReportPath $InstallerReport -PriorVersion $PriorVersion }
-        Invoke-Checked { & "$PSScriptRoot/test-windows-standard-user.ps1" -InstallerPath $InstallerPath -ReportDirectory $CompatibilityDirectory -PriorVersion $PriorVersion }
+        Invoke-Checked { & "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $InstallerPath -ReportPath $InstallerReport -PriorVersion $PriorVersion @UpdateArguments }
+        Invoke-Checked { & "$PSScriptRoot/test-windows-standard-user.ps1" -InstallerPath $InstallerPath -ReportDirectory $CompatibilityDirectory -PriorVersion $PriorVersion @UpdateArguments }
     }
     $Files = @($CandidateFiles | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = [System.IO.Path]::GetRelativePath($ProjectRoot, $_.FullName).Replace('\', '/'); bytes = $_.Length; sha256 = Get-Sha256 $_.FullName }
@@ -90,6 +106,7 @@ try {
         schemaVersion = 1
         candidate = $(if ($Installer) { "unsigned-installer" } else { "unsigned-directory" })
         installerUpgradeFrom = $(if ($VerifyInstallerLifecycle) { $PriorVersion } else { $null })
+        inAppUpdateFixture = [bool]$VerifyInAppUpdate
         platform = "win32"; arch = "x64"
         executableVersion = $ExecutableVersion
         toolchain = [ordered]@{ node = $NodeInfo.version; python = $PythonInfo.version; uv = $UvVersion; powershell = $PSVersionTable.PSVersion.ToString() }
@@ -118,6 +135,9 @@ try {
         $Sums += "$(Get-Sha256 $InstalledAppReport)  build/desktop/native-installed-app-smoke.json"
         $Sums += "$(Get-Sha256 (Join-Path $EvidenceRoot 'native-installed-app.png'))  build/desktop/native-installed-app.png"
         $Sums += "$(Get-Sha256 (Join-Path $EvidenceRoot 'native-installed-app.graph.png'))  build/desktop/native-installed-app.graph.png"
+        foreach ($File in @(Get-ChildItem -LiteralPath $EvidenceRoot -Filter 'native-installed-app.update-*.png' -File)) {
+            $Sums += "$(Get-Sha256 $File.FullName)  build/desktop/$($File.Name)"
+        }
         $Sums += "$(Get-Sha256 $ImportRecoveryReport)  build/desktop/native-import-recovery-smoke.json"
         foreach ($File in @(Get-ChildItem -LiteralPath $CompatibilityDirectory -File)) {
             $Relative = [IO.Path]::GetRelativePath($ProjectRoot, $File.FullName).Replace('\', '/')

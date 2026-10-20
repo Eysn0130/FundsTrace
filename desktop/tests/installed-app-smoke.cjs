@@ -8,6 +8,7 @@ const net = require('node:net');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
+const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
 
 const SENTINEL = 'FundsTrace synthetic installer lifecycle v1\n';
 const SEED_CASE = 'SYN prior installer lifecycle case';
@@ -23,7 +24,7 @@ const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, f
     offlineEnforcement: 'not-measured-by-this-helper; see standard-user compatibility report',
     simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
 const timings = report.timings, owned = [];
-let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage;
+let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, updateFixture;
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function bounded(promise, ms) {
@@ -48,17 +49,17 @@ async function check(name, action) {
 }
 function argumentsOf() {
   const args = process.argv.slice(2);
-  assert.ok(args.length === 3 || args.length === 5);
+  assert.ok(args.length === 3 || args.length === 5 || args.length === 7);
   const installRoot = args.shift(), values = {};
   while (args.length) {
     const key = args.shift(), value = args.shift();
-    assert.ok(['--report', '--screenshot'].includes(key) && !values[key] && value && path.isAbsolute(value));
+    assert.ok(['--report', '--screenshot', '--update-fixture'].includes(key) && !values[key] && value && path.isAbsolute(value));
     values[key] = path.resolve(value);
   }
   assert.ok(installRoot && path.isAbsolute(installRoot) && values['--report']);
   assert.equal(path.extname(values['--report']).toLowerCase(), '.json');
   if (values['--screenshot']) assert.equal(path.extname(values['--screenshot']).toLowerCase(), '.png');
-  return { installRoot: path.resolve(installRoot), reportPath: values['--report'], screenshot: values['--screenshot'] };
+  return { installRoot: path.resolve(installRoot), reportPath: values['--report'], screenshot: values['--screenshot'], updateFixture: values['--update-fixture'] };
 }
 function within(root, value) {
   const relative = path.relative(root, value);
@@ -72,7 +73,9 @@ function businessOrigin(value) {
   } catch { return null; }
 }
 function boot(executable, installRoot, env, debug) {
-  const child = spawn(executable, debug ? ['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1'] : [],
+  const args = debug ? ['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1'] : [];
+  if (updateFixture) args.push('--no-proxy-server', '--host-resolver-rules=MAP analytix.top 127.0.0.1, MAP download.analytix.top 127.0.0.1');
+  const child = spawn(executable, args,
     { cwd: installRoot, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
   const instance = { child, done: false, failed: false, debugUrl: null };
   owned.push(instance);
@@ -227,6 +230,7 @@ async function portClosed(port) {
   });
   reportPath = config.reportPath;
   await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' }); reportOwned = true;
+  if (config.updateFixture) updateFixture = await check('isolatedUpdateHttpsFixture', () => createUpdateFixture(config.updateFixture));
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
     !/^(FUND_|FUNDS_TRACE_|ELECTRON_|NODE_OPTIONS$)/i.test(name)));
   const executable = path.join(config.installRoot, 'FundsTrace.exe');
@@ -430,10 +434,13 @@ async function portClosed(port) {
   await check('noPageExceptions', async () => {
     assert.ok(!instrumentationFailed); assert.equal(errorCount, 0);
   });
+  if (updateFixture) report.updateCycle = await runInstalledUpdateJourney({
+    fixture: updateFixture, primary, evaluate, clickElement, cdp, page, check, screenshot: config.screenshot,
+  });
   await check('normalClose', async () => {
     // CDP Page.close runs beforeunload. Main's window-all-closed/before-quit
     // handlers must finish their owned backend shutdown; Browser.close is not used.
-    await cdp.send('Page.close', {}, page.sessionId).catch(() => {});
+    if (!primary.done) await cdp.send('Page.close', {}, page.sessionId).catch(() => {});
     assert.deepEqual(await bounded(primary.exited, 30000), { code: 0, signal: null });
     assert.equal(errorCount, 0);
   });
@@ -452,6 +459,7 @@ async function portClosed(port) {
     await Promise.all(owned.filter(instance => !instance.done).map(instance => bounded(instance.exited, 5000).catch(() => {})));
   }
   cdp?.close();
+  if (updateFixture) await updateFixture.close();
   for (const instance of owned) {
     if (!instance.done) {
       instance.child.kill();

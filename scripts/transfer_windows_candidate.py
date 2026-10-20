@@ -146,6 +146,25 @@ def main():
                 "upgradedFactsUnchanged", "upgradedCanvasAndTracking", "legacyPackageRoundTrip",
                 "upgradedAnalysisPaths", "upgradedAnalysisCycles", "upgradedAtomicCanvas",
                 "upgradedEofReopened", "upgradedSourceFilesUnchanged"))
+            if candidate.get("inAppUpdateFixture") is True:
+                cycle = app["updateCycle"]
+                version_parts = [int(part) for part in args.tag[1:].split(".")]
+                next_version = f"{version_parts[0]}.{version_parts[1]}.{version_parts[2] + 1}"
+                assert cycle["currentVersion"] == args.tag[1:] and cycle["nextVersion"] == next_version
+                assert cycle["privateFixtureOnly"] is True and cycle["productionFeedModified"] is False
+                assert cycle["tlsVerificationDisabled"] is False
+                assert re.fullmatch(r"[0-9a-f]{64}", cycle["installerSha256"])
+                assert all(cycle["requests"][name] > 0 for name in ("manifest", "truncate", "corrupt", "valid"))
+                assert all(app["checks"][name] is True for name in (
+                    "installedInterruptedUpdateRejected", "installedCorruptUpdateRejected",
+                    "installedUpdateProgressAndReady", "installedUpdateLaterRetainsApplication",
+                    "installedUpdateConfirmedRestart", "installedUpdateAutoRelaunch",
+                    "installedUpdateExactResources", "installedUpdateRelaunchNormalClose"))
+                assert installer["checks"]["installedInAppUpdate"] == "passed"
+                assert all(installer["inAppUpdateDataChecks"][name] is True for name in (
+                    "upgradedFactsUnchanged", "upgradedCanvasAndTracking", "legacyPackageRoundTrip",
+                    "upgradedAnalysisPaths", "upgradedAnalysisCycles", "upgradedAtomicCanvas",
+                    "upgradedEofReopened", "upgradedSourceFilesUnchanged"))
         for key, file in (
             ("nativeManifestSha256", manifest_path), ("hostResourcesReportSha256", host_path),
             ("smokeReportSha256", base / "native-backend-smoke.json"),
@@ -192,6 +211,11 @@ def main():
         assets = [installer, manifest_path, host_path, candidates[0], base / "windows-candidate.sha256",
                   base / "native-installed-app.png", base / "native-installed-app.graph.png", zip_path, summary_path,
                   *(base / name for name in reports)]
+        if candidate.get("inAppUpdateFixture") is True:
+            for phase in ("downloading", "ready"):
+                screenshot = base / f"native-installed-app.update-{phase}.png"
+                assert screenshot.is_file()
+                assets.append(screenshot)
         assert len({file.name for file in assets}) == len(assets)
         subprocess.run(["gh", "release", "upload", args.tag, "--repo", REPO, *(str(file) for file in assets)], check=True)
         print(json.dumps(summary))
