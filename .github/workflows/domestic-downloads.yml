@@ -9,6 +9,10 @@ on:
         description: Published latest stable release to mirror (for retry/bootstrap)
         required: true
         type: string
+      verify_upload:
+        description: Diagnose fresh installer uploads without changing the download entry
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -81,10 +85,11 @@ jobs:
         if: steps.current.outputs.eligible == 'true'
         env:
           DOWNLOAD_RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          VERIFY_FRESH_UPLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_upload }}
           ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ steps.cloud.outputs.aliyun-access-key-id }}
           ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ steps.cloud.outputs.aliyun-access-key-secret }}
           ALIBABA_CLOUD_SECURITY_TOKEN: ${{ steps.cloud.outputs.aliyun-security-token }}
-        run: node scripts/release-publisher/publish.mjs
+        run: node scripts/release-publisher/run.mjs
       - name: Verify public latest document
         if: steps.current.outputs.eligible == 'true'
         run: |
