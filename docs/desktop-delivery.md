@@ -74,6 +74,8 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 2026-10-19 核对 v0.1.6 与 v0.1.7：安装身份、NSIS hook、Main／sidecar 退出、数据库、数据路径、偏好、导入／案件包服务及相关依赖未改变；此次标签修复不需要新增数据迁移。v0.1.7 原发布验收的旧版为 v0.1.5，不能推导出 v0.1.6 原包升级已经验证；单独的原包测试结果必须按运行记录判断。
 
+本轮已用两个已发布原包补齐 [v0.1.6 → v0.1.7 原生验收](https://github.com/Eysn0130/FundsTrace/actions/runs/39363570681)，测试工具源码为 `f037ba2898bdf620036073d965f380c5d461adb9`，未重新构建应用。旧包 SHA-256 为 `fc9c6513079b0ac456b0dabe47b0f8a175eaf9b3b62eceda77a8abddaf6776aa`，目标包为 `52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a`。维护者及普通账户各通过 33 项安装生命周期、61 项已安装应用检查、15 项冻结后端导入恢复；普通账户另通过 11 项环境／清理检查。升级／重装均自动找到原中文自定义目录；旧程序测试文件自然清除；EXE／asar／sidecar／manifest 资源一致；原有案件、精确金额、币种、画布、追踪、来源原件及设置的受测契约保留；升级后的实际节点标签回归通过。照片、关注节点、导入会话／回执尚未加入这条升级前后逐项比较，不能把其他独立测试等同于它们的跨版本证据。
+
 现有会话采用每次启动的新内存 partition、`cache:false`，桌面后端为全部响应加 `no-store`。正常关闭并替换后，页面会重新从新 sidecar 读取资源。验收仍同时检查 EXE、asar、sidecar 和 manifest 中的静态资源摘要，并执行标签回归；仅看“安装成功”或版本号不足以证明业务页面更新。
 
 | 尚需单独处理的条件 | 当前事实与后续原则 |
@@ -83,13 +85,15 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 | 数据格式演进、跨版本跳升及降级 | 当前无显式持久 schema 上限／最低可读版本、升级前完整备份或降级门。今后改变 schema／DuckDB／案件包时，应单独建立版本契约、事务迁移、失败恢复和最早支持版本的跳升验证。`.fundcase` 不含所有上传原件／导入回执，不能替代完整运行目录备份。 |
 | 普通用户、Windows 10／11、安全系统 | 保持同一 Windows 用户的 per-user 安装与 AppData 身份。Server 2022 专用普通账户／程序出站阻断，与 Win10／11 交互向导、系统 DPI、SmartScreen／SAC、整机断网验收分别记录。当前安装器仍未签名。 |
 
-官方文档分清两条更新架构：[Electron 内置 autoUpdater](https://www.electronjs.org/docs/latest/tutorial/updates) 在 Windows 文档中主要使用 Squirrel；FundsTrace 已采用 NSIS，应参考锁定版本的 [electron-builder v26 更新指引](https://www.electron.build/v26/docs/features/auto-update/)。应用内更新还需要更新元数据、客户端集成、包校验、用户选择和安全退出；仅发布 EXE 不会自动获得这些行为。保持 appId 的 [官方身份规则](https://www.electron.build/v26/docs/nsis/#guid-vs-application-name) 继续适用。默认站点部分内容属于尚未发布的 v27，不能当作当前 26.15.3 已支持功能。
+官方文档分清两条更新架构：[Electron 内置 autoUpdater](https://www.electronjs.org/docs/latest/tutorial/updates) 在 Windows 文档中主要使用 Squirrel；FundsTrace 已采用 NSIS，应参考锁定版本的 [electron-builder v26 更新指引](https://www.electron.build/v26/docs/features/auto-update/)。应用内更新还需要更新元数据、客户端集成、包校验、用户选择和安全退出；仅发布 EXE 不会自动获得这些行为。保持 appId 的 [官方身份规则](https://www.electron.build/v26/docs/nsis/#guid-vs-application-name) 继续适用。默认站点部分内容属于尚未发布的 v27，不能当作当前 26.15.3 已支持功能。 每次修复应递增版本并绑定唯一候选包，避免同版本换包导致旧缓存与版本判断不一致。
 
 可借鉴的公开项目机制，均按源码快照而非项目热度判断：
 
 - [Joplin](https://github.com/laurent22/joplin/blob/cf57e5932584c0fbd894d8510f1a31a4d41f2251/packages/app-desktop/services/autoUpdater/AutoUpdaterService.ts#L50-L84) 禁止在普通退出时自动安装，由用户明确调用安装；其 [数据库版本门](https://github.com/laurent22/joplin/blob/cf57e5932584c0fbd894d8510f1a31a4d41f2251/packages/lib/JoplinDatabase.ts#L405-L415) 拒绝未知的新 profile。适合借鉴业务退出控制和独立的数据兼容版本。
 - [Signal 安装器](https://github.com/signalapp/Signal-Desktop/blob/f3040f3e13b6dca5021c3db149320e0f7a771f0a/build/installer.nsh#L28-L55) 检查降级并默认取消；其 [更新签名](https://github.com/signalapp/Signal-Desktop/blob/f3040f3e13b6dca5021c3db149320e0f7a771f0a/ts/updater/signature.node.ts#L22-L42) 绑定包摘要和版本。适合借鉴明确降级政策及可信更新身份，不需要照搬其自建 updater。
 - Joplin 的 [官方安全公告](https://github.com/laurent22/joplin/security/advisories/GHSA-9wp7-hr9m-3273) 说明安装器签名与更新客户端校验发布者是两项契约；以后增加 updater 时须同时验证，不能只检查 EXE 已签名。
+
+本轮 `Invoke-WebRequest` 下载及 `/S` 安装未模拟浏览器下载后的 Mark of the Web 与 Shell 双击；[微软说明](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation) 指出签名与文件／发布者信誉共同影响防护，未签名包也可能被 Smart App Control 阻止。Win10／11 的浏览器下载→交互向导→启动验收仍需独立实机，不能从本轮无弹窗的静默安装推导。
 
 这些项目没有为 FundsTrace 证明完整 NSIS 回滚；它们清理安装器缓存的代码也不授权扫描删除本项目用户数据。
 
