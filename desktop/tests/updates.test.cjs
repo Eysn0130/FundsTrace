@@ -30,7 +30,7 @@ test('check, explicit download, progress and explicit restart preserve the updat
   assert.equal((await controller.action('download')).phase, 'ready');
   assert.ok(states.some(value => value.phase === 'downloading' && value.percent === 41.25));
   assert.equal((await controller.action('install')).phase, 'installing');
-  assert.deepEqual(calls, ['check', 'download', 'shutdown']);
+  assert.deepEqual(calls, ['check', 'download', 'check', 'shutdown']);
   controller.install(); assert.deepEqual(calls.at(-1), ['install', false, true]);
 });
 test('malformed feeds, foreign products and external executables never become downloadable', async () => {
@@ -73,4 +73,18 @@ test('IPC requires an owned, exact-origin top frame', () => {
   assert.equal(allowed({ sender, senderFrame: frame }, 'http://127.0.0.1:55123', new Set([7])), true);
   for (const event of [{ sender, senderFrame: { ...frame } }, { sender, senderFrame: { url: 'https://analytix.top' } }, { sender: { ...sender, id: 8 }, senderFrame: frame }])
     assert.equal(allowed(event, 'http://127.0.0.1:55123', new Set([7])), false);
+});
+test('a superseded or changed cached release is not installed after download', async () => {
+  for (const change of ['newer', 'checksum', 'offline']) {
+    const { updater, controller, calls } = fixture();
+    await controller.action('check'); await controller.action('download');
+    updater.checkForUpdates = async () => {
+      if (change === 'offline') throw new Error('offline');
+      const value = info(change === 'newer' ? '0.1.9' : '0.1.8');
+      if (change === 'checksum') value.files[0].sha512 = Buffer.alloc(64, 2).toString('base64');
+      return { updateInfo: value };
+    };
+    assert.equal((await controller.action('install')).phase, 'error');
+    assert.deepEqual(calls, ['check', 'download']);
+  }
 });

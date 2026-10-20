@@ -20,14 +20,14 @@
 1. OIDC issuer `https://token.actions.githubusercontent.com`；audience `sts.aliyuncs.com`。
 2. RAM role 只信任 `repo:Eysn0130/FundsTrace:environment:production-downloads`。同时限制 issuer、audience 和 subject，禁止通配其他仓库。
 3. 权限只给 `oss:GetObject`、`oss:PutObject`：资源为 `acs:oss:*:*:analytix-hub-downloads-prod/releases/fundstrace/windows/*` 和上面的一个 latest.yml 对象。不给 Analytix 其他安装包、站点 HTML、删除、ACL 或 Bucket 管理权限。
-4. GitHub `production-downloads` environment 配置 `FUNDS_TRACE_DOWNLOAD_ROLE_ARN`、`FUNDS_TRACE_DOWNLOAD_OIDC_PROVIDER_ARN`。ARN 不是秘密。发布工作流仅从受保护 main 读取脚本；环境限制由维护者按当前发布流程设置。
+4. GitHub `production-downloads` environment 配置 `FUNDS_TRACE_DOWNLOAD_ROLE_ARN`、`FUNDS_TRACE_DOWNLOAD_OIDC_PROVIDER_ARN`。ARN 不是秘密。必须限制 environment 只接受 main 分支及维护者正式发布的 v* 标签，不能允许任意开发分支使用云角色。发布工作流仅从受保护 main 读取脚本。权限 JSON 见 deploy/fundstrace-download-publisher-policy.json。
 5. 先同步已发布 v0.1.7，验证完整 CDN 下载哈希；再发布带更新器的新候选。候选合并与版本发布遵守原有维护者审阅流程。
 
 ## 客户端
 
 NSIS + `electron-updater`，固定 HTTPS feed，关闭自动下载、退出自动安装、预发布和降级。Main 独占检查、下载缓存和安装操作；renderer 只有固定动作 IPC，验证所属顶层 frame 和精确本机 origin，不接收远程 URL、文件路径或安装参数。下载仅接受 FundsTrace 产品及本域不可变路径，先由 updater 校验 SHA-512，再允许用户显式重启。
 
-顶部右侧胶囊显示检查、更新、圆环下载进度、重试和重启状态。点击重启先出现默认“稍后”的确认框，提示保存所有窗口画布、等待导入和导出结束；随后先关闭所属 sidecar，再启动 NSIS。普通退出不会安装更新。数据、appId、每用户安装身份和卸载默认保留数据不变。网络失败不阻止使用；仍可从官网手动覆盖安装。
+顶部右侧胶囊显示检查、更新、圆环下载进度、重试和重启状态。重启前再次读取最新版，离线、缓存版本被取代或散列改变均停止安装。点击重启先出现默认“稍后”的确认框，提示保存所有窗口画布、等待导入和导出结束；随后先关闭所属 sidecar，再启动 NSIS。普通退出不会安装更新。数据、appId、每用户安装身份和卸载默认保留数据不变。网络失败不阻止使用；仍可从官网手动覆盖安装。
 
 现有 v0.1.7 没有更新器，需要先手动覆盖安装一次带更新器的版本。完整自动更新验收需要两份不同版本的真实 Windows 安装包，不能用同版本重装或本机合成 UI 代替。未签名预览沿用现状；HTTPS 与散列保护传输和完整性，不等同于 Authenticode 发布者签名，不关闭未来签名校验。
 

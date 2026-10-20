@@ -79,6 +79,9 @@ function updateController({ updater, version, enabled, notify = () => {}, restar
       else if (action === 'install' && state.phase === 'ready' && !installing) {
         installing = true;
         try {
+          const latest = releaseInfo((await updater.checkForUpdates())?.updateInfo);
+          if (!accepted || latest.version !== accepted.version || latest.file.sha512 !== accepted.file.sha512
+              || latest.file.size !== accepted.file.size) throw new Error('Downloaded release is no longer current');
           if (await restart()) set({ phase: 'installing' });
         } catch { failed(); }
         finally { installing = false; }
