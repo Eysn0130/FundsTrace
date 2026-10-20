@@ -4,12 +4,12 @@
 
 ## 唯一最新版记录
 
-- 官网与更新器共同读取 `https://analytix.top/fundstrace/latest.yml`。内容是 JSON（也是合法 YAML），包含产品 ID、版本、不可变安装包 URL、字节数、SHA-256、SHA-512 和 GitHub Release/asset ID。
+- 官网与更新器共同读取 `https://analytix.top/fundstrace/latest.yml`。内容是 JSON（也是合法 YAML），包含产品 ID、版本、不可变安装包 URL、字节数、SHA-256、SHA-512 和 GitHub Release/asset ID。可变 latest 记录还携带 GitHub Release 正文 `releaseNotes`；下载中心从同一份响应显示版本和纯文本说明，旧版无此字段时仍可下载。
 - OSS 对象：`analytix-hub-downloads-prod/releases/windows/site/fundstrace/latest.yml`。
 - 安装包独立前缀：`releases/fundstrace/windows/<version>/`。仅复制 GitHub 已正式发布的同一个 Windows x64 NSIS EXE，不重新构建。
-- GitHub Release 发布后触发 `Domestic Windows downloads`；`workflow_dispatch` 可补同步已有最新版或重试。Draft、prerelease、没有 GitHub SHA-256 digest 的资产和旧版本均拒绝。
-- 上传前校验 GitHub 的字节数和 SHA-256，上传后从 OSS 读回完整文件再次校验，然后用一次 PutObject 切换共同记录。失败保留旧指针和旧安装包；同版本内容改变必须提升版本。无自动删除旧包。
-- 所有发布必须通过同一个不取消的 GitHub concurrency group。OSS PutObject 不提供此处可依赖的 If-Match CAS，禁止另起并发手动发布器。脚本在切换前复核当前 ETag 和 GitHub 最新资产，发现外部改动停止。
+- GitHub Release 发布或修改说明后触发 `Domestic Windows downloads`；`workflow_dispatch` 可补同步已有最新版或重试。只同步当前最新稳定版；旧版的说明修改不切换下载入口。Draft、prerelease、没有 GitHub SHA-256 digest 的资产和旧版本均拒绝。
+- 上传前校验 GitHub 的字节数和 SHA-256，上传后从 OSS 读回完整文件再次校验，然后用一次 PutObject 切换共同记录。失败保留旧指针和旧安装包；同版本安装包或版本清单改变必须提升版本。修正当前版说明只更新 latest 的 `releaseNotes`，不重写不可变版本清单或 EXE；其余元数据必须完全一致。无自动删除旧包。
+- 所有发布必须通过同一个不取消的 GitHub concurrency group。OSS PutObject 不提供此处可依赖的 If-Match CAS，禁止另起并发手动发布器。脚本在切换前复核当前 ETag、GitHub 最新资产与说明，发现外部改动停止。
 
 ## 阿里云与 GitHub 接线
 
