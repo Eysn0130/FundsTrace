@@ -7,21 +7,26 @@ const path = require('node:path');
 const asar = require('@electron/asar');
 const builder = require('../electron-builder.cjs');
 const { createTransformer } = require('app-builder-lib/out/fileTransformer');
-const { verifyHostArchive } = require('./package-resources.cjs');
+const { verifyHostArchive, runtimeDependencies } = require('./package-resources.cjs');
 
 test('actual ASAR inspection detects omitted preload, unexpected files and stale host content', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fundstrace-archive-test-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const source = path.resolve(__dirname, '..');
+  const modules = await runtimeDependencies(source);
   async function archive(name, change) {
     const directory = path.join(root, name), file = path.join(root, name + '.asar');
     await fs.mkdir(directory);
     for (const entry of builder.files) await fs.copyFile(path.join(source, entry), path.join(directory, entry));
-    for (const entry of ['node_modules/electron-updater/package.json', 'node_modules/electron-updater/out/main.js']) {
-      await fs.mkdir(path.dirname(path.join(directory, entry)), { recursive: true });
-      const transformed = await createTransformer(source, builder)(path.join(source, entry));
-      if (transformed == null) await fs.copyFile(path.join(source, entry), path.join(directory, entry));
-      else await fs.writeFile(path.join(directory, entry), transformed);
+    for (const [entry, origin] of modules) {
+      const target = path.join(directory, entry);
+      await fs.cp(origin, target, { recursive: true, filter: file => !path.relative(origin, file).split(path.sep).includes('node_modules') });
+      for (const file of await fs.readdir(target, { recursive: true })) {
+        const local = path.join(origin, file);
+        if (!(await fs.stat(local)).isFile()) continue;
+        const transformed = await createTransformer(source, builder)(local);
+        if (transformed != null) await fs.writeFile(path.join(target, file), transformed);
+      }
     }
     if (change) await change(directory);
     await asar.createPackage(directory, file);
@@ -39,4 +44,6 @@ test('actual ASAR inspection detects omitted preload, unexpected files and stale
     const value = JSON.parse(await fs.readFile(file, 'utf8')); value.version = '0.0.0';
     await fs.writeFile(file, JSON.stringify(value));
   })), /Packaged dependency drift/);
+  await assert.rejects(verifyHostArchive(await archive('development-semver', dir =>
+    fs.copyFile(path.join(source, 'node_modules/semver/bin/semver.js'), path.join(dir, 'node_modules/semver/bin/semver.js')))), /Packaged dependency drift/);
 });
