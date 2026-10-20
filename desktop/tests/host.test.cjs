@@ -153,7 +153,7 @@ test('health checks status, protocol and exact service using main-only authoriza
 test('distribution manifest prevents cross-platform packaging and includes only host source', async t => {
   const builder = require('../electron-builder.cjs');
   assert.equal(builder.appId, 'com.eysn.fundstrace');
-  assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs']);
+  assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'assets/icon.png', 'assets/icon.ico']);
   assert.deepEqual(builder.publish, { provider: 'generic', url: 'https://analytix.top/fundstrace/' });
   assert.equal(builder.nsis.deleteAppDataOnUninstall, false);
   assert.equal(builder.win.signExecutable, false);
@@ -175,7 +175,7 @@ function deferred() {
 }
 
 // Exercise the real Main entry and Electron lifecycle events without a business server.
-function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopBackend = async () => true, restartResponse = 0 } = {}) {
+function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopBackend = async () => true, restartResponse = 0, platform = 'win32' } = {}) {
   const app = new EventEmitter();
   const state = { windows: [], errors: [], backendStarts: 0, backendStops: 0, quitCount: 0, removed: [] };
   const ready = deferred();
@@ -185,6 +185,7 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
   app.isPackaged = !!updater;
   app.getVersion = () => '0.1.7';
   app.setName = app.setAppUserModelId = () => {};
+  if (platform === 'darwin') app.dock = { setIcon: icon => { state.dockIcon = icon; } };
   app.requestSingleInstanceLock = () => true;
   app.whenReady = () => Promise.resolve();
   app.getPath = () => path.join(os.tmpdir(), 'FundsTrace synthetic user');
@@ -254,9 +255,27 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
       return { ready: ready.promise, stop: async () => { state.backendStops++; return await stopBackend(); } };
     } };
     return require(name);
-  }, clearInterval, setInterval, setImmediate, __dirname: path.resolve(__dirname, '..'), process: { argv: ['FundsTrace', ...(synthetic ? ['--synthetic'] : [])], env: {}, platform: 'win32' } });
+  }, clearInterval, setInterval, setImmediate, __dirname: path.resolve(__dirname, '..'), process: { argv: ['FundsTrace', ...(synthetic ? ['--synthetic'] : [])], env: {}, platform } });
   return { app, state, ready, screen, flush: async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); } };
 }
+
+test('Main uses the packaged brand asset for startup and analysis windows and the macOS dock', async () => {
+  const builder = require('../electron-builder.cjs');
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const harness = mainHarness({ platform }); await harness.flush();
+    const relative = `assets/icon.${platform === 'win32' ? 'ico' : 'png'}`;
+    const icon = path.resolve(__dirname, '..', relative);
+    assert.ok(builder.files.includes(relative), 'runtime icon must be present in the distributed host');
+    assert.equal(harness.state.windows[0].options.icon, icon);
+    assert.equal(harness.state.dockIcon, platform === 'darwin' ? icon : undefined);
+    harness.ready.resolve({ origin, token: 'main-only-test-token' }); await harness.flush();
+    harness.state.windows[0].popup({ url: `${origin}/analysis?case_id=1` }); await harness.flush();
+    assert.equal(harness.state.windows[1].options.icon, icon);
+    for (const win of harness.state.windows) win.close();
+    await harness.flush();
+    assert.deepEqual(harness.state.errors, []);
+  }
+});
 
 test('Main adapts existing windows after DPI/work-area changes while retaining bounds that still fit', async () => {
   const harness = mainHarness(); await harness.flush();

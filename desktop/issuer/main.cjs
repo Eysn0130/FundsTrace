@@ -4,13 +4,14 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createIssuer, IssuerError } = require('./core.cjs');
 const { trustedSender, localResource } = require('./policy.cjs');
+const appIcon = path.join(__dirname, '..', 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 
 app.setName('FundsTrace Issuer');
 app.setAppUserModelId('com.eysn.fundstrace.issuer');
 app.setPath('userData', path.join(app.getPath('appData'), 'FundsTrace Issuer'));
 const issuer = createIssuer();
 const page = pathToFileURL(path.join(__dirname, 'index.html')).href;
-const resources = new Set(['index.html', 'style.css', 'renderer.js'].map(name => pathToFileURL(path.join(__dirname, name)).href));
+const resources = new Set(['index.html', 'style.css', 'renderer.js', '../assets/icon.png'].map(name => pathToFileURL(path.join(__dirname, name)).href));
 let win, busy = false;
 const cancelled = () => ({ ok: false, cancelled: true });
 function handle(name, operation) {
@@ -57,13 +58,14 @@ else {
   app.on('before-quit', () => issuer.clear());
   app.on('window-all-closed', () => app.quit());
   app.whenReady().then(async () => {
+    app.dock?.setIcon(appIcon);
     const local = session.fromPartition('fundstrace-issuer', { cache: false });
     local.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     local.setPermissionCheckHandler(() => false);
     local.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !localResource(details.url, resources) }));
     local.on('will-download', event => event.preventDefault());
     const area = screen.getPrimaryDisplay().workArea;
-    win = new BrowserWindow({ title: 'FundsTrace Issuer', width: Math.min(980, area.width), height: Math.min(760, area.height), minWidth: Math.min(680, area.width), minHeight: Math.min(540, area.height), show: false,
+    win = new BrowserWindow({ title: 'FundsTrace Issuer', icon: appIcon, width: Math.min(980, area.width), height: Math.min(760, area.height), minWidth: Math.min(680, area.width), minHeight: Math.min(540, area.height), show: false,
       webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: local, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, spellcheck: false } });
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     for (const name of ['will-navigate', 'will-redirect', 'will-attach-webview']) win.webContents.on(name, event => event.preventDefault());
