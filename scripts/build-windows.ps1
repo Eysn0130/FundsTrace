@@ -1,5 +1,6 @@
 #Requires -Version 7.0
-param([switch]$Installer, [switch]$VerifyInstallerLifecycle)
+param([switch]$Installer, [switch]$VerifyInstallerLifecycle,
+    [ValidateSet('0.1.5', '0.1.7')][string]$PriorVersion = '0.1.5')
 if ($VerifyInstallerLifecycle -and -not $Installer) { throw "Installer lifecycle verification requires -Installer." }
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -68,8 +69,8 @@ try {
     $ImportRecoveryReport = Join-Path $EvidenceRoot 'native-import-recovery-smoke.json'
     $CompatibilityDirectory = Join-Path $EvidenceRoot 'standard-user'
     if ($VerifyInstallerLifecycle) {
-        Invoke-Checked { & "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $InstallerPath -ReportPath $InstallerReport }
-        Invoke-Checked { & "$PSScriptRoot/test-windows-standard-user.ps1" -InstallerPath $InstallerPath -ReportDirectory $CompatibilityDirectory }
+        Invoke-Checked { & "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $InstallerPath -ReportPath $InstallerReport -PriorVersion $PriorVersion }
+        Invoke-Checked { & "$PSScriptRoot/test-windows-standard-user.ps1" -InstallerPath $InstallerPath -ReportDirectory $CompatibilityDirectory -PriorVersion $PriorVersion }
     }
     $Files = @($CandidateFiles | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = [System.IO.Path]::GetRelativePath($ProjectRoot, $_.FullName).Replace('\', '/'); bytes = $_.Length; sha256 = Get-Sha256 $_.FullName }
@@ -88,6 +89,7 @@ try {
     $Manifest = [ordered]@{
         schemaVersion = 1
         candidate = $(if ($Installer) { "unsigned-installer" } else { "unsigned-directory" })
+        installerUpgradeFrom = $(if ($VerifyInstallerLifecycle) { $PriorVersion } else { $null })
         platform = "win32"; arch = "x64"
         executableVersion = $ExecutableVersion
         toolchain = [ordered]@{ node = $NodeInfo.version; python = $PythonInfo.version; uv = $UvVersion; powershell = $PSVersionTable.PSVersion.ToString() }

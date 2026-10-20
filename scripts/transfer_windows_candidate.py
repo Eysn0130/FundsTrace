@@ -58,6 +58,21 @@ def verify_host_report(host, version, package, source_file):
         assert sha in variants(source_file(name))
 
 
+def verify_upgrade_origin(candidate, installer):
+    """Bind each account's upgrade report to the pinned source installer."""
+    pinned = {
+        "0.1.5": "f5c337e37adb30dc30c8cb895722703c91461ed0de49acee8dd487d454d8f1fc",
+        "0.1.7": "52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a",
+    }
+    prior = candidate.get("installerUpgradeFrom", "0.1.5")
+    assert prior in pinned
+    assert installer["status"] == "passed" and installer["priorVersion"] == prior
+    # Historical v0.1.5 reports predate this field; new v0.1.7 reports must carry it.
+    if prior != "0.1.5" or "priorInstallerSha256" in installer:
+        assert installer.get("priorInstallerSha256") == pinned[prior]
+    return prior
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
@@ -116,12 +131,13 @@ def main():
             assert value["status"] == "passed"
         standard = base / "standard-user"
         assert data(standard / "compatibility.json")["status"] == "passed"
+        prior_version = verify_upgrade_origin(candidate, reports["native-installer-smoke.json"])
         for folder in (base, standard):
             app = data(folder / "native-installed-app-smoke.json")
             assert app["status"] == "passed" and all(value is True for value in app["checks"].values())
             assert all(app["checks"][name] is True for name in GRAPH_CHECKS)
             installer = data(folder / "native-installer-smoke.json")
-            assert installer["status"] == "passed" and installer["priorVersion"] == "0.1.5"
+            assert verify_upgrade_origin(candidate, installer) == prior_version
             assert installer["currentVersion"] == args.tag[1:] and all(value == "passed" for value in installer["checks"].values())
             assert all(installer["priorDataChecks"][name] is True for name in (
                 "priorBackendSeeded", "priorExactMoneyAndCurrency", "priorCanvasAndTracking",
@@ -164,6 +180,7 @@ def main():
                 assert file.is_file() and file.suffix in {".json", ".png"}
                 archive.write(file, file.name)
         summary = {"schemaVersion": 1, "status": "passed", "sourceCommit": source,
+            "installerUpgradeFrom": prior_version,
             "sourceRun": args.run_id, "tag": args.tag, "installer": expected,
             "resourceCount": len(manifest["resources"]), "hostFileCount": len(host["hostFiles"]) + 1,
             "sourceResourcesIndependentlyChecked": sources_checked,

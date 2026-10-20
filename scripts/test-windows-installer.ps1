@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$InstallerPath,
     [Parameter(Mandatory = $true)][string]$ReportPath,
     [string]$CiTemporaryRoot,
+    [ValidateSet('0.1.5', '0.1.7')][string]$PriorVersion = '0.1.5',
     [switch]$PreflightOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -221,8 +222,12 @@ try {
     $PriorInstaller = Join-Path $TemporaryRoot 'prior-stable.exe'
 
     $Stage = 'priorInstallerDigest'
-    Invoke-WebRequest -Uri 'https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.5/FundsTrace-0.1.5-windows-x64-unsigned.exe' -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
-    if ((Get-Sha256 $PriorInstaller) -cne 'f5c337e37adb30dc30c8cb895722703c91461ed0de49acee8dd487d454d8f1fc') {
+    $PriorDigests = @{
+        '0.1.5' = 'f5c337e37adb30dc30c8cb895722703c91461ed0de49acee8dd487d454d8f1fc'
+        '0.1.7' = '52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a'
+    }
+    Invoke-WebRequest -Uri "https://github.com/Eysn0130/FundsTrace/releases/download/v$PriorVersion/FundsTrace-$PriorVersion-windows-x64-unsigned.exe" -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
+    if ((Get-Sha256 $PriorInstaller) -cne $PriorDigests[$PriorVersion]) {
         throw 'The prior installer digest differs from the pinned release.'
     }
     $Report.checks.priorInstallerDigest = 'passed'
@@ -230,8 +235,9 @@ try {
     $MayHaveInstalled = $true
     # /D is NSIS syntax: absolute path, last argument, deliberately no quotes even with spaces.
     [void](Invoke-Native -FileName $PriorInstaller -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
-    Assert-Installed '0.1.5'
-    $Report.priorVersion = '0.1.5'; $Report.checks.priorInstalled = 'passed'
+    Assert-Installed $PriorVersion
+    $Report.priorVersion = $PriorVersion; $Report.priorInstallerSha256 = $PriorDigests[$PriorVersion]
+    $Report.checks.priorInstalled = 'passed'
 
     $Stage = 'syntheticDataSeeded'
     # The earlier absence check establishes ownership; never redirect or reuse a maintainer's data.

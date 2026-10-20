@@ -7,6 +7,11 @@ on:
         description: Build unsigned NSIS installer and verify isolated lifecycle
         type: boolean
         default: false
+      prior_version:
+        description: Pinned published installer used for upgrade acceptance
+        type: choice
+        options: ['0.1.5', '0.1.7']
+        default: '0.1.5'
       transfer_run_id:
         description: Transfer a successful existing candidate to an empty draft; do not rebuild
         type: string
@@ -79,8 +84,9 @@ jobs:
       - name: Build unsigned Windows directory candidate and native backend evidence
         env:
           BUILD_INSTALLER: ${{ inputs.installer }}
+          PRIOR_VERSION: ${{ inputs.prior_version }}
         run: |
-          if ($env:BUILD_INSTALLER -eq 'true') { ./scripts/build-windows.ps1 -Installer -VerifyInstallerLifecycle }
+          if ($env:BUILD_INSTALLER -eq 'true') { ./scripts/build-windows.ps1 -Installer -VerifyInstallerLifecycle -PriorVersion $env:PRIOR_VERSION }
           else { ./scripts/build-windows.ps1 }
       - name: Retain explicit candidate and safe evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
