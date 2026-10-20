@@ -203,17 +203,33 @@ function Assert-PresentationPreferences {
     # granting a test IPC. The fixture is written by this test, not the old UI.
     $PreferenceReadCode = @'
 const assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
+const { TextDecoder } = require('node:util');
 const vm = require('node:vm');
 const asar = require('./desktop/node_modules/@electron/asar');
 const [archive, directory, expectedJson] = process.argv.slice(1);
 function installed(name) {
   assert.ok(['preferences.cjs', 'host-policy.cjs'].includes(name));
+  const bytes = asar.extractFile(archive, name), info = asar.statFile(archive, name);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  let source, utf8 = true;
+  try { source = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { utf8 = false; }
+  const integrity = !info.integrity || (info.integrity.algorithm === 'SHA256' && info.integrity.hash === sha256);
+  const diagnostic = `name=${name}, bytes=${bytes.length}, sha256=${sha256}, utf8=${utf8}, integrity=${integrity}`;
+  if (bytes.length !== info.size || !utf8 || !integrity || bytes.includes(0)) {
+    throw new Error(`Invalid archived module: ${diagnostic}`);
+  }
   const module = { exports: {} };
-  vm.runInNewContext(asar.extractFile(archive, name).toString('utf8'), { module, exports: module.exports,
+  const context = { module, exports: module.exports,
     require(request) {
       if (['node:fs', 'node:path', 'node:crypto'].includes(request)) return require(request);
       assert.equal(request, './host-policy.cjs'); return installed('host-policy.cjs');
-    } }, { filename: name, timeout: 5000 });
+    } };
+  // Compile separately so a parse failure never prints source text into CI logs.
+  let compiled;
+  try { compiled = new vm.Script(source, { filename: name }); }
+  catch { throw new Error(`Archived module syntax rejected: ${diagnostic}`); }
+  compiled.runInNewContext(context, { timeout: 5000 });
   return module.exports;
 }
 const store = installed('preferences.cjs').preferenceStore(directory);

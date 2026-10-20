@@ -17,12 +17,21 @@ test('installed archive preference reader checks the actual store without writin
   const host = path.join(directory, 'host'), archive = path.join(directory, 'app.asar'), user = path.join(directory, 'user');
   await fs.mkdir(host); await fs.mkdir(user);
   for (const name of ['preferences.cjs', 'host-policy.cjs']) await fs.copyFile(path.join(root, 'desktop', name), path.join(host, name));
-  await asar.createPackage(host, archive);
+  // asar 3.4.1 resolves createPackage at out.end(), before the destination
+  // stream finishes. Wait for the producing process to exit before reading;
+  // Windows can otherwise expose a short read padded with NUL bytes.
+  const packed = spawnSync(process.execPath, [require.resolve('@electron/asar/bin/asar.js'), 'pack', host, archive],
+    { cwd: root, encoding: 'utf8', timeout: 15000 });
+  assert.equal(packed.status, 0, packed.stderr || packed.stdout);
+  for (const name of ['preferences.cjs', 'host-policy.cjs']) {
+    assert.deepEqual(asar.extractFile(archive, name), await fs.readFile(path.join(host, name)),
+      'the completed fixture archive must preserve the complete module bytes');
+  }
   const preferences = { fund_case: '3', fund_edge_type: 'polyline', fund_show_ids: '1',
     fund_show_photos: '0', fund_edge_labels: '["money","currency"]' };
   const file = path.join(user, 'preferences.json'), raw = Buffer.from(JSON.stringify(preferences));
   await fs.writeFile(file, raw);
-  const invoke = expected => spawnSync(process.execPath, ['-e', reader, archive, user, JSON.stringify(expected)],
+  const invoke = (expected, input = archive) => spawnSync(process.execPath, ['-e', reader, input, user, JSON.stringify(expected)],
     { cwd: root, encoding: 'utf8', timeout: 15000 });
   const accepted = invoke(preferences);
   assert.equal(accepted.status, 0, accepted.stderr || accepted.stdout);
@@ -30,5 +39,15 @@ test('installed archive preference reader checks the actual store without writin
   assert.deepEqual(await fs.readdir(user), ['preferences.json']);
   const rejected = invoke({ ...preferences, fund_case: '4' });
   assert.notEqual(rejected.status, 0, 'a changed preference must fail the actual archived-store comparison');
+  assert.deepEqual(await fs.readFile(file), raw);
+  const damaged = path.join(directory, 'incomplete.asar'), bytes = await fs.readFile(archive);
+  const info = asar.statFile(archive, 'preferences.cjs'), start = 8 + asar.getRawHeader(archive).headerSize + Number(info.offset);
+  bytes.fill(0, start, start + info.size);
+  await fs.writeFile(damaged, bytes);
+  const incomplete = invoke(preferences, damaged);
+  assert.notEqual(incomplete.status, 0, 'NUL-filled short-read output must fail before compiling a module');
+  assert.match(incomplete.stderr, /Invalid archived module: name=preferences\.cjs, bytes=\d+, sha256=[0-9a-f]{64}, utf8=true, integrity=false/);
+  assert.doesNotMatch(incomplete.stderr, /'use strict'|Invalid or unexpected token/,
+    'invalid source bytes must produce metadata diagnostics rather than source text');
   assert.deepEqual(await fs.readFile(file), raw);
 });
