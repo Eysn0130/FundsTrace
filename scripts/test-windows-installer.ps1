@@ -339,6 +339,7 @@ try {
         'activationFree', 'singleInstance', 'normalClose', 'backendReleasedAfterClose',
         'installedGraphModulesLoaded', 'installedCsvPreviewMapping', 'installedCsvCommittedExact',
         'installedQueryExact', 'installedFirstTrackExact', 'installedSecondTrackVisible',
+        'installedAutomaticNodeLabelRecovery',
         'installedContextTrackedConsistent', 'installedNeighborhoodTrackVisible',
         'installedCanvasCloneExact', 'installedCanvasSaveRestoreTypes',
         'installedCanvasUndoRedoTypes', 'installedKeyboardUndoRedoOutsideGraph', 'installedCaseIsolationAndReturn', 'installedGraphScreenshot')) {
