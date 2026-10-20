@@ -1,6 +1,6 @@
 # 国内下载与 Windows 应用内更新
 
-此候选新增 FundsTrace 独立通道，保留 Analytix 的下载、身份和更新通道。
+此候选新增 FundsTrace 独立更新通道。维护者已授权官网现有 Windows 下载替换为 FundsTrace；其他平台保留。FundsTrace 与 Analytix 的安装身份、数据目录和更新通道保持独立。
 
 ## 唯一最新版记录
 
