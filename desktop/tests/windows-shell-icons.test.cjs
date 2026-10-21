@@ -38,8 +38,14 @@ test('native shell shortcut icons match approved art and reject different pixels
   const nativeSource = path.join(root, 'native-reader.cs'), wrong = path.join(root, 'wrong.ico');
   await fs.writeFile(nativeSource, source, { flag: 'wx' });
   await fs.writeFile(wrong, wrongIcon(), { flag: 'wx' });
-  // Resource-only PE fixture: read by the shell, never executed or installed.
-  const exe = NtExecutable.createEmpty(false, false), resources = NtExecutableResource.from(exe);
+  // Preserve a real native PE's headers/sections. An empty resource-parser
+  // fixture does not establish that the Windows shell accepts its PE headers.
+  // Only the temporary copy is changed; it is never executed or installed.
+  const exe = NtExecutable.from(await fs.readFile(process.execPath), { ignoreCert: true });
+  const resources = NtExecutableResource.from(exe);
+  for (let index = resources.entries.length - 1; index >= 0; index--) {
+    if ([3, 14].includes(resources.entries[index].type)) resources.entries.splice(index, 1);
+  }
   const icons = Data.IconFile.from(await fs.readFile(approved)).icons.map(icon => icon.data);
   Resource.IconGroupEntry.replaceIconsForResource(resources.entries, 103, 1033, icons);
   resources.outputResource(exe);
@@ -86,6 +92,13 @@ try {
     if ($null -ne $Comparison) {
         $Report.comparison = [ordered]@{ width = $Comparison.Width; height = $Comparison.Height; matched = $Comparison.Matched
             actual = $Comparison.ActualSha256; expected = $Comparison.ExpectedSha256 }
+        try {
+            # Distinguish an invalid PE fixture from normalization of identical
+            # art by the shell's image list. This is diagnostic only, never a pass.
+            $Reference = [FundsTraceBrandIcons]::Shortcut($Approved, $Approved, $Small)
+            $Report.reference = [ordered]@{ width = $Reference.Width; height = $Reference.Height; matched = $Reference.Matched
+                actual = $Reference.ActualSha256; expected = $Reference.ExpectedSha256 }
+        } catch { }
     }
 } finally {
     try {
@@ -106,21 +119,20 @@ if ($Failed) { exit 1 }
   } catch (error) {
     // Never echo compiler/COM messages, source paths, command arguments or raw
     // stderr. Preserve only fixed stages and process outcome for CI diagnosis.
-    let failedCheck = null, failureCode = null, comparison = null;
+    let failedCheck = null, failureCode = null, comparison = null, reference = null;
     try {
       const value = JSON.parse(String(error.stdout || '').replace(/^\uFEFF/, ''));
       if (['nativeSource', 'createShortcut', 'approvedLarge', 'approvedSmall', 'wrongLarge', 'wrongSmall', 'comCleanup'].includes(value.failedCheck)) failedCheck = value.failedCheck;
       if (['UNCLASSIFIED', 'APPROVED_ICON_MISMATCH', 'WRONG_ICON_ACCEPTED', 'SHORTCUT_ICON_FAILED',
         'ICON_INFO_FAILED', 'ICON_BITMAP_FAILED', 'ICON_DIMENSIONS_INVALID', 'ICON_DC_FAILED', 'ICON_DIB_FAILED',
         'ICON_SELECT_FAILED', 'ICON_DRAW_FAILED', 'ICON_FLUSH_FAILED', 'EXPECTED_ICON_LOAD_FAILED'].includes(value.failureCode)) failureCode = value.failureCode;
-      const frame = value.comparison;
-      if (frame && Number.isInteger(frame.width) && frame.width > 0 && frame.width <= 1024
-        && Number.isInteger(frame.height) && frame.height > 0 && frame.height <= 1024
-        && typeof frame.matched === 'boolean' && /^[a-f0-9]{64}$/.test(frame.actual) && /^[a-f0-9]{64}$/.test(frame.expected)) {
-        comparison = { width: frame.width, height: frame.height, matched: frame.matched, actual: frame.actual, expected: frame.expected };
-      }
+      const safeFrame = frame => frame && Number.isInteger(frame.width) && frame.width > 0 && frame.width <= 1024
+          && Number.isInteger(frame.height) && frame.height > 0 && frame.height <= 1024
+          && typeof frame.matched === 'boolean' && /^[a-f0-9]{64}$/.test(frame.actual) && /^[a-f0-9]{64}$/.test(frame.expected)
+        ? { width: frame.width, height: frame.height, matched: frame.matched, actual: frame.actual, expected: frame.expected } : null;
+      comparison = safeFrame(value.comparison); reference = safeFrame(value.reference);
     } catch {}
-    throw new Error(JSON.stringify({ code: error.killed ? 'NATIVE_SHELL_TIMEOUT' : 'NATIVE_SHELL_PROCESS_FAILED', failedCheck, failureCode, comparison,
+    throw new Error(JSON.stringify({ code: error.killed ? 'NATIVE_SHELL_TIMEOUT' : 'NATIVE_SHELL_PROCESS_FAILED', failedCheck, failureCode, comparison, reference,
       exitCode: Number.isInteger(error.code) ? error.code : null,
       signal: ['SIGTERM', 'SIGKILL', 'SIGABRT'].includes(error.signal) ? error.signal : null }));
   }
