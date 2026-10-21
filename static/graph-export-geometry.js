@@ -122,6 +122,10 @@
         if (readLabels().every(label => inside(label.bounds, { minX: padding, minY: padding, maxX: width - padding, maxY: contentHeight - padding }))) break;
       }
       const labels = readLabels(), nodeLabels = labels.filter(label => label.kind === 'node');
+      const annotations = nodes.flatMap(item => (item.getContainer?.()?.get?.('children') || [])
+        .filter(shape => shape.get?.('name') === 'funds-node-annotation')
+        .map((shape, index) => ({ key: `annotation:${item.getModel?.().id}:${index}`, bounds: shape.getCanvasBBox?.() })))
+        .filter(note => valid(note.bounds));
       const edgeLabels = labels.filter(label => label.kind === 'edge');
       // Bound relocation work independently of graph size. Unplanned amounts
       // remain visible and participate as obstacles and in the final audit.
@@ -133,6 +137,7 @@
       const obstacles = [
         ...nodes.map((item, index) => ({ key: `body:${index}`, bounds: bodyBounds(item) })),
         ...nodeLabels.map(label => ({ key: `node:${label.key}`, bounds: label.bounds })),
+        ...annotations,
         ...edgeLabels.filter(label => !plannedSet.has(label)).map(label => ({ key: `fixed:${label.key}`, bounds: label.bounds })),
       ].filter(obstacle => valid(obstacle.bounds));
       const selector = root.FundsGraphLabels?.select;
@@ -170,7 +175,7 @@
       const finalLabels = readLabels();
       if (typeof selector === 'function') {
         const audit = selector(finalLabels.map(label => ({ key: label.key, kind: label.kind, required: true,
-          bounds: label.bounds })), { obstacles: nodes.map((item, index) => ({ key: `body:${index}`, bounds: bodyBounds(item) })),
+          bounds: label.bounds })), { obstacles: [...nodes.map((item, index) => ({ key: `body:${index}`, bounds: bodyBounds(item) })), ...annotations],
           viewport, padding: 0, obstaclePadding: 0, retainAll: true });
         result.unresolvedCount = audit.conflicts + audit.unknownGeometry;
       } else result.unresolvedCount = finalLabels.length;

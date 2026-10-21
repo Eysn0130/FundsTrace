@@ -290,7 +290,8 @@ def test_amount_width_without_encodable_relations_declares_missing_range(client)
 
 def test_export_runtime_plain_labels_midpoint_gaps_identity_and_manual_ratios(client):
     snapshot = graph_snapshot()
-    snapshot["nodes"][0].update(labelStyle={"fontSize": 24, "lineHeight": 8},
+    snapshot["nodes"][0].update(annotation={"id": "OTHER-ID", "text": "实际控制人（合成）\n</script><script>window.injected=true</script>", "anchor": "above", "dx": 23, "dy": -14, "size": 20, "fontFamily": "KaiTi", "color": "#C084FC", "html": "<img onerror=evil>"},
+                                labelStyle={"fontSize": 24, "lineHeight": 8},
                                 labelOffset={"x": 35, "y": -12},
                                 labelLeader={"x1": 100, "y1": 200, "x2": 135, "y2": 225},
                                 data={"is_main": 1, "out_cnt": 1, "in_cnt": 1})

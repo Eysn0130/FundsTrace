@@ -45,6 +45,7 @@
           <div class="ribbon-group-body">
             <button type="button" class="btn ribbon-action" id="btnCanvasNew" ><img class="ui-icon" src="/static/ui-icons/file-plus.svg" alt=""><span>新建画布</span></button>
             <button type="button" class="btn ribbon-action" id="btnCanvasClone" ><img class="ui-icon" src="/static/ui-icons/copy.svg" alt=""><span>另存为</span></button>
+            <button type="button" class="btn ribbon-action" id="btnCanvasRemove" title="删除当前画布（默认画布不可删除）"><img class="ui-icon" src="/static/ui-icons/trash.svg" alt=""><span>删除画布</span></button>
             <button type="button" class="btn ribbon-action" id="btnCanvasActions" data-toolbar-menu="canvasActions" aria-controls="canvasActions" aria-expanded="false" aria-haspopup="menu"><img class="ui-icon" src="/static/ui-icons/settings.svg" alt=""><span>画布管理<img class="ui-icon toolbar-menu-chevron" src="/static/ui-icons/chevron-down.svg" alt=""></span></button>
           </div>
           <span class="ribbon-group-label">画布文件</span></div>
@@ -53,6 +54,7 @@
             <button type="button" class="btn ribbon-action" data-ribbon-command="selectAll" ><img class="ui-icon" src="/static/ui-icons/selection.svg" alt=""><span>选择全部</span></button>
             <button type="button" class="btn ribbon-action" data-ribbon-command="clearSelection" ><img class="ui-icon" src="/static/ui-icons/selection-clear.svg" alt=""><span>取消选择</span></button>
             <button type="button" class="btn ribbon-action" data-ribbon-command="invertSelection" ><img class="ui-icon" src="/static/ui-icons/swap.svg" alt=""><span>反选</span></button>
+            <button type="button" class="btn ribbon-action" id="btnAnnotation" data-ribbon-command="annotateSelection" title="给所选账户添加自定义文字（贴着节点，可选在图形正上方或文字下方）"><img class="ui-icon" src="/static/ui-icons/pencil.svg" alt=""><span>添加标注</span></button>
             <div class="ribbon-slot" data-ribbon-slot="find"></div>
           </div>
           <span class="ribbon-group-label">选择与查找</span></div>
@@ -510,7 +512,30 @@
   <select id="exportFmt" hidden aria-hidden="true" tabindex="-1"><option value="png">PNG 图像</option><option value="html">HTML 可拖拽图谱</option><option value="pdf">PDF 文档</option></select>
   <button id="btnExportPng" type="button" hidden>导出图谱</button><button id="btnExportXlsx" type="button" hidden>导出追踪流水 Excel</button>
 </dialog>
-<div id="canvasActions" class="toolbar-menu" role="menu" aria-label="画布管理" hidden inert>
+<dialog id="annotationDialog" class="toolbar-form" aria-labelledby="annotationTitle">
+  <form id="annotationForm">
+    <h2 id="annotationTitle">自定义标注</h2>
+    <label class="toolbar-form-field" for="annotationText">显示在图上的文字<textarea id="annotationText" rows="4" maxlength="200" placeholder="例如：实际控制人 / 已核实 / 与 SYN-B001 同一人"></textarea></label>
+    <fieldset class="toolbar-form-field annotation-anchor-field">
+      <legend>起始位置</legend>
+      <label><input type="radio" name="annotationAnchor" value="below" checked> 节点文字下方</label>
+      <label><input type="radio" name="annotationAnchor" value="above"> 图形正上方</label>
+    </fieldset>
+    <div class="annotation-style-row">
+      <label class="toolbar-form-field" for="annotationSize">字号
+        <select id="annotationSize"><option value="10">10</option><option value="12">12</option><option value="13" selected>13</option><option value="16">16</option><option value="20">20</option><option value="24">24</option><option value="28">28</option><option value="32">32</option></select>
+      </label>
+      <label class="toolbar-form-field" for="annotationFont">字体
+        <select id="annotationFont"><option value="Arial">默认</option><option value="Microsoft YaHei">微软雅黑</option><option value="SimSun">宋体</option><option value="SimHei">黑体</option><option value="KaiTi">楷体</option><option value="FangSong">仿宋</option></select>
+      </label>
+      <label class="toolbar-form-field" for="annotationColor">颜色
+        <input type="color" id="annotationColor" value="#e3a12b">
+      </label>
+    </div>
+    <p id="annotationHint" class="toolbar-form-hint">支持多行：直接回车换行（最多 6 行 / 200 字）。标注贴着节点，拖动节点时一起移动；按住标注可以微调位置，随画布保存。</p>
+    <footer><button class="btn" id="annotationCancel" type="button">取消</button><button class="btn" id="annotationDelete" type="button" disabled>删除标注</button><button class="btn primary" id="annotationSave" type="submit">保存标注</button></footer>
+  </form>
+</dialog><div id="canvasActions" class="toolbar-menu" role="menu" aria-label="画布管理" hidden inert>
   <button type="button" class="toolbar-menu-item" id="btnCanvasRename" role="menuitem" tabindex="-1" aria-disabled="true"><img class="ui-icon" src="/static/ui-icons/pencil.svg" alt=""><span>重命名画布…</span></button>
   <button type="button" class="toolbar-menu-item" id="btnCanvasMenuClone" role="menuitem" tabindex="-1"><img class="ui-icon" src="/static/ui-icons/copy.svg" alt=""><span>另存为新画布…</span></button>
   <div class="toolbar-menu-separator" role="separator"></div>

@@ -46,7 +46,7 @@ def test_ribbon_has_four_tabs_and_preserves_single_business_controls():
     assert [tab['data-ribbon-tab'] for tab in page.tabs] == ['common', 'trace', 'style', 'view']
     assert len(page.panels) == 4
     assert sum('hidden' not in panel for panel in page.panels) == 1
-    for key in ('btnCanvasSave', 'btnUndo', 'btnRedo', 'btnRelayout', 'btnFit', 'neighborAccount',
+    for key in ('btnCanvasNew', 'btnCanvasRemove', 'btnCanvasSave', 'btnAnnotation', 'btnUndo', 'btnRedo', 'btnRelayout', 'btnFit', 'neighborAccount',
                 'neighborDirection', 'btnNeighborhood', 'btnExpandNeighbors', 'btnGraphOverview',
                 'btnMinimap', 'graphLabelMode', 'relationCurrency', 'relationMin', 'relationMax',
                 'btnRelationApply', 'btnRelationClear', 'amountWidthCk', 'widthCurrency'):
@@ -114,3 +114,17 @@ def test_node_appearance_controls_use_existing_popovers_and_scoped_commands():
         assert page.tags[identifier][1]["data-ribbon-command"] == command
     assert page.tags["btnNodeBorder"][1]["data-ribbon-popover"] == "nodeBorderPopover"
     assert page.tags["btnNodeSize"][1]["data-ribbon-popover"] == "nodeSizePopover"
+
+
+def test_graph_export_uses_white_print_paper():
+    """PNG/PDF 导出为白底黑字：底色常量与 toDataURL 必须成对出现。"""
+    source = (ROOT / 'static/app.js').read_text(encoding='utf-8')
+    assert "PRINT_PAPER = '#ffffff'" in source
+    assert "PRINT_INK = '#111111'" in source
+    assert "graph.toDataURL('image/png', PRINT_PAPER)" in source
+    assert "applyPrintInk([...(graph.getNodes?.() || []), ...(graph.getEdges?.() || [])])" in source
+    # 页脚与文字使用打印墨色，深色主题的旧常量不得回到导出路径。
+    assert "fill:PRINT_PAPER" in source
+    assert "fill:PRINT_INK" in source
+    assert "'#111a23'" not in source
+    assert "'#111c26'" not in source

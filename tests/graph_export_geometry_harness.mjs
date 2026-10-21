@@ -184,3 +184,14 @@ test('an adapter failure restores temporary text and completed path cleanups bef
   assert.equal(f.options.graph.get('autoPaint'), true); assert.equal(f.cleanupCalls.length, 1);
   assert.ok(f.groups.every(group => group.removed));
 });
+
+test('image sampling treats anchored annotations as fixed obstacles for relationship labels', () => {
+  const f=fixture(2),owner=f.nodes[0],base=owner.getContainer(),model=f.edges[0].getModel();
+  const note={get:name=>name==='name'?'funds-node-annotation':undefined,getCanvasBBox:()=>envelope(
+    {minX:25,minY:-175,maxX:185,maxY:-120},(x,y)=>f.options.graph.getCanvasByPoint(x,y))};
+  owner.getContainer=()=>({get:name=>name==='children'?[...base.get('children'),note]:base.get(name),
+    getCanvasBBox:()=>union([base.getCanvasBBox(),note.getCanvasBBox()])});
+  const result=api.prepare(f.options);
+  for(const edge of f.edges)assert.equal(intersects(edge.text.getCanvasBBox(),note.getCanvasBBox()),false,'the sampled amount avoids the anchored note');
+  assert.equal(f.edges[0].getModel(),model);result.restore();
+});

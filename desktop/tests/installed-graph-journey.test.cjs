@@ -1,7 +1,8 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { fixtureCsv, assertGraph, assertEdgeTypes, assertAutomaticLeafLabel, assertPartialViewportLabels, assertImportCompletion, safeJourneyFailure, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
+const { fixtureCsv, assertGraph, assertEdgeTypes, assertNoAnnotation, assertAnnotation, assertAnnotationFollow,
+  assertAutomaticLeafLabel, assertPartialViewportLabels, assertImportCompletion, safeJourneyFailure, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
 
 function observed() {
   // Independent two-transfer observation with exact decimal strings. The
@@ -165,14 +166,94 @@ test('per-relationship styling rejects changes to another relationship or a miss
   assert.throws(() => assertEdgeTypes(snapshot, expected));
 });
 
+function annotationObserved() {
+  const value = observed();
+  value.viewport = { width: 900, height: 600 };
+  value.camera = [1.5,0,0,0,1.5,0,100,50,1];
+  for (const [id,x] of [['SYN-INST-A',-60], ['SYN-INST-B',120], ['SYN-INST-C',280]]) {
+    Object.assign(value.renderedNodes.find(node => node.id === id), { x, y: 30 });
+  }
+  value.annotations = [{ id: 'SYN-INST-C', text: 'SYN installed note\nVerified exact cents',
+    anchor: 'above', dx: 24, dy: -12, size: 16, fontFamily: 'Microsoft YaHei', color: '#e3a12b' }];
+  value.renderedAnnotations = [{ id: 'SYN-INST-C', type: 'text', text: 'SYN installed note\nVerified exact cents',
+    fill: '#e3a12b', fontSize: 16, fontFamily: 'Microsoft YaHei', textAlign: 'center', textBaseline: 'bottom',
+    x: 24, y: -42, drawn: true, bounds: { minX: 430, minY: 25, maxX: 610, maxY: 70 } }];
+  return value;
+}
+const expectedAnnotation = Object.freeze({ id: 'SYN-INST-C', text: 'SYN installed note\nVerified exact cents',
+  anchor: 'above', dx: 24, dy: -12, size: 16, fontFamily: 'Microsoft YaHei', color: '#e3a12b' });
+
+test('annotation acceptance requires the complete saved note and its actual visible G6 text shape', () => {
+  assert.doesNotThrow(() => assertAnnotation(annotationObserved(), expectedAnnotation));
+  for (const mutate of [
+    value => { value.annotations[0].text = 'SYN installed note'; },
+    value => { value.annotations[0].anchor = 'below'; },
+    value => { value.annotations[0].dx = 0; }, value => { value.annotations[0].dy = 0; },
+    value => { value.annotations[0].color = '#000000'; }, value => { value.annotations[0].size = 13; },
+    value => { value.annotations[0].fontFamily = 'Arial'; },
+    value => { value.renderedAnnotations = []; },
+    value => { value.renderedAnnotations.push({ ...value.renderedAnnotations[0] }); },
+    value => { value.renderedAnnotations[0].id = 'SYN-INST-B'; },
+    value => { value.renderedAnnotations[0].type = 'rect'; },
+    value => { value.renderedAnnotations[0].text = 'SYN installed note'; },
+    value => { value.renderedAnnotations[0].fill = '#000000'; },
+    value => { value.renderedAnnotations[0].fontSize = 13; },
+    value => { value.renderedAnnotations[0].fontFamily = 'Arial'; },
+    value => { value.renderedAnnotations[0].textBaseline = 'top'; },
+    value => { value.renderedAnnotations[0].x = 0; },
+    value => { value.renderedAnnotations[0].drawn = false; },
+    value => { value.renderedAnnotations[0].bounds = null; },
+    value => { value.renderedAnnotations[0].bounds.maxY = 25; },
+    value => { value.renderedAnnotations[0].bounds.minX = 1000; value.renderedAnnotations[0].bounds.maxX = 1200; },
+    value => { value.ready = false; },
+  ]) {
+    const value = annotationObserved(); mutate(value);
+    assert.throws(() => assertAnnotation(value, expectedAnnotation));
+  }
+});
+
+test('annotation undo or a different canvas must clear both presentation data and rendered text', () => {
+  const cleared = { ready: true, annotations: [], renderedAnnotations: [] };
+  assert.doesNotThrow(() => assertNoAnnotation(cleared));
+  assert.throws(() => assertNoAnnotation({ ...cleared, annotations: annotationObserved().annotations }));
+  assert.throws(() => assertNoAnnotation({ ...cleared, renderedAnnotations: annotationObserved().renderedAnnotations }));
+  assert.throws(() => assertNoAnnotation({ ...cleared, ready: false }));
+});
+
+test('moving one annotated node translates its actual shape without changing offset, siblings or exact facts', () => {
+  function moved() {
+    const value = annotationObserved();
+    Object.assign(value.renderedNodes.find(node => node.id === 'SYN-INST-C'), { x: 312, y: 54 });
+    value.renderedAnnotations[0].bounds = { minX: 478, minY: 61, maxX: 658, maxY: 106 };
+    return value;
+  }
+  assert.doesNotThrow(() => assertAnnotationFollow(annotationObserved(), moved(), expectedAnnotation));
+  assertGraph(moved(), ['71','72','73'], 2);
+  for (const mutate of [
+    value => { Object.assign(value.renderedNodes.find(node => node.id === 'SYN-INST-C'), { x: 280, y: 30 }); },
+    value => { value.renderedNodes.find(node => node.id === 'SYN-INST-B').x += 32; },
+    value => { value.camera[6] += 48; },
+    value => { value.renderedAnnotations[0].y += 24; },
+    value => { value.renderedAnnotations[0].bounds = { minX: 430, minY: 25, maxX: 610, maxY: 70 }; },
+    value => { value.renderedAnnotations[0].bounds.maxX += 3; },
+  ]) {
+    const value = moved(); mutate(value);
+    assert.throws(() => assertAnnotationFollow(annotationObserved(), value, expectedAnnotation));
+  }
+  const lostCents = moved(); lostCents.edges[1].total = '12345678901234.00';
+  assert.throws(() => assertGraph(lostCents, ['71','72','73'], 2));
+});
+
 test('installed journey reports fixed, distinct mandatory behavior checks', () => {
-  assert.equal(new Set(REQUIRED_CHECKS).size, 15);
+  assert.equal(new Set(REQUIRED_CHECKS).size, 20);
   assert.ok(REQUIRED_CHECKS.includes('installedKeyboardUndoRedoOutsideGraph'));
   assert.ok(REQUIRED_CHECKS.includes('installedSecondTrackVisible'));
   assert.ok(REQUIRED_CHECKS.includes('installedAutomaticNodeLabelRecovery'));
   assert.ok(REQUIRED_CHECKS.includes('installedPartialViewportNodeLabels'));
   assert.ok(REQUIRED_CHECKS.includes('installedNeighborhoodTrackVisible'));
   assert.ok(REQUIRED_CHECKS.includes('installedCanvasSaveRestoreTypes'));
+  for (const name of ['installedAnnotationDialogSave', 'installedAnnotationUndoRedo', 'installedAnnotationOffsetDrag',
+    'installedAnnotationNodeFollow', 'installedCanvasSaveRestoreAnnotation']) assert.ok(REQUIRED_CHECKS.includes(name));
   assert.ok(REQUIRED_CHECKS.every(name => /^installed[A-Z][A-Za-z]+$/.test(name)));
 });
 
@@ -184,6 +265,10 @@ test('failure diagnostics retain only known step and failure enums', () => {
     { step: 'node-label-pan-return', kind: 'assertion' });
   assert.deepEqual(safeJourneyFailure({ installedGraphDiagnostic: { step: 'node-label-partial-leave', kind: 'assertion' } }),
     { step: 'node-label-partial-leave', kind: 'assertion' });
+  for (const step of ['annotation-node','annotation-open','annotation-fill','annotation-save','annotation-rendered',
+    'annotation-undo','annotation-redo','annotation-style-reset','annotation-offset','annotation-follow','annotation-restored']) {
+    assert.deepEqual(safeJourneyFailure({ installedGraphDiagnostic: { step, kind: 'runtime', payload: error.message } }), { step, kind: 'runtime' });
+  }
   for (const detail of [{ step: error.message, kind: 'timeout' }, { step: 'canvas-submit', kind: error.message }]) {
     assert.equal(safeJourneyFailure({ installedGraphDiagnostic: detail }), null);
   }

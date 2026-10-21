@@ -336,10 +336,14 @@ test('empty-case minimap suppression preserves the user preference and rejects s
   const node = selector => {
     if (!nodes.has(selector)) {
       const classes = new Set();
-      nodes.set(selector, { style: {}, hidden: false, disabled: false, attributes: {},
+      const element = { style: {}, hidden: false, disabled: false, attributes: {},
         classList: { toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name), remove: name => classes.delete(name), contains: name => classes.has(name) },
         querySelectorAll: () => [],
-        setAttribute(name, value) { this.attributes[name] = value; } });
+        setAttribute(name, value) { this.attributes[name] = value; } };
+      if (selector === '#annotationDialog') Object.assign(element, {
+        open: false, close() { this.open = false; },
+      });
+      nodes.set(selector, element);
     }
     return nodes.get(selector);
   };
@@ -350,7 +354,9 @@ test('empty-case minimap suppression preserves the user preference and rejects s
     fetch: async () => ({ ok: true, headers: { get: () => 'application/json' }, json: () => stats.promise }) });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../static/app.js'), 'utf8'), context);
   const run = source => vm.runInContext(source, context);
+  const annotationDialog = node('#annotationDialog'); annotationDialog.open = true;
   run('selectCase(1); state.stats = { flows: 3 }; updateHeader();');
+  assert.equal(annotationDialog.open, false, 'case selection closes the previous annotation dialog');
   const panel = node('#graphMinimapPanel'), button = node('#btnMinimap'), wrap = node('#canvasWrap');
   assert.equal(wrap.classList.contains('case-empty'), false);
   assert.equal(button.disabled, false);

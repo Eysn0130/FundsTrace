@@ -75,6 +75,40 @@
     return Array.isArray(input) ? [...new Set(input.filter(value => typeof value === 'string' && value !== ''))] : [];
   }
 
+  // 标注可选字体限定在系统常见中文字体，避免随意字符串进入渲染与导出。
+  const ANNOTATION_FONTS = new Set(['Arial', 'Microsoft YaHei', 'SimSun', 'SimHei', 'KaiTi', 'FangSong']);
+  const ANNOTATION_DEFAULT_COLOR = '#e3a12b';
+  const ANNOTATION_COLOR = /^#[0-9a-f]{6}$/i;
+
+  // 主体标注锚定在节点上：anchor 只在“图形正上方”和“文字下方”之间取，dx/dy 是相对锚点的微调；
+  // size/fontFamily/color 决定标注自身的外观，非法值回落到默认。
+  function annotations(input) {
+    if (!Array.isArray(input)) return [];
+    const out = [], ids = new Set();
+    for (const item of input.slice(0, 200)) {
+      if (!object(item)) continue;
+      // 多行标注：统一换行符、逐行去首尾空白、最多 6 行、200 字。
+      const text = typeof item.text === 'string'
+        ? item.text.replace(/\r\n?/g, '\n').split('\n').map(line => line.trim()).join('\n')
+          .replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '').split('\n').slice(0, 6).join('\n').slice(0, 200)
+        : '';
+      const id = typeof item.id === 'string' ? item.id : '';
+      if (!text || !id || ids.has(id)) continue;
+      ids.add(id);
+      const size = Number(item.size);
+      const dx = Number(item.dx), dy = Number(item.dy);
+      out.push({
+        id, text,
+        anchor: item.anchor === 'above' ? 'above' : 'below',
+        dx: Number.isFinite(dx) ? Math.max(-400, Math.min(400, dx)) : 0,
+        dy: Number.isFinite(dy) ? Math.max(-400, Math.min(400, dy)) : 0,
+        size: Number.isFinite(size) ? Math.min(40, Math.max(9, size)) : 13,
+        fontFamily: ANNOTATION_FONTS.has(item.fontFamily) ? item.fontFamily : 'Arial',
+        color: typeof item.color === 'string' && ANNOTATION_COLOR.test(item.color) ? item.color.toLowerCase() : ANNOTATION_DEFAULT_COLOR,
+      });
+    }
+    return out;
+  }
   function create(input) {
     const source = object(input) ? input : {};
     const checked = relations && typeof relations.validateFilter === 'function'
@@ -91,6 +125,7 @@
       edgeStyles: styleMap(source.edgeStyles, sanitizeEdge),
       hiddenAccounts: accounts(source.hiddenAccounts),
       onlyAccounts: Array.isArray(source.onlyAccounts) ? accounts(source.onlyAccounts) : null,
+      annotations: annotations(source.annotations),
     };
   }
 

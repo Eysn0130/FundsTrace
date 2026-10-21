@@ -3232,3 +3232,27 @@ test('graph persistence: clipping indexes complete bottom-anchored text before a
   assert.equal(state.graphView.clipResult.nodeIds.has('SYN-HUB'),true,'visible multiline text keeps its offscreen node group drawable');
   assert.equal(group.get('visible'),true);
 });
+
+for(const outcome of ['success','capture-error'])test(`print image ${outcome}: white paper, black labels and explicit note color restore to screen`,async()=>{
+  const h=harness('app.js');samplingGraph(h);h.network(()=>response({}));
+  const state=h.run('state'),graph=state.graph,values={label:'#dfe3ea',note:'#e3a12b'},samples=[];
+  const shape=(key,name)=>({get:property=>property==='type'?'text':property==='name'?name:undefined,
+    attr(property,value){if(arguments.length===2)values[key]=value;return values[key]}});
+  graph.getNodes()[0].shapes.push(shape('label','synthetic-print-label'),shape('note','funds-node-annotation'));
+  const original=graph.toDataURL;
+  graph.toDataURL=(type,background)=>{samples.push({type,background,...values});if(outcome==='capture-error')throw new Error('合成图像失败');return original();};
+  const exporting=h.element('#btnExportPng').onclick();await finishSample(h);await exporting;
+  assert.deepEqual(samples,[{type:'image/png',background:'#ffffff',label:'#111111',note:'#e3a12b'}]);
+  assert.deepEqual(values,{label:'#dfe3ea',note:'#e3a12b'});assert.equal(state.graphView.exportDepth,0);
+  assert.equal(h.downloads.length,outcome==='success'?1:0);
+});
+
+test('annotations: collected node snapshots carry only safe display metadata for offline HTML and canvas restore',async()=>{
+  const h=harness('app.js');samplingGraph(h);
+  h.run(`state.presentation=newGraphPresentation({annotations:[{id:'SYN-HUB',text:'主体\\n合成核对',anchor:'above',dx:21,dy:-12,size:20,fontFamily:'KaiTi',color:'#C084FC',html:'<b>ignored</b>'}]})`);
+  const snapshot=await h.run('window.__collectSnapshot({scope:"all",embedPhotos:false})');
+  assert.deepEqual(JSON.parse(JSON.stringify(snapshot.nodes.find(node=>node.id==='SYN-HUB').annotation)),{
+    id:'SYN-HUB',text:'主体\n合成核对',anchor:'above',dx:21,dy:-12,size:20,fontFamily:'KaiTi',color:'#c084fc'});
+  assert.equal(snapshot.nodes.find(node=>node.id==='SYN-00000').annotation,undefined);
+  assert.equal(h.run('JSON.stringify(state.lastGraph)===originalGraphFacts'),true);
+});

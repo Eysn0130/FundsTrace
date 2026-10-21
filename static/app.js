@@ -195,6 +195,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   installNeighborhood();
   installNodeFinder();
   initGraph();
+  installAnnotationDialog();
   await loadCases();
   void window.FundsImportWorkflow?.restore();
   await refreshStats();
@@ -436,7 +437,7 @@ function newGraphPresentation(value) {
   return typeof FundsGraphPresentation !== 'undefined' ? FundsGraphPresentation.create(value) : {
     version: 1, relationFilter: { currency: null, min: '', max: '', active: false },
     amountWidth: { enabled: false, currency: null }, nodeLabels: {}, nodeStyles: {}, edgeLabels: {}, edgeStyles: {},
-    hiddenAccounts: [], onlyAccounts: null,
+    hiddenAccounts: [], onlyAccounts: null, annotations: [],
   };
 }
 function graphViewIsFiltered() {
@@ -479,6 +480,7 @@ function newGraphView(labelMode) {
     drawnNodes: 0, drawnEdges: 0, exportDepth: 0, amountWidths: null, recentNodeIds: new Set(), autoRoutes: {} };
 }
 function resetGraphView() {
+  cancelAnnotationDrag?.(); closeAnnotationEditor();
   clearGraphLocateFeedback();
   state.graphCamera?.cancelComposition?.();
   cancelGraphImageExport?.();
@@ -1017,7 +1019,11 @@ function applyGraphLabels(paint = true) {
   update(view.nodeItems, view.policy.nodeIds, settled.nodeIds,true);
   update(view.edgeItems, view.policy.edgeKeys, settled.edgeKeys,true);
   view.policy=settled;
+  renderNodeAnnotations(false);
   const unproject=graphUnprojector();
+  for(const note of annotationList()) {
+    const item=view.nodeItems.get(note.id);if(item)view.clipIndex?.include('node',note.id,graphItemBounds(item,unproject));
+  }
   for(const [kind,items,keys] of [['node',view.nodeItems,view.policy.nodeIds],['edge',view.edgeItems,view.policy.edgeKeys]]) {
     for(const key of keys){const item=items.get(key);if(item)view.clipIndex?.include(kind,key,graphItemBounds(item,unproject));}
   }
@@ -1103,6 +1109,7 @@ function paintWorkspaceResize(graph) {
 function rebuildGraphViewport() {
   const graph = state.graph, view = state.graphView;
   if (!graph) return;
+  renderNodeAnnotations(false);
   view.nodeItems = new Map(graph.getNodes().map(n => [n.getModel().id,n]));
   view.edgeItems = new Map(graph.getEdges().map(e => [edgeKey(e.getModel()),e]));
   const unproject=graphUnprojector();
@@ -1336,6 +1343,7 @@ function initGraph() {
     if (!source.ctrlKey && !source.metaKey) exploreNeighborhood(event.item.getModel().id);
   });
   initGraphSelection(graph, c);
+  state.graphDisposers.push(installAnnotationDrag(c, graph));
   if (typeof FundsGraphSelection === 'undefined') graph.on('node:click', ev => {
     if (!layoutJob && !state.graphLoading && !window.FundsCanvasEditor?.history.status().busy) {
       closeDrawer(false); selectItem(ev.item);
@@ -2182,13 +2190,23 @@ function bindCanvases() {
   const named = () => !!state.canvasId;
   const ready = () => !!state.caseId && state.canvasId !== missingCanvasId && !layoutJob && !state.graphLoading
     && !window.FundsMainAccountsActions?.blocked(caseContext())
-    && !window.FundsCanvasEditor?.history?.status?.().busy
+    && !window.FundsCanvasEditor?.history?.status?.().busy && !cancelAnnotationDrag
     && !state.graphSelection?.status?.().dragging;
   const view = window.FundsCanvasWorkspace.createView(document, { context: caseContext, readName: () => state.canvasName, isCurrent: isCurrentCase });
   const sync = status => {
     view.onState(status);
     const unavailable = !ready() || status.pending || status.unknown;
     for (const id of ['btnCanvasNew', 'btnCanvasClone', 'btnCanvasSave']) $('#' + id).disabled = unavailable;
+    // 删除画布对默认画布不可用：默认画布是案件数据的落点，需先“另存为”再删。
+    const removeCanvas = $('#btnCanvasRemove');
+    if (removeCanvas) {
+      const removeDisabled = unavailable || !named();
+      removeCanvas.disabled = removeDisabled;
+      removeCanvas.title = removeDisabled
+        ? (state.canvasId === missingCanvasId ? '画布已不存在，请在顶栏选择其他画布'
+          : !named() ? '默认画布不可删除；如需分离请先“另存为”' : '画布正在处理或结果待核对')
+        : `删除画布「${state.canvasName || '当前画布'}」`;
+    }
     for (const id of ['btnCanvasRename', 'btnCanvasDel', 'btnCanvasMenuClone']) {
       const row = $('#' + id);
       const disabled = unavailable || (id !== 'btnCanvasMenuClone' && !named());
@@ -2247,9 +2265,12 @@ function bindCanvases() {
   view.attach(actions);
   window.FundsCanvasActions = actions;
   for (const [id, action] of [['btnCanvasNew','new'], ['btnCanvasClone','clone'], ['btnCanvasSave','save'],
-    ['btnCanvasRename','rename'], ['btnCanvasDel','delete'], ['btnCanvasMenuClone','clone']]) {
-    $('#' + id).onclick = event => actions.run(action, id === 'btnCanvasMenuClone' || id === 'btnCanvasRename' || id === 'btnCanvasDel'
-      ? $('#btnCanvasActions') : event?.currentTarget || $('#' + id));
+    ['btnCanvasRemove','delete'], ['btnCanvasRename','rename'], ['btnCanvasDel','delete'], ['btnCanvasMenuClone','clone']]) {
+    const button = $('#' + id);
+    // 旧宿主/测试桩可能还没有新按钮，缺元素时跳过而不是抛错。
+    if (!button) continue;
+    button.onclick = event => actions.run(action, id === 'btnCanvasMenuClone' || id === 'btnCanvasRename' || id === 'btnCanvasDel'
+      ? $('#btnCanvasActions') : event?.currentTarget || button);
   }
   $('#canvasSel').onchange = async event => {
     const context = caseContext(), v = Number(event.target.value) || 0;
@@ -2676,6 +2697,150 @@ function renderGraph() {
   }, 0);
 }
 
+/* ---------------- 主体标注：锚定在节点上，随节点移动 ----------------
+   只改变“看见什么”，不动追踪集合、金额或关系事实。
+   起始位置二选一：图形正上方（above）或节点文字下方（below）；dx/dy 是相对锚点的微调。 */
+let annotationShapes = [];
+let cancelAnnotationDrag = null, annotationEditor = null;
+
+function annotationList() {
+  return Array.isArray(state.presentation?.annotations) ? state.presentation.annotations : [];
+}
+function annotationFor(id) { return annotationList().find(note => note.id === id) || null; }
+function annotationAnchorY(item, note) {
+  const graph=state.graph, model=item.getModel?.()||{}, zoom=Math.abs(graph?.getZoom?.()||1);
+  const gap=10*(state.graphView.exportLabelScale||1), body=graphNodeBodyBounds(item);
+  const label=graphLabelBounds(item,'node');
+  if(body&&graph?.getPointByCanvas) {
+    const y=note.anchor==='above'?body.minY-gap:Math.max(body.maxY,label?.maxY??body.maxY)+gap;
+    return graph.getPointByCanvas((body.minX+body.maxX)/2,y).y-model.y;
+  }
+  const size=Array.isArray(model.size)?Math.max(...model.size):Number(model.size)||32;
+  const labelHeight=graphTextSize(String(model.fundsLabel??model.label??nodeLabel(model.data||{})),effectiveGraphLabelStyle('node',model.id)).height;
+  return note.anchor==='above'?-size/2-gap/zoom:size/2+labelHeight+(6+gap)/zoom;
+}
+function normalizeAnnotationText(value) {
+  return FundsGraphPresentation.create({annotations:[{id:'text',text:String(value??'')}]}).annotations[0]?.text||'';
+}
+function annotationNoteStyle(note) {
+  const size=note.size||13;
+  return {fontSize:size,lineHeight:Math.round(size*1.4),fontFamily:note.fontFamily||'Arial',fontWeight:'normal',fontStyle:'normal'};
+}
+function renderNodeAnnotations(paint=true) {
+  const graph=state.graph;if(!graph)return;
+  for(const shape of annotationShapes){try{shape.remove?.();}catch(_){/* disposed canvas */}}
+  annotationShapes=[];
+  for(const note of annotationList()) {
+    const item=graph.findById?.(note.id),container=item?.getContainer?.();if(!container?.addShape)continue;
+    const style=annotationNoteStyle(note);
+    annotationShapes.push(container.addShape('text',{name:'funds-node-annotation',capture:false,attrs:{
+      x:note.dx||0,y:annotationAnchorY(item,note)+(note.dy||0),text:note.text,...style,
+      fill:note.color||'#e3a12b',textAlign:'center',textBaseline:note.anchor==='above'?'bottom':'top'}}));
+  }
+  if(paint)graph.paint?.();
+}
+function annotationAt(point) {
+  if(!point)return null;
+  const graph=state.graph,padding=6/Math.abs(graph?.getZoom?.()||1);
+  for(const note of [...annotationList()].reverse()) {
+    const item=graph?.findById?.(note.id),model=item?.getModel?.()||{};
+    if(!Number.isFinite(model.x)||!Number.isFinite(model.y)||item.getContainer?.()?.get?.('visible')===false)continue;
+    const style=annotationNoteStyle(note),bounds=graphTextSize(note.text,style);
+    const offsetY=annotationAnchorY(item,note)+(note.dy||0),height=bounds.height;
+    const top=model.y+offsetY-(note.anchor==='above'?height:0),left=model.x+(note.dx||0)-bounds.width/2;
+    if(point.x>=left-padding&&point.x<=left+bounds.width+padding&&point.y>=top-padding&&point.y<=top+height+padding)return note;
+  }
+  return null;
+}
+function annotationReady() {
+  return !!state.caseId&&!!state.graph&&!state.graphLoading&&!layoutJob&&!state.graphView.exportDepth
+    &&!cancelAnnotationDrag&&!state.graphSelection?.status?.().dragging
+    &&!window.FundsCanvasEditor?.history?.status?.().busy&&!window.FundsMainAccountsActions?.blocked(caseContext());
+}
+function annotationEditorCurrent(binding=annotationEditor) {
+  return !!binding&&isCurrentCase(binding.context)&&binding.graph===state.graph&&binding.view===state.graphView
+    &&binding.revision===state.graphView.revision&&!!state.graph.findById?.(binding.id);
+}
+function openAnnotationEditor() {
+  if(!annotationReady())return false;
+  const ids=[...(state.graphSelection?.ids||[])];
+  if(ids.length!==1){toast('请先选中一个账户再添加标注','err');return false;}
+  const dialog=$('#annotationDialog'),input=$('#annotationText');if(!dialog||!input||!state.graph.findById?.(ids[0]))return false;
+  annotationEditor={id:ids[0],context:caseContext(),graph:state.graph,view:state.graphView,revision:state.graphView.revision};
+  const note=annotationFor(ids[0]);dialog.dataset.node=ids[0];input.value=note?.text||'';
+  for(const radio of dialog.querySelectorAll('input[name="annotationAnchor"]'))radio.checked=radio.value===(note?.anchor==='above'?'above':'below');
+  $('#annotationSize').value=String(note?.size||13);$('#annotationFont').value=note?.fontFamily||'Arial';$('#annotationColor').value=note?.color||'#e3a12b';
+  $('#annotationDelete').disabled=!note;dialog.showModal();input.focus();return true;
+}
+function closeAnnotationEditor(){annotationEditor=null;$('#annotationDialog')?.close();}
+async function changeAnnotation(notes,label,binding) {
+  if(!annotationReady()||!annotationEditorCurrent(binding)||!window.FundsCanvasEditor?.command)return false;
+  let applied=false;
+  const accepted=await window.FundsCanvasEditor.command(label,()=>{
+    if(!annotationEditorCurrent(binding))return;
+    state.presentation=newGraphPresentation({...state.presentation,annotations:notes});
+    renderNodeAnnotations(false);rebuildGraphViewport();scheduleGraphLabels();state.graph.paint?.();applied=true;
+  });
+  if(applied&&annotationEditor===binding)closeAnnotationEditor();
+  return accepted===true&&applied;
+}
+function saveAnnotationEditor() {
+  const binding=annotationEditor;if(!annotationEditorCurrent(binding))return Promise.resolve(false);
+  const id=binding.id,existing=annotationFor(id),notes=annotationList().filter(note=>note.id!==id),text=normalizeAnnotationText($('#annotationText')?.value);
+  if(text&&!existing&&notes.length>=200){toast('每张画布最多保存200个标注，请先删除一个标注','err');return Promise.resolve(false);}
+  if(text)notes.push({id,text,anchor:[...$('#annotationDialog').querySelectorAll('input[name="annotationAnchor"]')].find(radio=>radio.checked)?.value,
+    dx:existing?.dx||0,dy:existing?.dy||0,size:Number($('#annotationSize')?.value),fontFamily:$('#annotationFont')?.value,color:$('#annotationColor')?.value});
+  return changeAnnotation(notes,'修改主体标注',binding);
+}
+function deleteAnnotation() {
+  const binding=annotationEditor;if(!annotationEditorCurrent(binding))return Promise.resolve(false);
+  return changeAnnotation(annotationList().filter(note=>note.id!==binding.id),'删除主体标注',binding);
+}
+/* Captured pointer preview owns the same command lock as node/edge geometry. */
+function installAnnotationDrag(container,graph=state.graph) {
+  if(!container)return ()=>{};
+  let drag=null;
+  const toModel=event=>{const rect=container.getBoundingClientRect();return graph.getPointByCanvas(event.clientX-rect.left,event.clientY-rect.top);};
+  const current=()=>drag&&isCurrentCase(drag.context)&&graph===state.graph&&drag.view===state.graphView&&drag.revision===state.graphView.revision&&annotationFor(drag.note.id)===drag.note;
+  const stop=event=>{event.preventDefault();event.stopImmediatePropagation?.();event.stopPropagation();};
+  const finish=(commit=false,event)=>{
+    if(!drag||event&&event.pointerId!==drag.pointerId)return;
+    const active=drag,owned=current();drag=null;cancelAnnotationDrag=null;
+    if(!commit){active.note.dx=active.dx;active.note.dy=active.dy;}
+    if(owned){renderNodeAnnotations(false);rebuildGraphViewport();scheduleGraphLabels();graph.paint?.();}
+    window.FundsCanvasEditor?.finishDisplayGesture?.(active.token,'移动主体标注',!!owned&&commit);
+    try{container.releasePointerCapture?.(active.pointerId);}catch(_){/* capture already lost */}
+    if(event)stop(event);
+  };
+  const down=event=>{
+    if(event.button!==0||drag||graph!==state.graph||!annotationReady())return;
+    const point=toModel(event),note=annotationAt(point);if(!note)return;
+    const token=window.FundsCanvasEditor?.beginDisplayGesture?.();if(!token)return;
+    drag={note,start:point,dx:note.dx||0,dy:note.dy||0,pointerId:event.pointerId,context:caseContext(),view:state.graphView,revision:state.graphView.revision,token};
+    cancelAnnotationDrag=()=>finish(false);stop(event);container.focus?.({preventScroll:true});
+    try{container.setPointerCapture(event.pointerId);}catch(_){finish(false);}
+  };
+  const move=event=>{
+    if(!drag||event.pointerId!==drag.pointerId)return;
+    if(!current())return finish(false,event);
+    const point=toModel(event);
+    drag.note.dx=Math.max(-400,Math.min(400,Math.round(drag.dx+point.x-drag.start.x)));
+    drag.note.dy=Math.max(-400,Math.min(400,Math.round(drag.dy+point.y-drag.start.y)));
+    stop(event);renderNodeAnnotations(false);rebuildGraphViewport();graph.paint?.();
+  };
+  const up=event=>{if(!current())return finish(false,event);finish(true,event);};
+  const cancel=event=>finish(false,event);
+  const events={pointerdown:down,pointermove:move,pointerup:up,pointercancel:cancel,lostpointercapture:cancel};
+  for(const [name,listener]of Object.entries(events))container.addEventListener(name,listener,true);
+  return ()=>{finish(false);for(const [name,listener]of Object.entries(events))container.removeEventListener(name,listener,true);};
+}
+function installAnnotationDialog() {
+  const dialog=$('#annotationDialog');if(!dialog)return;
+  $('#annotationCancel')?.addEventListener('click',closeAnnotationEditor);
+  dialog.addEventListener('close',()=>{annotationEditor=null;});
+  $('#annotationDelete')?.addEventListener('click',()=>{void deleteAnnotation();});
+  $('#annotationForm')?.addEventListener('submit',event=>{event.preventDefault();void saveAnnotationEditor();});
+}
 function applyPendingGraphRecent(view,graph) {
   if(view.exportDepth || !view.pendingRecent)return;
   const involved=view.pendingRecent;view.pendingRecent=null;
@@ -4464,7 +4629,7 @@ function installCaseWorkspace() {
     },
     saveCanvas: async (context, name) => window.FundsCanvasActions.withWrite(context, async () => {
       if (!isCurrentCase(context)) throw new Error('案件或画布已变化，请重新保存');
-      if (layoutJob || state.graphLoading || window.FundsCanvasEditor?.history?.status?.().busy) throw new Error('画布正在处理，请稍后保存');
+      if (layoutJob || state.graphLoading || cancelAnnotationDrag || window.FundsCanvasEditor?.history?.status?.().busy) throw new Error('画布正在处理，请稍后保存');
       const snapshot = await window.__collectSnapshot({ scope: 'all', embedPhotos: false });
       if (!isCurrentCase(context) || !snapshot) throw new Error('图谱已变化，请重新保存');
       let result;
@@ -4929,6 +5094,25 @@ function bindUI() {
 
   // PNG and PDF share one mutable G6 canvas. Queue only the sampling step;
   // each job owns its dimensions/camera and relinquishes them before the next.
+  /* 打印样式：导出的 PNG/PDF 统一白底黑字（省墨、便于打印）。
+     只把文字改成黑墨，节点/关系颜色仍保留原有业务含义；逐项记住原值以便还原屏幕主题。 */
+  const PRINT_PAPER = '#ffffff', PRINT_INK = '#111111', PRINT_RULE = '#c9c9c9';
+  function applyPrintInk(items) {
+    const saved = [];
+    for (const item of items) {
+      for (const shape of item?.getContainer?.()?.get?.('children') || []) {
+        if (shape?.get?.('name') === 'funds-edge-selection-outline') continue;
+        // 标注的颜色是用户显式选择，打印样式不强行转黑。
+        if (shape?.get?.('name') === 'funds-node-annotation') continue;
+        if (shape?.get?.('type') !== 'text' || !shape.attr) continue;
+        const before = shape.attr('fill');
+        if (before == null || before === PRINT_INK) continue;
+        saved.push([shape, before]);
+        shape.attr('fill', PRINT_INK);
+      }
+    }
+    return () => { for (const [shape, value] of saved) shape.attr('fill', value); };
+  }
   const imageExportQueue = [];
   let imageExportActive = false;
   function drainImageExports() {
@@ -4957,12 +5141,14 @@ function bindUI() {
       wrapped.push(row);
     }
     const footerHeight=(wrapped.length*18+24)*scale;
-    let footer=null,exportGeometry=null,camera = null, finished = false, timer;
+    let footer=null,exportGeometry=null,camera = null, finished = false, timer, restorePrintInk = null;
     const done = url => {
       if (finished) return;
       finished = true; clearTimeout(timer);
       if (cancelGraphImageExport === cancel) cancelGraphImageExport = null;
       const owned = current();
+      // 打印墨色必须在下一次上屏绘制之前还原，屏幕主题保持原样。
+      try{restorePrintInk?.();restorePrintInk = null;}catch(_){/* disposed sampling canvas */}
       try{footer?.remove?.();exportGeometry?.restore();}catch(_){/* disposed canvas */}
       if (samplingZoom) { try { graph.set('maxZoom', originalMaxZoom); } catch (_) { /* disposed sampling graph */ } }
       view.exportDepth = Math.max(0, view.exportDepth - 1);view.exportFooterHeight=0;delete view.exportLabelScale;
@@ -5017,14 +5203,18 @@ function bindUI() {
       });
       footer=graph.get?.('canvas')?.addGroup?.({name:'funds-export-legend',capture:false});
       if(footer) {
-        footer.addShape('rect',{capture:false,attrs:{x:0,y:H*scale-footerHeight,width:W*scale,height:footerHeight,fill:'#111c26'}});
-        footer.addShape('text',{capture:false,attrs:{x:16*scale,y:H*scale-footerHeight+12*scale,text:wrapped.join('\n'),fontSize:12*scale,lineHeight:18*scale,fontFamily:'Arial',fill:'#c3d2df',textBaseline:'top'}});
+        // 打印版页脚：白底黑字，与图纸同底色，省墨。
+        footer.addShape('rect',{capture:false,attrs:{x:0,y:H*scale-footerHeight,width:W*scale,height:footerHeight,fill:PRINT_PAPER}});
+        footer.addShape('path',{capture:false,attrs:{path:[['M',0,H*scale-footerHeight],['L',W*scale,H*scale-footerHeight]],stroke:PRINT_RULE,lineWidth:Math.max(1,scale)}});
+        footer.addShape('text',{capture:false,attrs:{x:16*scale,y:H*scale-footerHeight+12*scale,text:wrapped.join('\n'),fontSize:12*scale,lineHeight:18*scale,fontFamily:'Arial',fill:PRINT_INK,textBaseline:'top'}});
         graph.paint();
       }
+      restorePrintInk = applyPrintInk([...(graph.getNodes?.() || []), ...(graph.getEdges?.() || [])]);
+      if (footer) graph.paint();
       timer = setTimeout(() => {
         if (finished) return;
         if (!current()) return done(null);
-        try { done(graph.toDataURL('image/png','#111a23')); } catch (_) { done(null); }
+        try { done(graph.toDataURL('image/png', PRINT_PAPER)); } catch (_) { done(null); }
       }, 400);
     } catch (_) { done(null); }
   }
@@ -5069,6 +5259,7 @@ function bindUI() {
       const custom=state.presentation.nodeStyles?.[m.id];
       return { photoUrl: embedPhotos?nodePhotoUrl(source):null, node: {
         id: m.id, x: Math.round((m.x || 0) * 100) / 100, y: Math.round((m.y || 0) * 100) / 100,
+        ...(annotationFor(m.id)?{annotation:newGraphPresentation({annotations:[annotationFor(m.id)]}).annotations[0]}:{}),
         label: m.fundsLabel ?? m.label ?? nodeLabel(source), size: m.size || 32, style: (m.style && { ...m.style }) || {},
         labelStyle: effectiveGraphLabelStyle('node',m.id),
         labelOffset:{x:offset?offset.x-offset.baseX:0,y:offset?offset.y-offset.baseY:0},
@@ -5196,7 +5387,7 @@ function bindUI() {
     getScope: () => ({ graphAccounts: state.graph?.getNodes?.().length || 0,
       graphRelations: state.graph?.getEdges?.().length || 0, trackedFlows: state.tracked.size,
       pendingLayout: !!layoutJob,
-      graphReady: !!state.graph && state.graphInited && !state.graphLoading
+      graphReady: !!state.graph && state.graphInited && !state.graphLoading && !cancelAnnotationDrag
         && !window.FundsCanvasEditor?.history?.status?.().busy }),
     setLegacyFormat: format => { $('#exportFmt').value = format; }, execute: executeExportFormat,
   });

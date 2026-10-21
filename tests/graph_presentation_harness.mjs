@@ -17,7 +17,7 @@ const sorted = iterable => [...iterable].sort();
 test('defaults are pure JSON and UMD/CommonJS provide the same API', () => {
   const expected = { version: 1, relationFilter: { currency: null, min: '', max: '', active: false },
     amountWidth: { enabled: false, currency: null }, nodeLabels: {}, nodeStyles: {}, edgeLabels: {}, edgeStyles: {},
-    hiddenAccounts: [], onlyAccounts: null };
+    hiddenAccounts: [], onlyAccounts: null, annotations: [] };
   assert.deepEqual(presentation.create(), expected);
   assert.deepEqual(presentation.create(null), expected);
   const root = fileURLToPath(new URL('../', import.meta.url)), sandbox = {};
@@ -75,7 +75,7 @@ test('persistent state drops transaction facts, photos, HTML and arbitrary field
   assert.deepEqual(state, { version: 1, relationFilter: { currency: 'CNY', min: '1.00', max: '100.00', active: true },
     amountWidth: { enabled: true, currency: 'CNY' }, nodeLabels: { A: { fontSize: 12 } }, nodeStyles: {},
     edgeLabels: { 'A=>B': { fill: '#123' } }, edgeStyles: { 'A=>B': { stroke: '#fed' } },
-    hiddenAccounts: ['A', 'B'], onlyAccounts: ['B', 'C'] });
+    hiddenAccounts: ['A', 'B'], onlyAccounts: ['B', 'C'], annotations: [] });
   const serialized = JSON.stringify(state);
   for (const secret of ['secret', 'SECRET', 'trackedIds', 'amount_totals', '999999999', '<script>', 'photo', 'ids']) {
     assert.equal(serialized.includes(secret), false);
@@ -174,4 +174,45 @@ test('effective node and relationship labels always discard legacy backplates, b
     assert.equal(style.labelLeader,undefined);assert.equal(style.fontSize,16);assert.equal(style.lineHeight,22);
     assert.equal(style.fontFamily,'Microsoft YaHei');
   }
+});
+
+test('node annotations keep only anchored, bounded text with safe styling', () => {
+  const presentation = require('../static/graph-presentation.js');
+  const kept = presentation.create({
+    annotations: [
+      { id: 'SYN-A', text: '  实际控制人  ', anchor: 'above', dx: 20, dy: -8, size: 15, fontFamily: 'SimHei', color: '#FF0000' },
+      { id: 'SYN-B', text: '文字下方', anchor: 'sideways' },
+      { id: 'SYN-C', text: '   ' },
+      { text: '没有主体', anchor: 'above' },
+      { id: 'SYN-D', text: '越界偏移', dx: 9999, dy: -9999, fontFamily: 'Comic Sans MS', color: 'red' },
+    ],
+  }).annotations;
+  assert.deepEqual(kept, [
+    { id: 'SYN-A', text: '实际控制人', anchor: 'above', dx: 20, dy: -8, size: 15, fontFamily: 'SimHei', color: '#ff0000' },
+    { id: 'SYN-B', text: '文字下方', anchor: 'below', dx: 0, dy: 0, size: 13, fontFamily: 'Arial', color: '#e3a12b' },
+    { id: 'SYN-D', text: '越界偏移', anchor: 'below', dx: 400, dy: -400, size: 13, fontFamily: 'Arial', color: '#e3a12b' },
+  ]);
+  // 旧快照没有标注字段时保持空数组，不报错。
+  assert.deepEqual(presentation.create({ version: 1 }).annotations, []);
+  // 字号被夹在 9..40，且只接受白名单字体与 #RRGGBB 颜色。
+  const clamped = presentation.create({ annotations: [{ id: 'SYN-E', text: '字号', size: 99 }] }).annotations[0];
+  assert.equal(clamped.size, 40);
+  assert.equal(clamped.fontFamily, 'Arial');
+  assert.equal(clamped.color, '#e3a12b');
+});
+test('annotations keep multiple lines within six rows', () => {
+  const presentation = require('../static/graph-presentation.js');
+  const multiline = presentation.create({
+    annotations: [{ id: 'SYN-A', text: '第一行\r\n  第二行  \n\n\n\n第三行\n四\n五\n六\n七\n八' }],
+  }).annotations[0];
+  // CRLF 归一、逐行去空白、连续空行压成一个空行、超过 6 行截断。
+  assert.equal(multiline.text, '第一行\n第二行\n\n第三行\n四\n五');
+  assert.equal(multiline.text.split('\n').length, 6);
+  const collapsed = presentation.create({ annotations: [{ id: 'SYN-B', text: '\n\n只有一行\n\n' }] }).annotations[0];
+  assert.equal(collapsed.text, '只有一行');
+});
+test('annotations preserve exact long account IDs and normalize duplicate anchors without changing identities', () => {
+  const id = 'SYN-' + 'A'.repeat(100);
+  const result = presentation.create({ annotations: [{ id, text: '第一条' }, { id, text: '重复' }] }).annotations;
+  assert.equal(result.length, 1); assert.equal(result[0].id, id);
 });

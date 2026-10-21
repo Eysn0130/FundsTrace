@@ -29,6 +29,7 @@ function harness({ relationController = false } = {}) {
     const classes = new Set(), listeners = new Map();
     const node = { id, kind, value: '', checked: false, disabled: false, hidden: false, style: {}, dataset: {}, children: [],
       innerHTML: '', textContent: '', clientWidth: 900, clientHeight: 600,
+      showModal() { this.open = true; }, close() { this.open = false; },
       classList: { add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name),
         toggle(name, force) { const on = force === undefined ? !classes.has(name) : force; on ? classes.add(name) : classes.delete(name); } },
       get options() { return this.children.filter(child => child.kind === 'option'); },
@@ -680,4 +681,31 @@ test('releasing a graph pointer restores the explicit button command before its 
   await f.event('inspectSelection');
   assert.equal(f.drawerCalls.length, 1); assert.equal(f.drawerCalls[0].id, 'A');
   assert.equal(f.editor.history.status().count, 0);
+});
+
+test('style reset clears annotations through its normal redraw and undo restores the complete prior display', async () => {
+  const f=harness(),graphData=clone(f.state.lastGraph),tracked=[...f.state.tracked],camera=f.camera;
+  const response=value=>({ok:true,headers:{get:()=> 'application/json'},json:async()=>clone(value)});
+  f.network((path,options)=>{
+    if(path==='/api/track/state') {
+      const body=JSON.parse(options.body);assert.deepEqual(body.expected_ids,tracked);assert.deepEqual(body.desired_ids,tracked);
+      return response({ok:true,tracked_ids:tracked});
+    }
+    if(path.startsWith('/api/graph?'))return response(graphData);
+    if(path.startsWith('/api/flows?'))return response({page:1,size:50,total:0,rows:[]});
+    throw new Error(`Unexpected synthetic route: ${path}`);
+  });
+  f.state.presentation.nodeStyles={A:{size:48,stroke:'#aabbcc'}};
+  f.state.presentation.annotations=[{id:'A',text:'合成主体\n待核对',anchor:'above',dx:23,dy:-14,size:20,fontFamily:'KaiTi',color:'#c084fc'}];
+  f.run(`renderFlows=()=>{};renderGraph();globalThis.resetPaints=0;const renderBeforeReset=renderGraph;
+    renderGraph=(...args)=>{resetPaints++;return renderBeforeReset(...args)};`);
+  const before=clone(f.state.presentation),facts=JSON.stringify(f.state.lastGraph);
+  const result=await f.commands.execute('styleReset');await f.settle();
+  assert.equal(result,true,JSON.stringify(f.messages));
+  assert.equal(f.run('resetPaints'),1,'the presentation command owns one unified redraw');
+  assert.deepEqual(clone(f.state.presentation.annotations),[]);assert.deepEqual(clone(f.state.presentation.nodeStyles),{});
+  assert.equal(f.editor.history.status().count,1);
+  assert.equal(await f.editor.history.undo(),true);assert.deepEqual(clone(f.state.presentation),before);
+  assert.equal(await f.editor.history.redo(),true);assert.deepEqual(clone(f.state.presentation.annotations),[]);
+  assert.deepEqual(f.camera,camera);assert.equal(JSON.stringify(f.state.lastGraph),facts);assert.deepEqual([...f.state.tracked],tracked);
 });
