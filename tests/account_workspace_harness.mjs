@@ -177,6 +177,9 @@ function harness() {
   add(nodeMenu, 'ndRemove', 'button');
   const photoMenu = add(drawer, 'nodePhotoMenu'); photoMenu.hidden = true;
   add(photoMenu, 'ndPhotoRe', 'button'); add(photoMenu, 'ndPhotoClr', 'button');
+  // Canvas readiness shares the actual annotation lifecycle; retain its dialog
+  // identity and close events alongside the account confirmation surface.
+  add(document.body, 'annotationDialog', 'dialog');
   const confirmation = add(document.body, 'nodeConfirm', 'dialog'); confirmation.className = 'action-dialog';
   for (const id of ['ndConfirmTitle', 'ndConfirmMessage']) add(confirmation, id);
   for (const id of ['ndConfirmAccept', 'ndConfirmCancel', 'ndConfirmClose']) add(confirmation, id, 'button');
@@ -235,6 +238,9 @@ function harness() {
   vm.runInContext(section('let pendingCanvasId = 0;', 'async function loadCases()'), context);
   vm.runInContext(section('async function applyPendingFocusEdge()', 'async function refreshStats()'), context);
   vm.runInContext(section('function caseContext()', '/* ---------------- 初始化'), context);
+  // Load the production controller and its lexical lifecycle state together.
+  // A duplicated flag or empty cancellation shim would conceal canvas blockers.
+  vm.runInContext(section('let annotationShapes = [];', 'function applyPendingGraphRecent('), context);
   vm.runInContext(section('function activateCanvas(id)', 'function graphMetric('), context);
   vm.runInContext(section('function edgeKey(', 'function graphEdgeType('), context);
   vm.runInContext(section('let _selItem = null;', '/* ---------------- 交易上下文'), context);
