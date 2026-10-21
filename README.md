@@ -63,7 +63,7 @@
 
 [使用指南](docs/workspace-guide.md) · [示例数据与操作步骤](docs/examples/harbor-path/README.md) · [开发与贡献](CONTRIBUTING.md)
 
-欢迎提交带合成复现步骤的 [Issue](https://github.com/Eysn0130/FundsTrace/issues) 或范围清楚的 PR。反馈时请勿上传真实案件、身份、账号或照片。案件迁移与完整备份的区别见[数据边界](docs/source-boundaries.md)。
+欢迎提交带合成复现步骤的 [Issue](https://github.com/Eysn0130/FundsTrace/issues) 或范围清楚的 PR。反馈时请勿上传真实案件、身份、账号或照片。案件迁移与完整备份的区别见[案件包说明](docs/import-lifecycle.md#界面与案件包)。
 
 <details>
 <summary><strong>开发与架构</strong></summary>
