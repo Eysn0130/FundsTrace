@@ -165,13 +165,14 @@ test('frame summaries report shared-runner gaps without declaring a strict 60fps
   assert.equal(result.strictFrameRateGate, false);
 });
 
-test('Win32 client includes the Views menu while the WebContents viewport excludes it', () => {
+test('Win32 client owns one permanent 32 DIP caption above both body views', () => {
   const native = {scaleFactor:1,client:{width:944,height:625}};
-  assert.equal(assertNativeClientGeometry(native,{width:944,height:605,dpr:1}),20);
+  assert.equal(assertNativeClientGeometry(native,{width:944,height:593,dpr:1}),32);
   assert.equal(assertNativeClientGeometry({scaleFactor:1.5,client:{width:1416,height:937.5}},
-    {width:944,height:605,dpr:1.5},20),20);
+    {width:944,height:593,dpr:1.5},32),32);
   assert.throws(() => assertNativeClientGeometry(native,{width:960,height:605,dpr:1}),/STARTUP_NATIVE_CLIENT_WIDTH/);
   assert.throws(() => assertNativeClientGeometry(native,{width:944,height:626.5,dpr:1}),/STARTUP_NATIVE_CLIENT_CHROME/);
   assert.throws(() => assertNativeClientGeometry(native,{width:944,height:500,dpr:1}),/STARTUP_NATIVE_CLIENT_CHROME/);
-  assert.throws(() => assertNativeClientGeometry(native,{width:944,height:590,dpr:1},20),/STARTUP_NATIVE_CLIENT_CHROME_CHANGED/);
+  assert.throws(() => assertNativeClientGeometry(native,{width:944,height:605,dpr:1}),/STARTUP_NATIVE_CLIENT_CHROME/);
+  assert.throws(() => assertNativeClientGeometry(native,{width:944,height:593,dpr:1},26),/STARTUP_NATIVE_CLIENT_CHROME_CHANGED/);
 });

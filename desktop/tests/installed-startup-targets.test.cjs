@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { startupTarget } = require('./installed-startup-journey.cjs');
+const { titlebarTarget } = require('./installed-titlebar-journey.cjs');
 
 // Exercise the real attachment handler with the lifecycle that exposed the race:
 // both renderers start blank, then one becomes the local file and one the app.
@@ -16,7 +17,7 @@ function targetHarness() {
   const calls = [], urls = new Map();
   let callback, infoGate;
   const sessions = new Map(), heldBusinessSessions = new Set(), debuggerSessions = new Set();
-  const context = vm.createContext({ startupTarget, sessions, heldBusinessSessions, debuggerSessions,
+  const context = vm.createContext({ startupTarget, titlebarTarget, sessions, heldBusinessSessions, debuggerSessions,
     startupInspectionHeld:true, instrumentationFailed:false, errorCount:0,
     businessOrigin(value) {
       try { const u = new URL(value); return u.protocol === 'http:' && u.hostname === '127.0.0.1'
@@ -46,6 +47,16 @@ test('a blank startup target later classified as the local ASAR file is resumed,
   assert.equal(h.heldBusinessSessions.size,0);
   assert.ok(h.calls.some(call => call.method === 'Debugger.resume'));
   assert.ok(h.calls.some(call => call.method === 'Debugger.disable'));
+  assert.equal(h.healthy(),true);
+});
+
+test('a persistent local caption is never held by business startup instrumentation',async()=>{
+  const h=targetHarness();h.attach('caption','about:blank');await h.flush();
+  h.urls.set('caption','file:///C:/SYN/FundsTrace/resources/app.asar/titlebar/index.html');
+  h.pause('caption');await h.flush();
+  assert.equal(h.heldBusinessSessions.size,0);
+  assert.ok(h.calls.some(call=>call.method==='Debugger.resume'));
+  assert.ok(h.calls.some(call=>call.method==='Debugger.disable'));
   assert.equal(h.healthy(),true);
 });
 

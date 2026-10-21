@@ -1,0 +1,101 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Microsoft YaHei UI", sans-serif;
+  --titlebar-height: 32px;
+  --platform-left-inset: 0px;
+}
+
+html[data-platform="darwin"] {
+  --platform-left-inset: 76px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: var(--titlebar-height);
+  margin: 0;
+  overflow: hidden;
+  background: #151d27;
+}
+
+.titlebar {
+  position: relative;
+  width: 100%;
+  height: var(--titlebar-height);
+  border-bottom: 1px solid #a6b7c914;
+  -webkit-app-region: drag;
+  app-region: drag;
+  user-select: none;
+}
+
+.titlebar-content {
+  position: absolute;
+  top: env(titlebar-area-y, 0px);
+  left: max(var(--platform-left-inset), env(titlebar-area-x, 0px));
+  right: max(0px, calc(100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%)));
+  height: min(var(--titlebar-height), env(titlebar-area-height, 32px));
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  overflow: hidden;
+}
+
+.titlebar-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.titlebar-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #d5dee8;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.titlebar-menu {
+  display: inline-flex;
+  width: 40px;
+  height: 26px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-left: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #b8c5d3;
+  font-family: inherit;
+  font-size: 11px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.titlebar-menu:enabled:hover {
+  background: #c4d5e41a;
+  color: #edf2fa;
+}
+
+.titlebar-menu:enabled:active {
+  background: #c4d5e42b;
+}
+
+.titlebar-menu:focus-visible {
+  outline: 1px solid #9bbdd8;
+  outline-offset: -2px;
+}
+
+.titlebar-menu:disabled {
+  opacity: 1;
+}

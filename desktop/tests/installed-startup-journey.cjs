@@ -13,8 +13,9 @@ const OBSERVATION_KEY = '__fundsTraceStartupObservation';
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const near = (actual, expected, tolerance = 1) => Number.isFinite(actual) && Math.abs(actual - expected) <= tolerance;
 
-function startupTarget(value) {
+function installedLocalTarget(value, kind) {
   try {
+    if (!['startup', 'titlebar'].includes(kind)) return false;
     if (typeof value !== 'string' || !/^file:\/\/\//i.test(value) || /%2f|%5c/i.test(value)) return false;
     const url = new URL(value);
     if (url.protocol !== 'file:' || url.hostname || url.username || url.password || url.port || url.search || url.hash) return false;
@@ -24,9 +25,10 @@ function startupTarget(value) {
     if (!/^\/[A-Za-z]:\//.test(pathname) || pathname.includes('\\') || /[\u0000-\u001f]/.test(pathname)) return false;
     if (pathname.split('/').some(part => part === '.' || part === '..')) return false;
     if (pathname !== decodeURIComponent(url.pathname)) return false;
-    return pathname.endsWith('/resources/app.asar/startup/index.html');
+    return pathname.endsWith(`/resources/app.asar/${kind}/index.html`);
   } catch { return false; }
 }
+const startupTarget = value => installedLocalTarget(value, 'startup');
 
 const INSTALL_OBSERVATION = `(() => {
   if (window.${OBSERVATION_KEY}) return true;
@@ -155,12 +157,11 @@ function assertNativeClientGeometry(native, viewport, priorInset) {
   const scale = native.scaleFactor;
   assert.ok(near(viewport.dpr, scale, .01), 'STARTUP_NATIVE_CLIENT_DPR');
   assert.ok(near(viewport.width, native.client.width / scale, 2), 'STARTUP_NATIVE_CLIENT_WIDTH');
-  // Electron's RootView lays its Views menu above the content view, inside the
-  // Win32 client rectangle. GetClientRect therefore includes that menu strip;
-  // equating it with a WebContents viewport is the wrong contract on Windows.
-  // Source: electron v44.7.2 shell/browser/ui/views/root_view.cc.
+  // The persistent local caption owns exactly 32 DIP inside the Win32 client.
+  // OS resize borders stay outside this measurement; no native menu strip is
+  // allowed to introduce a second inset above either WebContentsView.
   const inset = native.client.height / scale - viewport.height;
-  assert.ok(viewport.height > 0 && inset >= -1 && inset <= 48, 'STARTUP_NATIVE_CLIENT_CHROME');
+  assert.ok(viewport.height > 0 && near(inset, 32, 2), 'STARTUP_NATIVE_CLIENT_CHROME');
   if (priorInset !== undefined) assert.ok(near(inset, priorInset, 2), 'STARTUP_NATIVE_CLIENT_CHROME_CHANGED');
   return inset;
 }
@@ -335,5 +336,5 @@ async function createInstalledStartupProbe({ cdp, target, evaluate, until, scree
   };
 }
 
-module.exports = { startupTarget, createInstalledStartupProbe, assertLayout, assertWaitingObservation,
+module.exports = { installedLocalTarget, startupTarget, createInstalledStartupProbe, assertLayout, assertWaitingObservation,
   assertHandoffObservation, assertNativeClientGeometry, frameSummary, VIEWPORTS, DEVICE_SCALES };

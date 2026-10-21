@@ -13,7 +13,7 @@ const assetUrls = new Set(['startup/index.html', 'startup/style.css', 'startup/r
   .map(name => pathToFileURL(path.join(__dirname, name)).href));
 
 // A separate local-only renderer never receives the backend origin, token or case data.
-function createStartup(win, { onFailure }, { WebContentsView, session, ipcMain, setTimer = setTimeout, clearTimer = clearTimeout } = require('electron')) {
+function createStartup(win, { onFailure, contentInset = 0, focusContents = win.webContents }, { WebContentsView, session, ipcMain, setTimer = setTimeout, clearTimer = clearTimeout } = require('electron')) {
   const local = session.fromPartition(`funds-trace-startup-${randomUUID()}`, { cache: false });
   const view = new WebContentsView({ webPreferences: {
     preload: path.join(__dirname, 'startup/preload.cjs'), session: local,
@@ -48,7 +48,7 @@ function createStartup(win, { onFailure }, { WebContentsView, session, ipcMain, 
   function fit() {
     if (disposed || win.isDestroyed()) return;
     const { width, height } = win.getContentBounds();
-    view.setBounds({ x: 0, y: 0, width, height });
+    view.setBounds({ x: 0, y: contentInset, width, height: Math.max(0, height - contentInset) });
   }
   function dispose(completed = false) {
     if (disposed) return;
@@ -69,7 +69,7 @@ function createStartup(win, { onFailure }, { WebContentsView, session, ipcMain, 
         || event.senderFrame !== contents.mainFrame || event.senderFrame?.url !== startupUrl
         || contents.getURL() !== startupUrl) return;
     dispose(true);
-    if (!win.isDestroyed()) win.webContents.focus();
+    if (!win.isDestroyed() && !focusContents.isDestroyed()) focusContents.focus();
   }
   ipcMain.on(CHANNEL, onComplete);
   win.on('resize', fit);
@@ -92,8 +92,7 @@ function createStartup(win, { onFailure }, { WebContentsView, session, ipcMain, 
 
 // The application's first case, graph and table must finish initializing. A health
 // response or did-finish-load alone does not mean the workbench is usable.
-function waitForWorkbench(win, origin, { ipcMain, setTimer = setTimeout, clearTimer = clearTimeout } = require('electron')) {
-  const contents = win.webContents;
+function waitForWorkbench(win, origin, { ipcMain, contents = win.webContents, setTimer = setTimeout, clearTimer = clearTimeout } = require('electron')) {
   let settled = false, initialized = false, navigated = false, resolve;
   const ready = new Promise(yes => { resolve = yes; });
   function finish(value) {

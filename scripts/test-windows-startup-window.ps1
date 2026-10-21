@@ -2,10 +2,12 @@
 param(
     [Parameter(Mandatory = $true)][string]$InstallRoot,
     [Parameter(Mandatory = $true)][int]$ProcessId,
-    [ValidateSet('Inspect', 'Resize', 'Capture')][string]$Action = 'Inspect',
+    [ValidateSet('Inspect', 'Resize', 'Capture', 'CaptionProbe', 'CaptionClose', 'ZoomIn', 'ZoomReset')][string]$Action = 'Inspect',
     [int]$WidthDip = 0,
     [int]$HeightDip = 0,
-    [string]$ScreenshotPath = ''
+    [string]$ScreenshotPath = '',
+    [int]$DragXDip = 0,
+    [int]$MenuXDip = 0
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -13,6 +15,7 @@ Set-StrictMode -Version Latest
 
 # This helper is only for the disposable installer's synthetic account. It never
 # launches an app, changes a display setting, reads a title, or inspects a renderer.
+# Caption/input actions are bound to this installed PID and a foreground hit test.
 $Report = [ordered]@{ schemaVersion = 1; status = 'failed'; failedCheck = 'ciPlatform'; processBound = $false }
 $Stage = 'ciPlatform'
 $ExitCode = 1
@@ -63,6 +66,8 @@ try {
     if ($ProcessId -le 0 -or -not [IO.File]::Exists($InstalledExe)) { throw 'INVALID_CANDIDATE_INPUT' }
     if ($Action -eq 'Resize' -and ($WidthDip -lt 1 -or $HeightDip -lt 1 -or
         $WidthDip -gt 16384 -or $HeightDip -gt 16384)) { throw 'INVALID_RESIZE_INPUT' }
+    if ($Action -eq 'CaptionProbe' -and ($DragXDip -le 0 -or $MenuXDip -le 0 -or
+        $DragXDip -gt 16384 -or $MenuXDip -gt 16384)) { throw 'INVALID_CAPTION_INPUT' }
 
     $Stage = 'nativeWindowReader'
     Add-Type @'
@@ -70,6 +75,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
 public static class FundsTraceStartupWindow {
@@ -94,6 +100,30 @@ public static class FundsTraceStartupWindow {
         public uint Dpi;
         public int MinTrackWidth, MinTrackHeight;
     }
+    [StructLayout(LayoutKind.Sequential)] struct MouseInput {
+        public int X, Y;
+        public uint MouseData, Flags, Time;
+        public UIntPtr Extra;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct KeyInput {
+        public ushort Key, Scan;
+        public uint Flags, Time;
+        public UIntPtr Extra;
+    }
+    [StructLayout(LayoutKind.Explicit)] struct InputUnion {
+        [FieldOffset(0)] public MouseInput Mouse;
+        [FieldOffset(0)] public KeyInput Keyboard;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct Input { public uint Type; public InputUnion Value; }
+    public sealed class CaptionEvidence {
+        public string InputSource = "SendInput-on-bound-visible-caption";
+        public bool PointerInputInjected = true, MinimizeButtonClicked, MinimizedObserved, MinimizeRestoredObserved;
+        public bool MaximizeButtonClicked, MaximizedObserved, RestoreButtonClicked, RestoredObserved;
+        public bool Dragged, CloseButtonClicked, WindowClosedObserved;
+        public string MinimizeRestoreSource = "ShowWindow-SW_RESTORE; not a caption button click";
+        public int CaptionHit, MenuHit;
+        public Evidence Before, After;
+    }
     delegate bool EnumProc(IntPtr window, IntPtr state);
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] static extern IntPtr GetThreadDpiAwarenessContext();
@@ -101,6 +131,15 @@ public static class FundsTraceStartupWindow {
     [DllImport("user32.dll", SetLastError = true)] static extern bool EnumWindows(EnumProc callback, IntPtr state);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
+    [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr window);
+    [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point point);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window, uint flags);
+    [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
+    [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint count, Input[] inputs, int size);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll", SetLastError = true)] static extern bool GetWindowRect(IntPtr window, out NativeRect rectangle);
     [DllImport("user32.dll", SetLastError = true)] static extern bool GetClientRect(IntPtr window, out NativeRect rectangle);
@@ -213,6 +252,124 @@ public static class FundsTraceStartupWindow {
         DwmFlush();
         return Read(window, processId);
     }
+    static void Wait(Func<bool> ready) {
+        for (int i = 0; i < 100; i++) { if (ready()) return; Thread.Sleep(30); }
+        throw new InvalidOperationException("CAPTION_STATE_TIMEOUT");
+    }
+    static void InputDesktop(IntPtr window, uint processId) {
+        if (!Environment.UserInteractive) throw new InvalidOperationException("INPUT_DESKTOP_UNAVAILABLE");
+        IntPtr desktop = OpenInputDesktop(0, false, 1);
+        if (desktop == IntPtr.Zero) throw new InvalidOperationException("INPUT_DESKTOP_UNAVAILABLE");
+        CloseDesktop(desktop);
+        AssertOwner(window, processId);
+        if (GetForegroundWindow() != window && !SetForegroundWindow(window))
+            throw new InvalidOperationException("INPUT_FOREGROUND_UNAVAILABLE");
+        Wait(() => GetForegroundWindow() == window);
+        foreach (int key in new int[] {1,2,4,16,17,18,91,92})
+            if (GetAsyncKeyState(key) < 0) throw new InvalidOperationException("INPUT_KEYS_ALREADY_PRESSED");
+    }
+    static void Inject(params Input[] inputs) {
+        if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>()) != inputs.Length)
+            throw new InvalidOperationException("INPUT_INJECTION_FAILED");
+    }
+    static Input Mouse(uint flags, int x = 0, int y = 0) {
+        return new Input { Type = 0, Value = new InputUnion { Mouse = new MouseInput { X=x, Y=y, Flags=flags } } };
+    }
+    static Input Key(ushort key, bool up = false) {
+        return new Input { Type = 1, Value = new InputUnion { Keyboard = new KeyInput { Key=key, Flags=up ? 2u : 0u } } };
+    }
+    static void Move(Point point) {
+        int left=GetSystemMetrics(76), top=GetSystemMetrics(77), width=GetSystemMetrics(78), height=GetSystemMetrics(79);
+        if (width < 2 || height < 2 || point.X < left || point.Y < top || point.X >= left+width || point.Y >= top+height)
+            throw new InvalidOperationException("INPUT_POINT_UNAVAILABLE");
+        int x=(int)Math.Round((point.X-left)*65535.0/(width-1)), y=(int)Math.Round((point.Y-top)*65535.0/(height-1));
+        Inject(Mouse(0x0001u|0x8000u|0x4000u,x,y));
+    }
+    static int Hit(IntPtr window, Point point) {
+        if (point.X < short.MinValue || point.X > short.MaxValue || point.Y < short.MinValue || point.Y > short.MaxValue)
+            throw new InvalidOperationException("CAPTION_POINT_UNAVAILABLE");
+        IntPtr result;
+        long packed=(uint)((ushort)point.X | ((uint)(ushort)point.Y << 16));
+        if (SendMessageTimeoutW(window,0x0084,IntPtr.Zero,new IntPtr(packed),SMTO_ABORTIFHUNG,1000,out result)==IntPtr.Zero)
+            throw new InvalidOperationException("CAPTION_HIT_UNAVAILABLE");
+        return unchecked((int)result.ToInt64());
+    }
+    static Point Button(IntPtr window, uint processId, int expectedHit) {
+        Evidence value=Read(window,processId);
+        int y=value.Client.Y+(int)Math.Round(16*value.Dpi/96.0), sum=0,count=0;
+        for (int inset=3;inset<=Math.Min(240,value.Client.Width*96/(int)value.Dpi);inset+=3) {
+            int x=value.Client.X+value.Client.Width-(int)Math.Round(inset*value.Dpi/96.0);
+            if (Hit(window,new Point{X=x,Y=y})==expectedHit) {sum+=x;count++;}
+        }
+        if(count==0) throw new InvalidOperationException("NATIVE_CAPTION_BUTTON_HIT_MISSING");
+        return new Point{X=sum/count,Y=y};
+    }
+    static void Click(IntPtr window,uint processId,Point point,int expectedHit) {
+        InputDesktop(window,processId);
+        if (Hit(window,point)!=expectedHit || GetAncestor(WindowFromPoint(point),2)!=window)
+            throw new InvalidOperationException("CAPTION_INPUT_HIT_MISMATCH");
+        Move(point); Thread.Sleep(40);
+        if (GetForegroundWindow()!=window || GetAncestor(WindowFromPoint(point),2)!=window)
+            throw new InvalidOperationException("INPUT_FOREGROUND_UNAVAILABLE");
+        try { Inject(Mouse(2)); } finally { Inject(Mouse(4)); }
+    }
+    public static CaptionEvidence Caption(IntPtr window,uint processId,int dragXDip,int menuXDip,bool close) {
+        InputDesktop(window,processId);
+        Point cursor; if(!GetCursorPos(out cursor)) throw new InvalidOperationException("INPUT_CURSOR_UNAVAILABLE");
+        var result=new CaptionEvidence{Before=Read(window,processId)};
+        try {
+            if(close) {
+                Click(window,processId,Button(window,processId,20),20);
+                result.CloseButtonClicked=true;
+                Wait(()=>!IsWindow(window));result.WindowClosedObserved=true;return result;
+            }
+            Evidence before=result.Before;
+            if(IsZoomed(window)) throw new InvalidOperationException("CAPTION_EXPECTED_NORMAL_WINDOW");
+            var drag=new Point{X=before.Client.X+(int)Math.Round(dragXDip*before.Dpi/96.0),Y=before.Client.Y+(int)Math.Round(16*before.Dpi/96.0)};
+            var menu=new Point{X=before.Client.X+(int)Math.Round(menuXDip*before.Dpi/96.0),Y=drag.Y};
+            result.CaptionHit=Hit(window,drag);result.MenuHit=Hit(window,menu);
+            if(result.CaptionHit!=2 || result.MenuHit!=1) throw new InvalidOperationException("CAPTION_DRAG_MENU_HIT_MISMATCH");
+            int right=before.WorkArea.X+before.WorkArea.Width-before.Window.X-before.Window.Width;
+            int bottom=before.WorkArea.Y+before.WorkArea.Height-before.Window.Y-before.Window.Height;
+            int dx=right>=24?24:before.Window.X-before.WorkArea.X>=24?-24:0;
+            int dy=bottom>=12?12:before.Window.Y-before.WorkArea.Y>=12?-12:0;
+            if(dx!=0 || dy!=0) {
+                if(GetAncestor(WindowFromPoint(drag),2)!=window) throw new InvalidOperationException("CAPTION_INPUT_HIT_MISMATCH");
+                Move(drag);Inject(Mouse(2));
+                try { for(int step=1;step<=6;step++) {Move(new Point{X=drag.X+dx*step/6,Y=drag.Y+dy*step/6});Thread.Sleep(20);} }
+                finally {Inject(Mouse(4));}
+                Wait(()=>{NativeRect r;return GetWindowRect(window,out r) && (Math.Abs(r.Left-before.Window.X)>=4 || Math.Abs(r.Top-before.Window.Y)>=4);});
+                Evidence moved=Read(window,processId);
+                if(moved.Window.Width!=before.Window.Width || moved.Window.Height!=before.Window.Height)
+                    throw new InvalidOperationException("CAPTION_DRAG_RESIZED_WINDOW");
+                result.Dragged=true;
+                // Cleanup only; this bounds reset is never reported as a drag.
+                if(!SetWindowPos(window,IntPtr.Zero,before.Window.X,before.Window.Y,before.Window.Width,before.Window.Height,0x0004|0x0010))
+                    throw new InvalidOperationException("CAPTION_RESTORE_BOUNDS_FAILED");
+            }
+            Click(window,processId,Button(window,processId,8),8);result.MinimizeButtonClicked=true;
+            Wait(()=>IsIconic(window));result.MinimizedObserved=true;
+            ShowWindow(window,9);Wait(()=>!IsIconic(window));result.MinimizeRestoredObserved=true;
+            Click(window,processId,Button(window,processId,9),9);result.MaximizeButtonClicked=true;
+            Wait(()=>IsZoomed(window));result.MaximizedObserved=true;
+            Click(window,processId,Button(window,processId,9),9);result.RestoreButtonClicked=true;
+            Wait(()=>!IsZoomed(window) && !IsIconic(window));result.RestoredObserved=true;
+            result.After=Read(window,processId);return result;
+        } finally { Move(cursor); }
+    }
+    public static void Zoom(IntPtr window,uint processId,bool reset) {
+        InputDesktop(window,processId);
+        // Actual key input reaches the installed application's accelerators.
+        // This is not CSS/Emulation scaling and never changes Windows DPI.
+        try {
+            if(reset) Inject(Key(0x11),Key(0x30),Key(0x30,true),Key(0x11,true));
+            else Inject(Key(0x11),Key(0x10),Key(0xBB),Key(0xBB,true),Key(0x10,true),Key(0x11,true));
+        } finally {
+            // Release only the keys this guarded helper injected, even after a
+            // partial SendInput result. Existing pressed keys were rejected.
+            Inject(Key(reset?(ushort)0x30:(ushort)0xBB,true),Key(0x10,true),Key(0x11,true));
+        }
+    }
     static bool Contains(Rectangle outer, Rectangle inner) {
         return inner.X >= outer.X && inner.Y >= outer.Y &&
             (long)inner.X + inner.Width <= (long)outer.X + outer.Width &&
@@ -294,6 +451,7 @@ public static class FundsTraceStartupWindow {
     $Window = [FundsTraceStartupWindow]::UniqueWindow([uint32]$ProcessId)
     $Stage = 'nativeWindowInspect'
     $Evidence = [FundsTraceStartupWindow]::Read($Window, [uint32]$ProcessId)
+    foreach ($Entry in (Convert-Evidence $Evidence).GetEnumerator()) { $Report[$Entry.Key] = $Entry.Value }
     if ($Action -eq 'Resize') {
         $Stage = 'nativeWindowResize'
         $Evidence = [FundsTraceStartupWindow]::Resize($Window, [uint32]$ProcessId, $WidthDip, $HeightDip)
@@ -301,8 +459,18 @@ public static class FundsTraceStartupWindow {
         $Report.readback = Convert-Evidence $Evidence
         $Report.resizePolicy = 'Centered in current work area; actual readback is authoritative. SetWindowPos does not guarantee interactive minimum tracking enforcement.'
     }
+    if ($Action -in @('CaptionProbe', 'CaptionClose')) {
+        $Stage = 'nativeCaptionInteraction'
+        $Report.interaction = [FundsTraceStartupWindow]::Caption($Window, [uint32]$ProcessId, $DragXDip, $MenuXDip, $Action -eq 'CaptionClose')
+        if ($Action -eq 'CaptionProbe') { $Evidence = $Report.interaction.After }
+    }
+    if ($Action -in @('ZoomIn', 'ZoomReset')) {
+        $Stage = 'nativeCaptionInteraction'
+        [FundsTraceStartupWindow]::Zoom($Window, [uint32]$ProcessId, $Action -eq 'ZoomReset')
+        $Report.interaction = [ordered]@{ source = 'SendInput-keyboard'; action = $Action; windowsDpiChanged = $false }
+    }
     foreach ($Entry in (Convert-Evidence $Evidence).GetEnumerator()) { $Report[$Entry.Key] = $Entry.Value }
-    Assert-ProcessBinding
+    if ($Action -ne 'CaptionClose') { Assert-ProcessBinding }
     $Report.status = 'passed'
     $Report.failedCheck = $null
     $ExitCode = 0
@@ -361,6 +529,13 @@ public static class FundsTraceStartupWindow {
     $Report.status = 'failed'
     $Report.failedCheck = $Stage
     $ExitCode = 1
+    $InputUnavailable = @('INPUT_DESKTOP_UNAVAILABLE', 'INPUT_FOREGROUND_UNAVAILABLE',
+        'INPUT_KEYS_ALREADY_PRESSED', 'INPUT_INJECTION_FAILED', 'INPUT_CURSOR_UNAVAILABLE')
+    if ($Stage -eq 'nativeCaptionInteraction' -and $_.Exception.GetBaseException().Message -in $InputUnavailable) {
+        $Report.status = 'unavailable'
+        $Report.reason = $_.Exception.GetBaseException().Message
+        $ExitCode = 2
+    }
     if ($Action -eq 'Capture' -and -not $Report.Contains('screenshot')) {
         $Report.screenshot = [ordered]@{ captured = $false; source = 'native-window-screen-composite'; reviewed = $false }
     }

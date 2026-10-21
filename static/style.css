@@ -57,6 +57,7 @@ b { color: #fff; }
   background: #151e28; border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: 10px; flex: none; }
+html[data-funds-desktop-shell="true"] #topbar > .brand { display: none; }
 .logo { font-size: 20px; font-weight: 600; letter-spacing: .1px; white-space: nowrap; }
 .topbar-logo { width: 29px; height: 29px; flex: none; }
 .case-box { display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 100%; }
