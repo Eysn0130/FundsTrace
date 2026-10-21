@@ -50,7 +50,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version Latest
 $Report = [ordered]@{ schemaVersion = 1; status = 'running'; failedCheck = $null; checks = [ordered]@{} }
-$Stage = 'nativeSource'; $Failed = $false; $Shell = $null; $Link = $null
+$Stage = 'nativeSource'; $Failed = $false; $Shell = $null; $Link = $null; $Comparison = $null
 try {
     Add-Type -Path $NativeSource
     $Stage = 'createShortcut'
@@ -62,16 +62,31 @@ try {
     foreach ($Small in @($false, $true)) {
         $Size = $(if ($Small) { 'Small' } else { 'Large' })
         $Stage = 'approved' + $Size
+        $Comparison = $null
         $Comparison = [FundsTraceBrandIcons]::Shortcut((Join-Path $Root 'synthetic.lnk'), $Approved, $Small)
         if (-not $Comparison.Matched -or $Comparison.Width -lt 1 -or $Comparison.Height -lt 1) { throw 'APPROVED_ICON_MISMATCH' }
         $Report.checks[$Stage] = $true
         $Stage = 'wrong' + $Size
+        $Comparison = $null
         $Comparison = [FundsTraceBrandIcons]::Shortcut((Join-Path $Root 'synthetic.lnk'), $Wrong, $Small)
         if ($Comparison.Matched) { throw 'WRONG_ICON_ACCEPTED' }
         $Report.checks[$Stage] = $true
     }
 } catch {
     $Failed = $true; $Report.failedCheck = $Stage
+    $Report.failureCode = 'UNCLASSIFIED'
+    $Codes = @('APPROVED_ICON_MISMATCH', 'WRONG_ICON_ACCEPTED', 'SHORTCUT_ICON_FAILED',
+        'ICON_INFO_FAILED', 'ICON_BITMAP_FAILED', 'ICON_DIMENSIONS_INVALID', 'ICON_DC_FAILED',
+        'ICON_DIB_FAILED', 'ICON_SELECT_FAILED', 'ICON_DRAW_FAILED', 'ICON_FLUSH_FAILED', 'EXPECTED_ICON_LOAD_FAILED')
+    $Cause = $_.Exception
+    while ($null -ne $Cause) {
+        if ($Cause.Message -cin $Codes) { $Report.failureCode = $Cause.Message; break }
+        $Cause = $Cause.InnerException
+    }
+    if ($null -ne $Comparison) {
+        $Report.comparison = [ordered]@{ width = $Comparison.Width; height = $Comparison.Height; matched = $Comparison.Matched
+            actual = $Comparison.ActualSha256; expected = $Comparison.ExpectedSha256 }
+    }
 } finally {
     try {
         if ($null -ne $Link) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Link) }
@@ -91,12 +106,21 @@ if ($Failed) { exit 1 }
   } catch (error) {
     // Never echo compiler/COM messages, source paths, command arguments or raw
     // stderr. Preserve only fixed stages and process outcome for CI diagnosis.
-    let failedCheck = null;
+    let failedCheck = null, failureCode = null, comparison = null;
     try {
       const value = JSON.parse(String(error.stdout || '').replace(/^\uFEFF/, ''));
       if (['nativeSource', 'createShortcut', 'approvedLarge', 'approvedSmall', 'wrongLarge', 'wrongSmall', 'comCleanup'].includes(value.failedCheck)) failedCheck = value.failedCheck;
+      if (['UNCLASSIFIED', 'APPROVED_ICON_MISMATCH', 'WRONG_ICON_ACCEPTED', 'SHORTCUT_ICON_FAILED',
+        'ICON_INFO_FAILED', 'ICON_BITMAP_FAILED', 'ICON_DIMENSIONS_INVALID', 'ICON_DC_FAILED', 'ICON_DIB_FAILED',
+        'ICON_SELECT_FAILED', 'ICON_DRAW_FAILED', 'ICON_FLUSH_FAILED', 'EXPECTED_ICON_LOAD_FAILED'].includes(value.failureCode)) failureCode = value.failureCode;
+      const frame = value.comparison;
+      if (frame && Number.isInteger(frame.width) && frame.width > 0 && frame.width <= 1024
+        && Number.isInteger(frame.height) && frame.height > 0 && frame.height <= 1024
+        && typeof frame.matched === 'boolean' && /^[a-f0-9]{64}$/.test(frame.actual) && /^[a-f0-9]{64}$/.test(frame.expected)) {
+        comparison = { width: frame.width, height: frame.height, matched: frame.matched, actual: frame.actual, expected: frame.expected };
+      }
     } catch {}
-    throw new Error(JSON.stringify({ code: error.killed ? 'NATIVE_SHELL_TIMEOUT' : 'NATIVE_SHELL_PROCESS_FAILED', failedCheck,
+    throw new Error(JSON.stringify({ code: error.killed ? 'NATIVE_SHELL_TIMEOUT' : 'NATIVE_SHELL_PROCESS_FAILED', failedCheck, failureCode, comparison,
       exitCode: Number.isInteger(error.code) ? error.code : null,
       signal: ['SIGTERM', 'SIGKILL', 'SIGABRT'].includes(error.signal) ? error.signal : null }));
   }
