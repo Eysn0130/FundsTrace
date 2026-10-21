@@ -1,7 +1,4 @@
-<h1 align="center">
-  <img alt="" src="docs/brand/icons/icon-256.png" width="112" height="112"><br>
-  FundsTrace
-</h1>
+<h1 align="center"><img alt="" src="docs/brand/icons/icon-256.png" width="112" height="112"><br>FundsTrace</h1>
 
 <p align="center"><strong>让资金往来，清晰可见。</strong><br>本地资金流水追踪与关联分析工具</p>
 
@@ -11,7 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Eysn0130/FundsTrace?style=flat-square&amp;color=151A1E" alt="许可证：MIT"></a>
 </p>
 
-<p align="center"><strong><a href="https://github.com/Eysn0130/FundsTrace/releases/latest">下载 Windows 版</a></strong> &nbsp; · &nbsp; <a href="docs/workspace-guide.md">使用指南</a> &nbsp; · &nbsp; <a href="#看看实际操作">操作演示</a> &nbsp; · &nbsp; <a href="https://github.com/Eysn0130/FundsTrace/issues">问题反馈</a></p>
+<p align="center"><strong><a href="https://github.com/Eysn0130/FundsTrace/releases/latest">下载 Windows 版</a></strong> &nbsp; · &nbsp; <a href="docs/workspace-guide.md">使用指南</a> &nbsp; · &nbsp; <a href="#看看实际操作">操作演示</a></p>
 
 [![FundsTrace 工作台：查看资金分流与归集，整理账户关系和交易金额；点击查看原图](docs/media/showcase/workspace-focus.png)](docs/media/showcase/workspace-focus.png)
 
