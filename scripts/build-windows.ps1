@@ -166,6 +166,9 @@ try {
         foreach ($File in @(Get-ChildItem -LiteralPath $EvidenceRoot -Filter 'native-installed-app.update-*.png' -File)) {
             $Sums += "$(Get-Sha256 $File.FullName)  build/desktop/$($File.Name)"
         }
+        foreach ($File in @(Get-ChildItem -LiteralPath $EvidenceRoot -Filter 'native-installed-app.startup-*.png' -File)) {
+            $Sums += "$(Get-Sha256 $File.FullName)  build/desktop/$($File.Name)"
+        }
         $Sums += "$(Get-Sha256 $ImportRecoveryReport)  build/desktop/native-import-recovery-smoke.json"
         foreach ($File in @(Get-ChildItem -LiteralPath $CompatibilityDirectory -File)) {
             $Relative = [IO.Path]::GetRelativePath($ProjectRoot, $File.FullName).Replace('\', '/')

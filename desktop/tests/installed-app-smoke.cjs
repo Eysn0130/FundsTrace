@@ -9,6 +9,8 @@ const net = require('node:net');
 const path = require('node:path');
 const os = require('node:os');
 const { performance } = require('node:perf_hooks');
+const { pathToFileURL } = require('node:url');
+const { startupTarget, createInstalledStartupProbe } = require('./installed-startup-journey.cjs');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
 const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
 const { runInstalledProductionUpdateJourney } = require('./installed-production-update-journey.cjs');
@@ -29,6 +31,7 @@ const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, f
     simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
 const timings = report.timings, owned = [];
 let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, updateFixture, productionUpdate = false;
+let releaseStartupInspection = async () => {};
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function bounded(promise, ms) {
@@ -87,6 +90,75 @@ async function windowIcons(installRoot, processId, minimumWindows, taskbarScreen
   const result = JSON.parse(stdout.replace(/^\uFEFF/, ''));
   assert.equal(result.status, 'passed');
   assert.ok(result.visibleWindowCount >= minimumWindows);
+  return result;
+}
+async function nativeStartupWindow(installRoot, processId, { action = 'Inspect', widthDip, heightDip, screenshotPath } = {}) {
+  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+    path.resolve(__dirname, '../../scripts/test-windows-startup-window.ps1'),
+    '-InstallRoot', installRoot, '-ProcessId', String(processId), '-Action', action];
+  if (widthDip !== undefined) args.push('-WidthDip', String(widthDip), '-HeightDip', String(heightDip));
+  if (screenshotPath) args.push('-ScreenshotPath', screenshotPath);
+  let stdout;
+  try { ({ stdout } = await promisify(execFile)('pwsh.exe', args, { timeout:20000, maxBuffer:128 * 1024 })); }
+  catch (error) {
+    if (![1, 2].includes(error.code) || typeof error.stdout !== 'string') throw new Error('STARTUP_NATIVE_WINDOW_FAILED');
+    stdout = error.stdout;
+  }
+  let result;
+  try { result = JSON.parse(String(stdout).replace(/^\uFEFF/, '')); }
+  catch { throw new Error('STARTUP_NATIVE_REPORT_INVALID'); }
+  assert.equal(result.schemaVersion, 1);
+  if (result.status === 'failed') {
+    const stages = ['ciPlatform','syntheticUserBinding','inputBinding','nativeWindowReader','installedProcessBinding',
+      'physicalDpiContext','uniqueVisibleWindow','nativeWindowInspect','nativeWindowResize','screenshotOutputBinding','nativeWindowCapture'];
+    report.startupNativeFailure = { failedCheck:stages.includes(result.failedCheck) ? result.failedCheck : 'unknown', processBound:result.processBound === true };
+  }
+  assert.equal(result.processBound, true);
+  assert.ok(result.status === 'passed' || action === 'Capture' && result.status === 'unavailable');
+  return result;
+}
+async function nativeStartupBounds(config, primary, target) {
+  const observe = options => nativeStartupWindow(config.installRoot, primary.child.pid, options);
+  const result = report.startup.nativeWindows = { step:'initialInspect', actualSystemDpiValidated:false,
+    scope:'actual-installed-HWND-on-Windows-Server; no-system-display-setting-changes' };
+  const initial = await observe({});
+  result.initial = initial;
+  const scale = initial.scaleFactor, area = initial.workArea;
+  const expected = { width:Math.min(Math.max(960, Math.min(1440, area.width / scale - 64)), area.width / scale),
+    height:Math.min(Math.max(640, Math.min(940, area.height / scale - 64)), area.height / scale) };
+  const near = (actual, wanted) => Math.abs(actual - wanted) <= 2;
+  const inArea = result => {
+    assert.ok(result.window.x >= result.workArea.x - 1 && result.window.y >= result.workArea.y - 1
+      && result.window.x + result.window.width <= result.workArea.x + result.workArea.width + 1
+      && result.window.y + result.window.height <= result.workArea.y + result.workArea.height + 1);
+  };
+  inArea(initial);
+  assert.ok(near(initial.window.width / scale, expected.width) && near(initial.window.height / scale, expected.height));
+  const min = { width:Math.min(960, area.width / scale), height:Math.min(640, area.height / scale) };
+  assert.ok(near(initial.minTrack.width / scale, min.width) && near(initial.minTrack.height / scale, min.height));
+  const client = async native => {
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))', target);
+    const value = await evaluate(`({width:innerWidth,height:innerHeight,dpr:devicePixelRatio,
+      scale:Number(getComputedStyle(document.querySelector('#startup-surface')).getPropertyValue('--brand-scale'))})`, target);
+    assert.ok(near(value.width, native.client.width / native.scaleFactor)
+      && near(value.height, native.client.height / native.scaleFactor) && Math.abs(value.dpr - native.scaleFactor) < .01);
+    return value;
+  };
+  result.initialClient = await client(initial);
+  result.step = 'defaultCapture';
+  if (config.screenshot) result.initialCapture = await observe({ action:'Capture', screenshotPath:`${config.screenshot.slice(0, -4)}.startup-native-default.png` });
+  result.step = 'minimumResize';
+  const minimum = await observe({ action:'Resize', widthDip:Math.round(min.width), heightDip:Math.round(min.height) });
+  result.minimum = minimum;
+  inArea(minimum);
+  assert.ok(near(minimum.window.width / scale, min.width) && near(minimum.window.height / scale, min.height));
+  result.minimumClient = await client(minimum);
+  result.step = 'minimumCapture';
+  if (config.screenshot) result.minimumCapture = await observe({ action:'Capture', screenshotPath:`${config.screenshot.slice(0, -4)}.startup-native-minimum.png` });
+  result.step = 'restoreDefault';
+  result.restored = await observe({ action:'Resize', widthDip:Math.round(initial.window.width / scale), heightDip:Math.round(initial.window.height / scale) });
+  await client(result.restored);
+  result.step = 'completed';
   return result;
 }
 function argumentsOf() {
@@ -289,6 +361,17 @@ async function portClosed(port) {
   });
   let errorCount = 0, instrumentationFailed = false;
   const sessions = new Map();
+  let startupInspectionHeld = !productionUpdate;
+  const heldBusinessSessions = new Set(), debuggerSessions = new Set();
+  releaseStartupInspection = async () => {
+    startupInspectionHeld = false;
+    for (const sessionId of debuggerSessions) {
+      await cdp.send('Debugger.resume', {}, sessionId, 3000).catch(() => {});
+      await cdp.send('Debugger.disable', {}, sessionId, 3000).catch(() => {});
+    }
+    heldBusinessSessions.clear();
+    debuggerSessions.clear();
+  };
   await check('installedWindowReady', async () => {
     const debugUrl = await until(() => {
       assert.ok(!primary.done); return primary.debugUrl;
@@ -298,9 +381,29 @@ async function portClosed(port) {
       if (message.method === 'Runtime.exceptionThrown' || message.method === 'Inspector.targetCrashed'
         || message.method === 'Target.targetCrashed'
         || message.method === 'Runtime.consoleAPICalled' && message.params?.type === 'error') errorCount += 1;
+      if (message.method === 'Debugger.paused') {
+        const item = [...sessions.values()].find(value => value.sessionId === message.sessionId);
+        void (async () => {
+          if (!item) return;
+          const { targetInfo } = await cdp.send('Target.getTargetInfo', { targetId:item.targetId });
+          if (startupInspectionHeld && businessOrigin(targetInfo.url)) {
+            item.paused = true;
+            heldBusinessSessions.add(item.sessionId);
+          } else {
+            // An initially blank target may turn out to be the local overlay.
+            // Never keep that renderer paused based on stale attachment metadata.
+            await cdp.send('Debugger.resume', {}, item.sessionId).catch(() => {});
+            if (!startupInspectionHeld || startupTarget(targetInfo.url)) {
+              await cdp.send('Debugger.disable', {}, item.sessionId).catch(() => {});
+              debuggerSessions.delete(item.sessionId);
+            }
+          }
+        })().catch(() => { if (startupInspectionHeld) instrumentationFailed = true; });
+        return;
+      }
       if (message.method !== 'Target.attachedToTarget') return;
       const { sessionId, targetInfo } = message.params;
-      const item = { sessionId, ready: false };
+      const item = { sessionId, targetId:targetInfo.targetId, ready: false, paused:false };
       if (targetInfo.type === 'page') sessions.set(targetInfo.targetId, item);
       void (async () => {
         // A newly created renderer is paused before its execution context
@@ -310,15 +413,50 @@ async function portClosed(port) {
         if (targetInfo.type === 'page') {
           await cdp.send('Runtime.enable', {}, sessionId);
           await cdp.send('Page.enable', {}, sessionId);
+          if (startupInspectionHeld) {
+            // CI inspection only: hold execution of our own business page while
+            // measuring the unmodified shipped startup layer. No fake readiness.
+            debuggerSessions.add(sessionId);
+            await cdp.send('Debugger.enable', {}, sessionId);
+            if (startupInspectionHeld) await cdp.send('Debugger.setInstrumentationBreakpoint', { instrumentation:'beforeScriptExecution' }, sessionId);
+            if (!startupInspectionHeld) await cdp.send('Debugger.disable', {}, sessionId).catch(() => {});
+          }
         }
         item.ready = true;
       })().catch(() => { instrumentationFailed = true; });
     });
     await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+    if (!productionUpdate) await check('installedStartupAnimationAndBounds', () => bounded((async () => {
+      const expectedUrl = pathToFileURL(path.join(config.installRoot, 'resources/app.asar/startup/index.html')).href;
+      const startup = await until(async () => {
+        assert.ok(!primary.done && !instrumentationFailed);
+        const { targetInfos } = await cdp.send('Target.getTargets');
+        const pages = targetInfos.filter(target => target.type === 'page');
+        assert.ok(pages.length <= 2);
+        const overlays = pages.filter(target => startupTarget(target.url));
+        const business = pages.filter(target => businessOrigin(target.url));
+        const pending = pages.filter(target => !target.url || target.url === 'about:blank');
+        assert.ok(overlays.length <= 1 && business.length <= 1 && overlays.length + business.length + pending.length === pages.length);
+        const target = overlays[0], session = target && sessions.get(target.targetId);
+        if (!target || !session?.ready) return false;
+        assert.equal(target.url, expectedUrl);
+        return { ...session, targetId:target.targetId };
+      }, 20000);
+      await until(() => [...sessions.values()].some(item => heldBusinessSessions.has(item.sessionId) && item.paused), 15000);
+      report.startup = { deliberatelyHeldBusinessRenderer:true, measuredUserColdStart:false };
+      const probe = await createInstalledStartupProbe({ cdp, target:startup, evaluate, until,
+        screenshotPrefix:config.screenshot ? `${config.screenshot.slice(0, -4)}.startup` : undefined });
+      report.startup.nativeWindows = await nativeStartupBounds(config, primary, startup);
+      report.startup.waiting = await probe.observeWaitingAndLayout();
+      await releaseStartupInspection();
+      report.startup.completion = await probe.observeCompletion({ timeoutMs:15000 });
+      assert.ok(!instrumentationFailed);
+    })(), 45000).finally(releaseStartupInspection));
+    stage = 'installedWindowReady';
     page = await until(async () => {
       assert.ok(!primary.done && !instrumentationFailed);
       const { targetInfos } = await cdp.send('Target.getTargets');
-      const pages = targetInfos.filter(target => target.type === 'page');
+      const pages = targetInfos.filter(target => target.type === 'page' && !startupTarget(target.url));
       assert.ok(pages.length <= 1);
       const target = pages[0];
       const origin = target && businessOrigin(target.url);
@@ -331,8 +469,8 @@ async function portClosed(port) {
       const session = sessions.get(page.targetId);
       if (!session?.ready) return false;
       page.sessionId = session.sessionId;
-      // The data: startup document can replace its execution context while a
-      // first DOM probe is in flight. Retry only this bounded navigation probe.
+      // Navigation can replace the execution context while a first DOM probe
+      // is in flight. Retry only this bounded navigation probe.
       try {
         return await evaluate(`document.readyState === 'complete' && !!document.querySelector('#graphContainer')
           && !!document.querySelector('#caseSelect') && typeof state === 'object' && !state.graphLoading && state.graphInited`);
@@ -542,6 +680,7 @@ async function portClosed(port) {
   // Best effort graceful close, then only handles spawned above. No process-name
   // discovery, user-data removal, or termination of unrelated installations.
   if (cdp && owned.some(instance => !instance.done)) {
+    await releaseStartupInspection();
     if (analysisPage) await cdp.send('Page.close', {}, analysisPage.sessionId, 3000).catch(() => {});
     if (page) await cdp.send('Page.close', {}, page.sessionId, 3000).catch(() => {});
     await Promise.all(owned.filter(instance => !instance.done).map(instance => bounded(instance.exited, 5000).catch(() => {})));

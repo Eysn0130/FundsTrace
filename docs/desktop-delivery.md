@@ -80,6 +80,10 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 安装版主窗口启动后，若当前 CI 桌面存在可见 Shell 任务栏，会另保存 `native-installed-app.taskbar.png`，并记录截图尺寸与 SHA-256。它来自实际屏幕的任务栏矩形，不是 renderer 截图或拼合图。没有 Shell、截图不可用或尚未查看时不记录任务栏外观通过；脚本报告保留 `reviewed:false`，截图核对结果须在对应候选记录中单列。
 
+安装版启动验证精确区分本地 ASAR 启动层和真实业务页。CI 仅在自己的合成安装进程中暂缓业务 renderer 执行，以检查等待画面；最长 45 秒且在成功、失败及清理路径恢复，不注入或伪造就绪通知。正式启动素材接受 1440×880、1302×604、960×580、960×440、683×284 客户区与 DPR 1／1.25／1.5／2 共 20 组仿真，核对固定 Logo、字标、加载区、居中、留白和整体缩放。随后恢复真实初始化，记录背景透明度、整组淡出及启动 renderer 的释放；有界 rAF 样本保留 P95／最大间隔，不以共享 CI 结果承诺用户冷启动耗时或持续 60 FPS。
+
+[原生窗口 helper](../scripts/test-windows-startup-window.ps1) 按安装 EXE 的 PID 和文件路径核对归属，读取真实窗口、客户区、显示器工作区、窗口 DPI 及最小跟踪尺寸，再调整并回读最小窗口。它不修改系统显示模式或缩放；20 组 CSS／DPR 仿真也不等同于 20 种 Windows 显示设置。`native-installed-app.startup-*.png` 包含启动 renderer 表面截图，以及交互桌面允许时的默认／最小原生窗口合成截图，随候选 SHA-256 清单保留；无法截取或未人工查看时不记录外观验收通过。暂缓业务执行的检查不作为正常冷启动性能数据。
+
 上述自动检查仍仅覆盖 Windows hosted runner。它不证明 Windows 10／11 任务栏最终外观、既有固定图标缓存、真实系统 DPI 或 SmartScreen；没有可用交互桌面时不能把这些项目记为通过。候选构建默认不创建 Tag 或 Release，未获发布授权时仅保留 Actions 产物，现有 Latest 和下载入口保持原版本。
 
 [Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以 `desktop/upgrade-baseline.json` 明确指定并固定 SHA-256／字节数的已公开客户端作为旧版本，验证静默安装到中文自定义目录 → 旧安装版后端写入并重开合成案件 → 新安装器不指定目录而自动找到旧版并覆盖升级 → 旧安装目录测试文件清除、设置字节与已安装设置模块读取 → 比对旧流水／金额／币种／画布／追踪和旧案件包往返 → 同版重装后重复资源／数据／设置核对 → 真正 EXE 启动／快捷键／单实例／正常关闭 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json` 和 `native-installed-app-smoke.json`，前者的 `priorDataChecks`、`upgradedDataChecks` 记录旧数据兼容链。原件仅依据已注册的导入来源核对摘要，不扫描业务目录。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
