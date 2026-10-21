@@ -1,5 +1,9 @@
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
+// Readiness is a one-way signal from the initialized main workbench, with no data.
+window.addEventListener('funds-trace:workbench', event => {
+  if (event.detail === 'ready' || event.detail === 'failed') ipcRenderer.send('funds-trace:workbench', event.detail);
+});
 // Sandboxed preload exposes no IPC primitive, token, file path or case payload.
 const channel = 'funds-trace:preferences';
 contextBridge.exposeInMainWorld('FundsDesktopPreferences', Object.freeze({

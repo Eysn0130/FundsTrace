@@ -9,10 +9,8 @@ const { launchConfig, HEADER, pageAllowed, popupKind, requestAllowed, downloadAl
 const { startBackend } = require('./backend.cjs');
 const { CHANNEL, preferenceStore, preferenceRequest } = require('./preferences.cjs');
 const updates = require('./updates.cjs');
+const { createStartup, waitForWorkbench } = require('./startup.cjs');
 const appIcon = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
-
-// Fixed, script-free content has no backend token, network access or business data.
-const startupUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>FundsTrace 正在启动</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f7fb;color:#202b3c;font:16px/1.7 system-ui,"Microsoft YaHei",sans-serif}main{padding:32px;max-width:440px}h1{font-size:26px;margin:0 0 12px}p{margin:8px 0;color:#526078}</style><main role="status"><h1>正在启动 FundsTrace</h1><p>正在准备工作区，首次启动可能需要一点时间。</p><p>可关闭此窗口取消启动。</p></main></html>`);
 
 app.setName('FundsTrace');
 app.setAppUserModelId('com.eysn.fundstrace');
@@ -69,8 +67,7 @@ else {
       localSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
       localSession.setPermissionCheckHandler(() => false);
       localSession.webRequest.onBeforeRequest((details, callback) => {
-        const startup = !origin && details.url === startupUrl && details.resourceType === 'mainFrame' && owned.has(details.webContentsId);
-        callback({ cancel: !startup && !requestAllowed(details.url, origin, details.webContentsId, owned) });
+        callback({ cancel: !requestAllowed(details.url, origin, details.webContentsId, owned) });
       });
       localSession.webRequest.onBeforeSendHeaders((details, callback) => {
         const headers = { ...details.requestHeaders };
@@ -91,7 +88,7 @@ else {
       function createWindow() {
         const owner = [...windows][0];
         const display = owner ? screen.getDisplayMatching(owner.getBounds()) : screen.getPrimaryDisplay();
-        const win = new BrowserWindow({ title: 'FundsTrace', icon: appIcon, ...windowBounds(display.workArea), show: false,
+        const win = new BrowserWindow({ title: '循迹 FundsTrace', backgroundColor: '#10171f', icon: appIcon, ...windowBounds(display.workArea), show: false,
           webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: localSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, spellcheck: false } });
         const contents = win.webContents;
         const contentsId = contents.id;
@@ -150,9 +147,17 @@ else {
         win.once('ready-to-show', () => { if (!quitting && !win.isDestroyed()) win.show(); });
         return win;
       }
-      Menu.setApplicationMenu(null);
+      // Reserve native menu height before the fixed startup composition is shown.
+      Menu.setApplicationMenu(Menu.buildFromTemplate([
+        ...(process.platform === 'darwin' ? [{ label: 'FundsTrace', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] }] : []),
+        { label: '文件', submenu: [{ role: 'quit' }] },
+        { label: '编辑', enabled: false, submenu: [] },
+        { label: '显示', enabled: false, submenu: [] },
+        { label: '帮助', enabled: false, submenu: [] },
+      ]));
       const primary = createWindow();
-      await primary.loadURL(startupUrl);
+      const startup = createStartup(primary, { onFailure: () => void fail('循迹启动页面无法显示，请关闭后重新打开应用。') });
+      await startup.loaded;
       if (quitting || primary.isDestroyed()) return;
       primary.show();
       preparation = (async () => {
@@ -203,14 +208,25 @@ else {
         if (['check', 'download', 'install'].includes(action)) return updateService.action(action);
         return null;
       });
-      Menu.setApplicationMenu(Menu.buildFromTemplate([
+      const installMenu = () => Menu.setApplicationMenu(Menu.buildFromTemplate([
         ...(process.platform === 'darwin' ? [{ label: 'FundsTrace', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] }] : []),
         { label: '文件', submenu: [{ label: '资金图谱', click: () => [...windows][0]?.loadURL(`${origin}/`) }, { label: '案件与导入', click: () => [...windows][0]?.loadURL(`${origin}/workspace/`) }, { type: 'separator' }, { role: 'quit' }] },
         { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
         { label: '显示', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
         { label: '帮助', submenu: [{ label: '检查更新', enabled: updatesEnabled, click: () => void updateService.action('check') }] }
       ]));
-      await primary.loadURL(`${origin}/`);
+      const workbench = waitForWorkbench(primary, origin);
+      try {
+        await Promise.all([
+          primary.loadURL(`${origin}/`).then(() => workbench.navigated()),
+          workbench.ready.then(ready => { if (!ready) throw new Error('Workbench initialization failed'); }),
+        ]);
+      }
+      catch (error) { workbench.dispose(); throw error; }
+      if (quitting || primary.isDestroyed()) return;
+      startup.finish();
+      if (!await startup.finished || quitting || primary.isDestroyed()) return;
+      installMenu();
       if (updatesEnabled) {
         void updateService.action('check');
         updateTimer = setInterval(() => { if (!quitting) void updateService.action('check'); }, 6 * 60 * 60 * 1000);

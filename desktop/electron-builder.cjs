@@ -6,7 +6,8 @@ const windowsIcon = path.join(__dirname, 'assets/icon.ico');
 module.exports = {
   appId: 'com.eysn.fundstrace', productName: 'FundsTrace',
   directories: { output: '../build/desktop/electron' },
-  files: ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'assets/icon.png', 'assets/icon.ico'],
+  files: ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'startup.cjs',
+    'startup/index.html', 'startup/style.css', 'startup/renderer.js', 'startup/preload.cjs', 'assets/icon.png', 'assets/icon.ico'],
   asar: true,
   electronLanguages: ['en-US', 'zh-CN', 'zh-TW'],
   extraResources: [
