@@ -528,11 +528,14 @@ async function portClosed(port) {
   if (productionUpdate) {
     const codes = ['ERR_ASSERTION', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ENOENT',
       'ECONNREFUSED', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'];
-    const kinds = ['PRODUCTION_FEED_RESPONSE', 'PRODUCTION_FEED_SIZE', 'PRODUCTION_FEED_TIMEOUT',
-      'PRODUCTION_FEED_METADATA', 'UPDATE_JOURNEY_TIMEOUT', 'UPDATE_DIALOG_TIMEOUT', 'UPDATE_DIALOG_FAILED'];
+    const kinds = ['UPDATE_JOURNEY_TIMEOUT', 'UPDATE_DIALOG_TIMEOUT', 'UPDATE_DIALOG_FAILED'];
     report.productionFailure = { code: codes.includes(error?.code) ? error.code : 'UNKNOWN',
-      kind: kinds.includes(error?.message) ? error.message : 'UNCLASSIFIED',
-      httpStatus: Number.isInteger(error?.statusCode) && error.statusCode >= 100 && error.statusCode <= 599 ? error.statusCode : null };
+      kind: kinds.includes(error?.message) ? error.message : 'UNCLASSIFIED' };
+    try {
+      const value = await evaluate('window.FundsDesktopUpdates.state()');
+      report.productionFailure.updatePhase = ['idle','checking','available','downloading','error','ready','installing','current'].includes(value?.phase) ? value.phase : 'unknown';
+      report.productionFailure.updateErrorCode = FAILURE_CODES.includes(value?.errorCode) ? value.errorCode : 'UNKNOWN';
+    } catch { /* The old renderer may already have exited normally. */ }
   }
 }).finally(async () => {
   // Best effort graceful close, then only handles spawned above. No process-name

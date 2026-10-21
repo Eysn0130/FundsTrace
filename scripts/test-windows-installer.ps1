@@ -444,6 +444,11 @@ try {
         if ($NextInstaller) { throw 'Published and private update modes cannot be combined.' }
         $UpdateConfig = Join-Path $TemporaryRoot 'production-update.json'
         $UpdateSettings = Get-Content -Raw -LiteralPath (Join-Path $InstallRoot 'resources/app-update.yml')
+        if ($UpdateSettings -cnotmatch '(?m)^provider: generic\s*$' -or
+            $UpdateSettings -cnotmatch '(?m)^url: https://analytix\.top/fundstrace/\s*$') {
+            throw 'The installed prior release does not use the fixed official update source.'
+        }
+        $Report.checks.productionUpdateOfficialFeedConfigured = 'passed'
         $CacheMatch = [regex]::Match($UpdateSettings, '(?m)^updaterCacheDirName: ([a-z0-9-]+)\s*$')
         if (-not $CacheMatch.Success) { throw 'Installed updater cache identity is missing.' }
         $Sha512 = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($InstallerPath)))

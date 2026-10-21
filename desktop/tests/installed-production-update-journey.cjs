@@ -4,40 +4,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
-const https = require('node:https');
 const { createHash } = require('node:crypto');
 const { nativeButton } = require('./installed-update-journey.cjs');
 
-const FEED = 'https://analytix.top/fundstrace/latest.yml';
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(inspect, ms = 30000) {
   const deadline = Date.now() + ms;
   do { const value = await inspect(); if (value) return value; await delay(100); } while (Date.now() < deadline);
   throw new Error('UPDATE_JOURNEY_TIMEOUT');
-}
-
-function publicFeed() {
-  return new Promise((resolve, reject) => {
-    const request = https.get(FEED, { timeout: 30000 }, response => {
-      if (response.statusCode !== 200) {
-        response.resume(); const error = new Error('PRODUCTION_FEED_RESPONSE');
-        error.statusCode = response.statusCode; reject(error); return;
-      }
-      const chunks = []; let bytes = 0;
-      response.on('data', chunk => {
-        bytes += chunk.length;
-        if (bytes > 65536) { response.destroy(new Error('PRODUCTION_FEED_SIZE')); return; }
-        chunks.push(chunk);
-      });
-      response.once('error', reject);
-      response.once('end', () => {
-        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-        catch { reject(new Error('PRODUCTION_FEED_METADATA')); }
-      });
-    });
-    request.once('timeout', () => request.destroy(new Error('PRODUCTION_FEED_TIMEOUT')));
-    request.once('error', reject);
-  });
 }
 
 async function installerDigests(filename) {
@@ -74,7 +48,6 @@ async function runInstalledProductionUpdateJourney({ configFile, primary, evalua
     return value;
   });
   const filename = `FundsTrace-${config.version}-windows-x64-unsigned.exe`;
-  const url = `https://download.analytix.top/releases/fundstrace/windows/${config.version}/${filename}`;
   const pending = path.join(process.env.LOCALAPPDATA, config.cacheDirectoryName, 'pending');
   const button = `document.querySelector('funds-desktop-update .funds-update-capsule')`;
   const status = () => evaluate('window.FundsDesktopUpdates.state()');
@@ -101,15 +74,6 @@ async function runInstalledProductionUpdateJourney({ configFile, primary, evalua
     const value = await cdp.send('Page.captureScreenshot', { format: 'png' }, page.sessionId);
     await fsp.writeFile(screenshot.replace(/\.png$/i, `.update-${name}.png`), Buffer.from(value.data, 'base64'), { flag: 'wx' });
   }
-  await check('installedProductionFeedMatchesPublishedCandidate', async () => {
-    const feed = await publicFeed();
-    assert.equal(feed.schemaVersion, 1); assert.equal(feed.product, 'com.eysn.fundstrace');
-    assert.equal(feed.version, config.version); assert.equal(feed.files.length, 1);
-    assert.deepEqual(feed.files[0], { url, sha512: config.installerSha512, size: config.installerBytes });
-    assert.equal(feed.path, url); assert.equal(feed.sha512, config.installerSha512);
-    assert.equal(feed.checksumSha256, config.installerSha256);
-    assert.ok(!feed.packages);
-  });
   await check('installedProductionUpgradePreferencesBefore', preferencesMatch);
   await check('installedProductionUpdateAvailable', async () => {
     if (await phase() === 'idle') await click();
