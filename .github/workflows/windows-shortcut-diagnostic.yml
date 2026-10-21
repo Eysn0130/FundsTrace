@@ -1,5 +1,5 @@
 name: Windows shortcut diagnostic
-on: workflow_dispatch
+on: workflow_call
 permissions:
   contents: read
 jobs:
