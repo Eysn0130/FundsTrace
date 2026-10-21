@@ -51,10 +51,15 @@ jobs:
                 $link=$shell.CreateShortcut($linkPath)
                 try {
                   $target=[string]$link.TargetPath
+                  $wide=[FundsTraceBrandIcons]::ReadShortcut($linkPath)
                   $report.shortcuts += [ordered]@{ location=$location.ToString(); exists=(Test-Path -LiteralPath $linkPath -PathType Leaf)
                     expected=(Display-CiPath $expected); target=(Display-CiPath $target); icon=(Display-CiPath ([string]$link.IconLocation))
                     expectedExists=(Test-Path -LiteralPath $expected -PathType Leaf); targetExists=(Test-Path -LiteralPath $target -PathType Leaf)
-                    sameFile=[FundsTraceBrandIcons]::SameFile($target,$expected) }
+                    sameFile=[FundsTraceBrandIcons]::SameFile($target,$expected)
+                    nativeTarget=(Display-CiPath $wide.TargetPath); nativeIcon=(Display-CiPath $wide.IconPath); nativeIconIndex=$wide.IconIndex
+                    nativeSameFile=[FundsTraceBrandIcons]::SameFile($wide.TargetPath,$expected)
+                    nativeIconSameFile=[FundsTraceBrandIcons]::SameFile($wide.IconPath,$expected)
+                    linkContainsUnicodeInstallFolder=([Text.Encoding]::Unicode.GetString([IO.File]::ReadAllBytes($linkPath)).Contains('应用 安装路径')) }
                 } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($link) }
               }
             } finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) }

@@ -72,14 +72,29 @@ const windowsActions = process.platform === 'win32' && process.env.GITHUB_ACTION
 test('native shell shortcut icons match approved art and reject different pixels', {
   skip: windowsActions ? false : 'Windows GitHub Actions only', timeout: 90000,
 }, async t => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'FundsTrace synthetic shell icons '));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'FundsTrace 合成 快捷方式 '));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const approved = path.resolve(__dirname, '../assets/icon.ico');
   const helper = await fs.readFile(path.resolve(__dirname, '../../scripts/test-windows-brand-icon.ps1'), 'utf8');
   const source = /^[\t ]*Add-Type[\t ]+@'\r?\n([\s\S]*?)\r?\n[\t ]*'@[\t ]*\r?$/m.exec(helper)?.[1];
   assert.ok(source, 'NATIVE_SHELL_SOURCE_UNAVAILABLE');
   const nativeSource = path.join(root, 'native-reader.cs'), wrong = path.join(root, 'wrong.ico'), wrongPng = path.join(root, 'wrong-png.ico');
-  await fs.writeFile(nativeSource, source, { flag: 'wx' });
+  // Add a Unicode fixture writer only to this temporary compilation. WSH's
+  // shortcut property getter is lossy on the English Windows runner.
+  const fixtureSource = source.replace('public static class FundsTraceBrandIcons', 'public static partial class FundsTraceBrandIcons') + `
+public static partial class FundsTraceBrandIcons {
+    public static void CreateSyntheticShortcut(string linkPath, string target) {
+        object link = new ShellLinkObject();
+        try {
+            var wide = (IShellLinkW)link;
+            System.Runtime.InteropServices.Marshal.ThrowExceptionForHR(wide.SetPath(target));
+            System.Runtime.InteropServices.Marshal.ThrowExceptionForHR(wide.SetIconLocation(target, 0));
+            ((System.Runtime.InteropServices.ComTypes.IPersistFile)link).Save(linkPath, true);
+        } finally { System.Runtime.InteropServices.Marshal.FinalReleaseComObject(link); }
+    }
+}
+`;
+  await fs.writeFile(nativeSource, fixtureSource, { flag: 'wx' });
   await fs.writeFile(wrong, wrongIcon(), { flag: 'wx' });
   await fs.writeFile(wrongPng, wrongPngIcon(), { flag: 'wx' });
   // Preserve a real native PE's headers/sections. An empty resource-parser
@@ -100,7 +115,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version Latest
 $Report = [ordered]@{ schemaVersion = 1; status = 'running'; failedCheck = $null; checks = [ordered]@{} }
-$Stage = 'nativeSource'; $Failed = $false; $Shell = $null; $Link = $null; $Comparison = $null
+$Stage = 'nativeSource'; $Failed = $false; $Comparison = $null
 try {
     Add-Type -Path $NativeSource
     $Stage = 'fileIdentity'
@@ -115,11 +130,13 @@ try {
         [FundsTraceBrandIcons]::SameFile((Join-Path $Root 'missing.exe'), $Target)) { throw 'FILE_IDENTITY_MISMATCH' }
     $Report.checks.fileIdentity = $true
     $Stage = 'createShortcut'
-    $Shell = New-Object -ComObject WScript.Shell
-    $Link = $Shell.CreateShortcut((Join-Path $Root 'synthetic.lnk'))
-    $Link.TargetPath = Join-Path $Root 'synthetic.exe'
-    $Link.IconLocation = (Join-Path $Root 'synthetic.exe') + ',0'
-    $Link.Save()
+    [FundsTraceBrandIcons]::CreateSyntheticShortcut((Join-Path $Root 'synthetic.lnk'), $Target)
+    $Stage = 'unicodeShortcutBinding'
+    $Binding = [FundsTraceBrandIcons]::ReadShortcut((Join-Path $Root 'synthetic.lnk'))
+    if (-not [FundsTraceBrandIcons]::SameFile($Binding.TargetPath, $Target) -or
+        -not [FundsTraceBrandIcons]::SameFile($Binding.IconPath, $Target) -or $Binding.IconIndex -ne 0 -or
+        -not $Binding.TargetPath.Contains('合成')) { throw 'FILE_BINDING_MISMATCH' }
+    $Report.checks.unicodeShortcutBinding = $true
     foreach ($Small in @($false, $true)) {
         $Size = $(if ($Small) { 'Small' } else { 'Large' })
         $Stage = 'approved' + $Size
@@ -141,7 +158,7 @@ try {
 } catch {
     $Failed = $true; $Report.failedCheck = $Stage
     $Report.failureCode = 'UNCLASSIFIED'
-    $Codes = @('FILE_IDENTITY_MISMATCH', 'APPROVED_ICON_MISMATCH', 'WRONG_ICON_ACCEPTED', 'SHORTCUT_ICON_FAILED',
+    $Codes = @('FILE_IDENTITY_MISMATCH', 'FILE_BINDING_MISMATCH', 'APPROVED_ICON_MISMATCH', 'WRONG_ICON_ACCEPTED', 'SHORTCUT_ICON_FAILED',
         'ICON_INFO_FAILED', 'ICON_BITMAP_FAILED', 'ICON_DIMENSIONS_INVALID', 'ICON_DC_FAILED',
         'ICON_DIB_FAILED', 'ICON_SELECT_FAILED', 'ICON_DRAW_FAILED', 'ICON_FLUSH_FAILED', 'EXPECTED_ICON_LOAD_FAILED')
     $Cause = $_.Exception
@@ -163,10 +180,6 @@ try {
         catch { }
     }
 } finally {
-    try {
-        if ($null -ne $Link) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Link) }
-        if ($null -ne $Shell) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Shell) }
-    } catch { $Failed = $true; $Report.failedCheck = 'comCleanup' }
     $Report.status = $(if ($Failed) { 'failed' } else { 'passed' })
     $Report | ConvertTo-Json -Depth 4 -Compress
 }
@@ -184,8 +197,8 @@ if ($Failed) { exit 1 }
     let failedCheck = null, failureCode = null, comparison = null, reference = null, preview = null;
     try {
       const value = JSON.parse(String(error.stdout || '').replace(/^\uFEFF/, ''));
-      if (['nativeSource', 'fileIdentity', 'createShortcut', 'approvedLarge', 'approvedSmall', 'wrongLarge', 'wrongSmall', 'wrongPngLarge', 'wrongPngSmall', 'comCleanup'].includes(value.failedCheck)) failedCheck = value.failedCheck;
-      if (['UNCLASSIFIED', 'FILE_IDENTITY_MISMATCH', 'APPROVED_ICON_MISMATCH', 'WRONG_ICON_ACCEPTED', 'SHORTCUT_ICON_FAILED',
+      if (['nativeSource', 'fileIdentity', 'createShortcut', 'unicodeShortcutBinding', 'approvedLarge', 'approvedSmall', 'wrongLarge', 'wrongSmall', 'wrongPngLarge', 'wrongPngSmall', 'comCleanup'].includes(value.failedCheck)) failedCheck = value.failedCheck;
+      if (['UNCLASSIFIED', 'FILE_IDENTITY_MISMATCH', 'FILE_BINDING_MISMATCH', 'APPROVED_ICON_MISMATCH', 'WRONG_ICON_ACCEPTED', 'SHORTCUT_ICON_FAILED',
         'ICON_INFO_FAILED', 'ICON_BITMAP_FAILED', 'ICON_DIMENSIONS_INVALID', 'ICON_DC_FAILED', 'ICON_DIB_FAILED',
         'ICON_SELECT_FAILED', 'ICON_DRAW_FAILED', 'ICON_FLUSH_FAILED', 'EXPECTED_ICON_LOAD_FAILED'].includes(value.failureCode)) failureCode = value.failureCode;
       const safeFrame = frame => frame && Number.isInteger(frame.width) && frame.width > 0 && frame.width <= 1024
@@ -208,5 +221,5 @@ if ($Failed) { exit 1 }
   try { result = JSON.parse(stdout.replace(/^\uFEFF/, '')); }
   catch { throw new Error('NATIVE_SHELL_JSON_INVALID'); }
   assert.deepEqual(result, { schemaVersion: 1, status: 'passed', failedCheck: null,
-    checks: { fileIdentity: true, approvedLarge: true, wrongLarge: true, wrongPngLarge: true, approvedSmall: true, wrongSmall: true, wrongPngSmall: true } });
+    checks: { fileIdentity: true, unicodeShortcutBinding: true, approvedLarge: true, wrongLarge: true, wrongPngLarge: true, approvedSmall: true, wrongSmall: true, wrongPngSmall: true } });
 });

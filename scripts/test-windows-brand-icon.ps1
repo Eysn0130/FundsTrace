@@ -53,6 +53,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 public static class FundsTraceBrandIcons {
@@ -84,6 +85,35 @@ public static class FundsTraceBrandIcons {
     }
     [StructLayout(LayoutKind.Sequential)] struct WindowRect { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] struct FileIdentity { public ulong Volume, Low, High; }
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    class ShellLinkObject { }
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellLinkW {
+        // Keep the complete native vtable order, including methods this reader
+        // never calls. All string parameters use the Unicode interface ABI.
+        [PreserveSig] int GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int capacity, IntPtr findData, uint flags);
+        [PreserveSig] int GetIDList(out IntPtr itemList);
+        [PreserveSig] int SetIDList(IntPtr itemList);
+        [PreserveSig] int GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder description, int capacity);
+        [PreserveSig] int SetDescription([MarshalAs(UnmanagedType.LPWStr)] string description);
+        [PreserveSig] int GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder directory, int capacity);
+        [PreserveSig] int SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string directory);
+        [PreserveSig] int GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder arguments, int capacity);
+        [PreserveSig] int SetArguments([MarshalAs(UnmanagedType.LPWStr)] string arguments);
+        [PreserveSig] int GetHotkey(out ushort hotkey);
+        [PreserveSig] int SetHotkey(ushort hotkey);
+        [PreserveSig] int GetShowCmd(out int command);
+        [PreserveSig] int SetShowCmd(int command);
+        [PreserveSig] int GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int capacity, out int index);
+        [PreserveSig] int SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+        [PreserveSig] int SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+        [PreserveSig] int Resolve(IntPtr window, uint flags);
+        [PreserveSig] int SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
+    }
+    public sealed class ShortcutBinding {
+        public string TargetPath, IconPath;
+        public int IconIndex;
+    }
     public sealed class Comparison {
         public string Source;
         public int Width, Height;
@@ -126,6 +156,33 @@ public static class FundsTraceBrandIcons {
                 !GetFileInformationByHandleEx(expected, 18, out b, size) ||
                 (a.High == 0 && a.Low == 0) || (b.High == 0 && b.Low == 0)) return false;
             return a.Volume == b.Volume && a.High == b.High && a.Low == b.Low;
+        }
+    }
+    public static ShortcutBinding ReadShortcut(string path) {
+        object instance = null;
+        try {
+            instance = new ShellLinkObject();
+            // Use the framework's complete IPersistFile declaration. STGM_READ
+            // loads only; never Resolve, Save, or change the original link.
+            ((System.Runtime.InteropServices.ComTypes.IPersistFile)instance).Load(path, 0);
+            var link = (IShellLinkW)instance;
+            // GetPath documents MAX_PATH. Reject a full buffer rather than
+            // allowing a potentially truncated path to participate in binding.
+            const int capacity = 260;
+            var target = new StringBuilder(capacity);
+            var icon = new StringBuilder(capacity);
+            int index;
+            // SLGP_RAWPATH retains the stored Unicode path, including any
+            // environment variables expanded later by Get-NormalizedPath.
+            if (link.GetPath(target, target.Capacity, IntPtr.Zero, 4) != 0 ||
+                target.Length == 0 || target.Length >= capacity - 1)
+                throw new InvalidOperationException("SHORTCUT_TARGET_MISMATCH");
+            if (link.GetIconLocation(icon, icon.Capacity, out index) != 0 || icon.Length >= capacity - 1)
+                throw new InvalidOperationException("SHORTCUT_ICON_LOCATION_MISMATCH");
+            return new ShortcutBinding { TargetPath = target.ToString(), IconPath = icon.ToString(), IconIndex = index };
+        } finally {
+            // Both interface casts share this one RCW; release it only once.
+            if (instance != null) Marshal.FinalReleaseComObject(instance);
         }
     }
     [DllImport("user32.dll", SetLastError = true)] static extern bool EnumWindows(EnumProc callback, IntPtr state);
@@ -363,55 +420,44 @@ public static class FundsTraceBrandIcons {
             }
         } finally { if ($null -ne $Process) { $Process.Dispose() } }
     } else {
-        $Shell = $null
-        try {
-            $Stage = 'shortcutReader'
-            $Shell = New-Object -ComObject WScript.Shell
-            $Report.pathBindings = [ordered]@{}
-            # Fixed product-name candidates only; no directory recursion or other shortcuts.
-            $Locations = [ordered]@{
-                desktopShortcut = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
-                startMenuShortcut = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
+        $Stage = 'shortcutReader'
+        $Report.pathBindings = [ordered]@{}
+        # Fixed product-name candidates only; no directory recursion or other shortcuts.
+        $Locations = [ordered]@{
+            desktopShortcut = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+            startMenuShortcut = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
+        }
+        foreach ($Name in $Locations.Keys) {
+            $Stage = $Name
+            $Directory = [string]$Locations[$Name]
+            if (-not $Directory -or -not [IO.Path]::IsPathRooted($Directory)) { throw 'SHORTCUT_DIRECTORY_UNAVAILABLE' }
+            $ShortcutPath = Join-Path $Directory 'FundsTrace.lnk'
+            if (-not (Test-Path -LiteralPath $ShortcutPath -PathType Leaf)) { throw 'SHORTCUT_MISSING' }
+            # Read the stored Unicode fields without WSH's ANSI conversion.
+            $Shortcut = [FundsTraceBrandIcons]::ReadShortcut($ShortcutPath)
+            $TargetPath = Get-NormalizedPath ([string]$Shortcut.TargetPath)
+            $Binding = [ordered]@{
+                targetTextMatch = ($TargetPath -ieq $InstalledExe)
+                targetFileMatch = [FundsTraceBrandIcons]::SameFile($TargetPath, $InstalledExe)
             }
-            foreach ($Name in $Locations.Keys) {
-                $Stage = $Name
-                $Directory = [string]$Locations[$Name]
-                if (-not $Directory -or -not [IO.Path]::IsPathRooted($Directory)) { throw 'SHORTCUT_DIRECTORY_UNAVAILABLE' }
-                $ShortcutPath = Join-Path $Directory 'FundsTrace.lnk'
-                if (-not (Test-Path -LiteralPath $ShortcutPath -PathType Leaf)) { throw 'SHORTCUT_MISSING' }
-                $Shortcut = $null
-                try {
-                    # CreateShortcut opens the existing link. Do not call Save or Resolve.
-                    $Shortcut = $Shell.CreateShortcut($ShortcutPath)
-                    $TargetPath = Get-NormalizedPath ([string]$Shortcut.TargetPath)
-                    $Binding = [ordered]@{
-                        targetTextMatch = ($TargetPath -ieq $InstalledExe)
-                        targetFileMatch = [FundsTraceBrandIcons]::SameFile($TargetPath, $InstalledExe)
-                    }
-                    $Report.pathBindings[$Name] = $Binding
-                    if (-not $Binding.targetFileMatch) { throw 'SHORTCUT_TARGET_MISMATCH' }
-                    $IconLocation = ([string]$Shortcut.IconLocation).Trim()
-                    if ($IconLocation) {
-                        $IconPath = $IconLocation; $IconIndex = 0
-                        if ($IconLocation -match '^(.*),\s*(-?\d+)\s*$') { $IconPath = $Matches[1]; $IconIndex = [int]$Matches[2] }
-                        if ($IconIndex -ne 0) { throw 'SHORTCUT_ICON_LOCATION_MISMATCH' }
-                        $NormalizedIcon = Get-NormalizedPath $IconPath
-                        $Binding.iconLocationTextMatch = ($NormalizedIcon -ieq $InstalledExe)
-                        $Binding.iconLocationFileMatch = [FundsTraceBrandIcons]::SameFile($NormalizedIcon, $InstalledExe)
-                        if (-not $Binding.iconLocationFileMatch) { throw 'SHORTCUT_ICON_LOCATION_MISMATCH' }
-                    }
-                    foreach ($Small in @($false, $true)) {
-                        $Comparison = [FundsTraceBrandIcons]::Shortcut($ShortcutPath, $ExpectedIco, $Small)
-                        $Comparison.Source = $Name + '/' + $Comparison.Source
-                        $Report.iconComparisons.Add($Comparison)
-                        if (-not $Comparison.Matched) { throw 'SHORTCUT_ICON_PIXEL_MISMATCH' }
-                    }
-                    $Report.checks[$Name] = 'passed'
-                } finally {
-                    if ($null -ne $Shortcut) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Shortcut) }
-                }
+            $Report.pathBindings[$Name] = $Binding
+            if (-not $Binding.targetFileMatch) { throw 'SHORTCUT_TARGET_MISMATCH' }
+            $IconPath = ([string]$Shortcut.IconPath).Trim()
+            if ($Shortcut.IconIndex -ne 0) { throw 'SHORTCUT_ICON_LOCATION_MISMATCH' }
+            if ($IconPath) {
+                $NormalizedIcon = Get-NormalizedPath $IconPath
+                $Binding.iconLocationTextMatch = ($NormalizedIcon -ieq $InstalledExe)
+                $Binding.iconLocationFileMatch = [FundsTraceBrandIcons]::SameFile($NormalizedIcon, $InstalledExe)
+                if (-not $Binding.iconLocationFileMatch) { throw 'SHORTCUT_ICON_LOCATION_MISMATCH' }
             }
-        } finally { if ($null -ne $Shell) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Shell) } }
+            foreach ($Small in @($false, $true)) {
+                $Comparison = [FundsTraceBrandIcons]::Shortcut($ShortcutPath, $ExpectedIco, $Small)
+                $Comparison.Source = $Name + '/' + $Comparison.Source
+                $Report.iconComparisons.Add($Comparison)
+                if (-not $Comparison.Matched) { throw 'SHORTCUT_ICON_PIXEL_MISMATCH' }
+            }
+            $Report.checks[$Name] = 'passed'
+        }
     }
 } catch {
     $Failed = $true; $Report.failedCheck = $Stage
