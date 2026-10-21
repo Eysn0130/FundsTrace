@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "sourceCommit": "39fa1b66d4273d2a5e709289522e577c9ca2aac8",
+  "installerUpgradeFrom": "0.1.8",
+  "sourceRun": "39561022602",
+  "tag": "v0.1.9",
+  "installer": {
+    "path": "build/desktop/electron/FundsTrace-0.1.9-windows-x64-unsigned.exe",
+    "bytes": 162368036,
+    "sha256": "064d0f4410a38652fffeb3279e180edbf9260605ddab4b6f5976097f6ef5c94b"
+  },
+  "upgradeBaseline": {
+    "schemaVersion": 1,
+    "targetVersion": "0.1.9",
+    "prior": {
+      "version": "0.1.8",
+      "sha256": "7c568bc4ca8f0cd4fa9f86ebeb876e234ab46f5aa51f5d1f92a1245f4190ba0e",
+      "bytes": 160337859
+    },
+    "baselineSha256": "187a1f5f8732de5ea73dcae9a6efb9c33cb49126d40cf8278a0109d6ee17a9f8",
+    "priorInstallerUrl": "https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.8/FundsTrace-0.1.8-windows-x64-unsigned.exe"
+  },
+  "resourceCount": 112,
+  "hostFileCount": 9,
+  "sourceResourcesIndependentlyChecked": 109,
+  "installedAppChecks": 79,
+  "standardAppChecks": 79,
+  "standardUserArchiveSha256": "3b0ea6978d4f384be940457b61c2d3eebf0fb280edd70f4cbfdc7119e993431d",
+  "publicReleasePublished": false
+}

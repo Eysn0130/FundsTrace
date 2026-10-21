@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "version": "0.1.9",
+  "checks": {
+    "exactHostAllowlist": true,
+    "packageIdentity": true,
+    "sourceHashes": true,
+    "preferencesAndPreloadIncluded": true
+  },
+  "hostFiles": {
+    "main.cjs": "1b5caf753c656d59bcbb255029ae2244872438872669f9d4b4f4c052b79f7957",
+    "backend.cjs": "da88fcd743735a0d55c6ce1ef9b3822cea60b6e97a4b127dd11991ffb4f9791e",
+    "host-policy.cjs": "ce3e4304c16360ac59ac6b23251cab1bc99ddbc4ee8f4c504fd4e27714c94115",
+    "preferences.cjs": "22886b804768d5aebd17024c7f9dba3ccbb09645da278f9b75e2d0f5643ae5cd",
+    "preload.cjs": "0343b6fb7b16dc086bbb300fabf92d3e25c296b16398fbcb7fc7929391ce7fe7",
+    "updates.cjs": "102ef20a6da033fdf98d18380607afc509c61443731a77e5ce63db881b8cfeb6",
+    "assets/icon.png": "804f473a29c05d0a50968341c47f11a24547732758b67240fc6615cf719abae4",
+    "assets/icon.ico": "fb6156b2f4f141121d49460f0d41133556dcc1cfb9622dc1ef3bf2fc1f25ca4c"
+  },
+  "appArchiveSha256": "8567179d2ebdee9ebf4e0c56b1bf8678737a2f8ab1d7502922ba6d709b9d22fc"
+}
