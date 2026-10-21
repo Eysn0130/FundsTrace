@@ -53,6 +53,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using Microsoft.Win32.SafeHandles;
 
 public static class FundsTraceBrandIcons {
     const uint WM_GETICON = 0x007F, DI_NORMAL = 3, LR_LOADFROMFILE = 0x0010;
@@ -82,6 +83,7 @@ public static class FundsTraceBrandIcons {
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)] public string TypeName;
     }
     [StructLayout(LayoutKind.Sequential)] struct WindowRect { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] struct FileIdentity { public ulong Volume, Low, High; }
     public sealed class Comparison {
         public string Source;
         public int Width, Height;
@@ -107,6 +109,25 @@ public static class FundsTraceBrandIcons {
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr CopyIcon(IntPtr icon);
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)] static extern IntPtr SHGetFileInfoW(string path, uint attributes, out ShellFileInfo info, uint size, uint flags);
     [DllImport("comctl32.dll", ExactSpelling = true)] static extern IntPtr ImageList_GetIcon(IntPtr imageList, int index, uint flags);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", ExactSpelling = true)]
+    static extern bool GetFileInformationByHandleEx(SafeFileHandle file, int informationClass, out FileIdentity information, uint size);
+    public static bool SameFile(string actualPath, string expectedPath) {
+        // Windows shortcuts may expand an 8.3 install path. Bind to the actual
+        // existing file, not one spelling of its path. Metadata-only handles
+        // remain open together; both are owned and disposed here.
+        using (var actual = CreateFileW(actualPath, 0, 7, IntPtr.Zero, 3, 0, IntPtr.Zero))
+        using (var expected = CreateFileW(expectedPath, 0, 7, IntPtr.Zero, 3, 0, IntPtr.Zero)) {
+            FileIdentity a, b;
+            uint size = (uint)Marshal.SizeOf<FileIdentity>();
+            // FileIdInfo (18) retains the full 128-bit ID, including on ReFS.
+            if (actual.IsInvalid || expected.IsInvalid || !GetFileInformationByHandleEx(actual, 18, out a, size) ||
+                !GetFileInformationByHandleEx(expected, 18, out b, size) ||
+                (a.High == 0 && a.Low == 0) || (b.High == 0 && b.Low == 0)) return false;
+            return a.Volume == b.Volume && a.High == b.High && a.Low == b.Low;
+        }
+    }
     [DllImport("user32.dll", SetLastError = true)] static extern bool EnumWindows(EnumProc callback, IntPtr state);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
@@ -292,7 +313,7 @@ public static class FundsTraceBrandIcons {
         $Process = $null
         try {
             $Process = [Diagnostics.Process]::GetProcessById($ProcessId)
-            if ((Get-NormalizedPath $Process.MainModule.FileName) -ine $InstalledExe -or $Process.HasExited) {
+            if (-not [FundsTraceBrandIcons]::SameFile((Get-NormalizedPath $Process.MainModule.FileName), $InstalledExe) -or $Process.HasExited) {
                 throw 'INSTALLED_PROCESS_MISMATCH'
             }
             $Report.checks.installedProcessBinding = 'passed'
@@ -346,6 +367,7 @@ public static class FundsTraceBrandIcons {
         try {
             $Stage = 'shortcutReader'
             $Shell = New-Object -ComObject WScript.Shell
+            $Report.pathBindings = [ordered]@{}
             # Fixed product-name candidates only; no directory recursion or other shortcuts.
             $Locations = [ordered]@{
                 desktopShortcut = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
@@ -361,12 +383,22 @@ public static class FundsTraceBrandIcons {
                 try {
                     # CreateShortcut opens the existing link. Do not call Save or Resolve.
                     $Shortcut = $Shell.CreateShortcut($ShortcutPath)
-                    if ((Get-NormalizedPath ([string]$Shortcut.TargetPath)) -ine $InstalledExe) { throw 'SHORTCUT_TARGET_MISMATCH' }
+                    $TargetPath = Get-NormalizedPath ([string]$Shortcut.TargetPath)
+                    $Binding = [ordered]@{
+                        targetTextMatch = ($TargetPath -ieq $InstalledExe)
+                        targetFileMatch = [FundsTraceBrandIcons]::SameFile($TargetPath, $InstalledExe)
+                    }
+                    $Report.pathBindings[$Name] = $Binding
+                    if (-not $Binding.targetFileMatch) { throw 'SHORTCUT_TARGET_MISMATCH' }
                     $IconLocation = ([string]$Shortcut.IconLocation).Trim()
                     if ($IconLocation) {
                         $IconPath = $IconLocation; $IconIndex = 0
                         if ($IconLocation -match '^(.*),\s*(-?\d+)\s*$') { $IconPath = $Matches[1]; $IconIndex = [int]$Matches[2] }
-                        if ($IconIndex -ne 0 -or (Get-NormalizedPath $IconPath) -ine $InstalledExe) { throw 'SHORTCUT_ICON_LOCATION_MISMATCH' }
+                        if ($IconIndex -ne 0) { throw 'SHORTCUT_ICON_LOCATION_MISMATCH' }
+                        $NormalizedIcon = Get-NormalizedPath $IconPath
+                        $Binding.iconLocationTextMatch = ($NormalizedIcon -ieq $InstalledExe)
+                        $Binding.iconLocationFileMatch = [FundsTraceBrandIcons]::SameFile($NormalizedIcon, $InstalledExe)
+                        if (-not $Binding.iconLocationFileMatch) { throw 'SHORTCUT_ICON_LOCATION_MISMATCH' }
                     }
                     foreach ($Small in @($false, $true)) {
                         $Comparison = [FundsTraceBrandIcons]::Shortcut($ShortcutPath, $ExpectedIco, $Small)

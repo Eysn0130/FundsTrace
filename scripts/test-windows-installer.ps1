@@ -142,6 +142,22 @@ function Get-SafeIconFailure([string]$Text) {
             }
         }
     }
+    if ($Icon.Contains('pathBindings') -and $Icon['pathBindings'] -is [Collections.IDictionary]) {
+        $Bindings = [ordered]@{}
+        foreach ($Name in @('desktopShortcut', 'startMenuShortcut')) {
+            if (-not $Icon['pathBindings'].Contains($Name) -or
+                $Icon['pathBindings'][$Name] -isnot [Collections.IDictionary]) { continue }
+            $Binding = $Icon['pathBindings'][$Name]; $SafeBinding = [ordered]@{}; $Malformed = $false
+            foreach ($Field in @('targetTextMatch', 'targetFileMatch', 'iconLocationTextMatch', 'iconLocationFileMatch')) {
+                if ($Binding.Contains($Field)) {
+                    if ($Binding[$Field] -isnot [bool]) { $Malformed = $true; break }
+                    $SafeBinding[$Field] = [bool]$Binding[$Field]
+                }
+            }
+            if (-not $Malformed -and $SafeBinding.Count -gt 0) { $Bindings[$Name] = $SafeBinding }
+        }
+        if ($Bindings.Count -gt 0) { $Safe.pathBindings = $Bindings }
+    }
     $Sources = @('desktopShortcut/shell-small', 'desktopShortcut/shell-large', 'startMenuShortcut/shell-small', 'startMenuShortcut/shell-large')
     if ($Icon.Contains('iconComparisons') -and $Icon['iconComparisons'] -is [Array] -and $Icon['iconComparisons'].Count -le 4) {
         foreach ($Frame in $Icon['iconComparisons']) {

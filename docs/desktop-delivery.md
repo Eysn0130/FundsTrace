@@ -62,6 +62,8 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 快捷方式比较通过 `SHGFI_SYSICONINDEX` 和 `ImageList_GetIcon(ILD_NORMAL)` 读取 Shell 的基础图标，不把系统快捷箭头误认为应用图形变化。批准 ICO 也经过同一 Shell 流程，严格比较黑白背景下的完整像素与尺寸；PE 资源仍单独比对源 ICO 全部图像。原生回归使用临时资源 PE 与真实 `.lnk`，要求批准图标通过、DIB 与 PNG 两种错误图标均失败。失败报告保留固定检查名、错误码、尺寸、摘要及有界合成图标像素，方便区分快捷方式缺失、目标错误和图像不一致，不输出原始子进程日志。[Microsoft Shell 图标接口](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shgetfileinfow)
 
+快捷方式目标、图标位置与窗口进程路径通过同时打开文件句柄后的卷号及文件标识核对，允许 Windows 的长短路径别名指向同一安装文件；相同字节的另一文件仍拒绝。报告仅记录路径文本和文件身份是否一致，不记录路径内容。
+
 安装版主窗口启动后，若当前 CI 桌面存在可见 Shell 任务栏，会另保存 `native-installed-app.taskbar.png`，并记录截图尺寸与 SHA-256。它来自实际屏幕的任务栏矩形，不是 renderer 截图或拼合图。没有 Shell、截图不可用或尚未查看时不记录任务栏外观通过；脚本报告保留 `reviewed:false`，截图核对结果须在对应候选记录中单列。
 
 上述自动检查仍仅覆盖 Windows hosted runner。它不证明 Windows 10／11 任务栏最终外观、既有固定图标缓存、真实系统 DPI 或 SmartScreen；没有可用交互桌面时不能把这些项目记为通过。候选构建默认不创建 Tag 或 Release，未获发布授权时仅保留 Actions 产物，现有 Latest 和下载入口保持原版本。

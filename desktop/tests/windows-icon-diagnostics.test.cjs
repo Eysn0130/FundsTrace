@@ -23,6 +23,13 @@ test('Windows icon failure diagnostics retain only approved synthetic fields and
     iconComparisons: [{ ...frame, path: syntheticPath, extra: { rawError: marker } }],
     path: syntheticPath, extra: { rawStdout: marker, rawStderr: marker },
   };
+  const pathBindings = {
+    desktopShortcut: { targetTextMatch: false, targetFileMatch: true, iconLocationTextMatch: false, iconLocationFileMatch: true },
+    startMenuShortcut: { targetTextMatch: true, targetFileMatch: true, iconLocationTextMatch: true, iconLocationFileMatch: true },
+  };
+  const rejectedBinding = {
+    targetTextMatch: false, targetFileMatch: false, iconLocationTextMatch: false, iconLocationFileMatch: false,
+  };
   const cases = [
     JSON.stringify(payload),
     JSON.stringify({ ...payload, failureCode: marker }),
@@ -34,6 +41,20 @@ test('Windows icon failure diagnostics retain only approved synthetic fields and
       { ...frame, Source: syntheticPath }, { ...frame, Width: 1025 },
       { ...frame, ActualSha256: syntheticPath }, { ...frame, Matched: 'false' },
     ] }),
+    JSON.stringify({ ...payload, pathBindings: {
+      desktopShortcut: { ...pathBindings.desktopShortcut, rawTarget: syntheticPath },
+      startMenuShortcut: { ...pathBindings.startMenuShortcut, extra: { rawIcon: syntheticPath } },
+      arbitrarySource: { targetFileMatch: true, rawTarget: syntheticPath },
+    } }),
+    JSON.stringify({ ...payload, pathBindings: {
+      desktopShortcut: { targetTextMatch: syntheticPath, targetFileMatch: true },
+      startMenuShortcut: { iconLocationFileMatch: 'false', targetTextMatch: false },
+    } }),
+    JSON.stringify({ ...payload, pathBindings: {
+      desktopShortcut: syntheticPath, startMenuShortcut: [true, false], arbitrarySource: { targetFileMatch: true },
+    } }),
+    JSON.stringify({ ...payload, pathBindings: [{ desktopShortcut: pathBindings.desktopShortcut }] }),
+    JSON.stringify({ ...payload, pathBindings: { desktopShortcut: rejectedBinding } }),
   ];
   const command = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -75,6 +96,7 @@ try {
   const unavailable = { kind: 'brand-icon', status: 'diagnostic-unavailable' };
   assert.deepEqual(results, [
     safe, { ...safe, failureCode: 'UNCLASSIFIED' }, unavailable, unavailable, unavailable, unavailable,
-    { ...safe, iconComparisons: [] },
+    { ...safe, iconComparisons: [] }, { ...safe, pathBindings }, safe, safe, safe,
+    { ...safe, pathBindings: { desktopShortcut: rejectedBinding } },
   ]);
 });

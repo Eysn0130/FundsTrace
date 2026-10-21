@@ -103,6 +103,17 @@ $Report = [ordered]@{ schemaVersion = 1; status = 'running'; failedCheck = $null
 $Stage = 'nativeSource'; $Failed = $false; $Shell = $null; $Link = $null; $Comparison = $null
 try {
     Add-Type -Path $NativeSource
+    $Stage = 'fileIdentity'
+    $Target = Join-Path $Root 'synthetic.exe'
+    $Alias = Join-Path $Root 'same-file-alias.exe'
+    $Copy = Join-Path $Root 'same-bytes-different-file.exe'
+    New-Item -ItemType HardLink -Path $Alias -Target $Target | Out-Null
+    [IO.File]::Copy($Target, $Copy)
+    if (-not [FundsTraceBrandIcons]::SameFile($Alias, $Target) -or
+        -not [FundsTraceBrandIcons]::SameFile($Target, $Target) -or
+        [FundsTraceBrandIcons]::SameFile($Copy, $Target) -or
+        [FundsTraceBrandIcons]::SameFile((Join-Path $Root 'missing.exe'), $Target)) { throw 'FILE_IDENTITY_MISMATCH' }
+    $Report.checks.fileIdentity = $true
     $Stage = 'createShortcut'
     $Shell = New-Object -ComObject WScript.Shell
     $Link = $Shell.CreateShortcut((Join-Path $Root 'synthetic.lnk'))
@@ -130,7 +141,7 @@ try {
 } catch {
     $Failed = $true; $Report.failedCheck = $Stage
     $Report.failureCode = 'UNCLASSIFIED'
-    $Codes = @('APPROVED_ICON_MISMATCH', 'WRONG_ICON_ACCEPTED', 'SHORTCUT_ICON_FAILED',
+    $Codes = @('FILE_IDENTITY_MISMATCH', 'APPROVED_ICON_MISMATCH', 'WRONG_ICON_ACCEPTED', 'SHORTCUT_ICON_FAILED',
         'ICON_INFO_FAILED', 'ICON_BITMAP_FAILED', 'ICON_DIMENSIONS_INVALID', 'ICON_DC_FAILED',
         'ICON_DIB_FAILED', 'ICON_SELECT_FAILED', 'ICON_DRAW_FAILED', 'ICON_FLUSH_FAILED', 'EXPECTED_ICON_LOAD_FAILED')
     $Cause = $_.Exception
@@ -173,8 +184,8 @@ if ($Failed) { exit 1 }
     let failedCheck = null, failureCode = null, comparison = null, reference = null, preview = null;
     try {
       const value = JSON.parse(String(error.stdout || '').replace(/^\uFEFF/, ''));
-      if (['nativeSource', 'createShortcut', 'approvedLarge', 'approvedSmall', 'wrongLarge', 'wrongSmall', 'wrongPngLarge', 'wrongPngSmall', 'comCleanup'].includes(value.failedCheck)) failedCheck = value.failedCheck;
-      if (['UNCLASSIFIED', 'APPROVED_ICON_MISMATCH', 'WRONG_ICON_ACCEPTED', 'SHORTCUT_ICON_FAILED',
+      if (['nativeSource', 'fileIdentity', 'createShortcut', 'approvedLarge', 'approvedSmall', 'wrongLarge', 'wrongSmall', 'wrongPngLarge', 'wrongPngSmall', 'comCleanup'].includes(value.failedCheck)) failedCheck = value.failedCheck;
+      if (['UNCLASSIFIED', 'FILE_IDENTITY_MISMATCH', 'APPROVED_ICON_MISMATCH', 'WRONG_ICON_ACCEPTED', 'SHORTCUT_ICON_FAILED',
         'ICON_INFO_FAILED', 'ICON_BITMAP_FAILED', 'ICON_DIMENSIONS_INVALID', 'ICON_DC_FAILED', 'ICON_DIB_FAILED',
         'ICON_SELECT_FAILED', 'ICON_DRAW_FAILED', 'ICON_FLUSH_FAILED', 'EXPECTED_ICON_LOAD_FAILED'].includes(value.failureCode)) failureCode = value.failureCode;
       const safeFrame = frame => frame && Number.isInteger(frame.width) && frame.width > 0 && frame.width <= 1024
@@ -197,5 +208,5 @@ if ($Failed) { exit 1 }
   try { result = JSON.parse(stdout.replace(/^\uFEFF/, '')); }
   catch { throw new Error('NATIVE_SHELL_JSON_INVALID'); }
   assert.deepEqual(result, { schemaVersion: 1, status: 'passed', failedCheck: null,
-    checks: { approvedLarge: true, wrongLarge: true, wrongPngLarge: true, approvedSmall: true, wrongSmall: true, wrongPngSmall: true } });
+    checks: { fileIdentity: true, approvedLarge: true, wrongLarge: true, wrongPngLarge: true, approvedSmall: true, wrongSmall: true, wrongPngSmall: true } });
 });
