@@ -474,10 +474,41 @@ def test_standard_archive_is_identical_despite_mtime_and_creation_order(tmp_path
             file = directory / name
             file.write_bytes(content[name])
             os.utime(file, (1000000000 + index * 500000000,) * 2)
-        transfer.standard_archive(directory, outputs[index])
+        transfer.standard_archive(directory, outputs[index], set(content))
     assert outputs[0].read_bytes() == outputs[1].read_bytes()
     with zipfile.ZipFile(outputs[0]) as archive:
         assert archive.namelist() == sorted(content)
         assert {name: archive.read(name) for name in archive.namelist()} == content
         assert all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist())
         assert all(info.external_attr >> 16 == 0o100644 for info in archive.infolist())
+
+
+def test_standard_archive_excludes_only_known_preparation_diagnostic(tmp_path):
+    folder = tmp_path / "standard-user"
+    folder.mkdir()
+    evidence = {"report.json": b'{"status":"passed"}', "window.png": b"\x89PNG\r\nsynthetic"}
+    for name, content in evidence.items():
+        (folder / name).write_bytes(content)
+    (folder / "native-update-preparation.json").write_bytes(b'{"stage":"completed"}')
+    output = tmp_path / "selected.zip"
+    transfer.standard_archive(folder, output, set(evidence))
+    with zipfile.ZipFile(output) as archive:
+        assert set(archive.namelist()) == set(evidence)
+        assert {name: archive.read(name) for name in archive.namelist()} == evidence
+
+
+@pytest.mark.parametrize("change", ["missing", "unknown", "directory", "symlink"])
+def test_standard_archive_rejects_missing_unknown_or_nonregular_evidence(tmp_path, change):
+    folder = tmp_path / "standard-user"
+    folder.mkdir()
+    (folder / "report.json").write_bytes(b'{"status":"passed"}')
+    if change == "missing":
+        (folder / "report.json").unlink()
+    elif change == "unknown":
+        (folder / "unapproved.json").write_bytes(b'{}')
+    elif change == "directory":
+        (folder / "native-update-preparation.json").mkdir()
+    else:
+        (folder / "native-update-preparation.json").symlink_to(folder / "report.json")
+    with pytest.raises(AssertionError):
+        transfer.standard_archive(folder, tmp_path / "rejected.zip", {"report.json"})

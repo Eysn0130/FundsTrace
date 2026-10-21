@@ -222,6 +222,17 @@ def _taskbar_capture(app, *, required, account):
     return capture["sha256"]
 
 
+def standard_evidence_files(candidate, tag, app):
+    """Return the exact public standard-user file set declared by these reports."""
+    icons = _icon_declaration(candidate, tag)
+    files = set(STANDARD_FILES)
+    if candidate.get("inAppUpdateFixture") is True:
+        files.update(UPDATE_SCREENSHOTS)
+    if _taskbar_capture(app, required=icons, account="standard-user") is not None:
+        files.add(TASKBAR_SCREENSHOT)
+    return files
+
+
 def _required_files(candidate, tag, app, installer, standard):
     icons = _icon_declaration(candidate, tag)
     _require(STANDARD_FILES <= set(standard), "Missing standard-user ZIP members")
@@ -230,20 +241,17 @@ def _required_files(candidate, tag, app, installer, standard):
         _account_icon_reports(app, installer, "main")
         _account_icon_reports(standard_app, _json_value(standard["native-installer-smoke.json"]), "standard-user")
     files = dict(EVIDENCE_FILES)
-    standard_files = set(STANDARD_FILES)
+    standard_files = standard_evidence_files(candidate, tag, standard_app)
     if icons:
         files[ICON_REPORT] = ICON_REPORT
     if candidate.get("inAppUpdateFixture") is True:
         files.update({name: name for name in UPDATE_SCREENSHOTS})
-        standard_files.update(UPDATE_SCREENSHOTS)
     captures = {
         "main": _taskbar_capture(app, required=icons, account="main"),
         "standard-user": _taskbar_capture(standard_app, required=icons, account="standard-user"),
     }
     if captures["main"] is not None:
         files[TASKBAR_SCREENSHOT] = TASKBAR_SCREENSHOT
-    if captures["standard-user"] is not None:
-        standard_files.add(TASKBAR_SCREENSHOT)
     _require(set(standard) == standard_files, "Unexpected or missing standard-user ZIP members")
     if captures["standard-user"] is not None:
         _require(hashlib.sha256(standard[TASKBAR_SCREENSHOT]).hexdigest() == captures["standard-user"],
