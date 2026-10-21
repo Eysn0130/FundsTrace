@@ -5,6 +5,9 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
+const { EventEmitter } = require('node:events');
+const { pathToFileURL, fileURLToPath } = require('node:url');
 const { createIssuer, machineCode, expiryCode, payloadBytes, saveNewFiles, DOMAIN } = require('../issuer/core.cjs');
 const { trustedSender, localResource } = require('../issuer/policy.cjs');
 // RFC 8032 test vector 1: this published seed is not a deployment signing key.
@@ -66,8 +69,75 @@ test('IPC requires exact owned main frame and local resources have an explicit a
 test('issuer packaging has its own identity and excludes backend/business resources', () => {
   const builder = require('../issuer/electron-builder.cjs');
   assert.equal(builder.appId, 'com.eysn.fundstrace.issuer'); assert.equal(builder.extraMetadata.main, 'issuer/main.cjs');
-  assert.deepEqual(builder.files, ['package.json', 'issuer/main.cjs', 'issuer/core.cjs', 'issuer/policy.cjs', 'issuer/preload.cjs', 'issuer/renderer.js', 'issuer/index.html', 'issuer/style.css']);
+  assert.deepEqual(builder.files, ['package.json', 'issuer/main.cjs', 'issuer/core.cjs', 'issuer/policy.cjs', 'issuer/preload.cjs', 'issuer/renderer.js', 'issuer/index.html', 'issuer/style.css', 'assets/icon.png', 'assets/icon.ico']);
   assert.equal(builder.files.some(file => /[?*]|\.pem$|\.key$/.test(file)), false);
   assert.deepEqual(builder.extraResources.map(item => item.from), ['../LICENSE', '../THIRD_PARTY_NOTICES.md']);
-  assert.equal(builder.publish, null); assert.equal(builder.win.signAndEditExecutable, false);
+  assert.equal(builder.publish, null); assert.equal(builder.win.signExecutable, false);
+  assert.notEqual(builder.win.signAndEditExecutable, false);
+});
+
+test('Issuer uses the shared packaged icon for its page, window and macOS dock without loading keys', async () => {
+  const source = await fs.readFile(path.join(__dirname, '../issuer/main.cjs'), 'utf8');
+  const html = await fs.readFile(path.join(__dirname, '../issuer/index.html'), 'utf8');
+  const builder = require('../issuer/electron-builder.cjs');
+  const image = /<img\b[^>]*\bsrc="([^"]+)"/.exec(html)?.[1];
+  const favicon = /<link\b[^>]*\brel="icon"[^>]*\bhref="([^"]+)"/.exec(html)?.[1];
+  assert.equal(image, '../assets/icon.png');
+  assert.equal(favicon, image);
+  const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html)?.[1];
+  assert.match(csp, /(?:^|;\s*)img-src 'self'(?:;|$)/);
+  assert.match(csp, /(?:^|;\s*)connect-src 'none'(?:;|$)/);
+  const pageResources = [...html.matchAll(/<(?:link|script|img)\b[^>]*\b(?:src|href)="([^"]+)"/g)].map(match => match[1]);
+  for (const platform of ['win32', 'darwin']) {
+    const app = new EventEmitter(), state = { errors: [] };
+    app.setName = app.setAppUserModelId = app.setPath = app.quit = () => {};
+    app.getPath = () => '/synthetic/app-data';
+    app.requestSingleInstanceLock = () => true;
+    app.whenReady = () => Promise.resolve();
+    if (platform === 'darwin') app.dock = { setIcon: icon => { state.dockIcon = icon; } };
+    const local = new EventEmitter();
+    local.setPermissionRequestHandler = local.setPermissionCheckHandler = () => {};
+    local.webRequest = { onBeforeRequest: handler => { state.request = handler; } };
+    class Window extends EventEmitter {
+      constructor(options) {
+        super(); state.options = options;
+        this.webContents = new EventEmitter();
+        this.webContents.setWindowOpenHandler = () => {};
+      }
+      async loadURL(url) { state.url = url; }
+    }
+    const electron = { app, BrowserWindow: Window,
+      ipcMain: { handle() {} }, session: { fromPartition: () => local },
+      screen: { getPrimaryDisplay: () => ({ workArea: { width: 1920, height: 1040 } }) },
+      Menu: { buildFromTemplate: value => value, setApplicationMenu() {} },
+      dialog: { showErrorBox: (...args) => state.errors.push(args) } };
+    vm.runInNewContext(source, { require: name => {
+      if (name === 'electron') return electron;
+      if (name === './core.cjs') return { createIssuer: () => ({ clear() {} }) };
+      if (name === './policy.cjs') return require('../issuer/policy.cjs');
+      return require(name);
+    }, __dirname: path.resolve(__dirname, '../issuer'), process: { platform } });
+    await new Promise(resolve => setImmediate(resolve));
+    const relative = `assets/icon.${platform === 'win32' ? 'ico' : 'png'}`;
+    const icon = path.resolve(__dirname, '..', relative);
+    assert.ok(builder.files.includes(relative));
+    assert.equal(state.options.icon, icon);
+    assert.equal(state.dockIcon, platform === 'darwin' ? icon : undefined);
+    assert.equal(state.url, pathToFileURL(path.resolve(__dirname, '../issuer/index.html')).href);
+    function cancelled(url) {
+      let value;
+      state.request({ url }, result => { value = result.cancel; });
+      return value;
+    }
+    for (const name of pageResources) {
+      const url = new URL(name, state.url).href;
+      assert.equal(cancelled(url), false, `Required issuer resource is blocked: ${name}`);
+      assert.ok(builder.files.includes(path.relative(path.resolve(__dirname, '..'), fileURLToPath(url)).split(path.sep).join('/')));
+    }
+    const sharedImage = new URL(image, state.url).href;
+    for (const url of [sharedImage + '?injected', new URL('../assets/private.pem', state.url).href, 'https://example.com/icon.png', 'data:image/png;base64,c3ludGhldGlj']) {
+      assert.equal(cancelled(url), true, 'only exact allowlisted local resources are available to the page');
+    }
+    assert.deepEqual(state.errors, []);
+  }
 });

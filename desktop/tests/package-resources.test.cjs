@@ -17,7 +17,11 @@ test('actual ASAR inspection detects omitted preload, unexpected files and stale
   async function archive(name, change) {
     const directory = path.join(root, name), file = path.join(root, name + '.asar');
     await fs.mkdir(directory);
-    for (const entry of builder.files) await fs.copyFile(path.join(source, entry), path.join(directory, entry));
+    for (const entry of builder.files) {
+      const target = path.join(directory, entry);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.copyFile(path.join(source, entry), target);
+    }
     for (const [entry, origin] of modules) {
       const target = path.join(directory, entry);
       await fs.cp(origin, target, { recursive: true, filter: file => !path.relative(origin, file).split(path.sep).includes('node_modules') });
@@ -35,8 +39,10 @@ test('actual ASAR inspection detects omitted preload, unexpected files and stale
   const complete = await verifyHostArchive(await archive('complete'));
   assert.equal(complete.status, 'passed'); assert.equal(complete.checks.preferencesAndPreloadIncluded, true);
   await assert.rejects(verifyHostArchive(await archive('omitted', dir => fs.unlink(path.join(dir, 'preload.cjs')))), /exactly the reviewed files/);
+  await assert.rejects(verifyHostArchive(await archive('missing-icon', dir => fs.unlink(path.join(dir, 'assets/icon.ico')))), /exactly the reviewed files/);
   await assert.rejects(verifyHostArchive(await archive('unexpected', dir => fs.writeFile(path.join(dir, 'license.dat'), 'synthetic-only'))), /exactly the reviewed files/);
   await assert.rejects(verifyHostArchive(await archive('stale', dir => fs.appendFile(path.join(dir, 'main.cjs'), '\n// synthetic drift\n'))), /Packaged host drift/);
+  await assert.rejects(verifyHostArchive(await archive('stale-icon', dir => fs.writeFile(path.join(dir, 'assets/icon.png'), 'synthetic stale icon'))), /Packaged host drift/);
   await assert.rejects(verifyHostArchive(await archive('missing-updater', dir => fs.unlink(path.join(dir, 'node_modules/electron-updater/out/main.js')))), /Missing update runtime/);
   await assert.rejects(verifyHostArchive(await archive('stale-updater', dir => fs.appendFile(path.join(dir, 'node_modules/electron-updater/out/main.js'), '\n// drift'))), /Packaged dependency drift/);
   await assert.rejects(verifyHostArchive(await archive('wrong-updater-version', async dir => {

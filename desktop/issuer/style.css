@@ -2,6 +2,8 @@
 * { box-sizing: border-box; }
 body { margin: 0; }
 header { height: 66px; padding: 0 28px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; }
+.brand-lockup { display: flex; align-items: center; }
+.brand-lockup img { display: block; object-fit: contain; margin-right: 10px; flex: none; }
 .brand { font-size: 22px; font-weight: 600; letter-spacing: -.6px; }
 .edition { color: var(--muted); margin-left: 10px; font-size: 15px; }
 .offline { color: var(--muted); font-size: 12px; }

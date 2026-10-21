@@ -9,6 +9,10 @@ on:
         description: Published latest stable release to mirror (for retry/bootstrap)
         required: true
         type: string
+      verify_upload:
+        description: Diagnose fresh installer uploads without changing the download entry
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -81,33 +85,13 @@ jobs:
         if: steps.current.outputs.eligible == 'true'
         env:
           DOWNLOAD_RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          VERIFY_FRESH_UPLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_upload }}
           ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ steps.cloud.outputs.aliyun-access-key-id }}
           ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ steps.cloud.outputs.aliyun-access-key-secret }}
           ALIBABA_CLOUD_SECURITY_TOKEN: ${{ steps.cloud.outputs.aliyun-security-token }}
-        run: node scripts/release-publisher/publish.mjs
+        run: node scripts/release-publisher/run.mjs
       - name: Verify public latest document
         if: steps.current.outputs.eligible == 'true'
-        run: |
-          node --input-type=module - <<'NODE'
-          import { selectRelease, validateCurrent } from './scripts/release-publisher/publish.mjs';
-          const urls = ['https://api.github.com/repos/Eysn0130/FundsTrace/releases/latest',
-            `https://analytix.top/fundstrace/latest.yml?verify=${process.env.GITHUB_RUN_ID}`,
-            `https://download.analytix.top/releases/windows/site/fundstrace/latest.yml?verify=${process.env.GITHUB_RUN_ID}`];
-          const [github, ...documents] = await Promise.all(urls.map(async url => {
-            const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(30000) });
-            if (!response.ok) throw new Error('Public release metadata is unavailable');
-            return response.json();
-          }));
-          const latest = selectRelease(github);
-          for (const document of documents) {
-            const value = validateCurrent(document);
-            if (`v${value.version}` !== process.env.EXPECTED_TAG || value.version !== latest.version
-                || value.githubReleaseId !== latest.releaseId || value.githubAssetId !== latest.asset.id
-                || value.checksumSha256 !== latest.asset.digest.slice(7) || value.files[0].size !== latest.asset.size
-                || value.releaseDate !== latest.releaseDate || value.releaseNotes !== latest.releaseNotes)
-              throw new Error('Public version, installer or release notes differ from GitHub');
-          }
-          console.log(`Public FundsTrace ${latest.version} version, installer and release notes verified`);
-          NODE
+        run: node scripts/release-publisher/verify-public.mjs
         env:
           EXPECTED_TAG: ${{ inputs.tag || github.event.release.tag_name }}

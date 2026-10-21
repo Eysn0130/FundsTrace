@@ -9,13 +9,13 @@ export const pointer = 'releases/windows/site/fundstrace/latest.yml';
 const cdn = 'https://download.analytix.top';
 const versionPattern = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/;
 const hash = (data, algorithm = 'sha256', encoding = 'hex') => createHash(algorithm).update(data).digest(encoding);
-const stages = new Set(['github.metadata', 'github.download', 'installer.integrity', 'oss.read-current',
+export const stages = new Set(['github.metadata', 'github.download', 'installer.integrity', 'oss.read-current',
   'oss.read-manifest', 'oss.read-installer', 'oss.upload-installer', 'oss.verify-installer',
   'oss.upload-manifest', 'github.recheck', 'oss.recheck-current', 'oss.promote',
   'oss.verify-promotion', 'cdn.prewarm']);
-const safeCodes = new Set(['ABORT_ERR', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'EAI_AGAIN',
+export const safeCodes = new Set(['ABORT_ERR', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'EAI_AGAIN',
   'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
-  'RequestTimeout', 'ConnectionTimeoutError', 'AccessDenied', 'InvalidAccessKeyId',
+  'RequestTimeout', 'ResponseTimeoutError', 'ConnectionTimeoutError', 'AccessDenied', 'InvalidAccessKeyId',
   'SecurityTokenExpired', 'InvalidSecurityToken', 'SignatureDoesNotMatch', 'RequestTimeTooSkewed',
   'NoSuchKey', 'PreconditionFailed']);
 
@@ -30,9 +30,9 @@ export function createDiagnostics(report = () => {}, now = Date.now) {
       report({ stage, event: 'done', elapsedMs: elapsed() });
       return result;
     } catch (error) {
-      const candidate = error?.code || error?.cause?.code;
-      const code = safeCodes.has(candidate) ? candidate
-        : error?.name === 'TimeoutError' ? 'TIMEOUT' : error?.name === 'AbortError' ? 'ABORTED' : 'UNKNOWN';
+      const candidate = [error?.code, error?.cause?.code, error?.name].find(value => safeCodes.has(value));
+      const code = candidate
+        || (error?.name === 'TimeoutError' ? 'TIMEOUT' : error?.name === 'AbortError' ? 'ABORTED' : 'UNKNOWN');
       const status = error?.status || error?.statusCode || error?.res?.status;
       report({ stage, event: 'failed', elapsedMs: elapsed(), code,
         ...(Number.isInteger(status) && status >= 100 && status <= 599 ? { status } : {}) });
@@ -114,17 +114,29 @@ async function githubLatest() {
   if (!response.ok) throw Object.assign(new Error('GitHub release lookup failed'), { status: response.status });
   return selectRelease(await response.json());
 }
-async function object(client, key) {
+export async function object(client, key, options) {
   try {
-    const result = await client.get(key);
+    const result = await client.get(key, options);
     return { bytes: result.content, etag: result.res.headers.etag };
   } catch (error) { if (error.code === 'NoSuchKey') return null; throw error; }
+}
+
+export async function uploadInstaller(client, key, bytes, options = {}) {
+  try {
+    await client.multipartUpload(key, bytes, { parallel: 3, partSize: 8 * 1024 * 1024,
+      ...options, mime: 'application/octet-stream', headers: { 'Content-Type': 'application/octet-stream',
+        'Cache-Control': 'public, max-age=31536000, immutable', 'x-oss-forbid-overwrite': 'true' } });
+  } catch (error) {
+    // No abort argument: stop local streams without requiring cloud DELETE permissions.
+    client.cancel();
+    throw error;
+  }
 }
 
 // Upload exact published bytes first. A single OSS PutObject then
 // promotes the JSON document (also valid YAML) used by BOTH site and updater.
 // No CDN/ECS upload credentials ever enter a desktop installer or renderer.
-export async function publish({ client, selected, bytes, assertLatest = async () => {}, report }) {
+export async function publish({ client, uploadClient = client, selected, bytes, assertLatest = async () => {}, report }) {
   const stage = createDiagnostics(report);
   const manifest = await stage('installer.integrity', () => manifestFor(selected, bytes));
   const serialized = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
@@ -152,8 +164,7 @@ export async function publish({ client, selected, bytes, assertLatest = async ()
     return priorInstaller;
   });
   if (!priorInstaller) {
-    await stage('oss.upload-installer', () => client.put(installerKey, bytes, { headers: { 'Content-Type': 'application/octet-stream',
-      'Cache-Control': 'public, max-age=31536000, immutable', 'x-oss-forbid-overwrite': 'true' } }));
+    await stage('oss.upload-installer', () => uploadInstaller(uploadClient, installerKey, bytes));
     await stage('oss.verify-installer', async () => {
       const uploaded = await object(client, installerKey);
       if (!uploaded || uploaded.bytes.length !== bytes.length || hash(uploaded.bytes) !== manifest.checksumSha256)
@@ -182,7 +193,7 @@ export async function publish({ client, selected, bytes, assertLatest = async ()
 }
 
 async function main() {
-  const report = value => console.log(JSON.stringify(value));
+  const report = value => process.send ? process.send(value) : console.log(JSON.stringify(value));
   const stage = createDiagnostics(report);
   const selected = await stage('github.metadata', githubLatest);
   const requested = process.env.DOWNLOAD_RELEASE_TAG || '';
@@ -192,10 +203,20 @@ async function main() {
     if (!response.ok) throw Object.assign(new Error('GitHub installer download failed'), { status: response.status });
     return Buffer.from(await response.arrayBuffer());
   });
-  const client = new OSS({ region: 'oss-cn-heyuan', bucket: 'analytix-hub-downloads-prod', secure: true,
+  const clientOptions = { region: 'oss-cn-heyuan', bucket: 'analytix-hub-downloads-prod', secure: true,
     accessKeyId: process.env.ALIBABA_CLOUD_ACCESS_KEY_ID, accessKeySecret: process.env.ALIBABA_CLOUD_ACCESS_KEY_SECRET,
-    stsToken: process.env.ALIBABA_CLOUD_SECURITY_TOKEN, timeout: 10 * 60 * 1000 });
-  const manifest = await publish({ client, selected, bytes, report,
+    stsToken: process.env.ALIBABA_CLOUD_SECURITY_TOKEN, timeout: 10 * 60 * 1000 };
+  const client = new OSS(clientOptions);
+  // Only installer multipart traffic uses acceleration. Reads and metadata retain the regional endpoint.
+  const uploadClient = new OSS({ ...clientOptions, endpoint: 'https://oss-accelerate.aliyuncs.com' });
+  if (process.env.VERIFY_FRESH_UPLOAD === 'true') {
+    const { verifyFreshUpload } = await import('./verify-upload.mjs');
+    await verifyFreshUpload({ client, uploadClient, selected, bytes, report,
+      run: `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
+      assertLatest: async () => assertReleaseSnapshot(selected, await githubLatest()) });
+    return;
+  }
+  const manifest = await publish({ client, uploadClient, selected, bytes, report,
     assertLatest: async () => assertReleaseSnapshot(selected, await githubLatest()) });
   console.log(`FundsTrace ${manifest.version}: GitHub bytes verified; domestic installer and shared latest pointer verified.`);
   const receipt = await stage('cdn.prewarm', async () => {

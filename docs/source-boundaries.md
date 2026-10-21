@@ -14,7 +14,7 @@
 | 授权生成器、内嵌签名材料 | 不复制签名值及生成器 | 真实材料由维护者在受保护运行环境管理 |
 | 原单位图标、标识及模板身份示例 | 不复制图片；文本改为中性品牌及合成示例 | 公开前确认所有资源来源与使用权 |
 
-新 SVG 标识由本次源码直接绘制。已有 `static/vendor/g6.min.js` 保留为本地锁定的 G6 4.8.19 及校验补丁，来源与哈希见 [G6-PATCH.md](../static/vendor/G6-PATCH.md)；完整 MIT 文本保留为 `static/vendor/G6-LICENSE` 并列入桌面资源。补丁前本地文件未被冒认为已独立核验的上游分发包。公开维护快照的来源和第三方通知统一记于 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)，后续新增依赖须继续保留通知。
+当前应用图标来自维护者确认的 PNG 方案，批准原图、透明母版与派生资源的边界见 [品牌资产](brand/README.md)；不使用原单位图标或标识。已有 `static/vendor/g6.min.js` 保留为本地锁定的 G6 4.8.19 及校验补丁，来源与哈希见 [G6-PATCH.md](../static/vendor/G6-PATCH.md)；完整 MIT 文本保留为 `static/vendor/G6-LICENSE` 并列入桌面资源。补丁前本地文件未被冒认为已独立核验的上游分发包。公开维护快照的来源和第三方通知统一记于 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)，后续新增依赖须继续保留通知。
 
 ## 运行目录
 
