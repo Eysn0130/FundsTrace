@@ -221,3 +221,374 @@ def test_optional_original_release_snapshot_is_complete_and_bound(candidate, tmp
     snapshot["assets"][0]["digest"] = "sha256:" + "b" * 64
     with pytest.raises(ValueError, match="Original Release asset digest mismatch"):
         prepare(candidate, tmp_path / "bad-snapshot", release_snapshot=snapshot)
+
+
+OPTIONAL_EVIDENCE = {
+    name: name for name in (
+        "native-icon-resources.json", "native-installed-app.taskbar.png",
+        "native-installed-app.update-downloading.png", "native-installed-app.update-ready.png",
+    )
+}
+UPDATE_SCREENSHOTS = {"native-installed-app.update-downloading.png", "native-installed-app.update-ready.png"}
+TASKBAR_SCREENSHOT = "native-installed-app.taskbar.png"
+
+
+def standard_contents(base):
+    with zipfile.ZipFile(base / "standard-user-compatibility.zip") as archive:
+        return {item.filename: archive.read(item) for item in archive.infolist()}
+
+
+def write_standard(base, contents):
+    with zipfile.ZipFile(base / "standard-user-compatibility.zip", "w") as archive:
+        for name, value in sorted(contents.items()):
+            archive.writestr(name, value)
+
+
+def rebind_candidate(base, installer, *, tag="v0.1.9"):
+    """Recompute independent fixture hashes after an intentional source edit."""
+    value = json.loads((base / "windows-candidate.json").read_text())
+    value["executableVersion"] = {"fileVersion": tag[1:], "productVersion": tag[1:] + ".0"}
+    value["files"] = [installer]
+    for key, name in CANDIDATE_REPORTS.items():
+        value[key] = sha((base / EVIDENCE_FILES[name]).read_bytes())
+    if "iconResourcesReportSha256" in value and (base / "native-icon-resources.json").exists():
+        value["iconResourcesReportSha256"] = sha((base / "native-icon-resources.json").read_bytes())
+    standard = standard_contents(base)
+    value["standardUserCompatibilitySha256"] = sha(standard["compatibility.json"])
+    write_json(base / "windows-candidate.json", value)
+    sums = {"build/desktop/" + relative: sha((base / relative).read_bytes())
+            for name, relative in {**EVIDENCE_FILES, **OPTIONAL_EVIDENCE}.items()
+            if name not in {"windows-candidate.sha256", "standard-user-compatibility.zip", "release-verification.json"}
+            and (base / relative).exists()}
+    sums[installer["path"]] = installer["sha256"]
+    sums.update({"build/desktop/standard-user/" + name: sha(content) for name, content in standard.items()})
+    (base / "windows-candidate.sha256").write_text(
+        "".join(f"{digest}  {name}\n" for name, digest in sorted(sums.items())))
+    write_json(base / "release-verification.json", {
+        "schemaVersion": 1, "status": "passed", "tag": tag, "sourceCommit": SOURCE, "sourceRun": RUN,
+        "installer": installer, "standardUserArchiveSha256": sha((base / "standard-user-compatibility.zip").read_bytes()),
+    })
+
+
+def modern_candidate(candidate, *, main_capture="captured", standard_capture="captured", update=True):
+    base, old_installer = candidate
+    installer = {**old_installer, "path": "build/desktop/electron/FundsTrace-0.1.9-windows-x64-unsigned.exe"}
+    value = json.loads((base / "windows-candidate.json").read_text())
+    value["checks"]["nativeIconResources"] = "passed"
+    value["iconResourcesReportSha256"] = "0" * 64
+    value["inAppUpdateFixture"] = update
+    write_json(base / "windows-candidate.json", value)
+    resource = {"schemaVersion": 1, "status": "passed", "selection": "default-icon-index-0"}
+    write_json(base / "native-icon-resources.json", {
+        "schemaVersion": 1, "status": "passed", "application": resource, "installer": resource,
+        "limits": {"taskbarAppearance": False, "windows10And11Interactive": False},
+    })
+    standard = standard_contents(base)
+    for account, capture_status in (("main", main_capture), ("standard", standard_capture)):
+        content = b"\x89PNG\r\n" + account.encode() + b" taskbar\x00"
+        capture = ({"status": "captured", "width": 1024, "height": 40,
+                    "sha256": sha(content), "reviewed": False}
+                   if capture_status == "captured" else {"status": "unavailable", "reason": capture_status})
+        window = {"schemaVersion": 1, "status": "passed", "mode": "visibleWindowIcons",
+                  "checks": {name: "passed" for name in (
+                      "inputBinding", "nativeIconReader", "installedProcessBinding", "visibleWindowIcons")}}
+        app = {"status": "passed", "checks": {"installedWorkspaceWindowIcon": True, "installedAnalysisWindowIcon": True},
+               "workspaceWindowIcons": {**window, "taskbarCapture": capture}, "analysisWindowIcons": window}
+        shortcuts = {"schemaVersion": 1, "status": "passed", "mode": "shortcuts",
+                     "checks": {name: "passed" for name in (
+                         "inputBinding", "nativeIconReader", "desktopShortcut", "startMenuShortcut")}}
+        installed = {"status": "passed", "checks": {"installedExecutableIcons": "passed", "installedShortcutIcons": "passed"},
+                     "iconResources": {"FundsTrace.exe": resource, "Uninstall FundsTrace.exe": resource}, "shortcutIcons": shortcuts}
+        if account == "main":
+            write_json(base / "native-installed-app-smoke.json", app)
+            write_json(base / "native-installer-smoke.json", installed)
+            if capture_status == "captured":
+                (base / TASKBAR_SCREENSHOT).write_bytes(content)
+            if update:
+                for name in UPDATE_SCREENSHOTS:
+                    (base / name).write_bytes(b"\x89PNG\r\n" + name.encode())
+        else:
+            standard["native-installed-app-smoke.json"] = (json.dumps(app) + "\n").encode()
+            standard["native-installer-smoke.json"] = (json.dumps(installed) + "\n").encode()
+            if capture_status == "captured":
+                standard[TASKBAR_SCREENSHOT] = content
+            if update:
+                standard.update({name: b"\x89PNG\r\nstandard " + name.encode() for name in UPDATE_SCREENSHOTS})
+    write_standard(base, standard)
+    rebind_candidate(base, installer)
+    return base, installer
+
+
+def prepare_modern(candidate, output, **kwargs):
+    base, installer = candidate
+    return prepare_evidence(base, output, tag="v0.1.9", source_commit=SOURCE, source_run=RUN,
+                            installer=installer, **kwargs)
+
+
+def test_archive_includes_declared_update_icon_and_both_accounts_taskbar(candidate, tmp_path):
+    modern = modern_candidate(candidate)
+    output = tmp_path / "modern"
+    manifest = prepare_modern(modern, output)
+    assert {item["path"].removeprefix("evidence/") for item in manifest["files"]} == set(EVIDENCE_FILES) | set(OPTIONAL_EVIDENCE)
+    with zipfile.ZipFile(output / "evidence/standard-user-compatibility.zip") as archive:
+        assert set(archive.namelist()) == STANDARD_FILES | UPDATE_SCREENSHOTS | {TASKBAR_SCREENSHOT}
+    assert verify_evidence(output) == manifest
+
+
+@pytest.mark.parametrize("main_capture,standard_capture", [
+    ("captured", "captured"), ("captured", "SHELL_TASKBAR_UNAVAILABLE"),
+    ("TASKBAR_CAPTURE_FAILED", "captured"), ("SHELL_TASKBAR_UNAVAILABLE", "TASKBAR_CAPTURE_FAILED"),
+])
+def test_taskbar_requirements_follow_each_account_report(candidate, tmp_path, main_capture, standard_capture):
+    modern = modern_candidate(candidate, main_capture=main_capture, standard_capture=standard_capture, update=False)
+    output = tmp_path / "archive"
+    manifest = prepare_modern(modern, output)
+    assert ("evidence/" + TASKBAR_SCREENSHOT in {item["path"] for item in manifest["files"]}) == (main_capture == "captured")
+    with zipfile.ZipFile(output / "evidence/standard-user-compatibility.zip") as archive:
+        assert (TASKBAR_SCREENSHOT in archive.namelist()) == (standard_capture == "captured")
+
+
+@pytest.mark.parametrize("change", ["check-only", "digest-only", "check-failed", "digest-invalid", "v019-downgrade"])
+def test_icon_declarations_must_be_paired_and_cannot_be_downgraded(candidate, tmp_path, change):
+    base, installer = modern_candidate(candidate, update=False)
+    path = base / "windows-candidate.json"
+    value = json.loads(path.read_text())
+    if change in {"check-only", "v019-downgrade"}:
+        value.pop("iconResourcesReportSha256")
+    if change in {"digest-only", "v019-downgrade"}:
+        value["checks"].pop("nativeIconResources")
+    if change == "check-failed":
+        value["checks"]["nativeIconResources"] = "not-run"
+    if change == "digest-invalid":
+        value["iconResourcesReportSha256"] = "wrong"
+    write_json(path, value)
+    # Refresh only the candidate's original checksum, preserving the deliberately invalid declaration.
+    sums = (base / "windows-candidate.sha256").read_text().splitlines()
+    (base / "windows-candidate.sha256").write_text("\n".join(
+        f"{sha(path.read_bytes())}  build/desktop/windows-candidate.json" if line.endswith("  build/desktop/windows-candidate.json") else line
+        for line in sums) + "\n")
+    with pytest.raises(ValueError):
+        prepare_modern((base, installer), tmp_path / "archive")
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "true", [], {}])
+def test_update_declaration_must_be_boolean(candidate, tmp_path, value):
+    base, installer = modern_candidate(candidate, update=False)
+    path = base / "windows-candidate.json"
+    data = json.loads(path.read_text())
+    data["inAppUpdateFixture"] = value
+    write_json(path, data)
+    rebind_candidate(base, installer)
+    with pytest.raises(ValueError):
+        prepare_modern((base, installer), tmp_path / "archive")
+
+
+@pytest.mark.parametrize("account,name", [
+    ("main", "native-icon-resources.json"), ("main", TASKBAR_SCREENSHOT),
+    ("standard", TASKBAR_SCREENSHOT), ("main", "native-installed-app.update-downloading.png"),
+    ("main", "native-installed-app.update-ready.png"), ("standard", "native-installed-app.update-downloading.png"),
+    ("standard", "native-installed-app.update-ready.png"),
+])
+def test_declared_artifacts_cannot_be_omitted(candidate, tmp_path, account, name):
+    base, installer = modern_candidate(candidate)
+    if account == "main":
+        (base / name).unlink()
+    else:
+        contents = standard_contents(base)
+        del contents[name]
+        write_standard(base, contents)
+    rebind_candidate(base, installer)
+    with pytest.raises(ValueError):
+        prepare_modern((base, installer), tmp_path / "archive")
+
+
+@pytest.mark.parametrize("account", ["main", "standard"])
+@pytest.mark.parametrize("change", ["capture-digest", "capture-status", "reviewed", "unknown-reason", "unavailable-with-sha", "unavailable-with-png"])
+def test_taskbar_report_and_artifact_must_agree(candidate, tmp_path, account, change):
+    unavailable = change in {"unknown-reason", "unavailable-with-sha", "unavailable-with-png"}
+    statuses = {"main_capture": "captured", "standard_capture": "captured"}
+    if unavailable:
+        statuses[account + "_capture"] = "SHELL_TASKBAR_UNAVAILABLE"
+    base, installer = modern_candidate(candidate, update=False, **statuses)
+    contents = standard_contents(base)
+    path = base / "native-installed-app-smoke.json"
+    app = json.loads(path.read_text() if account == "main" else contents[path.name])
+    capture = app["workspaceWindowIcons"]["taskbarCapture"]
+    if change == "capture-digest":
+        capture["sha256"] = "f" * 64
+    elif change == "capture-status":
+        capture["status"] = "not-run"
+    elif change == "reviewed":
+        capture["reviewed"] = True
+    elif change == "unknown-reason":
+        capture["reason"] = "arbitrary"
+    elif change == "unavailable-with-sha":
+        capture["sha256"] = "f" * 64
+    else:
+        if account == "main":
+            (base / TASKBAR_SCREENSHOT).write_bytes(b"unexpected capture")
+        else:
+            contents[TASKBAR_SCREENSHOT] = b"unexpected capture"
+    if account == "main":
+        write_json(path, app)
+    else:
+        contents[path.name] = (json.dumps(app) + "\n").encode()
+    write_standard(base, contents)
+    rebind_candidate(base, installer)
+    with pytest.raises(ValueError):
+        prepare_modern((base, installer), tmp_path / "archive")
+
+
+@pytest.mark.parametrize("account,report,field", [
+    ("main", "native-installer-smoke.json", "iconResources"),
+    ("standard", "native-installer-smoke.json", "shortcutIcons"),
+    ("main", "native-installed-app-smoke.json", "workspaceWindowIcons"),
+    ("standard", "native-installed-app-smoke.json", "analysisWindowIcons"),
+    ("main", "native-icon-resources.json", "application"),
+])
+def test_declared_icon_reports_require_passed_nested_reports(candidate, tmp_path, account, report, field):
+    base, installer = modern_candidate(candidate, update=False)
+    contents = standard_contents(base)
+    data = json.loads((base / report).read_text() if account == "main" else contents[report])
+    if field == "iconResources":
+        data[field]["FundsTrace.exe"]["status"] = "failed"
+    else:
+        data[field]["status"] = "failed"
+    if account == "main":
+        write_json(base / report, data)
+    else:
+        contents[report] = (json.dumps(data) + "\n").encode()
+        write_standard(base, contents)
+    rebind_candidate(base, installer)
+    with pytest.raises(ValueError):
+        prepare_modern((base, installer), tmp_path / "archive")
+
+
+@pytest.mark.parametrize("account", ["main", "standard"])
+@pytest.mark.parametrize("change", ["missing-installer-check", "failed-window-check"])
+def test_declared_icon_reports_require_their_checks(candidate, tmp_path, account, change):
+    base, installer = modern_candidate(candidate, update=False)
+    contents = standard_contents(base)
+    name = "native-installer-smoke.json" if change == "missing-installer-check" else "native-installed-app-smoke.json"
+    data = json.loads((base / name).read_text() if account == "main" else contents[name])
+    if change == "missing-installer-check":
+        del data["checks"]["installedExecutableIcons"]
+    else:
+        data["workspaceWindowIcons"]["checks"]["installedProcessBinding"] = "failed"
+    if account == "main":
+        write_json(base / name, data)
+    else:
+        contents[name] = (json.dumps(data) + "\n").encode()
+        write_standard(base, contents)
+    rebind_candidate(base, installer)
+    with pytest.raises(ValueError):
+        prepare_modern((base, installer), tmp_path / "archive")
+
+
+@pytest.mark.parametrize("change", ["icon-candidate-sha", "icon-original-sha", "main-taskbar-original-sha", "standard-taskbar-original-sha"])
+def test_declared_artifacts_are_bound_to_candidate_checksums(candidate, tmp_path, change):
+    base, installer = modern_candidate(candidate, update=False)
+    if change == "icon-candidate-sha":
+        path = base / "windows-candidate.json"
+        data = json.loads(path.read_text())
+        data["iconResourcesReportSha256"] = "f" * 64
+        write_json(path, data)
+        name = "build/desktop/windows-candidate.json"
+        digest = sha(path.read_bytes())
+    else:
+        name = "build/desktop/" + {
+            "icon-original-sha": "native-icon-resources.json",
+            "main-taskbar-original-sha": TASKBAR_SCREENSHOT,
+            "standard-taskbar-original-sha": "standard-user/" + TASKBAR_SCREENSHOT,
+        }[change]
+        digest = "f" * 64
+    path = base / "windows-candidate.sha256"
+    path.write_text("\n".join(f"{digest}  {name}" if line.endswith("  " + name) else line
+                              for line in path.read_text().splitlines()) + "\n")
+    with pytest.raises(ValueError):
+        prepare_modern((base, installer), tmp_path / "archive")
+
+
+@pytest.mark.parametrize("attack", ["duplicate", "traversal", "backslash", "directory", "symlink", "encrypted", "nul"])
+def test_standard_zip_rejects_unsafe_or_ambiguous_members(candidate, tmp_path, attack):
+    base, installer = candidate
+    path = base / "standard-user-compatibility.zip"
+    contents = standard_contents(base)
+    names = {"traversal": "../outside.json", "backslash": "folder\\outside.json", "directory": "extra/",
+             "nul": "compatibility.jsonXevil"}
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, value in contents.items():
+            info = zipfile.ZipInfo(names.get(attack, name) if name == "compatibility.json" else name)
+            if attack == "symlink" and name == "compatibility.json":
+                info.external_attr = 0o120777 << 16
+            archive.writestr(info, value)
+        if attack == "duplicate":
+            with pytest.warns(UserWarning, match="Duplicate"):
+                archive.writestr("compatibility.json", contents["compatibility.json"])
+    value = path.read_bytes()
+    if attack == "encrypted":
+        # Mark all local and central records encrypted; no read should be attempted.
+        value = value.replace(b"PK\x03\x04\x14\x00\x00\x00", b"PK\x03\x04\x14\x00\x01\x00")
+        value = value.replace(b"PK\x01\x02\x14\x03\x14\x00\x00\x00", b"PK\x01\x02\x14\x03\x14\x00\x01\x00")
+    elif attack == "nul":
+        value = value.replace(b"compatibility.jsonXevil", b"compatibility.json\x00evil")
+    path.write_bytes(value)
+    summary_path = base / "release-verification.json"
+    summary = json.loads(summary_path.read_text())
+    summary["standardUserArchiveSha256"] = sha(value)
+    write_json(summary_path, summary)
+    with pytest.raises(ValueError):
+        prepare(candidate, tmp_path / "archive")
+
+
+def test_v019_cannot_claim_only_the_historical_twelve_files(candidate, tmp_path):
+    base, old_installer = candidate
+    installer = {**old_installer, "path": "build/desktop/electron/FundsTrace-0.1.9-windows-x64-unsigned.exe"}
+    rebind_candidate(base, installer)
+    with pytest.raises(ValueError, match="requires native icon evidence"):
+        prepare_modern((base, installer), tmp_path / "archive")
+
+
+@pytest.mark.parametrize("change", ["missing", "extra", "duplicate", "symlink", "bytes"])
+def test_modern_archive_verifier_rejects_changed_declared_set(candidate, tmp_path, change):
+    modern = modern_candidate(candidate)
+    output = tmp_path / "archive"
+    prepare_modern(modern, output)
+    path = output / "evidence" / TASKBAR_SCREENSHOT
+    if change == "missing":
+        path.unlink()
+        manifest_path = output / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"] = [item for item in manifest["files"] if item["path"] != "evidence/" + TASKBAR_SCREENSHOT]
+        write_json(manifest_path, manifest)
+    elif change == "duplicate":
+        manifest_path = output / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"].append(dict(manifest["files"][0]))
+        write_json(manifest_path, manifest)
+    elif change == "extra":
+        (output / "evidence/unapproved.png").write_bytes(b"extra")
+    elif change == "symlink":
+        elsewhere = tmp_path / "elsewhere.png"
+        elsewhere.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(elsewhere)
+    else:
+        path.write_bytes(path.read_bytes() + b"changed")
+        rehash(output, path.name)
+    with pytest.raises(ValueError):
+        verify_evidence(output)
+
+
+def test_modern_snapshot_uses_actual_archive_set(candidate, tmp_path):
+    base, installer = modern_candidate(candidate)
+    assets = [{"name": name, "size": (base / relative).stat().st_size,
+               "digest": "sha256:" + sha((base / relative).read_bytes())}
+              for name, relative in {**EVIDENCE_FILES, **OPTIONAL_EVIDENCE}.items()]
+    assets.append({"name": Path(installer["path"]).name, "size": installer["bytes"], "digest": "sha256:" + installer["sha256"]})
+    snapshot = {"tag_name": "v0.1.9", "body": "Synthetic original release", "assets": assets}
+    manifest = prepare_modern((base, installer), tmp_path / "archive", release_snapshot=snapshot)
+    assert len(manifest["files"]) == 17
+    snapshot["assets"] = snapshot["assets"][:-2] + snapshot["assets"][-1:]
+    with pytest.raises(ValueError):
+        prepare_modern((base, installer), tmp_path / "incomplete", release_snapshot=snapshot)

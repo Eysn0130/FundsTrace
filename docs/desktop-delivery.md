@@ -4,7 +4,7 @@
 
 FundsTrace v0.1.x 正常启动**无需公钥或授权码**。每个实际版本 Tag 对应 GitHub Release，附 Windows x64 NSIS `.exe`，从 [Releases](https://github.com/Eysn0130/FundsTrace/releases/latest) 下载并安装。原生构建与安装结果以对应版本的候选清单和发布报告为准；下方历史记录仅对应各自源码。安装包未签名，不能声称完成代码签名或 Windows 全面兼容验收。
 
-新版 Release 下载区仅上传 Windows `.exe`；Source code ZIP／tar.gz 由 GitHub 自动提供。验证报告、摘要清单和合成截图保存到本仓库专用证据分支 `codex/release-evidence` 的 `releases/<tag>/`，Release 正文链接到归档的不可变 Git 提交，并保留安装包名称、字节数、SHA-256、更新说明和兼容性限制。整理既有 Release 时，先核对长期归档，再移除非 EXE 附件；原安装包及版本 Tag 保持不变。
+新版 Release 下载区仅上传 Windows `.exe`；Source code ZIP／tar.gz 由 GitHub 自动提供。验证报告、摘要清单和合成截图保存到本仓库专用证据分支 `codex/release-evidence` 的 `releases/<tag>/`；简短 Release 正文保留用户更新说明、兼容性提示和不可变归档链接，安装包名称、字节数、SHA-256 及验证明细在归档清单中核对。整理既有 Release 时，先核对长期归档，再移除非 EXE 附件；原安装包及版本 Tag 保持不变。
 
 v0.1.6 已按此方式整理：[长期验证归档](https://github.com/Eysn0130/FundsTrace/tree/31c83a6baee8ff0a818f1c427babb526d3422a25/releases/v0.1.6) 保留原 12 个验证附件及整理前 Release 元数据。原 EXE 附件仍为 160013027 字节、SHA-256 `fc9c6513079b0ac456b0dabe47b0f8a175eaf9b3b62eceda77a8abddaf6776aa`，Tag 仍指向 `835d526f08901c03fb1d55c48791faeb8d4bea48`；整理没有重新构建或上传安装包。
 
@@ -15,13 +15,13 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 - 保留 `com.eysn.fundstrace`、FundsTrace 产品名、appId 派生的注册表键及**当前用户**安装范围。标准 NSIS 引导显示已安装版本；安装目录可以选择。使用新版 EXE 覆盖安装，由同一注册信息找到旧卸载器；不另建 Analytix 安装身份。
 - 安装替换、静默／交互卸载前，检查选定及注册的旧安装目录。仅向该目录中精确 `FundsTrace.exe` 路径的窗口请求正常关闭，等待所属进程退出；Main 通过 stdin EOF 停止自己的 Python 后端。占用或检查失败时交互 Retry／Cancel，静默返回非零；不按 Python／Electron 名称强杀。
 - Windows“已安装的应用”和程序目录提供卸载入口。`deleteAppDataOnUninstall:false`，默认保留 `%APPDATA%\FundsTrace` 中的案件、上传、设置及历史授权。不要把用户数据放进安装目录；卸载后重装会继续使用同一数据目录。删除真实案件须由用户另行明确操作。
-- 本轮没有应用内自动更新器。新版本通过同项目 Release 下载 EXE 覆盖安装；后续再做“检查更新 → 版本说明 → 用户确认下载／安装”。保留包完整性、任务安全停止及失败反馈边界；只有 EXE 附件不构成自动更新 feed，不套用 Analytix 的更新源。
+- 顶部更新入口支持显式检查、版本说明、用户确认下载及重启安装；普通退出不会自动安装。使用 FundsTrace 独立 HTTPS 更新记录和安装包完整性检查，详见 [国内下载与应用内更新](domestic-downloads.md)。旧版也可从同项目 Release 或官网下载 EXE 覆盖安装；不套用 Analytix 的更新源。
 
 [installer.nsh](../desktop/installer.nsh) 和 [installer-processes.ps1](../desktop/installer-processes.ps1) 按需适配 Analytix 安装根进程范围和生命周期设计，使用 FundsTrace 自身身份、per-user 范围和正常关窗策略；未引入其大型 React＋WebView2／WinForms 引导器。来源基于只读 commit `c7d2a370855a8d371c61c32cc2422515b9404ef2` 的 [NSIS hook](https://github.com/Eysn0130/analytix/blob/c7d2a370855a8d371c61c32cc2422515b9404ef2/build/standard-win-installer.nsh)、[原生引导器](https://github.com/Eysn0130/analytix/blob/c7d2a370855a8d371c61c32cc2422515b9404ef2/installer/winforms-bootstrapper/AnalytixWinFormsBootstrapper.cs) 和 [更新器](https://github.com/Eysn0130/analytix/blob/c7d2a370855a8d371c61c32cc2422515b9404ef2/src/main/gui-updater.ts)。Apache-2.0 版权、修改通知及许可证随包保留；本轮不修改 Analytix。
 
 ## 运行与数据边界
 
-[desktop/main.cjs](../desktop/main.cjs) 负责窗口、受限导航／下载和自己创建的服务。受 sandbox 和 contextIsolation 保护的 [preload](../desktop/preload.cjs) 仅暴露展示偏好 get/set/remove；Main 校验窗口归属、主框架及当前精确 origin，只将案件选择、线型、标签、证件／照片显示开关写入 `userData/preferences.json`。随机端口和临时 session 不变；不持久化 token、流水、快照或任意 renderer 键，不提供通用 IPC。G6 `/` 保留完整业务，`/analysis` 为分析，`/workspace/` 为共享 React 试点。业务数据在 Electron 自身 `userData/data`，不写安装资源，不打开 Analytix 数据根。保留单实例和原有按显示器 DIP 工作区创建窗口的规则。
+[desktop/main.cjs](../desktop/main.cjs) 负责窗口、受限导航／下载和自己创建的服务。受 sandbox 和 contextIsolation 保护的 [preload](../desktop/preload.cjs) 仅暴露展示偏好 get/set/remove 和固定更新动作及状态订阅；Main 校验窗口归属、主框架及当前精确 origin，只将案件选择、线型、标签、证件／照片显示开关写入 `userData/preferences.json`。随机端口和临时 session 不变；不持久化 token、流水、快照或任意 renderer 键，不提供通用 IPC。G6 `/` 保留完整业务，`/analysis` 为分析，`/workspace/` 为共享 React 试点。业务数据在 Electron 自身 `userData/data`，不写安装资源，不打开 Analytix 数据根。保留单实例和原有按显示器 DIP 工作区创建窗口的规则。
 
 [desktop_backend.py](../desktop_backend.py) 从 stdin 读取严格的 `{protocol:1, token, dataDir, synthetic}` 后才导入应用。随机 token 只经父进程管道和 Main 持有的精确 origin 请求头传递，不进入 URL、argv、renderer、日志或导出。后端绑定 `127.0.0.1:0`，Main 健康检查后才加载页面；冻结后端拒绝 source-only synthetic 模式。
 
@@ -43,7 +43,7 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 | 首次报告 | 普通启动、案件和分析入口不再提前初始化 Matplotlib；首次报告才加载。实际报告附件仍由源码回归和包内请求验证，不通过删除依赖制造启动收益。 |
 | 体积 | 保留 Python onedir、Electron asar 和宿主文件白名单；Electron 语言资源保留 en-US、zh-CN、zh-TW。构建报告区分安装器字节、安装后字节、backend／语言资源与最大文件，不凭依赖名称裁剪动态模块。 |
 | 运行中升级 | 只向已核对路径的本应用请求正常关闭；疑似本应用进程路径不可读时返回检查失败，不能静默当空闲或按名称强杀。 |
-| 安装后启用 | 自动链使用固定摘要的 v0.1.5 作为旧版，由其安装版后端通过公开 API 创建合成案件、金额、画布和追踪，再升级到当前候选。比较原数据、旧案件包迁移和原件摘要，并启动真正的 FundsTrace.exe 检查业务 DOM、快捷键、免激活、单实例、正常关闭和端口释放，再卸载回读合成数据。实际执行结果绑定候选 SHA 记录。 |
+| 安装后启用 | 自动链按 `desktop/upgrade-baseline.json` 固定旧版、目标版、旧包摘要和字节数；由旧安装版后端通过公开 API 创建合成案件、金额、画布和追踪，再升级到当前候选。比较原数据、旧案件包迁移和原件摘要，并启动真正的 FundsTrace.exe 检查业务 DOM、快捷键、免激活、单实例、正常关闭和端口释放，再卸载回读合成数据。实际执行结果绑定候选 SHA 记录。 |
 
 安装后 EXE 烟测仅在 Actions 专用合成用户运行，以 Electron 原生 loopback 调试接口观察自身页面；不增加生产 IPC、测试开关或共享授权。安全报告只含检查名与耗时，可保存的图片是 renderer 表面截图。它扩大了“直接启动 backend”的旧证据，但仍不是 Win10／11 普通账户、SmartScreen／SAC、断网首次使用、100%／150%／200% DPI、触屏或原生保存取消的实机验收。`guiAcceptance:false` 等限制继续保留。
 
@@ -72,19 +72,52 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 上述自动检查仍仅覆盖 Windows hosted runner。它不证明 Windows 10／11 任务栏最终外观、既有固定图标缓存、真实系统 DPI 或 SmartScreen；没有可用交互桌面时不能把这些项目记为通过。候选构建默认不创建 Tag 或 Release，未获发布授权时仅保留 Actions 产物，现有 Latest 和下载入口保持原版本。
 
-[Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以已公开且固定 SHA-256 的 v0.1.5 客户端作为旧版本，验证静默安装 → 旧安装版后端写入并重开合成案件 → 当前候选版覆盖升级 → 比对旧流水／金额／币种／画布／追踪和旧案件包往返 → 真正 EXE 启动／快捷键／单实例／正常关闭 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json` 和 `native-installed-app-smoke.json`，前者的 `priorDataChecks`、`upgradedDataChecks` 记录旧数据兼容链。原件仅依据已注册的导入来源核对摘要，不扫描业务目录。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
+[Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以 `desktop/upgrade-baseline.json` 明确指定并固定 SHA-256／字节数的已公开客户端作为旧版本，验证静默安装到中文自定义目录 → 旧安装版后端写入并重开合成案件 → 新安装器不指定目录而自动找到旧版并覆盖升级 → 旧安装目录测试文件清除、设置字节与已安装设置模块读取 → 比对旧流水／金额／币种／画布／追踪和旧案件包往返 → 同版重装后重复资源／数据／设置核对 → 真正 EXE 启动／快捷键／单实例／正常关闭 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json` 和 `native-installed-app-smoke.json`，前者的 `priorDataChecks`、`upgradedDataChecks` 记录旧数据兼容链。原件仅依据已注册的导入来源核对摘要，不扫描业务目录。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
+
+`desktop/upgrade-baseline.json` 的目标必须等于 `desktop/package.json`，旧版必须早于目标。当前候选固定为 **v0.1.8 → v0.1.9**；`prior_version` 输入和 `-PriorVersion` 参数保留，但只接受当前基线的旧版，取代过时的 `0.1.5`／`0.1.7` 选择。候选清单与两个账户的报告必须携带一致的基线、版本、旧包摘要／字节及当前候选摘要／字节。版本升级但未更新基线、旧包摘要或字节不符、报告属于其他版本对／安装包，均拒绝进入对应安装或候选转移步骤。设置样例由测试写入专用用户目录，再由旧／新已安装 asar 中的真实 store 读取；它不是旧版设置 UI 写入证据。旧目录中的待清理文件也是测试创建的程序文件，不是用户数据。
+
+验证**已发布原包**时，手动调度同一 Windows workflow，指定 `published_target_sha256` 与 `published_target_bytes`。该模式从当前源码版本对应的 Release 下载目标 EXE，先核对固定摘要和长度，再将其中 x64 payload 解包作为资源比较参考；不构建、不替换公开资产。随后复用维护者和一次性普通账户的安装生命周期；安全报告及合成截图保留为独立 `fundstrace-published-upgrade-<run>` artifact。普通构建／候选转移模式继续独立，不把重新构建的同版包当成已发布包证据。该模式只支持与当前 package／baseline 目标相同的已发布版本，并按该版本源码图标和解包 manifest 核对；目标尚未发布时下载会失败，不回退或重建。必须在目标版本的正式 Release 资产存在后运行原包模式。已发布原包、候选构建、候选转移和诊断 probe 互斥；`in_app_update` 只允许与候选安装生命周期一起使用。
 
 旧数据验证使用一次性的公开合成样例，包含超出 JavaScript 安全整数范围的带分金额、独立 CNY／USD 流水、同账号跨案隔离、具名画布快照和追踪成员。升级前案件包由旧安装版导出，升级后导入为新案件并按流水号比较事实及重映射后的关联；新增路径、时序环路与原子上图在导入副本验证。它证明这些具体旧数据结构和流程的兼容性，不代表已读取或验证维护者的真实案件库。
 
-构建 job 只有仓库读取权限，不接收生产授权／私钥，不执行 Release 写入。Actions 中的所选 EXE 或目录、安全报告及合成窗口截图仅留存 3 天，不上传整个 build 或运行目录。维护者核对成功运行、源码 SHA 和产物摘要后，可显式调度独立 transfer job；该 job 核对 Tag、候选资源及全部报告，先创建并核对长期证据归档，再仅向已存在的空草稿上传原候选 EXE，并在正文写入不可变归档链接。该流程不重新构建或公开发布；归档失败不上传 EXE。维护者重新核对上传摘要后单独发布。发布包与 Tag 必须绑定同一 green 源码；构建报告的 `published:false` 表示构建脚本本身没有发布。
+构建 job 只有仓库读取权限，不接收生产授权／私钥，不执行 Release 写入。Actions 中的所选 EXE 或目录、安全报告及合成窗口截图仅留存 3 天，不上传整个 build 或运行目录。维护者核对成功运行、源码 SHA 和产物摘要后，可显式调度独立 transfer job；该 job 核对 Tag、候选资源及全部报告，先创建并核对长期证据归档，再仅向已存在的草稿上传原候选 EXE，并在正文写入不可变归档链接。该流程不重新构建或公开发布；归档失败不上传 EXE。维护者重新核对上传摘要后单独发布。发布包与 Tag 必须绑定同一 green 源码；构建报告的 `published:false` 表示构建脚本本身没有发布。
 
 长期归档按版本保存原验证附件，包括后端／安装／应用／导入恢复报告、候选和资源清单、SHA-256 文件、两张合成 renderer 截图及普通账户证据 ZIP；`manifest.json` 记录来源运行、候选源码、Tag、安装包摘要及归档文件的大小和 SHA-256，`README.md` 说明范围与验收限制。整理既有 Release 时另保留 `release.original.json`，记录移除附件前的公开 Release 元数据。原安装包继续从 Release 下载，无需在证据分支重复保存。
+
+归档集合由候选声明决定：历史 12 项保留兼容；图标声明要求独立 PE 图标报告和两账户嵌入的快捷方式／窗口报告；`inAppUpdateFixture=true` 要求两账户各自的下载中／就绪截图。各账户任务栏报告为 `captured` 时，必须同时归档 PNG，并核对报告与原候选 SHA 清单中的摘要；`unavailable` 仅保留固定原因，不表示已验收任务栏。0.1.9 起不得删除图标声明降级到历史证据集合。ZIP 拒绝重复、异常路径、NUL 截断、符号链接、目录和加密成员，不按目录扫描推定收录权限。
+
+transfer 使用独立、不可取消的并发组。若上传完成后正文更新中断，可重跑同一候选：仅接受空草稿，或唯一同名、同长度、同 SHA-256 且已完成上传的原 EXE；后者跳过上传并补齐归档链接，不覆盖资产。不同或额外附件立即拒绝。正文完成后再次回读草稿、Tag、唯一 EXE 和归档链接，才报告转移成功。
 
 证据分支只追加新版本，使用 fast-forward 更新，不 force push、不覆盖已有同版本目录，也不合并到产品 `main`。归档后重新读取 Git 提交中的文件并逐项核对摘要；Release 正文使用该提交的永久链接，避免后续分支变化影响追溯。Actions 的短期工件用于传递候选，不能替代该长期归档。安装、升级、旧案件兼容和其他原有检查继续完整执行，下载区简化不减少验收范围。
 
 清单记录 Windows 实际检出字节。未强制 LF 的许可证、SVG、锁文件可能由 `core.autocrlf` 转 CRLF；本地对照须只允许已核实的检出换行转换，安装器和报告按实际字节严格核对。
 
-手动 Windows Actions 的 `prior_version` 可明确选择固定摘要的 `0.1.5`（历史默认）或 `0.1.7`。该值贯穿管理员与普通账户的真实安装生命周期，并写入 `windows-candidate.json` 的 `installerUpgradeFrom`；转存草稿时两个账户的报告必须与该值一致，`0.1.7` 还必须携带已发布安装器的固定 SHA-256。选择输入本身不代表升级通过，仍以对应运行的安装、旧数据和资源完整性报告为准。此 EXE 覆盖安装验收也不代表已完成软件内下载／重启更新循环。
+## 覆盖升级研究与后续边界
+
+2026-10-19 核对 v0.1.6 与 v0.1.7：安装身份、NSIS hook、Main／sidecar 退出、数据库、数据路径、偏好、导入／案件包服务及相关依赖未改变；此次标签修复不需要新增数据迁移。v0.1.7 原发布验收的旧版为 v0.1.5，不能推导出 v0.1.6 原包升级已经验证；单独的原包测试结果必须按运行记录判断。
+
+2026-10-19 的历史验证曾用两个已发布原包补齐 [v0.1.6 → v0.1.7 原生验收](https://github.com/Eysn0130/FundsTrace/actions/runs/39363570681)，测试工具源码为 `f037ba2898bdf620036073d965f380c5d461adb9`，未重新构建应用。旧包 SHA-256 为 `fc9c6513079b0ac456b0dabe47b0f8a175eaf9b3b62eceda77a8abddaf6776aa`，目标包为 `52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a`。维护者及普通账户各通过 33 项安装生命周期、61 项已安装应用检查、15 项冻结后端导入恢复；普通账户另通过 11 项环境／清理检查。升级／重装均自动找到原中文自定义目录；旧程序测试文件自然清除；EXE／asar／sidecar／manifest 资源一致；原有案件、精确金额、币种、画布、追踪、来源原件及设置的受测契约保留；升级后的实际节点标签回归通过。照片、关注节点、导入会话／回执尚未加入这条升级前后逐项比较，不能把其他独立测试等同于它们的跨版本证据。这份旧运行记录不构成 v0.1.8 → v0.1.9 的安装或更新验证。
+
+现有会话采用每次启动的新内存 partition、`cache:false`，桌面后端为全部响应加 `no-store`。正常关闭并替换后，页面会重新从新 sidecar 读取资源。验收仍同时检查 EXE、asar、sidecar 和 manifest 中的静态资源摘要，并执行标签回归；仅看“安装成功”或版本号不足以证明业务页面更新。
+
+| 尚需单独处理的条件 | 当前事实与后续原则 |
+| --- | --- |
+| 运行中升级、未保存编辑、活动导入 | 正常关窗与 owned sidecar EOF 已有；尚未证明安装器发起关窗时所有草稿／任务都已安全收敛。以后更新入口应先处理业务状态，再进入安装；不能把强杀视为保存。 |
+| 旧卸载器丢失／被系统阻止、磁盘满／复制失败 | 锁定的 NSIS 模板有部分恢复及重试，但旧卸载器错误分支可能继续、复制最终回退路径不是完整原子替换。未做本轮故障注入，不能承诺任意失败后自动回滚。 |
+| 数据格式演进、跨版本跳升及降级 | 当前无显式持久 schema 上限／最低可读版本、升级前完整备份或降级门。今后改变 schema／DuckDB／案件包时，应单独建立版本契约、事务迁移、失败恢复和最早支持版本的跳升验证。`.fundcase` 不含所有上传原件／导入回执，不能替代完整运行目录备份。 |
+| 普通用户、Windows 10／11、安全系统 | 保持同一 Windows 用户的 per-user 安装与 AppData 身份。Server 2022 专用普通账户／程序出站阻断，与 Win10／11 交互向导、系统 DPI、SmartScreen／SAC、整机断网验收分别记录。当前安装器仍未签名。 |
+
+官方文档分清两条更新架构：[Electron 内置 autoUpdater](https://www.electronjs.org/docs/latest/tutorial/updates) 在 Windows 文档中主要使用 Squirrel；FundsTrace 已采用 NSIS，应参考锁定版本的 [electron-builder v26 更新指引](https://www.electron.build/v26/docs/features/auto-update/)。应用内更新还需要更新元数据、客户端集成、包校验、用户选择和安全退出；仅发布 EXE 不会自动获得这些行为。保持 appId 的 [官方身份规则](https://www.electron.build/v26/docs/nsis/#guid-vs-application-name) 继续适用。默认站点部分内容属于尚未发布的 v27，不能当作当前 26.15.3 已支持功能。 每次修复应递增版本并绑定唯一候选包，避免同版本换包导致旧缓存与版本判断不一致。
+
+可借鉴的公开项目机制，均按源码快照而非项目热度判断：
+
+- [Joplin](https://github.com/laurent22/joplin/blob/cf57e5932584c0fbd894d8510f1a31a4d41f2251/packages/app-desktop/services/autoUpdater/AutoUpdaterService.ts#L50-L84) 禁止在普通退出时自动安装，由用户明确调用安装；其 [数据库版本门](https://github.com/laurent22/joplin/blob/cf57e5932584c0fbd894d8510f1a31a4d41f2251/packages/lib/JoplinDatabase.ts#L405-L415) 拒绝未知的新 profile。适合借鉴业务退出控制和独立的数据兼容版本。
+- [Signal 安装器](https://github.com/signalapp/Signal-Desktop/blob/f3040f3e13b6dca5021c3db149320e0f7a771f0a/build/installer.nsh#L28-L55) 检查降级并默认取消；其 [更新签名](https://github.com/signalapp/Signal-Desktop/blob/f3040f3e13b6dca5021c3db149320e0f7a771f0a/ts/updater/signature.node.ts#L22-L42) 绑定包摘要和版本。适合借鉴明确降级政策及可信更新身份，不需要照搬其自建 updater。
+- Joplin 的 [官方安全公告](https://github.com/laurent22/joplin/security/advisories/GHSA-9wp7-hr9m-3273) 说明安装器签名与更新客户端校验发布者是两项契约；以后增加 updater 时须同时验证，不能只检查 EXE 已签名。
+
+本轮 `Invoke-WebRequest` 下载及 `/S` 安装未模拟浏览器下载后的 Mark of the Web 与 Shell 双击；[微软说明](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation) 指出签名与文件／发布者信誉共同影响防护，未签名包也可能被 Smart App Control 阻止。Win10／11 的浏览器下载→交互向导→启动验收仍需独立实机，不能从本轮无弹窗的静默安装推导。
+
+这些项目没有为 FundsTrace 证明完整 NSIS 回滚；它们清理安装器缓存的代码也不授权扫描删除本项目用户数据。
 
 `in_app_update=true` 另在这两个隔离账户运行真实安装版的更新胶囊：中断下载、损坏校验、重试、圆圈进度、稍后、确认重启、NSIS 静默安装和自动重新打开，再检查安装资源与原有案件。仅在 CI 内构建下一补丁号的私有测试安装器，通过临时测试 CA 和进程级 DNS 规则承接程序固定 HTTPS 地址。CA 由隔离虚拟机管理员统一加入该虚拟机的根信任，两个测试账户只读取加密叶证书夹具，结束后移除；不改变用户电脑或生产证书，不关闭 TLS 验证，不修改生产 feed、系统 hosts 或客户端源码中的地址。临时证书、私钥、服务及私有安装器不作为 Release 资产。该结果须标明私有 HTTPS 测试环境，不能代替国内 CDN 的实际下载验证或未来公开版本的发布链验收。
 

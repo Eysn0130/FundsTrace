@@ -4,7 +4,8 @@ import hashlib
 
 import pytest
 
-from scripts.transfer_windows_candidate import verify_host_report, verify_upgrade_origin
+from scripts.transfer_windows_candidate import verify_host_report, verify_upgrade_origin, verify_icon_report
+from scripts.upgrade_baseline import validate_baseline
 
 
 def fixture(updater):
@@ -40,28 +41,70 @@ def test_transfer_rejects_incomplete_or_unreviewed_updater_payloads(change):
         verify_host_report(report, "0.1.8", package, files.__getitem__)
 
 
-def test_upgrade_origin_keeps_legacy_reports_and_requires_pinned_v017_digest():
-    assert verify_upgrade_origin({}, {"status": "passed", "priorVersion": "0.1.5"}) == "0.1.5"
-    assert verify_upgrade_origin({"installerUpgradeFrom": "0.1.7"}, {
-        "status": "passed", "priorVersion": "0.1.7",
-        "priorInstallerSha256": "52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a",
-    }) == "0.1.7"
+def upgrade_fixture():
+    baseline = validate_baseline({"schemaVersion": 1, "targetVersion": "0.1.9", "prior": {
+        "version": "0.1.8", "sha256": "a" * 64, "bytes": 1234}}, "0.1.9")
+    candidate = {"installerUpgradeFrom": "0.1.8", "upgradeBaseline": deepcopy(baseline)}
+    report = {"status": "passed", "upgradeBaseline": deepcopy(baseline),
+              "priorVersion": "0.1.8", "currentVersion": "0.1.9", "priorInstallerSha256": "a" * 64,
+              "priorInstallerBytes": 1234, "currentInstallerSha256": "b" * 64, "currentInstallerBytes": 2345}
+    return baseline, candidate, report
 
 
-@pytest.mark.parametrize("change", ["missingDigest", "wrongDigest", "wrongVersion", "failed", "unapprovedVersion"])
-def test_upgrade_origin_rejects_mismatched_or_unpinned_installer_reports(change):
-    candidate = {"installerUpgradeFrom": "0.1.7"}
-    report = {"status": "passed", "priorVersion": "0.1.7",
-              "priorInstallerSha256": "52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a"}
-    if change == "missingDigest":
-        del report["priorInstallerSha256"]
-    elif change == "wrongDigest":
-        report["priorInstallerSha256"] = "0" * 64
-    elif change == "wrongVersion":
-        report["priorVersion"] = "0.1.5"
-    elif change == "failed":
-        report["status"] = "failed"
+def test_upgrade_origin_binds_both_accounts_to_candidate_baseline_and_current_installer():
+    baseline, candidate, report = upgrade_fixture()
+    for account_report in (report, deepcopy(report)):
+        assert verify_upgrade_origin(candidate, account_report, baseline, "b" * 64, 2345) == "0.1.8"
+
+
+@pytest.mark.parametrize("field,wrong", [
+    ("priorVersion", "0.1.7"), ("currentVersion", "0.1.8"),
+    ("priorInstallerSha256", "c" * 64), ("priorInstallerBytes", 2345),
+    ("currentInstallerSha256", "a" * 64), ("currentInstallerBytes", 1234),
+    ("upgradeBaseline", {}), ("status", "failed"),
+])
+def test_upgrade_origin_rejects_mismatched_account_identity(field, wrong):
+    baseline, candidate, report = upgrade_fixture()
+    report[field] = wrong
+    with pytest.raises((AssertionError, ValueError)):
+        verify_upgrade_origin(candidate, report, baseline, "b" * 64, 2345)
+
+
+@pytest.mark.parametrize("change", ["missingBaseline", "otherBaseline", "oldVersion", "missingOrigin"])
+def test_upgrade_origin_rejects_undeclared_or_stale_candidate_baseline(change):
+    baseline, candidate, report = upgrade_fixture()
+    if change == "missingBaseline":
+        del candidate["upgradeBaseline"]
+    elif change == "otherBaseline":
+        candidate["upgradeBaseline"]["prior"]["bytes"] += 1
+    elif change == "oldVersion":
+        candidate["installerUpgradeFrom"] = "0.1.5"
     else:
-        candidate["installerUpgradeFrom"] = "0.1.6"
+        del candidate["installerUpgradeFrom"]
+    with pytest.raises((AssertionError, KeyError)):
+        verify_upgrade_origin(candidate, report, baseline, "b" * 64, 2345)
+
+
+def icon_fixture():
+    icon = {"status": "passed", "selection": "default-icon-index-0", "expectedIcoSha256": "c" * 64,
+            "verifiedLanguageVariants": 1, "frames": [{"width": 32, "height": 32, "sha256": "d" * 64}]}
+    report = {"status": "passed", "application": {**icon, "executableSha256": "a" * 64},
+              "installer": {**icon, "executableSha256": "b" * 64}}
+    candidate = {"files": [{"path": "build/desktop/electron/win-unpacked/FundsTrace.exe", "sha256": "a" * 64}]}
+    return report, candidate, {"sha256": "b" * 64}
+
+
+def test_icon_transfer_requires_approved_icon_and_exact_application_and_installer():
+    report, candidate, installer = icon_fixture()
+    verify_icon_report(report, candidate, installer, "c" * 64)
+
+
+@pytest.mark.parametrize("field,wrong", [("expectedIcoSha256", "e" * 64),
+    ("executableSha256", "e" * 64), ("selection", "another-hidden-group"),
+    ("verifiedLanguageVariants", 0), ("verifiedLanguageVariants", True), ("frames", []), ("status", "failed")])
+@pytest.mark.parametrize("entry", ["application", "installer"])
+def test_icon_transfer_rejects_other_executable_unapproved_or_incomplete_pe_evidence(entry, field, wrong):
+    report, candidate, installer = icon_fixture()
+    report[entry][field] = wrong
     with pytest.raises(AssertionError):
-        verify_upgrade_origin(candidate, report)
+        verify_icon_report(report, candidate, installer, "c" * 64)

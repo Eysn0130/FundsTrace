@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$InstallerPath,
     [Parameter(Mandatory = $true)][string]$ReportDirectory,
-    [ValidateSet('0.1.5', '0.1.7')][string]$PriorVersion = '0.1.5',
+    [string]$PriorVersion = '',
     [string]$NextInstaller = '',
     [string]$NextUnpacked = '',
     [string]$TrustedCertificateFixture = ''
