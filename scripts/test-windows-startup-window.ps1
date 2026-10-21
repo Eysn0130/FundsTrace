@@ -90,6 +90,7 @@ public static class FundsTraceStartupWindow {
     }
     public sealed class Evidence {
         public Rectangle Window, Client, WorkArea;
+        public Rectangle CaptureFrame;
         public uint Dpi;
         public int MinTrackWidth, MinTrackHeight;
     }
@@ -117,6 +118,7 @@ public static class FundsTraceStartupWindow {
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
     [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr desktop);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window, uint attribute, out int value, uint size);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window, uint attribute, out NativeRect value, uint size);
     [DllImport("dwmapi.dll")] static extern int DwmFlush();
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
@@ -223,11 +225,24 @@ public static class FundsTraceStartupWindow {
     static bool Same(Rectangle a, Rectangle b) {
         return a.X == b.X && a.Y == b.Y && a.Width == b.Width && a.Height == b.Height;
     }
+    static Rectangle VisibleFrame(IntPtr window, Evidence evidence) {
+        NativeRect frame;
+        // GetWindowRect contains invisible resize borders on modern Windows.
+        // DWM's extended frame rectangle is already in physical screen pixels;
+        // never fall back to copying desktop pixels from those invisible edges.
+        if (DwmGetWindowAttribute(window, 9, out frame, (uint)Marshal.SizeOf<NativeRect>()) != 0)
+            throw new InvalidOperationException("CAPTURE_FRAME_UNAVAILABLE");
+        Rectangle visible = Rect(frame);
+        if (!Contains(evidence.Window, visible) || !Contains(evidence.WorkArea, visible))
+            throw new InvalidOperationException("CAPTURE_FRAME_UNAVAILABLE");
+        return visible;
+    }
     static void AssertCaptureScene(IntPtr window, uint processId, Evidence expected) {
         if (UniqueWindow(processId) != window || GetForegroundWindow() != window)
             throw new InvalidOperationException("CAPTURE_FOREGROUND_UNAVAILABLE");
         Evidence actual = Read(window, processId);
-        if (!Contains(actual.WorkArea, actual.Window) || !Same(actual.Window, expected.Window))
+        Rectangle frame = VisibleFrame(window, actual);
+        if (!Same(actual.Window, expected.Window) || expected.CaptureFrame == null || !Same(frame, expected.CaptureFrame))
             throw new InvalidOperationException("CAPTURE_BOUNDS_UNAVAILABLE");
         // Foreground ownership alone does not exclude an unrelated topmost
         // window. Reject any visible, non-cloaked overlapping window above it.
@@ -240,7 +255,7 @@ public static class FundsTraceStartupWindow {
             NativeRect bounds;
             if (!GetWindowRect(above, out bounds)) throw new InvalidOperationException("CAPTURE_SCENE_UNAVAILABLE");
             if (bounds.Right <= bounds.Left || bounds.Bottom <= bounds.Top) continue;
-            if (Intersects(Rect(bounds), actual.Window)) throw new InvalidOperationException("CAPTURE_OCCLUDED");
+            if (Intersects(Rect(bounds), frame)) throw new InvalidOperationException("CAPTURE_OCCLUDED");
         }
     }
     public static Evidence PrepareCapture(IntPtr window, uint processId) {
@@ -254,6 +269,7 @@ public static class FundsTraceStartupWindow {
         }
         if (DwmFlush() != 0) throw new InvalidOperationException("COMPOSITOR_UNAVAILABLE");
         Evidence result = Read(window, processId);
+        result.CaptureFrame = VisibleFrame(window, result);
         AssertCaptureScene(window, processId, result);
         return result;
     }
@@ -312,7 +328,7 @@ public static class FundsTraceStartupWindow {
         try {
             Add-Type -AssemblyName System.Drawing.Common
             $CaptureEvidence = [FundsTraceStartupWindow]::PrepareCapture($Window, [uint32]$ProcessId)
-            $Bounds = $CaptureEvidence.Window
+            $Bounds = $CaptureEvidence.CaptureFrame
             $Bitmap = [Drawing.Bitmap]::new($Bounds.Width, $Bounds.Height)
             $Graphics = [Drawing.Graphics]::FromImage($Bitmap)
             $Graphics.CopyFromScreen($Bounds.X, $Bounds.Y, 0, 0, $Bitmap.Size)
@@ -325,7 +341,8 @@ public static class FundsTraceStartupWindow {
             $Report.screenshot = [ordered]@{
                 captured = $true; width = $Bounds.Width; height = $Bounds.Height
                 sha256 = (Get-FileHash -LiteralPath $CanonicalOutput -Algorithm SHA256).Hash.ToLowerInvariant()
-                source = 'native-window-screen-composite'; reviewed = $false
+                source = 'native-window-screen-composite'; frame = 'DWM-extended-frame-bounds'
+                bounds = (Convert-Rect $Bounds); reviewed = $false
             }
             foreach ($Entry in (Convert-Evidence $CaptureEvidence).GetEnumerator()) { $Report[$Entry.Key] = $Entry.Value }
         } catch {

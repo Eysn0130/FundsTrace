@@ -237,7 +237,11 @@ function assertHandoffObservation(value, { targetGone } = {}) {
     if (sample.exitOpacity >= .2 && sample.exitOpacity <= .8) reachedMidpoint = true;
   }
   assert.ok(reachedMidpoint, 'STARTUP_HANDOFF_SKIPPED_FADE');
-  const observedSpanMs = last.time - first.time;
+  // The shipped renderer computes opacity from rAF's frame timestamp. A busy
+  // runner can execute that callback later; its performance.now() is not the
+  // animation clock. The mutation sample still anchors the real phase change.
+  const animationTime = sample => sample.source === 'raf' && Number.isFinite(sample.rafTime) ? sample.rafTime : sample.time;
+  const observedSpanMs = animationTime(last) - first.time;
   assert.ok(observedSpanMs >= expectedDurationMs * .7 && observedSpanMs <= expectedDurationMs + 250,
     'STARTUP_HANDOFF_DURATION');
   assert.ok(last.exitOpacity < .2, 'STARTUP_HANDOFF_DISAPPEARED_OPAQUE');
@@ -245,7 +249,7 @@ function assertHandoffObservation(value, { targetGone } = {}) {
   // Phase mutation records the real beginning without replacing the bridge.
   // Small scheduling offsets are allowed; a 140ms fade cannot pass as 1100ms.
   for (const sample of samples) {
-    const progress = ((sample.time - first.time) / expectedDurationMs - .04) / .92;
+    const progress = ((animationTime(sample) - first.time) / expectedDurationMs - .04) / .92;
     assert.ok(near(sample.exitOpacity, 1 - quintic(progress), .1), 'STARTUP_HANDOFF_CURVE');
   }
   return { reducedMotion:reduced, expectedDurationMs, observedSpanMs, targetDisposed:true,

@@ -446,6 +446,13 @@ async function portClosed(port) {
       }, 20000);
       await until(() => [...sessions.values()].some(item => heldBusinessSessions.has(item.sessionId) && item.paused), 15000);
       report.startup = { deliberatelyHeldBusinessRenderer:true, measuredUserColdStart:false };
+      const environmentReducedMotion = await evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches", startup);
+      await cdp.send('Emulation.setEmulatedMedia', {
+        features:[{ name:'prefers-reduced-motion', value:'no-preference' }],
+      }, startup.sessionId);
+      await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))', startup);
+      assert.equal(await evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches", startup), false);
+      report.startup.motionPreference = { environmentReducedMotion, tested:'no-preference', emulatedForInspection:true };
       const probe = await createInstalledStartupProbe({ cdp, target:startup, evaluate, until,
         screenshotPrefix:config.screenshot ? `${config.screenshot.slice(0, -4)}.startup` : undefined });
       report.startup.nativeWindows = await nativeStartupBounds(config, primary, startup);

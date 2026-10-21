@@ -146,6 +146,17 @@ test('handoff rejects abrupt removal, independently hidden titles, resetting opa
   assert.throws(() => assertHandoffObservation(handoff(), { targetGone:false }), /STARTUP_TARGET_NOT_DISPOSED/);
 });
 
+test('handoff uses the renderer frame clock when CI executes animation callbacks late', () => {
+  const value = handoff();
+  value.samples.forEach((sample, index) => {
+    sample.source = index ? 'raf' : 'mutation';
+    if (index) { sample.rafTime = sample.time; sample.time += 180; }
+  });
+  const result = assertHandoffObservation(value, { targetGone:true });
+  assert.equal(result.expectedDurationMs, 1100);
+  assert.equal(result.observedSpanMs, 1100);
+});
+
 test('frame summaries report shared-runner gaps without declaring a strict 60fps gate', () => {
   const result = frameSummary([0, 16.7, 33.4, 50.1, 170.1].map(time => ({ time })));
   assert.equal(result.intervalCount, 4);
