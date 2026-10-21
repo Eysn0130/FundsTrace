@@ -115,8 +115,9 @@ async function runInstalledProductionUpdateJourney({ configFile, primary, evalua
       downloadAttempts.push({ durationMs, phase: result.phase,
         errorCode: result.phase === 'error' ? (FAILURE_CODES.includes(result.errorCode) ? result.errorCode : 'UNKNOWN') : null });
       if (result.phase === 'ready') { downloadMs = durationMs; break; }
-      // Exercise the shipped recovery UI once. Integrity/signature failures
-      // remain hard failures; the eventual file must still match both digests.
+      // Exercise the shipped recovery UI once. The prior release's UNKNOWN
+      // also covers unmapped errors; do not infer a network cause from it.
+      // Every retry uses the real verifier and the final file must match both digests.
       assert.equal(attempt, 0);
       assert.ok(['UNKNOWN', 'ERR_CONNECTION_RESET', 'ERR_CONNECTION_CLOSED', 'ERR_CONNECTION_REFUSED',
         'ERR_INTERNET_DISCONNECTED', 'ERR_NAME_NOT_RESOLVED', 'ERR_CONTENT_LENGTH_MISMATCH'].includes(result.errorCode));
