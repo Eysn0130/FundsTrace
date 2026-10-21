@@ -280,8 +280,10 @@ async function createInstalledStartupProbe({ cdp, target, evaluate, until, scree
             mobile:false, screenWidth:width, screenHeight:height }, target.sessionId);
           await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))', target);
           const snapshot = await evaluate(READ_LAYOUT, target);
-          reference ||= assertLayout(snapshot, { width, height, dpr:deviceScaleFactor });
-          assertLayout(snapshot, { width, height, dpr:deviceScaleFactor, reference });
+          try {
+            reference ||= assertLayout(snapshot, { width, height, dpr:deviceScaleFactor });
+            assertLayout(snapshot, { width, height, dpr:deviceScaleFactor, reference });
+          } catch (error) { error.startupLayout = snapshot; throw error; }
           matrix.push({ width, height, deviceScaleFactor, ...snapshot });
           const label = width === 1440 ? 'normal' : width === 960 && height === 580 ? 'minimum' : width === 683 ? 'small' : null;
           if (screenshotPrefix && deviceScaleFactor === 1 && label) {
@@ -300,7 +302,9 @@ async function createInstalledStartupProbe({ cdp, target, evaluate, until, scree
         const last = value?.samples.at(-1);
         return last?.time >= 7000 && near(last.backdropOpacity, last.motion === 'reduce' ? 1 : .6, .001);
       }, 9000);
-      const waiting = assertWaitingObservation(latest);
+      let waiting;
+      try { waiting = assertWaitingObservation(latest); }
+      catch (error) { error.startupObservation = latest; throw error; }
       waitingDone = true;
       return { simulatedCssViewportOnly:true, actualSystemDpiValidated:false, matrix, screenshots, waiting };
     },
@@ -317,7 +321,9 @@ async function createInstalledStartupProbe({ cdp, target, evaluate, until, scree
         if (await targetGone()) { gone = true; break; }
         await delay(35);
       }
-      const handoff = assertHandoffObservation(latest, { targetGone:gone });
+      let handoff;
+      try { handoff = assertHandoffObservation(latest, { targetGone:gone }); }
+      catch (error) { error.startupObservation = latest; throw error; }
       return { handoff, observation:latest, limits:{ deliberatelyHeldBusinessRenderer:true,
         measuredUserColdStart:false, actualSystemDpiValidated:false,
         rendererSurfaceScreenshotIsNotNativeComposition:true } };

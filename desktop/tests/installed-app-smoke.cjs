@@ -648,7 +648,13 @@ async function portClosed(port) {
   report.status = 'passed';
 })().catch(async error => {
   report.status = 'failed'; report.failedCheck = stage; process.exitCode = 1;
-  if (/^STARTUP_[A-Z0-9_]{1,80}$/.test(error?.message || '')) report.startupFailure = error.message;
+  if (/^STARTUP_[A-Z0-9_]{1,80}$/.test(error?.message || '')) {
+    report.startupFailure = error.message;
+    // These two projections contain only this helper's bounded numeric DOM
+    // geometry / frame samples, never protocol errors, URLs or request data.
+    if (error.startupLayout) report.startupLayoutFailure = error.startupLayout;
+    if (error.startupObservation) report.startupObservationFailure = error.startupObservation;
+  }
   if (updateFixture) {
     let errorCode = 'UNAVAILABLE';
     // Read the published status only; do not inspect Main or request headers.
