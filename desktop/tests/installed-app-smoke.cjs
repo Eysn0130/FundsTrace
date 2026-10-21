@@ -11,6 +11,7 @@ const os = require('node:os');
 const { performance } = require('node:perf_hooks');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
 const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
+const { runInstalledProductionUpdateJourney } = require('./installed-production-update-journey.cjs');
 const { FAILURE_CODES } = require('../updates.cjs');
 
 const SENTINEL = 'FundsTrace synthetic installer lifecycle v1\n';
@@ -94,13 +95,15 @@ function argumentsOf() {
   const installRoot = args.shift(), values = {};
   while (args.length) {
     const key = args.shift(), value = args.shift();
-    assert.ok(['--report', '--screenshot', '--update-fixture'].includes(key) && !values[key] && value && path.isAbsolute(value));
+    assert.ok(['--report', '--screenshot', '--update-fixture', '--production-update'].includes(key) && !values[key] && value && path.isAbsolute(value));
     values[key] = path.resolve(value);
   }
   assert.ok(installRoot && path.isAbsolute(installRoot) && values['--report']);
   assert.equal(path.extname(values['--report']).toLowerCase(), '.json');
   if (values['--screenshot']) assert.equal(path.extname(values['--screenshot']).toLowerCase(), '.png');
-  return { installRoot: path.resolve(installRoot), reportPath: values['--report'], screenshot: values['--screenshot'], updateFixture: values['--update-fixture'] };
+  assert.ok(!values['--update-fixture'] || !values['--production-update']);
+  return { installRoot: path.resolve(installRoot), reportPath: values['--report'], screenshot: values['--screenshot'],
+    updateFixture: values['--update-fixture'], productionUpdate: values['--production-update'] };
 }
 function within(root, value) {
   const relative = path.relative(root, value);
@@ -335,6 +338,17 @@ async function portClosed(port) {
       } catch { return false; }
     }, 15000);
   });
+  if (config.productionUpdate) {
+    // The real prior release predates current graph/icon checks. Exercise only
+    // its shipped updater here; the lifecycle verifies the new install below.
+    report.updateCycle = await runInstalledProductionUpdateJourney({ configFile: config.productionUpdate,
+      primary, evaluate, clickElement, cdp, page, check, screenshot: config.screenshot });
+    await check('productionUpdateNoPageExceptions', async () => {
+      assert.ok(!instrumentationFailed); assert.equal(errorCount, 0);
+    });
+    await check('productionUpdateOldBackendReleased', () => until(() => portClosed(Number(new URL(page.origin).port)), 15000));
+    report.status = 'passed'; return;
+  }
   report.workspaceWindowIcons = await check('installedWorkspaceWindowIcon', () => windowIcons(config.installRoot, primary.child.pid, 1,
     config.screenshot ? `${config.screenshot.slice(0, -4)}.taskbar.png` : undefined));
   await check('nodeSelectionModuleLoaded', async () => {

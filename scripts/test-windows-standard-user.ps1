@@ -5,7 +5,8 @@ param(
     [string]$PriorVersion = '',
     [string]$NextInstaller = '',
     [string]$NextUnpacked = '',
-    [string]$TrustedCertificateFixture = ''
+    [string]$TrustedCertificateFixture = '',
+    [switch]$PublishedInAppUpdate
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -30,6 +31,11 @@ $InstallRoot = Join-Path $LifecycleRoot '应用 安装路径'
 $Report = [ordered]@{ schemaVersion = 1; status = 'running'; failedCheck = $null; checks = [ordered]@{};
     limits = @{ platform = 'Windows Server 2022'; windows10And11Interactive = $false;
         networkIsolation = 'installed Electron and backend outbound firewall block; loopback retained'; systemDpi = $false } }
+if ($PublishedInAppUpdate) {
+    # The real updater needs HTTPS. Keep the backend offline; do not claim the
+    # separate offline-Electron check from this explicitly online journey.
+    $Report.limits.networkIsolation = 'installed backend outbound block; Electron online for official update feed'
+}
 $Stage = 'setup'; $User = $null; $Child = $null; $Failed = $false
 $RuleNames = @(); $Profiles = @(); $RootOwned = $false
 function Quote-Literal([string]$Value) { "'" + $Value.Replace("'", "''") + "'" }
@@ -59,7 +65,9 @@ try {
         throw 'All effective firewall profiles must be enabled for isolation.'
     }
     $Report.checks.firewallProfilesEnabled = $true
-    foreach ($Program in @((Join-Path $InstallRoot 'FundsTrace.exe'), (Join-Path $InstallRoot 'resources/backend/funds-trace-backend.exe'))) {
+    $BlockedPrograms = @((Join-Path $InstallRoot 'resources/backend/funds-trace-backend.exe'))
+    if (-not $PublishedInAppUpdate) { $BlockedPrograms += (Join-Path $InstallRoot 'FundsTrace.exe') }
+    foreach ($Program in $BlockedPrograms) {
         $Name = 'FundsTrace-CI-' + $RunId + '-' + $RuleNames.Count
         [void](New-NetFirewallRule -Name $Name -DisplayName $Name -Direction Outbound -Action Block -Program $Program -Profile Any)
         $RuleNames += $Name
@@ -93,7 +101,7 @@ try {
         localCacheBaseWritable = $true } | ConvertTo-Json | Set-Content -LiteralPath __ENV_REPORT__ -Encoding utf8
     $Result = 1
     try {
-        & __LIFECYCLE__ -InstallerPath __INSTALLER__ -ReportPath __REPORT__ -CiTemporaryRoot __LIFECYCLE_ROOT__ -PriorVersion __PRIOR_VERSION__ -NextInstaller __NEXT_INSTALLER__ -NextUnpacked __NEXT_UNPACKED__ -TrustedCertificateFixture __CERTIFICATE_FIXTURE__
+        & __LIFECYCLE__ -InstallerPath __INSTALLER__ -ReportPath __REPORT__ -CiTemporaryRoot __LIFECYCLE_ROOT__ -PriorVersion __PRIOR_VERSION__ -NextInstaller __NEXT_INSTALLER__ -NextUnpacked __NEXT_UNPACKED__ -TrustedCertificateFixture __CERTIFICATE_FIXTURE__ -PublishedInAppUpdate:__PUBLISHED_UPDATE__
         $Result = $LASTEXITCODE
     } finally {
         # Installer-private temp files belong to this token. Clean them before
@@ -105,6 +113,7 @@ try {
     exit $Result
 } catch { [Console]::Error.WriteLine('Standard-user compatibility child failed.'); exit 1 }
 '@
+    $Template = $Template.Replace('__PUBLISHED_UPDATE__', $(if ($PublishedInAppUpdate) { '$true' } else { '$false' }))
     $Replacements = @{
         '__STAGE__' = $StageRoot; '__ENV_REPORT__' = (Join-Path $ReportDirectory 'standard-user-environment.json')
         '__LIFECYCLE__' = (Join-Path $PSScriptRoot 'test-windows-installer.ps1'); '__INSTALLER__' = $InstallerPath

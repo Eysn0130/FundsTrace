@@ -21,7 +21,7 @@ on:
         options: ['0.1.8']
         default: '0.1.8'
       in_app_update:
-        description: Exercise installed update with a disposable private HTTPS fixture
+        description: Test in-app update (official feed for published EXE mode; private HTTPS for builds)
         type: boolean
         default: false
       update_fixture_probe:
@@ -68,8 +68,10 @@ jobs:
           probe = value['UPDATE_FIXTURE_PROBE'] != 'none'
           assert sum((published, transfer, probe)) <= 1, 'Choose exactly one verification mode'
           if published or transfer or probe:
-              assert value['BUILD_INSTALLER'] != 'true' and value['IN_APP_UPDATE'] != 'true', 'Selected mode cannot build a candidate'
-          assert value['IN_APP_UPDATE'] != 'true' or value['BUILD_INSTALLER'] == 'true', 'In-app update requires installer lifecycle verification'
+              assert value['BUILD_INSTALLER'] != 'true', 'Selected mode cannot build a candidate'
+          if transfer or probe:
+              assert value['IN_APP_UPDATE'] != 'true', 'Selected mode cannot run an update journey'
+          assert value['IN_APP_UPDATE'] != 'true' or published or value['BUILD_INSTALLER'] == 'true', 'In-app update requires installer lifecycle verification'
           if published:
               assert re.fullmatch(r'[0-9a-f]{64}', value['TARGET_SHA256']), 'Require a frozen published SHA-256'
               assert re.fullmatch(r'[1-9][0-9]{0,15}', value['TARGET_BYTES']) and int(value['TARGET_BYTES']) <= 2**53 - 1, 'Require a frozen published byte count'
@@ -297,7 +299,7 @@ jobs:
           TARGET_SHA256: ${{ inputs.published_target_sha256 }}
           TARGET_BYTES: ${{ inputs.published_target_bytes }}
         run: |
-          if ($env:BUILD_INSTALLER -eq 'true' -or $env:TRANSFER_RUN_ID -or $env:DRAFT_TAG -or $env:IN_APP_UPDATE -eq 'true' -or $env:UPDATE_FIXTURE_PROBE -ne 'none') {
+          if ($env:BUILD_INSTALLER -eq 'true' -or $env:TRANSFER_RUN_ID -or $env:DRAFT_TAG -or $env:UPDATE_FIXTURE_PROBE -ne 'none') {
             throw 'Published upgrade verification cannot build or transfer release assets.'
           }
           if ($env:TARGET_SHA256 -cnotmatch '^[0-9a-f]{64}$' -or $env:TARGET_BYTES -cnotmatch '^[1-9][0-9]{0,18}$') {
@@ -335,7 +337,8 @@ jobs:
         env:
           TARGET_SHA256: ${{ inputs.published_target_sha256 }}
           TARGET_BYTES: ${{ inputs.published_target_bytes }}
-        run: ./scripts/test-windows-published-upgrade.ps1 -TargetSha256 $env:TARGET_SHA256 -TargetBytes $env:TARGET_BYTES
+          IN_APP_UPDATE: ${{ inputs.in_app_update }}
+        run: ./scripts/test-windows-published-upgrade.ps1 -TargetSha256 $env:TARGET_SHA256 -TargetBytes $env:TARGET_BYTES -InAppUpdate:($env:IN_APP_UPDATE -eq 'true')
       - name: Retain only safe upgrade reports and synthetic renderer screenshots
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -350,4 +353,6 @@ jobs:
             源码 FundsTrace/build/desktop/native-installed-app.png
             源码 FundsTrace/build/desktop/native-installed-app.graph.png
             源码 FundsTrace/build/desktop/native-import-recovery-smoke.json
+            源码 FundsTrace/build/desktop/native-production-update.json
+            源码 FundsTrace/build/desktop/native-production-update.update-*.png
             源码 FundsTrace/build/desktop/standard-user/

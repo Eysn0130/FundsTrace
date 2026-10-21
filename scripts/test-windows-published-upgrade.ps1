@@ -1,7 +1,8 @@
 #Requires -Version 7.0
 param(
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string]$TargetSha256,
-    [Parameter(Mandatory = $true)][ValidateRange(1, [long]::MaxValue)][long]$TargetBytes
+    [Parameter(Mandatory = $true)][ValidateRange(1, [long]::MaxValue)][long]$TargetBytes,
+    [switch]$InAppUpdate
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -58,12 +59,13 @@ $InputReport = [ordered]@{
     schemaVersion = 1; targetVersion = $Version; targetSha256 = $ActualSha256; targetBytes = $TargetBytes
     testCommit = $env:GITHUB_SHA; targetReleaseTag = "v$Version"
     source = 'published GitHub Release installer'; rebuilt = $false; upgradeBaseline = $Baseline
+    productionInAppUpdate = [bool]$InAppUpdate
     installerIcon = $InstallerIcon; applicationIcon = $ApplicationIcon
     extractedApplicationSha256 = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash.ToLowerInvariant()
     limits = @{ windows10And11Interactive = $false; systemDpi = $false; powerLoss = $false }
 }
 $InputReport | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'published-upgrade-inputs.json') -Encoding utf8
-& "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $Installer -ReportPath (Join-Path $EvidenceRoot 'native-installer-smoke.json')
+& "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $Installer -ReportPath (Join-Path $EvidenceRoot 'native-installer-smoke.json') -PublishedInAppUpdate:$InAppUpdate
 if ($LASTEXITCODE -ne 0) { throw 'Published upgrade lifecycle failed.' }
-& "$PSScriptRoot/test-windows-standard-user.ps1" -InstallerPath $Installer -ReportDirectory (Join-Path $EvidenceRoot 'standard-user')
+& "$PSScriptRoot/test-windows-standard-user.ps1" -InstallerPath $Installer -ReportDirectory (Join-Path $EvidenceRoot 'standard-user') -PublishedInAppUpdate:$InAppUpdate
 if ($LASTEXITCODE -ne 0) { throw 'Published upgrade standard-user lifecycle failed.' }
