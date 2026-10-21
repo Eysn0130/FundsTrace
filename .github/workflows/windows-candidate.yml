@@ -17,9 +17,9 @@ on:
         type: boolean
         default: false
       update_fixture_probe:
-        description: Run an isolated native fixture diagnostic without building an installer
+        description: Run an isolated update fixture diagnostic without building an installer
         type: choice
-        options: ['none', 'tls', 'dialog', 'shortcut']
+        options: ['none', 'tls', 'dialog']
         default: 'none'
       transfer_run_id:
         description: Transfer a successful existing candidate to an empty draft; do not rebuild
@@ -38,11 +38,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  shortcut-probe:
-    if: ${{ inputs.update_fixture_probe == 'shortcut' }}
-    uses: ./.github/workflows/windows-shortcut-diagnostic.yml
   update-fixture-probe:
-    if: ${{ inputs.update_fixture_probe == 'tls' || inputs.update_fixture_probe == 'dialog' }}
+    if: ${{ inputs.update_fixture_probe != 'none' }}
     runs-on: windows-2022
     timeout-minutes: 3
     steps:

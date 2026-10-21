@@ -58,7 +58,31 @@ async function windowIcons(installRoot, processId, minimumWindows, taskbarScreen
       '-InstallRoot', installRoot, '-ExpectedIco', path.resolve(__dirname, '../assets/icon.ico'),
       '-ProcessId', String(processId), ...(taskbarScreenshot ? ['-TaskbarScreenshot', taskbarScreenshot] : [])],
     { timeout: 60000, maxBuffer: 256 * 1024 }));
-  } catch { throw new Error('NATIVE_WINDOW_ICON_CHECK_FAILED'); }
+  } catch (error) {
+    // Retain only fixed native stages and icon fingerprints. Compiler/COM
+    // messages and process arguments may contain local paths or headers.
+    try {
+      const raw = String(error.stdout || '');
+      if (raw.length > 32768) throw new Error('DIAGNOSTIC_TOO_LARGE');
+      const failed = JSON.parse(raw.replace(/^\uFEFF/, ''));
+      if (failed.schemaVersion === 1 && failed.status === 'failed') {
+        const sources = ['WM_GETICON-small2', 'WM_GETICON-big', 'WM_GETICON-small', 'class-small', 'class-big'];
+        report.nativeWindowIconFailure = {
+          failedCheck: ['ciPlatform', 'inputBinding', 'nativeIconReader', 'installedProcessBinding', 'visibleWindowIcons'].includes(failed.failedCheck) ? failed.failedCheck : null,
+          visibleWindowCount: Number.isInteger(failed.visibleWindowCount) && failed.visibleWindowCount >= 0 && failed.visibleWindowCount <= 64 ? failed.visibleWindowCount : null,
+          iconComparisons: Array.isArray(failed.iconComparisons) ? failed.iconComparisons.slice(0, 8).filter(icon =>
+            sources.includes(icon?.Source) && typeof icon.Matched === 'boolean'
+            && Number.isInteger(icon.Width) && icon.Width > 0 && icon.Width <= 1024
+            && Number.isInteger(icon.Height) && icon.Height > 0 && icon.Height <= 1024
+            && typeof icon.ActualSha256 === 'string' && typeof icon.ExpectedSha256 === 'string'
+            && /^[a-f0-9]{64}$/.test(icon.ActualSha256) && /^[a-f0-9]{64}$/.test(icon.ExpectedSha256)
+          ).map(({ Source, Width, Height, Matched, ActualSha256, ExpectedSha256 }) =>
+            ({ Source, Width, Height, Matched, ActualSha256, ExpectedSha256 })) : [],
+        };
+      }
+    } catch {}
+    throw new Error('NATIVE_WINDOW_ICON_CHECK_FAILED');
+  }
   const result = JSON.parse(stdout.replace(/^\uFEFF/, ''));
   assert.equal(result.status, 'passed');
   assert.ok(result.visibleWindowCount >= minimumWindows);
