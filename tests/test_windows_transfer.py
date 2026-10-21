@@ -8,12 +8,17 @@ from scripts.transfer_windows_candidate import verify_host_report, verify_upgrad
 from scripts.upgrade_baseline import validate_baseline
 
 
-def fixture(updater):
+def fixture(updater, *, version="0.1.8", brand=False):
     names = ["main.cjs", "backend.cjs", "host-policy.cjs", "preferences.cjs", "preload.cjs"]
     if updater:
         names.append("updates.cjs")
     files = {name: f"synthetic reviewed {name}\n".encode() for name in names}
-    report = {"status": "passed", "version": "0.1.8", "checks": {"sourceHashes": True},
+    if brand:
+        # Both fixtures include CRLF; binary assets must never receive the text
+        # checkout normalization allowed for reviewed JavaScript sources.
+        files.update({"assets/icon.png": b"\x89PNG\r\n\x1a\nSYN icon pixels\r\n",
+                      "assets/icon.ico": b"\x00\x00\x01\x00SYN icon frames\r\n"})
+    report = {"status": "passed", "version": version, "checks": {"sourceHashes": True},
               "hostFiles": {name: hashlib.sha256(value).hexdigest() for name, value in files.items()}}
     package = {"dependencies": {"electron-updater": "6.8.9"}} if updater else {}
     return files, report, package
@@ -37,6 +42,46 @@ def test_transfer_rejects_incomplete_or_unreviewed_updater_payloads(change):
         report["hostFiles"]["updates.cjs"] = hashlib.sha256(b"unreviewed update command").hexdigest()
     else:
         report["checks"]["sourceHashes"] = False
+    with pytest.raises(AssertionError):
+        verify_host_report(report, "0.1.8", package, files.__getitem__)
+
+
+@pytest.mark.parametrize("version", ["0.1.9", "0.1.10"])
+def test_transfer_accepts_current_host_with_both_exact_source_icons(version):
+    files, report, package = fixture(True, version=version, brand=True)
+    verify_host_report(report, version, package, files.__getitem__)
+
+
+@pytest.mark.parametrize("name", ["assets/icon.png", "assets/icon.ico"])
+@pytest.mark.parametrize("change", ["missing", "changed", "normalized"])
+def test_transfer_rejects_missing_changed_or_newline_normalized_brand_asset(name, change):
+    files, report, package = fixture(True, version="0.1.9", brand=True)
+    if change == "missing":
+        del report["hostFiles"][name]
+    elif change == "changed":
+        report["hostFiles"][name] = hashlib.sha256(files[name] + b"changed pixels").hexdigest()
+    else:
+        report["hostFiles"][name] = hashlib.sha256(files[name].replace(b"\r\n", b"\n")).hexdigest()
+    with pytest.raises(AssertionError):
+        verify_host_report(report, "0.1.9", package, files.__getitem__)
+
+
+def test_current_version_cannot_omit_both_brand_assets_as_a_legacy_host():
+    files, report, package = fixture(True, version="0.1.9")
+    with pytest.raises(AssertionError):
+        verify_host_report(report, "0.1.9", package, files.__getitem__)
+
+
+@pytest.mark.parametrize("name", ["other.cjs", "assets/unapproved.png"])
+def test_current_brand_host_rejects_unreviewed_extra_files(name):
+    files, report, package = fixture(True, version="0.1.9", brand=True)
+    report["hostFiles"][name] = hashlib.sha256(b"unreviewed extra").hexdigest()
+    with pytest.raises(AssertionError):
+        verify_host_report(report, "0.1.9", package, files.__getitem__)
+
+
+def test_historical_host_cannot_claim_new_brand_entries():
+    files, report, package = fixture(True, brand=True)
     with pytest.raises(AssertionError):
         verify_host_report(report, "0.1.8", package, files.__getitem__)
 

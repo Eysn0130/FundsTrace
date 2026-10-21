@@ -6,6 +6,7 @@ import zipfile
 
 import pytest
 
+from scripts import release_evidence
 from scripts.release_evidence import (
     CANDIDATE_REPORTS, EVIDENCE_FILES, STANDARD_FILES, prepare_evidence, verify_evidence,
 )
@@ -233,6 +234,79 @@ UPDATE_SCREENSHOTS = {"native-installed-app.update-downloading.png", "native-ins
 TASKBAR_SCREENSHOT = "native-installed-app.taskbar.png"
 
 
+def standard_declaration(*, update=False, capture="captured"):
+    candidate = {"checks": {"nativeIconResources": "passed"}, "iconResourcesReportSha256": "a" * 64,
+                 "inAppUpdateFixture": update}
+    report = ({"status": "captured", "width": 1024, "height": 40, "sha256": "b" * 64, "reviewed": False}
+              if capture == "captured" else {"status": "unavailable", "reason": capture})
+    return candidate, {"workspaceWindowIcons": {"taskbarCapture": report}}
+
+
+def test_standard_evidence_policy_preserves_historical_seven_and_returns_a_fresh_set():
+    candidate, app = {"checks": {}}, {}
+    expected = {"compatibility.json", "native-import-recovery-smoke.json", "native-installed-app-smoke.json",
+                "native-installed-app.graph.png", "native-installed-app.png", "native-installer-smoke.json",
+                "standard-user-environment.json"}
+    first = release_evidence.standard_evidence_files(candidate, TAG, app)
+    assert first == expected
+    first.add("unapproved.json")
+    assert release_evidence.standard_evidence_files(candidate, TAG, app) == expected
+    assert candidate == {"checks": {}} and app == {}
+
+
+@pytest.mark.parametrize("update", [False, True])
+@pytest.mark.parametrize("capture", ["captured", "SHELL_TASKBAR_UNAVAILABLE", "TASKBAR_CAPTURE_FAILED"])
+def test_standard_evidence_policy_uses_only_declared_update_and_taskbar_files(update, capture):
+    candidate, app = standard_declaration(update=update, capture=capture)
+    original = json.dumps([candidate, app], sort_keys=True)
+    expected = {"compatibility.json", "native-import-recovery-smoke.json", "native-installed-app-smoke.json",
+                "native-installed-app.graph.png", "native-installed-app.png", "native-installer-smoke.json",
+                "standard-user-environment.json"}
+    if update:
+        expected |= {"native-installed-app.update-downloading.png", "native-installed-app.update-ready.png"}
+    if capture == "captured":
+        expected.add("native-installed-app.taskbar.png")
+    actual = release_evidence.standard_evidence_files(candidate, "v0.1.9", app)
+    assert actual == expected
+    assert "native-update-preparation.json" not in actual
+    assert json.dumps([candidate, app], sort_keys=True) == original
+
+
+@pytest.mark.parametrize("change", ["check-only", "digest-only", "downgrade", "nonboolean-update"])
+def test_standard_evidence_policy_rejects_invalid_candidate_declarations(change):
+    candidate, app = standard_declaration()
+    if change in {"check-only", "downgrade"}:
+        candidate.pop("iconResourcesReportSha256")
+    if change in {"digest-only", "downgrade"}:
+        candidate["checks"].pop("nativeIconResources")
+    if change == "nonboolean-update":
+        candidate["inAppUpdateFixture"] = 1
+    with pytest.raises(ValueError):
+        release_evidence.standard_evidence_files(candidate, "v0.1.9", app)
+
+
+@pytest.mark.parametrize("change", ["missing", "invalid-status", "invalid-sha", "reviewed", "unknown-reason", "unavailable-sha"])
+def test_standard_evidence_policy_rejects_invalid_taskbar_capture(change):
+    candidate, app = standard_declaration()
+    capture = app["workspaceWindowIcons"]["taskbarCapture"]
+    if change == "missing":
+        del app["workspaceWindowIcons"]["taskbarCapture"]
+    elif change == "invalid-status":
+        capture["status"] = "not-run"
+    elif change == "invalid-sha":
+        capture["sha256"] = "invalid"
+    elif change == "reviewed":
+        capture["reviewed"] = True
+    else:
+        app["workspaceWindowIcons"]["taskbarCapture"] = {"status": "unavailable", "reason": "SHELL_TASKBAR_UNAVAILABLE"}
+        if change == "unknown-reason":
+            app["workspaceWindowIcons"]["taskbarCapture"]["reason"] = "other"
+        else:
+            app["workspaceWindowIcons"]["taskbarCapture"]["sha256"] = "b" * 64
+    with pytest.raises(ValueError):
+        release_evidence.standard_evidence_files(candidate, "v0.1.9", app)
+
+
 def standard_contents(base):
     with zipfile.ZipFile(base / "standard-user-compatibility.zip") as archive:
         return {item.filename: archive.read(item) for item in archive.infolist()}
@@ -333,6 +407,17 @@ def test_archive_includes_declared_update_icon_and_both_accounts_taskbar(candida
     with zipfile.ZipFile(output / "evidence/standard-user-compatibility.zip") as archive:
         assert set(archive.namelist()) == STANDARD_FILES | UPDATE_SCREENSHOTS | {TASKBAR_SCREENSHOT}
     assert verify_evidence(output) == manifest
+
+
+@pytest.mark.parametrize("extra", ["native-update-preparation.json", "unknown-diagnostic.json"])
+def test_standard_zip_keeps_rejecting_operational_diagnostics_even_when_checksum_bound(candidate, tmp_path, extra):
+    base, installer = modern_candidate(candidate)
+    contents = standard_contents(base)
+    contents[extra] = b'{"status":"passed","diagnostic":true}\n'
+    write_standard(base, contents)
+    rebind_candidate(base, installer)
+    with pytest.raises(ValueError, match="Unexpected or missing standard-user ZIP members"):
+        prepare_modern((base, installer), tmp_path / "archive")
 
 
 @pytest.mark.parametrize("main_capture,standard_capture", [

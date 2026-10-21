@@ -15,10 +15,10 @@ import tempfile
 import zipfile
 
 if __package__:
-    from .release_evidence import prepare_evidence, verify_evidence
+    from .release_evidence import prepare_evidence, verify_evidence, standard_evidence_files
     from .upgrade_baseline import parse_baseline, validate_installer_identity
 else:
-    from release_evidence import prepare_evidence, verify_evidence
+    from release_evidence import prepare_evidence, verify_evidence, standard_evidence_files
     from upgrade_baseline import parse_baseline, validate_installer_identity
 
 REPO = "Eysn0130/FundsTrace"
@@ -218,11 +218,17 @@ def upload_verified_installer(installer, tag, source, expected, archive, *, rele
     assert api("GET", f"commits/{tag}")["sha"] == source, "Tag moved after upload"
 
 
-def standard_archive(standard, output):
-    """Stable bytes allow an interrupted transfer to reuse its existing archive."""
+def standard_archive(standard, output, members):
+    """Archive only declared evidence, preserving exact bytes and ZIP identity."""
+    members = set(members)
+    files = {file.name: file for file in standard.iterdir()}
+    assert members <= set(files), "Missing declared standard-user evidence"
+    assert set(files) - members <= {"native-update-preparation.json"}, "Unexpected standard-user evidence"
+    for file in files.values():
+        assert file.is_file() and not file.is_symlink() and file.suffix in {".json", ".png"}
     with zipfile.ZipFile(output, "x", compression=zipfile.ZIP_DEFLATED) as archive:
-        for file in sorted(standard.iterdir()):
-            assert file.is_file() and not file.is_symlink() and file.suffix in {".json", ".png"}
+        for name in sorted(members):
+            file = files[name]
             info = zipfile.ZipInfo(file.name, date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
@@ -250,15 +256,24 @@ def variants(value):
 
 
 def verify_host_report(host, version, package, source_file):
-    """Bind every packaged host entry to this candidate, including its updater."""
+    """Bind the versioned host allowlist, updater and raw brand bytes to source."""
     assert host["status"] == "passed" and host["version"] == version
     assert all(value is True for value in host["checks"].values())
     expected = {"main.cjs", "backend.cjs", "host-policy.cjs", "preferences.cjs", "preload.cjs"}
     if package.get("dependencies", {}).get("electron-updater"):
         expected.add("updates.cjs")
+    # v0.1.9 first declares both brand assets in electron-builder.files. Older
+    # releases retain their original host allowlist; current reports need both.
+    icons = {"assets/icon.png", "assets/icon.ico"}
+    if tuple(map(int, version.split("."))) >= (0, 1, 9):
+        expected.update(icons)
     assert set(host["hostFiles"]) == expected
     for name, sha in host["hostFiles"].items():
-        assert sha in variants(source_file(name))
+        content = source_file(name)
+        if name in icons:
+            assert sha == hashlib.sha256(content).hexdigest()
+        else:
+            assert sha in variants(content)
 
 
 def verify_upgrade_origin(candidate, installer, baseline, current_sha256, current_bytes):
@@ -428,7 +443,8 @@ def main():
                 relative = "build/desktop/" + file.relative_to(base).as_posix()
                 assert digest(file) == sums[relative], f"Artifact checksum mismatch: {relative}"
         zip_path = base / "standard-user-compatibility.zip"
-        standard_archive(standard, zip_path)
+        standard_archive(standard, zip_path, standard_evidence_files(
+            candidate, args.tag, data(standard / "native-installed-app-smoke.json")))
         summary = {"schemaVersion": 1, "status": "passed", "sourceCommit": source,
             "installerUpgradeFrom": prior_version,
             "sourceRun": args.run_id, "tag": args.tag, "installer": expected,
