@@ -58,11 +58,21 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 未签名构建使用 `signExecutable:false` 保留应用EXE版本资源编辑；构建会读取PE文件属性并核对产品版本及文件主／次／补丁版本。脚本校对实际包内 manifest 与资源，再用包内程序验证中文／空格资源和数据路径、无授权访问业务、无 token 拒绝、一个合成案件崩溃后重开、无 `license.dat` 生成和 EOF 正常退出。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅含版本、相对产物文件名、内容哈希及检查范围，不含业务数据或 token。
 
+新图标候选另检查实际应用 EXE、NSIS 安装器和安装后卸载器的默认 PE 图标组，与批准 ICO 的全部尺寸和图像内容比对，记录为 `native-icon-resources.json` 及安装报告。安装生命周期读取隔离账户的桌面／开始菜单快捷方式，核对目标、图标位置及 Shell 解析的大小图标；实际应用烟测按所启动 PID 读取主窗口和分析窗口的原生图标句柄，与源 ICO 同尺寸渲染像素比对。它们补充 ASAR 内 PNG／ICO 文件摘要，不能以单纯 builder 配置或 renderer 截图代替。
+
+快捷方式比较通过 `SHGFI_SYSICONINDEX` 和 `ImageList_GetIcon(ILD_NORMAL)` 读取 Shell 的基础图标，不把系统快捷箭头误认为应用图形变化。批准 ICO 也经过同一 Shell 流程，严格比较黑白背景下的完整像素与尺寸；PE 资源仍单独比对源 ICO 全部图像。原生回归使用临时资源 PE 与真实 `.lnk`，要求批准图标通过、DIB 与 PNG 两种错误图标均失败。失败报告保留固定检查名、错误码、尺寸、摘要及有界合成图标像素，方便区分快捷方式缺失、目标错误和图像不一致，不输出原始子进程日志。[Microsoft Shell 图标接口](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shgetfileinfow)
+
+快捷方式通过原生 `IShellLinkW` 和只读 `IPersistFile.Load` 读取 Unicode 目标及图标位置，避免英文 Windows 上 WSH 属性将中文转为 `?`。目标、图标位置与窗口进程路径通过同时打开文件句柄后的卷号及完整 128 位文件标识核对，允许别名指向同一安装文件；相同字节的另一文件仍拒绝。报告仅记录路径文本和文件身份是否一致，不记录路径内容。
+
+安装版主窗口启动后，若当前 CI 桌面存在可见 Shell 任务栏，会另保存 `native-installed-app.taskbar.png`，并记录截图尺寸与 SHA-256。它来自实际屏幕的任务栏矩形，不是 renderer 截图或拼合图。没有 Shell、截图不可用或尚未查看时不记录任务栏外观通过；脚本报告保留 `reviewed:false`，截图核对结果须在对应候选记录中单列。
+
+上述自动检查仍仅覆盖 Windows hosted runner。它不证明 Windows 10／11 任务栏最终外观、既有固定图标缓存、真实系统 DPI 或 SmartScreen；没有可用交互桌面时不能把这些项目记为通过。候选构建默认不创建 Tag 或 Release，未获发布授权时仅保留 Actions 产物，现有 Latest 和下载入口保持原版本。
+
 [Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以 `desktop/upgrade-baseline.json` 明确指定并固定 SHA-256／字节数的已公开客户端作为旧版本，验证静默安装到中文自定义目录 → 旧安装版后端写入并重开合成案件 → 新安装器不指定目录而自动找到旧版并覆盖升级 → 旧安装目录测试文件清除、设置字节与已安装设置模块读取 → 比对旧流水／金额／币种／画布／追踪和旧案件包往返 → 同版重装后重复资源／数据／设置核对 → 真正 EXE 启动／快捷键／单实例／正常关闭 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json` 和 `native-installed-app-smoke.json`，前者的 `priorDataChecks`、`upgradedDataChecks` 记录旧数据兼容链。原件仅依据已注册的导入来源核对摘要，不扫描业务目录。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
 
-`desktop/upgrade-baseline.json` 的目标必须等于 `desktop/package.json`，旧版必须早于目标。版本升级但未更新基线、旧包摘要或字节不符、报告属于其他版本对／安装包，均拒绝进入对应安装或候选转移步骤。设置样例由测试写入专用用户目录，再由旧／新已安装 asar 中的真实 store 读取；它不是旧版设置 UI 写入证据。旧目录中的待清理文件也是测试创建的程序文件，不是用户数据。
+`desktop/upgrade-baseline.json` 的目标必须等于 `desktop/package.json`，旧版必须早于目标。当前候选固定为 **v0.1.8 → v0.1.9**；`prior_version` 输入和 `-PriorVersion` 参数保留，但只接受当前基线的旧版，取代过时的 `0.1.5`／`0.1.7` 选择。候选清单与两个账户的报告必须携带一致的基线、版本、旧包摘要／字节及当前候选摘要／字节。版本升级但未更新基线、旧包摘要或字节不符、报告属于其他版本对／安装包，均拒绝进入对应安装或候选转移步骤。设置样例由测试写入专用用户目录，再由旧／新已安装 asar 中的真实 store 读取；它不是旧版设置 UI 写入证据。旧目录中的待清理文件也是测试创建的程序文件，不是用户数据。
 
-验证**已发布原包**时，手动调度同一 Windows workflow，指定 `published_target_sha256` 与 `published_target_bytes`。该模式从当前源码版本对应的 Release 下载目标 EXE，先核对固定摘要和长度，再将其中 x64 payload 解包作为资源比较参考；不构建、不替换公开资产。随后复用维护者和一次性普通账户的安装生命周期；安全报告及合成截图保留为独立 `fundstrace-published-upgrade-<run>` artifact。普通构建／候选转移模式继续独立，不把重新构建的同版包当成已发布包证据。
+验证**已发布原包**时，手动调度同一 Windows workflow，指定 `published_target_sha256` 与 `published_target_bytes`。该模式从当前源码版本对应的 Release 下载目标 EXE，先核对固定摘要和长度，再将其中 x64 payload 解包作为资源比较参考；不构建、不替换公开资产。随后复用维护者和一次性普通账户的安装生命周期；安全报告及合成截图保留为独立 `fundstrace-published-upgrade-<run>` artifact。普通构建／候选转移模式继续独立，不把重新构建的同版包当成已发布包证据。该模式只支持与当前 package／baseline 目标相同的已发布版本，并按该版本源码图标和解包 manifest 核对；目标尚未发布时下载会失败，不回退或重建。目前 v0.1.9 尚未发布，须待其正式 Release 资产存在后再运行原包模式。已发布原包、候选构建、候选转移和诊断 probe 互斥；`in_app_update` 只允许与候选安装生命周期一起使用。
 
 旧数据验证使用一次性的公开合成样例，包含超出 JavaScript 安全整数范围的带分金额、独立 CNY／USD 流水、同账号跨案隔离、具名画布快照和追踪成员。升级前案件包由旧安装版导出，升级后导入为新案件并按流水号比较事实及重映射后的关联；新增路径、时序环路与原子上图在导入副本验证。它证明这些具体旧数据结构和流程的兼容性，不代表已读取或验证维护者的真实案件库。
 
@@ -74,7 +84,7 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 2026-10-19 核对 v0.1.6 与 v0.1.7：安装身份、NSIS hook、Main／sidecar 退出、数据库、数据路径、偏好、导入／案件包服务及相关依赖未改变；此次标签修复不需要新增数据迁移。v0.1.7 原发布验收的旧版为 v0.1.5，不能推导出 v0.1.6 原包升级已经验证；单独的原包测试结果必须按运行记录判断。
 
-本轮已用两个已发布原包补齐 [v0.1.6 → v0.1.7 原生验收](https://github.com/Eysn0130/FundsTrace/actions/runs/39363570681)，测试工具源码为 `f037ba2898bdf620036073d965f380c5d461adb9`，未重新构建应用。旧包 SHA-256 为 `fc9c6513079b0ac456b0dabe47b0f8a175eaf9b3b62eceda77a8abddaf6776aa`，目标包为 `52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a`。维护者及普通账户各通过 33 项安装生命周期、61 项已安装应用检查、15 项冻结后端导入恢复；普通账户另通过 11 项环境／清理检查。升级／重装均自动找到原中文自定义目录；旧程序测试文件自然清除；EXE／asar／sidecar／manifest 资源一致；原有案件、精确金额、币种、画布、追踪、来源原件及设置的受测契约保留；升级后的实际节点标签回归通过。照片、关注节点、导入会话／回执尚未加入这条升级前后逐项比较，不能把其他独立测试等同于它们的跨版本证据。
+2026-10-19 的历史验证曾用两个已发布原包补齐 [v0.1.6 → v0.1.7 原生验收](https://github.com/Eysn0130/FundsTrace/actions/runs/39363570681)，测试工具源码为 `f037ba2898bdf620036073d965f380c5d461adb9`，未重新构建应用。旧包 SHA-256 为 `fc9c6513079b0ac456b0dabe47b0f8a175eaf9b3b62eceda77a8abddaf6776aa`，目标包为 `52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a`。维护者及普通账户各通过 33 项安装生命周期、61 项已安装应用检查、15 项冻结后端导入恢复；普通账户另通过 11 项环境／清理检查。升级／重装均自动找到原中文自定义目录；旧程序测试文件自然清除；EXE／asar／sidecar／manifest 资源一致；原有案件、精确金额、币种、画布、追踪、来源原件及设置的受测契约保留；升级后的实际节点标签回归通过。照片、关注节点、导入会话／回执尚未加入这条升级前后逐项比较，不能把其他独立测试等同于它们的跨版本证据。这份旧运行记录不构成 v0.1.8 → v0.1.9 的安装或更新验证。
 
 现有会话采用每次启动的新内存 partition、`cache:false`，桌面后端为全部响应加 `no-store`。正常关闭并替换后，页面会重新从新 sidecar 读取资源。验收仍同时检查 EXE、asar、sidecar 和 manifest 中的静态资源摘要，并执行标签回归；仅看“安装成功”或版本号不足以证明业务页面更新。
 
@@ -97,7 +107,11 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 这些项目没有为 FundsTrace 证明完整 NSIS 回滚；它们清理安装器缓存的代码也不授权扫描删除本项目用户数据。
 
+`in_app_update=true` 另在这两个隔离账户运行真实安装版的更新胶囊：中断下载、损坏校验、重试、圆圈进度、稍后、确认重启、NSIS 静默安装和自动重新打开，再检查安装资源与原有案件。仅在 CI 内构建下一补丁号的私有测试安装器，通过临时测试 CA 和进程级 DNS 规则承接程序固定 HTTPS 地址。CA 由隔离虚拟机管理员统一加入该虚拟机的根信任，两个测试账户只读取加密叶证书夹具，结束后移除；不改变用户电脑或生产证书，不关闭 TLS 验证，不修改生产 feed、系统 hosts 或客户端源码中的地址。临时证书、私钥、服务及私有安装器不作为 Release 资产。该结果须标明私有 HTTPS 测试环境，不能代替国内 CDN 的实际下载验证或未来公开版本的发布链验收。
+
 ## 当前证据与尚未执行的边界
+
+普通账户夹具显式绑定新建账户自己的 `LocalAppData`，并用一次性文件验证缓存基目录可写，避免带着调用者的环境访问其他用户的缓存目录。该准备只适用于 Windows Actions 新建的合成账户，随后仍由真实安装版创建和使用自己的更新缓存；失败时也由原账户清理私有临时文件，再移除测试 profile 和账户。
 
 v0.1.3 的 [PR CI](https://github.com/Eysn0130/FundsTrace/actions/runs/38845930019) 完成 Python／G6 394 项及108个子测试、React 38项和 Windows 桌面 Node 34项；[Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38845925970) 绑定源码 `2b8eda98bb6a3dae8c8fa0b91ade36a5e6342ef5`，完成59项定向Python、34项Node、55条资源和13项包内后端检查。维护者与普通账户各完成18项安装生命周期、46项实际EXE应用检查（内含27组CSS视口／DPR）、15项冻结后端导入中断恢复，普通账户另有11项环境和清理检查。旧版证据保留在各版本记录中。
 

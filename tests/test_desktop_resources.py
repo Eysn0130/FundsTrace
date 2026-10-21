@@ -35,6 +35,8 @@ def test_resource_boundary_includes_runtime_html_scripts(tmp_path, monkeypatch):
     monkeypatch.setattr(builder, 'ROOT', tmp_path)
     packaged = {relative.replace('\\', '/') for _, relative in builder.resource_files()}
     assert references <= packaged, f'Runtime scripts missing from desktop resources: {sorted(references - packaged)}'
+    assert {'static/logo.png', 'static/favicon.ico', 'static/favicon-32.png'} <= packaged
+    assert not {'static/logo.svg', 'static/favicon.svg'} & packaged
 
 
 def test_all_retained_html_dependencies_are_packaged():

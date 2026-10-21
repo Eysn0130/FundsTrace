@@ -1,7 +1,11 @@
 #Requires -Version 7.0
 param(
     [Parameter(Mandatory = $true)][string]$InstallerPath,
-    [Parameter(Mandatory = $true)][string]$ReportDirectory
+    [Parameter(Mandatory = $true)][string]$ReportDirectory,
+    [string]$PriorVersion = '',
+    [string]$NextInstaller = '',
+    [string]$NextUnpacked = '',
+    [string]$TrustedCertificateFixture = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -73,18 +77,30 @@ try {
     if ($Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Expected standard token.' }
     $env:USERPROFILE = [Environment]::GetFolderPath('UserProfile')
     $env:APPDATA = [Environment]::GetFolderPath('ApplicationData')
-    $env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
+    # CreateProcessWithLogonW inherits the invoking runner's environment. This
+    # fresh disposable profile uses the normal local AppData location explicitly.
+    $env:LOCALAPPDATA = Join-Path $env:USERPROFILE 'AppData\Local'
     if (-not $env:USERPROFILE.Contains('FT兼容') -or -not $env:APPDATA.StartsWith($env:USERPROFILE, [StringComparison]::OrdinalIgnoreCase)) { throw 'Expected own Unicode profile.' }
     $env:TEMP = __STAGE__; $env:TMP = $env:TEMP
     $env:CI = 'true'; $env:GITHUB_ACTIONS = 'true'
-    @{ standardToken = $true; unicodeProfile = $true; ownAppData = $true } | ConvertTo-Json | Set-Content -LiteralPath __ENV_REPORT__ -Encoding utf8
-    & __LIFECYCLE__ -InstallerPath __INSTALLER__ -ReportPath __REPORT__ -CiTemporaryRoot __LIFECYCLE_ROOT__
-    $Result = $LASTEXITCODE
-    if ($Result -eq 0) {
+    [void](New-Item -ItemType Directory -Path $env:LOCALAPPDATA -Force)
+    $CacheProbe = Join-Path $env:LOCALAPPDATA ('FundsTrace CI cache probe ' + [guid]::NewGuid().ToString('N'))
+    try {
+        [void](New-Item -ItemType Directory -Path $CacheProbe)
+        [IO.File]::WriteAllText((Join-Path $CacheProbe 'synthetic.txt'), 'SYN cache write probe')
+    } finally { if (Test-Path -LiteralPath $CacheProbe) { Remove-Item -LiteralPath $CacheProbe -Recurse -Force } }
+    @{ standardToken = $true; unicodeProfile = $true; ownAppData = $true; ownLocalAppData = $true;
+        localCacheBaseWritable = $true } | ConvertTo-Json | Set-Content -LiteralPath __ENV_REPORT__ -Encoding utf8
+    $Result = 1
+    try {
+        & __LIFECYCLE__ -InstallerPath __INSTALLER__ -ReportPath __REPORT__ -CiTemporaryRoot __LIFECYCLE_ROOT__ -PriorVersion __PRIOR_VERSION__ -NextInstaller __NEXT_INSTALLER__ -NextUnpacked __NEXT_UNPACKED__ -TrustedCertificateFixture __CERTIFICATE_FIXTURE__
+        $Result = $LASTEXITCODE
+    } finally {
         # Installer-private temp files belong to this token. Clean them before
         # the parent removes this account, without widening their ACLs.
         Remove-Item -LiteralPath $env:TEMP -Recurse -Force
-        @{ standardToken = $true; unicodeProfile = $true; ownAppData = $true; ownTemporaryRemoved = $true } | ConvertTo-Json | Set-Content -LiteralPath __ENV_REPORT__ -Encoding utf8
+        @{ standardToken = $true; unicodeProfile = $true; ownAppData = $true; ownLocalAppData = $true;
+            localCacheBaseWritable = $true; ownTemporaryRemoved = $true } | ConvertTo-Json | Set-Content -LiteralPath __ENV_REPORT__ -Encoding utf8
     }
     exit $Result
 } catch { [Console]::Error.WriteLine('Standard-user compatibility child failed.'); exit 1 }
@@ -93,6 +109,9 @@ try {
         '__STAGE__' = $StageRoot; '__ENV_REPORT__' = (Join-Path $ReportDirectory 'standard-user-environment.json')
         '__LIFECYCLE__' = (Join-Path $PSScriptRoot 'test-windows-installer.ps1'); '__INSTALLER__' = $InstallerPath
         '__REPORT__' = (Join-Path $ReportDirectory 'native-installer-smoke.json'); '__LIFECYCLE_ROOT__' = $LifecycleRoot
+        '__PRIOR_VERSION__' = $PriorVersion
+        '__NEXT_INSTALLER__' = $NextInstaller; '__NEXT_UNPACKED__' = $NextUnpacked
+        '__CERTIFICATE_FIXTURE__' = $TrustedCertificateFixture
     }
     foreach ($Key in $Replacements.Keys) { $Template = $Template.Replace($Key, (Quote-Literal $Replacements[$Key])) }
     $Tokens = $null; $ParseErrors = $null
@@ -103,7 +122,7 @@ try {
     if (-not $Child.WaitForExit(900000)) { throw 'Standard-user lifecycle timed out.' }
     if ($Child.ExitCode -ne 0) { throw 'Standard-user lifecycle failed.' }
     $Environment = Get-Content -Raw -LiteralPath (Join-Path $ReportDirectory 'standard-user-environment.json') | ConvertFrom-Json
-    foreach ($Name in @('standardToken', 'unicodeProfile', 'ownAppData', 'ownTemporaryRemoved')) { if ($Environment.$Name -ne $true) { throw 'Standard-user environment check failed.' } }
+    foreach ($Name in @('standardToken', 'unicodeProfile', 'ownAppData', 'ownLocalAppData', 'localCacheBaseWritable', 'ownTemporaryRemoved')) { if ($Environment.$Name -ne $true) { throw 'Standard-user environment check failed.' } }
     $Lifecycle = Get-Content -Raw -LiteralPath (Join-Path $ReportDirectory 'native-installer-smoke.json') | ConvertFrom-Json
     if ($Lifecycle.status -cne 'passed') { throw 'Standard-user installation checks failed.' }
     $Report.checks.standardUserLifecycle = $true

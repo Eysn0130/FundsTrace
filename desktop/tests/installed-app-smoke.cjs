@@ -2,12 +2,16 @@
 // CI-only installed EXE smoke. Never import Main, inspect request headers, or log CDP payloads.
 // Usage: node installed-app-smoke.cjs <absolute-install-root> --report <absolute-json> [--screenshot <absolute-png>]
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const fs = require('node:fs/promises');
 const net = require('node:net');
 const path = require('node:path');
+const os = require('node:os');
 const { performance } = require('node:perf_hooks');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
+const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
+const { FAILURE_CODES } = require('../updates.cjs');
 
 const SENTINEL = 'FundsTrace synthetic installer lifecycle v1\n';
 const SEED_CASE = 'SYN prior installer lifecycle case';
@@ -18,12 +22,12 @@ const VIEWPORTS = [[960, 500], [960, 640], [1280, 640]], DEVICE_SCALES = [1, 1.5
 const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, failedCheck: null,
   limits: { windowsServerAutomationOnly: true, windows10And11Interactive: false,
     dpi: false, importRecovery: false, screenshotIsRendererSurface: true,
-    nativeGraphExportSaveDialog: false,
+    nativeGraphExportSaveDialog: false, taskbarAppearance: false,
     simulatedCssViewportOnly: true, actualSystemDpiValidated: false,
     offlineEnforcement: 'not-measured-by-this-helper; see standard-user compatibility report',
     simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
 const timings = report.timings, owned = [];
-let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage;
+let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, updateFixture;
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function bounded(promise, ms) {
@@ -46,19 +50,57 @@ async function check(name, action) {
   report.checks[name] = true;
   return result;
 }
+async function windowIcons(installRoot, processId, minimumWindows, taskbarScreenshot) {
+  let stdout;
+  try {
+    ({ stdout } = await promisify(execFile)('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+      path.resolve(__dirname, '../../scripts/test-windows-brand-icon.ps1'),
+      '-InstallRoot', installRoot, '-ExpectedIco', path.resolve(__dirname, '../assets/icon.ico'),
+      '-ProcessId', String(processId), ...(taskbarScreenshot ? ['-TaskbarScreenshot', taskbarScreenshot] : [])],
+    { timeout: 60000, maxBuffer: 256 * 1024 }));
+  } catch (error) {
+    // Retain only fixed native stages and icon fingerprints. Compiler/COM
+    // messages and process arguments may contain local paths or headers.
+    try {
+      const raw = String(error.stdout || '');
+      if (raw.length > 32768) throw new Error('DIAGNOSTIC_TOO_LARGE');
+      const failed = JSON.parse(raw.replace(/^\uFEFF/, ''));
+      if (failed.schemaVersion === 1 && failed.status === 'failed') {
+        const sources = ['WM_GETICON-small2', 'WM_GETICON-big', 'WM_GETICON-small', 'class-small', 'class-big'];
+        report.nativeWindowIconFailure = {
+          failedCheck: ['ciPlatform', 'inputBinding', 'nativeIconReader', 'installedProcessBinding', 'visibleWindowIcons'].includes(failed.failedCheck) ? failed.failedCheck : null,
+          visibleWindowCount: Number.isInteger(failed.visibleWindowCount) && failed.visibleWindowCount >= 0 && failed.visibleWindowCount <= 64 ? failed.visibleWindowCount : null,
+          iconComparisons: Array.isArray(failed.iconComparisons) ? failed.iconComparisons.slice(0, 8).filter(icon =>
+            sources.includes(icon?.Source) && typeof icon.Matched === 'boolean'
+            && Number.isInteger(icon.Width) && icon.Width > 0 && icon.Width <= 1024
+            && Number.isInteger(icon.Height) && icon.Height > 0 && icon.Height <= 1024
+            && typeof icon.ActualSha256 === 'string' && typeof icon.ExpectedSha256 === 'string'
+            && /^[a-f0-9]{64}$/.test(icon.ActualSha256) && /^[a-f0-9]{64}$/.test(icon.ExpectedSha256)
+          ).map(({ Source, Width, Height, Matched, ActualSha256, ExpectedSha256 }) =>
+            ({ Source, Width, Height, Matched, ActualSha256, ExpectedSha256 })) : [],
+        };
+      }
+    } catch {}
+    throw new Error('NATIVE_WINDOW_ICON_CHECK_FAILED');
+  }
+  const result = JSON.parse(stdout.replace(/^\uFEFF/, ''));
+  assert.equal(result.status, 'passed');
+  assert.ok(result.visibleWindowCount >= minimumWindows);
+  return result;
+}
 function argumentsOf() {
   const args = process.argv.slice(2);
-  assert.ok(args.length === 3 || args.length === 5);
+  assert.ok(args.length === 3 || args.length === 5 || args.length === 7);
   const installRoot = args.shift(), values = {};
   while (args.length) {
     const key = args.shift(), value = args.shift();
-    assert.ok(['--report', '--screenshot'].includes(key) && !values[key] && value && path.isAbsolute(value));
+    assert.ok(['--report', '--screenshot', '--update-fixture'].includes(key) && !values[key] && value && path.isAbsolute(value));
     values[key] = path.resolve(value);
   }
   assert.ok(installRoot && path.isAbsolute(installRoot) && values['--report']);
   assert.equal(path.extname(values['--report']).toLowerCase(), '.json');
   if (values['--screenshot']) assert.equal(path.extname(values['--screenshot']).toLowerCase(), '.png');
-  return { installRoot: path.resolve(installRoot), reportPath: values['--report'], screenshot: values['--screenshot'] };
+  return { installRoot: path.resolve(installRoot), reportPath: values['--report'], screenshot: values['--screenshot'], updateFixture: values['--update-fixture'] };
 }
 function within(root, value) {
   const relative = path.relative(root, value);
@@ -72,7 +114,9 @@ function businessOrigin(value) {
   } catch { return null; }
 }
 function boot(executable, installRoot, env, debug) {
-  const child = spawn(executable, debug ? ['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1'] : [],
+  const args = debug ? ['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1'] : [];
+  if (updateFixture) args.push('--no-proxy-server', '--host-resolver-rules=MAP analytix.top 127.0.0.1, MAP download.analytix.top 127.0.0.1');
+  const child = spawn(executable, args,
     { cwd: installRoot, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
   const instance = { child, done: false, failed: false, debugUrl: null };
   owned.push(instance);
@@ -144,7 +188,7 @@ async function evaluate(expression, target = page) {
   assert.ok(!result.exceptionDetails);
   return result.result?.value;
 }
-// Runtime is used only to inspect/layout the DOM. Product actions use actual CDP
+// Runtime inspects/layouts the DOM and reads the published update status. Product actions use actual CDP
 // pointer input; navigation uses existing links or Page.navigate where no link exists.
 async function clickElement(expression, target = page) {
   const point = await evaluate(`(() => {
@@ -227,6 +271,7 @@ async function portClosed(port) {
   });
   reportPath = config.reportPath;
   await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' }); reportOwned = true;
+  if (config.updateFixture) updateFixture = await check('isolatedUpdateHttpsFixture', () => createUpdateFixture(config.updateFixture));
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
     !/^(FUND_|FUNDS_TRACE_|ELECTRON_|NODE_OPTIONS$)/i.test(name)));
   const executable = path.join(config.installRoot, 'FundsTrace.exe');
@@ -290,6 +335,8 @@ async function portClosed(port) {
       } catch { return false; }
     }, 15000);
   });
+  report.workspaceWindowIcons = await check('installedWorkspaceWindowIcon', () => windowIcons(config.installRoot, primary.child.pid, 1,
+    config.screenshot ? `${config.screenshot.slice(0, -4)}.taskbar.png` : undefined));
   await check('nodeSelectionModuleLoaded', async () => {
     assert.equal(await evaluate(`typeof window.FundsGraphSelection?.create === 'function'
       && !!state.graphSelection && !state.graphSelection.status().destroyed`), true);
@@ -404,6 +451,7 @@ async function portClosed(port) {
       && !!document.querySelector('#results .analysis-empty') && !!document.querySelector('#caseSel')?.options.length
       && document.querySelector('#caseStats')?.textContent.includes('流水')`, analysisPage);
   });
+  report.analysisWindowIcons = await check('installedAnalysisWindowIcon', () => windowIcons(config.installRoot, primary.child.pid, 2));
   await viewportMatrix('analysisLayout', analysisPage, `!!document.querySelector('#panel')
     && !!document.querySelector('#results .analysis-empty') && document.querySelector('#caseStats')?.textContent.includes('流水')`, [
     `document.querySelector('#caseSel')`, `document.querySelector('#backToGraph')`,
@@ -430,18 +478,37 @@ async function portClosed(port) {
   await check('noPageExceptions', async () => {
     assert.ok(!instrumentationFailed); assert.equal(errorCount, 0);
   });
+  if (updateFixture) report.updateCycle = await runInstalledUpdateJourney({
+    fixture: updateFixture, primary, evaluate, clickElement, cdp, page, check, screenshot: config.screenshot,
+  });
   await check('normalClose', async () => {
     // CDP Page.close runs beforeunload. Main's window-all-closed/before-quit
     // handlers must finish their owned backend shutdown; Browser.close is not used.
-    await cdp.send('Page.close', {}, page.sessionId).catch(() => {});
+    if (!primary.done) await cdp.send('Page.close', {}, page.sessionId).catch(() => {});
     assert.deepEqual(await bounded(primary.exited, 30000), { code: 0, signal: null });
     assert.equal(errorCount, 0);
   });
   await check('backendReleasedAfterClose', () => until(() => portClosed(Number(new URL(page.origin).port)), 15000));
   report.status = 'passed';
-})().catch(error => {
+})().catch(async error => {
   report.status = 'failed'; report.failedCheck = stage; process.exitCode = 1;
-  const detail = safeJourneyFailure(error);
+  if (updateFixture) {
+    let errorCode = 'UNAVAILABLE';
+    // Read the published status only; do not inspect Main or request headers.
+    try {
+      const status = await evaluate('window.FundsDesktopUpdates.state()');
+      if (FAILURE_CODES.includes(status?.errorCode) || status?.errorCode === 'UNKNOWN') errorCode = status.errorCode;
+    } catch {}
+    const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+    const cache = path.join(local, 'fundstrace-updater');
+    report.updateFixtureDiagnostics = { ...updateFixture.requests, lastPhase: updateFixture.lastPhase || 'not-started', errorCode,
+      cacheUnderOwnProfile: within(os.homedir(), cache),
+      cacheDirectoryPresent: await fs.stat(cache).then(value => value.isDirectory(), () => false),
+      cachePendingPresent: await fs.stat(path.join(cache, 'pending')).then(value => value.isDirectory(), () => false),
+    };
+  }
+  const detail = safeJourneyFailure(error) || (['UPDATE_DIALOG_TIMEOUT','UPDATE_DIALOG_FAILED','UPDATE_JOURNEY_TIMEOUT'].includes(error?.message)
+    ? { step: 'update', kind: error.message } : null);
   if (detail) report.failureDetail = detail;
 }).finally(async () => {
   // Best effort graceful close, then only handles spawned above. No process-name
@@ -452,6 +519,7 @@ async function portClosed(port) {
     await Promise.all(owned.filter(instance => !instance.done).map(instance => bounded(instance.exited, 5000).catch(() => {})));
   }
   cdp?.close();
+  if (updateFixture) await updateFixture.close();
   for (const instance of owned) {
     if (!instance.done) {
       instance.child.kill();

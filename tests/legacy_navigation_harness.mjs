@@ -723,7 +723,7 @@ test('public graph snapshot discards a revoked canvas even when its id returns',
   assert.equal(await snapshot, null);
 });
 
-function installSyntheticHub(h, size = 1000, { bodyPadding = 0 } = {}) {
+function installSyntheticHub(h, size = 1000, { bodyPadding = 0, fixedScreenShadow = false } = {}) {
   const cents=1000000000000000001n+BigInt(size-2),outTotal=`${cents/100n}.${String(cents%100n).padStart(2,'0')}`;
   h.bindApp();
   h.element('#caseSelect').selectedOptions = [{ textContent: 'Synthetic A' }];
@@ -732,6 +732,7 @@ function installSyntheticHub(h, size = 1000, { bodyPadding = 0 } = {}) {
   h.run(`globalThis.labelShapeWrites = 0; globalThis.createdLabelShapes=0;globalThis.initialGraphLabelShapes=null;globalThis.graphPaints = 0;globalThis.imageReads=0;
     globalThis.syntheticZoom = 0.45;
     globalThis.syntheticBodyPadding = ${JSON.stringify(bodyPadding)};
+    globalThis.syntheticFixedScreenShadow = ${JSON.stringify(fixedScreenShadow)};
     globalThis.syntheticLabelBounds=null;
     globalThis.syntheticGraphEvents=new Map();
     globalThis.syntheticViewport={minX:0,minY:0,maxX:1000,maxY:700};
@@ -769,7 +770,13 @@ function installSyntheticHub(h, size = 1000, { bodyPadding = 0 } = {}) {
       const projectLocal=bounds=>{const center=state.graph.getCanvasByPoint?.(model.x,model.y)||{x:model.x,y:model.y},zoom=Math.abs(state.graph.getZoom?.()||1);
         return {minX:center.x+bounds.minX*zoom,minY:center.y+bounds.minY*zoom,
           maxX:center.x+bounds.maxX*zoom,maxY:center.y+bounds.maxY*zoom}};
-      const key={getBBox:bodyBounds,getCanvasBBox:()=>model.source?null:projectLocal(bodyBounds())};
+      const key={getBBox:bodyBounds,getCanvasBBox:()=>{
+        if(model.source)return null;
+        const box=projectLocal(bodyBounds()),shadow=syntheticFixedScreenShadow?Math.max(0,Number(model.style?.shadowBlur)||0):0;
+        // The pinned Canvas renderer expands the projected shape with a fixed
+        // screen-space shadow envelope; this padding does not scale with zoom.
+        return {minX:box.minX-shadow,minY:box.minY-shadow,maxX:box.maxX+shadow,maxY:box.maxY+shadow};
+      }};
       const item={getModel:()=>model,shapes,getContainer:()=>group,...(model.source?{}:{getKeyShape:()=>key}),
         syncLabel(){if(typeof model.label!=='string'||!model.label.length)shapes.length=0;
           else if(!shapes.length){const text=makeShape('text-shape',shapes),background=makeShape('text-bg-shape',shapes);
@@ -1384,6 +1391,78 @@ for(const zoom of [.4,1,2]) test(`lazy node labels recover from rendered body en
   assert.deepEqual(JSON.parse(JSON.stringify(snapshot.edges[0].data.amount_totals)),beforeAppend.edges[0].amount_totals);
   assert.equal(snapshot.edges[0].data.amount_totals[0].amount,'10000000000000000.01');
   assert.deepEqual(Array.from(snapshot.edges[0].data.ids),[1,2]);
+});
+
+for(const [initialZoom,nextZoom] of [[.4,.8],[.945,1.167],[1,2]]) test(`node label shapes survive fixed-screen shadows when zoom changes ${initialZoom} to ${nextZoom} and back`,()=>{
+  const h=harness('app.js');installSyntheticHub(h,6,{fixedScreenShadow:true});
+  h.run(`syntheticZoom=${initialZoom};syntheticViewport={minX:0,minY:0,maxX:1000/syntheticZoom,maxY:700/syntheticZoom};
+    const atInitialScreen=(x,y)=>({x:x/syntheticZoom,y:y/syntheticZoom});
+    state.positions={'SYN-HUB':atInitialScreen(150,150),'SYN-00000':atInitialScreen(450,150),
+      'SYN-00001':atInitialScreen(750,150),'SYN-00002':atInitialScreen(150,450),
+      'SYN-00003':atInitialScreen(450,450),'SYN-00004':atInitialScreen(850,450)};
+    state.graphView.labelMode='auto';renderGraph();
+    globalThis.zoomLabelCoordinates=JSON.stringify(state.graph.getNodes().map(item=>{
+      const m=item.getModel();return{id:m.id,x:m.x,y:m.y}}));`);
+  const allIds=['SYN-00000','SYN-00001','SYN-00002','SYN-00003','SYN-00004','SYN-HUB'];
+  const actualTextIds=()=>Array.from(h.run(`state.graph.getNodes().filter(item=>item.getContainer().get('visible')!==false
+    &&labelShapes(item).some(shape=>shape.get('visible')!==false&&shape.attr('text')===item.getModel().fundsLabel))
+    .map(item=>item.getModel().id)`)).sort();
+  const settle=zoom=>{
+    h.run(`state.graph.zoomTo(${zoom});syntheticViewport={minX:0,minY:0,maxX:1000/syntheticZoom,maxY:700/syntheticZoom};scheduleGraphLabels(true)`);
+    h.timers.findLast(timer=>timer.delay===140&&!timer.cancelled).callback();
+  };
+  const refreshHover=id=>{
+    h.run(`state.graphView.hoveredAccount=${JSON.stringify(id)};scheduleGraphLabels()`);
+    h.timers.findLast(timer=>timer.delay===0&&!timer.cancelled).callback();
+  };
+  assert.deepEqual(actualTextIds(),allIds,'initial auto labels have real visible canonical text shapes');
+  assertAppliedLabelPlacements(h);
+  settle(nextZoom);
+  assert.ok(h.run(`state.graph.getNodes().some(item=>{const b=graphNodeBodyBounds(item);return b.minX>1000||b.minY>700})`),
+    'the same zoom gesture moves at least one complete node beyond the physical viewport');
+  const staying=nextZoom/initialZoom>1.5?['SYN-00000','SYN-HUB']:allIds.filter(id=>id!=='SYN-00004');
+  assert.deepEqual(actualTextIds(),staying,'unobstructed nodes left on screen retain actual text without hover');
+  assertAppliedLabelPlacements(h);
+  refreshHover('SYN-HUB');
+  assert.deepEqual(actualTextIds(),staying,'hover does not become the only way to create ordinary labels');
+  refreshHover(null);
+  assert.deepEqual(actualTextIds(),staying,'leaving hover preserves every unobstructed on-screen text shape');
+  assertAppliedLabelPlacements(h);
+  settle(initialZoom);
+  assert.deepEqual(actualTextIds(),allIds,'returning the camera restores all canonical text shapes');
+  assertAppliedLabelPlacements(h);
+  assert.equal(h.run('JSON.stringify(state.lastGraph)===originalGraphFacts'),true);
+  assert.equal(h.run(`JSON.stringify(state.graph.getNodes().map(item=>{
+    const m=item.getModel();return{id:m.id,x:m.x,y:m.y}}))===zoomLabelCoordinates`),true,
+    'zoom and label recovery never move nodes or alter saved coordinates');
+});
+
+test('node label obstacles follow same-zoom live movement and shadow style changes without weakening real collisions',()=>{
+  const h=harness('app.js');installSyntheticHub(h,3,{fixedScreenShadow:true});
+  h.run(`syntheticZoom=1;syntheticViewport={minX:0,minY:0,maxX:1000,maxY:700};
+    state.positions={'SYN-HUB':{x:200,y:150},'SYN-00000':{x:500,y:150},'SYN-00001':{x:800,y:150}};
+    state.graphView.labelMode='auto';renderGraph();`);
+  const text=id=>h.run(`labelShapes(state.graphView.nodeItems.get(${JSON.stringify(id)})).filter(shape=>
+    shape.get('visible')!==false&&shape.attr('text')===state.graphView.nodeItems.get(${JSON.stringify(id)}).getModel().fundsLabel).length`);
+  for(const id of ['SYN-HUB','SYN-00000','SYN-00001'])assert.equal(text(id),1);
+  h.run(`const changing=state.graphView.nodeItems.get('SYN-HUB');
+    state.graph.updateItem(changing,{style:{...changing.getModel().style,shadowBlur:0}});applyGraphLabels()`);
+  assert.equal(text('SYN-HUB'),1,'shrinking the live screen shadow cannot leave an obsolete obstacle over its label');
+  assertAppliedLabelPlacements(h);
+  h.run(`const blocker=state.graphView.nodeItems.get('SYN-00001');
+    const label=labelShapes(state.graphView.nodeItems.get('SYN-HUB'))[0].getCanvasBBox();
+    state.graph.updateItem(blocker,{x:200,y:(label.minY+label.maxY)/2});
+    refreshGraphRoutesAndLabels();applyGraphLabels()`);
+  assert.equal(text('SYN-HUB'),0,'a neighboring node moved over the label suppresses its actual text at the same zoom');
+  h.run(`state.graph.updateItem(state.graphView.nodeItems.get('SYN-00001'),{x:800,y:150});
+    refreshGraphRoutesAndLabels();applyGraphLabels()`);
+  for(const id of ['SYN-HUB','SYN-00000','SYN-00001'])assert.equal(text(id),1,'moving the real blocker away restores ordinary text');
+  assertAppliedLabelPlacements(h);
+  assert.equal(h.run('state.graphView.hoveredAccount'),null);
+  assert.equal(h.run('JSON.stringify(state.lastGraph)===originalGraphFacts'),true);
+  assert.deepEqual(JSON.parse(h.run(`JSON.stringify(state.graph.getNodes().map(item=>{
+    const m=item.getModel();return{id:m.id,x:m.x,y:m.y}}))`)),[
+    {id:'SYN-HUB',x:200,y:150},{id:'SYN-00000',x:500,y:150},{id:'SYN-00001',x:800,y:150}]);
 });
 
 test('viewport clipping retains a crossing edge and both snapshot scopes preserve offscreen facts and canonical labels', async () => {

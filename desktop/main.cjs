@@ -8,6 +8,8 @@ const { randomUUID } = require('node:crypto');
 const { launchConfig, HEADER, pageAllowed, popupKind, requestAllowed, downloadAllowed, windowBounds } = require('./host-policy.cjs');
 const { startBackend } = require('./backend.cjs');
 const { CHANNEL, preferenceStore, preferenceRequest } = require('./preferences.cjs');
+const updates = require('./updates.cjs');
+const appIcon = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 
 // Fixed, script-free content has no backend token, network access or business data.
 const startupUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>FundsTrace 正在启动</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f7fb;color:#202b3c;font:16px/1.7 system-ui,"Microsoft YaHei",sans-serif}main{padding:32px;max-width:440px}h1{font-size:26px;margin:0 0 12px}p{margin:8px 0;color:#526078}</style><main role="status"><h1>正在启动 FundsTrace</h1><p>正在准备工作区，首次启动可能需要一点时间。</p><p>可关闭此窗口取消启动。</p></main></html>`);
@@ -16,6 +18,7 @@ app.setName('FundsTrace');
 app.setAppUserModelId('com.eysn.fundstrace');
 const synthetic = process.argv.includes('--synthetic');
 let backend, preparation, temporaryRoot, quitting = false, shutdownComplete = false, fatalShown = false;
+let updateService, installUpdate = false, updateTimer;
 const owned = new Set();
 const windows = new Set();
 
@@ -33,15 +36,34 @@ else {
   app.on('before-quit', event => {
     if (shutdownComplete) return;
     event.preventDefault(); if (quitting) return; quitting = true;
+    clearInterval(updateTimer);
     void (async () => {
-      try { await preparation?.catch(() => {}); await backend?.stop(); if (temporaryRoot) await fs.rm(temporaryRoot, { recursive: true, force: true }); }
-      finally { shutdownComplete = true; app.quit(); }
+      try {
+        await preparation?.catch(() => {});
+        const graceful = await backend?.stop();
+        if (installUpdate && graceful !== true) {
+          installUpdate = false;
+          dialog.showErrorBox('FundsTrace 更新', '数据服务未能正常退出，本次未启动安装。请重新打开应用，确认导入和导出已完成后重试更新。');
+        }
+        if (temporaryRoot) await fs.rm(temporaryRoot, { recursive: true, force: true });
+      } catch {
+        if (installUpdate) {
+          installUpdate = false;
+          dialog.showErrorBox('FundsTrace 更新', '退出数据服务时发生错误，本次未启动安装。请重新打开应用后重试更新。');
+        }
+      }
+      finally {
+        shutdownComplete = true;
+        if (installUpdate) updateService.install();
+        else app.quit();
+      }
     })();
   });
   app.on('window-all-closed', () => app.quit());
   app.whenReady().then(async () => {
     try {
       if (synthetic && app.isPackaged) throw new Error('Synthetic mode is unavailable in installed builds.');
+      app.dock?.setIcon(appIcon);
       let origin, token;
       const localSession = session.fromPartition(`funds-trace-${randomUUID()}`, { cache: false });
       localSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
@@ -69,7 +91,7 @@ else {
       function createWindow() {
         const owner = [...windows][0];
         const display = owner ? screen.getDisplayMatching(owner.getBounds()) : screen.getPrimaryDisplay();
-        const win = new BrowserWindow({ title: 'FundsTrace', ...windowBounds(display.workArea), show: false,
+        const win = new BrowserWindow({ title: 'FundsTrace', icon: appIcon, ...windowBounds(display.workArea), show: false,
           webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: localSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, spellcheck: false } });
         const contents = win.webContents;
         const contentsId = contents.id;
@@ -150,13 +172,50 @@ else {
       ipcMain.on(CHANNEL, (event, operation, key, value) => {
         event.returnValue = preferenceRequest(preferences, event, origin, owned, operation, key, value);
       });
+      const updatesEnabled = app.isPackaged && process.platform === 'win32' && !synthetic;
+      updateService = updates.updateController({
+        updater: updatesEnabled ? require('electron-updater').autoUpdater : undefined,
+        enabled: updatesEnabled, version: app.getVersion(),
+        notify: value => {
+          if (value.phase === 'error' && installUpdate && shutdownComplete) {
+            dialog.showErrorBox('FundsTrace 更新', '安装程序未能启动。请从 analytix.top 下载最新版覆盖安装，已有案件和设置会保留。');
+            installUpdate = false; app.quit(); return;
+          }
+          for (const win of windows) if (!win.isDestroyed() && pageAllowed(win.webContents.getURL(), origin))
+            win.webContents.send(updates.CHANNEL, value);
+        },
+        restart: async () => {
+          const owner = [...windows].find(win => !win.isDestroyed());
+          const options = { type: 'question', title: '重启更新 FundsTrace',
+            message: '更新已下载并通过完整性校验。现在重启更新？',
+            detail: '请先保存所有窗口中的画布，并等待导入、导出等操作完成。已有案件和设置会保留。',
+            buttons: ['稍后', '重启更新'], defaultId: 0, cancelId: 0, noLink: true };
+          const result = await (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options));
+          if (result.response !== 1 || quitting) return false;
+          installUpdate = true;
+          setImmediate(() => app.quit());
+          return true;
+        },
+      });
+      ipcMain.handle(updates.CHANNEL, (event, action) => {
+        if (!updates.allowed(event, origin, owned) || quitting) return null;
+        if (action === 'state') return updateService.snapshot();
+        if (['check', 'download', 'install'].includes(action)) return updateService.action(action);
+        return null;
+      });
       Menu.setApplicationMenu(Menu.buildFromTemplate([
         ...(process.platform === 'darwin' ? [{ label: 'FundsTrace', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] }] : []),
         { label: '文件', submenu: [{ label: '资金图谱', click: () => [...windows][0]?.loadURL(`${origin}/`) }, { label: '案件与导入', click: () => [...windows][0]?.loadURL(`${origin}/workspace/`) }, { type: 'separator' }, { role: 'quit' }] },
         { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-        { label: '显示', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] }
+        { label: '显示', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
+        { label: '帮助', submenu: [{ label: '检查更新', enabled: updatesEnabled, click: () => void updateService.action('check') }] }
       ]));
       await primary.loadURL(`${origin}/`);
+      if (updatesEnabled) {
+        void updateService.action('check');
+        updateTimer = setInterval(() => { if (!quitting) void updateService.action('check'); }, 6 * 60 * 60 * 1000);
+        updateTimer.unref();
+      }
     } catch (error) {
       await fail(error?.message === 'FundsTrace backend startup timed out'
         ? 'FundsTrace 启动超时。请关闭后重新打开应用；若仍无法启动，请检查可用磁盘空间，或重新安装当前版本。已有案件保留在用户数据目录。'

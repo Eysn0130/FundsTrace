@@ -1,6 +1,8 @@
 """Fail closed when release-pair inputs or installed evidence drift."""
 from copy import deepcopy
 import json
+import os
+import textwrap
 from pathlib import Path
 import subprocess
 import sys
@@ -122,3 +124,33 @@ def test_transfer_report_identity_rejects_another_pair_installer_or_missing_evid
     changed["upgradeBaseline"]["schemaVersion"] = True
     with pytest.raises(ValueError):
         upgrade_baseline.validate_installer_identity(changed, identity, CURRENT_SHA256, 160000000)
+
+
+@pytest.mark.parametrize("inputs,accepted", [
+    ({}, True),
+    ({"BUILD_INSTALLER": "true"}, True),
+    ({"BUILD_INSTALLER": "true", "IN_APP_UPDATE": "true"}, True),
+    ({"IN_APP_UPDATE": "true"}, False),
+    ({"UPDATE_FIXTURE_PROBE": "tls"}, True),
+    ({"UPDATE_FIXTURE_PROBE": "dialog", "BUILD_INSTALLER": "true"}, False),
+    ({"TRANSFER_RUN_ID": "123", "DRAFT_TAG": "v0.1.9"}, True),
+    ({"TRANSFER_RUN_ID": "123"}, False),
+    ({"DRAFT_TAG": "v0.1.9"}, False),
+    ({"TARGET_SHA256": "a" * 64, "TARGET_BYTES": "1234"}, True),
+    ({"TARGET_SHA256": "a" * 64}, False),
+    ({"TARGET_BYTES": "1234"}, False),
+    ({"TARGET_SHA256": "a" * 64, "TARGET_BYTES": str(2**53)}, False),
+    ({"TARGET_SHA256": "a" * 64, "TARGET_BYTES": "1234", "BUILD_INSTALLER": "true"}, False),
+    ({"TARGET_SHA256": "a" * 64, "TARGET_BYTES": "1234", "IN_APP_UPDATE": "true"}, False),
+    ({"TARGET_SHA256": "a" * 64, "TARGET_BYTES": "1234", "UPDATE_FIXTURE_PROBE": "tls"}, False),
+    ({"TARGET_SHA256": "a" * 64, "TARGET_BYTES": "1234", "TRANSFER_RUN_ID": "123", "DRAFT_TAG": "v0.1.9"}, False),
+])
+def test_workflow_rejects_mixed_or_incomplete_manual_modes_before_windows_jobs(inputs, accepted):
+    workflow = (ROOT / ".github/workflows/windows-candidate.yml").read_text(encoding="utf-8")
+    validation = workflow.split("        shell: python\n        run: |\n", 1)[1].split("  update-fixture-probe:", 1)[0]
+    environment = {**os.environ, "BUILD_INSTALLER": "false", "IN_APP_UPDATE": "false",
+                   "UPDATE_FIXTURE_PROBE": "none", "TRANSFER_RUN_ID": "", "DRAFT_TAG": "",
+                   "TARGET_SHA256": "", "TARGET_BYTES": "", **inputs}
+    result = subprocess.run([sys.executable, "-c", textwrap.dedent(validation)], env=environment,
+                            text=True, capture_output=True)
+    assert (result.returncode == 0) is accepted

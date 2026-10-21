@@ -11,3 +11,16 @@ contextBridge.exposeInMainWorld('FundsDesktopPreferences', Object.freeze({
     if (ipcRenderer.sendSync(channel, 'remove', String(key)) !== true) throw new Error('偏好设置保存失败');
   },
 }));
+const updateChannel = 'funds-trace:updates';
+contextBridge.exposeInMainWorld('FundsDesktopUpdates', Object.freeze({
+  state: () => ipcRenderer.invoke(updateChannel, 'state'),
+  check: () => ipcRenderer.invoke(updateChannel, 'check'),
+  download: () => ipcRenderer.invoke(updateChannel, 'download'),
+  install: () => ipcRenderer.invoke(updateChannel, 'install'),
+  subscribe: callback => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on(updateChannel, listener);
+    return () => ipcRenderer.removeListener(updateChannel, listener);
+  },
+}));

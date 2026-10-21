@@ -14,6 +14,17 @@ const helper = path.join(desktop, 'installer-processes.ps1');
 const processes = fs.readFileSync(helper, 'utf8');
 const templates = path.join(desktop, 'node_modules/app-builder-lib/templates/nsis');
 
+test('Windows app, installer and uninstaller use the same brand icon for FundsTrace and Issuer', () => {
+  const icon = path.join(desktop, 'assets/icon.ico');
+  for (const builder of [require('../electron-builder.cjs'), require('../issuer/electron-builder.cjs')]) {
+    assert.equal(builder.win.icon, icon);
+    assert.equal(builder.nsis.installerIcon, icon);
+    assert.equal(builder.nsis.uninstallerIcon, icon);
+    assert.equal(builder.win.signExecutable, false);
+    assert.notEqual(builder.win.signAndEditExecutable, false, 'unsigned apps still need embedded icon editing');
+  }
+});
+
 test('installer keeps FundsTrace identity, per-user scope, case data, and license distribution', () => {
   const builder = require('../electron-builder.cjs');
   assert.equal(builder.appId, 'com.eysn.fundstrace');
@@ -69,11 +80,14 @@ const powershell = process.platform === 'win32'
   : null;
 
 function checkDirectory(directory, excludedPid = process.pid, rejectInstallerInInstallDirectory = false) {
-  return spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+  const result = spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', helper, '-TimeoutSeconds', '0', ...(rejectInstallerInInstallDirectory ? ['-RejectInstallerInInstallDirectory'] : [])], {
     env: { ...process.env, FUNDS_TRACE_INSTALLER_APP_ROOT: directory, FUNDS_TRACE_INSTALLER_SELF_PID: String(excludedPid) },
-    encoding: 'utf8', timeout: 15000, windowsHide: true
+    encoding: 'utf8', timeout: 60000, windowsHide: true
   });
+  assert.equal(Boolean(result.error), false,
+    `PowerShell check did not complete: code=${result.error?.code || 'unknown'}; signal=${result.signal || 'none'}`);
+  return result;
 }
 
 test('Windows process gate treats an unreadable possible FundsTrace path as check failure without guessing ownership', { skip: !powershell }, t => {
@@ -83,10 +97,13 @@ test('Windows process gate treats an unreadable possible FundsTrace path as chec
   // its failure exit code, with fixed synthetic process records and no real PID.
   function inspect(records) {
     const command = `function Get-CimInstance { [CmdletBinding()] param([string]$ClassName) ConvertFrom-Json $env:FUNDS_TRACE_TEST_PROCESSES }; & $env:FUNDS_TRACE_TEST_HELPER -InstallDirectory $env:FUNDS_TRACE_TEST_ROOT -InstallerProcessId 123 -TimeoutSeconds 0; exit $LASTEXITCODE`;
-    return spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+    const result = spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
       env: { ...process.env, FUNDS_TRACE_TEST_HELPER: helper, FUNDS_TRACE_TEST_ROOT: directory, FUNDS_TRACE_TEST_PROCESSES: JSON.stringify(records) },
-      encoding: 'utf8', timeout: 15000, windowsHide: true,
+      encoding: 'utf8', timeout: 60000, windowsHide: true,
     });
+    assert.equal(Boolean(result.error), false,
+      `PowerShell check did not complete: code=${result.error?.code || 'unknown'}; signal=${result.signal || 'none'}`);
+    return result;
   }
   for (const name of ['FundsTrace.exe', 'funds-trace-backend.exe', 'FUNDSTRACE.EXE']) {
     const result = inspect([{ ProcessId: 456, Name: name, ExecutablePath: null }]);

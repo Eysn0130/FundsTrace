@@ -18,6 +18,10 @@ The import-batch table uses the unmodified `dots.svg` from the same Tabler Icons
 
 The additional compact ribbon icons in `static/ui-icons/` (`network`, `selection`, `selection-clear`, `swap`, `list`, `group`, `link`, `layers`, `chart`, `route`, `play`, `star`, `shape`, `photo`, `align-left`, `align-top`, `distribute-vertical`, `lock`, `focus`, `zoom-out`, `zoom-in`, `zoom-reset`, `eye`, `eye-off`, `eye-restore`, `legend`, `map`, `calendar`, `target`, and `font-text`) were drawn for FundsTrace on 2026-10-16. They use the project MIT license and the same 24px outline grammar as the retained Tabler controls. No external icon service or runtime dependency is used.
 
+## Windows updater and release publisher
+
+The desktop host includes `electron-updater` 6.8.9 (electron-builder contributors, MIT); its locked production dependencies and their license files are bundled by electron-builder. The cloud publication tool uses Alibaba Cloud's `ali-oss` 6.23.0 SDK (Alibaba Group, MIT) only in the release job; it is not included in installers. Exact versions, transitive dependencies and registry integrity hashes are retained in `desktop/package-lock.json` and `scripts/release-publisher/package-lock.json`.
+
 ## React and React DOM
 
 The React pilot bundles React and React DOM. Their exact versions are fixed in `frontend/package-lock.json`. Both carry the following MIT notice:
@@ -52,6 +56,8 @@ Python runtime dependency versions and distribution hashes are recorded in `requ
 
 `desktop/installer.nsh` adapts installation-root process scoping and installer lifecycle hooks from Analytix `build/standard-win-installer.nsh` at commit `c7d2a370855a8d371c61c32cc2422515b9404ef2` (https://github.com/Eysn0130/analytix). Copyright 2026 Guoqin He (GitHub: Eysn0130); Apache License 2.0, reproduced in `desktop/licenses/Apache-2.0.txt` and distributed as `resources/licenses/Analytix-Apache-2.0.txt`. FundsTrace modifications dated 2026-10-15 retain its per-user installation identity and default data retention, display the installed version, and request normal window closing rather than forcing process termination. FundsTrace does not use Analytix registry keys, update feeds or signing identity.
 
-## Brand typography
+## FundsTrace application icon and historical typography
 
-The FundsTrace wordmark uses Manrope and Noto Sans SC, both under SIL Open Font License 1.1. The fixed source versions, copyright notices and full licenses are recorded in [docs/brand/README.md](docs/brand/README.md) and [docs/brand/licenses/](docs/brand/licenses/). Published SVGs contain glyph outlines; font binaries are not included in this repository.
+The current application icon is derived from the maintainer-approved raster image retained as `docs/brand/source/app-icon-approved.png`. Its transparent master and generated application, web and GitHub resources are documented in [docs/brand/README.md](docs/brand/README.md). The application icon does not depend on a font or external icon service.
+
+The earlier FundsTrace wordmarks used Manrope and Noto Sans SC, both under SIL Open Font License 1.1. Those wordmark assets have been retired; their copyright notices and full licenses remain in [docs/brand/licenses/](docs/brand/licenses/). Font binaries are not included in this repository, and replacing the application icon does not change those upstream licenses.

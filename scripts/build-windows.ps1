@@ -1,11 +1,15 @@
 #Requires -Version 7.0
-param([switch]$Installer, [switch]$VerifyInstallerLifecycle)
+param([switch]$Installer, [switch]$VerifyInstallerLifecycle, [switch]$VerifyInAppUpdate,
+    [string]$PriorVersion = '')
 if ($VerifyInstallerLifecycle -and -not $Installer) { throw "Installer lifecycle verification requires -Installer." }
+if ($VerifyInAppUpdate -and -not $VerifyInstallerLifecycle) { throw 'In-app update verification requires installer lifecycle verification.' }
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) { throw "Run this pipeline natively on Windows x64." }
 if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne "X64") { throw "This candidate targets Windows x64." }
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'windows-update-certificate.ps1')
+$SharedUpdateCertificate = $null
 function Invoke-Checked([scriptblock]$Command) { & $Command; if ($LASTEXITCODE -ne 0) { throw "Build command failed (exit $LASTEXITCODE)." } }
 function Get-Sha256([string]$File) { (Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash.ToLowerInvariant() }
 Push-Location $ProjectRoot
@@ -19,6 +23,10 @@ try {
     $PythonInfo = (& $PythonExe -c "import json, platform, struct, sys; print(json.dumps({'version': platform.python_version(), 'major': sys.version_info.major, 'minor': sys.version_info.minor, 'bits': struct.calcsize('P') * 8, 'machine': platform.machine().lower()}))") | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or $PythonInfo.major -ne 3 -or $PythonInfo.minor -ne 11 -or $PythonInfo.bits -ne 64 -or $PythonInfo.machine -notin @("amd64", "x86_64")) { throw "Use Python 3.11 running as an x64 process." }
     Invoke-Checked { uv pip sync --python $PythonExe --require-hashes requirements-desktop.lock }
+    $Baseline = (& $PythonExe scripts/upgrade_baseline.py --baseline desktop/upgrade-baseline.json --package desktop/package.json) | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw 'The upgrade baseline differs from the current package.' }
+    if ($PriorVersion -and $PriorVersion -cne $Baseline.prior.version) { throw 'Requested prior version differs from the current upgrade baseline.' }
+    $PriorVersion = $Baseline.prior.version
     Push-Location frontend
     try { Invoke-Checked { npm.cmd ci }; Invoke-Checked { npm.cmd run build } } finally { Pop-Location }
     Invoke-Checked { & $PythonExe scripts/build_desktop_backend.py }
@@ -49,6 +57,13 @@ try {
         throw "Packaged executable version metadata differs from the candidate version."
     }
     $ExecutableVersion = [ordered]@{ fileVersion = $ExecutableInfo.FileVersion; productVersion = $ExecutableInfo.ProductVersion }
+    $ExpectedIcon = Join-Path $ProjectRoot 'desktop/assets/icon.ico'
+    $IconHelper = Join-Path $ProjectRoot 'desktop/tests/windows-icon-resources.cjs'
+    $ApplicationIcon = (& node $IconHelper (Join-Path $CandidateDir 'FundsTrace.exe') $ExpectedIcon) | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $ApplicationIcon.status -cne 'passed') { throw 'Application PE icon differs from the approved icon.' }
+    $IconReportPath = Join-Path $EvidenceRoot 'native-icon-resources.json'
+    $IconReport = [ordered]@{ schemaVersion = 1; status = 'passed'; application = $ApplicationIcon;
+        limits = @{ taskbarAppearance = $false; windows10And11Interactive = $false } }
     $PackagedBackend = Join-Path $CandidateDir "resources/backend"
     if ((Get-Sha256 (Join-Path $PackagedBackend "build-manifest.json")) -ne (Get-Sha256 $NativeManifest)) { throw "The packaged backend manifest differs from the native build." }
     $Resources = (Get-Content -Raw -LiteralPath $NativeManifest | ConvertFrom-Json).resources
@@ -62,14 +77,38 @@ try {
         $InstallerPath = Join-Path $EvidenceRoot "electron/FundsTrace-$Version-windows-x64-unsigned.exe"
         if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) { throw "The unsigned installer candidate is missing." }
         $CandidateFiles += Get-Item -LiteralPath $InstallerPath
+        $InstallerIcon = (& node $IconHelper $InstallerPath $ExpectedIcon) | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $InstallerIcon.status -cne 'passed') { throw 'Installer PE icon differs from the approved icon.' }
+        $IconReport.installer = $InstallerIcon
     }
+    $IconReport | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $IconReportPath -Encoding utf8
     $InstallerReport = Join-Path $EvidenceRoot "native-installer-smoke.json"
     $InstalledAppReport = Join-Path $EvidenceRoot "native-installed-app-smoke.json"
     $ImportRecoveryReport = Join-Path $EvidenceRoot 'native-import-recovery-smoke.json'
     $CompatibilityDirectory = Join-Path $EvidenceRoot 'standard-user'
+    $UpdateArguments = @{}
+    if ($VerifyInAppUpdate) {
+        $NextParts = $Version.Split('.')
+        $NextVersion = "$($NextParts[0]).$($NextParts[1]).$([int]$NextParts[2] + 1)"
+        $NextRoot = Join-Path $EvidenceRoot 'private-update-fixture'
+        Push-Location desktop
+        try {
+            Invoke-Checked { & node_modules/.bin/electron-builder.cmd --win nsis --x64 --config electron-builder.cjs --publish never `
+                "--config.extraMetadata.version=$NextVersion" "--config.directories.output=$NextRoot" }
+        } finally { Pop-Location }
+        $SharedUpdateCertificate = New-FundsTraceUpdateCertificate (Join-Path $NextRoot 'crypto')
+        $CertificateFixture = Join-Path $SharedUpdateCertificate.Directory 'fixture.json'
+        @{ pfx=$SharedUpdateCertificate.Pfx; passphrase=$SharedUpdateCertificate.Passphrase } |
+            ConvertTo-Json | Set-Content -LiteralPath $CertificateFixture -Encoding utf8
+        $UpdateArguments = @{
+            NextInstaller = (Join-Path $NextRoot "FundsTrace-$NextVersion-windows-x64-unsigned.exe")
+            NextUnpacked = (Join-Path $NextRoot 'win-unpacked')
+            TrustedCertificateFixture = $CertificateFixture
+        }
+    }
     if ($VerifyInstallerLifecycle) {
-        Invoke-Checked { & "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $InstallerPath -ReportPath $InstallerReport }
-        Invoke-Checked { & "$PSScriptRoot/test-windows-standard-user.ps1" -InstallerPath $InstallerPath -ReportDirectory $CompatibilityDirectory }
+        Invoke-Checked { & "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $InstallerPath -ReportPath $InstallerReport -PriorVersion $PriorVersion @UpdateArguments }
+        Invoke-Checked { & "$PSScriptRoot/test-windows-standard-user.ps1" -InstallerPath $InstallerPath -ReportDirectory $CompatibilityDirectory -PriorVersion $PriorVersion @UpdateArguments }
     }
     $Files = @($CandidateFiles | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = [System.IO.Path]::GetRelativePath($ProjectRoot, $_.FullName).Replace('\', '/'); bytes = $_.Length; sha256 = Get-Sha256 $_.FullName }
@@ -88,14 +127,18 @@ try {
     $Manifest = [ordered]@{
         schemaVersion = 1
         candidate = $(if ($Installer) { "unsigned-installer" } else { "unsigned-directory" })
+        installerUpgradeFrom = $(if ($VerifyInstallerLifecycle) { $PriorVersion } else { $null })
+        upgradeBaseline = $(if ($VerifyInstallerLifecycle) { $Baseline } else { $null })
+        inAppUpdateFixture = [bool]$VerifyInAppUpdate
         platform = "win32"; arch = "x64"
         executableVersion = $ExecutableVersion
         toolchain = [ordered]@{ node = $NodeInfo.version; python = $PythonInfo.version; uv = $UvVersion; powershell = $PSVersionTable.PSVersion.ToString() }
         lockSha256 = $Locks
         nativeManifestSha256 = Get-Sha256 $NativeManifest
         hostResourcesReportSha256 = Get-Sha256 $HostResourceReport
+        iconResourcesReportSha256 = Get-Sha256 $IconReportPath
         smokeReportSha256 = Get-Sha256 $SmokeReport
-        checks = [ordered]@{ desktopNodeTests = "passed"; nativeBackendSmoke = "passed"; installerLifecycle = $(if ($VerifyInstallerLifecycle) { "passed" } else { "not-run" }) }
+        checks = [ordered]@{ desktopNodeTests = "passed"; nativeBackendSmoke = "passed"; nativeIconResources = 'passed'; installerLifecycle = $(if ($VerifyInstallerLifecycle) { "passed" } else { "not-run" }) }
         sizes = $Sizes
         limits = [ordered]@{ guiAcceptance = $false; installedAcceptance = $false; signed = $false; published = $false }
         installerReportSha256 = $(if ($VerifyInstallerLifecycle) { Get-Sha256 $InstallerReport } else { $null })
@@ -107,7 +150,7 @@ try {
     $ManifestPath = Join-Path $EvidenceRoot "windows-candidate.json"
     $Manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ManifestPath -Encoding utf8
     $Sums = @($Files | ForEach-Object { "$($_.sha256)  $($_.path)" })
-    foreach ($File in @($NativeManifest, $HostResourceReport, $SmokeReport, $ManifestPath)) {
+    foreach ($File in @($NativeManifest, $HostResourceReport, $IconReportPath, $SmokeReport, $ManifestPath)) {
         $Relative = [System.IO.Path]::GetRelativePath($ProjectRoot, $File).Replace('\', '/')
         $Sums += "$(Get-Sha256 $File)  $Relative"
     }
@@ -116,6 +159,9 @@ try {
         $Sums += "$(Get-Sha256 $InstalledAppReport)  build/desktop/native-installed-app-smoke.json"
         $Sums += "$(Get-Sha256 (Join-Path $EvidenceRoot 'native-installed-app.png'))  build/desktop/native-installed-app.png"
         $Sums += "$(Get-Sha256 (Join-Path $EvidenceRoot 'native-installed-app.graph.png'))  build/desktop/native-installed-app.graph.png"
+        foreach ($File in @(Get-ChildItem -LiteralPath $EvidenceRoot -Filter 'native-installed-app.update-*.png' -File)) {
+            $Sums += "$(Get-Sha256 $File.FullName)  build/desktop/$($File.Name)"
+        }
         $Sums += "$(Get-Sha256 $ImportRecoveryReport)  build/desktop/native-import-recovery-smoke.json"
         foreach ($File in @(Get-ChildItem -LiteralPath $CompatibilityDirectory -File)) {
             $Relative = [IO.Path]::GetRelativePath($ProjectRoot, $File.FullName).Replace('\', '/')
@@ -124,4 +170,7 @@ try {
     }
     $Sums | Set-Content -LiteralPath (Join-Path $EvidenceRoot "windows-candidate.sha256") -Encoding utf8
     Write-Host "Unsigned local candidate and safe manifest/SHA-256 evidence created under build/desktop. Windows GUI acceptance and release publication remain separate."
-} finally { Pop-Location }
+} finally {
+    try { if ($null -ne $SharedUpdateCertificate) { Remove-FundsTraceUpdateCertificate $SharedUpdateCertificate } }
+    finally { Pop-Location }
+}
