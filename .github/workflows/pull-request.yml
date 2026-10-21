@@ -108,6 +108,10 @@ jobs:
       - name: Install locked test dependencies without downloading Electron
         run: npm ci --ignore-scripts
       - run: npm test
+      - name: Install isolated publisher dependencies
+        run: npm ci --prefix ../scripts/release-publisher --ignore-scripts --no-audit --no-fund
+      - name: Check publication failure and integrity behavior without cloud access
+        run: npm test --prefix ../scripts/release-publisher
 
   required:
     name: PR required

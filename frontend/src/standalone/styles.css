@@ -35,20 +35,10 @@ body {
   letter-spacing: -.6px
 }
 
-:where(.funds-trace) .brand svg {
+:where(.funds-trace) .brand img {
   width: 35px;
   height: 35px;
   flex-shrink: 0
-}
-
-:where(.funds-trace) .brand svg path {
-  stroke: #92b5f2;
-  stroke-width: 2;
-  fill: none
-}
-
-:where(.funds-trace) .brand svg circle {
-  fill: #e4edff
 }
 
 :where(.funds-trace) .brand small {

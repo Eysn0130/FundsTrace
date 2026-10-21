@@ -1,0 +1,11 @@
+{
+  "Version": "1",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["oss:GetObject", "oss:PutObject"],
+    "Resource": [
+      "acs:oss:*:*:analytix-hub-downloads-prod/releases/fundstrace/windows/*",
+      "acs:oss:*:*:analytix-hub-downloads-prod/releases/windows/site/fundstrace/latest.yml"
+    ]
+  }]
+}

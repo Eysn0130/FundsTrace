@@ -7,8 +7,22 @@ on:
         description: Build unsigned NSIS installer and verify isolated lifecycle
         type: boolean
         default: false
+      prior_version:
+        description: Pinned published installer used for upgrade acceptance
+        type: choice
+        options: ['0.1.5', '0.1.7']
+        default: '0.1.5'
+      in_app_update:
+        description: Exercise installed update with a disposable private HTTPS fixture
+        type: boolean
+        default: false
+      update_fixture_probe:
+        description: Run an isolated update fixture diagnostic without building an installer
+        type: choice
+        options: ['none', 'tls', 'dialog']
+        default: 'none'
       transfer_run_id:
-        description: Archive verified evidence and transfer only the existing EXE to an empty draft
+        description: Archive verified evidence and transfer the original EXE to a draft; identical retries resume
         type: string
         default: ''
       draft_tag:
@@ -20,12 +34,64 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-candidate-${{ github.ref }}
-  cancel-in-progress: true
+  group: windows-candidate-${{ inputs.transfer_run_id != '' && 'transfer' || github.ref }}
+  cancel-in-progress: ${{ inputs.transfer_run_id == '' }}
 
 jobs:
+  update-fixture-probe:
+    if: ${{ inputs.update_fixture_probe != 'none' }}
+    runs-on: windows-2022
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Bound certificate preparation to 30 seconds
+        if: ${{ inputs.update_fixture_probe == 'tls' }}
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'fundstrace-update-crypto-probe'
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          $start = [Diagnostics.ProcessStartInfo]::new()
+          $start.FileName = Join-Path $PSHOME 'pwsh.exe'
+          $start.UseShellExecute = $false
+          $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+          foreach ($arg in @('-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path (Get-Location) 'scripts/test-windows-updater.ps1'),'-PrepareOnly','-ReportPath',(Join-Path $directory 'native-crypto-probe.json'))) { $start.ArgumentList.Add($arg) }
+          $child = [Diagnostics.Process]::Start($start)
+          $output = $child.StandardOutput.ReadToEndAsync(); $errors = $child.StandardError.ReadToEndAsync()
+          if (-not $child.WaitForExit(30000)) {
+            # Only this held, certificate-only probe; it never runs an installer.
+            $child.Kill($true); $child.WaitForExit()
+            Get-Content -Raw (Join-Path $directory 'native-update-preparation.json')
+            throw 'Certificate-only probe timed out; inspect its fixed preparation stage.'
+          }
+          if ($child.ExitCode -ne 0) { throw 'Certificate-only probe failed; inspect its safe report.' }
+          Get-Content -Raw (Join-Path $directory 'native-crypto-probe.json')
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.4.0
+        if: ${{ inputs.update_fixture_probe == 'dialog' }}
+        with:
+          node-version: '22.22.1'
+      - name: Install the real Electron native-dialog runtime
+        if: ${{ inputs.update_fixture_probe == 'dialog' }}
+        shell: pwsh
+        run: npm.cmd --prefix desktop ci
+      - name: Verify native confirmation results without an installer or backend
+        if: ${{ inputs.update_fixture_probe == 'dialog' }}
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'fundstrace-update-crypto-probe'
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          node desktop/tests/windows-update-dialog-probe.cjs (Join-Path $directory 'native-dialog-probe.json')
+          if ($LASTEXITCODE -ne 0) { throw 'Native confirmation probe failed; inspect its safe report.' }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: fundstrace-update-fixture-${{ github.run_id }}
+          retention-days: 3
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/fundstrace-update-crypto-probe/*.json
   windows-candidate:
-    if: ${{ inputs.transfer_run_id == '' }}
+    if: ${{ inputs.update_fixture_probe == 'none' && inputs.transfer_run_id == '' }}
     runs-on: windows-2022
     timeout-minutes: 45
     defaults:
@@ -58,11 +124,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "uv installation failed." }
       - name: Run focused source process and recovery regressions
         run: |
-          foreach ($file in @('scripts/build-windows.ps1', 'scripts/test-windows-installer.ps1', 'scripts/test-windows-standard-user.ps1', 'desktop/installer-processes.ps1')) {
+          foreach ($file in @('scripts/build-windows.ps1', 'scripts/test-windows-installer.ps1', 'scripts/test-windows-brand-icon.ps1', 'scripts/test-windows-standard-user.ps1', 'scripts/test-windows-updater.ps1', 'scripts/windows-update-certificate.ps1', 'scripts/click-windows-update-dialog.ps1', 'desktop/installer-processes.ps1')) {
             $tokens = $null; $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $file), [ref]$tokens, [ref]$errors)
             if ($errors.Count -gt 0) { throw "PowerShell parse failed: $file" }
           }
+          $iconSource = Get-Content -Raw -LiteralPath 'scripts/test-windows-brand-icon.ps1'
+          $nativeIconSource = [regex]::Match($iconSource, "(?s)Add-Type @'\r?\n(.*?)\r?\n'@")
+          if (-not $nativeIconSource.Success) { throw 'Native icon reader source missing.' }
+          Add-Type -TypeDefinition $nativeIconSource.Groups[1].Value
           uv venv --python 3.11 .venv
           if ($LASTEXITCODE -ne 0) { throw "Test environment creation failed." }
           uv pip sync --python .venv/Scripts/python.exe --require-hashes requirements-dev.lock
@@ -79,8 +149,10 @@ jobs:
       - name: Build unsigned Windows directory candidate and native backend evidence
         env:
           BUILD_INSTALLER: ${{ inputs.installer }}
+          PRIOR_VERSION: ${{ inputs.prior_version }}
+          IN_APP_UPDATE: ${{ inputs.in_app_update }}
         run: |
-          if ($env:BUILD_INSTALLER -eq 'true') { ./scripts/build-windows.ps1 -Installer -VerifyInstallerLifecycle }
+          if ($env:BUILD_INSTALLER -eq 'true') { ./scripts/build-windows.ps1 -Installer -VerifyInstallerLifecycle -PriorVersion $env:PRIOR_VERSION -VerifyInAppUpdate:($env:IN_APP_UPDATE -eq 'true') }
           else { ./scripts/build-windows.ps1 }
       - name: Retain explicit candidate and safe evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -93,15 +165,33 @@ jobs:
             ${{ inputs.installer && '源码 FundsTrace/build/desktop/electron/*-windows-x64-unsigned.exe' || '源码 FundsTrace/build/desktop/electron/win-unpacked/' }}
             源码 FundsTrace/build/desktop/backend/funds-trace-backend/build-manifest.json
             源码 FundsTrace/build/desktop/packaged-host-resources.json
+            源码 FundsTrace/build/desktop/native-icon-resources.json
             源码 FundsTrace/build/desktop/native-backend-smoke.json
             源码 FundsTrace/build/desktop/native-installer-smoke.json
             源码 FundsTrace/build/desktop/native-installed-app-smoke.json
             源码 FundsTrace/build/desktop/native-installed-app.png
             源码 FundsTrace/build/desktop/native-installed-app.graph.png
+            源码 FundsTrace/build/desktop/native-installed-app.taskbar.png
+            源码 FundsTrace/build/desktop/native-installed-app.update-*.png
             源码 FundsTrace/build/desktop/native-import-recovery-smoke.json
             源码 FundsTrace/build/desktop/standard-user/
             源码 FundsTrace/build/desktop/windows-candidate.json
             源码 FundsTrace/build/desktop/windows-candidate.sha256
+      - name: Retain reviewable native evidence without the installer
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fundstrace-windows-evidence-${{ github.run_id }}
+          retention-days: 3
+          if-no-files-found: ignore
+          path: |
+            源码 FundsTrace/build/desktop/backend/funds-trace-backend/build-manifest.json
+            源码 FundsTrace/build/desktop/packaged-host-resources.json
+            源码 FundsTrace/build/desktop/native-*.json
+            源码 FundsTrace/build/desktop/native-*.png
+            源码 FundsTrace/build/desktop/windows-candidate.json
+            源码 FundsTrace/build/desktop/windows-candidate.sha256
+            源码 FundsTrace/build/desktop/standard-user/
       - name: Retain safe failure diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

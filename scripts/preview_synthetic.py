@@ -15,7 +15,7 @@ from urllib.parse import unquote, urlsplit
 
 GRAPH_ASSET_FILES = ("index.html", "app.js", "graph-view.js", "graph-layout.js", "graph-layout-worker.js", "graph-layout-quality.js", "graph-routing.js", "graph-route-quality.js", "graph-selection.js", "graph-benchmark.js",
                      "graph-relations.js", "graph-presentation.js", "graph-label-geometry.js", "ribbon-commands.js", "ribbon.js", "workspace-shell.js",
-                     "style.css", "vendor/g6.min.js", "money.js", "logo.svg", "favicon.svg")
+                     "style.css", "vendor/g6.min.js", "money.js", "logo.png", "favicon.ico", "favicon-32.png")
 
 
 class _StaticReferences(HTMLParser):

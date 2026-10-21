@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { fixtureCsv, assertGraph, assertEdgeTypes, assertImportCompletion, safeJourneyFailure, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
+const { fixtureCsv, assertGraph, assertEdgeTypes, assertAutomaticLeafLabel, assertPartialViewportLabels, assertImportCompletion, safeJourneyFailure, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
 
 function observed() {
   // Independent two-transfer observation with exact decimal strings. The
@@ -81,6 +81,37 @@ test('rendered item presence alone does not pass an offscreen or hidden drawing'
   assert.throws(() => assertGraph(loading, ['71', '72', '73'], 2));
 });
 
+test('automatic leaf label acceptance rejects missing, hidden, hovered and colliding labels', () => {
+  function snapshot() {
+    const value = observed();
+    value.viewport = { width: 900, height: 600 };
+    value.labelContext = { mode: 'auto', selectedIds: [], previewIds: [], selectedAccount: null,
+      hoveredAccount: null, selectedEdge: null, exportDepth: 0 };
+    Object.assign(value.renderedNodes[0], { fundsLabel: 'SYN recipient 1\nSYN-INST-C',
+      label: 'SYN recipient 1\nSYN-INST-C', bodyBounds: { minX: 400, minY: 100, maxX: 440, maxY: 140 },
+      labelShape: { text: 'SYN recipient 1\nSYN-INST-C', drawn: true,
+        bounds: { minX: 390, minY: 150, maxX: 450, maxY: 180 } } });
+    return value;
+  }
+  assert.doesNotThrow(() => assertAutomaticLeafLabel(snapshot(), 'SYN-INST-C'));
+  for (const mutate of [
+    value => { value.renderedNodes[0].label = undefined; },
+    value => { value.renderedNodes[0].labelShape = null; },
+    value => { value.renderedNodes[0].labelShape.drawn = false; },
+    value => { value.renderedNodes[0].labelShape.text = 'truncated label'; },
+    value => { value.renderedNodes[0].labelShape.bounds.maxX = 901; },
+    value => { value.renderedNodes[0].bodyBounds.maxY = 160; },
+    value => { value.renderedEdges[0].labelBounds = { minX: 430, minY: 150, maxX: 480, maxY: 170 }; },
+    value => { value.labelContext.mode = 'all'; },
+    value => { value.labelContext.hoveredAccount = 'SYN-INST-C'; },
+    value => { value.labelContext.selectedIds = ['SYN-INST-C']; },
+    value => { value.labelContext.previewIds = ['SYN-INST-C']; },
+  ]) {
+    const value = snapshot(); mutate(value);
+    assert.throws(() => assertAutomaticLeafLabel(value, 'SYN-INST-C'));
+  }
+});
+
 test('neighborhood may hide an endpoint while retaining the full graph and exact tracked facts', () => {
   const snapshot = observed();
   snapshot.renderedNodes = snapshot.renderedNodes.filter(node => node.id !== 'SYN-INST-C');
@@ -88,6 +119,40 @@ test('neighborhood may hide an endpoint while retaining the full graph and exact
   assert.doesNotThrow(() => assertGraph(snapshot, ['71', '72', '73'], 2, ['SYN-INST-A', 'SYN-INST-B']));
   snapshot.accounts.pop();
   assert.throws(() => assertGraph(snapshot, ['71', '72', '73'], 2, ['SYN-INST-A', 'SYN-INST-B']));
+});
+
+test('partial viewport acceptance requires settled unforced labels on every retained chain node', () => {
+  function snapshot() {
+    const value = observed();
+    value.viewport = { width: 900, height: 600 };
+    value.labelContext = { mode: 'auto', selectedIds: [], previewIds: [], selectedAccount: null,
+      hoveredAccount: null, selectedEdge: null, exportDepth: 0 };
+    value.labelsSettled = true; value.clipFull = false; value.clipNodeIds = ['SYN-INST-B','SYN-INST-C'];
+    for (const [index,id] of ['SYN-INST-B','SYN-INST-C'].entries()) {
+      const x = 100 + 300 * index, text = `SYN account ${id}`;
+      Object.assign(value.renderedNodes.find(node => node.id === id), { fundsLabel: text, label: text,
+        bodyBounds: { minX: x, minY: 100, maxX: x + 40, maxY: 140 },
+        labelShape: { text, drawn: true, bounds: { minX: x - 20, minY: 150, maxX: x + 60, maxY: 180 } } });
+    }
+    Object.assign(value.renderedNodes.find(node => node.id === 'SYN-INST-A'), { drawnInContainer: false,
+      bodyBounds: { minX: -240, minY: 100, maxX: -200, maxY: 140 } });
+    return value;
+  }
+  assert.doesNotThrow(() => assertPartialViewportLabels(snapshot(), ['71','72','73']));
+  for (const mutate of [
+    value => { for (const node of value.renderedNodes) { node.label = undefined; node.labelShape = null; } },
+    value => { value.renderedNodes.find(node => node.id === 'SYN-INST-B').labelShape.drawn = false; },
+    value => { value.clipNodeIds.push('SYN-INST-A'); },
+    value => { value.clipFull = true; },
+    value => { value.renderedNodes.find(node => node.id === 'SYN-INST-A').drawnInContainer = true; },
+    value => { value.renderedNodes.find(node => node.id === 'SYN-INST-C').bodyBounds.minX = -1; },
+    value => { value.labelsSettled = false; },
+    value => { value.labelContext.hoveredAccount = 'SYN-INST-A'; },
+    value => { value.edges[1].total = '12345678901234.00'; },
+  ]) {
+    const value = snapshot(); mutate(value);
+    assert.throws(() => assertPartialViewportLabels(value, ['71','72','73']));
+  }
 });
 
 test('per-relationship styling rejects changes to another relationship or a missing saved edge', () => {
@@ -101,9 +166,11 @@ test('per-relationship styling rejects changes to another relationship or a miss
 });
 
 test('installed journey reports fixed, distinct mandatory behavior checks', () => {
-  assert.equal(new Set(REQUIRED_CHECKS).size, 13);
+  assert.equal(new Set(REQUIRED_CHECKS).size, 15);
   assert.ok(REQUIRED_CHECKS.includes('installedKeyboardUndoRedoOutsideGraph'));
   assert.ok(REQUIRED_CHECKS.includes('installedSecondTrackVisible'));
+  assert.ok(REQUIRED_CHECKS.includes('installedAutomaticNodeLabelRecovery'));
+  assert.ok(REQUIRED_CHECKS.includes('installedPartialViewportNodeLabels'));
   assert.ok(REQUIRED_CHECKS.includes('installedNeighborhoodTrackVisible'));
   assert.ok(REQUIRED_CHECKS.includes('installedCanvasSaveRestoreTypes'));
   assert.ok(REQUIRED_CHECKS.every(name => /^installed[A-Z][A-Za-z]+$/.test(name)));
@@ -113,6 +180,10 @@ test('failure diagnostics retain only known step and failure enums', () => {
   const error = new Error('private URL and business content must not leave the helper');
   error.installedGraphDiagnostic = { step: 'canvas-submit', kind: 'timeout', payload: error.message };
   assert.deepEqual(safeJourneyFailure(error), { step: 'canvas-submit', kind: 'timeout' });
+  assert.deepEqual(safeJourneyFailure({ installedGraphDiagnostic: { step: 'node-label-pan-return', kind: 'assertion' } }),
+    { step: 'node-label-pan-return', kind: 'assertion' });
+  assert.deepEqual(safeJourneyFailure({ installedGraphDiagnostic: { step: 'node-label-partial-leave', kind: 'assertion' } }),
+    { step: 'node-label-partial-leave', kind: 'assertion' });
   for (const detail of [{ step: error.message, kind: 'timeout' }, { step: 'canvas-submit', kind: error.message }]) {
     assert.equal(safeJourneyFailure({ installedGraphDiagnostic: detail }), null);
   }

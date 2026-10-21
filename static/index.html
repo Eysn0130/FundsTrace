@@ -3,14 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="icon" href="/static/favicon.svg">
+<link rel="icon" href="/static/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="/static/favicon-32.png" sizes="32x32">
 <title>FundsTrace · 资金流水追踪与关联分析</title>
 <link rel="stylesheet" href="/static/style.css?v=release-0.1.5">
+<link rel="stylesheet" href="/static/desktop-updates.css">
+<script defer src="/static/desktop-updates.js"></script>
 <script src="/static/vendor/g6.min.js"></script>
 </head>
 <body>
 <header id="topbar">
-  <div class="brand"><img src="/static/logo.svg" alt="" class="topbar-logo"><div class="logo">FundsTrace</div></div>
+  <div class="brand"><img src="/static/logo.png" alt="" class="topbar-logo"><div class="logo">FundsTrace</div></div>
   <div class="case-box"><label for="caseSelect">案件</label><select id="caseSelect" aria-label="当前案件"></select><label for="canvasSel">画布</label><select id="canvasSel" aria-label="当前画布"><option value="0">默认画布</option></select></div>
   <div class="ribbon-quick" role="group" aria-label="保存与历史">
   <button type="button" class="btn ribbon-action" id="btnCanvasSave" aria-label="保存画布" title="保存完整画布及显示设置"><img class="ui-icon" src="/static/ui-icons/device-floppy.svg" alt=""><span>保存</span></button>
@@ -21,7 +24,7 @@
     <button type="button" class="btn small" id="btnExportActions" aria-label="导出" title="导出当前画布或流水" data-action-dialog="exportActions" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/file-export.svg" alt=""><span class="header-action-label">导出</span></button>
     <a class="btn small analysis-link" id="analysisLink" aria-label="全案分析（新窗口）" href="/analysis" target="_blank" rel="noopener" title="全案原始流水的独立分析页，与当前图内筛选分开"><img class="ui-icon" src="/static/ui-icons/network.svg" alt=""><span class="header-action-label">全案分析 ↗</span></a>
     <button type="button" class="btn small" id="btnCaseActions" aria-label="案件管理" title="案件管理" data-action-dialog="caseActions" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/settings.svg" alt=""><span class="header-action-label">案件管理</span></button>
-  </nav><div class="stats" id="statLine">加载中…</div>
+  </nav><div class="stats" id="statLine">加载中…</div><funds-desktop-update hidden></funds-desktop-update>
 </header>
 <section id="editorToolbar" class="workspace-toolbar funds-ribbon" aria-label="画布编辑器">
   <div id="graphToolbar" role="group" aria-label="图谱编辑工具">

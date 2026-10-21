@@ -1,0 +1,97 @@
+name: Domestic Windows downloads
+
+on:
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published latest stable release to mirror (for retry/bootstrap)
+        required: true
+        type: string
+      verify_upload:
+        description: Diagnose fresh installer uploads without changing the download entry
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One writer for the shared latest document. Never interrupt a promotion.
+concurrency:
+  group: fundstrace-domestic-download-publisher
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    if: ${{ github.repository == 'Eysn0130/FundsTrace' && (github.event_name == 'workflow_dispatch' || (!github.event.release.draft && !github.event.release.prerelease)) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production-downloads
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.1'
+          package-manager-cache: false
+      - name: Install locked publisher and run isolated publication regressions
+        run: |
+          npm ci --prefix scripts/release-publisher --ignore-scripts --no-audit --no-fund
+          npm test --prefix scripts/release-publisher
+      - name: Resolve the current stable release before obtaining cloud credentials
+        id: current
+        env:
+          REQUESTED_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          node --input-type=module - <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          import { selectRelease } from './scripts/release-publisher/publish.mjs';
+          const response = await fetch('https://api.github.com/repos/Eysn0130/FundsTrace/releases/latest', {
+            headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+            signal: AbortSignal.timeout(30000),
+          });
+          if (!response.ok) throw new Error('Latest stable release lookup failed');
+          const latest = selectRelease(await response.json());
+          const eligible = `v${latest.version}` === process.env.REQUESTED_TAG;
+          if (!eligible && process.env.EVENT_NAME === 'workflow_dispatch') throw new Error('Only the latest stable release may be synchronized');
+          appendFileSync(process.env.GITHUB_OUTPUT, `eligible=${eligible}\n`);
+          console.log(eligible ? 'Current stable release selected' : 'Historical release edit skipped; current download entry retained');
+          NODE
+      - name: Require configured limited OIDC role
+        if: steps.current.outputs.eligible == 'true'
+        env:
+          ROLE: ${{ vars.FUNDS_TRACE_DOWNLOAD_ROLE_ARN }}
+          PROVIDER: ${{ vars.FUNDS_TRACE_DOWNLOAD_OIDC_PROVIDER_ARN }}
+        run: |
+          test -n "$ROLE" && test -n "$PROVIDER"
+      - name: Obtain temporary OSS credentials
+        if: steps.current.outputs.eligible == 'true'
+        id: cloud
+        uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6
+        with:
+          role-to-assume: ${{ vars.FUNDS_TRACE_DOWNLOAD_ROLE_ARN }}
+          oidc-provider-arn: ${{ vars.FUNDS_TRACE_DOWNLOAD_OIDC_PROVIDER_ARN }}
+          audience: sts.aliyuncs.com
+          role-session-name: fundstrace-downloads-${{ github.run_id }}
+          role-session-expiration: 1800
+      - name: Verify exact GitHub asset, upload and atomically promote site and updater
+        if: steps.current.outputs.eligible == 'true'
+        env:
+          DOWNLOAD_RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          VERIFY_FRESH_UPLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_upload }}
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ steps.cloud.outputs.aliyun-access-key-id }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ steps.cloud.outputs.aliyun-access-key-secret }}
+          ALIBABA_CLOUD_SECURITY_TOKEN: ${{ steps.cloud.outputs.aliyun-security-token }}
+        run: node scripts/release-publisher/run.mjs
+      - name: Verify public latest document
+        if: steps.current.outputs.eligible == 'true'
+        run: node scripts/release-publisher/verify-public.mjs
+        env:
+          EXPECTED_TAG: ${{ inputs.tag || github.event.release.tag_name }}

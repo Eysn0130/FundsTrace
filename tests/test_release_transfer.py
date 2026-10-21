@@ -210,7 +210,8 @@ def draft_transfer(tmp_path, monkeypatch):
                "url": f"https://github.com/{transfer.REPO}/tree/{commit}/releases/{TAG}",
                "manifestSha256": "c" * 64}
     state = {"release": {"draft": True, "assets": [], "body": "Synthetic release notes."},
-             "tag": SOURCE, "commands": [], "notes": None, "wrong_uploaded_digest": False}
+             "tag": SOURCE, "commands": [], "notes": None, "wrong_uploaded_digest": False,
+             "fail_notes_once": False, "change_after_notes": False}
 
     def fake_api(method, endpoint, payload=None):
         assert method == "GET" and payload is None
@@ -232,7 +233,13 @@ def draft_transfer(tmp_path, monkeypatch):
             assert command[:4] == ["gh", "release", "edit", TAG]
             assert command[4:7] == ["--repo", transfer.REPO, "--notes-file"]
             assert len(command) == 8
+            if state["fail_notes_once"]:
+                state["fail_notes_once"] = False
+                raise RuntimeError("Synthetic interruption after upload")
             state["notes"] = Path(command[7]).read_text(encoding="utf-8")
+            state["release"]["body"] = state["notes"]
+            if state["change_after_notes"]:
+                state["tag"] = "e" * 40
 
     monkeypatch.setattr(transfer, "api", fake_api)
     monkeypatch.setattr(transfer.subprocess, "run", fake_run)
@@ -246,8 +253,48 @@ def test_transfer_uploads_only_original_installer_and_keeps_release_draft(draft_
     assert state["release"]["draft"] is True
     assert [asset["name"] for asset in state["release"]["assets"]] == [installer.name]
     assert state["notes"].startswith("Synthetic release notes.")
-    for value in (archive["url"], archive["manifestSha256"], SOURCE, installer.name, expected["sha256"]):
-        assert value in state["notes"]
+    assert archive["url"] in state["notes"]
+    assert expected["sha256"] not in state["notes"]
+    assert SOURCE not in state["notes"]
+
+
+def test_transfer_resumes_after_upload_without_replacing_the_installer(draft_transfer):
+    installer, expected, archive, state = draft_transfer
+    state["fail_notes_once"] = True
+    with pytest.raises(RuntimeError, match="interruption"):
+        transfer.upload_verified_installer(installer, TAG, SOURCE, expected, archive)
+    asset = copy.deepcopy(state["release"]["assets"])
+    transfer.upload_verified_installer(installer, TAG, SOURCE, expected, archive)
+    assert state["release"]["assets"] == asset
+    assert sum(command[2] == "upload" for command in state["commands"]) == 1
+    assert state["release"]["body"].count(archive["url"]) == 1
+    previous = list(state["commands"])
+    transfer.upload_verified_installer(installer, TAG, SOURCE, expected, archive)
+    assert state["commands"] == previous
+
+
+def test_transfer_rechecks_tag_after_editing_release_notes(draft_transfer):
+    installer, expected, archive, state = draft_transfer
+    state["change_after_notes"] = True
+    with pytest.raises(AssertionError, match="Tag moved"):
+        transfer.upload_verified_installer(installer, TAG, SOURCE, expected, archive)
+
+
+@pytest.mark.parametrize("change", ["extra", "name", "digest", "size", "state"])
+def test_transfer_never_replaces_or_adopts_unmatched_existing_assets(draft_transfer, change):
+    installer, expected, archive, state = draft_transfer
+    asset = {"name": installer.name, "state": "uploaded", "size": expected["bytes"],
+             "digest": "sha256:" + expected["sha256"]}
+    if change == "extra":
+        state["release"]["assets"] = [asset, dict(asset)]
+    else:
+        asset[{"name": "name", "digest": "digest", "size": "size", "state": "state"}[change]] = {
+            "name": "other.exe", "digest": "sha256:" + "0" * 64, "size": expected["bytes"] + 1,
+            "state": "new"}[change]
+        state["release"]["assets"] = [asset]
+    with pytest.raises(AssertionError):
+        transfer.upload_verified_installer(installer, TAG, SOURCE, expected, archive)
+    assert state["commands"] == []
 
 
 @pytest.mark.parametrize("changed", ["tag", "existing_asset", "published"])

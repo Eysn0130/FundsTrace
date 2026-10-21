@@ -24,6 +24,8 @@ EVIDENCE_BRANCH = "codex/release-evidence"
 GRAPH_CHECKS = (
     "installedGraphModulesLoaded", "installedCsvPreviewMapping", "installedCsvCommittedExact",
     "installedQueryExact", "installedFirstTrackExact", "installedSecondTrackVisible",
+    "installedAutomaticNodeLabelRecovery",
+    "installedPartialViewportNodeLabels",
     "installedContextTrackedConsistent", "installedNeighborhoodTrackVisible", "installedCanvasCloneExact",
     "installedCanvasSaveRestoreTypes", "installedCanvasUndoRedoTypes", "installedKeyboardUndoRedoOutsideGraph", "installedCaseIsolationAndReturn",
 )
@@ -122,32 +124,51 @@ def archive_evidence(directory):
             "manifestSha256": digest(directory / "manifest.json")}
 
 
+def verify_draft_assets(release, name, expected=None):
+    """Resume only an unchanged sole EXE; never replace or remove an asset."""
+    assert release.get("draft") is True, "Release is no longer a draft"
+    assets = release.get("assets")
+    assert isinstance(assets, list) and len(assets) <= 1, "Unexpected draft assets"
+    if not assets:
+        return False
+    asset = assets[0]
+    assert asset.get("name") == name and asset.get("state") == "uploaded", "Unexpected draft asset"
+    assert type(asset.get("size")) is int and asset["size"] > 0
+    assert isinstance(asset.get("digest"), str) and re.fullmatch(r"sha256:[0-9a-f]{64}", asset["digest"])
+    if expected is not None:
+        assert asset["size"] == expected["bytes"] and asset["digest"] == "sha256:" + expected["sha256"], "Draft installer differs from candidate"
+    return True
+
+
 def upload_verified_installer(installer, tag, source, expected, archive):
     """Only a verified permanent archive permits the sole draft asset upload."""
     assert re.fullmatch(r"[0-9a-f]{40}", archive["commit"])
     assert archive["branch"] == EVIDENCE_BRANCH and archive["path"] == f"releases/{tag}"
     assert archive["url"] == f"https://github.com/{REPO}/tree/{archive['commit']}/{archive['path']}"
     release = api("GET", f"releases/tags/{tag}")
-    assert release["draft"] and not release["assets"], "Draft changed before upload"
+    existing = verify_draft_assets(release, installer.name, expected)
     assert api("GET", f"commits/{tag}")["sha"] == source, "Tag moved before upload"
     assert installer.name == f"FundsTrace-{tag[1:]}-windows-x64-unsigned.exe"
     assert installer.stat().st_size == expected["bytes"] and digest(installer) == expected["sha256"]
-    subprocess.run(["gh", "release", "upload", tag, "--repo", REPO, str(installer)], check=True)
+    if not existing:
+        subprocess.run(["gh", "release", "upload", tag, "--repo", REPO, str(installer)], check=True)
     uploaded = api("GET", f"releases/tags/{tag}")
-    assert uploaded["draft"] and len(uploaded["assets"]) == 1
-    asset = uploaded["assets"][0]
-    assert asset["name"] == installer.name and asset["state"] == "uploaded"
-    assert asset["size"] == expected["bytes"] and asset["digest"] == "sha256:" + expected["sha256"]
-    notes = (release.get("body") or "").rstrip() + (
-        f"\n\n验证记录：[长期归档]({archive['url']})。源码 `{source}`。\n\n"
-        f"安装包：`{installer.name}`，{expected['bytes']} 字节。\n\n"
-        f"SHA-256：`{expected['sha256']}`。\n\n"
-        f"归档清单 SHA-256：`{archive['manifestSha256']}`。\n")
-    with tempfile.TemporaryDirectory(prefix="fundstrace-draft-notes-") as temporary:
-        file = Path(temporary) / "notes.md"
-        file.write_text(notes, encoding="utf-8")
-        subprocess.run(["gh", "release", "edit", tag, "--repo", REPO,
-                        "--notes-file", str(file)], check=True)
+    assert verify_draft_assets(uploaded, installer.name, expected)
+    # Preserve concurrently edited user notes; never replace them with the
+    # snapshot taken before a potentially long upload.
+    notes = uploaded.get("body") or ""
+    link = f"[验证记录]({archive['url']})"
+    if link not in notes:
+        notes = notes.rstrip() + f"\n\n{link}\n"
+        with tempfile.TemporaryDirectory(prefix="fundstrace-draft-notes-") as temporary:
+            file = Path(temporary) / "notes.md"
+            file.write_text(notes, encoding="utf-8")
+            subprocess.run(["gh", "release", "edit", tag, "--repo", REPO,
+                            "--notes-file", str(file)], check=True)
+    final = api("GET", f"releases/tags/{tag}")
+    assert verify_draft_assets(final, installer.name, expected)
+    assert link in (final.get("body") or ""), "Archive link missing after notes update"
+    assert api("GET", f"commits/{tag}")["sha"] == source, "Tag moved after upload"
 
 
 def standard_archive(standard, output):
@@ -181,6 +202,33 @@ def variants(value):
     return values
 
 
+def verify_host_report(host, version, package, source_file):
+    """Bind every packaged host entry to this candidate, including its updater."""
+    assert host["status"] == "passed" and host["version"] == version
+    assert all(value is True for value in host["checks"].values())
+    expected = {"main.cjs", "backend.cjs", "host-policy.cjs", "preferences.cjs", "preload.cjs"}
+    if package.get("dependencies", {}).get("electron-updater"):
+        expected.add("updates.cjs")
+    assert set(host["hostFiles"]) == expected
+    for name, sha in host["hostFiles"].items():
+        assert sha in variants(source_file(name))
+
+
+def verify_upgrade_origin(candidate, installer):
+    """Bind each account's upgrade report to the pinned source installer."""
+    pinned = {
+        "0.1.5": "f5c337e37adb30dc30c8cb895722703c91461ed0de49acee8dd487d454d8f1fc",
+        "0.1.7": "52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a",
+    }
+    prior = candidate.get("installerUpgradeFrom", "0.1.5")
+    assert prior in pinned
+    assert installer["status"] == "passed" and installer["priorVersion"] == prior
+    # Historical v0.1.5 reports predate this field; new v0.1.7 reports must carry it.
+    if prior != "0.1.5" or "priorInstallerSha256" in installer:
+        assert installer.get("priorInstallerSha256") == pinned[prior]
+    return prior
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
@@ -194,8 +242,8 @@ def main():
     source = run["head_sha"]
     assert re.fullmatch(r"[0-9a-f]{40}", source)
     assert json.loads(gh("api", f"repos/{REPO}/commits/{args.tag}"))["sha"] == source
-    release = json.loads(gh("release", "view", args.tag, "--repo", REPO, "--json", "isDraft,assets"))
-    assert release["isDraft"] and not release["assets"], "Only a new empty draft may receive assets"
+    release = api("GET", f"releases/tags/{args.tag}")
+    verify_draft_assets(release, f"FundsTrace-{args.tag[1:]}-windows-x64-unsigned.exe")
     subprocess.run(["git", "fetch", "--no-tags", "origin", source], check=True)
 
     with tempfile.TemporaryDirectory(prefix="fundstrace-verified-transfer-") as temporary:
@@ -228,11 +276,9 @@ def main():
 
         host_path = base / "packaged-host-resources.json"
         host = data(host_path)
-        assert host["status"] == "passed" and host["version"] == args.tag[1:]
-        assert all(value is True for value in host["checks"].values())
-        assert set(host["hostFiles"]) == {"main.cjs", "backend.cjs", "host-policy.cjs", "preferences.cjs", "preload.cjs"}
-        for name, sha in host["hostFiles"].items():
-            assert sha in variants(subprocess.check_output(["git", "show", f"{source}:desktop/{name}"]))
+        package = json.loads(subprocess.check_output(["git", "show", f"{source}:desktop/package.json"]))
+        verify_host_report(host, args.tag[1:], package,
+                           lambda name: subprocess.check_output(["git", "show", f"{source}:desktop/{name}"]))
 
         reports = {name: data(base / name) for name in (
             "native-backend-smoke.json", "native-installer-smoke.json", "native-installed-app-smoke.json",
@@ -241,12 +287,13 @@ def main():
             assert value["status"] == "passed"
         standard = base / "standard-user"
         assert data(standard / "compatibility.json")["status"] == "passed"
+        prior_version = verify_upgrade_origin(candidate, reports["native-installer-smoke.json"])
         for folder in (base, standard):
             app = data(folder / "native-installed-app-smoke.json")
             assert app["status"] == "passed" and all(value is True for value in app["checks"].values())
             assert all(app["checks"][name] is True for name in GRAPH_CHECKS)
             installer = data(folder / "native-installer-smoke.json")
-            assert installer["status"] == "passed" and installer["priorVersion"] == "0.1.5"
+            assert verify_upgrade_origin(candidate, installer) == prior_version
             assert installer["currentVersion"] == args.tag[1:] and all(value == "passed" for value in installer["checks"].values())
             assert all(installer["priorDataChecks"][name] is True for name in (
                 "priorBackendSeeded", "priorExactMoneyAndCurrency", "priorCanvasAndTracking",
@@ -255,6 +302,25 @@ def main():
                 "upgradedFactsUnchanged", "upgradedCanvasAndTracking", "legacyPackageRoundTrip",
                 "upgradedAnalysisPaths", "upgradedAnalysisCycles", "upgradedAtomicCanvas",
                 "upgradedEofReopened", "upgradedSourceFilesUnchanged"))
+            if candidate.get("inAppUpdateFixture") is True:
+                cycle = app["updateCycle"]
+                version_parts = [int(part) for part in args.tag[1:].split(".")]
+                next_version = f"{version_parts[0]}.{version_parts[1]}.{version_parts[2] + 1}"
+                assert cycle["currentVersion"] == args.tag[1:] and cycle["nextVersion"] == next_version
+                assert cycle["privateFixtureOnly"] is True and cycle["productionFeedModified"] is False
+                assert cycle["tlsVerificationDisabled"] is False
+                assert re.fullmatch(r"[0-9a-f]{64}", cycle["installerSha256"])
+                assert all(cycle["requests"][name] > 0 for name in ("manifest", "truncate", "corrupt", "valid"))
+                assert all(app["checks"][name] is True for name in (
+                    "installedInterruptedUpdateRejected", "installedCorruptUpdateRejected",
+                    "installedUpdateProgressAndReady", "installedUpdateLaterRetainsApplication",
+                    "installedUpdateConfirmedRestart", "installedUpdateAutoRelaunch",
+                    "installedUpdateExactResources", "installedUpdateRelaunchNormalClose"))
+                assert installer["checks"]["installedInAppUpdate"] == "passed"
+                assert all(installer["inAppUpdateDataChecks"][name] is True for name in (
+                    "upgradedFactsUnchanged", "upgradedCanvasAndTracking", "legacyPackageRoundTrip",
+                    "upgradedAnalysisPaths", "upgradedAnalysisCycles", "upgradedAtomicCanvas",
+                    "upgradedEofReopened", "upgradedSourceFilesUnchanged"))
         for key, file in (
             ("nativeManifestSha256", manifest_path), ("hostResourcesReportSha256", host_path),
             ("smokeReportSha256", base / "native-backend-smoke.json"),
@@ -286,6 +352,7 @@ def main():
         zip_path = base / "standard-user-compatibility.zip"
         standard_archive(standard, zip_path)
         summary = {"schemaVersion": 1, "status": "passed", "sourceCommit": source,
+            "installerUpgradeFrom": prior_version,
             "sourceRun": args.run_id, "tag": args.tag, "installer": expected,
             "resourceCount": len(manifest["resources"]), "hostFileCount": len(host["hostFiles"]) + 1,
             "sourceResourcesIndependentlyChecked": sources_checked,

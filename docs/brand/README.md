@@ -1,67 +1,55 @@
 # FundsTrace 品牌资产
 
-标识沿既有节点连线语义精修：去掉闭合三角形，让起点、转折与终点组成一条开放的追踪路径。主品牌名为 **FundsTrace**，中文说明为 **资金流水追踪与关联分析**。图形、字体轮廓与应用资源均可独立使用；此目录不包含产品截图或模拟界面。
+当前应用图标使用维护者确认的 PNG 方案。桌面应用、浏览器页头与标签页、GitHub README 和社交预览均从同一批准来源派生，保留图标自身的底色与图形；深浅主题使用相同图像。主品牌名为 **FundsTrace**，中文说明为 **资金流水追踪与关联分析**。
 
 ![FundsTrace 品牌板](brand-board.png)
+
+## 来源与母版
+
+- [批准原图](source/app-icon-approved.png) 保留维护者选定的原始栅格方案，作为来源记录。
+- [透明母版](source/app-icon-master.png) 保留批准方案的应用图标主体与底色，将图标外部背景处理为透明，作为各尺寸资源的统一母版。
+- [render.mjs](render.mjs) 是应用图标和品牌展示资源的统一生成入口。更新时先确认来源与母版，再重新生成派生文件，避免各页面自行重绘或变色。
 
 ## 选用资产
 
 | 用途 | 文件 | 规格 |
 | --- | --- | --- |
-| GitHub README 深色主题 | [深底字标](fundstrace-wordmark-dark.svg) | 1080 × 190，文字已转路径 |
-| GitHub README 浅色主题 | [浅底字标](fundstrace-wordmark-light.svg) | 1080 × 190，文字已转路径 |
-| 外部排版 | [深底用透明字标](fundstrace-wordmark-transparent-dark.svg)、[浅底用透明字标](fundstrace-wordmark-transparent-light.svg) | 1080 × 190，无背景 |
-| 图形单独使用 | [深底用透明标识](fundstrace-mark.svg)、[浅底用透明标识](fundstrace-mark-light.svg) | 64 × 64 原生矢量 |
-| 应用图标 | [图标源](fundstrace-icon.svg)、[Windows ICO](icons/icon.ico) | 石墨底；ICO 含 16、32、48、64、128、256 六档 |
-| PNG 导出 | [16](icons/icon-16.png)、[32](icons/icon-32.png)、[48](icons/icon-48.png)、[64](icons/icon-64.png)、[128](icons/icon-128.png)、[256](icons/icon-256.png)、[512](icons/icon-512.png)、[1024](icons/icon-1024.png) | RGBA，圆角外透明 |
-| 品牌板 | [SVG](brand-board.svg)、[PNG](brand-board.png) | SVG 1440 × 1040；PNG 2880 × 2080 |
-| 可编辑字标 | [深底源](source/wordmark-dark-editable.svg)、[浅底源](source/wordmark-light-editable.svg) | 保留 SVG text；编辑时需安装下述字体 |
+| GitHub README | [应用图标](icons/icon-256.png) | 256 × 256，页面按需缩小 |
+| 浏览器页头与 React 工作台 | [Logo](../../static/logo.png) | 256 × 256，同一图标 |
+| 浏览器标签页 | [ICO](../../static/favicon.ico)、[PNG](../../static/favicon-32.png) | 多尺寸 ICO、32 × 32 PNG |
+| 桌面应用与安装器 | [PNG](../../desktop/assets/icon.png)、[Windows ICO](../../desktop/assets/icon.ico) | PNG 与多尺寸 ICO |
+| PNG 尺寸集 | [16](icons/icon-16.png)、[20](icons/icon-20.png)、[24](icons/icon-24.png)、[32](icons/icon-32.png)、[40](icons/icon-40.png)、[48](icons/icon-48.png)、[64](icons/icon-64.png)、[96](icons/icon-96.png)、[128](icons/icon-128.png)、[256](icons/icon-256.png)、[512](icons/icon-512.png)、[1024](icons/icon-1024.png) | RGBA，图标外透明 |
+| 通用 Windows 图标 | [ICO](icons/icon.ico) | 与桌面应用共用 |
+| 品牌板 | [PNG](brand-board.png) | 图标与尺寸使用示意 |
+| GitHub 社交预览 | [PNG](../media/fundstrace-social.png) | 与应用图标共用母版 |
 
-深浅字标另有同名 PNG（2160 × 380），适用于不接受 SVG 的场景。正式 SVG 使用轮廓路径，无脚本、外部资源、位图或字体加载依赖。保持原比例，图形周围至少留出一个节点直径的空白；小于 32px 时使用图形，不附加中文或缩写。
-
-## 色彩与字体
-
-| 色彩 | 值 | 用途 |
-| --- | --- | --- |
-| Graphite | `#151A1E` | 品牌底与浅底主字色 |
-| Trace | `#5BE3C0` | 深底追踪路径 |
-| Jade | `#087D65` | 浅底追踪路径，浅底对比度 4.72:1 |
-| Paper | `#F5F7F5` | 浅色背景与深底主字色 |
-| Mist | `#99AAA6` | 深底中文说明，对比度 7.22:1 |
-
-英文字标使用 [Manrope](https://github.com/google/fonts/tree/b31870aff700ab7a1d74fa0c6887d95beb9e0037/ofl/manrope) 650 字重；中文使用 [Noto Sans SC](https://github.com/google/fonts/tree/a85815a42757630ce188fdad368c2dfc444d4773/ofl/notosanssc) 400 字重。两者均使用 SIL Open Font License 1.1；版权和完整许可证分别保留在 [Manrope-OFL.txt](licenses/Manrope-OFL.txt)、[NotoSansSC-OFL.txt](licenses/NotoSansSC-OFL.txt)。字体二进制没有加入本仓库。字标是使用字体生成的图形文档，字体本身的 OFL 许可仍独立保留。
-
-图形与排版由本仓库原生 SVG 及生成脚本绘制，随项目 MIT 许可提供；未复制外部产品的标识或品牌图片。
+保持正方形比例，不裁掉图标边缘，不额外添加底板、阴影、文字或主题滤镜。小尺寸直接使用对应 PNG／ICO 档位。旧版 SVG 标识、字标与主题变体已停用并移除。
 
 ## 重建
 
-[generate.py](generate.py) 是字标轮廓与图形的统一生成源；[render.mjs](render.mjs) 从这些 SVG 导出 PNG 和 Windows ICO。已验证环境：fontTools 4.67.0、sharp 0.35.5。ICO 检查使用 Pillow 12.3.0。生成流程没有调用图片生成服务。
-
-从上述固定版本的字体目录下载 `Manrope[wght].ttf` 与 `NotoSansSC[wght].ttf` 到独立的临时目录（不要把完整字体加入提交），传入实际路径：
-
 ```sh
-python docs/brand/generate.py --latin-font /path/to/Manrope.ttf --cjk-font /path/to/NotoSansSC.ttf
-BRAND_SHARP_PATH=/path/to/node_modules/sharp node docs/brand/render.mjs
+BRAND_SHARP_PATH=/path/to/node_modules/sharp \
+BRAND_CANVAS_PATH=/path/to/node_modules/@napi-rs/canvas \
+node docs/brand/render.mjs --latin-font /path/to/latin.ttf --cjk-font /path/to/cjk.ttf
 ```
 
-`BRAND_SHARP_PATH` 可省略，此时使用正常 Node 模块解析。脚本核对字体 SHA-256，拒绝与当前轮廓来源不同的输入：
+需要 `sharp 0.35.5`、`@napi-rs/canvas 0.1.100`；两个库路径可省略，此时使用正常 Node 模块解析。字体仅用于品牌板和社交预览文字，默认使用 macOS Avenir Next／Hiragino Sans GB，可用参数替换；应用图标仅缩放母版。生成过程在本地运行，不调用图像生成服务，也不需要历史字标字体。产物包括 `icons/` 的 PNG／ICO、`static/logo.png`、`static/favicon.ico`、`static/favicon-32.png`、`desktop/assets/icon.png`、`desktop/assets/icon.ico`、1600 × 1040 品牌板和 1280 × 640 社交预览图。ICO 包含 16／20／24／32／40／48／64／96／128／256 像素共十档。
 
-```text
-Manrope.ttf     3ae11c49db0455a3cc33e37d380f20fdb8c7f8b41dc07625c177e3d87a9d6ae6
-NotoSansSC.ttf  a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da
-```
+## 来源与许可记录
 
-重建会同步 `static/logo.svg`、`static/favicon.svg`、`desktop/assets/icon.ico` 与 `desktop/assets/icon.png`。源文件保留真实的圆、路径、填色与字距，设计调整先改生成源，再重新导出。
+当前批准原图是维护者在本次设计会话选定的图像生成方案，透明母版通过同一图像工具去除图标外围的展示背景与投影，不重绘内部标识；不包含业务数据或原单位标识。图标的来源、母版与派生文件一起保留，后续设计变更不得以低清截图替代母版。
+
+历史字标曾使用 [Manrope](https://github.com/google/fonts/tree/b31870aff700ab7a1d74fa0c6887d95beb9e0037/ofl/manrope) 650 字重与 [Noto Sans SC](https://github.com/google/fonts/tree/a85815a42757630ce188fdad368c2dfc444d4773/ofl/notosanssc) 400 字重；两者均使用 SIL Open Font License 1.1。旧字标资源已停用，版权和完整许可证继续保留在 [Manrope-OFL.txt](licenses/Manrope-OFL.txt)、[NotoSansSC-OFL.txt](licenses/NotoSansSC-OFL.txt)。字体二进制没有加入本仓库，当前应用图标不使用这些字体。
 
 ## 桌面集成边界
 
-`desktop/electron-builder.cjs` 仅增加 `win.icon`，指向 `desktop/assets/icon.ico`。appId、产品名、版本、数据目录、安装和卸载行为没有更改。图标资源已进入本支线源码候选；已公开的 **v0.1.1 二进制不包含本轮新品牌资产**。本轮没有重打包、替换 Release 文件或验证新图标在 Windows 安装器、任务栏、系统缩放中的实际表现。后续正式包需在其自身构建和 Windows 安装证据中核对图标。
+桌面宿主和安装器使用同一组 PNG／ICO 资源。此次图标替换不改变 appId、产品名、数据目录或升级身份。源码资源变更不会追溯修改任何已经发布的 EXE；旧版发布资产继续保留其原图标。新候选仍需在自身构建及实际 Windows 安装、任务栏和系统缩放证据中核对图标，源码与浏览器预览不能代替这些检查。
 
 ## 主页业务展示图
 
-主页沿用现有品牌，新增可复用的[业务流程 SVG](../media/fundstrace-workflow.svg)／[2× PNG](../media/fundstrace-workflow.png)与[本机架构 SVG](../media/fundstrace-architecture.svg)／[2× PNG](../media/fundstrace-architecture.png)。它们是逻辑示意，产品主视觉与 GIF 均使用真实合成预览截图；具体来源和验证见[素材核验](../showcase-validation.md)。
+主页保留可复用的[业务流程 SVG](../media/fundstrace-workflow.svg)／[2× PNG](../media/fundstrace-workflow.png)与[本机架构 SVG](../media/fundstrace-architecture.svg)／[2× PNG](../media/fundstrace-architecture.png)。它们是逻辑示意，产品主视觉与 GIF 均使用真实合成预览截图；具体来源和验证见[素材核验](../showcase-validation.md)。
 
-[render-showcase-figures.mjs](render-showcase-figures.mjs) 仅重建这两张图，需要 `@napi-rs/canvas 0.1.100`、`sharp 0.35.5` 与本地可用的拉丁／中文字体。通过 `SHOWCASE_CANVAS_PATH`、`SHOWCASE_SHARP_PATH` 可指定已有库路径，用 `--latin-font FILE --cjk-font FILE` 指定字体。SVG 字体转为路径，无外部字体请求；字体文件不随图分发。当前成图使用 macOS Avenir Next／PingFang。
+[render-showcase-figures.mjs](render-showcase-figures.mjs) 仅重建这两张图，需要 `@napi-rs/canvas 0.1.100`、`sharp 0.35.5` 与本地可用的拉丁／中文字体。通过 `SHOWCASE_CANVAS_PATH`、`SHOWCASE_SHARP_PATH` 可指定已有库路径，用 `--latin-font FILE --cjk-font FILE` 指定字体。SVG 字体转为路径，页眉内嵌同一 PNG 图标，无外部字体或图片请求；字体文件不随图分发。当前成图使用 macOS Avenir Next／Hiragino Sans GB。
 
 [render-showcase-media.py](render-showcase-media.py) 需要 Pillow 12.3.0，读取 `docs/media/showcase/` 内已采集的 PNG，生成首屏展示图、导入／分析 GIF 及静态封面。截图只等比缩放，字幕、边框和进度在产品画面之外；没有 MP4 中间文件。可用 `--font FILE` 指定中文字体，当前成图使用 macOS STHeiti Light。
 

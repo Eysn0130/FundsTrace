@@ -1,0 +1,15 @@
+funds-desktop-update { display: inline-flex; flex: 0 0 auto; vertical-align: middle; }
+funds-desktop-update[hidden] { display: none; }
+.funds-update-capsule { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 30px; padding: 4px 12px; border: 1px solid #cbd8ed; border-radius: 999px; background: #f3f7ff; color: #35568c; font: 500 12px/1.4 system-ui, sans-serif; white-space: nowrap; cursor: pointer; }
+.funds-update-capsule:hover { background: #e7efff; }
+.funds-update-capsule:focus-visible { outline: 2px solid #4263c7; outline-offset: 3px; }
+.funds-update-capsule:disabled { cursor: default; opacity: .85; }
+.funds-update-capsule[data-phase="available"], .funds-update-capsule[data-phase="ready"] { color: #fff; background: #355ac3; border-color: #355ac3; }
+.funds-update-ring { display: none; width: 13px; height: 13px; box-sizing: border-box; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; }
+[data-phase="checking"] .funds-update-ring, [data-phase="installing"] .funds-update-ring { display: inline-block; animation: funds-update-spin 1s linear infinite; }
+[data-phase="downloading"] .funds-update-ring { display: inline-block; border: 0; background: conic-gradient(currentColor var(--funds-update-progress), #dce5f5 0); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 0); }
+.funds-update-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.standalone-update { position: absolute; top: 16px; right: 22px; z-index: 15; }
+body:has(.standalone-update:not([hidden])) .standalone-main { padding-top: 48px; }
+@keyframes funds-update-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .funds-update-ring { animation: none !important; } }

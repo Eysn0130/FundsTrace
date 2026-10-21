@@ -1,0 +1,116 @@
+#Requires -Version 7.0
+param([string]$InstallRoot,
+    [string]$NextInstaller,
+    [string]$NextUnpacked,
+    [Parameter(Mandatory=$true)][string]$ReportPath,
+    [string]$ScreenshotPath,
+    [string]$TrustedCertificateFixture,
+    [switch]$PrepareOnly)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+trap {
+    if ($IsWindows -and $env:GITHUB_ACTIONS -ceq 'true' -and [IO.Path]::IsPathRooted($ReportPath)) {
+        @{ status='failed'; failedCheck='privateFixturePreflight'; failureType=$_.Exception.GetType().FullName;
+            failureLine=$_.InvocationInfo.ScriptLineNumber } | ConvertTo-Json | Set-Content -LiteralPath $ReportPath -Encoding utf8
+    }
+    [Console]::Error.WriteLine('Native update cycle failed at privateFixturePreflight.')
+    exit 1
+}
+if (-not $IsWindows -or $env:GITHUB_ACTIONS -cne 'true' -or $env:CI -cne 'true') { throw 'Disposable Windows CI only.' }
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'windows-update-certificate.ps1')
+function Write-PreparationStage([string]$Name) {
+    @{status='running'; stage=$Name} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $ReportPath) 'native-update-preparation.json') -Encoding utf8
+}
+if (-not [IO.Path]::IsPathRooted($ReportPath)) { throw 'Absolute CI report path required.' }
+if (-not $PrepareOnly) {
+$UserRoot = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'FundsTrace'
+if ([IO.File]::ReadAllText((Join-Path $UserRoot 'installer-lifecycle-sentinel.txt')) -cne "FundsTrace synthetic installer lifecycle v1`n") {
+    throw 'Synthetic installation ownership is required.'
+}
+foreach ($Value in @($InstallRoot,$NextInstaller,$NextUnpacked,$ReportPath,$ScreenshotPath,$TrustedCertificateFixture)) {
+    if (-not [IO.Path]::IsPathRooted($Value)) { throw 'Absolute CI fixture paths required.' }
+}
+}
+$Version = (Get-Content -Raw (Join-Path $ProjectRoot 'desktop/package.json') | ConvertFrom-Json).version
+$Parts = $Version.Split('.')
+$NextVersion = "$($Parts[0]).$($Parts[1]).$([int]$Parts[2] + 1)"
+if (-not $PrepareOnly) {
+$PrivateVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $NextUnpacked 'FundsTrace.exe')).ProductVersion
+if (($PrivateVersion.Split('.')[0..2] -join '.') -cne $NextVersion) {
+    throw 'Private fixture version mismatch.'
+}
+}
+$FixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('FundsTrace private updater ' + [guid]::NewGuid().ToString('N'))
+$PreparedCertificate = $null; $Report = $null; $Failed = $false; $Relaunched = $null
+$Stage = 'privateCertificate'
+try {
+    [void](New-Item -ItemType Directory -Path $FixtureRoot)
+    if ($PrepareOnly) {
+        $PreparedCertificate = New-FundsTraceUpdateCertificate (Join-Path $FixtureRoot 'crypto') { param($name) Write-PreparationStage $name }
+        $Report=@{status='passed';checks=@{certificatePrepared=$true}}
+    } else {
+    $SharedCertificate = Get-Content -Raw -LiteralPath $TrustedCertificateFixture | ConvertFrom-Json
+    $Fixture = Join-Path $FixtureRoot 'fixture.json'
+    @{ version=$NextVersion; installer=$NextInstaller; pfx=$SharedCertificate.pfx; passphrase=$SharedCertificate.passphrase } |
+        ConvertTo-Json | Set-Content -LiteralPath $Fixture -Encoding utf8
+    $Stage = 'installedUpdateJourney'
+    Write-PreparationStage 'installedUpdateJourney'
+    $Output = & node.exe (Join-Path $ProjectRoot 'desktop/tests/installed-app-smoke.cjs') $InstallRoot `
+        --report $ReportPath --screenshot $ScreenshotPath --update-fixture $Fixture
+    if ($LASTEXITCODE -ne 0) { throw 'Installed update journey failed.' }
+    $Report = ($Output -join "`n") | ConvertFrom-Json -AsHashtable
+    if ($Report.status -cne 'passed' -or $Report.updateCycle.nextVersion -cne $NextVersion) { throw 'Update report mismatch.' }
+    $Stage = 'automaticRelaunch'
+    $Executable = [IO.Path]::GetFullPath((Join-Path $InstallRoot 'FundsTrace.exe'))
+    $QueryPath = $Executable.Replace('\','\\').Replace("'","\'")
+    $Deadline = [DateTime]::UtcNow.AddSeconds(90)
+    do {
+        $Registration = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\b56dd6f8-a8a1-5427-b970-3e6cc301a2c0' -ErrorAction SilentlyContinue
+        $InstalledVersion = $(if ($null -ne $Registration) { [string]$Registration.DisplayVersion } else { '' })
+        if ($InstalledVersion -ceq $NextVersion) {
+            foreach ($Owned in @(Get-CimInstance Win32_Process -Filter "ExecutablePath='$QueryPath'")) {
+                $Process = Get-Process -Id $Owned.ProcessId -ErrorAction SilentlyContinue
+                if ($null -ne $Process -and $Process.MainWindowHandle -ne [IntPtr]::Zero -and
+                    $Process.MainWindowTitle -ceq 'FundsTrace · 资金流水追踪与关联分析') { $Relaunched = $Process; break }
+            }
+        }
+        if ($null -eq $Relaunched) { Start-Sleep -Milliseconds 200 }
+    } while ($null -eq $Relaunched -and [DateTime]::UtcNow -lt $Deadline)
+    if ($null -eq $Relaunched) { throw 'Updated application did not automatically reopen.' }
+    $Stage = 'updatedInstalledResources'
+    foreach ($Relative in @('FundsTrace.exe','resources/app.asar','resources/backend/build-manifest.json','resources/backend/funds-trace-backend.exe')) {
+        if ((Get-FileHash -LiteralPath (Join-Path $InstallRoot $Relative)).Hash -cne (Get-FileHash -LiteralPath (Join-Path $NextUnpacked $Relative)).Hash) {
+            throw 'Installed update differs from the private candidate.'
+        }
+    }
+    $Report.checks['installedUpdateAutoRelaunch'] = $true
+    $Report.checks['installedUpdateExactResources'] = $true
+    $Stage = 'updatedNormalClose'
+    if (-not $Relaunched.CloseMainWindow() -or -not $Relaunched.WaitForExit(30000)) { throw 'Updated application did not close normally.' }
+    $Report.checks['installedUpdateRelaunchNormalClose'] = $true
+    }
+} catch {
+    $Failed = $true
+    if ($null -eq $Report -and (Test-Path -LiteralPath $ReportPath)) { $Report = Get-Content -Raw -LiteralPath $ReportPath | ConvertFrom-Json -AsHashtable }
+    if ($null -eq $Report) { $Report=@{ status='failed'; failedCheck=$Stage } }
+    if ($Report.status -cne 'failed') { $Report.status='failed'; $Report.failedCheck=$Stage }
+    $Report['wrapperFailedCheck']=$Stage
+    $Report['failureType']=$_.Exception.GetType().FullName
+    $Report['failureLine']=$_.InvocationInfo.ScriptLineNumber
+    $Report['failureId']=$(if ($_.FullyQualifiedErrorId -cmatch '^[A-Za-z0-9_.,:+-]{1,160}$') { $_.FullyQualifiedErrorId } else { 'UNCLASSIFIED' })
+    [Console]::Error.WriteLine("Native update cycle failed at $Stage.")
+} finally {
+    try {
+        if ($null -ne $Relaunched -and -not $Relaunched.HasExited) {
+            [void]$Relaunched.CloseMainWindow()
+            if (-not $Relaunched.WaitForExit(30000)) { throw 'Owned updated application remains active.' }
+        }
+        if ($null -ne $PreparedCertificate) { Remove-FundsTraceUpdateCertificate $PreparedCertificate }
+        if (Test-Path -LiteralPath $FixtureRoot) { Remove-Item -LiteralPath $FixtureRoot -Recurse -Force }
+    } catch { $Failed=$true; if ($null -ne $Report) { $Report.status='failed'; $Report.failedCheck='privateFixtureCleanup' } }
+    if ($null -ne $Report) { $Report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $ReportPath -Encoding utf8 }
+}
+if ($Failed) { exit 1 }
+$Report | ConvertTo-Json -Depth 12 -Compress
+exit 0

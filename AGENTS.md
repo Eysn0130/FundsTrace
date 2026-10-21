@@ -51,6 +51,7 @@
 
 - The maintainer's 2026-10-15 decision is that upcoming `FundsTrace v0.1.x` packages temporarily launch without an activation code. Normal Python/API and UI startup are activation-free, including packaged smoke checks; existing alpha binaries keep their historical behavior. Do not substitute synthetic mode or a shared test license for normal startup.
 - Each concrete `v0.1.x` tag must have a corresponding GitHub Release with a downloadable Windows x64 NSIS `.exe`. Preserve FundsTrace's appId, data directory and upgrade identity. Default uninstall retains case data; installing a new version must close only FundsTrace-owned services safely.
+- Write public Release notes as a short user-facing update: one introductory sentence if useful, then 2–5 concrete feature/improvement/fix bullets. Keep CI, implementation details and hashes in verification records. Follow `CONTRIBUTING.md`'s release-note convention; verify that analytix.top's download center shows the same latest version and notes before reporting domestic synchronization complete.
 - Adapt the necessary Analytix installer/update design without modifying Analytix or copying its appId, registry keys, feed, signing identity or runtime cleanup list. Start with EXE installation/upgrade/uninstall, then add explicit in-app update checking. Keep update integrity checks and desktop request authentication independent of the suspended product-activation requirement. Details and verification limits are in `docs/desktop-delivery.md`.
 
 ## Working and delivery
