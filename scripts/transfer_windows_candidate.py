@@ -144,24 +144,67 @@ def verify_draft_assets(release, name, expected=None):
     return True
 
 
-def upload_verified_installer(installer, tag, source, expected, archive):
+def verify_draft_identity(release, tag, release_id=None):
+    """Bind the selected draft to an exact tag and a stable numeric Release ID."""
+    assert isinstance(release, dict), "Invalid Release response"
+    assert type(release.get("id")) is int and release["id"] > 0, "Invalid Release identity"
+    if release_id is not None:
+        assert type(release_id) is int and release_id > 0 and release["id"] == release_id, "Release identity changed"
+    assert release.get("tag_name") == tag, "Release tag changed"
+    assert release.get("draft") is True, "Release is no longer a draft"
+
+
+def read_draft_release(tag, release_id):
+    assert type(release_id) is int and release_id > 0, "Invalid Release identity"
+    release = api("GET", f"releases/{release_id}")
+    verify_draft_identity(release, tag, release_id)
+    return release
+
+
+def resolve_draft_release(tag, *, release_id=None):
+    """The tag endpoint excludes drafts; list every page, then read the exact ID."""
+    matches = []
+    page = 1
+    while True:
+        releases = api("GET", f"releases?per_page=100&page={page}")
+        assert isinstance(releases, list) and len(releases) <= 100, "Invalid Release listing"
+        assert all(isinstance(release, dict) for release in releases), "Invalid Release listing entry"
+        matches.extend(release for release in releases if release.get("tag_name") == tag)
+        if len(releases) < 100:
+            break
+        page += 1
+    assert len(matches) == 1, "Expected exactly one Release matching the exact tag"
+    verify_draft_identity(matches[0], tag, release_id)
+    return read_draft_release(tag, matches[0]["id"])
+
+
+def upload_verified_installer(installer, tag, source, expected, archive, *, release_id=None):
     """Only a verified permanent archive permits the sole draft asset upload."""
     assert re.fullmatch(r"[0-9a-f]{40}", archive["commit"])
     assert archive["branch"] == EVIDENCE_BRANCH and archive["path"] == f"releases/{tag}"
     assert archive["url"] == f"https://github.com/{REPO}/tree/{archive['commit']}/{archive['path']}"
-    release = api("GET", f"releases/tags/{tag}")
+    release = resolve_draft_release(tag) if release_id is None else read_draft_release(tag, release_id)
+    release_id = release["id"]
     existing = verify_draft_assets(release, installer.name, expected)
     assert api("GET", f"commits/{tag}")["sha"] == source, "Tag moved before upload"
     assert installer.name == f"FundsTrace-{tag[1:]}-windows-x64-unsigned.exe"
     assert installer.stat().st_size == expected["bytes"] and digest(installer) == expected["sha256"]
     if not existing:
-        subprocess.run(["gh", "release", "upload", tag, "--repo", REPO, str(installer)], check=True)
-    uploaded = api("GET", f"releases/tags/{tag}")
+        # gh's writes resolve by tag. Reconfirm uniqueness and the pinned ID
+        # immediately before each write, then verify that ID again afterward.
+        ready = resolve_draft_release(tag, release_id=release_id)
+        if not verify_draft_assets(ready, installer.name, expected):
+            subprocess.run(["gh", "release", "upload", tag, "--repo", REPO, str(installer)], check=True)
+    uploaded = read_draft_release(tag, release_id)
     assert verify_draft_assets(uploaded, installer.name, expected)
     # Preserve concurrently edited user notes; never replace them with the
     # snapshot taken before a potentially long upload.
     notes = uploaded.get("body") or ""
     link = f"[验证记录]({archive['url']})"
+    if link not in notes:
+        ready = resolve_draft_release(tag, release_id=release_id)
+        assert verify_draft_assets(ready, installer.name, expected)
+        notes = ready.get("body") or ""
     if link not in notes:
         notes = notes.rstrip() + f"\n\n{link}\n"
         with tempfile.TemporaryDirectory(prefix="fundstrace-draft-notes-") as temporary:
@@ -169,7 +212,7 @@ def upload_verified_installer(installer, tag, source, expected, archive):
             file.write_text(notes, encoding="utf-8")
             subprocess.run(["gh", "release", "edit", tag, "--repo", REPO,
                             "--notes-file", str(file)], check=True)
-    final = api("GET", f"releases/tags/{tag}")
+    final = read_draft_release(tag, release_id)
     assert verify_draft_assets(final, installer.name, expected)
     assert link in (final.get("body") or ""), "Archive link missing after notes update"
     assert api("GET", f"commits/{tag}")["sha"] == source, "Tag moved after upload"
@@ -253,7 +296,7 @@ def main():
     source = run["head_sha"]
     assert re.fullmatch(r"[0-9a-f]{40}", source)
     assert json.loads(gh("api", f"repos/{REPO}/commits/{args.tag}"))["sha"] == source
-    release = api("GET", f"releases/tags/{args.tag}")
+    release = resolve_draft_release(args.tag)
     verify_draft_assets(release, f"FundsTrace-{args.tag[1:]}-windows-x64-unsigned.exe")
     subprocess.run(["git", "fetch", "--no-tags", "origin", source], check=True)
     source_package = json.loads(subprocess.check_output(["git", "show", f"{source}:desktop/package.json"]))
@@ -402,7 +445,7 @@ def main():
             prepare_evidence(base, archive_dir, tag=args.tag, source_commit=source,
                              source_run=args.run_id, installer=expected)
             archive = archive_evidence(archive_dir)
-        upload_verified_installer(installer, args.tag, source, expected, archive)
+        upload_verified_installer(installer, args.tag, source, expected, archive, release_id=release["id"])
         print(json.dumps({**summary, "evidenceArchive": archive, "uploadedAssets": [installer.name]}))
 
 
