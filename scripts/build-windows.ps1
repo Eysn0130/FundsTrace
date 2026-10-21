@@ -159,6 +159,10 @@ try {
         $Sums += "$(Get-Sha256 $InstalledAppReport)  build/desktop/native-installed-app-smoke.json"
         $Sums += "$(Get-Sha256 (Join-Path $EvidenceRoot 'native-installed-app.png'))  build/desktop/native-installed-app.png"
         $Sums += "$(Get-Sha256 (Join-Path $EvidenceRoot 'native-installed-app.graph.png'))  build/desktop/native-installed-app.graph.png"
+        $TaskbarScreenshot = Join-Path $EvidenceRoot 'native-installed-app.taskbar.png'
+        if (Test-Path -LiteralPath $TaskbarScreenshot -PathType Leaf) {
+            $Sums += "$(Get-Sha256 $TaskbarScreenshot)  build/desktop/native-installed-app.taskbar.png"
+        }
         foreach ($File in @(Get-ChildItem -LiteralPath $EvidenceRoot -Filter 'native-installed-app.update-*.png' -File)) {
             $Sums += "$(Get-Sha256 $File.FullName)  build/desktop/$($File.Name)"
         }
