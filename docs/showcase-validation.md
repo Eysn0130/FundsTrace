@@ -43,7 +43,23 @@
 - 运行 `python docs/brand/render-showcase-media.py --font "/System/Library/Fonts/STHeiti Light.ttc"`，直接重建主视觉、两段 GIF 与静态封面。导入四帧时长为 2600／2800／2800／3200ms，分析三帧为 2800／3000／3200ms；逐帧解码、尺寸、时长和静态首帧一致性检查通过。
 - 检查本轮文档的本地相对引用及 `git diff --check`。没有重新运行 GitHub Markdown API、线上主页、390px 移动端或减少动态效果的完整验收；这些历史结果不能作为本轮候选的新证据。
 
-GitHub 仓库设置中的 Social preview 已于同日上传本轮 [1280 × 640 品牌图](media/fundstrace-social.png)，刷新设置页后确认保留新图。该设置独立于代码分支生效；README 与仓库素材的线上更新仍以本次 PR 合并为准。
+GitHub 仓库设置中的 Social preview 已于同日上传本轮 [1280 × 640 品牌图](media/fundstrace-social.png)，刷新设置页后确认保留新图。该设置独立于代码分支生效。统一图标的 PR #27 已合并到 `417ff3d9cf17a5f7d31c5d6c89b39dd3ee4a6609`，仓库主分支已展示新图标；这不表示既有安装包已经改变。
+
+## 2026-10-20 · GitHub 主页排版精修
+
+本轮在 `codex/github-homepage-polish` 隔离工作树调整 README。采用 [Impeccable 4.7.0](https://github.com/pbakaus/impeccable/blob/main/.agents/skills/impeccable/SKILL.md) 的 distill / polish 方法，参考 [PowerToys](https://github.com/microsoft/PowerToys) 的简明导航和 [Immich](https://github.com/immich-app/immich) 的品牌与实景展示层级；没有安装上下文加载器、复制其他项目品牌或添加运行依赖。
+
+Logo 从 64px 调整为 112px，与原生 `FundsTrace` H1 组成同一标题区；保留口号，收敛为下载、指南、演示三个导航入口。首屏直接引用现有工作台截图，避免重复的外框标题。三步流程、产品操作和导出说明优先展示，开发架构与源码运行折叠到页尾。采集版本、制作过程和平台验证细节留在本文及桌面文档，README 保留合成数据、金额口径与人工复核说明。
+
+实际在线检查对应 README 内容提交 `700597fffb5239a169c2adb599323826adde8bca`，使用 GitHub 分支主页的原生渲染，没有注入 HTML 或修改页面样式：
+
+- 1440 × 1000 与 390 × 844 CSS 像素，均检查深色、浅色主题。页面宽度与视口相同，README 的 `scrollWidth` 与 `clientWidth` 相同；标题、导航、图片没有横向溢出。390px 下三个导航入口保持一行。
+- 8 个图像入口全部加载、解码成功，包括应用图标、三个徽章、工作台截图、两段演示和折叠区架构图。
+- 正常动态偏好下两段演示使用 GIF；`prefers-reduced-motion: reduce` 下实际 `currentSrc` 分别为 `import-poster.png`、`analysis-poster.png`，均成功解码为 1200 × 886。普通静态封面链接继续保留。
+- 点击“操作演示”到达对应标题；展开“开发与架构”和源码预览均显示完整内容，代码块使用自身水平滚动区域。H1 原生锚点为 `fundstrace`。
+- 本地核对 README 相对文件与锚点、CI 范围判定和差异格式。本轮只修改展示文档，不修改应用、图标文件、数据契约、安装包、Release 或下载版本。检查结果不代替 Windows 桌面验证。
+
+本段记录分支候选的展示效果，主分支排版以此轮 PR 合并后为准；后续仅补充核验记录时，README 的有效证据不变。
 
 ## 历史展示与导出核验
 
