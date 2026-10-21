@@ -151,6 +151,20 @@ function assertLayout(value, { width, height, dpr, reference } = {}) {
   return relative;
 }
 
+function assertNativeClientGeometry(native, viewport, priorInset) {
+  const scale = native.scaleFactor;
+  assert.ok(near(viewport.dpr, scale, .01), 'STARTUP_NATIVE_CLIENT_DPR');
+  assert.ok(near(viewport.width, native.client.width / scale, 2), 'STARTUP_NATIVE_CLIENT_WIDTH');
+  // Electron's RootView lays its Views menu above the content view, inside the
+  // Win32 client rectangle. GetClientRect therefore includes that menu strip;
+  // equating it with a WebContents viewport is the wrong contract on Windows.
+  // Source: electron v44.7.2 shell/browser/ui/views/root_view.cc.
+  const inset = native.client.height / scale - viewport.height;
+  assert.ok(viewport.height > 0 && inset >= -1 && inset <= 48, 'STARTUP_NATIVE_CLIENT_CHROME');
+  if (priorInset !== undefined) assert.ok(near(inset, priorInset, 2), 'STARTUP_NATIVE_CLIENT_CHROME_CHANGED');
+  return inset;
+}
+
 function assertObservationHealth(value) {
   assert.ok(value && Array.isArray(value.samples) && value.samples.length, 'STARTUP_OBSERVATION_MISSING');
   assert.equal(value.resourceErrors, 0, 'STARTUP_RESOURCE_ERROR');
@@ -312,4 +326,4 @@ async function createInstalledStartupProbe({ cdp, target, evaluate, until, scree
 }
 
 module.exports = { startupTarget, createInstalledStartupProbe, assertLayout, assertWaitingObservation,
-  assertHandoffObservation, frameSummary, VIEWPORTS, DEVICE_SCALES };
+  assertHandoffObservation, assertNativeClientGeometry, frameSummary, VIEWPORTS, DEVICE_SCALES };

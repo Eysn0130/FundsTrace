@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { startupTarget, assertLayout, assertWaitingObservation, assertHandoffObservation,
-  frameSummary, VIEWPORTS, DEVICE_SCALES } = require('./installed-startup-journey.cjs');
+  assertNativeClientGeometry, frameSummary, VIEWPORTS, DEVICE_SCALES } = require('./installed-startup-journey.cjs');
 
 function layout(width = 1440, height = 880, dpr = 1) {
   const unscaledHeight = 388, scale = Math.min(1, (width - 48) / 360, (height - 48) / unscaledHeight);
@@ -152,4 +152,15 @@ test('frame summaries report shared-runner gaps without declaring a strict 60fps
   assert.ok(Math.abs(result.maxGapMs - 120) < .001);
   assert.equal(result.p95Ms, result.maxGapMs);
   assert.equal(result.strictFrameRateGate, false);
+});
+
+test('Win32 client includes the Views menu while the WebContents viewport excludes it', () => {
+  const native = {scaleFactor:1,client:{width:944,height:625}};
+  assert.equal(assertNativeClientGeometry(native,{width:944,height:605,dpr:1}),20);
+  assert.equal(assertNativeClientGeometry({scaleFactor:1.5,client:{width:1416,height:937.5}},
+    {width:944,height:605,dpr:1.5},20),20);
+  assert.throws(() => assertNativeClientGeometry(native,{width:960,height:605,dpr:1}),/STARTUP_NATIVE_CLIENT_WIDTH/);
+  assert.throws(() => assertNativeClientGeometry(native,{width:944,height:626.5,dpr:1}),/STARTUP_NATIVE_CLIENT_CHROME/);
+  assert.throws(() => assertNativeClientGeometry(native,{width:944,height:500,dpr:1}),/STARTUP_NATIVE_CLIENT_CHROME/);
+  assert.throws(() => assertNativeClientGeometry(native,{width:944,height:590,dpr:1},20),/STARTUP_NATIVE_CLIENT_CHROME_CHANGED/);
 });

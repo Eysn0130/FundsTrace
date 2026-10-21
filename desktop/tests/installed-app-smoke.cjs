@@ -10,7 +10,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { performance } = require('node:perf_hooks');
 const { pathToFileURL } = require('node:url');
-const { startupTarget, createInstalledStartupProbe } = require('./installed-startup-journey.cjs');
+const { startupTarget, createInstalledStartupProbe, assertNativeClientGeometry } = require('./installed-startup-journey.cjs');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
 const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
 const { runInstalledProductionUpdateJourney } = require('./installed-production-update-journey.cjs');
@@ -99,7 +99,7 @@ async function nativeStartupWindow(installRoot, processId, { action = 'Inspect',
   if (widthDip !== undefined) args.push('-WidthDip', String(widthDip), '-HeightDip', String(heightDip));
   if (screenshotPath) args.push('-ScreenshotPath', screenshotPath);
   let stdout;
-  try { ({ stdout } = await promisify(execFile)('pwsh.exe', args, { timeout:20000, maxBuffer:128 * 1024 })); }
+  try { ({ stdout } = await promisify(execFile)('pwsh.exe', args, { timeout:20000, maxBuffer:128 * 1024, windowsHide:true })); }
   catch (error) {
     if (![1, 2].includes(error.code) || typeof error.stdout !== 'string') throw new Error('STARTUP_NATIVE_WINDOW_FAILED');
     stdout = error.stdout;
@@ -139,14 +139,16 @@ async function nativeStartupBounds(config, primary, target) {
   const client = async native => {
     await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))', target);
     const value = await evaluate(`({width:innerWidth,height:innerHeight,dpr:devicePixelRatio,
+      outerWidth,outerHeight,screenX,screenY,
       scale:Number(getComputedStyle(document.querySelector('#startup-surface')).getPropertyValue('--brand-scale'))})`, target);
-    assert.ok(near(value.width, native.client.width / native.scaleFactor)
-      && near(value.height, native.client.height / native.scaleFactor) && Math.abs(value.dpr - native.scaleFactor) < .01);
+    (result.clientMeasurements ||= []).push(value);
+    result.clientChromeInsetDip = assertNativeClientGeometry(native, value, result.clientChromeInsetDip);
     return value;
   };
-  result.initialClient = await client(initial);
   result.step = 'defaultCapture';
   if (config.screenshot) result.initialCapture = await observe({ action:'Capture', screenshotPath:`${config.screenshot.slice(0, -4)}.startup-native-default.png` });
+  result.step = 'initialClient';
+  result.initialClient = await client(initial);
   result.step = 'minimumResize';
   const minimum = await observe({ action:'Resize', widthDip:Math.round(min.width), heightDip:Math.round(min.height) });
   result.minimum = minimum;
@@ -646,6 +648,7 @@ async function portClosed(port) {
   report.status = 'passed';
 })().catch(async error => {
   report.status = 'failed'; report.failedCheck = stage; process.exitCode = 1;
+  if (/^STARTUP_[A-Z0-9_]{1,80}$/.test(error?.message || '')) report.startupFailure = error.message;
   if (updateFixture) {
     let errorCode = 'UNAVAILABLE';
     // Read the published status only; do not inspect Main or request headers.
