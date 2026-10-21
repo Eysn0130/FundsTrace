@@ -343,7 +343,8 @@ async function portClosed(port) {
     // The real prior release predates current graph/icon checks. Exercise only
     // its shipped updater here; the lifecycle verifies the new install below.
     report.updateCycle = await runInstalledProductionUpdateJourney({ configFile: config.productionUpdate,
-      primary, evaluate, clickElement, cdp, page, check, screenshot: config.screenshot });
+      primary, evaluate, clickElement, cdp, page, check, screenshot: config.screenshot,
+      observations: report.productionUpdateObservations = {} });
     await check('productionUpdateNoPageExceptions', async () => {
       assert.ok(!instrumentationFailed); assert.equal(errorCount, 0);
     });

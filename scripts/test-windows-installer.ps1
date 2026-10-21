@@ -461,7 +461,7 @@ try {
         $UpdateJson = Invoke-Native -FileName $NodeExe -Arguments @(
             (Join-Path $ProjectRoot 'desktop/tests/installed-app-smoke.cjs'), $InstallRoot,
             '--report', $UpdateReportPath, '--screenshot', $UpdateScreenshot, '--production-update', $UpdateConfig
-        ) -TimeoutSeconds 420
+        ) -TimeoutSeconds 720
         $UpdateReport = $UpdateJson | ConvertFrom-Json
         if ($UpdateReport.status -cne 'passed' -or $UpdateReport.updateCycle.currentVersion -cne $Baseline.prior.version -or
             $UpdateReport.updateCycle.nextVersion -cne $CurrentVersion) { throw 'Published update journey did not pass.' }

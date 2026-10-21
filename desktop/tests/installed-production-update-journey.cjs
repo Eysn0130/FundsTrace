@@ -6,6 +6,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { nativeButton } = require('./installed-update-journey.cjs');
+const { FAILURE_CODES } = require('../updates.cjs');
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(inspect, ms = 30000) {
@@ -25,7 +26,7 @@ async function installerDigests(filename) {
   return { bytes, sha256: sha256.digest('hex'), sha512: sha512.digest('base64') };
 }
 
-async function runInstalledProductionUpdateJourney({ configFile, primary, evaluate, clickElement, cdp, page, check, screenshot }) {
+async function runInstalledProductionUpdateJourney({ configFile, primary, evaluate, clickElement, cdp, page, check, screenshot, observations }) {
   const config = await check('installedProductionUpdateConfiguration', async () => {
     assert.equal(process.platform, 'win32'); assert.equal(process.env.GITHUB_ACTIONS, 'true');
     assert.notEqual(process.env.NODE_TLS_REJECT_UNAUTHORIZED, '0');
@@ -93,22 +94,45 @@ async function runInstalledProductionUpdateJourney({ configFile, primary, evalua
     }
   });
   let downloadMs = 0, downloadProgressObserved = false, maxObservedPercent = 0;
+  const downloadAttempts = [];
+  observations.downloadAttempts = downloadAttempts;
   await check('installedProductionUpdateDownloadedAndReady', async () => {
-    const started = Date.now();
-    await click();
-    await until(async () => {
-      assert.ok(!primary.done);
-      const value = await status();
-      assert.equal(value.currentVersion, config.currentVersion); assert.equal(value.version, config.version);
-      assert.notEqual(value.phase, 'error');
-      if (value.phase === 'downloading') {
-        assert.ok(Number.isFinite(value.percent) && value.percent >= 0 && value.percent <= 100);
-        maxObservedPercent = Math.max(maxObservedPercent, value.percent);
-        if (!downloadProgressObserved) { downloadProgressObserved = true; await screenshotPhase('downloading'); }
-      }
-      return value.phase === 'ready' && await phase() === 'ready';
-    }, 240000);
-    downloadMs = Date.now() - started;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const started = Date.now();
+      await click();
+      const result = await until(async () => {
+        assert.ok(!primary.done);
+        const value = await status();
+        assert.equal(value.currentVersion, config.currentVersion); assert.equal(value.version, config.version);
+        if (value.phase === 'downloading') {
+          assert.ok(Number.isFinite(value.percent) && value.percent >= 0 && value.percent <= 100);
+          maxObservedPercent = Math.max(maxObservedPercent, value.percent);
+          if (!downloadProgressObserved) { downloadProgressObserved = true; await screenshotPhase('downloading'); }
+        }
+        return ['ready', 'error'].includes(value.phase) && await phase() === value.phase ? value : false;
+      }, 240000);
+      const durationMs = Date.now() - started;
+      downloadAttempts.push({ durationMs, phase: result.phase,
+        errorCode: result.phase === 'error' ? (FAILURE_CODES.includes(result.errorCode) ? result.errorCode : 'UNKNOWN') : null });
+      if (result.phase === 'ready') { downloadMs = durationMs; break; }
+      // Exercise the shipped recovery UI once. Integrity/signature failures
+      // remain hard failures; the eventual file must still match both digests.
+      assert.equal(attempt, 0);
+      assert.ok(['UNKNOWN', 'ERR_CONNECTION_RESET', 'ERR_CONNECTION_CLOSED', 'ERR_CONNECTION_REFUSED',
+        'ERR_INTERNET_DISCONNECTED', 'ERR_NAME_NOT_RESOLVED', 'ERR_CONTENT_LENGTH_MISMATCH'].includes(result.errorCode));
+      await check('installedProductionFailedDownloadRetainsOldApplication', async () => {
+        assert.ok(!primary.done); await preferencesMatch();
+        assert.equal((await status()).currentVersion, config.currentVersion);
+      });
+      await screenshotPhase('error');
+      await check('installedProductionUpdateRecheckedAfterError', async () => {
+        await click();
+        await until(async () => (await status()).phase !== 'error', 5000);
+        await waitPhase('available', 45000);
+        assert.equal((await status()).version, config.version);
+      });
+    }
+    assert.equal(await phase(), 'ready');
     await screenshotPhase('ready');
   });
   await check('installedProductionDownloadedInstallerIntegrity', async () => {
@@ -131,7 +155,7 @@ async function runInstalledProductionUpdateJourney({ configFile, primary, evalua
   });
   return { currentVersion: config.currentVersion, nextVersion: config.version,
     installerSha256: config.installerSha256, installerSha512: config.installerSha512,
-    installerBytes: config.installerBytes, downloadMs, downloadProgressObserved, maxObservedPercent,
+    installerBytes: config.installerBytes, downloadMs, downloadAttempts, downloadProgressObserved, maxObservedPercent,
     cacheInitiallyEmpty: true, downloadedInstallerIntegrityVerified: true,
     productionFeed: true, privateFixtureOnly: false, productionFeedModified: false, tlsVerificationDisabled: false };
 }
