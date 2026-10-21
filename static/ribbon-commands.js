@@ -311,7 +311,7 @@
       return edit('更改关系线样式',p=>{Object.defineProperty(p.edgeStyles,key,{value:{...(p.edgeStyles[key]||{}),...safe},enumerable:true,configurable:true,writable:true});});
     }
     if (command === 'annotateSelection') return openAnnotationEditor();
-    if(command==='styleReset')return edit('恢复默认图谱样式',p=>{p.nodeLabels={};p.nodeStyles={};p.edgeLabels={};p.edgeStyles={};p.annotations=[];syncGraphAnnotationsAfterReset();return true;});
+    if(command==='styleReset')return edit('恢复默认图谱样式',p=>{p.nodeLabels={};p.nodeStyles={};p.edgeLabels={};p.edgeStyles={};p.annotations=[];});
     if(command==='toggleLegend'){$('#legend').hidden=!$('#legend').hidden;return true;}
     const shell=$('#workspace')?.fundsWorkspaceShell;
     if(command==='toggleSidebar'){shell?.setSidebarCollapsed(!shell.getState().sidebarCollapsed);return true;}

@@ -12,12 +12,16 @@ const SUMMARIES = Object.freeze(['SYN installed chain first', 'SYN installed cha
 const MAPPING = Object.freeze({ trade_no: '交易流水号', trade_time: '交易时间', payer_name: '付款户名',
   payer_account: '付款账号', payee_name: '收款户名', payee_account: '收款账号', amount: '交易金额', currency: '币种', summary: '摘要' });
 const CANVAS = 'SYN installed saved graph';
+const ANNOTATION = Object.freeze({ id: ACCOUNTS[3], text: 'SYN installed note\nVerified exact cents',
+  anchor: 'above', dx: 0, dy: 0, size: 16, fontFamily: 'Microsoft YaHei', color: '#e3a12b' });
 const JOURNEY_STEPS = new Set(['graph-facts', 'finder-open', 'finder-query', 'finder-locate', 'finder-close',
   'graph-visible', 'node-label-auto', 'node-label-pan-out', 'node-label-pan-return',
   'node-label-partial-zoom', 'node-label-partial', 'node-label-partial-leave', 'node-label-partial-return',
   'edge-pointer', 'style-tab', 'style-select', 'style-confirm', 'canvas-open', 'canvas-fill',
   'canvas-submit', 'canvas-closed', 'canvas-activated', 'canvas-clone-verify', 'canvas-default', 'canvas-restored',
-  'history-undo', 'history-redo', 'case-empty', 'case-return']);
+  'history-undo', 'history-redo', 'case-empty', 'case-return',
+  'annotation-node', 'annotation-open', 'annotation-fill', 'annotation-save', 'annotation-rendered',
+  'annotation-undo', 'annotation-redo', 'annotation-style-reset', 'annotation-offset', 'annotation-follow', 'annotation-restored']);
 function safeJourneyFailure(error) {
   const detail = error?.installedGraphDiagnostic;
   return detail && JOURNEY_STEPS.has(detail.step) && ['assertion', 'timeout', 'runtime'].includes(detail.kind)
@@ -29,6 +33,8 @@ const REQUIRED_CHECKS = Object.freeze([
   'installedAutomaticNodeLabelRecovery',
   'installedPartialViewportNodeLabels',
   'installedContextTrackedConsistent', 'installedNeighborhoodTrackVisible',
+  'installedAnnotationDialogSave', 'installedAnnotationUndoRedo', 'installedAnnotationOffsetDrag',
+  'installedAnnotationNodeFollow', 'installedCanvasSaveRestoreAnnotation',
   'installedCanvasCloneExact', 'installedCanvasSaveRestoreTypes',
   'installedCanvasUndoRedoTypes', 'installedKeyboardUndoRedoOutsideGraph', 'installedCaseIsolationAndReturn',
 ]);
@@ -75,6 +81,49 @@ function renderedEdgeTypes(snapshot) {
 }
 function assertEdgeTypes(snapshot, expected) {
   assert.deepEqual(renderedEdgeTypes(snapshot), expected);
+}
+function assertNoAnnotation(snapshot) {
+  assert.equal(snapshot.ready, true);
+  assert.deepEqual(snapshot.annotations, []);
+  assert.deepEqual(snapshot.renderedAnnotations, []);
+}
+function assertAnnotation(snapshot, expected) {
+  assert.equal(snapshot.ready, true);
+  assert.deepEqual(snapshot.annotations, [expected]);
+  assert.equal(snapshot.renderedAnnotations.length, 1);
+  const shape = snapshot.renderedAnnotations[0];
+  assert.equal(shape.id, expected.id);
+  assert.equal(shape.type, 'text');
+  assert.equal(shape.text, expected.text);
+  assert.equal(shape.fill, expected.color);
+  assert.equal(shape.fontSize, expected.size);
+  assert.equal(shape.fontFamily, expected.fontFamily);
+  assert.equal(shape.textAlign, 'center');
+  assert.equal(shape.textBaseline, expected.anchor === 'above' ? 'bottom' : 'top');
+  assert.equal(shape.x, expected.dx);
+  assert.ok(Number.isFinite(shape.y));
+  assert.equal(shape.drawn, true);
+  const bounds = shape.bounds;
+  assert.ok(bounds && Object.values(bounds).every(Number.isFinite)
+    && bounds.maxX > bounds.minX && bounds.maxY > bounds.minY);
+  assert.ok(bounds.maxX > 0 && bounds.minX < snapshot.viewport.width
+    && bounds.maxY > 0 && bounds.minY < snapshot.viewport.height);
+}
+function assertAnnotationFollow(before, after, expected) {
+  assertAnnotation(before, expected); assertAnnotation(after, expected);
+  assert.deepEqual(after.camera, before.camera);
+  const positions = value => Object.fromEntries(value.renderedNodes.map(node => [node.id, { x: node.x, y: node.y }]));
+  const oldNodes = positions(before), newNodes = positions(after);
+  assert.deepEqual(sorted(Object.keys(newNodes)), sorted(Object.keys(oldNodes)));
+  const oldNode = oldNodes[expected.id], newNode = newNodes[expected.id];
+  assert.ok(oldNode && newNode && Math.hypot(newNode.x - oldNode.x, newNode.y - oldNode.y) > 4);
+  for (const id of Object.keys(oldNodes)) if (id !== expected.id) assert.deepEqual(newNodes[id], oldNodes[id]);
+  const oldShape = before.renderedAnnotations[0], newShape = after.renderedAnnotations[0];
+  assert.equal(newShape.x, oldShape.x); assert.ok(Math.abs(newShape.y - oldShape.y) < .01);
+  const dx = (newNode.x - oldNode.x) * before.camera[0] + (newNode.y - oldNode.y) * before.camera[3];
+  const dy = (newNode.x - oldNode.x) * before.camera[1] + (newNode.y - oldNode.y) * before.camera[4];
+  for (const key of ['minX', 'maxX']) assert.ok(Math.abs(newShape.bounds[key] - oldShape.bounds[key] - dx) < .75);
+  for (const key of ['minY', 'maxY']) assert.ok(Math.abs(newShape.bounds[key] - oldShape.bounds[key] - dy) < .75);
 }
 function assertAutomaticNodeLabel(snapshot, id) {
   assert.equal(snapshot.ready, true);
@@ -156,6 +205,16 @@ const GRAPH_PROBE = `(() => {
       exportDepth: state.graphView.exportDepth },
     accounts: state.lastGraph.nodes.map(node => node.account),
     trackedIds: [...state.tracked].map(String),
+    annotations: (state.presentation?.annotations || []).map(note => ({ id: note.id, text: note.text,
+      anchor: note.anchor, dx: note.dx, dy: note.dy, size: note.size, fontFamily: note.fontFamily, color: note.color })),
+    renderedAnnotations: state.graph.getNodes().flatMap(item => item.getContainer().get('children')
+      .filter(shape => shape.get('name') === 'funds-node-annotation').map(shape => ({
+        id: item.getModel().id, type: shape.get('type'), text: shape.attr('text'), fill: shape.attr('fill'),
+        fontSize: shape.attr('fontSize'), fontFamily: shape.attr('fontFamily'),
+        textAlign: shape.attr('textAlign'), textBaseline: shape.attr('textBaseline'),
+        x: shape.attr('x'), y: shape.attr('y'), bounds: bounds(shape),
+        drawn: !shape.get('destroyed') && shape.get('visible') !== false && item.getContainer().get('visible') !== false,
+      }))),
     edges: state.lastGraph.edges.map(edge => ({ source: edge.source, target: edge.target,
       ids: edge.ids.map(String), total: edge.total, cnt: edge.cnt, amount_totals: edge.amount_totals })),
     renderedNodes: state.graph.getNodes().map(item => {
@@ -176,7 +235,7 @@ const GRAPH_PROBE = `(() => {
 })()`;
 
 async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, until, check, createdCase, seedCase, captureGraph }) {
-  let step = null;
+  let step = null, flowIds;
   const key = async (name, code, virtual, modifiers = 0) => {
     for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', {
       type, key: name, code, windowsVirtualKeyCode: virtual, nativeVirtualKeyCode: virtual, modifiers,
@@ -570,6 +629,58 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     }
     await clickElement(`document.querySelector('#flowTbody tr[data-id="${flowId}"] .${action}')`);
   }
+  async function pointerClick(point) {
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point }, page.sessionId);
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', {
+      type, ...point, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1,
+    }, page.sessionId);
+  }
+  async function pointerDrag(from, to) {
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...from }, page.sessionId);
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...from,
+      button: 'left', buttons: 1, clickCount: 1 }, page.sessionId);
+    for (let i = 1; i <= 12; i += 1) {
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved',
+        x: from.x + (to.x - from.x) * i / 12, y: from.y + (to.y - from.y) * i / 12,
+        button: 'left', buttons: 1 }, page.sessionId);
+      await evaluate(`new Promise(resolve => requestAnimationFrame(resolve))`);
+    }
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...to,
+      button: 'left', buttons: 0, clickCount: 1 }, page.sessionId);
+  }
+  async function selectAnnotationNode() {
+    step = 'annotation-node';
+    const point = await evaluate(`(() => {
+      const model = state.graph.findById(${JSON.stringify(ANNOTATION.id)})?.getModel();
+      if (!model) return null;
+      const client = state.graph.getClientByPoint(model.x, model.y), hit = document.elementFromPoint(client.x, client.y);
+      return hit?.tagName === 'CANVAS' && document.querySelector('#graphContainer').contains(hit) ? client : null;
+    })()`);
+    assert.ok(point);
+    await pointerClick(point);
+    await until(() => evaluate(`JSON.stringify([...state.graphSelection.ids].map(String)) === ${JSON.stringify(JSON.stringify([ANNOTATION.id]))}
+      && state.graphView.selectedEdge === null`), 10000);
+  }
+  async function openAnnotation() {
+    await clickElement(`document.querySelector('#ribbonTab-common')`);
+    await selectAnnotationNode(); step = 'annotation-open';
+    await clickElement(`document.querySelector('#btnAnnotation')`);
+    await until(() => evaluate(`document.querySelector('#annotationDialog').open
+      && document.querySelector('#annotationDialog').dataset.node === ${JSON.stringify(ANNOTATION.id)}`), 10000);
+  }
+  async function annotation(expected) {
+    await until(async () => {
+      try { const snapshot = await evaluate(GRAPH_PROBE); assert.equal(snapshot.labelsSettled, true);
+        expected ? assertAnnotation(snapshot, expected) : assertNoAnnotation(snapshot); return true; }
+      catch { return false; }
+    }, 15000);
+    const snapshot = await evaluate(GRAPH_PROBE);
+    expected ? assertAnnotation(snapshot, expected) : assertNoAnnotation(snapshot);
+    assertGraph(snapshot, flowIds, 3);
+    return snapshot;
+  }
+  const positions = snapshot => snapshot.renderedNodes.map(node => [node.id, node.x, node.y])
+    .sort((a, b) => a[0].localeCompare(b[0]));
 
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'funds-trace-installed-graph-'));
   try {
@@ -607,7 +718,6 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
             && row.children[4].textContent === summaries[i] && row.children[5].textContent === 'CNY');
       })()`), true);
     });
-    let flowIds;
     await check('installedCsvCommittedExact', async () => {
       await clickElement(`document.querySelector('#impCommit')`);
       const receipt = () => evaluate(`({
@@ -683,8 +793,75 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
         && state.graphView.visibleIds.has(${JSON.stringify(ACCOUNTS[2])})
         && state.graphView.visibleIds.has(${JSON.stringify(ACCOUNTS[3])})`), true);
     });
+    await check('installedAnnotationDialogSave', async () => {
+      await openAnnotation(); step = 'annotation-fill';
+      await fill('#annotationText', ANNOTATION.text);
+      await select('#annotationSize', ANNOTATION.size);
+      await select('#annotationFont', ANNOTATION.fontFamily);
+      await clickElement(`document.querySelector('input[name="annotationAnchor"][value="above"]')`);
+      // The installed journey keeps the normal default color. Custom colors
+      // have browser coverage; opening Windows' native color chooser is outside
+      // this renderer-input journey and is never replaced with an eval write.
+      assert.equal(await evaluate(`document.querySelector('#annotationColor').value`), ANNOTATION.color);
+      step = 'annotation-save';
+      await clickElement(`document.querySelector('#annotationSave')`);
+      await until(() => evaluate(`!document.querySelector('#annotationDialog').open`), 15000);
+      await clickElement(`document.querySelector('#ribbonTab-view')`);
+      await clickElement(`document.querySelector('#btnFit')`);
+      step = 'annotation-rendered';
+      const snapshot = await annotation(ANNOTATION);
+      const node = snapshot.renderedNodes.find(item => item.id === ANNOTATION.id);
+      assert.ok(snapshot.renderedAnnotations[0].bounds.maxY < node.bodyBounds.minY);
+    });
+    await check('installedAnnotationUndoRedo', async () => {
+      step = 'annotation-undo';
+      await clickElement(`document.querySelector('#ribbonTab-view')`);
+      await key('z', 'KeyZ', 90, 2); await annotation(null);
+      step = 'annotation-redo';
+      await clickElement(`document.querySelector('#ribbonTab-view')`);
+      await key('Z', 'KeyZ', 90, 10); await annotation(ANNOTATION);
+      step = 'style-tab';
+      await clickElement(`document.querySelector('#ribbonTab-style')`);
+      step = 'annotation-style-reset';
+      await clickElement(`document.querySelector('[data-ribbon-command="styleReset"]')`);
+      await annotation(null);
+      step = 'annotation-undo';
+      await key('z', 'KeyZ', 90, 2); await annotation(ANNOTATION);
+    });
+    const savedAnnotation = { ...ANNOTATION, dx: 24, dy: -12 };
+    await check('installedAnnotationOffsetDrag', async () => {
+      step = 'annotation-offset';
+      const before = await annotation(ANNOTATION);
+      const gesture = await evaluate(`(() => {
+        const item = state.graph.findById(${JSON.stringify(ANNOTATION.id)}), box = document.querySelector('#graphContainer').getBoundingClientRect();
+        const shape = item.getContainer().get('children').find(child => child.get('name') === 'funds-node-annotation');
+        const bounds = shape.getCanvasBBox(), x = (bounds.minX + bounds.maxX) / 2, y = (bounds.minY + bounds.maxY) / 2;
+        const point = state.graph.getPointByCanvas(x, y), from = { x: box.left + x, y: box.top + y };
+        const to = state.graph.getClientByPoint(point.x + 24, point.y - 12);
+        return [from,to].every(client => document.elementFromPoint(client.x, client.y)?.tagName === 'CANVAS') ? { from, to } : null;
+      })()`);
+      assert.ok(gesture); await pointerDrag(gesture.from, gesture.to);
+      const after = await annotation(savedAnnotation);
+      assert.deepEqual(positions(after), positions(before)); assert.deepEqual(after.camera, before.camera);
+      assert.ok(Math.abs(after.renderedAnnotations[0].y - before.renderedAnnotations[0].y + 12) < .01);
+    });
+    await check('installedAnnotationNodeFollow', async () => {
+      await selectAnnotationNode(); step = 'annotation-follow';
+      const before = await annotation(savedAnnotation);
+      const gesture = await evaluate(`(() => {
+        const model = state.graph.findById(${JSON.stringify(ANNOTATION.id)}).getModel();
+        const box = document.querySelector('#graphContainer').getBoundingClientRect(), from = state.graph.getClientByPoint(model.x, model.y);
+        const dx = from.x < box.left + box.width / 2 ? 32 : -32, dy = from.y < box.top + box.height / 2 ? 24 : -24;
+        const to = state.graph.getClientByPoint(model.x + dx, model.y + dy);
+        return [from,to].every(client => document.elementFromPoint(client.x, client.y)?.tagName === 'CANVAS') ? { from, to } : null;
+      })()`);
+      assert.ok(gesture); await pointerDrag(gesture.from, gesture.to);
+      const after = await annotation(savedAnnotation);
+      assertAnnotationFollow(before, after, savedAnnotation);
+    });
     if (captureGraph) await captureGraph();
     let clonedTypes, savedTypes, redoneTypes;
+    let savedPositions;
     await check('installedCanvasCloneExact', async () => {
       clonedTypes = await type('line');
       await clickElement(`document.querySelector('#ribbonTab-common')`);
@@ -694,18 +871,27 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       await graph(3, flowIds);
       step = 'canvas-clone-verify';
       assertEdgeTypes(await evaluate(GRAPH_PROBE), clonedTypes);
+      await annotation(savedAnnotation);
       assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'line'`), true);
     });
     await check('installedCanvasSaveRestoreTypes', async () => {
-      savedTypes = await type('polyline'); await prompt('#btnCanvasSave', CANVAS);
-      await until(() => evaluate(`[...document.querySelectorAll('#toasts .toast')].some(node => node.textContent.includes('形态已保存'))`), 10000);
-      step = 'canvas-default';
-      await select('#canvasSel', '0'); await graph(3, flowIds);
-      await type('line');
-      step = 'canvas-restored';
-      await select('#canvasSel', CANVAS, true); await graph(3, flowIds);
-      assertEdgeTypes(await evaluate(GRAPH_PROBE), savedTypes);
-      assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'polyline'`), true);
+      await check('installedCanvasSaveRestoreAnnotation', async () => {
+        savedTypes = await type('polyline'); await prompt('#btnCanvasSave', CANVAS);
+        await until(() => evaluate(`[...document.querySelectorAll('#toasts .toast')].some(node => node.textContent.includes('形态已保存'))`), 10000);
+        savedPositions = positions(await annotation(savedAnnotation));
+        step = 'canvas-default';
+        await select('#canvasSel', '0'); await graph(3, flowIds);
+        await type('line');
+        // The default canvas has no saved presentation. Reopening the named
+        // canvas must read its saved note after this empty annotation view.
+        await annotation(null);
+        step = 'canvas-restored';
+        await select('#canvasSel', CANVAS, true); await graph(3, flowIds);
+        assertEdgeTypes(await evaluate(GRAPH_PROBE), savedTypes);
+        assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'polyline'`), true);
+        step = 'annotation-restored';
+        assert.deepEqual(positions(await annotation(savedAnnotation)), savedPositions);
+      });
     });
     await check('installedCanvasUndoRedoTypes', async () => {
       await check('installedKeyboardUndoRedoOutsideGraph', async () => {
@@ -735,11 +921,16 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       await until(() => evaluate(`!state.graphLoading && !layoutJob && state.stats.flows === 0
         && state.search.total === 0 && state.lastGraph.nodes.length === 0 && state.tracked.size === 0
         && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(seedCase)}`), 15000);
+      assertNoAnnotation(await evaluate(GRAPH_PROBE));
       step = 'case-return';
       await select('#caseSelect', createdCase, true);
       await until(() => evaluate(`state.stats.flows === 3 && state.search.total === 3 && state.canvasId === 0
         && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(createdCase)}`), 15000);
       await graph(3, flowIds);
+      assertNoAnnotation(await evaluate(GRAPH_PROBE));
+      await select('#canvasSel', CANVAS, true); await graph(3, flowIds);
+      step = 'annotation-restored';
+      assert.deepEqual(positions(await annotation(savedAnnotation)), savedPositions);
     });
   } catch (error) {
     const failure = new Error('INSTALLED_GRAPH_JOURNEY_FAILED');
@@ -752,4 +943,6 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
   }
 }
 
-module.exports = { ACCOUNTS, AMOUNTS, SUMMARIES, REQUIRED_CHECKS, fixtureCsv, assertGraph, assertEdgeTypes, assertAutomaticLeafLabel, assertPartialViewportLabels, assertImportCompletion, safeJourneyFailure, runInstalledGraphJourney };
+module.exports = { ACCOUNTS, AMOUNTS, SUMMARIES, REQUIRED_CHECKS, fixtureCsv, assertGraph, assertEdgeTypes,
+  assertNoAnnotation, assertAnnotation, assertAnnotationFollow, assertAutomaticLeafLabel, assertPartialViewportLabels,
+  assertImportCompletion, safeJourneyFailure, runInstalledGraphJourney };

@@ -211,3 +211,8 @@ test('annotations keep multiple lines within six rows', () => {
   const collapsed = presentation.create({ annotations: [{ id: 'SYN-B', text: '\n\n只有一行\n\n' }] }).annotations[0];
   assert.equal(collapsed.text, '只有一行');
 });
+test('annotations preserve exact long account IDs and normalize duplicate anchors without changing identities', () => {
+  const id = 'SYN-' + 'A'.repeat(100);
+  const result = presentation.create({ annotations: [{ id, text: '第一条' }, { id, text: '重复' }] }).annotations;
+  assert.equal(result.length, 1); assert.equal(result[0].id, id);
+});

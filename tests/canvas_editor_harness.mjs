@@ -991,3 +991,80 @@ test('clear canvas removes restored edge types and undo restores their geometry'
   await f.h.element('#btnRedo').onclick();assert.deepEqual(Object.keys(f.state.edgeTypes),[]);
   assert.deepEqual(Object.keys(f.state.graphView.autoRoutes),[]);
 });
+
+function annotations() {
+  const f = editor(), shapes = [], container = f.h.element('#graphContainer');
+  let rebuilt = 0;
+  f.env.renderNodeAnnotations = () => {};
+  f.env.rebuildGraphViewport = () => { rebuilt += 1; };
+  f.env.scheduleGraphLabels = () => {};
+  f.state.graph.findById = id => f.models.find(model => model.id === id) ? {
+    getModel: () => ({ ...f.models.find(model => model.id === id), size: 32, fundsLabel: '合成账户' }),
+    getContainer: () => ({ get: () => shapes }),
+  } : null;
+  f.state.graph.getPointByCanvas = (x, y) => ({ x, y });
+  f.state.graph.getZoom = () => 1;
+  f.state.graph.getCanvasByPoint = (x, y) => ({ x, y });
+  f.state.graphSelection = { ids: new Set(['SYN-A']), status: () => ({ dragging: false }), refresh() {}, clear() {}, destroy() {}, rebind() {} };
+  const dialog = f.h.element('#annotationDialog');
+  dialog.showModal = () => { dialog.open = true; };
+  dialog.querySelectorAll = () => [{ value: 'below', checked: true }];
+  container.setPointerCapture = () => {};
+  container.releasePointerCapture = () => {};
+  container.removeEventListener = () => {};
+  f.env.installAnnotationDrag(container);
+  return { ...f, dialog, get rebuilt() { return rebuilt; },
+    save(text) { f.env.openAnnotationEditor(); f.h.element('#annotationText').value = text; return f.env.saveAnnotationEditor(); },
+    pointer(type, x = 3, y = 64, pointerId = 7) { f.gesture(type, { type, button: 0, pointerId, clientX: x, clientY: y,
+      preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} }); } };
+}
+
+test('annotations: add edit delete and undo share the existing display history without losing earlier annotations', async () => {
+  const f = annotations();
+  await f.save('第一行\n第二行');
+  assert.equal(f.history.status().count, 1);
+  assert.ok(f.rebuilt > 0, 'saving must refresh the annotation bounds');
+  assert.equal(f.state.presentation.annotations[0].text, '第一行\n第二行');
+  await f.env.window.FundsCanvasEditor.command('合成移动节点', () => { f.state.positions['SYN-A'].x = 30; f.models[0].x = 30; });
+  await f.save('修改后的标注');
+  await f.history.undo();
+  assert.equal(f.state.presentation.annotations[0].text, '第一行\n第二行');
+  await f.history.undo();
+  assert.equal(f.state.presentation.annotations[0].text, '第一行\n第二行');
+  f.state.graphSelection = { ids: new Set(['SYN-A']), status: () => ({}), clear() {}, destroy() {} };
+  f.env.openAnnotationEditor(); await f.env.deleteAnnotation();
+  assert.equal(f.state.presentation.annotations.length, 0);
+  await f.history.undo(); assert.equal(f.state.presentation.annotations[0].text, '第一行\n第二行');
+});
+
+test('annotations: a dialog from an old same-case canvas binding cannot write into the new presentation', async () => {
+  const f = annotations(); f.env.openAnnotationEditor();
+  f.h.element('#annotationText').value = '旧画布的内容';
+  f.state.canvasGeneration += 1;
+  const result = await f.env.saveAnnotationEditor();
+  assert.equal(result, false); assert.equal(f.state.presentation.annotations.length, 0);
+  assert.equal(f.history.status().count, 0);
+});
+
+test('annotations: pointer drag records one undo step, ignores other pointers and rolls back cancellation', async () => {
+  const f = annotations(); await f.save('合成多行\n第二行');
+  const y = f.env.annotationAnchorY(f.state.graph.findById('SYN-A'), f.state.presentation.annotations[0]) + 4;
+  f.pointer('pointerdown', 3, y); f.pointer('pointermove', 23, y + 30, 999);
+  assert.equal(f.state.presentation.annotations[0].dx, 0, 'a second pointer cannot move the note');
+  f.pointer('pointermove', 23, y + 30); f.pointer('pointerup', 23, y + 30);
+  assert.equal(f.history.status().count, 2); assert.equal(f.state.presentation.annotations[0].dx, 20);
+  await f.history.undo(); assert.equal(f.state.presentation.annotations[0].dx, 0);
+  f.pointer('pointerdown', 3, y); f.pointer('pointermove', 43, y + 40); f.pointer('pointercancel', 43, y + 40);
+  assert.equal(f.state.presentation.annotations[0].dx, 0); assert.equal(f.history.status().count, 2);
+  f.pointer('pointerdown', 3, y); f.pointer('pointermove', 43, y + 40); f.pointer('lostpointercapture');
+  assert.equal(f.state.presentation.annotations[0].dx, 0);
+});
+
+test('annotations: view revision revocation rolls back a drag without recording unrelated new state', async () => {
+  const f=annotations();await f.save('绑定合成标注');
+  const note=f.state.presentation.annotations[0],y=f.env.annotationAnchorY(f.state.graph.findById('SYN-A'),note)+4;
+  f.pointer('pointerdown',3,y);f.pointer('pointermove',40,y+20);
+  f.state.graphView.revision+=1;f.state.presentation.nodeStyles={'SYN-A':{size:48}};
+  f.pointer('pointerup',40,y+20);
+  assert.equal(note.dx,0);assert.equal(f.history.status().count,1,'a revoked gesture cannot record unrelated later presentation');
+});

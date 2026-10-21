@@ -1850,8 +1850,10 @@ buildWM();
       {endArrow:{path:'M 0,0 L 10,5 L 10,-5 Z',fill:stroke}});
   }
   var nodes=DATA.nodes.map(function(n){
+    var raw=n.annotation||{},annotation=presentation.create({annotations:[{id:n.id,text:raw.text,anchor:raw.anchor,
+      dx:raw.dx,dy:raw.dy,size:raw.size,fontFamily:raw.fontFamily,color:raw.color}]}).annotations[0]||null;
     var o={id:n.id,x:n.x,y:n.y,label:n.label,size:n.size,style:nodeStyle(n),data:n.data,labelVisible:n.labelVisible,
-      labelOffset:point(n.labelOffset),photoBorder:presentation.sanitizeNode(n.photoBorder),
+      labelOffset:point(n.labelOffset),photoBorder:presentation.sanitizeNode(n.photoBorder),annotation:annotation,
       labelCfg:{position:'bottom',offset:6,style:presentation.effectiveLabel('node',n.labelStyle)}};
     if(n.img){o.type='image';o.img=n.img;}
     return o;});
@@ -1934,6 +1936,22 @@ buildWM();
     decoration(item,'funds-photo-border','circle',m.type==='image'&&(border.stroke||border.lineWidth)?
       {x:0,y:0,r:size/2,stroke:border.stroke||stroke||'#7ca6d5',lineWidth:border.lineWidth||1.5,fill:null}:null);
   }
+  function annotation(item){
+    var m=item.getModel(),note=m.annotation;if(!note){decoration(item,'funds-node-annotation','text',null);return;}
+    var body=item.getKeyShape&&item.getKeyShape(),text=named(item,'text-shape'),zoom=Math.abs(graph.getZoom?graph.getZoom():1)||1;
+    var bodyBox=body&&body.getCanvasBBox&&body.getCanvasBBox(),labelBox=text&&text.getCanvasBBox&&text.getCanvasBBox();
+    var size=Array.isArray(m.size)?Math.max.apply(Math,m.size):m.size||32;
+    var y=note.anchor==='above'?-size/2-10/zoom:size/2+10/zoom;
+    if(bodyBox&&[bodyBox.minX,bodyBox.minY,bodyBox.maxX,bodyBox.maxY].every(finite)&&typeof graph.getPointByCanvas==='function'){
+      var edge=note.anchor==='above'?bodyBox.minY-10:Math.max(bodyBox.maxY,labelBox&&finite(labelBox.maxY)?labelBox.maxY:bodyBox.maxY)+10;
+      y=graph.getPointByCanvas((bodyBox.minX+bodyBox.maxX)/2,edge).y-m.y;
+    }else if(note.anchor!=='above'){
+      var labelLocal=text&&text.getBBox&&text.getBBox();if(labelLocal&&finite(labelLocal.maxY))y=Math.max(y,labelLocal.maxY+10/zoom);
+    }
+    decoration(item,'funds-node-annotation','text',{x:note.dx,y:y+note.dy,text:note.text,fontSize:note.size,
+      lineHeight:Math.round(note.size*1.4),fontFamily:note.fontFamily,fill:note.color,fontWeight:'normal',fontStyle:'normal',
+      textAlign:'center',textBaseline:note.anchor==='above'?'bottom':'top'});
+  }
   function applyGeometry(){
     graph.setAutoPaint(false);
     graph.getNodes().concat(graph.getEdges()).forEach(function(item){
@@ -1954,7 +1972,7 @@ buildWM();
         labelGeometry.placeEdge(item,{anchor:anchor,above:above,gap:4,style:m.style,visible:visible});
       }else{
         labelGeometry.placeNode(item,{zoom:graph.getZoom?graph.getZoom():1});
-        identity(item);
+        identity(item);annotation(item);
       }
     });
     graph.setAutoPaint(true);graph.paint();

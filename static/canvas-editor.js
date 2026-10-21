@@ -478,7 +478,7 @@
     try { listener(membershipSnapshot()); } catch (_) { /* Isolate view observers. */ }
     return () => { membershipListeners.delete(listener); };
   } });
-  window.FundsCanvasEditor = Object.freeze({ history, membership, command, syncControls });
+  window.FundsCanvasEditor = Object.freeze({ history, membership, command, syncControls, beginDisplayGesture, finishDisplayGesture });
 
   const readGraph = loadGraph;
   loadGraph = async function (retry = true, context = caseContext()) {
@@ -557,7 +557,22 @@
     });
   }
 
-  const geometry = snapshot => JSON.stringify([snapshot.positions, snapshot.edgeLabelPos, snapshot.edgeBendPos, snapshot.edgeSnapshotLabels,snapshot.autoRoutes]);
+  const geometry = snapshot => JSON.stringify([snapshot.positions, snapshot.edgeLabelPos, snapshot.edgeBendPos, snapshot.edgeSnapshotLabels,snapshot.autoRoutes,snapshot.presentation]);
+  // Display gestures share the normal command lock and snapshot boundary.
+  // The token prevents a late pointer from finishing another binding's gesture.
+  function beginDisplayGesture() {
+    if (gesture || history.status().busy || state.graphLoading || !state.caseId || layoutJob || mainAccountsBlocked()) return null;
+    const token = {};
+    gesture = { context: caseContext(), before: capture(), token };
+    update();
+    return token;
+  }
+  function finishDisplayGesture(token, label, commit = true) {
+    if (!token || gesture?.token !== token) return false;
+    if (!commit) { gesture = null; update(); return false; }
+    endGesture(label);
+    return true;
+  }
   function startGesture(event) {
     // Node gestures are captured only after crossing the drag threshold. A
     // selection click must not traverse the entire graph or create undo work.
@@ -633,7 +648,7 @@
     window.addEventListener('mouseup', () => {
       // Window listeners registered at pointer-down run after this listener.
       // Let the selection controller commit its preview before ending history.
-      if (state.graphSelection?.status?.()?.dragging) return;
+      if (state.graphSelection?.status?.()?.dragging || gesture?.token) return;
       Promise.resolve().then(() => endGesture());
     });
     window.addEventListener('funds:selection-drag-start', startGesture);

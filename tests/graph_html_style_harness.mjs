@@ -176,6 +176,22 @@ assert.deepEqual(graph.fitRequests.at(-1), [40, 40, 84, 40], 'offsetHeight suppo
 delete legend.offsetHeight;
 graph.emit('node:dblclick', {});
 assert.deepEqual(graph.fitRequests.at(-1), [40, 40, 40, 40], 'missing measurement retains the old 40px padding');
+const note=shape(a,'funds-node-annotation');
+assert.ok(note,'the downloaded standalone HTML renders the custom annotation');
+assert.equal(note.attr('text'),'实际控制人（合成）\n</script><script>window.injected=true</script>');
+assert.equal(note.attr('fontSize'),20);assert.equal(note.attr('lineHeight'),28);
+assert.equal(note.attr('fontFamily'),'KaiTi');assert.equal(note.attr('fill'),'#c084fc');
+assert.equal(note.attr('x'),23);assert.equal(note.attr('textBaseline'),'bottom');
+assert.equal(a.model.annotation.id,a.model.id,'a supplied annotation cannot target a different account');
+assert.equal(a.model.annotation.html,undefined);assert.equal(context.window.injected,undefined);
+function assertNoteAnchor(){
+  const current=shape(a,'funds-node-annotation'),body=a.getKeyShape().getCanvasBBox();
+  near((a.model.y+current.attr('y'))*graph.getZoom(),body.minY-10+a.model.annotation.dy*graph.getZoom());
+}
+assertNoteAnchor();
+graph.zoomTo(2);graph.emit('viewportchange',{action:'zoom'});assertNoteAnchor();
+graph.move(a.model.id,17,23);assertNoteAnchor();graph.move(a.model.id,-17,-23);
+graph.zoomTo(1);graph.emit('viewportchange',{action:'zoom'});
 assert.equal(a.model.labelCfg.style.fontFamily, 'Arial');
 assert.equal(a.model.labelCfg.style.lineHeight, 28, 'legacy short lineHeight is clamped to the effective font');
 assert.equal(manual.model.labelCfg.style.fontSize, 13);

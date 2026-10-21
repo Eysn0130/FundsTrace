@@ -127,7 +127,7 @@ function graphInteractions({ selection = false, observeResize = false, observeFo
     env.window.FundsMainAccountsView={create:()=>({show(){},onState(){},dismiss(){},attach(){}})};
     h.run(readFileSync(new URL('../static/app.js',import.meta.url),'utf8'));}
   const state = h.run('state');
-  const applyLabels = env.applyGraphLabels, fitGraph=env.fitGraph,applyViewport=env.applyGraphViewport;
+  const applyLabels = env.applyGraphLabels, fitGraph=env.fitGraph,applyViewport=env.applyGraphViewport,rebuildViewport=env.rebuildGraphViewport;
   if(geometry){h.element('#graphContainer').clientWidth=900;h.element('#graphContainer').clientHeight=600;}
   env.performance = { now: () => 0 };
   const listeners = new Map(), documentListeners = new Map(), graphs = [], destroyedWithListeners = [];
@@ -275,7 +275,7 @@ function graphInteractions({ selection = false, observeResize = false, observeFo
       edges: [{ id: 'SYN-E', source: 'SYN-A', target: 'SYN-B', type: 'polyline' }] });
     return graph;
   };
-  return { h, env, state, graphs, destroyedWithListeners, observers, applyLabels, fitGraph, applyViewport, count, seed,
+  return { h, env, state, graphs, destroyedWithListeners, observers, applyLabels, fitGraph, applyViewport, rebuildViewport, count, seed,
     fontEvent(name){for(const callback of [...fontListeners.get(name)||[]])callback()},
     event(name, event = {}) { for (const callback of [...listeners.get(name) || []]) callback(event); },
     documentEvent(name,event={}){for(const callback of [...documentListeners.get(name)||[]])callback(event)},
@@ -2804,4 +2804,45 @@ test('background route scheduling follows measured planner work, not graph size 
   assert.equal(evaluate(18,47),false,'small scenes retain the lower overhead synchronous path');
   state.graphView.routeWork.force={planningMs:500};
   assert.equal(evaluate(400,458,'force'),false,'a moving force baseline must reach its fresh real gate before planning');
+});
+
+function annotationPointerFixture() {
+  const f=graphInteractions({geometry:true}),container=f.h.element('#graphContainer'),events=new Map();
+  container.addEventListener=(name,callback)=>{if(!events.has(name))events.set(name,new Set());events.get(name).add(callback);};
+  container.removeEventListener=(name,callback)=>events.get(name)?.delete(callback);
+  container.setPointerCapture=()=>{};container.releasePointerCapture=()=>{};
+  f.h.run('initGraph()');const graph=f.seed();
+  f.state.graphInited=true;f.state.presentation=f.env.FundsGraphPresentation.create({annotations:[{id:'SYN-A',text:'合成标注\n第二行',anchor:'above'}]});
+  return {...f,container,graph,events,pointer(name,x=0,y=-40,pointerId=7){for(const fn of [...events.get(name)||[]])fn({
+    type:name,button:0,pointerId,clientX:x,clientY:y,preventDefault(){},stopPropagation(){},stopImmediatePropagation(){}});}};
+}
+
+test('annotations: rebuilding the graph removes every captured pointer listener before installing one replacement',()=>{
+  const f=annotationPointerFixture();
+  const counts=new Map([...f.events].map(([name,listeners])=>[name,listeners.size]));
+  for(let pass=0;pass<4;pass++) {
+    f.h.run('initGraph()');f.seed();
+    for(const name of ['pointerdown','pointermove','pointerup','pointercancel','lostpointercapture'])assert.equal(f.events.get(name)?.size,counts.get(name),`${name} after rebuild ${pass}`);
+  }
+});
+
+for(const zoom of [.25,1,4])test(`annotations: above-node gap stays ten screen pixels at zoom ${zoom}`,()=>{
+  const f=annotationPointerFixture();f.graph.zoom=zoom;
+  const note=f.state.presentation.annotations[0],item=f.graph.findById('SYN-A');
+  const y=f.env.annotationAnchorY(item,note),body=f.env.graphNodeBodyBounds(item);
+  assert.ok(Math.abs((item.model.y+y)*zoom-(body.minY-10))<1e-8);
+  const before=JSON.stringify(f.state.presentation);f.env.renderNodeAnnotations(false);
+  assert.equal(JSON.stringify(f.state.presentation),before,'zoom placement never rewrites saved offsets');
+});
+
+test('annotations: viewport rebuild and later label passes include multiline annotation bounds',()=>{
+  const f=annotationPointerFixture();
+  f.state.lastGraph={nodes:[{account:'SYN-A'},{account:'SYN-B'}],edges:[]};
+  f.state.graphView.index=f.env.FundsGraphView.createIndex(f.state.lastGraph);
+  f.state.presentation.annotations[0].dx=400;
+  const index=f.env.FundsGraphViewport.build;
+  let nodes;
+  f.env.FundsGraphViewport={...f.env.FundsGraphViewport,build:value=>{nodes=value.nodes;return index(value);}};
+  f.rebuildViewport();
+  assert.ok(nodes.find(node=>node.id==='SYN-A').bounds.maxX>390,'the displaced note is part of the indexed node envelope');
 });

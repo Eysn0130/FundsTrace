@@ -84,7 +84,7 @@
   // size/fontFamily/color 决定标注自身的外观，非法值回落到默认。
   function annotations(input) {
     if (!Array.isArray(input)) return [];
-    const out = [];
+    const out = [], ids = new Set();
     for (const item of input.slice(0, 200)) {
       if (!object(item)) continue;
       // 多行标注：统一换行符、逐行去首尾空白、最多 6 行、200 字。
@@ -92,8 +92,9 @@
         ? item.text.replace(/\r\n?/g, '\n').split('\n').map(line => line.trim()).join('\n')
           .replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '').split('\n').slice(0, 6).join('\n').slice(0, 200)
         : '';
-      const id = typeof item.id === 'string' && item.id ? item.id.slice(0, 80) : '';
-      if (!text || !id) continue;
+      const id = typeof item.id === 'string' ? item.id : '';
+      if (!text || !id || ids.has(id)) continue;
+      ids.add(id);
       const size = Number(item.size);
       const dx = Number(item.dx), dy = Number(item.dy);
       out.push({
