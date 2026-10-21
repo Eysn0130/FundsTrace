@@ -12,6 +12,11 @@ import subprocess
 import tempfile
 import zipfile
 
+if __package__:
+    from .upgrade_baseline import parse_baseline, validate_installer_identity
+else:
+    from upgrade_baseline import parse_baseline, validate_installer_identity
+
 REPO = "Eysn0130/FundsTrace"
 GRAPH_CHECKS = (
     "installedGraphModulesLoaded", "installedCsvPreviewMapping", "installedCsvCommittedExact",
@@ -59,19 +64,26 @@ def verify_host_report(host, version, package, source_file):
         assert sha in variants(source_file(name))
 
 
-def verify_upgrade_origin(candidate, installer):
-    """Bind each account's upgrade report to the pinned source installer."""
-    pinned = {
-        "0.1.5": "f5c337e37adb30dc30c8cb895722703c91461ed0de49acee8dd487d454d8f1fc",
-        "0.1.7": "52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a",
-    }
-    prior = candidate.get("installerUpgradeFrom", "0.1.5")
-    assert prior in pinned
-    assert installer["status"] == "passed" and installer["priorVersion"] == prior
-    # Historical v0.1.5 reports predate this field; new v0.1.7 reports must carry it.
-    if prior != "0.1.5" or "priorInstallerSha256" in installer:
-        assert installer.get("priorInstallerSha256") == pinned[prior]
-    return prior
+def verify_upgrade_origin(candidate, installer, baseline, current_sha256, current_bytes):
+    """Require the source baseline, candidate declaration and installed bytes to agree."""
+    assert candidate["installerUpgradeFrom"] == baseline["prior"]["version"]
+    assert json.dumps(candidate["upgradeBaseline"], sort_keys=True) == json.dumps(baseline, sort_keys=True)
+    assert installer["status"] == "passed"
+    validate_installer_identity(installer, baseline, current_sha256, current_bytes)
+    return baseline["prior"]["version"]
+
+
+def verify_icon_report(icons, candidate, installer, expected_icon_sha):
+    """Keep PE evidence tied to the actual candidate files and approved icon."""
+    assert icons["status"] == "passed"
+    for name in ("application", "installer"):
+        icon = icons[name]
+        assert icon["status"] == "passed" and icon["selection"] == "default-icon-index-0"
+        assert icon["expectedIcoSha256"] == expected_icon_sha
+        assert type(icon["verifiedLanguageVariants"]) is int and icon["verifiedLanguageVariants"] > 0 and icon["frames"]
+    assert icons["installer"]["executableSha256"] == installer["sha256"]
+    applications = [item for item in candidate["files"] if item["path"] == "build/desktop/electron/win-unpacked/FundsTrace.exe"]
+    assert len(applications) == 1 and icons["application"]["executableSha256"] == applications[0]["sha256"]
 
 
 def main():
@@ -90,6 +102,10 @@ def main():
     release = json.loads(gh("release", "view", args.tag, "--repo", REPO, "--json", "isDraft,assets"))
     assert release["isDraft"] and not release["assets"], "Only a new empty draft may receive assets"
     subprocess.run(["git", "fetch", "--no-tags", "origin", source], check=True)
+    source_package = json.loads(subprocess.check_output(["git", "show", f"{source}:desktop/package.json"]))
+    assert source_package["version"] == args.tag[1:]
+    baseline = parse_baseline(subprocess.check_output(
+        ["git", "show", f"{source}:desktop/upgrade-baseline.json"]), source_package["version"])
 
     with tempfile.TemporaryDirectory(prefix="fundstrace-verified-transfer-") as temporary:
         root = Path(temporary)
@@ -104,6 +120,10 @@ def main():
         assert all(value == "passed" for value in candidate["checks"].values())
         assert all(str(candidate["executableVersion"][key]).split(".")[:3] == args.tag[1:].split(".")
                    for key in ("fileVersion", "productVersion"))
+        installer_name = f"FundsTrace-{args.tag[1:]}-windows-x64-unsigned.exe"
+        installer_records = [item for item in candidate["files"] if item["path"].endswith("/" + installer_name)]
+        assert len(installer_records) == 1
+        expected = installer_records[0]
         manifest_path = base / "backend/funds-trace-backend/build-manifest.json"
         manifest = data(manifest_path)
         assert manifest["platform"] == "win32" and manifest["arch"] == "x64" and manifest["protocol"] == 1
@@ -125,6 +145,11 @@ def main():
         verify_host_report(host, args.tag[1:], package,
                            lambda name: subprocess.check_output(["git", "show", f"{source}:desktop/{name}"]))
 
+        icons = data(base / "native-icon-resources.json")
+        expected_icon_sha = hashlib.sha256(subprocess.check_output(
+            ["git", "show", f"{source}:desktop/assets/icon.ico"])).hexdigest()
+        verify_icon_report(icons, candidate, expected, expected_icon_sha)
+
         reports = {name: data(base / name) for name in (
             "native-backend-smoke.json", "native-installer-smoke.json", "native-installed-app-smoke.json",
             "native-import-recovery-smoke.json")}
@@ -132,18 +157,30 @@ def main():
             assert value["status"] == "passed"
         standard = base / "standard-user"
         assert data(standard / "compatibility.json")["status"] == "passed"
-        prior_version = verify_upgrade_origin(candidate, reports["native-installer-smoke.json"])
+        prior_version = verify_upgrade_origin(candidate, reports["native-installer-smoke.json"],
+                                               baseline, expected["sha256"], expected["bytes"])
         for folder in (base, standard):
             app = data(folder / "native-installed-app-smoke.json")
             assert app["status"] == "passed" and all(value is True for value in app["checks"].values())
-            assert all(app["checks"][name] is True for name in GRAPH_CHECKS)
+            assert all(app["checks"][name] is True for name in (*GRAPH_CHECKS,
+                "installedWorkspaceWindowIcon", "installedAnalysisWindowIcon"))
             installer = data(folder / "native-installer-smoke.json")
-            assert verify_upgrade_origin(candidate, installer) == prior_version
+            assert verify_upgrade_origin(candidate, installer, baseline, expected["sha256"], expected["bytes"]) == prior_version
             assert installer["currentVersion"] == args.tag[1:] and all(value == "passed" for value in installer["checks"].values())
+            assert all(installer["checks"][name] == "passed" for name in (
+                "upgradeBaseline", "presentationPreferencesSeeded", "obsoleteInstalledFileRemoved",
+                "installedExecutableIcons", "installedShortcutIcons",
+                "upgradedPresentationPreferences", "sameVersionReinstalled", "reinstalledResourceIntegrity",
+                "reinstalledDataFilesUnchanged", "reinstalledExistingCaseData",
+                "reinstalledPresentationPreferences", "presentationPreferencesRetained"))
             assert all(installer["priorDataChecks"][name] is True for name in (
                 "priorBackendSeeded", "priorExactMoneyAndCurrency", "priorCanvasAndTracking",
                 "priorPackageExported", "priorEofReopened"))
             assert all(installer["upgradedDataChecks"][name] is True for name in (
+                "upgradedFactsUnchanged", "upgradedCanvasAndTracking", "legacyPackageRoundTrip",
+                "upgradedAnalysisPaths", "upgradedAnalysisCycles", "upgradedAtomicCanvas",
+                "upgradedEofReopened", "upgradedSourceFilesUnchanged"))
+            assert all(installer["reinstalledDataChecks"][name] is True for name in (
                 "upgradedFactsUnchanged", "upgradedCanvasAndTracking", "legacyPackageRoundTrip",
                 "upgradedAnalysisPaths", "upgradedAnalysisCycles", "upgradedAtomicCanvas",
                 "upgradedEofReopened", "upgradedSourceFilesUnchanged"))
@@ -168,6 +205,7 @@ def main():
                     "upgradedEofReopened", "upgradedSourceFilesUnchanged"))
         for key, file in (
             ("nativeManifestSha256", manifest_path), ("hostResourcesReportSha256", host_path),
+            ("iconResourcesReportSha256", base / "native-icon-resources.json"),
             ("smokeReportSha256", base / "native-backend-smoke.json"),
             ("installerReportSha256", base / "native-installer-smoke.json"),
             ("installedAppReportSha256", base / "native-installed-app-smoke.json"),
@@ -177,11 +215,9 @@ def main():
             assert digest(file) == candidate[key]
         for file in root.rglob("*"):
             assert not file.is_symlink()
-        installer_name = f"FundsTrace-{args.tag[1:]}-windows-x64-unsigned.exe"
         installers = list(root.rglob(installer_name))
         assert len(installers) == 1
         installer = installers[0]
-        expected = next(item for item in candidate["files"] if item["path"].endswith("/" + installer_name))
         assert installer.stat().st_size == expected["bytes"] and digest(installer) == expected["sha256"]
         with installer.open("rb") as stream:
             assert stream.read(2) == b"MZ"
@@ -202,6 +238,7 @@ def main():
         summary = {"schemaVersion": 1, "status": "passed", "sourceCommit": source,
             "installerUpgradeFrom": prior_version,
             "sourceRun": args.run_id, "tag": args.tag, "installer": expected,
+            "upgradeBaseline": baseline,
             "resourceCount": len(manifest["resources"]), "hostFileCount": len(host["hostFiles"]) + 1,
             "sourceResourcesIndependentlyChecked": sources_checked,
             "installedAppChecks": len(reports["native-installed-app-smoke.json"]["checks"]),

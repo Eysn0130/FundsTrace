@@ -1,6 +1,6 @@
 #Requires -Version 7.0
 param([switch]$Installer, [switch]$VerifyInstallerLifecycle, [switch]$VerifyInAppUpdate,
-    [ValidateSet('0.1.5', '0.1.7')][string]$PriorVersion = '0.1.5')
+    [string]$PriorVersion = '')
 if ($VerifyInstallerLifecycle -and -not $Installer) { throw "Installer lifecycle verification requires -Installer." }
 if ($VerifyInAppUpdate -and -not $VerifyInstallerLifecycle) { throw 'In-app update verification requires installer lifecycle verification.' }
 $ErrorActionPreference = "Stop"
@@ -23,6 +23,10 @@ try {
     $PythonInfo = (& $PythonExe -c "import json, platform, struct, sys; print(json.dumps({'version': platform.python_version(), 'major': sys.version_info.major, 'minor': sys.version_info.minor, 'bits': struct.calcsize('P') * 8, 'machine': platform.machine().lower()}))") | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or $PythonInfo.major -ne 3 -or $PythonInfo.minor -ne 11 -or $PythonInfo.bits -ne 64 -or $PythonInfo.machine -notin @("amd64", "x86_64")) { throw "Use Python 3.11 running as an x64 process." }
     Invoke-Checked { uv pip sync --python $PythonExe --require-hashes requirements-desktop.lock }
+    $Baseline = (& $PythonExe scripts/upgrade_baseline.py --baseline desktop/upgrade-baseline.json --package desktop/package.json) | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw 'The upgrade baseline differs from the current package.' }
+    if ($PriorVersion -and $PriorVersion -cne $Baseline.prior.version) { throw 'Requested prior version differs from the current upgrade baseline.' }
+    $PriorVersion = $Baseline.prior.version
     Push-Location frontend
     try { Invoke-Checked { npm.cmd ci }; Invoke-Checked { npm.cmd run build } } finally { Pop-Location }
     Invoke-Checked { & $PythonExe scripts/build_desktop_backend.py }
@@ -124,6 +128,7 @@ try {
         schemaVersion = 1
         candidate = $(if ($Installer) { "unsigned-installer" } else { "unsigned-directory" })
         installerUpgradeFrom = $(if ($VerifyInstallerLifecycle) { $PriorVersion } else { $null })
+        upgradeBaseline = $(if ($VerifyInstallerLifecycle) { $Baseline } else { $null })
         inAppUpdateFixture = [bool]$VerifyInAppUpdate
         platform = "win32"; arch = "x64"
         executableVersion = $ExecutableVersion

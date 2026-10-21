@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$InstallerPath,
     [Parameter(Mandatory = $true)][string]$ReportPath,
     [string]$CiTemporaryRoot,
-    [ValidateSet('0.1.5', '0.1.7')][string]$PriorVersion = '0.1.5',
+    [string]$PriorVersion = '',
     [string]$NextInstaller,
     [string]$NextUnpacked,
     [string]$TrustedCertificateFixture,
@@ -30,13 +30,21 @@ $Stage = 'inputPaths'
 $script:NativeStep = $null
 $Report = [ordered]@{
     schemaVersion = 1; status = 'running'; priorVersion = $null; currentVersion = $null; failedCheck = $null
+    upgradeBaseline = $null; priorInstallerSha256 = $null; priorInstallerBytes = $null
+    currentInstallerSha256 = $null; currentInstallerBytes = $null
     failureType = $null; failureId = $null; failedNativeStep = $null; nativeErrorCode = $null
     checks = [ordered]@{
-        ciFreshUser = 'not-run'; priorInstallerDigest = 'not-run'; priorInstalled = 'not-run'
+        upgradeBaseline = 'not-run'; ciFreshUser = 'not-run'; priorInstallerDigest = 'not-run'; priorInstalled = 'not-run'
         syntheticDataSeeded = 'not-run'; priorCaseDataWrittenByInstalledBackend = 'not-run'
+        presentationPreferencesSeeded = 'not-run'; obsoleteInstalledFileRemoved = 'not-run'
         upgradedSameIdentity = 'not-run'; installedResourceIntegrity = 'not-run'
+        installedExecutableIcons = 'not-run'; installedShortcutIcons = 'not-run'
+        upgradedPresentationPreferences = 'not-run'
         upgradedExistingCaseData = 'not-run'; legacyCasePackageCompatible = 'not-run'
         upgradedAnalysisAndAtomicCanvas = 'not-run'
+        sameVersionReinstalled = 'not-run'; reinstalledResourceIntegrity = 'not-run'
+        reinstalledDataFilesUnchanged = 'not-run'; reinstalledExistingCaseData = 'not-run'
+        reinstalledPresentationPreferences = 'not-run'
         installedBackendWithoutActivation = 'not-run'; installedBackendAuthentication = 'not-run'
         syntheticCaseCreatedAndReopened = 'not-run'; eofShutdown = 'not-run'
         installedApplicationStarted = 'not-run'; installedApplicationSingleInstance = 'not-run'
@@ -44,7 +52,7 @@ $Report = [ordered]@{
         installedGraphJourney = 'not-run'
         installedImportRecovery = 'not-run'
         uninstallRegistrationRemoved = 'not-run'; installedExecutableRemoved = 'not-run'
-        syntheticDataRetained = 'not-run'; cleanup = 'not-run'
+        syntheticDataRetained = 'not-run'; presentationPreferencesRetained = 'not-run'; cleanup = 'not-run'
     }
     limits = [ordered]@{ gui = $false; importRecovery = $false }
 }
@@ -238,6 +246,72 @@ function Assert-Sentinel {
         throw 'Synthetic data sentinel changed.'
     }
 }
+function Assert-InstalledResources {
+    foreach ($Relative in @('FundsTrace.exe', 'resources/app.asar', 'resources/backend/funds-trace-backend.exe',
+        'resources/backend/build-manifest.json', 'resources/licenses/Analytix-Apache-2.0.txt')) {
+        if ((Get-Sha256 (Join-Path $InstallRoot $Relative)) -cne (Get-Sha256 (Join-Path $CandidateRoot $Relative))) {
+            throw 'Installed candidate content differs from win-unpacked.'
+        }
+    }
+    $InstalledBackend = Join-Path $InstallRoot 'resources/backend'
+    if ((Get-Sha256 (Join-Path $InstalledBackend 'build-manifest.json')) -cne (Get-Sha256 $NativeManifest)) {
+        throw 'Installed backend manifest differs from the native build.'
+    }
+    $Manifest = Get-Content -Raw -LiteralPath $NativeManifest | ConvertFrom-Json
+    if ($Manifest.protocol -ne 1 -or $Manifest.platform -cne 'win32' -or $Manifest.arch -cne 'x64') {
+        throw 'Unexpected native manifest identity.'
+    }
+    $InternalRoot = [System.IO.Path]::GetFullPath((Join-Path $InstalledBackend '_internal')) + [System.IO.Path]::DirectorySeparatorChar
+    foreach ($Resource in $Manifest.resources.PSObject.Properties) {
+        $ResourcePath = [System.IO.Path]::GetFullPath((Join-Path $InternalRoot $Resource.Name))
+        if (-not $ResourcePath.StartsWith($InternalRoot, [StringComparison]::OrdinalIgnoreCase) -or
+            $Resource.Value -cnotmatch '^[0-9a-f]{64}$' -or (Get-Sha256 $ResourcePath) -cne $Resource.Value) {
+            throw 'Installed resource differs from the native manifest.'
+        }
+    }
+}
+function Assert-PresentationPreferences {
+    Assert-Sentinel
+    if ((Get-Sha256 $PreferenceFile) -cne $PreferenceSha256) { throw 'Presentation preference bytes changed.' }
+    # Read the old/new installed archive's actual store, without loading Main or
+    # granting a test IPC. The fixture is written by this test, not the old UI.
+    $PreferenceReadCode = @'
+const assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
+const { TextDecoder } = require('node:util');
+const vm = require('node:vm');
+const asar = require('./desktop/node_modules/@electron/asar');
+const [archive, directory, expectedJson] = process.argv.slice(1);
+function installed(name) {
+  assert.ok(['preferences.cjs', 'host-policy.cjs'].includes(name));
+  const bytes = asar.extractFile(archive, name), info = asar.statFile(archive, name);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  let source, utf8 = true;
+  try { source = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { utf8 = false; }
+  const integrity = !info.integrity || (info.integrity.algorithm === 'SHA256' && info.integrity.hash === sha256);
+  const diagnostic = `name=${name}, bytes=${bytes.length}, sha256=${sha256}, utf8=${utf8}, integrity=${integrity}`;
+  if (bytes.length !== info.size || !utf8 || !integrity || bytes.includes(0)) {
+    throw new Error(`Invalid archived module: ${diagnostic}`);
+  }
+  const module = { exports: {} };
+  const context = { module, exports: module.exports,
+    require(request) {
+      if (['node:fs', 'node:path', 'node:crypto'].includes(request)) return require(request);
+      assert.equal(request, './host-policy.cjs'); return installed('host-policy.cjs');
+    } };
+  // Compile separately so a parse failure never prints source text into CI logs.
+  let compiled;
+  try { compiled = new vm.Script(source, { filename: name }); }
+  catch { throw new Error(`Archived module syntax rejected: ${diagnostic}`); }
+  compiled.runInNewContext(context, { timeout: 5000 });
+  return module.exports;
+}
+const store = installed('preferences.cjs').preferenceStore(directory);
+for (const [key, value] of Object.entries(JSON.parse(expectedJson))) assert.equal(store.getItem(key), value);
+'@
+    [void](Invoke-Native -FileName $NodeExe -Arguments @('-e', $PreferenceReadCode,
+        (Join-Path $InstallRoot 'resources/app.asar'), $UserRoot, $PreferenceJson) -TimeoutSeconds 15)
+}
 
 try {
     if (-not [System.IO.Path]::IsPathRooted($InstallerPath) -or -not [System.IO.Path]::IsPathRooted($ReportPath)) {
@@ -255,11 +329,24 @@ try {
     $Stage = 'nodeLookup'
     $NodeExe = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Path
     if (-not [System.IO.File]::Exists($NodeExe)) { throw 'Node executable is unavailable.' }
+    $Stage = 'pythonLookup'
+    if (-not [System.IO.File]::Exists($PythonExe)) { throw 'The isolated Python executable is unavailable.' }
     $Stage = 'workingDirectory'
     if (-not [System.IO.Directory]::Exists($ProjectRoot)) { throw 'Source working directory is unavailable.' }
     $Stage = 'candidateIdentity'
     $CurrentVersion = (Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot 'desktop/package.json') | ConvertFrom-Json).version
     if ($CurrentVersion -cnotmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') { throw 'INVALID_CANDIDATE_VERSION' }
+    $Stage = 'upgradeBaseline'
+    $Baseline = (Invoke-Native -FileName $PythonExe -Arguments @(
+        (Join-Path $ProjectRoot 'scripts/upgrade_baseline.py'), '--baseline',
+        (Join-Path $ProjectRoot 'desktop/upgrade-baseline.json'), '--package',
+        (Join-Path $ProjectRoot 'desktop/package.json')
+    ) -TimeoutSeconds 15) | ConvertFrom-Json
+    if ($PriorVersion -and $PriorVersion -cne $Baseline.prior.version) { throw 'Requested prior version differs from the current upgrade baseline.' }
+    $PriorVersion = $Baseline.prior.version
+    $Report.upgradeBaseline = $Baseline
+    $Report.checks.upgradeBaseline = 'passed'
+    $Stage = 'candidateIdentity'
     $IdentityCode = "const b=require('./desktop/electron-builder.cjs');if(b.appId!=='com.eysn.fundstrace'||b.nsis.guid!==undefined)process.exit(1);"
     [void](Invoke-Native -FileName $NodeExe -Arguments @('-e', $IdentityCode) -TimeoutSeconds 15)
     $Stage = 'defaultAppData'
@@ -279,6 +366,8 @@ try {
     foreach ($Required in @($InstallerPath, $NativeManifest, $PythonExe, (Join-Path $CandidateRoot 'FundsTrace.exe'))) {
         if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) { throw 'Required candidate input is missing.' }
     }
+    $Report.currentInstallerSha256 = Get-Sha256 $InstallerPath
+    $Report.currentInstallerBytes = (Get-Item -LiteralPath $InstallerPath).Length
     $Stage = 'createTemporary'
     $TemporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("FundsTrace 安装 生命周期 " + [guid]::NewGuid().ToString('N'))
     if ($CiTemporaryRoot) {
@@ -294,22 +383,22 @@ try {
     $PriorInstaller = Join-Path $TemporaryRoot 'prior-stable.exe'
 
     $Stage = 'priorInstallerDigest'
-    $PriorDigests = @{
-        '0.1.5' = 'f5c337e37adb30dc30c8cb895722703c91461ed0de49acee8dd487d454d8f1fc'
-        '0.1.7' = '52eabd3c6b0f77270c61066b8d1830b84cb5b316153d399625c7d21badfbeb7a'
-    }
-    Invoke-WebRequest -Uri "https://github.com/Eysn0130/FundsTrace/releases/download/v$PriorVersion/FundsTrace-$PriorVersion-windows-x64-unsigned.exe" -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
-    if ((Get-Sha256 $PriorInstaller) -cne $PriorDigests[$PriorVersion]) {
-        throw 'The prior installer digest differs from the pinned release.'
+    Invoke-WebRequest -Uri $Baseline.priorInstallerUrl -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
+    $Report.priorInstallerSha256 = Get-Sha256 $PriorInstaller
+    $Report.priorInstallerBytes = (Get-Item -LiteralPath $PriorInstaller).Length
+    if ($Report.priorInstallerSha256 -cne $Baseline.prior.sha256 -or $Report.priorInstallerBytes -ne $Baseline.prior.bytes) {
+        throw 'The prior installer digest or byte count differs from the pinned release.'
     }
     $Report.checks.priorInstallerDigest = 'passed'
     $Stage = 'priorInstalled'
     $MayHaveInstalled = $true
     # /D is NSIS syntax: absolute path, last argument, deliberately no quotes even with spaces.
     [void](Invoke-Native -FileName $PriorInstaller -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
-    Assert-Installed $PriorVersion
-    $Report.priorVersion = $PriorVersion; $Report.priorInstallerSha256 = $PriorDigests[$PriorVersion]
-    $Report.checks.priorInstalled = 'passed'
+    Assert-Installed $Baseline.prior.version
+    $Report.priorVersion = $Baseline.prior.version; $Report.checks.priorInstalled = 'passed'
+    $ObsoleteFile = Join-Path $InstallRoot 'fundstrace-upgrade-obsolete-sentinel.txt'
+    if (Test-Path -LiteralPath $ObsoleteFile) { throw 'Unexpected obsolete test file already exists.' }
+    [System.IO.File]::WriteAllText($ObsoleteFile, $SentinelContent)
 
     $Stage = 'syntheticDataSeeded'
     # The earlier absence check establishes ownership; never redirect or reuse a maintainer's data.
@@ -336,12 +425,26 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $DataDirectory 'fund.duckdb') -PathType Leaf)) { throw 'Synthetic database was not created.' }
     $Report.checks.syntheticDataSeeded = 'passed'
     $Report.checks.priorCaseDataWrittenByInstalledBackend = 'passed'
+    $Stage = 'presentationPreferencesSeeded'
+    $PreferenceFile = Join-Path $UserRoot 'preferences.json'
+    if (Test-Path -LiteralPath $PreferenceFile) { throw 'Unexpected preferences appeared before synthetic seeding.' }
+    $PriorSnapshot = Get-Content -Raw -LiteralPath (Join-Path $UpgradeFixture 'snapshot.json') | ConvertFrom-Json
+    $PreferenceJson = [ordered]@{ fund_case = [string]$PriorSnapshot.original.caseId; fund_edge_type = 'polyline'
+        fund_show_ids = '1'; fund_show_photos = '0'; fund_edge_labels = '["money","time","summary","currency"]' } | ConvertTo-Json -Compress
+    [System.IO.File]::WriteAllText($PreferenceFile, $PreferenceJson)
+    $PreferenceSha256 = Get-Sha256 $PreferenceFile
+    Assert-PresentationPreferences
+    $Report.checks.presentationPreferencesSeeded = 'passed'
 
     $Stage = 'upgradedSameIdentity'
-    [void](Invoke-Native -FileName $InstallerPath -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
+    # Let NSIS find the existing custom directory from its registered identity.
+    [void](Invoke-Native -FileName $InstallerPath -RawArguments '/S' -TimeoutSeconds 240)
     Assert-Installed $CurrentVersion
     Assert-Sentinel
     $Report.currentVersion = $CurrentVersion; $Report.checks.upgradedSameIdentity = 'passed'
+    $Stage = 'obsoleteInstalledFileRemoved'
+    if (Test-Path -LiteralPath $ObsoleteFile) { throw 'The old installation retained the obsolete test file.' }
+    $Report.checks.obsoleteInstalledFileRemoved = 'passed'
 
     $Stage = 'installedResourceIntegrity'
     $ExpectedIcon = Join-Path $ProjectRoot 'desktop/assets/icon.ico'
@@ -363,29 +466,12 @@ try {
     if ($Report.shortcutIcons.status -cne 'passed') { throw 'Installed shortcut icon mismatch.' }
     $Report.checks.installedShortcutIcons = 'passed'
     $Stage = 'installedResourceIntegrity'
-    foreach ($Relative in @('FundsTrace.exe', 'resources/app.asar', 'resources/backend/funds-trace-backend.exe',
-        'resources/backend/build-manifest.json', 'resources/licenses/Analytix-Apache-2.0.txt')) {
-        if ((Get-Sha256 (Join-Path $InstallRoot $Relative)) -cne (Get-Sha256 (Join-Path $CandidateRoot $Relative))) {
-            throw 'Installed candidate content differs from win-unpacked.'
-        }
-    }
+    Assert-InstalledResources
     $InstalledBackend = Join-Path $InstallRoot 'resources/backend'
-    if ((Get-Sha256 (Join-Path $InstalledBackend 'build-manifest.json')) -cne (Get-Sha256 $NativeManifest)) {
-        throw 'Installed backend manifest differs from the native build.'
-    }
-    $Manifest = Get-Content -Raw -LiteralPath $NativeManifest | ConvertFrom-Json
-    if ($Manifest.protocol -ne 1 -or $Manifest.platform -cne 'win32' -or $Manifest.arch -cne 'x64') {
-        throw 'Unexpected native manifest identity.'
-    }
-    $InternalRoot = [System.IO.Path]::GetFullPath((Join-Path $InstalledBackend '_internal')) + [System.IO.Path]::DirectorySeparatorChar
-    foreach ($Resource in $Manifest.resources.PSObject.Properties) {
-        $ResourcePath = [System.IO.Path]::GetFullPath((Join-Path $InternalRoot $Resource.Name))
-        if (-not $ResourcePath.StartsWith($InternalRoot, [StringComparison]::OrdinalIgnoreCase) -or
-            $Resource.Value -cnotmatch '^[0-9a-f]{64}$' -or (Get-Sha256 $ResourcePath) -cne $Resource.Value) {
-            throw 'Installed resource differs from the native manifest.'
-        }
-    }
     $Report.checks.installedResourceIntegrity = 'passed'
+    $Stage = 'upgradedPresentationPreferences'
+    Assert-PresentationPreferences
+    $Report.checks.upgradedPresentationPreferences = 'passed'
 
     $Stage = 'upgradedExistingCaseData'
     $UpgradedData = (Invoke-Native -FileName $NodeExe -Arguments @(
@@ -399,6 +485,32 @@ try {
     $Report.checks.upgradedExistingCaseData = 'passed'
     $Report.checks.legacyCasePackageCompatible = 'passed'
     $Report.checks.upgradedAnalysisAndAtomicCanvas = 'passed'
+
+    $Stage = 'sameVersionReinstalled'
+    $ReinstallDatabaseSha256 = Get-Sha256 (Join-Path $DataDirectory 'fund.duckdb')
+    [void](Invoke-Native -FileName $InstallerPath -RawArguments '/S' -TimeoutSeconds 240)
+    Assert-Installed $CurrentVersion
+    Assert-Sentinel
+    $Report.checks.sameVersionReinstalled = 'passed'
+    $Stage = 'reinstalledResourceIntegrity'
+    Assert-InstalledResources
+    $Report.checks.reinstalledResourceIntegrity = 'passed'
+    $Stage = 'reinstalledDataFilesUnchanged'
+    if ((Get-Sha256 (Join-Path $DataDirectory 'fund.duckdb')) -cne $ReinstallDatabaseSha256) { throw 'Same-version reinstall changed the closed database.' }
+    $Report.checks.reinstalledDataFilesUnchanged = 'passed'
+    $Stage = 'reinstalledPresentationPreferences'
+    Assert-PresentationPreferences
+    $Report.checks.reinstalledPresentationPreferences = 'passed'
+    $Stage = 'reinstalledExistingCaseData'
+    $ReinstalledData = (Invoke-Native -FileName $NodeExe -Arguments @(
+        $UpgradeHelper, $InstallRoot, '--mode', 'verify', '--fixture', $UpgradeFixture
+    ) -Environment $CompatibilityEnvironment -TimeoutSeconds 240) | ConvertFrom-Json
+    foreach ($Name in @('upgradedFactsUnchanged', 'upgradedCanvasAndTracking', 'legacyPackageRoundTrip',
+        'upgradedAnalysisPaths', 'upgradedAnalysisCycles', 'upgradedAtomicCanvas', 'upgradedEofReopened', 'upgradedSourceFilesUnchanged')) {
+        if ($ReinstalledData.$Name -isnot [bool] -or -not $ReinstalledData.$Name) { throw 'Same-version reinstall did not retain compatible case data.' }
+    }
+    $Report.reinstalledDataChecks = $ReinstalledData
+    $Report.checks.reinstalledExistingCaseData = 'passed'
 
     $Stage = 'installedBackendWithoutActivation'
     $HelperJson = Invoke-Native -FileName $NodeExe -Arguments @((Join-Path $ProjectRoot 'desktop/tests/installed-data-smoke.cjs'), $InstallRoot) -TimeoutSeconds 210
@@ -443,6 +555,7 @@ try {
     if ($AppHelper.status -cne 'passed') { throw 'Installed application did not reach a usable workspace.' }
     foreach ($Name in @('installedExecutableStarted', 'authenticatedWorkspaceLoaded', 'nodeSelectionModuleLoaded',
         'activationFree', 'singleInstance', 'normalClose', 'backendReleasedAfterClose',
+        'installedWorkspaceWindowIcon', 'installedAnalysisWindowIcon',
         'installedGraphModulesLoaded', 'installedCsvPreviewMapping', 'installedCsvCommittedExact',
         'installedQueryExact', 'installedFirstTrackExact', 'installedSecondTrackVisible',
         'installedAutomaticNodeLabelRecovery',
@@ -471,12 +584,17 @@ try {
     }
 
     $Stage = 'uninstallRegistrationRemoved'
+    $UninstallPreferencesSha256 = Get-Sha256 $PreferenceFile
     Invoke-Uninstall
     $MayHaveInstalled = $false
     $Report.checks.uninstallRegistrationRemoved = 'passed'
     $Report.checks.installedExecutableRemoved = 'passed'
     $Stage = 'syntheticDataRetained'
     Assert-Sentinel
+    $Stage = 'presentationPreferencesRetained'
+    if ((Get-Sha256 $PreferenceFile) -cne $UninstallPreferencesSha256) { throw 'Uninstall changed retained presentation preferences.' }
+    $Report.checks.presentationPreferencesRetained = 'passed'
+    $Stage = 'syntheticDataRetained'
     $VerifyCode = @'
 import os
 import hashlib
@@ -579,5 +697,5 @@ if ($Failed) {
     exit 1
 }
 if ($PreflightOnly) { Write-Host 'Native installer preflight passed; no installation was attempted.' }
-else { Write-Host "Native installer lifecycle passed: pinned $PriorVersion upgrade, prior-version case compatibility, installed application startup/single-instance/close, activation-free data, EOF and uninstall retention. Win10/11 interactive acceptance remains separate." }
+else { Write-Host "Native installer lifecycle passed: pinned $($Baseline.prior.version) to $CurrentVersion upgrade, obsolete-file removal, preferences, same-version reinstall, case compatibility, installed application startup/single-instance/close, activation-free data, EOF and uninstall retention. Win10/11 interactive acceptance remains separate." }
 exit 0
