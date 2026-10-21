@@ -197,9 +197,22 @@ public static class FundsTraceBrandIcons {
     }
     public static Comparison Shortcut(string shortcutPath, string expectedPath, bool small) {
         IntPtr icon = ShellIcon(shortcutPath, small);
+        IntPtr expected = IntPtr.Zero;
         try {
-            return Compare(icon, expectedPath, small ? "shell-small" : "shell-large");
-        } finally { if (icon != IntPtr.Zero) DestroyIcon(icon); }
+            // The system image list renders ICO pixels differently from
+            // LoadImage. Resolve both sides through the same Shell pipeline;
+            // retain exact black/white pixel equality, with no tolerance.
+            expected = ShellIcon(expectedPath, small);
+            int[] size = Dimensions(icon), expectedSize = Dimensions(expected);
+            string actualHash = Fingerprint(icon, size[0], size[1]);
+            string expectedHash = Fingerprint(expected, expectedSize[0], expectedSize[1]);
+            return new Comparison { Source = small ? "shell-small" : "shell-large", Width = size[0], Height = size[1],
+                Matched = size[0] == expectedSize[0] && size[1] == expectedSize[1] && actualHash == expectedHash,
+                ActualSha256 = actualHash, ExpectedSha256 = expectedHash };
+        } finally {
+            if (expected != IntPtr.Zero) DestroyIcon(expected);
+            DestroyIcon(icon);
+        }
     }
     // Failure-only regression evidence: exact GDI pixels, never application
     // content. Bound the payload to a small shell icon, not an arbitrary bitmap.

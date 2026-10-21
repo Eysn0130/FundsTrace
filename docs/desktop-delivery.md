@@ -60,7 +60,7 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 新图标候选另检查实际应用 EXE、NSIS 安装器和安装后卸载器的默认 PE 图标组，与批准 ICO 的全部尺寸和图像内容比对，记录为 `native-icon-resources.json` 及安装报告。安装生命周期读取隔离账户的桌面／开始菜单快捷方式，核对目标、图标位置及 Shell 解析的大小图标；实际应用烟测按所启动 PID 读取主窗口和分析窗口的原生图标句柄，与源 ICO 同尺寸渲染像素比对。它们补充 ASAR 内 PNG／ICO 文件摘要，不能以单纯 builder 配置或 renderer 截图代替。
 
-快捷方式比较通过 `SHGFI_SYSICONINDEX` 和 `ImageList_GetIcon(ILD_NORMAL)` 读取 Shell 的基础图标，不把系统快捷箭头误认为应用图形变化；原图像的精确比较仍保留。原生回归使用临时资源 PE 与真实 `.lnk`，要求批准图标通过、错误图标失败。失败报告仅保留固定检查名、错误码、尺寸与摘要，方便区分快捷方式缺失、目标错误和图像不一致，不输出原始子进程日志。[Microsoft Shell 图标接口](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shgetfileinfow)
+快捷方式比较通过 `SHGFI_SYSICONINDEX` 和 `ImageList_GetIcon(ILD_NORMAL)` 读取 Shell 的基础图标，不把系统快捷箭头误认为应用图形变化。批准 ICO 也经过同一 Shell 流程，严格比较黑白背景下的完整像素与尺寸；PE 资源仍单独比对源 ICO 全部图像。原生回归使用临时资源 PE 与真实 `.lnk`，要求批准图标通过、DIB 与 PNG 两种错误图标均失败。失败报告保留固定检查名、错误码、尺寸、摘要及有界合成图标像素，方便区分快捷方式缺失、目标错误和图像不一致，不输出原始子进程日志。[Microsoft Shell 图标接口](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shgetfileinfow)
 
 安装版主窗口启动后，若当前 CI 桌面存在可见 Shell 任务栏，会另保存 `native-installed-app.taskbar.png`，并记录截图尺寸与 SHA-256。它来自实际屏幕的任务栏矩形，不是 renderer 截图或拼合图。没有 Shell、截图不可用或尚未查看时不记录任务栏外观通过；脚本报告保留 `reviewed:false`，截图核对结果须在对应候选记录中单列。
 

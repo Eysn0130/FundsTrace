@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { deflateSync } = require('node:zlib');
 const { NtExecutable, NtExecutableResource, Data, Resource } = require('resedit');
 
 function wrongIcon() {
@@ -25,6 +26,48 @@ function wrongIcon() {
   return Buffer.from(ico.generate());
 }
 
+function wrongPngIcon() {
+  // Match the DIB negative's opaque magenta pixels using PNG-backed frames.
+  // The shell comparison must reject this encoding as well as the DIB one.
+  function chunk(type, data) {
+    const result = Buffer.alloc(data.length + 12);
+    result.writeUInt32BE(data.length, 0);
+    result.write(type, 4, 4, 'ascii');
+    data.copy(result, 8);
+    let crc = 0xffffffff;
+    for (const byte of result.subarray(4, result.length - 4)) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+    result.writeUInt32BE((crc ^ 0xffffffff) >>> 0, result.length - 4);
+    return result;
+  }
+  const sizes = [16, 32];
+  const frames = sizes.map(size => {
+    const header = Buffer.alloc(13), stride = 1 + size * 4;
+    header.writeUInt32BE(size, 0); header.writeUInt32BE(size, 4);
+    header[8] = 8; header[9] = 6; // 8-bit RGBA, no palette or interlacing.
+    const pixels = Buffer.alloc(stride * size); // Each row starts with filter 0.
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const offset = y * stride + 1 + x * 4;
+      pixels[offset] = 255; pixels[offset + 2] = 255; pixels[offset + 3] = 255;
+    }
+    return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      chunk('IHDR', header), chunk('IDAT', deflateSync(pixels, { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
+  });
+  const directory = Buffer.alloc(6 + sizes.length * 16);
+  directory.writeUInt16LE(1, 2); directory.writeUInt16LE(sizes.length, 4);
+  let offset = directory.length;
+  frames.forEach((frame, index) => {
+    const entry = 6 + index * 16;
+    directory[entry] = sizes[index]; directory[entry + 1] = sizes[index];
+    directory.writeUInt16LE(1, entry + 4); directory.writeUInt16LE(32, entry + 6);
+    directory.writeUInt32LE(frame.length, entry + 8); directory.writeUInt32LE(offset, entry + 12);
+    offset += frame.length;
+  });
+  return Buffer.concat([directory, ...frames]);
+}
+
 const windowsActions = process.platform === 'win32' && process.env.GITHUB_ACTIONS === 'true';
 test('native shell shortcut icons match approved art and reject different pixels', {
   skip: windowsActions ? false : 'Windows GitHub Actions only', timeout: 90000,
@@ -35,9 +78,10 @@ test('native shell shortcut icons match approved art and reject different pixels
   const helper = await fs.readFile(path.resolve(__dirname, '../../scripts/test-windows-brand-icon.ps1'), 'utf8');
   const source = /^[\t ]*Add-Type[\t ]+@'\r?\n([\s\S]*?)\r?\n[\t ]*'@[\t ]*\r?$/m.exec(helper)?.[1];
   assert.ok(source, 'NATIVE_SHELL_SOURCE_UNAVAILABLE');
-  const nativeSource = path.join(root, 'native-reader.cs'), wrong = path.join(root, 'wrong.ico');
+  const nativeSource = path.join(root, 'native-reader.cs'), wrong = path.join(root, 'wrong.ico'), wrongPng = path.join(root, 'wrong-png.ico');
   await fs.writeFile(nativeSource, source, { flag: 'wx' });
   await fs.writeFile(wrong, wrongIcon(), { flag: 'wx' });
+  await fs.writeFile(wrongPng, wrongPngIcon(), { flag: 'wx' });
   // Preserve a real native PE's headers/sections. An empty resource-parser
   // fixture does not establish that the Windows shell accepts its PE headers.
   // Only the temporary copy is changed; it is never executed or installed.
@@ -51,7 +95,7 @@ test('native shell shortcut icons match approved art and reject different pixels
   resources.outputResource(exe);
   await fs.writeFile(path.join(root, 'synthetic.exe'), Buffer.from(exe.generate()), { flag: 'wx' });
   const script = path.join(root, 'inspect.ps1');
-  await fs.writeFile(script, `param([string]$Root, [string]$Approved, [string]$Wrong, [string]$NativeSource)
+  await fs.writeFile(script, `param([string]$Root, [string]$Approved, [string]$Wrong, [string]$WrongPng, [string]$NativeSource)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version Latest
@@ -75,6 +119,11 @@ try {
         $Stage = 'wrong' + $Size
         $Comparison = $null
         $Comparison = [FundsTraceBrandIcons]::Shortcut((Join-Path $Root 'synthetic.lnk'), $Wrong, $Small)
+        if ($Comparison.Matched) { throw 'WRONG_ICON_ACCEPTED' }
+        $Report.checks[$Stage] = $true
+        $Stage = 'wrongPng' + $Size
+        $Comparison = $null
+        $Comparison = [FundsTraceBrandIcons]::Shortcut((Join-Path $Root 'synthetic.lnk'), $WrongPng, $Small)
         if ($Comparison.Matched) { throw 'WRONG_ICON_ACCEPTED' }
         $Report.checks[$Stage] = $true
     }
@@ -115,7 +164,7 @@ if ($Failed) { exit 1 }
   let stdout;
   try {
     ({ stdout } = await promisify(execFile)('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', script,
-      '-Root', root, '-Approved', approved, '-Wrong', wrong, '-NativeSource', nativeSource], {
+      '-Root', root, '-Approved', approved, '-Wrong', wrong, '-WrongPng', wrongPng, '-NativeSource', nativeSource], {
       timeout: 60000, maxBuffer: 128 * 1024, windowsHide: true,
     }));
   } catch (error) {
@@ -124,7 +173,7 @@ if ($Failed) { exit 1 }
     let failedCheck = null, failureCode = null, comparison = null, reference = null, preview = null;
     try {
       const value = JSON.parse(String(error.stdout || '').replace(/^\uFEFF/, ''));
-      if (['nativeSource', 'createShortcut', 'approvedLarge', 'approvedSmall', 'wrongLarge', 'wrongSmall', 'comCleanup'].includes(value.failedCheck)) failedCheck = value.failedCheck;
+      if (['nativeSource', 'createShortcut', 'approvedLarge', 'approvedSmall', 'wrongLarge', 'wrongSmall', 'wrongPngLarge', 'wrongPngSmall', 'comCleanup'].includes(value.failedCheck)) failedCheck = value.failedCheck;
       if (['UNCLASSIFIED', 'APPROVED_ICON_MISMATCH', 'WRONG_ICON_ACCEPTED', 'SHORTCUT_ICON_FAILED',
         'ICON_INFO_FAILED', 'ICON_BITMAP_FAILED', 'ICON_DIMENSIONS_INVALID', 'ICON_DC_FAILED', 'ICON_DIB_FAILED',
         'ICON_SELECT_FAILED', 'ICON_DRAW_FAILED', 'ICON_FLUSH_FAILED', 'EXPECTED_ICON_LOAD_FAILED'].includes(value.failureCode)) failureCode = value.failureCode;
@@ -148,5 +197,5 @@ if ($Failed) { exit 1 }
   try { result = JSON.parse(stdout.replace(/^\uFEFF/, '')); }
   catch { throw new Error('NATIVE_SHELL_JSON_INVALID'); }
   assert.deepEqual(result, { schemaVersion: 1, status: 'passed', failedCheck: null,
-    checks: { approvedLarge: true, wrongLarge: true, approvedSmall: true, wrongSmall: true } });
+    checks: { approvedLarge: true, wrongLarge: true, wrongPngLarge: true, approvedSmall: true, wrongSmall: true, wrongPngSmall: true } });
 });
