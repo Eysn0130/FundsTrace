@@ -2,7 +2,8 @@
 // CI-only installed EXE smoke. Never import Main, inspect request headers, or log CDP payloads.
 // Usage: node installed-app-smoke.cjs <absolute-install-root> --report <absolute-json> [--screenshot <absolute-png>]
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const fs = require('node:fs/promises');
 const net = require('node:net');
 const path = require('node:path');
@@ -21,7 +22,7 @@ const VIEWPORTS = [[960, 500], [960, 640], [1280, 640]], DEVICE_SCALES = [1, 1.5
 const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, failedCheck: null,
   limits: { windowsServerAutomationOnly: true, windows10And11Interactive: false,
     dpi: false, importRecovery: false, screenshotIsRendererSurface: true,
-    nativeGraphExportSaveDialog: false,
+    nativeGraphExportSaveDialog: false, taskbarAppearance: false,
     simulatedCssViewportOnly: true, actualSystemDpiValidated: false,
     offlineEnforcement: 'not-measured-by-this-helper; see standard-user compatibility report',
     simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
@@ -47,6 +48,44 @@ async function check(name, action) {
   const result = await action();
   timings[name] = Math.round(performance.now() - start);
   report.checks[name] = true;
+  return result;
+}
+async function windowIcons(installRoot, processId, minimumWindows, taskbarScreenshot) {
+  let stdout;
+  try {
+    ({ stdout } = await promisify(execFile)('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+      path.resolve(__dirname, '../../scripts/test-windows-brand-icon.ps1'),
+      '-InstallRoot', installRoot, '-ExpectedIco', path.resolve(__dirname, '../assets/icon.ico'),
+      '-ProcessId', String(processId), ...(taskbarScreenshot ? ['-TaskbarScreenshot', taskbarScreenshot] : [])],
+    { timeout: 60000, maxBuffer: 256 * 1024 }));
+  } catch (error) {
+    // Retain only fixed native stages and icon fingerprints. Compiler/COM
+    // messages and process arguments may contain local paths or headers.
+    try {
+      const raw = String(error.stdout || '');
+      if (raw.length > 32768) throw new Error('DIAGNOSTIC_TOO_LARGE');
+      const failed = JSON.parse(raw.replace(/^\uFEFF/, ''));
+      if (failed.schemaVersion === 1 && failed.status === 'failed') {
+        const sources = ['WM_GETICON-small2', 'WM_GETICON-big', 'WM_GETICON-small', 'class-small', 'class-big'];
+        report.nativeWindowIconFailure = {
+          failedCheck: ['ciPlatform', 'inputBinding', 'nativeIconReader', 'installedProcessBinding', 'visibleWindowIcons'].includes(failed.failedCheck) ? failed.failedCheck : null,
+          visibleWindowCount: Number.isInteger(failed.visibleWindowCount) && failed.visibleWindowCount >= 0 && failed.visibleWindowCount <= 64 ? failed.visibleWindowCount : null,
+          iconComparisons: Array.isArray(failed.iconComparisons) ? failed.iconComparisons.slice(0, 8).filter(icon =>
+            sources.includes(icon?.Source) && typeof icon.Matched === 'boolean'
+            && Number.isInteger(icon.Width) && icon.Width > 0 && icon.Width <= 1024
+            && Number.isInteger(icon.Height) && icon.Height > 0 && icon.Height <= 1024
+            && typeof icon.ActualSha256 === 'string' && typeof icon.ExpectedSha256 === 'string'
+            && /^[a-f0-9]{64}$/.test(icon.ActualSha256) && /^[a-f0-9]{64}$/.test(icon.ExpectedSha256)
+          ).map(({ Source, Width, Height, Matched, ActualSha256, ExpectedSha256 }) =>
+            ({ Source, Width, Height, Matched, ActualSha256, ExpectedSha256 })) : [],
+        };
+      }
+    } catch {}
+    throw new Error('NATIVE_WINDOW_ICON_CHECK_FAILED');
+  }
+  const result = JSON.parse(stdout.replace(/^\uFEFF/, ''));
+  assert.equal(result.status, 'passed');
+  assert.ok(result.visibleWindowCount >= minimumWindows);
   return result;
 }
 function argumentsOf() {
@@ -296,6 +335,8 @@ async function portClosed(port) {
       } catch { return false; }
     }, 15000);
   });
+  report.workspaceWindowIcons = await check('installedWorkspaceWindowIcon', () => windowIcons(config.installRoot, primary.child.pid, 1,
+    config.screenshot ? `${config.screenshot.slice(0, -4)}.taskbar.png` : undefined));
   await check('nodeSelectionModuleLoaded', async () => {
     assert.equal(await evaluate(`typeof window.FundsGraphSelection?.create === 'function'
       && !!state.graphSelection && !state.graphSelection.status().destroyed`), true);
@@ -410,6 +451,7 @@ async function portClosed(port) {
       && !!document.querySelector('#results .analysis-empty') && !!document.querySelector('#caseSel')?.options.length
       && document.querySelector('#caseStats')?.textContent.includes('流水')`, analysisPage);
   });
+  report.analysisWindowIcons = await check('installedAnalysisWindowIcon', () => windowIcons(config.installRoot, primary.child.pid, 2));
   await viewportMatrix('analysisLayout', analysisPage, `!!document.querySelector('#panel')
     && !!document.querySelector('#results .analysis-empty') && document.querySelector('#caseStats')?.textContent.includes('流水')`, [
     `document.querySelector('#caseSel')`, `document.querySelector('#backToGraph')`,

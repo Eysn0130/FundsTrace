@@ -53,6 +53,13 @@ try {
         throw "Packaged executable version metadata differs from the candidate version."
     }
     $ExecutableVersion = [ordered]@{ fileVersion = $ExecutableInfo.FileVersion; productVersion = $ExecutableInfo.ProductVersion }
+    $ExpectedIcon = Join-Path $ProjectRoot 'desktop/assets/icon.ico'
+    $IconHelper = Join-Path $ProjectRoot 'desktop/tests/windows-icon-resources.cjs'
+    $ApplicationIcon = (& node $IconHelper (Join-Path $CandidateDir 'FundsTrace.exe') $ExpectedIcon) | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $ApplicationIcon.status -cne 'passed') { throw 'Application PE icon differs from the approved icon.' }
+    $IconReportPath = Join-Path $EvidenceRoot 'native-icon-resources.json'
+    $IconReport = [ordered]@{ schemaVersion = 1; status = 'passed'; application = $ApplicationIcon;
+        limits = @{ taskbarAppearance = $false; windows10And11Interactive = $false } }
     $PackagedBackend = Join-Path $CandidateDir "resources/backend"
     if ((Get-Sha256 (Join-Path $PackagedBackend "build-manifest.json")) -ne (Get-Sha256 $NativeManifest)) { throw "The packaged backend manifest differs from the native build." }
     $Resources = (Get-Content -Raw -LiteralPath $NativeManifest | ConvertFrom-Json).resources
@@ -66,7 +73,11 @@ try {
         $InstallerPath = Join-Path $EvidenceRoot "electron/FundsTrace-$Version-windows-x64-unsigned.exe"
         if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) { throw "The unsigned installer candidate is missing." }
         $CandidateFiles += Get-Item -LiteralPath $InstallerPath
+        $InstallerIcon = (& node $IconHelper $InstallerPath $ExpectedIcon) | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $InstallerIcon.status -cne 'passed') { throw 'Installer PE icon differs from the approved icon.' }
+        $IconReport.installer = $InstallerIcon
     }
+    $IconReport | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $IconReportPath -Encoding utf8
     $InstallerReport = Join-Path $EvidenceRoot "native-installer-smoke.json"
     $InstalledAppReport = Join-Path $EvidenceRoot "native-installed-app-smoke.json"
     $ImportRecoveryReport = Join-Path $EvidenceRoot 'native-import-recovery-smoke.json'
@@ -120,8 +131,9 @@ try {
         lockSha256 = $Locks
         nativeManifestSha256 = Get-Sha256 $NativeManifest
         hostResourcesReportSha256 = Get-Sha256 $HostResourceReport
+        iconResourcesReportSha256 = Get-Sha256 $IconReportPath
         smokeReportSha256 = Get-Sha256 $SmokeReport
-        checks = [ordered]@{ desktopNodeTests = "passed"; nativeBackendSmoke = "passed"; installerLifecycle = $(if ($VerifyInstallerLifecycle) { "passed" } else { "not-run" }) }
+        checks = [ordered]@{ desktopNodeTests = "passed"; nativeBackendSmoke = "passed"; nativeIconResources = 'passed'; installerLifecycle = $(if ($VerifyInstallerLifecycle) { "passed" } else { "not-run" }) }
         sizes = $Sizes
         limits = [ordered]@{ guiAcceptance = $false; installedAcceptance = $false; signed = $false; published = $false }
         installerReportSha256 = $(if ($VerifyInstallerLifecycle) { Get-Sha256 $InstallerReport } else { $null })
@@ -133,7 +145,7 @@ try {
     $ManifestPath = Join-Path $EvidenceRoot "windows-candidate.json"
     $Manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ManifestPath -Encoding utf8
     $Sums = @($Files | ForEach-Object { "$($_.sha256)  $($_.path)" })
-    foreach ($File in @($NativeManifest, $HostResourceReport, $SmokeReport, $ManifestPath)) {
+    foreach ($File in @($NativeManifest, $HostResourceReport, $IconReportPath, $SmokeReport, $ManifestPath)) {
         $Relative = [System.IO.Path]::GetRelativePath($ProjectRoot, $File).Replace('\', '/')
         $Sums += "$(Get-Sha256 $File)  $Relative"
     }

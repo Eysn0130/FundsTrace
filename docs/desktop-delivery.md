@@ -58,6 +58,16 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 未签名构建使用 `signExecutable:false` 保留应用EXE版本资源编辑；构建会读取PE文件属性并核对产品版本及文件主／次／补丁版本。脚本校对实际包内 manifest 与资源，再用包内程序验证中文／空格资源和数据路径、无授权访问业务、无 token 拒绝、一个合成案件崩溃后重开、无 `license.dat` 生成和 EOF 正常退出。`native-backend-smoke.json`、`windows-candidate.json`／`.sha256` 仅含版本、相对产物文件名、内容哈希及检查范围，不含业务数据或 token。
 
+新图标候选另检查实际应用 EXE、NSIS 安装器和安装后卸载器的默认 PE 图标组，与批准 ICO 的全部尺寸和图像内容比对，记录为 `native-icon-resources.json` 及安装报告。安装生命周期读取隔离账户的桌面／开始菜单快捷方式，核对目标、图标位置及 Shell 解析的大小图标；实际应用烟测按所启动 PID 读取主窗口和分析窗口的原生图标句柄，与源 ICO 同尺寸渲染像素比对。它们补充 ASAR 内 PNG／ICO 文件摘要，不能以单纯 builder 配置或 renderer 截图代替。
+
+快捷方式比较通过 `SHGFI_SYSICONINDEX` 和 `ImageList_GetIcon(ILD_NORMAL)` 读取 Shell 的基础图标，不把系统快捷箭头误认为应用图形变化。批准 ICO 也经过同一 Shell 流程，严格比较黑白背景下的完整像素与尺寸；PE 资源仍单独比对源 ICO 全部图像。原生回归使用临时资源 PE 与真实 `.lnk`，要求批准图标通过、DIB 与 PNG 两种错误图标均失败。失败报告保留固定检查名、错误码、尺寸、摘要及有界合成图标像素，方便区分快捷方式缺失、目标错误和图像不一致，不输出原始子进程日志。[Microsoft Shell 图标接口](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shgetfileinfow)
+
+快捷方式通过原生 `IShellLinkW` 和只读 `IPersistFile.Load` 读取 Unicode 目标及图标位置，避免英文 Windows 上 WSH 属性将中文转为 `?`。目标、图标位置与窗口进程路径通过同时打开文件句柄后的卷号及完整 128 位文件标识核对，允许别名指向同一安装文件；相同字节的另一文件仍拒绝。报告仅记录路径文本和文件身份是否一致，不记录路径内容。
+
+安装版主窗口启动后，若当前 CI 桌面存在可见 Shell 任务栏，会另保存 `native-installed-app.taskbar.png`，并记录截图尺寸与 SHA-256。它来自实际屏幕的任务栏矩形，不是 renderer 截图或拼合图。没有 Shell、截图不可用或尚未查看时不记录任务栏外观通过；脚本报告保留 `reviewed:false`，截图核对结果须在对应候选记录中单列。
+
+上述自动检查仍仅覆盖 Windows hosted runner。它不证明 Windows 10／11 任务栏最终外观、既有固定图标缓存、真实系统 DPI 或 SmartScreen；没有可用交互桌面时不能把这些项目记为通过。候选构建默认不创建 Tag 或 Release，未获发布授权时仅保留 Actions 产物，现有 Latest 和下载入口保持原版本。
+
 [Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以已公开且固定 SHA-256 的 v0.1.5 客户端作为旧版本，验证静默安装 → 旧安装版后端写入并重开合成案件 → 当前候选版覆盖升级 → 比对旧流水／金额／币种／画布／追踪和旧案件包往返 → 真正 EXE 启动／快捷键／单实例／正常关闭 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json` 和 `native-installed-app-smoke.json`，前者的 `priorDataChecks`、`upgradedDataChecks` 记录旧数据兼容链。原件仅依据已注册的导入来源核对摘要，不扫描业务目录。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
 
 旧数据验证使用一次性的公开合成样例，包含超出 JavaScript 安全整数范围的带分金额、独立 CNY／USD 流水、同账号跨案隔离、具名画布快照和追踪成员。升级前案件包由旧安装版导出，升级后导入为新案件并按流水号比较事实及重映射后的关联；新增路径、时序环路与原子上图在导入副本验证。它证明这些具体旧数据结构和流程的兼容性，不代表已读取或验证维护者的真实案件库。

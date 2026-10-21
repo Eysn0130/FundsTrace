@@ -110,9 +110,74 @@ function Wait-Removed {
     } while ([DateTime]::UtcNow -lt $Deadline)
     throw 'Uninstall did not remove the application and registration.'
 }
+function Get-SafeIconFailure([string]$Text) {
+    $Unavailable = [ordered]@{ kind = 'brand-icon'; status = 'diagnostic-unavailable' }
+    if (-not $Text -or $Text.Length -gt 65536) { return $Unavailable }
+    try { $Icon = ConvertFrom-Json -InputObject $Text -AsHashtable -Depth 12 -ErrorAction Stop }
+    catch { return $Unavailable }
+    $AllowedStages = @('ciPlatform', 'inputBinding', 'nativeIconReader', 'shortcutReader', 'desktopShortcut', 'startMenuShortcut')
+    if ($Icon -isnot [Collections.IDictionary] -or
+        ($Icon['schemaVersion'] -isnot [int] -and $Icon['schemaVersion'] -isnot [long]) -or
+        $Icon['schemaVersion'] -ne 1 -or $Icon['status'] -isnot [string] -or $Icon['status'] -cne 'failed' -or
+        $Icon['failedCheck'] -isnot [string] -or $AllowedStages -cnotcontains $Icon['failedCheck'] -or
+        ($Icon.Contains('mode') -and ($Icon['mode'] -isnot [string] -or $Icon['mode'] -cne 'shortcuts'))) { return $Unavailable }
+    $Safe = [ordered]@{
+        kind = 'brand-icon'; schemaVersion = 1; status = 'failed'; failedCheck = [string]$Icon['failedCheck']
+        failureCode = 'UNCLASSIFIED'; checks = [ordered]@{}; iconComparisons = @()
+    }
+    $AllowedCodes = @(
+        'UNCLASSIFIED', 'INVALID_PATH', 'MISSING_CANDIDATE_INPUT', 'ICON_INFO_FAILED', 'ICON_BITMAP_FAILED',
+        'ICON_DIMENSIONS_INVALID', 'ICON_DC_FAILED', 'ICON_DIB_FAILED', 'ICON_SELECT_FAILED', 'ICON_DRAW_FAILED',
+        'ICON_FLUSH_FAILED', 'EXPECTED_ICON_LOAD_FAILED', 'SHORTCUT_ICON_FAILED', 'SHORTCUT_DIRECTORY_UNAVAILABLE',
+        'SHORTCUT_MISSING', 'SHORTCUT_TARGET_MISMATCH', 'SHORTCUT_ICON_LOCATION_MISMATCH', 'SHORTCUT_ICON_PIXEL_MISMATCH'
+    )
+    if ($Icon.Contains('failureCode') -and $Icon['failureCode'] -is [string] -and $AllowedCodes -ccontains $Icon['failureCode']) {
+        $Safe.failureCode = [string]$Icon['failureCode']
+    }
+    if ($Icon.Contains('checks') -and $Icon['checks'] -is [Collections.IDictionary]) {
+        foreach ($Name in @('inputBinding', 'nativeIconReader', 'desktopShortcut', 'startMenuShortcut')) {
+            if ($Icon['checks'].Contains($Name) -and $Icon['checks'][$Name] -is [string] -and
+                @('not-run', 'passed', 'failed') -ccontains $Icon['checks'][$Name]) {
+                $Safe.checks[$Name] = [string]$Icon['checks'][$Name]
+            }
+        }
+    }
+    if ($Icon.Contains('pathBindings') -and $Icon['pathBindings'] -is [Collections.IDictionary]) {
+        $Bindings = [ordered]@{}
+        foreach ($Name in @('desktopShortcut', 'startMenuShortcut')) {
+            if (-not $Icon['pathBindings'].Contains($Name) -or
+                $Icon['pathBindings'][$Name] -isnot [Collections.IDictionary]) { continue }
+            $Binding = $Icon['pathBindings'][$Name]; $SafeBinding = [ordered]@{}; $Malformed = $false
+            foreach ($Field in @('targetTextMatch', 'targetFileMatch', 'iconLocationTextMatch', 'iconLocationFileMatch')) {
+                if ($Binding.Contains($Field)) {
+                    if ($Binding[$Field] -isnot [bool]) { $Malformed = $true; break }
+                    $SafeBinding[$Field] = [bool]$Binding[$Field]
+                }
+            }
+            if (-not $Malformed -and $SafeBinding.Count -gt 0) { $Bindings[$Name] = $SafeBinding }
+        }
+        if ($Bindings.Count -gt 0) { $Safe.pathBindings = $Bindings }
+    }
+    $Sources = @('desktopShortcut/shell-small', 'desktopShortcut/shell-large', 'startMenuShortcut/shell-small', 'startMenuShortcut/shell-large')
+    if ($Icon.Contains('iconComparisons') -and $Icon['iconComparisons'] -is [Array] -and $Icon['iconComparisons'].Count -le 4) {
+        foreach ($Frame in $Icon['iconComparisons']) {
+            if ($Frame -isnot [Collections.IDictionary] -or $Frame['Source'] -isnot [string] -or $Sources -cnotcontains $Frame['Source'] -or
+                ($Frame['Width'] -isnot [int] -and $Frame['Width'] -isnot [long]) -or
+                ($Frame['Height'] -isnot [int] -and $Frame['Height'] -isnot [long]) -or
+                $Frame['Width'] -lt 1 -or $Frame['Width'] -gt 1024 -or $Frame['Height'] -lt 1 -or $Frame['Height'] -gt 1024 -or
+                $Frame['Matched'] -isnot [bool] -or $Frame['ActualSha256'] -isnot [string] -or $Frame['ExpectedSha256'] -isnot [string] -or
+                $Frame['ActualSha256'] -cnotmatch '\A[a-f0-9]{64}\z' -or $Frame['ExpectedSha256'] -cnotmatch '\A[a-f0-9]{64}\z') { continue }
+            $Safe.iconComparisons += [ordered]@{
+                Source = [string]$Frame['Source']; Width = [int]$Frame['Width']; Height = [int]$Frame['Height']; Matched = [bool]$Frame['Matched']
+                ActualSha256 = [string]$Frame['ActualSha256']; ExpectedSha256 = [string]$Frame['ExpectedSha256']
+            }
+        }
+    }
+    return $Safe
+}
 function Invoke-Native {
     param([string]$FileName, [string[]]$Arguments = @(), [string]$RawArguments = '',
-        [hashtable]$Environment = @{}, [int]$TimeoutSeconds = 180)
+        [hashtable]$Environment = @{}, [int]$TimeoutSeconds = 180, [switch]$CaptureIconFailure)
     $script:NativeStep = 'configure'
     $script:NativeDiagnostic = $null
     $Start = [System.Diagnostics.ProcessStartInfo]::new()
@@ -148,7 +213,11 @@ function Invoke-Native {
         $ErrorText = $Errors.GetAwaiter().GetResult()
         $script:NativeStep = 'exit'
         if ($Process.ExitCode -ne 0) {
-            if ($ErrorText -cmatch '\AUpgrade data smoke failed at ([A-Za-z]{1,80}) line ([0-9]{1,5})\.\r?\n\z') {
+            if ($CaptureIconFailure) {
+                # Child output is untrusted: retain only fixed icon schema fields,
+                # never raw stdout/stderr, exception messages or filesystem paths.
+                $script:NativeDiagnostic = Get-SafeIconFailure $Text
+            } elseif ($ErrorText -cmatch '\AUpgrade data smoke failed at ([A-Za-z]{1,80}) line ([0-9]{1,5})\.\r?\n\z') {
                 $script:NativeDiagnostic = "upgrade-data:$($Matches[1]):$($Matches[2])"
             }
             throw 'Native process failed.'
@@ -274,6 +343,25 @@ try {
     Assert-Sentinel
     $Report.currentVersion = $CurrentVersion; $Report.checks.upgradedSameIdentity = 'passed'
 
+    $Stage = 'installedResourceIntegrity'
+    $ExpectedIcon = Join-Path $ProjectRoot 'desktop/assets/icon.ico'
+    $IconHelper = Join-Path $ProjectRoot 'desktop/tests/windows-icon-resources.cjs'
+    $Report.iconResources = [ordered]@{}
+    foreach ($Name in @('FundsTrace.exe', 'Uninstall FundsTrace.exe')) {
+        $IconJson = Invoke-Native -FileName $NodeExe -Arguments @($IconHelper, (Join-Path $InstallRoot $Name), $ExpectedIcon) -TimeoutSeconds 30
+        $Icon = $IconJson | ConvertFrom-Json
+        if ($Icon.status -cne 'passed') { throw 'Installed executable icon mismatch.' }
+        $Report.iconResources[$Name] = $Icon
+    }
+    $Report.checks.installedExecutableIcons = 'passed'
+    $Stage = 'installedShortcutIcons'
+    $ShortcutJson = Invoke-Native -FileName (Join-Path $PSHOME 'pwsh.exe') -Arguments @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-File', (Join-Path $PSScriptRoot 'test-windows-brand-icon.ps1'),
+        '-InstallRoot', $InstallRoot, '-ExpectedIco', $ExpectedIcon
+    ) -TimeoutSeconds 30 -CaptureIconFailure
+    $Report.shortcutIcons = $ShortcutJson | ConvertFrom-Json
+    if ($Report.shortcutIcons.status -cne 'passed') { throw 'Installed shortcut icon mismatch.' }
+    $Report.checks.installedShortcutIcons = 'passed'
     $Stage = 'installedResourceIntegrity'
     foreach ($Relative in @('FundsTrace.exe', 'resources/app.asar', 'resources/backend/funds-trace-backend.exe',
         'resources/backend/build-manifest.json', 'resources/licenses/Analytix-Apache-2.0.txt')) {
