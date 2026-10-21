@@ -99,6 +99,8 @@ try {
             $Report.reference = [ordered]@{ width = $Reference.Width; height = $Reference.Height; matched = $Reference.Matched
                 actual = $Reference.ActualSha256; expected = $Reference.ExpectedSha256 }
         } catch { }
+        try { $Report.preview = [Convert]::ToBase64String([FundsTraceBrandIcons]::ShortcutPixels((Join-Path $Root 'synthetic.lnk'), $Small)) }
+        catch { }
     }
 } finally {
     try {
@@ -119,7 +121,7 @@ if ($Failed) { exit 1 }
   } catch (error) {
     // Never echo compiler/COM messages, source paths, command arguments or raw
     // stderr. Preserve only fixed stages and process outcome for CI diagnosis.
-    let failedCheck = null, failureCode = null, comparison = null, reference = null;
+    let failedCheck = null, failureCode = null, comparison = null, reference = null, preview = null;
     try {
       const value = JSON.parse(String(error.stdout || '').replace(/^\uFEFF/, ''));
       if (['nativeSource', 'createShortcut', 'approvedLarge', 'approvedSmall', 'wrongLarge', 'wrongSmall', 'comCleanup'].includes(value.failedCheck)) failedCheck = value.failedCheck;
@@ -131,8 +133,14 @@ if ($Failed) { exit 1 }
           && typeof frame.matched === 'boolean' && /^[a-f0-9]{64}$/.test(frame.actual) && /^[a-f0-9]{64}$/.test(frame.expected)
         ? { width: frame.width, height: frame.height, matched: frame.matched, actual: frame.actual, expected: frame.expected } : null;
       comparison = safeFrame(value.comparison); reference = safeFrame(value.reference);
+      if (typeof value.preview === 'string' && value.preview.length <= 33000 && /^[A-Za-z0-9+/]+={0,2}$/.test(value.preview)) {
+        const bytes = Buffer.from(value.preview, 'base64');
+        if (bytes.length >= 8 && bytes.readInt32LE(0) > 0 && bytes.readInt32LE(0) <= 64
+          && bytes.readInt32LE(4) > 0 && bytes.readInt32LE(4) <= 64
+          && bytes.length === 8 + bytes.readInt32LE(0) * bytes.readInt32LE(4) * 6) preview = value.preview;
+      }
     } catch {}
-    throw new Error(JSON.stringify({ code: error.killed ? 'NATIVE_SHELL_TIMEOUT' : 'NATIVE_SHELL_PROCESS_FAILED', failedCheck, failureCode, comparison, reference,
+    throw new Error(JSON.stringify({ code: error.killed ? 'NATIVE_SHELL_TIMEOUT' : 'NATIVE_SHELL_PROCESS_FAILED', failedCheck, failureCode, comparison, reference, preview,
       exitCode: Number.isInteger(error.code) ? error.code : null,
       signal: ['SIGTERM', 'SIGKILL', 'SIGABRT'].includes(error.signal) ? error.signal : null }));
   }

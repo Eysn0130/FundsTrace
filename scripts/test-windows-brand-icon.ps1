@@ -184,7 +184,7 @@ public static class FundsTraceBrandIcons {
                 ActualSha256 = actualHash, ExpectedSha256 = expectedHash };
         } finally { DestroyIcon(expected); }
     }
-    public static Comparison Shortcut(string shortcutPath, string expectedPath, bool small) {
+    static IntPtr ShellIcon(string shortcutPath, bool small) {
         ShellFileInfo info;
         // SHGFI_ICON adds the shortcut arrow even without SHGFI_ADDOVERLAYS.
         // Resolve this real link's system image index, then copy the base image
@@ -192,10 +192,30 @@ public static class FundsTraceBrandIcons {
         IntPtr imageList = SHGetFileInfoW(shortcutPath, 0, out info, (uint)Marshal.SizeOf<ShellFileInfo>(), 0x4000u | (small ? 1u : 0u));
         if (imageList == IntPtr.Zero || info.IconIndex < 0) throw new InvalidOperationException("SHORTCUT_ICON_FAILED");
         IntPtr icon = ImageList_GetIcon(imageList, info.IconIndex, 0);
+        if (icon == IntPtr.Zero) throw new InvalidOperationException("SHORTCUT_ICON_FAILED");
+        return icon;
+    }
+    public static Comparison Shortcut(string shortcutPath, string expectedPath, bool small) {
+        IntPtr icon = ShellIcon(shortcutPath, small);
         try {
-            if (icon == IntPtr.Zero) throw new InvalidOperationException("SHORTCUT_ICON_FAILED");
             return Compare(icon, expectedPath, small ? "shell-small" : "shell-large");
         } finally { if (icon != IntPtr.Zero) DestroyIcon(icon); }
+    }
+    // Failure-only regression evidence: exact GDI pixels, never application
+    // content. Bound the payload to a small shell icon, not an arbitrary bitmap.
+    public static byte[] ShortcutPixels(string shortcutPath, bool small) {
+        IntPtr icon = ShellIcon(shortcutPath, small);
+        try {
+            int[] size = Dimensions(icon);
+            if (size[0] > 64 || size[1] > 64) throw new InvalidOperationException("ICON_DIMENSIONS_INVALID");
+            byte[] black = Render(icon, size[0], size[1], 0), white = Render(icon, size[0], size[1], 255);
+            byte[] result = new byte[8 + black.Length + white.Length];
+            Buffer.BlockCopy(BitConverter.GetBytes(size[0]), 0, result, 0, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(size[1]), 0, result, 4, 4);
+            Buffer.BlockCopy(black, 0, result, 8, black.Length);
+            Buffer.BlockCopy(white, 0, result, 8 + black.Length, white.Length);
+            return result;
+        } finally { DestroyIcon(icon); }
     }
     static void WindowIcon(WindowEvidence evidence, IntPtr window, string expectedPath, bool small) {
         IntPtr borrowed, ignored;
