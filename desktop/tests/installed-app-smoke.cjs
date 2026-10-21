@@ -2,7 +2,8 @@
 // CI-only installed EXE smoke. Never import Main, inspect request headers, or log CDP payloads.
 // Usage: node installed-app-smoke.cjs <absolute-install-root> --report <absolute-json> [--screenshot <absolute-png>]
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const fs = require('node:fs/promises');
 const net = require('node:net');
 const path = require('node:path');
@@ -21,7 +22,7 @@ const VIEWPORTS = [[960, 500], [960, 640], [1280, 640]], DEVICE_SCALES = [1, 1.5
 const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, failedCheck: null,
   limits: { windowsServerAutomationOnly: true, windows10And11Interactive: false,
     dpi: false, importRecovery: false, screenshotIsRendererSurface: true,
-    nativeGraphExportSaveDialog: false,
+    nativeGraphExportSaveDialog: false, taskbarAppearance: false,
     simulatedCssViewportOnly: true, actualSystemDpiValidated: false,
     offlineEnforcement: 'not-measured-by-this-helper; see standard-user compatibility report',
     simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
@@ -47,6 +48,19 @@ async function check(name, action) {
   const result = await action();
   timings[name] = Math.round(performance.now() - start);
   report.checks[name] = true;
+  return result;
+}
+async function windowIcons(installRoot, processId, minimumWindows) {
+  let stdout;
+  try {
+    ({ stdout } = await promisify(execFile)('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+      path.resolve(__dirname, '../../scripts/test-windows-brand-icon.ps1'),
+      '-InstallRoot', installRoot, '-ExpectedIco', path.resolve(__dirname, '../assets/icon.ico'),
+      '-ProcessId', String(processId)], { timeout: 30000, maxBuffer: 256 * 1024 }));
+  } catch { throw new Error('NATIVE_WINDOW_ICON_CHECK_FAILED'); }
+  const result = JSON.parse(stdout.replace(/^\uFEFF/, ''));
+  assert.equal(result.status, 'passed');
+  assert.ok(result.visibleWindowCount >= minimumWindows);
   return result;
 }
 function argumentsOf() {
@@ -296,6 +310,7 @@ async function portClosed(port) {
       } catch { return false; }
     }, 15000);
   });
+  report.workspaceWindowIcons = await check('installedWorkspaceWindowIcon', () => windowIcons(config.installRoot, primary.child.pid, 1));
   await check('nodeSelectionModuleLoaded', async () => {
     assert.equal(await evaluate(`typeof window.FundsGraphSelection?.create === 'function'
       && !!state.graphSelection && !state.graphSelection.status().destroyed`), true);
@@ -410,6 +425,7 @@ async function portClosed(port) {
       && !!document.querySelector('#results .analysis-empty') && !!document.querySelector('#caseSel')?.options.length
       && document.querySelector('#caseStats')?.textContent.includes('流水')`, analysisPage);
   });
+  report.analysisWindowIcons = await check('installedAnalysisWindowIcon', () => windowIcons(config.installRoot, primary.child.pid, 2));
   await viewportMatrix('analysisLayout', analysisPage, `!!document.querySelector('#panel')
     && !!document.querySelector('#results .analysis-empty') && document.querySelector('#caseStats')?.textContent.includes('流水')`, [
     `document.querySelector('#caseSel')`, `document.querySelector('#backToGraph')`,

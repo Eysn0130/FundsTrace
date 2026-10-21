@@ -275,6 +275,25 @@ try {
     $Report.currentVersion = $CurrentVersion; $Report.checks.upgradedSameIdentity = 'passed'
 
     $Stage = 'installedResourceIntegrity'
+    $ExpectedIcon = Join-Path $ProjectRoot 'desktop/assets/icon.ico'
+    $IconHelper = Join-Path $ProjectRoot 'desktop/tests/windows-icon-resources.cjs'
+    $Report.iconResources = [ordered]@{}
+    foreach ($Name in @('FundsTrace.exe', 'Uninstall FundsTrace.exe')) {
+        $IconJson = Invoke-Native -FileName $NodeExe -Arguments @($IconHelper, (Join-Path $InstallRoot $Name), $ExpectedIcon) -TimeoutSeconds 30
+        $Icon = $IconJson | ConvertFrom-Json
+        if ($Icon.status -cne 'passed') { throw 'Installed executable icon mismatch.' }
+        $Report.iconResources[$Name] = $Icon
+    }
+    $Report.checks.installedExecutableIcons = 'passed'
+    $Stage = 'installedShortcutIcons'
+    $ShortcutJson = Invoke-Native -FileName (Join-Path $PSHOME 'pwsh.exe') -Arguments @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-File', (Join-Path $PSScriptRoot 'test-windows-brand-icon.ps1'),
+        '-InstallRoot', $InstallRoot, '-ExpectedIco', $ExpectedIcon
+    ) -TimeoutSeconds 30
+    $Report.shortcutIcons = $ShortcutJson | ConvertFrom-Json
+    if ($Report.shortcutIcons.status -cne 'passed') { throw 'Installed shortcut icon mismatch.' }
+    $Report.checks.installedShortcutIcons = 'passed'
+    $Stage = 'installedResourceIntegrity'
     foreach ($Relative in @('FundsTrace.exe', 'resources/app.asar', 'resources/backend/funds-trace-backend.exe',
         'resources/backend/build-manifest.json', 'resources/licenses/Analytix-Apache-2.0.txt')) {
         if ((Get-Sha256 (Join-Path $InstallRoot $Relative)) -cne (Get-Sha256 (Join-Path $CandidateRoot $Relative))) {
