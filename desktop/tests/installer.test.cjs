@@ -80,11 +80,14 @@ const powershell = process.platform === 'win32'
   : null;
 
 function checkDirectory(directory, excludedPid = process.pid, rejectInstallerInInstallDirectory = false) {
-  return spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+  const result = spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', helper, '-TimeoutSeconds', '0', ...(rejectInstallerInInstallDirectory ? ['-RejectInstallerInInstallDirectory'] : [])], {
     env: { ...process.env, FUNDS_TRACE_INSTALLER_APP_ROOT: directory, FUNDS_TRACE_INSTALLER_SELF_PID: String(excludedPid) },
-    encoding: 'utf8', timeout: 15000, windowsHide: true
+    encoding: 'utf8', timeout: 60000, windowsHide: true
   });
+  assert.equal(Boolean(result.error), false,
+    `PowerShell check did not complete: code=${result.error?.code || 'unknown'}; signal=${result.signal || 'none'}`);
+  return result;
 }
 
 test('Windows process gate treats an unreadable possible FundsTrace path as check failure without guessing ownership', { skip: !powershell }, t => {
@@ -94,10 +97,13 @@ test('Windows process gate treats an unreadable possible FundsTrace path as chec
   // its failure exit code, with fixed synthetic process records and no real PID.
   function inspect(records) {
     const command = `function Get-CimInstance { [CmdletBinding()] param([string]$ClassName) ConvertFrom-Json $env:FUNDS_TRACE_TEST_PROCESSES }; & $env:FUNDS_TRACE_TEST_HELPER -InstallDirectory $env:FUNDS_TRACE_TEST_ROOT -InstallerProcessId 123 -TimeoutSeconds 0; exit $LASTEXITCODE`;
-    return spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+    const result = spawnSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
       env: { ...process.env, FUNDS_TRACE_TEST_HELPER: helper, FUNDS_TRACE_TEST_ROOT: directory, FUNDS_TRACE_TEST_PROCESSES: JSON.stringify(records) },
-      encoding: 'utf8', timeout: 15000, windowsHide: true,
+      encoding: 'utf8', timeout: 60000, windowsHide: true,
     });
+    assert.equal(Boolean(result.error), false,
+      `PowerShell check did not complete: code=${result.error?.code || 'unknown'}; signal=${result.signal || 'none'}`);
+    return result;
   }
   for (const name of ['FundsTrace.exe', 'funds-trace-backend.exe', 'FUNDSTRACE.EXE']) {
     const result = inspect([{ ProcessId: 456, Name: name, ExecutablePath: null }]);

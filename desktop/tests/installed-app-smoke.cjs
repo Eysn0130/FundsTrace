@@ -50,13 +50,14 @@ async function check(name, action) {
   report.checks[name] = true;
   return result;
 }
-async function windowIcons(installRoot, processId, minimumWindows) {
+async function windowIcons(installRoot, processId, minimumWindows, taskbarScreenshot) {
   let stdout;
   try {
     ({ stdout } = await promisify(execFile)('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File',
       path.resolve(__dirname, '../../scripts/test-windows-brand-icon.ps1'),
       '-InstallRoot', installRoot, '-ExpectedIco', path.resolve(__dirname, '../assets/icon.ico'),
-      '-ProcessId', String(processId)], { timeout: 30000, maxBuffer: 256 * 1024 }));
+      '-ProcessId', String(processId), ...(taskbarScreenshot ? ['-TaskbarScreenshot', taskbarScreenshot] : [])],
+    { timeout: 60000, maxBuffer: 256 * 1024 }));
   } catch { throw new Error('NATIVE_WINDOW_ICON_CHECK_FAILED'); }
   const result = JSON.parse(stdout.replace(/^\uFEFF/, ''));
   assert.equal(result.status, 'passed');
@@ -310,7 +311,8 @@ async function portClosed(port) {
       } catch { return false; }
     }, 15000);
   });
-  report.workspaceWindowIcons = await check('installedWorkspaceWindowIcon', () => windowIcons(config.installRoot, primary.child.pid, 1));
+  report.workspaceWindowIcons = await check('installedWorkspaceWindowIcon', () => windowIcons(config.installRoot, primary.child.pid, 1,
+    config.screenshot ? `${config.screenshot.slice(0, -4)}.taskbar.png` : undefined));
   await check('nodeSelectionModuleLoaded', async () => {
     assert.equal(await evaluate(`typeof window.FundsGraphSelection?.create === 'function'
       && !!state.graphSelection && !state.graphSelection.status().destroyed`), true);

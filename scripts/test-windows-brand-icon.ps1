@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$InstallRoot,
     [Parameter(Mandatory = $true)][string]$ExpectedIco,
-    [ValidateRange(0, 2147483647)][int]$ProcessId = 0
+    [ValidateRange(0, 2147483647)][int]$ProcessId = 0,
+    [string]$TaskbarScreenshot = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -14,7 +15,7 @@ if (-not $IsWindows -or $env:GITHUB_ACTIONS -cne 'true' -or -not $env:RUNNER_TEM
     exit 1
 }
 $Report = [ordered]@{
-    schemaVersion = 1; status = 'running'; failedCheck = $null
+    schemaVersion = 1; status = 'running'; failedCheck = $null; failureCode = $null
     mode = $(if ($ProcessId -gt 0) { 'visibleWindowIcons' } else { 'shortcuts' })
     platform = [ordered]@{ osVersion = [Environment]::OSVersion.Version.ToString(); architecture = 'X64'; githubActions = $true }
     checks = [ordered]@{ inputBinding = 'not-run' }
@@ -80,6 +81,7 @@ public static class FundsTraceBrandIcons {
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string DisplayName;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)] public string TypeName;
     }
+    [StructLayout(LayoutKind.Sequential)] struct WindowRect { public int Left, Top, Right, Bottom; }
     public sealed class Comparison {
         public string Source;
         public int Width, Height;
@@ -104,9 +106,12 @@ public static class FundsTraceBrandIcons {
     [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr icon);
     [DllImport("user32.dll", SetLastError = true)] static extern IntPtr CopyIcon(IntPtr icon);
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)] static extern IntPtr SHGetFileInfoW(string path, uint attributes, out ShellFileInfo info, uint size, uint flags);
+    [DllImport("comctl32.dll", ExactSpelling = true)] static extern IntPtr ImageList_GetIcon(IntPtr imageList, int index, uint flags);
     [DllImport("user32.dll", SetLastError = true)] static extern bool EnumWindows(EnumProc callback, IntPtr state);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)] static extern IntPtr FindWindowW(string className, string name);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool GetWindowRect(IntPtr window, out WindowRect rectangle);
     [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)] static extern IntPtr SendMessageTimeoutW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
     [DllImport("user32.dll", EntryPoint = "GetClassLongPtrW", ExactSpelling = true)] static extern IntPtr GetClassLongPtr(IntPtr window, int index);
 
@@ -181,13 +186,16 @@ public static class FundsTraceBrandIcons {
     }
     public static Comparison Shortcut(string shortcutPath, string expectedPath, bool small) {
         ShellFileInfo info;
-        // No USEFILEATTRIBUTES or LINKOVERLAY: resolve the actual existing link
-        // through the shell without a synthetic file type or link-arrow overlay.
-        IntPtr result = SHGetFileInfoW(shortcutPath, 0, out info, (uint)Marshal.SizeOf<ShellFileInfo>(), 0x100u | (small ? 1u : 0u));
+        // SHGFI_ICON adds the shortcut arrow even without SHGFI_ADDOVERLAYS.
+        // Resolve this real link's system image index, then copy the base image
+        // with ILD_NORMAL. Never mutate or destroy the shared system image list.
+        IntPtr imageList = SHGetFileInfoW(shortcutPath, 0, out info, (uint)Marshal.SizeOf<ShellFileInfo>(), 0x4000u | (small ? 1u : 0u));
+        if (imageList == IntPtr.Zero || info.IconIndex < 0) throw new InvalidOperationException("SHORTCUT_ICON_FAILED");
+        IntPtr icon = ImageList_GetIcon(imageList, info.IconIndex, 0);
         try {
-            if (result == IntPtr.Zero || info.Icon == IntPtr.Zero) throw new InvalidOperationException("SHORTCUT_ICON_FAILED");
-            return Compare(info.Icon, expectedPath, small ? "shell-small" : "shell-large");
-        } finally { if (info.Icon != IntPtr.Zero) DestroyIcon(info.Icon); }
+            if (icon == IntPtr.Zero) throw new InvalidOperationException("SHORTCUT_ICON_FAILED");
+            return Compare(icon, expectedPath, small ? "shell-small" : "shell-large");
+        } finally { if (icon != IntPtr.Zero) DestroyIcon(icon); }
     }
     static void WindowIcon(WindowEvidence evidence, IntPtr window, string expectedPath, bool small) {
         IntPtr borrowed, ignored;
@@ -233,6 +241,16 @@ public static class FundsTraceBrandIcons {
         if (!completed) throw new InvalidOperationException("WINDOW_ENUMERATION_FAILED");
         return evidence;
     }
+    public static int[] TaskbarBounds() {
+        IntPtr window = FindWindowW("Shell_TrayWnd", null);
+        if (window == IntPtr.Zero || !IsWindowVisible(window)) return null;
+        WindowRect rectangle;
+        if (!GetWindowRect(window, out rectangle)) throw new InvalidOperationException("TASKBAR_BOUNDS_FAILED");
+        int width = rectangle.Right - rectangle.Left, height = rectangle.Bottom - rectangle.Top;
+        if (width < 1 || height < 1 || width > 16384 || height > 16384 || (width > 512 && height > 512))
+            throw new InvalidOperationException("TASKBAR_BOUNDS_INVALID");
+        return new int[] { rectangle.Left, rectangle.Top, width, height };
+    }
 }
 '@
     $Report.checks.nativeIconReader = 'passed'
@@ -252,6 +270,43 @@ public static class FundsTraceBrandIcons {
             if ($Evidence.VisibleWindows -lt 1 -or $Evidence.Icons.Count -lt 1 -or
                 @($Evidence.Icons | Where-Object { -not $_.Matched }).Count -gt 0) { throw 'WINDOW_ICON_MISMATCH_OR_UNAVAILABLE' }
             $Report.checks.visibleWindowIcons = 'passed'
+            if ($TaskbarScreenshot) {
+                # Optional actual Shell pixels, distinct from the renderer screenshot
+                # and from a successful HICON comparison. No activation or pinning.
+                $Report.taskbarCapture = [ordered]@{ status = 'unavailable'; reason = 'SHELL_TASKBAR_UNAVAILABLE' }
+                try {
+                    $CapturePath = Get-NormalizedPath $TaskbarScreenshot
+                    $AllowedOutput = $false
+                    foreach ($Root in @($env:RUNNER_TEMP, $env:GITHUB_WORKSPACE)) {
+                        if ($Root -and $CapturePath.StartsWith((Get-NormalizedPath $Root) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+                            $AllowedOutput = $true
+                        }
+                    }
+                    if (-not $AllowedOutput -or [IO.Path]::GetExtension($CapturePath) -ine '.png' -or
+                        (Test-Path -LiteralPath $CapturePath)) { throw 'TASKBAR_OUTPUT_INVALID' }
+                    $Bounds = [FundsTraceBrandIcons]::TaskbarBounds()
+                    if ($null -ne $Bounds) {
+                        Add-Type -AssemblyName System.Drawing.Common
+                        $Bitmap = $null; $Graphics = $null; $Output = $null
+                        try {
+                            $Bitmap = [Drawing.Bitmap]::new($Bounds[2], $Bounds[3])
+                            $Graphics = [Drawing.Graphics]::FromImage($Bitmap)
+                            $Graphics.CopyFromScreen($Bounds[0], $Bounds[1], 0, 0, $Bitmap.Size)
+                            $Output = [IO.File]::Open($CapturePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                            $Bitmap.Save($Output, [Drawing.Imaging.ImageFormat]::Png)
+                        } finally {
+                            if ($null -ne $Output) { $Output.Dispose() }
+                            if ($null -ne $Graphics) { $Graphics.Dispose() }
+                            if ($null -ne $Bitmap) { $Bitmap.Dispose() }
+                        }
+                        $Report.taskbarCapture = [ordered]@{
+                            status = 'captured'; width = $Bounds[2]; height = $Bounds[3]
+                            sha256 = (Get-FileHash -LiteralPath $CapturePath -Algorithm SHA256).Hash.ToLowerInvariant()
+                            reviewed = $false
+                        }
+                    }
+                } catch { $Report.taskbarCapture = [ordered]@{ status = 'unavailable'; reason = 'TASKBAR_CAPTURE_FAILED' } }
+            }
         } finally { if ($null -ne $Process) { $Process.Dispose() } }
     } else {
         $Shell = $null
@@ -295,6 +350,21 @@ public static class FundsTraceBrandIcons {
     }
 } catch {
     $Failed = $true; $Report.failedCheck = $Stage
+    # Publish only known codes. Native/COM exceptions may contain local paths.
+    $KnownCodes = @('INVALID_PATH', 'MISSING_CANDIDATE_INPUT', 'INSTALLED_PROCESS_MISMATCH',
+        'SHORTCUT_DIRECTORY_UNAVAILABLE', 'SHORTCUT_MISSING', 'SHORTCUT_TARGET_MISMATCH',
+        'SHORTCUT_ICON_LOCATION_MISMATCH', 'SHORTCUT_ICON_PIXEL_MISMATCH',
+        'WINDOW_ICON_MISMATCH_OR_UNAVAILABLE', 'ICON_INFO_FAILED', 'ICON_BITMAP_FAILED',
+        'ICON_DIMENSIONS_INVALID', 'ICON_DC_FAILED', 'ICON_DIB_FAILED', 'ICON_SELECT_FAILED',
+        'ICON_DRAW_FAILED', 'ICON_FLUSH_FAILED', 'EXPECTED_ICON_LOAD_FAILED',
+        'SHORTCUT_ICON_FAILED', 'WINDOW_ICON_COPY_FAILED', 'VISIBLE_WINDOW_ICON_UNAVAILABLE',
+        'WINDOW_ENUMERATION_FAILED')
+    $Report.failureCode = 'UNCLASSIFIED'
+    $Cause = $_.Exception
+    while ($null -ne $Cause) {
+        if ($Cause.Message -cin $KnownCodes) { $Report.failureCode = $Cause.Message; break }
+        $Cause = $Cause.InnerException
+    }
     [Console]::Error.WriteLine("Brand icon verification failed at $Stage.")
 } finally {
     $Report.status = $(if ($Failed) { 'failed' } else { 'passed' })
