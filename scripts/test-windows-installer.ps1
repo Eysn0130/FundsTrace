@@ -479,7 +479,14 @@ try {
         if ($null -eq $Relaunched) { throw 'Published update did not automatically reopen the new version.' }
         $Report.checks.productionUpdateAutoRelaunch = 'passed'
         $Stage = 'productionUpdateRelaunchClose'
-        if (-not $Relaunched.CloseMainWindow() -or -not $Relaunched.WaitForExit(30000)) { throw 'Updated application did not close normally.' }
+        $Relaunched.Refresh()
+        $Report.productionUpdateClose = [ordered]@{ windowPresent=($Relaunched.MainWindowHandle -ne [IntPtr]::Zero)
+            workspaceTitle=($Relaunched.MainWindowTitle -ceq 'FundsTrace · 资金流水追踪与关联分析')
+            responding=$Relaunched.Responding; requestSent=$false; exited=$false }
+        $Report.productionUpdateClose.requestSent = $Relaunched.CloseMainWindow()
+        if (-not $Report.productionUpdateClose.requestSent) { throw 'Updated application did not accept a normal close request.' }
+        $Report.productionUpdateClose.exited = $Relaunched.WaitForExit(30000)
+        if (-not $Report.productionUpdateClose.exited) { throw 'Updated application did not finish its normal close.' }
         $Report.checks.productionUpdateRelaunchClose = 'passed'
     } else {
         # Let NSIS find the existing custom directory from its registered identity.
