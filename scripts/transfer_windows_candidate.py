@@ -28,6 +28,8 @@ GRAPH_CHECKS = (
     "installedQueryExact", "installedFirstTrackExact", "installedSecondTrackVisible",
     "installedAutomaticNodeLabelRecovery",
     "installedPartialViewportNodeLabels",
+    "installedAnnotationDialogSave", "installedAnnotationUndoRedo", "installedAnnotationOffsetDrag",
+    "installedAnnotationNodeFollow", "installedCanvasSaveRestoreAnnotation",
     "installedContextTrackedConsistent", "installedNeighborhoodTrackVisible", "installedCanvasCloneExact",
     "installedCanvasSaveRestoreTypes", "installedCanvasUndoRedoTypes", "installedKeyboardUndoRedoOutsideGraph", "installedCaseIsolationAndReturn",
 )
