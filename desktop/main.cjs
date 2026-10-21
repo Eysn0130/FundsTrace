@@ -9,6 +9,7 @@ const { launchConfig, HEADER, pageAllowed, popupKind, requestAllowed, downloadAl
 const { startBackend } = require('./backend.cjs');
 const { CHANNEL, preferenceStore, preferenceRequest } = require('./preferences.cjs');
 const updates = require('./updates.cjs');
+const appIcon = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 
 // Fixed, script-free content has no backend token, network access or business data.
 const startupUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>FundsTrace 正在启动</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f7fb;color:#202b3c;font:16px/1.7 system-ui,"Microsoft YaHei",sans-serif}main{padding:32px;max-width:440px}h1{font-size:26px;margin:0 0 12px}p{margin:8px 0;color:#526078}</style><main role="status"><h1>正在启动 FundsTrace</h1><p>正在准备工作区，首次启动可能需要一点时间。</p><p>可关闭此窗口取消启动。</p></main></html>`);
@@ -62,6 +63,7 @@ else {
   app.whenReady().then(async () => {
     try {
       if (synthetic && app.isPackaged) throw new Error('Synthetic mode is unavailable in installed builds.');
+      app.dock?.setIcon(appIcon);
       let origin, token;
       const localSession = session.fromPartition(`funds-trace-${randomUUID()}`, { cache: false });
       localSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
@@ -89,7 +91,7 @@ else {
       function createWindow() {
         const owner = [...windows][0];
         const display = owner ? screen.getDisplayMatching(owner.getBounds()) : screen.getPrimaryDisplay();
-        const win = new BrowserWindow({ title: 'FundsTrace', ...windowBounds(display.workArea), show: false,
+        const win = new BrowserWindow({ title: 'FundsTrace', icon: appIcon, ...windowBounds(display.workArea), show: false,
           webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: localSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, spellcheck: false } });
         const contents = win.webContents;
         const contentsId = contents.id;

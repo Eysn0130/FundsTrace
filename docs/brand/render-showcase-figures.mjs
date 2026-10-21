@@ -9,8 +9,8 @@
  *     --latin-font /path/to/latin.ttf --cjk-font /path/to/cjk.ttf
  *
  * macOS system-font defaults are provided for local rebuilding. Font files are
- * never copied into the repository. Final SVGs contain paths, no text, scripts,
- * remote resources or raster images. This script does not rebuild brand icons,
+ * never copied into the repository. Final SVGs contain outlined text and an
+ * embedded icon PNG, with no scripts or remote resources. This script does not rebuild brand icons,
  * application resources or any other media.
  */
 import fs from 'node:fs/promises';
@@ -23,6 +23,7 @@ const { GlobalFonts, convertSVGTextToPath } = require(process.env.SHOWCASE_CANVA
 const sharp = require(process.env.SHOWCASE_SHARP_PATH || 'sharp');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const media = path.join(root, 'docs/media');
+const brandIcon = (await fs.readFile(path.join(root, 'docs/brand/icons/icon-128.png'))).toString('base64');
 
 const options = {
   '--latin-font': '/System/Library/Fonts/Avenir Next.ttc',
@@ -71,11 +72,7 @@ const arrow = (x, y, color = C.jade, size = 9) =>
   `<path d="M${x - size} ${y - size / 1.3}L${x} ${y}L${x - size} ${y + size / 1.3}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`;
 
 function brandHeader(title, category) {
-  return route('M65 68 80 42 100 59', C.jade, 3.7)
-    + circle(65, 68, 4.8, C.jade)
-    + circle(80, 42, 4.8, C.jade)
-    + circle(100, 59, 4.8, C.graphite)
-    + text('FundsTrace', 120, 66, 29, C.graphite, { weight: 600, latin: true })
+  return text('FundsTrace', 120, 66, 29, C.graphite, { weight: 600, latin: true })
     + text(category, 1376, 64, 19, C.secondary, { align: 'end', latin: true, weight: 500, spacing: 2 })
     + text(title, 64, 126, 40, C.graphite, { weight: 600 })
     + line(64, 158, 1376, 158, C.line, 1.5);
@@ -266,6 +263,7 @@ for (const [name, figure] of [['fundstrace-architecture', architecture()], ['fun
   if (/<(?:text|script|image|foreignObject)\b/i.test(outlined) || /(?:href|url\()\s*=?\s*["']?https?:/i.test(outlined)) {
     throw new Error(`Unexpected dependency in ${name}.svg`);
   }
+  outlined = outlined.replace('</svg>', `<image x="58" y="24" width="54" height="54" href="data:image/png;base64,${brandIcon}"/></svg>`);
   const svgPath = path.join(media, `${name}.svg`);
   const pngPath = path.join(media, `${name}.png`);
   await fs.writeFile(svgPath, outlined);

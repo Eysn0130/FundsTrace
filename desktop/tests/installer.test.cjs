@@ -14,6 +14,17 @@ const helper = path.join(desktop, 'installer-processes.ps1');
 const processes = fs.readFileSync(helper, 'utf8');
 const templates = path.join(desktop, 'node_modules/app-builder-lib/templates/nsis');
 
+test('Windows app, installer and uninstaller use the same brand icon for FundsTrace and Issuer', () => {
+  const icon = path.join(desktop, 'assets/icon.ico');
+  for (const builder of [require('../electron-builder.cjs'), require('../issuer/electron-builder.cjs')]) {
+    assert.equal(builder.win.icon, icon);
+    assert.equal(builder.nsis.installerIcon, icon);
+    assert.equal(builder.nsis.uninstallerIcon, icon);
+    assert.equal(builder.win.signExecutable, false);
+    assert.notEqual(builder.win.signAndEditExecutable, false, 'unsigned apps still need embedded icon editing');
+  }
+});
+
 test('installer keeps FundsTrace identity, per-user scope, case data, and license distribution', () => {
   const builder = require('../electron-builder.cjs');
   assert.equal(builder.appId, 'com.eysn.fundstrace');

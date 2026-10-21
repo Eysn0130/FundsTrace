@@ -34,7 +34,12 @@ function runtimeDependencies(source) {
 }
 async function verifyHostArchive(archive, source = path.resolve(__dirname, '..')) {
   const entries = asar.listPackage(archive).map(name => name.replaceAll('\\', '/').replace(/^\//, '')).sort();
-  assert.deepEqual(entries.filter(name => name !== 'node_modules' && !name.startsWith('node_modules/')), [...builder.files].sort(), 'Packaged host must contain exactly the reviewed files');
+  const hostEntries = entries.filter(name => name !== 'node_modules' && !name.startsWith('node_modules/'));
+  const expectedHostEntries = new Set(builder.files);
+  for (const name of builder.files) {
+    for (let parent = path.posix.dirname(name); parent !== '.'; parent = path.posix.dirname(parent)) expectedHostEntries.add(parent);
+  }
+  assert.deepEqual(hostEntries, [...expectedHostEntries].sort(), 'Packaged host must contain exactly the reviewed files');
   const expected = JSON.parse(await fs.readFile(path.join(source, 'package.json'), 'utf8'));
   const actual = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'));
   assert.equal(actual.name, expected.name);

@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/fundstrace-mark.svg">
-    <img alt="FundsTrace 追踪路径标识" src="docs/brand/fundstrace-mark-light.svg" width="64" height="64">
-  </picture>
+  <img alt="FundsTrace 应用图标" src="docs/brand/icons/icon-256.png" width="64" height="64">
 </p>
 
 <h1 align="center">FundsTrace</h1>
@@ -20,9 +17,9 @@
 
 <p align="center"><strong><a href="https://github.com/Eysn0130/FundsTrace/releases/latest">下载 Windows 版</a></strong> · <a href="#三步走完一次分析">三步上手</a> · <a href="#看看实际操作">操作演示</a> · <a href="docs/workspace-guide.md">使用指南</a></p>
 
-[![FundsTrace v0.1.5 真实工作台：12 笔合成流水经三路分流，在远帆供应归集；点击查看原图](docs/media/showcase/hero.png)](docs/media/showcase/workspace-focus.png)
+[![FundsTrace 0.1.8 源码候选真实工作台：12 笔合成流水经三路分流，在远帆供应归集；点击查看原图](docs/media/showcase/hero.png)](docs/media/showcase/workspace-focus.png)
 
-<sub>真实界面 · v0.1.5 源码 · 12 笔合成流水 / 7 个虚构账户。截图来自 macOS Chrome 合成预览，Windows 安装验证范围见[桌面交付](docs/desktop-delivery.md)。</sub>
+<sub>真实界面 · 0.1.8 源码候选 · 2026-10-20 新品牌截图 · 12 笔合成流水 / 7 个虚构账户。截图来自 macOS Chrome 合成预览，Windows 安装验证范围见[桌面交付](docs/desktop-delivery.md)。</sub>
 
 ## 三步走完一次分析
 
