@@ -190,19 +190,25 @@ function initWatermark() {
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
-  initWatermark();
-  bindUI();
-  installNeighborhood();
-  installNodeFinder();
-  initGraph();
-  installAnnotationDialog();
-  await loadCases();
-  void window.FundsImportWorkflow?.restore();
-  await refreshStats();
-  await loadGraph();
-  await applyPendingFocusEdge();
-  await refreshCanvasList(null).catch(() => {});
-  doSearch(1);
+  try {
+    initWatermark();
+    bindUI();
+    installNeighborhood();
+    installNodeFinder();
+    initGraph();
+    installAnnotationDialog();
+    await loadCases();
+    void window.FundsImportWorkflow?.restore();
+    await refreshStats();
+    await loadGraph();
+    await applyPendingFocusEdge();
+    await refreshCanvasList(null).catch(() => {});
+    await doSearch(1);
+    window.dispatchEvent(new CustomEvent('funds-trace:workbench', { detail: 'ready' }));
+  } catch (error) {
+    window.dispatchEvent(new CustomEvent('funds-trace:workbench', { detail: 'failed' }));
+    throw error;
+  }
 });
 
 async function refreshAll() {

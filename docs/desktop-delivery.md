@@ -21,7 +21,7 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 ## 运行与数据边界
 
-[desktop/main.cjs](../desktop/main.cjs) 负责窗口、受限导航／下载和自己创建的服务。受 sandbox 和 contextIsolation 保护的 [preload](../desktop/preload.cjs) 仅暴露展示偏好 get/set/remove 和固定更新动作及状态订阅；Main 校验窗口归属、主框架及当前精确 origin，只将案件选择、线型、标签、证件／照片显示开关写入 `userData/preferences.json`。随机端口和临时 session 不变；不持久化 token、流水、快照或任意 renderer 键，不提供通用 IPC。G6 `/` 保留完整业务，`/analysis` 为分析，`/workspace/` 为共享 React 试点。业务数据在 Electron 自身 `userData/data`，不写安装资源，不打开 Analytix 数据根。保留单实例和原有按显示器 DIP 工作区创建窗口的规则。
+[desktop/main.cjs](../desktop/main.cjs) 负责窗口、受限导航／下载和自己创建的服务。受 sandbox 和 contextIsolation 保护的 [preload](../desktop/preload.cjs) 暴露展示偏好 get/set/remove、固定更新动作及状态订阅，并仅转发固定的工作台 `ready`／`failed` 单向通知；Main 校验窗口归属、主框架及当前精确 origin，只将案件选择、线型、标签、证件／照片显示开关写入 `userData/preferences.json`。随机端口和临时 session 不变；不持久化 token、流水、快照或任意 renderer 键，不提供通用 IPC。G6 `/` 保留完整业务，`/analysis` 为分析，`/workspace/` 为共享 React 试点。业务数据在 Electron 自身 `userData/data`，不写安装资源，不打开 Analytix 数据根。保留单实例，窗口尺寸以当前显示器的 DIP 工作区为准。
 
 [desktop_backend.py](../desktop_backend.py) 从 stdin 读取严格的 `{protocol:1, token, dataDir, synthetic}` 后才导入应用。随机 token 只经父进程管道和 Main 持有的精确 origin 请求头传递，不进入 URL、argv、renderer、日志或导出。后端绑定 `127.0.0.1:0`，Main 健康检查后才加载页面；冻结后端拒绝 source-only synthetic 模式。
 
@@ -31,6 +31,16 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 下载使用原生保存对话框，处理取消／中断，拒绝任意远程 URL；服务生成成功和磁盘落盘完成分别处理，不自动打开下载 HTML。[DownloadItem](https://www.electronjs.org/docs/latest/api/download-item)
 
+## 启动显示与窗口尺寸
+
+[desktop/startup.cjs](../desktop/startup.cjs) 在业务窗口上方创建独立、透明的本地 `WebContentsView`：先显示启动层，再在下方准备后端与真实工作台。启动层使用独立受限 session，页面资源请求仅允许本地 `startup/index.html`、`startup/style.css`、`startup/renderer.js` 和 `assets/icon.png` 四项；不接收后端 origin、token 或业务数据，不使用截图或模拟案件。它保留 sandbox、contextIsolation 和 CSP，禁止联网、权限、下载及新窗口；[专用 preload](../desktop/startup/preload.cjs) 只接收就绪通知并报告淡出完成。完成或关窗时显式关闭该层的 `webContents`，避免仅移除 View 后残留 renderer。
+
+[启动画面](../desktop/startup/index.html) 使用原版 176px Logo、46px／600 字重的“循迹”和下排 21px／500 字重的 FundsTrace，保留副标题、原 A 扫光与琥珀呼吸。宽 360px 的品牌组通常按固定尺寸居中，加载反馈区固定高度；只有可用客户区不足时才整体等比缩小，按四周 24px 留白计算。实际 resize 只调整该比例，不重置时钟或淡出透明度。
+
+常规动效先停留 1400ms，再于持续加载期间将深色遮罩从不透明缓慢降至 60%，到 6500ms 最多显露下方真实工作台的 40%；这只是等待装饰，不代表启动完成。加载反馈为不定进度，不显示虚构百分比。初始案件、统计、图谱数据和查询列表完成后，业务页才发出 `ready`；后端健康或文档加载结束均不能代替这个信号。该契约不承诺异步 G6 布局已完成，本轮不改变图渲染。真实就绪后立即从当前画面开始 1100ms 的统一淡出，Logo、字标、加载反馈和遮罩一同退出；减少动态效果时使用 140ms 收尾，不强制等待演示时长。初始化失效或超时会安全失败，准备中关闭仍清理本次所属窗口、启动层和服务，不输出 token 或内部异常。
+
+[窗口策略](../desktop/host-policy.cjs) 默认按工作区四周 32 DIP 留白计算，默认创建尺寸上限为 1440×940，常规最小值为 960×640；小工作区会收紧窗口及最小值，使其落在工作区内。这是默认创建规则，用户仍可调整窗口大小。工作区坐标和窗口尺寸均使用 DIP，不乘 `devicePixelRatio`；启动层在实际客户区内居中，避免将原生边框和菜单高度当作内容空间。
+
 ## Windows 10／11 安装与启动边界
 
 当前目标是 Windows 10／11 **x64**。锁定的 [Electron 44.7.2](https://github.com/electron/electron/blob/v44.7.2/README.md#platform-support) 支持 Windows 10 及以后，Electron 44 已移除 Windows 32 位；本仓库不发布 32 位或原生 ARM64 包，也不凭上游声明推断最低 Win10 build 或任意机器兼容。
@@ -39,7 +49,7 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 | --- | --- |
 | 下载与安装 | 单个 NSIS EXE，当前用户范围，不要求另装 Python、配置公钥或授权码；使用相同安装身份覆盖升级。Windows hosted runner 是管理员且关闭 UAC，因此不能用 CI 证明普通无管理员用户的全部交互路径。 |
 | 安全系统拦截 | 当前仍未签名。SmartScreen 可能告警；Win11 Smart App Control 还可能阻止没有信誉的未签名安装器或 backend。它与业务激活无关，不要求用户关闭系统防护来获得通过标记。签名和信誉需独立处理。 |
-| 启动反馈 | 先显示不含业务数据或脚本的本地启动提示，后端健康后同窗进入业务；准备中关闭会取消并清理本次归属服务，二次双击聚焦同一窗口。超时给出安全错误说明，不输出 token 或内部异常。 |
+| 启动反馈 | 先显示不含业务数据的受限本地启动层，后台准备真实工作台；初始案件、图谱数据和查询完成后统一淡出进入业务。准备中关闭会取消并清理本次归属服务，二次双击聚焦同一窗口；初始化失效或超时给出安全错误说明。 |
 | 首次报告 | 普通启动、案件和分析入口不再提前初始化 Matplotlib；首次报告才加载。实际报告附件仍由源码回归和包内请求验证，不通过删除依赖制造启动收益。 |
 | 体积 | 保留 Python onedir、Electron asar 和宿主文件白名单；Electron 语言资源保留 en-US、zh-CN、zh-TW。构建报告区分安装器字节、安装后字节、backend／语言资源与最大文件，不凭依赖名称裁剪动态模块。 |
 | 运行中升级 | 只向已核对路径的本应用请求正常关闭；疑似本应用进程路径不可读时返回检查失败，不能静默当空闲或按名称强杀。 |
@@ -122,6 +132,8 @@ transfer 使用独立、不可取消的并发组。若上传完成后正文更�
 `in_app_update=true` 另在这两个隔离账户运行真实安装版的更新胶囊：中断下载、损坏校验、重试、圆圈进度、稍后、确认重启、NSIS 静默安装和自动重新打开，再检查安装资源与原有案件。仅在 CI 内构建下一补丁号的私有测试安装器，通过临时测试 CA 和进程级 DNS 规则承接程序固定 HTTPS 地址。CA 由隔离虚拟机管理员统一加入该虚拟机的根信任，两个测试账户只读取加密叶证书夹具，结束后移除；不改变用户电脑或生产证书，不关闭 TLS 验证，不修改生产 feed、系统 hosts 或客户端源码中的地址。临时证书、私钥、服务及私有安装器不作为 Release 资产。该结果须标明私有 HTTPS 测试环境，不能代替国内 CDN 的实际下载验证或未来公开版本的发布链验收。
 
 ## 当前证据与尚未执行的边界
+
+2026-10-21 启动页与窗口尺寸源码候选：桌面 Node 回归共 104 项，其中 98 项通过、6 项跳过；Python 定向回归 6 项通过。macOS 上使用隔离合成状态实际启动源码 Electron，已进入真实工作台，并将原生窗口从 1440×809 调至 960×640。浏览器以候选启动素材核对 1440×880、960×580、960×440 和 683×284 客户区：前三组保持 176px Logo，最后一组整体缩小，均居中且保留至少 24px 留白；淡出中缩放不重置进度。这些结果只覆盖该源码候选，不代表 Windows 安装版、原生 DPI／跨屏或 Win10／11 实机验收；本轮未打包或发布，历史 Windows 报告不覆盖本次新增启动层。
 
 普通账户夹具显式绑定新建账户自己的 `LocalAppData`，并用一次性文件验证缓存基目录可写，避免带着调用者的环境访问其他用户的缓存目录。该准备只适用于 Windows Actions 新建的合成账户，随后仍由真实安装版创建和使用自己的更新缓存；失败时也由原账户清理私有临时文件，再移除测试 profile 和账户。
 

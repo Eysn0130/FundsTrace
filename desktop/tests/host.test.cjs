@@ -153,7 +153,8 @@ test('health checks status, protocol and exact service using main-only authoriza
 test('distribution manifest prevents cross-platform packaging and includes only host source', async t => {
   const builder = require('../electron-builder.cjs');
   assert.equal(builder.appId, 'com.eysn.fundstrace');
-  assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'assets/icon.png', 'assets/icon.ico']);
+  assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'startup.cjs',
+    'startup/index.html', 'startup/style.css', 'startup/renderer.js', 'startup/preload.cjs', 'assets/icon.png', 'assets/icon.ico']);
   assert.deepEqual(builder.publish, { provider: 'generic', url: 'https://analytix.top/fundstrace/' });
   assert.equal(builder.nsis.deleteAppDataOnUninstall, false);
   assert.equal(builder.win.signExecutable, false);
@@ -175,9 +176,9 @@ function deferred() {
 }
 
 // Exercise the real Main entry and Electron lifecycle events without a business server.
-function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopBackend = async () => true, restartResponse = 0, platform = 'win32' } = {}) {
+function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopBackend = async () => true, restartResponse = 0, platform = 'win32', workbenchReady = true, completeStartup = true, navigationPending = false } = {}) {
   const app = new EventEmitter();
-  const state = { windows: [], errors: [], backendStarts: 0, backendStops: 0, quitCount: 0, removed: [] };
+  const state = { windows: [], startupViews: [], timers: [], errors: [], backendStarts: 0, backendStops: 0, quitCount: 0, removed: [] };
   const ready = deferred();
   const screen = new EventEmitter();
   state.display = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
@@ -199,25 +200,34 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
       super(); this.options = options; this.loads = []; this.shown = 0; this.focused = 0;
       this.bounds = { x: options.x, y: options.y, width: options.width, height: options.height };
       this.minimum = [options.minWidth, options.minHeight]; this.boundsChanges = [];
+      this.contentView = new EventEmitter(); this.contentView.children = [];
+      this.contentView.addChildView = view => this.contentView.children.push(view);
+      this.contentView.removeChildView = view => { this.contentView.children = this.contentView.children.filter(child => child !== view); };
       this.webContents = new EventEmitter(); this.webContents.id = state.windows.length + 1;
       this.webContents.setWindowOpenHandler = handler => { this.popup = handler; };
       this.webContents.isDestroyed = () => this.destroyed;
       this.webContents.getURL = () => this.loads.at(-1);
       this.webContents.send = () => {};
+      this.webContents.focus = () => { this.contentsFocused = true; };
       state.windows.push(this);
     }
-    async loadURL(url) { this.loads.push(url); this.webContents.mainFrame = { url }; this.emit('ready-to-show'); }
+    async loadURL(url) {
+      this.loads.push(url); this.webContents.mainFrame = { url }; this.emit('ready-to-show');
+      if (workbenchReady) electron.ipcMain.emit('funds-trace:workbench', { sender: this.webContents, senderFrame: this.webContents.mainFrame }, 'ready');
+      if (navigationPending) await new Promise(() => {});
+    }
     show() { this.shown++; }
     focus() { this.focused++; }
     isMinimized() { return true; }
     restore() { this.restored = true; }
     isDestroyed() { return Boolean(this.destroyed); }
     getBounds() { return { ...this.bounds }; }
+    getContentBounds() { return { ...this.bounds, height: this.bounds.height - 60 }; }
     getMinimumSize() { return [...this.minimum]; }
     setMinimumSize(width, height) { this.minimum = [width, height]; }
     setBounds(bounds) {
       assert.ok(bounds.width >= this.minimum[0] && bounds.height >= this.minimum[1], 'minimum must be lowered before fitting bounds');
-      this.bounds = { ...bounds }; this.boundsChanges.push(bounds); this.emit('move');
+      this.bounds = { ...bounds }; this.boundsChanges.push(bounds); this.emit('move'); this.emit('resize');
     }
     isMaximized() { return Boolean(this.maximized); }
     isFullScreen() { return Boolean(this.fullscreen); }
@@ -226,14 +236,39 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
       if (state.windows.every(win => win.destroyed)) app.emit('window-all-closed');
     }
   }
-  const localSession = new EventEmitter();
-  localSession.setPermissionRequestHandler = handler => { state.permission = handler; };
-  localSession.setPermissionCheckHandler = handler => { state.permissionCheck = handler; };
-  localSession.webRequest = {
-    onBeforeRequest: handler => { state.request = handler; },
-    onBeforeSendHeaders: handler => { state.headers = handler; },
+  class StartupView {
+    constructor(options) {
+      this.options = options; this.messages = [];
+      this.webContents = new EventEmitter(); this.webContents.id = 1000 + state.startupViews.length;
+      this.webContents.isDestroyed = () => !!this.destroyed;
+      this.webContents.close = () => { this.destroyed = true; };
+      this.webContents.setWindowOpenHandler = handler => { this.popup = handler; };
+      this.webContents.getURL = () => this.webContents.mainFrame?.url;
+      this.webContents.loadFile = async filename => { this.file = filename; this.webContents.mainFrame = { url: require('node:url').pathToFileURL(filename).href }; };
+      this.webContents.send = (channel, value) => {
+        this.messages.push({ channel, value });
+        if (completeStartup) queueMicrotask(() => electron.ipcMain.emit(channel,
+          { sender: this.webContents, senderFrame: this.webContents.mainFrame }, 'complete'));
+      };
+      state.startupViews.push(this);
+    }
+    setBackgroundColor(value) { this.backgroundColor = value; }
+    setBounds(value) { this.bounds = value; }
+  }
+  const fromPartition = name => {
+    const localSession = new EventEmitter();
+    const prefix = name.startsWith('funds-trace-startup-') ? 'startup' : '';
+    localSession.setPermissionRequestHandler = handler => { state[prefix ? 'startupPermission' : 'permission'] = handler; };
+    localSession.setPermissionCheckHandler = handler => { state[prefix ? 'startupPermissionCheck' : 'permissionCheck'] = handler; };
+    localSession.webRequest = {
+      onBeforeRequest: handler => { state[prefix ? 'startupRequest' : 'request'] = handler; },
+      onBeforeSendHeaders: handler => { state[prefix ? 'startupHeaders' : 'headers'] = handler; },
+    };
+    return localSession;
   };
-  const electron = { app, ipcMain: new EventEmitter(), BrowserWindow: Window, session: { fromPartition: () => localSession }, screen,
+  const electron = { app, ipcMain: new EventEmitter(), BrowserWindow: Window, WebContentsView: StartupView, session: { fromPartition }, screen,
+    setTimer(callback, milliseconds) { const timer = { callback, milliseconds, unref() {} }; state.timers.push(timer); return timer; },
+    clearTimer(timer) { if (timer) timer.cleared = true; },
     Menu: { buildFromTemplate: value => value, setApplicationMenu: () => {} },
     dialog: { showErrorBox: (_title, message) => state.errors.push(message), showMessageBox: async () => ({ response: restartResponse }) } };
   electron.ipcMain.handle = (name, handler) => { state.updateRequest = handler; };
@@ -245,6 +280,11 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
     if (name === 'electron') return electron;
     if (name === './host-policy.cjs') return policy;
     if (name === './updates.cjs') return require('../updates.cjs');
+    if (name === './startup.cjs') {
+      const startup = require('../startup.cjs');
+      return { createStartup: (win, options) => startup.createStartup(win, options, electron),
+        waitForWorkbench: (win, url) => startup.waitForWorkbench(win, url, electron) };
+    }
     if (name === 'electron-updater') return { autoUpdater: updater };
     if (name === './preferences.cjs') return { ...require('../preferences.cjs'), preferenceStore: () => ({
       getItem: () => null, setItem: () => true, removeItem: () => true,
@@ -256,7 +296,7 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
     } };
     return require(name);
   }, clearInterval, setInterval, setImmediate, __dirname: path.resolve(__dirname, '..'), process: { argv: ['FundsTrace', ...(synthetic ? ['--synthetic'] : [])], env: {}, platform } });
-  return { app, state, ready, screen, flush: async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); } };
+  return { app, state, ready, screen, ipcMain: electron.ipcMain, flush: async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); } };
 }
 
 test('Main uses the packaged brand asset for startup and analysis windows and the macOS dock', async () => {
@@ -384,24 +424,32 @@ test('Main shows a restricted startup window before backend readiness and focuse
   assert.equal(state.windows.length, 1, 'slow backend must still have a visible application window');
   const win = state.windows[0];
   assert.ok(win.shown > 0);
-  assert.match(decodeURIComponent(win.loads[0]), /正在启动/);
-  assert.match(decodeURIComponent(win.loads[0]), /default-src 'none'/);
+  const startup = state.startupViews[0];
+  assert.ok(startup.file.endsWith(path.join('startup', 'index.html')));
+  assert.equal(startup.backgroundColor, 'rgba(0, 0, 0, 0)');
+  assert.equal(win.loads.length, 0, 'backend preparation must not replace the local overlay');
   assert.equal(win.options.webPreferences.sandbox, true);
   assert.equal(win.options.webPreferences.contextIsolation, true);
   assert.equal(win.options.webPreferences.nodeIntegration, false);
   let response;
-  const request = { url: win.loads[0], resourceType: 'mainFrame', webContentsId: win.webContents.id };
-  state.request(request, value => { response = value; }); assert.equal(response.cancel, false);
-  state.request({ ...request, url: 'https://example.com/' }, value => { response = value; }); assert.equal(response.cancel, true);
-  state.headers({ ...request, requestHeaders: { [HEADER]: 'renderer-supplied' } }, value => { response = value; });
+  const request = { url: startup.webContents.getURL(), resourceType: 'mainFrame', webContentsId: startup.webContents.id };
+  state.startupRequest(request, value => { response = value; }); assert.equal(response.cancel, false);
+  for (const url of ['https://example.com/', `${origin}/api/cases`, 'file:///etc/passwd']) {
+    state.startupRequest({ ...request, url }, value => { response = value; }); assert.equal(response.cancel, true);
+  }
+  state.request(request, value => { response = value; }); assert.equal(response.cancel, true, 'business session cannot load local files');
+  state.startupHeaders({ ...request, requestHeaders: { [HEADER]: 'renderer-supplied' } }, value => { response = value; });
   assert.equal(response.requestHeaders[HEADER], undefined);
   harness.app.emit('second-instance'); assert.equal(win.focused, 1); assert.equal(win.restored, true);
   harness.ready.resolve({ origin, token: 'main-only-test-token' }); await harness.flush();
-  assert.deepEqual(win.loads.slice(1), [`${origin}/`]);
-  state.request(request, value => { response = value; }); assert.equal(response.cancel, true, 'startup document is unavailable after readiness');
-  state.headers({ ...request, url: `${origin}/api/cases`, requestHeaders: {} }, value => { response = value; });
+  assert.deepEqual(win.loads, [`${origin}/`]);
+  assert.equal(startup.destroyed, true);
+  assert.equal(win.contentView.children.length, 0);
+  assert.equal(win.contentsFocused, true);
+  state.startupRequest(request, value => { response = value; }); assert.equal(response.cancel, true, 'startup session is unavailable after dismissal');
+  state.headers({ ...request, webContentsId: win.webContents.id, url: `${origin}/api/cases`, requestHeaders: {} }, value => { response = value; });
   assert.equal(response.requestHeaders[HEADER], 'main-only-test-token');
-  assert.ok(!win.loads[0].includes('main-only-test-token'));
+  assert.ok(!startup.webContents.getURL().includes('main-only-test-token'));
   win.close(); await harness.flush(); assert.equal(state.backendStops, 1); assert.equal(state.quitCount, 1);
 });
 
@@ -417,12 +465,104 @@ test('closing during preparation removes owned temporary state and never launche
   assert.equal(harness.state.quitCount, 1);
 });
 
+test('startup waits for initialized main workbench, rejects unrelated frames and keeps its overlay through the fade', async () => {
+  const harness = mainHarness({ workbenchReady: false, completeStartup: false }); await harness.flush();
+  const win = harness.state.windows[0], view = harness.state.startupViews[0];
+  const localEvent = { sender: view.webContents, senderFrame: view.webContents.mainFrame };
+  harness.ipcMain.emit('funds-trace:startup', localEvent, 'complete');
+  assert.equal(view.destroyed, undefined, 'an early completion must not dismiss the loading surface');
+  harness.ready.resolve({ origin, token: 'main-only-test-token' }); await harness.flush();
+  assert.equal(view.messages.length, 0, 'backend health and did-finish-load are not workbench readiness');
+  const valid = { sender: win.webContents, senderFrame: win.webContents.mainFrame };
+  for (const event of [localEvent, { ...valid, senderFrame: { url: `${origin}/` } }, { ...valid, sender: {} }]) {
+    harness.ipcMain.emit('funds-trace:workbench', event, 'ready');
+  }
+  await harness.flush(); assert.equal(view.messages.length, 0);
+  harness.ipcMain.emit('funds-trace:workbench', valid, 'ready'); await harness.flush();
+  assert.deepEqual(view.messages, [{ channel: 'funds-trace:startup', value: 'ready' }]);
+  assert.equal(view.destroyed, undefined, 'the real app remains covered until the renderer finishes fading');
+  harness.ipcMain.emit('funds-trace:startup', valid, 'complete');
+  harness.ipcMain.emit('funds-trace:startup', { ...localEvent, senderFrame: { url: view.webContents.getURL() } }, 'complete');
+  assert.equal(view.destroyed, undefined);
+  harness.ipcMain.emit('funds-trace:startup', localEvent, 'complete'); await harness.flush();
+  assert.equal(view.destroyed, true);
+  assert.equal(win.contentView.children.length, 0);
+  assert.equal(harness.ipcMain.listenerCount('funds-trace:startup'), 0);
+  assert.equal(harness.ipcMain.listenerCount('funds-trace:workbench'), 0);
+  win.close(); await harness.flush();
+});
+
+test('startup overlay follows content bounds through resize and releases its listeners on cancel', async () => {
+  const harness = mainHarness({ workbenchReady: false }); await harness.flush();
+  const win = harness.state.windows[0], view = harness.state.startupViews[0];
+  assert.deepEqual(view.bounds, { x: 0, y: 0, width: 1440, height: 880 });
+  win.bounds = { x: -100, y: 30, width: 683, height: 344 };
+  win.contentView.emit('bounds-changed');
+  assert.deepEqual(view.bounds, { x: 0, y: 0, width: 683, height: 284 });
+  assert.equal(view.options.webPreferences.sandbox, true);
+  assert.equal(view.options.webPreferences.nodeIntegration, false);
+  assert.equal(view.popup({ url: 'https://example.com' }).action, 'deny');
+  let permission;
+  harness.state.startupPermission(view.webContents, 'clipboard-read', value => { permission = value; });
+  assert.equal(permission, false);
+  win.close(); await harness.flush();
+  assert.equal(view.destroyed, true);
+  assert.equal(win.listenerCount('resize'), 0);
+  assert.equal(win.contentView.listenerCount('bounds-changed'), 0);
+  assert.equal(harness.ipcMain.listenerCount('funds-trace:startup'), 0);
+});
+
+test('failed workbench initialization keeps the safe error path and stops the owned service', async () => {
+  const harness = mainHarness({ workbenchReady: false }); await harness.flush();
+  harness.ready.resolve({ origin, token: 'not-in-error-message' }); await harness.flush();
+  const win = harness.state.windows[0];
+  harness.ipcMain.emit('funds-trace:workbench', { sender: win.webContents, senderFrame: win.webContents.mainFrame }, 'failed');
+  await harness.flush();
+  assert.equal(harness.state.startupViews[0].messages.length, 0);
+  assert.equal(harness.state.backendStops, 1);
+  assert.equal(harness.state.errors.length, 1);
+  assert.ok(!harness.state.errors[0].includes('not-in-error-message'));
+  win.close(); await harness.flush();
+});
+
+test('a missing workbench signal or a stalled fade fails safely instead of silently entering the app', async () => {
+  for (const workbenchReady of [false, true]) {
+    const harness = mainHarness({ workbenchReady, completeStartup: false }); await harness.flush();
+    harness.ready.resolve({ origin, token: 'not-visible' }); await harness.flush();
+    const timer = harness.state.timers.find(timer => !timer.cleared);
+    assert.equal(timer.milliseconds, workbenchReady ? 10_000 : 120_000);
+    timer.callback(); await harness.flush();
+    assert.equal(harness.state.errors.length, 1);
+    assert.equal(harness.state.backendStops, 1);
+    assert.equal(harness.state.startupViews[0].messages.length, workbenchReady ? 1 : 0);
+    if (workbenchReady) assert.equal(harness.state.startupViews[0].destroyed, true);
+    harness.state.windows[0].close(); await harness.flush();
+  }
+});
+
+test('workbench deadline stops startup even while the document navigation remains pending', async () => {
+  for (const workbenchReady of [false, true]) {
+    const harness = mainHarness({ workbenchReady, navigationPending: true }); await harness.flush();
+    harness.ready.resolve({ origin, token: 'not-visible' }); await harness.flush();
+    const timer = harness.state.timers.find(timer => !timer.cleared);
+    assert.equal(timer?.milliseconds, 120_000, 'the deadline must also cover ready before navigation completion');
+    timer.callback(); await harness.flush();
+    try {
+      assert.equal(harness.state.errors.length, 1);
+      assert.equal(harness.state.backendStops, 1);
+      assert.equal(harness.state.startupViews[0].messages.length, 0);
+      assert.equal(harness.ipcMain.listenerCount('funds-trace:workbench'), 0);
+    } finally { harness.state.windows[0].close(); await harness.flush(); }
+  }
+});
+
 test('closing a startup window stops its backend and ignores readiness arriving after close', async () => {
   const harness = mainHarness(); await harness.flush();
   const win = harness.state.windows[0]; assert.ok(win, 'startup window exists before readiness');
   win.close(); await harness.flush(); assert.equal(harness.state.backendStops, 1);
   harness.ready.resolve({ origin, token: 'never-rendered' }); await harness.flush();
-  assert.equal(win.loads.length, 1); assert.equal(harness.state.windows.length, 1);
+  assert.equal(win.loads.length, 0); assert.equal(harness.state.windows.length, 1);
+  assert.equal(harness.state.startupViews[0].destroyed, true);
   assert.deepEqual(harness.state.errors, []);
 });
 
@@ -433,7 +573,7 @@ test('a startup failure reports a safe recovery message and stops the owned back
   assert.match(harness.state.errors[0], /启动超时/);
   assert.match(harness.state.errors[0], /重新打开/);
   assert.equal(harness.state.backendStops, 1);
-  assert.equal(harness.state.windows[0].loads.length, 1);
+  assert.equal(harness.state.windows[0].loads.length, 0);
   assert.equal(harness.state.quitCount, 1);
 });
 

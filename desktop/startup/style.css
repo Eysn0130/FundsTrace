@@ -1,0 +1,24 @@
+:root{color-scheme:dark;font-family:"Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif}
+*{box-sizing:border-box}
+html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent}
+.startup-surface{--backdrop-opacity:1;--exit-opacity:1;--wait-opacity:0;--wait-x:-15px;--brand-scale:1;position:absolute;inset:0;overflow:hidden;opacity:var(--exit-opacity);isolation:isolate}
+.startup-backdrop,.startup-atmosphere{position:absolute;inset:0;pointer-events:none}
+.startup-backdrop{background:#10171f;opacity:var(--backdrop-opacity)}
+.startup-atmosphere{background:radial-gradient(ellipse 28% 58% at 50% 48%,#10171fe0 0%,#10171f8c 52%,#10171f00 100%),radial-gradient(ellipse 48% 62% at 50% 36%,#263f5a40 0%,#18263918 52%,#10171f00 85%)}
+.startup-brand{position:absolute;left:50%;top:50%;width:360px;display:flex;flex-direction:column;align-items:center;transform:translate(-50%,-50%) scale(var(--brand-scale));transform-origin:center;pointer-events:none;user-select:none}
+.startup-mark{position:relative;width:176px;height:176px;flex:0 0 auto;isolation:isolate}
+.startup-icon{position:absolute;inset:0;display:block;width:100%;height:100%;user-select:none}
+.startup-original-light{position:absolute;inset:0;mask:url(../assets/icon.png) center/contain no-repeat;-webkit-mask:url(../assets/icon.png) center/contain no-repeat;overflow:hidden;opacity:.55;mix-blend-mode:soft-light;pointer-events:none}
+.startup-original-sweep{position:absolute;inset:-50% -150%;background:linear-gradient(112deg,transparent 42%,#d8eaff40 46%,#fff 49%,#dbeaff90 51%,transparent 56%);transform:translateX(-32%);will-change:transform}
+.startup-amber{position:absolute;left:62%;top:56%;width:17%;height:23%;border-radius:0 0 55% 0;mix-blend-mode:screen;pointer-events:none}
+.startup-amber-light{position:absolute;inset:0;border-radius:inherit;background:radial-gradient(ellipse at 48% 45%,#ffd8798c,#ffb13000 75%);opacity:0}
+.startup-caption{flex:0 0 auto;margin-top:20px;text-align:center;white-space:nowrap}
+.startup-cn-name{font-family:"PingFang SC","Microsoft YaHei UI","Microsoft YaHei",sans-serif;font-size:46px;font-weight:600;line-height:1.16;letter-spacing:.148148em;padding-left:.148148em;color:#edf2fa}
+.startup-wordmark{font-size:21px;font-weight:500;line-height:1.35;letter-spacing:.033333em;color:#b9c8d9;margin-top:9px}
+.startup-subtitle{font-size:12px;font-weight:400;line-height:1.5;letter-spacing:.2142857em;padding-left:.2142857em;color:#8194a8;margin-top:18px}
+.startup-wait{height:28px;flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:11px;margin-top:36px;opacity:var(--wait-opacity);white-space:nowrap}
+.startup-wait-track{width:33px;height:2px;flex:0 0 auto;background:#9bb6ca1c;border-radius:2px;overflow:hidden}
+.startup-wait-track>span{display:block;width:14px;height:100%;background:linear-gradient(90deg,#a9c1d700,#c2d8e6c4,#a9c1d700);transform:translateX(var(--wait-x))}
+.startup-wait-label{font-size:10px;font-weight:400;line-height:1.5;letter-spacing:.166666em;padding-left:.166666em;color:#8193a5}
+.startup-surface[data-phase=complete]{visibility:hidden}
+html[data-motion=reduce] .startup-original-light,html[data-motion=reduce] .startup-amber{display:none}

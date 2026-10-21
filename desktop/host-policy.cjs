@@ -8,7 +8,11 @@ const PAGES = new Set(['/', '/analysis', '/license', '/workspace', '/workspace/'
 
 // Electron work areas and BrowserWindow bounds both use DIP, including at 200% DPI.
 function windowBounds(workArea, current) {
-  const width = Math.min(current?.width ?? 1440, workArea.width), height = Math.min(current?.height ?? 940, workArea.height);
+  // Leave 32 DIP at each edge on first launch when the normal minimum fits.
+  // Existing user bounds retain their size; only the work-area clamp applies.
+  const inset = 32 * 2;
+  const width = Math.min(current?.width ?? Math.max(960, Math.min(1440, workArea.width - inset)), workArea.width);
+  const height = Math.min(current?.height ?? Math.max(640, Math.min(940, workArea.height - inset)), workArea.height);
   const x = current?.x ?? workArea.x + Math.floor((workArea.width - width) / 2);
   const y = current?.y ?? workArea.y + Math.floor((workArea.height - height) / 2);
   return { width, height, minWidth: Math.min(960, width), minHeight: Math.min(640, height),

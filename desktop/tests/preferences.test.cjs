@@ -81,6 +81,7 @@ test('preference IPC denies foreign frames, stale origins and unowned renderers'
 test('sandbox preload exposes only the narrow preferences API', () => {
   let exposed, calls = [];
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../preload.cjs'), 'utf8'), {
+    window: { addEventListener() {} },
     require(name) {
       assert.equal(name, 'electron');
       return { contextBridge: { exposeInMainWorld(name, value) { assert.ok(['FundsDesktopPreferences', 'FundsDesktopUpdates'].includes(name)); if (name === 'FundsDesktopPreferences') exposed = value; } },
