@@ -150,4 +150,4 @@ async function runInstalledUpdateJourney({ fixture, primary, evaluate, clickElem
     privateFixtureOnly: true, productionFeedModified: false, tlsVerificationDisabled: false };
 }
 
-module.exports = { createUpdateFixture, runInstalledUpdateJourney };
+module.exports = { createUpdateFixture, runInstalledUpdateJourney, nativeButton };

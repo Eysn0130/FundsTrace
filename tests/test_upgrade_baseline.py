@@ -141,7 +141,10 @@ def test_transfer_report_identity_rejects_another_pair_installer_or_missing_evid
     ({"TARGET_BYTES": "1234"}, False),
     ({"TARGET_SHA256": "a" * 64, "TARGET_BYTES": str(2**53)}, False),
     ({"TARGET_SHA256": "a" * 64, "TARGET_BYTES": "1234", "BUILD_INSTALLER": "true"}, False),
-    ({"TARGET_SHA256": "a" * 64, "TARGET_BYTES": "1234", "IN_APP_UPDATE": "true"}, False),
+    ({"TARGET_SHA256": "a" * 64, "TARGET_BYTES": "1234", "IN_APP_UPDATE": "true"}, True),
+    ({"TARGET_SHA256": "a" * 64, "IN_APP_UPDATE": "true"}, False),
+    ({"TRANSFER_RUN_ID": "123", "DRAFT_TAG": "v0.1.9", "IN_APP_UPDATE": "true"}, False),
+    ({"UPDATE_FIXTURE_PROBE": "tls", "IN_APP_UPDATE": "true"}, False),
     ({"TARGET_SHA256": "a" * 64, "TARGET_BYTES": "1234", "UPDATE_FIXTURE_PROBE": "tls"}, False),
     ({"TARGET_SHA256": "a" * 64, "TARGET_BYTES": "1234", "TRANSFER_RUN_ID": "123", "DRAFT_TAG": "v0.1.9"}, False),
 ])

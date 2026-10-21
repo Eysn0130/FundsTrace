@@ -7,6 +7,7 @@ param(
     [string]$NextInstaller,
     [string]$NextUnpacked,
     [string]$TrustedCertificateFixture,
+    [switch]$PublishedInAppUpdate,
     [switch]$PreflightOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -431,14 +432,81 @@ try {
     $PriorSnapshot = Get-Content -Raw -LiteralPath (Join-Path $UpgradeFixture 'snapshot.json') | ConvertFrom-Json
     $PreferenceJson = [ordered]@{ fund_case = [string]$PriorSnapshot.original.caseId; fund_edge_type = 'polyline'
         fund_show_ids = '1'; fund_show_photos = '0'; fund_edge_labels = '["money","time","summary","currency"]' } | ConvertTo-Json -Compress
-    [System.IO.File]::WriteAllText($PreferenceFile, $PreferenceJson)
+    # Use the actual store's canonical form; the prior UI saves its current case
+    # on startup, so a missing newline would create a false byte-retention failure.
+    [System.IO.File]::WriteAllText($PreferenceFile, $PreferenceJson + "`n")
     $PreferenceSha256 = Get-Sha256 $PreferenceFile
     Assert-PresentationPreferences
     $Report.checks.presentationPreferencesSeeded = 'passed'
 
     $Stage = 'upgradedSameIdentity'
-    # Let NSIS find the existing custom directory from its registered identity.
-    [void](Invoke-Native -FileName $InstallerPath -RawArguments '/S' -TimeoutSeconds 240)
+    if ($PublishedInAppUpdate) {
+        if ($NextInstaller) { throw 'Published and private update modes cannot be combined.' }
+        $UpdateConfig = Join-Path $TemporaryRoot 'production-update.json'
+        $UpdateSettings = Get-Content -Raw -LiteralPath (Join-Path $InstallRoot 'resources/app-update.yml')
+        if ($UpdateSettings -cnotmatch '(?m)^provider: generic\s*$' -or
+            $UpdateSettings -cnotmatch '(?m)^url: https://analytix\.top/fundstrace/\s*$') {
+            throw 'The installed prior release does not use the fixed official update source.'
+        }
+        $Report.checks.productionUpdateOfficialFeedConfigured = 'passed'
+        $CacheMatch = [regex]::Match($UpdateSettings, '(?m)^updaterCacheDirName: ([a-z0-9-]+)\s*$')
+        if (-not $CacheMatch.Success) { throw 'Installed updater cache identity is missing.' }
+        $Sha512 = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($InstallerPath)))
+        @{ currentVersion=$Baseline.prior.version; version=$CurrentVersion; installerSha256=$Report.currentInstallerSha256
+            installerSha512=$Sha512; installerBytes=$Report.currentInstallerBytes; preferences=($PreferenceJson | ConvertFrom-Json)
+            cacheDirectoryName=$CacheMatch.Groups[1].Value } |
+            ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $UpdateConfig -Encoding utf8
+        $UpdateReportPath = Join-Path (Split-Path -Parent $ReportPath) 'native-production-update.json'
+        $UpdateScreenshot = Join-Path (Split-Path -Parent $ReportPath) 'native-production-update.png'
+        $UpdateJson = Invoke-Native -FileName $NodeExe -Arguments @(
+            (Join-Path $ProjectRoot 'desktop/tests/installed-app-smoke.cjs'), $InstallRoot,
+            '--report', $UpdateReportPath, '--screenshot', $UpdateScreenshot, '--production-update', $UpdateConfig
+        ) -TimeoutSeconds 720
+        $UpdateReport = $UpdateJson | ConvertFrom-Json
+        if ($UpdateReport.status -cne 'passed' -or $UpdateReport.updateCycle.currentVersion -cne $Baseline.prior.version -or
+            $UpdateReport.updateCycle.nextVersion -cne $CurrentVersion) { throw 'Published update journey did not pass.' }
+        $Stage = 'productionUpdateAutoRelaunch'
+        $QueryPath = (Join-Path $InstallRoot 'FundsTrace.exe').Replace('\','\\').Replace("'","\'")
+        $Relaunched = $null
+        $Deadline = [DateTime]::UtcNow.AddSeconds(90)
+        do {
+            foreach ($Owned in @(Get-CimInstance Win32_Process -Filter "ExecutablePath='$QueryPath'")) {
+                $Process = Get-Process -Id $Owned.ProcessId -ErrorAction SilentlyContinue
+                if ($null -ne $Process -and $Process.MainWindowHandle -ne [IntPtr]::Zero -and
+                    $Process.MainWindowTitle -ceq 'FundsTrace · 资金流水追踪与关联分析' -and
+                    [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $InstallRoot 'FundsTrace.exe')).ProductVersion -like "$CurrentVersion*") {
+                    Assert-Installed $CurrentVersion
+                    $Relaunched = $Process; break
+                }
+            }
+            if ($null -eq $Relaunched) { Start-Sleep -Milliseconds 200 }
+        } while ($null -eq $Relaunched -and [DateTime]::UtcNow -lt $Deadline)
+        if ($null -eq $Relaunched) { throw 'Published update did not automatically reopen the new version.' }
+        $Report.checks.productionUpdateAutoRelaunch = 'passed'
+        $Stage = 'productionUpdateRelaunchClose'
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class FundsTraceUpdateWindowState {
+  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr window);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+}
+'@
+        $Relaunched.Refresh()
+        $Report.productionUpdateClose = [ordered]@{ windowPresent=($Relaunched.MainWindowHandle -ne [IntPtr]::Zero)
+            workspaceTitle=($Relaunched.MainWindowTitle -ceq 'FundsTrace · 资金流水追踪与关联分析')
+            windowEnabled=[FundsTraceUpdateWindowState]::IsWindowEnabled($Relaunched.MainWindowHandle)
+            windowVisible=[FundsTraceUpdateWindowState]::IsWindowVisible($Relaunched.MainWindowHandle)
+            responding=$Relaunched.Responding; requestSent=$false; exited=$false }
+        $Report.productionUpdateClose.requestSent = $Relaunched.CloseMainWindow()
+        if (-not $Report.productionUpdateClose.requestSent) { throw 'Updated application did not accept a normal close request.' }
+        $Report.productionUpdateClose.exited = $Relaunched.WaitForExit(30000)
+        if (-not $Report.productionUpdateClose.exited) { throw 'Updated application did not finish its normal close.' }
+        $Report.checks.productionUpdateRelaunchClose = 'passed'
+    } else {
+        # Let NSIS find the existing custom directory from its registered identity.
+        [void](Invoke-Native -FileName $InstallerPath -RawArguments '/S' -TimeoutSeconds 240)
+    }
     Assert-Installed $CurrentVersion
     Assert-Sentinel
     $Report.currentVersion = $CurrentVersion; $Report.checks.upgradedSameIdentity = 'passed'

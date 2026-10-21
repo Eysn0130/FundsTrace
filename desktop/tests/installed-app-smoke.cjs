@@ -11,6 +11,7 @@ const os = require('node:os');
 const { performance } = require('node:perf_hooks');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
 const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
+const { runInstalledProductionUpdateJourney } = require('./installed-production-update-journey.cjs');
 const { FAILURE_CODES } = require('../updates.cjs');
 
 const SENTINEL = 'FundsTrace synthetic installer lifecycle v1\n';
@@ -27,7 +28,7 @@ const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, f
     offlineEnforcement: 'not-measured-by-this-helper; see standard-user compatibility report',
     simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
 const timings = report.timings, owned = [];
-let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, updateFixture;
+let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, updateFixture, productionUpdate = false;
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function bounded(promise, ms) {
@@ -94,13 +95,15 @@ function argumentsOf() {
   const installRoot = args.shift(), values = {};
   while (args.length) {
     const key = args.shift(), value = args.shift();
-    assert.ok(['--report', '--screenshot', '--update-fixture'].includes(key) && !values[key] && value && path.isAbsolute(value));
+    assert.ok(['--report', '--screenshot', '--update-fixture', '--production-update'].includes(key) && !values[key] && value && path.isAbsolute(value));
     values[key] = path.resolve(value);
   }
   assert.ok(installRoot && path.isAbsolute(installRoot) && values['--report']);
   assert.equal(path.extname(values['--report']).toLowerCase(), '.json');
   if (values['--screenshot']) assert.equal(path.extname(values['--screenshot']).toLowerCase(), '.png');
-  return { installRoot: path.resolve(installRoot), reportPath: values['--report'], screenshot: values['--screenshot'], updateFixture: values['--update-fixture'] };
+  assert.ok(!values['--update-fixture'] || !values['--production-update']);
+  return { installRoot: path.resolve(installRoot), reportPath: values['--report'], screenshot: values['--screenshot'],
+    updateFixture: values['--update-fixture'], productionUpdate: values['--production-update'] };
 }
 function within(root, value) {
   const relative = path.relative(root, value);
@@ -270,6 +273,7 @@ async function portClosed(port) {
     return value;
   });
   reportPath = config.reportPath;
+  productionUpdate = !!config.productionUpdate;
   await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' }); reportOwned = true;
   if (config.updateFixture) updateFixture = await check('isolatedUpdateHttpsFixture', () => createUpdateFixture(config.updateFixture));
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
@@ -335,6 +339,18 @@ async function portClosed(port) {
       } catch { return false; }
     }, 15000);
   });
+  if (config.productionUpdate) {
+    // The real prior release predates current graph/icon checks. Exercise only
+    // its shipped updater here; the lifecycle verifies the new install below.
+    report.updateCycle = await runInstalledProductionUpdateJourney({ configFile: config.productionUpdate,
+      primary, evaluate, clickElement, cdp, page, check, screenshot: config.screenshot,
+      observations: report.productionUpdateObservations = {} });
+    await check('productionUpdateNoPageExceptions', async () => {
+      assert.ok(!instrumentationFailed); assert.equal(errorCount, 0);
+    });
+    await check('productionUpdateOldBackendReleased', () => until(() => portClosed(Number(new URL(page.origin).port)), 15000));
+    report.status = 'passed'; return;
+  }
   report.workspaceWindowIcons = await check('installedWorkspaceWindowIcon', () => windowIcons(config.installRoot, primary.child.pid, 1,
     config.screenshot ? `${config.screenshot.slice(0, -4)}.taskbar.png` : undefined));
   await check('nodeSelectionModuleLoaded', async () => {
@@ -510,6 +526,18 @@ async function portClosed(port) {
   const detail = safeJourneyFailure(error) || (['UPDATE_DIALOG_TIMEOUT','UPDATE_DIALOG_FAILED','UPDATE_JOURNEY_TIMEOUT'].includes(error?.message)
     ? { step: 'update', kind: error.message } : null);
   if (detail) report.failureDetail = detail;
+  if (productionUpdate) {
+    const codes = ['ERR_ASSERTION', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ENOENT',
+      'ECONNREFUSED', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'];
+    const kinds = ['UPDATE_JOURNEY_TIMEOUT', 'UPDATE_DIALOG_TIMEOUT', 'UPDATE_DIALOG_FAILED'];
+    report.productionFailure = { code: codes.includes(error?.code) ? error.code : 'UNKNOWN',
+      kind: kinds.includes(error?.message) ? error.message : 'UNCLASSIFIED' };
+    try {
+      const value = await evaluate('window.FundsDesktopUpdates.state()');
+      report.productionFailure.updatePhase = ['idle','checking','available','downloading','error','ready','installing','current'].includes(value?.phase) ? value.phase : 'unknown';
+      report.productionFailure.updateErrorCode = FAILURE_CODES.includes(value?.errorCode) ? value.errorCode : 'UNKNOWN';
+    } catch { /* The old renderer may already have exited normally. */ }
+  }
 }).finally(async () => {
   // Best effort graceful close, then only handles spawned above. No process-name
   // discovery, user-data removal, or termination of unrelated installations.
