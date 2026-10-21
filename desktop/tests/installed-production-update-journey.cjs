@@ -19,7 +19,10 @@ async function until(inspect, ms = 30000) {
 function publicFeed() {
   return new Promise((resolve, reject) => {
     const request = https.get(FEED, { timeout: 30000 }, response => {
-      if (response.statusCode !== 200) { response.resume(); reject(new Error('PRODUCTION_FEED_RESPONSE')); return; }
+      if (response.statusCode !== 200) {
+        response.resume(); const error = new Error('PRODUCTION_FEED_RESPONSE');
+        error.statusCode = response.statusCode; reject(error); return;
+      }
       const chunks = []; let bytes = 0;
       response.on('data', chunk => {
         bytes += chunk.length;

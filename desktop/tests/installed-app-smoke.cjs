@@ -28,7 +28,7 @@ const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, f
     offlineEnforcement: 'not-measured-by-this-helper; see standard-user compatibility report',
     simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
 const timings = report.timings, owned = [];
-let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, updateFixture;
+let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, updateFixture, productionUpdate = false;
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function bounded(promise, ms) {
@@ -273,6 +273,7 @@ async function portClosed(port) {
     return value;
   });
   reportPath = config.reportPath;
+  productionUpdate = !!config.productionUpdate;
   await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' }); reportOwned = true;
   if (config.updateFixture) updateFixture = await check('isolatedUpdateHttpsFixture', () => createUpdateFixture(config.updateFixture));
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
@@ -524,6 +525,15 @@ async function portClosed(port) {
   const detail = safeJourneyFailure(error) || (['UPDATE_DIALOG_TIMEOUT','UPDATE_DIALOG_FAILED','UPDATE_JOURNEY_TIMEOUT'].includes(error?.message)
     ? { step: 'update', kind: error.message } : null);
   if (detail) report.failureDetail = detail;
+  if (productionUpdate) {
+    const codes = ['ERR_ASSERTION', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ENOENT',
+      'ECONNREFUSED', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'];
+    const kinds = ['PRODUCTION_FEED_RESPONSE', 'PRODUCTION_FEED_SIZE', 'PRODUCTION_FEED_TIMEOUT',
+      'PRODUCTION_FEED_METADATA', 'UPDATE_JOURNEY_TIMEOUT', 'UPDATE_DIALOG_TIMEOUT', 'UPDATE_DIALOG_FAILED'];
+    report.productionFailure = { code: codes.includes(error?.code) ? error.code : 'UNKNOWN',
+      kind: kinds.includes(error?.message) ? error.message : 'UNCLASSIFIED',
+      httpStatus: Number.isInteger(error?.statusCode) && error.statusCode >= 100 && error.statusCode <= 599 ? error.statusCode : null };
+  }
 }).finally(async () => {
   // Best effort graceful close, then only handles spawned above. No process-name
   // discovery, user-data removal, or termination of unrelated installations.

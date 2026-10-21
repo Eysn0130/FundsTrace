@@ -479,9 +479,19 @@ try {
         if ($null -eq $Relaunched) { throw 'Published update did not automatically reopen the new version.' }
         $Report.checks.productionUpdateAutoRelaunch = 'passed'
         $Stage = 'productionUpdateRelaunchClose'
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class FundsTraceUpdateWindowState {
+  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr window);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+}
+'@
         $Relaunched.Refresh()
         $Report.productionUpdateClose = [ordered]@{ windowPresent=($Relaunched.MainWindowHandle -ne [IntPtr]::Zero)
             workspaceTitle=($Relaunched.MainWindowTitle -ceq 'FundsTrace · 资金流水追踪与关联分析')
+            windowEnabled=[FundsTraceUpdateWindowState]::IsWindowEnabled($Relaunched.MainWindowHandle)
+            windowVisible=[FundsTraceUpdateWindowState]::IsWindowVisible($Relaunched.MainWindowHandle)
             responding=$Relaunched.Responding; requestSent=$false; exited=$false }
         $Report.productionUpdateClose.requestSent = $Relaunched.CloseMainWindow()
         if (-not $Report.productionUpdateClose.requestSent) { throw 'Updated application did not accept a normal close request.' }
