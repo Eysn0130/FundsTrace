@@ -7,7 +7,7 @@ const markup = readFileSync(new URL('../static/index.html', import.meta.url), 'u
 const source = readFileSync(new URL('../static/ribbon.js', import.meta.url), 'utf8');
 
 // Minimal DOM uses the shipped markup, with no browser or frontend npm dependency.
-function harness() {
+function harness(width = 1600) {
   let doc;
   const all = [], events = [], listeners = new Map();
   const matches = (node, selector) => {
@@ -31,7 +31,7 @@ function harness() {
     hasAttribute(key) { return this.attrs.has(key); }
     getAttribute(key) { return this.attrs.get(key) ?? null; }
     setAttribute(key, value) { this.attrs.set(key, String(value)); }
-    appendChild(node) { if (node.parentElement) node.parentElement.children = node.parentElement.children.filter(c => c !== node); this.children.push(node); node.parentElement = this; }
+    appendChild(node) { if (doc?.activeElement && node.contains(doc.activeElement)) doc.activeElement = null; if (node.parentElement) node.parentElement.children = node.parentElement.children.filter(c => c !== node); this.children.push(node); node.parentElement = this; }
     querySelectorAll(selector) { const out = []; const visit = n => { for (const child of n.children) { if (matches(child, selector)) out.push(child); visit(child); } }; visit(this); return out; }
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
     closest(selector) { for (let node = this; node; node = node.parentElement) if (selector === '[hidden]' ? node.hidden : matches(node, selector)) return node; return null; }
@@ -56,7 +56,7 @@ function harness() {
   }
   doc = { activeElement: null, createElement: tag => new Element(tag), getElementById: id => all.find(n => n.id === id), querySelectorAll: selector => all.filter(n => matches(n, selector)), querySelector: selector => all.find(n => matches(n, selector)), addEventListener(name, fn) { const list = listeners.get(name) || []; list.push(fn); listeners.set(name, list); }, dispatchEvent(event) { events.push(event); for (const fn of listeners.get(event.type) || []) fn(event); }, fire(name, detail = {}) { const event = { preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...detail }; for (const fn of listeners.get(name) || []) fn(event); return event; } };
   const windowHandlers = new Map();
-  const window = { document: doc, innerWidth: 1200, innerHeight: 800, CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } }, addEventListener(name, fn) { const list = windowHandlers.get(name) || []; list.push(fn); windowHandlers.set(name, list); } };
+  const window = { document: doc, innerWidth: width, innerHeight: 800, CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } }, addEventListener(name, fn) { const list = windowHandlers.get(name) || []; list.push(fn); windowHandlers.set(name, list); } };
   vm.runInNewContext(source, { window });
   return { doc, window, events, api: window.FundsRibbon, node: id => doc.getElementById(id), fireWindow(name, detail = {}) { for (const fn of windowHandlers.get(name) || []) fn(detail); } };
 }
@@ -222,4 +222,47 @@ test('expanded and compact details entries share exact selection availability an
   assert.deepEqual(h.events.map(event => event.detail.command), ['inspectSelection', 'inspectSelection']);
   h.api.setStatus({ selectionCount: 2, edgeSelectionCount: 0 });
   for (const button of buttons) assert.equal(button.disabled, true, 'a stale command override cannot enable multiple objects');
+});
+
+
+test('narrow expanded ribbons keep forms reachable and preserve values through resize', () => {
+  const h = harness(960), font = h.node('labelFontSize');
+  h.api.activateTab('style');
+  assert.equal(h.api.getState().dense, true);
+  assert.equal(h.node('editorToolbar').classList.contains('is-dense'), true);
+  for (const id of ['textStylePopover', 'edgeStylePopover', 'toolbarDisplayExtra']) {
+    assert.equal(h.node(id).getAttribute('role'), 'dialog');
+    assert.equal(h.node(id).hidden, true);
+  }
+  h.node('btnTextStyle').click();
+  assert.equal(h.node('textStylePopover').hidden, false);
+  font.value = '20'; font.focus();
+  h.window.innerWidth = 1800; h.fireWindow('resize');
+  assert.equal(h.api.getState().dense, false);
+  assert.equal(h.node('textStylePopover').hidden, false);
+  assert.equal(h.node('textStylePopover').getAttribute('role'), 'group');
+  assert.equal(h.node('labelFontSize'), font);
+  font.focus(); h.window.innerWidth = 1850; h.fireWindow('resize');
+  assert.equal(h.doc.activeElement, font, 'resizing without moving the bundle keeps native input focus');
+  h.window.innerWidth = 960; h.fireWindow('resize');
+  assert.equal(h.node('textStylePopover').hidden, true);
+  assert.equal(h.doc.activeElement, h.node('btnTextStyle'));
+  h.node('btnTextStyle').click();
+  assert.equal(h.node('textStylePopover').hidden, false);
+  assert.equal(font.value, '20');
+  assert.equal(h.events.length, 0, 'layout changes never issue graph commands');
+});
+
+test('wide windows also use dense tools when the active panel does not fit its measured slot', () => {
+  const h = harness(1800), panel = h.node('ribbonPanel-style');
+  panel.clientWidth = 1800; panel.scrollWidth = 1840;
+  h.api.activateTab('style');
+  assert.equal(h.api.getState().dense, true);
+  assert.equal(h.node('textStylePopover').hidden, true);
+  h.node('btnTextStyle').click();
+  assert.equal(h.node('textStylePopover').hidden, false);
+  panel.scrollWidth = 1750; h.fireWindow('resize');
+  assert.equal(h.api.getState().dense, false);
+  assert.equal(h.node('textStylePopover').getAttribute('role'), 'group');
+  assert.equal(h.events.length, 0);
 });

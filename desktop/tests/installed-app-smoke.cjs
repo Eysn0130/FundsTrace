@@ -545,6 +545,39 @@ async function portClosed(port) {
     report.titlebar.journey = await runInstalledTitlebarJourney({cdp,page,probe:titlebarProbe,evaluate,until,
       nativeAction:options=>nativeStartupWindow(config.installRoot,primary.child.pid,options)});
   });
+  await check('installedMinimumWorkbenchToolsWithoutHorizontalScroll', async () => {
+    // This checks the installed renderer at the minimum CSS width. It does not
+    // change Windows system DPI or claim Win11 pointer/Snap acceptance.
+    await cdp.send('Emulation.setDeviceMetricsOverride', {width:960,height:640,deviceScaleFactor:1,mobile:false}, page.sessionId);
+    const inspect = `(() => {
+      const panel = [...document.querySelectorAll('.ribbon-panel')].find(node => !node.hidden)
+        || document.querySelector('#ribbonCompact');
+      const rect = panel.getBoundingClientRect();
+      return panel.scrollWidth <= panel.clientWidth + 1
+        && [...panel.querySelectorAll('button,a,input,select')].filter(node => node.getClientRects().length).every(node => {
+          const control = node.getBoundingClientRect();
+          return control.left >= rect.left - 1 && control.right <= rect.right + 1
+            && control.top >= rect.top - 1 && control.bottom <= rect.bottom + 1;
+        })
+        && document.querySelector('#topbar').scrollWidth <= innerWidth + 1
+        && !document.querySelector('#flowHorizontalPosition')
+        && document.querySelectorAll('#flowTable thead th').length === 7;
+    })()`;
+    try {
+      for (const tab of ['common','trace','style','view']) {
+        await clickElement(`document.querySelector('#ribbonTab-${tab}')`);
+        await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+        assert.equal(await evaluate(inspect), true, `MINIMUM_RIBBON_${tab.toUpperCase()}_OVERFLOW`);
+      }
+      await clickElement(`document.querySelector('[data-ribbon-collapse="true"]')`);
+      await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      assert.equal(await evaluate(inspect), true, 'MINIMUM_COMPACT_RIBBON_OVERFLOW');
+    } finally {
+      await evaluate(`document.querySelector('#workspace').fundsWorkspaceShell.setToolbarCollapsed(false);
+        window.FundsRibbon.activateTab('common')`);
+      await cdp.send('Emulation.clearDeviceMetricsOverride', {}, page.sessionId);
+    }
+  });
   await check('syntheticWindowContent', async () => {
     assert.equal(await evaluate(`(() => {
       const select = document.querySelector('#caseSelect');

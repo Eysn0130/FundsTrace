@@ -142,7 +142,6 @@ function harness() {
   add(tools, 'resultInfo'); add(tools, 'btnFlowOverview', 'button');
   add(tab, 'flowTableHint'); const viewport = add(tab, 'flowTableScroll');
   const table = add(viewport, 'flowTable', 'table'); add(table, 'flowSelectionHeader', 'th'); add(table, 'flowTbody', 'tbody');
-  add(tab, 'flowHorizontal', 'div', 'flow-horizontal-scroll');
   const pager = add(tab, 'flowPager', 'div', 'pager');
   add(pager, 'btnPrev', 'button'); add(pager, 'pageInfo'); add(pager, 'btnNext', 'button');
   const overview = add(doc.body, 'flowOverview'); overview.style.display = 'none';
@@ -245,6 +244,8 @@ test('overview moves the same table nodes and retains separate scroll positions 
   const f = harness(); await f.search(); f.toggleAnchor(1, true);
   f.setStatus({ confirmedIds: ['2'], desiredIds: ['2'] });
   const viewport = f.element('flowTableScroll'), table = f.element('flowTable'), row = f.rows()[0];
+  assert.equal(f.doc.querySelector('.flow-horizontal-scroll'), null, 'the flow table has only its native scroll viewport');
+  assert.equal(viewport.fire('keydown', { key: 'ArrowRight' }).defaultPrevented, false, 'native horizontal keys remain available');
   viewport.scrollLeft = 83; viewport.scrollTop = 41;
   f.open();
   assert.equal(viewport.parentElement, f.element('flowOverviewContent'));
@@ -259,6 +260,8 @@ test('overview moves the same table nodes and retains separate scroll positions 
   assert.equal(viewport.scrollLeft, 83); assert.equal(viewport.scrollTop, 41);
   assert.equal(f.doc.activeElement, f.element('btnFlowOverview'));
   f.open(); assert.equal(viewport.scrollLeft, 17); assert.equal(viewport.scrollTop, 200);
+  assert.equal(f.doc.querySelector('.flow-horizontal-scroll'), null, 'opening the overview does not add another scroll control');
+  assert.equal(viewport.fire('keydown', { key: 'ArrowLeft' }).defaultPrevented, false);
 });
 
 test('overview checkbox and row Space request membership once while closing leaves the sent operation alive', async () => {

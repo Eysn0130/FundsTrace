@@ -13,12 +13,13 @@
     const compact = doc.getElementById('ribbonCompact');
     const panelContainer = doc.getElementById('ribbonPanels');
     const tabbar = doc.getElementById('ribbonTabs')?.parentElement;
-    const status = { tab: 'common', collapsed: false, selectionCount: 0, edgeSelectionCount: 0, busy: false, cameraReady:false };
+    const status = { tab: 'common', collapsed: false, dense: false, selectionCount: 0, edgeSelectionCount: 0, busy: false, cameraReady:false };
     const commandOverrides = new Map();
     const mixedOptions = new WeakMap(), mixedTitles = new WeakMap();
     let currentPopover = null;
 
-    const adaptiveInline = panel => panel.classList.contains('ribbon-adaptive-popover') && !status.collapsed;
+    const denseLayout = () => (toolbar.clientWidth || root.innerWidth) <= 1500;
+    const adaptiveInline = panel => panel.classList.contains('ribbon-adaptive-popover') && !status.collapsed && !status.dense;
     function validFocus(node) {
       return node && node.isConnected !== false && !node.disabled && !node.inert &&
         (!node.getClientRects || node.getClientRects().length);
@@ -28,10 +29,11 @@
         const panel = doc.getElementById(trigger.dataset.ribbonPopover);
         if (!panel) continue;
         const open = trigger.getAttribute('aria-expanded') === 'true';
-        if (open && (restore || panel.contains(doc.activeElement)) && validFocus(trigger)) trigger.focus();
+        const inline = adaptiveInline(panel);
+        if ((open || !inline && panel.contains(doc.activeElement)) &&
+            (restore || panel.contains(doc.activeElement)) && validFocus(trigger)) trigger.focus();
         trigger.setAttribute('aria-expanded', 'false');
         panel.classList.remove('is-open');
-        const inline = adaptiveInline(panel);
         panel.setAttribute('role', inline ? 'group' : 'dialog');
         panel.hidden = !inline;
         panel.inert = panel.hidden;
@@ -62,6 +64,8 @@
       currentPopover = { panel, trigger };
     }
     function render() {
+      status.dense = denseLayout();
+      toolbar.classList[status.dense ? 'add' : 'remove']('is-dense');
       closePopovers();
       for (const panel of panels) {
         const active = !status.collapsed && panel.id === `ribbonPanel-${status.tab}`;
@@ -82,10 +86,18 @@
         const parent = status.collapsed ?
           compact.querySelector(`[data-ribbon-slot="${name}"]`) || doc.querySelector(`[data-ribbon-compact-slot="${name}"]`) :
           doc.getElementById(`ribbonPanel-${bundle.dataset.ribbonHome}`)?.querySelector(`[data-ribbon-slot="${name}"]`);
-        (parent || storage).appendChild(bundle);
+        const destination = parent || storage;
+        if (bundle.parentElement !== destination) destination.appendChild(bundle);
       }
-      // Adaptive panels become inline only in the expanded ribbon.
+      // Keep the same form controls in popovers when the ribbon needs a denser layout.
       closePopovers();
+      const activePanel = panels.find(panel => !panel.hidden);
+      if (!status.collapsed && !status.dense && activePanel?.clientWidth > 0 &&
+          activePanel.scrollWidth > activePanel.clientWidth + 1) {
+        status.dense = true;
+        toolbar.classList.add('is-dense');
+        closePopovers();
+      }
       const active = doc.activeElement;
       if (active && toolbar.contains(active) && active.closest?.('[hidden]')) {
         (status.collapsed ? compact.querySelector('[data-ribbon-collapse]') : tabs.find(tab => tab.dataset.ribbonTab === status.tab))?.focus();
@@ -227,7 +239,7 @@
         closePopovers(true);
       }
     });
-    root.addEventListener('resize', () => closePopovers());
+    root.addEventListener('resize', () => render());
     for (const node of [...panels, compact]) node.addEventListener('scroll', () => closePopovers());
     root.addEventListener('fundstrace:workspace-resize', event => setCollapsed(event.detail.toolbarCollapsed));
     const api = { activateTab, setCollapsed, closePopovers, setStatus, setValues, setCommandEnabled, getState: () => ({ ...status }) };
