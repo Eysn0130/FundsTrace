@@ -94,8 +94,8 @@ npm --prefix frontend run build
 
 ## 许可 / License
 
-当前维护版本采用自定义的**循迹 FundsTrace 社区使用与源码许可协议 1.0**，源码可见，非 OSI 标准开源。个人非商业使用、修复与增功能免费；机构、商业及对外在线服务须取得许可。一般条款下对外分发修改版须公开完整对应源码并保留通知，未经许可不得单独换皮改名、冒充或转售；指定贡献者特许及历史 MIT 权利见许可说明。许可条件与启动授权码分别处理，现有免激活政策不变。
+当前维护版本采用自定义的**循迹 FundsTrace 社区使用与源码许可协议 1.0**，源码可见，非 OSI 标准开源。个人非商业使用和开发免费；机构、商业及对第三方在线服务须事先取得书面许可。一般条款下分发修改版须公开完整对应源码并保留通知，禁止未经授权的单独换皮、冒充与转售。历史 MIT、第三方权利及指定贡献者特许见许可说明；免激活启动不等于已获法律授权。
 
-The maintained version uses the custom **FundsTrace Community Use and Source License 1.0**, a source-available license that is not OSI-approved. Personal noncommercial use and development are free; institutional, commercial and third-party online services require permission. Under the general terms, distributed modifications require complete corresponding source and notices; unauthorized standalone rebranding, impersonation and resale are prohibited. See the licensing guide for designated-contributor permissions and preserved MIT rights. The activation-free startup policy remains unchanged.
+The maintained version uses the custom **FundsTrace Community Use and Source License 1.0**, a source-available license that is not OSI-approved. Personal noncommercial use and development are free; institutional or commercial use and online services for third parties require prior written permission. General distribution terms require complete corresponding source for modifications and retained notices, and prohibit unauthorized standalone rebranding, impersonation and resale. See the guide for historical MIT, third-party rights and designated-contributor permissions. Activation-free startup does not grant legal authorization.
 
 [中文协议（优先）](LICENSE) · [English license](LICENSE.en) · [中文许可说明](docs/licensing.md) · [English licensing guide](docs/licensing.en.md) · [历史 MIT](LICENSES/MIT.txt) · [第三方许可与来源](THIRD_PARTY_NOTICES.md)
