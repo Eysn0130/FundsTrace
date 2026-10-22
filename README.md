@@ -1,6 +1,6 @@
-<h1 align="center"><img alt="" src="docs/brand/icons/icon-256.png" width="112" height="112"><br>FundsTrace</h1>
+<h1 align="center"><img alt="" src="docs/brand/icons/icon-256.png" width="112" height="112"><br>循迹 FundsTrace</h1>
 
-<p align="center"><strong>让资金往来，清晰可见。</strong><br>本地资金流水追踪与关联分析工具</p>
+<p align="center"><strong>循着资金轨迹，理清往来脉络。</strong><br>本地资金追踪与案件分析工具<br><sub>Local transaction tracing and case analysis.</sub></p>
 
 <p align="center">
   <a href="https://github.com/Eysn0130/FundsTrace/releases/latest"><img src="https://img.shields.io/github/v/release/Eysn0130/FundsTrace?style=flat-square&amp;color=24558A&amp;label=release" alt="GitHub 最新发布版本"></a>
@@ -8,7 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Source--Available%201.0-151A1E?style=flat-square" alt="许可证：循迹 FundsTrace 社区使用与源码许可协议 1.0（源码可见）"></a>
 </p>
 
-<p align="center"><strong><a href="https://github.com/Eysn0130/FundsTrace/releases/latest">下载 Windows 版</a></strong> &nbsp; · &nbsp; <a href="docs/workspace-guide.md">使用指南</a> &nbsp; · &nbsp; <a href="#看看实际操作">操作演示</a></p>
+<p align="center"><strong><a href="https://github.com/Eysn0130/FundsTrace/releases/latest">下载 Windows 版</a></strong> &nbsp; · &nbsp; <a href="docs/workspace-guide.md">使用指南</a> &nbsp; · &nbsp; <a href="#操作演示">操作演示</a></p>
 
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/media/showcase/startup-wait-poster.png">
@@ -19,15 +19,26 @@
 
 ## 从流水到图谱
 
-下载 [Windows x64 安装包](https://github.com/Eysn0130/FundsTrace/releases/latest)，安装后即可开始。支持覆盖安装，卸载默认保留案件数据。[安装与版本说明](docs/desktop-delivery.md)
+循迹 FundsTrace 把流水核对、账户关系和交易路径放在同一个本地工作台中，帮助你沿资金来源与去向整理分析线索。数据按案件组织，图谱与流水可以相互核对。
 
-1. **导入数据**：新建案件，选择 CSV / XLSX，核对字段与本方账号。
-2. **分析追踪**：筛选交易，追踪资金来源与去向，查看账户关系和交易路径。
-3. **整理导出**：调整布局与标注，保存画布，导出图谱、流水或报告。
+| 工作环节 | 你可以做什么 |
+| --- | --- |
+| 流水核对 | 导入 CSV / XLSX，确认字段与本方账号，按账号、金额和日期等条件筛选交易 |
+| 资金追踪 | 沿来源或去向追踪账户往来，结合路径、环路等分析结果复核线索 |
+| 图谱整理 | 调整布局、添加标注，用多个画布保存不同的分析视角 |
+| 结果交付 | 导出图谱、追踪流水和分析报告，通过案件包迁移案件 |
+
+## 快速上手
+
+下载 [Windows x64 安装包](https://github.com/Eysn0130/FundsTrace/releases/latest)，安装后开始使用。当前提供未签名预览版，安装与升级说明见[桌面交付文档](docs/desktop-delivery.md)。
+
+1. **导入流水**：新建案件，选择 CSV / XLSX，核对预览、字段和本方账号。
+2. **追踪资金**：筛选交易，选择追踪起点和方向，查看账户关系与交易路径。
+3. **保存结果**：整理图谱与标注，保存画布，导出所需的图谱、流水或报告。
 
 [下载合成样例 CSV](docs/examples/harbor-path/fundstrace-synthetic.csv?raw=1) · [XLSX](docs/examples/harbor-path/fundstrace-synthetic.xlsx?raw=1) · [跟做步骤与示例结果](docs/examples/harbor-path/README.md)
 
-## 看看实际操作
+## 操作演示
 
 ### 导入与核对
 

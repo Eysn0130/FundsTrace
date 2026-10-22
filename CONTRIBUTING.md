@@ -72,7 +72,7 @@ npm --prefix desktop test
 npm --prefix desktop run synthetic
 ```
 
-Electron 44 运行时会在首次运行时下载；安装 NPM 包本身不证明二进制已安装。普通桌面启动为 `npm --prefix desktop start`，数据在自身 `userData/data`，无需配置产品授权。Windows x64 原生构建与 `-Installer`、手动 Actions、安装生命周期证据统一见 [桌面交付](docs/desktop-delivery.md)；不要将本机源码预览当作 Windows 安装验收。已发布 alpha.3 的历史授权与保留的 FT2／HMAC 验签、私钥和独立 Issuer 见 [历史授权维护](docs/license-activation.md)。
+Electron 44 运行时会在首次运行时下载；安装 NPM 包本身不证明二进制已安装。普通桌面启动为 `npm --prefix desktop start`，数据在自身 `userData/data`，无需配置产品授权。Windows x64 原生构建与 `-Installer`、手动 Actions、安装生命周期证据统一见 [桌面交付](docs/desktop-delivery.md)；不要将本机源码预览当作 Windows 安装验收。已发布 alpha.3 的历史授权与保留的 FT2／HMAC 验签、私钥和独立 Issuer 见 [历史授权维护](docs/activation-history.md)。
 
 需要普通浏览器服务时，显式选择独立运行目录：
 
