@@ -86,7 +86,7 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 安装版另识别持久的本地标题层，核对32 DIP、原生 Window Controls Overlay 实际安全区、菜单与拖动命中，确认启动等待、淡出和工作台共享同一标题document。检查真实业务缩放／重载／页面切换后，标题字号和位置不变；分析新窗按唯一新增标题target识别，核对独立布局；关闭其标题层后，必须同时释放该分析内容和标题target，并保留主窗口两个target，以记录实际生命周期耦合。Electron不实现Chrome的 `Browser.getWindowForTarget`，检查不依赖该协议，也不将renderer target或相同尺寸当作原生HWND绑定。原生输入helper按已安装EXE/PID、前台窗口、WM_NCHITTEST和输入桌面约束执行SendInput，记录拖动、原生最小化／最大化／还原／关闭按钮及真实快捷键结果；从最小化恢复明确记录为系统ShowWindow命令。缺少可交互桌面时记录unavailable，不能把CDP关窗、设置bounds或CSS仿真当作真实按钮操作通过。
 
-[原生窗口 helper](../scripts/test-windows-startup-window.ps1) 按安装 EXE 的 PID 和文件路径核对归属，读取真实窗口、客户区、显示器工作区、窗口 DPI 及最小跟踪尺寸，再调整并回读最小窗口。它不修改系统显示模式或缩放；20 组 CSS／DPR 仿真也不等同于 20 种 Windows 显示设置。`native-installed-app.startup-*.png` 包含启动 renderer 表面截图，以及交互桌面允许时的默认／最小原生窗口合成截图，随候选 SHA-256 清单保留；无法截取或未人工查看时不记录外观验收通过。暂缓业务执行的检查不作为正常冷启动性能数据。
+[原生窗口 helper](../scripts/test-windows-startup-window.ps1) 按安装 EXE 的 PID 和文件路径核对归属，读取真实窗口、客户区、显示器工作区、窗口 DPI 及最小跟踪尺寸，再调整并回读最小窗口。hidden/thickFrame普通恢复态的Electron逻辑边界与原始HWND外框不同：报告保留GetWindowRect和WM_GETMINMAXINFO原值，另按同次屏幕客户区的实测边距还原逻辑窗口／最小尺寸；Resize按该边距转换，最后以实际回读验收。DWM可见边界仅用于截图，不替代Electron逻辑尺寸。它不修改系统显示模式或缩放；20 组 CSS／DPR 仿真也不等同于 20 种 Windows 显示设置。`native-installed-app.startup-*.png` 包含启动 renderer 表面截图，以及交互桌面允许时的默认／最小原生窗口合成截图，随候选 SHA-256 清单保留；无法截取或未人工查看时不记录外观验收通过。暂缓业务执行的检查不作为正常冷启动性能数据。
 
 上述自动检查仍仅覆盖 Windows hosted runner。它不证明 Windows 10／11 任务栏最终外观、既有固定图标缓存、真实系统 DPI 或 SmartScreen；没有可用交互桌面时不能把这些项目记为通过。候选构建默认不创建 Tag 或 Release，未获发布授权时仅保留 Actions 产物，现有 Latest 和下载入口保持原版本。
 

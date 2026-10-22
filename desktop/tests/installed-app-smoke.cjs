@@ -10,7 +10,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { performance } = require('node:perf_hooks');
 const { pathToFileURL } = require('node:url');
-const { startupTarget, createInstalledStartupProbe, assertNativeClientGeometry } = require('./installed-startup-journey.cjs');
+const { startupTarget, createInstalledStartupProbe, assertNativeClientGeometry, assertNativeWindowBounds } = require('./installed-startup-journey.cjs');
 const { titlebarTarget, createInstalledTitlebarProbe, runInstalledTitlebarJourney, safeTitlebarFailure } = require('./installed-titlebar-journey.cjs');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
 const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
@@ -129,16 +129,9 @@ async function nativeStartupBounds(config, primary, target) {
   const scale = initial.scaleFactor, area = initial.workArea;
   const expected = { width:Math.min(Math.max(960, Math.min(1440, area.width / scale - 64)), area.width / scale),
     height:Math.min(Math.max(640, Math.min(940, area.height / scale - 64)), area.height / scale) };
-  const near = (actual, wanted) => Math.abs(actual - wanted) <= 2;
-  const inArea = result => {
-    assert.ok(result.window.x >= result.workArea.x - 1 && result.window.y >= result.workArea.y - 1
-      && result.window.x + result.window.width <= result.workArea.x + result.workArea.width + 1
-      && result.window.y + result.window.height <= result.workArea.y + result.workArea.height + 1);
-  };
-  inArea(initial);
-  assert.ok(near(initial.window.width / scale, expected.width) && near(initial.window.height / scale, expected.height));
   const min = { width:Math.min(960, area.width / scale), height:Math.min(640, area.height / scale) };
-  assert.ok(near(initial.minTrack.width / scale, min.width) && near(initial.minTrack.height / scale, min.height));
+  result.expectedInitialDip={...expected,minWidth:min.width,minHeight:min.height};
+  assertNativeWindowBounds(initial,result.expectedInitialDip);
   const client = async native => {
     await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))', target);
     const value = await evaluate(`({width:innerWidth,height:innerHeight,dpr:devicePixelRatio,
@@ -156,13 +149,13 @@ async function nativeStartupBounds(config, primary, target) {
   result.step = 'minimumResize';
   const minimum = await observe({ action:'Resize', widthDip:Math.round(min.width), heightDip:Math.round(min.height) });
   result.minimum = minimum;
-  inArea(minimum);
-  assert.ok(near(minimum.window.width / scale, min.width) && near(minimum.window.height / scale, min.height));
+  assertNativeWindowBounds(minimum,{...min,minWidth:min.width,minHeight:min.height});
   result.minimumClient = await client(minimum);
   result.step = 'minimumCapture';
   if (config.screenshot) result.minimumCapture = await observe({ action:'Capture', screenshotPath:`${config.screenshot.slice(0, -4)}.startup-native-minimum.png` });
   result.step = 'restoreDefault';
-  result.restored = await observe({ action:'Resize', widthDip:Math.round(initial.window.width / scale), heightDip:Math.round(initial.window.height / scale) });
+  result.restored = await observe({ action:'Resize', widthDip:Math.round(initial.electronWindow.width / scale), heightDip:Math.round(initial.electronWindow.height / scale) });
+  assertNativeWindowBounds(result.restored,result.expectedInitialDip);
   await client(result.restored);
   result.step = 'completed';
   return result;

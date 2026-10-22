@@ -33,9 +33,16 @@ function Test-WithinRoot([string]$Path, [string]$Root) {
         $Path.StartsWith($Root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
 }
 function Convert-Rect($Rectangle) {
+    if ($null -eq $Rectangle) { return $null }
     return [ordered]@{ x = $Rectangle.X; y = $Rectangle.Y; width = $Rectangle.Width; height = $Rectangle.Height }
 }
 function Convert-Evidence($Evidence) {
+    $ElectronMinTrack = $null
+    $FrameInsets = $null
+    if ($Evidence.NormalizationAvailable) {
+        $ElectronMinTrack = [ordered]@{ width = $Evidence.ElectronMinTrackWidth; height = $Evidence.ElectronMinTrackHeight }
+        $FrameInsets = [ordered]@{ left = $Evidence.FrameInsets.Left; top = $Evidence.FrameInsets.Top; right = $Evidence.FrameInsets.Right; bottom = $Evidence.FrameInsets.Bottom }
+    }
     return [ordered]@{
         window = (Convert-Rect $Evidence.Window)
         client = (Convert-Rect $Evidence.Client)
@@ -43,6 +50,11 @@ function Convert-Evidence($Evidence) {
         dpi = $Evidence.Dpi
         scaleFactor = $Evidence.Dpi / 96.0
         minTrack = [ordered]@{ width = $Evidence.MinTrackWidth; height = $Evidence.MinTrackHeight }
+        normalizationAvailable = $Evidence.NormalizationAvailable
+        electronWindow = (Convert-Rect $Evidence.ElectronWindow)
+        electronMinTrack = $ElectronMinTrack
+        frameInsets = $FrameInsets
+        frameInsetsSource = $Evidence.FrameInsetsSource
     }
 }
 function Assert-ProcessBinding {
@@ -94,11 +106,19 @@ public static class FundsTraceStartupWindow {
     public sealed class Rectangle {
         public int X, Y, Width, Height;
     }
+    public sealed class Insets {
+        public int Left, Top, Right, Bottom;
+    }
     public sealed class Evidence {
         public Rectangle Window, Client, WorkArea;
         public Rectangle CaptureFrame;
         public uint Dpi;
         public int MinTrackWidth, MinTrackHeight;
+        public Rectangle ElectronWindow;
+        public Insets FrameInsets;
+        public int ElectronMinTrackWidth, ElectronMinTrackHeight;
+        public bool NormalizationAvailable;
+        public string FrameInsetsSource = "restored-hidden-thick-frame; GetWindowRect-and-screen-client";
     }
     [StructLayout(LayoutKind.Sequential)] struct MouseInput {
         public int X, Y;
@@ -211,6 +231,47 @@ public static class FundsTraceStartupWindow {
         AssertOwner(windows[0], processId);
         return windows[0];
     }
+    public static void NormalizeRestoredGeometry(Evidence value, bool restored) {
+        value.NormalizationAvailable = false;
+        value.ElectronWindow = null; value.FrameInsets = null;
+        value.ElectronMinTrackWidth = 0; value.ElectronMinTrackHeight = 0;
+        // Electron's restored hidden/thick-frame widget is its screen client
+        // rectangle. Maximized/fullscreen GetBounds follows another contract.
+        if (!restored) return;
+        if (value.Window == null || value.Client == null || !Contains(value.Window, value.Client))
+            throw new InvalidOperationException("FRAME_INSETS_UNAVAILABLE");
+        var insets = new Insets {
+            Left = checked(value.Client.X - value.Window.X),
+            Top = checked(value.Client.Y - value.Window.Y),
+            Right = checked((int)((long)value.Window.X + value.Window.Width - value.Client.X - value.Client.Width)),
+            Bottom = checked((int)((long)value.Window.Y + value.Window.Height - value.Client.Y - value.Client.Height))
+        };
+        // This CI helper serves only the candidate's restored hidden/thick frame:
+        // no native caption inset, with the same resize inset at left/right/bottom.
+        if (insets.Top != 0 || insets.Left != insets.Right || insets.Left != insets.Bottom)
+            throw new InvalidOperationException("FRAME_INSETS_UNAVAILABLE");
+        int minimumWidth = checked(value.MinTrackWidth - insets.Left - insets.Right);
+        int minimumHeight = checked(value.MinTrackHeight - insets.Top - insets.Bottom);
+        if (minimumWidth < 1 || minimumHeight < 1)
+            throw new InvalidOperationException("MIN_TRACK_UNAVAILABLE");
+        value.ElectronWindow = new Rectangle { X = value.Client.X, Y = value.Client.Y, Width = value.Client.Width, Height = value.Client.Height };
+        value.FrameInsets = insets;
+        value.ElectronMinTrackWidth = minimumWidth; value.ElectronMinTrackHeight = minimumHeight;
+        value.NormalizationAvailable = true;
+    }
+    public static Rectangle ResizeBounds(Evidence before, int widthDip, int heightDip) {
+        if (!before.NormalizationAvailable || before.FrameInsets == null || before.WorkArea == null)
+            throw new InvalidOperationException("RESIZE_RESTORED_WINDOW_REQUIRED");
+        if (widthDip < 1 || heightDip < 1 || before.Dpi < 48 || before.Dpi > 960)
+            throw new InvalidOperationException("INVALID_RESIZE_INPUT");
+        int width = Math.Min(before.WorkArea.Width, checked((int)Math.Round(widthDip * (before.Dpi / 96.0), MidpointRounding.AwayFromZero)));
+        int height = Math.Min(before.WorkArea.Height, checked((int)Math.Round(heightDip * (before.Dpi / 96.0), MidpointRounding.AwayFromZero)));
+        int x = checked(before.WorkArea.X + (before.WorkArea.Width - width) / 2 - before.FrameInsets.Left);
+        int y = checked(before.WorkArea.Y + (before.WorkArea.Height - height) / 2 - before.FrameInsets.Top);
+        return new Rectangle { X = x, Y = y,
+            Width = checked(width + before.FrameInsets.Left + before.FrameInsets.Right),
+            Height = checked(height + before.FrameInsets.Top + before.FrameInsets.Bottom) };
+    }
     public static Evidence Read(IntPtr window, uint processId) {
         AssertOwner(window, processId);
         NativeRect frame, client;
@@ -234,20 +295,27 @@ public static class FundsTraceStartupWindow {
                 throw new InvalidOperationException("MIN_TRACK_UNAVAILABLE");
             result.MinTrackWidth = sizes.MinTrackSize.X; result.MinTrackHeight = sizes.MinTrackSize.Y;
         } finally { Marshal.FreeHGlobal(buffer); }
+        // A resize/DPI transition between these calls would invalidate measured
+        // insets. Keep the original readback and reject a mixed observation.
+        NativeRect finalFrame, finalClient;
+        var finalOrigin = new Point();
+        if (!GetWindowRect(window, out finalFrame) || !GetClientRect(window, out finalClient) || !ClientToScreen(window, ref finalOrigin))
+            throw new InvalidOperationException("BOUNDS_UNAVAILABLE");
+        if (!Same(result.Window, Rect(finalFrame)) || !Same(Rect(client), Rect(finalClient)) ||
+            origin.X != finalOrigin.X || origin.Y != finalOrigin.Y || GetDpiForWindow(window) != dpi)
+            throw new InvalidOperationException("BOUNDS_CHANGED");
+        NormalizeRestoredGeometry(result, !IsZoomed(window) && !Same(result.Window, Rect(info.Monitor)));
         AssertOwner(window, processId);
         if (UniqueWindow(processId) != window) throw new InvalidOperationException("WINDOW_BINDING_CHANGED");
         return result;
     }
     public static Evidence Resize(IntPtr window, uint processId, int widthDip, int heightDip) {
         Evidence before = Read(window, processId);
-        int width = Math.Min(before.WorkArea.Width, checked((int)Math.Round(widthDip * (before.Dpi / 96.0), MidpointRounding.AwayFromZero)));
-        int height = Math.Min(before.WorkArea.Height, checked((int)Math.Round(heightDip * (before.Dpi / 96.0), MidpointRounding.AwayFromZero)));
-        int x = before.WorkArea.X + (before.WorkArea.Width - width) / 2;
-        int y = before.WorkArea.Y + (before.WorkArea.Height - height) / 2;
+        Rectangle target = ResizeBounds(before, widthDip, heightDip);
         // SetWindowPos is not an interactive sizing operation: WM_GETMINMAXINFO
         // is evidence, not a promise that this API clamps a below-minimum request.
         // Never overwrite actual readback with the requested DIP dimensions.
-        if (!SetWindowPos(window, IntPtr.Zero, x, y, width, height, 0x0004 | 0x0010))
+        if (!SetWindowPos(window, IntPtr.Zero, target.X, target.Y, target.Width, target.Height, 0x0004 | 0x0010))
             throw new InvalidOperationException("RESIZE_FAILED");
         DwmFlush();
         return Read(window, processId);
@@ -457,7 +525,7 @@ public static class FundsTraceStartupWindow {
         $Evidence = [FundsTraceStartupWindow]::Resize($Window, [uint32]$ProcessId, $WidthDip, $HeightDip)
         $Report.requestedDip = [ordered]@{ width = $WidthDip; height = $HeightDip }
         $Report.readback = Convert-Evidence $Evidence
-        $Report.resizePolicy = 'Centered in current work area; actual readback is authoritative. SetWindowPos does not guarantee interactive minimum tracking enforcement.'
+        $Report.resizePolicy = 'Electron client geometry centered in current work area; raw SetWindowPos bounds include measured resize insets. Actual readback is authoritative; SetWindowPos does not guarantee interactive minimum tracking enforcement.'
     }
     if ($Action -in @('CaptionProbe', 'CaptionClose')) {
         $Stage = 'nativeCaptionInteraction'

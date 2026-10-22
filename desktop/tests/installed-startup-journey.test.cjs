@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { startupTarget, assertLayout, assertWaitingObservation, assertHandoffObservation,
-  assertNativeClientGeometry, frameSummary, VIEWPORTS, DEVICE_SCALES } = require('./installed-startup-journey.cjs');
+  assertNativeWindowBounds, assertNativeClientGeometry, frameSummary, VIEWPORTS, DEVICE_SCALES } = require('./installed-startup-journey.cjs');
 
 function layout(width = 1440, height = 880, dpr = 1) {
   const unscaledHeight = 388, scale = Math.min(1, (width - 48) / 360, (height - 48) / unscaledHeight);
@@ -40,6 +40,31 @@ function handoff({ reduced = false } = {}) {
     .map(([time, opacity], index) => sample(8000 + time * scale, index === 6 ? 'complete' : 'handoff', opacity,
       reduced ? 1 : .6, { motion:reduced ? 'reduce' : 'full' })));
 }
+
+test('hidden Windows frame geometry preserves raw resize borders and validates Electron logical bounds',()=>{
+  const examples=[
+    {window:{x:24,y:32,width:976,height:672},electronWindow:{x:32,y:32,width:960,height:664},
+      frameInsets:{left:8,top:0,right:8,bottom:8},minTrack:{width:976,height:648},electronMinTrack:{width:960,height:640},
+      scaleFactor:1,workArea:{x:0,y:0,width:1024,height:728}},
+    {window:{x:-1612,y:-68,width:1464,height:1008},electronWindow:{x:-1600,y:-68,width:1440,height:996},
+      frameInsets:{left:12,top:0,right:12,bottom:12},minTrack:{width:1464,height:972},electronMinTrack:{width:1440,height:960},
+      scaleFactor:1.5,workArea:{x:-1920,y:-100,width:1920,height:1200}},
+    {window:{x:48,y:64,width:1952,height:1344},electronWindow:{x:64,y:64,width:1920,height:1328},
+      frameInsets:{left:16,top:0,right:16,bottom:16},minTrack:{width:1952,height:1296},electronMinTrack:{width:1920,height:1280},
+      scaleFactor:2,workArea:{x:0,y:0,width:2048,height:1456}},
+  ];
+  const expected={width:960,height:664,minWidth:960,minHeight:640};
+  for(const value of examples) assertNativeWindowBounds(value,expected);
+  for(const [mutate,code] of [
+    [v=>{v.electronWindow={...v.window};},/STARTUP_NATIVE_LOGICAL_CONVERSION/],
+    [v=>{v.electronMinTrack={...v.minTrack};},/STARTUP_NATIVE_MIN_TRACK_CONVERSION/],
+    [v=>{v.window.width+=20;v.electronWindow.width+=20;},/STARTUP_NATIVE_DEFAULT_OR_RESIZED_BOUNDS/],
+    [v=>{v.window.x+=100;v.electronWindow.x+=100;},/STARTUP_NATIVE_WORK_AREA/],
+  ]) {
+    const value=structuredClone(examples[0]);mutate(value);
+    assert.throws(()=>assertNativeWindowBounds(value,expected),code);
+  }
+});
 
 test('installed startup classification accepts only exact local Windows ASAR paths', () => {
   assert.equal(startupTarget('file:///C:/Users/CI/AppData/Local/Programs/FundsTrace/resources/app.asar/startup/index.html'), true);

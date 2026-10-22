@@ -153,6 +153,25 @@ function assertLayout(value, { width, height, dpr, reference } = {}) {
   return relative;
 }
 
+function assertNativeWindowBounds(native, expected) {
+  const {window:raw,electronWindow:logical,frameInsets:insets,minTrack,electronMinTrack:minimum,scaleFactor:scale,workArea:area}=native;
+  assert.ok(raw && logical && insets && minTrack && minimum && scale>0,'STARTUP_NATIVE_LOGICAL_BOUNDS_MISSING');
+  for(const key of ['left','top','right','bottom']) assert.ok(Number.isInteger(insets[key]) && insets[key]>=0 && insets[key]<=256,
+    'STARTUP_NATIVE_FRAME_INSETS');
+  assert.ok(near(logical.x,raw.x+insets.left,1) && near(logical.y,raw.y+insets.top,1)
+    && near(logical.width,raw.width-insets.left-insets.right,1)
+    && near(logical.height,raw.height-insets.top-insets.bottom,1),'STARTUP_NATIVE_LOGICAL_CONVERSION');
+  assert.ok(near(minimum.width,minTrack.width-insets.left-insets.right,1)
+    && near(minimum.height,minTrack.height-insets.top-insets.bottom,1),'STARTUP_NATIVE_MIN_TRACK_CONVERSION');
+  assert.ok(logical.x>=area.x-1 && logical.y>=area.y-1
+    && logical.x+logical.width<=area.x+area.width+1 && logical.y+logical.height<=area.y+area.height+1,
+  'STARTUP_NATIVE_WORK_AREA');
+  assert.ok(near(logical.width/scale,expected.width,2) && near(logical.height/scale,expected.height,2),
+    'STARTUP_NATIVE_DEFAULT_OR_RESIZED_BOUNDS');
+  assert.ok(near(minimum.width/scale,expected.minWidth,2) && near(minimum.height/scale,expected.minHeight,2),
+    'STARTUP_NATIVE_MIN_TRACK_BOUNDS');
+}
+
 function assertNativeClientGeometry(native, viewport, priorInset) {
   const scale = native.scaleFactor;
   assert.ok(near(viewport.dpr, scale, .01), 'STARTUP_NATIVE_CLIENT_DPR');
@@ -337,4 +356,4 @@ async function createInstalledStartupProbe({ cdp, target, evaluate, until, scree
 }
 
 module.exports = { installedLocalTarget, startupTarget, createInstalledStartupProbe, assertLayout, assertWaitingObservation,
-  assertHandoffObservation, assertNativeClientGeometry, frameSummary, VIEWPORTS, DEVICE_SCALES };
+  assertHandoffObservation, assertNativeWindowBounds, assertNativeClientGeometry, frameSummary, VIEWPORTS, DEVICE_SCALES };
