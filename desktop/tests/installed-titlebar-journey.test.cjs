@@ -1,16 +1,25 @@
 'use strict';
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {titlebarTarget,assertCaption,assertCaptionBody,windowId} = require('./installed-titlebar-journey.cjs');
+const vm = require('node:vm');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const {titlebarTarget,assertCaption,assertCaptionBody,READ_CAPTION,readinessFailure,
+  createInstalledTitlebarProbe,safeCaptionProjection,safeTitlebarFailure} = require('./installed-titlebar-journey.cjs');
 
 function caption() {
   return {time:1000,timeOrigin:9000,viewport:{width:1280,height:720,dpr:1},
-    overlay:{visible:true,area:{x:0,y:0,width:1142,height:32}},
+    document:{readyState:'complete',visibilityState:'visible',secureContext:true,standardsMode:true,fontStatus:'loaded'},
+    dom:{bar:true,content:true,name:true,icon:true,menu:true},
+    bridge:{type:'object',openMenu:'function',onMenuEnabled:'function'},
+    overlay:{supported:true,visible:true,rectMethod:'function',areaReadFailed:false,area:{x:0,y:0,width:1142,height:32}},
     bar:{x:0,y:0,width:1280,height:32},content:{x:0,y:0,width:1142,height:32},
     icon:{x:8,y:7,width:18,height:18},name:{x:33,y:7,width:108,height:18},
     menu:{x:150,y:3,width:28,height:26},text:'循迹 FundsTrace',opacity:1,visibility:'visible',
     fontSize:13,fontWeight:'400',color:'rgb(213, 222, 232)',drag:'drag',menuDrag:'no-drag',
-    menuDisabled:true,iconLoaded:true,stylesheetLoaded:true};
+    menuDisabled:true,iconLoaded:true,stylesheetLoaded:true,
+    image:{complete:true,naturalWidth:1024,naturalHeight:1024,decode:'decoded'}};
 }
 
 test('permanent caption classification is separate from startup, business and untrusted file paths',()=>{
@@ -61,10 +70,160 @@ test('body geometry rejects a second menu inset, overlap, emulated DPR and a mis
     {client:{width:1280,height:746},scaleFactor:1}),/TITLEBAR_NATIVE_CLIENT/);
 });
 
-test('native parent binding requires an actual Browser window ID for each target',async()=>{
+test('caption/body layout uses actual cleared viewports without an unsupported browser window ID command',async()=>{
   const calls=[];
-  assert.equal(await windowId({send:async(method,params)=>{calls.push({method,params});return {windowId:12};}},
-    {targetId:'body'}),12);
-  assert.deepEqual(calls,[{method:'Browser.getWindowForTarget',params:{targetId:'body'}}]);
-  await assert.rejects(windowId({send:async()=>({})},{targetId:'body'}),/TITLEBAR_NATIVE_WINDOW_BINDING/);
+  const unsupported=['Browser','getWindowForTarget'].join('.');
+  const cdp={send:async(method,params,sessionId)=>{assert.notEqual(method,unsupported);calls.push({method,params,sessionId});return {};}};
+  const probe=await createInstalledTitlebarProbe({cdp,target:{targetId:'caption',sessionId:'caption-session'},
+    evaluate:async expression=>expression===READ_CAPTION ? caption() : expression==='({width:innerWidth,height:innerHeight,dpr:devicePixelRatio})'
+      ? {width:1280,height:688,dpr:1} : true,
+    until:async check=>{assert.equal(await check(),true);}});
+  const result=await probe.checkBody({targetId:'body',sessionId:'body-session'},
+    {client:{width:1280,height:720},scaleFactor:1});
+  assert.equal(result.sameCaptionDocument,true);
+  assert.equal(result.bodyInsetDip,32);
+  assert.equal(result.layoutMatches,true);
+  assert.equal(result.nativeClientMatched,true);
+  assert.equal(Object.hasOwn(result,'sameNativeWindow'),false);
+  assert.equal(Object.hasOwn(result,'nativeWindowBinding'),false);
+  assert.deepEqual(calls,[
+    {method:'Emulation.clearDeviceMetricsOverride',params:{},sessionId:'caption-session'},
+    {method:'Emulation.clearDeviceMetricsOverride',params:{},sessionId:'body-session'},
+  ]);
+  for(const filename of ['installed-titlebar-journey.cjs','installed-app-smoke.cjs']) {
+    assert.ok(!(await fs.readFile(path.join(__dirname,filename),'utf8')).includes(unsupported));
+  }
+  await assert.rejects(probe.checkBody(probe.target),/TITLEBAR_BODY_MUST_BE_SEPARATE_TARGET/);
+});
+
+function captionDocument({overlay=true,stylesheet=true,complete=true,naturalWidth=1024}={}) {
+  const sample=caption(),selectors=new Map();
+  for(const [selector,key] of [['.titlebar','bar'],['.titlebar-content','content'],['.titlebar-name','name'],
+    ['.titlebar-icon','icon'],['#titlebar-menu','menu']]) {
+    selectors.set(selector,{getBoundingClientRect:()=>sample[key],textContent:'循迹 FundsTrace',disabled:true,
+      styleKey:key,complete,naturalWidth,naturalHeight:naturalWidth,decode:()=>Promise.resolve()});
+  }
+  // Any attempt to inspect a URL or resource location fails the real DOM probe.
+  for(const element of selectors.values()) for(const key of ['src','currentSrc','href']) {
+    Object.defineProperty(element,key,{get(){throw new Error('SYN_RESOURCE_URL_MUST_NOT_BE_READ');}});
+  }
+  selectors.set('link[rel=stylesheet]',{sheet:stylesheet?{}:null});
+  const document={readyState:'complete',visibilityState:'visible',compatMode:'CSS1Compat',fonts:{status:'loaded'},
+    querySelector:selector=>selectors.get(selector)||null};
+  Object.defineProperty(document,'URL',{get(){throw new Error('SYN_DOCUMENT_URL_MUST_NOT_BE_READ');}});
+  const context=vm.createContext({document,window:{FundsTraceTitlebar:{openMenu(){},onMenuEnabled(){}}},
+    navigator:overlay?{windowControlsOverlay:{visible:true,getTitlebarAreaRect:()=>sample.overlay.area}}:{},
+    innerWidth:1280,innerHeight:720,devicePixelRatio:1,isSecureContext:true,
+    performance:{now:()=>1000,timeOrigin:9000},getComputedStyle:element=>({opacity:'1',visibility:'visible',fontSize:'13px',
+      fontWeight:'400',color:'rgb(213, 222, 232)',getPropertyValue:()=>element.styleKey==='menu'?'no-drag':'drag'})});
+  return ()=>vm.runInContext(READ_CAPTION,context);
+}
+
+test('the real DOM projection still reports fixed geometry when the overlay API is missing',()=>{
+  const value=captionDocument({overlay:false})();
+  assert.ok(value);
+  assert.equal(value.bar.height,32);
+  assert.equal(value.overlay.supported,false);
+  assert.equal(value.document.secureContext,true);
+  assert.equal(value.bridge.openMenu,'function');
+  assert.equal(readinessFailure(value),'TITLEBAR_OVERLAY_API_UNAVAILABLE');
+  assert.throws(()=>assertCaption(value),/TITLEBAR_NATIVE_OVERLAY_MISSING/);
+});
+
+test('stylesheet, pending image, failed image and hidden overlay failures have different fixed stages',()=>{
+  assert.equal(readinessFailure(captionDocument({stylesheet:false})()),'TITLEBAR_STYLESHEET_NOT_LOADED');
+  assert.equal(readinessFailure(captionDocument({complete:false,naturalWidth:0})()),'TITLEBAR_ICON_NOT_LOADED');
+  assert.equal(readinessFailure(captionDocument({complete:true,naturalWidth:0})()),'TITLEBAR_ICON_DECODE_FAILED');
+  const hidden=caption();hidden.overlay.visible=false;
+  assert.equal(readinessFailure(hidden),'TITLEBAR_OVERLAY_NOT_VISIBLE');
+  hidden.overlay.visible=true;hidden.overlay.areaReadFailed=true;hidden.overlay.area=null;
+  assert.equal(readinessFailure(hidden),'TITLEBAR_OVERLAY_RECT_UNAVAILABLE');
+});
+
+test('image decoding is observed asynchronously without delaying or fabricating readiness',async()=>{
+  const read=captionDocument();
+  assert.equal(read().image.decode,'pending');
+  await new Promise(resolve=>setImmediate(resolve));
+  const value=read();
+  assert.equal(value.image.decode,'decoded');
+  assert.equal(value.iconLoaded,true);
+});
+
+test('a timed-out readiness probe preserves the 15 second gate and captures only the local caption strip',async()=>{
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'fundstrace-caption-probe-test-'));
+  const screenshotPath=path.join(directory,'native-installed-app.startup-caption-failure.png'),calls=[];
+  const value=captionDocument({overlay:false})();
+  const png=Buffer.from([137,80,78,71,13,10,26,10,0,0,0,0]);
+  let observed;
+  try {
+    await assert.rejects(createInstalledTitlebarProbe({target:{targetId:'caption',sessionId:'caption-session'},
+      evaluate:async()=>value,
+      until:async(check,ms)=>{assert.equal(ms,15000);assert.equal(await check(),false);assert.equal(await check(),false);throw new Error('SYN_TIMEOUT_PRIVATE_URL');},
+      cdp:{send:async(method,params,sessionId,timeout)=>{calls.push({method,params,sessionId,timeout});return {data:png.toString('base64')};}},
+      failureScreenshotPath:screenshotPath}),error=>{
+      observed=error;
+      assert.equal(error.message,'TITLEBAR_OVERLAY_API_UNAVAILABLE');
+      assert.equal(error.titlebarFailure.attempts,2);
+      assert.equal(error.titlebarFailure.readFailures,0);
+      assert.equal(error.titlebarFailure.observation.bar.height,32);
+      assert.equal(error.titlebarFailure.screenshot.captured,true);
+      return true;
+    });
+    assert.deepEqual(calls,[{method:'Page.captureScreenshot',params:{format:'png',fromSurface:true,captureBeyondViewport:false,
+      clip:{x:0,y:0,width:1280,height:32,scale:1}},sessionId:'caption-session',timeout:3000}]);
+    assert.deepEqual(await fs.readFile(screenshotPath),png);
+    assert.ok(!JSON.stringify(observed.titlebarFailure).includes('SYN_TIMEOUT_PRIVATE_URL'));
+  } finally {await fs.rm(directory,{recursive:true,force:true});}
+});
+
+test('failure projections discard unexpected strings, extra keys and protocol exception text',async()=>{
+  const value=caption();
+  value.overlay.supported=false;value.overlay.visible=false;
+  value.headers={'X-FundsTrace-Desktop':'SYN_PRIVATE_TOKEN'};value.url='https://SYN_PRIVATE_URL';
+  value.text='SYN_PRIVATE_TOKEN';value.color='url(https://SYN_PRIVATE_URL)';value.fontWeight='SYN_PRIVATE_TOKEN';
+  value.bridge.type='SYN_PRIVATE_TOKEN';
+  const safe=safeTitlebarFailure({stage:'TITLEBAR_OVERLAY_API_UNAVAILABLE',attempts:2,readFailures:0,observation:value});
+  assert.ok(!JSON.stringify(safe).includes('SYN_PRIVATE'));
+  assert.ok(!JSON.stringify(safeCaptionProjection(value)).includes('headers'));
+  assert.deepEqual(safeTitlebarFailure(safe),safe,'the installed smoke can sanitize the projection again');
+  await assert.rejects(createInstalledTitlebarProbe({cdp:{},target:{targetId:'caption',sessionId:'caption-session'},
+    evaluate:async()=>{throw new Error('https://SYN_PRIVATE_URL/X-FundsTrace-Desktop/SYN_PRIVATE_TOKEN');},
+    until:async check=>{await check();throw new Error('SYN_PRIVATE_TOKEN');}}),error=>{
+    assert.equal(error.message,'TITLEBAR_DOM_READ_UNAVAILABLE');
+    assert.equal(error.titlebarFailure.readFailures,1);
+    assert.equal(error.titlebarFailure.observation,null);
+    assert.ok(!JSON.stringify(error.titlebarFailure).includes('SYN_PRIVATE'));
+    return true;
+  });
+});
+
+test('every creation substage keeps a fixed failure code, last safe DOM and bounded protocol category',async()=>{
+  for(const scenario of [
+    {fail:'initial-projection',code:'TITLEBAR_INITIAL_PROJECTION_FAILED',method:'Runtime.evaluate',category:'protocol-command'},
+    {fail:'initial-validation',code:'TITLEBAR_FIXED_CAPTION',method:'none',category:'assertion'},
+    {fail:'observation-installation',code:'TITLEBAR_OBSERVATION_INSTALL_FAILED',method:'Runtime.evaluate',category:'protocol-timeout'},
+  ]) {
+    let calls=0;
+    await assert.rejects(createInstalledTitlebarProbe({target:{targetId:'caption',sessionId:'caption-session'},
+      evaluate:async()=>{
+        calls++;
+        if(scenario.fail==='initial-projection' && calls===2) throw new Error('CDP_COMMAND');
+        if(scenario.fail==='observation-installation' && calls===3) throw new Error('CDP_TIMEOUT');
+        const value=caption();
+        if(scenario.fail==='initial-validation' && calls===2) value.bar.height=26;
+        return value;
+      },
+      until:async(check,ms)=>{assert.equal(ms,15000);assert.equal(await check(),true);},
+      cdp:{send:async()=>({})},
+    }),error=>{
+      assert.equal(error.message,scenario.code);
+      assert.equal(error.titlebarFailure.operation,scenario.fail);
+      assert.equal(error.titlebarFailure.method,scenario.method);
+      assert.equal(error.titlebarFailure.errorCategory,scenario.category);
+      assert.equal(error.titlebarFailure.observation.dom.bar,true);
+      assert.equal(error.titlebarFailure.observation.document.readyState,'complete');
+      assert.equal(error.titlebarFailure.screenshot.captured,false);
+      return true;
+    });
+  }
 });

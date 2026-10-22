@@ -11,7 +11,7 @@ const os = require('node:os');
 const { performance } = require('node:perf_hooks');
 const { pathToFileURL } = require('node:url');
 const { startupTarget, createInstalledStartupProbe, assertNativeClientGeometry } = require('./installed-startup-journey.cjs');
-const { titlebarTarget, createInstalledTitlebarProbe, runInstalledTitlebarJourney, windowId } = require('./installed-titlebar-journey.cjs');
+const { titlebarTarget, createInstalledTitlebarProbe, runInstalledTitlebarJourney, safeTitlebarFailure } = require('./installed-titlebar-journey.cjs');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
 const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
 const { runInstalledProductionUpdateJourney } = require('./installed-production-update-journey.cjs');
@@ -455,7 +455,8 @@ async function portClosed(port) {
       }, 20000);
       await until(() => [...sessions.values()].some(item => heldBusinessSessions.has(item.sessionId) && item.paused), 15000);
       report.startup = { deliberatelyHeldBusinessRenderer:true, measuredUserColdStart:false };
-      titlebarProbe = await createInstalledTitlebarProbe({cdp,target:titlebarPage,evaluate,until});
+      titlebarProbe = await createInstalledTitlebarProbe({cdp,target:titlebarPage,evaluate,until,
+        failureScreenshotPath:config.screenshot ? `${config.screenshot.slice(0,-4)}.startup-caption-failure.png` : undefined});
       report.titlebar = {heightDip:32,limits:{windows11Snap:false,windows10And11Interactive:false,actualSystemDpiValidated:false}};
       const environmentReducedMotion = await evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches", startup);
       await cdp.send('Emulation.setEmulatedMedia', {
@@ -635,18 +636,22 @@ async function portClosed(port) {
     }, 20000);
   });
   await check('installedAnalysisCaptionBoundToWindow', async () => {
-    const owner = await windowId(cdp, analysisPage);
-    assert.notEqual(owner,titlebarProbe.windowId,'TITLEBAR_ANALYSIS_NATIVE_WINDOW');
+    assert.notEqual(analysisPage.targetId,page.targetId,'TITLEBAR_ANALYSIS_BUSINESS_TARGET');
     analysisTitlebarPage = await until(async () => {
       const {targetInfos} = await cdp.send('Target.getTargets');
-      for (const target of targetInfos.filter(value=>value.type==='page' && titlebarTarget(value.url))) {
-        const session = sessions.get(target.targetId);
-        if (session?.ready && await windowId(cdp,target)===owner) return {...session,targetId:target.targetId};
-      }
-      return false;
+      assert.ok(targetInfos.some(value=>value.targetId===titlebarPage.targetId)
+        && targetInfos.some(value=>value.targetId===page.targetId),'TITLEBAR_PRIMARY_TARGETS_LOST_DURING_ANALYSIS_OPEN');
+      const captions=targetInfos.filter(value=>value.type==='page' && titlebarTarget(value.url) && value.targetId!==titlebarPage.targetId);
+      assert.ok(captions.length<=1,'TITLEBAR_ANALYSIS_CAPTION_AMBIGUOUS');
+      const target=captions[0],session=target && sessions.get(target.targetId);
+      if(target) assert.ok(target.url===pathToFileURL(path.join(config.installRoot,'resources/app.asar/titlebar/index.html')).href,
+        'TITLEBAR_ANALYSIS_CAPTION_FILE');
+      return session?.ready ? {...session,targetId:target.targetId} : false;
     },10000);
     const probe = await createInstalledTitlebarProbe({cdp,target:analysisTitlebarPage,evaluate,until});
-    report.titlebar.analysis = await probe.checkBody(analysisPage);
+    report.titlebar.analysis = {...await probe.checkBody(analysisPage),targetSeparation:{distinctBodies:true,distinctCaptions:true,
+      newAnalysisCaptionAfterOpen:true,primaryCaptionRetained:true},
+      evidenceScope:'distinct-installed-renderer-targets-and-layout; window lifetime checked on close'};
   });
   await check('installedAnalysisLinkOpened', async () => {
     await readyDocument(`location.pathname === '/analysis' && !!document.querySelector('#panel')
@@ -664,7 +669,12 @@ async function portClosed(port) {
     await cdp.send('Page.close', {}, analysisTitlebarPage.sessionId);
     await until(async () => {
       const { targetInfos } = await cdp.send('Target.getTargets');
-      return !targetInfos.some(target => target.targetId === analysisPage.targetId);
+      const alive=id=>targetInfos.some(target=>target.targetId===id);
+      const lifetime={analysisBodyGone:!alive(analysisPage.targetId),analysisCaptionGone:!alive(analysisTitlebarPage.targetId),
+        primaryBodyAlive:alive(page.targetId),primaryCaptionAlive:alive(titlebarPage.targetId)};
+      report.titlebar.analysis.lifetimeCoupling=lifetime;
+      assert.ok(lifetime.primaryBodyAlive && lifetime.primaryCaptionAlive,'TITLEBAR_PRIMARY_TARGET_LOST_ON_ANALYSIS_CLOSE');
+      return lifetime.analysisBodyGone && lifetime.analysisCaptionGone;
     }, 10000);
   });
   await check('singleInstance', async () => {
@@ -711,6 +721,7 @@ async function portClosed(port) {
     // geometry / frame samples, never protocol errors, URLs or request data.
     if (error.startupLayout) report.startupLayoutFailure = error.startupLayout;
     if (error.startupObservation) report.startupObservationFailure = error.startupObservation;
+    if (error.titlebarFailure) report.titlebarFailure = safeTitlebarFailure(error.titlebarFailure);
   }
   if (updateFixture) {
     let errorCode = 'UNAVAILABLE';

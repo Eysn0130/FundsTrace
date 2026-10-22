@@ -1,6 +1,8 @@
 'use strict';
 // CI-only inspection of the installed local caption. Nothing here is shipped.
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const { installedLocalTarget } = require('./installed-startup-journey.cjs');
 const HEIGHT = 32;
 const titlebarTarget = value => installedLocalTarget(value, 'titlebar');
@@ -11,19 +13,117 @@ const READ_CAPTION = `(() => {
   const bar = document.querySelector('.titlebar'), content = document.querySelector('.titlebar-content');
   const name = document.querySelector('.titlebar-name'), icon = document.querySelector('.titlebar-icon');
   const menu = document.querySelector('#titlebar-menu'), overlay = navigator.windowControlsOverlay;
-  if (!bar || !content || !name || !icon || !menu || !overlay) return null;
-  const rect = element => { const r = element.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; };
-  const area = overlay.getTitlebarAreaRect();
-  const style = getComputedStyle(bar), nameStyle = getComputedStyle(name);
+  const rect = element => { if (!element) return null; const r = element.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; };
+  let area = null, areaReadFailed = false;
+  try { const r = overlay?.getTitlebarAreaRect?.(); if (r) area = {x:r.x,y:r.y,width:r.width,height:r.height}; }
+  catch { areaReadFailed = true; }
+  const style = bar ? getComputedStyle(bar) : null, nameStyle = name ? getComputedStyle(name) : null;
+  let imageDecode = 'missing';
+  if (icon) {
+    imageDecode = !icon.complete ? 'pending' : icon.naturalWidth > 0 ? 'natural-size-ready' : 'failed';
+    if (icon.complete && icon.naturalWidth > 0 && typeof icon.decode === 'function') {
+      let state = window.__fundsTraceCaptionDecode;
+      if (!state || state.icon !== icon) {
+        state = {icon,status:'pending'}; window.__fundsTraceCaptionDecode = state;
+        try { Promise.resolve(icon.decode()).then(()=>{state.status='decoded';},()=>{state.status='failed';}); }
+        catch { state.status='failed'; }
+      }
+      imageDecode = state.status;
+    }
+  }
+  const bridge = window.FundsTraceTitlebar;
   return {time:performance.now(),timeOrigin:performance.timeOrigin,viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio},
-    overlay:{visible:overlay.visible,area:{x:area.x,y:area.y,width:area.width,height:area.height}},
+    document:{readyState:document.readyState,visibilityState:document.visibilityState,secureContext:globalThis.isSecureContext===true,
+      standardsMode:document.compatMode==='CSS1Compat',fontStatus:document.fonts?.status || 'unavailable'},
+    dom:{bar:!!bar,content:!!content,name:!!name,icon:!!icon,menu:!!menu},
+    bridge:{type:typeof bridge,openMenu:typeof bridge?.openMenu,onMenuEnabled:typeof bridge?.onMenuEnabled},
+    overlay:{supported:!!overlay,visible:overlay?.visible===true,rectMethod:typeof overlay?.getTitlebarAreaRect,areaReadFailed,area},
     bar:rect(bar),content:rect(content),name:rect(name),icon:rect(icon),menu:rect(menu),
-    text:name.textContent.trim(),opacity:Number(style.opacity),visibility:style.visibility,
-    fontSize:Number.parseFloat(nameStyle.fontSize),fontWeight:nameStyle.fontWeight,color:nameStyle.color,
-    drag:style.getPropertyValue('-webkit-app-region'),menuDrag:getComputedStyle(menu).getPropertyValue('-webkit-app-region'),
-    menuDisabled:menu.disabled,iconLoaded:icon.complete && icon.naturalWidth > 0,
+    text:name?.textContent.trim()==='循迹 FundsTrace'?'循迹 FundsTrace':'unexpected',opacity:style ? Number(style.opacity) : null,visibility:style?.visibility || 'unavailable',
+    fontSize:nameStyle ? Number.parseFloat(nameStyle.fontSize) : null,fontWeight:nameStyle?.fontWeight || 'unavailable',color:nameStyle?.color || 'unavailable',
+    drag:style?.getPropertyValue('-webkit-app-region') || 'unavailable',menuDrag:menu ? getComputedStyle(menu).getPropertyValue('-webkit-app-region') : 'unavailable',
+    menuDisabled:menu ? menu.disabled : null,iconLoaded:!!icon && icon.complete && icon.naturalWidth > 0,
+    image:{complete:icon?.complete===true,naturalWidth:icon?.naturalWidth || 0,naturalHeight:icon?.naturalHeight || 0,decode:imageDecode},
     stylesheetLoaded:!!document.querySelector('link[rel=stylesheet]')?.sheet};
 })()`;
+
+const number = value => Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER ? value : null;
+const oneOf = (value, allowed) => allowed.includes(value) ? value : 'other';
+function safeCaptionProjection(value) {
+  if (!value || typeof value !== 'object') return null;
+  const box = value => value && typeof value === 'object'
+    ? Object.fromEntries(['x','y','width','height'].map(key=>[key,Number.isFinite(value[key]) && Math.abs(value[key])<=32768 ? value[key] : null])) : null;
+  const type = value => oneOf(value,['undefined','object','function','boolean','string','number','symbol','bigint']);
+  return {time:number(value.time),timeOrigin:number(value.timeOrigin),
+    document:{readyState:oneOf(value.document?.readyState,['loading','interactive','complete']),
+      visibilityState:oneOf(value.document?.visibilityState,['visible','hidden']),secureContext:value.document?.secureContext===true,
+      standardsMode:value.document?.standardsMode===true,fontStatus:oneOf(value.document?.fontStatus,['loading','loaded','unavailable'])},
+    dom:Object.fromEntries(['bar','content','name','icon','menu'].map(key=>[key,value.dom?.[key]===true])),
+    bridge:{type:type(value.bridge?.type),openMenu:type(value.bridge?.openMenu),onMenuEnabled:type(value.bridge?.onMenuEnabled)},
+    viewport:{width:number(value.viewport?.width),height:number(value.viewport?.height),dpr:number(value.viewport?.dpr)},
+    overlay:{supported:value.overlay?.supported===true,visible:value.overlay?.visible===true,rectMethod:type(value.overlay?.rectMethod),
+      areaReadFailed:value.overlay?.areaReadFailed===true,area:box(value.overlay?.area)},
+    bar:box(value.bar),content:box(value.content),name:box(value.name),icon:box(value.icon),menu:box(value.menu),
+    brandTextMatches:value.text==='循迹 FundsTrace' || value.brandTextMatches===true,opacity:number(value.opacity),visibility:oneOf(value.visibility,['visible','hidden','collapse','unavailable']),
+    fontSize:number(value.fontSize),fontWeight:/^(?:[1-9]00|normal|bold)$/.test(value.fontWeight) ? value.fontWeight : 'other',
+    color:/^rgba?\([\d,. %]+\)$/.test(value.color) && value.color.length<=64 ? value.color : 'other',
+    drag:oneOf(value.drag,['drag','no-drag','none','unavailable']),menuDrag:oneOf(value.menuDrag,['drag','no-drag','none','unavailable']),
+    menuDisabled:typeof value.menuDisabled==='boolean' ? value.menuDisabled : null,
+    iconLoaded:value.iconLoaded===true,stylesheetLoaded:value.stylesheetLoaded===true,
+    image:{complete:value.image?.complete===true,naturalWidth:number(value.image?.naturalWidth),naturalHeight:number(value.image?.naturalHeight),
+      decode:oneOf(value.image?.decode,['missing','pending','natural-size-ready','decoded','failed'])}};
+}
+
+function readinessFailure(value) {
+  if (!value) return 'TITLEBAR_DOM_READ_UNAVAILABLE';
+  if (!['bar','content','name','icon','menu'].every(key=>value.dom?.[key])) return 'TITLEBAR_DOM_INCOMPLETE';
+  if (!value.stylesheetLoaded) return 'TITLEBAR_STYLESHEET_NOT_LOADED';
+  if (!value.iconLoaded) return value.image?.complete || value.image?.decode==='failed'
+    ? 'TITLEBAR_ICON_DECODE_FAILED' : 'TITLEBAR_ICON_NOT_LOADED';
+  if (!value.overlay?.supported) return 'TITLEBAR_OVERLAY_API_UNAVAILABLE';
+  if (!value.overlay.visible) return 'TITLEBAR_OVERLAY_NOT_VISIBLE';
+  if (!value.overlay.area || value.overlay.areaReadFailed) return 'TITLEBAR_OVERLAY_RECT_UNAVAILABLE';
+  return 'TITLEBAR_READINESS_TIMEOUT';
+}
+
+function safeTitlebarFailure(value) {
+  const stage = /^TITLEBAR_[A-Z0-9_]{1,80}$/.test(value?.stage || '') ? value.stage : 'TITLEBAR_READINESS_TIMEOUT';
+  const screenshot = value?.screenshot;
+  return {stage,
+    operation:oneOf(value?.operation,['readiness','initial-projection','initial-validation','observation-installation']),
+    method:oneOf(value?.method,['Runtime.evaluate','none']),
+    errorCategory:oneOf(value?.errorCategory,['bound-timeout','protocol-closed','protocol-command','protocol-timeout','protocol-send',
+      'protocol-connect','assertion','javascript-TypeError','javascript-ReferenceError','javascript-SyntaxError','javascript-RangeError','unclassified']),
+    attempts:Number.isInteger(value?.attempts) && value.attempts>=0 && value.attempts<=10000 ? value.attempts : null,
+    readFailures:Number.isInteger(value?.readFailures) && value.readFailures>=0 && value.readFailures<=10000 ? value.readFailures : null,
+    observation:safeCaptionProjection(value?.observation),
+    screenshot:{captured:screenshot?.captured===true,source:'shell-renderer-caption-only',nativeControlsIncluded:false,
+      ...(screenshot?.captured===true ? {file:'native-installed-app.startup-caption-failure.png',width:number(screenshot.width),height:number(screenshot.height)} : {})}};
+}
+
+function errorCategory(error) {
+  const codes={TIMEOUT:'bound-timeout',CDP_CLOSED:'protocol-closed',CDP_COMMAND:'protocol-command',CDP_TIMEOUT:'protocol-timeout',
+    CDP_SEND:'protocol-send',CDP_CONNECT:'protocol-connect'};
+  if(Object.hasOwn(codes,error?.message)) return codes[error.message];
+  if(error?.code==='ERR_ASSERTION') return 'assertion';
+  return ['TypeError','ReferenceError','SyntaxError','RangeError'].includes(error?.name) ? `javascript-${error.name}` : 'unclassified';
+}
+
+async function captureCaptionFailure(cdp,target,value,screenshotPath) {
+  const width=Math.min(4096,Math.floor(value?.viewport?.width || 0));
+  const height=Math.min(HEIGHT,Math.floor(value?.viewport?.height || 0));
+  if (!screenshotPath || !path.isAbsolute(screenshotPath) || !value?.dom?.bar || width<1 || height<1) return {captured:false};
+  try {
+    const result=await cdp.send('Page.captureScreenshot',{format:'png',fromSurface:true,captureBeyondViewport:false,
+      clip:{x:0,y:0,width,height,scale:1}},target.sessionId,3000);
+    if(typeof result.data!=='string' || result.data.length>16*1024*1024) return {captured:false};
+    const bytes=Buffer.from(result.data,'base64');
+    if(!bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) return {captured:false};
+    await fs.mkdir(path.dirname(screenshotPath),{recursive:true});
+    await fs.writeFile(screenshotPath,bytes,{flag:'wx'});
+    return {captured:true,width,height};
+  } catch {return {captured:false};}
+}
 
 function assertCaption(value, reference) {
   assert.ok(value && value.overlay.visible === true, 'TITLEBAR_NATIVE_OVERLAY_MISSING');
@@ -68,20 +168,33 @@ function assertCaptionBody(caption, body, native) {
   }
 }
 
-async function windowId(cdp, target) {
-  const value = await cdp.send('Browser.getWindowForTarget', {targetId:target.targetId});
-  assert.ok(Number.isInteger(value.windowId), 'TITLEBAR_NATIVE_WINDOW_BINDING');
-  return value.windowId;
-}
-
-async function createInstalledTitlebarProbe({cdp, target, evaluate, until}) {
-  await until(async () => {
-    try { const value = await evaluate(READ_CAPTION, target); return value?.iconLoaded && value.stylesheetLoaded && value.overlay.visible; }
-    catch { return false; }
-  }, 15000);
-  const initial = assertCaption(await evaluate(READ_CAPTION, target));
-  const id = await windowId(cdp, target);
-  await evaluate(`(() => {
+async function createInstalledTitlebarProbe({cdp, target, evaluate, until, failureScreenshotPath}) {
+  let latest=null,attempts=0,readFailures=0,lastReadError;
+  const fail=async(stage,operation,method,cause)=>{
+    const screenshot=await captureCaptionFailure(cdp,target,latest,failureScreenshotPath);
+    const error=new Error(stage);
+    error.titlebarFailure=safeTitlebarFailure({stage,operation,method,errorCategory:errorCategory(cause),
+      attempts,readFailures,observation:latest,screenshot});
+    throw error;
+  };
+  try {
+    await until(async () => {
+      attempts++;
+      try {
+        latest=await evaluate(READ_CAPTION,target);
+        return latest?.iconLoaded && latest.stylesheetLoaded && latest.overlay?.visible && !!latest.overlay.area;
+      } catch(error) {readFailures++;lastReadError=error;return false;}
+    },15000);
+  } catch(error) {
+    await fail(readinessFailure(latest),'readiness','Runtime.evaluate',latest ? error : lastReadError || error);
+  }
+  let initial;
+  try {latest=await evaluate(READ_CAPTION,target);}
+  catch(error) {await fail('TITLEBAR_INITIAL_PROJECTION_FAILED','initial-projection','Runtime.evaluate',error);}
+  try {initial=assertCaption(latest);}
+  catch(error) {await fail(/^TITLEBAR_[A-Z0-9_]{1,80}$/.test(error?.message || '') ? error.message : 'TITLEBAR_INITIAL_VALIDATION_FAILED',
+    'initial-validation','none',error);}
+  try {await evaluate(`(() => {
     if (window.${KEY}) return;
     // Store numbers/styles only. The permanent local shell has no case data.
     const state = {samples:[],stopped:false};
@@ -95,20 +208,27 @@ async function createInstalledTitlebarProbe({cdp, target, evaluate, until}) {
     };
     sample();state.timer=setInterval(sample,50);state.stop=()=>{clearInterval(state.timer);state.stopped=true;sample();};
     window.${KEY}=state;
-  })()`, target);
+  })()`, target);}
+  catch(error) {await fail('TITLEBAR_OBSERVATION_INSTALL_FAILED','observation-installation','Runtime.evaluate',error);}
   let stopped = false;
   return {
-    target, initial, windowId:id,
+    target, initial,
     async read({stable = true} = {}) {
       const value = assertCaption(await evaluate(READ_CAPTION, target), stable ? initial : undefined);
       return value;
     },
     async checkBody(bodyTarget, native) {
-      assert.equal(await windowId(cdp, bodyTarget), id, 'TITLEBAR_BUSINESS_WINDOW_BINDING');
+      assert.notEqual(bodyTarget.targetId,target.targetId,'TITLEBAR_BODY_MUST_BE_SEPARATE_TARGET');
+      // Explicitly clear prior CSS/DPR emulation before comparing actual Views.
+      // The optional Win32 client measurement adds native geometry evidence;
+      // no unsupported browser-to-HWND identity claim is inferred from it.
+      for(const item of [target,bodyTarget]) await cdp.send('Emulation.clearDeviceMetricsOverride',{},item.sessionId);
+      await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))',bodyTarget);
       const caption = await this.read();
       const body = await evaluate('({width:innerWidth,height:innerHeight,dpr:devicePixelRatio})', bodyTarget);
       assertCaptionBody(caption, body, native);
-      return {caption, body, sameNativeWindow:true, clientChromeInsetDip:HEIGHT};
+      return {caption,body,sameCaptionDocument:caption.timeOrigin===initial.timeOrigin,
+        bodyInsetDip:HEIGHT,layoutMatches:true,nativeClientMatched:!!native,viewportEmulationCleared:true,distinctRendererTargets:true};
     },
     async finishStartup() {
       if (!stopped) await evaluate(`window.${KEY}.stop()`, target);
@@ -132,7 +252,7 @@ async function runInstalledTitlebarJourney({cdp, page, probe, evaluate, until, n
   const body = await probe.checkBody(page);
   const baseline = await evaluate('({width:innerWidth,dpr:devicePixelRatio})', page);
   const zoomIn = await nativeAction({action:'ZoomIn'});
-  const result = {nativeWindowBinding:body.sameNativeWindow,captionHeightDip:HEIGHT,
+  const result = {sameCaptionDocument:body.sameCaptionDocument,bodyInsetDip:body.bodyInsetDip,layoutMatches:body.layoutMatches,captionHeightDip:HEIGHT,
     limits:{windows10And11Interactive:false,windows11Snap:false,actualSystemDpiValidated:false}};
   if (zoomIn.status === 'unavailable') {
     result.businessZoom = {status:'unavailable',nativeInput:zoomIn};
@@ -174,4 +294,4 @@ async function runInstalledTitlebarJourney({cdp, page, probe, evaluate, until, n
 }
 
 module.exports = {HEIGHT,titlebarTarget,assertCaption,assertCaptionBody,createInstalledTitlebarProbe,
-  runInstalledTitlebarJourney,windowId};
+  runInstalledTitlebarJourney,READ_CAPTION,safeCaptionProjection,safeTitlebarFailure,readinessFailure};

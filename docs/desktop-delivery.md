@@ -84,7 +84,7 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 安装版启动验证精确区分本地 ASAR 启动层和真实业务页。CI 仅在自己的合成安装进程中暂缓业务 renderer 执行，以检查等待画面；最长 45 秒且在成功、失败及清理路径恢复，不注入或伪造就绪通知。报告先记录环境的减少动态效果偏好，再仅对启动 renderer 仿真 `no-preference`，检查正常金属柔光、渐变及约 1100ms 淡出，不修改系统偏好或正式应用的无障碍行为。正式启动素材接受 1440×880、1302×604、960×580、960×440、683×284 客户区与 DPR 1／1.25／1.5／2 共 20 组仿真，核对固定 Logo、字标、加载区、居中、留白和整体缩放。随后恢复真实初始化，记录背景透明度、整组淡出及启动 renderer 的释放；有界 rAF 样本保留 P95／最大间隔，不以共享 CI 结果承诺用户冷启动耗时或持续 60 FPS。
 
-安装版另识别持久的本地标题层，核对32 DIP、原生 Window Controls Overlay 实际安全区、菜单与拖动命中，确认启动等待、淡出和工作台共享同一标题document。检查真实业务缩放／重载／页面切换后，标题字号和位置不变；分析新窗独立绑定自己的标题层。原生输入helper按已安装EXE/PID、前台窗口、WM_NCHITTEST和输入桌面约束执行SendInput，记录拖动、原生最小化／最大化／还原／关闭按钮及真实快捷键结果；从最小化恢复明确记录为系统ShowWindow命令。缺少可交互桌面时记录unavailable，不能把CDP关窗、设置bounds或CSS仿真当作真实按钮操作通过。
+安装版另识别持久的本地标题层，核对32 DIP、原生 Window Controls Overlay 实际安全区、菜单与拖动命中，确认启动等待、淡出和工作台共享同一标题document。检查真实业务缩放／重载／页面切换后，标题字号和位置不变；分析新窗按唯一新增标题target识别，核对独立布局；关闭其标题层后，必须同时释放该分析内容和标题target，并保留主窗口两个target，以记录实际生命周期耦合。Electron不实现Chrome的 `Browser.getWindowForTarget`，检查不依赖该协议，也不将renderer target或相同尺寸当作原生HWND绑定。原生输入helper按已安装EXE/PID、前台窗口、WM_NCHITTEST和输入桌面约束执行SendInput，记录拖动、原生最小化／最大化／还原／关闭按钮及真实快捷键结果；从最小化恢复明确记录为系统ShowWindow命令。缺少可交互桌面时记录unavailable，不能把CDP关窗、设置bounds或CSS仿真当作真实按钮操作通过。
 
 [原生窗口 helper](../scripts/test-windows-startup-window.ps1) 按安装 EXE 的 PID 和文件路径核对归属，读取真实窗口、客户区、显示器工作区、窗口 DPI 及最小跟踪尺寸，再调整并回读最小窗口。它不修改系统显示模式或缩放；20 组 CSS／DPR 仿真也不等同于 20 种 Windows 显示设置。`native-installed-app.startup-*.png` 包含启动 renderer 表面截图，以及交互桌面允许时的默认／最小原生窗口合成截图，随候选 SHA-256 清单保留；无法截取或未人工查看时不记录外观验收通过。暂缓业务执行的检查不作为正常冷启动性能数据。
 
