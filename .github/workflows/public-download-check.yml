@@ -70,3 +70,19 @@ jobs:
           node scripts/release-publisher/verify-public.previous.mjs
       - name: Require the current verifier to validate all public metadata
         run: node scripts/release-publisher/verify-public.mjs
+      - name: Diagnose failed public connections without cloud credentials
+        if: failure()
+        run: |
+          node --input-type=module - <<'NODE'
+          import { lookup } from 'node:dns/promises';
+          for (const hostname of ['analytix.top', 'download.analytix.top']) {
+            try { console.log(JSON.stringify({ hostname, addresses: await lookup(hostname, { all: true }) })); }
+            catch (error) { console.log(JSON.stringify({ hostname, code: error.code })); }
+          }
+          NODE
+          for url in 'https://analytix.top/fundstrace/latest.yml' 'https://download.analytix.top/releases/windows/site/fundstrace/latest.yml'; do
+            curl --ipv4 --silent --show-error --max-time 12 --connect-timeout 5 --max-filesize 65536 \
+              --output "$RUNNER_TEMP/public-metadata.json" \
+              --write-out 'url=%{url_effective} status=%{http_code} remote=%{remote_ip} dns=%{time_namelookup} tcp=%{time_connect} tls=%{time_appconnect} first=%{time_starttransfer} exit=%{exitcode}\n' \
+              "$url" || true
+          done
