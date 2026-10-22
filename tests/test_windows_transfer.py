@@ -1,9 +1,13 @@
 """Transfer must accept the updater host and reject omitted or changed bytes."""
 from copy import deepcopy
 import hashlib
+import json
+from pathlib import Path
+import subprocess
 
 import pytest
 
+from scripts import transfer_windows_candidate as transfer
 from scripts.transfer_windows_candidate import verify_host_report, verify_upgrade_origin, verify_icon_report
 from scripts.upgrade_baseline import validate_baseline
 
@@ -46,10 +50,102 @@ def test_transfer_rejects_incomplete_or_unreviewed_updater_payloads(change):
         verify_host_report(report, "0.1.8", package, files.__getitem__)
 
 
-@pytest.mark.parametrize("version", ["0.1.9", "0.1.10"])
-def test_transfer_accepts_current_host_with_both_exact_source_icons(version):
-    files, report, package = fixture(True, version=version, brand=True)
-    verify_host_report(report, version, package, files.__getitem__)
+def test_transfer_preserves_official_brand_host_with_both_exact_source_icons():
+    files, report, package = fixture(True, version="0.1.9", brand=True)
+    verify_host_report(report, "0.1.9", package, files.__getitem__)
+
+
+SHELL_HOST_FILES = [
+    "startup.cjs", "window-shell.cjs", "titlebar/index.html", "titlebar/style.css",
+    "titlebar/renderer.js", "titlebar/preload.cjs", "startup/index.html", "startup/style.css",
+    "startup/renderer.js", "startup/preload.cjs", "LICENSE",
+]
+
+
+@pytest.fixture(scope="module")
+def current_host():
+    root = Path(__file__).resolve().parents[1]
+    # Read the actual packaging declaration, including files sourced outside
+    # desktop/, without packing or loading the application.
+    script = """
+const path = require('node:path');
+const builder = require('./desktop/electron-builder.cjs');
+const files = builder.files.flatMap(entry => typeof entry === 'string'
+  ? [[entry, path.join('desktop', entry)]]
+  : entry.filter.map(name => [path.posix.join(entry.to, name),
+      path.relative(process.cwd(), path.join(entry.from, name))]));
+process.stdout.write(JSON.stringify(files));
+"""
+    result = subprocess.run(["node", "-e", script], cwd=root, text=True,
+                            capture_output=True, check=True)
+    paths = dict(json.loads(result.stdout))
+    files = {name: (root / source).read_bytes() for name, source in paths.items()
+             if name != "package.json"}
+    report = {"status": "passed", "version": "0.1.10", "checks": {"sourceHashes": True},
+              "hostFiles": {name: hashlib.sha256(content).hexdigest() for name, content in files.items()}}
+    package = json.loads((root / "desktop/package.json").read_text(encoding="utf-8"))
+    return files, report, package, paths
+
+
+def test_transfer_accepts_actual_startup_shell_package_and_source_assets(current_host):
+    files, report, package, paths = current_host
+    assert paths["LICENSE"] == "LICENSE"
+    verify_host_report(report, "0.1.10", package, files.__getitem__)
+
+
+@pytest.mark.parametrize("name", SHELL_HOST_FILES)
+@pytest.mark.parametrize("change", ["missing", "changed"])
+def test_transfer_rejects_missing_or_changed_startup_shell_source(current_host, name, change):
+    files, original, package, _ = current_host
+    report = deepcopy(original)
+    if change == "missing":
+        del report["hostFiles"][name]
+    else:
+        report["hostFiles"][name] = hashlib.sha256(files[name] + b"changed bytes").hexdigest()
+    with pytest.raises(AssertionError):
+        verify_host_report(report, "0.1.10", package, files.__getitem__)
+
+
+@pytest.mark.parametrize("name", ["other.cjs", "assets/unapproved.png"])
+def test_startup_shell_host_rejects_unreviewed_extra_files(current_host, name):
+    files, original, package, _ = current_host
+    report = deepcopy(original)
+    report["hostFiles"][name] = hashlib.sha256(b"unreviewed extra").hexdigest()
+    with pytest.raises(AssertionError):
+        verify_host_report(report, "0.1.10", package, files.__getitem__)
+
+
+def test_startup_shell_version_cannot_claim_the_old_brand_host():
+    files, report, package = fixture(True, version="0.1.10", brand=True)
+    with pytest.raises(AssertionError):
+        verify_host_report(report, "0.1.10", package, files.__getitem__)
+
+
+@pytest.mark.parametrize("name", SHELL_HOST_FILES)
+def test_official_brand_host_cannot_claim_startup_shell_entries(name):
+    files, report, package = fixture(True, version="0.1.9", brand=True)
+    report["hostFiles"][name] = hashlib.sha256(b"unreviewed extra").hexdigest()
+    with pytest.raises(AssertionError):
+        verify_host_report(report, "0.1.9", package, files.__getitem__)
+
+
+def test_transfer_reads_root_license_and_desktop_assets_from_candidate_commit(current_host, monkeypatch):
+    files, report, package, paths = current_host
+    commit = "a" * 40
+    requested = []
+
+    def read_source(command):
+        requested.append(command)
+        assert command[:2] == ["git", "show"]
+        _, source = command[2].split(":", 1)
+        name = next(name for name, path in paths.items() if path == source)
+        return files[name]
+
+    monkeypatch.setattr(transfer.subprocess, "check_output", read_source)
+    verify_host_report(report, "0.1.10", package,
+                       lambda name: transfer.source_host_file(commit, name))
+    assert ["git", "show", f"{commit}:LICENSE"] in requested
+    assert ["git", "show", f"{commit}:desktop/startup.cjs"] in requested
 
 
 @pytest.mark.parametrize("name", ["assets/icon.png", "assets/icon.ico"])

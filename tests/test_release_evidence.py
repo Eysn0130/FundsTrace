@@ -10,6 +10,7 @@ from scripts import release_evidence
 from scripts.release_evidence import (
     CANDIDATE_REPORTS, EVIDENCE_FILES, STANDARD_FILES, prepare_evidence, verify_evidence,
 )
+from scripts.transfer_windows_candidate import standard_archive
 
 
 TAG = "v0.1.6"
@@ -232,6 +233,17 @@ OPTIONAL_EVIDENCE = {
 }
 UPDATE_SCREENSHOTS = {"native-installed-app.update-downloading.png", "native-installed-app.update-ready.png"}
 TASKBAR_SCREENSHOT = "native-installed-app.taskbar.png"
+STARTUP_RENDERER_SCREENSHOTS = {
+    "normal": "native-installed-app.startup-normal.png",
+    "minimum": "native-installed-app.startup-minimum.png",
+    "small": "native-installed-app.startup-small.png",
+}
+STARTUP_NATIVE_SCREENSHOTS = {
+    "initialCapture": "native-installed-app.startup-native-default.png",
+    "minimumCapture": "native-installed-app.startup-native-minimum.png",
+}
+STARTUP_EVIDENCE = {name: name for name in (
+    *STARTUP_RENDERER_SCREENSHOTS.values(), *STARTUP_NATIVE_SCREENSHOTS.values())}
 
 
 def standard_declaration(*, update=False, capture="captured"):
@@ -331,7 +343,7 @@ def rebind_candidate(base, installer, *, tag="v0.1.9"):
     value["standardUserCompatibilitySha256"] = sha(standard["compatibility.json"])
     write_json(base / "windows-candidate.json", value)
     sums = {"build/desktop/" + relative: sha((base / relative).read_bytes())
-            for name, relative in {**EVIDENCE_FILES, **OPTIONAL_EVIDENCE}.items()
+            for name, relative in {**EVIDENCE_FILES, **OPTIONAL_EVIDENCE, **STARTUP_EVIDENCE}.items()
             if name not in {"windows-candidate.sha256", "standard-user-compatibility.zip", "release-verification.json"}
             and (base / relative).exists()}
     sums[installer["path"]] = installer["sha256"]
@@ -397,6 +409,166 @@ def prepare_modern(candidate, output, **kwargs):
     base, installer = candidate
     return prepare_evidence(base, output, tag="v0.1.9", source_commit=SOURCE, source_run=RUN,
                             installer=installer, **kwargs)
+
+
+def startup_report(native_captures=()):
+    return {
+        "waiting": {"screenshots": [
+            {"label": label, "path": name, "rendererSurfaceOnly": True}
+            for label, name in STARTUP_RENDERER_SCREENSHOTS.items()
+        ]},
+        "nativeWindows": {key: {"screenshot": {
+            "captured": key in native_captures, "source": "native-window-screen-composite", "reviewed": False,
+            **({"sha256": sha(name.encode())} if key in native_captures else {}),
+        }} for key, name in STARTUP_NATIVE_SCREENSHOTS.items()},
+    }
+
+
+def startup_candidate(candidate, *, main_native=(), standard_native=()):
+    base, old_installer = modern_candidate(candidate)
+    installer = {**old_installer, "path": "build/desktop/electron/FundsTrace-0.1.10-windows-x64-unsigned.exe"}
+    standard = standard_contents(base)
+    for account, native in (("main", main_native), ("standard", standard_native)):
+        app = (json.loads((base / "native-installed-app-smoke.json").read_text()) if account == "main"
+               else json.loads(standard["native-installed-app-smoke.json"]))
+        app["startup"] = startup_report(native)
+        names = set(STARTUP_RENDERER_SCREENSHOTS.values()) | {STARTUP_NATIVE_SCREENSHOTS[key] for key in native}
+        if account == "main":
+            write_json(base / "native-installed-app-smoke.json", app)
+            for name in names:
+                (base / name).write_bytes(name.encode())
+        else:
+            standard["native-installed-app-smoke.json"] = (json.dumps(app) + "\n").encode()
+            standard.update({name: name.encode() for name in names})
+    write_standard(base, standard)
+    rebind_candidate(base, installer, tag="v0.1.10")
+    return base, installer
+
+
+def prepare_startup(candidate, output):
+    base, installer = candidate
+    return prepare_evidence(base, output, tag="v0.1.10", source_commit=SOURCE, source_run=RUN, installer=installer)
+
+
+@pytest.mark.parametrize("native", [(), ("initialCapture",), ("minimumCapture",), ("initialCapture", "minimumCapture")])
+def test_startup_policy_requires_exact_renderer_files_and_declared_native_files(native):
+    candidate, app = standard_declaration()
+    app["startup"] = startup_report(native)
+    expected = (STANDARD_FILES | {TASKBAR_SCREENSHOT} | set(STARTUP_RENDERER_SCREENSHOTS.values())
+                | {STARTUP_NATIVE_SCREENSHOTS[key] for key in native})
+    assert release_evidence.standard_evidence_files(candidate, "v0.1.10", app) == expected
+    assert release_evidence.standard_evidence_files(candidate, "v0.1.9", app) == STANDARD_FILES | {TASKBAR_SCREENSHOT}
+
+
+@pytest.mark.parametrize("change", ["missing-startup", "missing-renderer", "duplicate-renderer", "other-renderer",
+                                  "missing-native", "nonboolean-native", "missing-native-sha"])
+def test_startup_policy_rejects_missing_or_invalid_capture_declarations(change):
+    candidate, app = standard_declaration()
+    app["startup"] = startup_report(("initialCapture",))
+    startup = app["startup"]
+    if change == "missing-startup":
+        del app["startup"]
+    elif change == "missing-renderer":
+        startup["waiting"]["screenshots"].pop()
+    elif change == "duplicate-renderer":
+        startup["waiting"]["screenshots"][1] = dict(startup["waiting"]["screenshots"][0])
+    elif change == "other-renderer":
+        startup["waiting"]["screenshots"][0]["path"] = "native-installed-app.startup-extra.png"
+    elif change == "missing-native":
+        del startup["nativeWindows"]["initialCapture"]
+    elif change == "nonboolean-native":
+        startup["nativeWindows"]["initialCapture"]["screenshot"]["captured"] = 1
+    else:
+        del startup["nativeWindows"]["initialCapture"]["screenshot"]["sha256"]
+    with pytest.raises(ValueError, match="[Ss]tartup"):
+        release_evidence.standard_evidence_files(candidate, "v0.1.10", app)
+
+
+@pytest.mark.parametrize("main_native,standard_native", [
+    ((), ()), (("initialCapture",), ("minimumCapture",)),
+    (("minimumCapture",), ("initialCapture",)),
+    (("initialCapture", "minimumCapture"), ("initialCapture", "minimumCapture")),
+])
+def test_startup_archive_roundtrip_retains_each_accounts_declared_captures(candidate, tmp_path,
+                                                                        main_native, standard_native):
+    current = startup_candidate(candidate, main_native=main_native, standard_native=standard_native)
+    base, _ = current
+    output = tmp_path / "startup-archive"
+    manifest = prepare_startup(current, output)
+    expected_main = (set(EVIDENCE_FILES) | set(OPTIONAL_EVIDENCE) | set(STARTUP_RENDERER_SCREENSHOTS.values())
+                     | {STARTUP_NATIVE_SCREENSHOTS[key] for key in main_native})
+    assert {item["path"].removeprefix("evidence/") for item in manifest["files"]} == expected_main
+    for name in expected_main:
+        assert (output / "evidence" / name).read_bytes() == (base / EVIDENCE_FILES.get(name, name)).read_bytes()
+    with zipfile.ZipFile(output / "evidence/standard-user-compatibility.zip") as archive:
+        assert set(archive.namelist()) == (STANDARD_FILES | UPDATE_SCREENSHOTS | {TASKBAR_SCREENSHOT}
+            | set(STARTUP_RENDERER_SCREENSHOTS.values()) | {STARTUP_NATIVE_SCREENSHOTS[key] for key in standard_native})
+    assert verify_evidence(output) == manifest
+
+
+@pytest.mark.parametrize("native", [(), ("initialCapture", "minimumCapture")])
+def test_startup_declarations_drive_the_transfer_standard_archive(candidate, tmp_path, native):
+    base, _ = startup_candidate(candidate, standard_native=native)
+    contents = standard_contents(base)
+    standard = tmp_path / "standard-user"
+    standard.mkdir()
+    for name, content in contents.items():
+        (standard / name).write_bytes(content)
+    app = json.loads(contents["native-installed-app-smoke.json"])
+    declared = release_evidence.standard_evidence_files(json.loads((base / "windows-candidate.json").read_text()),
+                                                         "v0.1.10", app)
+    output = tmp_path / "transfer-standard.zip"
+    standard_archive(standard, output, declared)
+    with zipfile.ZipFile(output) as archive:
+        assert set(archive.namelist()) == set(contents)
+        assert all(archive.read(name) == content for name, content in contents.items())
+
+
+@pytest.mark.parametrize("account", ["main", "standard"])
+@pytest.mark.parametrize("name", list(STARTUP_EVIDENCE))
+def test_startup_archive_rejects_each_missing_required_capture(candidate, tmp_path, account, name):
+    base, installer = startup_candidate(candidate, main_native=tuple(STARTUP_NATIVE_SCREENSHOTS),
+                                         standard_native=tuple(STARTUP_NATIVE_SCREENSHOTS))
+    if account == "main":
+        (base / name).unlink()
+    else:
+        standard = standard_contents(base)
+        del standard[name]
+        write_standard(base, standard)
+    rebind_candidate(base, installer, tag="v0.1.10")
+    with pytest.raises((ValueError, OSError)):
+        prepare_startup((base, installer), tmp_path / "archive")
+
+
+@pytest.mark.parametrize("account", ["main", "standard"])
+@pytest.mark.parametrize("name", list(STARTUP_NATIVE_SCREENSHOTS.values()))
+def test_startup_archive_rejects_undeclared_native_capture(candidate, tmp_path, account, name):
+    base, installer = startup_candidate(candidate)
+    if account == "main":
+        (base / name).write_bytes(name.encode())
+    else:
+        standard = standard_contents(base)
+        standard[name] = name.encode()
+        write_standard(base, standard)
+    rebind_candidate(base, installer, tag="v0.1.10")
+    with pytest.raises(ValueError, match="Undeclared|Unexpected or missing"):
+        prepare_startup((base, installer), tmp_path / "archive")
+
+
+@pytest.mark.parametrize("account", ["main", "standard"])
+@pytest.mark.parametrize("name", list(STARTUP_NATIVE_SCREENSHOTS.values()))
+def test_startup_archive_binds_native_capture_to_report_sha256(candidate, tmp_path, account, name):
+    base, installer = startup_candidate(candidate, main_native=tuple(STARTUP_NATIVE_SCREENSHOTS),
+                                         standard_native=tuple(STARTUP_NATIVE_SCREENSHOTS))
+    if account == "main":
+        (base / name).write_bytes(b"different native capture")
+    else:
+        standard = standard_contents(base)
+        standard[name] = b"different native capture"
+        write_standard(base, standard)
+    rebind_candidate(base, installer, tag="v0.1.10")
+    with pytest.raises(ValueError, match="[Ss]tartup.*checksum mismatch"):
+        prepare_startup((base, installer), tmp_path / "archive")
 
 
 def test_archive_includes_declared_update_icon_and_both_accounts_taskbar(candidate, tmp_path):
