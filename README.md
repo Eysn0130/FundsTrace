@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/Eysn0130/FundsTrace/releases/latest"><img src="https://img.shields.io/github/v/release/Eysn0130/FundsTrace?style=flat-square&amp;color=24558A&amp;label=release" alt="GitHub 最新发布版本"></a>
   <a href="docs/desktop-delivery.md"><img src="https://img.shields.io/badge/Windows-x64-151A1E?style=flat-square" alt="平台：Windows x64"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Eysn0130/FundsTrace?style=flat-square&amp;color=151A1E" alt="许可证：MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Community%201.0-151A1E?style=flat-square" alt="许可证：循迹 FundsTrace 社区使用与源码许可协议 1.0（源码可见）"></a>
 </p>
 
 <p align="center"><strong><a href="https://github.com/Eysn0130/FundsTrace/releases/latest">下载 Windows 版</a></strong> &nbsp; · &nbsp; <a href="docs/workspace-guide.md">使用指南</a> &nbsp; · &nbsp; <a href="#看看实际操作">操作演示</a></p>
@@ -92,4 +92,10 @@ npm --prefix frontend run build
 
 </details>
 
-[MIT License](LICENSE) · [第三方许可与来源](THIRD_PARTY_NOTICES.md)
+## 许可 / License
+
+当前维护版本采用自定义的**循迹 FundsTrace 社区使用与源码许可协议 1.0**，源码可见，非 OSI 标准开源。个人非商业使用、修复与增功能免费；机构、商业及对外在线服务须取得许可。一般条款下对外分发修改版须公开完整对应源码并保留通知，未经许可不得单独换皮改名、冒充或转售；指定贡献者特许及历史 MIT 权利见许可说明。许可条件与启动授权码分别处理，现有免激活政策不变。
+
+The maintained version uses the custom **FundsTrace Community Use and Source License 1.0**, a source-available license that is not OSI-approved. Personal noncommercial use and development are free; institutional, commercial and third-party online services require permission. Under the general terms, distributed modifications require complete corresponding source and notices; unauthorized standalone rebranding, impersonation and resale are prohibited. See the licensing guide for designated-contributor permissions and preserved MIT rights. The activation-free startup policy remains unchanged.
+
+[中文协议（优先）](LICENSE) · [English license](LICENSE.en) · [中文许可说明](docs/licensing.md) · [English licensing guide](docs/licensing.en.md) · [历史 MIT](LICENSES/MIT.txt) · [第三方许可与来源](THIRD_PARTY_NOTICES.md)

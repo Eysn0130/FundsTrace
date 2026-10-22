@@ -66,12 +66,36 @@ test('IPC requires exact owned main frame and local resources have an explicit a
   frame.url = `${page}?injected`; assert.equal(trustedSender({ sender: contents, senderFrame: frame }, contents, page), false);
   for (const url of ['https://example.com/', 'http://127.0.0.1/', 'file:///arbitrary/private.pem']) assert.equal(localResource(url, new Set([page])), false);
 });
-test('issuer packaging has its own identity and excludes backend/business resources', () => {
+test('issuer packaging has its own identity and excludes backend/business resources', async () => {
   const builder = require('../issuer/electron-builder.cjs');
   assert.equal(builder.appId, 'com.eysn.fundstrace.issuer'); assert.equal(builder.extraMetadata.main, 'issuer/main.cjs');
-  assert.deepEqual(builder.files, ['package.json', 'issuer/main.cjs', 'issuer/core.cjs', 'issuer/policy.cjs', 'issuer/preload.cjs', 'issuer/renderer.js', 'issuer/index.html', 'issuer/style.css', 'assets/icon.png', 'assets/icon.ico']);
-  assert.equal(builder.files.some(file => /[?*]|\.pem$|\.key$/.test(file)), false);
-  assert.deepEqual(builder.extraResources.map(item => item.from), ['../LICENSE', '../THIRD_PARTY_NOTICES.md']);
+  assert.deepEqual(builder.files, ['package.json', 'issuer/main.cjs', 'issuer/core.cjs', 'issuer/policy.cjs', 'issuer/preload.cjs', 'issuer/renderer.js', 'issuer/index.html', 'issuer/style.css', 'assets/icon.png', 'assets/icon.ico',
+    { from: path.resolve(__dirname, '../..'), to: '.', filter: ['LICENSE', 'LICENSE.en'] }]);
+  assert.equal(builder.files.some(file => /[?*]|\.pem$|\.key$/.test(typeof file === 'string' ? file : file.from)), false);
+  assert.deepEqual(builder.extraResources, [
+    { from: '../LICENSE', to: 'LICENSE' },
+    { from: '../LICENSE.en', to: 'LICENSE.en' },
+    { from: '../THIRD_PARTY_NOTICES.md', to: 'THIRD_PARTY_NOTICES.md' },
+    { from: '../LICENSES/MIT.txt', to: 'LICENSES/MIT.txt' },
+    { from: '../docs/licensing.md', to: 'docs/licensing.md' },
+    { from: '../docs/licensing.en.md', to: 'docs/licensing.en.md' },
+  ]);
+  assert.ok((await fs.readFile(path.join(builder.files.at(-1).from, 'LICENSE'), 'utf8')).includes('循迹 FundsTrace'));
+  for (const resource of builder.extraResources) {
+    assert.equal((await fs.stat(path.resolve(__dirname, '..', resource.from))).isFile(), true);
+  }
+  for (const filename of ['docs/licensing.md', 'docs/licensing.en.md']) {
+    const licensing = builder.extraResources.find(resource => resource.to === filename);
+    const licensingSource = path.resolve(__dirname, '..', licensing.from);
+    const licensingText = await fs.readFile(licensingSource, 'utf8');
+    for (const link of ['../LICENSE', '../LICENSE.en', '../LICENSES/MIT.txt', '../THIRD_PARTY_NOTICES.md']) {
+      assert.ok(licensingText.includes(`](${link})`), `${filename}: ${link}`);
+      const target = path.posix.normalize(path.posix.join(path.posix.dirname(licensing.to), link));
+      const resource = builder.extraResources.find(item => item.to === target);
+      assert.ok(resource, `Issuer licensing link must resolve to a distributed resource: ${link}`);
+      assert.equal(path.resolve(__dirname, '..', resource.from), path.resolve(path.dirname(licensingSource), link));
+    }
+  }
   assert.equal(builder.publish, null); assert.equal(builder.win.signExecutable, false);
   assert.notEqual(builder.win.signAndEditExecutable, false);
 });

@@ -1,6 +1,10 @@
 # Third-party notices and source provenance
 
-FundsTrace is maintained in this repository by Eysn0130 and contributors. It continues a pre-existing colleague-developed application; the initial repository import is a maintenance snapshot and does not assert sole authorship of that earlier work. Existing author and copyright notices are retained. The project license is MIT, as selected by its maintainer.
+FundsTrace is maintained in this repository by Eysn0130 and contributors. It continues a pre-existing colleague-developed application; the initial repository import is a maintenance snapshot and does not assert sole authorship of that earlier work. Existing author and copyright notices are retained. The maintainer originally selected MIT; its complete project notice is preserved unchanged in `LICENSES/MIT.txt`. On 2026-10-21 the maintainer adopted the FundsTrace Community Use and Source License 1.0 for content within the team's authority to license: the Chinese text in `LICENSE` controls, and `LICENSE.en` is the complete English translation. This source-available license does not withdraw existing MIT permissions, including for MIT-licensed content retained in a later snapshot, or replace any third-party license. Scope and the transition boundary are documented in `docs/licensing.md` and `docs/licensing.en.md`.
+
+The maintainer has confirmed non-exclusive contribution authorization from CodeHaven969 and linzijie6524 and their special permission under section 7 of `LICENSE` for continued Agent development and integration into their own closed-source or commercial products. This does not establish authorization for another author's work or waive third-party obligations. In particular, the colleague-developed source provenance is retained without assuming those contributors' authorization covers every original component.
+
+中文说明：当前许可为《循迹 FundsTrace 社区使用与源码许可协议 1.0》，中文正文 `LICENSE` 为准，英文完整对照见 `LICENSE.en`；中英文适用说明见 `docs/licensing.md` 和 `docs/licensing.en.md`。历史 MIT 原文及既有权利继续保留，所有第三方组件仍按各自原许可使用。两位指定贡献者的特别授权仅覆盖团队实际有权授予的内容，不据此推定原同事或其他作者的授权。
 
 ## G6
 
@@ -16,7 +20,7 @@ The import-batch table uses the unmodified `dots.svg` from the same Tabler Icons
 
 ## FundsTrace ribbon icons
 
-The additional compact ribbon icons in `static/ui-icons/` (`network`, `selection`, `selection-clear`, `swap`, `list`, `group`, `link`, `layers`, `chart`, `route`, `play`, `star`, `shape`, `photo`, `align-left`, `align-top`, `distribute-vertical`, `lock`, `focus`, `zoom-out`, `zoom-in`, `zoom-reset`, `eye`, `eye-off`, `eye-restore`, `legend`, `map`, `calendar`, `target`, and `font-text`) were drawn for FundsTrace on 2026-10-16. They use the project MIT license and the same 24px outline grammar as the retained Tabler controls. No external icon service or runtime dependency is used.
+The additional compact ribbon icons in `static/ui-icons/` (`network`, `selection`, `selection-clear`, `swap`, `list`, `group`, `link`, `layers`, `chart`, `route`, `play`, `star`, `shape`, `photo`, `align-left`, `align-top`, `distribute-vertical`, `lock`, `focus`, `zoom-out`, `zoom-in`, `zoom-reset`, `eye`, `eye-off`, `eye-restore`, `legend`, `map`, `calendar`, `target`, and `font-text`) were drawn for FundsTrace on 2026-10-16. Their recorded MIT license is retained in `LICENSES/MIT.txt`; they use the same 24px outline grammar as the retained Tabler controls. No external icon service or runtime dependency is used.
 
 ## Windows updater and release publisher
 
@@ -50,7 +54,7 @@ SOFTWARE.
 
 ## Python, Electron and build dependencies
 
-Python runtime dependency versions and distribution hashes are recorded in `requirements-desktop.lock`. Native backend builds recursively retain installed runtime distribution metadata and their supplied license files. Bundled fonts retain their upstream notices. Electron distributions retain `LICENSE` and `LICENSES.chromium.html`. Build and test dependencies keep their own licenses; the FundsTrace MIT license does not replace those licenses. No project authorization secret or business dataset is part of the distribution.
+Python runtime dependency versions and distribution hashes are recorded in `requirements-desktop.lock`. Native backend builds recursively retain installed runtime distribution metadata and their supplied license files. Bundled fonts retain their upstream notices. Electron distributions retain their upstream `LICENSE` and `LICENSES.chromium.html`. Build and test dependencies keep their own licenses; neither the FundsTrace community license nor its historical MIT notice replaces those licenses. No project authorization secret or business dataset is part of the distribution.
 
 ## Analytix Windows installer flow
 
