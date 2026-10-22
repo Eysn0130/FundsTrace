@@ -8,8 +8,76 @@ import subprocess
 import pytest
 
 from scripts import transfer_windows_candidate as transfer
+from scripts import build_desktop_backend as builder
 from scripts.transfer_windows_candidate import verify_host_report, verify_upgrade_origin, verify_icon_report
 from scripts.upgrade_baseline import validate_baseline
+
+
+@pytest.fixture
+def backend_resources(tmp_path, monkeypatch):
+    # Drive the real packager collector without building a frontend/backend or
+    # reading an activation key from the developer's checkout.
+    contents = {name: f"synthetic reviewed {name}\n".encode() for name in (
+        "LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/MIT.txt",
+        "docs/licensing.md", "docs/licensing.en.md", "static/graph-selection.js",
+        "frontend/dist/index.html", "frontend/dist/assets/index.js", "frontend/dist/assets/index.css")}
+    for name, content in contents.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    monkeypatch.setattr(builder, "ROOT", tmp_path)
+    monkeypatch.setattr(builder, "STATIC_NAMES", ("graph-selection.js",))
+    files = {name.replace("\\", "/"): path.read_bytes() for path, name in builder.resource_files()}
+    manifest = {"platform": "win32", "arch": "x64", "protocol": 1,
+                "resources": {name: hashlib.sha256(content).hexdigest() for name, content in files.items()},
+                "sourceEntrySha256": hashlib.sha256(b"synthetic backend entry\n").hexdigest()}
+    return files | {"desktop_backend.py": b"synthetic backend entry\n"}, manifest
+
+
+def test_transfer_accepts_the_actual_packager_license_resources(backend_resources):
+    files, manifest = backend_resources
+    read = []
+
+    def source(name):
+        read.append(name)
+        return files[name]
+
+    assert transfer.verify_backend_report(manifest, source) == 6
+    assert set(read) == {"LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/MIT.txt",
+                         "docs/licensing.md", "docs/licensing.en.md", "static/graph-selection.js",
+                         "desktop_backend.py"}
+
+
+def test_backend_transfer_preserves_the_earlier_two_document_contract(backend_resources):
+    files, manifest = backend_resources
+    for name in ("LICENSES/MIT.txt", "docs/licensing.md", "docs/licensing.en.md"):
+        del manifest["resources"][name]
+    assert transfer.verify_backend_report(manifest, files.__getitem__) == 3
+
+
+@pytest.mark.parametrize("name", ["LICENSES/MIT.txt", "docs/licensing.md", "docs/licensing.en.md",
+                                 "desktop_backend.py"])
+def test_backend_transfer_rejects_changed_license_or_entry_bytes(backend_resources, name):
+    files, manifest = backend_resources
+    files[name] += b"unreviewed change"
+    with pytest.raises(AssertionError):
+        transfer.verify_backend_report(manifest, files.__getitem__)
+
+
+@pytest.mark.parametrize("name", ["docs/private.md", "LICENSES/unreviewed.txt", "static/../private.txt"])
+def test_backend_transfer_does_not_allow_arbitrary_documents_or_traversal(backend_resources, name):
+    files, manifest = backend_resources
+    files[name] = b"unreviewed source"
+    manifest["resources"][name] = hashlib.sha256(files[name]).hexdigest()
+    with pytest.raises(AssertionError):
+        transfer.verify_backend_report(manifest, files.__getitem__)
+
+
+def test_backend_transfer_keeps_the_compiled_frontend_count_requirement(backend_resources):
+    files, manifest = backend_resources
+    manifest["resources"]["frontend/dist/extra.js"] = "a" * 64
+    with pytest.raises(AssertionError):
+        transfer.verify_backend_report(manifest, files.__getitem__)
 
 
 def fixture(updater, *, version="0.1.8", brand=False):
