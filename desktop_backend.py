@@ -15,7 +15,7 @@ TOKEN_HEADER = b"x-fundstrace-desktop"
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
        "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
        "worker-src 'self' blob:; object-src 'none'; base-uri 'none'; "
-       "frame-src 'none'; frame-ancestors 'none'; form-action 'self'")
+       "frame-src 'self'; frame-ancestors 'self'; form-action 'self'")
 
 
 def read_bootstrap(stream):
