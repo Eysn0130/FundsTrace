@@ -132,7 +132,7 @@ public static class FundsTracePrivateUpdateWindowState {
         if ($null -ne $Report) {
             $Report.status='failed'
             $Report['privateFixtureCleanupFailed']=$true
-            if (-not $Report.failedCheck) { $Report.failedCheck='privateFixtureCleanup' }
+            if (-not $Report.ContainsKey('failedCheck') -or -not $Report['failedCheck']) { $Report.failedCheck='privateFixtureCleanup' }
         }
     }
     if ($null -ne $Report) { $Report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $ReportPath -Encoding utf8 }
