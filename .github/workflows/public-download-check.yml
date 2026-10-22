@@ -54,6 +54,19 @@ jobs:
           NODE
       - name: Require the current verifier to validate all public metadata
         run: node scripts/release-publisher/verify-public.mjs
+      - name: Verify native recovery against the same public metadata
+        run: |
+          node --input-type=module - <<'NODE'
+          import { verifyPublic } from './scripts/release-publisher/verify-public.mjs';
+          const latest = await verifyPublic({
+            fetchImpl(url, options) {
+              if (new URL(url).hostname !== 'api.github.com')
+                throw Object.assign(new Error('Controlled recovery-path check'), { code: 'UND_ERR_CONNECT_TIMEOUT' });
+              return fetch(url, options);
+            },
+          });
+          console.log(`Native recovery read and verified public FundsTrace ${latest.version} metadata`);
+          NODE
       - name: Diagnose failed public connections without cloud credentials
         if: failure()
         run: |
