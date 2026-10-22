@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "version": "0.1.10",
+  "checks": {
+    "exactHostAllowlist": true,
+    "packageIdentity": true,
+    "sourceHashes": true,
+    "preferencesAndPreloadIncluded": true
+  },
+  "hostFiles": {
+    "backend.cjs": "da88fcd743735a0d55c6ce1ef9b3822cea60b6e97a4b127dd11991ffb4f9791e",
+    "host-policy.cjs": "678ca541f8bf342faa616c3cd16b7ceb1cde61ea2cc2be5fba0b2f5371f95244",
+    "main.cjs": "6f6760df04b831b741a99bdeebaf276842780c341e4b35b740e1d1715d5c8ac7",
+    "preferences.cjs": "f5154819f31419561ade267c034562ee3ae02e214f23a75a015bae3bf6ce447c",
+    "preload.cjs": "816488cc45df933ee2ac5d74aa65c23f9ea1bc2e803cf375835888172061b313",
+    "startup.cjs": "d69af631e9de02b1251eb931a8dcf328a93fc33a28ae6f4652e90911a2ebbe90",
+    "updates.cjs": "102ef20a6da033fdf98d18380607afc509c61443731a77e5ce63db881b8cfeb6",
+    "window-shell.cjs": "5d11f0a1395403e204a292c1bb76a4fad05e79437094d4eb171a306f557b36e7",
+    "titlebar/index.html": "19aadd408cbf16f8a563a1e0946642d6b951ae45ed844a0d93a841c1ad44b887",
+    "titlebar/preload.cjs": "a1b0205b60c51dd9bd3d2fb0c4dca04290266e7d1502866629949ec3319a0bbe",
+    "titlebar/renderer.js": "2ad95131b028763d4ee88933d595b41ffe8b94db607f71f43e000bdf96ca91cd",
+    "titlebar/style.css": "a37a41f5d8ea1deb6a8ade637dd3993938e91e85ea5a198d212aa342352a015d",
+    "startup/index.html": "6c080fa891006007ee513c8ff4ca3290c3bcad909f95c8e33fd4f3796a0d1e02",
+    "startup/preload.cjs": "849362339f47848656eb89121c06a597c360df2af4d293c90b12e3b794416f41",
+    "startup/renderer.js": "d9084572b871bb0fe99f43655ce705e2ca3d5f22512e265bc32619c94ad513e6",
+    "startup/style.css": "0830e9a953b7422166a8492a11cb8faaa0a3f4593f616534c27f2bd43b30e844",
+    "assets/icon.ico": "fb6156b2f4f141121d49460f0d41133556dcc1cfb9622dc1ef3bf2fc1f25ca4c",
+    "assets/icon.png": "804f473a29c05d0a50968341c47f11a24547732758b67240fc6615cf719abae4",
+    "LICENSE": "36cb176eb42796f36c70f4e3b59c478d68c5d18778c1ea73b4e2f7c99d3a8f41"
+  },
+  "appArchiveSha256": "a1a4c511b65903cd45cb516c495078ef3c096948db28d11fd30253fa55489863"
+}

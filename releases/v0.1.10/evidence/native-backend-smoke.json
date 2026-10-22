@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "platform": "win32",
+  "arch": "x64",
+  "node": "22.22.1",
+  "testState": "temporary-database-with-one-synthetic-case",
+  "checks": {
+    "normalFirstBootWithoutActivation": true,
+    "syntheticCaseCreatedWithoutActivation": true,
+    "packagedReportAfterLazyImport": true,
+    "localEntryScriptsServed": true,
+    "ownedChildForcedExit": true,
+    "syntheticCasePersistedAfterCrash": true,
+    "normalReopenWithoutActivation": true,
+    "desktopTokenRequired": true,
+    "legacyAndVersionedEntryPoints": true,
+    "eofShutdown": true,
+    "chineseAndSpacePaths": true,
+    "noLicenseFileGenerated": true,
+    "temporaryStateRemoved": true
+  },
+  "timings": {
+    "firstBackendReadyMs": 1656,
+    "firstReportMs": 717,
+    "reopenedBackendReadyMs": 1151
+  },
+  "limits": {
+    "gui": false,
+    "importRecovery": false,
+    "productionActivation": false
+  }
+}
