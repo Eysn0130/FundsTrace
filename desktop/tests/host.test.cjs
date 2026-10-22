@@ -973,27 +973,50 @@ test('only successful appearance commits broadcast pure snapshots to owned windo
   const win=harness.state.windows[0],business=win.businessView.webContents;
   win.businessView.popup({url:`${origin}/analysis?case_id=1`});await harness.flush();
   const second=harness.state.windows[1], frame=business.mainFrame;
-  const saved={version:1,theme:'system',accent:'teal',translucency:true}, raw=JSON.stringify(saved);
-  for(const event of [{sender:win.webContents,senderFrame:win.webContents.mainFrame},{sender:business,senderFrame:{url:frame.url}}]) {
-    harness.ipcMain.emit('funds-trace:preferences',event,'set','fund_appearance',raw);assert.equal(event.returnValue,null);
+  const saved={version:1,theme:'light',accent:'teal',translucency:true}, raw=JSON.stringify(saved);
+  function request(operation,key,value,sender=business,senderFrame=frame) {
+    let reply;
+    const event={sender,senderFrame};
+    Object.defineProperty(event,'returnValue',{set(value){reply=value;}});
+    harness.ipcMain.emit('funds-trace:preferences',event,operation,key,value);
+    assert.equal(event.returnValue,undefined, 'Electron exposes a setter-only synchronous reply');
+    return reply;
   }
-  const invalid={sender:business,senderFrame:frame};
-  harness.ipcMain.emit('funds-trace:preferences',invalid,'set','fund_appearance',JSON.stringify({...saved,token:'SYN'}));assert.equal(invalid.returnValue,false);
+  const before=[win,second].map(current=>[current.messages.length,current.businessView.messages.length]);
+  assert.equal(request('set','fund_appearance',raw,win.webContents,win.webContents.mainFrame),null);
+  assert.equal(request('set','fund_appearance',raw,business,{url:frame.url}),null);
+  assert.equal(request('set','fund_appearance',JSON.stringify({...saved,token:'SYN'})),false);
   assert.equal(values.has('fund_appearance'),false);
-  const event={sender:business,senderFrame:frame};
-  harness.ipcMain.emit('funds-trace:preferences',event,'set','fund_appearance',raw);assert.equal(event.returnValue,true);
+  assert.deepEqual([win,second].map(current=>[current.messages.length,current.businessView.messages.length]),before);
+  assert.equal(request('set','fund_appearance',raw),true);
   assert.equal(values.get('fund_appearance'),raw);
   for(const current of [win,second]) {
+    assert.ok(current.overlay, 'successful setter-only IPC replies must immediately update the native caption');
     assert.equal(current.overlay.color,'#f4f3ef');assert.equal(current.overlay.symbolColor,'#292825');
+    assert.equal(current.backgroundColor,'#fcfcfb');
     assert.equal(current.businessView.backgroundColor,'#fcfcfb');
     const publicValue=current.businessView.messages.filter(item=>item.channel==='funds-trace:appearance').at(-1).value;
     assert.deepEqual(JSON.parse(publicValue.value),saved);assert.equal(publicValue.key,'fund_appearance');
     assert.deepEqual(current.messages.at(-1).value,{...saved,theme:'light'});
   }
+  const system={...saved,theme:'system'};
+  assert.equal(request('set','fund_appearance',JSON.stringify(system)),true);
   harness.nativeTheme.shouldUseDarkColors=true;harness.nativeTheme.emit('updated');
   assert.equal(win.overlay.color,'#151d27');assert.equal(second.messages.at(-1).value.theme,'dark');
   assert.equal(JSON.parse(values.get('fund_appearance')).theme,'system');
-  const privateRead={sender:business,senderFrame:frame};harness.ipcMain.emit('funds-trace:preferences',privateRead,'get','fund_window_state');assert.equal(privateRead.returnValue,null);
+  assert.equal(request('set','fund_appearance',raw),true);
+  assert.equal(win.overlay.color,'#f4f3ef');
+  assert.equal(request('remove','fund_appearance'),true);
+  assert.equal(values.has('fund_appearance'),false);
+  for(const current of [win,second]) {
+    assert.equal(current.overlay.color,'#151d27');assert.equal(current.overlay.symbolColor,'#cdd7e3');
+    assert.equal(current.backgroundColor,'#10171f');
+    assert.equal(current.businessView.backgroundColor,'#10171f');
+    const publicValue=current.businessView.messages.filter(item=>item.channel==='funds-trace:appearance').at(-1).value;
+    assert.deepEqual(JSON.parse(publicValue.value),require('../appearance.cjs').DEFAULT);
+    assert.deepEqual(current.messages.at(-1).value,require('../appearance.cjs').DEFAULT);
+  }
+  assert.equal(request('get','fund_window_state'),null);
   assert.ok(!JSON.stringify([...win.messages,...second.messages]).includes('SYN_MAIN_ONLY_APPEARANCE_TOKEN'));
   second.close();win.close();await harness.flush();
 });
