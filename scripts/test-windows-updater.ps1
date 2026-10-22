@@ -87,7 +87,26 @@ try {
     $Report.checks['installedUpdateAutoRelaunch'] = $true
     $Report.checks['installedUpdateExactResources'] = $true
     $Stage = 'updatedNormalClose'
-    if (-not $Relaunched.CloseMainWindow() -or -not $Relaunched.WaitForExit(30000)) { throw 'Updated application did not close normally.' }
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class FundsTracePrivateUpdateWindowState {
+  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr window);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+}
+'@
+    # MainWindowHandle is cached by Process. Re-read it after resource checking,
+    # before sending a normal close to the current native caption.
+    $Relaunched.Refresh()
+    $Report.updateRelaunchClose = [ordered]@{ windowPresent=($Relaunched.MainWindowHandle -ne [IntPtr]::Zero)
+        workspaceTitle=($Relaunched.MainWindowTitle -ceq '循迹 FundsTrace')
+        windowEnabled=[FundsTracePrivateUpdateWindowState]::IsWindowEnabled($Relaunched.MainWindowHandle)
+        windowVisible=[FundsTracePrivateUpdateWindowState]::IsWindowVisible($Relaunched.MainWindowHandle)
+        responding=$Relaunched.Responding; requestSent=$false; exited=$false }
+    $Report.updateRelaunchClose.requestSent = $Relaunched.CloseMainWindow()
+    if (-not $Report.updateRelaunchClose.requestSent) { throw 'Updated application did not accept a normal close request.' }
+    $Report.updateRelaunchClose.exited = $Relaunched.WaitForExit(30000)
+    if (-not $Report.updateRelaunchClose.exited) { throw 'Updated application did not finish its normal close.' }
     $Report.checks['installedUpdateRelaunchNormalClose'] = $true
     }
 } catch {
@@ -108,7 +127,14 @@ try {
         }
         if ($null -ne $PreparedCertificate) { Remove-FundsTraceUpdateCertificate $PreparedCertificate }
         if (Test-Path -LiteralPath $FixtureRoot) { Remove-Item -LiteralPath $FixtureRoot -Recurse -Force }
-    } catch { $Failed=$true; if ($null -ne $Report) { $Report.status='failed'; $Report.failedCheck='privateFixtureCleanup' } }
+    } catch {
+        $Failed=$true
+        if ($null -ne $Report) {
+            $Report.status='failed'
+            $Report['privateFixtureCleanupFailed']=$true
+            if (-not $Report.failedCheck) { $Report.failedCheck='privateFixtureCleanup' }
+        }
+    }
     if ($null -ne $Report) { $Report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $ReportPath -Encoding utf8 }
 }
 if ($Failed) { exit 1 }
