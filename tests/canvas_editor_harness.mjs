@@ -18,12 +18,17 @@ function editor({ relationships = [] } = {}) {
   env.window.addEventListener = (name, fn) => { if (!events.has(name)) events.set(name, new Set()); events.get(name).add(fn); };
   env.window.removeEventListener = (name, fn) => events.get(name)?.delete(fn);
   env.window.dispatchEvent = event => { for (const fn of [...events.get(event.type) || []]) fn(event); };
-  const labels = ['money', 'time', 'summary'].map(em => Object.assign(h.element(`#label-${em}`), { dataset: { em }, checked: em === 'money' }));
+  const labels = ['money', 'time', 'summary', 'currency'].map(em => Object.assign(h.element(`#label-${em}`), { dataset: { em }, checked: em === 'money' }));
+  let displayPortaled = false;
   env.document.querySelectorAll = selector => {
     if (selector === '#flowTbody .flow-ck') return boxes;
-    if (selector === '#edgeLabelGroup .edge-ck') return labels;
     if (selector.includes('.modal') || selector.includes('.act-track')) return [];
-    return selector.split(',').flatMap(part => part === '#edgeLabelGroup .edge-ck' ? labels : /^#[\w-]+$/.test(part) ? [h.element(part)] : []);
+    return [...new Set(selector.split(',').flatMap(value => {
+      const part = value.trim();
+      if (part === '#edgeLabelGroup .edge-ck') return displayPortaled ? labels.slice(0, 2) : labels;
+      if (part === '#toolbarDisplayExtra .edge-ck') return labels.slice(2);
+      return /^#[\w-]+$/.test(part) ? [h.element(part)] : [];
+    }))];
   };
   const container = h.element('#graphContainer');
   container.addEventListener = (type, fn) => { if (!elementEvents.has(type)) elementEvents.set(type, []); elementEvents.get(type).push(fn); };
@@ -85,12 +90,33 @@ function editor({ relationships = [] } = {}) {
   h.run(source('canvas-editor.js'));
   for (const fn of [...events.get('DOMContentLoaded') || []]) fn();
   return { h, env, state, boxes, labels, searches, messages, tracked, snapshot: () => snapshot(), history: env.window.FundsCanvasEditor.history,
+    portalDisplay(value = true) { displayPortaled = value; },
     membership: env.window.FundsCanvasEditor.membership,
     get models() { return models; }, get matrix() { return matrix; }, set matrix(value) { matrix = value; },
     conflict(value) { conflict = value; }, intercept(fn) { intercept = fn; },
     event(type, event = {}) { for (const fn of [...events.get(type) || []]) fn(event); },
     gesture(type, event = {}) { for (const fn of elementEvents.get(type) || []) fn({ preventDefault() {}, stopImmediatePropagation() {}, ...event }); } };
 }
+
+test('portaled display checkboxes retain change history, busy locking and restored selection state', async () => {
+  const f = editor(), summary = f.labels.find(node => node.dataset.em === 'summary');
+  f.portalDisplay();
+  summary.checked = true;
+  await summary.onchange({ target: summary });
+  assert.equal(f.state.edgeLabels.has('summary'), true);
+  assert.equal(f.history.status().count, 1);
+  await f.h.element('#btnUndo').onclick();
+  assert.equal(f.state.edgeLabels.has('summary'), false);
+  assert.equal(summary.checked, false, 'undo synchronizes controls outside their original label group');
+
+  const wait = deferred();
+  const pending = f.env.window.FundsCanvasEditor.command('synthetic pending display command', () => wait.promise);
+  await flush();
+  assert.equal(f.history.status().busy, true);
+  assert.ok(f.labels.every(node => node.disabled), 'both portaled and inline display controls honor the same command lock');
+  wait.resolve(); await pending;
+  assert.ok(f.labels.every(node => !node.disabled));
+});
 
 function cameraChrome(f, { left = 560, top = 180, bounds } = {}) {
   f.h.run(source('workspace-camera.js'));

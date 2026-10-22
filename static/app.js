@@ -5032,14 +5032,14 @@ function bindUI() {
   // 图谱工具
   $('#layoutSel').onchange = e => { const previous=state.layout;state.layout = e.target.value; return relayout(true,false,previous); };
   initEdgeLabels();
-  $$('#edgeLabelGroup .edge-ck').forEach(ck => {
+  $$('#edgeLabelGroup .edge-ck, #toolbarDisplayExtra .edge-ck').forEach(ck => {
     ck.checked = state.edgeLabels.has(ck.dataset.em);
     ck.onchange = () => {
       if (ck.checked) state.edgeLabels.add(ck.dataset.em);
       else state.edgeLabels.delete(ck.dataset.em);
       if (!state.edgeLabels.size) {  // 至少保留一项
         state.edgeLabels.add('money');
-        $$('#edgeLabelGroup .edge-ck').forEach(c => { if (c.dataset.em === 'money') c.checked = true; });
+        $$('#edgeLabelGroup .edge-ck, #toolbarDisplayExtra .edge-ck').forEach(c => { if (c.dataset.em === 'money') c.checked = true; });
       }
       saveEdgeLabels();
       renderGraph();

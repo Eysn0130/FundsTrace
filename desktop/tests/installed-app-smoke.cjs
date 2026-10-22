@@ -130,9 +130,9 @@ async function nativeStartupBounds(config, primary, target) {
   const initial = await observe({});
   result.initial = initial;
   const scale = initial.scaleFactor, area = initial.workArea;
-  const expected = { width:Math.min(Math.max(960, Math.min(1440, area.width / scale - 64)), area.width / scale),
-    height:Math.min(Math.max(640, Math.min(940, area.height / scale - 64)), area.height / scale) };
-  const min = { width:Math.min(960, area.width / scale), height:Math.min(640, area.height / scale) };
+  const expected = { width:Math.min(Math.max(1280, Math.min(1440, area.width / scale - 64)), area.width / scale),
+    height:Math.min(Math.max(720, Math.min(940, area.height / scale - 64)), area.height / scale) };
+  const min = { width:Math.min(1280, area.width / scale), height:Math.min(720, area.height / scale) };
   result.expectedInitialDip={...expected,minWidth:min.width,minHeight:min.height};
   assertNativeWindowBounds(initial,result.expectedInitialDip);
   const client = async native => {
@@ -544,6 +544,48 @@ async function portClosed(port) {
   await check('installedPersistentCaptionZoomReloadAndNativeControls', async () => {
     report.titlebar.journey = await runInstalledTitlebarJourney({cdp,page,probe:titlebarProbe,evaluate,until,
       nativeAction:options=>nativeStartupWindow(config.installRoot,primary.child.pid,options)});
+  });
+  await check('installedMinimumWorkspaceToolsAndSingleTableScroll', async () => {
+    const samples = report.minimumWorkspace = [];
+    const inspect = async label => {
+      await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      const value = await evaluate(`(() => {
+        const bars=[...document.querySelectorAll('#topbar,.ribbon-panel:not([hidden]),#ribbonCompact:not([hidden])')];
+        const action=document.querySelector('.ribbon-panel:not([hidden]) .ribbon-action');
+        const controls=bars.flatMap(bar=>[...bar.querySelectorAll('button,input,select,a')])
+          .filter(node=>node.getClientRects().length&&getComputedStyle(node).visibility!=='hidden');
+        const table=document.querySelector('#flowTableScroll');
+        return {width:innerWidth,height:innerHeight,dpr:devicePixelRatio,
+          bars:bars.map(bar=>({id:bar.id,client:bar.clientWidth,scroll:bar.scrollWidth})),
+          clippedControls:controls.filter(node=>{const r=node.getBoundingClientRect();return r.left < -1 || r.right > innerWidth+1;}).length,
+          action:action?{direction:getComputedStyle(action).flexDirection,font:parseFloat(getComputedStyle(action).fontSize),
+            icon:parseFloat(getComputedStyle(action.querySelector('.ui-icon')).width)}:null,
+          table:{columns:document.querySelectorAll('#flowTable thead th').length,overflow:getComputedStyle(table).overflowX,focusable:table.tabIndex===0},
+          duplicateScrollControls:[...document.querySelectorAll('.flow-horizontal-scroll')].filter(node=>node.getClientRects().length).length};
+      })()`);
+      samples.push({label,...value});
+      assert.ok(value.bars.length===2&&value.bars.every(bar=>bar.scroll<=bar.client+1),'WORKSPACE_TOOLBAR_OVERFLOW');
+      assert.equal(value.clippedControls,0,'WORKSPACE_TOOLBAR_CLIPPED');
+      if(value.action){assert.equal(value.action.direction,'column');assert.equal(value.action.font,12);assert.ok(Math.abs(value.action.icon-27)<.05);}
+      assert.deepEqual(value.table,{columns:7,overflow:'auto',focusable:true});
+      assert.equal(value.duplicateScrollControls,0);
+    };
+    try {
+      for(const size of [null,[1280,688,1],[1440,808,1],[1024,648,1.5]]) {
+        if(size) await cdp.send('Emulation.setDeviceMetricsOverride',{width:size[0],height:size[1],deviceScaleFactor:size[2],mobile:false},page.sessionId);
+        else await cdp.send('Emulation.clearDeviceMetricsOverride',{},page.sessionId);
+        for(const tab of ['common','trace','style','view']) {
+          await clickElement(`document.querySelector('#ribbonTab-${tab}')`);
+          await inspect(`${size?size.join('x'):'native'}:${tab}`);
+        }
+        await clickElement(`document.querySelector('[data-ribbon-collapse="true"]')`);
+        await inspect(`${size?size.join('x'):'native'}:compact`);
+        await clickElement(`document.querySelector('#ribbonCompact [data-ribbon-collapse="false"]')`);
+      }
+    } finally {
+      await cdp.send('Emulation.clearDeviceMetricsOverride',{},page.sessionId);
+      await clickElement(`document.querySelector('#ribbonTab-common')`);
+    }
   });
   await check('syntheticWindowContent', async () => {
     assert.equal(await evaluate(`(() => {

@@ -11,12 +11,36 @@
     const triggers = Array.from(doc.querySelectorAll('[data-ribbon-popover]'));
     const storage = doc.getElementById('ribbonStorage');
     const compact = doc.getElementById('ribbonCompact');
+    const topbar = doc.getElementById('topbar');
     const panelContainer = doc.getElementById('ribbonPanels');
     const tabbar = doc.getElementById('ribbonTabs')?.parentElement;
     const status = { tab: 'common', collapsed: false, selectionCount: 0, edgeSelectionCount: 0, busy: false, cameraReady:false };
     const commandOverrides = new Map();
     const mixedOptions = new WeakMap(), mixedTitles = new WeakMap();
-    let currentPopover = null;
+    let currentPopover = null, toolbarScale = null;
+    const popoverHomes = new Map();
+    for (const trigger of triggers) {
+      const panel = doc.getElementById(trigger.dataset.ribbonPopover);
+      if (panel) popoverHomes.set(panel, { parent: panel.parentElement, next: panel.nextSibling });
+    }
+
+    function updateToolbarFit(notify = true) {
+      const width = Math.max(1, doc.documentElement?.clientWidth || root.innerWidth || 1280);
+      const scale = Math.min(1, width / 1280);
+      const changed = toolbarScale !== null && scale !== toolbarScale;
+      const announce = phase => root.dispatchEvent(new root.CustomEvent('fundstrace:workspace-resize', {
+        detail: { ...doc.getElementById('workspace')?.fundsWorkspaceShell?.getState?.(),
+          toolbarCollapsed: status.collapsed, reason: 'toolbar-fit', phase }
+      }));
+      if (changed && notify) announce('prepare');
+      toolbarScale = scale;
+      for (const bar of [topbar, toolbar]) {
+        if (!bar) continue;
+        bar.style.setProperty('--toolbar-fit-width', `${Math.max(1280, width)}px`);
+        bar.style.setProperty('--toolbar-fit-scale', String(scale));
+      }
+      if (changed && notify) announce('start');
+    }
 
     const adaptiveInline = panel => panel.classList.contains('ribbon-adaptive-popover') && !status.collapsed;
     function validFocus(node) {
@@ -35,6 +59,10 @@
         panel.setAttribute('role', inline ? 'group' : 'dialog');
         panel.hidden = !inline;
         panel.inert = panel.hidden;
+        const home = popoverHomes.get(panel);
+        if (home && panel.parentElement !== home.parent) {
+          home.parent.insertBefore(panel, home.next?.parentElement === home.parent ? home.next : null);
+        }
       }
       currentPopover = null;
     }
@@ -54,6 +82,9 @@
       const opening = trigger.getAttribute('aria-expanded') !== 'true';
       closePopovers();
       if (!opening) return;
+      // Like the shared toolbar menus, floating surfaces use unscaled viewport
+      // coordinates. Return the same controls home when closing or expanding.
+      doc.body.appendChild(panel);
       panel.hidden = false;
       panel.inert = false;
       panel.classList.add('is-open');
@@ -227,12 +258,13 @@
         closePopovers(true);
       }
     });
-    root.addEventListener('resize', () => closePopovers());
+    root.addEventListener('resize', () => { closePopovers(); updateToolbarFit(); });
     for (const node of [...panels, compact]) node.addEventListener('scroll', () => closePopovers());
     root.addEventListener('fundstrace:workspace-resize', event => setCollapsed(event.detail.toolbarCollapsed));
     const api = { activateTab, setCollapsed, closePopovers, setStatus, setValues, setCommandEnabled, getState: () => ({ ...status }) };
     toolbar.fundsRibbon = api;
     root.FundsRibbon = api;
+    updateToolbarFit(false);
     render();
     refreshAvailability();
     return api;
