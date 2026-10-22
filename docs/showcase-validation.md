@@ -1,12 +1,24 @@
 # 主页展示与素材核验
 
-当前展示图于 **2026-10-20（America/Los_Angeles）** 在 `codex/unified-app-icon` 隔离工作树重新采集。运行界面来自 **0.1.8 源码候选**，基于 `1826c355301db16803c90bffa5d42757af16b0f0`，包含本轮统一应用图标的工作树修改。版本号和源码基线不表示这些图标已经进入任何既有安装包。
+## 2026-10-21 · 首页启动动画
+
+首页首图采用维护者确认的独立设计预览 `bilingual.html#original`：**A 原版 Logo、中文在上英文在下、持续等待态**。只截取中间应用窗口，保留 40% 合成工作台背景、Logo 柔光与持续滑动的加载条，不包含外围播放控件，不触发“模拟就绪”或淡出转场。这是设计预览，不是程序启动录屏，也不表示程序或既有安装包已改变。
+
+[循环动图](media/showcase/startup-wait.png)为无损 APNG，1204 × 826，4.3 秒、84 个编码帧、无限循环，3,143,182 B；从浏览器 650 × 840 CSS 像素、2× 设备像素比的窗口区域逐帧采样，86 个源帧按 50ms 间隔编码，合并相同帧后时长不变。[静态封面](media/showcase/startup-wait-poster.png)与动图首帧像素一致；README 沿用 `picture`，减少动态效果时选用封面。
+
+本轮只更新主页展示文档及媒体，不修改程序代码、许可、安装配置或发布物。全部动画帧与对应浏览器源帧逐像素一致；加载条区域跨帧变化、4.3 秒总时长及无限循环标记已核对。
+
+已在 GitHub 原生分支主页（媒体内容提交 `2b9fe94`）检查 1440 × 1100 桌面及 390 × 844 手机视口：动图成功解码为 1204 × 826，两种宽度均无页面横向溢出；桌面连续截图中的加载条区域实际变化，确认线上没有被转成静态图。手机减少动态效果时，`currentSrc` 切换为静态封面并成功解码。这些记录仅验证主页展示，不增加程序或安装包验收声明。
+
+## 既有业务界面素材
+
+下述业务界面展示图于 **2026-10-20（America/Los_Angeles）** 在 `codex/unified-app-icon` 隔离工作树重新采集。运行界面来自 **0.1.8 源码候选**，基于 `1826c355301db16803c90bffa5d42757af16b0f0`，包含本轮统一应用图标的工作树修改。版本号和源码基线不表示这些图标已经进入任何既有安装包。
 
 ## 当前素材
 
 | 内容 | 入口与规格 |
 | --- | --- |
-| 产品主视觉 | [展示版 PNG](media/showcase/hero.png)，1600 × 1180；[专注图谱](media/showcase/workspace-focus.png)与[完整工作台](media/showcase/workspace.png)，均为 1600 × 1000 |
+| 业务界面展示 | [展示版 PNG](media/showcase/hero.png)，1600 × 1180；[专注图谱](media/showcase/workspace-focus.png)与[完整工作台](media/showcase/workspace.png)，均为 1600 × 1000 |
 | 数据导入 GIF | [11.4 秒 / 4 个步骤](media/showcase/import-demo.gif)，1200 × 886，293,662 B |
 | 数据分析 GIF | [9 秒 / 3 个步骤](media/showcase/analysis-demo.gif)，1200 × 886，203,675 B |
 | 静态替代 | [导入封面](media/showcase/import-poster.png)／[分析封面](media/showcase/analysis-poster.png)，与相应 GIF 首帧像素一致 |
@@ -16,7 +28,7 @@
 | 本机架构 | [SVG](media/fundstrace-architecture.svg)／[2× PNG](media/fundstrace-architecture.png)，界面、所属后端与两类存储 |
 | 公开合成输入与历史导出 | [样例说明](examples/harbor-path/README.md)、[CSV](examples/harbor-path/fundstrace-synthetic.csv)、[XLSX](examples/harbor-path/fundstrace-synthetic.xlsx)；历史[图谱](examples/harbor-path/exports/traced-graph.png)、[追踪流水](examples/harbor-path/exports/tracked-flows.xlsx)、[分析报告](examples/harbor-path/exports/analysis-report.html)的核验边界见下文 |
 
-9 张源 PNG 均由真实浏览器视口直接截图。GIF 由本轮 PNG 编码，是带阶段字幕的步骤演示，不称连续录屏；没有 MP4 输入、转换或新视频产物。生成脚本仅等比缩放完整截图，字幕、边框与进度放在产品画面之外；没有重画、遮盖或替换产品画面中的 Logo、控件、节点或内部状态。GIF 调色压缩不改变业务内容。
+9 张业务源 PNG 均由真实浏览器视口直接截图。导入／分析 GIF 由这些 PNG 编码，是带阶段字幕的步骤演示，不称连续录屏；没有 MP4 输入、转换或新视频产物。生成脚本仅等比缩放完整截图，字幕、边框与进度放在产品画面之外；没有重画、遮盖或替换产品画面中的 Logo、控件、节点或内部状态。GIF 调色压缩不改变业务内容。
 
 应用页头、React 侧栏、浏览器标签页和 README 共用新图标的 PNG／ICO 派生资源，不再按深浅主题切换标识。业务与架构 SVG 的文字转为路径，页眉内嵌同一应用图标 PNG，无脚本、远程图片或字体请求。React 仍为案件／导入／核对试点，G6 仍承载图谱；没有新增 Rust、AI、云端或其他宿主能力声明。来源和重建入口见[品牌资产](brand/README.md)。
 

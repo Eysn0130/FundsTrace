@@ -1,6 +1,8 @@
-# FundsTrace 品牌资产
+# 循迹 FundsTrace 品牌资产
 
-当前应用图标使用维护者确认的 PNG 方案。桌面应用、浏览器页头与标签页、GitHub README 和社交预览均从同一批准来源派生，保留图标自身的底色与图形；深浅主题使用相同图像。主品牌名为 **FundsTrace**，中文说明为 **资金流水追踪与关联分析**。
+项目对外展示名称为 **循迹 FundsTrace**，中文名为 **循迹**，英文名为 **FundsTrace**。简短定位为 **本地资金追踪与案件分析工具**，介绍语为 **循着资金轨迹，理清往来脉络。**
+
+当前应用图标使用维护者确认的 PNG 方案。桌面应用、浏览器页头与标签页、GitHub README 和社交预览均从同一批准来源派生，保留图标自身的底色与图形；深浅主题使用相同图像。品牌板、社交预览与已发布安装包中的文字以各自制作或发布时的版本为准。
 
 ![FundsTrace 品牌板](brand-board.png)
 
@@ -47,7 +49,7 @@ node docs/brand/render.mjs --latin-font /path/to/latin.ttf --cjk-font /path/to/c
 
 ## 主页业务展示图
 
-主页保留可复用的[业务流程 SVG](../media/fundstrace-workflow.svg)／[2× PNG](../media/fundstrace-workflow.png)与[本机架构 SVG](../media/fundstrace-architecture.svg)／[2× PNG](../media/fundstrace-architecture.png)。它们是逻辑示意，产品主视觉与 GIF 均使用真实合成预览截图；具体来源和验证见[素材核验](../showcase-validation.md)。
+主页保留可复用的[业务流程 SVG](../media/fundstrace-workflow.svg)／[2× PNG](../media/fundstrace-workflow.png)与[本机架构 SVG](../media/fundstrace-architecture.svg)／[2× PNG](../media/fundstrace-architecture.png)。它们是逻辑示意，导入／分析展示使用真实合成预览截图；首页启动动图来自已确认设计预览的持续等待态。具体来源和验证见[素材核验](../showcase-validation.md)。
 
 [render-showcase-figures.mjs](render-showcase-figures.mjs) 仅重建这两张图，需要 `@napi-rs/canvas 0.1.100`、`sharp 0.35.5` 与本地可用的拉丁／中文字体。通过 `SHOWCASE_CANVAS_PATH`、`SHOWCASE_SHARP_PATH` 可指定已有库路径，用 `--latin-font FILE --cjk-font FILE` 指定字体。SVG 字体转为路径，页眉内嵌同一 PNG 图标，无外部字体或图片请求；字体文件不随图分发。当前成图使用 macOS Avenir Next／Hiragino Sans GB。
 

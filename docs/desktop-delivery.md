@@ -8,7 +8,7 @@ FundsTrace v0.1.x 正常启动**无需公钥或授权码**。每个实际版本 
 
 v0.1.6 已按此方式整理：[长期验证归档](https://github.com/Eysn0130/FundsTrace/tree/31c83a6baee8ff0a818f1c427babb526d3422a25/releases/v0.1.6) 保留原 12 个验证附件及整理前 Release 元数据。原 EXE 附件仍为 160013027 字节、SHA-256 `fc9c6513079b0ac456b0dabe47b0f8a175eaf9b3b62eceda77a8abddaf6776aa`，Tag 仍指向 `835d526f08901c03fb1d55c48791faeb8d4bea48`；整理没有重新构建或上传安装包。
 
-Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activation_required:false`，如实保留历史 `activated` 状态；`/license` 可直接进入系统。没有公钥、没有授权文件或存在损坏的历史授权都不阻塞业务，不生成测试授权来解锁。FT2／HMAC 验签接口、独立 `desktop/issuer/` 工具和已有材料保留，见 [历史授权维护](license-activation.md)。已发布 alpha.3 不随源码改变。
+Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activation_required:false`，如实保留历史 `activated` 状态；`/license` 可直接进入系统。没有公钥、没有授权文件或存在损坏的历史授权都不阻塞业务，不生成测试授权来解锁。FT2／HMAC 验签接口、独立 `desktop/issuer/` 工具和已有材料保留，见 [历史授权维护](activation-history.md)。已发布 alpha.3 不随源码改变。
 
 ## 安装、升级与卸载
 
