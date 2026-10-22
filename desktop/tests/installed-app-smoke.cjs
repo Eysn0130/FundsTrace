@@ -797,21 +797,26 @@ async function restorePresentationPreferences(snapshot) {
     })()`);
     assert.equal(handle.hit, true, 'PRESENTATION_SEPARATOR_REACHABLE');
     const right = handle.current + 20 <= handle.maximum;
-    const sidebarWidth = handle.current + (right ? 20 : -20), key = right ? 'ArrowRight' : 'ArrowLeft';
-    for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent',
-      {type,x:handle.x,y:handle.y,button:'left',clickCount:1}, page.sessionId);
-    for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent',
-      {type,key,code:key,windowsVirtualKeyCode:right ? 39 : 37,nativeVirtualKeyCode:right ? 39 : 37}, page.sessionId);
+    const delta = right ? 20 : -20, sidebarWidth = handle.current + delta;
+    report.presentationMemory = { scope:'installed-EXE-native-window-edge-and-sidebar-pointer-drag; same-isolated-Windows-user',
+      before:initial.electronWindow, changed:resized.electronWindow, scaleFactor:scale,
+      changedSize:initial.electronWindow.width !== resized.electronWindow.width || initial.electronWindow.height !== resized.electronWindow.height,
+      nativeUserResize:resized.interaction, expectedSidebarWidth:sidebarWidth };
+    await cdp.send('Input.dispatchMouseEvent',
+      {type:'mousePressed',x:handle.x,y:handle.y,button:'left',buttons:1,clickCount:1}, page.sessionId);
+    await cdp.send('Input.dispatchMouseEvent',
+      {type:'mouseMoved',x:handle.x+delta,y:handle.y,button:'left',buttons:1}, page.sessionId);
+    await cdp.send('Input.dispatchMouseEvent',
+      {type:'mouseReleased',x:handle.x+delta,y:handle.y,button:'left',buttons:0,clickCount:1}, page.sessionId);
+    report.presentationMemory.sidebarReadback = await evaluate(`({width:document.querySelector('#left').getBoundingClientRect().width,
+      saved:window.FundsDesktopPreferences.getItem('fund_sidebar_width')})`);
     await until(() => evaluate(`window.FundsDesktopPreferences.getItem('fund_sidebar_width') === '${sidebarWidth}'
       && Math.abs(document.querySelector('#left').getBoundingClientRect().width - ${sidebarWidth}) <= 1`), 5000);
     // Geometry is Main-owned; the renderer's public preference port cannot read it.
     assert.equal(await evaluate(`window.FundsDesktopPreferences.getItem('fund_window_state')`), null);
     rememberedPresentation = { bounds:Object.fromEntries(Object.entries(resized.electronWindow)
       .map(([key,value]) => [key, value / scale])), minimum, sidebarWidth };
-    report.presentationMemory = { scope:'installed-EXE-native-SendInput-edge-resize-and-renderer-keyboard-input; same-isolated-Windows-user',
-      before:initial.electronWindow, changed:resized.electronWindow, scaleFactor:scale,
-      changedSize:initial.electronWindow.width !== resized.electronWindow.width || initial.electronWindow.height !== resized.electronWindow.height,
-      expectedSidebarWidth:sidebarWidth, windowStateRendererReadable:false };
+    report.presentationMemory.windowStateRendererReadable = false;
   });
   await check('noPageExceptions', async () => {
     assert.ok(!instrumentationFailed); assert.equal(errorCount, 0);
