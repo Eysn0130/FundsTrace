@@ -10,9 +10,12 @@
 
 <p align="center"><strong><a href="https://github.com/Eysn0130/FundsTrace/releases/latest">下载 Windows 版</a></strong> &nbsp; · &nbsp; <a href="docs/workspace-guide.md">使用指南</a> &nbsp; · &nbsp; <a href="#看看实际操作">操作演示</a></p>
 
-[![FundsTrace 工作台：查看资金分流与归集，整理账户关系和交易金额；点击查看原图](docs/media/showcase/workspace-focus.png)](docs/media/showcase/workspace-focus.png)
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/media/showcase/startup-wait-poster.png">
+  <img alt="循迹 FundsTrace 启动动画：A 原版 Logo，中英文排版，工作台背景与持续滑动的加载条。" src="docs/media/showcase/startup-wait.png" width="1080">
+</picture>
 
-<p align="center"><sub>产品实景 · 合成示例数据 · <a href="docs/showcase-validation.md">素材说明</a></sub></p>
+<p align="center"><sub>启动动画预览 · 合成工作台背景 · <a href="docs/media/showcase/startup-wait-poster.png">静态封面</a> · <a href="docs/showcase-validation.md">素材说明</a></sub></p>
 
 ## 从流水到图谱
 
