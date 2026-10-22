@@ -17,6 +17,8 @@
 #appPageHost {position:relative;flex:1;min-width:0;min-height:0;overflow:hidden}
 #graphPage {position:absolute;inset:0;display:flex;flex-direction:column;min-width:0;min-height:0}
 #graphPage.page-inactive {visibility:hidden;pointer-events:none}
+/* Override #drawer.open visibility while keeping its draft for return home. */
+#graphPage.page-inactive #drawer {visibility:hidden;pointer-events:none}
 #casesFrame {position:absolute;inset:0;width:100%;height:100%;border:0;background:var(--surface)}
 #editorToolbar {flex-shrink:0}
 #graphPage #workspace {flex:1;min-height:0}
