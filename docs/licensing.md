@@ -2,7 +2,7 @@
 
 中文 · [English](licensing.en.md)
 
-当前维护版本采用《[循迹 FundsTrace 社区使用与源码许可协议 1.0](../LICENSE)》，维护者采用日期为 2026-10-21。这是自定义的源码可见许可，不是 MIT、GPL、AGPL 或 OSI 批准的标准开源许可。[英文协议](../LICENSE.en)及本说明的英文版供对照；解释不一致时，以中文 `LICENSE` 为准。本说明帮助定位适用范围；具体权利以完整协议及各部分的有效原许可为准。
+当前维护版本采用《[循迹 FundsTrace 社区使用与源码许可协议 1.0](../LICENSE)》，维护者采用日期为 2026-10-21。这是自定义的源码可见许可，不是 MIT、GPL、AGPL 或 OSI 批准的标准开源许可。同一 `LICENSE` 文件附完整英文参考译文，本说明也提供英文版；解释不一致时，以中文 `LICENSE` 为准。本说明帮助定位适用范围；具体权利以完整协议及各部分的有效原许可为准。
 
 对外名称为“循迹 FundsTrace 项目维护团队”，日常授权联系人为 Eysn0130。授权申请可发至 **eysn0130@gmail.com** 或 **402168648@qq.com**。另行签发的机构／商业许可应注明实际授权主体、代表身份、权限及适用范围；团队名称本身不表示已经登记为独立法人或组织。
 
@@ -62,7 +62,7 @@
 
 ## 分发时携带的许可材料
 
-- 源码仓库、桌面后端资源及独立 Issuer 资源配置保留六项：`LICENSE`、`LICENSE.en`、`LICENSES/MIT.txt`、`THIRD_PARTY_NOTICES.md`、`docs/licensing.md`、`docs/licensing.en.md`。
-- 主桌面及 Issuer 的应用包顶层另须携带 `LICENSE` 和 `LICENSE.en`，使 `package.json` 的 `SEE LICENSE IN LICENSE` 指向中文正文并提供英文对照。各第三方原许可及原有资源继续保留。
+- 源码仓库、桌面后端资源及独立 Issuer 资源配置保留五项：双语 `LICENSE`、`LICENSES/MIT.txt`、`THIRD_PARTY_NOTICES.md`、`docs/licensing.md`、`docs/licensing.en.md`。
+- 主桌面及 Issuer 的应用包顶层另须携带同一双语 `LICENSE`，使 `package.json` 的 `SEE LICENSE IN LICENSE` 指向完整中英文条款。各第三方原许可及原有资源继续保留。
 
 这些是持续适用的分发配置要求，不表示具体安装包已经构建或验收；既有发布物保留发布时许可。本文的本地链接指向随包材料，其他研发文档以源码仓库路径标明。许可背景见 [GitHub 许可指南](https://opensource.guide/legal/)。

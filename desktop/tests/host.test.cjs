@@ -155,7 +155,7 @@ test('distribution manifest prevents cross-platform packaging and includes host 
   assert.equal(builder.appId, 'com.eysn.fundstrace');
   assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'startup.cjs',
     'startup/index.html', 'startup/style.css', 'startup/renderer.js', 'startup/preload.cjs', 'assets/icon.png', 'assets/icon.ico',
-    { from: path.resolve(__dirname, '../..'), to: '.', filter: ['LICENSE', 'LICENSE.en'] }]);
+    { from: path.resolve(__dirname, '../..'), to: '.', filter: ['LICENSE'] }]);
   const manifest = require('../package.json');
   const lock = require('../package-lock.json');
   assert.equal(manifest.license, 'SEE LICENSE IN LICENSE');
@@ -175,12 +175,12 @@ test('distribution manifest prevents cross-platform packaging and includes host 
   }
 });
 
-test('both application asars enumerate only the two root licenses at their top level', async t => {
+test('both application asars enumerate only the single bilingual root license at their top level', async t => {
   const { getFileMatchers } = require('app-builder-lib/out/fileMatcher');
   const { computeFileSets, getDestinationPath } = require('app-builder-lib/out/util/appFileCopier');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fundstrace-license-enumeration-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  const names = ['LICENSE', 'LICENSE.en'];
+  const names = ['LICENSE'];
   const sources = names.map(name => path.resolve(__dirname, '../..', name));
   for (const [name, builder] of [
     ['desktop', require('../electron-builder.cjs')],

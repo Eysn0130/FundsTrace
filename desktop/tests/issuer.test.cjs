@@ -70,11 +70,10 @@ test('issuer packaging has its own identity and excludes backend/business resour
   const builder = require('../issuer/electron-builder.cjs');
   assert.equal(builder.appId, 'com.eysn.fundstrace.issuer'); assert.equal(builder.extraMetadata.main, 'issuer/main.cjs');
   assert.deepEqual(builder.files, ['package.json', 'issuer/main.cjs', 'issuer/core.cjs', 'issuer/policy.cjs', 'issuer/preload.cjs', 'issuer/renderer.js', 'issuer/index.html', 'issuer/style.css', 'assets/icon.png', 'assets/icon.ico',
-    { from: path.resolve(__dirname, '../..'), to: '.', filter: ['LICENSE', 'LICENSE.en'] }]);
+    { from: path.resolve(__dirname, '../..'), to: '.', filter: ['LICENSE'] }]);
   assert.equal(builder.files.some(file => /[?*]|\.pem$|\.key$/.test(typeof file === 'string' ? file : file.from)), false);
   assert.deepEqual(builder.extraResources, [
     { from: '../LICENSE', to: 'LICENSE' },
-    { from: '../LICENSE.en', to: 'LICENSE.en' },
     { from: '../THIRD_PARTY_NOTICES.md', to: 'THIRD_PARTY_NOTICES.md' },
     { from: '../LICENSES/MIT.txt', to: 'LICENSES/MIT.txt' },
     { from: '../docs/licensing.md', to: 'docs/licensing.md' },
@@ -88,7 +87,7 @@ test('issuer packaging has its own identity and excludes backend/business resour
     const licensing = builder.extraResources.find(resource => resource.to === filename);
     const licensingSource = path.resolve(__dirname, '..', licensing.from);
     const licensingText = await fs.readFile(licensingSource, 'utf8');
-    for (const link of ['../LICENSE', '../LICENSE.en', '../LICENSES/MIT.txt', '../THIRD_PARTY_NOTICES.md']) {
+    for (const link of ['../LICENSE', '../LICENSES/MIT.txt', '../THIRD_PARTY_NOTICES.md']) {
       assert.ok(licensingText.includes(`](${link})`), `${filename}: ${link}`);
       const target = path.posix.normalize(path.posix.join(path.posix.dirname(licensing.to), link));
       const resource = builder.extraResources.find(item => item.to === target);

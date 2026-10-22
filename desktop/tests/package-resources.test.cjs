@@ -48,7 +48,7 @@ test('actual ASAR inspection detects omitted preload, unexpected files and stale
     const value = JSON.parse(await fs.readFile(file, 'utf8')); value.license = 'MIT';
     await fs.writeFile(file, JSON.stringify(value));
   })), /Packaged license metadata/);
-  for (const name of ['LICENSE', 'LICENSE.en']) {
+  for (const name of ['LICENSE']) {
     const bytes = await fs.readFile(path.resolve(source, '..', name));
     assert.equal(complete.hostFiles[name], crypto.createHash('sha256').update(bytes).digest('hex'));
     await assert.rejects(verifyHostArchive(await archive(`missing-${name}`, dir => fs.unlink(path.join(dir, name)))), /exactly the reviewed files/);
