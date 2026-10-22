@@ -131,7 +131,7 @@ test('the actual pointer helper preserves ordinary clicks and dispatches Ctrl on
 });
 
 test('the actual inspection waits for settled height and slot scaling without waiting away clipping failures',async()=>{
-  const source=await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8');
+  const source=(await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8')).replace(/\r\n/g,'\n');
   const start=source.indexOf('const inspect = async (label,expected) => {');
   const end=source.indexOf('    try {\n      for(const size',start);
   assert.ok(start>=0&&end>start);
