@@ -94,7 +94,7 @@ def test_license_resources_preserve_both_languages_and_historical_notices(tmp_pa
     contents = {name: (builder.ROOT / name).read_bytes() for name in names}
     assert '循迹 FundsTrace'.encode() in contents['LICENSE']
     assert b'FundsTrace' in contents['LICENSE.en']
-    assert contents['LICENSES/MIT.txt'].startswith(b'MIT License\n')
+    assert contents['LICENSES/MIT.txt'].splitlines()[0] == b'MIT License'
     assert len({contents[name] for name in ('LICENSE', 'LICENSE.en', 'LICENSES/MIT.txt')}) == 3
     for name, content in contents.items():
         source = tmp_path / name
