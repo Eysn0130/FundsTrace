@@ -392,7 +392,10 @@ test('Main restores the user normal size and maximum state without analysis wind
   const win = first.state.windows[0];
   assert.deepEqual(win.bounds, { x: 240, y: 115, width: 1440, height: 810 });
   const chosen = { x: 80, y: 70, width: 1520, height: 900 };
-  win.emit('will-resize', {}, chosen); win.setBounds(chosen); win.emit('resized');
+  // The proposed Win32 outer rectangle includes hidden frame borders; only
+  // completed logical bounds may be restored through Electron's constructor.
+  win.emit('will-resize', {}, { x: 72, y: 70, width: 1536, height: 908 });
+  win.setBounds(chosen); win.emit('resized');
   first.ready.resolve({ origin: 'http://127.0.0.1:54321', token: 'synthetic' }); await first.flush();
   win.businessView.popup({ url: 'http://127.0.0.1:54321/analysis' }); await first.flush();
   const child = first.state.windows[1];

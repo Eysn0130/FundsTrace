@@ -159,19 +159,33 @@ else {
           if (!remember) return;
           clearTimeout(saveTimer); saveTimer = setTimeout(saveWindow, 250); saveTimer.unref();
         };
+        let userResize = false, userMove = false;
         // These events identify a user gesture. Automatic work-area fitting,
         // DPI changes and maximized frames must not replace the preferred size.
-        const rememberBounds = (_event, bounds) => {
-          if (!remember || fitting || win.isDestroyed() || win.isMaximized() || win.isFullScreen()) return;
-          const next = Object.fromEntries(['x', 'y', 'width', 'height'].map(key => [key, bounds[key]]));
-          if (readWindowState(JSON.stringify({ bounds: next, maximized: false }))) normalBounds = next;
+        const userGestureAllowed = () => remember && !fitting && !win.isDestroyed() && !win.isMaximized() && !win.isFullScreen();
+        const beginResize = () => { if (userGestureAllowed()) userResize = true; };
+        const beginMove = () => { if (userGestureAllowed()) userMove = true; };
+        const rememberBounds = () => {
+          if ((userResize || userMove) && userGestureAllowed()) {
+            // will-resize/move carry proposed native outer bounds on Windows.
+            // Read the completed logical rectangle so hidden frame insets are
+            // never accumulated on every restart. Moving retains preferred size.
+            const current = win.getBounds();
+            const next = { x: current.x, y: current.y,
+              width: userResize ? current.width : normalBounds.width,
+              height: userResize ? current.height : normalBounds.height };
+            if (readWindowState(JSON.stringify({ bounds: next, maximized: false }))) normalBounds = next;
+            scheduleSave();
+          }
+          userResize = userMove = false;
         };
         const rememberMaximized = () => { maximized = true; saveWindow(); };
         const rememberRestored = () => { maximized = false; saveWindow(); };
-        win.on('will-move', rememberBounds); win.on('will-resize', rememberBounds);
-        win.on('resized', scheduleSave); win.on('moved', scheduleSave);
+        const closeWindow = () => { rememberBounds(); saveWindow(); };
+        win.on('will-move', beginMove); win.on('will-resize', beginResize);
+        win.on('resized', rememberBounds); win.on('moved', rememberBounds);
         win.on('maximize', rememberMaximized); win.on('unmaximize', rememberRestored);
-        win.on('close', saveWindow);
+        win.on('close', closeWindow);
         const fitWorkArea = () => {
           if (fitting || win.isDestroyed()) return;
           fitting = true;
@@ -197,10 +211,10 @@ else {
         screen.on('display-removed', fitWorkArea);
         win.on('closed', () => {
           clearTimeout(saveTimer);
-          win.removeListener('will-move', rememberBounds); win.removeListener('will-resize', rememberBounds);
-          win.removeListener('resized', scheduleSave); win.removeListener('moved', scheduleSave);
+          win.removeListener('will-move', beginMove); win.removeListener('will-resize', beginResize);
+          win.removeListener('resized', rememberBounds); win.removeListener('moved', rememberBounds);
           win.removeListener('maximize', rememberMaximized); win.removeListener('unmaximize', rememberRestored);
-          win.removeListener('close', saveWindow);
+          win.removeListener('close', closeWindow);
           win.removeListener('move', movedDisplay);
           for (const event of normalBoundsEvents) win.removeListener(event, fitWorkArea);
           screen.removeListener('display-metrics-changed', fitWorkArea); screen.removeListener('display-removed', fitWorkArea);
