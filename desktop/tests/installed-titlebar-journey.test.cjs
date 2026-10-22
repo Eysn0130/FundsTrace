@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {titlebarTarget,assertCaption,assertCaptionBody,READ_CAPTION,readinessFailure,
   createInstalledTitlebarProbe,safeCaptionProjection,safeTitlebarFailure,safeProtocolMethod,protocolError,
-  safeInstalledFailure,createMainErrorMarkerProbe} = require('./installed-titlebar-journey.cjs');
+  safeInstalledFailure,createMainErrorMarkerProbe,runInstalledTitlebarJourney} = require('./installed-titlebar-journey.cjs');
 
 function caption() {
   return {time:1000,timeOrigin:9000,viewport:{width:1280,height:720,dpr:1},
@@ -297,4 +297,62 @@ test('Main stderr probes latch fixed markers across chunks and retain only boole
   assert.deepEqual(Object.keys(probe).sort(),['consume','snapshot']);
   const shorter=createMainErrorMarkerProbe();shorter.consume('JavaScript error occurred in main process');
   assert.equal(shorter.snapshot().javascriptErrorInMainProcess,true);
+});
+
+function nativeCaptionJourney(interaction) {
+  const calls=[];
+  return {calls,run:()=>runInstalledTitlebarJourney({
+    cdp:{send:async method=>{calls.push(method);return {};}},page:{sessionId:'body'},
+    probe:{checkBody:async()=>({sameCaptionDocument:true,bodyInsetDip:32,layoutMatches:true,caption:caption()}),
+      read:async()=>caption()},
+    evaluate:async expression=>expression==='({width:innerWidth,dpr:devicePixelRatio})' ? {width:1280,dpr:1} : true,
+    until:async check=>assert.ok(await check()),
+    nativeAction:async options=>{
+      calls.push(options.action);
+      return options.action==='ZoomIn' ? {status:'unavailable',reason:'INPUT_DESKTOP_UNAVAILABLE'}
+        : {status:'passed',interaction};
+    },
+  })};
+}
+const completedNativeCaption={PointerInputInjected:true,MinimizeButtonClicked:true,MinimizedObserved:true,
+  MinimizeRestoredObserved:true,MaximizeButtonClicked:true,MaximizedObserved:true,
+  RestoreButtonClicked:true,RestoredObserved:true,CaptionHit:2,MenuHit:2};
+
+test('installed caption journey requires the preview badge to hit HTCAPTION and retains native button gates',async()=>{
+  const good=nativeCaptionJourney({...completedNativeCaption});
+  const result=await good.run();
+  assert.equal(result.nativeControls.interaction.MenuHit,2);
+  assert.ok(good.calls.includes('Page.reload'));
+  assert.deepEqual(good.calls.filter(value=>['ZoomIn','CaptionProbe'].includes(value)),['ZoomIn','CaptionProbe']);
+  await assert.rejects(nativeCaptionJourney({...completedNativeCaption,MenuHit:1}).run(),/TITLEBAR_NATIVE_PREVIEW_DRAG_HIT/);
+  await assert.rejects(nativeCaptionJourney({...completedNativeCaption,CaptionHit:1}).run(),/TITLEBAR_NATIVE_DRAG_HIT/);
+  for(const key of ['PointerInputInjected','MinimizeButtonClicked','MinimizedObserved','MinimizeRestoredObserved',
+    'MaximizeButtonClicked','MaximizedObserved','RestoreButtonClicked','RestoredObserved']) {
+    await assert.rejects(nativeCaptionJourney({...completedNativeCaption,[key]:false}).run(),/TITLEBAR_NATIVE_BUTTON_SEQUENCE/);
+  }
+});
+
+async function nativeFailureProjection(action,failureCode) {
+  const source=await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8');
+  const start=source.indexOf('async function nativeStartupWindow('),end=source.indexOf('async function nativeStartupBounds(',start);
+  assert.ok(start>=0 && end>start);
+  const report={};
+  const context=vm.createContext({assert,path,__dirname,report,execFile(){},
+    promisify:()=>async()=>({stdout:JSON.stringify({schemaVersion:1,status:'failed',
+      failedCheck:'nativeCaptionInteraction',processBound:true,failureCode,
+      action:'https://SYN_PRIVATE_URL',message:'SYN_PRIVATE_TOKEN',command:'SYN_PRIVATE_COMMAND'})})});
+  vm.runInContext(`${source.slice(start,end)};globalThis.nativeStartupWindow=nativeStartupWindow;`,context);
+  await assert.rejects(context.nativeStartupWindow(path.resolve('SYN_INSTALL'),101,{action}),{code:'ERR_ASSERTION'});
+  return JSON.parse(JSON.stringify(report.startupNativeFailure));
+}
+
+test('the actual native wrapper keeps only allowlisted action and fixed failure classification while still rejecting failure',async()=>{
+  for(const [action,failureCode] of [['CaptionProbe','CAPTION_HIT'],['ZoomIn','STATE_TIMEOUT'],
+    ['ZoomReset','NATIVE_CAPTION_FAILED'],['CaptionCloseForeground','HTCLOSE']]) {
+    assert.deepEqual(await nativeFailureProjection(action,failureCode),
+      {action,failedCheck:'nativeCaptionInteraction',processBound:true,failureCode});
+  }
+  const unknown=await nativeFailureProjection('SYN_PRIVATE_ACTION','SYN_PRIVATE_CODE');
+  assert.deepEqual(unknown,{action:'unknown',failedCheck:'nativeCaptionInteraction',processBound:true,failureCode:'NATIVE_WINDOW_FAILED'});
+  assert.ok(!JSON.stringify(unknown).includes('SYN_PRIVATE'));
 });

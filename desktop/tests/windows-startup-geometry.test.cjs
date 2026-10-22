@@ -22,6 +22,19 @@ $source = [IO.File]::ReadAllText($Helper)
 $native = [regex]::Match($source, "(?s)Add-Type @'\r?\n(.*?)\r?\n'@")
 if (-not $native.Success) { throw 'NATIVE_SOURCE_MISSING' }
 Add-Type -TypeDefinition $native.Groups[1].Value
+# Execute the same strict hit guard used by the real Caption operation. Both
+# the empty caption and the noninteractive preview badge must be HTCAPTION=2;
+# the former menu's HTCLIENT=1 must never be accepted as an alternative.
+$captionHits = [FundsTraceStartupWindow+CaptionEvidence]::new()
+$captionHits.CaptionHit = 2; $captionHits.MenuHit = 2
+[FundsTraceStartupWindow]::AssertCaptionHits($captionHits)
+foreach ($hits in @(@(2,1), @(1,2), @(1,1), @(2,0), @(8,2))) {
+    $captionHits.CaptionHit = $hits[0]; $captionHits.MenuHit = $hits[1]
+    $rejected = $false
+    try { [FundsTraceStartupWindow]::AssertCaptionHits($captionHits) }
+    catch { $rejected = $_.Exception.GetBaseException().Message -ceq 'CAPTION_DRAG_PREVIEW_HIT_MISMATCH' }
+    if (-not $rejected) { throw 'UNSAFE_CAPTION_HIT_ACCEPTED' }
+}
 function New-Rect([int[]]$Numbers) {
     $result = [FundsTraceStartupWindow+Rectangle]::new()
     $result.X = $Numbers[0]; $result.Y = $Numbers[1]
@@ -112,10 +125,16 @@ $failures = @(
     @{ code = 'NATIVE_CAPTION_BUTTON_HIT_MISSING'; expected = 'HTCLOSE'; status = 'failed' },
     @{ code = 'CAPTION_STATE_TIMEOUT'; expected = 'STATE_TIMEOUT'; status = 'failed' },
     @{ code = 'INPUT_DESKTOP_UNAVAILABLE'; expected = 'INPUT_DESKTOP_UNAVAILABLE'; status = 'unavailable' },
-    @{ code = 'synthetic unapproved exception /private-test-path 0x1234'; expected = 'NATIVE_CLOSE_FAILED'; status = 'failed' }
+    @{ code = 'synthetic unapproved exception /private-test-path 0x1234'; expected = 'NATIVE_CLOSE_FAILED'; status = 'failed' },
+    @{ action = 'CaptionProbe'; code = 'CAPTION_DRAG_PREVIEW_HIT_MISMATCH'; expected = 'CAPTION_HIT'; status = 'failed' },
+    @{ action = 'CaptionProbe'; code = 'CAPTION_DRAG_RESIZED_WINDOW'; expected = 'CAPTION_GEOMETRY'; status = 'failed' },
+    @{ action = 'ZoomIn'; code = 'CAPTION_STATE_TIMEOUT'; expected = 'STATE_TIMEOUT'; status = 'failed' },
+    @{ action = 'ZoomReset'; code = 'INPUT_DESKTOP_UNAVAILABLE'; expected = 'INPUT_DESKTOP_UNAVAILABLE'; status = 'unavailable' },
+    @{ action = 'CaptionProbe'; code = 'synthetic unapproved exception /private-test-path 0x1234'; expected = 'NATIVE_CAPTION_FAILED'; status = 'failed' }
 )
 foreach ($failure in $failures) {
-    $Action = 'CaptionCloseForeground'; $Stage = 'nativeCaptionInteraction'; $Report = [ordered]@{}; $ExitCode = 0
+    $Action = if ($failure.ContainsKey('action')) { $failure.action } else { 'CaptionCloseForeground' }
+    $Stage = 'nativeCaptionInteraction'; $Report = [ordered]@{}; $ExitCode = 0
     try { throw $failure.code } catch { . $failureHandler }
     if ($Report.status -ne $failure.status -or $Report.failureCode -ne $failure.expected -or
         $Report.failedCheck -ne 'nativeCaptionInteraction') { throw 'FAILURE_CLASSIFICATION_MISMATCH' }

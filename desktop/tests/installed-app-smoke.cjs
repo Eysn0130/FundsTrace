@@ -115,9 +115,12 @@ async function nativeStartupWindow(installRoot, processId, { action = 'Inspect',
   if (result.status === 'failed') {
     const stages = ['ciPlatform','syntheticUserBinding','inputBinding','nativeWindowReader','installedProcessBinding',
       'physicalDpiContext','uniqueVisibleWindow','nativeWindowInspect','nativeWindowResize','screenshotOutputBinding','nativeWindowCapture','nativeCaptionInteraction'];
-    const codes=['OWNED_WINDOW_COUNT','FOREGROUND_BINDING','HTCLOSE','STATE_TIMEOUT','PROCESS_BINDING','NATIVE_GEOMETRY','CAPTION_POINT','NATIVE_CLOSE_FAILED'];
-    report.startupNativeFailure = { failedCheck:stages.includes(result.failedCheck) ? result.failedCheck : 'unknown', processBound:result.processBound === true,
-      ...(action==='CaptionCloseForeground' ? {failureCode:codes.includes(result.failureCode) ? result.failureCode : 'NATIVE_CLOSE_FAILED'} : {}) };
+    const actions=['Inspect','Resize','UserResize','Capture','CaptionProbe','CaptionClose','CaptionCloseForeground','ZoomIn','ZoomReset'];
+    const codes=['OWNED_WINDOW_COUNT','FOREGROUND_BINDING','HTCLOSE','STATE_TIMEOUT','PROCESS_BINDING','NATIVE_GEOMETRY','CAPTION_POINT',
+      'CAPTION_HIT','CAPTION_STATE','CAPTION_GEOMETRY','NATIVE_CLOSE_FAILED','NATIVE_CAPTION_FAILED'];
+    report.startupNativeFailure = { action:actions.includes(action) ? action : 'unknown',
+      failedCheck:stages.includes(result.failedCheck) ? result.failedCheck : 'unknown', processBound:result.processBound === true,
+      failureCode:codes.includes(result.failureCode) ? result.failureCode : action==='CaptionCloseForeground' ? 'NATIVE_CLOSE_FAILED' : 'NATIVE_WINDOW_FAILED' };
   }
   assert.equal(result.processBound, true);
   assert.ok(result.status === 'passed' || ['Capture','CaptionProbe','CaptionClose','CaptionCloseForeground','ZoomIn','ZoomReset'].includes(action) && result.status === 'unavailable');
