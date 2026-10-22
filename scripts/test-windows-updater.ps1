@@ -72,7 +72,7 @@ try {
             foreach ($Owned in @(Get-CimInstance Win32_Process -Filter "ExecutablePath='$QueryPath'")) {
                 $Process = Get-Process -Id $Owned.ProcessId -ErrorAction SilentlyContinue
                 if ($null -ne $Process -and $Process.MainWindowHandle -ne [IntPtr]::Zero -and
-                    $Process.MainWindowTitle -ceq 'FundsTrace · 资金流水追踪与关联分析') { $Relaunched = $Process; break }
+                    $Process.MainWindowTitle -ceq '循迹 FundsTrace') { $Relaunched = $Process; break }
             }
         }
         if ($null -eq $Relaunched) { Start-Sleep -Milliseconds 200 }
