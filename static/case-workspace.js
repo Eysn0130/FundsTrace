@@ -129,6 +129,9 @@
           result = { id: value.id ?? value.case_id, name: value.name, ...(value.flows != null ? { flows: value.flows } : {}) };
           phase = 'done'; feedback = '打开案件后开始工作。当前编辑内容继续保留。';
           try { await options.listCases(); } catch (_) { feedback = '案件已保存；案件列表刷新失败，可稍后重新打开软件查看。'; }
+          if (job.view === 'new' && options.autoOpenCreated && active(job.context)) {
+            if (await options.openCase(result.id, job.context)) close();
+          }
         } else {
           if (save) {
             feedback = '正在保存当前画布…'; refresh();

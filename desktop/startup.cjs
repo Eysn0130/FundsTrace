@@ -4,6 +4,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { randomUUID } = require('node:crypto');
 const { HEADER, pageAllowed } = require('./host-policy.cjs');
+const appearance = require('./appearance.cjs');
 
 const CHANNEL = 'funds-trace:startup';
 const WORKBENCH_CHANNEL = 'funds-trace:workbench';
@@ -13,7 +14,8 @@ const assetUrls = new Set(['startup/index.html', 'startup/style.css', 'startup/r
   .map(name => pathToFileURL(path.join(__dirname, name)).href));
 
 // A separate local-only renderer never receives the backend origin, token or case data.
-function createStartup(win, { onFailure, contentInset = 0, focusContents = win.webContents }, { WebContentsView, session, ipcMain, setTimer = setTimeout, clearTimer = clearTimeout } = require('electron')) {
+function createStartup(win, { onFailure, contentInset = 0, focusContents = win.webContents, appearance: initialAppearance = appearance.DEFAULT }, { WebContentsView, session, ipcMain, setTimer = setTimeout, clearTimer = clearTimeout } = require('electron')) {
+  let snapshot = appearance.resolveAppearance(initialAppearance);
   // Keep the EventEmitter reference before the native window can be destroyed.
   const contentView = win.contentView;
   const local = session.fromPartition(`funds-trace-startup-${randomUUID()}`, { cache: false });
@@ -24,6 +26,7 @@ function createStartup(win, { onFailure, contentInset = 0, focusContents = win.w
     // Only this short-lived layer runs while occluded, so the fade can finish
     // and release its renderer even if the user switches to another app.
     backgroundThrottling: false,
+    additionalArguments: [appearance.ARGUMENT + JSON.stringify(snapshot)],
   } });
   const contents = view.webContents;
   let disposed = false, finishing = false, finishTimer;
@@ -46,6 +49,10 @@ function createStartup(win, { onFailure, contentInset = 0, focusContents = win.w
   contents.on('will-attach-webview', event => event.preventDefault());
   contents.setWindowOpenHandler(() => ({ action: 'deny' }));
   contents.on('render-process-gone', () => { if (!disposed) onFailure(); });
+  const sendAppearance = () => {
+    if (!disposed && !contents.isDestroyed() && contents.getURL() === startupUrl) contents.send(appearance.CHANNEL, snapshot);
+  };
+  contents.on('did-finish-load', sendAppearance);
 
   function fit() {
     if (disposed || win.isDestroyed()) return;
@@ -57,6 +64,7 @@ function createStartup(win, { onFailure, contentInset = 0, focusContents = win.w
     disposed = true;
     clearTimer(finishTimer);
     ipcMain.removeListener(CHANNEL, onComplete);
+    contents.removeListener('did-finish-load', sendAppearance);
     win.removeListener('resize', fit);
     win.removeListener('closed', onClosed);
     contentView.removeListener('bounds-changed', fit);
@@ -82,6 +90,11 @@ function createStartup(win, { onFailure, contentInset = 0, focusContents = win.w
   fit();
   const loaded = contents.loadFile(startupFile);
   return { loaded, finished, dispose,
+    setAppearance(value) {
+      const next = appearance.readAppearance(JSON.stringify(value));
+      if (disposed || !next || next.theme === 'system') return false;
+      snapshot = next; sendAppearance(); return true;
+    },
     finish() {
       if (disposed || finishing) return;
       finishing = true;

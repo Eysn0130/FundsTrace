@@ -147,7 +147,9 @@ async function loadCases() {
     $('#caseSel').innerHTML = cases.length ? cases.map(item => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join('') : '<option value="">暂无案件</option>';
     const saved = new URLSearchParams(window.location.search).get('case_id') || preferenceStorage.getItem('fund_case');
     const pick = cases.find(item => String(item.id) === String(saved)) || cases[0];
-    selectAnalysisCase(pick?.id ?? null);
+    if (String(caseId) !== String(pick?.id ?? null)) selectAnalysisCase(pick?.id ?? null);
+    else $('#caseSel').value = String(caseId);
+    syncAnalysisControls();
     if (pick) await showStats();
   } catch (error) {
     if (request !== caseLoadRequest) return;

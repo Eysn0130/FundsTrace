@@ -23,7 +23,7 @@
     $('#flowCkAll').indeterminate = count > 0 && count < boxes.length;
   }
   function summary() {
-    const values = fields.filter(([key]) => $('#' + key)?.value.trim()).map(([key, label]) => `${label} ${$('#' + key).value.trim()}`);
+    const values = fields.filter(([key]) => $('#' + key)?.value.trim()).map(([key, label]) => `${key === 'fAccount' && $('#fAccount').dataset.exactAccount === $('#fAccount').value ? '账号（精确）' : label} ${$('#' + key).value.trim()}`);
     if ($('#fTracked')?.checked) values.push('仅已上图');
     return values.join(' · ') || '全部流水';
   }
@@ -200,6 +200,10 @@
     return result;
   };
 
+  window.FundsTableDrafts = Object.freeze({
+    capture: () => { rememberAnchors(); return [...anchors]; },
+    restore: ids => { anchors = new Set((ids || []).map(id)); inputRevision++; updateSummary(); updateMembership(); anchorStatus(); }
+  });
   window.addEventListener('DOMContentLoaded', () => {
     mounted = true; membership = window.FundsCanvasEditor.membership;
     $('#btnQueryToggle').onclick = () => setQueryCollapsed($('#btnQueryToggle').getAttribute('aria-expanded') === 'true');

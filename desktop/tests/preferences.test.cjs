@@ -14,6 +14,24 @@ function temporary(t) {
 }
 const chosen = { fund_case: '3', fund_edge_type: 'polyline', fund_show_ids: '0', fund_show_photos: '1', fund_edge_labels: '["money","time","summary","currency"]', fund_sidebar_width: '620' };
 
+test('appearance is one strict atomic preference and IPC validates even an injected store', t => {
+  const value = JSON.stringify({ version: 1, theme: 'system', accent: 'teal', translucency: true });
+  const directory = temporary(t), store = preferenceStore(directory);
+  assert.equal(store.setItem('fund_appearance', value), true);
+  assert.equal(store.getItem('fund_appearance'), value);
+  assert.equal(preferenceStore(directory).getItem('fund_appearance'), value);
+  const origin = 'http://127.0.0.1:54321', frame = { url: origin + '/' };
+  const sender = { id: 1, mainFrame: frame, isDestroyed: () => false };
+  let writes = 0;
+  for (const invalid of ['null', '[]', '{}', '{bad', value.replace('system', 'automatic'), value.replace('teal', 'red'),
+    value.replace('true', '"true"'), value.replace('"version":1', '"version":2'), value.replace('}', ',"token":"SYN"}'), value + ' '.repeat(257)]) {
+    assert.equal(store.setItem('fund_appearance', invalid), false);
+    assert.equal(preferenceRequest({ setItem() { writes++; return true; } }, { sender, senderFrame: frame }, origin, new Set([1]), 'set', 'fund_appearance', invalid), false);
+  }
+  assert.equal(writes, 0); assert.equal(store.getItem('fund_appearance'), value);
+  assert.equal(store.removeItem('fund_appearance'), true);
+});
+
 test('window geometry is persisted for Main only and invalid layouts are ignored', t => {
   const directory = temporary(t), store = preferenceStore(directory);
   const value = JSON.stringify({ bounds: { x: -1920, y: 24, width: 1480, height: 850 }, maximized: true });
@@ -100,12 +118,28 @@ test('sandbox preload exposes only the narrow preferences API', () => {
     window: { addEventListener() {} },
     require(name) {
       assert.equal(name, 'electron');
-      return { contextBridge: { exposeInMainWorld(name, value) { assert.ok(['FundsDesktopPreferences', 'FundsDesktopUpdates'].includes(name)); if (name === 'FundsDesktopPreferences') exposed = value; } },
-        ipcRenderer: { sendSync(...args) { calls.push(args); return args[1] === 'get' ? '2' : true; } } };
+      return { contextBridge: { exposeInMainWorld(name, value) { assert.ok(['FundsDesktopPreferences', 'FundsPreferences', 'FundsDesktopUpdates'].includes(name)); if (name === 'FundsDesktopPreferences') exposed = value; } },
+        ipcRenderer: { on() {}, sendSync(...args) { calls.push(args); return args[1] === 'get' ? '2' : true; } } };
     },
   });
-  assert.deepEqual(Object.keys(exposed), ['getItem', 'setItem', 'removeItem']);
+  assert.deepEqual(Object.keys(exposed), ['getItem', 'setItem', 'removeItem', 'subscribe']);
   assert.equal(Object.isFrozen(exposed), true);
   assert.equal(exposed.getItem('fund_case'), '2'); exposed.setItem('fund_case', 3); exposed.removeItem('fund_edge_label');
   assert.deepEqual(calls, [[CHANNEL, 'get', 'fund_case'], [CHANNEL, 'set', 'fund_case', '3'], [CHANNEL, 'remove', 'fund_edge_label']]);
+});
+
+test('business appearance subscriptions buffer committed values without exposing IPC events or other preferences', () => {
+  const listeners=new Map(), exposed=new Map(), values=[];
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../preload.cjs'),'utf8'),{
+    window:{addEventListener(){}},require:()=>({contextBridge:{exposeInMainWorld:(name,value)=>exposed.set(name,value)},
+      ipcRenderer:{on:(name,listener)=>listeners.set(name,listener),sendSync:()=>true}}),
+  });
+  const api=exposed.get('FundsDesktopPreferences');assert.equal(api,exposed.get('FundsPreferences'));
+  const notify=listeners.get('funds-trace:appearance');
+  notify({token:'SYN_DO_NOT_EXPOSE'},{key:'fund_window_state',value:'private'});
+  const raw=JSON.stringify({version:1,theme:'light',accent:'amber',translucency:false});
+  notify({token:'SYN_DO_NOT_EXPOSE'},{key:'fund_appearance',value:raw,unrelated:'not exposed'});
+  const remove=api.subscribe(value=>values.push(JSON.parse(JSON.stringify(value))));
+  assert.deepEqual(values,[{key:'fund_appearance',value:raw}]);
+  remove();notify({}, {key:'fund_appearance',value:raw});assert.equal(values.length,1);
 });

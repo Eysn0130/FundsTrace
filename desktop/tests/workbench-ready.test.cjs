@@ -49,7 +49,7 @@ test('business preload forwards only fixed readiness states and no event data', 
     window: { addEventListener: (name, callback) => listeners.set(name, callback) },
     require: name => {
       assert.equal(name, 'electron');
-      return { contextBridge: { exposeInMainWorld() {} }, ipcRenderer: { send: (...args) => calls.push(args) } };
+      return { contextBridge: { exposeInMainWorld() {} }, ipcRenderer: { on() {}, send: (...args) => calls.push(args) } };
     },
   });
   const notify = listeners.get('funds-trace:workbench');

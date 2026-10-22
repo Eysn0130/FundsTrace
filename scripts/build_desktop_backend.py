@@ -27,9 +27,11 @@ UI_ICON_NAMES = (
     "layers", "chart", "route", "play", "star", "shape", "photo", "align-left",
     "align-top", "distribute-vertical", "lock", "focus", "zoom-out", "zoom-in",
     "zoom-reset", "eye", "eye-off", "eye-restore", "legend", "map", "calendar",
-    "target", "font-text",
+    "target", "font-text", "home", "folder",
 )
 STATIC_NAMES = (
+    "navigation.css", "appearance.css", "appearance.js", "analysis-link.js", "import-workflow.js",
+    "workspace-drafts.js", "workspace-session.js", "account-workspace.js", "app-navigation.js",
     "index.html", "analysis.html", "license.html", "license.js", "app.js",
     "analysis.js", "analysis.css", "case-workspace.js", "table-scroll.js", "style.css", "money.js", "graph-view.js", "graph-layout.js", "graph-layout-worker.js", "graph-layout-quality.js", "graph-routing.js", "graph-route-quality.js",
     "graph-labels.js", "graph-viewport.js", "graph-minimap.js", "graph-selection.js", "logo.png", "favicon.ico", "favicon-32.png",

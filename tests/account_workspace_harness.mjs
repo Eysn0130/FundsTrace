@@ -590,11 +590,13 @@ test('case navigation asks before discarding drafts, keeps them on Cancel and cl
   assert.equal(h.element('ndIdInput').value, 'SYN-ORIGINAL'); assert.equal(writes(h).length, 0);
 });
 
-test('clean case navigation revokes its old binding synchronously without a needless confirmation turn', async () => {
+test('clean case navigation revokes its old binding after import preflight without a needless confirmation turn', async () => {
   const h = harness(); await ready(h); const generation = h.state.caseGeneration;
   const change = h.changeCase(2);
+  assert.equal(h.element('nodeConfirm').open, false);
+  await change.completion;
   assert.equal(h.state.caseId, 2); assert.equal(h.state.caseGeneration, generation + 1);
-  assert.equal(h.element('nodeConfirm').open, false); await change.completion;
+  assert.equal(h.element('nodeConfirm').open, false);
 });
 
 test('detached account controls cannot mutate, navigate or reopen photos after their binding changes', async () => {
@@ -696,7 +698,7 @@ test('server-normalized identity becomes the saved baseline without overwriting 
     const h = harness(); await ready(h); const pending = deferred(); let reopened;
     h.network((path, options) => options?.method === 'POST' ? pending.promise : path.includes('/profile?') ? profile() : []);
     h.onGraphRender(() => { h.run('closeDrawer(false)'); h.state.graphView.revision += 1; reopened = h.open(); });
-    await h.edit('ndIdInput', submitted); const first = h.element('ndIdSave').click();
+    await h.edit('ndIdInput', submitted); const first = h.element('ndIdSave').click(); await flush();
     assert.equal(JSON.parse(writes(h)[0].options.body).id_no, submitted.trim());
     // A synthetic input event models a newer draft delivered before the save
     // receipt; ordinary physical input remains disabled while the write runs.

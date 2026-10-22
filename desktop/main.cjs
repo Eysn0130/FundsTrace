@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, Menu, dialog, session, screen, ipcMain } = require('electron');
+const { app, Menu, dialog, session, screen, ipcMain, nativeTheme } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs/promises');
@@ -11,6 +11,7 @@ const { CHANNEL, preferenceStore, preferenceRequest, readWindowState } = require
 const updates = require('./updates.cjs');
 const { createStartup, waitForWorkbench } = require('./startup.cjs');
 const { createWindowShell, HEIGHT: TITLEBAR_HEIGHT } = require('./window-shell.cjs');
+const appearance = require('./appearance.cjs');
 const appIcon = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 
 app.setName('FundsTrace');
@@ -74,6 +75,20 @@ else {
       } : preferenceStore(app.getPath('userData'));
       const savedWindow = readWindowState(preferences.getItem('fund_window_state'));
       let origin, token;
+      let startup;
+      const savedAppearance = () => appearance.readAppearance(preferences.getItem('fund_appearance')) || appearance.DEFAULT;
+      const resolvedAppearance = () => appearance.resolveAppearance(savedAppearance(), nativeTheme?.shouldUseDarkColors ?? true);
+      function sendBusinessAppearance(contents) {
+        if (!quitting && contents && !contents.isDestroyed() && pageAllowed(contents.getURL(), origin))
+          contents.send(appearance.CHANNEL, { key: 'fund_appearance', value: JSON.stringify(savedAppearance()) });
+      }
+      function applyAppearance() {
+        const snapshot = resolvedAppearance();
+        for (const host of shells.values()) { host.setAppearance(snapshot); sendBusinessAppearance(host.contents); }
+        startup?.setAppearance(snapshot);
+      }
+      nativeTheme?.on('updated', applyAppearance);
+      app.once('will-quit', () => nativeTheme?.removeListener('updated', applyAppearance));
       const localSession = session.fromPartition(`funds-trace-${randomUUID()}`, { cache: false });
       localSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
       localSession.setPermissionCheckHandler(() => false);
@@ -102,7 +117,7 @@ else {
         ? [...windows].find(win => !win.isDestroyed() && win.isFocused()) || fallback : fallback;
       const menuTemplate = win => [
         ...(process.platform === 'darwin' ? [{ label: 'FundsTrace', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] }] : []),
-        { label: '文件', submenu: [{ label: '资金图谱', click: () => void navigate(menuWindow(win), `${origin}/`) }, { label: '案件与导入', click: () => void navigate(menuWindow(win), `${origin}/workspace/`) }, { type: 'separator' }, { role: 'quit' }] },
+        { label: '文件', submenu: [{ label: '资金图谱', click: () => void navigateWorkspace(menuWindow(win), 'home') }, { label: '案件与导入', click: () => void navigateWorkspace(menuWindow(win), 'cases') }, { type: 'separator' }, { role: 'quit' }] },
         { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
         { label: '显示', submenu: [{ label: '重新加载', accelerator: 'CmdOrCtrl+R', click: () => windowContents(menuWindow(win))?.reload() },
           { label: '实际大小', accelerator: 'CmdOrCtrl+0', click: () => windowContents(menuWindow(win))?.setZoomLevel(0) },
@@ -123,6 +138,16 @@ else {
           if (!quitting && !win.isDestroyed()) { win.show(); host.contents.focus(); }
         } catch { if (!quitting && !win.isDestroyed()) void fail('FundsTrace 页面无法打开，请重试。'); }
       }
+      async function navigateWorkspace(win, page) {
+        const contents = windowContents(win);
+        if (!contents || contents.isDestroyed()) return;
+        const command = page === 'cases'
+          ? "(() => { const nav = window.FundsAppNavigation; if (typeof nav?.show !== 'function') return false; nav.show('cases'); return true; })()"
+          : "(() => { const nav = window.FundsAppNavigation; if (typeof nav?.show !== 'function') return false; nav.show('home'); return true; })()";
+        try { if (await contents.executeJavaScript(command)) return; }
+        catch { /* Non-workspace pages use the approved main-workspace URL. */ }
+        await navigate(win, page === 'cases' ? `${origin}/?page=cases` : `${origin}/`);
+      }
       function openMenu(win) {
         const host = shells.get(win);
         if (!menuReady || quitting || !host || win.isDestroyed()) return;
@@ -138,12 +163,12 @@ else {
         const host = createWindowShell({
           windowOptions: { title: '循迹 FundsTrace', backgroundColor: '#10171f', icon: appIcon, ...initialBounds, show: false },
           webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: localSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, spellcheck: false },
-          onFailure: () => void fail('FundsTrace 页面进程已停止，请重新打开应用。'), onMenu: openMenu,
+          onFailure: () => void fail('FundsTrace 页面进程已停止，请重新打开应用。'), appearance: resolvedAppearance(),
         });
         const { win, contents } = host;
         const captionContents = win.webContents;
         shells.set(win, host);
-        host.setMenuEnabled(menuReady);
+        contents.on('did-finish-load', () => sendBusinessAppearance(contents));
         const contentsId = contents.id;
         windows.add(win); owned.add(contentsId);
         let displayId = display.id, fitting = false;
@@ -292,7 +317,7 @@ else {
       ]) : null);
       const primary = createWindow(true);
       const primaryContents = windowContents(primary);
-      const startup = createStartup(primary, { contentInset: TITLEBAR_HEIGHT, focusContents: primaryContents,
+      startup = createStartup(primary, { contentInset: TITLEBAR_HEIGHT, focusContents: primaryContents, appearance: resolvedAppearance(),
         onFailure: () => void fail('循迹启动页面无法显示，请关闭后重新打开应用。') });
       await Promise.all([shells.get(primary).loaded, startup.loaded]);
       if (quitting || primary.isDestroyed()) return;
@@ -314,6 +339,7 @@ else {
       if (quitting || primary.isDestroyed()) return;
       ipcMain.on(CHANNEL, (event, operation, key, value) => {
         event.returnValue = preferenceRequest(preferences, event, origin, owned, operation, key, value);
+        if (event.returnValue === true && key === 'fund_appearance' && ['set', 'remove'].includes(operation)) applyAppearance();
       });
       const updatesEnabled = app.isPackaged && process.platform === 'win32' && !synthetic;
       updateService = updates.updateController({
@@ -360,7 +386,6 @@ else {
       startup.finish();
       if (!await startup.finished || quitting || primary.isDestroyed()) return;
       menuReady = true;
-      for (const host of shells.values()) host.setMenuEnabled(true);
       if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate(primary)));
       if (updatesEnabled) {
         void updateService.action('check');

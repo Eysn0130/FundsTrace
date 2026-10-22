@@ -32,6 +32,7 @@ from . import db, importer, sample_data
 from .case_packages import CASE_PKG_TABLES, CASE_PKG_COLS, delete_package_case, export_package, import_package, require_case, photo_name
 from . import license as lic
 from .services import imports as import_service
+from .services import accounts as account_service
 from .services.cases import ServiceError
 from .services.main_accounts import mark_automatic
 from .money import money_decimal, money_string, money_display
@@ -258,6 +259,26 @@ def import_progress(import_id: str, case_id: Optional[int] = None):
     return _legacy_import_result(import_service.legacy_progress, import_id, case_id)
 
 
+@app.get("/api/account-registry")
+def account_registry(case_id: int = Query(1, ge=1, le=2147483647),
+                     source: Literal["flows", "identity"] = "flows", q: str = "",
+                     page: int = Query(1, ge=1, le=2147483647),
+                     page_size: int = Query(30, ge=1, le=100)):
+    try:
+        return account_service.list_registry(case_id, source, q, page, page_size)
+    except ServiceError as error:
+        raise HTTPException(error.status, error.message) from None
+
+
+@app.get("/api/account-registry/profile")
+def account_registry_profile(case_id: int = Query(1, ge=1, le=2147483647),
+                             account: str = Query(..., min_length=1)):
+    try:
+        return account_service.account_profile(case_id, account)
+    except ServiceError as error:
+        raise HTTPException(error.status, error.message) from None
+
+
 # ---------------- 流水查询 ----------------
 
 @app.get("/api/flows")
@@ -265,7 +286,7 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
           min_amount: Optional[str] = None, max_amount: Optional[str] = None,
           tfrom: str = "", tto: str = "", ids: str = "", case_id: int = 1,
           tracked: int = 0, canvas_id: int = 0,
-          page: int = 1, size: int = Query(50, le=500)):
+          page: int = 1, size: int = Query(50, le=500), account_exact: bool = False):
     try:
         lower = money_decimal(min_amount) if min_amount not in (None, "") else None
         upper = money_decimal(max_amount) if max_amount not in (None, "") else None
@@ -287,8 +308,8 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         return f"%{v.strip()}%"
 
     if account.strip():
-        conds.append("(payer_account ilike ? or payee_account ilike ?)")
-        params += [like(account)] * 2
+        conds.append("(payer_account = ? or payee_account = ?)" if account_exact else "(payer_account ilike ? or payee_account ilike ?)")
+        params += [account.strip() if account_exact else like(account)] * 2
     if name.strip():
         conds.append("(payer_name ilike ? or payee_name ilike ?)")
         params += [like(name)] * 2
@@ -830,7 +851,7 @@ def canvas_delete(canvas_id: int, case_id: int = 1):
 def focus_node_set(body: FocusIn):
     """设置/取消节点重点展示（画布按倍数放大，1~4 倍；on=false 或 scale<=1 取消）"""
     with _case_transaction(body.case_id):
-        acct = _norm_acct(body.account)
+        acct = body.account.strip()
         if not acct:
             raise HTTPException(400, "账号不能为空")
         if body.on and body.scale > 1.0:
@@ -1205,7 +1226,7 @@ class AccountIdIn(BaseModel):
 def account_id_set(body: AccountIdIn):
     """设置/清除单个账号的身份证号（图谱抽屉编辑用）"""
     with _case_transaction(body.case_id):
-        acct = _norm_acct(body.account)
+        acct = body.account.strip()
         idno = body.id_no.strip().replace(" ", "").upper()
         if not acct:
             raise HTTPException(400, "账号不能为空")
@@ -1354,7 +1375,7 @@ async def account_photo_set(case_id: int = Form(...), account: str = Form(...),
                             crop_r: float = Form(0.5)):
     """上传节点照片（存原图与裁剪参数，展示时按需生成圆形头像）"""
     require_case(case_id)
-    acct = _norm_acct(account)
+    acct = account.strip()
     if not acct:
         raise HTTPException(400, "账号不能为空")
     ext = Path(file.filename or "").suffix.lower()
@@ -1386,7 +1407,7 @@ async def account_photo_set(case_id: int = Form(...), account: str = Form(...),
 
 @app.post("/api/account-photos/clear")
 def account_photo_clear(body: AccountIdIn):
-    acct = _norm_acct(body.account)
+    acct = body.account.strip()
     if not acct:
         raise HTTPException(400, "账号不能为空")
     with _photo_transaction(body.case_id) as directory:
@@ -1410,7 +1431,7 @@ def account_photo_orig(case_id: int, account: str):
         p = _photo_dir(case_id) / row[0]["fname"]
         if not p.exists():
             raise HTTPException(404, "照片文件缺失")
-        media = "image/png" if p.suffix == ".png" else "image/jpeg"
+        media = {".png": "image/png", ".webp": "image/webp", ".bmp": "image/bmp"}.get(p.suffix.lower(), "image/jpeg")
         return Response(p.read_bytes(), media_type=media)
 
 @app.get("/api/account-photos/img")
@@ -1429,9 +1450,9 @@ def account_photo_img(case_id: int, account: str, ring: str = "#4caf7d"):
         orig = d / row[0]["fname"]
         if not orig.exists():
             raise HTTPException(404, "照片文件缺失")
-        cx = row[0].get("crop_cx") or 0.5
-        cy = row[0].get("crop_cy") or 0.5
-        cr = row[0].get("crop_r") or 0.5
+        cx = 0.5 if row[0].get("crop_cx") is None else row[0]["crop_cx"]
+        cy = 0.5 if row[0].get("crop_cy") is None else row[0]["crop_cy"]
+        cr = 0.5 if row[0].get("crop_r") is None else row[0]["crop_r"]
         h = _photo_hash(account)
         stamp = str(row[0].get("updated_at") or "").replace("-", "").replace(":", "").replace(" ", "")
         cache = d / f"{h}.{stamp}.{ring.lstrip('#')}.png"

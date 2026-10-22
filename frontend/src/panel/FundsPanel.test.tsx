@@ -32,6 +32,37 @@ function session(id = '1', scopeKey = 'host-scope-one', generation = 0, override
 const host = (value: FundsPanelSessionV1 | null) => ({ version: FUNDS_PANEL_VERSION, session: value });
 
 describe('FundsPanel host isolation', () => {
+  it('refreshes on reactivation and data revisions while retaining applied filters and unapplied drafts', async () => {
+    const bound = session(); const flows = vi.spyOn(bound.client, 'flows');
+    const { rerender } = render(<FundsPanel host={host(bound.value)} active revision={0} />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    fireEvent.change(screen.getByLabelText('账号筛选'), { target: { value: 'APPLIED-ACCOUNT' } });
+    fireEvent.click(screen.getByRole('button', { name: '查询' }));
+    await waitFor(() => expect(flows).toHaveBeenLastCalledWith({ account: 'APPLIED-ACCOUNT', kw: '', page: 1 }, expect.any(AbortSignal)));
+    fireEvent.change(screen.getByLabelText('账号筛选'), { target: { value: 'UNSUBMITTED-DRAFT' } });
+    const before = flows.mock.calls.length;
+    rerender(<FundsPanel host={host(bound.value)} active={false} revision={1} />);
+    expect(flows).toHaveBeenCalledTimes(before);
+    rerender(<FundsPanel host={host(bound.value)} active revision={1} />);
+    await waitFor(() => expect(flows).toHaveBeenCalledTimes(before + 1));
+    expect(flows).toHaveBeenLastCalledWith({ account: 'APPLIED-ACCOUNT', kw: '', page: 1 }, expect.any(AbortSignal));
+    expect((screen.getByLabelText('账号筛选') as HTMLInputElement).value).toBe('UNSUBMITTED-DRAFT');
+    rerender(<FundsPanel host={host(bound.value)} active revision={2} />);
+    await waitFor(() => expect(flows).toHaveBeenCalledTimes(before + 2));
+  });
+
+  it('rejects a read that finishes after the panel is hidden', async () => {
+    const pending = deferred<FlowPage>();
+    const bound = session('1', 'active-scope', 0, { flows: () => pending.promise });
+    const { rerender } = render(<FundsPanel host={host(bound.value)} active />);
+    rerender(<FundsPanel host={host(bound.value)} active={false} />);
+    await act(async () => pending.resolve(page('1', 'STALE-HIDDEN')));
+    expect(screen.queryByRole('button', { name: '核对流水 STALE-HIDDEN' })).toBeNull();
+    bound.client.flows = async () => page('1', 'FRESH-RETURN');
+    rerender(<FundsPanel host={host(bound.value)} active />);
+    await screen.findByRole('button', { name: '核对流水 FRESH-RETURN' });
+  });
+
   it('uses only the injected current-case client and does not change standalone URL state', async () => {
     const before = window.location.href;
     const fetch = vi.spyOn(globalThis, 'fetch');

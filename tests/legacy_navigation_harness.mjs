@@ -311,25 +311,21 @@ test('deleting a case refreshes the remaining selection after the response', asy
   assert.equal(h.location.searchParams.get('case_id'), '1');
 });
 
-test('explicitly opening a newly created case discards the old named canvas and context', async () => {
+test('a newly created case opens immediately without carrying the previous canvas or account context', async () => {
   const h = harness('app.js'); await h.run('loadCases()'); h.bindApp();
   h.run("state.canvasId = 99; state.canvasName = 'Old synthetic canvas'; state.ctx = { flowId: 1 }; state.imp = { import_id: 'old' };");
   h.network((path, options) => response(options.method === 'POST' ? cases[2] : cases));
   await h.element('#btnNewCase').onclick();
   h.element('#caseName').value = 'Synthetic new';
   await h.element('#caseSubmit').onclick();
-  assert.equal(h.run('state.caseId'), 1, 'creation preserves the current case until explicit open');
-  assert.equal(h.run('state.canvasId'), 99);
-  assert.equal(h.run('state.canvasName'), 'Old synthetic canvas');
-  assert.equal(h.run('state.ctx.flowId'), 1);
-  assert.equal(h.run('state.imp.import_id'), 'old');
-  await h.element('#caseOpenResult').onclick();
   assert.equal(h.run('state.caseId'), 3);
   assert.equal(h.run('state.canvasId'), 0);
   assert.equal(h.run('state.canvasName'), '');
   assert.equal(h.run('state.ctx'), null);
   assert.equal(h.run('state.imp'), null);
   assert.equal(h.element('#canvasSel').value, '0');
+  assert.equal(h.location.searchParams.get('case_id'), '3');
+  assert.equal(h.requests.filter(request => request.options.method === 'POST' && request.path === '/api/cases').length, 1);
 });
 
 test('the real app binding exports a case package through its shared blob download host', async () => {

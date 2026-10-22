@@ -278,9 +278,16 @@ def verify_host_report(host, version, package, source_file):
         expected.update({"startup.cjs", "window-shell.cjs", "titlebar/index.html", "titlebar/style.css",
                          "titlebar/renderer.js", "titlebar/preload.cjs", "startup/index.html", "startup/style.css",
                          "startup/renderer.js", "startup/preload.cjs", "LICENSE"})
+    # Appearance is being added without changing the historical v0.1.10
+    # release. Bind this module to the reviewed Main source's static import,
+    # never to the version or a file claimed by the downloaded host report.
+    # Both this Main source and the required module are hash-checked below.
+    main_source = source_file("main.cjs")
+    if re.search(rb"(?m)^[ \t]*const[ \t]+appearance[ \t]*=[ \t]*require\((['\"])\./appearance\.cjs\1\);[ \t]*\r?$", main_source):
+        expected.add("appearance.cjs")
     assert set(host["hostFiles"]) == expected
     for name, sha in host["hostFiles"].items():
-        content = source_file(name)
+        content = main_source if name == "main.cjs" else source_file(name)
         if name in icons:
             assert sha == hashlib.sha256(content).hexdigest()
         else:

@@ -4,6 +4,12 @@
   const brand = document.querySelector('.startup-brand');
   const media = matchMedia('(prefers-reduced-motion: reduce)');
   const bridge = window.FundsTraceStartup;
+  const accents = { blue: '#367cff', teal: '#14b8a6', violet: '#8b5cf6', rose: '#e75b85', amber: '#e6ad39' };
+  const unsubscribeAppearance = bridge.onAppearance?.(value => {
+    document.documentElement.dataset.theme = value.theme;
+    document.documentElement.dataset.translucency = String(value.translucency);
+    document.documentElement.style.setProperty('--startup-accent', accents[value.accent]);
+  });
   const clamp = value => Math.max(0, Math.min(1, value));
   const ease = value => { const x = clamp(value); return x*x*x*(x*(x*6-15)+10); };
   const step = (time, start, end) => ease((time-start)/(end-start));
@@ -61,6 +67,7 @@
     cancelAnimationFrame(raf);
     observer.disconnect();
     unsubscribe();
+    unsubscribeAppearance?.();
     media.removeEventListener('change', motionChanged);
     for (const animation of animations) animation.cancel();
   }

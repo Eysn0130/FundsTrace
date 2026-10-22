@@ -4,10 +4,9 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { randomUUID } = require('node:crypto');
 const { HEADER } = require('./host-policy.cjs');
+const appearance = require('./appearance.cjs');
 
 const HEIGHT = 32;
-const MENU_CHANNEL = 'funds-trace:titlebar';
-const MENU_ENABLED_CHANNEL = 'funds-trace:titlebar-menu-enabled';
 const shellFile = path.join(__dirname, 'titlebar/index.html');
 const shellUrl = pathToFileURL(shellFile).href;
 const assetUrls = new Set(['titlebar/index.html', 'titlebar/style.css', 'titlebar/renderer.js', 'assets/icon.png']
@@ -15,14 +14,17 @@ const assetUrls = new Set(['titlebar/index.html', 'titlebar/style.css', 'titleba
 
 // The root document owns only local caption chrome. The caller owns navigation,
 // authentication and application behavior in the separate business WebContents.
-function createWindowShell({ windowOptions, webPreferences, onFailure, onMenu },
-  { BrowserWindow, WebContentsView, session, ipcMain, platform = process.platform } = require('electron')) {
+function createWindowShell({ windowOptions, webPreferences, onFailure, appearance: initialAppearance = appearance.DEFAULT },
+  { BrowserWindow, WebContentsView, session, platform = process.platform } = require('electron')) {
+  let snapshot = appearance.resolveAppearance(initialAppearance);
+  const palette = appearance.colors(snapshot);
   const local = session.fromPartition(`funds-trace-titlebar-${randomUUID()}`, { cache: false });
   const win = new BrowserWindow({
     ...windowOptions,
+    backgroundColor: palette.background,
     frame: true,
     titleBarStyle: 'hidden',
-    titleBarOverlay: platform === 'darwin' ? true : { color: '#151d27', symbolColor: '#cdd7e3', height: HEIGHT },
+    titleBarOverlay: platform === 'darwin' ? true : { color: palette.caption, symbolColor: palette.foreground, height: HEIGHT },
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'titlebar/preload.cjs'), session: local,
@@ -31,6 +33,7 @@ function createWindowShell({ windowOptions, webPreferences, onFailure, onMenu },
       webSecurity: true, allowRunningInsecureContent: false, webviewTag: false,
       spellcheck: false, navigateOnDragDrop: false, disableDialogs: true,
       zoomFactor: 1,
+      additionalArguments: [appearance.ARGUMENT + JSON.stringify(snapshot)],
     },
   });
   if (platform !== 'darwin') win.setMenu(null);
@@ -39,7 +42,7 @@ function createWindowShell({ windowOptions, webPreferences, onFailure, onMenu },
   const contentView = win.contentView;
   const businessView = new WebContentsView({ webPreferences: { ...webPreferences } });
   const contents = businessView.webContents;
-  let disposed = false, failed = false, menuEnabled = false;
+  let disposed = false, failed = false;
 
   const prevent = event => event.preventDefault();
   const reportFailure = () => {
@@ -64,15 +67,20 @@ function createWindowShell({ windowOptions, webPreferences, onFailure, onMenu },
   root.on('render-process-gone', reportFailure);
   contents.on('render-process-gone', reportFailure);
 
-  function sendMenuEnabled() {
+  function sendAppearance() {
     if (disposed || root.isDestroyed() || root.getURL() !== shellUrl) return;
-    root.send(MENU_ENABLED_CHANNEL, menuEnabled);
+    root.send(appearance.CHANNEL, snapshot);
   }
-  function onMenuRequest(event, action, ...extra) {
-    if (disposed || !menuEnabled || extra.length || action !== 'open-menu' || win.isDestroyed()
-        || root.isDestroyed() || event?.sender !== root || event.senderFrame !== root.mainFrame
-        || event.senderFrame?.url !== shellUrl || root.getURL() !== shellUrl) return;
-    onMenu(win);
+  function setAppearance(value) {
+    const next = appearance.readAppearance(JSON.stringify(value));
+    if (disposed || win.isDestroyed() || !next || next.theme === 'system') return false;
+    snapshot = next;
+    const colors = appearance.colors(snapshot);
+    win.setBackgroundColor?.(colors.background);
+    businessView.setBackgroundColor(colors.background);
+    if (platform !== 'darwin') win.setTitleBarOverlay?.({ color: colors.caption, symbolColor: colors.foreground, height: HEIGHT });
+    sendAppearance();
+    return true;
   }
   function fit() {
     if (disposed || win.isDestroyed()) return;
@@ -82,11 +90,10 @@ function createWindowShell({ windowOptions, webPreferences, onFailure, onMenu },
   function dispose() {
     if (disposed) return;
     disposed = true;
-    ipcMain.removeListener(MENU_CHANNEL, onMenuRequest);
     win.removeListener('resize', fit);
     win.removeListener('closed', dispose);
     contentView.removeListener('bounds-changed', fit);
-    root.removeListener('did-finish-load', sendMenuEnabled);
+    root.removeListener('did-finish-load', sendAppearance);
     root.removeListener('render-process-gone', reportFailure);
     for (const event of ['will-navigate', 'will-frame-navigate', 'will-redirect', 'will-attach-webview']) root.removeListener(event, prevent);
     contents.removeListener('render-process-gone', reportFailure);
@@ -98,20 +105,15 @@ function createWindowShell({ windowOptions, webPreferences, onFailure, onMenu },
     if (!contents.isDestroyed()) contents.close({ waitForBeforeUnload: false });
   }
 
-  ipcMain.on(MENU_CHANNEL, onMenuRequest);
-  root.on('did-finish-load', sendMenuEnabled);
+  root.on('did-finish-load', sendAppearance);
   win.on('resize', fit);
   win.once('closed', dispose);
   contentView.on('bounds-changed', fit);
-  businessView.setBackgroundColor(windowOptions?.backgroundColor || '#10171f');
+  businessView.setBackgroundColor(palette.background);
   contentView.addChildView(businessView);
   fit();
   const loaded = root.loadFile(shellFile).catch(error => { reportFailure(); throw error; });
-  return { win, contents, loaded, setMenuEnabled(value) {
-    if (disposed || typeof value !== 'boolean') return;
-    menuEnabled = value;
-    sendMenuEnabled();
-  } };
+  return { win, contents, loaded, setAppearance };
 }
 
 module.exports = { createWindowShell, HEIGHT };

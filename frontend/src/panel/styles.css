@@ -4,15 +4,46 @@
 
 .funds-trace {
   font-family: var(--funds-font-family, "SF Pro Text",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif);
-  color: var(--funds-text, #253449);
-  background: var(--funds-background, #f6f8fb);
+  color: var(--funds-text, #292825);
+  background: var(--funds-background, #fcfcfb);
   font-synthesis: none;
   font-weight: 400;
   font-size: 14px;
   line-height: 1.5;
   --accent: var(--funds-accent, #3267d6);
-  --border: var(--funds-border, #e4e9f0);
-  --muted: var(--funds-muted, #586a81)
+  --border: var(--funds-border, #e2e0da);
+  --muted: var(--funds-muted, #6b6961);
+  --surface-base: var(--funds-surface-base, #fcfcfb);
+  --surface: var(--funds-surface, #f8f7f4);
+  --surface-raised: var(--funds-surface-raised, #fff);
+  --surface-input: var(--funds-surface-input, #fff);
+  --surface-control: var(--funds-surface-control, #f4f3ef);
+  --surface-control-hover: var(--funds-surface-control-hover, #ebe9e3);
+  --surface-table-header: var(--funds-surface-table-header, #f7f6f2);
+  --text-primary: var(--funds-text-primary, #292825);
+  --text-subtle: var(--funds-text-subtle, #77746c);
+  --border-strong: var(--funds-border-strong, #cecbc3);
+  --focus-ring: var(--funds-focus-ring, #3267d6);
+  --accent-link: var(--funds-accent-link, #3267d6);
+  --action-fill: var(--funds-action-fill, #3267d6);
+  --action-hover: var(--funds-action-hover, #285bc4);
+  --action-on: var(--funds-action-on, #fff);
+  --selection-surface: var(--funds-selection-surface, #eff5ff);
+  --state-success: var(--funds-state-success, #246f55);
+  --state-success-surface: var(--funds-state-success-surface, #edf5f2);
+  --state-success-border: var(--funds-state-success-border, #9fc5b4);
+  --state-warning: var(--funds-state-warning, #805609);
+  --state-warning-surface: var(--funds-state-warning-surface, #fff5db);
+  --state-warning-border: var(--funds-state-warning-border, #d6b876);
+  --state-danger: var(--funds-state-danger, #aa3d4f);
+  --state-danger-surface: var(--funds-state-danger-surface, #fff0f1);
+  --state-danger-border: var(--funds-state-danger-border, #dcabb3);
+  --overlay-scrim: var(--funds-overlay-scrim, #29282533);
+  --shadow-color: var(--funds-shadow-color, #29282514);
+  --icon-filter: var(--funds-icon-filter, none);
+  --icon-on-filter: var(--funds-icon-on-filter, brightness(0) invert(1));
+  --icon-danger-filter: var(--funds-icon-danger-filter, none);
+  --icon-accent-filter: var(--funds-icon-accent-filter, none);
 }
 
 :where(.funds-trace),:where(.funds-trace) * {
@@ -46,27 +77,27 @@
 }
 
 :where(.funds-trace) button:focus-visible,:where(.funds-trace) a:focus-visible,:where(.funds-trace) summary:focus-visible {
-  outline: 3px solid #90b3ff;
+  outline: 3px solid var(--focus-ring);
   outline-offset: 3px
 }
 
 :where(.funds-trace) input,:where(.funds-trace) select {
-  border: 1px solid #dce2ea;
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
-  background: #fff;
-  color: #26374c;
+  background: var(--surface-input);
+  color: var(--text-primary);
   padding: 9px 11px;
   min-width: 0
 }
 
 :where(.funds-trace) input:focus,:where(.funds-trace) select:focus {
-  outline: 2px solid #b4c9f6;
+  outline: 2px solid var(--focus-ring);
   outline-offset: 0;
-  border-color: #6b93e5
+  border-color: var(--focus-ring)
 }
 
 :where(.funds-trace) input::placeholder {
-  color: #9ca6b5
+  color: var(--text-subtle)
 }
 
 :where(.funds-trace) h1,:where(.funds-trace) h2,:where(.funds-trace) h3,:where(.funds-trace) p {
@@ -110,7 +141,7 @@
 }
 
 :where(.funds-trace) .icon-button:hover {
-  background: #ffffff12
+  background: var(--surface-control-hover)
 }
 
 :where(.funds-trace) .main-workspace {
@@ -124,19 +155,19 @@
   justify-content: space-between;
   align-items: center;
   border-bottom: 1px solid var(--border);
-  color: #8490a0;
+  color: var(--muted);
   font-size: 11px
 }
 
 :where(.funds-trace) .breadcrumb {
   padding: 0 12px;
-  color: #bac3d0
+  color: var(--muted)
 }
 
 :where(.funds-trace) .local-label {
   font-size: 10px;
-  color: #8794a6;
-  border: 1px solid #dce3ed;
+  color: var(--muted);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
   padding: 3px 7px
 }
@@ -151,7 +182,7 @@
 
 :where(.funds-trace) .eyebrow {
   font-size: 11px;
-  color: #6c7f99;
+  color: var(--muted);
   letter-spacing: 1px;
   margin-bottom: 8px
 }
@@ -166,7 +197,7 @@
 
 :where(.funds-trace) .description {
   margin-top: 10px;
-  color: #8b96a5;
+  color: var(--muted);
   font-size: 12px
 }
 
@@ -194,23 +225,31 @@
 }
 
 :where(.funds-trace) .button.primary {
-  background: var(--accent);
-  color: #fff;
-  box-shadow: 0 2px 3px #2458bd10
+  background: var(--action-fill);
+  color: var(--action-on);
+  box-shadow: 0 2px 3px var(--action-fill)
 }
 
 :where(.funds-trace) .button.primary:hover {
-  background: #285bc4
+  background: var(--action-hover)
+}
+
+html[data-ft-theme="light"] :where(.funds-trace) .button.primary { box-shadow: 0 1px 2px var(--shadow-color); }
+:where(.funds-trace) :is(.button, .icon-button, .text-button, .page-button, .row-action):not(:disabled):not([aria-disabled=true]):not([aria-busy=true]) {
+  transition: background-color 120ms var(--interaction-ease, ease), border-color 120ms var(--interaction-ease, ease), color 120ms var(--interaction-ease, ease)
+}
+@media (prefers-reduced-motion: reduce) {
+  :where(.funds-trace) :is(.button, .icon-button, .text-button, .page-button, .row-action):not(:disabled):not([aria-disabled=true]):not([aria-busy=true]) { transition: none; }
 }
 
 :where(.funds-trace) .button.secondary {
-  background: #fff;
-  border-color: #dce3ed;
-  color: #4c5f77
+  background: var(--surface-control);
+  border-color: var(--border-strong);
+  color: var(--text-primary)
 }
 
 :where(.funds-trace) .button.secondary:hover {
-  background: #f2f5fa
+  background: var(--surface-control-hover)
 }
 
 :where(.funds-trace) .button[aria-disabled=true] {
@@ -226,7 +265,7 @@
 }
 
 :where(.funds-trace) .case-facts>div {
-  border-right: 1px solid #e1e6ee;
+  border-right: 1px solid var(--border-strong);
   padding-right: 18px
 }
 
@@ -236,7 +275,7 @@
 
 :where(.funds-trace) .case-facts>div>span {
   font-size: 11px;
-  color: #8692a3;
+  color: var(--muted);
   display: block;
   margin-bottom: 7px
 }
@@ -250,7 +289,7 @@
 
 :where(.funds-trace) .case-facts small {
   font-size: 10px;
-  color: #92a0b2;
+  color: var(--muted);
   font-weight: 400;
   letter-spacing: 0
 }
@@ -266,7 +305,7 @@
 }
 
 :where(.funds-trace) .transactions {
-  background: #fff;
+  background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: 8px;
   min-width: 0;
@@ -288,8 +327,8 @@
 :where(.funds-trace) .table-heading h2>span {
   display: inline-block;
   font-size: 10px;
-  color: #8593a8;
-  background: #f1f4f8;
+  color: var(--muted);
+  background: var(--surface-raised);
   border-radius: 4px;
   padding: 1px 6px;
   margin-left: 6px;
@@ -327,7 +366,7 @@
 :where(.funds-trace) .text-button {
   border: 0;
   background: none;
-  color: #58739a;
+  color: var(--accent-link);
   font-size: 11px;
   white-space: nowrap
 }
@@ -350,10 +389,10 @@
 }
 
 :where(.funds-trace) .flow-table th,:where(.funds-trace) .preview-table th {
-  background: #f7f9fc;
-  border-top: 1px solid #e9edf3;
-  border-bottom: 1px solid #e9edf3;
-  color: #8794a6;
+  background: var(--surface-table-header);
+  border-top: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+  color: var(--muted);
   font-size: 10px;
   font-weight: 500;
   white-space: nowrap;
@@ -361,7 +400,7 @@
 }
 
 :where(.funds-trace) .flow-table td,:where(.funds-trace) .preview-table td {
-  border-bottom: 1px solid #eef1f6;
+  border-bottom: 1px solid var(--border-strong);
   padding: 17px 13px;
   vertical-align: top
 }
@@ -371,12 +410,12 @@
 }
 
 :where(.funds-trace) .flow-table tbody tr:hover {
-  background: #fafcff
+  background: var(--surface-control-hover)
 }
 
 :where(.funds-trace) .flow-table small,:where(.funds-trace) .preview-table small {
   display: block;
-  color: #91a0b1;
+  color: var(--muted);
   margin-top: 5px;
   font-size: 10px;
   line-height: 1.4
@@ -391,12 +430,12 @@
 :where(.funds-trace) .time-cell {
   white-space: nowrap;
   font-size: 10px;
-  color: #66788f
+  color: var(--muted)
 }
 
 :where(.funds-trace) .flow-arrow {
   width: 20px!important;
-  color: #b6c2d1;
+  color: var(--muted);
   padding-left: 0!important;
   padding-right: 0!important
 }
@@ -404,12 +443,12 @@
 :where(.funds-trace) .money-cell {
   font-size: 12px;
   white-space: nowrap;
-  color: #334b6e
+  color: var(--text-primary)
 }
 
 :where(.funds-trace) .summary-cell {
   max-width: 170px;
-  color: #8895a6;
+  color: var(--muted);
   font-size: 11px;
   overflow-wrap: anywhere
 }
@@ -417,14 +456,14 @@
 :where(.funds-trace) .row-action {
   border: 0;
   background: none;
-  color: #6480a9;
+  color: var(--accent-link);
   white-space: nowrap;
   font-size: 11px;
   padding: 0
 }
 
 :where(.funds-trace) .row-action:hover {
-  color: #2a62cf
+  color: var(--accent-link)
 }
 
 :where(.funds-trace) .table-footer {
@@ -434,9 +473,9 @@
   align-items: center;
   gap: 14px;
   padding: 15px 20px;
-  color: #8e9bab;
+  color: var(--muted);
   font-size: 10px;
-  border-top: 1px solid #eef1f6
+  border-top: 1px solid var(--border-strong)
 }
 
 :where(.funds-trace) .table-footer>div {
@@ -449,9 +488,9 @@
 
 :where(.funds-trace) .page-button {
   flex: 0 0 auto;
-  border: 1px solid #e3e9f1;
-  background: #fff;
-  color: #7185a1;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-control);
+  color: var(--muted);
   width: 26px;
   height: 26px;
   border-radius: 5px
@@ -459,7 +498,7 @@
 
 :where(.funds-trace) .workspace-footnote {
   font-size: 10px;
-  color: #98a5b5;
+  color: var(--muted);
   padding-top: 17px
 }
 
@@ -469,7 +508,7 @@
   align-items: center;
   justify-content: center;
   flex-direction: column;
-  color: #8a99ab;
+  color: var(--muted);
   text-align: center;
   padding: 30px;
   gap: 11px
@@ -477,7 +516,7 @@
 
 :where(.funds-trace) .empty-state h3 {
   font-size: 14px;
-  color: #5f728d;
+  color: var(--muted);
   font-weight: 500
 }
 
@@ -488,7 +527,7 @@
 
 :where(.funds-trace) .empty-symbol {
   font-size: 31px;
-  color: #bccadd;
+  color: var(--text-primary);
   margin-bottom: 3px
 }
 
@@ -499,8 +538,8 @@
 :where(.funds-trace) .loading-mark {
   height: 18px;
   width: 18px;
-  border: 2px solid #d8e4f8;
-  border-top-color: #5f8cdb;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--border-strong);
   border-radius: 50%;
   animation: funds-trace-spin .8s linear infinite
 }
@@ -513,18 +552,18 @@ to {
 }
 
 :where(.funds-trace) .modal {
-  border: 1px solid #e5eaf2;
+  border: 1px solid var(--border-strong);
   border-radius: 12px;
   padding: 0;
-  box-shadow: 0 20px 90px #142b4b33;
+  box-shadow: 0 20px 90px var(--border);
   width: min(800px,calc(100vw - 36px));
   max-height: 90vh;
   overflow: auto;
-  color: #2d3f58
+  color: var(--text-primary)
 }
 
 :where(.funds-trace) .modal::backdrop {
-  background: #12233b66;
+  background: var(--overlay-scrim);
   backdrop-filter: blur(3px)
 }
 
@@ -544,25 +583,25 @@ to {
 }
 
 :where(.funds-trace) .modal-heading .icon-button {
-  color: #9aa7b8
+  color: var(--muted)
 }
 
 :where(.funds-trace) .modal-context {
   padding: 15px 25px;
-  color: #8592a4;
+  color: var(--muted);
   font-size: 11px;
-  background: #fafbfd
+  background: var(--surface-raised)
 }
 
 :where(.funds-trace) .modal-context strong {
-  color: #3c5579;
+  color: var(--text-primary);
   margin-left: 6px;
   font-weight: 500
 }
 
 :where(.funds-trace) .modal-context span {
   float: right;
-  color: #9ba7b6
+  color: var(--muted)
 }
 
 :where(.funds-trace) .import-steps {
@@ -571,8 +610,8 @@ to {
   flex-wrap: wrap;
   padding: 20px 25px;
   margin: 0;
-  border-bottom: 1px solid #edf0f5;
-  color: #b1bdcc;
+  border-bottom: 1px solid var(--border-strong);
+  color: var(--muted);
   font-size: 12px;
   gap: 28px
 }
@@ -584,19 +623,19 @@ to {
 }
 
 :where(.funds-trace) .import-steps li.active {
-  color: #3566be;
+  color: var(--text-primary);
   font-weight: 600
 }
 
 :where(.funds-trace) .import-steps li.done {
-  color: #718cad
+  color: var(--muted)
 }
 
 :where(.funds-trace) .file-drop {
   margin: 28px 25px;
   min-height: 210px;
-  border: 1px dashed #bacce6;
-  background: #f8fbff;
+  border: 1px dashed var(--border-strong);
+  background: var(--surface-raised);
   border-radius: 9px;
   display: flex;
   flex-direction: column;
@@ -604,12 +643,12 @@ to {
   justify-content: center;
   gap: 9px;
   font-size: 11px;
-  color: #98a6bb
+  color: var(--muted)
 }
 
 :where(.funds-trace) .file-drop strong {
   font-size: 14px;
-  color: #5d7596;
+  color: var(--muted);
   font-weight: 500
 }
 
@@ -623,7 +662,7 @@ to {
 
 :where(.funds-trace) .upload-symbol {
   font-size: 28px;
-  color: #7096d2
+  color: var(--accent-link)
 }
 
 :where(.funds-trace) .modal-footer {
@@ -632,7 +671,7 @@ to {
   justify-content: flex-end;
   gap: 10px;
   padding: 19px 25px;
-  border-top: 1px solid #e9edf4;
+  border-top: 1px solid var(--border-strong);
   margin-top: 20px
 }
 
@@ -645,13 +684,13 @@ to {
 }
 
 :where(.funds-trace) .file-summary strong {
-  color: #4d6483;
+  color: var(--muted);
   font-weight: 500;
   overflow-wrap: anywhere
 }
 
 :where(.funds-trace) .file-summary span {
-  color: #92a0b2;
+  color: var(--muted);
   white-space: nowrap
 }
 
@@ -661,7 +700,7 @@ to {
   gap: 15px;
   align-items: center;
   font-size: 11px;
-  color: #8c9bae;
+  color: var(--muted);
   padding: 4px 25px 14px
 }
 
@@ -675,7 +714,7 @@ to {
 :where(.funds-trace) .mapping {
   padding: 0 25px;
   font-size: 11px;
-  color: #637995
+  color: var(--muted)
 }
 
 :where(.funds-trace) .mapping summary {
@@ -684,7 +723,7 @@ to {
 }
 
 :where(.funds-trace) .mapping summary span {
-  color: #a2aebe;
+  color: var(--muted);
   font-size: 10px;
   margin-left: 12px
 }
@@ -716,7 +755,7 @@ to {
 :where(.funds-trace) .preview-wrap {
   margin: 14px 25px;
   overflow: auto;
-  border: 1px solid #e6ebf3;
+  border: 1px solid var(--border-strong);
   border-radius: 6px
 }
 
@@ -726,10 +765,10 @@ to {
 }
 
 :where(.funds-trace) .preview-table caption {
-  background: #fafbfd;
+  background: var(--surface);
   text-align: left;
   padding: 10px 13px;
-  color: #8d9db1;
+  color: var(--muted);
   font-size: 10px
 }
 
@@ -746,7 +785,7 @@ to {
   margin: 12px 25px;
   padding: 0;
   font-size: 11px;
-  color: #7c8ea6
+  color: var(--muted)
 }
 
 :where(.funds-trace) .main-accounts legend {
@@ -764,14 +803,14 @@ to {
 }
 
 :where(.funds-trace) .main-accounts .mono {
-  color: #9dabbc;
+  color: var(--muted);
   font-size: 10px;
   margin-left: 5px
 }
 
 :where(.funds-trace) .import-progress {
   padding: 10px 25px;
-  color: #718baa;
+  color: var(--muted);
   font-size: 11px
 }
 
@@ -795,7 +834,7 @@ to {
 }
 
 :where(.funds-trace) .import-complete p {
-  color: #8495ad;
+  color: var(--muted);
   font-size: 12px;
   margin-top: 7px
 }
@@ -805,18 +844,18 @@ to {
   place-items: center;
   width: 44px;
   height: 44px;
-  background: #edf5f2;
-  color: #5d9f88;
+  background: var(--surface-raised);
+  color: var(--state-success);
   border-radius: 50%;
   font-size: 22px
 }
 
 :where(.funds-trace) .error-banner {
   padding: 12px 15px;
-  background: #fff4f2;
-  border: 1px solid #f1d4ce;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
-  color: #a95e50;
+  color: var(--state-danger);
   font-size: 12px;
   margin-bottom: 15px
 }
@@ -826,7 +865,7 @@ to {
 }
 
 :where(.funds-trace) .error-banner a,:where(.funds-trace) .error-banner button {
-  color: #9c4d3e;
+  color: var(--state-danger);
   text-decoration: underline;
   background: none;
   border: 0;
@@ -839,7 +878,7 @@ to {
   flex-direction: column;
   gap: 9px;
   padding: 25px;
-  color: #7f91a8;
+  color: var(--muted);
   font-size: 12px
 }
 
@@ -861,19 +900,19 @@ to {
 
 :where(.funds-trace) .flow-details>div {
   padding: 13px 0;
-  border-bottom: 1px solid #edf0f5;
+  border-bottom: 1px solid var(--border-strong);
   overflow-wrap: anywhere
 }
 
 :where(.funds-trace) .flow-details dt {
   font-size: 10px;
-  color: #9aa7b8;
+  color: var(--muted);
   margin-bottom: 5px
 }
 
 :where(.funds-trace) .flow-details dd {
   margin: 0;
-  color: #536c8e
+  color: var(--muted)
 }
 
 :where(.funds-trace) .history-toolbar {
@@ -912,7 +951,7 @@ to {
 
 :where(.funds-trace) .history-description p {
   font-size: 11px;
-  color: #8191a7;
+  color: var(--muted);
   margin-top: 6px
 }
 
@@ -944,7 +983,7 @@ to {
 :where(.funds-trace) .cleanup-result {
   width: 100%;
   font-size: 11px;
-  color: #6d809b;
+  color: var(--muted);
   display: flex;
   align-items: center;
   gap: 15px;
@@ -972,7 +1011,7 @@ to {
   padding: 17px 0;
   border-bottom: 1px solid var(--border);
   font-size: 11px;
-  color: #6e829e
+  color: var(--muted)
 }
 
 :where(.funds-trace) .source-record>p {
@@ -982,8 +1021,8 @@ to {
 :where(.funds-trace) .status-label {
   font-size: 10px;
   white-space: nowrap;
-  color: #6a83a7;
-  background: #f0f4fa;
+  color: var(--muted);
+  background: var(--surface-raised);
   padding: 3px 7px;
   border-radius: 4px
 }
@@ -994,31 +1033,31 @@ to {
   gap: 12px;
   margin-top: 11px;
   font-size: 9px;
-  color: #9aa8bb
+  color: var(--muted)
 }
 
 :where(.funds-trace) .source-digest code {
   overflow-wrap: anywhere;
   font-size: 10px;
-  color: #7d8da3;
+  color: var(--muted);
   min-width: 0
 }
 
 :where(.funds-trace) .source-note {
   font-size: 11px!important;
-  color: #9a8c77!important
+  color: var(--muted)!important
 }
 
 :where(.funds-trace) .source-download {
   display: inline-block;
   margin-top: 10px;
   font-size: 11px;
-  color: #376dc9
+  color: var(--accent-link)
 }
 
 :where(.funds-trace) .source-empty {
   font-size: 12px;
-  color: #8d9bb0;
+  color: var(--muted);
   padding: 18px 0
 }
 
@@ -1029,7 +1068,7 @@ to {
   justify-content: flex-end;
   gap: 15px;
   font-size: 11px;
-  color: #8a9bb0;
+  color: var(--muted);
   margin-top: 15px
 }
 
@@ -1293,11 +1332,11 @@ to {
 :where(.funds-trace) .workspace-footnote,
 :where(.funds-trace) .flow-details dt,
 :where(.funds-trace) .source-digest code { font-size: 12px; }
-:where(.funds-trace) .row-action { padding: 6px 2px; min-height: 32px; font-size: 12px; color: #315e9d; }
+:where(.funds-trace) .row-action { padding: 6px 2px; min-height: 32px; font-size: 12px; color: var(--accent-link); }
 :where(.funds-trace) .page-button { min-width: 32px; min-height: 32px; }
 :where(.funds-trace) .icon-button { min-width: 32px; min-height: 32px; }
-:where(.funds-trace) .source-note { color: #725e3c !important; }
-:where(.funds-trace) .status-label { color: #506783; }
+:where(.funds-trace) .source-note { color: var(--state-warning) !important; }
+:where(.funds-trace) .status-label { color: var(--muted); }
 :where(.funds-trace) .source-download { border: 0; background: transparent; padding: 6px 0; cursor: pointer; }
 :where(.funds-trace) .modal {
   max-height: calc(100dvh - 40px);
@@ -1309,13 +1348,13 @@ to {
   position: sticky;
   top: 0;
   z-index: 2;
-  background: #fff;
+  background: var(--surface-raised);
 }
 :where(.funds-trace) .modal-footer {
   position: sticky;
   bottom: 0;
   z-index: 1;
-  background: #fff;
+  background: var(--surface-raised);
 }
 :where(.funds-trace) .heading-actions { flex-wrap: wrap; }
 :where(.funds-trace) .capability-note { color: var(--muted); font-size: 12px; padding-top: 8px; }

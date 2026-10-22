@@ -1,9 +1,11 @@
 :root{color-scheme:dark;font-family:"Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif}
+:root{--startup-bg:#10171f;--startup-text:#edf2fa;--startup-secondary:#b9c8d9;--startup-muted:#8194a8;--startup-accent:#367cff}
+html[data-theme=light]{color-scheme:light;--startup-bg:#fcfcfb;--startup-text:#292825;--startup-secondary:#6b6961;--startup-muted:#6b6961}
 *{box-sizing:border-box}
 html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent}
 .startup-surface{--backdrop-opacity:1;--exit-opacity:1;--wait-opacity:0;--wait-x:-15px;--brand-scale:1;position:absolute;inset:0;overflow:hidden;opacity:var(--exit-opacity);isolation:isolate}
 .startup-backdrop,.startup-atmosphere{position:absolute;inset:0;pointer-events:none}
-.startup-backdrop{background:#10171f;opacity:var(--backdrop-opacity)}
+.startup-backdrop{background:var(--startup-bg);opacity:var(--backdrop-opacity)}
 .startup-atmosphere{background:radial-gradient(ellipse 28% 58% at 50% 48%,#10171fe0 0%,#10171f8c 52%,#10171f00 100%),radial-gradient(ellipse 48% 62% at 50% 36%,#263f5a40 0%,#18263918 52%,#10171f00 85%)}
 .startup-brand{position:absolute;left:50%;top:50%;width:360px;display:flex;flex-direction:column;align-items:center;transform:translate(-50%,-50%) scale(var(--brand-scale));transform-origin:center;pointer-events:none;user-select:none}
 .startup-mark{position:relative;width:176px;height:176px;flex:0 0 auto;isolation:isolate}
@@ -21,4 +23,9 @@ html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent
 .startup-wait-track>span{display:block;width:14px;height:100%;background:linear-gradient(90deg,#a9c1d700,#c2d8e6c4,#a9c1d700);transform:translateX(var(--wait-x))}
 .startup-wait-label{font-size:10px;font-weight:400;line-height:1.5;letter-spacing:.166666em;padding-left:.166666em;color:#8193a5}
 .startup-surface[data-phase=complete]{visibility:hidden}
+.startup-cn-name{color:var(--startup-text)}
+.startup-wordmark{color:var(--startup-secondary)}
+.startup-subtitle,.startup-wait-label{color:var(--startup-muted)}
+html[data-theme=light] .startup-atmosphere{background:radial-gradient(ellipse 45% 60% at 50% 42%,#ffffffc9,transparent 85%)}
+.startup-wait-track>span{background:linear-gradient(90deg,transparent,var(--startup-accent),transparent)}
 html[data-motion=reduce] .startup-original-light,html[data-motion=reduce] .startup-amber{display:none}

@@ -192,46 +192,34 @@ test('business bounds reserve exactly 32 DIP through resize and content bounds c
   assert.equal(view.boundsHistory.length, count);
 });
 
-test('menu is disabled until enabled and rejects non-main frames, other senders and altered file URLs', async () => {
-  const fake = harness(); const shell = create(fake); await shell.loaded;
+test('caption accepts only pure resolved appearance and never registers a menu command', async () => {
+  const fake = harness(), shell = create(fake); await shell.loaded;
   const root = shell.win.webContents;
-  assert.deepEqual(root.sent, [[ENABLED_CHANNEL, false]]);
-  fake.ipcMain.emit(MENU_CHANNEL, menuEvent(root), 'open-menu'); assert.equal(shell.menus.length, 0);
-  shell.setMenuEnabled(true); assert.deepEqual(root.sent.at(-1), [ENABLED_CHANNEL, true]);
-  for (const event of [undefined, menuEvent(root, { url: root.getURL() }), { sender: shell.contents, senderFrame: root.mainFrame },
-    { sender: root, senderFrame: null }]) fake.ipcMain.emit(MENU_CHANNEL, event, 'open-menu');
-  fake.ipcMain.emit(MENU_CHANNEL, menuEvent(root), 'close');
-  fake.ipcMain.emit(MENU_CHANNEL, menuEvent(root), 'open-menu', { unexpected: true });
-  root.mainFrame.url += '#different'; fake.ipcMain.emit(MENU_CHANNEL, menuEvent(root), 'open-menu');
-  root.mainFrame.url = localUrl('titlebar/index.html'); root.url += '?different';
-  fake.ipcMain.emit(MENU_CHANNEL, menuEvent(root), 'open-menu');
-  assert.equal(shell.menus.length, 0);
-  root.url = localUrl('titlebar/index.html');
-  fake.ipcMain.emit(MENU_CHANNEL, menuEvent(root), 'open-menu'); assert.deepEqual(shell.menus, [shell.win]);
-  shell.setMenuEnabled(false); fake.ipcMain.emit(MENU_CHANNEL, menuEvent(root), 'open-menu');
-  shell.setMenuEnabled('true'); fake.ipcMain.emit(MENU_CHANNEL, menuEvent(root), 'open-menu');
-  assert.deepEqual(root.sent.at(-1), [ENABLED_CHANNEL, false]); assert.equal(shell.menus.length, 1);
+  assert.deepEqual(root.sent, [['funds-trace:appearance', {version:1,theme:'dark',accent:'blue',translucency:false}]]);
+  assert.equal(fake.ipcMain.listenerCount(MENU_CHANNEL), 0);
+  assert.equal(shell.setAppearance({version:1,theme:'light',accent:'teal',translucency:true}), true);
+  assert.deepEqual(root.sent.at(-1), ['funds-trace:appearance', {version:1,theme:'light',accent:'teal',translucency:true}]);
+  for (const value of [null, true, {version:1,theme:'system',accent:'teal',translucency:true}, {version:1,theme:'dark',accent:'blue',translucency:false,token:'SYN'}]) assert.equal(shell.setAppearance(value), false);
+  assert.deepEqual(fake.views[0].bounds, {x:0,y:32,width:1280,height:688});
   shell.win.destroy();
 });
 
-test('menu enablement survives local load completion without changing caption options or business bounds', async () => {
-  const fake = harness(); const shell = create(fake);
-  const options = structuredClone({ titleBarStyle: shell.win.options.titleBarStyle, titleBarOverlay: shell.win.options.titleBarOverlay });
-  const bounds = { ...fake.views[0].bounds };
-  shell.setMenuEnabled(true); await shell.loaded;
-  assert.deepEqual(shell.win.webContents.sent.at(-1), [ENABLED_CHANNEL, true]);
-  assert.deepEqual({ titleBarStyle: shell.win.options.titleBarStyle, titleBarOverlay: shell.win.options.titleBarOverlay }, options);
-  assert.deepEqual(fake.views[0].bounds, bounds);
-  shell.win.destroy();
-  const sent = shell.win.webContents.sent.length;
-  shell.setMenuEnabled(false); shell.win.webContents.emit('did-finish-load');
-  assert.equal(shell.win.webContents.sent.length, sent);
+test('appearance changes preserve caption geometry, survive load completion and stop after disposal', async () => {
+  const fake=harness(), shell=create(fake);
+  const next={version:1,theme:'light',accent:'violet',translucency:false};
+  shell.setAppearance(next); await shell.loaded;
+  assert.deepEqual(shell.win.webContents.sent.at(-1), ['funds-trace:appearance',next]);
+  assert.equal(fake.views[0].background, '#fcfcfb');
+  assert.deepEqual(fake.views[0].bounds,{x:0,y:32,width:1280,height:688});
+  shell.win.destroy(); const count=shell.win.webContents.sent.length;
+  assert.equal(shell.setAppearance(next),false); shell.win.webContents.emit('did-finish-load');
+  assert.equal(shell.win.webContents.sent.length,count);
 });
 
 test('destroy releases the business renderer and every owned listener before closing it', async () => {
   const fake = harness(); const shell = create(fake); await shell.loaded;
   const root = shell.win.webContents, local = fake.sessions[0];
-  assert.equal(fake.ipcMain.listenerCount(MENU_CHANNEL), 1);
+  assert.equal(fake.ipcMain.listenerCount(MENU_CHANNEL), 0);
   assert.equal(shell.win.listenerCount('resize'), 1);
   assert.equal(shell.win.contentView.listenerCount('bounds-changed'), 1);
   shell.win.destroy();
@@ -264,21 +252,15 @@ test('native closed releases the business view without rereading the destroyed w
   assert.deepEqual(shell.failures, []);
 });
 
-test('multiple windows isolate caption requests, menu enablement and cleanup', async () => {
-  const fake = harness(); const first = create(fake), second = create(fake);
-  await Promise.all([first.loaded, second.loaded]);
-  assert.notEqual(fake.sessions[0].partition, fake.sessions[1].partition);
-  assert.equal(fake.ipcMain.listenerCount(MENU_CHANNEL), 2);
-  first.setMenuEnabled(true);
-  fake.ipcMain.emit(MENU_CHANNEL, menuEvent(second.win.webContents), 'open-menu');
-  assert.deepEqual(first.menus, []); assert.deepEqual(second.menus, []);
-  fake.ipcMain.emit(MENU_CHANNEL, menuEvent(first.win.webContents), 'open-menu');
-  assert.deepEqual(first.menus, [first.win]); assert.deepEqual(second.menus, []);
-  assert.deepEqual(request(fake.sessions[0].beforeRequest, { url: localUrl('assets/icon.png'), webContentsId: second.win.webContents.id }), { cancel: true });
-  first.win.destroy(); assert.equal(fake.ipcMain.listenerCount(MENU_CHANNEL), 1);
-  second.setMenuEnabled(true);
-  fake.ipcMain.emit(MENU_CHANNEL, menuEvent(second.win.webContents), 'open-menu'); assert.deepEqual(second.menus, [second.win]);
-  assert.deepEqual(request(fake.sessions[1].beforeRequest, { url: localUrl('assets/icon.png'), webContentsId: second.win.webContents.id }), { cancel: false });
+test('multiple windows isolate caption appearance, requests and cleanup', async () => {
+  const fake=harness(), first=create(fake), second=create(fake); await Promise.all([first.loaded,second.loaded]);
+  assert.notEqual(fake.sessions[0].partition,fake.sessions[1].partition);
+  first.setAppearance({version:1,theme:'light',accent:'rose',translucency:true});
+  assert.equal(first.win.webContents.sent.at(-1)[1].theme,'light');
+  assert.equal(second.win.webContents.sent.at(-1)[1].theme,'dark');
+  assert.deepEqual(request(fake.sessions[0].beforeRequest,{url:localUrl('assets/icon.png'),webContentsId:second.win.webContents.id}),{cancel:true});
+  first.win.destroy(); assert.equal(fake.sessions[0].beforeRequest,null);
+  assert.deepEqual(request(fake.sessions[1].beforeRequest,{url:localUrl('assets/icon.png'),webContentsId:second.win.webContents.id}),{cancel:false});
   second.win.destroy();
 });
 
@@ -297,56 +279,45 @@ test('root load failure and renderer loss report once while normal destruction s
   }
 });
 
-test('caption preload exposes only fixed menu IPC and buffers strictly boolean enabled state', () => {
-  const ipc = new EventEmitter(), sent = [], documentListeners = new Map(); let bridge;
-  ipc.send = (...args) => sent.push(args);
-  const document = { documentElement: { dataset: {} }, addEventListener: (event, listener) => documentListeners.set(event, listener) };
-  vm.runInNewContext(fs.readFileSync(path.join(desktop, 'titlebar/preload.cjs'), 'utf8'), {
-    document, process: { platform: 'darwin' }, require: name => {
-      assert.equal(name, 'electron');
-      return { ipcRenderer: ipc, contextBridge: { exposeInMainWorld: (name, value) => { assert.equal(name, 'FundsTraceTitlebar'); bridge = value; } } };
-    },
+test('caption preload exposes only readonly appearance and rejects business or authentication fields', () => {
+  const ipc=new EventEmitter(), sent=[], listeners=new Map(); let bridge;
+  ipc.send=(...args)=>sent.push(args);
+  const document={documentElement:{dataset:{}},addEventListener:(name,listener)=>listeners.set(name,listener)};
+  vm.runInNewContext(fs.readFileSync(path.join(desktop,'titlebar/preload.cjs'),'utf8'),{
+    document,process:{platform:'darwin',argv:['--funds-appearance='+JSON.stringify({version:1,theme:'light',accent:'amber',translucency:true})]},
+    require:()=>({ipcRenderer:ipc,contextBridge:{exposeInMainWorld(name,value){assert.equal(name,'FundsTraceTitlebar');bridge=value;}}}),
   });
-  assert.deepEqual(Object.keys(bridge).sort(), ['onMenuEnabled', 'openMenu']);
-  const seen = []; const unsubscribe = bridge.onMenuEnabled(value => seen.push(value));
-  assert.deepEqual(seen, [false]);
-  for (const value of ['true', 1, {}, null]) ipc.emit(ENABLED_CHANNEL, { private: 'synthetic' }, value);
-  assert.deepEqual(seen, [false]);
-  ipc.emit(ENABLED_CHANNEL, {}, true); assert.deepEqual(seen, [false, true]);
-  const late = []; bridge.onMenuEnabled(value => late.push(value)); assert.deepEqual(late, [true]);
-  unsubscribe(); ipc.emit(ENABLED_CHANNEL, {}, false); assert.deepEqual(seen, [false, true]);
-  bridge.openMenu({ ignored: true }); assert.deepEqual(sent, [[MENU_CHANNEL, 'open-menu']]);
-  documentListeners.get('DOMContentLoaded')(); assert.equal(document.documentElement.dataset.platform, 'darwin');
+  assert.deepEqual(Object.keys(bridge),['onAppearance']);
+  const seen=[],off=bridge.onAppearance(value=>seen.push(JSON.parse(JSON.stringify(value))));
+  assert.deepEqual(seen,[{version:1,theme:'light',accent:'amber',translucency:true}]);
+  ipc.emit('funds-trace:appearance',{token:'not exposed'},{version:1,theme:'dark',accent:'blue',translucency:false,caseId:'1'});
+  assert.equal(seen.length,1);
+  ipc.emit('funds-trace:appearance',{}, {version:1,theme:'dark',accent:'blue',translucency:false}); assert.equal(seen.length,2);
+  off(); ipc.emit('funds-trace:appearance',{}, {version:1,theme:'light',accent:'blue',translucency:false}); assert.equal(seen.length,2);
+  listeners.get('DOMContentLoaded')(); assert.equal(document.documentElement.dataset.platform,'darwin'); assert.deepEqual(sent,[]);
 });
 
-test('caption renderer only changes menu availability and never sends a disabled click', () => {
-  let enabledListener, openCount = 0, removed = false;
-  const events = new Map(), windowEvents = new Map();
-  const menu = { disabled: true, addEventListener: (event, listener) => events.set(event, listener) };
-  const bridge = { onMenuEnabled(callback) { enabledListener = callback; callback(false); return () => { removed = true; }; },
-    openMenu() { openCount++; } };
-  vm.runInNewContext(fs.readFileSync(path.join(desktop, 'titlebar/renderer.js'), 'utf8'), {
-    document: { querySelector: selector => { assert.equal(selector, '#titlebar-menu'); return menu; } },
-    window: { FundsTraceTitlebar: bridge, addEventListener: (event, listener) => windowEvents.set(event, listener) },
+test('caption renderer only applies appearance and releases its readonly subscription', () => {
+  let apply, removed=false; const events=new Map(), properties=new Map();
+  const document={documentElement:{dataset:{},style:{setProperty:(key,value)=>properties.set(key,value)}}};
+  vm.runInNewContext(fs.readFileSync(path.join(desktop,'titlebar/renderer.js'),'utf8'),{
+    document,window:{FundsTraceTitlebar:{onAppearance(callback){apply=callback;return()=>{removed=true;};}},addEventListener:(name,listener)=>events.set(name,listener)},
   });
-  events.get('click')(); assert.equal(openCount, 0);
-  enabledListener(true); assert.equal(menu.disabled, false); events.get('click')(); assert.equal(openCount, 1);
-  enabledListener('false'); assert.equal(menu.disabled, false);
-  enabledListener(false); assert.equal(menu.disabled, true); events.get('click')(); assert.equal(openCount, 1);
-  windowEvents.get('pagehide')(); assert.equal(removed, true);
+  apply({version:1,theme:'light',accent:'teal',translucency:true});
+  assert.equal(document.documentElement.dataset.theme,'light'); assert.equal(properties.get('--caption-accent'),'#14b8a6');
+  events.get('pagehide')(); assert.equal(removed,true);
 });
 
-test('caption document stays local and exposes only a menu button beside the approved icon', () => {
+test('caption document stays local and exposes only a passive preview badge beside the approved icon', () => {
   const html = fs.readFileSync(path.join(desktop, 'titlebar/index.html'), 'utf8');
   assert.match(html, /connect-src 'none'/);
   assert.match(html, /frame-src 'none'/);
   assert.match(html, /object-src 'none'/);
   assert.doesNotMatch(html, /https?:|\son\w+\s*=|<iframe|<webview|<style[\s>]/i);
   const buttons = [...html.matchAll(/<button\b([^>]*)>/g)];
-  assert.equal(buttons.length, 1);
-  assert.match(buttons[0][1], /id="titlebar-menu"/);
-  assert.match(buttons[0][1], /\bdisabled\b/);
-  assert.match(html, /<button\b[^>]*id="titlebar-menu"[^>]*>\s*菜单\s*<\/button>/);
+  assert.equal(buttons.length, 0);
+  assert.match(html, /<span class="titlebar-preview">预览版<\/span>/);
+  assert.doesNotMatch(html, /titlebar-menu|aria-haspopup|打开应用菜单/);
   const references = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]);
   assert.deepEqual(references.sort(), ['../assets/icon.png', 'renderer.js', 'style.css']);
   for (const reference of references) assert.ok(fs.existsSync(path.resolve(desktop, 'titlebar', reference)));
