@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { get as httpsGet } from 'node:https';
+import { isIPv4 } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { selectRelease, validateCurrent } from './publish.mjs';
 
@@ -7,14 +8,43 @@ const networkCodes = new Set(['UND_ERR_CONNECT_TIMEOUT', 'ECONNRESET', 'EAI_AGAI
 const diagnosticCodes = new Set([...networkCodes, 'ABORT_ERR', 'ENOTFOUND', 'ECONNREFUSED', 'ETIMEDOUT',
   'ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE']);
 const delays = [2000, 5000];
+const publicHosts = new Set(['api.github.com', 'analytix.top', 'download.analytix.top']);
 
-// Keep TLS hostname/certificate verification while bypassing Undici's separate
-// 10-second connector timer after a connection timeout. The request signal owns
-// the complete DNS, connection, TLS and response-body budget.
-export function fetchPublicNative(url, { method, headers, signal }, getImpl = httpsGet) {
+export async function resolvePublicAddresses(hostname, { signal, fetchImpl = fetch } = {}) {
+  if (!publicHosts.has(hostname) || !(signal instanceof AbortSignal)) throw new Error('Invalid public DNS request');
+  const url = new URL('https://dns.google/resolve');
+  url.searchParams.set('name', hostname);
+  url.searchParams.set('type', 'A');
+  url.searchParams.set('edns_client_subnet', '0.0.0.0/0');
+  const response = await fetchImpl(url.href, { method: 'GET', redirect: 'error', signal,
+    headers: { Accept: 'application/json', 'User-Agent': 'FundsTrace-public-verifier' } });
+  if (!response.ok || response.redirected) throw new Error('Public DNS response is unavailable');
+  const document = await response.json();
+  const question = document?.Question;
+  if (document?.Status !== 0 || document.TC !== false || document.CD !== false
+      || !Array.isArray(question) || question.length !== 1 || question[0]?.type !== 1
+      || typeof question[0].name !== 'string' || question[0].name.toLowerCase().replace(/\.$/, '') !== hostname
+      || !Array.isArray(document.Answer)) throw new Error('Invalid public DNS response');
+  const records = document.Answer.filter(answer => answer?.type === 1);
+  if (!records.length || records.some(answer => !isIPv4(answer.data))) throw new Error('Invalid public DNS addresses');
+  return [...new Set(records.map(answer => answer.data))].map(address => ({ address, family: 4 }));
+}
+
+// Only the connection addresses change: the original URL still owns SNI and
+// certificate validation. DoH and the complete HTTPS request share one budget.
+export async function fetchPublicNative(url, { method, headers, signal }, getImpl = httpsGet,
+  resolveImpl = resolvePublicAddresses) {
+  const hostname = new URL(url).hostname;
+  const addresses = await resolveImpl(hostname, { signal });
+  signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const request = getImpl(url, { method, headers, signal, family: 0, autoSelectFamily: true, agent: false,
-      rejectUnauthorized: true }, response => {
+      rejectUnauthorized: true,
+      lookup(name, options, callback) {
+        if (name !== hostname) return callback(new Error('Invalid public DNS hostname'));
+        if (options.all) callback(null, addresses);
+        else callback(null, addresses[0].address, addresses[0].family);
+      } }, response => {
       response.on('error', reject);
       if (!Number.isInteger(response.statusCode) || response.statusCode < 200 || response.statusCode >= 300) {
         response.destroy();
@@ -46,7 +76,7 @@ export async function verifyPublic({ expectedTag = process.env.EXPECTED_TAG, run
           redirect: 'error', signal: AbortSignal.timeout(30000) });
         if (!response.ok) throw new Error('Public release metadata is unavailable');
         const document = await response.json();
-        if (transport === 'https-native') report({ endpoint: label, attempt, transport, event: 'json-read' });
+        if (transport === 'https-doh') report({ endpoint: label, attempt, transport, event: 'json-read' });
         return document;
       } catch (error) {
         const code = [error?.code, error?.cause?.code].find(value => diagnosticCodes.has(value))
@@ -55,7 +85,7 @@ export async function verifyPublic({ expectedTag = process.env.EXPECTED_TAG, run
         if (!networkCodes.has(code) || attempt === 3) throw error;
         if (code === 'UND_ERR_CONNECT_TIMEOUT') {
           request = fallbackFetchImpl;
-          transport = 'https-native';
+          transport = 'https-doh';
         }
         await wait(delays[attempt - 1]);
       }

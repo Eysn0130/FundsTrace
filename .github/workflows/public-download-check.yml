@@ -27,7 +27,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -78,12 +77,10 @@ jobs:
             catch (error) { console.log(JSON.stringify({ hostname, code: error.code })); }
           }
           await Promise.all(['https://analytix.top/fundstrace/latest.yml',
-            'https://download.analytix.top/releases/windows/site/fundstrace/latest.yml'].flatMap(url =>
-            ['default', 'classical-curves'].map(profile => new Promise(resolve => {
-              const state = { hostname: new URL(url).hostname, profile, tcp: false, tls: false };
+            'https://download.analytix.top/releases/windows/site/fundstrace/latest.yml'].map(url => new Promise(resolve => {
+              const state = { hostname: new URL(url).hostname, tcp: false, tls: false };
               const request = get(url, { family: 0, autoSelectFamily: true, agent: false,
-                rejectUnauthorized: true, signal: AbortSignal.timeout(5000),
-                ...(profile === 'classical-curves' ? { ecdhCurve: 'X25519:P-256' } : {}) }, response => {
+                rejectUnauthorized: true, signal: AbortSignal.timeout(5000) }, response => {
                 response.resume(); console.log(JSON.stringify({ ...state, status: response.statusCode })); resolve();
               });
               request.on('socket', socket => {
@@ -91,7 +88,7 @@ jobs:
                 socket.on('secureConnect', () => { state.tls = true; });
               });
               request.on('error', error => { console.log(JSON.stringify({ ...state, code: error.code })); resolve(); });
-            }))));
+            })));
           NODE
           for url in 'https://analytix.top/fundstrace/latest.yml' 'https://download.analytix.top/releases/windows/site/fundstrace/latest.yml'; do
             curl --ipv4 --silent --show-error --max-time 12 --connect-timeout 5 --max-filesize 65536 \
