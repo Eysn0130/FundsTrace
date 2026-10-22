@@ -114,10 +114,12 @@ async function nativeStartupWindow(installRoot, processId, { action = 'Inspect',
   if (result.status === 'failed') {
     const stages = ['ciPlatform','syntheticUserBinding','inputBinding','nativeWindowReader','installedProcessBinding',
       'physicalDpiContext','uniqueVisibleWindow','nativeWindowInspect','nativeWindowResize','screenshotOutputBinding','nativeWindowCapture','nativeCaptionInteraction'];
-    report.startupNativeFailure = { failedCheck:stages.includes(result.failedCheck) ? result.failedCheck : 'unknown', processBound:result.processBound === true };
+    const codes=['OWNED_WINDOW_COUNT','FOREGROUND_BINDING','HTCLOSE','STATE_TIMEOUT','PROCESS_BINDING','NATIVE_GEOMETRY','CAPTION_POINT','NATIVE_CLOSE_FAILED'];
+    report.startupNativeFailure = { failedCheck:stages.includes(result.failedCheck) ? result.failedCheck : 'unknown', processBound:result.processBound === true,
+      ...(action==='CaptionCloseForeground' ? {failureCode:codes.includes(result.failureCode) ? result.failureCode : 'NATIVE_CLOSE_FAILED'} : {}) };
   }
   assert.equal(result.processBound, true);
-  assert.ok(result.status === 'passed' || ['Capture','CaptionProbe','CaptionClose','ZoomIn','ZoomReset'].includes(action) && result.status === 'unavailable');
+  assert.ok(result.status === 'passed' || ['Capture','CaptionProbe','CaptionClose','CaptionCloseForeground','ZoomIn','ZoomReset'].includes(action) && result.status === 'unavailable');
   return result;
 }
 async function nativeStartupBounds(config, primary, target) {
@@ -659,7 +661,15 @@ async function portClosed(port) {
   await check('analysisControlsReachable', async () => {
     await evaluate(`document.querySelector('#btnRun').scrollIntoView({ block: 'center' })`, analysisPage);
     assert.equal(await evaluate(visibleControl(`document.querySelector('#btnRun')`), analysisPage), true);
-    await cdp.send('Page.close', {}, analysisTitlebarPage.sessionId);
+    report.titlebar.analysis.nativeClose=await nativeStartupWindow(config.installRoot,primary.child.pid,{action:'CaptionCloseForeground'});
+    if(report.titlebar.analysis.nativeClose.status==='unavailable') {
+      report.titlebar.analysis.nativeClose.fallback='window.close-on-owning-local-shell; not a native button click';
+      // A successful close can destroy this execution context before its reply.
+      await evaluate('window.close()',analysisTitlebarPage).catch(()=>{});
+    } else {
+      assert.equal(report.titlebar.analysis.nativeClose.interaction.CloseButtonClicked,true,'TITLEBAR_ANALYSIS_NATIVE_CLOSE_CLICK');
+      assert.equal(report.titlebar.analysis.nativeClose.interaction.WindowClosedObserved,true,'TITLEBAR_ANALYSIS_NATIVE_CLOSE_OBSERVED');
+    }
     await until(async () => {
       const { targetInfos } = await cdp.send('Target.getTargets');
       const alive=id=>targetInfos.some(target=>target.targetId===id);
@@ -690,12 +700,12 @@ async function portClosed(port) {
   });
   await check('normalClose', async () => {
     // Close the actual native caption button when the CI desktop supports real
-    // pointer input. A fallback Page.close closes the owning root, not its WCV.
+    // pointer input. A fallback local window.close targets the owning root.
     if (!primary.done) {
       report.titlebar.nativeClose = await nativeStartupWindow(config.installRoot,primary.child.pid,{action:'CaptionClose'});
       if (report.titlebar.nativeClose.status==='unavailable') {
-        report.titlebar.nativeClose.fallback='Page.close-on-owning-shell; not a native button click';
-        await cdp.send('Page.close', {}, titlebarPage.sessionId).catch(() => {});
+        report.titlebar.nativeClose.fallback='window.close-on-owning-local-shell; not a native button click';
+        await evaluate('window.close()',titlebarPage).catch(() => {});
       } else {
         assert.equal(report.titlebar.nativeClose.interaction.CloseButtonClicked,true);
         assert.equal(report.titlebar.nativeClose.interaction.WindowClosedObserved,true);

@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-test('actual native helper converts restored hidden-frame geometry at 96/144/192 DPI without losing raw evidence',
+test('actual native helper preserves frame geometry and strictly selects owned windows',
   { skip: process.platform !== 'win32' }, async t => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'FundsTrace synthetic window geometry '));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
@@ -16,7 +16,7 @@ test('actual native helper converts restored hidden-frame geometry at 96/144/192
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $tokens = $null; $errors = $null
-[void][System.Management.Automation.Language.Parser]::ParseFile($Helper, [ref]$tokens, [ref]$errors)
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($Helper, [ref]$tokens, [ref]$errors)
 if ($errors.Count -gt 0) { throw 'HELPER_PARSE_FAILED' }
 $source = [IO.File]::ReadAllText($Helper)
 $native = [regex]::Match($source, "(?s)Add-Type @'\r?\n(.*?)\r?\n'@")
@@ -77,6 +77,53 @@ $invalid.MinTrackWidth = 976; $invalid.MinTrackHeight = 648
 $rejected = $false
 try { [FundsTraceStartupWindow]::NormalizeRestoredGeometry($invalid, $true) } catch { $rejected = $true }
 if (-not $rejected -or $invalid.NormalizationAvailable) { throw 'UNEXPECTED_CAPTION_FRAME_ACCEPTED' }
+# Synthetic handles exercise only the actual pure selection guard, never Win32
+# ownership/input calls. Real selection enumerates and revalidates the bound PID.
+$ownedPair = [IntPtr[]]@([IntPtr]101, [IntPtr]202)
+if ([FundsTraceStartupWindow]::SelectOwnedCandidate([IntPtr[]]@([IntPtr]101), [IntPtr]::Zero, $false) -ne [IntPtr]101) { throw 'UNIQUE_SELECTION_MISMATCH' }
+if ([FundsTraceStartupWindow]::SelectOwnedCandidate($ownedPair, [IntPtr]202, $true) -ne [IntPtr]202) { throw 'FOREGROUND_SELECTION_MISMATCH' }
+if ([FundsTraceStartupWindow]::SelectOwnedCandidate([IntPtr[]]@([IntPtr]202,[IntPtr]101), [IntPtr]202, $true) -ne [IntPtr]202) { throw 'ENUMERATION_ORDER_SELECTED_WINDOW' }
+if ([FundsTraceStartupWindow]::SelectOwnedCandidate($ownedPair, [IntPtr]101, $true) -eq [IntPtr]202) { throw 'FOREGROUND_CHANGE_IGNORED' }
+$invalidSelections = @(
+    @{ owned = [IntPtr[]]@(); foreground = [IntPtr]202; two = $true },
+    @{ owned = [IntPtr[]]@([IntPtr]202); foreground = [IntPtr]202; two = $true },
+    @{ owned = [IntPtr[]]@([IntPtr]101,[IntPtr]202,[IntPtr]303); foreground = [IntPtr]202; two = $true },
+    @{ owned = $ownedPair; foreground = [IntPtr]202; two = $false },
+    @{ owned = $ownedPair; foreground = [IntPtr]303; two = $true },
+    @{ owned = $ownedPair; foreground = [IntPtr]::Zero; two = $true },
+    @{ owned = [IntPtr[]]@([IntPtr]202,[IntPtr]202); foreground = [IntPtr]202; two = $true },
+    @{ owned = [IntPtr[]]@([IntPtr]::Zero,[IntPtr]202); foreground = [IntPtr]202; two = $true }
+)
+foreach ($selection in $invalidSelections) {
+    $rejected = $false
+    try { [void][FundsTraceStartupWindow]::SelectOwnedCandidate($selection.owned, $selection.foreground, $selection.two) } catch { $rejected = $true }
+    if (-not $rejected) { throw 'UNSAFE_WINDOW_SELECTION_ACCEPTED' }
+}
+# Execute the real outer catch in isolation: fixed native guard failures stay
+# failed, only known input unavailability is downgraded, arbitrary text is omitted.
+$outerTry = @($ast.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] })
+if ($outerTry.Count -ne 1 -or $outerTry[0].CatchClauses.Count -ne 1) { throw 'OUTER_FAILURE_HANDLER_MISSING' }
+$catchText = $outerTry[0].CatchClauses[0].Body.Extent.Text
+$failureHandler = [scriptblock]::Create($catchText.Substring(1, $catchText.Length - 2))
+$failures = @(
+    @{ code = 'TWO_OWNED_WINDOWS_REQUIRED'; expected = 'OWNED_WINDOW_COUNT'; status = 'failed' },
+    @{ code = 'OWNED_FOREGROUND_REQUIRED'; expected = 'FOREGROUND_BINDING'; status = 'failed' },
+    @{ code = 'WINDOW_BINDING_CHANGED'; expected = 'FOREGROUND_BINDING'; status = 'failed' },
+    @{ code = 'NATIVE_CAPTION_BUTTON_HIT_MISSING'; expected = 'HTCLOSE'; status = 'failed' },
+    @{ code = 'CAPTION_STATE_TIMEOUT'; expected = 'STATE_TIMEOUT'; status = 'failed' },
+    @{ code = 'INPUT_DESKTOP_UNAVAILABLE'; expected = 'INPUT_DESKTOP_UNAVAILABLE'; status = 'unavailable' },
+    @{ code = 'synthetic unapproved exception /private-test-path 0x1234'; expected = 'NATIVE_CLOSE_FAILED'; status = 'failed' }
+)
+foreach ($failure in $failures) {
+    $Action = 'CaptionCloseForeground'; $Stage = 'nativeCaptionInteraction'; $Report = [ordered]@{}; $ExitCode = 0
+    try { throw $failure.code } catch { . $failureHandler }
+    if ($Report.status -ne $failure.status -or $Report.failureCode -ne $failure.expected -or
+        $Report.failedCheck -ne 'nativeCaptionInteraction') { throw 'FAILURE_CLASSIFICATION_MISMATCH' }
+    if ($failure.status -eq 'unavailable') {
+        if ($ExitCode -ne 2 -or $Report.reason -ne 'INPUT_DESKTOP_UNAVAILABLE') { throw 'INPUT_UNAVAILABILITY_LOST' }
+    } elseif ($ExitCode -ne 1) { throw 'NON_INPUT_FAILURE_DOWNGRADED' }
+    if (($Report | ConvertTo-Json -Compress).Contains('/private-test-path')) { throw 'UNSAFE_EXCEPTION_TEXT_REPORTED' }
+}
 Write-Output 'WINDOW_GEOMETRY_FIXTURES_PASSED'
 `);
     const result = spawnSync('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', script,

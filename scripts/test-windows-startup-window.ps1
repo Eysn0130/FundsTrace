@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$InstallRoot,
     [Parameter(Mandatory = $true)][int]$ProcessId,
-    [ValidateSet('Inspect', 'Resize', 'Capture', 'CaptionProbe', 'CaptionClose', 'ZoomIn', 'ZoomReset')][string]$Action = 'Inspect',
+    [ValidateSet('Inspect', 'Resize', 'Capture', 'CaptionProbe', 'CaptionClose', 'CaptionCloseForeground', 'ZoomIn', 'ZoomReset')][string]$Action = 'Inspect',
     [int]$WidthDip = 0,
     [int]$HeightDip = 0,
     [string]$ScreenshotPath = '',
@@ -92,6 +92,8 @@ using Microsoft.Win32.SafeHandles;
 
 public static class FundsTraceStartupWindow {
     static readonly IntPtr PerMonitorV2 = new IntPtr(-4);
+    static IntPtr selectedForegroundWindow, remainingOwnedWindow;
+    static uint selectedForegroundProcess;
     const uint WM_GETMINMAXINFO = 0x0024, SMTO_ABORTIFHUNG = 0x0002;
     [StructLayout(LayoutKind.Sequential)] struct NativeRect { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] struct Point { public int X, Y; }
@@ -215,10 +217,10 @@ public static class FundsTraceStartupWindow {
     }
     static void AssertOwner(IntPtr window, uint processId) {
         uint actual;
-        if (window == IntPtr.Zero || GetWindowThreadProcessId(window, out actual) == 0 || actual != processId ||
+        if (window == IntPtr.Zero || !IsWindow(window) || GetWindowThreadProcessId(window, out actual) == 0 || actual != processId ||
             !IsWindowVisible(window) || IsIconic(window)) throw new InvalidOperationException("WINDOW_BINDING_FAILED");
     }
-    public static IntPtr UniqueWindow(uint processId) {
+    static List<IntPtr> OwnedVisibleWindows(uint processId) {
         var windows = new List<IntPtr>();
         EnumProc callback = (window, state) => {
             uint actual;
@@ -227,9 +229,54 @@ public static class FundsTraceStartupWindow {
                 GetWindowRect(window, out bounds) && bounds.Right > bounds.Left && bounds.Bottom > bounds.Top) windows.Add(window);
             return true;
         };
-        if (!EnumWindows(callback, IntPtr.Zero) || windows.Count != 1) throw new InvalidOperationException("UNIQUE_WINDOW_REQUIRED");
-        AssertOwner(windows[0], processId);
-        return windows[0];
+        if (!EnumWindows(callback, IntPtr.Zero)) throw new InvalidOperationException("WINDOW_ENUMERATION_FAILED");
+        return windows;
+    }
+    // Pure selection guard for independently supplied synthetic HWND fixtures.
+    // Native callers supply only the process-bound enumeration above.
+    public static IntPtr SelectOwnedCandidate(IntPtr[] windows, IntPtr foreground, bool foregroundOfTwo) {
+        if (windows == null || windows.Length != (foregroundOfTwo ? 2 : 1))
+            throw new InvalidOperationException(foregroundOfTwo ? "TWO_OWNED_WINDOWS_REQUIRED" : "UNIQUE_WINDOW_REQUIRED");
+        var unique = new HashSet<IntPtr>();
+        foreach (IntPtr window in windows)
+            if (window == IntPtr.Zero || !unique.Add(window)) throw new InvalidOperationException("WINDOW_BINDING_FAILED");
+        if (foregroundOfTwo && (foreground == IntPtr.Zero || !unique.Contains(foreground)))
+            throw new InvalidOperationException("OWNED_FOREGROUND_REQUIRED");
+        return foregroundOfTwo ? foreground : windows[0];
+    }
+    public static IntPtr UniqueWindow(uint processId) {
+        var windows = OwnedVisibleWindows(processId);
+        IntPtr selected = SelectOwnedCandidate(windows.ToArray(), IntPtr.Zero, false);
+        AssertOwner(selected, processId);
+        return selected;
+    }
+    public static IntPtr ForegroundWindowOfTwo(uint processId) {
+        AssertInputDesktopAvailable();
+        var windows = OwnedVisibleWindows(processId);
+        foreach (IntPtr window in windows) AssertOwner(window, processId);
+        IntPtr selected = SelectOwnedCandidate(windows.ToArray(), GetForegroundWindow(), true);
+        selectedForegroundWindow = selected; selectedForegroundProcess = processId;
+        remainingOwnedWindow = windows[0] == selected ? windows[1] : windows[0];
+        AssertSelection(selected, processId);
+        return selected;
+    }
+    static void AssertSelection(IntPtr window, uint processId) {
+        AssertOwner(window, processId);
+        if (selectedForegroundWindow != IntPtr.Zero) {
+            if (window != selectedForegroundWindow || processId != selectedForegroundProcess)
+                throw new InvalidOperationException("WINDOW_BINDING_CHANGED");
+            var windows = OwnedVisibleWindows(processId);
+            foreach (IntPtr candidate in windows) AssertOwner(candidate, processId);
+            if (SelectOwnedCandidate(windows.ToArray(), GetForegroundWindow(), true) != window || !windows.Contains(remainingOwnedWindow))
+                throw new InvalidOperationException("WINDOW_BINDING_CHANGED");
+        } else if (UniqueWindow(processId) != window) throw new InvalidOperationException("WINDOW_BINDING_CHANGED");
+    }
+    static void AssertRemainingWindow(uint processId) {
+        if (selectedForegroundWindow == IntPtr.Zero) return;
+        var windows = OwnedVisibleWindows(processId);
+        if (processId != selectedForegroundProcess || windows.Count != 1 || windows[0] != remainingOwnedWindow)
+            throw new InvalidOperationException("WINDOW_BINDING_CHANGED");
+        AssertOwner(remainingOwnedWindow, processId);
     }
     public static void NormalizeRestoredGeometry(Evidence value, bool restored) {
         value.NormalizationAvailable = false;
@@ -273,7 +320,7 @@ public static class FundsTraceStartupWindow {
             Height = checked(height + before.FrameInsets.Top + before.FrameInsets.Bottom) };
     }
     public static Evidence Read(IntPtr window, uint processId) {
-        AssertOwner(window, processId);
+        AssertSelection(window, processId);
         NativeRect frame, client;
         var origin = new Point();
         if (!GetWindowRect(window, out frame) || !GetClientRect(window, out client) || !ClientToScreen(window, ref origin))
@@ -306,8 +353,7 @@ public static class FundsTraceStartupWindow {
             throw new InvalidOperationException("BOUNDS_CHANGED");
         Rectangle monitor = Rect(info.Monitor);
         NormalizeRestoredGeometry(result, !IsZoomed(window) && !(Same(result.Window, monitor) && Same(result.Client, monitor)));
-        AssertOwner(window, processId);
-        if (UniqueWindow(processId) != window) throw new InvalidOperationException("WINDOW_BINDING_CHANGED");
+        AssertSelection(window, processId);
         return result;
     }
     public static Evidence Resize(IntPtr window, uint processId, int widthDip, int heightDip) {
@@ -325,13 +371,17 @@ public static class FundsTraceStartupWindow {
         for (int i = 0; i < 100; i++) { if (ready()) return; Thread.Sleep(30); }
         throw new InvalidOperationException("CAPTION_STATE_TIMEOUT");
     }
-    static void InputDesktop(IntPtr window, uint processId) {
+    static void AssertInputDesktopAvailable() {
         if (!Environment.UserInteractive) throw new InvalidOperationException("INPUT_DESKTOP_UNAVAILABLE");
         IntPtr desktop = OpenInputDesktop(0, false, 1);
         if (desktop == IntPtr.Zero) throw new InvalidOperationException("INPUT_DESKTOP_UNAVAILABLE");
         CloseDesktop(desktop);
+    }
+    static void InputDesktop(IntPtr window, uint processId) {
+        AssertInputDesktopAvailable();
         AssertOwner(window, processId);
-        if (GetForegroundWindow() != window && !SetForegroundWindow(window))
+        if (selectedForegroundWindow != IntPtr.Zero) AssertSelection(window, processId);
+        else if (GetForegroundWindow() != window && !SetForegroundWindow(window))
             throw new InvalidOperationException("INPUT_FOREGROUND_UNAVAILABLE");
         Wait(() => GetForegroundWindow() == window);
         foreach (int key in new int[] {1,2,4,16,17,18,91,92})
@@ -378,8 +428,9 @@ public static class FundsTraceStartupWindow {
         if (Hit(window,point)!=expectedHit || GetAncestor(WindowFromPoint(point),2)!=window)
             throw new InvalidOperationException("CAPTION_INPUT_HIT_MISMATCH");
         Move(point); Thread.Sleep(40);
+        if (selectedForegroundWindow != IntPtr.Zero) AssertSelection(window, processId);
         if (GetForegroundWindow()!=window || GetAncestor(WindowFromPoint(point),2)!=window)
-            throw new InvalidOperationException("INPUT_FOREGROUND_UNAVAILABLE");
+            throw new InvalidOperationException(selectedForegroundWindow != IntPtr.Zero ? "WINDOW_BINDING_CHANGED" : "INPUT_FOREGROUND_UNAVAILABLE");
         try { Inject(Mouse(2)); } finally { Inject(Mouse(4)); }
     }
     public static CaptionEvidence Caption(IntPtr window,uint processId,int dragXDip,int menuXDip,bool close) {
@@ -390,7 +441,9 @@ public static class FundsTraceStartupWindow {
             if(close) {
                 Click(window,processId,Button(window,processId,20),20);
                 result.CloseButtonClicked=true;
-                Wait(()=>!IsWindow(window));result.WindowClosedObserved=true;return result;
+                Wait(()=>!IsWindow(window));
+                AssertRemainingWindow(processId);
+                result.WindowClosedObserved=true;return result;
             }
             Evidence before=result.Before;
             if(IsZoomed(window)) throw new InvalidOperationException("CAPTION_EXPECTED_NORMAL_WINDOW");
@@ -517,7 +570,13 @@ public static class FundsTraceStartupWindow {
     $PreviousDpi = [FundsTraceStartupWindow]::EnterPhysicalCoordinates()
     $DpiScopeEntered = $true
     $Stage = 'uniqueVisibleWindow'
-    $Window = [FundsTraceStartupWindow]::UniqueWindow([uint32]$ProcessId)
+    if ($Action -eq 'CaptionCloseForeground') {
+        $Stage = 'nativeCaptionInteraction'
+        $Report.selection = 'foreground-of-two-owned-windows'
+        $Window = [FundsTraceStartupWindow]::ForegroundWindowOfTwo([uint32]$ProcessId)
+    } else {
+        $Window = [FundsTraceStartupWindow]::UniqueWindow([uint32]$ProcessId)
+    }
     $Stage = 'nativeWindowInspect'
     $Evidence = [FundsTraceStartupWindow]::Read($Window, [uint32]$ProcessId)
     foreach ($Entry in (Convert-Evidence $Evidence).GetEnumerator()) { $Report[$Entry.Key] = $Entry.Value }
@@ -528,9 +587,10 @@ public static class FundsTraceStartupWindow {
         $Report.readback = Convert-Evidence $Evidence
         $Report.resizePolicy = 'Electron client geometry centered in current work area; raw SetWindowPos bounds include measured resize insets. Actual readback is authoritative; SetWindowPos does not guarantee interactive minimum tracking enforcement.'
     }
-    if ($Action -in @('CaptionProbe', 'CaptionClose')) {
+    if ($Action -in @('CaptionProbe', 'CaptionClose', 'CaptionCloseForeground')) {
         $Stage = 'nativeCaptionInteraction'
-        $Report.interaction = [FundsTraceStartupWindow]::Caption($Window, [uint32]$ProcessId, $DragXDip, $MenuXDip, $Action -eq 'CaptionClose')
+        Assert-ProcessBinding
+        $Report.interaction = [FundsTraceStartupWindow]::Caption($Window, [uint32]$ProcessId, $DragXDip, $MenuXDip, $Action -in @('CaptionClose', 'CaptionCloseForeground'))
         if ($Action -eq 'CaptionProbe') { $Evidence = $Report.interaction.After }
     }
     if ($Action -in @('ZoomIn', 'ZoomReset')) {
@@ -598,11 +658,30 @@ public static class FundsTraceStartupWindow {
     $Report.status = 'failed'
     $Report.failedCheck = $Stage
     $ExitCode = 1
+    $SafeExceptionCode = $_.Exception.GetBaseException().Message
     $InputUnavailable = @('INPUT_DESKTOP_UNAVAILABLE', 'INPUT_FOREGROUND_UNAVAILABLE',
         'INPUT_KEYS_ALREADY_PRESSED', 'INPUT_INJECTION_FAILED', 'INPUT_CURSOR_UNAVAILABLE')
-    if ($Stage -eq 'nativeCaptionInteraction' -and $_.Exception.GetBaseException().Message -in $InputUnavailable) {
+    if ($Action -eq 'CaptionCloseForeground') {
+        $FailureCodes = @{
+            TWO_OWNED_WINDOWS_REQUIRED = 'OWNED_WINDOW_COUNT'; UNIQUE_WINDOW_REQUIRED = 'OWNED_WINDOW_COUNT'
+            WINDOW_ENUMERATION_FAILED = 'OWNED_WINDOW_COUNT'
+            WINDOW_BINDING_FAILED = 'FOREGROUND_BINDING'; WINDOW_BINDING_CHANGED = 'FOREGROUND_BINDING'
+            OWNED_FOREGROUND_REQUIRED = 'FOREGROUND_BINDING'
+            NATIVE_CAPTION_BUTTON_HIT_MISSING = 'HTCLOSE'; CAPTION_INPUT_HIT_MISMATCH = 'HTCLOSE'
+            CAPTION_HIT_UNAVAILABLE = 'HTCLOSE'; CAPTION_POINT_UNAVAILABLE = 'HTCLOSE'
+            CAPTION_STATE_TIMEOUT = 'STATE_TIMEOUT'
+            PROCESS_BINDING_FAILED = 'PROCESS_BINDING'; PATH_BINDING_FAILED = 'PROCESS_BINDING'
+            BOUNDS_UNAVAILABLE = 'NATIVE_GEOMETRY'; BOUNDS_CHANGED = 'NATIVE_GEOMETRY'
+            MIN_TRACK_UNAVAILABLE = 'NATIVE_GEOMETRY'; FRAME_INSETS_UNAVAILABLE = 'NATIVE_GEOMETRY'
+            WORK_AREA_UNAVAILABLE = 'NATIVE_GEOMETRY'; DPI_UNAVAILABLE = 'NATIVE_GEOMETRY'
+            DPI_CONTEXT_UNAVAILABLE = 'NATIVE_GEOMETRY'; INPUT_POINT_UNAVAILABLE = 'CAPTION_POINT'
+        }
+        $Report.failureCode = if ($FailureCodes.ContainsKey($SafeExceptionCode)) { $FailureCodes[$SafeExceptionCode] }
+            elseif ($SafeExceptionCode -in $InputUnavailable) { $SafeExceptionCode } else { 'NATIVE_CLOSE_FAILED' }
+    }
+    if ($Stage -eq 'nativeCaptionInteraction' -and $SafeExceptionCode -in $InputUnavailable) {
         $Report.status = 'unavailable'
-        $Report.reason = $_.Exception.GetBaseException().Message
+        $Report.reason = $SafeExceptionCode
         $ExitCode = 2
     }
     if ($Action -eq 'Capture' -and -not $Report.Contains('screenshot')) {
