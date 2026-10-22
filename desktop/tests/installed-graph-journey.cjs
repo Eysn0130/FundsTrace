@@ -616,12 +616,15 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     await until(() => evaluate(`!document.querySelector('#canvasActionForm[open]')`), 15000);
   }
   async function rowAction(flowId, action) {
-    // The seven-column sidebar keeps row actions at its right edge. Use its
-    // visible scrollbar control rather than clicking a clipped table button.
+    // The seven-column sidebar owns one native scroll viewport. Scroll it with
+    // renderer input before clicking a row action at the right edge.
     if (await evaluate(`document.querySelector('#flowTableScroll').scrollWidth
       > document.querySelector('#flowTableScroll').clientWidth + 1`)) {
-      await clickElement(`document.querySelector('#flowHorizontalPosition')`);
-      await key('End', 'End', 35);
+      const scroll = await evaluate(`(() => {
+        const viewport = document.querySelector('#flowTableScroll'), rect = viewport.getBoundingClientRect();
+        return {x:rect.left + rect.width / 2, y:rect.top + Math.min(60, rect.height / 2), deltaX:viewport.scrollWidth};
+      })()`);
+      await cdp.send('Input.dispatchMouseEvent', {type:'mouseWheel', ...scroll, deltaY:0}, page.sessionId);
       await until(() => evaluate(`(() => {
         const viewport = document.querySelector('#flowTableScroll');
         return viewport.scrollLeft >= viewport.scrollWidth - viewport.clientWidth - 1;
