@@ -31,7 +31,10 @@ export function Modal({ title, children, onClose, busy = false }: { title: strin
       target?.focus({ preventScroll: true });
     };
   }, []);
-  return <dialog ref={dialog} className="modal" aria-labelledby={titleId} tabIndex={-1} onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
+  return <dialog ref={dialog} className="modal" aria-labelledby={titleId} tabIndex={-1} onCancel={event => {
+    if (event.target !== event.currentTarget) return;
+    event.preventDefault(); if (!busy) onClose();
+  }}>
     <header className="modal-heading"><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" disabled={busy} aria-label="关闭对话框" onClick={onClose}>×</button></header>
     {children}
   </dialog>;

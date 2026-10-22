@@ -24,6 +24,16 @@ describe('FundsTrace modal keyboard lifecycle', () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it('keeps the import dialog open when its native file picker is cancelled', () => {
+    const close = vi.fn();
+    render(<Modal title="合成文件导入" onClose={close}><input type="file" aria-label="选择合成流水" /></Modal>);
+    fireEvent(screen.getByLabelText('选择合成流水'), new Event('cancel', { bubbles: true }));
+    expect(close).not.toHaveBeenCalled();
+    expect((screen.getByRole('dialog', { name: '合成文件导入' }) as HTMLDialogElement).open).toBe(true);
+    fireEvent(screen.getByRole('dialog', { name: '合成文件导入' }), new Event('cancel', { cancelable: true }));
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it.each(['disabled', 'hidden', 'inactive', 'closed-menu'] as const)('returns focus to an available control when its opener becomes %s', state => {
     const scope = document.createElement('div'); scope.className = 'funds-trace';
     const fallback = document.createElement('button'), group = document.createElement(state === 'closed-menu' ? 'details' : 'div'), opener = document.createElement('button');
