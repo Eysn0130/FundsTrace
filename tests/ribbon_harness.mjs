@@ -64,13 +64,16 @@ function harness() {
   return { doc, window, events, windowEvents, api: window.FundsRibbon, node: id => doc.getElementById(id), fireWindow(name, detail = {}) { for (const fn of windowHandlers.get(name) || []) fn(detail); } };
 }
 
-test('tool chrome preserves a 1280 logical width below the baseline without scaling content', () => {
+test('the retained ribbon preserves a 1280 logical width without scaling the rail, caption or content', () => {
   const h = harness(), layout = h.node('layoutSel');
+  assert.equal(h.node('topbar'), undefined, 'the old stacked app header is replaced by the navigation rail');
+  assert.ok(h.node('appRail'));
+  assert.ok(h.node('browserCaption'));
   layout.value = 'dagre';
   for (const width of [1280, 1920, 1024, 960, 1280]) {
     h.window.innerWidth = width;
     h.fireWindow('resize');
-    for (const id of ['topbar', 'editorToolbar']) {
+    for (const id of ['editorToolbar']) {
       const style = h.node(id).style;
       const logical = Number.parseFloat(style.getPropertyValue('--toolbar-fit-width'));
       const scale = Number(style.getPropertyValue('--toolbar-fit-scale'));
@@ -79,6 +82,8 @@ test('tool chrome preserves a 1280 logical width below the baseline without scal
       assert.equal(logical * scale, width);
     }
     assert.equal(h.doc.body.style.getPropertyValue('--toolbar-fit-scale'), '');
+    assert.equal(h.node('appRail').style.getPropertyValue('--toolbar-fit-scale'), '');
+    assert.equal(h.node('browserCaption').style.getPropertyValue('--toolbar-fit-scale'), '');
     assert.equal(h.node('flowTableScroll').style.getPropertyValue('--toolbar-fit-scale'), '');
     assert.equal(h.node('layoutSel'), layout);
     assert.equal(layout.value, 'dagre');

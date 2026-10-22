@@ -10,7 +10,15 @@ window.addEventListener('funds-trace:workbench', event => {
 });
 // Sandboxed preload exposes no IPC primitive, token, file path or case payload.
 const channel = 'funds-trace:preferences';
-contextBridge.exposeInMainWorld('FundsDesktopPreferences', Object.freeze({
+const appearanceChannel = 'funds-trace:appearance';
+const appearanceListeners = new Set();
+let lastAppearance;
+ipcRenderer.on(appearanceChannel, (_event, change) => {
+  if (!change || change.key !== 'fund_appearance' || typeof change.value !== 'string' || change.value.length > 256) return;
+  lastAppearance = Object.freeze({ key: 'fund_appearance', value: change.value });
+  for (const callback of appearanceListeners) { try { callback(lastAppearance); } catch { /* One subscriber cannot interrupt delivery. */ } }
+});
+const preferences = Object.freeze({
   getItem: key => ipcRenderer.sendSync(channel, 'get', String(key)),
   setItem: (key, value) => {
     if (ipcRenderer.sendSync(channel, 'set', String(key), String(value)) !== true) throw new Error('偏好设置保存失败');
@@ -18,7 +26,15 @@ contextBridge.exposeInMainWorld('FundsDesktopPreferences', Object.freeze({
   removeItem: key => {
     if (ipcRenderer.sendSync(channel, 'remove', String(key)) !== true) throw new Error('偏好设置保存失败');
   },
-}));
+  subscribe: callback => {
+    if (typeof callback !== 'function') return () => {};
+    appearanceListeners.add(callback);
+    if (lastAppearance) callback(lastAppearance);
+    return () => appearanceListeners.delete(callback);
+  },
+});
+contextBridge.exposeInMainWorld('FundsDesktopPreferences', preferences);
+contextBridge.exposeInMainWorld('FundsPreferences', preferences);
 const updateChannel = 'funds-trace:updates';
 contextBridge.exposeInMainWorld('FundsDesktopUpdates', Object.freeze({
   state: () => ipcRenderer.invoke(updateChannel, 'state'),

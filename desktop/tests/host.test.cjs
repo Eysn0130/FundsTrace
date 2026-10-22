@@ -153,7 +153,7 @@ test('health checks status, protocol and exact service using main-only authoriza
 test('distribution manifest prevents cross-platform packaging and includes host source and licenses', async t => {
   const builder = require('../electron-builder.cjs');
   assert.equal(builder.appId, 'com.eysn.fundstrace');
-  assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'startup.cjs', 'window-shell.cjs',
+  assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'startup.cjs', 'window-shell.cjs', 'appearance.cjs',
     'titlebar/index.html', 'titlebar/style.css', 'titlebar/renderer.js', 'titlebar/preload.cjs',
     'startup/index.html', 'startup/style.css', 'startup/renderer.js', 'startup/preload.cjs', 'assets/icon.png', 'assets/icon.ico',
     { from: path.resolve(__dirname, '../..'), to: '.', filter: ['LICENSE'] }]);
@@ -212,6 +212,7 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
   const app = new EventEmitter();
   const state = { windows: [], businessViews: [], startupViews: [], sessions: [], titlebarSessions: [], menuPopups: [], applicationMenus: [], timers: [], errors: [], backendStarts: 0, backendStops: 0, quitCount: 0, removed: [] };
   const ready = deferred();
+  const nativeTheme = new EventEmitter(); nativeTheme.shouldUseDarkColors = false;
   const screen = new EventEmitter();
   let nextContentsId = 0;
   state.display = initialDisplay || { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
@@ -247,6 +248,8 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
     contents.getZoomLevel = () => contents.zoomLevel;
     contents.setZoomLevel = level => { contents.zoomLevel = level; };
     contents.reload = () => { owner.reloadCount = (owner.reloadCount || 0) + 1; };
+    owner.scripts = [];
+    contents.executeJavaScript = async command => { owner.scripts.push(command); return owner.canNavigate === true; };
     contents.downloadURL = url => owner.downloads.push(url);
     contents.loadFile = async filename => {
       owner.file = filename; owner.fileLoads.push(filename);
@@ -281,6 +284,8 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
       state.windows.push(this);
     }
     setMenu(menu) { this.menu = menu; }
+    setBackgroundColor(color) { this.backgroundColor = color; }
+    setTitleBarOverlay(value) { this.overlay = value; }
     show() { this.shown++; focusWindow(this); }
     focus() { this.focused++; focusWindow(this); }
     isFocused() { return !this.destroyed && this.hasFocus; }
@@ -328,7 +333,7 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
     };
     return localSession;
   };
-  const electron = { app, ipcMain: new EventEmitter(), BrowserWindow: Window, WebContentsView: StartView, session: { fromPartition }, screen, platform,
+  const electron = { app, nativeTheme, ipcMain: new EventEmitter(), BrowserWindow: Window, WebContentsView: StartView, session: { fromPartition }, screen, platform,
     setTimer(callback, milliseconds) { const timer = { callback, milliseconds, unref() {} }; state.timers.push(timer); return timer; },
     clearTimer(timer) { if (timer) timer.cleared = true; },
     Menu: { buildFromTemplate: template => ({ template, popup: options => state.menuPopups.push({ template, options }) }),
@@ -342,6 +347,7 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
   vm.runInNewContext(source, { require: name => {
     if (name === 'electron') return electron;
     if (name === './host-policy.cjs') return policy;
+    if (name === './appearance.cjs') return require('../appearance.cjs');
     if (name === './updates.cjs') return require('../updates.cjs');
     if (name === './window-shell.cjs') {
       const shell = require('../window-shell.cjs');
@@ -365,7 +371,7 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
     } };
     return require(name);
   }, clearInterval, setInterval, setImmediate, setTimeout, clearTimeout, __dirname: path.resolve(__dirname, '..'), process: { argv: ['FundsTrace', ...(synthetic ? ['--synthetic'] : [])], env: {}, platform } });
-  return { app, state, ready, screen, ipcMain: electron.ipcMain, flush: async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); } };
+  return { app, state, ready, screen, nativeTheme, ipcMain: electron.ipcMain, flush: async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); } };
 }
 
 test('Main uses the packaged brand asset for startup and analysis windows and the macOS dock', async () => {
@@ -585,15 +591,15 @@ test('startup waits for initialized main workbench, rejects unrelated frames and
   harness.ipcMain.emit('funds-trace:startup', localEvent, 'complete');
   assert.equal(view.destroyed, undefined, 'an early completion must not dismiss the loading surface');
   harness.ready.resolve({ origin, token: 'main-only-test-token' }); await harness.flush();
-  assert.equal(view.messages.length, 0, 'backend health and did-finish-load are not workbench readiness');
+  assert.equal(view.messages.filter(item => item.channel === 'funds-trace:startup').length, 0, 'backend health and did-finish-load are not workbench readiness');
   const valid = { sender: win.businessView.webContents, senderFrame: win.businessView.webContents.mainFrame };
   for (const event of [localEvent, { sender: win.webContents, senderFrame: win.webContents.mainFrame },
     { ...valid, senderFrame: { url: `${origin}/` } }, { ...valid, sender: {} }]) {
     harness.ipcMain.emit('funds-trace:workbench', event, 'ready');
   }
-  await harness.flush(); assert.equal(view.messages.length, 0);
+  await harness.flush(); assert.equal(view.messages.filter(item => item.channel === 'funds-trace:startup').length, 0);
   harness.ipcMain.emit('funds-trace:workbench', valid, 'ready'); await harness.flush();
-  assert.deepEqual(view.messages, [{ channel: 'funds-trace:startup', value: 'ready' }]);
+  assert.deepEqual(view.messages.filter(item => item.channel === 'funds-trace:startup'), [{ channel: 'funds-trace:startup', value: 'ready' }]);
   assert.equal(view.destroyed, undefined, 'the real app remains covered until the renderer finishes fading');
   harness.ipcMain.emit('funds-trace:startup', valid, 'complete');
   harness.ipcMain.emit('funds-trace:startup', { ...localEvent, senderFrame: { url: view.webContents.getURL() } }, 'complete');
@@ -640,7 +646,7 @@ test('Main preserves the same native 32 DIP caption through backend readiness an
   assert.equal(business.bounds.y, 32);
   assert.notEqual(win.options.webPreferences.session, business.options.webPreferences.session);
   assert.notEqual(win.options.webPreferences.session, startup.options.webPreferences.session);
-  harness.ipcMain.emit('funds-trace:titlebar', { sender: root, senderFrame: root.mainFrame }, 'open-menu');
+  root.emit('before-input-event', {preventDefault() {}}, {type:'keyDown',key:'F10'});
   assert.equal(harness.state.menuPopups.length, 0, 'startup caption menu stays unavailable');
   harness.ready.resolve({ origin, token: 'business-only-synthetic-token' }); await harness.flush();
   assert.equal(win.webContents, root);
@@ -653,11 +659,11 @@ test('Main preserves the same native 32 DIP caption through backend readiness an
     harness.ipcMain.emit('funds-trace:workbench', event, 'ready');
   }
   await harness.flush();
-  assert.deepEqual(startup.messages, [], 'only the current business main frame can unlock the handoff');
+  assert.deepEqual(startup.messages.filter(item => item.channel === 'funds-trace:startup'), [], 'only the current business main frame can unlock the handoff');
   const captionMessages = [...win.messages];
   harness.ipcMain.emit('funds-trace:workbench', { sender: business.webContents, senderFrame: business.webContents.mainFrame }, 'ready');
   await harness.flush();
-  assert.deepEqual(startup.messages, [{ channel: 'funds-trace:startup', value: 'ready' }]);
+  assert.deepEqual(startup.messages.filter(item => item.channel === 'funds-trace:startup'), [{ channel: 'funds-trace:startup', value: 'ready' }]);
   assert.deepEqual(win.messages, captionMessages, 'the caption does not receive business readiness or fade commands');
   harness.ipcMain.emit('funds-trace:startup', { sender: startup.webContents, senderFrame: startup.webContents.mainFrame }, 'complete');
   await harness.flush();
@@ -665,7 +671,7 @@ test('Main preserves the same native 32 DIP caption through backend readiness an
   assert.equal(root.getURL(), rootUrl);
   assert.equal(win.fileLoads.length, 1);
   assert.deepEqual(win.contentView.children, [business]);
-  assert.deepEqual(win.messages.at(-1), { channel: 'funds-trace:titlebar-menu-enabled', value: true });
+  assert.equal(win.messages.at(-1).channel, 'funds-trace:appearance');
   assert.equal(root.focusCount, 0);
   let response;
   const backendRequest = { url: `${origin}/api/cases`, webContentsId: root.id, requestHeaders: {} };
@@ -686,7 +692,7 @@ test('caption menus target the selected native window and its separate business 
   harness.ready.resolve({ origin, token: 'main-only-test-token' }); await harness.flush();
   const primary = harness.state.windows[0], primaryBusiness = primary.businessView.webContents;
   const primaryFocus = primaryBusiness.focusCount;
-  harness.ipcMain.emit('funds-trace:titlebar', { sender: primary.webContents, senderFrame: primary.webContents.mainFrame }, 'open-menu');
+  primaryBusiness.emit('before-input-event', {preventDefault() {}}, {type:'keyDown',key:'F10'});
   const primaryMenu = harness.state.menuPopups.at(-1);
   assert.equal(primaryMenu.options.window, primary);
   assert.equal(primaryMenu.options.x, 8); assert.equal(primaryMenu.options.y, 32);
@@ -706,14 +712,14 @@ test('caption menus target the selected native window and its separate business 
   const originalPrimaryLoads = [...primary.businessView.loads];
   const originalPrimaryFocus = primaryBusiness.focusCount;
   const analysisFocus = analysisBusiness.focusCount;
-  harness.ipcMain.emit('funds-trace:titlebar', { sender: analysis.webContents, senderFrame: analysis.webContents.mainFrame }, 'open-menu');
+  analysisBusiness.emit('before-input-event', {preventDefault() {}}, {type:'keyDown',key:'F10'});
   const analysisMenu = harness.state.menuPopups.at(-1);
   assert.equal(analysisMenu.options.window, analysis);
   assert.equal(analysisBusiness.focusCount, analysisFocus + 1);
   assert.equal(primaryBusiness.focusCount, originalPrimaryFocus);
   const fileMenu = analysisMenu.template.find(item => item.label === '文件');
   fileMenu.submenu.find(item => item.label === '案件与导入').click(); await harness.flush();
-  assert.deepEqual(analysis.businessView.loads, [`${origin}/analysis?case_id=1`, `${origin}/workspace/`]);
+  assert.deepEqual(analysis.businessView.loads, [`${origin}/analysis?case_id=1`, `${origin}/?page=cases`]);
   assert.deepEqual(primary.businessView.loads, originalPrimaryLoads);
   const viewMenu = analysisMenu.template.find(item => item.label === '显示');
   viewMenu.submenu.find(item => item.label === '放大').click();
@@ -824,7 +830,7 @@ test('failed workbench initialization keeps the safe error path and stops the ow
   const win = harness.state.windows[0];
   harness.ipcMain.emit('funds-trace:workbench', { sender: win.businessView.webContents, senderFrame: win.businessView.webContents.mainFrame }, 'failed');
   await harness.flush();
-  assert.equal(harness.state.startupViews[0].messages.length, 0);
+  assert.equal(harness.state.startupViews[0].messages.filter(item => item.channel === 'funds-trace:startup').length, 0);
   assert.equal(harness.state.backendStops, 1);
   assert.equal(harness.state.errors.length, 1);
   assert.ok(!harness.state.errors[0].includes('not-in-error-message'));
@@ -840,7 +846,7 @@ test('a missing workbench signal or a stalled fade fails safely instead of silen
     timer.callback(); await harness.flush();
     assert.equal(harness.state.errors.length, 1);
     assert.equal(harness.state.backendStops, 1);
-    assert.equal(harness.state.startupViews[0].messages.length, workbenchReady ? 1 : 0);
+    assert.equal(harness.state.startupViews[0].messages.filter(item => item.channel === 'funds-trace:startup').length, workbenchReady ? 1 : 0);
     if (workbenchReady) assert.equal(harness.state.startupViews[0].destroyed, true);
     harness.state.windows[0].close(); await harness.flush();
   }
@@ -856,7 +862,7 @@ test('workbench deadline stops startup even while the document navigation remain
     try {
       assert.equal(harness.state.errors.length, 1);
       assert.equal(harness.state.backendStops, 1);
-      assert.equal(harness.state.startupViews[0].messages.length, 0);
+      assert.equal(harness.state.startupViews[0].messages.filter(item => item.channel === 'funds-trace:startup').length, 0);
       assert.equal(harness.ipcMain.listenerCount('funds-trace:workbench'), 0);
     } finally { harness.state.windows[0].close(); await harness.flush(); }
   }
@@ -920,7 +926,7 @@ test('installed update stops the owned backend before running NSIS and ordinary 
     assert.equal((await harness.state.updateRequest(event, 'download')).phase, 'ready');
     assert.ok(harness.state.windows[0].businessView.messages.some(message => message.channel === 'funds-trace:updates' && message.value.phase === 'available'));
     assert.ok(harness.state.windows[0].businessView.messages.some(message => message.channel === 'funds-trace:updates' && message.value.phase === 'ready'));
-    assert.ok(harness.state.windows[0].messages.every(message => message.channel === 'funds-trace:titlebar-menu-enabled'), 'update state never enters the local caption root');
+    assert.ok(harness.state.windows[0].messages.every(message => message.channel === 'funds-trace:appearance'), 'update state never enters the local caption root');
     if (update) await harness.state.updateRequest(event, 'install'); else harness.app.quit();
     await harness.flush(); assert.equal(harness.state.backendStops, 1); assert.deepEqual(installed, []);
     stopped.resolve(); await harness.flush();
@@ -929,4 +935,65 @@ test('installed update stops the owned backend before running NSIS and ordinary 
     if (update && !graceful) assert.ok(harness.state.errors.some(message => message.includes('本次未启动安装')));
     assert.equal(harness.state.quitCount, 1);
   }
+});
+
+test('Main applies saved appearance before startup and system changes never signal workbench readiness', async () => {
+  const value = {version:1,theme:'system',accent:'rose',translucency:true};
+  const harness = mainHarness({preferenceValues:new Map([['fund_appearance',JSON.stringify(value)]]),workbenchReady:false,completeStartup:false});
+  await harness.flush();
+  const win=harness.state.windows[0], startup=harness.state.startupViews[0];
+  assert.equal(win.options.titleBarOverlay.color,'#f4f3ef');
+  assert.equal(win.options.titleBarOverlay.symbolColor,'#292825');
+  const initial=JSON.parse(startup.options.webPreferences.additionalArguments[0].split('--funds-appearance=')[1]);
+  assert.deepEqual(initial,{...value,theme:'light'});
+  harness.nativeTheme.shouldUseDarkColors=true;harness.nativeTheme.emit('updated');
+  assert.equal(win.overlay.color,'#151d27');assert.equal(win.overlay.height,32);
+  assert.equal(startup.messages.at(-1).value.theme,'dark');
+  assert.equal(startup.messages.filter(item=>item.channel==='funds-trace:startup').length,0);
+  assert.ok(startup.messages.every(item=>Object.keys(item.value).sort().join()==='accent,theme,translucency,version'));
+  win.close();await harness.flush();
+});
+
+test('F10 retains the application menu and shared workspace navigation preserves the mounted business page', async () => {
+  const harness=mainHarness();await harness.flush();harness.ready.resolve({origin,token:'SYN_MAIN_ONLY'});await harness.flush();
+  const win=harness.state.windows[0],business=win.businessView;business.canNavigate=true;
+  business.webContents.emit('before-input-event',{preventDefault(){}},{type:'keyDown',key:'F10'});
+  const menu=harness.state.menuPopups.at(-1);assert.equal(menu.options.window,win);
+  const file=menu.template.find(item=>item.label==='文件');
+  file.submenu.find(item=>item.label==='案件与导入').click();await harness.flush();
+  file.submenu.find(item=>item.label==='资金图谱').click();await harness.flush();
+  assert.deepEqual(business.loads,[`${origin}/`]);
+  assert.match(business.scripts[0],/nav\.show\('cases'\)/);assert.match(business.scripts[1],/nav\.show\('home'\)/);
+  assert.equal(harness.ipcMain.listenerCount('funds-trace:titlebar'),0);win.close();await harness.flush();
+});
+
+test('only successful appearance commits broadcast pure snapshots to owned windows and keep geometry private', async () => {
+  const values=new Map(),harness=mainHarness({preferenceValues:values});await harness.flush();
+  harness.ready.resolve({origin,token:'SYN_MAIN_ONLY_APPEARANCE_TOKEN'});await harness.flush();
+  const win=harness.state.windows[0],business=win.businessView.webContents;
+  win.businessView.popup({url:`${origin}/analysis?case_id=1`});await harness.flush();
+  const second=harness.state.windows[1], frame=business.mainFrame;
+  const saved={version:1,theme:'system',accent:'teal',translucency:true}, raw=JSON.stringify(saved);
+  for(const event of [{sender:win.webContents,senderFrame:win.webContents.mainFrame},{sender:business,senderFrame:{url:frame.url}}]) {
+    harness.ipcMain.emit('funds-trace:preferences',event,'set','fund_appearance',raw);assert.equal(event.returnValue,null);
+  }
+  const invalid={sender:business,senderFrame:frame};
+  harness.ipcMain.emit('funds-trace:preferences',invalid,'set','fund_appearance',JSON.stringify({...saved,token:'SYN'}));assert.equal(invalid.returnValue,false);
+  assert.equal(values.has('fund_appearance'),false);
+  const event={sender:business,senderFrame:frame};
+  harness.ipcMain.emit('funds-trace:preferences',event,'set','fund_appearance',raw);assert.equal(event.returnValue,true);
+  assert.equal(values.get('fund_appearance'),raw);
+  for(const current of [win,second]) {
+    assert.equal(current.overlay.color,'#f4f3ef');assert.equal(current.overlay.symbolColor,'#292825');
+    assert.equal(current.businessView.backgroundColor,'#fcfcfb');
+    const publicValue=current.businessView.messages.filter(item=>item.channel==='funds-trace:appearance').at(-1).value;
+    assert.deepEqual(JSON.parse(publicValue.value),saved);assert.equal(publicValue.key,'fund_appearance');
+    assert.deepEqual(current.messages.at(-1).value,{...saved,theme:'light'});
+  }
+  harness.nativeTheme.shouldUseDarkColors=true;harness.nativeTheme.emit('updated');
+  assert.equal(win.overlay.color,'#151d27');assert.equal(second.messages.at(-1).value.theme,'dark');
+  assert.equal(JSON.parse(values.get('fund_appearance')).theme,'system');
+  const privateRead={sender:business,senderFrame:frame};harness.ipcMain.emit('funds-trace:preferences',privateRead,'get','fund_window_state');assert.equal(privateRead.returnValue,null);
+  assert.ok(!JSON.stringify([...win.messages,...second.messages]).includes('SYN_MAIN_ONLY_APPEARANCE_TOKEN'));
+  second.close();win.close();await harness.flush();
 });

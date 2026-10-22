@@ -1,0 +1,169 @@
+.account-workspace {
+  min-height: 100vh; padding: 24px 22px 14px; color-scheme: inherit;
+  background: var(--surface);
+}
+.account-workspace .aw-heading { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; margin-bottom: 23px; }
+.account-workspace h1 { font-size: 24px; letter-spacing: 0; font-weight: 650; }
+.account-workspace h2 { font-size: 22px; font-weight: 600; }
+.account-workspace h3 { font-size: 14px; font-weight: 500; }
+.account-workspace .aw-heading-actions { margin-left: auto; display: flex; align-items: center; gap: 21px; }
+.account-workspace .aw-case-picker { display: flex; align-items: center; gap: 18px; color: var(--muted); font-size: 14px; }
+.account-workspace .aw-case-picker select { width: 260px; background: var(--surface-input); border: 1px solid var(--border-strong); color: var(--text-primary); padding: 9px 12px; font-size: 14px; }
+.account-workspace .aw-icon { width: 18px; height: 18px; flex: 0 0 auto; filter:var(--icon-filter); }
+.account-workspace .aw-button, .account-workspace .aw-text-button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; white-space: nowrap; font-size: 14px; }
+.account-workspace .aw-button { min-height: 35px; padding: 7px 13px; border: 1px solid var(--border-strong); background: var(--surface-control); color: var(--text-primary); border-radius: 5px; }
+.account-workspace .aw-button:hover:not(:disabled) { background: var(--surface-control-hover); }
+.account-workspace .aw-button.primary { background: var(--action-fill); border-color: var(--action-fill); color: var(--action-on); }
+.account-workspace .aw-button.primary .aw-icon { filter:var(--icon-on-filter); }
+.account-workspace .aw-heading-actions > .primary { padding: 11px 18px; min-height: 43px; font-size: 14px; }
+.account-workspace .aw-text-button { border: 0; background: none; padding: 5px 0; color: var(--accent-link); }
+.account-workspace .aw-text-button .aw-icon { width: 15px; height: 15px; }
+.account-workspace .aw-button.icon-only { padding: 6px; min-height: 30px; }
+.account-workspace .danger { color: var(--state-danger); }
+.account-workspace .aw-error, .account-workspace .aw-unknown { margin: 0 0 15px; border: 1px solid var(--state-danger-border); border-radius: 5px; background: var(--state-danger-surface); padding: 13px 16px; color: var(--text-primary); font-size: 14px; }
+.account-workspace .aw-unknown { background: var(--state-warning-surface); border-color: var(--state-warning-border); color: var(--state-warning); }
+.account-workspace .aw-unknown p { margin: 5px 0 9px; }
+.account-workspace .aw-unknown > div { display: flex; align-items: center; gap: 17px; flex-wrap: wrap; padding: 4px 0; }
+.account-workspace .aw-status, .account-workspace .aw-draft-note { margin: 0 0 15px; color: var(--text-primary); font-size: 14px; }
+.account-workspace .aw-draft-note { color: var(--state-warning); }
+.account-workspace .aw-draft-note .aw-text-button { margin-left: 12px; font-size: 12px; }
+.account-workspace .aw-columns { display: grid; grid-template-columns: minmax(0, 61fr) minmax(430px, 39fr); align-items: start; gap: 17px; }
+.account-workspace .aw-list, .account-workspace .aw-profile { min-width: 0; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-raised); overflow: hidden; }
+.account-workspace .aw-list { display: flex; flex-direction: column; min-height: calc(100vh - 135px); }
+.account-workspace .aw-list-toolbar { display: flex; align-items: center; gap: 16px; justify-content: space-between; margin: 0 17px; border-bottom: 1px solid var(--border-strong); min-height: 59px; }
+.account-workspace .aw-tabs { display: flex; align-self: stretch; gap: 22px; }
+.account-workspace .aw-tabs button { position: relative; padding: 0 7px; font-size: 14px; white-space: nowrap; border: 0; background: transparent; color: var(--muted); }
+.account-workspace .aw-tabs button[aria-selected=true] { color: var(--text-primary); font-weight: 600; }
+.account-workspace .aw-tabs button[aria-selected=true]::after { position: absolute; content: ''; bottom: -1px; left: 0; right: 0; height: 3px; border-radius: 2px; background: var(--accent); }
+.account-workspace .aw-search { display: flex; align-items: center; gap: 11px; padding: 18px 17px; }
+.account-workspace .aw-search label { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; background: var(--surface-raised); border: 1px solid var(--border-strong); padding: 0 11px; border-radius: 5px; }
+.account-workspace .aw-search input { width: 100%; padding: 10px 0; background: none; border: 0; color: var(--text-primary); font-size: 14px; outline-offset: 3px; }
+.account-workspace .aw-search input::placeholder, .account-workspace .aw-identity-editor input::placeholder { color: var(--text-subtle); }
+.account-workspace .aw-table-scroll { flex: 1; min-height: 350px; overflow-x: auto; }
+.account-workspace .aw-account-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 14px; }
+.account-workspace .aw-account-table th { color: var(--muted); font-size: 12px; font-weight: 500; padding: 11px 15px; background: var(--surface-table-header); border-block: 1px solid var(--border-strong); white-space: nowrap; }
+.account-workspace .aw-account-table th:first-child { width: 41%; padding-left: 25px; }
+.account-workspace .aw-account-table th:nth-child(2) { width: 29%; }
+.account-workspace .aw-account-table th:nth-child(3) { width: 20%; }
+.account-workspace .aw-account-table td { padding: 9px 15px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.account-workspace .aw-account-table tr.selected { background: var(--selection-surface); box-shadow: inset 3px 0 var(--accent); }
+.account-workspace .aw-account-table tbody tr:hover { background: var(--surface-control-hover); }
+.account-workspace .aw-account-table td small { display: block; font-size: 12px; color: var(--muted); margin-top: 5px; }
+.account-workspace .aw-account-select { display: flex; align-items: center; gap: 15px; padding: 0; border: 0; background: none; color: var(--text-primary); width: 100%; text-align: left; min-width: 0; }
+.account-workspace .aw-account-select > span { min-width: 0; }
+.account-workspace .aw-account-select strong { display: block; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.account-workspace .aw-account-select small { font-size: 12px; overflow-wrap: anywhere; }
+.account-workspace .aw-main-label { white-space: nowrap; font-size: 12px; }
+.account-workspace .aw-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; padding: 13px 17px; gap: 12px; color: var(--muted); font-size: 12px; }
+.account-workspace .aw-pagination > div { display: flex; align-items: center; gap: 14px; }
+.account-workspace .aw-empty { min-height: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 26px; color: var(--muted); font-size: 14px; text-align: center; }
+.account-workspace .aw-empty h2 { font-size: 15px; }
+.account-workspace .aw-profile { position: sticky; top: 16px; padding: 19px 18px 20px; max-height: calc(100vh - 115px); overflow-y: auto; scrollbar-width: thin; }
+.account-workspace .aw-profile > h2 { margin-bottom: 22px; }
+.account-workspace .aw-profile-identity { display: grid; gap: 13px; margin: 0; }
+.account-workspace .aw-profile-identity > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 13px; align-items: baseline; }
+.account-workspace .aw-profile dt { color: var(--muted); font-size: 14px; }
+.account-workspace .aw-profile-identity dd { margin: 0; color: var(--text-primary); font-size: 22px; font-weight: 600; overflow-wrap: anywhere; }
+.account-workspace .aw-profile-identity dd.mono { font-size: 20px; }
+.account-workspace .aw-profile-account { display: flex; gap: 10px; align-items: center; }
+.account-workspace .aw-profile-account > span { min-width: 0; overflow-wrap: anywhere; }
+.account-workspace .aw-profile-account > button { flex: 0 0 auto; padding: 5px; }
+.account-workspace .aw-profile-scope { margin-top: 12px; font-size: 12px; color: var(--muted); }
+.account-workspace .aw-photo-section, .account-workspace .aw-identity-editor, .account-workspace .aw-main-section, .account-workspace .aw-transactions { border-top: 1px solid var(--border-strong); margin-top: 19px; padding-top: 19px; }
+.account-workspace .aw-photo-section h3 { margin-bottom: 13px; color: var(--text-primary); }
+.account-workspace .aw-photo-controls { display: flex; gap: 16px; align-items: center; }
+.account-workspace .aw-photo { flex: 0 0 110px; width: 110px; height: 110px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; border: 1px dashed var(--border-strong); border-radius: 4px; color: var(--muted); font-size: 12px; background: var(--surface-raised); overflow: hidden; }
+.account-workspace .aw-photo > img:not(.aw-icon) { width: 100%; height: 100%; object-fit: contain; }
+.account-workspace .aw-photo > .aw-icon { width: 36px; height: 36px; }
+.account-workspace .aw-photo-controls > div:last-child { min-width: 0; }
+.account-workspace .aw-photo-controls p { color: var(--muted); font-size: 12px; line-height: 1.75; margin-bottom: 11px; }
+.account-workspace .aw-file-label { cursor: pointer; position: relative; overflow: hidden; }
+.account-workspace .aw-file-label input { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); }
+.account-workspace .aw-file-label:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.account-workspace .aw-file-label.disabled { opacity: .45; cursor: default; }
+.account-workspace .aw-photo-secondary { display: flex; gap: 15px; flex-wrap: wrap; margin-top: 7px; }
+.account-workspace .aw-photo-secondary button { font-size: 12px; }
+.account-workspace .aw-photo-section { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 12px; align-items: start; }
+.account-workspace .aw-photo-section h3 { margin: 4px 0 0; }
+.account-workspace .aw-identity-editor { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 0 12px; align-items: center; }
+.account-workspace .aw-identity-editor > h3 { grid-column: 1; }
+.account-workspace .aw-identity-editor > div, .account-workspace .aw-identity-editor > p, .account-workspace .aw-identity-editor > button { grid-column: 2; }
+.account-workspace .aw-identity-editor > button { justify-self: start; }
+.account-workspace .aw-identity-editor > div { display: flex; gap: 9px; align-items: center; margin-top: 0; }
+.account-workspace .aw-identity-editor input { padding: 9px 11px; width: 100%; background: var(--surface-input); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text-primary); font-size: 14px; min-width: 0; }
+.account-workspace .aw-editor-note { font-size: 12px; color: var(--muted); margin-top: 9px; line-height: 1.7; }
+.account-workspace .aw-editor-note .aw-text-button { font-size: 12px; margin-left: 7px; }
+.account-workspace .aw-identity-editor > .aw-text-button { font-size: 12px; margin-top: 6px; }
+.account-workspace .aw-main-section { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.account-workspace .aw-main-section h3 { margin-bottom: 11px; }
+.account-workspace .aw-main-badge { display: inline-block; font-size: 12px; background: var(--surface-raised); padding: 4px 9px; border-radius: 12px; color: var(--text-primary); }
+.account-workspace .aw-main-badge.active { color: var(--state-success); background: var(--state-success-surface); }
+.account-workspace .aw-main-section p { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.account-workspace .aw-main-buttons { display: flex; align-items: end; gap: 8px; flex-direction: column; flex: 0 0 auto; }
+.account-workspace .aw-main-buttons .aw-button { font-size: 12px; padding: 6px 9px; }
+.account-workspace .aw-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.account-workspace .aw-section-heading h3 { font-size: 18px; font-weight: 600; }
+.account-workspace .aw-section-heading .aw-text-button { font-size: 12px; }
+.account-workspace .aw-transactions dl { margin: 11px 0 0; }
+.account-workspace .aw-transactions dl > div { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 1.35fr); gap: 9px; padding: 7px 5px; border-block-start: 1px solid var(--border); }
+.account-workspace .aw-transactions dt { font-size: 12px; }
+.account-workspace .aw-transactions dd { margin: 0; font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; color: var(--text-primary); }
+.account-workspace .aw-counterparties { margin-top: 14px; color: var(--muted); font-size: 12px; }
+.account-workspace .aw-counterparties summary { cursor: pointer; }
+.account-workspace .aw-counterparties > div { display: grid; gap: 4px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.account-workspace .aw-counterparties strong { font-size: 14px; font-weight: 500; }
+.account-workspace .aw-counterparties small { color: var(--muted); }
+.account-workspace .aw-footnote { margin-top: 12px; color: var(--muted); font-size: 12px; }
+.account-workspace .modal { color: var(--text-primary); background: var(--surface-raised); border: 1px solid var(--border-strong); box-shadow: 0 20px 90px var(--shadow-color); }
+.account-workspace .modal::backdrop { background: var(--overlay-scrim); }
+.account-workspace .modal-heading, .account-workspace .modal-footer { border-color: var(--border-strong); background: var(--surface-raised); }
+.account-workspace .aw-confirm { padding: 23px 25px 0; font-size: 14px; color: var(--text-primary); }
+.account-workspace .aw-confirm p + p { margin-top: 12px; font-size: 14px; }
+.account-workspace .aw-crop { padding: 21px 25px 0; font-size: 14px; }
+.account-workspace .aw-crop > p { color: var(--text-primary); margin-bottom: 14px; }
+.account-workspace .aw-crop-image { position: relative; max-width: 100%; margin: 0 auto 21px; overflow: hidden; background: var(--surface); }
+.account-workspace .aw-crop-image > img { display: block; width: 100%; height: auto; }
+.account-workspace .aw-crop-circle { position: absolute; display: block; aspect-ratio: 1; border: 2px solid #82b4ff; border-radius: 50%; box-shadow: 0 0 0 1000px #04091188; transform: translate(-50%, -50%); pointer-events: none; }
+.account-workspace .aw-crop > label { display: grid; grid-template-columns: 65px minmax(0, 1fr) 42px; align-items: center; gap: 10px; margin-top: 12px; color: var(--text-primary); font-size: 12px; }
+.account-workspace .aw-crop input[type=range] { width: 100%; accent-color: var(--accent); }
+
+/* The list is the paper surface; the profile reads as a quieter adjacent area. */
+html[data-ft-theme="light"] .account-workspace { background: var(--surface-base); }
+html[data-ft-theme="light"] .account-workspace .aw-profile { background: var(--surface); border-color: transparent; }
+html[data-ft-theme="light"] .account-workspace :is(.aw-list-toolbar, .aw-account-table th, .aw-photo-section, .aw-identity-editor, .aw-main-section, .aw-transactions, .modal-heading, .modal-footer) { border-color: var(--border); }
+html[data-ft-theme="light"] .account-workspace .aw-photo { background: var(--surface-base); border-color: var(--border); }
+html[data-ft-theme="light"] .account-workspace .aw-main-badge:not(.active) { background: var(--surface-control); }
+.account-workspace .aw-account-table tr.selected:hover { background: var(--selection-surface); }
+.account-workspace :is(.aw-button, .aw-text-button, .aw-tabs button):not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) { transition: background-color 120ms var(--interaction-ease, ease), border-color 120ms var(--interaction-ease, ease), color 120ms var(--interaction-ease, ease); }
+.account-workspace .aw-tabs button:hover:not([aria-selected=true]) { color: var(--text-primary); }
+@media (prefers-reduced-motion: reduce) {
+  .account-workspace :is(.aw-button, .aw-text-button, .aw-tabs button):not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) { transition: none; }
+}
+@media (max-width: 1250px) {
+  .account-workspace .aw-photo-section, .account-workspace .aw-identity-editor { grid-template-columns: 70px minmax(0, 1fr); }
+  .account-workspace .aw-columns { grid-template-columns: minmax(0, 1.35fr) minmax(360px, 1fr); }
+  .account-workspace .aw-list-toolbar { gap: 9px; flex-wrap: wrap; padding: 11px 0 0; }
+  .account-workspace .aw-tabs { min-height: 40px; gap: 10px; }
+  .account-workspace .aw-list-toolbar > .aw-button { margin-bottom: 10px; }
+  .account-workspace .aw-photo-controls { gap: 11px; }
+  .account-workspace .aw-photo { width: 90px; height: 100px; flex-basis: 90px; }
+}
+@media (max-width: 930px) {
+  .account-workspace { padding: 20px 17px; }
+  .account-workspace .aw-columns { grid-template-columns: minmax(0, 1fr); }
+  .account-workspace .aw-profile { position: static; max-height: none; }
+  .account-workspace .aw-list { min-height: 380px; }
+  .account-workspace .aw-table-scroll { min-height: 240px; }
+  .account-workspace .aw-heading { gap: 15px; }
+  .account-workspace .aw-heading-actions { margin-left: 0; }
+}
+@media (max-width: 580px) {
+  .account-workspace .aw-case-picker { flex-wrap: wrap; gap: 9px; }
+  .account-workspace .aw-photo-section, .account-workspace .aw-identity-editor { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .account-workspace .aw-identity-editor > div, .account-workspace .aw-identity-editor > p, .account-workspace .aw-identity-editor > button { grid-column: 1; }
+  .account-workspace .aw-case-picker select { max-width: 100%; }
+  .account-workspace .aw-heading-actions { flex-wrap: wrap; gap: 12px; }
+  .account-workspace .aw-account-table { min-width: 610px; }
+  .account-workspace .aw-tabs { gap: 5px; }
+  .account-workspace .aw-tabs button { padding-inline: 3px; font-size: 14px; }
+}

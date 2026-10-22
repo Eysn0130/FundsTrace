@@ -1,7 +1,7 @@
 import type { Case, CaseList, CaseStats, FlowPage, ImportPreview, ImportJob, CommitRequest, RepreviewRequest, ImportSessionList, FlowSourceList, CleanupResult } from '../../../contracts/api-v1';
 
 export class ApiError extends Error {
-  constructor(public code: string, message: string) { super(message); }
+  constructor(public code: string, message: string, public status?: number) { super(message); }
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -12,7 +12,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError('network_error', '无法连接本地服务，请检查服务是否运行。');
   }
   const payload = await response.json().catch(() => null);
-  if (!response.ok) throw new ApiError(payload?.error?.code || 'request_failed', payload?.error?.message || '请求失败，请重试。');
+  if (!response.ok) throw new ApiError(payload?.error?.code || 'request_failed', payload?.error?.message || '请求失败，请重试。', response.status);
   return payload as T;
 }
 

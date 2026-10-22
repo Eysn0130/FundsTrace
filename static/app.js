@@ -321,6 +321,7 @@ function updateHeader() {
   }
   exportWorkspace?.refresh();
   caseWorkspace?.refresh();
+  window.FundsAppNavigation?.sync();
 }
 
 /* ---------------- 流水查询（当前案件） ---------------- */
@@ -337,6 +338,7 @@ function searchParams(page) {
     p.tracked = 1;
     p.canvas_id = state.canvasId || 0;
   }
+  if ($('#fAccount')?.dataset?.exactAccount && $('#fAccount').dataset.exactAccount === p.account) p.account_exact = 1;
   Object.keys(p).forEach(k => { if (p[k] === '' || p[k] == null) delete p[k]; });
   return new URLSearchParams(p);
 }
@@ -2187,14 +2189,16 @@ async function loadCanvas(id) {
   await loadGraph();
   if (!isCurrentCase(activated)) return;
   applyCanvasSnapshot(r.snapshot);
+  window.FundsWorkspaceSession?.restore();
   state.canvasName = r.name;
   toast(`已调阅画布「${r.name}」（如需继续编辑，记得点「保存」）`);
 }
 
+function externalImportPending(context = caseContext()) { return !!window.FundsImportWorkflow?.externalStatus?.(context)?.length; }
 function bindCanvases() {
   let missingCanvasId = null;
   const named = () => !!state.canvasId;
-  const ready = () => !!state.caseId && state.canvasId !== missingCanvasId && !layoutJob && !state.graphLoading
+  const ready = () => !externalImportPending() && !window.FundsAccountActions?.blocked(caseContext()) && !!state.caseId && state.canvasId !== missingCanvasId && !layoutJob && !state.graphLoading
     && !window.FundsMainAccountsActions?.blocked(caseContext())
     && !window.FundsCanvasEditor?.history?.status?.().busy && !cancelAnnotationDrag
     && !state.graphSelection?.status?.().dragging;
@@ -2221,7 +2225,7 @@ function bindCanvases() {
     }
     // Keep the menu trigger usable so an uncertain result can be reconciled.
     $('#btnCanvasActions').setAttribute('aria-busy', 'false');
-    $('#canvasSel').disabled = status.pending;
+    $('#canvasSel').disabled = status.pending || !!window.FundsAccountActions?.blocked(caseContext());
   };
   const actions = window.FundsCanvasWorkspace.create({
     context: caseContext, isCurrent: isCurrentCase, readName: () => state.canvasName,
@@ -2254,6 +2258,7 @@ function bindCanvases() {
       }
       const id = action === 'delete' ? 0 : result.canvas_id;
       activateCanvas(id);
+      if (action === 'delete') window.FundsWorkspaceSession?.removeCanvas(context.caseId, context.canvasId);
       const activated = caseContext();
       state.canvasName = action === 'delete' ? '' : result.name;
       try {
@@ -2262,6 +2267,7 @@ function bindCanvases() {
         await loadGraph(true, activated);
         if (!isCurrentCase(activated)) return;
         if (action === 'clone') applyCanvasSnapshot(snapshot);
+        if (action === 'delete') { window.FundsWorkspaceSession?.restore(); await doSearch(state.search.page || 1); }
         toast(action === 'delete' ? '画布已删除，原始流水已保留' : action === 'new' ? '空白画布已创建' : '已另存为新画布，源画布已保留');
       } catch (_) {
         if (isCurrentCase(activated)) toast('画布操作已完成，部分数据未刷新，请重新调阅画布', 'err');
@@ -2281,9 +2287,9 @@ function bindCanvases() {
   $('#canvasSel').onchange = async event => {
     const context = caseContext(), v = Number(event.target.value) || 0;
     event.target.value = String(state.canvasId);
-    if (v === state.canvasId || actions.status().pending) return;
+    if (v === state.canvasId || actions.status().pending || externalImportPending(context) || window.FundsAccountActions?.blocked(context)) return;
     if (hasNodeDrafts() && !await leaveNodeDrafts()) return;
-    if (!isCurrentCase(context)) return;
+    if (!isCurrentCase(context) || actions.status().pending || externalImportPending(context)) return;
     missingCanvasId = null;
     event.target.value = String(v);
     activateCanvas(v);
@@ -2300,6 +2306,8 @@ function bindCanvases() {
       await loadGraph(true, activated);
       if (!isCurrentCase(activated)) return;
       if (snapshot) applyCanvasSnapshot(snapshot);
+      window.FundsWorkspaceSession?.restore();
+      await doSearch(state.search.page || 1);
       await applyPendingFocusEdge();
     } catch (_) { if (isCurrentCase(activated)) toast('画布未能载入，请重新调阅', 'err'); }
     finally { actions.sync(); }
@@ -2311,6 +2319,7 @@ function bindCanvases() {
     }
   });
   window.addEventListener('funds:graph-metric', () => actions.sync());
+  window.addEventListener('funds:import-state', () => actions.sync());
   actions.sync();
 }
 
@@ -3385,7 +3394,7 @@ function closeDrawer(clearSelection = true, { keepSelection = false } = {}) {
 
 /* ---------------- 账户资料与照片裁剪 ---------------- */
 let nodeWorkspace = null, nodeConfirmation = null;
-const nodeDrafts = new Map(), nodeWrites = new Map();
+const nodeDrafts = new Map(), nodeWrites = new Map(), retainedNodeInputs = new Map();
 // Unlike drawer-local writes, these leases survive canvas/case revocation.
 const accountDataWrites = new Set();
 const pcState = { file: null, account: null, item: null, binding: null, objectUrl: null, cx: .5, cy: .5, r: .4 };
@@ -3445,7 +3454,7 @@ function disposeNodeWorkspace() {
   workspace.closed = true; workspace.scroll?.destroy(); nodeWorkspace = null;
 }
 function resetNodeWorkspace() {
-  disposeNodeWorkspace(); nodeDrafts.clear(); nodeWrites.clear();
+  disposeNodeWorkspace(); nodeDrafts.clear(); nodeWrites.clear(); retainedNodeInputs.clear();
   if ($('#nodeConfirm')?.open) $('#nodeConfirm').close('cancel');
 }
 async function nodeWorkspaceRequest(path, options = {}) {
@@ -3454,6 +3463,8 @@ async function nodeWorkspaceRequest(path, options = {}) {
   if (writing) {
     const body = typeof options.body === 'string' ? JSON.parse(options.body) : options.body;
     const caseId = body?.case_id ?? body?.get?.('case_id') ?? state.caseId;
+    if (window.FundsImportWorkflow && !await window.FundsImportWorkflow.canWrite({caseId})) throw new Error('流水导入尚未结束，请先核对');
+    if (window.FundsAccountActions?.blocked({ caseId })) throw new Error('账户操作尚未确认，请先在账户与身份页面核对');
     if (window.FundsDataToolsActions?.blocked({ caseId })) throw new Error('本案件资料正在批量更新，请稍后保存');
     if (window.FundsMainAccountsActions?.blocked({ caseId })) throw new Error('主账号标记正在更新，请稍后保存');
     lease = { caseId }; accountDataWrites.add(lease);
@@ -3495,13 +3506,14 @@ function hasNodeDrafts() {
 }
 async function leaveNodeDrafts() {
   if (!hasNodeDrafts()) return true;
+  if (window.FundsWorkspaceSession) { window.FundsWorkspaceSession.capture(); return true; }
   const context = caseContext();
   return await confirmNodeAction({ title: '离开账户资料？', message: '尚有未保存的账户资料。离开当前案件或画布后将放弃这些修改。', accept: '放弃修改', cancel: '继续编辑' }) && isCurrentCase(context);
 }
 function syncNodeWorkspaceControls(workspace = nodeWorkspace) {
   if (!nodeWorkspaceIsCurrent(workspace) || !workspace.draft) return;
   const pending = (nodeWrites.size > 0), crop = pcState.binding && isCurrentCase(pcState.binding.context);
-  const bulk = !!window.FundsDataToolsActions?.blocked(workspace.context) || !!window.FundsMainAccountsActions?.blocked(workspace.context);
+  const bulk = !!window.FundsAccountActions?.blocked(workspace.context) || !!window.FundsDataToolsActions?.blocked(workspace.context) || !!window.FundsMainAccountsActions?.blocked(workspace.context);
   const busy = workspace.phase !== 'ready' || pending || !!crop || workspace.confirming || bulk;
   for (const button of $('#drawerBody').querySelectorAll('[data-node-action]')) button.disabled = !!busy;
   for (const id of ['#ndIdInput', '#ndFocusScale', '#ndPhotoFile']) if ($(id)) $(id).disabled = !!busy;
@@ -3532,6 +3544,8 @@ function renderNodeWorkspace(workspace) {
   let draft = nodeDrafts.get(workspace.key);
   if (!draft) {
     draft = { idValue: node.id_no || '', idBase: node.id_no || '', focusValue: scale, focusBase: scale, status: '' };
+    const retained = retainedNodeInputs.get(account);
+    if (retained) { draft.idValue = retained.idValue; draft.focusValue = retained.focusValue; retainedNodeInputs.delete(account); }
     nodeDrafts.set(workspace.key, draft);
   } else {
     if (draft.idValue.trim() === draft.idBase) draft.idValue = draft.idBase = node.id_no || '';
@@ -3604,6 +3618,7 @@ async function showNodeDrawer(account, item) {
   await loadNodeWorkspace(workspace);
 }
 async function writeNodeWorkspace(workspace, kind) {
+  if (window.FundsAccountActions?.blocked(workspace?.context)) return;
   if (window.FundsDataToolsActions?.blocked(workspace?.context)) return;
   if (window.FundsMainAccountsActions?.blocked(workspace?.context)) return;
   if (!nodeWorkspaceIsCurrent(workspace) || workspace.phase !== 'ready' || (nodeWrites.size > 0) || pcState.binding || workspace.confirming) return;
@@ -3757,7 +3772,7 @@ function bindPhotoCrop() {
       if (binding && pcState.binding === binding) { $('#pcStatus').textContent = '图谱已更新，请重新打开照片裁剪。'; $('#pcConfirm').disabled = true; }
       return;
     }
-    if (binding.busy || (nodeWrites.size > 0) || window.FundsMainAccountsActions?.blocked(binding.context)) return;
+    if (binding.busy || (nodeWrites.size > 0) || window.FundsMainAccountsActions?.blocked(binding.context) || window.FundsAccountActions?.blocked(binding.context)) return;
     const operation = { kind: 'photo' }; binding.busy = true; nodeWrites.set(binding.key, operation);
     $('#pcClose').disabled = true; $('#pcConfirm').disabled = true; $('#pcConfirm').textContent = '正在上传…'; $('#pcZoom').disabled = true;
     $('#photoCropModal').setAttribute('aria-busy', 'true'); $('#pcStatus').textContent = '正在上传照片…'; syncNodeWorkspaceControls();
@@ -4375,7 +4390,8 @@ function openBatchMenu(trigger, batch, context) {
 }
 
 async function deleteBatch(batch, context) {
-  if (window.FundsMainAccountsActions?.blocked(context)) return;
+  if (window.FundsImportWorkflow && !await window.FundsImportWorkflow.canWrite(context)) return;
+  if (window.FundsMainAccountsActions?.blocked(context) || window.FundsAccountActions?.blocked(context)) return;
   if (!batchCurrent(context) || batchView.deleting || !batchView.rows.some(row => String(row.id) === String(batch.id))) return;
   const trigger = batchView.menu?.trigger;
   closeBatchMenu(true);
@@ -4385,7 +4401,7 @@ async function deleteBatch(batch, context) {
   let deleted = false;
   try {
     const accepted = await confirm(`删除批次「${batch.filename}」？\n\n将移除该批次的 ${fmtCount(batch.rows_imported ?? 0)} 笔流水及对应的图谱引用。此操作无法撤销。`);
-    if (!current() || !accepted || window.FundsMainAccountsActions?.blocked(context)) return;
+    if (!current() || !accepted || window.FundsMainAccountsActions?.blocked(context) || window.FundsAccountActions?.blocked(context)) return;
     showBatchFeedback('正在删除批次…');
     await batchRequest(`/api/batches/${encodeURIComponent(batch.id)}?case_id=${encodeURIComponent(context.caseId)}`, { method: 'DELETE' });
     if (!current()) return;
@@ -4394,7 +4410,7 @@ async function deleteBatch(batch, context) {
     batchView.rows = batchView.rows.filter(row => String(row.id) !== String(batch.id));
     batchView.phase = batchView.rows.length ? 'ready' : 'empty'; renderBatchRows(context);
     toast('批次已删除');
-    try { await refreshAll(); }
+    try { if(window.FundsAppNavigation) await window.FundsAppNavigation.dataChanged(); else await refreshAll(); }
     catch (_) {
       if (current()) showBatchFeedback('批次已删除，工作区刷新未完成。', async () => {
         try { await refreshAll(); }
@@ -4464,6 +4480,7 @@ function installExportWorkspace(options) {
   const count = value => fmtCount(Math.max(0, Number(value) || 0));
   function blocker(scope) {
     if (!context?.caseId) return '请先选择案件';
+    if (window.FundsAccountActions?.blocked(context)) return '账户操作尚未确认，请先核对后再导出';
     if (window.FundsMainAccountsActions?.blocked(context)) return '主账号标记更新尚未结束，请先完成或核对';
     if (format === 'xlsx') return scope.trackedFlows > 0 ? '' : '当前画布暂无追踪流水';
     if (scope.pendingLayout) return '布局计算中，完成后可导出图谱';
@@ -4589,25 +4606,42 @@ async function refreshManagedCases() {
   sel.innerHTML = cases.map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('');
   // Refresh the list without selecting a case or resetting any in-progress edits.
   sel.value = String(state.caseId);
+  window.FundsAppNavigation?.sync(true);
   return cases;
 }
 
 async function openManagedCase(id, context, options = {}) {
   if (!isCurrentCase(context)) return false;
+  if (window.FundsImportWorkflow && !await window.FundsImportWorkflow.canWrite(context)) { toast('流水导入尚未结束，请先在案件与导入核对', 'err'); return false; }
+  if (window.FundsAccountActions?.blocked(context)) { toast('账户操作尚未确认，请先在账户与身份页面核对', 'err'); return false; }
   if (window.FundsDataToolsActions?.blocked(context)) { toast('本案件资料更新尚未确认，请先完成数据工具中的操作', 'err'); return false; }
   if (window.FundsMainAccountsActions?.blocked(context)) { toast('主账号标记尚未确认，请先在主账号管理中核对', 'err'); return false; }
   if (!options.discardApproved && hasNodeDrafts() && !await leaveNodeDrafts()) return false;
   if (!isCurrentCase(context)) return false;
+  if ([...accountDataWrites].some(write => String(write.caseId) === String(context.caseId)) || nodeWrites.size || pcState.binding || window.FundsCanvasEditor?.history?.status?.().busy) { toast('当前编辑正在保存，请稍后切换案件', 'err'); return false; }
+  if (window.FundsCanvasActions?.blocked()) { toast('画布操作尚未确认，请先在画布管理中核对', 'err'); return false; }
+  if (String(id) === String(state.caseId)) return true;
   selectCase(id);
+  if (options.discardApproved && !state.cases.some(item => String(item.id) === String(context.caseId))) window.FundsWorkspaceSession?.removeCase(context.caseId);
   const opened = caseContext();
   try {
     await refreshStats();
     if (!isCurrentCase(opened)) return true;
-    await refreshCanvasList(null);
-    if (!isCurrentCase(opened)) return true;
-    await loadGraph();
-    if (!isCurrentCase(opened)) return true;
-    await doSearch(1);
+    const retainedCanvas = window.FundsWorkspaceSession?.lastCanvas(id);
+    await refreshCanvasList(retainedCanvas);
+    const canvasBinding = caseContext();
+    if (!isCurrentCase(opened, false)) return true;
+    let snapshot = null;
+    if (state.canvasId) {
+      const saved = await caseRequest(`/api/canvases/${state.canvasId}?case_id=${state.caseId}`);
+      if (!isCurrentCase(canvasBinding)) return true;
+      snapshot = saved.snapshot;
+    }
+    await loadGraph(true, canvasBinding);
+    if (!isCurrentCase(canvasBinding)) return true;
+    if (snapshot) applyCanvasSnapshot(snapshot);
+    window.FundsWorkspaceSession?.restore();
+    await doSearch(state.search.page || 1);
     if (isCurrentCase(opened) && $('#tab-batches').style.display === 'flex') await loadBatches();
   } catch (_) { if (isCurrentCase(opened)) toast('案件已打开，部分数据加载失败，请刷新后重试', 'err'); }
   return true;
@@ -4615,7 +4649,7 @@ async function openManagedCase(id, context, options = {}) {
 
 function installCaseWorkspace() {
   return window.FundsCaseWorkspace.create({
-    document, context: caseContext, isCurrent: isCurrentCase,
+    document, context: caseContext, isCurrent: isCurrentCase, autoOpenCreated: true,
     readSummary: () => ({ name: state.cases.find(item => item.id === state.caseId)?.name || String(state.caseId || '未选择'),
       canvasName: state.canvasName || '默认画布', flows: state.stats.flows || 0,
       accounts: state.stats.accounts || 0, defaultCase: state.caseId === 1 }),
@@ -4624,11 +4658,15 @@ function installCaseWorkspace() {
     createCase: name => caseRequest('/api/cases', { method: 'POST', ...jsonOpts({ name }) }),
     importCase: file => { const data = new FormData(); data.append('file', file);
       return caseRequest('/api/cases/import', { method: 'POST', body: data }); },
-    deleteCase: id => {
+    deleteCase: async id => {
+      if (window.FundsImportWorkflow && !await window.FundsImportWorkflow.canWrite({caseId:id})) throw new Error('流水导入尚未结束，请先核对');
+      if (window.FundsAccountActions?.blocked({caseId:id})) throw new Error('账户操作尚未确认，请先核对后再删除案件');
       if (window.FundsMainAccountsActions?.blocked({ caseId: id })) throw new Error('主账号标记正在更新，请稍后删除案件');
-      return caseRequest(`/api/cases/${id}`, { method: 'DELETE' });
+      return caseRequest(`/api/cases/${id}`, { method: 'DELETE' }).then(result => { window.FundsWorkspaceSession?.removeCase(id); return result; });
     },
     exportCase: async id => {
+      if (window.FundsImportWorkflow && !await window.FundsImportWorkflow.canWrite({caseId:id})) throw new Error('流水导入尚未结束，请先核对');
+      if (window.FundsAccountActions?.blocked({caseId:id})) throw new Error('账户操作尚未确认，请先核对后再导出');
       if (window.FundsDataToolsActions?.blocked({ caseId: id })) throw new Error('本案件资料正在更新，请稍后导出');
       if (window.FundsMainAccountsActions?.blocked({ caseId: id })) throw new Error('主账号标记正在更新，请稍后导出');
       return { blob: await caseRequest(`/api/cases/${id}/export`, {}, true), filename: `案件包_${id}.fundcase` };
@@ -4654,6 +4692,7 @@ function installCaseWorkspace() {
     }),
     openCase: openManagedCase,
     canLeave: async context => {
+      if (window.FundsImportWorkflow && !await window.FundsImportWorkflow.canWrite(context)) throw new Error('流水导入尚未结束，请先核对');
       if (window.FundsDataToolsActions?.blocked(context)) throw new Error('本案件资料更新尚未确认，请先完成数据工具中的操作');
       if (window.FundsMainAccountsActions?.blocked(context)) throw new Error('主账号标记尚未确认，请先在主账号管理中核对');
       return isCurrentCase(context) && (!hasNodeDrafts() || await leaveNodeDrafts()) && isCurrentCase(context);
@@ -4692,6 +4731,7 @@ async function refreshAccountIdentity(context, authoritativeRows = null) {
   }
   rebuildGraphViewport(); applyGraphLabels(); state.graphSelection?.refresh();
   syncNodeWorkspaceControls();
+  window.FundsAppNavigation?.accountsChanged();
 }
 
 async function refreshMainAccountRoles(context, rows) {
@@ -4749,6 +4789,7 @@ async function refreshMainAccountRoles(context, rows) {
   }
   if (edgeDetail) edgeDetail.revision = view.revision;
   updateGraphViewStatus(); syncNodeWorkspaceControls();
+  window.FundsAppNavigation?.accountsChanged();
 }
 
 function installMainAccounts() {
@@ -4756,6 +4797,7 @@ function installMainAccounts() {
     if (!context.caseId || !isCurrentCase(context, false)) return '请先选择案件';
     if (window.FundsDataToolsActions?.blocked(context)) return '数据工具操作尚未结束，请先完成或核对';
     const cases = caseWorkspace?.status(), canvas = window.FundsCanvasActions?.status(), exported = exportWorkspace?.status();
+    if (externalImportPending(context)) return '流水导入尚未结束，请先核对';
     if (cases?.pending || cases?.phase === 'unknown' || canvas?.pending || canvas?.unknown || exported?.pending) return '案件或画布正在处理，请稍后操作';
     if ([...accountDataWrites].some(write => String(write.caseId) === String(context.caseId)) || nodeWrites.size || pcState.binding || nodeConfirmation || nodeWorkspace?.confirming) return '账户资料正在处理，请稍后操作';
     if (['loading','removing'].includes(nodeWorkspace?.phase) || batchView.deleting) return '案件资料正在处理，请稍后操作';
@@ -4810,6 +4852,7 @@ function installDataTools() {
   };
   const ready = (_action, context) => isCurrentCase(context, false) && !caseBusy(context)
     && !window.FundsMainAccountsActions?.blocked(context)
+    && !externalImportPending(context)
     && ![...accountDataWrites].some(write => String(write.caseId) === String(context.caseId))
     && !nodeWrites.size && !pcState.binding && !nodeConfirmation && !nodeWorkspace?.confirming
     && nodeWorkspace?.phase !== 'removing' && !layoutJob && !state.graphLoading
@@ -4847,7 +4890,7 @@ function installDataTools() {
       await refreshStats();
       if (!isCurrentCase(context, false)) return;
       await doSearch(state.search.page || 1);
-      if (isCurrentCase(context, false)) await loadBatches();
+      if (isCurrentCase(context, false)) { await loadBatches(); await window.FundsAppNavigation?.dataChanged(); }
     },
     reconcile: async (action, context) => {
       const reader = caseContext();
@@ -5346,6 +5389,7 @@ function bindUI() {
   }
   async function executeExportFormat(format, task) {
     const context = task.context;
+    if (window.FundsAccountActions?.blocked(context)) throw new Error('账户操作尚未确认，请先核对后再导出');
     if (window.FundsMainAccountsActions?.blocked(context)) throw new Error('主账号标记正在更新，请完成或核对后再导出');
     if (format === 'xlsx') {
       task.setPhase('generating');

@@ -60,6 +60,7 @@ SHELL_HOST_FILES = [
     "titlebar/renderer.js", "titlebar/preload.cjs", "startup/index.html", "startup/style.css",
     "startup/renderer.js", "startup/preload.cjs", "LICENSE",
 ]
+APPEARANCE_IMPORT = b"const appearance = require('./appearance.cjs');\n"
 
 
 @pytest.fixture(scope="module")
@@ -93,7 +94,7 @@ def test_transfer_accepts_actual_startup_shell_package_and_source_assets(current
     verify_host_report(report, "0.1.10", package, files.__getitem__)
 
 
-@pytest.mark.parametrize("name", SHELL_HOST_FILES)
+@pytest.mark.parametrize("name", [*SHELL_HOST_FILES, "appearance.cjs"])
 @pytest.mark.parametrize("change", ["missing", "changed"])
 def test_transfer_rejects_missing_or_changed_startup_shell_source(current_host, name, change):
     files, original, package, _ = current_host
@@ -119,6 +120,39 @@ def test_startup_shell_version_cannot_claim_the_old_brand_host():
     files, report, package = fixture(True, version="0.1.10", brand=True)
     with pytest.raises(AssertionError):
         verify_host_report(report, "0.1.10", package, files.__getitem__)
+
+
+def test_transfer_preserves_same_version_startup_shell_without_appearance():
+    files, report, package = fixture(True, version="0.1.10", brand=True)
+    for name in SHELL_HOST_FILES:
+        files[name] = f"synthetic reviewed {name}\n".encode()
+        report["hostFiles"][name] = hashlib.sha256(files[name]).hexdigest()
+    verify_host_report(report, "0.1.10", package, files.__getitem__)
+
+    # Neither an unreviewed report claim nor a commented import upgrades the
+    # exact reviewed source candidate's required host resource boundary.
+    report["hostFiles"]["appearance.cjs"] = hashlib.sha256(b"unreviewed appearance").hexdigest()
+    with pytest.raises(AssertionError):
+        verify_host_report(report, "0.1.10", package, files.__getitem__)
+    files["main.cjs"] += b"// " + APPEARANCE_IMPORT
+    report["hostFiles"]["main.cjs"] = hashlib.sha256(files["main.cjs"]).hexdigest()
+    with pytest.raises(AssertionError):
+        verify_host_report(report, "0.1.10", package, files.__getitem__)
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+def test_reviewed_main_source_requires_appearance_even_if_report_omits_it(newline):
+    files, report, package = fixture(True, version="0.1.10", brand=True)
+    for name in SHELL_HOST_FILES:
+        files[name] = f"synthetic reviewed {name}\n".encode()
+        report["hostFiles"][name] = hashlib.sha256(files[name]).hexdigest()
+    files["main.cjs"] += APPEARANCE_IMPORT.replace(b"\n", newline)
+    report["hostFiles"]["main.cjs"] = hashlib.sha256(files["main.cjs"]).hexdigest()
+    with pytest.raises(AssertionError):
+        verify_host_report(report, "0.1.10", package, files.__getitem__)
+    files["appearance.cjs"] = b"synthetic reviewed appearance\n"
+    report["hostFiles"]["appearance.cjs"] = hashlib.sha256(files["appearance.cjs"]).hexdigest()
+    verify_host_report(report, "0.1.10", package, files.__getitem__)
 
 
 @pytest.mark.parametrize("name", SHELL_HOST_FILES)

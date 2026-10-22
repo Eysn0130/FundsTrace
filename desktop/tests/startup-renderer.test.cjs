@@ -8,7 +8,7 @@ const vm = require('node:vm');
 const startupDirectory = path.join(__dirname, '../startup');
 const rendererSource = fs.readFileSync(path.join(startupDirectory, 'renderer.js'), 'utf8');
 
-function renderer({ reduced = false, earlyReady = false } = {}) {
+function renderer({ reduced = false, earlyReady = false, appearance } = {}) {
   let now = 1000, nextFrame = 1, ready, completed = 0, unsubscribed = 0, layoutReads = 0;
   const frames = new Map(), properties = new Map(), writes = [], animations = [], windowListeners = new Map();
   const surface = {
@@ -35,7 +35,7 @@ function renderer({ reduced = false, earlyReady = false } = {}) {
     removeEventListener(type, callback) { assert.equal(type, 'change'); motionListeners.delete(callback); },
   };
   let observer;
-  const document = {documentElement:{dataset:{}},querySelector:selector => {
+  const document = {documentElement:{dataset:{},style:{setProperty:(key,value)=>properties.set(key,value)}},querySelector:selector => {
     assert.ok(elements.has(selector), selector);
     return elements.get(selector);
   }};
@@ -50,6 +50,7 @@ function renderer({ reduced = false, earlyReady = false } = {}) {
     cancelAnimationFrame(id) { frames.delete(id); },
     window:{
       FundsTraceStartup:{
+        onAppearance:appearance ? callback=>{callback(appearance);return()=>{};} : undefined,
         onReady(callback) { ready = callback; if (earlyReady) ready(); return () => { unsubscribed++; }; },
         complete() { completed++; },
       },
@@ -93,6 +94,15 @@ test('waiting uses real elapsed time, holds A, then reveals forty percent withou
   assert.ok(view.animations.every(animation => animation.paused));
   assert.ok(view.animations.every(animation => animation.currentTime === 89000), 'shine and breathing share the real clock');
   assert.equal(view.layoutReads, 2, 'animation frames never measure layout');
+});
+
+test('startup appearance changes only presentation while its transparent readiness handoff keeps its clock', () => {
+  const view=renderer({appearance:{version:1,theme:'light',accent:'teal',translucency:true}});
+  assert.equal(view.document.documentElement.dataset.theme,'light');
+  assert.equal(view.properties.get('--startup-accent'),'#14b8a6');
+  view.frame(7500);assert.equal(view.completed,0);assert.equal(view.value('backdrop-opacity'),.6);
+  view.ready(7500);view.frame(8050);assert.equal(view.value('exit-opacity'),.5);
+  view.frame(8600);assert.equal(view.completed,1);
 });
 
 test('early readiness fades the current surface together for 1100ms and completes exactly once', () => {
@@ -197,7 +207,7 @@ test('startup preload exposes only its narrow bridge, buffers readiness and neve
     },
   });
   assert.equal(Object.isFrozen(api), true);
-  assert.deepEqual(Object.keys(api), ['onReady','complete']);
+  assert.deepEqual(Object.keys(api), ['onAppearance','onReady','complete']);
   api.complete();
   assert.deepEqual(sends, [], 'completion is unavailable until Main confirms readiness');
   const notify = listeners.get('funds-trace:startup');

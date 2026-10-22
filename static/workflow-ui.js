@@ -301,7 +301,7 @@
           if (visible(session)) { hidePbar(); $('#impResultText').textContent = message; controls(session); }
           toast(message);
           // Refresh failures cannot relabel a durable completed import as failed.
-          try { await refreshAll(); } catch (_) { if (visible(session)) recovery(session, '导入已完成，列表刷新失败。关闭后可重新查询。'); }
+          try { if(window.FundsAppNavigation) await window.FundsAppNavigation.dataChanged(); else await refreshAll(); } catch (_) { if (visible(session)) recovery(session, '导入已完成，列表刷新失败。关闭后可重新查询。'); }
           return;
         }
         if (progress.stage === 'error') {

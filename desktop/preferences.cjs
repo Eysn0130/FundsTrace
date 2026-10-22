@@ -6,7 +6,18 @@ const { randomUUID } = require('node:crypto');
 const { pageAllowed } = require('./host-policy.cjs');
 const CHANNEL = 'funds-trace:preferences';
 const labels = new Set(['money', 'time', 'summary', 'currency']);
-const keys = new Set(['fund_case', 'fund_edge_type', 'fund_show_ids', 'fund_show_photos', 'fund_edge_label', 'fund_edge_labels', 'fund_sidebar_width']);
+const keys = new Set(['fund_case', 'fund_edge_type', 'fund_show_ids', 'fund_show_photos', 'fund_edge_label', 'fund_edge_labels', 'fund_sidebar_width', 'fund_appearance']);
+
+function readAppearance(value) {
+  if (typeof value !== 'string' || value.length > 256) return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || Array.isArray(parsed) || Object.keys(parsed).sort().join() !== 'accent,theme,translucency,version'
+        || parsed.version !== 1 || !['dark', 'light', 'system'].includes(parsed.theme)
+        || !['blue', 'teal', 'violet', 'rose', 'amber'].includes(parsed.accent) || typeof parsed.translucency !== 'boolean') return null;
+    return { version: 1, theme: parsed.theme, accent: parsed.accent, translucency: parsed.translucency };
+  } catch { return null; }
+}
 
 function readWindowState(value) {
   try {
@@ -24,6 +35,7 @@ function readWindowState(value) {
 function validPreference(key, value) {
   if (typeof value !== 'string' || value.length > 256) return false;
   switch (key) {
+    case 'fund_appearance': return readAppearance(value) !== null;
     case 'fund_case': return /^[1-9]\d{0,18}$/.test(value);
     case 'fund_edge_type': return ['line', 'polyline', 'quadratic'].includes(value);
     case 'fund_show_ids': case 'fund_show_photos': return value === '0' || value === '1';
@@ -77,9 +89,9 @@ function preferenceRequest(store, event, origin, owned, operation, key, value) {
   if (!sender || sender.isDestroyed() || !owned.has(sender.id) || !frame || frame !== sender.mainFrame || !pageAllowed(frame.url, origin)) return null;
   if (typeof key !== 'string' || !keys.has(key)) return null;
   if (operation === 'get') return store.getItem(key);
-  if (operation === 'set') return store.setItem(key, value);
+  if (operation === 'set') return validPreference(key, value) && store.setItem(key, value);
   if (operation === 'remove') return store.removeItem(key);
   return null;
 }
 
-module.exports = { CHANNEL, validPreference, preferenceStore, preferenceRequest, readWindowState };
+module.exports = { CHANNEL, validPreference, preferenceStore, preferenceRequest, readWindowState, readAppearance };

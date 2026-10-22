@@ -87,7 +87,7 @@
     window.FundsNeighborhoodActions?.update();
   }
 
-  const mainAccountsBlocked = () => !!window.FundsMainAccountsActions?.blocked(caseContext());
+  const mainAccountsBlocked = () => !!window.FundsImportWorkflow?.externalStatus?.(caseContext())?.length || !!window.FundsAccountActions?.blocked(caseContext()) || !!window.FundsMainAccountsActions?.blocked(caseContext());
 
   function update(status = history.status()) {
     const unavailable = status.busy || state.graphLoading || !state.caseId || !!layoutJob || !!gesture || mainAccountsBlocked();
@@ -478,7 +478,7 @@
     try { listener(membershipSnapshot()); } catch (_) { /* Isolate view observers. */ }
     return () => { membershipListeners.delete(listener); };
   } });
-  window.FundsCanvasEditor = Object.freeze({ history, membership, command, syncControls, beginDisplayGesture, finishDisplayGesture });
+  window.FundsCanvasEditor = Object.freeze({ history, membership, command, syncControls, captureDisplay: () => { const {trackedIds, ...display} = capture(); return display; }, beginDisplayGesture, finishDisplayGesture });
 
   const readGraph = loadGraph;
   loadGraph = async function (retry = true, context = caseContext()) {
@@ -670,6 +670,8 @@
     });
     window.addEventListener('funds:graph-metric', () => update());
     window.addEventListener('funds:main-accounts-state', () => update());
+    window.addEventListener('funds:account-state', () => update());
+    window.addEventListener('funds:import-state', () => update());
     reset();
   });
 })();

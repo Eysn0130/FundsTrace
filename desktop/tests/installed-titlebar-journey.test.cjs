@@ -13,12 +13,12 @@ function caption() {
   return {time:1000,timeOrigin:9000,viewport:{width:1280,height:720,dpr:1},
     document:{readyState:'complete',visibilityState:'visible',secureContext:true,standardsMode:true,fontStatus:'loaded'},
     dom:{bar:true,content:true,name:true,icon:true,menu:true},
-    bridge:{type:'object',openMenu:'function',onMenuEnabled:'function'},
+    bridge:{type:'object',onAppearance:'function'},
     overlay:{supported:true,visible:true,rectMethod:'function',areaReadFailed:false,area:{x:0,y:0,width:1142,height:32}},
     bar:{x:0,y:0,width:1280,height:32},content:{x:0,y:0,width:1142,height:32},
     icon:{x:8,y:7,width:18,height:18},name:{x:33,y:7,width:108,height:18},
     menu:{x:150,y:3,width:28,height:26},text:'循迹 FundsTrace',opacity:1,visibility:'visible',
-    fontSize:13,fontWeight:'400',color:'rgb(213, 222, 232)',drag:'drag',menuDrag:'no-drag',
+    fontSize:13,fontWeight:'400',color:'rgb(213, 222, 232)',drag:'drag',menuDrag:'drag',
     menuDisabled:true,iconLoaded:true,stylesheetLoaded:true,
     image:{complete:true,naturalWidth:1024,naturalHeight:1024,decode:'decoded'}};
 }
@@ -47,7 +47,7 @@ test('caption checks reject hidden overlay, wrong height, faded branding and nat
     [v=>{v.opacity=.5;},/TITLEBAR_PARTICIPATED_IN_FADE/],
     [v=>{v.menu.x=1140;},/TITLEBAR_CONTENT_OVERLAPS_NATIVE_CONTROLS/],
     [v=>{v.overlay.area.width=1280;},/TITLEBAR_NATIVE_CONTROLS_SAFE_AREA/],
-    [v=>{v.menuDrag='drag';},/TITLEBAR_MENU_DRAG_REGION/],
+    [v=>{v.menuDrag='no-drag';},/TITLEBAR_PREVIEW_DRAG_REGION/],
     [v=>{v.iconLoaded=false;},/TITLEBAR_RESOURCES_MISSING/],
   ]){const value=caption();mutate(value);assert.throws(()=>assertCaption(value),expected);}
 });
@@ -100,7 +100,7 @@ test('caption/body layout uses actual cleared viewports without an unsupported b
 function captionDocument({overlay=true,stylesheet=true,complete=true,naturalWidth=1024}={}) {
   const sample=caption(),selectors=new Map();
   for(const [selector,key] of [['.titlebar','bar'],['.titlebar-content','content'],['.titlebar-name','name'],
-    ['.titlebar-icon','icon'],['#titlebar-menu','menu']]) {
+    ['.titlebar-icon','icon'],['.titlebar-preview','menu']]) {
     selectors.set(selector,{getBoundingClientRect:()=>sample[key],textContent:'循迹 FundsTrace',disabled:true,
       styleKey:key,complete,naturalWidth,naturalHeight:naturalWidth,decode:()=>Promise.resolve()});
   }
@@ -112,11 +112,11 @@ function captionDocument({overlay=true,stylesheet=true,complete=true,naturalWidt
   const document={readyState:'complete',visibilityState:'visible',compatMode:'CSS1Compat',fonts:{status:'loaded'},
     querySelector:selector=>selectors.get(selector)||null};
   Object.defineProperty(document,'URL',{get(){throw new Error('SYN_DOCUMENT_URL_MUST_NOT_BE_READ');}});
-  const context=vm.createContext({document,window:{FundsTraceTitlebar:{openMenu(){},onMenuEnabled(){}}},
+  const context=vm.createContext({document,window:{FundsTraceTitlebar:{onAppearance(){}}},
     navigator:overlay?{windowControlsOverlay:{visible:true,getTitlebarAreaRect:()=>sample.overlay.area}}:{},
     innerWidth:1280,innerHeight:720,devicePixelRatio:1,isSecureContext:true,
     performance:{now:()=>1000,timeOrigin:9000},getComputedStyle:element=>({opacity:'1',visibility:'visible',fontSize:'13px',
-      fontWeight:'400',color:'rgb(213, 222, 232)',getPropertyValue:()=>element.styleKey==='menu'?'no-drag':'drag'})});
+      fontWeight:'400',color:'rgb(213, 222, 232)',getPropertyValue:()=> 'drag'})});
   return ()=>vm.runInContext(READ_CAPTION,context);
 }
 
@@ -126,7 +126,7 @@ test('the real DOM projection still reports fixed geometry when the overlay API 
   assert.equal(value.bar.height,32);
   assert.equal(value.overlay.supported,false);
   assert.equal(value.document.secureContext,true);
-  assert.equal(value.bridge.openMenu,'function');
+  assert.equal(value.bridge.onAppearance,'function');
   assert.equal(readinessFailure(value),'TITLEBAR_OVERLAY_API_UNAVAILABLE');
   assert.throws(()=>assertCaption(value),/TITLEBAR_NATIVE_OVERLAY_MISSING/);
 });

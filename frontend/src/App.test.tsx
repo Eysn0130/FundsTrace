@@ -2,7 +2,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { describe, it, expect, vi } from 'vitest';
 import type { Case, CaseStats, Flow, FlowPage, ImportPreview, ImportJob, ImportSession, ImportSessionList, FlowSource, FlowSourceList } from '../../contracts/api-v1';
 import { App } from './App';
-import type { FundsApi } from './lib/api';
+import { ApiError, type FundsApi } from './lib/api';
+import { WORKSPACE_CHANNEL } from './standalone/workspaceBridge';
 
 const cases: Case[] = [{ id: '1', name: '合成案件甲', created_at: null }, { id: '2', name: '合成案件乙', created_at: null }];
 const stats = (id: string): CaseStats => ({ case_id: id, flows: 1, accounts: 2, batches: 1, amount_total: '9999999999999999.99', currency: 'CNY', amount_totals: [{ currency: 'CNY', amount: '9999999999999999.99' }] });
@@ -28,7 +29,201 @@ function fakeApi(): FundsApi {
 
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 
+function embeddedHost() {
+  const messages = vi.spyOn(window, 'postMessage').mockImplementation(() => {});
+  const send = (data: Record<string, unknown>) => act(() => window.dispatchEvent(new MessageEvent('message', { origin: window.location.origin, source: window, data: { channel: WORKSPACE_CHANNEL, version: 1, ...data } })));
+  const bind = (extra = {}) => send({ type: 'context', caseId: '1', name: '合成案件甲', generation: 1, retainedCaseIds: [], active: true, ...extra });
+  const requests = () => messages.mock.calls.map(call => call[0]).filter(message => message.type === 'request');
+  const answer = async (action: string, ok = true, error?: string) => {
+    await waitFor(() => expect(requests().at(-1)?.action).toBe(action));
+    const request = requests().at(-1)!; send({ type: 'result', requestId: request.requestId, ok, error }); return request;
+  };
+  const upload = async () => {
+    fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
+    fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv', { type: 'text/csv' })] } });
+    fireEvent.click(await screen.findByRole('button', { name: '确认导入' }));
+  };
+  return { messages, send, bind, requests, answer, upload, close: () => messages.mockRestore() };
+}
+
 describe('FundsTrace case workspace', () => {
+  it('refreshes after hidden host reactivation and current data changes without losing filter drafts', async () => {
+    const h = embeddedHost(), api = fakeApi(); const flows = vi.spyOn(api, 'flows');
+    try {
+      render(<App api={api} embedded />); h.bind();
+      await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      fireEvent.change(screen.getByLabelText('账号筛选'), { target: { value: 'UNSUBMITTED' } });
+      const before = flows.mock.calls.length;
+      h.bind({ active: false }); h.send({ type: 'data-changed', caseId: '1', generation: 1 });
+      expect(flows).toHaveBeenCalledTimes(before);
+      h.bind({ active: true }); await waitFor(() => expect(flows).toHaveBeenCalledTimes(before + 1));
+      expect((screen.getByLabelText('账号筛选') as HTMLInputElement).value).toBe('UNSUBMITTED');
+      h.send({ type: 'data-changed', caseId: '1', generation: 0 }); expect(flows).toHaveBeenCalledTimes(before + 1);
+      h.send({ type: 'data-changed', caseId: '1', generation: 1 }); await waitFor(() => expect(flows).toHaveBeenCalledTimes(before + 2));
+    } finally { h.close(); }
+  });
+
+  it('requires parent acquisition before POST and publishes completion only after terminal release', async () => {
+    const h = embeddedHost(), api = fakeApi(); const commit = vi.spyOn(api, 'commit');
+    try {
+      render(<App api={api} embedded />); h.bind(); await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      await h.upload(); await waitFor(() => expect(h.requests().at(-1)?.action).toBe('import-acquire'));
+      expect(commit).not.toHaveBeenCalled(); await h.answer('import-acquire');
+      await waitFor(() => expect(commit).toHaveBeenCalledOnce());
+      const release = await h.answer('import-release'); expect(release.payload).toEqual({ importId: preview.import_id, jobId: preview.import_id });
+      await h.answer('data-changed'); await screen.findByText('流水已写入当前案件');
+      expect(commit).toHaveBeenCalledOnce();
+    } finally { h.close(); }
+  });
+
+  it.each([undefined, 500])('keeps an unknown submission locked and explicitly reconciles without another POST (status %s)', async status => {
+    const h = embeddedHost(), api = fakeApi(); api.commit = vi.fn(async () => { throw new ApiError('synthetic_failure', '合成提交未确认', status); });
+    try {
+      render(<App api={api} embedded />); h.bind(); await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      await h.upload(); await h.answer('import-acquire'); await screen.findByText('合成提交未确认');
+      expect(h.requests().filter(request => request.action === 'import-release')).toHaveLength(0);
+      fireEvent.click(screen.getByRole('button', { name: '取消' }));
+      const notice = screen.getByRole('region', { name: '待核对导入' });
+      fireEvent.click(within(notice).getByRole('button', { name: /核对导入结果/ }));
+      await h.answer('import-release', false, '合成任务仍在运行'); await screen.findByText('合成任务仍在运行');
+      expect(api.commit).toHaveBeenCalledOnce();
+      fireEvent.click(within(screen.getByRole('region', { name: '待核对导入' })).getByRole('button', { name: /核对导入结果/ }));
+      await h.answer('import-release'); await h.answer('data-changed');
+      await waitFor(() => expect(screen.queryByRole('region', { name: '待核对导入' })).toBeNull());
+      expect(api.commit).toHaveBeenCalledOnce();
+    } finally { h.close(); }
+  });
+
+  it('releases a known 4xx only through the parent rejection verification', async () => {
+    const h = embeddedHost(), api = fakeApi(); api.commit = vi.fn(async () => { throw new ApiError('invalid_request', '合成请求被拒绝', 422); });
+    try {
+      render(<App api={api} embedded />); h.bind(); await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      await h.upload(); await h.answer('import-acquire');
+      const release = await h.answer('import-release'); expect(release.payload).toEqual({ importId: preview.import_id, rejected: true });
+      await screen.findByText('合成请求被拒绝'); fireEvent.click(screen.getByRole('button', { name: '取消' }));
+      expect(screen.queryByRole('region', { name: '待核对导入' })).toBeNull(); expect(api.commit).toHaveBeenCalledOnce();
+    } finally { h.close(); }
+  });
+
+  it('never dispatches a POST from an acquisition acknowledgement after A–B–A rebinding', async () => {
+    const h = embeddedHost(), api = fakeApi(); const commit = vi.spyOn(api, 'commit');
+    try {
+      render(<App api={api} embedded />); h.bind(); await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      await h.upload(); await waitFor(() => expect(h.requests().at(-1)?.action).toBe('import-acquire'));
+      const request = h.requests().at(-1)!;
+      h.bind({ caseId: '2', name: '合成案件乙', generation: 2 }); h.bind({ generation: 3 });
+      h.send({ type: 'result', requestId: request.requestId, ok: true });
+      await screen.findByRole('button', { name: '核对流水 SYN-1' }); expect(commit).not.toHaveBeenCalled();
+    } finally { h.close(); }
+  });
+
+  it('restores each case query draft and page while loading fresh authoritative rows', async () => {
+    const api = fakeApi();
+    api.flows = vi.fn(async (id, filters) => ({ ...page(id), total: 120, page: filters.page }));
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.change(screen.getByLabelText('账号筛选'), { target: { value: '000SYN-A' } });
+    fireEvent.click(screen.getByRole('button', { name: '查询' }));
+    await waitFor(() => expect(api.flows).toHaveBeenLastCalledWith('1', { account: '000SYN-A', kw: '', page: 1 }, expect.any(AbortSignal)));
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    await waitFor(() => expect(api.flows).toHaveBeenLastCalledWith('1', { account: '000SYN-A', kw: '', page: 2 }, expect.any(AbortSignal)));
+    fireEvent.change(screen.getByLabelText('摘要或流水号'), { target: { value: '尚未提交的关键词' } });
+    fireEvent.click(screen.getByRole('button', { name: '合成案件乙' }));
+    await screen.findByRole('button', { name: '核对流水 SYN-2' });
+    expect((screen.getByLabelText('账号筛选') as HTMLInputElement).value).toBe('');
+    fireEvent.click(screen.getByRole('button', { name: '合成案件甲' }));
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    expect((screen.getByLabelText('账号筛选') as HTMLInputElement).value).toBe('000SYN-A');
+    expect((screen.getByLabelText('摘要或流水号') as HTMLInputElement).value).toBe('尚未提交的关键词');
+    expect(api.flows).toHaveBeenLastCalledWith('1', { account: '000SYN-A', kw: '', page: 2 }, expect.any(AbortSignal));
+  });
+
+  it('keeps the current case and its work when creating a new case fails', async () => {
+    const api = fakeApi(); api.createCase = async () => { throw new ApiError('invalid_request', '合成创建失败'); };
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.change(screen.getByLabelText('账号筛选'), { target: { value: '未提交的账号' } });
+    fireEvent.click(screen.getByRole('button', { name: '新建案件' }));
+    fireEvent.change(screen.getByRole('textbox', { name: '案件名称' }), { target: { value: '失败案件' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建案件' }));
+    await screen.findByText('合成创建失败');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('合成案件甲');
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect((screen.getByLabelText('账号筛选') as HTMLInputElement).value).toBe('未提交的账号');
+  });
+
+  it('checks the case list after an uncertain create result and opens only after explicit selection', async () => {
+    const api = fakeApi(); let written = false;
+    api.cases = vi.fn(async () => ({ items: written ? [...cases, { id: '3', name: '响应丢失案件', created_at: null }] : cases }));
+    api.createCase = vi.fn(async () => { written = true; throw new ApiError('network_error', '合成连接中断'); });
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(screen.getByRole('button', { name: '新建案件' }));
+    fireEvent.change(screen.getByLabelText('案件名称'), { target: { value: '响应丢失案件' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建案件' }));
+    await screen.findByText(/无法确认案件是否已创建/);
+    const dialog = screen.getByRole('dialog', { name: '新建案件' });
+    fireEvent.submit(dialog.querySelector('form')!);
+    expect(api.createCase).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: '核对案件列表' }));
+    const open = await screen.findByRole('button', { name: '打开 响应丢失案件 · ID 3' });
+    expect(api.createCase).toHaveBeenCalledOnce();
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('合成案件甲');
+    fireEvent.click(open);
+    await screen.findByRole('button', { name: '核对流水 SYN-3' });
+    expect(api.createCase).toHaveBeenCalledOnce();
+  });
+
+  it('preserves uncertain-create protection when the dialog is reopened and requires a read check before returning to input', async () => {
+    const api = fakeApi(); api.createCase = vi.fn(async () => { throw new ApiError('network_error', '合成连接中断'); });
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(screen.getByRole('button', { name: '新建案件' }));
+    fireEvent.change(screen.getByLabelText('案件名称'), { target: { value: '待核对案件' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建案件' }));
+    await screen.findByText(/无法确认案件是否已创建/);
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    fireEvent.click(screen.getByRole('button', { name: '新建案件' }));
+    expect(screen.queryByRole('button', { name: '创建案件' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '已核对，重新填写' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '核对案件列表' }));
+    fireEvent.click(await screen.findByRole('button', { name: '已核对，重新填写' }));
+    expect((screen.getByLabelText('案件名称') as HTMLInputElement).value).toBe('');
+    expect((screen.getByRole('button', { name: '创建案件' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(api.createCase).toHaveBeenCalledOnce();
+  });
+
+  it('uses parent-controlled case selection and retains the old case until a new-case context arrives', async () => {
+    const messages = vi.spyOn(window, 'postMessage').mockImplementation(() => {});
+    const api = fakeApi(); const flows = vi.spyOn(api, 'flows'); const create = vi.spyOn(api, 'createCase');
+    const send = (data: Record<string, unknown>) => act(() => window.dispatchEvent(new MessageEvent('message', { origin: window.location.origin, source: window, data: { channel: WORKSPACE_CHANNEL, version: 1, ...data } })));
+    try {
+      render(<App api={api} embedded />);
+      await screen.findByRole('button', { name: '合成案件甲' });
+      expect(flows).not.toHaveBeenCalled();
+      send({ type: 'context', caseId: '1', name: '合成案件甲', generation: 1, retainedCaseIds: ['1'] });
+      await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      fireEvent.click(screen.getByRole('button', { name: '新建案件' }));
+      fireEvent.change(screen.getByRole('textbox', { name: '案件名称' }), { target: { value: '合成案件丙' } });
+      fireEvent.click(screen.getByRole('button', { name: '创建案件' }));
+      await waitFor(() => expect(messages.mock.calls.at(-1)?.[0]).toMatchObject({ type: 'request', caseId: '1', generation: 1, action: 'select-case', payload: { caseId: '3' } }));
+      let request = messages.mock.calls.at(-1)![0];
+      send({ type: 'result', requestId: request.requestId, ok: false, error: '合成保留失败' });
+      await screen.findByText('合成保留失败');
+      fireEvent.click(screen.getByRole('button', { name: '打开已创建案件' }));
+      await waitFor(() => expect(messages.mock.calls.at(-1)?.[0].requestId).not.toBe(request.requestId));
+      request = messages.mock.calls.at(-1)![0];
+      expect(create).toHaveBeenCalledOnce();
+      send({ type: 'result', requestId: request.requestId, ok: true });
+      expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('合成案件甲');
+      expect(screen.getByRole('dialog', { name: '新建案件' })).toBeTruthy();
+      send({ type: 'context', caseId: '3', name: '合成案件丙', generation: 2, retainedCaseIds: ['1'] });
+      await screen.findByRole('button', { name: '核对流水 SYN-3' });
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(screen.getByRole('button', { name: '合成案件甲' }).textContent).toContain('工作已保留');
+    } finally { messages.mockRestore(); }
+  });
+
   it('displays exact money and bigint identity in the verification dialog', async () => {
     render(<App api={fakeApi()} />);
     await screen.findByRole('button', { name: '核对流水 SYN-1' });
@@ -91,7 +286,7 @@ describe('FundsTrace case workspace', () => {
     rerender(<App api={api} actionsForCase={nextActions} />);
     expect(screen.queryByRole('dialog')).toBeNull();
     await screen.findByRole('button', { name: '核对流水 SYN-1' });
-    fireEvent.click(screen.getByRole('button', { name: /打开 G6 图谱/ }));
+    fireEvent.click(screen.getByRole('button', { name: /进入画图/ }));
     await waitFor(() => expect(nextGraph).toHaveBeenCalledOnce());
     expect(firstGraph).not.toHaveBeenCalled();
     expect(screen.queryByRole('heading', { name: '案件会话已撤销' })).toBeNull();

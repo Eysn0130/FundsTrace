@@ -8,24 +8,26 @@
 <title>循迹 FundsTrace · 资金流水追踪与关联分析</title>
 <link rel="stylesheet" href="/static/style.css?v=release-0.1.5">
 <link rel="stylesheet" href="/static/desktop-updates.css">
+<link rel="stylesheet" href="/static/navigation.css">
+<link rel="stylesheet" href="/static/appearance.css">
+<script src="/static/appearance.js"></script>
 <script defer src="/static/desktop-updates.js"></script>
 <script src="/static/vendor/g6.min.js"></script>
 </head>
 <body>
-<header id="topbar">
-  <div class="brand"><img src="/static/logo.png" alt="" class="topbar-logo"><div class="logo">FundsTrace</div></div>
-  <div class="case-box"><label for="caseSelect">案件</label><select id="caseSelect" aria-label="当前案件"></select><label for="canvasSel">画布</label><select id="canvasSel" aria-label="当前画布"><option value="0">默认画布</option></select></div>
-  <div class="ribbon-quick" role="group" aria-label="保存与历史">
-  <button type="button" class="btn ribbon-action" id="btnCanvasSave" aria-label="保存画布" title="保存完整画布及显示设置"><img class="ui-icon" src="/static/ui-icons/device-floppy.svg" alt=""><span>保存</span></button>
-  <button type="button" class="btn ribbon-action" id="btnUndo" aria-label="撤销" title="暂无可撤销的画布编辑" disabled><img class="ui-icon" src="/static/ui-icons/arrow-back-up.svg" alt=""><span>撤销</span></button>
-  <button type="button" class="btn ribbon-action" id="btnRedo" aria-label="重做" title="暂无可重做的画布编辑" disabled><img class="ui-icon" src="/static/ui-icons/arrow-forward-up.svg" alt=""><span>重做</span></button></div>
-  <nav class="workspace-actions" aria-label="案件数据与分析">
-    <button type="button" class="btn small primary" id="btnImport" aria-label="导入流水" title="导入流水"><img class="ui-icon" src="/static/ui-icons/upload.svg" alt=""><span class="header-action-label">导入流水</span></button>
-    <button type="button" class="btn small" id="btnExportActions" aria-label="导出" title="导出当前画布或流水" data-action-dialog="exportActions" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/file-export.svg" alt=""><span class="header-action-label">导出</span></button>
-    <a class="btn small analysis-link" id="analysisLink" aria-label="全案分析（新窗口）" href="/analysis" target="_blank" rel="noopener" title="全案原始流水的独立分析页，与当前图内筛选分开"><img class="ui-icon" src="/static/ui-icons/network.svg" alt=""><span class="header-action-label">全案分析 ↗</span></a>
-    <button type="button" class="btn small" id="btnCaseActions" aria-label="案件管理" title="案件管理" data-action-dialog="caseActions" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/settings.svg" alt=""><span class="header-action-label">案件管理</span></button>
-  </nav><div class="stats" id="statLine">加载中…</div><funds-desktop-update hidden></funds-desktop-update>
-</header>
+<header id="browserCaption"><img src="/static/favicon-32.png" alt=""><span>循迹 FundsTrace</span><span class="preview-badge">预览版</span></header>
+<div id="appShell">
+<nav id="appRail" aria-label="主导航">
+  <button type="button" data-nav-page="home" aria-label="主页" title="主页" aria-current="page"><img src="/static/ui-icons/home.svg" alt=""></button>
+  <button type="button" data-nav-page="cases" aria-label="案件与导入" title="案件与导入"><img src="/static/ui-icons/folder.svg" alt=""></button>
+  <button type="button" id="navAccounts" data-nav-page="accounts" aria-label="账户与身份" title="账户与身份"><img src="/static/ui-icons/user-search.svg" alt=""></button>
+  <button type="button" id="navAnalysis" data-nav-page="analysis" aria-label="全案分析" title="全案分析"><img src="/static/ui-icons/network.svg" alt=""></button>
+  <div class="rail-spacer"></div>
+  <div class="rail-update-slot"><button type="button" id="navUpdate" class="rail-update" aria-label="更新" title="更新"><img src="/static/ui-icons/download.svg" alt=""></button><funds-desktop-update hidden></funds-desktop-update></div>
+  <button type="button" id="navSettings" aria-label="设置" title="设置"><img src="/static/ui-icons/settings.svg" alt=""></button>
+</nav>
+<div id="appPageHost"><div id="graphPage">
+
 <section id="editorToolbar" class="workspace-toolbar funds-ribbon" aria-label="画布编辑器">
   <div id="graphToolbar" role="group" aria-label="图谱编辑工具">
     <div class="ribbon-tabbar">
@@ -35,6 +37,11 @@
         <button type="button" role="tab" id="ribbonTab-style" aria-controls="ribbonPanel-style" aria-selected="false" tabindex="-1" data-ribbon-tab="style">图形样式</button>
         <button type="button" role="tab" id="ribbonTab-view" aria-controls="ribbonPanel-view" aria-selected="false" tabindex="-1" data-ribbon-tab="view">视图</button>
       </div>
+  <div class="case-box"><label for="caseSelect">当前案件</label><select id="caseSelect" aria-label="当前案件"></select><label for="canvasSel">当前画布</label><select id="canvasSel" aria-label="当前画布"><option value="0">默认画布</option></select></div>
+  <div class="ribbon-quick" role="group" aria-label="保存与历史">
+  <button type="button" class="btn ribbon-action" id="btnCanvasSave" aria-label="保存画布" title="保存完整画布及显示设置"><img class="ui-icon" src="/static/ui-icons/device-floppy.svg" alt=""><span>保存</span></button>
+  <button type="button" class="btn ribbon-action" id="btnUndo" aria-label="撤销" title="暂无可撤销的画布编辑" disabled><img class="ui-icon" src="/static/ui-icons/arrow-back-up.svg" alt=""><span>撤销</span></button>
+  <button type="button" class="btn ribbon-action" id="btnRedo" aria-label="重做" title="暂无可重做的画布编辑" disabled><img class="ui-icon" src="/static/ui-icons/arrow-forward-up.svg" alt=""><span>重做</span></button></div>
       <output id="ribbonSelectionStatus" aria-live="polite">未选择节点</output>
       <button type="button" class="btn small ribbon-inspect" data-ribbon-command="inspectSelection" aria-controls="drawer" title="查看所选对象详情 · Enter" disabled><img class="ui-icon" src="/static/ui-icons/list.svg" alt=""><span>查看详情</span></button>
       <button type="button" class="btn ribbon-collapse-button" data-ribbon-collapse="true">收起功能区<img class="ui-icon" src="/static/ui-icons/chevron-up.svg" alt=""></button>
@@ -315,7 +322,7 @@
     <div id="tab-search" class="tab-body">
       <div class="query-disclosure-head">
         <button class="btn small query-toggle" id="btnQueryToggle" type="button" aria-expanded="true" aria-controls="queryFields"><img class="ui-icon" src="/static/ui-icons/chevron-up.svg" alt=""><span>筛选</span></button>
-        <span id="querySummary" class="query-summary">全部流水</span>
+        <span class="stats query-stat-line" id="statLine">加载中…</span><span id="querySummary" class="query-summary">全部流水</span>
       </div>
       <div class="query-disclosure" id="queryFields"><div class="query-controls">
       <div class="form-grid query-fields">
@@ -403,6 +410,13 @@
     <div class="batch-menu node-menu" id="nodeMenu" role="menu" aria-label="账户操作" hidden><button id="ndRemove" type="button" role="menuitem">从图谱移出</button></div>
   </aside>
 </main>
+</div><iframe id="casesFrame" title="案件与导入" hidden></iframe><iframe id="analysisFrame" title="全案分析" hidden></iframe></div></div>
+<div hidden id="legacyActions">  <nav class="workspace-actions" aria-label="案件数据与分析">
+    <button type="button" class="btn small primary" id="btnImport" aria-label="导入流水" title="导入流水"><img class="ui-icon" src="/static/ui-icons/upload.svg" alt=""><span class="header-action-label">导入流水</span></button>
+    <button type="button" class="btn small" id="btnExportActions" aria-label="导出" title="导出当前画布或流水" data-action-dialog="exportActions" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/file-export.svg" alt=""><span class="header-action-label">导出</span></button>
+    <a class="btn small analysis-link" id="analysisLink" aria-label="全案分析" href="/analysis" target="_blank" rel="noopener" title="全案原始流水的独立分析页，与当前图内筛选分开"><img class="ui-icon" src="/static/ui-icons/network.svg" alt=""><span class="header-action-label">全案分析 ↗</span></a>
+    <button type="button" class="btn small" id="btnCaseActions" aria-label="案件管理" title="案件管理" data-action-dialog="caseActions" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/settings.svg" alt=""><span class="header-action-label">案件管理</span></button>
+  </nav></div>
 <dialog id="nodeConfirm" class="action-dialog node-confirm" aria-labelledby="ndConfirmTitle" aria-describedby="ndConfirmMessage">
   <div class="action-dialog-head"><h2 id="ndConfirmTitle">确认操作</h2><button id="ndConfirmClose" class="btn small icon-button" type="button" aria-label="关闭确认"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></div>
   <p id="ndConfirmMessage" class="action-dialog-context"></p><div class="btn-row node-confirm-actions"><button id="ndConfirmCancel" class="btn" type="button">继续编辑</button><button id="ndConfirmAccept" class="btn primary" type="button">确定</button></div>
@@ -678,12 +692,17 @@
 <script src="/static/data-tools.js?v=1"></script>
 <script src="/static/main-accounts.js?v=1"></script>
 <script src="/static/main-accounts-view.js?v=neighborhood-search-1"></script>
+<script src="/static/workspace-drafts.js"></script>
 <script src="/static/app.js?v=release-0.1.5"></script>
 <script src="/static/canvas-history.js?v=1"></script>
 <script src="/static/canvas-editor.js?v=neighborhood-search-1"></script>
 <script src="/static/table-workspace.js?v=neighborhood-search-1"></script>
+<script src="/static/workspace-session.js"></script>
+<script src="/static/account-workspace.js"></script>
+<script src="/static/app-navigation.js"></script>
 <script src="/static/ui-dialogs.js?v=export-workspace-1"></script>
 <script src="/static/workflow-ui.js?v=main-accounts-1"></script>
+<script src="/static/import-workflow.js"></script>
 <script src="/static/ribbon-commands.js?v=release-0.1.5"></script>
 <script src="/static/ribbon.js?v=release-0.1.5"></script>
 </body>

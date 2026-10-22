@@ -52,7 +52,7 @@ function createMainErrorMarkerProbe() {
 const READ_CAPTION = `(() => {
   const bar = document.querySelector('.titlebar'), content = document.querySelector('.titlebar-content');
   const name = document.querySelector('.titlebar-name'), icon = document.querySelector('.titlebar-icon');
-  const menu = document.querySelector('#titlebar-menu'), overlay = navigator.windowControlsOverlay;
+  const menu = document.querySelector('.titlebar-preview'), overlay = navigator.windowControlsOverlay;
   const rect = element => { if (!element) return null; const r = element.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; };
   let area = null, areaReadFailed = false;
   try { const r = overlay?.getTitlebarAreaRect?.(); if (r) area = {x:r.x,y:r.y,width:r.width,height:r.height}; }
@@ -76,7 +76,7 @@ const READ_CAPTION = `(() => {
     document:{readyState:document.readyState,visibilityState:document.visibilityState,secureContext:globalThis.isSecureContext===true,
       standardsMode:document.compatMode==='CSS1Compat',fontStatus:document.fonts?.status || 'unavailable'},
     dom:{bar:!!bar,content:!!content,name:!!name,icon:!!icon,menu:!!menu},
-    bridge:{type:typeof bridge,openMenu:typeof bridge?.openMenu,onMenuEnabled:typeof bridge?.onMenuEnabled},
+    bridge:{type:typeof bridge,onAppearance:typeof bridge?.onAppearance},
     overlay:{supported:!!overlay,visible:overlay?.visible===true,rectMethod:typeof overlay?.getTitlebarAreaRect,areaReadFailed,area},
     bar:rect(bar),content:rect(content),name:rect(name),icon:rect(icon),menu:rect(menu),
     text:name?.textContent.trim()==='循迹 FundsTrace'?'循迹 FundsTrace':'unexpected',opacity:style ? Number(style.opacity) : null,visibility:style?.visibility || 'unavailable',
@@ -99,7 +99,7 @@ function safeCaptionProjection(value) {
       visibilityState:oneOf(value.document?.visibilityState,['visible','hidden']),secureContext:value.document?.secureContext===true,
       standardsMode:value.document?.standardsMode===true,fontStatus:oneOf(value.document?.fontStatus,['loading','loaded','unavailable'])},
     dom:Object.fromEntries(['bar','content','name','icon','menu'].map(key=>[key,value.dom?.[key]===true])),
-    bridge:{type:type(value.bridge?.type),openMenu:type(value.bridge?.openMenu),onMenuEnabled:type(value.bridge?.onMenuEnabled)},
+    bridge:{type:type(value.bridge?.type),onAppearance:type(value.bridge?.onAppearance)},
     viewport:{width:number(value.viewport?.width),height:number(value.viewport?.height),dpr:number(value.viewport?.dpr)},
     overlay:{supported:value.overlay?.supported===true,visible:value.overlay?.visible===true,rectMethod:type(value.overlay?.rectMethod),
       areaReadFailed:value.overlay?.areaReadFailed===true,area:box(value.overlay?.area)},
@@ -174,7 +174,7 @@ function assertCaption(value, reference) {
   assert.equal(value.text, '循迹 FundsTrace', 'TITLEBAR_BRAND_TEXT');
   assert.ok(near(value.icon.width, 18) && near(value.icon.height, 18) && near(value.fontSize, 13), 'TITLEBAR_BRAND_SIZE');
   assert.equal(value.drag, 'drag', 'TITLEBAR_DRAG_REGION');
-  assert.equal(value.menuDrag, 'no-drag', 'TITLEBAR_MENU_DRAG_REGION');
+  assert.equal(value.menuDrag, 'drag', 'TITLEBAR_PREVIEW_DRAG_REGION');
   const area = value.overlay.area;
   assert.ok(area.x >= 0 && area.y >= 0 && near(area.height, HEIGHT)
     && area.width > 100 && area.x + area.width <= value.viewport.width - 80,
@@ -327,7 +327,7 @@ async function runInstalledTitlebarJourney({cdp, page, probe, evaluate, until, n
       assert.equal(value?.[key],true,'TITLEBAR_NATIVE_BUTTON_SEQUENCE');
     }
     assert.equal(value.CaptionHit,2,'TITLEBAR_NATIVE_DRAG_HIT');
-    assert.equal(value.MenuHit,1,'TITLEBAR_NATIVE_MENU_HIT');
+    assert.equal(value.MenuHit,2,'TITLEBAR_NATIVE_PREVIEW_DRAG_HIT');
   }
   // Maximize/restore and drag may resize/reposition the root; fixed branding is
   // still checked against the original native shell document and dimensions.

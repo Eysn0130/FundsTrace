@@ -3,7 +3,11 @@
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Microsoft YaHei UI", sans-serif;
   --titlebar-height: 32px;
   --platform-left-inset: 0px;
+  --caption-bg: #151d27;
+  --caption-text: #d5dee8;
+  --caption-accent: #367cff;
 }
+html[data-theme="light"] { color-scheme: light; --caption-bg: #f4f3ef; --caption-text: #292825; }
 
 html[data-platform="darwin"] {
   --platform-left-inset: 76px;
@@ -19,7 +23,7 @@ body {
   height: var(--titlebar-height);
   margin: 0;
   overflow: hidden;
-  background: #151d27;
+  background: var(--caption-bg);
 }
 
 .titlebar {
@@ -55,7 +59,7 @@ body {
 .titlebar-name {
   min-width: 0;
   overflow: hidden;
-  color: #d5dee8;
+  color: var(--caption-text);
   font-size: 13px;
   font-weight: 400;
   line-height: 18px;
@@ -63,39 +67,18 @@ body {
   white-space: nowrap;
 }
 
-.titlebar-menu {
+.titlebar-preview {
   display: inline-flex;
-  width: 40px;
-  height: 26px;
+  height: 22px;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   margin-left: 2px;
-  padding: 0;
-  border: 0;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--caption-accent) 28%, var(--caption-bg));
   border-radius: 4px;
-  background: transparent;
-  color: #b8c5d3;
+  background: color-mix(in srgb, var(--caption-accent) 12%, var(--caption-bg));
+  color: var(--caption-text);
   font-family: inherit;
   font-size: 11px;
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
-}
-
-.titlebar-menu:enabled:hover {
-  background: #c4d5e41a;
-  color: #edf2fa;
-}
-
-.titlebar-menu:enabled:active {
-  background: #c4d5e42b;
-}
-
-.titlebar-menu:focus-visible {
-  outline: 1px solid #9bbdd8;
-  outline-offset: -2px;
-}
-
-.titlebar-menu:disabled {
-  opacity: 1;
 }
