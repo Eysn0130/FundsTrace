@@ -590,9 +590,16 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     await selectEdge();
     step = 'style-tab';
     await clickElement(`document.querySelector('#ribbonTab-style')`);
-    // The expanded style tab exposes this select inline.
+    const popover = await evaluate(`document.querySelector('#edgeStylePopover').hidden`);
+    if (popover) {
+      await clickElement(`document.querySelector('#btnEdgeStyle')`);
+      await until(() => evaluate(`!document.querySelector('#edgeStylePopover').hidden
+        && !document.querySelector('#edgeStylePopover').inert
+        && !document.querySelector('#edgeTypeSel').disabled`), 10000);
+    }
     step = 'style-select';
     await select('#edgeTypeSel', value);
+    if (popover) await clickElement(`document.querySelector('#btnEdgeStyle')`);
     expected[editedEdge] = value;
     step = 'style-confirm';
     await until(async () => {
