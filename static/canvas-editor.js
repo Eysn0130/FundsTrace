@@ -31,7 +31,7 @@
   let membershipContext = caseContext(), membershipDesired = new Map(), membershipActive = new Map();
   let membershipFailures = new Map(), membershipWaiters = [];
   const membershipListeners = new Set(), trackedWrites = new Set();
-  const controls = '#btnBulkTrack,#btnClearGraph,#layoutSel,#btnRelayout,#btnArrangeLabels,#showIdCk,#showPhotoCk,#graphLabelMode,#btnNeighborhood,#btnExpandNeighbors,#btnGraphOverview,#neighborAccount,#neighborDirection,#edgeLabelGroup .edge-ck';
+  const controls = '#btnBulkTrack,#btnClearGraph,#layoutSel,#btnRelayout,#btnArrangeLabels,#showIdCk,#showPhotoCk,#graphLabelMode,#btnNeighborhood,#btnExpandNeighbors,#btnGraphOverview,#neighborAccount,#neighborDirection,#edgeLabelGroup .edge-ck, #toolbarDisplayExtra .edge-ck';
 
   function capture() {
     // Async commands can finish between animation/ResizeObserver samples.
@@ -82,7 +82,7 @@
     }
     if ($('#showIdCk')) $('#showIdCk').checked = state.showIds;
     if ($('#showPhotoCk')) $('#showPhotoCk').checked = state.showPhotos;
-    $$('#edgeLabelGroup .edge-ck').forEach(node => { node.checked = state.edgeLabels.has(node.dataset.em); });
+    $$('#edgeLabelGroup .edge-ck, #toolbarDisplayExtra .edge-ck').forEach(node => { node.checked = state.edgeLabels.has(node.dataset.em); });
     window.FundsRibbonCommands?.sync();
     window.FundsNeighborhoodActions?.update();
   }
@@ -601,7 +601,7 @@
     wrap('#layoutSel', 'onchange', '更改布局'); wrap('#btnRelayout', 'onclick', '重新布局');
     wrap('#btnArrangeLabels','onclick','按文字整理布局');
     // Selected-edge line type owns its command; wrapping it again nests history.
-    wrap('#edgeLabelGroup .edge-ck', 'onchange', '更改连线标注');
+    wrap('#edgeLabelGroup .edge-ck, #toolbarDisplayExtra .edge-ck', 'onchange', '更改连线标注');
     wrap('#showIdCk', 'onchange', '切换证件号显示'); wrap('#showPhotoCk', 'onchange', '切换照片显示');
     wrap('#graphLabelMode', 'onchange', '更改标注模式');
     $('#btnBulkTrack').onclick = () => {

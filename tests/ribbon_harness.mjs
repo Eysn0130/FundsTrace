@@ -9,7 +9,7 @@ const source = readFileSync(new URL('../static/ribbon.js', import.meta.url), 'ut
 // Minimal DOM uses the shipped markup, with no browser or frontend npm dependency.
 function harness() {
   let doc;
-  const all = [], events = [], listeners = new Map();
+  const all = [], events = [], windowEvents = [], listeners = new Map();
   const matches = (node, selector) => {
     if (selector.startsWith('.')) return node.classList.contains(selector.slice(1));
     const attribute = selector.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);
@@ -19,7 +19,8 @@ function harness() {
   class Element {
     constructor(tag, attrs = {}) {
       this.tagName = tag.toUpperCase(); this.attrs = new Map(Object.entries(attrs)); this.children = [];
-      this.id = attrs.id || ''; this.dataset = {}; this.handlers = new Map(); this.style = {};
+      this.id = attrs.id || ''; this.dataset = {}; this.handlers = new Map();
+      this.style = { setProperty(key, value) { this[key] = String(value); }, getPropertyValue(key) { return this[key] || ''; } };
       this.hidden = 'hidden' in attrs; this.inert = false; this.disabled = 'disabled' in attrs;
       this.checked = 'checked' in attrs; this.type = attrs.type || ''; this.value = attrs.value || ''; this.tabIndex = +(attrs.tabindex || 0);
       this.isConnected = true; this.textContent = ''; this.clicks = 0;
@@ -32,6 +33,8 @@ function harness() {
     getAttribute(key) { return this.attrs.get(key) ?? null; }
     setAttribute(key, value) { this.attrs.set(key, String(value)); }
     appendChild(node) { if (node.parentElement) node.parentElement.children = node.parentElement.children.filter(c => c !== node); this.children.push(node); node.parentElement = this; }
+    insertBefore(node, next) { if (!next) return this.appendChild(node); if (node.parentElement) node.parentElement.children = node.parentElement.children.filter(c => c !== node); this.children.splice(this.children.indexOf(next), 0, node); node.parentElement = this; }
+    get nextSibling() { return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1] || null; }
     querySelectorAll(selector) { const out = []; const visit = n => { for (const child of n.children) { if (matches(child, selector)) out.push(child); visit(child); } }; visit(this); return out; }
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
     closest(selector) { for (let node = this; node; node = node.parentElement) if (selector === '[hidden]' ? node.hidden : matches(node, selector)) return node; return null; }
@@ -54,12 +57,61 @@ function harness() {
     const node = new Element(tag, attrs); stack.at(-1).appendChild(node);
     if (!voidTags.has(tag.toLowerCase()) && !raw.endsWith('/')) stack.push(node);
   }
-  doc = { activeElement: null, createElement: tag => new Element(tag), getElementById: id => all.find(n => n.id === id), querySelectorAll: selector => all.filter(n => matches(n, selector)), querySelector: selector => all.find(n => matches(n, selector)), addEventListener(name, fn) { const list = listeners.get(name) || []; list.push(fn); listeners.set(name, list); }, dispatchEvent(event) { events.push(event); for (const fn of listeners.get(event.type) || []) fn(event); }, fire(name, detail = {}) { const event = { preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...detail }; for (const fn of listeners.get(name) || []) fn(event); return event; } };
+  doc = { activeElement: null, body: all.find(n => n.tagName === 'BODY'), documentElement: all.find(n => n.tagName === 'HTML'), createElement: tag => new Element(tag), getElementById: id => all.find(n => n.id === id), querySelectorAll: selector => all.filter(n => matches(n, selector)), querySelector: selector => all.find(n => matches(n, selector)), addEventListener(name, fn) { const list = listeners.get(name) || []; list.push(fn); listeners.set(name, list); }, dispatchEvent(event) { events.push(event); for (const fn of listeners.get(event.type) || []) fn(event); }, fire(name, detail = {}) { const event = { preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...detail }; for (const fn of listeners.get(name) || []) fn(event); return event; } };
   const windowHandlers = new Map();
-  const window = { document: doc, innerWidth: 1200, innerHeight: 800, CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } }, addEventListener(name, fn) { const list = windowHandlers.get(name) || []; list.push(fn); windowHandlers.set(name, list); } };
+  const window = { document: doc, innerWidth: 1200, innerHeight: 800, CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } }, addEventListener(name, fn) { const list = windowHandlers.get(name) || []; list.push(fn); windowHandlers.set(name, list); }, dispatchEvent(event) { windowEvents.push(event); for (const fn of windowHandlers.get(event.type) || []) fn(event); } };
   vm.runInNewContext(source, { window });
-  return { doc, window, events, api: window.FundsRibbon, node: id => doc.getElementById(id), fireWindow(name, detail = {}) { for (const fn of windowHandlers.get(name) || []) fn(detail); } };
+  return { doc, window, events, windowEvents, api: window.FundsRibbon, node: id => doc.getElementById(id), fireWindow(name, detail = {}) { for (const fn of windowHandlers.get(name) || []) fn(detail); } };
 }
+
+test('tool chrome preserves a 1280 logical width below the baseline without scaling content', () => {
+  const h = harness(), layout = h.node('layoutSel');
+  layout.value = 'dagre';
+  for (const width of [1280, 1920, 1024, 960, 1280]) {
+    h.window.innerWidth = width;
+    h.fireWindow('resize');
+    for (const id of ['topbar', 'editorToolbar']) {
+      const style = h.node(id).style;
+      const logical = Number.parseFloat(style.getPropertyValue('--toolbar-fit-width'));
+      const scale = Number(style.getPropertyValue('--toolbar-fit-scale'));
+      assert.equal(logical, Math.max(1280, width));
+      assert.equal(scale, Math.min(1, width / 1280));
+      assert.equal(logical * scale, width);
+    }
+    assert.equal(h.doc.body.style.getPropertyValue('--toolbar-fit-scale'), '');
+    assert.equal(h.node('flowTableScroll').style.getPropertyValue('--toolbar-fit-scale'), '');
+    assert.equal(h.node('layoutSel'), layout);
+    assert.equal(layout.value, 'dagre');
+  }
+  assert.equal(h.events.length, 0, 'adapting chrome must not invoke a graph command');
+  assert.ok(h.windowEvents.some(event => event.detail.reason === 'toolbar-fit' && event.detail.phase === 'prepare'));
+  assert.ok(h.windowEvents.some(event => event.detail.reason === 'toolbar-fit' && event.detail.phase === 'start'));
+});
+
+test('floating controls leave scaled chrome temporarily and return home with identity and focus intact', () => {
+  const h = harness(); h.api.setCollapsed(true);
+  const trigger = h.node('btnDisplayActions'), panel = h.node('toolbarDisplayExtra');
+  const originalParent = panel.parentElement, originalNext = panel.nextSibling, checkbox = h.node('showIdCk');
+  checkbox.checked = false;
+  h.window.innerWidth = 1024; h.fireWindow('resize');
+  trigger.click();
+  assert.equal(panel.parentElement, h.doc.body);
+  assert.equal(panel.hidden, false);
+  assert.equal(panel.style.left, '696px', 'anchored popover uses unscaled viewport coordinates');
+  checkbox.focus();
+  h.window.innerWidth = 960; h.fireWindow('resize');
+  assert.equal(panel.hidden, true);
+  assert.equal(panel.parentElement, originalParent);
+  assert.equal(panel.nextSibling, originalNext);
+  assert.equal(h.doc.activeElement, trigger);
+  assert.equal(h.node('showIdCk'), checkbox);
+  assert.equal(checkbox.checked, false);
+  h.api.setCollapsed(false);
+  assert.equal(panel.hidden, false);
+  assert.equal(panel.getAttribute('role'), 'group');
+  assert.equal(panel.parentElement, originalParent);
+  assert.equal(h.events.length, 0);
+});
 
 test('four real tabs show one panel and support wrapping keyboard navigation', () => {
   const h = harness();

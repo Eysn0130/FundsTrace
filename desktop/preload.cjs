@@ -1,5 +1,9 @@
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
+// The browser version retains its own brand; the desktop host already owns it.
+window.addEventListener('DOMContentLoaded', () => {
+  document.documentElement.dataset.fundsDesktopShell = 'true';
+}, { once: true });
 // Readiness is a one-way signal from the initialized main workbench, with no data.
 window.addEventListener('funds-trace:workbench', event => {
   if (event.detail === 'ready' || event.detail === 'failed') ipcRenderer.send('funds-trace:workbench', event.detail);

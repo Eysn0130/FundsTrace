@@ -46,7 +46,18 @@ TASKBAR_SCREENSHOT = "native-installed-app.taskbar.png"
 UPDATE_SCREENSHOTS = {
     "native-installed-app.update-downloading.png", "native-installed-app.update-ready.png",
 }
-OPTIONAL_EVIDENCE_FILES = {name: name for name in {ICON_REPORT, TASKBAR_SCREENSHOT} | UPDATE_SCREENSHOTS}
+STARTUP_RENDERER_SCREENSHOTS = {
+    "normal": "native-installed-app.startup-normal.png",
+    "minimum": "native-installed-app.startup-minimum.png",
+    "small": "native-installed-app.startup-small.png",
+}
+STARTUP_NATIVE_SCREENSHOTS = {
+    "initialCapture": "native-installed-app.startup-native-default.png",
+    "minimumCapture": "native-installed-app.startup-native-minimum.png",
+}
+OPTIONAL_EVIDENCE_FILES = {name: name for name in (
+    {ICON_REPORT, TASKBAR_SCREENSHOT} | UPDATE_SCREENSHOTS
+    | set(STARTUP_RENDERER_SCREENSHOTS.values()) | set(STARTUP_NATIVE_SCREENSHOTS.values()))}
 TASKBAR_UNAVAILABLE_REASONS = {"SHELL_TASKBAR_UNAVAILABLE", "TASKBAR_CAPTURE_FAILED"}
 
 
@@ -222,6 +233,41 @@ def _taskbar_capture(app, *, required, account):
     return capture["sha256"]
 
 
+def _startup_captures(app, tag, account):
+    """Bind the v0.1.10 startup capture set to each installed account's report."""
+    if int(tag.removeprefix("v0.1.")) < 10:
+        return {}
+    _require(isinstance(app, dict) and isinstance(app.get("startup"), dict),
+             f"Startup report is missing: {account}")
+    startup = app["startup"]
+    waiting = startup.get("waiting")
+    screenshots = waiting.get("screenshots") if isinstance(waiting, dict) else None
+    _require(isinstance(screenshots, list) and len(screenshots) == len(STARTUP_RENDERER_SCREENSHOTS),
+             f"Startup renderer capture declarations are missing: {account}")
+    labels = set()
+    for capture in screenshots:
+        _require(isinstance(capture, dict) and isinstance(capture.get("label"), str),
+                 f"Invalid startup renderer capture declaration: {account}")
+        label = capture["label"]
+        _require(label in STARTUP_RENDERER_SCREENSHOTS and label not in labels
+                 and capture.get("path") == STARTUP_RENDERER_SCREENSHOTS[label]
+                 and capture.get("rendererSurfaceOnly") is True,
+                 f"Invalid startup renderer capture declaration: {account}")
+        labels.add(label)
+    files = {name: None for name in STARTUP_RENDERER_SCREENSHOTS.values()}
+    native = startup.get("nativeWindows")
+    _require(isinstance(native, dict), f"Startup native capture declarations are missing: {account}")
+    for key, name in STARTUP_NATIVE_SCREENSHOTS.items():
+        report = native.get(key)
+        capture = report.get("screenshot") if isinstance(report, dict) else None
+        _require(isinstance(capture, dict) and type(capture.get("captured")) is bool,
+                 f"Invalid startup native capture declaration: {account}/{key}")
+        if capture["captured"]:
+            _require(_sha(capture.get("sha256")), f"Invalid startup native capture digest: {account}/{key}")
+            files[name] = capture["sha256"]
+    return files
+
+
 def standard_evidence_files(candidate, tag, app):
     """Return the exact public standard-user file set declared by these reports."""
     icons = _icon_declaration(candidate, tag)
@@ -230,6 +276,7 @@ def standard_evidence_files(candidate, tag, app):
         files.update(UPDATE_SCREENSHOTS)
     if _taskbar_capture(app, required=icons, account="standard-user") is not None:
         files.add(TASKBAR_SCREENSHOT)
+    files.update(_startup_captures(app, tag, "standard-user"))
     return files
 
 
@@ -246,6 +293,7 @@ def _required_files(candidate, tag, app, installer, standard):
         files[ICON_REPORT] = ICON_REPORT
     if candidate.get("inAppUpdateFixture") is True:
         files.update({name: name for name in UPDATE_SCREENSHOTS})
+    files.update({name: name for name in _startup_captures(app, tag, "main")})
     captures = {
         "main": _taskbar_capture(app, required=icons, account="main"),
         "standard-user": _taskbar_capture(standard_app, required=icons, account="standard-user"),
@@ -256,6 +304,10 @@ def _required_files(candidate, tag, app, installer, standard):
     if captures["standard-user"] is not None:
         _require(hashlib.sha256(standard[TASKBAR_SCREENSHOT]).hexdigest() == captures["standard-user"],
                  "Standard-user taskbar capture checksum mismatch")
+    for name, digest in _startup_captures(standard_app, tag, "standard-user").items():
+        if digest is not None:
+            _require(hashlib.sha256(standard[name]).hexdigest() == digest,
+                     f"Standard-user startup capture checksum mismatch: {name}")
     return files, captures, icons
 
 
@@ -381,6 +433,10 @@ def verify_evidence(directory: Path) -> dict:
     if captures["main"] is not None:
         _require(captures["main"] == files["evidence/" + TASKBAR_SCREENSHOT]["sha256"],
                  "Main-account taskbar capture checksum mismatch")
+    for name, digest in _startup_captures(app, manifest["tag"], "main").items():
+        if digest is not None:
+            _require(files["evidence/" + name]["sha256"] == digest,
+                     f"Main-account startup capture checksum mismatch: {name}")
     expected_paths = set(files) | {"manifest.json", "README.md", "evidence"}
     actual_paths = set()
     for path in directory.rglob("*"):

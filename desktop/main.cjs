@@ -1,15 +1,16 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, dialog, session, screen, ipcMain } = require('electron');
+const { app, Menu, dialog, session, screen, ipcMain } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
 const { launchConfig, HEADER, pageAllowed, popupKind, requestAllowed, downloadAllowed, windowBounds } = require('./host-policy.cjs');
 const { startBackend } = require('./backend.cjs');
-const { CHANNEL, preferenceStore, preferenceRequest } = require('./preferences.cjs');
+const { CHANNEL, preferenceStore, preferenceRequest, readWindowState } = require('./preferences.cjs');
 const updates = require('./updates.cjs');
 const { createStartup, waitForWorkbench } = require('./startup.cjs');
+const { createWindowShell, HEIGHT: TITLEBAR_HEIGHT } = require('./window-shell.cjs');
 const appIcon = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 
 app.setName('FundsTrace');
@@ -19,6 +20,7 @@ let backend, preparation, temporaryRoot, quitting = false, shutdownComplete = fa
 let updateService, installUpdate = false, updateTimer;
 const owned = new Set();
 const windows = new Set();
+const shells = new Map();
 
 async function fail(message) {
   if (quitting || fatalShown) return;
@@ -62,6 +64,15 @@ else {
     try {
       if (synthetic && app.isPackaged) throw new Error('Synthetic mode is unavailable in installed builds.');
       app.dock?.setIcon(appIcon);
+      // A single Main-owned store prevents geometry and renderer preferences
+      // overwriting one another. Disposable source mode never changes user settings.
+      const transientPreferences = new Map();
+      const preferences = synthetic ? {
+        getItem: key => transientPreferences.get(key) ?? null,
+        setItem: (key, value) => { transientPreferences.set(key, value); return true; },
+        removeItem: key => transientPreferences.delete(key),
+      } : preferenceStore(app.getPath('userData'));
+      const savedWindow = readWindowState(preferences.getItem('fund_window_state'));
       let origin, token;
       const localSession = session.fromPartition(`funds-trace-${randomUUID()}`, { cache: false });
       localSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
@@ -79,21 +90,102 @@ else {
         if (!webContents || !owned.has(webContents.id) || !downloadAllowed(item.getURL(), origin)) { event.preventDefault(); return; }
         item.once('done', (_event, state) => {
           if (state === 'completed' || quitting) return;
-          const owner = webContents.isDestroyed() ? null : BrowserWindow.fromWebContents(webContents);
+          const owner = [...windows].find(win => shells.get(win)?.contents === webContents) || null;
           const options = { type: state === 'cancelled' ? 'info' : 'warning', title: 'FundsTrace 下载', message: state === 'cancelled' ? '下载已取消，文件未保存。' : '下载未完成，请重新导出并选择保存位置。' };
           void (owner ? dialog.showMessageBox(owner, options) : dialog.showMessageBox(options));
         });
         // Do not setSavePath: Electron presents the normal Save dialog.
       });
-      function createWindow() {
+      let menuReady = false;
+      const windowContents = win => shells.get(win)?.contents;
+      const menuWindow = fallback => process.platform === 'darwin'
+        ? [...windows].find(win => !win.isDestroyed() && win.isFocused()) || fallback : fallback;
+      const menuTemplate = win => [
+        ...(process.platform === 'darwin' ? [{ label: 'FundsTrace', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] }] : []),
+        { label: '文件', submenu: [{ label: '资金图谱', click: () => void navigate(menuWindow(win), `${origin}/`) }, { label: '案件与导入', click: () => void navigate(menuWindow(win), `${origin}/workspace/`) }, { type: 'separator' }, { role: 'quit' }] },
+        { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
+        { label: '显示', submenu: [{ label: '重新加载', accelerator: 'CmdOrCtrl+R', click: () => windowContents(menuWindow(win))?.reload() },
+          { label: '实际大小', accelerator: 'CmdOrCtrl+0', click: () => windowContents(menuWindow(win))?.setZoomLevel(0) },
+          { label: '放大', accelerator: 'CmdOrCtrl+Plus', click: () => zoom(menuWindow(win), .5) },
+          { label: '缩小', accelerator: 'CmdOrCtrl+-', click: () => zoom(menuWindow(win), -.5) },
+          { label: '全屏', accelerator: process.platform === 'darwin' ? 'Control+Command+F' : 'F11', click: () => { const current = menuWindow(win); if (!current.isDestroyed()) current.setFullScreen(!current.isFullScreen()); } }] },
+        { label: '帮助', submenu: [{ label: '检查更新', enabled: app.isPackaged && process.platform === 'win32' && !synthetic, click: () => void updateService?.action('check') }] },
+      ];
+      function zoom(win, amount) {
+        const contents = windowContents(win);
+        if (contents && !contents.isDestroyed()) contents.setZoomLevel(Math.max(-7.5, Math.min(8.5, contents.getZoomLevel() + amount)));
+      }
+      async function navigate(win, url) {
+        const host = shells.get(win);
+        if (!host || win.isDestroyed()) return;
+        try {
+          await Promise.all([host.loaded, host.contents.loadURL(url)]);
+          if (!quitting && !win.isDestroyed()) { win.show(); host.contents.focus(); }
+        } catch { if (!quitting && !win.isDestroyed()) void fail('FundsTrace 页面无法打开，请重试。'); }
+      }
+      function openMenu(win) {
+        const host = shells.get(win);
+        if (!menuReady || quitting || !host || win.isDestroyed()) return;
+        host.contents.focus();
+        Menu.buildFromTemplate(menuTemplate(win)).popup({ window: win, x: 8, y: TITLEBAR_HEIGHT });
+      }
+      function createWindow(remember = false) {
         const owner = [...windows][0];
-        const display = owner ? screen.getDisplayMatching(owner.getBounds()) : screen.getPrimaryDisplay();
-        const win = new BrowserWindow({ title: '循迹 FundsTrace', backgroundColor: '#10171f', icon: appIcon, ...windowBounds(display.workArea), show: false,
-          webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: localSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, spellcheck: false } });
-        const contents = win.webContents;
+        const savedBounds = remember ? savedWindow?.bounds : null;
+        const display = savedBounds ? screen.getDisplayMatching(savedBounds)
+          : owner ? screen.getDisplayMatching(owner.getBounds()) : screen.getPrimaryDisplay();
+        const initialBounds = windowBounds(display.workArea, savedBounds);
+        const host = createWindowShell({
+          windowOptions: { title: '循迹 FundsTrace', backgroundColor: '#10171f', icon: appIcon, ...initialBounds, show: false },
+          webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: localSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, spellcheck: false },
+          onFailure: () => void fail('FundsTrace 页面进程已停止，请重新打开应用。'), onMenu: openMenu,
+        });
+        const { win, contents } = host;
+        const captionContents = win.webContents;
+        shells.set(win, host);
+        host.setMenuEnabled(menuReady);
         const contentsId = contents.id;
         windows.add(win); owned.add(contentsId);
         let displayId = display.id, fitting = false;
+        let normalBounds = savedBounds || Object.fromEntries(['x', 'y', 'width', 'height'].map(key => [key, initialBounds[key]]));
+        let maximized = remember && savedWindow?.maximized === true;
+        let saveTimer, savedWindowValue = preferences.getItem('fund_window_state');
+        const saveWindow = () => {
+          clearTimeout(saveTimer);
+          const value = JSON.stringify({ bounds: normalBounds, maximized });
+          if (remember && value !== savedWindowValue && preferences.setItem('fund_window_state', value)) savedWindowValue = value;
+        };
+        const scheduleSave = () => {
+          if (!remember) return;
+          clearTimeout(saveTimer); saveTimer = setTimeout(saveWindow, 250); saveTimer.unref();
+        };
+        let userResize = false, userMove = false;
+        // These events identify a user gesture. Automatic work-area fitting,
+        // DPI changes and maximized frames must not replace the preferred size.
+        const userGestureAllowed = () => remember && !fitting && !win.isDestroyed() && !win.isMaximized() && !win.isFullScreen();
+        const beginResize = () => { if (userGestureAllowed()) userResize = true; };
+        const beginMove = () => { if (userGestureAllowed()) userMove = true; };
+        const rememberBounds = () => {
+          if ((userResize || userMove) && userGestureAllowed()) {
+            // will-resize/move carry proposed native outer bounds on Windows.
+            // Read the completed logical rectangle so hidden frame insets are
+            // never accumulated on every restart. Moving retains preferred size.
+            const current = win.getBounds();
+            const next = { x: current.x, y: current.y,
+              width: userResize ? current.width : normalBounds.width,
+              height: userResize ? current.height : normalBounds.height };
+            if (readWindowState(JSON.stringify({ bounds: next, maximized: false }))) normalBounds = next;
+            scheduleSave();
+          }
+          userResize = userMove = false;
+        };
+        const rememberMaximized = () => { maximized = true; saveWindow(); };
+        const rememberRestored = () => { maximized = false; saveWindow(); };
+        const closeWindow = () => { rememberBounds(); saveWindow(); };
+        win.on('will-move', beginMove); win.on('will-resize', beginResize);
+        win.on('resized', rememberBounds); win.on('moved', rememberBounds);
+        win.on('maximize', rememberMaximized); win.on('unmaximize', rememberRestored);
+        win.on('close', closeWindow);
         const fitWorkArea = () => {
           if (fitting || win.isDestroyed()) return;
           fitting = true;
@@ -118,10 +210,15 @@ else {
         screen.on('display-metrics-changed', fitWorkArea);
         screen.on('display-removed', fitWorkArea);
         win.on('closed', () => {
+          clearTimeout(saveTimer);
+          win.removeListener('will-move', beginMove); win.removeListener('will-resize', beginResize);
+          win.removeListener('resized', rememberBounds); win.removeListener('moved', rememberBounds);
+          win.removeListener('maximize', rememberMaximized); win.removeListener('unmaximize', rememberRestored);
+          win.removeListener('close', closeWindow);
           win.removeListener('move', movedDisplay);
           for (const event of normalBoundsEvents) win.removeListener(event, fitWorkArea);
           screen.removeListener('display-metrics-changed', fitWorkArea); screen.removeListener('display-removed', fitWorkArea);
-          windows.delete(win); owned.delete(contentsId);
+          windows.delete(win); owned.delete(contentsId); shells.delete(win);
         });
         contents.on('will-attach-webview', event => event.preventDefault());
         contents.on('will-navigate', (event, url) => {
@@ -132,7 +229,45 @@ else {
           if (popupKind(url, origin) === 'download') contents.downloadURL(url);
         });
         contents.on('will-redirect', (event, url) => { if (!pageAllowed(url, origin)) event.preventDefault(); });
-        contents.on('render-process-gone', () => void fail('FundsTrace 页面进程已停止，请重新打开应用。'));
+        // Windows has no hidden native menu strip: keep accelerators in the
+        // business renderer while the caption remains at an independent 100%.
+        let altMenuPending = false;
+        const shortcuts = (event, input) => {
+          if (!menuReady || quitting) return;
+          const key = input.key.toLowerCase();
+          if (key === 'alt') {
+            if (input.type === 'keyDown' && !input.control && !input.meta && !input.shift) altMenuPending = true;
+            if (input.type === 'keyUp') {
+              if (altMenuPending) { event.preventDefault(); openMenu(win); }
+              altMenuPending = false;
+            }
+            return;
+          }
+          if (input.type !== 'keyDown') return;
+          altMenuPending = false;
+          if (key === 'f10' && !input.shift && !input.alt && !input.control && !input.meta) {
+            event.preventDefault(); openMenu(win); return;
+          }
+          if (input.alt || input.meta) return;
+          let action;
+          if (key === 'f11') action = () => win.setFullScreen(!win.isFullScreen());
+          else if (key === 'f5' || input.control && key === 'r') action = () => contents.reload();
+          else if (input.control && key === '0') action = () => contents.setZoomLevel(0);
+          else if (input.control && ['+', '=', 'add'].includes(key)) action = () => zoom(win, .5);
+          else if (input.control && ['-', 'subtract'].includes(key)) action = () => zoom(win, -.5);
+          if (action) { event.preventDefault(); action(); }
+        };
+        if (process.platform !== 'darwin') {
+          const cancelAltMenu = () => { altMenuPending = false; };
+          contents.on('before-input-event', shortcuts);
+          captionContents.on('before-input-event', shortcuts);
+          win.on('blur', cancelAltMenu);
+          win.once('closed', () => {
+            win.removeListener('blur', cancelAltMenu);
+            contents.removeListener('before-input-event', shortcuts);
+            captionContents.removeListener('before-input-event', shortcuts);
+          });
+        }
         contents.setWindowOpenHandler(({ url }) => {
           const kind = popupKind(url, origin);
           if (kind === 'download') { contents.downloadURL(url); return { action: 'deny' }; }
@@ -141,24 +276,28 @@ else {
           // Electron's guest-window factory (which has a separate ownership
           // contract in current Electron versions).
           const child = createWindow();
-          void child.loadURL(url).catch(() => void fail('FundsTrace 分析页面无法打开，请重试。'));
+          void navigate(child, url);
           return { action: 'deny' };
         });
-        win.once('ready-to-show', () => { if (!quitting && !win.isDestroyed()) win.show(); });
         return win;
       }
-      // Reserve native menu height before the fixed startup composition is shown.
-      Menu.setApplicationMenu(Menu.buildFromTemplate([
+      // The caption owns the Windows/Linux menu entry from the first frame.
+      // macOS keeps its system application menu without adding an in-window strip.
+      Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([
         ...(process.platform === 'darwin' ? [{ label: 'FundsTrace', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] }] : []),
         { label: '文件', submenu: [{ role: 'quit' }] },
         { label: '编辑', enabled: false, submenu: [] },
         { label: '显示', enabled: false, submenu: [] },
         { label: '帮助', enabled: false, submenu: [] },
-      ]));
-      const primary = createWindow();
-      const startup = createStartup(primary, { onFailure: () => void fail('循迹启动页面无法显示，请关闭后重新打开应用。') });
-      await startup.loaded;
+      ]) : null);
+      const primary = createWindow(true);
+      const primaryContents = windowContents(primary);
+      const startup = createStartup(primary, { contentInset: TITLEBAR_HEIGHT, focusContents: primaryContents,
+        onFailure: () => void fail('循迹启动页面无法显示，请关闭后重新打开应用。') });
+      await Promise.all([shells.get(primary).loaded, startup.loaded]);
       if (quitting || primary.isDestroyed()) return;
+      // maximize() also shows a hidden window; wait for both local surfaces first.
+      if (savedWindow?.maximized) primary.maximize();
       primary.show();
       preparation = (async () => {
         const dataDir = synthetic
@@ -173,7 +312,6 @@ else {
       if (!backend || quitting || primary.isDestroyed()) return;
       ({ origin, token } = await backend.ready);
       if (quitting || primary.isDestroyed()) return;
-      const preferences = preferenceStore(app.getPath('userData'));
       ipcMain.on(CHANNEL, (event, operation, key, value) => {
         event.returnValue = preferenceRequest(preferences, event, origin, owned, operation, key, value);
       });
@@ -186,8 +324,10 @@ else {
             dialog.showErrorBox('FundsTrace 更新', '安装程序未能启动。请从 analytix.top 下载最新版覆盖安装，已有案件和设置会保留。');
             installUpdate = false; app.quit(); return;
           }
-          for (const win of windows) if (!win.isDestroyed() && pageAllowed(win.webContents.getURL(), origin))
-            win.webContents.send(updates.CHANNEL, value);
+          for (const win of windows) {
+            const contents = windowContents(win);
+            if (!win.isDestroyed() && contents && pageAllowed(contents.getURL(), origin)) contents.send(updates.CHANNEL, value);
+          }
         },
         restart: async () => {
           const owner = [...windows].find(win => !win.isDestroyed());
@@ -208,17 +348,10 @@ else {
         if (['check', 'download', 'install'].includes(action)) return updateService.action(action);
         return null;
       });
-      const installMenu = () => Menu.setApplicationMenu(Menu.buildFromTemplate([
-        ...(process.platform === 'darwin' ? [{ label: 'FundsTrace', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] }] : []),
-        { label: '文件', submenu: [{ label: '资金图谱', click: () => [...windows][0]?.loadURL(`${origin}/`) }, { label: '案件与导入', click: () => [...windows][0]?.loadURL(`${origin}/workspace/`) }, { type: 'separator' }, { role: 'quit' }] },
-        { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-        { label: '显示', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
-        { label: '帮助', submenu: [{ label: '检查更新', enabled: updatesEnabled, click: () => void updateService.action('check') }] }
-      ]));
-      const workbench = waitForWorkbench(primary, origin);
+      const workbench = waitForWorkbench(primary, origin, { ipcMain, contents: primaryContents });
       try {
         await Promise.all([
-          primary.loadURL(`${origin}/`).then(() => workbench.navigated()),
+          primaryContents.loadURL(`${origin}/`).then(() => workbench.navigated()),
           workbench.ready.then(ready => { if (!ready) throw new Error('Workbench initialization failed'); }),
         ]);
       }
@@ -226,7 +359,9 @@ else {
       if (quitting || primary.isDestroyed()) return;
       startup.finish();
       if (!await startup.finished || quitting || primary.isDestroyed()) return;
-      installMenu();
+      menuReady = true;
+      for (const host of shells.values()) host.setMenuEnabled(true);
+      if (process.platform === 'darwin') Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate(primary)));
       if (updatesEnabled) {
         void updateService.action('check');
         updateTimer = setInterval(() => { if (!quitting) void updateService.action('check'); }, 6 * 60 * 60 * 1000);

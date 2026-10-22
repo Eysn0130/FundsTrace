@@ -9,6 +9,10 @@ const net = require('node:net');
 const path = require('node:path');
 const os = require('node:os');
 const { performance } = require('node:perf_hooks');
+const { pathToFileURL } = require('node:url');
+const { startupTarget, createInstalledStartupProbe, assertNativeClientGeometry, assertNativeWindowBounds } = require('./installed-startup-journey.cjs');
+const { titlebarTarget, createInstalledTitlebarProbe, runInstalledTitlebarJourney, safeTitlebarFailure,
+  safeProtocolMethod, protocolError, safeInstalledFailure, createMainErrorMarkerProbe } = require('./installed-titlebar-journey.cjs');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
 const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
 const { runInstalledProductionUpdateJourney } = require('./installed-production-update-journey.cjs');
@@ -28,7 +32,9 @@ const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, f
     offlineEnforcement: 'not-measured-by-this-helper; see standard-user compatibility report',
     simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
 const timings = report.timings, owned = [];
-let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, updateFixture, productionUpdate = false;
+let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, titlebarPage, analysisTitlebarPage,
+  titlebarProbe, updateFixture, productionUpdate = false, presentationPreferences;
+let releaseStartupInspection = async () => {};
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function bounded(promise, ms) {
@@ -89,6 +95,75 @@ async function windowIcons(installRoot, processId, minimumWindows, taskbarScreen
   assert.ok(result.visibleWindowCount >= minimumWindows);
   return result;
 }
+async function nativeStartupWindow(installRoot, processId, { action = 'Inspect', widthDip, heightDip, screenshotPath, dragXDip, menuXDip } = {}) {
+  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+    path.resolve(__dirname, '../../scripts/test-windows-startup-window.ps1'),
+    '-InstallRoot', installRoot, '-ProcessId', String(processId), '-Action', action];
+  if (widthDip !== undefined) args.push('-WidthDip', String(widthDip), '-HeightDip', String(heightDip));
+  if (screenshotPath) args.push('-ScreenshotPath', screenshotPath);
+  if (dragXDip !== undefined) args.push('-DragXDip', String(dragXDip), '-MenuXDip', String(menuXDip));
+  let stdout;
+  try { ({ stdout } = await promisify(execFile)('pwsh.exe', args, { timeout:20000, maxBuffer:128 * 1024, windowsHide:true })); }
+  catch (error) {
+    if (![1, 2].includes(error.code) || typeof error.stdout !== 'string') throw new Error('STARTUP_NATIVE_WINDOW_FAILED');
+    stdout = error.stdout;
+  }
+  let result;
+  try { result = JSON.parse(String(stdout).replace(/^\uFEFF/, '')); }
+  catch { throw new Error('STARTUP_NATIVE_REPORT_INVALID'); }
+  assert.equal(result.schemaVersion, 1);
+  if (result.status === 'failed') {
+    const stages = ['ciPlatform','syntheticUserBinding','inputBinding','nativeWindowReader','installedProcessBinding',
+      'physicalDpiContext','uniqueVisibleWindow','nativeWindowInspect','nativeWindowResize','screenshotOutputBinding','nativeWindowCapture','nativeCaptionInteraction'];
+    const codes=['OWNED_WINDOW_COUNT','FOREGROUND_BINDING','HTCLOSE','STATE_TIMEOUT','PROCESS_BINDING','NATIVE_GEOMETRY','CAPTION_POINT','NATIVE_CLOSE_FAILED'];
+    report.startupNativeFailure = { failedCheck:stages.includes(result.failedCheck) ? result.failedCheck : 'unknown', processBound:result.processBound === true,
+      ...(action==='CaptionCloseForeground' ? {failureCode:codes.includes(result.failureCode) ? result.failureCode : 'NATIVE_CLOSE_FAILED'} : {}) };
+  }
+  assert.equal(result.processBound, true);
+  assert.ok(result.status === 'passed' || ['Capture','CaptionProbe','CaptionClose','CaptionCloseForeground','ZoomIn','ZoomReset'].includes(action) && result.status === 'unavailable');
+  return result;
+}
+async function nativeStartupBounds(config, primary, target) {
+  const observe = options => nativeStartupWindow(config.installRoot, primary.child.pid, options);
+  const result = report.startup.nativeWindows = { step:'initialInspect', actualSystemDpiValidated:false,
+    scope:'actual-installed-HWND-on-Windows-Server; no-system-display-setting-changes' };
+  const initial = await observe({});
+  result.initial = initial;
+  const scale = initial.scaleFactor, area = initial.workArea;
+  const defaultWidth = Math.round(Math.min(1440, area.width / scale - 64, (area.height / scale - 64) * 16 / 9));
+  const expected = { width:Math.min(Math.max(1280, defaultWidth), area.width / scale),
+    height:Math.min(Math.max(720, Math.round(defaultWidth * 9 / 16)), area.height / scale) };
+  const min = { width:Math.min(1280, area.width / scale), height:Math.min(720, area.height / scale) };
+  result.expectedInitialDip={...expected,minWidth:min.width,minHeight:min.height};
+  assertNativeWindowBounds(initial,result.expectedInitialDip);
+  const client = async native => {
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))', target);
+    const value = await evaluate(`({width:innerWidth,height:innerHeight,dpr:devicePixelRatio,
+      outerWidth,outerHeight,screenX,screenY,
+      scale:Number(getComputedStyle(document.querySelector('#startup-surface')).getPropertyValue('--brand-scale'))})`, target);
+    (result.clientMeasurements ||= []).push(value);
+    result.clientChromeInsetDip = assertNativeClientGeometry(native, value, result.clientChromeInsetDip);
+    await titlebarProbe.checkBody(target, native);
+    return value;
+  };
+  result.step = 'defaultCapture';
+  if (config.screenshot) result.initialCapture = await observe({ action:'Capture', screenshotPath:`${config.screenshot.slice(0, -4)}.startup-native-default.png` });
+  result.step = 'initialClient';
+  result.initialClient = await client(initial);
+  result.step = 'minimumResize';
+  const minimum = await observe({ action:'Resize', widthDip:Math.round(min.width), heightDip:Math.round(min.height) });
+  result.minimum = minimum;
+  assertNativeWindowBounds(minimum,{...min,minWidth:min.width,minHeight:min.height});
+  result.minimumClient = await client(minimum);
+  result.step = 'minimumCapture';
+  if (config.screenshot) result.minimumCapture = await observe({ action:'Capture', screenshotPath:`${config.screenshot.slice(0, -4)}.startup-native-minimum.png` });
+  result.step = 'restoreDefault';
+  result.restored = await observe({ action:'Resize', widthDip:Math.round(initial.electronWindow.width / scale), heightDip:Math.round(initial.electronWindow.height / scale) });
+  assertNativeWindowBounds(result.restored,result.expectedInitialDip);
+  await client(result.restored);
+  result.step = 'completed';
+  return result;
+}
 function argumentsOf() {
   const args = process.argv.slice(2);
   assert.ok(args.length === 3 || args.length === 5 || args.length === 7);
@@ -121,7 +196,7 @@ function boot(executable, installRoot, env, debug) {
   if (updateFixture) args.push('--no-proxy-server', '--host-resolver-rules=MAP analytix.top 127.0.0.1, MAP download.analytix.top 127.0.0.1');
   const child = spawn(executable, args,
     { cwd: installRoot, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
-  const instance = { child, done: false, failed: false, debugUrl: null };
+  const instance = { child, done: false, failed: false, debugUrl: null, mainErrors:createMainErrorMarkerProbe() };
   owned.push(instance);
   instance.exited = new Promise(resolve => {
     child.once('exit', (code, signal) => { instance.done = true; resolve({ code, signal }); });
@@ -131,6 +206,7 @@ function boot(executable, installRoot, env, debug) {
   let partial = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', chunk => {
+    instance.mainErrors.consume(chunk);
     if (!debug || instance.debugUrl) return;
     partial = (partial + chunk).slice(-8192);
     const lines = partial.split('\n'); partial = lines.pop();
@@ -147,40 +223,41 @@ function boot(executable, installRoot, env, debug) {
 async function connect(url) {
   const socket = new WebSocket(url), pending = new Map();
   let sequence = 0, closed = false, listener = () => {};
-  function rejectPending() {
+  function rejectPending(kind = 'CDP_CLOSED') {
     closed = true;
-    for (const { reject, timer } of pending.values()) { clearTimeout(timer); reject(new Error('CDP_CLOSED')); }
+    for (const { reject, timer, protocolMethod } of pending.values()) { clearTimeout(timer); reject(protocolError(kind,protocolMethod)); }
     pending.clear();
   }
-  socket.addEventListener('close', rejectPending);
-  socket.addEventListener('error', rejectPending);
+  socket.addEventListener('close', () => rejectPending());
+  socket.addEventListener('error', () => rejectPending());
   socket.addEventListener('message', event => {
     let message;
-    try { message = JSON.parse(String(event.data)); } catch { rejectPending(); return; }
+    try { message = JSON.parse(String(event.data)); } catch { rejectPending('CDP_INVALID_JSON'); return; }
     if (message.id) {
       const request = pending.get(message.id); if (!request) return;
       pending.delete(message.id); clearTimeout(request.timer);
-      if (message.error) request.reject(new Error('CDP_COMMAND')); else request.resolve(message.result || {});
+      if (message.error) request.reject(protocolError('CDP_COMMAND',request.protocolMethod)); else request.resolve(message.result || {});
     } else {
-      try { listener(message); } catch { rejectPending(); }
+      try { listener(message); } catch { rejectPending('CDP_LISTENER_FAILED'); }
     }
   });
   try {
     await bounded(new Promise((resolve, reject) => {
       socket.addEventListener('open', resolve, { once: true });
-      socket.addEventListener('error', () => reject(new Error('CDP_CONNECT')), { once: true });
+      socket.addEventListener('error', () => reject(protocolError('CDP_CONNECT')), { once: true });
     }), 10000);
   } catch (error) { socket.close(); throw error; }
   return {
     onEvent(handler) { listener = handler; },
     send(method, params = {}, sessionId, timeout = 10000) {
-      if (closed || socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error('CDP_CLOSED'));
+      const protocolMethod=safeProtocolMethod(method);
+      if (closed || socket.readyState !== WebSocket.OPEN) return Promise.reject(protocolError('CDP_CLOSED',protocolMethod));
       return new Promise((resolve, reject) => {
         const id = ++sequence;
-        const timer = setTimeout(() => { pending.delete(id); reject(new Error('CDP_TIMEOUT')); }, timeout);
-        pending.set(id, { resolve, reject, timer });
+        const timer = setTimeout(() => { pending.delete(id); reject(protocolError('CDP_TIMEOUT',protocolMethod)); }, timeout);
+        pending.set(id, { resolve, reject, timer, protocolMethod });
         try { socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); }
-        catch { pending.delete(id); clearTimeout(timer); reject(new Error('CDP_SEND')); }
+        catch { pending.delete(id); clearTimeout(timer); reject(protocolError('CDP_SEND',protocolMethod)); }
       });
     },
     close() { listener = () => {}; rejectPending(); socket.close(); },
@@ -188,7 +265,8 @@ async function connect(url) {
 }
 async function evaluate(expression, target = page) {
   const result = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, target.sessionId);
-  assert.ok(!result.exceptionDetails);
+  try {assert.ok(!result.exceptionDetails);}
+  catch(error) {error.protocolMethod='Runtime.evaluate';throw error;}
   return result.result?.value;
 }
 // Runtime inspects/layouts the DOM and reads the published update status. Product actions use actual CDP
@@ -255,6 +333,40 @@ async function portClosed(port) {
     socket.setTimeout(1000, () => finish(false));
   });
 }
+async function readPresentationPreferences(userRoot) {
+  // The lifecycle sentinel binds this path to the disposable CI user above.
+  // Retain only the two presentation keys this journey changes, never case data.
+  const file = path.join(userRoot, 'preferences.json');
+  const values = await fs.readFile(file, 'utf8').catch(error => {
+    if (error.code === 'ENOENT') return '{}';
+    throw error;
+  });
+  assert.ok(Buffer.byteLength(values) <= 16384, 'PRESENTATION_PREFERENCES_TOO_LARGE');
+  const current = JSON.parse(values), saved = {};
+  assert.ok(current && typeof current === 'object' && !Array.isArray(current));
+  for (const key of ['fund_window_state', 'fund_sidebar_width']) {
+    if (Object.hasOwn(current, key)) saved[key] = current[key];
+  }
+  return { file, saved };
+}
+async function restorePresentationPreferences(snapshot) {
+  const values = await fs.readFile(snapshot.file, 'utf8').catch(error => {
+    if (error.code === 'ENOENT') return '{}';
+    throw error;
+  });
+  assert.ok(Buffer.byteLength(values) <= 16384, 'PRESENTATION_PREFERENCES_TOO_LARGE');
+  const current = JSON.parse(values);
+  assert.ok(current && typeof current === 'object' && !Array.isArray(current));
+  for (const key of ['fund_window_state', 'fund_sidebar_width']) {
+    if (Object.hasOwn(snapshot.saved, key)) current[key] = snapshot.saved[key];
+    else delete current[key];
+  }
+  const temporary = `${snapshot.file}.ci-presentation-${process.pid}.tmp`;
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(current)}\n`, { flag:'wx' });
+    await fs.rename(temporary, snapshot.file);
+  } finally { await fs.rm(temporary, { force:true }); }
+}
 
 (async () => {
   const config = await check('ciSyntheticUser', async () => {
@@ -266,6 +378,7 @@ async function portClosed(port) {
     const userRoot = path.join(process.env.APPDATA, 'FundsTrace');
     assert.equal(await fs.readFile(path.join(userRoot, 'installer-lifecycle-sentinel.txt'), 'utf8'), SENTINEL);
     assert.ok((await fs.stat(path.join(userRoot, 'data', 'fund.duckdb'))).isFile());
+    if (!value.updateFixture && !value.productionUpdate) presentationPreferences = await readPresentationPreferences(userRoot);
     for (const output of [value.reportPath, value.screenshot].filter(Boolean)) {
       assert.ok(!within(userRoot, output) && !within(value.installRoot, output));
     }
@@ -289,6 +402,17 @@ async function portClosed(port) {
   });
   let errorCount = 0, instrumentationFailed = false;
   const sessions = new Map();
+  let startupInspectionHeld = !productionUpdate;
+  const heldBusinessSessions = new Set(), debuggerSessions = new Set();
+  releaseStartupInspection = async () => {
+    startupInspectionHeld = false;
+    for (const sessionId of debuggerSessions) {
+      await cdp.send('Debugger.resume', {}, sessionId, 3000).catch(() => {});
+      await cdp.send('Debugger.disable', {}, sessionId, 3000).catch(() => {});
+    }
+    heldBusinessSessions.clear();
+    debuggerSessions.clear();
+  };
   await check('installedWindowReady', async () => {
     const debugUrl = await until(() => {
       assert.ok(!primary.done); return primary.debugUrl;
@@ -298,9 +422,29 @@ async function portClosed(port) {
       if (message.method === 'Runtime.exceptionThrown' || message.method === 'Inspector.targetCrashed'
         || message.method === 'Target.targetCrashed'
         || message.method === 'Runtime.consoleAPICalled' && message.params?.type === 'error') errorCount += 1;
+      if (message.method === 'Debugger.paused') {
+        const item = [...sessions.values()].find(value => value.sessionId === message.sessionId);
+        void (async () => {
+          if (!item) return;
+          const { targetInfo } = await cdp.send('Target.getTargetInfo', { targetId:item.targetId });
+          if (startupInspectionHeld && businessOrigin(targetInfo.url)) {
+            item.paused = true;
+            heldBusinessSessions.add(item.sessionId);
+          } else {
+            // An initially blank target may turn out to be the local overlay.
+            // Never keep that renderer paused based on stale attachment metadata.
+            await cdp.send('Debugger.resume', {}, item.sessionId).catch(() => {});
+            if (!startupInspectionHeld || startupTarget(targetInfo.url) || titlebarTarget(targetInfo.url)) {
+              await cdp.send('Debugger.disable', {}, item.sessionId).catch(() => {});
+              debuggerSessions.delete(item.sessionId);
+            }
+          }
+        })().catch(() => { if (startupInspectionHeld) instrumentationFailed = true; });
+        return;
+      }
       if (message.method !== 'Target.attachedToTarget') return;
       const { sessionId, targetInfo } = message.params;
-      const item = { sessionId, ready: false };
+      const item = { sessionId, targetId:targetInfo.targetId, ready: false, paused:false };
       if (targetInfo.type === 'page') sessions.set(targetInfo.targetId, item);
       void (async () => {
         // A newly created renderer is paused before its execution context
@@ -310,15 +454,65 @@ async function portClosed(port) {
         if (targetInfo.type === 'page') {
           await cdp.send('Runtime.enable', {}, sessionId);
           await cdp.send('Page.enable', {}, sessionId);
+          if (startupInspectionHeld) {
+            // CI inspection only: hold execution of our own business page while
+            // measuring the unmodified shipped startup layer. No fake readiness.
+            debuggerSessions.add(sessionId);
+            await cdp.send('Debugger.enable', {}, sessionId);
+            if (startupInspectionHeld) await cdp.send('Debugger.setInstrumentationBreakpoint', { instrumentation:'beforeScriptExecution' }, sessionId);
+            if (!startupInspectionHeld) await cdp.send('Debugger.disable', {}, sessionId).catch(() => {});
+          }
         }
         item.ready = true;
       })().catch(() => { instrumentationFailed = true; });
     });
     await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+    if (!productionUpdate) await check('installedStartupAnimationAndBounds', () => bounded((async () => {
+      const expectedUrl = pathToFileURL(path.join(config.installRoot, 'resources/app.asar/startup/index.html')).href;
+      const startup = await until(async () => {
+        assert.ok(!primary.done && !instrumentationFailed);
+        const { targetInfos } = await cdp.send('Target.getTargets');
+        const pages = targetInfos.filter(target => target.type === 'page');
+        assert.ok(pages.length <= 3);
+        const overlays = pages.filter(target => startupTarget(target.url));
+        const captions = pages.filter(target => titlebarTarget(target.url));
+        const business = pages.filter(target => businessOrigin(target.url));
+        const pending = pages.filter(target => !target.url || target.url === 'about:blank');
+        assert.ok(overlays.length <= 1 && captions.length <= 1 && business.length <= 1
+          && overlays.length + captions.length + business.length + pending.length === pages.length);
+        const caption = captions[0], captionSession = caption && sessions.get(caption.targetId);
+        const target = overlays[0], session = target && sessions.get(target.targetId);
+        if (!target || !session?.ready || !captionSession?.ready) return false;
+        assert.equal(target.url, expectedUrl);
+        assert.equal(caption.url, pathToFileURL(path.join(config.installRoot, 'resources/app.asar/titlebar/index.html')).href);
+        titlebarPage = { ...captionSession, targetId:caption.targetId };
+        return { ...session, targetId:target.targetId };
+      }, 20000);
+      await until(() => [...sessions.values()].some(item => heldBusinessSessions.has(item.sessionId) && item.paused), 15000);
+      report.startup = { deliberatelyHeldBusinessRenderer:true, measuredUserColdStart:false };
+      titlebarProbe = await createInstalledTitlebarProbe({cdp,target:titlebarPage,evaluate,until,
+        failureScreenshotPath:config.screenshot ? `${config.screenshot.slice(0,-4)}.startup-caption-failure.png` : undefined});
+      report.titlebar = {heightDip:32,limits:{windows11Snap:false,windows10And11Interactive:false,actualSystemDpiValidated:false}};
+      const environmentReducedMotion = await evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches", startup);
+      await cdp.send('Emulation.setEmulatedMedia', {
+        features:[{ name:'prefers-reduced-motion', value:'no-preference' }],
+      }, startup.sessionId);
+      await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))', startup);
+      assert.equal(await evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches", startup), false);
+      report.startup.motionPreference = { environmentReducedMotion, tested:'no-preference', emulatedForInspection:true };
+      const probe = await createInstalledStartupProbe({ cdp, target:startup, evaluate, until,
+        screenshotPrefix:config.screenshot ? `${config.screenshot.slice(0, -4)}.startup` : undefined });
+      report.startup.nativeWindows = await nativeStartupBounds(config, primary, startup);
+      report.startup.waiting = await probe.observeWaitingAndLayout();
+      await releaseStartupInspection();
+      report.startup.completion = await probe.observeCompletion({ timeoutMs:15000 });
+      assert.ok(!instrumentationFailed);
+    })(), 45000).finally(releaseStartupInspection));
+    stage = 'installedWindowReady';
     page = await until(async () => {
       assert.ok(!primary.done && !instrumentationFailed);
       const { targetInfos } = await cdp.send('Target.getTargets');
-      const pages = targetInfos.filter(target => target.type === 'page');
+      const pages = targetInfos.filter(target => target.type === 'page' && !startupTarget(target.url) && !titlebarTarget(target.url));
       assert.ok(pages.length <= 1);
       const target = pages[0];
       const origin = target && businessOrigin(target.url);
@@ -331,13 +525,20 @@ async function portClosed(port) {
       const session = sessions.get(page.targetId);
       if (!session?.ready) return false;
       page.sessionId = session.sessionId;
-      // The data: startup document can replace its execution context while a
-      // first DOM probe is in flight. Retry only this bounded navigation probe.
+      // Navigation can replace the execution context while a first DOM probe
+      // is in flight. Retry only this bounded navigation probe.
       try {
         return await evaluate(`document.readyState === 'complete' && !!document.querySelector('#graphContainer')
           && !!document.querySelector('#caseSelect') && typeof state === 'object' && !state.graphLoading && state.graphInited`);
       } catch { return false; }
     }, 15000);
+  });
+  if (!productionUpdate) await check('installedPersistentCaptionStartup', async () => {
+    report.titlebar.startup = await titlebarProbe.finishStartup();
+    report.titlebar.readyBody = await titlebarProbe.checkBody(page);
+    const waiting = report.startup.nativeWindows.clientMeasurements.at(-1), ready = report.titlebar.readyBody.body;
+    assert.ok(Math.abs(waiting.width-ready.width)<=2 && Math.abs(waiting.height-ready.height)<=2,
+      'TITLEBAR_STARTUP_BUSINESS_VIEWPORT_DIFFERENT');
   });
   if (config.productionUpdate) {
     // The real prior release predates current graph/icon checks. Exercise only
@@ -375,6 +576,52 @@ async function portClosed(port) {
       const response = await fetch('/api/license/info'); if (!response.ok) return false;
       const value = await response.json(); return value.activation_required === false && value.activated === false;
     })()`), true);
+  });
+  await check('installedPersistentCaptionZoomReloadAndNativeControls', async () => {
+    report.titlebar.journey = await runInstalledTitlebarJourney({cdp,page,probe:titlebarProbe,evaluate,until,
+      nativeAction:options=>nativeStartupWindow(config.installRoot,primary.child.pid,options)});
+  });
+  await check('installedMinimumWorkspaceToolsAndSingleTableScroll', async () => {
+    const samples = report.minimumWorkspace = [];
+    const inspect = async label => {
+      await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      const value = await evaluate(`(() => {
+        const bars=[...document.querySelectorAll('#topbar,.ribbon-panel:not([hidden]),#ribbonCompact:not([hidden])')];
+        const action=document.querySelector('.ribbon-panel:not([hidden]) .ribbon-action');
+        const controls=bars.flatMap(bar=>[...bar.querySelectorAll('button,input,select,a')])
+          .filter(node=>node.getClientRects().length&&getComputedStyle(node).visibility!=='hidden');
+        const table=document.querySelector('#flowTableScroll');
+        return {width:innerWidth,height:innerHeight,dpr:devicePixelRatio,
+          bars:bars.map(bar=>({id:bar.id,client:bar.clientWidth,scroll:bar.scrollWidth})),
+          clippedControls:controls.filter(node=>{const r=node.getBoundingClientRect();return r.left < -1 || r.right > innerWidth+1;}).length,
+          action:action?{direction:getComputedStyle(action).flexDirection,font:parseFloat(getComputedStyle(action).fontSize),
+            icon:parseFloat(getComputedStyle(action.querySelector('.ui-icon')).width)}:null,
+          table:{columns:document.querySelectorAll('#flowTable thead th').length,overflow:getComputedStyle(table).overflowX,focusable:table.tabIndex===0},
+          duplicateScrollControls:[...document.querySelectorAll('.flow-horizontal-scroll')].filter(node=>node.getClientRects().length).length};
+      })()`);
+      samples.push({label,...value});
+      assert.ok(value.bars.length===2&&value.bars.every(bar=>bar.scroll<=bar.client+1),'WORKSPACE_TOOLBAR_OVERFLOW');
+      assert.equal(value.clippedControls,0,'WORKSPACE_TOOLBAR_CLIPPED');
+      if(value.action){assert.equal(value.action.direction,'column');assert.equal(value.action.font,12);assert.ok(Math.abs(value.action.icon-27)<.05);}
+      assert.deepEqual(value.table,{columns:7,overflow:'auto',focusable:true});
+      assert.equal(value.duplicateScrollControls,0);
+    };
+    try {
+      for(const size of [null,[1280,688,1],[1440,808,1],[1024,648,1.5]]) {
+        if(size) await cdp.send('Emulation.setDeviceMetricsOverride',{width:size[0],height:size[1],deviceScaleFactor:size[2],mobile:false},page.sessionId);
+        else await cdp.send('Emulation.clearDeviceMetricsOverride',{},page.sessionId);
+        for(const tab of ['common','trace','style','view']) {
+          await clickElement(`document.querySelector('#ribbonTab-${tab}')`);
+          await inspect(`${size?size.join('x'):'native'}:${tab}`);
+        }
+        await clickElement(`document.querySelector('[data-ribbon-collapse="true"]')`);
+        await inspect(`${size?size.join('x'):'native'}:compact`);
+        await clickElement(`document.querySelector('#ribbonCompact [data-ribbon-collapse="false"]')`);
+      }
+    } finally {
+      await cdp.send('Emulation.clearDeviceMetricsOverride',{},page.sessionId);
+      await clickElement(`document.querySelector('#ribbonTab-common')`);
+    }
   });
   await check('syntheticWindowContent', async () => {
     assert.equal(await evaluate(`(() => {
@@ -445,12 +692,15 @@ async function portClosed(port) {
       && state.graphInited && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(SEED_CASE)}
       && state.stats.flows === 0 && state.lastGraph.nodes.length === 0`);
   });
+  await check('installedPersistentCaptionNavigation', async () => {
+    report.titlebar.navigation = {sameShellTarget:true,caption:await titlebarProbe.read()};
+  });
   await check('analysisLinkClicked', () => clickElement(`document.querySelector('#analysisLink')`));
   await check('installedAnalysisWindowAttached', async () => {
     analysisPage = await until(async () => {
       assert.ok(!primary.done && !instrumentationFailed);
       const { targetInfos } = await cdp.send('Target.getTargets');
-      const pageCount = targetInfos.filter(target => target.type === 'page').length;
+      const pageCount = targetInfos.filter(target => target.type === 'page' && !titlebarTarget(target.url)).length;
       assert.ok(pageCount <= 2);
       if (pageCount !== 2) return false;
       const target = targetInfos.find(target => {
@@ -461,6 +711,24 @@ async function portClosed(port) {
       const session = target && sessions.get(target.targetId);
       return session?.ready ? { ...session, targetId: target.targetId, origin: page.origin } : false;
     }, 20000);
+  });
+  await check('installedAnalysisCaptionBoundToWindow', async () => {
+    assert.notEqual(analysisPage.targetId,page.targetId,'TITLEBAR_ANALYSIS_BUSINESS_TARGET');
+    analysisTitlebarPage = await until(async () => {
+      const {targetInfos} = await cdp.send('Target.getTargets');
+      assert.ok(targetInfos.some(value=>value.targetId===titlebarPage.targetId)
+        && targetInfos.some(value=>value.targetId===page.targetId),'TITLEBAR_PRIMARY_TARGETS_LOST_DURING_ANALYSIS_OPEN');
+      const captions=targetInfos.filter(value=>value.type==='page' && titlebarTarget(value.url) && value.targetId!==titlebarPage.targetId);
+      assert.ok(captions.length<=1,'TITLEBAR_ANALYSIS_CAPTION_AMBIGUOUS');
+      const target=captions[0],session=target && sessions.get(target.targetId);
+      if(target) assert.ok(target.url===pathToFileURL(path.join(config.installRoot,'resources/app.asar/titlebar/index.html')).href,
+        'TITLEBAR_ANALYSIS_CAPTION_FILE');
+      return session?.ready ? {...session,targetId:target.targetId} : false;
+    },10000);
+    const probe = await createInstalledTitlebarProbe({cdp,target:analysisTitlebarPage,evaluate,until});
+    report.titlebar.analysis = {...await probe.checkBody(analysisPage),targetSeparation:{distinctBodies:true,distinctCaptions:true,
+      newAnalysisCaptionAfterOpen:true,primaryCaptionRetained:true},
+      evidenceScope:'distinct-installed-renderer-targets-and-layout; window lifetime checked on close'};
   });
   await check('installedAnalysisLinkOpened', async () => {
     await readyDocument(`location.pathname === '/analysis' && !!document.querySelector('#panel')
@@ -475,10 +743,23 @@ async function portClosed(port) {
   await check('analysisControlsReachable', async () => {
     await evaluate(`document.querySelector('#btnRun').scrollIntoView({ block: 'center' })`, analysisPage);
     assert.equal(await evaluate(visibleControl(`document.querySelector('#btnRun')`), analysisPage), true);
-    await cdp.send('Page.close', {}, analysisPage.sessionId);
+    report.titlebar.analysis.nativeClose=await nativeStartupWindow(config.installRoot,primary.child.pid,{action:'CaptionCloseForeground'});
+    if(report.titlebar.analysis.nativeClose.status==='unavailable') {
+      report.titlebar.analysis.nativeClose.fallback='window.close-on-owning-local-shell; not a native button click';
+      // A successful close can destroy this execution context before its reply.
+      await evaluate('window.close()',analysisTitlebarPage).catch(()=>{});
+    } else {
+      assert.equal(report.titlebar.analysis.nativeClose.interaction.CloseButtonClicked,true,'TITLEBAR_ANALYSIS_NATIVE_CLOSE_CLICK');
+      assert.equal(report.titlebar.analysis.nativeClose.interaction.WindowClosedObserved,true,'TITLEBAR_ANALYSIS_NATIVE_CLOSE_OBSERVED');
+    }
     await until(async () => {
       const { targetInfos } = await cdp.send('Target.getTargets');
-      return !targetInfos.some(target => target.targetId === analysisPage.targetId);
+      const alive=id=>targetInfos.some(target=>target.targetId===id);
+      const lifetime={analysisBodyGone:!alive(analysisPage.targetId),analysisCaptionGone:!alive(analysisTitlebarPage.targetId),
+        primaryBodyAlive:alive(page.targetId),primaryCaptionAlive:alive(titlebarPage.targetId)};
+      report.titlebar.analysis.lifetimeCoupling=lifetime;
+      assert.ok(lifetime.primaryBodyAlive && lifetime.primaryCaptionAlive,'TITLEBAR_PRIMARY_TARGET_LOST_ON_ANALYSIS_CLOSE');
+      return lifetime.analysisBodyGone && lifetime.analysisCaptionGone;
     }, 10000);
   });
   await check('singleInstance', async () => {
@@ -486,10 +767,56 @@ async function portClosed(port) {
     assert.deepEqual(await bounded(second.exited, 15000), { code: 0, signal: null });
     assert.ok(!primary.done);
     const { targetInfos } = await cdp.send('Target.getTargets');
-    const pages = targetInfos.filter(target => target.type === 'page');
+    const pages = targetInfos.filter(target => target.type === 'page' && !titlebarTarget(target.url));
     assert.equal(pages.length, 1); assert.equal(pages[0].targetId, page.targetId);
+    assert.equal(targetInfos.filter(target=>target.type==='page' && titlebarTarget(target.url)).length,1);
+    await titlebarProbe.read();
     assert.equal(businessOrigin(pages[0].url), page.origin);
     assert.equal(await evaluate(`document.readyState === 'complete' && !!document.querySelector('#graphContainer')`), true);
+  });
+  let rememberedPresentation;
+  if (!updateFixture) await check('installedPresentationUserResize', async () => {
+    await cdp.send('Emulation.clearDeviceMetricsOverride', {}, page.sessionId);
+    const initial = await nativeStartupWindow(config.installRoot, primary.child.pid);
+    const scale = initial.scaleFactor, area = initial.workArea;
+    const minimum = { width:Math.min(1280, area.width / scale), height:Math.min(720, area.height / scale) };
+    // A deliberately free ratio verifies that a saved user size is not replaced
+    // by the first-open 16:9 default. Small CI desktops still have a few spare DIP.
+    const size = { width:Math.min(minimum.width + 80, area.width / scale),
+      height:Math.min(minimum.height + 5, area.height / scale) };
+    const resized = await nativeStartupWindow(config.installRoot, primary.child.pid,
+      { action:'UserResize', widthDip:Math.round(size.width), heightDip:Math.round(size.height) });
+    assert.deepEqual(resized.interaction, {source:'SendInput-native-resize-edge',userResizeObserved:true});
+    assertNativeWindowBounds(resized, {...size,minWidth:minimum.width,minHeight:minimum.height});
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    const handle = await evaluate(`(() => {
+      const node = document.querySelector('#workspaceSidebarResize'), rect = node.getBoundingClientRect();
+      const x = rect.x + rect.width / 2, y = rect.y + rect.height / 4;
+      return {x,y,hit:document.elementFromPoint(x,y)===node,
+        current:Number(node.getAttribute('aria-valuenow')),maximum:Number(node.getAttribute('aria-valuemax'))};
+    })()`);
+    assert.equal(handle.hit, true, 'PRESENTATION_SEPARATOR_REACHABLE');
+    const right = handle.current + 20 <= handle.maximum;
+    const delta = right ? 20 : -20, sidebarWidth = handle.current + delta;
+    report.presentationMemory = { scope:'installed-EXE-native-window-edge-and-sidebar-pointer-drag; same-isolated-Windows-user',
+      before:initial.electronWindow, changed:resized.electronWindow, scaleFactor:scale,
+      changedSize:initial.electronWindow.width !== resized.electronWindow.width || initial.electronWindow.height !== resized.electronWindow.height,
+      nativeUserResize:resized.interaction, expectedSidebarWidth:sidebarWidth };
+    await cdp.send('Input.dispatchMouseEvent',
+      {type:'mousePressed',x:handle.x,y:handle.y,button:'left',buttons:1,clickCount:1}, page.sessionId);
+    await cdp.send('Input.dispatchMouseEvent',
+      {type:'mouseMoved',x:handle.x+delta,y:handle.y,button:'left',buttons:1}, page.sessionId);
+    await cdp.send('Input.dispatchMouseEvent',
+      {type:'mouseReleased',x:handle.x+delta,y:handle.y,button:'left',buttons:0,clickCount:1}, page.sessionId);
+    report.presentationMemory.sidebarReadback = await evaluate(`({width:document.querySelector('#left').getBoundingClientRect().width,
+      saved:window.FundsDesktopPreferences.getItem('fund_sidebar_width')})`);
+    await until(() => evaluate(`window.FundsDesktopPreferences.getItem('fund_sidebar_width') === '${sidebarWidth}'
+      && Math.abs(document.querySelector('#left').getBoundingClientRect().width - ${sidebarWidth}) <= 1`), 5000);
+    // Geometry is Main-owned; the renderer's public preference port cannot read it.
+    assert.equal(await evaluate(`window.FundsDesktopPreferences.getItem('fund_window_state')`), null);
+    rememberedPresentation = { bounds:Object.fromEntries(Object.entries(resized.electronWindow)
+      .map(([key,value]) => [key, value / scale])), minimum, sidebarWidth };
+    report.presentationMemory.windowStateRendererReadable = false;
   });
   await check('noPageExceptions', async () => {
     assert.ok(!instrumentationFailed); assert.equal(errorCount, 0);
@@ -498,16 +825,80 @@ async function portClosed(port) {
     fixture: updateFixture, primary, evaluate, clickElement, cdp, page, check, screenshot: config.screenshot,
   });
   await check('normalClose', async () => {
-    // CDP Page.close runs beforeunload. Main's window-all-closed/before-quit
-    // handlers must finish their owned backend shutdown; Browser.close is not used.
-    if (!primary.done) await cdp.send('Page.close', {}, page.sessionId).catch(() => {});
+    // Close the actual native caption button when the CI desktop supports real
+    // pointer input. A fallback local window.close targets the owning root.
+    if (!primary.done) {
+      report.titlebar.nativeClose = await nativeStartupWindow(config.installRoot,primary.child.pid,{action:'CaptionClose'});
+      if (report.titlebar.nativeClose.status==='unavailable') {
+        report.titlebar.nativeClose.fallback='window.close-on-owning-local-shell; not a native button click';
+        await evaluate('window.close()',titlebarPage).catch(() => {});
+      } else {
+        assert.equal(report.titlebar.nativeClose.interaction.CloseButtonClicked,true);
+        assert.equal(report.titlebar.nativeClose.interaction.WindowClosedObserved,true);
+      }
+    }
     assert.deepEqual(await bounded(primary.exited, 30000), { code: 0, signal: null });
     assert.equal(errorCount, 0);
   });
   await check('backendReleasedAfterClose', () => until(() => portClosed(Number(new URL(page.origin).port)), 15000));
+  if (rememberedPresentation) {
+    await check('installedPresentationRestoredAfterRelaunch', async () => {
+      cdp.close();
+      const restarted = boot(executable, config.installRoot, env, true);
+      const debugUrl = await until(() => { assert.ok(!restarted.done); return restarted.debugUrl; }, 30000);
+      cdp = await connect(debugUrl);
+      cdp.onEvent(message => {
+        if (message.method === 'Runtime.exceptionThrown' || message.method === 'Inspector.targetCrashed'
+          || message.method === 'Target.targetCrashed'
+          || message.method === 'Runtime.consoleAPICalled' && message.params?.type === 'error') errorCount += 1;
+      });
+      const targets = await until(async () => {
+        assert.ok(!restarted.done);
+        const {targetInfos} = await cdp.send('Target.getTargets');
+        const body = targetInfos.find(value => value.type === 'page' && businessOrigin(value.url));
+        const caption = targetInfos.find(value => value.type === 'page' && titlebarTarget(value.url));
+        return body && caption ? {body,caption} : false;
+      }, 90000);
+      const attach = async target => {
+        const {sessionId} = await cdp.send('Target.attachToTarget', {targetId:target.targetId,flatten:true});
+        await cdp.send('Runtime.enable', {}, sessionId);
+        await cdp.send('Page.enable', {}, sessionId);
+        return {targetId:target.targetId,sessionId};
+      };
+      page = {...await attach(targets.body),origin:businessOrigin(targets.body.url)};
+      titlebarPage = await attach(targets.caption);
+      analysisPage = analysisTitlebarPage = null;
+      await readyDocument(`!!document.querySelector('#graphContainer') && typeof state === 'object'
+        && !state.graphLoading && state.graphInited`);
+      const restored = await nativeStartupWindow(config.installRoot, restarted.child.pid);
+      const expected = rememberedPresentation;
+      assertNativeWindowBounds(restored, {...expected.bounds,minWidth:expected.minimum.width,minHeight:expected.minimum.height});
+      for (const key of ['x','y']) assert.ok(Math.abs(restored.electronWindow[key] / restored.scaleFactor - expected.bounds[key]) <= 2,
+        'PRESENTATION_NATIVE_POSITION_RESTORED');
+      await until(() => evaluate(`window.FundsDesktopPreferences.getItem('fund_sidebar_width') === '${expected.sidebarWidth}'
+        && Math.abs(document.querySelector('#left').getBoundingClientRect().width - ${expected.sidebarWidth}) <= 1`), 5000);
+      const probe = await createInstalledTitlebarProbe({cdp,target:titlebarPage,evaluate,until});
+      report.presentationMemory.restored = { native:restored.electronWindow,scaleFactor:restored.scaleFactor,
+        sidebarWidth:await evaluate(`document.querySelector('#left').getBoundingClientRect().width`),
+        caption:await probe.checkBody(page),sameUserRestart:true };
+      await evaluate('window.close()', titlebarPage).catch(() => {});
+      assert.deepEqual(await bounded(restarted.exited, 30000), {code:0,signal:null});
+      assert.equal(errorCount, 0);
+      await until(() => portClosed(Number(new URL(page.origin).port)), 15000);
+    });
+  }
   report.status = 'passed';
 })().catch(async error => {
   report.status = 'failed'; report.failedCheck = stage; process.exitCode = 1;
+  report.failure=safeInstalledFailure(error);
+  if (/^(STARTUP|TITLEBAR)_[A-Z0-9_]{1,80}$/.test(error?.message || '')) {
+    report.startupFailure = error.message;
+    // These two projections contain only this helper's bounded numeric DOM
+    // geometry / frame samples, never protocol errors, URLs or request data.
+    if (error.startupLayout) report.startupLayoutFailure = error.startupLayout;
+    if (error.startupObservation) report.startupObservationFailure = error.startupObservation;
+    if (error.titlebarFailure) report.titlebarFailure = safeTitlebarFailure(error.titlebarFailure);
+  }
   if (updateFixture) {
     let errorCode = 'UNAVAILABLE';
     // Read the published status only; do not inspect Main or request headers.
@@ -542,8 +933,9 @@ async function portClosed(port) {
   // Best effort graceful close, then only handles spawned above. No process-name
   // discovery, user-data removal, or termination of unrelated installations.
   if (cdp && owned.some(instance => !instance.done)) {
-    if (analysisPage) await cdp.send('Page.close', {}, analysisPage.sessionId, 3000).catch(() => {});
-    if (page) await cdp.send('Page.close', {}, page.sessionId, 3000).catch(() => {});
+    await releaseStartupInspection();
+    if (analysisTitlebarPage || analysisPage) await cdp.send('Page.close', {}, (analysisTitlebarPage||analysisPage).sessionId, 3000).catch(() => {});
+    if (titlebarPage || page) await cdp.send('Page.close', {}, (titlebarPage||page).sessionId, 3000).catch(() => {});
     await Promise.all(owned.filter(instance => !instance.done).map(instance => bounded(instance.exited, 5000).catch(() => {})));
   }
   cdp?.close();
@@ -554,7 +946,24 @@ async function portClosed(port) {
       await bounded(instance.exited, 10000).catch(() => { report.status = 'failed'; report.failedCheck = 'ownedProcessCleanup'; process.exitCode = 1; });
     }
   }
+  if (presentationPreferences) {
+    try {
+      await restorePresentationPreferences(presentationPreferences);
+      report.checks.isolatedPresentationPreferencesRestored = true;
+    } catch {
+      if (report.status !== 'failed') report.failedCheck = 'isolatedPresentationPreferencesCleanup';
+      report.checks.isolatedPresentationPreferencesRestored = false;
+      report.status = 'failed'; process.exitCode = 1;
+    }
+  }
   if (reportOwned) {
+    report.mainProcessErrorMarkers={objectDestroyed:false,javascriptErrorInMainProcess:false,uncaughtException:false};
+    for(const instance of owned) for(const [key,value] of Object.entries(instance.mainErrors.snapshot())) {
+      report.mainProcessErrorMarkers[key] ||= value;
+    }
+    if(report.status==='passed' && Object.values(report.mainProcessErrorMarkers).some(Boolean)) {
+      report.status='failed';report.failedCheck='noMainProcessErrors';process.exitCode=1;
+    }
     try { await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8'); }
     catch { report.status = 'failed'; report.failedCheck = 'safeReport'; process.exitCode = 1; }
   }

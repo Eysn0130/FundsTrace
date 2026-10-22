@@ -14,7 +14,8 @@ const MAPPING = Object.freeze({ trade_no: '交易流水号', trade_time: '交易
 const CANVAS = 'SYN installed saved graph';
 const ANNOTATION = Object.freeze({ id: ACCOUNTS[3], text: 'SYN installed note\nVerified exact cents',
   anchor: 'above', dx: 0, dy: 0, size: 16, fontFamily: 'Microsoft YaHei', color: '#e3a12b' });
-const JOURNEY_STEPS = new Set(['graph-facts', 'finder-open', 'finder-query', 'finder-locate', 'finder-close',
+const JOURNEY_STEPS = new Set(['csv-open', 'csv-file-input', 'csv-preview', 'csv-verify',
+  'graph-facts', 'finder-open', 'finder-query', 'finder-locate', 'finder-close',
   'graph-visible', 'node-label-auto', 'node-label-pan-out', 'node-label-pan-return',
   'node-label-partial-zoom', 'node-label-partial', 'node-label-partial-leave', 'node-label-partial-return',
   'edge-pointer', 'style-tab', 'style-select', 'style-confirm', 'canvas-open', 'canvas-fill',
@@ -590,9 +591,16 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     await selectEdge();
     step = 'style-tab';
     await clickElement(`document.querySelector('#ribbonTab-style')`);
-    // The expanded style tab exposes this select inline.
+    const popover = await evaluate(`document.querySelector('#edgeStylePopover').hidden`);
+    if (popover) {
+      await clickElement(`document.querySelector('#btnEdgeStyle')`);
+      await until(() => evaluate(`!document.querySelector('#edgeStylePopover').hidden
+        && !document.querySelector('#edgeStylePopover').inert
+        && !document.querySelector('#edgeTypeSel').disabled`), 10000);
+    }
     step = 'style-select';
     await select('#edgeTypeSel', value);
+    if (popover) await clickElement(`document.querySelector('#btnEdgeStyle')`);
     expected[editedEdge] = value;
     step = 'style-confirm';
     await until(async () => {
@@ -616,12 +624,15 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     await until(() => evaluate(`!document.querySelector('#canvasActionForm[open]')`), 15000);
   }
   async function rowAction(flowId, action) {
-    // The seven-column sidebar keeps row actions at its right edge. Use its
-    // visible scrollbar control rather than clicking a clipped table button.
+    // The seven-column sidebar owns one native scroll viewport. Scroll it with
+    // renderer input before clicking a row action at the right edge.
     if (await evaluate(`document.querySelector('#flowTableScroll').scrollWidth
       > document.querySelector('#flowTableScroll').clientWidth + 1`)) {
-      await clickElement(`document.querySelector('#flowHorizontalPosition')`);
-      await key('End', 'End', 35);
+      const scroll = await evaluate(`(() => {
+        const viewport = document.querySelector('#flowTableScroll'), rect = viewport.getBoundingClientRect();
+        return {x:rect.left + rect.width / 2, y:rect.top + Math.min(60, rect.height / 2), deltaX:viewport.scrollWidth};
+      })()`);
+      await cdp.send('Input.dispatchMouseEvent', {type:'mouseWheel', ...scroll, deltaY:0}, page.sessionId);
       await until(() => evaluate(`(() => {
         const viewport = document.querySelector('#flowTableScroll');
         return viewport.scrollLeft >= viewport.scrollWidth - viewport.clientWidth - 1;
@@ -686,6 +697,9 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
   try {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1,
       mobile: false, screenWidth: 1600, screenHeight: 1000 }, page.sessionId);
+    // Match the other viewport journeys: shell zoom/layout settles on RAF.
+    // Do not aim a real pointer at coordinates from the preceding viewport.
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     await check('installedGraphModulesLoaded', async () => {
       assert.equal(await evaluate(`typeof FundsGraphSelection?.create === 'function'
         && !!state.graphSelection && !state.graphSelection.status().destroyed
@@ -697,14 +711,18 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     const csvFile = path.join(directory, 'synthetic-installed-chain.csv');
     await fs.writeFile(csvFile, fixtureCsv(), { flag: 'wx' });
     await check('installedCsvPreviewMapping', async () => {
+      step = 'csv-open';
       await clickElement(`document.querySelector('#btnImport')`);
       await until(() => evaluate(`document.querySelector('#importModal').style.display === 'flex'`), 10000);
+      step = 'csv-file-input';
       const { root } = await cdp.send('DOM.getDocument', {}, page.sessionId);
       const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '#impFile' }, page.sessionId);
       assert.ok(nodeId);
       await cdp.send('DOM.setFileInputFiles', { nodeId, files: [csvFile] }, page.sessionId);
+      step = 'csv-preview';
       await until(() => evaluate(`document.querySelector('#impStep2').style.display === 'block'
         && state.imp?.stats?.total === 3 && state.imp?.stats?.ok === 3`), 30000);
+      step = 'csv-verify';
       assert.equal(await evaluate(`(() => {
         const expected = ${JSON.stringify(AMOUNTS)}, summaries = ${JSON.stringify(SUMMARIES)}, mapping = ${JSON.stringify(MAPPING)};
         return state.imp.mode === 'A' && state.imp.stats.skipped === 0

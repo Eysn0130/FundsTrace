@@ -5,7 +5,7 @@ import test from 'node:test';
 
 const source = readFileSync(new URL('../static/workspace-shell.js', import.meta.url), 'utf8');
 
-function harness(width = 1440) {
+function harness(width = 1440, preferences = {}) {
   const nodes = new Map();
   const events = [];
   let doc;
@@ -40,8 +40,18 @@ function harness(width = 1440) {
   doc = { readyState: 'complete', body: nodes.get('body'), activeElement: null, getElementById: id => nodes.get(id), addEventListener: documentEvents.addEventListener.bind(documentEvents) };
   const windowEvents = node('window');
   const window = { document: doc, innerWidth: width, CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } }, dispatchEvent(event) { events.push(event); }, addEventListener: windowEvents.addEventListener.bind(windowEvents) };
+  Object.defineProperties(window, Object.getOwnPropertyDescriptors(preferences));
   vm.runInNewContext(source, { window });
   return { nodes, events, doc, shell: nodes.get('workspace').fundsWorkspaceShell, documentEvents, windowEvents, window };
+}
+
+function storage(initial = {}) {
+  const values = new Map(Object.entries(initial)), writes = [];
+  return {
+    writes,
+    getItem: key => values.get(key) ?? null,
+    setItem(key, value) { values.set(key, value); writes.push([key, value]); },
+  };
 }
 
 test('sidebar and toolbar collapse only on click and remain independent', () => {
@@ -180,6 +190,67 @@ test('unmodified sidebar width keeps CSS responsive defaults while respecting av
   workspace.width = h.window.innerWidth = 1440;
   h.windowEvents.fire('resize');
   assert.equal(h.nodes.get('left').getBoundingClientRect().width, 560);
+});
+
+test('desktop sidebar preference survives a new mount and writes only after user resizing', () => {
+  const desktop = storage(), browser = storage({ fund_sidebar_width: '740' });
+  const h = harness(1440, { FundsDesktopPreferences: desktop, localStorage: browser });
+  const handle = h.nodes.get('workspaceSidebarResize');
+  assert.equal(h.nodes.get('workspace').style.getPropertyValue('--sidebar-width'), '');
+  handle.fire('pointerdown', { button: 0, pointerId: 1, clientX: 560 });
+  handle.fire('pointermove', { pointerId: 1, clientX: 650 });
+  handle.fire('pointermove', { pointerId: 1, clientX: 663 });
+  assert.equal(desktop.writes.length, 0);
+  handle.fire('pointerup', { pointerId: 1 });
+  handle.fire('lostpointercapture', { pointerId: 1 });
+  assert.deepEqual(desktop.writes, [['fund_sidebar_width', '663']]);
+  assert.equal(browser.writes.length, 0);
+  const reopened = harness(1440, { FundsDesktopPreferences: desktop });
+  assert.equal(reopened.nodes.get('left').getBoundingClientRect().width, 663);
+  assert.equal(reopened.nodes.get('workspaceSidebarResize').getAttribute('aria-valuenow'), '663');
+  assert.equal(desktop.writes.length, 1);
+  reopened.nodes.get('workspaceSidebarResize').fire('keydown', { key: 'ArrowLeft' });
+  assert.deepEqual(desktop.writes.at(-1), ['fund_sidebar_width', '643']);
+});
+
+test('restoring on a narrow viewport preserves the preferred width when it grows again', () => {
+  const preferences = storage({ fund_sidebar_width: '663' });
+  const h = harness(599, { localStorage: preferences });
+  const workspace = h.nodes.get('workspace'), handle = h.nodes.get('workspaceSidebarResize');
+  assert.equal(h.nodes.get('left').getBoundingClientRect().width, 399);
+  assert.equal(handle.getAttribute('aria-valuenow'), '399');
+  workspace.width = h.window.innerWidth = 1440;
+  h.windowEvents.fire('resize');
+  assert.equal(h.nodes.get('left').getBoundingClientRect().width, 663);
+  assert.equal(preferences.getItem('fund_sidebar_width'), '663');
+  assert.equal(preferences.writes.length, 0);
+});
+
+test('a width chosen in a tiny viewport stays readable when restored on a larger screen', () => {
+  const preferences = storage({ fund_sidebar_width: '346' });
+  const h = harness(1440, { localStorage: preferences });
+  assert.equal(h.nodes.get('left').getBoundingClientRect().width, 360);
+  h.nodes.get('workspace').width = h.window.innerWidth = 390;
+  h.windowEvents.fire('resize');
+  assert.equal(h.nodes.get('left').getBoundingClientRect().width, 346);
+  assert.equal(preferences.getItem('fund_sidebar_width'), '346');
+  assert.equal(preferences.writes.length, 0);
+});
+
+test('invalid saved widths and unavailable storage leave resizing usable', () => {
+  for (const width of ['-1', '761', 'NaN', '600px', '4e2', '']) {
+    const h = harness(1440, { localStorage: storage({ fund_sidebar_width: width }) });
+    assert.equal(h.nodes.get('workspace').style.getPropertyValue('--sidebar-width'), '');
+  }
+  const blocked = harness(1440, { get localStorage() { throw new Error('denied'); } });
+  assert.doesNotThrow(() => blocked.nodes.get('workspaceSidebarResize').fire('keydown', { key: 'ArrowRight' }));
+  assert.equal(blocked.nodes.get('left').getBoundingClientRect().width, 580);
+  const failing = harness(1440, { FundsDesktopPreferences: {
+    getItem() { throw new Error('unavailable'); },
+    setItem() { throw new Error('unavailable'); },
+  } });
+  assert.doesNotThrow(() => failing.nodes.get('workspaceSidebarResize').fire('keydown', { key: 'ArrowRight' }));
+  assert.equal(failing.nodes.get('left').getBoundingClientRect().width, 580);
 });
 
 test('mount is idempotent and transition receipts contain chrome state only', () => {

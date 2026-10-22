@@ -622,6 +622,9 @@ public static class FundsTraceUpdateWindowState {
     $AppHelper = $AppJson | ConvertFrom-Json
     if ($AppHelper.status -cne 'passed') { throw 'Installed application did not reach a usable workspace.' }
     foreach ($Name in @('installedExecutableStarted', 'authenticatedWorkspaceLoaded', 'nodeSelectionModuleLoaded',
+        'installedStartupAnimationAndBounds',
+        'installedPersistentCaptionStartup', 'installedPersistentCaptionZoomReloadAndNativeControls',
+        'installedPersistentCaptionNavigation', 'installedAnalysisCaptionBoundToWindow',
         'activationFree', 'singleInstance', 'normalClose', 'backendReleasedAfterClose',
         'installedWorkspaceWindowIcon', 'installedAnalysisWindowIcon',
         'installedGraphModulesLoaded', 'installedCsvPreviewMapping', 'installedCsvCommittedExact',

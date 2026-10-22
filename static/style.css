@@ -57,6 +57,7 @@ b { color: #fff; }
   background: #151e28; border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: 10px; flex: none; }
+html[data-funds-desktop-shell="true"] #topbar > .brand { display: none; }
 .logo { font-size: 20px; font-weight: 600; letter-spacing: .1px; white-space: nowrap; }
 .topbar-logo { width: 29px; height: 29px; flex: none; }
 .case-box { display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 100%; }
@@ -345,6 +346,9 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 
 /* ---------- Four-tab ribbon and single-row compact tools ---------- */
 .workspace-toolbar { position: relative; flex: 0 0 auto; min-width: 0; height: 148px; background: linear-gradient(180deg,#182431,#131f2a); border-bottom: 1px solid #3c526c; z-index: 21; transition: height var(--workspace-ease); }
+/* Keep the approved 1280px tool composition when Windows has less usable space.
+   CSS zoom participates in flow, so the canvas receives the scaled bar height. */
+#topbar, .workspace-toolbar { width: var(--toolbar-fit-width, 100%); zoom: var(--toolbar-fit-scale, 1); }
 #graphToolbar { height: 100%; min-width: 0; }
 .ribbon-tabbar { height: 35px; display: flex; align-items: stretch; border-bottom: 1px solid #33485f; padding: 0 12px; gap: 12px; }
 #ribbonTabs { display: flex; flex: none; }
@@ -357,7 +361,7 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .ribbon-collapse-button .ui-icon { width: 15px; height: 15px; }
 #ribbonPanels { height: 112px; }
 #ribbonPanels[hidden] { display: none !important; }
-.ribbon-panel { height: 112px; display: flex; padding: 7px 10px 4px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; scrollbar-color: #4b6380 transparent; }
+.ribbon-panel { height: 112px; display: flex; padding: 7px 10px 4px; overflow: hidden; }
 .ribbon-group { display: flex; flex-direction: column; justify-content: space-between; min-width: max-content; flex: 0 0 auto; border-right: 1px solid #31485e; padding: 0 12px; }
 .ribbon-group:first-child { padding-left: 2px; }
 .ribbon-group:last-child { border-right: 0; }
@@ -438,29 +442,29 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .ribbon-quick .ribbon-action .ui-icon { width: 21px; height: 21px; }
 #btnCanvasSave .ui-icon { filter: brightness(0) saturate(100%) invert(59%) sepia(66%) saturate(2811%) hue-rotate(195deg); }
 .funds-ribbon.is-collapsed { height: 66px; }
-#ribbonCompact { display: flex; align-items: center; height: 65px; overflow-x: auto; overflow-y: hidden; padding: 4px 12px; gap: 7px; scrollbar-width: thin; scrollbar-color: #4b6380 transparent; }
+#ribbonCompact { display: flex; align-items: center; height: 65px; overflow: hidden; padding: 4px 8px; gap: 4px; }
 #ribbonCompact .ribbon-bundle { flex: none; }
 #ribbonCompact .ribbon-action { min-height: 52px; min-width: 42px; font-size: 11px; gap: 3px; padding: 3px 5px; }
 #ribbonCompact .ribbon-action .ui-icon { width: 24px; height: 24px; }
 #ribbonCompact #edgeLabelGroup { max-width: none; flex-wrap: nowrap; }
 #ribbonCompact #btnDisplayActions { flex-direction: row; min-height: 31px; }
 #ribbonCompact #btnDisplayActions .ui-icon { width: 17px; height: 17px; }
-#ribbonCompact .ribbon-width-currency { flex-direction: row; }
+#ribbonCompact .ribbon-width-currency { flex-direction: column; gap: 2px; }
 #ribbonCompact .ribbon-width-currency > select { width: 72px; }
-#ribbonCompact .ribbon-switch { flex-direction: row; gap: 5px; }
+#ribbonCompact .ribbon-switch { flex-direction: column; gap: 3px; }
 #ribbonCompact [data-planned] { display: none; }
 #ribbonCompact .ribbon-layout { gap: 3px; }
 #ribbonCompact #layoutSel { width: 96px; }
 .ribbon-divider { flex: 0 0 1px; width: 1px; height: 39px; background: #354d67; margin: 0 2px; }
-.ribbon-expand-button { position: sticky; right: 0; z-index: 4; margin-left: auto; align-self: stretch; min-width: 120px; border: 0; border-left: 1px solid #3c526c; border-radius: 0; background: #172635; box-shadow: -8px 0 12px #172635; color: #dbe9fa; font-size: 12px; padding: 4px 10px; }
+.ribbon-expand-button { margin-left: auto; align-self: stretch; min-width: 120px; border: 0; border-left: 1px solid #3c526c; border-radius: 0; background: #172635; color: #dbe9fa; font-size: 12px; padding: 4px 10px; }
 .ribbon-expand-button .ui-icon { width: 19px; height: 19px; }
 .workspace-collapse { position: absolute; z-index: 5; display: flex; align-items: center; justify-content: center; border: 1px solid #49627f; border-radius: 5px; background: #1d3046; color: #e2efff; cursor: pointer; opacity: 0; transition: opacity 160ms ease, background 160ms ease; }
 .workspace-collapse .ui-icon { width: 19px; height: 19px; }
 .workspace-collapse:hover { background: #294764; border-color: #8bbcff; }
 #btnToolbarToggle { width: 48px; height: 20px; bottom: -10px; left: 50%; transform: translateX(-50%); }
 .workspace-toolbar:hover #btnToolbarToggle, .workspace-collapse:focus-visible { opacity: 1; }
-/* Header remains one line; narrow windows scroll context instead of consuming the canvas. */
-#topbar { flex-wrap: nowrap; min-height: 56px; padding: 7px 14px; gap: 13px; overflow-x: auto; scrollbar-width: thin; }
+/* Header remains one line with every action visible at the shared logical width. */
+#topbar { flex-wrap: nowrap; min-height: 56px; padding: 7px 14px; gap: 13px; overflow: hidden; }
 .logo { font-size: 19px; }
 .topbar-logo { width: 27px; height: 27px; }
 .case-box { flex: none; gap: 7px; }
@@ -474,28 +478,12 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
   #canvasSel { width: 112px; }
   #topbar .btn.small { padding-left: 8px; padding-right: 8px; }
   #topbar .stats { display: none; }
-  .ribbon-group { padding-left: 9px; padding-right: 9px; }
-  .ribbon-action { padding-left: 5px; padding-right: 5px; }
 }
-
-/* Keep the case context and every header action reachable in small desktop windows. */
-@media (max-width: 1100px) {
-  #topbar { gap: 8px; }
-  #topbar .brand { gap: 7px; }
-  #topbar .logo { font-size: 17px; }
-  #topbar .topbar-logo { width: 25px; height: 25px; }
-  #topbar #caseSelect { width: 112px; }
-  #topbar #canvasSel { width: 100px; }
-  #topbar .case-box { gap: 6px; }
-  #topbar .workspace-actions { gap: 5px; }
-  #topbar .workspace-actions .btn.small { width: 34px; min-width: 34px; padding: 6px; }
-  #topbar .header-action-label { display: none; }
-  #topbar .stats { display: none; }
+@media (max-width: 1600px) {
+  .ribbon-group { padding-left: 2px; padding-right: 2px; }
+  .ribbon-group-body, .ribbon-bundle, .ribbon-inline { gap: 3px; }
+  .ribbon-panel .ribbon-action { padding-left: 4px; padding-right: 4px; }
 }
-#topbar, .ribbon-panel, #ribbonCompact { scrollbar-width: auto; scrollbar-color: #607f9e #11202d; }
-#topbar::-webkit-scrollbar, .ribbon-panel::-webkit-scrollbar, #ribbonCompact::-webkit-scrollbar { height: 6px; }
-#topbar::-webkit-scrollbar-track, .ribbon-panel::-webkit-scrollbar-track, #ribbonCompact::-webkit-scrollbar-track { background: #11202d; }
-#topbar::-webkit-scrollbar-thumb, .ribbon-panel::-webkit-scrollbar-thumb, #ribbonCompact::-webkit-scrollbar-thumb { background: #607f9e; border: 1px solid #11202d; border-radius: 4px; }
 
 /* ---------- Query and graph regions ---------- */
 main { flex: 1; display: flex; min-width: 0; min-height: 0; position: relative; overflow: hidden; }
@@ -619,7 +607,9 @@ body.workspace-resizing { cursor: col-resize; user-select: none; }
 #flowTable tr[data-id]:focus-visible > td { background: #263d58; box-shadow: inset 0 1px #6d9ff8, inset 0 -1px #6d9ff8; }
 #flowTable tr[data-id]:has(.flow-ck:checked) > td { background: #203b5b; }
 #flowTable .flow-ck { width: 16px; height: 16px; vertical-align: middle; accent-color: #6094ff; }
-.flow-horizontal-scroll { flex: none; display: flex; align-items: center; gap: 5px; height: 25px; margin-top: 3px; padding: 0; }
+/* Each table keeps its native overflow:auto viewport as the only horizontal
+   scroll control. Legacy range bindings remain dormant to preserve callers. */
+.flow-horizontal-scroll { flex: none; display: none; align-items: center; gap: 5px; height: 25px; margin-top: 3px; padding: 0; }
 .flow-horizontal-scroll .btn { min-width: 25px; min-height: 25px; padding: 0 4px; border: 0; background: transparent; color: #b4c9e1; }
 .flow-horizontal-scroll .btn:hover { background: #2c3c52; }
 .flow-horizontal-scroll input[type="range"] { appearance: none; -webkit-appearance: none; flex: 1; min-width: 0; height: 24px; padding: 0; border: 0; background: transparent; cursor: ew-resize; }
@@ -867,16 +857,6 @@ tr.detail-row td { background: #15181e; }
 @media (max-width: 700px) {
   :root { --sidebar-width: calc(100vw - 44px); }
   body { height: 100dvh; overflow: hidden; }
-  #topbar { padding: 8px 10px; gap: 8px; }
-  .logo { font-size: 18px; }
-  .brand { flex: none; }
-  #caseSelect { width: 120px; }
-  #canvasSel { width: 110px; }
-  .workspace-actions { margin-left: 0; }
-  .stats { display: none; }
-  .ribbon-tabbar { padding-left: 4px; gap: 0; }
-  #ribbonTabs [role="tab"] { min-width: 64px; padding: 0 10px; }
-  #ribbonSelectionStatus { display: none; }
   #left { border-right: 1px solid #40516a; }
   .tab-body { padding: 10px; }
   .query-fields { gap: 9px; }
@@ -892,19 +872,6 @@ tr.detail-row td { background: #15181e; }
   .mapping-grid { grid-template-columns: minmax(0, 1fr); }
   #toasts { left: 12px; right: 12px; }
   .toast { max-width: 100%; }
-}
-@media (max-width: 700px) {
-  #topbar { gap: 6px; padding: 7px 8px; overflow-x: scroll; }
-  #topbar .logo { font-size: 16px; }
-  #topbar .brand { gap: 5px; }
-  #topbar #caseSelect { width: 102px; }
-  #topbar #canvasSel { width: 96px; }
-  #topbar .case-box { gap: 5px; }
-  #topbar .ribbon-quick { padding-left: 4px; }
-}
-@media (max-width: 480px) {
-  #ribbonTabs [role="tab"] { font-size: 12px; min-width: 54px; padding: 0 7px; }
-  .ribbon-collapse-button { font-size: 10px; gap: 3px; padding: 2px 4px; }
 }
 @media (hover: none), (pointer: coarse) {
   .workspace-collapse { opacity: 1; }

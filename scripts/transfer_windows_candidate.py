@@ -255,6 +255,12 @@ def variants(value):
     return values
 
 
+def source_host_file(commit, name):
+    """Read the source location used by the reviewed host packaging declaration."""
+    path = "LICENSE" if name == "LICENSE" else f"desktop/{name}"
+    return subprocess.check_output(["git", "show", f"{commit}:{path}"])
+
+
 def verify_host_report(host, version, package, source_file):
     """Bind the versioned host allowlist, updater and raw brand bytes to source."""
     assert host["status"] == "passed" and host["version"] == version
@@ -265,8 +271,13 @@ def verify_host_report(host, version, package, source_file):
     # v0.1.9 first declares both brand assets in electron-builder.files. Older
     # releases retain their original host allowlist; current reports need both.
     icons = {"assets/icon.png", "assets/icon.ico"}
-    if tuple(map(int, version.split("."))) >= (0, 1, 9):
+    release_version = tuple(map(int, version.split(".")))
+    if release_version >= (0, 1, 9):
         expected.update(icons)
+    if release_version >= (0, 1, 10):
+        expected.update({"startup.cjs", "window-shell.cjs", "titlebar/index.html", "titlebar/style.css",
+                         "titlebar/renderer.js", "titlebar/preload.cjs", "startup/index.html", "startup/style.css",
+                         "startup/renderer.js", "startup/preload.cjs", "LICENSE"})
     assert set(host["hostFiles"]) == expected
     for name, sha in host["hostFiles"].items():
         content = source_file(name)
@@ -355,7 +366,7 @@ def main():
         host = data(host_path)
         package = json.loads(subprocess.check_output(["git", "show", f"{source}:desktop/package.json"]))
         verify_host_report(host, args.tag[1:], package,
-                           lambda name: subprocess.check_output(["git", "show", f"{source}:desktop/{name}"]))
+                           lambda name: source_host_file(source, name))
 
         icons = data(base / "native-icon-resources.json")
         expected_icon_sha = hashlib.sha256(subprocess.check_output(

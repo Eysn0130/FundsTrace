@@ -21,7 +21,9 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 ## 运行与数据边界
 
-[desktop/main.cjs](../desktop/main.cjs) 负责窗口、受限导航／下载和自己创建的服务。受 sandbox 和 contextIsolation 保护的 [preload](../desktop/preload.cjs) 暴露展示偏好 get/set/remove、固定更新动作及状态订阅，并仅转发固定的工作台 `ready`／`failed` 单向通知；Main 校验窗口归属、主框架及当前精确 origin，只将案件选择、线型、标签、证件／照片显示开关写入 `userData/preferences.json`。随机端口和临时 session 不变；不持久化 token、流水、快照或任意 renderer 键，不提供通用 IPC。G6 `/` 保留完整业务，`/analysis` 为分析，`/workspace/` 为共享 React 试点。业务数据在 Electron 自身 `userData/data`，不写安装资源，不打开 Analytix 数据根。保留单实例，窗口尺寸以当前显示器的 DIP 工作区为准。
+[desktop/main.cjs](../desktop/main.cjs) 负责窗口、受限导航／下载和自己创建的服务。受 sandbox 和 contextIsolation 保护的 [preload](../desktop/preload.cjs) 暴露展示偏好 get/set/remove、固定更新动作及状态订阅，并仅转发固定的工作台 `ready`／`failed` 单向通知；Main 校验窗口归属、主框架及当前精确 origin，只将案件选择、线型、标签、证件／照片显示开关和侧栏宽度写入 `userData/preferences.json`。随机端口和临时 session 不变；不持久化 token、流水、快照或任意 renderer 键，不提供通用 IPC。G6 `/` 保留完整业务，`/analysis` 为分析，`/workspace/` 为共享 React 试点。业务数据在 Electron 自身 `userData/data`，不写安装资源，不打开 Analytix 数据根。保留单实例，窗口尺寸以当前显示器的 DIP 工作区为准。
+
+首次打开在工作区内居中采用接近16:9的比例（上限1440×810 DIP），正常最小1280×720，工作区更小时同时收紧最小值。用户可自由改变比例；主窗口的正常尺寸、位置与最大化状态保存在同一用户的 `preferences.json`，由 Main 独占管理 `fund_window_state`，renderer IPC 无权读写。调整窗口后及关闭前保存，下次从启动页恢复；分析子窗不覆盖主窗口偏好，最小化与全屏不作为下次默认状态。显示器断开或DPI变化时按当前工作区限制可见窗口，不用临时受限尺寸覆盖用户偏好。`fund_sidebar_width` 在用户拖动结束或键盘调整后保存，跨随机端口重开仍恢复；较窄工作区临时限制显示，不永久缩小原宽度。偏好无效或不可写时应用仍使用可操作的默认布局。
 
 [desktop_backend.py](../desktop_backend.py) 从 stdin 读取严格的 `{protocol:1, token, dataDir, synthetic}` 后才导入应用。随机 token 只经父进程管道和 Main 持有的精确 origin 请求头传递，不进入 URL、argv、renderer、日志或导出。后端绑定 `127.0.0.1:0`，Main 健康检查后才加载页面；冻结后端拒绝 source-only synthetic 模式。
 
@@ -33,13 +35,17 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 ## 启动显示与窗口尺寸
 
+[desktop/window-shell.cjs](../desktop/window-shell.cjs) 将每个窗口的本地标题层与业务 `WebContentsView` 分开：左侧18px批准图标、13px「循迹 FundsTrace」和菜单，固定32 DIP；Windows通过 `titleBarStyle: hidden` 和 `titleBarOverlay` 保留原生最小化、最大化／还原、关闭按钮，CSS按实际原生安全区避让，菜单单独设为不可拖动区域。标题层只允许本地四项资源，不拥有后端认证或业务IPC；业务、分析页与启动层均在下方32 DIP处开始，重载、业务缩放或页面切换不会替换、缩放标题层。桌面图谱隐藏原业务栏的重复品牌，浏览器版保留。Windows不再显示原生菜单条或通过Alt临时插入菜单高度；标题栏菜单保留文件、编辑、显示及更新命令，业务重载、缩放和全屏快捷键单独路由到对应内容。关闭时使用创建阶段保留的视图引用清理监听与业务／启动renderer，避免在closed事件后读取已销毁的原生窗口属性；归属后端继续沿用EOF关闭流程。[Electron原生标题栏](https://www.electronjs.org/docs/latest/tutorial/custom-title-bar)
+
 [desktop/startup.cjs](../desktop/startup.cjs) 在业务窗口上方创建独立、透明的本地 `WebContentsView`：先显示启动层，再在下方准备后端与真实工作台。启动层使用独立受限 session，页面资源请求仅允许本地 `startup/index.html`、`startup/style.css`、`startup/renderer.js` 和 `assets/icon.png` 四项；不接收后端 origin、token 或业务数据，不使用截图或模拟案件。它保留 sandbox、contextIsolation 和 CSP，禁止联网、权限、下载及新窗口；[专用 preload](../desktop/startup/preload.cjs) 只接收就绪通知并报告淡出完成。完成或关窗时显式关闭该层的 `webContents`，避免仅移除 View 后残留 renderer。
 
 [启动画面](../desktop/startup/index.html) 使用原版 176px Logo、46px／600 字重的“循迹”和下排 21px／500 字重的 FundsTrace，保留副标题、原 A 扫光与琥珀呼吸。宽 360px 的品牌组通常按固定尺寸居中，加载反馈区固定高度；只有可用客户区不足时才整体等比缩小，按四周 24px 留白计算。实际 resize 只调整该比例，不重置时钟或淡出透明度。
 
 常规动效先停留 1400ms，再于持续加载期间将深色遮罩从不透明缓慢降至 60%，到 6500ms 最多显露下方真实工作台的 40%；这只是等待装饰，不代表启动完成。加载反馈为不定进度，不显示虚构百分比。初始案件、统计、图谱数据和查询列表完成后，业务页才发出 `ready`；后端健康或文档加载结束均不能代替这个信号。该契约不承诺异步 G6 布局已完成，本轮不改变图渲染。真实就绪后立即从当前画面开始 1100ms 的统一淡出，Logo、字标、加载反馈和遮罩一同退出；减少动态效果时使用 140ms 收尾，不强制等待演示时长。初始化失效或超时会安全失败，准备中关闭仍清理本次所属窗口、启动层和服务，不输出 token 或内部异常。
 
-[窗口策略](../desktop/host-policy.cjs) 默认按工作区四周 32 DIP 留白计算，默认创建尺寸上限为 1440×940，常规最小值为 960×640；小工作区会收紧窗口及最小值，使其落在工作区内。这是默认创建规则，用户仍可调整窗口大小。工作区坐标和窗口尺寸均使用 DIP，不乘 `devicePixelRatio`；启动层在实际客户区内居中，避免将原生边框和菜单高度当作内容空间。
+[窗口策略](../desktop/host-policy.cjs) 以 **1280×720 DIP** 为常规最小窗口，窗口比例可自由调整。默认创建尺寸上限仍为1440×940，空间充足时四周预留32 DIP；Windows缩放和任务栏使可用工作区不足时，窗口与最小值一并限制在该工作区内。移动到更大的工作区时恢复常规最小值，保留符合边界的用户尺寸和位置。坐标和尺寸直接使用Electron的DIP，不再乘除 `devicePixelRatio`。
+
+顶部保留原27px大图标、12px文字及分组顺序，1280宽时仅收紧留白。业务视口不足1280 CSS px时，只把案件操作栏和工具区整体等比适配；表格、画布及32 DIP原生标题栏不参与这层缩放。四个工具页与收起带均完整呈现，不依靠横向滚动访问命令；浮动工具弹层使用独立视口坐标。表格保留自身原生横向滚动，停用重复的范围滑条。启动层在扣除32 DIP标题区后的实际客户区居中；Logo通常保持原176px，仅在空间不足时按既有规则整体缩小。
 
 ## Windows 10／11 安装与启动边界
 
@@ -80,11 +86,17 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 安装版主窗口启动后，若当前 CI 桌面存在可见 Shell 任务栏，会另保存 `native-installed-app.taskbar.png`，并记录截图尺寸与 SHA-256。它来自实际屏幕的任务栏矩形，不是 renderer 截图或拼合图。没有 Shell、截图不可用或尚未查看时不记录任务栏外观通过；脚本报告保留 `reviewed:false`，截图核对结果须在对应候选记录中单列。
 
+安装版启动验证精确区分本地 ASAR 启动层和真实业务页。CI 仅在自己的合成安装进程中暂缓业务 renderer 执行，以检查等待画面；最长 45 秒且在成功、失败及清理路径恢复，不注入或伪造就绪通知。报告先记录环境的减少动态效果偏好，再仅对启动 renderer 仿真 `no-preference`，检查正常金属柔光、渐变及约 1100ms 淡出，不修改系统偏好或正式应用的无障碍行为。正式启动素材接受 1440×880、1302×604、960×580、960×440、683×284 客户区与 DPR 1／1.25／1.5／2 共 20 组仿真，核对固定 Logo、字标、加载区、居中、留白和整体缩放。随后恢复真实初始化，记录背景透明度、整组淡出及启动 renderer 的释放；有界 rAF 样本保留 P95／最大间隔，不以共享 CI 结果承诺用户冷启动耗时或持续 60 FPS。
+
+安装版另识别持久的本地标题层，核对32 DIP、原生 Window Controls Overlay 实际安全区、菜单与拖动命中，确认启动等待、淡出和工作台共享同一标题document。检查真实业务缩放／重载／页面切换后，标题字号和位置不变；分析新窗按唯一新增标题target识别，核对独立布局；关闭其标题层后，必须同时释放该分析内容和标题target，并保留主窗口两个target，以记录实际生命周期耦合。Electron不实现Chrome的 `Browser.getWindowForTarget`，检查不依赖该协议，也不将renderer target或相同尺寸当作原生HWND绑定。原生输入helper按已安装EXE/PID、前台窗口、WM_NCHITTEST和输入桌面约束执行SendInput，记录拖动、原生最小化／最大化／还原／关闭按钮及真实快捷键结果；分析窗关闭仅选择恰好两个归属窗口中已处于前台的一项，随后核对主窗保留和分析层释放。从最小化恢复明确记录为系统ShowWindow命令。缺少可交互桌面时记录unavailable，不能把CDP关窗、设置bounds或CSS仿真当作真实按钮操作通过。
+
+[原生窗口 helper](../scripts/test-windows-startup-window.ps1) 按安装 EXE 的 PID 和文件路径核对归属，读取真实窗口、客户区、显示器工作区、窗口 DPI 及最小跟踪尺寸，再调整并回读最小窗口。hidden/thickFrame普通恢复态的Electron逻辑边界与原始HWND外框不同：报告保留GetWindowRect和WM_GETMINMAXINFO原值，另按同次屏幕客户区的实测边距还原逻辑窗口／最小尺寸；Resize按该边距转换，最后以实际回读验收。DWM可见边界仅用于截图，不替代Electron逻辑尺寸。它不修改系统显示模式或缩放；20 组 CSS／DPR 仿真也不等同于 20 种 Windows 显示设置。`native-installed-app.startup-*.png` 包含启动 renderer 表面截图，以及交互桌面允许时的默认／最小原生窗口合成截图，随候选 SHA-256 清单保留；无法截取或未人工查看时不记录外观验收通过。暂缓业务执行的检查不作为正常冷启动性能数据。
+
 上述自动检查仍仅覆盖 Windows hosted runner。它不证明 Windows 10／11 任务栏最终外观、既有固定图标缓存、真实系统 DPI 或 SmartScreen；没有可用交互桌面时不能把这些项目记为通过。候选构建默认不创建 Tag 或 Release，未获发布授权时仅保留 Actions 产物，现有 Latest 和下载入口保持原版本。
 
 [Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以 `desktop/upgrade-baseline.json` 明确指定并固定 SHA-256／字节数的已公开客户端作为旧版本，验证静默安装到中文自定义目录 → 旧安装版后端写入并重开合成案件 → 新安装器不指定目录而自动找到旧版并覆盖升级 → 旧安装目录测试文件清除、设置字节与已安装设置模块读取 → 比对旧流水／金额／币种／画布／追踪和旧案件包往返 → 同版重装后重复资源／数据／设置核对 → 真正 EXE 启动／快捷键／单实例／正常关闭 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json` 和 `native-installed-app-smoke.json`，前者的 `priorDataChecks`、`upgradedDataChecks` 记录旧数据兼容链。原件仅依据已注册的导入来源核对摘要，不扫描业务目录。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。
 
-`desktop/upgrade-baseline.json` 的目标必须等于 `desktop/package.json`，旧版必须早于目标。当前候选固定为 **v0.1.8 → v0.1.9**；`prior_version` 输入和 `-PriorVersion` 参数保留，但只接受当前基线的旧版，取代过时的 `0.1.5`／`0.1.7` 选择。候选清单与两个账户的报告必须携带一致的基线、版本、旧包摘要／字节及当前候选摘要／字节。版本升级但未更新基线、旧包摘要或字节不符、报告属于其他版本对／安装包，均拒绝进入对应安装或候选转移步骤。设置样例由测试写入专用用户目录，再由旧／新已安装 asar 中的真实 store 读取；它不是旧版设置 UI 写入证据。旧目录中的待清理文件也是测试创建的程序文件，不是用户数据。
+`desktop/upgrade-baseline.json` 的目标必须等于 `desktop/package.json`，旧版必须早于目标。当前候选固定为 **v0.1.9 → v0.1.10**；`prior_version` 输入和 `-PriorVersion` 参数保留，但只接受当前基线的旧版，取代过时的 `0.1.5`／`0.1.7` 选择。候选清单与两个账户的报告必须携带一致的基线、版本、旧包摘要／字节及当前候选摘要／字节。版本升级但未更新基线、旧包摘要或字节不符、报告属于其他版本对／安装包，均拒绝进入对应安装或候选转移步骤。设置样例由测试写入专用用户目录，再由旧／新已安装 asar 中的真实 store 读取；它不是旧版设置 UI 写入证据。旧目录中的待清理文件也是测试创建的程序文件，不是用户数据。
 
 验证**已发布原包**时，手动调度同一 Windows workflow，指定 `published_target_sha256` 与 `published_target_bytes`。该模式从当前源码版本对应的 Release 下载目标 EXE，先核对固定摘要和长度，再将其中 x64 payload 解包作为资源比较参考；不构建、不替换公开资产。随后复用维护者和一次性普通账户的安装生命周期；安全报告及合成截图保留为独立 `fundstrace-published-upgrade-<run>` artifact。普通构建／候选转移模式继续独立，不把重新构建的同版包当成已发布包证据。该模式只支持与当前 package／baseline 目标相同的已发布版本，并按该版本源码图标和解包 manifest 核对；目标尚未发布时下载会失败，不回退或重建。必须在目标版本的正式 Release 资产存在后运行原包模式。已发布原包、候选构建、候选转移和诊断 probe 互斥。原包模式可同时指定 `in_app_update=true`：先安装固定的旧 Release，以旧版后端写入合成案件和偏好，再操作旧客户端的真实更新按钮，从其内置正式 HTTPS 更新源发现、下载、校验并确认重启安装。测试独立比对下载缓存的长度、SHA-256／SHA-512，要求自动重开目标版本、安装资源与公开 EXE 一致、案件与偏好保留；不改 DNS、证书或正式 feed。普通账户中仅后端保持出站阻断，Electron 为正式更新联网；离线启动证据仍来自独立生命周期。候选构建的 `in_app_update=true` 继续使用私有 HTTPS 失败夹具，二者证据分开记录。
 

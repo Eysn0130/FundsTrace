@@ -26,10 +26,10 @@ test('initial window and minimum sizes fit a small logical work area without dou
     {x:0,y:0,width:960,height:500,minWidth:960,minHeight:500});
 });
 
-test('existing bounds retain a user size and position, fitting only outside the current work area', () => {
+test('existing bounds fit the approved minimum and current work area', () => {
   const area = { x: -1280, y: 24, width: 1280, height: 696 };
   assert.deepEqual(windowBounds(area, { x: -1200, y: 60, width: 1100, height: 650 }),
-    { x: -1200, y: 60, width: 1100, height: 650, minWidth: 960, minHeight: 640 });
+    { x: -1280, y: 24, width: 1280, height: 696, minWidth: 1280, minHeight: 696 });
   assert.deepEqual(windowBounds({ x: 1920, y: 20, width: 960, height: 500 },
     { x: 2100, y: 100, width: 1200, height: 760 }),
   { x: 1920, y: 20, width: 960, height: 500, minWidth: 960, minHeight: 500 });
@@ -153,7 +153,8 @@ test('health checks status, protocol and exact service using main-only authoriza
 test('distribution manifest prevents cross-platform packaging and includes host source and licenses', async t => {
   const builder = require('../electron-builder.cjs');
   assert.equal(builder.appId, 'com.eysn.fundstrace');
-  assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'startup.cjs',
+  assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'startup.cjs', 'window-shell.cjs',
+    'titlebar/index.html', 'titlebar/style.css', 'titlebar/renderer.js', 'titlebar/preload.cjs',
     'startup/index.html', 'startup/style.css', 'startup/renderer.js', 'startup/preload.cjs', 'assets/icon.png', 'assets/icon.ico',
     { from: path.resolve(__dirname, '../..'), to: '.', filter: ['LICENSE'] }]);
   const manifest = require('../package.json');
@@ -207,12 +208,13 @@ function deferred() {
 }
 
 // Exercise the real Main entry and Electron lifecycle events without a business server.
-function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopBackend = async () => true, restartResponse = 0, platform = 'win32', workbenchReady = true, completeStartup = true, navigationPending = false } = {}) {
+function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopBackend = async () => true, restartResponse = 0, platform = 'win32', workbenchReady = true, completeStartup = true, navigationPending = false, preferenceValues = new Map(), initialDisplay } = {}) {
   const app = new EventEmitter();
-  const state = { windows: [], startupViews: [], timers: [], errors: [], backendStarts: 0, backendStops: 0, quitCount: 0, removed: [] };
+  const state = { windows: [], businessViews: [], startupViews: [], sessions: [], titlebarSessions: [], menuPopups: [], applicationMenus: [], timers: [], errors: [], backendStarts: 0, backendStops: 0, quitCount: 0, removed: [] };
   const ready = deferred();
   const screen = new EventEmitter();
-  state.display = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
+  let nextContentsId = 0;
+  state.display = initialDisplay || { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
   screen.getPrimaryDisplay = screen.getDisplayMatching = () => state.display;
   app.isPackaged = !!updater;
   app.getVersion = () => '0.1.7';
@@ -226,29 +228,62 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
     app.emit('before-quit', { preventDefault: () => { prevented = true; } });
     if (!prevented) state.quitCount++;
   };
+  function focusWindow(win) {
+    for (const candidate of state.windows) candidate.hasFocus = candidate === win;
+  }
+  function contentsFor(owner, kind) {
+    const contents = new EventEmitter(); contents.id = ++nextContentsId;
+    contents.mainFrame = { url: 'about:blank' }; contents.zoomLevel = 0; contents.focusCount = 0;
+    owner.loads = []; owner.fileLoads = []; owner.messages = []; owner.downloads = [];
+    contents.isDestroyed = () => !!owner.destroyed;
+    contents.close = options => { owner.closeOptions = options; owner.destroyed = true; };
+    contents.setWindowOpenHandler = handler => { owner.popup = handler; };
+    contents.getURL = () => contents.mainFrame.url;
+    contents.focus = () => {
+      contents.focusCount++;
+      const win = kind === 'titlebar' ? owner : owner.window;
+      if (win) focusWindow(win);
+    };
+    contents.getZoomLevel = () => contents.zoomLevel;
+    contents.setZoomLevel = level => { contents.zoomLevel = level; };
+    contents.reload = () => { owner.reloadCount = (owner.reloadCount || 0) + 1; };
+    contents.downloadURL = url => owner.downloads.push(url);
+    contents.loadFile = async filename => {
+      owner.file = filename; owner.fileLoads.push(filename);
+      contents.mainFrame = { url: require('node:url').pathToFileURL(filename).href };
+      contents.emit('did-finish-load');
+      if (kind === 'titlebar') owner.emit('ready-to-show');
+    };
+    contents.loadURL = async url => {
+      owner.loads.push(url); contents.mainFrame = { url };
+      if (kind === 'business' && workbenchReady) electron.ipcMain.emit('funds-trace:workbench', { sender: contents, senderFrame: contents.mainFrame }, 'ready');
+      if (kind === 'business' && navigationPending) await new Promise(() => {});
+    };
+    contents.send = (channel, value) => {
+      owner.messages.push({ channel, value });
+      if (kind === 'startup' && completeStartup && channel === 'funds-trace:startup' && value === 'ready') queueMicrotask(() => electron.ipcMain.emit(channel,
+        { sender: contents, senderFrame: contents.mainFrame }, 'complete'));
+    };
+    return contents;
+  }
   class Window extends EventEmitter {
     constructor(options) {
-      super(); this.options = options; this.loads = []; this.shown = 0; this.focused = 0;
+      super(); this.options = options; this.shown = 0; this.focused = 0; this.hasFocus = false;
       this.bounds = { x: options.x, y: options.y, width: options.width, height: options.height };
       this.minimum = [options.minWidth, options.minHeight]; this.boundsChanges = [];
       this.contentView = new EventEmitter(); this.contentView.children = [];
-      this.contentView.addChildView = view => this.contentView.children.push(view);
+      this.contentView.addChildView = view => {
+        this.contentView.children.push(view); view.window = this;
+        if (view.kind === 'business') this.businessView = view;
+      };
       this.contentView.removeChildView = view => { this.contentView.children = this.contentView.children.filter(child => child !== view); };
-      this.webContents = new EventEmitter(); this.webContents.id = state.windows.length + 1;
-      this.webContents.setWindowOpenHandler = handler => { this.popup = handler; };
-      this.webContents.isDestroyed = () => this.destroyed;
-      this.webContents.getURL = () => this.loads.at(-1);
-      this.webContents.send = () => {};
-      this.webContents.focus = () => { this.contentsFocused = true; };
+      this.webContents = contentsFor(this, 'titlebar');
       state.windows.push(this);
     }
-    async loadURL(url) {
-      this.loads.push(url); this.webContents.mainFrame = { url }; this.emit('ready-to-show');
-      if (workbenchReady) electron.ipcMain.emit('funds-trace:workbench', { sender: this.webContents, senderFrame: this.webContents.mainFrame }, 'ready');
-      if (navigationPending) await new Promise(() => {});
-    }
-    show() { this.shown++; }
-    focus() { this.focused++; }
+    setMenu(menu) { this.menu = menu; }
+    show() { this.shown++; focusWindow(this); }
+    focus() { this.focused++; focusWindow(this); }
+    isFocused() { return !this.destroyed && this.hasFocus; }
     isMinimized() { return true; }
     restore() { this.restored = true; }
     isDestroyed() { return Boolean(this.destroyed); }
@@ -260,47 +295,44 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
       assert.ok(bounds.width >= this.minimum[0] && bounds.height >= this.minimum[1], 'minimum must be lowered before fitting bounds');
       this.bounds = { ...bounds }; this.boundsChanges.push(bounds); this.emit('move'); this.emit('resize');
     }
+    maximize() { this.maximized = true; this.emit('maximize'); }
     isMaximized() { return Boolean(this.maximized); }
     isFullScreen() { return Boolean(this.fullscreen); }
+    setFullScreen(value) { this.fullscreen = value; }
     close() {
-      this.destroyed = true; this.emit('closed');
+      this.emit('close'); this.destroyed = true; this.hasFocus = false; this.emit('closed');
       if (state.windows.every(win => win.destroyed)) app.emit('window-all-closed');
     }
   }
-  class StartupView {
+  class StartView {
     constructor(options) {
-      this.options = options; this.messages = [];
-      this.webContents = new EventEmitter(); this.webContents.id = 1000 + state.startupViews.length;
-      this.webContents.isDestroyed = () => !!this.destroyed;
-      this.webContents.close = () => { this.destroyed = true; };
-      this.webContents.setWindowOpenHandler = handler => { this.popup = handler; };
-      this.webContents.getURL = () => this.webContents.mainFrame?.url;
-      this.webContents.loadFile = async filename => { this.file = filename; this.webContents.mainFrame = { url: require('node:url').pathToFileURL(filename).href }; };
-      this.webContents.send = (channel, value) => {
-        this.messages.push({ channel, value });
-        if (completeStartup) queueMicrotask(() => electron.ipcMain.emit(channel,
-          { sender: this.webContents, senderFrame: this.webContents.mainFrame }, 'complete'));
-      };
-      state.startupViews.push(this);
+      this.options = options;
+      this.kind = options.webPreferences.preload === path.resolve(__dirname, '../startup/preload.cjs') ? 'startup' : 'business';
+      assert.equal(options.webPreferences.preload, path.resolve(__dirname, this.kind === 'startup' ? '../startup/preload.cjs' : '../preload.cjs'));
+      this.webContents = contentsFor(this, this.kind);
+      state[this.kind === 'startup' ? 'startupViews' : 'businessViews'].push(this);
     }
     setBackgroundColor(value) { this.backgroundColor = value; }
     setBounds(value) { this.bounds = value; }
   }
   const fromPartition = name => {
-    const localSession = new EventEmitter();
-    const prefix = name.startsWith('funds-trace-startup-') ? 'startup' : '';
-    localSession.setPermissionRequestHandler = handler => { state[prefix ? 'startupPermission' : 'permission'] = handler; };
-    localSession.setPermissionCheckHandler = handler => { state[prefix ? 'startupPermissionCheck' : 'permissionCheck'] = handler; };
+    const localSession = new EventEmitter(); localSession.partition = name; state.sessions.push(localSession);
+    const prefix = name.startsWith('funds-trace-startup-') ? 'startup' : name.startsWith('funds-trace-titlebar-') ? 'titlebar' : '';
+    if (prefix === 'titlebar') state.titlebarSessions.push(localSession);
+    localSession.setPermissionRequestHandler = handler => { localSession.permission = handler; state[prefix ? `${prefix}Permission` : 'permission'] = handler; };
+    localSession.setPermissionCheckHandler = handler => { localSession.permissionCheck = handler; state[prefix ? `${prefix}PermissionCheck` : 'permissionCheck'] = handler; };
+    localSession.setDisplayMediaRequestHandler = handler => { localSession.displayMedia = handler; };
     localSession.webRequest = {
-      onBeforeRequest: handler => { state[prefix ? 'startupRequest' : 'request'] = handler; },
-      onBeforeSendHeaders: handler => { state[prefix ? 'startupHeaders' : 'headers'] = handler; },
+      onBeforeRequest: handler => { localSession.request = handler; state[prefix ? `${prefix}Request` : 'request'] = handler; },
+      onBeforeSendHeaders: handler => { localSession.headers = handler; state[prefix ? `${prefix}Headers` : 'headers'] = handler; },
     };
     return localSession;
   };
-  const electron = { app, ipcMain: new EventEmitter(), BrowserWindow: Window, WebContentsView: StartupView, session: { fromPartition }, screen,
+  const electron = { app, ipcMain: new EventEmitter(), BrowserWindow: Window, WebContentsView: StartView, session: { fromPartition }, screen, platform,
     setTimer(callback, milliseconds) { const timer = { callback, milliseconds, unref() {} }; state.timers.push(timer); return timer; },
     clearTimer(timer) { if (timer) timer.cleared = true; },
-    Menu: { buildFromTemplate: value => value, setApplicationMenu: () => {} },
+    Menu: { buildFromTemplate: template => ({ template, popup: options => state.menuPopups.push({ template, options }) }),
+      setApplicationMenu: menu => { state.applicationMenu = menu; state.applicationMenus.push(menu); } },
     dialog: { showErrorBox: (_title, message) => state.errors.push(message), showMessageBox: async () => ({ response: restartResponse }) } };
   electron.ipcMain.handle = (name, handler) => { state.updateRequest = handler; };
   const policy = { ...require('../host-policy.cjs'), launchConfig: input => input };
@@ -311,14 +343,20 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
     if (name === 'electron') return electron;
     if (name === './host-policy.cjs') return policy;
     if (name === './updates.cjs') return require('../updates.cjs');
+    if (name === './window-shell.cjs') {
+      const shell = require('../window-shell.cjs');
+      return { ...shell, createWindowShell: options => shell.createWindowShell(options, electron) };
+    }
     if (name === './startup.cjs') {
       const startup = require('../startup.cjs');
       return { createStartup: (win, options) => startup.createStartup(win, options, electron),
-        waitForWorkbench: (win, url) => startup.waitForWorkbench(win, url, electron) };
+        waitForWorkbench: (win, url, dependencies = {}) => startup.waitForWorkbench(win, url, { ...electron, ...dependencies }) };
     }
     if (name === 'electron-updater') return { autoUpdater: updater };
     if (name === './preferences.cjs') return { ...require('../preferences.cjs'), preferenceStore: () => ({
-      getItem: () => null, setItem: () => true, removeItem: () => true,
+      getItem: key => preferenceValues.get(key) ?? null,
+      setItem: (key, value) => { assert.equal(require('../preferences.cjs').validPreference(key, value), true); preferenceValues.set(key, value); return true; },
+      removeItem: key => preferenceValues.delete(key),
     }) };
     if (name === 'node:fs/promises') return filesystem;
     if (name === './backend.cjs') return { startBackend: (_config, options) => {
@@ -326,7 +364,7 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
       return { ready: ready.promise, stop: async () => { state.backendStops++; return await stopBackend(); } };
     } };
     return require(name);
-  }, clearInterval, setInterval, setImmediate, __dirname: path.resolve(__dirname, '..'), process: { argv: ['FundsTrace', ...(synthetic ? ['--synthetic'] : [])], env: {}, platform } });
+  }, clearInterval, setInterval, setImmediate, setTimeout, clearTimeout, __dirname: path.resolve(__dirname, '..'), process: { argv: ['FundsTrace', ...(synthetic ? ['--synthetic'] : [])], env: {}, platform } });
   return { app, state, ready, screen, ipcMain: electron.ipcMain, flush: async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); } };
 }
 
@@ -340,12 +378,56 @@ test('Main uses the packaged brand asset for startup and analysis windows and th
     assert.equal(harness.state.windows[0].options.icon, icon);
     assert.equal(harness.state.dockIcon, platform === 'darwin' ? icon : undefined);
     harness.ready.resolve({ origin, token: 'main-only-test-token' }); await harness.flush();
-    harness.state.windows[0].popup({ url: `${origin}/analysis?case_id=1` }); await harness.flush();
+    harness.state.windows[0].businessView.popup({ url: `${origin}/analysis?case_id=1` }); await harness.flush();
     assert.equal(harness.state.windows[1].options.icon, icon);
     for (const win of harness.state.windows) win.close();
     await harness.flush();
     assert.deepEqual(harness.state.errors, []);
   }
+});
+
+test('Main restores the user normal size and maximum state without analysis windows overwriting it', async () => {
+  const preferenceValues = new Map();
+  const first = mainHarness({ preferenceValues }); await first.flush();
+  const win = first.state.windows[0];
+  assert.deepEqual(win.bounds, { x: 240, y: 115, width: 1440, height: 810 });
+  const chosen = { x: 80, y: 70, width: 1520, height: 900 };
+  // The proposed Win32 outer rectangle includes hidden frame borders; only
+  // completed logical bounds may be restored through Electron's constructor.
+  win.emit('will-resize', {}, { x: 72, y: 70, width: 1536, height: 908 });
+  win.setBounds(chosen); win.emit('resized');
+  first.ready.resolve({ origin: 'http://127.0.0.1:54321', token: 'synthetic' }); await first.flush();
+  win.businessView.popup({ url: 'http://127.0.0.1:54321/analysis' }); await first.flush();
+  const child = first.state.windows[1];
+  child.emit('will-resize', {}, { x: 0, y: 0, width: 1800, height: 1000 }); child.close();
+  assert.equal(preferenceValues.has('fund_window_state'), false);
+  win.maximize(); win.close(); await first.flush();
+  assert.deepEqual(JSON.parse(preferenceValues.get('fund_window_state')), { bounds: chosen, maximized: true });
+  const second = mainHarness({ preferenceValues }); await second.flush();
+  const reopened = second.state.windows[0];
+  assert.deepEqual(reopened.bounds, chosen);
+  assert.equal(reopened.isMaximized(), true);
+  assert.ok(second.state.startupViews[0].file, 'startup is loaded before restored maximize shows the window');
+  reopened.maximized = false; reopened.emit('unmaximize'); reopened.close(); await second.flush();
+  assert.deepEqual(JSON.parse(preferenceValues.get('fund_window_state')), { bounds: chosen, maximized: false });
+});
+
+test('saved preferences survive temporary DPI constraints and disconnected-display recovery', async () => {
+  const chosen = { x: -1800, y: 50, width: 1500, height: 880 };
+  const preferenceValues = new Map([['fund_window_state', JSON.stringify({ bounds: chosen, maximized: false })]]);
+  const small = mainHarness({ preferenceValues, initialDisplay: { id: 2, scaleFactor: 1.5,
+    workArea: { x: 0, y: 0, width: 960, height: 500 } } }); await small.flush();
+  const win = small.state.windows[0];
+  assert.deepEqual(win.bounds, { x: 0, y: 0, width: 960, height: 500 });
+  small.state.display = { id: 2, scaleFactor: 2, workArea: { x: 0, y: 0, width: 683, height: 344 } };
+  small.screen.emit('display-metrics-changed', {}, small.state.display, ['scaleFactor']);
+  assert.deepEqual(win.bounds, { x: 0, y: 0, width: 683, height: 344 });
+  win.close(); await small.flush();
+  assert.deepEqual(JSON.parse(preferenceValues.get('fund_window_state')).bounds, chosen,
+    'automatic fit must not permanently shrink the user preference');
+  const large = mainHarness({ preferenceValues }); await large.flush();
+  assert.deepEqual(large.state.windows[0].bounds, { ...chosen, x: 0 });
+  large.state.windows[0].close(); await large.flush();
 });
 
 test('Main adapts existing windows after DPI/work-area changes while retaining bounds that still fit', async () => {
@@ -358,10 +440,10 @@ test('Main adapts existing windows after DPI/work-area changes while retaining b
   assert.deepEqual(win.bounds, { x: 0, y: 0, width: 960, height: 500 });
   assert.equal(win.boundsChanges.length, 1);
   harness.state.display = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
-  win.bounds = { x: 50, y: 70, width: 1200, height: 760 };
+  win.bounds = { x: 50, y: 70, width: 1400, height: 760 };
   harness.screen.emit('display-metrics-changed', {}, harness.state.display, ['workArea']);
-  assert.deepEqual(win.minimum, [960, 640]);
-  assert.deepEqual(win.bounds, { x: 50, y: 70, width: 1200, height: 760 });
+  assert.deepEqual(win.minimum, [1280, 720]);
+  assert.deepEqual(win.bounds, { x: 50, y: 70, width: 1400, height: 760 });
   assert.equal(win.boundsChanges.length, 1, 'a valid user size and position must not be reset');
   win.close(); await harness.flush();
   assert.equal(harness.screen.listenerCount('display-metrics-changed'), 0);
@@ -381,7 +463,7 @@ test('Main fits a new display or removed-display recovery without trapping movem
   assert.deepEqual(win.bounds, { x: 1920, y: 20, width: 960, height: 500 });
   harness.state.display = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
   harness.screen.emit('display-removed', {}, { id: 2 });
-  assert.deepEqual(win.bounds, { x: 960, y: 20, width: 960, height: 500 });
+  assert.deepEqual(win.bounds, { x: 640, y: 20, width: 1280, height: 720 });
   const changes = win.boundsChanges.length;
   win.maximized = true;
   win.bounds = { x: -8, y: -8, width: 1936, height: 1056 };
@@ -458,7 +540,7 @@ test('Main shows a restricted startup window before backend readiness and focuse
   const startup = state.startupViews[0];
   assert.ok(startup.file.endsWith(path.join('startup', 'index.html')));
   assert.equal(startup.backgroundColor, 'rgba(0, 0, 0, 0)');
-  assert.equal(win.loads.length, 0, 'backend preparation must not replace the local overlay');
+  assert.equal(win.businessView.loads.length, 0, 'backend preparation must not replace the local overlay');
   assert.equal(win.options.webPreferences.sandbox, true);
   assert.equal(win.options.webPreferences.contextIsolation, true);
   assert.equal(win.options.webPreferences.nodeIntegration, false);
@@ -473,12 +555,12 @@ test('Main shows a restricted startup window before backend readiness and focuse
   assert.equal(response.requestHeaders[HEADER], undefined);
   harness.app.emit('second-instance'); assert.equal(win.focused, 1); assert.equal(win.restored, true);
   harness.ready.resolve({ origin, token: 'main-only-test-token' }); await harness.flush();
-  assert.deepEqual(win.loads, [`${origin}/`]);
+  assert.deepEqual(win.businessView.loads, [`${origin}/`]);
   assert.equal(startup.destroyed, true);
-  assert.equal(win.contentView.children.length, 0);
-  assert.equal(win.contentsFocused, true);
+  assert.deepEqual(win.contentView.children, [win.businessView]);
+  assert.ok(win.businessView.webContents.focusCount > 0);
   state.startupRequest(request, value => { response = value; }); assert.equal(response.cancel, true, 'startup session is unavailable after dismissal');
-  state.headers({ ...request, webContentsId: win.webContents.id, url: `${origin}/api/cases`, requestHeaders: {} }, value => { response = value; });
+  state.headers({ ...request, webContentsId: win.businessView.webContents.id, url: `${origin}/api/cases`, requestHeaders: {} }, value => { response = value; });
   assert.equal(response.requestHeaders[HEADER], 'main-only-test-token');
   assert.ok(!startup.webContents.getURL().includes('main-only-test-token'));
   win.close(); await harness.flush(); assert.equal(state.backendStops, 1); assert.equal(state.quitCount, 1);
@@ -504,8 +586,9 @@ test('startup waits for initialized main workbench, rejects unrelated frames and
   assert.equal(view.destroyed, undefined, 'an early completion must not dismiss the loading surface');
   harness.ready.resolve({ origin, token: 'main-only-test-token' }); await harness.flush();
   assert.equal(view.messages.length, 0, 'backend health and did-finish-load are not workbench readiness');
-  const valid = { sender: win.webContents, senderFrame: win.webContents.mainFrame };
-  for (const event of [localEvent, { ...valid, senderFrame: { url: `${origin}/` } }, { ...valid, sender: {} }]) {
+  const valid = { sender: win.businessView.webContents, senderFrame: win.businessView.webContents.mainFrame };
+  for (const event of [localEvent, { sender: win.webContents, senderFrame: win.webContents.mainFrame },
+    { ...valid, senderFrame: { url: `${origin}/` } }, { ...valid, sender: {} }]) {
     harness.ipcMain.emit('funds-trace:workbench', event, 'ready');
   }
   await harness.flush(); assert.equal(view.messages.length, 0);
@@ -517,7 +600,7 @@ test('startup waits for initialized main workbench, rejects unrelated frames and
   assert.equal(view.destroyed, undefined);
   harness.ipcMain.emit('funds-trace:startup', localEvent, 'complete'); await harness.flush();
   assert.equal(view.destroyed, true);
-  assert.equal(win.contentView.children.length, 0);
+  assert.deepEqual(win.contentView.children, [win.businessView]);
   assert.equal(harness.ipcMain.listenerCount('funds-trace:startup'), 0);
   assert.equal(harness.ipcMain.listenerCount('funds-trace:workbench'), 0);
   win.close(); await harness.flush();
@@ -526,10 +609,10 @@ test('startup waits for initialized main workbench, rejects unrelated frames and
 test('startup overlay follows content bounds through resize and releases its listeners on cancel', async () => {
   const harness = mainHarness({ workbenchReady: false }); await harness.flush();
   const win = harness.state.windows[0], view = harness.state.startupViews[0];
-  assert.deepEqual(view.bounds, { x: 0, y: 0, width: 1440, height: 880 });
+  assert.deepEqual(view.bounds, { x: 0, y: 32, width: 1440, height: 718 });
   win.bounds = { x: -100, y: 30, width: 683, height: 344 };
   win.contentView.emit('bounds-changed');
-  assert.deepEqual(view.bounds, { x: 0, y: 0, width: 683, height: 284 });
+  assert.deepEqual(view.bounds, { x: 0, y: 32, width: 683, height: 252 });
   assert.equal(view.options.webPreferences.sandbox, true);
   assert.equal(view.options.webPreferences.nodeIntegration, false);
   assert.equal(view.popup({ url: 'https://example.com' }).action, 'deny');
@@ -543,11 +626,203 @@ test('startup overlay follows content bounds through resize and releases its lis
   assert.equal(harness.ipcMain.listenerCount('funds-trace:startup'), 0);
 });
 
+test('Main preserves the same native 32 DIP caption through backend readiness and the startup fade', async () => {
+  const harness = mainHarness({ workbenchReady: false, completeStartup: false }); await harness.flush();
+  const win = harness.state.windows[0], root = win.webContents, business = win.businessView;
+  const startup = harness.state.startupViews[0];
+  const rootUrl = root.getURL();
+  assert.ok(rootUrl.endsWith('/titlebar/index.html'));
+  assert.notEqual(root, business.webContents);
+  assert.deepEqual(win.options.titleBarOverlay, { color: '#151d27', symbolColor: '#cdd7e3', height: 32 });
+  assert.equal(win.options.titleBarStyle, 'hidden');
+  assert.equal(win.menu, null);
+  assert.deepEqual(startup.bounds, business.bounds);
+  assert.equal(business.bounds.y, 32);
+  assert.notEqual(win.options.webPreferences.session, business.options.webPreferences.session);
+  assert.notEqual(win.options.webPreferences.session, startup.options.webPreferences.session);
+  harness.ipcMain.emit('funds-trace:titlebar', { sender: root, senderFrame: root.mainFrame }, 'open-menu');
+  assert.equal(harness.state.menuPopups.length, 0, 'startup caption menu stays unavailable');
+  harness.ready.resolve({ origin, token: 'business-only-synthetic-token' }); await harness.flush();
+  assert.equal(win.webContents, root);
+  assert.equal(root.getURL(), rootUrl);
+  assert.equal(win.fileLoads.length, 1);
+  assert.deepEqual(win.loads, [], 'the caption never navigates to a backend page');
+  assert.deepEqual(business.loads, [`${origin}/`]);
+  for (const event of [{ sender: root, senderFrame: root.mainFrame },
+    { sender: business.webContents, senderFrame: { url: business.webContents.getURL() } }]) {
+    harness.ipcMain.emit('funds-trace:workbench', event, 'ready');
+  }
+  await harness.flush();
+  assert.deepEqual(startup.messages, [], 'only the current business main frame can unlock the handoff');
+  const captionMessages = [...win.messages];
+  harness.ipcMain.emit('funds-trace:workbench', { sender: business.webContents, senderFrame: business.webContents.mainFrame }, 'ready');
+  await harness.flush();
+  assert.deepEqual(startup.messages, [{ channel: 'funds-trace:startup', value: 'ready' }]);
+  assert.deepEqual(win.messages, captionMessages, 'the caption does not receive business readiness or fade commands');
+  harness.ipcMain.emit('funds-trace:startup', { sender: startup.webContents, senderFrame: startup.webContents.mainFrame }, 'complete');
+  await harness.flush();
+  assert.equal(win.webContents, root);
+  assert.equal(root.getURL(), rootUrl);
+  assert.equal(win.fileLoads.length, 1);
+  assert.deepEqual(win.contentView.children, [business]);
+  assert.deepEqual(win.messages.at(-1), { channel: 'funds-trace:titlebar-menu-enabled', value: true });
+  assert.equal(root.focusCount, 0);
+  let response;
+  const backendRequest = { url: `${origin}/api/cases`, webContentsId: root.id, requestHeaders: {} };
+  harness.state.request(backendRequest, value => { response = value; }); assert.equal(response.cancel, true);
+  harness.state.headers(backendRequest, value => { response = value; }); assert.equal(response.requestHeaders[HEADER], undefined);
+  harness.state.titlebarHeaders({ requestHeaders: { [HEADER]: 'renderer-supplied' } }, value => { response = value; });
+  assert.equal(response.requestHeaders[HEADER], undefined);
+  harness.state.headers({ ...backendRequest, webContentsId: business.webContents.id }, value => { response = value; });
+  assert.equal(response.requestHeaders[HEADER], 'business-only-synthetic-token');
+  assert.ok(!JSON.stringify(win.messages).includes('business-only-synthetic-token'));
+  win.close(); await harness.flush();
+  assert.equal(business.destroyed, true);
+  assert.equal(harness.ipcMain.listenerCount('funds-trace:titlebar'), 0);
+});
+
+test('caption menus target the selected native window and its separate business renderer, including analysis windows', async () => {
+  const harness = mainHarness(); await harness.flush();
+  harness.ready.resolve({ origin, token: 'main-only-test-token' }); await harness.flush();
+  const primary = harness.state.windows[0], primaryBusiness = primary.businessView.webContents;
+  const primaryFocus = primaryBusiness.focusCount;
+  harness.ipcMain.emit('funds-trace:titlebar', { sender: primary.webContents, senderFrame: primary.webContents.mainFrame }, 'open-menu');
+  const primaryMenu = harness.state.menuPopups.at(-1);
+  assert.equal(primaryMenu.options.window, primary);
+  assert.equal(primaryMenu.options.x, 8); assert.equal(primaryMenu.options.y, 32);
+  assert.equal(primaryBusiness.focusCount, primaryFocus + 1);
+  assert.equal(primary.webContents.focusCount, 0);
+  assert.equal(primary.businessView.popup({ url: `${origin}/analysis?case_id=1` }).action, 'deny');
+  await harness.flush();
+  const analysis = harness.state.windows[1], analysisBusiness = analysis.businessView.webContents;
+  assert.notEqual(analysisBusiness, analysis.webContents);
+  assert.notEqual(analysisBusiness, primaryBusiness);
+  assert.deepEqual(analysis.businessView.loads, [`${origin}/analysis?case_id=1`]);
+  assert.deepEqual(analysis.loads, []);
+  assert.equal(analysis.fileLoads.length, 1);
+  assert.ok(analysis.webContents.getURL().endsWith('/titlebar/index.html'));
+  assert.equal(analysis.options.webPreferences.session === primary.options.webPreferences.session, false);
+  assert.equal(analysis.businessView.options.webPreferences.session, primary.businessView.options.webPreferences.session);
+  const originalPrimaryLoads = [...primary.businessView.loads];
+  const originalPrimaryFocus = primaryBusiness.focusCount;
+  const analysisFocus = analysisBusiness.focusCount;
+  harness.ipcMain.emit('funds-trace:titlebar', { sender: analysis.webContents, senderFrame: analysis.webContents.mainFrame }, 'open-menu');
+  const analysisMenu = harness.state.menuPopups.at(-1);
+  assert.equal(analysisMenu.options.window, analysis);
+  assert.equal(analysisBusiness.focusCount, analysisFocus + 1);
+  assert.equal(primaryBusiness.focusCount, originalPrimaryFocus);
+  const fileMenu = analysisMenu.template.find(item => item.label === '文件');
+  fileMenu.submenu.find(item => item.label === '案件与导入').click(); await harness.flush();
+  assert.deepEqual(analysis.businessView.loads, [`${origin}/analysis?case_id=1`, `${origin}/workspace/`]);
+  assert.deepEqual(primary.businessView.loads, originalPrimaryLoads);
+  const viewMenu = analysisMenu.template.find(item => item.label === '显示');
+  viewMenu.submenu.find(item => item.label === '放大').click();
+  assert.equal(analysisBusiness.getZoomLevel(), .5);
+  assert.equal(analysis.webContents.getZoomLevel(), 0);
+  assert.equal(primaryBusiness.getZoomLevel(), 0);
+  viewMenu.submenu.find(item => item.label === '实际大小').click();
+  for (const source of [analysisBusiness, analysis.webContents]) {
+    let prevented = 0;
+    source.emit('before-input-event', { preventDefault() { prevented++; } }, { type: 'keyDown', key: '=', control: true, shift: true });
+    assert.equal(analysisBusiness.getZoomLevel(), .5, 'Ctrl+Shift+= changes only the selected business renderer');
+    assert.equal(analysis.webContents.getZoomLevel(), 0);
+    source.emit('before-input-event', { preventDefault() { prevented++; } }, { type: 'keyDown', key: '0', control: true });
+    assert.equal(analysisBusiness.getZoomLevel(), 0);
+    assert.equal(analysis.webContents.getZoomLevel(), 0);
+    assert.equal(prevented, 2);
+  }
+  assert.equal(primaryBusiness.getZoomLevel(), 0);
+  for (const win of harness.state.windows) win.close();
+  await harness.flush();
+  assert.equal(harness.ipcMain.listenerCount('funds-trace:titlebar'), 0);
+});
+
+test('Windows F10 and a standalone Alt release open the caption menu without consuming context or combined shortcuts', async () => {
+  const harness = mainHarness(); await harness.flush();
+  const win = harness.state.windows[0], business = win.businessView.webContents;
+  const input = (source, type, key, modifiers = {}) => {
+    let prevented = 0;
+    source.emit('before-input-event', { preventDefault() { prevented++; } }, { type, key, ...modifiers });
+    return prevented;
+  };
+  for (const source of [win.webContents, business]) {
+    assert.equal(input(source, 'keyDown', 'F10'), 0);
+    assert.equal(input(source, 'keyDown', 'Alt', { alt: true }), 0);
+    assert.equal(input(source, 'keyUp', 'Alt'), 0);
+  }
+  assert.deepEqual(harness.state.menuPopups, [], 'all menu keyboard entry points stay inactive during startup');
+  input(win.webContents, 'keyDown', 'Alt', { alt: true });
+  harness.ready.resolve({ origin, token: 'main-only-test-token' }); await harness.flush();
+  assert.equal(input(win.webContents, 'keyUp', 'Alt'), 0, 'an Alt press during startup cannot arm the ready menu');
+  for (const source of [win.webContents, business]) {
+    let count = harness.state.menuPopups.length;
+    assert.equal(input(source, 'keyDown', 'F10'), 1);
+    assert.equal(harness.state.menuPopups.length, ++count);
+    assert.equal(harness.state.menuPopups.at(-1).options.window, win);
+    assert.equal(input(source, 'keyUp', 'F10'), 0);
+    assert.equal(input(source, 'keyDown', 'F10', { shift: true }), 0, 'Shift+F10 retains the native context-menu shortcut');
+    assert.equal(input(source, 'keyDown', 'F10', { control: true }), 0);
+    assert.equal(input(source, 'keyUp', 'Alt'), 0, 'an unmatched Alt release is inactive');
+    assert.equal(harness.state.menuPopups.length, count);
+    assert.equal(input(source, 'keyDown', 'Alt', { alt: true }), 0);
+    assert.equal(harness.state.menuPopups.length, count, 'Alt opens only on its standalone release');
+    assert.equal(input(source, 'keyUp', 'Alt'), 1);
+    assert.equal(harness.state.menuPopups.length, ++count);
+    assert.equal(input(source, 'keyDown', 'Alt', { alt: true }), 0);
+    assert.equal(input(source, 'keyDown', 'f', { alt: true }), 0);
+    assert.equal(input(source, 'keyUp', 'f', { alt: true }), 0);
+    assert.equal(input(source, 'keyUp', 'Alt'), 0);
+    assert.equal(input(source, 'keyDown', 'F10', { alt: true }), 0);
+    assert.equal(input(source, 'keyUp', 'a'), 0);
+    assert.equal(harness.state.menuPopups.length, count, 'Alt combinations and unrelated key releases do not open a menu');
+  }
+  assert.equal(win.webContents.focusCount, 0);
+  assert.ok(business.focusCount > 0);
+  win.close(); await harness.flush();
+});
+
+test('macOS system display-menu callbacks follow the focused analysis business window dynamically', async () => {
+  const harness = mainHarness({ platform: 'darwin' }); await harness.flush();
+  harness.ready.resolve({ origin, token: 'main-only-test-token' }); await harness.flush();
+  const primary = harness.state.windows[0], primaryBusiness = primary.businessView.webContents;
+  const applicationMenu = harness.state.applicationMenu;
+  const displayMenu = applicationMenu.template.find(item => item.label === '显示');
+  const command = label => displayMenu.submenu.find(item => item.label === label).click();
+  primaryBusiness.setZoomLevel(1);
+  primary.businessView.popup({ url: `${origin}/analysis?case_id=2` }); await harness.flush();
+  const analysis = harness.state.windows[1], analysisBusiness = analysis.businessView.webContents;
+  analysis.focus();
+  assert.equal(analysis.isFocused(), true);
+  assert.equal(primary.isFocused(), false);
+  assert.equal(harness.state.applicationMenu, applicationMenu, 'the callbacks must select the active window without replacing the primary menu');
+  command('重新加载');
+  assert.equal(analysis.businessView.reloadCount, 1);
+  assert.equal(primary.businessView.reloadCount, undefined);
+  assert.equal(analysis.reloadCount, undefined);
+  assert.equal(primary.reloadCount, undefined);
+  analysisBusiness.setZoomLevel(2);
+  command('实际大小'); assert.equal(analysisBusiness.getZoomLevel(), 0);
+  command('放大'); assert.equal(analysisBusiness.getZoomLevel(), .5);
+  command('缩小'); assert.equal(analysisBusiness.getZoomLevel(), 0);
+  assert.equal(primaryBusiness.getZoomLevel(), 1);
+  assert.equal(primary.webContents.getZoomLevel(), 0);
+  assert.equal(analysis.webContents.getZoomLevel(), 0);
+  command('全屏'); assert.equal(analysis.isFullScreen(), true); assert.equal(primary.isFullScreen(), false);
+  command('全屏'); assert.equal(analysis.isFullScreen(), false);
+  primary.focus();
+  command('重新加载');
+  assert.equal(primary.businessView.reloadCount, 1, 'the same callback follows a later focus change');
+  assert.equal(analysis.businessView.reloadCount, 1);
+  command('实际大小'); assert.equal(primaryBusiness.getZoomLevel(), 0);
+  for (const win of harness.state.windows) win.close();
+  await harness.flush();
+});
+
 test('failed workbench initialization keeps the safe error path and stops the owned service', async () => {
   const harness = mainHarness({ workbenchReady: false }); await harness.flush();
   harness.ready.resolve({ origin, token: 'not-in-error-message' }); await harness.flush();
   const win = harness.state.windows[0];
-  harness.ipcMain.emit('funds-trace:workbench', { sender: win.webContents, senderFrame: win.webContents.mainFrame }, 'failed');
+  harness.ipcMain.emit('funds-trace:workbench', { sender: win.businessView.webContents, senderFrame: win.businessView.webContents.mainFrame }, 'failed');
   await harness.flush();
   assert.equal(harness.state.startupViews[0].messages.length, 0);
   assert.equal(harness.state.backendStops, 1);
@@ -592,9 +867,26 @@ test('closing a startup window stops its backend and ignores readiness arriving 
   const win = harness.state.windows[0]; assert.ok(win, 'startup window exists before readiness');
   win.close(); await harness.flush(); assert.equal(harness.state.backendStops, 1);
   harness.ready.resolve({ origin, token: 'never-rendered' }); await harness.flush();
-  assert.equal(win.loads.length, 0); assert.equal(harness.state.windows.length, 1);
+  assert.equal(win.businessView.loads.length, 0); assert.equal(harness.state.windows.length, 1);
   assert.equal(harness.state.startupViews[0].destroyed, true);
   assert.deepEqual(harness.state.errors, []);
+});
+
+test('Main removes caption shortcuts after native destruction without reading the destroyed window getter', async () => {
+  const harness=mainHarness();await harness.flush();
+  harness.ready.resolve({origin,token:'synthetic-main-only-token'});await harness.flush();
+  const win=harness.state.windows[0],root=win.webContents;
+  Object.defineProperty(win,'webContents',{get(){
+    if(win.destroyed) throw new Error('Object has been destroyed');
+    return root;
+  }});
+  assert.ok(root.listenerCount('before-input-event')>0);
+  assert.doesNotThrow(()=>win.close());
+  await harness.flush();
+  assert.equal(root.listenerCount('before-input-event'),0);
+  assert.equal(win.businessView.destroyed,true);
+  assert.equal(harness.state.backendStops,1);
+  assert.deepEqual(harness.state.errors,[]);
 });
 
 test('a startup failure reports a safe recovery message and stops the owned backend', async () => {
@@ -604,7 +896,7 @@ test('a startup failure reports a safe recovery message and stops the owned back
   assert.match(harness.state.errors[0], /启动超时/);
   assert.match(harness.state.errors[0], /重新打开/);
   assert.equal(harness.state.backendStops, 1);
-  assert.equal(harness.state.windows[0].loads.length, 0);
+  assert.equal(harness.state.windows[0].businessView.loads.length, 0);
   assert.equal(harness.state.quitCount, 1);
 });
 
@@ -620,10 +912,15 @@ test('installed update stops the owned backend before running NSIS and ordinary 
     updater.quitAndInstall = (...args) => { installed.push(args); harness.app.quit(); };
     const harness = mainHarness({ updater, stopBackend: async () => { await stopped.promise; return graceful; }, restartResponse: 1 });
     await harness.flush(); harness.ready.resolve({ origin: 'http://127.0.0.1:55123', token: 'synthetic-only-token' }); await harness.flush();
-    const sender = harness.state.windows[0].webContents;
+    const sender = harness.state.windows[0].businessView.webContents;
     const event = { sender, senderFrame: sender.mainFrame };
+    const root = harness.state.windows[0].webContents;
+    assert.equal(await harness.state.updateRequest({ sender: root, senderFrame: root.mainFrame }, 'state'), null);
     assert.equal((await harness.state.updateRequest(event, 'state')).phase, 'available');
     assert.equal((await harness.state.updateRequest(event, 'download')).phase, 'ready');
+    assert.ok(harness.state.windows[0].businessView.messages.some(message => message.channel === 'funds-trace:updates' && message.value.phase === 'available'));
+    assert.ok(harness.state.windows[0].businessView.messages.some(message => message.channel === 'funds-trace:updates' && message.value.phase === 'ready'));
+    assert.ok(harness.state.windows[0].messages.every(message => message.channel === 'funds-trace:titlebar-menu-enabled'), 'update state never enters the local caption root');
     if (update) await harness.state.updateRequest(event, 'install'); else harness.app.quit();
     await harness.flush(); assert.equal(harness.state.backendStops, 1); assert.deepEqual(installed, []);
     stopped.resolve(); await harness.flush();

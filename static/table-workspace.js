@@ -149,7 +149,7 @@
     scrolls[open ? 'overview' : 'sidebar'] = [viewport.scrollLeft, viewport.scrollTop];
     open = next;
     if (next) {
-      slots = ['.flow-table-tools', '#flowTableHint', '#flowTableScroll', '.flow-horizontal-scroll', '.pager'].map(selector => {
+      slots = ['.flow-table-tools', '#flowTableHint', '#flowTableScroll', '.pager'].map(selector => {
         const node = document.querySelector('#tab-search ' + selector), marker = document.createComment('table workspace slot');
         node.before(marker); $('#flowOverviewContent').appendChild(node); return [node, marker];
       });

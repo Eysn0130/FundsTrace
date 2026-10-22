@@ -95,7 +95,7 @@ def test_license_resources_preserve_both_languages_and_historical_notices(tmp_pa
     assert '循迹 FundsTrace'.encode() in contents['LICENSE']
     assert b'I. Scope and Existing Rights' in contents['LICENSE']
     assert b'XI. Miscellaneous' in contents['LICENSE']
-    assert contents['LICENSES/MIT.txt'].startswith(b'MIT License\n')
+    assert contents['LICENSES/MIT.txt'].splitlines()[0] == b'MIT License'
     assert contents['LICENSE'] != contents['LICENSES/MIT.txt']
     for name, content in contents.items():
         source = tmp_path / name
