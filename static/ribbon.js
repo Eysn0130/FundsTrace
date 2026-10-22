@@ -14,6 +14,7 @@
     const topbar = doc.getElementById('topbar');
     const panelContainer = doc.getElementById('ribbonPanels');
     const tabbar = doc.getElementById('ribbonTabs')?.parentElement;
+    const toolbarHost = toolbar.parentElement;
     const status = { tab: 'common', collapsed: false, selectionCount: 0, edgeSelectionCount: 0, busy: false, cameraReady:false };
     const commandOverrides = new Map();
     const mixedOptions = new WeakMap(), mixedTitles = new WeakMap();
@@ -25,7 +26,12 @@
     }
 
     function updateToolbarFit(notify = true) {
-      const width = Math.max(1, doc.documentElement?.clientWidth || root.innerWidth || 1280);
+      // The navigation rail occupies viewport space outside the toolbar's slot.
+      // Measure the unscaled host; reading the toolbar would feed its own zoom
+      // back into the next measurement. Hidden slots wait for visible geometry.
+      const hostWidth = toolbarHost?.clientWidth;
+      const width = Number.isFinite(hostWidth) ? hostWidth : doc.documentElement?.clientWidth || root.innerWidth || 1280;
+      if (width <= 0) return;
       const scale = Math.min(1, width / 1280);
       const changed = toolbarScale !== null && scale !== toolbarScale;
       const announce = phase => root.dispatchEvent(new root.CustomEvent('fundstrace:workspace-resize', {
@@ -259,6 +265,12 @@
       }
     });
     root.addEventListener('resize', () => { closePopovers(); updateToolbarFit(); });
+    if (root.ResizeObserver && toolbarHost) {
+      // One observer per mounted ribbon, matching the window listeners' lifetime.
+      // The mount guard above also prevents duplicate observers on re-entry.
+      const fitObserver = new root.ResizeObserver(() => { closePopovers(); updateToolbarFit(); });
+      fitObserver.observe(toolbarHost);
+    }
     for (const node of [...panels, compact]) node.addEventListener('scroll', () => closePopovers());
     root.addEventListener('fundstrace:workspace-resize', event => setCollapsed(event.detail.toolbarCollapsed));
     const api = { activateTab, setCollapsed, closePopovers, setStatus, setValues, setCommandEnabled, getState: () => ({ ...status }) };

@@ -537,8 +537,13 @@
   };
   showGraphOverview = (...args) => command('显示完整图谱', () => overview(...args));
 
+  function homePageActive() {
+    const page = $('#graphPage');
+    return !page?.inert && !page?.classList.contains('page-inactive');
+  }
+
   async function travel(redo) {
-    if (history.status().busy || gesture || state.graphLoading || layoutJob || mainAccountsBlocked()) return false;
+    if (!homePageActive() || history.status().busy || gesture || state.graphLoading || layoutJob || mainAccountsBlocked()) return false;
     const context = caseContext();
     try { return await (redo ? history.redo() : history.undo()); }
     catch (error) { if (isCurrentCase(context)) toast('无法恢复画布：' + error.message, 'err'); return false; }
@@ -656,7 +661,7 @@
     window.addEventListener('funds:selection-drag-end', () => endGesture('移动选中节点'));
     window.addEventListener('funds:edge-drag-end', () => endGesture('调整连线或标注'));
     window.addEventListener('keydown', event => {
-      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.defaultPrevented || window.FundsToolbarMenu?.isOpen()) return;
+      if (!homePageActive() || !(event.ctrlKey || event.metaKey) || event.altKey || event.defaultPrevented || window.FundsToolbarMenu?.isOpen()) return;
       const target = event.target;
       if (target?.closest?.('input,select,textarea,[contenteditable]:not([contenteditable="false"])')) return;
       if ($$('.modal,dialog,[role="dialog"]').some(node => node.open || (!node.hidden && node.style.display !== 'none' && node.getClientRects().length))) return;

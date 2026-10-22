@@ -10,12 +10,16 @@ vm.runInNewContext(readFileSync(`${root}static/graph-minimap.js`, 'utf8'), sandb
 const minimap = sandbox.window.FundsGraphMinimap;
 const plain = value => JSON.parse(JSON.stringify(value));
 
-function fixture() {
+function fixture(options = {}) {
   const operations = () => {
     const calls = [];
-    const context = { calls };
+    const context = { calls, inks: [] };
     for (const name of ['clearRect', 'drawImage', 'fillRect', 'strokeRect', 'beginPath', 'rect', 'arc', 'moveTo', 'fill']) {
-      context[name] = (...args) => calls.push([name, ...args]);
+      context[name] = (...args) => {
+        calls.push([name, ...args]);
+        if (name === 'fill' || name === 'fillRect') context.inks.push([name, context.fillStyle]);
+        if (name === 'strokeRect') context.inks.push([name, context.strokeStyle]);
+      };
     }
     return context;
   };
@@ -28,7 +32,7 @@ function fixture() {
     removeEventListener: (name, fn) => { if (events.get(name) === fn) events.delete(name); },
     setPointerCapture: id => captured.add(id), releasePointerCapture: id => captured.delete(id) };
   const backing = { width: 0, height: 0, getContext: () => base };
-  const api = minimap.create({ canvas, createCanvas: () => backing, onNavigate: point => navigations.push(plain(point)),
+  const api = minimap.create({ canvas, createCanvas: () => backing, onNavigate: point => navigations.push(plain(point)), ...options,
     raf: fn => { const id = ++nextId; callbacks.set(id, fn); allCallbacks.push(fn); return id; },
     caf: id => { callbacks.delete(id); cancelled.push(id); } });
   const event = (name, values = {}) => events.get(name)?.({ pointerId: 1, button: 0, clientX: 70, clientY: 60,
@@ -80,6 +84,48 @@ test('5000-node base is cached and 100 coalesced viewport updates draw no node p
   assert.equal(f.base.calls.length, baseCalls, 'viewport gestures never rebuild or traverse the node base');
   assert.deepEqual(f.context.calls.map(c => c[0]), ['clearRect', 'drawImage', 'fillRect', 'strokeRect']);
   assert.equal(JSON.stringify(data), original);
+});
+
+test('initial theme and theme changes paint the requested ink while retaining cached geometry and viewport', () => {
+  for (const initial of [undefined, 'light']) {
+    const f = fixture(initial ? { theme: initial } : {});
+    const data = { nodes: [{ x: -100, y: -50, isMain: true }, { x: 100, y: 50 }] };
+    f.api.setData(data); f.api.setViewport({ minX: -50, minY: -25, maxX: 50, maxY: 25 }); f.flush();
+    const baseCalls = f.base.calls.length;
+    const baseGeometry = f.base.calls.filter(call => ['rect', 'moveTo', 'arc'].includes(call[0]));
+    const viewportGeometry = f.context.calls.filter(call => call[0] === 'fillRect' || call[0] === 'strokeRect');
+    const assertInk = theme => {
+      assert.deepEqual(f.base.inks.slice(-2), [['fill', theme === 'light' ? '#2367ad' : '#679bd6'], ['fill', '#ffd16c']]);
+      assert.deepEqual(f.context.inks.slice(-2), theme === 'light'
+        ? [['fillRect', 'rgba(35,103,173,0.12)'], ['strokeRect', '#2367ad']]
+        : [['fillRect', 'rgba(122,184,255,0.12)'], ['strokeRect', '#b7d9ff']]);
+    };
+    assertInk(initial || 'dark');
+    // setData copied the geometry; a theme change cannot reread caller data.
+    data.nodes[1].x = 9000;
+    const next = initial === 'light' ? 'dark' : 'light';
+    f.api.setTheme(next); f.flush(); assertInk(next);
+    assert.deepEqual(f.base.calls.slice(baseCalls).filter(call => ['rect', 'moveTo', 'arc'].includes(call[0])), baseGeometry);
+    assert.deepEqual(f.context.calls.filter(call => call[0] === 'fillRect' || call[0] === 'strokeRect').slice(-2), viewportGeometry);
+    const calls = [f.base.calls.length, f.context.calls.length, f.allCallbacks.length];
+    f.api.setTheme(next); f.flush();
+    assert.deepEqual([f.base.calls.length, f.context.calls.length, f.allCallbacks.length], calls, 'the same resolved theme is a no-op');
+  }
+});
+
+test('theme changes preserve pointer capture, pending navigation and a scheduled frame', () => {
+  const f = fixture();
+  f.api.setData({ nodes: [{ x: -100, y: -50 }, { x: 100, y: 50 }] });
+  f.api.setViewport({ minX: -50, minY: -25, maxX: 50, maxY: 25 }); f.flush();
+  f.event('pointerdown');
+  const frames = f.allCallbacks.length;
+  f.api.setTheme('light');
+  assert.equal(f.captured.has(1), true); assert.equal(f.callbacks.size, 1); assert.equal(f.allCallbacks.length, frames);
+  f.flush(); assert.deepEqual(f.navigations, [{ x: 0, y: 0 }]);
+  assert.deepEqual(f.context.inks.slice(-2), [['fillRect', 'rgba(35,103,173,0.12)'], ['strokeRect', '#2367ad']]);
+  f.event('pointermove', { clientX: 116 }); f.api.setTheme('dark'); f.flush();
+  assert.equal(f.navigations.length, 2); assert.equal(f.navigations[1].x, 100); assert.equal(f.captured.has(1), true);
+  f.event('pointerup'); f.flush(); assert.equal(f.captured.size, 0);
 });
 
 test('click and captured drag navigate in graph coordinates, coalescing input and respecting CSS scale', () => {
@@ -154,6 +200,6 @@ test('destroy is idempotent, removes listeners and late callbacks or API calls c
   assert.equal(f.backing.width, 0); assert.equal(f.backing.height, 0);
   const count = f.context.calls.length;
   stale(); f.api.setData({ nodes: [{ x: 100, y: 100 }] }); f.api.setViewport({ minX: 0, minY: 0, maxX: 10, maxY: 10 });
-  f.api.resize(); f.api.clear();
+  f.api.resize(); f.api.clear(); f.api.setTheme('light');
   assert.equal(f.context.calls.length, count); assert.equal(f.navigations.length, 0);
 });

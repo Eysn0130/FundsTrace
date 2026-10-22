@@ -7,9 +7,9 @@ const markup = readFileSync(new URL('../static/index.html', import.meta.url), 'u
 const source = readFileSync(new URL('../static/ribbon.js', import.meta.url), 'utf8');
 
 // Minimal DOM uses the shipped markup, with no browser or frontend npm dependency.
-function harness() {
+function harness({ slotWidth = 1144, hidden = false, resizeObserver = true } = {}) {
   let doc;
-  const all = [], events = [], windowEvents = [], listeners = new Map();
+  const all = [], events = [], windowEvents = [], listeners = new Map(), observers = [];
   const matches = (node, selector) => {
     if (selector.startsWith('.')) return node.classList.contains(selector.slice(1));
     const attribute = selector.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);
@@ -41,7 +41,17 @@ function harness() {
     contains(node) { for (; node; node = node.parentElement) if (node === this) return true; return false; }
     focus() { doc.activeElement = this; }
     getClientRects() { return this.closest('[hidden]') ? [] : [{}]; }
-    getBoundingClientRect() { return { left: 1100, bottom: 180, width: 320, height: 180 }; }
+    getBoundingClientRect() {
+      if (this.id === 'graphPage') return { left: 56, right: 56 + this.clientWidth, width: this.clientWidth, top: 32, bottom: 800, height: 768 };
+      if (this.id === 'editorToolbar') {
+        // Model the shipped CSS width/zoom relationship, independently of the
+        // width source selected by ribbon.js. The 56px navigation rail remains
+        // outside this slot and must never contribute to the toolbar's width.
+        const width = Number.parseFloat(this.style.getPropertyValue('--toolbar-fit-width')) * Number(this.style.getPropertyValue('--toolbar-fit-scale'));
+        return { left: 56, right: 56 + width, width, top: 32, bottom: 180, height: 148 };
+      }
+      return { left: 1100, bottom: 180, width: 320, height: 180 };
+    }
     addEventListener(name, fn) { const list = this.handlers.get(name) || []; list.push(fn); this.handlers.set(name, list); }
     fire(name, detail = {}) { const event = { target: this, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...detail }; for (const fn of this.handlers.get(name) || []) fn(event); return event; }
     click() { if (!this.disabled) { this.clicks++; this.fire('click'); } }
@@ -60,8 +70,22 @@ function harness() {
   doc = { activeElement: null, body: all.find(n => n.tagName === 'BODY'), documentElement: all.find(n => n.tagName === 'HTML'), createElement: tag => new Element(tag), getElementById: id => all.find(n => n.id === id), querySelectorAll: selector => all.filter(n => matches(n, selector)), querySelector: selector => all.find(n => matches(n, selector)), addEventListener(name, fn) { const list = listeners.get(name) || []; list.push(fn); listeners.set(name, list); }, dispatchEvent(event) { events.push(event); for (const fn of listeners.get(event.type) || []) fn(event); }, fire(name, detail = {}) { const event = { preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...detail }; for (const fn of listeners.get(name) || []) fn(event); return event; } };
   const windowHandlers = new Map();
   const window = { document: doc, innerWidth: 1200, innerHeight: 800, CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } }, addEventListener(name, fn) { const list = windowHandlers.get(name) || []; list.push(fn); windowHandlers.set(name, list); }, dispatchEvent(event) { windowEvents.push(event); for (const fn of windowHandlers.get(event.type) || []) fn(event); } };
+  Object.defineProperty(doc.documentElement, 'clientWidth', { get: () => window.innerWidth });
+  const host = doc.getElementById('graphPage');
+  host.hidden = hidden;
+  Object.defineProperty(host, 'clientWidth', { get: () => host.closest('[hidden]') ? 0 : slotWidth });
+  if (resizeObserver) window.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; this.targets = new Set(); observers.push(this); }
+    observe(target) { this.targets.add(target); }
+    disconnect() { this.targets.clear(); }
+  };
+  const notifySlotResize = () => {
+    for (const observer of observers) if (observer.targets.has(host)) observer.callback([{ target: host, contentRect: host.getBoundingClientRect() }]);
+  };
   vm.runInNewContext(source, { window });
-  return { doc, window, events, windowEvents, api: window.FundsRibbon, node: id => doc.getElementById(id), fireWindow(name, detail = {}) { for (const fn of windowHandlers.get(name) || []) fn(detail); } };
+  return { doc, window, events, windowEvents, observers, notifySlotResize,
+    resizeSlot(width, notify = true) { slotWidth = width; if (notify) notifySlotResize(); },
+    api: window.FundsRibbon, node: id => doc.getElementById(id), fireWindow(name, detail = {}) { for (const fn of windowHandlers.get(name) || []) fn(detail); } };
 }
 
 test('the retained ribbon preserves a 1280 logical width without scaling the rail, caption or content', () => {
@@ -70,16 +94,21 @@ test('the retained ribbon preserves a 1280 logical width without scaling the rai
   assert.ok(h.node('appRail'));
   assert.ok(h.node('browserCaption'));
   layout.value = 'dagre';
-  for (const width of [1280, 1920, 1024, 960, 1280]) {
-    h.window.innerWidth = width;
+  for (const [viewportWidth, availableWidth, logicalWidth, expectedScale] of [
+    [1512, 1456, 1456, 1], [1336, 1280, 1280, 1], [1920, 1864, 1864, 1],
+    [1024, 968, 1280, 0.75625], [960, 904, 1280, 0.70625], [1336, 1280, 1280, 1]
+  ]) {
+    h.window.innerWidth = viewportWidth;
+    h.resizeSlot(availableWidth, false);
     h.fireWindow('resize');
     for (const id of ['editorToolbar']) {
       const style = h.node(id).style;
       const logical = Number.parseFloat(style.getPropertyValue('--toolbar-fit-width'));
       const scale = Number(style.getPropertyValue('--toolbar-fit-scale'));
-      assert.equal(logical, Math.max(1280, width));
-      assert.equal(scale, Math.min(1, width / 1280));
-      assert.equal(logical * scale, width);
+      assert.equal(logical, logicalWidth);
+      assert.equal(scale, expectedScale);
+      assert.equal(h.node(id).getBoundingClientRect().right, viewportWidth, 'the complete toolbar fits beside the 56px rail');
+      assert.equal(h.node(id).getBoundingClientRect().width, availableWidth);
     }
     assert.equal(h.doc.body.style.getPropertyValue('--toolbar-fit-scale'), '');
     assert.equal(h.node('appRail').style.getPropertyValue('--toolbar-fit-scale'), '');
@@ -91,6 +120,64 @@ test('the retained ribbon preserves a 1280 logical width without scaling the rai
   assert.equal(h.events.length, 0, 'adapting chrome must not invoke a graph command');
   assert.ok(h.windowEvents.some(event => event.detail.reason === 'toolbar-fit' && event.detail.phase === 'prepare'));
   assert.ok(h.windowEvents.some(event => event.detail.reason === 'toolbar-fit' && event.detail.phase === 'start'));
+});
+
+test('slot resizing fits the ribbon without a window resize and coordinates the canvas before scaling', () => {
+  const h = harness({ slotWidth: 1456 }), toolbar = h.node('editorToolbar'), layout = h.node('layoutSel');
+  h.window.innerWidth = 1512;
+  layout.value = 'dagre';
+  const samples = [];
+  h.window.addEventListener('fundstrace:workspace-resize', event => {
+    if (event.detail.reason === 'toolbar-fit') samples.push([event.detail.phase, toolbar.getBoundingClientRect().width]);
+  });
+  h.resizeSlot(968);
+  assert.equal(h.window.innerWidth, 1512);
+  assert.equal(toolbar.getBoundingClientRect().width, 968);
+  assert.deepEqual(samples, [['prepare', 1456], ['start', 968]], 'camera coordination surrounds the CSS geometry change');
+  h.notifySlotResize();
+  assert.equal(samples.length, 2, 'unchanged observer notifications do not restart camera coordination');
+  h.resizeSlot(1456);
+  assert.equal(toolbar.getBoundingClientRect().right, 1512);
+  assert.equal(h.node('layoutSel'), layout);
+  assert.equal(layout.value, 'dagre');
+  assert.equal(h.events.length, 0);
+});
+
+test('a temporarily hidden slot retains its fit and observes the restored slot width', () => {
+  const h = harness({ slotWidth: 968 }), toolbar = h.node('editorToolbar'), host = h.node('graphPage');
+  const style = [toolbar.style.getPropertyValue('--toolbar-fit-width'), toolbar.style.getPropertyValue('--toolbar-fit-scale')];
+  host.hidden = true;
+  h.resizeSlot(1456);
+  h.window.innerWidth = 1512; h.fireWindow('resize');
+  assert.deepEqual([toolbar.style.getPropertyValue('--toolbar-fit-width'), toolbar.style.getPropertyValue('--toolbar-fit-scale')], style, 'a zero-width hidden slot must not be replaced by the whole viewport');
+  host.hidden = false; h.notifySlotResize();
+  assert.equal(toolbar.getBoundingClientRect().width, 1456);
+  assert.equal(toolbar.style.getPropertyValue('--toolbar-fit-scale'), '1');
+  assert.equal(h.events.length, 0);
+});
+
+test('a ribbon mounted in a hidden slot waits for geometry and retains the window-resize fallback', () => {
+  const h = harness({ slotWidth: 968, hidden: true, resizeObserver: false }), toolbar = h.node('editorToolbar');
+  assert.equal(toolbar.style.getPropertyValue('--toolbar-fit-scale'), '');
+  h.node('graphPage').hidden = false; h.fireWindow('resize');
+  assert.equal(toolbar.getBoundingClientRect().width, 968);
+  h.resizeSlot(1456, false); h.window.innerWidth = 1512; h.fireWindow('resize');
+  assert.equal(toolbar.getBoundingClientRect().right, 1512);
+});
+
+test('slot resizing closes a floating popover and returns focus without replacing its controls', () => {
+  const h = harness({ slotWidth: 1456 }); h.api.setCollapsed(true);
+  const trigger = h.node('btnDisplayActions'), panel = h.node('toolbarDisplayExtra'), checkbox = h.node('showIdCk');
+  const originalParent = panel.parentElement;
+  checkbox.checked = false;
+  trigger.click(); checkbox.focus();
+  h.resizeSlot(968);
+  assert.equal(panel.hidden, true);
+  assert.equal(panel.parentElement, originalParent);
+  assert.equal(h.doc.activeElement, trigger);
+  assert.equal(h.node('showIdCk'), checkbox);
+  assert.equal(checkbox.checked, false);
+  assert.equal(h.events.length, 0);
 });
 
 test('floating controls leave scaled chrome temporarily and return home with identity and focus intact', () => {

@@ -32,6 +32,25 @@ function session(id = '1', scopeKey = 'host-scope-one', generation = 0, override
 const host = (value: FundsPanelSessionV1 | null) => ({ version: FUNDS_PANEL_VERSION, session: value });
 
 describe('FundsPanel host isolation', () => {
+  it('keeps the Chinese file selection area associated with the native input and locks it during parsing', async () => {
+    const pending = deferred<Awaited<ReturnType<FundsCaseClientV1['preview']>>>();
+    const bound = session('1', 'upload-label', 0, { preview: vi.fn(() => pending.promise) });
+    render(<FundsPanel host={host(bound.value)} />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
+    const input = screen.getByLabelText<HTMLInputElement>('选择流水文件'), area = input.labels![0];
+    expect(area.htmlFor).toBe(input.id); expect(area.textContent).toContain('选择 CSV 或 Excel 文件');
+    expect(document.getElementById(input.getAttribute('aria-describedby')!)?.textContent).toBe('支持 UTF-8／GBK CSV 和 XLSX');
+    expect(input.accept).toBe('.csv,.tsv,.txt,.xlsx'); input.focus(); expect(document.activeElement).toBe(input);
+    const file = new File(['synthetic'], '中文合成流水.csv', { type: 'text/csv' });
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(input.disabled).toBe(true); expect(area.getAttribute('aria-busy')).toBe('true');
+    expect(area.textContent).toContain('正在解析文件…');
+    expect(bound.client.preview).toHaveBeenCalledWith(file, expect.any(AbortSignal));
+    await act(async () => pending.reject(new Error('合成解析失败')));
+    expect(input.disabled).toBe(false); expect(area.getAttribute('aria-busy')).toBe('false');
+  });
+
   it('refreshes on reactivation and data revisions while retaining applied filters and unapplied drafts', async () => {
     const bound = session(); const flows = vi.spyOn(bound.client, 'flows');
     const { rerender } = render(<FundsPanel host={host(bound.value)} active revision={0} />);
@@ -61,6 +80,51 @@ describe('FundsPanel host isolation', () => {
     bound.client.flows = async () => page('1', 'FRESH-RETURN');
     rerender(<FundsPanel host={host(bound.value)} active />);
     await screen.findByRole('button', { name: '核对流水 FRESH-RETURN' });
+  });
+
+  it.each([
+    { trigger: '导入记录', title: '导入记录' },
+    { trigger: '导入流水', title: '导入流水' },
+    { trigger: '核对流水 HOST-1', title: '流水核对' },
+  ])('removes the $title dialog while inactive without revoking the session or losing the query draft', async ({ trigger, title }) => {
+    const bound = session(); const { container, rerender } = render(<FundsPanel host={host(bound.value)} active />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    fireEvent.change(screen.getByLabelText('账号筛选'), { target: { value: '保留面板草稿' } });
+    fireEvent.click(screen.getByRole('button', { name: trigger }));
+    const dialog = await screen.findByRole('dialog', { name: title });
+    rerender(<FundsPanel host={host(bound.value)} active={false} />);
+    expect(container.querySelector('dialog[open]')).toBeNull(); expect(dialog.isConnected).toBe(false); expect(bound.controller.signal.aborted).toBe(false);
+    rerender(<FundsPanel host={host(bound.value)} active />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    expect((screen.getByLabelText('账号筛选') as HTMLInputElement).value).toBe('保留面板草稿');
+    if (title !== '流水核对') await screen.findByRole('dialog', { name: title });
+    else expect(container.querySelector('dialog[open]')).toBeNull();
+  });
+
+  it('preserves a new upload preview, mode, edited mapping and main-account choices across inactive round trips', async () => {
+    const bound = session(), parse = bound.client.preview;
+    bound.client.preview = vi.fn(async (file, signal) => ({ ...await parse(file, signal), self_accounts_in_file: [{ account: '000HOST-A', name: '合成主账号', count: 1 }] }));
+    const repreview = vi.spyOn(bound.client, 'repreview'), commit = vi.spyOn(bound.client, 'commit');
+    const { container, rerender } = render(<FundsPanel host={host(bound.value)} active />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
+    fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'host-synthetic.csv')] } });
+    await screen.findByRole('button', { name: '确认导入' });
+    fireEvent.click(screen.getByRole('checkbox', { name: /合成主账号/ }));
+    fireEvent.change(screen.getByLabelText('流水文件类型'), { target: { value: 'B' } });
+    fireEvent.change(screen.getByLabelText('映射本方账号'), { target: { value: '付款账号' } });
+    for (let round = 0; round < 2; round++) {
+      rerender(<FundsPanel host={host(bound.value)} active={false} />);
+      expect(container.querySelector('dialog[open]')).toBeNull();
+      rerender(<FundsPanel host={host(bound.value)} active />);
+      expect(screen.queryByText('host-synthetic.csv')).not.toBeNull();
+      expect((screen.getByLabelText('流水文件类型') as HTMLSelectElement).value).toBe('B');
+      expect((screen.getByLabelText('映射本方账号') as HTMLSelectElement).value).toBe('付款账号');
+      expect((screen.getByRole('checkbox', { name: /合成主账号/ }) as HTMLInputElement).checked).toBe(false);
+      expect((screen.getByRole('button', { name: '确认导入' }) as HTMLButtonElement).disabled).toBe(true);
+      expect(screen.getByRole('button', { name: '按当前映射重新预览' })).toBeTruthy();
+    }
+    expect(bound.client.preview).toHaveBeenCalledOnce(); expect(repreview).not.toHaveBeenCalled(); expect(commit).not.toHaveBeenCalled();
   });
 
   it('uses only the injected current-case client and does not change standalone URL state', async () => {

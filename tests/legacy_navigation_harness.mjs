@@ -34,7 +34,7 @@ async function waitForLayoutCommit(h) {
 
 export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extras = {}) {
   const elements = new Map(), downloads = [], objectUrls = [], requests = [], storage = new Map([['fund_case', stored]]);
-  const timers = [], frames = [];
+  const timers = [], frames = [], windowEvents = new Map();
   let document;
   const requestFrame = callback => { frames.push({callback,cancelled:false,ran:false}); return frames.length; };
   const cancelFrame = id => { if (frames[id-1]) frames[id-1].cancelled=true; };
@@ -69,7 +69,8 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
   class TestURL extends URL { static createObjectURL(blob) { objectUrls.push({url:'blob:synthetic',blob}); return 'blob:synthetic'; } static revokeObjectURL() {} }
   document = { querySelector: element, getElementById: id => element('#' + id), querySelectorAll: selector => selector === '.alg' ? algorithms : [],
     createElement: kind => element(Symbol(kind)), body: element('body'), addEventListener() {}, };
-  const window = { location, history: { replaceState(_state, _title, value) { location.href = new URL(value, location).href; } }, addEventListener() {},removeEventListener(){},dispatchEvent(){},
+  const window = { location, history: { replaceState(_state, _title, value) { location.href = new URL(value, location).href; } }, addEventListener(name,fn){if(!windowEvents.has(name))windowEvents.set(name,new Set());windowEvents.get(name).add(fn)},
+    removeEventListener(name,fn){windowEvents.get(name)?.delete(fn)},dispatchEvent(event){for(const fn of windowEvents.get(event.type)||[])fn(event)},
     requestAnimationFrame:requestFrame,cancelAnimationFrame:cancelFrame };
   const sandbox = { window, document, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)), removeItem: key => storage.delete(key) },
     ...extras, URL: TestURL, URLSearchParams, Blob, Event, performance, CustomEvent: class { constructor(type) { this.type = type; } }, atob:globalThis.atob,console,requestAnimationFrame:requestFrame,cancelAnimationFrame:cancelFrame,
@@ -117,7 +118,7 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
         setPhase() {}});
     };
   `, context);
-  return { element, downloads, objectUrls,requests, storage, location, timers,frames, run: code => vm.runInContext(code, context),
+  return { element, downloads, objectUrls,requests, storage, location, timers,frames, windowEvent: (type,event={}) => window.dispatchEvent({type,...event}), run: code => vm.runInContext(code, context),
     sampleExport: format => { context.fixtureExportFormat = format; return vm.runInContext('sampleExportForFixture(fixtureExportFormat)', context); },
     flushFrames(){const pending=frames.filter(frame=>!frame.cancelled&&!frame.ran);for(const frame of pending){frame.ran=true;frame.callback()}},
     network: fn => { fetcher = fn; },
@@ -3251,4 +3252,66 @@ test('annotations: collected node snapshots carry only safe display metadata for
     id:'SYN-HUB',text:'主体\n合成核对',anchor:'above',dx:21,dy:-12,size:20,fontFamily:'KaiTi',color:'#c084fc'});
   assert.equal(snapshot.nodes.find(node=>node.id==='SYN-00000').annotation,undefined);
   assert.equal(h.run('JSON.stringify(state.lastGraph)===originalGraphFacts'),true);
+});
+
+
+test('appearance event repaints graph ink without changing facts, geometry, manual labels, selection, camera or history', async () => {
+  const h = harness('app.js'); installSyntheticHub(h, 3);
+  h.run(`document.documentElement={dataset:{ftTheme:'dark'}};
+    state.presentation.nodeLabels={'SYN-00000':{fill:'#dfe3ea'}};
+    state.presentation.edgeStyles={'SYN-HUB=>SYN-00000':{stroke:'#a12345'}};
+    state.presentation.edgeLabels={'SYN-HUB=>SYN-00000':{fill:'#125678'}};
+    state.edgeLabelPos={'SYN-HUB=>SYN-00000':.27};
+    globalThis.themeSelectionRefreshes=0;state.graphSelection={ids:new Set(['SYN-HUB']),refresh(){themeSelectionRefreshes++}};
+    globalThis.themeBefore=JSON.stringify({facts:state.lastGraph,positions:state.positions,labels:state.edgeLabelPos,
+      presentation:state.presentation,revision:state.graphView.revision,viewport:syntheticViewport,
+      children:state.graph.getEdges().map(e=>e.getContainer().get('children').map(s=>({name:s.get('name'),x:s.attr('x'),y:s.attr('y')})))});
+    state.graph.changeData=()=>{throw Error('theme cannot rebuild graph')};state.graph.fitView=()=>{throw Error('theme cannot fit camera')};
+    state.graph.changeSize=()=>{throw Error('theme cannot resize graph')};
+    globalThis.historyWrites=0;window.FundsCanvasEditor={history:{run(){historyWrites++}}};
+    document.documentElement.dataset.ftTheme='light';`);
+  const requests = h.requests.length;
+  h.windowEvent('funds-appearance-change',{detail:{resolvedTheme:'light'}});
+  assert.equal(h.run("state.graph.getNodes()[0].getModel().labelCfg.style.fill"),'#111111');
+  assert.equal(h.run("state.graph.getNodes()[1].getModel().labelCfg.style.fill"),'#dfe3ea','explicit custom colour wins even when it equals the old default');
+  assert.equal(h.run("state.graph.getEdges()[0].getModel().labelCfg.style.fill"),'#125678');
+  assert.equal(h.run('themeSelectionRefreshes'),1);
+  assert.equal(h.run('historyWrites'),0); assert.equal(h.requests.length,requests);
+  assert.equal(h.run(`JSON.stringify({facts:state.lastGraph,positions:state.positions,labels:state.edgeLabelPos,
+    presentation:state.presentation,revision:state.graphView.revision,viewport:syntheticViewport,
+    children:state.graph.getEdges().map(e=>e.getContainer().get('children').map(s=>({name:s.get('name'),x:s.attr('x'),y:s.attr('y')})))})===themeBefore`),true);
+  h.run("document.documentElement.dataset.ftTheme='dark'"); h.windowEvent('funds-appearance-change');
+  assert.equal(h.run("state.graph.getNodes()[0].getModel().labelCfg.style.fill"),'#dfe3ea');
+});
+
+test('public saved snapshot stays theme-neutral and retains exact metadata and sparse authored styles', async () => {
+  const h = harness('app.js'); snapshotGraph(h);
+  h.run(`state.presentation.nodeLabels={'SYN-A':{fontSize:17}};
+    state.presentation.edgeLabels={'SYN-A=>SYN-B':{fill:'#dfe3ea'}};
+    document.documentElement={dataset:{ftTheme:'dark'}};`);
+  const dark = JSON.parse(JSON.stringify(await h.run('window.__collectSnapshot()')));
+  h.run("document.documentElement.dataset.ftTheme='light'");
+  const light = JSON.parse(JSON.stringify(await h.run('window.__collectSnapshot()')));
+  assert.deepEqual(light,dark);
+  assert.equal(light.nodes[0].labelStyle.fill,'#dfe3ea');
+  assert.equal(light.nodes[0].data.out_amt,'10000000000000000.01');
+  assert.deepEqual(light.presentation.nodeLabels,{'SYN-A':{fontSize:17}});
+});
+
+test('theme previews during image sampling wait until completion and restore the latest chosen theme before painting', async () => {
+  for (const outcome of ['complete','cancel']) {
+    const h = harness('app.js'); installSyntheticHub(h,3);
+    h.run(`document.documentElement={dataset:{ftTheme:'light'}};applyGraphTheme();
+      globalThis.themePrintPaints=[];state.graph.paint=()=>themePrintPaints.push(state.graph.getNodes()[0].getModel().labelCfg.style.fill);`);
+    const pending = h.sampleExport('png');
+    assert.equal(h.run('state.graphView.exportDepth'),1);
+    h.run("document.documentElement.dataset.ftTheme='dark'"); h.windowEvent('funds-appearance-change');
+    assert.equal(h.run("state.graph.getNodes()[0].getModel().labelCfg.style.fill"),'#111111','preview must not contaminate image sampling');
+    if(outcome==='complete') h.timers.findLast(timer=>timer.delay===400).callback();
+    else h.run('cancelGraphImageExport()');
+    if(outcome==='cancel') await assert.rejects(pending,/未获得图像数据/); else await pending;
+    assert.equal(h.run('state.graphView.exportDepth'),0);
+    assert.equal(h.run("state.graph.getNodes()[0].getModel().labelCfg.style.fill"),'#dfe3ea');
+    assert.equal(h.run("themePrintPaints.slice(-1)[0]"),'#dfe3ea');
+  }
 });

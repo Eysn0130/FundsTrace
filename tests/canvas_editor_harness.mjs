@@ -9,7 +9,7 @@ const response = (value, status = 200) => ({ ok: status === 200, status,
   headers: { get: () => 'application/json' }, json: async () => value, text: async () => JSON.stringify(value) });
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 
-function editor({ relationships = [] } = {}) {
+function editor({ relationships = [], navigation = false } = {}) {
   const h = harness('app.js'), env = h.run('globalThis'), state = h.run('state');
   const events = new Map(), elementEvents = new Map(), messages = [], searches = [], boxes = [1, 2].map(id => ({ dataset: { id: String(id) }, checked: true }));
   env.setTimeout = (callback, delay = 0) => setTimeout(callback, delay === 1500 ? 0 : delay); env.clearTimeout = clearTimeout;
@@ -89,7 +89,23 @@ function editor({ relationships = [] } = {}) {
   env.window.FundsCanvasHistory = { create(options) { snapshot = options.capture; return create(options); } };
   h.run(source('canvas-editor.js'));
   for (const fn of [...events.get('DOMContentLoaded') || []]) fn();
+  const nav = new Map();
+  if (navigation) {
+    for (const page of ['home', 'cases', 'accounts', 'analysis']) {
+      const node = h.element(`#nav-${page}`); node.dataset.navPage = page; nav.set(page, node);
+    }
+    const queryAll = env.document.querySelectorAll, classes = new Set(), page = h.element('#graphPage');
+    page.classList = { toggle(name, on) { on ? classes.add(name) : classes.delete(name); }, contains: name => classes.has(name) };
+    env.document.querySelectorAll = selector => selector === '[data-nav-page]' ? [...nav.values()] : queryAll(selector);
+    env.location = env.window.location; env.history = env.window.history;
+    env.refreshAll = async () => {};
+    env.window.FundsWorkspaceSession = { capture() {}, retainedCaseIds: () => ['1'] };
+    const ready = new Set(events.get('DOMContentLoaded'));
+    h.run(source('app-navigation.js'));
+    for (const fn of events.get('DOMContentLoaded')) if (!ready.has(fn)) fn();
+  }
   return { h, env, state, boxes, labels, searches, messages, tracked, snapshot: () => snapshot(), history: env.window.FundsCanvasEditor.history,
+    nav,
     portalDisplay(value = true) { displayPortaled = value; },
     membership: env.window.FundsCanvasEditor.membership,
     get models() { return models; }, get matrix() { return matrix; }, set matrix(value) { matrix = value; },
@@ -971,6 +987,40 @@ test('keyboard undo does not require the graph container to hold focus', async (
   await new Promise(resolve => setTimeout(resolve, 5));
   assert.equal(prevented, 1, 'Ctrl+Z must still undo when focus left the graph');
   assert.equal(f.history.status().canRedo, true);
+});
+
+for (const page of ['cases', 'accounts', 'analysis']) test(`history shortcuts and buttons ignore the hidden home canvas on ${page} and resume after returning`, async () => {
+  const f = editor({ navigation: true }), checkbox = f.h.element('#showIdCk');
+  checkbox.checked = false; await checkbox.onchange();
+  assert.equal(f.state.showIds, false); assert.equal(f.history.status().canUndo, true);
+  let prevented = 0;
+  const shortcut = async keys => {
+    f.event('keydown', { target: f.env.document.activeElement, preventDefault() { prevented++; }, ...keys });
+    await flush();
+  };
+  f.nav.get(page).onclick(); f.env.document.activeElement = f.nav.get(page);
+  assert.equal(f.h.element('#graphPage').inert, true);
+  for (const keys of [{ ctrlKey: true, key: 'z' }, { metaKey: true, key: 'z' }]) await shortcut(keys);
+  assert.equal(f.state.showIds, false, 'a parent-page rail shortcut must not undo the hidden home display');
+  assert.equal(prevented, 0, 'other pages retain their native shortcut behavior');
+  assert.equal(await f.h.element('#btnUndo').onclick(), false, 'a direct hidden undo button callback cannot bypass the page boundary');
+  assert.equal(f.history.status().canUndo, true);
+
+  f.nav.get('home').onclick(); f.env.document.activeElement = f.h.element('#btnFit');
+  await shortcut({ ctrlKey: true, key: 'z' });
+  assert.equal(f.state.showIds, true, 'returning home permits undo with Ribbon focus');
+  assert.equal(f.history.status().canRedo, true);
+  f.nav.get(page).onclick(); f.env.document.activeElement = f.nav.get(page);
+  for (const keys of [{ ctrlKey: true, key: 'y' }, { metaKey: true, shiftKey: true, key: 'z' }]) await shortcut(keys);
+  assert.equal(f.state.showIds, true, 'a parent-page rail shortcut must not redo the hidden home display');
+  assert.equal(prevented, 1);
+  assert.equal(await f.h.element('#btnRedo').onclick(), false, 'a direct hidden redo button callback cannot bypass the page boundary');
+  assert.equal(f.history.status().canRedo, true);
+
+  f.nav.get('home').onclick(); f.env.document.activeElement = f.h.element('#btnSearch');
+  await shortcut({ metaKey: true, shiftKey: true, key: 'z' });
+  assert.equal(f.state.showIds, false, 'returning home permits redo with query-sidebar focus');
+  assert.equal(f.history.status().canUndo, true); assert.equal(prevented, 2);
 });
 
 test('selected-edge type undo and redo retain other overrides, the default and source facts', async () => {

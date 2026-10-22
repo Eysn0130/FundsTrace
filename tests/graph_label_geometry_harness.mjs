@@ -400,6 +400,56 @@ test('inline suppression clears a cached key arrow without affecting the visible
   assert.deepEqual(f.key.attr('path'), f.path); assert.equal(f.key.capture, true); assert.equal(f.key.getClip(), null);
 });
 
+test('paintEdge recolours an inline visible path and cached arrows without changing geometry or hit suppression', () => {
+  const f = fixture();
+  const startArrow = { ...plain(f.style.endArrow), d: 3 };
+  const style = { ...f.style, startArrow };
+  geometry.placeEdge(f.item, { style, outline: f.outline });
+  const drawn = visible(f), clip = drawn.getClip(), outlineClip = f.outline.getClip();
+  const textBefore = plain(f.text.attr()), modelBefore = JSON.stringify(f.model), pathBefore = plain(f.key.attr('path'));
+  const caches = [];
+  for (const name of ['startArrow', 'endArrow']) {
+    const cache = new Shape('path', { attrs: { ...plain(drawn.attr(name)), stroke: '#123456', matrix: [1, 0, 0, 0, 1, 0, 17, 23, 1] } }, f.group);
+    drawn.set(name + 'Shape', cache); caches.push(cache);
+  }
+  const arrowGeometry = caches.map(shape => ({ path: plain(shape.attr('path')), matrix: plain(shape.attr('matrix')), d: shape.attr('d') }));
+  assert.equal(geometry.paintEdge(f.item, { stroke: '#2367ad', lineWidth: 99, opacity: 1, strokeOpacity: 1,
+    path: [['M', 0, 0]], startArrow: { fill: '#abcdef', stroke: '#fedcba', path: 'IGNORED', d: 99 },
+    endArrow: { fill: '#2367ad', path: 'IGNORED', d: 99 } }), true);
+  assert.equal(drawn.attr('stroke'), '#2367ad'); assert.equal(f.key.attr('stroke'), '#2367ad');
+  assert.equal(f.key.attr('opacity'), 0); assert.equal(f.key.attr('strokeOpacity'), 0); assert.equal(f.key.attr('fillOpacity'), 0);
+  assert.equal(f.key.attr('startArrow'), false); assert.equal(f.key.attr('endArrow'), false);
+  assert.equal(f.key.capture, true); assert.equal(drawn.capture, false);
+  assert.equal(drawn.attr('lineWidth'), 7); assert.equal(drawn.attr('opacity'), .85); assert.equal(drawn.attr('strokeOpacity'), .9);
+  assert.deepEqual(drawn.attr('lineDash'), [6, 4]); assert.deepEqual(f.key.attr('path'), pathBefore);
+  assert.equal(drawn.getClip(), clip); assert.equal(f.outline.getClip(), outlineClip);
+  assert.deepEqual(f.text.attr(), textBefore); assert.equal(JSON.stringify(f.model), modelBefore);
+  assert.deepEqual(caches.map(shape => ({ path: plain(shape.attr('path')), matrix: plain(shape.attr('matrix')), d: shape.attr('d') })), arrowGeometry);
+  assert.equal(caches[0].attr('fill'), '#abcdef'); assert.equal(caches[0].attr('stroke'), '#fedcba');
+  assert.equal(caches[1].attr('fill'), '#2367ad'); assert.equal(caches[1].attr('stroke'), '#2367ad');
+  assert.deepEqual(drawn.attr('startArrow'), { ...startArrow, fill: '#abcdef', stroke: '#fedcba' });
+  assert.deepEqual(drawn.attr('endArrow'), { ...f.style.endArrow, fill: '#2367ad' });
+  geometry.restoreEdge(f.item);
+  assert.equal(f.key.attr('stroke'), '#2367ad', 'restoration uses the updated base paint');
+  assert.equal(f.key.attr('opacity'), .85); assert.equal(f.key.attr('lineWidth'), 7);
+  assert.deepEqual(f.key.attr('endArrow'), { ...f.style.endArrow, fill: '#2367ad' });
+});
+
+test('paintEdge preserves unclipped anchors, hidden paths and disabled arrows when given a full rendering style', () => {
+  const f = fixture(), muted = { ...f.style, opacity: 0, endArrow: false };
+  geometry.placeEdge(f.item, { style: muted, above: true, outline: f.outline });
+  const textBefore = plain(f.text.attr()), keyBefore = plain(f.key.attr()), childrenBefore = f.group.children.slice();
+  f.key.hide();
+  geometry.paintEdge(f.item, { ...f.style, stroke: '#7f8b99', opacity: 1, endArrow: { ...f.style.endArrow, fill: '#7f8b99' } });
+  assert.deepEqual(f.key.attr(), { ...keyBefore, stroke: '#7f8b99' });
+  assert.equal(f.key.isVisible(), false); assert.equal(f.key.attr('endArrow'), false);
+  assert.deepEqual(f.text.attr(), textBefore); assert.deepEqual(f.group.children, childrenBefore);
+  assert.equal(visible(f), undefined); assert.equal(f.key.getClip(), null);
+  geometry.restoreEdge(f.item);
+  assert.equal(f.key.attr('opacity'), 0); assert.equal(f.key.attr('endArrow'), false);
+  assert.equal(geometry.paintEdge(null, {}), false); assert.equal(geometry.paintEdge(f.item, null), false);
+});
+
 test('arrow cache synchronization only removes explicitly false arrows and is idempotent', () => {
   const f = fixture(), removed = [], start = { destroy: () => removed.push('start') }, end = { destroy: () => removed.push('end') };
   let invalidations = 0; f.key.clearCacheBBox = () => { invalidations++; };

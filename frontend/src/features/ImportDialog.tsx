@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { ImportPreview, ImportJob, ImportSession } from '../../../contracts/api-v1';
 import { Modal } from '../components/Modal';
 import type { FundsCaseClientV1, FundsCaseContextV1 } from '../panel/host';
@@ -18,7 +18,8 @@ const modeFields = {
   B: new Set([...fieldsB, 'counter_bank', 'channel', '_time2']),
 };
 
-export function ImportDialog({ target, client, scopeSignal, resume, onClose, onImported }: { target: FundsCaseContextV1; client: FundsCaseClientV1; scopeSignal: AbortSignal; resume?: ImportSession; onClose: () => void; onImported: () => void }) {
+export function ImportDialog({ target, client, scopeSignal, resume, onClose, onImported, active = true }: { target: FundsCaseContextV1; client: FundsCaseClientV1; scopeSignal: AbortSignal; resume?: ImportSession; onClose: () => void; onImported: () => void; active?: boolean }) {
+  const fileId = useId();
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [mode, setMode] = useState<'A' | 'B'>('A');
@@ -114,13 +115,13 @@ export function ImportDialog({ target, client, scopeSignal, resume, onClose, onI
   const complete = job?.stage === 'done';
   const activeJob = job?.stage === 'parsing' || job?.stage === 'importing';
   const working = busy || polling;
-  return <Modal title="导入流水" onClose={onClose} busy={busy}>
+  return active ? <Modal title="导入流水" onClose={onClose} busy={busy}>
     <div className="modal-context">导入到 <strong>{target.name}</strong><span>当前案件内去重</span></div>
     <ol className="import-steps" aria-label="导入步骤"><li className={!preview ? 'active' : 'done'}>1 <span>选择文件</span></li><li className={preview && !job ? 'active' : ''}>2 <span>映射与预览</span></li><li className={job ? 'active' : ''}>3 <span>核对结果</span></li></ol>
     {error && <div role="alert" className="error-banner">{error}{!working && activeJob ? <button onClick={() => { setError(''); void poll(resume?.import_id ?? preview!.import_id, ++operation.current); }}>重新查询进度</button> : !working && job?.stage === 'error' && job.recoverable !== false ? <button onClick={() => void (preview ? repreview() : restorePreview())}>重新预览后重试</button> : !working && resume && !preview && !complete && <button onClick={() => void restorePreview()}>重试恢复预览</button>}</div>}
     {complete ? <div className="import-complete" role="status"><span className="success-symbol">✓</span><h3>流水已写入当前案件</h3><p>新增 <strong>{job.result?.ok ?? 0}</strong> 笔 · 重复 {job.result?.rows_dup ?? 0} 笔 · 跳过 {job.result?.skipped ?? 0} 行</p><p className="muted">批次 {job.result?.batch_id} · {preview?.filename ?? resume?.filename}</p></div>
       : !preview ? resume ? <div className="resume-summary"><strong>{resume.filename}</strong><p className="muted">{working ? activeJob ? '正在查询原任务，关闭窗口后任务仍继续。' : '正在用原始上传与已保存映射重新预览…' : '请核对任务状态后继续。'}</p></div>
-        : <label className="file-drop"><span className="upload-symbol">↑</span><strong>{busy ? '正在解析文件…' : '选择 CSV 或 Excel 文件'}</strong><span>支持 UTF-8／GBK CSV 和 XLSX</span><input aria-label="选择流水文件" type="file" accept=".csv,.tsv,.txt,.xlsx" disabled={working} onChange={event => void upload(event.target.files?.[0])} /></label>
+        : <label className="file-drop" htmlFor={fileId} aria-busy={working}><span className="upload-symbol">↑</span><strong>{busy ? '正在解析文件…' : '选择 CSV 或 Excel 文件'}</strong><span id={`${fileId}-hint`}>支持 UTF-8／GBK CSV 和 XLSX</span><input id={fileId} aria-label="选择流水文件" aria-describedby={`${fileId}-hint`} type="file" accept=".csv,.tsv,.txt,.xlsx" disabled={working} onChange={event => void upload(event.target.files?.[0])} /></label>
       : <>
         <div className="file-summary"><strong>{preview.filename}</strong><span>{preview.stats.total} 行 · 可导入 {preview.stats.ok} 行 · 跳过 {preview.stats.skipped} 行</span></div>
         <label className="mode-field">文件类型<select aria-label="流水文件类型" value={mode} disabled={working || activeJob} onChange={event => { const next = event.target.value as 'A' | 'B'; setMode(next); setMapping(value => Object.fromEntries(Object.entries(value).filter(([field]) => modeFields[next].has(field)))); setDirty(true); }}><option value="A">双边流水（付款方 → 收款方）</option><option value="B">单账户流水（本方与交易对手）</option></select></label>
@@ -131,5 +132,5 @@ export function ImportDialog({ target, client, scopeSignal, resume, onClose, onI
       </>}
     {working && !complete && <div role="status" className="import-progress"><progress max={job?.total || 1} value={job?.done || 0} /><span>{job?.message || '正在处理…'} {job ? `${job.done} / ${job.total}` : ''}</span></div>}
     <footer className="modal-footer"><button className="button secondary" disabled={busy} onClick={onClose}>{complete ? '返回流水核对' : activeJob ? '关闭进度' : '取消'}</button>{preview && !complete && !activeJob && <button className="button primary" disabled={working || dirty || preview.stats.ok === 0 || job?.stage === 'error'} onClick={() => void commit()}>{working ? '正在导入…' : '确认导入'}</button>}</footer>
-  </Modal>;
+  </Modal> : null;
 }

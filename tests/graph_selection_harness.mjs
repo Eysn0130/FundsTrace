@@ -143,6 +143,28 @@ test('selection preserves role fill and shadow, image and source facts', () => {
   assert.equal(f.graph.nodes[0].attrs.stroke, '#ffd700'); assert.equal(f.graph.nodes[0].get('styles').selected.fill, '#fff');
 });
 
+test('theme refresh updates existing selection outlines without changing roles, geometry or selection', () => {
+  let color = '#66d9ef';
+  const f = fixture(2, { selectionColor: () => color });
+  f.click(0); f.click(1, { ctrlKey: true }); f.camera(2, 100, 10); f.api.refresh();
+  const outlines = f.graph.nodes.map(item => item.getContainer().shapes[0]);
+  const facts = JSON.stringify(f.allModels), selected = sorted(f.api.ids), notifications = f.changes.length;
+  const stateCalls = f.calls.filter(call => call[0] === 'state').length, before = f.metrics();
+  const halos = f.container.children[0].children.map(halo => ({ ...halo.style }));
+  color = '#2367ad'; f.api.refresh();
+  assert.ok(outlines.every(outline => outline.attrs.stroke === '#2367ad'));
+  assert.ok(f.graph.nodes.every((item, i) => item.getContainer().shapes.length === 1 && item.getContainer().shapes[0] === outlines[i]));
+  assert.ok(f.graph.nodes.every(item => item.attrs.stroke === '#ffd700' && item.attrs.fill === '#4caf7d'));
+  assert.equal(JSON.stringify(f.allModels), facts); assert.deepEqual(sorted(f.api.ids), selected);
+  assert.equal(f.changes.length, notifications); assert.equal(f.calls.filter(call => call[0] === 'state').length, stateCalls);
+  assert.deepEqual(f.container.children[0].children.map(halo => ({ ...halo.style })), halos);
+  assert.deepEqual(f.metrics(), { ...before, paints: before.paints + 1 });
+  f.api.refresh(); assert.equal(f.metrics().paints, before.paints + 1, 'the same outline color does not repaint');
+  color = '#66d9ef'; f.api.refresh();
+  assert.ok(outlines.every(outline => outline.attrs.stroke === '#66d9ef'));
+  assert.equal(f.metrics().paints, before.paints + 2);
+});
+
 test('keyboard select-all includes offscreen graph nodes and excludes edges, foreign focus, editors and modals', () => {
   const f = fixture(); f.allModels[11].x = 20000;
   const foreign = f.key({ ctrlKey: true, target: f.outside }); assert.equal(foreign.prevented, undefined); assert.equal(f.api.ids.size, 0);

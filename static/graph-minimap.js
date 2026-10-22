@@ -4,6 +4,11 @@
 
   const finite = value => typeof value === 'number' && Number.isFinite(value);
   const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
+  const resolveTheme = theme => theme === 'light' ? 'light' : 'dark';
+  const themeColors = {
+    dark: { point: '#679bd6', viewportFill: 'rgba(122,184,255,0.12)', viewportStroke: '#b7d9ff' },
+    light: { point: '#2367ad', viewportFill: 'rgba(35,103,173,0.12)', viewportStroke: '#2367ad' },
+  };
 
   function bounds(nodes) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -69,6 +74,7 @@
     const onNavigate = typeof options.onNavigate === 'function' ? options.onNavigate : () => {};
     let points = [], mapping = null, viewport = null, frame = null, frameSerial = 0;
     let generation = 0, pointerId = null, pendingNavigation = null, destroyed = false;
+    let theme = resolveTheme(options.theme);
 
     function paint() {
       context.clearRect(0, 0, canvas.width, canvas.height);
@@ -76,9 +82,9 @@
       context.drawImage(backing, 0, 0);
       const rect = viewportRect(viewport, mapping);
       if (!rect) return;
-      context.fillStyle = 'rgba(122,184,255,0.12)';
+      context.fillStyle = themeColors[theme].viewportFill;
       context.fillRect(rect.x, rect.y, rect.width, rect.height);
-      context.strokeStyle = '#b7d9ff'; context.lineWidth = 1.5;
+      context.strokeStyle = themeColors[theme].viewportStroke; context.lineWidth = 1.5;
       context.strokeRect(rect.x, rect.y, rect.width, rect.height);
     }
 
@@ -113,7 +119,7 @@
       mapping = transform(bounds(points), backing.width, backing.height);
       if (!mapping) return;
       // Two batched paths; no edges, labels, images or duplicate G6 item tree.
-      baseContext.fillStyle = '#679bd6'; baseContext.beginPath();
+      baseContext.fillStyle = themeColors[theme].point; baseContext.beginPath();
       for (const point of points) {
         if (point.isMain) continue;
         const p = project(point, mapping);
@@ -188,6 +194,13 @@
         if (destroyed) return;
         viewport = next ? { minX: next.minX, minY: next.minY, maxX: next.maxX, maxY: next.maxY } : null;
         schedule();
+      },
+      setTheme(next) {
+        if (destroyed) return;
+        const resolved = resolveTheme(next);
+        if (theme === resolved) return;
+        theme = resolved;
+        rebuild(); schedule();
       },
       resize() {
         if (destroyed) return;

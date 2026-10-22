@@ -36,7 +36,7 @@
     const styles = (edge ? [edgeKey(edge.getModel())] : ids.length ? ids : [undefined]).map(id => {
       const overrides = graphLabelStyle(kind, id);
       const style = typeof FundsGraphPresentation.effectiveLabel === 'function' ?
-        FundsGraphPresentation.effectiveLabel(kind, overrides) : overrides;
+        FundsGraphPresentation.effectiveLabel(kind, overrides, document.documentElement?.dataset?.ftTheme || 'dark') : overrides;
       return {
         labelFontFamily: style.fontFamily || 'Arial',
         labelFontSize: style.fontSize || 13,
