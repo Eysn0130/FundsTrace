@@ -26,11 +26,11 @@
 
 开启加速后，同一候选 `545e8f0` 的独立运行 `39469686098`、`39470102496` 均完成两组全新对象上传和区域端点完整读回：8 MiB 组分别 13.985、15.881 秒，1 MiB 组分别 38.752、35.484 秒，均为 160,337,859 字节且 SHA-256/SHA-512 与 GitHub 原包一致，原指针未变。两次工作流末尾的公开核验均在 `Promise.all(index 1)` 对应的官网 latest JSON 连接处约 10 秒超时，报 `UND_ERR_CONNECT_TIMEOUT`，没有 HTTP 响应，工作流整体仍失败；此处不能判定元数据错误或两个公共入口均不可用，也不撤销已通过的上传证据。既有 Chrome 完整下载哈希通过仅证明该浏览器下载路径。
 
-v0.1.10 的同步运行 `39741723284` 已完成安装包上传、OSS 完整读回、最新版切换、切换读回和预热，但最后官网与下载域名的公开读回连续约 10.5 秒连接超时。原核验虽传入 30 秒总预算，Node 22.22.1 内置 Undici 仍有独立的 [10 秒连接限制](https://github.com/nodejs/node/blob/v22.22.1/deps/undici/src/lib/core/connect.js#L79)，因此重试可能始终走同一失败路径。这些日志不能确定 DNS、IP 地址族或跨境路由的底层原因，也不能当成文件内容或更新说明错误。
+v0.1.10 的同步运行 `39741723284` 已完成安装包上传、OSS 完整读回、最新版切换、切换读回和预热，但最后官网与下载域名的公开读回连续约 10.5 秒连接超时。原核验虽传入 30 秒总预算，Node 22.22.1 内置 Undici 仍有独立的 [10 秒连接限制](https://github.com/nodejs/node/blob/v22.22.1/deps/undici/src/lib/core/connect.js#L79)，而重试没有改变连接策略。本轮 Linux 只读诊断 `39748173556` 再次复现 fetch 超时，但同一 runner 的 curl 可在约 1 秒完成两份 JSON 回读；下载域名有多个 A 记录，固定 IPv4 首地址的备用连接也超时。故不能只延长超时或强制 IPv4，更不能将此判为内容错误；底层网络为何丢弃连接仍未被证实。
 
-公开核验由 `verify-public.mjs` 保留 GitHub、官网和下载域名三个固定 HTTPS URL。首轮仍使用 fetch；只有 `UND_ERR_CONNECT_TIMEOUT` 才把该入口的后续尝试切换到 Node 内置 HTTPS IPv4 连接，不修改系统 DNS、代理、全局 Agent 或 TLS 设置。单入口最多三次请求，间隔仍为 2、5 秒；每次都用新的 30 秒 AbortSignal 覆盖 DNS、连接、TLS 和响应体。IPv4 连接保留证书、主机名校验，不跟随重定向。`ECONNRESET`、`EAI_AGAIN` 保留原有重试规则；HTTP 非 2xx、JSON、TLS、未知异常、版本、资产、大小、摘要、日期或说明不一致均失败，持续网络失败也不会放行。日志仅输出固定入口标签、尝试次数、传输方式及错误类别，成功读取 JSON 不等于最终元数据已通过。
+公开核验由 `verify-public.mjs` 保留 GitHub、官网和下载域名三个固定 HTTPS URL。首轮仍使用 fetch；只有 `UND_ERR_CONNECT_TIMEOUT` 才把该入口的后续尝试切换到 Node 内置 HTTPS 多地址连接，不修改系统 DNS、代理、全局 Agent 或 TLS 设置，不固定 IP。[Node 的自动地址选择](https://nodejs.org/download/release/v22.22.1/docs/api/net.html#socketconnectoptions-connectlistener) 会尝试 DNS 返回的其他地址，避免 `family: 4` 只取首个 A 记录；它处理 TCP 地址选择，不保证修复任意 TLS 或网络故障。单入口最多三次请求，间隔仍为 2、5 秒；每次都用新的 30 秒 AbortSignal 覆盖 DNS、连接、TLS 和响应体。备用连接保留证书、主机名校验，不跟随重定向。`ECONNRESET`、`EAI_AGAIN` 保留原有重试规则；HTTP 非 2xx、JSON、TLS、未知异常、版本、资产、大小、摘要、日期或说明不一致均失败，持续网络失败也不会放行。日志仅输出固定入口标签、尝试次数、传输方式及错误类别，成功读取 JSON 不等于最终元数据已通过。
 
-[Public download readback](../.github/workflows/public-download-check.yml) 在相关 PR 中以 Linux runner 对照旧、新核验器；旧版结果仅作诊断，新版必须通过。合并后也可手动单独运行，省去重新上传或切换最新版。该工作流只有仓库读取权限，不接入生产 environment、OIDC 或云凭据，只读取三个公开 JSON，不下载安装器、不修改 Release 或下载指针。PR 内的合成回归另覆盖有界切换、TLS/内容错误拒绝与请求中止；真实网络通过只说明该次 runner 路径可用，不保证未来网络永不故障。
+[Public download readback](../.github/workflows/public-download-check.yml) 在相关 PR 中用 Linux runner 检查三个公开 JSON，合并后也可手动单独运行，省去重新上传或切换最新版。该工作流只有仓库读取权限，不接入生产 environment、OIDC 或云凭据，不下载安装器、不修改 Release 或下载指针。失败后自动补充公开域名的 DNS 与 curl 连接计时，核验失败仍保留失败状态。合成回归另覆盖有界切换、TLS/内容错误拒绝、多地址尝试与请求中止；真实网络通过只说明该次 runner 路径可用，不保证未来网络永不故障。
 
 工作流通过 `run.mjs` 启动发布器子进程，只转发固定 schema 的 IPC 诊断。锁定 urllib 在重复回调时会直接输出原始 URL/异常，绕过普通 reporter；父进程不转发依赖 stdout/stderr，并关闭 DEBUG 类日志，避免诊断输出认证信息或任意原始异常。不更换 SDK、代理、agent 或 TLS 验证策略。
 

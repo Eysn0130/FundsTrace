@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { createServer } from 'node:net';
+import { get as httpsGet } from 'node:https';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { fetchPublicIpv4, verifyPublic } from './verify-public.mjs';
+import { fetchPublicNative, verifyPublic } from './verify-public.mjs';
 
 const githubUrl = 'https://api.github.com/repos/Eysn0130/FundsTrace/releases/latest';
 const siteUrl = 'https://analytix.top/fundstrace/latest.yml?verify=12345';
@@ -36,19 +37,19 @@ function harness(respond = () => undefined) {
     return await respond(url, attempt, transport) || json(url === githubUrl ? github : document);
   };
   const verify = options => verifyPublic({ expectedTag: 'v0.1.8', run: '12345', fetchImpl: request('fetch'),
-    fallbackFetchImpl: request('https-ipv4'),
+    fallbackFetchImpl: request('https-native'),
     wait: async delay => { waits.push(delay); }, report: event => events.push(event), ...options });
   return { verify, calls, counts, waits, events };
 }
 
-test('a connect timeout switches only that endpoint to IPv4 HTTPS within the original three attempts', async () => {
+test('a connect timeout switches only that endpoint to native HTTPS within the original three attempts', async () => {
   for (const url of [githubUrl, siteUrl, downloadUrl]) {
     const h = harness((target, attempt) => {
       if (target === url && attempt < 3) throw networkError(attempt === 1 ? 'UND_ERR_CONNECT_TIMEOUT' : 'ECONNRESET');
     });
     assert.equal((await h.verify()).version, '0.1.8');
     assert.deepEqual(h.calls.filter(call => call.url === url).map(call => call.transport),
-      ['fetch', 'https-ipv4', 'https-ipv4']);
+      ['fetch', 'https-native', 'https-native']);
     assert.ok(h.calls.filter(call => call.url !== url).every(call => call.transport === 'fetch'));
     assert.deepEqual(h.waits, [2000, 5000]);
   }
@@ -67,10 +68,10 @@ test('each allowed transient network error retries twice then verifies all origi
     assert.deepEqual(h.waits, [2000, 5000]);
     assert.equal(new Set(h.calls.map(call => call.options.signal)).size, 5, 'every attempt receives a fresh timeout signal');
     assert.deepEqual(h.events, [{ endpoint: 'site', attempt: 1, transport: 'fetch', code },
-      { endpoint: 'site', attempt: 2, transport: code === 'UND_ERR_CONNECT_TIMEOUT' ? 'https-ipv4' : 'fetch', code },
-      ...(code === 'UND_ERR_CONNECT_TIMEOUT' ? [{ endpoint: 'site', attempt: 3, transport: 'https-ipv4', event: 'json-read' }] : [])]);
+      { endpoint: 'site', attempt: 2, transport: code === 'UND_ERR_CONNECT_TIMEOUT' ? 'https-native' : 'fetch', code },
+      ...(code === 'UND_ERR_CONNECT_TIMEOUT' ? [{ endpoint: 'site', attempt: 3, transport: 'https-native', event: 'json-read' }] : [])]);
     assert.deepEqual(h.calls.filter(call => call.url === siteUrl).map(call => call.transport),
-      code === 'UND_ERR_CONNECT_TIMEOUT' ? ['fetch', 'https-ipv4', 'https-ipv4'] : ['fetch', 'fetch', 'fetch']);
+      code === 'UND_ERR_CONNECT_TIMEOUT' ? ['fetch', 'https-native', 'https-native'] : ['fetch', 'fetch', 'fetch']);
   }
   assert.equal(timeouts.length, 15);
   assert.ok(timeouts.every(delay => delay === 30000), 'each GET keeps its original 30 second budget');
@@ -85,7 +86,7 @@ test('a persistent permitted network error stops after exactly three GET attempt
     assert.equal(h.events.length, 3);
     assert.equal(h.events.at(-1).attempt, 3);
     assert.deepEqual(h.calls.filter(call => call.url === url).map(call => call.transport),
-      ['fetch', 'https-ipv4', 'https-ipv4']);
+      ['fetch', 'https-native', 'https-native']);
     assert.deepEqual([...h.counts.keys()].sort(), [githubUrl, siteUrl, downloadUrl].sort());
   }
 });
@@ -109,6 +110,20 @@ test('HTTP, JSON, TLS and unknown errors fail on either transport without furthe
         assert.equal(JSON.stringify(h.events).includes('SENSITIVE'), false);
       }
     }
+  }
+});
+
+test('known diagnostic error codes do not expand the network retry allowlist', async () => {
+  for (const code of ['ABORT_ERR', 'ENOTFOUND', 'ECONNREFUSED', 'ETIMEDOUT', 'ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_HAS_EXPIRED']) {
+    const h = harness((url, attempt) => {
+      if (url !== siteUrl) return;
+      throw networkError(attempt === 1 ? 'UND_ERR_CONNECT_TIMEOUT' : code);
+    });
+    await assert.rejects(h.verify());
+    assert.equal(h.counts.get(siteUrl), 2);
+    assert.deepEqual(h.waits, [2000]);
+    assert.deepEqual(h.events.at(-1), { endpoint: 'site', attempt: 2, transport: 'https-native', code });
+    assert.equal(JSON.stringify(h.events).includes('SENSITIVE'), false);
   }
 });
 
@@ -146,12 +161,12 @@ test('both documents retain every existing metadata and notes comparison without
   assert.deepEqual(changedLatest.waits, []);
 });
 
-test('IPv4 HTTPS keeps exact URL, GET headers, TLS validation and the caller deadline', async () => {
+test('native HTTPS keeps exact URL, GET headers, TLS validation and the caller deadline', async () => {
   const signal = new AbortController().signal;
   const headers = { Accept: 'application/json', 'User-Agent': 'FundsTrace-public-verifier' };
-  const response = await fetchPublicIpv4(siteUrl, { method: 'GET', headers, signal }, (url, options, receive) => {
+  const response = await fetchPublicNative(siteUrl, { method: 'GET', headers, signal }, (url, options, receive) => {
     assert.equal(url, siteUrl);
-    assert.deepEqual(options, { method: 'GET', headers, signal, family: 4, agent: false, rejectUnauthorized: true });
+    assert.deepEqual(options, { method: 'GET', headers, signal, family: 0, autoSelectFamily: true, agent: false, rejectUnauthorized: true });
     queueMicrotask(() => {
       const incoming = new PassThrough(); incoming.statusCode = 200;
       receive(incoming);
@@ -163,10 +178,10 @@ test('IPv4 HTTPS keeps exact URL, GET headers, TLS validation and the caller dea
   assert.deepEqual(await response.json(), document);
 });
 
-test('IPv4 HTTPS rejects status and TLS failures without following redirects or exposing raw errors', async () => {
+test('native HTTPS rejects status and TLS failures without following redirects or exposing raw errors', async () => {
   for (const statusCode of [undefined, 302, 403, 404, 503]) {
     let calls = 0;
-    await assert.rejects(fetchPublicIpv4(siteUrl, { method: 'GET', headers: {}, signal: new AbortController().signal },
+    await assert.rejects(fetchPublicNative(siteUrl, { method: 'GET', headers: {}, signal: new AbortController().signal },
       (_url, _options, receive) => {
         calls++;
         queueMicrotask(() => {
@@ -179,7 +194,7 @@ test('IPv4 HTTPS rejects status and TLS failures without following redirects or 
     assert.equal(calls, 1);
   }
   const tlsError = Object.assign(new Error('SENSITIVE_RAW_TLS_ERROR'), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' });
-  await assert.rejects(fetchPublicIpv4(siteUrl, { method: 'GET', headers: {}, signal: new AbortController().signal },
+  await assert.rejects(fetchPublicNative(siteUrl, { method: 'GET', headers: {}, signal: new AbortController().signal },
     () => {
       const request = new EventEmitter();
       queueMicrotask(() => request.emit('error', tlsError));
@@ -187,7 +202,7 @@ test('IPv4 HTTPS rejects status and TLS failures without following redirects or 
     }), error => error === tlsError);
 });
 
-test('the real IPv4 HTTPS request aborts a stalled local TLS handshake within the caller budget', { timeout: 2000 }, async t => {
+test('the real native HTTPS request aborts a stalled local TLS handshake within the caller budget', { timeout: 2000 }, async t => {
   const sockets = new Set();
   const server = createServer(socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -195,9 +210,38 @@ test('the real IPv4 HTTPS request aborts a stalled local TLS handshake within th
     for (const socket of sockets) socket.destroy();
     await new Promise(resolve => server.close(resolve));
   });
-  await assert.rejects(fetchPublicIpv4(`https://127.0.0.1:${server.address().port}/latest.yml`, {
+  await assert.rejects(fetchPublicNative(`https://127.0.0.1:${server.address().port}/latest.yml`, {
     method: 'GET', headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(50),
   }), { code: 'ABORT_ERR' });
+});
+
+test('native HTTPS tries the second DNS address when the first local address does not accept the connection', { timeout: 2000 }, async t => {
+  let accepted = 0, lookupAll;
+  const sockets = new Set();
+  const server = createServer(socket => {
+    accepted++;
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy();
+    await new Promise(resolve => server.close(resolve));
+  });
+  const get = (url, options, receive) => httpsGet(url, { ...options,
+    lookup(hostname, lookupOptions, callback) {
+      assert.equal(hostname, 'public-readback.test');
+      lookupAll = lookupOptions.all;
+      const addresses = [{ address: '127.0.0.2', family: 4 }, { address: '127.0.0.1', family: 4 }];
+      if (lookupOptions.all) callback(null, addresses);
+      else callback(null, addresses[0].address, addresses[0].family);
+    },
+  }, receive);
+  await assert.rejects(fetchPublicNative(`https://public-readback.test:${server.address().port}/latest.yml`, {
+    method: 'GET', headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(600),
+  }, get), { code: 'ABORT_ERR' });
+  assert.equal(lookupAll, true);
+  assert.equal(accepted, 1, 'the second address reaches the local stalled TLS server');
 });
 
 test('the CLI uses EXPECTED_TAG and reports failures without printing raw exceptions', () => {

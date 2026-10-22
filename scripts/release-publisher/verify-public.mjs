@@ -4,14 +4,16 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { selectRelease, validateCurrent } from './publish.mjs';
 
 const networkCodes = new Set(['UND_ERR_CONNECT_TIMEOUT', 'ECONNRESET', 'EAI_AGAIN']);
+const diagnosticCodes = new Set([...networkCodes, 'ABORT_ERR', 'ENOTFOUND', 'ECONNREFUSED', 'ETIMEDOUT',
+  'ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE']);
 const delays = [2000, 5000];
 
 // Keep TLS hostname/certificate verification while bypassing Undici's separate
 // 10-second connector timer after a connection timeout. The request signal owns
 // the complete DNS, connection, TLS and response-body budget.
-export function fetchPublicIpv4(url, { method, headers, signal }, getImpl = httpsGet) {
+export function fetchPublicNative(url, { method, headers, signal }, getImpl = httpsGet) {
   return new Promise((resolve, reject) => {
-    const request = getImpl(url, { method, headers, signal, family: 4, agent: false,
+    const request = getImpl(url, { method, headers, signal, family: 0, autoSelectFamily: true, agent: false,
       rejectUnauthorized: true }, response => {
       response.on('error', reject);
       if (!Number.isInteger(response.statusCode) || response.statusCode < 200 || response.statusCode >= 300) {
@@ -28,7 +30,7 @@ export function fetchPublicIpv4(url, { method, headers, signal }, getImpl = http
 }
 
 export async function verifyPublic({ expectedTag = process.env.EXPECTED_TAG, run = process.env.GITHUB_RUN_ID,
-  fetchImpl = fetch, fallbackFetchImpl = fetchPublicIpv4, wait = sleep,
+  fetchImpl = fetch, fallbackFetchImpl = fetchPublicNative, wait = sleep,
   report = value => console.log(JSON.stringify(value)) } = {}) {
   const endpoints = [
     { label: 'github', url: 'https://api.github.com/repos/Eysn0130/FundsTrace/releases/latest' },
@@ -44,15 +46,16 @@ export async function verifyPublic({ expectedTag = process.env.EXPECTED_TAG, run
           redirect: 'error', signal: AbortSignal.timeout(30000) });
         if (!response.ok) throw new Error('Public release metadata is unavailable');
         const document = await response.json();
-        if (transport === 'https-ipv4') report({ endpoint: label, attempt, transport, event: 'json-read' });
+        if (transport === 'https-native') report({ endpoint: label, attempt, transport, event: 'json-read' });
         return document;
       } catch (error) {
-        const code = [error?.code, error?.cause?.code].find(value => networkCodes.has(value)) || 'UNKNOWN';
+        const code = [error?.code, error?.cause?.code].find(value => diagnosticCodes.has(value))
+          || (error?.name === 'TimeoutError' ? 'TIMEOUT' : error?.name === 'AbortError' ? 'ABORTED' : 'UNKNOWN');
         report({ endpoint: label, attempt, transport, code });
-        if (code === 'UNKNOWN' || attempt === 3) throw error;
+        if (!networkCodes.has(code) || attempt === 3) throw error;
         if (code === 'UND_ERR_CONNECT_TIMEOUT') {
           request = fallbackFetchImpl;
-          transport = 'https-ipv4';
+          transport = 'https-native';
         }
         await wait(delays[attempt - 1]);
       }

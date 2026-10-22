@@ -52,22 +52,6 @@ jobs:
           appendFileSync(process.env.GITHUB_ENV, `EXPECTED_TAG=${tag}\n`);
           console.log(`Read-only metadata check for ${tag}; no installer download or publication`);
           NODE
-      - name: Compare the previous verifier on the same runner
-        if: github.event_name == 'pull_request'
-        id: previous
-        continue-on-error: true
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          node --input-type=module - <<'NODE'
-          import { execFileSync } from 'node:child_process';
-          import { writeFileSync } from 'node:fs';
-          const base = process.env.BASE_SHA;
-          if (!/^[0-9a-f]{40}$/.test(base)) throw new Error('Invalid base commit');
-          writeFileSync('scripts/release-publisher/verify-public.previous.mjs',
-            execFileSync('git', ['show', `${base}:scripts/release-publisher/verify-public.mjs`]));
-          NODE
-          node scripts/release-publisher/verify-public.previous.mjs
       - name: Require the current verifier to validate all public metadata
         run: node scripts/release-publisher/verify-public.mjs
       - name: Diagnose failed public connections without cloud credentials
@@ -75,10 +59,26 @@ jobs:
         run: |
           node --input-type=module - <<'NODE'
           import { lookup } from 'node:dns/promises';
+          import { get } from 'node:https';
           for (const hostname of ['analytix.top', 'download.analytix.top']) {
             try { console.log(JSON.stringify({ hostname, addresses: await lookup(hostname, { all: true }) })); }
             catch (error) { console.log(JSON.stringify({ hostname, code: error.code })); }
           }
+          await Promise.all(['https://analytix.top/fundstrace/latest.yml',
+            'https://download.analytix.top/releases/windows/site/fundstrace/latest.yml'].flatMap(url =>
+            ['default', 'classical-curves'].map(profile => new Promise(resolve => {
+              const state = { hostname: new URL(url).hostname, profile, tcp: false, tls: false };
+              const request = get(url, { family: 0, autoSelectFamily: true, agent: false,
+                rejectUnauthorized: true, signal: AbortSignal.timeout(5000),
+                ...(profile === 'classical-curves' ? { ecdhCurve: 'X25519:P-256' } : {}) }, response => {
+                response.resume(); console.log(JSON.stringify({ ...state, status: response.statusCode })); resolve();
+              });
+              request.on('socket', socket => {
+                socket.on('connect', () => { state.tcp = true; state.remote = socket.remoteAddress; });
+                socket.on('secureConnect', () => { state.tls = true; });
+              });
+              request.on('error', error => { console.log(JSON.stringify({ ...state, code: error.code })); resolve(); });
+            }))));
           NODE
           for url in 'https://analytix.top/fundstrace/latest.yml' 'https://download.analytix.top/releases/windows/site/fundstrace/latest.yml'; do
             curl --ipv4 --silent --show-error --max-time 12 --connect-timeout 5 --max-filesize 65536 \
