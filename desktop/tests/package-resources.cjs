@@ -6,6 +6,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const asar = require('@electron/asar');
 const { createTransformer } = require('app-builder-lib/out/fileTransformer');
+const { getFileMatchers } = require('app-builder-lib/out/fileMatcher');
+const { computeFileSets, getDestinationPath } = require('app-builder-lib/out/util/appFileCopier');
 const { getCollectorByPackageManager, PM } = require('app-builder-lib/out/node-module-collector');
 const { TmpDir } = require('temp-file');
 const builder = require('../electron-builder.cjs');
@@ -32,11 +34,33 @@ function runtimeDependencies(source) {
   })());
   return dependencyMaps.get(source);
 }
+async function hostResources(source) {
+  const matchers = getFileMatchers(builder, 'files', source, {
+    defaultSrc: source, macroExpander: value => value, customBuildOptions: {},
+    globalOutDir: path.resolve(source, builder.directories.output),
+  });
+  const fileSets = await computeFileSets(matchers, () => null,
+    { info: { areNodeModulesHandledExternally: true } }, false);
+  const resources = new Map();
+  for (const fileSet of fileSets) {
+    for (const file of fileSet.files) {
+      const name = path.relative(source, getDestinationPath(file, fileSet)).split(path.sep).join('/');
+      assert.ok(name && !name.startsWith('../') && !path.isAbsolute(name), `Host resource outside archive: ${name}`);
+      assert.ok(!resources.has(name), `Duplicate host resource: ${name}`);
+      resources.set(name, file);
+    }
+  }
+  const reviewedNames = builder.files.flatMap(entry => typeof entry === 'string' ? [entry]
+    : entry.filter.map(name => path.posix.join(entry.to, name)));
+  assert.deepEqual([...resources.keys()].sort(), reviewedNames.sort(), 'Missing or unexpected reviewed host source');
+  return resources;
+}
 async function verifyHostArchive(archive, source = path.resolve(__dirname, '..')) {
   const entries = asar.listPackage(archive).map(name => name.replaceAll('\\', '/').replace(/^\//, '')).sort();
   const hostEntries = entries.filter(name => name !== 'node_modules' && !name.startsWith('node_modules/'));
-  const expectedHostEntries = new Set(builder.files);
-  for (const name of builder.files) {
+  const resources = await hostResources(source);
+  const expectedHostEntries = new Set(resources.keys());
+  for (const name of resources.keys()) {
     for (let parent = path.posix.dirname(name); parent !== '.'; parent = path.posix.dirname(parent)) expectedHostEntries.add(parent);
   }
   assert.deepEqual(hostEntries, [...expectedHostEntries].sort(), 'Packaged host must contain exactly the reviewed files');
@@ -45,6 +69,7 @@ async function verifyHostArchive(archive, source = path.resolve(__dirname, '..')
   assert.equal(actual.name, expected.name);
   assert.equal(actual.version, expected.version);
   assert.equal(actual.main, 'main.cjs');
+  assert.equal(actual.license, expected.license, 'Packaged license metadata drift');
   assert.deepEqual(actual.dependencies, expected.dependencies);
   // Dependencies are packaged by electron-builder in addition to files. Every
   // included dependency byte must match this candidate's locked npm install.
@@ -69,16 +94,17 @@ async function verifyHostArchive(archive, source = path.resolve(__dirname, '..')
   for (const name of ['node_modules/electron-updater/package.json', 'node_modules/electron-updater/out/main.js'])
     assert.ok(entries.includes(name), `Missing update runtime: ${name}`);
   const hostFiles = {};
-  for (const name of builder.files.filter(name => name !== 'package.json')) {
+  for (const [name, local] of resources) {
+    if (name === 'package.json') continue;
     const bytes = asar.extractFile(archive, name);
-    assert.equal(digest(bytes), digest(await fs.readFile(path.join(source, name))), `Packaged host drift: ${name}`);
+    assert.equal(digest(bytes), digest(await fs.readFile(local)), `Packaged host drift: ${name}`);
     hostFiles[name] = digest(bytes);
   }
   return { schemaVersion: 1, status: 'passed', version: actual.version,
     checks: { exactHostAllowlist: true, packageIdentity: true, sourceHashes: true, preferencesAndPreloadIncluded: true },
     hostFiles, appArchiveSha256: digest(await fs.readFile(archive)) };
 }
-module.exports = { verifyHostArchive, runtimeDependencies };
+module.exports = { verifyHostArchive, runtimeDependencies, hostResources };
 
 if (require.main === module) {
   (async () => {

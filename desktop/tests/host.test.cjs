@@ -150,11 +150,17 @@ test('health checks status, protocol and exact service using main-only authoriza
   await assert.rejects(verifyHealth(server.address().port, 'test-main-only-token'), /identity check failed/);
 });
 
-test('distribution manifest prevents cross-platform packaging and includes only host source', async t => {
+test('distribution manifest prevents cross-platform packaging and includes host source and licenses', async t => {
   const builder = require('../electron-builder.cjs');
   assert.equal(builder.appId, 'com.eysn.fundstrace');
   assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'startup.cjs',
-    'startup/index.html', 'startup/style.css', 'startup/renderer.js', 'startup/preload.cjs', 'assets/icon.png', 'assets/icon.ico']);
+    'startup/index.html', 'startup/style.css', 'startup/renderer.js', 'startup/preload.cjs', 'assets/icon.png', 'assets/icon.ico',
+    { from: path.resolve(__dirname, '../..'), to: '.', filter: ['LICENSE', 'LICENSE.en'] }]);
+  const manifest = require('../package.json');
+  const lock = require('../package-lock.json');
+  assert.equal(manifest.license, 'SEE LICENSE IN LICENSE');
+  assert.equal(lock.packages[''].license, manifest.license);
+  assert.ok(fs.readFileSync(path.join(builder.files.at(-1).from, 'LICENSE'), 'utf8').includes('循迹 FundsTrace'));
   assert.deepEqual(builder.publish, { provider: 'generic', url: 'https://analytix.top/fundstrace/' });
   assert.equal(builder.nsis.deleteAppDataOnUninstall, false);
   assert.equal(builder.win.signExecutable, false);
@@ -166,6 +172,31 @@ test('distribution manifest prevents cross-platform packaging and includes only 
   // Missing native backend must fail rather than create an Electron-only package.
   if (!fs.existsSync(path.join(builder.extraResources[0].from, 'build-manifest.json'))) {
     await assert.rejects(builder.beforePack({ electronPlatformName: 'win32', arch: 1 }));
+  }
+});
+
+test('both application asars enumerate only the two root licenses at their top level', async t => {
+  const { getFileMatchers } = require('app-builder-lib/out/fileMatcher');
+  const { computeFileSets, getDestinationPath } = require('app-builder-lib/out/util/appFileCopier');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fundstrace-license-enumeration-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const names = ['LICENSE', 'LICENSE.en'];
+  const sources = names.map(name => path.resolve(__dirname, '../..', name));
+  for (const [name, builder] of [
+    ['desktop', require('../electron-builder.cjs')],
+    ['issuer', require('../issuer/electron-builder.cjs')],
+  ]) {
+    const licenseFileSet = builder.files.find(file => typeof file === 'object');
+    const destination = path.join(directory, name, 'app.asar');
+    const matchers = getFileMatchers({ files: [licenseFileSet] }, 'files', destination, {
+      defaultSrc: path.resolve(__dirname, '..'), macroExpander: value => value,
+      customBuildOptions: {}, globalOutDir: directory,
+    });
+    const fileSets = await computeFileSets(matchers, () => null,
+      { info: { areNodeModulesHandledExternally: true } }, false);
+    assert.deepEqual(fileSets.flatMap(fileSet => fileSet.files).sort(), sources, name);
+    assert.deepEqual(fileSets.flatMap(fileSet => fileSet.files.map(file => getDestinationPath(file, fileSet))).sort(),
+      names.map(filename => path.join(destination, filename)), name);
   }
 });
 
