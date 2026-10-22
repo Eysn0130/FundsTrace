@@ -11,7 +11,8 @@ const os = require('node:os');
 const { performance } = require('node:perf_hooks');
 const { pathToFileURL } = require('node:url');
 const { startupTarget, createInstalledStartupProbe, assertNativeClientGeometry, assertNativeWindowBounds } = require('./installed-startup-journey.cjs');
-const { titlebarTarget, createInstalledTitlebarProbe, runInstalledTitlebarJourney, safeTitlebarFailure } = require('./installed-titlebar-journey.cjs');
+const { titlebarTarget, createInstalledTitlebarProbe, runInstalledTitlebarJourney, safeTitlebarFailure,
+  safeProtocolMethod, protocolError, safeInstalledFailure, createMainErrorMarkerProbe } = require('./installed-titlebar-journey.cjs');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
 const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
 const { runInstalledProductionUpdateJourney } = require('./installed-production-update-journey.cjs');
@@ -194,7 +195,7 @@ function boot(executable, installRoot, env, debug) {
   if (updateFixture) args.push('--no-proxy-server', '--host-resolver-rules=MAP analytix.top 127.0.0.1, MAP download.analytix.top 127.0.0.1');
   const child = spawn(executable, args,
     { cwd: installRoot, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
-  const instance = { child, done: false, failed: false, debugUrl: null };
+  const instance = { child, done: false, failed: false, debugUrl: null, mainErrors:createMainErrorMarkerProbe() };
   owned.push(instance);
   instance.exited = new Promise(resolve => {
     child.once('exit', (code, signal) => { instance.done = true; resolve({ code, signal }); });
@@ -204,6 +205,7 @@ function boot(executable, installRoot, env, debug) {
   let partial = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', chunk => {
+    instance.mainErrors.consume(chunk);
     if (!debug || instance.debugUrl) return;
     partial = (partial + chunk).slice(-8192);
     const lines = partial.split('\n'); partial = lines.pop();
@@ -220,40 +222,41 @@ function boot(executable, installRoot, env, debug) {
 async function connect(url) {
   const socket = new WebSocket(url), pending = new Map();
   let sequence = 0, closed = false, listener = () => {};
-  function rejectPending() {
+  function rejectPending(kind = 'CDP_CLOSED') {
     closed = true;
-    for (const { reject, timer } of pending.values()) { clearTimeout(timer); reject(new Error('CDP_CLOSED')); }
+    for (const { reject, timer, protocolMethod } of pending.values()) { clearTimeout(timer); reject(protocolError(kind,protocolMethod)); }
     pending.clear();
   }
-  socket.addEventListener('close', rejectPending);
-  socket.addEventListener('error', rejectPending);
+  socket.addEventListener('close', () => rejectPending());
+  socket.addEventListener('error', () => rejectPending());
   socket.addEventListener('message', event => {
     let message;
-    try { message = JSON.parse(String(event.data)); } catch { rejectPending(); return; }
+    try { message = JSON.parse(String(event.data)); } catch { rejectPending('CDP_INVALID_JSON'); return; }
     if (message.id) {
       const request = pending.get(message.id); if (!request) return;
       pending.delete(message.id); clearTimeout(request.timer);
-      if (message.error) request.reject(new Error('CDP_COMMAND')); else request.resolve(message.result || {});
+      if (message.error) request.reject(protocolError('CDP_COMMAND',request.protocolMethod)); else request.resolve(message.result || {});
     } else {
-      try { listener(message); } catch { rejectPending(); }
+      try { listener(message); } catch { rejectPending('CDP_LISTENER_FAILED'); }
     }
   });
   try {
     await bounded(new Promise((resolve, reject) => {
       socket.addEventListener('open', resolve, { once: true });
-      socket.addEventListener('error', () => reject(new Error('CDP_CONNECT')), { once: true });
+      socket.addEventListener('error', () => reject(protocolError('CDP_CONNECT')), { once: true });
     }), 10000);
   } catch (error) { socket.close(); throw error; }
   return {
     onEvent(handler) { listener = handler; },
     send(method, params = {}, sessionId, timeout = 10000) {
-      if (closed || socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error('CDP_CLOSED'));
+      const protocolMethod=safeProtocolMethod(method);
+      if (closed || socket.readyState !== WebSocket.OPEN) return Promise.reject(protocolError('CDP_CLOSED',protocolMethod));
       return new Promise((resolve, reject) => {
         const id = ++sequence;
-        const timer = setTimeout(() => { pending.delete(id); reject(new Error('CDP_TIMEOUT')); }, timeout);
-        pending.set(id, { resolve, reject, timer });
+        const timer = setTimeout(() => { pending.delete(id); reject(protocolError('CDP_TIMEOUT',protocolMethod)); }, timeout);
+        pending.set(id, { resolve, reject, timer, protocolMethod });
         try { socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); }
-        catch { pending.delete(id); clearTimeout(timer); reject(new Error('CDP_SEND')); }
+        catch { pending.delete(id); clearTimeout(timer); reject(protocolError('CDP_SEND',protocolMethod)); }
       });
     },
     close() { listener = () => {}; rejectPending(); socket.close(); },
@@ -261,7 +264,8 @@ async function connect(url) {
 }
 async function evaluate(expression, target = page) {
   const result = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, target.sessionId);
-  assert.ok(!result.exceptionDetails);
+  try {assert.ok(!result.exceptionDetails);}
+  catch(error) {error.protocolMethod='Runtime.evaluate';throw error;}
   return result.result?.value;
 }
 // Runtime inspects/layouts the DOM and reads the published update status. Product actions use actual CDP
@@ -718,6 +722,7 @@ async function portClosed(port) {
   report.status = 'passed';
 })().catch(async error => {
   report.status = 'failed'; report.failedCheck = stage; process.exitCode = 1;
+  report.failure=safeInstalledFailure(error);
   if (/^(STARTUP|TITLEBAR)_[A-Z0-9_]{1,80}$/.test(error?.message || '')) {
     report.startupFailure = error.message;
     // These two projections contain only this helper's bounded numeric DOM
@@ -774,6 +779,13 @@ async function portClosed(port) {
     }
   }
   if (reportOwned) {
+    report.mainProcessErrorMarkers={objectDestroyed:false,javascriptErrorInMainProcess:false,uncaughtException:false};
+    for(const instance of owned) for(const [key,value] of Object.entries(instance.mainErrors.snapshot())) {
+      report.mainProcessErrorMarkers[key] ||= value;
+    }
+    if(report.status==='passed' && Object.values(report.mainProcessErrorMarkers).some(Boolean)) {
+      report.status='failed';report.failedCheck='noMainProcessErrors';process.exitCode=1;
+    }
     try { await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8'); }
     catch { report.status = 'failed'; report.failedCheck = 'safeReport'; process.exitCode = 1; }
   }

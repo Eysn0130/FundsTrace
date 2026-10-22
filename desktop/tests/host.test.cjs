@@ -794,6 +794,23 @@ test('closing a startup window stops its backend and ignores readiness arriving 
   assert.deepEqual(harness.state.errors, []);
 });
 
+test('Main removes caption shortcuts after native destruction without reading the destroyed window getter', async () => {
+  const harness=mainHarness();await harness.flush();
+  harness.ready.resolve({origin,token:'synthetic-main-only-token'});await harness.flush();
+  const win=harness.state.windows[0],root=win.webContents;
+  Object.defineProperty(win,'webContents',{get(){
+    if(win.destroyed) throw new Error('Object has been destroyed');
+    return root;
+  }});
+  assert.ok(root.listenerCount('before-input-event')>0);
+  assert.doesNotThrow(()=>win.close());
+  await harness.flush();
+  assert.equal(root.listenerCount('before-input-event'),0);
+  assert.equal(win.businessView.destroyed,true);
+  assert.equal(harness.state.backendStops,1);
+  assert.deepEqual(harness.state.errors,[]);
+});
+
 test('a startup failure reports a safe recovery message and stops the owned backend', async () => {
   const harness = mainHarness(); await harness.flush();
   harness.ready.reject(new Error('FundsTrace backend startup timed out')); await harness.flush();

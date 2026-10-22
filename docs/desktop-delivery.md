@@ -33,7 +33,7 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 ## 启动显示与窗口尺寸
 
-[desktop/window-shell.cjs](../desktop/window-shell.cjs) 将每个窗口的本地标题层与业务 `WebContentsView` 分开：左侧18px批准图标、13px「循迹 FundsTrace」和菜单，固定32 DIP；Windows通过 `titleBarStyle: hidden` 和 `titleBarOverlay` 保留原生最小化、最大化／还原、关闭按钮，CSS按实际原生安全区避让，菜单单独设为不可拖动区域。标题层只允许本地四项资源，不拥有后端认证或业务IPC；业务、分析页与启动层均在下方32 DIP处开始，重载、业务缩放或页面切换不会替换、缩放标题层。桌面图谱隐藏原业务栏的重复品牌，浏览器版保留。Windows不再显示原生菜单条或通过Alt临时插入菜单高度；标题栏菜单保留文件、编辑、显示及更新命令，业务重载、缩放和全屏快捷键单独路由到对应内容。关闭时显式释放业务和启动renderer，归属后端继续沿用EOF关闭流程。[Electron原生标题栏](https://www.electronjs.org/docs/latest/tutorial/custom-title-bar)
+[desktop/window-shell.cjs](../desktop/window-shell.cjs) 将每个窗口的本地标题层与业务 `WebContentsView` 分开：左侧18px批准图标、13px「循迹 FundsTrace」和菜单，固定32 DIP；Windows通过 `titleBarStyle: hidden` 和 `titleBarOverlay` 保留原生最小化、最大化／还原、关闭按钮，CSS按实际原生安全区避让，菜单单独设为不可拖动区域。标题层只允许本地四项资源，不拥有后端认证或业务IPC；业务、分析页与启动层均在下方32 DIP处开始，重载、业务缩放或页面切换不会替换、缩放标题层。桌面图谱隐藏原业务栏的重复品牌，浏览器版保留。Windows不再显示原生菜单条或通过Alt临时插入菜单高度；标题栏菜单保留文件、编辑、显示及更新命令，业务重载、缩放和全屏快捷键单独路由到对应内容。关闭时使用创建阶段保留的视图引用清理监听与业务／启动renderer，避免在closed事件后读取已销毁的原生窗口属性；归属后端继续沿用EOF关闭流程。[Electron原生标题栏](https://www.electronjs.org/docs/latest/tutorial/custom-title-bar)
 
 [desktop/startup.cjs](../desktop/startup.cjs) 在业务窗口上方创建独立、透明的本地 `WebContentsView`：先显示启动层，再在下方准备后端与真实工作台。启动层使用独立受限 session，页面资源请求仅允许本地 `startup/index.html`、`startup/style.css`、`startup/renderer.js` 和 `assets/icon.png` 四项；不接收后端 origin、token 或业务数据，不使用截图或模拟案件。它保留 sandbox、contextIsolation 和 CSP，禁止联网、权限、下载及新窗口；[专用 preload](../desktop/startup/preload.cjs) 只接收就绪通知并报告淡出完成。完成或关窗时显式关闭该层的 `webContents`，避免仅移除 View 后残留 renderer。
 

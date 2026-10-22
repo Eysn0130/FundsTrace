@@ -129,6 +129,7 @@ else {
           onFailure: () => void fail('FundsTrace 页面进程已停止，请重新打开应用。'), onMenu: openMenu,
         });
         const { win, contents } = host;
+        const captionContents = win.webContents;
         shells.set(win, host);
         host.setMenuEnabled(menuReady);
         const contentsId = contents.id;
@@ -203,12 +204,12 @@ else {
         if (process.platform !== 'darwin') {
           const cancelAltMenu = () => { altMenuPending = false; };
           contents.on('before-input-event', shortcuts);
-          win.webContents.on('before-input-event', shortcuts);
+          captionContents.on('before-input-event', shortcuts);
           win.on('blur', cancelAltMenu);
           win.once('closed', () => {
             win.removeListener('blur', cancelAltMenu);
             contents.removeListener('before-input-event', shortcuts);
-            win.webContents.removeListener('before-input-event', shortcuts);
+            captionContents.removeListener('before-input-event', shortcuts);
           });
         }
         contents.setWindowOpenHandler(({ url }) => {

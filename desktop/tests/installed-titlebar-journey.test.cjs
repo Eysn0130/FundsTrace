@@ -6,7 +6,8 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {titlebarTarget,assertCaption,assertCaptionBody,READ_CAPTION,readinessFailure,
-  createInstalledTitlebarProbe,safeCaptionProjection,safeTitlebarFailure} = require('./installed-titlebar-journey.cjs');
+  createInstalledTitlebarProbe,safeCaptionProjection,safeTitlebarFailure,safeProtocolMethod,protocolError,
+  safeInstalledFailure,createMainErrorMarkerProbe} = require('./installed-titlebar-journey.cjs');
 
 function caption() {
   return {time:1000,timeOrigin:9000,viewport:{width:1280,height:720,dpr:1},
@@ -207,8 +208,8 @@ test('every creation substage keeps a fixed failure code, last safe DOM and boun
     await assert.rejects(createInstalledTitlebarProbe({target:{targetId:'caption',sessionId:'caption-session'},
       evaluate:async()=>{
         calls++;
-        if(scenario.fail==='initial-projection' && calls===2) throw new Error('CDP_COMMAND');
-        if(scenario.fail==='observation-installation' && calls===3) throw new Error('CDP_TIMEOUT');
+        if(scenario.fail==='initial-projection' && calls===2) throw protocolError('CDP_COMMAND','Runtime.evaluate');
+        if(scenario.fail==='observation-installation' && calls===3) throw protocolError('CDP_TIMEOUT','Runtime.evaluate');
         const value=caption();
         if(scenario.fail==='initial-validation' && calls===2) value.bar.height=26;
         return value;
@@ -220,10 +221,80 @@ test('every creation substage keeps a fixed failure code, last safe DOM and boun
       assert.equal(error.titlebarFailure.operation,scenario.fail);
       assert.equal(error.titlebarFailure.method,scenario.method);
       assert.equal(error.titlebarFailure.errorCategory,scenario.category);
+      assert.equal(safeInstalledFailure(error).protocolMethod,scenario.method==='none' ? null : scenario.method);
       assert.equal(error.titlebarFailure.observation.dom.bar,true);
       assert.equal(error.titlebarFailure.observation.document.readyState,'complete');
       assert.equal(error.titlebarFailure.screenshot.captured,false);
       return true;
     });
   }
+});
+
+test('generic failure diagnostics preserve only fixed kinds and allowed protocol method names',()=>{
+  for(const kind of ['CDP_CLOSED','CDP_COMMAND','CDP_TIMEOUT','CDP_SEND','CDP_CONNECT','TIMEOUT','ERR_ASSERTION']) {
+    const error=protocolError(kind,'Target.getTargets');
+    error.params={token:'SYN_PRIVATE_TOKEN'};error.result={url:'https://SYN_PRIVATE_URL'};
+    assert.deepEqual(safeInstalledFailure(error),{kind,protocolMethod:'Target.getTargets'});
+  }
+  assert.deepEqual(safeInstalledFailure({code:'ERR_ASSERTION',message:'https://SYN_PRIVATE_URL',
+    protocolMethod:'Runtime.evaluate'}),{kind:'ERR_ASSERTION',protocolMethod:'Runtime.evaluate'});
+  assert.equal(safeProtocolMethod('Network.getAllCookies'),null);
+  const unsafe=safeInstalledFailure({message:'SYN_PRIVATE_TOKEN',protocolMethod:'https://SYN_PRIVATE_URL',
+    headers:{'X-FundsTrace-Desktop':'SYN_PRIVATE_TOKEN'}});
+  assert.deepEqual(unsafe,{kind:'UNCLASSIFIED',protocolMethod:null});
+  assert.ok(!JSON.stringify(unsafe).includes('SYN_PRIVATE'));
+});
+
+async function connectHarness() {
+  const source=await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8');
+  const start=source.indexOf('async function connect(url) {'),end=source.indexOf('async function evaluate(',start);
+  assert.ok(start>=0 && end>start);
+  let socket,nextTimer=1;
+  const timers=new Map();
+  class Socket {
+    static OPEN=1;
+    constructor() {socket=this;this.listeners=new Map();this.readyState=0;queueMicrotask(()=>{this.readyState=1;this.emit('open',{});});}
+    addEventListener(name,fn) {const list=this.listeners.get(name)||[];list.push(fn);this.listeners.set(name,list);}
+    emit(name,event) {for(const fn of this.listeners.get(name)||[]) fn(event);}
+    send() {if(this.throwSend) throw new Error('SYN_PRIVATE_SEND_PAYLOAD');}
+    close() {this.readyState=3;this.emit('close',{});}
+  }
+  const context=vm.createContext({WebSocket:Socket,protocolError,safeProtocolMethod,bounded:async promise=>promise,
+    setTimeout:fn=>{const id=nextTimer++;timers.set(id,fn);return id;},clearTimeout:id=>timers.delete(id)});
+  vm.runInContext(`${source.slice(start,end)};globalThis.testConnect=connect;`,context);
+  const client=await context.testConnect('ws://127.0.0.1/SYN_PRIVATE_DEBUG_PATH');
+  return {client,socket,timers};
+}
+
+test('the actual CDP transport tags command, timeout, send and socket-close rejections without payloads',async()=>{
+  for(const kind of ['CDP_COMMAND','CDP_TIMEOUT','CDP_SEND','CDP_CLOSED','CDP_INVALID_JSON']) {
+    const h=await connectHarness();
+    if(kind==='CDP_SEND') h.socket.throwSend=true;
+    const request=h.client.send('Target.getTargets',{headers:{token:'SYN_PRIVATE_TOKEN'}},'SYN_PRIVATE_SESSION');
+    if(kind==='CDP_COMMAND') h.socket.emit('message',{data:JSON.stringify({id:1,error:{message:'https://SYN_PRIVATE_URL/SYN_PRIVATE_TOKEN'}})});
+    if(kind==='CDP_TIMEOUT') [...h.timers.values()][0]();
+    if(kind==='CDP_CLOSED') h.socket.close();
+    if(kind==='CDP_INVALID_JSON') h.socket.emit('message',{data:'SYN_PRIVATE_INVALID_PACKET'});
+    await assert.rejects(request,error=>{
+      assert.deepEqual(safeInstalledFailure(error),{kind,protocolMethod:'Target.getTargets'});
+      assert.ok(!JSON.stringify(safeInstalledFailure(error)).includes('SYN_PRIVATE'));
+      return true;
+    });
+    h.client.close();
+    await assert.rejects(h.client.send('Runtime.evaluate'),error=>error.message==='CDP_CLOSED'
+      && error.protocolMethod==='Runtime.evaluate');
+  }
+});
+
+test('Main stderr probes latch fixed markers across chunks and retain only boolean snapshots',()=>{
+  const probe=createMainErrorMarkerProbe();
+  probe.consume('https://SYN_PRIVATE_URL token=SYN_PRIVATE_TOKEN\nObject has been dest');
+  assert.deepEqual(probe.snapshot(),{objectDestroyed:false,javascriptErrorInMainProcess:false,uncaughtException:false});
+  probe.consume('royed\nA JavaScript error occurred in the main pro');
+  probe.consume('cess\nUNCAUGHT EXCEPTION\nSYN_PRIVATE_TOKEN');
+  assert.deepEqual(probe.snapshot(),{objectDestroyed:true,javascriptErrorInMainProcess:true,uncaughtException:true});
+  assert.ok(!JSON.stringify(probe.snapshot()).includes('SYN_PRIVATE'));
+  assert.deepEqual(Object.keys(probe).sort(),['consume','snapshot']);
+  const shorter=createMainErrorMarkerProbe();shorter.consume('JavaScript error occurred in main process');
+  assert.equal(shorter.snapshot().javascriptErrorInMainProcess,true);
 });

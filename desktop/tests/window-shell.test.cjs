@@ -15,7 +15,7 @@ const ENABLED_CHANNEL = 'funds-trace:titlebar-menu-enabled';
 const desktop = path.resolve(__dirname, '..');
 const localUrl = file => pathToFileURL(path.join(desktop, file)).href;
 
-function harness({ platform = 'win32', loadError } = {}) {
+function harness({ platform = 'win32', loadError, throwDestroyedContentView = false } = {}) {
   const sessions = [], views = [], windows = [], ipcMain = new EventEmitter();
   let nextId = 0;
   class Contents extends EventEmitter {
@@ -48,6 +48,13 @@ function harness({ platform = 'win32', loadError } = {}) {
       this.contentView = new EventEmitter(); this.contentView.children = [];
       this.contentView.addChildView = view => this.contentView.children.push(view);
       this.contentView.removeChildView = view => { this.contentView.children = this.contentView.children.filter(child => child !== view); };
+      if (throwDestroyedContentView) {
+        const contentView = this.contentView;
+        Object.defineProperty(this, 'contentView', { get() {
+          if (this.destroyed) throw new Error('Object has been destroyed');
+          return contentView;
+        } });
+      }
       windows.push(this);
     }
     setMenu(value) { this.menu = value; }
@@ -241,6 +248,20 @@ test('destroy releases the business renderer and every owned listener before clo
   assert.deepEqual(shell.failures, []);
   shell.win.emit('closed');
   assert.equal(shell.contents.closeCalls.length, 1);
+});
+
+test('native closed releases the business view without rereading the destroyed window contentView getter', async () => {
+  const fake = harness({ throwDestroyedContentView: true }); const shell = create(fake); await shell.loaded;
+  const contentView = shell.win.contentView;
+  let closedObserved = false;
+  shell.win.once('closed', () => { closedObserved = true; });
+  assert.doesNotThrow(() => shell.win.destroy());
+  assert.equal(closedObserved, true, 'teardown must not interrupt later Main closed listeners');
+  assert.deepEqual(shell.contents.closeCalls, [{ waitForBeforeUnload: false }]);
+  assert.equal(contentView.listenerCount('bounds-changed'), 0);
+  assert.equal(fake.ipcMain.listenerCount(MENU_CHANNEL), 0);
+  assert.equal(fake.sessions[0].beforeRequest, null);
+  assert.deepEqual(shell.failures, []);
 });
 
 test('multiple windows isolate caption requests, menu enablement and cleanup', async () => {

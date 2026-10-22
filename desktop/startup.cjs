@@ -14,6 +14,8 @@ const assetUrls = new Set(['startup/index.html', 'startup/style.css', 'startup/r
 
 // A separate local-only renderer never receives the backend origin, token or case data.
 function createStartup(win, { onFailure, contentInset = 0, focusContents = win.webContents }, { WebContentsView, session, ipcMain, setTimer = setTimeout, clearTimer = clearTimeout } = require('electron')) {
+  // Keep the EventEmitter reference before the native window can be destroyed.
+  const contentView = win.contentView;
   const local = session.fromPartition(`funds-trace-startup-${randomUUID()}`, { cache: false });
   const view = new WebContentsView({ webPreferences: {
     preload: path.join(__dirname, 'startup/preload.cjs'), session: local,
@@ -57,8 +59,8 @@ function createStartup(win, { onFailure, contentInset = 0, focusContents = win.w
     ipcMain.removeListener(CHANNEL, onComplete);
     win.removeListener('resize', fit);
     win.removeListener('closed', onClosed);
-    win.contentView.removeListener('bounds-changed', fit);
-    if (!win.isDestroyed()) win.contentView.removeChildView(view);
+    contentView.removeListener('bounds-changed', fit);
+    if (!win.isDestroyed()) contentView.removeChildView(view);
     // Removing a child View does not destroy its renderer.
     if (!contents.isDestroyed()) contents.close();
     resolveFinished(completed);
@@ -74,9 +76,9 @@ function createStartup(win, { onFailure, contentInset = 0, focusContents = win.w
   ipcMain.on(CHANNEL, onComplete);
   win.on('resize', fit);
   win.once('closed', onClosed);
-  win.contentView.on('bounds-changed', fit);
+  contentView.on('bounds-changed', fit);
   view.setBackgroundColor('rgba(0, 0, 0, 0)');
-  win.contentView.addChildView(view);
+  contentView.addChildView(view);
   fit();
   const loaded = contents.loadFile(startupFile);
   return { loaded, finished, dispose,

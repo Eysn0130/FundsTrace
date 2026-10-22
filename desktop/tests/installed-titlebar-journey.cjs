@@ -8,6 +8,46 @@ const HEIGHT = 32;
 const titlebarTarget = value => installedLocalTarget(value, 'titlebar');
 const near = (actual, expected, tolerance = 1) => Number.isFinite(actual) && Math.abs(actual - expected) <= tolerance;
 const KEY = '__fundsTraceCaptionObservation';
+const PROTOCOL_METHODS = new Set([
+  'Target.getTargets','Target.getTargetInfo','Target.setAutoAttach',
+  'Runtime.enable','Runtime.evaluate','Runtime.runIfWaitingForDebugger',
+  'Page.enable','Page.navigate','Page.reload','Page.close','Page.bringToFront','Page.captureScreenshot',
+  'Debugger.enable','Debugger.disable','Debugger.resume','Debugger.setInstrumentationBreakpoint',
+  'Emulation.clearDeviceMetricsOverride','Emulation.setDeviceMetricsOverride','Emulation.setEmulatedMedia',
+  'Input.dispatchMouseEvent','Input.dispatchKeyEvent','Input.insertText',
+  'DOM.getDocument','DOM.querySelector','DOM.setFileInputFiles',
+]);
+const FAILURE_KINDS = new Set(['CDP_CLOSED','CDP_COMMAND','CDP_TIMEOUT','CDP_SEND','CDP_CONNECT','CDP_INVALID_JSON',
+  'CDP_LISTENER_FAILED','TIMEOUT','SPAWN_FAILED','ERR_ASSERTION','ENOENT','EACCES','ETIMEDOUT','ECONNRESET','ECONNREFUSED']);
+const safeProtocolMethod = method => PROTOCOL_METHODS.has(method) ? method : null;
+function protocolError(kind,method) {
+  const error=new Error(FAILURE_KINDS.has(kind) ? kind : 'CDP_COMMAND');
+  error.protocolMethod=safeProtocolMethod(method);
+  return error;
+}
+function safeInstalledFailure(error) {
+  const kind=FAILURE_KINDS.has(error?.code) ? error.code : FAILURE_KINDS.has(error?.message) ? error.message : 'UNCLASSIFIED';
+  return {kind,protocolMethod:safeProtocolMethod(error?.protocolMethod)};
+}
+function createMainErrorMarkerProbe() {
+  const flags={objectDestroyed:false,javascriptErrorInMainProcess:false,uncaughtException:false};
+  const patterns=[['objectDestroyed','object has been destroyed'],
+    ['javascriptErrorInMainProcess','javascript error occurred in main process'],
+    ['javascriptErrorInMainProcess','javascript error occurred in the main process'],['uncaughtException','uncaught exception']]
+    .map(([key,text])=>({key,text,matched:0}));
+  return {
+    consume(chunk) {
+      // Retain prefix lengths and booleans only, never an stderr line or tail.
+      for(const character of String(chunk)) for(const item of patterns) {
+        if(flags[item.key]) continue;
+        const value=character.toLowerCase();
+        item.matched=value===item.text[item.matched] ? item.matched+1 : value===item.text[0] ? 1 : 0;
+        if(item.matched===item.text.length) {flags[item.key]=true;item.matched=0;}
+      }
+    },
+    snapshot:()=>({...flags}),
+  };
+}
 
 const READ_CAPTION = `(() => {
   const bar = document.querySelector('.titlebar'), content = document.querySelector('.titlebar-content');
@@ -173,6 +213,9 @@ async function createInstalledTitlebarProbe({cdp, target, evaluate, until, failu
   const fail=async(stage,operation,method,cause)=>{
     const screenshot=await captureCaptionFailure(cdp,target,latest,failureScreenshotPath);
     const error=new Error(stage);
+    const causeDetail=safeInstalledFailure(cause);
+    if(causeDetail.kind!=='UNCLASSIFIED') error.code=causeDetail.kind;
+    error.protocolMethod=causeDetail.protocolMethod;
     error.titlebarFailure=safeTitlebarFailure({stage,operation,method,errorCategory:errorCategory(cause),
       attempts,readFailures,observation:latest,screenshot});
     throw error;
@@ -294,4 +337,5 @@ async function runInstalledTitlebarJourney({cdp, page, probe, evaluate, until, n
 }
 
 module.exports = {HEIGHT,titlebarTarget,assertCaption,assertCaptionBody,createInstalledTitlebarProbe,
-  runInstalledTitlebarJourney,READ_CAPTION,safeCaptionProjection,safeTitlebarFailure,readinessFailure};
+  runInstalledTitlebarJourney,READ_CAPTION,safeCaptionProjection,safeTitlebarFailure,readinessFailure,
+  safeProtocolMethod,protocolError,safeInstalledFailure,createMainErrorMarkerProbe};

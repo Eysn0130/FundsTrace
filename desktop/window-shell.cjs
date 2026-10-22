@@ -35,6 +35,8 @@ function createWindowShell({ windowOptions, webPreferences, onFailure, onMenu },
   });
   if (platform !== 'darwin') win.setMenu(null);
   const root = win.webContents;
+  // Native window getters are invalid by the time Electron emits `closed`.
+  const contentView = win.contentView;
   const businessView = new WebContentsView({ webPreferences: { ...webPreferences } });
   const contents = businessView.webContents;
   let disposed = false, failed = false, menuEnabled = false;
@@ -83,7 +85,7 @@ function createWindowShell({ windowOptions, webPreferences, onFailure, onMenu },
     ipcMain.removeListener(MENU_CHANNEL, onMenuRequest);
     win.removeListener('resize', fit);
     win.removeListener('closed', dispose);
-    win.contentView.removeListener('bounds-changed', fit);
+    contentView.removeListener('bounds-changed', fit);
     root.removeListener('did-finish-load', sendMenuEnabled);
     root.removeListener('render-process-gone', reportFailure);
     for (const event of ['will-navigate', 'will-frame-navigate', 'will-redirect', 'will-attach-webview']) root.removeListener(event, prevent);
@@ -91,7 +93,7 @@ function createWindowShell({ windowOptions, webPreferences, onFailure, onMenu },
     local.removeListener('will-download', prevent);
     local.webRequest.onBeforeRequest(null);
     local.webRequest.onBeforeSendHeaders(null);
-    if (!win.isDestroyed()) win.contentView.removeChildView(businessView);
+    if (!win.isDestroyed()) contentView.removeChildView(businessView);
     // Removing a View does not release its renderer, including after win.destroy().
     if (!contents.isDestroyed()) contents.close({ waitForBeforeUnload: false });
   }
@@ -100,9 +102,9 @@ function createWindowShell({ windowOptions, webPreferences, onFailure, onMenu },
   root.on('did-finish-load', sendMenuEnabled);
   win.on('resize', fit);
   win.once('closed', dispose);
-  win.contentView.on('bounds-changed', fit);
+  contentView.on('bounds-changed', fit);
   businessView.setBackgroundColor(windowOptions?.backgroundColor || '#10171f');
-  win.contentView.addChildView(businessView);
+  contentView.addChildView(businessView);
   fit();
   const loaded = root.loadFile(shellFile).catch(error => { reportFailure(); throw error; });
   return { win, contents, loaded, setMenuEnabled(value) {
