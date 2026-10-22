@@ -167,6 +167,66 @@ async function nativeStartupBounds(config, primary, target) {
   result.step = 'completed';
   return result;
 }
+function readWorkspaceTools() {
+  const rect=node=>{if(!node)return null;const r=node.getBoundingClientRect();return {
+    left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
+  const visible=node=>!!node&&node.getClientRects().length>0&&getComputedStyle(node).visibility!=='hidden';
+  const toolbar=document.querySelector('#editorToolbar'),slot=toolbar?.parentElement;
+  const header=document.querySelector('#editorToolbar .ribbon-tabbar');
+  const panels=[...document.querySelectorAll('#editorToolbar .ribbon-panel:not([hidden])')].filter(visible);
+  const compact=document.querySelector('#ribbonCompact'),compactVisible=visible(compact);
+  const bars=[header,...panels,...(compactVisible?[compact]:[])].filter(visible);
+  const slotRect=rect(slot),toolbarRect=rect(toolbar),viewport={left:0,top:0,right:innerWidth,bottom:innerHeight};
+  const clipped=(node,bar)=>{
+    const r=rect(node),bounds=[viewport,slotRect,toolbarRect,rect(bar)].filter(Boolean);
+    for(let parent=node.parentElement;parent&&parent!==slot;parent=parent.parentElement) {
+      const style=getComputedStyle(parent),p=rect(parent);
+      bounds.push({left:/^(hidden|clip|auto|scroll)$/.test(style.overflowX)?p.left:-Infinity,
+        right:/^(hidden|clip|auto|scroll)$/.test(style.overflowX)?p.right:Infinity,
+        top:/^(hidden|clip|auto|scroll)$/.test(style.overflowY)?p.top:-Infinity,
+        bottom:/^(hidden|clip|auto|scroll)$/.test(style.overflowY)?p.bottom:Infinity});
+    }
+    return bounds.some(b=>r.left<b.left-1||r.right>b.right+1||r.top<b.top-1||r.bottom>b.bottom+1);
+  };
+  const controls=bar=>[...bar.querySelectorAll('button,input,select,a')].filter(visible);
+  const action=panels[0]?.querySelector('.ribbon-action'),table=document.querySelector('#flowTableScroll');
+  const required=['caseSelect','canvasSel','btnCanvasSave','btnUndo','btnRedo','btnWorkspaceView',
+    'ribbonTab-common','ribbonTab-trace','ribbonTab-style','ribbonTab-view'];
+  const style=toolbar?getComputedStyle(toolbar):null;
+  return {width:innerWidth,height:innerHeight,dpr:devicePixelRatio,slot:slotRect,slotClientWidth:slot?.clientWidth||0,toolbar:toolbarRect,
+    scale:style?Number(style.getPropertyValue('--toolbar-fit-scale')):null,
+    logicalWidth:toolbar?.clientWidth||0,cssHeight:style?parseFloat(style.height):null,
+    collapsed:toolbar?.classList.contains('is-collapsed')===true,compactVisible,panels:panels.map(node=>node.id),
+    requiredControlsVisible:required.every(id=>{const node=document.getElementById(id);return visible(node)&&header?.contains(node);})
+      &&visible(header?.querySelector('[data-ribbon-command="inspectSelection"]'))&&visible(header?.querySelector('[data-ribbon-collapse]')),
+    bars:bars.map(bar=>({id:bar===header?'ribbon-tabbar':bar.id,client:bar.clientWidth,scroll:bar.scrollWidth,rect:rect(bar)})),
+    clippedControls:bars.reduce((count,bar)=>count+controls(bar).filter(node=>clipped(node,bar)).length,0),
+    action:action?{direction:getComputedStyle(action).flexDirection,font:parseFloat(getComputedStyle(action).fontSize),
+      icon:parseFloat(getComputedStyle(action.querySelector('.ui-icon')).width)}:null,
+    table:table?{columns:document.querySelectorAll('#flowTable thead th').length,overflow:getComputedStyle(table).overflowX,focusable:table.tabIndex===0}:null,
+    duplicateScrollControls:[...document.querySelectorAll('.flow-horizontal-scroll')].filter(visible).length};
+}
+function assertWorkspaceTools(value,{tab,collapsed}) {
+  assert.ok(value.slot&&value.toolbar&&value.slot.width>0&&value.toolbar.width>0,'WORKSPACE_TOOLBAR_SLOT_MISSING');
+  const r=value.toolbar,s=value.slot;
+  assert.ok(r.left>=s.left-1&&r.right<=s.right+1&&r.top>=s.top-1&&r.bottom<=s.bottom+1
+    &&Math.abs(r.left-s.left)<=1&&Math.abs(r.right-s.right)<=1,'WORKSPACE_TOOLBAR_SLOT_CLIPPED');
+  assert.ok(value.scale>0&&value.scale<=1&&Math.abs(r.width-value.logicalWidth*value.scale)<=1,'WORKSPACE_TOOLBAR_SCALE');
+  assert.equal(value.collapsed,collapsed);assert.equal(value.compactVisible,collapsed);
+  assert.deepEqual(value.panels,collapsed?[]:[`ribbonPanel-${tab}`]);
+  assert.deepEqual(value.bars.map(bar=>bar.id),['ribbon-tabbar',collapsed?'ribbonCompact':`ribbonPanel-${tab}`]);
+  assert.ok(value.bars.every(bar=>bar.scroll<=bar.client+1),'WORKSPACE_TOOLBAR_OVERFLOW');
+  assert.equal(value.requiredControlsVisible,true,'WORKSPACE_TOOLBAR_CONTROLS_MISSING');
+  assert.equal(value.clippedControls,0,'WORKSPACE_TOOLBAR_CLIPPED');
+  if(value.action){assert.equal(value.action.direction,'column');assert.equal(value.action.font,12);assert.ok(Math.abs(value.action.icon-27)<.05);}
+  assert.deepEqual(value.table,{columns:7,overflow:'auto',focusable:true});
+  assert.equal(value.duplicateScrollControls,0);
+}
+function readImportEntry() {
+  const label=document.querySelector('dialog[open] label.file-drop'),input=label?.querySelector('input[type="file"]');
+  return {associated:!!input&&!!input.id&&label.htmlFor===input.id&&label.control===input
+    &&document.getElementById(input.id)===input,type:input?.type||null,accept:input?.accept||null,enabled:input?.disabled===false};
+}
 function argumentsOf() {
   const args = process.argv.slice(2);
   assert.ok(args.length === 3 || args.length === 5 || args.length === 7);
@@ -274,7 +334,8 @@ async function evaluate(expression, target = page) {
 }
 // Runtime inspects/layouts the DOM and reads the published update status. Product actions use actual CDP
 // pointer input; navigation uses existing links or Page.navigate where no link exists.
-async function clickElement(expression, target = page) {
+async function clickElement(expression, target = page, {modifiers=0} = {}) {
+  assert.ok(Number.isInteger(modifiers)&&modifiers>=0&&modifiers<=15,'POINTER_MODIFIERS_INVALID');
   const point = await evaluate(`(() => {
     const element = ${expression}; if (!element || element.disabled) return null;
     element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -283,8 +344,9 @@ async function clickElement(expression, target = page) {
     const hit = document.elementFromPoint(x, y); return hit && (hit === element || element.contains(hit)) ? { x, y } : null;
   })()`, target);
   assert.ok(point);
-  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 }, target.sessionId);
-  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 }, target.sessionId);
+  const modified=modifiers?{modifiers}:{};
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1, ...modified }, target.sessionId);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1, ...modified }, target.sessionId);
 }
 function visibleControl(expression) {
   return `(() => {
@@ -586,28 +648,19 @@ async function restorePresentationPreferences(snapshot) {
   });
   await check('installedMinimumWorkspaceToolsAndSingleTableScroll', async () => {
     const samples = report.minimumWorkspace = [];
-    const inspect = async label => {
-      await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
-      const value = await evaluate(`(() => {
-        const bars=[...document.querySelectorAll('#topbar,.ribbon-panel:not([hidden]),#ribbonCompact:not([hidden])')];
-        const action=document.querySelector('.ribbon-panel:not([hidden]) .ribbon-action');
-        const controls=bars.flatMap(bar=>[...bar.querySelectorAll('button,input,select,a')])
-          .filter(node=>node.getClientRects().length&&getComputedStyle(node).visibility!=='hidden');
-        const table=document.querySelector('#flowTableScroll');
-        return {width:innerWidth,height:innerHeight,dpr:devicePixelRatio,
-          bars:bars.map(bar=>({id:bar.id,client:bar.clientWidth,scroll:bar.scrollWidth})),
-          clippedControls:controls.filter(node=>{const r=node.getBoundingClientRect();return r.left < -1 || r.right > innerWidth+1;}).length,
-          action:action?{direction:getComputedStyle(action).flexDirection,font:parseFloat(getComputedStyle(action).fontSize),
-            icon:parseFloat(getComputedStyle(action.querySelector('.ui-icon')).width)}:null,
-          table:{columns:document.querySelectorAll('#flowTable thead th').length,overflow:getComputedStyle(table).overflowX,focusable:table.tabIndex===0},
-          duplicateScrollControls:[...document.querySelectorAll('.flow-horizontal-scroll')].filter(node=>node.getClientRects().length).length};
-      })()`);
-      samples.push({label,...value});
-      assert.ok(value.bars.length===2&&value.bars.every(bar=>bar.scroll<=bar.client+1),'WORKSPACE_TOOLBAR_OVERFLOW');
-      assert.equal(value.clippedControls,0,'WORKSPACE_TOOLBAR_CLIPPED');
-      if(value.action){assert.equal(value.action.direction,'column');assert.equal(value.action.font,12);assert.ok(Math.abs(value.action.icon-27)<.05);}
-      assert.deepEqual(value.table,{columns:7,overflow:'auto',focusable:true});
-      assert.equal(value.duplicateScrollControls,0);
+    const inspect = async (label,expected) => {
+      let value;
+      try {
+        await until(async()=>{
+          value=await evaluate(`(${readWorkspaceTools.toString()})()`);
+          return value.collapsed===expected.collapsed&&value.compactVisible===expected.collapsed
+            &&value.panels.join(',')===(expected.collapsed?'':`ribbonPanel-${expected.tab}`)
+            &&Math.abs(value.cssHeight-(expected.collapsed?66:148))<.05
+            &&value.slotClientWidth>0&&value.logicalWidth===Math.max(1280,value.slotClientWidth)
+            &&Math.abs(value.scale-Math.min(1,value.slotClientWidth/1280))<1e-6;
+        },5000);
+      } finally { if(value)samples.push({label,...value}); }
+      assertWorkspaceTools(value,expected);
     };
     try {
       for(const size of [null,[1280,688,1],[1440,808,1],[1024,648,1.5]]) {
@@ -615,11 +668,11 @@ async function restorePresentationPreferences(snapshot) {
         else await cdp.send('Emulation.clearDeviceMetricsOverride',{},page.sessionId);
         for(const tab of ['common','trace','style','view']) {
           await clickElement(`document.querySelector('#ribbonTab-${tab}')`);
-          await inspect(`${size?size.join('x'):'native'}:${tab}`);
+          await inspect(`${size?size.join('x'):'native'}:${tab}`,{tab,collapsed:false});
         }
         await clickElement(`document.querySelector('[data-ribbon-collapse="true"]')`);
-        await inspect(`${size?size.join('x'):'native'}:compact`);
-        await clickElement(`document.querySelector('#ribbonCompact [data-ribbon-collapse="false"]')`);
+        await inspect(`${size?size.join('x'):'native'}:compact`,{tab:'view',collapsed:true});
+        await clickElement(`document.querySelector('#editorToolbar .ribbon-tabbar [data-ribbon-collapse="false"]')`);
       }
     } finally {
       await cdp.send('Emulation.clearDeviceMetricsOverride',{},page.sessionId);
@@ -641,7 +694,7 @@ async function restorePresentationPreferences(snapshot) {
     return graph && graph.width > 100 && graph.height > 80 && graph.left >= 0 && graph.top >= 0
       && graph.right <= innerWidth + 1 && graph.bottom <= innerHeight + 1
       && !!document.querySelector('#graphContainer canvas, #graphContainer svg');
-  })()`, [`document.querySelector('#btnImport')`, `document.querySelector('#btnImport2')`]);
+  })()`, [`document.querySelector('[data-ribbon-proxy="btnImport"]')`, `document.querySelector('#btnImport2')`]);
   await check('minimalCssViewportScreenshot', async () => {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 960, height: 500, deviceScaleFactor: 1,
       mobile: false, screenWidth: 960, screenHeight: 500 }, page.sessionId);
@@ -685,12 +738,14 @@ async function restorePresentationPreferences(snapshot) {
   await check('reactEmptyCaseImportEntry', async () => {
     await clickElement(`document.querySelector('.empty-state .button.primary')`);
     await readyDocument(`!!document.querySelector('dialog[open] input[type="file"]')`);
-    assert.equal(await evaluate(visibleControl(`document.querySelector('dialog[open] input[type="file"]')`)), true);
+    assert.equal(await evaluate(visibleControl(`document.querySelector('dialog[open] label.file-drop')`)), true);
+    assert.deepEqual(await evaluate(`(${readImportEntry.toString()})()`),
+      {associated:true,type:'file',accept:'.csv,.tsv,.txt,.xlsx',enabled:true});
     await clickElement(`[...document.querySelectorAll('dialog[open] button')].find(item => item.textContent.trim() === '取消')`);
     await readyDocument(`!document.querySelector('dialog[open]')`);
   });
   await check('workspaceGraphLinkOpened', async () => {
-    await clickElement(`document.querySelector('.workspace-nav a[href^="/?case_id="]')`);
+    await clickElement(`[...document.querySelectorAll('.heading-actions button')].find(node=>node.textContent.trim()==='进入画图')`);
     await readyDocument(`location.pathname === '/' && typeof state === 'object' && !state.graphLoading
       && state.graphInited && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(SEED_CASE)}
       && state.stats.flows === 0 && state.lastGraph.nodes.length === 0`);
@@ -698,7 +753,27 @@ async function restorePresentationPreferences(snapshot) {
   await check('installedPersistentCaptionNavigation', async () => {
     report.titlebar.navigation = {sameShellTarget:true,caption:await titlebarProbe.read()};
   });
-  await check('analysisLinkClicked', () => clickElement(`document.querySelector('#analysisLink')`));
+  await check('installedEmbeddedAnalysisCaseLinked', async () => {
+    await clickElement(`document.querySelector('#navAnalysis')`);
+    await readyDocument(`(() => {
+      const frame=document.querySelector('#analysisFrame'),select=frame?.contentDocument?.querySelector('#caseSel');
+      return frame&&!frame.hidden&&frame.contentDocument.readyState==='complete'
+        &&document.querySelector('#navAnalysis').getAttribute('aria-current')==='page'
+        &&select&&!select.disabled&&select.value===document.querySelector('#caseSelect').value
+        &&frame.contentDocument.querySelector('#caseStats')?.textContent.includes('流水');
+    })()`);
+    await clickElement(`document.querySelector('[data-nav-page="home"]')`);
+    await readyDocument(`document.querySelector('#analysisFrame').hidden&&!document.querySelector('#graphPage').inert
+      &&!state.graphLoading&&state.graphInited&&state.cases.find(item=>item.id===state.caseId)?.name===${JSON.stringify(SEED_CASE)}`);
+    report.titlebar.embeddedAnalysis={sameCase:true,returnedToGraph:true,...await titlebarProbe.checkBody(page)};
+  });
+  await check('analysisLinkClicked', async () => {
+    await clickElement(`document.querySelector('#ribbonTab-trace')`);
+    await until(()=>evaluate(visibleControl(`document.querySelector('[data-analysis-algorithm="paths"]')`)),5000);
+    // Ctrl is a real CDP pointer modifier (bit 2), preserving the product's
+    // explicit external-window path instead of synthesizing window.open().
+    await clickElement(`document.querySelector('[data-analysis-algorithm="paths"]')`,page,{modifiers:2});
+  });
   await check('installedAnalysisWindowAttached', async () => {
     analysisPage = await until(async () => {
       assert.ok(!primary.done && !instrumentationFailed);
