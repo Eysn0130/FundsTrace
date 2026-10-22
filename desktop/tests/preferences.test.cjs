@@ -12,7 +12,23 @@ function temporary(t) {
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   return directory;
 }
-const chosen = { fund_case: '3', fund_edge_type: 'polyline', fund_show_ids: '0', fund_show_photos: '1', fund_edge_labels: '["money","time","summary","currency"]' };
+const chosen = { fund_case: '3', fund_edge_type: 'polyline', fund_show_ids: '0', fund_show_photos: '1', fund_edge_labels: '["money","time","summary","currency"]', fund_sidebar_width: '620' };
+
+test('window geometry is persisted for Main only and invalid layouts are ignored', t => {
+  const directory = temporary(t), store = preferenceStore(directory);
+  const value = JSON.stringify({ bounds: { x: -1920, y: 24, width: 1480, height: 850 }, maximized: true });
+  assert.equal(store.setItem('fund_window_state', value), true);
+  assert.equal(preferenceStore(directory).getItem('fund_window_state'), value);
+  const origin = 'http://127.0.0.1:54321', frame = { url: origin + '/' };
+  const sender = { id: 1, mainFrame: frame, isDestroyed: () => false };
+  for (const op of ['get', 'set', 'remove']) assert.equal(
+    preferenceRequest(store, { sender, senderFrame: frame }, origin, new Set([1]), op, 'fund_window_state', value), null);
+  for (const invalid of ['null', '[]', '{}', '{bad', JSON.stringify({ bounds: { x: 0, y: 0, width: -1, height: 720 }, maximized: false }),
+    value.replace('1480', '1.5'), value.replace('true', '"true"'), value.replace('1480', '1000000'), value.replace('-1920', '-100001')]) {
+    assert.equal(store.setItem('fund_window_state', invalid), false);
+  }
+  for (const width of ['-1', '761', '1.5', '0600', 'NaN']) assert.equal(store.setItem('fund_sidebar_width', width), false);
+});
 
 test('presentation preferences survive host restart and a new loopback origin', t => {
   const directory = temporary(t);

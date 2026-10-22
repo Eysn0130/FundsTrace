@@ -9,7 +9,7 @@ const titlebarTarget = value => installedLocalTarget(value, 'titlebar');
 const near = (actual, expected, tolerance = 1) => Number.isFinite(actual) && Math.abs(actual - expected) <= tolerance;
 const KEY = '__fundsTraceCaptionObservation';
 const PROTOCOL_METHODS = new Set([
-  'Target.getTargets','Target.getTargetInfo','Target.setAutoAttach',
+  'Target.getTargets','Target.getTargetInfo','Target.setAutoAttach','Target.attachToTarget',
   'Runtime.enable','Runtime.evaluate','Runtime.runIfWaitingForDebugger',
   'Page.enable','Page.navigate','Page.reload','Page.close','Page.bringToFront','Page.captureScreenshot',
   'Debugger.enable','Debugger.disable','Debugger.resume','Debugger.setInstrumentationBreakpoint',

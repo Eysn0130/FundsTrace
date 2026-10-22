@@ -7,7 +7,7 @@ const fs = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
 const { launchConfig, HEADER, pageAllowed, popupKind, requestAllowed, downloadAllowed, windowBounds } = require('./host-policy.cjs');
 const { startBackend } = require('./backend.cjs');
-const { CHANNEL, preferenceStore, preferenceRequest } = require('./preferences.cjs');
+const { CHANNEL, preferenceStore, preferenceRequest, readWindowState } = require('./preferences.cjs');
 const updates = require('./updates.cjs');
 const { createStartup, waitForWorkbench } = require('./startup.cjs');
 const { createWindowShell, HEIGHT: TITLEBAR_HEIGHT } = require('./window-shell.cjs');
@@ -64,6 +64,15 @@ else {
     try {
       if (synthetic && app.isPackaged) throw new Error('Synthetic mode is unavailable in installed builds.');
       app.dock?.setIcon(appIcon);
+      // A single Main-owned store prevents geometry and renderer preferences
+      // overwriting one another. Disposable source mode never changes user settings.
+      const transientPreferences = new Map();
+      const preferences = synthetic ? {
+        getItem: key => transientPreferences.get(key) ?? null,
+        setItem: (key, value) => { transientPreferences.set(key, value); return true; },
+        removeItem: key => transientPreferences.delete(key),
+      } : preferenceStore(app.getPath('userData'));
+      const savedWindow = readWindowState(preferences.getItem('fund_window_state'));
       let origin, token;
       const localSession = session.fromPartition(`funds-trace-${randomUUID()}`, { cache: false });
       localSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
@@ -120,11 +129,14 @@ else {
         host.contents.focus();
         Menu.buildFromTemplate(menuTemplate(win)).popup({ window: win, x: 8, y: TITLEBAR_HEIGHT });
       }
-      function createWindow() {
+      function createWindow(remember = false) {
         const owner = [...windows][0];
-        const display = owner ? screen.getDisplayMatching(owner.getBounds()) : screen.getPrimaryDisplay();
+        const savedBounds = remember ? savedWindow?.bounds : null;
+        const display = savedBounds ? screen.getDisplayMatching(savedBounds)
+          : owner ? screen.getDisplayMatching(owner.getBounds()) : screen.getPrimaryDisplay();
+        const initialBounds = windowBounds(display.workArea, savedBounds);
         const host = createWindowShell({
-          windowOptions: { title: '循迹 FundsTrace', backgroundColor: '#10171f', icon: appIcon, ...windowBounds(display.workArea), show: false },
+          windowOptions: { title: '循迹 FundsTrace', backgroundColor: '#10171f', icon: appIcon, ...initialBounds, show: false },
           webPreferences: { preload: path.join(__dirname, 'preload.cjs'), session: localSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, spellcheck: false },
           onFailure: () => void fail('FundsTrace 页面进程已停止，请重新打开应用。'), onMenu: openMenu,
         });
@@ -135,6 +147,31 @@ else {
         const contentsId = contents.id;
         windows.add(win); owned.add(contentsId);
         let displayId = display.id, fitting = false;
+        let normalBounds = savedBounds || Object.fromEntries(['x', 'y', 'width', 'height'].map(key => [key, initialBounds[key]]));
+        let maximized = remember && savedWindow?.maximized === true;
+        let saveTimer, savedWindowValue = preferences.getItem('fund_window_state');
+        const saveWindow = () => {
+          clearTimeout(saveTimer);
+          const value = JSON.stringify({ bounds: normalBounds, maximized });
+          if (remember && value !== savedWindowValue && preferences.setItem('fund_window_state', value)) savedWindowValue = value;
+        };
+        const scheduleSave = () => {
+          if (!remember) return;
+          clearTimeout(saveTimer); saveTimer = setTimeout(saveWindow, 250); saveTimer.unref();
+        };
+        // These events identify a user gesture. Automatic work-area fitting,
+        // DPI changes and maximized frames must not replace the preferred size.
+        const rememberBounds = (_event, bounds) => {
+          if (!remember || fitting || win.isDestroyed() || win.isMaximized() || win.isFullScreen()) return;
+          const next = Object.fromEntries(['x', 'y', 'width', 'height'].map(key => [key, bounds[key]]));
+          if (readWindowState(JSON.stringify({ bounds: next, maximized: false }))) normalBounds = next;
+        };
+        const rememberMaximized = () => { maximized = true; saveWindow(); };
+        const rememberRestored = () => { maximized = false; saveWindow(); };
+        win.on('will-move', rememberBounds); win.on('will-resize', rememberBounds);
+        win.on('resized', scheduleSave); win.on('moved', scheduleSave);
+        win.on('maximize', rememberMaximized); win.on('unmaximize', rememberRestored);
+        win.on('close', saveWindow);
         const fitWorkArea = () => {
           if (fitting || win.isDestroyed()) return;
           fitting = true;
@@ -159,6 +196,11 @@ else {
         screen.on('display-metrics-changed', fitWorkArea);
         screen.on('display-removed', fitWorkArea);
         win.on('closed', () => {
+          clearTimeout(saveTimer);
+          win.removeListener('will-move', rememberBounds); win.removeListener('will-resize', rememberBounds);
+          win.removeListener('resized', scheduleSave); win.removeListener('moved', scheduleSave);
+          win.removeListener('maximize', rememberMaximized); win.removeListener('unmaximize', rememberRestored);
+          win.removeListener('close', saveWindow);
           win.removeListener('move', movedDisplay);
           for (const event of normalBoundsEvents) win.removeListener(event, fitWorkArea);
           screen.removeListener('display-metrics-changed', fitWorkArea); screen.removeListener('display-removed', fitWorkArea);
@@ -234,12 +276,14 @@ else {
         { label: '显示', enabled: false, submenu: [] },
         { label: '帮助', enabled: false, submenu: [] },
       ]) : null);
-      const primary = createWindow();
+      const primary = createWindow(true);
       const primaryContents = windowContents(primary);
       const startup = createStartup(primary, { contentInset: TITLEBAR_HEIGHT, focusContents: primaryContents,
         onFailure: () => void fail('循迹启动页面无法显示，请关闭后重新打开应用。') });
       await Promise.all([shells.get(primary).loaded, startup.loaded]);
       if (quitting || primary.isDestroyed()) return;
+      // maximize() also shows a hidden window; wait for both local surfaces first.
+      if (savedWindow?.maximized) primary.maximize();
       primary.show();
       preparation = (async () => {
         const dataDir = synthetic
@@ -254,7 +298,6 @@ else {
       if (!backend || quitting || primary.isDestroyed()) return;
       ({ origin, token } = await backend.ready);
       if (quitting || primary.isDestroyed()) return;
-      const preferences = preferenceStore(app.getPath('userData'));
       ipcMain.on(CHANNEL, (event, operation, key, value) => {
         event.returnValue = preferenceRequest(preferences, event, origin, owned, operation, key, value);
       });

@@ -208,13 +208,13 @@ function deferred() {
 }
 
 // Exercise the real Main entry and Electron lifecycle events without a business server.
-function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopBackend = async () => true, restartResponse = 0, platform = 'win32', workbenchReady = true, completeStartup = true, navigationPending = false } = {}) {
+function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopBackend = async () => true, restartResponse = 0, platform = 'win32', workbenchReady = true, completeStartup = true, navigationPending = false, preferenceValues = new Map(), initialDisplay } = {}) {
   const app = new EventEmitter();
   const state = { windows: [], businessViews: [], startupViews: [], sessions: [], titlebarSessions: [], menuPopups: [], applicationMenus: [], timers: [], errors: [], backendStarts: 0, backendStops: 0, quitCount: 0, removed: [] };
   const ready = deferred();
   const screen = new EventEmitter();
   let nextContentsId = 0;
-  state.display = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
+  state.display = initialDisplay || { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
   screen.getPrimaryDisplay = screen.getDisplayMatching = () => state.display;
   app.isPackaged = !!updater;
   app.getVersion = () => '0.1.7';
@@ -295,11 +295,12 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
       assert.ok(bounds.width >= this.minimum[0] && bounds.height >= this.minimum[1], 'minimum must be lowered before fitting bounds');
       this.bounds = { ...bounds }; this.boundsChanges.push(bounds); this.emit('move'); this.emit('resize');
     }
+    maximize() { this.maximized = true; this.emit('maximize'); }
     isMaximized() { return Boolean(this.maximized); }
     isFullScreen() { return Boolean(this.fullscreen); }
     setFullScreen(value) { this.fullscreen = value; }
     close() {
-      this.destroyed = true; this.hasFocus = false; this.emit('closed');
+      this.emit('close'); this.destroyed = true; this.hasFocus = false; this.emit('closed');
       if (state.windows.every(win => win.destroyed)) app.emit('window-all-closed');
     }
   }
@@ -353,7 +354,9 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
     }
     if (name === 'electron-updater') return { autoUpdater: updater };
     if (name === './preferences.cjs') return { ...require('../preferences.cjs'), preferenceStore: () => ({
-      getItem: () => null, setItem: () => true, removeItem: () => true,
+      getItem: key => preferenceValues.get(key) ?? null,
+      setItem: (key, value) => { assert.equal(require('../preferences.cjs').validPreference(key, value), true); preferenceValues.set(key, value); return true; },
+      removeItem: key => preferenceValues.delete(key),
     }) };
     if (name === 'node:fs/promises') return filesystem;
     if (name === './backend.cjs') return { startBackend: (_config, options) => {
@@ -361,7 +364,7 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
       return { ready: ready.promise, stop: async () => { state.backendStops++; return await stopBackend(); } };
     } };
     return require(name);
-  }, clearInterval, setInterval, setImmediate, __dirname: path.resolve(__dirname, '..'), process: { argv: ['FundsTrace', ...(synthetic ? ['--synthetic'] : [])], env: {}, platform } });
+  }, clearInterval, setInterval, setImmediate, setTimeout, clearTimeout, __dirname: path.resolve(__dirname, '..'), process: { argv: ['FundsTrace', ...(synthetic ? ['--synthetic'] : [])], env: {}, platform } });
   return { app, state, ready, screen, ipcMain: electron.ipcMain, flush: async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); } };
 }
 
@@ -381,6 +384,47 @@ test('Main uses the packaged brand asset for startup and analysis windows and th
     await harness.flush();
     assert.deepEqual(harness.state.errors, []);
   }
+});
+
+test('Main restores the user normal size and maximum state without analysis windows overwriting it', async () => {
+  const preferenceValues = new Map();
+  const first = mainHarness({ preferenceValues }); await first.flush();
+  const win = first.state.windows[0];
+  assert.deepEqual(win.bounds, { x: 240, y: 115, width: 1440, height: 810 });
+  const chosen = { x: 80, y: 70, width: 1520, height: 900 };
+  win.emit('will-resize', {}, chosen); win.setBounds(chosen); win.emit('resized');
+  first.ready.resolve({ origin: 'http://127.0.0.1:54321', token: 'synthetic' }); await first.flush();
+  win.businessView.popup({ url: 'http://127.0.0.1:54321/analysis' }); await first.flush();
+  const child = first.state.windows[1];
+  child.emit('will-resize', {}, { x: 0, y: 0, width: 1800, height: 1000 }); child.close();
+  assert.equal(preferenceValues.has('fund_window_state'), false);
+  win.maximize(); win.close(); await first.flush();
+  assert.deepEqual(JSON.parse(preferenceValues.get('fund_window_state')), { bounds: chosen, maximized: true });
+  const second = mainHarness({ preferenceValues }); await second.flush();
+  const reopened = second.state.windows[0];
+  assert.deepEqual(reopened.bounds, chosen);
+  assert.equal(reopened.isMaximized(), true);
+  assert.ok(second.state.startupViews[0].file, 'startup is loaded before restored maximize shows the window');
+  reopened.maximized = false; reopened.emit('unmaximize'); reopened.close(); await second.flush();
+  assert.deepEqual(JSON.parse(preferenceValues.get('fund_window_state')), { bounds: chosen, maximized: false });
+});
+
+test('saved preferences survive temporary DPI constraints and disconnected-display recovery', async () => {
+  const chosen = { x: -1800, y: 50, width: 1500, height: 880 };
+  const preferenceValues = new Map([['fund_window_state', JSON.stringify({ bounds: chosen, maximized: false })]]);
+  const small = mainHarness({ preferenceValues, initialDisplay: { id: 2, scaleFactor: 1.5,
+    workArea: { x: 0, y: 0, width: 960, height: 500 } } }); await small.flush();
+  const win = small.state.windows[0];
+  assert.deepEqual(win.bounds, { x: 0, y: 0, width: 960, height: 500 });
+  small.state.display = { id: 2, scaleFactor: 2, workArea: { x: 0, y: 0, width: 683, height: 344 } };
+  small.screen.emit('display-metrics-changed', {}, small.state.display, ['scaleFactor']);
+  assert.deepEqual(win.bounds, { x: 0, y: 0, width: 683, height: 344 });
+  win.close(); await small.flush();
+  assert.deepEqual(JSON.parse(preferenceValues.get('fund_window_state')).bounds, chosen,
+    'automatic fit must not permanently shrink the user preference');
+  const large = mainHarness({ preferenceValues }); await large.flush();
+  assert.deepEqual(large.state.windows[0].bounds, { ...chosen, x: 0 });
+  large.state.windows[0].close(); await large.flush();
 });
 
 test('Main adapts existing windows after DPI/work-area changes while retaining bounds that still fit', async () => {
@@ -562,7 +606,7 @@ test('startup waits for initialized main workbench, rejects unrelated frames and
 test('startup overlay follows content bounds through resize and releases its listeners on cancel', async () => {
   const harness = mainHarness({ workbenchReady: false }); await harness.flush();
   const win = harness.state.windows[0], view = harness.state.startupViews[0];
-  assert.deepEqual(view.bounds, { x: 0, y: 32, width: 1440, height: 848 });
+  assert.deepEqual(view.bounds, { x: 0, y: 32, width: 1440, height: 718 });
   win.bounds = { x: -100, y: 30, width: 683, height: 344 };
   win.contentView.emit('bounds-changed');
   assert.deepEqual(view.bounds, { x: 0, y: 32, width: 683, height: 252 });

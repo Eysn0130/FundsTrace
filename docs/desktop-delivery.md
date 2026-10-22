@@ -21,7 +21,9 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 ## 运行与数据边界
 
-[desktop/main.cjs](../desktop/main.cjs) 负责窗口、受限导航／下载和自己创建的服务。受 sandbox 和 contextIsolation 保护的 [preload](../desktop/preload.cjs) 暴露展示偏好 get/set/remove、固定更新动作及状态订阅，并仅转发固定的工作台 `ready`／`failed` 单向通知；Main 校验窗口归属、主框架及当前精确 origin，只将案件选择、线型、标签、证件／照片显示开关写入 `userData/preferences.json`。随机端口和临时 session 不变；不持久化 token、流水、快照或任意 renderer 键，不提供通用 IPC。G6 `/` 保留完整业务，`/analysis` 为分析，`/workspace/` 为共享 React 试点。业务数据在 Electron 自身 `userData/data`，不写安装资源，不打开 Analytix 数据根。保留单实例，窗口尺寸以当前显示器的 DIP 工作区为准。
+[desktop/main.cjs](../desktop/main.cjs) 负责窗口、受限导航／下载和自己创建的服务。受 sandbox 和 contextIsolation 保护的 [preload](../desktop/preload.cjs) 暴露展示偏好 get/set/remove、固定更新动作及状态订阅，并仅转发固定的工作台 `ready`／`failed` 单向通知；Main 校验窗口归属、主框架及当前精确 origin，只将案件选择、线型、标签、证件／照片显示开关和侧栏宽度写入 `userData/preferences.json`。随机端口和临时 session 不变；不持久化 token、流水、快照或任意 renderer 键，不提供通用 IPC。G6 `/` 保留完整业务，`/analysis` 为分析，`/workspace/` 为共享 React 试点。业务数据在 Electron 自身 `userData/data`，不写安装资源，不打开 Analytix 数据根。保留单实例，窗口尺寸以当前显示器的 DIP 工作区为准。
+
+首次打开在工作区内居中采用接近16:9的比例（上限1440×810 DIP），正常最小1280×720，工作区更小时同时收紧最小值。用户可自由改变比例；主窗口的正常尺寸、位置与最大化状态保存在同一用户的 `preferences.json`，由 Main 独占管理 `fund_window_state`，renderer IPC 无权读写。调整窗口后及关闭前保存，下次从启动页恢复；分析子窗不覆盖主窗口偏好，最小化与全屏不作为下次默认状态。显示器断开或DPI变化时按当前工作区限制可见窗口，不用临时受限尺寸覆盖用户偏好。`fund_sidebar_width` 在用户拖动结束或键盘调整后保存，跨随机端口重开仍恢复；较窄工作区临时限制显示，不永久缩小原宽度。偏好无效或不可写时应用仍使用可操作的默认布局。
 
 [desktop_backend.py](../desktop_backend.py) 从 stdin 读取严格的 `{protocol:1, token, dataDir, synthetic}` 后才导入应用。随机 token 只经父进程管道和 Main 持有的精确 origin 请求头传递，不进入 URL、argv、renderer、日志或导出。后端绑定 `127.0.0.1:0`，Main 健康检查后才加载页面；冻结后端拒绝 source-only synthetic 模式。
 

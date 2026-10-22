@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$InstallRoot,
     [Parameter(Mandatory = $true)][int]$ProcessId,
-    [ValidateSet('Inspect', 'Resize', 'Capture', 'CaptionProbe', 'CaptionClose', 'CaptionCloseForeground', 'ZoomIn', 'ZoomReset')][string]$Action = 'Inspect',
+    [ValidateSet('Inspect', 'Resize', 'UserResize', 'Capture', 'CaptionProbe', 'CaptionClose', 'CaptionCloseForeground', 'ZoomIn', 'ZoomReset')][string]$Action = 'Inspect',
     [int]$WidthDip = 0,
     [int]$HeightDip = 0,
     [string]$ScreenshotPath = '',
@@ -76,7 +76,7 @@ try {
     $InstallRoot = Get-NormalizedAbsolutePath $InstallRoot
     $InstalledExe = Join-Path $InstallRoot 'FundsTrace.exe'
     if ($ProcessId -le 0 -or -not [IO.File]::Exists($InstalledExe)) { throw 'INVALID_CANDIDATE_INPUT' }
-    if ($Action -eq 'Resize' -and ($WidthDip -lt 1 -or $HeightDip -lt 1 -or
+    if ($Action -in @('Resize', 'UserResize') -and ($WidthDip -lt 1 -or $HeightDip -lt 1 -or
         $WidthDip -gt 16384 -or $HeightDip -gt 16384)) { throw 'INVALID_RESIZE_INPUT' }
     if ($Action -eq 'CaptionProbe' -and ($DragXDip -le 0 -or $MenuXDip -le 0 -or
         $DragXDip -gt 16384 -or $MenuXDip -gt 16384)) { throw 'INVALID_CAPTION_INPUT' }
@@ -433,6 +433,65 @@ public static class FundsTraceStartupWindow {
             throw new InvalidOperationException(selectedForegroundWindow != IntPtr.Zero ? "WINDOW_BINDING_CHANGED" : "INPUT_FOREGROUND_UNAVAILABLE");
         try { Inject(Mouse(2)); } finally { Inject(Mouse(4)); }
     }
+    static Point ResizePoint(IntPtr window,Evidence value,bool horizontal) {
+        int hit=horizontal?11:15;
+        int start=horizontal?value.Client.X+value.Client.Width-4:value.Client.Y+value.Client.Height-4;
+        int end=horizontal?value.Window.X+value.Window.Width:value.Window.Y+value.Window.Height;
+        int edge=horizontal?value.WorkArea.X+value.WorkArea.Width:value.WorkArea.Y+value.WorkArea.Height;
+        for(int position=start;position<Math.Min(end,edge);position++) {
+            var point=horizontal?new Point{X=position,Y=value.Client.Y+value.Client.Height/2}
+                :new Point{X=value.Client.X+value.Client.Width/2,Y=position};
+            if(Hit(window,point)==hit && GetAncestor(WindowFromPoint(point),2)==window) return point;
+        }
+        throw new InvalidOperationException("RESIZE_INPUT_EDGE_UNAVAILABLE");
+    }
+    static void DragResizeEdge(IntPtr window,uint processId,bool horizontal,int targetSize) {
+        Evidence before=Read(window,processId);
+        int size=horizontal?before.Client.Width:before.Client.Height;
+        if(size==targetSize) return;
+        Point point=ResizePoint(window,before,horizontal);
+        int delta=targetSize-size, hit=horizontal?11:15;
+        InputDesktop(window,processId);
+        if(Hit(window,point)!=hit || GetAncestor(WindowFromPoint(point),2)!=window)
+            throw new InvalidOperationException("RESIZE_INPUT_EDGE_UNAVAILABLE");
+        Move(point);Thread.Sleep(40);
+        if(GetForegroundWindow()!=window || GetAncestor(WindowFromPoint(point),2)!=window)
+            throw new InvalidOperationException("INPUT_FOREGROUND_UNAVAILABLE");
+        Inject(Mouse(2));
+        try {
+            for(int step=1;step<=8;step++) {
+                if(GetForegroundWindow()!=window) throw new InvalidOperationException("INPUT_FOREGROUND_UNAVAILABLE");
+                Move(new Point{X=point.X+(horizontal?delta*step/8:0),Y=point.Y+(horizontal?0:delta*step/8)});
+                Thread.Sleep(25);
+            }
+        } finally {Inject(Mouse(4));}
+        Wait(()=>{NativeRect client;return GetClientRect(window,out client)
+            && Math.Abs((horizontal?client.Right-client.Left:client.Bottom-client.Top)-targetSize)<=1;});
+    }
+    public static Evidence UserResize(IntPtr window,uint processId,int widthDip,int heightDip) {
+        InputDesktop(window,processId);
+        Evidence before=Read(window,processId);
+        if(!before.NormalizationAvailable || IsZoomed(window) || widthDip<1 || heightDip<1)
+            throw new InvalidOperationException("USER_RESIZE_RESTORED_WINDOW_REQUIRED");
+        int width=(int)Math.Round(widthDip*before.Dpi/96.0,MidpointRounding.AwayFromZero);
+        int height=(int)Math.Round(heightDip*before.Dpi/96.0,MidpointRounding.AwayFromZero);
+        if(width<before.ElectronMinTrackWidth || height<before.ElectronMinTrackHeight
+            || width>before.WorkArea.Width || height>before.WorkArea.Height)
+            throw new InvalidOperationException("INVALID_USER_RESIZE_INPUT");
+        Point cursor;if(!GetCursorPos(out cursor)) throw new InvalidOperationException("INPUT_CURSOR_UNAVAILABLE");
+        try {
+            // Position only: NOSIZE is required. The actual size changes below
+            // come exclusively from native nonclient mouse dragging, so Electron
+            // receives the same will-resize events as an interactive user.
+            if(!SetWindowPos(window,IntPtr.Zero,before.WorkArea.X-before.FrameInsets.Left,
+                before.WorkArea.Y-before.FrameInsets.Top,0,0,0x0001|0x0004|0x0010))
+                throw new InvalidOperationException("USER_RESIZE_POSITION_FAILED");
+            DwmFlush();Thread.Sleep(60);
+            DragResizeEdge(window,processId,true,width);
+            DragResizeEdge(window,processId,false,height);
+            DwmFlush();return Read(window,processId);
+        } finally {Move(cursor);}
+    }
     public static CaptionEvidence Caption(IntPtr window,uint processId,int dragXDip,int menuXDip,bool close) {
         InputDesktop(window,processId);
         Point cursor; if(!GetCursorPos(out cursor)) throw new InvalidOperationException("INPUT_CURSOR_UNAVAILABLE");
@@ -586,6 +645,15 @@ public static class FundsTraceStartupWindow {
         $Report.requestedDip = [ordered]@{ width = $WidthDip; height = $HeightDip }
         $Report.readback = Convert-Evidence $Evidence
         $Report.resizePolicy = 'Electron client geometry centered in current work area; raw SetWindowPos bounds include measured resize insets. Actual readback is authoritative; SetWindowPos does not guarantee interactive minimum tracking enforcement.'
+    }
+    if ($Action -eq 'UserResize') {
+        $Stage = 'nativeWindowResize'
+        $BeforeResize = $Evidence
+        $Evidence = [FundsTraceStartupWindow]::UserResize($Window, [uint32]$ProcessId, $WidthDip, $HeightDip)
+        $Report.requestedDip = [ordered]@{ width = $WidthDip; height = $HeightDip }
+        $Report.interaction = [ordered]@{ source = 'SendInput-native-resize-edge';
+            userResizeObserved = ($Evidence.Client.Width -ne $BeforeResize.Client.Width -or $Evidence.Client.Height -ne $BeforeResize.Client.Height) }
+        $Report.resizePolicy = 'Position-only preparation with NOSIZE, followed by actual native right/bottom edge mouse dragging. Actual readback is authoritative.'
     }
     if ($Action -in @('CaptionProbe', 'CaptionClose', 'CaptionCloseForeground')) {
         $Stage = 'nativeCaptionInteraction'

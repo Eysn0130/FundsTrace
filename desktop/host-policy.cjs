@@ -12,8 +12,9 @@ function windowBounds(workArea, current) {
   // Do not scale DIP again or let a taskbar/high-DPI work area strand controls.
   const inset = 32 * 2;
   const minWidth = Math.min(1280, workArea.width), minHeight = Math.min(720, workArea.height);
-  const width = Math.max(minWidth, Math.min(current?.width ?? Math.min(1440, workArea.width - inset), workArea.width));
-  const height = Math.max(minHeight, Math.min(current?.height ?? Math.min(940, workArea.height - inset), workArea.height));
+  const initialWidth = Math.round(Math.min(1440, workArea.width - inset, (workArea.height - inset) * 16 / 9));
+  const width = Math.max(minWidth, Math.min(current?.width ?? initialWidth, workArea.width));
+  const height = Math.max(minHeight, Math.min(current?.height ?? Math.round(initialWidth * 9 / 16), workArea.height));
   const x = current?.x ?? workArea.x + Math.floor((workArea.width - width) / 2);
   const y = current?.y ?? workArea.y + Math.floor((workArea.height - height) / 2);
   return { width, height, minWidth, minHeight,

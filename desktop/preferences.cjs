@@ -6,7 +6,20 @@ const { randomUUID } = require('node:crypto');
 const { pageAllowed } = require('./host-policy.cjs');
 const CHANNEL = 'funds-trace:preferences';
 const labels = new Set(['money', 'time', 'summary', 'currency']);
-const keys = new Set(['fund_case', 'fund_edge_type', 'fund_show_ids', 'fund_show_photos', 'fund_edge_label', 'fund_edge_labels']);
+const keys = new Set(['fund_case', 'fund_edge_type', 'fund_show_ids', 'fund_show_photos', 'fund_edge_label', 'fund_edge_labels', 'fund_sidebar_width']);
+
+function readWindowState(value) {
+  try {
+    const state = JSON.parse(value), bounds = state?.bounds;
+    if (!bounds || typeof state.maximized !== 'boolean'
+        || Object.keys(state).sort().join() !== 'bounds,maximized'
+        || Object.keys(bounds).sort().join() !== 'height,width,x,y'
+        || !['x', 'y', 'width', 'height'].every(key => Number.isSafeInteger(bounds[key]))
+        || Math.abs(bounds.x) > 100000 || Math.abs(bounds.y) > 100000
+        || bounds.width < 1 || bounds.width > 32768 || bounds.height < 1 || bounds.height > 32768) return null;
+    return state;
+  } catch { return null; }
+}
 
 function validPreference(key, value) {
   if (typeof value !== 'string' || value.length > 256) return false;
@@ -14,6 +27,9 @@ function validPreference(key, value) {
     case 'fund_case': return /^[1-9]\d{0,18}$/.test(value);
     case 'fund_edge_type': return ['line', 'polyline', 'quadratic'].includes(value);
     case 'fund_show_ids': case 'fund_show_photos': return value === '0' || value === '1';
+    case 'fund_sidebar_width': return /^(0|[1-9]\d{0,2})$/.test(value) && Number(value) <= 760;
+    // Main owns normal window bounds. This key is never exposed by preference IPC.
+    case 'fund_window_state': return readWindowState(value) !== null;
     case 'fund_edge_label': return labels.has(value) || value === 'all';
     case 'fund_edge_labels':
       try { const items = JSON.parse(value); return Array.isArray(items) && items.length >= 1 && items.length <= 4 && items.every(item => labels.has(item)) && new Set(items).size === items.length; }
@@ -59,11 +75,11 @@ function preferenceStore(directory) {
 function preferenceRequest(store, event, origin, owned, operation, key, value) {
   const sender = event.sender, frame = event.senderFrame;
   if (!sender || sender.isDestroyed() || !owned.has(sender.id) || !frame || frame !== sender.mainFrame || !pageAllowed(frame.url, origin)) return null;
-  if (typeof key !== 'string') return null;
+  if (typeof key !== 'string' || !keys.has(key)) return null;
   if (operation === 'get') return store.getItem(key);
   if (operation === 'set') return store.setItem(key, value);
   if (operation === 'remove') return store.removeItem(key);
   return null;
 }
 
-module.exports = { CHANNEL, validPreference, preferenceStore, preferenceRequest };
+module.exports = { CHANNEL, validPreference, preferenceStore, preferenceRequest, readWindowState };

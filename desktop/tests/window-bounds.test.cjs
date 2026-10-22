@@ -7,9 +7,9 @@ const { windowBounds } = require('../host-policy.cjs');
 test('normal windows enforce the approved 1280 by 720 minimum without locking the aspect ratio', () => {
   for (const [workArea, expected] of [
     [{ x: 0, y: 0, width: 1920, height: 1040 },
-      { x: 240, y: 50, width: 1440, height: 940, minWidth: 1280, minHeight: 720 }],
+      { x: 240, y: 115, width: 1440, height: 810, minWidth: 1280, minHeight: 720 }],
     [{ x: 0, y: 0, width: 1366, height: 728 },
-      { x: 32, y: 4, width: 1302, height: 720, minWidth: 1280, minHeight: 720 }],
+      { x: 43, y: 4, width: 1280, height: 720, minWidth: 1280, minHeight: 720 }],
     [{ x: 0, y: 0, width: 1280, height: 680 },
       { x: 0, y: 0, width: 1280, height: 680, minWidth: 1280, minHeight: 680 }],
   ]) assert.deepEqual(windowBounds(Object.freeze(workArea)), expected);
@@ -17,7 +17,7 @@ test('normal windows enforce the approved 1280 by 720 minimum without locking th
 
 test('taskbar and scaling are already included in DIP work areas, including 125 and 150 percent examples', () => {
   for (const [width, height, expected] of [
-    [1536, 824, { x: 48, y: 32, width: 1440, height: 760, minWidth: 1280, minHeight: 720 }],
+    [1536, 824, { x: 92, y: 32, width: 1351, height: 760, minWidth: 1280, minHeight: 720 }],
     [1280, 688, { x: 0, y: 0, width: 1280, height: 688, minWidth: 1280, minHeight: 688 }],
     [960, 500, { x: 0, y: 0, width: 960, height: 500, minWidth: 960, minHeight: 500 }],
     [683, 344, { x: 0, y: 0, width: 683, height: 344, minWidth: 683, minHeight: 344 }],
@@ -28,7 +28,7 @@ test('centering respects negative display coordinates and taskbars on either edg
   assert.deepEqual(windowBounds({ x: -1280, y: 24, width: 1280, height: 696 }),
     { x: -1280, y: 24, width: 1280, height: 696, minWidth: 1280, minHeight: 696 });
   assert.deepEqual(windowBounds({ x: 0, y: -1040, width: 1920, height: 1040 }),
-    { x: 240, y: -990, width: 1440, height: 940, minWidth: 1280, minHeight: 720 });
+    { x: 240, y: -925, width: 1440, height: 810, minWidth: 1280, minHeight: 720 });
   assert.deepEqual(windowBounds({ x: 48, y: 0, width: 1318, height: 768 }),
     { x: 67, y: 24, width: 1280, height: 720, minWidth: 1280, minHeight: 720 });
 });

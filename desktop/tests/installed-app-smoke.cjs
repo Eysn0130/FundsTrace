@@ -33,7 +33,7 @@ const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, f
     simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
 const timings = report.timings, owned = [];
 let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, titlebarPage, analysisTitlebarPage,
-  titlebarProbe, updateFixture, productionUpdate = false;
+  titlebarProbe, updateFixture, productionUpdate = false, presentationPreferences;
 let releaseStartupInspection = async () => {};
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -130,8 +130,9 @@ async function nativeStartupBounds(config, primary, target) {
   const initial = await observe({});
   result.initial = initial;
   const scale = initial.scaleFactor, area = initial.workArea;
-  const expected = { width:Math.min(Math.max(1280, Math.min(1440, area.width / scale - 64)), area.width / scale),
-    height:Math.min(Math.max(720, Math.min(940, area.height / scale - 64)), area.height / scale) };
+  const defaultWidth = Math.round(Math.min(1440, area.width / scale - 64, (area.height / scale - 64) * 16 / 9));
+  const expected = { width:Math.min(Math.max(1280, defaultWidth), area.width / scale),
+    height:Math.min(Math.max(720, Math.round(defaultWidth * 9 / 16)), area.height / scale) };
   const min = { width:Math.min(1280, area.width / scale), height:Math.min(720, area.height / scale) };
   result.expectedInitialDip={...expected,minWidth:min.width,minHeight:min.height};
   assertNativeWindowBounds(initial,result.expectedInitialDip);
@@ -332,6 +333,40 @@ async function portClosed(port) {
     socket.setTimeout(1000, () => finish(false));
   });
 }
+async function readPresentationPreferences(userRoot) {
+  // The lifecycle sentinel binds this path to the disposable CI user above.
+  // Retain only the two presentation keys this journey changes, never case data.
+  const file = path.join(userRoot, 'preferences.json');
+  const values = await fs.readFile(file, 'utf8').catch(error => {
+    if (error.code === 'ENOENT') return '{}';
+    throw error;
+  });
+  assert.ok(Buffer.byteLength(values) <= 16384, 'PRESENTATION_PREFERENCES_TOO_LARGE');
+  const current = JSON.parse(values), saved = {};
+  assert.ok(current && typeof current === 'object' && !Array.isArray(current));
+  for (const key of ['fund_window_state', 'fund_sidebar_width']) {
+    if (Object.hasOwn(current, key)) saved[key] = current[key];
+  }
+  return { file, saved };
+}
+async function restorePresentationPreferences(snapshot) {
+  const values = await fs.readFile(snapshot.file, 'utf8').catch(error => {
+    if (error.code === 'ENOENT') return '{}';
+    throw error;
+  });
+  assert.ok(Buffer.byteLength(values) <= 16384, 'PRESENTATION_PREFERENCES_TOO_LARGE');
+  const current = JSON.parse(values);
+  assert.ok(current && typeof current === 'object' && !Array.isArray(current));
+  for (const key of ['fund_window_state', 'fund_sidebar_width']) {
+    if (Object.hasOwn(snapshot.saved, key)) current[key] = snapshot.saved[key];
+    else delete current[key];
+  }
+  const temporary = `${snapshot.file}.ci-presentation-${process.pid}.tmp`;
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(current)}\n`, { flag:'wx' });
+    await fs.rename(temporary, snapshot.file);
+  } finally { await fs.rm(temporary, { force:true }); }
+}
 
 (async () => {
   const config = await check('ciSyntheticUser', async () => {
@@ -343,6 +378,7 @@ async function portClosed(port) {
     const userRoot = path.join(process.env.APPDATA, 'FundsTrace');
     assert.equal(await fs.readFile(path.join(userRoot, 'installer-lifecycle-sentinel.txt'), 'utf8'), SENTINEL);
     assert.ok((await fs.stat(path.join(userRoot, 'data', 'fund.duckdb'))).isFile());
+    if (!value.updateFixture && !value.productionUpdate) presentationPreferences = await readPresentationPreferences(userRoot);
     for (const output of [value.reportPath, value.screenshot].filter(Boolean)) {
       assert.ok(!within(userRoot, output) && !within(value.installRoot, output));
     }
@@ -738,6 +774,45 @@ async function portClosed(port) {
     assert.equal(businessOrigin(pages[0].url), page.origin);
     assert.equal(await evaluate(`document.readyState === 'complete' && !!document.querySelector('#graphContainer')`), true);
   });
+  let rememberedPresentation;
+  if (!updateFixture) await check('installedPresentationUserResize', async () => {
+    await cdp.send('Emulation.clearDeviceMetricsOverride', {}, page.sessionId);
+    const initial = await nativeStartupWindow(config.installRoot, primary.child.pid);
+    const scale = initial.scaleFactor, area = initial.workArea;
+    const minimum = { width:Math.min(1280, area.width / scale), height:Math.min(720, area.height / scale) };
+    // A deliberately free ratio verifies that a saved user size is not replaced
+    // by the first-open 16:9 default. Small CI desktops still have a few spare DIP.
+    const size = { width:Math.min(minimum.width + 80, area.width / scale),
+      height:Math.min(minimum.height + 5, area.height / scale) };
+    const resized = await nativeStartupWindow(config.installRoot, primary.child.pid,
+      { action:'UserResize', widthDip:Math.round(size.width), heightDip:Math.round(size.height) });
+    assert.deepEqual(resized.interaction, {source:'SendInput-native-resize-edge',userResizeObserved:true});
+    assertNativeWindowBounds(resized, {...size,minWidth:minimum.width,minHeight:minimum.height});
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    const handle = await evaluate(`(() => {
+      const node = document.querySelector('#workspaceSidebarResize'), rect = node.getBoundingClientRect();
+      const x = rect.x + rect.width / 2, y = rect.y + rect.height / 4;
+      return {x,y,hit:document.elementFromPoint(x,y)===node,
+        current:Number(node.getAttribute('aria-valuenow')),maximum:Number(node.getAttribute('aria-valuemax'))};
+    })()`);
+    assert.equal(handle.hit, true, 'PRESENTATION_SEPARATOR_REACHABLE');
+    const right = handle.current + 20 <= handle.maximum;
+    const sidebarWidth = handle.current + (right ? 20 : -20), key = right ? 'ArrowRight' : 'ArrowLeft';
+    for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent',
+      {type,x:handle.x,y:handle.y,button:'left',clickCount:1}, page.sessionId);
+    for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent',
+      {type,key,code:key,windowsVirtualKeyCode:right ? 39 : 37,nativeVirtualKeyCode:right ? 39 : 37}, page.sessionId);
+    await until(() => evaluate(`window.FundsDesktopPreferences.getItem('fund_sidebar_width') === '${sidebarWidth}'
+      && Math.abs(document.querySelector('#left').getBoundingClientRect().width - ${sidebarWidth}) <= 1`), 5000);
+    // Geometry is Main-owned; the renderer's public preference port cannot read it.
+    assert.equal(await evaluate(`window.FundsDesktopPreferences.getItem('fund_window_state')`), null);
+    rememberedPresentation = { bounds:Object.fromEntries(Object.entries(resized.electronWindow)
+      .map(([key,value]) => [key, value / scale])), minimum, sidebarWidth };
+    report.presentationMemory = { scope:'installed-EXE-native-SendInput-edge-resize-and-renderer-keyboard-input; same-isolated-Windows-user',
+      before:initial.electronWindow, changed:resized.electronWindow, scaleFactor:scale,
+      changedSize:initial.electronWindow.width !== resized.electronWindow.width || initial.electronWindow.height !== resized.electronWindow.height,
+      expectedSidebarWidth:sidebarWidth, windowStateRendererReadable:false };
+  });
   await check('noPageExceptions', async () => {
     assert.ok(!instrumentationFailed); assert.equal(errorCount, 0);
   });
@@ -761,6 +836,52 @@ async function portClosed(port) {
     assert.equal(errorCount, 0);
   });
   await check('backendReleasedAfterClose', () => until(() => portClosed(Number(new URL(page.origin).port)), 15000));
+  if (rememberedPresentation) {
+    await check('installedPresentationRestoredAfterRelaunch', async () => {
+      cdp.close();
+      const restarted = boot(executable, config.installRoot, env, true);
+      const debugUrl = await until(() => { assert.ok(!restarted.done); return restarted.debugUrl; }, 30000);
+      cdp = await connect(debugUrl);
+      cdp.onEvent(message => {
+        if (message.method === 'Runtime.exceptionThrown' || message.method === 'Inspector.targetCrashed'
+          || message.method === 'Target.targetCrashed'
+          || message.method === 'Runtime.consoleAPICalled' && message.params?.type === 'error') errorCount += 1;
+      });
+      const targets = await until(async () => {
+        assert.ok(!restarted.done);
+        const {targetInfos} = await cdp.send('Target.getTargets');
+        const body = targetInfos.find(value => value.type === 'page' && businessOrigin(value.url));
+        const caption = targetInfos.find(value => value.type === 'page' && titlebarTarget(value.url));
+        return body && caption ? {body,caption} : false;
+      }, 90000);
+      const attach = async target => {
+        const {sessionId} = await cdp.send('Target.attachToTarget', {targetId:target.targetId,flatten:true});
+        await cdp.send('Runtime.enable', {}, sessionId);
+        await cdp.send('Page.enable', {}, sessionId);
+        return {targetId:target.targetId,sessionId};
+      };
+      page = {...await attach(targets.body),origin:businessOrigin(targets.body.url)};
+      titlebarPage = await attach(targets.caption);
+      analysisPage = analysisTitlebarPage = null;
+      await readyDocument(`!!document.querySelector('#graphContainer') && typeof state === 'object'
+        && !state.graphLoading && state.graphInited`);
+      const restored = await nativeStartupWindow(config.installRoot, restarted.child.pid);
+      const expected = rememberedPresentation;
+      assertNativeWindowBounds(restored, {...expected.bounds,minWidth:expected.minimum.width,minHeight:expected.minimum.height});
+      for (const key of ['x','y']) assert.ok(Math.abs(restored.electronWindow[key] / restored.scaleFactor - expected.bounds[key]) <= 2,
+        'PRESENTATION_NATIVE_POSITION_RESTORED');
+      await until(() => evaluate(`window.FundsDesktopPreferences.getItem('fund_sidebar_width') === '${expected.sidebarWidth}'
+        && Math.abs(document.querySelector('#left').getBoundingClientRect().width - ${expected.sidebarWidth}) <= 1`), 5000);
+      const probe = await createInstalledTitlebarProbe({cdp,target:titlebarPage,evaluate,until});
+      report.presentationMemory.restored = { native:restored.electronWindow,scaleFactor:restored.scaleFactor,
+        sidebarWidth:await evaluate(`document.querySelector('#left').getBoundingClientRect().width`),
+        caption:await probe.checkBody(page),sameUserRestart:true };
+      await evaluate('window.close()', titlebarPage).catch(() => {});
+      assert.deepEqual(await bounded(restarted.exited, 30000), {code:0,signal:null});
+      assert.equal(errorCount, 0);
+      await until(() => portClosed(Number(new URL(page.origin).port)), 15000);
+    });
+  }
   report.status = 'passed';
 })().catch(async error => {
   report.status = 'failed'; report.failedCheck = stage; process.exitCode = 1;
@@ -818,6 +939,16 @@ async function portClosed(port) {
     if (!instance.done) {
       instance.child.kill();
       await bounded(instance.exited, 10000).catch(() => { report.status = 'failed'; report.failedCheck = 'ownedProcessCleanup'; process.exitCode = 1; });
+    }
+  }
+  if (presentationPreferences) {
+    try {
+      await restorePresentationPreferences(presentationPreferences);
+      report.checks.isolatedPresentationPreferencesRestored = true;
+    } catch {
+      if (report.status !== 'failed') report.failedCheck = 'isolatedPresentationPreferencesCleanup';
+      report.checks.isolatedPresentationPreferencesRestored = false;
+      report.status = 'failed'; process.exitCode = 1;
     }
   }
   if (reportOwned) {

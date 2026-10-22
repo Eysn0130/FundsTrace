@@ -15,7 +15,27 @@
     const state = { sidebarCollapsed: false, toolbarCollapsed: false };
     let drag = null;
     let preferredSidebarWidth = null;
+    let savedSidebarWidth = null;
     let sidebarEndTimer = null;
+    let preferenceStorage = null;
+    try {
+      preferenceStorage = root.FundsDesktopPreferences || root.localStorage;
+      const saved = preferenceStorage?.getItem('fund_sidebar_width');
+      if (typeof saved === 'string' && /^(0|[1-9]\d{0,2})$/.test(saved) && Number(saved) <= 760) {
+        preferredSidebarWidth = Number(saved);
+        savedSidebarWidth = saved;
+      }
+    } catch (_) { /* Unavailable storage must not prevent the workbench opening. */ }
+
+    function saveSidebarWidth() {
+      if (preferredSidebarWidth === null || !preferenceStorage?.setItem) return;
+      const value = String(preferredSidebarWidth);
+      if (value === savedSidebarWidth) return;
+      try {
+        preferenceStorage.setItem('fund_sidebar_width', value);
+        savedSidebarWidth = value;
+      } catch (_) { /* Resizing remains available when the preference cannot be saved. */ }
+    }
 
     function emitResize(reason, phase = 'start') {
       root.dispatchEvent(new root.CustomEvent('fundstrace:workspace-resize', {
@@ -80,6 +100,9 @@
       // CSS combines this bound with its responsive default or the user's width.
       // Never overwrite the preference with a temporarily constrained width.
       workspace.style.setProperty('--sidebar-maximum-width', `${maximum}px`);
+      if (preferredSidebarWidth !== null) {
+        workspace.style.setProperty('--sidebar-width', `${Math.max(minimum, preferredSidebarWidth)}px`);
+      }
       const width = preferredSidebarWidth ?? sidebar.getBoundingClientRect().width;
       const next = Math.round(Math.min(maximum, Math.max(minimum, width)));
       resizeHandle.setAttribute('aria-valuemin', String(minimum));
@@ -91,7 +114,6 @@
     function setSidebarWidth(width, reason = 'sidebar-width') {
       const { minimum, maximum } = bounds();
       preferredSidebarWidth = Math.round(Math.min(maximum, Math.max(minimum, width)));
-      workspace.style.setProperty('--sidebar-width', `${preferredSidebarWidth}px`);
       updateSidebarBounds(reason);
     }
 
@@ -130,6 +152,7 @@
       workspace.classList.remove('is-resizing');
       doc.body.classList.remove('workspace-resizing');
       if (resizeHandle.hasPointerCapture?.(pointerId)) resizeHandle.releasePointerCapture(pointerId);
+      saveSidebarWidth();
       if (notify) emitResize('sidebar-width', 'end');
     }
     resizeHandle.addEventListener('pointerup', endResize);
@@ -141,6 +164,7 @@
       if (!direction) return;
       event.preventDefault();
       setSidebarWidth(sidebar.getBoundingClientRect().width + direction * (event.shiftKey ? 50 : 20));
+      saveSidebarWidth();
     });
     updateSidebarBounds('mount', false);
 
