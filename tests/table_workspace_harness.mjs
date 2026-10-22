@@ -20,7 +20,7 @@ const flow = id => ({ id, trade_time: '2026-01-01 12:00:00', payer_name: 'Synthe
 // The frozen app's actual renderer, search parameters and table handlers run in
 // this harness; only HTML parsing and network/graph boundaries are synthetic.
 function harness() {
-  const byId = new Map(), ready = [], requests = [], graphCalls = [], membershipCalls = [];
+  const byId = new Map(), ready = [], requests = [], graphCalls = [], membershipCalls = [], windowListeners = new Map();
   const membershipListeners = new Set();
   let doc, context, membershipToken = 0;
   let status = { confirmedIds: [], desiredIds: [], pendingIds: [], failures: {}, available: true, busy: false };
@@ -170,7 +170,7 @@ function harness() {
     },
   };
   const sandbox = {
-    window: { addEventListener(name, fn) { if (name === 'DOMContentLoaded') ready.push(fn); },
+    window: { addEventListener(name, fn) { if (name === 'DOMContentLoaded') ready.push(fn); else { if(!windowListeners.has(name))windowListeners.set(name,[]);windowListeners.get(name).push(fn); } },
       FundsCanvasEditor: { membership, history: { status: () => ({ canUndo: false, canRedo: false, busy: false }) } } },
     document: doc, state, URLSearchParams, console,
     $: selector => doc.querySelector(selector), $$: selector => doc.querySelectorAll(selector),
@@ -200,6 +200,12 @@ function harness() {
   vm.runInContext(source, context, { filename: 'table-workspace.js' });
   for (const callback of ready) callback();
   return { context, state, doc, element, requests, graphCalls, membershipCalls,
+    view(view, relayout = () => {}) {
+      for (const phase of ['prepare', 'start', 'end']) {
+        if (phase === 'end') relayout();
+        for (const fn of windowListeners.get('fundstrace:workspace-resize') || []) fn({detail:{reason:'workspace-view',phase,view}});
+      }
+    },
     rows: () => element('flowTbody').querySelectorAll('tr[data-id]'),
     box: id => element('flowTbody').querySelectorAll('.flow-ck').find(box => box.dataset.id === String(id)),
     search: (...args) => context.doSearch(...args),
@@ -476,4 +482,59 @@ test('missing, throwing and rejected camera adapters cannot turn a successful qu
     assert.equal(f.element('resultInfo').textContent, '共 2 笔'); assert.equal(f.rows().length, 2);
     assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
   }
+});
+
+
+test('workspace views retain one query/table and anchors, with independent filter disclosure and no writes', async () => {
+  const f = harness(); await f.search(); f.toggleAnchor(1,true);
+  const table=f.element('flowTableScroll'), rows=f.rows(), requests=f.requests.length;
+  table.scrollLeft=190; table.scrollTop=32;
+  f.element('fAccount').value='SYN-UNSUBMITTED'; f.element('fAccount').fire('input');
+  f.view('split');
+  assert.equal(f.element('queryFields').inert,true,'first split gives the transaction table room');
+  assert.equal(f.element('btnQueryToggle').getAttribute('aria-expanded'),'false');
+  assert.equal(f.box(1).getAttribute('aria-label'),'选为追踪锚点，流水 1');
+  f.toggleAnchor(2,true);
+  assert.equal(f.membershipCalls.length,0,'split checkboxes stay browse anchors, never graph membership');
+  f.element('btnQueryToggle').click(); // remember this split view with its filters open
+  f.view('focus'); f.view('standard');
+  assert.equal(f.element('btnQueryToggle').getAttribute('aria-expanded'),'true');
+  f.element('btnQueryToggle').click(); // standard remembers its own closed filter state
+  f.view('split');
+  assert.equal(f.element('btnQueryToggle').getAttribute('aria-expanded'),'true');
+  f.view('standard');
+  assert.equal(f.element('btnQueryToggle').getAttribute('aria-expanded'),'false');
+  assert.equal(f.element('flowTableScroll'),table);assert.deepEqual(f.rows(),rows);
+  assert.deepEqual([table.scrollLeft,table.scrollTop],[190,32]);
+  assert.equal(f.element('fAccount').value,'SYN-UNSUBMITTED');
+  assert.equal(f.box(1).checked,true);assert.equal(f.box(2).checked,true);
+  assert.equal(f.requests.length,requests);assert.equal(f.graphCalls.length,0);assert.equal(f.membershipCalls.length,0);
+});
+
+test('overview returns the same table and original anchor meaning after a workspace view change', async () => {
+  const f=harness();await f.search();f.toggleAnchor(1,true);
+  const table=f.element('flowTableScroll');f.open();
+  assert.equal(f.box(1).getAttribute('aria-label'),'加入当前画布，流水 1');
+  f.view('split');f.close();
+  assert.equal(f.element('flowTableScroll'),table);
+  assert.equal(table.parentElement.id,'tab-search');
+  assert.equal(f.box(1).checked,true);
+  assert.equal(f.box(1).getAttribute('aria-label'),'选为追踪锚点，流水 1');
+  f.toggleAnchor(2,true);assert.equal(f.membershipCalls.length,0);
+});
+
+test('workspace view scroll snapshots survive browser clamping and are revoked on a binding change', async () => {
+  const f=harness(); await f.search(); const table=f.element('flowTableScroll');
+  table.scrollLeft=190; table.scrollTop=32;
+  const clamp=()=>{table.scrollLeft=0;table.scrollTop=0;};
+  f.view('split',clamp); assert.deepEqual([table.scrollLeft,table.scrollTop],[0,0]);
+  table.scrollTop=41;
+  f.view('standard',clamp); assert.deepEqual([table.scrollLeft,table.scrollTop],[190,32]);
+  f.open(); table.scrollTop=200;
+  f.view('split'); assert.equal(table.scrollTop,200,'view changes do not move the modal table');
+  f.close(); assert.deepEqual([table.scrollLeft,table.scrollTop],[0,41]);
+  f.view('standard',clamp); assert.deepEqual([table.scrollLeft,table.scrollTop],[190,32]);
+  f.context.selectCase('another-case');
+  f.view('split',clamp); f.view('standard',clamp);
+  assert.deepEqual([table.scrollLeft,table.scrollTop],[0,0],'old binding offsets cannot restore into a new case');
 });

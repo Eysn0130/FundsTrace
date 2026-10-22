@@ -5,6 +5,9 @@
   let rows = [], request = 0, anchors = new Set(), applied = '', draft = false, inputRevision = 0;
   let open = false, mounted = false, binding = 0, membership = null, rendering = false, refreshBinding = null;
   let scrolls = { sidebar: [0, 0], overview: [0, 0] }, slots = [];
+  let workspaceView = 'standard';
+  const queryViews = new Map([['split', true]]);
+  const viewScrolls = new Map();
   const id = value => String(value);
   const fields = [['fAccount', '账号'], ['fName', '户名'], ['fCounter', '对手'], ['fKw', '关键词'],
     ['fMin', '最小金额'], ['fMax', '最大金额'], ['fFrom', '开始'], ['fTo', '结束']];
@@ -142,6 +145,30 @@
     button.querySelector('img').src = `/static/ui-icons/chevron-${collapsed ? 'down' : 'up'}.svg`;
     updateSummary();
   }
+  window.addEventListener('fundstrace:workspace-resize', event => {
+    const detail = event.detail || {};
+    if (!mounted || detail.reason !== 'workspace-view'
+      || !['standard', 'focus', 'split'].includes(detail.view)) return;
+    const viewport = $('#flowTableScroll');
+    if (detail.phase === 'prepare' && detail.view !== workspaceView) {
+      // Wider slots and hidden panels clamp native scroll offsets. Capture
+      // before the shell changes geometry, not after the browser has clamped.
+      viewScrolls.set(workspaceView, open ? [...scrolls.sidebar] : [viewport.scrollLeft, viewport.scrollTop]);
+      return;
+    }
+    if (detail.phase === 'end' && detail.view === workspaceView) {
+      const scroll = viewScrolls.get(workspaceView) || [0, 0];
+      scrolls.sidebar = [...scroll];
+      if (!open) { viewport.scrollLeft = scroll[0]; viewport.scrollTop = scroll[1]; }
+      return;
+    }
+    if (detail.phase !== 'start' || detail.view === workspaceView) return;
+    queryViews.set(workspaceView, $('#btnQueryToggle').getAttribute('aria-expanded') !== 'true');
+    workspaceView = detail.view;
+    // View preferences affect disclosure only; the original table retains its
+    // query, anchors and scroll, and never enters overview's write-on-check mode.
+    setQueryCollapsed(queryViews.get(workspaceView) ?? false);
+  });
   function setOpen(next, returnFocus = true) {
     next = Boolean(next); if (next === open || !mounted) return;
     const viewport = $('#flowTableScroll');
@@ -171,11 +198,13 @@
   function invalidate() {
     binding++; request++; rows = []; applied = ''; draft = false;
     setOpen(false, false); scrolls = { sidebar: [0, 0], overview: [0, 0] };
+    viewScrolls.clear();
     state.search.page = 1; state.search.total = 0;
     // The old canvas switch clears graph facts, but does not clear its table.
     // Revoke both DOM and model together before the new binding can be used.
     renderFlows([]); anchors.clear();
     if (mounted) {
+      $('#flowTableScroll').scrollLeft = 0; $('#flowTableScroll').scrollTop = 0;
       $('#flowTableScroll').setAttribute('aria-busy', 'false');
       $('#resultInfo').textContent = '等待画布就绪后查询'; $('#pageInfo').textContent = '';
       $('#btnPrev').disabled = true; $('#btnNext').disabled = true; updateSummary();

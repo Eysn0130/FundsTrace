@@ -351,13 +351,26 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
    CSS zoom participates in flow, so the canvas receives the scaled bar height. */
 #topbar, .workspace-toolbar { width: var(--toolbar-fit-width, 100%); zoom: var(--toolbar-fit-scale, 1); }
 #graphToolbar { height: 100%; min-width: 0; }
-.ribbon-tabbar { height: 35px; display: flex; align-items: stretch; border-bottom: 1px solid var(--border-strong); padding: 0 12px; gap: 12px; }
+.ribbon-tabbar { height: 35px; display: flex; align-items: stretch; border-bottom: 1px solid var(--border-strong); padding: 0 8px; gap: 8px; }
 #ribbonTabs { display: flex; flex: none; }
-#ribbonTabs [role="tab"] { background: transparent; border: 0; border-bottom: 3px solid transparent; color: var(--text-primary); cursor: pointer; font: inherit; padding: 0 19px; min-width: 76px; }
+#ribbonTabs [role="tab"] { background: transparent; border: 0; border-bottom: 3px solid transparent; color: var(--text-primary); cursor: pointer; font: inherit; padding: 0 14px; min-width: 68px; }
 #ribbonTabs [role="tab"][aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--accent); background: var(--selection-surface); }
 #ribbonTabs [role="tab"]:hover { background: var(--surface-control-hover); }
 #ribbonTabs [role="tab"]:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -3px; }
-#ribbonSelectionStatus { color: var(--muted); font-size: 11px; align-self: center; margin-left: auto; white-space: nowrap; }
+#ribbonSelectionStatus { color: var(--muted); font-size: 11px; align-self: center; margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-view-trigger { align-self: center; min-height: var(--control-height-compact,28px); height: var(--control-height-compact,28px); padding: 3px 6px; gap: 5px; font-size: 12px; }
+.workspace-view-trigger > :first-child { color: var(--muted); }
+#workspaceViewCurrent { font-weight: 600; }
+.workspace-view-trigger .toolbar-menu-chevron { width: 12px; height: 12px; }
+.workspace-view-menu { width: 264px; }
+.workspace-view-option { gap: 12px; min-height: 58px; }
+.workspace-view-copy { display: grid; flex: 1; min-width: 0; gap: 2px; }
+.workspace-view-copy strong { font-size: 13px; font-weight: 500; }
+.workspace-view-copy > span { font-size: 12px; color: var(--muted); }
+.workspace-view-check { width: 16px; height: 16px; opacity: 0; }
+.workspace-view-option[aria-checked="true"] { background: var(--selection-surface); }
+.workspace-view-option[aria-checked="true"] .workspace-view-check { opacity: 1; filter: var(--icon-accent-filter); }
+
 .ribbon-collapse-button { flex: none; border: 0; background: transparent; color: var(--text-primary); font-size: 11px; min-height: 30px; padding: 2px 6px; }
 .ribbon-collapse-button .ui-icon { width: 15px; height: 15px; }
 #ribbonPanels { height: 112px; }
@@ -443,19 +456,25 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .ribbon-quick .ribbon-action .ui-icon { width: 21px; height: 21px; }
 #btnCanvasSave .ui-icon { filter:var(--icon-accent-filter); }
 .funds-ribbon.is-collapsed { height: 66px; }
-#ribbonCompact { display: flex; align-items: center; height: 65px; overflow: hidden; padding: 4px 8px; gap: 4px; }
+#ribbonCompact { display: flex; align-items: center; height: 31px; overflow: hidden; padding: 1px 8px; gap: 2px; }
+/* The always-visible top row already owns the details action. */
+#ribbonCompact > [data-ribbon-command="inspectSelection"] { display: none; }
 #ribbonCompact .ribbon-bundle { flex: none; }
-#ribbonCompact .ribbon-action { min-height: 52px; min-width: 42px; font-size: 11px; gap: 3px; padding: 3px 5px; }
-#ribbonCompact .ribbon-action .ui-icon { width: 24px; height: 24px; }
+#ribbonCompact .ribbon-action { min-height: 28px; min-width: 42px; flex-direction: row; font-size: 11px; gap: 3px; padding: 2px 5px; }
+#ribbonCompact .ribbon-action .ui-icon { width: 17px; height: 17px; }
 #ribbonCompact #edgeLabelGroup { max-width: none; flex-wrap: nowrap; }
-#ribbonCompact #btnDisplayActions { flex-direction: row; min-height: 31px; }
+#ribbonCompact #btnDisplayActions { flex-direction: row; min-height: 28px; }
 #ribbonCompact #btnDisplayActions .ui-icon { width: 17px; height: 17px; }
-#ribbonCompact .ribbon-width-currency { flex-direction: column; gap: 2px; }
+#ribbonCompact .ribbon-width-currency { flex-direction: row; gap: 4px; }
 #ribbonCompact .ribbon-width-currency > select { width: 72px; }
-#ribbonCompact .ribbon-switch { flex-direction: column; gap: 3px; }
+#ribbonCompact .ribbon-switch { flex-direction: row; gap: 3px; }
 #ribbonCompact [data-planned] { display: none; }
 #ribbonCompact .ribbon-layout { gap: 3px; }
 #ribbonCompact #layoutSel { width: 96px; }
+#ribbonCompact select, #ribbonCompact input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]) { min-height: 26px; height: 26px; }
+#ribbonCompact .ribbon-divider { height: 23px; }
+#ribbonCompact .ribbon-expand-button { display: none; }
+
 .ribbon-divider { flex: 0 0 1px; width: 1px; height: 39px; background: var(--surface-raised); margin: 0 2px; }
 .ribbon-expand-button { margin-left: auto; align-self: stretch; min-width: 120px; border: 0; border-left: 1px solid var(--border-strong); border-radius: 0; background: var(--surface-control); color: var(--text-primary); font-size: 12px; padding: 4px 10px; }
 .ribbon-expand-button .ui-icon { width: 19px; height: 19px; }
@@ -503,6 +522,42 @@ main { flex: 1; display: flex; min-width: 0; min-height: 0; position: relative; 
 .sidebar-collapsed #btnSidebarToggle { left: 0; }
 #workspace.is-resizing #left, #workspace.is-resizing #workspaceSidebarEdge { transition: none; }
 body.workspace-resizing { cursor: col-resize; user-select: none; }
+body.workspace-resizing-vertical { cursor: row-resize; }
+/* Same query controls, anchors and seven-column table; only the surrounding regions move. */
+#workspace[data-workspace-view="split"] { display: grid; grid-template-columns: minmax(0,1fr); grid-template-rows: minmax(0,1fr) var(--workspace-bottom-height,44%); }
+#workspace[data-workspace-view="split"] #canvasWrap { grid-area: 1 / 1; }
+#workspace[data-workspace-view="split"] #left { grid-area: 2 / 1; width: 100%; height: 100%; border-right: 0; border-top: 1px solid var(--border-strong); transition: none; }
+#workspace[data-workspace-view="split"].sidebar-collapsed { grid-template-rows: minmax(0,1fr) 0px; }
+#workspace[data-workspace-view="split"] #workspaceSidebarEdge { top: auto; bottom: calc(var(--workspace-bottom-height,44%) - 8px); left: 0; right: 0; width: auto; height: 16px; margin-left: 0; transition: none; }
+#workspace[data-workspace-view="split"].sidebar-collapsed #workspaceSidebarEdge { bottom: 0; height: 22px; }
+#workspace[data-workspace-view="split"] #workspaceSidebarResize { inset: 3px 0; cursor: row-resize; }
+#workspace[data-workspace-view="split"] #workspaceSidebarResize::after { width: 100%; height: 2px; position: absolute; top: 50%; }
+#workspace[data-workspace-view="split"] #btnSidebarToggle { top: 2px; left: 50%; width: 48px; height: 27px; transform: translateX(-50%); }
+#workspace[data-workspace-view="split"] #tab-search { display: grid; grid-template-columns: minmax(0,1fr) auto; grid-template-rows: auto max-content auto auto minmax(48px,1fr) auto; gap: 0 16px; padding: 8px 12px; }
+#workspace[data-workspace-view="split"] #tab-search > .query-disclosure-head { grid-area: 1 / 1 / auto / -1; margin: 0 0 4px; }
+#workspace[data-workspace-view="split"] #queryFields { grid-area: 2 / 1 / auto / -1; }
+#workspace[data-workspace-view="split"] #bulkTrackBar { grid-area: 3 / 1; flex-wrap: wrap; align-content: center; padding: 3px 0; margin: 0; border-top: 0; }
+#workspace[data-workspace-view="split"] .flow-table-tools { grid-area: 3 / 2; margin: 0; align-self: center; }
+#workspace[data-workspace-view="split"] .flow-table-hint { grid-area: 4 / 1 / auto / -1; margin: 0 0 3px; }
+#workspace[data-workspace-view="split"] #flowTableScroll { grid-area: 5 / 1 / auto / -1; min-height: 48px; }
+#workspace[data-workspace-view="split"] #tab-search > .pager { grid-area: 6 / 1 / auto / -1; padding: 5px 0 0; }
+#workspace[data-workspace-view="split"] #left > .tabs .tab { padding-top: 6px; padding-bottom: 5px; }
+#workspace.workspace-view-changing #left, #workspace.workspace-view-changing #workspaceSidebarEdge { transition: none; }
+#graphPage:has(#workspace.workspace-view-changing) #editorToolbar { transition: none; }
+#workspace.workspace-view-changing .query-disclosure { transition: none; }
+#workspace[data-workspace-view="split"] .query-disclosure { transition: none; }
+#workspace[data-workspace-view="split"] .query-disclosure:not(.is-collapsed) { display: block; min-height: 0; }
+#workspace[data-workspace-view="split"] .query-disclosure.is-collapsed { display: none; }
+#workspace[data-workspace-view="split"] .query-disclosure:not(.is-collapsed) .query-controls { overflow: visible; }
+@container (max-width: 760px) {
+  #workspace[data-workspace-view="split"] #tab-search { grid-template-columns: minmax(0,1fr); grid-template-rows: auto max-content auto auto auto minmax(48px,1fr) auto; }
+  #workspace[data-workspace-view="split"] #bulkTrackBar { grid-area: 3 / 1; }
+  #workspace[data-workspace-view="split"] .flow-table-tools { grid-area: 4 / 1; }
+  #workspace[data-workspace-view="split"] .flow-table-hint { grid-area: 5 / 1; }
+  #workspace[data-workspace-view="split"] #flowTableScroll { grid-area: 6 / 1; }
+  #workspace[data-workspace-view="split"] #tab-search > .pager { grid-area: 7 / 1; }
+}
+
 .tabs { display: flex; flex: none; border-bottom: 1px solid var(--border); min-width: 0; }
 .tab { font: inherit; background: transparent; border: 0; padding: 11px 18px 9px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; }
 .tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }

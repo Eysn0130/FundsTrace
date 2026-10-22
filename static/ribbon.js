@@ -110,7 +110,16 @@
         tab.setAttribute('aria-selected', String(active));
         tab.tabIndex = active ? 0 : -1;
       }
-      if (tabbar) { tabbar.hidden = status.collapsed; tabbar.inert = status.collapsed; }
+      if (tabbar) { tabbar.hidden = false; tabbar.inert = false; }
+      const fold = tabbar?.querySelector('.ribbon-collapse-button');
+      if (fold) {
+        fold.dataset.ribbonCollapse = String(!status.collapsed);
+        fold.setAttribute('aria-expanded', String(!status.collapsed));
+        const label = doc.getElementById('ribbonCollapseLabel');
+        if (label) label.textContent = status.collapsed ? '展开功能区' : '收起功能区';
+        const image = fold.querySelector('img');
+        if (image) image.src = `/static/ui-icons/chevron-${status.collapsed ? 'down' : 'up'}.svg`;
+      }
       if (panelContainer) { panelContainer.hidden = status.collapsed; panelContainer.inert = status.collapsed; }
       compact.hidden = !status.collapsed;
       compact.inert = !status.collapsed;
@@ -125,7 +134,7 @@
       closePopovers();
       const active = doc.activeElement;
       if (active && toolbar.contains(active) && active.closest?.('[hidden]')) {
-        (status.collapsed ? compact.querySelector('[data-ribbon-collapse]') : tabs.find(tab => tab.dataset.ribbonTab === status.tab))?.focus();
+        (fold || tabs.find(tab => tab.dataset.ribbonTab === status.tab))?.focus();
       }
     }
     function activateTab(name, focus = false) {
@@ -208,8 +217,14 @@
         }
       }
     }
+    function activateVisibleTab(name, focus = false) {
+      activateTab(name, focus);
+      if (!status.collapsed) return;
+      const shell = doc.getElementById('workspace')?.fundsWorkspaceShell;
+      if (shell) shell.setToolbarCollapsed(false); else setCollapsed(false);
+    }
     for (const tab of tabs) {
-      tab.addEventListener('click', () => activateTab(tab.dataset.ribbonTab));
+      tab.addEventListener('click', () => activateVisibleTab(tab.dataset.ribbonTab));
       tab.addEventListener('keydown', event => {
         const index = tabs.indexOf(tab);
         let next = null;
@@ -219,7 +234,7 @@
         if (event.key === 'End') next = tabs.length - 1;
         if (next === null) return;
         event.preventDefault();
-        activateTab(tabs[next].dataset.ribbonTab, true);
+        activateVisibleTab(tabs[next].dataset.ribbonTab, true);
       });
     }
     for (const button of doc.querySelectorAll('[data-ribbon-collapse]')) button.addEventListener('click', () => {

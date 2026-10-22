@@ -218,13 +218,28 @@ test('four real tabs show one panel and support wrapping keyboard navigation', (
   assert.equal(h.events.length, 0, 'switching tabs must not invoke graph commands');
 });
 
-test('compact mode moves original controls without cloning or emitting graph commands', () => {
+test('compact mode retains tabs, case/canvas and history while moving the original editing controls', () => {
   const h = harness();
   const layout = h.node('layoutSel'), currency = h.node('relationCurrency'), checkbox = h.node('showPhotoCk');
+  const persistent = new Map([
+    'ribbonTab-common', 'ribbonTab-trace', 'ribbonTab-style', 'ribbonTab-view',
+    'caseSelect', 'canvasSel', 'btnCanvasSave', 'btnUndo', 'btnRedo', 'btnWorkspaceView',
+  ].map(id => [id, h.node(id)]));
   layout.value = 'dagre'; currency.value = 'USD'; checkbox.checked = false;
+  h.node('caseSelect').value = 'synthetic-case'; h.node('canvasSel').value = 'synthetic-canvas';
   h.api.setCollapsed(true);
   assert.equal(h.node('ribbonCompact').contains(layout), true);
-  assert.equal(h.node('ribbonTabs').parentElement.hidden, true);
+  assert.equal(h.node('ribbonTabs').parentElement.hidden, false);
+  assert.equal(h.node('ribbonTabs').parentElement.inert, false);
+  assert.equal(h.doc.querySelectorAll('[data-ribbon-tab]').length, 4);
+  for (const [id, original] of persistent) {
+    assert.ok(original, id);
+    assert.equal(h.node(id), original, `${id} retains its control identity`);
+    assert.equal(h.doc.querySelectorAll(`[id="${id}"]`).length, 1, `${id} remains unique`);
+    for (let ancestor = original; ancestor; ancestor = ancestor.parentElement) {
+      assert.equal(ancestor.hidden || ancestor.inert, false, `${id} remains reachable in compact mode`);
+    }
+  }
   assert.equal(h.node('ribbonPanels').hidden, true, 'the fixed-height panel container must release its space');
   assert.equal(h.node('ribbonPanels').inert, true);
   assert.equal(h.doc.querySelectorAll('.ribbon-panel').filter(p => !p.hidden).length, 0);
@@ -234,6 +249,61 @@ test('compact mode moves original controls without cloning or emitting graph com
   assert.equal(h.node('ribbonPanel-trace').contains(currency), true);
   assert.equal(h.node('layoutSel'), layout); assert.equal(layout.value, 'dagre');
   assert.equal(currency.value, 'USD'); assert.equal(checkbox.checked, false);
+  assert.equal(h.node('caseSelect').value, 'synthetic-case'); assert.equal(h.node('canvasSel').value, 'synthetic-canvas');
+  assert.equal(h.events.length, 0);
+});
+
+test('clicking a visible tab or navigating with ArrowRight expands its matching tool panel', () => {
+  const h = harness(), changes = [];
+  h.node('workspace').fundsWorkspaceShell = { setToolbarCollapsed(collapsed) {
+    changes.push(collapsed);
+    h.window.dispatchEvent({ type: 'fundstrace:workspace-resize', detail: { toolbarCollapsed: collapsed } });
+  } };
+  h.api.setCollapsed(true);
+  h.node('ribbonTab-style').click();
+  assert.equal(h.api.getState().collapsed, false);
+  assert.equal(h.api.getState().tab, 'style');
+  assert.equal(h.node('ribbonPanel-style').hidden, false);
+  assert.equal(h.node('ribbonPanel-style').inert, false);
+
+  h.api.setCollapsed(true);
+  const key = h.node('ribbonTab-style').fire('keydown', { key: 'ArrowRight' });
+  assert.equal(key.prevented, true);
+  assert.equal(h.api.getState().collapsed, false);
+  assert.equal(h.api.getState().tab, 'view');
+  assert.equal(h.doc.activeElement, h.node('ribbonTab-view'));
+  assert.equal(h.node('ribbonPanel-view').hidden, false);
+  assert.equal(h.node('ribbonPanel-view').inert, false);
+  assert.deepEqual(changes, [false, false], 'visible tab activation expands the toolbar through its shell');
+  assert.equal(h.events.length, 0);
+});
+
+test('the top fold button toggles the shell and keeps its next action and accessibility state current', () => {
+  const h = harness(), changes = [], tabbar = h.node('ribbonTabs').parentElement;
+  const fold = tabbar.querySelector('.ribbon-collapse-button'), label = h.node('ribbonCollapseLabel');
+  h.node('workspace').fundsWorkspaceShell = { setToolbarCollapsed(collapsed) {
+    changes.push(collapsed);
+    h.window.dispatchEvent({ type: 'fundstrace:workspace-resize', detail: { toolbarCollapsed: collapsed } });
+  } };
+  assert.equal(fold.dataset.ribbonCollapse, 'true');
+  assert.equal(fold.getAttribute('aria-expanded'), 'true');
+  assert.equal(label.textContent, '收起功能区');
+
+  fold.click();
+  assert.equal(h.api.getState().collapsed, true);
+  assert.equal(fold.dataset.ribbonCollapse, 'false');
+  assert.equal(fold.getAttribute('aria-expanded'), 'false');
+  assert.equal(label.textContent, '展开功能区');
+  assert.match(fold.querySelector('img').src, /chevron-down\.svg$/);
+  assert.equal(Boolean(fold.closest('[hidden]')), false);
+
+  fold.click();
+  assert.equal(h.api.getState().collapsed, false);
+  assert.equal(fold.dataset.ribbonCollapse, 'true');
+  assert.equal(fold.getAttribute('aria-expanded'), 'true');
+  assert.equal(label.textContent, '收起功能区');
+  assert.match(fold.querySelector('img').src, /chevron-up\.svg$/);
+  assert.deepEqual(changes, [true, false]);
   assert.equal(h.events.length, 0);
 });
 
@@ -366,4 +436,20 @@ test('expanded and compact details entries share exact selection availability an
   assert.deepEqual(h.events.map(event => event.detail.command), ['inspectSelection', 'inspectSelection']);
   h.api.setStatus({ selectionCount: 2, edgeSelectionCount: 0 });
   for (const button of buttons) assert.equal(button.disabled, true, 'a stale command override cannot enable multiple objects');
+});
+
+test('the workspace-view menu remains reachable through ribbon collapse and graph busy states', () => {
+  const h = harness(), trigger = h.node('btnWorkspaceView');
+  assert.ok(trigger);
+  assert.equal(trigger.hasAttribute('data-ribbon-command'), false,
+    'view chrome belongs to the workspace shell rather than the graph command adapter');
+  for (const collapsed of [false, true, false]) {
+    h.api.setCollapsed(collapsed);
+    h.api.setStatus({ busy: true, cameraReady: false, selectionCount: 0, edgeSelectionCount: 0 });
+    assert.equal(h.node('btnWorkspaceView'), trigger, 'the same menu trigger survives the ribbon move');
+    assert.equal(trigger.disabled, false, 'a pending graph operation does not disable workspace chrome');
+    assert.equal(Boolean(trigger.closest('[hidden]')), false, 'focus mode must retain a visible way to change the workspace view');
+    trigger.click();
+  }
+  assert.equal(h.events.length, 0, 'opening workspace views does not emit a graph editing command');
 });

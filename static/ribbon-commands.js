@@ -2,7 +2,7 @@
 (function (root) {
   'use strict';
   let lastGraph = null, lastBinding = '', filterKey = '', widthKey = '', styleKey = '';
-  let lastStatus = '', focusChrome = null, edgeGesture = null, pointerGesture = null;
+  let lastStatus = '', edgeGesture = null, pointerGesture = null;
   let relationFilter = null, relationChoices = [];
   const availability = new Map();
   const selected = () => [...(state.graphSelection?.ids || [])];
@@ -82,7 +82,7 @@
     const binding = JSON.stringify(caseContext()), p = state.presentation, ids = selected(), edge = selectedEdge();
     if (lastGraph !== state.lastGraph || lastBinding !== binding) {
       lastGraph = state.lastGraph; populateCurrencies();
-      if (lastBinding !== binding) { filterKey = ''; widthKey = ''; styleKey = ''; focusChrome = null; }
+      if (lastBinding !== binding) { filterKey = ''; widthKey = ''; styleKey = ''; }
       lastBinding = binding;
       for (const link of document.querySelectorAll('[data-analysis-algorithm]')) {
         link.href=`/analysis?case_id=${encodeURIComponent(state.caseId)}&algorithm=${encodeURIComponent(link.dataset.analysisAlgorithm)}`;
@@ -315,10 +315,7 @@
     if(command==='toggleLegend'){$('#legend').hidden=!$('#legend').hidden;return true;}
     const shell=$('#workspace')?.fundsWorkspaceShell;
     if(command==='toggleSidebar'){shell?.setSidebarCollapsed(!shell.getState().sidebarCollapsed);return true;}
-    if(command==='focusCanvas'&&shell){
-      if(focusChrome){shell.setSidebarCollapsed(focusChrome.sidebarCollapsed);shell.setToolbarCollapsed(focusChrome.toolbarCollapsed);focusChrome=null;}
-      else{focusChrome=shell.getState();shell.setSidebarCollapsed(true);shell.setToolbarCollapsed(true);}return true;
-    }
+    if(command==='focusCanvas'&&shell){shell.toggleFocus();return true;}
     return false;
   }
   function applyFilter() {
