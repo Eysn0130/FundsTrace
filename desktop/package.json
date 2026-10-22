@@ -1,7 +1,7 @@
 {
   "name": "funds-trace-desktop",
   "productName": "FundsTrace",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "author": "FundsTrace contributors",
   "license": "SEE LICENSE IN LICENSE",
