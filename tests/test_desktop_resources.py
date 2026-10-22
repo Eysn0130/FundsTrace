@@ -26,7 +26,7 @@ def test_resource_boundary_includes_runtime_html_scripts(tmp_path, monkeypatch):
     assert all(name.startswith('static/') for name in references)
     # Exercise the actual resource collector with synthetic files, so this does
     # not read local activation material or require an existing frontend build.
-    names = {'LICENSE', 'LICENSE.en', 'THIRD_PARTY_NOTICES.md', 'LICENSES/MIT.txt',
+    names = {'LICENSE', 'THIRD_PARTY_NOTICES.md', 'LICENSES/MIT.txt',
              'docs/licensing.md', 'docs/licensing.en.md', 'frontend/dist/index.html',
              *('static/' + name for name in builder.STATIC_NAMES), *references}
     for name in names:
@@ -72,7 +72,7 @@ def test_all_retained_html_dependencies_are_packaged():
 ])
 def test_resource_boundary_accepts_only_a_complete_public_key(tmp_path, monkeypatch, tail, accepted):
     monkeypatch.setattr(builder, 'ROOT', tmp_path)
-    for name in ('LICENSE', 'LICENSE.en', 'THIRD_PARTY_NOTICES.md', 'LICENSES/MIT.txt',
+    for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'LICENSES/MIT.txt',
                  'docs/licensing.md', 'docs/licensing.en.md',
                  *('static/' + n for n in builder.STATIC_NAMES), 'frontend/dist/index.html'):
         file = tmp_path / name
@@ -89,13 +89,14 @@ def test_resource_boundary_accepts_only_a_complete_public_key(tmp_path, monkeypa
 
 
 def test_license_resources_preserve_both_languages_and_historical_notices(tmp_path, monkeypatch):
-    names = ('LICENSE', 'LICENSE.en', 'LICENSES/MIT.txt', 'THIRD_PARTY_NOTICES.md',
+    names = ('LICENSE', 'LICENSES/MIT.txt', 'THIRD_PARTY_NOTICES.md',
              'docs/licensing.md', 'docs/licensing.en.md')
     contents = {name: (builder.ROOT / name).read_bytes() for name in names}
     assert '循迹 FundsTrace'.encode() in contents['LICENSE']
-    assert b'FundsTrace' in contents['LICENSE.en']
+    assert b'I. Scope and Existing Rights' in contents['LICENSE']
+    assert b'XI. Miscellaneous' in contents['LICENSE']
     assert contents['LICENSES/MIT.txt'].startswith(b'MIT License\n')
-    assert len({contents[name] for name in ('LICENSE', 'LICENSE.en', 'LICENSES/MIT.txt')}) == 3
+    assert contents['LICENSE'] != contents['LICENSES/MIT.txt']
     for name, content in contents.items():
         source = tmp_path / name
         source.parent.mkdir(parents=True, exist_ok=True)
