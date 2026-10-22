@@ -304,7 +304,8 @@ public static class FundsTraceStartupWindow {
         if (!Same(result.Window, Rect(finalFrame)) || !Same(Rect(client), Rect(finalClient)) ||
             origin.X != finalOrigin.X || origin.Y != finalOrigin.Y || GetDpiForWindow(window) != dpi)
             throw new InvalidOperationException("BOUNDS_CHANGED");
-        NormalizeRestoredGeometry(result, !IsZoomed(window) && !Same(result.Window, Rect(info.Monitor)));
+        Rectangle monitor = Rect(info.Monitor);
+        NormalizeRestoredGeometry(result, !IsZoomed(window) && !(Same(result.Window, monitor) && Same(result.Client, monitor)));
         AssertOwner(window, processId);
         if (UniqueWindow(processId) != window) throw new InvalidOperationException("WINDOW_BINDING_CHANGED");
         return result;

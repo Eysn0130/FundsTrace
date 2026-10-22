@@ -40,7 +40,10 @@ $fixtures = @(
     @{ dpi = 144; raw = @(-2532,48,1464,1008); client = @(-2520,48,1440,996); area = @(-2880,0,2880,1620);
        inset = 12; rawMin = @(1464,972); electronMin = @(1440,960); request = @(1280,720); target = @(-2412,270,1944,1092) },
     @{ dpi = 192; raw = @(-2368,-1400,1952,1344); client = @(-2352,-1400,1920,1328); area = @(-2560,-1440,2560,1440);
-       inset = 16; rawMin = @(1952,1296); electronMin = @(1920,1280); request = @(683,324); target = @(-1979,-1044,1398,664) }
+       inset = 16; rawMin = @(1952,1296); electronMin = @(1920,1280); request = @(683,324); target = @(-1979,-1044,1398,664) },
+    # A restored raw frame can equal its monitor while its inset client does not.
+    @{ dpi = 96; raw = @(0,0,1920,1080); client = @(8,0,1904,1072); area = @(0,0,1920,1080);
+       inset = 8; rawMin = @(976,648); electronMin = @(960,640); request = @(960,640); target = @(472,220,976,648) }
 )
 foreach ($fixture in $fixtures) {
     $evidence = [FundsTraceStartupWindow+Evidence]::new()
@@ -56,7 +59,7 @@ foreach ($fixture in $fixtures) {
         $evidence.ElectronMinTrackHeight -ne $fixture.electronMin[1]) { throw 'MINIMUM_MISMATCH' }
     $target = [FundsTraceStartupWindow]::ResizeBounds($evidence, $fixture.request[0], $fixture.request[1])
     Assert-Rect $target $fixture.target
-    if ($fixture.dpi -eq 96) {
+    if ($fixture.area[2] -eq 1024) {
         Assert-Rect ([FundsTraceStartupWindow]::ResizeBounds($evidence, 2000, 2000)) @(-8,0,1040,736)
     }
     Assert-Rect $evidence.Window $fixture.raw; Assert-Rect $evidence.Client $fixture.client
