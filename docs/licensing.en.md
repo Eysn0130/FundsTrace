@@ -2,7 +2,7 @@
 
 [中文](licensing.md) · English
 
-The maintained version adopts the [FundsTrace Community Use and Source License 1.0](../LICENSE), adopted by the maintainer on 2026-10-21. This is a custom source-available license, not MIT, GPL, AGPL or an OSI-approved standard open-source license. The [English license](../LICENSE.en) and this English guide are references; the Chinese `LICENSE` prevails if interpretations differ. This guide helps identify the applicable scope; specific rights are governed by the complete agreement and each part's valid original license.
+The maintained version adopts the [FundsTrace Community Use and Source License 1.0](../LICENSE), adopted by the maintainer on 2026-10-21. This is a custom source-available license, not MIT, GPL, AGPL or an OSI-approved standard open-source license. The same `LICENSE` includes the complete English reference translation. That translation and this English guide are references; the Chinese text prevails if interpretations differ. This guide helps identify the applicable scope; specific rights are governed by the complete agreement and each part's valid original license.
 
 The outward-facing name is “循迹 FundsTrace 项目维护团队” (FundsTrace Project Maintenance Team), and the routine licensing contact is Eysn0130. Send licensing requests to **eysn0130@gmail.com** or **402168648@qq.com**. Separately issued institutional or commercial permissions should identify the actual licensing party, representative, authority and scope. The team name does not itself state that the team is a separately registered legal person or organization.
 
@@ -62,7 +62,7 @@ The following boundaries govern the applicable scope:
 
 ## License materials to include in distributions
 
-- The source repository, desktop backend resources and standalone Issuer resource configuration retain six materials: `LICENSE`, `LICENSE.en`, `LICENSES/MIT.txt`, `THIRD_PARTY_NOTICES.md`, `docs/licensing.md` and `docs/licensing.en.md`.
-- The main desktop and Issuer application packages must also include `LICENSE` and `LICENSE.en` at the application-package root, so `SEE LICENSE IN LICENSE` in `package.json` points to the Chinese text and an English reference is available. Each third party's original license and existing resources remain included.
+- The source repository, desktop backend resources and standalone Issuer resource configuration retain five materials: the bilingual `LICENSE`, `LICENSES/MIT.txt`, `THIRD_PARTY_NOTICES.md`, `docs/licensing.md` and `docs/licensing.en.md`.
+- The main desktop and Issuer application packages must also include the same bilingual `LICENSE` at the application-package root, so `SEE LICENSE IN LICENSE` in `package.json` points to the complete Chinese and English terms. Each third party's original license and existing resources remain included.
 
 These are ongoing distribution-configuration requirements, not evidence that a particular installer has been built or accepted. Existing released artifacts retain their original licenses. Local links in this guide point to packaged materials; other development documents are identified by source-repository paths. For licensing background, see [GitHub's legal guide](https://opensource.guide/legal/).

@@ -26,10 +26,10 @@ test('initial window and minimum sizes fit a small logical work area without dou
     {x:0,y:0,width:960,height:500,minWidth:960,minHeight:500});
 });
 
-test('existing bounds retain a user size and position, fitting only outside the current work area', () => {
+test('existing bounds fit the approved minimum and current work area', () => {
   const area = { x: -1280, y: 24, width: 1280, height: 696 };
   assert.deepEqual(windowBounds(area, { x: -1200, y: 60, width: 1100, height: 650 }),
-    { x: -1200, y: 60, width: 1100, height: 650, minWidth: 960, minHeight: 640 });
+    { x: -1280, y: 24, width: 1280, height: 696, minWidth: 1280, minHeight: 696 });
   assert.deepEqual(windowBounds({ x: 1920, y: 20, width: 960, height: 500 },
     { x: 2100, y: 100, width: 1200, height: 760 }),
   { x: 1920, y: 20, width: 960, height: 500, minWidth: 960, minHeight: 500 });
@@ -156,7 +156,7 @@ test('distribution manifest prevents cross-platform packaging and includes host 
   assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'startup.cjs', 'window-shell.cjs',
     'titlebar/index.html', 'titlebar/style.css', 'titlebar/renderer.js', 'titlebar/preload.cjs',
     'startup/index.html', 'startup/style.css', 'startup/renderer.js', 'startup/preload.cjs', 'assets/icon.png', 'assets/icon.ico',
-    { from: path.resolve(__dirname, '../..'), to: '.', filter: ['LICENSE', 'LICENSE.en'] }]);
+    { from: path.resolve(__dirname, '../..'), to: '.', filter: ['LICENSE'] }]);
   const manifest = require('../package.json');
   const lock = require('../package-lock.json');
   assert.equal(manifest.license, 'SEE LICENSE IN LICENSE');
@@ -176,12 +176,12 @@ test('distribution manifest prevents cross-platform packaging and includes host 
   }
 });
 
-test('both application asars enumerate only the two root licenses at their top level', async t => {
+test('both application asars enumerate only the single bilingual root license at their top level', async t => {
   const { getFileMatchers } = require('app-builder-lib/out/fileMatcher');
   const { computeFileSets, getDestinationPath } = require('app-builder-lib/out/util/appFileCopier');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'fundstrace-license-enumeration-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  const names = ['LICENSE', 'LICENSE.en'];
+  const names = ['LICENSE'];
   const sources = names.map(name => path.resolve(__dirname, '../..', name));
   for (const [name, builder] of [
     ['desktop', require('../electron-builder.cjs')],
@@ -393,10 +393,10 @@ test('Main adapts existing windows after DPI/work-area changes while retaining b
   assert.deepEqual(win.bounds, { x: 0, y: 0, width: 960, height: 500 });
   assert.equal(win.boundsChanges.length, 1);
   harness.state.display = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
-  win.bounds = { x: 50, y: 70, width: 1200, height: 760 };
+  win.bounds = { x: 50, y: 70, width: 1400, height: 760 };
   harness.screen.emit('display-metrics-changed', {}, harness.state.display, ['workArea']);
-  assert.deepEqual(win.minimum, [960, 640]);
-  assert.deepEqual(win.bounds, { x: 50, y: 70, width: 1200, height: 760 });
+  assert.deepEqual(win.minimum, [1280, 720]);
+  assert.deepEqual(win.bounds, { x: 50, y: 70, width: 1400, height: 760 });
   assert.equal(win.boundsChanges.length, 1, 'a valid user size and position must not be reset');
   win.close(); await harness.flush();
   assert.equal(harness.screen.listenerCount('display-metrics-changed'), 0);
@@ -416,7 +416,7 @@ test('Main fits a new display or removed-display recovery without trapping movem
   assert.deepEqual(win.bounds, { x: 1920, y: 20, width: 960, height: 500 });
   harness.state.display = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
   harness.screen.emit('display-removed', {}, { id: 2 });
-  assert.deepEqual(win.bounds, { x: 960, y: 20, width: 960, height: 500 });
+  assert.deepEqual(win.bounds, { x: 640, y: 20, width: 1280, height: 720 });
   const changes = win.boundsChanges.length;
   win.maximized = true;
   win.bounds = { x: -8, y: -8, width: 1936, height: 1056 };

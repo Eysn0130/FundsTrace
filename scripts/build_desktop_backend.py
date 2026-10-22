@@ -55,7 +55,7 @@ def native_arch() -> str:
 
 def resource_files() -> list[tuple[Path, str]]:
     resources = [(ROOT / name, name) for name in (
-        "LICENSE", "LICENSE.en", "THIRD_PARTY_NOTICES.md", "LICENSES/MIT.txt",
+        "LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/MIT.txt",
         "docs/licensing.md", "docs/licensing.en.md",
     )]
     resources += [(ROOT / "static" / name, str(Path("static") / name)) for name in STATIC_NAMES]

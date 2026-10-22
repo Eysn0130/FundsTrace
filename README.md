@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/Eysn0130/FundsTrace/releases/latest"><img src="https://img.shields.io/github/v/release/Eysn0130/FundsTrace?style=flat-square&amp;color=24558A&amp;label=release" alt="GitHub 最新发布版本"></a>
   <a href="docs/desktop-delivery.md"><img src="https://img.shields.io/badge/Windows-x64-151A1E?style=flat-square" alt="平台：Windows x64"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Community%201.0-151A1E?style=flat-square" alt="许可证：循迹 FundsTrace 社区使用与源码许可协议 1.0（源码可见）"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Source--Available%201.0-151A1E?style=flat-square" alt="许可证：循迹 FundsTrace 社区使用与源码许可协议 1.0（源码可见）"></a>
 </p>
 
 <p align="center"><strong><a href="https://github.com/Eysn0130/FundsTrace/releases/latest">下载 Windows 版</a></strong> &nbsp; · &nbsp; <a href="docs/workspace-guide.md">使用指南</a> &nbsp; · &nbsp; <a href="#看看实际操作">操作演示</a></p>
@@ -98,4 +98,4 @@ npm --prefix frontend run build
 
 The maintained version uses the custom **FundsTrace Community Use and Source License 1.0**, a source-available license that is not OSI-approved. Personal noncommercial use and development are free; institutional or commercial use and online services for third parties require prior written permission. General distribution terms require complete corresponding source for modifications and retained notices, and prohibit unauthorized standalone rebranding, impersonation and resale. See the guide for historical MIT, third-party rights and designated-contributor permissions. Activation-free startup does not grant legal authorization.
 
-[中文协议（优先）](LICENSE) · [English license](LICENSE.en) · [中文许可说明](docs/licensing.md) · [English licensing guide](docs/licensing.en.md) · [历史 MIT](LICENSES/MIT.txt) · [第三方许可与来源](THIRD_PARTY_NOTICES.md)
+[许可 / License（中英文）](LICENSE)

@@ -1,6 +1,6 @@
 # 开发与贡献
 
-当前维护版本按自定义的[循迹 FundsTrace 社区使用与源码许可协议 1.0](LICENSE)提供有权授权的材料，属于源码可见软件，非 OSI 标准开源；[英文协议](LICENSE.en)供对照，以中文为准。欢迎可复现问题和范围清楚的 PR。先读 [AGENTS.md](AGENTS.md)、[许可说明](docs/licensing.md)（[English](docs/licensing.en.md)）和 [源码与私有数据边界](docs/source-boundaries.md)，再按本文建立开发环境。产品操作见 [工作台使用指南](docs/workspace-guide.md)，已发布安装包和验证限制见 [桌面交付](docs/desktop-delivery.md)。
+当前维护版本按自定义的[循迹 FundsTrace 社区使用与源码许可协议 1.0](LICENSE)提供有权授权的材料，属于源码可见软件，非 OSI 标准开源；同一文件附完整英文参考译文，以中文为准。欢迎可复现问题和范围清楚的 PR。先读 [AGENTS.md](AGENTS.md)、[许可说明](docs/licensing.md)（[English](docs/licensing.en.md)）和 [源码与私有数据边界](docs/source-boundaries.md)，再按本文建立开发环境。产品操作见 [工作台使用指南](docs/workspace-guide.md)，已发布安装包和验证限制见 [桌面交付](docs/desktop-delivery.md)。
 
 ## 贡献许可与权限
 

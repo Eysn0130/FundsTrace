@@ -36,7 +36,7 @@
 
 ## 许可与发行边界
 
-1. 2026-10-15 维护者授权公开 `Eysn0130/FundsTrace` 并选用 MIT，该决定保留为历史。自定义的[循迹 FundsTrace 社区使用与源码许可协议 1.0](../LICENSE)已于 2026-10-21（America/Los_Angeles）通过 [PR #36](https://github.com/Eysn0130/FundsTrace/pull/36) 合并 main；首次采用及合并提交见[许可说明](licensing.md)。这是源码可见许可，非 OSI 标准开源；[英文协议](../LICENSE.en)供对照，以中文为准。本次源码许可采用不代表发布新安装包，也不替换既有发行物的许可。
+1. 2026-10-15 维护者授权公开 `Eysn0130/FundsTrace` 并选用 MIT，该决定保留为历史。自定义的[循迹 FundsTrace 社区使用与源码许可协议 1.0](../LICENSE)已于 2026-10-21（America/Los_Angeles）通过 [PR #36](https://github.com/Eysn0130/FundsTrace/pull/36) 合并 main；首次采用及合并提交见[许可说明](licensing.md)。这是源码可见许可，非 OSI 标准开源；同一文件附完整英文参考译文，以中文为准。本次源码许可采用不代表发布新安装包，也不替换既有发行物的许可。
 2. 本仓库从源码维护快照开始，来源记于 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)；未导入原历史，不冒称初始快照作者独创全部原代码。历史 [MIT 文本](../LICENSES/MIT.txt)、原作者版权及第三方许可保留，历史代码和当前快照沿用的 MIT 部分，其既有权利不因新协议追溯回收。
 3. 核对 G6、图标、字体及未来引入组件的具体来源、版本、许可证和通知要求。
 4. 审查全部待提交文件及后续取得的历史，确保没有业务数据、授权材料或私有环境信息。
