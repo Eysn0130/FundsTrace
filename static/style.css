@@ -358,7 +358,7 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .ribbon-collapse-button .ui-icon { width: 15px; height: 15px; }
 #ribbonPanels { height: 112px; }
 #ribbonPanels[hidden] { display: none !important; }
-.ribbon-panel { height: 112px; display: flex; padding: 7px 10px 4px; }
+.ribbon-panel { height: 112px; display: flex; padding: 7px 10px 4px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; scrollbar-color: #4b6380 transparent; }
 .ribbon-group { display: flex; flex-direction: column; justify-content: space-between; min-width: max-content; flex: 0 0 auto; border-right: 1px solid #31485e; padding: 0 12px; }
 .ribbon-group:first-child { padding-left: 2px; }
 .ribbon-group:last-child { border-right: 0; }
@@ -438,8 +438,8 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .ribbon-quick .ribbon-action span { display: none; }
 .ribbon-quick .ribbon-action .ui-icon { width: 21px; height: 21px; }
 #btnCanvasSave .ui-icon { filter: brightness(0) saturate(100%) invert(59%) sepia(66%) saturate(2811%) hue-rotate(195deg); }
-.funds-ribbon.is-collapsed { height: auto; min-height: 66px; }
-#ribbonCompact { display: flex; align-items: center; min-height: 65px; flex-wrap: wrap; padding: 4px 12px; gap: 7px; }
+.funds-ribbon.is-collapsed { height: 66px; }
+#ribbonCompact { display: flex; align-items: center; height: 65px; overflow-x: auto; overflow-y: hidden; padding: 4px 12px; gap: 7px; scrollbar-width: thin; scrollbar-color: #4b6380 transparent; }
 #ribbonCompact .ribbon-bundle { flex: none; }
 #ribbonCompact .ribbon-action { min-height: 52px; min-width: 42px; font-size: 11px; gap: 3px; padding: 3px 5px; }
 #ribbonCompact .ribbon-action .ui-icon { width: 24px; height: 24px; }
@@ -460,8 +460,8 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .workspace-collapse:hover { background: #294764; border-color: #8bbcff; }
 #btnToolbarToggle { width: 48px; height: 20px; bottom: -10px; left: 50%; transform: translateX(-50%); }
 .workspace-toolbar:hover #btnToolbarToggle, .workspace-collapse:focus-visible { opacity: 1; }
-/* Context and actions remain visible without a horizontal wheel. */
-#topbar { flex-wrap: wrap; min-height: 56px; padding: 7px 14px; gap: 13px; }
+/* Header remains one line; narrow windows scroll context instead of consuming the canvas. */
+#topbar { flex-wrap: nowrap; min-height: 56px; padding: 7px 14px; gap: 13px; overflow-x: auto; scrollbar-width: thin; }
 .logo { font-size: 19px; }
 .topbar-logo { width: 27px; height: 27px; }
 .case-box { flex: none; gap: 7px; }
@@ -493,26 +493,10 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
   #topbar .header-action-label { display: none; }
   #topbar .stats { display: none; }
 }
-/* Narrow ribbons use small, labelled rows rather than clipping or scrolling tools. */
-.workspace-toolbar.is-dense { height: auto; min-height: 148px; }
-.is-dense #graphToolbar, .is-dense #ribbonPanels { height: auto; }
-.is-dense .ribbon-panel { height: auto; min-height: 112px; flex-wrap: wrap; row-gap: 8px; }
-.is-dense .ribbon-group { padding-left: 7px; padding-right: 7px; }
-.is-dense .ribbon-group-body { display: grid; grid-auto-flow: column; grid-template-rows: repeat(2, 36px); gap: 2px 5px; align-content: center; }
-.is-dense .ribbon-panel .ribbon-bundle, .is-dense .ribbon-small-stack { display: contents; }
-.is-dense .ribbon-panel .ribbon-action { flex-direction: row; justify-content: flex-start; min-width: 0; min-height: 32px; padding: 3px 5px; gap: 5px; }
-.is-dense .ribbon-action .ui-icon { width: 18px; height: 18px; }
-.is-dense .ribbon-action .toolbar-menu-chevron { width: 12px; height: 12px; }
-.funds-ribbon.is-dense #btnDisplayActions, .funds-ribbon.is-dense #btnTextStyle, .funds-ribbon.is-dense #btnEdgeStyle { display: inline-flex; }
-.is-dense .ribbon-panel .ribbon-width-currency, .is-dense .ribbon-panel .ribbon-switch { flex-direction: row; gap: 5px; }
-.is-dense .ribbon-panel #btnClearGraph { margin-left: 0; }
-.is-dense #ribbonCompact .ribbon-action { flex-direction: row; min-height: 32px; padding: 3px 5px; }
-.is-dense #ribbonCompact .ribbon-bundle { flex-wrap: wrap; }
-.is-dense #ribbonCompact .ribbon-expand-button { min-height: 32px; }
-@media (max-width: 1100px) {
-  .is-dense .ribbon-panel .ribbon-group-body { grid-template-rows: repeat(3, 32px); }
-  .is-dense .ribbon-group-label { font-size: 10px; }
-}
+#topbar, .ribbon-panel, #ribbonCompact { scrollbar-width: auto; scrollbar-color: #607f9e #11202d; }
+#topbar::-webkit-scrollbar, .ribbon-panel::-webkit-scrollbar, #ribbonCompact::-webkit-scrollbar { height: 6px; }
+#topbar::-webkit-scrollbar-track, .ribbon-panel::-webkit-scrollbar-track, #ribbonCompact::-webkit-scrollbar-track { background: #11202d; }
+#topbar::-webkit-scrollbar-thumb, .ribbon-panel::-webkit-scrollbar-thumb, #ribbonCompact::-webkit-scrollbar-thumb { background: #607f9e; border: 1px solid #11202d; border-radius: 4px; }
 
 /* ---------- Query and graph regions ---------- */
 main { flex: 1; display: flex; min-width: 0; min-height: 0; position: relative; overflow: hidden; }
@@ -911,7 +895,7 @@ tr.detail-row td { background: #15181e; }
   .toast { max-width: 100%; }
 }
 @media (max-width: 700px) {
-  #topbar { gap: 6px; padding: 7px 8px; }
+  #topbar { gap: 6px; padding: 7px 8px; overflow-x: scroll; }
   #topbar .logo { font-size: 16px; }
   #topbar .brand { gap: 5px; }
   #topbar #caseSelect { width: 102px; }
