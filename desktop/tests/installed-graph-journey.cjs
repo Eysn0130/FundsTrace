@@ -83,6 +83,19 @@ function renderedEdgeTypes(snapshot) {
 function assertEdgeTypes(snapshot, expected) {
   assert.deepEqual(renderedEdgeTypes(snapshot), expected);
 }
+function nodePositions(snapshot) {
+  return snapshot.renderedNodes.map(node => [node.id, node.x, node.y])
+    .sort((a, b) => a[0].localeCompare(b[0]));
+}
+function assertWorkspaceRestored(snapshot, before, flowIds, count, expectedAnnotation) {
+  assert.ok(before.binding && Object.values(before.binding).every(value => typeof value === 'string' && value));
+  assert.ok(nodePositions(before).every(([id, x, y]) => typeof id === 'string' && Number.isFinite(x) && Number.isFinite(y)));
+  assertGraph(snapshot, flowIds, count);
+  assertAnnotation(snapshot, expectedAnnotation);
+  assert.deepEqual(snapshot.binding, before.binding);
+  assertEdgeTypes(snapshot, renderedEdgeTypes(before));
+  assert.deepEqual(nodePositions(snapshot), nodePositions(before));
+}
 function assertNoAnnotation(snapshot) {
   assert.equal(snapshot.ready, true);
   assert.deepEqual(snapshot.annotations, []);
@@ -195,6 +208,9 @@ const GRAPH_PROBE = `(() => {
   };
   return { ready: !state.graphLoading && state.graphInited && !layoutJob
       && !window.FundsCanvasEditor.history.status().busy,
+    binding: { caseId: String(state.caseId),
+      caseName: state.cases.find(item => String(item.id) === String(state.caseId))?.name || '',
+      canvasId: String(state.canvasId), canvasName: state.canvasName || '默认画布' },
     viewport: { width: box.width, height: box.height },
     zoom: state.graph.getZoom(),
     labelsSettled: state.graphView.viewportFrame == null && state.graphView.labelTimer == null && !state.graphView.zoomSettling,
@@ -690,8 +706,7 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     assertGraph(snapshot, flowIds, 3);
     return snapshot;
   }
-  const positions = snapshot => snapshot.renderedNodes.map(node => [node.id, node.x, node.y])
-    .sort((a, b) => a[0].localeCompare(b[0]));
+  const positions = nodePositions;
 
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'funds-trace-installed-graph-'));
   try {
@@ -712,7 +727,7 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     await fs.writeFile(csvFile, fixtureCsv(), { flag: 'wx' });
     await check('installedCsvPreviewMapping', async () => {
       step = 'csv-open';
-      await clickElement(`document.querySelector('#btnImport')`);
+      await clickElement(`document.querySelector('[data-ribbon-proxy="btnImport"]')`);
       await until(() => evaluate(`document.querySelector('#importModal').style.display === 'flex'`), 10000);
       step = 'csv-file-input';
       const { root } = await cdp.send('DOM.getDocument', {}, page.sessionId);
@@ -879,9 +894,13 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     });
     if (captureGraph) await captureGraph();
     let clonedTypes, savedTypes, redoneTypes;
-    let savedPositions;
+    let savedPositions, defaultWorkspace;
     await check('installedCanvasCloneExact', async () => {
       clonedTypes = await type('line');
+      defaultWorkspace = await annotation(savedAnnotation);
+      assert.equal(defaultWorkspace.binding.caseName, createdCase);
+      assert.equal(defaultWorkspace.binding.canvasId, '0');
+      assert.equal(defaultWorkspace.binding.canvasName, '默认画布');
       await clickElement(`document.querySelector('#ribbonTab-common')`);
       await prompt('#btnCanvasClone', CANVAS);
       step = 'canvas-activated';
@@ -899,10 +918,10 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
         savedPositions = positions(await annotation(savedAnnotation));
         step = 'canvas-default';
         await select('#canvasSel', '0'); await graph(3, flowIds);
-        await type('line');
-        // The default canvas has no saved presentation. Reopening the named
-        // canvas must read its saved note after this empty annotation view.
-        await annotation(null);
+        // The default canvas retains its own pre-clone draft, independently
+        // from the polyline presentation saved in the named canvas.
+        assertWorkspaceRestored(await annotation(savedAnnotation), defaultWorkspace,
+          flowIds, 3, savedAnnotation);
         step = 'canvas-restored';
         await select('#canvasSel', CANVAS, true); await graph(3, flowIds);
         assertEdgeTypes(await evaluate(GRAPH_PROBE), savedTypes);
@@ -934,21 +953,30 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       });
     });
     await check('installedCaseIsolationAndReturn', async () => {
+      const beforeCaseSwitch = await annotation(savedAnnotation);
+      assert.equal(beforeCaseSwitch.binding.caseName, createdCase);
+      assert.notEqual(beforeCaseSwitch.binding.canvasId, '0');
+      assert.equal(beforeCaseSwitch.binding.canvasName, CANVAS);
+      assertEdgeTypes(beforeCaseSwitch, redoneTypes);
       step = 'case-empty';
       await select('#caseSelect', seedCase, true);
       await until(() => evaluate(`!state.graphLoading && !layoutJob && state.stats.flows === 0
-        && state.search.total === 0 && state.lastGraph.nodes.length === 0 && state.tracked.size === 0
+        && state.search.total === 0 && state.lastGraph.nodes.length === 0 && state.lastGraph.edges.length === 0 && state.tracked.size === 0
         && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(seedCase)}`), 15000);
-      assertNoAnnotation(await evaluate(GRAPH_PROBE));
+      const empty = await evaluate(GRAPH_PROBE);
+      assertNoAnnotation(empty);
+      assert.deepEqual(empty.renderedNodes, []);
+      assert.deepEqual(empty.renderedEdges, []);
       step = 'case-return';
       await select('#caseSelect', createdCase, true);
-      await until(() => evaluate(`state.stats.flows === 3 && state.search.total === 3 && state.canvasId === 0
+      await until(() => evaluate(`state.stats.flows === 3 && state.search.total === 3
+        && String(state.canvasId) === ${JSON.stringify(beforeCaseSwitch.binding.canvasId)}
+        && state.canvasName === ${JSON.stringify(CANVAS)}
         && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(createdCase)}`), 15000);
-      await graph(3, flowIds);
-      assertNoAnnotation(await evaluate(GRAPH_PROBE));
-      await select('#canvasSel', CANVAS, true); await graph(3, flowIds);
+      await graph(3, flowIds, undefined, { frame: false });
       step = 'annotation-restored';
-      assert.deepEqual(positions(await annotation(savedAnnotation)), savedPositions);
+      assertWorkspaceRestored(await annotation(savedAnnotation), beforeCaseSwitch,
+        flowIds, 3, savedAnnotation);
     });
   } catch (error) {
     const failure = new Error('INSTALLED_GRAPH_JOURNEY_FAILED');
@@ -962,5 +990,5 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
 }
 
 module.exports = { ACCOUNTS, AMOUNTS, SUMMARIES, REQUIRED_CHECKS, fixtureCsv, assertGraph, assertEdgeTypes,
-  assertNoAnnotation, assertAnnotation, assertAnnotationFollow, assertAutomaticLeafLabel, assertPartialViewportLabels,
+  assertNoAnnotation, assertAnnotation, assertWorkspaceRestored, assertAnnotationFollow, assertAutomaticLeafLabel, assertPartialViewportLabels,
   assertImportCompletion, safeJourneyFailure, runInstalledGraphJourney };
