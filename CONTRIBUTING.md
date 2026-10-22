@@ -1,6 +1,14 @@
 # 开发与贡献
 
-项目按 [MIT](LICENSE) 公开维护，欢迎可复现问题和范围清楚的 PR。先读 [AGENTS.md](AGENTS.md) 和 [源码与私有数据边界](docs/source-boundaries.md)，再按本文建立开发环境。产品操作见 [工作台使用指南](docs/workspace-guide.md)，已发布安装包和验证限制见 [桌面交付](docs/desktop-delivery.md)。
+当前维护版本按自定义的[循迹 FundsTrace 社区使用与源码许可协议 1.0](LICENSE)提供有权授权的材料，属于源码可见软件，非 OSI 标准开源；[英文协议](LICENSE.en)供对照，以中文为准。欢迎可复现问题和范围清楚的 PR。先读 [AGENTS.md](AGENTS.md)、[许可说明](docs/licensing.md)（[English](docs/licensing.en.md)）和 [源码与私有数据边界](docs/source-boundaries.md)，再按本文建立开发环境。产品操作见 [工作台使用指南](docs/workspace-guide.md)，已发布安装包和验证限制见 [桌面交付](docs/desktop-delivery.md)。
+
+## 贡献许可与权限
+
+接受新的外部贡献前，贡献者与维护团队须明确并记录：贡献者对相关材料拥有或已取得充分权限，可按社区许可提供该贡献，以及团队另行授予机构／商业许可和 [LICENSE 第七条](LICENSE)指定特别许可所需的权限。涉及雇主、共同作者或第三方材料时，应先明确相应权利和限制。普通 PR、代码被合并或社区许可本身不构成版权转让，也不自动授予无限再许可权；本项目未因此建立 CLA 流程，权限未明确前不接受相关贡献。
+
+贡献者保留其依法享有的版权；历史 [MIT](LICENSES/MIT.txt) 代码（包括当前快照沿用的部分）和第三方材料继续保留原许可与既有权利。CodeHaven969、linzijie6524 的非独占、免许可费特许涵盖本项目研发，以及各自其他产品的闭源商业集成、交付、在线服务和必要客户使用，并豁免相应源码公开义务，仍须保留适用通知；具体范围受团队实际有权授予的权限约束，不推定覆盖原同事或其他作者的代码，也不自动适用于其他贡献者。
+
+一般社区条款允许个人非商业修复和增功能，对外分发修改版须公开完整对应源码；机构、商业、对外在线服务及未获许可的单独换皮改名、转售行为，依 [LICENSE](LICENSE) 的授权要求处理。提交 PR 不替代使用或分发所需的许可。授权联系人为循迹 FundsTrace 项目维护团队的 Eysn0130：[eysn0130@gmail.com](mailto:eysn0130@gmail.com) 或 [402168648@qq.com](mailto:402168648@qq.com)。软件许可与启动授权码分别处理，现有免激活政策不变。
 
 ## 环境安装与测试入口
 
@@ -187,7 +195,7 @@ uv --no-config pip compile requirements-dev.in --python-version 3.11 --universal
 uv pip sync requirements-dev.lock
 ```
 
-Node 依赖同步所属目录的 `package.json` 和 `package-lock.json`，使用 `npm ci` 复现安装。保留 MIT、原作者和第三方版权；新增或更新外部代码、资源和依赖时核对来源、版本及许可要求，必要时更新 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，不直接替换锁定的 vendor 文件。
+Node 依赖同步所属目录的 `package.json` 和 `package-lock.json`，使用 `npm ci` 复现安装。保留适用的社区许可、历史 MIT、原作者和第三方版权与通知；新增或更新外部代码、资源和依赖时核对来源、版本及许可要求，必要时更新 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，不直接替换锁定的 vendor 文件。
 
 源码文件使用 UTF-8；Python 和脚本用 `snake_case`，测试用 `test_<behavior>.py`，文档用 `kebab-case.md`。目录按职责组织，不以开发者、修复次数或日期命名功能源码。
 

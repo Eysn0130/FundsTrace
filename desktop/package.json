@@ -4,7 +4,7 @@
   "version": "0.1.9",
   "private": true,
   "author": "FundsTrace contributors",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "description": "Independent FundsTrace desktop host",
   "main": "main.cjs",
   "engines": {

@@ -26,7 +26,8 @@ def test_resource_boundary_includes_runtime_html_scripts(tmp_path, monkeypatch):
     assert all(name.startswith('static/') for name in references)
     # Exercise the actual resource collector with synthetic files, so this does
     # not read local activation material or require an existing frontend build.
-    names = {'LICENSE', 'THIRD_PARTY_NOTICES.md', 'frontend/dist/index.html',
+    names = {'LICENSE', 'LICENSE.en', 'THIRD_PARTY_NOTICES.md', 'LICENSES/MIT.txt',
+             'docs/licensing.md', 'docs/licensing.en.md', 'frontend/dist/index.html',
              *('static/' + name for name in builder.STATIC_NAMES), *references}
     for name in names:
         file = tmp_path / name
@@ -71,7 +72,9 @@ def test_all_retained_html_dependencies_are_packaged():
 ])
 def test_resource_boundary_accepts_only_a_complete_public_key(tmp_path, monkeypatch, tail, accepted):
     monkeypatch.setattr(builder, 'ROOT', tmp_path)
-    for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md', *('static/' + n for n in builder.STATIC_NAMES), 'frontend/dist/index.html'):
+    for name in ('LICENSE', 'LICENSE.en', 'THIRD_PARTY_NOTICES.md', 'LICENSES/MIT.txt',
+                 'docs/licensing.md', 'docs/licensing.en.md',
+                 *('static/' + n for n in builder.STATIC_NAMES), 'frontend/dist/index.html'):
         file = tmp_path / name
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text('synthetic resource')
@@ -83,3 +86,28 @@ def test_resource_boundary_accepts_only_a_complete_public_key(tmp_path, monkeypa
     else:
         with pytest.raises(SystemExit):
             builder.resource_files()
+
+
+def test_license_resources_preserve_both_languages_and_historical_notices(tmp_path, monkeypatch):
+    names = ('LICENSE', 'LICENSE.en', 'LICENSES/MIT.txt', 'THIRD_PARTY_NOTICES.md',
+             'docs/licensing.md', 'docs/licensing.en.md')
+    contents = {name: (builder.ROOT / name).read_bytes() for name in names}
+    assert '循迹 FundsTrace'.encode() in contents['LICENSE']
+    assert b'FundsTrace' in contents['LICENSE.en']
+    assert contents['LICENSES/MIT.txt'].startswith(b'MIT License\n')
+    assert len({contents[name] for name in ('LICENSE', 'LICENSE.en', 'LICENSES/MIT.txt')}) == 3
+    for name, content in contents.items():
+        source = tmp_path / name
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(content)
+    dist = tmp_path / 'frontend' / 'dist'
+    dist.mkdir(parents=True)
+    (dist / 'index.html').write_text('synthetic frontend')
+    monkeypatch.setattr(builder, 'ROOT', tmp_path)
+    monkeypatch.setattr(builder, 'STATIC_NAMES', ())
+
+    resources = {relative: source for source, relative in builder.resource_files()}
+
+    for name, content in contents.items():
+        assert resources[name] == tmp_path / name
+        assert resources[name].read_bytes() == content

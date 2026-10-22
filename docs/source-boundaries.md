@@ -36,15 +36,21 @@
 
 ## 许可与发行边界
 
-1. 维护者已在本次任务授权公开 `Eysn0130/FundsTrace`，并明确选用 MIT；现有原作者及第三方版权继续保留。
-2. 本仓库从源码维护快照开始，来源记于 `THIRD_PARTY_NOTICES.md`；未导入原历史，不冒称初始快照作者独创全部原代码。
+1. 2026-10-15 维护者授权公开 `Eysn0130/FundsTrace` 并选用 MIT，该决定保留为历史。自 2026-10-21 采用决定起，当前维护版本采用自定义的[循迹 FundsTrace 社区使用与源码许可协议 1.0](../LICENSE)，属于源码可见软件，非 OSI 标准开源；[英文协议](../LICENSE.en)供对照，以中文为准。首次适用提交以实际 Git 记录确认，不编造新 Tag／SHA，也不替换既有发行物的许可。
+2. 本仓库从源码维护快照开始，来源记于 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)；未导入原历史，不冒称初始快照作者独创全部原代码。历史 [MIT 文本](../LICENSES/MIT.txt)、原作者版权及第三方许可保留，历史代码和当前快照沿用的 MIT 部分，其既有权利不因新协议追溯回收。
 3. 核对 G6、图标、字体及未来引入组件的具体来源、版本、许可证和通知要求。
 4. 审查全部待提交文件及后续取得的历史，确保没有业务数据、授权材料或私有环境信息。
 5. 稳定发行前补充 Windows 安装后数据目录、升级／恢复和断网用户入口证据；本次未签名预览单独记录原生构建及 sidecar 检查，不使用 Windows GUI 已验收标记。
 
+社区许可仅适用于团队拥有或有权授权、并明确标注采用它的材料；材料位于同一仓库或安装包并不自动改变原许可。CodeHaven969、linzijie6524 的贡献授权仅覆盖各自有权授权的贡献及已确认权限，不推定覆盖原同事或其他作者的代码。原同事代码的授权范围尚未单独明确，保留来源与原许可，不将其归入二人的授权范围。具体覆盖边界见[许可说明](licensing.md)（[English](licensing.en.md)）。
+
+一般社区条款允许个人非商业用途免费使用、修复及增功能；机构用途、商业用途和对外在线服务须另行取得明确书面许可。对外分发修改版须依一般条款公开完整对应源码，保留来源和适用通知；未经许可不得将 FundsTrace 单独换皮改名、冒充官方或转售。CodeHaven969、linzijie6524 在团队有权授予的范围内享有全球、非独占、免许可费的本项目研发，以及各自其他产品集成特别许可，允许闭源商业集成、交付、在线服务及集成产品必要的客户使用，并豁免相应源码公开义务；来源、版权、适用许可和第三方通知仍须保留。该特许不提供脱离集成产品的独立转售或再许可权，也不自动扩展给其他贡献者。
+
+许可方共同对外名称为“循迹 FundsTrace 项目维护团队”，不声明独立法人或登记组织身份。日常授权联系人 Eysn0130：[eysn0130@gmail.com](mailto:eysn0130@gmail.com) 或 [402168648@qq.com](mailto:402168648@qq.com)；另行签发机构／商业许可应明确实际授权主体、代表身份与权限。软件许可与授权码分别处理，社区许可不改变上文的免激活策略、桌面请求认证或历史密钥保留要求。
+
 ## GitHub 与轻量治理
 
-2026-10-15，维护者已授权创建公开 [Eysn0130/FundsTrace](https://github.com/Eysn0130/FundsTrace)、采用 MIT、手动运行 Windows Actions 并尝试发布未签名预览。该授权替代此前“先私有”的建议；源码公开与二进制预览发布分别记录，不以 Windows GUI 已验收为标记。原目录及业务数据仍在上传边界之外。[GitHub 许可说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository)
+2026-10-15，维护者已授权创建公开 [Eysn0130/FundsTrace](https://github.com/Eysn0130/FundsTrace)、采用 MIT、手动运行 Windows Actions 并尝试发布未签名预览。该历史授权替代当时“先私有”的建议；2026-10-21 采用社区许可的当前边界见上文，不改写这项历史决定。源码公开与二进制预览发布分别记录，不以 Windows GUI 已验收为标记。原目录及业务数据仍在上传边界之外。[GitHub 许可说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository)
 
 仓库将自动 PR 源码检查与手动 Windows 候选工作流分开，复用既有脚本和锁文件，固定 Action 完整 SHA、只读 token、取消过时运行并限制超时；不调用真实 Provider、不注入授权材料、不自动发布。跨 Harness 分工、main 保护与 Eysn0130 审阅边界统一见 [开发与贡献](../CONTRIBUTING.md#分工和-pr)，运行与预览发布记录见 [桌面交付](desktop-delivery.md)。工作流和合成回归不能替代 Windows 的真实 DPI、系统保存和任务恢复 UI 验收。[手动触发要求](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[Actions 权限与依赖固定](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions)
 
@@ -52,4 +58,4 @@
 
 - [OpenAI Codex 工作流策略](https://github.com/openai/codex/blob/main/.github/workflows/README.md) 将快速反馈与较昂贵的跨平台验证分开；[repo-checks.yml](https://github.com/openai/codex/blob/main/.github/workflows/repo-checks.yml) 复用脚本。FundsTrace 后续 PR 默认使用现有定向检查，Windows 打包先手动运行，避免每次改文档都完整封装。
 - [Anthropic Python SDK CI](https://github.com/anthropics/anthropic-sdk-python/blob/main/.github/workflows/ci.yml) 明确检查职责并取消过时任务；[贡献说明](https://github.com/anthropics/anthropic-sdk-python/blob/main/CONTRIBUTING.md) 提供可复现命令。本项目沿用 README／AGENTS／锁文件维护这些入口，不复制 SDK 生成、API 兼容或自动发布链。
-- 维护者采用单一 main、短分支与小范围 PR，由 Eysn0130 审阅后合并；先启用 PR／自动检查保护，有独立贡献身份后再启用强制 Code Owner 批准。暂不增加 CLA、固定双审、复杂工作流框架或额外架构层。接受外部贡献前明确维护范围，补真实可用的私密问题报告渠道；不冒用上游的安全邮箱或赏金承诺。[OpenAI 当前贡献政策](https://github.com/openai/codex/blob/main/docs/contributing.md)
+- 维护者采用单一 main、短分支与小范围 PR，由 Eysn0130 审阅后合并；先启用 PR／自动检查保护，有独立贡献身份后再启用强制 Code Owner 批准。暂不增加 CLA、固定双审、复杂工作流框架或额外架构层。接受新的外部贡献前，明确并记录贡献者有权按社区许可提供材料，以及团队另行授予机构／商业许可和指定特别许可所需的权限；普通 PR 和社区许可本身不包含版权转让或无限再许可。协作细则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。同时明确维护范围，补真实可用的私密问题报告渠道；不冒用上游的安全邮箱或赏金承诺。[OpenAI 当前贡献政策](https://github.com/openai/codex/blob/main/docs/contributing.md)

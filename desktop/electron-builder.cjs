@@ -8,7 +8,8 @@ module.exports = {
   directories: { output: '../build/desktop/electron' },
   files: ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'startup.cjs', 'window-shell.cjs',
     'titlebar/index.html', 'titlebar/style.css', 'titlebar/renderer.js', 'titlebar/preload.cjs',
-    'startup/index.html', 'startup/style.css', 'startup/renderer.js', 'startup/preload.cjs', 'assets/icon.png', 'assets/icon.ico'],
+    'startup/index.html', 'startup/style.css', 'startup/renderer.js', 'startup/preload.cjs', 'assets/icon.png', 'assets/icon.ico',
+    { from: path.resolve(__dirname, '..'), to: '.', filter: ['LICENSE', 'LICENSE.en'] }],
   asar: true,
   electronLanguages: ['en-US', 'zh-CN', 'zh-TW'],
   extraResources: [
