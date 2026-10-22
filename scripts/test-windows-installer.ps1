@@ -473,7 +473,7 @@ try {
             foreach ($Owned in @(Get-CimInstance Win32_Process -Filter "ExecutablePath='$QueryPath'")) {
                 $Process = Get-Process -Id $Owned.ProcessId -ErrorAction SilentlyContinue
                 if ($null -ne $Process -and $Process.MainWindowHandle -ne [IntPtr]::Zero -and
-                    $Process.MainWindowTitle -ceq 'FundsTrace · 资金流水追踪与关联分析' -and
+                    $Process.MainWindowTitle -ceq '循迹 FundsTrace' -and
                     [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $InstallRoot 'FundsTrace.exe')).ProductVersion -like "$CurrentVersion*") {
                     Assert-Installed $CurrentVersion
                     $Relaunched = $Process; break
@@ -494,7 +494,7 @@ public static class FundsTraceUpdateWindowState {
 '@
         $Relaunched.Refresh()
         $Report.productionUpdateClose = [ordered]@{ windowPresent=($Relaunched.MainWindowHandle -ne [IntPtr]::Zero)
-            workspaceTitle=($Relaunched.MainWindowTitle -ceq 'FundsTrace · 资金流水追踪与关联分析')
+            workspaceTitle=($Relaunched.MainWindowTitle -ceq '循迹 FundsTrace')
             windowEnabled=[FundsTraceUpdateWindowState]::IsWindowEnabled($Relaunched.MainWindowHandle)
             windowVisible=[FundsTraceUpdateWindowState]::IsWindowVisible($Relaunched.MainWindowHandle)
             responding=$Relaunched.Responding; requestSent=$false; exited=$false }
