@@ -47,7 +47,7 @@ node docs/brand/render.mjs --latin-font /path/to/latin.ttf --cjk-font /path/to/c
 
 ## 主页业务展示图
 
-主页保留可复用的[业务流程 SVG](../media/fundstrace-workflow.svg)／[2× PNG](../media/fundstrace-workflow.png)与[本机架构 SVG](../media/fundstrace-architecture.svg)／[2× PNG](../media/fundstrace-architecture.png)。它们是逻辑示意，产品主视觉与 GIF 均使用真实合成预览截图；具体来源和验证见[素材核验](../showcase-validation.md)。
+主页保留可复用的[业务流程 SVG](../media/fundstrace-workflow.svg)／[2× PNG](../media/fundstrace-workflow.png)与[本机架构 SVG](../media/fundstrace-architecture.svg)／[2× PNG](../media/fundstrace-architecture.png)。它们是逻辑示意，导入／分析展示使用真实合成预览截图；首页启动动图来自已确认设计预览的持续等待态。具体来源和验证见[素材核验](../showcase-validation.md)。
 
 [render-showcase-figures.mjs](render-showcase-figures.mjs) 仅重建这两张图，需要 `@napi-rs/canvas 0.1.100`、`sharp 0.35.5` 与本地可用的拉丁／中文字体。通过 `SHOWCASE_CANVAS_PATH`、`SHOWCASE_SHARP_PATH` 可指定已有库路径，用 `--latin-font FILE --cjk-font FILE` 指定字体。SVG 字体转为路径，页眉内嵌同一 PNG 图标，无外部字体或图片请求；字体文件不随图分发。当前成图使用 macOS Avenir Next／Hiragino Sans GB。
 
