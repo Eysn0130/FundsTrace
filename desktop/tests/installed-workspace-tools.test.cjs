@@ -152,3 +152,103 @@ test('the actual inspection waits for settled height and slot scaling without wa
     assert.equal(reads,2);assert.equal(samples.length,1);assert.equal(samples[0].cssHeight,148);
   }
 });
+
+async function casesFixture({missing=false,crossOrigin=false,originThrows=false,hidden=false,outerBlocked=false,innerBlocked=false}={}) {
+  const source=await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8');
+  const start=source.indexOf('function casesFrameExpression('),end=source.indexOf('async function readyDocument(',start);
+  assert.ok(start>=0&&end>start);
+  const box=(x,y,width,height)=>({x,y,left:x,top:y,right:x+width,bottom:y+height,width,height});
+  const style={visibility:'visible',display:'block',opacity:'1'},calls=[],page={sessionId:'body',origin:'http://127.0.0.1:12345'};
+  const button={disabled:false,style,scrollIntoView(){},getBoundingClientRect:()=>box(20,30,80,40),contains:()=>false};
+  const childDocument={readyState:'complete',documentElement:{scrollWidth:796},
+    querySelector:selector=>selector==='#action'?button:null,elementFromPoint:()=>innerBlocked?{}:button};
+  const child={document:childDocument,location:{origin:crossOrigin?'https://invalid.example':page.origin},
+    innerWidth:796,innerHeight:496,devicePixelRatio:1,getComputedStyle:node=>node.style,
+    requestAnimationFrame:fn=>fn(),scrollTo(){}};
+  if(originThrows)Object.defineProperty(child,'location',{get(){throw new Error('SYN_PRIVATE_CROSS_ORIGIN_DETAIL');}});
+  const frame={tagName:'IFRAME',hidden,style,contentWindow:child,contentDocument:childDocument,
+    offsetWidth:800,offsetHeight:500,clientWidth:796,clientHeight:496,clientLeft:2,clientTop:2,
+    bounds:box(56,40,1000,625),getBoundingClientRect(){return this.bounds;},getClientRects(){return this.hidden?[]:[this.bounds];}};
+  const document={documentElement:{scrollWidth:1280},querySelector:selector=>selector==='#casesFrame'&&!missing?frame:null,
+    elementFromPoint:()=>outerBlocked?{}:frame};
+  const context=vm.createContext({assert,URL,page,document,location:{origin:page.origin},innerWidth:1280,innerHeight:800,
+    devicePixelRatio:1,getComputedStyle:node=>node.style,requestAnimationFrame:fn=>fn(),window:{scrollTo(){}},
+    cdp:{send:async(...args)=>{calls.push(args);}}});
+  context.evaluate=async expression=>vm.runInContext(expression,context);
+  vm.runInContext(source.slice(start,end),context);
+  return {source,context,calls,page,frame,child,document,childDocument};
+}
+
+test('the actual cases-frame pointer uses both hit tests and border-aware transformed frame offsets',async()=>{
+  const fixture=await casesFixture();
+  await fixture.context.clickElement('document.querySelector("#action")',fixture.page,{frame:true,modifiers:2});
+  assert.equal(fixture.calls.length,2);
+  for(const [,params,session] of fixture.calls) {
+    assert.equal(params.x,133.5);assert.equal(params.y,105);assert.equal(params.modifiers,2);assert.equal(session,'body');
+  }
+  assert.equal(vm.runInContext(fixture.context.visibleControl('document.querySelector("#action")',{frame:true}),fixture.context),true);
+});
+
+test('missing, hidden, cross-origin and obscured cases frames cannot dispatch a product click',async()=>{
+  for(const options of [{missing:true},{hidden:true},{crossOrigin:true},{originThrows:true},{outerBlocked:true},{innerBlocked:true}]) {
+    const fixture=await casesFixture(options);
+    await assert.rejects(fixture.context.clickElement('document.querySelector("#action")',fixture.page,{frame:true}));
+    assert.equal(fixture.calls.length,0);
+    const expression=fixture.context.visibleControl('document.querySelector("#action")',{frame:true});
+    if(options.missing||options.hidden||options.crossOrigin||options.originThrows)assert.throws(()=>vm.runInContext(expression,fixture.context),error=>
+      /^CASES_FRAME_(MISSING|HIDDEN|CROSS_ORIGIN)$/.test(error.message)&&!error.message.includes('SYN_PRIVATE'));
+    else assert.equal(vm.runInContext(expression,fixture.context),false);
+  }
+});
+
+test('the actual embedded matrix measures the iframe slot rather than equating child and top viewports',async()=>{
+  for(const mismatch of [false,true]) {
+    const fixture=await casesFixture(),{context,frame,child,document,childDocument}=fixture;
+    const start=fixture.source.indexOf('async function viewportMatrix('),end=fixture.source.indexOf('async function portClosed(',start);
+    assert.ok(start>=0&&end>start);
+    context.VIEWPORTS=[[960,500]];context.DEVICE_SCALES=[1.25];context.check=async(_name,action)=>action();
+    context.cdp.send=async(_method,metrics)=>{
+      Object.assign(context,{innerWidth:metrics.width,innerHeight:metrics.height,devicePixelRatio:metrics.deviceScaleFactor});
+      document.documentElement.scrollWidth=metrics.width;
+      frame.bounds={x:56,y:0,left:56,top:0,right:metrics.width,bottom:metrics.height,width:metrics.width-56,height:metrics.height};
+      frame.parentElement={getBoundingClientRect:()=>frame.bounds};
+      frame.offsetWidth=frame.clientWidth=metrics.width-56;frame.offsetHeight=frame.clientHeight=metrics.height;
+      frame.clientLeft=frame.clientTop=0;
+      child.innerWidth=frame.clientWidth+(mismatch?2:0);child.innerHeight=frame.clientHeight;child.devicePixelRatio=metrics.deviceScaleFactor;
+      childDocument.documentElement.scrollWidth=child.innerWidth;
+    };
+    vm.runInContext(fixture.source.slice(start,end),context);
+    const run=context.viewportMatrix('embedded',fixture.page,'true',[],[],{frame:true});
+    if(mismatch)await assert.rejects(run,/CASES_FRAME_SLOT_GEOMETRY/);else await run;
+    assert.equal(frame.clientWidth,904);
+  }
+});
+
+test('the actual public React entry requires the host redirect, preserves its case and selects through the iframe',async()=>{
+  const source=await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8');
+  const start=source.indexOf("  await check('installedReactWorkspaceOpened'"),end=source.indexOf("  await viewportMatrix('reactWorkspaceLayout'",start);
+  assert.ok(start>=0&&end>start);
+  for(const failure of [null,'standalone','lost-case','unembedded']) {
+    const origin='http://127.0.0.1:12345',selected={value:'2',selectedOptions:[{textContent:'SYN current'}]},report={},navigations=[];
+    const childDoc={querySelector:selector=>selector==='.workspace-heading .description .mono'?{textContent:selected.value}
+      :selector==='.case-item[aria-pressed="true"]'?{getAttribute:()=> 'SYN seed'}:null};
+    const frame={hidden:false,src:`${origin}/workspace/?embedded=${failure==='unembedded'?'0':'1'}&surface=cases&case_id=2`,contentDocument:childDoc};
+    const context=vm.createContext({assert,URL,URLSearchParams,SEED_CASE:'SYN seed',report,page:{origin,sessionId:'body'},
+      location:{pathname:'/',search:'?case_id=2'},document:{querySelector:selector=>selector==='#casesFrame'?frame:selected},
+      check:async(_name,action)=>action(),readyCases:async()=>{},
+      clickElement:async(_expression,_target,options)=>{assert.equal(options.frame,true);selected.value='3';selected.selectedOptions=[{textContent:'SYN seed'}];}});
+    context.evaluate=async()=>selected.value;
+    context.readyDocument=async expression=>assert.equal(vm.runInContext(expression,context),true);
+    context.cdp={send:async(_method,params)=>{
+      navigations.push(params.url);
+      context.location=failure==='standalone'?{pathname:'/workspace/',search:'?case_id=2'}
+        :{pathname:'/',search:failure==='lost-case'?'?page=cases':'?page=cases&case_id=2',origin};
+    }};
+    const run=vm.runInContext(`(async()=>{${source.slice(start,end)}})()`,context);
+    if(failure)await assert.rejects(run,{code:'ERR_ASSERTION'});else {
+      await run;assert.equal(selected.value,'3');assert.equal(report.workspaceEntry.caseSelectionLinked,true);
+      assert.ok(frame.src.endsWith('case_id=2'),'bridge case switches do not require rewriting the iframe URL');
+    }
+    assert.deepEqual(navigations,[`${origin}/workspace/?case_id=2`]);
+  }
+});
