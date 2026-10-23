@@ -487,13 +487,18 @@ try {
         Add-Type @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class FundsTraceUpdateWindowState {
+  [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left, Top, Right, Bottom; }
   delegate bool EnumWindowProc(IntPtr window, IntPtr state);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr window);
   [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr window);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowProc callback, IntPtr state);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out Rect rectangle);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder name, int maximum);
+  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
   public static bool OwnedWindow(IntPtr window, uint processId) {
     uint actual;
     return IsWindow(window) && GetWindowThreadProcessId(window, out actual) != 0 && actual == processId;
@@ -506,6 +511,21 @@ public static class FundsTraceUpdateWindowState {
     };
     if (!EnumWindows(callback, IntPtr.Zero)) throw new InvalidOperationException("WINDOW_ENUMERATION_FAILED");
     return count;
+  }
+  public static string Kind(IntPtr window) {
+    var name = new StringBuilder(256);
+    if (GetClassName(window, name, name.Capacity) == 0) return "unavailable";
+    var value = name.ToString();
+    return value == "Chrome_WidgetWin_1" || value == "Chrome_WidgetWin_0" || value == "#32770" ? value : "other";
+  }
+  public static int[] CaptureBounds(IntPtr window, uint processId) {
+    Rect rectangle;
+    if (!OwnedWindow(window, processId) || !IsWindowVisible(window) || !GetWindowRect(window, out rectangle))
+      throw new InvalidOperationException("BOUND_WINDOW_UNAVAILABLE");
+    int width = rectangle.Right - rectangle.Left, height = rectangle.Bottom - rectangle.Top;
+    if (width <= 0 || height <= 0 || width > 8192 || height > 8192 || (long)width * height > 16777216)
+      throw new InvalidOperationException("BOUND_WINDOW_GEOMETRY_INVALID");
+    return new[] { rectangle.Left, rectangle.Top, width, height };
   }
 }
 '@
@@ -528,6 +548,7 @@ public static class FundsTraceUpdateWindowState {
         if (-not $Report.productionUpdateClose.exited) {
             $AfterClose = [ordered]@{ windowQuerySucceeded=$false; processAlive=$null
                 originalWindowExists=$null; originalWindowProcessBound=$null; visibleTopLevelWindowCount=$null
+                originalWindowVisible=$null; originalWindowEnabled=$null; currentWindowIsOriginal=$null; currentWindowKind=$null
                 mainWindowPresent=$null; workspaceTitle=$null; windowEnabled=$null; windowVisible=$null; responding=$null
                 backendQuerySucceeded=$false; directOwnedBackendCount=$null }
             $Report.productionUpdateClose.afterTimeout = $AfterClose
@@ -536,9 +557,13 @@ public static class FundsTraceUpdateWindowState {
                 $AfterClose.processAlive = -not $Relaunched.HasExited
                 $AfterClose.originalWindowExists = [FundsTraceUpdateWindowState]::IsWindow($CloseWindow)
                 $AfterClose.originalWindowProcessBound = [FundsTraceUpdateWindowState]::OwnedWindow($CloseWindow, [uint32]$Relaunched.Id)
+                $AfterClose.originalWindowVisible = [FundsTraceUpdateWindowState]::IsWindowVisible($CloseWindow)
+                $AfterClose.originalWindowEnabled = [FundsTraceUpdateWindowState]::IsWindowEnabled($CloseWindow)
                 $AfterClose.visibleTopLevelWindowCount = [FundsTraceUpdateWindowState]::VisibleWindowCount([uint32]$Relaunched.Id)
                 if ($AfterClose.processAlive) {
                     $CurrentWindow = $Relaunched.MainWindowHandle
+                    $AfterClose.currentWindowIsOriginal = $CurrentWindow -eq $CloseWindow
+                    $AfterClose.currentWindowKind = [FundsTraceUpdateWindowState]::Kind($CurrentWindow)
                     $AfterClose.mainWindowPresent = $CurrentWindow -ne [IntPtr]::Zero
                     if ($AfterClose.mainWindowPresent) {
                         $AfterClose.workspaceTitle = $Relaunched.MainWindowTitle -ceq '循迹 FundsTrace'
@@ -555,21 +580,31 @@ public static class FundsTraceUpdateWindowState {
                     "ParentProcessId=$($Relaunched.Id) AND ExecutablePath='$BackendQueryPath'") -ErrorAction Stop).Count
                 $AfterClose.backendQuerySucceeded = $true
             } catch { <# An unavailable query is not evidence that the owned backend exited. #> }
-            $Capture = [ordered]@{ attempted=$true; captured=$false; processBound=$null; failureCode='CAPTURE_NOT_COMPLETED' }
+            $Capture = [ordered]@{ attempted=$true; captured=$false; processBound=$null; failureCode='CAPTURE_NOT_COMPLETED'
+                source='bound-owned-visible-window-composite'; scope='synthetic-CI-profile-only; not-DPI-acceptance' }
             $Report.productionUpdateClose.capture = $Capture
-            $CloseStage = $Stage; $CloseNativeStep = $script:NativeStep; $CloseNativeDiagnostic = $script:NativeDiagnostic
+            $CaptureBitmap = $null; $CaptureGraphics = $null; $CaptureDpi = [IntPtr]::Zero
             try {
-                $CaptureJson = Invoke-Native -FileName ((Get-Command pwsh.exe -ErrorAction Stop).Source) -Arguments @(
-                    '-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $ProjectRoot 'scripts/test-windows-startup-window.ps1'),
-                    '-InstallRoot',$InstallRoot,'-ProcessId',[string]$Relaunched.Id,'-Action','Capture','-ScreenshotPath',
-                    (Join-Path (Split-Path -Parent $ReportPath) 'native-production-update.update-relaunch-close-timeout.png')
-                ) -TimeoutSeconds 30
-                $CaptureReport = $CaptureJson | ConvertFrom-Json
-                $Capture.processBound = $CaptureReport.processBound -eq $true
-                $Capture.captured = $CaptureReport.status -ceq 'passed' -and $Capture.processBound -and $CaptureReport.screenshot.captured -eq $true
-                $Capture.failureCode = if ($Capture.captured) { $null } else { 'CAPTURE_OUTPUT_REJECTED' }
-            } catch { $Capture.failureCode = 'CAPTURE_HELPER_FAILED' }
-            finally { $Stage = $CloseStage; $script:NativeStep = $CloseNativeStep; $script:NativeDiagnostic = $CloseNativeDiagnostic }
+                # Caption acceptance requires normal window geometry. This
+                # bound capture also observes an owned post-close modal.
+                $CapturePath = Join-Path (Split-Path -Parent $ReportPath) 'native-production-update.update-relaunch-close-timeout.png'
+                if (Test-Path -LiteralPath $CapturePath) { throw 'Diagnostic capture must be new.' }
+                $Relaunched.Refresh()
+                $CaptureDpi = [FundsTraceUpdateWindowState]::SetThreadDpiAwarenessContext([IntPtr](-4))
+                $CaptureBounds = [FundsTraceUpdateWindowState]::CaptureBounds($Relaunched.MainWindowHandle, [uint32]$Relaunched.Id)
+                $Capture.processBound = $true
+                Add-Type -AssemblyName System.Drawing
+                $CaptureBitmap = [Drawing.Bitmap]::new($CaptureBounds[2], $CaptureBounds[3])
+                $CaptureGraphics = [Drawing.Graphics]::FromImage($CaptureBitmap)
+                $CaptureGraphics.CopyFromScreen($CaptureBounds[0], $CaptureBounds[1], 0, 0, $CaptureBitmap.Size)
+                $CaptureBitmap.Save($CapturePath, [Drawing.Imaging.ImageFormat]::Png)
+                $Capture.captured = $true; $Capture.failureCode = $null
+            } catch { $Capture.failureCode = 'BOUND_WINDOW_CAPTURE_FAILED' }
+            finally {
+                if ($CaptureGraphics) { $CaptureGraphics.Dispose() }
+                if ($CaptureBitmap) { $CaptureBitmap.Dispose() }
+                if ($CaptureDpi -ne [IntPtr]::Zero) { [void][FundsTraceUpdateWindowState]::SetThreadDpiAwarenessContext($CaptureDpi) }
+            }
             throw 'Updated application did not finish its normal close.'
         }
         $Report.checks.productionUpdateRelaunchClose = 'passed'
