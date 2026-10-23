@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "version": "0.1.11",
+  "checks": {
+    "exactHostAllowlist": true,
+    "packageIdentity": true,
+    "sourceHashes": true,
+    "preferencesAndPreloadIncluded": true
+  },
+  "hostFiles": {
+    "appearance.cjs": "aa1ded7eefdc69a398d4495c95a79f9eb9b70d157a8932f932b114791ea77be0",
+    "backend.cjs": "da88fcd743735a0d55c6ce1ef9b3822cea60b6e97a4b127dd11991ffb4f9791e",
+    "host-policy.cjs": "678ca541f8bf342faa616c3cd16b7ceb1cde61ea2cc2be5fba0b2f5371f95244",
+    "main.cjs": "1f2c7cf87df09e4432663ac80fbb04f35c6853eb69f4fa66cfdb42db730aefc6",
+    "preferences.cjs": "e93bd82e4d79af39b3b4ba0eff08d9b53d4429dcf24794693d176720898c2bec",
+    "preload.cjs": "3836cbbdd9c087cfeed19727c3c9c6518d668b65078f4a96c16f39d8849bbe0e",
+    "startup.cjs": "9448ec9eb1ee75c7087f97a721fedb73c26006bfe0013e01250778d27ef7c52d",
+    "updates.cjs": "102ef20a6da033fdf98d18380607afc509c61443731a77e5ce63db881b8cfeb6",
+    "window-shell.cjs": "bc3b3a5d6babc3fa50f57c341ec1a9bca4b8033f614300c2e4475b13151b4df0",
+    "titlebar/index.html": "d3a306476ab567ca0f8c8278e746466772ba98aeb7ef5ae08bbfc776efa1dfe6",
+    "titlebar/preload.cjs": "39c504a47b7568331b20e883b309e650e237c4e9fd7e4c706b5c9fb9a8b0341e",
+    "titlebar/renderer.js": "09e1a3c85ad88d99aea4652dd9647e13e99dcfced8a861ee254644439b72cd18",
+    "titlebar/style.css": "e097c320415cc984af9794ee04157db73300c668aa4be85a9ca98d457034904e",
+    "startup/index.html": "46d7c4732437bcb4d71f1b411a0a9b9bc12288feb79bea1a5aa82bcba36bc4ce",
+    "startup/preload.cjs": "ce5a127dbf4b4fd2b119bce1eb731b4768080a877a4aa03ba01e29758df1f441",
+    "startup/renderer.js": "6cd0974224321494e16f87d3acd5e5c6b0aec2d2abe343b12fea1c05695ac349",
+    "startup/style.css": "48a73618a89496105ea48689d7f56799ef9be1e4ee5e22a19ac59fee3ecdf379",
+    "assets/icon.ico": "fb6156b2f4f141121d49460f0d41133556dcc1cfb9622dc1ef3bf2fc1f25ca4c",
+    "assets/icon.png": "804f473a29c05d0a50968341c47f11a24547732758b67240fc6615cf719abae4",
+    "LICENSE": "36cb176eb42796f36c70f4e3b59c478d68c5d18778c1ea73b4e2f7c99d3a8f41"
+  },
+  "appArchiveSha256": "60160c069083a4ee6b68eea8298c1e114336823a8e5a5d4627a0e2289a0ee008"
+}
