@@ -8,6 +8,7 @@ param(
     [string]$NextUnpacked,
     [string]$TrustedCertificateFixture,
     [switch]$PublishedInAppUpdate,
+    [switch]$OfficialNetworkDiagnostic,
     [switch]$PreflightOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -20,6 +21,9 @@ if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Syst
     $env:GITHUB_ACTIONS -cne 'true') {
     [Console]::Error.WriteLine('Installer lifecycle requires native Windows x64 GitHub Actions.')
     exit 1
+}
+if ($OfficialNetworkDiagnostic -and (-not $PublishedInAppUpdate -or $PreflightOnly -or $env:CI -cne 'true')) {
+    throw 'Official network diagnostics require the isolated published update journey.'
 }
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
@@ -56,7 +60,8 @@ $Report = [ordered]@{
         uninstallRegistrationRemoved = 'not-run'; installedExecutableRemoved = 'not-run'
         syntheticDataRetained = 'not-run'; presentationPreferencesRetained = 'not-run'; cleanup = 'not-run'
     }
-    limits = [ordered]@{ gui = $false; importRecovery = $false }
+    limits = [ordered]@{ gui = $false; importRecovery = $false
+        diagnosticOnly = [bool]$OfficialNetworkDiagnostic; acceptanceEligible = -not [bool]$OfficialNetworkDiagnostic }
 }
 $OwnUserData = $false
 $OwnTemporary = $false
@@ -507,10 +512,13 @@ try {
             ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $UpdateConfig -Encoding utf8
         $UpdateReportPath = Join-Path (Split-Path -Parent $ReportPath) 'native-production-update.json'
         $UpdateScreenshot = Join-Path (Split-Path -Parent $ReportPath) 'native-production-update.png'
-        $UpdateJson = Invoke-Native -FileName $NodeExe -Arguments @(
+        $UpdateArguments = @(
             (Join-Path $ProjectRoot 'desktop/tests/installed-app-smoke.cjs'), $InstallRoot,
             '--report', $UpdateReportPath, '--screenshot', $UpdateScreenshot, '--production-update', $UpdateConfig
-        ) -TimeoutSeconds 720
+        )
+        if ($OfficialNetworkDiagnostic) { $UpdateArguments += '--official-network-diagnostic' }
+        $UpdateJson = Invoke-Native -FileName $NodeExe -Arguments $UpdateArguments -TimeoutSeconds 720
+        if ($OfficialNetworkDiagnostic) { throw 'Official network diagnostic must stop before installer confirmation and cannot qualify a release.' }
         $UpdateReport = $UpdateJson | ConvertFrom-Json
         if ($UpdateReport.status -cne 'passed' -or $UpdateReport.updateCycle.currentVersion -cne $Baseline.prior.version -or
             $UpdateReport.updateCycle.nextVersion -cne $CurrentVersion) { throw 'Published update journey did not pass.' }

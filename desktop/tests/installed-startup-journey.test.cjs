@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { startupTarget, assertLayout, assertWaitingObservation, assertHandoffObservation,
-  assertNativeWindowBounds, assertNativeClientGeometry, frameSummary, VIEWPORTS, DEVICE_SCALES } = require('./installed-startup-journey.cjs');
+  assertNativeWindowBounds, expectedStartupBounds, assertNativeClientGeometry, frameSummary, VIEWPORTS, DEVICE_SCALES } = require('./installed-startup-journey.cjs');
 
 function layout(width = 1440, height = 880, dpr = 1) {
   const unscaledHeight = 388, scale = Math.min(1, (width - 48) / 360, (height - 48) / unscaledHeight);
@@ -63,6 +63,76 @@ test('hidden Windows frame geometry preserves raw resize borders and validates E
   ]) {
     const value=structuredClone(examples[0]);mutate(value);
     assert.throws(()=>assertNativeWindowBounds(value,expected),code);
+  }
+});
+
+const savedWindow = (bounds, maximized = false) => JSON.stringify({ bounds: { x: 0, y: 0, ...bounds }, maximized });
+function restoredNative(height) {
+  return { window: { x: -8, y: 0, width: 1040, height: height + 8 },
+    electronWindow: { x: 0, y: 0, width: 1024, height }, frameInsets: { left: 8, top: 0, right: 8, bottom: 8 },
+    minTrack: { width: 1040, height: 728 }, electronMinTrack: { width: 1024, height: 720 },
+    scaleFactor: 1, workArea: { x: 0, y: 0, width: 1024, height: 728 } };
+}
+
+test('startup expectation restores the independently saved 1024 by 725 DIP and rejects a 720 DIP window', () => {
+  const raw = savedWindow({ width: 1024, height: 725 }), expected = expectedStartupBounds(restoredNative(725), raw);
+  assert.deepEqual(expected, { source: 'saved', width: 1024, height: 725, minWidth: 1024, minHeight: 720 });
+  assertNativeWindowBounds(restoredNative(725), expected);
+  assert.throws(() => assertNativeWindowBounds(restoredNative(720), expected), /STARTUP_NATIVE_DEFAULT_OR_RESIZED_BOUNDS/);
+});
+
+test('fresh startup still requires the original 1024 by 720 DIP default on the small work area', () => {
+  const expected = expectedStartupBounds(restoredNative(720));
+  assert.deepEqual(expected, { source: 'default', width: 1024, height: 720, minWidth: 1024, minHeight: 720 });
+  assertNativeWindowBounds(restoredNative(720), expected);
+  assert.throws(() => assertNativeWindowBounds(restoredNative(725), expected), /STARTUP_NATIVE_DEFAULT_OR_RESIZED_BOUNDS/);
+});
+
+test('saved dimensions clamp to the independent work area and design minimum without changing the saved state', () => {
+  const large = savedWindow({ width: 4000, height: 3000 });
+  assert.deepEqual(expectedStartupBounds({ scaleFactor: 1, workArea: { width: 1280, height: 800 } }, large),
+    { source: 'saved', width: 1280, height: 800, minWidth: 1280, minHeight: 720 });
+  assert.equal(large, savedWindow({ width: 4000, height: 3000 }));
+  assert.deepEqual(expectedStartupBounds({ scaleFactor: 1, workArea: { width: 1920, height: 1080 } }, savedWindow({ width: 800, height: 600 })),
+    { source: 'saved', width: 1280, height: 720, minWidth: 1280, minHeight: 720 });
+});
+
+test('physical work areas are converted once while saved window dimensions remain DIP', () => {
+  assert.deepEqual(expectedStartupBounds({ scaleFactor: 1.25, workArea: { x: -1600, y: -950, width: 1600, height: 950 } },
+    savedWindow({ width: 1280, height: 724 })),
+  { source: 'saved', width: 1280, height: 724, minWidth: 1280, minHeight: 720 });
+  const native = { scaleFactor: 1.5, workArea: { width: 2400, height: 1500 } };
+  assert.deepEqual(expectedStartupBounds(native, savedWindow({ width: 1500, height: 900 })),
+    { source: 'saved', width: 1500, height: 900, minWidth: 1280, minHeight: 720 });
+  assert.deepEqual(expectedStartupBounds(native),
+    { source: 'default', width: 1440, height: 810, minWidth: 1280, minHeight: 720 });
+  assert.deepEqual(expectedStartupBounds({ scaleFactor: 2, workArea: { width: 1366, height: 768 } }, savedWindow({ width: 1024, height: 725 })),
+    { source: 'saved', width: 683, height: 384, minWidth: 683, minHeight: 384 });
+});
+
+test('invalid presentation state retains the product default instead of trusting malformed saved geometry', () => {
+  const defaults = { source: 'default', width: 1024, height: 720, minWidth: 1024, minHeight: 720 };
+  const native = restoredNative(720);
+  for (const raw of [undefined, null, '', 'not-json', 'null', '[]', 1,
+    { bounds: { x: 0, y: 0, width: 1024, height: 725 }, maximized: false },
+    savedWindow({ width: 0, height: 725 }), savedWindow({ width: 32769, height: 725 }),
+    savedWindow({ width: '1024', height: 725 }), savedWindow({ width: 1024.5, height: 725 }),
+    savedWindow({ x: 100001, width: 1024, height: 725 }), savedWindow({ width: 1024, height: 725 }, 'false'),
+    JSON.stringify({ bounds: { x: 0, y: 0, width: 1024, height: 725 }, maximized: false, extra: true }),
+    savedWindow({ width: 1024, height: 725 }) + ' '.repeat(256)]) {
+    assert.deepEqual(expectedStartupBounds(native, raw), defaults);
+  }
+});
+
+test('maximized restoration is explicitly unsupported and actual window sizes cannot supply the oracle', () => {
+  const native = { scaleFactor: 1, workArea: { width: 1024, height: 728 },
+    get window() { assert.fail('actual raw bounds read'); }, get electronWindow() { assert.fail('actual logical bounds read'); } };
+  assert.deepEqual(expectedStartupBounds(native, savedWindow({ width: 1024, height: 725 })),
+    { source: 'saved', width: 1024, height: 725, minWidth: 1024, minHeight: 720 });
+  assert.throws(() => expectedStartupBounds(native, savedWindow({ width: 1024, height: 725 }, true)), /STARTUP_SAVED_MAXIMIZED_UNSUPPORTED/);
+  for (const context of [{ scaleFactor: 0, workArea: { width: 1024, height: 728 } },
+    { scaleFactor: Infinity, workArea: { width: 1024, height: 728 } }, { scaleFactor: 1, workArea: { width: 0, height: 728 } }]) {
+    assert.throws(() => expectedStartupBounds(context), /STARTUP_NATIVE_EXPECTATION_CONTEXT/);
   }
 });
 

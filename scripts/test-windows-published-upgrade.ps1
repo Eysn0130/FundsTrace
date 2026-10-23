@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string]$TargetSha256,
     [Parameter(Mandatory = $true)][ValidateRange(1, [long]::MaxValue)][long]$TargetBytes,
-    [switch]$InAppUpdate
+    [switch]$InAppUpdate,
+    [switch]$OfficialNetworkDiagnostic
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -11,6 +12,9 @@ Set-StrictMode -Version Latest
 if (-not $IsWindows -or $env:GITHUB_ACTIONS -cne 'true' -or
     [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne 'X64') {
     throw 'Published upgrade verification requires native Windows x64 GitHub Actions.'
+}
+if ($OfficialNetworkDiagnostic -and (-not $InAppUpdate -or $env:CI -cne 'true')) {
+    throw 'Official network diagnostics require the isolated in-app update journey.'
 }
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $EvidenceRoot = Join-Path $ProjectRoot 'build/desktop'
@@ -25,6 +29,9 @@ if ($Version -cnotmatch '^\d+\.\d+\.\d+$') { throw 'Require a stable release ver
 $PythonExe = Join-Path $ProjectRoot '.venv/Scripts/python.exe'
 $Baseline = (& $PythonExe (Join-Path $ProjectRoot 'scripts/upgrade_baseline.py') --baseline (Join-Path $ProjectRoot 'desktop/upgrade-baseline.json') --package (Join-Path $ProjectRoot 'desktop/package.json')) | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or $Baseline.targetVersion -cne $Version) { throw 'Published target must match the current package and upgrade baseline.' }
+if ($OfficialNetworkDiagnostic -and ($Version -cne '0.1.12' -or $Baseline.prior.version -cne '0.1.11')) {
+    throw 'Official network diagnostics are restricted to the current frozen release pair.'
+}
 $SevenZip = (Get-Command 7z.exe -CommandType Application | Select-Object -First 1).Path
 if (-not [IO.File]::Exists($SevenZip)) { throw '7-Zip is unavailable.' }
 [void](New-Item -ItemType Directory -Path $InputRoot)
@@ -60,12 +67,30 @@ $InputReport = [ordered]@{
     testCommit = $env:GITHUB_SHA; targetReleaseTag = "v$Version"
     source = 'published GitHub Release installer'; rebuilt = $false; upgradeBaseline = $Baseline
     productionInAppUpdate = [bool]$InAppUpdate
+    officialNetworkDiagnostic = [bool]$OfficialNetworkDiagnostic
     installerIcon = $InstallerIcon; applicationIcon = $ApplicationIcon
     extractedApplicationSha256 = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash.ToLowerInvariant()
-    limits = @{ windows10And11Interactive = $false; systemDpi = $false; powerLoss = $false }
+    limits = @{ windows10And11Interactive = $false; systemDpi = $false; powerLoss = $false
+        acceptanceEligible = -not [bool]$OfficialNetworkDiagnostic }
 }
 $InputReport | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'published-upgrade-inputs.json') -Encoding utf8
-& "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $Installer -ReportPath (Join-Path $EvidenceRoot 'native-installer-smoke.json') -PublishedInAppUpdate:$InAppUpdate
+if ($InAppUpdate -and -not $OfficialNetworkDiagnostic) {
+    # A separate, read-only network preflight does not populate the updater's
+    # cache or substitute for any of the installed client's acceptance gates.
+    $TargetSha512 = [Convert]::ToBase64String([Convert]::FromHexString((Get-FileHash -LiteralPath $Installer -Algorithm SHA512).Hash))
+    & node (Join-Path $ProjectRoot 'desktop/tests/public-update-transport-preflight.cjs') `
+        --report (Join-Path $EvidenceRoot 'native-public-update-preflight.json') `
+        --version $Version --sha256 $TargetSha256 --sha512 $TargetSha512 --bytes $TargetBytes
+    if ($LASTEXITCODE -ne 0) { throw 'Public update transport preflight failed; installed-client acceptance was not started.' }
+}
+if ($OfficialNetworkDiagnostic) {
+    # Observe the old updater even when the independent preflight would fail.
+    # This separate diagnosis cannot pass the normal preflight or lifecycle.
+    @{ schemaVersion=1; status='diagnostic-only-skipped'; passed=$false; acceptanceEligible=$false } |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'native-public-update-preflight.json') -Encoding utf8
+}
+& "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $Installer -ReportPath (Join-Path $EvidenceRoot 'native-installer-smoke.json') -PublishedInAppUpdate:$InAppUpdate -OfficialNetworkDiagnostic:$OfficialNetworkDiagnostic
+if ($OfficialNetworkDiagnostic) { throw 'Official network diagnostic completed without release acceptance; standard-user qualification was not started.' }
 if ($LASTEXITCODE -ne 0) { throw 'Published upgrade lifecycle failed.' }
 & "$PSScriptRoot/test-windows-standard-user.ps1" -InstallerPath $Installer -ReportDirectory (Join-Path $EvidenceRoot 'standard-user') -PublishedInAppUpdate:$InAppUpdate
 if ($LASTEXITCODE -ne 0) { throw 'Published upgrade standard-user lifecycle failed.' }
