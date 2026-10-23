@@ -65,6 +65,15 @@ $InputReport = [ordered]@{
     limits = @{ windows10And11Interactive = $false; systemDpi = $false; powerLoss = $false }
 }
 $InputReport | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'published-upgrade-inputs.json') -Encoding utf8
+if ($InAppUpdate) {
+    # A separate, read-only network preflight does not populate the updater's
+    # cache or substitute for any of the installed client's acceptance gates.
+    $TargetSha512 = [Convert]::ToBase64String([Convert]::FromHexString((Get-FileHash -LiteralPath $Installer -Algorithm SHA512).Hash))
+    & node (Join-Path $ProjectRoot 'desktop/tests/public-update-transport-preflight.cjs') `
+        --report (Join-Path $EvidenceRoot 'native-public-update-preflight.json') `
+        --version $Version --sha256 $TargetSha256 --sha512 $TargetSha512 --bytes $TargetBytes
+    if ($LASTEXITCODE -ne 0) { throw 'Public update transport preflight failed; installed-client acceptance was not started.' }
+}
 & "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $Installer -ReportPath (Join-Path $EvidenceRoot 'native-installer-smoke.json') -PublishedInAppUpdate:$InAppUpdate
 if ($LASTEXITCODE -ne 0) { throw 'Published upgrade lifecycle failed.' }
 & "$PSScriptRoot/test-windows-standard-user.ps1" -InstallerPath $Installer -ReportDirectory (Join-Path $EvidenceRoot 'standard-user') -PublishedInAppUpdate:$InAppUpdate
