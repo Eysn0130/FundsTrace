@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { fixtureCsv, assertGraph, assertEdgeTypes, assertNoAnnotation, assertAnnotation, assertAnnotationFollow,
-  assertAutomaticLeafLabel, assertPartialViewportLabels, assertImportCompletion, safeJourneyFailure, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
+  assertWorkspaceRestored, assertAutomaticLeafLabel, assertPartialViewportLabels, assertImportCompletion, safeJourneyFailure, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
 
 function observed() {
   // Independent two-transfer observation with exact decimal strings. The
@@ -212,12 +212,40 @@ test('annotation acceptance requires the complete saved note and its actual visi
   }
 });
 
-test('annotation undo or a different canvas must clear both presentation data and rendered text', () => {
+test('annotation undo or an empty isolated case must clear both presentation data and rendered text', () => {
   const cleared = { ready: true, annotations: [], renderedAnnotations: [] };
   assert.doesNotThrow(() => assertNoAnnotation(cleared));
   assert.throws(() => assertNoAnnotation({ ...cleared, annotations: annotationObserved().annotations }));
   assert.throws(() => assertNoAnnotation({ ...cleared, renderedAnnotations: annotationObserved().renderedAnnotations }));
   assert.throws(() => assertNoAnnotation({ ...cleared, ready: false }));
+});
+
+test('returning to a default or named canvas requires its retained scope, annotation, geometry, style and exact facts', () => {
+  for (const canvas of [{ canvasId: '0', canvasName: '默认画布' },
+    { canvasId: '9', canvasName: 'SYN named canvas' }]) {
+    const before = annotationObserved();
+    before.binding = { caseId: '7', caseName: 'SYN retained case', ...canvas };
+    before.renderedEdges[0].type = 'line';
+    assert.doesNotThrow(() => assertWorkspaceRestored(structuredClone(before), before,
+      ['71', '72', '73'], 2, expectedAnnotation));
+    for (const mutate of [
+      value => { value.binding.caseId = '8'; },
+      value => { value.binding.caseName = 'SYN other case'; },
+      value => { value.binding.canvasId = canvas.canvasId === '0' ? '9' : '0'; },
+      value => { value.binding.canvasName = 'SYN other canvas'; },
+      value => { delete value.binding; },
+      value => { value.annotations = []; value.renderedAnnotations = []; },
+      value => { value.annotations[0].dx = 0; },
+      value => { value.renderedNodes[0].x += 1; },
+      value => { value.renderedEdges[0].type = 'polyline'; },
+      value => { value.edges[1].total = '12345678901234.00'; },
+      value => { value.trackedIds.pop(); },
+      value => { value.renderedNodes.pop(); },
+    ]) {
+      const after = structuredClone(before); mutate(after);
+      assert.throws(() => assertWorkspaceRestored(after, before, ['71', '72', '73'], 2, expectedAnnotation));
+    }
+  }
 });
 
 test('moving one annotated node translates its actual shape without changing offset, siblings or exact facts', () => {

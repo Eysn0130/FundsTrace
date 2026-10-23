@@ -23,4 +23,27 @@ describe('FundsTrace modal keyboard lifecycle', () => {
     fireEvent(dialog, new Event('cancel', { cancelable: true }));
     expect(close).toHaveBeenCalledOnce();
   });
+
+  it('keeps the import dialog open when its native file picker is cancelled', () => {
+    const close = vi.fn();
+    render(<Modal title="合成文件导入" onClose={close}><input type="file" aria-label="选择合成流水" /></Modal>);
+    fireEvent(screen.getByLabelText('选择合成流水'), new Event('cancel', { bubbles: true }));
+    expect(close).not.toHaveBeenCalled();
+    expect((screen.getByRole('dialog', { name: '合成文件导入' }) as HTMLDialogElement).open).toBe(true);
+    fireEvent(screen.getByRole('dialog', { name: '合成文件导入' }), new Event('cancel', { cancelable: true }));
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it.each(['disabled', 'hidden', 'inactive', 'closed-menu'] as const)('returns focus to an available control when its opener becomes %s', state => {
+    const scope = document.createElement('div'); scope.className = 'funds-trace';
+    const fallback = document.createElement('button'), group = document.createElement(state === 'closed-menu' ? 'details' : 'div'), opener = document.createElement('button');
+    if (group instanceof HTMLDetailsElement) { group.open = true; group.append(document.createElement('summary')); }
+    group.append(opener); scope.append(fallback, group); document.body.append(scope); opener.focus();
+    const view = render(<Modal title="合成焦点回退" onClose={() => {}}>合成数据</Modal>, { container: scope.appendChild(document.createElement('div')) });
+    if (state === 'disabled') opener.disabled = true;
+    else if (state === 'hidden') group.hidden = true;
+    else if (state === 'inactive') group.classList.add('page-inactive');
+    else (group as HTMLDetailsElement).open = false;
+    view.unmount(); expect(document.activeElement).toBe(fallback); scope.remove();
+  });
 });

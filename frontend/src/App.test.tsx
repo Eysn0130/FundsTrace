@@ -47,6 +47,123 @@ function embeddedHost() {
 }
 
 describe('FundsTrace case workspace', () => {
+  it('closes the case actions menu on Escape, outside click, focus departure and case change', async () => {
+    const { container } = render(<App api={fakeApi()} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    const menu = container.querySelector<HTMLDetailsElement>('.case-actions')!, summary = menu.querySelector('summary')!;
+    fireEvent.click(summary); expect(menu.open).toBe(true);
+    fireEvent.keyDown(within(menu).getByRole('button', { name: '案件信息' }), { key: 'Escape' });
+    expect(menu.open).toBe(false); expect(document.activeElement).toBe(summary);
+    fireEvent.click(summary); fireEvent.pointerDown(screen.getByLabelText('筛选案件')); expect(menu.open).toBe(false);
+    fireEvent.click(summary); fireEvent.blur(menu, { relatedTarget: screen.getByLabelText('筛选案件') }); expect(menu.open).toBe(false);
+    fireEvent.click(summary); fireEvent.click(screen.getByRole('button', { name: '合成案件乙' }));
+    await screen.findByRole('button', { name: '核对流水 SYN-2' }); expect(container.querySelector<HTMLDetailsElement>('.case-actions')!.open).toBe(false);
+  });
+
+  it('closes the case menu before opening case information and returns focus to its visible summary', async () => {
+    const { container } = render(<App api={fakeApi()} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    const menu = container.querySelector<HTMLDetailsElement>('.case-actions')!, summary = menu.querySelector('summary')!;
+    fireEvent.click(summary); fireEvent.click(within(menu).getByRole('button', { name: '案件信息' }));
+    expect(menu.open).toBe(false);
+    fireEvent.click(within(screen.getByRole('dialog', { name: '案件信息' })).getByRole('button', { name: '关闭' }));
+    expect(document.activeElement).toBe(summary);
+  });
+
+  it('closes the case menu after dispatch and prevents reopening during the host operation', async () => {
+    const h = embeddedHost();
+    try {
+      const { container } = render(<App api={fakeApi()} embedded />); h.bind();
+      await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      const menu = container.querySelector<HTMLDetailsElement>('.case-actions')!, summary = menu.querySelector('summary')!;
+      fireEvent.click(summary); fireEvent.click(within(menu).getByRole('button', { name: '导出案件包' }));
+      await waitFor(() => expect(h.requests().at(-1)?.action).toBe('case-action'));
+      expect(menu.open).toBe(false); fireEvent.click(summary); expect(menu.open).toBe(false);
+      expect(summary.getAttribute('aria-disabled')).toBe('true');
+      await h.answer('case-action');
+      await waitFor(() => expect(summary.getAttribute('aria-disabled')).toBe('false'));
+      fireEvent.click(summary); expect(menu.open).toBe(true);
+      await act(async () => h.bind({ generation: 2 }));
+      expect(container.querySelector<HTMLDetailsElement>('.case-actions')!.open).toBe(false);
+    } finally { h.close(); }
+  });
+
+  it('returns keyboard focus to the case menu summary when the host rejects an action', async () => {
+    const h = embeddedHost();
+    try {
+      const { container } = render(<App api={fakeApi()} embedded />); h.bind();
+      await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      const menu = container.querySelector<HTMLDetailsElement>('.case-actions')!, summary = menu.querySelector('summary')!;
+      fireEvent.click(summary); const action = within(menu).getByRole('button', { name: '导出案件包' }); action.focus(); fireEvent.click(action);
+      await h.answer('case-action', false, '合成导出被拒绝'); await screen.findByText('合成导出被拒绝');
+      expect(menu.open).toBe(false); expect(document.activeElement).toBe(summary);
+    } finally { h.close(); }
+  });
+
+  it.each(['新建案件', '案件信息'])('unmounts the %s modal while the cases surface is hidden and preserves its draft on return', async title => {
+    const h = embeddedHost();
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ case_id: '1', source: 'flows', total: 0, page: 1, page_size: 30, items: [] }));
+    try {
+      const { container } = render(<App api={fakeApi()} embedded />); h.bind({ surface: 'cases' });
+      await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      fireEvent.change(screen.getByLabelText('账号筛选'), { target: { value: '保留查询草稿' } });
+      if (title === '新建案件') {
+        fireEvent.click(screen.getByRole('button', { name: title }));
+        fireEvent.change(screen.getByLabelText('案件名称'), { target: { value: '保留新建草稿' } });
+      } else {
+        fireEvent.click(container.querySelector('.case-actions summary')!); fireEvent.click(screen.getByRole('button', { name: title }));
+      }
+      for (const hidden of [{ surface: 'accounts' }, { active: false }]) {
+        const dialog = screen.getByRole('dialog', { name: title });
+        await act(async () => h.bind(hidden));
+        expect(container.querySelector('dialog[open]')).toBeNull(); expect(dialog.isConnected).toBe(false);
+        await act(async () => h.bind({ surface: 'cases', active: true }));
+        await screen.findByRole('dialog', { name: title });
+        expect((screen.getByLabelText('账号筛选') as HTMLInputElement).value).toBe('保留查询草稿');
+        if (title === '新建案件') expect((screen.getByLabelText('案件名称') as HTMLInputElement).value).toBe('保留新建草稿');
+      }
+    } finally { fetch.mockRestore(); h.close(); }
+  });
+
+  it('releases a hidden busy create modal without aborting or resending the in-flight create', async () => {
+    const h = embeddedHost(), api = fakeApi(), pending = deferred<Case>(); let createSignal: AbortSignal | undefined;
+    api.createCase = vi.fn((_name, signal) => { createSignal = signal; return pending.promise; });
+    try {
+      const { container } = render(<App api={api} embedded />); h.bind();
+      await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      fireEvent.click(screen.getByRole('button', { name: '新建案件' }));
+      fireEvent.change(screen.getByLabelText('案件名称'), { target: { value: '合成延迟创建' } });
+      fireEvent.click(screen.getByRole('button', { name: '创建案件' }));
+      h.bind({ active: false }); expect(container.querySelector('dialog[open]')).toBeNull(); expect(createSignal?.aborted).toBe(false);
+      h.bind({ active: true });
+      expect((screen.getByRole('button', { name: '正在创建…' }) as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByLabelText('案件名称') as HTMLInputElement).value).toBe('合成延迟创建');
+      await act(async () => pending.resolve({ id: '3', name: '合成延迟创建', created_at: null }));
+      await h.answer('select-case', false, '合成打开尚未确认'); await screen.findByText('合成打开尚未确认');
+      expect(api.createCase).toHaveBeenCalledOnce(); expect(createSignal?.aborted).toBe(false);
+    } finally { h.close(); }
+  });
+
+  it('keeps the sent import alive while hidden and retains its completed receipt without another POST', async () => {
+    const h = embeddedHost(), api = fakeApi(), pending = deferred<{ case_id: string; import_id: string; started: boolean }>();
+    let commitSignal: AbortSignal | undefined;
+    api.commit = vi.fn((_caseId, _importId, _body, signal) => { commitSignal = signal; return pending.promise; }); const job = vi.spyOn(api, 'job');
+    try {
+      const { container } = render(<App api={api} embedded />); h.bind();
+      await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      await h.upload(); await h.answer('import-acquire'); await waitFor(() => expect(api.commit).toHaveBeenCalledOnce());
+      h.bind({ active: false }); expect(container.querySelector('dialog[open]')).toBeNull(); expect(commitSignal?.aborted).toBe(false);
+      await act(async () => pending.resolve({ case_id: '1', import_id: preview.import_id, started: true }));
+      await h.answer('import-release'); await h.answer('data-changed');
+      expect(container.querySelector('dialog[open]')).toBeNull();
+      await act(async () => h.bind({ active: true })); await screen.findByText('流水已写入当前案件');
+      expect(screen.queryByRole('region', { name: '待核对导入' })).toBeNull();
+      expect(api.commit).toHaveBeenCalledOnce(); expect(job).toHaveBeenCalledOnce(); expect(commitSignal?.aborted).toBe(false);
+      expect(h.requests().filter(request => request.action === 'import-acquire')).toHaveLength(1);
+      expect(screen.getByText(`批次 ${completed.result!.batch_id} · ${preview.filename}`)).toBeTruthy();
+    } finally { h.close(); }
+  });
+
   it('refreshes after hidden host reactivation and current data changes without losing filter drafts', async () => {
     const h = embeddedHost(), api = fakeApi(); const flows = vi.spyOn(api, 'flows');
     try {

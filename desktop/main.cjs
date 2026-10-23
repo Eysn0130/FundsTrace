@@ -338,8 +338,9 @@ else {
       ({ origin, token } = await backend.ready);
       if (quitting || primary.isDestroyed()) return;
       ipcMain.on(CHANNEL, (event, operation, key, value) => {
-        event.returnValue = preferenceRequest(preferences, event, origin, owned, operation, key, value);
-        if (event.returnValue === true && key === 'fund_appearance' && ['set', 'remove'].includes(operation)) applyAppearance();
+        const result = preferenceRequest(preferences, event, origin, owned, operation, key, value);
+        event.returnValue = result;
+        if (result === true && key === 'fund_appearance' && ['set', 'remove'].includes(operation)) applyAppearance();
       });
       const updatesEnabled = app.isPackaged && process.platform === 'win32' && !synthetic;
       updateService = updates.updateController({

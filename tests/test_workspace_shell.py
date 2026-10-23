@@ -52,3 +52,22 @@ def test_workspace_shell_state_and_resize_behavior():
     result = subprocess.run(['node', '--test', str(ROOT / 'tests/workspace_shell_harness.mjs')],
                             cwd=ROOT, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_workspace_view_menu_is_distinct_from_node_layout_and_preserves_details():
+    page = WorkspaceMarkup()
+    page.feed((ROOT / 'static/index.html').read_text())
+    trigger = page.tags['btnWorkspaceView'][1]
+    assert trigger['data-toolbar-menu'] == 'workspaceViewMenu'
+    assert trigger['aria-haspopup'] == 'menu'
+    assert 'data-ribbon-command' not in trigger
+    assert page.tags['workspace'][1]['data-workspace-view'] == 'standard'
+    for element, view in [('workspaceViewStandard', 'standard'), ('workspaceViewFocus', 'focus'), ('workspaceViewSplit', 'split')]:
+        attrs = page.tags[element][1]
+        assert attrs['role'] == 'menuitemradio'
+        assert attrs['data-workspace-view'] == view
+        assert attrs['aria-checked'] == str(view == 'standard').lower()
+    assert page.tags['workspaceViewMenu'][1]['role'] == 'menu'
+    assert page.tags['layoutSel'][1]['aria-label'] == '布局算法'
+    assert page.tags['drawer'][0] == 'aside'
+    assert page.flow_headers == 7

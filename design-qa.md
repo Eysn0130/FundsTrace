@@ -808,3 +808,16 @@ final result: passed
 - [x] G6 固定文件哈希未变；资源闭包包含 node-finder.js。未打包、未提交或发布。
 
 final result: passed
+
+## 2026-10-22 · 三种工作区视图
+
+用户确认方案1／4是同一布局和详情状态。本轮在原主页增加“工作区视图”：标准、专注、上下分栏；原节点“布局算法／重新布局”保持独立。
+
+- 复用原查询、真实七列表格和图谱；分栏不进入全览的即时上图模式。详情在三态独立；模式切换不调用布局、适应全图、追踪写入或历史命令。
+- 收起后保留四个Tab、案件／画布、保存／撤销／重做、视图及详情入口。Chrome实测工具区66px（顶行35px＋快捷带31px），快捷带内容1182.875px，低于既有1280px构成宽度；未新增一层顶栏。
+- 修复实际浏览器窄表→宽分栏→窄表造成横滚归零；在外壳改变前捕获模式位置，结束后恢复，切案／切画布清旧快照。查询草稿和锚点保留。全览关闭后回到原tab-search、七列和“选为追踪锚点”语义。
+- 修复分栏最大高度不随功能区展开收敛：实际浏览器工具区展开后底区408px／图谱140px，再收起恢复底区490px／图谱140px；aria上限同步。筛选使用完整内容行和外层滚动，展开后queryBottom与bulkTop相接，无区域重叠。
+- 全量入口：`.venv/bin/python scripts/test.py -q --tb=short`，987 passed、108 subtests passed；最终CSS收敛后6个相关Python入口再验15 passed。新增shell 26／Ribbon及命令50／table 23项Node行为回归包含尺寸夹取、模式回切、原生滚动夹取模拟、全览及绑定失效；JavaScript语法与diff空白检查通过。
+- Chrome使用一次性合成数据库，视口1512×728；完整金额和CNY／USD来自合成夹具。分栏截图曾显式点击“适应画布”方便阅读，模式本身不触发该动作。截图位于本地交付目录workspace-views的01-standard、02-focus、03-split、04-standard-details.png。
+
+交付目录：`/Users/sun/.codex/visualizations/2026/10/22/01a162c9-3f33-7a63-9750-e3fb5f7d63bb/workspace-views/`。本轮没有修改G6绘制／布局／业务事实、API、React或桌面原生宿主；没有执行正式打包、发布或Windows原生GUI／DPI验收。

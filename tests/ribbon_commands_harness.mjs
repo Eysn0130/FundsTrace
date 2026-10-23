@@ -17,7 +17,7 @@ const fixture = () => ({ nodes: ['A', 'B', 'C', 'D'].map(account => ({ account, 
 ], tracked_ids: ['9007199254740993', '9007199254740994'] });
 const positions = () => ({ A: { x: 10, y: 40 }, B: { x: 30, y: 10 }, C: { x: 100, y: 100 }, D: { x: 180, y: 160 } });
 
-function harness({ relationController = false } = {}) {
+function harness({ relationController = false, workspaceShell = false } = {}) {
   const elements = new Map(), events = new Map(), documentEvents = new Map(), requests = [], messages = [], enabled = new Map();
   const ribbonValues = {}, ribbonStatus = {}, drawerCalls = [], filterAdapter = { options: null, updates: 0 };
   let visibleModals = [];
@@ -26,8 +26,9 @@ function harness({ relationController = false } = {}) {
   const dispatch = (map, event) => { for (const callback of [...map.get(event.type) || []]) callback(event); };
   function element(id, kind = 'div') {
     if (elements.has(id)) return elements.get(id);
-    const classes = new Set(), listeners = new Map();
-    const node = { id, kind, value: '', checked: false, disabled: false, hidden: false, style: {}, dataset: {}, children: [],
+    const classes = new Set(), listeners = new Map(), attributes = new Map();
+    const node = { id, kind, value: '', checked: false, disabled: false, hidden: false,
+      style: { setProperty(name, value) { this[name] = String(value); } }, dataset: {}, children: [],
       innerHTML: '', textContent: '', clientWidth: 900, clientHeight: 600,
       showModal() { this.open = true; }, close() { this.open = false; },
       classList: { add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name),
@@ -37,11 +38,15 @@ function harness({ relationController = false } = {}) {
       replaceChildren(...children) { this.children = [...children]; this.value = ''; },
       addEventListener: (type, callback) => register(listeners, type, callback),
       removeEventListener: (type, callback) => listeners.get(type)?.delete(callback),
-      dispatchEvent: event => dispatch(listeners, event), setAttribute() {}, remove() {}, focus() { document.activeElement = this; }, scrollIntoView() {},
+      dispatchEvent: event => dispatch(listeners, event),
+      setAttribute: (name, value) => attributes.set(name, String(value)),
+      getAttribute: name => attributes.get(name) ?? null, hasAttribute: name => attributes.has(name),
+      removeAttribute: name => attributes.delete(name), remove() {}, focus() { document.activeElement = this; }, scrollIntoView() {},
+      contains(candidate) { return candidate === this || this.children.some(child => child.contains?.(candidate)); },
       closest: () => null,
       getBoundingClientRect() { return { left: 0, top: 0, right: this.clientWidth, bottom: this.clientHeight,
         width: this.clientWidth, height: this.clientHeight }; },
-      getClientRects: () => [], querySelectorAll: () => [], click() { this.dispatchEvent({ type: 'click' }); },
+      getClientRects: () => [], querySelector: () => null, querySelectorAll: () => [], click() { this.dispatchEvent({ type: 'click' }); },
     };
     elements.set(id, node); return node;
   }
@@ -139,8 +144,25 @@ function harness({ relationController = false } = {}) {
   // Mount the ribbon only: app startup/network and unrelated DOM bindings are outside this harness.
   [...events.get('DOMContentLoaded')].at(-1)();
   const commands = window.FundsRibbonCommands;
+  const shellCalls = [];
+  let shell = null;
+  if (workspaceShell) {
+    // Exercise the production shell instead of reproducing its view-state rules here.
+    Object.assign(window, { document, localStorage: context.localStorage, CustomEvent: context.CustomEvent,
+      setTimeout, clearTimeout });
+    run(source('workspace-shell'));
+    shell = window.FundsWorkspaceShell.mount(document);
+    for (const method of ['toggleFocus', 'setSidebarCollapsed', 'setToolbarCollapsed']) {
+      const original = shell[method];
+      shell[method] = (...args) => {
+        shellCalls.push({ method, view: shell.getState().view, args });
+        return original(...args);
+      };
+    }
+  }
   async function settle() { for (let i = 0; i < 50 && editor.history.status().busy; i++) await delay(); await delay(); }
   return { run, state, element, requests, messages, commands, editor, enabled, install, ribbonValues, ribbonStatus, drawerCalls,
+    shell, shellCalls,
     relationOptions: filterAdapter.options,
     network(callback) { network = callback; },
     drawerWait(promise) { context.drawerWait = promise; },
@@ -204,6 +226,53 @@ for (const [command, selection, query, targets] of [
     assert.equal(JSON.stringify(f.editor.history.status()), history); assert.equal(f.requests.length, 0);
   });
 }
+
+for (const previousView of ['standard', 'split']) {
+  test(`focusCanvas delegates to the shell and restores the previous ${previousView} view without editing the graph`, async () => {
+    const f = harness({ workspaceShell: true });
+    f.shell.setView(previousView);
+    f.select(['B', 'D']);
+    f.state.edgeBendPos = { 'A=>B': [{ x: 20, y: 25 }] };
+    f.state.edgeLabelPos['A=>B'] = 0.35;
+    f.state.edgeSnapshotLabels = { 'A=>B': { lx: 15, ly: 20 } };
+    const snapshot = () => JSON.stringify({ facts: f.state.lastGraph, tracked: [...f.state.tracked],
+      positions: f.state.positions, bends: f.state.edgeBendPos, labelRatios: f.state.edgeLabelPos,
+      labelPositions: f.state.edgeSnapshotLabels, presentation: f.state.presentation,
+      selection: [...f.state.graphSelection.ids], nodes: f.nodes.map(item => item.getModel()),
+      edges: f.edges.map(item => item.getModel()), camera: f.camera, history: f.editor.history.status() });
+    const before = snapshot();
+    f.shellCalls.length = 0;
+
+    assert.equal(await f.commands.execute('focusCanvas'), true);
+    assert.equal(f.shell.getState().view, 'focus');
+    assert.deepEqual(f.shellCalls, [{ method: 'toggleFocus', view: previousView, args: [] }],
+      'the ribbon uses the shell mode API rather than managing two collapse booleans');
+    assert.equal(snapshot(), before);
+
+    await f.event('focusCanvas');
+    assert.equal(f.shell.getState().view, previousView);
+    assert.deepEqual(f.shellCalls, [
+      { method: 'toggleFocus', view: previousView, args: [] },
+      { method: 'toggleFocus', view: 'focus', args: [] },
+    ]);
+    assert.equal(snapshot(), before);
+    assert.equal(f.requests.length, 0);
+  });
+}
+
+test('focusCanvas remains safe when no workspace shell is mounted', async () => {
+  const f = harness(); f.select(['B']);
+  const snapshot = () => JSON.stringify({ facts: f.state.lastGraph, positions: f.state.positions,
+    selection: [...f.state.graphSelection.ids], camera: f.camera, history: f.editor.history.status() });
+  const before = snapshot();
+  assert.equal(f.element('#workspace').fundsWorkspaceShell, undefined);
+
+  await assert.doesNotReject(() => f.commands.execute('focusCanvas'));
+  await f.event('focusCanvas');
+
+  assert.equal(snapshot(), before); assert.equal(f.requests.length, 0);
+  assert.deepEqual(f.messages, []);
+});
 
 test('rejected focus and zoom commands do not interrupt the sidebar camera', async () => {
   const f = harness(), order = [], camera = f.camera;

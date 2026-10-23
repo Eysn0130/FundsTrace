@@ -155,19 +155,25 @@ function initWatermark() {
   const txt = 'FundsTrace';
   const wm = document.createElement('div');
   wm.id = 'watermark';
-  // 用 SVG 平铺：旋转 -28°，透明度低不影响阅读
+  // Canvas 平铺：旋转 -28°，透明度低不影响阅读
   const cell = document.createElement('canvas');
   cell.width = 340; cell.height = 220;
   const g = cell.getContext('2d');
-  g.translate(170, 110);
-  g.rotate(-28 * Math.PI / 180);
-  g.font = '15px "Microsoft YaHei", sans-serif';
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  g.fillStyle = 'rgba(255, 255, 255, 0.055)';
-  g.fillText(txt, 0, 0);
-  g.font = '10px "Microsoft YaHei", sans-serif';
-  g.fillText(new Date().toLocaleDateString('zh-CN'), 0, 18);
+  const paintCell = () => {
+    // Resetting the canvas also resets its transform; repeated previews cannot accumulate rotation.
+    cell.width = 340;
+    g.translate(170, 110); g.rotate(-28 * Math.PI / 180);
+    g.font = '15px "Microsoft YaHei", sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillStyle = graphTheme() === 'light' ? 'rgba(17, 17, 17, 0.055)' : 'rgba(255, 255, 255, 0.055)';
+    g.fillText(txt, 0, 0);
+    g.font = '10px "Microsoft YaHei", sans-serif';
+    g.fillText(new Date().toLocaleDateString('zh-CN'), 0, 18);
+  };
+  paintCell();
+  window.addEventListener('funds-appearance-change', () => {
+    paintCell(); wm.style.backgroundImage = `url(${cell.toDataURL()})`;
+  });
   wm.style.cssText = `position:fixed;inset:0;z-index:9999;pointer-events:none;` +
     `background-image:url(${cell.toDataURL()});background-repeat:repeat;`;
   document.body.appendChild(wm);
@@ -455,10 +461,14 @@ function graphViewIsFiltered() {
 function graphLabelStyle(kind, id) {
   return (kind === 'node' ? state.presentation.nodeLabels[id] : state.presentation.edgeLabels[id]) || {};
 }
-function graphRelationStyle(edge, muted = false) {
+function graphTheme() {
+  return document.documentElement?.dataset?.ftTheme === 'light' ? 'light' : 'dark';
+}
+function graphPalette(theme = graphTheme()) { return FundsGraphPresentation.palette(theme); }
+function graphRelationStyle(edge, muted = false, theme = graphTheme()) {
   const key = edgeKey(edge), custom = state.presentation.edgeStyles[key] || {};
   const width = state.graphView.amountWidths?.widths.get(key);
-  const stroke = custom.stroke || (muted ? '#3f4854' : '#7f8b99');
+  const palette = graphPalette(theme), stroke = custom.stroke || (muted ? palette.mutedEdge : palette.edge);
   return { ...denseEdgeStyle(muted), lineDash: [], ...custom, stroke,
     lineWidth: width ?? custom.lineWidth ?? (muted ? 0.75 : 1.4), lineCap:'round', lineJoin:'round', lineAppendWidth:8,
     endArrow: muted ? false : { ...graphArrow(), fill: stroke } };
@@ -642,10 +652,44 @@ function graphLayoutNode(model, fixed = false) {
   return {id:model.id,x:model.x,y:model.y,fixed,isMain:model.data?.is_main===1,size,
     width:Math.max(size,label.width),height:size+6+label.height,offsetX:0,offsetY:(6+label.height)/2};
 }
-function effectiveGraphLabelStyle(kind, id) {
-  const custom=graphLabelStyle(kind,id);
-  return FundsGraphPresentation.effectiveLabel(kind,custom);
+function effectiveGraphLabelStyle(kind, id, theme = graphTheme()) {
+  return FundsGraphPresentation.effectiveLabel(kind, graphLabelStyle(kind, id), theme);
 }
+// Theme changes recolour existing shapes only. Never rebuild, relayout, save or record history.
+function applyGraphTheme({ paint = true } = {}) {
+  const graph = state.graph, view = state.graphView;
+  if (!graph || view.exportDepth) return;
+  const palette = graphPalette();
+  for (const [kind, items] of [['node', graph.getNodes?.() || []], ['edge', graph.getEdges?.() || []]]) {
+    for (const item of items) {
+      const model = item.getModel(), id = kind === 'node' ? model.id : edgeKey(model);
+      const fill = effectiveGraphLabelStyle(kind, id).fill;
+      model.labelCfg = { ...model.labelCfg, style: { ...model.labelCfg?.style, fill } };
+      for (const shape of labelShapes(item)) {
+        if (shape.get('name') === 'text-shape') shape.attr('fill', fill);
+      }
+      if (kind !== 'edge') continue;
+      const selected = view.selectedEdge === id;
+      const style = graphRelationStyle(model, view.mutedEdges.has(id));
+      if (selected) {
+        style.stroke = palette.selection;
+        if (style.endArrow) style.endArrow = { ...style.endArrow, fill: palette.selection };
+      }
+      // This helper retains the label cutout, hit path, manual positions and cached arrows.
+      FundsGraphLabelGeometry.paintEdge(item, style);
+      const styles = item.get?.('styles');
+      if (styles?.selected) item.set?.('styles', { ...styles, selected: { ...styles.selected, stroke: palette.selection,
+        endArrow: style.endArrow } });
+      const outline = item.getContainer?.()?.get?.('children')?.find(shape => shape.get('name') === 'funds-edge-selection-outline');
+      outline?.attr('stroke', palette.selection);
+    }
+  }
+  state.graphSelection?.refresh();
+  state.minimap?.setTheme(graphTheme());
+  window.FundsRibbonCommands?.sync();
+  if (paint) graph.paint();
+}
+window.addEventListener('funds-appearance-change', () => applyGraphTheme());
 function labelShapes(item) {
   return (item.getContainer?.()?.get?.('children')||[]).filter(shape =>
     ['text-shape','text-bg-shape'].includes(shape.get('name')));
@@ -1308,7 +1352,7 @@ function initGraph() {
       style: { stroke: '#0e1013', lineWidth: 2 },
       labelCfg: {
         position: 'bottom', offset: 6,
-        style: FundsGraphPresentation.effectiveLabel('node'),
+        style: effectiveGraphLabelStyle('node'),
       },
     },
     defaultEdge: {
@@ -1319,16 +1363,16 @@ function initGraph() {
       },
       labelCfg: {
         autoRotate: false,
-        style: FundsGraphPresentation.effectiveLabel('edge'),
+        style: effectiveGraphLabelStyle('edge'),
       },
     },
-    nodeStateStyles: { selected: { stroke: '#66d9ef', lineWidth: 3 }, recent: { lineDash: [4, 3] } },
+    nodeStateStyles: { selected: { stroke: graphPalette().selection, lineWidth: 3 }, recent: { lineDash: [4, 3] } },
     edgeStateStyles: { selected: { stroke: '#f5a623' } },
   });
   state.graph = graph;
   const mini = $('#graphMinimap');
   if (mini?.getContext && typeof FundsGraphMinimap !== 'undefined') {
-    state.minimap = FundsGraphMinimap.create({ canvas: mini, onNavigate: point => {
+    state.minimap = FundsGraphMinimap.create({ canvas: mini, theme: graphTheme(), onNavigate: point => {
       if (state.graph !== graph || !graphCameraInteractionAllowed()) return;
       state.graphCamera?.resize();
       state.graphCamera?.cancelComposition?.();
@@ -1406,7 +1450,7 @@ function initGraph() {
 function initGraphSelection(graph = state.graph, c = $('#graphContainer')) {
   if (typeof FundsGraphSelection !== 'undefined') {
     const context = caseContext();
-    state.graphSelection = FundsGraphSelection.create({ graph, container: c, context,
+    state.graphSelection = FundsGraphSelection.create({ graph, container: c, context, selectionColor: () => graphPalette().selection,
       isCurrent: binding => graph === state.graph && isCurrentCase(binding) && !state.graphLoading,
       canInteract: () => !layoutJob&&!window.FundsCanvasEditor?.history.status().busy,
       onChange: ({ ids }) => {
@@ -1872,7 +1916,7 @@ function syncGraphEdgeLabel(item,outline,anchorOverride) {
   const horizontal=a&&b&&Math.abs(b.y-a.y)<=Math.abs(b.x-a.x)*.12;
   const selected=key===view.selectedEdge&&!view.exportDepth;
   const style=graphRelationStyle(model,view.mutedEdges.has(key));
-  if(selected){style.stroke='#66d9ef';if(style.endArrow)style.endArrow={...style.endArrow,fill:'#66d9ef'};}
+  if(selected){style.stroke=graphPalette().selection;if(style.endArrow)style.endArrow={...style.endArrow,fill:graphPalette().selection};}
   outline=outline||(item.getContainer?.()?.get?.('children')||[]).find(s=>s.get('name')==='funds-edge-selection-outline');
   const result=FundsGraphLabelGeometry.placeEdge(item,{anchor,above:!manual&&graphHasSimpleGeometry()&&horizontal,
     gap:4,style,outline,visible:model.label!==undefined});
@@ -3336,13 +3380,13 @@ function refreshSelectedEdgeAppearance() {
     (item.getContainer?.()?.get?.('children')||[]).find(shape=>shape.get('name')==='funds-edge-selection-outline')?.hide?.();
     state.graph.setItemState(item,'selected',false);syncGraphEdgeLabel(item);return;
   }
-  const model=item.getModel(),base={...graphRelationStyle(model,false),stroke:'#66d9ef'},styles=item.get?.('styles')||{};
+  const model=item.getModel(),base={...graphRelationStyle(model,false),stroke:graphPalette().selection},styles=item.get?.('styles')||{};
   item.set?.('styles',{...styles,selected:{...styles.selected,...base,shadowBlur:0,shadowColor:'transparent',
     'text-shape':{...styles.selected?.['text-shape'],fontWeight:effectiveGraphLabelStyle('edge',key).fontWeight}}});
   const group=item.getContainer?.(),path=item.getKeyShape?.()?.attr?.('path');
   let outline=(group?.get?.('children')||[]).find(shape=>shape.get('name')==='funds-edge-selection-outline');
   if(path) {
-    const attrs={path,stroke:'#66d9ef',lineWidth:base.lineWidth+5,opacity:.32,lineCap:'round',lineJoin:'round',fill:null};
+    const attrs={path,stroke:graphPalette().selection,lineWidth:base.lineWidth+5,opacity:.32,lineCap:'round',lineJoin:'round',fill:null};
     if(outline){outline.attr(attrs);outline.show?.();}else outline=group?.addShape?.('path',{name:'funds-edge-selection-outline',capture:false,attrs});
     outline?.toBack?.();
   }
@@ -5202,6 +5246,7 @@ function bindUI() {
       if (samplingZoom) { try { graph.set('maxZoom', originalMaxZoom); } catch (_) { /* disposed sampling graph */ } }
       view.exportDepth = Math.max(0, view.exportDepth - 1);view.exportFooterHeight=0;delete view.exportLabelScale;
       if (owned) {
+        applyGraphTheme({ paint: false });
         try { graph.changeSize(W, H); } catch (_) { /* Release ownership even if G6 restoration fails. */ }
         if (camera) {
           try { graph.get('group').setMatrix(camera); graph.paint(); } catch (_) { /* The graph may be disposing. */ }
@@ -5310,7 +5355,7 @@ function bindUI() {
         id: m.id, x: Math.round((m.x || 0) * 100) / 100, y: Math.round((m.y || 0) * 100) / 100,
         ...(annotationFor(m.id)?{annotation:newGraphPresentation({annotations:[annotationFor(m.id)]}).annotations[0]}:{}),
         label: m.fundsLabel ?? m.label ?? nodeLabel(source), size: m.size || 32, style: (m.style && { ...m.style }) || {},
-        labelStyle: effectiveGraphLabelStyle('node',m.id),
+        labelStyle: effectiveGraphLabelStyle('node',m.id,'dark'),
         labelOffset:{x:offset?offset.x-offset.baseX:0,y:offset?offset.y-offset.baseY:0},
         ...(nodePhotoUrl(source)&&custom?{photoBorder:{stroke:custom.stroke||nodeRing(source),lineWidth:custom.lineWidth||1.5}}:{}),
         labelVisible: scope === 'all' || !state.graphView.policy || state.graphView.policy.nodeIds.has(m.id),
@@ -5334,7 +5379,7 @@ function bindUI() {
         curvePolicy:m.curvePolicy||null,labelPlacement:m.labelPlacement||'inline',
         routeManual:Object.prototype.hasOwnProperty.call(state.edgeTypes,edgeKey(m))||!!state.edgeBendPos[edgeKey(m)]?.length,
         routeAutoEligible:scope==='all'||(!view.visibleIds&&!graphViewIsFiltered())||graphHasSimpleGeometry(),
-        style: graphRelationStyle(source, false), labelStyle: effectiveGraphLabelStyle('edge',edgeKey(source)),
+        style: graphRelationStyle(source, false, 'dark'), labelStyle: effectiveGraphLabelStyle('edge',edgeKey(source),'dark'),
         labelRatio:hasRatio?ratio:null,labelManual:manual,
         labelOffset:{x:offset?offset.x-offset.baseX:0,y:offset?offset.y-offset.baseY:0},
         controlPoints: (m.controlPoints || []).map(point => ({ x: +(+point.x).toFixed(2), y: +(+point.y).toFixed(2) })),

@@ -16,6 +16,11 @@
   const color = value => typeof value === 'string' && /^#(?:[\da-f]{3}|[\da-f]{6})$/i.test(value);
   const accountId = node => typeof node.account === 'string' ? node.account
     : typeof node.id === 'string' ? node.id : null;
+  const palettes = Object.freeze({
+    dark: Object.freeze({ ink: '#dfe3ea', mutedEdge: '#3f4854', edge: '#7f8b99', selection: '#66d9ef' }),
+    light: Object.freeze({ ink: '#111111', mutedEdge: '#c9c9c9', edge: '#7f8b99', selection: '#2367ad' }),
+  });
+  const palette = theme => palettes[theme === 'light' ? 'light' : 'dark'];
 
   function sanitizeLabel(input) {
     const result = {};
@@ -31,9 +36,9 @@
 
   // One effective style for drawing, measurement, controls and offline output.
   // Old snapshots may contain only a fontSize or an undersized lineHeight.
-  function effectiveLabel(kind, input) {
+  function effectiveLabel(kind, input, theme = 'dark') {
     const node = kind === 'node', custom = sanitizeLabel(input);
-    const result = { fill: '#dfe3ea', fontSize: 13, lineHeight: 18,
+    const result = { fill: palette(theme).ink, fontSize: 13, lineHeight: 18,
       fontFamily: 'Arial', fontWeight: 'normal', fontStyle: 'normal',
       stroke:null,lineWidth:0,
       ...custom };
@@ -160,5 +165,5 @@
         hiddenNodes: filtered.nodes.length - nodes.length, hiddenEdges: filtered.edges.length - edges.length } };
   }
 
-  return Object.freeze({ sanitizeLabel, effectiveLabel, sanitizeNode, sanitizeEdge, create, displayData });
+  return Object.freeze({ palette, sanitizeLabel, effectiveLabel, sanitizeNode, sanitizeEdge, create, displayData });
 });

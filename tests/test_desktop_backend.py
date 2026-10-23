@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from fastapi.testclient import TestClient
 import pytest
 
@@ -19,6 +20,19 @@ from desktop_backend import DesktopBoundary, read_bootstrap
 
 TOKEN = "a" * 64  # Public fixture, not a deployed runtime session.
 HEADER = {"X-FundsTrace-Desktop": TOKEN}
+
+
+def assert_owned_desktop_csp(response):
+    directives = [part.strip().split() for part in response.headers["content-security-policy"].split(";") if part.strip()]
+    expected = {
+        "default-src": ["'self'"], "script-src": ["'self'"],
+        "style-src": ["'self'", "'unsafe-inline'"], "img-src": ["'self'", "data:", "blob:"],
+        "font-src": ["'self'", "data:"], "connect-src": ["'self'"],
+        "worker-src": ["'self'", "blob:"], "object-src": ["'none'"], "base-uri": ["'none'"],
+        "frame-src": ["'self'"], "frame-ancestors": ["'self'"], "form-action": ["'self'"],
+    }
+    assert len(directives) == len(expected)
+    assert {name: sources for name, *sources in directives} == expected
 
 
 @pytest.mark.parametrize("change", [
@@ -59,11 +73,34 @@ def test_desktop_front_door_rejects_missing_duplicate_cross_origin_and_wrong_hos
         response = client.get("/private", headers={**HEADER, "Origin": "http://127.0.0.1:14321"})
         assert response.json() == {"reached": True}
         assert response.headers["cache-control"] == "no-store"
-        assert "script-src 'self';" in response.headers["content-security-policy"]
-        assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
-        assert "'unsafe-inline'" not in response.headers["content-security-policy"].split("script-src", 1)[1].split(";", 1)[0]
+        assert_owned_desktop_csp(response)
         assert client.get("/__desktop/health", headers=HEADER).json() == {
             "protocol": 1, "service": "FundsTrace", "ready": True}
+
+
+@pytest.mark.parametrize("path", ["/", "/workspace/?embedded=1&surface=cases&case_id=2", "/analysis?embedded=1&case_id=2"])
+def test_normal_desktop_documents_allow_only_owned_same_origin_embedding(path):
+    app = FastAPI()
+
+    def page():
+        return HTMLResponse("<!doctype html><title>Synthetic owned workspace</title>",
+                            headers={"Content-Security-Policy": "default-src *; frame-src *; frame-ancestors *"})
+
+    for route in ("/", "/workspace/", "/analysis"):
+        app.add_api_route(route, page)
+
+    with TestClient(DesktopBoundary(app, TOKEN, 14321), base_url="http://127.0.0.1:14321") as client:
+        response = client.get(path, headers={**HEADER, "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Dest": "iframe"})
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+        assert_owned_desktop_csp(response)
+        assert response.headers["cache-control"] == "no-store"
+        for headers in ({"Sec-Fetch-Dest": "iframe"},
+                        {**HEADER, "Origin": "http://attacker.invalid", "Sec-Fetch-Dest": "iframe"},
+                        {**HEADER, "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "iframe"}):
+            rejected = client.get(path, headers=headers)
+            assert rejected.status_code == 403
+            assert TOKEN not in rejected.text
 
 
 def test_activation_free_desktop_still_requires_owned_session(database, tmp_path, monkeypatch):

@@ -316,6 +316,53 @@
     return state;
   }
 
+  // Theme changes own paint only. Keep the hit path transparent, and retain
+  // arrow geometry, clipping, label anchors and the visible-copy arrangement.
+  function paintEdge(item, style) {
+    if (!style || typeof style !== 'object') return false;
+    const state = stateFor(item);
+    if (!state) return false;
+    const colors = {};
+    for (const name of ['stroke', 'fill']) if (typeof style[name] === 'string') colors[name] = style[name];
+    const arrowColors = name => {
+      const source = style[name], result = {};
+      for (const property of ['fill', 'stroke']) {
+        if (source && typeof source === 'object' && typeof source[property] === 'string') result[property] = source[property];
+      }
+      return result;
+    };
+    const recolor = (values, name) => {
+      const setting = values[name];
+      if (!setting || typeof setting !== 'object') return setting;
+      return { ...copy(setting), ...arrowColors(name) };
+    };
+    Object.assign(state.base, colors);
+    for (const name of ['startArrow', 'endArrow']) {
+      if (state.base[name] && typeof state.base[name] === 'object') state.base[name] = recolor(state.base, name);
+    }
+    for (const shape of [state.key, ...children(item).filter(value => named(value, visibleName))]) {
+      const patch = { ...colors };
+      for (const name of ['startArrow', 'endArrow']) {
+        const setting = shape.attr(name);
+        // Never enable an arrow suppressed on the transparent hit target.
+        if (setting && typeof setting === 'object') patch[name] = recolor({ [name]: setting }, name);
+      }
+      attrs(shape, patch);
+      syncArrows(shape);
+      // G6 caches arrows separately and does not repaint their colours when
+      // the parent path's stroke changes. Update that cache without recreating it.
+      for (const name of ['startArrow', 'endArrow']) {
+        const arrow = shape.get?.(name + 'Shape');
+        if (!arrow?.attr) continue;
+        const setting = shape.attr(name), patch = arrowColors(name);
+        if (!Object.prototype.hasOwnProperty.call(patch, 'stroke') && typeof colors.stroke === 'string'
+          && (!setting || typeof setting !== 'object' || !setting.stroke)) patch.stroke = colors.stroke;
+        attrs(arrow, patch);
+      }
+    }
+    return true;
+  }
+
   function removeVisible(item) {
     children(item).filter(shape => named(shape, visibleName)).forEach(shape => shape.remove?.());
   }
@@ -415,5 +462,5 @@
   }
 
   return Object.freeze({ isSimpleGraph, compactControlPoint, measureText, clearTextMeasurements,
-    plain, placeNode, placeEdge, restoreEdge, syncArrows });
+    plain, placeNode, placeEdge, restoreEdge, paintEdge, syncArrows });
 });

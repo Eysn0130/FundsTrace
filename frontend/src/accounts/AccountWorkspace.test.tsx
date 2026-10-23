@@ -57,6 +57,60 @@ describe('AccountWorkspace', () => {
     await waitFor(() => expect(h.api.list).toHaveBeenLastCalledWith('1', { source: 'identity', q: '', page: 1, pageSize: 30 }, expect.any(AbortSignal)));
   });
 
+  it('navigates source tabs with arrows, Home and End and exposes one named tab panel', async () => {
+    const h = fixture(); render(<AccountWorkspace {...h.props} />); await ready();
+    const flows = screen.getByRole('tab', { name: '本案流水账户' }), identity = screen.getByRole('tab', { name: '身份证对照记录' });
+    expect(flows.tabIndex).toBe(0); expect(identity.tabIndex).toBe(-1);
+    expect(flows.getAttribute('aria-controls')).toBe(screen.getByRole('tabpanel', { name: '本案流水账户' }).id);
+    fireEvent.change(screen.getByLabelText('搜索户名或账号'), { target: { value: '未提交检索' } });
+    flows.focus(); fireEvent.keyDown(flows, { key: 'ArrowRight' });
+    await waitFor(() => expect(h.api.list).toHaveBeenLastCalledWith('1', { source: 'identity', q: '', page: 1, pageSize: 30 }, expect.any(AbortSignal)));
+    expect(document.activeElement).toBe(identity); expect(identity.tabIndex).toBe(0); expect(flows.tabIndex).toBe(-1);
+    expect(identity.getAttribute('aria-controls')).toBe(screen.getByRole('tabpanel', { name: '身份证对照记录' }).id);
+    expect((screen.getByLabelText('搜索户名或账号') as HTMLInputElement).value).toBe('');
+    fireEvent.keyDown(identity, { key: 'ArrowRight' }); expect(document.activeElement).toBe(flows);
+    fireEvent.keyDown(flows, { key: 'End' }); expect(document.activeElement).toBe(identity);
+    fireEvent.keyDown(identity, { key: 'Home' }); expect(document.activeElement).toBe(flows);
+    fireEvent.keyDown(flows, { key: 'ArrowLeft' }); expect(document.activeElement).toBe(identity);
+  });
+
+  it('announces a delayed save, keeps tabs locked and reconciles an unknown result without reporting success or replaying', async () => {
+    const h = fixture(), write = deferred<void>(), check = deferred<void>();
+    h.actions.mutate = vi.fn(async () => { await write.promise; throw Object.assign(new Error('合成响应中断'), { code: 'write-unknown', operationId: 'delayed-identity' }); });
+    h.actions.reconcile = vi.fn(() => check.promise);
+    render(<AccountWorkspace {...h.props} />); await ready();
+    fireEvent.change(screen.getByLabelText('身份证号'), { target: { value: '00000020000101000X' } });
+    const save = screen.getByRole('button', { name: '保存' }); fireEvent.click(save);
+    expect(save.getAttribute('aria-busy')).toBe('true');
+    expect(screen.getByRole('status').textContent).toBe('正在保存身份证号…');
+    expect(screen.getByRole('status').getAttribute('aria-busy')).toBe('true');
+    const flows = screen.getByRole('tab', { name: '本案流水账户' });
+    fireEvent.keyDown(flows, { key: 'ArrowRight' });
+    expect(flows.getAttribute('aria-selected')).toBe('true');
+    expect((screen.getByRole('tab', { name: '身份证对照记录' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText('身份证号已更新。')).toBeNull();
+    await act(async () => write.resolve()); await screen.findByText(/有 1 项写入结果尚未确认/);
+    expect(save.getAttribute('aria-busy')).toBe('false'); expect((save as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText('身份证号已更新。')).toBeNull(); expect(h.actions.mutate).toHaveBeenCalledOnce();
+    const reconcile = screen.getByRole('button', { name: '核对状态' }); fireEvent.click(reconcile);
+    expect(reconcile.getAttribute('aria-busy')).toBe('true');
+    expect(screen.getByRole('status').textContent).toBe('正在核对写入结果…');
+    await act(async () => check.resolve()); await screen.findByText('已核对写入结果，资料将重新加载。');
+    expect(h.actions.mutate).toHaveBeenCalledOnce(); expect(h.actions.reconcile).toHaveBeenCalledWith('delayed-identity', expect.any(AbortSignal));
+  });
+
+  it('announces the actual host action while its response is pending', async () => {
+    const h = fixture(), download = deferred<void>(); h.actions.downloadTemplate = vi.fn(() => download.promise);
+    render(<AccountWorkspace {...h.props} />); await ready();
+    const trigger = screen.getByRole('button', { name: '下载模板' }); fireEvent.click(trigger);
+    expect(trigger.getAttribute('aria-busy')).toBe('true');
+    expect(screen.getByRole('status').textContent).toBe('正在下载身份证对照表模板…');
+    expect((screen.getByRole('button', { name: '主账号管理' }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => download.resolve()); await ready();
+    expect(trigger.getAttribute('aria-busy')).toBe('false');
+    expect(screen.queryByText('正在下载身份证对照表模板…')).toBeNull();
+  });
+
   it('reloads the valid last page when clearing the only identity record on page two reduces the total to thirty', async () => {
     const h = fixture(); let removed = false;
     const correctedPage = deferred<AccountPage>();
@@ -246,7 +300,8 @@ describe('AccountWorkspace', () => {
   });
 
   it('rejects oversized or unsupported images and writes a photo only after image load and crop confirmation', async () => {
-    const h = fixture(); render(<AccountWorkspace {...h.props} />); await ready();
+    const h = fixture(), upload = deferred<void>(); h.actions.mutate = vi.fn(() => upload.promise);
+    render(<AccountWorkspace {...h.props} />); await ready();
     const choose = screen.getByLabelText('选择账户照片');
     fireEvent.change(choose, { target: { files: [new File([new Uint8Array(8 * 1024 * 1024 + 1)], 'large.png', { type: 'image/png' })] } });
     expect(screen.getByText('照片不能超过 8 MB。')).toBeTruthy();
@@ -261,6 +316,9 @@ describe('AccountWorkspace', () => {
     fireEvent.change(screen.getByLabelText('裁剪半径'), { target: { value: '28' } });
     fireEvent.click(screen.getByRole('button', { name: '确认裁剪并上传' }));
     await waitFor(() => expect(h.actions.mutate).toHaveBeenCalledWith({ kind: 'photo-set', account: accountA, file, crop: { cx: 0.35, cy: 0.5, r: 0.28 } }, expect.any(AbortSignal)));
+    expect(within(screen.getByRole('dialog', { name: '裁剪并上传账户照片' })).getByRole('status').textContent).toBe('正在上传账户照片…');
+    expect(screen.getByRole('button', { name: '确认裁剪并上传' }).getAttribute('aria-busy')).toBe('true');
+    await act(async () => upload.resolve());
     await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:synthetic-1'));
   });
 
@@ -320,12 +378,14 @@ describe('AccountWorkspace', () => {
   it('releases a photo preview on unknown writes and prevents a second photo submission before reconciliation', async () => {
     const h = fixture(); h.actions.mutate = vi.fn(async () => { throw Object.assign(new Error('合成上传回执中断'), { code: 'write-unknown', operationId: 'photo-uncertain' }); });
     render(<AccountWorkspace {...h.props} />); await ready();
-    fireEvent.change(screen.getByLabelText('选择账户照片'), { target: { files: [new File(['synthetic'], 'synthetic.bmp', { type: 'image/bmp' })] } });
+    const choose = screen.getByLabelText('选择账户照片'); choose.focus();
+    fireEvent.change(choose, { target: { files: [new File(['synthetic'], 'synthetic.bmp', { type: 'image/bmp' })] } });
     fireEvent.load(screen.getByAltText('照片裁剪预览'));
     fireEvent.click(screen.getByRole('button', { name: '确认裁剪并上传' }));
     await screen.findByText(/有 1 项写入结果尚未确认/);
     expect(screen.queryByRole('dialog')).toBeNull(); expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:synthetic-1');
     expect((screen.getByLabelText('选择账户照片') as HTMLInputElement).disabled).toBe(true);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '下载模板' }));
     expect(h.actions.mutate).toHaveBeenCalledOnce();
   });
 

@@ -42,9 +42,10 @@
   <button type="button" class="btn ribbon-action" id="btnCanvasSave" aria-label="保存画布" title="保存完整画布及显示设置"><img class="ui-icon" src="/static/ui-icons/device-floppy.svg" alt=""><span>保存</span></button>
   <button type="button" class="btn ribbon-action" id="btnUndo" aria-label="撤销" title="暂无可撤销的画布编辑" disabled><img class="ui-icon" src="/static/ui-icons/arrow-back-up.svg" alt=""><span>撤销</span></button>
   <button type="button" class="btn ribbon-action" id="btnRedo" aria-label="重做" title="暂无可重做的画布编辑" disabled><img class="ui-icon" src="/static/ui-icons/arrow-forward-up.svg" alt=""><span>重做</span></button></div>
+      <button type="button" class="btn workspace-view-trigger" id="btnWorkspaceView" data-toolbar-menu="workspaceViewMenu" aria-controls="workspaceViewMenu" aria-expanded="false" aria-haspopup="menu" title="切换工作区视图"><span>工作区视图</span><span id="workspaceViewCurrent">标准</span><img class="ui-icon toolbar-menu-chevron" src="/static/ui-icons/chevron-down.svg" alt=""></button>
       <output id="ribbonSelectionStatus" aria-live="polite">未选择节点</output>
       <button type="button" class="btn small ribbon-inspect" data-ribbon-command="inspectSelection" aria-controls="drawer" title="查看所选对象详情 · Enter" disabled><img class="ui-icon" src="/static/ui-icons/list.svg" alt=""><span>查看详情</span></button>
-      <button type="button" class="btn ribbon-collapse-button" data-ribbon-collapse="true">收起功能区<img class="ui-icon" src="/static/ui-icons/chevron-up.svg" alt=""></button>
+      <button type="button" class="btn ribbon-collapse-button" data-ribbon-collapse="true" aria-expanded="true"><span id="ribbonCollapseLabel">收起功能区</span><img class="ui-icon" src="/static/ui-icons/chevron-up.svg" alt=""></button>
     </div>
     <div id="ribbonPanels">
       <div class="ribbon-panel" id="ribbonPanel-common" role="tabpanel" aria-labelledby="ribbonTab-common">
@@ -309,7 +310,12 @@
   </div>
   <button class="workspace-collapse" id="btnToolbarToggle" type="button" aria-label="收起顶部工具带" aria-expanded="true" aria-controls="graphToolbar" title="收起顶部工具带"><img class="ui-icon" src="/static/ui-icons/chevron-up.svg" alt=""></button>
 </section>
-<main id="workspace">
+<div id="workspaceViewMenu" class="toolbar-menu workspace-view-menu" role="menu" aria-label="工作区视图" hidden inert>
+  <button type="button" id="workspaceViewStandard" class="toolbar-menu-item workspace-view-option" role="menuitemradio" aria-checked="true" tabindex="-1" data-workspace-view="standard"><span class="workspace-view-copy"><strong>标准</strong><span>查询在左，画布在右</span></span><img class="ui-icon workspace-view-check" src="/static/ui-icons/check.svg" alt=""></button>
+  <button type="button" id="workspaceViewFocus" class="toolbar-menu-item workspace-view-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-workspace-view="focus"><span class="workspace-view-copy"><strong>专注</strong><span>收起查询和功能区，扩大画布</span></span><img class="ui-icon workspace-view-check" src="/static/ui-icons/check.svg" alt=""></button>
+  <button type="button" id="workspaceViewSplit" class="toolbar-menu-item workspace-view-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-workspace-view="split"><span class="workspace-view-copy"><strong>上下分栏</strong><span>画布在上，查询和流水在下</span></span><img class="ui-icon workspace-view-check" src="/static/ui-icons/check.svg" alt=""></button>
+</div>
+<main id="workspace" data-workspace-view="standard">
   <div id="workspaceSidebarEdge" class="sidebar-edge">
     <div id="workspaceSidebarResize" role="separator" aria-label="调整查询区宽度" aria-orientation="vertical" aria-valuemin="360" aria-valuemax="760" aria-valuenow="560" tabindex="0"></div>
     <button class="workspace-collapse" id="btnSidebarToggle" type="button" aria-label="收起查询区" aria-expanded="true" aria-controls="left" title="收起查询区"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button>

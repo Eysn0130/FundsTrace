@@ -492,6 +492,10 @@ public static class FundsTraceStartupWindow {
             DwmFlush();return Read(window,processId);
         } finally {Move(cursor);}
     }
+    public static void AssertCaptionHits(CaptionEvidence result) {
+        if(result.CaptionHit!=2 || result.MenuHit!=2)
+            throw new InvalidOperationException("CAPTION_DRAG_PREVIEW_HIT_MISMATCH");
+    }
     public static CaptionEvidence Caption(IntPtr window,uint processId,int dragXDip,int menuXDip,bool close) {
         InputDesktop(window,processId);
         Point cursor; if(!GetCursorPos(out cursor)) throw new InvalidOperationException("INPUT_CURSOR_UNAVAILABLE");
@@ -509,7 +513,7 @@ public static class FundsTraceStartupWindow {
             var drag=new Point{X=before.Client.X+(int)Math.Round(dragXDip*before.Dpi/96.0),Y=before.Client.Y+(int)Math.Round(16*before.Dpi/96.0)};
             var menu=new Point{X=before.Client.X+(int)Math.Round(menuXDip*before.Dpi/96.0),Y=drag.Y};
             result.CaptionHit=Hit(window,drag);result.MenuHit=Hit(window,menu);
-            if(result.CaptionHit!=2 || result.MenuHit!=1) throw new InvalidOperationException("CAPTION_DRAG_MENU_HIT_MISMATCH");
+            AssertCaptionHits(result);
             int right=before.WorkArea.X+before.WorkArea.Width-before.Window.X-before.Window.Width;
             int bottom=before.WorkArea.Y+before.WorkArea.Height-before.Window.Y-before.Window.Height;
             int dx=right>=24?24:before.Window.X-before.WorkArea.X>=24?-24:0;
@@ -729,7 +733,7 @@ public static class FundsTraceStartupWindow {
     $SafeExceptionCode = $_.Exception.GetBaseException().Message
     $InputUnavailable = @('INPUT_DESKTOP_UNAVAILABLE', 'INPUT_FOREGROUND_UNAVAILABLE',
         'INPUT_KEYS_ALREADY_PRESSED', 'INPUT_INJECTION_FAILED', 'INPUT_CURSOR_UNAVAILABLE')
-    if ($Action -eq 'CaptionCloseForeground') {
+    if ($Stage -eq 'nativeCaptionInteraction') {
         $FailureCodes = @{
             TWO_OWNED_WINDOWS_REQUIRED = 'OWNED_WINDOW_COUNT'; UNIQUE_WINDOW_REQUIRED = 'OWNED_WINDOW_COUNT'
             WINDOW_ENUMERATION_FAILED = 'OWNED_WINDOW_COUNT'
@@ -737,6 +741,9 @@ public static class FundsTraceStartupWindow {
             OWNED_FOREGROUND_REQUIRED = 'FOREGROUND_BINDING'
             NATIVE_CAPTION_BUTTON_HIT_MISSING = 'HTCLOSE'; CAPTION_INPUT_HIT_MISMATCH = 'HTCLOSE'
             CAPTION_HIT_UNAVAILABLE = 'HTCLOSE'; CAPTION_POINT_UNAVAILABLE = 'HTCLOSE'
+            CAPTION_DRAG_PREVIEW_HIT_MISMATCH = 'CAPTION_HIT'
+            CAPTION_EXPECTED_NORMAL_WINDOW = 'CAPTION_STATE'
+            CAPTION_DRAG_RESIZED_WINDOW = 'CAPTION_GEOMETRY'; CAPTION_RESTORE_BOUNDS_FAILED = 'CAPTION_GEOMETRY'
             CAPTION_STATE_TIMEOUT = 'STATE_TIMEOUT'
             PROCESS_BINDING_FAILED = 'PROCESS_BINDING'; PATH_BINDING_FAILED = 'PROCESS_BINDING'
             BOUNDS_UNAVAILABLE = 'NATIVE_GEOMETRY'; BOUNDS_CHANGED = 'NATIVE_GEOMETRY'
@@ -745,7 +752,8 @@ public static class FundsTraceStartupWindow {
             DPI_CONTEXT_UNAVAILABLE = 'NATIVE_GEOMETRY'; INPUT_POINT_UNAVAILABLE = 'CAPTION_POINT'
         }
         $Report.failureCode = if ($FailureCodes.ContainsKey($SafeExceptionCode)) { $FailureCodes[$SafeExceptionCode] }
-            elseif ($SafeExceptionCode -in $InputUnavailable) { $SafeExceptionCode } else { 'NATIVE_CLOSE_FAILED' }
+            elseif ($SafeExceptionCode -in $InputUnavailable) { $SafeExceptionCode }
+            elseif ($Action -eq 'CaptionCloseForeground') { 'NATIVE_CLOSE_FAILED' } else { 'NATIVE_CAPTION_FAILED' }
     }
     if ($Stage -eq 'nativeCaptionInteraction' -and $SafeExceptionCode -in $InputUnavailable) {
         $Report.status = 'unavailable'

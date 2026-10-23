@@ -1,13 +1,13 @@
 /* Shared application navigation. Keep the live graph at its original size while
    another page is in front, so hidden-page resizing cannot move its camera. */
-#browserCaption {height:32px;flex:0 0 32px;display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--surface-rail);border-bottom:1px solid var(--border);font-size:12px}
+#browserCaption {height:32px;flex:0 0 32px;display:flex;align-items:center;gap:var(--space-8);padding:0 12px;background:var(--surface-rail);border-bottom:1px solid var(--border);font-size:var(--font-size-meta)}
 #browserCaption img {width:14px;height:14px}
 .preview-badge {font-size:10px;color:var(--muted);background:var(--surface-control);padding:2px 6px;border-radius:4px}
 #appShell {flex:1;display:flex;min-width:0;min-height:0;overflow:hidden}
-#appRail {width:56px;flex:0 0 56px;display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 0 10px;background:var(--surface-rail);border-right:1px solid var(--border)}
-#appRail button {width:38px;height:38px;flex:0 0 38px;border:0;border-radius:7px;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center}
+#appRail {width:56px;flex:0 0 56px;display:flex;flex-direction:column;align-items:center;gap:var(--space-8);padding:12px 0 10px;background:var(--surface-rail);border-right:1px solid var(--border)}
+#appRail button {width:38px;height:38px;flex:0 0 38px;border:0;border-radius:var(--control-radius);background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center}
 #appRail button:hover {background:var(--surface-hover)}
-#appRail button:focus-visible {outline:2px solid var(--focus-ring);outline-offset:2px}
+#appRail button:focus-visible {outline:var(--focus-width) solid var(--focus-ring);outline-offset:var(--focus-offset)}
 #appRail button[aria-current="page"] {background:var(--selection-surface);box-shadow:inset 2px 0 var(--accent)}
 #appRail img {width:21px;height:21px;filter:var(--icon-filter)}
 #appRail button[aria-current="page"] img {filter:var(--icon-filter)}
@@ -17,34 +17,36 @@
 #appPageHost {position:relative;flex:1;min-width:0;min-height:0;overflow:hidden}
 #graphPage {position:absolute;inset:0;display:flex;flex-direction:column;min-width:0;min-height:0}
 #graphPage.page-inactive {visibility:hidden;pointer-events:none}
+/* Override #drawer.open visibility while keeping its draft for return home. */
+#graphPage.page-inactive #drawer {visibility:hidden;pointer-events:none}
 #casesFrame {position:absolute;inset:0;width:100%;height:100%;border:0;background:var(--surface)}
 #editorToolbar {flex-shrink:0}
 #graphPage #workspace {flex:1;min-height:0}
 #graphPage .ribbon-tabbar {flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}
 #ribbonTabs {flex:0 0 auto}
 #graphPage .case-box {margin-left:24px;gap:7px;flex:0 0 auto;white-space:nowrap}
-#graphPage .case-box label {font-size:11px;color:var(--muted)}
-#graphPage .case-box select {height:26px;min-height:26px;font-size:12px;padding:2px 24px 2px 8px;width:160px;max-width:180px}
+#graphPage .case-box label {font-size:var(--font-size-meta);color:var(--muted)}
+#graphPage .case-box select {height:var(--control-height-compact);min-height:var(--control-height-compact);font-size:var(--font-size-meta);padding:2px 24px 2px 8px;width:160px;max-width:180px}
 #graphPage #caseSelect {font-weight:600}
 #graphPage #canvasSel {width:145px}
 #graphPage .ribbon-quick {display:flex;flex:0 0 auto;gap:3px;margin:0 10px}
-#graphPage .ribbon-quick .ribbon-action {width:30px;min-width:30px;height:28px;min-height:28px;padding:4px;display:flex;align-items:center;justify-content:center}
+#graphPage .ribbon-quick .ribbon-action {width:30px;min-width:30px;height:var(--control-height-compact);min-height:var(--control-height-compact);padding:4px;display:flex;align-items:center;justify-content:center}
 #graphPage .ribbon-quick .ribbon-action img {width:17px;height:17px}
 #graphPage .ribbon-quick span {display:none}
-#ribbonSelectionStatus {margin-left:auto;white-space:nowrap;flex:0 0 auto}
+#ribbonSelectionStatus {margin-left:auto;white-space:nowrap;flex:0 1 auto}
 #caseQuerySummary {padding:9px 12px 7px;border-bottom:1px solid var(--border);background:var(--surface-raised)}
-#caseQuerySummary .stats {font-size:11px;color:var(--muted)}
-#caseQuerySummary .workflow-status {margin:6px 0 0;padding:6px;line-height:1.5;font-size:11px}
-.app-system-dialog {max-width:460px;padding:24px}
-.app-system-dialog h2 {font-size:18px;margin-bottom:14px}
+#caseQuerySummary .stats {font-size:var(--font-size-meta);color:var(--muted)}
+#caseQuerySummary .workflow-status {margin:6px 0 0;padding:6px;line-height:1.5;font-size:var(--font-size-meta)}
+.app-system-dialog {max-width:460px;padding:var(--space-24)}
+.app-system-dialog h2 {font-size:var(--font-size-section-title);line-height:var(--line-height-section-title);margin-bottom:var(--space-16)}
 .app-system-dialog p {line-height:1.7;margin:12px 0;color:var(--muted)}
-@media(max-width:1100px) {#graphPage .case-box {margin-left:12px} #graphPage .case-box select{width:130px} #graphPage .ribbon-inspect span{display:none} #ribbonSelectionStatus{font-size:11px}}
+@media(max-width:1100px) {#graphPage .case-box {margin-left:12px} #graphPage .case-box select{width:130px} #graphPage .ribbon-inspect span{display:none} #ribbonSelectionStatus{font-size:var(--font-size-meta)}}
 
 #analysisFrame{position:absolute;inset:0;width:100%;height:100%;border:0;background:var(--surface)}
 #analysisFrame[hidden]{display:none}
 
 #browserCaption[hidden]{display:none}
-.query-stat-line{font-size:11px;color:var(--muted);white-space:nowrap}
+.query-stat-line{font-size:var(--font-size-meta);color:var(--muted);white-space:nowrap}
 
 /* Surface separation replaces heavy frames without changing the canvas slot. */
 html[data-ft-theme="light"] #graphPage :is(.ribbon-tabbar,.workspace-toolbar) {border-bottom-color:var(--border)}
@@ -52,7 +54,7 @@ html[data-ft-theme="light"] #graphPage .ribbon-tabbar {background:var(--surface-
 html[data-ft-theme="light"] #graphPage .ribbon-group {border-right-color:var(--border)}
 html[data-ft-theme="light"] #graphPage #left {border-right-color:var(--border)}
 #ribbonTabs [role="tab"][aria-selected="true"]:hover {background:var(--selection-surface)}
-#appRail :is([data-nav-page],#navAnalysis,#navSettings,#navUpdate):not(:disabled),#ribbonTabs [role="tab"],#editorToolbar .btn:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {transition:background-color 120ms var(--interaction-ease),border-color 120ms var(--interaction-ease),color 120ms var(--interaction-ease)}
+#appRail :is([data-nav-page],#navAnalysis,#navSettings,#navUpdate):not(:disabled),#ribbonTabs [role="tab"],#editorToolbar .btn:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {transition:background-color var(--motion-fast) var(--interaction-ease),border-color var(--motion-fast) var(--interaction-ease),color var(--motion-fast) var(--interaction-ease)}
 #editorToolbar .btn:is(:disabled,[aria-disabled="true"],[aria-busy="true"]) {transition:none}
 @media(prefers-reduced-motion:reduce) {#appRail :is([data-nav-page],#navAnalysis,#navSettings,#navUpdate):not(:disabled),#ribbonTabs [role="tab"],#editorToolbar .btn:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {transition:none}}
 

@@ -29,6 +29,27 @@ test('defaults are pure JSON and UMD/CommonJS provide the same API', () => {
   assert.equal(typeof sandbox.FundsGraphPresentation.displayData, 'function');
 });
 
+test('canvas palettes change only implicit label ink and leave explicit colours and persistent state intact', () => {
+  assert.deepEqual(presentation.palette('light'), { ink: '#111111', mutedEdge: '#c9c9c9', edge: '#7f8b99', selection: '#2367ad' });
+  assert.deepEqual(presentation.palette('dark'), { ink: '#dfe3ea', mutedEdge: '#3f4854', edge: '#7f8b99', selection: '#66d9ef' });
+  assert.equal(Object.isFrozen(presentation.palette('light')), true);
+  assert.equal(presentation.palette('system'), presentation.palette('dark'), 'the caller supplies a resolved theme');
+  const custom = { fontSize: 20, fill: '#dfe3ea' }, before = JSON.stringify(custom);
+  for (const kind of ['node', 'edge']) {
+    const dark = presentation.effectiveLabel(kind), light = presentation.effectiveLabel(kind, { fontSize: 20 }, 'light');
+    assert.equal(dark.fill, '#dfe3ea'); assert.equal(light.fill, '#111111');
+    assert.deepEqual(presentation.effectiveLabel(kind, undefined, 'light'), { ...dark, fill: '#111111' });
+    assert.equal(presentation.effectiveLabel(kind, custom, 'light').fill, '#dfe3ea', 'an explicit old-default colour stays explicit');
+    assert.equal(presentation.effectiveLabel(kind, { fill: '#abc' }, 'light').fill, '#abc');
+    assert.equal(light.lineHeight, 24, 'theme leaves font-size bounds unchanged');
+  }
+  assert.equal(JSON.stringify(custom), before);
+  const saved = presentation.create({ theme: 'light', nodeLabels: { A: { fontSize: 20 } }, edgeLabels: { 'A=>B': custom } });
+  assert.deepEqual(saved.nodeLabels.A, { fontSize: 20 });
+  assert.deepEqual(saved.edgeLabels['A=>B'], custom);
+  assert.equal(Object.hasOwn(saved, 'theme'), false, 'live appearance never enters saved graph presentation');
+});
+
 test('label style retains only approved fonts, bounded geometry and literal colors', () => {
   assert.deepEqual(presentation.sanitizeLabel({ fontFamily: 'Microsoft YaHei', fontSize: 8, fontWeight: 'bold',
     fontStyle: 'italic', fill: '#ABCDEF', lineHeight: 64, text: '<script>alert(1)</script>', underline: true }),

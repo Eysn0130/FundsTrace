@@ -27,7 +27,10 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
   const [listReload, setListReload] = useState(0);
   const [creating, setCreating] = useState(false);
   const [caseInfoOpen, setCaseInfoOpen] = useState(false);
-  useEffect(() => setCaseInfoOpen(false), [selectedId]);
+  const [caseActionsOpen, setCaseActionsOpen] = useState(false);
+  const caseActionsMenu = useRef<HTMLDetailsElement>(null);
+  const caseActionsSummary = useRef<HTMLElement>(null);
+  useEffect(() => { setCaseInfoOpen(false); setCaseActionsOpen(false); }, [selectedId, generation]);
   const [caseName, setCaseName] = useState('');
   const [createError, setCreateError] = useState('');
   const [createBusy, setCreateBusy] = useState(false);
@@ -39,6 +42,15 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
   const queryDrafts = useRef(new Map<string, FundsQueryDraft>());
   const retainedCaseIds = hostContext?.retainedCaseIds ?? [];
   const pageActive = !embedded || hostContext?.active !== false;
+  useEffect(() => { if (operationBusy || !pageActive || surface !== 'cases') setCaseActionsOpen(false); }, [operationBusy, pageActive, surface]);
+  useEffect(() => {
+    if (!caseActionsOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !caseActionsMenu.current?.contains(event.target)) setCaseActionsOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    return () => document.removeEventListener('pointerdown', closeOutside);
+  }, [caseActionsOpen]);
   const [connection, setConnection] = useState<{ binding: ReturnType<typeof createHttpFundsSession>; transport: FundsApi; actionsFactory: typeof actionsForCase } | null>(null);
   const currentBinding = useRef<ReturnType<typeof createHttpFundsSession> | null>(null);
   const nextBinding = useRef(0);
@@ -205,6 +217,8 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
     finally { if (!lifetime.current.signal.aborted) setCreateBusy(false); }
   };
   const runOperation = async (action: 'import' | 'export' | 'delete') => {
+    if (operationBusy) return;
+    closeCaseActions(true);
     setOperationBusy(true); setError('');
     try {
       if (embedded && bridge.current) await bridge.current.request('case-action', { action }, lifetime.current.signal);
@@ -213,6 +227,7 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
     finally { if (!lifetime.current.signal.aborted) setOperationBusy(false); }
   };
   const chooseCase = async (id: string) => {
+    closeCaseActions();
     setOperationBusy(true); setError('');
     try { await selectCase(id); }
     catch (reason) { if ((reason as Error).name !== 'AbortError') setError((reason as Error).message); }
@@ -246,7 +261,11 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
       viewFlows: (account,signal) => request('account-action',{action:'view-flows',account},signal),
     };
   }, []);
-  const caseActions = <details className="case-actions"><summary aria-disabled={operationBusy}>案件操作 <img className="ui-icon" src="/static/ui-icons/chevron-down.svg" alt="" /></summary><div className="case-actions-menu"><button disabled={operationBusy} onClick={() => void runOperation('export')}><img className="ui-icon" src="/static/ui-icons/download.svg" alt="" />导出案件包</button><button className="danger-text" disabled={operationBusy} onClick={() => void runOperation('delete')}><img className="ui-icon" src="/static/ui-icons/trash.svg" alt="" />删除案件…</button><button disabled={operationBusy} onClick={() => setCaseInfoOpen(true)}><img className="ui-icon" src="/static/ui-icons/list.svg" alt="" />案件信息</button></div></details>;
+  function closeCaseActions(restoreFocus = false) {
+    setCaseActionsOpen(false);
+    if (restoreFocus) caseActionsSummary.current?.focus({ preventScroll: true });
+  }
+  const caseActions = <details ref={caseActionsMenu} className="case-actions" open={caseActionsOpen} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) closeCaseActions(); }} onKeyDown={event => { if (event.key === 'Escape' && caseActionsOpen) { event.preventDefault(); event.stopPropagation(); closeCaseActions(true); } }}><summary ref={caseActionsSummary} aria-disabled={operationBusy} aria-expanded={caseActionsOpen} onClick={event => { event.preventDefault(); if (!operationBusy) setCaseActionsOpen(value => !value); }}>案件操作 <img className="ui-icon" src="/static/ui-icons/chevron-down.svg" alt="" /></summary><div className="case-actions-menu"><button disabled={operationBusy} onClick={() => void runOperation('export')}><img className="ui-icon" src="/static/ui-icons/download.svg" alt="" />导出案件包</button><button className="danger-text" disabled={operationBusy} onClick={() => void runOperation('delete')}><img className="ui-icon" src="/static/ui-icons/trash.svg" alt="" />删除案件…</button><button disabled={operationBusy} onClick={() => { closeCaseActions(true); setCaseInfoOpen(true); }}><img className="ui-icon" src="/static/ui-icons/list.svg" alt="" />案件信息</button></div></details>;
   return <>
     <div className="funds-trace standalone-surface" hidden={surface !== 'accounts'}>{selected ? <AccountWorkspace active={pageActive && surface === 'accounts'} context={{caseId:selected.id,name:selected.name,generation}} cases={cases} onSelectCase={selectCase} revision={accountRevision} actions={accountActions} unresolvedOperations={hostContext?.unresolvedOperations} /> : <div role="status">正在连接案件账户工作区…</div>}</div>
     <div hidden={surface !== 'cases'} className={`funds-trace app-shell cases-workspace${embedded ? ' embedded-workspace' : ''}`}>
@@ -261,7 +280,7 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
       {importError && <p role="alert" className="error-banner">{importError}</p>}
       <FundsPanel active={pageActive && surface === 'cases'} revision={dataRevision} host={{ version: FUNDS_PANEL_VERSION, session }} workspace={{ initialDraft: queryDrafts.current.get(selectedId), onDraftChange: draft => { if (selectedId) queryDrafts.current.set(selectedId, draft); }, caseActions, retained: retainedCaseIds.includes(selectedId) }} />
     </main>
-    {caseInfoOpen && selected && <Modal title="案件信息" onClose={() => setCaseInfoOpen(false)}><dl className="case-info"><dt>案件名称</dt><dd>{selected.name}</dd><dt>案件 ID</dt><dd className="mono">{selected.id}</dd><dt>创建时间</dt><dd>{cases.find(item => item.id === selected.id)?.created_at || '未提供'}</dd></dl><p className="case-info-note">本案件的流水、账户资料和画布独立保存。当前会话内保留的编辑现场，请在退出前保存画布。</p><footer className="modal-footer"><button className="button secondary" onClick={() => setCaseInfoOpen(false)}>关闭</button></footer></Modal>}
-    {creating && <Modal title="新建案件" busy={createBusy} onClose={() => setCreating(false)}><form onSubmit={event => void create(event)} className="create-case-form"><label>案件名称<input autoFocus aria-label="案件名称" maxLength={200} disabled={!!createdCase || !!uncertainCreate} value={caseName} onChange={event => setCaseName(event.target.value)} placeholder="输入便于识别的案件名称" /></label>{uncertainCreate && <section className="uncertain-create" aria-label="核对新建案件结果"><p>创建结果尚未确认，请核对“{uncertainCreate.name}”。本次核对只读取案件列表。</p>{uncertainCreate.checked && (uncertainCreate.matches.length ? <><p>找到同名案件，请核对后选择打开：</p>{uncertainCreate.matches.map(item => <button key={item.id} type="button" className="button secondary" disabled={createBusy} onClick={() => void openCheckedCase(item)}>打开 {item.name} · ID {item.id}</button>)}</> : <p>当前列表未找到同名案件。可稍后再次核对，或确认后返回填写。</p>)}</section>}{createdCase && <p className="created-case-note">案件已创建，正在打开工作区。打开失败时可重试，或稍后从案件列表继续。</p>}{createError && <p role="alert" className="error-banner">{createError}</p>}<footer className="modal-footer"><button type="button" className="button secondary" disabled={createBusy} onClick={() => setCreating(false)}>取消</button>{uncertainCreate ? <><button type="button" className="button primary" disabled={createBusy} onClick={() => void checkUncertainCreate()}>{createBusy ? '正在核对…' : '核对案件列表'}</button>{uncertainCreate.checked && !uncertainCreate.matches.length && <button type="button" className="button secondary" disabled={createBusy} onClick={() => { setUncertainCreate(null); setCreateError(''); setCaseName(''); }}>已核对，重新填写</button>}</> : <button className="button primary" disabled={createBusy || !caseName.trim()}>{createBusy ? createdCase ? '正在打开…' : '正在创建…' : createdCase ? '打开已创建案件' : '创建案件'}</button>}</footer></form></Modal>}
+    {pageActive && surface === 'cases' && caseInfoOpen && selected && <Modal title="案件信息" onClose={() => setCaseInfoOpen(false)}><dl className="case-info"><dt>案件名称</dt><dd>{selected.name}</dd><dt>案件 ID</dt><dd className="mono">{selected.id}</dd><dt>创建时间</dt><dd>{cases.find(item => item.id === selected.id)?.created_at || '未提供'}</dd></dl><p className="case-info-note">本案件的流水、账户资料和画布独立保存。当前会话内保留的编辑现场，请在退出前保存画布。</p><footer className="modal-footer"><button className="button secondary" onClick={() => setCaseInfoOpen(false)}>关闭</button></footer></Modal>}
+    {pageActive && surface === 'cases' && creating && <Modal title="新建案件" busy={createBusy} onClose={() => setCreating(false)}><form onSubmit={event => void create(event)} className="create-case-form"><label>案件名称<input autoFocus aria-label="案件名称" maxLength={200} disabled={!!createdCase || !!uncertainCreate} value={caseName} onChange={event => setCaseName(event.target.value)} placeholder="输入便于识别的案件名称" /></label>{uncertainCreate && <section className="uncertain-create" aria-label="核对新建案件结果"><p>创建结果尚未确认，请核对“{uncertainCreate.name}”。本次核对只读取案件列表。</p>{uncertainCreate.checked && (uncertainCreate.matches.length ? <><p>找到同名案件，请核对后选择打开：</p>{uncertainCreate.matches.map(item => <button key={item.id} type="button" className="button secondary" disabled={createBusy} onClick={() => void openCheckedCase(item)}>打开 {item.name} · ID {item.id}</button>)}</> : <p>当前列表未找到同名案件。可稍后再次核对，或确认后返回填写。</p>)}</section>}{createdCase && <p className="created-case-note">案件已创建，正在打开工作区。打开失败时可重试，或稍后从案件列表继续。</p>}{createError && <p role="alert" className="error-banner">{createError}</p>}<footer className="modal-footer"><button type="button" className="button secondary" disabled={createBusy} onClick={() => setCreating(false)}>取消</button>{uncertainCreate ? <><button type="button" className="button primary" disabled={createBusy} onClick={() => void checkUncertainCreate()}>{createBusy ? '正在核对…' : '核对案件列表'}</button>{uncertainCreate.checked && !uncertainCreate.matches.length && <button type="button" className="button secondary" disabled={createBusy} onClick={() => { setUncertainCreate(null); setCreateError(''); setCaseName(''); }}>已核对，重新填写</button>}</> : <button className="button primary" disabled={createBusy || !caseName.trim()}>{createBusy ? createdCase ? '正在打开…' : '正在创建…' : createdCase ? '打开已创建案件' : '创建案件'}</button>}</footer></form></Modal>}
   </div></>;
 }

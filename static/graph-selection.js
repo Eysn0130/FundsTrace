@@ -15,6 +15,7 @@
     if (!graph || !container) throw new TypeError('FundsGraphSelection requires a graph and container');
     const document = container.ownerDocument || global.document;
     const context = options.context, ids = asIds(options.ids);
+    const selectionColor = typeof options.selectionColor === 'function' ? options.selectionColor : () => '#66d9ef';
     const current = () => !destroyed && !graph.destroyed && (!options.isCurrent || options.isCurrent(context));
     const interactive = () => !options.canInteract || options.canInteract();
     const layer = document.createElement('div');
@@ -89,6 +90,7 @@
       const model = modelOf(item);
       if (!model) { const existed = outlines.has(item); removeOutline(item); return existed; }
       const size = sizeOf(model), border = model.style?.lineWidth ?? item.getKeyShape?.()?.attr?.()?.lineWidth ?? 0;
+      const color = selectionColor() || '#66d9ef';
       const radius = Math.max(size.width, size.height) / 2 + Math.max(3, (finite(border) ? border : 0) / 2 + 2);
       let outline = outlines.get(item), changed = false;
       if (outline?.shape.destroyed) { outlines.delete(item); outline = null; }
@@ -96,11 +98,12 @@
         // The same static outer ring handles circles and Canvas images. It is
         // independent of the role border and remains visible above ten selected.
         const shape = item.getContainer?.()?.addShape?.('circle', { name: 'funds-selection-outline', capture: false,
-          attrs: { x: 0, y: 0, r: radius, stroke: '#66d9ef', lineWidth: 2, fill: null, shadowBlur: 0 } });
+          attrs: { x: 0, y: 0, r: radius, stroke: color, lineWidth: 2, fill: null, shadowBlur: 0 } });
         if (!shape) return false;
-        outline = { shape, radius, visible: true }; outlines.set(item, outline); changed = true;
+        outline = { shape, radius, color, visible: true }; outlines.set(item, outline); changed = true;
       }
       if (outline.radius !== radius) { outline.shape.attr?.({ r: radius }); outline.radius = radius; changed = true; }
+      if (outline.color !== color) { outline.shape.attr?.({ stroke: color }); outline.color = color; changed = true; }
       if (outline.visible !== visualsVisible) {
         if (visualsVisible) outline.shape.show?.(); else outline.shape.hide?.();
         outline.visible = visualsVisible; changed = true;

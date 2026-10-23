@@ -14,6 +14,7 @@
     const topbar = doc.getElementById('topbar');
     const panelContainer = doc.getElementById('ribbonPanels');
     const tabbar = doc.getElementById('ribbonTabs')?.parentElement;
+    const toolbarHost = toolbar.parentElement;
     const status = { tab: 'common', collapsed: false, selectionCount: 0, edgeSelectionCount: 0, busy: false, cameraReady:false };
     const commandOverrides = new Map();
     const mixedOptions = new WeakMap(), mixedTitles = new WeakMap();
@@ -25,7 +26,12 @@
     }
 
     function updateToolbarFit(notify = true) {
-      const width = Math.max(1, doc.documentElement?.clientWidth || root.innerWidth || 1280);
+      // The navigation rail occupies viewport space outside the toolbar's slot.
+      // Measure the unscaled host; reading the toolbar would feed its own zoom
+      // back into the next measurement. Hidden slots wait for visible geometry.
+      const hostWidth = toolbarHost?.clientWidth;
+      const width = Number.isFinite(hostWidth) ? hostWidth : doc.documentElement?.clientWidth || root.innerWidth || 1280;
+      if (width <= 0) return;
       const scale = Math.min(1, width / 1280);
       const changed = toolbarScale !== null && scale !== toolbarScale;
       const announce = phase => root.dispatchEvent(new root.CustomEvent('fundstrace:workspace-resize', {
@@ -104,7 +110,16 @@
         tab.setAttribute('aria-selected', String(active));
         tab.tabIndex = active ? 0 : -1;
       }
-      if (tabbar) { tabbar.hidden = status.collapsed; tabbar.inert = status.collapsed; }
+      if (tabbar) { tabbar.hidden = false; tabbar.inert = false; }
+      const fold = tabbar?.querySelector('.ribbon-collapse-button');
+      if (fold) {
+        fold.dataset.ribbonCollapse = String(!status.collapsed);
+        fold.setAttribute('aria-expanded', String(!status.collapsed));
+        const label = doc.getElementById('ribbonCollapseLabel');
+        if (label) label.textContent = status.collapsed ? '展开功能区' : '收起功能区';
+        const image = fold.querySelector('img');
+        if (image) image.src = `/static/ui-icons/chevron-${status.collapsed ? 'down' : 'up'}.svg`;
+      }
       if (panelContainer) { panelContainer.hidden = status.collapsed; panelContainer.inert = status.collapsed; }
       compact.hidden = !status.collapsed;
       compact.inert = !status.collapsed;
@@ -119,7 +134,7 @@
       closePopovers();
       const active = doc.activeElement;
       if (active && toolbar.contains(active) && active.closest?.('[hidden]')) {
-        (status.collapsed ? compact.querySelector('[data-ribbon-collapse]') : tabs.find(tab => tab.dataset.ribbonTab === status.tab))?.focus();
+        (fold || tabs.find(tab => tab.dataset.ribbonTab === status.tab))?.focus();
       }
     }
     function activateTab(name, focus = false) {
@@ -202,8 +217,14 @@
         }
       }
     }
+    function activateVisibleTab(name, focus = false) {
+      activateTab(name, focus);
+      if (!status.collapsed) return;
+      const shell = doc.getElementById('workspace')?.fundsWorkspaceShell;
+      if (shell) shell.setToolbarCollapsed(false); else setCollapsed(false);
+    }
     for (const tab of tabs) {
-      tab.addEventListener('click', () => activateTab(tab.dataset.ribbonTab));
+      tab.addEventListener('click', () => activateVisibleTab(tab.dataset.ribbonTab));
       tab.addEventListener('keydown', event => {
         const index = tabs.indexOf(tab);
         let next = null;
@@ -213,7 +234,7 @@
         if (event.key === 'End') next = tabs.length - 1;
         if (next === null) return;
         event.preventDefault();
-        activateTab(tabs[next].dataset.ribbonTab, true);
+        activateVisibleTab(tabs[next].dataset.ribbonTab, true);
       });
     }
     for (const button of doc.querySelectorAll('[data-ribbon-collapse]')) button.addEventListener('click', () => {
@@ -259,6 +280,12 @@
       }
     });
     root.addEventListener('resize', () => { closePopovers(); updateToolbarFit(); });
+    if (root.ResizeObserver && toolbarHost) {
+      // One observer per mounted ribbon, matching the window listeners' lifetime.
+      // The mount guard above also prevents duplicate observers on re-entry.
+      const fitObserver = new root.ResizeObserver(() => { closePopovers(); updateToolbarFit(); });
+      fitObserver.observe(toolbarHost);
+    }
     for (const node of [...panels, compact]) node.addEventListener('scroll', () => closePopovers());
     root.addEventListener('fundstrace:workspace-resize', event => setCollapsed(event.detail.toolbarCollapsed));
     const api = { activateTab, setCollapsed, closePopovers, setStatus, setValues, setCommandEnabled, getState: () => ({ ...status }) };
