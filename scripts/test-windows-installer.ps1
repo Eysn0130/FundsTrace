@@ -488,20 +488,90 @@ try {
 using System;
 using System.Runtime.InteropServices;
 public static class FundsTraceUpdateWindowState {
+  delegate bool EnumWindowProc(IntPtr window, IntPtr state);
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr window);
   [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr window);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowProc callback, IntPtr state);
+  public static bool OwnedWindow(IntPtr window, uint processId) {
+    uint actual;
+    return IsWindow(window) && GetWindowThreadProcessId(window, out actual) != 0 && actual == processId;
+  }
+  public static int VisibleWindowCount(uint processId) {
+    int count = 0;
+    EnumWindowProc callback = (window, state) => {
+      if (OwnedWindow(window, processId) && IsWindowVisible(window)) count++;
+      return true;
+    };
+    if (!EnumWindows(callback, IntPtr.Zero)) throw new InvalidOperationException("WINDOW_ENUMERATION_FAILED");
+    return count;
+  }
 }
 '@
         $Relaunched.Refresh()
+        # Keep the original HWND for read-only failure observations. Handles,
+        # IDs, titles and paths never enter the report.
+        $CloseWindow = $Relaunched.MainWindowHandle
+        $SameWindowsSession = $null
+        try { $SameWindowsSession = [Diagnostics.Process]::GetCurrentProcess().SessionId -eq $Relaunched.SessionId }
+        catch { <# Session metadata is diagnostic only. #> }
         $Report.productionUpdateClose = [ordered]@{ windowPresent=($Relaunched.MainWindowHandle -ne [IntPtr]::Zero)
             workspaceTitle=($Relaunched.MainWindowTitle -ceq '循迹 FundsTrace')
             windowEnabled=[FundsTraceUpdateWindowState]::IsWindowEnabled($Relaunched.MainWindowHandle)
             windowVisible=[FundsTraceUpdateWindowState]::IsWindowVisible($Relaunched.MainWindowHandle)
+            sameWindowsSession=$SameWindowsSession
             responding=$Relaunched.Responding; requestSent=$false; exited=$false }
         $Report.productionUpdateClose.requestSent = $Relaunched.CloseMainWindow()
         if (-not $Report.productionUpdateClose.requestSent) { throw 'Updated application did not accept a normal close request.' }
         $Report.productionUpdateClose.exited = $Relaunched.WaitForExit(30000)
-        if (-not $Report.productionUpdateClose.exited) { throw 'Updated application did not finish its normal close.' }
+        if (-not $Report.productionUpdateClose.exited) {
+            $AfterClose = [ordered]@{ windowQuerySucceeded=$false; processAlive=$null
+                originalWindowExists=$null; originalWindowProcessBound=$null; visibleTopLevelWindowCount=$null
+                mainWindowPresent=$null; workspaceTitle=$null; windowEnabled=$null; windowVisible=$null; responding=$null
+                backendQuerySucceeded=$false; directOwnedBackendCount=$null }
+            $Report.productionUpdateClose.afterTimeout = $AfterClose
+            try {
+                $Relaunched.Refresh()
+                $AfterClose.processAlive = -not $Relaunched.HasExited
+                $AfterClose.originalWindowExists = [FundsTraceUpdateWindowState]::IsWindow($CloseWindow)
+                $AfterClose.originalWindowProcessBound = [FundsTraceUpdateWindowState]::OwnedWindow($CloseWindow, [uint32]$Relaunched.Id)
+                $AfterClose.visibleTopLevelWindowCount = [FundsTraceUpdateWindowState]::VisibleWindowCount([uint32]$Relaunched.Id)
+                if ($AfterClose.processAlive) {
+                    $CurrentWindow = $Relaunched.MainWindowHandle
+                    $AfterClose.mainWindowPresent = $CurrentWindow -ne [IntPtr]::Zero
+                    if ($AfterClose.mainWindowPresent) {
+                        $AfterClose.workspaceTitle = $Relaunched.MainWindowTitle -ceq '循迹 FundsTrace'
+                        $AfterClose.windowEnabled = [FundsTraceUpdateWindowState]::IsWindowEnabled($CurrentWindow)
+                        $AfterClose.windowVisible = [FundsTraceUpdateWindowState]::IsWindowVisible($CurrentWindow)
+                        $AfterClose.responding = $Relaunched.Responding
+                    }
+                }
+                $AfterClose.windowQuerySucceeded = $true
+            } catch { <# Missing observations remain null; never substitute a successful close. #> }
+            try {
+                $BackendQueryPath = (Join-Path $InstallRoot 'resources/backend/funds-trace-backend.exe').Replace('\','\\').Replace("'","\'")
+                $AfterClose.directOwnedBackendCount = @(Get-CimInstance Win32_Process -Filter (
+                    "ParentProcessId=$($Relaunched.Id) AND ExecutablePath='$BackendQueryPath'") -ErrorAction Stop).Count
+                $AfterClose.backendQuerySucceeded = $true
+            } catch { <# An unavailable query is not evidence that the owned backend exited. #> }
+            $Capture = [ordered]@{ attempted=$true; captured=$false; processBound=$null; failureCode='CAPTURE_NOT_COMPLETED' }
+            $Report.productionUpdateClose.capture = $Capture
+            $CloseStage = $Stage; $CloseNativeStep = $script:NativeStep; $CloseNativeDiagnostic = $script:NativeDiagnostic
+            try {
+                $CaptureJson = Invoke-Native -FileName ((Get-Command pwsh.exe -ErrorAction Stop).Source) -Arguments @(
+                    '-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $ProjectRoot 'scripts/test-windows-startup-window.ps1'),
+                    '-InstallRoot',$InstallRoot,'-ProcessId',[string]$Relaunched.Id,'-Action','Capture','-ScreenshotPath',
+                    (Join-Path (Split-Path -Parent $ReportPath) 'native-production-update.update-relaunch-close-timeout.png')
+                ) -TimeoutSeconds 30
+                $CaptureReport = $CaptureJson | ConvertFrom-Json
+                $Capture.processBound = $CaptureReport.processBound -eq $true
+                $Capture.captured = $CaptureReport.status -ceq 'passed' -and $Capture.processBound -and $CaptureReport.screenshot.captured -eq $true
+                $Capture.failureCode = if ($Capture.captured) { $null } else { 'CAPTURE_OUTPUT_REJECTED' }
+            } catch { $Capture.failureCode = 'CAPTURE_HELPER_FAILED' }
+            finally { $Stage = $CloseStage; $script:NativeStep = $CloseNativeStep; $script:NativeDiagnostic = $CloseNativeDiagnostic }
+            throw 'Updated application did not finish its normal close.'
+        }
         $Report.checks.productionUpdateRelaunchClose = 'passed'
     } else {
         # Let NSIS find the existing custom directory from its registered identity.
