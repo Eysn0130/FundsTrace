@@ -6,8 +6,8 @@
   function load(task, prepareRoutes = false) {
     const urls = [];
     if (task === 'layout') {
-      if (!root.FundsGraphLayout) urls.push('/static/graph-layout.js?v=layout-pipeline-1');
-      if (!root.FundsGraphLayoutQuality) urls.push('/static/graph-layout-quality.js?v=quality-1');
+      if (!root.FundsGraphLayout) urls.push('/static/graph-layout.js?v=canvas-display-1');
+      if (!root.FundsGraphLayoutQuality) urls.push('/static/graph-layout-quality.js?v=canvas-display-1');
     }
     if ((task === 'routes' || prepareRoutes) && !root.FundsGraphRouting) urls.push('/static/graph-routing.js?v=compact-arcs-1');
     if (urls.length) root.importScripts(...urls);

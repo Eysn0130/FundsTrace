@@ -11,6 +11,8 @@
 
   const families = new Set(['Microsoft YaHei', 'PingFang SC', 'SimSun', 'SimHei', 'Arial', 'system-ui', 'sans-serif']);
   const weights = new Set(['normal', 'bold', '400', '700', 400, 700]);
+  const shapes = new Set(['circle', 'rect', 'diamond', 'ellipse']);
+  const icons = new Set(['none', 'person', 'organization', 'account', 'flag']);
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   const bounded = (value, min, max) => typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
   const color = value => typeof value === 'string' && /^#(?:[\da-f]{3}|[\da-f]{6})$/i.test(value);
@@ -29,6 +31,7 @@
     if (bounded(input.fontSize, 8, 32)) result.fontSize = input.fontSize;
     if (weights.has(input.fontWeight)) result.fontWeight = input.fontWeight;
     if (input.fontStyle === 'normal' || input.fontStyle === 'italic') result.fontStyle = input.fontStyle;
+    if (typeof input.underline === 'boolean') result.underline = input.underline;
     if (color(input.fill)) result.fill = input.fill;
     if (bounded(input.lineHeight, 8, 64)) result.lineHeight = input.lineHeight;
     return result;
@@ -61,6 +64,8 @@
     if(color(input.stroke))result.stroke=input.stroke;
     if(bounded(input.lineWidth,0.5,5))result.lineWidth=input.lineWidth;
     if(bounded(input.size,24,96))result.size=input.size;
+    if(shapes.has(input.shape))result.shape=input.shape;
+    if(icons.has(input.icon))result.icon=input.icon;
     return result;
   }
 
@@ -78,6 +83,25 @@
 
   function accounts(input) {
     return Array.isArray(input) ? [...new Set(input.filter(value => typeof value === 'string' && value !== ''))] : [];
+  }
+
+  function groups(input) {
+    const ids = new Set();
+    return (Array.isArray(input) ? input : []).slice(0, 200).flatMap(item => {
+      if (!object(item) || typeof item.id !== 'string' || !item.id || item.id.length > 160 || ids.has(item.id)) return [];
+      const name = typeof item.name === 'string' ? item.name.trim().slice(0, 60) : '';
+      if (!name) return [];
+      ids.add(item.id);
+      return [{id:item.id,name,color:color(item.color)?item.color:'#7f8b99',
+        members:accounts(item.members),notes:typeof item.notes==='string'?item.notes.trim().slice(0, 1000):''}];
+    });
+  }
+
+  function timeWindow(input) {
+    const source=object(input)?input:{};
+    // These are original transaction-local civil times, never converted to UTC.
+    const civil=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?)?$/.test(value)?value.replace('T',' '):'';
+    return {start:civil(source.start),end:civil(source.end),includeUndated:source.includeUndated!==false};
   }
 
   // 标注可选字体限定在系统常见中文字体，避免随意字符串进入渲染与导出。
@@ -131,7 +155,56 @@
       hiddenAccounts: accounts(source.hiddenAccounts),
       onlyAccounts: Array.isArray(source.onlyAccounts) ? accounts(source.onlyAccounts) : null,
       annotations: annotations(source.annotations),
+      pinnedAccounts: accounts(source.pinnedAccounts),
+      groups: groups(source.groups),
+      timeWindow: timeWindow(source.timeWindow),
     };
+  }
+
+  function decoration(item, name, kind, attrs) {
+    const group=item?.getContainer?.(), existing=(group?.get?.('children')||[]).find(shape=>shape.get('name')===name);
+    if(!attrs){existing?.remove?.();return null;}
+    if(existing){existing.attr(attrs);existing.show?.();return existing;}
+    return group?.addShape?.(kind,{name,capture:false,attrs})||null;
+  }
+
+  // Built-in vector marks are explicit analyst display choices, never detected roles.
+  function decorateNode(item, input, options={}) {
+    const style=sanitizeNode(input), model=item.getModel(), size=Array.isArray(model.size)?Math.max(...model.size):model.size||32;
+    const ink=options.ink||'#24394c', k=Math.min(1.4,size/36), path=[];
+    const command=(op,...values)=>path.push([op,...values.map(value=>value*k)]);
+    if(style.icon==='person') {
+      command('M',-4,-7);command('Q',-4,-12,0,-12);command('Q',4,-12,4,-7);command('Q',4,-2,0,-2);command('Q',-4,-2,-4,-7);
+      command('M',-8,9);command('Q',-8,0,0,0);command('Q',8,0,8,9);
+    }else if(style.icon==='organization') {
+      command('M',-9,9);command('L',-9,-9);command('L',9,-9);command('L',9,9);command('Z');
+      for(const x of [-4,4])for(const y of [-4,2]){command('M',x-1,y);command('L',x+1,y);}
+      command('M',-2,9);command('L',-2,5);command('L',2,5);command('L',2,9);
+    }else if(style.icon==='account') {
+      command('M',-10,-7);command('L',10,-7);command('L',10,7);command('L',-10,7);command('Z');
+      command('M',-10,-2);command('L',10,-2);command('M',-6,3);command('L',-1,3);
+    }else if(style.icon==='flag') {
+      command('M',-5,10);command('L',-5,-10);command('L',8,-10);command('L',4,-4);command('L',-5,-4);
+    }
+    decoration(item,'funds-node-icon','path',path.length?{path,stroke:ink,lineWidth:1.6,fill:null,lineCap:'round',lineJoin:'round'}:null);
+    decoration(item,'funds-node-pin','circle',options.pinned?{x:size/2-2,y:-size/2+2,r:3,fill:'#e3a12b',stroke:ink,lineWidth:1}:null);
+    const assigned=groups(options.groups?.map(group=>({...group,members:group.members||[]}))), label=(item.getContainer?.()?.get?.('children')||[]).find(shape=>shape.get('name')==='text-shape');
+    const visible=label&&label.get?.('visible')!==false&&model.label!==undefined;
+    const bounds=label?.getBBox?.(), annotation=(item.getContainer?.()?.get?.('children')||[]).find(shape=>shape.get('name')==='funds-node-annotation')?.getBBox?.();
+    const y=Math.max(size/2,Number.isFinite(bounds?.maxY)?bounds.maxY:size/2,Number.isFinite(annotation?.maxY)?annotation.maxY:size/2)+5;
+    decoration(item,'funds-node-group','text',assigned.length&&visible?{x:0,y,text:`分组：${assigned[0].name}${assigned.length>1?' +'+(assigned.length-1):''}`,
+      fontSize:11,lineHeight:15,fontFamily:'Arial',fill:assigned[0].color,textAlign:'center',textBaseline:'top'}:null);
+  }
+
+  function decorateLabel(item, input) {
+    const style=sanitizeLabel(input), text=(item.getContainer?.()?.get?.('children')||[]).find(shape=>shape.get('name')==='text-shape');
+    const bounds=text?.getBBox?.();
+    if(!style.underline||!text||text.get?.('visible')===false||item.getModel().label===undefined||!bounds||![bounds.minX,bounds.maxX,bounds.minY,bounds.maxY].every(Number.isFinite)) {
+      decoration(item,'funds-label-underline','path',null);return;
+    }
+    const lines=String(text.attr('text')??item.getModel().label).split('\n'), height=Math.max(1,(bounds.maxY-bounds.minY)/lines.length),path=[];
+    for(let i=0;i<lines.length;i++)if(lines[i])path.push(['M',bounds.minX,bounds.minY+height*(i+1)-1],['L',bounds.maxX,bounds.minY+height*(i+1)-1]);
+    decoration(item,'funds-label-underline','path',{path,stroke:text.attr('fill')||style.fill||'#111111',lineWidth:1,fill:null});
   }
 
   function displayData(graph, presentation, neighborhoodIds) {
@@ -165,5 +238,5 @@
         hiddenNodes: filtered.nodes.length - nodes.length, hiddenEdges: filtered.edges.length - edges.length } };
   }
 
-  return Object.freeze({ palette, sanitizeLabel, effectiveLabel, sanitizeNode, sanitizeEdge, create, displayData });
+  return Object.freeze({ palette, sanitizeLabel, effectiveLabel, sanitizeNode, sanitizeEdge, create, displayData, decorateNode, decorateLabel });
 });

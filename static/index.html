@@ -6,7 +6,7 @@
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" href="/static/favicon-32.png" sizes="32x32">
 <title>循迹 FundsTrace · 资金流水追踪与关联分析</title>
-<link rel="stylesheet" href="/static/style.css?v=release-0.1.5">
+<link rel="stylesheet" href="/static/style.css?v=canvas-investigation-1">
 <link rel="stylesheet" href="/static/desktop-updates.css">
 <link rel="stylesheet" href="/static/navigation.css">
 <link rel="stylesheet" href="/static/appearance.css">
@@ -78,9 +78,9 @@
           <span class="ribbon-group-label">数据与账户</span></div>
         <div class="ribbon-group" role="group" aria-label="节点组织">
           <div class="ribbon-group-body">
-            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/group.svg" alt=""><span>新建分组</span><i class="ribbon-planned" aria-hidden="true"></i></button>
-            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/link.svg" alt=""><span>加入分组</span><i class="ribbon-planned" aria-hidden="true"></i></button>
-            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/layers.svg" alt=""><span>分组管理</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="createGroup"><img class="ui-icon" src="/static/ui-icons/group.svg" alt=""><span>新建分组</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="addToGroup"><img class="ui-icon" src="/static/ui-icons/link.svg" alt=""><span>加入分组</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="manageGroups"><img class="ui-icon" src="/static/ui-icons/layers.svg" alt=""><span>分组管理</span></button>
           </div>
           <span class="ribbon-group-label">节点组织</span></div>
         <div class="ribbon-group" role="group" aria-label="输出与管理">
@@ -118,8 +118,8 @@
           <span class="ribbon-group-label">全案算法 · 独立分析页</span></div>
         <div class="ribbon-group" role="group" aria-label="时序探索">
           <div class="ribbon-group-body">
-            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/route.svg" alt=""><span>图内找路径</span><i class="ribbon-planned" aria-hidden="true"></i></button>
-            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/play.svg" alt=""><span>时间播放</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="findGraphPaths"><img class="ui-icon" src="/static/ui-icons/route.svg" alt=""><span>图内找路径</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="timePlayback"><img class="ui-icon" src="/static/ui-icons/play.svg" alt=""><span>时间播放</span></button>
           </div>
           <span class="ribbon-group-label">时序探索</span></div>
       </div>
@@ -138,8 +138,8 @@
               <div id="nodeBorderPopover" class="ribbon-popover" role="dialog" aria-label="所选节点边框" hidden><label class="ribbon-color" title="所选节点边框颜色"><input type="color" id="nodeBorderColor" aria-label="节点边框颜色" value="#9bd6bf" data-ribbon-command="nodeBorderColor"></label><select id="nodeBorderWidth" aria-label="节点边框粗细" data-ribbon-command="nodeBorderWidth"><option value="0.5">边框 0.5</option><option value="1">边框 1</option><option value="1.5">边框 1.5</option><option value="2">边框 2</option><option value="2.8">边框 2.8</option><option value="3">边框 3</option><option value="4">边框 4</option><option value="5">边框 5</option></select></div>
               <div id="nodeSizePopover" class="ribbon-popover" role="dialog" aria-label="所选节点大小" hidden><select id="nodeSize" aria-label="节点基础大小" title="照片至少40；重点展示在基础大小上按倍数放大" data-ribbon-command="nodeSize"><option value="auto">自动大小</option><option value="24">24</option><option value="28">28</option><option value="32">32</option><option value="40">40</option><option value="48">48</option><option value="64">64</option><option value="80">80</option><option value="96">96</option></select></div>
             </div>
-            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/shape.svg" alt=""><span>形状</span><i class="ribbon-planned" aria-hidden="true"></i></button>
-            <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/photo.svg" alt=""><span>图标</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="nodeShape"><img class="ui-icon" src="/static/ui-icons/shape.svg" alt=""><span>形状</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="nodeIcon"><img class="ui-icon" src="/static/ui-icons/photo.svg" alt=""><span>图标</span></button>
           </div>
           <span class="ribbon-group-label">节点外观</span></div>
         <div class="ribbon-group" role="group" aria-label="关系线">
@@ -154,16 +154,16 @@
             <button type="button" class="btn ribbon-action" data-ribbon-command="distributeHorizontal" ><img class="ui-icon" src="/static/ui-icons/layout-distribute-horizontal.svg" alt=""><span>水平分布</span></button>
             <button type="button" class="btn ribbon-action" data-ribbon-command="distributeVertical" ><img class="ui-icon" src="/static/ui-icons/distribute-vertical.svg" alt=""><span>垂直分布</span></button>
             <div class="ribbon-small-stack">
-              <button type="button" class="btn ribbon-action planned" disabled data-planned="true" data-planned-feature="fixLayout" title="规划功能，尚未实现"><img class="ui-icon" src="/static/ui-icons/lock.svg" alt=""><span>布局时固定</span><i class="ribbon-planned" aria-hidden="true"></i></button>
-              <button type="button" class="btn ribbon-action planned" disabled data-planned="true" data-planned-feature="unfixLayout" title="规划功能，尚未实现"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""><span>解除固定</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+              <button type="button" class="btn ribbon-action" data-ribbon-command="fixLayout"><img class="ui-icon" src="/static/ui-icons/lock.svg" alt=""><span>布局时固定</span></button>
+              <button type="button" class="btn ribbon-action" data-ribbon-command="unfixLayout"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""><span>解除固定</span></button>
             </div>
           </div>
           <span class="ribbon-group-label">排列</span></div>
         <div class="ribbon-group" role="group" aria-label="样式预设">
           <div class="ribbon-group-body">
             <div class="ribbon-small-stack">
-              <button type="button" class="btn ribbon-action planned" disabled data-planned="true" data-planned-feature="presetDefault" title="规划功能，尚未实现"><img class="ui-icon" src="/static/ui-icons/settings.svg" alt=""><span>默认</span><i class="ribbon-planned" aria-hidden="true"></i></button>
-              <button type="button" class="btn ribbon-action planned" disabled data-planned="true" data-planned-feature="presetReport" title="规划功能，尚未实现"><img class="ui-icon" src="/static/ui-icons/list.svg" alt=""><span>汇报阅读</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+              <button type="button" class="btn ribbon-action" data-ribbon-command="presetDefault"><img class="ui-icon" src="/static/ui-icons/settings.svg" alt=""><span>默认</span></button>
+              <button type="button" class="btn ribbon-action" data-ribbon-command="presetReport"><img class="ui-icon" src="/static/ui-icons/list.svg" alt=""><span>汇报阅读</span></button>
             </div>
             <button type="button" class="btn ribbon-action" data-ribbon-command="styleReset" ><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt=""><span>恢复样式</span></button>
           </div>
@@ -248,7 +248,7 @@
           <footer class="relation-filter-footer"><button type="button" class="btn small" id="btnRelationClear" disabled><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt="">清除关系筛选</button><span>按有向关系的单币种累计金额</span><button type="button" class="btn small primary" id="btnRelationApply" disabled>应用筛选</button></footer>
         </section>
         <label class="ribbon-field ribbon-width-currency" for="widthCurrency">币种<select id="widthCurrency" aria-label="线宽映射币种"><option>CNY</option><option>USD</option><option>EUR</option><option>HKD</option><option>JPY</option><option>GBP</option></select></label><label class="el-ck ribbon-switch" title="按指定币种的关系累计金额映射线宽，不合并币种"><input type="checkbox" id="amountWidthCk"><span>金额→线宽</span></label>
-        <button type="button" class="btn ribbon-action planned" disabled data-planned="true" title="规划功能，尚未实现" ><img class="ui-icon" src="/static/ui-icons/calendar.svg" alt=""><span>时间窗口</span><i class="ribbon-planned" aria-hidden="true"></i></button>
+        <button type="button" class="btn ribbon-action" data-ribbon-command="timeWindow"><img class="ui-icon" src="/static/ui-icons/calendar.svg" alt=""><span>时间窗口</span></button>
       </div>
       <div id="ribbonNeighborhood" class="ribbon-bundle" data-ribbon-bundle="neighborhood" data-ribbon-home="trace">
         <button type="button" class="btn ribbon-action" id="btnNeighborActions" data-toolbar-menu="neighborPopover" data-toolbar-menu-kind="form" aria-controls="neighborPopover" aria-expanded="false" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/target.svg" alt=""><span>邻域追踪<img class="ui-icon toolbar-menu-chevron" src="/static/ui-icons/chevron-down.svg" alt=""></span></button>
@@ -274,7 +274,7 @@
             <div class="ribbon-inline">
               <button type="button" class="btn ribbon-type-button" id="labelBold" data-ribbon-command="labelBold" aria-pressed="false" aria-label="粗体"><b>B</b></button>
               <button type="button" class="btn ribbon-type-button" id="labelItalic" data-ribbon-command="labelItalic" aria-pressed="false" aria-label="斜体"><i>I</i></button>
-              <button type="button" class="btn ribbon-type-button" id="labelUnderline" disabled data-planned="true" title="规划功能，尚未实现" data-ribbon-command="labelUnderline" aria-pressed="false" aria-label="下划线"><u>U</u></button>
+              <button type="button" class="btn ribbon-type-button" id="labelUnderline" title="所选文字下划线" data-ribbon-command="labelUnderline" aria-pressed="false" aria-label="下划线"><u>U</u></button>
               <label class="ribbon-color" title="文字颜色">A<input type="color" id="labelColor" value="#e8eef6" aria-label="文字颜色" data-ribbon-command="labelColor"></label></div>
           </div>
         </div>
@@ -675,10 +675,25 @@
   </section>
 </div>
 
+<dialog id="investigationDialog" class="action-dialog investigation-dialog" aria-labelledby="investigationTitle">
+  <header class="action-dialog-head"><h2 id="investigationTitle">画布研判</h2><button type="button" class="btn small" id="investigationClose" aria-label="关闭研判窗口">关闭</button></header>
+  <p id="investigationContext" class="muted"></p>
+  <output id="investigationStatus" role="status" aria-live="polite"></output>
+  <div id="investigationBody"></div>
+</dialog>
+<section id="investigationTransport" class="investigation-transport" aria-label="时间播放控制" hidden>
+  <span id="investigationFrame" role="status" aria-live="polite"></span>
+  <input id="investigationSeek" type="range" min="0" max="0" step="1" value="0" aria-label="播放时间点">
+  <button type="button" class="btn small" id="investigationPrevious">上一时刻</button>
+  <button type="button" class="btn small" id="investigationPlay">播放</button>
+  <button type="button" class="btn small" id="investigationNext">下一时刻</button>
+  <button type="button" class="btn small" id="investigationKeep">应用此帧</button>
+  <button type="button" class="btn small" id="investigationStop">结束预览</button>
+</section>
 <div id="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
 <script src="/static/money.js?v=1"></script>
-<script src="/static/graph-layout.js?v=layout-pipeline-1"></script>
-<script src="/static/graph-layout-quality.js?v=quality-1"></script>
+<script src="/static/graph-layout.js?v=canvas-investigation-1"></script>
+<script src="/static/graph-layout-quality.js?v=canvas-investigation-1"></script>
 <script src="/static/graph-routing.js?v=compact-arcs-1"></script>
 <script src="/static/graph-route-quality.js?v=compact-arcs-1"></script>
 <script src="/static/graph-view.js?v=1"></script>
@@ -688,10 +703,10 @@
 <script src="/static/graph-selection.js?v=main-accounts-1"></script>
 <script src="/static/workspace-shell.js?v=workspace-camera-2"></script>
 <script src="/static/graph-relations.js?v=relation-filter-1"></script>
-<script src="/static/graph-presentation.js?v=1"></script>
+<script src="/static/graph-presentation.js?v=canvas-investigation-1"></script>
 <script src="/static/graph-label-geometry.js?v=compact-arcs-1"></script>
 <script src="/static/table-scroll.js?v=1"></script>
-<script src="/static/graph-export-geometry.js?v=export-workspace-1"></script>
+<script src="/static/graph-export-geometry.js?v=canvas-investigation-1"></script>
 <script src="/static/case-workspace.js?v=case-management-1"></script>
 <script src="/static/toolbar-menu.js?v=relation-filter-1"></script>
 <script src="/static/relation-filter.js?v=1"></script>
@@ -705,7 +720,7 @@
 <script src="/static/main-accounts.js?v=1"></script>
 <script src="/static/main-accounts-view.js?v=neighborhood-search-1"></script>
 <script src="/static/workspace-drafts.js"></script>
-<script src="/static/app.js?v=release-0.1.5"></script>
+<script src="/static/app.js?v=canvas-investigation-1"></script>
 <script src="/static/canvas-history.js?v=1"></script>
 <script src="/static/canvas-editor.js?v=neighborhood-search-1"></script>
 <script src="/static/table-workspace.js?v=neighborhood-search-1"></script>
@@ -715,7 +730,8 @@
 <script src="/static/ui-dialogs.js?v=export-workspace-1"></script>
 <script src="/static/workflow-ui.js?v=main-accounts-1"></script>
 <script src="/static/import-workflow.js"></script>
-<script src="/static/ribbon-commands.js?v=release-0.1.5"></script>
-<script src="/static/ribbon.js?v=release-0.1.5"></script>
+<script src="/static/canvas-investigation.js?v=1"></script>
+<script src="/static/ribbon-commands.js?v=canvas-investigation-1"></script>
+<script src="/static/ribbon.js?v=canvas-investigation-1"></script>
 </body>
 </html>

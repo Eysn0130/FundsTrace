@@ -877,12 +877,51 @@
   }
   function placeIncremental(input = {}) { const model = generatorSimulation(incrementalPositions(input)); while (model.step()) { /* bounded caller-owned batch */ } return model.result(); }
 
-  function simulation(input) {
+  function unconstrainedSimulation(input) {
     if (input.kind === 'incremental') return generatorSimulation(incrementalPositions(input));
     if (['dagre', 'partition', 'auto'].includes(input.kind)) return generatorSimulation(adaptivePositions(input));
     if (input.kind === 'structural') return structuralSimulation(input);
     if (input.kind !== 'dagre' && input.nodes.length <= 80) return smallForceSimulation(input);
     return largeForceSimulation(input);
+  }
+  function* anchoredPositions(input, result) {
+    const source=new Map(input.nodes.map(node=>[node.id,node])), positions=new Map(result.nodes.map(node=>[node.id,{...node}]));
+    const fixed=input.nodes.filter(node=>node.fixed===true&&Number.isFinite(node.x)&&Number.isFinite(node.y)).sort((a,b)=>compareId(a.id,b.id));
+    if(!fixed.length)return result;
+    // Translate the candidate around the analyst's anchors, then resolve free
+    // footprints around those exact positions. Anchors are never a business role.
+    const dx=fixed.reduce((sum,node)=>sum+(node.x-positions.get(node.id).x)/fixed.length,0);
+    const dy=fixed.reduce((sum,node)=>sum+(node.y-positions.get(node.id).y)/fixed.length,0);
+    for(const point of positions.values()){point.x+=dx;point.y+=dy;}
+    const fixedIds=new Set(fixed.map(node=>node.id)),occupied=geometryIndex(),gap=18;
+    let all=null,work=0;
+    const occupy=(point,node)=>{const box=nodeBounds(point,dimensions(node),gap/2);occupied.add(box);all=all?unionBounds([all,box]):box;};
+    for(const node of fixed){const point=positions.get(node.id);point.x=node.x;point.y=node.y;occupy(point,node);}
+    for(const point of [...positions.values()].filter(point=>!fixedIds.has(point.id)).sort((a,b)=>compareId(a.id,b.id))) {
+      const node=source.get(point.id),d=dimensions(node),origin={x:point.x,y:point.y},candidates=[origin],seen=new Set();let chosen=null;
+      for(let tries=0;candidates.length&&tries<24;tries++) {
+        candidates.sort((a,b)=>(a.x-origin.x)**2+(a.y-origin.y)**2-(b.x-origin.x)**2-(b.y-origin.y)**2||a.x-b.x||a.y-b.y);
+        const next=candidates.shift(),key=`${next.x},${next.y}`;if(seen.has(key))continue;seen.add(key);
+        const hits=occupied.query(nodeBounds(next,d,gap/2));
+        if(!hits.length){chosen=next;break;}
+        for(const {box}of hits.slice(0,8))candidates.push(
+          {x:box.minX-d.width/2-gap/2-d.offsetX,y:next.y},{x:box.maxX+d.width/2+gap/2-d.offsetX,y:next.y},
+          {x:next.x,y:box.minY-d.height/2-gap/2-d.offsetY},{x:next.x,y:box.maxY+d.height/2+gap/2-d.offsetY});
+      }
+      if(!chosen)chosen={x:all.maxX+d.width/2+gap/2-d.offsetX,y:origin.y};
+      point.x=chosen.x;point.y=chosen.y;occupy(point,node);if(++work%32===0)yield;
+    }
+    return {...result,nodes:result.nodes.map(node=>positions.get(node.id)),layout:{...(result.layout||{}),pinnedCount:fixed.length}};
+  }
+  function simulation(input) {
+    const model=unconstrainedSimulation(input);
+    if(input.kind==='incremental'||!input.nodes.some(node=>node.fixed===true&&Number.isFinite(node.x)&&Number.isFinite(node.y)))return model;
+    let done=false,repair=null,result=null;
+    return {step(){
+      if(result)return false;
+      if(!done){if(model.step())return true;done=true;repair=anchoredPositions(input,model.result());}
+      const next=repair.next();if(!next.done)return true;result=next.value;return false;
+    },result:()=>result||model.result()};
   }
   function largeForceSimulation(input) {
     const width = Math.max(180, input.width || 900), height = Math.max(180, input.height || 600);

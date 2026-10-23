@@ -459,12 +459,13 @@ function newGraphPresentation(value) {
   return typeof FundsGraphPresentation !== 'undefined' ? FundsGraphPresentation.create(value) : {
     version: 1, relationFilter: { currency: null, min: '', max: '', active: false },
     amountWidth: { enabled: false, currency: null }, nodeLabels: {}, nodeStyles: {}, edgeLabels: {}, edgeStyles: {},
-    hiddenAccounts: [], onlyAccounts: null, annotations: [],
+    hiddenAccounts: [], onlyAccounts: null, annotations: [], pinnedAccounts: [], groups: [],
+    timeWindow: {start:'',end:'',includeUndated:true},
   };
 }
 function graphViewIsFiltered() {
   const p = state.presentation;
-  return !!(p.relationFilter.active || p.hiddenAccounts.length || p.onlyAccounts !== null);
+  return !!(p.relationFilter.active || p.hiddenAccounts.length || p.onlyAccounts !== null || window.FundsInvestigation?.active?.());
 }
 function graphLabelStyle(kind, id) {
   return (kind === 'node' ? state.presentation.nodeLabels[id] : state.presentation.edgeLabels[id]) || {};
@@ -473,26 +474,27 @@ function graphTheme() {
   return document.documentElement?.dataset?.ftTheme === 'light' ? 'light' : 'dark';
 }
 function graphPalette(theme = graphTheme()) { return FundsGraphPresentation.palette(theme); }
-function graphRelationStyle(edge, muted = false, theme = graphTheme()) {
+function graphRelationStyle(edge, muted = false, theme = graphTheme(), encoding = state.graphView.amountWidths) {
   const key = edgeKey(edge), custom = state.presentation.edgeStyles[key] || {};
-  const width = state.graphView.amountWidths?.widths.get(key);
+  const width = encoding?.widths.get(key);
   const palette = graphPalette(theme), stroke = custom.stroke || (muted ? palette.mutedEdge : palette.edge);
   return { ...denseEdgeStyle(muted), lineDash: [], ...custom, stroke,
     lineWidth: width ?? custom.lineWidth ?? (muted ? 0.75 : 1.4), lineCap:'round', lineJoin:'round', lineAppendWidth:8,
     endArrow: muted ? false : { ...graphArrow(), fill: stroke } };
 }
-function graphAmountWidthMetadata() {
-  const encoding=state.graphView.amountWidths;if(!encoding)return null;
+function graphAmountWidthMetadata(encoding=state.graphView.amountWidths) {
+  if(!encoding)return null;
   const legend=encoding.legend;
   return {currency:legend.currency,min_amount:legend.minAmount,max_amount:legend.maxAmount,
     missing_edges:encoding.missing.size,invalid_edges:encoding.invalid.size,scale:'full-graph',transform:'sqrt',min_width:1.5,max_width:7};
 }
 function graphImageExportLines() {
   const view=state.graphView,filter=state.presentation.relationFilter,encoding=graphAmountWidthMetadata();
+  if(!view.index || state.graphLoading)return [];
   const lines=[`FundsTrace · ${graphViewIsFiltered()?'当前筛选视图':view.visibleIds?'当前邻域视图':'全部图谱'} ${view.index.nodeIds.size}/${state.lastGraph.nodes.length} 个账户 · ${view.index.edgeKeys.size}/${state.lastGraph.edges.length} 条关系 · 导出全部标签（屏幕：${{auto:'自动分级',focus:'关注邻域',all:'全部标签'}[view.labelMode]}）`];
   if(filter.active)lines.push(`关系筛选：${filter.currency||'未标注币种'} · ${filter.min||'不限下界'} — ${filter.max||'不限上界'}；仅筛选显示，追踪数据未删除`);
-  if(encoding)lines.push(`金额→线宽：${encoding.currency||'未标注币种'} ${encoding.min_amount??'—'} — ${encoding.max_amount??'—'} · sqrt · 全追踪图统一比例 1.5–7 · 无该币种 ${encoding.missing_edges} 条 · 无效 ${encoding.invalid_edges} 条`);
-  lines.push('角色：源头 / 中转 / 沉淀 · 金环：主账号 · 紫环：同户名 · 选中与悬停装饰不导出');
+  if(encoding)lines.push(`金额→线宽：${encoding.currency||'未标注币种'} ${encoding.min_amount??'—'} — ${encoding.max_amount??'—'} · sqrt · ${window.FundsInvestigation?.active?.()?'当前时间窗口内':''}全追踪图统一比例 1.5–7`);
+  const temporal=window.FundsInvestigation?.description?.();if(temporal)lines.push(temporal);
   return lines;
 }
 function newGraphView(labelMode) {
@@ -657,7 +659,7 @@ function graphTextSize(text, style) {
 function graphLayoutNode(model, fixed = false) {
   const size=Array.isArray(model.size)?Math.max(...model.size):model.size||32;
   const label=graphTextSize(model.fundsLabel??model.label,effectiveGraphLabelStyle('node',model.id));
-  return {id:model.id,x:model.x,y:model.y,fixed,isMain:model.data?.is_main===1,size,
+  return {id:model.id,x:model.x,y:model.y,fixed:fixed||state.presentation.pinnedAccounts?.includes(model.id),isMain:model.data?.is_main===1,size,
     width:Math.max(size,label.width),height:size+6+label.height,offsetX:0,offsetY:(6+label.height)/2};
 }
 function effectiveGraphLabelStyle(kind, id, theme = graphTheme()) {
@@ -676,6 +678,7 @@ function applyGraphTheme({ paint = true } = {}) {
       for (const shape of labelShapes(item)) {
         if (shape.get('name') === 'text-shape') shape.attr('fill', fill);
       }
+      FundsGraphPresentation.decorateLabel?.(item,effectiveGraphLabelStyle(kind,id));
       if (kind !== 'edge') continue;
       const selected = view.selectedEdge === id;
       const style = graphRelationStyle(model, view.mutedEdges.has(id));
@@ -1085,6 +1088,7 @@ function applyGraphLabels(paint = true) {
   update(view.edgeItems, view.policy.edgeKeys, settled.edgeKeys,true);
   view.policy=settled;
   renderNodeAnnotations(false);
+  syncGraphDisplayDecorations();
   const unproject=graphUnprojector();
   for(const note of annotationList()) {
     const item=view.nodeItems.get(note.id);if(item)view.clipIndex?.include('node',note.id,graphItemBounds(item,unproject));
@@ -1311,7 +1315,9 @@ async function exploreNeighborhood(account, reset = false, options = {}) {
 }
 function showGraphOverview() {
   savePositions(); closeDrawer();
-  state.presentation = newGraphPresentation({ ...state.presentation, relationFilter: {}, hiddenAccounts: [], onlyAccounts: null });
+  window.FundsInvestigation?.resetPreview?.();
+  state.presentation = newGraphPresentation({ ...state.presentation, relationFilter: {}, hiddenAccounts: [], onlyAccounts: null,
+    timeWindow:{start:'',end:'',includeUndated:true} });
   const mode = state.graphView.labelMode,autoRoutes=state.graphView.autoRoutes;
   resetGraphView(); state.graphView.labelMode = mode;state.graphView.autoRoutes=autoRoutes;
   state.graphView.fullIndex = FundsGraphView.createIndex(state.lastGraph);
@@ -1935,6 +1941,7 @@ function syncGraphEdgeLabel(item,outline,anchorOverride) {
     gap:4,style,outline,visible:model.label!==undefined});
   outline?.toBack?.();
   model.labelPlacement=result.mode==='above'?'above':'inline';
+  if(state.presentation.edgeLabels[key]?.underline===true)FundsGraphPresentation.decorateLabel?.(item,effectiveGraphLabelStyle('edge',key));
 }
 function syncGraphEdgeLabels() {
   for(const item of state.graph?.getEdges?.()||[])syncGraphEdgeLabel(item);
@@ -2451,9 +2458,91 @@ function nodeStyle(n) {
   const role=n.out_cnt>0&&n.in_cnt>0?'mid':n.out_cnt>0?'src':'sink';
   const fill={src:'#d77d79',mid:'#63b69d',sink:'#7ca6d5'}[role];
   const stroke=n.is_main===1?'#e8c46a':n.is_same_name===1?'#a79be0':{src:'#e7a19a',mid:'#9bd6bf',sink:'#b0c8e5'}[role];
+  const {shape,icon,...custom}=state.presentation.nodeStyles?.[n.account]||{};
   return {fill,stroke,lineWidth:n.is_main===1?2.8:1.5,shadowColor:'rgba(0,0,0,.22)',shadowBlur:5,
-    ...(state.presentation.nodeStyles?.[n.account]||{})};
+    ...custom};
 }
+function nodeDisplayShape(id) { return FundsGraphPresentation.sanitizeNode(state.presentation.nodeStyles?.[id]).shape||'circle'; }
+function nodeDisplayGroups(id) { return (state.presentation.groups||[]).filter(group=>group.members.includes(id)).map(({id,name,color})=>({id,name,color})); }
+function decorateGraphNode(item) {
+  const id=item.getModel().id;
+  FundsGraphPresentation.decorateNode?.(item,state.presentation.nodeStyles?.[id],{
+    groups:nodeDisplayGroups(id),pinned:state.presentation.pinnedAccounts?.includes(id),ink:'#24394c'});
+}
+function syncGraphDisplayDecorations() {
+  const view=state.graphView,presentation=state.presentation,previous=view.displayDecorations||{},
+    nodes=new Set([...Object.entries(presentation.nodeStyles||{}).filter(([,style])=>style.icon&&style.icon!=='none').map(([id])=>id),
+      ...(presentation.pinnedAccounts||[]),...(presentation.groups||[]).flatMap(group=>group.members)]);
+  for(const id of new Set([...nodes,...previous.nodes||[]])) {
+    const item=view.nodeItems.get(id);if(item)decorateGraphNode(item);
+  }
+  const next={nodes};
+  for(const [kind,items,styles]of [['node',view.nodeItems,presentation.nodeLabels],['edge',view.edgeItems,presentation.edgeLabels]]) {
+    const ids=new Set(Object.entries(styles||{}).filter(([,style])=>style.underline===true).map(([id])=>id));
+    for(const id of new Set([...ids,...previous[kind]||[]])) {
+      const item=items.get(id);if(item)FundsGraphPresentation.decorateLabel?.(item,effectiveGraphLabelStyle(kind,id));
+    }
+    next[kind]=ids;
+  }
+  view.displayDecorations=next;
+}
+
+// Commands retain their opening selection and reject callbacks from an old canvas.
+window.FundsCanvasDisplay=Object.freeze((()=>{
+  const ready=()=>!!state.caseId&&!!state.graph&&!state.graphLoading&&!layoutJob&&!state.graphView.exportDepth
+    &&!window.FundsCanvasEditor?.history.status().busy&&!!window.FundsCanvasEditor?.command;
+  const snapshot=()=>({context:caseContext(),revision:state.graphView.revision,graph:state.graph,source:state.lastGraph,
+    nodeIds:[...(state.graphSelection?.ids||[])].filter(id=>state.graphView.nodeItems.has(id)),
+    edgeKeys:state.graphView.selectedEdge?[state.graphView.selectedEdge]:[],
+    pinnedIds:[...(state.presentation.pinnedAccounts||[])]});
+  const current=token=>!!token&&isCurrentCase(token.context)&&token.revision===state.graphView.revision
+    &&token.graph===state.graph&&token.source===state.lastGraph;
+  async function edit(label,token,apply,rebuild=false) {
+    if(!ready()||!current(token))return false;
+    let applied=false;
+    const accepted=await window.FundsCanvasEditor.command(label,()=>{
+      if(!current(token))return;
+      savePositions();apply();state.presentation=newGraphPresentation(state.presentation);
+      state.forceFit=false;if(rebuild)state.forceRebuild=true;
+      renderGraph();window.FundsCanvasEditor.syncControls();applied=true;
+    });
+    return accepted===true&&applied;
+  }
+  function nodeProperty(property,value,token=snapshot()) {
+    const safe=FundsGraphPresentation.sanitizeNode({[property]:value});
+    if(!Object.hasOwn(safe,property)||!token.nodeIds.length)return Promise.resolve(false);
+    return edit(property==='shape'?'更改节点形状':'更改节点图标',token,()=>{
+      for(const id of token.nodeIds)Object.defineProperty(state.presentation.nodeStyles,id,{enumerable:true,configurable:true,writable:true,
+        value:{...(state.presentation.nodeStyles[id]||{}),[property]:value}});
+    },property==='shape');
+  }
+  return {ready,snapshot,
+    setNodeShape:(value,token)=>nodeProperty('shape',value,token),setNodeIcon:(value,token)=>nodeProperty('icon',value,token),
+    setUnderline(value,token=snapshot()) {
+      if(typeof value!=='boolean'||!token.nodeIds.length&&!token.edgeKeys.length)return Promise.resolve(false);
+      return edit('更改标签下划线',token,()=>{
+        for(const [map,ids]of [[state.presentation.nodeLabels,token.nodeIds],[state.presentation.edgeLabels,token.edgeKeys]])
+          for(const id of ids)Object.defineProperty(map,id,{enumerable:true,configurable:true,writable:true,value:{...(map[id]||{}),underline:value}});
+      });
+    },
+    setPinned(value,token=snapshot()) {
+      if(typeof value!=='boolean'||!token.nodeIds.length)return Promise.resolve(false);
+      return edit(value?'固定节点布局位置':'取消固定节点布局位置',token,()=>{
+        const pinned=new Set(state.presentation.pinnedAccounts||[]);
+        for(const id of token.nodeIds)value?pinned.add(id):pinned.delete(id);
+        state.presentation.pinnedAccounts=[...pinned];
+      });
+    },
+    preset(name,token=snapshot()) {
+      if(!['default','report'].includes(name))return Promise.resolve(false);
+      return edit(name==='report'?'应用报告阅读预设':'应用默认阅读预设',token,()=>{
+        state.graphView.labelMode=name==='report'?'all':'auto';
+        state.edgeLabels=new Set(name==='report'?['money','time']:['money']);
+        state.showIds=name==='default';
+        // Presets only control reading density; analyst marks, scopes and geometry survive.
+      });
+    }};
+})());
 function syncNodeIdentityRings() {
   for(const item of state.graph.getNodes()) {
     const m=item.getModel(),n=m.data||{},group=item.getContainer?.();
@@ -2491,6 +2580,9 @@ function nodeSize(n) {
   const scale=state.focusNodes.get(n.account)||1;
   const base=state.presentation.nodeStyles?.[n.account]?.size ?? (28+Math.min(24,(n.in_cnt+n.out_cnt)*2)+(n.is_main===1?6:n.is_same_name===1?3:0));
   return Math.max(Math.round(base*scale),nodePhotoUrl(n)?Math.round(40*scale):0);
+}
+function nodeRenderSize(n) {
+  const size=nodeSize(n);return !nodePhotoUrl(n)&&nodeDisplayShape(n.account)==='ellipse'?[Math.round(size*1.4),size]:size;
 }
 
 function nodeLabel(n) {
@@ -2555,16 +2647,17 @@ function renderGraph() {
   view.clipIndex=null; view.clipResult=null; view.nodeItems=new Map(); view.edgeItems=new Map();
   view.revision += 1;
   const full = state.lastGraph;
+  const projected=window.FundsInvestigation?.displayGraph?.(full)||full;
   const scoped = view.visibleIds ? {
-    nodes: full.nodes.filter(node => view.visibleIds.has(node.account)),
-    edges: full.edges.filter(edge => view.visibleIds.has(edge.source) && view.visibleIds.has(edge.target)),
-  } : full;
+    nodes: projected.nodes.filter(node => view.visibleIds.has(node.account)),
+    edges: projected.edges.filter(edge => view.visibleIds.has(edge.source) && view.visibleIds.has(edge.target)),
+  } : projected;
   const g = typeof FundsGraphPresentation !== 'undefined'
     ? FundsGraphPresentation.displayData(scoped, state.presentation) : scoped;
-  view.index = view.visibleIds || graphViewIsFiltered() ? FundsGraphView.createIndex(g)
+  view.index = projected!==full || view.visibleIds || graphViewIsFiltered() ? FundsGraphView.createIndex(g)
     : (view.fullIndex || FundsGraphView.createIndex(g));
   view.amountWidths = typeof FundsGraphRelations !== 'undefined' && state.presentation.amountWidth.enabled
-    ? FundsGraphRelations.encodeWidths(full.edges, state.presentation.amountWidth.currency) : null;
+    ? FundsGraphRelations.encodeWidths(projected.edges, state.presentation.amountWidth.currency) : null;
   const pos = state.positions;
   const hasPosition=id=>Number.isFinite(pos[id]?.x)&&Number.isFinite(pos[id]?.y);
   const oldIds=new Set(oldNodes.map(node=>node.getModel().id));
@@ -2580,9 +2673,9 @@ function renderGraph() {
     const focusScale = state.focusNodes.get(n.account) || 1;
     const isFocus = focusScale > 1;
     const nd = {
-      id: n.account, fundsLabel: nodeLabel(n), data: n,
+      id: n.account, type:nodeDisplayShape(n.account), fundsLabel: nodeLabel(n), data: n,
       x: p ? p.x : null, y: p ? p.y : null,
-      size: nodeSize(n),
+      size: nodeRenderSize(n),
       style: nodeStyle(n),
       labelCfg: {style: effectiveGraphLabelStyle('node',n.account)},
     };
@@ -2697,16 +2790,16 @@ function renderGraph() {
         const wantImg = nodePhotoUrl(nm);
         const wantLabel = nodeLabel(nm);
         const wantStyle = wantImg ? {} : nodeStyle(nm);   // 照片节点不能带圆点样式（防色块）
-        const fs = nodeSize(nm);
+        const fs = nodeRenderSize(nm);
         const m = n.getModel();
-        if (m.size !== fs) upd.size = fs;   // 重点展示尺寸同步
+        if (JSON.stringify(m.size) !== JSON.stringify(fs)) upd.size = fs;   // 重点展示尺寸同步
         if (m.fundsLabel !== wantLabel || JSON.stringify(m.style) !== JSON.stringify(wantStyle)) {
           upd.fundsLabel = wantLabel;
           if (m.label !== undefined) upd.label = wantLabel;
           upd.style = wantStyle;
         }
         // 3) 照片节点与圆点互切（上传/清除/开关后 type 与 img 需同步）
-        const wantType = wantImg ? 'image' : 'circle';
+        const wantType = wantImg ? 'image' : nodeDisplayShape(id);
         if (m.type !== wantType) {
           upd.type = wantType;
           if (wantImg) upd.img = wantImg;
@@ -2945,6 +3038,7 @@ function fitGraph(cap = 1.6,{rebuild=false}={}) {
       const zoom=graph.getZoom?.()||1;
       if(zoom===measuredZoom)return measuredBounds;
       for(const item of nodes) FundsGraphLabelGeometry.placeNode(item,{zoom:graph.getZoom?.()||1});
+      syncGraphDisplayDecorations();
       const inverse=graphUnprojector();let bounds=null;
       for(const item of items) {
         const box=graphItemBounds(item,inverse);if(!box)continue;
@@ -3151,7 +3245,7 @@ async function relayout(fit = true, reserveLabels = false, previousLayout = stat
       // of the user's current camera. The evaluator separately solves the
       // fixed 6 CSS-pixel gap at the anticipated fit scale.
       const size=Math.max(modelSize,bodyWidth,bodyHeight),gapWorld=6;
-      return {id:m.id,x:m.x,y:m.y,isMain:m.data?.is_main===1,
+      return {id:m.id,x:m.x,y:m.y,fixed:state.presentation.pinnedAccounts?.includes(m.id)===true,isMain:m.data?.is_main===1,
         size:reserveLabels?Math.max(size,graphLabelLayoutSize(node)):size,
         width:bounds?Math.max(size,(bounds.maxX-bounds.minX)/zoom):size,
         height:bounds?size+gapWorld+(bounds.maxY-bounds.minY)/zoom:size,
@@ -3271,7 +3365,7 @@ async function relayout(fit = true, reserveLabels = false, previousLayout = stat
       try {
         // One task at a time. A completed view keeps one warm pure-kernel
         // Worker; cancellation/invalid input always retires its active owner.
-        const worker=job.worker||new Worker('/static/graph-layout-worker.js?v=compact-arcs-1');job.worker=worker;
+        const worker=job.worker||new Worker('/static/graph-layout-worker.js?v=canvas-display-1');job.worker=worker;
         const response=await new Promise(resolve=>{
           let settled=false;
           const stop=value=>{
@@ -4551,7 +4645,7 @@ function installExportWorkspace(options) {
     if (!context || !options.isCurrent(context)) return;
     const scope = options.getScope(context), labels = options.getLabels(context);
     $('#exportContext').textContent = `当前案件：${labels.caseName} · 画布：${labels.canvasName}`;
-    $('#exportScope').textContent = format === 'xlsx' ? '当前画布的全部追踪流水' : '当前图谱范围';
+    $('#exportScope').textContent = format === 'xlsx' ? '当前画布的全部追踪流水' : scope.description || '当前图谱范围';
     $('#exportContents').textContent = format === 'xlsx'
       ? `${count(scope.trackedFlows)} 笔追踪流水 · 待调取账号`
       : `${count(scope.graphAccounts)} 个账户 · ${count(scope.graphRelations)} 条关系`;
@@ -5206,22 +5300,25 @@ function bindUI() {
   // each job owns its dimensions/camera and relinquishes them before the next.
   /* 打印样式：导出的 PNG/PDF 统一白底黑字（省墨、便于打印）。
      只把文字改成黑墨，节点/关系颜色仍保留原有业务含义；逐项记住原值以便还原屏幕主题。 */
-  const PRINT_PAPER = '#ffffff', PRINT_INK = '#111111', PRINT_RULE = '#c9c9c9';
+  const PRINT_PAPER = '#ffffff', PRINT_INK = '#111111';
   function applyPrintInk(items) {
     const saved = [];
     for (const item of items) {
       for (const shape of item?.getContainer?.()?.get?.('children') || []) {
+        if(shape?.get?.('name')==='funds-label-underline') {
+          const before=shape.attr('stroke');saved.push([shape,'stroke',before]);shape.attr('stroke',PRINT_INK);continue;
+        }
         if (shape?.get?.('name') === 'funds-edge-selection-outline') continue;
         // 标注的颜色是用户显式选择，打印样式不强行转黑。
         if (shape?.get?.('name') === 'funds-node-annotation') continue;
         if (shape?.get?.('type') !== 'text' || !shape.attr) continue;
         const before = shape.attr('fill');
         if (before == null || before === PRINT_INK) continue;
-        saved.push([shape, before]);
+        saved.push([shape, 'fill', before]);
         shape.attr('fill', PRINT_INK);
       }
     }
-    return () => { for (const [shape, value] of saved) shape.attr('fill', value); };
+    return () => { for (const [shape, property, value] of saved) shape.attr(property, value); };
   }
   const imageExportQueue = [];
   let imageExportActive = false;
@@ -5240,18 +5337,8 @@ function bindUI() {
     const selectedOutline=(selectedEdge?.getContainer?.()?.get?.('children')||[]).find(shape=>shape.get('name')==='funds-edge-selection-outline');
     const edgeOutlineVisible=selectedOutline?.get?.('visible')!==false;
     const recent=(graph.getNodes?.()||[]).filter(item=>item.hasState?.('recent')||(item.getStates?.()||[]).includes('recent'));
-    const footerLines=graphImageExportLines(),wrapped=[];
-    const context=document.createElement('canvas').getContext?.('2d');
-    if(context)context.font='12px Arial';
-    for(const line of footerLines) {
-      let row='';for(const char of line) {
-        const next=row+char,width=context?.measureText?.(next)?.width??Array.from(next).length*8;
-        if(row&&width>W-32){wrapped.push(row);row=char;}else row=next;
-      }
-      wrapped.push(row);
-    }
-    const footerHeight=(wrapped.length*18+24)*scale;
-    let footer=null,exportGeometry=null,camera = null, finished = false, timer, restorePrintInk = null;
+    const footerHeight=0;
+    let exportGeometry=null,camera = null, finished = false, timer, restorePrintInk = null;
     const done = url => {
       if (finished) return;
       finished = true; clearTimeout(timer);
@@ -5259,7 +5346,7 @@ function bindUI() {
       const owned = current();
       // 打印墨色必须在下一次上屏绘制之前还原，屏幕主题保持原样。
       try{restorePrintInk?.();restorePrintInk = null;}catch(_){/* disposed sampling canvas */}
-      try{footer?.remove?.();exportGeometry?.restore();}catch(_){/* disposed canvas */}
+      try{exportGeometry?.restore();}catch(_){/* disposed canvas */}
       if (samplingZoom) { try { graph.set('maxZoom', originalMaxZoom); } catch (_) { /* disposed sampling graph */ } }
       view.exportDepth = Math.max(0, view.exportDepth - 1);view.exportFooterHeight=0;delete view.exportLabelScale;
       if (owned) {
@@ -5312,16 +5399,8 @@ function bindUI() {
           return ()=>{if(current())syncGraphEdgeLabel(item);};
         },
       });
-      footer=graph.get?.('canvas')?.addGroup?.({name:'funds-export-legend',capture:false});
-      if(footer) {
-        // 打印版页脚：白底黑字，与图纸同底色，省墨。
-        footer.addShape('rect',{capture:false,attrs:{x:0,y:H*scale-footerHeight,width:W*scale,height:footerHeight,fill:PRINT_PAPER}});
-        footer.addShape('path',{capture:false,attrs:{path:[['M',0,H*scale-footerHeight],['L',W*scale,H*scale-footerHeight]],stroke:PRINT_RULE,lineWidth:Math.max(1,scale)}});
-        footer.addShape('text',{capture:false,attrs:{x:16*scale,y:H*scale-footerHeight+12*scale,text:wrapped.join('\n'),fontSize:12*scale,lineHeight:18*scale,fontFamily:'Arial',fill:PRINT_INK,textBaseline:'top'}});
-        graph.paint();
-      }
       restorePrintInk = applyPrintInk([...(graph.getNodes?.() || []), ...(graph.getEdges?.() || [])]);
-      if (footer) graph.paint();
+      graph.paint();
       timer = setTimeout(() => {
         if (finished) return;
         if (!current()) return done(null);
@@ -5358,9 +5437,9 @@ function bindUI() {
     const edgeItems = new Map(liveEdges.map(item => [edgeKey(item.getModel()), item]));
     const nodeSources = scope === 'all' ? state.lastGraph.nodes.map(source => {
       const live = nodeModels.get(source.account);
-      if (live) return live;
+      if (live) return {...live,data:source,fundsLabel:nodeLabel(source),size:nodeRenderSize(source),style:nodePhotoUrl(source)?{}:nodeStyle(source)};
       const position = state.positions[source.account] || FundsGraphLayout.seed(source.account, width, height);
-      const size=nodeSize(source);
+      const size=nodeRenderSize(source);
       return {id: source.account, ...position, label: nodeLabel(source), size,
         style: nodePhotoUrl(source) ? {} : nodeStyle(source), data: source};
     }) : liveNodes.map(item => item.getModel());
@@ -5370,6 +5449,9 @@ function bindUI() {
       const custom=state.presentation.nodeStyles?.[m.id];
       return { photoUrl: embedPhotos?nodePhotoUrl(source):null, node: {
         id: m.id, x: Math.round((m.x || 0) * 100) / 100, y: Math.round((m.y || 0) * 100) / 100,
+        type:nodeDisplayShape(m.id),displayStyle:FundsGraphPresentation.sanitizeNode(custom),
+        groups:nodeDisplayGroups(m.id),pinned:state.presentation.pinnedAccounts?.includes(m.id)===true,
+        displayGroups:nodeDisplayGroups(m.id).map(({name,color})=>({name,color})),
         ...(annotationFor(m.id)?{annotation:newGraphPresentation({annotations:[annotationFor(m.id)]}).annotations[0]}:{}),
         label: m.fundsLabel ?? m.label ?? nodeLabel(source), size: m.size || 32, style: (m.style && { ...m.style }) || {},
         labelStyle: effectiveGraphLabelStyle('node',m.id,'dark'),
@@ -5380,6 +5462,8 @@ function bindUI() {
       } };
     });
     const edgeSources = scope === 'all' ? state.lastGraph.edges : liveEdges.map(item => item.getModel().data || item.getModel());
+    const snapshotWidths = scope === 'all' && state.presentation.amountWidth.enabled
+      ? FundsGraphRelations.encodeWidths(state.lastGraph.edges, state.presentation.amountWidth.currency) : view.amountWidths;
     const edges = edgeSources.map(source => {
       const item = edgeItems.get(edgeKey(source));
       const m = item?.getModel() || { ...source, label: edgeLabel(source), data: source,
@@ -5396,17 +5480,17 @@ function bindUI() {
         curvePolicy:m.curvePolicy||null,labelPlacement:m.labelPlacement||'inline',
         routeManual:Object.prototype.hasOwnProperty.call(state.edgeTypes,edgeKey(m))||!!state.edgeBendPos[edgeKey(m)]?.length,
         routeAutoEligible:scope==='all'||(!view.visibleIds&&!graphViewIsFiltered())||graphHasSimpleGeometry(),
-        style: graphRelationStyle(source, false, 'dark'), labelStyle: effectiveGraphLabelStyle('edge',edgeKey(source),'dark'),
+        style: graphRelationStyle(source, false, 'dark', snapshotWidths), labelStyle: effectiveGraphLabelStyle('edge',edgeKey(source),'dark'),
         labelRatio:hasRatio?ratio:null,labelManual:manual,
         labelOffset:{x:offset?offset.x-offset.baseX:0,y:offset?offset.y-offset.baseY:0},
         controlPoints: (m.controlPoints || []).map(point => ({ x: +(+point.x).toFixed(2), y: +(+point.y).toFixed(2) })),
-        label: m.fundsLabel ?? m.label ?? edgeLabel(m.data || source),
+        label: scope==='all'?edgeLabel(source):m.fundsLabel ?? m.label ?? edgeLabel(m.data || source),
         labelVisible: scope === 'all' || !state.graphView.policy || state.graphView.policy.edgeKeys.has(edgeKey(m)),
         lx: !item&&hasRatio?null:text ? +(text.attr('x') || 0).toFixed(2) : savedLabel.lx ?? null,
         ly: !item&&hasRatio?null:text ? +(text.attr('y') || 0).toFixed(2) : savedLabel.ly ?? null,
         bw: background != null ? background.attr('width') : savedLabel.bw ?? null,
         bh: background != null ? background.attr('height') : savedLabel.bh ?? null,
-        data: metadata(m.data || {}, ['cnt', 'ids', 'amount_totals', 'total', 'currencies']),
+        data: metadata(scope==='all'?source:m.data || {}, ['cnt', 'ids', 'amount_totals', 'total', 'currencies']),
       };
     });
     for (const entry of prepared) {
@@ -5430,7 +5514,8 @@ function bindUI() {
       display: { layout:state.layout,edgeType:state.edgeType,edgeLabels:[...state.edgeLabels],showIds:state.showIds,showPhotos:state.showPhotos,
         labelMode:view.labelMode,labelRenderPolicy:'clean-midpoint-v1' },
       view: {scope, mode: graphViewIsFiltered() ? 'filtered' : state.graphView.visibleIds ? 'neighborhood' : 'overview',
-        ...(view.amountWidths?{amount_width:graphAmountWidthMetadata()}:{}),
+        ...(scope==='visible'&&window.FundsInvestigation?.exportWindow?.()?{time_window:window.FundsInvestigation.exportWindow()}:{}),
+        ...(snapshotWidths?{amount_width:graphAmountWidthMetadata(snapshotWidths)}:{}),
         ...(relationFilter.active ? {relation_filter:{currency:relationFilter.currency,min:relationFilter.min||null,max:relationFilter.max||null}} : {}),
         total_nodes: state.lastGraph.nodes.length, total_edges: state.lastGraph.edges.length,
         visible_nodes: liveNodes.length, visible_edges: liveEdges.length, label_mode: state.graphView.labelMode} } : null;
@@ -5477,20 +5562,15 @@ function bindUI() {
       if (blob) downloadBlob(blob, `${snapshot.case_name || '资金图谱'}_图谱.html`);
       return;
     }
+    const description = graphImageExportLines().join('\n');
     const url = await exportHiResPng(format === 'pdf' ? 3 : 2, current);
     if (!assertGraph()) return;
     if (!url?.startsWith('data:image/png')) throw new Error('未获得图像数据，请重试');
     task.setPhase('generating');
-    if (format === 'pdf') {
-      const response = await fetch('/api/export/graph.pdf', { method: 'POST', ...jsonOpts({ image: url }) });
-      const blob = await exportResponse(response, current);
-      if (!assertGraph()) return;
-      if (blob) downloadBlob(blob, `${filename}.pdf`);
-    } else {
-      const binary = atob(url.slice(url.indexOf(',') + 1));
-      const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
-      if (current()) downloadBlob(new Blob([bytes], { type: 'image/png' }), `${filename}.png`);
-    }
+    const response = await fetch(`/api/export/graph.${format}`, { method: 'POST', ...jsonOpts({ image: url, description }) });
+    const blob = await exportResponse(response, current);
+    if (!assertGraph()) return;
+    if (blob) downloadBlob(blob, `${filename}.${format}`);
   }
   exportWorkspace = installExportWorkspace({
     getContext: caseContext, isCurrent: isCurrentCase,
@@ -5498,6 +5578,7 @@ function bindUI() {
       canvasName: state.canvasName || '默认画布' }),
     getScope: () => ({ graphAccounts: state.graph?.getNodes?.().length || 0,
       graphRelations: state.graph?.getEdges?.().length || 0, trackedFlows: state.tracked.size,
+      description: graphImageExportLines().join('\n'),
       pendingLayout: !!layoutJob,
       graphReady: !!state.graph && state.graphInited && !state.graphLoading && !cancelAnnotationDrag
         && !window.FundsCanvasEditor?.history?.status?.().busy }),

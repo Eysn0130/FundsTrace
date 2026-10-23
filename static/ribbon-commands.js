@@ -42,6 +42,7 @@
         labelFontSize: style.fontSize || 13,
         labelBold: ['bold', 700, '700'].includes(style.fontWeight),
         labelItalic: style.fontStyle === 'italic',
+        labelUnderline: style.underline === true,
         labelColor: labelColorValue(style.fill),
       };
     });
@@ -105,7 +106,7 @@
     for (const command of ['alignLeft','alignTop']) enable(command, ids.length > 1);
     for (const command of ['distributeHorizontal','distributeVertical']) enable(command, ids.length > 2);
     enable('restoreHidden', p.hiddenAccounts.length > 0 || p.onlyAccounts !== null);
-    for (const command of ['labelFontFamily','labelFontSize','labelBold','labelItalic','labelColor']) enable(command, !!edge || ids.length > 0);
+    for (const command of ['labelFontFamily','labelFontSize','labelBold','labelItalic','labelUnderline','labelColor']) enable(command, !!edge || ids.length > 0);
     for (const command of ['nodeBorderColor','nodeBorderWidth','nodeSize']) enable(command, ids.length>0 && !edge);
     for (const id of ['btnNodeBorder','btnNodeSize']) { const button=$('#'+id);if(button)button.disabled=!ready()||!ids.length||!!edge; }
     for (const command of ['edgeColor','edgeDash']) enable(command, !!edge);
@@ -143,13 +144,18 @@
     if (!legend && $('#legend')) { legend = document.createElement('div'); legend.id='amountWidthLegend'; legend.className='amount-width-legend'; $('#legend').appendChild(legend); }
     if (legend) {
       legend.hidden = !p.amountWidth.enabled;
-      legend.textContent = encoding ? `${currencyLabel(encoding.legend.currency)} 金额→线宽 · ${encoding.legend.minAmount ?? '—'} — ${encoding.legend.maxAmount ?? '—'} · 全图统一比例`
+      legend.textContent = encoding ? `${currencyLabel(encoding.legend.currency)} 金额→线宽 · ${encoding.legend.minAmount ?? '—'} — ${encoding.legend.maxAmount ?? '—'} · ${root.FundsInvestigation?.active?.()?'当前时间窗口内':''}全图统一比例`
         + (encoding.missing.size ? ` · ${encoding.missing.size} 条无该币种，使用普通线宽` : '')
         + (encoding.invalid.size ? ` · ${encoding.invalid.size} 条金额无效，未编码` : '') : '';
     }
     const edgeWidth = $('#edgeWidth');
     if (edgeWidth) edgeWidth.title = p.amountWidth.enabled ? '金额线宽已启用；关闭后可设置固定线宽' : '所选关系的固定线宽';
     relationFilter?.update();
+    for (const command of ['createGroup','addToGroup','nodeShape','nodeIcon','fixLayout']) enable(command, ids.length > 0 && !edge);
+    enable('addToGroup', ids.length > 0 && !edge && (p.groups || []).length > 0);
+    enable('unfixLayout', ids.some(id => (p.pinnedAccounts || []).includes(id)));
+    for (const command of ['manageGroups','findGraphPaths','timeWindow','timePlayback','presetDefault','presetReport']) enable(command, !!state.caseId && !!state.lastGraph.nodes.length);
+    root.FundsInvestigation?.sync();
   }
   function filterBlocker(ignoreHistory = false) {
     const context = caseContext();
@@ -167,7 +173,7 @@
     if (!root.FundsRelationFilter) return;
     relationFilter = root.FundsRelationFilter.create({
       read: () => ({ binding: JSON.stringify(caseContext()), filter: state.presentation.relationFilter,
-        graph: state.lastGraph, presentation: state.presentation, visibleIds: state.graphView.visibleIds,
+        graph: root.FundsInvestigation?.displayGraph?.(state.lastGraph) || state.lastGraph, presentation: state.presentation, visibleIds: state.graphView.visibleIds,
         view: state.graphView, currencies: relationChoices, ready: !!state.caseId && !!state.graph && !state.graphLoading }),
       preview: (filter, snapshot) => {
         const result = FundsGraphPresentation.displayData(snapshot.graph, { ...snapshot.presentation, relationFilter: filter }, snapshot.visibleIds);
@@ -181,7 +187,7 @@
           if (binding !== JSON.stringify(caseContext())) throw new Error('画布已切换，请重新打开筛选');
           const blocked = filterBlocker(true); if (blocked) throw new Error(blocked);
           // Recheck the composed view before publishing a history entry.
-          FundsGraphPresentation.displayData(state.lastGraph, { ...p, relationFilter: filter }, state.graphView.visibleIds);
+          FundsGraphPresentation.displayData(root.FundsInvestigation?.displayGraph?.(state.lastGraph) || state.lastGraph, { ...p, relationFilter: filter }, state.graphView.visibleIds);
           p.relationFilter = filter;
         });
       }
@@ -248,6 +254,10 @@
     });
   }
   async function execute(command,value) {
+    if (['createGroup','addToGroup','manageGroups','findGraphPaths','timeWindow','timePlayback','nodeShape','nodeIcon'].includes(command)) return root.FundsInvestigation?.execute(command);
+    if (command === 'labelUnderline') return root.FundsCanvasDisplay?.setUnderline(value);
+    if (command === 'fixLayout' || command === 'unfixLayout') return root.FundsCanvasDisplay?.setPinned(command === 'fixLayout');
+    if (command === 'presetDefault' || command === 'presetReport') return root.FundsCanvasDisplay?.preset(command === 'presetReport' ? 'report' : 'default');
     if (command === 'findNode') return root.FundsNodeFinderActions?.search(value) ?? false;
     const cameraCommand=['zoomIn','zoomOut','zoomReset','fitSelection','focusSelection','locateNew'].includes(command);
     if (!(cameraCommand?graphCameraInteractionAllowed():ready())) { sync(); return false; }

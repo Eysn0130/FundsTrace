@@ -352,6 +352,36 @@ test('relation controller adapter preview composes neighborhood, hidden and only
   assert.equal(JSON.stringify(f.state.lastGraph), raw); assert.deepEqual([...f.state.tracked], tracked); assert.equal(f.requests.length, 0);
 });
 
+test('time-window money drives relation preview, displayed widths and filtered results without changing complete facts', async () => {
+  const f = harness({relationController:true}), raw = JSON.stringify(f.state.lastGraph);
+  const tracked=[...f.state.tracked], response=value=>({ok:true,headers:{get:()=> 'application/json'},json:async()=>clone(value)});
+  f.network((path,options)=>{
+    if(path==='/api/track/state') {
+      const body=JSON.parse(options.body);assert.deepEqual(body.expected_ids,tracked);assert.deepEqual(body.desired_ids,tracked);
+      return response({ok:true,tracked_ids:tracked});
+    }
+    if(path.startsWith('/api/graph?'))return response(JSON.parse(raw));
+    if(path.startsWith('/api/flows?'))return response({page:1,size:50,total:0,rows:[]});
+    throw new Error(`Unexpected synthetic route: ${path}`);
+  });
+  f.run('renderFlows=()=>{}');
+  f.run(`window.FundsInvestigation={active:()=>true,sync(){},displayGraph:full=>({...full,nodes:full.nodes.slice(0,3),
+    edges:[{...full.edges[0],amount_totals:[{currency:'CNY',amount:'10.00'}]},
+      {...full.edges[2],amount_totals:[{currency:'CNY',amount:'20.00'}]}]})};
+    state.presentation.amountWidth={enabled:true,currency:'CNY'};renderGraph();`);
+  f.commands.sync();
+  assert.equal(f.state.graphView.amountWidths.widths.get('A=>B'),1.5, 'the huge all-period relation is now the smaller window relation');
+  assert.equal(f.state.graphView.amountWidths.widths.get('B=>C'),7);
+  assert.equal(f.state.graphView.amountWidths.legend.maxAmount,'20.00');
+  const ports=f.relationOptions, filter={currency:'CNY',min:'50.00',max:'',active:true};
+  assert.deepEqual(clone(ports.preview(filter,ports.read())),{nodes:0,edges:0});
+  await ports.commit(filter,ports.read().binding);
+  assert.equal(f.edges.length,0); assert.equal(f.nodes.length,0);
+  assert.equal(JSON.stringify(f.state.lastGraph),raw);
+  await f.editor.history.undo();
+  assert.equal(f.edges.length,2); assert.equal(f.state.graphView.amountWidths.legend.maxAmount,'20.00');
+});
+
 test('relation controller commit retains exact money, camera, source and unrelated display settings in one history entry', async () => {
   const f = harness({ relationController: true });
   f.state.presentation.nodeLabels = { A: { fontSize: 18, lineHeight: 23 } };

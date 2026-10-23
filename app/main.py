@@ -5,7 +5,6 @@
 """
 import base64
 import datetime
-from collections import deque
 from contextlib import asynccontextmanager, contextmanager
 from html import escape
 import shutil
@@ -30,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 from . import db, importer, sample_data
+from . import canvas_investigation
 from .case_packages import CASE_PKG_TABLES, CASE_PKG_COLS, delete_package_case, export_package, import_package, require_case, photo_name
 from . import license as lic
 from .services import imports as import_service
@@ -647,6 +647,22 @@ def graph(case_id: int, canvas_id: int = 0):
         return _graph(case_id, canvas_id)
 
 
+@app.post("/api/canvas/investigation/time")
+def canvas_investigation_time(body: canvas_investigation.TimeInvestigationIn):
+    with db._lock:
+        require_case(body.case_id)
+        _require_canvas(body.case_id, body.canvas_id)
+        return canvas_investigation.time_projection(body)
+
+
+@app.post("/api/canvas/investigation/paths")
+def canvas_investigation_paths(body: canvas_investigation.PathInvestigationIn):
+    with db._lock:
+        require_case(body.case_id)
+        _require_canvas(body.case_id, body.canvas_id)
+        return canvas_investigation.paths(body)
+
+
 def _graph_mirror_duplicate_ids(case_id: int, canvas_id: int):
     """Pair each tracked row with at most one oldest compatible ledger mirror."""
     rows = db.q_raw("""
@@ -657,26 +673,7 @@ def _graph_mirror_duplicate_ids(case_id: int, canvas_id: int):
         where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?
         order by f.trade_time, f.id
     """, [case_id, canvas_id, case_id])
-    pending, duplicate_ids = {}, []
-    tolerance = datetime.timedelta(seconds=120)
-    for row in rows:
-        if any(row[field] is None for field in ("payer_account", "payee_account", "amount", "mirror_time")):
-            continue  # NULL values could not match in the previous SQL rule either.
-        if not row["payer_account"] or not row["payee_account"]:
-            continue
-        key = (row["payer_account"], row["payee_account"], row["amount"], row["currency"])
-        queue = pending.setdefault(key, deque())
-        while queue and row["mirror_time"] - queue[0][0] > tolerance:
-            queue.popleft()
-        # All unmatched rows in a group share one declared self_account: a
-        # different/undeclared ledger immediately consumes its oldest partner.
-        # Truncated seconds preserve the existing date_diff('second') boundary.
-        if queue and not (row["self_account"] and row["self_account"] == queue[0][1]):
-            queue.popleft()
-            duplicate_ids.append(row["id"])
-        else:
-            queue.append((row["mirror_time"], row["self_account"]))
-    return duplicate_ids
+    return [flow_id for ids in canvas_investigation.mirror_groups(rows).values() for flow_id in ids]
 
 
 def _graph(case_id: int, canvas_id: int):
@@ -1589,6 +1586,19 @@ class GraphAmountWidth(BaseModel):
         return self
 
 
+class GraphTimeWindow(BaseModel):
+    start: Optional[str] = Field(default=None, max_length=32)
+    end: Optional[str] = Field(default=None, max_length=32)
+    include_undated: bool = True
+    preview: bool = False
+
+    @model_validator(mode="after")
+    def validate_window(self):
+        # Reuse the same local-time input contract as the live projection.
+        canvas_investigation.TimeInvestigationIn(case_id=1, start=self.start, end=self.end)
+        return self
+
+
 class GraphExportView(BaseModel):
     """Display scope only; hiding a neighborhood never deletes tracked facts."""
     scope: Literal["visible", "all"]
@@ -1600,6 +1610,7 @@ class GraphExportView(BaseModel):
     label_mode: Literal["auto", "all", "focus"]
     relation_filter: Optional[GraphRelationFilter] = None
     amount_width: Optional[GraphAmountWidth] = None
+    time_window: Optional[GraphTimeWindow] = None
 
     @model_validator(mode="after")
     def validate_counts(self):
@@ -1645,7 +1656,7 @@ def export_graph_html(body: GraphHtmlIn):
     data = body.model_dump()
     # Keep older export payloads unchanged when optional display metadata is absent.
     if body.view is not None:
-        for key in ("relation_filter", "amount_width"):
+        for key in ("relation_filter", "amount_width", "time_window"):
             if getattr(body.view, key) is None:
                 data["view"].pop(key, None)
     payload = json.dumps(data, ensure_ascii=False)
@@ -1674,6 +1685,12 @@ def export_graph_html(body: GraphHtmlIn):
             scope_text += f"；{prefix}：按 {currency} 聚合关系金额，{amount_range}（不同币种不相加）"
         labels = {"auto": "自动分级", "all": "全部", "focus": "仅重点"}
         scope_text += f" · 标签：{labels[view.label_mode]}"
+        if view.time_window is not None:
+            window = view.time_window
+            scope_text += (f"；交易时间：{window.start or '不限起点'} 至 {window.end or '不限终点'}（原始本地时间，含边界）"
+                           f"；{'包含' if window.include_undated else '排除'}无时间流水；按窗口内实际流水重算金额")
+            if window.preview:
+                scope_text += "；时间回放预览帧"
     amount_legend = ""
     if body.view is not None and body.view.amount_width is not None:
         width = body.view.amount_width
@@ -1706,24 +1723,57 @@ def export_graph_html(body: GraphHtmlIn):
 
 class GraphPdfIn(BaseModel):
     image: str   # 高清 PNG dataURL
+    description: Optional[str] = Field(default=None, max_length=8192, strict=True)
+
+
+def _graph_png_bytes(image: str) -> bytes:
+    """Validate the canvas PNG without trusting its data URL's MIME label."""
+    from PIL import Image
+    prefix = "data:image/png;base64,"
+    if not image.startswith(prefix):
+        raise ValueError("expected a PNG data URL")
+    png = base64.b64decode(image[len(prefix):], validate=True)
+    with Image.open(io.BytesIO(png)) as decoded:
+        if decoded.format != "PNG":
+            raise ValueError("expected PNG image data")
+        decoded.verify()
+    return png
+
+
+@app.post("/api/export/graph.png")
+def export_graph_png(body: GraphPdfIn):
+    """Keep view scope in PNG metadata, leaving the canvas pixels unchanged."""
+    from PIL import Image, PngImagePlugin
+    try:
+        png = _graph_png_bytes(body.image)
+        metadata = PngImagePlugin.PngInfo()
+        if body.description is not None:
+            metadata.add_itxt("Description", body.description)
+        out = io.BytesIO()
+        with Image.open(io.BytesIO(png)) as image:
+            image.save(out, "PNG", pnginfo=metadata)
+    except Exception:
+        raise HTTPException(400, "图像转换失败：请提供有效的 PNG 图像") from None
+    fname = urllib.parse.quote("资金图谱.png")
+    return Response(out.getvalue(), media_type="image/png",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fname}"})
 
 
 @app.post("/api/export/graph.pdf")
 def export_graph_pdf(body: GraphPdfIn):
-    """把前端生成的高清图谱 PNG 包装为单页 PDF（无损嵌入，保证线条/文字清晰）"""
+    """把前端高清图谱 PNG 包装为单页 PDF，并保存范围元数据。"""
     try:
-        b64 = body.image.split(",", 1)[1]
-        png = base64.b64decode(b64)
-        pdf = _png_to_pdf_lossless(png)
-    except Exception as e:
-        raise HTTPException(400, f"图像转换失败: {e}")
+        png = _graph_png_bytes(body.image)
+        pdf = _png_to_pdf_lossless(png, body.description)
+    except Exception:
+        raise HTTPException(400, "图像转换失败：请提供有效的 PNG 图像") from None
     fname = urllib.parse.quote("资金图谱.pdf")
     return Response(pdf, media_type="application/pdf",
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fname}"})
 
 
-def _png_to_pdf_lossless(png: bytes) -> bytes:
-    """优先 img2pdf 无损嵌入；失败则 Pillow P 模式（避免 RGB 走有损 JPEG）"""
+def _png_to_pdf_lossless(png: bytes, description: Optional[str] = None) -> bytes:
+    """优先 img2pdf 无损嵌入；Pillow 回退保留尺寸但量化为 256 色。"""
     from PIL import Image
     img = Image.open(io.BytesIO(png))
     if img.mode != "RGB":
@@ -1733,13 +1783,21 @@ def _png_to_pdf_lossless(png: bytes) -> bytes:
         img = bg
     flat = io.BytesIO()
     img.save(flat, "PNG")
+    metadata = {"title": "资金图谱", "creator": "FundsTrace"}
+    if description is not None:
+        metadata["subject"] = description
     try:
         import img2pdf
-        return img2pdf.convert(flat.getvalue())   # 默认按 96dpi 定页面尺寸
+        return img2pdf.convert(flat.getvalue(), **metadata)   # 默认按 96dpi 定页面尺寸
     except Exception:
+        from PIL import PdfParser
+        # PDF literal strings normalize raw CR bytes, including the low byte of
+        # Chinese characters such as 不 (U+4E0D). Hex strings preserve UTF-16BE.
+        pdf_metadata = {key: PdfParser.PdfBinary(PdfParser.encode_text(value))
+                        for key, value in metadata.items()}
         quantized = img.convert("P", palette=Image.ADAPTIVE, colors=256)
         out = io.BytesIO()
-        quantized.save(out, "PDF", resolution=288.0)
+        quantized.save(out, "PDF", resolution=288.0, **pdf_metadata)
         return out.getvalue()
 
 
@@ -1962,7 +2020,10 @@ buildWM();
   var nodes=DATA.nodes.map(function(n){
     var raw=n.annotation||{},annotation=presentation.create({annotations:[{id:n.id,text:raw.text,anchor:raw.anchor,
       dx:raw.dx,dy:raw.dy,size:raw.size,fontFamily:raw.fontFamily,color:raw.color}]}).annotations[0]||null;
+    var displayStyle=presentation.sanitizeNode(n.displayStyle||{});
     var o={id:n.id,x:n.x,y:n.y,label:n.label,size:n.size,style:nodeStyle(n),data:n.data,labelVisible:n.labelVisible,
+      type:['circle','rect','diamond','ellipse'].indexOf(n.type)>=0?n.type:'circle',
+      displayStyle:displayStyle,groups:n.groups||[],pinned:n.pinned===true,labelStyle:n.labelStyle||{},
       labelOffset:point(n.labelOffset),photoBorder:presentation.sanitizeNode(n.photoBorder),annotation:annotation,
       labelCfg:{position:'bottom',offset:6,style:presentation.effectiveLabel('node',n.labelStyle)}};
     if(n.img){o.type='image';o.img=n.img;}
@@ -1976,7 +2037,7 @@ buildWM();
     curvePolicy:['compact-arc','screen-right','obstacle-aware'].indexOf(e.curvePolicy)>=0?e.curvePolicy:null,
     routeManual:typeof e.routeManual==='boolean'?e.routeManual:undefined,
     routeAutoEligible:typeof e.routeAutoEligible==='boolean'?e.routeAutoEligible:undefined,
-    labelCfg:{autoRotate:false,style:presentation.effectiveLabel('edge',e.labelStyle)}};});
+    labelStyle:e.labelStyle||{},labelCfg:{autoRotate:false,style:presentation.effectiveLabel('edge',e.labelStyle)}};});
   function graphHeight(){
     var top=document.getElementById('exportHeader').getBoundingClientRect().height;
     document.getElementById('mount').style.top=top+'px';
@@ -2083,7 +2144,9 @@ buildWM();
       }else{
         labelGeometry.placeNode(item,{zoom:graph.getZoom?graph.getZoom():1});
         identity(item);annotation(item);
+        presentation.decorateNode(item,m.displayStyle,{groups:m.groups,pinned:m.pinned,ink:'#24394c'});
       }
+      presentation.decorateLabel(item,m.labelStyle);
     });
     graph.setAutoPaint(true);graph.paint();
   }
