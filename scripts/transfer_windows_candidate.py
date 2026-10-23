@@ -15,9 +15,11 @@ import tempfile
 import zipfile
 
 if __package__:
+    from .build_desktop_backend import SOURCE_DOCUMENT_NAMES
     from .release_evidence import prepare_evidence, verify_evidence, standard_evidence_files
     from .upgrade_baseline import parse_baseline, validate_installer_identity
 else:
+    from build_desktop_backend import SOURCE_DOCUMENT_NAMES
     from release_evidence import prepare_evidence, verify_evidence, standard_evidence_files
     from upgrade_baseline import parse_baseline, validate_installer_identity
 
@@ -261,6 +263,23 @@ def source_host_file(commit, name):
     return subprocess.check_output(["git", "show", f"{commit}:{path}"])
 
 
+def verify_backend_report(manifest, source_file):
+    """Check native backend resources against the selected immutable source."""
+    assert manifest["platform"] == "win32" and manifest["arch"] == "x64" and manifest["protocol"] == 1
+    sources_checked = 0
+    for name, sha in manifest["resources"].items():
+        assert not PurePosixPath(name).is_absolute() and ".." not in PurePosixPath(name).parts
+        if name.startswith("frontend/dist/"):
+            continue  # Windows verified the compiled resources and their installed bytes.
+        assert name in SOURCE_DOCUMENT_NAMES or name.startswith("static/")
+        assert sha in variants(source_file(name))
+        sources_checked += 1
+    assert "static/graph-selection.js" in manifest["resources"]
+    assert len(manifest["resources"]) == sources_checked + 3
+    assert manifest["sourceEntrySha256"] in variants(source_file("desktop_backend.py"))
+    return sources_checked
+
+
 def verify_host_report(host, version, package, source_file):
     """Bind the versioned host allowlist, updater and raw brand bytes to source."""
     assert host["status"] == "passed" and host["version"] == version
@@ -356,18 +375,8 @@ def main():
         expected = installer_records[0]
         manifest_path = base / "backend/funds-trace-backend/build-manifest.json"
         manifest = data(manifest_path)
-        assert manifest["platform"] == "win32" and manifest["arch"] == "x64" and manifest["protocol"] == 1
-        sources_checked = 0
-        for name, sha in manifest["resources"].items():
-            assert not PurePosixPath(name).is_absolute() and ".." not in PurePosixPath(name).parts
-            if name.startswith("frontend/dist/"):
-                continue  # The Windows build verified these actual compiled resources, then installed them.
-            assert name in {"LICENSE", "THIRD_PARTY_NOTICES.md"} or name.startswith("static/")
-            assert sha in variants(subprocess.check_output(["git", "show", f"{source}:{name}"]))
-            sources_checked += 1
-        assert "static/graph-selection.js" in manifest["resources"]
-        assert len(manifest["resources"]) == sources_checked + 3
-        assert manifest["sourceEntrySha256"] in variants(subprocess.check_output(["git", "show", f"{source}:desktop_backend.py"]))
+        sources_checked = verify_backend_report(manifest, lambda name: subprocess.check_output(
+            ["git", "show", f"{source}:{name}"]))
 
         host_path = base / "packaged-host-resources.json"
         host = data(host_path)
