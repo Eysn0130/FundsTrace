@@ -359,5 +359,6 @@ jobs:
             源码 FundsTrace/build/desktop/native-installed-app.graph.png
             源码 FundsTrace/build/desktop/native-import-recovery-smoke.json
             源码 FundsTrace/build/desktop/native-production-update.json
+            源码 FundsTrace/build/desktop/native-prior-presentation-baseline.json
             源码 FundsTrace/build/desktop/native-production-update.update-*.png
             源码 FundsTrace/build/desktop/standard-user/

@@ -1,6 +1,6 @@
 'use strict';
 // CI-only installed EXE smoke. Never import Main, inspect request headers, or log CDP payloads.
-// Usage: node installed-app-smoke.cjs <absolute-install-root> --report <absolute-json> [--screenshot <absolute-png>] [--startup-close]
+// Usage: node installed-app-smoke.cjs <absolute-install-root> --report <absolute-json> [--screenshot <absolute-png>] [--startup-close | --presentation-baseline <absolute-config>]
 const assert = require('node:assert/strict');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
@@ -16,6 +16,7 @@ const { titlebarTarget, createInstalledTitlebarProbe, runInstalledTitlebarJourne
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
 const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
 const { runInstalledProductionUpdateJourney } = require('./installed-production-update-journey.cjs');
+const { runInstalledPresentationBaseline } = require('./installed-presentation-baseline.cjs');
 const { FAILURE_CODES } = require('../updates.cjs');
 
 const SENTINEL = 'FundsTrace synthetic installer lifecycle v1\n';
@@ -235,16 +236,16 @@ function argumentsOf() {
   const installRoot = args.shift(), values = {};
   while (args.length) {
     const key = args.shift(), value = args.shift();
-    assert.ok(['--report', '--screenshot', '--update-fixture', '--production-update'].includes(key) && !values[key] && value && path.isAbsolute(value));
+    assert.ok(['--report', '--screenshot', '--update-fixture', '--production-update', '--presentation-baseline'].includes(key) && !values[key] && value && path.isAbsolute(value));
     values[key] = path.resolve(value);
   }
   assert.ok(installRoot && path.isAbsolute(installRoot) && values['--report']);
   assert.equal(path.extname(values['--report']).toLowerCase(), '.json');
   if (values['--screenshot']) assert.equal(path.extname(values['--screenshot']).toLowerCase(), '.png');
-  assert.ok(!values['--update-fixture'] || !values['--production-update']);
-  assert.ok(!startupClose || !values['--update-fixture'] && !values['--production-update']);
+  assert.ok([startupClose, values['--update-fixture'], values['--production-update'], values['--presentation-baseline']].filter(Boolean).length <= 1);
   return { installRoot: path.resolve(installRoot), reportPath: values['--report'], screenshot: values['--screenshot'],
-    updateFixture: values['--update-fixture'], productionUpdate: values['--production-update'], startupClose };
+    updateFixture: values['--update-fixture'], productionUpdate: values['--production-update'],
+    presentationBaseline:values['--presentation-baseline'], startupClose };
 }
 function within(root, value) {
   const relative = path.relative(root, value);
@@ -491,7 +492,8 @@ async function restorePresentationPreferences(snapshot) {
     const userRoot = path.join(process.env.APPDATA, 'FundsTrace');
     assert.equal(await fs.readFile(path.join(userRoot, 'installer-lifecycle-sentinel.txt'), 'utf8'), SENTINEL);
     assert.ok((await fs.stat(path.join(userRoot, 'data', 'fund.duckdb'))).isFile());
-    if (!value.updateFixture && !value.productionUpdate) presentationPreferences = await readPresentationPreferences(userRoot);
+    if (!value.updateFixture && !value.productionUpdate && !value.presentationBaseline)
+      presentationPreferences = await readPresentationPreferences(userRoot);
     for (const output of [value.reportPath, value.screenshot].filter(Boolean)) {
       assert.ok(!within(userRoot, output) && !within(value.installRoot, output));
     }
@@ -500,9 +502,14 @@ async function restorePresentationPreferences(snapshot) {
   });
   reportPath = config.reportPath;
   productionUpdate = !!config.productionUpdate;
+  const priorClientOnly = productionUpdate || !!config.presentationBaseline;
   if (config.startupClose) report.limits = { windowsServerAutomationOnly:true, windows10And11Interactive:false,
     actualSystemDpiValidated:false, importRecovery:false, startupBusinessRendererIntentionallyPaused:true,
     normalWorkbenchJourney:false, nativeCaptionCloseRequired:true, fallbackCloseAllowed:false };
+  if (config.presentationBaseline) report.limits = { windowsServerAutomationOnly:true, windows10And11Interactive:false,
+    actualSystemDpiValidated:false, importRecovery:false, priorClientPresentationOnly:true,
+    nativeUserResizeRequired:true, nativeCaptionCloseRequired:true, fallbackCloseAllowed:false,
+    preferencesWrittenOnlyByInstalledClient:true, preferencesRestoredByHelper:false };
   await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' }); reportOwned = true;
   if (config.updateFixture) updateFixture = await check('isolatedUpdateHttpsFixture', () => createUpdateFixture(config.updateFixture));
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
@@ -518,7 +525,7 @@ async function restorePresentationPreferences(snapshot) {
   });
   let errorCount = 0, instrumentationFailed = false;
   const sessions = new Map();
-  let startupInspectionHeld = !productionUpdate;
+  let startupInspectionHeld = !priorClientOnly;
   const heldBusinessSessions = new Set(), debuggerSessions = new Set();
   releaseStartupInspection = async () => {
     startupInspectionHeld = false;
@@ -621,7 +628,7 @@ async function restorePresentationPreferences(snapshot) {
       });
       return;
     }
-    if (!productionUpdate) await check('installedStartupAnimationAndBounds', () => bounded((async () => {
+    if (!priorClientOnly) await check('installedStartupAnimationAndBounds', () => bounded((async () => {
       const expectedUrl = pathToFileURL(path.join(config.installRoot, 'resources/app.asar/startup/index.html')).href;
       const startup = await until(async () => {
         assert.ok(!primary.done && !instrumentationFailed);
@@ -688,7 +695,26 @@ async function restorePresentationPreferences(snapshot) {
     }, 15000);
   });
   if (config.startupClose) { report.status = 'passed'; return; }
-  if (!productionUpdate) await check('installedPersistentCaptionStartup', async () => {
+  if (config.presentationBaseline) {
+    const baselineConfig = JSON.parse((await fs.readFile(config.presentationBaseline, 'utf8')).replace(/^\uFEFF/, ''));
+    report.presentationBaseline = await runInstalledPresentationBaseline({ config:baselineConfig, primary, evaluate,
+      ready:() => until(async () => {
+        assert.ok(!primary.done && !instrumentationFailed);
+        const { targetInfos } = await cdp.send('Target.getTargets');
+        // The old client's real workbench readiness and completed startup fade
+        // must precede the native resize. No new caption/graph assertions apply.
+        return !targetInfos.some(target => target.type === 'page' && startupTarget(target.url))
+          && targetInfos.some(target => target.targetId === page.targetId && businessOrigin(target.url) === page.origin);
+      }, 15000),
+      nativeWindow:options => nativeStartupWindow(config.installRoot, primary.child.pid, options),
+      readPreferences:() => fs.readFile(path.join(process.env.APPDATA, 'FundsTrace', 'preferences.json')),
+      until, bounded, backendReleased:() => portClosed(Number(new URL(page.origin).port)), check });
+    await check('priorPresentationNoPageExceptions', async () => {
+      assert.ok(!instrumentationFailed); assert.equal(errorCount, 0);
+    });
+    report.status = 'passed'; return;
+  }
+  if (!priorClientOnly) await check('installedPersistentCaptionStartup', async () => {
     report.titlebar.startup = await titlebarProbe.finishStartup();
     report.titlebar.readyBody = await titlebarProbe.checkBody(page);
     const waiting = report.startup.nativeWindows.clientMeasurements.at(-1), ready = report.titlebar.readyBody.body;
