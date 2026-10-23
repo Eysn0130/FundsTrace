@@ -306,7 +306,12 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
     setFullScreen(value) { this.fullscreen = value; }
     close() {
       this.emit('close'); this.destroyed = true; this.hasFocus = false; this.emit('closed');
-      if (state.windows.every(win => win.destroyed)) app.emit('window-all-closed');
+      // Electron drains the native `closed` callback's microtasks before it
+      // removes the window and emits `window-all-closed`. A turn boundary keeps
+      // the mock from hiding startup promise rejections inside that interval.
+      if (state.windows.every(win => win.destroyed)) setImmediate(() => {
+        if (state.windows.every(win => win.destroyed)) app.emit('window-all-closed');
+      });
     }
   }
   class StartView {
@@ -876,6 +881,41 @@ test('closing a startup window stops its backend and ignores readiness arriving 
   assert.equal(win.businessView.loads.length, 0); assert.equal(harness.state.windows.length, 1);
   assert.equal(harness.state.startupViews[0].destroyed, true);
   assert.deepEqual(harness.state.errors, []);
+});
+
+for (const [name, options] of [
+  ['without a ready signal', { workbenchReady: false }],
+  ['with navigation still pending', { workbenchReady: true, navigationPending: true }],
+]) {
+  test(`closing during workbench initialization ${name} stops once without a startup error`, async () => {
+    const harness = mainHarness(options); await harness.flush();
+    harness.ready.resolve({ origin, token: 'synthetic-main-only' }); await harness.flush();
+    const win = harness.state.windows[0];
+    assert.equal(win.businessView.loads.length, 1);
+    assert.equal(harness.ipcMain.listenerCount('funds-trace:workbench'), 1);
+    assert.equal(harness.state.startupViews[0].messages.some(item => item.channel === 'funds-trace:startup'), false);
+    win.close(); await harness.flush();
+    assert.deepEqual(harness.state.errors, []);
+    assert.equal(harness.state.backendStops, 1);
+    assert.equal(harness.state.quitCount, 1);
+    assert.equal(win.businessView.destroyed, true);
+    assert.equal(harness.state.startupViews[0].destroyed, true);
+    assert.equal(harness.ipcMain.listenerCount('funds-trace:workbench'), 0);
+  });
+}
+
+test('a live workbench failure still reports its startup error and stops the backend', async () => {
+  const harness = mainHarness({ workbenchReady: false }); await harness.flush();
+  harness.ready.resolve({ origin, token: 'synthetic-main-only' }); await harness.flush();
+  const win = harness.state.windows[0], contents = win.businessView.webContents;
+  assert.equal(win.isDestroyed(), false);
+  harness.ipcMain.emit('funds-trace:workbench', { sender: contents, senderFrame: contents.mainFrame }, 'failed');
+  await harness.flush();
+  assert.equal(harness.state.errors.length, 1);
+  assert.match(harness.state.errors[0], /无法完成启动/);
+  assert.equal(harness.state.backendStops, 1);
+  assert.equal(harness.state.quitCount, 1);
+  win.close(); await harness.flush();
 });
 
 test('Main removes caption shortcuts after native destruction without reading the destroyed window getter', async () => {

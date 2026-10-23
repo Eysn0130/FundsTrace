@@ -1,6 +1,6 @@
 'use strict';
 // CI-only installed EXE smoke. Never import Main, inspect request headers, or log CDP payloads.
-// Usage: node installed-app-smoke.cjs <absolute-install-root> --report <absolute-json> [--screenshot <absolute-png>]
+// Usage: node installed-app-smoke.cjs <absolute-install-root> --report <absolute-json> [--screenshot <absolute-png>] [--startup-close]
 const assert = require('node:assert/strict');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
@@ -228,7 +228,9 @@ function readImportEntry() {
     &&document.getElementById(input.id)===input,type:input?.type||null,accept:input?.accept||null,enabled:input?.disabled===false};
 }
 function argumentsOf() {
-  const args = process.argv.slice(2);
+  const input = process.argv.slice(2), startupClose = input.includes('--startup-close');
+  assert.ok(input.filter(value => value === '--startup-close').length <= 1);
+  const args = input.filter(value => value !== '--startup-close');
   assert.ok(args.length === 3 || args.length === 5 || args.length === 7);
   const installRoot = args.shift(), values = {};
   while (args.length) {
@@ -240,8 +242,9 @@ function argumentsOf() {
   assert.equal(path.extname(values['--report']).toLowerCase(), '.json');
   if (values['--screenshot']) assert.equal(path.extname(values['--screenshot']).toLowerCase(), '.png');
   assert.ok(!values['--update-fixture'] || !values['--production-update']);
+  assert.ok(!startupClose || !values['--update-fixture'] && !values['--production-update']);
   return { installRoot: path.resolve(installRoot), reportPath: values['--report'], screenshot: values['--screenshot'],
-    updateFixture: values['--update-fixture'], productionUpdate: values['--production-update'] };
+    updateFixture: values['--update-fixture'], productionUpdate: values['--production-update'], startupClose };
 }
 function within(root, value) {
   const relative = path.relative(root, value);
@@ -497,6 +500,9 @@ async function restorePresentationPreferences(snapshot) {
   });
   reportPath = config.reportPath;
   productionUpdate = !!config.productionUpdate;
+  if (config.startupClose) report.limits = { windowsServerAutomationOnly:true, windows10And11Interactive:false,
+    actualSystemDpiValidated:false, importRecovery:false, startupBusinessRendererIntentionallyPaused:true,
+    normalWorkbenchJourney:false, nativeCaptionCloseRequired:true, fallbackCloseAllowed:false };
   await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' }); reportOwned = true;
   if (config.updateFixture) updateFixture = await check('isolatedUpdateHttpsFixture', () => createUpdateFixture(config.updateFixture));
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
@@ -523,7 +529,7 @@ async function restorePresentationPreferences(snapshot) {
     heldBusinessSessions.clear();
     debuggerSessions.clear();
   };
-  await check('installedWindowReady', async () => {
+  await check(config.startupClose ? 'installedStartupCloseInstrumentation' : 'installedWindowReady', async () => {
     const debugUrl = await until(() => {
       assert.ok(!primary.done); return primary.debugUrl;
     }, 30000);
@@ -539,6 +545,7 @@ async function restorePresentationPreferences(snapshot) {
           const { targetInfo } = await cdp.send('Target.getTargetInfo', { targetId:item.targetId });
           if (startupInspectionHeld && businessOrigin(targetInfo.url)) {
             item.paused = true;
+            item.beforeScriptExecution = message.params?.reason === 'instrumentation';
             heldBusinessSessions.add(item.sessionId);
           } else {
             // An initially blank target may turn out to be the local overlay.
@@ -577,6 +584,43 @@ async function restorePresentationPreferences(snapshot) {
       })().catch(() => { instrumentationFailed = true; });
     });
     await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+    if (config.startupClose) {
+      page = await check('installedStartupCloseBusinessPaused', () => until(async () => {
+        assert.ok(!primary.done && !instrumentationFailed && startupInspectionHeld);
+        const held = [...sessions.values()].filter(item => heldBusinessSessions.has(item.sessionId));
+        assert.ok(held.length <= 1);
+        const item = held[0];
+        if (!item?.ready || !item.paused || !item.beforeScriptExecution
+          || [...sessions.values()].some(session => !session.ready)) return false;
+        const { targetInfo } = await cdp.send('Target.getTargetInfo', { targetId:item.targetId });
+        const origin = businessOrigin(targetInfo.url);
+        assert.equal(targetInfo.targetId, item.targetId);
+        assert.equal(targetInfo.type, 'page');
+        if (!origin) return false;
+        // Main starts this navigation only after authenticating its owned
+        // backend. Keep that real business page paused before any resume.
+        return { ...item, origin };
+      }, 30000));
+      report.startupClose = { businessRendererPausedBeforeScript:true, backendOriginObserved:true,
+        keptPausedForNativeClose:false };
+      await check('installedStartupCloseNativeCaption', async () => {
+        assert.ok(startupInspectionHeld && heldBusinessSessions.has(page.sessionId)
+          && sessions.get(page.targetId)?.paused && sessions.get(page.targetId)?.beforeScriptExecution);
+        report.startupClose.keptPausedForNativeClose = true;
+        report.startupClose.nativeCaption = await nativeStartupWindow(config.installRoot,primary.child.pid,{action:'CaptionClose'});
+        assert.equal(report.startupClose.nativeCaption.status,'passed');
+        assert.equal(report.startupClose.nativeCaption.interaction.CloseButtonClicked,true);
+        assert.equal(report.startupClose.nativeCaption.interaction.WindowClosedObserved,true);
+      });
+      await check('installedStartupCloseCleanExit', async () => {
+        assert.deepEqual(await bounded(primary.exited,30000),{code:0,signal:null});
+      });
+      await check('installedStartupCloseBackendReleased', () => until(() => portClosed(Number(new URL(page.origin).port)),15000));
+      await check('installedStartupCloseNoPageExceptions', async () => {
+        assert.ok(!instrumentationFailed); assert.equal(errorCount,0);
+      });
+      return;
+    }
     if (!productionUpdate) await check('installedStartupAnimationAndBounds', () => bounded((async () => {
       const expectedUrl = pathToFileURL(path.join(config.installRoot, 'resources/app.asar/startup/index.html')).href;
       const startup = await until(async () => {
@@ -643,6 +687,7 @@ async function restorePresentationPreferences(snapshot) {
       } catch { return false; }
     }, 15000);
   });
+  if (config.startupClose) { report.status = 'passed'; return; }
   if (!productionUpdate) await check('installedPersistentCaptionStartup', async () => {
     report.titlebar.startup = await titlebarProbe.finishStartup();
     report.titlebar.readyBody = await titlebarProbe.checkBody(page);

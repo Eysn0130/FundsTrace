@@ -50,6 +50,7 @@ $Report = [ordered]@{
         syntheticCaseCreatedAndReopened = 'not-run'; eofShutdown = 'not-run'
         installedApplicationStarted = 'not-run'; installedApplicationSingleInstance = 'not-run'
         installedApplicationNormalClose = 'not-run'
+        installedApplicationStartupClose = 'not-run'
         installedGraphJourney = 'not-run'
         installedImportRecovery = 'not-run'
         uninstallRegistrationRemoved = 'not-run'; installedExecutableRemoved = 'not-run'
@@ -707,6 +708,24 @@ public static class FundsTraceUpdateWindowState {
     if ($ImportHelper.status -cne 'passed') { throw 'Installed backend import recovery failed.' }
     $Report.checks.installedImportRecovery = 'passed'
     $Report.limits.importRecovery = 'installed-backend-public-api-process-restart; not Windows interactive task recovery'
+
+    $Stage = 'installedApplicationStartupClose'
+    $StartupClosePath = Join-Path $TemporaryRoot 'installed-startup-close.json'
+    $StartupCloseJson = Invoke-Native -FileName $NodeExe -Arguments @(
+        (Join-Path $ProjectRoot 'desktop/tests/installed-app-smoke.cjs'), $InstallRoot,
+        '--report', $StartupClosePath, '--startup-close'
+    ) -TimeoutSeconds 180
+    $StartupCloseHelper = $StartupCloseJson | ConvertFrom-Json
+    if ($StartupCloseHelper.status -cne 'passed') { throw 'Installed startup close did not complete.' }
+    $Report.startupCloseChecks = [ordered]@{}
+    foreach ($Name in @('installedStartupCloseBusinessPaused', 'installedStartupCloseNativeCaption',
+        'installedStartupCloseCleanExit', 'installedStartupCloseBackendReleased', 'installedStartupCloseNoPageExceptions')) {
+        if ($StartupCloseHelper.checks.$Name -isnot [bool] -or -not $StartupCloseHelper.checks.$Name) {
+            throw 'Installed startup close did not satisfy its check.'
+        }
+        $Report.startupCloseChecks[$Name] = $true
+    }
+    $Report.checks.installedApplicationStartupClose = 'passed'
 
     $Stage = 'installedApplicationStarted'
     $AppReportPath = Join-Path (Split-Path -Parent $ReportPath) 'native-installed-app-smoke.json'
