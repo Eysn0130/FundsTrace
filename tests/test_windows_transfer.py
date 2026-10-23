@@ -12,6 +12,94 @@ from scripts.transfer_windows_candidate import verify_host_report, verify_upgrad
 from scripts.upgrade_baseline import validate_baseline
 
 
+BACKEND_LICENSES = ("LICENSES/MIT.txt", "docs/licensing.md", "docs/licensing.en.md")
+
+
+def backend_resources(*, licenses=()):
+    files = {name: f"Synthetic reviewed {name}\n".encode() for name in (
+        "LICENSE", "THIRD_PARTY_NOTICES.md", "static/graph-selection.js", *licenses,
+    )}
+    resources = {name: hashlib.sha256(content).hexdigest() for name, content in files.items()}
+    resources.update({name: "c" * 64 for name in (
+        "frontend/dist/index.html", "frontend/dist/assets/index.js", "frontend/dist/assets/index.css",
+    )})
+    return files, resources
+
+
+def test_backend_resource_transfer_preserves_historical_manifest():
+    files, resources = backend_resources()
+    checked = []
+
+    def source_file(name):
+        checked.append(name)
+        return files[name]
+
+    assert transfer.verify_backend_resources(resources, source_file) == len(files)
+    assert set(checked) == set(files)
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+def test_backend_resource_transfer_checks_all_three_current_license_sources(newline):
+    files, resources = backend_resources(licenses=BACKEND_LICENSES)
+    for name in BACKEND_LICENSES:
+        resources[name] = hashlib.sha256(files[name].replace(b"\n", newline)).hexdigest()
+    checked = []
+
+    def source_file(name):
+        checked.append(name)
+        return files[name]
+
+    assert transfer.verify_backend_resources(resources, source_file) == len(files)
+    assert set(checked) == set(files)
+
+
+@pytest.mark.parametrize("name", BACKEND_LICENSES)
+def test_backend_resource_transfer_rejects_changed_license_hash(name):
+    files, resources = backend_resources(licenses=BACKEND_LICENSES)
+    resources[name] = hashlib.sha256(files[name] + b"unreviewed change").hexdigest()
+    checked = []
+
+    def source_file(source):
+        checked.append(source)
+        return files[source]
+
+    with pytest.raises(AssertionError):
+        transfer.verify_backend_resources(resources, source_file)
+    assert name in checked, "The allowed license must reach source-byte verification"
+
+
+@pytest.mark.parametrize("name", [
+    "docs/other.md", "docs/licensing.fr.md", "docs/licensing.md/extra.md",
+    "LICENSES/OTHER.txt", "LICENSES/MIT.txt.bak",
+    "static/../docs/licensing.md", "frontend/dist/../index.html", "/static/graph-selection.js",
+])
+def test_backend_resource_transfer_rejects_other_documents_and_unsafe_paths(name):
+    files, resources = backend_resources()
+    resources[name] = hashlib.sha256(b"unapproved source").hexdigest()
+    checked = []
+
+    def source_file(source):
+        checked.append(source)
+        return files[source]
+
+    with pytest.raises(AssertionError):
+        transfer.verify_backend_resources(resources, source_file)
+    assert name not in checked, "Disallowed paths must be rejected before reading source"
+
+
+@pytest.mark.parametrize("change", ["missingCompiled", "extraCompiled", "missingGraphSelection"])
+def test_backend_resource_transfer_preserves_compiled_count_and_required_graph_contract(change):
+    files, resources = backend_resources()
+    if change == "missingCompiled":
+        del resources["frontend/dist/index.html"]
+    elif change == "extraCompiled":
+        resources["frontend/dist/assets/extra.js"] = "d" * 64
+    else:
+        del resources["static/graph-selection.js"]
+    with pytest.raises(AssertionError):
+        transfer.verify_backend_resources(resources, files.__getitem__)
+
+
 def fixture(updater, *, version="0.1.8", brand=False):
     names = ["main.cjs", "backend.cjs", "host-policy.cjs", "preferences.cjs", "preload.cjs"]
     if updater:
