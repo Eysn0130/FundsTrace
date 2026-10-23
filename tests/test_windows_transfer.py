@@ -348,6 +348,71 @@ def test_upgrade_origin_rejects_undeclared_or_stale_candidate_baseline(change):
         verify_upgrade_origin(candidate, report, baseline, "b" * 64, 2345)
 
 
+STARTUP_CLOSE_CHECKS = (
+    "installedStartupCloseBusinessPaused", "installedStartupCloseNativeCaption",
+    "installedStartupCloseCleanExit", "installedStartupCloseBackendReleased",
+    "installedStartupCloseNoPageExceptions",
+)
+
+
+def startup_close_report(version="0.1.12"):
+    return {"currentVersion": version,
+            "checks": {"installedApplicationStartupClose": "passed"},
+            "startupCloseChecks": dict.fromkeys(STARTUP_CLOSE_CHECKS, True)}
+
+
+@pytest.mark.parametrize("version", ["0.1.12", "0.1.13"])
+def test_startup_close_transfer_accepts_complete_current_and_future_reports(version):
+    report = startup_close_report(version)
+    for account_report in (report, deepcopy(report)):
+        transfer.verify_startup_close_report(account_report, version)
+
+
+@pytest.mark.parametrize("change", ["missing", False, "true", True])
+def test_startup_close_transfer_rejects_missing_or_invalid_installer_gate(change):
+    report = startup_close_report()
+    if change == "missing":
+        del report["checks"]["installedApplicationStartupClose"]
+    else:
+        report["checks"]["installedApplicationStartupClose"] = change
+    with pytest.raises(AssertionError):
+        transfer.verify_startup_close_report(report, "0.1.12")
+
+
+@pytest.mark.parametrize("name", STARTUP_CLOSE_CHECKS)
+@pytest.mark.parametrize("change", ["missing", False, "true", 1])
+def test_startup_close_transfer_requires_each_check_to_be_boolean_true(name, change):
+    report = startup_close_report()
+    if change == "missing":
+        del report["startupCloseChecks"][name]
+    else:
+        report["startupCloseChecks"][name] = change
+    with pytest.raises(AssertionError):
+        transfer.verify_startup_close_report(report, "0.1.12")
+
+
+@pytest.mark.parametrize("change", ["missing", None, []])
+def test_startup_close_transfer_rejects_missing_or_malformed_detail_dictionary(change):
+    report = startup_close_report()
+    if change == "missing":
+        del report["startupCloseChecks"]
+    else:
+        report["startupCloseChecks"] = change
+    with pytest.raises(AssertionError):
+        transfer.verify_startup_close_report(report, "0.1.12")
+
+
+@pytest.mark.parametrize("version", ["0.1.10", "0.1.11"])
+def test_startup_close_transfer_preserves_legacy_report_contract(version):
+    report = {"currentVersion": version, "checks": {"installedApplicationStarted": "passed"}}
+    transfer.verify_startup_close_report(report, version)
+
+
+def test_startup_close_transfer_rejects_another_release_target():
+    with pytest.raises(AssertionError):
+        transfer.verify_startup_close_report(startup_close_report("0.1.11"), "0.1.12")
+
+
 def icon_fixture():
     icon = {"status": "passed", "selection": "default-icon-index-0", "expectedIcoSha256": "c" * 64,
             "verifiedLanguageVariants": 1, "frames": [{"width": 32, "height": 32, "sha256": "d" * 64}]}

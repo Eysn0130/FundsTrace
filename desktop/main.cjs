@@ -382,7 +382,13 @@ else {
           workbench.ready.then(ready => { if (!ready) throw new Error('Workbench initialization failed'); }),
         ]);
       }
-      catch (error) { workbench.dispose(); throw error; }
+      catch (error) {
+        workbench.dispose();
+        // Native `closed` callbacks can reject startup before `window-all-closed`
+        // begins shutdown. A normal close must not open a blocking error dialog.
+        if (quitting || primary.isDestroyed()) return;
+        throw error;
+      }
       if (quitting || primary.isDestroyed()) return;
       startup.finish();
       if (!await startup.finished || quitting || primary.isDestroyed()) return;
