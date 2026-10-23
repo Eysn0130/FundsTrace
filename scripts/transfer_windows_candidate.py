@@ -319,6 +319,22 @@ def verify_upgrade_origin(candidate, installer, baseline, current_sha256, curren
     return baseline["prior"]["version"]
 
 
+def verify_startup_close_report(installer, version):
+    """Bind startup-close evidence to the verified release target."""
+    assert installer["currentVersion"] == version
+    if tuple(map(int, version.split("."))) < (0, 1, 12):
+        return
+    assert installer["checks"].get("installedApplicationStartupClose") == "passed", "Startup-close installer gate did not pass"
+    checks = installer.get("startupCloseChecks")
+    assert isinstance(checks, dict), "Startup-close checks are missing or invalid"
+    for name in (
+        "installedStartupCloseBusinessPaused", "installedStartupCloseNativeCaption",
+        "installedStartupCloseCleanExit", "installedStartupCloseBackendReleased",
+        "installedStartupCloseNoPageExceptions",
+    ):
+        assert checks.get(name) is True, f"Startup-close check did not pass: {name}"
+
+
 def verify_icon_report(icons, candidate, installer, expected_icon_sha):
     """Keep PE evidence tied to the actual candidate files and approved icon."""
     assert icons["status"] == "passed"
@@ -404,7 +420,8 @@ def main():
                 "installedWorkspaceWindowIcon", "installedAnalysisWindowIcon"))
             installer = data(folder / "native-installer-smoke.json")
             assert verify_upgrade_origin(candidate, installer, baseline, expected["sha256"], expected["bytes"]) == prior_version
-            assert installer["currentVersion"] == args.tag[1:] and all(value == "passed" for value in installer["checks"].values())
+            assert all(value == "passed" for value in installer["checks"].values())
+            verify_startup_close_report(installer, args.tag[1:])
             assert all(installer["checks"][name] == "passed" for name in (
                 "upgradeBaseline", "presentationPreferencesSeeded", "obsoleteInstalledFileRemoved",
                 "installedExecutableIcons", "installedShortcutIcons",
