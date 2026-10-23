@@ -61,7 +61,7 @@ html[data-ft-theme="light"] #graphPage #left {border-right-color:var(--border)}
 .rail-update-slot{position:relative;width:38px;height:34px;flex:0 0 34px;display:flex;align-items:center;justify-content:center}
 .rail-update-slot funds-desktop-update:not([hidden]){position:absolute;inset:2px 4px;width:30px;height:30px}
 .rail-update-slot:has(funds-desktop-update:not([hidden])) #navUpdate{visibility:hidden}
-#appRail .funds-update-capsule{width:30px;height:30px;min-height:30px;padding:0;border:0;border-radius:50%;background:var(--action-fill);color:var(--action-on)}
+#appRail .funds-update-capsule{width:30px;height:30px;min-height:30px;flex:0 0 30px;padding:0;border:0;border-radius:50%;background:var(--action-fill);color:var(--action-on)}
 #appRail .funds-update-capsule > span:last-child{position:absolute;overflow:hidden;clip-path:inset(50%);width:1px;height:1px}
 #appRail .funds-update-capsule:not([data-phase="downloading"]):not([data-phase="installing"])::before{content:"";width:17px;height:17px;background:var(--action-on);mask:url('/static/ui-icons/download.svg') center/contain no-repeat}
 html[data-ft-translucency="true"] .fta-settings::backdrop{backdrop-filter:blur(3px)}
