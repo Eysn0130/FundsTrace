@@ -20,7 +20,7 @@ HEADERS = ["date", "payer_account", "payee_account", "amount", "unused"]
 FIRST = ["2026-01-01", "SYN-A", "SYN-B", "1.23", "original"]
 LATER_HEADERS = ["date", "payee_account", "payer_account", "123", "amount"]
 SECOND = ["2026-01-02", "SYN-C", "SYN-D", "9.87", "2.34"]
-NEW_PROFILE = "funds-trace-table-v16"
+NEW_PROFILE = "funds-trace-table-v17"
 OLD_PROFILE = "funds-trace-table-v14"
 
 

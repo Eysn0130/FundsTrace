@@ -35,8 +35,10 @@ BANK_NAME_PROFILE = "funds-trace-table-v13"
 QUERY_OWNER_PROFILE = "funds-trace-table-v14"
 REGION_HEADER_PROFILE = "funds-trace-table-v15"
 REORDERED_TIME_PROFILE = "funds-trace-table-v16"
-PROFILE = REORDERED_TIME_PROFILE
-REGION_HEADER_PROFILES = frozenset((REGION_HEADER_PROFILE, REORDERED_TIME_PROFILE))
+CURRENCY_REGION_PROFILE = "funds-trace-table-v17"
+PROFILE = CURRENCY_REGION_PROFILE
+REORDERED_TIME_PROFILES = frozenset((REORDERED_TIME_PROFILE, CURRENCY_REGION_PROFILE))
+REGION_HEADER_PROFILES = frozenset((REGION_HEADER_PROFILE, *REORDERED_TIME_PROFILES))
 QUERY_OWNER_PROFILES = frozenset((QUERY_OWNER_PROFILE, *REGION_HEADER_PROFILES))
 BANK_NAME_PROFILES = frozenset((BANK_NAME_PROFILE, *QUERY_OWNER_PROFILES))
 SOURCE_ROLE_PROFILES = frozenset((SOURCE_ROLE_PROFILE, *BANK_NAME_PROFILES))
@@ -106,6 +108,7 @@ REASONS = {
     "unsupported_identity_format": "Excel身份数字显示格式无法唯一解释，未计入资金统计",
     "formula_value": "关键字段为未执行的Excel公式，未计入资金统计",
     "region_mapping_conflict": "所选映射不能唯一适用于当前表格区域，未计入资金统计",
+    "ambiguous_region_header": "当前区域同时符合交易和新表头结构，金额、时间或双方解释可能不同；保留来源，至下一明确表头前不计入资金及关系统计",
 }
 
 
@@ -162,6 +165,11 @@ for _field in set(FIELD_SYNONYMS) | set(_EXTRA):
     _ALIASES[_field] = {_norm(x) for x in [*FIELD_SYNONYMS.get(_field, []), *_EXTRA.get(_field, [])]}
 # Cash/remittance indicators are not currency codes.
 _ALIASES["currency"].discard(_norm("钞汇标志"))
+_REGION_IDENTITIES = frozenset(("payer_account", "payee_account", "self_account", "self_card",
+                                "counter_account", "counter_card", "payer_name", "payee_name", "self_name", "counter_name"))
+_REGION_IDENTITY_HEADERS = frozenset(value for field in _REGION_IDENTITIES
+                                     for value in _ALIASES.get(field, ())) | {
+    "本方卡号", "交易对方卡号", "交易对方账卡号", "查询帐号", "查询卡号"}
 _FINANCIAL_ALIASES = {field: {_norm(value) for value in values}
                       for field, values in table_financial.ALIASES.items()}
 _FINANCIAL_MONEY_HEADERS = frozenset(value for field in table_financial.MONEY_FIELDS
@@ -360,6 +368,8 @@ def _candidates(headers, profile=IDENTITY_PROFILE):
             basis = "uniform_query_owner"
         if profile in BANK_NAME_PROFILES and _norm(header) == "交易对方账号开户行":
             fields, basis = ["counter_bank"], "explicit_identity_role"
+        if profile == CURRENCY_REGION_PROFILE and base == "币种代码":
+            fields, basis = ["currency"], "exact_header_alias"
         if declared_time:
             basis = "explicit_time_format"
         if not fields and profile in ROLE_PROFILES and (field := identity_field(base)):
@@ -1253,7 +1263,7 @@ def _later_header(row, candidates, profile=IDENTITY_PROFILE):
     # v16 checks that structure only when the old monetary fields cannot parse.
     has_old_time = any(_time(_value(row, item)) is not None for item in candidates.get("trade_time", []))
     if has_old_time:
-        if profile != REORDERED_TIME_PROFILE or any(
+        if profile not in REORDERED_TIME_PROFILES or any(
                 _money(_value(row, item), item)[0] is not None
                 for field in ("amount", "income_amt", "expense_amt")
                 for item in candidates.get(field, [])):
@@ -1288,6 +1298,56 @@ def _later_header(row, candidates, profile=IDENTITY_PROFILE):
     new_time = {item["index"] for item in found["trade_time"]}
     new_money = {item["index"] for key in money_fields for item in found.get(key, [])}
     return bool(old_time & new_time and old_money & new_money)
+
+
+def _overlapping_header(row, candidates, profile):
+    """Only v17: a complete schema reusing current party coordinates is ambiguous.
+
+    Header words wholly in extra cells remain ordinary transaction data. Account
+    text itself is legal; neither the date/amount fast path nor schema priority
+    proves which interpretation was intended when the core coordinates overlap.
+    """
+    if profile != CURRENCY_REGION_PROFILE:
+        return False
+    old_positions = {item["index"] for field in _REGION_IDENTITIES for item in candidates.get(field, [])}
+    if not any(_norm(row[index]) in _REGION_IDENTITY_HEADERS
+               or identity_field(_norm(row[index])) in _REGION_IDENTITIES
+               for index in old_positions if index < len(row)):
+        return False
+    if not any(_time(_value(row, item)) is not None for item in candidates.get("trade_time", [])):
+        return False
+    if not any(_money(_value(row, item), item)[0] is not None
+               for field in ("amount", "income_amt", "expense_amt")
+               for item in candidates.get(field, [])):
+        return False
+    found = _candidates(row, profile)
+    new_positions = {item["index"] for field in _REGION_IDENTITIES for item in found.get(field, [])}
+    return bool(old_positions & new_positions and _shape(found, profile))
+
+
+def _remember_layout(layouts, candidates):
+    # Retain only actual competing financial coordinates, once per layout.
+    # This is not a search over arbitrary columns or combinations of mappings.
+    fields = ("trade_time", "time_part", "amount", "income_amt", "expense_amt",
+              "amount_unit", "income_amt_unit", "expense_amt_unit")
+    layout = {field: candidates[field] for field in fields if field in candidates}
+    key = tuple((field, tuple((item["index"], item.get("factor"), item.get("unit"),
+                              item.get("time_format")) for item in items))
+                for field, items in layout.items())
+    layouts.setdefault(key, layout)
+
+
+def _unmistakable_header(row, profile, layouts):
+    if not _shape(_candidates(row, profile), profile):
+        return False
+    for layout in layouts.values():
+        resolved, _ = _financial_candidates(row, layout)
+        if (_financial_times(row, resolved, [])
+                and any(_money(_value(row, item), item)[0] is not None
+                        for field in ("amount", "income_amt", "expense_amt")
+                        for item in resolved.get(field, []))):
+            return False
+    return True
 
 
 def _region_evidence(headers, candidates, labels, path, header_row):
@@ -1386,6 +1446,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                             amount_model=source_contract.amount_model, candidate_scope="all_region_candidates")
         plan["documents"].append(document)
         member_count = 0
+        ambiguous_layouts = {}
         for index, row in enumerate(raw_rows, start=1):
             if header_no is not None and index == header_no + 1:
                 continue
@@ -1400,7 +1461,14 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
             elif header_no is None:
                 disposition, reason = "unresolved", "unknown_table"
                 details["financial_effect"] = "undetermined"
-            elif _later_header(row, candidates, profile):
+            elif _overlapping_header(row, candidates, profile):
+                _remember_layout(ambiguous_layouts, candidates)
+                _remember_layout(ambiguous_layouts, _candidates(row, profile))
+                disposition, reason = "unresolved", "ambiguous_region_header"
+                details.update(financial_effect="undetermined", validation_issues=reason)
+            elif ((ambiguous_layouts and _unmistakable_header(row, profile, ambiguous_layouts))
+                  or not ambiguous_layouts and _later_header(row, candidates, profile)):
+                ambiguous_layouts.clear()
                 headers = row
                 candidates, labels, actual_mode, current_mapping, region_error, active_reference_policy = _region(
                     headers, mode, mapping, strict=False, reference_policy=reference_policy, profile=profile)
@@ -1408,6 +1476,12 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                 document["header_rows"].append(index)
                 plan["mapping_evidence"].extend(_region_evidence(headers, candidates, labels, sheet["path"], index))
                 disposition, reason = "non_transaction", "repeated_header"
+            elif ambiguous_layouts:
+                found = _candidates(row, profile)
+                if _shape(found, profile):
+                    _remember_layout(ambiguous_layouts, found)
+                disposition, reason = "unresolved", "ambiguous_region_header"
+                details.update(financial_effect="undetermined", validation_issues=reason)
             elif len(row) != len(headers):
                 disposition, reason = "unresolved", "row_width"
                 details["financial_effect"] = "undetermined"
@@ -1425,6 +1499,8 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                         and FINANCIAL_VALIDATION_ISSUES.intersection(parsed_details.get("validation_issues", "").split(","))
                         and any(item.get("basis") in {"explicit_financial_header", "explicit_source_contract", "explicit_time_format"} for items in candidates.values() for item in items)):
                     details["validation_basis"] = FINANCIAL_CONFLICT_BASIS
+            if source_contract and reason == "ambiguous_region_header":
+                details.update(source_contract.details())
             details["reason"] = REASONS[reason]
             if source_contract and reason == "missing_direction":
                 details["reason"] = ("缺少明确方向及同一笔交易的完整前后账面余额；普通相邻余额未证明连续性，"

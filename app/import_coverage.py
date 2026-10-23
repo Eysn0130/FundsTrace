@@ -61,7 +61,7 @@ def _table_cancellation_conflicts(case_id):
 def _header_resolution_pairs(case_id):
     """Discharge only the two closed, source-bound header corrections.
 
-    An admitted v9/v10/v11/v12/v13/v14/v15/v16 interpretation of the identical physical record must have
+    An admitted v9/v10/v11/v12/v13/v14/v15/v16/v17 interpretation of the identical physical record must have
     precisely the old mapping with that one misclassified complete column
     moved to direction for the v7/v8 defect. The v11 English unit declaration
     correction requires identical mappings and an unknown-to-known factor on
@@ -77,7 +77,7 @@ def _header_resolution_pairs(case_id):
         join import_members m on m.case_id=s.case_id and m.source_id=s.source_id
         join import_members nm on nm.case_id=m.case_id and nm.member_path=m.member_path and nm.sha256=m.sha256
         join import_sources n on n.case_id=nm.case_id and n.source_id=nm.source_id
-          and n.parser_version in ('funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16')
+          and n.parser_version in ('funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17')
           and n.row_kind='table_record' and n.mode=s.mode
         where s.case_id=? and s.row_kind='table_record'
           and s.parser_version in ('funds-trace-table-v7','funds-trace-table-v8',
@@ -132,7 +132,7 @@ def import_coverage(case_id):
 
     Supported v5 evaluations supersede v4 and v3; v3 evaluations supersede v2, and v2 supersedes v1, regardless
     of the order in which different versions were imported. Table archive v3
-    supersedes archive v2 and v1, then ordinary table v16 through v5 evaluations.
+    supersedes archive v2 and v1, then ordinary table v17 through v5 evaluations.
     Within one rule version the newest assessment wins, including explicit
     removal. Unsupported evaluations take precedence and remain uncertain even
     when marked imported or removed: an older application cannot interpret
@@ -141,7 +141,7 @@ def import_coverage(case_id):
     a gap even across archive evaluations:
     reimporting an earlier identity or deleting a flow is not evidence that the
     competing identity was resolved. Only a future supported resolution rule
-    may discharge that gap. The bounded v9/v10/v11/v12/v13/v14/v15/v16 whole-direction-header correction
+    may discharge that gap. The bounded v9/v10/v11/v12/v13/v14/v15/v16/v17 whole-direction-header correction
     discharges only its proven v7/v8 diagnostic, and v11 discharges only proven
     v7-v10 English-unit-header diagnostics. Disclosure never rewrites
     source history. This describes imported feedback sources only, not whether
@@ -191,6 +191,7 @@ def import_coverage(case_id):
                                               'funds-trace-table-v14',
                                               'funds-trace-table-v15',
                                               'funds-trace-table-v16',
+                                              'funds-trace-table-v17',
                                               'funds-trace-table-archive-v1',
                                               'funds-trace-table-archive-v2',
                                               'funds-trace-table-archive-v3')
@@ -201,10 +202,10 @@ def import_coverage(case_id):
                               and r.reason_code='own_identity_conflict'
                             or s.parser_version='funds-trace-table-archive-v3'
                               and r.reason_code='cancellation_historical_conflict'
-                            or s.parser_version in ('funds-trace-table-v6','funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16')
+                            or s.parser_version in ('funds-trace-table-v6','funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17')
                               and r.disposition='unresolved'
                               and json_extract_string(r.details_json,'$.counterparty_basis') in (?,?)
-                            or s.parser_version in ('funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16') and r.disposition='unresolved'
+                            or s.parser_version in ('funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17') and r.disposition='unresolved'
                               and json_extract_string(r.details_json,'$.validation_basis')=?
                               and h.record_no is null
                             or c.source_row is not null
@@ -229,6 +230,7 @@ def import_coverage(case_id):
                     when 'funds-trace-table-v14' then 5.998046875
                     when 'funds-trace-table-v15' then 5.9990234375
                     when 'funds-trace-table-v16' then 5.99951171875
+                    when 'funds-trace-table-v17' then 5.999755859375
                     when 'funds-trace-table-archive-v1' then 6
                     when 'funds-trace-table-archive-v2' then 7
                     when 'funds-trace-table-archive-v3' then 8

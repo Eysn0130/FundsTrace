@@ -50,7 +50,7 @@ def test_exact_bank_column_is_automatically_mapped_to_its_directed_counterparty(
     if reverse:
         headers, row = list(reversed(headers)), list(reversed(row))
     result = parse(headers, [row], suffix)
-    assert result["profile"] == "funds-trace-table-v16" and result["stats"]["accepted"] == 1
+    assert result["profile"] == "funds-trace-table-v17" and result["stats"]["accepted"] == 1
     flow = result["rows"][0]
     assert flow[counter_side + "_account"] == "SYN-OTHER"
     assert flow[counter_side + "_bank"] == "Synthetic source bank"
@@ -183,7 +183,7 @@ def test_bank_conflict_after_the_first_hundred_rows_is_still_validated(suffix):
     assert result["stats"]["currency_totals"] == {"CNY": "129.15"}
 
 
-@pytest.mark.parametrize("profile", ["funds-trace-table-v13", "funds-trace-table-v14", "funds-trace-table-v15", "funds-trace-table-v16"])
+@pytest.mark.parametrize("profile", ["funds-trace-table-v13", "funds-trace-table-v14", "funds-trace-table-v15", "funds-trace-table-v16", "funds-trace-table-v17"])
 @pytest.mark.parametrize("direction,own_party,party_card", [("out", "payer_account", "付款人卡号"), ("in", "payee_account", "收款人卡号")])
 def test_bank_profiles_inherit_v12_card_kind_constraints_without_cross_kind_comparison(profile, direction, own_party, party_card):
     headers = ["date", "本方账号", "本方卡号", "交易对方账号", "交易对方账号开户行", own_party, party_card, "direction", "amount"]

@@ -21,7 +21,7 @@ def test_ready_v6_repreview_and_commit_keep_old_money_after_v11_is_default(clien
                "2026-01-01,SYN-A,SYN-B,1.01,万元\n").encode()
     old = profile_preview(client, cid, payload, monkeypatch, table_import.ROLE_PROFILE)
     assert old["stats"]["ok"] == 1 and old["table_summary"]["currency_totals"] == {"CNY": "1.01"}
-    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v16"
+    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v17"
     rechecked = client.post(f"/api/v1/cases/{cid}/imports/{old['import_id']}/preview", json={
         "mode": old["mode"], "mapping": old["mapping"]})
     assert rechecked.status_code == 200, rechecked.text

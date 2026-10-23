@@ -31,7 +31,7 @@ def test_direction_headers_complete_automatically_preserve_signs_and_round_trip(
         ["2026-03-01 11:00:00", "SYN-OWN", "SYN-USD", "234", "CREDIT", "USD"],
     ], suffix)
     view = preview(client, cid, payload, "synthetic" + suffix)
-    assert view["automatic"] and view["table_summary"]["profile"] == "funds-trace-table-v16"
+    assert view["automatic"] and view["table_summary"]["profile"] == "funds-trace-table-v17"
     assert view["table_summary"]["accepted"] == 2
     job = complete(client, cid, view)
     assert job["stage"] == "done" and (job["result"]["ok"], job["result"]["rows_dup"]) == (2, 0)
@@ -55,7 +55,7 @@ def test_direction_headers_complete_automatically_preserve_signs_and_round_trip(
     assert facts(database, restored) == expected
     assert coverage(client, restored) == coverage(client, cid)
     assert {item["parser_version"] for item in database.q_raw(
-        "select parser_version from import_sources where case_id=?", [restored])} == {"funds-trace-table-v16"}
+        "select parser_version from import_sources where case_id=?", [restored])} == {"funds-trace-table-v17"}
 
 
 @pytest.mark.parametrize("alias,reason", [
@@ -70,7 +70,7 @@ def test_ready_v8_direction_diagnostics_remain_frozen_after_v11_default(
     payload = encoded_table((*OWN, "amount", alias), [[*ROW, "1.23", "DEBIT"]])
     old = profile_preview(client, cid, payload, monkeypatch, "funds-trace-table-v8")
     assert old["table_summary"]["accepted"] == 0
-    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v16"
+    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v17"
     rechecked = client.post(f"/api/v1/cases/{cid}/imports/{old['import_id']}/preview", json={
         "mode": old["mode"], "mapping": old["mapping"]})
     assert rechecked.status_code == 200, rechecked.text

@@ -48,7 +48,7 @@ def payload(headers, rows, suffix):
 
 @pytest.mark.parametrize("suffix", [".csv", ".xlsx"])
 @pytest.mark.parametrize("enterprise", [False, True])
-@pytest.mark.parametrize("profile", [NEW_PROFILE, "funds-trace-table-v15", "funds-trace-table-v16"])
+@pytest.mark.parametrize("profile", [NEW_PROFILE, "funds-trace-table-v15", "funds-trace-table-v16", "funds-trace-table-v17"])
 def test_uniform_query_owner_automatic_import_exact_facts_sources_and_package(
         client, database, make_case, monkeypatch, suffix, enterprise, profile):
     monkeypatch.setattr(imports, "TABLE_PROFILE", profile)
@@ -230,7 +230,7 @@ def test_v14_package_rejects_unknown_future_profile(client, make_case, tmp_path)
     view = preview(client, cid, csv_bytes(TRANSACTION_QUERY_ONLY, [query_row()]))
     assert complete(client, cid, view)["result"]["ok"] == 1
     members = _members(case_packages.export_package(cid)[0])
-    _mutate(members, "import_sources", "update entries set parser_version='funds-trace-table-v17'", tmp_path)
+    _mutate(members, "import_sources", "update entries set parser_version='funds-trace-table-v18'", tmp_path)
     with pytest.raises(HTTPException):
         case_packages.import_package(_archive(members))
 

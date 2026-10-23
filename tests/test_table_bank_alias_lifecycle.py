@@ -49,7 +49,7 @@ def test_bank_alias_automatic_commit_retains_full_source_mapping_and_facts(
         row["凭证号"] = row["交易流水号"]
     data = csv_bytes(headers, rows) if suffix == ".csv" else workbook(headers, rows)
     view = preview(client, cid, data, "synthetic-bank" + suffix)
-    assert view["automatic"] and view["table_summary"]["profile"] == "funds-trace-table-v16"
+    assert view["automatic"] and view["table_summary"]["profile"] == "funds-trace-table-v17"
     assert view["mapping"]["counter_bank"] == "交易对方账号开户行"
     summary = view["table_summary"]
     assert (summary["accepted"], summary["unresolved"], summary["record_total"]) == (2, 1, 3)
@@ -158,7 +158,7 @@ def test_v13_known_reference_metadata_and_unknown_future_package_are_distinguish
     assert facts(database, restored) == facts(database, cid)
 
     members = _members(package)
-    _mutate(members, "import_sources", "update entries set parser_version='funds-trace-table-v17'", tmp_path)
+    _mutate(members, "import_sources", "update entries set parser_version='funds-trace-table-v18'", tmp_path)
     # An unknown future rule must remain a package rejection, not downgrade.
     with pytest.raises(HTTPException):
         case_packages.import_package(_archive(members))

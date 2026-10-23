@@ -56,7 +56,7 @@ def test_ready_v7_session_keeps_its_financial_interpretation_after_v11_is_defaul
                "2026-02-01 10:00:00,SYN-OWN,SYN-OTHER,-123,out,CNY\n").encode()
     old = profile_preview(client, cid, payload, monkeypatch, "funds-trace-table-v7")
     assert old["table_summary"]["accepted"] == 1
-    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v16"
+    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v17"
     rechecked = client.post(f"/api/v1/cases/{cid}/imports/{old['import_id']}/preview", json={
         "mode": old["mode"], "mapping": old["mapping"]})
     assert rechecked.status_code == 200, rechecked.text

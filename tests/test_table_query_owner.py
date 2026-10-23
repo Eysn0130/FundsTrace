@@ -29,7 +29,7 @@ def test_complete_uniform_query_template_automatically_binds_owner(annotations):
         headers[:2] = ["企业名称(查询条件)", "合成证照(查询条件)"]
     result = parse(headers, [query_row()])
     assert result["stats"]["accepted"] == 1
-    assert result["profile"] == "funds-trace-table-v16"
+    assert result["profile"] == "funds-trace-table-v17"
     flow = result["rows"][0]
     assert (flow["payer_account"], flow["payee_account"], flow["amount"]) == (
         "SYN-OWN", "SYN-OTHER", Decimal("12.34"))

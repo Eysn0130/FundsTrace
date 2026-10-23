@@ -268,7 +268,7 @@ def test_v11_unit_header_correction_does_not_discharge_an_unproven_gap(
         database.x("update import_records set details_json=? where case_id=? and source_id=?",
                    [json.dumps(details), cid, old["import_id"]])
     elif difference == "future_profile":
-        database.x("update import_sources set parser_version='funds-trace-table-v17' where case_id=? and source_id=?",
+        database.x("update import_sources set parser_version='funds-trace-table-v18' where case_id=? and source_id=?",
                    [cid, current["import_id"]])
     elif difference == "unmapped_candidate":
         assert "amount" not in old["mapping"] and "amount" not in current["mapping"]
