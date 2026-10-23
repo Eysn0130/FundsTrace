@@ -255,6 +255,22 @@ def variants(value):
     return values
 
 
+def verify_backend_resources(resources, source_file):
+    """Verify the declared backend resources against their reviewed source bytes."""
+    sources_checked = 0
+    for name, sha in resources.items():
+        assert not PurePosixPath(name).is_absolute() and ".." not in PurePosixPath(name).parts
+        if name.startswith("frontend/dist/"):
+            continue  # The Windows build verified these actual compiled resources, then installed them.
+        assert name in {"LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/MIT.txt",
+                        "docs/licensing.md", "docs/licensing.en.md"} or name.startswith("static/")
+        assert sha in variants(source_file(name))
+        sources_checked += 1
+    assert "static/graph-selection.js" in resources
+    assert len(resources) == sources_checked + 3
+    return sources_checked
+
+
 def source_host_file(commit, name):
     """Read the source location used by the reviewed host packaging declaration."""
     path = "LICENSE" if name == "LICENSE" else f"desktop/{name}"
@@ -357,16 +373,8 @@ def main():
         manifest_path = base / "backend/funds-trace-backend/build-manifest.json"
         manifest = data(manifest_path)
         assert manifest["platform"] == "win32" and manifest["arch"] == "x64" and manifest["protocol"] == 1
-        sources_checked = 0
-        for name, sha in manifest["resources"].items():
-            assert not PurePosixPath(name).is_absolute() and ".." not in PurePosixPath(name).parts
-            if name.startswith("frontend/dist/"):
-                continue  # The Windows build verified these actual compiled resources, then installed them.
-            assert name in {"LICENSE", "THIRD_PARTY_NOTICES.md"} or name.startswith("static/")
-            assert sha in variants(subprocess.check_output(["git", "show", f"{source}:{name}"]))
-            sources_checked += 1
-        assert "static/graph-selection.js" in manifest["resources"]
-        assert len(manifest["resources"]) == sources_checked + 3
+        sources_checked = verify_backend_resources(manifest["resources"], lambda name:
+            subprocess.check_output(["git", "show", f"{source}:{name}"]))
         assert manifest["sourceEntrySha256"] in variants(subprocess.check_output(["git", "show", f"{source}:desktop_backend.py"]))
 
         host_path = base / "packaged-host-resources.json"
