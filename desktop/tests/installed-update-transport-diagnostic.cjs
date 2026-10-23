@@ -64,8 +64,11 @@ function readEndpoint(url, { limit, timeoutMs, budgetLimited, config, installerU
       : result.responseStarted ? 'readTimeout' : result.tlsEstablished ? 'responseTimeout' : 'connectTimeout',
     { errorCode: budgetLimited ? 'NONE' : 'ETIMEDOUT' }), timeoutMs);
     try {
-      // Node's verified HTTPS defaults apply. No headers, proxy, redirects or TLS overrides.
-      request = https.get(url, incoming => {
+      // Match only the updater's public request shape. Transport remains independent
+      // Node HTTPS; no runtime headers, credentials, proxy, redirects or TLS overrides.
+      const headers = { 'User-Agent': 'electron-builder', 'Cache-Control': 'no-cache',
+        ...(metadata ? {} : { accept: '*/*' }) };
+      request = https.get(url, { headers }, incoming => {
         response = incoming; result.responseStarted = true; result.tlsEstablished = true;
         result.statusCode = Number.isInteger(incoming.statusCode) && incoming.statusCode >= 100 && incoming.statusCode <= 599
           ? incoming.statusCode : null;
@@ -107,7 +110,8 @@ function readEndpoint(url, { limit, timeoutMs, budgetLimited, config, installerU
 
 async function safeProductionTransportDiagnostic(config, options = {}) {
   const startedAt = Date.now();
-  const report = { schemaVersion: 1, kind: 'configurationRejected', configurationValid: false,
+  const report = { schemaVersion: 1, transport: 'independentNodeHttps', metadataNoCacheQuery: true,
+    kind: 'configurationRejected', configurationValid: false,
     tlsVerificationEnabled: true, metadata: emptyResult(), installer: emptyResult() };
   try {
     // Freeze only the expected scalar inputs before validating or constructing URLs.
@@ -124,7 +128,7 @@ async function safeProductionTransportDiagnostic(config, options = {}) {
     const installerUrl = `https://download.analytix.top/releases/fundstrace/windows/${config.version}/FundsTrace-${config.version}-windows-x64-unsigned.exe`;
     const remaining = () => Math.max(0, budgetMs - Math.max(0, Date.now() - startedAt));
     for (const [key, url, limit, maximum] of [
-      ['metadata', 'https://analytix.top/fundstrace/latest.yml', 65536, 45000],
+      ['metadata', `https://analytix.top/fundstrace/latest.yml?noCache=${Date.now().toString(32)}`, 65536, 45000],
       ['installer', installerUrl, config.installerBytes, 240000],
     ]) {
       const available = remaining();

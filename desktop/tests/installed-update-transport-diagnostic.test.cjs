@@ -19,9 +19,9 @@ const metadata = () => ({ product: 'com.eysn.fundstrace', version: config.versio
 const json = value => Buffer.from(JSON.stringify(value));
 const plain = value => JSON.parse(JSON.stringify(value));
 
-function harness(plans, environment = {}) {
+function harness(plans, environment = {}, initialClock = 0) {
   const requests = [], scheduled = [], active = new Map();
-  let clock = 0, timerId = 0;
+  let clock = initialClock, timerId = 0;
   const module = { exports: {} };
   const context = vm.createContext({ module, Buffer, Date: { now: () => clock }, process: { env: environment },
     setTimeout(callback, milliseconds) {
@@ -31,12 +31,17 @@ function harness(plans, environment = {}) {
     require(name) {
       if (name !== 'node:https') return require(name);
       return { get(...args) {
-        assert.equal(args.length, 2, 'no request headers, authentication, proxy or TLS options');
-        const [url, callback] = args, plan = plans[requests.length];
+        assert.equal(args.length, 3);
+        const [url, options, callback] = args, plan = plans[requests.length];
+        const isMetadata = requests.length === 0;
+        assert.deepEqual(plain(options), { headers: { 'User-Agent': 'electron-builder', 'Cache-Control': 'no-cache',
+          ...(isMetadata ? {} : { accept: '*/*' }) } }, 'only the fixed public updater headers, with no credentials, proxy or TLS options');
+        if (isMetadata) assert.match(url, /^https:\/\/analytix\.top\/fundstrace\/latest\.yml\?noCache=[0-9a-v]+$/);
+        else assert.equal(url, installerUrl);
         assert.ok(plan, 'unexpected network request, including redirects');
         const request = new EventEmitter();
         request.destroyed = false; request.destroy = () => { request.destroyed = true; };
-        const entry = { url, request }; requests.push(entry);
+        const entry = { url, options, request }; requests.push(entry);
         if (plan.syncError) throw plan.syncError;
         queueMicrotask(() => {
           clock += plan.elapsedMs ?? 11;
@@ -86,10 +91,23 @@ test('post-failure transport reads both fixed endpoints fully and verifies both 
   assert.equal(report.metadata.completed, true); assert.equal(report.installer.completed, true);
   for (const key of ['expectedSizeMatch', 'sha256Match', 'sha512Match']) assert.equal(report.installer[key], true);
   assert.equal(report.metadata.versionMatch, true); assert.equal(report.metadata.installerUrlMatch, true);
-  assert.deepEqual(run.requests.map(value => value.url), ['https://analytix.top/fundstrace/latest.yml', installerUrl]);
+  assert.deepEqual(run.requests.map(value => value.url), ['https://analytix.top/fundstrace/latest.yml?noCache=0', installerUrl]);
   assert.deepEqual(run.scheduled, [45000, 240000]); assert.equal(run.active.size, 0);
   assert.ok(!JSON.stringify(report).includes('SYN_PRIVATE'));
   assert.ok(!JSON.stringify(report).includes('https://'));
+  assert.equal(report.transport, 'independentNodeHttps'); assert.equal(report.metadataNoCacheQuery, true);
+});
+
+test('metadata noCache uses only the internal base-32 timestamp and request headers remain public constants', async () => {
+  const run = harness([{ body: json(metadata()) }, { body: installer }], {}, 12345);
+  const report = await run.run({ ...config, noCache: 'SYN_PRIVATE_QUERY',
+    headers: { Authorization: 'SYN_PRIVATE_TOKEN', 'User-Agent': 'SYN_PRIVATE_AGENT' } });
+  assert.equal(run.requests[0].url, `https://analytix.top/fundstrace/latest.yml?noCache=${(12345).toString(32)}`);
+  assert.equal(run.requests[1].url, installerUrl);
+  assert.equal(new URL(run.requests[1].url).search, '');
+  assert.ok(!JSON.stringify(report).includes('SYN_PRIVATE'));
+  assert.ok(!JSON.stringify(report).includes('electron-builder'));
+  assert.ok(!JSON.stringify(report).includes('Cache-Control'));
 });
 
 test('complete HTTP bodies with invalid metadata or incorrect digests stay distinct from transport failure', async () => {
