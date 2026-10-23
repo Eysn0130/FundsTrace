@@ -3,8 +3,8 @@
   'use strict';
   function create(doc, options) {
     const el = id => doc.getElementById(id), dialog = el('mainAccountsDialog');
-    let controller, state, trigger, binding, rowMenu = null, listKey = '', searchKey = '', debounce = null;
-    let composing = false, closingReason = '', screen = '', searchIntent = 0;
+    let controller, state, trigger, binding, rowMenu = null, listKey = '', searchKey = '', picker = null;
+    let composing = false, closingReason = '', screen = '', pickerEpoch = 0, pickerContext = '', exactQuery = false, exactAccount = '';
     const usable = item => item?.isConnected && !item.disabled && item.getClientRects().length;
     const current = context => context && options.isCurrent(context, false);
     const image = (name, className = '') => {
@@ -33,8 +33,7 @@
       }
     }
     function dismiss(reason = 'close') {
-      searchIntent++;
-      clearTimeout(debounce); debounce = null; closingReason = reason; closeRow();
+      pickerEpoch++; picker?.invalidate(); exactAccount = ''; composing = false; closingReason = reason; closeRow();
       el('btnMainActions').setAttribute('aria-expanded', 'false');
       if (dialog.open) dialog.close();
     }
@@ -131,11 +130,17 @@
       el('maConfirmSubmit').classList.toggle('primary', action === 'auto');
     }
     function onState(next) {
+      const startingSearch = next.searching && !state?.searching;
       state = next;
-      if (!next.visible || !current(next.context)) { if (dialog.open) dismiss('context'); return; }
+      if (!next.visible || !current(next.context)) { picker?.invalidate(); if (dialog.open) dismiss('context'); return; }
       binding = next.context;
       const disabled = next.pending || next.unknown;
       const changedScreen = screen !== next.screen; screen = next.screen;
+      const contextKey = JSON.stringify(binding);
+      if (changedScreen || pickerContext !== contextKey || disabled || next.loading || startingSearch) picker?.invalidate();
+      if (changedScreen || pickerContext !== contextKey) pickerEpoch++;
+      if (changedScreen || pickerContext !== contextKey) { exactQuery = false; exactAccount = ''; }
+      pickerContext = contextKey;
       if (changedScreen) closeRow();
       el('maTitle').textContent = next.screen === 'search' ? '添加主账号' : '主账号管理';
       el('maCase').textContent = options.readCaseName(binding);
@@ -170,7 +175,7 @@
       screen = ''; listKey = ''; searchKey = ''; onState(next);
     }
     el('maSearchAdd').onclick = () => controller.showSearch();
-    el('maBack').onclick = () => { searchIntent++; clearTimeout(debounce); controller.back(); };
+    el('maBack').onclick = () => { picker?.invalidate(); controller.back(); };
     el('maClose').onclick = () => controller.close('close');
     el('btnAutoMain').onclick = () => controller.prepare('auto');
     el('btnClearAutoMain').onclick = () => controller.prepare('clear-auto');
@@ -178,27 +183,35 @@
     el('maConfirmSubmit').onclick = () => controller.submit();
     el('maConvert').onclick = () => { const row = rowMenu?.row; closeRow(); if (row) controller.prepare('manual', row); };
     el('maRemove').onclick = () => { const row = rowMenu?.row; closeRow(); if (row) controller.prepare('remove', row); };
-    el('maRetry').onclick = () => state.screen === 'search' ? controller.search(el('maQuery').value, state.page) : controller.refresh();
+    el('maRetry').onclick = () => state.screen === 'search' ? controller.search(state.query, state.page, exactQuery) : controller.refresh();
     el('maReconcile').onclick = () => controller.reconcile(); el('maAcknowledge').onclick = () => controller.acknowledge();
-    el('maPrev').onclick = () => controller.search(state.query, state.page - 1); el('maNext').onclick = () => controller.search(state.query, state.page + 1);
-    const doSearch = async (locate = false) => {
-      clearTimeout(debounce); debounce = null;
-      const intent = ++searchIntent, query = el('maQuery').value.trim(), context = binding, locator = root.FundsGraphLocator;
-      if (composing) return false;
-      let previewBinding;
-      try { if (locate && query !== '') previewBinding = locator?.capture?.(); } catch (_) { /* Search remains available without a camera. */ }
-      const result = await controller.search(query, 1), next = controller.status();
-      if (result && previewBinding != null && intent === searchIntent && !composing && query !== '' && query === el('maQuery').value.trim()
-        && current(context) && next.visible && next.screen === 'search' && !next.pending && !next.unknown && !next.searching
-        && next.query === query && next.total === 1 && next.candidates.length === 1) {
-        try { await locator?.previewAccount?.(next.candidates[0].account, { binding: previewBinding }); } catch (_) { /* Preview failure cannot discard valid search results. */ }
-      }
-      return result;
+    el('maPrev').onclick = () => controller.search(state.query, state.page - 1, exactQuery); el('maNext').onclick = () => controller.search(state.query, state.page + 1, exactQuery);
+    const queryScope = () => state?.visible && state.screen === 'search' && dialog.open && current(binding)
+      && !state.pending && !state.unknown && !state.loading
+      // Disabling the submitted SVG button returns focus to this input. That
+      // focus must not reopen suggestions over the result being requested;
+      // editing a different draft is still allowed while it is in flight.
+      && !(state.searching && el('maQuery').value.trim() === state.query) ? `${pickerEpoch}:${JSON.stringify(binding)}` : null;
+    const doSearch = (query = el('maQuery').value, selected = picker?.getSelected()) => {
+      if (composing || !state?.visible || state.screen !== 'search' || !dialog.open || !current(binding) || state.pending || state.unknown || state.loading) return false;
+      const value = String(query).trim(), selectedAccount = typeof selected?.account === 'string' ? selected.account : '';
+      if (selectedAccount && value === selectedAccount) exactAccount = selectedAccount;
+      exactQuery = !!exactAccount && value === exactAccount; return controller.search(value, 1, exactQuery);
     };
-    el('maSearchForm').addEventListener('submit', event => { event.preventDefault(); if (!event.isComposing) void doSearch(true); });
-    el('maQuery').addEventListener('input', () => { searchIntent++; clearTimeout(debounce); if (!composing) debounce = setTimeout(() => { void doSearch(); }, 220); });
-    el('maQuery').addEventListener('compositionstart', () => { searchIntent++; composing = true; clearTimeout(debounce); });
-    el('maQuery').addEventListener('compositionend', () => { searchIntent++; composing = false; clearTimeout(debounce); debounce = setTimeout(() => { void doSearch(); }, 220); });
+    picker = root.FundsEntitySearch?.mount(el('maQuery'), {
+      caseId: () => binding?.caseId, scope: queryScope, source: 'flows', kind: 'account',
+      onSelect(item) { exactAccount = typeof item.account === 'string' && el('maQuery').value === item.account ? item.account : ''; },
+      onSubmit: (query, selected) => { void doSearch(query, selected); },
+    }) || null;
+    const searchButton = el('maSearchForm').querySelector('button');
+    searchButton.classList.add('icon-button'); searchButton.setAttribute('aria-label', '查询本案件账号或户名');
+    const leadingIcon = el('maSearchForm').querySelector('img');
+    if (leadingIcon?.parentElement === el('maSearchForm')) leadingIcon.remove();
+    searchButton.replaceChildren(image('search'));
+    el('maSearchForm').addEventListener('submit', event => { event.preventDefault(); if (!event.isComposing) void doSearch(); });
+    el('maQuery').addEventListener('input', () => { exactAccount = ''; });
+    el('maQuery').addEventListener('compositionstart', () => { composing = true; });
+    el('maQuery').addEventListener('compositionend', () => { composing = false; });
     el('maFilters').addEventListener('click', event => { const button = event.target.closest('[data-ma-filter]'); if (button) controller.setFilter(button.dataset.maFilter); });
     el('maFilters').addEventListener('keydown', event => {
       if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
@@ -208,7 +221,10 @@
     });
     dialog.addEventListener('pointerdown', event => { if (rowMenu && !event.target.closest('#maRowMenu,.main-accounts-more')) closeRow(); });
     dialog.addEventListener('keydown', event => {
-      if (event.key === 'Enter' && (composing || event.isComposing || event.keyCode === 229)) event.preventDefault();
+      if (composing || event.isComposing || event.keyCode === 229) {
+        if (event.key === 'Enter') event.preventDefault();
+        event.stopPropagation(); return;
+      }
       if (rowMenu) {
         if (event.key === 'Escape' || event.key === 'Tab') { closeRow(event.key === 'Escape'); event.preventDefault(); }
         else if (['ArrowDown','ArrowUp','Home','End'].includes(event.key)) {
@@ -216,10 +232,21 @@
           const index = commands.indexOf(doc.activeElement), next = event.key === 'Home' ? 0 : event.key === 'End' ? commands.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + commands.length) % commands.length;
           event.preventDefault(); commands[next]?.focus();
         }
+      } else if (event.key === 'Escape') {
+        // A native search input clears itself before the dialog's cancel
+        // default runs. Handle this key here, through the controller's write
+        // lock, after the picker has consumed its own first Escape.
+        event.preventDefault();
+        if (el('maQuery').getAttribute('aria-expanded') === 'true') picker?.close();
+        else controller.close('escape');
       }
       event.stopPropagation();
     });
-    dialog.addEventListener('cancel', event => { event.preventDefault(); if (rowMenu) closeRow(true); else controller.close('escape'); });
+    dialog.addEventListener('cancel', event => {
+      event.preventDefault();
+      if (el('maQuery').getAttribute('aria-expanded') === 'true') picker?.close();
+      else if (rowMenu) closeRow(true); else controller.close('escape');
+    });
     dialog.addEventListener('close', () => { if (!dialog.open && closingReason !== 'context' && current(binding) && usable(trigger)) trigger.focus({ preventScroll: true }); });
     root.addEventListener('resize', place); root.addEventListener('fundstrace:workspace-resize', place);
     dialog.addEventListener('scroll', () => closeRow(), true);

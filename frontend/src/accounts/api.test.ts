@@ -22,6 +22,34 @@ describe('account registry read adapter', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ detail: '合成账户不存在' }), { status: 404 }));
     await expect(accountRegistryApi.profile('1', 'missing', new AbortController().signal)).rejects.toThrow('合成账户不存在');
   });
+  it('marks an explicit account pick as exact rather than a contains search', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ ...accountPage, page: 1 }), { status: 200 }));
+    const signal = new AbortController().signal;
+    await accountRegistryApi.list(caseId, { source: 'identity', q: account, page: 1, pageSize: 30, accountExact: true }, signal);
+    expect(fetch).toHaveBeenLastCalledWith(`/api/account-registry?case_id=${caseId}&source=identity&q=${account}&page=1&page_size=30&account_exact=true`, { signal });
+  });
+  it('rejects a contains result returned for an exact account pick', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ ...accountPage, page: 1, total: 2, items: [row, { ...row, account: `${account}0` }] }), { status: 200 }));
+    await expect(accountRegistryApi.list(caseId, { source: 'identity', q: account, page: 1, pageSize: 30, accountExact: true }, new AbortController().signal)).rejects.toThrow('账户列表响应不完整');
+  });
+  it('reads bounded suggestions without profile aggregation and preserves complete identifiers', async () => {
+    const response = { case_id: caseId, source: 'flows', query: '合成', items: [{ account, name: '合成主体', id_no: '00000020000101000X', matched_field: 'name', matched_text: '合成主体' }], has_more: false, next_offset: null };
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));
+    const signal = new AbortController().signal;
+    const result = await accountRegistryApi.suggestions!(caseId, { source: 'flows', q: ' 合成 ', offset: 0, limit: 30 }, signal);
+    expect(result.items[0].account).toBe(account); expect(result.items[0].id_no).toBe('00000020000101000X');
+    expect(fetch).toHaveBeenLastCalledWith(`/api/account-suggestions?case_id=${caseId}&source=flows&q=+%E5%90%88%E6%88%90+&offset=0&page_size=30`, { signal });
+  });
+  it.each([
+    { case_id: 'foreign' }, { source: 'identity' }, { query: 'other' }, { has_more: true, next_offset: 1 },
+    { next_offset: 30 }, { items: [{ account: 123, name: '合成', id_no: null, matched_field: 'account', matched_text: '123' }] },
+    { items: [{ account, name: '合成', id_no: 123, matched_field: 'name', matched_text: '合成' }] },
+    { items: [{ account, name: '合成', id_no: null, matched_field: 'unknown', matched_text: '合成' }] },
+    { items: Array.from({ length: 2 }, () => ({ account, name: '合成', id_no: null, matched_field: 'name', matched_text: '合成' })) },
+  ])('rejects malformed or foreign suggestion receipts %#', async overrides => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ case_id: caseId, source: 'flows', query: '合成', items: [], has_more: false, next_offset: null, ...overrides }), { status: 200 }));
+    await expect(accountRegistryApi.suggestions!(caseId, { source: 'flows', q: '合成', offset: 0, limit: 30 }, new AbortController().signal)).rejects.toThrow('账户候选响应不完整');
+  });
   it.each([
     { ...accountPage, items: null },
     { ...accountPage, case_id: 9007199254740993 },

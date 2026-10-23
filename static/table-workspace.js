@@ -6,10 +6,11 @@
   let open = false, mounted = false, binding = 0, membership = null, rendering = false, refreshBinding = null;
   let scrolls = { sidebar: [0, 0], overview: [0, 0] }, slots = [];
   let workspaceView = 'standard';
+  const entityPickers = [];
   const queryViews = new Map([['split', true]]);
   const viewScrolls = new Map();
   const id = value => String(value);
-  const fields = [['fAccount', '账号'], ['fName', '户名'], ['fCounter', '对手'], ['fKw', '关键词'],
+  const fields = [['fAccount', '账户'], ['fName', '户名'], ['fCounter', '对手'], ['fKw', '关键词'],
     ['fMin', '最小金额'], ['fMax', '最大金额'], ['fFrom', '开始'], ['fTo', '结束']];
   const selectedRows = () => $$('#flowTbody .flow-ck');
   const member = () => membership?.snapshot() || { confirmedIds: [], desiredIds: [], pendingIds: [], failures: {}, available: false };
@@ -108,7 +109,9 @@
     const context = caseContext(), generation = binding, sequence = ++request;
     const parameters = searchParams(page), requestedSummary = summary();
     const revision = inputRevision, locator = window.FundsGraphLocator;
-    const preview = { account: parameters.get('account') || '', name: parameters.get('name') || '', counterparty: parameters.get('counter') || '' };
+    const preview = { [parameters.get('account_exact') ? 'exactAccount' : 'account']: parameters.get('account') || '',
+      entity: parameters.get('entity') || '', name: parameters.get('name') || '',
+      [parameters.get('counter_exact') ? 'exactCounterparty' : 'counterparty']: parameters.get('counter') || '' };
     let previewBinding;
     try { if (options?.locate === true && Object.values(preview).some(Boolean)) previewBinding = locator?.capture?.(); } catch (_) { /* Preview availability cannot reject a transaction query. */ }
     if (!context.caseId) return false;
@@ -123,7 +126,7 @@
       $('#pageInfo').textContent = `第 ${result.page} / ${pages} 页`;
       $('#btnPrev').disabled = result.page <= 1; $('#btnNext').disabled = result.page >= pages;
       updateSummary();
-      if (previewBinding != null && revision === inputRevision && !draft) {
+      if (previewBinding != null && result.total > 0 && revision === inputRevision && !draft) {
         try { await locator?.previewFields?.(preview, { binding: previewBinding }); } catch (_) { /* A camera preview cannot turn a successful query into a failure. */ }
       }
       return true;
@@ -196,6 +199,8 @@
     decorate(); syncFlowTableScroll();
   }
   function invalidate() {
+    entityPickers.forEach(picker => picker.invalidate());
+    for (const key of ['fAccount', 'fCounter']) if ($('#' + key)?.dataset) delete $('#' + key).dataset.exactAccount;
     binding++; request++; rows = []; applied = ''; draft = false;
     setOpen(false, false); scrolls = { sidebar: [0, 0], overview: [0, 0] };
     viewScrolls.clear();
@@ -219,6 +224,8 @@
   }
   const originalLoadGraph = loadGraph;
   loadGraph = async function (retry = true, context = caseContext()) {
+    // Imports and identity edits also reload this graph without changing case.
+    entityPickers.forEach(picker => picker.invalidate());
     const result = await originalLoadGraph.call(this, retry, context);
     if (refreshBinding?.generation === binding && isCurrentCase(context) &&
         isCurrentCase(refreshBinding.context) && !state.graphLoading) {
@@ -245,13 +252,26 @@
       selectedRows().forEach(box => { box.checked = event.target.checked; }); rememberAnchors(); anchorStatus();
     };
     $('#btnSearch').onclick = () => doSearch(1, { locate: true });
-    $('#queryFields').addEventListener('input', () => { inputRevision++; draft = summary() !== (applied || '全部流水'); updateSummary(); });
+    $('#queryFields').addEventListener('input', event => {
+      if (['fAccount', 'fCounter'].includes(event.target?.id)) delete event.target.dataset.exactAccount;
+      inputRevision++; draft = summary() !== (applied || '全部流水'); updateSummary();
+    });
     $('#queryFields').addEventListener('keydown', event => {
-      if (event.key === 'Enter' && event.target.matches('input') && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); doSearch(1, { locate: true }); }
+      if (event.key === 'Enter' && !event.shiftKey && event.target.matches('input') && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); doSearch(1, { locate: true }); }
     });
     $('#btnReset').onclick = () => {
+      entityPickers.forEach(picker => picker.invalidate());
+      for (const key of ['fAccount', 'fCounter']) delete $('#' + key).dataset.exactAccount;
       fields.forEach(([key]) => { $('#' + key).value = ''; }); $('#fTracked').checked = false; doSearch(1);
     };
+    if (window.FundsEntitySearch) for (const key of ['fAccount', 'fCounter']) {
+      const field = $('#' + key);
+      const picker = window.FundsEntitySearch.mount(field, { kind: 'account', source: 'flows', caseId: () => state.caseId,
+        scope: () => state.caseId ? JSON.stringify([String(state.caseId), binding]) : null,
+        onSelect: item => { field.dataset.exactAccount = item.account; updateSummary(); },
+        onSubmit: () => { void doSearch(1, { locate: true }); } });
+      if (picker) entityPickers.push(picker);
+    }
     $('#flowTbody').addEventListener('click', event => {
       if (open && event.target.matches('.flow-ck')) event.stopImmediatePropagation();
     }, true);

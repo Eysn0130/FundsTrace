@@ -16,6 +16,7 @@ const candidate = (account = '00001', name = '合成同名', extra = {}) => ({ a
 function harness() {
   const ids = new Map(), timers = new Map(), rootEvents = new Map(), requests = [], previews = [], captures = [];
   let doc, timerId = 0, route = null, candidates = [candidate()], total = null, previewError = false, cameraIntent = 0;
+  let pickerOptions, selected = null, invalidations = 0;
   const binding = { caseId: 11, generation: 1, canvasId: 3, canvasGeneration: 1 };
   let records = [];
   class Element {
@@ -66,19 +67,42 @@ function harness() {
       return this.isConnected ? [this.getBoundingClientRect()] : [];
     }
     getBoundingClientRect() { return { left: 400, top: 20, width: 140, height: 30, right: 540, bottom: 50 }; }
-    focus() { if (!this.disabled && this.isConnected && this.getClientRects().length) doc.activeElement = this; }
+    focus() {
+      if (!this.disabled && this.isConnected && this.getClientRects().length && doc.activeElement !== this) {
+        doc.activeElement = this; this.fire('focus', { bubbles: false });
+      }
+    }
     addEventListener(type, callback) { const list = this.listeners.get(type) || []; list.push(callback); this.listeners.set(type, list); }
     fire(type, options = {}) {
-      const event = { type, target: this, key: '', isComposing: false, defaultPrevented: false, stopped: false,
-        preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; }, ...options };
+      const event = { type, target: this, key: '', isComposing: false, defaultPrevented: false, stopped: false, immediateStopped: false,
+        preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; },
+        stopImmediatePropagation() { this.stopped = true; this.immediateStopped = true; }, ...options };
       for (let node = this; node; node = node.parentElement) {
         node['on' + type]?.(event);
-        for (const callback of node.listeners.get(type) || []) callback(event);
-        if (event.stopped) break;
+        for (const callback of node.listeners.get(type) || []) { callback(event); if (event.immediateStopped) break; }
+        if (event.stopped || event.bubbles === false) break;
       }
       return event;
     }
-    click() { if (!this.disabled) return this.fire('click'); }
+    key(key, options = {}) {
+      const event = this.fire('keydown', { key, ...options });
+      if (key === 'Escape' && !event.defaultPrevented && !event.isComposing && event.keyCode !== 229) {
+        // Native search controls consume Escape to clear their value before a
+        // dialog cancel event. Exercise that default after the keydown path.
+        if (this.getAttribute('type') === 'search' && this.value) { this.value = ''; this.fire('input'); }
+        else {
+          const dialog = this.closest('dialog');
+          if (dialog?.open && !dialog.fire('cancel').defaultPrevented) dialog.close();
+        }
+      }
+      return event;
+    }
+    click() {
+      if (this.disabled) return;
+      this.focus(); const event = this.fire('click');
+      if (!event.defaultPrevented && this.tagName === 'BUTTON' && this.getAttribute('type') === 'submit') this.closest('form')?.fire('submit');
+      return event;
+    }
     showModal() { this.open = true; }
     close() { this.open = false; this.fire('close'); }
   }
@@ -100,7 +124,19 @@ function harness() {
     if (!['input', 'img', 'br', 'hr'].includes(tag.toLowerCase())) stack.push(node);
   }
   const root = { addEventListener(type, callback) { const list = rootEvents.get(type) || []; list.push(callback); rootEvents.set(type, list); },
-    FundsToolbarMenu: { place() {}, close() {} }, FundsRibbon: { closePopovers() {} } };
+    FundsToolbarMenu: { place() {}, close() {} }, FundsRibbon: { closePopovers() {} },
+    FundsEntitySearch: { mount(input, options) {
+      pickerOptions = options;
+      const open = () => { input.setAttribute('aria-expanded', String(!!input.value.trim() && options.scope() !== null)); };
+      input.addEventListener('focus', open);
+      input.addEventListener('click', open);
+      input.addEventListener('input', open);
+      input.addEventListener('keydown', event => {
+        if (event.isComposing || event.keyCode === 229 || event.key !== 'Escape' || input.getAttribute('aria-expanded') !== 'true') return;
+        event.preventDefault(); event.stopImmediatePropagation(); input.setAttribute('aria-expanded', 'false');
+      });
+      return { getSelected: () => selected, invalidate() { invalidations++; selected = null; input.setAttribute('aria-expanded', 'false'); }, close() { input.setAttribute('aria-expanded', 'false'); } };
+    } } };
   root.FundsGraphLocator = {
     capture() { const token = { ...binding, cameraIntent }; captures.push(token); return token; },
     availability(account) { return account === '00003' ? { visible: false, tracked: true, reason: '已上图，但不在当前视图' }
@@ -138,6 +174,10 @@ function harness() {
     async timers() { const tasks = [...timers.values()]; timers.clear(); for (const callback of tasks) callback(); await flush(); },
     input(text, event = 'input') { ids.get('maQuery').value = text; ids.get('maQuery').fire(event); },
     async submit() { ids.get('maSearchForm').fire('submit'); await flush(); },
+    picker: { options: () => pickerOptions, invalidations: () => invalidations,
+      select(value) { selected = value; ids.get('maQuery').value = value.value; pickerOptions.onSelect(value); },
+      submit() { pickerOptions.onSubmit(ids.get('maQuery').value, selected); },
+    },
     locate(account) { return ids.get('maCandidates').children.find(row => row.children[0].children[1].textContent === account)?.children[1].children[0]; },
     add(account) { return ids.get('maCandidates').children.find(row => row.children[0].children[1].textContent === account)?.children[1].children[1]; },
     switchCase(value = 12) { binding.caseId = value; binding.generation++; controller.revoke(); },
@@ -145,20 +185,125 @@ function harness() {
   };
 }
 
-test('explicit search previews one exact candidate without changing its leading-zero identity or mark', async () => {
+test('explicit main-account search reads candidates without moving the canvas or changing a mark', async () => {
   const h = harness(); await h.searchScreen(); h.input('00001'); await h.submit();
-  assert.equal(h.previews.length, 1); assert.equal(h.previews[0].account, '00001');
-  assert.equal(h.captures.length, 1); assert.equal(h.requests.some(row => row.options.method), false);
+  assert.equal(h.previews.length, 0); assert.equal(h.captures.length, 0); assert.equal(h.requests.some(row => row.options.method), false);
+  assert.equal(new URL(h.requests.at(-1).path, 'http://synthetic.local').searchParams.get('q'), '00001');
   assert.equal(h.controller.status().screen, 'search'); assert.equal(h.el('mainAccountsDialog').open, true);
   assert.equal(h.doc.activeElement, h.el('maQuery'));
 });
 
-test('opening, debounce, paging, retry and direct controller search never preview the camera', async () => {
+test('typing uses only candidate suggestions; explicit paging, retry and controller search never preview the camera', async () => {
   const h = harness(); h.candidates([candidate()], 31); await h.searchScreen();
-  h.input('合成'); await h.timers();
+  const reads = h.requests.length; h.input('合成'); await h.timers(); assert.equal(h.requests.length, reads);
   h.el('maNext').click(); await flush(); h.el('maPrev').click(); await flush(); h.el('maRetry').click(); await flush();
   await h.controller.search('00001', 1, true);
   assert.equal(h.previews.length, 0); assert.equal(h.captures.length, 0);
+});
+
+test('shared candidates fill an exact account without querying the registry until explicit submit', async () => {
+  const h = harness(); h.candidates([candidate('00001'), candidate('00002')]); await h.searchScreen();
+  const configuration = h.picker.options(), reads = h.requests.length;
+  assert.equal(configuration.source, 'flows'); assert.equal(configuration.kind, 'account'); assert.equal(configuration.caseId(), 11);
+  assert.match(configuration.scope(), /"generation":1/);
+  h.picker.select({ key: '00002', value: '00002', account: '00002', label: '合成同名' }); await flush();
+  assert.equal(h.el('maQuery').value, '00002'); assert.equal(h.requests.length, reads);
+  assert.equal(h.previews.length, 0); assert.equal(h.requests.some(row => row.options.method), false);
+  h.picker.submit(); await flush();
+  const parameters = new URL(h.requests.at(-1).path, 'http://synthetic.local').searchParams;
+  assert.equal(parameters.get('q'), '00002'); assert.equal(parameters.get('exact'), 'true');
+  const button = h.el('maSearchForm').querySelector('button');
+  assert.equal(button.children[0].src, '/static/ui-icons/search.svg'); assert.equal(button.getAttribute('aria-label'), '查询本案件账号或户名');
+  assert.equal(h.el('maSearchForm').children.filter(node => node.tagName === 'IMG').length, 0);
+});
+
+test('an exact account remains exact on repeated submit and executed pagination, while input editing clears its binding', async () => {
+  const h = harness(); h.candidates([candidate('00001'), candidate('100001')], 31); await h.searchScreen();
+  h.picker.select({ key: '00001', value: '00001', account: '00001', label: '合成同名' });
+  await h.submit(); await h.submit();
+  let searches = h.requests.filter(row => row.path.includes('/candidates?')).slice(-2);
+  assert.equal(searches.length, 2);
+  for (const request of searches) {
+    const parameters = new URL(request.path, 'http://synthetic.local').searchParams;
+    assert.equal(parameters.get('q'), '00001'); assert.equal(parameters.get('exact'), 'true');
+  }
+  h.el('maNext').click(); await flush();
+  let parameters = new URL(h.requests.at(-1).path, 'http://synthetic.local').searchParams;
+  assert.equal(parameters.get('page'), '2'); assert.equal(parameters.get('exact'), 'true');
+  h.input('00001'); await h.submit();
+  parameters = new URL(h.requests.at(-1).path, 'http://synthetic.local').searchParams;
+  assert.equal(parameters.get('q'), '00001'); assert.equal(parameters.get('exact'), null);
+  h.picker.select({ key: '00001', value: '00001', account: '00001', label: '合成同名' });
+  h.el('maBack').click(); h.controller.showSearch(); await flush(); await h.submit();
+  parameters = new URL(h.requests.at(-1).path, 'http://synthetic.local').searchParams;
+  assert.equal(parameters.get('exact'), null);
+  assert.equal(h.previews.length, 0); assert.equal(h.requests.some(row => row.options.method), false);
+});
+
+test('registry work revokes old candidates but permits a new draft; screen changes and rebinding revoke its scope', async () => {
+  const h = harness(); await h.searchScreen(); const start = h.picker.invalidations();
+  const pending = deferred(); h.route(path => path.includes('/candidates?') ? pending.promise : undefined);
+  h.input('00001'); h.el('maSearchForm').fire('submit');
+  assert.equal(h.picker.options().scope(), null); assert.ok(h.picker.invalidations() > start);
+  const reads = h.requests.length; h.input('新的检索');
+  assert.notEqual(h.picker.options().scope(), null); assert.equal(h.requests.length, reads);
+  pending.resolve({ items: [candidate()], total: 1, page: 1, page_size: 30 }); await flush();
+  assert.notEqual(h.picker.options().scope(), null);
+  h.el('maBack').click(); assert.equal(h.picker.options().scope(), null);
+  h.controller.showSearch(); await flush(); const before = h.picker.invalidations(); h.switchCase();
+  assert.equal(h.picker.options().scope(), null); assert.ok(h.picker.invalidations() > before); assert.equal(h.el('mainAccountsDialog').open, false);
+});
+
+test('SVG submit keeps suggestions closed through disabled-button focus fallback but new drafts remain editable', async () => {
+  const h = harness(); await h.searchScreen(); const pending = deferred();
+  h.route(path => path.includes('/candidates?') ? pending.promise : undefined);
+  h.input('合成'); assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'true');
+  const button = h.el('maSearchForm').querySelector('button'); button.click();
+  assert.equal(button.disabled, true); assert.equal(h.doc.activeElement, h.el('maQuery'));
+  assert.equal(h.el('maQuery').disabled, false);
+  assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'false');
+  h.input('新的检索'); assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'true');
+  h.input('合成'); assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'false');
+  pending.resolve({ items: [candidate()], total: 1, page: 1, page_size: 30 }); await flush();
+  assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'false');
+  h.el('maQuery').click(); assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'true');
+  assert.equal(h.controller.status().query, '合成');
+});
+
+test('real Escape keydown dismisses suggestions first, then the dialog without native search clearing', async () => {
+  const h = harness(); await h.searchScreen(); h.input('合成');
+  const first = h.el('maQuery').key('Escape'); assert.equal(first.defaultPrevented, true);
+  assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'false'); assert.equal(h.el('mainAccountsDialog').open, true);
+  assert.equal(h.el('maQuery').value, '合成');
+  const second = h.el('maQuery').key('Escape'); assert.equal(second.defaultPrevented, true);
+  assert.equal(h.el('mainAccountsDialog').open, false); assert.equal(h.el('maQuery').value, '合成');
+});
+
+test('Escape preserves IME and cannot close a sent main-account write', async () => {
+  const h = harness(); await h.searchScreen(); h.input('合成');
+  h.el('maQuery').fire('compositionstart');
+  h.el('maQuery').key('Escape', { isComposing: true, keyCode: 229 });
+  assert.equal(h.el('mainAccountsDialog').open, true); assert.equal(h.el('maQuery').value, '合成');
+  h.el('maQuery').fire('compositionend');
+  const pending = deferred(); h.route((path, options) => options.method ? pending.promise : undefined);
+  h.add('00001').click(); await flush();
+  assert.equal(h.controller.status().pending, true); assert.equal(h.controller.status().sent, true);
+  const escape = h.el('mainAccountsDialog').key('Escape');
+  assert.equal(escape.defaultPrevented, true); assert.equal(h.el('mainAccountsDialog').open, true);
+  pending.resolve({ ok: true, account: '00001', source: 'manual' }); await flush();
+  h.el('mainAccountsDialog').key('Escape'); assert.equal(h.el('mainAccountsDialog').open, false);
+});
+
+test('Escape closes the row action menu before the parent dialog and restores its trigger', async () => {
+  const h = harness();
+  h.route(path => path.startsWith('/api/main-accounts?') ? [candidate('00001', '合成同名', { source: 'auto' })] : undefined);
+  await h.searchScreen(); h.el('maBack').click();
+  const trigger = h.el('maRows').children[0].children[2].children[0]; trigger.click();
+  assert.equal(h.el('maRowMenu').hidden, false); assert.equal(h.doc.activeElement, h.el('maConvert'));
+  const first = h.el('maConvert').key('Escape');
+  assert.equal(first.defaultPrevented, true); assert.equal(h.el('maRowMenu').hidden, true);
+  assert.equal(h.doc.activeElement, trigger); assert.equal(h.el('mainAccountsDialog').open, true);
+  trigger.key('Escape'); assert.equal(h.el('mainAccountsDialog').open, false);
 });
 
 test('explicit empty, multi-result and malformed searches never pick an arbitrary first candidate', async () => {
@@ -189,8 +334,7 @@ test('changed input, newer search and closing revoke a delayed explicit preview'
     if (action === 'close') h.el('maClose').click();
     if (action === 'submit') { newer.resolve({ items: [candidate('00002')], total: 1, page: 1, page_size: 30 }); await flush(); }
     pending.resolve({ items: [candidate()], total: 1, page: 1, page_size: 30 }); await flush();
-    if (action === 'submit') assert.deepEqual(h.previews.map(row => row.account), ['00002']);
-    else assert.equal(h.previews.length, 0);
+    assert.equal(h.previews.length, 0);
   }
 });
 

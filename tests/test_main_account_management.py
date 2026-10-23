@@ -84,6 +84,38 @@ def test_candidates_match_every_flow_name_alias_for_same_account(client, databas
         assert result["items"] == [{"account": "000-ALIASED", "name": "Zeta synthetic alias", "is_main": False, "source": None}]
 
 
+def test_candidates_search_case_account_identity_and_normalize_only_free_queries(client, database, make_case, flow_row):
+    cid, other = make_case("Identity candidate scope"), make_case("Other identity candidate scope")
+    for owner in (cid, other):
+        for account in ("0001", "10001", "０００１"):
+            insert_flow(database, owner, flow_row, payer_account=account, payer_name="MiXeD synthetic holder", payee_account="")
+    for owner, account, id_no in ((cid, "0001", "SYN-ID-A"), (cid, "ID-ONLY", "SYN-ID-ONLY"),
+                                   (other, "0001", "SYN-ID-B"), (other, "10001", "SYN-ID-A")):
+        database.x("insert into account_ids(case_id,account,id_no) values (?,?,?)", [owner, account, id_no])
+    for query in ("SYN-ID-A", "　ＳＹＮ－ＩＤ－Ａ　"):
+        value = search(client, cid, q=query)
+        assert value["total"] == 1 and value["items"][0]["account"] == "0001"
+    assert search(client, cid, q="SYN-ID-B")["total"] == 0
+    assert [row["account"] for row in search(client, other, q="SYN-ID-A")["items"]] == ["10001"]
+    assert search(client, cid, q="ｍｉｘｅｄ")["total"] == 3
+    assert [row["account"] for row in search(client, cid, q="０００１")["items"]] == ["0001", "10001"]
+    assert [row["account"] for row in search(client, cid, q="0001", exact=True)["items"]] == ["0001"]
+    assert [row["account"] for row in search(client, cid, q="０００１", exact=True)["items"]] == ["０００１"]
+    assert search(client, cid, q="SYN-ID-ONLY")["total"] == 0
+    assert search(client, cid, q="ID-ONLY", exact=True)["total"] == 0
+    assert "ID-ONLY" not in {row["account"] for row in search(client, cid)["items"]}
+    assert client.post("/api/main-accounts", json={"case_id": cid, "account": "ID-ONLY"}).status_code == 404
+
+
+@pytest.mark.parametrize("literal", ["ID%TOKEN", "ID_TOKEN", "ID\\TOKEN"])
+def test_main_account_identity_queries_treat_pattern_characters_literally(client, database, make_case, flow_row, literal):
+    cid = make_case()
+    for account, id_no in (("0001", literal), ("0002", "ID-ANY-TOKEN")):
+        insert_flow(database, cid, flow_row, payer_account=account, payer_name="Plain holder", payee_account="")
+        database.x("insert into account_ids(case_id,account,id_no) values (?,?,?)", [cid, account, id_no])
+    assert [row["account"] for row in search(client, cid, q=literal)["items"]] == ["0001"]
+
+
 def test_exact_candidate_lookup_is_not_hidden_by_first_page_of_substring_matches(client, database, make_case, flow_row):
     cid, other = make_case("Exact candidate"), make_case("Other exact candidate")
     for i in range(35):

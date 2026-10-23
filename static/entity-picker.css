@@ -1,0 +1,42 @@
+.fep-popup {
+  position: fixed; inset: auto; margin: 0; padding: 0; box-sizing: border-box;
+  min-width: 0; max-width: calc(100vw - 24px); overflow: hidden;
+  border: 1px solid var(--border-strong, var(--border, #bbc4ce)); border-radius: 6px;
+  color: var(--text-primary, #1b2530); background: var(--surface-raised, #fff);
+  box-shadow: var(--menu-shadow, 0 8px 24px var(--shadow-color, #0003));
+  font: var(--font-size-body, 13px)/1.45 var(--font-family-ui, system-ui, sans-serif);
+  z-index: 20000; isolation: isolate;
+}
+.fep-popup[hidden], .fep-ghost[hidden], .fep-feedback[hidden] { display: none; }
+.fep-popup::backdrop, .fep-ghost::backdrop { background: transparent; pointer-events: none; }
+.fep-scroll { min-height: 0; max-height: 358px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; overflow-anchor: none; scrollbar-color: auto; scrollbar-width: auto; }
+.fep-scroll::-webkit-scrollbar { width: 9px; height: 9px; }
+.fep-scroll::-webkit-scrollbar-track { background: var(--surface-raised, #fff); }
+.fep-scroll::-webkit-scrollbar-thumb { background: var(--text-subtle, #8693a1); border: 2px solid var(--surface-raised, #fff); border-radius: 8px; }
+.fep-option { position: relative; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; row-gap: 0; box-sizing: border-box; min-height: 33px; padding: 6px 10px; cursor: pointer; background: var(--surface-raised, #fff); color: var(--text-primary, #1b2530); }
+.fep-option[aria-selected=true] { background: var(--selection-surface, #eaf1fa); outline: 1px solid transparent; outline-offset: -1px; }
+.fep-option:hover { background: var(--surface-hover, var(--selection-surface, #eaf1fa)); }
+.fep-option > span { min-width: 0; overflow-wrap: anywhere; word-break: normal; }
+.fep-name { font-weight: 560; order: 0; }
+.fep-account { font-family: var(--font-family-mono, ui-monospace, monospace); order: 1; }
+.fep-identity { font: 12px/1.5 var(--font-family-mono, ui-monospace, monospace); color: var(--muted, #647080); order: 2; }
+.fep-identity-label { font-family: var(--font-family-ui, system-ui, sans-serif); font-size: 11px; }
+.fep-number { font-family: var(--font-family-mono, ui-monospace, monospace); order: 3; }
+.fep-detail, .fep-state { color: var(--muted, #647080); font-size: 12px; order: 4; }
+.fep-option[data-layout=stack] .fep-identity { order: 1; }
+.fep-option[data-layout=stack] .fep-account { order: 8; flex-basis: 100%; }
+.fep-option[data-layout=number] .fep-account { order: -1; flex-basis: 100%; }
+.fep-option[data-layout=number] .fep-name { order: 0; }
+.fep-option[data-layout=number] .fep-identity { order: 1; }
+.fep-option[data-layout=number] .fep-name { font-size: 12px; font-weight: 500; }
+.fep-option mark { padding: 0; color: var(--accent-link, #2869bd); background: transparent; font-weight: 650; }
+.fep-spacer { pointer-events: none; flex: none; }
+.fep-offscreen { position: absolute; width: 1px; height: 1px; min-height: 0; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.fep-feedback { display: flex; min-height: 32px; gap: 12px; align-items: center; padding: 0 10px; color: var(--muted, #647080); font-size: 12px; }
+.fep-feedback button { appearance: none; border: 0; border-radius: 3px; padding: 4px 7px; background: transparent; color: var(--accent-link, #2869bd); font: inherit; cursor: pointer; }
+.fep-feedback button:focus-visible { outline: 2px solid var(--focus-ring, #397bd2); outline-offset: -2px; }
+.fep-ghost { position: fixed; inset: auto; margin: 0; box-sizing: border-box; overflow: hidden; white-space: pre; pointer-events: none; color: var(--muted, #647080); background: transparent; z-index: 20001; }
+.fep-ghost-suffix { opacity: .52; }
+@media (pointer: coarse) { .fep-option { min-height: 44px; } .fep-feedback button { min-height: 44px; } }
+@media (prefers-reduced-motion: reduce) { .fep-popup, .fep-scroll { scroll-behavior: auto; animation: none; transition: none; } }
+@media (forced-colors: active) { .fep-popup { border-color: CanvasText; background: Canvas; color: CanvasText; } .fep-option { background: Canvas; color: CanvasText; } .fep-option[aria-selected=true] { background: Highlight; color: HighlightText; } .fep-option[aria-selected=true] span, .fep-option[aria-selected=true] mark { color: HighlightText; } .fep-option mark { color: LinkText; } .fep-ghost-suffix { color: GrayText; opacity: 1; } }

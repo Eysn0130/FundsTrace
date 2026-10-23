@@ -1,5 +1,7 @@
 """Read-only account registries; account identity never implies a person merge."""
 
+import unicodedata
+
 from app import db
 from app.money import money_string
 from .cases import ServiceError, require_case
@@ -41,20 +43,24 @@ def _item(row):
     return {key: row[key] for key in _ITEM_KEYS}
 
 
-def list_registry(case_id, source="flows", q="", page=1, page_size=30):
+def list_registry(case_id, source="flows", q="", page=1, page_size=30, account_exact=False):
     with db._lock:
         cid = require_case(str(case_id))
         if source not in {"flows", "identity"}:
             raise ServiceError(422, "invalid_account_source", "账户来源无效")
         source_sql = "flow_accounts" if source == "flows" else "(select account from account_ids where case_id=? and account<>'')"
         params = [cid, cid] + ([cid] if source == "identity" else []) + [cid] * 3
-        keyword = q.strip().lower()
-        query = _FLOW_ACCOUNTS + ", registry as (" + _metadata(source_sql) + """
-            where contains(lower(a.account), ?) or contains(lower(coalesce(i.id_no,'')), ?)
+        keyword = q.strip()
+        if account_exact:
+            predicate = "where a.account=?"
+            params += [keyword]
+        else:
+            keyword = unicodedata.normalize("NFKC", q).strip().lower()
+            predicate = """where contains(lower(a.account), ?) or contains(lower(coalesce(i.id_no,'')), ?)
               or contains(lower(coalesce(m.name,'')), ?)
-              or exists (select 1 from flow_names n where n.account=a.account and contains(lower(n.name), ?))
-        ) """
-        params += [keyword] * 4
+              or exists (select 1 from flow_names n where n.account=a.account and contains(lower(n.name), ?))"""
+            params += [keyword] * 4
+        query = _FLOW_ACCOUNTS + ", registry as (" + _metadata(source_sql) + predicate + ") "
         total = db.q_raw(query + "select count(*) total from registry", params)[0]["total"]
         rows = db.q(query + "select * from registry order by account limit ? offset ?",
                     [*params, page_size, (page - 1) * page_size])

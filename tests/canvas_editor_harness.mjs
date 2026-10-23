@@ -201,7 +201,11 @@ test('tracking, undo and redo preserve checked rows, filters, page and camera', 
   assert.deepEqual(f.tracked.get('1:0'), [1]); assert.deepEqual(f.matrix, [1, 0, 0, 0, 1, 0, 12, 15, 1]);
   await f.h.element('#btnRedo').onclick(); assert.deepEqual(f.tracked.get('1:0'), [1, 2]);
   assert.equal(f.boxes[0].checked, true); assert.equal(f.boxes[1].checked, false);
-  assert.equal(f.state.search.page, 3); assert.ok(f.searches.every(path => path.includes('account=SYN-FILTER') && path.includes('page=3')));
+  assert.equal(f.state.search.page, 3); assert.ok(f.searches.length > 0);
+  assert.ok(f.searches.every(path => {
+    const parameters = new URL(path, 'http://synthetic.local').searchParams;
+    return parameters.get('entity') === 'SYN-FILTER' && !parameters.has('account') && parameters.get('page') === '3';
+  }));
 });
 
 test('undo and redo preserve zoom, selection and screen camera across sidebar and toolbar transitions', async () => {

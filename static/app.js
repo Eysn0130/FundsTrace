@@ -351,6 +351,8 @@ function searchParams(page) {
     p.canvas_id = state.canvasId || 0;
   }
   if ($('#fAccount')?.dataset?.exactAccount && $('#fAccount').dataset.exactAccount === p.account) p.account_exact = 1;
+  else { p.entity = p.account; delete p.account; }
+  if ($('#fCounter')?.dataset?.exactAccount && $('#fCounter').dataset.exactAccount === p.counter) p.counter_exact = 1;
   Object.keys(p).forEach(k => { if (p[k] === '' || p[k] == null) delete p[k]; });
   return new URLSearchParams(p);
 }
@@ -908,14 +910,19 @@ async function locateGraphAccount(account, { binding } = {}) {
 async function locateGraphFields(fields, { binding } = {}) {
   if (binding && !currentGraphLocation(binding)) return { ok: false, reason: '定位已取消，画布或视角已变化' };
   const tokens = Object.entries(fields || {}).filter(([, value]) => String(value ?? '').trim())
-    .map(([kind, value]) => [kind, String(value).trim().toLocaleLowerCase()]);
+    .map(([kind, value]) => [kind, kind.startsWith('exact') ? String(value).trim() : String(value).trim().toLocaleLowerCase()]);
   if (!tokens.length) return { ok: false, reason: '本次查询没有账户定位条件' };
   const nodes = state.lastGraph.nodes, matches = new Set();
   for (const [kind, query] of tokens) {
+    if (kind === 'exactAccount' || kind === 'exactCounterparty') {
+      for (const node of nodes) if (String(node.account ?? node.id) === query) matches.add(String(node.account ?? node.id));
+      continue;
+    }
     const exact = kind !== 'name' ? nodes.filter(node => String(node.account ?? node.id).toLocaleLowerCase() === query) : [];
     const candidates = exact.length ? exact : nodes.filter(node => kind === 'name' ? String(node.name || '').toLocaleLowerCase().includes(query)
       : kind === 'account' ? String(node.account ?? node.id).toLocaleLowerCase().includes(query)
-      : String(node.account ?? node.id).toLocaleLowerCase().includes(query) || String(node.name || '').toLocaleLowerCase().includes(query));
+      : String(node.account ?? node.id).toLocaleLowerCase().includes(query) || String(node.name || '').toLocaleLowerCase().includes(query)
+        || (['entity', 'counterparty'].includes(kind) && String(node.id_no || '').toLocaleLowerCase().includes(query)));
     for (const node of candidates) matches.add(String(node.account ?? node.id));
   }
   const visible = [...matches].filter(id => graphAccountAvailability(id).visible);
@@ -934,11 +941,11 @@ function installNodeFinder() {
   let cached = null, accounts = [], finderPreview = null;
   const read = () => {
     const graph = state.graph, view = state.graphView, binding = JSON.stringify(caseContext());
-    const ready = !!state.caseId && !!graph && !state.graphLoading;
-    if (!cached || cached.graph !== graph || cached.revision !== view.revision || cached.ready !== ready || cached.binding !== binding) {
-      cached = { graph, revision: view.revision, ready, binding };
+    const ready = !!state.caseId && !!graph && !state.graphLoading, dataRevision = window.FundsEntitySearch?.revision || 0;
+    if (!cached || cached.dataRevision !== dataRevision || cached.graph !== graph || cached.revision !== view.revision || cached.ready !== ready || cached.binding !== binding) {
+      cached = { graph, revision: view.revision, ready, binding, dataRevision };
       accounts = ready ? graph.getNodes().filter(item => !view.index || view.index.nodeIds.has(item.getModel().id))
-        .map(item => { const model = item.getModel(); return { account: String(model.id), name: String(model.data?.name || '') }; })
+        .map(item => { const model = item.getModel(); return { account: String(model.id), name: String(model.data?.name || ''), ...(model.data?.id_no ? { idNo: String(model.data.id_no) } : {}) }; })
         .sort((a, b) => a.account.localeCompare(b.account)) : [];
     }
     return { binding, revision: view.revision, source: graph, ready, accounts, recent: [...view.recentNodeIds || []] };
@@ -2380,6 +2387,7 @@ function revokeGraphReads() {
 }
 async function readGraphData(retry = true, context = caseContext()) {
   if (!isCurrentCase(context)) return null;
+  window.FundsEntitySearch?.invalidateAll();
   const read = { sequence: ++graphRequestSequence, promise: null };
   const current = () => isCurrentCase(context) && read.sequence === graphRequestSequence;
   read.promise = (async () => {
@@ -3693,6 +3701,7 @@ async function writeNodeWorkspace(workspace, kind) {
       }
       draft.idBase = saved;
       const node = state.lastGraph.nodes.find(value => value.account === account); if (node) node.id_no = saved || null;
+      window.FundsEntitySearch?.invalidateAll();
     }
     if (kind === 'focus') { draft.focusBase = body.scale; if (body.on) state.focusNodes.set(account, body.scale); else state.focusNodes.delete(account); }
     draft.status = '已保存';
@@ -3722,7 +3731,8 @@ function browseNodeFlows(workspace, counter = '') {
   const account = workspace.account; closeDrawer(false, { keepSelection: true }); switchTab('search');
   $('#workspace')?.fundsWorkspaceShell?.setSidebarCollapsed(false);
   for (const id of ['#fAccount','#fName','#fCounter','#fKw','#fMin','#fMax','#fFrom','#fTo']) $(id).value = '';
-  $('#fTracked').checked = false; $('#fAccount').value = account; $('#fCounter').value = counter; doSearch(1);
+  $('#fTracked').checked = false; $('#fAccount').value = account; $('#fCounter').value = counter;
+  $('#fAccount').dataset.exactAccount = account; $('#fCounter').dataset.exactAccount = counter; doSearch(1);
 }
 function openNodeMenu(workspace, element, trigger) {
   if (!nodeWorkspaceIsCurrent(workspace) || (nodeWrites.size > 0) || trigger.disabled) return;
@@ -4756,6 +4766,7 @@ async function refreshAccountIdentity(context, authoritativeRows = null) {
   const rows = authoritativeRows || await caseRequest(`/api/account-ids/list?case_id=${encodeURIComponent(context.caseId)}`);
   if (!isCurrentCase(context, false) || !isCurrentCase(binding) || state.graph !== graph || state.graphView !== view || view.revision !== revision) return;
   const identities = new Map(rows.map(row => [String(row.account), row.id_no]));
+  window.FundsEntitySearch?.invalidateAll();
   for (const node of state.lastGraph.nodes) node.id_no = identities.get(String(node.account)) || null;
   const nodes = new Map(state.lastGraph.nodes.map(node => [String(node.account), node]));
   const autoPaint = graph?.get?.('autoPaint') !== false;

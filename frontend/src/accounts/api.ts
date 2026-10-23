@@ -1,4 +1,4 @@
-import type { AccountPage, AccountProfile, AccountRegistryApi, AccountRow, CurrencyTotal } from './types';
+import type { AccountPage, AccountProfile, AccountRegistryApi, AccountRow, AccountSuggestions, CurrencyTotal } from './types';
 
 async function get(path: string, query: Record<string, string>, signal: AbortSignal): Promise<unknown> {
   let response: Response;
@@ -37,11 +37,28 @@ export function isAccountProfile(value: unknown): value is AccountProfile {
       && count(item.in_cnt) && count(item.out_cnt) && totals(item.in_totals) && totals(item.out_totals));
 }
 
+export function isAccountSuggestions(value: unknown): value is AccountSuggestions {
+  return record(value) && identifier(value.case_id) && (value.source === 'flows' || value.source === 'identity')
+    && typeof value.query === 'string' && typeof value.has_more === 'boolean' && (value.next_offset === null || count(value.next_offset))
+    && Array.isArray(value.items) && value.items.length <= 50 && value.items.every(item => record(item) && identifier(item.account)
+      && typeof item.name === 'string' && nullableString(item.id_no) && ['account', 'name', 'id'].includes(String(item.matched_field)) && typeof item.matched_text === 'string')
+    && new Set(value.items.map(item => item.account)).size === value.items.length;
+}
+
 /** Account registry reads only. The parent owns every write and bulk operation. */
 export const accountRegistryApi: AccountRegistryApi = {
   async list(caseId, query, signal) {
-    const result = await get('/api/account-registry', { case_id: caseId, source: query.source, q: query.q, page: String(query.page), page_size: String(query.pageSize) }, signal);
-    if (!isAccountPage(result) || result.case_id !== caseId || result.source !== query.source || result.page !== query.page) throw new Error('账户列表响应不完整或案件不一致，请重新加载。');
+    const result = await get('/api/account-registry', { case_id: caseId, source: query.source, q: query.q, page: String(query.page), page_size: String(query.pageSize), ...(query.accountExact ? { account_exact: 'true' } : {}) }, signal);
+    if (!isAccountPage(result) || result.case_id !== caseId || result.source !== query.source || result.page !== query.page
+      || (query.accountExact && (result.total > 1 || result.items.some(item => item.account !== query.q)))) throw new Error('账户列表响应不完整或案件不一致，请重新加载。');
+    return result;
+  },
+  async suggestions(caseId, query, signal) {
+    const result = await get('/api/account-suggestions', { case_id: caseId, source: query.source, q: query.q, offset: String(query.offset), page_size: String(query.limit) }, signal);
+    if (!isAccountSuggestions(result) || result.case_id !== caseId || result.source !== query.source || result.query !== query.q.normalize('NFKC').trim()
+      || result.items.length > query.limit || (result.has_more ? result.items.length !== query.limit || result.next_offset !== query.offset + result.items.length : result.next_offset !== null)) {
+      throw new Error('账户候选响应不完整或查询范围不一致，请重新输入。');
+    }
     return result;
   },
   async profile(caseId, account, signal) {
