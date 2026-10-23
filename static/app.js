@@ -317,6 +317,12 @@ function updateHeader() {
   const s = state.stats || {};
   $('#statLine').innerHTML =
     `流水 <b>${fmtCount(s.flows || 0)}</b> 笔 · 账户 <b>${fmtCount(s.accounts || 0)}</b> 个 · 已上图 <b>${state.tracked.size}</b> 笔`;
+  const coverage = s.import_coverage, coverageNote = $('#importCoverageNote');
+  if (coverageNote) {
+    coverageNote.hidden = coverage?.scope !== 'source_reported_flows' || ![coverage?.unresolved_records, coverage?.cancelled_records, coverage?.excluded_flows, coverage?.non_monetary_records].some(value => value > 0);
+    $('#statLine').title = coverage?.scope === 'source_reported_flows' ? '金额按已接纳来源流水，不代表结算净额；导入明细与处理口径见案件与导入。' : '';
+    coverageNote.textContent = coverageNote.hidden ? '' : `${fmtCount(coverage.unresolved_records)} 条资金含义未确定的来源记录未计入统计；金额按已接纳来源流水，不代表结算净额。已配对冲正/撤销 ${fmtCount(coverage.cancelled_records ?? 0)} 条（双方均不计有效资金）。${(coverage.excluded_flows ?? 0) > 0 ? `本案另有 ${fmtCount(coverage.excluded_flows)} 笔历史留存流水已退出有效统计。` : ''}无资金变动的 ${fmtCount(coverage.non_monetary_records)} 条记录已单独保存。`;
+  }
   const empty = (s.flows || 0) === 0;
   $('#emptyHint').style.display = empty ? 'flex' : 'none';
   $('#canvasWrap').classList.toggle('case-empty', empty);

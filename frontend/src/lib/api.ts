@@ -19,6 +19,21 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 const json = (body: unknown): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 const casePath = (id: string) => `/cases/${encodeURIComponent(id)}`;
 
+async function download(path: string, filename: string, signal?: AbortSignal): Promise<void> {
+  const response = await fetch(`/api/v1${path}`, { signal });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new ApiError(payload?.error?.code || 'download_failed', payload?.error?.message || '无法下载文件。', response.status);
+  }
+  const blob = await response.blob();
+  if (signal?.aborted) throw new DOMException('下载已中止。', 'AbortError');
+  const url = URL.createObjectURL(blob);
+  try {
+    const link = document.createElement('a'); link.href = url; link.download = filename;
+    document.body.appendChild(link); link.click(); link.remove();
+  } finally { URL.revokeObjectURL(url); }
+}
+
 export const api = {
   cases: (signal?: AbortSignal) => request<CaseList>('/cases', { signal }),
   createCase: (name: string, signal?: AbortSignal) => request<Case>('/cases', { ...json({ name }), signal }),
@@ -38,20 +53,10 @@ export const api = {
   imports: (id: string, signal?: AbortSignal) => request<ImportSessionList>(`${casePath(id)}/imports?limit=100`, { signal }),
   sources: (id: string, flowId: string, page = 1, signal?: AbortSignal) =>
     request<FlowSourceList>(`${casePath(id)}/flows/${encodeURIComponent(flowId)}/sources?page=${page}&page_size=50`, { signal }),
-  downloadSource: async (id: string, sourceId: string, filename: string, signal?: AbortSignal): Promise<void> => {
-    const response = await fetch(`/api/v1${casePath(id)}/sources/${encodeURIComponent(sourceId)}/file`, { signal });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => null);
-      throw new ApiError(payload?.error?.code || 'download_failed', payload?.error?.message || '无法下载原始文件。');
-    }
-    const blob = await response.blob();
-    if (signal?.aborted) throw new DOMException('下载已中止。', 'AbortError');
-    const url = URL.createObjectURL(blob);
-    try {
-      const link = document.createElement('a'); link.href = url; link.download = filename;
-      document.body.appendChild(link); link.click(); link.remove();
-    } finally { URL.revokeObjectURL(url); }
-  },
+  downloadSource: (id: string, sourceId: string, filename: string, signal?: AbortSignal): Promise<void> =>
+    download(`${casePath(id)}/sources/${encodeURIComponent(sourceId)}/file`, filename, signal),
+  downloadImportReport: (id: string, sourceId: string, filename: string, signal?: AbortSignal): Promise<void> =>
+    download(`${casePath(id)}/sources/${encodeURIComponent(sourceId)}/report`, filename, signal),
   cleanup: (id: string, dryRun = true, signal?: AbortSignal) => request<CleanupResult>(`${casePath(id)}/imports/cleanup`, { ...json({ dry_run: dryRun }), signal }),
 };
 

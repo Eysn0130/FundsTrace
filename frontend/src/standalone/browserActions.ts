@@ -8,5 +8,6 @@ export function createBrowserFundsActions(context: FundsCaseContextV1, transport
     openGraph: () => { window.location.assign(graphPath); },
     openLegacyImport: importId => { window.location.assign(`${graphPath}&import_id=${encodeURIComponent(importId)}`); },
     downloadSource: (source, signal) => transport.downloadSource(context.caseId, source.sourceId, source.filename, signal),
+    downloadImportReport: (source, signal) => transport.downloadImportReport(context.caseId, source.sourceId, source.filename, signal),
   };
 }

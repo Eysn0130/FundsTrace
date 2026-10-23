@@ -50,7 +50,9 @@ with TestClient(app) as client:
     assert snapshot["schema_version"] == "funds-report.v1"
     assert snapshot["case_id"] == str(cid)
     assert snapshot["case"]["case_name"] == "Synthetic lazy report"
-    assert snapshot["case"]["stats"] == {"flows": 2, "accounts": 2}
+    assert snapshot["case"]["stats"] == {"flows": 2, "accounts": 2, "import_coverage": {
+        "scope": "source_reported_flows", "unresolved_records": 0, "non_monetary_records": 0,
+        "cancelled_records": 0, "excluded_flows": 0, "financial_interpretation_complete": True}}
     assert snapshot["results"]["source_snapshot"] == snapshot["case"]["stats"]
     assert snapshot["results"]["cycles"]["cycles"][0]["total"] == "250.02"
     assert "app.report" in sys.modules

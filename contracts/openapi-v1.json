@@ -234,6 +234,16 @@
           "flows": {
             "title": "Flows",
             "type": "integer"
+          },
+          "import_coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportCoverage"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -396,6 +406,173 @@
         "title": "CurrencyAmount",
         "type": "object"
       },
+      "FeedbackExample": {
+        "additionalProperties": false,
+        "properties": {
+          "member_path": {
+            "title": "Member Path",
+            "type": "string"
+          },
+          "reason_code": {
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "source_row": {
+            "title": "Source Row",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "member_path",
+          "source_row",
+          "reason_code"
+        ],
+        "title": "FeedbackExample",
+        "type": "object"
+      },
+      "FeedbackMember": {
+        "additionalProperties": false,
+        "properties": {
+          "encoding": {
+            "title": "Encoding",
+            "type": "string"
+          },
+          "member_path": {
+            "title": "Member Path",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "row_count": {
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "member_path",
+          "role",
+          "sha256",
+          "size_bytes",
+          "encoding",
+          "row_count"
+        ],
+        "title": "FeedbackMember",
+        "type": "object"
+      },
+      "FeedbackSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "integer"
+          },
+          "auxiliary": {
+            "title": "Auxiliary",
+            "type": "integer"
+          },
+          "cancelled": {
+            "default": 0,
+            "title": "Cancelled",
+            "type": "integer"
+          },
+          "currency_totals": {
+            "additionalProperties": {
+              "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+              "type": "string"
+            },
+            "title": "Currency Totals",
+            "type": "object"
+          },
+          "excluded_flows": {
+            "default": 0,
+            "title": "Excluded Flows",
+            "type": "integer"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackMember"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "non_monetary": {
+            "default": 0,
+            "title": "Non Monetary",
+            "type": "integer"
+          },
+          "non_transaction": {
+            "title": "Non Transaction",
+            "type": "integer"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "reason_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Reason Counts",
+            "type": "object"
+          },
+          "record_total": {
+            "title": "Record Total",
+            "type": "integer"
+          },
+          "review": {
+            "title": "Review",
+            "type": "integer"
+          },
+          "review_examples": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackExample"
+            },
+            "title": "Review Examples",
+            "type": "array"
+          },
+          "transaction_total": {
+            "title": "Transaction Total",
+            "type": "integer"
+          },
+          "unresolved": {
+            "default": 0,
+            "title": "Unresolved",
+            "type": "integer"
+          },
+          "unresolved_examples": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackExample"
+            },
+            "title": "Unresolved Examples",
+            "type": "array"
+          }
+        },
+        "required": [
+          "profile",
+          "record_total",
+          "transaction_total",
+          "accepted",
+          "review",
+          "non_transaction",
+          "auxiliary",
+          "reason_counts",
+          "currency_totals",
+          "members",
+          "review_examples"
+        ],
+        "title": "FeedbackSummary",
+        "type": "object"
+      },
       "Flow": {
         "additionalProperties": false,
         "properties": {
@@ -477,6 +654,39 @@
           "self_name": {
             "title": "Self Name",
             "type": "string"
+          },
+          "source_member": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Member"
+          },
+          "source_record_no": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Record No"
+          },
+          "source_row": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Row"
           },
           "summary": {
             "title": "Summary",
@@ -585,6 +795,28 @@
             "title": "Mapping",
             "type": "object"
           },
+          "member_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Member Path"
+          },
+          "member_row": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Member Row"
+          },
           "mode": {
             "enum": [
               "A",
@@ -605,10 +837,19 @@
             "title": "Parser Version",
             "type": "string"
           },
+          "record_details": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Record Details",
+            "type": "object"
+          },
           "row_kind": {
             "enum": [
               "csv_record",
               "worksheet_row",
+              "archive_record",
+              "table_record",
               "unknown"
             ],
             "title": "Row Kind",
@@ -700,6 +941,46 @@
           "page_size"
         ],
         "title": "FlowSourceList",
+        "type": "object"
+      },
+      "ImportCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "cancelled_records": {
+            "default": 0,
+            "title": "Cancelled Records",
+            "type": "integer"
+          },
+          "excluded_flows": {
+            "default": 0,
+            "title": "Excluded Flows",
+            "type": "integer"
+          },
+          "financial_interpretation_complete": {
+            "title": "Financial Interpretation Complete",
+            "type": "boolean"
+          },
+          "non_monetary_records": {
+            "title": "Non Monetary Records",
+            "type": "integer"
+          },
+          "scope": {
+            "const": "source_reported_flows",
+            "title": "Scope",
+            "type": "string"
+          },
+          "unresolved_records": {
+            "title": "Unresolved Records",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "scope",
+          "unresolved_records",
+          "non_monetary_records",
+          "financial_interpretation_complete"
+        ],
+        "title": "ImportCoverage",
         "type": "object"
       },
       "ImportJob": {
@@ -795,6 +1076,11 @@
       "ImportPreview": {
         "additionalProperties": false,
         "properties": {
+          "automatic": {
+            "default": false,
+            "title": "Automatic",
+            "type": "boolean"
+          },
           "case_id": {
             "pattern": "^[1-9][0-9]*$",
             "title": "Case Id",
@@ -806,6 +1092,16 @@
             },
             "title": "Columns",
             "type": "array"
+          },
+          "feedback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FeedbackSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "filename": {
             "title": "Filename",
@@ -846,6 +1142,16 @@
           },
           "stats": {
             "$ref": "#/components/schemas/PreviewStats"
+          },
+          "table_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TableSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -860,6 +1166,120 @@
           "self_accounts_in_file"
         ],
         "title": "ImportPreview",
+        "type": "object"
+      },
+      "ImportRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "details": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Details",
+            "type": "object"
+          },
+          "disposition": {
+            "enum": [
+              "imported",
+              "duplicate",
+              "review",
+              "unresolved",
+              "non_monetary",
+              "cancelled",
+              "non_transaction",
+              "auxiliary",
+              "removed"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          },
+          "flow_id": {
+            "anyOf": [
+              {
+                "pattern": "^[1-9][0-9]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flow Id"
+          },
+          "member_path": {
+            "title": "Member Path",
+            "type": "string"
+          },
+          "reason_code": {
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "record_key": {
+            "title": "Record Key",
+            "type": "string"
+          },
+          "record_no": {
+            "title": "Record No",
+            "type": "integer"
+          },
+          "source_row": {
+            "title": "Source Row",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "record_no",
+          "member_path",
+          "source_row",
+          "record_key",
+          "disposition",
+          "reason_code",
+          "details",
+          "flow_id"
+        ],
+        "title": "ImportRecord",
+        "type": "object"
+      },
+      "ImportRecordPage": {
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Case Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImportRecord"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "case_id",
+          "source_id",
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "ImportRecordPage",
         "type": "object"
       },
       "ImportResult": {
@@ -880,6 +1300,16 @@
             "pattern": "^[1-9][0-9]*$",
             "title": "Batch Id",
             "type": "string"
+          },
+          "feedback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FeedbackSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "main_detected": {
             "items": {
@@ -917,6 +1347,27 @@
           "skipped": {
             "title": "Skipped",
             "type": "integer"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "table_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TableSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "total": {
             "title": "Total",
@@ -1160,6 +1611,39 @@
             "title": "Self Name",
             "type": "string"
           },
+          "source_member": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Member"
+          },
+          "source_record_no": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Record No"
+          },
+          "source_row": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Row"
+          },
           "summary": {
             "title": "Summary",
             "type": "string"
@@ -1255,6 +1739,121 @@
           "mapping"
         ],
         "title": "RepreviewRequest",
+        "type": "object"
+      },
+      "TableSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "integer"
+          },
+          "auxiliary": {
+            "title": "Auxiliary",
+            "type": "integer"
+          },
+          "cancelled": {
+            "default": 0,
+            "title": "Cancelled",
+            "type": "integer"
+          },
+          "currency_totals": {
+            "additionalProperties": {
+              "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+              "type": "string"
+            },
+            "title": "Currency Totals",
+            "type": "object"
+          },
+          "documents": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Documents",
+            "type": "array"
+          },
+          "effective_added": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Added"
+          },
+          "excluded_flows": {
+            "default": 0,
+            "title": "Excluded Flows",
+            "type": "integer"
+          },
+          "mapping_evidence": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Mapping Evidence",
+            "type": "array"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackMember"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "non_monetary": {
+            "title": "Non Monetary",
+            "type": "integer"
+          },
+          "non_transaction": {
+            "title": "Non Transaction",
+            "type": "integer"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "reason_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Reason Counts",
+            "type": "object"
+          },
+          "record_total": {
+            "title": "Record Total",
+            "type": "integer"
+          },
+          "unresolved": {
+            "title": "Unresolved",
+            "type": "integer"
+          },
+          "unresolved_examples": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackExample"
+            },
+            "title": "Unresolved Examples",
+            "type": "array"
+          }
+        },
+        "required": [
+          "profile",
+          "record_total",
+          "accepted",
+          "unresolved",
+          "non_monetary",
+          "non_transaction",
+          "auxiliary",
+          "reason_counts",
+          "currency_totals",
+          "members"
+        ],
+        "title": "TableSummary",
         "type": "object"
       }
     }
@@ -2439,6 +3038,170 @@
         ]
       }
     },
+    "/api/v1/cases/{case_id}/imports/{source_id}/records": {
+      "get": {
+        "operationId": "v1_import_records",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{12,32}$",
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "disposition",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "imported",
+                    "duplicate",
+                    "review",
+                    "unresolved",
+                    "non_monetary",
+                    "cancelled",
+                    "non_transaction",
+                    "auxiliary",
+                    "removed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Disposition"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportRecordPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid file or request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Application is not activated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Case, session or source not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "HTTP method is not supported"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "State conflict or source unavailable"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid parameters or mapping"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Operation failed safely"
+          }
+        },
+        "summary": "Records",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
     "/api/v1/cases/{case_id}/sources/{source_id}/file": {
       "get": {
         "operationId": "v1_source_file",
@@ -2548,6 +3311,120 @@
           }
         },
         "summary": "Source File",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/cases/{case_id}/sources/{source_id}/report": {
+      "get": {
+        "operationId": "v1_import_report",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{12,32}$",
+              "title": "Source Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Complete source disposition report"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid file or request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Application is not activated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Case, session or source not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "HTTP method is not supported"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "State conflict or source unavailable"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid parameters or mapping"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Operation failed safely"
+          }
+        },
+        "summary": "Report",
         "tags": [
           "v1"
         ]

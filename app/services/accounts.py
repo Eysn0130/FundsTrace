@@ -10,10 +10,10 @@ from .cases import ServiceError, require_case
 _FLOW_ACCOUNTS = """
 with flow_names as (
     select trim(payer_account) as account, trim(coalesce(payer_name, '')) as name
-    from flows where case_id=? and payer_account is not null
+    from effective_flows where case_id=? and payer_account is not null
     union all
     select trim(payee_account), trim(coalesce(payee_name, ''))
-    from flows where case_id=? and payee_account is not null
+    from effective_flows where case_id=? and payee_account is not null
 ), flow_accounts as (
     select account, max(name) as name from flow_names where account<>'' group by account
 )
@@ -104,7 +104,7 @@ def account_profile(case_id, account):
             count(*) filter (where trim(payer_account)=?) out_cnt,
             count(*) filter (where trim(payee_account)=?) in_cnt,
             min(trade_time) tmin, max(trade_time) tmax
-            from flows where case_id=? and (trim(payer_account)=? or trim(payee_account)=?)""",
+            from effective_flows where case_id=? and (trim(payer_account)=? or trim(payee_account)=?)""",
                       [account, account, cid, account, account])[0]
         result.update(counts)
         own_money = db.q_raw("""select coalesce(currency,'') currency,
@@ -112,7 +112,7 @@ def account_profile(case_id, account):
             coalesce(sum(amount) filter (where trim(payer_account)=?),0) out_amt,
             count(*) filter (where trim(payee_account)=?) in_cnt,
             coalesce(sum(amount) filter (where trim(payee_account)=?),0) in_amt
-            from flows where case_id=? and (trim(payer_account)=? or trim(payee_account)=?)
+            from effective_flows where case_id=? and (trim(payer_account)=? or trim(payee_account)=?)
             group by coalesce(currency,'') order by currency""",
                              [account, account, account, account, cid, account, account])
         result.update(_directional_money(own_money))
@@ -123,10 +123,10 @@ def account_profile(case_id, account):
             coalesce(sum(amount) filter (where direction='in'),0) in_amt
             from (
               select trim(payee_account) acct, payee_name as name, currency, amount, 'out' direction
-              from flows where case_id=? and trim(payer_account)=?
+              from effective_flows where case_id=? and trim(payer_account)=?
               union all
               select trim(payer_account), payer_name, currency, amount, 'in'
-              from flows where case_id=? and trim(payee_account)=?
+              from effective_flows where case_id=? and trim(payee_account)=?
             ) where coalesce(acct,'')<>'' group by acct, coalesce(currency,'') order by currency""",
                                   [cid, account, cid, account])
         grouped = {}

@@ -33,7 +33,7 @@ def _pt(s):
 def load_flows(case_id):
     rows = db_q("select id, trade_no, trade_time, amount, balance, currency, self_account, summary, "
                 "payer_account, payer_name, payee_account, payee_name "
-                "from flows where case_id = ? order by trade_time, id", [case_id])
+                "from effective_flows where case_id = ? order by trade_time, id", [case_id])
     for row in rows:
         row["amount"] = money_decimal(row["amount"]) if row["amount"] is not None else ZERO
         row["balance"] = money_decimal(row["balance"]) if row["balance"] is not None else None
@@ -599,10 +599,14 @@ def run_all(case_id, params=None):
         subjects = [x.strip() for x in re.split(r"[,，;；\n\r\s]+", subjects) if x.strip()]
     # One database read establishes the source snapshot for all algorithms and
     # report overview counts. The pure helpers only read these row dictionaries.
-    flows = load_flows(case_id)
+    from . import db
+    from .import_coverage import import_coverage
+    with db._lock:
+        flows = load_flows(case_id)
+        coverage = import_coverage(case_id)
     accounts = {flow[key] for flow in flows for key in ("payer_account", "payee_account") if flow[key]}
     out = {"case_id": case_id, "subjects": subjects, "algorithms": list(algorithms), "money_contract": MONEY_CONTRACT,
-           "source_snapshot": {"flows": len(flows), "accounts": len(accounts)}}
+           "source_snapshot": {"flows": len(flows), "accounts": len(accounts), "import_coverage": coverage}}
     if "cycles" in algorithms:
         out["cycles"] = find_cycles(case_id, max_len=p.get("cycle_max_len", 4), max_cycles=p.get("cycle_max", 30),
                                     window_days=p.get("cycle_window_days", 7), min_total=p.get("cycle_min_total", 0),

@@ -213,6 +213,31 @@ create table if not exists flow_sources (
     primary key (case_id, source_id, source_row)
 );
 
+create table if not exists import_members (
+    case_id integer not null,
+    source_id varchar not null,
+    member_path varchar not null,
+    role varchar not null,
+    sha256 varchar not null,
+    size_bytes bigint not null,
+    encoding varchar not null,
+    row_count bigint not null,
+    primary key (source_id, member_path)
+);
+
+create table if not exists import_records (
+    case_id integer not null,
+    source_id varchar not null,
+    record_no bigint not null,
+    member_path varchar not null,
+    source_row bigint not null,
+    record_key varchar not null,
+    disposition varchar not null,
+    reason_code varchar not null,
+    details_json varchar not null,
+    primary key (case_id, source_id, record_no)
+);
+
 create table if not exists import_file_gc (
     import_id varchar primary key,
     suffix varchar not null,
@@ -290,6 +315,63 @@ def con():
                     if stmt.strip():
                         candidate.execute(stmt)
                 _migrate(candidate)
+                # Keep original facts and source links immutable. A versioned
+                # paired-cancellation journal excludes the same physical
+                # original occurrence from every effective-money reader,
+                # including a later reimport under an older parser.
+                # Narrow physical links before parsing JSON so metadata hashes
+                # cannot become join-build keys over the complete journal.
+                candidate.execute("""create or replace view effective_flows as
+                    with table_cancel_candidates as materialized (
+                      select fs.case_id,fs.source_id,fs.source_row,fs.flow_id,
+                        r.details_json source_details_json,c.details_json cancellation_details_json,
+                        f.self_account,f.self_name
+                      from flow_sources fs
+                      join flows f on f.case_id=fs.case_id and f.id=fs.flow_id
+                      join import_records r on r.case_id=fs.case_id
+                        and r.source_id=fs.source_id and r.record_no=fs.source_row
+                      join import_members rm on rm.case_id=r.case_id and rm.source_id=r.source_id
+                        and rm.member_path=r.member_path
+                      join import_records c on c.case_id=r.case_id and c.record_key=r.record_key
+                        and c.member_path=r.member_path and c.source_row=r.source_row
+                      join import_members cm on cm.case_id=c.case_id and cm.source_id=c.source_id
+                        and cm.member_path=c.member_path and cm.sha256=rm.sha256
+                      join import_sources p on p.case_id=c.case_id and p.source_id=c.source_id
+                      where p.row_kind='table_record' and p.parser_version='funds-trace-table-archive-v3'
+                        and c.disposition='cancelled' and c.reason_code='matched_cancellation'
+                    ), table_cancelled_links as materialized (
+                      select distinct case_id,source_id,source_row,flow_id from table_cancel_candidates
+                      where json_extract_string(try_cast(cancellation_details_json as json),'$.cancellation_role')='original'
+                        and json_extract_string(try_cast(cancellation_details_json as json),'$.cancellation_policy')='table-paired-cancellation-v1'
+                        and json_extract_string(try_cast(source_details_json as json),'$.flow_sha256')=
+                            json_extract_string(try_cast(cancellation_details_json as json),'$.flow_sha256')
+                        and case when coalesce(self_account,'')='' then '' else sha256(self_account) end=
+                            json_extract_string(try_cast(cancellation_details_json as json),'$.cancellation_own_account_sha256')
+                        and case when coalesce(self_name,'')='' then '' else sha256(self_name) end=
+                            json_extract_string(try_cast(cancellation_details_json as json),'$.cancellation_own_name_sha256')
+                    ), table_cancelled_flows as materialized (
+                      select fs.case_id,fs.flow_id from flow_sources fs
+                      left join table_cancelled_links c on c.case_id=fs.case_id and c.source_id=fs.source_id
+                        and c.source_row=fs.source_row and c.flow_id=fs.flow_id
+                      group by fs.case_id,fs.flow_id having count(*)=count(c.flow_id)
+                    )
+                    select f.* from flows f where not exists (
+                      select 1 from flow_sources fs
+                      join import_records r on r.case_id=fs.case_id
+                        and r.source_id=fs.source_id and r.record_no=fs.source_row
+                      join import_records c on c.case_id=r.case_id and c.record_key=r.record_key
+                      join import_sources p on p.case_id=c.case_id and p.source_id=c.source_id
+                      where fs.case_id=f.case_id and fs.flow_id=f.id
+                        and p.row_kind='archive_record'
+                        and p.parser_version in ('funds-trace-bank-feedback-v3','funds-trace-bank-feedback-v4','funds-trace-bank-feedback-v5')
+                        and c.disposition='cancelled' and c.reason_code='matched_cancellation'
+                        and json_extract_string(try_cast(c.details_json as json),'$.cancellation_role')='original'
+                        and json_extract_string(try_cast(c.details_json as json),'$.cancellation_policy')='paired-cancellation-v1'
+                        and (p.parser_version<>'funds-trace-bank-feedback-v5' or
+                          json_extract_string(try_cast(c.details_json as json),'$.canonical_currency')=f.currency)
+                    ) and not exists (
+                      select 1 from table_cancelled_flows c where c.case_id=f.case_id and c.flow_id=f.id
+                    )""")
                 for stmt in INDEXES.strip().split(";"):
                     if stmt.strip():
                         candidate.execute(stmt)

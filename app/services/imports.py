@@ -4,6 +4,7 @@ The database owns session state; disk filenames never grant access. A completed
 receipt is committed with its flows and remains readable after source cleanup.
 """
 import datetime as dt
+from decimal import Decimal, localcontext
 import hashlib
 import io
 import json
@@ -15,13 +16,14 @@ import threading
 import tempfile
 import uuid
 
-from app import db, importer
+from app import db, importer, feedback_import, table_import, table_archive, import_validation
 from .cases import ServiceError, preview_flow, require_case
 from .main_accounts import mark_automatic
 
 
 OWNER_TOKEN = uuid.uuid4().hex
-_extensions = {".csv", ".txt", ".tsv", ".xlsx", ".xls"}
+TABLE_PROFILE = table_import.PROFILE
+_extensions = {".csv", ".txt", ".tsv", ".xlsx", ".xls", ".zip"}
 _max_upload = 300 * 1024 * 1024
 _active_stages = ("parsing", "importing")
 _messages = {"parsing": "解析文件…", "importing": "写入流水…", "done": "导入完成",
@@ -30,6 +32,7 @@ _errors = {"import_interrupted": "上次导入被中断，未完成的数据已�
            "source_changed": "上传文件校验失败，请重新上传文件",
            "source_missing": "上传文件已清理或不存在，请重新上传文件",
            "no_importable_rows": "没有可导入的数据行，请检查列映射",
+           "import_integrity_failed": "入库一致性校验失败，本次写入已全部回滚；原有数据未改动，请重试或联系维护人员",
            "import_failed": _messages["error"]}
 
 
@@ -154,18 +157,268 @@ def _accounts(rows):
     return sorted(seen.values(), key=lambda entry: -entry["count"])
 
 
-def _parse(source, mode=None, mapping=None, *, suffix=None):
+def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=None, table_profile=None):
     try:
+        if table_profile not in (None, importer.PARSER_VERSION, *table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
+            raise ServiceError(400, "invalid_table_file", "来源解析规则不受支持，请重新上传预览")
+        if table_profile in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
+            plan = (table_archive.parse(source, profile=table_profile) if table_profile in table_archive.SUPPORTED_PROFILES
+                    else table_import.parse(source, suffix=suffix, mode=mode, mapping=mapping,
+                                            profile=table_profile))
+            frame = importer.pd.DataFrame(columns=plan["columns"])
+            frame.attrs.update(source_row_kind=table_import.ROW_KIND, table_plan=plan)
+            stats = dict(plan["stats"])
+            stats["bad_examples"] = [{key: value for key, value in example.items()
+                                      if key in ("row", "source_row", "reason")}
+                                     for example in stats["bad_examples"]]
+            return frame, plan["sheet"], plan["mode"], plan["mapping"], plan["rows"], stats
+        if suffix == ".zip":
+            if mode is not None and (mode != "B" or mapping != feedback_import.MAPPING):
+                raise ServiceError(422, "fixed_feedback_mapping", "资金反馈包使用已验证的固定格式规则，请重新上传预览")
+            plan = feedback_import.parse(source, profile=feedback_profile or feedback_import.PROFILE)
+            frame = importer.pd.DataFrame(columns=feedback_import.COLUMNS)
+            frame.attrs.update(source_row_kind="archive_record", feedback_plan=plan)
+            stats = dict(plan["stats"])
+            stats["bad_examples"] = [{"row": f"包内记录 {r['record_no']}", "source_row": r["record_no"],
+                                      "reason": r["reason_code"]}
+                                     for r in plan["records"] if r["disposition"] in ("review", "unresolved")][:3]
+            return frame, "", "B", dict(feedback_import.MAPPING), plan["rows"], stats
         frame, sheet = importer.read_table(source, suffix=suffix)
         if mapping is None:
             mode, mapping = importer.analyze(frame, mode_hint=mode)
         mapping = _mapping(mode, mapping, list(frame.columns))
         rows, stats = importer.build_rows(frame, mode, mapping)
         return frame, sheet, mode, mapping, rows, stats
+    except feedback_import.FeedbackImportError as error:
+        raise ServiceError(400, "invalid_feedback_archive", str(error)) from None
+    except table_import.TableImportError as error:
+        raise ServiceError(400, "invalid_table_file", str(error)) from None
     except ServiceError:
         raise
     except Exception:
         raise _invalid_file() from None
+
+
+def _bind_feedback_plan(case_id, parsed):
+    """Prevent changed auxiliary identity from adding the same physical money."""
+    frame, _sheet, _mode, _mapping, rows, stats = parsed
+    plan = frame.attrs.get("feedback_plan")
+    if (case_id is None or plan is None
+            or not (rows or plan.get("cancelled_rows"))):
+        return
+    members = {member["member_path"]: member["sha256"] for member in plan["members"]}
+    transaction_members = [(member["member_path"], member["sha256"])
+                           for member in plan["members"] if member["role"] == "transaction"]
+    wanted = ",".join("(?,?)" for _ in transaction_members)
+    profiles = sorted(feedback_import.SUPPORTED_PROFILES)
+    supported = ",".join("?" for _ in profiles)
+    cancellation_profiles = sorted(feedback_import.CANCELLATION_PROFILES)
+    cancellation_supported = ",".join("?" for _ in cancellation_profiles)
+    existing = {}
+    prior_cancellation_members = set()
+    for previous in db.q_raw(f"""
+            select distinct r.member_path,m.sha256,r.source_row,
+                   case when p.parser_version in ({supported}) and p.row_kind='archive_record'
+                             and (r.disposition in ('imported','duplicate') or
+                                  (p.parser_version in ({cancellation_supported}) and r.disposition='cancelled'
+                                   and json_extract_string(r.details_json,'$.cancellation_role')='original'))
+                        then json_extract_string(r.details_json,'$.own_identity_sha256') else null end identity_hash,
+                   (p.parser_version in ({cancellation_supported}) and r.disposition='cancelled'
+                    and json_extract_string(r.details_json,'$.cancellation_role')='original') prior_cancellation
+            from import_records r
+            join import_sources p on p.case_id=r.case_id and p.source_id=r.source_id
+            join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
+            join (values {wanted}) wanted(member_path,sha256) on wanted.member_path=m.member_path and wanted.sha256=m.sha256
+            left join flow_sources s on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
+            left join flows f on f.case_id=s.case_id and f.id=s.flow_id
+            where r.case_id=? and (f.id is not null or
+              (p.parser_version in ({cancellation_supported}) and r.disposition='cancelled'
+               and json_extract_string(r.details_json,'$.cancellation_role')='original'))
+            """, profiles + cancellation_profiles * 2
+                  + [value for member in transaction_members for value in member] + [case_id] + cancellation_profiles):
+        identity = previous["identity_hash"]
+        if previous["prior_cancellation"]:
+            prior_cancellation_members.add((previous["member_path"], previous["sha256"]))
+        if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity):
+            identity = None
+        existing.setdefault((previous["member_path"], previous["sha256"], previous["source_row"]), set()).add(identity)
+    # Historical v1 parsing remains unchanged for unrelated members. A pending
+    # v1 job may not re-create an occurrence from a member with a v3/v4/v5 cancellation
+    # under a different auxiliary identity and evade its effective exclusion.
+    legacy_guard = plan["profile"] == feedback_import.IDENTITY_PROFILE
+    if legacy_guard and not prior_cancellation_members:
+        return
+    records = {record["record_no"]: record for record in plan["records"]}
+    changed = False
+    conflicting_originals = []
+    for row in list(plan.get("cancelled_rows", [])):
+        record = records[row["_source_row"]]
+        previous = existing.get((record["member_path"], members[record["member_path"]], record["source_row"]))
+        if previous and previous != {record["details"]["own_identity_sha256"]}:
+            conflicting_originals.append(record["record_no"])
+    if conflicting_originals:
+        feedback_import.revoke_cancellations(plan, conflicting_originals)
+        changed = True
+    kept = []
+    for row in rows:
+        record = records[row["_source_row"]]
+        path, source_row = record["member_path"], record["source_row"]
+        if legacy_guard and (path, members[path]) not in prior_cancellation_members:
+            kept.append(row)
+            continue
+        previous = existing.get((path, members[path], source_row))
+        if previous and previous != {record["details"]["own_identity_sha256"]}:
+            changed = True
+            record.update(disposition="review" if legacy_guard else "unresolved", reason_code="own_identity_conflict",
+                          record_key=feedback_import.record_key(path, members[path], source_row))
+            if legacy_guard:
+                record["details"]["review_reasons"] = "own_identity_conflict"
+            else:
+                record["details"].update(financial_effect="undetermined", validation_issues="own_identity_conflict")
+            for field in ("own_identity_sha256", "own_identity_record"):
+                record["details"].pop(field, None)
+        else:
+            kept.append(row)
+    if not changed:
+        return
+    rows[:] = kept  # The parsed tuple and plan deliberately share this list.
+    if plan["profile"] in feedback_import.CANCELLATION_PROFILES:
+        feedback_import.refresh_stats(plan)
+        stats.clear()
+        stats.update(plan["stats"])
+        stats["bad_examples"] = [{"row": f"包内记录 {record['record_no']}", "source_row": record["record_no"],
+                                  "reason": record["reason_code"]}
+                                 for record in plan["records"] if record["disposition"] in ("review", "unresolved")][:3]
+        return
+    counts, reasons, totals, directions = {}, {}, {}, {}
+    for record in plan["records"]:
+        disposition, reason = record["disposition"], record["reason_code"]
+        counts[disposition] = counts.get(disposition, 0) + 1
+        reasons[reason] = reasons.get(reason, 0) + 1
+    with localcontext() as context:
+        context.prec = 40
+        for row in rows:
+            currency = row["currency"]
+            totals[currency] = totals.get(currency, Decimal("0.00")) + row["amount"]
+            by_direction = directions.setdefault(currency, {"in": Decimal("0.00"), "out": Decimal("0.00")})
+            direction = "out" if records[row["_source_row"]]["details"]["source_direction"] == "出" else "in"
+            by_direction[direction] += row["amount"]
+    updated = plan["stats"]
+    updated.update(ok=len(rows), reason_counts=reasons,
+                   skipped=sum(counts.get(kind, 0) for kind in ("review", "unresolved", "non_monetary", "non_transaction")),
+                   currency_totals={currency: format(amount, ".2f") for currency, amount in totals.items()},
+                   currency_direction_totals={currency: {direction: format(amount, ".2f")
+                                                         for direction, amount in values.items()}
+                                              for currency, values in directions.items()})
+    for kind in ("review", "unresolved", "non_monetary", "non_transaction", "auxiliary"):
+        updated[kind] = counts.get(kind, 0)
+    updated["bad_examples"] = [{"source_row": record["record_no"], "reason": record["reason_code"],
+                                "member_path": record["member_path"], "member_row": record["source_row"]}
+                               for record in plan["records"] if record["disposition"] in ("review", "unresolved")][:3]
+    stats.clear()
+    stats.update(updated)
+    stats["bad_examples"] = [{"row": f"包内记录 {record['record_no']}", "source_row": record["record_no"],
+                              "reason": record["reason_code"]}
+                             for record in plan["records"] if record["disposition"] in ("review", "unresolved")][:3]
+
+
+def _bind_table_history(case_id, plan, rows, stats):
+    """A new interpretation of the same physical row is not a second payment.
+
+    Preserve v5-to-v5 advanced mappings. A role-aware assessment on either side
+    requires exact historical facts; an old ready session cannot duplicate one.
+    """
+    if not rows:
+        return
+    requested = {(record["member_path"], record["source_row"]): row
+                 for row in rows for record in [plan["records"][row["_source_row"] - 1]]}
+    members = [(member["member_path"], member["sha256"]) for member in plan["members"]]
+    wanted = ",".join("(?,?)" for _ in members)
+    fields = table_import.FLOW_FIELDS
+    role_profiles = sorted(table_import.ROLE_PROFILES)
+    roles = ",".join("?" for _ in role_profiles)
+    cursor = db.con().execute(f"""
+        select r.member_path,r.source_row,{','.join('f.' + field for field in fields)}
+        from import_records r
+        join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
+        join (values {wanted}) wanted(member_path,sha256) on wanted.member_path=m.member_path and wanted.sha256=m.sha256
+        join import_sources i on i.case_id=r.case_id and i.source_id=r.source_id
+        join flow_sources s on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
+        join flows f on f.case_id=s.case_id and f.id=s.flow_id
+        where r.case_id=? and (? in ({roles}) or i.parser_version in ({roles}))
+        """, [value for member in members for value in member]
+              + [case_id, plan["profile"], *role_profiles, *role_profiles])
+    conflicting = set()
+    while batch := cursor.fetchmany(1024):
+        for path, position, *facts in batch:
+            row = requested.get((path, position))
+            if row is not None and importer._row_key(dict(zip(fields, facts))) != importer._row_key(row, default_currency="CNY"):
+                conflicting.add(row["_source_row"])
+    if not conflicting:
+        return
+    for number in conflicting:
+        record = plan["records"][number - 1]
+        record.update(disposition="unresolved", reason_code="conflicting_field")
+        record["details"].pop("flow_sha256", None)
+        record["details"].update(financial_effect="undetermined", validation_issues="conflicting_field",
+                                 counterparty_basis=table_import.HISTORY_CONFLICT_BASIS,
+                                 reason="同一来源已存在不同资金解释，本次未新增流水，防止重复累计")
+    rows[:] = [row for row in rows if row["_source_row"] not in conflicting]
+    table_import.refresh_stats(plan)
+    stats.clear()
+    stats.update(plan["stats"])
+    stats["bad_examples"] = [{key: value for key, value in example.items() if key in ("row", "source_row", "reason")}
+                             for example in stats["bad_examples"]]
+
+
+def _bind_table_plan(case_id, parsed):
+    """Bind cancellation evidence to every stored interpretation of its original.
+
+    A physical source occurrence can have several historical mappings. None of
+    those facts or receipts is rewritten when a newer parser excludes money.
+    """
+    frame, _sheet, _mode, _mapping, rows, stats = parsed
+    plan = frame.attrs.get("table_plan")
+    if case_id is not None and plan is not None and plan["profile"] in table_import.SUPPORTED_PROFILES:
+        _bind_table_history(case_id, plan, rows, stats)
+        return
+    if (case_id is None or plan is None or plan["profile"] != "funds-trace-table-archive-v3"
+            or not plan.get("cancelled_rows")):
+        return
+    from app import table_cancellations
+    records = {record["record_no"]: record for record in plan["records"]}
+    members = {member["member_path"]: member["sha256"] for member in plan["members"]}
+    requested = {(record["member_path"], members[record["member_path"]], record["source_row"]): (row["_source_row"], row)
+                 for row in plan["cancelled_rows"] for record in [records[row["_source_row"]]]}
+    for pair in plan.get("cancellations", []):
+        record = records[pair["cancellation_record_no"]]
+        requested[(record["member_path"], members[record["member_path"]], record["source_row"])] = (pair["original_record_no"], None)
+    wanted_members = sorted({(path, digest) for path, digest, _row in requested})
+    wanted = ",".join("(?,?)" for _ in wanted_members)
+    fields = (*table_import.FLOW_FIELDS, "self_account", "self_name")
+    conflicting = set()
+    for previous in db.q_raw(f"""
+            select r.member_path,m.sha256,r.source_row,{','.join('f.' + key for key in fields)}
+            from import_records r
+            join import_members m on m.case_id=r.case_id and m.source_id=r.source_id
+              and m.member_path=r.member_path
+            join (values {wanted}) wanted(member_path,sha256)
+              on wanted.member_path=m.member_path and wanted.sha256=m.sha256
+            join flow_sources s on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
+            join flows f on f.case_id=s.case_id and f.id=s.flow_id
+            where r.case_id=?
+            """, [value for member in wanted_members for value in member] + [case_id]):
+        physical = (previous["member_path"], previous["sha256"], previous["source_row"])
+        if physical not in requested:
+            continue
+        original_no, row = requested[physical]
+        if (row is None or importer._row_key(previous) != importer._row_key(row)
+                or any((previous.get(key) or "") != (row.get(key) or "") for key in ("self_account", "self_name"))):
+            conflicting.add(original_no)
+    if conflicting:
+        table_cancellations.revoke_pairs(plan, conflicting, reason="cancellation_historical_conflict")
+        stats.clear()
+        stats.update(plan["stats"])
 
 
 def _preview_result(session, parsed, legacy=False):
@@ -174,9 +427,101 @@ def _preview_result(session, parsed, legacy=False):
               "columns": list(frame.columns), "mode": mode, "mapping": mapping,
               "stats": stats, "preview": [preview_flow(row) for row in rows[:8]],
               "self_accounts_in_file": _accounts(rows)}
+    plan = frame.attrs.get("feedback_plan")
+    if plan is not None:
+        result["feedback"] = _feedback_summary(plan)
+        positions = {r["record_no"]: r for r in plan["records"]}
+        for preview, row in zip(result["preview"], rows):
+            record = positions[row["_source_row"]]
+            preview.update(source_member=record["member_path"], source_row=record["source_row"],
+                           source_record_no=record["record_no"])
+    table_plan = frame.attrs.get("table_plan")
+    if table_plan is not None:
+        result["table_summary"] = _table_summary(table_plan)
+        positions = {r["record_no"]: r for r in table_plan["records"]}
+        for preview, row in zip(result["preview"], rows):
+            record = positions[row["_source_row"]]
+            preview.update(source_member=record["member_path"], source_row=record["source_row"],
+                           source_record_no=record["record_no"])
     if not legacy:
         result["case_id"] = str(session["case_id"])
     return result
+
+
+def _table_summary(plan):
+    stats = plan["stats"]
+    return {"profile": plan["profile"], "record_total": len(plan["records"]),
+            "accepted": len(plan["rows"]),
+            "cancelled": stats.get("cancelled", 0), "excluded_flows": 0, "effective_added": None,
+            **{key: stats[key] for key in ("unresolved", "non_monetary", "non_transaction", "auxiliary", "reason_counts", "currency_totals")},
+            "members": plan["members"], "documents": plan["documents"],
+            "mapping_evidence": [{key: str(value) for key, value in entry.items()}
+                                 for entry in plan["mapping_evidence"]],
+            "unresolved_examples": [{key: record[key] for key in ("member_path", "source_row", "reason_code")}
+                                    for record in plan["records"] if record["disposition"] == "unresolved"][:10]}
+
+
+def _table_profile(session):
+    profile = json.loads(session.get("request_json") or "{}").get("_table_profile", importer.PARSER_VERSION)
+    if profile not in (importer.PARSER_VERSION, *table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
+        raise ServiceError(400, "invalid_table_file", "来源解析规则不受支持，请重新上传预览")
+    return profile
+
+
+def _table_overrides(session):
+    return bool(json.loads(session.get("request_json") or "{}").get("_table_overrides", False))
+
+
+def _table_mapping(mode, mapping, columns, *, profile):
+    fields = table_import.mapping_fields(profile)
+    if (mode not in ("A", "B") or not isinstance(mapping, dict)
+            or any(key not in fields or not isinstance(value, str)
+                   or not value or value not in columns for key, value in mapping.items())):
+        raise ServiceError(422, "invalid_mapping", "表格映射字段不存在或不明确，请重新预览")
+    return dict(mapping)
+
+
+def _feedback_summary(plan):
+    stats = plan["stats"]
+    return {"profile": plan["profile"], "record_total": len(plan["records"]),
+            "transaction_total": stats["total"], "accepted": len(plan["rows"]),
+            "review": stats["review"], "non_transaction": stats["non_transaction"],
+            "non_monetary": stats["non_monetary"], "unresolved": stats["unresolved"],
+            "cancelled": stats.get("cancelled", 0),
+            "auxiliary": stats["auxiliary"], "reason_counts": stats["reason_counts"],
+            "currency_totals": stats["currency_totals"], "members": plan["members"],
+            "review_examples": [{k: r[k] for k in ("member_path", "source_row", "reason_code")}
+                                for r in plan["records"] if r["disposition"] == "review"][:10],
+            "unresolved_examples": [{k: r[k] for k in ("member_path", "source_row", "reason_code")}
+                                    for r in plan["records"] if r["disposition"] == "unresolved"][:10]}
+
+
+def _feedback_profile(session):
+    # Historical ready sessions were evaluated under v1. New sessions pin the
+    # internal rule version at preview, including retries after a process restart.
+    request = json.loads(session.get("request_json") or "{}")
+    return request.get("_feedback_profile", feedback_import.IDENTITY_PROFILE)
+
+
+def _write_feedback_journal(cid, source_id, plan):
+    """Persist disposition metadata; original cells stay in the uploaded file."""
+    refs = {r["source_row"]: r["disposition"] for r in db.q_raw(
+        "select source_row,disposition from flow_sources where case_id=? and source_id=?", [cid, source_id])}
+    accepted = {r["record_no"] for r in plan["records"] if r["disposition"] == "accepted"}
+    if accepted != set(refs):
+        raise importer.ImportError("反馈包来源关联不完整")
+    for table, values, columns in (
+        ("import_members", [[cid, source_id, *[m[k] for k in ("member_path", "role", "sha256", "size_bytes", "encoding", "row_count")]]
+                            for m in plan["members"]],
+         ["case_id", "source_id", "member_path", "role", "sha256", "size_bytes", "encoding", "row_count"]),
+        ("import_records", [[cid, source_id, r["record_no"], r["member_path"], r["source_row"], r["record_key"],
+                             refs.get(r["record_no"], r["disposition"]), r["reason_code"], _json(r["details"])]
+                            for r in plan["records"]],
+         ["case_id", "source_id", "record_no", "member_path", "source_row", "record_key", "disposition", "reason_code", "details_json"]),
+    ):
+        frame = importer.pd.DataFrame(values, columns=columns)
+        for offset in range(0, len(frame), 50000):
+            db.insert_dataframe(table, frame.iloc[offset:offset + 50000], columns)
 
 
 async def _upload(case_id, file, surface):
@@ -185,7 +530,7 @@ async def _upload(case_id, file, surface):
     extension = Path(filename).suffix
     suffix = extension.lower() or ".csv"
     if suffix not in _extensions:
-        raise ServiceError(400, "unsupported_file_type", "请上传 CSV、TXT、TSV 或 Excel 流水文件")
+        raise ServiceError(400, "unsupported_file_type", "请上传 CSV、TXT、TSV、Excel 或资金反馈 ZIP 文件")
     # Decide the parser before shortening the display name, and never remove
     # the real extension (including an unsupported one) by truncation.
     filename = (filename[:-len(extension)][:240 - len(extension)] + extension
@@ -196,7 +541,8 @@ async def _upload(case_id, file, surface):
     # Preview parsing can be lengthy. Keep its already-buffered input in memory
     # until it succeeds, so exiting during parsing cannot orphan an original.
     with io.BytesIO(content) as source:
-        parsed = _parse(source, suffix=suffix)
+        table_profile = (table_archive.PROFILE if table_archive.should_parse(source) else None) if suffix == ".zip" else TABLE_PROFILE
+        parsed = _parse(source, suffix=suffix, table_profile=table_profile)
     import_id = uuid.uuid4().hex
     directory = _directory(create=True)
     path = directory / f"{import_id}{suffix}"
@@ -210,12 +556,19 @@ async def _upload(case_id, file, surface):
         with db.transaction():
             if cid is not None:
                 _cid(cid)
+                _bind_feedback_plan(cid, parsed)
+                _bind_table_plan(cid, parsed)
             db.x("""insert into import_sessions(import_id,case_id,surface,filename,suffix,sha256,size_bytes,
-                      mode,mapping_json,columns_json,stage,created_at,updated_at,expires_at,source_state)
-                    values (?,?,?,?,?,?,?,?,?,?,'ready',?,?,?,'retained')""",
+                      mode,mapping_json,columns_json,request_json,stage,created_at,updated_at,expires_at,source_state)
+                    values (?,?,?,?,?,?,?,?,?,?,?,'ready',?,?,?,'retained')""",
                  [import_id, cid, surface, filename, suffix, hashlib.sha256(content).hexdigest(), len(content),
-                  parsed[2], _json(parsed[3]), _json(list(parsed[0].columns)), now, now, now + dt.timedelta(days=7)])
-        return _preview_result(session, parsed, legacy=surface == "legacy")
+                  parsed[2], _json(parsed[3]), _json(list(parsed[0].columns)),
+                  _json({"_table_profile": parsed[0].attrs["table_plan"]["profile"]}) if "table_plan" in parsed[0].attrs
+                  else _json({"_feedback_profile": parsed[0].attrs["feedback_plan"]["profile"]}) if suffix == ".zip" else None,
+                  now, now, now + dt.timedelta(days=7)])
+        result = _preview_result(session, parsed, legacy=surface == "legacy")
+        result["automatic"] = True
+        return result
     except BaseException:
         if created:
             path.unlink(missing_ok=True)
@@ -236,12 +589,29 @@ def _repreview(case_id, import_id, body, surface):
         if session["stage"] in _active_stages or session["stage"] == "done":
             raise ServiceError(409, "import_already_started", "任务已开始或已完成，请查看导入进度")
         with _source(session, snapshot=True) as source:
-            parsed = _parse(source, body.mode, body.mapping, suffix=session["suffix"])
+            is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
+            overrides = is_table and (_table_overrides(session) or body.mode != session["mode"]
+                                      or body.mapping != json.loads(session["mapping_json"]))
+            if is_table:
+                _table_mapping(body.mode, body.mapping, json.loads(session["columns_json"]),
+                               profile=_table_profile(session))
+                if overrides and _table_profile(session) in table_archive.SUPPORTED_PROFILES:
+                    raise ServiceError(422, "invalid_mapping", "反馈包按成员独立校验，不能使用整包字段覆盖")
+            parsed = _parse(source, body.mode if not is_table or overrides else None,
+                            body.mapping if not is_table or overrides else None, suffix=session["suffix"],
+                            feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
+                            table_profile=_table_profile(session))
+        _bind_feedback_plan(session["case_id"], parsed)
+        _bind_table_plan(session["case_id"], parsed)
         now = _now()
         db.x("""update import_sessions set mode=?,mapping_json=?,columns_json=?,stage='ready',error_code=null,
                   updated_at=?,expires_at=? where import_id=?""",
              [parsed[2], _json(parsed[3]), _json(list(parsed[0].columns)), now, now + dt.timedelta(days=7), import_id])
         db.x("delete from import_file_gc where import_id=?", [import_id])
+        if is_table:
+            request = json.loads(session.get("request_json") or "{}")
+            request["_table_overrides"] = overrides
+            db.x("update import_sessions set request_json=? where import_id=?", [_json(request), import_id])
         return _preview_result(session, parsed, legacy=surface == "legacy")
 
 
@@ -285,11 +655,15 @@ def _mark_mains(cid, rows, receipt, request):
 
 
 def _receipt(raw):
-    return {"total": raw.get("total", 0), "ok": raw.get("ok", 0), "skipped": raw.get("skipped", 0),
+    result = {"total": raw.get("total", 0), "ok": raw.get("ok", 0), "skipped": raw.get("skipped", 0),
             "rows_dup": raw.get("rows_dup", 0), "batch_id": str(raw["batch_id"]),
             "bad_examples": raw.get("bad_examples", []), "self_accounts": raw.get("self_accounts", []),
             "self_accounts_count": raw.get("self_accounts_count", 0), "main_matched": raw.get("main_matched", []),
             "accounts_in_batch": raw.get("accounts_in_batch", 0), "main_detected": raw.get("main_detected", [])}
+    for key in ("feedback", "table_summary", "source_id"):
+        if key in raw:
+            result[key] = raw[key]
+    return result
 
 
 def _run(import_id):
@@ -301,35 +675,67 @@ def _run(import_id):
                 return
             session = found[0]
         request = json.loads(session["request_json"])
+        is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
+        overrides = _table_overrides(session)
         with _source(session, snapshot=True) as source:
-            _frame, sheet, mode, mapping, rows, stats = _parse(source, request["mode"], request["mapping"], suffix=session["suffix"])
-        if not rows:
+            parsed = _parse(
+                source, request["mode"] if not is_table or overrides else None,
+                request["mapping"] if not is_table or overrides else None, suffix=session["suffix"],
+                feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
+                table_profile=_table_profile(session))
+            _frame, sheet, mode, mapping, rows, stats = parsed
+        plan = _frame.attrs.get("feedback_plan")
+        table_plan = _frame.attrs.get("table_plan")
+        if not rows and plan is None and table_plan is None:
             raise ServiceError(422, "no_importable_rows", _errors["no_importable_rows"])
         with db.transaction():
             current = _session(session["case_id"], import_id, session["surface"])
             if current["owner_token"] != OWNER_TOKEN or current["stage"] != "parsing":
                 return
+            processed_total = len((plan or table_plan)["records"]) if plan or table_plan else len(rows)
             db.x("update import_sessions set stage='importing',total=?,updated_at=? where import_id=?",
-                 [len(rows), _now(), import_id])
+                 [processed_total, _now(), import_id])
         # One shared transaction includes the receipt, provenance and account
         # changes. Restart can never observe durable rows without their receipt.
         with db.transaction():
             current = _session(session["case_id"], import_id, session["surface"])
             if current["owner_token"] != OWNER_TOKEN or current["stage"] != "importing":
                 return
+            _bind_feedback_plan(session["case_id"], parsed)
+            _bind_table_plan(session["case_id"], parsed)
+            manifest = import_validation.table_manifest(table_plan, rows) if table_plan is not None else None
             provenance = {"source_id": import_id, "filename": session["filename"], "sha256": session["sha256"],
                           "size_bytes": session["size_bytes"], "mode": mode, "mapping": mapping,
-                          "sheet": sheet, "parser_version": getattr(importer, "PARSER_VERSION", "funds-trace-import-v1"),
+                          "sheet": sheet, "parser_version": (plan or table_plan)["profile"] if plan or table_plan else getattr(importer, "PARSER_VERSION", "funds-trace-import-v1"),
                           "row_kind": _frame.attrs.get("source_row_kind", "unknown")}
             receipt = importer.commit_rows(session["filename"], mode, rows, stats,
                                            case_id=session["case_id"], provenance=provenance)
+            receipt["source_id"] = import_id
+            if plan is not None:
+                _write_feedback_journal(session["case_id"], import_id, plan)
+                receipt["feedback"] = _feedback_summary(plan)
+                receipt["feedback"]["excluded_flows"] = db.q_raw("""
+                    select (select count(*) from flows where case_id=?) -
+                           (select count(*) from effective_flows where case_id=?) n
+                    """, [session["case_id"], session["case_id"]])[0]["n"]
+            if table_plan is not None:
+                _write_feedback_journal(session["case_id"], import_id, table_plan)
+                import_validation.verify_table_write(session["case_id"], import_id, table_plan["profile"], manifest)
+                receipt["table_summary"] = _table_summary(table_plan)
+                receipt["table_summary"].update(
+                    excluded_flows=db.q_raw("""select (select count(*) from flows where case_id=?) -
+                        (select count(*) from effective_flows where case_id=?) n""",
+                        [session["case_id"], session["case_id"]])[0]["n"],
+                    effective_added=db.q_raw("select count(*) n from effective_flows where case_id=? and batch_id=?",
+                                             [session["case_id"], receipt["batch_id"]])[0]["n"])
             _mark_mains(session["case_id"], rows, receipt, request)
             receipt = _receipt(receipt)
             db.x("""update import_sessions set stage='done',done=?,total=?,result_json=?,error_code=null,
                       updated_at=?,expires_at=? where import_id=? and owner_token=?""",
-                 [len(rows), len(rows), _json(receipt), _now(), _now() + dt.timedelta(days=30), import_id, OWNER_TOKEN])
+                 [processed_total, processed_total, _json(receipt), _now(), _now() + dt.timedelta(days=30), import_id, OWNER_TOKEN])
     except Exception as error:
-        code = error.code if isinstance(error, ServiceError) and error.code in _errors else "import_failed"
+        code = ("import_integrity_failed" if isinstance(error, import_validation.IntegrityError) else
+                error.code if isinstance(error, ServiceError) and error.code in _errors else "import_failed")
         with db.transaction():
             now = _now()
             db.x("""update import_sessions set stage='error',done=0,result_json=null,error_code=?,updated_at=?,expires_at=?
@@ -344,8 +750,19 @@ def _commit(case_id, import_id, body, surface):
             result = {"import_id": import_id, "started": False}
         else:
             _source(session)
-            mapping = _mapping(body.mode, body.mapping, json.loads(session["columns_json"] or "[]"))
+            is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
+            mapping = (_table_mapping(body.mode, body.mapping, json.loads(session["columns_json"] or "[]"),
+                                      profile=_table_profile(session)) if is_table
+                       else _mapping(body.mode, body.mapping, json.loads(session["columns_json"] or "[]")))
+            if is_table and (body.mode != session["mode"] or mapping != json.loads(session["mapping_json"])):
+                raise ServiceError(409, "preview_changed", "映射与已校验预览不同，请先重新预览")
+            if session["suffix"] == ".zip" and not is_table and (body.mode != "B" or mapping != feedback_import.MAPPING):
+                raise ServiceError(422, "fixed_feedback_mapping", "资金反馈包的格式规则不可更改，请重新预览")
             request = _request(body, mapping)
+            if session["suffix"] == ".zip":
+                request["_feedback_profile"] = _feedback_profile(session)
+            if is_table:
+                request.update(_table_profile=_table_profile(session), _table_overrides=_table_overrides(session))
             db.x("""update import_sessions set mode=?,mapping_json=?,request_json=?,stage='parsing',done=0,total=0,
                       result_json=null,error_code=null,attempt=attempt+1,owner_token=?,updated_at=?
                       where import_id=?""", [body.mode, _json(mapping), _json(request), OWNER_TOKEN, _now(), import_id])
@@ -384,6 +801,9 @@ def _progress(case_id, import_id, surface):
               "error": error, "error_code": error_code,
               "source_available": _source_available(session),
               "recoverable": stage == "error" and _source_available(session)}
+    feedback = (result["result"] or {}).get("feedback")
+    if stage == "done" and feedback:
+        result["message"] = f"自动处理完成，全部 {feedback['record_total']} 条来源记录已保存"
     if surface == "v1":
         result["case_id"] = str(case_id)
     return result
@@ -434,6 +854,84 @@ def get_source_file(case_id, source_id):
         return _source(session, snapshot=True), session["filename"]
 
 
+def _journal_source(case_id, source_id):
+    cid = _cid(case_id)
+    if not isinstance(source_id, str) or not re.fullmatch(r"[0-9a-f]{12,32}", source_id):
+        raise _missing()
+    found = db.q_raw("select * from import_sources where case_id=? and source_id=? and row_kind in ('archive_record','table_record')",
+                     [cid, source_id])
+    if not found:
+        raise _missing()
+    return cid, found[0]
+
+
+def _record_items(cid, source_id, *, disposition=None, limit=None, offset=0):
+    where, params = "r.case_id=? and r.source_id=?", [cid, source_id]
+    if disposition is not None:
+        where += " and r.disposition=?"
+        params.append(disposition)
+    paging = " limit ? offset ?" if limit is not None else ""
+    if limit is not None:
+        params += [limit, offset]
+    rows = db.q_raw(f"""select r.*,f.flow_id from import_records r left join flow_sources f
+                        on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
+                        where {where} order by r.record_no{paging}""", params)
+    return [{**{k: r[k] for k in ("record_no", "member_path", "source_row", "record_key", "disposition", "reason_code")},
+             "details": json.loads(r["details_json"]), "flow_id": str(r["flow_id"]) if r["flow_id"] is not None else None}
+            for r in rows]
+
+
+def list_records(case_id, source_id, page=1, page_size=100, disposition=None):
+    with db._lock:
+        cid, _ = _journal_source(case_id, source_id)
+        condition, params = (" and disposition=?", [disposition]) if disposition is not None else ("", [])
+        total = db.q_raw(f"select count(*) n from import_records where case_id=? and source_id=?{condition}",
+                         [cid, source_id, *params])[0]["n"]
+        return {"case_id": str(cid), "source_id": source_id, "total": total, "page": page, "page_size": page_size,
+                "items": _record_items(cid, source_id, disposition=disposition, limit=page_size, offset=(page - 1) * page_size)}
+
+
+def get_disposition_report(case_id, source_id):
+    """Snapshot the complete journal before download; no pagination truncation."""
+    stream = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b", dir=db.DATA_DIR)
+    try:
+        with db._lock:
+            cid, source = _journal_source(case_id, source_id)
+            members = db.q_raw("""select member_path,role,sha256,size_bytes,encoding,row_count from import_members
+                                    where case_id=? and source_id=? order by member_path""", [cid, source_id])
+            metadata = {"case_id": str(cid), "source_id": source_id, "filename": source["filename"],
+                        "sha256": source["sha256"], "profile": source["parser_version"],
+                        "source_available": source_is_available(cid, source_id), "source_files": "not_included",
+                        "members": members}
+            stream.write((_json(metadata)[:-1] + ',"items":[').encode("utf-8"))
+            offset, first = 0, True
+            while items := _record_items(cid, source_id, limit=1000, offset=offset):
+                for record in items:
+                    if not first:
+                        stream.write(b",")
+                    stream.write(_json(record).encode("utf-8"))
+                    first = False
+                offset += len(items)
+            stream.write(b"]}")
+        stream.seek(0)
+        return stream, f"import-{source_id}-report.json"
+    except BaseException:
+        stream.close()
+        raise
+
+
+def _source_references(source_id):
+    profiles = sorted({*feedback_import.SUPPORTED_PROFILES, *table_import.SUPPORTED_PROFILES,
+                       *table_archive.SUPPORTED_PROFILES})
+    placeholders = ",".join("?" for _ in profiles)
+    return db.q_raw(f"""select (select count(*) from flow_sources where source_id=?) +
+                         (select count(*) from import_records r join import_sources s
+                          on s.case_id=r.case_id and s.source_id=r.source_id where r.source_id=?
+                          and (r.disposition not in ('non_transaction','auxiliary','removed')
+                               or s.parser_version not in ({placeholders}))) n""",
+                    [source_id, source_id, *profiles])[0]["n"]
+
+
 def list_sessions(case_id, limit=100):
     cid = _cid(case_id)
     limit = max(1, min(int(limit), 200))
@@ -448,7 +946,8 @@ def list_sessions(case_id, limit=100):
                       "expires_at": row["expires_at"].isoformat(timespec="seconds") + "Z" if row["expires_at"] else None,
                       "error_code": row["error_code"], "attempt": row["attempt"],
                       "source_available": available, "recoverable": row["stage"] == "error" and available,
-                      "request": json.loads(row["request_json"]) if row["request_json"] else None,
+                      "request": {k: v for k, v in json.loads(row["request_json"]).items() if not k.startswith("_")}
+                                 if row["request_json"] and "mode" in json.loads(row["request_json"]) else None,
                       "result": json.loads(row["result_json"]) if row["result_json"] else None})
     return {"case_id": str(cid), "items": items}
 
@@ -482,7 +981,7 @@ def cleanup_uploads(case_id=None, now=None, dry_run=True):
         sessions = db.q_raw(f"""select s.* from import_sessions s where s.source_state='retained'
                                 and s.expires_at is not null and s.expires_at<=? {condition}""", [now, *params])
         for session in sessions:
-            references = db.q_raw("select count(*) n from flow_sources where source_id=?", [session["import_id"]])[0]["n"]
+            references = _source_references(session["import_id"])
             if session["stage"] in _active_stages or references:
                 counts["protected"] += 1
                 continue
@@ -495,7 +994,7 @@ def cleanup_uploads(case_id=None, now=None, dry_run=True):
         for item in queued:
             if cid is not None and item["case_id"] != cid:
                 continue
-            refs = db.q_raw("select count(*) n from flow_sources where source_id=?", [item["import_id"]])[0]["n"]
+            refs = _source_references(item["import_id"])
             if (item["stage"] in _active_stages or refs
                     or (item["session_id"] is not None and (item["source_state"] != "retained"
                                                            or item["expires_at"] is None or item["expires_at"] > now))):

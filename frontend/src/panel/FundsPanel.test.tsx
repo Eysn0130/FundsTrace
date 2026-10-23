@@ -39,9 +39,9 @@ describe('FundsPanel host isolation', () => {
     await screen.findByRole('button', { name: '核对流水 HOST-1' });
     fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
     const input = screen.getByLabelText<HTMLInputElement>('选择流水文件'), area = input.labels![0];
-    expect(area.htmlFor).toBe(input.id); expect(area.textContent).toContain('选择 CSV 或 Excel 文件');
-    expect(document.getElementById(input.getAttribute('aria-describedby')!)?.textContent).toBe('支持 UTF-8／GBK CSV 和 XLSX');
-    expect(input.accept).toBe('.csv,.tsv,.txt,.xlsx'); input.focus(); expect(document.activeElement).toBe(input);
+    expect(area.htmlFor).toBe(input.id); expect(area.textContent).toContain('选择 CSV、Excel 或银行反馈 ZIP');
+    expect(document.getElementById(input.getAttribute('aria-describedby')!)?.textContent).toBe('支持 UTF-8／GBK CSV、XLSX 和已知格式的银行反馈 ZIP');
+    expect(input.accept).toBe('.csv,.tsv,.txt,.xlsx,.zip'); input.focus(); expect(document.activeElement).toBe(input);
     const file = new File(['synthetic'], '中文合成流水.csv', { type: 'text/csv' });
     fireEvent.change(input, { target: { files: [file] } });
     expect(input.disabled).toBe(true); expect(area.getAttribute('aria-busy')).toBe('true');
@@ -192,6 +192,35 @@ describe('FundsPanel host isolation', () => {
     expect(job).toHaveBeenCalledOnce();
     expect(screen.getByRole('heading', { name: '未选择案件' })).toBeTruthy();
     expect(screen.queryByText('仍在服务端运行')).toBeNull();
+  });
+
+  it('keeps a new automatic import running while hidden and refreshes on reactivation without another write', async () => {
+    const pending = deferred<ImportJob>();
+    const table = { profile: 'funds-trace-table-v5', record_total: 1, accepted: 0, unresolved: 1,
+      non_monetary: 0, non_transaction: 0, auxiliary: 0, reason_counts: { missing_amount: 1 },
+      currency_totals: {}, members: [], unresolved_examples: [], documents: [], mapping_evidence: [] };
+    const commit = vi.fn(async () => ({ case_id: '1', import_id: record('1').import_id, started: true }));
+    const job = vi.fn(() => pending.promise), statistics = vi.fn(async () => stats('1'));
+    const bound = session('1', 'automatic-retained', 0, { stats: statistics, commit, job,
+      preview: async () => ({ case_id: '1', import_id: record('1').import_id, filename: 'host-synthetic.csv', mode: 'A',
+        columns: Object.values(mapping), mapping, automatic: true, table_summary: table,
+        stats: { total: 1, ok: 0, skipped: 1 }, preview: [], self_accounts_in_file: [] }) });
+    const { rerender } = render(<FundsPanel host={host(bound.value)} active />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
+    fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'host-synthetic.csv')] } });
+    await waitFor(() => expect(job).toHaveBeenCalledOnce());
+    rerender(<FundsPanel host={host(bound.value)} active={false} />);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await act(async () => pending.resolve({ case_id: '1', import_id: record('1').import_id, stage: 'done', done: 1, total: 1,
+      message: '完成', error: null, result: { total: 1, ok: 0, skipped: 1, rows_dup: 0, batch_id: 'SYN-BATCH',
+        bad_examples: [], self_accounts: [], self_accounts_count: 0, main_matched: [], accounts_in_batch: 0, main_detected: [], table_summary: table } }));
+    expect(screen.queryByRole('dialog')).toBeNull(); expect(statistics).toHaveBeenCalledOnce();
+    rerender(<FundsPanel host={host(bound.value)} active />);
+    await screen.findByRole('heading', { name: '自动处理完成' });
+    await waitFor(() => expect(statistics).toHaveBeenCalledTimes(2));
+    expect(commit).toHaveBeenCalledOnce(); expect(job).toHaveBeenCalledOnce();
+    expect(screen.getByText(/已保存 1 条记录 · 新增资金流水/).textContent).toContain('新增资金流水 0 笔');
   });
 
   it('does not start polling after an old in-flight commit returns following unmount', async () => {

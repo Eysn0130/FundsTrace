@@ -119,6 +119,7 @@ def build_report(case_id, results, case_info):
 
     # ---------- 概览 ----------
     stats = case_info.get("stats", {})
+    coverage = stats.get("import_coverage")
     add(f"""
     <div class="meta">
       <div><b>案件名称：</b>{case_info.get('case_name', case_id)}</div>
@@ -126,12 +127,20 @@ def build_report(case_id, results, case_info):
       <div><b>本次分析范围：</b>{scope}</div>
       <div><b>生成时间：</b>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}　<b>生成工具：</b>FundsTrace</div>
     </div>
-    <p class="note">本报告由 FundsTrace 自动生成，基于当前案件已导入的全部流水数据。
+    <p class="note">本报告由 FundsTrace 自动生成，基于当前案件的有效流水数据。
     仅执行上列分析项目；未选项目未分析，不作“未发现”的结论。
     各项结果均为算法辅助判断，供侦查参考，最终定案以人工核实为准。</p>
     <p class="note">金额按币种分别分析，不自动换汇。金额和交易边合计精确到分；路径及环路合计是各条交易边之和，
     不代表去重后的实际本金。单笔均额按十进制计算并以四舍六入五成双保留两位；Z 分数、时间跨度和图表坐标为近似统计或展示值。
     本报告内嵌可回读的原始精确金额快照。</p>""")
+    add('<p class="note">已匹配的冲正／撤销双方退出有效统计，普通退款仍保留；资金效果未确定记录不计入金额。本报告不代表结算净额或完整清算结果。</p>')
+    if coverage is not None:
+        add(f"""<p class="note">已导入反馈来源中，资金效果未确定记录 {coverage['unresolved_records']:,} 条，
+        未计入流水统计；已匹配冲正／撤销事件 {coverage.get('cancelled_records', 0):,} 条，
+        保留原始流水中退出分析 {coverage.get('excluded_flows', 0):,} 笔；非资金事件 {coverage['non_monetary_records']:,} 条单独保留，不计入金额与交易笔数。
+        此完整性范围仅限已导入反馈来源的资金语义，不表示银行提供的数据齐全。</p>""")
+    else:
+        add('<p class="note">未提供已导入反馈来源的资金语义覆盖信息，不能据此认定资金解释完整。</p>')
 
     # ---------- 路径追踪 ----------
     paths = cases.get("paths")

@@ -6,6 +6,7 @@ from decimal import Decimal
 import duckdb
 
 from app import db
+from app.import_coverage import import_coverage
 
 
 class ServiceError(Exception):
@@ -62,20 +63,22 @@ def stats(case_id):
     with db._lock:
         cid = require_case(case_id)
         row = raw_query("""
-            select (select count(*) from flows where case_id=?) flows,
+            select (select count(*) from effective_flows where case_id=?) flows,
               (select count(distinct account) from (
-                select payer_account account from flows where case_id=?
-                union all select payee_account from flows where case_id=?
+                select payer_account account from effective_flows where case_id=?
+                union all select payee_account from effective_flows where case_id=?
               ) where account is not null and account <> '') accounts,
               (select count(*) from batches where case_id=?) batches
         """, [cid] * 4)[0]
         totals = raw_query("""select coalesce(currency, '') currency,
                             coalesce(sum(amount), 0::decimal(18,2)) amount
-                            from flows where case_id=? group by coalesce(currency, '') order by currency""", [cid])
+                            from effective_flows where case_id=? group by coalesce(currency, '') order by currency""", [cid])
+        coverage = import_coverage(cid)
     return {"case_id": case_id, **row,
             "amount_total": amount(totals[0]["amount"]) if len(totals) == 1 else ("0.00" if not totals else None),
             "currency": totals[0]["currency"] if len(totals) == 1 else None,
-            "amount_totals": [{"currency": total["currency"], "amount": amount(total["amount"])} for total in totals]}
+            "amount_totals": [{"currency": total["currency"], "amount": amount(total["amount"])} for total in totals],
+            "import_coverage": coverage}
 
 
 TEXT_FIELDS = ("trade_no", "payer_name", "payer_account", "payer_bank", "payee_name", "payee_account",
@@ -99,8 +102,8 @@ def flows(case_id, account, kw, page, page_size):
             conditions.append("(summary ilike ? or trade_no ilike ?)")
             params += [f"%{kw.strip()}%"] * 2
         where = " and ".join(conditions)
-        total = raw_query(f"select count(*) total from flows where {where}", params)[0]["total"]
-        rows = raw_query(f"select * from flows where {where} order by trade_time desc nulls last, id desc limit ? offset ?",
+        total = raw_query(f"select count(*) total from effective_flows where {where}", params)[0]["total"]
+        rows = raw_query(f"select * from effective_flows where {where} order by trade_time desc nulls last, id desc limit ? offset ?",
                          params + [page_size, (page - 1) * page_size])
     return {"case_id": case_id, "total": total, "page": page, "page_size": page_size,
             "items": [{**preview_flow(row), "id": str(row["id"]), "case_id": str(row["case_id"]),
@@ -116,8 +119,9 @@ def flow_sources(case_id, flow_id, page=1, page_size=50):
                 "select id from flows where case_id=? and id=?", [cid, int(flow_id)]):
             raise ServiceError(404, "flow_not_found", "流水不存在或不属于当前案件")
         total = raw_query("select count(*) n from flow_sources where case_id=? and flow_id=?", [cid, int(flow_id)])[0]["n"]
-        rows = raw_query("""select s.*,f.source_row,f.disposition from flow_sources f
+        rows = raw_query("""select s.*,f.source_row,f.disposition,r.member_path,r.source_row member_row,r.details_json from flow_sources f
                             join import_sources s on s.source_id=f.source_id and s.case_id=f.case_id
+                            left join import_records r on r.case_id=f.case_id and r.source_id=f.source_id and r.record_no=f.source_row
                             where f.case_id=? and f.flow_id=? order by s.imported_at,s.source_id,f.source_row
                             limit ? offset ?""",
                          [cid, int(flow_id), page_size, (page - 1) * page_size])
@@ -126,5 +130,6 @@ def flow_sources(case_id, flow_id, page=1, page_size=50):
             items.append({key: row[key] for key in ("source_id", "filename", "sha256", "size_bytes", "mode", "sheet",
                                                    "row_kind", "source_row", "parser_version", "disposition", "origin")})
             items[-1].update(mapping=json.loads(row["mapping_json"]), imported_at=row["imported_at"].isoformat(timespec="seconds") + "Z",
-                             source_available=source_is_available(case_id, row["source_id"]))
+                             source_available=source_is_available(case_id, row["source_id"]), member_path=row["member_path"],
+                             member_row=row["member_row"], record_details=json.loads(row["details_json"]) if row["details_json"] else {})
     return {"case_id": case_id, "flow_id": flow_id, "items": items, "total": total, "page": page, "page_size": page_size}

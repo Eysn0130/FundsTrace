@@ -49,10 +49,11 @@ export function createHttpFundsSession({ context, scopeKey, generation, transpor
     cleanup: (dryRun, signal) => run(signal, combined => transport.cleanup(caseId, dryRun, combined)),
   };
   const boundActions: FundsHostActionsV1 = {};
-  const { openGraph, openLegacyImport, downloadSource } = actions;
+  const { openGraph, openLegacyImport, downloadSource, downloadImportReport } = actions;
   if (openGraph) boundActions.openGraph = signal => run(signal, combined => openGraph(combined));
   if (openLegacyImport) boundActions.openLegacyImport = (importId, signal) => run(signal, combined => openLegacyImport(importId, combined));
   if (downloadSource) boundActions.downloadSource = (source, signal) => run(signal, combined => downloadSource(source, combined));
+  if (downloadImportReport) boundActions.downloadImportReport = (source, signal) => run(signal, combined => downloadImportReport(source, combined));
   return {
     session: Object.freeze({ context: boundContext, scopeKey, generation, signal: lifetime.signal, client: Object.freeze(client), actions: Object.freeze(boundActions) }),
     revoke: () => lifetime.abort(),

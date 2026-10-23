@@ -116,7 +116,10 @@ def test_precise_identifiers_amounts_stats_filters_and_stable_pagination(client,
     stats = client.get(f"/api/v1/cases/{cid}/stats").json()
     assert stats == {"case_id": str(cid), "flows": 3, "accounts": 5, "batches": 1,
                      "amount_total": "10000000000000001.00", "currency": "CNY",
-                     "amount_totals": [{"currency": "CNY", "amount": "10000000000000001.00"}]}
+                     "amount_totals": [{"currency": "CNY", "amount": "10000000000000001.00"}],
+                     "import_coverage": {"scope": "source_reported_flows", "unresolved_records": 0,
+                                         "non_monetary_records": 0, "cancelled_records": 0,
+                                         "excluded_flows": 0, "financial_interpretation_complete": True}}
     pages = [client.get(f"/api/v1/cases/{cid}/flows", params={"page": page, "page_size": 1}).json() for page in (1, 2, 3, 4)]
     assert [page["items"][0]["id"] for page in pages[:3]] == [str(high + 1), str(high), str(high + 2)]
     assert pages[3]["items"] == []
@@ -231,12 +234,15 @@ def test_upload_and_mapping_errors_are_actionable_and_failed_upload_is_cleaned(c
     cid = make_case()
     base = f"/api/v1/cases/{cid}/imports/preview"
     assert_error(client.post(base, files={"file": ("bad.exe", b"x")}), 400, "unsupported_file_type")
-    response = client.post(base, files={"file": ("/private/synthetic/bad.csv", b"cannot,identify\none,two")})
-    assert_error(response, 400, "invalid_import_file")
+    # A structurally damaged CSV is rejected; an unfamiliar valid table instead
+    # receives a complete unresolved journal, covered separately below.
+    response = client.post(base, files={"file": ("/private/synthetic/bad.csv", b'"unterminated,record\n')})
+    assert_error(response, 400, "invalid_table_file")
     assert "/private" not in response.text
     # Invalid input is now parsed before creating its storage directory.
     uploads = database.DATA_DIR / "uploads"
     assert not uploads.exists() or list(uploads.iterdir()) == []
+    assert database.q("select count(*) n from import_sessions where case_id=?", [cid]) == [{"n": 0}]
     assert_error(client.post(base), 422)
     preview = upload(client, cid)
     route = f"/api/v1/cases/{cid}/imports/{preview['import_id']}"
@@ -244,6 +250,33 @@ def test_upload_and_mapping_errors_are_actionable_and_failed_upload_is_cleaned(c
         assert_error(client.post(f"{route}/{suffix}", json={"mode": "A", "mapping": {"trade_time": "does not exist"}}), 422, "invalid_mapping")
     assert_error(client.post(f"{route}/commit", json={"mode": "A", "mapping": preview["mapping"], "self_accounts": ["bad,account"]}), 422)
     assert_error(client.post(f"{route}/preview", json={"mode": "C", "mapping": {}}), 422)
+
+
+def test_unknown_table_completes_with_every_record_retained_as_unresolved(client, database, make_case):
+    cid = make_case("Synthetic unknown valid table")
+    content = b"cannot,identify\none,two"
+    response = client.post(f"/api/v1/cases/{cid}/imports/preview",
+                           files={"file": ("unknown.csv", content)})
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert preview["automatic"] is True and preview["mapping"] == {} and preview["preview"] == []
+    assert preview["table_summary"]["record_total"] == preview["table_summary"]["unresolved"] == 2
+    assert preview["table_summary"]["reason_counts"] == {"unknown_table": 2}
+    base = f"/api/v1/cases/{cid}/imports/{preview['import_id']}"
+    started = client.post(base + "/commit", json={"mode": preview["mode"], "mapping": {}})
+    assert started.status_code == 200 and started.json()["started"] is True
+    job = poll(client, cid, preview["import_id"])
+    assert job["stage"] == "done" and job["error"] is None and job["result"]["ok"] == 0
+    assert job["result"]["table_summary"]["record_total"] == job["result"]["table_summary"]["unresolved"] == 2
+    journal = client.get(base + "/records").json()
+    assert journal["total"] == 2
+    assert [(record["record_no"], record["member_path"], record["source_row"],
+             record["disposition"], record["reason_code"], record["flow_id"]) for record in journal["items"]] == [
+        (1, "table.csv", 1, "unresolved", "unknown_table", None),
+        (2, "table.csv", 2, "unresolved", "unknown_table", None)]
+    assert database.q("select count(*) n from flows where case_id=?", [cid]) == [{"n": 0}]
+    original = client.get(f"/api/v1/cases/{cid}/sources/{preview['import_id']}/file")
+    assert original.status_code == 200 and original.content == content
 
 
 def test_concurrent_same_session_commit_starts_one_atomic_job(client, database, make_case, monkeypatch):
@@ -322,9 +355,15 @@ def test_contract_generation_is_current_and_ignores_inherited_data_directory(tmp
     schema = json.loads((root / "contracts/openapi-v1.json").read_text())
     assert all(path.startswith("/api/v1/") for path in schema["paths"])
     operations = [operation for path in schema["paths"].values() for operation in path.values()]
-    assert len(operations) == 12 and len({operation["operationId"] for operation in operations}) == 12
+    assert len(operations) == 14 and len({operation["operationId"] for operation in operations}) == 14
     download = schema["paths"]["/api/v1/cases/{case_id}/sources/{source_id}/file"]["get"]
     assert download["responses"]["200"]["content"]["application/octet-stream"]["schema"] == {"type": "string", "format": "binary"}
+    report = schema["paths"]["/api/v1/cases/{case_id}/sources/{source_id}/report"]["get"]
+    assert report["operationId"] == "v1_import_report"
+    assert report["responses"]["200"]["content"]["application/json"]["schema"] == {"type": "string", "format": "binary"}
+    records = schema["paths"]["/api/v1/cases/{case_id}/imports/{source_id}/records"]["get"]
+    assert records["operationId"] == "v1_import_records"
+    assert records["responses"]["200"]["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/ImportRecordPage"}
     for operation in operations:
         for status in ("400", "403", "404", "405", "409", "422", "500"):
             assert operation["responses"][status]["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/ApiError"}

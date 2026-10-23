@@ -1,5 +1,5 @@
 """Explicit JSON models: identifiers and decimal amounts never use JS numbers."""
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -48,6 +48,15 @@ class CurrencyAmount(ContractModel):
     amount: Amount
 
 
+class ImportCoverage(ContractModel):
+    scope: Literal["source_reported_flows"]
+    unresolved_records: int
+    non_monetary_records: int
+    cancelled_records: int = 0
+    excluded_flows: int = 0
+    financial_interpretation_complete: bool
+
+
 class CaseStats(ContractModel):
     case_id: Identifier
     flows: int
@@ -56,6 +65,7 @@ class CaseStats(ContractModel):
     amount_total: Amount | None
     currency: str | None
     amount_totals: list[CurrencyAmount]
+    import_coverage: ImportCoverage | None = None
 
 
 class PreviewFlow(ContractModel):
@@ -74,6 +84,9 @@ class PreviewFlow(ContractModel):
     channel: str
     self_account: str
     self_name: str
+    source_member: str | None = None
+    source_row: int | None = None
+    source_record_no: int | None = None
 
 
 class Flow(PreviewFlow):
@@ -113,6 +126,59 @@ class PreviewStats(BaseModel):
     bad_examples: list[BadExample] = Field(default_factory=list)
 
 
+class FeedbackMember(ContractModel):
+    member_path: str
+    role: str
+    sha256: str
+    size_bytes: int
+    encoding: str
+    row_count: int
+
+
+class FeedbackExample(ContractModel):
+    member_path: str
+    source_row: int
+    reason_code: str
+
+
+class FeedbackSummary(ContractModel):
+    profile: str
+    record_total: int
+    transaction_total: int
+    accepted: int
+    review: int
+    non_monetary: int = 0
+    unresolved: int = 0
+    cancelled: int = 0
+    excluded_flows: int = 0
+    non_transaction: int
+    auxiliary: int
+    reason_counts: dict[str, int]
+    currency_totals: dict[str, Amount]
+    members: list[FeedbackMember]
+    review_examples: list[FeedbackExample]
+    unresolved_examples: list[FeedbackExample] = Field(default_factory=list)
+
+
+class TableSummary(ContractModel):
+    profile: str
+    record_total: int
+    accepted: int
+    cancelled: int = 0
+    excluded_flows: int = 0
+    effective_added: int | None = None
+    unresolved: int
+    non_monetary: int
+    non_transaction: int
+    auxiliary: int
+    reason_counts: dict[str, int]
+    currency_totals: dict[str, Amount]
+    members: list[FeedbackMember]
+    unresolved_examples: list[FeedbackExample] = Field(default_factory=list)
+    documents: list[dict[str, Any]] = Field(default_factory=list)
+    mapping_evidence: list[dict[str, str]] = Field(default_factory=list)
+
+
 class ImportPreview(ContractModel):
     case_id: Identifier
     import_id: str
@@ -123,6 +189,9 @@ class ImportPreview(ContractModel):
     stats: PreviewStats
     preview: list[PreviewFlow]
     self_accounts_in_file: list[AccountCandidate]
+    feedback: FeedbackSummary | None = None
+    table_summary: TableSummary | None = None
+    automatic: bool = False
 
 
 class RepreviewRequest(ContractModel):
@@ -160,6 +229,9 @@ class ImportResult(ContractModel):
     main_matched: list[str]
     accounts_in_batch: int
     main_detected: list[AccountIdentity]
+    source_id: str | None = None
+    feedback: FeedbackSummary | None = None
+    table_summary: TableSummary | None = None
 
 
 class ImportJob(ContractModel):
@@ -222,19 +294,42 @@ class FlowSource(ContractModel):
     mode: Literal["A", "B"]
     mapping: dict[str, str]
     sheet: str
-    row_kind: Literal["csv_record", "worksheet_row", "unknown"]
+    row_kind: Literal["csv_record", "worksheet_row", "archive_record", "table_record", "unknown"]
     source_row: int
     parser_version: str
     disposition: Literal["imported", "duplicate"]
     origin: Literal["upload", "package"]
     imported_at: str
     source_available: bool
+    member_path: str | None = None
+    member_row: int | None = None
+    record_details: dict[str, str] = Field(default_factory=dict)
 
 
 class FlowSourceList(ContractModel):
     case_id: Identifier
     flow_id: Identifier
     items: list[FlowSource]
+    total: int
+    page: int
+    page_size: int
+
+
+class ImportRecord(ContractModel):
+    record_no: int
+    member_path: str
+    source_row: int
+    record_key: str
+    disposition: Literal["imported", "duplicate", "review", "unresolved", "non_monetary", "cancelled", "non_transaction", "auxiliary", "removed"]
+    reason_code: str
+    details: dict[str, str]
+    flow_id: Identifier | None
+
+
+class ImportRecordPage(ContractModel):
+    case_id: Identifier
+    source_id: str
+    items: list[ImportRecord]
     total: int
     page: int
     page_size: int
