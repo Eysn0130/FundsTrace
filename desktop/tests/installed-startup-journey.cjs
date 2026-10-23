@@ -6,12 +6,31 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
+const { readWindowState } = require('../preferences.cjs');
 
 const VIEWPORTS = Object.freeze([[1440, 880], [1302, 604], [960, 580], [960, 440], [683, 284]].map(Object.freeze));
 const DEVICE_SCALES = Object.freeze([1, 1.25, 1.5, 2]);
 const OBSERVATION_KEY = '__fundsTraceStartupObservation';
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const near = (actual, expected, tolerance = 1) => Number.isFinite(actual) && Math.abs(actual - expected) <= tolerance;
+
+function expectedStartupBounds(native, savedWindowRaw) {
+  const scale = native?.scaleFactor, area = native?.workArea;
+  assert.ok(Number.isFinite(scale) && scale > 0 && Number.isFinite(area?.width) && area.width > 0
+    && Number.isFinite(area?.height) && area.height > 0, 'STARTUP_NATIVE_EXPECTATION_CONTEXT');
+  const availableWidth = area.width / scale, availableHeight = area.height / scale;
+  assert.ok(Number.isFinite(availableWidth) && Number.isFinite(availableHeight), 'STARTUP_NATIVE_EXPECTATION_CONTEXT');
+  // Expectations come from the pre-launch preference snapshot and OS work area,
+  // never the observed window dimensions or the product's bounds calculator.
+  const saved = typeof savedWindowRaw === 'string' && savedWindowRaw.length <= 256 ? readWindowState(savedWindowRaw) : null;
+  assert.ok(saved?.maximized !== true, 'STARTUP_SAVED_MAXIMIZED_UNSUPPORTED');
+  const minWidth = Math.min(1280, availableWidth), minHeight = Math.min(720, availableHeight);
+  const defaultWidth = Math.round(Math.min(1440, availableWidth - 64, (availableHeight - 64) * 16 / 9));
+  return { source: saved ? 'saved' : 'default',
+    width: Math.min(Math.max(minWidth, saved ? saved.bounds.width : defaultWidth), availableWidth),
+    height: Math.min(Math.max(minHeight, saved ? saved.bounds.height : Math.round(defaultWidth * 9 / 16)), availableHeight),
+    minWidth, minHeight };
+}
 
 function installedLocalTarget(value, kind) {
   try {
@@ -356,4 +375,4 @@ async function createInstalledStartupProbe({ cdp, target, evaluate, until, scree
 }
 
 module.exports = { installedLocalTarget, startupTarget, createInstalledStartupProbe, assertLayout, assertWaitingObservation,
-  assertHandoffObservation, assertNativeWindowBounds, assertNativeClientGeometry, frameSummary, VIEWPORTS, DEVICE_SCALES };
+  assertHandoffObservation, assertNativeWindowBounds, expectedStartupBounds, assertNativeClientGeometry, frameSummary, VIEWPORTS, DEVICE_SCALES };

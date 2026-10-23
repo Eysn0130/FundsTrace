@@ -11,7 +11,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { performance } = require('node:perf_hooks');
 const { pathToFileURL } = require('node:url');
-const { startupTarget, createInstalledStartupProbe, assertNativeClientGeometry, assertNativeWindowBounds } = require('./installed-startup-journey.cjs');
+const { startupTarget, createInstalledStartupProbe, assertNativeClientGeometry, assertNativeWindowBounds, expectedStartupBounds } = require('./installed-startup-journey.cjs');
 const { titlebarTarget, createInstalledTitlebarProbe, runInstalledTitlebarJourney, safeTitlebarFailure,
   safeProtocolMethod, protocolError, safeInstalledFailure, createMainErrorMarkerProbe } = require('./installed-titlebar-journey.cjs');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
@@ -137,12 +137,11 @@ async function nativeStartupBounds(config, primary, target) {
     scope:'actual-installed-HWND-on-Windows-Server; no-system-display-setting-changes' };
   const initial = await observe({});
   result.initial = initial;
-  const scale = initial.scaleFactor, area = initial.workArea;
-  const defaultWidth = Math.round(Math.min(1440, area.width / scale - 64, (area.height / scale - 64) * 16 / 9));
-  const expected = { width:Math.min(Math.max(1280, defaultWidth), area.width / scale),
-    height:Math.min(Math.max(720, Math.round(defaultWidth * 9 / 16)), area.height / scale) };
-  const min = { width:Math.min(1280, area.width / scale), height:Math.min(720, area.height / scale) };
-  result.expectedInitialDip={...expected,minWidth:min.width,minHeight:min.height};
+  const scale = initial.scaleFactor;
+  const { source, ...expected } = expectedStartupBounds(initial, presentationPreferences?.saved?.fund_window_state);
+  const min = { width:expected.minWidth, height:expected.minHeight };
+  result.expectedInitialSource=source;
+  result.expectedInitialDip=expected;
   assertNativeWindowBounds(initial,result.expectedInitialDip);
   const client = async native => {
     await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))', target);
