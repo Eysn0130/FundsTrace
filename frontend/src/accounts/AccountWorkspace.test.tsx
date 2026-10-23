@@ -455,9 +455,12 @@ describe('AccountWorkspace', () => {
     fireEvent.load(screen.getByAltText('照片裁剪预览'));
     fireEvent.click(screen.getByRole('button', { name: '确认裁剪并上传' }));
     await screen.findByText(/有 1 项写入结果尚未确认/);
-    expect(screen.queryByRole('dialog')).toBeNull(); expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:synthetic-1');
-    expect((screen.getByLabelText('选择账户照片') as HTMLInputElement).disabled).toBe(true);
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: '下载模板' }));
+    // The receipt can render before preview removal and passive URL/focus cleanup.
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull(); expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:synthetic-1');
+      expect((screen.getByLabelText('选择账户照片') as HTMLInputElement).disabled).toBe(true);
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: '下载模板' }));
+    });
     expect(h.actions.mutate).toHaveBeenCalledOnce();
   });
 
