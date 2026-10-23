@@ -137,6 +137,16 @@ test('exact account matching is case insensitive and resolves the canonical acco
   assert.deepEqual(h.locates[0].ids, ['000GRAPH-00001']);
 });
 
+test('literal case wins for an entered account; ambiguous case folding never picks the first object', async () => {
+  const h = harness(); h.state.accounts = [{ account: 'MiXeD', name: '同名' }, { account: 'mixed', name: '同名' }]; h.open();
+  for (const account of ['mixed', 'MiXeD']) {
+    h.input(account); assert.equal(await h.controller.search(), true); assert.deepEqual(h.locates.at(-1).ids, [account]);
+  }
+  const before = h.locates.length; h.input('MIXED');
+  assert.equal(await h.controller.search(), false); assert.equal(h.locates.length, before);
+  assert.deepEqual(plain(h.controller.getState().results.map(item => item.account)), ['MiXeD', 'mixed']);
+});
+
 test('unique fuzzy account and name searches immediately locate without selecting', async () => {
   const h = harness(); h.open(); h.input('456'); await h.controller.search(); h.input('唯一户名'); await h.controller.search();
   assert.deepEqual(h.locates.map(call => call.ids), [['00456'], ['00999']]); assert.equal(h.selects.length, 0);

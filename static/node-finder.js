@@ -173,8 +173,9 @@
       if (pending?.key === key) return false;
       cancelWork(); resetResults(); searched = true;
       if (!needle) { failure = '请输入卡号、账号或户名'; render(); field?.focus({ preventScroll: true }); return false; }
-      const items = accounts(), exact = items.find(item => normalize(item.account) === needle);
-      results = exact ? [exact] : items.filter(item => normalize(item.account).includes(needle) || normalize(item.name).includes(needle) || normalize(item.idNo).includes(needle));
+      const items = accounts(), exact = items.find(item => item.account === query.trim());
+      const folded = exact ? [] : items.filter(item => normalize(item.account) === needle);
+      results = exact ? [exact] : folded.length ? folded : items.filter(item => normalize(item.account).includes(needle) || normalize(item.name).includes(needle) || normalize(item.idNo).includes(needle));
       visibleCount = Math.min(pageSize, results.length);
       if (!results.length) { message = '当前显示范围内没有匹配账户'; outcome = 'notice'; }
       render();
