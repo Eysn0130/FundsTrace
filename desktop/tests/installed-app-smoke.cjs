@@ -18,6 +18,8 @@ const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-gr
 const { createUpdateFixture, runInstalledUpdateJourney, safeUpdateDialogFailure } = require('./installed-update-journey.cjs');
 const { runInstalledProductionUpdateJourney } = require('./installed-production-update-journey.cjs');
 const { safeProductionTransportDiagnostic } = require('./installed-update-transport-diagnostic.cjs');
+const { safeInstalledElectronMetadataProbe } = require('./installed-electron-metadata-probe.cjs');
+const { safeUpdateOwnerSnapshot } = require('./installed-update-owner-snapshot.cjs');
 const { runInstalledPresentationBaseline } = require('./installed-presentation-baseline.cjs');
 const { FAILURE_CODES } = require('../updates.cjs');
 
@@ -36,7 +38,7 @@ const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, f
     simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
 const timings = report.timings, owned = [];
 let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, titlebarPage, analysisTitlebarPage,
-  titlebarProbe, updateFixture, productionUpdate = false, productionTransportConfig, presentationPreferences;
+  titlebarProbe, updateFixture, productionUpdate = false, productionTransportConfig, productionOwner, presentationPreferences;
 let releaseStartupInspection = async () => {};
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -532,6 +534,7 @@ async function restorePresentationPreferences(snapshot) {
     }), 10000);
     return instance;
   });
+  if (productionUpdate) productionOwner = { pid: primary.child.pid, installRoot: config.installRoot };
   let errorCount = 0, instrumentationFailed = false;
   const sessions = new Map();
   let startupInspectionHeld = !priorClientOnly;
@@ -1151,12 +1154,21 @@ async function restorePresentationPreferences(snapshot) {
       report.productionFailure.updatePhase = ['idle','checking','available','downloading','error','ready','installing','current'].includes(value?.phase) ? value.phase : 'unknown';
       report.productionFailure.updateErrorCode = FAILURE_CODES.includes(value?.errorCode) ? value.errorCode : 'UNKNOWN';
     } catch { /* The old renderer may already have exited normally. */ }
+    const diagnosticBudget = maximum => Math.max(0, Math.min(maximum, 600000 - (Date.now() - smokeStartedAt)));
+    try { report.productionFailure.ownerSnapshot = await safeUpdateOwnerSnapshot(productionOwner,
+      { budgetMs: diagnosticBudget(8000) }); }
+    catch { /* Passive observation must not replace the original failure. */ }
+    try { report.productionFailure.electronMetadata = await safeInstalledElectronMetadataProbe(
+      { installRoot: productionOwner?.installRoot, version: productionTransportConfig?.version,
+        installerSha512: productionTransportConfig?.installerSha512, installerBytes: productionTransportConfig?.installerBytes },
+      { budgetMs: diagnosticBudget(60000) }); }
+    catch { /* The isolated probe is evidence only, never updater acceptance. */ }
     // A separate fixed-origin HTTPS observation runs only after the original
     // client check has failed. It cannot turn that failure into acceptance.
     // Reserve cleanup time inside the unchanged 720-second native child limit.
     try {
       report.productionFailure.transport = await safeProductionTransportDiagnostic(productionTransportConfig,
-        { budgetMs: Math.max(0, Math.min(285000, 600000 - (Date.now() - smokeStartedAt))) });
+        { budgetMs: diagnosticBudget(285000) });
     }
     catch { /* Diagnostic failure must not replace the original failure. */ }
   }
