@@ -1,7 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Modal } from '../components/Modal';
+import { EntityPicker, type EntityPickerItem, type EntityPickerSearch } from '../components/EntityPicker';
 import { displayTime, formatMoney } from '../lib/format';
-import { accountRegistryApi, isAccountPage, isAccountProfile } from './api';
+import { accountRegistryApi, isAccountPage, isAccountProfile, isAccountSuggestions } from './api';
 import type { AccountContext, AccountMutation, AccountPage, AccountProfile, AccountRegistryApi, AccountSource, AccountWorkspaceActions, CurrencyTotal, PhotoCrop, UnresolvedAccountOperation } from './types';
 import './styles.css';
 
@@ -35,9 +36,11 @@ function BoundAccountWorkspace({ context, cases, onSelectCase, revision, actions
   const sourceId = useId();
   const sourceTabs = useRef<Partial<Record<AccountSource, HTMLButtonElement | null>>>({});
   const [searchDraft, setSearchDraft] = useState('');
-  const [query, setQuery] = useState({ q: '', page: 1 });
-  const [pageData, setPageData] = useState<{ response: AccountPage; q: string } | null>(null);
-  const page = pageData?.response.case_id === context.caseId && pageData.response.source === source && pageData.response.page === query.page && pageData.q === query.q ? pageData.response : null;
+  const [exactAccount, setExactAccount] = useState('');
+  const composingSearch = useRef(false);
+  const [query, setQuery] = useState<{ q: string; page: number; accountExact?: boolean }>({ q: '', page: 1 });
+  const [pageData, setPageData] = useState<{ response: AccountPage; q: string; accountExact?: boolean } | null>(null);
+  const page = pageData?.response.case_id === context.caseId && pageData.response.source === source && pageData.response.page === query.page && pageData.q === query.q && pageData.accountExact === query.accountExact ? pageData.response : null;
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState('');
   const [selectedAccount, setSelectedAccount] = useState('');
@@ -81,14 +84,14 @@ function BoundAccountWorkspace({ context, cases, onSelectCase, revision, actions
     setListLoading(true); setListError(''); setPageData(null);
     api.list(context.caseId, { source, ...query, pageSize: 30 }, controller.signal).then(result => {
       if (!current || controller.signal.aborted) return;
-      if (!isAccountPage(result) || result.case_id !== context.caseId || result.source !== source || result.page !== query.page) throw new Error('账户列表与当前案件不一致或响应不完整，请重新加载。');
+      if (!isAccountPage(result) || result.case_id !== context.caseId || result.source !== source || result.page !== query.page || (query.accountExact && (result.total > 1 || result.items.some(item => item.account !== query.q)))) throw new Error('账户列表与当前案件不一致或响应不完整，请重新加载。');
       const lastPage = Math.max(1, Math.ceil(result.total / result.page_size));
       if (result.page > lastPage) {
         correctingPage = true;
         setQuery(current => current.q === query.q && current.page === query.page ? { ...current, page: lastPage } : current);
         return;
       }
-      setPageData({ response: result, q: query.q });
+      setPageData({ response: result, q: query.q, accountExact: query.accountExact });
       setSelectedAccount(current => result.items.some(item => item.account === current) ? current : result.items[0]?.account || '');
     }).catch(error => { if (current && !controller.signal.aborted) setListError(error.message); })
       .finally(() => { if (current && !controller.signal.aborted && !correctingPage) setListLoading(false); });
@@ -180,10 +183,29 @@ function BoundAccountWorkspace({ context, cases, onSelectCase, revision, actions
       if (!lifetime.signal.aborted && !selection.signal.aborted) setActionError('无法访问剪贴板，请选择完整账号后手动复制。');
     }
   }
-  function search(event: FormEvent) { event.preventDefault(); if (!busy) setQuery({ q: searchDraft.trim(), page: 1 }); }
+  function submitSearch() {
+    if (!active || busy || composingSearch.current) return;
+    setQuery({ q: exactAccount || searchDraft.trim(), page: 1, ...(exactAccount ? { accountExact: true } : {}) });
+  }
+  function search(event: FormEvent) { event.preventDefault(); submitSearch(); }
+  function changeSearch(value: string) { setSearchDraft(value); setExactAccount(''); }
+  function selectSuggestion(item: EntityPickerItem) {
+    if (!active || busy || !item.account) return;
+    setSearchDraft(item.account); setExactAccount(item.account);
+    setQuery({ q: item.account, page: 1, accountExact: true });
+  }
+  const suggestionScope = active && !busy && api.suggestions ? JSON.stringify([context.caseId, context.generation, source, revision, reload]) : null;
+  const searchSuggestions: EntityPickerSearch = async ({ query: q, offset, limit, signal }) => {
+    if (!api.suggestions) throw new Error('当前账户数据源不支持候选读取。');
+    const page = await api.suggestions(context.caseId, { source, q, offset, limit }, signal);
+    if (!isAccountSuggestions(page) || page.case_id !== context.caseId || page.source !== source || page.query !== q.normalize('NFKC').trim() || page.items.length > limit
+      || (page.has_more ? page.items.length !== limit || page.next_offset !== offset + page.items.length : page.next_offset !== null)) throw new Error('账户候选响应不完整或查询范围不一致，请重新输入。');
+    return { items: page.items.map(item => ({ key: item.account, label: item.name || item.account, value: item.account, account: item.account, idNo: item.id_no || undefined,
+      matchedField: item.matched_field === 'id' ? 'idNo' : item.matched_field === 'name' ? 'label' : 'account', matchedText: item.matched_text })), hasMore: page.has_more, nextOffset: page.next_offset ?? undefined };
+  };
   function selectSource(next: AccountSource) {
     if (busy) return;
-    setSource(next); setQuery({ q: '', page: 1 }); setSearchDraft('');
+    setSource(next); setQuery({ q: '', page: 1 }); setSearchDraft(''); setExactAccount('');
   }
   function sourceKey(event: KeyboardEvent<HTMLButtonElement>) {
     if (busy) return;
@@ -220,7 +242,7 @@ function BoundAccountWorkspace({ context, cases, onSelectCase, revision, actions
     {actionError && <p className="aw-error" role="alert">{actionError}</p>}{visibleStatus && <p className="aw-status" role="status" aria-busy={!!busy}>{visibleStatus}</p>}
     <div className="aw-columns">
       <section className="aw-list" aria-label="账户列表"><div className="aw-list-toolbar"><div className="aw-tabs" role="tablist" aria-label="账户来源">{([{ value: 'flows', label: '本案流水账户' }, { value: 'identity', label: '身份证对照记录' }] as const).map(tab => <button key={tab.value} ref={node => { sourceTabs.current[tab.value] = node; }} id={`${sourceId}-${tab.value}`} role="tab" aria-selected={source === tab.value} aria-controls={`${sourceId}-panel`} tabIndex={source === tab.value ? 0 : -1} disabled={!!busy} onKeyDown={sourceKey} onClick={() => selectSource(tab.value)}>{tab.label}</button>)}</div><button className="aw-button" aria-busy={busy === 'main-accounts'} disabled={writeBlocked || caseHasDrafts} onClick={() => void hostAction('main-accounts', actions.openMainAccounts)}>{icon('settings')}主账号管理</button></div>
-        <form className="aw-search" onSubmit={search}><label>{icon('search')}<span className="sr-only">搜索户名或账号</span><input aria-label="搜索户名或账号" value={searchDraft} onChange={event => setSearchDraft(event.target.value)} placeholder="搜索户名或账号（支持模糊匹配）" /></label><button className="aw-button" disabled={listLoading || !!busy}>查询</button>{query.q && <button type="button" className="aw-text-button" disabled={!!busy} onClick={() => { setSearchDraft(''); setQuery({ q: '', page: 1 }); }}>重置</button>}</form>
+        <form className="aw-search" onSubmit={search}><div className="aw-search-field"><EntityPicker aria-label="搜索户名或账号" value={searchDraft} onValueChange={changeSearch} scope={suggestionScope} search={searchSuggestions} onSelect={selectSuggestion} onSubmit={submitSearch} kind="account" onCompositionChange={value => { composingSearch.current = value; }} placeholder="户名、账号或身份证号" disabled={!!busy || !active} /><button className="aw-search-submit" aria-label="查询账户" type="submit" disabled={!!busy || !active}>{icon('search')}</button></div>{query.q && <button type="button" className="aw-text-button" disabled={!!busy} onClick={() => { setSearchDraft(''); setExactAccount(''); setQuery({ q: '', page: 1 }); }}>重置</button>}</form>
         <div className="aw-table-scroll" id={`${sourceId}-panel`} role="tabpanel" aria-labelledby={`${sourceId}-${source}`} aria-busy={listLoading}>{listError ? <div className="aw-empty"><p role="alert">{listError}</p><button className="aw-button" onClick={() => setReload(value => value + 1)}>重新加载账户</button></div> : <><table className="aw-account-table"><thead><tr><th>户名与账号</th><th>身份资料</th><th>主账号来源</th><th>操作</th></tr></thead><tbody>{page?.items.map(item => <tr key={item.account} className={selectedAccount === item.account ? 'selected' : ''}><td><button className="aw-account-select" aria-label={`选择账户 ${item.account}`} aria-pressed={selectedAccount === item.account} disabled={!!busy} onClick={() => setSelectedAccount(item.account)}>{icon('user-search')}<span><strong>{item.name || '未提供户名'}</strong><small className="mono">{item.account}</small></span></button></td><td><span className="mono">{item.id_no || '未填写'}</span><small>{drafts.has(draftKey(context.caseId, item.account)) ? '有未提交修改' : item.has_flows ? '本案流水账户' : '仅身份对照记录'}</small></td><td>{item.is_main ? <span className="aw-main-label">是 · {item.main_source === 'auto' ? '自动' : '手动'}</span> : '否'}</td><td><button className="aw-text-button" disabled={!!busy} aria-label={`查看账户资料 ${item.account}`} onClick={() => setSelectedAccount(item.account)}>资料{icon('chevron-right')}</button></td></tr>)}</tbody></table>{listLoading ? <div className="aw-empty" role="status">正在加载当前案件账户…</div> : page && !page.items.length && <div className="aw-empty"><h2>{query.q ? '没有匹配的账户' : source === 'identity' ? '暂无身份证对照记录' : '暂无流水账户'}</h2><p>{query.q ? '调整户名或账号后重新查询。' : source === 'identity' ? '可导入对照表，或为流水账户补充身份证号。' : '导入流水后，本案涉及的账户会显示在这里。'}</p></div>}</>}</div>
         <footer className="aw-pagination"><span>{page ? `显示 ${page.total ? (page.page - 1) * page.page_size + 1 : 0}–${Math.min(page.page * page.page_size, page.total)} 条，共 ${page.total} 条` : '等待加载'}</span><div><button className="aw-button icon-only" aria-label="账户上一页" disabled={listLoading || !page || !!busy || query.page <= 1} onClick={() => setQuery(value => ({ ...value, page: value.page - 1 }))}>{icon('chevron-left')}</button><span>{page ? `第 ${page.page} / ${totalPages} 页` : listLoading ? '正在加载页码…' : '暂无页码'}</span><button className="aw-button icon-only" aria-label="账户下一页" disabled={listLoading || !page || !!busy || query.page >= totalPages} onClick={() => setQuery(value => ({ ...value, page: value.page + 1 }))}>{icon('chevron-right')}</button></div></footer>
       </section>

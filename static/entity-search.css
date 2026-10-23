@@ -1,0 +1,7 @@
+.entity-search-field { display:flex;position:relative;min-width:0;width:100%; }
+.entity-search-field > input,.entity-search-field > textarea { width:100%;min-width:0;padding-right:34px!important; }
+.entity-search-action { position:absolute;right:2px;top:2px;bottom:2px;width:30px;padding:4px;border:0;border-radius:4px;background:transparent;color:var(--muted);cursor:pointer; }
+.entity-search-action:hover { background:var(--selection-surface);color:var(--text-primary); }
+.entity-search-action:focus-visible { outline:2px solid var(--focus-ring);outline-offset:-2px; }
+.find-popover.entity-search-enhanced .find-results-scroll { display:none; }
+.entity-search-enhanced #graphFindScope { display:none; }

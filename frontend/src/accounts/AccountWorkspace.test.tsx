@@ -2,7 +2,7 @@ import { StrictMode } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountWorkspace, type AccountWorkspaceProps } from './AccountWorkspace';
-import type { AccountPage, AccountProfile, AccountRegistryApi, AccountRow, AccountWorkspaceActions } from './types';
+import type { AccountPage, AccountProfile, AccountRegistryApi, AccountRow, AccountSuggestions, AccountWorkspaceActions } from './types';
 
 const accountA = '0009007199254740993'; const accountB = '0009007199254740994';
 const context = { caseId: '1', name: '合成资料核对案', generation: 1 };
@@ -22,6 +22,14 @@ function fixture() {
 }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 const details = () => screen.getByRole('complementary', { name: '账户资料' });
+const suggestionPage = (caseId: string, q: string, source: 'flows' | 'identity' = 'flows'): AccountSuggestions => ({ case_id: caseId, source, query: q.normalize('NFKC').trim(), items: [accountA, accountB].map((account, index) => ({ account, name: '合成同名主体', id_no: index ? '00000020000202000X' : null, matched_field: 'name', matched_text: '合成同名主体' })), has_more: false, next_offset: null });
+function measureSearch(input: HTMLElement) {
+  vi.spyOn(input, 'getBoundingClientRect').mockReturnValue({ x: 100, y: 100, left: 100, top: 100, right: 700, bottom: 132, width: 600, height: 32, toJSON: () => ({}) });
+  // jsdom has no rendered popover top layer; simulate only its show/hide visibility.
+  input.parentElement?.querySelectorAll<HTMLElement>('[popover]').forEach(layer => Object.defineProperties(layer, {
+    showPopover: { value: () => { layer.style.display = 'block'; } }, hidePopover: { value: () => { layer.style.display = 'none'; } },
+  }));
+}
 async function ready() { await screen.findByLabelText('身份证号'); }
 beforeEach(() => {
   let next = 0;
@@ -31,6 +39,70 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('AccountWorkspace', () => {
+  it('only queries the exact chosen account and clears that binding after manual editing', async () => {
+    const h = fixture();
+    h.api.suggestions = vi.fn(async (caseId, query) => suggestionPage(caseId, query.q, query.source));
+    h.api.list = vi.fn(async (caseId, query) => ({ case_id: caseId, source: query.source, total: query.accountExact ? 1 : 2, page: query.page, page_size: 30, items: query.accountExact ? [row(query.q)] : [row(), row(accountB)] }));
+    render(<AccountWorkspace {...h.props} />); await ready();
+    const input = screen.getByLabelText('搜索户名或账号'); measureSearch(input); input.focus();
+    fireEvent.input(input, { target: { value: '合' } });
+    const option = await screen.findByRole('option', { name: new RegExp(accountB) });
+    expect(h.api.list).toHaveBeenCalledOnce(); expect(h.actions.mutate).not.toHaveBeenCalled();
+    fireEvent.click(option);
+    await waitFor(() => expect(h.api.list).toHaveBeenLastCalledWith('1', { source: 'flows', q: accountB, page: 1, pageSize: 30, accountExact: true }, expect.any(AbortSignal)));
+    await waitFor(() => expect(h.api.profile).toHaveBeenLastCalledWith('1', accountB, expect.any(AbortSignal)));
+    expect((input as HTMLInputElement).value).toBe(accountB);
+    fireEvent.input(input, { target: { value: '0009' } });
+    fireEvent.click(screen.getByRole('button', { name: '查询账户' }));
+    await waitFor(() => expect(h.api.list).toHaveBeenLastCalledWith('1', { source: 'flows', q: '0009', page: 1, pageSize: 30 }, expect.any(AbortSignal)));
+    expect(h.actions.viewFlows).not.toHaveBeenCalled();
+  });
+
+  it('completes text with Shift+Enter without reading profiles, querying the list or saving, and leaves IME Enter to the input method', async () => {
+    const h = fixture(); h.api.suggestions = vi.fn(async (caseId, query) => suggestionPage(caseId, query.q, query.source));
+    render(<AccountWorkspace {...h.props} />); await ready();
+    const input = screen.getByLabelText('搜索户名或账号') as HTMLInputElement; measureSearch(input); input.focus();
+    fireEvent.compositionStart(input); fireEvent.input(input, { target: { value: '合' } });
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229, isComposing: true });
+    expect(h.api.suggestions).not.toHaveBeenCalled(); expect(h.api.list).toHaveBeenCalledOnce();
+    fireEvent.submit(input.closest('form')!); expect(h.api.list).toHaveBeenCalledOnce();
+    fireEvent.compositionEnd(input);
+    await screen.findByRole('option', { name: new RegExp(accountA) });
+    await waitFor(() => expect(input.parentElement?.querySelector('.fep-ghost-suffix')?.textContent).toBe('成同名主体'));
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+    expect(input.value).toBe('合成同名主体');
+    expect(h.api.list).toHaveBeenCalledOnce(); expect(h.api.profile).toHaveBeenCalledOnce(); expect(h.actions.mutate).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('身份证号').getAttribute('role')).toBeNull();
+  });
+
+  it('revokes a pending suggestion on source changes, hidden pages and A–B–A rebinding even when transport ignores abort', async () => {
+    const h = fixture(), requests: { caseId: string; source: 'flows' | 'identity'; signal: AbortSignal; reply: ReturnType<typeof deferred<AccountSuggestions>> }[] = [];
+    h.api.suggestions = vi.fn((caseId, query, signal) => { const reply = deferred<AccountSuggestions>(); requests.push({ caseId, source: query.source, signal, reply }); return reply.promise; });
+    const { rerender } = render(<AccountWorkspace {...h.props} />); await ready();
+    let input = screen.getByLabelText('搜索户名或账号'); measureSearch(input); input.focus(); fireEvent.input(input, { target: { value: '合' } });
+    await waitFor(() => expect(requests).toHaveLength(1));
+    fireEvent.click(screen.getByRole('tab', { name: '身份证对照记录' }));
+    expect(requests[0].signal.aborted).toBe(true);
+    await act(async () => requests[0].reply.resolve(suggestionPage('1', '合')));
+    expect(document.querySelector('.fep-popup [role="option"]')).toBeNull();
+    input.focus(); fireEvent.input(input, { target: { value: '合' } }); await waitFor(() => expect(requests).toHaveLength(2));
+    rerender(<AccountWorkspace {...h.props} active={false} />); expect(requests[1].signal.aborted).toBe(true);
+    await act(async () => requests[1].reply.resolve(suggestionPage('1', '合', 'identity'))); expect(document.querySelector('.fep-popup [role="option"]')).toBeNull();
+    rerender(<AccountWorkspace {...h.props} context={{ caseId: '2', name: cases[1].name, generation: 2 }} />); await ready();
+    rerender(<AccountWorkspace {...h.props} context={{ ...context, generation: 3 }} />); await ready();
+    input = screen.getByLabelText('搜索户名或账号'); measureSearch(input); input.focus(); fireEvent.input(input, { target: { value: '合' } });
+    await waitFor(() => expect(requests).toHaveLength(3));
+    rerender(<AccountWorkspace {...h.props} context={{ caseId: '2', name: cases[1].name, generation: 4 }} />); await ready();
+    rerender(<AccountWorkspace {...h.props} context={{ ...context, generation: 5 }} />); await ready();
+    input = screen.getByLabelText('搜索户名或账号'); measureSearch(input); input.focus(); fireEvent.input(input, { target: { value: '合' } });
+    await waitFor(() => expect(requests).toHaveLength(4));
+    expect(requests[2].signal.aborted).toBe(true);
+    await act(async () => requests[2].reply.resolve(suggestionPage('1', '合'))); expect(document.querySelector('.fep-popup [role="option"]')).toBeNull();
+    rerender(<AccountWorkspace {...h.props} context={{ ...context, generation: 5 }} revision={1} />);
+    expect(requests[3].signal.aborted).toBe(true);
+    await act(async () => requests[3].reply.resolve(suggestionPage('1', '合'))); expect(document.querySelector('.fep-popup [role="option"]')).toBeNull();
+  });
+
   it('keeps same-name accounts separate and shows exact multi-currency totals without requiring graph membership', async () => {
     const h = fixture(); render(<AccountWorkspace {...h.props} />); await ready();
     expect(screen.getAllByRole('button', { name: /^选择账户 / })).toHaveLength(2);
@@ -48,7 +120,7 @@ describe('AccountWorkspace', () => {
     const h = fixture(); h.api.list = vi.fn(async (caseId, query) => ({ case_id: caseId, source: query.source, total: 61, page: query.page, page_size: 30, items: [row()] }));
     render(<AccountWorkspace {...h.props} />); await ready();
     fireEvent.change(screen.getByLabelText('搜索户名或账号'), { target: { value: '合成同名' } });
-    fireEvent.click(screen.getByRole('button', { name: '查询' }));
+    fireEvent.click(screen.getByRole('button', { name: '查询账户' }));
     await waitFor(() => expect(h.api.list).toHaveBeenLastCalledWith('1', { source: 'flows', q: '合成同名', page: 1, pageSize: 30 }, expect.any(AbortSignal)));
     await waitFor(() => expect((screen.getByRole('button', { name: '账户下一页' }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole('button', { name: '账户下一页' }));
@@ -383,9 +455,12 @@ describe('AccountWorkspace', () => {
     fireEvent.load(screen.getByAltText('照片裁剪预览'));
     fireEvent.click(screen.getByRole('button', { name: '确认裁剪并上传' }));
     await screen.findByText(/有 1 项写入结果尚未确认/);
-    expect(screen.queryByRole('dialog')).toBeNull(); expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:synthetic-1');
-    expect((screen.getByLabelText('选择账户照片') as HTMLInputElement).disabled).toBe(true);
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: '下载模板' }));
+    // The receipt can render before preview removal and passive URL/focus cleanup.
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull(); expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:synthetic-1');
+      expect((screen.getByLabelText('选择账户照片') as HTMLInputElement).disabled).toBe(true);
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: '下载模板' }));
+    });
     expect(h.actions.mutate).toHaveBeenCalledOnce();
   });
 

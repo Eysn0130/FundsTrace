@@ -47,6 +47,40 @@ function embeddedHost() {
 }
 
 describe('FundsTrace case workspace', () => {
+  it('filters a case candidate without switching the current case until its existing open button is clicked', async () => {
+    const api = fakeApi(); api.stats = vi.fn(api.stats);
+    render(<App api={api} />); await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    const input = screen.getByLabelText('筛选案件');
+    vi.spyOn(input, 'getBoundingClientRect').mockReturnValue({ x: 20, y: 100, left: 20, top: 100, right: 320, bottom: 132, width: 300, height: 32, toJSON: () => ({}) });
+    // jsdom cannot render the browser's native popover top layer.
+    input.parentElement?.querySelectorAll<HTMLElement>('[popover]').forEach(layer => Object.defineProperties(layer, {
+      showPopover: { value: () => { layer.style.display = 'block'; } }, hidePopover: { value: () => { layer.style.display = 'none'; } },
+    }));
+    input.focus(); fireEvent.input(input, { target: { value: '合成案件' } });
+    const option = await screen.findByRole('option', { name: /合成案件乙.*2/ });
+    expect(screen.getByRole('button', { name: '合成案件甲' })).toBeTruthy();
+    fireEvent.click(option);
+    expect(screen.queryByRole('button', { name: '合成案件甲' })).toBeNull();
+    expect(screen.getByRole('button', { name: '核对流水 SYN-1' })).toBeTruthy();
+    expect(api.stats).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: '合成案件乙' }));
+    await screen.findByRole('button', { name: '核对流水 SYN-2' });
+    expect(api.stats).toHaveBeenLastCalledWith('2', expect.any(AbortSignal));
+  });
+
+  it('executes a free case keyword with its SVG button while IME draft input never filters or opens a case', async () => {
+    const api = fakeApi(); api.stats = vi.fn(api.stats);
+    render(<App api={api} />); await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    const input = screen.getByLabelText('筛选案件');
+    fireEvent.compositionStart(input); fireEvent.input(input, { target: { value: '乙' } }); fireEvent.submit(input.closest('form')!);
+    expect(screen.getByRole('button', { name: '合成案件甲' })).toBeTruthy(); expect(api.stats).toHaveBeenCalledOnce();
+    fireEvent.compositionEnd(input); fireEvent.click(screen.getByRole('button', { name: '查询案件' }));
+    expect(screen.queryByRole('button', { name: '合成案件甲' })).toBeNull(); expect(screen.getByRole('button', { name: '合成案件乙' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '核对流水 SYN-1' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '新建案件' }));
+    expect(screen.getByRole('textbox', { name: '案件名称' })).toBeTruthy();
+  });
+
   it('closes the case actions menu on Escape, outside click, focus departure and case change', async () => {
     const { container } = render(<App api={fakeApi()} />);
     await screen.findByRole('button', { name: '核对流水 SYN-1' });

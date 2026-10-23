@@ -151,6 +151,9 @@
         return;
       }
       if (!current) return;
+      // A nested combobox owns its first Escape; the next closes this menu.
+      if (key === 'Escape' && event.target?.getAttribute?.('aria-expanded') === 'true'
+        && doc.getElementById(event.target.getAttribute('aria-controls'))?.classList.contains('fep-scroll')) return;
       if (current.form && current.panel.contains(event.target)) {
         if (key === 'Escape') { stop(event); close('escape'); return; }
         if (key === 'Tab') {

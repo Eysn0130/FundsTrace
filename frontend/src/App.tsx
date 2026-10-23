@@ -4,6 +4,7 @@ import { api as defaultApi, ApiError, type FundsApi } from './lib/api';
 import { AccountWorkspace } from './accounts/AccountWorkspace';
 import type { AccountWorkspaceActions } from './accounts/types';
 import { Modal } from './components/Modal';
+import { EntityPicker, type EntityPickerSearch } from './components/EntityPicker';
 import { createHttpFundsSession } from './adapters/http';
 import { createBrowserFundsActions } from './standalone/browserActions';
 import { FUNDS_PANEL_VERSION, FundsPanel, type FundsCaseContextV1, type FundsHostActionsV1 } from './panel';
@@ -23,6 +24,8 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
   const [generation, setGeneration] = useState(0);
   const [casesLoading, setCasesLoading] = useState(true);
   const [caseSearch, setCaseSearch] = useState('');
+  const [caseQuery, setCaseQuery] = useState({ text: '', id: '' });
+  const caseSearchComposing = useRef(false);
   const [error, setError] = useState('');
   const [listReload, setListReload] = useState(0);
   const [creating, setCreating] = useState(false);
@@ -266,11 +269,30 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
     if (restoreFocus) caseActionsSummary.current?.focus({ preventScroll: true });
   }
   const caseActions = <details ref={caseActionsMenu} className="case-actions" open={caseActionsOpen} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) closeCaseActions(); }} onKeyDown={event => { if (event.key === 'Escape' && caseActionsOpen) { event.preventDefault(); event.stopPropagation(); closeCaseActions(true); } }}><summary ref={caseActionsSummary} aria-disabled={operationBusy} aria-expanded={caseActionsOpen} onClick={event => { event.preventDefault(); if (!operationBusy) setCaseActionsOpen(value => !value); }}>案件操作 <img className="ui-icon" src="/static/ui-icons/chevron-down.svg" alt="" /></summary><div className="case-actions-menu"><button disabled={operationBusy} onClick={() => void runOperation('export')}><img className="ui-icon" src="/static/ui-icons/download.svg" alt="" />导出案件包</button><button className="danger-text" disabled={operationBusy} onClick={() => void runOperation('delete')}><img className="ui-icon" src="/static/ui-icons/trash.svg" alt="" />删除案件…</button><button disabled={operationBusy} onClick={() => { closeCaseActions(true); setCaseInfoOpen(true); }}><img className="ui-icon" src="/static/ui-icons/list.svg" alt="" />案件信息</button></div></details>;
+  const normalizeCaseQuery = (value: string) => value.normalize('NFKC').trim().toLocaleLowerCase();
+  const visibleCases = cases.filter(item => caseQuery.id ? item.id === caseQuery.id : [item.name, item.id].some(value => normalizeCaseQuery(value).includes(normalizeCaseQuery(caseQuery.text))));
+  const searchCaseSuggestions: EntityPickerSearch = async ({ query, offset, limit, signal }) => {
+    if (signal.aborted) throw new DOMException('操作已中止。', 'AbortError');
+    const q = normalizeCaseQuery(query);
+    const matches = cases.filter(item => [item.name, item.id].some(value => normalizeCaseQuery(value).includes(q)));
+    const items = matches.slice(offset, offset + limit).map(item => {
+      const matchedNumber = normalizeCaseQuery(item.id).includes(q);
+      return { key: item.id, label: item.name, number: item.id, value: item.name, detail: item.created_at || undefined,
+        matchedField: matchedNumber ? 'number' as const : 'label' as const, matchedText: matchedNumber ? item.id : item.name };
+    });
+    const hasMore = offset + items.length < matches.length;
+    return { items, hasMore, nextOffset: hasMore ? offset + items.length : undefined };
+  };
+  const submitCaseSearch = () => {
+    if (!pageActive || surface !== 'cases' || operationBusy || caseSearchComposing.current) return;
+    setCaseQuery({ text: caseSearch, id: '' });
+  };
+  const caseSuggestionScope = pageActive && surface === 'cases' && !operationBusy && !casesLoading ? JSON.stringify(['cases', selectedId, generation, dataRevision, listReload, cases.length]) : null;
   return <>
     <div className="funds-trace standalone-surface" hidden={surface !== 'accounts'}>{selected ? <AccountWorkspace active={pageActive && surface === 'accounts'} context={{caseId:selected.id,name:selected.name,generation}} cases={cases} onSelectCase={selectCase} revision={accountRevision} actions={accountActions} unresolvedOperations={hostContext?.unresolvedOperations} /> : <div role="status">正在连接案件账户工作区…</div>}</div>
     <div hidden={surface !== 'cases'} className={`funds-trace app-shell cases-workspace${embedded ? ' embedded-workspace' : ''}`}>
     <aside className="sidebar" aria-label="案件导航">
-      <div className="case-section"><div className="section-heading"><h2>案件</h2><span>{cases.length}</span><button className="button primary new-case-button" onClick={() => { setCreating(true); if (!uncertainCreate) { setCreateError(''); setCreatedCase(null); setCaseName(''); } }}><img className="ui-icon" src="/static/ui-icons/file-plus.svg" alt="" />新建案件</button></div><input className="case-filter" aria-label="筛选案件" placeholder="搜索案件名称或 ID" value={caseSearch} onChange={event => setCaseSearch(event.target.value)} /><div className="case-list" aria-label="案件列表">{casesLoading ? <p className="sidebar-hint">正在加载案件…</p> : cases.filter(item => (item.name.toLowerCase().includes(caseSearch.toLowerCase()) || item.id.includes(caseSearch))).map(item => <button key={item.id} className={`case-item ${selectedId === item.id ? 'selected' : ''}`} aria-label={item.name} aria-pressed={selectedId === item.id} disabled={operationBusy} onClick={() => void chooseCase(item.id)}><img className="case-glyph ui-icon" src="/static/ui-icons/folder.svg" alt="" /><span className="case-label">{item.name}<small>案件 ID {item.id} · {selectedId === item.id ? '当前案件' : retainedCaseIds.includes(item.id) ? '工作已保留 · 可继续' : '点击打开案件'}</small></span>{retainedCaseIds.includes(item.id) && <span className="retained-dot" title="工作已保留" />}</button>)}{!casesLoading && !cases.length && <p className="sidebar-hint">新建案件或导入案件包后开始核对。</p>}{!casesLoading && !!cases.length && !cases.some(item => (item.name.toLowerCase().includes(caseSearch.toLowerCase()) || item.id.includes(caseSearch))) && <p className="sidebar-hint">没有匹配的案件。</p>}</div></div>
+      <div className="case-section"><div className="section-heading"><h2>案件</h2><span>{cases.length}</span><button className="button primary new-case-button" onClick={() => { setCreating(true); if (!uncertainCreate) { setCreateError(''); setCreatedCase(null); setCaseName(''); } }}><img className="ui-icon" src="/static/ui-icons/file-plus.svg" alt="" />新建案件</button></div><form className="case-filter-field" onSubmit={event => { event.preventDefault(); submitCaseSearch(); }}><EntityPicker className="case-filter" aria-label="筛选案件" placeholder="案件名称或 ID" value={caseSearch} onValueChange={setCaseSearch} scope={caseSuggestionScope} search={searchCaseSuggestions} kind="case" onSelect={item => { setCaseSearch(item.label); setCaseQuery({ text: '', id: item.key }); }} onSubmit={submitCaseSearch} onCompositionChange={value => { caseSearchComposing.current = value; }} disabled={operationBusy || !pageActive} /><button type="submit" className="case-filter-submit" aria-label="查询案件" disabled={operationBusy || !pageActive}><img className="ui-icon" src="/static/ui-icons/search.svg" alt="" /></button></form><div className="case-list" aria-label="案件列表">{casesLoading ? <p className="sidebar-hint">正在加载案件…</p> : visibleCases.map(item => <button key={item.id} className={`case-item ${selectedId === item.id ? 'selected' : ''}`} aria-label={item.name} aria-pressed={selectedId === item.id} disabled={operationBusy} onClick={() => void chooseCase(item.id)}><img className="case-glyph ui-icon" src="/static/ui-icons/folder.svg" alt="" /><span className="case-label">{item.name}<small>案件 ID {item.id} · {selectedId === item.id ? '当前案件' : retainedCaseIds.includes(item.id) ? '工作已保留 · 可继续' : '点击打开案件'}</small></span>{retainedCaseIds.includes(item.id) && <span className="retained-dot" title="工作已保留" />}</button>)}{!casesLoading && !cases.length && <p className="sidebar-hint">新建案件或导入案件包后开始核对。</p>}{!casesLoading && !!cases.length && !visibleCases.length && <p className="sidebar-hint">没有匹配的案件。</p>}</div></div>
       <div className="sidebar-footer"><button className="button secondary" disabled={operationBusy || (embedded && !hostContext)} onClick={() => void runOperation('import')}><img className="ui-icon" src="/static/ui-icons/upload.svg" alt="" />导入案件包</button><p>案件数据独立保存</p></div>
     </aside>
     <main className="standalone-main">

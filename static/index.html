@@ -10,6 +10,8 @@
 <link rel="stylesheet" href="/static/desktop-updates.css">
 <link rel="stylesheet" href="/static/navigation.css">
 <link rel="stylesheet" href="/static/appearance.css">
+<link rel="stylesheet" href="/static/entity-picker.css">
+<link rel="stylesheet" href="/static/entity-search.css">
 <script src="/static/appearance.js"></script>
 <script defer src="/static/desktop-updates.js"></script>
 <script src="/static/vendor/g6.min.js"></script>
@@ -332,8 +334,8 @@
       </div>
       <div class="query-disclosure" id="queryFields"><div class="query-controls">
       <div class="form-grid query-fields">
-        <label class="query-field query-primary" for="fAccount">账号/卡号<input id="fAccount" placeholder="付款或收款账号"></label>
-        <label class="query-field query-primary" for="fName">户名<input id="fName" placeholder="付款或收款户名"></label>
+        <label class="query-field query-primary" for="fAccount">账户<input id="fAccount" placeholder="户名、账号或证件"></label>
+        <label class="query-field query-primary" for="fName">户名包含<input id="fName" placeholder="付款或收款户名"></label>
         <label class="query-field query-primary" for="fCounter">交易对手<input id="fCounter" placeholder="对手户名 / 账号"></label>
         <label class="query-field query-keyword" for="fKw">关键词<input id="fKw" placeholder="摘要 / 流水号"></label>
         <div class="query-field query-amount"><label for="fMin">金额区间</label><div class="range"><input id="fMin" type="number" aria-label="最小金额" placeholder="最小"><span>—</span><input id="fMax" type="number" aria-label="最大金额" placeholder="最大"></div></div>
@@ -342,7 +344,7 @@
         <div class="query-time"><label for="fFrom">时间区间</label><div class="range date-range"><input id="fFrom" type="date" aria-label="开始日期"><span>—</span><input id="fTo" type="date" aria-label="结束日期"></div></div>
       <div class="query-actions">
         <label class="el-ck" title="只显示当前画布已上图的流水"><input type="checkbox" id="fTracked">仅已上图</label>
-        <button class="btn small" id="btnReset">重置</button><button class="btn small primary" id="btnSearch">查询</button>
+        <button class="btn small" id="btnReset">重置</button><button class="btn small primary icon-button" id="btnSearch" aria-label="查询流水并定位匹配账户"><img class="ui-icon" src="/static/ui-icons/search.svg" alt=""></button>
       </div>
       </div>
       </div></div>
@@ -692,6 +694,8 @@
 <script src="/static/toolbar-menu.js?v=relation-filter-1"></script>
 <script src="/static/relation-filter.js?v=1"></script>
 <script src="/static/neighborhood.js?v=1"></script>
+<script src="/static/entity-picker.js?v=1"></script>
+<script src="/static/entity-search.js?v=1"></script>
 <script src="/static/node-finder.js?v=1"></script>
 <script src="/static/canvas-workspace.js?v=1"></script>
 <script src="/static/workspace-camera.js?v=neighborhood-search-1"></script>

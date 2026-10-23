@@ -5,6 +5,7 @@ import test from 'node:test';
 
 const source = readFileSync(new URL('../static/table-workspace.js', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../static/app.js', import.meta.url), 'utf8');
+const entitySearch = readFileSync(new URL('../static/entity-search.js', import.meta.url), 'utf8');
 const section = (start, end) => app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start)));
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
@@ -19,7 +20,7 @@ const flow = id => ({ id, trade_time: '2026-01-01 12:00:00', payer_name: 'Synthe
 // A small DOM with real ancestry, moved-node identity and capture/bubble order.
 // The frozen app's actual renderer, search parameters and table handlers run in
 // this harness; only HTML parsing and network/graph boundaries are synthetic.
-function harness() {
+function harness({ entityInputs = false } = {}) {
   const byId = new Map(), ready = [], requests = [], graphCalls = [], membershipCalls = [], windowListeners = new Map();
   const membershipListeners = new Set();
   let doc, context, membershipToken = 0;
@@ -35,7 +36,7 @@ function harness() {
   };
   class Element {
     constructor(tag = 'div', id = '') {
-      this.tagName = tag.toUpperCase(); this.id = id; this.children = []; this.parentElement = null;
+      this.tagName = tag.toUpperCase(); this.id = id; this.children = []; this.parentElement = null; this.ownerDocument = doc;
       this.dataset = {}; this.attributes = new Map(); this.listeners = new Map(); this.style = {};
       this.value = ''; this.checked = false; this.disabled = false; this.inert = false; this.indeterminate = false;
       this.scrollLeft = this.scrollTop = 0; this.textContent = ''; this.title = ''; this.tabIndex = 0;
@@ -52,6 +53,7 @@ function harness() {
     appendChild(child) {
       child.remove(); this.children.push(child); child.parentElement = this; return child;
     }
+    append(...nodes) { nodes.forEach(node => this.appendChild(node)); }
     remove() {
       if (doc?.activeElement && this.contains(doc.activeElement)) doc.activeElement = doc.body;
       if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1);
@@ -190,6 +192,14 @@ function harness() {
     async api(path) { requests.push(path); return fetchFlows(new URL(path, 'http://synthetic.local').searchParams); },
   };
   context = vm.createContext(sandbox);
+  const pickerOptions = new Map(), pickerSelections = new Map(), invalidated = [];
+  if (entityInputs) {
+    sandbox.window.FundsEntityPicker = { create(options) {
+      pickerOptions.set(options.input.id, options);
+      return { invalidate() { invalidated.push(options.input.id); pickerSelections.delete(options.input.id); }, close() {}, open() {}, getSelected() { return pickerSelections.get(options.input.id) || null; } };
+    } };
+    vm.runInContext(entitySearch, context, { filename: 'entity-search.js' });
+  }
   vm.runInContext(section('function caseContext()', 'function selectCase('), context);
   vm.runInContext(section('function searchParams(', 'async function doSearch('), context);
   vm.runInContext(section('function partyCell(', 'let syncFlowTableScroll'), context);
@@ -199,7 +209,11 @@ function harness() {
   vm.runInContext(section("  $('#flowTbody').addEventListener('click'", '  // 批量追踪'), context);
   vm.runInContext(source, context, { filename: 'table-workspace.js' });
   for (const callback of ready) callback();
-  return { context, state, doc, element, requests, graphCalls, membershipCalls,
+  return { context, state, doc, element, requests, graphCalls, membershipCalls, pickerOptions, invalidated,
+    chooseCandidate(id, item) {
+      const field = element(id); field.value = item.value; field.fire('input');
+      pickerSelections.set(id, item); pickerOptions.get(id).onSelect(item);
+    },
     view(view, relayout = () => {}) {
       for (const phase of ['prepare', 'start', 'end']) {
         if (phase === 'end') relayout();
@@ -349,12 +363,12 @@ test('latest query wins, an explicit failure retains last results, and click-ent
 test('draft summary shows current unsubmitted input and remains a draft if input changes during a request', async () => {
   const f = harness(); f.element('fAccount').value = 'SYN-APPLIED'; await f.search();
   f.element('fAccount').value = 'SYN-DRAFT'; f.element('fAccount').fire('input');
-  assert.match(f.element('querySummary').textContent, /待查询 · 账号 SYN-DRAFT/);
+  assert.match(f.element('querySummary').textContent, /待查询 · 账户 SYN-DRAFT/);
   assert.doesNotMatch(f.element('querySummary').textContent, /SYN-APPLIED/);
   const pending = deferred(); f.network(() => pending.promise); const searching = f.search();
   f.element('fAccount').value = 'SYN-LATER'; f.element('fAccount').fire('input');
   pending.resolve({ page: 1, size: 50, total: 1, rows: [flow(1)] }); await searching;
-  assert.match(f.element('querySummary').textContent, /待查询 · 账号 SYN-LATER/);
+  assert.match(f.element('querySummary').textContent, /待查询 · 账户 SYN-LATER/);
 });
 
 test('canvas invalidation clears real rows immediately and graph readiness refreshes one consistent page', async () => {
@@ -399,13 +413,54 @@ test('only explicit query button and non-IME Enter preview frozen account fields
     async previewFields(fields, options) { previews.push(JSON.parse(JSON.stringify({ fields, options }))); } });
   f.element('fAccount').value = ' 00000123 '; f.element('fName').value = '合成户名'; f.element('fCounter').value = '00000456';
   await f.element('btnSearch').onclick();
-  assert.deepEqual(previews[0], { fields: { account: '00000123', name: '合成户名', counterparty: '00000456' }, options: { binding: { sequence: 1 } } });
+  assert.deepEqual(previews[0], { fields: { account: '', entity: '00000123', name: '合成户名', counterparty: '00000456' }, options: { binding: { sequence: 1 } } });
   const requests = f.requests.length;
   f.element('fAccount').fire('keydown', { key: 'Enter', isComposing: true });
   f.element('fAccount').fire('keydown', { key: 'Enter', keyCode: 229 });
   await flush(); assert.equal(f.requests.length, requests); assert.equal(previews.length, 1);
   f.element('fAccount').fire('keydown', { key: 'Enter' }); await flush();
   assert.equal(previews.length, 2); assert.equal(captures.length, 2);
+});
+
+test('free entity text is literal while an explicit picked account and counterparty use exact string filters', async () => {
+  const f = harness(), full = '00090071992547409931234567890123456789';
+  f.element('fAccount').value = ' 00%_\\ & 合成 ';
+  f.element('fCounter').value = '00000123';
+  await f.search();
+  let params = new URL(f.requests.at(-1), 'http://synthetic.local').searchParams;
+  assert.equal(params.get('entity'), '00%_\\ & 合成'); assert.equal(params.has('account'), false);
+  assert.equal(params.has('account_exact'), false); assert.equal(params.has('counter_exact'), false);
+  f.element('fAccount').value = full; f.element('fAccount').dataset.exactAccount = full;
+  f.element('fCounter').dataset.exactAccount = '00000123'; await f.search();
+  params = new URL(f.requests.at(-1), 'http://synthetic.local').searchParams;
+  assert.equal(params.get('account'), full); assert.equal(params.get('account_exact'), '1'); assert.equal(params.has('entity'), false);
+  assert.equal(params.get('counter'), '00000123'); assert.equal(params.get('counter_exact'), '1');
+  f.element('fAccount').value = full + '0'; await f.search();
+  params = new URL(f.requests.at(-1), 'http://synthetic.local').searchParams;
+  assert.equal(params.get('entity'), full + '0'); assert.equal(params.has('account_exact'), false);
+});
+
+test('real helper mounts flow-scoped inputs; typing and candidate selection only bind, while SVG and Enter explicitly execute', async () => {
+  const f = harness({ entityInputs: true }), full = '00090071992547409931234567890123456789';
+  assert.deepEqual([...f.pickerOptions.keys()], ['fAccount', 'fCounter']);
+  for (const options of f.pickerOptions.values()) { assert.equal(options.kind, 'account'); assert.ok(options.scope()); }
+  const field = f.element('fAccount'); field.value = '合'; field.fire('input');
+  assert.equal(f.requests.length, 0);
+  f.chooseCandidate('fAccount', { key: '1:' + full, value: full, account: full, label: '合成同名主体' });
+  assert.equal(f.requests.length, 0); assert.equal(field.dataset.exactAccount, full); assert.equal(field.value, full);
+  const svg = field.parentElement.children.find(node => node.className === 'entity-search-action');
+  assert.ok(svg); assert.equal(svg.children[0].src, '/static/ui-icons/search.svg'); assert.equal(svg.textContent, '');
+  svg.click(); await flush();
+  let params = new URL(f.requests.at(-1), 'http://synthetic.local').searchParams;
+  assert.equal(params.get('account'), full); assert.equal(params.get('account_exact'), '1');
+  f.chooseCandidate('fCounter', { key: '1:00012', value: '00012', account: '00012', label: '合成对手' });
+  assert.equal(f.requests.length, 1);
+  f.pickerOptions.get('fCounter').onSubmit('00012'); await flush();
+  params = new URL(f.requests.at(-1), 'http://synthetic.local').searchParams;
+  assert.equal(params.get('counter'), '00012'); assert.equal(params.get('counter_exact'), '1');
+  field.fire('input'); assert.equal(field.dataset.exactAccount, undefined); assert.equal(f.requests.length, 2);
+  await f.element('btnReset').onclick(); assert.equal(f.element('fCounter').dataset.exactAccount, undefined);
+  assert.deepEqual(f.invalidated, ['fAccount', 'fCounter']);
 });
 
 test('implicit searches, reset and binding readiness refresh never capture or preview the camera', async () => {
@@ -446,8 +501,8 @@ test('programmatic draft changes also prevent preview and never substitute the n
   f.element('fAccount').value = '00001'; f.network(() => result.promise);
   const search = f.search(1, { locate: true }); f.element('fAccount').value = '00002';
   result.resolve({ page: 1, size: 50, total: 1, rows: [flow(1)] }); await search;
-  assert.deepEqual(previews, []); assert.match(f.requests[0], /account=00001/);
-  assert.match(f.element('querySummary').textContent, /待查询 · 账号 00002/);
+  assert.deepEqual(previews, []); assert.match(f.requests[0], /entity=00001/);
+  assert.match(f.element('querySummary').textContent, /待查询 · 账户 00002/);
 });
 
 test('only the newest successful explicit query may preview; failures keep existing results', async () => {
@@ -458,7 +513,7 @@ test('only the newest successful explicit query may preview; failures keep exist
   f.element('fAccount').value = '00002'; const latest = f.search(1, { locate: true });
   second.resolve({ page: 1, size: 50, total: 1, rows: [flow(2)] }); assert.equal(await latest, true);
   first.resolve({ page: 1, size: 50, total: 1, rows: [flow(1)] }); assert.equal(await old, false);
-  assert.deepEqual(previews.map(fields => fields.account), ['00002']);
+  assert.deepEqual(previews.map(fields => fields.entity), ['00002']);
   f.network(async () => { throw new Error('Synthetic query failure'); });
   assert.equal(await f.search(1, { locate: true }), false); assert.equal(previews.length, 1);
 });
@@ -537,4 +592,14 @@ test('workspace view scroll snapshots survive browser clamping and are revoked o
   f.context.selectCase('another-case');
   f.view('split',clamp); f.view('standard',clamp);
   assert.deepEqual([table.scrollLeft,table.scrollTop],[0,0],'old binding offsets cannot restore into a new case');
+});
+
+test('a successful empty query does not move the camera to an account excluded by the other conditions', async () => {
+  const f = harness(), previews = [];
+  f.element('fAccount').value = '0001'; f.element('fAccount').dataset.exactAccount = '0001';
+  f.element('fMin').value = '100000';
+  f.locator({ capture: () => ({ binding: 1 }), previewFields: value => previews.push(value) });
+  f.network(async () => ({ page: 1, size: 50, total: 0, rows: [] }));
+  assert.equal(await f.search(1, { locate: true }), true);
+  assert.equal(f.rows().length, 0); assert.deepEqual(previews, []);
 });

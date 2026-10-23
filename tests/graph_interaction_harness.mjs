@@ -464,6 +464,15 @@ test('node finder adapter: search scope includes offscreen members and preserves
   assert.equal(f.state.lastGraph.nodes.length,3,'filtering retains the complete tracked facts');
 });
 
+test('node finder adapter: optional identity suggestions preserve complete strings and omit unavailable fields without changing the graph',()=>{
+  const f=nodeFinderAdapterScene(),identity='00000020000101000X';
+  f.state.lastGraph.nodes[0].id_no=identity;f.h.run('renderGraph()');f.settle();
+  const before=f.snapshot(),camera=f.camera,accounts=f.ports.read().accounts;
+  assert.deepEqual(JSON.parse(JSON.stringify(accounts)),f.ids.map((account,i)=>({account,name:i===2?'另一户名':'同名测试',...(i===0?{idNo:identity}:{})})));
+  assert.equal(f.snapshot(),before,'reading identity candidates cannot mutate facts, selection or geometry');
+  assert.deepEqual(f.camera,camera,'reading identity candidates cannot move the camera');
+});
+
 test('node finder adapter: locating keeps an unsaved editor intact and shows the complete node away from an open drawer',async()=>{
   const f=nodeFinderAdapterScene(),drawer=f.h.element('#drawer');
   f.h.run(`nodeDrafts.set('SYN-EDIT',{idBase:'原资料',idValue:'尚未保存的资料',focusBase:1,focusValue:1.5});`);

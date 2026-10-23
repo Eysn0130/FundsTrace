@@ -1195,7 +1195,7 @@ function analysisFixture(algorithms, network = async () => response([])) {
     addEventListener() {}, createElement: tag => element(`created-${tag}`), body: element('body') };
   document.activeElement = document.body;
   const location = new URL('http://synthetic.invalid/analysis?case_id=1');
-  const context = vm.createContext({ document, window: { location, history: { replaceState(_state,_title,url) { location.href = String(url); } } },
+  const context = vm.createContext({ document, window: { location, addEventListener() {}, history: { replaceState(_state,_title,url) { location.href = String(url); } } },
     fetch: async (path, options) => { requests.push({path,options}); return network(path,options); },
     localStorage: { getItem: () => null, setItem() {} }, URLSearchParams, URL, Blob, setTimeout() {} });
   vm.runInContext(readFileSync(new URL('../static/money.js', import.meta.url), 'utf8'), context, { filename: 'money.js' });
