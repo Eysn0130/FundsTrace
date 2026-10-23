@@ -14,7 +14,7 @@ const { startupTarget, createInstalledStartupProbe, assertNativeClientGeometry, 
 const { titlebarTarget, createInstalledTitlebarProbe, runInstalledTitlebarJourney, safeTitlebarFailure,
   safeProtocolMethod, protocolError, safeInstalledFailure, createMainErrorMarkerProbe } = require('./installed-titlebar-journey.cjs');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
-const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
+const { createUpdateFixture, runInstalledUpdateJourney, safeUpdateDialogFailure } = require('./installed-update-journey.cjs');
 const { runInstalledProductionUpdateJourney } = require('./installed-production-update-journey.cjs');
 const { runInstalledPresentationBaseline } = require('./installed-presentation-baseline.cjs');
 const { FAILURE_CODES } = require('../updates.cjs');
@@ -1135,6 +1135,8 @@ async function restorePresentationPreferences(snapshot) {
     const kinds = ['UPDATE_JOURNEY_TIMEOUT', 'UPDATE_DIALOG_TIMEOUT', 'UPDATE_DIALOG_FAILED'];
     report.productionFailure = { code: codes.includes(error?.code) ? error.code : 'UNKNOWN',
       kind: kinds.includes(error?.message) ? error.message : 'UNCLASSIFIED' };
+    const nativeDialog = safeUpdateDialogFailure(error);
+    if (nativeDialog) report.productionFailure.nativeDialog = nativeDialog;
     try {
       const value = await evaluate('window.FundsDesktopUpdates.state()');
       report.productionFailure.updatePhase = ['idle','checking','available','downloading','error','ready','installing','current'].includes(value?.phase) ? value.phase : 'unknown';

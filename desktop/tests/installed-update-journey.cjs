@@ -77,15 +77,79 @@ async function createUpdateFixture(filename) {
     close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
 }
 
+const DIALOG_STAGES = new Set(['notStarted', 'platform', 'nativeHelper', 'waitDialog', 'findButton', 'sendMessage', 'waitClosed', 'completed']);
+const DIALOG_COUNTS = ['attempts', 'ownedVisibleDialogCount', 'matchingDialogCount', 'matchingButtonCount'];
+const DIALOG_BOOLS = ['dialogSeen', 'buttonSeen', 'sendAttempted', 'sendMessageCompleted', 'dialogClosedObserved'];
+const DIALOG_NULLABLE_BOOLS = ['processAlive', 'dialogVisible', 'dialogEnabled', 'buttonVisible', 'buttonEnabled', 'foregroundIsDialog'];
+function safeHelperDiagnostic(value) {
+  if (!value || value.schemaVersion !== 1 || !['later', 'restart'].includes(value.choice)
+    || !DIALOG_STAGES.has(value.stage) || !['running', 'passed', 'failed', 'unavailable'].includes(value.status)
+    || !DIALOG_COUNTS.every(key => Number.isSafeInteger(value[key]) && value[key] >= 0 && value[key] <= 1000000)
+    || !DIALOG_BOOLS.every(key => typeof value[key] === 'boolean')
+    || !DIALOG_NULLABLE_BOOLS.every(key => value[key] === null || typeof value[key] === 'boolean')) return null;
+  return Object.fromEntries(['schemaVersion', 'choice', 'stage', 'status', ...DIALOG_COUNTS, ...DIALOG_BOOLS,
+    ...DIALOG_NULLABLE_BOOLS].map(key => [key, value[key]]));
+}
+function safeUpdateDialogFailure(errorOrDto) {
+  try {
+    const value = errorOrDto?.nativeUpdateDialog || errorOrDto;
+    const helper = safeHelperDiagnostic(value);
+    if (!helper || !['valid', 'missing', 'invalid'].includes(value.helperReport)
+      || !(value.exitCode === null || (Number.isInteger(value.exitCode) && value.exitCode >= -2147483648 && value.exitCode <= 2147483647))
+      || !Number.isInteger(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > 60000
+      || !['timedOut', 'stderrObserved', 'stdoutTruncated'].every(key => typeof value[key] === 'boolean')) return null;
+    return { ...helper, helperReport: value.helperReport, exitCode: value.exitCode, elapsedMs: value.elapsedMs,
+      timedOut: value.timedOut, stderrObserved: value.stderrObserved, stdoutTruncated: value.stdoutTruncated };
+  } catch { return null; }
+}
+
 async function nativeButton(pid, choice) {
+  const startedAt = Date.now();
   const helper = path.resolve(__dirname, '../../scripts/click-windows-update-dialog.ps1');
   const child = spawn('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', helper,
     '-ApplicationPid', String(pid), '-Choice', choice], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-  child.stdout.resume(); child.stderr.resume();
+  let latest = null, buffer = '', observedBytes = 0, invalid = false, stderrObserved = false, stdoutTruncated = false;
+  const parseLine = line => {
+    if (!line.startsWith('FT_UPDATE_DIALOG ')) return;
+    try {
+      const detail = safeHelperDiagnostic(JSON.parse(line.slice('FT_UPDATE_DIALOG '.length)));
+      if (detail && detail.choice === choice) latest = detail;
+      else invalid = true;
+    } catch { invalid = true; }
+  };
+  child.stdout.on('data', chunk => {
+    // Never retain or report raw stdout/stderr, even when PowerShell itself fails.
+    observedBytes += chunk.length;
+    if (observedBytes > 65536) { stdoutTruncated = true; buffer = ''; return; }
+    buffer += chunk.toString('utf8');
+    let newline;
+    while ((newline = buffer.indexOf('\n')) !== -1) {
+      parseLine(buffer.slice(0, newline).trim()); buffer = buffer.slice(newline + 1);
+    }
+  });
+  child.stderr.on('data', chunk => { if (chunk.length) stderrObserved = true; });
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { child.kill(); reject(new Error('UPDATE_DIALOG_TIMEOUT')); }, 25000);
-    child.once('error', () => { clearTimeout(timer); reject(new Error('UPDATE_DIALOG_FAILED')); });
-    child.once('exit', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error('UPDATE_DIALOG_FAILED')); });
+    const fail = (message, exitCode, timedOut = false) => {
+      if (buffer && !stdoutTruncated) parseLine(buffer.trim());
+      const detail = latest || { schemaVersion: 1, choice, stage: 'notStarted', status: 'unavailable',
+        ...Object.fromEntries(DIALOG_COUNTS.map(key => [key, 0])),
+        ...Object.fromEntries(DIALOG_BOOLS.map(key => [key, false])),
+        ...Object.fromEntries(DIALOG_NULLABLE_BOOLS.map(key => [key, null])) };
+      const error = new Error(message);
+      error.nativeUpdateDialog = safeUpdateDialogFailure({ ...detail,
+        helperReport: latest ? 'valid' : invalid ? 'invalid' : 'missing',
+        exitCode: Number.isInteger(exitCode) ? exitCode : null,
+        elapsedMs: Math.min(60000, Math.max(0, Date.now() - startedAt)), timedOut, stderrObserved, stdoutTruncated });
+      reject(error);
+    };
+    const timer = setTimeout(() => {
+      fail('UPDATE_DIALOG_TIMEOUT', null, true);
+      try { child.kill(); } catch { /* A cleanup failure must not replace the timeout. */ }
+    }, 25000);
+    child.once('error', () => { clearTimeout(timer); fail('UPDATE_DIALOG_FAILED', null); });
+    // close follows exit after both pipes drain, so the final safe helper record
+    // is retained. The same outer deadline still bounds this wait.
+    child.once('close', code => { clearTimeout(timer); code === 0 ? resolve() : fail('UPDATE_DIALOG_FAILED', code); });
   });
 }
 
@@ -150,4 +214,4 @@ async function runInstalledUpdateJourney({ fixture, primary, evaluate, clickElem
     privateFixtureOnly: true, productionFeedModified: false, tlsVerificationDisabled: false };
 }
 
-module.exports = { createUpdateFixture, runInstalledUpdateJourney, nativeButton };
+module.exports = { createUpdateFixture, runInstalledUpdateJourney, nativeButton, safeUpdateDialogFailure };
