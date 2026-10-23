@@ -85,8 +85,8 @@ test('layout-only Worker loads layout and quality once without loading routing',
     assert.equal(response.quality.valid, true);
     assert.equal(worker.context.onmessage, handler, 'lazy import cannot leave the legacy layout-only handler installed');
   }
-  assert.deepEqual(worker.imports, ['/static/graph-layout.js?v=layout-pipeline-1',
-    '/static/graph-layout-quality.js?v=quality-1']);
+  assert.deepEqual(worker.imports, ['/static/graph-layout.js?v=canvas-display-1',
+    '/static/graph-layout-quality.js?v=canvas-display-1']);
   assert.deepEqual(worker.importBatches, [worker.imports]);
 });
 
@@ -101,8 +101,8 @@ test('layout can preload routing in one import batch for an equivalent later rou
   const again = worker.send({ protocol: 1, requestId: 'preloaded', taskId: 3, task: 'layout', input, prepareRoutes: true });
   assert.deepEqual(again.result, layout.result);
   assert.deepEqual(again.quality, layout.quality);
-  assert.deepEqual(worker.imports, ['/static/graph-layout.js?v=layout-pipeline-1',
-    '/static/graph-layout-quality.js?v=quality-1', '/static/graph-routing.js?v=compact-arcs-1']);
+  assert.deepEqual(worker.imports, ['/static/graph-layout.js?v=canvas-display-1',
+    '/static/graph-layout-quality.js?v=canvas-display-1', '/static/graph-routing.js?v=compact-arcs-1']);
   assert.deepEqual(worker.importBatches, [worker.imports]);
   assert.equal(worker.context.onmessage, handler);
   assert.equal(JSON.stringify([input, routeGraph]), before);
@@ -147,8 +147,8 @@ test('one Worker accepts serial mixed tasks without stale results or shared inpu
   assert.deepEqual(last.result, first.result);
   assert.deepEqual(last.quality, first.quality);
   assert.equal(worker.context.onmessage, handler);
-  assert.deepEqual(worker.imports, ['/static/graph-layout.js?v=layout-pipeline-1',
-    '/static/graph-layout-quality.js?v=quality-1', '/static/graph-routing.js?v=compact-arcs-1']);
+  assert.deepEqual(worker.imports, ['/static/graph-layout.js?v=canvas-display-1',
+    '/static/graph-layout-quality.js?v=canvas-display-1', '/static/graph-routing.js?v=compact-arcs-1']);
 });
 
 test('failed lazy import restores the protocol handler and retries only the missing kernel', () => {
@@ -162,9 +162,9 @@ test('failed lazy import restores the protocol handler and retries only the miss
   const recovered = worker.send({ ...request, taskId: 3 });
   assert.deepEqual({ result: recovered.result, quality: recovered.quality }, layoutDirect(request.input));
   assert.equal(worker.context.onmessage, handler);
-  assert.deepEqual(worker.imports, ['/static/graph-layout.js?v=layout-pipeline-1',
-    '/static/graph-layout-quality.js?v=quality-1', '/static/graph-routing.js?v=compact-arcs-1',
-    '/static/graph-layout-quality.js?v=quality-1']);
+  assert.deepEqual(worker.imports, ['/static/graph-layout.js?v=canvas-display-1',
+    '/static/graph-layout-quality.js?v=canvas-display-1', '/static/graph-routing.js?v=compact-arcs-1',
+    '/static/graph-layout-quality.js?v=canvas-display-1']);
 });
 
 test('malformed protocols, tasks, inputs and kernel exceptions always receive a terminal error', () => {

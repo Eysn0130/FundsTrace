@@ -35,12 +35,15 @@
     // arithmetic unsafe or indicate a failed numerical solver.
     const limit = Math.min(1e12, Math.max(1e6, dimension * Math.max(64, ids.size + 1) * 4096));
     const seen = new Set();
+    const fixed = new Map(input.nodes.filter(node=>node.fixed===true&&Number.isFinite(node.x)&&Number.isFinite(node.y)).map(node=>[node.id,node]));
     for (const node of result.nodes) {
       if (!node || typeof node.id !== 'string' || !ids.has(node.id)) return { valid: false, reason: 'unexpected-node-id' };
       if (seen.has(node.id)) return { valid: false, reason: 'duplicate-node-id' };
       seen.add(node.id);
       if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) return { valid: false, reason: 'nonfinite-coordinate' };
       if (Math.abs(node.x) > limit || Math.abs(node.y) > limit) return { valid: false, reason: 'coordinate-overflow' };
+      const anchor=fixed.get(node.id);
+      if(anchor&&(node.x!==anchor.x||node.y!==anchor.y))return {valid:false,reason:'fixed-node-moved'};
     }
     return { valid: true, reason: null };
   }

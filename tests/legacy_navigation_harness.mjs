@@ -1069,19 +1069,52 @@ test('neighborhood snapshots distinguish current display from complete canvas pe
   assert.equal(full.edges[0].data.amount_totals[0].amount, '10000000000000000.01');
 });
 
+test('temporal projection exports visible facts but full canvas snapshots retain original counts, money and presentation', async () => {
+  const h=harness('app.js');installSyntheticHub(h,3);
+  h.run(`window.FundsInvestigation={active:()=>true,exportWindow:()=>({start:null,end:'2026-10-23 12:00:00.123456',include_undated:false,preview:true}),
+    displayGraph:full=>({nodes:full.nodes.slice(0,2).map(node=>({...node,in_cnt:1,out_cnt:0})),
+      edges:[{...full.edges[0],cnt:1,ids:['9007199254740993'],amount_totals:[{currency:'CNY',amount:'0.01'}],total:'0.01',currencies:['CNY']}]})};
+    state.presentation=newGraphPresentation({nodeStyles:{'SYN-HUB':{shape:'ellipse',icon:'account'}},nodeLabels:{'SYN-HUB':{underline:true}},
+      pinnedAccounts:['SYN-HUB'],groups:[{id:'manual',name:'待核查',color:'#abcdef',members:['SYN-HUB'],notes:'人工分组'}]});
+    state.graphView.labelMode='all';renderGraph();`);
+  const visible=await h.run('window.__collectSnapshot({embedPhotos:false})');
+  const full=await h.run('window.__collectSnapshot({scope:"all",embedPhotos:false})');
+  assert.equal(visible.nodes.length,2);assert.equal(visible.edges.length,1);
+  assert.equal(visible.edges[0].data.cnt,1);assert.equal(visible.edges[0].data.amount_totals[0].amount,'0.01');
+  assert.equal(visible.view.time_window.end,'2026-10-23 12:00:00.123456');
+  assert.equal(full.nodes.length,3);assert.equal(full.edges.length,2);assert.equal(full.view.time_window,undefined);
+  assert.equal(full.edges[0].data.cnt,2);assert.equal(full.edges[0].data.amount_totals[0].amount,'10000000000000000.01');
+  assert.match(full.edges[0].label,/10,000,000,000,000,000\.01/);
+  assert.equal(full.nodes[0].data.out_cnt,h.run('state.lastGraph.nodes[0].out_cnt'));
+  assert.equal(visible.nodes[0].style.fill,'#7ca6d5');assert.equal(full.nodes[0].style.fill,'#d77d79');
+  assert.deepEqual(Array.from(full.nodes[0].size),Array.from(h.run('nodeRenderSize(state.lastGraph.nodes[0])')));
+  assert.equal(full.nodes[0].type,'ellipse');assert.equal(full.nodes[0].displayStyle.icon,'account');
+  assert.equal(full.nodes[0].labelStyle.underline,true);assert.equal(full.nodes[0].pinned,true);
+  assert.equal(full.nodes[0].groups[0].name,'待核查');
+  assert.equal(h.run('state.graphView.index.nodeIds.size'),2);
+  assert.equal(h.run('JSON.stringify(state.lastGraph)===originalGraphFacts'),true);
+  h.run("state.presentation.amountWidth={enabled:true,currency:'CNY'};renderGraph();");
+  const windowSnapshot=await h.run('window.__collectSnapshot({embedPhotos:false})');
+  const fullSnapshot=await h.run('window.__collectSnapshot({scope:"all",embedPhotos:false})');
+  assert.equal(windowSnapshot.view.amount_width.max_amount,'0.01');
+  assert.equal(fullSnapshot.view.amount_width.max_amount,'10000000000000000.01');
+});
+
 test('PNG and PDF export complete only within their frozen graph binding', async () => {
   const pngBase64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jDioAAAAASUVORK5CYII=';
   for (const format of ['png', 'pdf']) {
     const h = harness('app.js'); installSyntheticHub(h); h.element('#exportFmt').value = format;
     if(format==='png')h.run(`state.graph.toDataURL=()=>{imageReads++;return 'data:image/png;base64,${pngBase64}'}`);
-    h.network(() => response({}));
+    h.network(() => ({...response({}), blob: async () => format === 'png'
+      ? new Blob([Buffer.from(pngBase64,'base64')], {type:'image/png'}) : new Blob(['synthetic PDF'], {type:'application/pdf'})}));
     const pending = h.element('#btnExportPng').onclick();
     const imageTimer = h.timers.findLast(timer => timer.delay === 400);
     assert.ok(imageTimer); imageTimer.callback(); await pending;
     assert.equal(h.run('imageReads'), 1);
     assert.equal(h.downloads.length, 1); assert.equal(h.downloads[0].filename, `资金图谱_案件1.${format}`);
-    const requests = h.requests.filter(request => request.path === '/api/export/graph.pdf');
-    assert.equal(requests.length, format === 'pdf' ? 1 : 0);
+    const requests = h.requests.filter(request => request.path === `/api/export/graph.${format}`);
+    assert.equal(requests.length, 1);
+    assert.match(JSON.parse(requests[0].options.body).description, /FundsTrace.*全部图谱/);
     if (format === 'pdf') assert.equal(JSON.parse(requests[0].options.body).image, 'data:image/png;base64,c3ludGhldGlj');
     else {
       assert.equal(h.downloads[0].href,'blob:synthetic','PNG uses the proven object URL download path');
@@ -1090,7 +1123,7 @@ test('PNG and PDF export complete only within their frozen graph binding', async
       const bytes=Buffer.from(await h.objectUrls[0].blob.arrayBuffer());
       assert.deepEqual([...bytes.subarray(0,8)],[137,80,78,71,13,10,26,10]);
       assert.deepEqual(bytes,Buffer.from(pngBase64,'base64'),'data URL conversion preserves every PNG byte');
-      assert.equal(h.requests.length,0,'synchronous PNG decoding does not issue another HTTP request');
+      assert.equal(JSON.parse(requests[0].options.body).image,`data:image/png;base64,${pngBase64}`);
     }
   }
 });
@@ -1105,17 +1138,17 @@ test('PNG and PDF reject their delayed image timer after case, canvas, view or g
       assert.equal(h.run('imageReads'), 0, `${format}: ${change}`);
       assert.equal(h.downloads.length, 0, `${format}: ${change}`);
       assert.equal(h.objectUrls.length,0,`${format}: ${change} cannot create a stale download URL`);
-      assert.equal(h.requests.filter(request => request.path === '/api/export/graph.pdf').length, 0);
+      assert.equal(h.requests.filter(request => request.path === `/api/export/graph.${format}`).length, 0);
     }
   }
 });
 
-test('PDF ignores a late HTTP response after its case has been revoked', async () => {
-  const h = harness('app.js'); installSyntheticHub(h); h.element('#exportFmt').value = 'pdf';
+for (const format of ['png','pdf']) test(`${format} ignores a late HTTP response after its case has been revoked`, async () => {
+  const h = harness('app.js'); installSyntheticHub(h); h.element('#exportFmt').value = format;
   const pendingResponse = deferred(); h.network(() => pendingResponse.promise);
   const exported = h.element('#btnExportPng').onclick();
   h.timers.findLast(timer => timer.delay === 400).callback(); await flush();
-  assert.equal(h.requests.filter(request => request.path === '/api/export/graph.pdf').length, 1);
+  assert.equal(h.requests.filter(request => request.path === `/api/export/graph.${format}`).length, 1);
   h.run('selectCase(2);selectCase(1)');
   pendingResponse.resolve(response({})); await exported;
   assert.equal(h.downloads.length, 0);

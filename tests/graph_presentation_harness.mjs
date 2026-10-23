@@ -17,7 +17,7 @@ const sorted = iterable => [...iterable].sort();
 test('defaults are pure JSON and UMD/CommonJS provide the same API', () => {
   const expected = { version: 1, relationFilter: { currency: null, min: '', max: '', active: false },
     amountWidth: { enabled: false, currency: null }, nodeLabels: {}, nodeStyles: {}, edgeLabels: {}, edgeStyles: {},
-    hiddenAccounts: [], onlyAccounts: null, annotations: [] };
+    hiddenAccounts: [], onlyAccounts: null, annotations: [], pinnedAccounts: [], groups: [], timeWindow: { start: '', end: '', includeUndated: true } };
   assert.deepEqual(presentation.create(), expected);
   assert.deepEqual(presentation.create(null), expected);
   const root = fileURLToPath(new URL('../', import.meta.url)), sandbox = {};
@@ -53,7 +53,7 @@ test('canvas palettes change only implicit label ink and leave explicit colours 
 test('label style retains only approved fonts, bounded geometry and literal colors', () => {
   assert.deepEqual(presentation.sanitizeLabel({ fontFamily: 'Microsoft YaHei', fontSize: 8, fontWeight: 'bold',
     fontStyle: 'italic', fill: '#ABCDEF', lineHeight: 64, text: '<script>alert(1)</script>', underline: true }),
-  { fontFamily: 'Microsoft YaHei', fontSize: 8, fontWeight: 'bold', fontStyle: 'italic', fill: '#ABCDEF', lineHeight: 64 });
+  { fontFamily: 'Microsoft YaHei', fontSize: 8, fontWeight: 'bold', fontStyle: 'italic', underline: true, fill: '#ABCDEF', lineHeight: 64 });
   for (const fontFamily of ['Microsoft YaHei', 'PingFang SC', 'SimSun', 'SimHei', 'Arial', 'system-ui', 'sans-serif']) {
     assert.equal(presentation.sanitizeLabel({ fontFamily }).fontFamily, fontFamily);
   }
@@ -96,7 +96,7 @@ test('persistent state drops transaction facts, photos, HTML and arbitrary field
   assert.deepEqual(state, { version: 1, relationFilter: { currency: 'CNY', min: '1.00', max: '100.00', active: true },
     amountWidth: { enabled: true, currency: 'CNY' }, nodeLabels: { A: { fontSize: 12 } }, nodeStyles: {},
     edgeLabels: { 'A=>B': { fill: '#123' } }, edgeStyles: { 'A=>B': { stroke: '#fed' } },
-    hiddenAccounts: ['A', 'B'], onlyAccounts: ['B', 'C'], annotations: [] });
+    hiddenAccounts: ['A', 'B'], onlyAccounts: ['B', 'C'], annotations: [], pinnedAccounts: [], groups: [], timeWindow: { start: '', end: '', includeUndated: true } });
   const serialized = JSON.stringify(state);
   for (const secret of ['secret', 'SECRET', 'trackedIds', 'amount_totals', '999999999', '<script>', 'photo', 'ids']) {
     assert.equal(serialized.includes(secret), false);

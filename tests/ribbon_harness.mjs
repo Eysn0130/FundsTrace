@@ -342,7 +342,7 @@ test('adaptive inline controls are groups and compact popovers alone use dialog 
   for (const id of ids) assert.equal(h.node(id).getAttribute('role'), 'group');
 });
 
-test('commands carry values, text entry is not intercepted and planned controls remain disabled', () => {
+test('commands carry values, text entry is not intercepted and underline is an active command', () => {
   const h = harness(); h.api.activateTab('style');
   h.node('labelBold').click();
   assert.equal(h.events.at(-1).detail.command, 'labelBold'); assert.equal(h.events.at(-1).detail.value, true);
@@ -355,7 +355,9 @@ test('commands carry values, text entry is not intercepted and planned controls 
   assert.equal(input.value, '  synthetic account  ', 'the ribbon leaves local text editing to the finder');
   h.api.setStatus({ selectionCount: 3, busy: false });
   for (const node of h.doc.querySelectorAll('[data-planned]')) assert.equal(node.disabled, true);
-  assert.equal(h.node('labelUnderline').disabled, true);
+  assert.equal(h.node('labelUnderline').disabled, false);
+  h.node('labelUnderline').click();
+
   assert.equal(h.doc.querySelectorAll('[data-ribbon-command="clearSelection"]')[0].disabled, false);
   h.api.setStatus({ busy: true });
   assert.equal(h.doc.querySelectorAll('[data-ribbon-command="clearSelection"]')[0].disabled, true);

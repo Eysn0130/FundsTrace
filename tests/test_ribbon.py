@@ -18,7 +18,7 @@ class RibbonMarkup(HTMLParser):
         self.icons = []
         self.scripts = []
         self.analysis_algorithms = []
-        self.planned_features = {}
+        self.commands = {}
 
     def handle_starttag(self, tag, attributes):
         attrs = dict(attributes)
@@ -33,8 +33,8 @@ class RibbonMarkup(HTMLParser):
             self.icons.append(attrs['src'])
         if 'data-analysis-algorithm' in attrs:
             self.analysis_algorithms.append((tag, attrs))
-        if 'data-planned-feature' in attrs:
-            self.planned_features[attrs['data-planned-feature']] = (tag, attrs)
+        if 'data-ribbon-command' in attrs:
+            self.commands[attrs['data-ribbon-command']] = (tag, attrs)
         if tag == 'script':
             self.scripts.append(attrs.get('src', '').split('?')[0])
 
@@ -54,8 +54,8 @@ def test_ribbon_has_four_tabs_and_preserves_single_business_controls():
     for key in ('relationMin', 'relationMax'):
         assert page.tags[key][1]['inputmode'] == 'decimal'
         assert page.tags[key][1].get('type') != 'number'
-    assert page.tags['labelUnderline'][1]['data-planned'] == 'true'
-    assert 'disabled' in page.tags['labelUnderline'][1]
+    assert page.tags['labelUnderline'][1]['data-ribbon-command'] == 'labelUnderline'
+    assert 'data-planned' not in page.tags['labelUnderline'][1]
     scripts = page.scripts
     assert scripts.index('/static/money.js') < scripts.index('/static/graph-relations.js') < scripts.index('/static/app.js')
     assert scripts.index('/static/workflow-ui.js') < scripts.index('/static/ribbon-commands.js') < scripts.index('/static/ribbon.js')
@@ -76,17 +76,18 @@ def test_analysis_shortcuts_are_case_bound_algorithm_links_without_running_analy
 
 
 
-def test_confirmed_style_placeholders_are_explicitly_planned_and_disabled():
+def test_all_formerly_planned_features_are_real_context_bound_commands():
     page = RibbonMarkup()
     page.feed((ROOT / 'static/index.html').read_text())
-    for feature in ('fixLayout', 'unfixLayout', 'presetDefault', 'presetReport'):
-        tag, attrs = page.planned_features[feature]
+    for feature in ('createGroup', 'addToGroup', 'manageGroups', 'findGraphPaths', 'timePlayback',
+                    'nodeShape', 'nodeIcon', 'fixLayout', 'unfixLayout', 'presetDefault', 'presetReport',
+                    'timeWindow', 'labelUnderline'):
+        tag, attrs = page.commands[feature]
         assert tag == 'button'
-        assert 'disabled' in attrs
-        assert attrs['data-planned'] == 'true'
-        assert 'data-ribbon-command' not in attrs
+        assert attrs['data-ribbon-command'] == feature
+        assert 'data-planned' not in attrs
         assert 'data-ribbon-proxy' not in attrs
-        assert 'planned' in attrs['class'].split()
+        assert 'planned' not in attrs['class'].split()
 
 
 def test_every_ribbon_icon_is_local_well_formed_svg():
@@ -123,8 +124,8 @@ def test_graph_export_uses_white_print_paper():
     assert "PRINT_INK = '#111111'" in source
     assert "graph.toDataURL('image/png', PRINT_PAPER)" in source
     assert "applyPrintInk([...(graph.getNodes?.() || []), ...(graph.getEdges?.() || [])])" in source
-    # 页脚与文字使用打印墨色，深色主题的旧常量不得回到导出路径。
-    assert "fill:PRINT_PAPER" in source
-    assert "fill:PRINT_INK" in source
+    # 范围保留在文件元数据，图像不再绘制机械说明页脚。
+    assert "funds-export-legend" not in source
+    assert "const description = graphImageExportLines().join" in source
     assert "'#111a23'" not in source
     assert "'#111c26'" not in source
