@@ -101,12 +101,19 @@ function harness({ url = 'http://synthetic.invalid/analysis?case_id=1', initialC
     matches(selector) { return selector.split(',').some(part => matches(this, part.trim())); }
     closest(selector) { for (let node = this; node; node = node.parentElement) if (node.matches(selector)) return node; return null; }
     querySelectorAll(selector) {
-      const all = this.children.flatMap(child => [child, ...child.querySelectorAll('*')]);
-      return all.filter(node => selector.split(',').some(part => {
-        const tokens = part.trim().split(/\s+/), leaf = tokens.pop();
-        if (!matches(node, leaf)) return false;
+      // Traverse once. Recursively querying '*' re-filtered each descendant at
+      // every ancestor and dominated the workspace's synthetic runtime.
+      const all = [], collect = parent => { for (const child of parent.children) { all.push(child); collect(child); } };
+      collect(this);
+      const branches = selector.split(',').map(part => part.trim().split(/\s+/));
+      return all.filter(node => branches.some(tokens => {
+        if (!matches(node, tokens.at(-1))) return false;
         let parent = node.parentElement;
-        for (const token of tokens.reverse()) { while (parent && !matches(parent, token)) parent = parent.parentElement; if (!parent) return false; parent = parent.parentElement; }
+        for (let index = tokens.length - 2; index >= 0; index--) {
+          while (parent && !matches(parent, tokens[index])) parent = parent.parentElement;
+          if (!parent) return false;
+          parent = parent.parentElement;
+        }
         return true;
       }));
     }
@@ -211,6 +218,21 @@ const posts = (h, path = '/api/analysis/run') => h.requests.filter(request => re
 const paramsOf = request => JSON.parse(request.options.body).params;
 const feedback = h => ['analysisError', 'runStatus', 'reportStatus', 'caseStats'].map(id => h.element(id)?.textContent || '').join(' ') + h.alerts.join(' ');
 async function finishedRun(h, value = result()) { await h.algorithms(value.algorithms || ['cycles']); h.network(() => value); await h.run('run()'); }
+
+test('synthetic selector traversal preserves document order, distinct branches and ancestor matching', async () => {
+  const h = harness(); await h.ready();
+  const fixture = h.document.createElement('section'); fixture.className = 'field';
+  fixture.innerHTML = '<div class="group"><span>text</span><input id="first" class="field" value="A"><div><input id="second" class="field" disabled checked></div></div><input id="last" class="field">';
+  assert.deepEqual(fixture.querySelectorAll('.field').map(node => node.id), ['first', 'second', 'last']);
+  assert.deepEqual(fixture.querySelectorAll('.group input').map(node => node.id), ['first', 'second']);
+  assert.deepEqual(fixture.querySelectorAll('.group input, #first, #last').map(node => node.id), ['first', 'second', 'last']);
+  assert.deepEqual(fixture.querySelectorAll('input:not(:disabled)').map(node => node.id), ['first', 'last']);
+  assert.deepEqual(fixture.querySelectorAll('input:checked').map(node => node.id), ['second']);
+  const first = fixture.querySelector('[value="A"]'); first.remove();
+  assert.deepEqual(fixture.querySelectorAll('.field').map(node => node.id), ['second', 'last']);
+  assert.equal(first.matches('.field'), true); assert.equal(first.isConnected, false);
+  assert.equal(fixture.querySelectorAll('*').some(node => node.tagName === '#TEXT'), false);
+});
 
 test('analysis account pickers are case-bound fill controls and never submit or locate', async () => {
   const h = harness({ entitySearch: true }); await h.ready();
