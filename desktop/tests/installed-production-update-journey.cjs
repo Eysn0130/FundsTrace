@@ -77,7 +77,6 @@ async function runInstalledProductionUpdateJourney({ configFile, primary, evalua
   }
   await check('installedProductionUpgradePreferencesBefore', preferencesMatch);
   await check('installedProductionUpdateAvailable', async () => {
-    if (await phase() === 'idle') await click();
     await waitPhase('available', 45000);
     const value = await status();
     assert.equal(value.version, config.version);
