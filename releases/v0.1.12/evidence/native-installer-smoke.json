@@ -1,0 +1,357 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "priorVersion": "0.1.11",
+  "currentVersion": "0.1.12",
+  "failedCheck": null,
+  "upgradeBaseline": {
+    "schemaVersion": 1,
+    "targetVersion": "0.1.12",
+    "prior": {
+      "version": "0.1.11",
+      "sha256": "b9533c1cf39a61120050893124a82f7adf5c229a77c663a5be2b17643f3ed71a",
+      "bytes": 162470583
+    },
+    "baselineSha256": "9904d463ff68a4636f67ac70af18b51f6c5d8900446b63cf3df291ce95b8e366",
+    "priorInstallerUrl": "https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.11/FundsTrace-0.1.11-windows-x64-unsigned.exe"
+  },
+  "priorInstallerSha256": "b9533c1cf39a61120050893124a82f7adf5c229a77c663a5be2b17643f3ed71a",
+  "priorInstallerBytes": 162470583,
+  "currentInstallerSha256": "1665fd14bec465a9c8a241907c0b4093f56d6ed2420c66c1dc8cd4f5944e70b3",
+  "currentInstallerBytes": 162470646,
+  "failureType": null,
+  "failureId": null,
+  "failedNativeStep": null,
+  "nativeErrorCode": null,
+  "checks": {
+    "upgradeBaseline": "passed",
+    "ciFreshUser": "passed",
+    "priorInstallerDigest": "passed",
+    "priorInstalled": "passed",
+    "syntheticDataSeeded": "passed",
+    "priorCaseDataWrittenByInstalledBackend": "passed",
+    "presentationPreferencesSeeded": "passed",
+    "obsoleteInstalledFileRemoved": "passed",
+    "upgradedSameIdentity": "passed",
+    "installedResourceIntegrity": "passed",
+    "installedExecutableIcons": "passed",
+    "installedShortcutIcons": "passed",
+    "upgradedPresentationPreferences": "passed",
+    "upgradedExistingCaseData": "passed",
+    "legacyCasePackageCompatible": "passed",
+    "upgradedAnalysisAndAtomicCanvas": "passed",
+    "sameVersionReinstalled": "passed",
+    "reinstalledResourceIntegrity": "passed",
+    "reinstalledDataFilesUnchanged": "passed",
+    "reinstalledExistingCaseData": "passed",
+    "reinstalledPresentationPreferences": "passed",
+    "installedBackendWithoutActivation": "passed",
+    "installedBackendAuthentication": "passed",
+    "syntheticCaseCreatedAndReopened": "passed",
+    "eofShutdown": "passed",
+    "installedApplicationStarted": "passed",
+    "installedApplicationSingleInstance": "passed",
+    "installedApplicationNormalClose": "passed",
+    "installedApplicationStartupClose": "passed",
+    "installedGraphJourney": "passed",
+    "installedImportRecovery": "passed",
+    "uninstallRegistrationRemoved": "passed",
+    "installedExecutableRemoved": "passed",
+    "syntheticDataRetained": "passed",
+    "presentationPreferencesRetained": "passed",
+    "cleanup": "passed",
+    "installedInAppUpdate": "passed"
+  },
+  "limits": {
+    "gui": false,
+    "importRecovery": "installed-backend-public-api-process-restart; not Windows interactive task recovery"
+  },
+  "priorDataChecks": {
+    "priorBackendSeeded": true,
+    "priorExactMoneyAndCurrency": true,
+    "priorCanvasAndTracking": true,
+    "priorPackageExported": true,
+    "priorEofReopened": true
+  },
+  "iconResources": {
+    "FundsTrace.exe": {
+      "schemaVersion": 1,
+      "status": "passed",
+      "selection": "default-icon-index-0",
+      "executableSha256": "fe24acdf975b826c47cdebd157f18e7aa42dd10e41444f55cf6b58ce03b250c3",
+      "expectedIcoSha256": "fb6156b2f4f141121d49460f0d41133556dcc1cfb9622dc1ef3bf2fc1f25ca4c",
+      "verifiedLanguageVariants": 1,
+      "frames": [
+        {
+          "width": 128,
+          "height": 128,
+          "bitCount": 32,
+          "bytes": 23693,
+          "sha256": "13a0c9e49abd327bf9f2db1a07ff998ec3e8a1ec0a473dc9efaefd7940f94612"
+        },
+        {
+          "width": 16,
+          "height": 16,
+          "bitCount": 32,
+          "bytes": 853,
+          "sha256": "c158be4e08fd9d6e6fa42f04a7c45ded6fa9591a622be058b7f591381d386139"
+        },
+        {
+          "width": 20,
+          "height": 20,
+          "bitCount": 32,
+          "bytes": 1237,
+          "sha256": "070afa5fa905719f86506f8e9af2e0bdba0460b30471048ee992ac5f1e2df9cf"
+        },
+        {
+          "width": 24,
+          "height": 24,
+          "bitCount": 32,
+          "bytes": 1620,
+          "sha256": "08ff7eed57f165a15e3bda10821dd0c909ced72e240d017a32541f736d8e0f3d"
+        },
+        {
+          "width": 256,
+          "height": 256,
+          "bitCount": 32,
+          "bytes": 78802,
+          "sha256": "c85bc7959c8d5afb0b8bf2a35a298ea7c8360e3aca405cbe3f64ee705b442f18"
+        },
+        {
+          "width": 32,
+          "height": 32,
+          "bitCount": 32,
+          "bytes": 2593,
+          "sha256": "e7bffd7f4baffa21c4fc6ae0dd6457c1f4861d2b41bddb74bf90fde56987eb4e"
+        },
+        {
+          "width": 40,
+          "height": 40,
+          "bitCount": 32,
+          "bytes": 3554,
+          "sha256": "c327b419b46fceb35ccabb9978232207ac62858607fb295c6f94049aa4135b91"
+        },
+        {
+          "width": 48,
+          "height": 48,
+          "bitCount": 32,
+          "bytes": 4848,
+          "sha256": "ebe1aa09b39af02961c18d4f63690a3c32a89bdd6470ef5074fa0f9da0e99b9d"
+        },
+        {
+          "width": 64,
+          "height": 64,
+          "bitCount": 32,
+          "bytes": 7436,
+          "sha256": "54c030c90da0292b81d44299307f44a3006fb840056842b9184ec398f038de5d"
+        },
+        {
+          "width": 96,
+          "height": 96,
+          "bitCount": 32,
+          "bytes": 14750,
+          "sha256": "0191d9a7f7e67cf36ba9d55c1fb2215e024da4acf624b78e1c6d968d4e8bfbf8"
+        }
+      ],
+      "limits": {
+        "renderedShellAppearance": false,
+        "windows11Interactive": false
+      }
+    },
+    "Uninstall FundsTrace.exe": {
+      "schemaVersion": 1,
+      "status": "passed",
+      "selection": "default-icon-index-0",
+      "executableSha256": "2c21f833e165273c5b667a3c159942b592c2bb102f6c625cc7abc21e3873c485",
+      "expectedIcoSha256": "fb6156b2f4f141121d49460f0d41133556dcc1cfb9622dc1ef3bf2fc1f25ca4c",
+      "verifiedLanguageVariants": 1,
+      "frames": [
+        {
+          "width": 128,
+          "height": 128,
+          "bitCount": 32,
+          "bytes": 23693,
+          "sha256": "13a0c9e49abd327bf9f2db1a07ff998ec3e8a1ec0a473dc9efaefd7940f94612"
+        },
+        {
+          "width": 16,
+          "height": 16,
+          "bitCount": 32,
+          "bytes": 853,
+          "sha256": "c158be4e08fd9d6e6fa42f04a7c45ded6fa9591a622be058b7f591381d386139"
+        },
+        {
+          "width": 20,
+          "height": 20,
+          "bitCount": 32,
+          "bytes": 1237,
+          "sha256": "070afa5fa905719f86506f8e9af2e0bdba0460b30471048ee992ac5f1e2df9cf"
+        },
+        {
+          "width": 24,
+          "height": 24,
+          "bitCount": 32,
+          "bytes": 1620,
+          "sha256": "08ff7eed57f165a15e3bda10821dd0c909ced72e240d017a32541f736d8e0f3d"
+        },
+        {
+          "width": 256,
+          "height": 256,
+          "bitCount": 32,
+          "bytes": 78802,
+          "sha256": "c85bc7959c8d5afb0b8bf2a35a298ea7c8360e3aca405cbe3f64ee705b442f18"
+        },
+        {
+          "width": 32,
+          "height": 32,
+          "bitCount": 32,
+          "bytes": 2593,
+          "sha256": "e7bffd7f4baffa21c4fc6ae0dd6457c1f4861d2b41bddb74bf90fde56987eb4e"
+        },
+        {
+          "width": 40,
+          "height": 40,
+          "bitCount": 32,
+          "bytes": 3554,
+          "sha256": "c327b419b46fceb35ccabb9978232207ac62858607fb295c6f94049aa4135b91"
+        },
+        {
+          "width": 48,
+          "height": 48,
+          "bitCount": 32,
+          "bytes": 4848,
+          "sha256": "ebe1aa09b39af02961c18d4f63690a3c32a89bdd6470ef5074fa0f9da0e99b9d"
+        },
+        {
+          "width": 64,
+          "height": 64,
+          "bitCount": 32,
+          "bytes": 7436,
+          "sha256": "54c030c90da0292b81d44299307f44a3006fb840056842b9184ec398f038de5d"
+        },
+        {
+          "width": 96,
+          "height": 96,
+          "bitCount": 32,
+          "bytes": 14750,
+          "sha256": "0191d9a7f7e67cf36ba9d55c1fb2215e024da4acf624b78e1c6d968d4e8bfbf8"
+        }
+      ],
+      "limits": {
+        "renderedShellAppearance": false,
+        "windows11Interactive": false
+      }
+    }
+  },
+  "shortcutIcons": {
+    "schemaVersion": 1,
+    "status": "passed",
+    "failedCheck": null,
+    "failureCode": null,
+    "mode": "shortcuts",
+    "platform": {
+      "osVersion": "10.0.20348.0",
+      "architecture": "X64",
+      "githubActions": true
+    },
+    "checks": {
+      "inputBinding": "passed",
+      "nativeIconReader": "passed",
+      "desktopShortcut": "passed",
+      "startMenuShortcut": "passed"
+    },
+    "iconComparisons": [
+      {
+        "Source": "desktopShortcut/shell-large",
+        "Width": 32,
+        "Height": 32,
+        "Matched": true,
+        "ActualSha256": "402c404a5641da29a73d50bee18b1ca2daca44f8ddf507de739f31e05d791a4d",
+        "ExpectedSha256": "402c404a5641da29a73d50bee18b1ca2daca44f8ddf507de739f31e05d791a4d"
+      },
+      {
+        "Source": "desktopShortcut/shell-small",
+        "Width": 16,
+        "Height": 16,
+        "Matched": true,
+        "ActualSha256": "5a7fc6d7a35837ccba676dca31e67afdf17e459f1567c53a78222aef4f327f94",
+        "ExpectedSha256": "5a7fc6d7a35837ccba676dca31e67afdf17e459f1567c53a78222aef4f327f94"
+      },
+      {
+        "Source": "startMenuShortcut/shell-large",
+        "Width": 32,
+        "Height": 32,
+        "Matched": true,
+        "ActualSha256": "402c404a5641da29a73d50bee18b1ca2daca44f8ddf507de739f31e05d791a4d",
+        "ExpectedSha256": "402c404a5641da29a73d50bee18b1ca2daca44f8ddf507de739f31e05d791a4d"
+      },
+      {
+        "Source": "startMenuShortcut/shell-small",
+        "Width": 16,
+        "Height": 16,
+        "Matched": true,
+        "ActualSha256": "5a7fc6d7a35837ccba676dca31e67afdf17e459f1567c53a78222aef4f327f94",
+        "ExpectedSha256": "5a7fc6d7a35837ccba676dca31e67afdf17e459f1567c53a78222aef4f327f94"
+      }
+    ],
+    "limits": {
+      "windows10And11Interactive": false,
+      "taskbarAppearance": false,
+      "systemDpi": false,
+      "comparison": "Exact RGB pixels after Win32 rendering on black and white backgrounds at the actual HICON dimensions; no tolerance.",
+      "scope": "Only fixed current-user FundsTrace shortcuts or visible top-level windows of the supplied installed EXE PID; no app launch, window changes or business content.",
+      "resampling": "A different rasterization/resampling result fails even if visually similar; this does not establish native taskbar, pinning or shortcut appearance on Windows 10/11."
+    },
+    "pathBindings": {
+      "desktopShortcut": {
+        "targetTextMatch": true,
+        "targetFileMatch": true,
+        "iconLocationTextMatch": true,
+        "iconLocationFileMatch": true
+      },
+      "startMenuShortcut": {
+        "targetTextMatch": true,
+        "targetFileMatch": true,
+        "iconLocationTextMatch": true,
+        "iconLocationFileMatch": true
+      }
+    }
+  },
+  "upgradedDataChecks": {
+    "upgradedFactsUnchanged": true,
+    "upgradedCanvasAndTracking": true,
+    "upgradedSourceFilesUnchanged": true,
+    "legacyPackageRoundTrip": true,
+    "upgradedAnalysisPaths": true,
+    "upgradedAnalysisCycles": true,
+    "upgradedAtomicCanvas": true,
+    "upgradedEofReopened": true
+  },
+  "reinstalledDataChecks": {
+    "upgradedFactsUnchanged": true,
+    "upgradedCanvasAndTracking": true,
+    "upgradedSourceFilesUnchanged": true,
+    "legacyPackageRoundTrip": true,
+    "upgradedAnalysisPaths": true,
+    "upgradedAnalysisCycles": true,
+    "upgradedAtomicCanvas": true,
+    "upgradedEofReopened": true
+  },
+  "startupCloseChecks": {
+    "installedStartupCloseBusinessPaused": true,
+    "installedStartupCloseNativeCaption": true,
+    "installedStartupCloseCleanExit": true,
+    "installedStartupCloseBackendReleased": true,
+    "installedStartupCloseNoPageExceptions": true
+  },
+  "inAppUpdateDataChecks": {
+    "upgradedFactsUnchanged": true,
+    "upgradedCanvasAndTracking": true,
+    "upgradedSourceFilesUnchanged": true,
+    "legacyPackageRoundTrip": true,
+    "upgradedAnalysisPaths": true,
+    "upgradedAnalysisCycles": true,
+    "upgradedAtomicCanvas": true,
+    "upgradedEofReopened": true
+  }
+}

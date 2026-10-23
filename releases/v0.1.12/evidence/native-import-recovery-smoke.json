@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "checks": {
+    "ciSyntheticRuntime": true,
+    "installedBackendReady": true,
+    "syntheticCaseCreated": true,
+    "syntheticUploadPreviewed": true,
+    "activeImportObservedAndOwnedBackendKilled": true,
+    "interruptedBackendReopened": true,
+    "interruptedReceiptRecovered": true,
+    "interruptionLeftNoPartialBatchFlowOrSource": true,
+    "explicitRepreviewAndCommit": true,
+    "recoveredImportCompleted": true,
+    "exactMoneyDedupAndProvenance": true,
+    "completedBackendClosed": true,
+    "completedReceiptReopened": true,
+    "doneReceiptNeverReplayed": true,
+    "finalOwnedBackendClosed": true
+  },
+  "timings": {
+    "ciSyntheticRuntime": 5,
+    "installedBackendReady": 997,
+    "syntheticCaseCreated": 78,
+    "syntheticUploadPreviewed": 330,
+    "activeImportObservedAndOwnedBackendKilled": 35,
+    "interruptedBackendReopened": 1010,
+    "interruptedReceiptRecovered": 47,
+    "interruptionLeftNoPartialBatchFlowOrSource": 22,
+    "explicitRepreviewAndCommit": 297,
+    "recoveredImportCompleted": 713,
+    "exactMoneyDedupAndProvenance": 63,
+    "completedBackendClosed": 388,
+    "completedReceiptReopened": 998,
+    "doneReceiptNeverReplayed": 113,
+    "finalOwnedBackendClosed": 303
+  },
+  "failedCheck": null,
+  "synthetic": {
+    "inputRows": 20003,
+    "uniqueRows": 20000,
+    "duplicateRows": 3,
+    "expectedAmount": "1240000.00"
+  },
+  "limits": {
+    "windowsActionsNativeBackendOnly": true,
+    "installedBackendPublicHttp": true,
+    "recoveryUiInteraction": false,
+    "defaultUserDataTouched": false
+  }
+}
