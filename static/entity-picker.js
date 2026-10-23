@@ -33,7 +33,7 @@
     let timer = null, frame = null, controller = null, serial = 0, currentScope = null, currentQuery = '';
     let currentTokenStart = -1, currentTokenEnd = -1, caretSignature = '', selectedToken = '';
     let items = [], offsets = [0], heights = [], active = -1, nextOffset = 0, hasMore = false, loading = false, failure = false;
-    let selected = null, selectedScope = null, selectedValue = '', ghostSuffix = '', rowEstimate = 34, narrow = false, writeInputSeen = false, lastWidth = 0;
+    let selected = null, selectedScope = null, selectedValue = '', rowEstimate = 34, narrow = false, writeInputSeen = false, lastWidth = 0;
     const listeners = [];
     const listen = (element, type, callback, capture) => {
       element.addEventListener(type, callback, capture); listeners.push(() => element.removeEventListener(type, callback, capture));
@@ -59,7 +59,7 @@
     };
     const hideLayer = element => { try { element.hidePopover(); } catch (_) { /* Removed/disconnected native layer. */ } element.hidden = true; };
     const showLayer = element => { element.hidden = false; if (typeof element.showPopover === 'function') { try { element.showPopover(); } catch (_) { /* Fallback retains fixed positioned DOM. */ } } };
-    const clearGhost = () => { ghostSuffix = ''; ghostShown = false; hideLayer(ghost); ghost.replaceChildren(); };
+    const clearGhost = () => { ghostShown = false; hideLayer(ghost); ghost.replaceChildren(); };
     function close() {
       wanted = false; shown = false; input.setAttribute('aria-expanded', 'false');
       input.removeAttribute('aria-activedescendant'); hideLayer(popup); clearGhost();
@@ -165,20 +165,22 @@
       }
       feedbackState();
     }
+    function completionSuffix() {
+      if (!shown || !wanted || options.ghost === false || input.tagName === 'TEXTAREA' || !items.length || !bindingValid()
+        || composing || input.scrollLeft > 0 || doc.activeElement !== input || input.selectionStart !== input.selectionEnd || input.selectionEnd !== input.value.length) return '';
+      const candidate = items[active >= 0 ? active : 0], part = token(), value = text(candidate.matchedText || candidate.value), query = part.query;
+      if (part.start !== 0 || part.end !== input.value.length || !query || value.length <= query.length || !value.toLocaleLowerCase().startsWith(query.toLocaleLowerCase())) return '';
+      return value.slice(query.length);
+    }
     function positionGhost() {
-      if (!ghostSuffix || composing || input.scrollLeft > 0 || doc.activeElement !== input || input.selectionStart !== input.selectionEnd || input.selectionEnd !== input.value.length) { clearGhost(); return; }
+      const completion = completionSuffix();
+      if (!completion) { clearGhost(); return; }
       const rect = input.getBoundingClientRect(), style = win.getComputedStyle(input);
       Object.assign(ghost.style, { left: rect.left + 'px', top: rect.top + 'px', width: rect.width + 'px', height: rect.height + 'px',
         font: style.font, letterSpacing: style.letterSpacing, lineHeight: style.lineHeight, padding: style.padding, borderWidth: style.borderWidth, borderStyle: 'solid', borderColor: 'transparent', textAlign: style.textAlign });
       ghost.replaceChildren(); const typed = doc.createElement('span'); typed.style.visibility = 'hidden'; typed.textContent = input.value;
-      const suffix = doc.createElement('span'); suffix.className = 'fep-ghost-suffix'; suffix.textContent = ghostSuffix; ghost.append(typed, suffix);
+      const suffix = doc.createElement('span'); suffix.className = 'fep-ghost-suffix'; suffix.textContent = completion; ghost.append(typed, suffix);
       if (!ghostShown) { showLayer(ghost); ghostShown = true; }
-    }
-    function updateGhost() {
-      if (options.ghost === false || input.tagName === 'TEXTAREA' || !items.length || !bindingValid()) { clearGhost(); return; }
-      const candidate = items[active >= 0 ? active : 0], part = token(), value = text(candidate.matchedText || candidate.value), query = part.query;
-      if (part.start !== 0 || part.end !== input.value.length || !query || value.length <= query.length || !value.toLocaleLowerCase().startsWith(query.toLocaleLowerCase())) { clearGhost(); return; }
-      ghostSuffix = value.slice(query.length); positionGhost();
     }
     function position() {
       if (!shown || !bindingValid()) { if (shown) close(); return; }
@@ -245,7 +247,7 @@
         if (requestSerial === serial && controller === requestController) {
           controller = null; loading = false;
           if (bindingValid() && wanted) {
-            reveal(); updateGhost();
+            reveal(); positionGhost();
             // A short/variable-height page can leave the viewport at the loaded boundary.
             // Continue only after actual progress; failures or duplicate-only pages never spin.
             if (hasMore && !failure && items.length > beforeCount && nearLoadedEnd()) {
@@ -270,7 +272,7 @@
     function open() {
       if (disposed || composing || writing) return;
       if (!bindingValid() || !currentQuery || (!items.length && !loading)) { queryChanged(true, true); return; }
-      wanted = true; reveal(); updateGhost();
+      wanted = true; reveal(); positionGhost();
     }
     function notifyInput() {
       writing = true; writeInputSeen = false;
@@ -306,7 +308,7 @@
       else if (offsets[active + 1] > list.scrollTop + height) list.scrollTop = offsets[active + 1] - height;
       render();
     }
-    function move(next) { active = Math.max(0, Math.min(items.length - 1, next)); ensureActiveVisible(); updateGhost(); if (hasMore && active >= items.length - 3 && !failure) load(true); }
+    function move(next) { active = Math.max(0, Math.min(items.length - 1, next)); ensureActiveVisible(); positionGhost(); if (hasMore && active >= items.length - 3 && !failure) load(true); }
     function keydown(event) {
       if (event.isComposing || composing || event.keyCode === 229) {
         if (['Enter', 'Escape', 'ArrowDown', 'ArrowUp'].includes(event.key) || event.keyCode === 229) event.stopImmediatePropagation();
@@ -315,9 +317,11 @@
       if (shown && !bindingValid()) invalidate();
       if (event.key === 'Escape' && (shown || wanted)) { event.preventDefault(); event.stopImmediatePropagation(); close(); return; }
       if (event.key === 'Tab') { close(); return; }
-      if (event.key === 'Enter' && event.shiftKey && ghostSuffix && bindingValid()) {
-        event.preventDefault(); event.stopImmediatePropagation(); const suffix = ghostSuffix; const end = input.selectionEnd;
-        write(suffix, end, end); queryChanged(false); return;
+      if (event.key === 'Enter' && event.shiftKey && input.tagName !== 'TEXTAREA') {
+        event.preventDefault(); event.stopImmediatePropagation(); const suffix = completionSuffix();
+        if (suffix) { const end = input.value.length; write(suffix, end, end); queryChanged(false); }
+        else clearGhost();
+        return;
       }
       if (event.key === 'Enter' && !event.shiftKey) {
         if (shown && active >= 0) { event.preventDefault(); event.stopImmediatePropagation(); choose(active); }
@@ -343,9 +347,11 @@
       return selected && selectedScope === validScope() && selectedValue === input.value && (!options.token || selectedToken === tokenSignature(token())) ? selected : null;
     }
     function caretChanged() {
-      if (!options.token || disposed || writing || composing || doc.activeElement !== input) return;
-      const signature = tokenSignature(token());
-      if (signature !== caretSignature) queryChanged(false);
+      if (disposed || writing || composing || doc.activeElement !== input) return;
+      if (options.token) {
+        const signature = tokenSignature(token());
+        if (signature !== caretSignature) queryChanged(false);
+      } else positionGhost();
     }
     function nearLoadedEnd() { return list.scrollTop + list.clientHeight >= (offsets[items.length] || 0) - rowEstimate * 4; }
     listen(input, 'input', () => { if (writing) writeInputSeen = true; else queryChanged(false); });
@@ -356,13 +362,12 @@
     listen(input, 'click', () => {
       caretChanged();
       if (!shown && !wanted) open();
-      else if (bindingValid()) updateGhost();
+      else if (bindingValid()) positionGhost();
     });
-    if (options.token) {
-      listen(input, 'select', caretChanged);
-      listen(input, 'keyup', caretChanged);
-      listen(doc, 'selectionchange', caretChanged);
-    }
+    listen(input, 'select', caretChanged);
+    listen(input, 'keyup', caretChanged);
+    listen(doc, 'selectionchange', caretChanged);
+    listen(input, 'scroll', positionGhost);
     listen(input, 'blur', () => { win.setTimeout(() => { if (!popup.contains(doc.activeElement) && doc.activeElement !== input) close(); }, 0); });
     listen(list, 'pointerdown', event => { if (event.target.closest('.fep-option')) event.preventDefault(); });
     listen(list, 'click', event => { const element = event.target.closest('.fep-option'); if (element && list.contains(element)) choose(Number(element.dataset.index)); });

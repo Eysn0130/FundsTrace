@@ -223,6 +223,61 @@ test('ghost is prefix-only and follows the keyboard candidate; Shift Enter only 
   h.type('三'); await flush(); assert.equal(h.ghost.hidden, true);
 });
 
+test('moving a single-line caret clears the ghost and Shift Enter cannot splice a stale suffix into an account', async () => {
+  const prefix = '000SYN-SEARCH-0001234', candidate = prefix + '0';
+  const h = harness({ debounce: 0, search: () => Promise.resolve({ items: [item(1, { value: candidate, account: candidate, matchedField: 'account', matchedText: candidate })], hasMore: false }) });
+  h.type(prefix); await flush(); assert.equal(h.ghost.textContent, candidate);
+  // Revalidate the caret during the shortcut, even before selectionchange.
+  h.input.setSelectionRange(prefix.length - 1, prefix.length - 1);
+  h.input.emit('keydown', { key: 'Enter', shiftKey: true }); assert.equal(h.input.value, prefix);
+  h.type(prefix); await flush();
+  h.input.setSelectionRange(prefix.length - 1, prefix.length - 1); h.input.emit('keyup', { key: 'ArrowLeft' });
+  assert.equal(h.ghost.hidden, true);
+  const middle = h.input.emit('keydown', { key: 'Enter', shiftKey: true });
+  assert.equal(middle.defaultPrevented, true); assert.equal(middle.immediateStopped, true); assert.equal(h.input.value, prefix);
+  h.input.setSelectionRange(prefix.length, prefix.length); h.doc.emit('selectionchange');
+  assert.equal(h.ghost.textContent, candidate); assert.equal(h.ghost.hidden, false);
+  // A programmatic caret change need not have delivered selectionchange yet.
+  h.input.setSelectionRange(prefix.length - 1, prefix.length - 1);
+  h.input.emit('keydown', { key: 'Enter', shiftKey: true }); assert.equal(h.input.value, prefix);
+  assert.equal(h.picks.length, 0); assert.equal(h.submits.length, 0);
+});
+
+test('single-line Shift Enter consumes missing suffixes and rechecks selection, scroll, focus and binding before writing', async () => {
+  const prefix = '0001234', candidate = prefix + '0';
+  const h = harness({ debounce: 0, search: () => Promise.resolve({ items: [item(1, { value: candidate, account: candidate, matchedText: candidate })], hasMore: false }) });
+  const noSubmit = () => {
+    const event = h.input.emit('keydown', { key: 'Enter', shiftKey: true });
+    assert.equal(event.defaultPrevented, true); assert.equal(event.immediateStopped, true);
+    assert.equal(h.picks.length, 0); assert.equal(h.submits.length, 0);
+  };
+  noSubmit(); // No query or loaded candidates: prevent native form submission too.
+  h.type(candidate); await flush(); assert.equal(h.ghost.hidden, true); noSubmit(); assert.equal(h.input.value, candidate);
+  for (const change of [
+    () => h.input.setSelectionRange(0, prefix.length),
+    () => { h.input.scrollLeft = 1; },
+    () => { h.doc.activeElement = h.form; },
+    () => h.bind('another-case'),
+  ]) {
+    h.bind('case:A/generation:1'); h.doc.activeElement = h.input; h.input.scrollLeft = 0;
+    h.type(prefix); await flush(); assert.equal(h.ghost.hidden, false);
+    change(); noSubmit(); assert.equal(h.input.value, prefix);
+  }
+  h.bind('case:A/generation:1'); h.doc.activeElement = h.input; h.type(prefix); await flush();
+  h.input.scrollLeft = 3; h.input.emit('scroll'); assert.equal(h.ghost.hidden, true);
+  h.input.scrollLeft = 0; h.input.emit('scroll'); assert.equal(h.ghost.hidden, false);
+  h.input.setSelectionRange(0, prefix.length); h.input.emit('select'); assert.equal(h.ghost.hidden, true);
+});
+
+test('textarea Shift Enter stays native even when the current token has matching candidates', async () => {
+  const h = harness({ debounce: 0, ghost: false, onSubmit: undefined, token: input => ({ query: input.value, start: 0, end: input.value.length }),
+    search: () => Promise.resolve({ items: [item(1)], hasMore: false }) });
+  h.input.tagName = 'TEXTAREA'; h.type('张'); await flush();
+  const event = h.input.emit('keydown', { key: 'Enter', shiftKey: true });
+  assert.equal(event.defaultPrevented, false); assert.equal(event.propagationStopped, false);
+  assert.equal(h.input.value, '张'); assert.equal(h.picks.length, 0); assert.equal(h.submits.length, 0);
+});
+
 test('numeric ID matches retain name layout; actual account match is number first; missing fields leave no empty placeholders', async () => {
   const h = harness({ debounce: 0, search: () => Promise.resolve({ items: [item(1, { matchedField: 'id', idNo: '123456789012345678', matchedText: '123456789012345678' }), item(2, { matchedField: 'account', idNo: undefined }), item(3, { account: undefined, idNo: undefined })], hasMore: false }) });
   h.type('123'); await flush(); const rows = h.options();

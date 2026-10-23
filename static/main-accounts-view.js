@@ -187,7 +187,11 @@
     el('maReconcile').onclick = () => controller.reconcile(); el('maAcknowledge').onclick = () => controller.acknowledge();
     el('maPrev').onclick = () => controller.search(state.query, state.page - 1, exactQuery); el('maNext').onclick = () => controller.search(state.query, state.page + 1, exactQuery);
     const queryScope = () => state?.visible && state.screen === 'search' && dialog.open && current(binding)
-      && !state.pending && !state.unknown && !state.loading ? `${pickerEpoch}:${JSON.stringify(binding)}` : null;
+      && !state.pending && !state.unknown && !state.loading
+      // Disabling the submitted SVG button returns focus to this input. That
+      // focus must not reopen suggestions over the result being requested;
+      // editing a different draft is still allowed while it is in flight.
+      && !(state.searching && el('maQuery').value.trim() === state.query) ? `${pickerEpoch}:${JSON.stringify(binding)}` : null;
     const doSearch = (query = el('maQuery').value, selected = picker?.getSelected()) => {
       if (composing || !state?.visible || state.screen !== 'search' || !dialog.open || !current(binding) || state.pending || state.unknown || state.loading) return false;
       const value = String(query).trim(), selectedAccount = typeof selected?.account === 'string' ? selected.account : '';
@@ -217,7 +221,10 @@
     });
     dialog.addEventListener('pointerdown', event => { if (rowMenu && !event.target.closest('#maRowMenu,.main-accounts-more')) closeRow(); });
     dialog.addEventListener('keydown', event => {
-      if (event.key === 'Enter' && (composing || event.isComposing || event.keyCode === 229)) event.preventDefault();
+      if (composing || event.isComposing || event.keyCode === 229) {
+        if (event.key === 'Enter') event.preventDefault();
+        event.stopPropagation(); return;
+      }
       if (rowMenu) {
         if (event.key === 'Escape' || event.key === 'Tab') { closeRow(event.key === 'Escape'); event.preventDefault(); }
         else if (['ArrowDown','ArrowUp','Home','End'].includes(event.key)) {
@@ -225,6 +232,13 @@
           const index = commands.indexOf(doc.activeElement), next = event.key === 'Home' ? 0 : event.key === 'End' ? commands.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + commands.length) % commands.length;
           event.preventDefault(); commands[next]?.focus();
         }
+      } else if (event.key === 'Escape') {
+        // A native search input clears itself before the dialog's cancel
+        // default runs. Handle this key here, through the controller's write
+        // lock, after the picker has consumed its own first Escape.
+        event.preventDefault();
+        if (el('maQuery').getAttribute('aria-expanded') === 'true') picker?.close();
+        else controller.close('escape');
       }
       event.stopPropagation();
     });

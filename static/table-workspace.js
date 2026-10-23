@@ -257,7 +257,7 @@
       inputRevision++; draft = summary() !== (applied || '全部流水'); updateSummary();
     });
     $('#queryFields').addEventListener('keydown', event => {
-      if (event.key === 'Enter' && event.target.matches('input') && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); doSearch(1, { locate: true }); }
+      if (event.key === 'Enter' && !event.shiftKey && event.target.matches('input') && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); doSearch(1, { locate: true }); }
     });
     $('#btnReset').onclick = () => {
       entityPickers.forEach(picker => picker.invalidate());

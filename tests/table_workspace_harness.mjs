@@ -407,7 +407,7 @@ test('case A-B-A rejects old reads and graph completions without republishing an
   assert.equal(f.state.caseId, 1); assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
 });
 
-test('only explicit query button and non-IME Enter preview frozen account fields, preserving leading zeroes', async () => {
+test('only explicit query button and plain non-IME Enter preview frozen account fields, preserving leading zeroes', async () => {
   const f = harness(), previews = [], captures = [];
   f.locator({ capture() { const token = { sequence: captures.length + 1 }; captures.push(token); return token; },
     async previewFields(fields, options) { previews.push(JSON.parse(JSON.stringify({ fields, options }))); } });
@@ -417,6 +417,8 @@ test('only explicit query button and non-IME Enter preview frozen account fields
   const requests = f.requests.length;
   f.element('fAccount').fire('keydown', { key: 'Enter', isComposing: true });
   f.element('fAccount').fire('keydown', { key: 'Enter', keyCode: 229 });
+  f.element('fAccount').fire('keydown', { key: 'Enter', shiftKey: true });
+  f.element('fMin').fire('keydown', { key: 'Enter', shiftKey: true });
   await flush(); assert.equal(f.requests.length, requests); assert.equal(previews.length, 1);
   f.element('fAccount').fire('keydown', { key: 'Enter' }); await flush();
   assert.equal(previews.length, 2); assert.equal(captures.length, 2);
