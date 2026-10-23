@@ -149,7 +149,7 @@ test('parent projection strips unknown fields and rejects every unsafe enum, cou
     { targetMatch: 'true' }, { errorCode: 'SYN_PRIVATE' }, { elapsedMs: 60001 }, { businessStartup: true }]) assert.equal(safeProbeResult({ ...result, ...changed }), null);
 });
 
-function loadWrapper({ failCleanup = false, pending = false, childUnavailable = false, taskkillCode = 0 } = {}) {
+function loadWrapper({ failCleanup = false, pending = false, childUnavailable = false, taskkillCode = 0, pathApi = path } = {}) {
   const module = { exports: {} }, spawned = [], removed = [], copied = [], writes = [], timers = new Map();
   let nextTimer = 0;
   const mockFs = {
@@ -174,6 +174,7 @@ function loadWrapper({ failCleanup = false, pending = false, childUnavailable = 
     clearTimeout(id) { timers.delete(id); },
     require(name) {
       if (name === 'node:fs/promises') return mockFs;
+      if (name === 'node:path') return pathApi;
       if (name !== 'node:child_process') return require(name);
       return { spawn(command, args, options) {
         const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
@@ -268,9 +269,16 @@ test('both diagnostic child environments exclude product and Electron overrides 
 });
 
 test('runtime copying is restricted to fixed root files, locale PAKs and the diagnostic Main', async () => {
-  const loaded = loadWrapper(); await loaded.copyRuntime('/synthetic/install', '/synthetic/owned', Date.now() + 10000);
-  assert.ok(loaded.copied.some(([original]) => original === '/synthetic/install/FundsTrace.exe'));
-  assert.ok(loaded.copied.some(([original]) => original.endsWith('/electron-metadata-probe-main.cjs')));
-  assert.ok(!loaded.copied.some(([original]) => original.includes('app.asar') || original.includes('backend') || original.includes('SYN_PRIVATE')));
-  assert.ok(loaded.writes.some(([target]) => target.endsWith('/resources/app/package.json')));
+  for (const pathApi of [path.posix, path.win32]) {
+    const installRoot = '/synthetic/install', owned = '/synthetic/owned';
+    const runtime = pathApi.join(owned, 'runtime'), application = pathApi.join(runtime, 'resources', 'app');
+    const loaded = loadWrapper({ pathApi }); await loaded.copyRuntime(installRoot, owned, Date.now() + 10000);
+    assert.deepEqual(loaded.copied, [
+      ...['FundsTrace.exe', 'icudtl.dat', 'resources.pak'].map(name => [pathApi.join(installRoot, name), pathApi.join(runtime, name)]),
+      ...['en-US.pak', 'zh-CN.pak'].map(name => [pathApi.join(installRoot, 'locales', name), pathApi.join(runtime, 'locales', name)]),
+      [pathApi.join(__dirname, 'electron-metadata-probe-main.cjs'), pathApi.join(application, 'main.cjs')],
+    ]);
+    assert.ok(!loaded.copied.some(([original]) => original.includes('app.asar') || original.includes('backend') || original.includes('SYN_PRIVATE')));
+    assert.deepEqual(loaded.writes.map(([target]) => target), [pathApi.join(application, 'package.json')]);
+  }
 });
