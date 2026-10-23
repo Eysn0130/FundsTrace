@@ -1,4 +1,5 @@
 'use strict';
+const smokeStartedAt = Date.now();
 // CI-only installed EXE smoke. Never import Main, inspect request headers, or log CDP payloads.
 // Usage: node installed-app-smoke.cjs <absolute-install-root> --report <absolute-json> [--screenshot <absolute-png>] [--startup-close | --presentation-baseline <absolute-config>]
 const assert = require('node:assert/strict');
@@ -16,6 +17,7 @@ const { titlebarTarget, createInstalledTitlebarProbe, runInstalledTitlebarJourne
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
 const { createUpdateFixture, runInstalledUpdateJourney, safeUpdateDialogFailure } = require('./installed-update-journey.cjs');
 const { runInstalledProductionUpdateJourney } = require('./installed-production-update-journey.cjs');
+const { safeProductionTransportDiagnostic } = require('./installed-update-transport-diagnostic.cjs');
 const { runInstalledPresentationBaseline } = require('./installed-presentation-baseline.cjs');
 const { FAILURE_CODES } = require('../updates.cjs');
 
@@ -34,7 +36,7 @@ const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, f
     simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
 const timings = report.timings, owned = [];
 let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, titlebarPage, analysisTitlebarPage,
-  titlebarProbe, updateFixture, productionUpdate = false, presentationPreferences;
+  titlebarProbe, updateFixture, productionUpdate = false, productionTransportConfig, presentationPreferences;
 let releaseStartupInspection = async () => {};
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -502,6 +504,13 @@ async function restorePresentationPreferences(snapshot) {
   });
   reportPath = config.reportPath;
   productionUpdate = !!config.productionUpdate;
+  if (productionUpdate) {
+    try {
+      const input = JSON.parse((await fs.readFile(config.productionUpdate, 'utf8')).replace(/^\uFEFF/, ''));
+      productionTransportConfig = Object.fromEntries(['currentVersion', 'version', 'installerSha256',
+        'installerSha512', 'installerBytes'].map(key => [key, input[key]]));
+    } catch { /* The existing configuration check retains authority to fail. */ }
+  }
   const priorClientOnly = productionUpdate || !!config.presentationBaseline;
   if (config.startupClose) report.limits = { windowsServerAutomationOnly:true, windows10And11Interactive:false,
     actualSystemDpiValidated:false, importRecovery:false, startupBusinessRendererIntentionallyPaused:true,
@@ -1142,6 +1151,14 @@ async function restorePresentationPreferences(snapshot) {
       report.productionFailure.updatePhase = ['idle','checking','available','downloading','error','ready','installing','current'].includes(value?.phase) ? value.phase : 'unknown';
       report.productionFailure.updateErrorCode = FAILURE_CODES.includes(value?.errorCode) ? value.errorCode : 'UNKNOWN';
     } catch { /* The old renderer may already have exited normally. */ }
+    // A separate fixed-origin HTTPS observation runs only after the original
+    // client check has failed. It cannot turn that failure into acceptance.
+    // Reserve cleanup time inside the unchanged 720-second native child limit.
+    try {
+      report.productionFailure.transport = await safeProductionTransportDiagnostic(productionTransportConfig,
+        { budgetMs: Math.max(0, Math.min(285000, 600000 - (Date.now() - smokeStartedAt))) });
+    }
+    catch { /* Diagnostic failure must not replace the original failure. */ }
   }
 }).finally(async () => {
   // Best effort graceful close, then only handles spawned above. No process-name
