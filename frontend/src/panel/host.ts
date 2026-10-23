@@ -24,6 +24,7 @@ export interface FundsHostActionsV1 {
   openGraph?(signal?: AbortSignal): void | Promise<void>;
   openLegacyImport?(importId: string, signal?: AbortSignal): void | Promise<void>;
   downloadSource?(source: Readonly<{ sourceId: string; filename: string }>, signal?: AbortSignal): Promise<void>;
+  downloadImportReport?(source: Readonly<{ sourceId: string; filename: string }>, signal?: AbortSignal): Promise<void>;
 }
 
 export interface FundsPanelSessionV1 {

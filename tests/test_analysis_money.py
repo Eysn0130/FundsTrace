@@ -164,7 +164,9 @@ def test_all_algorithms_and_report_overview_share_one_source_snapshot(client, da
     encoded = re.search(r'<script type="application/json" id="funds-trace-report-data">(.*?)</script>', response.text, re.S)
     snapshot = json.loads(encoded.group(1))
     assert loads == [case]
-    assert snapshot["case"]["stats"] == {"flows": 2, "accounts": 3}
+    assert snapshot["case"]["stats"] == {"flows": 2, "accounts": 3, "import_coverage": {
+        "scope": "source_reported_flows", "unresolved_records": 0, "non_monetary_records": 0,
+        "cancelled_records": 0, "excluded_flows": 0, "financial_interpretation_complete": True}}
     assert snapshot["results"]["fast_flows"]["count"] == 1
     assert snapshot["results"]["source_snapshot"] == snapshot["case"]["stats"]
     assert database.q("select count(*) n from flows where case_id=?", [case])[0]["n"] == 4

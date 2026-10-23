@@ -49,7 +49,11 @@ export function FlowSources({ caseId, flowId, client, scopeSignal, actions }: { 
     {data && !data.total && <p className="source-empty">未记录来源。历史流水无法据此还原原始文件或源行位置。</p>}
     {data?.items.map(source => <article className="source-record" key={`${source.source_id}:${source.source_row}`}>
       <div className="source-record-heading"><strong>{source.filename}</strong><span className="status-label">{source.disposition === 'duplicate' ? '重复记录关联' : '首次导入关联'}</span></div>
-      <p>{source.row_kind === 'worksheet_row' ? `工作表「${source.sheet}」 · 第 ${source.source_row} 行` : source.row_kind === 'csv_record' ? `CSV 第 ${source.source_row} 条逻辑记录（含表头和空记录）` : `来源位置 ${source.source_row}（行号口径未标定）`}</p>
+      <p>{source.row_kind === 'table_record'
+        ? source.record_details?.sheet
+          ? `工作表「${source.record_details.sheet}」 · 第 ${source.member_row} 行`
+          : `来源成员「${source.member_path}」 · CSV 第 ${source.member_row} 条逻辑记录（含表头和空记录）`
+        : source.row_kind === 'archive_record' ? `包成员「${source.member_path}」 · CSV 第 ${source.member_row} 条逻辑记录` : source.row_kind === 'worksheet_row' ? `工作表「${source.sheet}」 · 第 ${source.source_row} 行` : source.row_kind === 'csv_record' ? `CSV 第 ${source.source_row} 条逻辑记录（含表头和空记录）` : `来源位置 ${source.source_row}（行号口径未标定）`}</p>
       <p className="muted">{displayOperationalTime(source.imported_at)} · {source.size_bytes.toLocaleString('zh-CN')} 字节 · 解析器 {source.parser_version}</p>
       <div className="source-digest"><span>SHA-256</span><code>{source.sha256}</code></div>
       {source.origin === 'package' ? <p className="source-note">案件包携带的来源元数据；包内不含原始上传文件。</p>

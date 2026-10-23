@@ -22,7 +22,7 @@ function fakeApi(): FundsApi {
     commit: async () => ({ case_id: '1', import_id: preview.import_id, started: true }), job: async () => completed,
     imports: async id => ({ case_id: id, items: [] }),
     sources: async (id, flowId, page = 1) => ({ case_id: id, flow_id: flowId, items: [], total: 0, page, page_size: 50 }),
-    downloadSource: async () => {},
+    downloadSource: async () => {}, downloadImportReport: async () => {},
     cleanup: async (_id, dryRun = true) => ({ dry_run: dryRun, eligible: 0, deleted: 0, missing: 0, failed: 0, protected: 0, queued: 0 }),
   };
 }
@@ -511,6 +511,26 @@ describe('FundsTrace case workspace', () => {
     await screen.findByRole('button', { name: '确认导入' });
     expect(attempts).toBe(2);
     expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('downloads an automatic import report through the current case browser action', async () => {
+    const api = fakeApi();
+    const table = { profile: 'funds-trace-table-v5', record_total: 1, accepted: 0, unresolved: 1,
+      non_monetary: 0, non_transaction: 0, auxiliary: 0, reason_counts: { missing_amount: 1 },
+      currency_totals: {}, members: [], unresolved_examples: [], documents: [], mapping_evidence: [] };
+    api.preview = vi.fn(async () => ({ ...preview, automatic: true, table_summary: table, stats: { total: 1, ok: 0, skipped: 1 }, preview: [] }));
+    api.job = vi.fn(async () => ({ ...completed, result: { ...completed.result!, ok: 0, skipped: 1,
+      source_id: 'SYN-REPORT-SOURCE', table_summary: table } }));
+    const commit = vi.spyOn(api, 'commit'), report = vi.spyOn(api, 'downloadImportReport');
+    render(<App api={api} />);
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
+    fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } });
+    await screen.findByRole('heading', { name: '自动处理完成' });
+    expect(commit).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: '下载完整处理报告（JSON）' }));
+    await waitFor(() => expect(report).toHaveBeenCalledWith('1', 'SYN-REPORT-SOURCE',
+      'feedback-SYN-REPORT-SOURCE-dispositions.json', expect.any(AbortSignal)));
   });
 
   it('pages source records without pretending package metadata has a downloadable file', async () => {

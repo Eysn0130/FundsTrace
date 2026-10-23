@@ -657,6 +657,9 @@ def _row_key(r, default_currency=""):
 def _provenance_metadata(provenance, filename, mode, rows):
     """Validate trusted parser metadata before any persistent write."""
     source = dict(provenance)
+    from . import table_import, table_archive
+    table_source = (source.get("row_kind") == table_import.ROW_KIND
+                    and source.get("parser_version") in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES))
     source.setdefault("row_kind", rows[0].get("_source_row_kind") if rows else "unknown")
     mapping = source.get("mapping")
     # Extensionless uploads use CSV in the service; preserve that same format
@@ -670,17 +673,25 @@ def _provenance_metadata(provenance, filename, mode, rows):
             or source.get("mode") != mode or mode not in MODE_FIELDS
             or source.get("filename") != filename or not isinstance(filename, str) or not filename
             or not isinstance(source.get("sheet"), str)
-            or source.get("row_kind") not in ("csv_record", "worksheet_row", "unknown")
+            or source.get("row_kind") not in ("csv_record", "worksheet_row", "archive_record", "table_record", "unknown")
+            or (source.get("row_kind") == table_import.ROW_KIND) != table_source
+            or (source.get("parser_version") in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)) != table_source
             or not isinstance(source.get("parser_version"), str) or not source["parser_version"]
             or not isinstance(mapping, dict)
-            or any(k not in (*MODE_FIELDS.get(mode, []), "_time2", "self_account", "self_name")
+            or any(k not in (table_import.MAPPING_FIELDS if table_source else (*MODE_FIELDS.get(mode, []), "_time2", "self_account", "self_name"))
                    or not isinstance(v, str) or not v.strip() for k, v in mapping.items())
-            or not _validate(mapping, mode)
-            or suffix not in (".csv", ".tsv", ".txt", ".xlsx", ".xls")
+            or (not table_source and not _validate(mapping, mode))
+            or suffix not in (".csv", ".tsv", ".txt", ".xlsx", ".xls", ".zip")
             or (suffix in (".xlsx", ".xls")) != bool(source.get("sheet"))
             or (source["row_kind"] == "worksheet_row" and suffix not in (".xlsx", ".xls"))
-            or (source["row_kind"] == "csv_record" and suffix in (".xlsx", ".xls"))):
+            or (source["row_kind"] == "csv_record" and suffix in (".xlsx", ".xls", ".zip"))
+            or (suffix == ".zip") != (source["row_kind"] == "archive_record" or table_source and source["parser_version"] in table_archive.SUPPORTED_PROFILES)
+            or (table_source and (source["parser_version"] in table_archive.SUPPORTED_PROFILES) != (suffix == ".zip"))):
         raise ImportError("来源元数据无效")
+    if suffix == ".zip" and not table_source:
+        from .feedback_import import SUPPORTED_PROFILES, MAPPING
+        if source["parser_version"] not in SUPPORTED_PROFILES or mode != "B" or mapping != MAPPING:
+            raise ImportError("反馈包来源规则无效")
     positions = set()
     for row in rows:
         position = row.get("_source_row")
@@ -688,6 +699,8 @@ def _provenance_metadata(provenance, filename, mode, rows):
                 or row.get("_source_sheet") != source["sheet"]
                 or row.get("_source_row_kind") != source["row_kind"]):
             raise ImportError("来源行号或工作表无效")
+        if source["row_kind"] in ("archive_record", "table_record") and not re.fullmatch(r"[0-9a-f]{64}", row.get("_record_key", "")):
+            raise ImportError("反馈包记录身份无效")
         positions.add(position)
     return source
 
@@ -701,18 +714,74 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
             raise ImportError("案件不存在，无法导入流水")
         key_cols = ("trade_no, trade_time, payer_name, payer_account, payer_bank, "
                     "payee_name, payee_account, payee_bank, amount, balance, currency, summary, channel")
+        from . import table_archive, table_import
+        archive = source is not None and (source["row_kind"] == "archive_record"
+                  or source["row_kind"] == "table_record" and source["parser_version"] in table_archive.SUPPORTED_PROFILES)
         existing = {}
-        cursor = con.execute(f"select id,{key_cols} from flows where case_id = ? order by id", [case_id])
-        names = [column[0] for column in cursor.description]
-        for values in cursor.fetchall():
-            record = dict(zip(names, values))
-            existing.setdefault(_row_key(record), record["id"])
+        if archive:
+            # A missing counterparty and equal visible fields cannot prove that
+            # two source events are the same. Reuse only this exact member's
+            # content/path/record identity; retain distinct source occurrences.
+            envelope = source["row_kind"] == "table_record"
+            query = """select r.record_key,f.flow_id from import_records r
+                    join flow_sources f on f.case_id=r.case_id and f.source_id=r.source_id
+                      and f.source_row=r.record_no
+                    where r.case_id=? and r.disposition in ('imported','duplicate')"""
+            parameters = [case_id]
+            if envelope:
+                # A prior ordinary CSV may have folded equal facts from two
+                # physical rows into one flow. Reuse that flow at most once;
+                # prefer an existing envelope assessment on later imports.
+                # A shared physical key alone cannot establish equal facts
+                # after an ordinary table's advanced mapping was changed.
+                facts = [name.strip() for name in key_cols.split(",")] + ["self_account", "self_name"]
+                archive_profiles = sorted(table_archive.SUPPORTED_PROFILES, reverse=True)
+                table_profiles = sorted(table_import.SUPPORTED_PROFILES, reverse=True)
+                supported = ",".join("?" for _ in (*archive_profiles, *table_profiles))
+                precedence = " ".join(f"when ? then {rank}" for rank in range(len(archive_profiles)))
+                query = ("select r.record_key,f.flow_id," + ",".join("v." + name for name in facts) + f"""
+                    from import_records r
+                    join flow_sources f on f.case_id=r.case_id and f.source_id=r.source_id
+                      and f.source_row=r.record_no
+                    join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
+                    join flows v on v.case_id=r.case_id and v.id=f.flow_id
+                    where r.case_id=? and r.disposition in ('imported','duplicate')
+                    and s.parser_version in ({supported})
+                    order by case s.parser_version {precedence} else {len(archive_profiles)} end,
+                      f.flow_id, r.record_no""")
+                parameters += [*archive_profiles, *table_profiles, *archive_profiles]
+            else:
+                query += " order by f.flow_id"
+            requested = {row["_record_key"]: row for row in rows} if envelope else {}
+            reused_ids = set()
+            cursor = con.execute(query, parameters)
+            while candidates := cursor.fetchmany(1024):
+                for key, fid, *values in candidates:
+                    if key in existing:
+                        continue
+                    if envelope:
+                        requested_row = requested.get(key)
+                        if requested_row is None or fid in reused_ids:
+                            continue
+                        stored = dict(zip(facts, values))
+                        if (_row_key(stored) != _row_key(requested_row, default_currency="CNY")
+                                or any((stored.get(field) or "") != (requested_row.get(field) or "")
+                                       for field in ("self_account", "self_name"))):
+                            continue
+                    existing[key] = fid
+                    reused_ids.add(fid)
+        else:
+            cursor = con.execute(f"select id,{key_cols} from flows where case_id = ? order by id", [case_id])
+            names = [column[0] for column in cursor.description]
+            for values in cursor.fetchall():
+                record = dict(zip(names, values))
+                existing.setdefault(_row_key(record), record["id"])
 
         seen, final, references, dup = {}, [], [], 0
         for r in rows:
             # Match the value insertion will persist, without reinterpreting
             # genuinely unknown currency values in an existing database.
-            k = _row_key(r, default_currency="CNY")
+            k = r["_record_key"] if archive else _row_key(r, default_currency="CNY")
             if k in existing or k in seen:
                 dup += 1
                 if source:

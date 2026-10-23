@@ -50,6 +50,7 @@ export default function HostPreview() {
       sources: async (id, flowId, page = 1) => ({ case_id: id, flow_id: flowId, items: [], total: 0, page, page_size: 50 }),
       preview: unavailable, repreview: unavailable, commit: unavailable, job: unavailable,
       downloadSource: unavailable,
+      downloadImportReport: unavailable,
       cleanup: async (_id, dryRun = true) => ({ dry_run: dryRun, eligible: 0, protected: 0, queued: 0, deleted: 0, missing: 0, failed: 0 }),
     };
     const target = cases.find(item => item.id === selected)!;

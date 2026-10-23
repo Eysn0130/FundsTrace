@@ -3,6 +3,11 @@ from datetime import datetime
 import hashlib
 import time
 
+import pytest
+
+from app import importer
+from app.services import imports
+
 
 CSV = ("合成报表\n\n交易时间,付款账号,收款账号,交易金额\n"
        "2026-01-01 10:00:00,000SYN-A,000SYN-B,123.45\n\n"
@@ -47,11 +52,25 @@ def test_nonempty_session_discovery_and_paginated_sources_are_case_bound(client,
     pages = [client.get(base, params={"page": page, "page_size": 1}) for page in (1, 2)]
     assert all(response.status_code == 200 for response in pages)
     records = [response.json()["items"][0] for response in pages]
-    assert [record["source_row"] for record in records] == [4, 6]
+    # Flow links use the journal sequence; member_row remains the physical CSV
+    # position, including preamble/blank records excluded from the flow table.
+    assert [record["source_row"] for record in records] == [3, 5]
+    assert [record["member_row"] for record in records] == [4, 6]
+    journal = client.get(f"/api/v1/cases/{cid}/imports/{preview['import_id']}/records").json()
+    assert journal["total"] == 6
+    assert [(record["record_no"], record["source_row"]) for record in journal["items"]] == [
+        (1, 1), (2, 2), (3, 4), (4, 5), (5, 6), (6, 7)]
+    assert journal["items"][-1]["disposition"] == "unresolved"
+    assert journal["items"][-1]["reason_code"] == "invalid_time"
     assert {record["disposition"] for record in records} == {"imported", "duplicate"}
     for record in records:
         assert record["sha256"] == hashlib.sha256(CSV).hexdigest()
-        assert record["source_available"] and record["row_kind"] == "csv_record" and record["sheet"] == ""
+        assert record["source_available"] and record["row_kind"] == "table_record" and record["sheet"] == ""
+        assert record["member_path"] == "table.csv"
+        matched = journal["items"][record["source_row"] - 1]
+        assert matched["member_path"] == record["member_path"] and matched["source_row"] == record["member_row"]
+        assert matched["flow_id"] == fid and matched["disposition"] == record["disposition"]
+        assert matched["details"] == record["record_details"]
         elapsed = datetime.fromisoformat(record["imported_at"]) - datetime.fromisoformat(item["created_at"])
         assert 0 <= elapsed.total_seconds() < 60
     assert pages[0].json()["total"] == 2
@@ -65,9 +84,14 @@ def test_nonempty_session_discovery_and_paginated_sources_are_case_bound(client,
     assert client.get(f"/api/v1/cases/{other}/sources/{preview['import_id']}/file").status_code == 404
 
 
-def test_package_sources_remain_metadata_and_expired_unreferenced_files_can_be_cleaned(client, database, make_case):
+@pytest.mark.parametrize("legacy_without_journal", [False, True])
+def test_package_sources_remain_metadata_and_cleanup_respects_retained_evidence(
+        client, database, make_case, monkeypatch, legacy_without_journal):
     cid = make_case("Source lifecycle")
-    preview = upload(client, cid)
+    with monkeypatch.context() as profile:
+        if legacy_without_journal:
+            profile.setattr(imports, "TABLE_PROFILE", importer.PARSER_VERSION)
+        preview = upload(client, cid)
     job = complete(client, cid, preview)
     package = client.get(f"/api/cases/{cid}/export")
     restored = client.post("/api/cases/import", files={"file": ("synthetic.fundcase", package.content)})
@@ -87,12 +111,29 @@ def test_package_sources_remain_metadata_and_expired_unreferenced_files_can_be_c
     assert path.read_bytes() == CSV
     assert client.delete(f"/api/batches/{job['result']['batch_id']}", params={"case_id": cid}).status_code == 200
     plan = client.post(cleanup, json={})
-    assert plan.status_code == 200 and plan.json()["dry_run"] and plan.json()["eligible"] == 1
+    assert plan.status_code == 200 and plan.json()["dry_run"]
     assert path.is_file()
     applied = client.post(cleanup, json={"dry_run": False})
-    assert applied.status_code == 200 and applied.json()["deleted"] == 1 and not path.exists()
+    assert applied.status_code == 200
+    if legacy_without_journal:
+        assert plan.json()["eligible"] == 1 and plan.json()["protected"] == 0
+        assert applied.json()["deleted"] == 1 and applied.json()["protected"] == 0 and not path.exists()
+        assert database.q("select count(*) n from import_records where source_id=?", [preview["import_id"]]) == [{"n": 0}]
+    else:
+        assert plan.json()["eligible"] == 0 and plan.json()["protected"] == 1
+        assert applied.json()["deleted"] == 0 and applied.json()["protected"] == 1 and path.read_bytes() == CSV
+        assert database.q("select record_no,source_row,reason_code from import_records where source_id=? and disposition='removed' order by record_no",
+                          [preview["import_id"]]) == [
+            {"record_no": 3, "source_row": 4, "reason_code": "flow_deleted"},
+            {"record_no": 5, "source_row": 6, "reason_code": "flow_deleted"}]
+        assert database.q("select record_no,source_row,reason_code from import_records where source_id=? and disposition='unresolved'",
+                          [preview["import_id"]]) == [{"record_no": 6, "source_row": 7, "reason_code": "invalid_time"}]
+        assert database.q("select count(*) n from import_records where source_id=?", [preview["import_id"]]) == [{"n": 6}]
+        original = client.get(f"/api/v1/cases/{cid}/sources/{preview['import_id']}/file")
+        assert original.status_code == 200 and original.content == CSV
     receipt = client.get(f"/api/v1/cases/{cid}/imports/{preview['import_id']}").json()
-    assert receipt["stage"] == "done" and receipt["result"] == job["result"] and not receipt["source_available"]
+    assert receipt["stage"] == "done" and receipt["result"] == job["result"]
+    assert receipt["source_available"] is (not legacy_without_journal)
     assert client.get(f"/api/v1/cases/{restored_id}/flows").json()["total"] == 1
 
 

@@ -60,7 +60,24 @@ def test_durable_receipt_exact_money_and_source_download(database, make_case):
     listing = imports.list_sessions(str(cid))
     assert listing["items"][0]["source_available"] is True
     assert "owner_token" not in listing["items"][0] and "suffix" not in listing["items"][0]
-    assert "path" not in json.dumps(listing)
+    assert listing["items"][0]["result"]["table_summary"]["members"][0]["member_path"] == "table.csv"
+
+    def reject_host_path_keys(value):
+        if isinstance(value, dict):
+            assert "path" not in value
+            for nested in value.values():
+                reject_host_path_keys(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                reject_host_path_keys(nested)
+
+    reject_host_path_keys(listing)
+    serialized = json.dumps(listing)
+    assert str(database.DATA_DIR) not in serialized and str(database.DB_PATH) not in serialized
+    other = make_case("Synthetic foreign source request")
+    with pytest.raises(ServiceError) as foreign:
+        imports.get_source_file(str(other), iid)
+    assert foreign.value.status == 404 and foreign.value.code == "import_not_found"
 
 
 def test_concurrent_start_freezes_one_request(database, make_case, monkeypatch):
@@ -217,19 +234,37 @@ def test_cleanup_failure_is_queued_and_retryable_without_deleting_symlink_target
     assert target.read_text() == "synthetic preserved" and source.is_symlink()
 
 
-def test_completed_receipt_survives_source_cleanup_when_no_longer_referenced(database, make_case):
+@pytest.mark.parametrize("legacy_without_journal", [False, True])
+def test_completed_receipt_survives_batch_deletion_and_source_retention_policy(
+        client, database, make_case, monkeypatch, legacy_without_journal):
     cid = make_case()
-    preview = upload(cid)
+    with monkeypatch.context() as profile:
+        if legacy_without_journal:
+            profile.setattr(imports, "TABLE_PROFILE", importer.PARSER_VERSION)
+        preview = upload(cid)
     iid = preview["import_id"]
     imports.commit(str(cid), iid, body(preview))
-    receipt = poll(cid, iid)["result"]
-    # Simulate an explicitly deleted batch removing its source-row references.
-    database.x("delete from flow_sources where source_id=?", [iid])
+    completed = poll(cid, iid)
+    assert completed["stage"] == "done", completed
+    receipt = completed["result"]
+    removed = client.delete(f"/api/batches/{receipt['batch_id']}", params={"case_id": cid})
+    assert removed.status_code == 200
+    assert database.q("select count(*) n from flows where case_id=?", [cid]) == [{"n": 0}]
+    assert database.q("select count(*) n from flow_sources where source_id=?", [iid]) == [{"n": 0}]
     expire(database, iid)
-    assert imports.cleanup_uploads(str(cid), dry_run=False)["deleted"] == 1
+    cleanup = imports.cleanup_uploads(str(cid), dry_run=False)
     job = imports.progress(str(cid), iid)
-    assert job["result"] == receipt and job["stage"] == "done" and not job["source_available"]
+    assert job["result"] == receipt and job["stage"] == "done"
     assert imports.commit(str(cid), iid, body(preview))["started"] is False
+    # A real batch deletion retires every accepted record. Supported removed
+    # records remain portable metadata but no longer require original bytes.
+    assert cleanup["deleted"] == 1 and cleanup["protected"] == 0 and not job["source_available"]
+    if legacy_without_journal:
+        assert database.q("select count(*) n from import_records where source_id=?", [iid]) == [{"n": 0}]
+    else:
+        assert database.q("select record_no,source_row,disposition,reason_code from import_records where source_id=? order by record_no", [iid]) == [
+            {"record_no": 1, "source_row": 2, "disposition": "removed", "reason_code": "flow_deleted"},
+            {"record_no": 2, "source_row": 3, "disposition": "removed", "reason_code": "flow_deleted"}]
     with pytest.raises(ServiceError) as error:
         imports.get_source_file(str(cid), iid)
     assert error.value.code == "source_missing"

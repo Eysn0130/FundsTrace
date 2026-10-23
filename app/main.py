@@ -36,6 +36,7 @@ from .services import accounts as account_service
 from .services.cases import ServiceError
 from .services.main_accounts import mark_automatic
 from .money import money_decimal, money_string, money_display
+from .import_coverage import import_coverage
 
 @asynccontextmanager
 async def application_lifespan(application):
@@ -145,15 +146,18 @@ def index():
 
 @app.get("/api/stats")
 def stats(case_id: int = 1):
-    return db.q("""
-        select
-          (select count(*) from flows where case_id = ?) as flows,
-          (select count(distinct a) from (
-              select payer_account as a from flows where case_id = ?
-              union all select payee_account as a from flows where case_id = ?
-           ) where a is not null and a <> '') as accounts,
-          (select count(*) from batches where case_id = ?) as batches
-    """, [case_id, case_id, case_id, case_id])[0]
+    with db._lock:
+        result = db.q("""
+            select
+              (select count(*) from effective_flows where case_id = ?) as flows,
+              (select count(distinct a) from (
+                  select payer_account as a from effective_flows where case_id = ?
+                  union all select payee_account as a from effective_flows where case_id = ?
+               ) where a is not null and a <> '') as accounts,
+              (select count(*) from batches where case_id = ?) as batches
+        """, [case_id, case_id, case_id, case_id])[0]
+        result["import_coverage"] = import_coverage(case_id)
+        return result
 
 
 @app.get("/api/cases")
@@ -173,14 +177,24 @@ def _require_canvas(case_id, canvas_id):
         raise HTTPException(404, "画布不存在")
 
 
-def _require_flows(case_id, flow_ids):
+def _require_flows(case_id, flow_ids, *, effective=False):
     ids = list(dict.fromkeys(int(i) for i in flow_ids))
     if ids:
         marks = ",".join("?" for _ in ids)
-        owned = db.q(f"select id from flows where case_id=? and id in ({marks})", [case_id, *ids])
+        table = "effective_flows" if effective else "flows"
+        owned = db.q(f"select id from {table} where case_id=? and id in ({marks})", [case_id, *ids])
         if len(owned) != len(ids):
-            raise HTTPException(404, "流水不存在或不属于当前案件")
+            raise HTTPException(404, "流水不存在、已匹配冲正撤销或不属于当前案件" if effective
+                                else "流水不存在或不属于当前案件")
     return ids
+
+
+def _require_graphable(case_id, ids):
+    if ids:
+        marks = ",".join("?" for _ in ids)
+        if db.q(f"select id from flows where case_id=? and id in ({marks}) "
+                "and (coalesce(payer_account,'')='' or coalesce(payee_account,'')='') limit 1", [case_id, *ids]):
+            raise HTTPException(422, "所选流水含缺失账号的交易，事实已保留在明细中；补足身份依据后才能上图")
 
 
 @app.post("/api/cases")
@@ -222,6 +236,10 @@ def del_batch(batch_id: int, case_id: int = Query(...)):
             raise HTTPException(404, "批次不存在")
         db.x("delete from tracked_flows where case_id=? and flow_id in "
              "(select id from flows where batch_id=? and case_id=?)", [case_id, batch_id, case_id])
+        db.x("""update import_records set disposition='removed',reason_code='flow_deleted'
+                 where case_id=? and (source_id,record_no) in
+                 (select s.source_id,s.source_row from flow_sources s join flows f on f.id=s.flow_id and f.case_id=s.case_id
+                  where s.case_id=? and f.batch_id=?)""", [case_id, case_id, batch_id])
         db.x("delete from flow_sources where case_id=? and flow_id in "
              "(select id from flows where batch_id=? and case_id=?)", [case_id, batch_id, case_id])
         db.x("delete from flows where batch_id=? and case_id=?", [batch_id, case_id])
@@ -332,9 +350,9 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         conds.append("trade_time <= ?")
         params.append(tto + (" 23:59:59" if len(tto) == 10 else ""))
     where = "where " + " and ".join(conds)
-    total = db.q(f"select count(*) c from flows {where}", params)[0]["c"]
+    total = db.q(f"select count(*) c from effective_flows {where}", params)[0]["c"]
     off = (page - 1) * size
-    rows = db.q(f"select * from flows {where} order by trade_time desc, id desc limit ? offset ?",
+    rows = db.q(f"select * from effective_flows {where} order by trade_time desc, id desc limit ? offset ?",
                 params + [size, off])
     return {"total": total, "page": page, "size": size, "rows": rows}
 
@@ -346,6 +364,8 @@ def profile(account: str, case_id: int = 1):
 
 
 def _profile(account: str, case_id: int):
+    if not account:
+        raise HTTPException(422, "账号缺失，无法定位账户画像")
     r = db.q("""
         select count(*) as cnt,
           count(case when payer_account = ? then 1 end) as out_cnt,
@@ -353,12 +373,12 @@ def _profile(account: str, case_id: int):
           coalesce(sum(case when payer_account = ? then amount end), 0) as out_amt,
           coalesce(sum(case when payee_account = ? then amount end), 0) as in_amt,
           min(trade_time) as tmin, max(trade_time) as tmax
-        from flows where case_id = ? and (payer_account = ? or payee_account = ?)
+        from effective_flows where case_id = ? and (payer_account = ? or payee_account = ?)
     """, [account, account, account, account, case_id, account, account])[0]
     nm = db.q("""
         select name from (
-          select payer_name as name from flows where case_id = ? and payer_account = ?
-          union all select payee_name from flows where case_id = ? and payee_account = ?
+          select payer_name as name from effective_flows where case_id = ? and payer_account = ?
+          union all select payee_name from effective_flows where case_id = ? and payee_account = ?
         ) where name is not null and name <> '' group by name order by count(*) desc limit 1
     """, [case_id, account, case_id, account])
     r["account"] = account
@@ -371,11 +391,11 @@ def _profile(account: str, case_id: int):
           coalesce(sum(case when dir = 'in' then amt else 0 end), 0) as in_amt
         from (
           select payee_account as acct, payee_name as nm, 'out' as dir, amount as amt
-            from flows where case_id = ? and payer_account = ?
+            from effective_flows where case_id = ? and payer_account = ?
           union all
           select payer_account, payer_name, 'in', amount
-            from flows where case_id = ? and payee_account = ?
-        ) group by acct order by out_cnt desc, in_cnt desc, acct limit 20
+            from effective_flows where case_id = ? and payee_account = ?
+        ) where coalesce(acct,'')<>'' group by acct order by out_cnt desc, in_cnt desc, acct limit 20
     """, [case_id, account, case_id, account])
     money_rows = db.q_raw("""
         select acct, coalesce(currency, '') currency,
@@ -385,11 +405,11 @@ def _profile(account: str, case_id: int):
           coalesce(sum(amount) filter (where dir='in'), 0) in_amt
         from (
           select payee_account acct, currency, amount, 'out' dir
-            from flows where case_id=? and payer_account=?
+            from effective_flows where case_id=? and payer_account=?
           union all
           select payer_account, currency, amount, 'in'
-            from flows where case_id=? and payee_account=?
-        ) group by acct, coalesce(currency, '') order by currency
+            from effective_flows where case_id=? and payee_account=?
+        ) where coalesce(acct,'')<>'' group by acct, coalesce(currency, '') order by currency
     """, [case_id, account, case_id, account])
     for counterparty in r["top_counterparties"]:
         counterparty.update(_directional_money([row for row in money_rows if row["acct"] == counterparty["acct"]]))
@@ -399,7 +419,7 @@ def _profile(account: str, case_id: int):
           coalesce(sum(amount) filter (where payer_account=?), 0) out_amt,
           count(*) filter (where payee_account=?) in_cnt,
           coalesce(sum(amount) filter (where payee_account=?), 0) in_amt
-        from flows where case_id=? and (payer_account=? or payee_account=?)
+        from effective_flows where case_id=? and (payer_account=? or payee_account=?)
         group by coalesce(currency, '') order by currency
     """, [account, account, account, account, case_id, account, account])
     r.update(_directional_money(own_totals))
@@ -591,7 +611,7 @@ def _graph_mirror_duplicate_ids(case_id: int, canvas_id: int):
         select f.id, f.payer_account, f.payee_account, f.amount,
                coalesce(f.currency, '') as currency, coalesce(f.self_account, '') as self_account,
                date_trunc('second', f.trade_time) as mirror_time
-        from flows f join tracked_flows tf on tf.flow_id = f.id
+        from effective_flows f join tracked_flows tf on tf.flow_id = f.id
         where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?
         order by f.trade_time, f.id
     """, [case_id, canvas_id, case_id])
@@ -600,6 +620,8 @@ def _graph_mirror_duplicate_ids(case_id: int, canvas_id: int):
     for row in rows:
         if any(row[field] is None for field in ("payer_account", "payee_account", "amount", "mirror_time")):
             continue  # NULL values could not match in the previous SQL rule either.
+        if not row["payer_account"] or not row["payee_account"]:
+            continue
         key = (row["payer_account"], row["payee_account"], row["amount"], row["currency"])
         queue = pending.setdefault(key, deque())
         while queue and row["mirror_time"] - queue[0][0] > tolerance:
@@ -626,8 +648,9 @@ def _graph(case_id: int, canvas_id: int):
     # 画布维度：只统计当前画布追踪的流水（canvas_id 0 = 默认画布）。
     dedup_params = [case_id, canvas_id, case_id, _graph_mirror_duplicate_ids(case_id, canvas_id)]
     dedup_cte = """
-        with t as (select f.* from flows f join tracked_flows tf on tf.flow_id = f.id
-                   where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?),
+        with t as (select f.* from effective_flows f join tracked_flows tf on tf.flow_id = f.id
+                   where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?
+                     and coalesce(f.payer_account,'')<>'' and coalesce(f.payee_account,'')<>''),
         nd as (select f.*, f.id in (select unnest(?::bigint[])) as is_dup
                from t f)
     """
@@ -763,7 +786,8 @@ def canvas_from_flows(body: CanvasFromFlowsIn):
         name = body.name.strip()
         if not name:
             raise HTTPException(400, "画布名称不能为空")
-        ids = sorted(_require_flows(body.case_id, body.flow_ids))
+        ids = sorted(_require_flows(body.case_id, body.flow_ids, effective=True))
+        _require_graphable(body.case_id, ids)
         if not ids:
             raise HTTPException(400, "请选择需要上图的流水")
         candidates = db.q(
@@ -781,7 +805,7 @@ def canvas_from_flows(body: CanvasFromFlowsIn):
                          [body.case_id, name, json.dumps(snapshot, ensure_ascii=False)])[0]["id"]
         marks = ",".join("?" for _ in ids)
         db.x(f"insert into tracked_flows(case_id,flow_id,canvas_id) "
-             f"select ?,id,? from flows where case_id=? and id in ({marks})",
+             f"select ?,id,? from effective_flows where case_id=? and id in ({marks})",
              [body.case_id, canvas_id, body.case_id, *ids])
         return {"ok": True, "canvas_id": canvas_id, "name": name, "added": len(ids)}
 
@@ -866,12 +890,13 @@ def focus_node_set(body: FocusIn):
 def track(body: TrackIn):
     with _case_transaction(body.case_id):
         _require_canvas(body.case_id, body.canvas_id)
-        ids = _require_flows(body.case_id, body.flow_ids)
+        ids = _require_flows(body.case_id, body.flow_ids, effective=True)
+        _require_graphable(body.case_id, ids)
         if ids:
             marks = ",".join("?" for _ in ids)
             before = db.q("select count(*) n from tracked_flows where case_id=? and canvas_id=?", [body.case_id, body.canvas_id])[0]["n"]
             db.x(f"insert or ignore into tracked_flows(case_id,flow_id,canvas_id) "
-                 f"select ?,id,? from flows where case_id=? and id in ({marks})",
+                 f"select ?,id,? from effective_flows where case_id=? and id in ({marks})",
                  [body.case_id, body.canvas_id, body.case_id, *ids])
             after = db.q("select count(*) n from tracked_flows where case_id=? and canvas_id=?", [body.case_id, body.canvas_id])[0]["n"]
             return {"ok": True, "added": after - before}
@@ -902,6 +927,8 @@ def restore_track_state(body: TrackStateIn):
             raise HTTPException(409, "画布追踪已变更，请刷新后重试")
         desired = set(_require_flows(body.case_id, body.desired_ids))
         removed, added = sorted(current - desired), sorted(desired - current)
+        _require_flows(body.case_id, added, effective=True)
+        _require_graphable(body.case_id, added)
         if removed:
             marks = ",".join("?" for _ in removed)
             db.x(f"delete from tracked_flows where case_id=? and canvas_id=? and flow_id in ({marks})",
@@ -909,7 +936,7 @@ def restore_track_state(body: TrackStateIn):
         if added:
             marks = ",".join("?" for _ in added)
             db.x(f"insert into tracked_flows(case_id,flow_id,canvas_id) "
-                 f"select ?,id,? from flows where case_id=? and id in ({marks})",
+                 f"select ?,id,? from effective_flows where case_id=? and id in ({marks})",
                  [body.case_id, body.canvas_id, body.case_id, *added])
         return {"ok": True, "tracked_ids": sorted(desired)}
 
@@ -945,16 +972,17 @@ def track_bulk(body: BulkTrackIn):
                 [body.case_id, body.canvas_id])}
             if current != set(body.expected_ids):
                 raise HTTPException(409, "画布追踪已变更，请刷新后重试")
-        _require_flows(body.case_id, body.flow_ids)
+        _require_flows(body.case_id, body.flow_ids, effective=True)
         if not body.flow_ids:
             raise HTTPException(404, "未找到所选流水")
         if body.direction not in ("source", "target"):
             raise HTTPException(400, "direction 应为 source 或 target")
         x = max(1, min(50, body.x))
         id_str = ",".join(str(int(i)) for i in body.flow_ids)
-        anchors = db.q(f"select * from flows where case_id = ? and id in ({id_str})", [body.case_id])
+        anchors = db.q(f"select * from effective_flows where case_id = ? and id in ({id_str})", [body.case_id])
         if not anchors:
             raise HTTPException(404, "未找到所选流水")
+        _require_graphable(body.case_id, [row["id"] for row in anchors])
         mains = {r["account"] for r in db.q("select account from main_accounts where case_id = ?",
                                             [body.case_id])}
 
@@ -974,15 +1002,17 @@ def track_bulk(body: BulkTrackIn):
             if acct in mains:
                 if body.direction == "source":
                     rows = db.q("""
-                        select id from flows
+                        select id from effective_flows
                         where case_id = ? and payee_account = ? and self_account = ?
+                          and coalesce(payer_account,'')<>'' and coalesce(payee_account,'')<>''
                           and (trade_time < ? or (trade_time = ? and id < ?))
                         order by trade_time desc, id desc limit ?
                     """, [body.case_id, acct, acct, f["trade_time"], f["trade_time"], f["id"], x])
                 else:
                     rows = db.q("""
-                        select id from flows
+                        select id from effective_flows
                         where case_id = ? and payer_account = ? and self_account = ?
+                          and coalesce(payer_account,'')<>'' and coalesce(payee_account,'')<>''
                           and (trade_time > ? or (trade_time = ? and id > ?))
                         order by trade_time asc, id asc limit ?
                     """, [body.case_id, acct, acct, f["trade_time"], f["trade_time"], f["id"], x])
@@ -1004,7 +1034,7 @@ def track_bulk(body: BulkTrackIn):
         if pick_ids:
             ids2 = ",".join(str(i) for i in pick_ids)
             db.x(f"insert or ignore into tracked_flows(case_id, flow_id, canvas_id) "
-                 f"select ?, id, ? from flows where case_id = ? and id in ({ids2})",
+                 f"select ?, id, ? from effective_flows where case_id = ? and id in ({ids2})",
                  [body.case_id, body.canvas_id, body.case_id])
         tracked_ids = [row["flow_id"] for row in db.q(
             "select flow_id from tracked_flows where case_id=? and canvas_id=? order by flow_id",
@@ -1015,7 +1045,7 @@ def track_bulk(body: BulkTrackIn):
 @app.get("/api/context/{flow_id}")
 def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", case_id: int = 1):
     """某笔流水的交易对手在该账户流水中、位于本笔前后各 X 笔的流水（限当前案件）"""
-    f = db.q("select * from flows where id = ? and case_id = ?", [flow_id, case_id])
+    f = db.q("select * from effective_flows where id = ? and case_id = ?", [flow_id, case_id])
     if not f:
         raise HTTPException(404, "流水不存在")
     f = f[0]
@@ -1024,12 +1054,14 @@ def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", c
     else:
         side = "payee"
         acct = f["payee_account"]
+    if not acct:
+        raise HTTPException(422, "该侧账号缺失，无法定位账户流水；原交易仍保留在明细中")
     anchor = db.q("""
-        with acct as (select id, trade_time from flows
+        with acct as (select id, trade_time from effective_flows
                       where case_id = ? and (payer_account = ? or payee_account = ?))
         select count(*) as c from acct
-        where trade_time < (select trade_time from flows where id = ?)
-           or (trade_time = (select trade_time from flows where id = ?) and id < ?)
+        where trade_time < (select trade_time from effective_flows where id = ?)
+           or (trade_time = (select trade_time from effective_flows where id = ?) and id < ?)
     """, [case_id, acct, acct, flow_id, flow_id, flow_id])[0]["c"] + 1
     rows = db.q("""
         with acct as (
@@ -1039,13 +1071,13 @@ def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", c
                    case when self_account = ? then 'self'
                         when coalesce(self_account, '') <> '' then 'counter'
                         else '' end as book
-            from flows where case_id = ? and (payer_account = ? or payee_account = ?)
+            from effective_flows where case_id = ? and (payer_account = ? or payee_account = ?)
         ), ranked as (
             select *, row_number() over (order by trade_time, id) as rn from acct
         )
         select * from ranked where rn between ? and ? order by rn
     """, [acct, acct, case_id, acct, acct, anchor - x, anchor + x])
-    total = db.q("select count(*) c from flows where case_id = ? and (payer_account = ? or payee_account = ?)",
+    total = db.q("select count(*) c from effective_flows where case_id = ? and (payer_account = ? or payee_account = ?)",
                  [case_id, acct, acct])[0]["c"]
     result = {"anchor": f, "side": side, "account": acct, "total": total, "pos": anchor, "rows": rows}
     result["suggestions"] = _suggest_counterparties(rows, f)
@@ -1673,14 +1705,18 @@ def _png_to_pdf_lossless(png: bytes) -> bytes:
 def export_tracked(case_id: int, canvas_id: int = 0):
     with db._lock:
         rows, pending = _tracked_export_data(case_id, canvas_id)
-    return _tracked_workbook(case_id, rows, pending)
+        # Preserve the existing CSV/Excel export shape. The additional coverage
+        # sheet applies only when this case has versioned import evidence.
+        coverage = import_coverage(case_id) if db.q_raw(
+            "select 1 from import_sources where case_id=? and row_kind in ('archive_record','table_record') limit 1", [case_id]) else None
+    return _tracked_workbook(case_id, rows, pending, coverage)
 
 
 def _tracked_export_data(case_id, canvas_id):
     rows = db.q_raw("""
         select f.trade_time, f.trade_no, f.payer_name, f.payer_account, f.payer_bank,
                f.payee_name, f.payee_account, f.payee_bank, f.amount, f.currency, f.summary, f.channel, f.id
-        from flows f join tracked_flows tf on tf.flow_id = f.id
+        from effective_flows f join tracked_flows tf on tf.flow_id = f.id
         where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ? order by f.trade_time
     """, [case_id, canvas_id, case_id])
     if not rows:
@@ -1688,7 +1724,7 @@ def _tracked_export_data(case_id, canvas_id):
     return rows, _pending_accounts(case_id, canvas_id)
 
 
-def _tracked_workbook(case_id, rows, pending):
+def _tracked_workbook(case_id, rows, pending, coverage):
     cols = {"trade_time": "交易时间", "trade_no": "交易流水号",
             "payer_name": "付款户名", "payer_account": "付款账号", "payer_bank": "付款开户行",
             "payee_name": "收款户名", "payee_account": "收款账号", "payee_bank": "收款开户行",
@@ -1702,6 +1738,17 @@ def _tracked_workbook(case_id, rows, pending):
         df.to_excel(w, index=False, sheet_name="追踪流水")
         # 第二张表：待调取账号（当前画布图谱中出现、但尚未导入其本人流水的对手账户）
         pending.to_excel(w, index=False, sheet_name="待调取账号")
+        if coverage is not None:
+            pd.DataFrame([
+                ("流水口径", "当前画布的有效追踪流水；已匹配的冲正／撤销双方退出统计，普通退款仍保留，不代表结算净额或完整清算结果。"),
+                ("覆盖范围", "以下完整性仅限本案已导入反馈来源的资金语义，不表示银行提供的数据齐全。"),
+                ("资金效果未确定记录数", coverage["unresolved_records"]),
+                ("非资金事件记录数", coverage["non_monetary_records"]),
+                ("已匹配冲正撤销事件数", coverage.get("cancelled_records", 0)),
+                ("保留原始流水中退出分析的笔数", coverage.get("excluded_flows", 0)),
+                ("已导入来源资金语义是否完整", "是" if coverage["financial_interpretation_complete"] else "否"),
+                ("未确定记录", "资金效果未确定的记录未计入流水统计；非资金事件单独保留，不计入金额与交易笔数。"),
+            ], columns=["项目", "说明"]).to_excel(w, index=False, sheet_name="统计口径")
         # openpyxl otherwise interprets user strings beginning '=' as formulas
         # (and strings such as '#N/A' as errors). Preserve their literal value.
         for sheet in w.sheets.values():
@@ -1725,7 +1772,7 @@ def _pending_accounts(case_id: int, canvas_id: int = 0) -> "pd.DataFrame":
         where case_id = ? and self_account is not null and self_account <> ''
     """, [case_id])}
     nodes = db.q_raw("""
-        with t as (select f.* from flows f join tracked_flows tf on tf.flow_id = f.id
+        with t as (select f.* from effective_flows f join tracked_flows tf on tf.flow_id = f.id
                    where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?)
         select x.account as account, coalesce(x.currency, '') currency, max(x.name) as name,
                sum(case when x.ispay = 1 then 1 else 0 end) as out_cnt,
@@ -1739,7 +1786,7 @@ def _pending_accounts(case_id: int, canvas_id: int = 0) -> "pd.DataFrame":
             select payer_account as account, payer_name as name, 1 as ispay, amount, trade_time, currency from t
             union all
             select payee_account, payee_name, 0, amount, trade_time, currency from t
-        ) x
+        ) x where coalesce(x.account,'')<>''
         group by x.account, coalesce(x.currency, '')
     """, [case_id, canvas_id, case_id, case_id, case_id])
     pending = [n for n in nodes if n["account"] not in ledgers]

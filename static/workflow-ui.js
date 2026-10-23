@@ -16,6 +16,136 @@
   const text = error => String(error?.message || error || '请求失败').slice(0, 200);
   const pending = session => session.committing || session.polling || session.recovering;
 
+  const feedbackReasons = {
+    transaction_valid: '按来源方向与金额识别为资金流水', auxiliary_table: '辅助资料，未作为资金流水', feedback_only: '来源反馈，未包含资金流水',
+    negative_reversal_text: '负数与冲正描述缺少一致的来源依据', negative_revocation_text: '负数与撤销描述缺少一致的来源依据',
+    negative_reversal_revocation_text: '负数与冲正及撤销描述缺少一致的来源依据', negative_unknown: '来源未明确负号含义',
+    missing_core: '缺少形成资金流水必需的信息', invalid_amount: '交易金额格式无效', amount_precision: '交易金额超过分精度',
+    amount_overflow: '交易金额超出支持范围', zero_amount: '零金额，无资金变动', invalid_direction: '收付方向无法识别',
+    invalid_time: '交易时间无效', invalid_currency: '币种无法识别', unknown_status: '交易状态含义缺少适用的来源依据',
+    invalid_balance: '交易余额格式无效', balance_precision: '交易余额超过分精度', balance_overflow: '交易余额超出支持范围',
+    reversal_text_requires_review: '历史冲正或撤销记录缺少可确定资金效果的依据',
+    own_identity_conflict: '同一来源记录的本方身份资料冲突，已保留且未重复计入金额',
+    matched_cancellation: '已配对冲正/撤销，双方均不计有效资金',
+    mapping_unknown: '关键字段尚未识别，未推定资金事实', mapping_conflict: '关键字段存在多个冲突解释',
+    ambiguous_mapping: '关键字段无法唯一映射', missing_mapping: '缺少交易必需字段映射',
+    amount_conflict: '金额字段相互冲突', amount_unit_conflict: '金额单位相互冲突', unknown_amount_unit: '金额单位无法确定',
+    conflicting_unit: '金额单位声明相互矛盾',
+    balance_amount_conflict: '本笔交易前后账面余额差与金额不一致',
+    balance_direction_conflict: '本笔交易前后账面余额变化与收支方向矛盾',
+    direction_conflict: '方向字段与金额含义冲突', ambiguous_direction: '资金方向无法唯一确定',
+    ambiguous_date: '日期格式存在多种解释', field_conflict: '来源字段相互冲突',
+    invalid_row_width: '记录列数与表头不一致', repeated_header: '重复表头，未作为交易',
+    non_transaction: '说明或汇总记录，未作为交易', unsupported_document: '来源文件格式尚未适配',
+    unknown_table: '表格结构尚不能唯一识别', missing_time: '缺少形成资金流水必需的交易时间', conflicting_time: '多个时间字段不一致',
+    missing_amount: '缺少形成资金流水必需的交易金额', conflicting_amount: '多个金额字段换算后不一致', unknown_unit: '金额单位不能唯一确定',
+    negative_amount: '来源未明确负号含义', missing_direction: '缺少可确定的收支方向',
+    conflicting_direction: '方向与金额或收支分列矛盾', conflicting_income_expense: '收入与支出同时非零',
+    missing_identity: '缺少必要的本方或双边身份', conflicting_field: '同一字段的多个候选列不一致',
+    row_width: '来源记录列数与表头不同', column_count_mismatch: '来源记录列数与表头不同',
+    blank_record: '空白记录，未作为交易', preamble: '表头前说明，未作为交易',
+    failed_transaction: '来源明确标记交易未成功', unsafe_account_number: 'Excel数值账号可能已损失精度',
+    currency_unit_conflict: '金额单位标注的币种与币种字段矛盾', unsupported_identity_format: 'Excel数字身份显示格式无法唯一解释',
+    formula_value: '关键字段是未执行的公式，未推定计算结果',
+    region_mapping_conflict: '当前表格区域的字段无法唯一对应',
+  cancellation_structure: '来源结构不足以核实冲回关系', cancellation_missing_reference: '冲回缺少原交易引用',
+  cancellation_reference_not_unique: '原交易引用不能唯一配对', cancellation_action_unproven: '缺少明确且无矛盾的冲正或撤销说明',
+  cancellation_status_unproven: '冲回交易状态无法确定', cancellation_missing_scope: '缺少同账户同币种的核验依据',
+  cancellation_original_invalid: '原交易未通过完整校验', cancellation_time_ambiguous: '交易先后关系不能唯一确定',
+  cancellation_unlocated_record: '账户时间序列中存在无法定位的记录', cancellation_missing_balance: '缺少完整余额回补证据',
+  cancellation_amount_mismatch: '原交易与冲回金额不匹配', cancellation_direction_mismatch: '原交易与冲回的记账方向不一致',
+  cancellation_identity_conflict: '原交易与冲回身份字段存在冲突', cancellation_witness_untrusted: '前置余额缺少可靠交易依据',
+  cancellation_balance_mismatch: '余额变化不能核实完整冲回', cancellation_validation_failed: '冲回证据未通过一致性校验',
+  cancellation_historical_conflict: '冲回证据与本案历史流水冲突，未自动排除',
+  };
+  const feedbackReason = reason => feedbackReasons[reason] || '其他自动分类结果，详见完整处理报告';
+  const feedbackRoles = { transaction: '交易明细', account: '账户信息', client: '客户资料', subaccount: '子账户', address: '地址', phone: '联系方式', task: '查询任务', freeze: '冻结信息' };
+  const mappingNames = { trade_no: '流水号', trade_time: '交易时间', time_part: '交易时刻', _time2: '时间补充', amount: '交易金额', balance: '交易后余额', currency: '币种',
+    payer_name: '付款户名', payer_account: '付款账号', payer_bank: '付款开户行', payee_name: '收款户名', payee_account: '收款账号', payee_bank: '收款开户行',
+    self_account: '本方账号', self_name: '本方户名', counter_account: '对手账号', counter_name: '对手户名', counter_bank: '对手开户行',
+    direction: '收支方向', income_amt: '收入金额', expense_amt: '支出金额', summary: '摘要', channel: '渠道', status: '交易状态', voucher_reference: '凭证引用' };
+  const mappingBasis = { exact_header_alias: '按完整表头别名识别并校验', source_transaction_id: '使用来源交易流水号', independent_voucher_reference: '凭证号为独立引用，不与交易流水号判冲突', explicit_time_format: '明确的日期时间格式' };
+  const unresolvedCount = feedback => (feedback.unresolved || 0) + (feedback.review || 0);
+  const feedbackCounts = feedback => `已配对冲正/撤销 ${fmtCount(feedback.cancelled ?? 0)} 条（双方均不计有效资金） · 无资金变动 ${fmtCount(feedback.non_monetary || 0)} 条 · 未计入资金流水 ${fmtCount(unresolvedCount(feedback))} 条 · 来源反馈 ${fmtCount(feedback.non_transaction)} 条 · 辅助资料 ${fmtCount(feedback.auxiliary)} 条`;
+  const tableCounts = summary => `可靠识别流水 ${fmtCount(summary.accepted)} 条 · 已配对冲正/撤销 ${fmtCount(summary.cancelled ?? 0)} 条（双方均不计有效资金） · 未计入资金流水 ${fmtCount(summary.unresolved)} 条 · 无资金变动 ${fmtCount(summary.non_monetary)} 条 · 非交易记录 ${fmtCount(summary.non_transaction)} 条 · 辅助资料 ${fmtCount(summary.auxiliary)} 条`;
+
+  const effectiveAdded = result => result.table_summary?.effective_added ?? result.ok;
+  const retainedFacts = result => result.table_summary?.effective_added != null && result.table_summary.effective_added !== result.ok
+    ? `本次保留流水事实 ${fmtCount(result.ok)} 笔，其中新增有效资金流水 ${fmtCount(result.table_summary.effective_added)} 笔；已有配对依据的记录不重复进入统计。` : '';
+
+  function tableHtml(summary, complete = false) {
+    const reasons = Object.entries(summary.reason_counts || {}).map(([reason, count]) => `<li>${esc(feedbackReason(reason))}：${fmtCount(count)} 条</li>`).join('');
+    const evidence = (summary.mapping_evidence || []).slice(0, 50).map(item => `<li>${esc(item.member_path || '')} · ${esc(mappingNames[item.field] || item.field || '字段')} ← ${esc(item.column || '未识别')}${item.time_format ? ` · 时间格式：${esc(item.time_format)}` : ''}${item.unit && ['amount', 'balance', 'income_amt', 'expense_amt'].includes(item.field) ? ` · 来源单位：${esc(item.unit)}` : ''}${item.unit_factor && ['amount', 'balance', 'income_amt', 'expense_amt'].includes(item.field) ? ` · 金额单位换算系数：${esc(item.unit_factor)}` : ''}${item.candidate_count ? ` · 候选列：${esc(item.candidate_count)}` : ''}${mappingBasis[item.basis] ? ` · ${esc(mappingBasis[item.basis])}` : ''}</li>`).join('');
+    const examples = (summary.unresolved_examples || []).map(row => `<li>${esc(row.member_path)} · 原始第 ${fmtCount(row.source_row)} 行 · ${esc(feedbackReason(row.reason_code))}</li>`).join('');
+    const totals = Object.entries(summary.currency_totals || {}).map(([currency, amount]) => `<li>${moneyHtml(amount, currency)}</li>`).join('');
+    const documents = (summary.documents || []).slice(0, 50).map(item => `<li>${esc(item.member_path || '来源表格')}${item.sheet ? ` · 工作表：${esc(item.sheet)}` : ''}${item.header_row != null ? ` · 表头第 ${fmtCount(item.header_row)} 行` : ' · 未能唯一识别表头'}${item.row_count != null ? ` · 来源记录 ${fmtCount(item.row_count)} 条` : ''}</li>`).join('');
+    return `<p><strong>表格自动识别 · 全量校验</strong></p><p>来源记录 ${fmtCount(summary.record_total)} 条 · ${tableCounts(summary)}</p>`
+      + `<p>${complete ? '自动处理已完成，未计入资金流水的记录已' : '自动处理会正常完成，未计入资金流水的记录会'}保留来源和原因，无需逐条确认；这些记录不参与金额、交易笔数和关系统计。</p>`
+      + ((summary.cancelled ?? 0) > 0 ? '<p>已配对记录保留来源和核验依据，双方退出有效资金统计；退款、退货或仅有负号的记录不据此排除。</p>' : '')
+      + (complete && (summary.excluded_flows ?? 0) > 0 ? `<p>本案另有 ${fmtCount(summary.excluded_flows)} 笔历史留存流水已退出有效统计。</p>` : '')
+      + (summary.unresolved > 0 ? '<p>分析仅使用可靠识别的有效流水，可能无法反映完整资金流向、金额和关联关系。未计入不代表金额为零或没有发生交易。</p>' : '')
+      + (summary.accepted === 0 ? `<p>文件${complete ? '已处理' : '可保存处理结果'}，暂无可可靠计入的流水。</p>` : '')
+      + (totals ? `<p>可靠识别流水金额合计（按币种，含重复；非本次新增金额或净结算金额）：</p><ul>${totals}</ul>` : '')
+      + (evidence ? `<details open><summary>字段映射、金额单位与方向依据（共 ${fmtCount(summary.mapping_evidence.length)} 项）</summary><ul>${evidence}</ul>${summary.mapping_evidence.length > 50 ? '<p>显示前50项，完整依据见处理报告。</p>' : ''}</details>` : '')
+      + (reasons ? `<details open><summary>全量校验与未计入原因</summary><ul>${reasons}</ul></details>` : '')
+      + (examples ? `<details><summary>未计入记录的来源位置</summary><ul>${examples}</ul></details>` : '')
+      + (documents ? `<details><summary>已检查的来源文件与工作表（共 ${fmtCount(summary.documents.length)} 项）</summary><ul>${documents}</ul>${summary.documents.length > 50 ? '<p>显示前50项，完整清单见处理报告。</p>' : ''}</details>` : '');
+  }
+
+  function feedbackHtml(feedback, complete = false) {
+    const counts = `原始记录 ${fmtCount(feedback.record_total)} 条 · 交易明细表记录 ${fmtCount(feedback.transaction_total)} 条 · 来源已接纳流水 ${fmtCount(feedback.accepted)} 条 · ${feedbackCounts(feedback)}`;
+    const reasons = Object.entries(feedback.reason_counts || {}).map(([reason, count]) => `<li>${esc(feedbackReason(reason))}：${fmtCount(count)} 条</li>`).join('');
+    const totals = Object.entries(feedback.currency_totals || {}).map(([currency, amount]) => `<li>${moneyHtml(amount, currency)}</li>`).join('');
+    const sourceExamples = [...(feedback.unresolved_examples || []), ...(feedback.review_examples || [])].slice(0, 10);
+    const examples = sourceExamples.map(row => `<li>${esc(row.member_path)} · 原始第 ${fmtCount(row.source_row)} 行 · ${esc(feedbackReason(row.reason_code))}</li>`).join('');
+    const members = (feedback.members || []).map(member => `<tr><td>${esc(member.member_path)}</td><td>${esc(feedbackRoles[member.role] || member.role)}</td><td>${fmtCount(member.row_count)}</td><td>${fmtCount(member.size_bytes)}</td><td>${esc(member.encoding || '—')}</td><td class="mono">${esc(member.sha256)}</td></tr>`).join('');
+    return `<p><strong>银行反馈 ZIP · 已自动识别</strong></p><p>按固定规则自动分类并保存来源与处理结果，字段映射与流水模式不可修改。</p><p>${counts}</p>`
+      + `<p>${complete ? '自动处理已完成，未计入资金流水的记录已' : '自动处理会正常完成，未计入资金流水的记录会'}保留来源和原因，无需逐条确认；这些记录不参与金额、交易笔数和关系统计。</p>`
+      + '<p>仅按完整来源信息唯一配对冲正/撤销；配对双方保留来源记录，不计入有效资金统计。普通退款按来源记账方向与金额处理，不因摘要含“退款”自动排除。</p>'
+      + (unresolvedCount(feedback) > 0 ? '<p>分析仅使用可靠识别的有效流水，可能无法反映完整资金流向、金额和关联关系。未计入不代表金额为零或没有发生交易。</p>' : '')
+      + (complete && (feedback.excluded_flows ?? 0) > 0 ? `<p>本案另有 ${fmtCount(feedback.excluded_flows)} 笔历史留存流水已退出有效统计。</p>` : '')
+      + (totals ? `<p>来源已接纳流水金额合计（按币种，含重复记录，已排除配对冲正/撤销双方；非本次新增金额或净结算金额）：</p><ul>${totals}</ul>` : '<p>当前没有来源已接纳流水金额。</p>')
+      + (reasons ? `<details open><summary>自动分类依据</summary><ul>${reasons}</ul></details>` : '')
+      + (examples ? `<details><summary>未计入记录的来源示例（前 ${sourceExamples.length} 条）</summary><ul>${examples}</ul></details>` : '')
+      + (members ? `<details><summary>包内来源文件与校验信息</summary><div class="tbl-wrap"><table class="tbl"><thead><tr><th>来源文件</th><th>记录类型</th><th>记录数</th><th>字节数</th><th>编码</th><th>SHA-256</th></tr></thead><tbody>${members}</tbody></table></div></details>` : '');
+  }
+
+  function renderPreview(result) {
+    const feedback = result.feedback, summary = result.table_summary, classified = feedback || summary;
+    renderImport(classified ? { ...result, stats: { ...result.stats,
+      bad_examples: (result.stats.bad_examples || []).map(example => ({ ...example, reason: feedbackReason(example.reason) })) } } : result);
+    $('#impFeedback').hidden = !classified;
+    $('#impFeedback').setAttribute('aria-label', feedback ? '银行反馈包识别与处置汇总' : '表格自动识别与全量校验汇总');
+    $('#impFeedback').innerHTML = feedback ? feedbackHtml(feedback) : summary ? tableHtml(summary) : '';
+    for (const id of ['impMappingSection', 'impMode', 'impSelfLine']) $('#' + id).hidden = !!classified;
+    if (!classified) return;
+    $('#impPreviewNote').textContent = `前 ${result.preview.length} 条来源已接纳流水 · 原始成员与行号`;
+    $('#impPreviewHead').innerHTML = '<tr><th>来源文件／原始行</th><th>交易时间</th><th>付款方</th><th>收款方</th><th class="amt">金额</th><th>摘要</th></tr>';
+    $('#impTbody').innerHTML = result.preview.map(row => `<tr><td>${esc(row.source_member || '—')}<br>原始第 ${fmtCount(row.source_row ?? '—')} 行 · 记录 ${fmtCount(row.source_record_no ?? '—')}</td><td>${esc(fmtTime(row.trade_time))}</td><td>${esc(row.payer_name || (row.payer_account ? '户名未提供' : '未知对手'))}<br><span class="mono">${esc(row.payer_account || '账号缺失')}</span></td><td>${esc(row.payee_name || (row.payee_account ? '户名未提供' : '未知对手'))}<br><span class="mono">${esc(row.payee_account || '账号缺失')}</span></td><td class="amt">${moneyHtml(row.amount, row.currency)}</td><td>${esc(row.summary || '—')}</td></tr>`).join('');
+    $('#impStats').textContent = feedback ? `来源已接纳流水 ${fmtCount(feedback.accepted)} 条 · 已配对冲正/撤销 ${fmtCount(feedback.cancelled ?? 0)} 条（双方均不计有效资金） · 未计入资金流水 ${fmtCount(unresolvedCount(feedback))} 条` : tableCounts(summary);
+  }
+
+  async function downloadResult(kind) {
+    const session = active, sourceId = session?.result?.source_id;
+    if (!session || !visible(session) || !sourceId || session.downloading) return;
+    session.downloading = true; controls(session); $('#impDownloadStatus').textContent = '正在准备下载…';
+    const path = '/api/v1/cases/' + encodeURIComponent(session.context.caseId) + '/sources/' + encodeURIComponent(sourceId) + (kind === 'report' ? '/report' : '/file');
+    try {
+      const response = await fetch(path);
+      if (!response.ok) throw new Error('无法下载文件，请稍后重试');
+      const blob = await response.blob();
+      if (!visible(session)) return;
+      const url = URL.createObjectURL(blob);
+      try {
+        const link = document.createElement('a'); link.href = url;
+        link.download = kind === 'report' ? `feedback-${sourceId}-dispositions.json` : session.filename;
+        document.body.appendChild(link); link.click(); link.remove();
+      } finally { URL.revokeObjectURL(url); }
+      if (visible(session)) $('#impDownloadStatus').textContent = '下载已准备。';
+    } catch (error) { if (visible(session)) $('#impDownloadStatus').textContent = text(error); }
+    finally { session.downloading = false; if (visible(session)) controls(session); }
+  }
+
   async function request(path, options) {
     const response = await fetch(path, options);
     if (!response.ok) {
@@ -72,15 +202,19 @@
 
   function flow(session) {
     const working = !session.result && (session.previewing || session.committing || session.polling);
+    const feedback = session.preview?.feedback || session.result?.feedback || session.preview?.table_summary || session.result?.table_summary;
     let values = ['current', 'pending', 'pending'], status = '选择流水文件';
-    if (session.preview || session.phase !== 'file') { values = ['complete', 'current', 'pending']; status = '核对字段与数据预览'; }
+    if (session.preview || session.phase !== 'file') { values = ['complete', 'current', 'pending']; status = feedback ? '已自动识别格式与记录类型' : '核对字段与数据预览'; }
     if (session.phase === 'confirm') { values = ['complete', 'complete', working ? 'working' : 'current']; status = '正在导入'; }
     if (session.previewing) { values[session.phase === 'file' ? 0 : 1] = 'working'; status = session.phase === 'file' ? '正在上传或解析文件' : '正在重新识别字段'; }
     if (session.dirty && !working) status = '字段已修改，重新识别后可导入';
     if (session.errorStage) { values[{ file: 0, fields: 1, confirm: 2 }[session.errorStage]] = 'error'; status = session.errorStage === 'fields' ? '重新识别未完成' : session.errorStage === 'file' ? '文件未就绪' : '导入未完成'; }
     if (session.recovering && !session.polling && !session.committing) { values[2] = 'warning'; status = '结果待确认，重新读取进度'; }
-    if (session.result) { values = ['complete', 'complete', 'complete']; status = '导入完成'; }
-    const labels = ['文件', '字段', '确认'], names = { pending: '未开始', current: '待核对', working: '处理中', complete: '已完成', error: '未完成', warning: '结果待确认' };
+    if (session.result) { values = ['complete', 'complete', 'complete']; status = feedback ? '自动处理完成，全部记录已保存' : '导入完成'; }
+    const labels = feedback ? ['文件', '自动识别', '处理结果'] : ['文件', '字段', '确认'], names = { pending: '未开始', current: feedback ? '已就绪' : '待核对', working: '处理中', complete: '已完成', error: '未完成', warning: '结果待确认' };
+    const fieldsLabel = $('#impFlowFieldsLabel'), resultLabel = $('#impFlowConfirmLabel');
+    if (fieldsLabel) fieldsLabel.textContent = labels[1];
+    if (resultLabel) resultLabel.textContent = labels[2];
     ['impFlowFile', 'impFlowFields', 'impFlowConfirm'].forEach((id, index) => {
       const node = $('#' + id), value = values[index];
       node.setAttribute('data-state', value); node.setAttribute('aria-label', labels[index] + '：' + names[value]);
@@ -94,18 +228,32 @@
   function controls(session) {
     if (!ownsView(session)) return;
     const busy = !session.result && (pending(session) || session.previewing), complete = !!session.result;
-    $('#impCommit').disabled = busy || !session.preview || session.dirty || session.preview.stats?.ok === 0;
-    $('#impRe').disabled = busy || !session.preview;
-    $('#impRe').hidden = !session.preview || complete; $('#impCommit').hidden = !session.preview || complete;
+    const classified = !!session.preview?.feedback || !!session.preview?.table_summary, fixed = classified;
+    $('#impCommit').disabled = busy || !session.preview || session.dirty || (!classified && session.preview.stats?.ok === 0);
+    $('#impCommit').textContent = classified ? '开始导入' : '确认导入';
+    $('#impRe').disabled = busy || !session.preview || fixed;
+    $('#impRe').hidden = !session.preview || complete || fixed; $('#impCommit').hidden = !session.preview || complete;
     $$('#impMapping select,input[name=impMode],#impMainSel .mk-acct,#impSelfAccts').forEach(node => { node.disabled = busy; });
+    if (fixed) { $$('#impMapping select').forEach(node => { node.disabled = true; }); $$('input[name=impMode]').forEach(node => { node.disabled = true; }); $('#impSelfAccts').disabled = true; }
     $('#impFile').disabled = !!pending(session); $('#impChangeFile').disabled = busy;
     $('#impRetryProgress').disabled = session.polling;
     $('#impCancel').textContent = complete ? '完成' : busy ? '关闭' : '取消';
     $('#impResult').hidden = !complete;
     if (complete) {
       $('#impStep1').style.display = 'none'; $('#impStep2').style.display = 'none'; $('#impStats').textContent = '';
-      $('#impResultText').textContent = `新增 ${fmtCount(session.result.ok)} 笔 · 重复 ${fmtCount(session.result.rows_dup || 0)} 笔 · 跳过 ${fmtCount(session.result.skipped || 0)} 行`;
+      $('#impResultTitle').textContent = session.result.feedback || session.result.table_summary ? '自动处理完成' : '导入完成';
+      $('#impResultText').textContent = session.result.feedback
+        ? `已保存 ${fmtCount(session.result.feedback.record_total)} 条记录 · 新增资金流水 ${fmtCount(session.result.ok)} 笔 · 重复 ${fmtCount(session.result.rows_dup || 0)} 笔 · ${feedbackCounts(session.result.feedback)}`
+        : session.result.table_summary ? `已保存 ${fmtCount(session.result.table_summary.record_total)} 条记录 · 新增资金流水 ${fmtCount(effectiveAdded(session.result))} 笔 · 重复 ${fmtCount(session.result.rows_dup || 0)} 笔 · 未计入资金流水 ${fmtCount(session.result.table_summary.unresolved)} 条 · 已配对冲正/撤销 ${fmtCount(session.result.table_summary.cancelled ?? 0)} 条（双方均不计有效资金） · 无资金变动 ${fmtCount(session.result.table_summary.non_monetary)} 条 · 非交易记录 ${fmtCount(session.result.table_summary.non_transaction)} 条 · 辅助资料 ${fmtCount(session.result.table_summary.auxiliary)} 条`
+          : `新增 ${fmtCount(session.result.ok)} 笔 · 重复 ${fmtCount(session.result.rows_dup || 0)} 笔 · 跳过 ${fmtCount(session.result.skipped || 0)} 行`;
     }
+    const feedback = session.result?.feedback, summary = session.result?.table_summary;
+    $('#impResultFeedback').hidden = !feedback && !summary;
+    $('#impResultFeedback').style.textAlign = 'left'; $('#impResultFeedback').style.marginTop = '24px';
+    $('#impResultFeedback').innerHTML = feedback ? feedbackHtml(feedback, true) : summary ? tableHtml(summary, true) + (retainedFacts(session.result) ? `<p>${esc(retainedFacts(session.result))}</p>` : '') : '';
+    $('#impResultDownloads').hidden = (!feedback && !summary) || !session.result?.source_id;
+    $('#impDownloadOriginal').textContent = feedback ? '下载原始 ZIP' : '下载原始文件';
+    $('#impDownloadReport').disabled = $('#impDownloadOriginal').disabled = !!session.downloading;
     if (session.dirty) $('#impPreviewNote').textContent = '映射已变更 · 预览待更新';
     flow(session); previewScroll?.sync();
   }
@@ -116,7 +264,7 @@
       previewing: false, committing: false, polling: false, recovering: false, importId: null };
     active = session; state.imp = null;
     $('#impSelfAccts').value = ''; $('#impFile').value = ''; $('#impStats').textContent = '';
-    $('#impMapping').innerHTML = ''; $('#impMainSel').innerHTML = '';
+    $('#impMapping').innerHTML = ''; $('#impMainSel').innerHTML = ''; $('#impFeedback').hidden = true; $('#impDownloadStatus').textContent = '';
     $('#impPreviewScroll').scrollLeft = 0; $('#impContent').scrollTop = 0;
     $('#impStep1').style.display = 'block'; $('#impStep2').style.display = 'none'; hidePbar();
     const current = state.cases.find(item => item.id === session.context.caseId);
@@ -179,7 +327,7 @@
         if (importId) { session = newSession(); recovery(session, '无法恢复这条导入记录，请在当前案件的导入记录中核对后重试。'); }
         return;
       }
-      session = newSession(); session.importId = item.import_id;
+      session = newSession(); session.importId = item.import_id; session.filename = item.filename;
       if (['parsing', 'importing', 'done'].includes(item.stage)) {
         session.phase = 'confirm';
         session.lease = { context: { ...context }, session, importId: item.import_id, requestPending: false, probe: null };
@@ -196,8 +344,10 @@
       if (!visible(session)) return;
       if (preview.import_id !== item.import_id) throw new Error('预览回执与导入记录不匹配');
       session.preview = preview; session.mappingDraft = { ...preview.mapping }; session.dirty = false;
-      state.imp = preview; renderImport(preview); restoreAccounts(item.request); hidePbar();
-      recovery(session, '已恢复原文件和上次提交选项。请核对映射与主账号，确认后才会再次导入。');
+      state.imp = preview; session.filename = preview.filename; renderPreview(preview); restoreAccounts(item.request); hidePbar();
+      recovery(session, preview.feedback || preview.table_summary
+        ? '已恢复原文件和上次处理依据。请核对处理结果，确认后才会再次导入。'
+        : '已恢复原文件和上次提交选项。请核对映射与主账号，确认后才会再次导入。');
     } catch (error) {
       if (session) {
         if (visible(session)) { hidePbar(); recovery(session, '无法恢复导入：' + text(error)); }
@@ -237,7 +387,13 @@
         const form = new FormData(); form.append('file', file); xhr.send(form);
       });
       if (!current()) return;
-      session.preview = result; session.mappingDraft = { ...result.mapping }; state.imp = result; session.phase = 'fields'; renderImport(result); hidePbar();
+      session.preview = result; session.filename = result.filename; session.mappingDraft = { ...result.mapping }; state.imp = result; session.phase = 'fields'; renderPreview(result); hidePbar();
+      if (result.automatic === true) {
+        // Only a fresh upload response can trigger this write. Repreview and
+        // progress recovery retain their explicit, task-bound continuation.
+        session.previewing = false;
+        await commit();
+      }
     } catch (error) {
       if (current()) { session.errorStage = 'file'; hidePbar(); recovery(session, '文件预览失败：' + text(error) + '。可重新选择文件。'); }
     } finally {
@@ -247,7 +403,7 @@
 
   function mappingChanged(modeChanged = false) {
     const session = active;
-    if (!session || !visible(session) || !session.preview || pending(session) || session.previewing) return;
+    if (!session || !visible(session) || !session.preview || session.preview.feedback || session.preview.table_summary || pending(session) || session.previewing) return;
     session.dirty = true; session.errorStage = null; session.phase = 'fields';
     const { mode } = collectMapping();
     $$('#impMapping select').forEach(node => { session.mappingDraft[node.dataset.field] = node.value; });
@@ -261,7 +417,7 @@
 
   async function repreview() {
     const session = active;
-    if (!session || !visible(session) || !session.preview || pending(session) || session.previewing) return;
+    if (!session || !visible(session) || !session.preview || session.preview.feedback || session.preview.table_summary || pending(session) || session.previewing) return;
     const sequence = ++session.request, { mode, mapping } = collectMapping();
     const marked = new Map($$('#impMainSel .mk-acct').map(node => [node.value, node.checked]));
     session.phase = 'fields'; session.errorStage = null; session.dirty = true; session.previewing = true;
@@ -271,7 +427,7 @@
         import_id: session.preview.import_id, mode, mapping, case_id: session.context.caseId }) });
       if (!visible(session) || sequence !== session.request) return;
       session.preview = result; session.mappingDraft = { ...session.mappingDraft, ...result.mapping };
-      session.dirty = false; state.imp = result; renderImport(result);
+      session.dirty = false; state.imp = result; renderPreview(result);
       $$('#impMainSel .mk-acct').forEach(node => { if (marked.has(node.value)) node.checked = marked.get(node.value); });
     } catch (error) {
       if (visible(session) && sequence === session.request) {
@@ -296,8 +452,11 @@
           const result = progress.result;
           if (!result || result.ok == null) throw new Error('导入完成回执不完整，请重新读取进度');
           session.result = result; session.preview = null;
-          let message = `导入完成：新增 ${fmtCount(result.ok)} 笔，跳过 ${fmtCount(result.skipped || 0)} 行，重复 ${fmtCount(result.rows_dup || 0)} 笔`;
-          if (result.main_detected?.length) message += `；已标记本方主账号：${result.main_detected.map(item => item.name || item.account.slice(-6)).join('、')}`;
+          let message = result.feedback
+            ? `自动处理完成：已保存 ${fmtCount(result.feedback.record_total)} 条记录 · 新增资金流水 ${fmtCount(result.ok)} 笔 · 重复 ${fmtCount(result.rows_dup || 0)} 笔 · ${feedbackCounts(result.feedback)}`
+            : result.table_summary ? `自动处理完成：新增 ${fmtCount(effectiveAdded(result))} 笔 · 重复 ${fmtCount(result.rows_dup || 0)} 笔 · 未计入资金流水 ${fmtCount(result.table_summary.unresolved)} 条，原因见处理结果。`
+              : `导入完成：新增 ${fmtCount(result.ok)} 笔，跳过 ${fmtCount(result.skipped || 0)} 行，重复 ${fmtCount(result.rows_dup || 0)} 笔`;
+          if (result.main_detected?.length) message += result.table_summary ? `已标记本方主账号 ${fmtCount(result.main_detected.length)} 个。` : `；已标记本方主账号：${result.main_detected.map(item => item.name || item.account.slice(-6)).join('、')}`;
           if (visible(session)) { hidePbar(); $('#impResultText').textContent = message; controls(session); }
           toast(message);
           // Refresh failures cannot relabel a durable completed import as failed.
@@ -327,12 +486,14 @@
 
   async function commit() {
     const session = active;
-    if (!session || !visible(session) || !session.preview || session.dirty || session.preview.stats?.ok === 0 || pending(session) || session.previewing) return;
+    if (!session || !visible(session) || !session.preview || session.dirty || (!session.preview.feedback && !session.preview.table_summary && session.preview.stats?.ok === 0) || pending(session) || session.previewing) return;
     if (window.FundsDataToolsActions?.blocked(session.context) || window.FundsMainAccountsActions?.blocked(session.context)) {
       recovery(session, '该案件的资料更新尚未结束。请先完成或核对数据工具、主账号标记操作，再提交流水导入。');
       return;
     }
-    const { mode, mapping } = collectMapping();
+    // Automatic sources must retain every mapping admitted by their preview,
+    // including source-only fields absent from the historical mapping matrix.
+    const { mode, mapping } = session.preview.feedback || session.preview.table_summary ? session.preview : collectMapping();
     const payload = { import_id: session.preview.import_id, mode, mapping, case_id: session.context.caseId,
       self_accounts: $('#impSelfAccts').value.trim(),
       mark_accounts: $$('#impMainSel .mk-acct').filter(node => node.checked).map(node => node.value).join(',') };
@@ -564,6 +725,9 @@
     $('#btnImport').onclick = open; $('#btnImport2').onclick = open;
     $('#impClose').onclick = close; $('#impCancel').onclick = close;
     $('#impFile').onchange = upload; $('#impRe').onclick = repreview; $('#impCommit').onclick = commit;
+    const reportButton = $('#impDownloadReport'), originalButton = $('#impDownloadOriginal');
+    if (reportButton) reportButton.onclick = () => downloadResult('report');
+    if (originalButton) originalButton.onclick = () => downloadResult('original');
     $('#impChangeFile').onclick = () => { if (active && !pending(active) && !active.previewing) { newSession(); $('#impFile').click(); } };
     $('#impMapping').addEventListener('change', () => mappingChanged());
     $$('input[name=impMode]').forEach(input => { input.onchange = () => mappingChanged(true); });

@@ -1,5 +1,5 @@
 """Stable v1 routes; the legacy /api endpoints remain independently mounted."""
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, File, Path, Query, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -13,7 +13,7 @@ from starlette.exceptions import HTTPException
 from app.services import cases, imports
 from .models import (ApiError, Case, CaseCreate, CaseList, CaseStats, CommitRequest,
                      CommitStarted, FlowPage, ImportJob, ImportPreview, RepreviewRequest,
-                     ImportSessionList, CleanupRequest, CleanupResult, FlowSourceList)
+                     ImportSessionList, CleanupRequest, CleanupResult, FlowSourceList, ImportRecordPage)
 
 
 def error_response(status, code, message):
@@ -116,6 +116,31 @@ def source_file(case_id: CaseId, source_id: ImportId):
 @router.get("/cases/{case_id}/imports", response_model=ImportSessionList, operation_id="v1_import_sessions")
 def sessions(case_id: CaseId, limit: int = Query(100, ge=1, le=200)):
     return imports.list_sessions(case_id, limit)
+
+
+@router.get("/cases/{case_id}/imports/{source_id}/records", response_model=ImportRecordPage,
+            operation_id="v1_import_records")
+def records(case_id: CaseId, source_id: ImportId, page: int = Query(1, ge=1, le=2_147_483_647),
+            page_size: int = Query(100, ge=1, le=200),
+            disposition: Literal["imported", "duplicate", "review", "unresolved", "non_monetary", "cancelled", "non_transaction", "auxiliary", "removed"] | None = None):
+    return imports.list_records(case_id, source_id, page, page_size, disposition)
+
+
+@router.get("/cases/{case_id}/sources/{source_id}/report", operation_id="v1_import_report",
+            response_class=StreamingResponse, responses={200: {"description": "Complete source disposition report",
+                "content": {"application/json": {"schema": {"type": "string", "format": "binary"}}}}})
+def report(case_id: CaseId, source_id: ImportId):
+    stream, filename = imports.get_disposition_report(case_id, source_id)
+
+    def chunks():
+        try:
+            while block := stream.read(1024 * 1024):
+                yield block
+        finally:
+            stream.close()
+
+    return StreamingResponse(chunks(), media_type="application/json", background=BackgroundTask(stream.close),
+                             headers={"Cache-Control": "no-store", "Content-Disposition": f"attachment; filename*=utf-8''{quote(filename, safe='')}"})
 
 
 @router.post("/cases/{case_id}/imports/cleanup", response_model=CleanupResult, operation_id="v1_cleanup_uploads")

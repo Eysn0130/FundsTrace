@@ -330,6 +330,7 @@
         <button class="btn small query-toggle" id="btnQueryToggle" type="button" aria-expanded="true" aria-controls="queryFields"><img class="ui-icon" src="/static/ui-icons/chevron-up.svg" alt=""><span>筛选</span></button>
         <span class="stats query-stat-line" id="statLine">加载中…</span><span id="querySummary" class="query-summary">全部流水</span>
       </div>
+      <p class="workflow-status" id="importCoverageNote" role="note" hidden></p>
       <div class="query-disclosure" id="queryFields"><div class="query-controls">
       <div class="form-grid query-fields">
         <label class="query-field query-primary" for="fAccount">账号/卡号<input id="fAccount" placeholder="付款或收款账号"></label>
@@ -638,21 +639,22 @@
     </header>
     <ol class="import-steps" aria-label="导入进度">
       <li id="impFlowFile" data-state="current" aria-current="step"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span>文件</span></li>
-      <li id="impFlowFields" data-state="pending"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span>字段</span></li>
-      <li id="impFlowConfirm" data-state="pending"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span>确认</span></li>
+      <li id="impFlowFields" data-state="pending"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span id="impFlowFieldsLabel">字段</span></li>
+      <li id="impFlowConfirm" data-state="pending"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span id="impFlowConfirmLabel">确认</span></li>
     </ol>
     <div class="import-dialog-content" id="impContent">
       <div id="impStep1" class="import-file-stage">
         <img class="import-file-icon ui-icon" src="/static/ui-icons/upload.svg" alt="">
-        <h3>选择流水文件</h3><p class="muted">CSV、TXT、TSV 或 Excel · 导入到<span id="impCaseName">当前案件</span></p>
-        <label class="btn primary import-file-picker" for="impFile">选择文件<input type="file" id="impFile" accept=".csv,.txt,.tsv,.xlsx,.xls" aria-label="选择流水文件"></label>
+        <h3>选择流水文件</h3><p class="muted">CSV、TXT、TSV、Excel 或 ZIP · 自动识别并处理全部记录 · 导入到<span id="impCaseName">当前案件</span></p>
+        <label class="btn primary import-file-picker" for="impFile">选择文件<input type="file" id="impFile" accept=".csv,.txt,.tsv,.xlsx,.xls,.zip" aria-label="选择流水文件"></label>
       </div>
       <div class="pbar" id="impPbar" style="display:none"><div class="pfill" id="impPfill"></div><span class="ptext" id="impPtext">准备导入</span></div>
       <div id="impStep2" style="display:none">
-        <div class="import-file-toolbar"><div class="imp-meta" id="impMeta"></div><button class="btn import-change-file" id="impChangeFile" type="button">更换文件</button><fieldset class="imp-mode" aria-label="流水模式"><label><input type="radio" name="impMode" value="A">双边流水</label><label><input type="radio" name="impMode" value="B">单账户流水</label></fieldset></div>
-        <section class="import-mapping-section" aria-labelledby="impMappingTitle"><h3 id="impMappingTitle">字段映射</h3><div id="impMapping"></div></section>
+        <div class="import-file-toolbar"><div class="imp-meta" id="impMeta"></div><button class="btn import-change-file" id="impChangeFile" type="button">更换文件</button><fieldset class="imp-mode" id="impMode" aria-label="流水模式"><label><input type="radio" name="impMode" value="A">双边流水</label><label><input type="radio" name="impMode" value="B">单账户流水</label></fieldset></div>
+        <section class="import-mapping-section" id="impMappingSection" aria-labelledby="impMappingTitle"><h3 id="impMappingTitle">字段映射</h3><div id="impMapping"></div></section>
+        <section id="impFeedback" hidden aria-label="银行反馈包识别与处置汇总"></section>
         <div class="import-account-options">
-          <div class="imp-selfline"><label for="impSelfAccts">补充本方账号</label><input id="impSelfAccts" placeholder="可选，逗号分隔"></div>
+          <div class="imp-selfline" id="impSelfLine"><label for="impSelfAccts">补充本方账号</label><input id="impSelfAccts" placeholder="可选，逗号分隔"></div>
           <div id="impMainSelWrap" style="display:none"><div class="imp-cols-title" id="impMainTitle">本文件的本方账号</div><div id="impMainSel" class="mainsel-grid"></div></div>
         </div>
         <section class="import-preview-section" aria-labelledby="impPreviewTitle">
@@ -665,7 +667,7 @@
           </div><div id="impBad"></div>
         </section>
       </div>
-      <section class="import-result" id="impResult" hidden aria-labelledby="impResultTitle"><span class="import-result-mark" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><h3 id="impResultTitle">导入完成</h3><p id="impResultText"></p></section>
+      <section class="import-result" id="impResult" hidden aria-labelledby="impResultTitle"><span class="import-result-mark" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><h3 id="impResultTitle">导入完成</h3><p id="impResultText"></p><div id="impResultFeedback" hidden></div><div id="impResultDownloads" hidden><button class="btn" id="impDownloadReport" type="button">下载完整处理报告（JSON）</button><button class="btn" id="impDownloadOriginal" type="button">下载原始 ZIP</button><p id="impDownloadStatus" role="status" aria-live="polite"></p></div></section>
     </div>
     <footer class="import-dialog-footer"><div class="import-footer-status"><span id="impStats"></span><span id="impFlowStatus" role="status" aria-live="polite"></span></div><div class="import-footer-actions"><button class="btn" id="impRe" type="button"><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt="">重新识别</button><button class="btn" id="impCancel" type="button">取消</button><button class="btn primary" id="impCommit" type="button">确认导入</button></div></footer>
   </section>
