@@ -386,9 +386,10 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         conds.append("trade_time <= ?")
         params.append(tto + (" 23:59:59" if len(tto) == 10 else ""))
     where = "where " + " and ".join(conds)
-    total = db.q(f"select count(*) c from effective_flows {where}", params)[0]["c"]
+    # Keep the identity subqueries bound to the case-filtered effective rows.
+    total = db.q(f"select count(*) c from effective_flows as flows {where}", params)[0]["c"]
     off = (page - 1) * size
-    rows = db.q(f"select * from effective_flows {where} order by trade_time desc, id desc limit ? offset ?",
+    rows = db.q(f"select * from effective_flows as flows {where} order by trade_time desc, id desc limit ? offset ?",
                 params + [size, off])
     return {"total": total, "page": page, "size": size, "rows": rows}
 
