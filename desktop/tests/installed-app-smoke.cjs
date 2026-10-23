@@ -20,6 +20,7 @@ const { runInstalledProductionUpdateJourney } = require('./installed-production-
 const { safeProductionTransportDiagnostic } = require('./installed-update-transport-diagnostic.cjs');
 const { safeInstalledElectronMetadataProbe } = require('./installed-electron-metadata-probe.cjs');
 const { safeUpdateOwnerSnapshot } = require('./installed-update-owner-snapshot.cjs');
+const { diagnosticInspectorArguments, publicUpdateSnapshot, createOfficialNetworkProbe } = require('./installed-official-network-probe.cjs');
 const { runInstalledPresentationBaseline } = require('./installed-presentation-baseline.cjs');
 const { FAILURE_CODES } = require('../updates.cjs');
 
@@ -30,7 +31,7 @@ const COMPATIBILITY_CASES = ['SYN prior compatibility populated case', 'SYN prio
   'SYN prior compatibility populated case(导入1)', 'SYN prior compatibility populated case(导入2)'];
 const VIEWPORTS = [[960, 500], [960, 640], [1280, 640]], DEVICE_SCALES = [1, 1.5, 2];
 const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, failedCheck: null,
-  limits: { windowsServerAutomationOnly: true, windows10And11Interactive: false,
+  limits: { diagnosticOnly: false, acceptanceEligible: true, windowsServerAutomationOnly: true, windows10And11Interactive: false,
     dpi: false, importRecovery: false, screenshotIsRendererSurface: true,
     nativeGraphExportSaveDialog: false, taskbarAppearance: false,
     simulatedCssViewportOnly: true, actualSystemDpiValidated: false,
@@ -38,7 +39,8 @@ const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, f
     simulatedCssViewports: VIEWPORTS, simulatedDeviceScaleFactors: DEVICE_SCALES } };
 const timings = report.timings, owned = [];
 let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, titlebarPage, analysisTitlebarPage,
-  titlebarProbe, updateFixture, productionUpdate = false, productionTransportConfig, productionOwner, presentationPreferences;
+  titlebarProbe, updateFixture, productionUpdate = false, productionTransportConfig, productionOwner, presentationPreferences,
+  officialDiagnosticContext, officialProbe;
 let releaseStartupInspection = async () => {};
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -232,9 +234,10 @@ function readImportEntry() {
     &&document.getElementById(input.id)===input,type:input?.type||null,accept:input?.accept||null,enabled:input?.disabled===false};
 }
 function argumentsOf() {
-  const input = process.argv.slice(2), startupClose = input.includes('--startup-close');
+  const input = process.argv.slice(2), startupClose = input.includes('--startup-close'), officialNetworkDiagnostic = input.includes('--official-network-diagnostic');
   assert.ok(input.filter(value => value === '--startup-close').length <= 1);
-  const args = input.filter(value => value !== '--startup-close');
+  assert.ok(input.filter(value => value === '--official-network-diagnostic').length <= 1);
+  const args = input.filter(value => !['--startup-close', '--official-network-diagnostic'].includes(value));
   assert.ok(args.length === 3 || args.length === 5 || args.length === 7);
   const installRoot = args.shift(), values = {};
   while (args.length) {
@@ -246,9 +249,10 @@ function argumentsOf() {
   assert.equal(path.extname(values['--report']).toLowerCase(), '.json');
   if (values['--screenshot']) assert.equal(path.extname(values['--screenshot']).toLowerCase(), '.png');
   assert.ok([startupClose, values['--update-fixture'], values['--production-update'], values['--presentation-baseline']].filter(Boolean).length <= 1);
+  assert.ok(!officialNetworkDiagnostic || values['--production-update']);
   return { installRoot: path.resolve(installRoot), reportPath: values['--report'], screenshot: values['--screenshot'],
     updateFixture: values['--update-fixture'], productionUpdate: values['--production-update'],
-    presentationBaseline:values['--presentation-baseline'], startupClose };
+    presentationBaseline:values['--presentation-baseline'], startupClose, officialNetworkDiagnostic };
 }
 function within(root, value) {
   const relative = path.relative(root, value);
@@ -263,6 +267,7 @@ function businessOrigin(value) {
 }
 function boot(executable, installRoot, env, debug) {
   const args = debug ? ['--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1'] : [];
+  args.push(...diagnosticInspectorArguments(officialDiagnosticContext));
   if (updateFixture) args.push('--no-proxy-server', '--host-resolver-rules=MAP analytix.top 127.0.0.1, MAP download.analytix.top 127.0.0.1');
   const child = spawn(executable, args,
     { cwd: installRoot, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false });
@@ -272,11 +277,19 @@ function boot(executable, installRoot, env, debug) {
     child.once('exit', (code, signal) => { instance.done = true; resolve({ code, signal }); });
     child.once('error', () => { instance.failed = true; instance.done = true; resolve({ code: null, signal: null }); });
   });
+  if (officialDiagnosticContext?.enabled) {
+    assert.ok(!officialProbe, 'OFFICIAL_DIAGNOSTIC_SINGLE_PROCESS');
+    officialProbe = createOfficialNetworkProbe({ binding: () => owned.includes(instance) && !instance.done && !instance.failed,
+      packageJson: path.join(installRoot, 'resources', 'app.asar', 'package.json'), version: productionTransportConfig.version,
+      expectedPid: child.pid, executable: officialDiagnosticContext.executable,
+      budgetMs: () => Math.max(0, 600000 - (Date.now() - smokeStartedAt)) });
+  }
   child.stdout.resume();
   let partial = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', chunk => {
     instance.mainErrors.consume(chunk);
+    officialProbe?.consume(chunk);
     if (!debug || instance.debugUrl) return;
     partial = (partial + chunk).slice(-8192);
     const lines = partial.split('\n'); partial = lines.pop();
@@ -501,16 +514,37 @@ async function restorePresentationPreferences(snapshot) {
       assert.ok(!within(userRoot, output) && !within(value.installRoot, output));
     }
     assert.ok((await fs.stat(path.join(value.installRoot, 'FundsTrace.exe'))).isFile());
+    if (value.officialNetworkDiagnostic) {
+      const candidate = await fs.realpath(value.installRoot), temporary = await fs.realpath(os.tmpdir());
+      const executable = await fs.realpath(path.join(value.installRoot, 'FundsTrace.exe'));
+      assert.ok(candidate !== temporary && within(temporary, candidate), 'OFFICIAL_DIAGNOSTIC_TEMPORARY_INSTALL');
+      assert.equal(path.dirname(executable).toLowerCase(), candidate.toLowerCase(), 'OFFICIAL_DIAGNOSTIC_EXECUTABLE_BINDING');
+      value.officialExecutable = executable;
+    }
     return value;
   });
   reportPath = config.reportPath;
   productionUpdate = !!config.productionUpdate;
+  report.limits.diagnosticOnly = config.officialNetworkDiagnostic;
+  report.limits.acceptanceEligible = !config.officialNetworkDiagnostic;
+  if (config.officialNetworkDiagnostic) report.limits.mainStartupIntentionallyPaused = true;
   if (productionUpdate) {
     try {
       const input = JSON.parse((await fs.readFile(config.productionUpdate, 'utf8')).replace(/^\uFEFF/, ''));
       productionTransportConfig = Object.fromEntries(['currentVersion', 'version', 'installerSha256',
         'installerSha512', 'installerBytes'].map(key => [key, input[key]]));
     } catch { /* The existing configuration check retains authority to fail. */ }
+  }
+  if (config.officialNetworkDiagnostic) {
+    assert.equal(productionTransportConfig?.version, '0.1.12', 'OFFICIAL_DIAGNOSTIC_CONFIGURATION');
+    assert.equal(productionTransportConfig.currentVersion, require('../upgrade-baseline.json').prior.version, 'OFFICIAL_DIAGNOSTIC_CONFIGURATION');
+    assert.equal(productionTransportConfig.version, require('../package.json').version, 'OFFICIAL_DIAGNOSTIC_CONFIGURATION');
+    assert.match(productionTransportConfig.installerSha256, /^[a-f0-9]{64}$/);
+    assert.match(productionTransportConfig.installerSha512, /^[A-Za-z0-9+/]{86}==$/);
+    assert.ok(Number.isSafeInteger(productionTransportConfig.installerBytes) && productionTransportConfig.installerBytes > 0 && productionTransportConfig.installerBytes <= 1024 ** 3);
+    officialDiagnosticContext = { enabled: true, productionUpdate: true, platform: process.platform,
+      ci: process.env.CI, githubActions: process.env.GITHUB_ACTIONS, sentinelVerified: true, temporaryInstallVerified: true,
+      executable: config.officialExecutable };
   }
   const priorClientOnly = productionUpdate || !!config.presentationBaseline;
   if (config.startupClose) report.limits = { windowsServerAutomationOnly:true, windows10And11Interactive:false,
@@ -520,6 +554,8 @@ async function restorePresentationPreferences(snapshot) {
     actualSystemDpiValidated:false, importRecovery:false, priorClientPresentationOnly:true,
     nativeUserResizeRequired:true, nativeCaptionCloseRequired:true, fallbackCloseAllowed:false,
     preferencesWrittenOnlyByInstalledClient:true, preferencesRestoredByHelper:false };
+  report.limits.diagnosticOnly = config.officialNetworkDiagnostic;
+  report.limits.acceptanceEligible = !config.officialNetworkDiagnostic;
   await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' }); reportOwned = true;
   if (config.updateFixture) updateFixture = await check('isolatedUpdateHttpsFixture', () => createUpdateFixture(config.updateFixture));
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
@@ -534,6 +570,7 @@ async function restorePresentationPreferences(snapshot) {
     return instance;
   });
   if (productionUpdate) productionOwner = { pid: primary.child.pid, installRoot: config.installRoot };
+  if (officialProbe) await check('officialNetworkDiagnosticRegistered', () => officialProbe.attach());
   let errorCount = 0, instrumentationFailed = false;
   const sessions = new Map();
   let startupInspectionHeld = !priorClientOnly;
@@ -737,7 +774,7 @@ async function restorePresentationPreferences(snapshot) {
     // its shipped updater here; the lifecycle verifies the new install below.
     report.updateCycle = await runInstalledProductionUpdateJourney({ configFile: config.productionUpdate,
       primary, evaluate, clickElement, cdp, page, check, screenshot: config.screenshot,
-      observations: report.productionUpdateObservations = {} });
+      observations: report.productionUpdateObservations = {}, diagnosticOnly: config.officialNetworkDiagnostic });
     await check('productionUpdateNoPageExceptions', async () => {
       assert.ok(!instrumentationFailed); assert.equal(errorCount, 0);
     });
@@ -1112,6 +1149,7 @@ async function restorePresentationPreferences(snapshot) {
   }
   report.status = 'passed';
 })().catch(async error => {
+  const failureStartedAt = performance.now();
   report.status = 'failed'; report.failedCheck = stage; process.exitCode = 1;
   report.failure=safeInstalledFailure(error);
   if (/^(STARTUP|TITLEBAR)_[A-Z0-9_]{1,80}$/.test(error?.message || '')) {
@@ -1143,17 +1181,27 @@ async function restorePresentationPreferences(snapshot) {
   if (productionUpdate) {
     const codes = ['ERR_ASSERTION', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ENOENT',
       'ECONNREFUSED', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'];
-    const kinds = ['UPDATE_JOURNEY_TIMEOUT', 'UPDATE_DIALOG_TIMEOUT', 'UPDATE_DIALOG_FAILED'];
+    const kinds = ['UPDATE_JOURNEY_TIMEOUT', 'UPDATE_DIALOG_TIMEOUT', 'UPDATE_DIALOG_FAILED', 'DIAGNOSTIC_ONLY'];
     report.productionFailure = { code: codes.includes(error?.code) ? error.code : 'UNKNOWN',
       kind: kinds.includes(error?.message) ? error.message : 'UNCLASSIFIED' };
     const nativeDialog = safeUpdateDialogFailure(error);
     if (nativeDialog) report.productionFailure.nativeDialog = nativeDialog;
-    try {
-      const value = await evaluate('window.FundsDesktopUpdates.state()');
-      report.productionFailure.updatePhase = ['idle','checking','available','downloading','error','ready','installing','current'].includes(value?.phase) ? value.phase : 'unknown';
-      report.productionFailure.updateErrorCode = FAILURE_CODES.includes(value?.errorCode) ? value.errorCode : 'UNKNOWN';
-    } catch { /* The old renderer may already have exited normally. */ }
-    const diagnosticBudget = maximum => Math.max(0, Math.min(maximum, 600000 - (Date.now() - smokeStartedAt)));
+    const diagnosticBudget = (maximum, reserve = officialProbe ? 8000 : 0) => Math.max(0, Math.min(maximum, 600000 - (Date.now() - smokeStartedAt) - reserve));
+    const snapshot = async () => {
+      let value;
+      try {
+        const timeout = diagnosticBudget(2000, 0);
+        if (timeout && cdp && page) {
+          const result = await cdp.send('Runtime.evaluate', { expression: 'window.FundsDesktopUpdates.state()', returnByValue: true, awaitPromise: true }, page.sessionId, timeout);
+          if (!result.exceptionDetails) value = result.result?.value;
+        }
+      } catch { }
+      return publicUpdateSnapshot(value, Math.min(600000, Math.max(0, Math.round(performance.now() - failureStartedAt))));
+    };
+    report.productionFailure.initialUpdateState = await snapshot();
+    report.productionFailure.updatePhase = report.productionFailure.initialUpdateState.phase;
+    report.productionFailure.updateErrorCode = report.productionFailure.initialUpdateState.errorCode;
+    if (officialProbe) report.productionFailure.officialNetwork = await officialProbe.read();
     try { report.productionFailure.ownerSnapshot = await safeUpdateOwnerSnapshot(productionOwner,
       { budgetMs: diagnosticBudget(8000) }); }
     catch { /* Passive observation must not replace the original failure. */ }
@@ -1170,8 +1218,19 @@ async function restorePresentationPreferences(snapshot) {
         { budgetMs: diagnosticBudget(285000) });
     }
     catch { /* Diagnostic failure must not replace the original failure. */ }
+    report.productionFailure.lateUpdateState = await snapshot();
+    if (officialProbe) report.productionFailure.officialNetwork = await officialProbe.read();
   }
 }).finally(async () => {
+  if (officialProbe) {
+    const observation = await officialProbe.dispose();
+    (report.productionFailure ||= {}).officialNetwork = observation;
+  }
+  if (officialDiagnosticContext?.enabled) {
+    report.status = 'failed'; process.exitCode = 1;
+    report.limits.diagnosticOnly = true; report.limits.acceptanceEligible = false;
+    report.failedCheck ||= 'officialNetworkDiagnosticOnly';
+  }
   // Best effort graceful close, then only handles spawned above. No process-name
   // discovery, user-data removal, or termination of unrelated installations.
   if (cdp && owned.some(instance => !instance.done)) {

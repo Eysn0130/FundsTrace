@@ -131,6 +131,11 @@ def test_transfer_report_identity_rejects_another_pair_installer_or_missing_evid
     ({"BUILD_INSTALLER": "true"}, True),
     ({"BUILD_INSTALLER": "true", "IN_APP_UPDATE": "true"}, True),
     ({"IN_APP_UPDATE": "true"}, False),
+    ({"OFFICIAL_NETWORK_DIAGNOSTIC": "true"}, False),
+    ({"OFFICIAL_NETWORK_DIAGNOSTIC": "true", "BUILD_INSTALLER": "true", "IN_APP_UPDATE": "true"}, False),
+    ({"OFFICIAL_NETWORK_DIAGNOSTIC": "true", "TARGET_SHA256": "a" * 64, "TARGET_BYTES": "1234"}, False),
+    ({"OFFICIAL_NETWORK_DIAGNOSTIC": "true", "TARGET_SHA256": "a" * 64, "TARGET_BYTES": "1234", "IN_APP_UPDATE": "true"}, True),
+    ({"OFFICIAL_NETWORK_DIAGNOSTIC": "true", "TARGET_SHA256": "a" * 64, "TARGET_BYTES": "1234", "IN_APP_UPDATE": "true", "UPDATE_FIXTURE_PROBE": "tls"}, False),
     ({"UPDATE_FIXTURE_PROBE": "tls"}, True),
     ({"UPDATE_FIXTURE_PROBE": "dialog", "BUILD_INSTALLER": "true"}, False),
     ({"TRANSFER_RUN_ID": "123", "DRAFT_TAG": "v0.1.9"}, True),
@@ -151,7 +156,7 @@ def test_transfer_report_identity_rejects_another_pair_installer_or_missing_evid
 def test_workflow_rejects_mixed_or_incomplete_manual_modes_before_windows_jobs(inputs, accepted):
     workflow = (ROOT / ".github/workflows/windows-candidate.yml").read_text(encoding="utf-8")
     validation = workflow.split("        shell: python\n        run: |\n", 1)[1].split("  update-fixture-probe:", 1)[0]
-    environment = {**os.environ, "BUILD_INSTALLER": "false", "IN_APP_UPDATE": "false",
+    environment = {**os.environ, "BUILD_INSTALLER": "false", "IN_APP_UPDATE": "false", "OFFICIAL_NETWORK_DIAGNOSTIC": "false",
                    "UPDATE_FIXTURE_PROBE": "none", "TRANSFER_RUN_ID": "", "DRAFT_TAG": "",
                    "TARGET_SHA256": "", "TARGET_BYTES": "", **inputs}
     result = subprocess.run([sys.executable, "-c", textwrap.dedent(validation)], env=environment,

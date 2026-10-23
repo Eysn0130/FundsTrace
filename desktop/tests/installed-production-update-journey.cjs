@@ -26,7 +26,7 @@ async function installerDigests(filename) {
   return { bytes, sha256: sha256.digest('hex'), sha512: sha512.digest('base64') };
 }
 
-async function runInstalledProductionUpdateJourney({ configFile, primary, evaluate, clickElement, cdp, page, check, screenshot, observations }) {
+async function runInstalledProductionUpdateJourney({ configFile, primary, evaluate, clickElement, cdp, page, check, screenshot, observations, diagnosticOnly = false }) {
   const config = await check('installedProductionUpdateConfiguration', async () => {
     assert.equal(process.platform, 'win32'); assert.equal(process.env.GITHUB_ACTIONS, 'true');
     assert.notEqual(process.env.NODE_TLS_REJECT_UNAUTHORIZED, '0');
@@ -143,6 +143,7 @@ async function runInstalledProductionUpdateJourney({ configFile, primary, evalua
     const actual = await installerDigests(installer);
     assert.deepEqual(actual, { bytes: config.installerBytes, sha256: config.installerSha256, sha512: config.installerSha512 });
   });
+  if (diagnosticOnly) await check('officialNetworkDiagnosticOnly', async () => { throw new Error('DIAGNOSTIC_ONLY'); });
   await check('installedProductionUpdateLaterRetainsApplication', async () => {
     await click(); await nativeButton(primary.child.pid, 'later'); await waitPhase('ready');
     assert.equal(await evaluate(`document.readyState === 'complete' && !!document.querySelector('#graphContainer')`), true);

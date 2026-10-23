@@ -24,6 +24,10 @@ on:
         description: Test in-app update (official feed for published EXE mode; private HTTPS for builds)
         type: boolean
         default: false
+      official_network_diagnostic:
+        description: Diagnostic only; observe original updater requests, stop before install, never qualify a release
+        type: boolean
+        default: false
       update_fixture_probe:
         description: Run an isolated update fixture diagnostic without building an installer
         type: choice
@@ -54,6 +58,7 @@ jobs:
         env:
           BUILD_INSTALLER: ${{ inputs.installer }}
           IN_APP_UPDATE: ${{ inputs.in_app_update }}
+          OFFICIAL_NETWORK_DIAGNOSTIC: ${{ inputs.official_network_diagnostic }}
           UPDATE_FIXTURE_PROBE: ${{ inputs.update_fixture_probe }}
           TRANSFER_RUN_ID: ${{ inputs.transfer_run_id }}
           DRAFT_TAG: ${{ inputs.draft_tag }}
@@ -66,12 +71,14 @@ jobs:
           published = bool(value['TARGET_SHA256'] or value['TARGET_BYTES'])
           transfer = bool(value['TRANSFER_RUN_ID'] or value['DRAFT_TAG'])
           probe = value['UPDATE_FIXTURE_PROBE'] != 'none'
+          network_diagnostic = value['OFFICIAL_NETWORK_DIAGNOSTIC'] == 'true'
           assert sum((published, transfer, probe)) <= 1, 'Choose exactly one verification mode'
           if published or transfer or probe:
               assert value['BUILD_INSTALLER'] != 'true', 'Selected mode cannot build a candidate'
           if transfer or probe:
               assert value['IN_APP_UPDATE'] != 'true', 'Selected mode cannot run an update journey'
           assert value['IN_APP_UPDATE'] != 'true' or published or value['BUILD_INSTALLER'] == 'true', 'In-app update requires installer lifecycle verification'
+          assert not network_diagnostic or published and value['IN_APP_UPDATE'] == 'true', 'Official network diagnostics require frozen published bytes and an in-app update'
           if published:
               assert re.fullmatch(r'[0-9a-f]{64}', value['TARGET_SHA256']), 'Require a frozen published SHA-256'
               assert re.fullmatch(r'[1-9][0-9]{0,15}', value['TARGET_BYTES']) and int(value['TARGET_BYTES']) <= 2**53 - 1, 'Require a frozen published byte count'
@@ -303,12 +310,16 @@ jobs:
           DRAFT_TAG: ${{ inputs.draft_tag }}
           TARGET_SHA256: ${{ inputs.published_target_sha256 }}
           TARGET_BYTES: ${{ inputs.published_target_bytes }}
+          OFFICIAL_NETWORK_DIAGNOSTIC: ${{ inputs.official_network_diagnostic }}
         run: |
           if ($env:BUILD_INSTALLER -eq 'true' -or $env:TRANSFER_RUN_ID -or $env:DRAFT_TAG -or $env:UPDATE_FIXTURE_PROBE -ne 'none') {
             throw 'Published upgrade verification cannot build or transfer release assets.'
           }
           if ($env:TARGET_SHA256 -cnotmatch '^[0-9a-f]{64}$' -or $env:TARGET_BYTES -cnotmatch '^[1-9][0-9]{0,18}$') {
             throw 'Published upgrade verification requires a complete frozen digest and byte count.'
+          }
+          if ($env:OFFICIAL_NETWORK_DIAGNOSTIC -eq 'true' -and $env:IN_APP_UPDATE -ne 'true') {
+            throw 'Official network diagnostics require an in-app update and cannot qualify a release.'
           }
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -343,7 +354,8 @@ jobs:
           TARGET_SHA256: ${{ inputs.published_target_sha256 }}
           TARGET_BYTES: ${{ inputs.published_target_bytes }}
           IN_APP_UPDATE: ${{ inputs.in_app_update }}
-        run: ./scripts/test-windows-published-upgrade.ps1 -TargetSha256 $env:TARGET_SHA256 -TargetBytes $env:TARGET_BYTES -InAppUpdate:($env:IN_APP_UPDATE -eq 'true')
+          OFFICIAL_NETWORK_DIAGNOSTIC: ${{ inputs.official_network_diagnostic }}
+        run: ./scripts/test-windows-published-upgrade.ps1 -TargetSha256 $env:TARGET_SHA256 -TargetBytes $env:TARGET_BYTES -InAppUpdate:($env:IN_APP_UPDATE -eq 'true') -OfficialNetworkDiagnostic:($env:OFFICIAL_NETWORK_DIAGNOSTIC -eq 'true')
       - name: Retain only safe upgrade reports and synthetic renderer screenshots
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
