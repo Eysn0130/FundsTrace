@@ -409,7 +409,7 @@ test('late G6 graph, statistics and batches cannot refill a switched case', asyn
 test('analysis honors the explicit case and keeps its graph return link bound', async () => {
   const h = harness('analysis.js', 'http://127.0.0.1:8300/analysis?case_id=2', '1');
   await flush();
-  assert.equal(h.run('caseId'), 2);
+  assert.equal(h.run('caseId'), '2');
   assert.equal(new URL(h.element('#backToGraph').href, h.location).searchParams.get('case_id'), '2');
 });
 
@@ -617,7 +617,7 @@ for (const requested of ['paths','cycles','fast_flows','outliers','unrecognized'
     await flush();
     assert.deepEqual(algorithms.filter(input=>input.checked).map(input=>input.value),
       requested==='unrecognized'?['paths','cycles','fast_flows','outliers']:[requested]);
-    assert.equal(h.run('caseId'),2);assert.equal(h.requests.some(item=>item.path==='/api/analysis/run'),false);
+    assert.equal(h.run('caseId'),'2');assert.equal(h.requests.some(item=>item.path==='/api/analysis/run'),false);
   });
 }
 

@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import urllib.parse
+import unicodedata
 import uuid
 from datetime import datetime as _dt
 from pathlib import Path
@@ -33,6 +34,7 @@ from .case_packages import CASE_PKG_TABLES, CASE_PKG_COLS, delete_package_case, 
 from . import license as lic
 from .services import imports as import_service
 from .services import accounts as account_service
+from .services import account_suggestions as account_suggestion_service
 from .services.cases import ServiceError
 from .services.main_accounts import mark_automatic
 from .money import money_decimal, money_string, money_display
@@ -263,9 +265,21 @@ def import_progress(import_id: str, case_id: Optional[int] = None):
 def account_registry(case_id: int = Query(1, ge=1, le=2147483647),
                      source: Literal["flows", "identity"] = "flows", q: str = "",
                      page: int = Query(1, ge=1, le=2147483647),
-                     page_size: int = Query(30, ge=1, le=100)):
+                     page_size: int = Query(30, ge=1, le=100), account_exact: bool = False):
     try:
-        return account_service.list_registry(case_id, source, q, page, page_size)
+        return account_service.list_registry(case_id, source, q, page, page_size, account_exact)
+    except ServiceError as error:
+        raise HTTPException(error.status, error.message) from None
+
+
+@app.get("/api/account-suggestions")
+def account_suggestions(case_id: int = Query(..., ge=1, le=2147483647),
+                        q: str = Query("", max_length=200),
+                        source: Literal["flows", "identity", "all"] = "flows",
+                        page_size: int = Query(30, ge=1, le=50),
+                        offset: int = Query(0, ge=0, le=2147483647)):
+    try:
+        return account_suggestion_service.suggest_accounts(case_id, q, source, page_size, offset)
     except ServiceError as error:
         raise HTTPException(error.status, error.message) from None
 
@@ -286,7 +300,8 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
           min_amount: Optional[str] = None, max_amount: Optional[str] = None,
           tfrom: str = "", tto: str = "", ids: str = "", case_id: int = 1,
           tracked: int = 0, canvas_id: int = 0,
-          page: int = 1, size: int = Query(50, le=500), account_exact: bool = False):
+          page: int = 1, size: int = Query(50, le=500), account_exact: bool = False,
+          counter_exact: bool = False, entity: str = ""):
     try:
         lower = money_decimal(min_amount) if min_amount not in (None, "") else None
         upper = money_decimal(max_amount) if max_amount not in (None, "") else None
@@ -310,12 +325,33 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
     if account.strip():
         conds.append("(payer_account = ? or payee_account = ?)" if account_exact else "(payer_account ilike ? or payee_account ilike ?)")
         params += [account.strip() if account_exact else like(account)] * 2
+    entity_query = unicodedata.normalize("NFKC", entity).strip().lower()
+    if entity_query:
+        # A free query searches complete row facts, independently of the bounded
+        # suggestion pages. Identity is attached only to that case/account key.
+        conds.append("""(
+            contains(lower(coalesce(payer_account,'')), ?) or contains(lower(coalesce(payee_account,'')), ?)
+            or contains(lower(coalesce(payer_name,'')), ?) or contains(lower(coalesce(payee_name,'')), ?)
+            or exists (select 1 from account_ids identity
+                where identity.case_id=flows.case_id
+                  and (identity.account=flows.payer_account or identity.account=flows.payee_account)
+                  and contains(lower(coalesce(identity.id_no,'')), ?))
+        )""")
+        params += [entity_query] * 5
     if name.strip():
         conds.append("(payer_name ilike ? or payee_name ilike ?)")
         params += [like(name)] * 2
     if counter.strip():
-        conds.append("(payer_name ilike ? or payer_account ilike ? or payee_name ilike ? or payee_account ilike ?)")
-        params += [like(counter)] * 4
+        if counter_exact:
+            conds.append("(payer_account = ? or payee_account = ?)")
+            params += [counter.strip()] * 2
+        else:
+            conds.append("""(payer_name ilike ? or payer_account ilike ? or payee_name ilike ? or payee_account ilike ?
+                or exists (select 1 from account_ids identity
+                    where identity.case_id=flows.case_id
+                      and (identity.account=flows.payer_account or identity.account=flows.payee_account)
+                      and contains(lower(coalesce(identity.id_no,'')), ?)))""")
+            params += [like(counter)] * 4 + [unicodedata.normalize("NFKC", counter).strip().lower()]
     if kw.strip():
         conds.append("(summary ilike ? or trade_no ilike ?)")
         params += [like(kw)] * 2
@@ -496,11 +532,16 @@ def main_account_candidates(case_id: int, q: str = "", exact: bool = False, page
         if exact:
             criterion, search_params = "a.account=?", [keyword]
         else:
+            keyword = unicodedata.normalize("NFKC", q).strip().lower()
             criterion = """contains(lower(a.account), ?) or exists (
                 select 1 from account_rows names
                 where names.account=a.account and contains(lower(names.name), ?)
-            ) or contains(lower(coalesce(m.name,'')), ?)"""
-            search_params = [keyword.lower()] * 3
+            ) or contains(lower(coalesce(m.name,'')), ?) or exists (
+                select 1 from account_ids identity
+                where identity.case_id=? and identity.account=a.account
+                  and contains(lower(coalesce(identity.id_no,'')), ?)
+            )"""
+            search_params = [keyword] * 3 + [case_id, keyword]
         matching = _CASE_ACCOUNTS_SQL + """
             , matching as (
                 select a.account, coalesce(nullif(m.name,''), a.name) as name,

@@ -11,6 +11,7 @@
     let shown = false, binding, snapshot, source = null, session = 0, serial = 0, pending = null;
     let query = String(field?.value || ''), searched = false, results = [], visibleCount = 0;
     let activeAccount = '', failure = '', message = '', outcome = '', rendered = [];
+    let picker = null, accountStamp = null, accountCache = [], accountSource = null, dataRevision = -1;
     const stamp = value => ({ binding: value.binding, revision: value.revision, source: value.source, ready: value.ready });
     const sameStamp = (a, b) => !!a && !!b && a.binding === b.binding && a.revision === b.revision && a.source === b.source && a.ready === b.ready;
     const blocked = () => String(options.blocker?.() || (!snapshot?.ready ? '当前画布尚未就绪' : ''));
@@ -18,13 +19,15 @@
     const normalize = value => String(value ?? '').trim().toLocaleLowerCase();
 
     function accounts(value = snapshot) {
+      const revision = root.FundsEntitySearch?.revision || 0;
+      if (dataRevision === revision && accountSource === value?.accounts && sameStamp(accountStamp, stamp(value))) return accountCache;
       const seen = new Set(), items = [];
       for (const item of value?.accounts || []) {
         const account = String(item?.account ?? '').trim();
         if (!account || seen.has(account)) continue;
-        seen.add(account); items.push({ account, name: String(item?.name || '') });
+        seen.add(account); items.push({ account, name: String(item?.name || ''), ...(item?.idNo ? { idNo: String(item.idNo) } : {}) });
       }
-      return items;
+      dataRevision = revision; accountStamp = stamp(value); accountSource = value?.accounts; accountCache = items; return items;
     }
     function recent(value = snapshot) {
       const ids = new Set((value?.recent || []).map(item => String(item)));
@@ -101,10 +104,11 @@
       text('graphFindStatus', failure || reason || (pending ? pending.kind === 'select' ? '正在选择…' : '正在定位…' : message));
       el('graphFindStatus')?.setAttribute('data-state', failure ? 'error' : reason ? 'notice' : pending ? 'working' : outcome || 'ready');
       panel?.setAttribute('aria-busy', String(!!pending));
-      renderResults(reason);
+      if (!picker) renderResults(reason);
       if (shown) root.FundsToolbarMenu?.place(panel, trigger);
     }
     function end() {
+      picker?.invalidate();
       shown = false; session += 1; cancelWork(); resetResults(); render();
     }
     function close(reason = 'close') {
@@ -116,8 +120,10 @@
     function update() {
       const latest = options.read(), nextSource = stamp(latest), changedBinding = binding !== undefined && binding !== latest.binding;
       if (changedBinding) {
+        picker?.invalidate();
         close('context'); cancelWork(); resetResults(); query = ''; if (field) field.value = '';
       } else if (source && !sameStamp(source, nextSource)) {
+        picker?.invalidate();
         cancelWork(); resetResults();
       }
       binding = latest.binding; snapshot = latest; source = nextSource;
@@ -168,11 +174,11 @@
       cancelWork(); resetResults(); searched = true;
       if (!needle) { failure = '请输入卡号、账号或户名'; render(); field?.focus({ preventScroll: true }); return false; }
       const items = accounts(), exact = items.find(item => normalize(item.account) === needle);
-      results = exact ? [exact] : items.filter(item => normalize(item.account).includes(needle) || normalize(item.name).includes(needle));
+      results = exact ? [exact] : items.filter(item => normalize(item.account).includes(needle) || normalize(item.name).includes(needle) || normalize(item.idNo).includes(needle));
       visibleCount = Math.min(pageSize, results.length);
       if (!results.length) { message = '当前显示范围内没有匹配账户'; outcome = 'notice'; }
       render();
-      if (results.length !== 1) return false;
+      if (results.length !== 1) { picker?.open(); return false; }
       return run('locate', key, [results[0].account], ids => `已定位 · ${results.find(item => item.account === ids[0])?.name || ids[0]}`);
     }
     function locate(account) {
@@ -224,12 +230,30 @@
       buttons[next].focus({ preventScroll: true }); buttons[next].scrollIntoView?.({ block: 'nearest' });
     });
     el('btnGraphFindSearch')?.addEventListener('click', () => { void search(); });
-    el('btnGraphFindClear')?.addEventListener('click', () => { if (field) field.value = ''; input(); field?.focus({ preventScroll: true }); });
+    el('btnGraphFindClear')?.addEventListener('click', () => { picker?.invalidate(); if (field) field.value = ''; input(); field?.focus({ preventScroll: true }); });
     el('btnGraphFindClose')?.addEventListener('click', () => close('close'));
     el('btnGraphFindMore')?.addEventListener('click', more);
     el('btnGraphFindAll')?.addEventListener('click', () => { void locateAll(); });
     el('btnGraphFindNew')?.addEventListener('click', () => { void locateNew(); });
     el('btnGraphFindSelect')?.addEventListener('click', () => { void selectResults(); });
+    if (root.FundsEntitySearch && field) {
+      picker = root.FundsEntitySearch.mount(field, { action: false, kind: 'account',
+        scope: () => shown && !blocked() ? JSON.stringify([binding, snapshot.revision, session]) : null,
+        search: async request => {
+          const latest = options.read();
+          if (!sameStamp(source, stamp(latest))) { update(); return { items: [], hasMore: false }; }
+          return root.FundsEntitySearch.local(accounts().map(item => ({ key: item.account, label: item.name || item.account,
+            value: item.account, account: item.account, idNo: item.idNo || undefined })), request);
+        },
+        onSelect: item => {
+          if (!sameStamp(source, stamp(options.read()))) { update(); return; }
+          update(); const exact = accounts().find(value => value.account === item.account);
+          if (!shown || blocked() || !exact) return;
+          query = field.value; searched = true; results = [exact]; visibleCount = 1;
+          void locate(exact.account);
+        }, onSubmit: value => { void search(value); } });
+      panel.classList.add('entity-search-enhanced');
+    }
     update();
     return { update, open: () => root.FundsToolbarMenu?.open(trigger) || false, close, search, locate, locateAll, locateNew, selectResults, getState };
   }

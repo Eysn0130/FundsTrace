@@ -24,6 +24,28 @@ let analysisPhase = 'loading', casesLoading = false, reportPending = false, conf
 let analysisCases = [], currentStats = null, draftBaseline = '', activeResult = null, renderedResults = null, renderedAlgorithms = [];
 const resultScrolls = new Map();
 let tableSerial = 0;
+const analysisEntityPickers = [];
+
+function analysisSubjectToken(input) {
+  const value = input.value, separator = /[,，;；\s]/u;
+  let start = input.selectionStart ?? value.length, end = input.selectionEnd ?? start;
+  if (separator.test(value.slice(start, end))) return { query: '', start, end };
+  while (start > 0 && !separator.test(value[start - 1])) start -= 1;
+  while (end < value.length && !separator.test(value[end])) end += 1;
+  return { query: value.slice(start, end), start, end };
+}
+function installAnalysisEntitySearch() {
+  if (!window.FundsEntitySearch) return;
+  for (const id of ['pSrc', 'pDst', 'subjects']) {
+    const input = $('#' + id);
+    const picker = window.FundsEntitySearch.mount(input, {
+      caseId: () => caseId, source: 'flows', kind: 'account',
+      scope: () => caseId && !input.disabled ? JSON.stringify([caseId, caseGeneration]) : null,
+      ...(id === 'subjects' ? { token: analysisSubjectToken, ghost: false, action: false } : {}),
+    });
+    if (picker) analysisEntityPickers.push({ input, picker });
+  }
+}
 
 function analysisContext() { return { caseId, generation: caseGeneration }; }
 function isCurrentAnalysis(context) { return !!context && context.caseId === caseId && context.generation === caseGeneration; }
@@ -60,6 +82,7 @@ function syncAnalysisControls() {
     ['pSrc', ['paths']], ['pDst', ['paths']], ['pHops', ['paths']], ['pOrder', ['paths']]]) {
     $('#' + id).disabled = blocked || !$$('.alg').some(input => input.checked && algorithms.includes(input.value));
   }
+  for (const { input, picker } of analysisEntityPickers) if (input.disabled) picker.invalidate();
   $('#caseSel').disabled = casesLoading || !analysisCases.length;
   $('#btnRun').disabled = blocked;
   $('#btnRun').textContent = analysisPhase === 'running' ? '分析中…' : lastRun ? '重新分析' : '开始分析';
@@ -70,6 +93,8 @@ function syncAnalysisControls() {
   for (const tab of $$('.analysis-result-tab')) tab.disabled = blocked || !renderedAlgorithms.includes(tab.dataset.algorithm) || analysisPhase !== 'done';
 }
 function setAnalysisPhase(phase) {
+  // Embedded data revisions also reset the phase without switching the case.
+  for (const { picker } of analysisEntityPickers) picker.invalidate();
   analysisPhase = phase;
   const labels = { loading: '读取中', ready: '待运行', running: '分析中', done: '已完成', error: '未完成', empty: '无案件' };
   $('#runStatus').dataset.state = phase;
@@ -99,7 +124,8 @@ function confirmAnalysisAction({ title, message, accept = '确定', cancel = '�
 }
 function selectAnalysisCase(id) {
   dismissAnalysisConfirmation();
-  caseId = id == null ? null : Number(id); caseGeneration += 1; analysisRequest += 1; statsRequest += 1;
+  caseId = id == null ? null : String(id); caseGeneration += 1; analysisRequest += 1; statsRequest += 1;
+  for (const { picker } of analysisEntityPickers) picker.invalidate();
   lastResults = lastRun = renderedResults = null; renderedAlgorithms = []; activeResult = null; currentStats = null; reportPending = false;
   $('#caseSel').value = caseId == null ? '' : String(caseId);
   for (const id of ['subjects', 'pSrc', 'pDst']) $('#' + id).value = '';
@@ -451,4 +477,6 @@ function analysisDraftChanged(event) {
 document.addEventListener('input', analysisDraftChanged); document.addEventListener('change', analysisDraftChanged);
 const requestedAlgorithm = new URLSearchParams(window.location.search).get('algorithm');
 if (analysisMethods[requestedAlgorithm]) $$('.alg').forEach(input => { input.checked = input.value === requestedAlgorithm; });
+installAnalysisEntitySearch();
+window.addEventListener('pagehide', () => { for (const { picker } of analysisEntityPickers) picker.invalidate(); });
 syncAlgorithmFields(); void loadCases();

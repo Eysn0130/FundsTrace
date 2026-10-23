@@ -24,7 +24,10 @@ body { margin: 0; }
 .cases-workspace .section-heading h2 { font-size: 19px; font-weight: 600; }
 .cases-workspace .section-heading > span { font-size: var(--font-size-meta); color: var(--muted); }
 .cases-workspace .new-case-button { width: 100%; margin-bottom: 17px; }
-.cases-workspace .case-filter { width: 100%; padding: var(--space-4) var(--space-12); font-size: var(--font-size-meta); margin-bottom: 19px; }
+.cases-workspace .case-filter-field { display: flex; min-width: 0; margin-bottom: 19px; border: 1px solid var(--border-strong); border-radius: var(--control-radius); background: var(--surface-input); }
+.cases-workspace .case-filter { width: 100%; min-width: 0; padding: var(--space-4) var(--space-12); font-size: var(--font-size-meta); margin: 0; border: 0; background: transparent; }
+.cases-workspace .case-filter-submit { flex: 0 0 32px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; border-radius: var(--control-radius); }
+.cases-workspace .case-filter-submit:hover:not(:disabled) { background: var(--surface-control-hover); }
 .cases-workspace .case-list { flex: 1; min-height: 0; overflow-y: auto; }
 .cases-workspace .case-item { width: 100%; display: flex; align-items: flex-start; gap: 11px; border: 1px solid transparent; border-radius: var(--control-radius); padding: 13px 11px; margin-bottom: 7px; background: transparent; color: var(--muted); text-align: left; }
 .cases-workspace .case-item:hover:not(.selected):not(:disabled) { background: var(--surface-control-hover); }
@@ -146,7 +149,7 @@ body { margin: 0; }
   .cases-workspace .sidebar { position: static; height: auto; max-height: 330px; padding: 17px; border-right: 0; border-bottom: 1px solid var(--border); }
   .cases-workspace .section-heading { padding-bottom: 12px; }
   .cases-workspace .new-case-button { margin-bottom: 12px; }
-  .cases-workspace .case-filter { margin-bottom: 10px; }
+  .cases-workspace .case-filter-field { margin-bottom: 10px; }
   .cases-workspace .case-list { display: flex; gap: 7px; overflow-x: auto; flex: 0 0 auto; }
   .cases-workspace .case-item { flex: 0 0 190px; min-width: 0; }
   .cases-workspace .sidebar-footer { padding-top: 8px; display: flex; align-items: center; gap: 12px; }

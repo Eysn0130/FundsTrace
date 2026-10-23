@@ -140,6 +140,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=0, help="Loopback port; 0 chooses a free port")
     parser.add_argument("--graph-nodes", type=int, default=0, help="Seed two tracked synthetic graphs (2–5000 nodes)")
+    parser.add_argument("--search-accounts", type=int, default=0, help="Seed 0–100000 untracked synthetic candidate accounts")
     parser.add_argument("--graph-shape", choices=("chain", "hub"), default="chain")
     parser.add_argument("--graph-seed", type=int, default=2026, help="Deterministic public fixture seed")
     parser.add_argument("--graph-assets", type=Path, default=None,
@@ -147,6 +148,8 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if not 0 <= args.port <= 65535:
         parser.error("port must be between 0 and 65535")
+    if not 0 <= args.search_accounts <= 100000:
+        parser.error("search-accounts must be between 0 and 100000")
     if args.graph_nodes and not 2 <= args.graph_nodes <= 5000:
         parser.error("graph-nodes must be between 2 and 5000")
     if not 0 <= args.graph_seed <= 2**31 - 1:
@@ -199,10 +202,24 @@ def main():
             if args.graph_nodes:
                 for graph_case in (case_id, other_id):
                     db.x("insert into tracked_flows(case_id,flow_id,canvas_id) select case_id,id,0 from flows where case_id=?", [graph_case])
+            if args.search_accounts:
+                # Independent from tracked graph size: candidate latency is not layout latency.
+                with db._lock:
+                    db._con.execute("""insert into account_ids(case_id,account,id_no)
+                        select ?, '000SYN-SEARCH-' || lpad(cast(i as varchar), 8, '0'),
+                            'SYN-ID-' || lpad(cast(i as varchar), 12, '0')
+                        from range(?) t(i)""", [case_id, args.search_accounts])
+                    db._con.execute("""insert into flows(case_id,trade_no,trade_time,payer_account,payer_name,payee_account,payee_name,amount,currency,summary)
+                        select ?, 'SYN-SEARCH-' || cast(i as varchar), timestamp '2026-01-01 10:00:00',
+                            '000SYN-SEARCH-' || lpad(cast(i as varchar),8,'0'),
+                            case when i % 3 = 0 then '合成张三丰' when i % 3 = 1 then '合成张三' else '合成张长名称测试' end,
+                            '000GRAPH-00000','合成节点 0',1.01,'CNY','合成检索测试'
+                        from range(?) t(i)""", [case_id, args.search_accounts])
             metadata = {"syntheticOnly": True, "fixtureVersion": "graph-interaction.v1",
                         "cases": [fixture_summary(case_id, rows, args.graph_shape, args.graph_seed),
                                   fixture_summary(other_id, other_rows, args.graph_shape, args.graph_seed),
                                   {"caseId": str(empty_id), "nodes": 0, "edges": 0}],
+                        "searchAccounts": args.search_accounts,
                         "rendererAssetsOverride": args.graph_assets is not None,
                         "sourceSha256": source_fingerprint(root, args.graph_assets)}
             register_preview_routes(app, root, metadata, graph_assets=args.graph_assets)

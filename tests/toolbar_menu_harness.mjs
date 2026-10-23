@@ -253,6 +253,55 @@ test('form editing keys reach local handlers and preserve native defaults withou
   assert.equal(leaked, 0, 'document-level graph undo/delete/navigation receives no form keystrokes');
 });
 
+test('nested candidate Escape reaches its input before the parent toolbar form closes', () => {
+  const f = harness({ withForm: true }); let candidateEscapes = 0, capturedWhileOpen = false;
+  const popup = f.add(f.formPanel, 'div', 'entityPopup', { popover: 'manual' });
+  const list = f.add(popup, 'div', 'entityOptions', { class: 'fep-scroll', role: 'listbox' });
+  f.minimum.setAttribute('role', 'combobox'); f.minimum.setAttribute('aria-controls', list.id);
+  f.minimum.setAttribute('aria-expanded', 'true');
+  f.document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && event.target === f.minimum) capturedWhileOpen = f.api.isOpen();
+  }, true);
+  f.minimum.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || f.minimum.getAttribute('aria-expanded') !== 'true') return;
+    candidateEscapes++; f.minimum.setAttribute('aria-expanded', 'false');
+    event.preventDefault(); event.stopImmediatePropagation();
+  }, true);
+  f.api.open(f.formTrigger); f.minimum.focus();
+  const first = f.minimum.fire('keydown', { key: 'Escape' });
+  assert.equal(capturedWhileOpen, true, 'document capture delegates the first Escape to the nested picker');
+  assert.equal(candidateEscapes, 1); assert.equal(first.defaultPrevented, true); assert.equal(f.api.isOpen(), true);
+  assert.equal(f.document.activeElement, f.minimum); assert.equal(f.formPanel.inert, false);
+  f.minimum.fire('keydown', { key: 'Escape' });
+  assert.equal(candidateEscapes, 1); assert.equal(f.api.isOpen(), false); assert.equal(f.document.activeElement, f.formTrigger);
+});
+
+test('expanded controls only delegate Escape when aria-controls identifies the owned candidate scroller', () => {
+  const f = harness({ withForm: true });
+  const unrelated = f.add(f.formPanel, 'div', 'unrelatedOptions', { role: 'listbox' });
+  f.minimum.setAttribute('aria-expanded', 'true'); f.minimum.setAttribute('aria-controls', unrelated.id);
+  f.api.open(f.formTrigger); f.minimum.focus(); f.minimum.fire('keydown', { key: 'Escape' });
+  assert.equal(f.api.isOpen(), false, 'another expanded control does not bypass normal form Escape');
+});
+
+test('inline top-layer candidates keep their toolbar form open through wheel, scrollbar drag and inner scroll', () => {
+  const f = harness({ withForm: true });
+  const popup = f.add(f.formPanel, 'div', 'entityPopup', { popover: 'manual' });
+  const list = f.add(popup, 'div', 'entityOptions', { class: 'fep-scroll', role: 'listbox' });
+  const option = f.add(list, 'div', 'entityOption', { role: 'option' });
+  f.api.open(f.formTrigger); f.minimum.focus();
+  assert.equal(popup.parentElement, f.formPanel, 'a top-layer candidate retains its DOM ownership');
+  assert.equal(option.fire('wheel', { deltaY: 140 }).defaultPrevented, false);
+  for (const type of ['pointerdown', 'pointermove', 'pointerup']) {
+    assert.equal(list.fire(type).defaultPrevented, false, 'native scrollbar ' + type);
+    assert.equal(f.api.isOpen(), true);
+  }
+  list.fire('scroll'); popup.fire('scroll'); assert.equal(f.api.isOpen(), true);
+  option.fire('pointerdown'); option.click(); assert.equal(f.api.isOpen(), true);
+  f.toolbar.fire('scroll'); assert.equal(f.api.isOpen(), false); assert.equal(f.api.getState().reason, 'scroll');
+  f.api.open(f.formTrigger); f.after.fire('pointerdown'); assert.equal(f.api.isOpen(), false); assert.equal(f.api.getState().reason, 'outside');
+});
+
 test('Tab advances within a form and closes only at its logical toolbar boundary', () => {
   const f = harness({ withForm: true }); let leaked = 0;
   f.document.addEventListener('keydown', () => leaked++);

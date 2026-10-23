@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 
 const source = readFileSync(new URL('../static/node-finder.js', import.meta.url), 'utf8');
+const entitySearch = readFileSync(new URL('../static/entity-search.js', import.meta.url), 'utf8');
 const flush = async () => { for (let count = 0; count < 20; count++) await Promise.resolve(); };
 const plain = value => JSON.parse(JSON.stringify(value));
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
@@ -18,11 +19,13 @@ class Element {
         if (active) classes.add(name); else classes.delete(name); this.className = [...classes].join(' ');
       },
       contains: name => this.className.split(/\s+/).includes(name),
+      add: name => { this.classList.toggle(name, true); },
     };
   }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
   setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return this.attributes[name] ?? null; }
   removeAttribute(name) { delete this.attributes[name]; }
   addEventListener(name, listener) { if (!this.listeners.has(name)) this.listeners.set(name, []); this.listeners.get(name).push(listener); }
   replaceChildren(...children) { this._text = ''; this.children = children; for (const child of children) child.parentElement = this; }
@@ -38,14 +41,19 @@ class Element {
   }
 }
 
-function harness() {
+function harness({ entityInputs = false } = {}) {
   const elements = new Map(), locates = [], selects = [], cancellations = [], clearedPreviews = [], closes = [], places = [];
   const doc = new Element('document'); doc.doc = doc;
   const el = id => { if (!elements.has(id)) elements.set(id, new Element(id, doc)); return elements.get(id); };
   doc.getElementById = el; doc.createElement = tag => new Element(tag, doc);
   doc.createTextNode = value => { const node = new Element('#text', doc); node.textContent = value; return node; };
   const root = { document: doc, console }; root.window = root;
-  vm.runInContext(source, vm.createContext(root));
+  const context = vm.createContext(root); let pickerOptions, pickerInvalidations = 0;
+  if (entityInputs) {
+    root.FundsEntityPicker = { create(options) { pickerOptions = options; return { invalidate() { pickerInvalidations++; }, open() {} }; } };
+    vm.runInContext(entitySearch, context, { filename: 'entity-search.js' });
+  }
+  vm.runInContext(source, context);
   let shown = false, blocked = '', onLocate, onSelect;
   const state = { binding: 'case:2/epoch:1/canvas:3/epoch:1', revision: 1, source: {}, ready: true,
     accounts: [{ account: '00123', name: '共同户名' }, { account: '00456', name: '共同户名' }, { account: '00999', name: '唯一户名' },
@@ -64,6 +72,7 @@ function harness() {
   });
   const input = value => { el('graphFindInput').value = value; el('graphFindInput').emit('input'); };
   return { controller, state, doc, el, input, locates, selects, cancellations, clearedPreviews, closes, places,
+    picker: () => pickerOptions, pickerInvalidations: () => pickerInvalidations,
     open: () => controller.open(), setBlocked(value) { blocked = value; controller.update(); },
     onLocate(value) { onLocate = value; }, onSelect(value) { onSelect = value; },
   };
@@ -81,6 +90,38 @@ test('typing keeps the canvas and selection unchanged', () => {
   const h = harness(); h.open(); h.input('00123');
   assert.equal(h.locates.length, 0); assert.equal(h.selects.length, 0); assert.equal(h.controller.getState().searched, false);
   assert.equal(h.el('btnGraphFindSearch').disabled, false); assert.equal(h.el('btnGraphFindAll').disabled, true);
+});
+
+test('replacing the authoritative accounts array refreshes its cache even with an unchanged stamp', async () => {
+  const h = harness(); h.open();
+  h.state.accounts = [{ account: '00090071992547409931234567890', name: '新合成主体' }]; h.controller.update();
+  assert.match(h.el('graphFindScope').textContent, /1 个账户/);
+  h.input('新合成主体'); assert.equal(await h.controller.search(), true);
+  assert.deepEqual(h.locates[0].ids, ['00090071992547409931234567890']);
+  assert.deepEqual(plain(h.controller.getState().results[0]), { account: '00090071992547409931234567890', name: '新合成主体' });
+});
+
+test('a new revision refreshes the cached fields and clears results without merging same-name identities', async () => {
+  const h = harness(); h.open(); h.input('共同户名'); await h.controller.search();
+  h.state.accounts[0] = { account: '00123', name: '共同户名', idNo: '00000020000101000X' };
+  h.state.revision++; h.controller.update();
+  assert.equal(h.controller.getState().resultTotal, 0); h.input('共同户名'); await h.controller.search();
+  const result = plain(h.controller.getState().results);
+  assert.deepEqual(result.map(item => item.account), ['00123', '00456']);
+  assert.equal(result[0].idNo, '00000020000101000X'); assert.equal(Object.hasOwn(result[1], 'idNo'), false);
+});
+
+test('enhanced node finder uses only current graph members and rejects a stale provider read', async () => {
+  const h = harness({ entityInputs: true }); assert.equal(h.picker().scope(), null);
+  h.open(); h.input('共同户名'); assert.equal(h.locates.length, 0);
+  const request = { query: '共同户名', offset: 0, limit: 30, signal: new AbortController().signal, scope: h.picker().scope() };
+  const result = await h.picker().search(request);
+  assert.deepEqual(plain(result.items.map(item => item.account)), ['00123', '00456']);
+  assert.equal(h.locates.length, 0); assert.equal(h.selects.length, 0);
+  h.picker().onSelect(result.items[1]); await flush(); assert.deepEqual(h.locates[0].ids, ['00456']);
+  h.state.binding = 'case:2/epoch:3/canvas:3/epoch:3';
+  assert.deepEqual(plain(await h.picker().search(request)), { items: [], hasMore: false });
+  assert.equal(h.picker().scope(), null); assert.ok(h.pickerInvalidations() > 0);
 });
 
 test('exact account wins over substring/name matches and preserves leading zeros', async () => {

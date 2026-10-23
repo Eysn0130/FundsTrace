@@ -16,7 +16,7 @@ const decode = value => value.replace(/&(amp|lt|gt|quot|#39);/g, (_match, key) =
 
 // The DOM preserves real ancestry, detached-control identity and event order.
 // Analysis rendering, input events, dialog callbacks and shared scrolling run unchanged.
-function harness({ url = 'http://synthetic.invalid/analysis?case_id=1', initialCases = cases, initialNetwork } = {}) {
+function harness({ url = 'http://synthetic.invalid/analysis?case_id=1', initialCases = cases, initialNetwork, entitySearch = false } = {}) {
   let document;
   const matches = (node, selector) => {
     if (!node || node.tagName === '#TEXT') return false;
@@ -169,6 +169,11 @@ function harness({ url = 'http://synthetic.invalid/analysis?case_id=1', initialC
     static revokeObjectURL(url) { revokedUrls.push(url); }
   }
   const window = new Element('#window'); window.appendChild(document.root);
+  const pickerMounts = [];
+  if (entitySearch) window.FundsEntitySearch = { mount(input, options) {
+    const control = { input, options, invalidations: 0, invalidate() { this.invalidations += 1; } };
+    pickerMounts.push(control); return control;
+  } };
   const location = new URL(url);
   window.location = { get href() { return location.href; }, set href(value) { location.href = new URL(value, location).href; },
     get search() { return location.search; }, get origin() { return location.origin; }, get pathname() { return location.pathname; } };
@@ -184,7 +189,7 @@ function harness({ url = 'http://synthetic.invalid/analysis?case_id=1', initialC
   vm.runInContext(tableScroll, context, { filename: 'table-scroll.js' });
   vm.runInContext(source, context, { filename: 'analysis.js' });
   const element = id => document.getElementById(id);
-  return { document, window, requests, downloads, objectUrls, revokedUrls, alerts, timers, storage, element,
+  return { document, window, requests, downloads, objectUrls, revokedUrls, alerts, timers, storage, element, pickerMounts,
     ready: flush, network(handler) { network = handler; }, run(code) { return vm.runInContext(code, context); },
     async algorithms(names) { for (const node of document.querySelectorAll('.alg')) { node.checked = names.includes(node.value); await node.fire('change').completion; } },
     edit(id, value) { const input = element(id); assert.ok(input, `missing input #${id}`); input.value = value; return input.fire('input').completion; },
@@ -206,6 +211,77 @@ const posts = (h, path = '/api/analysis/run') => h.requests.filter(request => re
 const paramsOf = request => JSON.parse(request.options.body).params;
 const feedback = h => ['analysisError', 'runStatus', 'reportStatus', 'caseStats'].map(id => h.element(id)?.textContent || '').join(' ') + h.alerts.join(' ');
 async function finishedRun(h, value = result()) { await h.algorithms(value.algorithms || ['cycles']); h.network(() => value); await h.run('run()'); }
+
+test('analysis account pickers are case-bound fill controls and never submit or locate', async () => {
+  const h = harness({ entitySearch: true }); await h.ready();
+  assert.deepEqual(h.pickerMounts.map(control => control.input.id), ['pSrc', 'pDst', 'subjects']);
+  for (const { options } of h.pickerMounts) {
+    assert.equal(options.caseId(), '1'); assert.equal(options.source, 'flows'); assert.equal(options.kind, 'account');
+    assert.equal(options.onSubmit, undefined); assert.equal(options.onSelect, undefined);
+  }
+  const [src, dst, subjects] = h.pickerMounts;
+  assert.equal(src.options.scope(), null); assert.equal(dst.options.scope(), null);
+  assert.notEqual(subjects.options.scope(), null); assert.equal(subjects.options.ghost, false);
+  await h.algorithms(['paths']);
+  assert.notEqual(src.options.scope(), null); assert.equal(subjects.options.scope(), null);
+  await h.edit('pSrc', '00000000000000000001'); await h.edit('pDst', '90071992547409931234');
+  await h.element('pSrc').fire('keydown', { key: 'Enter' }).completion;
+  assert.equal(posts(h).length, 0);
+  assert.equal(h.requests.some(request => request.path.startsWith('/api/graph') || request.path.startsWith('/api/track')), false);
+  const pending = deferred(), prior = src.invalidations;
+  h.network(() => pending.promise);
+  const running = h.run('run()'); await h.ready();
+  assert.equal(src.options.scope(), null); assert.ok(src.invalidations > prior);
+  const params = paramsOf(posts(h)[0]);
+  assert.equal(params.path_src, '00000000000000000001'); assert.equal(params.path_dst, '90071992547409931234');
+  pending.resolve(emptyResult(['paths'])); await running;
+  assert.notEqual(src.options.scope(), null);
+});
+
+test('subjects query only the current token without replacing surrounding account strings', async () => {
+  const h = harness({ entitySearch: true }); await h.ready();
+  const input = h.element('subjects'), { options } = h.pickerMounts.find(control => control.input === input);
+  input.value = '000001，张三丰；000003\n000004';
+  input.selectionStart = input.selectionEnd = input.value.indexOf('三') + 1;
+  assert.deepEqual(JSON.parse(JSON.stringify(options.token(input))), { query: '张三丰', start: 7, end: 10 });
+  input.selectionStart = input.selectionEnd = input.value.length;
+  assert.deepEqual(JSON.parse(JSON.stringify(options.token(input))), { query: '000004', start: 18, end: 24 });
+  input.selectionStart = 0; input.selectionEnd = 9;
+  assert.equal(options.token(input).query, '', 'a selection across separators must not replace multiple objects');
+  await h.edit('subjects', '000001，00000000000000000002；90071992547409931234');
+  assert.equal(posts(h).length, 0);
+  await h.algorithms(['cycles']); h.network(() => emptyResult()); await h.run('run()');
+  assert.deepEqual(paramsOf(posts(h)[0]).subjects, ['000001', '00000000000000000002', '90071992547409931234']);
+  await h.edit('subjects', ''); h.network(() => emptyResult()); await h.run('run()');
+  assert.deepEqual(paramsOf(posts(h).at(-1)).subjects, [], 'empty subjects retain whole-case analysis');
+});
+
+test('case switching including A-B-A revokes every analysis picker scope and clears objects', async () => {
+  const h = harness({ entitySearch: true }); await h.ready(); await h.algorithms(['paths']);
+  const src = h.pickerMounts[0], firstScope = src.options.scope(), prior = src.invalidations;
+  h.element('pSrc').value = '000001'; h.element('pDst').value = '000002'; h.element('subjects').value = '000003';
+  h.run('selectAnalysisCase(2);selectAnalysisCase(1)');
+  assert.equal(src.options.caseId(), '1'); assert.notEqual(src.options.scope(), firstScope);
+  assert.ok(src.invalidations >= prior + 2);
+  for (const id of ['pSrc', 'pDst', 'subjects']) assert.equal(h.element(id).value, '');
+  assert.equal(posts(h).length, 0);
+});
+
+test('same-case embedded data invalidation also clears outstanding account candidates', async () => {
+  const h = harness({ entitySearch: true }); await h.ready();
+  const subjects = h.pickerMounts.find(control => control.input.id === 'subjects'), prior = subjects.invalidations;
+  h.run("setAnalysisPhase('ready')");
+  assert.ok(subjects.invalidations > prior);
+  assert.equal(subjects.options.caseId(), '1'); assert.equal(posts(h).length, 0);
+});
+
+test('analysis case identifiers remain strings through selection scope and execution', async () => {
+  const id = '90071992547409931234';
+  const h = harness({ url: `http://synthetic.invalid/analysis?case_id=${id}`, initialCases: [{ id, name: 'Synthetic exact case string' }], entitySearch: true });
+  await h.ready(); assert.equal(h.run('caseId'), id); assert.equal(h.pickerMounts[0].options.caseId(), id);
+  await h.algorithms(['cycles']); h.network(() => ({ ...emptyResult(), case_id: id })); await h.run('run()');
+  assert.equal(JSON.parse(posts(h)[0].options.body).case_id, id);
+});
 
 test('the paths shortcut reveals its required parameters before any input event', async () => {
   const h = harness({ url: 'http://synthetic.invalid/analysis?case_id=1&algorithm=paths' }); await h.ready();
@@ -659,7 +735,7 @@ test('a detected cycle opens on its own canvas instead of appending to the defau
   await button.click(); await flush();
   const save = h.requests.find(item => item.path === '/api/canvases/from-flows'); assert.ok(save, feedback(h));
   const saved = JSON.parse(save.options.body);
-  assert.equal(saved.case_id, 1);
+  assert.equal(saved.case_id, '1');
   assert.match(saved.name, /^环流 /);
   assert.deepEqual(saved.snapshot.nodes, []);
   assert.deepEqual(saved.flow_ids, ['17', '18', '19']);
@@ -717,7 +793,7 @@ test('cycle writes stay on their original case and a late A-B-A reply cannot cha
   pending.resolve(response({ ok: true, canvas_id: 41, added: 3 })); await flush();
   const writes = h.requests.filter(item => item.options?.method === 'POST' && !item.path.startsWith('/api/analysis/'));
   assert.equal(writes.length, 1, 'one in-flight click issues exactly one complete mutation');
-  assert.equal(JSON.parse(writes[0].options.body).case_id, 1);
+  assert.equal(JSON.parse(writes[0].options.body).case_id, '1');
   assert.equal(h.element('analysisError').textContent, '当前案件的新提示');
   assert.equal(h.element('results').querySelector('.btn-graph'), null);
 });

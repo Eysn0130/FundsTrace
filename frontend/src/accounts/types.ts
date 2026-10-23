@@ -29,7 +29,10 @@ export type AccountWorkspaceActions = Readonly<{
   viewFlows(account: string, signal: AbortSignal): void | Promise<void>;
 }>;
 export type AccountRegistryApi = Readonly<{
-  list(caseId: string, query: { source: AccountSource; q: string; page: number; pageSize: number }, signal: AbortSignal): Promise<AccountPage>;
+  list(caseId: string, query: { source: AccountSource; q: string; page: number; pageSize: number; accountExact?: boolean }, signal: AbortSignal): Promise<AccountPage>;
+  suggestions?(caseId: string, query: { source: AccountSource; q: string; offset: number; limit: number }, signal: AbortSignal): Promise<AccountSuggestions>;
   profile(caseId: string, account: string, signal: AbortSignal): Promise<AccountProfile>;
   photoUrl(caseId: string, account: string, updatedAt: string, original?: boolean): string;
 }>;
+export type AccountSuggestion = Readonly<{ account: string; name: string; id_no: string | null; matched_field: 'account' | 'name' | 'id'; matched_text: string }>;
+export type AccountSuggestions = Readonly<{ case_id: string; source: AccountSource; query: string; items: AccountSuggestion[]; has_more: boolean; next_offset: number | null }>;

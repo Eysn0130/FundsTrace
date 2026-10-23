@@ -40,6 +40,7 @@ STATIC_NAMES = (
     "graph-relations.js", "graph-presentation.js", "graph-label-geometry.js", "graph-export-geometry.js", "ribbon.js", "ribbon-commands.js",
     "toolbar-menu.js", "relation-filter.js", "neighborhood.js", "node-finder.js", "canvas-workspace.js", "data-tools.js", "workspace-camera.js", "main-accounts.js", "main-accounts-view.js",
     "table-workspace.js", "ui-dialogs.js", "workflow-ui.js", "ui-icons/LICENSE",
+    "entity-picker.js", "entity-picker.css", "entity-search.js", "entity-search.css",
     *(f"ui-icons/{name}.svg" for name in UI_ICON_NAMES),
 )
 
