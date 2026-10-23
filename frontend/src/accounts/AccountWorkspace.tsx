@@ -192,7 +192,6 @@ function BoundAccountWorkspace({ context, cases, onSelectCase, revision, actions
   function selectSuggestion(item: EntityPickerItem) {
     if (!active || busy || !item.account) return;
     setSearchDraft(item.account); setExactAccount(item.account);
-    setQuery({ q: item.account, page: 1, accountExact: true });
   }
   const suggestionScope = active && !busy && api.suggestions ? JSON.stringify([context.caseId, context.generation, source, revision, reload]) : null;
   const searchSuggestions: EntityPickerSearch = async ({ query: q, offset, limit, signal }) => {

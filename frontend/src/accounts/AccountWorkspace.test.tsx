@@ -39,7 +39,7 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('AccountWorkspace', () => {
-  it('only queries the exact chosen account and clears that binding after manual editing', async () => {
+  it.each(['SVG', 'Enter'])('only fills the chosen account until %s submits, and clears its exact binding after manual editing', async submit => {
     const h = fixture();
     h.api.suggestions = vi.fn(async (caseId, query) => suggestionPage(caseId, query.q, query.source));
     h.api.list = vi.fn(async (caseId, query) => ({ case_id: caseId, source: query.source, total: query.accountExact ? 1 : 2, page: query.page, page_size: 30, items: query.accountExact ? [row(query.q)] : [row(), row(accountB)] }));
@@ -48,7 +48,17 @@ describe('AccountWorkspace', () => {
     fireEvent.input(input, { target: { value: '合' } });
     const option = await screen.findByRole('option', { name: new RegExp(accountB) });
     expect(h.api.list).toHaveBeenCalledOnce(); expect(h.actions.mutate).not.toHaveBeenCalled();
-    fireEvent.click(option);
+    if (submit === 'Enter') {
+      fireEvent.keyDown(input, { key: 'End' });
+      fireEvent.keyDown(input, { key: 'Enter' });
+    } else fireEvent.click(option);
+    await act(async () => {});
+    expect((input as HTMLInputElement).value).toBe(accountB);
+    expect(h.api.list).toHaveBeenCalledOnce(); expect(h.api.profile).toHaveBeenCalledOnce();
+    expect(within(details()).getByText(accountA)).toBeTruthy();
+    expect(within(details()).queryByText(accountB)).toBeNull();
+    if (submit === 'Enter') fireEvent.keyDown(input, { key: 'Enter' });
+    else fireEvent.click(screen.getByRole('button', { name: '查询账户' }));
     await waitFor(() => expect(h.api.list).toHaveBeenLastCalledWith('1', { source: 'flows', q: accountB, page: 1, pageSize: 30, accountExact: true }, expect.any(AbortSignal)));
     await waitFor(() => expect(h.api.profile).toHaveBeenLastCalledWith('1', accountB, expect.any(AbortSignal)));
     expect((input as HTMLInputElement).value).toBe(accountB);

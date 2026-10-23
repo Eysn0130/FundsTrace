@@ -67,19 +67,42 @@ function harness() {
       return this.isConnected ? [this.getBoundingClientRect()] : [];
     }
     getBoundingClientRect() { return { left: 400, top: 20, width: 140, height: 30, right: 540, bottom: 50 }; }
-    focus() { if (!this.disabled && this.isConnected && this.getClientRects().length) doc.activeElement = this; }
+    focus() {
+      if (!this.disabled && this.isConnected && this.getClientRects().length && doc.activeElement !== this) {
+        doc.activeElement = this; this.fire('focus', { bubbles: false });
+      }
+    }
     addEventListener(type, callback) { const list = this.listeners.get(type) || []; list.push(callback); this.listeners.set(type, list); }
     fire(type, options = {}) {
-      const event = { type, target: this, key: '', isComposing: false, defaultPrevented: false, stopped: false,
-        preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; }, ...options };
+      const event = { type, target: this, key: '', isComposing: false, defaultPrevented: false, stopped: false, immediateStopped: false,
+        preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; },
+        stopImmediatePropagation() { this.stopped = true; this.immediateStopped = true; }, ...options };
       for (let node = this; node; node = node.parentElement) {
         node['on' + type]?.(event);
-        for (const callback of node.listeners.get(type) || []) callback(event);
-        if (event.stopped) break;
+        for (const callback of node.listeners.get(type) || []) { callback(event); if (event.immediateStopped) break; }
+        if (event.stopped || event.bubbles === false) break;
       }
       return event;
     }
-    click() { if (!this.disabled) return this.fire('click'); }
+    key(key, options = {}) {
+      const event = this.fire('keydown', { key, ...options });
+      if (key === 'Escape' && !event.defaultPrevented && !event.isComposing && event.keyCode !== 229) {
+        // Native search controls consume Escape to clear their value before a
+        // dialog cancel event. Exercise that default after the keydown path.
+        if (this.getAttribute('type') === 'search' && this.value) { this.value = ''; this.fire('input'); }
+        else {
+          const dialog = this.closest('dialog');
+          if (dialog?.open && !dialog.fire('cancel').defaultPrevented) dialog.close();
+        }
+      }
+      return event;
+    }
+    click() {
+      if (this.disabled) return;
+      this.focus(); const event = this.fire('click');
+      if (!event.defaultPrevented && this.tagName === 'BUTTON' && this.getAttribute('type') === 'submit') this.closest('form')?.fire('submit');
+      return event;
+    }
     showModal() { this.open = true; }
     close() { this.open = false; this.fire('close'); }
   }
@@ -104,6 +127,14 @@ function harness() {
     FundsToolbarMenu: { place() {}, close() {} }, FundsRibbon: { closePopovers() {} },
     FundsEntitySearch: { mount(input, options) {
       pickerOptions = options;
+      const open = () => { input.setAttribute('aria-expanded', String(!!input.value.trim() && options.scope() !== null)); };
+      input.addEventListener('focus', open);
+      input.addEventListener('click', open);
+      input.addEventListener('input', open);
+      input.addEventListener('keydown', event => {
+        if (event.isComposing || event.keyCode === 229 || event.key !== 'Escape' || input.getAttribute('aria-expanded') !== 'true') return;
+        event.preventDefault(); event.stopImmediatePropagation(); input.setAttribute('aria-expanded', 'false');
+      });
       return { getSelected: () => selected, invalidate() { invalidations++; selected = null; input.setAttribute('aria-expanded', 'false'); }, close() { input.setAttribute('aria-expanded', 'false'); } };
     } } };
   root.FundsGraphLocator = {
@@ -213,7 +244,7 @@ test('registry work revokes old candidates but permits a new draft; screen chang
   const h = harness(); await h.searchScreen(); const start = h.picker.invalidations();
   const pending = deferred(); h.route(path => path.includes('/candidates?') ? pending.promise : undefined);
   h.input('00001'); h.el('maSearchForm').fire('submit');
-  assert.notEqual(h.picker.options().scope(), null); assert.ok(h.picker.invalidations() > start);
+  assert.equal(h.picker.options().scope(), null); assert.ok(h.picker.invalidations() > start);
   const reads = h.requests.length; h.input('新的检索');
   assert.notEqual(h.picker.options().scope(), null); assert.equal(h.requests.length, reads);
   pending.resolve({ items: [candidate()], total: 1, page: 1, page_size: 30 }); await flush();
@@ -223,11 +254,56 @@ test('registry work revokes old candidates but permits a new draft; screen chang
   assert.equal(h.picker.options().scope(), null); assert.ok(h.picker.invalidations() > before); assert.equal(h.el('mainAccountsDialog').open, false);
 });
 
-test('first Escape dismisses the candidate layer and the next dismisses the parent dialog', async () => {
-  const h = harness(); await h.searchScreen(); h.el('maQuery').setAttribute('aria-expanded', 'true');
-  const first = h.el('mainAccountsDialog').fire('cancel'); assert.equal(first.defaultPrevented, true);
+test('SVG submit keeps suggestions closed through disabled-button focus fallback but new drafts remain editable', async () => {
+  const h = harness(); await h.searchScreen(); const pending = deferred();
+  h.route(path => path.includes('/candidates?') ? pending.promise : undefined);
+  h.input('合成'); assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'true');
+  const button = h.el('maSearchForm').querySelector('button'); button.click();
+  assert.equal(button.disabled, true); assert.equal(h.doc.activeElement, h.el('maQuery'));
+  assert.equal(h.el('maQuery').disabled, false);
+  assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'false');
+  h.input('新的检索'); assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'true');
+  h.input('合成'); assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'false');
+  pending.resolve({ items: [candidate()], total: 1, page: 1, page_size: 30 }); await flush();
+  assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'false');
+  h.el('maQuery').click(); assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'true');
+  assert.equal(h.controller.status().query, '合成');
+});
+
+test('real Escape keydown dismisses suggestions first, then the dialog without native search clearing', async () => {
+  const h = harness(); await h.searchScreen(); h.input('合成');
+  const first = h.el('maQuery').key('Escape'); assert.equal(first.defaultPrevented, true);
   assert.equal(h.el('maQuery').getAttribute('aria-expanded'), 'false'); assert.equal(h.el('mainAccountsDialog').open, true);
-  h.el('mainAccountsDialog').fire('cancel'); assert.equal(h.el('mainAccountsDialog').open, false);
+  assert.equal(h.el('maQuery').value, '合成');
+  const second = h.el('maQuery').key('Escape'); assert.equal(second.defaultPrevented, true);
+  assert.equal(h.el('mainAccountsDialog').open, false); assert.equal(h.el('maQuery').value, '合成');
+});
+
+test('Escape preserves IME and cannot close a sent main-account write', async () => {
+  const h = harness(); await h.searchScreen(); h.input('合成');
+  h.el('maQuery').fire('compositionstart');
+  h.el('maQuery').key('Escape', { isComposing: true, keyCode: 229 });
+  assert.equal(h.el('mainAccountsDialog').open, true); assert.equal(h.el('maQuery').value, '合成');
+  h.el('maQuery').fire('compositionend');
+  const pending = deferred(); h.route((path, options) => options.method ? pending.promise : undefined);
+  h.add('00001').click(); await flush();
+  assert.equal(h.controller.status().pending, true); assert.equal(h.controller.status().sent, true);
+  const escape = h.el('mainAccountsDialog').key('Escape');
+  assert.equal(escape.defaultPrevented, true); assert.equal(h.el('mainAccountsDialog').open, true);
+  pending.resolve({ ok: true, account: '00001', source: 'manual' }); await flush();
+  h.el('mainAccountsDialog').key('Escape'); assert.equal(h.el('mainAccountsDialog').open, false);
+});
+
+test('Escape closes the row action menu before the parent dialog and restores its trigger', async () => {
+  const h = harness();
+  h.route(path => path.startsWith('/api/main-accounts?') ? [candidate('00001', '合成同名', { source: 'auto' })] : undefined);
+  await h.searchScreen(); h.el('maBack').click();
+  const trigger = h.el('maRows').children[0].children[2].children[0]; trigger.click();
+  assert.equal(h.el('maRowMenu').hidden, false); assert.equal(h.doc.activeElement, h.el('maConvert'));
+  const first = h.el('maConvert').key('Escape');
+  assert.equal(first.defaultPrevented, true); assert.equal(h.el('maRowMenu').hidden, true);
+  assert.equal(h.doc.activeElement, trigger); assert.equal(h.el('mainAccountsDialog').open, true);
+  trigger.key('Escape'); assert.equal(h.el('mainAccountsDialog').open, false);
 });
 
 test('explicit empty, multi-result and malformed searches never pick an arbitrary first candidate', async () => {
