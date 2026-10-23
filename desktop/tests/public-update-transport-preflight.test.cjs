@@ -11,6 +11,7 @@ const args = () => ['--report', path.resolve('synthetic-public-preflight.json'),
   '--sha256', sha256, '--sha512', sha512, '--bytes', String(size)];
 function goodDiagnostic() {
   const endpoint = { kind: 'verified', statusCode: 200, bytes: size, elapsedMs: 100,
+    lookupObserved: true, lookupSucceeded: true, lookupErrorCode: 'NONE', tcpEstablished: true,
     completed: true, tlsEstablished: true, responseStarted: true, budgetLimited: false, errorCode: 'NONE',
     expectedSizeMatch: true, sha256Match: true, sha512Match: true, metadataValid: null,
     versionMatch: null, productMatch: null, installerUrlMatch: null };
@@ -106,10 +107,23 @@ test('raw diagnostic additions and exceptions cannot leak into the preflight rep
 
 test('malformed or incomplete diagnostic DTOs cannot be interpreted as success or exposed raw', async () => {
   for (const diagnostic of [null, {}, { ...goodDiagnostic(), transport: 'SYN_PRIVATE' },
-    { ...goodDiagnostic(), metadata: { ...goodDiagnostic().metadata, errorCode: 'SYN_PRIVATE' } }]) {
+    { ...goodDiagnostic(), metadata: { ...goodDiagnostic().metadata, errorCode: 'SYN_PRIVATE' } },
+    { ...goodDiagnostic(), metadata: { ...goodDiagnostic().metadata, lookupErrorCode: 'SYN_PRIVATE' } },
+    { ...goodDiagnostic(), metadata: { ...goodDiagnostic().metadata, lookupObserved: 'true' } },
+    { ...goodDiagnostic(), metadata: { ...goodDiagnostic().metadata, tcpEstablished: undefined } }]) {
     const run = harness({ diagnostic }); assert.equal(await run.run(args()), 1);
     assert.equal(JSON.parse(run.writes[0]).diagnostic, null); assert.ok(!run.writes[0].includes('SYN_PRIVATE'));
   }
+});
+
+test('preflight preserves safe lookup and TCP observations without turning an unobserved lookup into failure', async () => {
+  const diagnostic = goodDiagnostic(); diagnostic.metadata.lookupObserved = false; diagnostic.metadata.lookupSucceeded = null;
+  diagnostic.metadata.lookupAddress = 'SYN_PRIVATE_ADDRESS'; diagnostic.metadata.lookupHost = 'SYN_PRIVATE_HOST';
+  const run = harness({ diagnostic }); assert.equal(await run.run(args()), 0);
+  const result = JSON.parse(run.writes[0]).diagnostic.metadata;
+  assert.equal(result.lookupObserved, false); assert.equal(result.lookupSucceeded, null);
+  assert.equal(result.tcpEstablished, true); assert.equal(result.lookupErrorCode, 'NONE');
+  assert.ok(!run.writes[0].includes('SYN_PRIVATE'));
 });
 
 test('invalid CLI inputs fail without network access or report creation', async () => {

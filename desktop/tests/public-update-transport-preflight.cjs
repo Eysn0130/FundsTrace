@@ -14,15 +14,15 @@ const ERROR_CODES = new Set(['NONE', 'UNKNOWN', 'ENOTFOUND', 'EAI_AGAIN', 'ECONN
   'ERR_SSL_WRONG_VERSION_NUMBER', 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR']);
 const RESULT_KINDS = new Set(['notRun', 'verified', 'mismatch', 'invalidMetadata', 'httpError', 'tooLarge',
   'connectTimeout', 'responseTimeout', 'readTimeout', 'transportError', 'budgetExhausted']);
-const BOOLS = ['completed', 'tlsEstablished', 'responseStarted', 'budgetLimited'];
-const NULLABLE = ['expectedSizeMatch', 'sha256Match', 'sha512Match', 'metadataValid', 'versionMatch', 'productMatch', 'installerUrlMatch'];
+const BOOLS = ['lookupObserved', 'tcpEstablished', 'completed', 'tlsEstablished', 'responseStarted', 'budgetLimited'];
+const NULLABLE = ['lookupSucceeded', 'expectedSizeMatch', 'sha256Match', 'sha512Match', 'metadataValid', 'versionMatch', 'productMatch', 'installerUrlMatch'];
 function safeEndpoint(value) {
-  if (!value || !RESULT_KINDS.has(value.kind) || !ERROR_CODES.has(value.errorCode)
+  if (!value || !RESULT_KINDS.has(value.kind) || !ERROR_CODES.has(value.errorCode) || !ERROR_CODES.has(value.lookupErrorCode)
     || !(value.statusCode === null || Number.isInteger(value.statusCode) && value.statusCode >= 100 && value.statusCode <= 599)
     || !Number.isSafeInteger(value.bytes) || value.bytes < 0 || value.bytes > 1024 ** 3 + 65536
     || !Number.isInteger(value.elapsedMs) || value.elapsedMs < 0 || value.elapsedMs > 300000
     || !BOOLS.every(key => typeof value[key] === 'boolean') || !NULLABLE.every(key => [null, true, false].includes(value[key]))) return null;
-  return Object.fromEntries(['kind', 'statusCode', 'bytes', 'elapsedMs', ...BOOLS, 'errorCode', ...NULLABLE].map(key => [key, value[key]]));
+  return Object.fromEntries(['kind', 'statusCode', 'bytes', 'elapsedMs', ...BOOLS, 'errorCode', 'lookupErrorCode', ...NULLABLE].map(key => [key, value[key]]));
 }
 function safeDiagnostic(value) {
   try {

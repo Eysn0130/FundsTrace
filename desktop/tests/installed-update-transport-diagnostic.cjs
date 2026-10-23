@@ -16,6 +16,7 @@ function safeErrorCode(error) {
   catch { return 'UNKNOWN'; }
 }
 const emptyResult = () => ({ kind: 'notRun', statusCode: null, bytes: 0, elapsedMs: 0,
+  lookupObserved: false, lookupSucceeded: null, lookupErrorCode: 'NONE', tcpEstablished: false,
   completed: false, tlsEstablished: false, responseStarted: false, budgetLimited: false, errorCode: 'NONE',
   expectedSizeMatch: null, sha256Match: null, sha512Match: null, metadataValid: null,
   versionMatch: null, productMatch: null, installerUrlMatch: null });
@@ -69,7 +70,7 @@ function readEndpoint(url, { limit, timeoutMs, budgetLimited, config, installerU
       const headers = { 'User-Agent': 'electron-builder', 'Cache-Control': 'no-cache',
         ...(metadata ? {} : { accept: '*/*' }) };
       request = https.get(url, { headers }, incoming => {
-        response = incoming; result.responseStarted = true; result.tlsEstablished = true;
+        response = incoming; result.responseStarted = true; result.tcpEstablished = true; result.tlsEstablished = true;
         result.statusCode = Number.isInteger(incoming.statusCode) && incoming.statusCode >= 100 && incoming.statusCode <= 599
           ? incoming.statusCode : null;
         incoming.on('data', chunk => {
@@ -102,7 +103,17 @@ function readEndpoint(url, { limit, timeoutMs, budgetLimited, config, installerU
           } catch (error) { finish('transportError', { errorCode: safeErrorCode(error) }); }
         });
       });
-      request.once('socket', socket => socket.once('secureConnect', () => { result.tlsEstablished = true; }));
+      request.once('socket', socket => {
+        if (settled) return;
+        if (socket.connecting === false && socket.readyState === 'open') result.tcpEstablished = true;
+        socket.once('lookup', error => {
+          if (settled) return;
+          result.lookupObserved = true; result.lookupSucceeded = !error;
+          result.lookupErrorCode = error ? safeErrorCode(error) : 'NONE';
+        });
+        socket.once('connect', () => { if (!settled) result.tcpEstablished = true; });
+        socket.once('secureConnect', () => { if (!settled) { result.tcpEstablished = true; result.tlsEstablished = true; } });
+      });
       request.once('error', error => finish('transportError', { errorCode: safeErrorCode(error) }));
     } catch (error) { finish('transportError', { errorCode: safeErrorCode(error) }); }
   });

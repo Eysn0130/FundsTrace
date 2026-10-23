@@ -51,7 +51,16 @@ function harness(plans, environment = {}, initialClock = 0) {
             assert.ok(timer); clock += timer.milliseconds; timer.callback();
           };
           if (plan.timeout === 'connect') { timeout(); return; }
-          const socket = new EventEmitter(); request.emit('socket', socket); socket.emit('secureConnect');
+          const socket = new EventEmitter();
+          if (plan.reusedSocket) { socket.connecting = false; socket.readyState = 'open'; }
+          request.emit('socket', socket);
+          if (!plan.omitLookup) socket.emit('lookup', plan.lookupError || null, 'SYN_PRIVATE_ADDRESS', 4, 'SYN_PRIVATE_HOST');
+          if (plan.lookupError) { request.emit('error', plan.lookupError); return; }
+          if (plan.timeout === 'tcp') { timeout(); return; }
+          if (!plan.reusedSocket) socket.emit('connect');
+          if (plan.beforeTlsError) { request.emit('error', plan.beforeTlsError); return; }
+          if (plan.timeout === 'tls') { timeout(); return; }
+          socket.emit('secureConnect');
           if (plan.timeout === 'response') { timeout(); return; }
           const response = new EventEmitter();
           response.statusCode = plan.statusCode ?? 200;
@@ -91,11 +100,50 @@ test('post-failure transport reads both fixed endpoints fully and verifies both 
   assert.equal(report.metadata.completed, true); assert.equal(report.installer.completed, true);
   for (const key of ['expectedSizeMatch', 'sha256Match', 'sha512Match']) assert.equal(report.installer[key], true);
   assert.equal(report.metadata.versionMatch, true); assert.equal(report.metadata.installerUrlMatch, true);
+  for (const endpoint of [report.metadata, report.installer]) {
+    assert.equal(endpoint.lookupObserved, true); assert.equal(endpoint.lookupSucceeded, true);
+    assert.equal(endpoint.lookupErrorCode, 'NONE'); assert.equal(endpoint.tcpEstablished, true);
+  }
   assert.deepEqual(run.requests.map(value => value.url), ['https://analytix.top/fundstrace/latest.yml?noCache=0', installerUrl]);
   assert.deepEqual(run.scheduled, [45000, 240000]); assert.equal(run.active.size, 0);
   assert.ok(!JSON.stringify(report).includes('SYN_PRIVATE'));
   assert.ok(!JSON.stringify(report).includes('https://'));
   assert.equal(report.transport, 'independentNodeHttps'); assert.equal(report.metadataNoCacheQuery, true);
+});
+
+test('a DNS lookup failure is reported without reading or exposing the resolved address or host', async () => {
+  const run = harness([{ lookupError: { code: 'ENOTFOUND', message: 'SYN_PRIVATE_DNS_ERROR' } }, { body: installer }]);
+  const report = await run.run(config), result = report.metadata;
+  assert.equal(result.lookupObserved, true); assert.equal(result.lookupSucceeded, false);
+  assert.equal(result.lookupErrorCode, 'ENOTFOUND'); assert.equal(result.errorCode, 'ENOTFOUND');
+  assert.equal(result.tcpEstablished, false); assert.equal(result.tlsEstablished, false);
+  assert.equal(result.responseStarted, false); assert.equal(result.bytes, 0);
+  assert.ok(!JSON.stringify(report).includes('SYN_PRIVATE'));
+});
+
+test('lookup success followed by a TCP timeout is distinct from a TLS-stage timeout', async () => {
+  const run = harness([{ timeout: 'tcp' }, { timeout: 'tls' }]), report = await run.run(config);
+  assert.equal(report.metadata.lookupSucceeded, true); assert.equal(report.metadata.tcpEstablished, false);
+  assert.equal(report.metadata.tlsEstablished, false); assert.equal(report.metadata.errorCode, 'ETIMEDOUT');
+  assert.equal(report.installer.lookupSucceeded, true); assert.equal(report.installer.tcpEstablished, true);
+  assert.equal(report.installer.tlsEstablished, false); assert.equal(report.installer.responseStarted, false);
+  assert.equal(report.installer.bytes, 0);
+});
+
+test('a request error after TCP establishment preserves that boundary before TLS exists', async () => {
+  const run = harness([{ beforeTlsError: { code: 'ETIMEDOUT', message: 'SYN_PRIVATE_TLS_ERROR' } }, { body: installer }]);
+  const report = await run.run(config), result = report.metadata;
+  assert.equal(result.kind, 'transportError'); assert.equal(result.errorCode, 'ETIMEDOUT');
+  assert.equal(result.lookupSucceeded, true); assert.equal(result.tcpEstablished, true);
+  assert.equal(result.tlsEstablished, false); assert.equal(result.responseStarted, false);
+  assert.ok(!JSON.stringify(report).includes('SYN_PRIVATE'));
+});
+
+test('an unobserved lookup stays unknown on a reused open socket rather than being reported as DNS failure', async () => {
+  const run = harness([{ reusedSocket: true, omitLookup: true, beforeTlsError: { code: 'ECONNRESET' } }, { body: installer }]);
+  const report = await run.run(config), result = report.metadata;
+  assert.equal(result.lookupObserved, false); assert.equal(result.lookupSucceeded, null); assert.equal(result.lookupErrorCode, 'NONE');
+  assert.equal(result.tcpEstablished, true); assert.equal(result.tlsEstablished, false);
 });
 
 test('metadata noCache uses only the internal base-32 timestamp and request headers remain public constants', async () => {
