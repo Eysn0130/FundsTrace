@@ -57,7 +57,7 @@ test('an unassigned spawn PID retains an owned cleanup handle and absorbs the la
   assert.ok(!JSON.stringify({ message: failure.message, exit }).includes('SYN_PRIVATE'));
 });
 
-function collector({ ready = false } = {}) {
+function collector({ ready = false, moduleAvailable = true } = {}) {
   let finishReady; const readyPromise = new Promise(resolve => { finishReady = resolve; });
   const registrations = [], removals = [], listeners = {};
   const webRequest = Object.fromEntries(['onResponseStarted', 'onCompleted', 'onErrorOccurred'].map(name => [name, (filter, listener) => {
@@ -65,7 +65,8 @@ function collector({ ready = false } = {}) {
     registrations.push({ name, filter: plain(filter) }); listeners[name] = listener;
   }]));
   const context = vm.createContext({ URL, Date, process: { getBuiltinModule(name) {
-    assert.equal(name, 'module'); return { createRequire(value) {
+    assert.equal(name, 'module'); if (!moduleAvailable) return null;
+    return { createRequire(value) {
       assert.equal(value, packageJson); return name => {
         assert.equal(name, 'electron'); return { app: { isReady: () => ready, whenReady: () => readyPromise },
           session: { fromPartition(name, options) { assert.equal(name, 'electron-updater'); assert.deepEqual(plain(options), { cache: false }); return { webRequest }; } },
@@ -87,6 +88,9 @@ test('collector acknowledges before readiness and installs one combined filter p
   for (const item of run.registrations) assert.deepEqual(item.filter.urls, patterns);
   assert.ok(!patterns.some(value => value.endsWith('latest.yml*')));
   assert.equal(collector({ ready: true }).ack.registered, false);
+  const unavailable = collector({ moduleAvailable: false });
+  assert.deepEqual(unavailable.ack, { registered: false, appWasReady: false, reason: 'moduleUnavailable' });
+  unavailable.finishReady(); await Promise.resolve(); assert.equal(unavailable.registrations.length, 0);
 });
 
 test('passive events read only fixed scalar status/error fields and retain at most 32 safe records', async () => {
@@ -119,7 +123,8 @@ test('public state snapshots never invent UNKNOWN outside a real error phase or 
   assert.equal(publicUpdateSnapshot(undefined, 12).phase, null); assert.ok(!JSON.stringify(report).includes('SYN_PRIVATE'));
 });
 
-function connection({ failRegister = false, binding = () => true, budget = 2000, identity = true } = {}) {
+function connection({ failRegister = false, binding = () => true, budget = 2000, identity = true, processAvailable = true,
+  pause = true, extraPause = false, protocolFailure, evaluationFailure, exceptionClassName = 'ReferenceError', registrationReason, removeAck = true } = {}) {
   const calls = [], sockets = [], timers = [];
   class Socket {
     static OPEN = 1;
@@ -128,17 +133,32 @@ function connection({ failRegister = false, binding = () => true, budget = 2000,
     emit(name, value) { for (const action of this.handlers[name] || []) action(value); }
     send(raw) {
       const value = JSON.parse(raw); calls.push(value);
+      const expression = value.params.expression || '';
+      const kind = expression === `typeof process==='object' && process!==null` ? 'processAvailability'
+        : expression.includes('process.pid===') ? 'identity' : expression.includes('state.remove=') ? 'registrationAck' : 'other';
       let result = {};
-      if (value.method === 'Runtime.evaluate') result = { result: { value: value.params.expression.startsWith('process.pid===') ? identity : value.params.expression.includes('state.remove=')
-        ? { registered: !failRegister, appWasReady: false } : value.params.expression.includes('s.remove()') ? true
+      if (value.method === 'Runtime.evaluate') result = { result: { value: kind === 'processAvailability' ? processAvailable : kind === 'identity' ? identity : kind === 'registrationAck'
+        ? { registered: !failRegister && !registrationReason, appWasReady: registrationReason === 'alreadyReady', reason: registrationReason } : expression.includes('s.remove()') ? removeAck
           : { registered: true, installed: true, disposed: false, appWasReady: false, droppedCount: 0, events: [] } } };
-      queueMicrotask(() => this.emit('message', { data: JSON.stringify({ id: value.id, result }) }));
+      if (evaluationFailure === kind && value.method === 'Runtime.evaluate') result = { exceptionDetails: {
+        text: 'SYN_PRIVATE_EXCEPTION_TEXT', exception: { className: exceptionClassName, description: 'SYN_PRIVATE_DESCRIPTION', preview: { secret: 'SYN_PRIVATE' } } } };
+      queueMicrotask(() => {
+        // The event intentionally precedes runIfWaiting's ACK, reproducing the
+        // race a waiter created only after that command would miss.
+        if (value.method === 'Runtime.runIfWaitingForDebugger' && pause) {
+          this.emit('message', { data: JSON.stringify({ method: 'Debugger.paused', params: { callFrames: [{ url: 'SYN_PRIVATE_SCRIPT', scopeChain: ['SYN_PRIVATE_SCOPE'] }] } }) });
+          if (extraPause) this.emit('message', { data: JSON.stringify({ method: 'Debugger.paused', params: { callFrames: ['SYN_PRIVATE'] } }) });
+        }
+        this.emit('message', { data: JSON.stringify(protocolFailure === value.method || protocolFailure === kind
+          ? { id: value.id, error: { message: 'SYN_PRIVATE_PROTOCOL_ERROR' } } : { id: value.id, result }) });
+      });
     }
     close() { this.readyState = 3; this.emit('close'); }
   }
   const module = { exports: {} };
   const context = vm.createContext({ module, require, path, URL, WebSocket: Socket, Date,
-    setTimeout(callback, milliseconds) { timers.push({ callback, milliseconds }); return timers.length; }, clearTimeout() {} });
+    setTimeout(callback, milliseconds) { timers.push({ callback, milliseconds, active: true }); return timers.length; },
+    clearTimeout(id) { if (timers[id - 1]) timers[id - 1].active = false; } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, 'installed-official-network-probe.cjs'), 'utf8'), context);
   const probe = module.exports.createOfficialNetworkProbe({ binding, packageJson, version: '0.1.12', expectedPid: 42,
     executable: path.resolve('synthetic', 'FundsTrace.exe'), budgetMs: () => budget, WebSocketImpl: Socket });
@@ -146,23 +166,80 @@ function connection({ failRegister = false, binding = () => true, budget = 2000,
   return { probe, calls, sockets, timers };
 }
 
-test('only the owned loopback stderr endpoint is attached, registration precedes resume, and teardown precedes detach', async () => {
+test('owned startup bootstrap is released into an already-waited pause before identity and registration; Debugger is then disabled', async () => {
   const run = connection(); await run.probe.attach();
-  assert.equal(run.calls[0].method, 'Runtime.evaluate'); assert.ok(run.calls[0].params.expression.startsWith('process.pid==='));
-  assert.equal(run.calls[1].method, 'Runtime.evaluate'); assert.equal(run.calls[2].method, 'Runtime.runIfWaitingForDebugger');
+  assert.deepEqual(run.calls.map(value => value.method), ['Runtime.enable', 'Debugger.enable', 'Runtime.runIfWaitingForDebugger',
+    'Runtime.evaluate', 'Runtime.evaluate', 'Runtime.evaluate', 'Debugger.resume', 'Debugger.disable']);
+  assert.ok(run.calls[4].params.expression.includes('process.pid==='));
+  assert.ok(run.calls[5].params.expression.includes('state.remove='));
   await run.probe.read(); const result = await run.probe.dispose();
   assert.equal(result.teardownSucceeded, true); assert.equal(result.detached, true);
+  assert.equal(result.entryPauseObserved, true); assert.equal(result.identityConfirmed, true); assert.equal(result.debuggerDisabled, true);
+  assert.equal(result.failureClass, null); assert.equal(result.coverageAvailable, true);
   assert.ok(run.timers.every(value => value.milliseconds <= 2000));
   assert.ok(!JSON.stringify(result).includes('ws://')); assert.ok(!JSON.stringify(result).includes('SYN_PRIVATE'));
 });
 
 test('failed registration still detaches, and rejected ownership or exhausted budgets never connect', async () => {
   const failure = connection({ failRegister: true }); await assert.rejects(failure.probe.attach(), /OFFICIAL_DIAGNOSTIC_UNAVAILABLE/);
-  assert.equal((await failure.probe.dispose()).detached, true);
+  const failed = await failure.probe.dispose();
+  assert.equal(failed.detached, true); assert.equal(failed.stage, 'registrationAck'); assert.equal(failed.failureClass, 'ackRejected');
+  assert.equal(failed.resumeSucceeded, true); assert.equal(failed.debuggerDisabled, true);
   const rejected = connection({ binding: () => false }); await assert.rejects(rejected.probe.attach(), /OFFICIAL_DIAGNOSTIC_BINDING/); assert.equal(rejected.sockets.length, 0);
   const noBudget = connection({ budget: 0 }); await assert.rejects(noBudget.probe.attach(), /OFFICIAL_DIAGNOSTIC_UNAVAILABLE/); assert.equal(noBudget.sockets.length, 0);
   const wrongMain = connection({ identity: false }); await assert.rejects(wrongMain.probe.attach(), /OFFICIAL_DIAGNOSTIC_BINDING/);
   assert.equal((await wrongMain.probe.read()).observation, null);
-  assert.equal((await wrongMain.probe.dispose()).detached, true);
-  assert.equal(wrongMain.calls.length, 1, 'a mismatched Main must not load electron, register hooks or receive resume commands');
+  const wrong = await wrongMain.probe.dispose();
+  assert.equal(wrong.detached, true); assert.equal(wrong.stage, 'identity'); assert.equal(wrong.failureClass, 'bindingMismatch');
+  assert.equal(wrongMain.calls.length, 5, 'a mismatched Main must not load electron, register hooks or receive resume commands');
+});
+
+test('a paused bootstrap without global process fails closed without loading electron or resuming an unverified Main', async () => {
+  const run = connection({ processAvailable: false }); await assert.rejects(run.probe.attach(), /OFFICIAL_DIAGNOSTIC_UNAVAILABLE/);
+  const result = await run.probe.dispose();
+  assert.equal(result.stage, 'processAvailability'); assert.equal(result.failureClass, 'processUnavailable');
+  assert.equal(result.identityConfirmed, false); assert.equal(result.detached, true);
+  assert.equal(run.calls.length, 4); assert.equal(result.observation, null);
+});
+
+test('protocol and evaluation failures retain their fixed stage, safe class and detach path', async () => {
+  for (const [options, stage, failureClass, exceptionClassName] of [
+    [{ protocolFailure: 'Runtime.enable' }, 'runtimeEnable', 'protocolError', null],
+    [{ evaluationFailure: 'identity' }, 'identity', 'evaluationException', 'ReferenceError'],
+    [{ evaluationFailure: 'registrationAck', exceptionClassName: 'SYN_PRIVATE_CLASS' }, 'registrationAck', 'evaluationException', 'UNKNOWN'],
+    [{ registrationReason: 'moduleUnavailable' }, 'registrationAck', 'moduleUnavailable', null],
+    [{ registrationReason: 'alreadyReady' }, 'registrationAck', 'alreadyReady', null],
+  ]) {
+    const run = connection(options); await assert.rejects(run.probe.attach(), /OFFICIAL_DIAGNOSTIC_UNAVAILABLE/);
+    const result = await run.probe.dispose();
+    assert.equal(result.stage, stage); assert.equal(result.failureClass, failureClass); assert.equal(result.exceptionClassName, exceptionClassName);
+    assert.equal(result.detached, true); assert.equal(result.coverageAvailable, false);
+    if (result.identityConfirmed) { assert.equal(result.resumeSucceeded, true); assert.equal(result.debuggerDisabled, true); }
+    assert.ok(!JSON.stringify(result).includes('SYN_PRIVATE'));
+  }
+});
+
+test('a missing initial pause has a bounded timeout and additional pauses invalidate coverage without reading pause details', async () => {
+  const missing = connection({ pause: false }); const attached = missing.probe.attach();
+  const rejected = assert.rejects(attached, /OFFICIAL_DIAGNOSTIC_UNAVAILABLE/);
+  await new Promise(setImmediate);
+  const active = missing.timers.filter(timer => timer.active);
+  assert.equal(active.length, 1); assert.equal(active[0].milliseconds, 2000); active[0].callback();
+  await rejected; const result = await missing.probe.dispose();
+  assert.equal(result.stage, 'entryPause'); assert.equal(result.failureClass, 'timeout'); assert.equal(result.detached, true);
+  const extra = connection({ extraPause: true }); await assert.rejects(extra.probe.attach(), /OFFICIAL_DIAGNOSTIC_UNAVAILABLE/);
+  const invalid = await extra.probe.dispose();
+  assert.equal(invalid.extraPauseObserved, true); assert.equal(invalid.failureClass, 'unexpectedPause'); assert.equal(invalid.coverageAvailable, false);
+  assert.equal(extra.calls.length, 3); assert.ok(!JSON.stringify(invalid).includes('SYN_PRIVATE'));
+});
+
+test('cleanup failures are classified and still disable the owned debugger and detach', async () => {
+  const missingRemoval = connection({ removeAck: false }); await missingRemoval.probe.attach();
+  const removal = await missingRemoval.probe.dispose();
+  assert.equal(removal.stage, 'teardown'); assert.equal(removal.failureClass, 'ackRejected');
+  assert.equal(removal.teardownSucceeded, false); assert.equal(removal.debuggerDisabled, true); assert.equal(removal.detached, true);
+  const failedResume = connection({ protocolFailure: 'Debugger.resume' }); await assert.rejects(failedResume.probe.attach(), /OFFICIAL_DIAGNOSTIC_UNAVAILABLE/);
+  const resumed = await failedResume.probe.dispose();
+  assert.equal(resumed.stage, 'resume'); assert.equal(resumed.failureClass, 'protocolError');
+  assert.equal(resumed.debuggerDisabled, true); assert.equal(resumed.detached, true); assert.equal(resumed.coverageAvailable, false);
 });
