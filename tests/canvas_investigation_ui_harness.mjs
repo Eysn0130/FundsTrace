@@ -28,7 +28,7 @@ timeline: [{ time: time1 }, { time: time2 }], summary: { amount_totals: [{ curre
 // It deliberately keeps aborted responses deliverable to test stale-read guards.
 function fixture() {
   const elements = new Map(), windowListeners = new Map(), documentListeners = new Map();
-  const calls = [], toasts = [], commands = [], timers = new Map();
+  const calls = [], toasts = [], commands = [], fitRequests = [], timers = new Map();
   let timerSequence = 0, historyBusy = false, dragging = false, acceptCommand = true, renderCount = 0;
   const attrValue = (attrs, name) => attrs.match(new RegExp(`(?:^|\\s)${name}="([^"]*)"`))?.[1];
   const decode = value => String(value ?? '').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
@@ -111,13 +111,13 @@ function fixture() {
     esc: value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])),
     toast: (message, type) => toasts.push({ message, type }), FundsGraphRelations: require('../static/graph-relations.js'),
     fetch(path, options) { const pending = deferred(); calls.push({ path, options, body: JSON.parse(options.body), ...pending }); return pending.promise; },
-    renderGraph() { renderCount++; visible = window.FundsInvestigation.displayGraph(state.lastGraph); state.graphView.revision++;
+    renderGraph() { renderCount++; fitRequests.push(state.forceFit === true); visible = window.FundsInvestigation.displayGraph(state.lastGraph); state.graphView.revision++;
       for (const fn of windowListeners.get('funds:graph-metric') || []) fn({ type: 'funds:graph-metric' }); },
   };
   vm.createContext(env); vm.runInContext(controllerSource, env, { filename: 'canvas-investigation.js' });
   const respond = (index, payload = projection(), status = 200) => calls[index].resolve({ ok: status === 200, status, json: async () => clone(payload) });
   const reject = (index, error = new Error('synthetic unavailable')) => calls[index].reject(error);
-  return { api: window.FundsInvestigation, state, env, element, calls, toasts, commands, timers, respond, reject,
+  return { api: window.FundsInvestigation, state, env, element, calls, toasts, commands, fitRequests, timers, respond, reject,
     render: env.renderGraph, renders: () => renderCount, currentVisible: () => visible,
     setBusy(value) { historyBusy = value; }, setDragging(value) { dragging = value; }, setAccepted(value) { acceptCommand = value; },
     async emit(type, extra = {}) { for (const fn of documentListeners.get(type) || []) fn(extra); await flush(); },
@@ -257,6 +257,18 @@ test('playback controls preserve saved scope and wait for layout, history and no
   await h.element('investigationKeep').click();
   assert.equal(h.state.presentation.timeWindow.end, time2); assert.equal(h.api.exportWindow().preview, false);
   assert.equal(h.commands.length, 1, 'only applying the playback window enters display history');
+});
+
+test('playback frames never request a fit or consume a saved-canvas opening fit', async () => {
+  const h = fixture(); let openingFits = 0;
+  h.state.graphView.openingFit = { beforeProjection() { openingFits++; return () => openingFits++; } };
+  await startPlayback(h);
+  const next = h.element('investigationNext').click(); await flush();
+  h.respond(h.calls.length - 1, projection('0.02')); await next; await flush();
+  assert.equal(h.api.exportWindow().end, time2);
+  assert.equal(h.fitRequests.length, 2, 'both cumulative frames were rendered');
+  assert.deepEqual(h.fitRequests, [false, false]);
+  assert.equal(openingFits, 0, 'frame publication does not inherit opening camera ownership');
 });
 
 for (const interruption of ['pointer', 'stop', 'history-busy', 'layout-busy', 'dragging', 'hidden', 'resize', 'pause', 'binding-change']) test(`pending playback frame is discarded after ${interruption}`, async () => {

@@ -508,6 +508,7 @@ function newGraphView(labelMode) {
     drawnNodes: 0, drawnEdges: 0, exportDepth: 0, amountWidths: null, recentNodeIds: new Set(), autoRoutes: {} };
 }
 function resetGraphView() {
+  state.graphView.openingFit?.cancel();
   cancelAnnotationDrag?.(); closeAnnotationEditor();
   clearGraphLocateFeedback();
   state.graphCamera?.cancelComposition?.();
@@ -2198,7 +2199,6 @@ function applyCanvasSnapshot(snap) {
   if (typeof display.showIds === 'boolean') state.showIds = display.showIds;
   if (typeof display.showPhotos === 'boolean') state.showPhotos = display.showPhotos;
   if (['auto', 'focus', 'all'].includes(display.labelMode)) state.graphView.labelMode = display.labelMode;
-  const context = caseContext();
   // 快照与导出 HTML 同构：nodes[{id,x,y,label,size,style,img?}] / edges[{source,target,type,controlPoints,label,lx,ly,bw,bh}]
   state.positions = {};
   for (const n of (snap.nodes || [])) state.positions[n.id] = { x: n.x, y: n.y };
@@ -2223,24 +2223,43 @@ function applyCanvasSnapshot(snap) {
   state.forceRebuild = true;
   window.FundsCanvasEditor?.syncControls?.();
   renderGraph();
-  const graph = state.graph, view = state.graphView, revision = view.revision;
-  const layoutRevision=layoutSequence,openZoom=graph?.getZoom?.(),openIntent=state.graphCamera?.getIntent?.();
-  const readCamera=()=>{const matrix=graph?.get?.('group')?.getMatrix?.();return matrix?Array.from(matrix):null;};
-  const openCamera=JSON.stringify(readCamera());
-  // 标注绝对位置恢复（renderGraph 之后放置）
-  setTimeout(() => {
-    if (!isCurrentCase(context) || graph !== state.graph || view !== state.graphView || revision !== view.revision) return;
-    // A delayed initial fit owns only the unchanged opening view. User camera
-    // actions, later layouts and the image sampler outrank this old callback.
-    if(view.exportDepth||layoutJob||layoutRevision!==layoutSequence||openIntent!==state.graphCamera?.getIntent?.()
-      ||graph?.getZoom?.()!==openZoom||JSON.stringify(readCamera())!==openCamera)return;
-    const g = state.graph;
-    if (!g) return;
+  scheduleCanvasOpeningFit();
+}
+
+function scheduleCanvasOpeningFit() {
+  const context=caseContext(),graph=state.graph,view=state.graphView,source=state.lastGraph;
+  const investigation=window.FundsInvestigation;
+  const windowKey=()=>investigation?.windowKey?.(state.presentation.timeWindow);
+  const key=windowKey();
+  const camera=()=>JSON.stringify([state.graphCamera?.getIntent?.(),graph?.getZoom?.(),graph?.get?.('group')?.getMatrix?.()||null]);
+  let revision=view.revision,layoutRevision=layoutSequence,openingCamera=camera(),timer;
+  const cancel=()=>{clearTimeout(timer);if(view.openingFit===intent)view.openingFit=null;};
+  const bound=()=>view.openingFit===intent&&isCurrentCase(context)&&graph===state.graph&&view===state.graphView
+    &&source===state.lastGraph&&key===windowKey()&&!investigation?.exportWindow?.()?.preview&&!view.exportDepth&&!layoutJob;
+  const current=()=>bound()&&revision===view.revision&&layoutRevision===layoutSequence&&openingCamera===camera();
+  const consume=()=>{
+    if(!current()){cancel();return;}
+    // A saved time window may still be awaiting its first projection at 250ms.
+    if(investigation?.projectionReady?.()===false)return;
+    cancel();
+    if(!graph?.getNodes?.().length)return;
     restoreEdgeLabelPositions();
     // Photos are current case records. Saving a canvas never embeds redundant
     // bytes or revives a photo cleared after an older snapshot was written.
     try { fitGraph(1.6); } catch (err) { /* 忽略 */ }
-  }, 250);
+  };
+  const intent={cancel,beforeProjection(projectedKey){
+    if(projectedKey!==key||!current()){cancel();return null;}
+    const previousRevision=revision;
+    // Only this projection's synchronous render may advance the opening view.
+    // Any user camera action, layout, window/case switch or export cancels it.
+    return ()=>{
+      if(!bound()||view.revision!==previousRevision+1){cancel();return;}
+      revision=view.revision;layoutRevision=layoutSequence;openingCamera=camera();consume();
+    };
+  }};
+  view.openingFit?.cancel();view.openingFit=intent;
+  timer=setTimeout(consume,250);
 }
 
 async function loadCanvas(id) {
@@ -5538,6 +5557,7 @@ function bindUI() {
     const context = task.context;
     if (window.FundsAccountActions?.blocked(context)) throw new Error('账户操作尚未确认，请先核对后再导出');
     if (window.FundsMainAccountsActions?.blocked(context)) throw new Error('主账号标记正在更新，请完成或核对后再导出');
+    state.graphView.openingFit?.cancel();
     if (format === 'xlsx') {
       task.setPhase('generating');
       const response = await fetch(`/api/export/tracked.xlsx?case_id=${context.caseId}&canvas_id=${context.canvasId || 0}`);

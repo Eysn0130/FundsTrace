@@ -3,6 +3,7 @@ import base64
 import io
 import sys
 import types
+import zlib
 
 from PIL import Image, PdfParser
 import pytest
@@ -56,8 +57,7 @@ def test_png_export_preserves_pixels_and_exact_chinese_description(client, mode)
     assert b"iTXt" in response.content
 
 
-@pytest.mark.parametrize("img2pdf_state", ["unavailable", "failed"])
-def test_pdf_fallback_preserves_exact_chinese_description(client, monkeypatch, img2pdf_state):
+def force_pdf_fallback(monkeypatch, img2pdf_state):
     if img2pdf_state == "unavailable":
         monkeypatch.setitem(sys.modules, "img2pdf", None)
     else:
@@ -68,8 +68,44 @@ def test_pdf_fallback_preserves_exact_chinese_description(client, monkeypatch, i
 
         module.convert = failed_convert
         monkeypatch.setitem(sys.modules, "img2pdf", module)
+
+
+def pdf_image_rgb(image):
+    """Decode both the old indexed PDF and the lossless RGB replacement."""
+    if image.dictionary[b"Filter"] == b"FlateDecode":
+        pixels = zlib.decompress(image.buf)
+    else:
+        assert image.dictionary[b"Filter"] == b"ASCIIHexDecode"
+        pixels = bytes.fromhex(image.buf.rstrip().removesuffix(b">").decode("ascii"))
+    color_space = image.dictionary[b"ColorSpace"]
+    if color_space == b"DeviceRGB":
+        return pixels
+    assert color_space[:2] == [b"Indexed", b"DeviceRGB"]
+    palette = color_space[3]
+    return b"".join(palette[index * 3:index * 3 + 3] for index in pixels)
+
+
+def flattened_rgb(image):
+    if image.mode == "RGB":
+        return image.tobytes()
+    # Independent integer alpha-compositing oracle for the established dark
+    # background. Do not derive expected pixels through the production helper.
+    rgba = image.tobytes()
+    return bytes((rgba[index + channel] * rgba[index + 3] +
+                  background * (255 - rgba[index + 3]) + 127) // 255
+                 for index in range(0, len(rgba), 4)
+                 for channel, background in enumerate((20, 22, 26)))
+
+
+@pytest.mark.parametrize("img2pdf_state", ["unavailable", "failed"])
+@pytest.mark.parametrize("mode", ["RGB", "RGBA"])
+def test_pdf_fallback_preserves_rgb_geometry_and_chinese_description(client, monkeypatch, img2pdf_state, mode):
+    force_pdf_fallback(monkeypatch, img2pdf_state)
+    original = synthetic_image(mode)
+    expected_pixels = flattened_rgb(original)
+    assert len({expected_pixels[i:i + 3] for i in range(0, len(expected_pixels), 3)}) > 256
     response = client.post("/api/export/graph.pdf", json={
-        "image": image_url(synthetic_image()), "description": DESCRIPTION,
+        "image": image_url(original), "description": DESCRIPTION,
     })
     assert response.status_code == 200, response.text
     assert response.headers["content-type"] == "application/pdf"
@@ -83,8 +119,38 @@ def test_pdf_fallback_preserves_exact_chinese_description(client, monkeypatch, i
         objects = page[b"Resources"][b"XObject"]
         assert len(objects) == 1
         image = pdf.read_indirect(next(iter(objects.values())))
-        assert (image.dictionary[b"Width"], image.dictionary[b"Height"]) == (19, 17)
-        assert b"BT" not in pdf.read_indirect(page[b"Contents"]).decode()
+        assert (image.dictionary[b"Width"], image.dictionary[b"Height"]) == original.size
+        assert image.dictionary[b"BitsPerComponent"] == 8
+        assert pdf_image_rgb(image) == expected_pixels
+        assert image.dictionary[b"ColorSpace"] == b"DeviceRGB"
+        assert image.dictionary[b"Filter"] == b"FlateDecode"
+        width, height = original.width / 4, original.height / 4  # 72pt / 288dpi
+        assert page[b"MediaBox"] == [0, 0, width, height]
+        # Only paint the supplied image, without visible footer text or padding.
+        operators = pdf.read_indirect(page[b"Contents"]).decode().split()
+        assert operators[0] == b"q"
+        assert [float(value) for value in operators[1:7]] == [width, 0, 0, height, 0, 0]
+        assert operators[7:] == [b"cm", b"/image", b"Do", b"Q"]
+
+
+@pytest.mark.parametrize("img2pdf_state", ["unavailable", "failed"])
+def test_pdf_fallback_compresses_graph_like_rgb_without_palette_loss(client, monkeypatch, img2pdf_state):
+    force_pdf_fallback(monkeypatch, img2pdf_state)
+    original = Image.new("RGB", (512, 384), (250, 250, 250))
+    # A multicolor strip above a mostly empty canvas reproduces a compressible
+    # graph export while retaining far more than 256 distinct colors.
+    for y in range(32):
+        for x in range(original.width):
+            original.putpixel((x, y), (x % 256, y * 8, (x + y) % 256))
+    expected_pixels = original.tobytes()
+    response = client.post("/api/export/graph.pdf", json={"image": image_url(original)})
+    assert response.status_code == 200, response.text
+    assert len(response.content) < len(expected_pixels) // 4
+    with PdfParser.PdfParser(buf=response.content) as pdf:
+        assert len(pdf.pages) == 1
+        page = pdf.read_indirect(pdf.pages[0])
+        image = pdf.read_indirect(next(iter(page[b"Resources"][b"XObject"].values())))
+        assert pdf_image_rgb(image) == expected_pixels
 
 
 def test_pdf_passes_description_to_optional_img2pdf(client, monkeypatch):
