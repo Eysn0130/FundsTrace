@@ -106,6 +106,7 @@ def extract_artifact(archive, destination):
         names = set()
         folded = set()
         for item in zipped.infolist():
+            require(item.orig_filename == item.filename, "Artifact member name was normalized")
             name = item.filename.rstrip("/") if item.is_dir() else item.filename
             safe_name(name)
             require(name not in names and name.casefold() not in folded,
