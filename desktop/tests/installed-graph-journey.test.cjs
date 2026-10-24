@@ -716,3 +716,170 @@ test('the actual restore sequence restores each parent step only after its graph
     if (stop === 'named') assert.deepEqual(events.find(event => event[0] === 'named'), ['named', 'canvas-restored']);
   }
 });
+
+const cloneAccounts = ['SYN-INST-A', 'SYN-INST-B', 'SYN-INST-C', 'SYN-INST-D'];
+const cloneKeys = cloneAccounts.slice(0, 3).map((id, index) => `${id}=>${cloneAccounts[index + 1]}`);
+const cloneBinding = { caseId: '7', canvasId: '9', caseGeneration: 11, canvasGeneration: 3,
+  origin: 'http://127.0.0.1:12345', timeOrigin: 812345 };
+const cloneCase = 'SYN current installer lifecycle case', cloneCanvas = 'SYN installed saved graph';
+const cloneSummary = types => ({ types, exactKeySet: true });
+const clonePlain = value => JSON.parse(JSON.stringify(value));
+function clonePrefixContext(extras = {}, newline = 'LF') {
+  const source = graphHelperSource(), end = source.indexOf('const REQUIRED_CHECKS =');
+  const context = vm.createContext({ require, __filename: graphHelperPath, ...extras });
+  vm.runInContext(newline === 'CRLF' ? source.slice(0, end).replace(/\n/g, '\r\n') : source.slice(0, end), context);
+  for (const name of ['cloneShapeTypes', 'cloneShapePreClone', 'readCloneShapeProbe', 'readCloneShapeObservation', 'safeCloneShape']) {
+    assert.equal(typeof context[name], 'function', `W11 must provide ${name}`);
+  }
+  return context;
+}
+function cloneRendererFixture(newline = 'LF') {
+  const models = cloneKeys.map((_, index) => ({ source: cloneAccounts[index], target: cloneAccounts[index + 1],
+    type: ['quadratic', 'line', 'loop'][index], controlPoints: [{ x: 'SYN_PRIVATE_COORDINATE' }], curvePolicy: 'compact-arc' }));
+  const timers = [], requests = [], document = {}, graph = { getEdges: () => models.map(model => ({ getModel: () => model })),
+    getNodes: () => cloneAccounts.map(id => ({ getModel: () => ({ id }) })) };
+  const status = { pending: true, unknown: false, context: { caseId: '7', canvasId: '0', generation: 11, canvasGeneration: 0 } };
+  const state = { caseId: 7, canvasId: 9, caseGeneration: 11, canvasGeneration: 3, canvasName: cloneCanvas,
+    cases: [{ id: 7, name: cloneCase }], graph, graphLoading: false, graphInited: true, edgeType: 'quadratic',
+    edgeTypes: { [cloneKeys[0]]: 'line' }, edgeBendPos: { [cloneKeys[0]]: [{}, {}] },
+    graphView: { autoRoutes: { [cloneKeys[0]]: {} }, exportDepth: 0 },
+    lastGraph: { nodes: cloneAccounts.map(account => ({ account })), edges: models.map(model => ({ ...model })) } };
+  const response = { id: 9, name: cloneCanvas, snapshot: { display: { edgeType: 'polyline' },
+    edges: models.map(model => ({ ...model, type: 'polyline', routeManual: true, controlPoints: [{}, {}], curvePolicy: 'obstacle-aware' })) } };
+  const actions = { status: () => status }, context = clonePrefixContext({ document, location: { origin: cloneBinding.origin }, performance: { timeOrigin: cloneBinding.timeOrigin }, state,
+    window: { FundsCanvasActions: actions, FundsCanvasEditor: { history: { status: () => ({ busy: false }) } } }, FundsCanvasActions: actions,
+    layoutJob: null, AbortController,
+    setTimeout(callback, ms) { const timer = { callback, ms, cleared: false }; timers.push(timer); return timer; },
+    clearTimeout(timer) { timer.cleared = true; } }, newline);
+  const fixture = { context, state, models, status, response, timers, requests, mutate: null, mode: null,
+    run: expression => vm.runInContext(expression, context),
+    probe: () => context.readCloneShapeProbe({ ...cloneBinding }, cloneCase, cloneCanvas, [...cloneAccounts]) };
+  context.fetch = async (url, options) => {
+    requests.push({ url, options }); assert.equal(url, '/api/canvases/9?case_id=7'); assert.equal(options.method || 'GET', 'GET');
+    assert.ok(options.signal); assert.equal(requests.length, 1, 'diagnostics never retry');
+    if (fixture.mode === 'network') throw new Error('SYN_PRIVATE_NETWORK');
+    if (fixture.mode === 'timeout') return new Promise((_, reject) => options.signal.addEventListener('abort', () => reject(Object.assign(new Error('SYN_PRIVATE_ABORT'), { name: 'AbortError' }))));
+    fixture.mutate?.();
+    return { ok: fixture.mode !== 'http', json: async () => { if (fixture.mode === 'parse') throw new Error('SYN_PRIVATE_PARSE'); return response; } };
+  };
+  return fixture;
+}
+async function cloneBlockFixture({ newline = 'LF', mode = 'type' } = {}) {
+  const renderer = cloneRendererFixture(newline), cleanup = [], timers = [];
+  const expected = Object.fromEntries(cloneKeys.map(key => [key, 'line']));
+  const snapshot = { diagnosticBinding: { ...cloneBinding }, renderedEdges: cloneKeys.map((_, index) => ({ source: cloneAccounts[index],
+    target: cloneAccounts[index + 1], type: mode === 'type' && index === 0 ? 'polyline' : 'line' })) };
+  if (mode === 'duplicate') snapshot.renderedEdges[2] = { ...snapshot.renderedEdges[0] };
+  const preClone = { binding: { caseName: cloneCase, canvasId: '0', canvasName: '默认画布' },
+    renderedEdges: snapshot.renderedEdges.map((edge, index) => ({ ...edge, type: ['polyline', 'quadratic', 'loop'][index] })) };
+  let graphReads = 0, probeReads = 0, annotations = 0;
+  const otherError = assertionFrom(() => assert.equal('SYN_PRIVATE_OTHER_ASSERTION', 'other'));
+  const context = clonePrefixContext({ require: name => name === 'node:fs/promises' ? { rm: async (...args) => cleanup.push(args) } : require(name),
+    GRAPH_PROBE: 'SYN_GRAPH_PROBE', editedEdge: cloneKeys[0], createdCase: cloneCase, savedAnnotation: {}, flowIds: ['71', '72', '73'], directory: 'SYN_OWNED_DIRECTORY',
+    assertEdgeTypes, check: async (name, action) => { assert.equal(name, 'installedCanvasCloneExact'); await action(); },
+    type: async () => expected, annotation: async () => { if (++annotations > 1 && mode === 'other') throw otherError; return preClone; },
+    clickElement: async () => {}, prompt: async () => {}, graph: async () => {}, until: async predicate => assert.equal(await predicate(), true),
+    evaluate: async expression => { if (expression === 'SYN_GRAPH_PROBE') { graphReads++; return snapshot; }
+      if (expression.includes('readCloneShapeProbe')) { probeReads++;
+        assert.ok(expression.includes(JSON.stringify(cloneBinding.origin)), 'the wrapper serializes the frozen origin');
+        assert.ok(expression.includes(JSON.stringify(cloneBinding.timeOrigin)), 'the wrapper serializes the frozen timeOrigin');
+        return renderer.run(expression); } return true; },
+    setTimeout(callback, ms) { const timer = { callback, ms, cleared: false }; timers.push(timer); return timer; },
+    clearTimeout(timer) { timer.cleared = true; } }, newline);
+  const source = graphHelperSource(), start = source.indexOf("    await check('installedCanvasCloneExact'"), end = source.indexOf("    await check('installedCanvasSaveRestoreTypes'", start);
+  const tailStart = source.lastIndexOf('  } catch (error) {'), tailEnd = source.indexOf('\n}\n\nmodule.exports', tailStart);
+  assert.ok(start >= 0 && end > start && tailStart >= 0 && tailEnd > tailStart);
+  return { renderer, context, cleanup, timers, snapshot, expected, preClone,
+    get graphReads() { return graphReads; }, get probeReads() { return probeReads; },
+    run: () => vm.runInContext(`(async()=>{let step=null,cloneTypeFailure=null,cloneFailureSnapshot=null,clonePreClone=null;
+      let clonedTypes,defaultWorkspace;try{${source.slice(start, end)}${source.slice(tailStart + 2, tailEnd)}})()`, context) };
+}
+
+for (const newline of ['LF', 'CRLF']) test(`the exact clone assertion retains its original failure, snapshot read and cleanup with ${newline} helpers`, async () => {
+  const failed = await cloneBlockFixture({ newline });
+  await assert.rejects(failed.run(), error => {
+    assert.equal(error.message, 'INSTALLED_GRAPH_JOURNEY_FAILED'); const detail = safeJourneyFailure(error);
+    assert.equal(detail.step, 'canvas-clone-verify'); assert.equal(detail.kind, 'assertion'); assert.ok(detail.assertionLocation);
+    assert.deepEqual(detail.cloneShape.expected, cloneSummary(['line', 'line', 'line']));
+    assert.deepEqual(detail.cloneShape.actual, cloneSummary(['polyline', 'line', 'line']));
+    assert.deepEqual(detail.cloneShape.preClone, cloneSummary(['polyline', 'quadratic', 'loop'])); return true;
+  });
+  assert.equal(failed.graphReads, 1); assert.equal(failed.probeReads, 1); assert.equal(failed.renderer.requests.length, 1);
+  assert.deepEqual(clonePlain(failed.cleanup), [['SYN_OWNED_DIRECTORY', { recursive: true, force: true }]]);
+  assert.ok(failed.timers.some(timer => timer.ms === 4000)); assert.ok(failed.timers.every(timer => timer.cleared));
+  for (const mode of ['success', 'duplicate', 'other']) {
+    const f = await cloneBlockFixture({ newline, mode });
+    if (mode === 'success') await f.run();
+    else await assert.rejects(f.run(), error => { assert.equal(error.message, 'INSTALLED_GRAPH_JOURNEY_FAILED'); assert.equal(safeJourneyFailure(error).cloneShape, undefined); return true; });
+    assert.equal(f.graphReads, 1); assert.equal(f.probeReads, 0); assert.equal(f.renderer.requests.length, 0); assert.equal(f.cleanup.length, 1);
+  }
+});
+
+for (const newline of ['LF', 'CRLF']) test(`the one clone probe admits only stable owned snapshots and clears its Abort timer with ${newline} helpers`, async () => {
+  const f = cloneRendererFixture(newline); f.mutate = () => { f.status.pending = false; f.models[0].type = 'line'; };
+  const value = clonePlain(await f.probe()); assert.equal(value.state, 'available'); assert.equal(value.sourceCaseMatches, true);
+  assert.equal(value.pending, true); assert.equal(value.afterRead.pending, false); assert.equal(value.live[0].type, 'quadratic');
+  assert.equal(value.afterRead.liveTypes[0], 'line'); assert.equal(value.live[0].manualType, 'line'); assert.equal(value.live[0].bendCount, 2);
+  assert.equal(value.saved.state, 'available'); assert.equal(value.saved.edgeType, 'polyline'); assert.equal(value.saved.edges.length, 3);
+  assert.equal(f.timers[0].ms, 3000); assert.ok(f.timers.every(timer => timer.cleared)); assert.doesNotMatch(JSON.stringify(value), /SYN_PRIVATE|caseId|canvasId|coordinate|origin|timeOrigin/);
+  for (const mutate of [g => { g.context.location.origin = 'https://invalid.example'; }, g => { g.context.performance.timeOrigin++; }]) {
+    const g = cloneRendererFixture(newline); mutate(g); const result = await g.probe();
+    assert.equal(result.state, 'unavailable'); assert.equal(result.reason, 'binding'); assert.equal(g.requests.length, 0);
+  }
+  for (const mutate of [g => { g.state.caseGeneration += 2; }, g => { g.state.canvasGeneration++; }, g => { g.context.document = {}; },
+    g => { g.context.location.origin = 'https://invalid.example'; }, g => { g.context.performance.timeOrigin++; }, g => { g.state.graph = { ...g.state.graph }; }]) {
+    const g = cloneRendererFixture(newline); g.mutate = () => mutate(g); const result = await g.probe();
+    assert.equal(result.state, 'unavailable'); assert.equal(result.reason, 'binding'); assert.equal(result.saved.state, 'unavailable');
+    assert.ok(g.timers.every(timer => timer.cleared));
+  }
+  for (const mutate of [g => { g.state.canvasName = 'SYN wrong canvas'; }, g => { g.state.cases[0].name = 'SYN wrong case'; },
+    g => { g.models.pop(); }, g => { g.models[2] = { ...g.models[0] }; }, g => { g.state.lastGraph.edges[0].target = 'SYN_PRIVATE_OTHER'; }]) {
+    const g = cloneRendererFixture(newline); mutate(g); const result = await g.probe(); assert.equal(result.state, 'unavailable');
+    assert.equal(result.reason, 'ownership'); assert.equal(g.requests.length, 0);
+  }
+  for (const mode of ['network', 'http', 'parse', 'timeout', 'response-id']) {
+    const g = cloneRendererFixture(newline); g.mode = mode; if (mode === 'response-id') g.response.id = 10;
+    const pending = g.probe(); if (mode === 'timeout') g.timers.find(timer => timer.ms === 3000).callback();
+    const result = await pending; assert.equal(result.state, 'unavailable'); assert.equal(result.reason, mode);
+    assert.equal(result.saved.state, 'unavailable'); assert.equal(g.requests.length, 1); assert.ok(g.timers.every(timer => timer.cleared));
+  }
+  const wrong = cloneRendererFixture(newline); wrong.response.snapshot.edges[2] = { ...wrong.response.snapshot.edges[0] };
+  const rejected = await wrong.probe(); assert.equal(rejected.saved.state, 'unavailable');
+  const missingApi = cloneRendererFixture(newline); delete missingApi.context.fetch;
+  const unavailable = await missingApi.probe(); assert.equal(unavailable.state, 'unavailable'); assert.equal(unavailable.reason, 'api');
+  const nodeTimers = [], node = clonePrefixContext({ setTimeout(callback, ms) { const timer = { callback, ms, cleared: false }; nodeTimers.push(timer); return timer; }, clearTimeout(timer) { timer.cleared = true; } }, newline);
+  let calls = 0; await node.readCloneShapeObservation(async () => { calls++; }, null, cloneCase); assert.equal(calls, 0);
+  const pending = node.readCloneShapeObservation(() => new Promise(() => {}), { ...cloneBinding }, cloneCase);
+  nodeTimers.find(timer => timer.ms === 4000).callback(); const timedOut = await pending;
+  assert.equal(timedOut.state, 'unknown'); assert.equal(timedOut.reason, 'cdp'); assert.ok(nodeTimers.every(timer => timer.cleared));
+});
+
+for (const newline of ['LF', 'CRLF']) test(`clone summaries and the final whitelist preserve three slots without private values with ${newline} helpers`, async () => {
+  const api = clonePrefixContext({}, newline), exact = Object.fromEntries(cloneKeys.map((key, index) => [key, ['line', 'polyline', 'loop'][index]]));
+  assert.deepEqual(clonePlain(api.cloneShapeTypes(exact)), cloneSummary(['line', 'polyline', 'loop']));
+  const extra = { ...exact, SYN_PRIVATE_KEY: 'SYN_PRIVATE_VALUE' }; assert.equal(api.cloneShapeTypes(extra).exactKeySet, false);
+  const absent = { ...exact }; delete absent[cloneKeys[1]]; assert.deepEqual(clonePlain(api.cloneShapeTypes(absent)), { types: ['line', null, 'loop'], exactKeySet: false });
+  const duplicate = { renderedEdges: cloneKeys.map((_, index) => ({ source: cloneAccounts[index], target: cloneAccounts[index + 1], type: 'line' })) };
+  duplicate.renderedEdges[2] = { ...duplicate.renderedEdges[0] };
+  assert.deepEqual(clonePlain(api.cloneShapePreClone(duplicate)), { types: [null, 'line', null], exactKeySet: false });
+  const probe = clonePlain(await cloneRendererFixture(newline).probe());
+  const raw = { expected: cloneSummary(['line', 'line', 'line']), actual: cloneSummary(['polyline', 'line', 'line']), preClone: cloneSummary(['quadratic', 'loop', 'line']), probe, private: 'SYN_PRIVATE_PATH' };
+  const projected = clonePlain(api.safeCloneShape(raw)); assert.deepEqual(projected.actual, raw.actual); assert.equal(projected.private, undefined);
+  const malformed = { ...raw, probe: { private: 'SYN_PRIVATE' } }, degraded = clonePlain(api.safeCloneShape(malformed));
+  assert.deepEqual(degraded.actual, raw.actual); assert.equal(degraded.probe.state, 'unavailable'); assert.equal(degraded.probe.reason, 'malformed');
+  for (const field of ['expected', 'actual', 'preClone']) assert.ok(!api.safeCloneShape({ ...raw, [field]: { types: ['line', 'line', 'line', 'loop'], exactKeySet: true } }));
+  const dirty = structuredClone(raw); dirty.probe.live[0].type = 'SYN_PRIVATE'; dirty.probe.live[0].bendCount = 65;
+  dirty.probe.saved.edges[0].curvePolicy = 'SYN_PRIVATE'; dirty.probe.saved.edges[0].controlPointCount = -1;
+  const clean = clonePlain(api.safeCloneShape(dirty)); assert.equal(clean.probe.live[0].type, null); assert.equal(clean.probe.live[0].bendCount, null);
+  assert.equal(clean.probe.saved.edges[0].curvePolicy, null); assert.equal(clean.probe.saved.edges[0].controlPointCount, null);
+  const boundary = structuredClone(raw); boundary.probe.live[0].bendCount = 0; boundary.probe.live[1].controlPointCount = 64;
+  boundary.probe.live[2].curvePolicy = 'screen-right'; const admitted = clonePlain(api.safeCloneShape(boundary));
+  assert.equal(admitted.probe.live[0].bendCount, 0); assert.equal(admitted.probe.live[1].controlPointCount, 64); assert.equal(admitted.probe.live[2].curvePolicy, 'screen-right');
+  const getter = { ...raw, get probe() { throw new Error('SYN_PRIVATE_GETTER'); } }; assert.deepEqual(clonePlain(api.safeCloneShape(getter)).actual, raw.actual);
+  assert.ok(!api.safeCloneShape({ ...raw, get actual() { throw new Error('SYN_PRIVATE_GETTER'); } }));
+  assert.doesNotMatch(JSON.stringify([projected, clean, degraded]), /SYN_PRIVATE|requestId|caseId|canvasId|controlPoints/);
+  for (const [step, kind] of [['canvas-clone-verify', 'assertion'], ['canvas-restored', 'assertion'], ['canvas-clone-verify', 'runtime']]) {
+    const detail = safeJourneyFailure({ installedGraphDiagnostic: { step, kind, cloneShape: raw } });
+    assert.equal(!!detail.cloneShape, step === 'canvas-clone-verify' && kind === 'assertion');
+  }
+});
