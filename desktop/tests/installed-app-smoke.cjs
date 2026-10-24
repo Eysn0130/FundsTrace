@@ -928,7 +928,7 @@ async function restorePresentationPreferences(snapshot) {
     await readyCases(`!!document.querySelector('dialog[open] input[type="file"]')`);
     assert.equal(await evaluate(visibleControl(`document.querySelector('dialog[open] label.file-drop')`,{frame:true})), true);
     assert.deepEqual(await evaluateCases(`(${readImportEntry.toString()})()`),
-      {associated:true,type:'file',accept:'.csv,.tsv,.txt,.xlsx',enabled:true});
+      {associated:true,type:'file',accept:'.csv,.tsv,.txt,.xlsx,.xls,.zip',enabled:true});
     await clickElement(`[...document.querySelectorAll('dialog[open] button')].find(item => item.textContent.trim() === '取消')`,page,{frame:true});
     await readyCases(`!document.querySelector('dialog[open]')`);
   });

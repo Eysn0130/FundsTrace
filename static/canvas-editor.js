@@ -107,6 +107,7 @@
     const container = $('#graphContainer');
     if (container) container.style.pointerEvents = status.busy&&layoutJob?.phase!=='computing' ? 'none' : '';
     if ($('#btnFit')) $('#btnFit').disabled=!graphCameraInteractionAllowed();
+    syncMinimapNavigation();
     for(const selector of ['#btnCanvasSave','#btnCanvasClone','#btnExportPng'])if($(selector))$(selector).disabled=unavailable;
     window.FundsCanvasActions?.sync();
     syncEdgeTypeControl();
