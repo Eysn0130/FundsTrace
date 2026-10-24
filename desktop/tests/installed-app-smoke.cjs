@@ -36,6 +36,7 @@ const timings = report.timings, owned = [];
 let stage = 'ciSyntheticUser', reportPath, reportOwned = false, cdp, page, analysisPage, titlebarPage, analysisTitlebarPage,
   titlebarProbe, updateFixture, productionUpdate = false, presentationPreferences;
 let releaseStartupInspection = async () => {};
+let workspaceGraphObservationKey=null;
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function bounded(promise, ms) {
@@ -222,6 +223,114 @@ function assertWorkspaceTools(value,{tab,collapsed}) {
   if(value.action){assert.equal(value.action.direction,'column');assert.equal(value.action.font,12);assert.ok(Math.abs(value.action.icon-27)<.05);}
   assert.deepEqual(value.table,{columns:7,overflow:'auto',focusable:true});
   assert.equal(value.duplicateScrollControls,0);
+}
+function installWorkspaceGraphEventObserver(key) {
+  let api=null;
+  try {
+    const host=window,hostDocument=document,origin=location.origin;
+    if (typeof key!=='string'||!key||key.length>160||key in host) return false;
+    const frame=hostDocument.querySelector('#casesFrame'),child=frame?.contentWindow,childDocument=frame?.contentDocument;
+    if (!child||!childDocument||child.document!==childDocument||child.location.origin!==origin) return false;
+    const target=[...childDocument.querySelectorAll('.heading-actions button')].find(node=>node.textContent.trim()==='进入画图');
+    if (!target) return false;
+    let disposed=false,requestId=null;
+    const flags={pointerDown:false,pointerUp:false,click:false,trustedClick:null,requestSeen:false,requestBindingCurrent:null,
+      resultSeen:false,resultOk:null,resultBindingRejected:null,resultBusyRejected:null,resultOtherRejected:null};
+    const current=()=>host.document===hostDocument&&hostDocument.querySelector('#casesFrame')===frame
+      &&frame.contentWindow===child&&frame.contentDocument===childDocument&&child.document===childDocument&&child.location.origin===origin;
+    const pointer=event=>{
+      try {
+        if (disposed||!current()||!(event.target===target||target.contains(event.target))) return;
+        if (event.type==='pointerdown') flags.pointerDown=true;
+        else if (event.type==='pointerup') flags.pointerUp=true;
+        else if (event.type==='click') {
+          flags.click=true;flags.trustedClick=flags.trustedClick===true||event.isTrusted===true;
+        }
+      } catch {}
+    };
+    const request=event=>{
+      try {
+        if (disposed||!current()||event.origin!==origin||event.source!==child||requestId!==null) return;
+        const data=event.data,id=data?.requestId;
+        if (data?.channel!=='fundstrace:workspace'||data.version!==1||data.type!=='request'||data.action!=='open-graph'
+          ||typeof id!=='string'||id.length>160) return;
+        let binding=null;
+        try { if (typeof state==='object'&&state!==null) binding=data.caseId===String(state.caseId)&&data.generation===state.caseGeneration; } catch {}
+        requestId=id;flags.requestSeen=true;flags.requestBindingCurrent=binding;
+      } catch {}
+    };
+    const result=event=>{
+      try {
+        if (disposed||!current()||event.origin!==origin||event.source!==host||requestId===null||flags.resultSeen) return;
+        const data=event.data,ok=data?.ok;
+        if (data?.channel!=='fundstrace:workspace'||data.version!==1||data.type!=='result'||data.requestId!==requestId||typeof ok!=='boolean') return;
+        const reason=ok?null:data.error;
+        flags.resultSeen=true;flags.resultOk=ok;
+        flags.resultBindingRejected=!ok&&reason==='案件已变化，请重新操作';
+        flags.resultBusyRejected=!ok&&reason==='正在切换案件，请稍后操作';
+        flags.resultOtherRejected=!ok&&!flags.resultBindingRejected&&!flags.resultBusyRejected;
+      } catch {}
+    };
+    const dispose=()=>{
+      if (disposed) return;
+      disposed=true;requestId=null;
+      let failed=false;
+      const remove=(owner,type,listener)=>{try {owner.removeEventListener(type,listener,true);} catch {failed=true;}};
+      remove(target,'pointerdown',pointer);remove(target,'pointerup',pointer);remove(target,'click',pointer);
+      remove(host,'message',request);remove(child,'message',result);
+      try {if (host[key]===api) delete host[key];} catch {failed=true;}
+      if (failed) throw new Error('WORKSPACE_OBSERVATION_CLEANUP_FAILED');
+    };
+    api=Object.freeze({tag:'funds-trace:workspace-graph-observation',key,
+      read() {
+        if (disposed||!current()) return {available:false};
+        return {available:true,...flags,targetConnected:target.isConnected===true,targetEnabled:target.disabled===false,
+          alertPresent:!!childDocument.querySelector('[role="alert"]')};
+      },dispose});
+    host[key]=api;
+    const options={capture:true,passive:true};
+    target.addEventListener('pointerdown',pointer,options);target.addEventListener('pointerup',pointer,options);target.addEventListener('click',pointer,options);
+    host.addEventListener('message',request,options);child.addEventListener('message',result,options);
+    return true;
+  } catch {
+    try {api?.dispose();} catch {}
+    return false;
+  }
+}
+function readAndDisposeWorkspaceGraphEventObserver(key) {
+  try {
+    const api=window[key];
+    if (!api||api.tag!=='funds-trace:workspace-graph-observation'||api.key!==key||typeof api.read!=='function'||typeof api.dispose!=='function') return {available:false};
+    try {return api.read();} finally {api.dispose();}
+  } catch {return {available:false};}
+}
+async function startWorkspaceGraphEventObservation() {
+  try {
+    workspaceGraphObservationKey='__fundsTraceWorkspaceGraph_'+require('node:crypto').randomUUID();
+    if (await bounded(evaluate('('+installWorkspaceGraphEventObserver.toString()+')('+JSON.stringify(workspaceGraphObservationKey)+')'),3000)!==true) workspaceGraphObservationKey=null;
+  } catch {}
+}
+async function finishWorkspaceGraphEventObservation(record=false) {
+  const key=workspaceGraphObservationKey;
+  if (!key) {if (record) report.workspaceGraphEventDiagnostic={available:false};return;}
+  try {
+    const value=await bounded(evaluate('('+readAndDisposeWorkspaceGraphEventObserver.toString()+')('+JSON.stringify(key)+')'),3000);
+    if (record) {
+      const keys=['available','pointerDown','pointerUp','click','trustedClick','requestSeen','requestBindingCurrent',
+        'resultSeen','resultOk','resultBindingRejected','resultBusyRejected','resultOtherRejected','targetConnected','targetEnabled','alertPresent'];
+      if (!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length!==keys.length) throw new Error('WORKSPACE_EVENT_DIAGNOSTIC_INVALID');
+      const projection={};
+      for (const name of keys) {
+        if (!Object.hasOwn(value,name)) throw new Error('WORKSPACE_EVENT_DIAGNOSTIC_INVALID');
+        const item=value[name];
+        if (item!==null&&typeof item!=='boolean') throw new Error('WORKSPACE_EVENT_DIAGNOSTIC_INVALID');
+        projection[name]=item;
+      }
+      if (projection.available!==true) throw new Error('WORKSPACE_EVENT_DIAGNOSTIC_INVALID');
+      report.workspaceGraphEventDiagnostic=projection;
+    }
+  } catch {if (record) report.workspaceGraphEventDiagnostic={available:false};}
+  finally {workspaceGraphObservationKey=null;}
 }
 function readWorkspaceGraphDiagnostic(expectedName) {
   const current=typeof state==='object'&&state!==null?state:null;
@@ -947,6 +1056,7 @@ async function restorePresentationPreferences(snapshot) {
         &&doc.querySelector('.case-item[aria-pressed="true"]')?.getAttribute('aria-label')===${JSON.stringify(SEED_CASE)};
     })()`);
     report.workspaceEntry={publicRedirectPreservedCase:true,embeddedCasesSurface:true,caseSelectionLinked:true};
+    await startWorkspaceGraphEventObservation();
   });
   await viewportMatrix('reactWorkspaceLayout', page, `!!document.querySelector('.main-workspace[aria-label="资金流水面板"]')
     && document.querySelector('.workspace-heading h1')?.textContent === ${JSON.stringify(SEED_CASE)}
@@ -965,6 +1075,7 @@ async function restorePresentationPreferences(snapshot) {
     await readyCases(`!document.querySelector('dialog[open]')`);
   });
   await check('workspaceGraphLinkOpened', async () => {
+    try {
     report.workspaceGraphStep='click';
     await clickElement(`[...document.querySelectorAll('.heading-actions button')].find(node=>node.textContent.trim()==='进入画图')`,page,{frame:true});
     report.workspaceGraphStep='wait-ready';
@@ -973,6 +1084,9 @@ async function restorePresentationPreferences(snapshot) {
       &&state.stats.flows===0&&state.lastGraph.nodes.length===0&&document.querySelector('#casesFrame').hidden
       &&document.querySelector('[data-nav-page="home"]').getAttribute('aria-current')==='page'`);
     report.workspaceGraphStep='complete';
+    } finally {
+      await finishWorkspaceGraphEventObservation(report.workspaceGraphStep!=='complete');
+    }
   });
   await check('installedPersistentCaptionNavigation', async () => {
     report.titlebar.navigation = {sameShellTarget:true,caption:await titlebarProbe.read()};
@@ -1249,6 +1363,7 @@ async function restorePresentationPreferences(snapshot) {
     } catch { /* The old renderer may already have exited normally. */ }
   }
 }).finally(async () => {
+  await finishWorkspaceGraphEventObservation();
   // Best effort graceful close, then only handles spawned above. No process-name
   // discovery, user-data removal, or termination of unrelated installations.
   if (cdp && owned.some(instance => !instance.done)) {
