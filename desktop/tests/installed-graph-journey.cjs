@@ -23,6 +23,182 @@ const JOURNEY_STEPS = new Set(['csv-open', 'csv-file-input', 'csv-preview', 'csv
   'history-undo', 'history-redo', 'case-empty', 'case-return',
   'annotation-node', 'annotation-open', 'annotation-fill', 'annotation-save', 'annotation-rendered',
   'annotation-undo', 'annotation-redo', 'annotation-style-reset', 'annotation-offset', 'annotation-follow', 'annotation-restored']);
+function cloneShapeTypes(value) {
+  const keys=ACCOUNTS.slice(0,3).map((account,index)=>account+'=>'+ACCOUNTS[index+1]);
+  const type=value=>['line','polyline','quadratic','loop'].includes(value)?value:null;
+  try {
+    if (!value||typeof value!=='object'||Array.isArray(value)) return {types:[null,null,null],exactKeySet:false};
+    const present=Object.keys(value);
+    return {types:keys.map(key=>Object.prototype.hasOwnProperty.call(value,key)?type(value[key]):null),
+      exactKeySet:present.length===3&&keys.every(key=>present.includes(key))};
+  } catch { return {types:[null,null,null],exactKeySet:false}; }
+}
+function cloneShapePreClone(snapshot) {
+  const keys=ACCOUNTS.slice(0,3).map((account,index)=>account+'=>'+ACCOUNTS[index+1]);
+  try {
+    const edges=snapshot?.renderedEdges;
+    if (!Array.isArray(edges)||edges.length>64) return cloneShapeTypes(null);
+    const entries=edges.map(edge=>[edge.source+'=>'+edge.target,edge.type]);
+    const summary=cloneShapeTypes(Object.fromEntries(entries));
+    summary.exactKeySet=edges.length===3&&summary.exactKeySet&&new Set(entries.map(([key])=>key)).size===3;
+    keys.forEach((key,index)=>{ if(entries.filter(([entry])=>entry===key).length!==1) summary.types[index]=null; });
+    return summary;
+  } catch { return cloneShapeTypes(null); }
+}
+function cloneShapeEmptyProbe(state='unavailable',reason='malformed') {
+  return {state,reason,edgeType:null,pending:null,unknown:null,sourceCaseMatches:null,
+    live:Array.from({length:3},()=>({type:null,manualType:null,overridePresent:null,bendCount:null,
+      controlPointCount:null,curvePolicy:null,autoCachePresent:null})),
+    saved:{state:'unavailable',edgeType:null,exactKeySet:false,
+      edges:Array.from({length:3},()=>({type:null,routeManual:null,controlPointCount:null,curvePolicy:null}))},
+    afterRead:{pending:null,unknown:null,ready:null,liveTypes:[null,null,null]}};
+}
+// Serialized into the renderer only after the original clone comparison failed.
+// It never calls a product action and returns no identity or geometry values.
+async function readCloneShapeProbe(binding,expectedCase,expectedCanvas,accounts) {
+  const type=value=>['line','polyline','quadratic','loop'].includes(value)?value:null;
+  const policy=value=>['screen-right','compact-arc','obstacle-aware'].includes(value)?value:null;
+  const bool=value=>typeof value==='boolean'?value:null;
+  const count=value=>value==null?0:Array.isArray(value)&&value.length<=64?value.length:null;
+  const own=(object,key)=>!!object&&Object.prototype.hasOwnProperty.call(object,key);
+  const empty=(state='unavailable',reason='malformed')=>({state,reason,edgeType:null,pending:null,unknown:null,sourceCaseMatches:null,
+    live:Array.from({length:3},()=>({type:null,manualType:null,overridePresent:null,bendCount:null,
+      controlPointCount:null,curvePolicy:null,autoCachePresent:null})),
+    saved:{state:'unavailable',edgeType:null,exactKeySet:false,
+      edges:Array.from({length:3},()=>({type:null,routeManual:null,controlPointCount:null,curvePolicy:null}))},
+    afterRead:{pending:null,unknown:null,ready:null,liveTypes:[null,null,null]}});
+  let timer;
+  try {
+    if (!binding||!['caseId','canvasId'].every(key=>typeof binding[key]==='string'&&/^[1-9]\d*$/.test(binding[key]))
+      ||!['caseGeneration','canvasGeneration'].every(key=>Number.isSafeInteger(binding[key])&&binding[key]>=0)
+      ||typeof binding.origin!=='string'||!Number.isFinite(binding.timeOrigin)||binding.timeOrigin<=0) return empty('unavailable','binding');
+    if (!Array.isArray(accounts)||accounts.length!==4||new Set(accounts).size!==4
+      ||!accounts.every(value=>typeof value==='string')||typeof expectedCase!=='string'||typeof expectedCanvas!=='string') return empty('unavailable','ownership');
+    const doc=document,origin=location.origin,graph=state.graph;
+    const keys=accounts.slice(0,3).map((account,index)=>account+'=>'+accounts[index+1]);
+    const stable=()=>document===doc&&location.origin===origin&&origin===binding.origin
+      &&performance.timeOrigin===binding.timeOrigin&&state.graph===graph
+      &&String(state.caseId)===binding.caseId&&String(state.canvasId)===binding.canvasId
+      &&state.caseGeneration===binding.caseGeneration&&state.canvasGeneration===binding.canvasGeneration;
+    const edgeMap=edges=>{
+      if (!Array.isArray(edges)||edges.length!==3) return null;
+      const pairs=edges.map(edge=>[edge.source+'=>'+edge.target,edge]);
+      return new Set(pairs.map(([key])=>key)).size===3&&keys.every(key=>pairs.some(([entry])=>entry===key))?Object.fromEntries(pairs):null;
+    };
+    const owned=models=>state.cases?.find(item=>String(item.id)===binding.caseId)?.name===expectedCase
+      &&state.canvasName===expectedCanvas&&!!edgeMap(state.lastGraph?.edges)&&!!edgeMap(models)
+      &&Array.isArray(state.lastGraph?.nodes)&&state.lastGraph.nodes.length===4
+      &&new Set(state.lastGraph.nodes.map(node=>node.account)).size===4
+      &&accounts.every(account=>state.lastGraph.nodes.some(node=>node.account===account));
+    const liveModels=()=>graph.getEdges().map(item=>item.getModel());
+    if (!stable()) return empty('unavailable','binding');
+    const models=liveModels();
+    if (!owned(models)) return empty('unavailable','ownership');
+    if (typeof fetch!=='function'||typeof AbortController!=='function'
+      ||typeof window.FundsCanvasActions?.status!=='function') return empty('unavailable','api');
+    const actionStatus=()=>{
+      const value=window.FundsCanvasActions.status(),context=value?.context;
+      return {pending:bool(value?.pending),unknown:bool(value?.unknown),sourceCaseMatches:context==null?null:
+        String(context.caseId)===binding.caseId&&context.generation===binding.caseGeneration};
+    };
+    const result=empty('unavailable','runtime'),byKey=edgeMap(models);
+    Object.assign(result,{edgeType:type(state.edgeType)},actionStatus());
+    result.live=keys.map(key=>({type:type(byKey[key].type),manualType:type(state.edgeTypes?.[key]),
+      overridePresent:own(state.edgeTypes,key),bendCount:count(state.edgeBendPos?.[key]),
+      controlPointCount:count(byKey[key].controlPoints),curvePolicy:policy(byKey[key].curvePolicy),
+      autoCachePresent:own(state.graphView?.autoRoutes,key)}));
+    const controller=new AbortController();
+    let expired=false,response;
+    const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{
+      expired=true;try { controller.abort(); } catch {} reject(new Error('timeout'));
+    },3000);});
+    try {
+      const fetched=await Promise.race([fetch('/api/canvases/'+binding.canvasId+'?case_id='+binding.caseId,
+        {method:'GET',credentials:'same-origin',signal:controller.signal}),deadline]);
+      if (!fetched.ok) result.reason='http';
+      else {
+        try { response=await Promise.race([fetched.json(),deadline]); }
+        catch { result.reason=expired?'timeout':'parse'; }
+        if (response) {
+          if (String(response.id)!==binding.canvasId) result.reason='response-id';
+          else {
+            const edges=edgeMap(response.snapshot?.edges);
+            if (!edges) result.reason='ownership';
+            else {
+              result.state='available';result.reason=null;
+              result.saved={state:'available',edgeType:type(response.snapshot?.display?.edgeType),exactKeySet:true,
+                edges:keys.map(key=>({type:type(edges[key].type),routeManual:bool(edges[key].routeManual),
+                  controlPointCount:count(edges[key].controlPoints),curvePolicy:policy(edges[key].curvePolicy)}))};
+            }
+          }
+        } else if(result.reason==='runtime') result.reason='parse';
+      }
+    } catch { result.reason=expired?'timeout':'network'; }
+    if (!stable()) return empty('unavailable','binding');
+    const after=liveModels();
+    if (!owned(after)) return empty('unavailable','ownership');
+    const status=actionStatus(),afterEdges=edgeMap(after);
+    let ready=null;
+    try {
+      const busy=window.FundsCanvasEditor?.history.status().busy;
+      if(typeof state.graphLoading==='boolean'&&typeof state.graphInited==='boolean'&&typeof busy==='boolean')
+        ready=!state.graphLoading&&state.graphInited&&!layoutJob&&!busy;
+    } catch {}
+    result.afterRead={pending:status.pending,unknown:status.unknown,ready,
+      liveTypes:keys.map(key=>type(afterEdges[key].type))};
+    return result;
+  } catch { return empty('unavailable','runtime'); }
+  finally { if(timer!==undefined) clearTimeout(timer); }
+}
+async function readCloneShapeObservation(evaluate,binding,createdCase) {
+  let timer;
+  try {
+    if (!binding||!['caseId','canvasId'].every(key=>typeof binding[key]==='string'&&/^[1-9]\d*$/.test(binding[key]))
+      ||!['caseGeneration','canvasGeneration'].every(key=>Number.isSafeInteger(binding[key])&&binding[key]>=0)
+      ||typeof binding.origin!=='string'||!Number.isFinite(binding.timeOrigin)||binding.timeOrigin<=0) return cloneShapeEmptyProbe('unavailable','binding');
+    const frozen={caseId:binding.caseId,canvasId:binding.canvasId,caseGeneration:binding.caseGeneration,canvasGeneration:binding.canvasGeneration,
+      origin:binding.origin,timeOrigin:binding.timeOrigin};
+    return await Promise.race([
+      Promise.resolve().then(()=>evaluate('('+readCloneShapeProbe.toString()+')('+JSON.stringify(frozen)+','
+        +JSON.stringify(createdCase)+','+JSON.stringify(CANVAS)+','+JSON.stringify(ACCOUNTS)+')')),
+      new Promise(resolve=>{timer=setTimeout(()=>resolve(cloneShapeEmptyProbe('unknown','cdp')),4000);}),
+    ]);
+  } catch { return cloneShapeEmptyProbe('unknown','cdp'); }
+  finally { if(timer!==undefined) clearTimeout(timer); }
+}
+function safeCloneShape(value) {
+  const type=value=>['line','polyline','quadratic','loop'].includes(value)?value:null;
+  const policy=value=>['screen-right','compact-arc','obstacle-aware'].includes(value)?value:null;
+  const bool=value=>typeof value==='boolean'?value:null;
+  const count=value=>Number.isInteger(value)&&value>=0&&value<=64?value:null;
+  const states=['available','unavailable','unknown'];
+  const reasons=[null,'binding','ownership','network','http','parse','response-id','timeout','runtime','api','cdp','malformed'];
+  const types=values=>{ if(!Array.isArray(values)||values.length!==3) throw new Error('shape');return [type(values[0]),type(values[1]),type(values[2])]; };
+  const summary=input=>{
+    const exactKeySet=input?.exactKeySet;
+    if(typeof exactKeySet!=='boolean') throw new Error('shape');
+    return {types:types(input.types),exactKeySet};
+  };
+  try {
+    const result={expected:summary(value.expected),actual:summary(value.actual),preClone:summary(value.preClone)};
+    try {
+      const probe=value.probe,saved=probe.saved,after=probe.afterRead;
+      const state=probe.state,reason=probe.reason,savedState=saved.state,exactKeySet=saved.exactKeySet;
+      if(!states.includes(state)||!reasons.includes(reason)||!states.includes(savedState)
+        ||!Array.isArray(probe.live)||probe.live.length!==3||!Array.isArray(saved.edges)||saved.edges.length!==3
+        ||typeof exactKeySet!=='boolean') throw new Error('shape');
+      result.probe={state,reason,edgeType:type(probe.edgeType),pending:bool(probe.pending),
+        unknown:bool(probe.unknown),sourceCaseMatches:bool(probe.sourceCaseMatches),
+        live:[0,1,2].map(index=>{const edge=probe.live[index];return {type:type(edge.type),manualType:type(edge.manualType),overridePresent:bool(edge.overridePresent),
+          bendCount:count(edge.bendCount),controlPointCount:count(edge.controlPointCount),curvePolicy:policy(edge.curvePolicy),
+          autoCachePresent:bool(edge.autoCachePresent)};}),
+        saved:{state:savedState,edgeType:type(saved.edgeType),exactKeySet,
+          edges:[0,1,2].map(index=>{const edge=saved.edges[index];return {type:type(edge.type),routeManual:bool(edge.routeManual),controlPointCount:count(edge.controlPointCount),curvePolicy:policy(edge.curvePolicy)};})},
+        afterRead:{pending:bool(after.pending),unknown:bool(after.unknown),ready:bool(after.ready),liveTypes:types(after.liveTypes)}};
+    } catch { result.probe=cloneShapeEmptyProbe(); }
+    return result;
+  } catch { return null; }
+}
 function readAssertionLocation(error) {
   try {
     const stack=error?.stack,message=error?.message;
@@ -55,6 +231,9 @@ function safeJourneyFailure(error) {
           &&Number.isInteger(column)&&column>=1&&column<=10000) projection.assertionLocation={helper,line,column};
       }
     } catch {}
+    if(projection.step==='canvas-clone-verify') {
+      try { const shape=safeCloneShape(detail.cloneShape);if(shape) projection.cloneShape=shape; } catch {}
+    }
   }
   return projection;
 }
@@ -319,6 +498,9 @@ const GRAPH_PROBE = `(() => {
     binding: { caseId: String(state.caseId),
       caseName: state.cases.find(item => String(item.id) === String(state.caseId))?.name || '',
       canvasId: String(state.canvasId), canvasName: state.canvasName || '默认画布' },
+    diagnosticBinding: { caseId: String(state.caseId), canvasId: String(state.canvasId),
+      caseGeneration: state.caseGeneration, canvasGeneration: state.canvasGeneration,
+      origin: location.origin, timeOrigin: performance.timeOrigin },
     viewport: { width: box.width, height: box.height },
     zoom: state.graph.getZoom(),
     labelsSettled: state.graphView.viewportFrame == null && state.graphView.labelTimer == null && !state.graphView.zoomSettling,
@@ -361,6 +543,7 @@ const GRAPH_PROBE = `(() => {
 
 async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, until, check, createdCase, seedCase, captureGraph }) {
   let step = null, flowIds;
+  let cloneTypeFailure=null,cloneFailureSnapshot=null,clonePreClone=null;
   const key = async (name, code, virtual, modifiers = 0) => {
     for (const type of ['keyDown', 'keyUp']) await cdp.send('Input.dispatchKeyEvent', {
       type, key: name, code, windowsVirtualKeyCode: virtual, nativeVirtualKeyCode: virtual, modifiers,
@@ -993,7 +1176,19 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       await until(() => evaluate(`state.canvasId > 0 && state.canvasName === ${JSON.stringify(CANVAS)} && !state.graphLoading`), 15000);
       await graph(3, flowIds);
       step = 'canvas-clone-verify';
-      assertEdgeTypes(await evaluate(GRAPH_PROBE), clonedTypes);
+      let cloneSnapshot;
+      try {
+        assertEdgeTypes(cloneSnapshot = await evaluate(GRAPH_PROBE), clonedTypes);
+      } catch(error) {
+        try {
+          if(error?.code==='ERR_ASSERTION'&&error.operator==='deepStrictEqual'
+            &&error.expected===clonedTypes&&cloneSnapshot) {
+            cloneTypeFailure=error;cloneFailureSnapshot=cloneSnapshot;
+            clonePreClone=cloneShapePreClone(defaultWorkspace);
+          }
+        } catch {}
+        throw error;
+      }
       await annotation(savedAnnotation);
       assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'line'`), true);
     });
@@ -1072,6 +1267,15 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     failure.installedGraphDiagnostic = { step, kind: error?.code === 'ERR_ASSERTION' ? 'assertion'
       : error?.message === 'TIMEOUT' ? 'timeout' : 'runtime' };
     if (location) failure.installedGraphDiagnostic.assertionLocation=location;
+    if(error===cloneTypeFailure&&step==='canvas-clone-verify') {
+      try {
+        let binding;
+        try { binding=cloneFailureSnapshot?.diagnosticBinding; } catch {}
+        const shape=safeCloneShape({expected:cloneShapeTypes(error.expected),actual:cloneShapeTypes(error.actual),
+          preClone:clonePreClone,probe:await readCloneShapeObservation(evaluate,binding,createdCase)});
+        if(shape) failure.installedGraphDiagnostic.cloneShape=shape;
+      } catch {}
+    }
     throw failure;
   } finally {
     // The sole deletion target is this operation's fresh temporary CSV folder.
