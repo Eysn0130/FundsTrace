@@ -1773,7 +1773,7 @@ def export_graph_pdf(body: GraphPdfIn):
 
 
 def _png_to_pdf_lossless(png: bytes, description: Optional[str] = None) -> bytes:
-    """优先 img2pdf 无损嵌入；Pillow 回退保留尺寸但量化为 256 色。"""
+    """优先 img2pdf；回退以 Flate 压缩保留完整 RGB 像素与 288dpi 页面。"""
     from PIL import Image
     img = Image.open(io.BytesIO(png))
     if img.mode != "RGB":
@@ -1791,13 +1791,37 @@ def _png_to_pdf_lossless(png: bytes, description: Optional[str] = None) -> bytes
         return img2pdf.convert(flat.getvalue(), **metadata)   # 默认按 96dpi 定页面尺寸
     except Exception:
         from PIL import PdfParser
+        import time
+        import zlib
+
         # PDF literal strings normalize raw CR bytes, including the low byte of
         # Chinese characters such as 不 (U+4E0D). Hex strings preserve UTF-16BE.
-        pdf_metadata = {key: PdfParser.PdfBinary(PdfParser.encode_text(value))
-                        for key, value in metadata.items()}
-        quantized = img.convert("P", palette=Image.ADAPTIVE, colors=256)
         out = io.BytesIO()
-        quantized.save(out, "PDF", resolution=288.0, **pdf_metadata)
+        with PdfParser.PdfParser(f=out, mode="w+b") as pdf:
+            for key, value in metadata.items():
+                pdf.info[key.capitalize()] = PdfParser.PdfBinary(PdfParser.encode_text(value))
+            pdf.info["CreationDate"] = pdf.info["ModDate"] = time.gmtime()
+            pdf.start_writing()
+            pdf.write_header()
+            out.write(b"%\xe2\xe3\xcf\xd3\n")
+            image_ref = pdf.next_object_id(0)
+            page_ref = pdf.next_object_id(0)
+            contents_ref = pdf.next_object_id(0)
+            pdf.pages.append(page_ref)
+            pdf.write_catalog()
+            # Avoid both Pillow's indexed-color quantization and its expanded
+            # ASCIIHex image stream. Flate stores the RGB bytes losslessly.
+            pdf.write_obj(image_ref, Type=PdfParser.PdfName("XObject"),
+                          Subtype=PdfParser.PdfName("Image"), Width=img.width, Height=img.height,
+                          ColorSpace=PdfParser.PdfName("DeviceRGB"), BitsPerComponent=8,
+                          Filter=PdfParser.PdfName("FlateDecode"), stream=zlib.compress(img.tobytes()))
+            width, height = img.width * 72.0 / 288.0, img.height * 72.0 / 288.0
+            pdf.write_page(page_ref, Resources=PdfParser.PdfDict(
+                ProcSet=[PdfParser.PdfName("PDF"), PdfParser.PdfName("ImageC")],
+                XObject=PdfParser.PdfDict(image=image_ref)),
+                MediaBox=[0, 0, width, height], Contents=contents_ref)
+            pdf.write_obj(contents_ref, stream=b"q %f 0 0 %f 0 0 cm /image Do Q\n" % (width, height))
+            pdf.write_xref_and_trailer()
         return out.getvalue()
 
 
