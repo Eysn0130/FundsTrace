@@ -6,6 +6,7 @@ const path = require('node:path');
 const { fixtureCsv, assertGraph, assertEdgeTypes, assertNoAnnotation, assertAnnotation, assertAnnotationFollow,
   assertWorkspaceRestored, assertAutomaticLeafLabel, assertPartialViewportLabels, assertImportCompletion,
   assertAutomaticImportPreview, assertAutomaticImportCompletion, AUTOMATIC_IMPORT_PROBE,
+  assertFinderResults, FINDER_PROBE,
   runInstalledGraphJourney, safeJourneyFailure, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
 
 function observed() {
@@ -238,6 +239,98 @@ for (const pendingReads of [0, 2]) test(`automatic journey waits for completion 
   assert.equal(waits.filter(value => value.timeout === 45000 && !value.closed).length, 1);
   assert.equal(files.length, 1); assert.equal(fs.existsSync(path.dirname(files[0])), false);
   assert.equal(clicked.filter(value => value.includes('#impCancel')).length, 1);
+});
+
+function finderObservation(accounts = ['SYN-INST-A', 'SYN-INST-B']) {
+  return { finder: { open: true, searched: true, query: 'SYN-INST-', pending: false, error: '', busy: '',
+    resultTotal: accounts.length, visibleCount: accounts.length, results: accounts.map(account => ({ account })) },
+    open: true, inputValue: 'SYN-INST-', countVisible: true,
+    countText: `匹配结果 · ${accounts.length} 个`, allEnabled: true };
+}
+
+test('finder accepts exact two, three, four and visible-subset accounts in any order without mutation', () => {
+  for (const accounts of [['SYN-INST-A', 'SYN-INST-B'], ['SYN-INST-A', 'SYN-INST-B', 'SYN-INST-C'],
+    ['SYN-INST-A', 'SYN-INST-B', 'SYN-INST-C', 'SYN-INST-D'], ['SYN-INST-A', 'SYN-INST-C']]) {
+    const visible = Object.freeze([...accounts]), value = finderObservation([...accounts].reverse());
+    const before = structuredClone(value);
+    Object.freeze(value.finder.results); Object.freeze(value.finder); Object.freeze(value);
+    assertFinderResults(value, visible);
+    assert.deepEqual(value, before); assert.deepEqual(visible, accounts);
+  }
+});
+
+for (const [name, change] of [
+  ['closed DOM panel', value => { value.open = false; }],
+  ['missing controller', value => { value.finder = null; }],
+  ['closed controller', value => { value.finder.open = false; }],
+  ['unsearched query', value => { value.finder.searched = false; }],
+  ['stale controller query', value => { value.finder.query = 'SYN-INST-A'; }],
+  ['stale input', value => { value.inputValue = 'SYN-INST-A'; }],
+  ['pending query', value => { value.finder.pending = true; }],
+  ['controller error', value => { value.finder.error = 'Synthetic error'; }],
+  ['blocked controller', value => { value.finder.busy = 'Synthetic busy'; }],
+  ['wrong total', value => { value.finder.resultTotal = 3; }],
+  ['string total', value => { value.finder.resultTotal = '2'; }],
+  ['wrong visible count', value => { value.finder.visibleCount = 1; }],
+  ['missing results', value => { delete value.finder.results; }],
+  ['nonarray results', value => { value.finder.results = { account: 'SYN-INST-A' }; }],
+  ['same-count wrong account', value => { value.finder.results[1].account = 'SYN-INST-Z'; }],
+  ['duplicate account', value => { value.finder.results[1].account = 'SYN-INST-A'; }],
+  ['missing account', value => { delete value.finder.results[1].account; }],
+  ['numeric account', value => { value.finder.results[1].account = 2; }],
+  ['empty account', value => { value.finder.results[1].account = ''; }],
+  ['null result', value => { value.finder.results[1] = null; }],
+  ['fewer results', value => { value.finder.results.pop(); }],
+  ['more results', value => { value.finder.results.push({ account: 'SYN-INST-C' }); }],
+  ['hidden count', value => { value.countVisible = false; }],
+  ['wrong count label', value => { value.countText = '匹配结果 · 3 个'; }],
+  ['missing count label', value => { delete value.countText; }],
+  ['disabled locate button', value => { value.allEnabled = false; }],
+  ['missing locate button', value => { delete value.allEnabled; }],
+]) test(`finder result acceptance rejects ${name}`, () => {
+  const value = finderObservation(); change(value);
+  assert.throws(() => assertFinderResults(value, ['SYN-INST-A', 'SYN-INST-B']));
+});
+
+test('finder does not normalize duplicated results or substitute the full tracked graph for the visible subset', () => {
+  assert.throws(() => assertFinderResults(finderObservation(['SYN-INST-A', 'SYN-INST-A']), ['SYN-INST-A', 'SYN-INST-A']));
+  assert.throws(() => assertFinderResults(finderObservation(['SYN-INST-A', 'SYN-INST-B', 'SYN-INST-C']), ['SYN-INST-A', 'SYN-INST-B']));
+});
+
+test('finder probe reads controller plus real panel, input, result count and locate button without requiring candidates', () => {
+  const expected = finderObservation(), before = structuredClone(expected);
+  const node = properties => ({ hidden: false, getClientRects: () => [{}],
+    getBoundingClientRect: () => ({ width: 240, height: 24 }),
+    style: { display: 'block', visibility: 'visible', opacity: '1' }, ...properties });
+  const nodes = {
+    '#findNodePopover': node({}), '#graphFindInput': node({ value: 'SYN-INST-', expanded: 'false' }),
+    '#graphFindCount': node({ textContent: '匹配结果 · 2 个' }), '#btnGraphFindAll': node({ disabled: false }),
+  };
+  const window = { FundsNodeFinderActions: { getState: () => expected.finder } };
+  const document = { querySelector: selector => nodes[selector] || null };
+  const probe = () => new Function('window', 'document', 'getComputedStyle', '"use strict"; return ' + FINDER_PROBE)
+    (window, document, value => value.style);
+  const result = probe(); assert.deepEqual(result, expected);
+  assertFinderResults(result, ['SYN-INST-B', 'SYN-INST-A']); assert.deepEqual(expected, before);
+  for (const selector of Object.keys(nodes)) {
+    const original = nodes[selector]; delete nodes[selector];
+    assert.throws(() => assertFinderResults(probe(), ['SYN-INST-A', 'SYN-INST-B']), selector);
+    nodes[selector] = original;
+  }
+  delete window.FundsNodeFinderActions;
+  assert.throws(() => assertFinderResults(probe(), ['SYN-INST-A', 'SYN-INST-B']));
+  window.FundsNodeFinderActions = { getState: () => expected.finder };
+  for (const change of [value => { value.hidden = true; }, value => { value.getClientRects = () => []; },
+    value => { value.getBoundingClientRect = () => ({ width: 0, height: 0 }); },
+    value => { value.style.display = 'none'; }, value => { value.style.visibility = 'hidden'; },
+    value => { value.style.opacity = '0'; }]) {
+    const original = nodes['#graphFindCount']; nodes['#graphFindCount'] = node({ textContent: '匹配结果 · 2 个' });
+    change(nodes['#graphFindCount']);
+    assert.throws(() => assertFinderResults(probe(), ['SYN-INST-A', 'SYN-INST-B']));
+    nodes['#graphFindCount'] = original;
+  }
+  nodes['#btnGraphFindAll'].disabled = true;
+  assert.throws(() => assertFinderResults(probe(), ['SYN-INST-A', 'SYN-INST-B']));
 });
 
 test('graph acceptance compares IDs, endpoints and full decimal amounts', () => {

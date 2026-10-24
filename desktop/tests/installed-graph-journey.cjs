@@ -192,6 +192,38 @@ function assertImportCompletion(receipt) {
   assert.equal(receipt.summary, '新增 3 笔 · 重复 0 笔 · 跳过 0 行');
 }
 
+function assertFinderResults(observation, visible) {
+  const finder = observation.finder;
+  assert.equal(observation.open, true); assert.ok(finder);
+  assert.equal(finder.open, true); assert.equal(finder.searched, true);
+  assert.equal(finder.query, 'SYN-INST-'); assert.equal(observation.inputValue, 'SYN-INST-');
+  assert.equal(finder.pending, false); assert.equal(finder.error, ''); assert.equal(finder.busy, '');
+  assert.equal(finder.resultTotal, visible.length); assert.equal(finder.visibleCount, visible.length);
+  assert.ok(Array.isArray(finder.results)); assert.equal(finder.results.length, visible.length);
+  const accounts = finder.results.map(item => item?.account);
+  assert.ok(accounts.every(account => typeof account === 'string' && account.length > 0));
+  assert.equal(new Set(accounts).size, accounts.length);
+  assert.deepEqual(sorted(accounts), sorted(visible));
+  assert.equal(observation.countVisible, true);
+  assert.equal(observation.countText, `匹配结果 · ${visible.length} 个`);
+  assert.equal(observation.allEnabled, true);
+}
+const FINDER_PROBE = `(() => {
+  const panel = document.querySelector('#findNodePopover'), input = document.querySelector('#graphFindInput');
+  const count = document.querySelector('#graphFindCount'), all = document.querySelector('#btnGraphFindAll');
+  const actions = window.FundsNodeFinderActions;
+  const visible = node => {
+    if (!node || node.hidden || !node.getClientRects().length) return false;
+    const style = getComputedStyle(node), bounds = node.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility === 'visible' && style.opacity !== '0'
+      && bounds.width > 0 && bounds.height > 0;
+  };
+  return { finder: typeof actions?.getState === 'function' ? actions.getState() : null,
+    open: visible(panel), inputValue: input?.value ?? null,
+    countVisible: visible(count), countText: count?.textContent ?? null,
+    allEnabled: !!all && all.disabled === false };
+})()`;
+
 function assertAutomaticImportPreview(observation) {
   const { preview, headers, rows, mappingHidden } = observation;
   assert.equal(preview.automatic, true); assert.equal(preview.mode, 'A');
@@ -341,8 +373,10 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       step = 'finder-query';
       await fill('#graphFindInput', 'SYN-INST-');
       await clickElement(`document.querySelector('#btnGraphFindSearch')`);
-      await until(() => evaluate(`document.querySelectorAll('#graphFindResults .find-result').length === ${visible.length}
-        && !document.querySelector('#btnGraphFindAll').disabled`), 10000);
+      await until(async () => {
+        try { assertFinderResults(await evaluate(FINDER_PROBE), visible); return true; }
+        catch { return false; }
+      }, 10000);
       step = 'finder-locate';
       await clickElement(`document.querySelector('#btnGraphFindAll')`);
       await until(() => evaluate(`document.querySelector('#graphFindStatus').dataset.state === 'done'
@@ -1014,4 +1048,5 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
 module.exports = { ACCOUNTS, AMOUNTS, SUMMARIES, REQUIRED_CHECKS, fixtureCsv, assertGraph, assertEdgeTypes,
   assertNoAnnotation, assertAnnotation, assertWorkspaceRestored, assertAnnotationFollow, assertAutomaticLeafLabel, assertPartialViewportLabels,
   assertImportCompletion, assertAutomaticImportPreview, assertAutomaticImportCompletion, AUTOMATIC_IMPORT_PROBE,
+  assertFinderResults, FINDER_PROBE,
   safeJourneyFailure, runInstalledGraphJourney };
