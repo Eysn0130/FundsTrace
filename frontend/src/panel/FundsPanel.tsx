@@ -11,7 +11,7 @@ import { linkAbortSignal, runUnlessAborted } from './cancellation';
 type Filters = { account: string; kw: string; page: number };
 const emptyFilters: Filters = { account: '', kw: '', page: 1 };
 export type FundsQueryDraft = Readonly<{ filters: Filters; account: string; keyword: string }>;
-type WorkspacePresentation = { initialDraft?: FundsQueryDraft; onDraftChange?: (draft: FundsQueryDraft) => void; caseActions?: ReactNode; retained?: boolean };
+type WorkspacePresentation = { initialDraft?: FundsQueryDraft; onDraftChange?: (draft: FundsQueryDraft) => void; caseActions?: ReactNode; retained?: boolean; navigationPending?: boolean };
 
 export function FundsPanel({ host, workspace, active = true, revision = 0 }: { host: FundsPanelHostV1; workspace?: WorkspacePresentation; active?: boolean; revision?: number }) {
   const session = host.session;
@@ -81,7 +81,7 @@ function BoundFundsPanel({ session, workspace, active, revision }: { session: Fu
   };
   const search = (event: FormEvent) => { event.preventDefault(); setFilters({ account: accountDraft.trim(), kw: keywordDraft.trim(), page: 1 }); };
   const openGraph = async () => {
-    if (!actions?.openGraph) return;
+    if (!actions?.openGraph || workspace?.navigationPending) return;
     const signal = lifetime.current.signal;
     if (signal.aborted || session.signal.aborted) return;
     setGraphBusy(true); setGraphError('');
@@ -95,7 +95,7 @@ function BoundFundsPanel({ session, workspace, active, revision }: { session: Fu
     <section className="main-workspace" aria-label="资金流水面板">
 
       {!workspace && <div className="topline"><span>案件工作区 <span className="breadcrumb">/</span> 流水核对</span><span className="local-label">本地数据</span></div>}
-      <header className="workspace-heading"><div><p className="eyebrow">{workspace ? '当前案件' : '流水核对'}</p><h1>{context.name}</h1><p className="description">{workspace ? <>案件 ID：<span className="mono">{context.caseId}</span>{workspace.retained && <span className="work-retained">工作已保留</span>}</> : '核对交易明细，再进入关系图谱追踪资金流向。'}</p></div><div className="heading-actions">{!workspace && <button className="button secondary" onClick={() => setHistoryOpen(true)}>导入记录</button>}<button className="button primary" onClick={openImport}>{workspace ? <img className="ui-icon" src="/static/ui-icons/upload.svg" alt="" /> : <span aria-hidden="true">＋</span>} 导入流水</button><button className="button secondary" disabled={!actions?.openGraph || graphBusy} onClick={() => void openGraph()}>{workspace ? '进入画图' : '打开 G6 图谱'} {workspace ? <img className="ui-icon" src="/static/ui-icons/chevron-right.svg" alt="" /> : <span aria-hidden="true">↗</span>}</button>{workspace?.caseActions}</div></header>
+      <header className="workspace-heading"><div><p className="eyebrow">{workspace ? '当前案件' : '流水核对'}</p><h1>{context.name}</h1><p className="description">{workspace ? <>案件 ID：<span className="mono">{context.caseId}</span>{workspace.retained && <span className="work-retained">工作已保留</span>}</> : '核对交易明细，再进入关系图谱追踪资金流向。'}</p></div><div className="heading-actions">{!workspace && <button className="button secondary" onClick={() => setHistoryOpen(true)}>导入记录</button>}<button className="button primary" onClick={openImport}>{workspace ? <img className="ui-icon" src="/static/ui-icons/upload.svg" alt="" /> : <span aria-hidden="true">＋</span>} 导入流水</button><button className="button secondary" disabled={!actions?.openGraph || graphBusy || workspace?.navigationPending} onClick={() => void openGraph()}>{workspace ? '进入画图' : '打开 G6 图谱'} {workspace ? <img className="ui-icon" src="/static/ui-icons/chevron-right.svg" alt="" /> : <span aria-hidden="true">↗</span>}</button>{workspace?.caseActions}</div></header>
       {!actions?.openGraph && <p className="muted">宿主未提供图谱导航能力。</p>}
       {error && <div role="alert" className="error-banner">{error}<button onClick={() => setReload(value => value + 1)}>重新加载</button></div>}
       {graphError && <div role="alert" className="error-banner">{graphError}</div>}

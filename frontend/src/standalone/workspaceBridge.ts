@@ -3,7 +3,7 @@ export const WORKSPACE_CHANNEL = 'fundstrace:workspace' as const;
 export const WORKSPACE_VERSION = 1 as const;
 
 export type PendingImport = Readonly<{ importId: string; phase: 'pending' | 'unknown' }>;
-export type WorkspaceContext = Readonly<{ caseId: string; name: string; generation: number; retainedCaseIds: string[]; surface?: 'cases' | 'accounts'; active?: boolean; unresolvedOperations?: UnresolvedAccountOperation[]; pendingImports?: PendingImport[] }>;
+export type WorkspaceContext = Readonly<{ caseId: string; name: string; generation: number; retainedCaseIds: string[]; surface?: 'cases' | 'accounts'; active?: boolean; navigationPending?: boolean; unresolvedOperations?: UnresolvedAccountOperation[]; pendingImports?: PendingImport[] }>;
 type Requests = {
   'select-case': { caseId: string };
   'open-graph': Record<string, never>;
@@ -27,6 +27,7 @@ function validContext(value: Record<string, unknown>): value is Record<string, u
     && Array.isArray(value.retainedCaseIds) && value.retainedCaseIds.every(identifier)
     && (value.surface === undefined || value.surface === 'cases' || value.surface === 'accounts')
     && (value.active === undefined || typeof value.active === 'boolean')
+    && (!Object.prototype.hasOwnProperty.call(value, 'navigationPending') || typeof value.navigationPending === 'boolean')
     && (value.pendingImports === undefined || Array.isArray(value.pendingImports) && value.pendingImports.every(item => record(item) && identifier(item.importId) && ['pending', 'unknown'].includes(String(item.phase))))
     && (value.unresolvedOperations === undefined || Array.isArray(value.unresolvedOperations) && value.unresolvedOperations.every(item => record(item) && identifier(item.operationId) && identifier(item.account) && ['identity-set','photo-set','photo-clear','photo-crop','main-set'].includes(String(item.kind))));
 }
@@ -59,7 +60,7 @@ export function createWorkspaceBridge({ onContext, onCasesChanged, onAccountsCha
     if (data.channel !== WORKSPACE_CHANNEL || data.version !== WORKSPACE_VERSION) return;
     if (data.type === 'context' && validContext(data)) {
       if (context && (data.generation < context.generation || (data.generation === context.generation && (data.caseId !== context.caseId || data.name !== context.name)))) return;
-      const next = { caseId: data.caseId, name: data.name, generation: data.generation, retainedCaseIds: [...data.retainedCaseIds], surface: data.surface, active: data.active, unresolvedOperations: data.unresolvedOperations?.map(item => ({...item})), pendingImports: data.pendingImports?.map(item => ({...item})) };
+      const next = { caseId: data.caseId, name: data.name, generation: data.generation, retainedCaseIds: [...data.retainedCaseIds], surface: data.surface, active: data.active, navigationPending: Object.prototype.hasOwnProperty.call(data, 'navigationPending') && data.navigationPending === true, unresolvedOperations: data.unresolvedOperations?.map(item => ({...item})), pendingImports: data.pendingImports?.map(item => ({...item})) };
       const changed = !context || next.generation !== context.generation || next.caseId !== context.caseId || next.name !== context.name;
       context = next;
       if (changed) {

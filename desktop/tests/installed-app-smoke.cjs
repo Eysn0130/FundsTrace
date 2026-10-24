@@ -1076,6 +1076,11 @@ async function restorePresentationPreferences(snapshot) {
   });
   await check('workspaceGraphLinkOpened', async () => {
     try {
+    report.workspaceGraphStep='wait-enabled';
+    await readyCases(`(() => {
+      const button=[...document.querySelectorAll('.heading-actions button')].find(node=>node.textContent.trim()==='进入画图');
+      return !!button && !button.disabled;
+    })()`);
     report.workspaceGraphStep='click';
     await clickElement(`[...document.querySelectorAll('.heading-actions button')].find(node=>node.textContent.trim()==='进入画图')`,page,{frame:true});
     report.workspaceGraphStep='wait-ready';

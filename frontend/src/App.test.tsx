@@ -47,6 +47,75 @@ function embeddedHost() {
 }
 
 describe('FundsTrace case workspace', () => {
+  it('presents host navigation pending without recreating the same-case session, requests or query draft', async () => {
+    const h = embeddedHost(), api = fakeApi();
+    const stats = vi.spyOn(api, 'stats'), flows = vi.spyOn(api, 'flows');
+    const openGraph = vi.fn(), actionsForCase = vi.fn(() => ({ openGraph }));
+    try {
+      render(<App api={api} actionsForCase={actionsForCase} embedded />); h.bind();
+      await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      const input = screen.getByLabelText('账号筛选');
+      const graph = screen.getByRole('button', { name: '进入画图' }) as HTMLButtonElement;
+      const statsSignal = stats.mock.calls[0][1], flowSignal = flows.mock.calls[0][2];
+      expect(graph.disabled).toBe(false); // A host that omits the new field remains usable.
+      fireEvent.change(input, { target: { value: 'UNSUBMITTED-NAVIGATION-DRAFT' } });
+      for (const navigationPending of [true, false, true, false]) {
+        await act(async () => h.bind({ navigationPending }));
+        expect(graph.disabled).toBe(navigationPending);
+        expect(screen.getByLabelText('账号筛选')).toBe(input);
+        expect((input as HTMLInputElement).value).toBe('UNSUBMITTED-NAVIGATION-DRAFT');
+        expect(stats).toHaveBeenCalledOnce(); expect(flows).toHaveBeenCalledOnce();
+        expect(actionsForCase).toHaveBeenCalledOnce();
+        expect(statsSignal?.aborted).toBe(false); expect(flowSignal?.aborted).toBe(false);
+        expect(screen.queryByRole('heading', { name: '案件会话已撤销' })).toBeNull();
+        if (navigationPending) {
+          fireEvent.click(graph); expect(openGraph).not.toHaveBeenCalled();
+          expect((screen.getByRole('button', { name: '导入流水' }) as HTMLButtonElement).disabled).toBe(false);
+        }
+      }
+      fireEvent.click(graph); await waitFor(() => expect(openGraph).toHaveBeenCalledOnce());
+    } finally { h.close(); }
+  });
+
+  it('accepts a pending target context as case-selection confirmation without an old-bound result', async () => {
+    const h = embeddedHost(), api = fakeApi();
+    try {
+      render(<App api={api} embedded />); h.bind();
+      await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      fireEvent.click(screen.getByRole('button', { name: '合成案件乙' }));
+      await waitFor(() => expect(h.requests().at(-1)?.action).toBe('select-case'));
+      const selection = h.requests().at(-1)!;
+      h.bind({ navigationPending: true });
+      h.bind({ caseId: '2', name: '合成案件乙', generation: 2, navigationPending: true });
+      await screen.findByRole('button', { name: '核对流水 SYN-2' });
+      await waitFor(() => expect((screen.getByRole('button', { name: '合成案件甲' }) as HTMLButtonElement).disabled).toBe(false));
+      expect((screen.getByRole('button', { name: '进入画图' }) as HTMLButtonElement).disabled).toBe(true);
+      h.send({ type: 'result', requestId: selection.requestId, ok: false, error: '旧绑定结果不能恢复旧案件' });
+      expect(screen.queryByText('旧绑定结果不能恢复旧案件')).toBeNull();
+      expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('合成案件乙');
+      h.bind({ caseId: '2', name: '合成案件乙', generation: 2, navigationPending: false });
+      expect((screen.getByRole('button', { name: '进入画图' }) as HTMLButtonElement).disabled).toBe(false);
+      expect(h.requests().filter(request => request.action === 'select-case')).toHaveLength(1);
+    } finally { h.close(); }
+  });
+
+  it('keeps a current operation error visible when the idle context precedes its result', async () => {
+    const h = embeddedHost();
+    try {
+      render(<App api={fakeApi()} embedded />); h.bind();
+      await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      fireEvent.click(screen.getByRole('button', { name: '合成案件乙' }));
+      await waitFor(() => expect(h.requests().at(-1)?.action).toBe('select-case'));
+      const request = h.requests().at(-1)!;
+      h.bind({ navigationPending: true }); h.bind({ navigationPending: false });
+      h.send({ type: 'result', requestId: request.requestId, ok: false, error: '合成导航操作失败' });
+      await screen.findByText('合成导航操作失败');
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.getByRole('alert').textContent).toContain('合成导航操作失败');
+      expect(h.requests().filter(message => message.action === 'select-case')).toHaveLength(1);
+    } finally { h.close(); }
+  });
+
   it('filters a case candidate without switching the current case until its existing open button is clicked', async () => {
     const api = fakeApi(); api.stats = vi.fn(api.stats);
     render(<App api={api} />); await screen.findByRole('button', { name: '核对流水 SYN-1' });

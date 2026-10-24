@@ -6,7 +6,7 @@
   const analysisFrame = document.querySelector('#analysisFrame');
   let analysisLoaded = false, revision = 0;
   const frame = document.querySelector('#casesFrame'), graphPage = document.querySelector('#graphPage');
-  let page = 'home', surface = 'cases', loaded = false, busy = false;
+  let page = 'home', surface = 'cases', loaded = false, busyOwner = null;
   const handled = new Set();
   function accountReason(context) {
     if (window.FundsDataToolsActions?.blocked(context)) return '资料批量操作尚未结束，请先核对';
@@ -36,7 +36,7 @@
   const post = message => { if (loaded) frame.contentWindow?.postMessage({channel,version,...message},location.origin); };
   function context() {
     return {type:'context',surface,unresolvedOperations:accountActions?.operations(caseContext()) || [],caseId:String(state.caseId),name:state.cases.find(item=>String(item.id)===String(state.caseId))?.name || '当前案件',generation:state.caseGeneration,
-      pendingImports:window.FundsImportWorkflow?.externalStatus?.(caseContext()) || [], revision, active:page===surface, retainedCaseIds:window.FundsWorkspaceSession.retainedCaseIds()};
+      pendingImports:window.FundsImportWorkflow?.externalStatus?.(caseContext()) || [], navigationPending:!!busyOwner, revision, active:page===surface, retainedCaseIds:window.FundsWorkspaceSession.retainedCaseIds()};
   }
   function ensureFrames() {
     if (!state.caseId || !state.cases.length) return;
@@ -80,17 +80,30 @@
     const message = event.data;
     if (message.type==='ready') { if(fromAnalysis) analysisLoaded=true; else loaded=true; sync(); return; }
     if (message.type!=='request' || typeof message.requestId!=='string' || message.requestId.length>160 || handled.has(message.requestId)) return;
-    const reply = (ok,error,details={}) => event.source?.postMessage({channel,version,type:'result',requestId:message.requestId,ok,...(error?{error}:{}),...details},location.origin);
+    const owner = {};
+    const release = () => {
+      if (busyOwner !== owner) return;
+      busyOwner = null; sync();
+    };
+    const acquire = () => {
+      if (message.caseId!==String(state.caseId) || message.generation!==state.caseGeneration) throw new Error('案件已变化，请重新操作');
+      if (busyOwner) throw new Error('正在切换案件，请稍后操作');
+      busyOwner = owner; sync();
+    };
+    const reply = (ok,error,details={}) => {
+      release();
+      event.source?.postMessage({channel,version,type:'result',requestId:message.requestId,ok,...(error?{error}:{}),...details},location.origin);
+    };
     if (message.caseId!==String(state.caseId) || message.generation!==state.caseGeneration) {reply(false,'案件已变化，请重新操作');return;}
     if (!['select-case','open-graph','open-canvas','track-cycle','case-action','account-action','import-acquire','import-release','data-changed'].includes(message.action) || !message.payload || typeof message.payload!=='object') {reply(false,'不支持此操作');return;}
     if (fromAnalysis && !['select-case','open-graph','open-canvas','track-cycle'].includes(message.action)) {reply(false,'不支持此分析操作');return;}
     handled.add(message.requestId);
     if (handled.size > 2048) handled.delete(handled.values().next().value);
-    if (busy) { reply(false,'正在切换案件，请稍后操作'); return; }
+    if (busyOwner) { reply(false,'正在切换案件，请稍后操作'); return; }
     try {
       if (message.action==='select-case') {
         if (typeof message.payload.caseId!=='string') throw new Error('案件标识无效');
-        busy = true;
+        acquire();
         const rows = await refreshManagedCases();
         if (message.caseId!==String(state.caseId) || message.generation!==state.caseGeneration) throw new Error('案件已变化，请重新操作');
         const target = rows.find(item=>String(item.id)===message.payload.caseId);
@@ -108,7 +121,8 @@
         if(accountReason(binding) || accountActions?.blocked(binding)) throw new Error('当前写入或画布操作尚未结束，请先核对');
         if(typeof payload.name!=='string' || !payload.name.trim() || payload.name.length>60 || !Array.isArray(payload.flow_ids) || !payload.flow_ids.length || payload.flow_ids.some(id=>!/^\d+$/.test(String(id))) || !payload.snapshot || typeof payload.snapshot!=='object') throw new Error('分析画布参数无效');
         if(!await window.FundsImportWorkflow.canWrite(binding)) throw new Error('流水导入尚未结束，请先核对');
-        busy=true;
+        if(!isCurrentCase(binding)) throw new Error('案件或画布已变化');
+        acquire();
         const result=await window.FundsCanvasActions.withWrite(binding,async()=>{
           if(!isCurrentCase(binding)) throw new Error('案件或画布已变化');
           try {return await caseRequest('/api/canvases/from-flows',{method:'POST',...jsonOpts({case_id:binding.caseId,name:payload.name,flow_ids:payload.flow_ids,snapshot:payload.snapshot})});}
@@ -118,7 +132,7 @@
       } else if (message.action==='open-canvas') {
         const binding=caseContext(), canvasId=message.payload.canvasId;
         const reason=accountReason(binding); if(reason || window.FundsCanvasActions?.blocked()) throw new Error(reason || '画布操作尚未确认，请先核对');
-        busy=true;
+        acquire();
         if(typeof canvasId!=='string' || !/^[1-9]\d*$/.test(canvasId)) throw new Error('画布标识无效');
         if(window.FundsAccountActions?.blocked(caseContext()) || !await window.FundsImportWorkflow.canWrite(caseContext())) throw new Error('当前写入尚未完成，请先核对');
         if(!isCurrentCase(binding) || accountReason(binding) || window.FundsCanvasActions?.blocked()) throw new Error('案件或画布已变化，请重新打开');
@@ -161,7 +175,7 @@
         reply(true);
       }
     } catch(error) {reply(false,error?.message || '操作失败，请重试',{...(typeof error?.code==='string'?{code:error.code}:{}),...(typeof error?.operationId==='string'?{operationId:error.operationId}:{})});}
-    finally {busy=false;}
+    finally {release();}
   });
   async function dataChanged() {
     revision++; sync(); post({type:'data-changed',caseId:String(state.caseId),generation:state.caseGeneration});
