@@ -296,6 +296,39 @@ function nodePositions(snapshot) {
   return snapshot.renderedNodes.map(node => [node.id, node.x, node.y])
     .sort((a, b) => a[0].localeCompare(b[0]));
 }
+function assertWorkspaceRecovered(snapshot, expected, flowIds, count) {
+  assertTrackedGraph(snapshot, flowIds, count);
+  assert.deepEqual(snapshot.binding, expected.binding);
+  assert.deepEqual(nodePositions(snapshot), nodePositions(expected));
+  assertEdgeTypes(snapshot, renderedEdgeTypes(expected));
+  assert.deepEqual(snapshot.annotations, expected.annotations);
+  assert.deepEqual(snapshot.labelContext.selectedIds, expected.labelContext.selectedIds);
+  assert.equal(snapshot.labelContext.selectedEdge, expected.labelContext.selectedEdge);
+}
+async function waitForWorkspaceRecovered(evaluate, until, expected, flowIds, count = 3) {
+  let lastAssertion = null, operationalFailure = false;
+  try {
+    await until(async () => {
+      let snapshot;
+      try {
+        snapshot = await evaluate(`(() => {
+          if (state.graphLoading || !state.graphInited || !state.graph || !state.graphSelection) return { ready: false };
+          return (${GRAPH_PROBE});
+        })()`);
+      }
+      catch (error) { operationalFailure = true; throw error; }
+      try { assertWorkspaceRecovered(snapshot, expected, flowIds, count); return true; }
+      catch (error) {
+        if (error?.code !== 'ERR_ASSERTION') { operationalFailure = true; throw error; }
+        lastAssertion = error;
+        return false;
+      }
+    }, 15000);
+  } catch (error) {
+    if (!operationalFailure && error?.message === 'TIMEOUT' && lastAssertion) throw lastAssertion;
+    throw error;
+  }
+}
 function assertWorkspaceRestored(snapshot, before, flowIds, count, expectedAnnotation) {
   assert.ok(before.binding && Object.values(before.binding).every(value => typeof value === 'string' && value));
   assert.ok(nodePositions(before).every(([id, x, y]) => typeof id === 'string' && Number.isFinite(x) && Number.isFinite(y)));
@@ -1163,7 +1196,7 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     });
     if (captureGraph) await captureGraph();
     let clonedTypes, savedTypes, redoneTypes;
-    let savedPositions, defaultWorkspace;
+    let savedPositions, defaultWorkspace, savedWorkspace;
     await check('installedCanvasCloneExact', async () => {
       clonedTypes = await type('line');
       defaultWorkspace = await annotation(savedAnnotation);
@@ -1173,7 +1206,11 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       await clickElement(`document.querySelector('#ribbonTab-common')`);
       await prompt('#btnCanvasClone', CANVAS);
       step = 'canvas-activated';
-      await until(() => evaluate(`state.canvasId > 0 && state.canvasName === ${JSON.stringify(CANVAS)} && !state.graphLoading`), 15000);
+      await until(() => evaluate(`(() => {
+        const action = window.FundsCanvasActions?.status?.();
+        return state.canvasId > 0 && state.canvasName === ${JSON.stringify(CANVAS)} && !state.graphLoading
+          && action?.pending === false && action?.unknown === false;
+      })()`), 15000);
       await graph(3, flowIds);
       step = 'canvas-clone-verify';
       let cloneSnapshot;
@@ -1195,17 +1232,26 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     await check('installedCanvasSaveRestoreTypes', async () => {
       await check('installedCanvasSaveRestoreAnnotation', async () => {
         savedTypes = await type('polyline'); await prompt('#btnCanvasSave', CANVAS);
-        await until(() => evaluate(`[...document.querySelectorAll('#toasts .toast')].some(node => node.textContent.includes('形态已保存'))`), 10000);
-        savedPositions = positions(await annotation(savedAnnotation));
+        await until(() => evaluate(`(() => {
+          const action = window.FundsCanvasActions?.status?.();
+          return [...document.querySelectorAll('#toasts .toast')].some(node => node.textContent.includes('形态已保存'))
+            && action?.pending === false && action?.unknown === false;
+        })()`), 10000);
+        savedWorkspace = await annotation(savedAnnotation);
+        savedPositions = positions(savedWorkspace);
         step = 'canvas-default';
-        await select('#canvasSel', '0'); await graph(3, flowIds);
+        await select('#canvasSel', '0');
+        await waitForWorkspaceRecovered(evaluate, until, defaultWorkspace, flowIds, 3);
+        await graph(3, flowIds);
         step = 'canvas-default';
         // The default canvas retains its own pre-clone draft, independently
         // from the polyline presentation saved in the named canvas.
         assertWorkspaceRestored(await annotation(savedAnnotation), defaultWorkspace,
           flowIds, 3, savedAnnotation);
         step = 'canvas-restored';
-        await select('#canvasSel', CANVAS, true); await graph(3, flowIds);
+        await select('#canvasSel', CANVAS, true);
+        await waitForWorkspaceRecovered(evaluate, until, savedWorkspace, flowIds, 3);
+        await graph(3, flowIds);
         step = 'canvas-restored';
         assertEdgeTypes(await evaluate(GRAPH_PROBE), savedTypes);
         assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'polyline'`), true);

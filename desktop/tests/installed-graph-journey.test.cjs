@@ -705,9 +705,9 @@ test('the actual restore sequence restores each parent step only after its graph
   assert.ok(start >= 0 && end > start);
   for (const stop of ['default', 'named', 'graph']) {
     const events = [], stopError = new Error('SYN stop after the unchanged restore action');
-    const context = vm.createContext({ flowIds: ['71', '72', '73'], savedAnnotation: {}, defaultWorkspace: {}, savedTypes: {}, editedEdge: 'SYN edge', CANVAS: 'SYN canvas', GRAPH_PROBE: 'SYN graph probe', assert,
+    const context = vm.createContext({ flowIds: ['71', '72', '73'], savedAnnotation: {}, defaultWorkspace: {}, savedWorkspace: {}, savedTypes: {}, editedEdge: 'SYN edge', CANVAS: 'SYN canvas', GRAPH_PROBE: 'SYN graph probe', assert,
       select: async (...args) => events.push(['select', ...args]), graph: async () => { context.step = 'graph-visible'; if (stop === 'graph') throw stopError; },
-      annotation: async () => ({}), evaluate: async () => true,
+      annotation: async () => ({}), evaluate: async () => true, until: async () => {}, waitForWorkspaceRecovered: async () => {},
       assertWorkspaceRestored: () => { events.push(['default', context.step]); if (stop === 'default') throw stopError; },
       assertEdgeTypes: () => { events.push(['named', context.step]); throw stopError; } });
     await assert.rejects(vm.runInContext(`(async()=>{${source.slice(start, end)}})()`, context), error => error === stopError);
@@ -881,5 +881,215 @@ for (const newline of ['LF', 'CRLF']) test(`clone summaries and the final whitel
   for (const [step, kind] of [['canvas-clone-verify', 'assertion'], ['canvas-restored', 'assertion'], ['canvas-clone-verify', 'runtime']]) {
     const detail = safeJourneyFailure({ installedGraphDiagnostic: { step, kind, cloneShape: raw } });
     assert.equal(!!detail.cloneShape, step === 'canvas-clone-verify' && kind === 'assertion');
+  }
+});
+
+function recoverySnapshot(canvasId = '0') {
+  const value = annotationObserved(), amount_totals = [{ currency: 'CNY', amount: '345.67' }];
+  value.accounts.push('SYN-INST-D'); value.trackedIds.push('73');
+  value.edges.push({ source: 'SYN-INST-C', target: 'SYN-INST-D', ids: ['73'], total: '345.67', cnt: 1, amount_totals });
+  value.renderedNodes.push({ id: 'SYN-INST-D', x: 420, y: 30, drawnInContainer: true });
+  value.renderedEdges.push({ source: 'SYN-INST-C', target: 'SYN-INST-D', ids: ['73'], type: 'quadratic', drawn: true, amount_totals });
+  value.binding = { caseId: '7', caseName: cloneCase, canvasId, canvasName: canvasId === '0' ? '默认画布' : cloneCanvas };
+  value.labelContext = { selectedIds: ['SYN-INST-C'], selectedEdge: cloneKeys[0], hoveredAccount: null, previewIds: [] };
+  value.diagnosticBinding = { ...cloneBinding, canvasId }; return value;
+}
+function workspaceRecoveryApi(newline = 'LF', required = true, probe = 'SYN_WORKSPACE_PROBE') {
+  const source = graphHelperSource(), end = source.indexOf('const GRAPH_PROBE ='), errors = [];
+  const observedAssert = new Proxy(assert, { get(target, key) {
+    const value = Reflect.get(target, key);
+    if (!['ok', 'equal', 'deepEqual', 'strictEqual', 'deepStrictEqual'].includes(key)) return value;
+    return (...args) => { try { return value(...args); } catch (error) { errors.push(error); throw error; } };
+  } });
+  const prefix = source.slice(0, end), compiled = vm.runInThisContext(`(function(require,__filename,GRAPH_PROBE){\n${newline === 'CRLF' ? prefix.replace(/\n/g, '\r\n') : prefix}
+    return {assertWorkspaceRecovered:typeof assertWorkspaceRecovered==='function'?assertWorkspaceRecovered:undefined,
+      waitForWorkspaceRecovered:typeof waitForWorkspaceRecovered==='function'?waitForWorkspaceRecovered:undefined,readAssertionLocation};})`,
+    { filename: graphHelperPath, lineOffset: -1 });
+  const api = compiled(name => name === 'node:assert/strict' ? observedAssert : require(name), graphHelperPath, probe);
+  if (required) for (const name of ['assertWorkspaceRecovered', 'waitForWorkspaceRecovered']) assert.equal(typeof api[name], 'function', `W12 must provide ${name}`);
+  return { ...api, errors };
+}
+function recoverySentinel(expression, snapshot) {
+  return vm.runInNewContext(expression, { state: { graphLoading: false, graphInited: true, graph: {}, graphSelection: {} }, SYN_WORKSPACE_PROBE: snapshot });
+}
+
+for (const newline of ['LF', 'CRLF']) test(`logical workspace recovery admits offscreen state but rejects permanent persisted differences with ${newline} helpers`, async () => {
+  const api = workspaceRecoveryApi(newline), ids = ['71', '72', '73'];
+  for (const canvasId of ['0', '9']) {
+    const expected = recoverySnapshot(canvasId), original = JSON.stringify(expected), outside = structuredClone(expected);
+    outside.renderedNodes[0].drawnInContainer = false; outside.renderedAnnotations[0].bounds = { minX: 1000, minY: 1000, maxX: 1100, maxY: 1100 };
+    outside.labelContext.hoveredAccount = 'SYN-INST-D'; outside.labelContext.previewIds = ['SYN-INST-A']; outside.camera[6] += 300;
+    outside.diagnosticBinding.caseGeneration++; outside.diagnosticBinding.canvasGeneration++;
+    assert.doesNotThrow(() => api.assertWorkspaceRecovered(outside, expected, ids, 3));
+    assert.throws(() => assertWorkspaceRestored(outside, expected, ids, 3, expectedAnnotation), { code: 'ERR_ASSERTION' });
+    for (const mutate of [value => { value.ready = false; }, value => { value.binding.caseId = '8'; }, value => { value.binding.caseName = 'SYN other'; },
+      value => { value.binding.canvasId = '10'; }, value => { value.binding.canvasName = 'SYN other'; }, value => { value.accounts.pop(); },
+      value => { value.trackedIds.pop(); }, value => { value.edges[0].total = '0.03'; }, value => { value.renderedEdges[0].type = 'line'; },
+      value => { value.renderedNodes[0].x += 1; }, value => { value.annotations[0].text = 'SYN different note'; },
+      value => { value.labelContext.selectedIds = []; }, value => { value.labelContext.selectedEdge = null; }]) {
+      const actual = structuredClone(expected); mutate(actual); let reads = 0;
+      await assert.rejects(api.waitForWorkspaceRecovered(async expression => { reads++; return recoverySentinel(expression, actual); },
+        async (predicate, ms) => { assert.equal(ms, 15000); for (let round = 0; round < 3; round++) assert.equal(Boolean(await predicate()), false); throw new Error('TIMEOUT'); }, expected, ids, 3), error => {
+        assert.equal(error, api.errors.at(-1), 'the cutoff rethrows the last original synchronous assertion');
+        const location = api.readAssertionLocation(error); assert.ok(location); assert.match(graphHelperSource().split('\n')[location.line - 1], /assert\./); return true;
+      });
+      assert.equal(reads, 3); assert.equal(JSON.stringify(expected), original);
+    }
+  }
+  const statement = 'assert.deepEqual(await evaluate(selectionProbe), selection);'; assert.ok(graphHelperSource().includes(statement));
+  await assert.rejects(vm.runInNewContext(`(async()=>{${statement}})()`, { assert, selectionProbe: 'SYN selection',
+    selection: { nodes: ['SYN-INST-C'], edge: cloneKeys[0] }, evaluate: async () => ({ nodes: [], edge: null }) }), { code: 'ERR_ASSERTION' });
+});
+
+for (const newline of ['LF', 'CRLF']) test(`workspace recovery preserves evaluate and CDP rejection identity after an earlier mismatch with ${newline} helpers`, async () => {
+  const api = workspaceRecoveryApi(newline), expected = recoverySnapshot(), pending = structuredClone(expected); pending.labelContext.selectedEdge = null;
+  for (const failure of [Object.assign(new Error('SYN runtime assertion'), { code: 'ERR_ASSERTION' }), new Error('TIMEOUT'), new Error('CDP_TIMEOUT')]) {
+    let reads = 0;
+    await assert.rejects(api.waitForWorkspaceRecovered(async expression => { if (++reads === 1) return recoverySentinel(expression, pending); throw failure; },
+      async (predicate, ms) => { assert.equal(ms, 15000); assert.equal(Boolean(await predicate()), false); await predicate(); }, expected, ['71', '72', '73'], 3), error => error === failure);
+    assert.equal(reads, 2);
+  }
+  const cutoff = new Error('TIMEOUT');
+  await assert.rejects(api.waitForWorkspaceRecovered(async () => expected, async () => { throw cutoff; }, expected, ['71', '72', '73'], 3), error => error === cutoff);
+});
+
+for (const newline of ['LF', 'CRLF']) test(`the exact clone and save predicates require explicit idle status with ${newline} source`, async () => {
+  const source = graphHelperSource(), waits = [
+    ["    await check('installedCanvasCloneExact'", "    await check('installedCanvasSaveRestoreTypes'", 15000],
+    ["      await check('installedCanvasSaveRestoreAnnotation'", "        step = 'canvas-default';", 10000],
+  ];
+  for (const [from, to, deadline] of waits) {
+    const start = source.indexOf(from), block = source.slice(start, source.indexOf(to, start + from.length));
+    const match = /await until\(\(\) => evaluate\((`[\s\S]*?`)\), (15000|10000)\);/.exec(block); assert.ok(match);
+    for (const action of [{ pending: true, unknown: false }, { pending: false, unknown: true }, {}, null, { pending: 'false', unknown: false }, { pending: false, unknown: false }]) {
+      let admitted, statusReads = 0;
+      const context = vm.createContext({ CANVAS: cloneCanvas, state: { canvasId: 9, canvasName: cloneCanvas, graphLoading: false },
+        window: { FundsCanvasActions: { status: () => { statusReads++; return action; } } },
+        document: { querySelectorAll: () => [{ textContent: '形态已保存' }] },
+        until: async (predicate, ms) => { assert.equal(ms, deadline); admitted = await predicate(); } });
+      context.evaluate = expression => vm.runInContext(expression, context);
+      const statement = newline === 'CRLF' ? match[0].replace(/\n/g, '\r\n') : match[0];
+      await vm.runInContext(`(async()=>{${statement}})()`, context);
+      assert.equal(admitted, action?.pending === false && action?.unknown === false, 'pending/unknown cannot cross the actual action wait');
+      assert.equal(statusReads, 1, 'the status is read once per actual wait predicate');
+    }
+  }
+});
+
+for (const newline of ['LF', 'CRLF']) test(`the real default and named restore sequence waits for the original selection before Finder with ${newline} helpers`, async () => {
+  const api = workspaceRecoveryApi(newline, false), source = graphHelperSource();
+  const start = source.indexOf("    await check('installedCanvasSaveRestoreTypes'"), end = source.indexOf("    await check('installedCanvasUndoRedoTypes'", start);
+  assert.ok(start >= 0 && end > start);
+  const defaultWorkspace = recoverySnapshot('0'), savedWorkspace = recoverySnapshot('9');
+  for (const edge of defaultWorkspace.renderedEdges) edge.type = 'line';
+  for (const edge of savedWorkspace.renderedEdges) edge.type = 'polyline';
+  const original = JSON.stringify([defaultWorkspace, savedWorkspace]), events = []; let current = savedWorkspace, target, reads = 0, savedReads = 0;
+  const context = vm.createContext({ assert, GRAPH_PROBE: 'SYN_WORKSPACE_PROBE', CANVAS: cloneCanvas, editedEdge: cloneKeys[0],
+    defaultWorkspace, savedAnnotation: expectedAnnotation, flowIds: ['71', '72', '73'],
+    state: { edgeTypes: { [cloneKeys[0]]: 'polyline' }, graphLoading: false, graphInited: true, graph: {}, graphSelection: {} }, window: { FundsCanvasActions: { status: () => ({ pending: false, unknown: false }) } },
+    document: { querySelectorAll: () => [{ textContent: '形态已保存' }] },
+    check: async (_name, action) => action(), type: async () => Object.fromEntries(cloneKeys.map(key => [key, 'polyline'])), prompt: async () => {},
+    annotation: async () => { if (!target) savedReads++; return current; },
+    positions: value => value.renderedNodes.map(node => [node.id, node.x, node.y]).sort((a, b) => a[0].localeCompare(b[0])),
+    select: async (_selector, value) => { target = value === '0' ? defaultWorkspace : savedWorkspace; events.push(['select', target.binding.canvasId]);
+      current = structuredClone(target); current.labelContext.selectedIds = []; current.labelContext.selectedEdge = null; current.renderedNodes[0].drawnInContainer = false; },
+    graph: async () => {
+      assert.deepEqual({ nodes: current.labelContext.selectedIds, edge: current.labelContext.selectedEdge },
+        { nodes: target.labelContext.selectedIds, edge: target.labelContext.selectedEdge }, 'Finder cannot start before the exact restored selection');
+      events.push(['finder', target.binding.canvasId]); current.renderedNodes[0].drawnInContainer = true;
+    },
+    assertWorkspaceRestored, assertEdgeTypes,
+    waitForWorkspaceRecovered: async (evaluate, until, expected, ids, count) => {
+      assert.equal(expected, target, 'the wait uses the original actual snapshot'); await api.waitForWorkspaceRecovered(evaluate, until, expected, ids, count);
+    },
+    until: async (predicate, ms) => {
+      if (ms === 10000) { assert.equal(await predicate(), true); return; }
+      assert.equal(ms, 15000); assert.equal(current.ready, true); const finders = events.filter(event => event[0] === 'finder').length;
+      assert.equal(Boolean(await predicate()), false); assert.equal(events.filter(event => event[0] === 'finder').length, finders);
+      current.labelContext.selectedIds = [...target.labelContext.selectedIds]; current.labelContext.selectedEdge = target.labelContext.selectedEdge;
+      assert.equal(Boolean(await predicate()), true);
+    } });
+  Object.defineProperty(context, 'SYN_WORKSPACE_PROBE', { get() { reads++; return current; } });
+  context.evaluate = async expression => vm.runInContext(expression, context);
+  const block = newline === 'CRLF' ? source.slice(start, end).replace(/\n/g, '\r\n') : source.slice(start, end);
+  await vm.runInContext(`(async()=>{let savedTypes,savedPositions,savedWorkspace;${block}})()`, context);
+  assert.deepEqual(events, [['select', '0'], ['finder', '0'], ['select', '9'], ['finder', '9']]);
+  assert.equal(savedReads, 1, 'saving captures annotation once and derives positions from that same snapshot');
+  assert.equal(reads, 5, 'two polls per restore plus the original named edge-type read');
+  assert.equal(JSON.stringify([defaultWorkspace, savedWorkspace]), original);
+});
+
+function workspaceTransitionFixture(newline = 'LF') {
+  const source = graphHelperSource(), start = source.indexOf('const GRAPH_PROBE ='), end = source.indexOf('\nasync function runInstalledGraphJourney(', start);
+  assert.ok(start >= 0 && end > start);
+  const probe = vm.runInNewContext(`${source.slice(start, end)};GRAPH_PROBE`), snapshot = recoverySnapshot();
+  const shape = (name, attrs = {}, bounds = { minX: 1, minY: 1, maxX: 20, maxY: 20 }) => ({
+    get: key => key === 'name' ? name : key === 'type' ? 'text' : key === 'destroyed' ? false : key === 'visible' ? true : null,
+    attr: key => attrs[key], getCanvasBBox: () => ({ ...bounds, width: bounds.maxX - bounds.minX, height: bounds.maxY - bounds.minY }),
+  });
+  const item = (model, children = []) => ({ getModel: () => model, getKeyShape: () => shape('key'),
+    getContainer: () => ({ get: key => key === 'children' ? children : key === 'visible' ? true : null }) });
+  const nodes = snapshot.renderedNodes.map(model => item({ ...model, fundsLabel: 'SYN label', label: 'SYN label' },
+    model.id === expectedAnnotation.id ? [shape('funds-node-annotation', snapshot.renderedAnnotations[0], snapshot.renderedAnnotations[0].bounds)] : []));
+  const edges = snapshot.renderedEdges.map(model => item({ ...model, data: { ids: model.ids, amount_totals: model.amount_totals } }));
+  const graph = { getNodes: () => nodes, getEdges: () => edges, getZoom: () => 1.5,
+    getClientByPoint: (x, y) => ({ x: x * 1.5 + 100, y: y * 1.5 + 50 }), get: key => key === 'group' ? { getMatrix: () => snapshot.camera } : null };
+  const selection = { ids: new Set(snapshot.labelContext.selectedIds) }, state = { graphLoading: false, graphInited: true, graph, graphSelection: selection,
+    caseId: 7, canvasId: 0, caseGeneration: 11, canvasGeneration: 3, canvasName: '默认画布', cases: [{ id: 7, name: cloneCase }],
+    lastGraph: { nodes: snapshot.accounts.map(account => ({ account })), edges: snapshot.edges }, tracked: new Set(snapshot.trackedIds),
+    presentation: { annotations: snapshot.annotations }, graphView: { labelMode: 'auto', previewAccounts: new Set(), selectedAccount: null,
+      hoveredAccount: null, selectedEdge: snapshot.labelContext.selectedEdge, exportDepth: 0, viewportFrame: null, labelTimer: null, zoomSettling: false } };
+  const context = vm.createContext({ state, layoutJob: null, location: { origin: cloneBinding.origin }, performance: { timeOrigin: cloneBinding.timeOrigin },
+    window: { FundsCanvasEditor: { history: { status: () => ({ busy: false }) } } } });
+  let touches = 0, failure = null, evaluations = 0;
+  const document = { get querySelector() { touches++; if (failure) throw failure;
+    return selector => { assert.equal(selector, '#graphContainer'); return { getBoundingClientRect: () => ({ left: 0, top: 0, right: 900, bottom: 600, width: 900, height: 600 }) }; }; } };
+  context.document = document;
+  const expected = clonePlain(vm.runInContext(probe, context)); touches = 0;
+  return { api: workspaceRecoveryApi(newline, true, probe), context, state, graph, selection, expected,
+    get touches() { return touches; }, get evaluations() { return evaluations; }, set failure(error) { failure = error; },
+    evaluate: async expression => { evaluations++; return clonePlain(vm.runInContext(expression, context)); } };
+}
+
+for (const newline of ['LF', 'CRLF']) test(`the real recovery expression avoids the full probe during normal loading transitions with ${newline} helpers`, async () => {
+  for (const field of ['graphSelection', 'graph', 'graphLoading', 'graphInited']) {
+    const f = workspaceTransitionFixture(newline), original = f.state[field]; f.state[field] = field === 'graphLoading' ? true : field === 'graphInited' ? false : null;
+    f.failure = new Error('SYN full probe DOM getter must not run during a normal transition');
+    await f.api.waitForWorkspaceRecovered(f.evaluate, async (predicate, ms) => {
+      assert.equal(ms, 15000); assert.equal(Boolean(await predicate()), false); assert.equal(f.touches, 0);
+      f.state[field] = original; f.failure = null; assert.equal(Boolean(await predicate()), true); assert.equal(f.touches, 1);
+    }, f.expected, ['71', '72', '73'], 3);
+    assert.equal(f.evaluations, 2, 'each poll executes exactly one real JavaScript expression');
+  }
+});
+
+for (const newline of ['LF', 'CRLF']) test(`the real full probe still enforces restored selection and permanent unready cutoff with ${newline} helpers`, async () => {
+  const f = workspaceTransitionFixture(newline); f.state.graphView.selectedEdge = null;
+  await f.api.waitForWorkspaceRecovered(f.evaluate, async (predicate, ms) => {
+    assert.equal(ms, 15000); assert.equal(Boolean(await predicate()), false);
+    f.state.graphView.selectedEdge = f.expected.labelContext.selectedEdge; assert.equal(Boolean(await predicate()), true);
+  }, f.expected, ['71', '72', '73'], 3);
+  assert.equal(f.evaluations, 2); assert.equal(f.touches, 2);
+  const blocked = workspaceTransitionFixture(newline); blocked.state.graphSelection = null;
+  blocked.failure = new Error('SYN full probe DOM must remain untouched');
+  await assert.rejects(blocked.api.waitForWorkspaceRecovered(blocked.evaluate, async (predicate, ms) => {
+    assert.equal(ms, 15000); for (let poll = 0; poll < 3; poll++) assert.equal(Boolean(await predicate()), false); throw new Error('TIMEOUT');
+  }, blocked.expected, ['71', '72', '73'], 3), error => {
+    assert.equal(error, blocked.api.errors.at(-1)); assert.equal(error.code, 'ERR_ASSERTION'); assert.ok(blocked.api.readAssertionLocation(error)); return true;
+  });
+  assert.equal(blocked.evaluations, 3); assert.equal(blocked.touches, 0);
+});
+
+for (const newline of ['LF', 'CRLF']) test(`ready full-probe exceptions and CDP failures retain identity after a mismatch with ${newline} helpers`, async () => {
+  for (const transport of ['expression', 'cdp']) for (const error of [Object.assign(new Error('SYN ready DOM getter'), { code: 'ERR_ASSERTION' }), new Error('TIMEOUT')]) {
+    const f = workspaceTransitionFixture(newline); f.state.graphView.selectedEdge = null; let calls = 0;
+    const evaluate = async expression => {
+      if (++calls === 2) { if (transport === 'cdp') throw error; f.failure = error; }
+      return f.evaluate(expression);
+    };
+    await assert.rejects(f.api.waitForWorkspaceRecovered(evaluate, async (predicate, ms) => {
+      assert.equal(ms, 15000); assert.equal(Boolean(await predicate()), false); await predicate();
+    }, f.expected, ['71', '72', '73'], 3), failure => failure === error);
+    assert.equal(calls, 2); assert.equal(f.touches, transport === 'expression' ? 2 : 1);
   }
 });
