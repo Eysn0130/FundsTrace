@@ -28,7 +28,7 @@ function fixture(options = {}) {
     return context;
   };
   const context = operations(), base = operations(), events = new Map(), captured = new Set();
-  const callbacks = new Map(), allCallbacks = [], navigations = [], cancelled = [], statuses = [], focuses = [];
+  const callbacks = new Map(), allCallbacks = [], navigations = [], navigationMeta = [], gestures = [], cancelled = [], statuses = [], focuses = [];
   let nextId = 0;
   const canvas = { width: 200, height: 120, getContext: () => context,
     getBoundingClientRect: () => ({ left: 20, top: 30, width: 100, height: 60 }),
@@ -38,15 +38,137 @@ function fixture(options = {}) {
     setPointerCapture: id => captured.add(id), releasePointerCapture: id => captured.delete(id) };
   const backing = { width: 0, height: 0, getContext: () => base };
   const api = minimap.create({ ...options, canvas, createCanvas: () => backing,
-    onNavigate: point => { navigations.push(plain(point)); options.onNavigate?.(point); },
+    onNavigate: (point, meta) => { navigations.push(plain(point)); navigationMeta.push(meta && plain(meta)); options.onNavigate?.(point, meta); },
+    onGestureStart: () => { gestures.push(true); options.onGestureStart?.(); },
     onStatusChange: status => { statuses.push(plain(status)); options.onStatusChange?.(status); },
     raf: fn => { const id = ++nextId; callbacks.set(id, fn); allCallbacks.push(fn); return id; },
     caf: id => { callbacks.delete(id); cancelled.push(id); } });
   const event = (name, values = {}) => events.get(name)?.({ pointerId: 1, button: 0, clientX: 70, clientY: 60,
     preventDefault() {}, ...values });
   const flush = () => { const work = [...callbacks.values()]; callbacks.clear(); work.forEach(fn => fn()); };
-  return { api, canvas, backing, context, base, events, captured, callbacks, allCallbacks, navigations, cancelled, statuses, focuses, event, flush };
+  return { api, canvas, backing, context, base, events, captured, callbacks, allCallbacks, navigations, navigationMeta, gestures,
+    cancelled, statuses, focuses, event, flush };
 }
+
+test('a primary click confirms once on pointer-up with bounded graph and logical canvas coordinates', () => {
+  const f = fixture();
+  f.api.setData({ nodes: [{ x: -100, y: -50 }, { x: 100, y: 50 }] }); f.flush();
+  f.event('pointerdown', { clientX: 118 }); f.flush();
+  assert.deepEqual(f.navigations, [], 'pressing the map does not locate before the gesture is classified');
+  assert.equal(f.captured.has(1), true); assert.equal(f.gestures.length, 1);
+  f.event('pointerup', { clientX: 118 });
+  assert.equal(f.captured.size, 0); assert.deepEqual(f.navigations, [], 'confirmation remains frame-coalesced');
+  f.flush();
+  assert.deepEqual(f.navigations, [{ x: 100, y: 0 }]);
+  assert.deepEqual(f.navigationMeta, [{ kind: 'click', position: { x: 196, y: 60 } }]);
+  f.event('pointerup', { clientX: 118 }); f.event('pointermove'); f.flush();
+  assert.equal(f.navigations.length, 1, 'release or move events after completion cannot repeat the click');
+});
+
+test('an inside click with sub-four-pixel CSS jitter locates the released point once', () => {
+  const f = fixture();
+  f.canvas.width = 216; f.canvas.height = 116;
+  f.canvas.getBoundingClientRect = () => ({ left: 20, top: 30, width: 108, height: 58 });
+  f.api.setData({ nodes: [{ x: -100, y: -50 }, { x: 100, y: 50 }] });
+  f.api.setViewport({ minX: -40, minY: -20, maxX: 40, maxY: 20 }); f.flush();
+  f.event('pointerdown', { clientX: 84, clientY: 54 });
+  f.event('pointermove', { clientX: 86, clientY: 55 }); f.flush();
+  assert.deepEqual(f.navigations, [], 'minor pointer jitter is not a drag');
+  f.event('pointerup', { clientX: 85, clientY: 54 }); f.flush();
+  assert.deepEqual(f.navigations, [{ x: 22, y: -10 }]);
+  assert.deepEqual(f.navigationMeta, [{ kind: 'click', position: { x: 130, y: 48 } }]);
+});
+
+test('outside dragging keeps the viewport down offset and reports only drag targets through host feedback', () => {
+  const f = fixture();
+  f.canvas.width = 216; f.canvas.height = 116;
+  f.canvas.getBoundingClientRect = () => ({ left: 20, top: 30, width: 108, height: 58 });
+  f.api.setData({ nodes: [{ x: -100, y: -50 }, { x: 100, y: 50 }] });
+  f.api.setViewport({ minX: -40, minY: -20, maxX: 40, maxY: 20 }); f.flush();
+  f.event('pointerdown', { clientX: 34, clientY: 44 }); f.flush();
+  assert.deepEqual(f.navigations, [], 'pressing outside the viewport cannot jump before a relative drag');
+  f.event('pointermove', { clientX: 44, clientY: 49 }); f.flush();
+  assert.deepEqual(f.navigations, [{ x: 20, y: 10 }]);
+  f.api.setViewport({ minX: -20, minY: -10, maxX: 60, maxY: 30 });
+  f.event('pointermove', { clientX: 54, clientY: 54 }); f.flush();
+  assert.deepEqual(f.navigations.at(-1), { x: 40, y: 20 });
+  f.event('pointerup', { clientX: 54, clientY: 54 }); f.flush();
+  assert.equal(f.captured.size, 0); assert.deepEqual(f.navigations.at(-1), { x: 40, y: 20 });
+  assert.deepEqual(f.navigationMeta.map(meta => meta.kind), ['drag', 'drag', 'drag']);
+  assert.deepEqual(f.navigationMeta.at(-1).position, { x: 68, y: 48 });
+});
+
+test('drag takeover starts from the live viewport supplied synchronously by gesture start', () => {
+  const f = fixture({ onGestureStart() {
+    f.api.setViewport({ minX: -20, minY: -10, maxX: 60, maxY: 30 });
+  } });
+  f.canvas.width = 216; f.canvas.height = 116;
+  f.canvas.getBoundingClientRect = () => ({ left: 20, top: 30, width: 108, height: 58 });
+  f.api.setData({ nodes: [{ x: -100, y: -50 }, { x: 100, y: 50 }] });
+  f.api.setViewport({ minX: -40, minY: -20, maxX: 40, maxY: 20 }); f.flush();
+  f.event('pointerdown', { clientX: 84, clientY: 54 });
+  f.event('pointermove', { clientX: 94, clientY: 59 }); f.flush();
+  assert.deepEqual(f.navigations, [{ x: 40, y: 20 }],
+    'the live center (20,10) plus CSS movement (10,5) at 2x scale must not pull back to the cached center');
+  f.event('pointerup', { clientX: 94, clientY: 59 }); f.flush();
+  assert.deepEqual(f.navigations.at(-1), { x: 40, y: 20 });
+  assert.deepEqual(f.navigationMeta.map(meta => meta.kind), ['drag', 'drag']);
+});
+
+test('the four CSS pixel threshold includes a release without move events and stays a drag after returning', () => {
+  const f = fixture();
+  f.canvas.width = 216; f.canvas.height = 116;
+  f.canvas.getBoundingClientRect = () => ({ left: 20, top: 30, width: 108, height: 58 });
+  f.api.setData({ nodes: [{ x: -100, y: -50 }, { x: 100, y: 50 }] });
+  f.api.setViewport({ minX: -40, minY: -20, maxX: 40, maxY: 20 }); f.flush();
+  f.event('pointerdown', { clientX: 84, clientY: 54 });
+  f.event('pointermove', { clientX: 87.9, clientY: 54 }); f.flush();
+  assert.deepEqual(f.navigations, []);
+  f.event('pointerup', { clientX: 88, clientY: 54 }); f.flush();
+  assert.deepEqual(f.navigations, [{ x: 8, y: 0 }]); assert.equal(f.navigationMeta[0].kind, 'drag');
+  f.event('pointerdown', { clientX: 84, clientY: 54 });
+  f.event('pointerup', { clientX: 88, clientY: 54 }); f.flush();
+  assert.deepEqual(f.navigations.at(-1), { x: 8, y: 0 }); assert.equal(f.navigationMeta.at(-1).kind, 'drag');
+  f.event('pointerdown', { clientX: 84, clientY: 54 });
+  f.event('pointermove', { clientX: 88, clientY: 54 });
+  f.event('pointerup', { clientX: 84, clientY: 54 }); f.flush();
+  assert.deepEqual(f.navigations.at(-1), { x: 0, y: 0 }); assert.equal(f.navigationMeta.at(-1).kind, 'drag');
+});
+
+test('gesture start runs synchronously before capture and focus and revocation inside it fails closed', () => {
+  for (const revoke of [api => api.clear(), api => api.setData({ nodes: [{ x: 5, y: 5 }] }), api => api.destroy(),
+    api => { api.setEnabled(false); api.setEnabled(true); }, api => api.cancelNavigation(), () => { throw Error('cancel'); }]) {
+    let f;
+    f = fixture({ onGestureStart() {
+      assert.equal(f.captured.size, 0); assert.deepEqual(f.focuses, []); revoke(f.api);
+    } });
+    f.api.setData({ nodes: [{ x: -100, y: -50 }, { x: 100, y: 50 }] }); f.flush();
+    f.event('pointerdown');
+    assert.equal(f.gestures.length, 1); assert.equal(f.captured.size, 0); assert.deepEqual(f.focuses, []);
+    f.event('pointerup'); f.flush(); assert.deepEqual(f.navigations, []);
+  }
+  let busy = false;
+  const f = fixture({ canNavigate: () => !busy, onGestureStart: () => { busy = true; } });
+  f.api.setData({ nodes: [{ x: -100, y: -50 }, { x: 100, y: 50 }] }); f.flush();
+  f.event('pointerdown'); f.event('pointerup'); f.flush();
+  assert.equal(f.gestures.length, 1); assert.equal(f.captured.size, 0); assert.deepEqual(f.navigations, []);
+});
+
+test('revocation cancels queued click and final drag targets after capture has already been released', () => {
+  for (const kind of ['click', 'drag']) {
+    for (const revoke of [api => api.cancelNavigation(), api => { api.setEnabled(false); api.setEnabled(true); },
+      api => api.clear(), api => api.setData({ nodes: [{ x: 1000, y: 1000 }] }), api => api.destroy()]) {
+      const f = fixture();
+      f.api.setData({ nodes: [{ x: -100, y: -50 }, { x: 100, y: 50 }] }); f.flush();
+      f.event('pointerdown');
+      f.event('pointerup', kind === 'drag' ? { clientX: 80 } : {});
+      const stale = f.allCallbacks.at(-1);
+      assert.equal(f.captured.size, 0); assert.equal(f.callbacks.size, 1);
+      revoke(f.api); stale(); f.flush();
+      assert.deepEqual(f.navigations, []); assert.equal(f.captured.size, 0);
+    }
+  }
+});
 
 test('bounds reject invalid inputs and expand one-point/one-axis graphs without a zero divisor', () => {
   assert.equal(minimap.bounds([]), null);
@@ -133,7 +255,7 @@ test('theme changes preserve pointer capture, pending navigation and a scheduled
   const f = fixture();
   f.api.setData({ nodes: [{ x: -100, y: -50 }, { x: 100, y: 50 }] });
   f.api.setViewport({ minX: -50, minY: -25, maxX: 50, maxY: 25 }); f.flush();
-  f.event('pointerdown', { clientX: 116 });
+  f.event('pointerdown'); f.event('pointermove', { clientX: 116 });
   const frames = f.allCallbacks.length;
   f.api.setTheme('light');
   assert.equal(f.captured.has(1), true); assert.equal(f.callbacks.size, 1); assert.equal(f.allCallbacks.length, frames);
@@ -169,7 +291,7 @@ test('custom colors override initial theme defaults until a changed legacy theme
 test('legacy theme changes after clear or destroy never restore old geometry or navigation', () => {
   const f = fixture({ theme: 'light' });
   f.api.setData({ nodes: [{ x: 1000, y: 1000 }, { x: 2000, y: 2000 }] }); f.flush();
-  f.event('pointerdown'); const stale = f.allCallbacks.at(-1);
+  f.event('pointerdown'); f.event('pointerup'); const stale = f.allCallbacks.at(-1);
   f.api.clear(); f.base.calls.length = 0; f.context.calls.length = 0;
   const status = f.api.getStatus();
   f.api.setTheme('dark'); stale(); f.flush();
@@ -189,7 +311,10 @@ test('click and captured drag navigate in graph coordinates, coalescing input an
   f.api.setData({ nodes: [{ x: -100, y: -50 }, { x: 100, y: 50 }] }); f.flush();
   f.event('pointerdown');
   assert.equal(f.captured.has(1), true); f.flush();
+  assert.deepEqual(f.navigations, []);
+  f.event('pointerup'); f.flush();
   assert.deepEqual(f.navigations, [{ x: 0, y: 0 }]);
+  f.event('pointerdown');
   f.event('pointermove', { clientX: 95 });
   f.event('pointermove', { clientX: 116 });
   f.flush();
@@ -201,6 +326,7 @@ test('click and captured drag navigate in graph coordinates, coalescing input an
   assert.equal(f.captured.size, 0);
   f.event('pointermove'); f.flush();
   assert.equal(f.navigations.length, 3);
+  assert.deepEqual(f.navigationMeta.map(meta => meta.kind), ['click', 'drag', 'drag']);
 });
 
 test('foreign pointers, secondary buttons, cancellation and empty geometry cannot navigate', () => {
@@ -210,6 +336,7 @@ test('foreign pointers, secondary buttons, cancellation and empty geometry canno
   f.api.setData({ nodes: [{ x: 0, y: 0 }] }); f.flush();
   f.event('pointerdown', { button: 2 }); f.event('pointerdown', { isPrimary: false }); f.flush();
   assert.equal(f.navigations.length, 0);
+  assert.equal(f.gestures.length, 0, 'empty geometry, secondary buttons and non-primary pointers cannot start a camera gesture');
   f.event('pointerdown'); f.event('pointermove', { pointerId: 2 });
   f.event('pointercancel'); f.flush();
   assert.equal(f.navigations.length, 0); assert.equal(f.captured.size, 0);
@@ -229,10 +356,11 @@ test('grabbing the viewport preserves the grabbed offset through host pan feedba
   f.event('pointerdown', { clientX: 84, clientY: 54 }); f.flush();
   assert.deepEqual(f.navigations, [], 'grabbing an off-center point must not jump the camera');
   f.event('pointerup', { clientX: 84, clientY: 54 }); f.flush();
-  assert.deepEqual(f.navigations, [], 'a click inside the viewport does not recenter it');
+  assert.deepEqual(f.navigations, [{ x: 20, y: -10 }], 'a confirmed inside click locates its world point');
+  assert.equal(f.navigationMeta[0].kind, 'click');
   f.event('pointerdown', { clientX: 84, clientY: 54 });
   f.event('pointermove', { clientX: 94, clientY: 59 }); f.flush();
-  assert.deepEqual(f.navigations, [{ x: 20, y: 10 }]);
+  assert.deepEqual(f.navigations, [{ x: 20, y: -10 }, { x: 20, y: 10 }]);
   f.api.setViewport({ minX: -20, minY: -10, maxX: 60, maxY: 30 });
   f.event('pointermove', { clientX: 104, clientY: 64 }); f.flush();
   assert.deepEqual(f.navigations.at(-1), { x: 40, y: 20 });
@@ -241,7 +369,10 @@ test('grabbing the viewport preserves the grabbed offset through host pan feedba
   assert.equal(f.captured.size, 0);
   // Clicking outside the viewport still locates the clicked world point.
   f.event('pointerdown', { clientX: 34, clientY: 44 }); f.flush();
+  assert.deepEqual(f.navigations.at(-1), { x: 80, y: 20 }, 'pressing outside still waits for release');
+  f.event('pointerup', { clientX: 34, clientY: 44 }); f.flush();
   assert.deepEqual(f.navigations.at(-1), { x: -80, y: -30 });
+  assert.equal(f.navigationMeta.at(-1).kind, 'click');
 });
 
 test('disabled, busy and explicitly cancelled navigation revoke capture and queued input', () => {
@@ -251,6 +382,7 @@ test('disabled, busy and explicitly cancelled navigation revoke capture and queu
   f.api.setEnabled(false); f.event('pointerdown'); f.flush();
   assert.equal(f.captured.size, 0); assert.deepEqual(f.navigations, []);
   f.api.setEnabled(true); f.event('pointerdown');
+  f.event('pointermove', { clientX: 80 });
   assert.equal(f.captured.has(1), true);
   busy = true; f.flush();
   assert.equal(f.captured.size, 0); assert.deepEqual(f.navigations, [], 'busy state is rechecked at RAF commit');
@@ -258,13 +390,14 @@ test('disabled, busy and explicitly cancelled navigation revoke capture and queu
   assert.equal(f.captured.size, 0, 'busy state also blocks starting a gesture');
   busy = false; f.event('pointermove'); f.flush();
   assert.deepEqual(f.navigations, [], 'an invalidated gesture cannot resume');
-  f.event('pointerdown'); const late = f.allCallbacks.at(-1);
+  f.event('pointerdown'); f.event('pointermove', { clientX: 80 }); const late = f.allCallbacks.at(-1);
   f.api.setEnabled(false); f.api.setEnabled(true); late(); f.flush();
   assert.equal(f.captured.size, 0); assert.deepEqual(f.navigations, [], 'reopening cannot submit old input');
   f.event('pointerdown'); f.api.cancelNavigation(); f.event('pointerup'); f.flush();
   assert.deepEqual(f.navigations, []); assert.equal(f.captured.size, 0);
-  f.event('pointerdown'); f.flush();
+  f.event('pointerdown'); f.event('pointerup'); f.flush();
   assert.deepEqual(f.navigations, [{ x: 0, y: 0 }]);
+  f.event('pointerdown');
   busy = true; f.event('pointermove');
   assert.equal(f.captured.size, 0, 'a newly busy gesture releases capture synchronously on input');
 });
@@ -284,6 +417,7 @@ test('an allowed map click focuses the canvas without scrolling while disabled o
   f.event('pointerdown');
   assert.deepEqual(f.focuses, [{ preventScroll: true }]);
   assert.equal(f.captured.has(1), true);
+  assert.equal(f.gestures.length, 1, 'disabled and busy presses never notify gesture start');
 });
 
 test('status is immutable geometry only and reports a viewport completely outside the graph', () => {
@@ -387,7 +521,7 @@ test('a color change cancels captured and queued navigation and preserves the en
   f.api.setEnabled(false);
   f.api.setColors({ main: '#e8b34f' }); f.event('pointerdown', { clientX: 116 }); f.flush();
   assert.equal(f.captured.size, 0); assert.deepEqual(f.navigations, [], 'recoloring does not enable a disabled map');
-  f.api.setEnabled(true); f.event('pointerdown', { clientX: 116 }); f.flush();
+  f.api.setEnabled(true); f.event('pointerdown', { clientX: 116 }); f.event('pointerup', { clientX: 116 }); f.flush();
   assert.deepEqual(f.navigations, [{ x: 100, y: 0 }], 'fresh navigation still uses the preserved geometry');
 });
 
@@ -395,7 +529,7 @@ test('colors changed after clear keep the map empty and carry forward without re
   const f = fixture();
   f.api.setData({ nodes: [{ x: -100, y: -50 }, { x: 100, y: 50 }] });
   f.api.setViewport({ minX: -50, minY: -25, maxX: 50, maxY: 25 }); f.flush();
-  f.event('pointerdown', { clientX: 116 }); const stale = f.allCallbacks.at(-1);
+  f.event('pointerdown', { clientX: 116 }); f.event('pointerup', { clientX: 116 }); const stale = f.allCallbacks.at(-1);
   f.api.clear();
   f.base.calls.length = 0; f.context.calls.length = 0;
   f.api.setColors({ main: '#e8b34f', viewportStroke: '#c56b4d', viewportFill: 'rgba(197,107,77,0.07)' });
@@ -417,14 +551,14 @@ test('colors changed after clear keep the map empty and carry forward without re
 test('clear synchronously erases a case, releases capture and rejects already dispatched old RAF callbacks', () => {
   const f = fixture();
   f.api.setData({ nodes: [{ x: 1000, y: 1000 }, { x: 2000, y: 2000 }] }); f.flush();
-  f.event('pointerdown'); const stale = f.allCallbacks.at(-1);
+  f.event('pointerdown'); f.event('pointermove', { clientX: 80 }); const stale = f.allCallbacks.at(-1);
   f.api.clear();
   assert.equal(f.callbacks.size, 0); assert.equal(f.captured.size, 0);
   assert.equal(f.context.calls.at(-1)[0], 'clearRect');
   const afterClear = f.context.calls.length;
   stale(); assert.equal(f.context.calls.length, afterClear); assert.equal(f.navigations.length, 0);
   f.api.setData({ nodes: [{ x: -100, y: -50 }, { x: 100, y: 50 }] }); f.flush();
-  f.event('pointerdown'); f.flush();
+  f.event('pointerdown'); f.event('pointerup'); f.flush();
   assert.deepEqual(f.navigations, [{ x: 0, y: 0 }]);
   stale(); assert.equal(f.navigations.length, 1);
 });
