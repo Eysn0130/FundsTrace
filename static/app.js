@@ -1354,6 +1354,11 @@ function bindMinimapNavigation() {
       state.graphCamera?.cancelFocus?.('minimap-chrome');
       scheduleGraphViewport(); scheduleGraphLabels();
     },
+    onLayoutChange: () => {
+      state.minimap?.cancelNavigation?.();
+      state.graphCamera?.cancelFocus?.('minimap-chrome');
+      scheduleGraphViewport(); scheduleGraphLabels();
+    },
     onThemeChange: (_theme, colors) => {
       minimapColors = colors;
       state.minimap?.setColors?.(colors);
@@ -1440,7 +1445,8 @@ function initGraph() {
   if (mini?.getContext && typeof FundsGraphMinimap !== 'undefined') {
     state.minimap = FundsGraphMinimap.create({ canvas: mini,
       colors: minimapColors,
-      canNavigate: () => minimapExpanded && state.graph === graph && graphCameraInteractionAllowed(),
+      canNavigate: () => minimapExpanded && minimapNavigation?.isNavigationAvailable?.() !== false
+        && state.graph === graph && graphCameraInteractionAllowed(),
       onStatusChange: () => syncMinimapNavigation(), onNavigate: point => {
       if (state.graph !== graph || !graphCameraInteractionAllowed()) return;
       state.graphCamera?.resize();
