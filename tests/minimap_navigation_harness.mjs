@@ -8,9 +8,10 @@ const plain = value => JSON.parse(JSON.stringify(value));
 
 // Run the real controller with bubbling events, native disabled clicks and focus.
 function harness({ saved, appearance = {}, accentColor = '', computedStyleSupport = true, storageThrows = false, fitSucceeds = true,
-  animationSupport = false, reducedMotion = false } = {}) {
+  animationSupport = false, reducedMotion = false, slot, reentrant = false, ribbonState } = {}) {
   const nodes = new Map(), actions = [], changes = [], writes = [], storageReads = [], storageWrites = [], themeChanges = [];
-  const animations = [], computedReads = [];
+  const animations = [], computedReads = [], layoutChanges = [], resizeObservers = [], mutationObservers = [];
+  const space = slot ? { width: 800, height: 600, right: 20, bottom: 20, ...slot } : null;
   const state = { loading: false, busy: false, hasNodes: true, zoom: 1, status: 'viewport' };
   const stored = new Map([['fund_minimap_expanded', saved]]);
   let doc, presentation = { opacity: '1', transform: 'translateY(0) scale(1)' };
@@ -27,6 +28,7 @@ function harness({ saved, appearance = {}, accentColor = '', computedStyleSuppor
     appendChild(child) { child.parentElement = this; this.children.push(child); return child; }
     contains(child) { return child === this || this.children.some(node => node.contains(child)); }
     setAttribute(name, value) { this.attributes.set(name, String(value)); }
+    removeAttribute(name) { this.attributes.delete(name); }
     getAttribute(name) { return this.attributes.get(name) ?? null; }
     addEventListener(type, listener) {
       const entries = this.listeners.get(type) || []; entries.push(listener); this.listeners.set(type, entries);
@@ -60,7 +62,11 @@ function harness({ saved, appearance = {}, accentColor = '', computedStyleSuppor
     const node = new Element(id); nodes.set(id, node); parent.appendChild(node); return node;
   };
   const ribbon = add('btnMinimap'), background = add('background');
-  const panel = add('graphMinimapPanel'), popover = add('graphMinimapPopover', panel);
+  if (ribbonState) { ribbon.disabled = ribbonState.disabled; ribbon.setAttribute('aria-disabled', ribbonState.ariaDisabled); }
+  const sidebarToggle = add('btnSidebarToggle');
+  const host = space ? add('canvasWrap') : null;
+  if (host) host.getBoundingClientRect = () => ({ left: 0, top: 0, width: space.width, height: space.height });
+  const panel = add('graphMinimapPanel', host || doc.body), popover = add('graphMinimapPopover', panel);
   const canvas = add('graphMinimap', popover);
   const status = add('minimapStatus', popover), empty = add('minimapEmpty', popover), recovery = add('minimapRecovery', popover);
   const emptyIcon = add('minimapEmptyIcon', empty);
@@ -70,10 +76,25 @@ function harness({ saved, appearance = {}, accentColor = '', computedStyleSuppor
   const motion = new Element('motionPreference'); motion.matches = reducedMotion;
   motion.change = matches => { motion.matches = matches; return motion.fire('change', { matches }); };
   const view = new Element('window');
+  view.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; this.targets = new Set(); this.disconnected = false; resizeObservers.push(this); }
+    observe(target) { this.targets.add(target); }
+    disconnect() { this.disconnected = true; this.targets.clear(); }
+    deliver() { this.callback([...this.targets].map(target => ({ target }))); }
+  };
+  view.MutationObserver = class {
+    constructor(callback) { this.callback = callback; this.disconnected = false; mutationObservers.push(this); }
+    observe(target) { this.target = target; }
+    disconnect() { this.disconnected = true; }
+    deliver(records = [{ target: host, type: 'attributes', attributeName: 'style' }]) { this.callback(records); }
+  };
   view.matchMedia = query => { assert.equal(query, '(prefers-reduced-motion: reduce)'); return motion; };
   if (computedStyleSupport) {
     view.getComputedStyle = node => {
       if (node === doc.documentElement) return { getPropertyValue: name => name === '--accent' ? accentColor : '' };
+      if (node === panel && space) return { getPropertyValue: name => ({ '--mm-width': '272px', '--mm-map-height': '170px',
+        '--mm-controls-height': '46px', '--mm-gap': '10px', right: `${space.right}px`, bottom: `${space.bottom}px` })[name] || '',
+        right: `${space.right}px`, bottom: `${space.bottom}px` };
       assert.equal(node, popover); computedReads.push({ ...presentation }); return { ...presentation };
     };
   }
@@ -100,7 +121,8 @@ function harness({ saved, appearance = {}, accentColor = '', computedStyleSuppor
   let previousRibbonCalls = 0;
   const previousRibbonClick = () => previousRibbonCalls++;
   ribbon.onclick = previousRibbonClick;
-  const controller = root.FundsMinimapNavigation.create({ document: doc, storage, getState: () => ({ ...state }),
+  let controller;
+  controller = root.FundsMinimapNavigation.create({ document: doc, storage, getState: () => ({ ...state }),
     onZoom(direction) {
       actions.push(['zoom', direction]);
       state.zoom = direction === 'reset' ? 1 : Math.max(0.02, Math.min(4, state.zoom * (direction === 'in' ? 1.2 : 1 / 1.2)));
@@ -112,13 +134,22 @@ function harness({ saved, appearance = {}, accentColor = '', computedStyleSuppor
       state.zoom = 0.8; state.status = 'viewport'; return true;
     },
     onPan(direction) { actions.push(['pan', direction]); return true; },
-    onExpandedChange(next) { changes.push(next); },
+    onExpandedChange(next) { changes.push(next); if (reentrant) controller?.sync(); },
+    onLayoutChange(next) { layoutChanges.push(plain(next)); if (reentrant) controller?.sync(); },
     onThemeChange(name, colors) { themeChanges.push({ name, colors }); },
   });
   return { controller, doc, panel, popover, canvas, status, empty, recovery, toggle, zoomOut, value, zoomIn, fit,
-    ribbon, background, view, emptyIcon, resetIcon, motion, animations, computedReads, state, actions, changes,
+    ribbon, background, sidebarToggle, host, view, emptyIcon, resetIcon, motion, animations, computedReads, state, actions, changes,
+    layoutChanges, resizeObservers, mutationObservers,
     writes, storageReads, storageWrites, themeChanges, previousRibbonClick, previousRibbonCalls: () => previousRibbonCalls,
     stored: () => stored.get('fund_minimap_expanded'),
+    resizeSlot(next, signal = 'observer') {
+      Object.assign(space, next);
+      if (signal === 'passive') return;
+      if (signal === 'mutation') mutationObservers.forEach(observer => observer.deliver());
+      else if (signal === 'observer') resizeObservers.forEach(observer => observer.deliver());
+      else view.fire(signal);
+    },
     appear(next, detail = {}) {
       const { color, ...attributes } = next;
       Object.assign(doc.documentElement.dataset, attributes);
@@ -135,6 +166,101 @@ function assertZoom(h, percent) {
   assert.deepEqual(h.value.children, [h.resetIcon], 'sync preserves the reset icon');
   assert.deepEqual(h.value.textWrites, [], 'zoom percentages never replace the icon with text');
 }
+
+test('slot width retracts the whole panel without changing preference and restores it at the exact safe boundary', () => {
+  const h = harness({ saved: '1', slot: { width: 298 }, reentrant: true });
+  h.canvas.focus();
+  assert.equal(h.panel.hidden, false); assert.equal(h.popover.hidden, false);
+  h.resizeSlot({ width: 297 }, 'passive');
+  assert.equal(h.controller.isNavigationAvailable(), false, 'live geometry revokes navigation before ResizeObserver delivery');
+  assert.equal(h.panel.hidden, false, 'the navigation guard never mutates DOM');
+  h.canvas.fire('keydown', { key: '+' }); h.canvas.fire('keydown', { key: 'ArrowRight' });
+  assert.deepEqual(h.actions, [], 'late map keyboard input is also rejected before the observer delivers');
+  h.resizeObservers.forEach(observer => observer.deliver());
+  assert.equal(h.panel.hidden, true); assert.equal(h.panel.inert, true);
+  assert.equal(h.panel.getAttribute('aria-hidden'), 'true'); assert.equal(h.popover.hidden, true);
+  assert.equal(h.doc.activeElement, h.sidebarToggle);
+  assert.match(h.ribbon.getAttribute('title'), /增大窗口或收起查询区/);
+  h.ribbon.fire('click'); h.controller.setExpanded(false); h.zoomIn.fire('click');
+  assert.deepEqual(h.writes, []); assert.deepEqual(h.actions, []); assert.equal(h.stored(), '1');
+  h.resizeSlot({ width: 298 });
+  assert.equal(h.panel.hidden, false); assert.equal(h.panel.inert, false); assert.equal(h.popover.hidden, false);
+  assert.equal(h.controller.isNavigationAvailable(), true);
+  assert.deepEqual(h.changes, [true, false, true]); assert.deepEqual(h.writes, []);
+});
+
+test('short slots retain the capsule and focused toggle, restore the preferred map and respect an explicit later collapse', () => {
+  const h = harness({ saved: '1', slot: { height: 252 } });
+  h.canvas.focus(); h.resizeSlot({ height: 251 });
+  assert.equal(h.panel.hidden, false); assert.equal(h.popover.hidden, true); assert.equal(h.popover.inert, true);
+  assert.equal(h.doc.activeElement, h.toggle); assert.equal(h.toggle.disabled, false);
+  assert.equal(h.toggle.getAttribute('aria-disabled'), 'true'); assert.equal(h.ribbon.disabled, true);
+  h.toggle.click(); h.controller.setExpanded(false); h.canvas.fire('keydown', { key: 'ArrowRight' });
+  assert.deepEqual(h.writes, []); assert.deepEqual(h.actions, []);
+  h.zoomIn.click(); assert.deepEqual(h.actions, [['zoom', 'in']], 'the visible capsule still controls the camera');
+  h.resizeSlot({ height: 252 });
+  assert.equal(h.popover.hidden, false); assert.equal(h.toggle.getAttribute('aria-disabled'), 'false');
+  assert.equal(h.ribbon.disabled, false); assert.equal(h.toggle.getAttribute('title'), '收起缩略图');
+  h.toggle.click(); assert.deepEqual(h.writes, ['0']);
+  h.resizeSlot({ height: 200 }); h.resizeSlot({ height: 600 });
+  assert.equal(h.popover.hidden, true); assert.deepEqual(h.writes, ['0']);
+});
+
+test('slots shorter than the controls hide the panel and recover without stealing focus or writing storage', () => {
+  const h = harness({ saved: '1', slot: {} });
+  h.canvas.focus(); h.resizeSlot({ height: 71 }, 'resize');
+  assert.equal(h.panel.hidden, true); assert.equal(h.doc.activeElement, h.sidebarToggle);
+  h.resizeSlot({ height: 72 }, 'fundstrace:workspace-resize');
+  assert.equal(h.panel.hidden, false); assert.equal(h.popover.hidden, true);
+  h.resizeSlot({ height: 252 });
+  assert.equal(h.popover.hidden, false); assert.equal(h.doc.activeElement, h.sidebarToggle);
+  assert.deepEqual(h.writes, []);
+});
+
+test('space follows computed right and transport bottom offsets and notifies layout changes without observer loops', () => {
+  const h = harness({ saved: '1', slot: { width: 284, height: 304, right: 6, bottom: 72 }, reentrant: true });
+  assert.equal(h.popover.hidden, false);
+  h.resizeSlot({ bottom: 114 }, 'mutation');
+  assert.equal(h.popover.hidden, true); assert.equal(h.panel.hidden, false);
+  h.resizeSlot({ height: 346 }); assert.equal(h.popover.hidden, false);
+  h.resizeSlot({ right: 7 }); assert.equal(h.panel.hidden, true);
+  h.resizeSlot({ right: 6 }); assert.equal(h.panel.hidden, false);
+  const notices = h.layoutChanges.length;
+  h.controller.sync(); h.resizeObservers.forEach(observer => observer.deliver());
+  assert.equal(h.layoutChanges.length, notices, 'unchanged layout and reentrant host sync do not notify again');
+  assert.deepEqual(h.writes, []);
+});
+
+test('a missing layout API degrades to sufficient space and a saved collapsed map stays collapsed after recovery', () => {
+  const fallback = harness({ saved: '1', slot: { width: 0, height: 0 }, computedStyleSupport: false });
+  assert.equal(fallback.panel.hidden, false); assert.equal(fallback.popover.hidden, false);
+  const h = harness({ saved: '0', slot: { width: 200, height: 30 } });
+  assert.equal(h.panel.hidden, true);
+  h.resizeSlot({ width: 800, height: 600 });
+  assert.equal(h.panel.hidden, false); assert.equal(h.popover.hidden, true);
+  assert.deepEqual(h.changes, [false]); assert.deepEqual(h.writes, []);
+});
+
+test('automatic retraction cancels in-flight animation and destroy releases observers and rejects late resize work', () => {
+  const h = harness({ slot: {}, animationSupport: true });
+  h.toggle.click(); const running = h.animations[0], stale = running.onfinish;
+  h.resizeSlot({ height: 200 });
+  assert.equal(h.popover.hidden, true); assert.equal(running.cancelCount, 1);
+  stale(); assert.equal(h.popover.hidden, true); assert.equal(h.controller.isNavigationAvailable(), false);
+  h.resizeSlot({ height: 600 }); assert.equal(h.popover.hidden, false);
+  assert.equal(h.animations.length, 1, 'space recovery is immediate and does not replay disclosure animation');
+  h.controller.destroy();
+  assert.equal(h.resizeObservers.every(observer => observer.disconnected), true);
+  assert.equal(h.mutationObservers.every(observer => observer.disconnected), true);
+  h.resizeSlot({ height: 200 }); h.resizeSlot({ height: 600 }, 'resize'); stale();
+  assert.equal(h.popover.hidden, true); assert.equal(h.controller.isNavigationAvailable(), false);
+  assert.deepEqual(h.writes, ['1']); assert.equal([...h.view.listeners.values()].flat().length, 0);
+  const exiting = harness({ saved: '1', slot: {}, animationSupport: true });
+  exiting.toggle.click(); const exit = exiting.animations[0];
+  exiting.resizeSlot({ height: 200 });
+  assert.equal(exiting.popover.hidden, true, 'a manual exit is hard-settled when its map no longer fits');
+  assert.equal(exit.cancelCount, 1); exit.finish(); assert.equal(exiting.popover.hidden, true);
+});
 
 test('map and ribbon disclose the same non-modal popover and preserve the capsule', () => {
   const h = harness();
@@ -309,6 +435,11 @@ test('destroy releases camera ownership and removes listeners without overwritin
   assert.equal(h.popover.hidden, true); assert.equal(h.canvas.getAttribute('aria-disabled'), 'true');
   assert.deepEqual(h.changes, [true, false]); assert.equal(h.stored(), '1');
   assert.equal(h.ribbon.onclick, h.previousRibbonClick);
+  assert.equal(h.ribbon.disabled, false); assert.equal(h.ribbon.getAttribute('aria-disabled'), null);
+  const previouslyDisabled = harness({ ribbonState: { disabled: true, ariaDisabled: 'true' } });
+  previouslyDisabled.controller.destroy();
+  assert.equal(previouslyDisabled.ribbon.disabled, true);
+  assert.equal(previouslyDisabled.ribbon.getAttribute('aria-disabled'), 'true');
   h.toggle.click(); h.zoomIn.click(); h.canvas.fire('keydown', { key: 'ArrowRight' });
   assert.deepEqual(h.actions, []); assert.equal(h.controller.sync(), null);
   assert.equal(h.controller.setExpanded(true), false); assert.equal(h.popover.hidden, true);
