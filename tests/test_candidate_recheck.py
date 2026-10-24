@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import textwrap
+import types
 import zipfile
 
 import pytest
@@ -257,13 +258,89 @@ def test_original_fresh_report_cannot_claim_another_mode_or_exe(artifact, field,
         verify(artifact)
 
 
+@pytest.fixture(params=["/", "\\"], ids=["posix-separator", "windows-separator"])
+def zipfile_with_separator(request, monkeypatch):
+    private = types.ModuleType("candidate_recheck_private_zipfile")
+    private.__file__ = zipfile.__file__
+    exec(compile(Path(zipfile.__file__).read_bytes(), zipfile.__file__, "exec"), private.__dict__)
+
+    class OsWithSeparator:
+        sep = request.param
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+    private.os = OsWithSeparator()
+    original_zipfile, original_separator = checks.zipfile, os.sep
+    with monkeypatch.context() as patch:
+        patch.setattr(checks, "zipfile", private)
+        yield private
+    assert checks.zipfile is original_zipfile
+    assert os.sep == original_separator and zipfile.os is os
+
+
+def write_raw_zip_member(module, archive, name, content):
+    info = module.ZipInfo(name)
+    info.filename = name
+    with module.ZipFile(archive, "w") as zipped:
+        zipped.writestr(info, content)
+    with module.ZipFile(archive) as zipped:
+        [member] = zipped.infolist()
+        assert member.orig_filename == name
+        return member.filename
+
+
 @pytest.mark.parametrize("name", ["../escape", "/absolute", "C:/drive", "a\\b", "a/../b"])
-def test_artifact_extraction_rejects_unsafe_paths(tmp_path, name):
+def test_artifact_extraction_rejects_unsafe_paths(tmp_path, name, zipfile_with_separator):
     archive = tmp_path / "input.zip"
-    with zipfile.ZipFile(archive, "w") as zipped:
-        zipped.writestr(name, b"no")
+    write_raw_zip_member(zipfile_with_separator, archive, name, b"no")
     with pytest.raises(ValueError):
         checks.extract_artifact(archive, tmp_path / "extract")
+    assert not list((tmp_path / "extract").rglob("*"))
+
+
+def test_artifact_extraction_rejects_raw_nul_before_filename_truncation(tmp_path, zipfile_with_separator):
+    archive = tmp_path / "input.zip"
+    assert write_raw_zip_member(zipfile_with_separator, archive, "a\0b", b"no") == "a"
+    with pytest.raises(ValueError, match="Artifact member name was normalized"):
+        checks.extract_artifact(archive, tmp_path / "extract")
+    assert not list((tmp_path / "extract").rglob("*"))
+
+
+def test_artifact_extraction_preserves_legal_names_and_exact_bytes(tmp_path, zipfile_with_separator):
+    archive = tmp_path / "input.zip"
+    files = {"root.json": b"{}\n", "normal/path.bin": b"\0\xff\x01",
+             "中文 目录/合法 文件.csv": "合成,数据\n".encode()}
+    directories = ["empty directory/", "中文 目录/"]
+    with zipfile_with_separator.ZipFile(archive, "w") as zipped:
+        for name in directories:
+            zipped.writestr(name, b"")
+        for name, content in files.items():
+            zipped.writestr(name, content)
+    with zipfile_with_separator.ZipFile(archive) as zipped:
+        assert [(item.orig_filename, item.filename) for item in zipped.infolist()] == [
+            (name, name) for name in [*directories, *files]]
+    destination = tmp_path / "extract"
+    checks.extract_artifact(archive, destination)
+    assert {file.relative_to(destination).as_posix(): file.read_bytes()
+            for file in destination.rglob("*") if file.is_file()} == files
+    assert {file.relative_to(destination).as_posix() for file in destination.rglob("*") if file.is_dir()} == {
+        "empty directory", "中文 目录", "normal"}
+
+
+@pytest.mark.parametrize("zipfile_with_separator", ["\\"], indirect=True, ids=["windows-separator"])
+def test_artifact_extraction_accepts_backslash_normalized_by_the_windows_writer(tmp_path, zipfile_with_separator):
+    archive = tmp_path / "input.zip"
+    content = b"legal normalized writer output\0\xff"
+    with zipfile_with_separator.ZipFile(archive, "w") as zipped:
+        zipped.writestr("a\\b", content)
+    with zipfile_with_separator.ZipFile(archive) as zipped:
+        [member] = zipped.infolist()
+        assert member.orig_filename == member.filename == "a/b"
+    destination = tmp_path / "extract"
+    checks.extract_artifact(archive, destination)
+    assert (destination / "a/b").read_bytes() == content
+    assert {file.relative_to(destination).as_posix() for file in destination.rglob("*")} == {"a", "a/b"}
 
 
 def test_original_artifact_changed_after_download_cannot_be_used(artifact, tmp_path):
