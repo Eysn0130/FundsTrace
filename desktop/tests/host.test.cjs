@@ -495,15 +495,15 @@ test('Main fits a new display or removed-display recovery without trapping movem
   assert.equal(win.listenerCount('unmaximize'), 0);
 });
 
-test('empty-case minimap suppression preserves the user preference and rejects stale case statistics', async () => {
+test('empty-case minimap disables camera commands while preserving disclosure and rejecting stale statistics', async () => {
   const nodes = new Map();
   const node = selector => {
     if (!nodes.has(selector)) {
       const classes = new Set();
-      const element = { style: {}, hidden: false, disabled: false, attributes: {},
+      const element = { id: selector.slice(1), style: {}, dataset: {}, hidden: false, disabled: false, attributes: {},
         classList: { toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name), remove: name => classes.delete(name), contains: name => classes.has(name) },
-        querySelectorAll: () => [],
-        setAttribute(name, value) { this.attributes[name] = value; } };
+        querySelectorAll: () => [], contains: () => false, addEventListener() {}, removeEventListener() {}, focus() {},
+        setAttribute(name, value) { this.attributes[name] = value; }, getAttribute(name) { return this.attributes[name]; } };
       if (selector === '#annotationDialog') Object.assign(element, {
         open: false, close() { this.open = false; },
       });
@@ -512,32 +512,42 @@ test('empty-case minimap suppression preserves the user preference and rejects s
     return nodes.get(selector);
   };
   const stats = deferred();
-  const context = vm.createContext({ document: { querySelector: node, querySelectorAll: () => [] },
+  const context = vm.createContext({ document: { querySelector: node, querySelectorAll: () => [], getElementById: id => node('#' + id) },
     window: { location: { href: `${origin}/?case_id=1`, search: '?case_id=1' }, history: { replaceState() {} }, addEventListener() {} },
     localStorage: { getItem: () => null, setItem() {} }, FundsMoney: { count: String }, URL, URLSearchParams, clearTimeout, setTimeout,
     fetch: async () => ({ ok: true, headers: { get: () => 'application/json' }, json: () => stats.promise }) });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../static/minimap-navigation.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../static/app.js'), 'utf8'), context);
   const run = source => vm.runInContext(source, context);
   const annotationDialog = node('#annotationDialog'); annotationDialog.open = true;
-  run('selectCase(1); state.stats = { flows: 3 }; updateHeader();');
+  run('selectCase(1); bindMinimapNavigation(); minimapNavigation.setExpanded(true);');
+  const populated = () => run(`state.stats = { flows: 3 }; state.graphLoading = false;
+    state.graph = { clear() {}, getZoom: () => 1 }; state.graphView.nodeItems.set('SYN-NODE', {}); updateHeader();`);
+  populated();
   assert.equal(annotationDialog.open, false, 'case selection closes the previous annotation dialog');
   const panel = node('#graphMinimapPanel'), button = node('#btnMinimap'), wrap = node('#canvasWrap');
+  const toggle = node('#btnMinimapToggle'), camera = ['#btnMinimapZoomOut', '#minimapZoomValue', '#btnMinimapZoomIn', '#btnMinimapFit'].map(node);
   assert.equal(wrap.classList.contains('case-empty'), false);
   assert.equal(button.disabled, false);
+  assert.ok(camera.every(control => !control.disabled));
   const pending = run('refreshStats()');
   run('selectCase(2)');
-  assert.equal(wrap.classList.contains('case-empty'), true, 'case selection suppresses an old minimap before statistics arrive');
-  assert.equal(button.disabled, true);
-  assert.equal(panel.hidden, false, 'temporary suppression must not change the visibility preference');
+  assert.equal(wrap.classList.contains('case-empty'), true, 'case selection revokes the previous graph before statistics arrive');
+  assert.ok(camera.every(control => control.disabled), 'empty/loading graph cannot receive camera commands');
+  assert.equal(button.disabled, false); assert.equal(toggle.disabled, false, 'disclosure remains usable');
+  assert.equal(button.attributes['aria-pressed'], 'true');
+  assert.equal(panel.hidden, false, 'the capsule stays available across case changes');
   stats.resolve({ flows: 3 }); await pending;
-  assert.equal(wrap.classList.contains('case-empty'), true, 'late results from the old case cannot restore its minimap');
-  run('state.stats = { flows: 2 }; updateHeader();');
+  assert.equal(wrap.classList.contains('case-empty'), true, 'late results from the old case cannot restore its graph');
+  assert.ok(camera.every(control => control.disabled));
+  populated();
   assert.equal(wrap.classList.contains('case-empty'), false);
   assert.equal(button.disabled, false);
   assert.equal(button.attributes['aria-pressed'], 'true');
-  panel.hidden = true;
-  run('selectCase(1); state.stats = { flows: 3 }; updateHeader();');
-  assert.equal(panel.hidden, true, 'a minimap hidden by the user stays hidden across empty and populated cases');
+  assert.ok(camera.every(control => !control.disabled));
+  run('minimapNavigation.setExpanded(false); selectCase(1);'); populated();
+  assert.equal(node('#graphMinimapPopover').hidden, true, 'a user-collapsed map stays collapsed across case changes');
+  assert.equal(panel.hidden, false, 'collapsed map retains its independent camera capsule');
   assert.equal(button.attributes['aria-pressed'], 'false');
 });
 

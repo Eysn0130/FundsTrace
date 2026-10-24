@@ -11,6 +11,9 @@ let neighborhoodWorkspace = null;
 let nodeFinderWorkspace = null;
 let activeGraphFocus = null;
 let graphLocateFeedback = null;
+let minimapNavigation = null;
+let minimapExpanded = false;
+let minimapColors;
 
 const state = {
   caseId: null,
@@ -326,11 +329,7 @@ function updateHeader() {
   const empty = (s.flows || 0) === 0;
   $('#emptyHint').style.display = empty ? 'flex' : 'none';
   $('#canvasWrap').classList.toggle('case-empty', empty);
-  const minimapButton = $('#btnMinimap');
-  if (minimapButton) {
-    minimapButton.disabled = empty;
-    minimapButton.setAttribute('aria-pressed', String(!empty && !$('#graphMinimapPanel').hidden));
-  }
+  syncMinimapNavigation();
   exportWorkspace?.refresh();
   caseWorkspace?.refresh();
   window.FundsAppNavigation?.sync();
@@ -550,6 +549,7 @@ function activateCanvas(id) {
   updateHeader(); updateGraphViewStatus();
 }
 function graphMetric(phase, extra = {}) {
+  syncMinimapNavigation();
   if (typeof CustomEvent !== 'function' || typeof window.dispatchEvent !== 'function') return;
   const view = state.graphView;
   window.dispatchEvent(new CustomEvent('funds:graph-metric', { detail: {
@@ -562,6 +562,7 @@ function graphMetric(phase, extra = {}) {
   } }));
 }
 function updateGraphViewStatus() {
+  syncMinimapNavigation();
   const view = state.graphView, full = state.lastGraph;
   if (!neighborhoodWorkspace) {
     if ($('#btnExpandNeighbors')) $('#btnExpandNeighbors').disabled = !view.visibleIds || !view.remaining;
@@ -697,7 +698,6 @@ function applyGraphTheme({ paint = true } = {}) {
     }
   }
   state.graphSelection?.refresh();
-  state.minimap?.setTheme(graphTheme());
   window.FundsRibbonCommands?.sync();
   if (paint) graph.paint();
 }
@@ -779,12 +779,18 @@ function graphScreenBodies() {
   }
   return bodies;
 }
+function graphChromeBox(element) {
+  // A fading-out popover has already yielded its space to the live capsule.
+  const target = element.id === 'graphMinimapPanel' && element.dataset?.expanded === 'false'
+    ? element.querySelector('.minimap-capsule') || element : element;
+  return target.getBoundingClientRect();
+}
 function graphChromeObstacles() {
   if(state.graphView.exportDepth)return [];
   const container=$('#graphContainer').getBoundingClientRect?.();if(!container)return [];
   return ['legend','graphMinimapPanel'].flatMap(id=>{
     const element=$('#'+id);if(!element || element.hidden || !element.getClientRects?.().length)return [];
-    const box=element.getBoundingClientRect();
+    const box=graphChromeBox(element);
     return [{key:'chrome:'+id,bounds:{minX:box.left-container.left,minY:box.top-container.top,maxX:box.right-container.left,maxY:box.bottom-container.top}}];
   });
 }
@@ -800,7 +806,7 @@ function graphFocusObstacles() {
     if (!element || element.hidden || element.inert || element.style?.display === 'none' || !element.getClientRects?.().length) return [];
     if (element.id === 'drawer' && !element.classList.contains('open')) return [];
     if (element.tagName === 'DIALOG' && !element.open) return [];
-    const box = (element.classList?.contains('modal') ? element.querySelector('.modal-box') || element : element).getBoundingClientRect();
+    const box = graphChromeBox(element.classList?.contains('modal') ? element.querySelector('.modal-box') || element : element);
     const bounds = { minX: Math.max(0, box.left - container.left), minY: Math.max(0, box.top - container.top),
       maxX: Math.min(width, box.right - container.left), maxY: Math.min(height, box.bottom - container.top) };
     return bounds.maxX > bounds.minX && bounds.maxY > bounds.minY ? [{ bounds }] : [];
@@ -1328,6 +1334,46 @@ function showGraphOverview() {
 }
 
 /* ---------------- 图谱 ---------------- */
+/* Navigation chrome owns display preference only, never canvas facts/history. */
+function syncMinimapNavigation() {
+  minimapNavigation?.sync();
+  state.minimap?.setEnabled?.(minimapExpanded && graphCameraInteractionAllowed());
+}
+function bindMinimapNavigation() {
+  if (!window.FundsMinimapNavigation) return;
+  minimapNavigation?.destroy();
+  minimapNavigation = window.FundsMinimapNavigation.create({
+    document, storage: preferenceStorage,
+    getState: () => ({ loading: state.graphLoading, busy: !graphCameraInteractionAllowed(),
+      hasNodes: !!state.graphView.nodeItems.size, zoom: state.graph?.getZoom?.(),
+      status: state.minimap?.getStatus?.().state || 'empty' }),
+    onExpandedChange: expanded => {
+      minimapExpanded = expanded;
+      state.minimap?.cancelNavigation?.();
+      state.minimap?.setEnabled?.(expanded && graphCameraInteractionAllowed());
+      state.graphCamera?.cancelFocus?.('minimap-chrome');
+      scheduleGraphViewport(); scheduleGraphLabels();
+    },
+    onThemeChange: (_theme, colors) => {
+      minimapColors = colors;
+      state.minimap?.setColors?.(colors);
+    },
+    onZoom: direction => window.FundsRibbonCommands?.execute({in:'zoomIn',out:'zoomOut',reset:'zoomReset'}[direction]),
+    onFit: () => {
+      if (!graphCameraInteractionAllowed() || !state.graphView.nodeItems.size) return false;
+      fitGraph(1.6); syncMinimapNavigation(); return true;
+    },
+    onPan: direction => {
+      if (!graphCameraInteractionAllowed() || !state.graphView.nodeItems.size) return false;
+      const delta={left:[100,0],right:[-100,0],up:[0,100],down:[0,-100]}[direction];
+      if (!delta) return false;
+      state.graphCamera?.resize(); state.graphCamera?.cancelComposition?.();
+      state.graph.translate(...delta); scheduleGraphViewport(); scheduleGraphLabels(); return true;
+    },
+  });
+  syncMinimapNavigation();
+}
+
 function initGraph() {
   state.graphCamera?.resize();
   const chromeOffset = state.graphCamera?.getOffset();
@@ -1392,7 +1438,10 @@ function initGraph() {
   state.graph = graph;
   const mini = $('#graphMinimap');
   if (mini?.getContext && typeof FundsGraphMinimap !== 'undefined') {
-    state.minimap = FundsGraphMinimap.create({ canvas: mini, theme: graphTheme(), onNavigate: point => {
+    state.minimap = FundsGraphMinimap.create({ canvas: mini,
+      colors: minimapColors,
+      canNavigate: () => minimapExpanded && state.graph === graph && graphCameraInteractionAllowed(),
+      onStatusChange: () => syncMinimapNavigation(), onNavigate: point => {
       if (state.graph !== graph || !graphCameraInteractionAllowed()) return;
       state.graphCamera?.resize();
       state.graphCamera?.cancelComposition?.();
@@ -1400,9 +1449,11 @@ function initGraph() {
       graph.translate(c.clientWidth/2-p.x,c.clientHeight/2-p.y);
       scheduleGraphViewport(); scheduleGraphLabels();
     } });
+    syncMinimapNavigation();
   }
   graph.on('viewportchange', event => {
     if (state.graph !== graph) return;
+    syncMinimapNavigation();
     clearGraphLocateFeedback();
     scheduleGraphViewport();
     if (event.action === 'zoom') scheduleGraphLabels(true);
@@ -3067,7 +3118,8 @@ function fitGraph(cap = 1.6,{rebuild=false}={}) {
       }
       measuredZoom=zoom;measuredBounds=bounds;return bounds;
     };
-    const cameraFit=bounds=>bounds&&FundsGraphLayout.fitViewport({bounds,width,height,obstacles,maxZoom,minZoom:.02,padding:24});
+    const padding=Math.min(24,Math.max(0,(Math.min(width,height)-1)/2));
+    const cameraFit=bounds=>bounds&&FundsGraphLayout.fitViewport({bounds,width,height,obstacles,maxZoom,minZoom:.02,padding});
     let bounds,fit;
     if(graph.getCanvasByPoint&&graph.translate&&graph.zoomTo) {
       // A fixed screen gap changes its world footprint at each zoom. Start
@@ -5233,19 +5285,7 @@ function bindUI() {
     $('#btnExpandNeighbors').onclick = () => exploreNeighborhood(state.graphView.root);
   }
   $('#btnGraphOverview').onclick = showGraphOverview;
-  if ($('#btnMinimap')) $('#btnMinimap').onclick = () => {
-    const panel=$('#graphMinimapPanel'); panel.hidden=!panel.hidden;
-    $('#btnMinimap').setAttribute('aria-pressed',String(!panel.hidden));
-  };
-  $$('#graphMinimapPanel [data-pan]').forEach(button => {
-    button.onclick=() => {
-      if (!graphCameraInteractionAllowed()) return;
-      state.graphCamera?.resize();
-      state.graphCamera?.cancelComposition?.();
-      const pan={left:[100,0],right:[-100,0],up:[0,100],down:[0,-100]}[button.dataset.pan];
-      state.graph.translate(...pan); scheduleGraphViewport(); scheduleGraphLabels();
-    };
-  });
+  bindMinimapNavigation();
   // 图谱工具
   $('#layoutSel').onchange = e => { const previous=state.layout;state.layout = e.target.value; return relayout(true,false,previous); };
   initEdgeLabels();
@@ -5368,6 +5408,7 @@ function bindUI() {
       try{exportGeometry?.restore();}catch(_){/* disposed canvas */}
       if (samplingZoom) { try { graph.set('maxZoom', originalMaxZoom); } catch (_) { /* disposed sampling graph */ } }
       view.exportDepth = Math.max(0, view.exportDepth - 1);view.exportFooterHeight=0;delete view.exportLabelScale;
+      syncMinimapNavigation();
       if (owned) {
         applyGraphTheme({ paint: false });
         try { graph.changeSize(W, H); } catch (_) { /* Release ownership even if G6 restoration fails. */ }
@@ -5394,6 +5435,7 @@ function bindUI() {
     const cancel = () => done(null);
     cancelGraphImageExport = cancel;
     view.exportDepth += 1;view.exportFooterHeight=footerHeight;view.exportLabelScale=scale;
+    syncMinimapNavigation();
     try {
       selection?.setVisualsVisible?.(false);
       for(const item of recent)graph.setItemState(item,'recent',false);

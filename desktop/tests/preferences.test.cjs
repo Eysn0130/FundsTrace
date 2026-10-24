@@ -12,7 +12,7 @@ function temporary(t) {
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   return directory;
 }
-const chosen = { fund_case: '3', fund_edge_type: 'polyline', fund_show_ids: '0', fund_show_photos: '1', fund_edge_labels: '["money","time","summary","currency"]', fund_sidebar_width: '620' };
+const chosen = { fund_case: '3', fund_edge_type: 'polyline', fund_show_ids: '0', fund_show_photos: '1', fund_edge_labels: '["money","time","summary","currency"]', fund_sidebar_width: '620', fund_minimap_expanded: '1' };
 
 test('appearance is one strict atomic preference and IPC validates even an injected store', t => {
   const value = JSON.stringify({ version: 1, theme: 'system', accent: 'teal', translucency: true });
@@ -74,7 +74,7 @@ test('storage rejects arbitrary payloads and recovers from invalid state without
   assert.equal(store.getItem('token'), null);
   assert.equal(store.getItem('fund_edge_type'), null);
   assert.equal(store.getItem('fund_show_ids'), null);
-  for (const [key, value] of [['token', 'synthetic'], ['../file', 'x'], ['__proto__', '{}'], ['fund_case', '0'], ['fund_case', '-1'], ['fund_edge_type', 'loop'], ['fund_edge_labels', '["money","unknown"]'], ['fund_edge_labels', '["money","money"]'], ['fund_edge_labels', '[]'], ['fund_show_ids', 'true']]) {
+  for (const [key, value] of [['token', 'synthetic'], ['../file', 'x'], ['__proto__', '{}'], ['fund_case', '0'], ['fund_case', '-1'], ['fund_edge_type', 'loop'], ['fund_edge_labels', '["money","unknown"]'], ['fund_edge_labels', '["money","money"]'], ['fund_edge_labels', '[]'], ['fund_show_ids', 'true'], ['fund_minimap_expanded', 'true'], ['fund_minimap_expanded', '2'], ['fund_minimap_theme', 'graphite']]) {
     assert.equal(validPreference(key, value), false);
     assert.equal(store.setItem(key, value), false);
   }

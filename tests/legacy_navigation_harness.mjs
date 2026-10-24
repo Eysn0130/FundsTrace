@@ -3348,3 +3348,38 @@ test('theme previews during image sampling wait until completion and restore the
     assert.equal(h.run("themePrintPaints.slice(-1)[0]"),'#dfe3ea');
   }
 });
+
+
+test('collapsing overview yields its fading popover space but keeps capsule obstacles for labels and focus', () => {
+  const h=harness('app.js');
+  const rect=(left,top,width,height)=>({left,top,right:left+width,bottom:top+height,width,height});
+  const container=h.element('#graphContainer'), panel=h.element('#graphMinimapPanel');
+  container.getBoundingClientRect=()=>rect(100,200,1000,700);
+  const popup=rect(800,650,272,230), capsule=rect(820,834,252,46);
+  panel.id='graphMinimapPanel'; panel.hidden=false; panel.dataset.expanded='true';
+  panel.getBoundingClientRect=()=>({...popup}); panel.getClientRects=()=>[{...popup}];
+  h.element('#graphMinimapPanel .minimap-capsule').getBoundingClientRect=()=>({...capsule});
+  const bounds=()=>JSON.parse(h.run('JSON.stringify({labels:graphChromeObstacles(),focus:graphFocusObstacles()})'));
+  const opened=bounds();
+  assert.deepEqual(opened.labels[0].bounds,{minX:700,minY:450,maxX:972,maxY:680});
+  assert.deepEqual(opened.focus[0].bounds,opened.labels[0].bounds);
+  // The exiting popover remains rendered with its old size, but is already inert.
+  panel.dataset.expanded='false';
+  const closing=bounds();
+  assert.deepEqual(closing.labels[0].bounds,{minX:720,minY:634,maxX:972,maxY:680});
+  assert.deepEqual(closing.focus[0].bounds,closing.labels[0].bounds);
+  panel.dataset.expanded='true'; assert.deepEqual(bounds(),opened,'rapid reversal immediately restores the live popover obstacle');
+});
+
+test('public fit keeps a positive bounded camera when the graph slot is narrower than its normal padding', () => {
+  const h=harness('app.js');installSavedLabelPair(h);
+  h.element('#graphContainer').clientWidth=44;
+  h.element('#graphContainer').clientHeight=700;
+  const camera=installMeasuredFitCamera(h,{default:{minX:-100,minY:-50,maxX:100,maxY:50}});
+  h.element('#btnFit').onclick();
+  assert.equal(h.run('measuredFit.fallbacks.length'),0,'a narrow slot must not delegate impossible 24px side padding to G6 fitView');
+  assert.equal(camera().zoom,.02);
+  assert.ok(h.run('measuredFit.zooms.every(value=>Number.isFinite(value)&&value>=.02&&value<=1.6)'));
+  assert.ok(Object.values(camera()).every(Number.isFinite));
+  assert.equal(h.run('JSON.stringify(state.lastGraph)===pairFacts'),true);
+});

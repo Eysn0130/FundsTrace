@@ -507,7 +507,7 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 
 /* ---------- Query and graph regions ---------- */
 main { flex: 1; display: flex; min-width: 0; min-height: 0; position: relative; overflow: hidden; }
-#workspace { --sidebar-effective-width: min(var(--sidebar-width), var(--sidebar-maximum-width, 760px)); }
+#workspace { overflow: clip; --sidebar-effective-width: min(var(--sidebar-width), var(--sidebar-maximum-width, 760px)); }
 #left { width: var(--sidebar-effective-width); min-width: 0; flex: 0 0 auto; background: var(--surface-raised); border-right: 1px solid var(--border-strong); display: flex; flex-direction: column; min-height: 0; overflow: hidden; container-type: inline-size; transition: width var(--workspace-ease), opacity var(--workspace-ease); }
 #workspace.sidebar-collapsed { --sidebar-effective-width: 0px; }
 #workspace.sidebar-collapsed #left { opacity: 0; border-right: 0; pointer-events: none; }
@@ -764,13 +764,85 @@ html[data-ft-theme="light"] {
 .dot.main { background: #e8c46a; }
 .dot.samename { background: #a79be0; }
 #graphLayoutStatus { grid-area: 1 / 1; position: absolute; top: 12px; left: 16px; z-index: 7; max-width: calc(100% - 32px); padding: 7px 10px; border: 1px solid var(--graph-rule); border-radius: 4px; background: var(--graph-status-surface); color: var(--graph-ink); font-size: 12px; pointer-events: none; }
-#graphMinimapPanel { position: absolute; right: 16px; bottom: 15px; z-index: 12; width: 204px; padding: 9px; border: 1px solid var(--graph-rule); border-radius: 4px; background: var(--graph-overlay); color: var(--graph-secondary-ink); font-size: 12px; }
-#graphMinimapPanel > span { display: block; margin-bottom: 5px; }
-#graphMinimapPanel[hidden] { display: none; }
-#canvasWrap.case-empty #graphMinimapPanel, #canvasWrap.case-empty #legend { display: none; }
-#graphMinimap { display: block; width: 184px; height: 112px; max-width: 100%; touch-action: none; cursor: crosshair; border: 1px solid var(--graph-rule); background: var(--graph-mini-paper); }
-.minimap-actions { display: flex; justify-content: flex-end; gap: 5px; margin-top: 5px; }
-.minimap-actions .btn { min-height: 26px; padding: 0 8px; }
+/* A quiet floating utility layer; palettes never change graph meaning. */
+#graphMinimapPanel {
+  --mm-surface: rgba(249, 247, 242, .93); --mm-solid: #f9f7f2;
+  --mm-capsule: rgba(246, 243, 237, .95); --mm-map: rgba(224, 227, 230, .32);
+  --mm-edge: rgba(255, 255, 255, .56); --mm-highlight: rgba(255, 255, 255, .6); --mm-inset: rgba(109, 105, 95, .12);
+  --mm-text: #45453f; --mm-hover: rgba(120, 113, 98, .1); --mm-muted: #a7aaa9;
+  --mm-accent: var(--action-fill); --mm-accent-hover: var(--action-hover); --mm-focus: var(--focus-ring);
+  --mm-icon: brightness(0) saturate(100%) invert(27%); --mm-active-icon: brightness(0) invert(1);
+  --mm-shadow: 0 16px 40px -14px #0007, 0 4px 12px -4px #0005, inset 0 1px 0 var(--mm-highlight);
+  --mm-capsule-shadow: 0 8px 22px -8px #0007, 0 2px 5px -2px #0005, inset 0 1px 0 var(--mm-highlight);
+  position: absolute; right: 20px; bottom: 20px; z-index: 14;
+  width: 272px; max-width: min(calc(100vw - 88px), calc(100% - 40px)); max-height: calc(100% - 40px);
+  container-type: inline-size; display: flex; flex-direction: column; gap: 10px; pointer-events: none;
+  color: var(--mm-text); color-scheme: light;
+  font: 13px/1.5 var(--font-family-ui, system-ui, sans-serif);
+}
+#graphMinimapPanel[data-theme="graphite"] {
+  --mm-surface: rgba(32, 43, 58, .94); --mm-solid: #202b3a;
+  --mm-capsule: rgba(32, 43, 58, .96); --mm-map: rgba(12, 23, 37, .24);
+  --mm-edge: rgba(154, 181, 216, .28); --mm-highlight: rgba(214, 231, 255, .09); --mm-inset: rgba(180, 202, 226, .1);
+  --mm-text: #dce5ef; --mm-hover: rgba(171, 195, 226, .12); --mm-muted: #74859b;
+  --mm-accent: var(--action-fill); --mm-accent-hover: var(--action-hover); --mm-focus: var(--focus-ring);
+  --mm-icon: brightness(0) saturate(100%) invert(91%); --mm-active-icon: brightness(0) invert(1);
+  color-scheme: dark;
+}
+#graphMinimapPanel[data-theme="mist"] {
+  --mm-surface: rgba(234, 241, 238, .94); --mm-solid: #eaf1ee;
+  --mm-capsule: rgba(228, 237, 233, .96); --mm-map: rgba(170, 195, 187, .14);
+  --mm-edge: rgba(244, 255, 250, .6); --mm-highlight: rgba(249, 255, 252, .62); --mm-inset: rgba(72, 112, 100, .12);
+  --mm-text: #3b514b; --mm-hover: rgba(70, 119, 104, .1); --mm-muted: #94aaa1;
+  --mm-accent: var(--action-fill); --mm-accent-hover: var(--action-hover); --mm-focus: var(--focus-ring);
+  --mm-icon: brightness(0) saturate(100%) invert(29%); --mm-active-icon: brightness(0) invert(1);
+}
+#graphMinimapPopover {
+  width: 100%; pointer-events: auto; min-height: 0; overflow: auto; border: 1px solid var(--mm-edge); border-radius: 18px;
+  background: var(--mm-surface); box-shadow: var(--mm-shadow);
+  backdrop-filter: blur(24px) saturate(1.08); transform-origin: 25px calc(100% + 33px);
+  transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+#graphMinimapPopover[aria-hidden="true"] { pointer-events: none; }
+.minimap-content { padding: 4px; }
+.minimap-map { position: relative; overflow: hidden; border-radius: 14px; }
+#graphMinimap { display: block; width: 100%; height: auto; aspect-ratio: 262 / 160; touch-action: none; cursor: grab; outline-offset: -3px; }
+#graphMinimap:active { cursor: grabbing; }
+#graphMinimap[aria-disabled="true"] { cursor: default; }
+#minimapEmpty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--mm-muted); pointer-events: none; }
+#minimapEmpty .ui-icon { width: 24px; height: 24px; filter: var(--mm-icon); opacity: .35; }
+#minimapEmpty[data-loading="true"] .ui-icon { visibility: hidden; }
+#minimapEmpty[data-loading="true"]::after { content: ""; position: absolute; width: 16px; height: 16px; border: 1.5px solid var(--mm-muted); border-right-color: transparent; border-radius: 50%; animation: minimap-loading 800ms linear infinite; }
+#minimapRecovery { position: absolute; right: 7px; bottom: 7px; min-width: 28px; width: 28px; height: 28px; border: 1px solid var(--mm-edge); border-radius: 50%; background: var(--mm-solid); box-shadow: 0 2px 8px #0002; }
+#minimapRecovery .ui-icon { width: 16px; height: 16px; }
+.minimap-capsule { pointer-events: auto; width: 100%; max-width: 100%; min-height: 46px; flex-shrink: 0; align-self: flex-end; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px; padding: 5px 7px; border: 1px solid var(--mm-edge); border-radius: 28px; background: var(--mm-capsule); box-shadow: var(--mm-capsule-shadow); backdrop-filter: blur(24px) saturate(1.08); transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease; }
+.minimap-button { display: inline-flex; align-items: center; justify-content: center; flex: none; min-width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--mm-text); font: inherit; cursor: pointer; transition: background-color 160ms ease, transform 160ms cubic-bezier(.2,.8,.2,1), box-shadow 160ms ease; }
+.minimap-button .ui-icon { width: 18px; height: 18px; filter: var(--mm-icon); pointer-events: none; }
+.minimap-button:hover:not(:disabled) { background: var(--mm-hover); }
+.minimap-button:active:not(:disabled) { transform: scale(.96); }
+.minimap-button:focus-visible { outline: 2px solid var(--mm-focus); outline-offset: 2px; }
+#graphMinimap:focus-visible { outline: 2px solid var(--mm-focus); outline-offset: -3px; border-radius: 14px; }
+.minimap-button:disabled { opacity: .35; cursor: default; }
+.minimap-toggle { width: 34px; border-radius: 50%; background: var(--mm-hover); }
+.minimap-toggle[aria-expanded="true"] { background: var(--mm-accent); box-shadow: 0 2px 5px #00000014; }
+.minimap-toggle[aria-expanded="true"] .ui-icon { filter: var(--mm-active-icon); }
+.minimap-toggle[aria-expanded="true"]:hover { background: var(--mm-accent-hover); }
+#btnMinimapFit { background: var(--mm-hover); }
+.minimap-divider { width: 1px; height: 17px; background: var(--mm-inset); flex: none; margin: 0 3px; }
+@container (max-width: 250px) { .minimap-capsule { gap: 0; padding: 5px; } .minimap-capsule .minimap-button { min-width: 32px; width: 32px; height: 32px; } .minimap-divider { margin: 0 2px; } }
+@container (max-width: 80px) { .minimap-capsule { flex-direction: column; flex-wrap: nowrap; gap: 2px; padding: 1px; min-height: 0; } .minimap-capsule .minimap-button { min-width: 0; width: 100%; height: 28px; } .minimap-capsule .ui-icon { width: 16px; height: 16px; } .minimap-divider, #minimapRecovery { display: none; } }
+@keyframes minimap-loading { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { #minimapEmpty[data-loading="true"]::after { animation: none; } #graphMinimapPopover, .minimap-capsule, .minimap-button { transition: none; } }
+@media (prefers-reduced-transparency: reduce) { #graphMinimapPopover, .minimap-capsule { background: var(--mm-solid); backdrop-filter: none; } }
+@media (forced-colors: active) {
+  #graphMinimapPopover, .minimap-capsule, .minimap-map, #minimapRecovery { border: 1px solid CanvasText; background: Canvas; color: CanvasText; box-shadow: none; }
+  .minimap-button .ui-icon { filter: brightness(0); }
+  .minimap-toggle[aria-expanded="true"] { background: Highlight; }
+  .minimap-toggle[aria-expanded="true"] .ui-icon { filter: brightness(0) invert(1); }
+  .minimap-button:disabled { color: GrayText; }
+}
+html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucency="false"] .minimap-capsule { background: var(--mm-solid); backdrop-filter: none; }
+#canvasWrap.case-empty #legend { display: none; }
 #emptyHint { grid-area: 1 / 1; position: absolute; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center; background: var(--surface); overflow: auto; padding: 16px; }
 #emptyHint .card { padding: 26px 30px; max-width: 430px; text-align: center; }
 #emptyHint .h { font-size: 17px; margin-bottom: 8px; }
@@ -935,9 +1007,6 @@ html[data-ft-theme="light"] {
   .graph-explorer { padding: 12px 15px; align-content: flex-start; max-height: 155px; overflow: auto; }
   #legend { left: 10px; bottom: 10px; max-width: calc(100% - 20px); padding: 7px 9px; }
   .graph-legend { gap: 5px 9px; }
-  #graphMinimapPanel { right: 10px; bottom: 72px; width: 174px; }
-  #graphMinimap { width: 154px; height: 94px; }
-  #graphMinimapPanel > span { font-size: 12px; }
   #emptyHint .card { padding: 20px 14px; }
   .flow-overview { padding: 10px; }
   .flow-overview-box { padding: 12px; height: calc(100dvh - 20px); }
@@ -1676,3 +1745,5 @@ html[data-ft-theme="light"] {
 
 #canvasWrap:has(.investigation-transport:not([hidden])) #graphMinimapPanel, #canvasWrap:has(.investigation-transport:not([hidden])) #legend { bottom: calc(24px + var(--investigation-transport-height, 90px)); }
 #canvasWrap .investigation-transport { z-index: 40; }
+
+@media (max-width: 900px) { #graphMinimapPanel { right: 6px; bottom: 72px; max-width: min(calc(100vw - 88px), calc(100% - 12px)); } }
