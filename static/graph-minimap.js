@@ -72,6 +72,7 @@
     const raf = options.raf || global.requestAnimationFrame.bind(global);
     const caf = options.caf || global.cancelAnimationFrame.bind(global);
     const onNavigate = typeof options.onNavigate === 'function' ? options.onNavigate : () => {};
+    const onGestureStart = typeof options.onGestureStart === 'function' ? options.onGestureStart : () => {};
     const canNavigate = typeof options.canNavigate === 'function' ? options.canNavigate : () => true;
     const onStatusChange = typeof options.onStatusChange === 'function' ? options.onStatusChange : () => {};
     let theme = resolveTheme(options.theme);
@@ -80,7 +81,7 @@
       viewportStroke: color('viewportStroke'), viewportFill: color('viewportFill') };
     let points = [], mapping = null, viewport = null, frame = null, frameSerial = 0;
     let generation = 0, pointerId = null, pendingNavigation = null, destroyed = false, enabled = true;
-    let dragOffset = null, dragMoved = false;
+    let dragOffset = null, pointerStart = null, dragMoved = false, navigationSerial = 0;
     let status = Object.freeze({ state: 'empty', viewport: null });
 
     function validViewport(next) {
@@ -131,7 +132,7 @@
         frame = null;
         const target = pendingNavigation; pendingNavigation = null;
         if (target) {
-          if (navigationAllowed()) onNavigate(target);
+          if (navigationAllowed()) onNavigate(target.point, target.meta);
           else cancelNavigation();
         }
         if (!destroyed && generation === currentGeneration) paint();
@@ -146,13 +147,14 @@
 
     function releasePointer() {
       const previous = pointerId; pointerId = null;
-      dragOffset = null; dragMoved = false;
+      dragOffset = null; pointerStart = null; dragMoved = false;
       if (previous !== null) {
         try { canvas.releasePointerCapture?.(previous); } catch (_) { /* The browser may already have released it. */ }
       }
     }
 
     function cancelNavigation() {
+      navigationSerial += 1;
       pendingNavigation = null;
       releasePointer();
     }
@@ -187,46 +189,54 @@
       return finite(point.x) && finite(point.y) ? point : null;
     }
 
-    function queueNavigation(event) {
+    function queueNavigation(event, kind) {
       const point = eventPoint(event), target = unproject(point, mapping);
       if (!target) return;
-      // A grabbed viewport keeps its original world-space offset even as the host pans.
-      // Outside clicks retain the bounded point-navigation behavior.
-      const next = dragOffset ? { x: target.x - dragOffset.x, y: target.y - dragOffset.y }
+      // Every drag keeps its takeover viewport offset, including a press outside
+      // its frame. A confirmed click instead locates the released bounded point.
+      const next = kind === 'drag' && dragOffset ? { x: target.x - dragOffset.x, y: target.y - dragOffset.y }
         : { x: clamp(target.x, mapping.minX, mapping.maxX), y: clamp(target.y, mapping.minY, mapping.maxY) };
       if (!finite(next.x) || !finite(next.y)) return;
-      pendingNavigation = next;
+      pendingNavigation = { point: next, meta: { kind, position: point } };
       schedule();
+    }
+
+    function moved(event) {
+      return pointerStart && finite(event.clientX) && finite(event.clientY)
+        && Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) >= 4;
     }
 
     const handlers = {
       pointerdown(event) {
         if (!navigationAllowed() || !mapping || pointerId !== null || event.button !== 0 || event.isPrimary === false) return;
-        const point = eventPoint(event);
-        if (!point) return;
-        canvas.focus?.({ preventScroll: true });
+        const point = eventPoint(event), world = unproject(point, mapping);
+        if (!world) return;
+        const currentGeneration = generation, currentNavigation = navigationSerial;
         pendingNavigation = null;
-        const rect = viewportRect(viewport, mapping), world = unproject(point, mapping);
-        if (viewport && rect && world && point.x >= rect.x && point.x <= rect.x + rect.width
-          && point.y >= rect.y && point.y <= rect.y + rect.height) {
-          dragOffset = { x: world.x - (viewport.minX + (viewport.maxX - viewport.minX) / 2),
-            y: world.y - (viewport.minY + (viewport.maxY - viewport.minY) / 2) };
-        }
+        try { onGestureStart(); } catch (_) { cancelNavigation(); return; }
+        if (!navigationAllowed() || generation !== currentGeneration || navigationSerial !== currentNavigation) return;
+        canvas.focus?.({ preventScroll: true });
+        dragOffset = viewport ? { x: world.x - (viewport.minX + (viewport.maxX - viewport.minX) / 2),
+          y: world.y - (viewport.minY + (viewport.maxY - viewport.minY) / 2) } : null;
+        pointerStart = { x: event.clientX, y: event.clientY };
+        dragMoved = false;
         pointerId = event.pointerId;
         try { canvas.setPointerCapture?.(pointerId); } catch (_) { /* Click navigation also works without capture. */ }
         event.preventDefault();
-        if (!dragOffset) queueNavigation(event);
       },
       pointermove(event) {
         if (destroyed || pointerId === null || event.pointerId !== pointerId) return;
         if (!navigationAllowed()) { cancelNavigation(); return; }
-        event.preventDefault(); dragMoved = true; queueNavigation(event);
+        event.preventDefault();
+        dragMoved = dragMoved || moved(event);
+        if (dragMoved) queueNavigation(event, 'drag');
       },
       pointerup(event) {
         if (pointerId === null || event.pointerId !== pointerId) return;
         if (!navigationAllowed()) { cancelNavigation(); return; }
         event.preventDefault();
-        if (!dragOffset || dragMoved) queueNavigation(event);
+        dragMoved = dragMoved || moved(event);
+        queueNavigation(event, dragMoved ? 'drag' : 'click');
         releasePointer();
       },
       pointercancel(event) {

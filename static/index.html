@@ -399,11 +399,12 @@
         <div class="minimap-content">
           <div class="minimap-map">
             <canvas id="graphMinimap" width="262" height="160" tabindex="-1" role="region" aria-label="当前显示范围缩略图" aria-describedby="minimapHelp"></canvas>
+            <span id="minimapTarget" aria-hidden="true"></span>
             <span id="minimapEmpty" role="img" aria-label="当前范围暂无节点" hidden><img class="ui-icon" src="/static/ui-icons/minimap-map.svg" alt=""></span>
             <button type="button" id="minimapRecovery" class="minimap-button" aria-label="视窗已移出图形，返回全图" title="返回全图 · 当前显示范围" hidden><img class="ui-icon" src="/static/ui-icons/arrows-maximize.svg" alt=""></button>
           </div>
           <span id="minimapStatus" class="sr-only" role="status" aria-live="polite"></span>
-          <span id="minimapHelp" class="sr-only">点击空白位置定位，拖动视窗框平移；方向键平移，加减键缩放，0 恢复100%，Escape 收起缩略图。全图指当前显示范围，不会改变筛选。</span>
+          <span id="minimapHelp" class="sr-only">点击缩略图平滑定位，拖动平移；方向键平移，加减键缩放，0 恢复100%，Escape 收起缩略图。全图指当前显示范围，不会改变筛选。</span>
         </div>
       </section>
       <div class="minimap-capsule" role="group" aria-label="画布视图控制">

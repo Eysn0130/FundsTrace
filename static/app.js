@@ -14,6 +14,7 @@ let graphLocateFeedback = null;
 let minimapNavigation = null;
 let minimapExpanded = false;
 let minimapColors;
+let activeMinimapNavigation = null;
 
 const state = {
   caseId: null,
@@ -1334,10 +1335,69 @@ function showGraphOverview() {
 }
 
 /* ---------------- 图谱 ---------------- */
+function minimapCameraAvailable(graph) {
+  return !!graph && state.graph === graph && minimapExpanded
+    && minimapNavigation?.isNavigationAvailable?.() !== false && graphCameraInteractionAllowed();
+}
+function currentMinimapNavigation(token) {
+  return token.graph === state.graph && token.view === state.graphView
+    && token.revision === state.graphView.revision && isCurrentCase(token.context)
+    && minimapCameraAvailable(token.graph);
+}
+function clearMinimapNavigationFeedback(token = activeMinimapNavigation) {
+  if (token !== activeMinimapNavigation) return;
+  activeMinimapNavigation = null;
+  const panel = $('#graphMinimapPanel');
+  if (panel) panel.dataset.navigating = 'false';
+}
+function interruptGraphCamera(graph) {
+  if (state.graph !== graph) return;
+  state.graphCamera?.resize();
+  state.graphCamera?.cancelComposition?.();
+  clearMinimapNavigationFeedback();
+  clearGraphLocateFeedback();
+  if (state.graphView.previewAccounts?.size) { state.graphView.previewAccounts.clear(); scheduleGraphLabels(); }
+}
+function navigateMinimap(graph, point, interaction) {
+  if (!minimapCameraAvailable(graph) || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
+  interruptGraphCamera(graph);
+  if (!minimapCameraAvailable(graph)) return;
+  if (interaction?.kind === 'drag') {
+    const c = $('#graphContainer'), p = graph.getCanvasByPoint(point.x, point.y);
+    graph.translate(c.clientWidth / 2 - p.x, c.clientHeight / 2 - p.y);
+    applyGraphViewport(); scheduleGraphLabels(); return;
+  }
+  if (!state.graphCamera?.focus) return;
+  const token = { graph, view: state.graphView, revision: state.graphView.revision, context: caseContext() };
+  activeMinimapNavigation = token;
+  const position = interaction?.position, marker = $('#minimapTarget'), canvas = $('#graphMinimap');
+  if (marker && canvas && Number.isFinite(position?.x) && Number.isFinite(position?.y)) {
+    marker.style.left = `${position.x / canvas.width * 100}%`;
+    marker.style.top = `${position.y / canvas.height * 100}%`;
+    $('#graphMinimapPanel').dataset.navigating = 'true';
+  }
+  // A region click preserves the reading scale and centers that exact region.
+  // The real camera drives both canvases; dragging stays directly under the hand.
+  state.graphCamera.focus(point, { duration: 280, obstacles: [],
+    isCurrent: () => activeMinimapNavigation === token && currentMinimapNavigation(token),
+    onFrame: () => {
+      if (activeMinimapNavigation !== token || !currentMinimapNavigation(token)) return;
+      // G6 paint queues its draw for the next frame. Refresh clipping now so
+      // that draw cannot combine the new matrix with the previous visible set.
+      applyGraphViewport(); state.graphSelection?.refresh();
+    },
+    onFinish: () => {
+      if (activeMinimapNavigation !== token) return;
+      clearMinimapNavigationFeedback(token);
+      if (currentMinimapNavigation(token)) { scheduleGraphViewport(); scheduleGraphLabels(); state.graphSelection?.refresh(); }
+    }
+  });
+}
 /* Navigation chrome owns display preference only, never canvas facts/history. */
 function syncMinimapNavigation() {
   minimapNavigation?.sync();
   state.minimap?.setEnabled?.(minimapExpanded && graphCameraInteractionAllowed());
+  if (activeMinimapNavigation && !currentMinimapNavigation(activeMinimapNavigation)) state.graphCamera?.cancelFocus?.('minimap-unavailable');
 }
 function bindMinimapNavigation() {
   if (!window.FundsMinimapNavigation) return;
@@ -1447,14 +1507,12 @@ function initGraph() {
       colors: minimapColors,
       canNavigate: () => minimapExpanded && minimapNavigation?.isNavigationAvailable?.() !== false
         && state.graph === graph && graphCameraInteractionAllowed(),
-      onStatusChange: () => syncMinimapNavigation(), onNavigate: point => {
-      if (state.graph !== graph || !graphCameraInteractionAllowed()) return;
-      state.graphCamera?.resize();
-      state.graphCamera?.cancelComposition?.();
-      const c=$('#graphContainer'), p=graph.getCanvasByPoint(point.x,point.y);
-      graph.translate(c.clientWidth/2-p.x,c.clientHeight/2-p.y);
-      scheduleGraphViewport(); scheduleGraphLabels();
-    } });
+      onStatusChange: () => syncMinimapNavigation(),
+      onGestureStart: () => {
+        interruptGraphCamera(graph);
+        if (minimapCameraAvailable(graph)) state.minimap?.setViewport(graphViewportRect(graph));
+      },
+      onNavigate: (point, interaction) => navigateMinimap(graph, point, interaction) });
     syncMinimapNavigation();
   }
   graph.on('viewportchange', event => {
@@ -1510,13 +1568,7 @@ function initGraph() {
       paintWorkspaceResize(graph);
     }
   });
-  const interruptCamera = () => {
-    if(state.graph!==graph)return;
-    state.graphCamera?.resize();
-    state.graphCamera?.cancelComposition?.();
-    clearGraphLocateFeedback();
-    if (state.graphView.previewAccounts?.size) { state.graphView.previewAccounts.clear(); scheduleGraphLabels(); }
-  };
+  const interruptCamera = () => interruptGraphCamera(graph);
   for(const type of ['pointerdown','wheel'])c.addEventListener(type,interruptCamera,{capture:true,passive:true});
   state.graphDisposers.push(()=>{for(const type of ['pointerdown','wheel'])c.removeEventListener(type,interruptCamera,true);});
   const resize = () => state.graphCamera?.resize();
@@ -5441,6 +5493,7 @@ function bindUI() {
     const cancel = () => done(null);
     cancelGraphImageExport = cancel;
     view.exportDepth += 1;view.exportFooterHeight=footerHeight;view.exportLabelScale=scale;
+    state.graphCamera?.cancelFocus?.('export');
     syncMinimapNavigation();
     try {
       selection?.setVisualsVisible?.(false);

@@ -3386,3 +3386,205 @@ test('public fit keeps a positive bounded camera when the graph slot is narrower
   assert.ok(Object.values(camera()).every(Number.isFinite));
   assert.equal(h.run('JSON.stringify(state.lastGraph)===pairFacts'),true);
 });
+
+function installMinimapCameraAdapter(h, size = 3) {
+  installSyntheticHub(h, size);
+  h.run(`const createMinimap=FundsGraphMinimap.create;
+    FundsGraphMinimap={...FundsGraphMinimap,create:options=>{globalThis.minimapAdapter=options;return createMinimap(options)}};
+    const currentGraph=state.graph;state.minimap.destroy();state.minimap=null;state.graph=null;
+    globalThis.G6={Graph:function(){return currentGraph}};initGraph();
+    minimapExpanded=true;
+    globalThis.miniFocusCalls=[];globalThis.miniTranslations=[];globalThis.miniCancels=[];
+    globalThis.miniUpdates={viewport:0,labels:0,selection:0};
+    scheduleGraphViewport=()=>miniUpdates.viewport++;scheduleGraphLabels=()=>miniUpdates.labels++;
+    state.graphSelection={refresh(){miniUpdates.selection++}};
+    state.graph.getCanvasByPoint=(x,y)=>({x:x*1.25+20,y:y*1.25-30});
+    state.graph.getZoom=()=>1.25;state.graph.translate=(x,y)=>miniTranslations.push({x,y});
+    state.graphCamera={resize(){},cancelComposition(reason){miniCancels.push(reason)},
+      focus(point,options){miniFocusCalls.push({point,options});return Promise.resolve({ok:true})}};
+    globalThis.miniFacts=JSON.stringify(state.lastGraph);
+  `);
+  h.element('#graphContainer').clientWidth=1000;
+  h.element('#graphContainer').clientHeight=700;
+  h.element('#graphMinimap').width=262;h.element('#graphMinimap').height=160;
+}
+
+test('minimap click requests a bounded smooth pan without changing zoom or jumping before its frames', () => {
+  const h=harness('app.js');installMinimapCameraAdapter(h);
+  h.run(`minimapAdapter.onNavigate({x:800,y:500},{kind:'click',position:{x:65.5,y:80}})`);
+  assert.equal(h.run('miniFocusCalls.length'),1);
+  assert.equal(h.run('miniTranslations.length'),0,'click must acquire the animated camera instead of directly translating G6');
+  assert.equal(h.run('miniFocusCalls[0].options.duration'),280);
+  assert.equal(h.run('miniFocusCalls[0].options.preferredZoom'),undefined);
+  assert.equal(h.run('miniFocusCalls[0].options.obstacles.length'),0,'the selected region must reach the actual canvas center');
+  assert.equal(h.run('state.graph.getZoom()'),1.25);
+  assert.equal(h.element('#graphMinimapPanel').dataset.navigating,'true');
+  assert.equal(h.element('#minimapTarget').style.left,'25%');
+  assert.equal(h.element('#minimapTarget').style.top,'50%');
+  h.run('state.graphView.clipResult=null;miniFocusCalls[0].options.onFrame()');
+  assert.equal(h.run('state.graphView.clipResult!==null'),true,'the current camera must update drawing visibility before another frame');
+  assert.equal(h.run('state.graphView.drawnNodes'),h.run('state.graph.getNodes().filter(item=>item.getContainer().get("visible")!==false).length'));
+  assert.equal(h.run('miniUpdates.selection'),1);
+  h.run('miniFocusCalls[0].options.onFinish({ok:true})');
+  assert.equal(h.element('#graphMinimapPanel').dataset.navigating,'false');
+  assert.equal(h.run('miniUpdates.labels'),1);
+  assert.equal(h.run('JSON.stringify(state.lastGraph)===miniFacts'),true);
+});
+
+test('minimap drag stays direct and pointerdown immediately interrupts a camera journey', () => {
+  const h=harness('app.js');installMinimapCameraAdapter(h);
+  h.run(`state.graphView.previewAccounts.add('SYN-HUB');minimapAdapter.onGestureStart();
+    minimapAdapter.onNavigate({x:800,y:500},{kind:'drag',position:{x:60,y:80}})`);
+  assert.ok(h.run('miniCancels.length')>0);
+  assert.equal(h.run('state.graphView.previewAccounts.size'),0);
+  assert.equal(h.run('miniFocusCalls.length'),0);
+  assert.deepEqual(JSON.parse(h.run('JSON.stringify(miniTranslations)')),[{x:-520,y:-245}]);
+  assert.equal(h.element('#graphMinimapPanel').dataset.navigating,'false');
+});
+
+test('minimap click drives the real camera through intermediate frames and a drag takes over its live center', async () => {
+  const h=harness('app.js');installMinimapCameraAdapter(h);
+  h.run(`globalThis.miniTime=0;window.performance={now:()=>miniTime};
+    state.minimap.setData({nodes:[{x:-2000,y:-2000},{x:2000,y:2000}]});
+    globalThis.miniMatrix=[1.25,0,0,0,1.25,0,20,-30,1];
+    const group={getMatrix:()=>miniMatrix,setMatrix:matrix=>{miniMatrix=Array.from(matrix)}};
+    state.graph.get=key=>({group,width:1000,height:700,minZoom:.02,maxZoom:4}[key]);
+    state.graph.getZoom=()=>miniMatrix[0];
+    state.graph.getPointByCanvas=(x,y)=>({x:(x-miniMatrix[6])/miniMatrix[0],y:(y-miniMatrix[7])/miniMatrix[4]});
+    state.graph.getCanvasByPoint=(x,y)=>({x:x*miniMatrix[0]+miniMatrix[6],y:y*miniMatrix[4]+miniMatrix[7]});
+    state.graphCamera=window.FundsWorkspaceCamera.create({container:document.querySelector('#graphContainer'),graph:state.graph,
+      isCurrent:()=>true,isSuspended:()=>!!state.graphView.exportDepth});
+    minimapAdapter.onNavigate({x:800,y:500},{kind:'click',position:{x:100,y:80}});`);
+  const tick=time=>{h.run(`miniTime=${time}`);const pending=h.frames.filter(frame=>!frame.cancelled&&!frame.ran);
+    for(const frame of pending){frame.ran=true;frame.callback(time)}};
+  assert.equal(h.run('miniMatrix[6]'),20,'no direct jump before the first animation frame');
+  tick(70);const early=h.run('miniMatrix[6]');tick(140);const middle=h.run('miniMatrix[6]');
+  assert.ok(20>early&&early>middle&&middle>-500,'real G6 matrix progresses continuously toward the selected region');
+  assert.equal(h.run('miniMatrix[0]'),1.25,'pan must preserve zoom through every frame');
+  const viewport=JSON.parse(h.run('JSON.stringify(graphViewportRect())'));
+  const expectedCenter=(viewport.minX+viewport.maxX)/2;
+  h.run('minimapAdapter.onGestureStart()');
+  const status=h.run('state.minimap.getStatus()');assert.ok(status.viewport,'gesture acquires current geometry synchronously');
+  const before=h.run('miniMatrix[6]');tick(400);
+  assert.equal(h.run('miniMatrix[6]'),before,'cancelled navigation cannot resume after a grab');
+  assert.equal(h.run('(graphViewportRect().minX+graphViewportRect().maxX)/2'),expectedCenter);
+  h.run(`minimapAdapter.onNavigate({x:800,y:500},{kind:'click',position:{x:100,y:80}})`);
+  tick(680);
+  assert.equal(h.run('miniMatrix[6]'),-500);assert.equal(h.run('miniMatrix[7]'),-275);
+  assert.equal(h.run('miniMatrix[0]'),1.25);assert.equal(h.element('#graphMinimapPanel').dataset.navigating,'false');
+});
+
+function installDelayedMinimapRenderer(h) {
+  h.run('globalThis.realMinimapViewportScheduler=scheduleGraphViewport');
+  installMinimapCameraAdapter(h, 100);
+  h.run(`scheduleGraphViewport=realMinimapViewportScheduler;
+    globalThis.miniTime=0;window.performance={now:()=>miniTime};
+    globalThis.miniMatrix=[1,0,0,0,1,0,0,0,1];globalThis.miniRenderedFrames=[];
+    globalThis.miniDrawPending=false;
+    const graph=state.graph,group={getMatrix:()=>miniMatrix,setMatrix:matrix=>{miniMatrix=Array.from(matrix)}};
+    graph.get=key=>({group,width:1000,height:700,minZoom:.02,maxZoom:4,autoPaint:true}[key]);
+    graph.getZoom=()=>miniMatrix[0];
+    graph.getPointByCanvas=(x,y)=>({x:(x-miniMatrix[6])/miniMatrix[0],y:(y-miniMatrix[7])/miniMatrix[4]});
+    graph.getCanvasByPoint=(x,y)=>({x:x*miniMatrix[0]+miniMatrix[6],y:y*miniMatrix[4]+miniMatrix[7]});
+    // Pinned G6 paint() requests a deduplicated Canvas draw on the next rAF.
+    // Capture its visible groups when that draw executes, before later queued
+    // camera/culling callbacks. A synchronous paint stub would hide this race.
+    graph.paint=()=>{
+      if(miniDrawPending)return;miniDrawPending=true;
+      requestAnimationFrame(()=>{
+        miniDrawPending=false;
+        const nodes=graph.getNodes(),expected=nodes.filter(item=>{
+          const model=item.getModel(),x=model.x*miniMatrix[0]+miniMatrix[6],y=model.y*miniMatrix[4]+miniMatrix[7];
+          return x>=0&&x<=1000&&y>=0&&y<=700;
+        }).map(item=>item.getModel().id);
+        miniRenderedFrames.push({time:miniTime,matrix:Array.from(miniMatrix),expected,
+          visible:nodes.filter(item=>item.getContainer().get('visible')!==false).map(item=>item.getModel().id)});
+      });
+    };
+    graph.translate=(x,y)=>{
+      miniMatrix[6]+=x;miniMatrix[7]+=y;
+      for(const listener of syntheticGraphEvents.get('viewportchange')||[])listener({action:'translate'});
+      graph.paint();
+    };
+    graph.getNodes().forEach((item,i)=>Object.assign(item.getModel(),{x:100+i*100,y:350}));
+    renderNodeAnnotations=()=>{};applyGraphLabels=()=>{};
+    state.graphSelection={refresh(){}};
+    state.graphCamera=window.FundsWorkspaceCamera.create({container:document.querySelector('#graphContainer'),graph,
+      isCurrent:()=>state.graph===graph,isSuspended:()=>!!state.graphView.exportDepth});
+    rebuildGraphViewport();`);
+  const tick=time=>{
+    h.run(`miniTime=${time}`);
+    const pending=h.frames.filter(frame=>!frame.cancelled&&!frame.ran);
+    for(const frame of pending){frame.ran=true;frame.callback(time)}
+  };
+  tick(0);tick(0);
+  h.run('miniRenderedFrames=[]');
+  return {tick,frames:()=>JSON.parse(h.run('JSON.stringify(miniRenderedFrames)'))};
+}
+
+function assertRenderedMinimapNodes(frames) {
+  assert.ok(frames.length>0,'the delayed renderer must actually draw');
+  for(const frame of frames) {
+    assert.ok(frame.expected.length>0,'the independent screen projection has nodes along the entire journey');
+    const visible=new Set(frame.visible),missing=frame.expected.filter(id=>!visible.has(id));
+    assert.deepEqual(missing,[],`draw at ${frame.time}ms (matrix x=${frame.matrix[6]}) must use culling for that same camera`);
+    assert.equal(frame.matrix[0],1,'every painted intermediate frame must retain the reading scale');
+  }
+}
+
+test('minimap distant pan keeps entering nodes visible in every deferred renderer frame', () => {
+  const h=harness('app.js'),renderer=installDelayedMinimapRenderer(h);
+  h.run(`minimapAdapter.onNavigate({x:9500,y:350},{kind:'click',position:{x:240,y:80}})`);
+  for(let time=16;time<=320;time+=16)renderer.tick(time);
+  const frames=renderer.frames();
+  assert.ok(frames.length>=15,'a full animation must be inspected, not only its final state');
+  assert.ok(frames.some(frame=>frame.matrix[6]<0&&frame.matrix[6]>-9000),'the renderer must draw intermediate camera positions');
+  assertRenderedMinimapNodes(frames);
+  assert.equal(h.run('miniMatrix[6]'),-9000,'the selected world position must arrive at the actual canvas center');
+  assert.equal(h.run('miniMatrix[7]'),0);assert.equal(h.run('state.graph.getNodes().length'),100);
+  assert.equal(h.run('JSON.stringify(state.lastGraph)===miniFacts'),true,'drawing visibility never changes complete graph facts');
+});
+
+test('minimap drag takeover updates culling before an already queued renderer draws its new position', () => {
+  const h=harness('app.js'),renderer=installDelayedMinimapRenderer(h);
+  h.run(`minimapAdapter.onNavigate({x:4500,y:350},{kind:'click',position:{x:120,y:80}})`);
+  renderer.tick(16);
+  h.run(`minimapAdapter.onGestureStart();
+    minimapAdapter.onNavigate({x:9500,y:350},{kind:'drag',position:{x:240,y:80}})`);
+  assert.equal(h.run('miniMatrix[6]'),-9000,'drag takes over directly before another frame');
+  renderer.tick(32);renderer.tick(320);
+  assertRenderedMinimapNodes(renderer.frames());
+  assert.equal(h.run('miniMatrix[6]'),-9000,'the cancelled journey must not resume after drag takeover');
+  assert.equal(h.run('miniMatrix[0]'),1);assert.equal(h.run('state.graph.getNodes().length'),100);
+  assert.equal(h.run('JSON.stringify(state.lastGraph)===miniFacts'),true);
+});
+
+test('minimap camera frames revoke with their binding and a superseded completion cannot clear a newer target', () => {
+  const h=harness('app.js');installMinimapCameraAdapter(h);
+  h.run(`minimapAdapter.onNavigate({x:800,y:500},{kind:'click',position:{x:60,y:80}});
+    minimapAdapter.onNavigate({x:-200,y:100},{kind:'click',position:{x:190,y:90}});
+    miniFocusCalls[0].options.onFinish({ok:false,reason:'superseded'});`);
+  assert.equal(h.element('#graphMinimapPanel').dataset.navigating,'true');
+  assert.equal(h.element('#minimapTarget').style.left,`${190/262*100}%`);
+  assert.equal(h.run('miniFocusCalls[1].options.isCurrent()'),true);
+  for(const change of ['state.canvasGeneration++','state.caseGeneration++','state.graphView.revision++','minimapExpanded=false','state.graphLoading=true','state.graphView.exportDepth=1']) {
+    const next=harness('app.js');installMinimapCameraAdapter(next);
+    next.run(`minimapAdapter.onNavigate({x:800,y:500},{kind:'click',position:{x:60,y:80}});${change}`);
+    assert.equal(next.run('miniFocusCalls[0].options.isCurrent()'),false,change);
+    next.run('miniFocusCalls[0].options.onFrame();miniFocusCalls[0].options.onFinish({ok:false})');
+    assert.equal(next.run('miniUpdates.viewport'),0,'stale binding must not redraw a newer view');
+    assert.equal(next.element('#graphMinimapPanel').dataset.navigating,'false');
+  }
+});
+
+test('image sampling synchronously revokes camera animation before saving its matrix', async () => {
+  const h=harness('app.js');installSyntheticHub(h,3);
+  h.run(`globalThis.exportCameraCancelled=false;
+    state.graphCamera={resize(){},resume(){},cancelFocus(){exportCameraCancelled=true}};
+    const get=state.graph.get;state.graph.get=name=>{
+      if(name==='group')assertCameraStoppedForExport();return get(name)};
+    globalThis.assertCameraStoppedForExport=()=>{if(!exportCameraCancelled)throw Error('camera still animating')};`);
+  const pending=h.sampleExport('png');
+  assert.equal(h.run('exportCameraCancelled'),true);
+  h.timers.findLast(timer=>timer.delay===400).callback();await pending;
+});
