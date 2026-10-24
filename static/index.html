@@ -6,7 +6,7 @@
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" href="/static/favicon-32.png" sizes="32x32">
 <title>循迹 FundsTrace · 资金流水追踪与关联分析</title>
-<link rel="stylesheet" href="/static/style.css?v=canvas-investigation-1">
+<link rel="stylesheet" href="/static/style.css?v=minimap-integrated-6">
 <link rel="stylesheet" href="/static/desktop-updates.css">
 <link rel="stylesheet" href="/static/navigation.css">
 <link rel="stylesheet" href="/static/appearance.css">
@@ -394,10 +394,27 @@
     <div id="legend">
       <div class="graph-legend" aria-label="账户角色图例"><span class="lg" title="只转出（源头）"><i class="dot src"></i>源头</span><span class="lg"><i class="dot mid"></i>中转</span><span class="lg" title="只转入（沉淀）"><i class="dot sink"></i>沉淀</span><span class="lg"><i class="dot main"></i>主账号</span><span class="lg"><i class="dot samename"></i>同户名</span></div>
     </div>
-    <aside id="graphMinimapPanel" aria-label="图谱缩略图">
-      <span>概览 · 点击或拖动定位</span>
-      <canvas id="graphMinimap" width="180" height="112" aria-label="当前图谱概览，键盘可使用下方平移按钮"></canvas>
-      <div class="minimap-actions" aria-label="平移视窗"><button class="btn small" data-pan="left" aria-label="向左平移"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><button class="btn small" data-pan="up" aria-label="向上平移"><img class="ui-icon" src="/static/ui-icons/chevron-up.svg" alt=""></button><button class="btn small" data-pan="down" aria-label="向下平移"><img class="ui-icon" src="/static/ui-icons/chevron-down.svg" alt=""></button><button class="btn small" data-pan="right" aria-label="向右平移"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div>
+    <aside id="graphMinimapPanel" aria-label="画布导航">
+      <section id="graphMinimapPopover" aria-label="缩略图导航" hidden>
+        <div class="minimap-content">
+          <div class="minimap-map">
+            <canvas id="graphMinimap" width="262" height="160" tabindex="-1" role="region" aria-label="当前显示范围缩略图" aria-describedby="minimapHelp"></canvas>
+            <span id="minimapEmpty" role="img" aria-label="当前范围暂无节点" hidden><img class="ui-icon" src="/static/ui-icons/minimap-map.svg" alt=""></span>
+            <button type="button" id="minimapRecovery" class="minimap-button" aria-label="视窗已移出图形，返回全图" title="返回全图 · 当前显示范围" hidden><img class="ui-icon" src="/static/ui-icons/arrows-maximize.svg" alt=""></button>
+          </div>
+          <span id="minimapStatus" class="sr-only" role="status" aria-live="polite"></span>
+          <span id="minimapHelp" class="sr-only">点击空白位置定位，拖动视窗框平移；方向键平移，加减键缩放，0 恢复100%，Escape 收起缩略图。全图指当前显示范围，不会改变筛选。</span>
+        </div>
+      </section>
+      <div class="minimap-capsule" role="group" aria-label="画布视图控制">
+        <button type="button" id="btnMinimapToggle" class="minimap-button minimap-toggle" aria-label="展开缩略图" title="展开缩略图" aria-controls="graphMinimapPopover" aria-expanded="false"><img class="ui-icon" src="/static/ui-icons/minimap-map.svg" alt=""></button>
+        <span class="minimap-divider" aria-hidden="true"></span>
+        <button type="button" id="btnMinimapZoomOut" class="minimap-button" aria-label="缩小画布" title="缩小画布"><img class="ui-icon" src="/static/ui-icons/minimap-minus.svg" alt=""></button>
+        <button type="button" id="minimapZoomValue" class="minimap-button" aria-label="恢复100%实际比例" title="恢复100%实际比例"><img class="ui-icon" src="/static/ui-icons/focus.svg" alt=""></button>
+        <button type="button" id="btnMinimapZoomIn" class="minimap-button" aria-label="放大画布" title="放大画布"><img class="ui-icon" src="/static/ui-icons/minimap-plus.svg" alt=""></button>
+        <span class="minimap-divider" aria-hidden="true"></span>
+        <button type="button" id="btnMinimapFit" class="minimap-button" aria-label="返回全图（当前显示范围）" title="返回全图 · 当前显示范围"><img class="ui-icon" src="/static/ui-icons/arrows-maximize.svg" alt=""></button>
+      </div>
     </aside>
     <div id="emptyHint" style="display:none">
       <div class="card">
@@ -699,7 +716,8 @@
 <script src="/static/graph-view.js?v=1"></script>
 <script src="/static/graph-labels.js?v=1"></script>
 <script src="/static/graph-viewport.js?v=1"></script>
-<script src="/static/graph-minimap.js?v=1"></script>
+<script src="/static/graph-minimap.js?v=minimap-integrated-6"></script>
+<script src="/static/minimap-navigation.js?v=minimap-integrated-6"></script>
 <script src="/static/graph-selection.js?v=main-accounts-1"></script>
 <script src="/static/workspace-shell.js?v=workspace-camera-2"></script>
 <script src="/static/graph-relations.js?v=relation-filter-1"></script>
@@ -720,7 +738,7 @@
 <script src="/static/main-accounts.js?v=1"></script>
 <script src="/static/main-accounts-view.js?v=neighborhood-search-1"></script>
 <script src="/static/workspace-drafts.js"></script>
-<script src="/static/app.js?v=canvas-open-fit-2"></script>
+<script src="/static/app.js?v=minimap-integrated-6"></script>
 <script src="/static/canvas-history.js?v=1"></script>
 <script src="/static/canvas-editor.js?v=neighborhood-search-1"></script>
 <script src="/static/table-workspace.js?v=neighborhood-search-1"></script>

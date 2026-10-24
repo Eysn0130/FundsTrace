@@ -6,7 +6,7 @@ const { randomUUID } = require('node:crypto');
 const { pageAllowed } = require('./host-policy.cjs');
 const CHANNEL = 'funds-trace:preferences';
 const labels = new Set(['money', 'time', 'summary', 'currency']);
-const keys = new Set(['fund_case', 'fund_edge_type', 'fund_show_ids', 'fund_show_photos', 'fund_edge_label', 'fund_edge_labels', 'fund_sidebar_width', 'fund_appearance']);
+const keys = new Set(['fund_case', 'fund_edge_type', 'fund_show_ids', 'fund_show_photos', 'fund_edge_label', 'fund_edge_labels', 'fund_sidebar_width', 'fund_appearance', 'fund_minimap_expanded']);
 
 function readAppearance(value) {
   if (typeof value !== 'string' || value.length > 256) return null;
@@ -38,7 +38,7 @@ function validPreference(key, value) {
     case 'fund_appearance': return readAppearance(value) !== null;
     case 'fund_case': return /^[1-9]\d{0,18}$/.test(value);
     case 'fund_edge_type': return ['line', 'polyline', 'quadratic'].includes(value);
-    case 'fund_show_ids': case 'fund_show_photos': return value === '0' || value === '1';
+    case 'fund_show_ids': case 'fund_show_photos': case 'fund_minimap_expanded': return value === '0' || value === '1';
     case 'fund_sidebar_width': return /^(0|[1-9]\d{0,2})$/.test(value) && Number(value) <= 760;
     // Main owns normal window bounds. This key is never exposed by preference IPC.
     case 'fund_window_state': return readWindowState(value) !== null;

@@ -67,3 +67,7 @@ BIFF8 XLS reading uses [xlrd 2.0.2](https://github.com/python-excel/xlrd) and [o
 The current application icon is derived from the maintainer-approved raster image retained as `docs/brand/source/app-icon-approved.png`. Its transparent master and generated application, web and GitHub resources are documented in [docs/brand/README.md](docs/brand/README.md). The application icon does not depend on a font or external icon service.
 
 The earlier FundsTrace wordmarks used Manrope and Noto Sans SC, both under SIL Open Font License 1.1. Those wordmark assets have been retired; their copyright notices and full licenses remain in [docs/brand/licenses/](docs/brand/licenses/). Font binaries are not included in this repository, and replacing the application icon does not change those upstream licenses.
+
+## Minimap navigation icons
+
+`static/ui-icons/minimap-map.svg`, `minimap-minus.svg` and `minimap-plus.svg` are the map, minus and plus icons from Tabler Icons 3.35.0 (MIT), retained locally with `static/ui-icons/LICENSE`. No external icon request is required.
