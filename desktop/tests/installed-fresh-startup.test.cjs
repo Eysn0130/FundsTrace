@@ -11,7 +11,7 @@ const test = require('node:test');
 const sourceFile = path.join(__dirname, 'installed-app-smoke.cjs');
 const sentinel = 'FundsTrace synthetic installer lifecycle v1\n';
 async function isolatedFunction(name, end, globals = {}) {
-  const source = await fs.readFile(sourceFile, 'utf8');
+  const source = (await fs.readFile(sourceFile, 'utf8')).replace(/\r\n/g, '\n');
   const start = source.indexOf(`function ${name}(`), finish = source.indexOf(end, start);
   assert.ok(start >= 0 && finish > start);
   const expression = source.slice(start - (source.slice(start - 6, start) === 'async ' ? 6 : 0), finish);
@@ -59,7 +59,7 @@ test('fresh preflight requires sentinel-only user state and does not create data
 });
 
 test('fresh empty-case oracle uses renderer authenticated APIs and exact monetary strings', async () => {
-  const source = await fs.readFile(sourceFile, 'utf8');
+  const source = (await fs.readFile(sourceFile, 'utf8')).replace(/\r\n/g, '\n');
   const start = source.indexOf("  if (config.freshStartup) {\n    await check('authenticatedWorkspaceLoaded'");
   const body = source.slice(start, source.indexOf("    report.checks.defaultCaseEmpty = true;", start));
   const expression = body.split('await evaluate(`')[1].split('`), true);')[0];
@@ -85,7 +85,7 @@ test('fresh empty-case oracle uses renderer authenticated APIs and exact monetar
 test('first-client preference evidence preserves exact bytes and rejects pre-merge or receipt tampering', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'fundstrace-fresh-preference-evidence-'));
   t.after(() => fs.rm(directory, {recursive:true, force:true}));
-  const installer = await fs.readFile(path.resolve(__dirname, '../../scripts/test-windows-installer.ps1'), 'utf8');
+  const installer = (await fs.readFile(path.resolve(__dirname, '../../scripts/test-windows-installer.ps1'), 'utf8')).replace(/\r\n/g, '\n');
   const code = installer.split("$FreshPreferenceEvidenceCode = @'\n")[1].split("\n'@")[0];
   const file = path.join(directory, 'preferences.json');
   // Include unusual but valid JSON whitespace; evidence must preserve bytes, not reserialize them.
