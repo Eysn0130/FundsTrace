@@ -469,6 +469,28 @@ def test_workflow_keeps_recheck_read_only_separate_and_original_fresh_reports_in
                    ("candidate_recheck_run_id", "candidate_recheck_sha256", "candidate_recheck_bytes"))
 
 
+def test_recheck_cache_environment_is_initialized_after_checkout_for_all_later_steps():
+    workflow = (ROOT / ".github/workflows/windows-candidate.yml").read_text()
+    recheck = workflow.split("\n  candidate-recheck:\n", 1)[1]
+    header, steps = recheck.split("\n    steps:\n", 1)
+    environment = header.split("\n    env:\n", 1)[1]
+    assert "runner." not in environment
+    assert "UV_CACHE_DIR:" not in environment and "npm_config_cache:" not in environment
+    assert "shell: pwsh" in header and "working-directory: 源码 FundsTrace" in header
+
+    initialization_name = "      - name: Initialize isolated recheck caches"
+    assert steps.index("actions/checkout@") < steps.index(initialization_name) < steps.index("actions/setup-node@")
+    initialization = steps.split(initialization_name, 1)[1].split("\n      - ", 1)[0]
+    assert "$uvCache = Join-Path $env:RUNNER_TEMP 'candidate-recheck-uv-cache'" in initialization
+    assert "$nodeCache = Join-Path $env:RUNNER_TEMP 'candidate-recheck-node-cache'" in initialization
+    for assignment in ('"UV_CACHE_DIR=$uvCache"', '"npm_config_cache=$nodeCache"'):
+        assert f"{assignment} | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8" in initialization
+    assert initialization.count("Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8") == 2
+    assert "UV_CACHE_DIR:" not in steps and "npm_config_cache:" not in steps
+    assert steps.index(initialization_name) < steps.index("Prepare only the pinned development test dependencies")
+    assert steps.index(initialization_name) < steps.index("Run fresh startup and both upgrade lifecycles using the same original EXE")
+
+
 def test_published_preparation_retains_release_semantics_and_recheck_never_uses_transfer():
     published = (ROOT / "scripts/test-windows-published-upgrade.ps1").read_text()
     recheck = (ROOT / "scripts/test-windows-candidate-recheck.ps1").read_text()
