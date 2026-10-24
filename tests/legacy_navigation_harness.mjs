@@ -2095,7 +2095,7 @@ test('public fit tolerates degenerate, invalid and minimum-size host bounds with
     {bounds:{minX:100,minY:200,maxX:100,maxY:200},zoom:1.6},
     {bounds:{minX:-1e9,minY:-1e9,maxX:1e9,maxY:1e9},zoom:.02},
     {bounds:{minX:NaN,minY:0,maxX:20,maxY:30},fallback:true},
-    {bounds:{minX:10,minY:20,maxX:100,maxY:200},size:[32,32],fallback:true},
+    {bounds:{minX:10,minY:20,maxX:100,maxY:200},size:[32,32],zoom:.02},
   ]) {
     const h=harness('app.js');installSavedLabelPair(h);
     if(fixture.size){h.element('#graphContainer').clientWidth=fixture.size[0];h.element('#graphContainer').clientHeight=fixture.size[1]}
@@ -2104,7 +2104,10 @@ test('public fit tolerates degenerate, invalid and minimum-size host bounds with
     assert.ok(Object.values(camera()).every(Number.isFinite),'camera state is always finite');
     assert.ok(camera().zoom>=.02&&camera().zoom<=1.6);
     if(fixture.fallback)assert.deepEqual(JSON.parse(h.run('JSON.stringify(measuredFit.fallbacks)')),[[24,24,24,24]]);
-    else assert.ok(Math.abs(camera().zoom-fixture.zoom)<1e-8);
+    else {
+      assert.equal(h.run('measuredFit.fallbacks.length'),0,'valid bounds use the bounded camera even in the minimum slot');
+      assert.ok(Math.abs(camera().zoom-fixture.zoom)<1e-8);
+    }
     assert.equal(h.run('JSON.stringify(state.lastGraph)===pairFacts'),true);
   }
 });

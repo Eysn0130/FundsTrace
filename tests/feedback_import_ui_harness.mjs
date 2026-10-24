@@ -271,8 +271,9 @@ test('case totals retain the source interpretation note and discard statistics a
     return nodes.get(selector);
   };
   const state = { caseId: 1, generation: 1, tracked: new Set(), stats: {} };
-  let pending;
+  let pending, navigationSyncs = 0;
   const context = vm.createContext({ state, $: element, window: {}, exportWorkspace: null, caseWorkspace: null,
+    syncMinimapNavigation: () => { navigationSyncs++; },
     caseContext: () => ({ caseId: state.caseId, generation: state.generation }),
     isCurrentCase: binding => binding.caseId === state.caseId && binding.generation === state.generation,
     api: async () => new Promise(resolve => { pending = resolve; }) });
@@ -282,6 +283,7 @@ test('case totals retain the source interpretation note and discard statistics a
   const load = vm.runInContext('refreshStats()', context);
   pending({ flows: 80, accounts: 2, import_coverage: { scope: 'source_reported_flows', unresolved_records: 349, non_monetary_records: 233, cancelled_records: 4, excluded_flows: 2, financial_interpretation_complete: false } });
   await load;
+  assert.equal(navigationSyncs, 1, 'current statistics refresh navigation through its separate owner');
   assert.equal(element('#importCoverageNote').hidden, false);
   assert.match(element('#importCoverageNote').textContent, /349 条资金含义未确定的来源记录未计入统计/);
   assert.match(element('#importCoverageNote').textContent, /不代表结算净额/);
@@ -295,6 +297,7 @@ test('case totals retain the source interpretation note and discard statistics a
   assert.equal(element('#importCoverageNote').textContent, '');
   pending({ flows: 80, accounts: 2, import_coverage: { scope: 'source_reported_flows', unresolved_records: 349, non_monetary_records: 233, financial_interpretation_complete: false } });
   await oldLoad;
+  assert.equal(navigationSyncs, 2, 'a stale statistics response cannot refresh navigation for the new case');
   assert.equal(element('#importCoverageNote').hidden, true);
   assert.equal(element('#importCoverageNote').textContent, '');
 });
