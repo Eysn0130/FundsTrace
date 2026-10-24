@@ -810,6 +810,8 @@ html[data-ft-theme="light"] {
 #graphMinimap { display: block; width: 262px; height: 160px; touch-action: none; cursor: grab; outline-offset: -3px; }
 #graphMinimap:active { cursor: grabbing; }
 #graphMinimap[aria-disabled="true"] { cursor: default; }
+#minimapTarget { position: absolute; width: 14px; height: 14px; border: 1.5px solid var(--mm-accent); border-radius: 50%; pointer-events: none; opacity: 0; transform: translate(-50%, -50%) scale(.7); transition: opacity 120ms ease, transform 200ms cubic-bezier(.2,.8,.2,1); }
+#graphMinimapPanel[data-navigating="true"] #minimapTarget { opacity: .85; transform: translate(-50%, -50%) scale(1); }
 #minimapEmpty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--mm-muted); pointer-events: none; }
 #minimapEmpty .ui-icon { width: 24px; height: 24px; filter: var(--mm-icon); opacity: .35; }
 #minimapEmpty[data-loading="true"] .ui-icon { visibility: hidden; }
@@ -832,10 +834,11 @@ html[data-ft-theme="light"] {
 .minimap-divider { width: 1px; height: 17px; background: var(--mm-inset); flex: none; margin: 0 3px; }
 @keyframes minimap-loading { to { transform: rotate(360deg); } }
 @container graph-slot (max-width: 620px) { #graphMinimapPanel { bottom: 72px; } }
-@media (prefers-reduced-motion: reduce) { #minimapEmpty[data-loading="true"]::after { animation: none; } #graphMinimapPopover, .minimap-capsule, .minimap-button { transition: none; } }
+@media (prefers-reduced-motion: reduce) { #minimapEmpty[data-loading="true"]::after { animation: none; } #graphMinimapPopover, .minimap-capsule, .minimap-button, #minimapTarget { transition: none; } #minimapTarget { display: none; } }
 @media (prefers-reduced-transparency: reduce) { #graphMinimapPopover, .minimap-capsule { background: var(--mm-solid); backdrop-filter: none; } }
 @media (forced-colors: active) {
   #graphMinimapPopover, .minimap-capsule, .minimap-map, #minimapRecovery { border: 1px solid CanvasText; background: Canvas; color: CanvasText; box-shadow: none; }
+  #minimapTarget { border-color: Highlight; }
   .minimap-button .ui-icon { filter: brightness(0); }
   .minimap-toggle[aria-expanded="true"] { background: Highlight; }
   .minimap-toggle[aria-expanded="true"] .ui-icon { filter: brightness(0) invert(1); }
