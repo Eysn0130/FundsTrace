@@ -101,13 +101,13 @@ test('row overflow, missing persistent commands and the seven-column table remai
 });
 
 test('native file input remains enabled and exactly associated with its visible label despite its clipped size',async()=>{
-  const fixture=await toolsFixture(),input={id:'synthetic-file',type:'file',accept:'.csv,.tsv,.txt,.xlsx',disabled:false};
+  const fixture=await toolsFixture(),input={id:'synthetic-file',type:'file',accept:'.csv,.tsv,.txt,.xlsx,.xls,.zip',disabled:false};
   const label={htmlFor:input.id,control:input,querySelector:()=>input};
   fixture.nodes.set(input.id,input);
   const query=fixture.document.querySelector;
   fixture.document.querySelector=selector=>selector==='dialog[open] label.file-drop'?label:query(selector);
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.readImport())),
-    {associated:true,type:'file',accept:'.csv,.tsv,.txt,.xlsx',enabled:true});
+    {associated:true,type:'file',accept:'.csv,.tsv,.txt,.xlsx,.xls,.zip',enabled:true});
   label.htmlFor='another-input';assert.equal(fixture.readImport().associated,false);
   label.htmlFor=input.id;label.control=null;assert.equal(fixture.readImport().associated,false);
   label.control=input;input.disabled=true;assert.equal(fixture.readImport().enabled,false);
@@ -251,4 +251,61 @@ test('the actual public React entry requires the host redirect, preserves its ca
     }
     assert.deepEqual(navigations,[`${origin}/workspace/?case_id=2`]);
   }
+});
+
+async function importEntryContractFixture(sourceText) {
+  const fixture=await casesFixture(),{context,page,childDocument}=fixture;
+  const source=(sourceText??fixture.source).replace(/\r\n/g,'\n');
+  const start=source.indexOf("  await check('reactEmptyCaseImportEntry'"),end=source.indexOf("  await check('workspaceGraphLinkOpened'",start);
+  const readerStart=source.indexOf('function readImportEntry() {'),readerEnd=source.indexOf('function argumentsOf() {',readerStart);
+  assert.ok(start>=0&&end>start&&readerStart>=0&&readerEnd>readerStart);
+  const input={id:'synthetic-file',type:'file',accept:'.csv,.tsv,.txt,.xlsx,.xls,.zip',disabled:false};
+  const label=childDocument.querySelector('#action'),events=[];
+  label.style={...label.style};label.htmlFor=input.id;label.control=input;
+  label.querySelector=selector=>{assert.equal(selector,'input[type="file"]');return input;};
+  let open=false;
+  const originalQuery=childDocument.querySelector;
+  childDocument.querySelector=selector=>selector==='dialog[open] label.file-drop'?(open?label:null)
+    :selector==='dialog[open] input[type="file"]'?(open?input:null)
+    :selector==='dialog[open]'?(open?{}:null):originalQuery(selector);
+  childDocument.getElementById=id=>id===input.id?input:null;
+  context.check=async(name,action)=>{assert.equal(name,'reactEmptyCaseImportEntry');events.push('check');await action();};
+  context.clickElement=async(expression,target,options)=>{
+    assert.equal(target,page);assert.equal(options.frame,true);
+    if(!open){assert.ok(expression.includes('.empty-state .button.primary'));open=true;events.push('open');}
+    else{assert.ok(expression.includes("item.textContent.trim() === '取消'"));open=false;events.push('cancel');}
+  };
+  context.readyCases=async(expression,target=page)=>{
+    assert.equal(target,page);events.push(open?'wait-input':'wait-closed');
+    assert.equal(vm.runInContext(context.casesFrameExpression(`document.readyState==='complete'&&(${expression})`),context),true);
+  };
+  context.evaluate=async(expression,target=page)=>{
+    assert.equal(target,page);events.push(expression.includes('function readImportEntry')?'read-entry':'visible-label');
+    return vm.runInContext(expression,context);
+  };
+  vm.runInContext(source.slice(readerStart,readerEnd),context);
+  return {...fixture,input,label,events,isOpen:()=>open,
+    run:()=>vm.runInContext(`(async()=>{${source.slice(start,end)}})()`,context)};
+}
+
+for(const newline of ['LF','CRLF'])test(`the exact native empty-case import block accepts all six suffixes with ${newline} source`,async()=>{
+  const source=(await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8')).replace(/\r\n/g,'\n');
+  const fixture=await importEntryContractFixture(newline==='CRLF'?source.replace(/\n/g,'\r\n'):source);
+  await fixture.run();
+  assert.deepEqual(fixture.events,['check','open','wait-input','visible-label','read-entry','cancel','wait-closed']);
+  assert.equal(fixture.isOpen(),false);
+});
+
+for(const [name,change] of [
+  ['missing XLS',value=>{value.input.accept='.csv,.tsv,.txt,.xlsx,.zip';}],
+  ['missing ZIP',value=>{value.input.accept='.csv,.tsv,.txt,.xlsx,.xls';}],
+  ['extra EXE',value=>{value.input.accept+=',.exe';}],
+  ['wrong label association',value=>{value.label.htmlFor='another-input';}],
+  ['disabled input',value=>{value.input.disabled=true;}],
+  ['non-file input',value=>{value.input.type='text';}],
+  ['invisible label',value=>{value.label.style.visibility='hidden';}],
+])test(`the exact native empty-case import block rejects ${name}`,async()=>{
+  const fixture=await importEntryContractFixture();change(fixture);
+  await assert.rejects(fixture.run(),{code:'ERR_ASSERTION'});
+  assert.ok(!fixture.events.includes('cancel'),'a failed contract must not reach the successful close');
 });

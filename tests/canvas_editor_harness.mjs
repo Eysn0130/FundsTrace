@@ -157,6 +157,135 @@ function cameraChrome(f, { left = 560, top = 180, bounds } = {}) {
   };
 }
 
+function minimapChrome(f) {
+  const ids = ['graphMinimapPanel', 'graphMinimapPopover', 'btnMinimapToggle', 'btnMinimap', 'graphMinimap',
+    'minimapZoomValue', 'btnMinimapZoomOut', 'btnMinimapZoomIn', 'btnMinimapFit', 'minimapStatus', 'minimapEmpty', 'minimapRecovery'];
+  for (const id of ids) {
+    const node = f.h.element(`#${id}`), attributes = new Map(), listeners = new Map();
+    node.setAttribute = (name, value) => attributes.set(name, String(value));
+    node.getAttribute = name => attributes.get(name) ?? null;
+    node.addEventListener = (type, callback) => {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(callback);
+    };
+    node.removeEventListener = (type, callback) => listeners.get(type)?.delete(callback);
+    node.click = () => {
+      if (node.disabled) return;
+      for (const callback of [...listeners.get('click') || []]) callback({ target: node });
+      node.onclick?.();
+    };
+  }
+  // Only the renderer is synthetic: retain the real history/editor observer,
+  // minimap controller, app binding and graph-metric synchronization path.
+  const render = f.env.renderGraph;
+  f.env.renderGraph = () => {
+    render();
+    f.state.graphView.nodeItems = new Map(f.state.graph.getNodes().map(item => [item.getModel().id, item]));
+    f.h.run('graphMetric("paint")');
+  };
+  let enabled = false;
+  f.state.graph.getZoom = () => f.matrix[0];
+  f.state.minimap = { setEnabled(value) { enabled = value; }, cancelNavigation() {}, clear() {},
+    getStatus: () => ({ state: f.state.graphView.nodeItems.size ? 'viewport' : 'empty' }) };
+  f.h.storage.set('fund_minimap_expanded', '1');
+  f.h.run(source('minimap-navigation.js'));
+  f.env.renderGraph();
+  f.h.run('bindMinimapNavigation()');
+  return {
+    camera(available, busy) {
+      assert.equal(f.h.element('#graphMinimapPanel').getAttribute('aria-busy'), String(busy));
+      for (const id of ['btnMinimapZoomOut', 'btnMinimapZoomIn', 'minimapZoomValue', 'btnMinimapFit', 'minimapRecovery']) {
+        assert.equal(f.h.element(`#${id}`).disabled, !available, `${id} follows current history and graph availability`);
+      }
+      assert.equal(f.h.element('#graphMinimap').getAttribute('aria-disabled'), String(!available));
+      assert.equal(f.h.element('#graphMinimap').tabIndex, available ? 0 : -1);
+      assert.equal(f.h.element('#btnMinimapToggle').disabled, false, 'disclosure stays available');
+      if (f.state.graphView.nodeItems.size) assert.equal(enabled, f.h.run('graphCameraInteractionAllowed()'));
+    },
+  };
+}
+
+test('history completion automatically restores minimap camera controls after tracking, undo, redo and failure', async () => {
+  const f = editor(), minimap = minimapChrome(f);
+  minimap.camera(true, false);
+  for (const operation of [() => f.h.run('trackFlows([2])'), () => f.history.undo(), () => f.history.redo()]) {
+    const read = deferred(), started = deferred();
+    f.intercept(path => {
+      if (!path.startsWith('/api/graph')) return null;
+      started.resolve(); return read.promise;
+    });
+    const pending = operation(); await started.promise;
+    assert.equal(f.history.status().busy, true);
+    assert.equal(f.h.run('graphCameraInteractionAllowed()'), false);
+    minimap.camera(false, true);
+    f.intercept(null);
+    read.resolve(response({ tracked_ids: f.tracked.get('1:0'), nodes: [{ account: 'SYN-A' }, { account: 'SYN-B' }], edges: [] }));
+    assert.equal(await pending, true);
+    assert.equal(f.history.status().busy, false);
+    assert.equal(f.h.run('graphCameraInteractionAllowed()'), true);
+    minimap.camera(true, false);
+  }
+  const gate = deferred(), started = deferred(), count = f.history.status().count;
+  const failed = f.history.run('synthetic failed display command', async () => {
+    f.env.renderGraph(); started.resolve(); await gate.promise;
+    throw new Error('synthetic display failure');
+  });
+  await started.promise; minimap.camera(false, true);
+  gate.resolve(); await assert.rejects(failed, /synthetic display failure/);
+  assert.equal(f.history.status().busy, false); assert.equal(f.history.status().count, count);
+  assert.equal(f.h.run('graphCameraInteractionAllowed()'), true);
+  minimap.camera(true, false);
+});
+
+test('history completion retains minimap loading, layout commit, export and empty graph gates', async () => {
+  for (const [name, block, busy] of [
+    ['loading', 'state.graphLoading = true', true],
+    ['layout commit', 'layoutJob = { requestId: 7, phase: "committing" }', true],
+    ['export', 'state.graphView.exportDepth = 1', true],
+    ['empty graph', 'state.lastGraph = { nodes: [], edges: [], tracked_ids: [] }; state.tracked = new Set()', false],
+  ]) {
+    const f = editor(), minimap = minimapChrome(f), gate = deferred(), started = deferred();
+    const pending = f.history.run(`synthetic ${name} transition`, async () => {
+      f.env.renderGraph(); started.resolve(); await gate.promise;
+      f.h.run(block); f.env.renderGraph();
+    });
+    await started.promise; minimap.camera(false, true);
+    gate.resolve(); assert.equal(await pending, true);
+    assert.equal(f.history.status().busy, false);
+    assert.equal(f.h.run('graphCameraInteractionAllowed()'), !busy, name);
+    minimap.camera(false, busy);
+    if (name === 'empty graph') {
+      const toggle = f.h.element('#btnMinimapToggle');
+      toggle.click(); assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+      toggle.click(); assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+      minimap.camera(false, false);
+    }
+  }
+});
+
+test('late A-B-A history completion cannot release the replacement binding minimap camera lock', async () => {
+  const f = editor(), minimap = minimapChrome(f), oldGate = deferred(), oldStarted = deferred();
+  const old = f.history.run('synthetic old binding', async () => {
+    f.env.renderGraph(); oldStarted.resolve(); await oldGate.promise;
+  });
+  await oldStarted.promise; minimap.camera(false, true);
+  f.h.run('selectCase(2); selectCase(1); state.graphLoading = false; state.lastGraph = { nodes: [{ account: "SYN-A" }, { account: "SYN-B" }], edges: [], tracked_ids: [1] }; state.tracked = new Set([1]);');
+  f.env.renderGraph(); minimap.camera(true, false);
+  const newGate = deferred(), newStarted = deferred();
+  const current = f.history.run('synthetic current binding', async () => {
+    f.env.renderGraph(); newStarted.resolve(); await newGate.promise; f.state.showIds = !f.state.showIds;
+  });
+  await newStarted.promise; minimap.camera(false, true);
+  oldGate.resolve(); assert.equal(await old, false);
+  assert.equal(f.history.status().busy, true); assert.equal(f.history.status().count, 0);
+  assert.equal(f.h.run('graphCameraInteractionAllowed()'), false);
+  minimap.camera(false, true);
+  newGate.resolve(); assert.equal(await current, true);
+  assert.equal(f.history.status().busy, false); assert.equal(f.history.status().count, 1);
+  assert.equal(f.h.run('graphCameraInteractionAllowed()'), true);
+  minimap.camera(true, false);
+});
+
 test('canvas editor snapshots include only IDs, geometry and display choices', () => {
   const f = editor();
   f.state.edgeSnapshotLabels = { 'SYN-A=>SYN-B': { lx: 1, ly: 2, bw: 3, bh: 4, label: 'PRIVATE-SYNTHETIC', amount: '12.34' } };
@@ -926,13 +1055,14 @@ test('selection capture blocks history and commit gestures while computing prese
 });
 
 test('a pending layout command separates computing camera permission from atomic commit and edit history', async () => {
-  const f = editor(), before = f.snapshot();
+  const f = editor(), before = f.snapshot(), minimap = minimapChrome(f);
   f.state.graphSelection = { ids: new Set(), status: () => ({ dragging: false }), rebind() {}, refresh() {}, clear() {}, destroy() {} };
   f.env.relayout = () => { f.h.run('layoutJob = { requestId: 7, phase: "computing" }; graphMetric("layout-phase")'); return Promise.resolve(); };
   const pending = f.h.element('#btnRelayout').onclick(); await flush();
   assert.equal(f.history.status().busy, true); assert.equal(f.history.status().count, 0);
   assert.equal(f.h.element('#graphContainer').style.pointerEvents, '', 'the old complete canvas receives camera events during calculation');
   assert.equal(f.h.run('graphCameraInteractionAllowed()'), true);
+  minimap.camera(true, false);
   let prevented = 0;
   f.gesture('mousedown', { type: 'mousedown', button: 0, preventDefault() { prevented++; }, stopImmediatePropagation() {} });
   assert.equal(prevented, 0, 'native camera gestures bypass geometry history capture during calculation');
@@ -941,6 +1071,7 @@ test('a pending layout command separates computing camera permission from atomic
   assert.deepEqual(f.tracked.get('1:0'), [1]); assert.equal(f.history.status().count, 0);
   f.h.run('layoutJob.phase = "committing"; graphMetric("layout-phase")');
   assert.equal(f.h.run('graphCameraInteractionAllowed()'), false);
+  minimap.camera(false, true);
   assert.equal(f.h.element('#graphContainer').style.pointerEvents, 'none');
   f.gesture('mousedown', { type: 'mousedown', button: 0, preventDefault() { prevented++; }, stopImmediatePropagation() {} });
   assert.equal(prevented, 1, 'the short atomic commit cannot receive native geometry or camera gestures');
@@ -948,6 +1079,7 @@ test('a pending layout command separates computing camera permission from atomic
   f.h.run('layoutJob = null; graphMetric("layout")'); await pending;
   assert.equal(f.history.status().busy, false); assert.equal(f.history.status().count, 1);
   assert.equal(f.h.element('#graphContainer').style.pointerEvents, '');
+  minimap.camera(true, false);
   const undone=await f.h.element('#btnUndo').onclick();assert.notEqual(undone,false,JSON.stringify(f.messages));
   assert.deepEqual(f.snapshot().positions, before.positions);
   await f.h.element('#btnRedo').onclick(); assert.equal(f.models[0].x, 120);
