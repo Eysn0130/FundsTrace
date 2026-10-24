@@ -728,7 +728,7 @@ html[data-ft-theme="light"] {
   --graph-selection-surface:rgb(35 103 173 / 7%); --graph-preview-ink:#174e85; --graph-line-sample:#7f8b99;
 }
 /* ---------- Graph workspace ---------- */
-#canvasWrap { flex: 1; position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); background: var(--graph-paper); }
+#canvasWrap { flex: 1; position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); background: var(--graph-paper); container: graph-slot / inline-size; }
 #graphContainer { grid-area: 1 / 1; position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 #graphContainer:focus-visible { outline: 2px solid var(--graph-selection); outline-offset: -2px; }
 .graph-selection-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 2; }
@@ -766,6 +766,7 @@ html[data-ft-theme="light"] {
 #graphLayoutStatus { grid-area: 1 / 1; position: absolute; top: 12px; left: 16px; z-index: 7; max-width: calc(100% - 32px); padding: 7px 10px; border: 1px solid var(--graph-rule); border-radius: 4px; background: var(--graph-status-surface); color: var(--graph-ink); font-size: 12px; pointer-events: none; }
 /* A quiet floating utility layer; palettes never change graph meaning. */
 #graphMinimapPanel {
+  --mm-width: 272px; --mm-map-height: 170px; --mm-controls-height: 46px; --mm-gap: 10px;
   --mm-surface: rgba(249, 247, 242, .93); --mm-solid: #f9f7f2;
   --mm-capsule: rgba(246, 243, 237, .95); --mm-map: rgba(224, 227, 230, .32);
   --mm-edge: rgba(255, 255, 255, .56); --mm-highlight: rgba(255, 255, 255, .6); --mm-inset: rgba(109, 105, 95, .12);
@@ -775,8 +776,8 @@ html[data-ft-theme="light"] {
   --mm-shadow: 0 16px 40px -14px #0007, 0 4px 12px -4px #0005, inset 0 1px 0 var(--mm-highlight);
   --mm-capsule-shadow: 0 8px 22px -8px #0007, 0 2px 5px -2px #0005, inset 0 1px 0 var(--mm-highlight);
   position: absolute; right: 20px; bottom: 20px; z-index: 14;
-  width: 272px; max-width: min(calc(100vw - 88px), calc(100% - 40px)); max-height: calc(100% - 40px);
-  container-type: inline-size; display: flex; flex-direction: column; gap: 10px; pointer-events: none;
+  width: var(--mm-width); flex: none;
+  display: flex; flex-direction: column; gap: var(--mm-gap); pointer-events: none;
   color: var(--mm-text); color-scheme: light;
   font: 13px/1.5 var(--font-family-ui, system-ui, sans-serif);
 }
@@ -798,7 +799,7 @@ html[data-ft-theme="light"] {
   --mm-icon: brightness(0) saturate(100%) invert(29%); --mm-active-icon: brightness(0) invert(1);
 }
 #graphMinimapPopover {
-  width: 100%; pointer-events: auto; min-height: 0; overflow: auto; border: 1px solid var(--mm-edge); border-radius: 18px;
+  width: 100%; height: var(--mm-map-height); flex: none; pointer-events: auto; overflow: hidden; border: 1px solid var(--mm-edge); border-radius: 18px;
   background: var(--mm-surface); box-shadow: var(--mm-shadow);
   backdrop-filter: blur(24px) saturate(1.08); transform-origin: 25px calc(100% + 33px);
   transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
@@ -806,7 +807,7 @@ html[data-ft-theme="light"] {
 #graphMinimapPopover[aria-hidden="true"] { pointer-events: none; }
 .minimap-content { padding: 4px; }
 .minimap-map { position: relative; overflow: hidden; border-radius: 14px; }
-#graphMinimap { display: block; width: 100%; height: auto; aspect-ratio: 262 / 160; touch-action: none; cursor: grab; outline-offset: -3px; }
+#graphMinimap { display: block; width: 262px; height: 160px; touch-action: none; cursor: grab; outline-offset: -3px; }
 #graphMinimap:active { cursor: grabbing; }
 #graphMinimap[aria-disabled="true"] { cursor: default; }
 #minimapEmpty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--mm-muted); pointer-events: none; }
@@ -815,23 +816,22 @@ html[data-ft-theme="light"] {
 #minimapEmpty[data-loading="true"]::after { content: ""; position: absolute; width: 16px; height: 16px; border: 1.5px solid var(--mm-muted); border-right-color: transparent; border-radius: 50%; animation: minimap-loading 800ms linear infinite; }
 #minimapRecovery { position: absolute; right: 7px; bottom: 7px; min-width: 28px; width: 28px; height: 28px; border: 1px solid var(--mm-edge); border-radius: 50%; background: var(--mm-solid); box-shadow: 0 2px 8px #0002; }
 #minimapRecovery .ui-icon { width: 16px; height: 16px; }
-.minimap-capsule { pointer-events: auto; width: 100%; max-width: 100%; min-height: 46px; flex-shrink: 0; align-self: flex-end; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px; padding: 5px 7px; border: 1px solid var(--mm-edge); border-radius: 28px; background: var(--mm-capsule); box-shadow: var(--mm-capsule-shadow); backdrop-filter: blur(24px) saturate(1.08); transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease; }
+.minimap-capsule { pointer-events: auto; width: 100%; height: var(--mm-controls-height); flex: none; align-self: flex-end; display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 2px; padding: 5px 7px; border: 1px solid var(--mm-edge); border-radius: 28px; background: var(--mm-capsule); box-shadow: var(--mm-capsule-shadow); backdrop-filter: blur(24px) saturate(1.08); transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease; }
 .minimap-button { display: inline-flex; align-items: center; justify-content: center; flex: none; min-width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--mm-text); font: inherit; cursor: pointer; transition: background-color 160ms ease, transform 160ms cubic-bezier(.2,.8,.2,1), box-shadow 160ms ease; }
 .minimap-button .ui-icon { width: 18px; height: 18px; filter: var(--mm-icon); pointer-events: none; }
-.minimap-button:hover:not(:disabled) { background: var(--mm-hover); }
-.minimap-button:active:not(:disabled) { transform: scale(.96); }
+.minimap-button:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--mm-hover); }
+.minimap-button:active:not(:disabled):not([aria-disabled="true"]) { transform: scale(.96); }
 .minimap-button:focus-visible { outline: 2px solid var(--mm-focus); outline-offset: 2px; }
 #graphMinimap:focus-visible { outline: 2px solid var(--mm-focus); outline-offset: -3px; border-radius: 14px; }
-.minimap-button:disabled { opacity: .35; cursor: default; }
+.minimap-button:disabled, .minimap-button[aria-disabled="true"] { opacity: .35; cursor: default; }
 .minimap-toggle { width: 34px; border-radius: 50%; background: var(--mm-hover); }
 .minimap-toggle[aria-expanded="true"] { background: var(--mm-accent); box-shadow: 0 2px 5px #00000014; }
 .minimap-toggle[aria-expanded="true"] .ui-icon { filter: var(--mm-active-icon); }
 .minimap-toggle[aria-expanded="true"]:hover { background: var(--mm-accent-hover); }
 #btnMinimapFit { background: var(--mm-hover); }
 .minimap-divider { width: 1px; height: 17px; background: var(--mm-inset); flex: none; margin: 0 3px; }
-@container (max-width: 250px) { .minimap-capsule { gap: 0; padding: 5px; } .minimap-capsule .minimap-button { min-width: 32px; width: 32px; height: 32px; } .minimap-divider { margin: 0 2px; } }
-@container (max-width: 80px) { .minimap-capsule { flex-direction: column; flex-wrap: nowrap; gap: 2px; padding: 1px; min-height: 0; } .minimap-capsule .minimap-button { min-width: 0; width: 100%; height: 28px; } .minimap-capsule .ui-icon { width: 16px; height: 16px; } .minimap-divider, #minimapRecovery { display: none; } }
 @keyframes minimap-loading { to { transform: rotate(360deg); } }
+@container graph-slot (max-width: 620px) { #graphMinimapPanel { bottom: 72px; } }
 @media (prefers-reduced-motion: reduce) { #minimapEmpty[data-loading="true"]::after { animation: none; } #graphMinimapPopover, .minimap-capsule, .minimap-button { transition: none; } }
 @media (prefers-reduced-transparency: reduce) { #graphMinimapPopover, .minimap-capsule { background: var(--mm-solid); backdrop-filter: none; } }
 @media (forced-colors: active) {
@@ -1746,4 +1746,4 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 #canvasWrap:has(.investigation-transport:not([hidden])) #graphMinimapPanel, #canvasWrap:has(.investigation-transport:not([hidden])) #legend { bottom: calc(24px + var(--investigation-transport-height, 90px)); }
 #canvasWrap .investigation-transport { z-index: 40; }
 
-@media (max-width: 900px) { #graphMinimapPanel { right: 6px; bottom: 72px; max-width: min(calc(100vw - 88px), calc(100% - 12px)); } }
+@media (max-width: 900px) { #graphMinimapPanel { right: 6px; } }
