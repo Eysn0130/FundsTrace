@@ -192,6 +192,52 @@ function assertImportCompletion(receipt) {
   assert.equal(receipt.summary, '新增 3 笔 · 重复 0 笔 · 跳过 0 行');
 }
 
+function assertAutomaticImportPreview(observation) {
+  const { preview, headers, rows, mappingHidden } = observation;
+  assert.equal(preview.automatic, true); assert.equal(preview.mode, 'A');
+  assert.deepEqual({ total: preview.stats.total, ok: preview.stats.ok, skipped: preview.stats.skipped },
+    { total: 3, ok: 3, skipped: 0 });
+  assert.deepEqual(preview.mapping, MAPPING);
+  assert.deepEqual(preview.stats.currency_totals, { CNY: '12345678901579.70' });
+  const fields = ['trade_no', 'trade_time', 'payer_name', 'payer_account', 'payee_name', 'payee_account',
+    'amount', 'currency', 'summary', 'source_member', 'source_row', 'source_record_no'];
+  assert.deepEqual(preview.preview.map(row => fields.map(field => row[field])), AMOUNTS.map((amount, i) => [
+    `SYN-INST-${i + 1}`, `2026-01-01 10:0${i}:00`, `SYN sender ${i}`, ACCOUNTS[i],
+    `SYN recipient ${i}`, ACCOUNTS[i + 1], amount, 'CNY', SUMMARIES[i], 'table.csv', i + 2, i + 1,
+  ]));
+  assert.deepEqual(headers, ['来源文件／原始行', '交易时间', '付款方', '收款方', '金额', '摘要']);
+  const displayAmounts = ['¥12,345,678,901,234.01', '¥0.02', '¥345.67'];
+  assert.deepEqual(rows, AMOUNTS.map((_, i) => [
+    `table.csv原始第 ${i + 2} 行 · 记录 ${i + 1}`, `2026-01-01 10:0${i}:00`,
+    `SYN sender ${i}${ACCOUNTS[i]}`, `SYN recipient ${i}${ACCOUNTS[i + 1]}`, displayAmounts[i], SUMMARIES[i],
+  ]));
+  assert.equal(mappingHidden, true);
+}
+function assertAutomaticImportCompletion(receipt) {
+  assert.equal(receipt.open, true); assert.equal(receipt.busy, false);
+  assert.equal(receipt.resultVisible, true); assert.equal(receipt.commitHidden, true);
+  assert.equal(receipt.action, '完成'); assert.equal(receipt.title, '自动处理完成');
+  assert.equal(receipt.status, '自动处理完成，全部记录已保存');
+  assert.deepEqual(receipt.steps, ['complete', 'complete', 'complete']);
+  assert.equal(receipt.summary, '已保存 3 条记录 · 新增资金流水 3 笔 · 重复 0 笔 · 未计入资金流水 0 条 · 已配对冲正/撤销 0 条（双方均不计有效资金） · 无资金变动 0 条 · 非交易记录 0 条 · 辅助资料 0 条');
+}
+// Inspect the retained preview and visible completion separately; never mutate import state.
+const AUTOMATIC_IMPORT_PROBE = `(() => {
+  const modal = document.querySelector('#importModal'), result = document.querySelector('#impResult');
+  return { preview: state.imp,
+    headers: [...document.querySelectorAll('#impPreviewHead th')].map(node => node.textContent),
+    rows: [...document.querySelectorAll('#impTbody tr')].map(row => [...row.children].map(cell => cell.textContent)),
+    mappingHidden: document.querySelector('#impMappingSection')?.hidden === true,
+    receipt: { open: modal?.style.display === 'flex', busy: modal?.getAttribute('aria-busy') !== 'false',
+      resultVisible: !!result && result.hidden === false,
+      commitHidden: document.querySelector('#impCommit')?.hidden === true,
+      action: document.querySelector('#impCancel')?.textContent ?? null,
+      title: document.querySelector('#impResultTitle')?.textContent ?? null,
+      status: document.querySelector('#impFlowStatus')?.textContent ?? null,
+      steps: ['impFlowFile','impFlowFields','impFlowConfirm'].map(id => document.getElementById(id)?.dataset.state ?? null),
+      summary: document.querySelector('#impResultText')?.textContent ?? null } };
+})()`;
+
 // No calls to trackFlows, renderGraph, snapshots, history travel or other product
 // actions are allowed here. G6 access is observation of the actual rendered items.
 const GRAPH_PROBE = `(() => {
@@ -735,39 +781,15 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       assert.ok(nodeId);
       await cdp.send('DOM.setFileInputFiles', { nodeId, files: [csvFile] }, page.sessionId);
       step = 'csv-preview';
-      await until(() => evaluate(`document.querySelector('#impStep2').style.display === 'block'
-        && state.imp?.stats?.total === 3 && state.imp?.stats?.ok === 3`), 30000);
-      step = 'csv-verify';
-      assert.equal(await evaluate(`(() => {
-        const expected = ${JSON.stringify(AMOUNTS)}, summaries = ${JSON.stringify(SUMMARIES)}, mapping = ${JSON.stringify(MAPPING)};
-        return state.imp.mode === 'A' && state.imp.stats.skipped === 0
-          && ['trade_time','payer_account','payee_account','amount','currency','summary'].every(field =>
-            document.querySelector('#impMapping select[data-field="' + field + '"]')?.value === mapping[field])
-          && state.imp.preview.length === 3 && state.imp.preview.every((row,i) =>
-            row.amount === expected[i] && row.summary === summaries[i] && row.currency === 'CNY')
-          && document.querySelectorAll('#impTbody tr').length === 3
-          && [...document.querySelectorAll('#impTbody tr')].every((row, i) =>
-            row.children[3].textContent.replaceAll(',', '') === '¥' + expected[i]
-            && row.children[4].textContent === summaries[i] && row.children[5].textContent === 'CNY');
-      })()`), true);
-    });
-    await check('installedCsvCommittedExact', async () => {
-      await clickElement(`document.querySelector('#impCommit')`);
-      const receipt = () => evaluate(`({
-        open: document.querySelector('#importModal').style.display === 'flex',
-        busy: document.querySelector('#importModal').getAttribute('aria-busy') !== 'false',
-        resultVisible: !document.querySelector('#impResult').hidden,
-        commitHidden: document.querySelector('#impCommit').hidden,
-        action: document.querySelector('#impCancel').textContent,
-        status: document.querySelector('#impFlowStatus').textContent,
-        steps: ['impFlowFile','impFlowFields','impFlowConfirm'].map(id => document.getElementById(id).dataset.state),
-        summary: document.querySelector('#impResultText').textContent,
-      })`);
       await until(async () => {
-        try { assertImportCompletion(await receipt()); return true; }
+        try { assertAutomaticImportCompletion((await evaluate(AUTOMATIC_IMPORT_PROBE)).receipt); return true; }
         catch { return false; }
       }, 45000);
-      assertImportCompletion(await receipt());
+      step = 'csv-verify';
+      assertAutomaticImportPreview(await evaluate(AUTOMATIC_IMPORT_PROBE));
+    });
+    await check('installedCsvCommittedExact', async () => {
+      assertAutomaticImportCompletion((await evaluate(AUTOMATIC_IMPORT_PROBE)).receipt);
       await clickElement(`document.querySelector('#impCancel')`);
       await until(() => evaluate(`document.querySelector('#importModal').style.display === 'none'
         && state.search.total === 3 && state.stats.flows === 3 && document.querySelectorAll('#flowTbody tr[data-id]').length === 3`), 45000);
@@ -991,4 +1013,5 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
 
 module.exports = { ACCOUNTS, AMOUNTS, SUMMARIES, REQUIRED_CHECKS, fixtureCsv, assertGraph, assertEdgeTypes,
   assertNoAnnotation, assertAnnotation, assertWorkspaceRestored, assertAnnotationFollow, assertAutomaticLeafLabel, assertPartialViewportLabels,
-  assertImportCompletion, safeJourneyFailure, runInstalledGraphJourney };
+  assertImportCompletion, assertAutomaticImportPreview, assertAutomaticImportCompletion, AUTOMATIC_IMPORT_PROBE,
+  safeJourneyFailure, runInstalledGraphJourney };

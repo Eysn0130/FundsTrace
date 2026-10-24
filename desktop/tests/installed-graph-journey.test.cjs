@@ -1,8 +1,12 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { fixtureCsv, assertGraph, assertEdgeTypes, assertNoAnnotation, assertAnnotation, assertAnnotationFollow,
-  assertWorkspaceRestored, assertAutomaticLeafLabel, assertPartialViewportLabels, assertImportCompletion, safeJourneyFailure, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
+  assertWorkspaceRestored, assertAutomaticLeafLabel, assertPartialViewportLabels, assertImportCompletion,
+  assertAutomaticImportPreview, assertAutomaticImportCompletion, AUTOMATIC_IMPORT_PROBE,
+  runInstalledGraphJourney, safeJourneyFailure, REQUIRED_CHECKS } = require('./installed-graph-journey.cjs');
 
 function observed() {
   // Independent two-transfer observation with exact decimal strings. The
@@ -50,6 +54,190 @@ test('import acceptance requires the visible completed receipt with all three co
   ]) {
     const value = receipt(); mutate(value); assert.throws(() => assertImportCompletion(value));
   }
+});
+
+function automaticObservation() {
+  const transfers = [
+    ['SYN-INST-1', '2026-01-01 10:00:00', 'SYN sender 0', 'SYN-INST-A', 'SYN recipient 0', 'SYN-INST-B', '12345678901234.01', 'SYN installed chain first'],
+    ['SYN-INST-2', '2026-01-01 10:01:00', 'SYN sender 1', 'SYN-INST-B', 'SYN recipient 1', 'SYN-INST-C', '0.02', 'SYN installed chain second'],
+    ['SYN-INST-3', '2026-01-01 10:02:00', 'SYN sender 2', 'SYN-INST-C', 'SYN recipient 2', 'SYN-INST-D', '345.67', 'SYN installed chain third'],
+  ];
+  return { preview: { automatic: true, mode: 'A',
+    mapping: { trade_no: '交易流水号', trade_time: '交易时间', payer_name: '付款户名', payer_account: '付款账号',
+      payee_name: '收款户名', payee_account: '收款账号', amount: '交易金额', currency: '币种', summary: '摘要' },
+    stats: { total: 3, ok: 3, skipped: 0, currency_totals: { CNY: '12345678901579.70' } },
+    preview: transfers.map(([trade_no, trade_time, payer_name, payer_account, payee_name, payee_account, amount, summary], i) =>
+      ({ trade_no, trade_time, payer_name, payer_account, payee_name, payee_account, amount, summary,
+        currency: 'CNY', source_member: 'table.csv', source_row: i + 2, source_record_no: i + 1 })) },
+    headers: ['来源文件／原始行', '交易时间', '付款方', '收款方', '金额', '摘要'],
+    rows: [
+      ['table.csv原始第 2 行 · 记录 1', '2026-01-01 10:00:00', 'SYN sender 0SYN-INST-A', 'SYN recipient 0SYN-INST-B', '¥12,345,678,901,234.01', 'SYN installed chain first'],
+      ['table.csv原始第 3 行 · 记录 2', '2026-01-01 10:01:00', 'SYN sender 1SYN-INST-B', 'SYN recipient 1SYN-INST-C', '¥0.02', 'SYN installed chain second'],
+      ['table.csv原始第 4 行 · 记录 3', '2026-01-01 10:02:00', 'SYN sender 2SYN-INST-C', 'SYN recipient 2SYN-INST-D', '¥345.67', 'SYN installed chain third'],
+    ], mappingHidden: true,
+    receipt: { open: true, busy: false, resultVisible: true, commitHidden: true, action: '完成',
+      title: '自动处理完成', status: '自动处理完成，全部记录已保存', steps: ['complete', 'complete', 'complete'],
+      summary: '已保存 3 条记录 · 新增资金流水 3 笔 · 重复 0 笔 · 未计入资金流水 0 条 · 已配对冲正/撤销 0 条（双方均不计有效资金） · 无资金变动 0 条 · 非交易记录 0 条 · 辅助资料 0 条' } };
+}
+
+test('automatic acceptance checks every mapped transaction, exact total, source row and classified column', () => {
+  const value = automaticObservation(), before = structuredClone(value);
+  assertAutomaticImportPreview(value); assertAutomaticImportCompletion(value.receipt);
+  assert.deepEqual(value, before);
+  assert.throws(() => assertImportCompletion(value.receipt));
+});
+
+for (const [name, mutate] of [
+  ['manual mode', value => { value.preview.automatic = false; }],
+  ['missing automatic flag', value => { delete value.preview.automatic; }],
+  ['wrong mode', value => { value.preview.mode = 'B'; }],
+  ['wrong total', value => { value.preview.stats.total = 4; }],
+  ['unaccepted row', value => { value.preview.stats.ok = 2; }],
+  ['skipped row', value => { value.preview.stats.skipped = 1; }],
+  ['lost total cents', value => { value.preview.stats.currency_totals.CNY = '12345678901579.71'; }],
+  ['numeric total', value => { value.preview.stats.currency_totals.CNY = 12345678901579.7; }],
+  ['extra currency', value => { value.preview.stats.currency_totals.USD = '0.00'; }],
+  ['missing transaction', value => { value.preview.preview.pop(); }],
+  ['extra transaction', value => { value.preview.preview.push(structuredClone(value.preview.preview[0])); }],
+  ['manual mapping visible', value => { value.mappingHidden = false; }],
+  ['old manual columns', value => { value.headers = ['交易时间', '付款方', '收款方', '金额', '摘要', '币种']; }],
+  ['missing rendered row', value => { value.rows.pop(); }],
+  ['extra rendered row', value => { value.rows.push([...value.rows[0]]); }],
+]) test(`automatic preview rejects ${name}`, () => {
+  const value = automaticObservation(); mutate(value);
+  assert.throws(() => assertAutomaticImportPreview(value));
+});
+
+test('all nine automatic mappings must be exact and complete', () => {
+  for (const field of Object.keys(automaticObservation().preview.mapping)) {
+    for (const remove of [false, true]) {
+      const value = automaticObservation();
+      if (remove) delete value.preview.mapping[field]; else value.preview.mapping[field] = 'Wrong source column';
+      assert.throws(() => assertAutomaticImportPreview(value), `${field}: ${remove ? 'missing' : 'wrong'}`);
+    }
+  }
+  const extra = automaticObservation(); extra.preview.mapping.extra = '金额';
+  assert.throws(() => assertAutomaticImportPreview(extra));
+});
+
+for (const [field, wrong] of [
+  ['trade_no', 'SYN-INST-WRONG'], ['trade_time', '2026-01-02 10:00:00'],
+  ['payer_name', 'Wrong payer'], ['payer_account', 'SYN-INST-Z'],
+  ['payee_name', 'Wrong payee'], ['payee_account', 'SYN-INST-Z'],
+  ['amount', '0.03'], ['currency', 'USD'], ['summary', 'Wrong summary'],
+  ['source_member', 'other.csv'], ['source_row', 99], ['source_record_no', 99],
+]) test(`automatic preview checks ${field} on every transaction`, () => {
+  for (let i = 0; i < 3; i++) {
+    const value = automaticObservation(); value.preview.preview[i][field] = wrong;
+    assert.throws(() => assertAutomaticImportPreview(value), `row ${i + 1}`);
+  }
+});
+
+test('numeric amounts, string source indices and consistently reversed roles cannot pass automatic acceptance', () => {
+  for (let i = 0; i < 3; i++) {
+    for (const [field, wrong] of [['amount', 0.02], ['source_row', String(i + 2)], ['source_record_no', String(i + 1)]]) {
+      const value = automaticObservation(); value.preview.preview[i][field] = wrong;
+      assert.throws(() => assertAutomaticImportPreview(value));
+    }
+    const value = automaticObservation(), row = value.preview.preview[i];
+    [row.payer_account, row.payee_account] = [row.payee_account, row.payer_account];
+    [row.payer_name, row.payee_name] = [row.payee_name, row.payer_name];
+    [value.rows[i][2], value.rows[i][3]] = [value.rows[i][3], value.rows[i][2]];
+    assert.throws(() => assertAutomaticImportPreview(value));
+  }
+});
+
+test('each of the six rendered cells must match its source, time, parties, exact money and summary', () => {
+  for (let row = 0; row < 3; row++) for (let column = 0; column < 6; column++) {
+    const value = automaticObservation(); value.rows[row][column] = 'Wrong rendered value';
+    assert.throws(() => assertAutomaticImportPreview(value), `${row}:${column}`);
+  }
+});
+
+for (const [name, mutate] of [
+  ['closed dialog', value => { value.open = false; }], ['busy operation', value => { value.busy = true; }],
+  ['hidden result', value => { value.resultVisible = false; }], ['missing result', value => { delete value.resultVisible; }],
+  ['visible submit', value => { value.commitHidden = false; }], ['missing submit state', value => { delete value.commitHidden; }],
+  ['wrong action', value => { value.action = '关闭'; }], ['wrong title', value => { value.title = '导入完成'; }],
+  ['manual status', value => { value.status = '导入完成'; }], ['partial completion', value => { value.steps[2] = 'working'; }],
+  ['missing step', value => { value.steps.pop(); }], ['extra step', value => { value.steps.push('complete'); }],
+  ['missing receipt summary', value => { delete value.summary; }],
+  ['manual receipt summary', value => { value.summary = '新增 3 笔 · 重复 0 笔 · 跳过 0 行'; }],
+]) test(`automatic completion rejects ${name}`, () => {
+  const receipt = automaticObservation().receipt; mutate(receipt);
+  assert.throws(() => assertAutomaticImportCompletion(receipt));
+});
+
+test('automatic completion requires every exact saved, added and disposition count', () => {
+  for (const [from, to] of [['已保存 3 条记录', '已保存 2 条记录'], ['新增资金流水 3 笔', '新增资金流水 2 笔'],
+    ['重复 0 笔', '重复 1 笔'], ['未计入资金流水 0 条', '未计入资金流水 1 条'],
+    ['已配对冲正/撤销 0 条', '已配对冲正/撤销 1 条'], ['无资金变动 0 条', '无资金变动 1 条'],
+    ['非交易记录 0 条', '非交易记录 1 条'], ['辅助资料 0 条', '辅助资料 1 条']]) {
+    const receipt = automaticObservation().receipt; receipt.summary = receipt.summary.replace(from, to);
+    assert.throws(() => assertAutomaticImportCompletion(receipt), from);
+  }
+});
+
+test('automatic probe only observes retained preview and completion DOM, rejecting missing visible results', () => {
+  const value = automaticObservation(), before = structuredClone(value);
+  const nodes = {
+    '#importModal': { style: { display: 'flex' }, getAttribute: name => { assert.equal(name, 'aria-busy'); return 'false'; } },
+    '#impResult': { hidden: false }, '#impMappingSection': { hidden: true }, '#impCommit': { hidden: true },
+    '#impCancel': { textContent: value.receipt.action }, '#impResultTitle': { textContent: value.receipt.title },
+    '#impFlowStatus': { textContent: value.receipt.status }, '#impResultText': { textContent: value.receipt.summary },
+  };
+  const steps = Object.fromEntries(['impFlowFile', 'impFlowFields', 'impFlowConfirm']
+    .map((id, i) => [id, { dataset: { state: value.receipt.steps[i] } }]));
+  const document = { querySelector: selector => nodes[selector] || null, getElementById: id => steps[id] || null,
+    querySelectorAll: selector => selector === '#impPreviewHead th' ? value.headers.map(textContent => ({ textContent }))
+      : selector === '#impTbody tr' ? value.rows.map(row => ({ children: row.map(textContent => ({ textContent })) })) : [] };
+  const probe = () => new Function('state', 'document', '"use strict"; return ' + AUTOMATIC_IMPORT_PROBE)({ imp: value.preview }, document);
+  const result = probe(); assert.deepEqual(result, value);
+  assertAutomaticImportPreview(result); assertAutomaticImportCompletion(result.receipt);
+  assert.deepEqual(value, before);
+  nodes['#impResult'].hidden = true; assert.throws(() => assertAutomaticImportCompletion(probe().receipt));
+  delete nodes['#impResult']; assert.throws(() => assertAutomaticImportCompletion(probe().receipt));
+});
+
+for (const pendingReads of [0, 2]) test(`automatic journey waits for completion with ${pendingReads} pending reads and never submits again`, async () => {
+  const finished = automaticObservation(), stop = new Error('SYN stop before unchanged graph checks');
+  const checks = [], waits = [], clicked = [], files = []; let remaining = pendingReads, closed = false, reachedStop = false;
+  const evaluate = async expression => {
+    if (expression === AUTOMATIC_IMPORT_PROBE) {
+      const value = structuredClone(finished);
+      if (remaining-- > 0) { value.receipt.busy = true; value.receipt.resultVisible = false; value.receipt.steps[2] = 'working'; }
+      return value;
+    }
+    if (expression.includes('return summaries.map')) return ['71', '72', '73'];
+    if (expression.includes("style.display === 'none'")) return closed;
+    if (expression.includes('requestAnimationFrame') || expression.includes('typeof FundsGraphSelection')
+        || expression.includes("style.display === 'flex'") || expression.includes('state.lastGraph.nodes.length')) return true;
+    assert.fail('Unexpected CSV journey observation');
+  };
+  const cdp = { send: async (method, params) => {
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+    if (method === 'DOM.querySelector') return { nodeId: 2 };
+    if (method === 'DOM.setFileInputFiles') { files.push(params.files[0]); assert.equal(fs.readFileSync(params.files[0], 'utf8'), fixtureCsv()); }
+    else assert.equal(method, 'Emulation.setDeviceMetricsOverride');
+    return {};
+  } };
+  await assert.rejects(runInstalledGraphJourney({ cdp, page: { sessionId: 'SYN' }, evaluate,
+    clickElement: async expression => {
+      clicked.push(expression); assert.ok(!expression.includes('#impCommit'));
+      if (expression.includes('#impCancel')) closed = true;
+    }, until: async (predicate, timeout) => {
+      waits.push({ timeout, closed });
+      for (let attempt = 0; attempt < 5; attempt++) if (await predicate()) return true;
+      assert.fail('CSV completion did not settle');
+    }, check: async (name, action) => {
+      if (name === 'installedQueryExact') { reachedStop = true; throw stop; }
+      checks.push(name); await action();
+    } }), error => reachedStop && error.message === 'INSTALLED_GRAPH_JOURNEY_FAILED'
+      && safeJourneyFailure(error)?.step === 'csv-verify' && safeJourneyFailure(error)?.kind === 'runtime');
+  assert.deepEqual(checks, ['installedGraphModulesLoaded', 'installedCsvPreviewMapping', 'installedCsvCommittedExact']);
+  assert.equal(waits.filter(value => value.timeout === 45000 && !value.closed).length, 1);
+  assert.equal(files.length, 1); assert.equal(fs.existsSync(path.dirname(files[0])), false);
+  assert.equal(clicked.filter(value => value.includes('#impCancel')).length, 1);
 });
 
 test('graph acceptance compares IDs, endpoints and full decimal amounts', () => {
