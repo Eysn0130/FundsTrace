@@ -23,10 +23,40 @@ const JOURNEY_STEPS = new Set(['csv-open', 'csv-file-input', 'csv-preview', 'csv
   'history-undo', 'history-redo', 'case-empty', 'case-return',
   'annotation-node', 'annotation-open', 'annotation-fill', 'annotation-save', 'annotation-rendered',
   'annotation-undo', 'annotation-redo', 'annotation-style-reset', 'annotation-offset', 'annotation-follow', 'annotation-restored']);
+function readAssertionLocation(error) {
+  try {
+    const stack=error?.stack,message=error?.message;
+    if (typeof stack!=='string'||stack.length>65536||typeof message!=='string') return null;
+    const normalized=stack.replace(/\r\n/g,'\n');
+    const prefix='AssertionError [ERR_ASSERTION]: '+message.replace(/\r\n/g,'\n')+'\n';
+    if (!normalized.startsWith(prefix)) return null;
+    for (const entry of normalized.slice(prefix.length).split('\n',20)) {
+      const frame=/^[ \t]+at (?:[^()\r\n]+ \((.+):([0-9]+):([0-9]+)\)|(?:async )?(.+):([0-9]+):([0-9]+))$/.exec(entry);
+      if (!frame||(frame[1]??frame[4])!==__filename) continue;
+      const line=Number(frame[2]??frame[5]),column=Number(frame[3]??frame[6]);
+      if (Number.isInteger(line)&&line>=1&&line<=100000&&Number.isInteger(column)&&column>=1&&column<=10000) {
+        return {helper:'installed-graph-journey',line,column};
+      }
+      return null;
+    }
+  } catch {}
+  return null;
+}
 function safeJourneyFailure(error) {
   const detail = error?.installedGraphDiagnostic;
-  return detail && JOURNEY_STEPS.has(detail.step) && ['assertion', 'timeout', 'runtime'].includes(detail.kind)
+  const projection = detail && JOURNEY_STEPS.has(detail.step) && ['assertion', 'timeout', 'runtime'].includes(detail.kind)
     ? { step: detail.step, kind: detail.kind } : null;
+  if (projection?.kind==='assertion') {
+    try {
+      const location=detail.assertionLocation;
+      if (location&&typeof location==='object'&&!Array.isArray(location)) {
+        const {helper,line,column}=location;
+        if (helper==='installed-graph-journey'&&Number.isInteger(line)&&line>=1&&line<=100000
+          &&Number.isInteger(column)&&column>=1&&column<=10000) projection.assertionLocation={helper,line,column};
+      }
+    } catch {}
+  }
+  return projection;
 }
 const REQUIRED_CHECKS = Object.freeze([
   'installedGraphModulesLoaded', 'installedCsvPreviewMapping', 'installedCsvCommittedExact',
@@ -974,12 +1004,14 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
         savedPositions = positions(await annotation(savedAnnotation));
         step = 'canvas-default';
         await select('#canvasSel', '0'); await graph(3, flowIds);
+        step = 'canvas-default';
         // The default canvas retains its own pre-clone draft, independently
         // from the polyline presentation saved in the named canvas.
         assertWorkspaceRestored(await annotation(savedAnnotation), defaultWorkspace,
           flowIds, 3, savedAnnotation);
         step = 'canvas-restored';
         await select('#canvasSel', CANVAS, true); await graph(3, flowIds);
+        step = 'canvas-restored';
         assertEdgeTypes(await evaluate(GRAPH_PROBE), savedTypes);
         assert.equal(await evaluate(`state.edgeTypes[${JSON.stringify(editedEdge)}] === 'polyline'`), true);
         step = 'annotation-restored';
@@ -1035,9 +1067,11 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
         flowIds, 3, savedAnnotation);
     });
   } catch (error) {
+    const location=error?.code==='ERR_ASSERTION'?readAssertionLocation(error):null;
     const failure = new Error('INSTALLED_GRAPH_JOURNEY_FAILED');
     failure.installedGraphDiagnostic = { step, kind: error?.code === 'ERR_ASSERTION' ? 'assertion'
       : error?.message === 'TIMEOUT' ? 'timeout' : 'runtime' };
+    if (location) failure.installedGraphDiagnostic.assertionLocation=location;
     throw failure;
   } finally {
     // The sole deletion target is this operation's fresh temporary CSV folder.

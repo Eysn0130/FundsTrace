@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const { fixtureCsv, assertGraph, assertEdgeTypes, assertNoAnnotation, assertAnnotation, assertAnnotationFollow,
   assertWorkspaceRestored, assertAutomaticLeafLabel, assertPartialViewportLabels, assertImportCompletion,
   assertAutomaticImportPreview, assertAutomaticImportCompletion, AUTOMATIC_IMPORT_PROBE,
@@ -582,4 +583,136 @@ test('failure diagnostics retain only known step and failure enums', () => {
     assert.equal(safeJourneyFailure({ installedGraphDiagnostic: detail }), null);
   }
   assert.equal(safeJourneyFailure(error.message), null);
+});
+
+const graphHelperPath = path.join(__dirname, 'installed-graph-journey.cjs');
+const graphHelperSource = () => fs.readFileSync(graphHelperPath, 'utf8').replace(/\r\n/g, '\n');
+const locationValue = (line, column) => ({ helper: 'installed-graph-journey', line, column });
+function assertionLocationReader(filename = graphHelperPath, newline = 'LF') {
+  const source = graphHelperSource(), start = source.indexOf('function readAssertionLocation('), end = source.indexOf('function safeJourneyFailure(', start);
+  assert.ok(start >= 0 && end > start, 'W09 must provide the internal assertion location reader');
+  const reader = source.slice(start, end);
+  return vm.runInNewContext(`${newline === 'CRLF' ? reader.replace(/\n/g, '\r\n') : reader};readAssertionLocation`, { __filename: filename });
+}
+function assertionFrom(action) {
+  try { action(); } catch (error) { assert.equal(error.code, 'ERR_ASSERTION'); return error; }
+  assert.fail('the independent negative observation must fail its existing assertion');
+}
+
+test('real visibility, annotation and restored-coordinate assertions locate their actual helper call sites', () => {
+  const read = assertionLocationReader(), source = graphHelperSource().split('\n');
+  const invisible = observed(); invisible.renderedNodes[0].drawnInContainer = false;
+  const note = annotationObserved(); note.renderedAnnotations[0].text = 'SYN wrong shape';
+  const before = annotationObserved(); before.binding = { caseId: '7', caseName: 'SYN case', canvasId: '0', canvasName: '默认画布' };
+  const after = structuredClone(before); after.renderedNodes[0].x += 1;
+  for (const [action, statement] of [
+    [() => assertGraph(invisible, ['71', '72', '73'], 2), 'for (const node of snapshot.renderedNodes) assert.equal(node.drawnInContainer, true);'],
+    [() => assertAnnotation(note, expectedAnnotation), 'assert.equal(shape.text, expected.text);'],
+    [() => assertWorkspaceRestored(after, before, ['71', '72', '73'], 2, expectedAnnotation), 'assert.deepEqual(nodePositions(snapshot), nodePositions(before));'],
+  ]) {
+    const error = assertionFrom(action), line = source.findIndex(value => value.includes(statement));
+    assert.ok(line >= 0);
+    assert.deepEqual(JSON.parse(JSON.stringify(read(error))), locationValue(line + 1, source[line].indexOf('assert.') + 8));
+    assert.doesNotMatch(JSON.stringify(read(error)), /SYN|\.cjs|stack|actual|expected|message/);
+  }
+});
+
+test('the actual location reader accepts exact Posix and Windows frames and rejects forged, ambiguous and unsafe stacks', () => {
+  for (const newline of ['LF', 'CRLF']) for (const filename of ['/SYN private folder/installed-graph-journey.cjs', 'C:\\SYN private folder\\installed-graph-journey.cjs']) {
+    const read = assertionLocationReader(filename, newline), plain = value => value === null ? null : JSON.parse(JSON.stringify(value));
+    const error = (frames, message = 'SYN_PRIVATE_MESSAGE') => {
+      const stack = `AssertionError [ERR_ASSERTION]: ${message}\n${frames.join('\n')}`;
+      return { message: newline === 'CRLF' ? message.replace(/\n/g, '\r\n') : message,
+        stack: newline === 'CRLF' ? stack.replace(/\n/g, '\r\n') : stack };
+    };
+    for (const [frame, line, column] of [[`    at ${filename}:1:1`, 1, 1], [`    at helper (${filename}:100000:10000)`, 100000, 10000],
+      [`    at async ${filename}:42:7`, 42, 7], [`    at async helper (${filename}:12:3)`, 12, 3]]) {
+      assert.deepEqual(plain(read(error([frame]))), locationValue(line, column));
+    }
+    const fakeMessage = `SYN_PRIVATE_NAME_AMOUNT_URL\n    at forged (${filename}:9:9)\nSYN_PRIVATE_END`;
+    assert.deepEqual(plain(read(error([`    at real (${filename}:31:8)`], fakeMessage))), locationValue(31, 8));
+    assert.deepEqual(plain(read(error([`    at first (${filename}:4:5)`, `    at second (${filename}:6:7)`]))), locationValue(4, 5));
+    const capped = error([`    at exact (${filename}:6:7)`]);
+    capped.stack += '\n' + 'x'.repeat(65536 - capped.stack.length - 1);
+    assert.equal(capped.stack.length, 65536); assert.deepEqual(plain(read(capped)), locationValue(6, 7));
+    for (const frames of [[`    at first (${filename}:0:1)`, `    at second (${filename}:6:7)`],
+      [`    at first (${filename}:100001:1)`], [`    at first (${filename}:1:10001)`], [`    at first (${filename}:1:0)`],
+      [`    at first (${filename}:1.5:2)`], [`    at first (${filename}:-1:2)`],
+      [`    at other (/different/installed-graph-journey.cjs:4:5)`], [`    at other (${filename}.bak:4:5)`],
+      [`SYN_PRIVATE ${filename}:4:5`], [`    at ${filename}:4:5 trailing`],
+      [...Array(20).fill('    at other (/different/helper.cjs:1:1)'), `    at late (${filename}:6:7)`]]) assert.equal(read(error(frames)), null);
+    for (const value of [{}, { message: 1, stack: 'SYN_PRIVATE' }, { message: 'SYN_PRIVATE', stack: {} },
+      { message: 'SYN_PRIVATE', stack: 'x'.repeat(65537) }, { message: 'SYN_PRIVATE', stack: `Error: SYN_PRIVATE\n    at ${filename}:1:1` },
+      { message: 'different', stack: error([`    at ${filename}:1:1`]).stack },
+      { get message() { throw new Error('SYN_PRIVATE_GETTER'); }, stack: 'SYN_PRIVATE' },
+      { message: 'SYN_PRIVATE', get stack() { throw new Error('SYN_PRIVATE_GETTER'); } }]) assert.equal(read(value), null);
+  }
+});
+
+test('safe journey diagnostics clone only valid assertion coordinates and omit unsafe getters or extra fields', () => {
+  const base = { step: 'graph-visible', kind: 'assertion' }, valid = locationValue(1, 10000);
+  const detail = { ...base, assertionLocation: { ...valid, raw: 'SYN_PRIVATE_PATH_STACK_MESSAGE' } };
+  const projected = safeJourneyFailure({ installedGraphDiagnostic: detail });
+  assert.deepEqual(projected, { ...base, assertionLocation: valid }); assert.notEqual(projected.assertionLocation, detail.assertionLocation);
+  for (const location of [null, {}, { ...valid, helper: 'SYN_PRIVATE' }, { ...valid, line: 0 }, { ...valid, line: 100001 },
+    { ...valid, column: 0 }, { ...valid, column: 10001 }, { ...valid, line: 1.5 }, { ...valid, column: '1' },
+    { ...valid, get line() { throw new Error('SYN_PRIVATE_GETTER'); } }]) {
+    assert.deepEqual(safeJourneyFailure({ installedGraphDiagnostic: { ...base, assertionLocation: location } }), base);
+  }
+  const getter = { ...base, get assertionLocation() { throw new Error('SYN_PRIVATE_GETTER'); } };
+  assert.deepEqual(safeJourneyFailure({ installedGraphDiagnostic: getter }), base);
+  for (const kind of ['timeout', 'runtime']) assert.deepEqual(safeJourneyFailure({ installedGraphDiagnostic: { ...base, kind, assertionLocation: valid } }), { ...base, kind });
+  assert.deepEqual(safeJourneyFailure({ installedGraphDiagnostic: { ...base, assertionLocation: locationValue(100000, 1) } }),
+    { ...base, assertionLocation: locationValue(100000, 1) });
+  assert.doesNotMatch(JSON.stringify(projected), /SYN_PRIVATE|raw|stack|message|actual|expected/);
+});
+
+test('the real journey catch preserves assertion failure and its sole CSV cleanup even when location reading is unavailable', async () => {
+  const invisible = observed(); invisible.renderedNodes[0].drawnInContainer = false;
+  const actual = assertionFrom(() => assertGraph(invisible, ['71', '72', '73'], 2));
+  const lines = graphHelperSource().split('\n'), line = lines.findIndex(value => value.includes('for (const node of snapshot.renderedNodes) assert.equal(node.drawnInContainer, true);'));
+  const expectedLocation = locationValue(line + 1, lines[line].indexOf('assert.') + 8);
+  let runtimeStackReads = 0;
+  const unavailable = { code: 'ERR_ASSERTION', message: 'SYN_PRIVATE', get stack() { throw new Error('SYN_PRIVATE_GETTER'); } };
+  const timeout = { message: 'TIMEOUT', get stack() { runtimeStackReads++; throw new Error('SYN_PRIVATE_GETTER'); } };
+  for (const original of [actual, unavailable, timeout]) {
+    const files = [], finished = automaticObservation();
+    const evaluate = async expression => expression === AUTOMATIC_IMPORT_PROBE ? structuredClone(finished)
+      : expression.includes('return summaries.map') ? ['71', '72', '73'] : true;
+    const cdp = { send: async (method, params) => {
+      if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+      if (method === 'DOM.querySelector') return { nodeId: 2 };
+      if (method === 'DOM.setFileInputFiles') files.push(params.files[0]);
+      return {};
+    } };
+    await assert.rejects(runInstalledGraphJourney({ cdp, page: { sessionId: 'SYN' }, evaluate, clickElement: async () => {},
+      until: async predicate => assert.equal(await predicate(), true),
+      check: async (name, action) => { if (name === 'installedQueryExact') throw original; await action(); } }), failure => {
+      assert.equal(failure.message, 'INSTALLED_GRAPH_JOURNEY_FAILED');
+      const detail = safeJourneyFailure(failure);
+      assert.equal(detail.step, 'csv-verify'); assert.equal(detail.kind, original === timeout ? 'timeout' : 'assertion');
+      if (original === actual) assert.deepEqual(detail.assertionLocation, expectedLocation);
+      else assert.equal(detail.assertionLocation, undefined);
+      assert.doesNotMatch(JSON.stringify(detail), /SYN_PRIVATE|\.cjs|stack|message|actual|expected/); return true;
+    });
+    assert.equal(files.length, 1); assert.equal(fs.existsSync(path.dirname(files[0])), false);
+  }
+  assert.equal(runtimeStackReads, 0, 'non-assertion failures never inspect their stack');
+});
+
+test('the actual restore sequence restores each parent step only after its graph substep succeeds', async () => {
+  const source = graphHelperSource(), start = source.indexOf("        step = 'canvas-default';"), end = source.indexOf("        step = 'annotation-restored';", start);
+  assert.ok(start >= 0 && end > start);
+  for (const stop of ['default', 'named', 'graph']) {
+    const events = [], stopError = new Error('SYN stop after the unchanged restore action');
+    const context = vm.createContext({ flowIds: ['71', '72', '73'], savedAnnotation: {}, defaultWorkspace: {}, savedTypes: {}, editedEdge: 'SYN edge', CANVAS: 'SYN canvas', GRAPH_PROBE: 'SYN graph probe', assert,
+      select: async (...args) => events.push(['select', ...args]), graph: async () => { context.step = 'graph-visible'; if (stop === 'graph') throw stopError; },
+      annotation: async () => ({}), evaluate: async () => true,
+      assertWorkspaceRestored: () => { events.push(['default', context.step]); if (stop === 'default') throw stopError; },
+      assertEdgeTypes: () => { events.push(['named', context.step]); throw stopError; } });
+    await assert.rejects(vm.runInContext(`(async()=>{${source.slice(start, end)}})()`, context), error => error === stopError);
+    assert.equal(context.step, stop === 'graph' ? 'graph-visible' : stop === 'default' ? 'canvas-default' : 'canvas-restored');
+    if (stop !== 'graph') assert.deepEqual(events.find(event => event[0] === 'default'), ['default', 'canvas-default']);
+    if (stop === 'named') assert.deepEqual(events.find(event => event[0] === 'named'), ['named', 'canvas-restored']);
+  }
 });
