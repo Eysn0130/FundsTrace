@@ -54,12 +54,14 @@ def test_ready_v5_repreview_and_commit_remain_frozen_after_role_profile_is_defau
 def test_v5_v6_v7_share_physical_keys_reuse_facts_and_round_trip_in_format4(client, database, make_case, monkeypatch):
     cid = make_case("Synthetic compatible mapping package")
     content = b"date,payer_account,payee_account,amount\n2026-01-01,SYN-A,SYN-B,1.01\n"
+    # The new XLS-only profile cannot reinterpret these historical CSV bytes.
+    csv_profiles = table_import.SUPPORTED_PROFILES - {table_import.XLS_PROFILE}
     plans = [table_import.parse(io.BytesIO(content), suffix=".csv", profile=profile)
-             for profile in sorted(table_import.SUPPORTED_PROFILES)]
+             for profile in sorted(csv_profiles)]
     assert len({plan["records"][0]["record_key"] for plan in plans}) == 1
     old = legacy_preview(client, cid, content, monkeypatch)
     assert complete(client, cid, old)["result"]["ok"] == 1
-    for profile in sorted(table_import.ROLE_PROFILES):
+    for profile in sorted(table_import.ROLE_PROFILES - {table_import.XLS_PROFILE}):
         current = profile_preview(client, cid, content, monkeypatch, profile)
         job = complete(client, cid, current)
         assert job["stage"] == "done" and (job["result"]["ok"], job["result"]["rows_dup"]) == (0, 1)
@@ -70,7 +72,7 @@ def test_v5_v6_v7_share_physical_keys_reuse_facts_and_round_trip_in_format4(clie
     restored = case_packages.import_package(case_packages.export_package(cid)[0])["case_id"]
     assert database.q_raw("select amount from flows where case_id=?", [restored]) == [{"amount": Decimal("1.01")}]
     assert database.q_raw(query, [restored]) == before
-    assert {record["parser_version"] for record in database.q_raw("select parser_version from import_sources where case_id=?", [restored])} == table_import.SUPPORTED_PROFILES
+    assert {record["parser_version"] for record in database.q_raw("select parser_version from import_sources where case_id=?", [restored])} == csv_profiles
     coverage = client.get(f"/api/v1/cases/{restored}/stats").json()["import_coverage"]
     assert coverage["unresolved_records"] == 0 and coverage["financial_interpretation_complete"]
 

@@ -56,6 +56,8 @@ SOFTWARE.
 
 Python runtime dependency versions and distribution hashes are recorded in `requirements-desktop.lock`. Native backend builds recursively retain installed runtime distribution metadata and their supplied license files. Bundled fonts retain their upstream notices. Electron distributions retain their upstream `LICENSE` and `LICENSES.chromium.html`. Build and test dependencies keep their own licenses; neither the FundsTrace community license nor its historical MIT notice replaces those licenses. No project authorization secret or business dataset is part of the distribution.
 
+BIFF8 XLS reading uses [xlrd 2.0.2](https://github.com/python-excel/xlrd) and [olefile 0.47](https://github.com/decalage2/olefile). Their distribution license files retain the BSD-style terms and the earlier author/PIL notices included by their publishers. The native backend copies both distributions' metadata and license files. xlwt 1.3.0 generates synthetic development fixtures only and is not a runtime dependency.
+
 ## Analytix Windows installer flow
 
 `desktop/installer.nsh` adapts installation-root process scoping and installer lifecycle hooks from Analytix `build/standard-win-installer.nsh` at commit `c7d2a370855a8d371c61c32cc2422515b9404ef2` (https://github.com/Eysn0130/analytix). Copyright 2026 Guoqin He (GitHub: Eysn0130); Apache License 2.0, reproduced in `desktop/licenses/Apache-2.0.txt` and distributed as `resources/licenses/Analytix-Apache-2.0.txt`. FundsTrace modifications dated 2026-10-15 retain its per-user installation identity and default data retention, display the installed version, and request normal window closing rather than forcing process termination. FundsTrace does not use Analytix registry keys, update feeds or signing identity.

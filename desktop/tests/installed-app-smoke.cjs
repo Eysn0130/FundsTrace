@@ -1,6 +1,6 @@
 'use strict';
 // CI-only installed EXE smoke. Never import Main, inspect request headers, or log CDP payloads.
-// Usage: node installed-app-smoke.cjs <absolute-install-root> --report <absolute-json> [--screenshot <absolute-png>] [--startup-close | --presentation-baseline <absolute-config>]
+// Usage: node installed-app-smoke.cjs <absolute-install-root> --report <absolute-json> [--screenshot <absolute-png>] [--startup-close | --fresh-startup | --presentation-baseline <absolute-config>]
 const assert = require('node:assert/strict');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
@@ -229,9 +229,9 @@ function readImportEntry() {
     &&document.getElementById(input.id)===input,type:input?.type||null,accept:input?.accept||null,enabled:input?.disabled===false};
 }
 function argumentsOf() {
-  const input = process.argv.slice(2), startupClose = input.includes('--startup-close');
-  assert.ok(input.filter(value => value === '--startup-close').length <= 1);
-  const args = input.filter(value => value !== '--startup-close');
+  const input = process.argv.slice(2), startupClose = input.includes('--startup-close'), freshStartup = input.includes('--fresh-startup');
+  for (const flag of ['--startup-close', '--fresh-startup']) assert.ok(input.filter(value => value === flag).length <= 1);
+  const args = input.filter(value => !['--startup-close', '--fresh-startup'].includes(value));
   assert.ok(args.length === 3 || args.length === 5 || args.length === 7);
   const installRoot = args.shift(), values = {};
   while (args.length) {
@@ -242,10 +242,10 @@ function argumentsOf() {
   assert.ok(installRoot && path.isAbsolute(installRoot) && values['--report']);
   assert.equal(path.extname(values['--report']).toLowerCase(), '.json');
   if (values['--screenshot']) assert.equal(path.extname(values['--screenshot']).toLowerCase(), '.png');
-  assert.ok([startupClose, values['--update-fixture'], values['--production-update'], values['--presentation-baseline']].filter(Boolean).length <= 1);
+  assert.ok([startupClose, freshStartup, values['--update-fixture'], values['--production-update'], values['--presentation-baseline']].filter(Boolean).length <= 1);
   return { installRoot: path.resolve(installRoot), reportPath: values['--report'], screenshot: values['--screenshot'],
     updateFixture: values['--update-fixture'], productionUpdate: values['--production-update'],
-    presentationBaseline:values['--presentation-baseline'], startupClose };
+    presentationBaseline:values['--presentation-baseline'], startupClose, freshStartup };
 }
 function within(root, value) {
   const relative = path.relative(root, value);
@@ -447,6 +447,16 @@ async function portClosed(port) {
     socket.setTimeout(1000, () => finish(false));
   });
 }
+async function assertStartupData(userRoot, freshStartup) {
+  assert.equal(await fs.readFile(path.join(userRoot, 'installer-lifecycle-sentinel.txt'), 'utf8'), SENTINEL);
+  if (freshStartup) {
+    const root = await fs.lstat(userRoot);
+    assert.ok(root.isDirectory() && !root.isSymbolicLink(), 'FRESH_USER_ROOT');
+    // lstat also rejects a dangling link: a fresh GUI must create its own state.
+    for (const relative of ['data', 'preferences.json'])
+      await assert.rejects(fs.lstat(path.join(userRoot, relative)), { code:'ENOENT' });
+  } else assert.ok((await fs.stat(path.join(userRoot, 'data', 'fund.duckdb'))).isFile());
+}
 async function readPresentationPreferences(userRoot) {
   // The lifecycle sentinel binds this path to the disposable CI user above.
   // Retain only the two presentation keys this journey changes, never case data.
@@ -490,9 +500,8 @@ async function restorePresentationPreferences(snapshot) {
     const value = argumentsOf();
     assert.ok(process.env.APPDATA && path.isAbsolute(process.env.APPDATA));
     const userRoot = path.join(process.env.APPDATA, 'FundsTrace');
-    assert.equal(await fs.readFile(path.join(userRoot, 'installer-lifecycle-sentinel.txt'), 'utf8'), SENTINEL);
-    assert.ok((await fs.stat(path.join(userRoot, 'data', 'fund.duckdb'))).isFile());
-    if (!value.updateFixture && !value.productionUpdate && !value.presentationBaseline)
+    await assertStartupData(userRoot, value.freshStartup);
+    if (!value.freshStartup && !value.updateFixture && !value.productionUpdate && !value.presentationBaseline)
       presentationPreferences = await readPresentationPreferences(userRoot);
     for (const output of [value.reportPath, value.screenshot].filter(Boolean)) {
       assert.ok(!within(userRoot, output) && !within(value.installRoot, output));
@@ -502,7 +511,14 @@ async function restorePresentationPreferences(snapshot) {
   });
   reportPath = config.reportPath;
   productionUpdate = !!config.productionUpdate;
-  const priorClientOnly = productionUpdate || !!config.presentationBaseline;
+  const priorClientOnly = productionUpdate || !!config.presentationBaseline || config.freshStartup;
+  if (config.freshStartup) {
+    report.mode = 'fresh-startup';
+    report.checks.freshStateInitiallyAbsent = true;
+    report.limits = { windowsServerAutomationOnly:true, windows10And11Interactive:false,
+      actualSystemDpiValidated:false, importRecovery:false, firstNormalGuiBeforeSeed:true,
+      preferencesWrittenOnlyByInstalledClient:true, preferencesRestoredByHelper:false };
+  }
   if (config.startupClose) report.limits = { windowsServerAutomationOnly:true, windows10And11Interactive:false,
     actualSystemDpiValidated:false, importRecovery:false, startupBusinessRendererIntentionallyPaused:true,
     normalWorkbenchJourney:false, nativeCaptionCloseRequired:true, fallbackCloseAllowed:false };
@@ -695,6 +711,45 @@ async function restorePresentationPreferences(snapshot) {
     }, 15000);
   });
   if (config.startupClose) { report.status = 'passed'; return; }
+  if (config.freshStartup) {
+    await check('authenticatedWorkspaceLoaded', async () => {
+      assert.equal(await evaluate(`(async () => {
+        const response = await fetch('/api/v1/cases'); if (!response.ok) return false;
+        const value = await response.json();
+        if (!Array.isArray(value.items) || value.items.length !== 1
+          || value.items[0].id !== '1' || value.items[0].name !== '默认案件') return false;
+        const statsResponse = await fetch('/api/v1/cases/1/stats'); if (!statsResponse.ok) return false;
+        const stats = await statsResponse.json();
+        return stats.case_id === '1' && stats.flows === 0 && stats.accounts === 0 && stats.batches === 0
+          && stats.amount_total === '0.00' && Array.isArray(stats.amount_totals) && stats.amount_totals.length === 0;
+      })()`), true);
+      const denied = await fetch(`${page.origin}/api/v1/cases`, { redirect:'manual', signal:AbortSignal.timeout(10000) });
+      assert.equal(denied.status, 403); await denied.arrayBuffer();
+    });
+    report.checks.defaultCaseEmpty = true;
+    await check('activationFree', async () => {
+      assert.equal(await evaluate(`(async () => {
+        const response = await fetch('/api/license/info'); if (!response.ok) return false;
+        const value = await response.json(); return value.activation_required === false && value.activated === false;
+      })()`), true);
+    });
+    await check('noPageExceptions', async () => { assert.ok(!instrumentationFailed); assert.equal(errorCount, 0); });
+    await check('normalClose', async () => {
+      const close = report.nativeClose = await nativeStartupWindow(config.installRoot, primary.child.pid, { action:'CaptionClose' });
+      assert.equal(close.status, 'passed');
+      assert.equal(close.interaction.CloseButtonClicked, true); assert.equal(close.interaction.WindowClosedObserved, true);
+      assert.deepEqual(await bounded(primary.exited, 30000), { code:0, signal:null });
+      assert.equal(errorCount, 0);
+    });
+    await check('backendReleasedAfterClose', () => until(() => portClosed(Number(new URL(page.origin).port)), 15000));
+    await check('clientCreatedDefaultData', async () => {
+      const userRoot = path.join(process.env.APPDATA, 'FundsTrace');
+      assert.ok((await fs.stat(path.join(userRoot, 'data', 'fund.duckdb'))).isFile());
+      assert.ok((await fs.stat(path.join(userRoot, 'preferences.json'))).isFile());
+      await assert.rejects(fs.stat(path.join(userRoot, 'data', 'license.dat')), { code:'ENOENT' });
+    });
+    report.status = 'passed'; return;
+  }
   if (config.presentationBaseline) {
     const baselineConfig = JSON.parse((await fs.readFile(config.presentationBaseline, 'utf8')).replace(/^\uFEFF/, ''));
     report.presentationBaseline = await runInstalledPresentationBaseline({ config:baselineConfig, primary, evaluate,

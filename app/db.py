@@ -321,8 +321,10 @@ def con():
                 # including a later reimport under an older parser.
                 # Narrow physical links before parsing JSON so metadata hashes
                 # cannot become join-build keys over the complete journal.
-                candidate.execute("""create or replace view effective_flows as
-                    with table_cancel_candidates as materialized (
+                from . import table_cancellation_links
+                candidate.execute(f"""create or replace view effective_flows as
+                    with recursive {table_cancellation_links.ctes()},
+                    table_cancel_candidates as materialized (
                       select fs.case_id,fs.source_id,fs.source_row,fs.flow_id,
                         r.details_json source_details_json,c.details_json cancellation_details_json,
                         f.self_account,f.self_name
@@ -337,9 +339,9 @@ def con():
                       join import_members cm on cm.case_id=c.case_id and cm.source_id=c.source_id
                         and cm.member_path=c.member_path and cm.sha256=rm.sha256
                       join import_sources p on p.case_id=c.case_id and p.source_id=c.source_id
-                      where p.row_kind='table_record' and p.parser_version='funds-trace-table-archive-v3'
+                      where p.row_kind='table_record' and p.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4')
                         and c.disposition='cancelled' and c.reason_code='matched_cancellation'
-                    ), table_cancelled_links as materialized (
+                    ), table_same_path_cancelled_links as materialized (
                       select distinct case_id,source_id,source_row,flow_id from table_cancel_candidates
                       where json_extract_string(try_cast(cancellation_details_json as json),'$.cancellation_role')='original'
                         and json_extract_string(try_cast(cancellation_details_json as json),'$.cancellation_policy')='table-paired-cancellation-v1'
@@ -349,6 +351,9 @@ def con():
                             json_extract_string(try_cast(cancellation_details_json as json),'$.cancellation_own_account_sha256')
                         and case when coalesce(self_name,'')='' then '' else sha256(self_name) end=
                             json_extract_string(try_cast(cancellation_details_json as json),'$.cancellation_own_name_sha256')
+                    ), table_cancelled_links as materialized (
+                      select * from table_same_path_cancelled_links
+                      union select * from a02_shared_links
                     ), table_cancelled_flows as materialized (
                       select fs.case_id,fs.flow_id from flow_sources fs
                       left join table_cancelled_links c on c.case_id=fs.case_id and c.source_id=fs.source_id

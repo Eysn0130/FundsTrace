@@ -99,6 +99,9 @@ def mirror_groups(rows):
             continue
         stamp = stamp.replace(microsecond=0)
         ledger = row.get("self_account") or ""
+        if (not ledger or ledger not in (row["payer_account"], row["payee_account"])
+                or row["payer_account"] == row["payee_account"]):
+            continue
         key = (row["payer_account"], row["payee_account"], row["amount"], row.get("currency") or "")
         queue = pending.setdefault(key, deque())
         while queue and stamp - queue[0][0] > tolerance:

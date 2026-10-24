@@ -152,7 +152,7 @@ def test_envelope_reuse_prefers_v2_then_v1_then_ordinary_with_matching_facts(cli
     complete(client, cid, ordinary)
     historical = frozen_preview(client, cid, content, monkeypatch)
     complete(client, cid, historical)
-    current = preview(client, cid, content, "synthetic.zip")
+    current = frozen_preview(client, cid, content, monkeypatch, profile=table_archive.CANCELLATION_PROFILE)
     complete(client, cid, current)
     fields = "case_id,batch_id," + ",".join((*table_import.FLOW_FIELDS, "self_account", "self_name"))
     original = database.q("select id from flows where case_id=?", [cid])[0]["id"]
@@ -169,7 +169,7 @@ def test_envelope_reuse_prefers_v2_then_v1_then_ordinary_with_matching_facts(cli
     assert report(client, cid, repeated)["items"][0]["flow_id"] == str(preferred)
     # The physical key cannot override a changed own-account fact.
     database.x("update flows set self_account='SYN-CHANGED' where case_id=?", [cid])
-    fresh = preview(client, cid, content, "fresh.zip")
+    fresh = frozen_preview(client, cid, content, monkeypatch, profile=table_archive.CANCELLATION_PROFILE)
     assert complete(client, cid, fresh)["result"]["ok"] == 1
 
 

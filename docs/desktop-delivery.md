@@ -12,6 +12,14 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 ## 安装、升级与卸载
 
+0.1.13 候选新增三条独立验收链，当前仅实现验收工具；实际 Windows 结果须绑定后续 run、源码提交和安装包 SHA，不能从本地合成检查推断通过：
+
+- `test-windows-standard-user.ps1 -FreshInstallOnly` 在独立普通用户安装当前 EXE。第一次正常 GUI 启动前不存在数据库或偏好，不能先 seed；确认默认空案、免激活、正常认证及退出后，才生成合成兼容 fixture、合并指定测试偏好，并执行格式、重装和卸载保留检查。fresh 报告明确标记 `mode:fresh`、`current-seeded`，与旧版升级报告分开。
+- 既有升级链仍由固定公开 0.1.12 的已安装后端创建旧案和旧案件包，再覆盖到 0.1.13；原账户、画布、金额、来源、设置和旧包恢复断言保留。新的 CI-only 格式工具通过已安装 frozen backend 的公共接口核对 CSV/XLSX/XLS/ZIP、冲正链、迟到冲突及无扩展名案件包恢复；开发生成器的 xlwt 不进入运行锁或冻结包。
+- `candidate_recheck_run_id`、`candidate_recheck_sha256`、`candidate_recheck_bytes` 必须同时指定。独立 Windows run 只读下载首次唯一 artifact 中的同一 EXE，校对来源提交、原始清单、解包文件全集和 native manifest 后重新运行 fresh 与升级链，报告 `rebuilt:false`；不重建、不进入 Release transfer 写入路径。
+
+0.1.13 起发布证据要求成对声明 `checks.freshInstallerLifecycle` 和 `freshUserCompatibilitySha256`。新增 `fresh-user-compatibility.zip` 只收固定报告与报告声明的截图，逐项对应原候选摘要；0.1.12 及更早归档沿用原合同，若显式声明 fresh 证据则同样严格验证。三条链仍只证明 Windows Server 2022 自动化与合成案件，不代表 Win10/11 实机、DPI 或 SmartScreen 验收，安装包仍未签名。
+
 - 保留 `com.eysn.fundstrace`、FundsTrace 产品名、appId 派生的注册表键及**当前用户**安装范围。标准 NSIS 引导显示已安装版本；安装目录可以选择。使用新版 EXE 覆盖安装，由同一注册信息找到旧卸载器；不另建 Analytix 安装身份。
 - 安装替换、静默／交互卸载前，检查选定及注册的旧安装目录。仅向该目录中精确 `FundsTrace.exe` 路径的窗口请求正常关闭，等待所属进程退出；Main 通过 stdin EOF 停止自己的 Python 后端。占用或检查失败时交互 Retry／Cancel，静默返回非零；不按 Python／Electron 名称强杀。
 - Windows“已安装的应用”和程序目录提供卸载入口。`deleteAppDataOnUninstall:false`，默认保留 `%APPDATA%\FundsTrace` 中的案件、上传、设置及历史授权。不要把用户数据放进安装目录；卸载后重装会继续使用同一数据目录。删除真实案件须由用户另行明确操作。

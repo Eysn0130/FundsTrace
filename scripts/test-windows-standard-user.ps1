@@ -6,7 +6,8 @@ param(
     [string]$NextInstaller = '',
     [string]$NextUnpacked = '',
     [string]$TrustedCertificateFixture = '',
-    [switch]$PublishedInAppUpdate
+    [switch]$PublishedInAppUpdate,
+    [switch]$FreshInstallOnly
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -14,6 +15,9 @@ Set-StrictMode -Version Latest
 if (-not $IsWindows -or $env:GITHUB_ACTIONS -cne 'true' -or -not $env:RUNNER_TEMP -or
     [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne 'X64') {
     throw 'Standard-user compatibility requires native Windows x64 GitHub Actions.'
+}
+if ($FreshInstallOnly -and ($PublishedInAppUpdate -or $NextInstaller -or $NextUnpacked -or $TrustedCertificateFixture)) {
+    throw 'Fresh installation cannot be combined with an update journey.'
 }
 $Principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Runner administration is required for disposable test setup.' }
@@ -31,6 +35,7 @@ $InstallRoot = Join-Path $LifecycleRoot '应用 安装路径'
 $Report = [ordered]@{ schemaVersion = 1; status = 'running'; failedCheck = $null; checks = [ordered]@{};
     limits = @{ platform = 'Windows Server 2022'; windows10And11Interactive = $false;
         networkIsolation = 'installed Electron and backend outbound firewall block; loopback retained'; systemDpi = $false } }
+if ($FreshInstallOnly) { $Report.mode = 'fresh' }
 if ($PublishedInAppUpdate) {
     # The real updater needs HTTPS. Keep the backend offline; do not claim the
     # separate offline-Electron check from this explicitly online journey.
@@ -101,7 +106,7 @@ try {
         localCacheBaseWritable = $true } | ConvertTo-Json | Set-Content -LiteralPath __ENV_REPORT__ -Encoding utf8
     $Result = 1
     try {
-        & __LIFECYCLE__ -InstallerPath __INSTALLER__ -ReportPath __REPORT__ -CiTemporaryRoot __LIFECYCLE_ROOT__ -PriorVersion __PRIOR_VERSION__ -NextInstaller __NEXT_INSTALLER__ -NextUnpacked __NEXT_UNPACKED__ -TrustedCertificateFixture __CERTIFICATE_FIXTURE__ -PublishedInAppUpdate:__PUBLISHED_UPDATE__
+        & __LIFECYCLE__ -InstallerPath __INSTALLER__ -ReportPath __REPORT__ -CiTemporaryRoot __LIFECYCLE_ROOT__ -PriorVersion __PRIOR_VERSION__ -NextInstaller __NEXT_INSTALLER__ -NextUnpacked __NEXT_UNPACKED__ -TrustedCertificateFixture __CERTIFICATE_FIXTURE__ -PublishedInAppUpdate:__PUBLISHED_UPDATE__ -FreshInstallOnly:__FRESH_INSTALL__
         $Result = $LASTEXITCODE
     } finally {
         # Installer-private temp files belong to this token. Clean them before
@@ -114,6 +119,7 @@ try {
 } catch { [Console]::Error.WriteLine('Standard-user compatibility child failed.'); exit 1 }
 '@
     $Template = $Template.Replace('__PUBLISHED_UPDATE__', $(if ($PublishedInAppUpdate) { '$true' } else { '$false' }))
+    $Template = $Template.Replace('__FRESH_INSTALL__', $(if ($FreshInstallOnly) { '$true' } else { '$false' }))
     $Replacements = @{
         '__STAGE__' = $StageRoot; '__ENV_REPORT__' = (Join-Path $ReportDirectory 'standard-user-environment.json')
         '__LIFECYCLE__' = (Join-Path $PSScriptRoot 'test-windows-installer.ps1'); '__INSTALLER__' = $InstallerPath
@@ -134,6 +140,20 @@ try {
     foreach ($Name in @('standardToken', 'unicodeProfile', 'ownAppData', 'ownLocalAppData', 'localCacheBaseWritable', 'ownTemporaryRemoved')) { if ($Environment.$Name -ne $true) { throw 'Standard-user environment check failed.' } }
     $Lifecycle = Get-Content -Raw -LiteralPath (Join-Path $ReportDirectory 'native-installer-smoke.json') | ConvertFrom-Json
     if ($Lifecycle.status -cne 'passed') { throw 'Standard-user installation checks failed.' }
+    if ($FreshInstallOnly) {
+        $Version = (Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot 'desktop/package.json') | ConvertFrom-Json).version
+        $InstallerSha256 = (Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $InstallerBytes = (Get-Item -LiteralPath $InstallerPath).Length
+        if ($Lifecycle.mode -cne 'fresh' -or $Lifecycle.fixtureOrigin -cne 'current-seeded' -or
+            $Lifecycle.targetVersion -cne $Version -or $Lifecycle.currentVersion -cne $Version -or
+            $Lifecycle.currentInstallerSha256 -cne $InstallerSha256 -or $Lifecycle.currentInstallerBytes -ne $InstallerBytes -or
+            $Lifecycle.checks.cleanup -cne 'passed') { throw 'Fresh lifecycle identity or cleanup is inconsistent.' }
+        foreach ($Check in $Lifecycle.checks.PSObject.Properties) {
+            if ($Check.Value -cne 'passed') { throw 'Fresh lifecycle has an incomplete check.' }
+        }
+        $Report.targetVersion = $Version; $Report.currentInstallerSha256 = $InstallerSha256
+        $Report.currentInstallerBytes = $InstallerBytes
+    }
     $Report.checks.standardUserLifecycle = $true
 } catch {
     $Failed = $true; $Report.failedCheck = $Stage
@@ -182,4 +202,5 @@ try {
     $Report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ReportDirectory 'compatibility.json') -Encoding utf8
 }
 if ($Failed) { exit 1 }
-Write-Host 'Standard-user Unicode profile, program-isolated offline installed startup, upgrade and uninstall retention passed on Windows Server.'
+if ($FreshInstallOnly) { Write-Host 'Standard-user fresh EXE, first normal empty GUI, current-seeded compatibility and uninstall retention passed on Windows Server.' }
+else { Write-Host 'Standard-user Unicode profile, program-isolated offline installed startup, upgrade and uninstall retention passed on Windows Server.' }

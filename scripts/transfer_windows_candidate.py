@@ -15,10 +15,10 @@ import tempfile
 import zipfile
 
 if __package__:
-    from .release_evidence import prepare_evidence, verify_evidence, standard_evidence_files
+    from .release_evidence import prepare_evidence, verify_evidence, standard_evidence_files, fresh_declaration, fresh_evidence_files
     from .upgrade_baseline import parse_baseline, validate_installer_identity
 else:
-    from release_evidence import prepare_evidence, verify_evidence, standard_evidence_files
+    from release_evidence import prepare_evidence, verify_evidence, standard_evidence_files, fresh_declaration, fresh_evidence_files
     from upgrade_baseline import parse_baseline, validate_installer_identity
 
 REPO = "Eysn0130/FundsTrace"
@@ -488,6 +488,12 @@ def main():
         zip_path = base / "standard-user-compatibility.zip"
         standard_archive(standard, zip_path, standard_evidence_files(
             candidate, args.tag, data(standard / "native-installed-app-smoke.json")))
+        fresh_zip = None
+        if fresh_declaration(candidate, args.tag):
+            fresh = base / "fresh-standard-user"
+            fresh_zip = base / "fresh-user-compatibility.zip"
+            standard_archive(fresh, fresh_zip, fresh_evidence_files(
+                candidate, args.tag, data(fresh / "native-installed-app-smoke.json")))
         summary = {"schemaVersion": 1, "status": "passed", "sourceCommit": source,
             "installerUpgradeFrom": prior_version,
             "sourceRun": args.run_id, "tag": args.tag, "installer": expected,
@@ -497,6 +503,8 @@ def main():
             "installedAppChecks": len(reports["native-installed-app-smoke.json"]["checks"]),
             "standardAppChecks": len(data(standard / "native-installed-app-smoke.json")["checks"]),
             "standardUserArchiveSha256": digest(zip_path), "publicReleasePublished": False}
+        if fresh_zip is not None:
+            summary["freshUserArchiveSha256"] = digest(fresh_zip)
         summary_path = base / "release-verification.json"
         summary_path.write_text(json.dumps(summary, indent=2) + "\n")
         with tempfile.TemporaryDirectory(prefix="fundstrace-evidence-") as evidence_temporary:

@@ -86,6 +86,7 @@ try {
     $InstalledAppReport = Join-Path $EvidenceRoot "native-installed-app-smoke.json"
     $ImportRecoveryReport = Join-Path $EvidenceRoot 'native-import-recovery-smoke.json'
     $CompatibilityDirectory = Join-Path $EvidenceRoot 'standard-user'
+    $FreshCompatibilityDirectory = Join-Path $EvidenceRoot 'fresh-standard-user'
     $UpdateArguments = @{}
     if ($VerifyInAppUpdate) {
         $NextParts = $Version.Split('.')
@@ -109,6 +110,7 @@ try {
     if ($VerifyInstallerLifecycle) {
         Invoke-Checked { & "$PSScriptRoot/test-windows-installer.ps1" -InstallerPath $InstallerPath -ReportPath $InstallerReport -PriorVersion $PriorVersion @UpdateArguments }
         Invoke-Checked { & "$PSScriptRoot/test-windows-standard-user.ps1" -InstallerPath $InstallerPath -ReportDirectory $CompatibilityDirectory -PriorVersion $PriorVersion @UpdateArguments }
+        Invoke-Checked { & "$PSScriptRoot/test-windows-standard-user.ps1" -InstallerPath $InstallerPath -ReportDirectory $FreshCompatibilityDirectory -FreshInstallOnly }
     }
     $Files = @($CandidateFiles | Sort-Object FullName | ForEach-Object {
         [ordered]@{ path = [System.IO.Path]::GetRelativePath($ProjectRoot, $_.FullName).Replace('\', '/'); bytes = $_.Length; sha256 = Get-Sha256 $_.FullName }
@@ -147,6 +149,10 @@ try {
         standardUserCompatibilitySha256 = $(if ($VerifyInstallerLifecycle) { Get-Sha256 (Join-Path $CompatibilityDirectory 'compatibility.json') } else { $null })
         files = $Files
     }
+    if ($VerifyInstallerLifecycle) {
+        $Manifest.checks.freshInstallerLifecycle = 'passed'
+        $Manifest.freshUserCompatibilitySha256 = Get-Sha256 (Join-Path $FreshCompatibilityDirectory 'compatibility.json')
+    }
     $ManifestPath = Join-Path $EvidenceRoot "windows-candidate.json"
     $Manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ManifestPath -Encoding utf8
     $Sums = @($Files | ForEach-Object { "$($_.sha256)  $($_.path)" })
@@ -171,6 +177,10 @@ try {
         }
         $Sums += "$(Get-Sha256 $ImportRecoveryReport)  build/desktop/native-import-recovery-smoke.json"
         foreach ($File in @(Get-ChildItem -LiteralPath $CompatibilityDirectory -File)) {
+            $Relative = [IO.Path]::GetRelativePath($ProjectRoot, $File.FullName).Replace('\', '/')
+            $Sums += "$(Get-Sha256 $File.FullName)  $Relative"
+        }
+        foreach ($File in @(Get-ChildItem -LiteralPath $FreshCompatibilityDirectory -File)) {
             $Relative = [IO.Path]::GetRelativePath($ProjectRoot, $File.FullName).Replace('\', '/')
             $Sums += "$(Get-Sha256 $File.FullName)  $Relative"
         }

@@ -322,6 +322,123 @@ def _bind_feedback_plan(case_id, parsed):
                              for record in plan["records"] if record["disposition"] in ("review", "unresolved")][:3]
 
 
+def _table_history_conflicts(plan, rows, stats, conflicting, *, basis=table_import.HISTORY_CONFLICT_BASIS):
+    if not conflicting:
+        return
+    for number in conflicting:
+        record = plan["records"][number - 1]
+        record.update(disposition="unresolved", reason_code="conflicting_field")
+        record["details"].pop("flow_sha256", None)
+        record["details"].update(financial_effect="undetermined", validation_issues="conflicting_field",
+                                 counterparty_basis=basis,
+                                 reason="同一来源已存在不同资金解释，本次未新增流水，防止重复累计")
+    rows[:] = [row for row in rows if row["_source_row"] not in conflicting]
+    if plan["profile"] in table_archive.CANCELLATION_PROFILES:
+        from app import table_cancellations
+        dependent = [pair["original_record_no"] for pair in plan.get("cancellations", [])
+                     if pair["witness_record_no"] in conflicting]
+        if dependent:
+            table_cancellations.revoke_pairs(plan, dependent, reason="cancellation_historical_conflict")
+        else:
+            table_cancellations.refresh_stats(plan)
+    else:
+        table_import.refresh_stats(plan)
+    stats.clear()
+    stats.update(plan["stats"])
+    stats["bad_examples"] = [{key: value for key, value in example.items() if key in ("row", "source_row", "reason")}
+                             for example in stats["bad_examples"]]
+
+
+def _ordinary_csv_member(profile, source, member):
+    """The same closed text-CSV eligibility used by D01, never an Excel alias."""
+    from app.table_cancellation_links import ordinary_csv_member
+    return ordinary_csv_member(profile, source, member)
+
+
+def _bind_archive_header_history(case_id, plan, rows, stats, source):
+    """Compare direct physical identities when archive-v4 has assessed them.
+
+    Aggregate history once per identity. A plain CSV bridge does not make two
+    different archive member paths equivalent, and no historical fact changes.
+    """
+    if not rows:
+        return
+    archive = plan["profile"] in table_archive.SUPPORTED_PROFILES
+    members = {member["member_path"]: member for member in plan["members"]}
+    ordinary = {path for path, member in members.items()
+                if _ordinary_csv_member(plan["profile"], source, member)}
+    if not archive and not ordinary:
+        return
+    positions = {}
+    for row in rows:
+        record = plan["records"][row["_source_row"] - 1]
+        path = record["member_path"]
+        positions[row["_source_row"]] = (path, members[path]["sha256"], record["source_row"])
+    exact_wanted = set(positions.values())
+    bridge_wanted = {(digest, position) for _path, digest, position in exact_wanted}
+    exact, bridge, v4_exact, v4_bridge, blocked_exact, blocked_bridge = {}, {}, set(), set(), set(), set()
+    different = object()
+    fields = (*table_import.FLOW_FIELDS, "self_account", "self_name")
+    def signature(row, default_currency=""):
+        return (importer._row_key(row, default_currency=default_currency),
+                row.get("self_account") or "", row.get("self_name") or "")
+    profiles = sorted(table_import.SUPPORTED_PROFILES | table_archive.SUPPORTED_PROFILES)
+    digests = sorted({digest for _path, digest, _position in exact_wanted})
+    cursor = db.con().execute(f"""
+        select i.parser_version,i.filename,i.sheet,i.row_kind,i.sha256,
+          r.member_path,m.sha256,m.role,m.encoding,r.source_row,r.disposition,r.reason_code,
+          f.id,{','.join('f.' + field for field in fields)}
+        from import_records r
+        join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
+        join import_sources i on i.case_id=r.case_id and i.source_id=r.source_id
+        left join flow_sources s on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
+        left join flows f on f.case_id=s.case_id and f.id=s.flow_id
+        where r.case_id=? and i.row_kind=? and i.parser_version in ({','.join('?' for _ in profiles)})
+          and m.sha256 in ({','.join('?' for _ in digests)})
+          and (i.parser_version=? or r.disposition in ('imported','duplicate') and f.id is not null)
+        """, [case_id, table_import.ROW_KIND, *profiles, *digests, table_archive.PROFILE])
+    while batch := cursor.fetchmany(1024):
+        for (profile, filename, sheet, row_kind, source_sha, path, digest, role, encoding,
+             position, disposition, reason, fid, *facts) in batch:
+            prior_archive = profile in table_archive.SUPPORTED_PROFILES
+            prior_ordinary = _ordinary_csv_member(profile,
+                {"filename": filename, "sheet": sheet, "row_kind": row_kind, "sha256": source_sha},
+                {"member_path": path, "sha256": digest, "role": role, "encoding": encoding})
+            if archive and prior_archive:
+                key = (path, digest, position)
+                if key not in exact_wanted:
+                    continue
+                history, presence, blocked = exact, v4_exact, blocked_exact
+            elif prior_ordinary or ordinary and prior_archive:
+                key = (digest, position)
+                if key not in bridge_wanted:
+                    continue
+                history, presence, blocked = bridge, v4_bridge, blocked_bridge
+            else:
+                continue
+            if profile == table_archive.PROFILE:
+                presence.add(key)
+                if disposition == "unresolved" and reason in ("ambiguous_region_header", "invalid_currency"):
+                    blocked.add(key)
+            if fid is not None and disposition in ("imported", "duplicate"):
+                value = signature(dict(zip(fields, facts)))
+                history[key] = value if key not in history else history[key] if history[key] == value else different
+    conflicting = set()
+    for row in rows:
+        number = row["_source_row"]
+        physical = positions[number]
+        bridged = physical[1:]
+        has_v4 = plan["profile"] == table_archive.PROFILE or (physical in v4_exact if archive else bridged in v4_bridge)
+        if not has_v4:
+            continue
+        value = signature(row, default_currency="CNY")
+        if (physical in blocked_exact or bridged in blocked_bridge
+                or physical in exact and exact[physical] != value
+                or bridged in bridge and bridge[bridged] != value):
+            conflicting.add(number)
+    _table_history_conflicts(plan, rows, stats, conflicting, basis=table_import.ARCHIVE_HISTORY_CONFLICT_BASIS)
+
+
 def _bind_table_history(case_id, plan, rows, stats):
     """A new interpretation of the same physical row is not a second payment.
 
@@ -354,24 +471,90 @@ def _bind_table_history(case_id, plan, rows, stats):
             row = requested.get((path, position))
             if row is not None and importer._row_key(dict(zip(fields, facts))) != importer._row_key(row, default_currency="CNY"):
                 conflicting.add(row["_source_row"])
-    if not conflicting:
+    _table_history_conflicts(plan, rows, stats, conflicting)
+
+
+def _bind_stored_cancellation_history(case_id, plan, rows, stats, source):
+    """An old ready interpretation cannot add conflicting v4 original/negative facts."""
+    from app import table_cancellation_links, table_cancellations
+    members = {member["member_path"]: member for member in plan["members"]}
+    ordinary = any(_ordinary_csv_member(plan["profile"], source, member) for member in members.values())
+    archive = plan["profile"] in table_archive.SUPPORTED_PROFILES
+    if not rows or not (ordinary or archive):
         return
-    for number in conflicting:
-        record = plan["records"][number - 1]
-        record.update(disposition="unresolved", reason_code="conflicting_field")
-        record["details"].pop("flow_sha256", None)
-        record["details"].update(financial_effect="undetermined", validation_issues="conflicting_field",
-                                 counterparty_basis=table_import.HISTORY_CONFLICT_BASIS,
-                                 reason="同一来源已存在不同资金解释，本次未新增流水，防止重复累计")
-    rows[:] = [row for row in rows if row["_source_row"] not in conflicting]
-    table_import.refresh_stats(plan)
-    stats.clear()
-    stats.update(plan["stats"])
-    stats["bad_examples"] = [{key: value for key, value in example.items() if key in ("row", "source_row", "reason")}
-                             for example in stats["bad_examples"]]
+    expected = {}
+    for proof in db.q_raw(f"""with recursive {table_cancellation_links.ctes(scoped=True)}
+            select member_path,sha256,original_row,cancellation_row,original_details from a02_valid""", [case_id]):
+        notes = json.loads(proof["original_details"])
+        identity = (None if ordinary else proof["member_path"], proof["sha256"])
+        original = (*identity, proof["original_row"])
+        expected.setdefault(original, set()).add((notes.get("flow_sha256"),
+            notes.get("cancellation_own_account_sha256"), notes.get("cancellation_own_name_sha256")))
+        expected.setdefault((*identity, proof["cancellation_row"]), set()).add(None)
+    conflicting = set()
+    for row in rows:
+        record = plan["records"][row["_source_row"] - 1]
+        member = members[record["member_path"]]
+        key = (None if ordinary else record["member_path"], member["sha256"], record["source_row"])
+        actual = (table_import.flow_digest(row), table_cancellations.hash_value(row.get("self_account") or ""),
+                  table_cancellations.hash_value(row.get("self_name") or ""))
+        if key in expected and any(value != actual for value in expected[key]):
+            conflicting.add(record["record_no"])
+    _table_history_conflicts(plan, rows, stats, conflicting, basis=table_import.ARCHIVE_HISTORY_CONFLICT_BASIS)
 
 
-def _bind_table_plan(case_id, parsed):
+def _bind_shared_cancellation_plan_history(case_id, plan, stats):
+    """Recheck all three proof positions against direct actual history before write."""
+    from app import table_cancellation_links, table_cancellations
+    records = {record["record_no"]: record for record in plan["records"]}
+    members = {member["member_path"]: member["sha256"] for member in plan["members"]}
+    exact, bridge = {}, {}
+    for pair in plan["cancellations"]:
+        for role, field in (("original", "original_record_no"), ("cancellation", "cancellation_record_no"),
+                            ("witness", "witness_record_no")):
+            record = records[pair[field]]
+            position = (record["member_path"], members[record["member_path"]], record["source_row"])
+            item = (pair["original_record_no"], role, record["details"])
+            exact.setdefault(position, []).append(item)
+            bridge.setdefault(position[1:], []).append(item)
+    digests = sorted({digest for _path, digest, _row in exact})
+    fields = (*table_import.FLOW_FIELDS, "self_account", "self_name")
+    cursor = db.con().execute(f"""select i.parser_version,i.filename,i.sheet,i.row_kind,i.sha256,
+            r.member_path,m.sha256,m.role,m.encoding,r.source_row,r.disposition,
+            ({table_cancellation_links.conflict_sql('i', 'r')}) validation_conflict,
+            s.flow_id,f.id,{','.join('f.' + field for field in fields)}
+        from import_records r
+        join import_sources i on i.case_id=r.case_id and i.source_id=r.source_id
+        join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
+        left join flow_sources s on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
+        left join flows f on f.case_id=s.case_id and f.id=s.flow_id
+        where r.case_id=? and m.sha256 in ({','.join('?' for _ in digests)})""", [case_id, *digests])
+    conflicting = set()
+    while batch := cursor.fetchmany(1024):
+        for (profile, filename, sheet, row_kind, source_sha, path, digest, member_role, encoding,
+             position, disposition, conflict, linked_id, fid, *facts) in batch:
+            source = {"filename": filename, "sheet": sheet, "row_kind": row_kind, "sha256": source_sha}
+            member = {"member_path": path, "sha256": digest, "role": member_role, "encoding": encoding}
+            candidates = (bridge.get((digest, position), []) if _ordinary_csv_member(profile, source, member)
+                          else exact.get((path, digest, position), []))
+            actual = dict(zip(fields, facts)) if fid is not None else None
+            for original, role, notes in candidates:
+                invalid = conflict or linked_id is not None and fid is None or disposition in ("imported", "duplicate") and fid is None
+                if actual is not None:
+                    invalid = invalid or role == "cancellation" or role == "witness" and notes.get("cancellation_quality") != "accepted"
+                    invalid = invalid or table_import.flow_digest(actual) != notes.get("flow_sha256")
+                    invalid = invalid or any(table_cancellations.hash_value(actual.get(field) or "") != notes.get(note)
+                        for field, note in (("self_account", "cancellation_own_account_sha256"),
+                                            ("self_name", "cancellation_own_name_sha256")))
+                if invalid:
+                    conflicting.add(original)
+    if conflicting:
+        table_cancellations.revoke_pairs(plan, conflicting, reason="cancellation_historical_conflict")
+        stats.clear()
+        stats.update(plan["stats"])
+
+
+def _bind_table_plan(case_id, parsed, *, source=None):
     """Bind cancellation evidence to every stored interpretation of its original.
 
     A physical source occurrence can have several historical mappings. None of
@@ -379,13 +562,19 @@ def _bind_table_plan(case_id, parsed):
     """
     frame, _sheet, _mode, _mapping, rows, stats = parsed
     plan = frame.attrs.get("table_plan")
+    if case_id is not None and plan is not None:
+        _bind_archive_header_history(case_id, plan, rows, stats, source)
+        _bind_stored_cancellation_history(case_id, plan, rows, stats, source)
     if case_id is not None and plan is not None and plan["profile"] in table_import.SUPPORTED_PROFILES:
         _bind_table_history(case_id, plan, rows, stats)
         return
-    if (case_id is None or plan is None or plan["profile"] != "funds-trace-table-archive-v3"
+    if (case_id is None or plan is None or plan["profile"] not in table_archive.CANCELLATION_PROFILES
             or not plan.get("cancelled_rows")):
         return
     from app import table_cancellations
+    if plan["profile"] == table_archive.PROFILE:
+        _bind_shared_cancellation_plan_history(case_id, plan, stats)
+        return
     records = {record["record_no"]: record for record in plan["records"]}
     members = {member["member_path"]: member["sha256"] for member in plan["members"]}
     requested = {(record["member_path"], members[record["member_path"]], record["source_row"]): (row["_source_row"], row)
@@ -541,7 +730,8 @@ async def _upload(case_id, file, surface):
     # Preview parsing can be lengthy. Keep its already-buffered input in memory
     # until it succeeds, so exiting during parsing cannot orphan an original.
     with io.BytesIO(content) as source:
-        table_profile = (table_archive.PROFILE if table_archive.should_parse(source) else None) if suffix == ".zip" else TABLE_PROFILE
+        table_profile = ((table_archive.PROFILE if table_archive.should_parse(source) else None)
+                         if suffix == ".zip" else table_import.XLS_PROFILE if suffix == ".xls" else TABLE_PROFILE)
         parsed = _parse(source, suffix=suffix, table_profile=table_profile)
     import_id = uuid.uuid4().hex
     directory = _directory(create=True)
@@ -552,12 +742,13 @@ async def _upload(case_id, file, surface):
             created = True
             stream.write(content)
         now = _now()
-        session = {"case_id": cid, "import_id": import_id, "filename": filename}
+        session = {"case_id": cid, "import_id": import_id, "filename": filename,
+                   "sha256": hashlib.sha256(content).hexdigest()}
         with db.transaction():
             if cid is not None:
                 _cid(cid)
                 _bind_feedback_plan(cid, parsed)
-                _bind_table_plan(cid, parsed)
+                _bind_table_plan(cid, parsed, source=session)
             db.x("""insert into import_sessions(import_id,case_id,surface,filename,suffix,sha256,size_bytes,
                       mode,mapping_json,columns_json,request_json,stage,created_at,updated_at,expires_at,source_state)
                     values (?,?,?,?,?,?,?,?,?,?,?,'ready',?,?,?,'retained')""",
@@ -602,7 +793,7 @@ def _repreview(case_id, import_id, body, surface):
                             feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
                             table_profile=_table_profile(session))
         _bind_feedback_plan(session["case_id"], parsed)
-        _bind_table_plan(session["case_id"], parsed)
+        _bind_table_plan(session["case_id"], parsed, source=session)
         now = _now()
         db.x("""update import_sessions set mode=?,mapping_json=?,columns_json=?,stage='ready',error_code=null,
                   updated_at=?,expires_at=? where import_id=?""",
@@ -666,6 +857,30 @@ def _receipt(raw):
     return result
 
 
+def _standalone_csv_keys(plan, rows):
+    """Bind archive rows to the same bytes and physical rows as a plain CSV.
+
+    These keys exist only during commit. The journal keeps the full archive
+    member path and its original record identity.
+    """
+    members = {member["member_path"]: member for member in plan["members"]}
+    keys = {}
+    for row in rows:
+        position = row["_source_row"]
+        record = plan["records"][position - 1]
+        member = members[record["member_path"]]
+        source_row, digest = record["source_row"], member["sha256"]
+        if (record["record_no"] != position or record["disposition"] != "accepted"
+                or type(source_row) is not int or source_row <= 0
+                or member["role"] != "table"
+                or member["encoding"] not in ("utf-8-sig", "gb18030", "utf-16")
+                or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or record["record_key"] != table_import.record_key(record["member_path"], digest, source_row)):
+            raise import_validation.IntegrityError("invalid archive CSV identity")
+        keys[position] = table_import.record_key("table.csv", digest, source_row)
+    return keys
+
+
 def _run(import_id):
     try:
         with db._lock:
@@ -702,14 +917,17 @@ def _run(import_id):
             if current["owner_token"] != OWNER_TOKEN or current["stage"] != "importing":
                 return
             _bind_feedback_plan(session["case_id"], parsed)
-            _bind_table_plan(session["case_id"], parsed)
+            _bind_table_plan(session["case_id"], parsed, source=session)
             manifest = import_validation.table_manifest(table_plan, rows) if table_plan is not None else None
+            standalone_keys = (_standalone_csv_keys(table_plan, rows)
+                               if table_plan is not None and table_plan["profile"] in table_archive.SUPPORTED_PROFILES else None)
             provenance = {"source_id": import_id, "filename": session["filename"], "sha256": session["sha256"],
                           "size_bytes": session["size_bytes"], "mode": mode, "mapping": mapping,
                           "sheet": sheet, "parser_version": (plan or table_plan)["profile"] if plan or table_plan else getattr(importer, "PARSER_VERSION", "funds-trace-import-v1"),
                           "row_kind": _frame.attrs.get("source_row_kind", "unknown")}
             receipt = importer.commit_rows(session["filename"], mode, rows, stats,
-                                           case_id=session["case_id"], provenance=provenance)
+                                           case_id=session["case_id"], provenance=provenance,
+                                           standalone_csv_keys=standalone_keys)
             receipt["source_id"] = import_id
             if plan is not None:
                 _write_feedback_journal(session["case_id"], import_id, plan)

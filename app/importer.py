@@ -13,6 +13,7 @@ import io
 import json
 import math
 import re
+from collections import deque
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -682,6 +683,7 @@ def _provenance_metadata(provenance, filename, mode, rows):
                    or not isinstance(v, str) or not v.strip() for k, v in mapping.items())
             or (not table_source and not _validate(mapping, mode))
             or suffix not in (".csv", ".tsv", ".txt", ".xlsx", ".xls", ".zip")
+            or (source.get("parser_version") == table_import.XLS_PROFILE and suffix != ".xls")
             or (suffix in (".xlsx", ".xls")) != bool(source.get("sheet"))
             or (source["row_kind"] == "worksheet_row" and suffix not in (".xlsx", ".xls"))
             or (source["row_kind"] == "csv_record" and suffix in (".xlsx", ".xls", ".zip"))
@@ -705,16 +707,30 @@ def _provenance_metadata(provenance, filename, mode, rows):
     return source
 
 
-def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, provenance=None):
+def _csv_filename(filename):
+    return isinstance(filename, str) and bool(filename) and Path(filename).suffix.lower() in (".csv", ".tsv", ".txt", "")
+
+
+def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, provenance=None,
+                standalone_csv_keys=None):
     """去重后分批入库（去重范围为当前案件内），progress_cb(done, total) 汇报进度。
     去重规则：所有导入列完全一致才判为重复——任一列（如余额、摘要、对手）不同均视为不同流水。"""
     source = _provenance_metadata(provenance, filename, mode, rows) if provenance is not None else None
+    from . import table_archive, table_import
+    if standalone_csv_keys is not None:
+        if (source is None or source["row_kind"] != table_import.ROW_KIND
+                or source["parser_version"] not in table_archive.SUPPORTED_PROFILES
+                or not isinstance(standalone_csv_keys, dict)
+                or set(standalone_csv_keys) != {row["_source_row"] for row in rows}
+                or any(type(position) is not int or position <= 0 or not isinstance(key, str)
+                       or not re.fullmatch(r"[0-9a-f]{64}", key)
+                       for position, key in standalone_csv_keys.items())):
+            raise ImportError("反馈包CSV记录身份无效")
     with db.transaction() as con:
         if not db.q("select id from cases where id = ?", [case_id]):
             raise ImportError("案件不存在，无法导入流水")
         key_cols = ("trade_no, trade_time, payer_name, payer_account, payer_bank, "
                     "payee_name, payee_account, payee_bank, amount, balance, currency, summary, channel")
-        from . import table_archive, table_import
         archive = source is not None and (source["row_kind"] == "archive_record"
                   or source["row_kind"] == "table_record" and source["parser_version"] in table_archive.SUPPORTED_PROFILES)
         existing = {}
@@ -770,6 +786,54 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                             continue
                     existing[key] = fid
                     reused_ids.add(fid)
+            if envelope and standalone_csv_keys:
+                # Reserve every exact archive match first. A fallback must
+                # never consume a flow needed by a later exact physical key.
+                pending = {}
+                for key, row in requested.items():
+                    if key not in existing:
+                        pending[key] = (standalone_csv_keys[row["_source_row"]],
+                                        _row_key(row, default_currency="CNY"),
+                                        row.get("self_account") or "", row.get("self_name") or "")
+                if pending:
+                    # Only ordinary CSV journals qualify, never another
+                    # archive path, Excel sheet, or a merely similar source.
+                    csv_profiles = [profile for profile in table_profiles if profile != table_import.XLS_PROFILE]
+                    supported = ",".join("?" for _ in csv_profiles)
+                    signatures, available = set(pending.values()), {}
+                    cursor = con.execute("select r.record_key,f.flow_id,m.sha256,r.source_row,s.filename," + ",".join("v." + name for name in facts) + f"""
+                        from import_records r
+                        join flow_sources f on f.case_id=r.case_id and f.source_id=r.source_id
+                          and f.source_row=r.record_no
+                        join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
+                        join import_members m on m.case_id=r.case_id and m.source_id=r.source_id
+                          and m.member_path=r.member_path
+                        join flows v on v.case_id=r.case_id and v.id=f.flow_id
+                        where r.case_id=? and r.disposition in ('imported','duplicate')
+                          and s.row_kind=? and s.sheet='' and s.parser_version in ({supported})
+                          and r.member_path='table.csv' and m.role='table'
+                          and m.encoding in ('utf-8-sig','gb18030','utf-16') and m.sha256=s.sha256
+                        order by f.flow_id,r.record_no""", [case_id, table_import.ROW_KIND, *csv_profiles])
+                    while candidates := cursor.fetchmany(1024):
+                        for key, fid, digest, position, prior_filename, *values in candidates:
+                            if (fid in reused_ids or not _csv_filename(prior_filename)
+                                    or key != table_import.record_key("table.csv", digest, position)):
+                                continue
+                            stored = dict(zip(facts, values))
+                            signature = (key, _row_key(stored), stored.get("self_account") or "",
+                                         stored.get("self_name") or "")
+                            if signature in signatures:
+                                available.setdefault(signature, deque()).append(fid)
+                    # One flow can have multiple ordinary source links. Assign
+                    # it by current source order, not by the old link order.
+                    for key, signature in pending.items():
+                        matches = available.get(signature)
+                        while matches and matches[0] in reused_ids:
+                            matches.popleft()
+                        if matches:
+                            fid = matches.popleft()
+                            existing[key] = fid
+                            reused_ids.add(fid)
         else:
             cursor = con.execute(f"select id,{key_cols} from flows where case_id = ? order by id", [case_id])
             names = [column[0] for column in cursor.description]

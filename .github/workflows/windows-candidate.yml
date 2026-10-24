@@ -15,11 +15,23 @@ on:
         description: Byte length paired with published_target_sha256
         type: string
         default: ''
+      candidate_recheck_run_id:
+        description: Recheck this original successful candidate artifact without rebuilding or publishing
+        type: string
+        default: ''
+      candidate_recheck_sha256:
+        description: Frozen original candidate EXE SHA-256, required with recheck run ID
+        type: string
+        default: ''
+      candidate_recheck_bytes:
+        description: Frozen original candidate EXE byte length, required with recheck run ID
+        type: string
+        default: ''
       prior_version:
         description: Published prior version; must match desktop/upgrade-baseline.json
         type: choice
-        options: ['0.1.11']
-        default: '0.1.11'
+        options: ['0.1.12']
+        default: '0.1.12'
       in_app_update:
         description: Test in-app update (official feed for published EXE mode; private HTTPS for builds)
         type: boolean
@@ -42,7 +54,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-candidate-${{ inputs.transfer_run_id != '' && 'transfer' || github.ref }}
+  group: windows-candidate-${{ (inputs.candidate_recheck_run_id != '' || inputs.candidate_recheck_sha256 != '' || inputs.candidate_recheck_bytes != '') && format('recheck-{0}', github.run_id) || inputs.transfer_run_id != '' && 'transfer' || github.ref }}
   cancel-in-progress: ${{ inputs.transfer_run_id == '' }}
 
 jobs:
@@ -59,6 +71,9 @@ jobs:
           DRAFT_TAG: ${{ inputs.draft_tag }}
           TARGET_SHA256: ${{ inputs.published_target_sha256 }}
           TARGET_BYTES: ${{ inputs.published_target_bytes }}
+          RECHECK_RUN_ID: ${{ inputs.candidate_recheck_run_id }}
+          RECHECK_SHA256: ${{ inputs.candidate_recheck_sha256 }}
+          RECHECK_BYTES: ${{ inputs.candidate_recheck_bytes }}
         shell: python
         run: |
           import os, re
@@ -66,20 +81,25 @@ jobs:
           published = bool(value['TARGET_SHA256'] or value['TARGET_BYTES'])
           transfer = bool(value['TRANSFER_RUN_ID'] or value['DRAFT_TAG'])
           probe = value['UPDATE_FIXTURE_PROBE'] != 'none'
-          assert sum((published, transfer, probe)) <= 1, 'Choose exactly one verification mode'
-          if published or transfer or probe:
+          recheck = any(value.get(key, '') for key in ('RECHECK_RUN_ID', 'RECHECK_SHA256', 'RECHECK_BYTES'))
+          assert sum((published, transfer, probe, recheck)) <= 1, 'Choose exactly one verification mode'
+          if published or transfer or probe or recheck:
               assert value['BUILD_INSTALLER'] != 'true', 'Selected mode cannot build a candidate'
-          if transfer or probe:
+          if transfer or probe or recheck:
               assert value['IN_APP_UPDATE'] != 'true', 'Selected mode cannot run an update journey'
           assert value['IN_APP_UPDATE'] != 'true' or published or value['BUILD_INSTALLER'] == 'true', 'In-app update requires installer lifecycle verification'
           if published:
               assert re.fullmatch(r'[0-9a-f]{64}', value['TARGET_SHA256']), 'Require a frozen published SHA-256'
               assert re.fullmatch(r'[1-9][0-9]{0,15}', value['TARGET_BYTES']) and int(value['TARGET_BYTES']) <= 2**53 - 1, 'Require a frozen published byte count'
+          if recheck:
+              assert re.fullmatch(r'[1-9][0-9]*', value.get('RECHECK_RUN_ID', '')), 'Require the original candidate run ID'
+              assert re.fullmatch(r'[0-9a-f]{64}', value.get('RECHECK_SHA256', '')), 'Require a frozen candidate SHA-256'
+              assert re.fullmatch(r'[1-9][0-9]{0,15}', value.get('RECHECK_BYTES', '')) and int(value['RECHECK_BYTES']) <= 2**53 - 1, 'Require a frozen candidate byte count'
           if transfer:
               assert re.fullmatch(r'[1-9][0-9]*', value['TRANSFER_RUN_ID']) and re.fullmatch(r'v0\.1\.[0-9]+', value['DRAFT_TAG']), 'Require both a candidate run and draft tag'
   update-fixture-probe:
     needs: validate-inputs
-    if: ${{ inputs.update_fixture_probe != 'none' }}
+    if: ${{ (inputs.update_fixture_probe != 'none') && inputs.candidate_recheck_run_id == '' && inputs.candidate_recheck_sha256 == '' && inputs.candidate_recheck_bytes == '' }}
     runs-on: windows-2022
     timeout-minutes: 3
     steps:
@@ -132,7 +152,7 @@ jobs:
           path: ${{ runner.temp }}/fundstrace-update-crypto-probe/*.json
   windows-candidate:
     needs: validate-inputs
-    if: ${{ inputs.update_fixture_probe == 'none' && inputs.transfer_run_id == '' && inputs.published_target_sha256 == '' && inputs.published_target_bytes == '' }}
+    if: ${{ (inputs.update_fixture_probe == 'none' && inputs.transfer_run_id == '' && inputs.published_target_sha256 == '' && inputs.published_target_bytes == '') && inputs.candidate_recheck_run_id == '' && inputs.candidate_recheck_sha256 == '' && inputs.candidate_recheck_bytes == '' }}
     runs-on: windows-2022
     timeout-minutes: 45
     defaults:
@@ -221,6 +241,7 @@ jobs:
             源码 FundsTrace/build/desktop/native-installed-app.update-*.png
             源码 FundsTrace/build/desktop/native-import-recovery-smoke.json
             源码 FundsTrace/build/desktop/standard-user/
+            源码 FundsTrace/build/desktop/fresh-standard-user/
             源码 FundsTrace/build/desktop/windows-candidate.json
             源码 FundsTrace/build/desktop/windows-candidate.sha256
       - name: Retain reviewable native evidence without the installer
@@ -238,6 +259,7 @@ jobs:
             源码 FundsTrace/build/desktop/windows-candidate.json
             源码 FundsTrace/build/desktop/windows-candidate.sha256
             源码 FundsTrace/build/desktop/standard-user/
+            源码 FundsTrace/build/desktop/fresh-standard-user/
       - name: Retain safe failure diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -251,10 +273,11 @@ jobs:
             源码 FundsTrace/build/desktop/native-installed-app-smoke.json
             源码 FundsTrace/build/desktop/native-import-recovery-smoke.json
             源码 FundsTrace/build/desktop/standard-user/
+            源码 FundsTrace/build/desktop/fresh-standard-user/
 
   transfer-verified-candidate:
     needs: validate-inputs
-    if: ${{ inputs.update_fixture_probe == 'none' && inputs.transfer_run_id != '' && inputs.published_target_sha256 == '' && inputs.published_target_bytes == '' }}
+    if: ${{ (inputs.update_fixture_probe == 'none' && inputs.transfer_run_id != '' && inputs.published_target_sha256 == '' && inputs.published_target_bytes == '') && inputs.candidate_recheck_run_id == '' && inputs.candidate_recheck_sha256 == '' && inputs.candidate_recheck_bytes == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -279,7 +302,7 @@ jobs:
 
   published-upgrade:
     needs: validate-inputs
-    if: ${{ inputs.published_target_sha256 != '' || inputs.published_target_bytes != '' }}
+    if: ${{ (inputs.published_target_sha256 != '' || inputs.published_target_bytes != '') && inputs.candidate_recheck_run_id == '' && inputs.candidate_recheck_sha256 == '' && inputs.candidate_recheck_bytes == '' }}
     runs-on: windows-2022
     timeout-minutes: 35
     defaults:
@@ -321,7 +344,7 @@ jobs:
           architecture: x64
       - name: Prepare test dependencies without building an application
         run: |
-          foreach ($file in @('scripts/test-windows-published-upgrade.ps1', 'scripts/test-windows-installer.ps1', 'scripts/test-windows-standard-user.ps1')) {
+          foreach ($file in @('scripts/prepare-windows-installer.ps1', 'scripts/test-windows-published-upgrade.ps1', 'scripts/test-windows-installer.ps1', 'scripts/test-windows-standard-user.ps1')) {
             $tokens = $null; $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $file), [ref]$tokens, [ref]$errors)
             if ($errors.Count -gt 0) { throw "PowerShell parse failed: $file" }
@@ -362,3 +385,80 @@ jobs:
             源码 FundsTrace/build/desktop/native-prior-presentation-baseline.json
             源码 FundsTrace/build/desktop/native-production-update.update-*.png
             源码 FundsTrace/build/desktop/standard-user/
+            源码 FundsTrace/build/desktop/fresh-standard-user/
+
+  candidate-recheck:
+    needs: validate-inputs
+    if: ${{ inputs.candidate_recheck_run_id != '' || inputs.candidate_recheck_sha256 != '' || inputs.candidate_recheck_bytes != '' }}
+    runs-on: windows-2022
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: fundstrace-candidate-recheck-${{ github.run_id }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: 源码 FundsTrace
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONNOUSERSITE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: 源码 FundsTrace
+          persist-credentials: false
+      - name: Initialize isolated recheck caches
+        run: |
+          $uvCache = Join-Path $env:RUNNER_TEMP 'candidate-recheck-uv-cache'
+          $nodeCache = Join-Path $env:RUNNER_TEMP 'candidate-recheck-node-cache'
+          "UV_CACHE_DIR=$uvCache" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          "npm_config_cache=$nodeCache" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '22.22.1'
+          architecture: x64
+          package-manager-cache: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - name: Prepare only the pinned development test dependencies
+        run: |
+          foreach ($file in @('scripts/prepare-windows-installer.ps1', 'scripts/test-windows-candidate-recheck.ps1', 'scripts/test-windows-installer.ps1', 'scripts/test-windows-standard-user.ps1')) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $file), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) { throw "PowerShell parse failed: $file" }
+          }
+          python -m pip install --disable-pip-version-check uv==0.11.5
+          if ($LASTEXITCODE -ne 0) { throw 'uv installation failed.' }
+          uv venv --python 3.11 .venv
+          if ($LASTEXITCODE -ne 0) { throw 'Test environment creation failed.' }
+          uv pip sync --python .venv/Scripts/python.exe --require-hashes requirements-dev.lock
+          if ($LASTEXITCODE -ne 0) { throw 'Test dependency sync failed.' }
+          npm.cmd --prefix desktop ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop test dependencies failed.' }
+          & .venv/Scripts/python.exe -m pytest tests/test_upgrade_baseline.py tests/test_candidate_recheck.py -q
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate source validation regressions failed.' }
+      - name: Download and verify the unique original artifact by ID (read only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECHECK_RUN_ID: ${{ inputs.candidate_recheck_run_id }}
+          RECHECK_SHA256: ${{ inputs.candidate_recheck_sha256 }}
+          RECHECK_BYTES: ${{ inputs.candidate_recheck_bytes }}
+        run: |
+          & .venv/Scripts/python.exe scripts/candidate_recheck.py download --run-id $env:RECHECK_RUN_ID --commit $env:GITHUB_SHA --project-root (Get-Location).Path --source-root (Join-Path $env:RUNNER_TEMP 'candidate-recheck-source') --sha256 $env:RECHECK_SHA256 --bytes $env:RECHECK_BYTES
+          if ($LASTEXITCODE -ne 0) { throw 'Original candidate artifact acquisition failed.' }
+      - name: Run fresh startup and both upgrade lifecycles using the same original EXE
+        run: ./scripts/test-windows-candidate-recheck.ps1 -SourceRoot (Join-Path $env:RUNNER_TEMP 'candidate-recheck-source')
+      - name: Retain independent same-EXE reports without replacing the original evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fundstrace-candidate-recheck-${{ github.run_id }}
+          retention-days: 90
+          if-no-files-found: warn
+          path: 源码 FundsTrace/build/desktop/candidate-recheck/

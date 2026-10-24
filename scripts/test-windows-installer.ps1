@@ -8,6 +8,7 @@ param(
     [string]$NextUnpacked,
     [string]$TrustedCertificateFixture,
     [switch]$PublishedInAppUpdate,
+    [switch]$FreshInstallOnly,
     [switch]$PreflightOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -20,6 +21,10 @@ if (-not [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Syst
     $env:GITHUB_ACTIONS -cne 'true') {
     [Console]::Error.WriteLine('Installer lifecycle requires native Windows x64 GitHub Actions.')
     exit 1
+}
+
+if ($FreshInstallOnly -and ($PublishedInAppUpdate -or $NextInstaller -or $NextUnpacked -or $TrustedCertificateFixture)) {
+    throw 'Fresh installation cannot be combined with an update journey.'
 }
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
@@ -58,6 +63,47 @@ $Report = [ordered]@{
     }
     limits = [ordered]@{ gui = $false; importRecovery = $false }
 }
+if ($FreshInstallOnly) {
+    $Report.mode = 'fresh'; $Report.fixtureOrigin = 'current-seeded'
+    foreach ($Name in @('priorInstallerDigest', 'priorInstalled', 'obsoleteInstalledFileRemoved',
+        'priorCaseDataWrittenByInstalledBackend', 'upgradedSameIdentity', 'upgradedPresentationPreferences',
+        'upgradedExistingCaseData', 'legacyCasePackageCompatible', 'upgradedAnalysisAndAtomicCanvas')) {
+        $Report.checks.Remove($Name)
+    }
+    foreach ($Name in @('freshInstalled', 'freshStartup', 'frozenBackendFormats',
+        'currentCaseDataWrittenByInstalledBackend', 'currentPresentationPreferences', 'currentSeededCaseData',
+        'currentPackageCompatible', 'currentAnalysisAndAtomicCanvas')) { $Report.checks[$Name] = 'not-run' }
+}
+# Capture only the first normal client's bounded preferences, and verify the same
+# raw bytes immediately before the explicit five-key fixture merge.
+$FreshPreferenceEvidenceCode = @'
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const {createHash} = require('node:crypto');
+const [mode, file, expectedJson] = process.argv.slice(1);
+assert.ok(mode === 'capture' || mode === 'verify');
+const stat = fs.lstatSync(file);
+assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size > 0 && stat.size <= 16384);
+const raw = fs.readFileSync(file);
+assert.equal(raw.length, stat.size);
+const preferences = JSON.parse(raw.toString('utf8'));
+assert.ok(preferences && typeof preferences === 'object' && !Array.isArray(preferences));
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+const evidence = {base64:raw.toString('base64'), sha256:sha256(raw), bytes:raw.length};
+if (mode === 'verify') {
+  const expected = JSON.parse(expectedJson);
+  assert.equal(typeof expected.base64, 'string');
+  assert.ok(expected.base64.length > 0 && expected.base64.length <= 21848);
+  assert.ok(typeof expected.sha256 === 'string' && /^[a-f0-9]{64}$/.test(expected.sha256));
+  assert.ok(Number.isSafeInteger(expected.bytes) && expected.bytes > 0 && expected.bytes <= 16384);
+  const decoded = Buffer.from(expected.base64, 'base64');
+  assert.equal(decoded.toString('base64'), expected.base64);
+  assert.equal(decoded.length, expected.bytes);
+  assert.equal(sha256(decoded), expected.sha256);
+  assert.deepEqual(raw, decoded);
+}
+process.stdout.write(JSON.stringify(evidence));
+'@
 $OwnUserData = $false
 $OwnTemporary = $false
 $MayHaveInstalled = $false
@@ -339,6 +385,7 @@ try {
     $Stage = 'candidateIdentity'
     $CurrentVersion = (Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot 'desktop/package.json') | ConvertFrom-Json).version
     if ($CurrentVersion -cnotmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') { throw 'INVALID_CANDIDATE_VERSION' }
+    $Report.targetVersion = $CurrentVersion
     $Stage = 'upgradeBaseline'
     $Baseline = (Invoke-Native -FileName $PythonExe -Arguments @(
         (Join-Path $ProjectRoot 'scripts/upgrade_baseline.py'), '--baseline',
@@ -385,6 +432,61 @@ try {
     $InstallRoot = Join-Path $TemporaryRoot '应用 安装路径'
     $PriorInstaller = Join-Path $TemporaryRoot 'prior-stable.exe'
 
+    if ($FreshInstallOnly) {
+        $Stage = 'freshInstalled'
+        $MayHaveInstalled = $true
+        [void](Invoke-Native -FileName $InstallerPath -RawArguments "/S /D=$InstallRoot" -TimeoutSeconds 240)
+        Assert-Installed $CurrentVersion
+        Assert-InstalledResources
+        $Report.currentVersion = $CurrentVersion
+        $Report.checks.freshInstalled = 'passed'
+        # Establish ownership before the real first GUI, without creating data or preferences.
+        if (Test-Path -LiteralPath $UserRoot) { throw 'Unexpected state appeared before first GUI.' }
+        [void](New-Item -ItemType Directory -Path $UserRoot)
+        $OwnUserData = $true
+        [System.IO.File]::WriteAllText((Join-Path $UserRoot 'installer-lifecycle-sentinel.txt'), $SentinelContent)
+        foreach ($Relative in @('data', 'preferences.json')) {
+            if (Test-Path -LiteralPath (Join-Path $UserRoot $Relative)) { throw 'First GUI must start without database or preferences.' }
+        }
+        $Stage = 'freshStartup'
+        $FreshStartupPath = Join-Path (Split-Path -Parent $ReportPath) 'fresh-startup-smoke.json'
+        $FreshStartup = (Invoke-Native -FileName $NodeExe -Arguments @(
+            (Join-Path $ProjectRoot 'desktop/tests/installed-app-smoke.cjs'), $InstallRoot,
+            '--report', $FreshStartupPath, '--fresh-startup'
+        ) -TimeoutSeconds 180) | ConvertFrom-Json
+        if ($FreshStartup.status -cne 'passed' -or $FreshStartup.mode -cne 'fresh-startup') { throw 'First installed GUI startup failed.' }
+        foreach ($Name in @('freshStateInitiallyAbsent', 'installedExecutableStarted', 'authenticatedWorkspaceLoaded',
+            'defaultCaseEmpty', 'activationFree', 'noPageExceptions', 'normalClose', 'backendReleasedAfterClose', 'clientCreatedDefaultData')) {
+            if ($FreshStartup.checks.$Name -isnot [bool] -or -not $FreshStartup.checks.$Name) { throw 'First installed GUI startup check is missing.' }
+        }
+        Assert-Sentinel
+        $FirstPreferenceFile = Join-Path $UserRoot 'preferences.json'
+        if (-not (Test-Path -LiteralPath (Join-Path $UserRoot 'data/fund.duckdb') -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $FirstPreferenceFile -PathType Leaf)) { throw 'Installed client did not create its own state.' }
+        $FirstPreferenceEvidence = (Invoke-Native -FileName $NodeExe -Arguments @(
+            '-e', $FreshPreferenceEvidenceCode, 'capture', $FirstPreferenceFile
+        ) -TimeoutSeconds 15) | ConvertFrom-Json
+        $Report.firstStartupPreferencesBase64 = $FirstPreferenceEvidence.base64
+        $Report.firstStartupPreferencesSha256 = $FirstPreferenceEvidence.sha256
+        $Report.firstStartupPreferencesBytes = $FirstPreferenceEvidence.bytes
+        $Report.checks.freshStartup = 'passed'
+
+        $Stage = 'frozenBackendFormats'
+        $FormatFixture = Join-Path $TemporaryRoot 'format-fixtures'
+        # The existing development lock supplies fixture-only xlwt; no runtime dependency or seed env.
+        $FixtureEnvironment = @{ PYTHONUTF8 = '1'; PYTHONDONTWRITEBYTECODE = '1'; PYTHONNOUSERSITE = '1' }
+        [void](Invoke-Native -FileName $PythonExe -Arguments @(
+            (Join-Path $ProjectRoot 'scripts/windows_import_fixtures.py'), '--output-dir', $FormatFixture
+        ) -Environment $FixtureEnvironment -TimeoutSeconds 60)
+        $FormatReportPath = Join-Path (Split-Path -Parent $ReportPath) 'installed-formats-smoke.json'
+        $Formats = (Invoke-Native -FileName $NodeExe -Arguments @(
+            (Join-Path $ProjectRoot 'desktop/tests/installed-formats-smoke.cjs'),
+            '--backend', (Join-Path $InstallRoot 'resources/backend'), '--fixtures', $FormatFixture,
+            '--python', $PythonExe, '--report', $FormatReportPath
+        ) -TimeoutSeconds 420) | ConvertFrom-Json
+        if ($Formats.status -cne 'passed') { throw 'Installed frozen backend format checks failed.' }
+        $Report.checks.frozenBackendFormats = 'passed'
+    } else {
     $Stage = 'priorInstallerDigest'
     Invoke-WebRequest -Uri $Baseline.priorInstallerUrl -OutFile $PriorInstaller -TimeoutSec 180 -MaximumRedirection 5
     $Report.priorInstallerSha256 = Get-Sha256 $PriorInstaller
@@ -403,14 +505,18 @@ try {
     if (Test-Path -LiteralPath $ObsoleteFile) { throw 'Unexpected obsolete test file already exists.' }
     [System.IO.File]::WriteAllText($ObsoleteFile, $SentinelContent)
 
+    }
+
     $Stage = 'syntheticDataSeeded'
     # The earlier absence check establishes ownership; never redirect or reuse a maintainer's data.
-    if (Test-Path -LiteralPath $UserRoot) { throw 'Unexpected data appeared before synthetic seeding.' }
-    [void](New-Item -ItemType Directory -Path $UserRoot)
-    $OwnUserData = $true
-    [System.IO.File]::WriteAllText((Join-Path $UserRoot 'installer-lifecycle-sentinel.txt'), $SentinelContent)
+    if (-not $FreshInstallOnly) {
+        if (Test-Path -LiteralPath $UserRoot) { throw 'Unexpected data appeared before synthetic seeding.' }
+        [void](New-Item -ItemType Directory -Path $UserRoot)
+        $OwnUserData = $true
+        [System.IO.File]::WriteAllText((Join-Path $UserRoot 'installer-lifecycle-sentinel.txt'), $SentinelContent)
+    } else { Assert-Sentinel }
     $DataDirectory = Join-Path $UserRoot 'data'
-    [void](New-Item -ItemType Directory -Path $DataDirectory)
+    if (-not $FreshInstallOnly) { [void](New-Item -ItemType Directory -Path $DataDirectory) }
     $PythonEnvironment = @{ FUND_DATA_DIR = $DataDirectory; PYTHONUTF8 = '1'; PYTHONDONTWRITEBYTECODE = '1'; PYTHONNOUSERSITE = '1' }
     $UpgradeFixture = Join-Path $TemporaryRoot 'upgrade-fixture'
     $UpgradeHelper = Join-Path $ProjectRoot 'desktop/tests/upgrade-data-smoke.cjs'
@@ -424,24 +530,57 @@ try {
     foreach ($Name in @('priorBackendSeeded', 'priorExactMoneyAndCurrency', 'priorCanvasAndTracking', 'priorPackageExported', 'priorEofReopened')) {
         if ($PriorData.$Name -isnot [bool] -or -not $PriorData.$Name) { throw 'Old installed backend did not create the compatibility fixture.' }
     }
-    $Report.priorDataChecks = $PriorData
+    if ($FreshInstallOnly) {
+        $Report.currentSeededDataChecks = [ordered]@{
+            currentBackendSeeded = $PriorData.priorBackendSeeded; currentExactMoneyAndCurrency = $PriorData.priorExactMoneyAndCurrency
+            currentCanvasAndTracking = $PriorData.priorCanvasAndTracking; currentPackageExported = $PriorData.priorPackageExported
+            currentEofReopened = $PriorData.priorEofReopened
+        }
+    } else { $Report.priorDataChecks = $PriorData }
     if (-not (Test-Path -LiteralPath (Join-Path $DataDirectory 'fund.duckdb') -PathType Leaf)) { throw 'Synthetic database was not created.' }
     $Report.checks.syntheticDataSeeded = 'passed'
-    $Report.checks.priorCaseDataWrittenByInstalledBackend = 'passed'
+    if ($FreshInstallOnly) { $Report.checks.currentCaseDataWrittenByInstalledBackend = 'passed' }
+    else { $Report.checks.priorCaseDataWrittenByInstalledBackend = 'passed' }
     $Stage = 'presentationPreferencesSeeded'
     $PreferenceFile = Join-Path $UserRoot 'preferences.json'
-    if (Test-Path -LiteralPath $PreferenceFile) { throw 'Unexpected preferences appeared before synthetic seeding.' }
+    if (-not $FreshInstallOnly -and (Test-Path -LiteralPath $PreferenceFile)) { throw 'Unexpected preferences appeared before synthetic seeding.' }
     $PriorSnapshot = Get-Content -Raw -LiteralPath (Join-Path $UpgradeFixture 'snapshot.json') | ConvertFrom-Json
     $PreferenceJson = [ordered]@{ fund_case = [string]$PriorSnapshot.original.caseId; fund_edge_type = 'polyline'
         fund_show_ids = '1'; fund_show_photos = '0'; fund_edge_labels = '["money","time","summary","currency"]' } | ConvertTo-Json -Compress
     # Use the actual store's canonical form; the prior UI saves its current case
     # on startup, so a missing newline would create a false byte-retention failure.
-    [System.IO.File]::WriteAllText($PreferenceFile, $PreferenceJson + "`n")
+    if ($FreshInstallOnly) {
+        $FirstPreferenceExpected = @{ base64 = $Report.firstStartupPreferencesBase64
+            sha256 = $Report.firstStartupPreferencesSha256; bytes = $Report.firstStartupPreferencesBytes } | ConvertTo-Json -Compress
+        [void](Invoke-Native -FileName $NodeExe -Arguments @(
+            '-e', $FreshPreferenceEvidenceCode, 'verify', $PreferenceFile, $FirstPreferenceExpected
+        ) -TimeoutSeconds 15)
+        $BeforeMerge = Get-Sha256 $PreferenceFile
+        if ($BeforeMerge -cne $Report.firstStartupPreferencesSha256) { throw 'First GUI preferences changed before fixture merge.' }
+        $ClientPreferences = Get-Content -Raw -LiteralPath $PreferenceFile | ConvertFrom-Json -AsHashtable
+        if ($ClientPreferences -isnot [Collections.IDictionary]) { throw 'First GUI preferences must be an object.' }
+        $UnchangedPreferences = @{}
+        $FixturePreferences = $PreferenceJson | ConvertFrom-Json -AsHashtable
+        foreach ($Key in $ClientPreferences.Keys) {
+            if (-not $FixturePreferences.Contains($Key)) { $UnchangedPreferences[$Key] = $ClientPreferences[$Key] }
+        }
+        foreach ($Key in $FixturePreferences.Keys) { $ClientPreferences[$Key] = $FixturePreferences[$Key] }
+        [System.IO.File]::WriteAllText($PreferenceFile, ($ClientPreferences | ConvertTo-Json -Depth 10 -Compress) + "`n")
+        $MergedPreferences = Get-Content -Raw -LiteralPath $PreferenceFile | ConvertFrom-Json -AsHashtable
+        foreach ($Key in $UnchangedPreferences.Keys) {
+            if (($UnchangedPreferences[$Key] | ConvertTo-Json -Depth 10 -Compress) -cne
+                ($MergedPreferences[$Key] | ConvertTo-Json -Depth 10 -Compress)) { throw 'Fixture merge changed a client-owned preference.' }
+        }
+        $Report.presentationPreferenceFixture = [ordered]@{ beforeSha256 = $BeforeMerge
+            afterSha256 = (Get-Sha256 $PreferenceFile); mergedKeys = @($FixturePreferences.Keys | Sort-Object)
+            otherClientKeysPreserved = $true }
+    } else { [System.IO.File]::WriteAllText($PreferenceFile, $PreferenceJson + "`n") }
     $PreferenceStoreJson = $PreferenceJson
     $PreferenceSha256 = Get-Sha256 $PreferenceFile
     Assert-PresentationPreferences
     $Report.checks.presentationPreferencesSeeded = 'passed'
 
+    if (-not $FreshInstallOnly) {
     $Stage = 'upgradedSameIdentity'
     if ($PublishedInAppUpdate) {
         if ($NextInstaller) { throw 'Published and private update modes cannot be combined.' }
@@ -668,6 +807,8 @@ public static class FundsTraceUpdateWindowState {
     if (Test-Path -LiteralPath $ObsoleteFile) { throw 'The old installation retained the obsolete test file.' }
     $Report.checks.obsoleteInstalledFileRemoved = 'passed'
 
+    }
+
     $Stage = 'installedResourceIntegrity'
     $ExpectedIcon = Join-Path $ProjectRoot 'desktop/assets/icon.ico'
     $IconHelper = Join-Path $ProjectRoot 'desktop/tests/windows-icon-resources.cjs'
@@ -691,11 +832,11 @@ public static class FundsTraceUpdateWindowState {
     Assert-InstalledResources
     $InstalledBackend = Join-Path $InstallRoot 'resources/backend'
     $Report.checks.installedResourceIntegrity = 'passed'
-    $Stage = 'upgradedPresentationPreferences'
+    $Stage = $(if ($FreshInstallOnly) { 'currentPresentationPreferences' } else { 'upgradedPresentationPreferences' })
     Assert-PresentationPreferences
-    $Report.checks.upgradedPresentationPreferences = 'passed'
+    $Report.checks[$Stage] = 'passed'
 
-    $Stage = 'upgradedExistingCaseData'
+    $Stage = $(if ($FreshInstallOnly) { 'currentSeededCaseData' } else { 'upgradedExistingCaseData' })
     $UpgradedData = (Invoke-Native -FileName $NodeExe -Arguments @(
         $UpgradeHelper, $InstallRoot, '--mode', 'verify', '--fixture', $UpgradeFixture
     ) -Environment $CompatibilityEnvironment -TimeoutSeconds 240) | ConvertFrom-Json
@@ -703,10 +844,20 @@ public static class FundsTraceUpdateWindowState {
         'upgradedAnalysisPaths', 'upgradedAnalysisCycles', 'upgradedAtomicCanvas', 'upgradedEofReopened', 'upgradedSourceFilesUnchanged')) {
         if ($UpgradedData.$Name -isnot [bool] -or -not $UpgradedData.$Name) { throw 'Existing data did not survive upgrade or package migration.' }
     }
-    $Report.upgradedDataChecks = $UpgradedData
-    $Report.checks.upgradedExistingCaseData = 'passed'
-    $Report.checks.legacyCasePackageCompatible = 'passed'
-    $Report.checks.upgradedAnalysisAndAtomicCanvas = 'passed'
+    if ($FreshInstallOnly) {
+        $Report.currentDataChecks = [ordered]@{}
+        foreach ($Property in $UpgradedData.PSObject.Properties) {
+            $Name = $Property.Name -creplace '^upgraded', 'current' -creplace '^legacyPackage', 'currentPackage'
+            $Report.currentDataChecks[$Name] = $Property.Value
+        }
+        $Report.checks.currentSeededCaseData = 'passed'; $Report.checks.currentPackageCompatible = 'passed'
+        $Report.checks.currentAnalysisAndAtomicCanvas = 'passed'
+    } else {
+        $Report.upgradedDataChecks = $UpgradedData
+        $Report.checks.upgradedExistingCaseData = 'passed'
+        $Report.checks.legacyCasePackageCompatible = 'passed'
+        $Report.checks.upgradedAnalysisAndAtomicCanvas = 'passed'
+    }
 
     $Stage = 'sameVersionReinstalled'
     $ReinstallDatabaseSha256 = Get-Sha256 (Join-Path $DataDirectory 'fund.duckdb')
@@ -731,7 +882,13 @@ public static class FundsTraceUpdateWindowState {
         'upgradedAnalysisPaths', 'upgradedAnalysisCycles', 'upgradedAtomicCanvas', 'upgradedEofReopened', 'upgradedSourceFilesUnchanged')) {
         if ($ReinstalledData.$Name -isnot [bool] -or -not $ReinstalledData.$Name) { throw 'Same-version reinstall did not retain compatible case data.' }
     }
-    $Report.reinstalledDataChecks = $ReinstalledData
+    if ($FreshInstallOnly) {
+        $Report.reinstalledDataChecks = [ordered]@{}
+        foreach ($Property in $ReinstalledData.PSObject.Properties) {
+            $Name = $Property.Name -creplace '^upgraded', 'current' -creplace '^legacyPackage', 'currentPackage'
+            $Report.reinstalledDataChecks[$Name] = $Property.Value
+        }
+    } else { $Report.reinstalledDataChecks = $ReinstalledData }
     $Report.checks.reinstalledExistingCaseData = 'passed'
 
     $Stage = 'installedBackendWithoutActivation'
@@ -940,5 +1097,6 @@ if ($Failed) {
     exit 1
 }
 if ($PreflightOnly) { Write-Host 'Native installer preflight passed; no installation was attempted.' }
+elseif ($FreshInstallOnly) { Write-Host 'Native fresh installer lifecycle passed: first normal empty GUI before current-backend fixture, formats, reinstall and uninstall retention.' }
 else { Write-Host "Native installer lifecycle passed: pinned $($Baseline.prior.version) to $CurrentVersion upgrade, obsolete-file removal, preferences, same-version reinstall, case compatibility, installed application startup/single-instance/close, activation-free data, EOF and uninstall retention. Win10/11 interactive acceptance remains separate." }
 exit 0

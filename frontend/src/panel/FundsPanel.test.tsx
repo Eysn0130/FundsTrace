@@ -40,8 +40,8 @@ describe('FundsPanel host isolation', () => {
     fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
     const input = screen.getByLabelText<HTMLInputElement>('选择流水文件'), area = input.labels![0];
     expect(area.htmlFor).toBe(input.id); expect(area.textContent).toContain('选择 CSV、Excel 或银行反馈 ZIP');
-    expect(document.getElementById(input.getAttribute('aria-describedby')!)?.textContent).toBe('支持 UTF-8／GBK CSV、XLSX 和已知格式的银行反馈 ZIP');
-    expect(input.accept).toBe('.csv,.tsv,.txt,.xlsx,.zip'); input.focus(); expect(document.activeElement).toBe(input);
+    expect(document.getElementById(input.getAttribute('aria-describedby')!)?.textContent).toBe('支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP');
+    expect(input.accept).toBe('.csv,.tsv,.txt,.xlsx,.xls,.zip'); input.focus(); expect(document.activeElement).toBe(input);
     const file = new File(['synthetic'], '中文合成流水.csv', { type: 'text/csv' });
     fireEvent.change(input, { target: { files: [file] } });
     expect(input.disabled).toBe(true); expect(area.getAttribute('aria-busy')).toBe('true');

@@ -62,18 +62,26 @@ def create_case(name):
 def stats(case_id):
     with db._lock:
         cid = require_case(case_id)
-        row = raw_query("""
-            select (select count(*) from effective_flows where case_id=?) flows,
+        rows = raw_query("""
+            with case_flows as materialized (
+              select payer_account,payee_account,currency,amount from effective_flows where case_id=?
+            ), totals as (
+              select coalesce(currency,'') currency,coalesce(sum(amount),0::decimal(18,2)) amount
+              from case_flows group by coalesce(currency,'')
+            ), summary as (
+              select (select count(*) from case_flows) flows,
               (select count(distinct account) from (
-                select payer_account account from effective_flows where case_id=?
-                union all select payee_account from effective_flows where case_id=?
+                select payer_account account from case_flows
+                union all select payee_account from case_flows
               ) where account is not null and account <> '') accounts,
-              (select count(*) from batches where case_id=?) batches
-        """, [cid] * 4)[0]
-        totals = raw_query("""select coalesce(currency, '') currency,
-                            coalesce(sum(amount), 0::decimal(18,2)) amount
-                            from effective_flows where case_id=? group by coalesce(currency, '') order by currency""", [cid])
-        coverage = import_coverage(cid)
+              (select count(*) from batches where case_id=?) batches,
+              (select count(*) from flows where case_id=?) raw_flows
+            )
+            select summary.*,totals.currency,totals.amount from summary left join totals on true order by totals.currency
+        """, [cid] * 3)
+        row = {key: rows[0][key] for key in ("flows", "accounts", "batches")}
+        totals = [{"currency": item["currency"], "amount": item["amount"]} for item in rows if item["amount"] is not None]
+        coverage = import_coverage(cid, known_excluded=rows[0]["raw_flows"] - row["flows"])
     return {"case_id": case_id, **row,
             "amount_total": amount(totals[0]["amount"]) if len(totals) == 1 else ("0.00" if not totals else None),
             "currency": totals[0]["currency"] if len(totals) == 1 else None,

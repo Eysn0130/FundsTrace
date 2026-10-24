@@ -482,7 +482,7 @@ def _table_journals(check, paths):
     from . import table_import, table_archive, table_cancellations, table_contracts
     source_profiles = {source_id: profile for source_id, profile, _time in tables}
     source_times = {source_id: time for source_id, _profile, time in tables}
-    has_cancellation_profile = table_archive.PROFILE in source_profiles.values()
+    has_cancellation_profile = bool(table_archive.CANCELLATION_PROFILES.intersection(source_profiles.values()))
 
     for table, limit in (("import_members", table_archive.MAX_MEMBERS),
                          ("import_records", table_import.MAX_RECORDS)):
@@ -501,7 +501,8 @@ def _table_journals(check, paths):
                 or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
                 or size is None or not 0 <= size <= table_archive.MAX_MEMBER_BYTES
                 or count is None or not 0 <= count <= table_import.MAX_RECORDS
-                or encoding not in ("utf-8-sig", "gb18030", "utf-16", "xlsx")):
+                or encoding not in ("utf-8-sig", "gb18030", "utf-16", "xlsx", "xls")
+                or (encoding == "xls") != (source_profiles[source_id] == table_import.XLS_PROFILE)):
             _invalid("自动表格成员元数据无效")
         member_rows[source_id, path] = (role, digest, count)
         by_source.setdefault(source_id, []).append((size, count))
@@ -542,9 +543,11 @@ def _table_journals(check, paths):
             if member is None:
                 _invalid("自动表格记录引用了不存在的成员")
             role, member_digest, row_count = member
-            cancellation_rule = source_profiles[source_id] == table_archive.PROFILE
+            cancellation_rule = source_profiles[source_id] in table_archive.CANCELLATION_PROFILES
             reason_codes = table_import.REASON_CODES | (frozenset(table_cancellations.REASONS)
                                                         if cancellation_rule else frozenset())
+            if source_profiles[source_id] != table_import.XLS_PROFILE:
+                reason_codes -= {"invalid_cell_type"}
             record_dispositions = (*dispositions, *(('cancelled',) if cancellation_rule else ()))
             if (number is None or number != sequences.get(source_id, 0) + 1
                     or source_row is None or not 0 < source_row <= row_count + 1
@@ -619,6 +622,11 @@ def _table_journals(check, paths):
                     and (source_profiles[source_id] not in table_import.SUPPORTED_PROFILES or disposition != "unresolved"
                          or "conflicting_field" not in (issues or "").split(","))):
                 _invalid("自动表格历史冲突标记无效")
+            if (details.get("counterparty_basis") == table_import.ARCHIVE_HISTORY_CONFLICT_BASIS
+                    and (source_profiles[source_id] not in table_import.SUPPORTED_PROFILES | table_archive.SUPPORTED_PROFILES
+                         or disposition != "unresolved" or reason != "conflicting_field"
+                         or "conflicting_field" not in (issues or "").split(","))):
+                _invalid("归档参与的历史冲突标记无效")
             if ("validation_basis" in details
                     and (details["validation_basis"] != table_import.FINANCIAL_CONFLICT_BASIS
                          or source_profiles[source_id] not in table_import.FINANCIAL_PROFILES or disposition != "unresolved"
@@ -816,11 +824,30 @@ def _validate_package(content, directory):
                     archive_source = (suffix == ".zip" or row_kind == "archive_record"
                                       or isinstance(parser_version, str) and parser_version.startswith("funds-trace-bank-feedback-"))
                     if table_source:
+                        # Uploads already default an empty suffix to CSV while
+                        # preserving the original name. Admit only the exact
+                        # single-text-member contract; full journal and fact
+                        # validation below still applies.
+                        suffixless_text = (row_kind == "table_record" and suffix == "" and sheet == ""
+                                           and parser_version in table_import.SUPPORTED_PROFILES
+                                           and parser_version != table_import.XLS_PROFILE
+                                           and set(JOURNAL_PKG_COLS).issubset(paths))
+                        if suffixless_text:
+                            text_members = check.execute("""select member_path,role,sha256,size_bytes,encoding
+                                from import_members where source_id=?""", [source_id]).fetchall()
+                            suffixless_text = (len(text_members) == 1
+                                               and text_members[0][0] == "table.csv"
+                                               and text_members[0][1] in ("table", "auxiliary")
+                                               and text_members[0][2] == sha256
+                                               and text_members[0][3] == size_bytes
+                                               and text_members[0][4] in ("utf-8-sig", "gb18030", "utf-16"))
                         source_format_valid = (row_kind == "table_record"
                                                and ((suffix == ".zip" and parser_version in table_archive.SUPPORTED_PROFILES and sheet == "")
                                                     or (suffix in (".csv", ".tsv", ".txt", ".xlsx", ".xls")
                                                         and parser_version in table_import.SUPPORTED_PROFILES
-                                                        and (suffix in (".xlsx", ".xls")) == bool(sheet))))
+                                                        and (parser_version != table_import.XLS_PROFILE or suffix == ".xls")
+                                                        and (suffix in (".xlsx", ".xls")) == bool(sheet))
+                                                    or suffixless_text))
                     elif archive_source:
                         source_format_valid = (suffix == ".zip" and row_kind == "archive_record"
                                                and parser_version in feedback_import.SUPPORTED_PROFILES

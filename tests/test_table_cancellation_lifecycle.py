@@ -89,7 +89,7 @@ def test_conflicting_historical_manual_facts_revoke_pair_and_remain_a_gap(client
     manual = manual_preview(client, cid, payload, "商户名称")
     assert complete(client, cid, manual)["stage"] == "done"
     before = database.q_raw("select * from flows where case_id=? order by id", [cid])
-    view = preview(client, cid, content, "synthetic.zip")
+    view = frozen_preview(client, cid, content, monkeypatch, table_archive.CANCELLATION_PROFILE)
     assert view["table_summary"]["cancelled"] == 0 and view["table_summary"]["unresolved"] == 2
     assert view["table_summary"]["reason_counts"]["cancellation_historical_conflict"] == 2
     assert complete(client, cid, view)["stage"] == "done"
@@ -109,7 +109,7 @@ def test_manual_conflict_after_v3_is_disclosed_without_hiding_competing_facts(
         client, database, make_case, monkeypatch, profile, expected_gaps, expected_flows):
     cid = make_case("Synthetic later table mapping conflict")
     payload, content = paired_source()
-    assert complete(client, cid, preview(client, cid, content, "synthetic.zip"))["stage"] == "done"
+    import_version(client, cid, content, monkeypatch, table_archive.CANCELLATION_PROFILE)
     with monkeypatch.context() as frozen:
         frozen.setattr(imports, "TABLE_PROFILE", profile)
         manual = manual_preview(client, cid, payload, "商户名称")
@@ -120,7 +120,7 @@ def test_manual_conflict_after_v3_is_disclosed_without_hiding_competing_facts(
     assert count(database, "effective_flows", cid) == count(database, "flows", cid)
     current = coverage(client, cid)
     assert current["unresolved_records"] == expected_gaps and not current["financial_interpretation_complete"]
-    repeated = preview(client, cid, content, "repeat.zip")
+    repeated = frozen_preview(client, cid, content, monkeypatch, table_archive.CANCELLATION_PROFILE)
     assert repeated["table_summary"]["cancelled"] == 0
     assert complete(client, cid, repeated)["stage"] == "done"
     assert coverage(client, cid)["unresolved_records"] == expected_gaps
@@ -148,10 +148,10 @@ def test_shared_ordinary_flow_with_an_uncancelled_occurrence_stays_effective(cli
     assert count(database, "effective_flows", cid) == 2
 
 
-def test_commit_rechecks_historical_facts_added_after_preview(client, database, make_case):
+def test_commit_rechecks_historical_facts_added_after_preview(client, database, make_case, monkeypatch):
     cid = make_case("Synthetic table commit binding")
     payload, content = paired_source()
-    view = preview(client, cid, content, "synthetic.zip")
+    view = frozen_preview(client, cid, content, monkeypatch, table_archive.CANCELLATION_PROFILE)
     assert view["table_summary"]["cancelled"] == 2
     assert complete(client, cid, manual_preview(client, cid, payload, "商户名称"))["stage"] == "done"
     result = complete(client, cid, view)
