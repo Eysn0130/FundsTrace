@@ -235,7 +235,7 @@ test('the actual public React entry requires the host redirect, preserves its ca
     const frame={hidden:false,src:`${origin}/workspace/?embedded=${failure==='unembedded'?'0':'1'}&surface=cases&case_id=2`,contentDocument:childDoc};
     const context=vm.createContext({assert,URL,URLSearchParams,SEED_CASE:'SYN seed',report,page:{origin,sessionId:'body'},
       location:{pathname:'/',search:'?case_id=2'},document:{querySelector:selector=>selector==='#casesFrame'?frame:selected},
-      check:async(_name,action)=>action(),readyCases:async()=>{},
+      check:async(_name,action)=>action(),readyCases:async()=>{},startWorkspaceGraphEventObservation:async()=>{},
       clickElement:async(_expression,_target,options)=>{assert.equal(options.frame,true);selected.value='3';selected.selectedOptions=[{textContent:'SYN seed'}];}});
     context.evaluate=async()=>selected.value;
     context.readyDocument=async expression=>assert.equal(vm.runInContext(expression,context),true);
@@ -314,7 +314,7 @@ const WORKSPACE_GRAPH_KEYS=['pathHome','documentComplete','statePresent','graphP
   'caseNameStrictMatch','caseNameCoercedMatch','caseSelectorMatches','flowsZeroStrict','flowsZeroCoerced','nodesEmpty','edgesEmpty',
   'casesFramePresent','casesFrameHidden','graphPageActive','homeCurrent','layoutIdle','historyIdle'];
 const plain=value=>JSON.parse(JSON.stringify(value));
-async function graphReturnFixture({newline='LF',failure=null,diagnosticValue,diagnosticThrows=false,diagnosticTimeout=false,otherStage=false}={}) {
+async function graphReturnFixture({newline='LF',failure=null,diagnosticValue,diagnosticThrows=false,diagnosticTimeout=false,otherStage=false,observation=null}={}) {
   let source=(await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8')).replace(/\r\n/g,'\n');
   if(newline==='CRLF')source=source.replace(/\n/g,'\r\n');
   const blockStart=source.indexOf("  await check('workspaceGraphLinkOpened'"),blockEnd=source.indexOf("  await check('installedPersistentCaptionNavigation'",blockStart);
@@ -335,6 +335,7 @@ async function graphReturnFixture({newline='LF',failure=null,diagnosticValue,dia
     page:{sessionId:'body'},state,layoutJob:null,window:{FundsCanvasEditor:{history:{status:()=>({busy:false})}}},
     location:{pathname:'/'},document:{readyState:'complete',querySelector:selector=>nodes.get(selector)||null},
     originalError,owned:[instance],reportOwned:true,reportPath:'SYN_REPORT',updateFixture:null,productionUpdate:false,presentationPreferences:null,
+    finishWorkspaceGraphEventObservation:async()=>{},
     analysisTitlebarPage:null,analysisPage:null,titlebarPage:null,
     safeInstalledFailure:error=>{seenErrors.push(error);return safeInstalledFailure(error);},safeJourneyFailure:()=>null,
     process:{exitCode:0,stdout:{write(){events.push('stdout');}},stderr:{write(){events.push('stderr');}}},
@@ -362,9 +363,25 @@ async function graphReturnFixture({newline='LF',failure=null,diagnosticValue,dia
   };
   vm.runInContext(source.slice(checkStart,checkEnd)+source.slice(readyStart,readyEnd),context);
   if(readerStart>=0&&readerEnd>readerStart)vm.runInContext(source.slice(readerStart,readerEnd),context);
+  if(observation) {
+    let uuid=0;context.require=name=>{assert.equal(name,'node:crypto');return {randomUUID:()=>`SYN-UUID-${++uuid}`};};
+    context.workspaceGraphObservationKey=null;
+    vm.runInContext(workspaceObservationSource(source),context);
+    const evaluate=context.evaluate;
+    context.evaluate=async expression=>{
+      if(expression.includes('function installWorkspaceGraphEventObserver')) {observation.calls.push('install');return observation.run(expression);}
+      if(expression.includes('function readAndDisposeWorkspaceGraphEventObserver')) {
+        observation.calls.push('finish');const value=observation.run(expression);
+        if(observation.finishThrows)throw new Error('SYN_PRIVATE_PROTOCOL');
+        return observation.override===undefined?value:observation.override;
+      }
+      return evaluate(expression);
+    };
+  }
   const block=source.slice(blockStart,blockEnd);
   const action=block.slice(block.indexOf('async () => {')+'async () => {'.length);
-  assert.equal((action.match(/\bawait\b/g)||[]).length,2,'the original return check retains exactly its two awaits');
+  const originalTry=/\btry\s*\{([\s\S]*?)\}\s*finally\s*\{/.exec(action)?.[1]||action;
+  assert.equal((originalTry.match(/\bawait\b/g)||[]).length,2,'the original return check retains exactly its two awaits');
   return {context,report,events,writes,seenErrors,originalError,nodes,state,
     read:()=>{assert.equal(typeof context.readWorkspaceGraphDiagnostic,'function','W08 must expose its read-only fixed projection');return context.readWorkspaceGraphDiagnostic(seed);},
     run:()=>vm.runInContext(`(async()=>{${otherStage?"await check('syntheticOther',async()=>{throw originalError;});":block}report.status='passed';})()${source.slice(tailStart+4)}`,context)};
@@ -426,4 +443,148 @@ for(const newline of ['LF','CRLF'])test(`the actual W08 failure projection rejec
   const singleRead=valid();let reads=0;Object.defineProperty(singleRead,'homeCurrent',{enumerable:true,get(){reads++;return true;}});
   const once=await graphReturnFixture({newline,failure:'ready',diagnosticValue:singleRead});await once.run();
   assert.equal(once.report.workspaceGraphDiagnostic.available,true);assert.equal(reads,1,'the host copies each approved value only once');
+});
+
+const WORKSPACE_EVENT_EMPTY={available:true,pointerDown:false,pointerUp:false,click:false,trustedClick:null,
+  requestSeen:false,requestBindingCurrent:null,resultSeen:false,resultOk:null,resultBindingRejected:null,
+  resultBusyRejected:null,resultOtherRejected:null,targetConnected:true,targetEnabled:true,alertPresent:false};
+function workspaceObservationSource(source) {
+  const start=source.indexOf('function installWorkspaceGraphEventObserver('),end=source.indexOf('function readWorkspaceGraphDiagnostic(',start);
+  assert.ok(start>=0&&end>start,'W10 must provide its actual passive observation helpers');
+  return source.slice(start,end);
+}
+async function workspaceEventFixture(newline='LF',{failAdd=0,failRemove=false}={}) {
+  let source=(await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8')).replace(/\r\n/g,'\n');
+  if(newline==='CRLF')source=source.replace(/\n/g,'\r\n');
+  const listeners=[],calls=[],sideEffects=[];let additions=0,removalFailed=false,alert=false;
+  const forbidden=()=>{sideEffects.push('forbidden');throw new Error('SYN_PRIVATE_SIDE_EFFECT');};
+  const target=()=>({
+    addEventListener(type,callback,options){
+      assert.equal(options.capture,true);assert.equal(options.passive,true);
+      if(++additions===failAdd)throw new Error('SYN_PRIVATE_INSTALL');
+      listeners.push({target:this,type,callback,options});
+    },
+    removeEventListener(type,callback,options){
+      assert.equal(typeof options==='boolean'?options:options.capture,true);
+      const index=listeners.findIndex(value=>value.target===this&&value.type===type&&value.callback===callback);
+      if(index>=0)listeners.splice(index,1);
+      if(failRemove&&!removalFailed){removalFailed=true;throw new Error('SYN_PRIVATE_DISPOSE');}
+    },
+    emit(type,properties={}){const event={type,target:this,isTrusted:false,preventDefault:forbidden,stopPropagation:forbidden,...properties};
+      for(const value of [...listeners])if(value.target===this&&value.type===type)value.callback(event);},
+    postMessage:forbidden,focus:forbidden,scrollTo:forbidden,
+  });
+  const host=target(),child=target(),button=Object.assign(target(),{textContent:'进入画图',isConnected:true,disabled:false,
+    setAttribute:forbidden,scrollIntoView:forbidden,contains(node){return node===this||node===descendant;}}),descendant={};
+  const childDocument={querySelector:selector=>selector==='[role="alert"]'?(alert?{}:null):selector==='.heading-actions button'?button:null,
+    querySelectorAll:selector=>selector==='.heading-actions button'?[button]:[],defaultView:child};
+  const frame={contentWindow:child,contentDocument:childDocument,isConnected:true};
+  const document={querySelector:selector=>selector==='#casesFrame'?frame:null,defaultView:host};
+  host.document=document;child.document=childDocument;child.parent=host;host.parent=host;
+  const origin='http://127.0.0.1:12345';host.location={origin};child.location={origin};
+  const state={caseId:7,caseGeneration:11};
+  const context=vm.createContext({window:host,document,location:host.location,state});
+  vm.runInContext(workspaceObservationSource(source),context);
+  const message=(type,overrides={})=>({channel:'fundstrace:workspace',version:1,type,
+    ...(type==='request'?{action:'open-graph',caseId:'7',generation:11,payload:{}}:{ok:true}),requestId:'SYN_PRIVATE_REQUEST',...overrides});
+  return {context,host,child,button,descendant,frame,document,childDocument,state,origin,listeners,calls,sideEffects,
+    install:key=>context.installWorkspaceGraphEventObserver(key),finish:key=>plain(context.readAndDisposeWorkspaceGraphEventObserver(key)),
+    run:expression=>vm.runInContext(expression,context),alert(value){alert=value;},
+    request(overrides={},event={}){host.emit('message',{origin,source:child,data:message('request',overrides),...event});},
+    result(overrides={},event={}){child.emit('message',{origin,source:host,data:message('result',overrides),...event});},
+  };
+}
+
+for(const newline of ['LF','CRLF'])test(`the actual passive observer follows only its button and first authenticated request/result with ${newline} source`,async()=>{
+  const f=await workspaceEventFixture(newline),key='SYN observer';assert.equal(f.install(key),true);
+  assert.equal(Object.isFrozen(f.host[key]),true);assert.equal(f.listeners.length,5);
+  assert.deepEqual(plain(f.host[key].read()),WORKSPACE_EVENT_EMPTY);
+  f.button.emit('click',{target:{},isTrusted:true});f.result();
+  for(const event of [{origin:'https://invalid.example'},{source:{}},{data:{channel:'invalid'}}])f.request({},event);
+  for(const overrides of [{version:2},{type:'ready'},{action:'select-case'},{requestId:1},{requestId:'x'.repeat(161)}])f.request(overrides);
+  assert.deepEqual(plain(f.host[key].read()),WORKSPACE_EVENT_EMPTY);
+  f.button.emit('pointerdown',{target:f.descendant});f.button.emit('pointerup',{target:f.descendant});
+  f.button.emit('click',{target:f.descendant,isTrusted:false});f.button.emit('click',{target:f.descendant,isTrusted:true});f.button.emit('click',{isTrusted:false});
+  f.request({requestId:''});f.state.caseGeneration=12;f.request({requestId:'second',caseId:'OLD',generation:0});
+  for(const event of [{origin:'https://invalid.example'},{source:{}}])f.result({requestId:''},event);
+  for(const overrides of [{version:2},{type:'request'},{ok:'SYN_PRIVATE'}])f.result({requestId:'',...overrides});
+  assert.equal(f.host[key].read().resultSeen,false);
+  f.result({requestId:'second',ok:false,error:'SYN_PRIVATE'});f.result({requestId:'',ok:true});
+  f.result({requestId:'',ok:false,error:'案件已变化，请重新操作'});
+  const expected={...WORKSPACE_EVENT_EMPTY,pointerDown:true,pointerUp:true,click:true,trustedClick:true,requestSeen:true,requestBindingCurrent:true,
+    resultSeen:true,resultOk:true,resultBindingRejected:false,resultBusyRejected:false,resultOtherRejected:false};
+  assert.deepEqual(f.finish(key),expected);assert.equal(f.listeners.length,0);assert.equal(Object.hasOwn(f.host,key),false);
+  assert.deepEqual(f.sideEffects,[]);assert.doesNotMatch(JSON.stringify(expected),/SYN_PRIVATE|requestId|payload|origin/);
+  for(const [error,field] of [['案件已变化，请重新操作','resultBindingRejected'],['正在切换案件，请稍后操作','resultBusyRejected'],['SYN_PRIVATE_REASON','resultOtherRejected']]) {
+    const g=await workspaceEventFixture(newline);g.install(key);g.request({caseId:7});g.result({ok:false,error});g.alert(true);g.button.disabled=true;
+    const value=g.finish(key);assert.equal(value.requestBindingCurrent,false);assert.equal(value[field],true);assert.equal(value.resultOk,false);
+    assert.equal(value.targetEnabled,false);assert.equal(value.alertPresent,true);assert.doesNotMatch(JSON.stringify(value),/SYN_PRIVATE/);
+  }
+});
+
+for(const newline of ['LF','CRLF'])test(`the actual observer cleans partial installs, navigation, foreign keys and read/dispose failures with ${newline} source`,async()=>{
+  const key='SYN observer',foreign={tag:'foreign',read(){throw new Error('SYN_PRIVATE_FOREIGN');}};
+  const occupied=await workspaceEventFixture(newline);occupied.host[key]=foreign;
+  assert.equal(occupied.install(key),false);assert.equal(occupied.host[key],foreign);assert.equal(occupied.listeners.length,0);
+  assert.deepEqual(occupied.finish(key),{available:false});assert.equal(occupied.host[key],foreign);
+  const inherited=await workspaceEventFixture(newline);Object.setPrototypeOf(inherited.host,{[key]:foreign});
+  assert.equal(inherited.install(key),false);assert.equal(inherited.listeners.length,0);
+  const partial=await workspaceEventFixture(newline,{failAdd:3});assert.equal(partial.install(key),false);
+  assert.equal(partial.listeners.length,0);assert.equal(Object.hasOwn(partial.host,key),false);
+  for(const change of [f=>{f.document.querySelector=()=>null;},f=>{f.frame.contentDocument=null;},
+    f=>{f.childDocument.querySelectorAll=()=>[];},f=>{Object.defineProperty(f.frame,'contentWindow',{get(){throw new Error('SYN_PRIVATE_CROSS_ORIGIN');}});}]) {
+    const f=await workspaceEventFixture(newline);change(f);assert.equal(f.install(key),false);assert.equal(f.listeners.length,0);
+  }
+  for(const change of [f=>{f.context.document={};f.host.document=f.context.document;},f=>{f.frame.contentDocument={};},
+    f=>{f.frame.contentWindow={};},f=>{f.document.querySelector=()=>({});}]) {
+    const f=await workspaceEventFixture(newline);f.install(key);change(f);assert.deepEqual(f.finish(key),{available:false});
+    assert.equal(f.listeners.length,0);assert.equal(Object.hasOwn(f.host,key),false);
+  }
+  const replaced=await workspaceEventFixture(newline);replaced.install(key);replaced.button.isConnected=false;
+  assert.equal(replaced.finish(key).targetConnected,false);assert.equal(replaced.listeners.length,0);
+  const swapped=await workspaceEventFixture(newline);swapped.install(key);const own=swapped.host[key];swapped.host[key]=foreign;own.dispose();
+  assert.equal(swapped.host[key],foreign);assert.equal(swapped.listeners.length,0);
+  const getter=await workspaceEventFixture(newline);getter.install(key);Object.defineProperty(getter.button,'disabled',{get(){throw new Error('SYN_PRIVATE_GETTER');}});
+  assert.deepEqual(getter.finish(key),{available:false});assert.equal(getter.listeners.length,0);
+  const removal=await workspaceEventFixture(newline,{failRemove:true});removal.install(key);
+  assert.deepEqual(removal.finish(key),{available:false});assert.equal(removal.listeners.length,0);assert.equal(Object.hasOwn(removal.host,key),false);
+});
+
+for(const newline of ['LF','CRLF'])test(`the actual Node observation helpers preserve W08 errors, successful silence and global cleanup with ${newline} source`,async()=>{
+  const source=(await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8')).replace(/\r\n/g,'\n');
+  const entry=source.slice(source.indexOf("  await check('installedReactWorkspaceOpened'"),source.indexOf("  await viewportMatrix('reactWorkspaceLayout'"));
+  assert.ok(entry.lastIndexOf('await startWorkspaceGraphEventObservation()')>entry.lastIndexOf('await readyDocument('),'installation stays at the established entry end');
+  for(const options of [{},{failure:'click'},{failure:'ready'},{otherStage:true},{failure:'ready',finishThrows:true}]) {
+    const observation=await workspaceEventFixture(newline);observation.finishThrows=options.finishThrows;
+    const f=await graphReturnFixture({newline,...options,observation});await f.context.startWorkspaceGraphEventObservation();
+    assert.equal(observation.listeners.length,5);await f.run();
+    assert.equal(observation.listeners.length,0);assert.deepEqual(observation.calls,['install','finish']);
+    assert.ok(f.events.filter(value=>value==='bounded-3000').length>=2);
+    if(options.failure) {
+      assert.equal(f.report.status,'failed');assert.equal(f.report.failedCheck,'workspaceGraphLinkOpened');assert.equal(f.context.process.exitCode,1);
+      assert.equal(f.seenErrors[0],f.originalError);assert.equal(f.report.failure.kind,options.failure==='click'?'CDP_TIMEOUT':'TIMEOUT');
+      assert.deepEqual(plain(f.report.workspaceGraphEventDiagnostic),options.finishThrows?{available:false}:WORKSPACE_EVENT_EMPTY);
+    } else assert.equal(f.report.workspaceGraphEventDiagnostic,undefined);
+    assert.ok(f.events.includes('kill'));assert.equal(f.writes.length,1);assert.doesNotMatch(JSON.stringify(f.writes),/SYN_PRIVATE/);
+  }
+  const valid=()=>({...WORKSPACE_EVENT_EMPTY}),unknown={...valid(),private:'SYN_PRIVATE'},invalid={...valid(),click:'SYN_PRIVATE'},missing=valid();delete missing.click;
+  const getter=valid();Object.defineProperty(getter,'click',{enumerable:true,get(){throw new Error('SYN_PRIVATE_GETTER');}});
+  for(const override of [null,unknown,invalid,missing,getter]) {
+    const observation=await workspaceEventFixture(newline);observation.override=override;
+    const f=await graphReturnFixture({newline,failure:'ready',observation});await f.context.startWorkspaceGraphEventObservation();await f.run();
+    assert.deepEqual(plain(f.report.workspaceGraphEventDiagnostic),{available:false});assert.equal(f.report.failure.kind,'TIMEOUT');
+    assert.equal(f.seenErrors[0],f.originalError);assert.equal(observation.listeners.length,0);assert.doesNotMatch(JSON.stringify(f.writes),/SYN_PRIVATE/);
+  }
+  const observation=await workspaceEventFixture(newline),f=await graphReturnFixture({newline,observation});
+  await f.context.finishWorkspaceGraphEventObservation(true);assert.deepEqual(plain(f.report.workspaceGraphEventDiagnostic),{available:false});
+  delete f.report.workspaceGraphEventDiagnostic;
+  await f.context.startWorkspaceGraphEventObservation();const first=Object.keys(observation.host).find(key=>key.startsWith('__fundsTraceWorkspaceGraph_'));
+  await f.context.finishWorkspaceGraphEventObservation(false);await f.context.startWorkspaceGraphEventObservation();
+  const second=Object.keys(observation.host).find(key=>key.startsWith('__fundsTraceWorkspaceGraph_'));
+  assert.ok(first&&second&&first!==second);await f.context.finishWorkspaceGraphEventObservation(false);
+  assert.equal(f.report.workspaceGraphEventDiagnostic,undefined);assert.equal(observation.listeners.length,0);
+  await f.context.startWorkspaceGraphEventObservation();
+  f.context.bounded=async(promise,ms)=>{assert.equal(ms,3000);await promise;throw new Error('TIMEOUT');};
+  await f.context.finishWorkspaceGraphEventObservation(true);assert.deepEqual(plain(f.report.workspaceGraphEventDiagnostic),{available:false});
+  assert.equal(observation.listeners.length,0);
 });
