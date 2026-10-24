@@ -309,3 +309,121 @@ for(const [name,change] of [
   await assert.rejects(fixture.run(),{code:'ERR_ASSERTION'});
   assert.ok(!fixture.events.includes('cancel'),'a failed contract must not reach the successful close');
 });
+
+const WORKSPACE_GRAPH_KEYS=['pathHome','documentComplete','statePresent','graphPresent','graphLoadingFalse','graphInited',
+  'caseNameStrictMatch','caseNameCoercedMatch','caseSelectorMatches','flowsZeroStrict','flowsZeroCoerced','nodesEmpty','edgesEmpty',
+  'casesFramePresent','casesFrameHidden','graphPageActive','homeCurrent','layoutIdle','historyIdle'];
+const plain=value=>JSON.parse(JSON.stringify(value));
+async function graphReturnFixture({newline='LF',failure=null,diagnosticValue,diagnosticThrows=false,diagnosticTimeout=false,otherStage=false}={}) {
+  let source=(await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8')).replace(/\r\n/g,'\n');
+  if(newline==='CRLF')source=source.replace(/\n/g,'\r\n');
+  const blockStart=source.indexOf("  await check('workspaceGraphLinkOpened'"),blockEnd=source.indexOf("  await check('installedPersistentCaptionNavigation'",blockStart);
+  const checkStart=source.indexOf('async function check(name, action) {'),checkEnd=source.indexOf('async function windowIcons(',checkStart);
+  const readyStart=source.indexOf('async function readyDocument('),readyEnd=source.indexOf('async function viewportMatrix(',readyStart);
+  const readerStart=source.indexOf('function readWorkspaceGraphDiagnostic('),readerEnd=source.indexOf('function readImportEntry() {',readerStart);
+  const tailStart=source.indexOf('})().catch(async error => {');
+  assert.ok(blockStart>=0&&blockEnd>blockStart&&checkStart>=0&&checkEnd>checkStart&&readyStart>=0&&readyEnd>readyStart&&tailStart>=0);
+  const report={status:'running',checks:{},timings:{}},events=[],seenErrors=[],writes=[],seed='SYN fixture seed';
+  const originalError=Object.assign(new Error(failure==='click'?'CDP_TIMEOUT':'TIMEOUT'),failure==='click'?{protocolMethod:'Input.dispatchMouseEvent'}:{});
+  const frame={hidden:true},graphPage={inert:false},home={getAttribute:()=> 'page'},select={value:'7'};
+  for(const name of ['contentWindow','contentDocument'])Object.defineProperty(frame,name,{get(){throw new Error('SYN_PRIVATE_CROSS_ORIGIN');}});
+  const nodes=new Map([['#casesFrame',frame],['#graphPage',graphPage],['[data-nav-page="home"]',home],['#caseSelect',select]]);
+  const state={caseId:7,cases:[{id:7,name:seed}],graph:{},graphLoading:false,graphInited:true,stats:{flows:0},lastGraph:{nodes:[],edges:[]}};
+  const instance={done:false,exited:Promise.resolve(),child:{kill(){events.push('kill');}},mainErrors:{snapshot:()=>({})}};
+  const {safeInstalledFailure}=require('./installed-titlebar-journey.cjs');
+  const context=vm.createContext({assert,SEED_CASE:seed,report,timings:report.timings,stage:'syntheticStart',performance:{now:()=>0},
+    page:{sessionId:'body'},state,layoutJob:null,window:{FundsCanvasEditor:{history:{status:()=>({busy:false})}}},
+    location:{pathname:'/'},document:{readyState:'complete',querySelector:selector=>nodes.get(selector)||null},
+    originalError,owned:[instance],reportOwned:true,reportPath:'SYN_REPORT',updateFixture:null,productionUpdate:false,presentationPreferences:null,
+    analysisTitlebarPage:null,analysisPage:null,titlebarPage:null,
+    safeInstalledFailure:error=>{seenErrors.push(error);return safeInstalledFailure(error);},safeJourneyFailure:()=>null,
+    process:{exitCode:0,stdout:{write(){events.push('stdout');}},stderr:{write(){events.push('stderr');}}},
+    fs:{writeFile:async(_file,value)=>{writes.push(JSON.parse(value));events.push('write-report');}},
+    releaseStartupInspection:async()=>{events.push('release-startup');},
+    cdp:{send:async method=>{assert.equal(method,'Page.close');events.push('close-page');},close(){events.push('close-cdp');}},
+    bounded:async(promise,ms)=>{events.push(`bounded-${ms}`);const value=await promise;if(ms===3000&&diagnosticTimeout)throw new Error('TIMEOUT');return value;},
+    until:async(action,ms)=>{assert.equal(ms,20000);events.push('wait-ready');const value=await action();if(!value||failure==='ready')throw originalError;},
+    clickElement:async(expression,target,options)=>{
+      assert.equal(expression,"[...document.querySelectorAll('.heading-actions button')].find(node=>node.textContent.trim()==='进入画图')");
+      assert.equal(target,context.page);assert.equal(options.frame,true);events.push(`click-${report.workspaceGraphStep}`);
+      if(failure==='click')throw originalError;
+    }});
+  const readyExpression=`location.pathname === '/' && typeof state === 'object' && !state.graphLoading
+      && state.graphInited && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(seed)}
+      &&state.stats.flows===0&&state.lastGraph.nodes.length===0&&document.querySelector('#casesFrame').hidden
+      &&document.querySelector('[data-nav-page="home"]').getAttribute('aria-current')==='page'`;
+  context.evaluate=async expression=>{
+    if(expression.includes('function readWorkspaceGraphDiagnostic')) {
+      events.push('diagnostic');if(diagnosticThrows)throw new Error('SYN_PRIVATE_PROTOCOL_URL_AMOUNT');
+      return diagnosticValue===undefined?vm.runInContext(expression,context):diagnosticValue;
+    }
+    assert.equal(expression,`document.readyState === 'complete' && (${readyExpression})`);
+    assert.equal(report.workspaceGraphStep,'wait-ready');return vm.runInContext(expression,context);
+  };
+  vm.runInContext(source.slice(checkStart,checkEnd)+source.slice(readyStart,readyEnd),context);
+  if(readerStart>=0&&readerEnd>readerStart)vm.runInContext(source.slice(readerStart,readerEnd),context);
+  const block=source.slice(blockStart,blockEnd);
+  const action=block.slice(block.indexOf('async () => {')+'async () => {'.length);
+  assert.equal((action.match(/\bawait\b/g)||[]).length,2,'the original return check retains exactly its two awaits');
+  return {context,report,events,writes,seenErrors,originalError,nodes,state,
+    read:()=>{assert.equal(typeof context.readWorkspaceGraphDiagnostic,'function','W08 must expose its read-only fixed projection');return context.readWorkspaceGraphDiagnostic(seed);},
+    run:()=>vm.runInContext(`(async()=>{${otherStage?"await check('syntheticOther',async()=>{throw originalError;});":block}report.status='passed';})()${source.slice(tailStart+4)}`,context)};
+}
+
+for(const newline of ['LF','CRLF'])test(`the actual W08 projection is fixed, read-only and distinguishes strict mismatches with ${newline} source`,async()=>{
+  const f=await graphReturnFixture({newline});
+  assert.deepEqual(plain(f.read()),Object.fromEntries(WORKSPACE_GRAPH_KEYS.map(key=>[key,true])));
+  f.state.caseId='7';f.state.stats.flows='0';
+  let value=plain(f.read());assert.equal(value.caseNameStrictMatch,false);assert.equal(value.caseNameCoercedMatch,true);
+  assert.equal(value.flowsZeroStrict,false);assert.equal(value.flowsZeroCoerced,true);assert.equal(value.caseSelectorMatches,true);
+  f.state.caseId={private:'SYN_PRIVATE_ID'};f.state.stats.flows=[];f.state.lastGraph={nodes:{},edges:null};
+  value=plain(f.read());for(const key of ['caseNameCoercedMatch','caseSelectorMatches','flowsZeroCoerced','nodesEmpty','edgesEmpty'])assert.equal(value[key],null,key);
+  delete f.context.state;value=plain(f.read());assert.equal(value.statePresent,false);assert.equal(value.casesFramePresent,true);
+  for(const key of WORKSPACE_GRAPH_KEYS.slice(3,13))assert.equal(value[key],null,key);
+  delete f.context.document;delete f.context.location;delete f.context.layoutJob;f.context.window={};
+  value=plain(f.read());assert.deepEqual(Object.keys(value),WORKSPACE_GRAPH_KEYS);assert.equal(value.statePresent,false);
+  for(const key of WORKSPACE_GRAPH_KEYS.filter(key=>key!=='statePresent'))assert.equal(value[key],null,key);
+  assert.deepEqual(f.events,[],'a diagnostic read cannot invoke CDP, navigation or cleanup');
+  assert.doesNotMatch(JSON.stringify(value),/SYN_PRIVATE/);
+});
+
+for(const newline of ['LF','CRLF'])test(`the actual W08 check and catch/finally preserve success, failure and cleanup with ${newline} source`,async()=>{
+  const passed=await graphReturnFixture({newline});await passed.run();
+  assert.equal(passed.report.status,'passed');assert.equal(passed.report.workspaceGraphStep,'complete');
+  assert.equal(passed.report.checks.workspaceGraphLinkOpened,true);assert.equal(passed.report.workspaceGraphDiagnostic,undefined);
+  assert.equal(passed.events.includes('diagnostic'),false);
+  for(const failure of ['click','ready']) {
+    const f=await graphReturnFixture({newline,failure});await f.run();
+    assert.equal(f.report.status,'failed');assert.equal(f.report.failedCheck,'workspaceGraphLinkOpened');
+    assert.equal(f.report.workspaceGraphStep,failure==='click'?'click':'wait-ready');assert.equal(f.context.process.exitCode,1);
+    assert.equal(f.report.failure.kind,failure==='click'?'CDP_TIMEOUT':'TIMEOUT');assert.equal(f.seenErrors[0],f.originalError);
+    assert.deepEqual(plain(f.report.workspaceGraphDiagnostic),{available:true,...Object.fromEntries(WORKSPACE_GRAPH_KEYS.map(key=>[key,true]))});
+    assert.equal(f.events.filter(item=>item==='diagnostic').length,1);assert.ok(f.events.includes('bounded-3000'));
+    assert.ok(f.events.indexOf('diagnostic')<f.events.indexOf('release-startup'));
+    assert.deepEqual(f.events.slice(-8),['release-startup','close-page','bounded-5000','close-cdp','kill','bounded-10000','write-report','stderr']);
+    assert.equal(f.writes.length,1);assert.equal(f.writes[0].failure.kind,f.report.failure.kind);
+  }
+  const unrelated=await graphReturnFixture({newline,otherStage:true});await unrelated.run();
+  assert.equal(unrelated.report.failedCheck,'syntheticOther');assert.equal(unrelated.report.workspaceGraphDiagnostic,undefined);
+  assert.equal(unrelated.events.includes('diagnostic'),false);assert.equal(unrelated.context.process.exitCode,1);
+});
+
+for(const newline of ['LF','CRLF'])test(`the actual W08 failure projection rejects unavailable and malicious diagnostics with ${newline} source`,async()=>{
+  const valid=()=>Object.fromEntries(WORKSPACE_GRAPH_KEYS.map(key=>[key,true]));
+  const unknown={...valid(),private:'SYN_PRIVATE_NAME_ID_AMOUNT_URL'},invalid={...valid(),graphPresent:'SYN_PRIVATE_NAME_ID_AMOUNT_URL'},missing=valid();delete missing.homeCurrent;
+  const getter=valid();Object.defineProperty(getter,'homeCurrent',{enumerable:true,get(){throw new Error('SYN_PRIVATE_GETTER');}});
+  for(const options of [{diagnosticThrows:true},{diagnosticTimeout:true},{diagnosticValue:null},{diagnosticValue:unknown},{diagnosticValue:invalid},{diagnosticValue:missing},{diagnosticValue:getter}]) {
+    const f=await graphReturnFixture({newline,failure:'ready',...options});await f.run();
+    assert.deepEqual(plain(f.report.workspaceGraphDiagnostic),{available:false});assert.equal(f.report.failure.kind,'TIMEOUT');
+    assert.equal(f.seenErrors[0],f.originalError);assert.equal(f.report.failedCheck,'workspaceGraphLinkOpened');assert.equal(f.context.process.exitCode,1);
+    assert.ok(f.events.includes('bounded-3000'));assert.equal(f.writes.length,1);assert.ok(f.events.includes('kill'));
+    assert.doesNotMatch(JSON.stringify(f.writes),/SYN_PRIVATE/);
+  }
+  const f=await graphReturnFixture({newline,failure:'ready'});
+  Object.defineProperty(f.state,'graph',{get(){throw new Error('SYN_PRIVATE_PAGE_GETTER');}});
+  await f.run();assert.deepEqual(plain(f.report.workspaceGraphDiagnostic),{available:false});
+  assert.equal(f.report.failure.kind,'TIMEOUT');assert.doesNotMatch(JSON.stringify(f.writes),/SYN_PRIVATE/);
+  const singleRead=valid();let reads=0;Object.defineProperty(singleRead,'homeCurrent',{enumerable:true,get(){reads++;return true;}});
+  const once=await graphReturnFixture({newline,failure:'ready',diagnosticValue:singleRead});await once.run();
+  assert.equal(once.report.workspaceGraphDiagnostic.available,true);assert.equal(reads,1,'the host copies each approved value only once');
+});

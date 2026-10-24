@@ -223,6 +223,38 @@ function assertWorkspaceTools(value,{tab,collapsed}) {
   assert.deepEqual(value.table,{columns:7,overflow:'auto',focusable:true});
   assert.equal(value.duplicateScrollControls,0);
 }
+function readWorkspaceGraphDiagnostic(expectedName) {
+  const current=typeof state==='object'&&state!==null?state:null;
+  const doc=typeof document==='object'&&document!==null?document:null;
+  const frame=doc?.querySelector('#casesFrame'),graphPage=doc?.querySelector('#graphPage');
+  const home=doc?.querySelector('[data-nav-page="home"]'),select=doc?.querySelector('#caseSelect');
+  const cases=current&&Array.isArray(current.cases)?current.cases:null;
+  const caseId=current&&['string','number'].includes(typeof current.caseId)?String(current.caseId):null;
+  const stats=current?.stats,flows=stats?.flows;
+  const history=typeof window==='object'&&window!==null?window.FundsCanvasEditor?.history:null;
+  const status=typeof history?.status==='function'?history.status():null;
+  return {
+    pathHome:typeof location==='object'&&location!==null?location.pathname==='/':null,
+    documentComplete:doc?doc.readyState==='complete':null,
+    statePresent:current!==null,
+    graphPresent:current?!!current.graph:null,
+    graphLoadingFalse:current?!current.graphLoading:null,
+    graphInited:current?!!current.graphInited:null,
+    caseNameStrictMatch:cases?cases.find(item=>item.id===current.caseId)?.name===expectedName:null,
+    caseNameCoercedMatch:cases&&caseId!==null?cases.find(item=>['string','number'].includes(typeof item.id)&&String(item.id)===caseId)?.name===expectedName:null,
+    caseSelectorMatches:select&&caseId!==null?select.value===caseId:null,
+    flowsZeroStrict:stats?flows===0:null,
+    flowsZeroCoerced:stats&&['string','number'].includes(typeof flows)?Number(flows)===0:null,
+    nodesEmpty:Array.isArray(current?.lastGraph?.nodes)?current.lastGraph.nodes.length===0:null,
+    edgesEmpty:Array.isArray(current?.lastGraph?.edges)?current.lastGraph.edges.length===0:null,
+    casesFramePresent:doc?!!frame:null,
+    casesFrameHidden:frame?!!frame.hidden:null,
+    graphPageActive:graphPage?!graphPage.inert:null,
+    homeCurrent:home?home.getAttribute('aria-current')==='page':null,
+    layoutIdle:typeof layoutJob==='undefined'?null:!layoutJob,
+    historyIdle:status&&typeof status==='object'?!status.busy:null,
+  };
+}
 function readImportEntry() {
   const label=document.querySelector('dialog[open] label.file-drop'),input=label?.querySelector('input[type="file"]');
   return {associated:!!input&&!!input.id&&label.htmlFor===input.id&&label.control===input
@@ -933,11 +965,14 @@ async function restorePresentationPreferences(snapshot) {
     await readyCases(`!document.querySelector('dialog[open]')`);
   });
   await check('workspaceGraphLinkOpened', async () => {
+    report.workspaceGraphStep='click';
     await clickElement(`[...document.querySelectorAll('.heading-actions button')].find(node=>node.textContent.trim()==='进入画图')`,page,{frame:true});
+    report.workspaceGraphStep='wait-ready';
     await readyDocument(`location.pathname === '/' && typeof state === 'object' && !state.graphLoading
       && state.graphInited && state.cases.find(item => item.id === state.caseId)?.name === ${JSON.stringify(SEED_CASE)}
       &&state.stats.flows===0&&state.lastGraph.nodes.length===0&&document.querySelector('#casesFrame').hidden
       &&document.querySelector('[data-nav-page="home"]').getAttribute('aria-current')==='page'`);
+    report.workspaceGraphStep='complete';
   });
   await check('installedPersistentCaptionNavigation', async () => {
     report.titlebar.navigation = {sameShellTarget:true,caption:await titlebarProbe.read()};
@@ -1158,6 +1193,23 @@ async function restorePresentationPreferences(snapshot) {
 })().catch(async error => {
   report.status = 'failed'; report.failedCheck = stage; process.exitCode = 1;
   report.failure=safeInstalledFailure(error);
+  if (stage==='workspaceGraphLinkOpened') {
+    try {
+      const value=await bounded(evaluate(`(${readWorkspaceGraphDiagnostic.toString()})(${JSON.stringify(SEED_CASE)})`),3000);
+      const keys=['pathHome','documentComplete','statePresent','graphPresent','graphLoadingFalse','graphInited',
+        'caseNameStrictMatch','caseNameCoercedMatch','caseSelectorMatches','flowsZeroStrict','flowsZeroCoerced','nodesEmpty','edgesEmpty',
+        'casesFramePresent','casesFrameHidden','graphPageActive','homeCurrent','layoutIdle','historyIdle'];
+      if (!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length!==keys.length) throw new Error('WORKSPACE_DIAGNOSTIC_INVALID');
+      const projection={available:true};
+      for (const key of keys) {
+        if (!Object.hasOwn(value,key)) throw new Error('WORKSPACE_DIAGNOSTIC_INVALID');
+        const item=value[key];
+        if (item!==null&&typeof item!=='boolean') throw new Error('WORKSPACE_DIAGNOSTIC_INVALID');
+        projection[key]=item;
+      }
+      report.workspaceGraphDiagnostic=projection;
+    } catch { report.workspaceGraphDiagnostic={available:false}; }
+  }
   if (/^(STARTUP|TITLEBAR)_[A-Z0-9_]{1,80}$/.test(error?.message || '')) {
     report.startupFailure = error.message;
     // These two projections contain only this helper's bounded numeric DOM
