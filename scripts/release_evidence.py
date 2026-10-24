@@ -4,6 +4,8 @@ No Git or network operations are performed here.  Callers publish the verified
 directory to the dedicated evidence branch before changing Release assets.
 """
 from pathlib import Path, PurePosixPath
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -33,6 +35,8 @@ STANDARD_FILES = {
     "native-installed-app.png", "native-installer-smoke.json",
     "standard-user-environment.json",
 }
+FRESH_ARCHIVE = "fresh-user-compatibility.zip"
+FRESH_REPORTS = {"fresh-startup-smoke.json", "installed-formats-smoke.json"}
 CANDIDATE_REPORTS = {
     "nativeManifestSha256": "build-manifest.json",
     "hostResourcesReportSha256": "packaged-host-resources.json",
@@ -56,7 +60,7 @@ STARTUP_NATIVE_SCREENSHOTS = {
     "minimumCapture": "native-installed-app.startup-native-minimum.png",
 }
 OPTIONAL_EVIDENCE_FILES = {name: name for name in (
-    {ICON_REPORT, TASKBAR_SCREENSHOT} | UPDATE_SCREENSHOTS
+    {ICON_REPORT, TASKBAR_SCREENSHOT, FRESH_ARCHIVE} | UPDATE_SCREENSHOTS
     | set(STARTUP_RENDERER_SCREENSHOTS.values()) | set(STARTUP_NATIVE_SCREENSHOTS.values()))}
 TASKBAR_UNAVAILABLE_REASONS = {"SHELL_TASKBAR_UNAVAILABLE", "TASKBAR_CAPTURE_FAILED"}
 
@@ -280,7 +284,89 @@ def standard_evidence_files(candidate, tag, app):
     return files
 
 
-def _required_files(candidate, tag, app, installer, standard):
+def fresh_declaration(candidate, tag):
+    """New candidates declare fresh evidence; historical archives stay readable."""
+    _require(isinstance(candidate, dict) and isinstance(candidate.get("checks"), dict),
+             "Invalid Windows candidate checks")
+    checks = candidate.get("checks", {})
+    has_check = "freshInstallerLifecycle" in checks
+    has_digest = "freshUserCompatibilitySha256" in candidate
+    _require(has_check == has_digest, "Fresh declaration requires its check and report digest")
+    _require(int(tag.removeprefix("v0.1.")) < 13 or has_check,
+             "This candidate version requires fresh-user evidence")
+    if has_check:
+        _require(checks["freshInstallerLifecycle"] == "passed"
+                 and _sha(candidate["freshUserCompatibilitySha256"]), "Invalid fresh-user declaration")
+    return has_check
+
+
+def fresh_evidence_files(candidate, tag, app):
+    _require(fresh_declaration(candidate, tag), "Fresh-user evidence is not declared")
+    # FreshInstallOnly is a separate lifecycle and never runs an update fixture.
+    return standard_evidence_files({**candidate, "inAppUpdateFixture": False}, tag, app) | FRESH_REPORTS
+
+
+def _fresh_reports(candidate, tag, contents, installer, sums):
+    """Bind the separate fresh lifecycle to this exact EXE and original artifact."""
+    compatibility = _json_value(contents["compatibility.json"])
+    lifecycle = _json_value(contents["native-installer-smoke.json"])
+    for report in (compatibility, lifecycle):
+        _require(isinstance(report, dict) and report.get("status") == "passed"
+                 and report.get("mode") == "fresh" and report.get("targetVersion") == tag[1:]
+                 and report.get("currentInstallerSha256") == installer["sha256"]
+                 and type(report.get("currentInstallerBytes")) is int
+                 and report["currentInstallerBytes"] == installer["bytes"], "Fresh lifecycle identity mismatch")
+    checks = compatibility.get("checks")
+    _require(isinstance(checks, dict) and checks.get("cleanup") is True
+             and all(value is True for value in checks.values()), "Fresh account cleanup did not pass")
+    checks = lifecycle.get("checks")
+    _require(lifecycle.get("fixtureOrigin") == "current-seeded"
+             and isinstance(checks, dict) and all(checks.get(key) == "passed" for key in (
+                 "freshInstalled", "freshStartup", "frozenBackendFormats", "cleanup"))
+             and all(value == "passed" for value in checks.values())
+             and not any(checks.get(key) == "passed" for key in (
+                 "priorInstalled", "upgradedExistingCaseData", "legacyCasePackageCompatible")),
+             "Fresh lifecycle must prove current installation and cleanup")
+    encoded = lifecycle.get("firstStartupPreferencesBase64")
+    _require(isinstance(encoded, str) and 0 < len(encoded) <= 21_848,
+             "Fresh startup preferences bytes are missing")
+    try:
+        original = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        raise ValueError("Invalid fresh startup preferences encoding") from None
+    def invalid_constant(value):
+        raise ValueError("Fresh startup preferences must contain regular JSON numbers")
+    preferences = json.loads(original.decode("utf-8-sig"), parse_constant=invalid_constant)
+    _require(base64.b64encode(original).decode("ascii") == encoded and 0 < len(original) <= 16_384
+             and type(lifecycle.get("firstStartupPreferencesBytes")) is int
+             and len(original) == lifecycle["firstStartupPreferencesBytes"]
+             and hashlib.sha256(original).hexdigest() == lifecycle.get("firstStartupPreferencesSha256")
+             and isinstance(preferences, dict), "Fresh startup preferences bytes differ")
+    for name in FRESH_REPORTS:
+        report = _json_value(contents[name])
+        _require(isinstance(report, dict) and report.get("status") == "passed"
+                 and isinstance(report.get("checks"), dict) and report["checks"]
+                 and all(value is True for value in report["checks"].values()),
+                 f"Fresh helper checks did not pass: {name}")
+    formats = _json_value(contents["installed-formats-smoke.json"])
+    _require(all(formats["checks"].get(key) is True for key in (
+        "fourFormatsExact", "deterministicControls", "sourceReportsAndTraces", "publicRawPackageFacts",
+        "cancellationChainExact", "lateConflictExact", "suffixlessPackageExact", "cleanProcessRestore",
+        "reimportAddsZero", "desktopAuthentication", "activationFree", "ownedRuntime", "eofShutdown", "cleanup")),
+        "Frozen-backend import acceptance is incomplete")
+    startup = _json_value(contents["fresh-startup-smoke.json"])
+    _require(startup.get("mode") == "fresh-startup" and all(startup["checks"].get(key) is True for key in (
+        "freshStateInitiallyAbsent", "installedExecutableStarted", "authenticatedWorkspaceLoaded",
+        "defaultCaseEmpty", "activationFree", "noPageExceptions", "normalClose",
+        "backendReleasedAfterClose", "clientCreatedDefaultData")), "Fresh startup acceptance is incomplete")
+    for name, value in contents.items():
+        _require(hashlib.sha256(value).hexdigest() == sums.get("build/desktop/fresh-standard-user/" + name),
+                 f"Fresh-user original checksum mismatch: {name}")
+    _require(candidate["freshUserCompatibilitySha256"] == sums.get(
+        "build/desktop/fresh-standard-user/compatibility.json"), "Fresh-user candidate checksum mismatch")
+
+
+def _required_files(candidate, tag, app, installer, standard, fresh=None):
     icons = _icon_declaration(candidate, tag)
     _require(STANDARD_FILES <= set(standard), "Missing standard-user ZIP members")
     standard_app = _json_value(standard["native-installed-app-smoke.json"])
@@ -308,6 +394,23 @@ def _required_files(candidate, tag, app, installer, standard):
         if digest is not None:
             _require(hashlib.sha256(standard[name]).hexdigest() == digest,
                      f"Standard-user startup capture checksum mismatch: {name}")
+    if fresh_declaration(candidate, tag):
+        _require(isinstance(fresh, dict) and STANDARD_FILES | FRESH_REPORTS <= set(fresh),
+                 "Missing fresh-user ZIP members")
+        fresh_app = _json_value(fresh["native-installed-app-smoke.json"])
+        _require(set(fresh) == fresh_evidence_files(candidate, tag, fresh_app),
+                 "Unexpected or missing fresh-user ZIP members")
+        if icons:
+            _account_icon_reports(fresh_app, _json_value(fresh["native-installer-smoke.json"]), "fresh-user")
+        capture = _taskbar_capture(fresh_app, required=icons, account="fresh-user")
+        if capture is not None:
+            _require(hashlib.sha256(fresh[TASKBAR_SCREENSHOT]).hexdigest() == capture,
+                     "Fresh-user taskbar capture checksum mismatch")
+        for name, digest in _startup_captures(fresh_app, tag, "fresh-user").items():
+            if digest is not None:
+                _require(hashlib.sha256(fresh[name]).hexdigest() == digest,
+                         f"Fresh-user startup capture checksum mismatch: {name}")
+        files[FRESH_ARCHIVE] = FRESH_ARCHIVE
     return files, captures, icons
 
 
@@ -364,7 +467,8 @@ def prepare_evidence(base: Path, output: Path, *, tag: str, source_commit: str,
     app = _json(_regular(base, EVIDENCE_FILES["native-installed-app-smoke.json"]))
     installed = _json(_regular(base, EVIDENCE_FILES["native-installer-smoke.json"]))
     standard = _standard_contents(_regular(base, EVIDENCE_FILES["standard-user-compatibility.zip"]))
-    required, _, _ = _required_files(candidate, tag, app, installed, standard)
+    fresh = _standard_contents(_regular(base, FRESH_ARCHIVE)) if fresh_declaration(candidate, tag) else None
+    required, _, _ = _required_files(candidate, tag, app, installed, standard, fresh)
     sources = {name: _regular(base, relative) for name, relative in required.items()}
     for name, relative in OPTIONAL_EVIDENCE_FILES.items():
         _require(name in required or not ((base / relative).exists() or (base / relative).is_symlink()),
@@ -420,7 +524,8 @@ def verify_evidence(directory: Path) -> dict:
     app = _json(evidence / "native-installed-app-smoke.json")
     installed = _json(evidence / "native-installer-smoke.json")
     standard = _standard_contents(evidence / "standard-user-compatibility.zip")
-    required, captures, icons = _required_files(candidate, manifest["tag"], app, installed, standard)
+    fresh = _standard_contents(_regular(evidence, FRESH_ARCHIVE)) if fresh_declaration(candidate, manifest["tag"]) else None
+    required, captures, icons = _required_files(candidate, manifest["tag"], app, installed, standard, fresh)
     allowed = {"evidence/" + name for name in required}
     _require(set(files) in (allowed, allowed | {optional}), "Unexpected or missing evidence files")
     if icons:
@@ -479,7 +584,7 @@ def verify_evidence(directory: Path) -> dict:
     installer_path = f"build/desktop/electron/{installer['name']}"
     _require(sums.get(installer_path) == installer["sha256"], "Installer candidate checksum mismatch")
     for name, source_path in required.items():
-        if name not in {"windows-candidate.sha256", "standard-user-compatibility.zip", "release-verification.json"}:
+        if name not in {"windows-candidate.sha256", "standard-user-compatibility.zip", FRESH_ARCHIVE, "release-verification.json"}:
             _require(sums.get("build/desktop/" + source_path) == files["evidence/" + name]["sha256"],
                      f"Original artifact checksum mismatch: {name}")
     for key, name in CANDIDATE_REPORTS.items():
@@ -492,6 +597,11 @@ def verify_evidence(directory: Path) -> dict:
                  f"Standard-user original checksum mismatch: {name}")
     _require(candidate.get("standardUserCompatibilitySha256") == sums.get("build/desktop/standard-user/compatibility.json"),
              "Standard-user candidate checksum mismatch")
+    if fresh is not None:
+        _require(_sha(summary.get("freshUserArchiveSha256"))
+                 and _digest(evidence / FRESH_ARCHIVE) == summary["freshUserArchiveSha256"],
+                 "Fresh-user ZIP checksum mismatch")
+        _fresh_reports(candidate, manifest["tag"], fresh, installer, sums)
     if optional in files:
         _snapshot(_json(evidence / "release.original.json"), manifest["tag"], installer,
                   {name: files["evidence/" + name] for name in required})
