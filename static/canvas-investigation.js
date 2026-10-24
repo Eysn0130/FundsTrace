@@ -43,6 +43,7 @@
   }
   function effectiveWindow() { return normalizeWindow(preview || state.presentation.timeWindow); }
   function active() { return hasWindow(effectiveWindow()); }
+  function projectionReady() { return !active() || cache.has(windowKey(effectiveWindow())); }
   function exportWindow() {
     const value = effectiveWindow();
     return active() ? { start: value.start || null, end: value.end || null,
@@ -105,7 +106,11 @@
     if (!inflight.has(key) && !errors.has(key)) {
       const context = caseContext(), source = full;
       void loadProjection(value).then(() => {
-        if (live(context, source) && key === windowKey(effectiveWindow())) { state.forceFit = false; renderGraph(); }
+        if (live(context, source) && key === windowKey(effectiveWindow())) {
+          const completeOpeningFit = state.graphView.openingFit?.beforeProjection(key);
+          state.forceFit = false; renderGraph();
+          completeOpeningFit?.();
+        }
       }).catch(() => sync());
     }
     // Never draw old/full-period totals under a narrower time label.
@@ -436,6 +441,6 @@
     sync();
   }
   root.FundsInvestigation = Object.freeze({ execute, sync, active, displayGraph, description, exportWindow, resetPreview,
-    normalizeWindow, hasWindow, windowKey, requestBody });
+    normalizeWindow, hasWindow, windowKey, requestBody, projectionReady });
   if (document.readyState === 'loading') root.addEventListener('DOMContentLoaded', mount, { once: true }); else mount();
 })(window);

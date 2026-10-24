@@ -764,6 +764,118 @@ test('initial layout: a named canvas without valid saved coordinates runs one au
   assert.equal(JSON.stringify(f.state.lastGraph),facts);
 });
 
+function openingProjectionScene() {
+  const f=graphInteractions({geometry:true}),fits=[],pending=[];
+  const cameraEvents=new Map(),container=f.h.element('#graphContainer');
+  container.addEventListener=(type,listener)=>{if(!cameraEvents.has(type))cameraEvents.set(type,new Set());cameraEvents.get(type).add(listener)};
+  container.removeEventListener=(type,listener)=>cameraEvents.get(type)?.delete(listener);
+  const attach=graph=>{
+    let matrix=[.15,0,0,0,.15,0,20,30,1];
+    const get=graph.get.bind(graph),group={getMatrix:()=>matrix,setMatrix:value=>{matrix=Array.from(value)}};
+    graph.get=name=>name==='group'?group:get(name);
+    graph.getZoom=()=>matrix[0];
+    graph.zoomTo=zoom=>{matrix[0]=matrix[4]=zoom};
+    graph.translate=(x,y)=>{matrix[6]+=x;matrix[7]+=y};
+    graph.getCanvasByPoint=(x,y)=>({x:x*matrix[0]+matrix[6],y:y*matrix[4]+matrix[7]});
+    graph.getPointByCanvas=(x,y)=>({x:(x-matrix[6])/matrix[0],y:(y-matrix[7])/matrix[4]});
+    graph.getPointByClient=graph.getPointByCanvas;
+  };
+  const Graph=f.env.G6.Graph;
+  f.env.G6.Graph=class extends Graph { constructor(options){super(options);attach(this)} };
+  attach(f.state.graph);
+  f.env.fitGraph=(...args)=>{fits.push(f.state.graph.getNodes().map(item=>item.model.id));return f.fitGraph(...args)};
+  f.env.AbortController=AbortController;
+  f.env.document.readyState='loading';
+  f.h.run(readFileSync(new URL('../static/canvas-investigation.js',import.meta.url),'utf8'));
+  const nodes=['SYN-A','SYN-B','SYN-C'].map(account=>({account,name:account,in_cnt:1,out_cnt:1}));
+  const edge=(source,target,id)=>({source,target,ids:[id],cnt:1,total:'0.01',currencies:['CNY'],
+    amount_totals:[{currency:'CNY',amount:'0.01'}],tmin:'2026-01-03 10:02:00',tmax:'2026-01-03 10:02:00'});
+  const full={nodes,edges:[edge('SYN-A','SYN-B','1'),edge('SYN-B','SYN-C','2')],tracked_ids:['1','2']};
+  const snapshot={nodes:[{id:'SYN-A',x:100,y:100},{id:'SYN-B',x:500,y:100},{id:'SYN-C',x:3000,y:100}],
+    edges:[{source:'SYN-A',target:'SYN-B',type:'polyline',controlPoints:[{x:280,y:140}],routeManual:true,labelRatio:.37}],
+    presentation:{timeWindow:{start:'2026-01-03 10:02:00',end:'2026-01-04 10:03:00',includeUndated:false}},
+    display:{labelMode:'all',edgeLabels:['money','time']}};
+  const projected={nodes:nodes.slice(0,2),edges:full.edges.slice(0,1),summary:{selected_count:1},timeline:[]};
+  f.h.network(path=>{
+    if(path==='/api/canvases/7?case_id=1')return response({id:7,name:'合成时间窗口',snapshot});
+    if(path.startsWith('/api/graph?'))return response(full);
+    if(path==='/api/canvas/investigation/time'){const request=deferred();pending.push(request);return request.promise}
+    if(path.startsWith('/api/export/tracked.xlsx'))return {ok:true,blob:async()=>new Blob(['synthetic'])};
+    return response({});
+  });
+  const flush=async()=>{for(let i=0;i<8;i++)await new Promise(resolve=>setImmediate(resolve))};
+  const settle=(maxDelay=300)=>{
+    for(let pass=0;pass<5;pass++)for(const timer of f.h.timers.filter(timer=>!timer.cancelled&&!timer.ran&&timer.delay<=maxDelay)){
+      timer.ran=true;timer.callback();
+    }
+  };
+  return {...f,fits,pending,full,snapshot,projected,flush,settle,
+    async open(){await f.h.run('loadCanvas(7)');await flush()},
+    async deliver(value=projected,index=pending.length-1){pending[index].resolve(response(value));await flush();settle()},
+    cameraEvent(type){for(const listener of cameraEvents.get(type)||[])listener({button:0})},
+    geometry:()=>JSON.stringify({positions:f.state.positions,bends:f.state.edgeBendPos,ratios:f.state.edgeLabelPos}),
+  };
+}
+
+test('opening projection: a named time-window canvas fits the visible result once after the opening timer has elapsed',async()=>{
+  const f=openingProjectionScene();await f.open();
+  assert.equal(f.pending.length,1);assert.equal(f.state.graph.getNodes().length,0);
+  const before=f.geometry();f.settle(300);
+  assert.deepEqual(f.fits,[],'the opening fit must wait beyond 250ms rather than fit an empty placeholder');
+  await f.deliver();
+  assert.deepEqual(f.fits,[['SYN-A','SYN-B']],'the completed projection owns one fit of the actual visible graph');
+  assert.equal(f.geometry(),before,'opening fit preserves all saved coordinates, manual bends and label ratios');
+  f.h.run('renderGraph()');f.settle();
+  assert.equal(f.fits.length,1,'ordinary later renders cannot reuse the opening intent');
+  assert.equal(f.state.lastGraph.nodes.length,3);
+});
+
+test('opening projection: a fast response fits once and cancels the later opening timer',async()=>{
+  const f=openingProjectionScene();await f.open();await f.deliver();
+  assert.deepEqual(f.fits,[['SYN-A','SYN-B']]);f.settle();assert.equal(f.fits.length,1);
+});
+
+for(const empty of [false,true])test(`opening projection: ${empty?'empty':'populated'} cached result consumes the opening fit without another request`,async()=>{
+  const f=openingProjectionScene();await f.open();
+  const result=empty?{...f.projected,nodes:[],edges:[]}:f.projected;
+  f.settle();await f.deliver(result);
+  assert.equal(f.fits.length,empty?0:1,'an empty projection never fits an empty placeholder');
+  f.fits.length=0;f.env.savedOpeningSnapshot=f.snapshot;f.h.run('applyCanvasSnapshot(savedOpeningSnapshot)');f.settle();
+  assert.equal(f.pending.length,1,'the existing exact-window projection is reused');
+  assert.deepEqual(f.fits,empty?[]:[['SYN-A','SYN-B']]);
+  f.h.run('renderGraph()');f.settle();assert.equal(f.fits.length,empty?0:1);
+});
+
+for(const interaction of ['zoom','pan','camera round trip','focus','layout','window round trip','case A-B-A','export'])
+test(`opening projection: ${interaction} during the wait revokes the old automatic fit`,async()=>{
+  const f=openingProjectionScene();await f.open();f.settle();
+  if(interaction==='zoom'){f.cameraEvent('wheel');f.state.graph.zoomTo(.8)}
+  if(interaction==='pan'){f.cameraEvent('pointerdown');f.state.graph.translate(100,50)}
+  if(interaction==='camera round trip'){
+    f.cameraEvent('pointerdown');f.state.graph.translate(100,50);f.state.graph.translate(-100,-50);
+  }
+  if(interaction==='focus'){
+    const focused=await f.state.graphCamera.focus({x:100,y:100},{duration:0});assert.equal(focused.ok,true);
+  }
+  if(interaction==='layout')await f.h.run('relayout(true)');
+  if(interaction==='window round trip'){
+    f.h.run('globalThis.savedWindow=state.presentation.timeWindow;state.presentation.timeWindow={start:"",end:"",includeUndated:true};renderGraph();state.presentation.timeWindow=savedWindow;renderGraph()');
+  }
+  if(interaction==='case A-B-A')f.h.run('selectCase(2);selectCase(1)');
+  if(interaction==='export'){f.h.bindApp();await f.h.sampleExport('xlsx');assert.equal(f.h.downloads.length,1)}
+  const camera=JSON.stringify(f.state.graph.get('group').getMatrix()),fits=f.fits.length;
+  await f.deliver();
+  assert.equal(f.fits.length,fits,'the delayed result cannot reclaim an explicit later camera/workspace action');
+  assert.equal(JSON.stringify(f.state.graph.get('group').getMatrix()),camera);
+});
+
+test('opening projection: a retired case response cannot fit or complete a newer opening of the same case',async()=>{
+  const f=openingProjectionScene();await f.open();f.settle();
+  f.h.run('selectCase(2);selectCase(1)');await f.open();f.settle();assert.equal(f.pending.length,2);
+  await f.deliver(f.projected,0);assert.equal(f.fits.length,0);assert.equal(f.state.graph.getNodes().length,0);
+  await f.deliver(f.projected,1);assert.deepEqual(f.fits,[['SYN-A','SYN-B']]);
+});
+
 test('stable expansion: hidden accounts reserve their node bodies and complete multiline label area',()=>{
   const f=stableExpansionScene(),copy=value=>JSON.parse(JSON.stringify(value));
   f.state.lastGraph.nodes.find(node=>node.account==='SYN-D').name='合成隐藏账户用于测试完整多行标签占位不要被新增节点覆盖';
