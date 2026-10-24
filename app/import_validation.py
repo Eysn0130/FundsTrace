@@ -76,7 +76,7 @@ def table_manifest(plan, rows):
         manifest[position] = _facts(row)
     if manifest.keys() != accepted.keys():
         raise IntegrityError("accepted source facts missing")
-    if plan["profile"] == table_archive.PROFILE:
+    if plan["profile"] in table_archive.CANCELLATION_PROFILES:
         try:
             # Reconstruct the complete-member proof before it can exclude a
             # historical original from effective_flows. This reuses the package

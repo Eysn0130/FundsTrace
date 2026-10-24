@@ -2,6 +2,7 @@
 import io
 import json
 import uuid
+from decimal import Decimal
 
 from fastapi import HTTPException
 import pytest
@@ -304,7 +305,8 @@ def test_revoked_pair_preserves_a_different_manual_history_without_reinterpretin
 
 
 @pytest.mark.parametrize("history_difference", ["witness_summary", "observer_trade_no"])
-def test_public_lifecycle_round_trip_keeps_other_source_interpretations(client, database, make_case, history_difference):
+def test_public_lifecycle_round_trip_keeps_other_source_interpretations(client, database, make_case, history_difference, monkeypatch):
+    from test_archive_profile_upgrade import frozen_preview
     rows = round_trip()
     for row in rows:
         row["凭证号"] = row["交易流水号"]
@@ -329,7 +331,7 @@ def test_public_lifecycle_round_trip_keeps_other_source_interpretations(client, 
     assert response.status_code == 200, response.text
     old = response.json()
     assert complete(client, cid, old)["stage"] == "done"
-    current = preview(client, cid, archive, "synthetic.zip")
+    current = frozen_preview(client, cid, archive, monkeypatch, profile=V3)
     assert current["table_summary"]["cancelled"] == 2
     result = complete(client, cid, current)
     assert result["stage"] == "done", result
@@ -398,22 +400,43 @@ def test_public_unresolved_v3_records_remain_portable_without_claiming_a_pair(
     ("funds-trace-table-v6", 3, 2),
     ("funds-trace-table-v7", 3, 2),
 ])
+@pytest.mark.parametrize("archive_profile", [V3, table_archive.PROFILE])
 def test_public_later_competing_original_preserves_proof_history_and_coverage_gap(
-        client, database, make_case, monkeypatch, profile, expected_gaps, expected_flows):
+        client, database, make_case, monkeypatch, profile, expected_gaps, expected_flows, archive_profile):
+    from test_archive_profile_upgrade import frozen_preview
     rows = round_trip()
     for row in rows:
         row.update({"凭证号": row["交易流水号"], "商户名称": "Synthetic competing interpretation"})
     payload, archive = source(rows, path="table.csv")
     cid = make_case("Synthetic later original interpretation")
-    proof = preview(client, cid, archive, "synthetic.zip")
-    assert complete(client, cid, proof)["stage"] == "done"
+    proof = frozen_preview(client, cid, archive, monkeypatch, profile=archive_profile)
+    proof_job = complete(client, cid, proof)
+    assert proof_job["stage"] == "done"
+    old_facts = database.q_raw("select * from flows where case_id=? order by id", [cid])
+    old_proof = database.q_raw("select * from import_records where source_id=? order by record_no", [proof["import_id"]])
     with monkeypatch.context() as frozen:
         frozen.setattr(imports, "TABLE_PROFILE", profile)
         later = preview(client, cid, payload)
     revised = client.post(f"/api/v1/cases/{cid}/imports/{later['import_id']}/preview", json={
         "mode": later["mode"], "mapping": {**later["mapping"], "summary": "商户名称"}})
     assert revised.status_code == 200, revised.text
-    assert complete(client, cid, revised.json())["stage"] == "done"
+    later_job = complete(client, cid, revised.json())
+    assert later_job["stage"] == "done"
+    if archive_profile == table_archive.PROFILE:
+        # v4 protects both the witness and the cancelled original from a later
+        # competing interpretation; the explicit v3 expectations stay frozen.
+        expected_gaps, expected_flows = 3, 1
+        records = client.get(f"/api/v1/cases/{cid}/sources/{later['import_id']}/report").json()["items"]
+        for record in records[:2]:
+            assert record["disposition"] == "unresolved"
+            assert record["details"]["counterparty_basis"] == table_import.ARCHIVE_HISTORY_CONFLICT_BASIS
+        assert later_job["result"]["ok"] == later_job["result"]["rows_dup"] == 0
+        assert database.q_raw("select * from flows where case_id=? order by id", [cid]) == old_facts
+        assert database.q_raw("select * from import_records where source_id=? order by record_no", [proof["import_id"]]) == old_proof
+        assert client.get(f"/api/v1/cases/{cid}/imports/{proof['import_id']}").json()["result"] == proof_job["result"]
+        for table in ("flows", "effective_flows"):
+            assert database.q_raw(f"select count(*) n,sum(amount) amount from {table} where case_id=?", [cid]) == [
+                {"n": 1, "amount": Decimal("1.00")}]
     assert database.q_raw("select count(*) n from flows where case_id=?", [cid])[0]["n"] == expected_flows
     coverage = client.get(f"/api/v1/cases/{cid}/stats").json()["import_coverage"]
     assert coverage["unresolved_records"] == expected_gaps and not coverage["financial_interpretation_complete"]
@@ -427,7 +450,7 @@ def test_public_later_competing_original_preserves_proof_history_and_coverage_ga
             f"select {facts} from {table} where case_id=? order by trade_no,summary", [cid])
     assert database.q_raw("select parser_version,imported_at from import_sources where case_id=? order by imported_at", [restored]) == database.q_raw(
         "select parser_version,imported_at from import_sources where case_id=? order by imported_at", [cid])
-    assert database.q_raw("select r.record_no,r.disposition,r.details_json from import_records r join import_sources s on s.source_id=r.source_id where r.case_id=? and s.parser_version=? order by r.record_no", [restored, V3]) == original_records
+    assert database.q_raw("select r.record_no,r.disposition,r.details_json from import_records r join import_sources s on s.source_id=r.source_id where r.case_id=? and s.parser_version=? order by r.record_no", [restored, archive_profile]) == original_records
 
 
 def _seed_later_negative_actual(database, cid, proof_source):

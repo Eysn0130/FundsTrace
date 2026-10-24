@@ -1,0 +1,302 @@
+"""Public exact case statistics and their same-read coverage counting contract."""
+from decimal import Decimal
+
+import pytest
+
+from app import table_import
+from app.import_coverage import import_coverage
+from app.services import cases
+from test_archive_profile_upgrade import frozen_preview
+from test_automatic_table_import import preview
+from test_feedback_import_api import complete
+from test_table_cancellations import round_trip, source
+from test_table_contract_lifecycle import source_records
+from test_table_mapping_versions import profile_preview
+
+
+V3 = "funds-trace-table-archive-v3"
+V4 = "funds-trace-table-archive-v4"
+
+
+def coverage_value(*, unresolved=0, non_monetary=0, cancelled=0, excluded=0):
+    return {"scope": "source_reported_flows", "unresolved_records": unresolved,
+            "non_monetary_records": non_monetary, "cancelled_records": cancelled,
+            "excluded_flows": excluded, "financial_interpretation_complete": unresolved == 0}
+
+
+def assert_stats(client, cid, *, flows, accounts, batches, total, currency, totals, coverage):
+    response = client.get(f"/api/v1/cases/{cid}/stats")
+    assert response.status_code == 200, response.text
+    expected = {"case_id": str(cid), "flows": flows, "accounts": accounts, "batches": batches,
+                "amount_total": total, "currency": currency, "amount_totals": totals,
+                "import_coverage": coverage}
+    assert response.json() == expected
+    legacy = client.get("/api/stats", params={"case_id": cid})
+    assert legacy.status_code == 200, legacy.text
+    assert legacy.json() == {"flows": flows, "accounts": accounts, "batches": batches,
+                             "import_coverage": coverage}
+    return expected
+
+
+def assert_coverage_branches(database, cid, expected):
+    # The supplied value is derived only from this current case while holding
+    # the same lock. Independent expected coverage still checks every field.
+    with database._lock:
+        counts = database.q_raw(
+            "select (select count(*) from flows where case_id=?) raw_count,"
+            "(select count(*) from effective_flows where case_id=?) effective_count", [cid, cid])[0]
+        excluded = counts["raw_count"] - counts["effective_count"]
+        assert excluded == expected["excluded_flows"]
+        assert import_coverage(cid) == expected
+        assert import_coverage(cid, known_excluded=excluded) == expected
+
+
+def done(client, cid, view):
+    result = complete(client, cid, view)
+    assert result["stage"] == "done", result
+    return result
+
+
+def shared_pair(client, cid, *, profile=V4, zero_witness=False, monkeypatch=None):
+    rows = round_trip()
+    if zero_witness:
+        rows[0]["交易金额"] = "0.00"
+    payload, archive = source(rows, path="bank/renamed.csv")
+    ordinary = preview(client, cid, payload, "standalone.csv")
+    done(client, cid, ordinary)
+    proof = (frozen_preview(client, cid, archive, monkeypatch, profile)
+             if profile == V3 else preview(client, cid, archive, "synthetic.zip"))
+    done(client, cid, proof)
+    return ordinary, proof, payload, archive
+
+
+@pytest.mark.parametrize("batches", [0, 2], ids=["empty-case", "batches-without-flows"])
+def test_stats_empty_effective_subset_still_reports_its_independent_batch_count(
+        client, database, make_case, batches):
+    cid = make_case("Synthetic empty stats case")
+    for index in range(batches):
+        database.x("insert into batches(case_id,filename) values (?,?)", [cid, f"synthetic-empty-{index}.csv"])
+    expected = coverage_value()
+    assert_stats(client, cid, flows=0, accounts=0, batches=batches, total="0.00", currency=None,
+                 totals=[], coverage=expected)
+    assert_coverage_branches(database, cid, expected)
+
+
+def test_all_raw_money_excluded_by_a_zero_witness_pair_is_an_empty_currency_result(
+        client, database, make_case):
+    cid = make_case("Synthetic all raw funds excluded stats")
+    shared_pair(client, cid, zero_witness=True)
+    assert database.q_raw("select count(*) n,sum(amount) amount from flows where case_id=?", [cid]) == [
+        {"n": 1, "amount": Decimal("10.00")}]
+    # Coverage keeps each non-monetary source coordinate; A02 discharges only
+    # the ordinary negative diagnosis, without merging these two path records.
+    expected = coverage_value(non_monetary=2, cancelled=2, excluded=1)
+    assert_stats(client, cid, flows=0, accounts=0, batches=2, total="0.00", currency=None,
+                 totals=[], coverage=expected)
+    assert_coverage_branches(database, cid, expected)
+
+
+@pytest.mark.parametrize("rows,total,currency,totals", [
+    ([("1.01", "USD"), ("2.02", "USD")], "3.03", "USD",
+     [{"currency": "USD", "amount": "3.03"}]),
+    ([("1.01", ""), ("2.02", None)], "3.03", "",
+     [{"currency": "", "amount": "3.03"}]),
+    ([("0.01", None), ("0.02", ""), ("1.01", "CNY"), ("2.02", "USD"), ("3.03", "CNY")], None, None,
+     [{"currency": "", "amount": "0.03"}, {"currency": "CNY", "amount": "4.04"},
+      {"currency": "USD", "amount": "2.02"}]),
+    ([(None, "USD")], "0.00", "USD", [{"currency": "USD", "amount": "0.00"}]),
+], ids=["single-currency", "empty-currency-group", "multiple-currencies", "legacy-null-amount-group"])
+def test_stats_keeps_each_currency_group_and_legacy_null_aggregation(
+        client, database, make_case, rows, total, currency, totals):
+    cid = make_case("Synthetic stats currency grouping")
+    # Storage permits legacy NULL amounts and absent accounts. This is a
+    # statistics contract fixture, not a new import acceptance rule.
+    database.executemany("insert into flows(case_id,amount,currency) values (?,?,?)", [
+        (cid, Decimal(value) if value is not None else None, code) for value, code in rows])
+    expected = coverage_value()
+    assert_stats(client, cid, flows=len(rows), accounts=0, batches=0, total=total, currency=currency,
+                 totals=totals, coverage=expected)
+    assert_coverage_branches(database, cid, expected)
+
+
+def test_stats_preserves_decimal_sum_and_exact_distinct_account_meaning(client, database, make_case):
+    cid = make_case("Synthetic exact stats amount and account identities")
+    database.x("insert into batches(case_id,filename) values (?,'synthetic-legacy.csv')", [cid])
+    database.executemany(
+        "insert into flows(case_id,payer_account,payee_account,amount,currency) values (?,?,?,?, 'CNY')", [
+            (cid, None, None, Decimal("9999999999999999.99")),
+            (cid, None, "", Decimal("0.01")),
+            (cid, "SYN-A", "SYN-A", Decimal("0.02")),
+            (cid, "SYN-A", "SYN-B", Decimal("1.23")),
+            (cid, "", "SYN-B", Decimal("0.00")),
+            (cid, " SYN-A ", "syn-a", Decimal("0.02")),
+        ])
+    expected = coverage_value()
+    assert_stats(client, cid, flows=6, accounts=4, batches=1, total="10000000000000001.27", currency="CNY",
+                 totals=[{"currency": "CNY", "amount": "10000000000000001.27"}], coverage=expected)
+    assert_coverage_branches(database, cid, expected)
+
+
+def test_interleaved_case_stats_do_not_reuse_another_cases_subset_or_currency(client, database, make_case):
+    first, second = make_case("Synthetic stats first scope"), make_case("Synthetic stats second scope")
+    database.executemany("insert into flows(case_id,payer_account,payee_account,amount,currency) values (?,?,?,?,?)", [
+        (first, "SYN-A", "SYN-B", Decimal("1.01"), "CNY"),
+        (second, "SYN-A", "SYN-B", Decimal("999.99"), "USD"),
+        (first, "SYN-B", "SYN-C", Decimal("2.02"), "CNY"),
+    ])
+    database.executemany("insert into batches(case_id,filename) values (?,?)", [
+        (first, "first.csv"), (second, "second-a.csv"), (second, "second-b.csv")])
+    for cid, flows, accounts, batches, amount, currency in [
+        (first, 2, 3, 1, "3.03", "CNY"), (second, 1, 2, 2, "999.99", "USD"),
+        (first, 2, 3, 1, "3.03", "CNY"),
+    ]:
+        assert_stats(client, cid, flows=flows, accounts=accounts, batches=batches, total=amount, currency=currency,
+                     totals=[{"currency": currency, "amount": amount}], coverage=coverage_value())
+
+
+@pytest.mark.parametrize("case_id", ["2147483647", "9999999999999999999"])
+def test_nonexistent_case_retains_the_versioned_not_found_error(client, case_id):
+    response = client.get(f"/api/v1/cases/{case_id}/stats")
+    assert response.status_code == 404
+    assert response.json() == {"error": {"code": "case_not_found", "message": "案件不存在，请重新选择案件"}}
+
+
+def test_legacy_missing_case_stats_keeps_its_existing_empty_response(client):
+    response = client.get("/api/stats", params={"case_id": 2147483647})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"flows": 0, "accounts": 0, "batches": 0, "import_coverage": coverage_value()}
+
+
+@pytest.mark.parametrize("profiles", [(V3,), (V4,), (V3, V4)], ids=["v3-only", "v4-only", "mixed-proofs"])
+def test_default_and_known_excluded_coverage_preserve_versioned_proof_diagnostics(
+        client, database, make_case, monkeypatch, profiles):
+    cid = make_case("Synthetic stats versioned cancellation coverage")
+    _ordinary, _proof, _payload, archive = shared_pair(client, cid, profile=profiles[0], monkeypatch=monkeypatch)
+    if len(profiles) == 2:
+        done(client, cid, preview(client, cid, archive, "current.zip"))
+    current = V4 in profiles
+    expected = coverage_value(unresolved=0 if current else 1, cancelled=2, excluded=1 if current else 0)
+    amount = "1.00" if current else "11.00"
+    assert_stats(client, cid, flows=1 if current else 2, accounts=2, batches=1 + len(profiles),
+                 total=amount, currency="CNY", totals=[{"currency": "CNY", "amount": amount}], coverage=expected)
+    assert_coverage_branches(database, cid, expected)
+
+
+@pytest.mark.parametrize("kind", ["superseded-v5", "sticky-v6", "archive-v4"])
+def test_known_excluded_count_does_not_change_old_and_new_history_marker_scopes(
+        client, database, make_case, monkeypatch, kind):
+    cid = make_case("Synthetic stats historical marker coverage")
+    shared_pair(client, cid)
+    if kind == "archive-v4":
+        payload = ("date,payer_account,payee_account,amount,币种代码\n"
+                   "2026-02-01,SYN-HDR-A,SYN-HDR-B,4.56,USD\n").encode()
+        from test_table_container_identity import archive_bytes
+        # A generic CSV opts into the archive family through a nested ZIP;
+        # an ordinary single-layer ZIP retains the legacy feedback dispatcher.
+        content = archive_bytes([("bank/currency.csv", payload)], nested=True)
+        old = frozen_preview(client, cid, content, monkeypatch, V3)
+        first = done(client, cid, old)
+        later = preview(client, cid, content, "current-headers.zip")
+        assert later["table_summary"]["profile"] == V4
+        second = done(client, cid, later)
+        assert (first["result"]["ok"], second["result"]["ok"]) == (1, 0)
+        marker = table_import.ARCHIVE_HISTORY_CONFLICT_BASIS
+        unresolved, total = 1, "5.56"
+    else:
+        payload = ("date,payer_account,payee_account,付款方账户名称,amount\n"
+                   "2026-02-01,SYN-HDR-A,SYN-HDR-B,Synthetic payer,1.01\n").encode()
+        old = profile_preview(client, cid, payload, monkeypatch, "funds-trace-table-v5")
+        current = profile_preview(client, cid, payload, monkeypatch, "funds-trace-table-v6")
+        early, later = (current, old) if kind == "superseded-v5" else (old, current)
+        first, second = done(client, cid, early), done(client, cid, later)
+        assert (first["result"]["ok"], second["result"]["ok"]) == (1, 0)
+        marker = table_import.HISTORY_CONFLICT_BASIS
+        unresolved, total = (0 if kind == "superseded-v5" else 1), "2.01"
+    record = source_records(client, cid, later["import_id"])[0]
+    assert (record["disposition"], record["reason_code"], record["flow_id"]) == ("unresolved", "conflicting_field", None)
+    assert record["details"]["counterparty_basis"] == marker
+    expected = coverage_value(unresolved=unresolved, cancelled=2, excluded=1)
+    assert_stats(client, cid, flows=2, accounts=4, batches=4, total=total, currency="CNY",
+                 totals=[{"currency": "CNY", "amount": total}], coverage=expected)
+    assert_coverage_branches(database, cid, expected)
+
+
+@pytest.mark.parametrize("diagnosis", ["missing-time", "compound-negative", "role", "financial", "future-profile"])
+def test_known_excluded_still_runs_all_unrelated_financial_role_and_rule_diagnostics(
+        client, database, make_case, diagnosis):
+    cid = make_case("Synthetic stats known count does not bypass diagnoses")
+    shared_pair(client, cid)
+    if diagnosis == "role":
+        from test_table_source_role_parser import encoded as identity_bytes
+        # The established source-role fixture makes two candidates for the
+        # same card disagree, rather than relying on a mixed A/B layout.
+        payload = identity_bytes(
+            ["date", "本方账号", "本方卡号", "交易卡号", "direction", "amount"],
+            [["2026-01-01", "SYN-OWN", "SYN-CARD-A", "SYN-CARD-B", "out", "1.23"]])
+    elif diagnosis == "financial":
+        from test_table_financial_mapping import table_bytes
+        # A separate unit column is an explicit financial declaration; legacy
+        # unit-bearing amount aliases alone do not promise this newer marker.
+        payload = table_bytes(
+            ["date", "payer_account", "payee_account", "amount", "金额单位"],
+            [["2026-01-01", "SYN-BAD-A", "SYN-BAD-B", "1.01", "未定义单位"]])
+    else:
+        date = "2026-03-01" if diagnosis == "future-profile" else ("" if diagnosis == "missing-time" else "not-a-time")
+        amount = "-2.00" if diagnosis == "compound-negative" else "2.00"
+        payload = f"date,payer_account,payee_account,amount\n{date},SYN-BAD-A,SYN-BAD-B,{amount}\n".encode()
+    view = preview(client, cid, payload, "diagnostic.csv")
+    done(client, cid, view)
+    record = source_records(client, cid, view["import_id"])[0]
+    if diagnosis == "future-profile":
+        assert record["disposition"] == "imported"
+        database.x("update import_sources set parser_version='funds-trace-table-v99' where source_id=?", [view["import_id"]])
+    else:
+        assert record["disposition"] == "unresolved"
+        if diagnosis == "role":
+            assert record["reason_code"] == "conflicting_field"
+            assert record["details"]["counterparty_basis"] == table_import.ROLE_CONFLICT_BASIS
+        elif diagnosis == "financial":
+            assert record["details"]["validation_basis"] == table_import.FINANCIAL_CONFLICT_BASIS
+            assert "unknown_unit" in record["details"]["validation_issues"].split(",")
+        elif diagnosis == "compound-negative":
+            assert {"negative_amount", "invalid_time"} <= set(record["details"]["validation_issues"].split(","))
+        else:
+            assert record["reason_code"] == "missing_time"
+    future = diagnosis == "future-profile"
+    total = "3.00" if future else "1.00"
+    expected = coverage_value(unresolved=1, cancelled=2, excluded=1)
+    assert_stats(client, cid, flows=2 if future else 1, accounts=4 if future else 2, batches=3,
+                 total=total, currency="CNY", totals=[{"currency": "CNY", "amount": total}], coverage=expected)
+    assert_coverage_branches(database, cid, expected)
+
+
+def test_known_excluded_parameter_is_keyword_only(database, make_case):
+    cid = make_case("Synthetic narrow coverage argument")
+    with pytest.raises(TypeError):
+        import_coverage(cid, 0)
+    assert_coverage_branches(database, cid, coverage_value())
+
+
+def test_public_stats_passes_only_the_current_case_count_under_the_same_database_lock(
+        client, database, make_case, monkeypatch):
+    paired, empty = make_case("Synthetic known excluded one"), make_case("Synthetic known excluded zero")
+    shared_pair(client, paired)
+    expected = {paired: coverage_value(cancelled=2, excluded=1), empty: coverage_value()}
+    checked = []
+    original = cases.import_coverage
+
+    def locked_coverage(case_id, *, known_excluded=None):
+        assert database._lock._is_owned()
+        assert known_excluded == expected[case_id]["excluded_flows"]
+        assert original(case_id) == expected[case_id]
+        value = original(case_id, known_excluded=known_excluded)
+        assert value == expected[case_id]
+        checked.append((case_id, known_excluded))
+        return value
+
+    monkeypatch.setattr(cases, "import_coverage", locked_coverage)
+    for cid in (paired, empty, paired):
+        response = client.get(f"/api/v1/cases/{cid}/stats")
+        assert response.status_code == 200, response.text
+        assert response.json()["import_coverage"] == expected[cid]
+    assert checked == [(paired, 1), (empty, 0), (paired, 1)]

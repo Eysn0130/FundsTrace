@@ -36,8 +36,15 @@ QUERY_OWNER_PROFILE = "funds-trace-table-v14"
 REGION_HEADER_PROFILE = "funds-trace-table-v15"
 REORDERED_TIME_PROFILE = "funds-trace-table-v16"
 CURRENCY_REGION_PROFILE = "funds-trace-table-v17"
+XLS_PROFILE = "funds-trace-table-v18"
+# Internal archive CSV rule: v5 plus exactly the two header protections below.
+# Keep it outside standalone and financial/identity inheritance collections.
+ARCHIVE_MEMBER_PROFILE = "funds-trace-table-archive-v4"
 PROFILE = CURRENCY_REGION_PROFILE
-REORDERED_TIME_PROFILES = frozenset((REORDERED_TIME_PROFILE, CURRENCY_REGION_PROFILE))
+CURRENCY_REGION_PROFILES = frozenset((CURRENCY_REGION_PROFILE, XLS_PROFILE))
+CURRENCY_CODE_ALIAS_PROFILES = CURRENCY_REGION_PROFILES | {ARCHIVE_MEMBER_PROFILE}
+OVERLAPPING_HEADER_PROFILES = CURRENCY_REGION_PROFILES | {ARCHIVE_MEMBER_PROFILE}
+REORDERED_TIME_PROFILES = frozenset((REORDERED_TIME_PROFILE, *CURRENCY_REGION_PROFILES))
 REGION_HEADER_PROFILES = frozenset((REGION_HEADER_PROFILE, *REORDERED_TIME_PROFILES))
 QUERY_OWNER_PROFILES = frozenset((QUERY_OWNER_PROFILE, *REGION_HEADER_PROFILES))
 BANK_NAME_PROFILES = frozenset((BANK_NAME_PROFILE, *QUERY_OWNER_PROFILES))
@@ -51,13 +58,14 @@ ROLE_PROFILES = frozenset((ROLE_PROFILE, *FINANCIAL_PROFILES))
 SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, *ROLE_PROFILES))
 ROLE_CONFLICT_BASIS = "显式身份角色或候选字段存在矛盾"
 HISTORY_CONFLICT_BASIS = "同一物理来源已有不同资金解释，保留历史事实，防止重复累计"
+ARCHIVE_HISTORY_CONFLICT_BASIS = "归档v4参与的同一物理来源已有不同资金解释，保留历史事实，防止重复累计"
 FINANCIAL_CONFLICT_BASIS = "显式资金字段或单位声明未通过全量校验"
 FINANCIAL_VALIDATION_ISSUES = frozenset((
     "missing_time", "invalid_time", "conflicting_time", "missing_amount", "invalid_amount",
     "amount_precision", "amount_overflow", "conflicting_amount", "unknown_unit", "conflicting_unit",
     "invalid_direction", "conflicting_direction", "conflicting_income_expense", "invalid_balance",
     "currency_unit_conflict", "invalid_currency", "unknown_status", "formula_value",
-    "balance_amount_conflict", "balance_direction_conflict",
+    "balance_amount_conflict", "balance_direction_conflict", "invalid_cell_type",
 ))
 ROW_KIND = "table_record"
 TRANSACTION_REFERENCE_POLICY = "transaction-reference-v1"
@@ -107,6 +115,7 @@ REASONS = {
     "currency_unit_conflict": "表头明示的金额币种与来源币种矛盾，未计入资金统计",
     "unsupported_identity_format": "Excel身份数字显示格式无法唯一解释，未计入资金统计",
     "formula_value": "关键字段为未执行的Excel公式，未计入资金统计",
+    "invalid_cell_type": "关键字段为Excel错误、布尔或无法解释的日期类型，未计入资金统计",
     "region_mapping_conflict": "所选映射不能唯一适用于当前表格区域，未计入资金统计",
     "ambiguous_region_header": "当前区域同时符合交易和新表头结构，金额、时间或双方解释可能不同；保留来源，至下一明确表头前不计入资金及关系统计",
 }
@@ -230,6 +239,7 @@ class _WorkbookValue:
     number_format: str = "General"
     formula: bool = False
     date_only: bool = False
+    invalid_type: bool = False
 
 
 def _raw(value):
@@ -245,8 +255,17 @@ def _text(value):
     return str(value).strip()
 
 
+def _cell_present(value):
+    return (isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type)) or bool(_text(value))
+
+
+def _header_value(value, profile):
+    # Cached formula results and invalid typed cells cannot declare a schema.
+    return "" if profile == XLS_PROFILE and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type) else value
+
+
 def _header_parts(value, profile=IDENTITY_PROFILE):
-    value = unicodedata.normalize("NFKC", _text(value))
+    value = unicodedata.normalize("NFKC", _text(_header_value(value, profile)))
     if profile in FINANCIAL_PROFILES:
         normalized = _norm(value)
         money_headers = _FINANCIAL_MONEY_HEADERS | (_CONTRACT_MONEY_HEADERS if profile in CONTRACT_PROFILES else frozenset())
@@ -319,17 +338,18 @@ def _declared_time_header(value, profile):
     return (base, spec) if base in dates else None
 
 
-def _columns(headers):
+def _columns(headers, profile=IDENTITY_PROFILE):
     counts = {}
     labels = []
     for index, raw in enumerate(headers):
-        label = _text(raw) or f"未命名列{index + 1}"
+        label = _text(_header_value(raw, profile)) or f"未命名列{index + 1}"
         counts[label] = counts.get(label, 0) + 1
         labels.append(label)
     return [f"{label} [列{i + 1}]" if counts[label] > 1 else label for i, label in enumerate(labels)]
 
 
 def _candidates(headers, profile=IDENTITY_PROFILE):
+    headers = [_header_value(value, profile) for value in headers]
     found = {}
     query_owner = (profile in QUERY_OWNER_PROFILES and table_source_roles.classify(
         [_text(header) for header in headers], query_conditions=True)
@@ -368,7 +388,7 @@ def _candidates(headers, profile=IDENTITY_PROFILE):
             basis = "uniform_query_owner"
         if profile in BANK_NAME_PROFILES and _norm(header) == "交易对方账号开户行":
             fields, basis = ["counter_bank"], "explicit_identity_role"
-        if profile == CURRENCY_REGION_PROFILE and base == "币种代码":
+        if profile in CURRENCY_CODE_ALIAS_PROFILES and base == "币种代码":
             fields, basis = ["currency"], "exact_header_alias"
         if declared_time:
             basis = "explicit_time_format"
@@ -488,7 +508,8 @@ def _collect_rows(iterator, *, previous_count=0):
 
 def _excel(raw, suffix):
     if suffix == ".xls":
-        raise TableImportError("当前环境未提供旧版XLS读取组件，请使用XLSX或CSV格式")
+        from .table_xls import read_workbook
+        return read_workbook(raw)
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             info = archive.infolist()
@@ -808,6 +829,9 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
     critical_fields = set(candidates) - {"summary", "channel", "feedback_reason"}
     if any(isinstance(value := _value(row, item), _WorkbookValue) and value.formula for field in critical_fields for item in candidates[field]):
         return None, "unresolved", "formula_value", {"financial_effect": "undetermined", "validation_issues": "formula_value"}
+    if any(isinstance(value := _value(row, item), _WorkbookValue) and value.invalid_type
+           for field in critical_fields for item in candidates[field]):
+        return None, "unresolved", "invalid_cell_type", {"financial_effect": "undetermined", "validation_issues": "invalid_cell_type"}
     if (candidates.get("feedback_reason")
             and any(_text(_value(row, item)) for item in candidates["feedback_reason"])
             and not any(_text(_value(row, item)) for field in ("trade_time", "amount", "income_amt", "expense_amt", "direction") for item in candidates.get(field, []))):
@@ -1175,11 +1199,11 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, profile=ID
     """Resolve labels against this region's positions, never an earlier region."""
     candidates = _candidates(headers, profile)
     source_role = table_source_roles.classify(
-        [_text(header) for header in headers], query_conditions=profile in QUERY_OWNER_PROFILES
+        [_text(_header_value(header, profile)) for header in headers], query_conditions=profile in QUERY_OWNER_PROFILES
     ) if profile in SOURCE_ROLE_PROFILES else None
     query_owner = profile in QUERY_OWNER_PROFILES and source_role in {
         "transaction_explicit", "transaction_query_only"}
-    labels = _columns(headers)
+    labels = _columns(headers, profile)
     for items in candidates.values():
         for candidate in items:
             candidate["source_name"] = _text(headers[candidate["index"]])
@@ -1246,7 +1270,7 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, profile=ID
     active_reference_policy = None
     if ((reference_policy == TRANSACTION_REFERENCE_POLICY
             and len(headers) == len(BANK_FEEDBACK_32_COLUMNS)
-            and frozenset(_text(header) for header in headers) == BANK_FEEDBACK_32_COLUMNS)
+            and frozenset(_text(_header_value(header, profile)) for header in headers) == BANK_FEEDBACK_32_COLUMNS)
             or source_role in {"transaction_explicit", "transaction_query_only"} and not (mapping and "trade_no" in mapping)):
         active_reference_policy = TRANSACTION_REFERENCE_POLICY
         for item in candidates.get("trade_no", []):
@@ -1301,13 +1325,13 @@ def _later_header(row, candidates, profile=IDENTITY_PROFILE):
 
 
 def _overlapping_header(row, candidates, profile):
-    """Only v17: a complete schema reusing current party coordinates is ambiguous.
+    """Opted-in profiles protect schemas reusing party coordinates.
 
     Header words wholly in extra cells remain ordinary transaction data. Account
     text itself is legal; neither the date/amount fast path nor schema priority
     proves which interpretation was intended when the core coordinates overlap.
     """
-    if profile != CURRENCY_REGION_PROFILE:
+    if profile not in OVERLAPPING_HEADER_PROFILES:
         return False
     old_positions = {item["index"] for field in _REGION_IDENTITIES for item in candidates.get(field, [])}
     if not any(_norm(row[index]) in _REGION_IDENTITY_HEADERS
@@ -1363,11 +1387,11 @@ def _region_evidence(headers, candidates, labels, path, header_row):
 
 def _append_auxiliary_sheet(plan, sheet):
     rows = sheet["rows"]
-    header_no = next((index for index, row in enumerate(rows) if any(_text(value) for value in row)), None)
+    header_no = next((index for index, row in enumerate(rows) if any(_cell_present(value) for value in row)), None)
     if header_no is None:
         return False
     headers = rows[header_no]
-    role = table_source_roles.classify([_text(value) for value in headers])
+    role = table_source_roles.classify([_text(_header_value(value, plan["profile"])) for value in headers])
     if role not in {"account", "client", "subaccount"}:
         return False
     # A later transaction region must go through the ordinary complete parser.
@@ -1376,7 +1400,7 @@ def _append_auxiliary_sheet(plan, sheet):
     width = len(headers)
     meaningful_width = max(index + 1 for index, value in enumerate(headers) if _text(value))
     contract = table_contracts.compile_contract({})
-    labels = _columns(headers)
+    labels = _columns(headers, plan["profile"])
     plan["documents"].append({"member_path": sheet["path"], "sheet": sheet["name"],
                               "header_row": header_no + 1, "header_rows": [header_no + 1],
                               "columns": labels, "mapping": {}, "mode": "", "source_role": role,
@@ -1384,7 +1408,7 @@ def _append_auxiliary_sheet(plan, sheet):
     for index, row in enumerate(rows, start=1):
         if index == header_no + 1:
             continue
-        valid = len(row) == width and not any(_text(value) for value in row[meaningful_width:])
+        valid = len(row) == width and not any(_cell_present(value) for value in row[meaningful_width:])
         reason = "auxiliary_table" if valid else "column_count_mismatch"
         details = {"sheet": sheet["name"], "source_row": str(index), "source_role": role,
                    "financial_effect": "not_a_flow" if valid else "undetermined",
@@ -1398,7 +1422,9 @@ def _append_auxiliary_sheet(plan, sheet):
     return True
 
 
-def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=PROFILE):
+def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=None):
+    if profile is None:
+        profile = XLS_PROFILE if suffix.lower() == ".xls" else PROFILE
     # New exact cross-field arithmetic is independent of ambient Decimal
     # precision. Historical parsers keep their original behavior and receipts.
     if profile in CONTRACT_PROFILES:
@@ -1413,10 +1439,14 @@ def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pro
 def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=PROFILE):
     """Interpret every source record and return a write-free versioned plan."""
     suffix = suffix.lower()
-    if profile not in SUPPORTED_PROFILES:
+    archive_member = (profile == ARCHIVE_MEMBER_PROFILE and suffix == ".csv"
+                      and reference_policy == TRANSACTION_REFERENCE_POLICY)
+    if profile not in SUPPORTED_PROFILES and not archive_member:
         raise TableImportError("不支持的表格解析规则")
     if suffix not in {".csv", ".tsv", ".txt", ".xlsx", ".xls"}:
         raise TableImportError("表格文件格式不受支持")
+    if (profile == XLS_PROFILE) != (suffix == ".xls"):
+        raise TableImportError("XLS仅支持v18读取规则；历史规则及其他格式保持原解释")
     if mode not in (None, "A", "B") or (mapping is not None and not isinstance(mapping, dict)):
         raise TableImportError("表格映射参数无效")
     if reference_policy is not None and reference_policy != TRANSACTION_REFERENCE_POLICY:
@@ -1454,7 +1484,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
             key = record_key(sheet["path"], sheet["sha256"], index)
             details = {"sheet": sheet["name"], "source_row": str(index), "financial_effect": "not_a_flow"}
             result = None
-            if not any(_text(value) for value in row):
+            if not any(_cell_present(value) for value in row):
                 disposition, reason = "non_transaction", "blank_record"
             elif header_no is not None and index < header_no + 1:
                 disposition, reason = "auxiliary", "preamble"

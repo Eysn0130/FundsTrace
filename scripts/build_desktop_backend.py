@@ -116,7 +116,7 @@ def main() -> None:
             "--collect-all", "duckdb", "--collect-all", "uvicorn", "--collect-data", "matplotlib",
             "--hidden-import", "app.analysis_routes", "--hidden-import", "openpyxl",
             "--exclude-module", "desktop_synthetic", "--exclude-module", "scripts.preview_synthetic"]
-    for package in ("duckdb", "fastapi", "uvicorn", "pandas", "openpyxl", "python-multipart", "matplotlib", "cryptography"):
+    for package in ("duckdb", "fastapi", "uvicorn", "pandas", "openpyxl", "xlrd", "olefile", "python-multipart", "matplotlib", "cryptography"):
         args.extend(["--recursive-copy-metadata", package])
     for source, relative in resources:
         destination = str(Path(relative).parent)

@@ -209,16 +209,31 @@ def test_same_physical_csv_in_envelope_promotes_folded_rows_without_double_count
     assert len(flows) == 2 and sum(Decimal(row["amount"]) for row in flows) == Decimal("2.00")
 
 
-def test_envelope_replay_does_not_reuse_different_facts_from_manual_table_mapping(client, make_case):
+@pytest.mark.parametrize("archive_profile", ["funds-trace-table-archive-v3", "funds-trace-table-archive-v4"],
+                         ids=["frozen-v3", "default-v4"])
+def test_envelope_replay_does_not_reuse_different_facts_from_manual_table_mapping(
+        client, database, make_case, monkeypatch, archive_profile):
+    import json
     from app import case_packages
+    from test_archive_profile_upgrade import frozen_preview
+    from test_feedback_package import _members
+    from test_table_contract_lifecycle import facts
+    from test_table_currency_region_lifecycle import receipt, source_snapshot
+    from test_table_mapping_coverage import coverage
 
     content = b"date,payer_account,payee_account,amount\n2026-01-01,SYN-A,SYN-B,1.00\n"
     cid = make_case("Synthetic changed interpretation")
     view = preview(client, cid, content)
+    assert view["table_summary"]["profile"] == "funds-trace-table-v17"
     response = client.post(f"/api/v1/cases/{cid}/imports/{view['import_id']}/preview", json={
         "mode": "A", "mapping": {**view["mapping"], "payer_account": "payee_account", "payee_account": "payer_account"}})
     assert response.status_code == 200, response.text
-    assert complete(client, cid, response.json())["result"]["ok"] == 1
+    first = complete(client, cid, response.json())
+    assert first["stage"] == "done" and first["result"]["ok"] == 1
+    before = database.q_raw("select * from flows where case_id=? order by id", [cid])
+    assert len(before) == 1
+    assert (before[0]["payer_account"], before[0]["payee_account"]) == ("SYN-B", "SYN-A")
+    frozen = source_snapshot(database, cid, view["import_id"])
     nested = io.BytesIO()
     with zipfile.ZipFile(nested, "w"):
         pass
@@ -226,18 +241,71 @@ def test_envelope_replay_does_not_reuse_different_facts_from_manual_table_mappin
     with zipfile.ZipFile(envelope, "w") as package:
         package.writestr("table.csv", content)
         package.writestr("nested.zip", nested.getvalue())
-    automatic = preview(client, cid, envelope.getvalue(), "synthetic.zip")
+    def archive_preview(case_id, filename):
+        if archive_profile == "funds-trace-table-archive-v3":
+            current = frozen_preview(client, case_id, envelope.getvalue(), monkeypatch, archive_profile)
+        else:
+            current = preview(client, case_id, envelope.getvalue(), filename)
+        assert current["table_summary"]["profile"] == archive_profile
+        return current
+
+    automatic = archive_preview(cid, "synthetic.zip")
     result = complete(client, cid, automatic)
-    assert result["stage"] == "done" and result["result"]["ok"] == 1
+    assert result["stage"] == "done", result
     records = client.get(f"/api/v1/cases/{cid}/imports/{automatic['import_id']}/records").json()["items"]
-    flow_id = records[0]["flow_id"]
     flows = client.get(f"/api/v1/cases/{cid}/flows").json()["items"]
-    actual = next(row for row in flows if row["id"] == str(flow_id))
-    assert actual["payer_account"] == "SYN-A" and actual["payee_account"] == "SYN-B"
-    assert complete(client, cid, preview(client, cid, envelope.getvalue(), "repeat.zip"))["result"]["ok"] == 0
+    assert len(records) == 1 and records[0]["source_row"] == 2
+    if archive_profile == "funds-trace-table-archive-v3":
+        assert (result["result"]["ok"], result["result"]["rows_dup"]) == (1, 0)
+        flow_id = records[0]["flow_id"]
+        actual = next(row for row in flows if row["id"] == str(flow_id))
+        assert actual["payer_account"] == "SYN-A" and actual["payee_account"] == "SYN-B"
+        assert actual["id"] != str(before[0]["id"])
+    else:
+        assert (result["result"]["ok"], result["result"]["rows_dup"]) == (0, 0)
+        assert database.q_raw("select * from flows where case_id=? order by id", [cid]) == before
+        assert (records[0]["disposition"], records[0]["reason_code"], records[0]["flow_id"]) == (
+            "unresolved", "conflicting_field", None)
+        assert records[0]["details"]["counterparty_basis"] == table_import.ARCHIVE_HISTORY_CONFLICT_BASIS
+        assert records[0]["details"]["financial_effect"] == "undetermined"
+        assert "conflicting_field" in records[0]["details"]["validation_issues"].split(",")
+        assert coverage(client, cid)["unresolved_records"] > 0
+        assert coverage(client, cid)["financial_interpretation_complete"] is False
+    repeated_view = archive_preview(cid, "repeat.zip")
+    repeated = complete(client, cid, repeated_view)
+    assert repeated["stage"] == "done" and repeated["result"]["ok"] == 0
+    assert repeated["result"]["rows_dup"] == (1 if archive_profile == "funds-trace-table-archive-v3" else 0)
+    if archive_profile == "funds-trace-table-archive-v4":
+        repeated_records = client.get(
+            f"/api/v1/cases/{cid}/imports/{repeated_view['import_id']}/records").json()["items"]
+        assert (repeated_records[0]["disposition"], repeated_records[0]["reason_code"], repeated_records[0]["flow_id"]) == (
+            "unresolved", "conflicting_field", None)
+        assert database.q_raw("select * from flows where case_id=? order by id", [cid]) == before
+        assert coverage(client, cid)["unresolved_records"] > 0
+        assert coverage(client, cid)["financial_interpretation_complete"] is False
+    assert database.q_raw("select * from flows where case_id=? and id=?", [cid, before[0]["id"]]) == before
+    assert source_snapshot(database, cid, view["import_id"]) == frozen
+    assert receipt(client, cid, view["import_id"]) == first["result"]
     archive = case_packages.export_package(cid)[0]
+    assert json.loads(_members(archive)["meta.json"])["format"] == 4
     restored = case_packages.import_package(archive)["case_id"]
-    assert len(client.get(f"/api/v1/cases/{restored}/flows").json()["items"]) == 2
+    if archive_profile == "funds-trace-table-archive-v3":
+        assert len(client.get(f"/api/v1/cases/{restored}/flows").json()["items"]) == 2
+    else:
+        assert len(client.get(f"/api/v1/cases/{restored}/flows").json()["items"]) == 1
+        assert facts(database, restored) == facts(database, cid)
+        assert coverage(client, restored) == coverage(client, cid)
+        restored_view = archive_preview(restored, "restored-repeat.zip")
+        restored_job = complete(client, restored, restored_view)
+        assert restored_job["stage"] == "done"
+        assert (restored_job["result"]["ok"], restored_job["result"]["rows_dup"]) == (0, 0)
+        restored_records = client.get(
+            f"/api/v1/cases/{restored}/imports/{restored_view['import_id']}/records").json()["items"]
+        assert (restored_records[0]["disposition"], restored_records[0]["reason_code"], restored_records[0]["flow_id"]) == (
+            "unresolved", "conflicting_field", None)
+        assert facts(database, restored) == facts(database, cid)
+        assert coverage(client, restored)["unresolved_records"] > 0
+        assert coverage(client, restored)["financial_interpretation_complete"] is False
 
 
 @pytest.mark.parametrize("malformation", ["path", "depth", "duplicate"])

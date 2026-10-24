@@ -16,9 +16,11 @@ from . import feedback_import, table_import, table_cancellations
 IDENTITY_PROFILE = "funds-trace-table-archive-v1"
 REFERENCE_PROFILE = "funds-trace-table-archive-v2"
 PREVIOUS_PROFILE = REFERENCE_PROFILE
-PROFILE = "funds-trace-table-archive-v3"
-SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, REFERENCE_PROFILE, PROFILE))
-REFERENCE_PROFILES = frozenset((REFERENCE_PROFILE, PROFILE))
+CANCELLATION_PROFILE = "funds-trace-table-archive-v3"
+PROFILE = "funds-trace-table-archive-v4"
+CANCELLATION_PROFILES = frozenset((CANCELLATION_PROFILE, PROFILE))
+SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, REFERENCE_PROFILE, *CANCELLATION_PROFILES))
+REFERENCE_PROFILES = frozenset((REFERENCE_PROFILE, *CANCELLATION_PROFILES))
 MAX_MEMBERS = 256
 MAX_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_EXPANDED_BYTES = 512 * 1024 * 1024
@@ -110,7 +112,7 @@ def parse(source, profile=PROFILE):
         raise table_import.TableImportError("不支持的反馈包解析规则")
     plan = {"profile": profile, "mode": "B", "mapping": {}, "columns": [], "sheet": "",
             "rows": [], "records": [], "members": [], "documents": [], "mapping_evidence": []}
-    if profile == PROFILE:
+    if profile in CANCELLATION_PROFILES:
         plan.update(cancelled_rows=[], cancellations=[])
     budget = {"members": 0, "bytes": 0}
     seen = set()
@@ -147,7 +149,7 @@ def parse(source, profile=PROFILE):
             selected = True
         for field in ("rows", "records", "members"):
             plan[field].extend(part[field])
-        if profile == PROFILE:
+        if profile in CANCELLATION_PROFILES:
             plan["cancelled_rows"].extend(part.get("cancelled_rows", []))
             plan["cancellations"].extend({key: value + offset for key, value in pair.items()}
                                          for pair in part.get("cancellations", []))
@@ -201,15 +203,16 @@ def parse(source, profile=PROFILE):
                             raise table_import.TableImportError("新反馈包包含需使用原规则的旧版交易表，整包未接纳；未降级解释资金记录")
                         role = _AUXILIARY.get(frozenset(header)) if len(header) == len(set(header)) else None
                         with localcontext() as context:
-                            if profile == PROFILE:
+                            if profile in CANCELLATION_PROFILES:
                                 context.prec = max(context.prec, 50)
                             part = (_auxiliary(payload, path, header, encoding, role) if role
                                     else table_import.parse(
                                         io.BytesIO(payload), suffix=".csv",
-                                        profile=table_import.IDENTITY_PROFILE,
+                                        profile=(table_import.ARCHIVE_MEMBER_PROFILE if profile == PROFILE
+                                                 else table_import.IDENTITY_PROFILE),
                                         reference_policy=(table_import.TRANSACTION_REFERENCE_POLICY
                                                           if profile in REFERENCE_PROFILES else None)))
-                        if profile == PROFILE and not role:
+                        if profile in CANCELLATION_PROFILES and not role:
                             table_cancellations.apply(part, payload)
                         merge(part, path)
         except (zipfile.BadZipFile, RuntimeError, OSError, ValueError) as error:
@@ -221,7 +224,7 @@ def parse(source, profile=PROFILE):
     visit(source)
     if not plan["members"]:
         raise table_import.TableImportError("反馈包没有可处理的数据成员")
-    if profile == PROFILE:
+    if profile in CANCELLATION_PROFILES:
         table_cancellations.refresh_stats(plan)
         return plan
     counts = {key: 0 for key in ("accepted", "unresolved", "non_monetary", "non_transaction", "auxiliary")}

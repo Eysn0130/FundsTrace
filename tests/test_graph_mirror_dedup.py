@@ -42,9 +42,11 @@ def seed_graph(client, database, make_case, rows):
     (["SYN-A", "SYN-B", "SYN-A", "SYN-B"], 2),
     (["SYN-A", "SYN-A", "SYN-B", "SYN-B"], 2),
     (["SYN-A", "SYN-B", "SYN-B", "SYN-A"], 2),
-    (["", None, "", None], 2),
-    (["", "SYN-A", "SYN-A"], 2),
-    ([None, "SYN-A", "SYN-A"], 2),
+    # Undeclared ledgers were previously paired; approved G01 keeps all of
+    # these independent facts because no opposite ledger owner is established.
+    (["", None, "", None], 4),
+    (["", "SYN-A", "SYN-A"], 3),
+    ([None, "SYN-A", "SYN-A"], 3),
     (["SYN-A", "SYN-B", "SYN-C"], 2),
 ])
 def test_each_record_can_only_mirror_one_other_record(client, database, make_case, ledgers, expected_count):
@@ -58,6 +60,41 @@ def test_each_record_can_only_mirror_one_other_record(client, database, make_cas
     recipient = next(node for node in graph["nodes"] if node["account"] == "SYN-B")
     assert (sender["out_cnt"], sender["out_amt"]) == (expected_count, expected_total)
     assert (recipient["in_cnt"], recipient["in_amt"]) == (expected_count, expected_total)
+
+
+@pytest.mark.parametrize("ledgers", [
+    ["", None],
+    [None, "SYN-A"],
+    ["SYN-A", ""],
+    ["SYN-C", "SYN-A"],
+    ["SYN-B", "SYN-C"],
+    ["SYN-C", "SYN-D"],
+    [" SYN-A", "SYN-B"],
+])
+def test_missing_or_third_party_owner_never_justifies_a_mirror(client, database, make_case, ledgers):
+    graph = seed_graph(client, database, make_case, [{"self_account": ledger} for ledger in ledgers])
+    edge = graph["edges"][0]
+    assert (edge["cnt"], edge["total"]) == (2, "200.00")
+    assert edge["amount_totals"] == [{"currency": "CNY", "amount": "200.00"}]
+    sender = next(node for node in graph["nodes"] if node["account"] == "SYN-A")
+    recipient = next(node for node in graph["nodes"] if node["account"] == "SYN-B")
+    assert (sender["out_cnt"], sender["out_amt"]) == (2, "200.00")
+    assert (recipient["in_cnt"], recipient["in_amt"]) == (2, "200.00")
+
+
+def test_unproven_owners_do_not_consume_the_valid_fifo(client, database, make_case):
+    # The two established A/B mirrors still pair 0/120 and 110/220.
+    # Unknown/third-party rows are independently retained, never FIFO entries.
+    graph = seed_graph(client, database, make_case, [
+        {"self_account": "SYN-A", "second": 0},
+        {"self_account": "", "second": 1},
+        {"self_account": "SYN-C", "second": 2},
+        {"self_account": "SYN-A", "second": 110},
+        {"self_account": None, "second": 119},
+        {"self_account": "SYN-B", "second": 120},
+        {"self_account": "SYN-B", "second": 220},
+    ])
+    assert (graph["edges"][0]["cnt"], graph["edges"][0]["total"]) == (5, "500.00")
 
 
 def test_pairing_uses_time_then_id_and_oldest_unmatched_record(client, database, make_case):
@@ -146,3 +183,36 @@ def test_different_counterparties_and_reverse_direction_never_pair(client, datab
         ("SYN-A", "SYN-C", 1, "100.00"),
         ("SYN-B", "SYN-A", 1, "100.00"),
     }
+
+
+@pytest.mark.parametrize("ledgers", [["SYN-A", "SYN-A"], ["SYN-A", "SYN-B"], ["", None]])
+def test_self_transfer_cannot_establish_two_distinct_ledger_owners(client, database, make_case, ledgers):
+    graph = seed_graph(client, database, make_case, [
+        {"payer_account": "SYN-A", "payee_account": "SYN-A", "self_account": ledger}
+        for ledger in ledgers
+    ])
+    assert (graph["edges"][0]["cnt"], graph["edges"][0]["total"]) == (2, "200.00")
+
+
+@pytest.mark.parametrize("source,target", [(None, "SYN-B"), ("SYN-A", ""), ("", "")])
+def test_missing_party_facts_remain_ungraphable_and_historical_tracking_preserves_them(
+        client, database, make_case, source, target):
+    case_id = make_case("Synthetic incomplete historic graph identity")
+    ids = [database.q("""
+        insert into flows(case_id,trade_time,payer_account,payee_account,amount,self_account)
+        values (?, '2026-01-01 10:00:00', ?, ?, 100.00, ?) returning id
+    """, [case_id, source, target, ledger])[0]["id"] for ledger in ["SYN-A", "SYN-B"]]
+    before = database.q_raw("select * from flows where case_id=? order by id", [case_id])
+    rejected = client.post("/api/track", json={"case_id": case_id, "flow_ids": ids})
+    assert rejected.status_code == 422, rejected.text
+    assert database.q_raw("select * from flows where case_id=? order by id", [case_id]) == before
+    # A historical membership can predate current graphability validation.
+    # It retains its facts/IDs while still adding no anonymous graph edge.
+    for flow_id in ids:
+        database.x("insert into tracked_flows(case_id,flow_id) values (?,?)", [case_id, flow_id])
+    response = client.get("/api/graph", params={"case_id": case_id})
+    assert response.status_code == 200, response.text
+    assert response.json()["nodes"] == response.json()["edges"] == []
+    assert sorted(response.json()["tracked_ids"]) == ids
+    assert client.get("/api/stats", params={"case_id": case_id}).json()["flows"] == 2
+    assert database.q_raw("select * from flows where case_id=? order by id", [case_id]) == before

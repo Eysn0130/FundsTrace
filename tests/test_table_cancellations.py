@@ -45,10 +45,11 @@ def parse(rows, **kwargs):
     return table_archive.parse(io.BytesIO(source(rows, **kwargs)[1]), profile=profile)
 
 
-def test_pair_retains_records_and_only_excludes_effective_funds():
+@pytest.mark.parametrize("profile", sorted(table_archive.CANCELLATION_PROFILES))
+def test_pair_retains_records_and_only_excludes_effective_funds(profile):
     from app import table_cancellations as policy
-    plan = parse(round_trip())
-    assert plan["profile"] == "funds-trace-table-archive-v3"
+    plan = parse(round_trip(), profile=profile)
+    assert plan["profile"] == profile
     assert plan["cancellations"] == [{"original_record_no": 2, "cancellation_record_no": 3, "witness_record_no": 1}]
     assert [row["_source_row"] for row in plan["rows"]] == [1]
     assert [row["_source_row"] for row in plan["cancelled_rows"]] == [2]
@@ -287,7 +288,7 @@ def test_exact_32_column_headers_and_values_follow_existing_text_whitespace_rule
     assert all(row["self_account"] == "SYN-OWN" for row in (*plan["rows"], *plan["cancelled_rows"]))
 
 
-@pytest.mark.parametrize("profile", [table_archive.IDENTITY_PROFILE, table_archive.REFERENCE_PROFILE, table_archive.PROFILE])
+@pytest.mark.parametrize("profile", sorted(table_archive.SUPPORTED_PROFILES))
 def test_negative_explicit_failure_preserves_frozen_non_transaction_disposition(profile):
     rows = round_trip()
     rows[2]["交易是否成功"] = "失败"

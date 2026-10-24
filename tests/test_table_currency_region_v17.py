@@ -91,7 +91,7 @@ def test_currency_code_keeps_formula_and_explicit_money_currency_checks():
 
 @pytest.mark.parametrize("suffix", [".csv", ".xlsx"])
 def test_old_profiles_keep_ignored_title_and_overlapping_region_facts(suffix):
-    for profile in sorted(table_import.SUPPORTED_PROFILES - {NEW_PROFILE}):
+    for profile in sorted(table_import.SUPPORTED_PROFILES - {NEW_PROFILE, table_import.XLS_PROFILE}):
         content = [["date", "payer_account", "payee_account", "amount", "币种代码"],
                    ["2026-01-01", "SYN-A", "SYN-B", "1.23", "USD"]]
         plan = table_import.parse(payload(content, suffix), suffix=suffix, profile=profile)

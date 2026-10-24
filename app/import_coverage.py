@@ -2,18 +2,19 @@
 import hashlib
 import json
 
-from . import db, table_import
+from . import db, table_import, table_cancellation_links
 
 
 def _table_cancellation_conflicts(case_id):
-    """Find competing actual facts even if a later ordinary mapping supplied them."""
+    """Retain the old v3 same-path historical-conflict computation."""
+    gaps = set()
     proofs = db.q_raw("""select r.*,m.sha256 from import_records r
         join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
         where r.case_id=? and s.row_kind='table_record' and s.parser_version='funds-trace-table-archive-v3'
           and r.disposition='cancelled' and r.reason_code='matched_cancellation'""", [case_id])
     if not proofs:
-        return set()
+        return gaps
     by_source = {}
     for record in proofs:
         record["details"] = json.loads(record["details_json"])
@@ -40,7 +41,6 @@ def _table_cancellation_conflicts(case_id):
                 or hash_value(previous["self_account"]) != details.get("cancellation_own_account_sha256")
                 or hash_value(previous["self_name"]) != details.get("cancellation_own_name_sha256")):
             conflicting.add((source_id, number))
-    gaps = set()
     for source_id, records in by_source.items():
         invalid = {number for source, number in conflicting if source == source_id}
         while True:
@@ -77,7 +77,8 @@ def _header_resolution_pairs(case_id):
         join import_members m on m.case_id=s.case_id and m.source_id=s.source_id
         join import_members nm on nm.case_id=m.case_id and nm.member_path=m.member_path and nm.sha256=m.sha256
         join import_sources n on n.case_id=nm.case_id and n.source_id=nm.source_id
-          and n.parser_version in ('funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17')
+          and n.parser_version in ('funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18')
+          and (n.parser_version!='funds-trace-table-v18' or ends_with(lower(n.filename),'.xls'))
           and n.row_kind='table_record' and n.mode=s.mode
         where s.case_id=? and s.row_kind='table_record'
           and s.parser_version in ('funds-trace-table-v7','funds-trace-table-v8',
@@ -127,7 +128,7 @@ def _header_resolution_pairs(case_id):
     return resolved
 
 
-def import_coverage(case_id):
+def import_coverage(case_id, *, known_excluded=None):
     """Count each physical source occurrence once using its strongest evaluation.
 
     Supported v5 evaluations supersede v4 and v3; v3 evaluations supersede v2, and v2 supersedes v1, regardless
@@ -152,8 +153,18 @@ def import_coverage(case_id):
                            "select null::varchar,null::varchar,null::bigint where false")
         pair_values = ("values " + ",".join("(?,?,?)" for _ in resolution_pairs) if resolution_pairs else
                        "select null::varchar,null::varchar,null::varchar where false")
+        excluded_sql = ("?" if known_excluded is not None else
+                        "(select count(*) from flows where case_id=?) - (select count(*) from effective_flows where case_id=?)")
+        excluded_params = [known_excluded] if known_excluded is not None else [case_id, case_id]
         return db.q_raw(f"""
-            with conflicts(member_path,sha256,source_row) as ({conflict_values}),
+            with recursive {table_cancellation_links.ctes(scoped=True)},
+              conflicts(member_path,sha256,source_row) as (
+                {conflict_values}
+                union select distinct p.member_path,p.sha256,p.source_row
+                from a02_positions p join a02_invalid i on i.case_id=p.case_id
+                  and i.proof_source_id=p.proof_source_id and i.original_no=p.original_no
+                where p.position_role in ('original','cancellation')
+              ),
               resolution_pairs(old_source_id,new_source_id,proof) as ({pair_values}),
               resolved as (
                 select distinct r.source_id,r.record_no
@@ -173,7 +184,8 @@ def import_coverage(case_id):
                     'unknown_unit','unknown_unit,missing_amount')))
                   and nr.disposition in ('imported','duplicate','removed')
               ), evaluations as (
-              select r.disposition,s.parser_version,
+              select case when n.record_no is not null then 'resolved_cancellation' else r.disposition end disposition,
+                s.parser_version,
                 case when s.parser_version in ('funds-trace-bank-feedback-v1',
                                               'funds-trace-bank-feedback-v2',
                                               'funds-trace-bank-feedback-v3',
@@ -192,20 +204,27 @@ def import_coverage(case_id):
                                               'funds-trace-table-v15',
                                               'funds-trace-table-v16',
                                               'funds-trace-table-v17',
+                                              'funds-trace-table-v18',
                                               'funds-trace-table-archive-v1',
                                               'funds-trace-table-archive-v2',
-                                              'funds-trace-table-archive-v3')
+                                              'funds-trace-table-archive-v3',
+                                              'funds-trace-table-archive-v4')
+                  and (s.parser_version!='funds-trace-table-v18' or ends_with(lower(s.filename),'.xls'))
                   then false else true end as unsupported_rule,
                 max(case when s.parser_version in ('funds-trace-bank-feedback-v1',
                                                   'funds-trace-bank-feedback-v2',
                                                   'funds-trace-bank-feedback-v3','funds-trace-bank-feedback-v4','funds-trace-bank-feedback-v5')
                               and r.reason_code='own_identity_conflict'
-                            or s.parser_version='funds-trace-table-archive-v3'
+                            or s.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4')
                               and r.reason_code='cancellation_historical_conflict'
-                            or s.parser_version in ('funds-trace-table-v6','funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17')
+                            or s.parser_version in ('funds-trace-table-v6','funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18')
                               and r.disposition='unresolved'
                               and json_extract_string(r.details_json,'$.counterparty_basis') in (?,?)
-                            or s.parser_version in ('funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17') and r.disposition='unresolved'
+                            or s.parser_version in ('funds-trace-table-v5','funds-trace-table-v6','funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18','funds-trace-table-archive-v1','funds-trace-table-archive-v2','funds-trace-table-archive-v3','funds-trace-table-archive-v4')
+                              and r.disposition='unresolved'
+                              and r.reason_code='conflicting_field'
+                              and json_extract_string(r.details_json,'$.counterparty_basis')=?
+                            or s.parser_version in ('funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18') and r.disposition='unresolved'
                               and json_extract_string(r.details_json,'$.validation_basis')=?
                               and h.record_no is null
                             or c.source_row is not null
@@ -231,9 +250,11 @@ def import_coverage(case_id):
                     when 'funds-trace-table-v15' then 5.9990234375
                     when 'funds-trace-table-v16' then 5.99951171875
                     when 'funds-trace-table-v17' then 5.999755859375
+                    when 'funds-trace-table-v18' then 5.9998779296875
                     when 'funds-trace-table-archive-v1' then 6
                     when 'funds-trace-table-archive-v2' then 7
                     when 'funds-trace-table-archive-v3' then 8
+                    when 'funds-trace-table-archive-v4' then 8.5
                     when 'funds-trace-bank-feedback-v2' then 2
                     when 'funds-trace-bank-feedback-v1' then 1 else 9 end desc,
                     s.imported_at desc nulls last, s.source_id desc
@@ -244,22 +265,23 @@ def import_coverage(case_id):
               join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
               left join conflicts c on c.member_path=r.member_path and c.sha256=m.sha256 and c.source_row=r.source_row
               left join resolved h on h.source_id=r.source_id and h.record_no=r.record_no
+              left join a02_resolved_negative n on n.case_id=r.case_id and n.source_id=r.source_id and n.record_no=r.record_no
               where r.case_id=? and s.row_kind in ('archive_record','table_record')
             )
-            select count(*) filter (where parser_version='funds-trace-table-archive-v3' and disposition='cancelled') table_proofs,
+            select count(*) filter (where parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4') and disposition='cancelled') table_proofs,
                    count(*) filter (where unsupported_rule or identity_conflict=1
                                           or disposition in ('review','unresolved')) unresolved_records,
                    count(*) filter (where not unsupported_rule and identity_conflict=0
                                           and disposition='non_monetary') non_monetary_records,
                    count(*) filter (where not unsupported_rule and identity_conflict=0
                                           and disposition='cancelled') cancelled_records,
-                   (select count(*) from flows where case_id=?) -
-                   (select count(*) from effective_flows where case_id=?) excluded_flows
+                   {excluded_sql} excluded_flows
             from evaluations where assessment_rank=1
-        """, [value for key in conflicts for value in key] + [value for key in resolution_pairs for value in key]
+        """, [case_id] + [value for key in conflicts for value in key] + [value for key in resolution_pairs for value in key]
               + [case_id, table_import.FINANCIAL_CONFLICT_BASIS, table_import.ROLE_CONFLICT_BASIS,
-              table_import.HISTORY_CONFLICT_BASIS, table_import.FINANCIAL_CONFLICT_BASIS,
-              case_id, case_id, case_id])[0]
+              table_import.HISTORY_CONFLICT_BASIS, table_import.ARCHIVE_HISTORY_CONFLICT_BASIS,
+              table_import.FINANCIAL_CONFLICT_BASIS,
+              case_id] + excluded_params)[0]
     with db._lock:
         resolution_pairs = _header_resolution_pairs(case_id)
         row = read_coverage(set(), resolution_pairs)
