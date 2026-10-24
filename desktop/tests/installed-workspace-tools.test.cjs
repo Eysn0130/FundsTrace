@@ -335,7 +335,7 @@ async function graphReturnFixture({newline='LF',failure=null,diagnosticValue,dia
     page:{sessionId:'body'},state,layoutJob:null,window:{FundsCanvasEditor:{history:{status:()=>({busy:false})}}},
     location:{pathname:'/'},document:{readyState:'complete',querySelector:selector=>nodes.get(selector)||null},
     originalError,owned:[instance],reportOwned:true,reportPath:'SYN_REPORT',updateFixture:null,productionUpdate:false,presentationPreferences:null,
-    finishWorkspaceGraphEventObservation:async()=>{},
+    finishWorkspaceGraphEventObservation:async()=>{},readyCases:async()=>{},
     analysisTitlebarPage:null,analysisPage:null,titlebarPage:null,
     safeInstalledFailure:error=>{seenErrors.push(error);return safeInstalledFailure(error);},safeJourneyFailure:()=>null,
     process:{exitCode:0,stdout:{write(){events.push('stdout');}},stderr:{write(){events.push('stderr');}}},
@@ -381,7 +381,8 @@ async function graphReturnFixture({newline='LF',failure=null,diagnosticValue,dia
   const block=source.slice(blockStart,blockEnd);
   const action=block.slice(block.indexOf('async () => {')+'async () => {'.length);
   const originalTry=/\btry\s*\{([\s\S]*?)\}\s*finally\s*\{/.exec(action)?.[1]||action;
-  assert.equal((originalTry.match(/\bawait\b/g)||[]).length,2,'the original return check retains exactly its two awaits');
+  assert.equal((originalTry.match(/\bawait clickElement\(/g)||[]).length,1,'the original return check retains its real click');
+  assert.equal((originalTry.match(/\bawait readyDocument\(/g)||[]).length,1,'the original return check retains its strict ready wait');
   return {context,report,events,writes,seenErrors,originalError,nodes,state,
     read:()=>{assert.equal(typeof context.readWorkspaceGraphDiagnostic,'function','W08 must expose its read-only fixed projection');return context.readWorkspaceGraphDiagnostic(seed);},
     run:()=>vm.runInContext(`(async()=>{${otherStage?"await check('syntheticOther',async()=>{throw originalError;});":block}report.status='passed';})()${source.slice(tailStart+4)}`,context)};
@@ -587,4 +588,54 @@ for(const newline of ['LF','CRLF'])test(`the actual Node observation helpers pre
   f.context.bounded=async(promise,ms)=>{assert.equal(ms,3000);await promise;throw new Error('TIMEOUT');};
   await f.context.finishWorkspaceGraphEventObservation(true);assert.deepEqual(plain(f.report.workspaceGraphEventDiagnostic),{available:false});
   assert.equal(observation.listeners.length,0);
+});
+
+for(const newline of ['LF','CRLF'])test(`the actual native graph entry waits for its enabled iframe button and preserves failure cleanup with ${newline} source`,async()=>{
+  for(const mode of ['enabled','disabled','wait-error','post-ready']) {
+    const observation=await workspaceEventFixture(newline),f=await graphReturnFixture({newline,failure:mode==='post-ready'?'ready':null,observation});
+    const native=await casesFixture(),button=native.childDocument.querySelector('#action'),samples=[];
+    button.textContent='进入画图';button.disabled=true;native.document.readyState='complete';
+    native.childDocument.querySelectorAll=selector=>{assert.equal(selector,'.heading-actions button');return [button];};
+    const start=native.source.indexOf('async function readyDocument('),end=native.source.indexOf('async function viewportMatrix(',start);
+    assert.ok(start>=0&&end>start);vm.runInContext(native.source.slice(start,end),native.context);
+    const failure=mode==='wait-error'?new Error('CDP_TIMEOUT'):mode==='post-ready'?f.originalError:new Error('TIMEOUT');
+    native.context.until=async(predicate,ms)=>{
+      assert.equal(ms,20000);
+      for(let poll=0;poll<3;poll++) {
+        samples.push(button.disabled);if(mode==='wait-error')throw failure;
+        if(await predicate())return true;
+        if(mode!=='disabled'){button.disabled=false;observation.button.disabled=false;}
+      }
+      throw failure;
+    };
+    f.context.readyCases=async(...args)=>{f.events.push('wait-enabled');assert.equal(f.report.workspaceGraphStep,'wait-enabled');return native.context.readyCases(...args);};
+    const click=f.context.clickElement;
+    f.context.clickElement=async(expression,target,options)=>{
+      assert.equal(button.disabled,false,'the actual entry must wait before attempting a disabled native button');
+      await click(expression,target,options);await native.context.clickElement(expression,native.page,options);
+    };
+    const send=native.context.cdp.send;
+    native.context.cdp.send=async(...args)=>{
+      const result=await send(...args);
+      if(args[0]==='Input.dispatchMouseEvent') {
+        observation.button.emit(args[1].type==='mousePressed'?'pointerdown':'pointerup',{isTrusted:true});
+        if(args[1].type==='mouseReleased')observation.button.emit('click',{isTrusted:true});
+      }
+      return result;
+    };
+    await f.context.startWorkspaceGraphEventObservation();observation.button.disabled=true;
+    await f.run();assert.equal(observation.listeners.length,0);assert.ok(f.events.includes('kill'));assert.equal(f.writes.length,1);
+    const blocked=mode==='disabled'||mode==='wait-error';
+    assert.deepEqual(f.events.filter(value=>['wait-enabled','click-click','wait-ready'].includes(value)),blocked?['wait-enabled']:['wait-enabled','click-click','wait-ready']);
+    assert.equal(native.calls.length,blocked?0:2,'only an enabled control reaches the real CDP pointer helper');
+    if(mode==='enabled') {
+      assert.equal(f.report.status,'passed');assert.equal(f.report.workspaceGraphStep,'complete');assert.equal(f.report.workspaceGraphEventDiagnostic,undefined);
+      assert.deepEqual(samples,[true,false]);
+    } else {
+      assert.equal(f.report.status,'failed');assert.equal(f.report.failedCheck,'workspaceGraphLinkOpened');assert.equal(f.context.process.exitCode,1);
+      assert.equal(f.report.workspaceGraphStep,blocked?'wait-enabled':'wait-ready');assert.equal(f.seenErrors[0],failure);
+      assert.equal(f.report.failure.kind,mode==='wait-error'?'CDP_TIMEOUT':'TIMEOUT');assert.equal(f.report.workspaceGraphEventDiagnostic.available,true);
+      assert.equal(f.report.workspaceGraphEventDiagnostic.targetEnabled,!blocked);
+    }
+  }
 });

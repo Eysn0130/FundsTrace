@@ -16,6 +16,80 @@ function harness() {
 }
 
 describe('same-origin workspace bridge', () => {
+  it('defaults an older host without navigationPending to an idle presentation', () => {
+    const h = harness(); h.bind();
+    expect(h.bridge.context).toMatchObject({ caseId: '1', generation: 1, navigationPending: false });
+    h.bridge.dispose();
+  });
+
+  it.each([undefined, null, 0, 1, 'false', {}, []].map(value => [value]))('rejects a present non-boolean navigationPending value (%j)', navigationPending => {
+    const h = harness(); h.bind();
+    const current = h.bridge.context;
+    h.receive({ type: 'context', caseId: '2', name: '案件2', generation: 2, retainedCaseIds: [], navigationPending });
+    expect(h.bridge.context).toBe(current);
+    expect(h.onContext).toHaveBeenCalledOnce();
+    h.bridge.dispose();
+  });
+
+  it('updates only pending presentation without settling or rebinding an in-flight request', async () => {
+    const h = harness(); h.bind();
+    const resolved = vi.fn(), rejected = vi.fn();
+    const controller = new AbortController();
+    const pending = h.bridge.request('open-graph', {}, controller.signal).then(resolved, rejected);
+    const request = h.lastMessage();
+    for (const navigationPending of [true, false, true]) {
+      h.receive({ type: 'context', caseId: '1', name: '案件1', generation: 1, retainedCaseIds: [], navigationPending });
+      expect(h.bridge.context).toMatchObject({ caseId: '1', name: '案件1', generation: 1, navigationPending });
+      await Promise.resolve();
+      expect(resolved).not.toHaveBeenCalled(); expect(rejected).not.toHaveBeenCalled();
+    }
+    expect(h.parent.postMessage).toHaveBeenCalledTimes(2);
+    expect(controller.signal.aborted).toBe(false);
+    h.receive({ type: 'result', requestId: request.requestId, ok: true });
+    await pending; expect(resolved).toHaveBeenCalledOnce(); expect(rejected).not.toHaveBeenCalled();
+    h.bridge.dispose();
+  });
+
+  it('confirms a selected target from its pending context without waiting for the old result', async () => {
+    const h = harness(); h.bind();
+    const completed = vi.fn();
+    const selected = h.bridge.request('select-case', { caseId: '2' }).then(completed);
+    const request = h.lastMessage();
+    h.receive({ type: 'context', caseId: '1', name: '案件1', generation: 1, retainedCaseIds: [], navigationPending: true });
+    await Promise.resolve(); expect(completed).not.toHaveBeenCalled();
+    h.receive({ type: 'context', caseId: '2', name: '案件2', generation: 2, retainedCaseIds: [], navigationPending: true });
+    await selected; expect(completed).toHaveBeenCalledOnce();
+    expect(h.bridge.context).toMatchObject({ caseId: '2', generation: 2, navigationPending: true });
+    h.receive({ type: 'result', requestId: request.requestId, ok: false, error: '旧绑定结果' });
+    expect(completed).toHaveBeenCalledOnce(); expect(h.parent.postMessage).toHaveBeenCalledTimes(2);
+    h.bridge.dispose();
+  });
+
+  it('retains generation, abort and disposal isolation across pending-only and A–B–A updates', async () => {
+    const h = harness(); h.bind();
+    const stale = h.bridge.request('open-graph', {});
+    const staleFailure = expect(stale).rejects.toMatchObject({ name: 'AbortError' });
+    const staleRequest = h.lastMessage();
+    h.receive({ type: 'context', caseId: '1', name: '案件1', generation: 1, retainedCaseIds: [], navigationPending: true });
+    h.bind('2', 2); h.bind('1', 3); await staleFailure;
+    const current = h.bridge.context;
+    h.receive({ type: 'context', caseId: '1', name: '案件1', generation: 1, retainedCaseIds: [], navigationPending: true });
+    h.receive({ type: 'result', requestId: staleRequest.requestId, ok: true });
+    expect(h.bridge.context).toBe(current);
+    const controller = new AbortController();
+    const aborted = h.bridge.request('open-graph', {}, controller.signal);
+    const abortedFailure = expect(aborted).rejects.toMatchObject({ name: 'AbortError' });
+    h.receive({ type: 'context', caseId: '1', name: '案件1', generation: 3, retainedCaseIds: [], navigationPending: true });
+    controller.abort(); await abortedFailure;
+    const disposed = h.bridge.request('open-graph', {});
+    const disposedFailure = expect(disposed).rejects.toMatchObject({ name: 'AbortError' });
+    h.receive({ type: 'context', caseId: '1', name: '案件1', generation: 3, retainedCaseIds: [], navigationPending: false });
+    h.bridge.dispose(); await disposedFailure;
+    const last = h.bridge.context;
+    h.receive({ type: 'context', caseId: '2', name: '案件2', generation: 4, retainedCaseIds: [], navigationPending: true });
+    expect(h.bridge.context).toBe(last);
+  });
+
   it('only refreshes data for the current case generation and retains unresolved import metadata', () => {
     const h = harness(); h.bind();
     h.receive({ type: 'data-changed', caseId: '2', generation: 1 });

@@ -31,6 +31,15 @@ function session(id = '1', scopeKey = 'host-scope-one', generation = 0, override
 }
 const host = (value: FundsPanelSessionV1 | null) => ({ version: FUNDS_PANEL_VERSION, session: value });
 
+// Invoke the actual rendered callback to test the entry guard independently of DOM disabled handling.
+function renderedClick(button: HTMLButtonElement) {
+  const key = Object.keys(button).find(name => name.startsWith('__reactProps$'));
+  if (!key) throw new Error('Rendered React button props are unavailable');
+  const props = (button as unknown as Record<string, { onClick?: () => void }>)[key];
+  if (typeof props.onClick !== 'function') throw new Error('Rendered button click handler is unavailable');
+  return props.onClick;
+}
+
 describe('FundsPanel host isolation', () => {
   it('keeps the Chinese file selection area associated with the native input and locks it during parsing', async () => {
     const pending = deferred<Awaited<ReturnType<FundsCaseClientV1['preview']>>>();
@@ -257,6 +266,100 @@ describe('FundsPanel host isolation', () => {
     const download = await screen.findByRole('button', { name: /下载原始文件/ });
     expect((download as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('宿主未提供原件下载能力。')).toBeTruthy();
+  });
+
+  it('changes only graph availability while navigation is pending without replacing the session or query draft', async () => {
+    const openGraph = vi.fn(async (_signal?: AbortSignal) => {}), onDraftChange = vi.fn();
+    const bound = session('1', 'navigation-presentation', 0, {}, { openGraph });
+    const statistics = vi.spyOn(bound.client, 'stats'), flows = vi.spyOn(bound.client, 'flows');
+    const readyWorkspace = { retained: true, navigationPending: false, onDraftChange };
+    const pendingWorkspace = { ...readyWorkspace, navigationPending: true };
+    const { rerender } = render(<FundsPanel host={host(bound.value)} workspace={readyWorkspace} />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    const account = screen.getByLabelText<HTMLInputElement>('账号筛选');
+    const keyword = screen.getByLabelText<HTMLInputElement>('摘要或流水号');
+    const button = screen.getByRole<HTMLButtonElement>('button', { name: /进入画图/ });
+    fireEvent.change(account, { target: { value: 'PENDING-ACCOUNT-DRAFT' } });
+    fireEvent.change(keyword, { target: { value: 'PENDING-KEYWORD-DRAFT' } });
+    const readSignal = statistics.mock.calls[0][0], draftCalls = onDraftChange.mock.calls.length;
+    expect(button.disabled).toBe(false);
+    rerender(<FundsPanel host={host(bound.value)} workspace={pendingWorkspace} />);
+    expect(screen.getByLabelText('账号筛选')).toBe(account);
+    expect(screen.getByLabelText('摘要或流水号')).toBe(keyword);
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(openGraph).not.toHaveBeenCalled();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: /导入流水/ }).disabled).toBe(false);
+    expect(statistics).toHaveBeenCalledOnce(); expect(flows).toHaveBeenCalledOnce();
+    expect(readSignal?.aborted).toBe(false); expect(bound.controller.signal.aborted).toBe(false);
+    expect(onDraftChange).toHaveBeenCalledTimes(draftCalls);
+    rerender(<FundsPanel host={host(bound.value)} workspace={readyWorkspace} />);
+    expect(button.disabled).toBe(false);
+    expect(account.value).toBe('PENDING-ACCOUNT-DRAFT'); expect(keyword.value).toBe('PENDING-KEYWORD-DRAFT');
+    expect(statistics).toHaveBeenCalledOnce(); expect(flows).toHaveBeenCalledOnce();
+    expect(readSignal?.aborted).toBe(false); expect(bound.controller.signal.aborted).toBe(false);
+    expect(onDraftChange).toHaveBeenCalledTimes(draftCalls);
+    await act(async () => { fireEvent.click(button); });
+    expect(openGraph).toHaveBeenCalledOnce(); expect(openGraph.mock.calls[0][0]?.aborted).toBe(false);
+  });
+
+  it('guards the rendered graph action callback during navigation even when DOM disabled handling is bypassed', async () => {
+    const openGraph = vi.fn(async (_signal?: AbortSignal) => {});
+    const bound = session('1', 'navigation-entry-guard', 0, {}, { openGraph });
+    const pendingWorkspace = { retained: true, navigationPending: true };
+    const { rerender } = render(<FundsPanel host={host(bound.value)} workspace={pendingWorkspace} />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    const button = screen.getByRole<HTMLButtonElement>('button', { name: /进入画图/ });
+    await act(async () => renderedClick(button)());
+    expect(openGraph).not.toHaveBeenCalled();
+    const readyWorkspace = { ...pendingWorkspace, navigationPending: false };
+    rerender(<FundsPanel host={host(bound.value)} workspace={readyWorkspace} />);
+    await act(async () => renderedClick(button)());
+    expect(openGraph).toHaveBeenCalledOnce(); expect(openGraph.mock.calls[0][0]?.aborted).toBe(false);
+  });
+
+  it('keeps an in-flight graph action busy and alive through navigation presentation changes', async () => {
+    const gate = deferred<void>(); let received: AbortSignal | undefined;
+    const openGraph = vi.fn((signal?: AbortSignal) => { received = signal; return gate.promise; });
+    const bound = session('1', 'navigation-existing-action', 0, {}, { openGraph });
+    const statistics = vi.spyOn(bound.client, 'stats'), flows = vi.spyOn(bound.client, 'flows');
+    const readyWorkspace = { retained: true, navigationPending: false };
+    const pendingWorkspace = { ...readyWorkspace, navigationPending: true };
+    const { rerender } = render(<FundsPanel host={host(bound.value)} workspace={readyWorkspace} />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    const button = screen.getByRole<HTMLButtonElement>('button', { name: /进入画图/ });
+    fireEvent.click(button);
+    expect(openGraph).toHaveBeenCalledOnce(); expect(button.disabled).toBe(true); expect(received?.aborted).toBe(false);
+    rerender(<FundsPanel host={host(bound.value)} workspace={pendingWorkspace} />);
+    expect(button.disabled).toBe(true); expect(received?.aborted).toBe(false);
+    rerender(<FundsPanel host={host(bound.value)} workspace={readyWorkspace} />);
+    expect(button.disabled).toBe(true); expect(received?.aborted).toBe(false);
+    fireEvent.click(button); expect(openGraph).toHaveBeenCalledOnce();
+    expect(statistics).toHaveBeenCalledOnce(); expect(flows).toHaveBeenCalledOnce();
+    await act(async () => gate.resolve());
+    expect(button.disabled).toBe(false);
+    await act(async () => { fireEvent.click(button); });
+    expect(openGraph).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves graph action errors across flag-only navigation updates and supports hosts without the flag', async () => {
+    const openGraph = vi.fn(async () => { throw new Error('合成当前导航失败'); });
+    const bound = session('1', 'navigation-error-presentation', 0, {}, { openGraph });
+    const legacyWorkspace = { retained: true }, pendingWorkspace = { ...legacyWorkspace, navigationPending: true };
+    const { rerender } = render(<FundsPanel host={host(bound.value)} workspace={legacyWorkspace} />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    const button = screen.getByRole<HTMLButtonElement>('button', { name: /进入画图/ });
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('合成当前导航失败');
+    rerender(<FundsPanel host={host(bound.value)} workspace={pendingWorkspace} />);
+    expect(screen.getByRole('alert')).toBe(alert); expect(alert.textContent).toBe('合成当前导航失败');
+    const readyWorkspace = { ...legacyWorkspace, navigationPending: false };
+    rerender(<FundsPanel host={host(bound.value)} workspace={readyWorkspace} />);
+    expect(screen.getByRole('alert')).toBe(alert); expect(alert.textContent).toBe('合成当前导航失败');
+    expect(button.disabled).toBe(false); expect(openGraph).toHaveBeenCalledOnce();
+    expect(bound.controller.signal.aborted).toBe(false);
   });
 
   it('shows host action errors but discards a late error after the case changes', async () => {
