@@ -35,6 +35,34 @@ function show(client: FundsCaseClientV1, signal = new AbortController().signal, 
 function upload() { fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } }); }
 
 describe('automatic table import', () => {
+  it('keeps every existing file suffix and advertises XLS in the file picker', () => {
+    show(clientFor());
+    const input = screen.getByLabelText('选择流水文件') as HTMLInputElement;
+    expect(input.accept.split(',')).toEqual(['.csv', '.tsv', '.txt', '.xlsx', '.xls', '.zip']);
+    expect(screen.getByText('支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP')).toBeTruthy();
+  });
+
+  it('previews the same XLS File and completes one automatic commit without remapping', async () => {
+    const client = clientFor(), imported = vi.fn();
+    const file = new File(['synthetic XLS transport fixture'], 'synthetic.xls', { type: 'application/vnd.ms-excel' });
+    const xlsPreview = { ...preview, filename: file.name };
+    vi.mocked(client.preview).mockResolvedValue(xlsPreview);
+    show(client, undefined, undefined, imported);
+    fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [file] } });
+    await screen.findByRole('heading', { name: '自动处理完成' });
+    expect(client.preview).toHaveBeenCalledOnce();
+    expect(vi.mocked(client.preview).mock.calls[0][0]).toBe(file);
+    expect(client.preview).toHaveBeenCalledWith(file, expect.any(AbortSignal));
+    expect(client.commit).toHaveBeenCalledOnce();
+    expect(client.commit).toHaveBeenCalledWith(xlsPreview.import_id, {
+      mode: xlsPreview.mode, mapping: xlsPreview.mapping, mark_accounts: [], self_accounts: [],
+    }, expect.any(AbortSignal));
+    expect(client.repreview).not.toHaveBeenCalled();
+    expect(client.job).toHaveBeenCalledOnce();
+    expect(imported).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: '开始导入' })).toBeNull();
+  });
+
   it.each(['commit receipt lost', 'first progress read failed'])('recovers an uncertain submission using GET only: %s', async failure => {
     const client = clientFor(), imported = vi.fn();
     const done: ImportJob = { case_id: '1', import_id: preview.import_id, stage: 'done', done: 0, total: 3, message: '完成', error: null, result };
