@@ -133,9 +133,21 @@ async function assertSources(ready, dataDir, stored) {
     assert.equal(digest(await fs.readFile(file)), entry.sha256);
   }
 }
-async function verifyOriginal(ready, stored, dataDir) {
-  assert.deepEqual(await capture(ready, stored.original.caseId), stored.original);
-  assert.deepEqual(await capture(ready, stored.isolated.caseId), stored.isolated);
+function assertOriginalSnapshot(current, original, allowCoverageAddition = false) {
+  let comparable = current;
+  if (allowCoverageAddition === true && !Object.hasOwn(original.stats, 'import_coverage')) {
+    assert.ok(Object.hasOwn(current.stats, 'import_coverage'));
+    assert.deepEqual(current.stats.import_coverage, { scope: 'source_reported_flows',
+      unresolved_records: 0, non_monetary_records: 0, cancelled_records: 0, excluded_flows: 0,
+      financial_interpretation_complete: true });
+    comparable = { ...current, stats: { ...current.stats } };
+    delete comparable.stats.import_coverage;
+  }
+  assert.deepEqual(comparable, original);
+}
+async function verifyOriginal(ready, stored, dataDir, allowCoverageAddition = false) {
+  assertOriginalSnapshot(await capture(ready, stored.original.caseId), stored.original, allowCoverageAddition);
+  assertOriginalSnapshot(await capture(ready, stored.isolated.caseId), stored.isolated, allowCoverageAddition);
   const empty = await json(ready, `/api/v1/cases/${stored.emptyCaseId}/stats`); assert.equal(empty.flows, 0);
   await assertSources(ready, dataDir, stored);
 }
@@ -252,15 +264,15 @@ async function main() {
       await fs.writeFile(snapshotFile, `${JSON.stringify(stored, null, 2)}\n`, { flag: 'wx' });
     } else {
       const stored = JSON.parse(await fs.readFile(snapshotFile, 'utf8')); assert.equal(stored.schemaVersion, 1);
-      stage = 'upgradedOriginalFacts'; await verifyOriginal(ready, stored, dataDir);
+      stage = 'upgradedOriginalFacts'; await verifyOriginal(ready, stored, dataDir, true);
       checks.upgradedFactsUnchanged = true; checks.upgradedCanvasAndTracking = true; checks.upgradedSourceFilesUnchanged = true;
       stage = 'legacyPackageImport'; const exported = await fs.readFile(packageFile); assert.equal(digest(exported), stored.packageSha256);
       const body = new FormData(); body.append('file', new Blob([exported]), 'synthetic-prior.fundcase');
       const importedResult = await json(ready, '/api/cases/import', { method: 'POST', body });
       const imported = await importedMatches(ready, stored.original, String(importedResult.case_id)); checks.legacyPackageRoundTrip = true;
       stage = 'upgradedAnalysis'; Object.assign(checks, await analysis(ready, imported));
-      await verifyOriginal(ready, stored, dataDir); await stop();
-      stage = 'upgradedEofReopen'; ready = await boot(); await verifyOriginal(ready, stored, dataDir); await stop(); checks.upgradedEofReopened = true;
+      await verifyOriginal(ready, stored, dataDir, true); await stop();
+      stage = 'upgradedEofReopen'; ready = await boot(); await verifyOriginal(ready, stored, dataDir, true); await stop(); checks.upgradedEofReopened = true;
     }
   } finally { for (const instance of owned) await instance.backend.stop(); }
   process.stdout.write(`${JSON.stringify(checks)}\n`);
@@ -270,4 +282,4 @@ if (require.main === module) main().catch(error => {
   const line = String(error.stack || '').match(/upgrade-data-smoke\.cjs:(\d+):/)?.[1] || '0';
   process.stderr.write(`Upgrade data smoke failed at ${stage} line ${line}.\n`); process.exitCode = 1;
 });
-module.exports = { fixtureCsv, facts, normalizeSnapshot, canvasSnapshot };
+module.exports = { fixtureCsv, facts, normalizeSnapshot, canvasSnapshot, assertOriginalSnapshot };
