@@ -17,6 +17,11 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build" / "desktop"
+# Both packaging and release transfer consume this reviewed document boundary.
+SOURCE_DOCUMENT_NAMES = (
+    "LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/MIT.txt",
+    "docs/licensing.md", "docs/licensing.en.md",
+)
 UI_ICON_NAMES = (
     "device-floppy", "file-plus", "file-export", "arrow-back-up", "arrow-forward-up",
     "layout-distribute-horizontal", "arrows-maximize", "refresh", "chevron-left",
@@ -57,10 +62,7 @@ def native_arch() -> str:
 
 
 def resource_files() -> list[tuple[Path, str]]:
-    resources = [(ROOT / name, name) for name in (
-        "LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/MIT.txt",
-        "docs/licensing.md", "docs/licensing.en.md",
-    )]
+    resources = [(ROOT / name, name) for name in SOURCE_DOCUMENT_NAMES]
     resources += [(ROOT / "static" / name, str(Path("static") / name)) for name in STATIC_NAMES]
     public_key = ROOT / "activation-public-key.pem"
     if public_key.exists():

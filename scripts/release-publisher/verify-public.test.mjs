@@ -1,8 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { createServer } from 'node:net';
+import { get as httpsGet } from 'node:https';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { verifyPublic } from './verify-public.mjs';
+import { fetchPublicNative, resolvePublicAddresses, verifyPublic } from './verify-public.mjs';
 
 const githubUrl = 'https://api.github.com/repos/Eysn0130/FundsTrace/releases/latest';
 const siteUrl = 'https://analytix.top/fundstrace/latest.yml?verify=12345';
@@ -19,22 +23,86 @@ const document = { schemaVersion: 1, product: 'com.eysn.fundstrace', version: '0
   releaseNotes: '修复节点标签。\n稳定公开下载。' };
 const json = value => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
 const networkError = code => Object.assign(new TypeError('SENSITIVE_RAW_NETWORK_ERROR'), { cause: { code } });
+const dnsDocument = hostname => ({ Status: 0, TC: false, CD: false, AD: false,
+  Question: [{ name: `${hostname}.`, type: 1 }],
+  Answer: [{ name: hostname, type: 5, data: 'cdn.example.' },
+    { name: 'cdn.example.', type: 1, data: '192.0.2.10' },
+    { name: 'cdn.example.', type: 1, data: '192.0.2.11' },
+    { name: 'cdn.example.', type: 1, data: '192.0.2.10' }] });
+const loopbackResolver = async () => [{ address: '127.0.0.1', family: 4 }];
+
+test('fixed DoH requests preserve DNSSEC, suppress client subnet disclosure and deduplicate A addresses', async () => {
+  for (const hostname of ['api.github.com', 'analytix.top', 'download.analytix.top']) {
+    const signal = new AbortController().signal;
+    const addresses = await resolvePublicAddresses(hostname, { signal, fetchImpl: async (value, options) => {
+      const url = new URL(value);
+      assert.equal(url.origin + url.pathname, 'https://dns.google/resolve');
+      assert.deepEqual([...url.searchParams], [['name', hostname], ['type', 'A'], ['edns_client_subnet', '0.0.0.0/0']]);
+      assert.deepEqual(options, { method: 'GET', redirect: 'error', signal,
+        headers: { Accept: 'application/json', 'User-Agent': 'FundsTrace-public-verifier' } });
+      return json(dnsDocument(hostname));
+    } });
+    assert.deepEqual(addresses, [{ address: '192.0.2.10', family: 4 }, { address: '192.0.2.11', family: 4 }]);
+  }
+});
+
+test('DoH rejects foreign hosts, transport errors and incomplete or invalid DNS answers', async () => {
+  const signal = new AbortController().signal;
+  let calls = 0;
+  await assert.rejects(resolvePublicAddresses('foreign.invalid', { signal, fetchImpl: async () => { calls++; } }));
+  assert.equal(calls, 0);
+  const mutations = [value => { value.Status = 2; }, value => { value.Status = '0'; },
+    value => { value.TC = true; }, value => { delete value.TC; }, value => { value.CD = true; },
+    value => { delete value.CD; }, value => { value.Question = []; },
+    value => { value.Question.push({ name: 'analytix.top.', type: 1 }); },
+    value => { value.Question[0].name = 'foreign.invalid.'; }, value => { value.Question[0].type = 28; },
+    value => { value.Answer = []; }, value => { delete value.Answer; },
+    value => { value.Answer = [{ type: 5, data: 'cdn.example.' }]; },
+    ...['not-an-ip', '2001:db8::1', '192.0.2.999', null].map(data => value => { value.Answer[1].data = data; })];
+  for (const mutate of mutations) {
+    const value = dnsDocument('analytix.top'); mutate(value);
+    await assert.rejects(resolvePublicAddresses('analytix.top', { signal, fetchImpl: async () => json(value) }));
+  }
+  const redirected = json(dnsDocument('analytix.top'));
+  Object.defineProperty(redirected, 'redirected', { value: true });
+  for (const response of [new Response('', { status: 302 }), new Response('', { status: 403 }),
+    new Response('SENSITIVE_INVALID_JSON'), redirected]) {
+    await assert.rejects(resolvePublicAddresses('analytix.top', { signal, fetchImpl: async () => response }));
+  }
+  await assert.rejects(resolvePublicAddresses('analytix.top', { signal,
+    fetchImpl: async () => { throw networkError('ABORT_ERR'); } }));
+});
 
 function harness(respond = () => undefined) {
   const calls = [], waits = [], events = [], counts = new Map();
-  const fetchImpl = async (url, options) => {
+  const request = transport => async (url, options) => {
     assert.ok([githubUrl, siteUrl, downloadUrl].includes(url), 'only the three fixed public endpoints are requested');
     assert.equal(options.method, 'GET');
-    assert.deepEqual(options.headers, { Accept: 'application/json' });
+    assert.deepEqual(options.headers, { Accept: 'application/json', 'User-Agent': 'FundsTrace-public-verifier' });
+    assert.equal(options.redirect, 'error');
     assert.ok(options.signal instanceof AbortSignal);
     const attempt = (counts.get(url) || 0) + 1;
-    counts.set(url, attempt); calls.push({ url, options });
-    return await respond(url, attempt) || json(url === githubUrl ? github : document);
+    counts.set(url, attempt); calls.push({ url, options, transport });
+    return await respond(url, attempt, transport) || json(url === githubUrl ? github : document);
   };
-  const verify = options => verifyPublic({ expectedTag: 'v0.1.8', run: '12345', fetchImpl,
+  const verify = options => verifyPublic({ expectedTag: 'v0.1.8', run: '12345', fetchImpl: request('fetch'),
+    fallbackFetchImpl: request('https-doh'),
     wait: async delay => { waits.push(delay); }, report: event => events.push(event), ...options });
   return { verify, calls, counts, waits, events };
 }
+
+test('a connect timeout switches only that endpoint to native HTTPS within the original three attempts', async () => {
+  for (const url of [githubUrl, siteUrl, downloadUrl]) {
+    const h = harness((target, attempt) => {
+      if (target === url && attempt < 3) throw networkError(attempt === 1 ? 'UND_ERR_CONNECT_TIMEOUT' : 'ECONNRESET');
+    });
+    assert.equal((await h.verify()).version, '0.1.8');
+    assert.deepEqual(h.calls.filter(call => call.url === url).map(call => call.transport),
+      ['fetch', 'https-doh', 'https-doh']);
+    assert.ok(h.calls.filter(call => call.url !== url).every(call => call.transport === 'fetch'));
+    assert.deepEqual(h.waits, [2000, 5000]);
+  }
+});
 
 test('each allowed transient network error retries twice then verifies all original endpoints on the third attempt', async t => {
   const timeouts = [];
@@ -48,7 +116,11 @@ test('each allowed transient network error retries twice then verifies all origi
     assert.equal(h.counts.get(downloadUrl), 1);
     assert.deepEqual(h.waits, [2000, 5000]);
     assert.equal(new Set(h.calls.map(call => call.options.signal)).size, 5, 'every attempt receives a fresh timeout signal');
-    assert.deepEqual(h.events, [{ endpoint: 'site', attempt: 1, code }, { endpoint: 'site', attempt: 2, code }]);
+    assert.deepEqual(h.events, [{ endpoint: 'site', attempt: 1, transport: 'fetch', code },
+      { endpoint: 'site', attempt: 2, transport: code === 'UND_ERR_CONNECT_TIMEOUT' ? 'https-doh' : 'fetch', code },
+      ...(code === 'UND_ERR_CONNECT_TIMEOUT' ? [{ endpoint: 'site', attempt: 3, transport: 'https-doh', event: 'json-read' }] : [])]);
+    assert.deepEqual(h.calls.filter(call => call.url === siteUrl).map(call => call.transport),
+      code === 'UND_ERR_CONNECT_TIMEOUT' ? ['fetch', 'https-doh', 'https-doh'] : ['fetch', 'fetch', 'fetch']);
   }
   assert.equal(timeouts.length, 15);
   assert.ok(timeouts.every(delay => delay === 30000), 'each GET keeps its original 30 second budget');
@@ -62,22 +134,45 @@ test('a persistent permitted network error stops after exactly three GET attempt
     assert.deepEqual(h.waits, [2000, 5000]);
     assert.equal(h.events.length, 3);
     assert.equal(h.events.at(-1).attempt, 3);
+    assert.deepEqual(h.calls.filter(call => call.url === url).map(call => call.transport),
+      ['fetch', 'https-doh', 'https-doh']);
     assert.deepEqual([...h.counts.keys()].sort(), [githubUrl, siteUrl, downloadUrl].sort());
   }
 });
 
-test('HTTP errors, malformed JSON and unknown errors fail each public endpoint without retry', async () => {
+test('HTTP, JSON, TLS and unknown errors fail on either transport without further retry', async () => {
   for (const url of [githubUrl, siteUrl, downloadUrl]) {
-    for (const respond of [() => new Response('Forbidden', { status: 403 }),
-      () => new Response('Not found', { status: 404 }), () => new Response('Unavailable', { status: 503 }),
-      () => new Response('{invalid json'), () => { throw new TypeError('SENSITIVE_UNKNOWN_ERROR'); },
-      () => { throw networkError('ENOTFOUND'); }]) {
-      const h = harness(target => target === url ? respond() : undefined);
-      await assert.rejects(h.verify());
-      assert.equal(h.counts.get(url), 1);
-      assert.deepEqual(h.waits, []);
-      assert.equal(JSON.stringify(h.events).includes('SENSITIVE'), false);
+    for (const fallback of [false, true]) {
+      for (const respond of [() => new Response('Redirect', { status: 302 }),
+        () => new Response('Forbidden', { status: 403 }), () => new Response('Not found', { status: 404 }),
+        () => new Response('Unavailable', { status: 503 }), () => new Response('{invalid json'),
+        () => { throw new TypeError('SENSITIVE_UNKNOWN_ERROR'); },
+        ...['ENOTFOUND', 'ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_HAS_EXPIRED', 'ABORT_ERR'].map(code => () => { throw networkError(code); })]) {
+        const h = harness((target, attempt) => {
+          if (target !== url) return;
+          if (fallback && attempt === 1) throw networkError('UND_ERR_CONNECT_TIMEOUT');
+          return respond();
+        });
+        await assert.rejects(h.verify());
+        assert.equal(h.counts.get(url), fallback ? 2 : 1);
+        assert.deepEqual(h.waits, fallback ? [2000] : []);
+        assert.equal(JSON.stringify(h.events).includes('SENSITIVE'), false);
+      }
     }
+  }
+});
+
+test('known diagnostic error codes do not expand the network retry allowlist', async () => {
+  for (const code of ['ABORT_ERR', 'ENOTFOUND', 'ECONNREFUSED', 'ETIMEDOUT', 'ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_HAS_EXPIRED']) {
+    const h = harness((url, attempt) => {
+      if (url !== siteUrl) return;
+      throw networkError(attempt === 1 ? 'UND_ERR_CONNECT_TIMEOUT' : code);
+    });
+    await assert.rejects(h.verify());
+    assert.equal(h.counts.get(siteUrl), 2);
+    assert.deepEqual(h.waits, [2000]);
+    assert.deepEqual(h.events.at(-1), { endpoint: 'site', attempt: 2, transport: 'https-doh', code });
+    assert.equal(JSON.stringify(h.events).includes('SENSITIVE'), false);
   }
 });
 
@@ -91,12 +186,20 @@ test('both documents retain every existing metadata and notes comparison without
     value => { value.sha512 = Buffer.alloc(64, 8).toString('base64'); },
   ];
   for (const url of [siteUrl, downloadUrl]) {
-    for (const mutate of mutations) {
-      const changed = structuredClone(document); mutate(changed);
-      const h = harness(target => target === url ? json(changed) : undefined);
-      await assert.rejects(h.verify());
-      assert.deepEqual([...h.counts.entries()].sort(), [[githubUrl, 1], [siteUrl, 1], [downloadUrl, 1]].sort());
-      assert.deepEqual(h.waits, []);
+    for (const fallback of [false, true]) {
+      for (const mutate of mutations) {
+        const changed = structuredClone(document); mutate(changed);
+        const h = harness((target, attempt) => {
+          if (target !== url) return;
+          if (fallback && attempt === 1) throw networkError('UND_ERR_CONNECT_TIMEOUT');
+          return json(changed);
+        });
+        await assert.rejects(h.verify());
+        const expectedCounts = [[githubUrl, 1], [siteUrl, 1], [downloadUrl, 1]];
+        expectedCounts.find(([target]) => target === url)[1] = fallback ? 2 : 1;
+        assert.deepEqual([...h.counts.entries()].sort(), expectedCounts.sort());
+        assert.deepEqual(h.waits, fallback ? [2000] : []);
+      }
     }
   }
   const wrongTag = harness();
@@ -105,6 +208,115 @@ test('both documents retain every existing metadata and notes comparison without
   const changedLatest = harness(url => url === githubUrl ? json({ ...github, id: 124 }) : undefined);
   await assert.rejects(changedLatest.verify());
   assert.deepEqual(changedLatest.waits, []);
+});
+
+test('native HTTPS keeps exact URL, GET headers, TLS validation and the caller deadline', async () => {
+  const signal = new AbortController().signal;
+  const headers = { Accept: 'application/json', 'User-Agent': 'FundsTrace-public-verifier' };
+  const response = await fetchPublicNative(siteUrl, { method: 'GET', headers, signal }, (url, options, receive) => {
+    assert.equal(url, siteUrl);
+    const { lookup, ...connectionOptions } = options;
+    assert.deepEqual(connectionOptions, { method: 'GET', headers, signal, family: 0, autoSelectFamily: true, agent: false, rejectUnauthorized: true });
+    lookup('analytix.top', { all: true }, (error, addresses) => {
+      assert.equal(error, null);
+      assert.deepEqual(addresses, [{ address: '192.0.2.10', family: 4 }, { address: '192.0.2.11', family: 4 }]);
+    });
+    lookup('analytix.top', {}, (error, address, family) => {
+      assert.equal(error, null); assert.equal(address, '192.0.2.10'); assert.equal(family, 4);
+    });
+    queueMicrotask(() => {
+      const incoming = new PassThrough(); incoming.statusCode = 200;
+      receive(incoming);
+      incoming.end(`\uFEFF${JSON.stringify(document)}`);
+    });
+    return new EventEmitter();
+  }, (hostname, options) => {
+    assert.equal(hostname, 'analytix.top'); assert.equal(options.signal, signal);
+    return resolvePublicAddresses(hostname, { ...options, fetchImpl: async (_url, dohOptions) => {
+      assert.equal(dohOptions.signal, signal, 'DoH and HTTPS consume the same deadline');
+      return json(dnsDocument(hostname));
+    } });
+  });
+  assert.equal(response.ok, true);
+  assert.deepEqual(await response.json(), document);
+});
+
+test('native HTTPS rejects status and TLS failures without following redirects or exposing raw errors', async () => {
+  for (const statusCode of [undefined, 302, 403, 404, 503]) {
+    let calls = 0;
+    await assert.rejects(fetchPublicNative(siteUrl, { method: 'GET', headers: {}, signal: new AbortController().signal },
+      (_url, _options, receive) => {
+        calls++;
+        queueMicrotask(() => {
+          const incoming = new PassThrough(); incoming.statusCode = statusCode;
+          receive(incoming);
+          assert.equal(incoming.destroyed, true);
+        });
+        return new EventEmitter();
+      }, loopbackResolver), /Public release metadata is unavailable/);
+    assert.equal(calls, 1);
+  }
+  const tlsError = Object.assign(new Error('SENSITIVE_RAW_TLS_ERROR'), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' });
+  await assert.rejects(fetchPublicNative(siteUrl, { method: 'GET', headers: {}, signal: new AbortController().signal },
+    () => {
+      const request = new EventEmitter();
+      queueMicrotask(() => request.emit('error', tlsError));
+      return request;
+    }, loopbackResolver), error => error === tlsError);
+});
+
+test('a failed DoH resolution never starts an HTTPS request or resets the deadline', async () => {
+  let requests = 0;
+  const signal = new AbortController().signal;
+  await assert.rejects(fetchPublicNative(siteUrl, { method: 'GET', headers: {}, signal },
+    () => { requests++; }, (hostname, options) => {
+      assert.equal(hostname, 'analytix.top'); assert.equal(options.signal, signal);
+      throw new Error('Invalid public DNS response');
+    }), /Invalid public DNS response/);
+  assert.equal(requests, 0);
+});
+
+test('the real native HTTPS request aborts a stalled local TLS handshake within the caller budget', { timeout: 2000 }, async t => {
+  const sockets = new Set();
+  const server = createServer(socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy();
+    await new Promise(resolve => server.close(resolve));
+  });
+  await assert.rejects(fetchPublicNative(`https://127.0.0.1:${server.address().port}/latest.yml`, {
+    method: 'GET', headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(50),
+  }, httpsGet, loopbackResolver), { code: 'ABORT_ERR' });
+});
+
+test('native HTTPS tries the second DNS address when the first local address does not accept the connection', { timeout: 2000 }, async t => {
+  let accepted = 0, lookupAll;
+  const sockets = new Set();
+  const server = createServer(socket => {
+    accepted++;
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy();
+    await new Promise(resolve => server.close(resolve));
+  });
+  const get = (url, options, receive) => httpsGet(url, { ...options,
+    lookup(hostname, lookupOptions, callback) {
+      assert.equal(hostname, 'public-readback.test');
+      lookupAll = lookupOptions.all;
+      options.lookup(hostname, lookupOptions, callback);
+    },
+  }, receive);
+  await assert.rejects(fetchPublicNative(`https://public-readback.test:${server.address().port}/latest.yml`, {
+    method: 'GET', headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(600),
+  }, get, async hostname => {
+    assert.equal(hostname, 'public-readback.test');
+    return [{ address: '127.0.0.2', family: 4 }, { address: '127.0.0.1', family: 4 }];
+  }), { code: 'ABORT_ERR' });
+  assert.equal(lookupAll, true);
+  assert.equal(accepted, 1, 'the second address reaches the local stalled TLS server');
 });
 
 test('the CLI uses EXPECTED_TAG and reports failures without printing raw exceptions', () => {

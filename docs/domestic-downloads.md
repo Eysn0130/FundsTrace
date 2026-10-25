@@ -26,7 +26,11 @@
 
 开启加速后，同一候选 `545e8f0` 的独立运行 `39469686098`、`39470102496` 均完成两组全新对象上传和区域端点完整读回：8 MiB 组分别 13.985、15.881 秒，1 MiB 组分别 38.752、35.484 秒，均为 160,337,859 字节且 SHA-256/SHA-512 与 GitHub 原包一致，原指针未变。两次工作流末尾的公开核验均在 `Promise.all(index 1)` 对应的官网 latest JSON 连接处约 10 秒超时，报 `UND_ERR_CONNECT_TIMEOUT`，没有 HTTP 响应，工作流整体仍失败；此处不能判定元数据错误或两个公共入口均不可用，也不撤销已通过的上传证据。既有 Chrome 完整下载哈希通过仅证明该浏览器下载路径。
 
-公开核验由 `verify-public.mjs` 保留原 GitHub、官网和下载域名三个固定 URL，每个 GET 仍有独立 30 秒信号，仅对 `UND_ERR_CONNECT_TIMEOUT`、`ECONNRESET`、`EAI_AGAIN` 最多请求三次，间隔 2、5 秒。HTTP 非 2xx、JSON 错误、未知异常、元数据或说明不一致立即失败，网络重试耗尽也失败；所有原字段和两个公共文档均须核对通过。日志仅输出固定入口标签、次数和错误码。该只读容错候选尚待 main 的真实公开核验，不能宣称已解决底层网络原因或完整工作流恢复。
+v0.1.10 的同步运行 `39741723284` 已完成安装包上传、OSS 完整读回、最新版切换、切换读回和预热，但最后官网与下载域名的公开读回连续约 10.5 秒连接超时。原核验虽传入 30 秒总预算，Node 22.22.1 内置 Undici 仍有独立的 [10 秒连接限制](https://github.com/nodejs/node/blob/v22.22.1/deps/undici/src/lib/core/connect.js#L79)，而重试没有改变连接策略。本轮 Linux 只读诊断发现 CDN 调度差异：`39748173556` 的 curl 可在约 1 秒回读两份 JSON，`39749684203` 解析到的另一组下载节点却连 TCP 都无法建立，Node 与 curl 均失败。固定首个 IPv4 地址、多地址尝试或调整 TLS 均不能解决不可达节点；这不是 JSON 内容错误，底层网络为何丢弃连接仍未被证实。
+
+公开核验由 `verify-public.mjs` 保留 GitHub、官网和下载域名三个固定 HTTPS URL。首轮仍使用 fetch；只有 `UND_ERR_CONNECT_TIMEOUT` 才把该入口的后续尝试切换到独立 DNS 解析的 Node HTTPS 连接。备用解析仅向 [Google Public DNS 的 HTTPS JSON API](https://developers.google.com/speed/public-dns/docs/doh/json) 查询这三个固定公开域名的 A 记录，禁用客户端子网转发，核对回答、拒绝截断或错误响应；不修改系统 DNS、代理、全局 Agent、TLS 或 CDN 配置，不固定 IP。Node 自动尝试回答中的其他地址，原 URL、SNI、证书和主机名校验不变。单入口最多三次请求，间隔仍为 2、5 秒；每次新的 30 秒 AbortSignal 同时约束备用 DNS、连接、TLS 和响应体，且不跟随重定向。`ECONNRESET`、`EAI_AGAIN` 保留原有重试规则；HTTP 非 2xx、DNS/JSON、TLS、未知异常、版本、资产、大小、摘要、日期或说明不一致均失败，持续网络失败也不会放行。日志仅输出固定入口标签、尝试次数、传输方式及错误类别，成功读取 JSON 不等于最终元数据已通过。
+
+[Public download readback](../.github/workflows/public-download-check.yml) 在相关 PR 中用 Linux runner 检查三个公开 JSON，另定向触发一次备用链路读取两份真实公开 JSON，合并后也可手动单独运行，省去重新上传或切换最新版。该工作流只有仓库读取权限，不接入生产 environment、OIDC 或云凭据，不下载安装器、不修改 Release 或下载指针。失败后自动补充公开域名的 DNS 与 TCP/TLS、curl 连接计时，核验失败仍保留失败状态。合成回归另覆盖有界切换、TLS/内容错误拒绝、DNS 回答、多地址尝试与请求中止；真实网络通过只说明该次 runner 路径可用，不保证未来网络永不故障。
 
 工作流通过 `run.mjs` 启动发布器子进程，只转发固定 schema 的 IPC 诊断。锁定 urllib 在重复回调时会直接输出原始 URL/异常，绕过普通 reporter；父进程不转发依赖 stdout/stderr，并关闭 DEBUG 类日志，避免诊断输出认证信息或任意原始异常。不更换 SDK、代理、agent 或 TLS 验证策略。
 
