@@ -133,6 +133,38 @@ describe('application appearance preferences', () => {
     expect(check).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole('button', { name: '检查更新' })); await screen.findByText('当前已是最新版本。'); expect(check).toHaveBeenCalledOnce();
   });
 
+  it('restores update checking after a timeout and starts a fresh check on retry', async () => {
+    let listener, finishFirstCheck, finishRetry;
+    const firstCheck = new Promise(resolve => { finishFirstCheck = resolve; });
+    const retry = new Promise(resolve => { finishRetry = resolve; });
+    const checking = { phase: 'checking', currentVersion: '0.1.9' };
+    const timeout = { phase: 'error', currentVersion: '0.1.9', errorCode: 'ERR_UPDATER_CHECK_TIMEOUT' };
+    const available = { phase: 'available', currentVersion: '0.1.9', version: '0.1.10' };
+    const check = vi.fn()
+      .mockImplementationOnce(() => { listener(checking); return firstCheck; })
+      .mockImplementationOnce(() => { listener(checking); return retry; });
+    window.FundsDesktopUpdates = {
+      state: async () => ({ phase: 'idle', currentVersion: '0.1.9' }), check,
+      subscribe: callback => { listener = callback; return () => {}; },
+    };
+    load().openSettings('about'); await screen.findByText('可检查桌面更新。');
+    fireEvent.click(screen.getByRole('button', { name: '检查更新' }));
+    expect(check).toHaveBeenCalledOnce(); expect(screen.getByText('正在检查更新…')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '检查更新' }).disabled).toBe(true);
+
+    listener(timeout);
+    expect(screen.getByText('更新未完成，可重试检查。')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '检查更新' }).disabled).toBe(false);
+    // The controller's deadline settles the first bridge call before a retry starts.
+    finishFirstCheck(timeout); await firstCheck;
+    fireEvent.click(screen.getByRole('button', { name: '检查更新' }));
+    expect(check).toHaveBeenCalledTimes(2); expect(screen.getByText('正在检查更新…')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '检查更新' }).disabled).toBe(true);
+    listener(available); finishRetry(available); await retry;
+    expect(screen.getByText('有可用更新。')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '下载更新' }).disabled).toBe(false);
+  });
+
   it('opens the about and update tab directly for the rail update entry without checking automatically', async () => {
     const state = vi.fn(async () => ({ phase: 'idle', currentVersion: '0.1.9' })), check = vi.fn();
     window.FundsDesktopUpdates = { state, check, subscribe: () => () => {} };

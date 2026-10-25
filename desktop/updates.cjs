@@ -5,7 +5,7 @@ const CHANNEL = 'funds-trace:updates';
 const FEED = 'https://analytix.top/fundstrace/';
 const CDN = 'https://download.analytix.top/releases/fundstrace/windows/';
 const FAILURE_CODES = Object.freeze(['EACCES', 'EPERM', 'ENOSPC', 'EROFS', 'ENOENT', 'ENOTDIR',
-  'ERR_FAILED', 'ERR_ABORTED', 'ERR_CONNECTION_REFUSED', 'ERR_CONNECTION_RESET', 'ERR_CONNECTION_CLOSED',
+  'ERR_FAILED', 'ERR_ABORTED', 'ERR_UPDATER_CHECK_TIMEOUT', 'ERR_CONNECTION_REFUSED', 'ERR_CONNECTION_RESET', 'ERR_CONNECTION_CLOSED',
   'ERR_NAME_NOT_RESOLVED', 'ERR_INTERNET_DISCONNECTED', 'ERR_CONTENT_LENGTH_MISMATCH',
   'ERR_CERT_AUTHORITY_INVALID', 'ERR_CERT_COMMON_NAME_INVALID', 'ERR_CERT_DATE_INVALID',
   'ERR_SHA512_CHECKSUM_MISMATCH', 'ERR_UPDATER_INVALID_SIGNATURE']);
@@ -26,11 +26,27 @@ function allowed(event, origin, owned) {
     && frame === sender.mainFrame && pageAllowed(frame.url, origin);
 }
 
+function createUpdater() {
+  const { NsisUpdater } = require('electron-updater');
+  const { GenericProvider } = require('electron-updater/out/providers/GenericProvider');
+  const { CancellationToken } = require('builder-util-runtime');
+  const token = new CancellationToken();
+  // GenericProvider otherwise creates an inaccessible token for feed requests.
+  // This instance's token also rejects requests started after it is retired.
+  class CheckProvider extends GenericProvider {
+    httpRequest(url, headers) { return super.httpRequest(url, headers, token); }
+  }
+  return {
+    updater: new NsisUpdater({ provider: 'custom', updateProvider: CheckProvider, url: FEED }),
+    cancelCheck: () => token.cancel(),
+  };
+}
+
 // Main owns the feed, cached installer and install command. Renderer messages
 // contain only an action, never a URL, path, token or executable argument.
-function updateController({ updater, version, enabled, notify = () => {}, restart = async () => false }) {
+function updateController({ createUpdater, version, enabled, notify = () => {}, restart = async () => false }) {
   let state = { phase: enabled ? 'idle' : 'unavailable', currentVersion: version, version: '', percent: 0, errorCode: '' };
-  let operation, accepted, installing = false;
+  let client, operation, accepted, installing = false;
   const snapshot = () => ({ ...state });
   const set = next => { state = { ...state, ...next }; notify(snapshot()); };
   const failed = error => {
@@ -40,7 +56,10 @@ function updateController({ updater, version, enabled, notify = () => {}, restar
     // Fixed categories only; never return exception messages, paths or URLs.
     set({ phase: 'error', percent: 0, errorCode: code });
   };
-  if (enabled) {
+  function currentClient() {
+    if (client) return client;
+    const owner = createUpdater(), updater = owner.updater;
+    client = owner;
     updater.autoDownload = false;
     updater.autoInstallOnAppQuit = false;
     updater.allowPrerelease = false;
@@ -49,11 +68,32 @@ function updateController({ updater, version, enabled, notify = () => {}, restar
     // Full installers avoid depending on old cached installers/blockmaps.
     updater.disableDifferentialDownload = true;
     updater.logger = null;
-    updater.on('error', failed);
+    // Keep an error receiver on retired instances, but ignore their late events.
+    updater.on('error', error => { if (client === owner) failed(error); });
     updater.on('download-progress', progress => {
-      if (state.phase !== 'downloading') return;
+      if (client !== owner || state.phase !== 'downloading') return;
       set({ percent: Math.min(100, Math.max(0, Number(progress.percent) || 0)) });
     });
+    return owner;
+  }
+  if (enabled) currentClient();
+  async function check(owner) {
+    let timer;
+    try {
+      return await Promise.race([
+        owner.updater.checkForUpdates(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            // Retire before abort can emit errors. A fresh public updater
+            // instance avoids reusing the dependency's pending check promise.
+            if (client === owner) { client = undefined; accepted = undefined; }
+            try { owner.cancelCheck(); }
+            catch (_) { /* The retired instance cannot be reused even if abort fails. */ }
+            finally { reject(Object.assign(new Error('Update check timed out'), { code: 'ERR_UPDATER_CHECK_TIMEOUT' })); }
+          }, 30_000);
+        }),
+      ]);
+    } finally { clearTimeout(timer); }
   }
   function run(task) {
     if (operation) return operation;
@@ -67,7 +107,7 @@ function updateController({ updater, version, enabled, notify = () => {}, restar
       if (action === 'check' && !['ready', 'installing'].includes(state.phase)) await run(async () => {
         accepted = undefined;
         set({ phase: 'checking', version: '', percent: 0, errorCode: '' });
-        const result = await updater.checkForUpdates();
+        const result = await check(currentClient());
         if (!result?.updateInfo) throw new Error('No update response');
         const info = releaseInfo(result.updateInfo);
         // electron-updater determines semver availability; independently reject
@@ -82,7 +122,7 @@ function updateController({ updater, version, enabled, notify = () => {}, restar
       });
       else if (action === 'download' && state.phase === 'available') await run(async () => {
         set({ phase: 'downloading', percent: 0 });
-        const files = await updater.downloadUpdate();
+        const files = await currentClient().updater.downloadUpdate();
         if (!accepted || !Array.isArray(files) || files.length !== 1) throw new Error('Download failed');
         // The updater has verified SHA-512 (and Authenticode when configured).
         set({ phase: 'ready', percent: 100 });
@@ -90,7 +130,7 @@ function updateController({ updater, version, enabled, notify = () => {}, restar
       else if (action === 'install' && state.phase === 'ready' && !installing) {
         installing = true;
         try {
-          const latest = releaseInfo((await updater.checkForUpdates())?.updateInfo);
+          const latest = releaseInfo((await check(currentClient()))?.updateInfo);
           if (!accepted || latest.version !== accepted.version || latest.file.sha512 !== accepted.file.sha512
               || latest.file.size !== accepted.file.size) throw new Error('Downloaded release is no longer current');
           if (await restart()) set({ phase: 'installing' });
@@ -100,8 +140,8 @@ function updateController({ updater, version, enabled, notify = () => {}, restar
       return snapshot();
     },
     // Called only after the owned backend has finished its normal shutdown.
-    install() { updater.quitAndInstall(true, true); },
+    install() { client?.updater.quitAndInstall(true, true); },
   };
 }
 
-module.exports = { CHANNEL, FEED, CDN, FAILURE_CODES, releaseInfo, allowed, updateController };
+module.exports = { CHANNEL, FEED, CDN, FAILURE_CODES, releaseInfo, allowed, createUpdater, updateController };

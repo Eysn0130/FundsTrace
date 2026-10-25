@@ -353,7 +353,7 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
     if (name === 'electron') return electron;
     if (name === './host-policy.cjs') return policy;
     if (name === './appearance.cjs') return require('../appearance.cjs');
-    if (name === './updates.cjs') return require('../updates.cjs');
+    if (name === './updates.cjs') return { ...require('../updates.cjs'), createUpdater: () => ({ updater, cancelCheck() {} }) };
     if (name === './window-shell.cjs') {
       const shell = require('../window-shell.cjs');
       return { ...shell, createWindowShell: options => shell.createWindowShell(options, electron) };
@@ -363,7 +363,6 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
       return { createStartup: (win, options) => startup.createStartup(win, options, electron),
         waitForWorkbench: (win, url, dependencies = {}) => startup.waitForWorkbench(win, url, { ...electron, ...dependencies }) };
     }
-    if (name === 'electron-updater') return { autoUpdater: updater };
     if (name === './preferences.cjs') return { ...require('../preferences.cjs'), preferenceStore: () => ({
       getItem: key => preferenceValues.get(key) ?? null,
       setItem: (key, value) => { assert.equal(require('../preferences.cjs').validPreference(key, value), true); preferenceValues.set(key, value); return true; },

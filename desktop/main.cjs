@@ -344,7 +344,7 @@ else {
       });
       const updatesEnabled = app.isPackaged && process.platform === 'win32' && !synthetic;
       updateService = updates.updateController({
-        updater: updatesEnabled ? require('electron-updater').autoUpdater : undefined,
+        createUpdater: updates.createUpdater,
         enabled: updatesEnabled, version: app.getVersion(),
         notify: value => {
           if (value.phase === 'error' && installUpdate && shutdownComplete) {
