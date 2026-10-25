@@ -30,7 +30,7 @@
 
 原生 HTTPS 使用原域名、SNI、证书及主机名验证，拒绝重定向；DoH 仅查询三个固定公开域名并校验响应。HTTP 非 2xx、证书、JSON、未知异常、元数据、说明或摘要错误立即失败，外来取消不冒充本次超时。所有原字段和两个公共文档均须通过核对。日志只含固定入口、次数、传输、阶段与错误类别，不输出原异常。Node 22.22.1 的 fetch 还有独立的连接时限；原生 HTTPS 允许使用完整的本次预算，但 [autoSelectFamily](https://nodejs.org/download/release/v22.22.1/docs/api/net.html#socketconnectoptions-connectlistener) 只解决 TCP 建连选择，不能保证连接后的 TLS 或响应成功。
 
-[只读回读工作流](../.github/workflows/public-download-check.yml) 分别验证正常路径、受控触发原生系统 DNS 和受控触发 DoH 路径；每条仍读取真实公开 JSON 并执行完整元数据校验，各自结果不能相互替代。它不下载或发布安装器，不访问云凭据或修改下载指针。所有当次网络路径均不可达时必须失败；通过一次回读不证明 CDN／路由根因已消除，也不保证以后没有网络故障。
+[只读回读工作流](../.github/workflows/public-download-check.yml) 分别验证正常流程、受控 fetch 失败后的完整恢复链，以及强制前两级失败后的 DoH 路径；每条仍读取真实公开 JSON 并执行完整元数据校验，各自结果不能相互替代。恢复链必须证明两个 CDN 入口均实际进入原生系统 DNS，记录它的成功或失败，以及最终成功的传输方式；不要求每一级外部网络路径单独永远可达。它不下载或发布安装器，不访问云凭据或修改下载指针。所有当次网络路径均不可达时必须失败；通过一次回读不证明 CDN／路由根因已消除，也不保证以后没有网络故障。
 
 工作流通过 `run.mjs` 启动发布器子进程，只转发固定 schema 的 IPC 诊断。锁定 urllib 在重复回调时会直接输出原始 URL/异常，绕过普通 reporter；父进程不转发依赖 stdout/stderr，并关闭 DEBUG 类日志，避免诊断输出认证信息或任意原始异常。不更换 SDK、代理、agent 或 TLS 验证策略。
 

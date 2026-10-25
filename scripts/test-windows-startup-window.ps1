@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$InstallRoot,
     [Parameter(Mandatory = $true)][int]$ProcessId,
-    [ValidateSet('Inspect', 'Resize', 'UserResize', 'Capture', 'CaptionProbe', 'CaptionClose', 'CaptionCloseForeground', 'ZoomIn', 'ZoomReset')][string]$Action = 'Inspect',
+    [ValidateSet('Inspect', 'Resize', 'UserResize', 'Capture', 'CaptionProbe', 'CaptionMaximize', 'CaptionRestore', 'CaptionClose', 'CaptionCloseForeground', 'ZoomIn', 'ZoomReset')][string]$Action = 'Inspect',
     [int]$WidthDip = 0,
     [int]$HeightDip = 0,
     [string]$ScreenshotPath = '',
@@ -49,6 +49,8 @@ function Convert-Evidence($Evidence) {
         workArea = (Convert-Rect $Evidence.WorkArea)
         dpi = $Evidence.Dpi
         scaleFactor = $Evidence.Dpi / 96.0
+        maximized = $Evidence.Maximized
+        minimized = $Evidence.Minimized
         minTrack = [ordered]@{ width = $Evidence.MinTrackWidth; height = $Evidence.MinTrackHeight }
         normalizationAvailable = $Evidence.NormalizationAvailable
         electronWindow = (Convert-Rect $Evidence.ElectronWindow)
@@ -120,6 +122,7 @@ public static class FundsTraceStartupWindow {
         public Insets FrameInsets;
         public int ElectronMinTrackWidth, ElectronMinTrackHeight;
         public bool NormalizationAvailable;
+        public bool Maximized, Minimized;
         public string FrameInsetsSource = "restored-hidden-thick-frame; GetWindowRect-and-screen-client";
     }
     [StructLayout(LayoutKind.Sequential)] struct MouseInput {
@@ -319,8 +322,13 @@ public static class FundsTraceStartupWindow {
             Width = checked(width + before.FrameInsets.Left + before.FrameInsets.Right),
             Height = checked(height + before.FrameInsets.Top + before.FrameInsets.Bottom) };
     }
+    public static void AssertStableWindowState(Evidence before, bool maximized, bool minimized) {
+        if (before.Maximized != maximized || before.Minimized != minimized)
+            throw new InvalidOperationException("WINDOW_STATE_CHANGED");
+    }
     public static Evidence Read(IntPtr window, uint processId) {
         AssertSelection(window, processId);
+        bool maximized = IsZoomed(window), minimized = IsIconic(window);
         NativeRect frame, client;
         var origin = new Point();
         if (!GetWindowRect(window, out frame) || !GetClientRect(window, out client) || !ClientToScreen(window, ref origin))
@@ -329,7 +337,8 @@ public static class FundsTraceStartupWindow {
         if (!GetMonitorInfoW(MonitorFromWindow(window, 2), ref info)) throw new InvalidOperationException("WORK_AREA_UNAVAILABLE");
         uint dpi = GetDpiForWindow(window);
         if (dpi < 48 || dpi > 960) throw new InvalidOperationException("DPI_UNAVAILABLE");
-        var result = new Evidence { Window = Rect(frame), Client = Rect(client), WorkArea = Rect(info.Work), Dpi = dpi };
+        var result = new Evidence { Window = Rect(frame), Client = Rect(client), WorkArea = Rect(info.Work), Dpi = dpi,
+            Maximized = maximized, Minimized = minimized };
         result.Client.X = origin.X; result.Client.Y = origin.Y;
         IntPtr buffer = Marshal.AllocHGlobal(Marshal.SizeOf<MinMaxInfo>());
         try {
@@ -351,9 +360,11 @@ public static class FundsTraceStartupWindow {
         if (!Same(result.Window, Rect(finalFrame)) || !Same(Rect(client), Rect(finalClient)) ||
             origin.X != finalOrigin.X || origin.Y != finalOrigin.Y || GetDpiForWindow(window) != dpi)
             throw new InvalidOperationException("BOUNDS_CHANGED");
+        AssertStableWindowState(result, IsZoomed(window), IsIconic(window));
         Rectangle monitor = Rect(info.Monitor);
-        NormalizeRestoredGeometry(result, !IsZoomed(window) && !(Same(result.Window, monitor) && Same(result.Client, monitor)));
+        NormalizeRestoredGeometry(result, !result.Maximized && !result.Minimized && !(Same(result.Window, monitor) && Same(result.Client, monitor)));
         AssertSelection(window, processId);
+        AssertStableWindowState(result, IsZoomed(window), IsIconic(window));
         return result;
     }
     public static Evidence Resize(IntPtr window, uint processId, int widthDip, int heightDip) {
@@ -495,6 +506,24 @@ public static class FundsTraceStartupWindow {
     public static void AssertCaptionHits(CaptionEvidence result) {
         if(result.CaptionHit!=2 || result.MenuHit!=2)
             throw new InvalidOperationException("CAPTION_DRAG_PREVIEW_HIT_MISMATCH");
+    }
+    public static CaptionEvidence CaptionState(IntPtr window, uint processId, bool maximize) {
+        InputDesktop(window, processId);
+        Point cursor; if (!GetCursorPos(out cursor)) throw new InvalidOperationException("INPUT_CURSOR_UNAVAILABLE");
+        var result = new CaptionEvidence { Before = Read(window, processId) };
+        try {
+            if (result.Before.Minimized || result.Before.Maximized == maximize)
+                throw new InvalidOperationException("CAPTION_UNEXPECTED_WINDOW_STATE");
+            Click(window, processId, Button(window, processId, 9), 9);
+            if (maximize) result.MaximizeButtonClicked = true; else result.RestoreButtonClicked = true;
+            Wait(() => IsZoomed(window) == maximize && !IsIconic(window));
+            DwmFlush();
+            result.After = Read(window, processId);
+            if (result.After.Maximized != maximize || result.After.Minimized)
+                throw new InvalidOperationException("CAPTION_UNEXPECTED_WINDOW_STATE");
+            if (maximize) result.MaximizedObserved = true; else result.RestoredObserved = true;
+            return result;
+        } finally { Move(cursor); }
     }
     public static CaptionEvidence Caption(IntPtr window,uint processId,int dragXDip,int menuXDip,bool close) {
         InputDesktop(window,processId);
@@ -665,6 +694,12 @@ public static class FundsTraceStartupWindow {
         $Report.interaction = [FundsTraceStartupWindow]::Caption($Window, [uint32]$ProcessId, $DragXDip, $MenuXDip, $Action -in @('CaptionClose', 'CaptionCloseForeground'))
         if ($Action -eq 'CaptionProbe') { $Evidence = $Report.interaction.After }
     }
+    if ($Action -in @('CaptionMaximize', 'CaptionRestore')) {
+        $Stage = 'nativeCaptionInteraction'
+        Assert-ProcessBinding
+        $Report.interaction = [FundsTraceStartupWindow]::CaptionState($Window, [uint32]$ProcessId, $Action -eq 'CaptionMaximize')
+        $Evidence = $Report.interaction.After
+    }
     if ($Action -in @('ZoomIn', 'ZoomReset')) {
         $Stage = 'nativeCaptionInteraction'
         [FundsTraceStartupWindow]::Zoom($Window, [uint32]$ProcessId, $Action -eq 'ZoomReset')
@@ -743,6 +778,7 @@ public static class FundsTraceStartupWindow {
             CAPTION_HIT_UNAVAILABLE = 'HTCLOSE'; CAPTION_POINT_UNAVAILABLE = 'HTCLOSE'
             CAPTION_DRAG_PREVIEW_HIT_MISMATCH = 'CAPTION_HIT'
             CAPTION_EXPECTED_NORMAL_WINDOW = 'CAPTION_STATE'
+            CAPTION_UNEXPECTED_WINDOW_STATE = 'CAPTION_STATE'; WINDOW_STATE_CHANGED = 'CAPTION_STATE'
             CAPTION_DRAG_RESIZED_WINDOW = 'CAPTION_GEOMETRY'; CAPTION_RESTORE_BOUNDS_FAILED = 'CAPTION_GEOMETRY'
             CAPTION_STATE_TIMEOUT = 'STATE_TIMEOUT'
             PROCESS_BINDING_FAILED = 'PROCESS_BINDING'; PATH_BINDING_FAILED = 'PROCESS_BINDING'

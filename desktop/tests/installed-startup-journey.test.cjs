@@ -124,12 +124,13 @@ test('invalid presentation state retains the product default instead of trusting
   }
 });
 
-test('maximized restoration is explicitly unsupported and actual window sizes cannot supply the oracle', () => {
-  const native = { scaleFactor: 1, workArea: { width: 1024, height: 728 },
+test('maximized startup retains the independent normal-bounds oracle without reading actual window sizes', () => {
+  const native = { scaleFactor: 1, workArea: { x: 0, y: 0, width: 1024, height: 728 },
     get window() { assert.fail('actual raw bounds read'); }, get electronWindow() { assert.fail('actual logical bounds read'); } };
   assert.deepEqual(expectedStartupBounds(native, savedWindow({ width: 1024, height: 725 })),
     { source: 'saved', width: 1024, height: 725, minWidth: 1024, minHeight: 720 });
-  assert.throws(() => expectedStartupBounds(native, savedWindow({ width: 1024, height: 725 }, true)), /STARTUP_SAVED_MAXIMIZED_UNSUPPORTED/);
+  assert.deepEqual(expectedStartupBounds(native, savedWindow({ width: 1024, height: 725 }, true)),
+    { source: 'saved', width: 1024, height: 725, minWidth: 1024, minHeight: 720, maximized: true, x: 0, y: 0 });
   for (const context of [{ scaleFactor: 0, workArea: { width: 1024, height: 728 } },
     { scaleFactor: Infinity, workArea: { width: 1024, height: 728 } }, { scaleFactor: 1, workArea: { width: 0, height: 728 } }]) {
     assert.throws(() => expectedStartupBounds(context), /STARTUP_NATIVE_EXPECTATION_CONTEXT/);

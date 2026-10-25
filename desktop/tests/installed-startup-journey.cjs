@@ -23,13 +23,19 @@ function expectedStartupBounds(native, savedWindowRaw) {
   // Expectations come from the pre-launch preference snapshot and OS work area,
   // never the observed window dimensions or the product's bounds calculator.
   const saved = typeof savedWindowRaw === 'string' && savedWindowRaw.length <= 256 ? readWindowState(savedWindowRaw) : null;
-  assert.ok(saved?.maximized !== true, 'STARTUP_SAVED_MAXIMIZED_UNSUPPORTED');
   const minWidth = Math.min(1280, availableWidth), minHeight = Math.min(720, availableHeight);
   const defaultWidth = Math.round(Math.min(1440, availableWidth - 64, (availableHeight - 64) * 16 / 9));
-  return { source: saved ? 'saved' : 'default',
+  const expected = { source: saved ? 'saved' : 'default',
     width: Math.min(Math.max(minWidth, saved ? saved.bounds.width : defaultWidth), availableWidth),
     height: Math.min(Math.max(minHeight, saved ? saved.bounds.height : Math.round(defaultWidth * 9 / 16)), availableHeight),
     minWidth, minHeight };
+  if (saved?.maximized) {
+    assert.ok(Number.isFinite(area.x) && Number.isFinite(area.y), 'STARTUP_NATIVE_EXPECTATION_CONTEXT');
+    expected.maximized = true;
+    expected.x = Math.min(Math.max(saved.bounds.x, area.x / scale), (area.x + area.width) / scale - expected.width);
+    expected.y = Math.min(Math.max(saved.bounds.y, area.y / scale), (area.y + area.height) / scale - expected.height);
+  }
+  return expected;
 }
 
 function installedLocalTarget(value, kind) {
@@ -189,6 +195,44 @@ function assertNativeWindowBounds(native, expected) {
     'STARTUP_NATIVE_DEFAULT_OR_RESIZED_BOUNDS');
   assert.ok(near(minimum.width/scale,expected.minWidth,2) && near(minimum.height/scale,expected.minHeight,2),
     'STARTUP_NATIVE_MIN_TRACK_BOUNDS');
+  for (const key of ['x','y']) if (Object.hasOwn(expected, key))
+    assert.ok(near(logical[key] / scale, expected[key], 2), 'STARTUP_NATIVE_RESTORED_POSITION');
+}
+
+function assertNativeMaximizedWindowBounds(native) {
+  assert.ok(native.maximized === true && native.minimized === false, 'STARTUP_NATIVE_MAXIMIZED_STATE');
+  assert.ok(native.normalizationAvailable === false && native.electronWindow === null
+    && native.electronMinTrack === null && native.frameInsets === null, 'STARTUP_NATIVE_MAXIMIZED_NORMALIZATION');
+  const {workArea:area,client,window:raw,scaleFactor:scale}=native;
+  assert.ok(Number.isFinite(scale) && scale > 0 && area && client && raw
+    && ['x','y','width','height'].every(key => Number.isFinite(area[key]) && Number.isFinite(client[key]) && Number.isFinite(raw[key]))
+    && area.width > 0 && area.height > 0, 'STARTUP_NATIVE_MAXIMIZED_WORK_AREA');
+  // A maximized HWND's raw thick frame can extend past the work area. Its
+  // visible client fills that independently measured work area; never convert
+  // either the raw bounds or raw WM_GETMINMAXINFO into restored Electron bounds.
+  assert.ok(['x','y','width','height'].every(key => near(client[key],area[key],1))
+    && raw.x <= client.x && raw.y <= client.y
+    && raw.x + raw.width >= client.x + client.width && raw.y + raw.height >= client.y + client.height,
+  'STARTUP_NATIVE_MAXIMIZED_WORK_AREA');
+}
+
+function assertNativeCaptionState(native, maximized) {
+  const input=native.interaction;
+  assert.ok(native.status === 'passed' && native.processBound === true
+    && native.maximized === maximized && native.minimized === false
+    && input?.InputSource === 'SendInput-on-bound-visible-caption' && input.PointerInputInjected === true
+    && input.Before?.Maximized === !maximized && input.Before.Minimized === false
+    && input.After?.Maximized === maximized && input.After.Minimized === false
+    && input[maximized ? 'MaximizeButtonClicked' : 'RestoreButtonClicked'] === true
+    && input[maximized ? 'MaximizedObserved' : 'RestoredObserved'] === true, 'STARTUP_NATIVE_CAPTION_STATE');
+}
+
+function assertSavedPresentationWindow(raw, bounds, maximized) {
+  const saved=typeof raw === 'string' && raw.length <= 256 ? readWindowState(raw) : null;
+  assert.ok(saved, 'PRESENTATION_SAVED_WINDOW_INVALID');
+  assert.equal(saved.maximized, maximized, 'PRESENTATION_SAVED_MAXIMIZED');
+  assert.deepEqual(saved.bounds, bounds, 'PRESENTATION_SAVED_NORMAL_BOUNDS');
+  return saved;
 }
 
 function assertNativeClientGeometry(native, viewport, priorInset) {
@@ -375,4 +419,5 @@ async function createInstalledStartupProbe({ cdp, target, evaluate, until, scree
 }
 
 module.exports = { installedLocalTarget, startupTarget, createInstalledStartupProbe, assertLayout, assertWaitingObservation,
-  assertHandoffObservation, assertNativeWindowBounds, expectedStartupBounds, assertNativeClientGeometry, frameSummary, VIEWPORTS, DEVICE_SCALES };
+  assertHandoffObservation, assertNativeWindowBounds, assertNativeMaximizedWindowBounds, assertNativeCaptionState,
+  assertSavedPresentationWindow, expectedStartupBounds, assertNativeClientGeometry, frameSummary, VIEWPORTS, DEVICE_SCALES };

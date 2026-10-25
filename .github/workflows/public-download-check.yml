@@ -53,21 +53,30 @@ jobs:
           NODE
       - name: Require the current verifier to validate all public metadata
         run: node scripts/release-publisher/verify-public.mjs
-      - name: Verify system DNS recovery against the same public metadata
+      - name: Verify recovery from a fetch failure against the same public metadata
         run: |
           node --input-type=module - <<'NODE'
+          import assert from 'node:assert/strict';
           import { verifyPublic } from './scripts/release-publisher/verify-public.mjs';
+          const events = [];
           await verifyPublic({
+            report(event) { events.push(event); console.log(JSON.stringify(event)); },
             fetchImpl(url, options) {
               if (new URL(url).hostname !== 'api.github.com')
                 throw Object.assign(new Error('Controlled recovery-path check'), { code: 'UND_ERR_CONNECT_TIMEOUT' });
               return fetch(url, options);
             },
-            dohFetchImpl() { throw new Error('System DNS recovery must succeed without DoH'); },
           }).then(latest => {
-            console.log(`System DNS native recovery verified public FundsTrace ${latest.version} metadata`);
+            for (const endpoint of ['site', 'download']) {
+              assert.ok(events.some(event => event.endpoint === endpoint && event.attempt === 2 && event.transport === 'https-system'));
+              const success = events.find(event => event.endpoint === endpoint && event.event === 'json-read');
+              assert.ok(success && ((success.attempt === 2 && success.transport === 'https-system')
+                || (success.attempt === 3 && success.transport === 'https-doh')));
+              console.log(JSON.stringify({ endpoint, recoveredBy: success.transport }));
+            }
+            console.log(`Recovery from a fetch failure verified public FundsTrace ${latest.version} metadata`);
           }).catch(() => {
-            console.error('System DNS native recovery failed; inspect the fixed endpoint diagnostics.');
+            console.error('Recovery from a fetch failure failed; inspect the fixed endpoint diagnostics.');
             process.exitCode = 1;
           });
           NODE

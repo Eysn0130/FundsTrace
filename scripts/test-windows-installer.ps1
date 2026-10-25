@@ -969,6 +969,13 @@ public static class FundsTraceUpdateWindowState {
     $Report.checks.installedApplicationSingleInstance = 'passed'
     $Report.checks.installedApplicationNormalClose = 'passed'
     $Report.checks.installedGraphJourney = 'passed'
+    if (-not $NextInstaller) {
+        foreach ($Name in @('installedPresentationUserResize', 'installedPresentationMaximizedBeforeClose',
+            'installedPresentationMaximizedAfterRelaunch', 'installedPresentationRestoredAfterRelaunch')) {
+            if ($AppHelper.checks.$Name -isnot [bool] -or -not $AppHelper.checks.$Name) { throw 'Installed maximized window recovery did not satisfy its check.' }
+        }
+        $Report.checks.installedMaximizedWindowRecovery = 'passed'
+    }
     if ($NextInstaller) {
         foreach ($Name in @('installedUpdateAvailableFromTrustedPrivateHttps','installedInterruptedUpdateRejected',
             'installedCorruptUpdateRejected','installedUpdateProgressAndReady','installedUpdateLaterRetainsApplication',
