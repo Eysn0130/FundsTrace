@@ -2967,3 +2967,81 @@ test('annotations: viewport rebuild and later label passes include multiline ann
   f.rebuildViewport();
   assert.ok(nodes.find(node=>node.id==='SYN-A').bounds.maxX>390,'the displaced note is part of the indexed node envelope');
 });
+
+// Independent Bernstein evaluation and a bounded nearest-point search verify
+// real curve membership without consulting the application's path sampler.
+function labelCurvePoint(points,t) {
+  const v=1-t;
+  if(points.length===3)return {x:v*v*points[0].x+2*v*t*points[1].x+t*t*points[2].x,
+    y:v*v*points[0].y+2*v*t*points[1].y+t*t*points[2].y};
+  return {x:v*v*v*points[0].x+3*v*v*t*points[1].x+3*v*t*t*points[2].x+t*t*t*points[3].x,
+    y:v*v*v*points[0].y+3*v*v*t*points[1].y+3*v*t*t*points[2].y+t*t*t*points[3].y};
+}
+function labelCurveDistance(points,anchor) {
+  const distance=t=>{const p=labelCurvePoint(points,t);return Math.hypot(p.x-anchor.x,p.y-anchor.y)};
+  let best=0;
+  for(let i=1;i<=256;i++)if(distance(i/256)<distance(best/256))best=i;
+  let lo=Math.max(0,(best-1)/256),hi=Math.min(1,(best+1)/256);
+  for(let i=0;i<80;i++){
+    const a=lo+(hi-lo)/3,b=hi-(hi-lo)/3;
+    if(distance(a)<distance(b))hi=b;else lo=a;
+  }
+  return distance((lo+hi)/2);
+}
+
+for(const kind of ['quadratic','cubic','loop'])test(`manual ${kind} label stays on its actual curve after drag, zoom, hiding and geometry updates`,()=>{
+  const f=graphInteractions({geometry:true}),graph=f.state.graph,key=kind==='loop'?'A=>A':'A=>B';
+  f.state.lastGraph={nodes:[{account:'A',name:'合成 A',in_cnt:1,out_cnt:1},{account:'B',name:'合成 B',in_cnt:1,out_cnt:1}],
+    edges:[{source:'A',target:kind==='loop'?'A':'B',cnt:1,ids:[1],amount_totals:[{currency:'CNY',amount:'10000000000000000.01'}]}],tracked_ids:[1]};
+  f.state.positions={A:{x:0,y:0},B:{x:2000,y:0}};
+  f.state.edgeType='quadratic';f.state.edgeTypes={[key]:kind==='loop'?'loop':'quadratic'};
+  f.state.edgeBendPos={[key]:[{x:1000,y:5000}]};f.state.edgeLabelPos={[key]:.507};f.state.graphView.labelMode='all';
+  const facts=JSON.stringify(f.state.lastGraph);f.h.run('renderGraph()');
+  const item=graph.getEdges()[0],shape=item.getKeyShape(),attr=shape.attr.bind(shape);
+  let curve=kind==='quadratic'?[{x:0,y:0},{x:1000,y:5000},{x:2000,y:0}]
+    :kind==='cubic'?[{x:0,y:0},{x:0,y:9000},{x:2000,y:9000},{x:2000,y:0}]
+      :[{x:0,y:0},{x:5000,y:5000},{x:-5000,y:5000},{x:0,y:0}];
+  if(kind!=='quadratic'){
+    shape.attr=(...args)=>args.length===1&&args[0]==='path'
+      ?[['M',curve[0].x,curve[0].y],['C',...curve.slice(1).flatMap(p=>[p.x,p.y])]]:attr(...args);
+    shape.getPoint=t=>labelCurvePoint(curve,t);
+  }
+  const check=()=>{
+    const text=item.getContainer().children.find(s=>s.name==='text-shape'),box=text.getBBox();
+    const anchor={x:(box.minX+box.maxX)/2,y:(box.minY+box.maxY)/2};
+    const distance=labelCurveDistance(curve,anchor);
+    assert.ok(distance<1e-7,`${kind} label is ${distance} world units away from its own curve`);
+    assert.equal(text._fundsLabelOffset,undefined);assert.ok(item.getContainer().children.some(s=>s.name==='funds-edge-visible-path'));
+    assert.equal(item.getContainer().children.some(s=>s.name==='funds-label-leader'),false);
+    assert.equal(text.attr('text'),item.model.fundsLabel);assert.equal(JSON.stringify(f.state.lastGraph),facts);
+  };
+  f.applyLabels();check();assert.equal(f.state.edgeLabelPos[key],.507);
+  for(const zoom of [.1,4,.5]){graph.zoom=zoom;graph.emit('viewportchange',{action:'zoom'});f.applyLabels();check();assert.equal(f.state.edgeLabelPos[key],.507);}
+  const pointer=labelCurvePoint(curve,.519),text=item.getContainer().children.find(s=>s.name==='text-shape');
+  graph.emit('edge:mousedown',{item,target:text,preventDefault(){}});
+  f.event('mousemove',{clientX:pointer.x*graph.zoom,clientY:pointer.y*graph.zoom,buttons:1});f.event('mouseup');check();
+  const ratio=f.state.edgeLabelPos[key];assert.ok(ratio>0&&ratio<1);assert.notEqual(ratio,.519,'stored position remains an arc-length ratio, not a curve parameter');
+  f.state.graphView.labelMode='focus';f.applyLabels();assert.equal(item.model.label,undefined);
+  f.state.graphView.labelMode='all';f.applyLabels();check();assert.equal(f.state.edgeLabelPos[key],ratio);
+  if(kind==='quadratic'){
+    graph.updateItem(graph.findById('A'),{x:-300,y:120});graph.emit('node:dragstart');
+    graph.emit('node:drag',{item:graph.findById('A')});graph.emit('dragnodeend');
+    curve=[{x:-300,y:120},curve[1],curve[2]];
+  }else curve=curve.map(p=>({x:p.x+170,y:p.y-90}));
+  f.applyLabels();check();assert.equal(f.state.edgeLabelPos[key],ratio);
+});
+
+test('manual polyline labels preserve exact segment positions and legacy sampled-path fallback',()=>{
+  const f=graphInteractions({geometry:true}),graph=f.state.graph;
+  graph.data({nodes:[{id:'A',x:0,y:0},{id:'B',x:300,y:100}],
+    edges:[{source:'A',target:'B',type:'polyline',controlPoints:[{x:100,y:0},{x:100,y:100}],label:'CNY 0.01'}]});
+  const item=graph.getEdges()[0];f.state.edgeLabelPos={'A=>B':.5};
+  f.env.syncGraphEdgeLabel(item);
+  const box=item.getContainer().children.find(s=>s.name==='text-shape').getBBox();
+  assert.equal((box.minX+box.maxX)/2,100);assert.equal((box.minY+box.maxY)/2,100);
+  assert.deepEqual(plainGraph(f.h.run('ptAtRatio({pts:[{x:2,y:4},{x:8,y:12}],acc:[0,10],total:10},.25)')),{x:3.5,y:6});
+  const shape=item.getKeyShape(),attr=shape.attr.bind(shape);
+  shape.attr=(...args)=>args.length===1&&args[0]==='path'?[['M',0,0],['Q',1,2]]:attr(...args);
+  f.env.invalidLabelEdge=item;
+  assert.equal(f.h.run('edgePts(invalidLabelEdge)'),null,'an incomplete curve cannot provide a fabricated anchor');
+});

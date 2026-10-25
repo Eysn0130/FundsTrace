@@ -100,9 +100,8 @@
       let placement = null;
       for (const option of placements) {
         const bounds = paddedBounds(option.bounds, padding);
-        const fitsViewport = !viewport || (option.bounds.minX >= viewport.minX && option.bounds.maxX <= viewport.maxX
-          && option.bounds.minY >= viewport.minY && option.bounds.maxY <= viewport.maxY);
-        if (options.disabled === true || (fitsViewport && !collides(bounds, cells(bounds), ignored))) {
+        const visibleInViewport = !viewport || intersects(option.bounds, viewport);
+        if (options.disabled === true || (visibleInViewport && !collides(bounds, cells(bounds), ignored))) {
           placement = { ...option, conflicted: false }; break;
         }
       }

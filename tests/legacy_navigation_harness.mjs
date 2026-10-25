@@ -1450,7 +1450,11 @@ for(const [initialZoom,nextZoom] of [[.4,.8],[.945,1.167],[1,2]]) test(`node lab
   settle(nextZoom);
   assert.ok(h.run(`state.graph.getNodes().some(item=>{const b=graphNodeBodyBounds(item);return b.minX>1000||b.minY>700})`),
     'the same zoom gesture moves at least one complete node beyond the physical viewport');
-  const staying=nextZoom/initialZoom>1.5?['SYN-00000','SYN-HUB']:allIds.filter(id=>id!=='SYN-00004');
+  const staying=nextZoom/initialZoom>1.5?['SYN-00000','SYN-HUB']:allIds;
+  if(nextZoom/initialZoom<=1.5) assert.equal(h.run(`(()=>{
+    const item=state.graphView.nodeItems.get('SYN-00004'),body=graphNodeBodyBounds(item),label=graphLabelBounds(item,'node');
+    return body.minX>1000&&label.minX<1000&&label.maxX>1000})()`),true,
+    'the offscreen body retains the part of its original anchored label that still enters the canvas');
   assert.deepEqual(actualTextIds(),staying,'unobstructed nodes left on screen retain actual text without hover');
   assertAppliedLabelPlacements(h);
   refreshHover('SYN-HUB');
@@ -1465,6 +1469,48 @@ for(const [initialZoom,nextZoom] of [[.4,.8],[.945,1.167],[1,2]]) test(`node lab
   assert.equal(h.run(`JSON.stringify(state.graph.getNodes().map(item=>{
     const m=item.getModel();return{id:m.id,x:m.x,y:m.y}}))===zoomLabelCoordinates`),true,
     'zoom and label recovery never move nodes or alter saved coordinates');
+});
+
+for(const side of ['left','right','top','bottom']) test(`partially clipped ${side} node labels stay anchored through pan out and back without hover`,()=>{
+  const h=harness('app.js');installSyntheticHub(h,1);
+  h.run(`syntheticZoom=1;syntheticViewport={minX:0,minY:0,maxX:1000,maxY:700};
+    // Match this fixture's G6 glyph widths so a missing label's Canvas
+    // estimate remains conservative even when only two pixels enter the view.
+    graphLabelMeasure={measureText(value){return{width:String(value).length*Number(/([\\d.]+)px/.exec(this.font)[1])*.6}}};
+    state.positions={'SYN-HUB':{x:500,y:300}};state.graphView.labelMode='auto';renderGraph();
+    globalThis.boundaryLabel=state.graphView.nodeItems.get('SYN-HUB');
+    globalThis.boundaryBounds=graphLabelBounds(boundaryLabel,'node');
+    globalThis.boundaryAnchor=JSON.stringify(labelShapes(boundaryLabel).map(shape=>({x:shape.attr('x'),y:shape.attr('y')})));
+    globalThis.boundaryCoordinates=JSON.stringify({positions:state.positions,x:boundaryLabel.getModel().x,y:boundaryLabel.getModel().y});`);
+  const bounds=JSON.parse(h.run('JSON.stringify(boundaryBounds)'));
+  const pan=side==='left'?{x:bounds.maxX-2,y:0}:side==='right'?{x:bounds.minX-998,y:0}
+    :side==='top'?{x:0,y:bounds.maxY-2}:{x:0,y:bounds.minY-698};
+  const settle=(x,y)=>{
+    h.run(`syntheticViewport={minX:${x},minY:${y},maxX:${x+1000},maxY:${y+700}};scheduleGraphLabels(true)`);
+    h.timers.findLast(timer=>timer.delay===140&&!timer.cancelled).callback();
+  };
+  const assertVisible=()=>{
+    assert.equal(h.run('boundaryLabel.getContainer().get("visible")'),true,'the group remains drawn when its anchored label intersects the canvas');
+    assert.equal(h.run('labelShapes(boundaryLabel).length'),1,'the canonical label retains an actual G6 text shape');
+    assert.equal(h.run('labelShapes(boundaryLabel)[0].attr("text")===boundaryLabel.getModel().fundsLabel'),true);
+    assert.equal(h.run('JSON.stringify(labelShapes(boundaryLabel).map(shape=>({x:shape.attr("x"),y:shape.attr("y")})))===boundaryAnchor'),true,
+      'camera clipping never clamps or shifts the local text anchor');
+    assert.equal(h.run('boundaryLabel.getContainer().get("children").some(shape=>shape.get("name")==="funds-label-leader")'),false);
+    assertAppliedLabelPlacements(h);
+  };
+  assertVisible();settle(pan.x,pan.y);assertVisible();
+  const clipped=JSON.parse(h.run('JSON.stringify(graphLabelBounds(boundaryLabel,"node"))'));
+  assert.ok(clipped.minX<0||clipped.maxX>1000||clipped.minY<0||clipped.maxY>700,'the text really crosses a physical canvas boundary');
+  if(side==='left'||side==='right'||side==='top') assert.equal(h.run(`(()=>{
+    const m=boundaryLabel.getModel(),p=state.graph.getCanvasByPoint(m.x,m.y);return p.x<0||p.x>1000||p.y<0||p.y>700})()`),true,
+    'an offscreen node center does not suppress its visible label');
+  settle(5000,5000);
+  assert.equal(h.run('labelShapes(boundaryLabel).length'),0,'a fully offscreen ordinary label still releases its shape');
+  settle(pan.x,pan.y);assertVisible();
+  settle(0,0);assertVisible();
+  assert.equal(h.run('state.graphView.hoveredAccount'),null,'pan recovery never requires hover');
+  assert.equal(h.run('JSON.stringify(state.lastGraph)===originalGraphFacts'),true);
+  assert.equal(h.run('JSON.stringify({positions:state.positions,x:boundaryLabel.getModel().x,y:boundaryLabel.getModel().y})===boundaryCoordinates'),true);
 });
 
 test('node label obstacles follow same-zoom live movement and shadow style changes without weakening real collisions',()=>{
@@ -1778,8 +1824,8 @@ function assertAppliedLabelPlacements(h, { retainAll=false }={}) {
     assert.ok(placement.bounds,`${placement.kind} ${placement.key} has measured placement geometry`);
     if(placement.conflicted) assert.ok(retainAll||placement.required,`${placement.key} cannot silently retain an ordinary conflict`);
     else {
-      assert.ok(placement.bounds.minX>=4&&placement.bounds.minY>=4&&placement.bounds.maxX<=996&&placement.bounds.maxY<=696,
-        `${placement.key} fits the actual viewport`);
+      assert.ok(boxesIntersect(placement.bounds,{minX:0,minY:0,maxX:1000,maxY:700}),
+        `${placement.key} intersects the actual viewport`);
       for(const body of result.bodies.filter(body=>body.bounds)) assert.equal(
         boxesIntersect(paddedLabelBox(placement.bounds,3),paddedLabelBox(body.bounds,2)),false,
         `${placement.key} avoids node body ${body.key}`);

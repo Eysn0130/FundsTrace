@@ -1021,7 +1021,7 @@ function avoidGraphLabelCollisions(policy) {
   const height=view.exportDepth?(state.graph.get?.('height')||c.clientHeight):c.clientHeight;
   const selected=FundsGraphLabels.select(candidates,{obstacles:[...[...bodies].map(([key,bounds])=>({key,bounds})),...graphChromeObstacles(),...edgeObstacles],
     retainAll:view.labelMode==='all'||view.exportDepth>0,
-    viewport:width&&height?{minX:4,minY:4,maxX:width-4,maxY:height-(view.exportFooterHeight||0)-4}:null});
+    viewport:width&&height?{minX:0,minY:0,maxX:width,maxY:height-(view.exportFooterHeight||0)}:null});
   return {...policy,nodeIds:selected.nodeIds,edgeKeys:new Set(policy.edgeKeys),nodePlacements:selected.nodePlacements,
     edgePlacements:new Map(),collisions:selected.rejected,conflicts:selected.conflicts,unknownGeometry:selected.unknownGeometry};
 }
@@ -2086,26 +2086,30 @@ function setShapeTx(sh, x, y) {
 function edgePts(edge) {
   const path = edge.getKeyShape().attr('path');
   if (!path || !path.length) return null;
-  const pts = [];
+  const pts = [], spans = [];
   let cur = null;
   for (const s of path) {
+    if (!Array.isArray(s)) return null;
     if (s[0] === 'M' || s[0] === 'L') {
+      if (![s[1], s[2]].every(Number.isFinite)) return null;
       cur = { x: s[1], y: s[2] };
-      pts.push(cur);
+      pts.push(cur); spans.push(null);
     } else if (s[0] === 'Q') {
-      if (!cur) return null;
+      if (!cur || s.length < 5 || !s.slice(1, 5).every(Number.isFinite)) return null;
+      const start = cur, at = u => { const v = 1 - u; return {
+        x: v * v * start.x + 2 * v * u * s[1] + u * u * s[3],
+        y: v * v * start.y + 2 * v * u * s[2] + u * u * s[4] }; };
       for (let i = 1; i <= 24; i++) {
-        const u = i / 24, v = 1 - u;
-        pts.push({ x: v * v * cur.x + 2 * v * u * s[1] + u * u * s[3],
-                   y: v * v * cur.y + 2 * v * u * s[2] + u * u * s[4] });
+        pts.push(at(i / 24)); spans.push({ at, step: i });
       }
       cur = { x: s[3], y: s[4] };
     } else if (s[0] === 'C') {
-      if (!cur) return null;
+      if (!cur || s.length < 7 || !s.slice(1, 7).every(Number.isFinite)) return null;
+      const start = cur, at = u => { const v = 1 - u; return {
+        x: v * v * v * start.x + 3 * v * v * u * s[1] + 3 * v * u * u * s[3] + u * u * u * s[5],
+        y: v * v * v * start.y + 3 * v * v * u * s[2] + 3 * v * u * u * s[4] + u * u * u * s[6] }; };
       for (let i = 1; i <= 24; i++) {
-        const u = i / 24, v = 1 - u;
-        pts.push({ x: v * v * v * cur.x + 3 * v * v * u * s[1] + 3 * v * u * u * s[3] + u * u * u * s[5],
-                   y: v * v * v * cur.y + 3 * v * v * u * s[2] + 3 * v * u * u * s[4] + u * u * u * s[6] });
+        pts.push(at(i / 24)); spans.push({ at, step: i });
       }
       cur = { x: s[5], y: s[6] };
     }
@@ -2118,8 +2122,8 @@ function edgePts(edge) {
     total += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
     acc.push(total);
   }
-  if (total <= 0) return null;
-  return { pts, acc, total };
+  if (!Number.isFinite(total) || total <= 0) return null;
+  return { pts, acc, total, spans };
 }
 
 // 弧长比例 r∈[0,1] → 路径上的点
@@ -2129,6 +2133,11 @@ function ptAtRatio(P, r) {
     if (P.acc[i] >= target) {
       const segLen = (P.acc[i] - P.acc[i - 1]) || 1;
       const u = (target - P.acc[i - 1]) / segLen;
+      // Keep the stored chord-length ratio, but evaluate its final parameter
+      // on the real curve. Interpolating chord coordinates can visibly detach
+      // manual labels from a large bend when the user zooms in.
+      const span = P.spans?.[i], point = typeof span?.at === 'function' ? span.at((span.step - 1 + u) / 24) : null;
+      if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) return point;
       return { x: P.pts[i - 1].x + (P.pts[i].x - P.pts[i - 1].x) * u,
                y: P.pts[i - 1].y + (P.pts[i].y - P.pts[i - 1].y) * u };
     }
