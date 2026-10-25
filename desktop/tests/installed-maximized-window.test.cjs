@@ -157,11 +157,12 @@ test('the persisted normal-bounds read uses the already bound preference snapsho
   const start = appSource.indexOf(prefix), end = appSource.indexOf('},5000);', start);
   assert.ok(start >= 0 && end > start);
   const callback = appSource.slice(start + prefix.length, end + 1);
+  const directory = path.join(path.sep, 'synthetic-owned-user');
   const read = vm.runInNewContext(`(${callback})`, { path, readWindowState,
-    presentationPreferences:{file:path.join('/synthetic-owned-user','preferences.json')},
+    presentationPreferences:{file:path.join(directory,'preferences.json')},
     rememberedPresentation:{bounds:normal},
-    readPresentationPreferences:async directory => {
-      assert.equal(directory,'/synthetic-owned-user');
+    readPresentationPreferences:async actualDirectory => {
+      assert.equal(actualDirectory,directory);
       return {saved:{fund_window_state:saved(normal,false)}};
     },
   });
