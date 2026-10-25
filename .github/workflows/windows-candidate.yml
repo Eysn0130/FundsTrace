@@ -30,8 +30,8 @@ on:
       prior_version:
         description: Published prior version; must match desktop/upgrade-baseline.json
         type: choice
-        options: ['0.1.12']
-        default: '0.1.12'
+        options: ['0.1.13']
+        default: '0.1.13'
       in_app_update:
         description: Test in-app update (official feed for published EXE mode; private HTTPS for builds)
         type: boolean
