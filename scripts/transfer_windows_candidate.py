@@ -15,9 +15,11 @@ import tempfile
 import zipfile
 
 if __package__:
+    from .build_desktop_backend import SOURCE_DOCUMENT_NAMES
     from .release_evidence import prepare_evidence, verify_evidence, standard_evidence_files, fresh_declaration, fresh_evidence_files
     from .upgrade_baseline import parse_baseline, validate_installer_identity
 else:
+    from build_desktop_backend import SOURCE_DOCUMENT_NAMES
     from release_evidence import prepare_evidence, verify_evidence, standard_evidence_files, fresh_declaration, fresh_evidence_files
     from upgrade_baseline import parse_baseline, validate_installer_identity
 
@@ -262,8 +264,7 @@ def verify_backend_resources(resources, source_file):
         assert not PurePosixPath(name).is_absolute() and ".." not in PurePosixPath(name).parts
         if name.startswith("frontend/dist/"):
             continue  # The Windows build verified these actual compiled resources, then installed them.
-        assert name in {"LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/MIT.txt",
-                        "docs/licensing.md", "docs/licensing.en.md"} or name.startswith("static/")
+        assert name in SOURCE_DOCUMENT_NAMES or name.startswith("static/")
         assert sha in variants(source_file(name))
         sources_checked += 1
     assert "static/graph-selection.js" in resources

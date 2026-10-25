@@ -8,6 +8,7 @@ import subprocess
 import pytest
 
 from scripts import transfer_windows_candidate as transfer
+from scripts import build_desktop_backend as builder
 from scripts.transfer_windows_candidate import verify_host_report, verify_upgrade_origin, verify_icon_report
 from scripts.upgrade_baseline import validate_baseline
 
@@ -24,6 +25,33 @@ def backend_resources(*, licenses=()):
         "frontend/dist/index.html", "frontend/dist/assets/index.js", "frontend/dist/assets/index.css",
     )})
     return files, resources
+
+
+def test_transfer_accepts_the_actual_packager_license_resources(tmp_path, monkeypatch):
+    # Exercise the real packager collector against synthetic files, without
+    # building the frontend/backend or reading a local activation key.
+    contents = {name: f"Synthetic reviewed {name}\n".encode() for name in (
+        "LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/MIT.txt",
+        "docs/licensing.md", "docs/licensing.en.md", "static/graph-selection.js",
+        "frontend/dist/index.html", "frontend/dist/assets/index.js", "frontend/dist/assets/index.css",
+    )}
+    for name, content in contents.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    monkeypatch.setattr(builder, "ROOT", tmp_path)
+    monkeypatch.setattr(builder, "STATIC_NAMES", ("graph-selection.js",))
+    resources = {name.replace("\\", "/"): hashlib.sha256(path.read_bytes()).hexdigest()
+                 for path, name in builder.resource_files()}
+    checked = []
+
+    def source_file(name):
+        checked.append(name)
+        return contents[name]
+
+    assert transfer.verify_backend_resources(resources, source_file) == 6
+    assert set(checked) == {"LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/MIT.txt",
+                            "docs/licensing.md", "docs/licensing.en.md", "static/graph-selection.js"}
 
 
 def test_backend_resource_transfer_preserves_historical_manifest():
