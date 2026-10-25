@@ -726,3 +726,35 @@ for(const missingCalls of [[1],[2],[1,2]]){
   assert.equal(graph.edges[0].model.curvePolicy,'screen-right');
   assert.deepEqual(plain(graph.edges[0].model.controlPoints),[{x:400,y:250}]);
 }
+
+// The exported manual ratio still denotes arc length. Its final anchor must
+// lie on the actual curve rather than on a chord of the 64-point approximation.
+const preciseManual=plain(oldData);
+preciseManual.nodes=[{id:'SYN-A',x:0,y:0,label:'Synthetic A'},
+  {id:'SYN-B',x:2000,y:0,label:'Synthetic B'}];
+preciseManual.edges=[{source:'SYN-A',target:'SYN-B',type:'quadratic',routeManual:true,
+  controlPoints:[{x:1000,y:5000}],label:'CNY 10000000000000000.01',labelPlacement:'inline',
+  labelManual:true,labelRatio:.507}];
+vm.runInNewContext(withData(preciseManual),context);
+function assertExportManualOnCurve(){
+  const item=graph.edges[0],path=item.getKeyShape().attr('path'),box=text(item).getBBox();
+  const anchor={x:(box.minX+box.maxX)/2,y:(box.minY+box.maxY)/2};
+  const start={x:path[0][1],y:path[0][2]},control={x:path[1][1],y:path[1][2]},end={x:path[1][3],y:path[1][4]};
+  const distance=t=>{const v=1-t,x=v*v*start.x+2*v*t*control.x+t*t*end.x,
+    y=v*v*start.y+2*v*t*control.y+t*t*end.y;return Math.hypot(x-anchor.x,y-anchor.y)};
+  let lo=0,hi=1;
+  for(let i=0;i<90;i++){
+    const a=lo+(hi-lo)/3,b=hi-(hi-lo)/3;
+    if(distance(a)<distance(b))hi=b;else lo=a;
+  }
+  const error=distance((lo+hi)/2);
+  assert.ok(error<1e-7,`exported manual text is ${error} world units off its real curve`);
+  assert.equal(item.model.labelRatio,.507);assert.equal(text(item).attr('text'),'CNY 10000000000000000.01');
+  assert.equal(shape(item,'funds-label-leader'),undefined);assertInline(item);
+}
+assertExportManualOnCurve();
+for(const zoom of [.1,4,.5]){graph.zoomTo(zoom);assertExportManualOnCurve();}
+graph.edges[0].model.labelVisible=false;graph.emit('viewportchange',{action:'zoom'});
+assert.equal(text(graph.edges[0]).visible,false);
+graph.edges[0].model.labelVisible=true;graph.emit('viewportchange',{action:'zoom'});assertExportManualOnCurve();
+graph.drag('SYN-B',300,120);assertExportManualOnCurve();

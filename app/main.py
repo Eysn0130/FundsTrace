@@ -2113,7 +2113,9 @@ buildWM();
     var target=value*total;
     for(var j=1;j<points.length;j++)if(lengths[j]>=target){
       var t=(target-lengths[j-1])/(lengths[j]-lengths[j-1]||1);
-      return {x:points[j-1].x+(points[j].x-points[j-1].x)*t,y:points[j-1].y+(points[j].y-points[j-1].y)*t};
+      // Retain the sampled arc-length ratio, then evaluate the real path
+      // instead of placing manual text on an approximation's straight chord.
+      return point(shape.getPoint((j-1+t)/64));
     }
     return points[points.length-1];
   }

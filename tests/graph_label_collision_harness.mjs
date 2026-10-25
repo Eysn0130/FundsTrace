@@ -169,7 +169,7 @@ test('retainAll keeps all and export semantics while still attempting collision 
   assert.equal(result.rejected, 0);
 });
 
-test('viewport candidates and explicit own-body exclusions are checked without mutating inputs', () => {
+test('viewport intersections keep the first position and explicit own-body exclusions without mutating inputs', () => {
   const input = [candidate('a', box(0, 0, 10, 10), { ignoreObstacleKeys: ['a'], placements: [
     { bounds: box(-5, 0, 5, 10), dx: -5, dy: 0 },
     { bounds: box(0, 0, 10, 10), dx: 0, dy: 0 },
@@ -178,9 +178,42 @@ test('viewport candidates and explicit own-body exclusions are checked without m
   const result = labels.select(input, { padding: 0, viewport: box(0, 0, 100, 100),
     obstacles: [{ key: 'a', bounds: box(0, 0, 10, 10) }] });
   assert.deepEqual([...result.nodeIds], ['a']);
-  assert.equal(result.nodePlacements.get('a').index, 1);
+  assert.equal(result.nodePlacements.get('a').index, 0);
+  assert.equal(result.nodePlacements.get('a').dx, -5);
   assert.equal(result.unplaced, 1);
   assert.equal(JSON.stringify(input), before);
+});
+
+for (const [side, bounds] of [
+  ['left', box(-18, 30, 2, 40)], ['right', box(98, 30, 118, 40)],
+  ['top', box(30, -8, 50, 2)], ['bottom', box(30, 98, 50, 108)],
+]) test(`a label with only a visible strip at the ${side} viewport boundary keeps its fixed anchor`, () => {
+  const input = Object.freeze([Object.freeze(candidate('partial', Object.freeze(bounds)))]);
+  const result = labels.select(input, { viewport: box(0, 0, 100, 100) });
+  assert.deepEqual([...result.nodeIds], ['partial']);
+  const placement = result.nodePlacements.get('partial');
+  assert.deepEqual({ ...placement.bounds }, bounds);
+  assert.equal(placement.dx, 0); assert.equal(placement.dy, 0);
+  assert.equal(placement.conflicted, false);
+  assert.equal(result.rejected, 0);
+});
+
+test('viewport intersection preserves collision checks and fully offscreen required and all modes', () => {
+  const viewport = box(0, 0, 100, 100), partial = box(-10, 20, 10, 30), outside = box(-30, 60, -10, 70);
+  const result = labels.select([
+    candidate('partial', partial, { priority: 1 }), candidate('collision', partial), candidate('outside', outside),
+  ], { viewport });
+  assert.deepEqual(ids(result), { nodes: ['partial'], edges: [], rejected: 2 });
+  assert.equal(result.unplaced, 2);
+  const required = labels.select([candidate('outside', outside, { required: true })], { viewport });
+  assert.deepEqual([...required.nodeIds], ['outside']);
+  assert.equal(required.nodePlacements.get('outside').conflicted, true);
+  for (const options of [{ retainAll: true }, { disabled: true }]) {
+    const retained = labels.select([candidate('outside', outside)], { viewport, ...options });
+    assert.deepEqual([...retained.nodeIds], ['outside']);
+    assert.equal(retained.nodePlacements.get('outside').dx, 0);
+    assert.equal(retained.nodePlacements.get('outside').dy, 0);
+  }
 });
 
 test('a manually pinned required label stays at its only position and reports body conflicts', () => {
