@@ -1283,6 +1283,7 @@ async function restorePresentationPreferences(snapshot) {
     fixture: updateFixture, primary, evaluate, clickElement, cdp, page, check, screenshot: config.screenshot,
   });
   await check('normalClose', async () => {
+    if (rememberedPresentation) assert.equal(primary.done,false,'PRESENTATION_MAXIMIZED_NATIVE_CLOSE_REQUIRED');
     // Close the actual native caption button when the CI desktop supports real
     // pointer input. A fallback local window.close targets the owning root.
     if (!primary.done) {

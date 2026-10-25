@@ -136,3 +136,17 @@ test('the actual startup consumer rejects unavailable restore, wrong saved size 
     assert.deepEqual(flow.actions,['Inspect','CaptionRestore']);
   }
 });
+
+test('the maximized lifecycle cannot count an earlier clean process exit as a native close', async () => {
+  const prefix = "await check('normalClose', ";
+  const start = appSource.lastIndexOf(prefix), end = appSource.indexOf("\n  await check('backendReleasedAfterClose'", start);
+  assert.ok(start >= 0 && end > start);
+  const action = appSource.slice(start + prefix.length, end).trim().replace(/\);$/, '');
+  const run = rememberedPresentation => vm.runInNewContext(`
+    const primary = {done:true,exited:Promise.resolve({code:0,signal:null})};
+    (${action})()
+  `, { assert, rememberedPresentation, errorCount:0, bounded:async value => value,
+    nativeStartupWindow:() => assert.fail('already closed process cannot receive input') });
+  await assert.rejects(run({savedNormalBounds:normal}), /PRESENTATION_MAXIMIZED_NATIVE_CLOSE_REQUIRED/);
+  await run(null); // The private updater may legitimately have exited already.
+});
