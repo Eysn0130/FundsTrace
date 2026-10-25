@@ -17,7 +17,7 @@ function fixture(options = {}) {
   updater.downloadUpdate = async () => { calls.push('download'); updater.emit('download-progress', { percent: 41.25 }); return ['main-owned-cache-path']; };
   updater.quitAndInstall = (...args) => calls.push(['install', ...args]);
   const states = [];
-  const controller = updateController({ updater, version: '0.1.7', enabled: true, notify: value => states.push(value), restart: async () => { calls.push('shutdown'); return true; }, ...options });
+  const controller = updateController({ createUpdater: () => ({ updater, cancelCheck() {} }), version: '0.1.7', enabled: true, notify: value => states.push(value), restart: async () => { calls.push('shutdown'); return true; }, ...options });
   return { updater, calls, states, controller };
 }
 test('check, explicit download, progress and explicit restart preserve the update lifecycle', async () => {
@@ -78,6 +78,71 @@ test('multiple windows cannot duplicate a download; cancelling restart retains t
   await Promise.resolve(); finish(['cached']); await Promise.all([first, second]);
   assert.deepEqual(calls, ['check', 'download']);
   assert.equal((await controller.action('install')).phase, 'ready');
+});
+test('a stalled check expires after 30 seconds and retry uses a new updater through restart', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const first = fixture(), next = fixture();
+  let finishOld, cancelled = 0, created = 0;
+  first.updater.checkForUpdates = () => { first.calls.push('check'); return new Promise(resolve => { finishOld = resolve; }); };
+  const { controller } = fixture({ createUpdater: () => {
+    created++;
+    return { updater: created === 1 ? first.updater : next.updater, cancelCheck() { cancelled++; } };
+  } });
+  const check = controller.action('check'), duplicate = controller.action('check');
+  await Promise.resolve();
+  assert.deepEqual(first.calls, ['check']);
+  t.mock.timers.tick(29_999); await Promise.resolve();
+  assert.equal(controller.snapshot().phase, 'checking');
+  t.mock.timers.tick(1);
+  await new Promise(setImmediate);
+  assert.equal(controller.snapshot().phase, 'error');
+  assert.equal((await check).errorCode, 'ERR_UPDATER_CHECK_TIMEOUT');
+  await duplicate;
+  assert.equal(cancelled, 1);
+  assert.equal((await controller.action('check')).phase, 'available');
+  assert.equal(created, 2);
+  assert.deepEqual(next.calls, ['check']);
+  t.mock.timers.tick(30_000); await new Promise(setImmediate);
+  assert.equal(cancelled, 1, 'successful retry must clear its deadline');
+  finishOld({ updateInfo: info('0.1.99') });
+  first.updater.emit('error', Object.assign(new Error('late private details'), { code: 'ERR_FAILED' }));
+  first.updater.emit('download-progress', { percent: 99 });
+  await Promise.resolve();
+  assert.deepEqual(controller.snapshot(), { phase: 'available', currentVersion: '0.1.7', version: '0.1.8', percent: 0, errorCode: '' });
+  assert.equal((await controller.action('download')).phase, 'ready');
+  assert.equal((await controller.action('install')).phase, 'installing');
+  controller.install();
+  assert.deepEqual(next.calls, ['check', 'download', 'check', ['install', true, true]]);
+});
+test('installation recheck has the same deadline and cannot restart a retired updater', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { updater, controller, calls } = fixture();
+  await controller.action('check'); await controller.action('download');
+  let finish;
+  updater.checkForUpdates = () => new Promise(resolve => { finish = resolve; });
+  const install = controller.action('install');
+  t.mock.timers.tick(30_000);
+  await new Promise(setImmediate);
+  assert.equal(controller.snapshot().phase, 'error');
+  assert.equal((await install).errorCode, 'ERR_UPDATER_CHECK_TIMEOUT');
+  finish({ updateInfo: info() }); await Promise.resolve();
+  assert.equal(controller.snapshot().phase, 'error');
+  assert.deepEqual(calls, ['check', 'download']);
+});
+test('a cancellation failure still releases the timed-out check for a fresh retry', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const first = fixture(), next = fixture();
+  first.updater.checkForUpdates = () => new Promise(() => {});
+  let created = 0;
+  const { controller } = fixture({ createUpdater: () => ({
+    updater: ++created === 1 ? first.updater : next.updater,
+    cancelCheck() { throw new Error('private cancellation details'); },
+  }) });
+  const pending = controller.action('check'); await Promise.resolve();
+  t.mock.timers.tick(30_000);
+  assert.equal((await pending).errorCode, 'ERR_UPDATER_CHECK_TIMEOUT');
+  assert.equal((await controller.action('check')).phase, 'available');
+  assert.equal(created, 2);
 });
 test('IPC requires an owned, exact-origin top frame', () => {
   const frame = { url: 'http://127.0.0.1:55123/' }, sender = { id: 7, mainFrame: frame, isDestroyed: () => false };
