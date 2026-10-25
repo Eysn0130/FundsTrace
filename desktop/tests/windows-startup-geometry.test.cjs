@@ -12,7 +12,8 @@ test('actual native helper preserves frame geometry and strictly selects owned w
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'FundsTrace synthetic window geometry '));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     const script = path.join(directory, 'geometry-fixtures.ps1');
-    await fs.writeFile(script, String.raw`param([Parameter(Mandatory = $true)][string]$Helper)
+    await fs.writeFile(script, String.raw`param([Parameter(Mandatory = $true)][string]$Helper,
+    [Parameter(Mandatory = $true)][string]$Installer)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $tokens = $null; $errors = $null
@@ -22,6 +23,21 @@ $source = [IO.File]::ReadAllText($Helper)
 $native = [regex]::Match($source, "(?s)Add-Type @'\r?\n(.*?)\r?\n'@")
 if (-not $native.Success) { throw 'NATIVE_SOURCE_MISSING' }
 Add-Type -TypeDefinition $native.Groups[1].Value
+# A same-rectangle maximize/minimize transition must still invalidate Read.
+# Execute its exact state guard with independent before/after combinations.
+foreach ($maximized in @($false,$true)) {
+    foreach ($minimized in @($false,$true)) {
+        $state = [FundsTraceStartupWindow+Evidence]::new()
+        $state.Maximized = $maximized; $state.Minimized = $minimized
+        [FundsTraceStartupWindow]::AssertStableWindowState($state,$maximized,$minimized)
+        foreach ($after in @(@((-not $maximized),$minimized), @($maximized,(-not $minimized)))) {
+            $rejected = $false
+            try { [FundsTraceStartupWindow]::AssertStableWindowState($state,$after[0],$after[1]) }
+            catch { $rejected = $_.Exception.GetBaseException().Message -ceq 'WINDOW_STATE_CHANGED' }
+            if (-not $rejected) { throw 'WINDOW_STATE_RACE_ACCEPTED' }
+        }
+    }
+}
 # Execute the same strict hit guard used by the real Caption operation. Both
 # the empty caption and the noninteractive preview badge must be HTCAPTION=2;
 # the former menu's HTCLIENT=1 must never be accepted as an alternative.
@@ -130,6 +146,10 @@ $failures = @(
     @{ action = 'CaptionProbe'; code = 'CAPTION_DRAG_RESIZED_WINDOW'; expected = 'CAPTION_GEOMETRY'; status = 'failed' },
     @{ action = 'ZoomIn'; code = 'CAPTION_STATE_TIMEOUT'; expected = 'STATE_TIMEOUT'; status = 'failed' },
     @{ action = 'ZoomReset'; code = 'INPUT_DESKTOP_UNAVAILABLE'; expected = 'INPUT_DESKTOP_UNAVAILABLE'; status = 'unavailable' },
+    @{ action = 'CaptionMaximize'; code = 'INPUT_DESKTOP_UNAVAILABLE'; expected = 'INPUT_DESKTOP_UNAVAILABLE'; status = 'unavailable' },
+    @{ action = 'CaptionRestore'; code = 'INPUT_INJECTION_FAILED'; expected = 'INPUT_INJECTION_FAILED'; status = 'unavailable' },
+    @{ action = 'CaptionMaximize'; code = 'CAPTION_UNEXPECTED_WINDOW_STATE'; expected = 'CAPTION_STATE'; status = 'failed' },
+    @{ action = 'CaptionRestore'; code = 'WINDOW_STATE_CHANGED'; expected = 'CAPTION_STATE'; status = 'failed' },
     @{ action = 'CaptionProbe'; code = 'synthetic unapproved exception /private-test-path 0x1234'; expected = 'NATIVE_CAPTION_FAILED'; status = 'failed' }
 )
 foreach ($failure in $failures) {
@@ -139,14 +159,50 @@ foreach ($failure in $failures) {
     if ($Report.status -ne $failure.status -or $Report.failureCode -ne $failure.expected -or
         $Report.failedCheck -ne 'nativeCaptionInteraction') { throw 'FAILURE_CLASSIFICATION_MISMATCH' }
     if ($failure.status -eq 'unavailable') {
-        if ($ExitCode -ne 2 -or $Report.reason -ne 'INPUT_DESKTOP_UNAVAILABLE') { throw 'INPUT_UNAVAILABILITY_LOST' }
+        if ($ExitCode -ne 2 -or $Report.reason -ne $failure.code) { throw 'INPUT_UNAVAILABILITY_LOST' }
     } elseif ($ExitCode -ne 1) { throw 'NON_INPUT_FAILURE_DOWNGRADED' }
     if (($Report | ConvertTo-Json -Compress).Contains('/private-test-path')) { throw 'UNSAFE_EXCEPTION_TEXT_REPORTED' }
 }
+# Run the installer's actual required-check block, without running an installer.
+# The private update fixture remains exempt; ordinary installs must reject every
+# omitted check, false result and the truthy JSON string "true".
+$installerAst = [System.Management.Automation.Language.Parser]::ParseFile($Installer, [ref]$tokens, [ref]$errors)
+if ($errors.Count -gt 0) { throw 'INSTALLER_PARSE_FAILED' }
+$gates = @($installerAst.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.IfStatementAst] -and
+    $node.Clauses[0].Item1.Extent.Text -ceq '-not $NextInstaller' -and
+    $node.Extent.Text.Contains('installedMaximizedWindowRecovery')
+}, $true))
+if ($gates.Count -ne 1) { throw 'MAXIMIZED_INSTALLER_GATE_MISSING' }
+$gate = [scriptblock]::Create($gates[0].Extent.Text)
+$required = @('installedPresentationUserResize','installedPresentationMaximizedBeforeClose',
+    'installedPresentationMaximizedAfterRelaunch','installedPresentationRestoredAfterRelaunch')
+$NextInstaller = ''
+$values = @{}; foreach ($name in $required) { $values[$name] = $true }
+$AppHelper = [pscustomobject]@{ checks = [pscustomobject]$values }; $Report = @{ checks = @{} }
+. $gate
+if ($Report.checks.installedMaximizedWindowRecovery -cne 'passed') { throw 'MAXIMIZED_INSTALLER_GATE_NOT_RUN' }
+foreach ($name in $required) {
+    foreach ($invalid in @('missing','false','string')) {
+        $values = @{}; foreach ($key in $required) { $values[$key] = $true }
+        if ($invalid -eq 'missing') { $values.Remove($name) }
+        elseif ($invalid -eq 'false') { $values[$name] = $false }
+        else { $values[$name] = 'true' }
+        $AppHelper = [pscustomobject]@{ checks = [pscustomobject]$values }; $Report = @{ checks = @{} }
+        $rejected = $false
+        try { . $gate } catch { $rejected = $true }
+        if (-not $rejected -or $Report.checks.ContainsKey('installedMaximizedWindowRecovery')) { throw 'INVALID_MAXIMIZED_CHECK_ACCEPTED' }
+    }
+}
+$NextInstaller = 'synthetic-private-update-fixture'
+$AppHelper = [pscustomobject]@{ checks = [pscustomobject]@{} }; $Report = @{ checks = @{} }
+. $gate
+if ($Report.checks.ContainsKey('installedMaximizedWindowRecovery')) { throw 'PRIVATE_UPDATE_FIXTURE_GATE_CHANGED' }
 Write-Output 'WINDOW_GEOMETRY_FIXTURES_PASSED'
 `);
     const result = spawnSync('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', script,
-      '-Helper', path.resolve(__dirname, '../../scripts/test-windows-startup-window.ps1')],
+      '-Helper', path.resolve(__dirname, '../../scripts/test-windows-startup-window.ps1'),
+      '-Installer', path.resolve(__dirname, '../../scripts/test-windows-installer.ps1')],
     { encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024, windowsHide: true });
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, String(result.stderr || result.stdout));

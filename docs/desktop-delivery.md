@@ -100,6 +100,8 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 [原生窗口 helper](../scripts/test-windows-startup-window.ps1) 按安装 EXE 的 PID 和文件路径核对归属，读取真实窗口、客户区、显示器工作区、窗口 DPI 及最小跟踪尺寸，再调整并回读最小窗口。hidden/thickFrame普通恢复态的Electron逻辑边界与原始HWND外框不同：报告保留GetWindowRect和WM_GETMINMAXINFO原值，另按同次屏幕客户区的实测边距还原逻辑窗口／最小尺寸；Resize按该边距转换，最后以实际回读验收。DWM可见边界仅用于截图，不替代Electron逻辑尺寸。它不修改系统显示模式或缩放；20 组 CSS／DPR 仿真也不等同于 20 种 Windows 显示设置。`native-installed-app.startup-*.png` 包含启动 renderer 表面截图，以及交互桌面允许时的默认／最小原生窗口合成截图，随候选 SHA-256 清单保留；无法截取或未人工查看时不记录外观验收通过。暂缓业务执行的检查不作为正常冷启动性能数据。
 
+普通安装后生命周期还验证最大化偏好的保存与重开：先通过真实边框拖动建立非默认普通尺寸，再点击原生最大化按钮，等待已安装客户端自行保存普通尺寸和 `maximized:true`，关闭后重启。重启必须观察到原生最大化状态，客户区覆盖当前工作区，标题层仍为 32 DIP；随后原生还原，核对关闭前冻结的普通尺寸、位置及侧栏宽度。启动尺寸验收也支持预先保存的最大化状态：按保存的普通尺寸和当前工作区独立计算期望，验证最大化后先还原，再继续既有最小尺寸与还原检查。最大化时不套用普通窗口的 frame-inset 换算；状态变化、错误还原尺寸或输入不可用均不得报告通过。私有更新 fixture 保留其独立路径，不能冒充这条最大化记忆链。
+
 上述自动检查仍仅覆盖 Windows hosted runner。它不证明 Windows 10／11 任务栏最终外观、既有固定图标缓存、真实系统 DPI 或 SmartScreen；没有可用交互桌面时不能把这些项目记为通过。候选构建默认不创建 Tag 或 Release，未获发布授权时仅保留 Actions 产物，现有 Latest 和下载入口保持原版本。
 
 [Windows Actions](../.github/workflows/windows-candidate.yml) 只手动运行，使用中文源码路径；先执行定向进程／导入恢复／历史验签／资源回归，再复用同一构建入口。`installer=true` 额外传入 `-VerifyInstallerLifecycle`：仅在 GitHub Actions 的全新隔离用户下，以 `desktop/upgrade-baseline.json` 明确指定并固定 SHA-256／字节数的已公开客户端作为旧版本，验证静默安装到中文自定义目录 → 旧安装版后端写入并重开合成案件 → 新安装器不指定目录而自动找到旧版并覆盖升级 → 旧安装目录测试文件清除、设置字节与已安装设置模块读取 → 比对旧流水／金额／币种／画布／追踪和旧案件包往返 → 同版重装后重复资源／数据／设置核对 → 真正 EXE 启动／快捷键／单实例／正常关闭 → 卸载保留数据和移除注册入口。实际报告为 `native-installer-smoke.json` 和 `native-installed-app-smoke.json`，前者的 `priorDataChecks`、`upgradedDataChecks` 记录旧数据兼容链。原件仅依据已注册的导入来源核对摘要，不扫描业务目录。该模式拒绝已有 FundsTrace 安装或数据；普通本地构建不自动安装候选。

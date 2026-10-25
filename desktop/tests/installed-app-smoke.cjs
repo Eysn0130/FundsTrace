@@ -10,7 +10,9 @@ const path = require('node:path');
 const os = require('node:os');
 const { performance } = require('node:perf_hooks');
 const { pathToFileURL } = require('node:url');
-const { startupTarget, createInstalledStartupProbe, assertNativeClientGeometry, assertNativeWindowBounds, expectedStartupBounds } = require('./installed-startup-journey.cjs');
+const { startupTarget, createInstalledStartupProbe, assertNativeClientGeometry, assertNativeWindowBounds,
+  assertNativeMaximizedWindowBounds, assertNativeCaptionState, assertSavedPresentationWindow, expectedStartupBounds } = require('./installed-startup-journey.cjs');
+const { readWindowState } = require('../preferences.cjs');
 const { titlebarTarget, createInstalledTitlebarProbe, runInstalledTitlebarJourney, safeTitlebarFailure,
   safeProtocolMethod, protocolError, safeInstalledFailure, createMainErrorMarkerProbe } = require('./installed-titlebar-journey.cjs');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
@@ -117,7 +119,7 @@ async function nativeStartupWindow(installRoot, processId, { action = 'Inspect',
   if (result.status === 'failed') {
     const stages = ['ciPlatform','syntheticUserBinding','inputBinding','nativeWindowReader','installedProcessBinding',
       'physicalDpiContext','uniqueVisibleWindow','nativeWindowInspect','nativeWindowResize','screenshotOutputBinding','nativeWindowCapture','nativeCaptionInteraction'];
-    const actions=['Inspect','Resize','UserResize','Capture','CaptionProbe','CaptionClose','CaptionCloseForeground','ZoomIn','ZoomReset'];
+    const actions=['Inspect','Resize','UserResize','Capture','CaptionProbe','CaptionMaximize','CaptionRestore','CaptionClose','CaptionCloseForeground','ZoomIn','ZoomReset'];
     const codes=['OWNED_WINDOW_COUNT','FOREGROUND_BINDING','HTCLOSE','STATE_TIMEOUT','PROCESS_BINDING','NATIVE_GEOMETRY','CAPTION_POINT',
       'CAPTION_HIT','CAPTION_STATE','CAPTION_GEOMETRY','NATIVE_CLOSE_FAILED','NATIVE_CAPTION_FAILED'];
     report.startupNativeFailure = { action:actions.includes(action) ? action : 'unknown',
@@ -135,11 +137,17 @@ async function nativeStartupBounds(config, primary, target) {
   const initial = await observe({});
   result.initial = initial;
   const scale = initial.scaleFactor;
-  const { source, ...expected } = expectedStartupBounds(initial, presentationPreferences?.saved?.fund_window_state);
+  const { source, maximized = false, x, y, ...expected } = expectedStartupBounds(initial, presentationPreferences?.saved?.fund_window_state);
   const min = { width:expected.minWidth, height:expected.minHeight };
   result.expectedInitialSource=source;
   result.expectedInitialDip=expected;
-  assertNativeWindowBounds(initial,result.expectedInitialDip);
+  result.expectedInitialMaximized=maximized;
+  if (maximized) assertNativeMaximizedWindowBounds(initial);
+  else {
+    assert.equal(initial.maximized,false,'STARTUP_NATIVE_UNEXPECTED_MAXIMIZED');
+    assert.equal(initial.minimized,false,'STARTUP_NATIVE_UNEXPECTED_MINIMIZED');
+    assertNativeWindowBounds(initial,result.expectedInitialDip);
+  }
   const client = async native => {
     await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))', target);
     const value = await evaluate(`({width:innerWidth,height:innerHeight,dpr:devicePixelRatio,
@@ -154,6 +162,14 @@ async function nativeStartupBounds(config, primary, target) {
   if (config.screenshot) result.initialCapture = await observe({ action:'Capture', screenshotPath:`${config.screenshot.slice(0, -4)}.startup-native-default.png` });
   result.step = 'initialClient';
   result.initialClient = await client(initial);
+  let normal = initial;
+  if (maximized) {
+    result.step = 'restoreSavedNormal';
+    normal = result.normalRestored = await observe({action:'CaptionRestore'});
+    assertNativeCaptionState(normal,false);
+    assertNativeWindowBounds(normal,{...expected,x,y});
+    result.normalRestoredClient = await client(normal);
+  }
   result.step = 'minimumResize';
   const minimum = await observe({ action:'Resize', widthDip:Math.round(min.width), heightDip:Math.round(min.height) });
   result.minimum = minimum;
@@ -162,7 +178,7 @@ async function nativeStartupBounds(config, primary, target) {
   result.step = 'minimumCapture';
   if (config.screenshot) result.minimumCapture = await observe({ action:'Capture', screenshotPath:`${config.screenshot.slice(0, -4)}.startup-native-minimum.png` });
   result.step = 'restoreDefault';
-  result.restored = await observe({ action:'Resize', widthDip:Math.round(initial.electronWindow.width / scale), heightDip:Math.round(initial.electronWindow.height / scale) });
+  result.restored = await observe({ action:'Resize', widthDip:Math.round(normal.electronWindow.width / scale), heightDip:Math.round(normal.electronWindow.height / scale) });
   assertNativeWindowBounds(result.restored,result.expectedInitialDip);
   await client(result.restored);
   result.step = 'completed';
@@ -1236,7 +1252,29 @@ async function restorePresentationPreferences(snapshot) {
     assert.equal(await evaluate(`window.FundsDesktopPreferences.getItem('fund_window_state')`), null);
     rememberedPresentation = { bounds:Object.fromEntries(Object.entries(resized.electronWindow)
       .map(([key,value]) => [key, value / scale])), minimum, sidebarWidth };
+    const savedNormal = await until(async () => {
+      const current=readWindowState((await readPresentationPreferences(path.dirname(presentationPreferences.file))).saved.fund_window_state);
+      return current && current.maximized === false && ['x','y','width','height'].every(key =>
+        Math.abs(current.bounds[key] - rememberedPresentation.bounds[key]) <= 2) ? current : false;
+    },5000);
+    // Freeze what Main actually persisted while restored. Subsequent maximize
+    // must change only the flag, never replace this rectangle with screen size.
+    rememberedPresentation.savedNormalBounds=Object.freeze({...savedNormal.bounds});
+    report.presentationMemory.savedNormalBounds=rememberedPresentation.savedNormalBounds;
     report.presentationMemory.windowStateRendererReadable = false;
+  });
+  if (rememberedPresentation) await check('installedPresentationMaximizedBeforeClose', async () => {
+    const maximized=await nativeStartupWindow(config.installRoot,primary.child.pid,{action:'CaptionMaximize'});
+    assertNativeCaptionState(maximized,true);
+    assertNativeMaximizedWindowBounds(maximized);
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    const caption=await titlebarProbe.checkBody(page,maximized);
+    const persisted=await until(async () => {
+      const raw=(await readPresentationPreferences(path.dirname(presentationPreferences.file))).saved.fund_window_state,current=readWindowState(raw);
+      return current?.maximized === true ? raw : false;
+    },5000);
+    assertSavedPresentationWindow(persisted,rememberedPresentation.savedNormalBounds,true);
+    report.presentationMemory.maximizedBeforeClose={native:maximized,caption,persistedNormalBoundsUnchanged:true};
   });
   await check('noPageExceptions', async () => {
     assert.ok(!instrumentationFailed); assert.equal(errorCount, 0);
@@ -1245,10 +1283,16 @@ async function restorePresentationPreferences(snapshot) {
     fixture: updateFixture, primary, evaluate, clickElement, cdp, page, check, screenshot: config.screenshot,
   });
   await check('normalClose', async () => {
+    if (rememberedPresentation) assert.equal(primary.done,false,'PRESENTATION_MAXIMIZED_NATIVE_CLOSE_REQUIRED');
     // Close the actual native caption button when the CI desktop supports real
     // pointer input. A fallback local window.close targets the owning root.
     if (!primary.done) {
       report.titlebar.nativeClose = await nativeStartupWindow(config.installRoot,primary.child.pid,{action:'CaptionClose'});
+      if (rememberedPresentation) {
+        assert.equal(report.titlebar.nativeClose.status,'passed','PRESENTATION_MAXIMIZED_NATIVE_CLOSE_REQUIRED');
+        assert.equal(report.titlebar.nativeClose.interaction?.Before?.Maximized,true,'PRESENTATION_CLOSE_EXPECTED_MAXIMIZED');
+        assert.equal(report.titlebar.nativeClose.interaction?.Before?.Minimized,false,'PRESENTATION_CLOSE_EXPECTED_VISIBLE');
+      }
       if (report.titlebar.nativeClose.status==='unavailable') {
         report.titlebar.nativeClose.fallback='window.close-on-owning-local-shell; not a native button click';
         await evaluate('window.close()',titlebarPage).catch(() => {});
@@ -1290,17 +1334,33 @@ async function restorePresentationPreferences(snapshot) {
       analysisPage = analysisTitlebarPage = null;
       await readyDocument(`!!document.querySelector('#graphContainer') && typeof state === 'object'
         && !state.graphLoading && state.graphInited`);
-      const restored = await nativeStartupWindow(config.installRoot, restarted.child.pid);
       const expected = rememberedPresentation;
+      const probe = await createInstalledTitlebarProbe({cdp,target:titlebarPage,evaluate,until});
+      await check('installedPresentationMaximizedAfterRelaunch',async () => {
+        const maximized=await nativeStartupWindow(config.installRoot,restarted.child.pid);
+        assertNativeMaximizedWindowBounds(maximized);
+        assertSavedPresentationWindow((await readPresentationPreferences(path.dirname(presentationPreferences.file))).saved.fund_window_state,
+          expected.savedNormalBounds,true);
+        report.presentationMemory.maximizedAfterRelaunch={native:maximized,
+          caption:await probe.checkBody(page,maximized),sameUserRestart:true};
+      });
+      stage='installedPresentationRestoredAfterRelaunch';
+      const restored = await nativeStartupWindow(config.installRoot,restarted.child.pid,{action:'CaptionRestore'});
+      assertNativeCaptionState(restored,false);
       assertNativeWindowBounds(restored, {...expected.bounds,minWidth:expected.minimum.width,minHeight:expected.minimum.height});
       for (const key of ['x','y']) assert.ok(Math.abs(restored.electronWindow[key] / restored.scaleFactor - expected.bounds[key]) <= 2,
         'PRESENTATION_NATIVE_POSITION_RESTORED');
       await until(() => evaluate(`window.FundsDesktopPreferences.getItem('fund_sidebar_width') === '${expected.sidebarWidth}'
         && Math.abs(document.querySelector('#left').getBoundingClientRect().width - ${expected.sidebarWidth}) <= 1`), 5000);
-      const probe = await createInstalledTitlebarProbe({cdp,target:titlebarPage,evaluate,until});
+      const persisted=await until(async () => {
+        const raw=(await readPresentationPreferences(path.dirname(presentationPreferences.file))).saved.fund_window_state,current=readWindowState(raw);
+        return current?.maximized === false ? raw : false;
+      },5000);
+      assertSavedPresentationWindow(persisted,expected.savedNormalBounds,false);
       report.presentationMemory.restored = { native:restored.electronWindow,scaleFactor:restored.scaleFactor,
+        nativeRestore:restored.interaction,persistedNormalBoundsUnchanged:true,
         sidebarWidth:await evaluate(`document.querySelector('#left').getBoundingClientRect().width`),
-        caption:await probe.checkBody(page),sameUserRestart:true };
+        caption:await probe.checkBody(page,restored),sameUserRestart:true };
       await evaluate('window.close()', titlebarPage).catch(() => {});
       assert.deepEqual(await bounded(restarted.exited, 30000), {code:0,signal:null});
       assert.equal(errorCount, 0);
