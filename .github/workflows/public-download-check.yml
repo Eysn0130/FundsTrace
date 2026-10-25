@@ -100,6 +100,47 @@ jobs:
             process.exitCode = 1;
           });
           NODE
+      - name: Compare independent DNS routing without changing the verifier
+        if: always()
+        run: |
+          node --input-type=module - <<'NODE'
+          import { get } from 'node:https';
+          import { fetchPublicNative, resolvePublicAddresses } from './scripts/release-publisher/verify-public.mjs';
+          const codes = new Set(['ABORT_ERR', 'UND_ERR_CONNECT_TIMEOUT', 'ECONNRESET', 'ETIMEDOUT',
+            'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'EAI_AGAIN']);
+          const endpoints = ['https://analytix.top/fundstrace/latest.yml',
+            'https://download.analytix.top/releases/windows/site/fundstrace/latest.yml'];
+          await Promise.all(endpoints.flatMap(url => ['google', 'cloudflare'].map(async provider => {
+            const signal = AbortSignal.timeout(15000);
+            const state = { provider, hostname: new URL(url).hostname, stage: 'dns' };
+            try {
+              const addresses = await resolvePublicAddresses(state.hostname, { signal,
+                fetchImpl(dnsUrl, options) {
+                  if (provider === 'google') return fetch(dnsUrl, options);
+                  const alternate = new URL('https://cloudflare-dns.com/dns-query');
+                  alternate.searchParams.set('name', state.hostname);
+                  alternate.searchParams.set('type', 'A');
+                  return fetch(alternate, { ...options, headers: { ...options.headers, Accept: 'application/dns-json' } });
+                },
+              });
+              state.addresses = addresses.map(value => value.address);
+              state.stage = 'tcp';
+              const response = await fetchPublicNative(url, { method: 'GET', signal,
+                headers: { Accept: 'application/json' } }, (target, options, callback) => {
+                const request = get(target, options, response => { state.stage = 'body'; callback(response); });
+                request.on('socket', socket => {
+                  socket.once('connect', () => { state.stage = 'tls'; state.remote = socket.remoteAddress; });
+                  socket.once('secureConnect', () => { state.stage = 'headers'; });
+                });
+                return request;
+              }, async () => addresses);
+              await response.json();
+              console.log(JSON.stringify({ ...state, event: 'diagnostic-json-read' }));
+            } catch (error) {
+              console.log(JSON.stringify({ ...state, code: codes.has(error.code) ? error.code : 'DIAGNOSTIC_FAILED' }));
+            }
+          })));
+          NODE
       - name: Diagnose failed public connections without cloud credentials
         if: failure()
         run: |
