@@ -1253,7 +1253,7 @@ async function restorePresentationPreferences(snapshot) {
     rememberedPresentation = { bounds:Object.fromEntries(Object.entries(resized.electronWindow)
       .map(([key,value]) => [key, value / scale])), minimum, sidebarWidth };
     const savedNormal = await until(async () => {
-      const current=readWindowState((await readPresentationPreferences(userRoot)).saved.fund_window_state);
+      const current=readWindowState((await readPresentationPreferences(path.dirname(presentationPreferences.file))).saved.fund_window_state);
       return current && current.maximized === false && ['x','y','width','height'].every(key =>
         Math.abs(current.bounds[key] - rememberedPresentation.bounds[key]) <= 2) ? current : false;
     },5000);
@@ -1270,7 +1270,7 @@ async function restorePresentationPreferences(snapshot) {
     await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     const caption=await titlebarProbe.checkBody(page,maximized);
     const persisted=await until(async () => {
-      const raw=(await readPresentationPreferences(userRoot)).saved.fund_window_state,current=readWindowState(raw);
+      const raw=(await readPresentationPreferences(path.dirname(presentationPreferences.file))).saved.fund_window_state,current=readWindowState(raw);
       return current?.maximized === true ? raw : false;
     },5000);
     assertSavedPresentationWindow(persisted,rememberedPresentation.savedNormalBounds,true);
@@ -1339,7 +1339,7 @@ async function restorePresentationPreferences(snapshot) {
       await check('installedPresentationMaximizedAfterRelaunch',async () => {
         const maximized=await nativeStartupWindow(config.installRoot,restarted.child.pid);
         assertNativeMaximizedWindowBounds(maximized);
-        assertSavedPresentationWindow((await readPresentationPreferences(userRoot)).saved.fund_window_state,
+        assertSavedPresentationWindow((await readPresentationPreferences(path.dirname(presentationPreferences.file))).saved.fund_window_state,
           expected.savedNormalBounds,true);
         report.presentationMemory.maximizedAfterRelaunch={native:maximized,
           caption:await probe.checkBody(page,maximized),sameUserRestart:true};
@@ -1353,7 +1353,7 @@ async function restorePresentationPreferences(snapshot) {
       await until(() => evaluate(`window.FundsDesktopPreferences.getItem('fund_sidebar_width') === '${expected.sidebarWidth}'
         && Math.abs(document.querySelector('#left').getBoundingClientRect().width - ${expected.sidebarWidth}) <= 1`), 5000);
       const persisted=await until(async () => {
-        const raw=(await readPresentationPreferences(userRoot)).saved.fund_window_state,current=readWindowState(raw);
+        const raw=(await readPresentationPreferences(path.dirname(presentationPreferences.file))).saved.fund_window_state,current=readWindowState(raw);
         return current?.maximized === false ? raw : false;
       },5000);
       assertSavedPresentationWindow(persisted,expected.savedNormalBounds,false);

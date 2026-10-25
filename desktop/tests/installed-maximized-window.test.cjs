@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { readWindowState } = require('../preferences.cjs');
 const { assertNativeMaximizedWindowBounds, assertNativeWindowBounds, assertNativeCaptionState,
   assertSavedPresentationWindow, expectedStartupBounds, assertNativeClientGeometry } = require('./installed-startup-journey.cjs');
 
@@ -149,4 +150,20 @@ test('the maximized lifecycle cannot count an earlier clean process exit as a na
     nativeStartupWindow:() => assert.fail('already closed process cannot receive input') });
   await assert.rejects(run({savedNormalBounds:normal}), /PRESENTATION_MAXIMIZED_NATIVE_CLOSE_REQUIRED/);
   await run(null); // The private updater may legitimately have exited already.
+});
+
+test('the persisted normal-bounds read uses the already bound preference snapshot path', async () => {
+  const prefix = 'const savedNormal = await until(';
+  const start = appSource.indexOf(prefix), end = appSource.indexOf('},5000);', start);
+  assert.ok(start >= 0 && end > start);
+  const callback = appSource.slice(start + prefix.length, end + 1);
+  const read = vm.runInNewContext(`(${callback})`, { path, readWindowState,
+    presentationPreferences:{file:path.join('/synthetic-owned-user','preferences.json')},
+    rememberedPresentation:{bounds:normal},
+    readPresentationPreferences:async directory => {
+      assert.equal(directory,'/synthetic-owned-user');
+      return {saved:{fund_window_state:saved(normal,false)}};
+    },
+  });
+  assert.deepEqual(await read(), {bounds:normal,maximized:false});
 });
