@@ -31,7 +31,7 @@ final result: passed
 - 最终实际817×777界面：`statLine/querySummary/flowTableHint/btnFlowRetry/btnPrev/btnNext/ff-entry/ff-dock`数量0，画布成功提示空且hidden；浏览器error/warn为空。独立1280×720测试页也执行上述功能；临时设备尺寸覆盖已清除，其缩放不一致截图未用作视觉证据。
 - 定向Python入口40 passed（包含真实G6行为harness、API字符串ID、作用域和桌面资源）；最新table Node44/44通过，workspace session回归包含直接深位置恢复，核心DOM/绑定最终定向复查通过。低缩放成功布局不出现阅读提示，仍保留质量测量。diff和语法检查通过。最终远端CI另绑定PR head。
 
-未验证Windows安装后GUI/DPI、真实案件、读屏设备、长时间内存或全案并发写入快照保证；未打包发布。当前候选基于反馈PR #78，待另一清洗/账户索引候选结束后再处理main集成。
+未验证Windows安装后GUI/DPI、真实案件、读屏设备、长时间内存或全案并发写入快照保证；未打包发布。表格候选PR #79依赖反馈PR #78；#79以main为目标执行仓库完整CI，#78合并前暂含反馈差异，独立表格提交可分别审阅。待另一清洗/账户索引候选结束后再处理main集成，不提前绕过依赖顺序。
 
 - [x] 同尺寸全景与局部合并比较，五项视觉核对。
 - [x] 连续滚动、选择、冻结查询、失败、上下文和视口恢复回归。
