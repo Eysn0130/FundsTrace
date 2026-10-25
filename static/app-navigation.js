@@ -173,6 +173,8 @@
     },
     changed: context => String(context.caseId) === String(state.caseId) && context.generation === state.caseGeneration ? dataChanged() : undefined,
     viewingImport: () => !frame.hidden,
+    openAccount: () => show('accounts'),
+    accountOperations: context => accountActions?.operations(context) || [],
     openImport: (importId, importSurface, context) => {
       if (String(context.caseId) !== String(state.caseId) || context.generation !== state.caseGeneration) return;
       if (importSurface === 'legacy') { show('home'); void window.FundsImportWorkflow?.restore?.(importId); }

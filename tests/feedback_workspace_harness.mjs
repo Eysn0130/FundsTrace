@@ -10,16 +10,16 @@ function harness() {
   const window = {}, calls = [], tasks = [], notifications = [], timers = [];
   vm.runInNewContext(source, { window, setTimeout, clearTimeout, AbortController });
   let context = { caseId: 1, generation: 1 }, leases = [], rows = [], job = { case_id: '1', import_id: id, stage: 'importing', done: 1, total: 3 };
-  let release = async () => { leases = []; }, fetcher, changed = async () => {};
+  let release = async () => { leases = []; }, fetcher, changed = async () => {}, accountOperations = [];
   const options = { context: () => context, isCurrent: value => String(value.caseId) === String(context.caseId) && value.generation === context.generation,
     feedback: () => ({ task: value => tasks.push(value), notify: value => notifications.push(value) }),
     fetch: async (path, options) => { calls.push({ path, options }); return fetcher ? fetcher(path, options) : { ok: true, json: async () => path.includes('?limit=') ? { case_id: String(context.caseId), items: rows } : job }; },
-    leases: () => leases, release: async (...args) => { calls.push({ release: args }); return release(...args); },
-    changed: async () => { calls.push({ changed: true }); await changed(); }, openImport: (...args) => calls.push({ open: args }),
+    leases: () => leases, accountOperations: () => accountOperations, release: async (...args) => { calls.push({ release: args }); return release(...args); },
+    changed: async () => { calls.push({ changed: true }); await changed(); }, openImport: (...args) => calls.push({ open: args }), openAccount: () => calls.push({ account: true }),
     schedule: callback => { timers.push(callback); return timers.length; }, cancel() {}, now: () => 5000 };
   const observer = window.FundsFeedbackWorkspace.create(options);
   return { observer, calls, tasks, notifications, valid: window.FundsFeedbackWorkspace.validEvent,
-    context(value) { context = value; }, rows(value) { rows = value; }, leases(value) { leases = value; }, job(value) { job = value; }, release(value) { release = value; }, fetch(value) { fetcher = value; }, changed(value) { changed = value; } };
+    context(value) { context = value; }, rows(value) { rows = value; }, leases(value) { leases = value; }, accounts(value) { accountOperations = value; }, job(value) { job = value; }, release(value) { release = value; }, fetch(value) { fetcher = value; }, changed(value) { changed = value; } };
 }
 const row = (stage, attempt = 1, extra = {}) => ({ case_id: '1', import_id: id, surface: 'v1', stage, attempt, ...extra });
 
@@ -27,6 +27,23 @@ test('feedback event schema rejects arbitrary actions, invalid progress and over
   const h = harness(), event = { id: 'task:1', kind: 'task', operation: 'analysis', status: 'running', title: '正在分析' };
   assert.equal(h.valid(event), true);
   for (const extra of [{ actions: [] }, { progress: { done: 4, total: 3 } }, { progress: { done: 0, total: 0 } }, { title: 'x'.repeat(161) }, { status: 'done' }, { importId: id }]) assert.equal(h.valid({ ...event, ...extra }), false);
+});
+
+test('account feedback updates the owning operation row across page instances and retains a bound recovery action', async () => {
+  const h = harness(); h.observer.sync(); await flush();
+  const event = { id: 'account-operation:account-operation-1', kind: 'task', operation: 'account', status: 'unknown', title: '账户结果待核对' };
+  h.accounts([{ operationId: 'account-operation-1' }]);
+  h.observer.receive(event, 'workspace:old');
+  assert.equal(h.observer.receive({ ...event, status: 'success' }, 'workspace:old'), false, 'child completion cannot mask a held unknown owner');
+  h.accounts([]);
+  h.observer.receive({ ...event, status: 'warning', title: '资料尚未达到请求状态' }, 'workspace:new');
+  assert.equal(h.tasks.at(-2).id, 'account:account-operation-1');
+  assert.equal(h.tasks.at(-1).id, h.tasks.at(-2).id);
+  assert.equal(h.tasks.at(-1).status, 'warning');
+  assert.equal(h.observer.receive(event, 'workspace:new'), false, 'a late unknown cannot revive a resolved owner');
+  const action = h.tasks.at(-1).actions[0]; action.run(); assert.equal(h.calls.filter(value => value.account).length, 1);
+  h.context({ caseId: 2, generation: 2 }); h.observer.sync(); await flush();
+  action.run(); assert.equal(h.calls.filter(value => value.account).length, 1);
 });
 
 test('closed UI tasks are observed with GETs and terminal receipt still uses owning lease validation', async () => {
@@ -75,6 +92,15 @@ test('a previously unknown lease can later settle through fresh owning receipt v
   const h = harness(); h.rows([row('done', 2)]); h.leases([{ importId: id, phase: 'unknown' }]);
   h.observer.sync(); await flush();
   assert.equal(h.calls.filter(value => value.release).length, 1); assert.equal(h.tasks.at(-1).status, 'success');
+});
+
+test('a repeated child terminal message cannot downgrade an already verified import without a new lease', async () => {
+  const h = harness(); h.rows([row('importing')]); h.observer.sync(); await flush();
+  h.rows([row('done', 2)]); await h.observer.refresh();
+  const count = h.tasks.length;
+  h.observer.receive({ id: 'import:' + id, kind: 'task', operation: 'import', status: 'success', title: '已完成', importId: id });
+  assert.equal(h.tasks.length, count); assert.equal(h.tasks.at(-1).status, 'success');
+  await flush(); assert.equal(h.tasks.at(-1).status, 'success');
 });
 
 test('completed write with failed read refresh retains its warning and read action on later polls', async () => {

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createFeedbackStore, type FeedbackAction, type FeedbackItem, type FeedbackNotificationInput, type FeedbackScope, type FeedbackStore, type FeedbackTaskInput } from '../../../static/feedback-core.mjs';
 import '../../../static/feedback.css';
 
@@ -58,21 +58,36 @@ export function FeedbackBoundary({ port, scope, signal, children }: { port?: Fun
   return <FeedbackProvider port={guardedPort ?? local?.port ?? emptyPort}>{children}{!port && local && !signal.aborted && <FeedbackViewport store={local.store} />}</FeedbackProvider>;
 }
 
-const taskLabel = (status?: FeedbackTaskInput['status']) => ({ queued: '等待处理', running: '进行中', unknown: '结果待核对', success: '已完成', warning: '需留意', error: '未完成', cancelled: '已取消' })[status ?? 'running'];
+/** Task progress remains in its owning operation; this viewport renders short messages only. */
 export function FeedbackViewport({ store }: { store: FeedbackStore }) {
   const snapshot = useSyncExternalStore(store.subscribe, store.snapshot, store.snapshot);
-  const [expanded, setExpanded] = useState(true);
+  const [modalBlocked, setModalBlocked] = useState(() => !!document.querySelector('dialog[open]'));
+  const modalBlockedRef = useRef(modalBlocked), root = useRef<HTMLDivElement>(null);
+  const blocked = () => modalBlockedRef.current || !!document.querySelector('dialog[open]');
   useEffect(() => {
     const visibility = () => document.hidden ? store.pause('document-hidden') : store.resume('document-hidden');
-    document.addEventListener('visibilitychange', visibility); visibility();
-    return () => { document.removeEventListener('visibilitychange', visibility); store.resume('document-hidden'); };
+    const modal = (event?: Event) => {
+      const detail: unknown = (event as CustomEvent | undefined)?.detail;
+      const open = typeof detail === 'object' && detail !== null && 'open' in detail && typeof detail.open === 'boolean'
+        ? detail.open : !!document.querySelector('dialog[open]');
+      modalBlockedRef.current = open; setModalBlocked(open);
+      if (open) { store.pause('modal'); store.resume('pointer'); store.resume('focus'); }
+      else store.resume('modal');
+    };
+    const observer = new MutationObserver(() => modal());
+    observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['open'], childList: true });
+    document.addEventListener('visibilitychange', visibility); window.addEventListener('funds:feedback-modal', modal);
+    visibility(); modal();
+    return () => {
+      observer.disconnect(); document.removeEventListener('visibilitychange', visibility); window.removeEventListener('funds:feedback-modal', modal);
+      for (const reason of ['document-hidden', 'modal', 'pointer', 'focus']) store.resume(reason);
+    };
   }, [store]);
-  const actions = (item: FeedbackItem) => item.actions.map(action => <button key={action.id} className="ff-action" type="button" onClick={() => store.runAction(item.id, action.id)}>{action.label}</button>);
-  const activeCount = snapshot.tasks.filter(item => ['queued', 'running'].includes(item.status ?? '')).length;
-  const unknownCount = snapshot.tasks.filter(item => item.status === 'unknown').length;
-  return <div className="funds-feedback ff-root">
-    <div className="ff-toast-stack" aria-label="操作消息" onMouseEnter={() => store.pause('pointer')} onMouseLeave={() => store.resume('pointer')} onFocus={() => store.pause('focus')} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) store.resume('focus'); }}>{snapshot.toasts.map(item => <article key={item.id} className="ff-toast" data-status={item.severity} role={item.severity === 'error' ? 'alert' : 'status'}><div className="ff-content"><strong className="ff-title">{item.title}</strong>{item.detail && <p className="ff-detail">{item.detail}</p>}<div className="ff-actions">{actions(item)}</div></div><button className="ff-close" type="button" aria-label={`关闭消息：${item.title}`} onClick={() => store.dismiss(item.id)}>×</button></article>)}</div>
-    {snapshot.tasks.length > 0 && <section className="ff-dock" data-expanded={expanded} aria-label="持续任务"><div className="ff-dock-head"><button type="button" className="ff-dock-entry" aria-expanded={expanded} onClick={() => { store.revealTasks(); setExpanded(value => !value); }}><span className="ff-dock-title">任务 · {snapshot.tasks.length}</span><span className="ff-summary">{activeCount} 项进行中{unknownCount > 0 ? ` · ${unknownCount} 项结果待核对` : ''}</span></button><button type="button" className="ff-dock-toggle" aria-expanded={expanded} onClick={() => { if (!expanded) store.revealTasks(); setExpanded(value => !value); }}>{expanded ? '收起任务' : '展开任务'}</button></div><div className="ff-dock-body" hidden={!expanded}><div className="ff-task-list">{snapshot.tasks.filter(item => !item.dismissed).map(item => <article key={item.id} className="ff-task" data-status={item.status}><div className="ff-content"><div className="ff-item-heading"><strong className="ff-title">{item.title}</strong><span className="ff-state">{taskLabel(item.status)}</span></div>{item.detail && <p className="ff-detail">{item.detail}</p>}{['queued', 'running'].includes(item.status ?? '') && <progress className="ff-progress" aria-label={`${item.title}进度`} {...(item.progress && item.progress.total > 0 ? { value: item.progress.done, max: item.progress.total } : {})} />}<div className="ff-actions">{actions(item)}{!['queued', 'running', 'unknown'].includes(item.status ?? '') && <button className="ff-action" type="button" onClick={() => store.dismiss(item.id)}>关闭记录</button>}</div></div></article>)}</div></div></section>}
+  useEffect(() => { if (!root.current?.contains(document.activeElement)) store.resume('focus'); }, [snapshot.toasts, store]);
+  const actions = (item: FeedbackItem) => item.actions.map(action => <button key={action.id} className="ff-action" type="button" disabled={modalBlocked} onClick={() => { if (!blocked()) store.runAction(item.id, action.id); }}>{action.label}</button>);
+  const label = { success: '成功', info: '提示', warning: '注意', error: '错误' };
+  return <div ref={root} className="funds-feedback ff-root" hidden={modalBlocked} inert={modalBlocked}>
+    <div className="ff-toast-stack" aria-label="操作消息" onMouseEnter={() => store.pause('pointer')} onMouseLeave={() => store.resume('pointer')} onFocus={() => store.pause('focus')} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) store.resume('focus'); }}>{snapshot.toasts.map(item => <article key={item.id} className="ff-toast" data-status={item.severity} role={item.severity === 'error' ? 'alert' : 'status'}><div className="ff-content"><div className="ff-item-heading"><span className="ff-state">{item.severity === 'success' && <img className="ff-icon" src="/static/ui-icons/check.svg" alt="" />}{label[item.severity ?? 'info']}</span><strong className="ff-title">{item.title}</strong></div>{item.detail && <p className="ff-detail">{item.detail}</p>}<div className="ff-actions">{actions(item)}</div></div><button className="ff-close" type="button" disabled={modalBlocked} aria-label={`关闭消息：${item.title}`} onClick={() => { if (!blocked()) store.dismiss(item.id); }}><img className="ff-icon" src="/static/ui-icons/x.svg" alt="" /></button></article>)}</div>
   </div>;
 }
 export type { FeedbackAction };

@@ -44,6 +44,8 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
   const [hostContext, setHostContext] = useState<WorkspaceContext | null>(null);
   const [operationBusy, setOperationBusy] = useState(false);
   const [openImportRequest, setOpenImportRequest] = useState<{ caseId: string; generation: number; importId: string; sequence: number }>();
+  const [importSettlement, setImportSettlement] = useState<{ caseId: string; generation: number; importId: string; sequence: number }>();
+  const nextImportSettlement = useRef(0);
   const bridge = useRef<WorkspaceBridge | null>(null);
   const queryDrafts = useRef(new Map<string, FundsQueryDraft>());
   const retainedCaseIds = hostContext?.retainedCaseIds ?? [];
@@ -83,6 +85,7 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
         settledImports.current.add(JSON.stringify([owner.caseId, owner.generation, importId]));
         setLocalImports(items => items.filter(item => item.caseId !== owner.caseId || item.importId !== importId));
         setImportError(current => current?.caseId === owner.caseId && current.importId === importId ? null : current);
+        setImportSettlement({ caseId: owner.caseId, generation: owner.generation, importId, sequence: ++nextImportSettlement.current });
       },
     });
     bridge.current = connection;
@@ -108,6 +111,7 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
       commit: async (caseId, importId, body, signal) => {
         await ownBridge().request('import-acquire', { importId }, signal);
         settledImports.current.delete(JSON.stringify([caseId, generation, importId]));
+        setImportSettlement(current => current?.caseId === caseId && current.generation === generation && current.importId === importId ? undefined : current);
         importFeedback(importId, 'running', '正在提交导入，请等待原任务结果。');
         setLocalImports(items => [...items.filter(item => item.caseId !== caseId || item.importId !== importId), { caseId, importId, phase: 'pending' }]);
         try {
@@ -131,8 +135,8 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
       job: async (caseId, importId, signal) => {
         const job = await api.job(caseId, importId, signal);
         if (job.case_id !== caseId || job.import_id !== importId) throw new Error('导入进度与当前案件不一致。');
-        importFeedback(importId, job.stage === 'done' ? 'success' : job.stage === 'error' ? 'error' : 'running', job.stage === 'error' ? '任务未完成，请打开原任务核对结果。' : job.stage === 'done' ? '处理结果已保存，可打开原任务查看。' : '关闭进度后任务仍继续。', job.total > 0 ? { done: job.done, total: job.total } : undefined);
-        if (job.stage === 'done' || job.stage === 'error') {
+        if (job.stage === 'done' || job.stage === 'error' || !importSettled(importId)) importFeedback(importId, job.stage === 'done' ? 'success' : job.stage === 'error' ? 'error' : 'running', job.stage === 'error' ? '任务未完成，请打开原任务核对结果。' : job.stage === 'done' ? '处理结果已保存，可打开原任务查看。' : '关闭进度后任务仍继续。', job.total > 0 ? { done: job.done, total: job.total } : undefined);
+        if ((job.stage === 'done' || job.stage === 'error') && !importSettled(importId)) {
           try {
             await ownBridge().request('import-release', { importId, jobId: job.import_id }, signal); forgetImport(importId);
             const key = `${caseId}:${generation}:${importId}`;
@@ -328,7 +332,7 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
       {error && <div role="alert" className="error-banner">{error}<button onClick={() => setListReload(value => value + 1)}>重新加载案件</button></div>}
       {pendingImports.length > 0 && <section aria-label="待核对导入" className="warning-banner"><p>本案导入尚未结束或提交结果未确认；请核对原任务后继续写入。</p>{pendingImports.map(item => <button key={item.importId} disabled={!!checkingImport} onClick={() => void checkImport(item.importId)}>{checkingImport === item.importId ? '正在核对…' : '核对导入结果'} · {item.importId}</button>)}</section>}
       {importError?.caseId === selectedId && <p role="alert" className="warning-banner">{importError.message}</p>}
-      <FundsPanel feedback={session ? connection?.feedback.port : undefined} active={pageActive && surface === 'cases'} revision={dataRevision} host={{ version: FUNDS_PANEL_VERSION, session }} workspace={{ openImportRequest: openImportRequest?.caseId === selectedId && openImportRequest.generation === generation ? openImportRequest : undefined, initialDraft: queryDrafts.current.get(selectedId), onDraftChange: draft => { if (selectedId) queryDrafts.current.set(selectedId, draft); }, caseActions, retained: retainedCaseIds.includes(selectedId), navigationPending: hostContext?.navigationPending ?? false }} />
+      <FundsPanel feedback={session ? connection?.feedback.port : undefined} active={pageActive && surface === 'cases'} revision={dataRevision} host={{ version: FUNDS_PANEL_VERSION, session }} workspace={{ importSettlement: importSettlement?.caseId === selectedId && importSettlement.generation === generation ? importSettlement : undefined, openImportRequest: openImportRequest?.caseId === selectedId && openImportRequest.generation === generation ? openImportRequest : undefined, initialDraft: queryDrafts.current.get(selectedId), onDraftChange: draft => { if (selectedId) queryDrafts.current.set(selectedId, draft); }, caseActions, retained: retainedCaseIds.includes(selectedId), navigationPending: hostContext?.navigationPending ?? false }} />
     </main>
     {pageActive && surface === 'cases' && caseInfoOpen && selected && <Modal title="案件信息" onClose={() => setCaseInfoOpen(false)}><dl className="case-info"><dt>案件名称</dt><dd>{selected.name}</dd><dt>案件 ID</dt><dd className="mono">{selected.id}</dd><dt>创建时间</dt><dd>{cases.find(item => item.id === selected.id)?.created_at || '未提供'}</dd></dl><p className="case-info-note">本案件的流水、账户资料和画布独立保存。当前会话内保留的编辑现场，请在退出前保存画布。</p><footer className="modal-footer"><button className="button secondary" onClick={() => setCaseInfoOpen(false)}>关闭</button></footer></Modal>}
     {pageActive && surface === 'cases' && creating && <Modal title="新建案件" busy={createBusy} onClose={() => setCreating(false)}><form onSubmit={event => void create(event)} className="create-case-form"><label>案件名称<input autoFocus aria-label="案件名称" maxLength={200} disabled={!!createdCase || !!uncertainCreate} value={caseName} onChange={event => setCaseName(event.target.value)} placeholder="输入便于识别的案件名称" /></label>{uncertainCreate && <section className="uncertain-create" aria-label="核对新建案件结果"><p>创建结果尚未确认，请核对“{uncertainCreate.name}”。本次核对只读取案件列表。</p>{uncertainCreate.checked && (uncertainCreate.matches.length ? <><p>找到同名案件，请核对后选择打开：</p>{uncertainCreate.matches.map(item => <button key={item.id} type="button" className="button secondary" disabled={createBusy} onClick={() => void openCheckedCase(item)}>打开 {item.name} · ID {item.id}</button>)}</> : <p>当前列表未找到同名案件。可稍后再次核对，或确认后返回填写。</p>)}</section>}{createdCase && <p className="created-case-note">案件已创建，正在打开工作区。打开失败时可重试，或稍后从案件列表继续。</p>}{createError && <p role="alert" className="error-banner">{createError}</p>}<footer className="modal-footer"><button type="button" className="button secondary" disabled={createBusy} onClick={() => setCreating(false)}>取消</button>{uncertainCreate ? <><button type="button" className="button primary" disabled={createBusy} onClick={() => void checkUncertainCreate()}>{createBusy ? '正在核对…' : '核对案件列表'}</button>{uncertainCreate.checked && !uncertainCreate.matches.length && <button type="button" className="button secondary" disabled={createBusy} onClick={() => { setUncertainCreate(null); setCreateError(''); setCaseName(''); }}>已核对，重新填写</button>}</> : <button className="button primary" disabled={createBusy || !caseName.trim()}>{createBusy ? createdCase ? '正在打开…' : '正在创建…' : createdCase ? '打开已创建案件' : '创建案件'}</button>}</footer></form></Modal>}

@@ -60,3 +60,31 @@ describe('classified import outcome wording', () => {
     expect(screen.queryByRole('button', { name: '开始导入' })).toBeNull();
   });
 });
+
+describe('verified settlement display hints', () => {
+  it.each(['done', 'error'] as const)('reads an actual %s outcome and rejects a late POST callback without guessing from the hint', async stage => {
+    const client = clientFor(), imported = vi.fn();
+    let rejectCommit!: (reason: Error) => void, resolveJob!: (value: ImportJob) => void;
+    client.commit = vi.fn(() => new Promise<Awaited<ReturnType<FundsCaseClientV1['commit']>>>((_resolve, reject) => { rejectCommit = reject; }));
+    client.job = vi.fn(() => new Promise<ImportJob>(resolve => { resolveJob = resolve; }));
+    const signal = new AbortController().signal;
+    const props = { target: { caseId: '1', name: '合成案件' }, client, scopeSignal: signal, onClose: vi.fn(), onImported: imported };
+    const view = render(<ImportDialog {...props} />);
+    fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], preview.filename)] } });
+    fireEvent.click(await screen.findByRole('button', { name: '确认导入' }));
+    view.rerender(<ImportDialog {...props} settlementHint={{ importId: 'abcdefabcdef', sequence: 1 }} />);
+    expect(client.job).not.toHaveBeenCalled();
+    view.rerender(<ImportDialog {...props} settlementHint={{ importId: preview.import_id, sequence: 2 }} />);
+    await waitFor(() => expect(client.job).toHaveBeenCalledWith(preview.import_id, expect.any(AbortSignal)));
+    expect(screen.queryByText('流水已写入当前案件')).toBeNull(); expect(screen.queryByText('合成原任务确认失败')).toBeNull();
+    const terminal: ImportJob = { ...job, stage, done: 1, total: 1, message: stage === 'done' ? '完成' : '失败', error: stage === 'error' ? '合成原任务确认失败' : null,
+      result: stage === 'done' ? { total: 1, ok: 1, skipped: 0, rows_dup: 0, batch_id: 'SYNTHETIC-BATCH', bad_examples: [], self_accounts: [], self_accounts_count: 0, main_matched: [], accounts_in_batch: 0, main_detected: [] } : null };
+    await act(async () => resolveJob(terminal));
+    await screen.findByText(stage === 'done' ? '流水已写入当前案件' : '合成原任务确认失败');
+    await act(async () => rejectCommit(new Error('合成迟到的旧POST错误')));
+    expect(screen.queryByText('合成迟到的旧POST错误')).toBeNull(); expect(screen.queryByRole('button', { name: '重新查询进度' })).toBeNull();
+    view.rerender(<ImportDialog {...props} settlementHint={{ importId: preview.import_id, sequence: 3 }} />);
+    expect(client.job).toHaveBeenCalledOnce(); expect(client.commit).toHaveBeenCalledOnce(); expect(client.repreview).not.toHaveBeenCalled();
+    expect(imported).toHaveBeenCalledTimes(stage === 'done' ? 1 : 0);
+  });
+});

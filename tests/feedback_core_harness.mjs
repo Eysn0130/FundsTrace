@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 import { createFeedbackStore } from '../static/feedback-core.mjs';
@@ -145,6 +146,12 @@ test('cross-realm actions are rejected and disposal stops timers and further cha
 // The browser module runs unchanged against the DOM methods it uses. Native modal
 // state is controlled independently to verify no hidden global action stays usable.
 function domHarness() {
+  let document;
+  const observers = [], pendingMutations = new Set();
+  const changed = (node, attribute) => {
+    for (const observer of observers) if (observer.target?.contains(node) && observer.options.attributes
+      && (!observer.options.attributeFilter || observer.options.attributeFilter.includes(attribute))) pendingMutations.add(observer);
+  };
   class Element extends EventTarget {
     constructor(tag) {
       super(); this.tagName = tag.toUpperCase(); this.className = ''; this.children = []; this.parentElement = null;
@@ -152,6 +159,11 @@ function domHarness() {
       this.style = { setProperty() {} }; this._text = '';
     }
     get textContent() { return this._text + this.children.map(node => node.textContent).join(''); }
+    get hidden() { return this._hidden ?? false; }
+    set hidden(value) { this._hidden = Boolean(value); changed(this, 'hidden'); }
+    get inert() { return this._inert ?? false; }
+    set inert(value) { this._inert = Boolean(value); changed(this, 'inert'); }
+    get isConnected() { return this === document.body || !!this.parentElement?.isConnected; }
     set textContent(value) { this._text = String(value); this.children = []; }
     append(...nodes) { for (const node of nodes) this.insertBefore(node, null); }
     insertBefore(node, before) {
@@ -164,130 +176,164 @@ function domHarness() {
     getAttribute(key) { return this.attributes.get(key) ?? null; }
     removeAttribute(key) { this.attributes.delete(key); }
     contains(node) { return node === this || this.children.some(child => child.contains(node)); }
+    closest(selector) { return selector === '[inert]' ? this.inert ? this : this.parentElement?.closest(selector) || null : null; }
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
     querySelectorAll(selector) {
       const descendants = this.children.flatMap(node => [node, ...node.querySelectorAll('*')]);
-      return descendants.filter(node => selector === '*' || (selector.startsWith('.') && node.className.split(' ').includes(selector.slice(1))));
+      return descendants.filter(node => selector === '*' || (selector.startsWith('.') ? node.className.split(' ').includes(selector.slice(1)) : node.tagName === selector.toUpperCase()));
     }
     getBoundingClientRect() { return { height: 42 }; }
     click() { this.onclick?.(); this.dispatchEvent(new Event('click')); }
+    focus() { if (this.isConnected && !this.disabled && !this.closest('[inert]')) document.activeElement = this; }
   }
-  const document = new EventTarget();
+  document = new EventTarget();
   Object.assign(document, { body: new Element('body'), hidden: false, readyState: 'complete', modal: false, legacyModal: null,
     createElement: tag => new Element(tag), querySelector: () => document.modal ? {} : null,
     querySelectorAll: () => document.legacyModal ? [document.legacyModal] : [] });
+  document.activeElement = document.body;
   const window = new EventTarget();
   Object.assign(window, { location: { search: '' }, matchMedia: () => ({ matches: false }), getComputedStyle: node => node.style });
-  const observers = [], timers = new Map();
+  const timers = new Map();
   let timerId = 0;
-  class MutationObserver { constructor(fn) { this.fn = fn; observers.push(this); } observe() {} disconnect() {} }
-  class ResizeObserver { observe() {} disconnect() {} }
-  return { window, document, MutationObserver, ResizeObserver, observers, timers,
+  class MutationObserver {
+    constructor(fn) { this.fn = fn; observers.push(this); }
+    observe(target, options) { this.target = target; this.options = options; }
+    disconnect() { this.target = null; pendingMutations.delete(this); }
+  }
+  return { window, document, MutationObserver, observers, timers,
+    flushMutations(limit = 20) {
+      let batches = 0;
+      while (pendingMutations.size) {
+        assert.ok(++batches <= limit, 'feedback MutationObserver must settle without repeated same-value attribute writes');
+        const next = [...pendingMutations]; pendingMutations.clear();
+        for (const observer of next) if (observer.target) observer.fn();
+      }
+      return batches;
+    },
     setTimeout(fn, delay) { timers.set(++timerId, { fn, delay }); return timerId; }, clearTimeout(id) { timers.delete(id); } };
 }
 
-test('static renderer exposes API immediately, preserves task status on close, and blocks modal-hidden actions', async () => {
+async function withRenderer(name, run, prepare = () => {}) {
   const harness = domHarness();
-  const keys = ['window', 'document', 'MutationObserver', 'ResizeObserver', 'setTimeout', 'clearTimeout'];
+  const keys = ['window', 'document', 'MutationObserver', 'setTimeout', 'clearTimeout'];
   const previous = Object.fromEntries(keys.map(key => [key, globalThis[key]]));
   for (const key of keys) globalThis[key] = harness[key];
   let feedback;
   try {
-    let ready = 0; harness.window.addEventListener('funds:feedback-ready', () => ready++);
-    ({ feedback } = await import('../static/feedback-ui.mjs?synthetic-renderer'));
-    assert.equal(ready, 1); assert.equal(harness.window.FundsFeedback, feedback);
-    const root = harness.document.body.querySelector('.funds-feedback');
-    assert.ok(root); assert.equal(root.querySelector('.ff-dock').dataset.expanded, 'false');
-    feedback.task({ id: 'pending', status: 'unknown', title: '核对导入结果' });
-    feedback.task({ id: 'running', status: 'running', title: '正在分析' });
-    feedback.openTasks();
-    const row = root.querySelector('.ff-task');
-    assert.equal(row.dataset.status, 'running');
-    assert.equal(row.querySelector('.ff-progress').hidden, false);
-    assert.equal(row.querySelector('.ff-progress').getAttribute('value'), null);
-    feedback.dismiss('running');
-    const pendingRow = root.querySelector('.ff-task');
-    assert.equal(root.querySelector('.ff-dock-entry').getAttribute('aria-expanded'), 'true');
-    assert.equal(pendingRow.querySelector('.ff-progress').hidden, true);
-    pendingRow.querySelector('.ff-close').click();
-    assert.equal(root.querySelectorAll('.ff-task').length, 0);
-    assert.equal(feedback.snapshot().tasks.find(item => item.id === 'pending').status, 'unknown');
-    assert.match(root.querySelector('.ff-summary').textContent, /1 项待核对/);
-    feedback.openTasks(); assert.equal(root.querySelectorAll('.ff-task').length, 2);
-    feedback.task({ id: 'running', status: 'warning', title: '分析已完成，显示需留意' });
-    assert.match(root.querySelector('.ff-summary').textContent, /1 项待核对 · 1 项需留意/);
+    prepare(harness);
+    ({ feedback } = await import(`../static/feedback-ui.mjs?${name}`));
+    await run(harness, feedback);
+  } finally {
+    feedback?.dispose();
+    for (const key of keys) { if (previous[key] === undefined) delete globalThis[key]; else globalThis[key] = previous[key]; }
+  }
+}
+
+function assertToastOnly(document) {
+  for (const name of ['ff-entry', 'ff-entry-badge', 'ff-panel', 'ff-task', 'ff-task-list', 'ff-dock']) {
+    assert.equal(document.body.querySelectorAll('.' + name).length, 0, `no global ${name} control`);
+  }
+  assert.equal(document.body.querySelector('footer'), null);
+}
+
+test('static renderer is Toast-only, never adds layout controls, and keeps tasks silent unless explicitly announced', async () => {
+  const css = readFileSync(new URL('../static/feedback.css', import.meta.url), 'utf8');
+  const rootRule = css.match(/\.funds-feedback\.ff-root\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(rootRule, /position:\s*fixed/); assert.doesNotMatch(rootRule, /flex|height/);
+  assert.doesNotMatch(css, /ff-dock|ff-entry|ff-panel|ff-task|ff-summary|ff-progress|feedback-dock-height|feedback-bottom/);
+  await withRenderer('synthetic-toast-only', async (h, feedback) => {
+    const root = h.document.body.querySelector('.ff-root'), stack = root.querySelector('.ff-toast-stack');
+    assert.equal(h.window.FundsFeedback, feedback); assert.equal(typeof feedback.openTasks, 'undefined');
+    assert.equal(typeof feedback.openNotifications, 'undefined');
+    assertToastOnly(h.document); assert.equal(root.querySelectorAll('button').length, 0);
+    feedback.task({ id: 'unknown', status: 'unknown', title: '原操作待核对' });
+    feedback.task({ id: 'running', status: 'running', title: '原操作进行中', progress: { done: 1, total: 2 } });
+    feedback.task({ id: 'historical', status: 'error', title: '历史错误' });
+    assert.equal(feedback.snapshot().tasks.length, 3); assert.equal(feedback.snapshot().toasts.length, 0);
+    assert.equal(root.querySelectorAll('button').length, 0); assertToastOnly(h.document);
+    feedback.task({ id: 'running', status: 'success', title: '显式后台完成', announce: true });
+    assert.equal(stack.querySelectorAll('.ff-toast').length, 1);
+    feedback.task({ id: 'running', status: 'success', title: '显式后台完成', announce: true });
+    assert.equal(stack.querySelectorAll('.ff-toast').length, 1);
+    stack.querySelector('.ff-close').click();
+    assert.equal(feedback.snapshot().tasks.find(item => item.id === 'running').status, 'success');
+    assert.equal(feedback.snapshot().tasks.find(item => item.id === 'unknown').status, 'unknown');
     feedback.notify({ severity: 'error', title: '真正错误' });
     assert.match(root.querySelectorAll('.ff-sr')[1].textContent, /真正错误/);
-    assert.equal(root.querySelectorAll('.ff-sr')[0].textContent, '');
-    const stack = root.querySelector('.ff-toast-stack');
-    harness.document.activeElement = stack.querySelector('.ff-close');
-    stack.dispatchEvent(new Event('focusin'));
-    assert.equal(harness.timers.size, 0);
-    harness.document.activeElement.click();
+    assert.doesNotMatch(root.querySelectorAll('.ff-sr')[0].textContent, /真正错误/);
+    h.document.activeElement = stack.querySelector('.ff-close'); stack.dispatchEvent(new Event('focusin'));
+    assert.equal(h.timers.size, 0); h.document.activeElement.click();
     feedback.notify({ severity: 'info', title: '关闭焦点提示后的新通知' });
-    assert.equal(harness.timers.size, 1);
-    harness.document.modal = true; harness.observers.forEach(observer => observer.fn());
-    assert.equal(root.inert, true); assert.equal(root.getAttribute('aria-hidden'), 'true');
-    assert.equal(root.querySelector('.ff-toast-stack').hidden, true);
-    harness.document.modal = false; harness.observers.forEach(observer => observer.fn());
-    assert.equal(root.inert, false); assert.equal(root.querySelector('.ff-toast-stack').hidden, false);
-    harness.document.legacyModal = { isConnected: true, hidden: false, style: { display: 'flex', visibility: 'visible' } };
-    harness.observers.forEach(observer => observer.fn());
-    assert.equal(root.inert, true); assert.equal(root.querySelector('.ff-toast-stack').hidden, true);
-    harness.document.legacyModal.style.display = 'none'; harness.observers.forEach(observer => observer.fn());
-    assert.equal(root.inert, false);
-    root.inert = true; harness.observers.forEach(observer => observer.fn()); assert.equal(root.inert, false);
-  } finally {
-    feedback?.dispose();
-    for (const key of keys) { if (previous[key] === undefined) delete globalThis[key]; else globalThis[key] = previous[key]; }
-  }
+    assert.equal(h.timers.size, 1);
+    h.document.hidden = true; h.document.dispatchEvent(new Event('visibilitychange')); assert.equal(h.timers.size, 0);
+    h.document.hidden = false; h.document.dispatchEvent(new Event('visibilitychange')); assert.equal(h.timers.size, 1);
+    assertToastOnly(h.document);
+  });
 });
 
-test('embedded analysis exposes feedback state without adding a duplicate task dock', async () => {
-  const harness = domHarness(); harness.window.location.search = '?embedded=1';
-  const keys = ['window', 'document', 'MutationObserver', 'ResizeObserver', 'setTimeout', 'clearTimeout'];
-  const previous = Object.fromEntries(keys.map(key => [key, globalThis[key]]));
-  for (const key of keys) globalThis[key] = harness[key];
-  let feedback;
-  try {
-    ({ feedback } = await import('../static/feedback-ui.mjs?synthetic-embedded'));
-    assert.equal(harness.window.FundsFeedback, feedback);
-    assert.equal(harness.document.body.children.length, 0);
-  } finally {
-    feedback?.dispose();
-    for (const key of keys) { if (previous[key] === undefined) delete globalThis[key]; else globalThis[key] = previous[key]; }
-  }
-});
-
-test('external iframe modal flags combine with local dialogs and can block before the renderer mounts', async () => {
-  const harness = domHarness();
-  const keys = ['window', 'document', 'MutationObserver', 'ResizeObserver', 'setTimeout', 'clearTimeout'];
-  const previous = Object.fromEntries(keys.map(key => [key, globalThis[key]]));
-  for (const key of keys) globalThis[key] = harness[key];
-  let feedback;
-  try {
-    harness.window.addEventListener('funds:feedback-ready', event => event.detail.setModalBlocked(true));
-    ({ feedback } = await import('../static/feedback-ui.mjs?synthetic-external-modal'));
-    const root = harness.document.body.querySelector('.funds-feedback');
-    const stack = root.querySelector('.ff-toast-stack');
+test('Toast actions recheck scope after A-B-A and cannot execute while a local or external modal blocks feedback', async () => {
+  await withRenderer('synthetic-toast-actions', async (h, feedback) => {
+    const root = h.document.body.querySelector('.ff-root'), stack = root.querySelector('.ff-toast-stack');
+    let calls = 0;
+    feedback.bind({ caseId: 'A', generation: 1 });
+    feedback.notify({ id: 'scoped', severity: 'info', title: '原案件提示', actions: [{ id: 'open', label: '查看', run: () => calls++ }] });
+    const old = stack.querySelector('.ff-action'); old.click(); assert.equal(calls, 1);
+    feedback.bind({ caseId: 'B', generation: 2 });
+    feedback.bind({ caseId: 'A', generation: 3 });
+    old.onclick(); assert.equal(calls, 1); assert.equal(stack.querySelectorAll('.ff-toast').length, 0);
+    feedback.notify({ id: 'fresh', severity: 'info', title: '当前案件提示', actions: [{ id: 'open', label: '查看', run: () => calls++ }] });
+    const action = stack.querySelector('.ff-action');
+    feedback.setModalBlocked(true); action.onclick(); assert.equal(calls, 1);
     assert.equal(root.inert, true); assert.equal(root.getAttribute('aria-hidden'), 'true'); assert.equal(stack.hidden, true);
-    feedback.notify({ severity: 'info', title: '等待外部对话框关闭' });
-    assert.equal(harness.timers.size, 0);
-    feedback.setModalBlocked(false);
-    assert.equal(root.inert, false); assert.equal(stack.hidden, false); assert.equal(harness.timers.size, 1);
-    harness.document.modal = true; harness.observers.forEach(observer => observer.fn());
-    feedback.setModalBlocked(true);
-    harness.document.modal = false; harness.observers.forEach(observer => observer.fn());
-    assert.equal(root.inert, true); assert.equal(stack.hidden, true); assert.equal(harness.timers.size, 0);
-    feedback.setModalBlocked(false);
-    assert.equal(root.inert, false); assert.equal(harness.timers.size, 1);
-    harness.document.legacyModal = { isConnected: true, hidden: false, style: { display: 'flex', visibility: 'visible' } };
-    feedback.setModalBlocked(true); feedback.setModalBlocked(false);
-    assert.equal(root.inert, true); assert.equal(harness.timers.size, 0);
-    harness.document.legacyModal.hidden = true; harness.observers.forEach(observer => observer.fn());
-    assert.equal(root.inert, false); assert.equal(stack.hidden, false); assert.equal(harness.timers.size, 1);
-  } finally {
-    feedback?.dispose();
-    for (const key of keys) { if (previous[key] === undefined) delete globalThis[key]; else globalThis[key] = previous[key]; }
-  }
+    feedback.setModalBlocked(false); action.click(); assert.equal(calls, 2);
+    h.document.modal = true; h.observers.forEach(observer => observer.fn()); action.onclick();
+    assert.equal(calls, 2); assert.equal(root.inert, true); assert.equal(stack.hidden, true);
+    h.document.modal = false; h.observers.forEach(observer => observer.fn()); assert.equal(root.inert, false);
+    h.document.legacyModal = { isConnected: true, hidden: false, style: { display: 'flex', visibility: 'visible' } };
+    h.observers.forEach(observer => observer.fn()); action.onclick(); assert.equal(calls, 2); assert.equal(stack.hidden, true);
+    h.document.legacyModal.style.display = 'none'; h.observers.forEach(observer => observer.fn());
+    assert.equal(root.inert, false); assert.equal(stack.hidden, false); action.click(); assert.equal(calls, 3);
+    assertToastOnly(h.document);
+  });
+});
+
+test('embedded analysis retains feedback state without mounting duplicate global UI', async () => {
+  await withRenderer('synthetic-toast-embedded', async (h, feedback) => {
+    feedback.task({ id: 'internal', status: 'unknown', title: '原功能核对' });
+    assert.equal(h.window.FundsFeedback, feedback); assert.equal(feedback.snapshot().tasks.length, 1);
+    assert.equal(h.document.body.children.length, 0); assertToastOnly(h.document);
+  }, h => { h.window.location.search = '?embedded=1'; });
+});
+
+test('external modal state can pause before mounting and combines with native and legacy modal state', async () => {
+  await withRenderer('synthetic-toast-external-modal', async (h, feedback) => {
+    const root = h.document.body.querySelector('.ff-root'), stack = root.querySelector('.ff-toast-stack');
+    assert.equal(root.inert, true); assert.equal(stack.hidden, true);
+    feedback.notify({ severity: 'info', title: '等待对话框关闭' }); assert.equal(h.timers.size, 0);
+    feedback.setModalBlocked(false); assert.equal(root.inert, false); assert.equal(stack.hidden, false); assert.equal(h.timers.size, 1);
+    h.document.modal = true; h.observers.forEach(observer => observer.fn()); feedback.setModalBlocked(true);
+    h.document.modal = false; h.observers.forEach(observer => observer.fn());
+    assert.equal(root.inert, true); assert.equal(stack.hidden, true); assert.equal(h.timers.size, 0);
+    feedback.setModalBlocked(false); assert.equal(root.inert, false); assert.equal(h.timers.size, 1);
+    h.document.legacyModal = { isConnected: true, hidden: false, style: { display: 'flex', visibility: 'visible' } };
+    feedback.setModalBlocked(true); feedback.setModalBlocked(false); assert.equal(root.inert, true);
+    h.document.legacyModal.hidden = true; h.observers.forEach(observer => observer.fn()); assert.equal(root.inert, false);
+    assertToastOnly(h.document);
+  }, h => { h.window.addEventListener('funds:feedback-ready', event => event.detail.setModalBlocked(true)); });
+});
+
+test('Toast modal MutationObserver converges after repeated same-value visibility changes', async () => {
+  await withRenderer('synthetic-toast-mutation-convergence', async (h, feedback) => {
+    assert.ok(h.flushMutations() <= 2); assert.equal(h.flushMutations(), 0);
+    feedback.notify({ severity: 'warning', title: '需留意', detail: '保持原功能处理。' });
+    assert.ok(h.flushMutations() <= 2); assert.equal(h.flushMutations(), 0);
+    feedback.setModalBlocked(true); assert.ok(h.flushMutations() <= 2); assert.equal(h.flushMutations(), 0);
+    feedback.setModalBlocked(true); assert.equal(h.flushMutations(), 0);
+    feedback.setModalBlocked(false); assert.ok(h.flushMutations() <= 2); assert.equal(h.flushMutations(), 0);
+    feedback.setModalBlocked(false); assert.equal(h.flushMutations(), 0);
+    h.document.modal = true; h.observers.forEach(observer => observer.fn()); assert.ok(h.flushMutations() <= 2);
+    h.document.modal = false; h.observers.forEach(observer => observer.fn()); assert.ok(h.flushMutations() <= 2);
+    h.document.body.querySelector('.ff-close').click();
+    assert.ok(h.flushMutations() <= 2); assert.equal(h.flushMutations(), 0); assertToastOnly(h.document);
+  });
 });

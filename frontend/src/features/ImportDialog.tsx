@@ -111,7 +111,7 @@ function FeedbackSummary({ feedback, complete = false, uncertain = false }: { fe
   </section>;
 }
 
-export function ImportDialog({ target, client, scopeSignal, resume, actions, onClose, onImported, onOpenImport, active = true }: { target: FundsCaseContextV1; client: FundsCaseClientV1; scopeSignal: AbortSignal; resume?: ImportSession; actions?: FundsHostActionsV1; onClose: () => void; onImported: () => void; onOpenImport?: (importId: string) => void; active?: boolean }) {
+export function ImportDialog({ target, client, scopeSignal, resume, actions, onClose, onImported, onOpenImport, settlementHint, active = true }: { target: FundsCaseContextV1; client: FundsCaseClientV1; scopeSignal: AbortSignal; resume?: ImportSession; actions?: FundsHostActionsV1; onClose: () => void; onImported: () => void; onOpenImport?: (importId: string) => void; settlementHint?: { importId: string; sequence: number }; active?: boolean }) {
   const feedbackPort = useFeedback();
   const fileId = useId();
   const [preview, setPreview] = useState<ImportPreview | null>(null);
@@ -129,6 +129,9 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const alive = useRef(true);
   const lifetime = useRef(new AbortController());
   const operation = useRef(0);
+  // Hints already present at mount belong to a previous view or attempt.
+  const handledSettlement = useRef(settlementHint?.sequence);
+  const observingSettlement = useRef(false);
   const selectionInitialized = useRef(resume?.request?.mark_accounts != null);
   const valid = (token: number) => alive.current && token === operation.current && !lifetime.current.signal.aborted && !scopeSignal.aborted;
   const acceptPreview = (value: ImportPreview) => {
@@ -218,6 +221,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   };
   const startCommit = async (value: ImportPreview, token: number, selectedMode: 'A' | 'B', selectedMapping: Record<string, string>, selectedAccounts: string[]) => {
     if (!valid(token)) return;
+    observingSettlement.current = false;
     // A rejected POST promise cannot establish whether the server accepted it.
     // Keep the preview's import ID and permit only reads until status is known.
     setBusy(true); setError(''); setJob(null); setAwaitingStatus(true);
@@ -239,7 +243,19 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const working = busy || polling;
   const importId = job?.import_id ?? preview?.import_id ?? resume?.import_id;
   useEffect(() => {
+    if (!settlementHint || settlementHint.sequence === handledSettlement.current) return;
+    handledSettlement.current = settlementHint.sequence;
+    if (settlementHint.importId !== importId || !importId || scopeSignal.aborted || lifetime.current.signal.aborted || job?.stage === 'done' || job?.stage === 'error') return;
+    // A verified host hint only starts a fresh read. It does not establish an
+    // outcome, replay a write, or leave old request callbacks in control.
+    const token = ++operation.current;
+    observingSettlement.current = true;
+    setBusy(false); setPolling(false); setError(''); setAwaitingStatus(true);
+    void poll(importId, token);
+  }, [settlementHint?.sequence, settlementHint?.importId, importId, job?.stage, scopeSignal]);
+  useEffect(() => {
     if (!importId || scopeSignal.aborted || (!awaitingStatus && !job)) return;
+    if (observingSettlement.current && job?.stage !== 'done' && job?.stage !== 'error') return;
     const status = job?.stage === 'done' ? 'success' : job?.stage === 'error' ? 'error' : awaitingStatus && !working ? 'unknown' : 'running';
     feedbackPort.task({ id: `import:${importId}`, operation: 'import', importId, status,
       title: status === 'success' ? '流水导入已完成' : status === 'unknown' ? '导入结果待核对' : status === 'error' ? '流水导入未完成' : '正在导入流水',

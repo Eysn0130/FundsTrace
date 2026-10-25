@@ -141,11 +141,24 @@
         if (!seen.has(event.importId)) seen.set(event.importId, { status: 'running', attempt: null });
         const row = rows.get(event.importId) || { import_id: event.importId, surface: 'v1', stage: 'parsing' };
         const terminal = ['success','warning','error','cancelled'].includes(event.status);
+        if (terminal && ['success','error'].includes(seen.get(event.importId)?.status) && !(options.leases(context) || []).some(lease => lease.importId === event.importId)) { void refresh(); return true; }
         const status = terminal ? 'unknown' : event.status;
         task(context, { id: id(event.importId), status, title: terminal ? '正在核对导入回执' : event.title,
           detail: terminal ? '读取服务端任务与持久回执，不会再次提交。' : event.detail, progress: event.progress, announce: false,
           actions: status === 'unknown' ? [{ id: 'query', label: '查询状态', run: () => refresh(true) }, ...action(context, row)] : action(context, row) });
         void refresh(); return true;
+      }
+      if (event.operation === 'account' && event.kind === 'task' && event.id.startsWith('account-operation:')) {
+        // The owner also mirrors this operation. A new iframe instance must
+        // update that same row, retaining a host-built recovery action.
+        const operationId = event.id.slice('account-operation:'.length);
+        if (!operationId) return false;
+        const held = (options.accountOperations?.(context) || []).some(operation => operation.operationId === operationId);
+        const terminal = ['success','warning','error','cancelled'].includes(event.status);
+        if (held ? event.status !== 'unknown' : !terminal) return false;
+        task(context, { id: 'account:' + operationId, status: event.status, title: event.title, detail: event.detail, announce: false,
+          actions: [{ id: 'open', label: '打开核对', run: () => { if (same(context)) return options.openAccount?.(); } }] });
+        return true;
       }
       const key = source + ':' + event.id;
       if (event.kind === 'toast') feedback.notify({ id: key, scope: scope(context), severity: event.severity, title: event.title, detail: event.detail, dedupeKey: key });

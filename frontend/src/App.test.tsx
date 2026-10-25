@@ -778,10 +778,35 @@ describe('late local import transport replies', () => {
       h.send({ type: 'feedback-import-settled', caseId: '1', generation: 1, importId: preview.import_id });
       expect(screen.queryByRole('region', { name: '待核对导入' })).toBeNull();
       await act(async () => reject(new Error('合成本地回执迟到失败')));
-      await screen.findByText('合成本地回执迟到失败');
+      await screen.findByText('流水已写入当前案件');
+      expect(screen.queryByText('合成本地回执迟到失败')).toBeNull();
+      expect(screen.queryByRole('button', { name: '重新查询进度' })).toBeNull();
       expect(screen.queryByRole('region', { name: '待核对导入' })).toBeNull();
       expect(screen.queryByText(/导入提交结果尚未确认/)).toBeNull();
       expect(api.commit).toHaveBeenCalledOnce();
+    } finally { h.close(); }
+  });
+});
+
+
+describe('settled original import result observation', () => {
+  it.each(['done', 'error'] as const)('reads the real %s receipt into an already-open unknown dialog without another POST or release request', async stage => {
+    const h = embeddedHost(), api = fakeApi();
+    api.commit = vi.fn(async () => { throw new Error('合成POST回执丢失'); });
+    api.job = vi.fn(async (): Promise<ImportJob> => stage === 'done' ? completed : { ...completed, stage: 'error', error: '合成服务端确认失败', result: null });
+    try {
+      render(<App api={api} embedded />); h.bind(); await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      await h.upload(); await h.answer('import-acquire'); await screen.findByText('合成POST回执丢失');
+      const requests = h.requests().length, feedbackBefore = h.messages.mock.calls.length;
+      h.send({ type: 'feedback-import-settled', caseId: '1', generation: 1, importId: preview.import_id });
+      if (stage === 'done') await screen.findByText('流水已写入当前案件');
+      else await screen.findByText('合成服务端确认失败');
+      expect(api.job).toHaveBeenCalledWith('1', preview.import_id, expect.any(AbortSignal));
+      expect(api.commit).toHaveBeenCalledOnce(); expect(h.requests()).toHaveLength(requests);
+      expect(h.messages.mock.calls.slice(feedbackBefore).filter(([message]) => message.type === 'feedback' && message.event?.kind === 'task').every(([message]) => ['success', 'error'].includes(message.event.status))).toBe(true);
+      expect(screen.queryByText('合成POST回执丢失')).toBeNull();
+      expect(screen.queryByRole('button', { name: '重新查询进度' })).toBeNull();
+      expect(screen.queryByRole('region', { name: '待核对导入' })).toBeNull();
     } finally { h.close(); }
   });
 });

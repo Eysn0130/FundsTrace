@@ -12,7 +12,7 @@ import { FeedbackBoundary, type FundsFeedbackPort } from '../feedback/Feedback';
 type Filters = { account: string; kw: string; page: number };
 const emptyFilters: Filters = { account: '', kw: '', page: 1 };
 export type FundsQueryDraft = Readonly<{ filters: Filters; account: string; keyword: string }>;
-type WorkspacePresentation = { initialDraft?: FundsQueryDraft; onDraftChange?: (draft: FundsQueryDraft) => void; caseActions?: ReactNode; retained?: boolean; navigationPending?: boolean; openImportRequest?: { importId: string; sequence: number } };
+type WorkspacePresentation = { initialDraft?: FundsQueryDraft; onDraftChange?: (draft: FundsQueryDraft) => void; caseActions?: ReactNode; retained?: boolean; navigationPending?: boolean; openImportRequest?: { importId: string; sequence: number }; importSettlement?: { importId: string; sequence: number } };
 
 export function FundsPanel({ host, workspace, feedback, active = true, revision = 0 }: { host: FundsPanelHostV1; workspace?: WorkspacePresentation; feedback?: FundsFeedbackPort; active?: boolean; revision?: number }) {
   const session = host.session;
@@ -139,7 +139,7 @@ function BoundFundsPanel({ session, workspace, active, revision }: { session: Fu
 
     </section>
     {active && historyOpen && <ImportHistoryDialog target={context} client={client} scopeSignal={session.signal} actions={actions} onClose={() => { setHistoryOpen(false); setReload(value => value + 1); }} onOpen={session => { setImportOpen(true); setResumeSession(session); setReturnToHistory(true); setHistoryOpen(false); }} />}
-    {importOpen && <ImportDialog key={resumeSession?.import_id ?? 'new'} target={context} client={client} scopeSignal={session.signal} resume={resumeSession} actions={actions} active={active} onClose={closeImport} onImported={() => setReload(value => value + 1)} onOpenImport={openOriginalImport} />}
+    {importOpen && <ImportDialog key={resumeSession?.import_id ?? 'new'} target={context} client={client} scopeSignal={session.signal} resume={resumeSession} settlementHint={workspace?.importSettlement} actions={actions} active={active} onClose={closeImport} onImported={() => setReload(value => value + 1)} onOpenImport={openOriginalImport} />}
     {active && selectedFlow && <Modal title="流水核对" onClose={() => setSelectedFlow(null)}><dl className="flow-details">{Object.entries({ '所属案件': context.name, '流水 ID': selectedFlow.id, '批次 ID': selectedFlow.batch_id, '交易流水号': selectedFlow.trade_no, '交易时间': displayTime(selectedFlow.trade_time), '付款户名': selectedFlow.payer_name, '付款账号': selectedFlow.payer_account, '收款户名': selectedFlow.payee_name, '收款账号': selectedFlow.payee_account, '交易金额': `${formatMoney(selectedFlow.amount)} ${selectedFlow.currency}`, '交易后余额': selectedFlow.balance === null ? '未提供' : formatMoney(selectedFlow.balance), '摘要': selectedFlow.summary, '渠道': selectedFlow.channel }).map(([label, value]) => <div key={label}><dt>{label}</dt><dd className={label.includes('金额') || label.includes('ID') || label.includes('账号') ? 'mono' : ''}>{value || '—'}</dd></div>)}</dl><FlowSources key={`${selectedFlow.case_id}:${selectedFlow.id}`} caseId={selectedFlow.case_id} flowId={selectedFlow.id} client={client} scopeSignal={session.signal} actions={actions} /><footer className="modal-footer"><button className="button primary" onClick={() => setSelectedFlow(null)}>核对完成</button></footer></Modal>}
   </>;
 }

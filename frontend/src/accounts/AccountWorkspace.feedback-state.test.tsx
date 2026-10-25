@@ -36,12 +36,14 @@ describe('account feedback ownership', () => {
 
 
 describe('independent account feedback preview', () => {
-  it('retains its local shared task dock under StrictMode', async () => {
+  it('keeps unknown state in the original account workspace under StrictMode', async () => {
     const { api, actions } = fixture();
     vi.mocked(actions.mutate).mockRejectedValue(Object.assign(new Error('合成未知结果'), { code: 'write-unknown', operationId: 'synthetic-operation' }));
     render(<StrictMode><AccountWorkspace context={{ caseId: '1', name: '合成案件', generation: 1 }} cases={[{ id: '1', name: '合成案件' }]} revision={0} actions={actions} api={api} onSelectCase={vi.fn()} /></StrictMode>);
     await screen.findByLabelText('身份证号'); fireEvent.click(screen.getByRole('button', { name: '设为主账号' }));
-    expect(await screen.findByText('账户资料写入结果待核对')).toBeTruthy();
+    expect(await screen.findByText(/有 1 项写入结果尚未确认/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: '核对状态' })).toBeTruthy();
+    expect(document.querySelector('.ff-entry,.ff-panel,.ff-dock')).toBeNull();
   });
 });
 
