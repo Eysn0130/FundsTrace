@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ImportPreview, ImportJob, ImportSession, TableSummary as TableSummaryData } from '../../../contracts/api-v1';
 import { Modal } from '../components/Modal';
+import { useFeedback } from '../feedback/Feedback';
 import type { FundsCaseClientV1, FundsCaseContextV1, FundsHostActionsV1 } from '../panel/host';
 import { formatMoney, displayTime } from '../lib/format';
 import { linkAbortSignal, waitForNextPoll } from '../panel/cancellation';
@@ -76,12 +77,12 @@ const documentExplanation = (item: Record<string, unknown>) => [
   item.row_count != null ? `来源记录 ${String(item.row_count)} 条` : '',
 ].filter(Boolean).join(' · ');
 
-function TableSummary({ summary, complete = false }: { summary: TableSummaryData; complete?: boolean }) {
+function TableSummary({ summary, complete = false, uncertain = false }: { summary: TableSummaryData; complete?: boolean; uncertain?: boolean }) {
   const evidence = summary.mapping_evidence ?? [], documents = summary.documents ?? [], examples = summary.unresolved_examples ?? [];
   return <section className="resume-summary" aria-label="表格自动识别与全量校验汇总">
     <p><strong>表格自动识别 · 全量校验</strong></p>
     <p>来源记录 {summary.record_total} 条 · 可靠识别流水 {summary.accepted} 条 · 已配对冲正/撤销 {summary.cancelled ?? 0} 条（双方均不计有效资金） · 未计入资金流水 {summary.unresolved} 条 · 无资金变动 {summary.non_monetary} 条 · 非交易记录 {summary.non_transaction} 条 · 辅助资料 {summary.auxiliary} 条</p>
-    <p>{complete ? '自动处理已完成，未计入资金流水的记录已' : '自动处理会正常完成，未计入资金流水的记录会'}保留来源和原因，无需逐条确认；这些记录不参与金额、交易笔数和关系统计。</p>
+    <p>{complete ? '自动处理已完成，未计入资金流水的记录已' : uncertain ? '处理结果待核实。未计入资金流水的记录按规则' : '未计入资金流水的记录按规则'}保留来源和原因，无需逐条确认；这些记录不参与金额、交易笔数和关系统计。</p>
     {(summary.cancelled ?? 0) > 0 && <p>已配对记录保留来源和核验依据，双方退出有效资金统计；退款、退货或仅有负号的记录不据此排除。</p>}
     {complete && (summary.excluded_flows ?? 0) > 0 && <p>本案另有 {summary.excluded_flows} 笔历史留存流水已退出有效统计。</p>}
     {summary.unresolved > 0 && <p role="note">分析仅使用可靠识别的有效流水，可能无法反映完整资金流向、金额和关联关系。未计入不代表金额为零或没有发生交易。</p>}
@@ -94,12 +95,12 @@ function TableSummary({ summary, complete = false }: { summary: TableSummaryData
   </section>;
 }
 
-function FeedbackSummary({ feedback, complete = false }: { feedback: NonNullable<ImportPreview['feedback']>; complete?: boolean }) {
+function FeedbackSummary({ feedback, complete = false, uncertain = false }: { feedback: NonNullable<ImportPreview['feedback']>; complete?: boolean; uncertain?: boolean }) {
   const examples = [...(feedback.unresolved_examples ?? []), ...(feedback.review_examples ?? [])].slice(0, 10);
   return <section className="resume-summary" aria-label="银行反馈包识别与处置汇总">
-    <p><strong>银行反馈 ZIP · 已自动识别</strong></p><p className="muted">按固定规则自动分类并保存来源与处理结果，字段映射与流水模式不可修改。</p>
+    <p><strong>银行反馈 ZIP · 已自动识别</strong></p><p className="muted">{complete ? '按固定规则自动分类并保存来源与处理结果' : '按固定规则自动分类'}，字段映射与流水模式不可修改。</p>
     <p>原始记录 {feedback.record_total} 条 · 交易明细表记录 {feedback.transaction_total} 条 · 来源已接纳流水 {feedback.accepted} 条 · 已配对冲正/撤销 {feedback.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {feedback.non_monetary ?? 0} 条 · 未计入资金流水 <strong>{unresolvedCount(feedback)}</strong> 条 · 来源反馈 {feedback.non_transaction} 条 · 辅助资料 {feedback.auxiliary} 条</p>
-    <p>{complete ? '自动处理已完成，未计入资金流水的记录已' : '自动处理会正常完成，未计入资金流水的记录会'}保留来源和原因，无需逐条确认；这些记录不参与金额、交易笔数和关系统计。</p>
+    <p>{complete ? '自动处理已完成，未计入资金流水的记录已' : uncertain ? '处理结果待核实。未计入资金流水的记录按规则' : '未计入资金流水的记录按规则'}保留来源和原因，无需逐条确认；这些记录不参与金额、交易笔数和关系统计。</p>
     <p className="muted">仅按完整来源信息唯一配对冲正/撤销；配对双方保留来源记录，不计入有效资金统计。普通退款按来源记账方向与金额处理，不因摘要含“退款”自动排除。</p>
     {unresolvedCount(feedback) > 0 && <p role="note">分析仅使用可靠识别的有效流水，可能无法反映完整资金流向、金额和关联关系。未计入不代表金额为零或没有发生交易。</p>}
     {complete && (feedback.excluded_flows ?? 0) > 0 && <p>本案另有 {feedback.excluded_flows} 笔历史留存流水已退出有效统计。</p>}
@@ -110,7 +111,8 @@ function FeedbackSummary({ feedback, complete = false }: { feedback: NonNullable
   </section>;
 }
 
-export function ImportDialog({ target, client, scopeSignal, resume, actions, onClose, onImported, active = true }: { target: FundsCaseContextV1; client: FundsCaseClientV1; scopeSignal: AbortSignal; resume?: ImportSession; actions?: FundsHostActionsV1; onClose: () => void; onImported: () => void; active?: boolean }) {
+export function ImportDialog({ target, client, scopeSignal, resume, actions, onClose, onImported, onOpenImport, active = true }: { target: FundsCaseContextV1; client: FundsCaseClientV1; scopeSignal: AbortSignal; resume?: ImportSession; actions?: FundsHostActionsV1; onClose: () => void; onImported: () => void; onOpenImport?: (importId: string) => void; active?: boolean }) {
+  const feedbackPort = useFeedback();
   const fileId = useId();
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [mapping, setMapping] = useState<Record<string, string>>({});
@@ -143,7 +145,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
         if (!valid(token)) return;
         if (current.case_id !== target.caseId || current.import_id !== importId) throw new Error('导入进度与当前案件不一致。');
         setJob(current);
-        setAwaitingStatus(false);
+        setAwaitingStatus(false); setError('');
         if (current.stage === 'error') { setError(current.error || '导入失败，未完成写入。'); return; }
         if (current.stage === 'done') { onImported(); return; }
         await waitForNextPoll(300, signal);
@@ -235,6 +237,16 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const complete = job?.stage === 'done';
   const activeJob = awaitingStatus || job?.stage === 'parsing' || job?.stage === 'importing';
   const working = busy || polling;
+  const importId = job?.import_id ?? preview?.import_id ?? resume?.import_id;
+  useEffect(() => {
+    if (!importId || scopeSignal.aborted || (!awaitingStatus && !job)) return;
+    const status = job?.stage === 'done' ? 'success' : job?.stage === 'error' ? 'error' : awaitingStatus && !working ? 'unknown' : 'running';
+    feedbackPort.task({ id: `import:${importId}`, operation: 'import', importId, status,
+      title: status === 'success' ? '流水导入已完成' : status === 'unknown' ? '导入结果待核对' : status === 'error' ? '流水导入未完成' : '正在导入流水',
+      detail: status === 'unknown' ? '只查询原任务进度，确认前不会再次提交。' : status === 'error' ? '任务未完成，请打开原任务核对结果。' : status === 'success' ? '处理结果已保存，可打开原任务查看。' : '关闭进度后任务仍继续。',
+      progress: job && job.total > 0 ? { done: job.done, total: job.total } : null, announce: false,
+      actions: onOpenImport ? [{ id: 'open-import', label: status === 'success' ? '查看结果' : '查看进度', run: () => onOpenImport(importId) }] : [] });
+  }, [feedbackPort, importId, job, awaitingStatus, working, scopeSignal, onOpenImport]);
   const feedback = complete ? job.result?.feedback : preview?.feedback;
   const tableSummary = complete ? job.result?.table_summary : preview?.table_summary;
   const classified = !!feedback || !!tableSummary;
@@ -251,7 +263,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   return active ? <Modal title="导入流水" onClose={onClose} busy={busy}>
     <div className="modal-context">导入到 <strong>{target.name}</strong><span>当前案件内去重</span></div>
     <ol className="import-steps" aria-label="导入步骤"><li className={complete && classified ? 'done' : !preview ? 'active' : 'done'}>1 <span>选择文件</span></li><li className={preview && !job ? 'active' : ''}>2 <span>{classified ? '自动识别与校验' : '映射与预览'}</span></li><li className={job ? 'active' : ''}>3 <span>{classified ? '处理结果' : '核对结果'}</span></li></ol>
-    {error && <div role="alert" className="error-banner"><span>{error}</span>{awaitingStatus && <p>导入结果暂无法确认，请重新查询进度，确认前不会再次提交。</p>}{!working && activeJob ? <button onClick={() => { setError(''); void poll(resume?.import_id ?? preview!.import_id, ++operation.current); }}>重新查询进度</button> : !working && job?.stage === 'error' && job.recoverable !== false ? <button onClick={() => void (preview ? repreview() : restorePreview())}>重新预览后重试</button> : !working && resume && !preview && !complete && <button onClick={() => void restorePreview()}>重试恢复预览</button>}</div>}
+    {error && <div role="alert" className={awaitingStatus ? 'warning-banner' : 'error-banner'}><span>{error}</span>{awaitingStatus && <p>导入结果暂无法确认，请重新查询进度，确认前不会再次提交。</p>}{!working && activeJob ? <button onClick={() => { setError(''); void poll(resume?.import_id ?? preview!.import_id, ++operation.current); }}>重新查询进度</button> : !working && job?.stage === 'error' && job.recoverable !== false ? <button onClick={() => void (preview ? repreview() : restorePreview())}>重新预览后重试</button> : !working && resume && !preview && !complete && <button onClick={() => void restorePreview()}>重试恢复预览</button>}</div>}
     {complete ? <>
       <div className="import-complete" role="status"><span className="success-symbol">✓</span><h3>{classified ? '自动处理完成' : '流水已写入当前案件'}</h3>
         <p>{classified && <>已保存 {feedback?.record_total ?? tableSummary!.record_total} 条记录 · </>}{classified ? '新增资金流水' : '新增'} <strong>{tableSummary?.effective_added ?? job.result?.ok ?? 0}</strong> 笔 · 重复 {job.result?.rows_dup ?? 0} 笔 · {feedback ? <>已配对冲正/撤销 {feedback.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {feedback.non_monetary ?? 0} 条 · 未计入资金流水 {unresolvedCount(feedback)} 条 · 来源反馈 {feedback.non_transaction} 条 · 辅助资料 {feedback.auxiliary} 条</> : tableSummary ? <>未计入资金流水 {tableSummary.unresolved} 条 · 已配对冲正/撤销 {tableSummary.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {tableSummary.non_monetary} 条 · 非交易记录 {tableSummary.non_transaction} 条 · 辅助资料 {tableSummary.auxiliary} 条</> : <>跳过 {job.result?.skipped ?? 0} 行</>}</p>
@@ -269,14 +281,14 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
         : <label className="file-drop" htmlFor={fileId} aria-busy={working}><span className="upload-symbol">↑</span><strong>{busy ? '正在解析文件…' : '选择 CSV、Excel 或银行反馈 ZIP'}</strong><span id={`${fileId}-hint`}>支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP</span><input id={fileId} aria-label="选择流水文件" aria-describedby={`${fileId}-hint`} type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,.zip" disabled={working} onChange={event => void upload(event.target.files?.[0])} /></label>
       : <>
         <div className="file-summary"><strong>{preview.filename}</strong><span>{preview.feedback ? <>原始记录 {preview.feedback.record_total} 条 · 来源已接纳流水 {preview.feedback.accepted} 条 · 已配对冲正/撤销 {preview.feedback.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {preview.feedback.non_monetary ?? 0} 条 · 未计入资金流水 {unresolvedCount(preview.feedback)} 条 · 来源反馈 {preview.feedback.non_transaction} 条 · 辅助资料 {preview.feedback.auxiliary} 条</> : tableSummary ? <>来源记录 {tableSummary.record_total} 条 · 可靠识别流水 {tableSummary.accepted} 条 · 未计入资金流水 {tableSummary.unresolved} 条</> : <>{preview.stats.total} 行 · 可导入 {preview.stats.ok} 行 · 跳过 {preview.stats.skipped} 行</>}</span></div>
-        {tableSummary && <TableSummary summary={tableSummary} />}
-        {preview.feedback ? <FeedbackSummary feedback={preview.feedback} /> : <><label className="mode-field">文件类型<select aria-label="流水文件类型" value={mode} disabled={working || activeJob} onChange={event => { const next = event.target.value as 'A' | 'B'; setMode(next); setMapping(value => Object.fromEntries(Object.entries(value).filter(([field]) => modeFields[next].has(field)))); setDirty(true); }}><option value="A">双边流水（付款方 → 收款方）</option><option value="B">单账户流水（本方与交易对手）</option></select></label>
+        {tableSummary && <TableSummary summary={tableSummary} uncertain={awaitingStatus} />}
+        {preview.feedback ? <FeedbackSummary feedback={preview.feedback} uncertain={awaitingStatus} /> : <><label className="mode-field">文件类型<select aria-label="流水文件类型" value={mode} disabled={working || activeJob} onChange={event => { const next = event.target.value as 'A' | 'B'; setMode(next); setMapping(value => Object.fromEntries(Object.entries(value).filter(([field]) => modeFields[next].has(field)))); setDirty(true); }}><option value="A">双边流水（付款方 → 收款方）</option><option value="B">单账户流水（本方与交易对手）</option></select></label>
         <details className="mapping"><summary>{tableSummary ? '高级：调整解释' : '检查字段映射'} <span>{dirty ? '已修改，请重新预览' : '已自动识别，可调整'}</span></summary><div className="mapping-grid">{(mode === 'A' ? fieldsA : fieldsB).map(field => <label key={field}>{fieldNames[field]}<select aria-label={`映射${fieldNames[field]}`} value={mapping[field] || ''} disabled={working || activeJob} onChange={event => { setMapping(value => ({ ...value, [field]: event.target.value })); setDirty(true); }}><option value="">不使用</option>{preview.columns.map(column => <option key={column}>{column}</option>)}</select></label>)}</div></details>
         {dirty && <button className="button secondary" onClick={() => void repreview()} disabled={working || activeJob}>按当前映射重新预览</button>}</>}
         <div className="preview-wrap"><table className="preview-table"><caption>规范化预览 · 前 {preview.preview.length} 行</caption><thead><tr>{preview.feedback && <th>来源文件／原始行</th>}<th>交易时间</th><th>付款方</th><th>收款方</th><th className="align-right">金额</th></tr></thead><tbody>{preview.preview.map((row, index) => <tr key={index}>{preview.feedback && <td>{row.source_member || '—'}<small>原始第 {row.source_row ?? '—'} 行 · 记录 {row.source_record_no ?? '—'}</small></td>}<td className="mono">{displayTime(row.trade_time)}</td><td>{row.payer_name || (preview.feedback ? row.payer_account ? '户名未提供' : '未知对手' : '—')}<small className="mono">{row.payer_account || (preview.feedback ? '账号缺失' : '')}</small></td><td>{row.payee_name || (preview.feedback ? row.payee_account ? '户名未提供' : '未知对手' : '—')}<small className="mono">{row.payee_account || (preview.feedback ? '账号缺失' : '')}</small></td><td className="align-right mono">{formatMoney(row.amount)} <small>{row.currency}</small></td></tr>)}</tbody></table></div>
         {preview.self_accounts_in_file.length > 0 && <fieldset className="main-accounts"><legend>标记本方主账号</legend>{preview.self_accounts_in_file.map(account => <label key={account.account}><input type="checkbox" checked={marked.includes(account.account)} disabled={working || activeJob} onChange={event => setMarked(value => event.target.checked ? [...value, account.account] : value.filter(item => item !== account.account))} />{account.name || account.account} <span className="mono">{account.account}</span></label>)}</fieldset>}
       </>}
-    {working && !complete && <div role="status" className="import-progress"><progress max={job?.total || 1} value={job?.done || 0} /><span>{job?.message || '正在处理…'} {job ? `${job.done} / ${job.total}` : ''}</span></div>}
-    <footer className="modal-footer"><button className="button secondary" disabled={busy} onClick={onClose}>{complete ? classified ? '完成' : '返回流水核对' : job?.stage === 'parsing' || job?.stage === 'importing' ? '关闭进度' : '取消'}</button>{preview && !complete && !activeJob && <button className="button primary" disabled={working || dirty || (!classified && preview.stats.ok === 0) || job?.stage === 'error'} onClick={() => void commit()}>{working ? '正在导入…' : classified ? '开始导入' : '确认导入'}</button>}</footer>
+    {working && !complete && <div role="status" className="import-progress"><progress aria-label={job ? '流水导入进度' : '文件上传与解析进度'} {...(job && job.total > 0 ? { max: job.total, value: job.done } : {})} /><span>{job?.message || '正在处理…'} {job && job.total > 0 ? `${job.done} / ${job.total}` : ''}</span></div>}
+    <footer className="modal-footer"><button className="button secondary" disabled={busy} onClick={onClose}>{complete ? classified ? '完成' : '返回流水核对' : activeJob ? '关闭进度' : '取消'}</button>{preview && !complete && !activeJob && <button className="button primary" disabled={working || dirty || (!classified && preview.stats.ok === 0) || job?.stage === 'error'} onClick={() => void commit()}>{working ? '正在导入…' : classified ? '开始导入' : '确认导入'}</button>}</footer>
   </Modal> : null;
 }

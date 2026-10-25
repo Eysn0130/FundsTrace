@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useState, useRef, useCallback, type FormEvent, type ReactNode } from 'react';
 import type { CaseStats, Flow, FlowPage, ImportSession } from '../../../contracts/api-v1';
 import { formatMoney, displayTime } from '../lib/format';
 import { Modal } from '../components/Modal';
@@ -7,17 +7,18 @@ import { ImportHistoryDialog } from '../features/ImportHistoryDialog';
 import { FlowSources } from '../features/FlowSources';
 import { FUNDS_PANEL_VERSION, type FundsPanelHostV1, type FundsPanelSessionV1 } from './host';
 import { linkAbortSignal, runUnlessAborted } from './cancellation';
+import { FeedbackBoundary, type FundsFeedbackPort } from '../feedback/Feedback';
 
 type Filters = { account: string; kw: string; page: number };
 const emptyFilters: Filters = { account: '', kw: '', page: 1 };
 export type FundsQueryDraft = Readonly<{ filters: Filters; account: string; keyword: string }>;
-type WorkspacePresentation = { initialDraft?: FundsQueryDraft; onDraftChange?: (draft: FundsQueryDraft) => void; caseActions?: ReactNode; retained?: boolean; navigationPending?: boolean };
+type WorkspacePresentation = { initialDraft?: FundsQueryDraft; onDraftChange?: (draft: FundsQueryDraft) => void; caseActions?: ReactNode; retained?: boolean; navigationPending?: boolean; openImportRequest?: { importId: string; sequence: number } };
 
-export function FundsPanel({ host, workspace, active = true, revision = 0 }: { host: FundsPanelHostV1; workspace?: WorkspacePresentation; active?: boolean; revision?: number }) {
+export function FundsPanel({ host, workspace, feedback, active = true, revision = 0 }: { host: FundsPanelHostV1; workspace?: WorkspacePresentation; feedback?: FundsFeedbackPort; active?: boolean; revision?: number }) {
   const session = host.session;
   const binding = session?.client.binding;
   const valid = host.version === FUNDS_PANEL_VERSION && session && binding?.caseId === session.context.caseId && binding.scopeKey === session.scopeKey && binding.generation === session.generation;
-  return <div className="funds-trace funds-panel">{valid ? <SessionBoundary key={JSON.stringify([session.context.caseId, session.scopeKey, session.generation])} session={session} workspace={workspace} active={active} revision={revision} />
+  return <div className="funds-trace funds-panel">{valid ? <FeedbackBoundary key={JSON.stringify([session.context.caseId, session.scopeKey, session.generation])} port={feedback} scope={{ caseId: session.context.caseId, generation: session.generation }} signal={session.signal}><SessionBoundary session={session} workspace={workspace} active={active} revision={revision} /></FeedbackBoundary>
     : <section className="main-workspace"><div className="empty-state"><h2>{session ? '案件会话绑定无效' : '未选择案件'}</h2><p>请由宿主提供当前案件会话。</p></div></section>}</div>;
 }
 
@@ -47,6 +48,8 @@ function BoundFundsPanel({ session, workspace, active, revision }: { session: Fu
   const [historyOpen, setHistoryOpen] = useState(false);
   const [resumeSession, setResumeSession] = useState<ImportSession | undefined>();
   const [returnToHistory, setReturnToHistory] = useState(false);
+  const importObservation = useRef(0);
+  const openedRequest = useRef<number | undefined>(undefined);
   const [graphError, setGraphError] = useState('');
   const [graphBusy, setGraphBusy] = useState(false);
   const lifetime = useRef(new AbortController());
@@ -74,8 +77,32 @@ function BoundFundsPanel({ session, workspace, active, revision }: { session: Fu
       .finally(() => { if (live && !controller.signal.aborted) setLoading(false); });
     return () => { live = false; unlink(); controller.abort(); };
   }, [client, context.caseId, filters, reload, session.signal, active, revision]);
-  const openImport = () => { setImportOpen(true); setResumeSession(undefined); setReturnToHistory(false); setHistoryOpen(false); };
+  const openOriginalImport = useCallback(async (importId: string, signal = lifetime.current.signal) => {
+    const token = ++importObservation.current;
+    if (signal.aborted || session.signal.aborted) return;
+    try {
+      const value = await client.imports(signal);
+      if (signal.aborted || session.signal.aborted || token !== importObservation.current) return;
+      if (value.case_id !== context.caseId || value.items.some(item => item.case_id !== context.caseId)) throw new Error('导入记录与当前案件不一致。');
+      const item = value.items.find(item => item.import_id === importId && item.surface === 'v1' && ['parsing', 'importing', 'done'].includes(item.stage));
+      if (item) { setResumeSession(item); setReturnToHistory(true); setHistoryOpen(false); setImportOpen(true); }
+      else { setImportOpen(false); setResumeSession(undefined); setHistoryOpen(true); }
+    } catch (reason) { if (!signal.aborted && !session.signal.aborted && token === importObservation.current) { setError((reason as Error).message); setHistoryOpen(true); } }
+  }, [client, context.caseId, session.signal]);
+  useEffect(() => {
+    const request = workspace?.openImportRequest;
+    if (!request || !active || session.signal.aborted || openedRequest.current === request.sequence) return;
+    openedRequest.current = request.sequence;
+    const controller = new AbortController();
+    const unlink = linkAbortSignal(session.signal, controller);
+    let settled = false;
+    // Opening the original task only reads sessions; it never restores a POST.
+    void openOriginalImport(request.importId, controller.signal).then(() => { settled = true; });
+    return () => { if (!settled && openedRequest.current === request.sequence) openedRequest.current = undefined; unlink(); controller.abort(); };
+  }, [workspace?.openImportRequest?.sequence, active, openOriginalImport, session.signal]);
+  const openImport = () => { importObservation.current += 1; setImportOpen(true); setResumeSession(undefined); setReturnToHistory(false); setHistoryOpen(false); };
   const closeImport = () => {
+    importObservation.current += 1;
     if (returnToHistory) setHistoryOpen(true);
     setImportOpen(false); setResumeSession(undefined); setReturnToHistory(false); setReload(value => value + 1);
   };
@@ -112,7 +139,7 @@ function BoundFundsPanel({ session, workspace, active, revision }: { session: Fu
 
     </section>
     {active && historyOpen && <ImportHistoryDialog target={context} client={client} scopeSignal={session.signal} actions={actions} onClose={() => { setHistoryOpen(false); setReload(value => value + 1); }} onOpen={session => { setImportOpen(true); setResumeSession(session); setReturnToHistory(true); setHistoryOpen(false); }} />}
-    {importOpen && <ImportDialog key={resumeSession?.import_id ?? 'new'} target={context} client={client} scopeSignal={session.signal} resume={resumeSession} actions={actions} active={active} onClose={closeImport} onImported={() => setReload(value => value + 1)} />}
+    {importOpen && <ImportDialog key={resumeSession?.import_id ?? 'new'} target={context} client={client} scopeSignal={session.signal} resume={resumeSession} actions={actions} active={active} onClose={closeImport} onImported={() => setReload(value => value + 1)} onOpenImport={openOriginalImport} />}
     {active && selectedFlow && <Modal title="流水核对" onClose={() => setSelectedFlow(null)}><dl className="flow-details">{Object.entries({ '所属案件': context.name, '流水 ID': selectedFlow.id, '批次 ID': selectedFlow.batch_id, '交易流水号': selectedFlow.trade_no, '交易时间': displayTime(selectedFlow.trade_time), '付款户名': selectedFlow.payer_name, '付款账号': selectedFlow.payer_account, '收款户名': selectedFlow.payee_name, '收款账号': selectedFlow.payee_account, '交易金额': `${formatMoney(selectedFlow.amount)} ${selectedFlow.currency}`, '交易后余额': selectedFlow.balance === null ? '未提供' : formatMoney(selectedFlow.balance), '摘要': selectedFlow.summary, '渠道': selectedFlow.channel }).map(([label, value]) => <div key={label}><dt>{label}</dt><dd className={label.includes('金额') || label.includes('ID') || label.includes('账号') ? 'mono' : ''}>{value || '—'}</dd></div>)}</dl><FlowSources key={`${selectedFlow.case_id}:${selectedFlow.id}`} caseId={selectedFlow.case_id} flowId={selectedFlow.id} client={client} scopeSignal={session.signal} actions={actions} /><footer className="modal-footer"><button className="button primary" onClick={() => setSelectedFlow(null)}>核对完成</button></footer></Modal>}
   </>;
 }

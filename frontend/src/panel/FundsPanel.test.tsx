@@ -425,3 +425,28 @@ describe('FundsPanel host isolation', () => {
     unmount(); button.click(); expect(openGraph).not.toHaveBeenCalled();
   });
 });
+
+describe('FundsPanel feedback ports', () => {
+  it.each([true, false])('routes an unknown original import through its optional host port (%s)', hosted => {
+    const port = { notify: vi.fn(), task: vi.fn() };
+    const bound = session('1', 'feedback-scope', 1, { commit: vi.fn(async () => { throw new Error('合成提交回执丢失'); }) });
+    const view = render(<FundsPanel host={host(bound.value)} feedback={hosted ? port : undefined} />);
+    return (async () => {
+      await screen.findByRole('button', { name: '核对流水 HOST-1' });
+      fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
+      fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } });
+      fireEvent.click(await screen.findByRole('button', { name: '确认导入' }));
+      await screen.findByText('合成提交回执丢失');
+      if (hosted) {
+        await waitFor(() => expect(port.task).toHaveBeenCalledWith(expect.objectContaining({ id: `import:${record('1').import_id}`, status: 'unknown' })));
+        expect(document.querySelector('.ff-dock')).toBeNull();
+      } else expect(await screen.findByText('导入结果待核对')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: '关闭进度' }));
+      expect(screen.queryByRole('dialog', { name: '导入流水' })).toBeNull();
+      expect(bound.client.commit).toHaveBeenCalledOnce();
+      act(() => bound.controller.abort());
+      expect(screen.queryByText('导入结果待核对')).toBeNull();
+      view.unmount();
+    })();
+  });
+});

@@ -25,6 +25,35 @@ let analysisCases = [], currentStats = null, draftBaseline = '', activeResult = 
 const resultScrolls = new Map();
 let tableSerial = 0;
 const analysisEntityPickers = [];
+let analysisFeedbackSerial = 0, analysisFeedbackEpoch = 0;
+const analysisFeedbackTasks = new Map();
+
+function embeddedAnalysis() { return window.parent && window.parent !== window && new URLSearchParams(window.location.search).get('embedded') === '1'; }
+function bindAnalysisFeedback() {
+  if (!embeddedAnalysis()) window.FundsFeedback?.bind(analysisContext());
+}
+function publishAnalysisFeedback(ticket, status, detail) {
+  if (!ticket || ticket.epoch !== analysisFeedbackEpoch || !isCurrentAnalysis(ticket.context)) return;
+  const event = { id: ticket.id, kind: 'task', operation: ticket.operation, status, title: ticket.title, detail };
+  if (embeddedAnalysis()) {
+    if (!window.FundsAnalysisFeedback?.isCurrent(ticket.host)) return;
+    window.FundsAnalysisFeedback.publish(event, ticket.host);
+  } else window.FundsFeedback?.task({ ...event, scope: ticket.context, announce: false });
+  if (status === 'running') analysisFeedbackTasks.set(ticket.id, ticket);
+  else analysisFeedbackTasks.delete(ticket.id);
+}
+function startAnalysisFeedback(operation, title, detail) {
+  const ticket = { id: `analysis:${operation}:${++analysisFeedbackSerial}`, operation, title,
+    context: analysisContext(), epoch: analysisFeedbackEpoch, host: window.FundsAnalysisFeedback?.capture() };
+  publishAnalysisFeedback(ticket, 'running', detail);
+  return ticket;
+}
+function revokeAnalysisFeedback(detail) {
+  for (const ticket of analysisFeedbackTasks.values()) publishAnalysisFeedback(ticket, 'unknown', detail);
+  analysisFeedbackTasks.clear(); analysisFeedbackEpoch += 1;
+}
+window.addEventListener('funds:feedback-ready', bindAnalysisFeedback);
+window.addEventListener('DOMContentLoaded', bindAnalysisFeedback);
 
 function analysisSubjectToken(input) {
   const value = input.value, separator = /[,，;；\s]/u;
@@ -123,8 +152,10 @@ function confirmAnalysisAction({ title, message, accept = '确定', cancel = '�
   });
 }
 function selectAnalysisCase(id) {
+  revokeAnalysisFeedback('案件已切换，原任务的结果未确认；服务端请求可能仍在执行。');
   dismissAnalysisConfirmation();
   caseId = id == null ? null : String(id); caseGeneration += 1; analysisRequest += 1; statsRequest += 1;
+  bindAnalysisFeedback();
   for (const { picker } of analysisEntityPickers) picker.invalidate();
   lastResults = lastRun = renderedResults = null; renderedAlgorithms = []; activeResult = null; currentStats = null; reportPending = false;
   $('#caseSel').value = caseId == null ? '' : String(caseId);
@@ -246,17 +277,20 @@ async function run() {
   analysisError(); $('#reportStatus').textContent = ''; $('#analysisScopeNote').textContent = '';
   for (const input of $$('#analysisParams [aria-invalid]')) input.removeAttribute('aria-invalid');
   clearResults('正在分析', '全部导入流水 · 本地计算'); setAnalysisPhase('running'); renderResultTabs(); setBar();
+  const feedback = startAnalysisFeedback('analysis', '全案分析', '正在按本次参数计算，完成时间暂无法确定。');
   try {
     const result = await api('/api/analysis/run', { case_id: context.caseId, params: frozenParams });
     if (!current()) return;
     validateAnalysisResult(result, algs, context);
     lastResults = result; lastRun = { ...context, params: frozenParams, sourceStats: result.source_snapshot ? { ...result.source_snapshot } : null };
     render(result, algs); setAnalysisPhase('done');
+    publishAnalysisFeedback(feedback, 'success', '分析已完成，可在全案分析页面查看本次结果。');
     $('#resultScope').textContent = lastRun.sourceStats ? `本次结果 · 全部导入流水，${count(lastRun.sourceStats.flows)} 笔 · ${count(lastRun.sourceStats.accounts)} 个账户` : '本次结果 · 全部导入流水';
   } catch (error) {
     if (!current()) return;
     lastResults = lastRun = renderedResults = null; renderedAlgorithms = [];
     clearResults('本次分析未完成', '参数已保留，可重新运行'); setAnalysisPhase('error'); renderResultTabs(); analysisError('分析未完成：' + error.message);
+    publishAnalysisFeedback(feedback, 'error', '分析未完成：' + String(error.message || '请求未成功').slice(0, 300));
   } finally {
     if (current()) { $('#pbar').hidden = true; $('#pbar').style.display = 'none'; syncAnalysisControls(); }
   }
@@ -379,6 +413,7 @@ async function generateAnalysisReport() {
   if (!accepted || !isCurrentAnalysis(run) || lastRun !== run || analysisBusy()) return;
   const current = () => isCurrentAnalysis(run) && lastRun === run && reportPending;
   reportPending = true; $('#reportStatus').textContent = '正在重新计算并生成报告…'; syncAnalysisControls();
+  const feedback = startAnalysisFeedback('download', '生成分析报告', '正在按本次结果参数重新计算并生成 HTML 报告。');
   try {
     const response = await fetch('/api/analysis/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ case_id: run.caseId, params: run.params }) });
     if (!current()) return;
@@ -388,7 +423,11 @@ async function generateAnalysisReport() {
     link.href = url; link.download = `资金分析报告_案件${run.caseId}.html`; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
     $('#reportStatus').textContent = '报告已生成 · 已按本次参数重新计算';
-  } catch (error) { if (current()) $('#reportStatus').textContent = '报告生成未完成：' + error.message; }
+    publishAnalysisFeedback(feedback, 'success', '报告已生成，已发起 HTML 文件下载。');
+  } catch (error) { if (current()) {
+    $('#reportStatus').textContent = '报告生成未完成：' + error.message;
+    publishAnalysisFeedback(feedback, 'error', '报告生成未完成：' + String(error.message || '请求未成功').slice(0, 300));
+  } }
   finally { if (current()) { reportPending = false; syncAnalysisControls(); } }
 }
 $('#btnRun').onclick = run; $('#btnReport').onclick = generateAnalysisReport;
@@ -478,5 +517,8 @@ document.addEventListener('input', analysisDraftChanged); document.addEventListe
 const requestedAlgorithm = new URLSearchParams(window.location.search).get('algorithm');
 if (analysisMethods[requestedAlgorithm]) $$('.alg').forEach(input => { input.checked = input.value === requestedAlgorithm; });
 installAnalysisEntitySearch();
-window.addEventListener('pagehide', () => { for (const { picker } of analysisEntityPickers) picker.invalidate(); });
+window.addEventListener('pagehide', () => {
+  revokeAnalysisFeedback('分析页面已关闭，原任务的结果未确认；服务端请求可能仍在执行。');
+  for (const { picker } of analysisEntityPickers) picker.invalidate();
+});
 syncAlgorithmFields(); void loadCases();

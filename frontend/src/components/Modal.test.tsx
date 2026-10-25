@@ -47,3 +47,19 @@ describe('FundsTrace modal keyboard lifecycle', () => {
     view.unmount(); expect(document.activeElement).toBe(fallback); scope.remove();
   });
 });
+
+describe('feedback modal visibility events', () => {
+  it('keeps feedback blocked until the last native dialog closes', () => {
+    const states: boolean[] = [];
+    const listen = (event: Event) => states.push((event as CustomEvent<{ open: boolean }>).detail.open);
+    window.addEventListener('funds:feedback-modal', listen);
+    try {
+      const first = render(<Modal title="第一合成核对" onClose={() => {}}>第一对话框</Modal>);
+      const second = render(<Modal title="第二合成核对" onClose={() => {}}>第二对话框</Modal>);
+      expect(states).toEqual([true, true]);
+      second.unmount(); expect(states.at(-1)).toBe(true);
+      expect((screen.getByRole('dialog', { name: '第一合成核对' }) as HTMLDialogElement).open).toBe(true);
+      first.unmount(); expect(states.at(-1)).toBe(false);
+    } finally { window.removeEventListener('funds:feedback-modal', listen); }
+  });
+});

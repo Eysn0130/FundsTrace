@@ -142,7 +142,7 @@
   async function refreshRows(context) {
     try { await doSearch(state.search.page || 1); }
     catch (error) {
-      if (isCurrentCase(context)) toast('画布已更新，流水表格刷新失败：' + error.message, 'err');
+      if (isCurrentCase(context)) toast('画布已更新，流水表格暂未刷新', 'warn', context);
       return;
     }
   }
@@ -176,7 +176,16 @@
     // Revoke the unconfirmed facts as well as their undo chain. Re-selecting the
     // canvas (or reloading) fetches authoritative state before editing resumes.
     activateCanvas(state.canvasId);
-    toast('追踪状态无法确认，请重新加载当前画布。', 'err');
+    const scope = caseContext();
+    window.FundsFeedback?.task({ id: 'canvas:tracking', scope, status: 'unknown', title: '追踪结果待核对',
+      detail: '尚不能确认本次上图结果。重新读取当前画布，不会再次提交。', actions: [{ id: 'read', label: '重新读取画布', run: async () => {
+        if (!isCurrentCase(scope)) return;
+        try {
+          await loadGraph(true, scope);
+          if (!isCurrentCase(scope)) return;
+          window.FundsFeedback?.task({ id: 'canvas:tracking', scope, status: 'success', title: '画布状态已重新读取', detail: '请核对当前画布后继续操作。' });
+        } catch (_) { if (isCurrentCase(scope)) toast('画布状态暂不可用，请稍后再次读取。', 'warn', scope); }
+      } }] });
   }
 
   async function mutateTracked(context, write, prepare) {
@@ -612,7 +621,7 @@
     wrap('#graphLabelMode', 'onchange', '更改标注模式');
     $('#btnBulkTrack').onclick = () => {
       const ids = $$('#flowTbody .flow-ck').filter(node => node.checked).map(node => Number(node.dataset.id));
-      if (!ids.length) { toast('请先勾选要追踪的流水', 'err'); return Promise.resolve(false); }
+      if (!ids.length) { $('#flowCkCount').textContent = '请先勾选要追踪的流水'; $('#flowCkAll').focus(); return Promise.resolve(false); }
       const direction = $('#bulkDir').value, x = Math.max(1, Math.min(50, Number($('#bulkX').value) || 5));
       return command('批量追踪', async context => {
         const result = await mutateTracked(context, before => trackedWrite(context, () => api('/api/track/bulk', { method: 'POST', ...jsonOpts({ case_id: context.caseId,
@@ -630,9 +639,10 @@
         }
       });
     };
-    $('#btnClearGraph').onclick = () => {
+    $('#btnClearGraph').onclick = async () => {
       const where = state.canvasName ? `画布「${state.canvasName}」` : '默认画布';
-      if (!confirm(`清空${where}的全部追踪（已上图流水）？其他画布不受影响。`)) return Promise.resolve(false);
+      const scope = caseContext();
+      if (!await confirmFeedback({ title: '清空当前画布', message: `清空${where}的全部追踪（已上图流水）？其他画布不受影响，原始流水保留。`, accept: '清空当前画布', danger: true, scope })) return false;
       return command('清空画布', async context => {
         const result = await mutateTracked(context, before => replaceTracked(context, before, []), () => {
           state.positions = {}; state.edgeLabelPos = {}; state.edgeBendPos = {}; state.edgeSnapshotLabels = {}; state.edgeTypes = {};state.graphView.autoRoutes={};

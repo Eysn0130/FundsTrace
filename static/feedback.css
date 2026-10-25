@@ -1,0 +1,100 @@
+/* Shared presentation primitives. All rules stay inside the feedback host. */
+.funds-feedback {
+  --ff-surface: var(--surface-raised, #1b2530);
+  --ff-text: var(--text-primary, #e8eef6);
+  --ff-muted: var(--muted, #a8b6c7);
+  --ff-border: var(--border, #2e3b4a);
+  --ff-accent: var(--accent, #367cff);
+  --ff-success: var(--state-success, #72be9a);
+  --ff-warning: var(--state-warning, #ddb46c);
+  --ff-error: var(--state-danger, #e18c91);
+  color: var(--ff-text);
+  font: 14px/1.5 var(--font-family-ui, "Segoe UI", "Microsoft YaHei", sans-serif);
+  text-align: left;
+}
+.funds-feedback, .funds-feedback * { box-sizing: border-box; }
+.funds-feedback.ff-root { flex: 0 0 auto; width: 100%; min-width: 0; }
+.funds-feedback [hidden] { display: none !important; }
+.funds-feedback button { font: inherit; color: inherit; cursor: pointer; }
+.funds-feedback button:focus-visible { outline: 2px solid var(--focus-ring, #7ab8f0); outline-offset: 2px; }
+.funds-feedback .ff-icon { display: block; width: 18px; height: 18px; flex: none; filter: var(--icon-filter, none); }
+.funds-feedback .ff-toast-stack {
+  position: fixed;
+  top: var(--feedback-top, 180px);
+  right: var(--feedback-right, 18px);
+  z-index: var(--layer-feedback, 110);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(368px, calc(100vw - 32px));
+  max-height: calc(100dvh - var(--feedback-top, 180px) - var(--feedback-bottom, 48px) - 18px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 2px;
+  pointer-events: none;
+}
+.funds-feedback .ff-toast, .funds-feedback .ff-task {
+  --ff-status: var(--ff-accent);
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  color: var(--ff-text);
+}
+.funds-feedback [data-status="success"] { --ff-status: var(--ff-success); }
+.funds-feedback [data-status="warning"], .funds-feedback [data-status="unknown"] { --ff-status: var(--ff-warning); }
+.funds-feedback [data-status="error"] { --ff-status: var(--ff-error); }
+.funds-feedback [data-status="cancelled"], .funds-feedback [data-status="queued"] { --ff-status: var(--ff-muted); }
+.funds-feedback .ff-toast {
+  flex: none;
+  padding: 13px 12px 13px 15px;
+  border: 1px solid var(--ff-border);
+  border-left: 3px solid var(--ff-status);
+  border-radius: 10px;
+  background: var(--ff-surface);
+  box-shadow: 0 8px 26px color-mix(in srgb, var(--shadow-color, #0006) 70%, transparent);
+  pointer-events: auto;
+  animation: funds-feedback-toast-in 180ms cubic-bezier(.2, .75, .25, 1);
+}
+.funds-feedback .ff-content { flex: 1; min-width: 0; }
+.funds-feedback .ff-item-heading { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 9px; row-gap: 2px; }
+.funds-feedback .ff-state { display: inline-flex; align-items: center; gap: 4px; color: var(--ff-status); flex: none; font-size: 12px; line-height: 20px; }
+.funds-feedback .ff-state .ff-icon { width: 14px; height: 14px; }
+.funds-feedback .ff-title { font-weight: 600; overflow-wrap: anywhere; }
+.funds-feedback .ff-detail { margin: 5px 0 0; color: var(--ff-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.funds-feedback .ff-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; }
+.funds-feedback .ff-action { min-height: 28px; padding: 1px 0; border: 0; background: transparent; color: var(--accent-link, var(--ff-accent)); text-decoration: underline; text-underline-offset: 3px; }
+.funds-feedback .ff-action:hover { color: var(--ff-text); }
+.funds-feedback .ff-close { display: grid; place-items: center; flex: none; width: 28px; height: 28px; margin: -3px -3px 0 0; padding: 0; border: 0; border-radius: 6px; background: transparent; }
+.funds-feedback .ff-close:hover { background: var(--surface-control-hover, #ffffff0a); }
+.funds-feedback .ff-close .ff-icon { width: 16px; height: 16px; }
+.funds-feedback .ff-dock { position: relative; background: var(--ff-surface); border-top: 1px solid var(--ff-border); }
+.funds-feedback .ff-dock-head { display: flex; align-items: stretch; min-height: 42px; padding: 0 16px; gap: 12px; }
+.funds-feedback .ff-dock-entry { display: flex; align-items: center; flex: 1; min-width: 0; min-height: 42px; padding: 6px 0; border: 0; background: transparent; gap: 10px; text-align: left; }
+.funds-feedback .ff-dock-title { flex: none; font-weight: 600; }
+.funds-feedback .ff-summary { color: var(--ff-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.funds-feedback .ff-dock-toggle { display: flex; align-items: center; justify-content: center; flex: none; min-height: 42px; padding: 5px 0 5px 10px; border: 0; background: transparent; gap: 6px; font-size: 12px; }
+.funds-feedback .ff-dock-toggle .ff-icon { width: 16px; height: 16px; transition: transform 220ms ease; }
+.funds-feedback .ff-dock[data-expanded="true"] .ff-dock-toggle .ff-icon { transform: rotate(180deg); }
+.funds-feedback .ff-dock-body { max-height: 0; overflow: hidden; transition: max-height 220ms cubic-bezier(.2, .75, .25, 1); }
+.funds-feedback .ff-dock[data-expanded="true"] .ff-dock-body { max-height: min(320px, 40dvh); }
+.funds-feedback .ff-task-list { max-height: min(320px, 40dvh); overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; list-style: none; margin: 0; padding: 0; }
+.funds-feedback .ff-task { padding: 12px 18px; border-top: 1px solid var(--ff-border); }
+.funds-feedback .ff-progress { display: block; width: min(420px, 100%); height: 5px; margin-top: 10px; accent-color: var(--ff-accent); border: 0; border-radius: 4px; overflow: hidden; background: var(--surface-control, #24303e); }
+.funds-feedback .ff-progress::-webkit-progress-bar { background: var(--surface-control, #24303e); }
+.funds-feedback .ff-progress::-webkit-progress-value { background: var(--ff-accent); }
+.funds-feedback .ff-progress::-moz-progress-bar { background: var(--ff-accent); }
+.funds-feedback .ff-progress-label { display: block; margin-top: 4px; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ff-muted); }
+.funds-feedback .ff-empty { padding: 16px 18px 20px; margin: 0; border-top: 1px solid var(--ff-border); color: var(--ff-muted); }
+.funds-feedback .ff-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+@keyframes funds-feedback-toast-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+@media (max-width: 600px) {
+  .funds-feedback .ff-toast-stack { right: 12px; width: calc(100vw - 24px); }
+  .funds-feedback .ff-dock-head { padding: 0 12px; gap: 5px; }
+  .funds-feedback .ff-dock-entry { gap: 7px; flex-wrap: wrap; }
+  .funds-feedback .ff-summary { white-space: normal; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .funds-feedback .ff-toast { animation: none; }
+  .funds-feedback .ff-dock-body, .funds-feedback .ff-dock-toggle .ff-icon { transition: none; }
+}
