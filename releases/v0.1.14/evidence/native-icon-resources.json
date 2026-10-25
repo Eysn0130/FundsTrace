@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "application": {
+    "schemaVersion": 1,
+    "status": "passed",
+    "selection": "default-icon-index-0",
+    "executableSha256": "6c04675d9b16304315f5eba3211e318d5044a76f60c53d1c43f055643b305728",
+    "expectedIcoSha256": "fb6156b2f4f141121d49460f0d41133556dcc1cfb9622dc1ef3bf2fc1f25ca4c",
+    "verifiedLanguageVariants": 1,
+    "frames": [
+      {
+        "width": 128,
+        "height": 128,
+        "bitCount": 32,
+        "bytes": 23693,
+        "sha256": "13a0c9e49abd327bf9f2db1a07ff998ec3e8a1ec0a473dc9efaefd7940f94612"
+      },
+      {
+        "width": 16,
+        "height": 16,
+        "bitCount": 32,
+        "bytes": 853,
+        "sha256": "c158be4e08fd9d6e6fa42f04a7c45ded6fa9591a622be058b7f591381d386139"
+      },
+      {
+        "width": 20,
+        "height": 20,
+        "bitCount": 32,
+        "bytes": 1237,
+        "sha256": "070afa5fa905719f86506f8e9af2e0bdba0460b30471048ee992ac5f1e2df9cf"
+      },
+      {
+        "width": 24,
+        "height": 24,
+        "bitCount": 32,
+        "bytes": 1620,
+        "sha256": "08ff7eed57f165a15e3bda10821dd0c909ced72e240d017a32541f736d8e0f3d"
+      },
+      {
+        "width": 256,
+        "height": 256,
+        "bitCount": 32,
+        "bytes": 78802,
+        "sha256": "c85bc7959c8d5afb0b8bf2a35a298ea7c8360e3aca405cbe3f64ee705b442f18"
+      },
+      {
+        "width": 32,
+        "height": 32,
+        "bitCount": 32,
+        "bytes": 2593,
+        "sha256": "e7bffd7f4baffa21c4fc6ae0dd6457c1f4861d2b41bddb74bf90fde56987eb4e"
+      },
+      {
+        "width": 40,
+        "height": 40,
+        "bitCount": 32,
+        "bytes": 3554,
+        "sha256": "c327b419b46fceb35ccabb9978232207ac62858607fb295c6f94049aa4135b91"
+      },
+      {
+        "width": 48,
+        "height": 48,
+        "bitCount": 32,
+        "bytes": 4848,
+        "sha256": "ebe1aa09b39af02961c18d4f63690a3c32a89bdd6470ef5074fa0f9da0e99b9d"
+      },
+      {
+        "width": 64,
+        "height": 64,
+        "bitCount": 32,
+        "bytes": 7436,
+        "sha256": "54c030c90da0292b81d44299307f44a3006fb840056842b9184ec398f038de5d"
+      },
+      {
+        "width": 96,
+        "height": 96,
+        "bitCount": 32,
+        "bytes": 14750,
+        "sha256": "0191d9a7f7e67cf36ba9d55c1fb2215e024da4acf624b78e1c6d968d4e8bfbf8"
+      }
+    ],
+    "limits": {
+      "renderedShellAppearance": false,
+      "windows11Interactive": false
+    }
+  },
+  "limits": {
+    "windows10And11Interactive": false,
+    "taskbarAppearance": false
+  },
+  "installer": {
+    "schemaVersion": 1,
+    "status": "passed",
+    "selection": "default-icon-index-0",
+    "executableSha256": "2d0380c35ef22d9fb9278a9aa017a66d4733c07b03260a29d3b24bf03ee51ae6",
+    "expectedIcoSha256": "fb6156b2f4f141121d49460f0d41133556dcc1cfb9622dc1ef3bf2fc1f25ca4c",
+    "verifiedLanguageVariants": 1,
+    "frames": [
+      {
+        "width": 128,
+        "height": 128,
+        "bitCount": 32,
+        "bytes": 23693,
+        "sha256": "13a0c9e49abd327bf9f2db1a07ff998ec3e8a1ec0a473dc9efaefd7940f94612"
+      },
+      {
+        "width": 16,
+        "height": 16,
+        "bitCount": 32,
+        "bytes": 853,
+        "sha256": "c158be4e08fd9d6e6fa42f04a7c45ded6fa9591a622be058b7f591381d386139"
+      },
+      {
+        "width": 20,
+        "height": 20,
+        "bitCount": 32,
+        "bytes": 1237,
+        "sha256": "070afa5fa905719f86506f8e9af2e0bdba0460b30471048ee992ac5f1e2df9cf"
+      },
+      {
+        "width": 24,
+        "height": 24,
+        "bitCount": 32,
+        "bytes": 1620,
+        "sha256": "08ff7eed57f165a15e3bda10821dd0c909ced72e240d017a32541f736d8e0f3d"
+      },
+      {
+        "width": 256,
+        "height": 256,
+        "bitCount": 32,
+        "bytes": 78802,
+        "sha256": "c85bc7959c8d5afb0b8bf2a35a298ea7c8360e3aca405cbe3f64ee705b442f18"
+      },
+      {
+        "width": 32,
+        "height": 32,
+        "bitCount": 32,
+        "bytes": 2593,
+        "sha256": "e7bffd7f4baffa21c4fc6ae0dd6457c1f4861d2b41bddb74bf90fde56987eb4e"
+      },
+      {
+        "width": 40,
+        "height": 40,
+        "bitCount": 32,
+        "bytes": 3554,
+        "sha256": "c327b419b46fceb35ccabb9978232207ac62858607fb295c6f94049aa4135b91"
+      },
+      {
+        "width": 48,
+        "height": 48,
+        "bitCount": 32,
+        "bytes": 4848,
+        "sha256": "ebe1aa09b39af02961c18d4f63690a3c32a89bdd6470ef5074fa0f9da0e99b9d"
+      },
+      {
+        "width": 64,
+        "height": 64,
+        "bitCount": 32,
+        "bytes": 7436,
+        "sha256": "54c030c90da0292b81d44299307f44a3006fb840056842b9184ec398f038de5d"
+      },
+      {
+        "width": 96,
+        "height": 96,
+        "bitCount": 32,
+        "bytes": 14750,
+        "sha256": "0191d9a7f7e67cf36ba9d55c1fb2215e024da4acf624b78e1c6d968d4e8bfbf8"
+      }
+    ],
+    "limits": {
+      "renderedShellAppearance": false,
+      "windows11Interactive": false
+    }
+  }
+}

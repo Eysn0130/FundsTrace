@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "sourceCommit": "bc75fc0e4698dc7e4ab4a0fc34ef5e7c6ae2ec40",
+  "installerUpgradeFrom": "0.1.13",
+  "sourceRun": "40164253859",
+  "tag": "v0.1.14",
+  "installer": {
+    "path": "build/desktop/electron/FundsTrace-0.1.14-windows-x64-unsigned.exe",
+    "bytes": 163005406,
+    "sha256": "2d0380c35ef22d9fb9278a9aa017a66d4733c07b03260a29d3b24bf03ee51ae6"
+  },
+  "upgradeBaseline": {
+    "schemaVersion": 1,
+    "targetVersion": "0.1.14",
+    "prior": {
+      "version": "0.1.13",
+      "sha256": "ca517d0ffac07bb9c38fc64e17883333dd148e189aaa67e6d348d3b5633d0001",
+      "bytes": 163004637
+    },
+    "baselineSha256": "81b1f37c5cc17e1b2c216d8011681afc8eccccb5e302d109bf322581869639ac",
+    "priorInstallerUrl": "https://github.com/Eysn0130/FundsTrace/releases/download/v0.1.13/FundsTrace-0.1.13-windows-x64-unsigned.exe"
+  },
+  "resourceCount": 135,
+  "hostFileCount": 21,
+  "sourceResourcesIndependentlyChecked": 132,
+  "installedAppChecks": 79,
+  "standardAppChecks": 79,
+  "standardUserArchiveSha256": "de623244b356094304ebd1f961435c6bb6234c96bd636e09a2c0d7e6fd0a5793",
+  "publicReleasePublished": false,
+  "freshUserArchiveSha256": "915c817b67da19cf18e4bfcf69851b4e403ec51d6975ba3f0e5af98510b02f9c"
+}
