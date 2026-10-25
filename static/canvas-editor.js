@@ -140,7 +140,7 @@
   }
 
   async function refreshRows(context) {
-    try { await doSearch(state.search.page || 1); }
+    try { await doSearch(state.search.page || 1, { refresh: true }); }
     catch (error) {
       if (isCurrentCase(context)) toast('画布已更新，流水表格暂未刷新', 'warn', context);
       return;
@@ -207,7 +207,7 @@
       throw new Error('追踪响应缺少完整集合，状态无法确认，请重新加载当前画布。');
     }
     try {
-      if (prepare) prepare();
+      if (prepare) prepare(result);
       await loadGraph(true, context);
       if (isCurrentCase(context) && JSON.stringify([...state.tracked].sort(order)) !== JSON.stringify([...afterIds].sort(order))) {
         throw new Error('刷新期间追踪集合已变化，无法确认本次操作。');
@@ -620,13 +620,15 @@
     wrap('#showIdCk', 'onchange', '切换证件号显示'); wrap('#showPhotoCk', 'onchange', '切换照片显示');
     wrap('#graphLabelMode', 'onchange', '更改标注模式');
     $('#btnBulkTrack').onclick = () => {
-      const ids = $$('#flowTbody .flow-ck').filter(node => node.checked).map(node => Number(node.dataset.id));
+      const ids = window.FundsTableDrafts?.selectedIds?.()
+        ?? $$('#flowTbody .flow-ck').filter(node => node.checked).map(node => node.dataset.id);
       if (!ids.length) { $('#flowCkCount').textContent = '请先勾选要追踪的流水'; $('#flowCkAll').focus(); return Promise.resolve(false); }
       const direction = $('#bulkDir').value, x = Math.max(1, Math.min(50, Number($('#bulkX').value) || 5));
       return command('批量追踪', async context => {
         const result = await mutateTracked(context, before => trackedWrite(context, () => api('/api/track/bulk', { method: 'POST', ...jsonOpts({ case_id: context.caseId,
-          canvas_id: context.canvasId || 0, flow_ids: ids, direction, x, expected_ids: before }) })), () => {
-          state.justAdded = new Set(ids); state.forceFit = false;
+          canvas_id: context.canvasId || 0, flow_ids: ids, direction, x, expected_ids: before }) })), result => {
+          const selected = new Set(ids.map(String));
+          state.justAdded = new Set(result.tracked_ids.filter(id => selected.has(String(id)))); state.forceFit = false;
         });
         if (result && isCurrentCase(context)) {
           const dirLabel = direction === 'source' ? '来源' : '去向';

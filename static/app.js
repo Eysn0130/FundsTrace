@@ -252,7 +252,7 @@ async function refreshAll() {
   if (!isCurrentCase(context, false)) return;
   await loadGraph();
   if (!isCurrentCase(context, false)) return;
-  await doSearch(state.search.page || 1);
+  await doSearch(state.search.page || 1, { refresh: true });
   if (!isCurrentCase(context, false)) return;
   await loadBatches();
 }
@@ -344,12 +344,9 @@ async function refreshStats() {
 }
 function updateHeader() {
   const s = state.stats || {};
-  $('#statLine').innerHTML =
-    `流水 <b>${fmtCount(s.flows || 0)}</b> 笔 · 账户 <b>${fmtCount(s.accounts || 0)}</b> 个 · 已上图 <b>${state.tracked.size}</b> 笔`;
   const coverage = s.import_coverage, coverageNote = $('#importCoverageNote');
   if (coverageNote) {
     coverageNote.hidden = coverage?.scope !== 'source_reported_flows' || ![coverage?.unresolved_records, coverage?.cancelled_records, coverage?.excluded_flows, coverage?.non_monetary_records].some(value => value > 0);
-    $('#statLine').title = coverage?.scope === 'source_reported_flows' ? '金额按已接纳来源流水，不代表结算净额；导入明细与处理口径见案件与导入。' : '';
     coverageNote.textContent = coverageNote.hidden ? '' : `${fmtCount(coverage.unresolved_records)} 条资金含义未确定的来源记录未计入统计；金额按已接纳来源流水，不代表结算净额。已配对冲正/撤销 ${fmtCount(coverage.cancelled_records ?? 0)} 条（双方均不计有效资金）。${(coverage.excluded_flows ?? 0) > 0 ? `本案另有 ${fmtCount(coverage.excluded_flows)} 笔历史留存流水已退出有效统计。` : ''}无资金变动的 ${fmtCount(coverage.non_monetary_records)} 条记录已单独保存。`;
   }
   const empty = (s.flows || 0) === 0;
@@ -389,9 +386,7 @@ async function doSearch(page = 1) {
   state.search.page = r.page;
   state.search.total = r.total;
   renderFlows(r.rows);
-  const pages = Math.max(1, Math.ceil(r.total / r.size));
   $('#resultInfo').textContent = `共 ${fmtCount(r.total)} 笔`;
-  $('#pageInfo').textContent = `第 ${page} / ${pages} 页`;
 }
 
 function partyCell(name, acct) {
@@ -2494,7 +2489,7 @@ function bindCanvases() {
         await loadGraph(true, activated);
         if (!isCurrentCase(activated)) return;
         if (action === 'clone') applyCanvasSnapshot(snapshot);
-        if (action === 'delete') { window.FundsWorkspaceSession?.restore(); await doSearch(state.search.page || 1); }
+        if (action === 'delete') { window.FundsWorkspaceSession?.restore(); await doSearch(state.search.page || 1, { refresh: true }); }
         toast(action === 'delete' ? '画布已删除，原始流水已保留' : action === 'new' ? '空白画布已创建' : '已另存为新画布，源画布已保留');
       } catch (_) {
         if (isCurrentCase(activated)) toast('画布操作已完成，部分数据未刷新，请重新调阅画布', 'warn', activated);
@@ -2534,7 +2529,7 @@ function bindCanvases() {
       if (!isCurrentCase(activated)) return;
       if (snapshot) applyCanvasSnapshot(snapshot);
       window.FundsWorkspaceSession?.restore();
-      await doSearch(state.search.page || 1);
+      await doSearch(state.search.page || 1, { refresh: true });
       await applyPendingFocusEdge();
     } catch (_) { if (isCurrentCase(activated)) toast('画布未能载入，请重新调阅', 'err'); }
     finally { actions.sync(); }
@@ -3496,10 +3491,7 @@ async function relayout(fit = true, reserveLabels = false, previousLayout = stat
         fits:ownsCamera?view.cameraFit?.fits??null:null};
       view.layoutQuality={requested:input.kind,effective:candidate.kind,assessment:candidate.quality,rendered,
         attempts:job.attempts.map(attempt=>({...attempt})),routing:job.routing?{...job.routing}:null,geometry:'measured-footprint-estimate'};
-      const warning=rendered.fits===false?'图谱跨度超出当前缩放范围，可平移或聚焦账户阅读。'
-        :candidate.quality.overlaps.count?'局部标签空间不足，可放大查看或调整布局。'
-        :rendered.minimumFontPixels!=null&&rendered.minimumFontPixels<10?'图谱布局已完成；文字较小时可放大或聚焦账户阅读。':'';
-      finish(warning);
+      finish();
     } catch(error) {
       // Rendering is a transaction too. Never save half of a candidate.
       state.positions=before.positions;state.edgeLabelPos=before.ratios;state.edgeSnapshotLabels=before.labels;
@@ -4960,7 +4952,7 @@ async function openManagedCase(id, context, options = {}) {
     if (!isCurrentCase(canvasBinding)) return true;
     if (snapshot) applyCanvasSnapshot(snapshot);
     window.FundsWorkspaceSession?.restore();
-    await doSearch(state.search.page || 1);
+    await doSearch(state.search.page || 1, { refresh: true });
     if (isCurrentCase(opened) && $('#tab-batches').style.display === 'flex') await loadBatches();
   } catch (_) { if (isCurrentCase(opened)) toast('案件已打开，部分数据加载失败，请刷新后重试', 'warn', opened); }
   return true;
@@ -5051,6 +5043,10 @@ async function refreshAccountIdentity(context, authoritativeRows = null) {
   }
   rebuildGraphViewport(); applyGraphLabels(); state.graphSelection?.refresh();
   syncNodeWorkspaceControls();
+  // Identity is part of the applied entity/counterparty query. Retire its page
+  // window before later scroll reads can mix old and newly matched rows.
+  await doSearch(state.search.page || 1, { refresh: true });
+  if (!isCurrentCase(binding)) return;
   window.FundsAppNavigation?.accountsChanged();
 }
 
@@ -5211,7 +5207,7 @@ function installDataTools() {
       if (action === 'import') return refreshAccountIdentity(context);
       await refreshStats();
       if (!isCurrentCase(context, false)) return;
-      await doSearch(state.search.page || 1);
+      await doSearch(state.search.page || 1, { refresh: true });
       if (isCurrentCase(context, false)) { await loadBatches(); await window.FundsAppNavigation?.dataChanged(); }
     },
     reconcile: async (action, context) => {
@@ -5222,7 +5218,7 @@ function installDataTools() {
       if (action === 'import') await refreshAccountIdentity(reader, rows);
       else {
         await refreshStats();
-        if (isCurrentCase(reader)) await doSearch(state.search.page || 1);
+        if (isCurrentCase(reader)) await doSearch(state.search.page || 1, { refresh: true });
         if (isCurrentCase(reader)) await loadBatches();
       }
       return rows;
@@ -5303,8 +5299,6 @@ function bindUI() {
     ['#fAccount', '#fName', '#fCounter', '#fKw', '#fMin', '#fMax', '#fFrom', '#fTo'].forEach(s => $(s).value = '');
     doSearch(1);
   };
-  $('#btnPrev').onclick = () => { if (state.search.page > 1) doSearch(state.search.page - 1); };
-  $('#btnNext').onclick = () => doSearch(state.search.page + 1);
   $('#flowTbody').addEventListener('click', e => {
     const tr = e.target.closest('tr[data-id]');
     if (!tr) return;
@@ -5338,7 +5332,8 @@ function bindUI() {
   };
   // 批量追踪：勾选的每笔流水自动取来源/去向的最近 X 笔（仅本方账单）上图
   $('#btnBulkTrack').onclick = async () => {
-    const ids = $$('#flowTbody .flow-ck').filter(c => c.checked).map(c => Number(c.dataset.id));
+    const ids = window.FundsTableDrafts?.selectedIds?.()
+      ?? $$('#flowTbody .flow-ck').filter(c => c.checked).map(c => c.dataset.id);
     if (!ids.length) return toast('请先勾选要追踪的流水', 'err');
     const dir = $('#bulkDir').value;
     const x = Math.max(1, Math.min(50, Number($('#bulkX').value) || 5));
@@ -5356,7 +5351,7 @@ function bindUI() {
       toast(msg);
       state.forceFit = false;
       await loadGraph();
-      await doSearch(state.search.page || 1);
+      await doSearch(state.search.page || 1, { refresh: true });
     } catch (err2) {
       toast('批量追踪失败：' + err2.message, 'err');
     } finally {

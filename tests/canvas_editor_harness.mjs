@@ -77,7 +77,12 @@ function editor({ relationships = [], navigation = false } = {}) {
     if (path === '/api/track' || path === '/api/track/bulk') {
       if (body.expected_ids && JSON.stringify([...(tracked.get(key) || [])].sort()) !== JSON.stringify([...body.expected_ids].sort())) return response({ detail: 'synthetic bulk conflict' }, 409);
       const ids = new Set(tracked.get(key) || []);
-      for (const id of body.flow_ids) options.method === 'DELETE' ? ids.delete(id) : ids.add(id);
+      // Match the legacy API's integer request model for this harness's small
+      // fixture IDs. The exact-ID/offscreen regression has its own response.
+      for (const raw of body.flow_ids) {
+        const id = Number(raw); assert.ok(Number.isSafeInteger(id));
+        options.method === 'DELETE' ? ids.delete(id) : ids.add(id);
+      }
       tracked.set(key, [...ids].sort()); return response({ ok: true, tracked: ids.size, tracked_ids: [...ids].sort() });
     }
     if (path.startsWith('/api/graph')) {
@@ -751,6 +756,23 @@ test('bulk success feedback retains anchors, direction, skipped accounts and zer
       + `；1 笔被跳过（${party}方不是主账号，无法追踪）`
       + `；1 笔锚点在本方账单中无${label}流水（仅上图了本笔）`));
   }
+});
+
+test('bulk tracking uses retained offscreen anchors and sends their exact IDs', async () => {
+  const f = editor(), exact = '9007199254740993999';
+  f.env.window.FundsTableDrafts = { selectedIds: () => ['1', exact] };
+  f.boxes.forEach(box => { box.checked = false; });
+  let sent;
+  f.intercept((path, options) => {
+    if (path !== '/api/track/bulk') return null;
+    sent = JSON.parse(options.body);
+    f.tracked.set('1:0', [1, exact]);
+    return response({ ok: true, anchors: 2, tracked: 2, tracked_ids: [1, exact] });
+  });
+  assert.equal(await f.h.element('#btnBulkTrack').onclick(), true);
+  assert.deepEqual(sent.flow_ids, ['1', exact]);
+  assert.equal(sent.case_id, 1);
+  assert.equal(sent.canvas_id, 0);
 });
 
 test('restore conflict keeps the stack and current display unchanged', async () => {

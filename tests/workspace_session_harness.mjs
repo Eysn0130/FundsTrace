@@ -18,7 +18,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 function harness() {
   const elements = new Map(), callbacks = new Map(), requests = [], timers = [], notices = [];
   let boxes = [], tableRows = [], matrix = [1, 0, 0, 0, 1, 0, 40, 60, 1], intent = 0, fitCalls = 0;
-  const authorities = new Map(), canvasLists = new Map();
+  const authorities = new Map(), flowAuthorities = new Map(), canvasLists = new Map();
   const attributes = () => new Map();
   function element(id) {
     if (elements.has(id)) return elements.get(id);
@@ -34,6 +34,12 @@ function harness() {
       get selectedOptions() { return [{ textContent: this.value === '0' ? '默认画布' : `Canvas ${this.value}` }]; },
     };
     Object.defineProperty(item, 'innerHTML', { set(value) { this.html = value; if (id === 'flowTbody' && !value) { boxes = []; tableRows = []; } }, get() { return this.html || ''; } });
+    if (id === 'flowTableScroll') {
+      item.clientHeight = 180;
+      item.getBoundingClientRect = () => ({ top: 100, bottom: 280, height: 180 });
+      item.querySelector = selector => selector === 'thead'
+        ? { getBoundingClientRect: () => ({ top: 100, height: 34 }) } : null;
+    }
     elements.set(id, item); return item;
   }
   element('tab-batches').style.display = 'none'; element('bulkDir').value = 'target'; element('bulkX').value = '5';
@@ -88,7 +94,9 @@ function harness() {
     renderGraph() { state.graphView.revision++; state.graphView.edgeItems = new Map(state.lastGraph.edges.map(edge => [edge.source + '=>' + edge.target, edge])); },
     renderFlows(rows) {
       boxes = rows.map(row => ({ checked: false, disabled: false, dataset: { id: String(row.id) }, setAttribute() {} }));
-      tableRows = boxes.map(box => ({ dataset: box.dataset, classList: { toggle() {} }, querySelector: selector => selector === '.flow-ck' ? box : element('membership-' + box.dataset.id) }));
+      tableRows = boxes.map((box, index) => ({ dataset: box.dataset, classList: { toggle() {} },
+        getBoundingClientRect: () => ({ top: 134 + index * 40 - element('flowTableScroll').scrollTop, bottom: 174 + index * 40 - element('flowTableScroll').scrollTop, height: 40 }),
+        querySelector: selector => selector === '.flow-ck' ? box : element('membership-' + box.dataset.id) }));
       context.syncFlowCkCount();
     }, syncFlowCkCount() {},
     toast(message) { notices.push(message); }, restoreEdgeLabelPositions() {}, fitGraph() { fitCalls++; },
@@ -106,8 +114,10 @@ function harness() {
       if (url.pathname === '/api/canvases') return canvasLists.get(url.searchParams.get('case_id')) || [];
       if (url.pathname.startsWith('/api/canvases/')) return { snapshot: { nodes: [], edges: [], display: {} } };
       if (url.pathname === '/api/flows') {
-        const rows = (authorities.get(`${state.caseId}:${state.canvasId}`)?.tracked_ids || []).map(id => ({ id }));
-        return { rows, page: Number(url.searchParams.get('page') || 1), size: 50, total: rows.length };
+        const rows = flowAuthorities.get(`${state.caseId}:${state.canvasId}`)
+          || (authorities.get(`${state.caseId}:${state.canvasId}`)?.tracked_ids || []).map(id => ({ id }));
+        const page = Number(url.searchParams.get('page') || 1), size = Number(url.searchParams.get('size') || 50);
+        return { rows: rows.slice((page - 1) * size, page * size), page, size, total: rows.length };
       }
       throw new Error(`Unexpected service ${path}`);
     },
@@ -134,7 +144,7 @@ function harness() {
     createView: () => ({ onState() {}, attach() {} }),
     create(options) { canvasOptions = options; return { status: () => ({}), sync() {}, revoke() {} }; },
   };
-  return { state, context, element, requests, notices, authorities, canvasLists,
+  return { state, context, element, requests, notices, authorities, flowAuthorities, canvasLists,
     session: sandbox.window.FundsWorkspaceSession, table: sandbox.window.FundsTableDrafts,
     box: id => boxes.find(box => box.dataset.id === String(id)), matrix: () => matrix,
     setMatrix(value) { matrix = value.slice(); }, fitCalls: () => fitCalls,
@@ -150,15 +160,21 @@ const data = (ids = ['flow-a']) => ({ nodes: [{ account: 'node-a' }, { account: 
   edges: [{ source: 'node-a', target: 'node-b', amount: '1.01' }], tracked_ids: ids });
 
 test('actual A–B–A switch restores display/query/selection while rereading graph facts without writes', async () => {
-  const h = harness(); h.authorities.set('1:0', data()); h.authorities.set('2:0', data(['flow-b'])); await h.load();
+  const h = harness(); h.authorities.set('1:0', data()); h.authorities.set('2:0', data(['flow-b']));
+  h.flowAuthorities.set('1:0', Array.from({ length: 150 }, (_, index) => ({ id: `SYN-ROW-${index + 1}` })));
+  await h.load();
   h.state.positions = { 'node-a': { x: 150, y: 220 } }; h.state.graphSelection.rebind(['node-a']);
-  h.element('fAccount').value = 'typed filter'; h.state.search.page = 3; h.setMatrix([2, 0, 0, 0, 2, 0, 91, 72, 1]);
+  h.element('fAccount').value = 'typed filter'; await h.context.doSearch(3);
+  h.element('flowTableScroll').scrollTop = 12.25; h.element('flowTableScroll').scrollLeft = 421;
+  h.setMatrix([2, 0, 0, 0, 2, 0, 91, 72, 1]);
   assert.equal(await h.openCase(2), true);
   assert.equal(h.element('fAccount').value, '', 'a new case starts with its own empty query inputs');
   h.authorities.set('1:0', data(['fresh-flow-a']));
   assert.equal(await h.openCase(1), true);
   assert.deepEqual(plain(h.state.positions), { 'node-a': { x: 150, y: 220 } });
   assert.equal(h.element('fAccount').value, 'typed filter'); assert.equal(h.state.search.page, 3);
+  assert.deepEqual(plain(h.table.captureViewport()), { rowId: 'SYN-ROW-101', page: 3, offset: -12.25, scrollLeft: 421 });
+  assert.equal(h.element('flowTableScroll').scrollTop, 12.25);
   assert.deepEqual([...h.state.graphSelection.ids], ['node-a']);
   assert.deepEqual([...h.state.tracked], ['fresh-flow-a']); assert.deepEqual(h.matrix(), [2, 0, 0, 0, 2, 0, 91, 72, 1]);
   assert.ok(h.requests.every(request => request.method === 'GET'));

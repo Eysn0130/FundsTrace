@@ -115,3 +115,16 @@ test('retention is session-local and capturing many other canvases never silentl
   assert.equal(store.lastCanvas('other'), '149');
   assert.equal(create().get('first', '0'), null, 'a fresh session store has no previous user work');
 });
+
+test('table viewport retains only an exact row identifier and valid geometry', () => {
+  const store = create(), rowId = '0009007199254740993999';
+  const viewport = { rowId, page: 137, offset: -12.25, scrollLeft: 421, rows: [{ amount: 'PRIVATE_SYNTHETIC_FACT' }], total: 999 };
+  store.capture({ caseId: 'A', canvasId: '0' }, { query: { viewport } });
+  viewport.offset = 999;
+  assert.deepEqual(plain(store.get('A', '0').query.viewport), { rowId, page: 137, offset: -12.25, scrollLeft: 421 });
+  assert.equal(JSON.stringify(store.get('A', '0')).includes('PRIVATE_SYNTHETIC_FACT'), false);
+  for (const bad of [{ rowId: 42 }, { page: 0 }, { page: 1.5 }, { offset: NaN }, { scrollLeft: -1 }]) {
+    store.capture({ caseId: 'A', canvasId: '0' }, { query: { viewport: { ...viewport, ...bad } } });
+    assert.equal(store.get('A', '0').query.viewport, undefined);
+  }
+});

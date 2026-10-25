@@ -20,8 +20,17 @@ const flow = id => ({ id, trade_time: '2026-01-01 12:00:00', payer_name: 'Synthe
 // A small DOM with real ancestry, moved-node identity and capture/bubble order.
 // The frozen app's actual renderer, search parameters and table handlers run in
 // this harness; only HTML parsing and network/graph boundaries are synthetic.
-function harness({ entityInputs = false } = {}) {
+function harness({ entityInputs = false, geometry = false } = {}) {
   const byId = new Map(), ready = [], requests = [], graphCalls = [], membershipCalls = [], windowListeners = new Map();
+  const heights = new Map(), widths = new Map(), frames = [];
+  const baselineWidths = [40, 86, 140, 140, 96, 126, 92];
+  function measuredWidths() {
+    const viewport = byId.get('flowTableScroll'), table = byId.get('flowTable');
+    const mode = viewport?.dataset.flowWrap === 'single' ? 'single' : 'wrap';
+    const natural = baselineWidths.map((width, index) => Math.max(width, ...(table?.querySelectorAll('tr[data-id]') || []).map(row => widths.get(row.dataset.id)?.[mode]?.[index] || 0)));
+    const cols = table?.querySelector('colgroup')?.children || [];
+    return natural.map((width, index) => Math.max(width, parseFloat(cols[index]?.style.width) || 0));
+  }
   const membershipListeners = new Set();
   let doc, context, membershipToken = 0;
   let status = { confirmedIds: [], desiredIds: [], pendingIds: [], failures: {}, available: true, busy: false };
@@ -50,10 +59,38 @@ function harness({ entityInputs = false } = {}) {
     get isConnected() { return this === doc.body || !!this.parentElement?.isConnected; }
     get nextElementSibling() { return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1]; }
     get previousElementSibling() { return this.parentElement?.children[this.parentElement.children.indexOf(this) - 1]; }
+    get firstChild() { return this.children[0] || null; }
+    get scrollLeft() { return this._scrollLeft || 0; }
+    set scrollLeft(value) {
+      this._scrollLeft = geometry && this.id === 'flowTableScroll' ? Math.max(0, Math.min(Number(value) || 0, this.scrollWidth - this.clientWidth)) : value;
+    }
+    get clientWidth() { return geometry && this.id === 'flowTableScroll' ? 360 : 0; }
+    get scrollWidth() { return geometry && this.id === 'flowTableScroll' ? measuredWidths().reduce((sum, width) => sum + width, 0) : 0; }
+    get clientHeight() { return geometry && this.id === 'flowTableScroll' ? 120 : 0; }
+    get scrollHeight() { return geometry && this.id === 'flowTableScroll' ? this.querySelectorAll('tr[data-id]').reduce((sum, row) => sum + (heights.get(row.dataset.id) || 40), 0) : 0; }
+    getBoundingClientRect() {
+      if (!geometry) return undefined;
+      if (this.id === 'flowTableScroll') return { top: 0, bottom: 120, height: 120 };
+      if (this.tagName === 'TH') {
+        const index = this.parentElement.children.indexOf(this);
+        return { top: 0, bottom: 0, height: 0, width: measuredWidths()[index] };
+      }
+      if (this.tagName === 'TR' && this.dataset.id) {
+        const siblings = this.parentElement.children, viewport = byId.get('flowTableScroll');
+        const top = siblings.slice(0, siblings.indexOf(this)).reduce((sum, row) => sum + (heights.get(row.dataset.id) || 40), 0) - viewport.scrollTop;
+        const height = heights.get(this.dataset.id) || 40;
+        return { top, bottom: top + height, height };
+      }
+      return { top: 0, bottom: 0, height: 0 };
+    }
     appendChild(child) {
       child.remove(); this.children.push(child); child.parentElement = this; return child;
     }
     append(...nodes) { nodes.forEach(node => this.appendChild(node)); }
+    insertBefore(child, reference) {
+      if (!reference) return this.appendChild(child);
+      child.remove(); this.children.splice(this.children.indexOf(reference), 0, child); child.parentElement = this; return child;
+    }
     remove() {
       if (doc?.activeElement && this.contains(doc.activeElement)) doc.activeElement = doc.body;
       if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1);
@@ -125,6 +162,7 @@ function harness({ entityInputs = false } = {}) {
         }
         const details = actions.appendChild(new Element('button')); details.className = 'act-ctx';
       }
+      if (geometry) { const viewport = byId.get('flowTableScroll'); viewport.scrollLeft = viewport.scrollLeft; }
     }
   }
   const element = id => byId.get(id);
@@ -136,16 +174,19 @@ function harness({ entityInputs = false } = {}) {
   };
   const sidebar = add(doc.body, 'left'), tab = add(sidebar, 'tab-search'), query = add(tab, 'queryFields');
   const toggle = add(tab, 'btnQueryToggle', 'button'); toggle.setAttribute('aria-expanded', 'true'); add(toggle, '', 'img');
-  add(tab, 'querySummary');
   for (const id of ['fAccount', 'fName', 'fCounter', 'fKw', 'fMin', 'fMax', 'fFrom', 'fTo', 'fTracked']) add(query, id, 'input');
   add(query, 'btnReset', 'button'); add(query, 'btnSearch', 'button');
   add(tab, 'flowCkAll', 'input'); add(tab, 'flowCkCount');
   const tools = add(tab, 'flowTools', 'div', 'flow-table-tools');
   add(tools, 'resultInfo'); add(tools, 'btnFlowOverview', 'button');
-  add(tab, 'flowTableHint'); const viewport = add(tab, 'flowTableScroll');
-  const table = add(viewport, 'flowTable', 'table'); add(table, 'flowSelectionHeader', 'th'); add(table, 'flowTbody', 'tbody');
-  const pager = add(tab, 'flowPager', 'div', 'pager');
-  add(pager, 'btnPrev', 'button'); add(pager, 'pageInfo'); add(pager, 'btnNext', 'button');
+  const density = add(tools, 'flowTableDensity', 'select'), wrap = add(tools, 'flowTableWrap', 'select');
+  const viewport = add(tab, 'flowTableScroll');
+  viewport.dataset.flowDensity = density.value = 'compact'; viewport.dataset.flowWrap = wrap.value = 'wrap';
+  density.onchange = () => { viewport.dataset.flowDensity = density.value; viewport.scrollLeft = viewport.scrollLeft; };
+  wrap.onchange = () => { viewport.dataset.flowWrap = wrap.value; viewport.scrollLeft = viewport.scrollLeft; };
+  const table = add(viewport, 'flowTable', 'table'), head = add(table, 'flowTableHead', 'thead'), heading = add(head, 'flowTableHeading', 'tr');
+  add(heading, 'flowSelectionHeader', 'th'); for (let column = 1; column < 7; column++) add(heading, 'flowHeader' + column, 'th');
+  add(table, 'flowTbody', 'tbody');
   const overview = add(doc.body, 'flowOverview'); overview.style.display = 'none';
   for (const id of ['flowOverviewContext', 'btnCloseFlowOverview', 'overviewTrackAll', 'overviewMembershipStatus', 'btnOverviewUndo', 'btnOverviewRedo', 'flowOverviewContent']) add(overview, id);
   add(doc.body, 'btnUndo', 'button'); add(doc.body, 'btnRedo', 'button');
@@ -175,6 +216,7 @@ function harness({ entityInputs = false } = {}) {
     window: { addEventListener(name, fn) { if (name === 'DOMContentLoaded') ready.push(fn); else { if(!windowListeners.has(name))windowListeners.set(name,[]);windowListeners.get(name).push(fn); } },
       FundsCanvasEditor: { membership, history: { status: () => ({ canUndo: false, canRedo: false, busy: false }) } } },
     document: doc, state, URLSearchParams, console,
+    requestAnimationFrame(callback) { frames.push(callback); return frames.length; },
     $: selector => doc.querySelector(selector), $$: selector => doc.querySelectorAll(selector),
     fmtCount: String, fmtTime: String, flowTimeCell: String, moneyHtml: String,
     esc: value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;'),
@@ -209,7 +251,9 @@ function harness({ entityInputs = false } = {}) {
   vm.runInContext(section("  $('#flowTbody').addEventListener('click'", '  // 批量追踪'), context);
   vm.runInContext(source, context, { filename: 'table-workspace.js' });
   for (const callback of ready) callback();
-  return { context, state, doc, element, requests, graphCalls, membershipCalls, pickerOptions, invalidated,
+  return { context, state, doc, element, requests, graphCalls, membershipCalls, pickerOptions, invalidated, heights, widths,
+    drafts: sandbox.window.FundsTableDrafts,
+    drainFrames() { const pending = frames.splice(0); for (const callback of pending) callback(); },
     chooseCandidate(id, item) {
       const field = element(id); field.value = item.value; field.fire('input');
       pickerSelections.set(id, item); pickerOptions.get(id).onSelect(item);
@@ -239,7 +283,7 @@ test('query disclosure keeps table tools, results and selection usable and resto
   assert.equal(f.element('btnQueryToggle').getAttribute('aria-expanded'), 'false');
   assert.equal(f.doc.activeElement, f.element('btnQueryToggle'));
   assert.equal(f.element('flowTools').closest('[inert]'), null);
-  assert.equal(f.box(1).checked, true); assert.match(f.element('querySummary').textContent, /2 笔/);
+  assert.equal(f.box(1).checked, true); assert.equal(f.element('resultInfo').textContent, '共 2 笔');
   f.open(); f.close(); f.element('btnQueryToggle').click();
   assert.equal(f.element('queryFields').inert, false);
   assert.equal(f.element('btnQueryToggle').getAttribute('aria-expanded'), 'true');
@@ -320,7 +364,7 @@ test('result refresh restores the focused row control or row without scrolling o
       const f = harness(); await f.search(); if (overview) f.open();
       const oldRow = f.rows()[0], target = selector ? oldRow.querySelector(selector) : oldRow;
       target.focus(); const viewport = f.element('flowTableScroll'); viewport.scrollLeft = 108; viewport.scrollTop = 91;
-      await f.search();
+      await f.search(1, { refresh: true });
       const newRow = f.rows()[0], expected = selector ? newRow.querySelector(selector) : newRow;
       assert.notEqual(newRow, oldRow); assert.equal(f.doc.activeElement, expected);
       assert.equal(expected.lastFocusOptions.preventScroll, true);
@@ -360,15 +404,16 @@ test('latest query wins, an explicit failure retains last results, and click-ent
   assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
 });
 
-test('draft summary shows current unsubmitted input and remains a draft if input changes during a request', async () => {
+test('unsubmitted draft inputs survive a pending frozen query without a visible summary or implicit request', async () => {
   const f = harness(); f.element('fAccount').value = 'SYN-APPLIED'; await f.search();
   f.element('fAccount').value = 'SYN-DRAFT'; f.element('fAccount').fire('input');
-  assert.match(f.element('querySummary').textContent, /待查询 · 账户 SYN-DRAFT/);
-  assert.doesNotMatch(f.element('querySummary').textContent, /SYN-APPLIED/);
+  assert.equal(f.doc.querySelector('#querySummary'), null); assert.equal(f.requests.length, 1);
+  assert.equal(f.element('fAccount').value, 'SYN-DRAFT');
   const pending = deferred(); f.network(() => pending.promise); const searching = f.search();
   f.element('fAccount').value = 'SYN-LATER'; f.element('fAccount').fire('input');
   pending.resolve({ page: 1, size: 50, total: 1, rows: [flow(1)] }); await searching;
-  assert.match(f.element('querySummary').textContent, /待查询 · 账户 SYN-LATER/);
+  assert.equal(f.element('fAccount').value, 'SYN-LATER'); assert.equal(f.requests.length, 2);
+  assert.equal(new URL(f.requests.at(-1), 'http://synthetic.local').searchParams.get('entity'), 'SYN-DRAFT');
 });
 
 test('canvas invalidation clears real rows immediately and graph readiness refreshes one consistent page', async () => {
@@ -504,7 +549,7 @@ test('programmatic draft changes also prevent preview and never substitute the n
   const search = f.search(1, { locate: true }); f.element('fAccount').value = '00002';
   result.resolve({ page: 1, size: 50, total: 1, rows: [flow(1)] }); await search;
   assert.deepEqual(previews, []); assert.match(f.requests[0], /entity=00001/);
-  assert.match(f.element('querySummary').textContent, /待查询 · 账户 00002/);
+  assert.equal(f.element('fAccount').value, '00002'); assert.equal(f.doc.querySelector('#querySummary'), null);
 });
 
 test('only the newest successful explicit query may preview; failures keep existing results', async () => {
@@ -604,4 +649,313 @@ test('a successful empty query does not move the camera to an account excluded b
   f.network(async () => ({ page: 1, size: 50, total: 0, rows: [] }));
   assert.equal(await f.search(1, { locate: true }), true);
   assert.equal(f.rows().length, 0); assert.deepEqual(previews, []);
+});
+
+const pageResult = (page, total = 600) => ({ page, size: 50, total,
+  rows: Array.from({ length: Math.min(50, Math.max(0, total - (page - 1) * 50)) }, (_, index) => flow((page - 1) * 50 + index + 1)) });
+const paged = params => pageResult(Number(params.get('page')));
+async function wheelEdge(f, direction) {
+  const viewport = f.element('flowTableScroll');
+  viewport.scrollTop = direction < 0 ? 0 : Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+  const event = viewport.fire('wheel', { deltaY: direction * 80, deltaX: 0 });
+  await flush(); return event;
+}
+
+test('continuous scrolling reads only adjacent pages and bounds its real rows while retaining offscreen anchors', async () => {
+  const f = harness({ geometry: true }); f.network(paged); await f.search();
+  assert.equal(f.requests.length, 1); f.toggleAnchor(1, true);
+  for (let page = 2; page <= 8; page++) {
+    await wheelEdge(f, 1);
+    assert.equal(f.requests.length, page);
+    assert.ok(f.rows().length <= 250); assert.equal(new Set(f.rows().map(row => row.dataset.id)).size, f.rows().length);
+  }
+  assert.equal(f.rows()[0].dataset.id, '151'); assert.equal(f.rows().at(-1).dataset.id, '400');
+  assert.equal(f.box(1), undefined);
+  assert.deepEqual(Array.from(f.drafts.selectedIds()), ['1']); assert.deepEqual(Array.from(f.drafts.capture()), ['1']);
+  assert.equal(f.element('flowCkCount').textContent, '已选锚点 1 笔');
+  assert.deepEqual(f.requests.map(path => Number(new URL(path, 'http://synthetic.local').searchParams.get('page'))), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.equal(f.requests.every(path => new URL(path, 'http://synthetic.local').searchParams.get('size') === '50'), true);
+  const all = f.element('flowCkAll'); all.checked = true; all.fire('change');
+  const selected = Array.from(f.drafts.selectedIds());
+  assert.equal(selected.length, 251); assert.equal(selected.includes('1'), true); assert.equal(selected.includes('401'), false);
+  assert.equal(f.membershipCalls.length, 0, 'sidebar all only selects anchors');
+  f.open(); const overviewAll = f.element('overviewTrackAll'); overviewAll.checked = true; overviewAll.fire('change');
+  assert.equal(f.membershipCalls[0].ids.length, 250); assert.equal(f.membershipCalls[0].ids.includes('1'), false);
+  assert.equal(f.membershipCalls[0].ids.includes('401'), false);
+});
+
+test('prepending and evicting variable-height rows preserve the visible row offset and horizontal position', async () => {
+  const f = harness({ geometry: true }); f.network(paged);
+  for (let row = 1; row <= 600; row++) f.heights.set(String(row), row % 3 === 0 ? 83 : 31);
+  await f.search(4); const viewport = f.element('flowTableScroll'); viewport.scrollLeft = 177; viewport.scrollTop = 11;
+  const before = f.drafts.captureViewport();
+  await wheelEdge(f, -1);
+  const previousFirst = f.rows().find(row => row.dataset.id === before.rowId);
+  assert.equal(previousFirst.getBoundingClientRect().top, 0, 'the wheel reached the top before the prepend');
+  assert.equal(viewport.scrollLeft, 177); assert.equal(f.rows()[0].dataset.id, '101');
+  for (let next = 5; next <= 9; next++) {
+    viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
+    const anchor = f.drafts.captureViewport();
+    await wheelEdge(f, 1);
+    const visible = f.rows().find(row => row.dataset.id === anchor.rowId);
+    assert.ok(visible); assert.equal(visible.getBoundingClientRect().top, anchor.offset);
+    assert.equal(viewport.scrollLeft, 177); assert.ok(f.rows().length <= 250);
+  }
+  viewport.scrollTop = 13;
+  const anchor = f.drafts.captureViewport();
+  // A native scroll event near the upper edge starts the previous page before
+  // reaching zero, so the partial first row remains the actual visual anchor.
+  viewport.fire('scroll'); await flush();
+  const visible = f.rows().find(row => row.dataset.id === anchor.rowId);
+  assert.equal(visible.getBoundingClientRect().top, anchor.offset);
+});
+
+test('scroll bursts have one flight and continue the frozen applied filters without camera previews', async () => {
+  const f = harness({ geometry: true }), pending = deferred(), previews = [];
+  f.locator({ capture: () => ({}), previewFields: value => previews.push(value) });
+  f.element('fAccount').value = '000-APPLIED'; f.network(paged); await f.search(1, { locate: true });
+  f.network(params => Number(params.get('page')) === 2 ? pending.promise : paged(params));
+  f.element('fAccount').value = 'UNSUBMITTED'; f.element('fAccount').fire('input');
+  const viewport = f.element('flowTableScroll'); viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
+  for (let index = 0; index < 12; index++) { viewport.fire('wheel', { deltaY: 80 }); viewport.fire('scroll'); }
+  assert.equal(f.requests.length, 2); assert.equal(viewport.getAttribute('aria-busy'), 'true');
+  pending.resolve(pageResult(2)); await flush(); await wheelEdge(f, 1);
+  assert.equal(f.requests.length, 3);
+  assert.equal(f.requests.every(path => new URL(path, 'http://synthetic.local').searchParams.get('entity') === '000-APPLIED'), true);
+  assert.equal(f.element('fAccount').value, 'UNSUBMITTED'); assert.equal(previews.length, 1);
+  await f.search(f.state.search.page, { refresh: true });
+  assert.equal(new URL(f.requests.at(-1), 'http://synthetic.local').searchParams.get('entity'), '000-APPLIED');
+  assert.equal(f.element('fAccount').value, 'UNSUBMITTED'); assert.equal(previews.length, 1);
+});
+
+test('both continuation directions retain failed reads until a new boundary wheel or keyboard action retries once', async () => {
+  for (const direction of [-1, 1]) {
+    const f = harness({ geometry: true }); f.network(paged); await f.search(2);
+    const failedPage = direction < 0 ? 1 : 3; let failures = 1;
+    f.network(params => {
+      if (Number(params.get('page')) === failedPage && failures-- > 0) throw new Error('合成续载断网');
+      return paged(params);
+    });
+    const original = f.rows().map(row => row.dataset.id); await wheelEdge(f, direction);
+    assert.deepEqual(f.rows().map(row => row.dataset.id), original);
+    assert.match(f.element('resultInfo').textContent, /续载失败/); assert.match(f.element('resultInfo').title, /合成续载断网/);
+    const requests = f.requests.length;
+    for (let event = 0; event < 5; event++) f.element('flowTableScroll').fire('scroll');
+    await flush(); assert.equal(f.requests.length, requests, 'programmatic scroll never loops a failed read');
+    if (direction < 0) await wheelEdge(f, direction);
+    else { const row = f.rows().at(-1); row.focus(); row.fire('keydown', { key: 'ArrowDown' }); await flush(); }
+    assert.equal(f.requests.length, requests + 1); assert.equal(f.rows().length, 100);
+    assert.equal(f.element('resultInfo').textContent, '共 600 笔'); assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
+    assert.equal(Number(new URL(f.requests.at(-1), 'http://synthetic.local').searchParams.get('page')), failedPage);
+  }
+});
+
+test('a failed submitted query retries its own frozen draft and keeps the previous result readable', async () => {
+  const f = harness({ geometry: true }); f.network(paged); f.element('fAccount').value = 'OLD'; await f.search();
+  f.element('fAccount').value = 'ATTEMPT'; f.network(() => { throw new Error('合成查询失败'); });
+  assert.equal(await f.search(), false); assert.equal(f.rows().length, 50);
+  const beforeRetry = f.requests.length;
+  for (let event = 0; event < 5; event++) f.element('flowTableScroll').fire('scroll');
+  await flush(); assert.equal(f.requests.length, beforeRetry, 'a failed submitted query waits for deliberate wheel or keyboard input');
+  f.element('fAccount').value = 'LATER'; f.network(paged);
+  await wheelEdge(f, 1);
+  assert.equal(new URL(f.requests.at(-1), 'http://synthetic.local').searchParams.get('entity'), 'ATTEMPT');
+  assert.equal(f.element('fAccount').value, 'LATER');
+});
+
+test('new queries, case A-B-A and canvas rebindings reject delayed continuation rows and busy cleanup', async () => {
+  for (const change of ['query', 'refresh', 'case', 'canvas']) {
+    const f = harness({ geometry: true }), pending = deferred(); f.network(paged); await f.search();
+    f.network(params => Number(params.get('page')) === 2 ? pending.promise : paged(params));
+    await wheelEdge(f, 1); assert.equal(f.requests.length, 2);
+    if (change === 'case') { f.context.selectCase(2); f.context.selectCase(1); }
+    if (change === 'canvas') f.context.activateCanvas(7);
+    f.network(params => ({ ...paged(params), rows: pageResult(1).rows.map(row => ({ ...row, id: 'fresh-' + row.id })) }));
+    if (change === 'refresh') await f.search(1, { refresh: true });
+    else if (change === 'case' || change === 'canvas') await f.context.loadGraph();
+    else await f.search();
+    const before = f.rows().map(row => row.dataset.id); pending.resolve(pageResult(2)); await flush();
+    assert.deepEqual(f.rows().map(row => row.dataset.id), before); assert.equal(f.rows().length, 50);
+    assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
+  }
+});
+
+test('a saved viewport restores directly to one page using restored inputs and retains only identifiers and geometry', async () => {
+  const f = harness({ geometry: true }); f.network(paged); f.element('fAccount').value = 'BEFORE'; await f.search();
+  f.element('fAccount').value = 'RESTORED'; f.drafts.restore(['453']);
+  assert.equal(f.drafts.restoreViewport({ rowId: '453', page: 10, offset: -9, scrollLeft: 111 }), true);
+  const before = f.requests.length; await f.search(10, { refresh: true });
+  assert.equal(f.requests.length, before + 1); assert.equal(f.rows().length, 50);
+  const params = new URL(f.requests.at(-1), 'http://synthetic.local').searchParams;
+  assert.equal(params.get('page'), '10'); assert.equal(params.get('entity'), 'RESTORED');
+  assert.equal(f.box(453).checked, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.drafts.captureViewport())), { rowId: '453', page: 10, offset: -9, scrollLeft: 111 });
+  const viewport = f.element('flowTableScroll'), count = f.requests.length;
+  viewport.fire('wheel', { deltaY: 80, shiftKey: true }); viewport.fire('wheel', { deltaY: 1, deltaX: 80 });
+  await flush(); assert.equal(f.requests.length, count, 'horizontal gestures never fetch vertical continuation');
+});
+
+test('keyboard arrows cross a page boundary once and preserve native Enter, Space and external focus', async () => {
+  const f = harness({ geometry: true }); f.network(paged); await f.search(2);
+  f.rows()[0].focus(); const up = f.rows()[0].fire('keydown', { key: 'ArrowUp' });
+  assert.equal(up.immediate, true); assert.equal(up.defaultPrevented, true); await flush();
+  assert.equal(f.doc.activeElement.dataset.id, '50'); assert.equal(f.requests.length, 2);
+  f.rows().at(-1).focus(); const down = f.rows().at(-1).fire('keydown', { key: 'ArrowDown' }); await flush();
+  assert.equal(down.immediate, true); assert.equal(f.doc.activeElement.dataset.id, '101'); assert.equal(f.requests.length, 3);
+  const row = f.doc.activeElement; row.fire('keydown', { key: ' ' }); assert.equal(f.box(101).checked, true);
+  const pending = deferred(); f.network(() => pending.promise); f.rows().at(-1).focus();
+  f.rows().at(-1).fire('keydown', { key: 'ArrowDown' }); f.element('fAccount').focus();
+  pending.resolve(pageResult(4)); await flush(); assert.equal(f.doc.activeElement, f.element('fAccount'));
+});
+
+test('row-height changes preserve a partial visible row and scope changes revoke delayed measurement restoration', async () => {
+  const f = harness({ geometry: true }); f.network(paged); await f.search();
+  const viewport = f.element('flowTableScroll'); viewport.scrollTop = 90; viewport.scrollLeft = 170;
+  const anchor = f.drafts.captureViewport(); f.element('flowTableDensity').fire('change');
+  f.heights.set('1', 80); f.heights.set('2', 80); f.drainFrames();
+  assert.equal(f.rows().find(row => row.dataset.id === anchor.rowId).getBoundingClientRect().top, anchor.offset);
+  assert.equal(viewport.scrollLeft, 170);
+  f.element('flowTableWrap').fire('change'); f.context.activateCanvas(7); f.drainFrames();
+  assert.equal(viewport.scrollTop, 0); assert.equal(viewport.scrollLeft, 0);
+});
+
+test('a changed result total refreshes the query epoch instead of combining pages from different data states', async () => {
+  const f = harness({ geometry: true }); f.network(paged); await f.search();
+  f.network(params => pageResult(Number(params.get('page')), 601));
+  await wheelEdge(f, 1);
+  assert.deepEqual(f.requests.map(path => Number(new URL(path, 'http://synthetic.local').searchParams.get('page'))), [1, 2, 1]);
+  assert.equal(f.rows().length, 50); assert.equal(f.state.search.total, 601);
+});
+
+test('the last loaded result never starts reads beyond the known end', async () => {
+  const f = harness({ geometry: true }); f.network(params => pageResult(Number(params.get('page')), 75)); await f.search();
+  await wheelEdge(f, 1); assert.equal(f.rows().length, 75);
+  const before = f.requests.length; await wheelEdge(f, 1); await wheelEdge(f, 1);
+  assert.equal(f.requests.length, before); assert.equal(f.element('resultInfo').textContent, '共 75 笔');
+});
+
+test('restored viewport page wins over legacy page state and a shrunken result clamps directly to its new last page', async () => {
+  const f = harness({ geometry: true }); f.network(paged); await f.search();
+  f.drafts.restore(['7']); f.drafts.restoreViewport({ rowId: '12003', page: 241, offset: -9, scrollLeft: 80 });
+  f.state.search.page = 3; f.network(params => pageResult(Number(params.get('page')), 7));
+  const before = f.requests.length; assert.equal(await f.search(3, { refresh: true }), true);
+  assert.deepEqual(f.requests.slice(before).map(path => Number(new URL(path, 'http://synthetic.local').searchParams.get('page'))), [241, 1]);
+  assert.equal(f.rows().length, 7); assert.equal(f.state.search.page, 1); assert.equal(f.state.search.total, 7);
+  assert.equal(f.element('flowTableScroll').scrollLeft, 80); assert.equal(f.element('flowTableScroll').scrollTop, 0);
+  assert.equal(f.box(7).checked, true); assert.equal(f.element('resultInfo').textContent, '共 7 笔');
+});
+
+test('a clamp read is still revoked by a newer query or canvas binding', async () => {
+  for (const changed of ['query', 'canvas']) {
+    const f = harness({ geometry: true }), pending = deferred();
+    f.network(params => Number(params.get('page')) === 241 ? pageResult(241, 7) : pending.promise);
+    const old = f.search(241, { refresh: true }); await flush();
+    assert.deepEqual(f.requests.map(path => Number(new URL(path, 'http://synthetic.local').searchParams.get('page'))), [241, 1]);
+    if (changed === 'canvas') f.context.activateCanvas(7);
+    f.network(() => ({ page: 1, size: 50, total: 1, rows: [flow('NEW')] })); await f.search();
+    pending.resolve(pageResult(1, 7)); assert.equal(await old, false);
+    assert.deepEqual(f.rows().map(row => row.dataset.id), ['NEW']);
+  }
+});
+
+test('a slow continuation never evicts the page the reader returned to, but offscreen focus does not pin it later', async () => {
+  const f = harness({ geometry: true }); f.network(paged); await f.search();
+  for (let page = 2; page <= 5; page++) await wheelEdge(f, 1);
+  const original = f.rows(), viewport = f.element('flowTableScroll'), pending = deferred();
+  f.network(params => Number(params.get('page')) === 6 ? pending.promise : paged(params));
+  await wheelEdge(f, 1); assert.equal(f.requests.length, 6);
+  viewport.scrollTop = 0; original[0].focus(); viewport.fire('scroll');
+  pending.resolve(pageResult(6)); await flush();
+  assert.deepEqual(f.rows(), original, 'the late read leaves all five displayed pages and their row identity intact');
+  assert.equal(f.doc.activeElement, original[0]); assert.equal(viewport.scrollTop, 0);
+  assert.equal(f.rows()[0].dataset.id, '1'); assert.equal(f.rows().at(-1).dataset.id, '250');
+  assert.equal(viewport.getAttribute('aria-busy'), 'false');
+  assert.equal(f.element('resultInfo').title, f.element('resultInfo').textContent);
+  f.network(paged); await wheelEdge(f, 1);
+  assert.equal(f.requests.length, 7); assert.equal(f.rows()[0].dataset.id, '51'); assert.equal(f.rows().at(-1).dataset.id, '300');
+  assert.equal(f.doc.activeElement, viewport, 'the now-offscreen old focus follows the existing disappearing-row fallback');
+  assert.equal(f.element('resultInfo').title, f.element('resultInfo').textContent);
+});
+
+test('evicting the only wide row preserves seven measured column minima and horizontal position without retaining that row', async () => {
+  const f = harness({ geometry: true });
+  f.widths.set('1', { single: [40, 86, 1700, 140, 96, 4600, 92], wrap: [40, 86, 140, 140, 96, 126, 92] });
+  f.element('flowTableWrap').value = 'single'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  f.network(paged); await f.search();
+  const viewport = f.element('flowTableScroll'), width = viewport.scrollWidth;
+  assert.ok(width > 6000); viewport.scrollLeft = 1800;
+  for (let page = 2; page <= 6; page++) await wheelEdge(f, 1);
+  assert.equal(f.box(1), undefined); assert.equal(f.rows().length, 250);
+  assert.equal(viewport.scrollWidth, width); assert.equal(viewport.scrollLeft, 1800);
+  const columns = f.element('flowTable').querySelector('colgroup').children;
+  assert.equal(columns.length, 7); assert.equal(columns.every(col => parseFloat(col.style.width) > 0), true);
+  assert.deepEqual(Object.keys(f.drafts.captureViewport()).sort(), ['offset', 'page', 'rowId', 'scrollLeft']);
+  await f.search(f.state.search.page, { refresh: true });
+  assert.equal(viewport.scrollWidth, width); assert.equal(viewport.scrollLeft, 1800, 'same-query authoritative refresh keeps its geometric column envelope');
+  await f.search(2);
+  assert.ok(viewport.scrollWidth < 1000, 'a new submitted query releases the earlier query geometry');
+  assert.ok(viewport.scrollLeft <= viewport.scrollWidth - viewport.clientWidth);
+  f.context.activateCanvas(7);
+  assert.equal(columns.every(col => col.style.width === '' && col.style.minWidth === ''), true);
+});
+
+test('display modes keep separate seven-column geometry and horizontal offsets while preserving the visible row anchor', async () => {
+  const f = harness({ geometry: true });
+  f.widths.set('1', { single: [40, 86, 1700, 140, 96, 4600, 92], wrap: [40, 86, 140, 140, 96, 126, 92] });
+  const wrap = f.element('flowTableWrap'), density = f.element('flowTableDensity');
+  wrap.value = 'single'; wrap.fire('change'); f.drainFrames(); f.network(paged); await f.search();
+  const viewport = f.element('flowTableScroll'); viewport.scrollLeft = 1800;
+  for (let page = 2; page <= 6; page++) await wheelEdge(f, 1);
+  const width = viewport.scrollWidth; viewport.scrollTop = 90;
+  const anchor = f.drafts.captureViewport();
+  wrap.value = 'wrap'; wrap.fire('change'); f.drainFrames();
+  assert.ok(viewport.scrollWidth < 1000, 'the wide single-line envelope cannot become wrap mode geometry');
+  assert.equal(f.rows().find(row => row.dataset.id === anchor.rowId).getBoundingClientRect().top, anchor.offset);
+  viewport.scrollLeft = 130;
+  wrap.value = 'single'; wrap.fire('change'); f.drainFrames();
+  assert.equal(viewport.scrollWidth, width); assert.equal(viewport.scrollLeft, 1800);
+  assert.equal(f.rows().find(row => row.dataset.id === anchor.rowId).getBoundingClientRect().top, anchor.offset);
+  density.value = 'comfortable'; density.fire('change'); f.drainFrames();
+  assert.ok(viewport.scrollWidth < 1000, 'density is part of the bounded display-mode key');
+  density.value = 'compact'; density.fire('change'); f.drainFrames();
+  assert.equal(viewport.scrollWidth, width); assert.equal(viewport.scrollLeft, 1800);
+  wrap.value = 'wrap'; wrap.fire('change'); f.drainFrames();
+  assert.equal(viewport.scrollLeft, 130);
+  assert.equal(f.rows().length, 250); assert.equal(f.box(1), undefined);
+});
+
+test('a failed submitted query never retries on middle-of-table wheel or viewport Arrow browsing', async () => {
+  for (const action of ['wheel', 'keyboard']) {
+    const f = harness({ geometry: true }); f.network(paged); await f.search(2);
+    const viewport = f.element('flowTableScroll'); viewport.scrollTop = 500;
+    f.element('fAccount').value = 'ATTEMPT'; f.network(() => { throw new Error('合成查询断网'); });
+    assert.equal(await f.search(), false); const requests = f.requests.length;
+    f.element('fAccount').value = 'LATER'; f.network(paged);
+    if (action === 'wheel') {
+      viewport.fire('wheel', { deltaY: 80 }); viewport.scrollTop = 580; viewport.fire('scroll');
+    } else {
+      viewport.focus(); const event = viewport.fire('keydown', { key: 'ArrowDown' }); assert.equal(event.defaultPrevented, false);
+    }
+    await flush(); assert.equal(f.requests.length, requests); assert.equal(f.rows()[0].dataset.id, '51');
+    if (action === 'wheel') await wheelEdge(f, 1);
+    else { viewport.scrollTop = 0; viewport.fire('keydown', { key: 'ArrowUp' }); await flush(); }
+    assert.equal(f.requests.length, requests + 1);
+    assert.equal(new URL(f.requests.at(-1), 'http://synthetic.local').searchParams.get('entity'), 'ATTEMPT');
+    assert.equal(f.element('fAccount').value, 'LATER');
+  }
+});
+
+test('horizontal wheel and Shift scrolling plus native scroll events never fetch vertical pages', async () => {
+  const f = harness({ geometry: true }); f.network(paged); await f.search(2);
+  const viewport = f.element('flowTableScroll');
+  viewport.fire('wheel', { deltaX: 80, deltaY: 0 }); viewport.scrollLeft = 80; viewport.fire('scroll'); await flush();
+  assert.equal(f.requests.length, 1); assert.equal(viewport.scrollTop, 0); assert.equal(f.rows()[0].dataset.id, '51');
+  viewport.fire('wheel', { deltaY: 80, shiftKey: true }); viewport.scrollLeft = 160; viewport.fire('scroll'); await flush();
+  assert.equal(f.requests.length, 1); assert.equal(viewport.scrollTop, 0);
+  viewport.scrollTop = 13; viewport.fire('scroll'); await flush();
+  assert.deepEqual(f.requests.map(path => Number(new URL(path, 'http://synthetic.local').searchParams.get('page'))), [2, 1]);
+  const compensated = viewport.scrollTop; assert.ok(compensated > 13);
+  viewport.scrollLeft = 200; viewport.fire('scroll'); viewport.fire('scroll'); await flush();
+  assert.equal(f.requests.length, 2, 'the compensated baseline also ignores later horizontal and programmatic scroll events');
+  assert.equal(viewport.scrollTop, compensated); assert.equal(viewport.scrollLeft, 200);
 });
