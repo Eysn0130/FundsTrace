@@ -17,7 +17,7 @@
   --required-label: #ddb46c;
   --required-asterisk: #e18c91;
   --control-radius: 6px;
-  --dialog-radius: 18px;
+  --dialog-radius: 12px;
   --surface-table-header: #202d3c;
   --focus-ring: #7ab8f0;
   --selection-surface: color-mix(in srgb, var(--accent) 14%, var(--surface-raised));
@@ -952,7 +952,7 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 .el-ck input { margin: 0; width: 16px; height: 16px; padding: 0; }
 
 /* ---------- Toast ---------- */
-#toasts { position: fixed; right: 16px; bottom: 16px; z-index: 99; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+#toasts { display: none; }
 .toast {
   background: var(--state-success-surface); color: var(--state-success); border: 1px solid var(--state-success-border);
   padding: 9px 14px; border-radius: 8px; max-width: 380px;
@@ -960,6 +960,12 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 }
 .toast.err { background: var(--state-danger-surface); border-color: var(--state-danger-border); color: var(--state-danger); }
 .toast.fade { opacity: 0; }
+.feedback-confirm h2 { font-size: 16px; line-height: 1.5; }
+.feedback-confirm p { margin-top: 14px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-primary); font-size: 14px; line-height: 1.7; }
+.feedback-confirm footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+.feedback-confirm[open] { animation: feedback-dialog-enter 180ms ease-out; }
+@keyframes feedback-dialog-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .feedback-confirm[open] { animation: none; } }
 
 /* The overview moves the same table here; its column meaning is explicit. */
 .icon-button { width: 32px; padding: 4px !important; }

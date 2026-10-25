@@ -23,11 +23,42 @@
       });
       this.unsubscribe = bridge.subscribe(value => { this.received = true; this.render(value); });
       void bridge.state().then(value => { if (!this.received) this.render(value); }).catch(() => this.render(null));
+      this.feedbackReady = () => this.feedback(this.state);
+      root.addEventListener?.('funds:feedback-ready', this.feedbackReady);
     }
-    disconnectedCallback() { this.unsubscribe?.(); }
+    disconnectedCallback() { this.unsubscribe?.(); root.removeEventListener?.('funds:feedback-ready', this.feedbackReady); }
+    feedback(value) {
+      if (!root.FundsFeedback || !this.isConnected || !value) return;
+      const details = {
+        checking: ['running', '正在检查更新', '正在读取更新信息，完成时间暂无法确定。'],
+        available: ['warning', '有可用更新', `FundsTrace ${value.version || ''} 可下载。`],
+        downloading: ['running', '正在下载更新', `正在下载 FundsTrace ${value.version || ''}。`],
+        ready: ['warning', '更新已准备好', '下载已完成，重启后继续安装。'],
+        installing: ['running', '正在重启以更新', '安装结果将在下次启动后确认。'],
+        current: ['success', '更新检查完成', `当前已是最新版本${value.currentVersion ? ' ' + value.currentVersion : ''}。`],
+        error: ['error', '更新未完成', '请重试检查更新，或从官网下载最新版覆盖安装。'],
+      };
+      const state = details[value.phase];
+      if (!state) return;
+      const action = phases[value.phase]?.[1];
+      const signature = JSON.stringify([value.phase, value.currentVersion, value.version, value.percent]);
+      if (signature === this.feedbackSignature && this.feedbackStore === root.FundsFeedback) return;
+      this.feedbackSignature = signature; this.feedbackStore = root.FundsFeedback;
+      const progress = Number(value.percent);
+      root.FundsFeedback.task({ id: 'desktop:update', scope: null, operation: 'download',
+        status: state[0], title: state[1], detail: state[2], announce: false,
+        ...(value.phase === 'downloading' && Number.isFinite(progress) ? { progress: { done: Math.max(0, Math.min(100, progress)), total: 100 } } : {}),
+        actions: action ? [{ id: action, label: phases[value.phase][0], run: async () => {
+          if (!this.isConnected || phases[this.state?.phase]?.[1] !== action) return;
+          try { this.render(await bridge[action]()); }
+          catch (_) { this.render({ ...this.state, phase: 'error' }); }
+        } }] : [],
+      });
+    }
     render(value) {
       if (!this.isConnected) return;
       this.state = value;
+      this.feedback(value);
       const config = phases[value?.phase]; this.hidden = !config || !value.version;
       this.button.dataset.phase = value?.phase || '';
       if (this.hidden) { this.label.textContent = ''; this.status.textContent = ''; return; }

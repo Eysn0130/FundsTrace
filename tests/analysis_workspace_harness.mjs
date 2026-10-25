@@ -176,6 +176,9 @@ function harness({ url = 'http://synthetic.invalid/analysis?case_id=1', initialC
     static revokeObjectURL(url) { revokedUrls.push(url); }
   }
   const window = new Element('#window'); window.appendChild(document.root);
+  const feedbackEvents = [], feedbackBindings = [], feedbackNotices = [];
+  window.FundsFeedback = { bind: scope => feedbackBindings.push({ ...scope }),
+    task: event => feedbackEvents.push(event), notify: event => feedbackNotices.push(event) };
   const pickerMounts = [];
   if (entitySearch) window.FundsEntitySearch = { mount(input, options) {
     const control = { input, options, invalidations: 0, invalidate() { this.invalidations += 1; } };
@@ -197,6 +200,7 @@ function harness({ url = 'http://synthetic.invalid/analysis?case_id=1', initialC
   vm.runInContext(source, context, { filename: 'analysis.js' });
   const element = id => document.getElementById(id);
   return { document, window, requests, downloads, objectUrls, revokedUrls, alerts, timers, storage, element, pickerMounts,
+    feedbackEvents, feedbackBindings, feedbackNotices,
     ready: flush, network(handler) { network = handler; }, run(code) { return vm.runInContext(code, context); },
     async algorithms(names) { for (const node of document.querySelectorAll('.alg')) { node.checked = names.includes(node.value); await node.fire('change').completion; } },
     edit(id, value) { const input = element(id); assert.ok(input, `missing input #${id}`); input.value = value; return input.fire('input').completion; },
@@ -859,4 +863,49 @@ test('cycle details span their seven-column result table', async () => {
   h.network(() => response({rows: [], total: 0}));
   await h.element('results').querySelector('.btn-detail').click(); await flush();
   assert.equal(h.element('results').querySelector('.detail-row td')?.getAttribute('colspan'), '7');
+});
+
+test('analysis tasks use unknown-duration progress and one request identity through success or failure', async () => {
+  const h = harness(); await h.ready(); await h.algorithms(['cycles']);
+  const pending = deferred(); h.network(() => pending.promise);
+  const running = h.run('run()'), started = h.feedbackEvents.at(-1);
+  assert.equal(started.status, 'running'); assert.equal(started.operation, 'analysis');
+  assert.equal('progress' in started, false); assert.equal(started.scope.caseId, '1');
+  pending.resolve(result()); await running;
+  assert.deepEqual(h.feedbackEvents.filter(event => event.id === started.id).map(event => event.status), ['running', 'success']);
+  h.network(() => response({ detail: '合成分析失败' }, 503)); await h.run('run()');
+  const failed = h.feedbackEvents.at(-1);
+  assert.equal(failed.status, 'error'); assert.notEqual(failed.id, started.id); assert.match(failed.detail, /合成分析失败/);
+  assert.equal(h.feedbackNotices.length, 0, 'the visible result and task mirror do not add a second toast');
+});
+
+test('case rebinding retires running feedback without claiming cancellation or publishing a late terminal result', async () => {
+  const h = harness(); await h.ready(); await h.algorithms(['cycles']);
+  const pending = deferred(); h.network(path => path === '/api/analysis/run' ? pending.promise : { flows: 0, accounts: 0 });
+  const running = h.run('run()'), id = h.feedbackEvents.at(-1).id;
+  await h.select(2); await h.select(1);
+  const retired = h.feedbackEvents.filter(event => event.id === id);
+  assert.deepEqual(retired.map(event => event.status), ['running', 'unknown']);
+  assert.match(retired.at(-1).detail, /服务端请求可能仍在执行/);
+  pending.resolve(result('LATE-RESULT')); await running;
+  assert.equal(h.feedbackEvents.filter(event => event.id === id).length, 2);
+  assert.equal(h.feedbackBindings.at(-1).caseId, '1');
+  assert.ok(h.feedbackBindings.at(-1).generation > retired[0].scope.generation);
+});
+
+test('report task completes only after the file download is initiated and retains failures', async () => {
+  const h = harness(); await h.ready(); await finishedRun(h);
+  const pending = deferred(); h.network(() => pending.promise);
+  const reporting = h.run('generateAnalysisReport()'); await h.accept();
+  const started = h.feedbackEvents.at(-1);
+  assert.equal(started.operation, 'download'); assert.equal(started.status, 'running');
+  assert.equal(h.downloads.length, 0); assert.equal('progress' in started, false);
+  pending.resolve(response({})); await reporting;
+  const completed = h.feedbackEvents.at(-1);
+  assert.equal(completed.id, started.id); assert.equal(completed.status, 'success');
+  assert.equal(h.downloads.length, 1); assert.match(completed.detail, /已发起/);
+  h.network(() => response({ detail: '合成报告失败' }, 500));
+  const retry = h.run('generateAnalysisReport()'); await h.accept(); await retry;
+  assert.equal(h.feedbackEvents.at(-1).status, 'error');
+  assert.notEqual(h.feedbackEvents.at(-1).id, started.id);
 });

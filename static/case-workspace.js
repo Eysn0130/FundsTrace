@@ -5,7 +5,7 @@
     const doc = options.document, $ = id => doc.getElementById(id);
     const dialog = $('caseActions');
     let view = 'home', phase = 'idle', context = null, summary = {}, pending = null;
-    let result = null, trigger = null, file = null, feedback = '', error = '', reconcileScope = 'case', savedNote = '';
+    let result = null, trigger = null, file = null, feedback = '', error = '', refreshError = '', reconcileScope = 'case', savedNote = '';
     const titles = { new: '新建案件', import: '导入案件包', export: '导出案件包', delete: '删除当前案件' };
     const labels = { new: '创建案件', import: '导入案件包', export: '导出案件包', delete: '确认删除' };
     const count = value => new Intl.NumberFormat('zh-CN').format(value || 0);
@@ -53,10 +53,11 @@
       $('caseSubmit').disabled = !!pending || phase === 'done';
       $('caseSubmit').classList.toggle('danger', view === 'delete' && phase !== 'unknown');
       $('caseSubmitLabel').textContent = phase === 'unknown' ? (reconcileScope === 'canvas' ? '核对画布列表' : '核对案件列表') : labels[view] || '';
+      options.onState?.();
     }
     function home() {
       if (pending) return;
-      view = 'home'; phase = 'idle'; result = null; feedback = ''; error = ''; file = null; savedNote = '';
+      view = 'home'; phase = 'idle'; result = null; feedback = ''; error = ''; refreshError = ''; file = null; savedNote = '';
       $('casePkgFile').value = ''; capture(); refresh();
       $('btnNewCase').focus();
     }
@@ -64,7 +65,7 @@
       if (pending) return;
       capture();
       if (action === 'delete' && summary.defaultCase) return;
-      view = action; phase = 'idle'; result = null; error = ''; feedback = ''; file = null; savedNote = '';
+      view = action; phase = 'idle'; result = null; error = ''; refreshError = ''; feedback = ''; file = null; savedNote = '';
       $('caseName').value = ''; $('caseCanvasName').value = '';
       $('caseSaveCanvas').checked = false; $('casePkgFile').value = '';
       refresh();
@@ -108,7 +109,7 @@
         error = '请为当前画布填写名称'; phase = 'error'; refresh(); $('caseCanvasName').focus(); return;
       }
       const job = { view, context: { ...context }, file, name, mutationSent: false, committed: false, saving: false };
-      pending = job; phase = 'pending'; error = '';
+      pending = job; phase = 'pending'; error = ''; refreshError = '';
       feedback = ({ new: '正在创建案件…', import: '正在导入案件包…', export: '正在生成案件包…', delete: '正在删除案件…' })[view];
       refresh();
       try {
@@ -117,18 +118,20 @@
             phase = 'idle'; feedback = ''; return;
           }
           job.mutationSent = true;
+          refresh();
           const deleted = await options.deleteCase(job.context.caseId);
           job.committed = true;
           phase = 'done'; feedback = `案件已删除 · ${count(deleted.deleted_flows)} 笔流水`;
-          try { await options.listCases(); } catch (_) { feedback += '。案件列表刷新失败，请重新打开软件后核对。'; }
+          try { await options.listCases(); } catch (_) { refreshError = '案件列表刷新失败'; feedback += '。案件列表刷新失败，请重新打开软件后核对。'; }
           if (active(job.context)) await options.openCase(1, job.context, { discardApproved: true });
         } else if (job.view === 'new' || job.view === 'import') {
           job.mutationSent = true;
+          refresh();
           const value = job.view === 'new' ? await options.createCase(job.name) : await options.importCase(job.file);
           job.committed = true;
           result = { id: value.id ?? value.case_id, name: value.name, ...(value.flows != null ? { flows: value.flows } : {}) };
           phase = 'done'; feedback = '打开案件后开始工作。当前编辑内容继续保留。';
-          try { await options.listCases(); } catch (_) { feedback = '案件已保存；案件列表刷新失败，可稍后重新打开软件查看。'; }
+          try { await options.listCases(); } catch (_) { refreshError = '案件列表刷新失败'; feedback = '案件已保存；案件列表刷新失败，可稍后重新打开软件查看。'; }
           if (job.view === 'new' && options.autoOpenCreated && active(job.context)) {
             if (await options.openCase(result.id, job.context)) close();
           }
@@ -151,7 +154,7 @@
         }
       } catch (failure) {
         // Transport/5xx after a write is not proof that the transaction failed.
-        if (job.committed) { phase = 'done'; error = '操作已完成，界面刷新失败。请重新打开案件。'; return; }
+        if (job.committed) { phase = 'done'; refreshError = '界面刷新失败'; error = '操作已完成，界面刷新失败。请重新打开案件。'; return; }
         const unknown = (job.mutationSent || job.saving && failure?.writeSent) && !(failure?.status >= 400 && failure.status < 500);
         phase = unknown ? 'unknown' : 'error'; feedback = savedNote;
         reconcileScope = job.saving ? 'canvas' : 'case';
@@ -188,7 +191,7 @@
     });
     dialog.addEventListener('close', () => { if (trigger?.isConnected && !doc.querySelector('dialog[open]')) trigger.focus(); });
     dialog.addEventListener('cancel', event => { if (deletionLocked()) event.preventDefault(); });
-    return { open, refresh, revoke, submit, status: () => ({ view, phase, pending: !!pending,
+    return { open, refresh, revoke, submit, status: () => ({ view, phase, pending: !!pending, sent: !!pending?.mutationSent, refreshError,
       context: context ? { ...context } : null, result: result ? { ...result } : null, dialogOpen: dialog.open }) };
   }
   root.FundsCaseWorkspace = { create };

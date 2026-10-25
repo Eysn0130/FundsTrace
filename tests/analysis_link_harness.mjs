@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
+import { webcrypto } from 'node:crypto';
 
 const source = readFileSync(new URL('../static/analysis.js', import.meta.url), 'utf8');
 const page = readFileSync(new URL('../static/analysis.html', import.meta.url), 'utf8');
@@ -171,6 +172,15 @@ function harness({ url = 'http://synthetic.invalid/analysis?case_id=1', initialC
     static revokeObjectURL(url) { revokedUrls.push(url); }
   }
   const window = new Element('#window'); window.appendChild(document.root);
+  const localFeedback = [];
+  window.FundsFeedback = { bind() {}, task: event => localFeedback.push(event), notify: event => localFeedback.push(event) };
+  window.crypto = webcrypto;
+  const modalObservers = [];
+  window.MutationObserver = class {
+    constructor(callback) { this.callback = callback; modalObservers.push(this); }
+    observe(target, options) { this.target = target; this.options = options; this.active = true; }
+    disconnect() { this.active = false; }
+  };
   const location = new URL(url);
   window.location = { get href() { return location.href; }, set href(value) { location.href = new URL(value, location).href; },
     get search() { return location.search; }, get origin() { return location.origin; }, get pathname() { return location.pathname; } };
@@ -186,7 +196,8 @@ function harness({ url = 'http://synthetic.invalid/analysis?case_id=1', initialC
   vm.runInContext(tableScroll, context, { filename: 'table-scroll.js' });
   vm.runInContext(source, context, { filename: 'analysis.js' });
   const element = id => document.getElementById(id);
-  return { document, window, requests, downloads, objectUrls, revokedUrls, alerts, timers, storage, element,
+  return { document, window, requests, downloads, objectUrls, revokedUrls, alerts, timers, storage, element, localFeedback, modalObservers,
+    modalMutation() { for (const observer of modalObservers) if (observer.active) observer.callback([{ type: 'attributes', attributeName: 'open' }]); },
     ready: flush, network(handler) { network = handler; }, run(code) { return vm.runInContext(code, context); },
     async algorithms(names) { for (const node of document.querySelectorAll('.alg')) { node.checked = names.includes(node.value); await node.fire('change').completion; } },
     edit(id, value) { const input = element(id); assert.ok(input, `missing input #${id}`); input.value = value; return input.fire('input').completion; },
@@ -358,4 +369,89 @@ test('a host case change during list recovery cannot replace another case draft 
   assert.equal(h.element('subjects').value, 'SYN-CASE-A-DRAFT');
   assert.equal(h.element('draftStatus').textContent, '参数已修改');
   assert.equal(posts(h).length, 0);
+});
+
+test('embedded tasks publish only to the owning host with a stable instance and request identity', async () => {
+  const h = await linkedHarness(); await h.bind('1', 27); await h.algorithms(['cycles']);
+  h.network(path => path === '/api/analysis/run' ? result() : { flows: 3, accounts: 2 });
+  await h.run('run()');
+  const messages = h.messages.filter(item => item.message.type === 'feedback');
+  assert.equal(messages.length, 2);
+  const [started, completed] = messages.map(item => item.message);
+  const ready = h.messages.find(item => item.message.type === 'ready');
+  assert.ok(ready); assert.equal(ready.origin, h.window.location.origin);
+  assert.equal(ready.message.instanceId, started.instanceId);
+  assert.equal(started.caseId, '1'); assert.equal(started.generation, 27);
+  assert.match(started.instanceId, /^[0-9a-f-]{36}$/); assert.equal(completed.instanceId, started.instanceId);
+  assert.equal(started.event.id, completed.event.id);
+  assert.equal(started.event.status, 'running'); assert.equal(completed.event.status, 'success');
+  assert.equal(messages.every(item => item.origin === h.window.location.origin), true);
+  assert.equal(h.localFeedback.length, 0, 'the iframe does not also populate a local task dock');
+});
+
+test('a same-case data revision retires task display and rejects late success without cancelling server work', async () => {
+  const h = await linkedHarness(); await h.algorithms(['cycles']); const pending = deferred();
+  h.network(path => path === '/api/analysis/run' ? pending.promise : { flows: 4, accounts: 3 });
+  const running = h.run('run()');
+  const started = h.messages.filter(item => item.message.type === 'feedback').at(-1).message;
+  await h.bind('1', 1, { revision: 1 });
+  let events = h.messages.filter(item => item.message.type === 'feedback' && item.message.event.id === started.event.id);
+  assert.deepEqual(events.map(item => item.message.event.status), ['running', 'unknown']);
+  assert.match(events.at(-1).message.event.detail, /数据已更新/);
+  pending.resolve(result('LATE-REVISION')); await running;
+  events = h.messages.filter(item => item.message.type === 'feedback' && item.message.event.id === started.event.id);
+  assert.equal(events.length, 2); assert.equal(h.element('btnRun').disabled, false);
+  assert.doesNotMatch(h.element('results').textContent, /LATE-REVISION/);
+  assert.equal(posts(h).length, 1, 'invalidating feedback never submits another server request');
+});
+
+test('foreign context messages cannot rebind the feedback publisher', async () => {
+  const h = await linkedHarness();
+  const before = h.window.FundsAnalysisFeedback.capture();
+  await h.receive({ type: 'context', caseId: '2', generation: 99 }, { origin: 'https://foreign.invalid' });
+  await h.receive({ type: 'context', caseId: '2', generation: 99 }, { source: {} });
+  const after = h.window.FundsAnalysisFeedback.capture();
+  assert.equal(after.caseId, before.caseId); assert.equal(after.generation, before.generation);
+  await h.bind('2', 2);
+  const count = h.messages.length;
+  assert.equal(h.window.FundsAnalysisFeedback.publish({ id: 'stale', kind: 'task', operation: 'analysis', status: 'success', title: '旧任务' }, before), false);
+  assert.equal(h.messages.length, count);
+});
+
+test('a trusted parent hello repeats the document instance handshake and rejects other senders or protocols', async () => {
+  const h = await linkedHarness(), original = h.messages.find(item => item.message.type === 'ready').message;
+  const readyCount = () => h.messages.filter(item => item.message.type === 'ready').length;
+  const before = readyCount();
+  await h.receive({ type: 'feedback-hello' }, { origin: 'https://foreign.invalid' });
+  await h.receive({ type: 'feedback-hello' }, { source: {} });
+  await h.receive({ type: 'feedback-hello', channel: 'foreign' });
+  await h.receive({ type: 'feedback-hello', version: 2 });
+  assert.equal(readyCount(), before);
+  await h.receive({ type: 'feedback-hello' });
+  const latest = h.messages.filter(item => item.message.type === 'ready').at(-1);
+  assert.equal(readyCount(), before + 1); assert.equal(latest.message.instanceId, original.instanceId);
+  assert.equal(latest.origin, h.window.location.origin);
+});
+
+test('native modal visibility follows the host binding and hello replay without changing confirmation behavior', async () => {
+  const h = await linkedHarness(), ready = h.messages.find(item => item.message.type === 'ready').message;
+  const modalMessages = () => h.messages.filter(item => item.message.type === 'feedback-modal').map(item => item.message);
+  const observer = h.modalObservers[0];
+  assert.equal(observer.target, h.document.body); assert.equal(observer.options.subtree, true);
+  assert.equal(observer.options.attributeFilter.join(','), 'open');
+  const confirmation = h.run("confirmAnalysisAction({title:'合成确认',message:'合成说明'})");
+  h.modalMutation();
+  let latest = modalMessages().at(-1);
+  assert.equal(latest.open, true); assert.equal(latest.caseId, '1'); assert.equal(latest.generation, 1);
+  assert.equal(latest.instanceId, ready.instanceId);
+  const count = modalMessages().length; h.modalMutation();
+  assert.equal(modalMessages().length, count, 'unrelated mutations do not repeatedly announce an unchanged modal');
+  await h.receive({ type: 'feedback-hello' });
+  assert.equal(modalMessages().at(-1).open, true, 'a reconnected parent receives the currently open modal');
+  await h.cancel(); assert.equal(await confirmation, false); h.modalMutation();
+  assert.equal(modalMessages().at(-1).open, false);
+  await h.bind('2', 2);
+  latest = modalMessages().at(-1); assert.equal(latest.caseId, '2'); assert.equal(latest.generation, 2);
+  await h.window.fire('pagehide').completion;
+  assert.equal(observer.active, false); assert.equal(modalMessages().at(-1).open, false);
 });

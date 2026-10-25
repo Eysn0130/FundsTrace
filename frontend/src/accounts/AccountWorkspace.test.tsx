@@ -411,9 +411,13 @@ describe('AccountWorkspace', () => {
     render(<AccountWorkspace {...h.props} />); await ready();
     const before = screen.getByAltText(`${accountA} 账户照片`).getAttribute('src');
     fireEvent.click(screen.getByRole('button', { name: '重新裁剪' })); fireEvent.load(screen.getByAltText('照片裁剪预览'));
-    fireEvent.click(screen.getByRole('button', { name: '确认保存裁剪' }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '确认保存裁剪' })); });
     await waitFor(() => expect(h.actions.mutate).toHaveBeenCalledWith({ kind: 'photo-crop', account: accountA, crop: { cx: 0.45, cy: 0.55, r: 0.3 } }, expect.any(AbortSignal)));
-    await ready(); expect(screen.getByAltText(`${accountA} 账户照片`).getAttribute('src')).not.toBe(before);
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: '重新裁剪账户照片' })).toBeNull();
+      expect(screen.getByAltText(`${accountA} 账户照片`).getAttribute('src')).not.toBe(before);
+      expect((screen.getByRole('button', { name: '移除照片' }) as HTMLButtonElement).disabled).toBe(false);
+    });
     fireEvent.click(screen.getByRole('button', { name: '移除照片' })); expect(h.actions.mutate).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: '确认移除照片' }));
     await waitFor(() => expect(h.actions.mutate).toHaveBeenLastCalledWith({ kind: 'photo-clear', account: accountA }, expect.any(AbortSignal)));

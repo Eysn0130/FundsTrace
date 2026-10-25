@@ -5,6 +5,7 @@ import { displayTime, formatMoney } from '../lib/format';
 import { accountRegistryApi, isAccountPage, isAccountProfile, isAccountSuggestions } from './api';
 import type { AccountContext, AccountMutation, AccountPage, AccountProfile, AccountRegistryApi, AccountSource, AccountWorkspaceActions, CurrencyTotal, PhotoCrop, UnresolvedAccountOperation } from './types';
 import './styles.css';
+import { FeedbackBoundary, useFeedback, type FundsFeedbackPort } from '../feedback/Feedback';
 
 export type AccountWorkspaceProps = {
   context: AccountContext;
@@ -15,6 +16,7 @@ export type AccountWorkspaceProps = {
   unresolvedOperations?: ReadonlyArray<UnresolvedAccountOperation>;
   active?: boolean;
   api?: AccountRegistryApi;
+  feedback?: FundsFeedbackPort;
 };
 type Drafts = Map<string, string>;
 type OperationError = Error & { code?: string; operationId?: string };
@@ -28,10 +30,16 @@ const operationLabel = (kind: AccountMutation['kind']) => ({ 'identity-set': '�
 export function AccountWorkspace(props: AccountWorkspaceProps) {
   // Only user input is retained here, never fetched profiles, transactions or photos.
   const drafts = useRef<Drafts>(new Map());
-  return <div className="funds-trace account-workspace"><BoundAccountWorkspace key={JSON.stringify([props.context.caseId, props.context.generation])} {...props} drafts={drafts.current} /></div>;
+  const [feedbackSignal, setFeedbackSignal] = useState(() => new AbortController().signal);
+  useEffect(() => {
+    const controller = new AbortController(); setFeedbackSignal(controller.signal);
+    return () => controller.abort();
+  }, [props.context.caseId, props.context.generation]);
+  return <div className="funds-trace account-workspace"><FeedbackBoundary port={props.feedback} scope={props.context} signal={feedbackSignal}><BoundAccountWorkspace key={JSON.stringify([props.context.caseId, props.context.generation])} {...props} drafts={drafts.current} /></FeedbackBoundary></div>;
 }
 
 function BoundAccountWorkspace({ context, cases, onSelectCase, revision, actions, unresolvedOperations = [], active = true, api = accountRegistryApi, drafts }: AccountWorkspaceProps & { drafts: Drafts }) {
+  const feedback = useFeedback();
   const [source, setSource] = useState<AccountSource>('flows');
   const sourceId = useId();
   const sourceTabs = useRef<Partial<Record<AccountSource, HTMLButtonElement | null>>>({});
@@ -51,10 +59,15 @@ function BoundAccountWorkspace({ context, cases, onSelectCase, revision, actions
   const [identity, setIdentity] = useState('');
   const [draftVersion, setDraftVersion] = useState(0);
   const [reload, setReload] = useState(0);
-  const [status, setStatus] = useState('');
-  const [actionError, setActionError] = useState('');
+  const [statusValue, setStatusValue] = useState<{ account: string; text: string } | null>(null);
+  const [actionErrorValue, setActionErrorValue] = useState<{ account: string; text: string } | null>(null);
+  const status = statusValue?.account === selectedAccount ? statusValue.text : '';
+  const actionError = actionErrorValue?.account === selectedAccount ? actionErrorValue.text : '';
+  const setStatus = (text: string) => setStatusValue(text ? { account: selectedAccount, text } : null);
+  const setActionError = (text: string) => setActionErrorValue(text ? { account: selectedAccount, text } : null);
   const [busy, setBusy] = useState('');
   const [localUnknown, setLocalUnknown] = useState<UnresolvedAccountOperation[]>([]);
+  const [unknownError, setUnknownError] = useState('');
   const [clearIdentity, setClearIdentity] = useState(false);
   const [clearPhoto, setClearPhoto] = useState(false);
   const [discardCaseDrafts, setDiscardCaseDrafts] = useState(false);
@@ -78,6 +91,7 @@ function BoundAccountWorkspace({ context, cases, onSelectCase, revision, actions
   useEffect(() => {
     if (!active) { setCropPreview(null); setClearIdentity(false); setClearPhoto(false); setDiscardCaseDrafts(false); }
   }, [active]);
+  useEffect(() => { setStatus(''); setActionError(''); }, [selectedAccount]);
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController(); let current = true; let correctingPage = false;
@@ -112,7 +126,7 @@ function BoundAccountWorkspace({ context, cases, onSelectCase, revision, actions
       if (input !== undefined && normalizedIdentity(input) === (result.id_no || '')) drafts.delete(key);
       if (input !== undefined && lastProfileRevision.current !== null && lastProfileRevision.current !== revision) setStatus('资料已更新，未提交的身份证号已保留；请核对后保存或放弃修改。');
       lastProfileRevision.current = revision;
-    }).catch(error => { if (current && !controller.signal.aborted && !selection.signal.aborted) setProfileError(error.message); })
+    }).catch(error => { if (current && !controller.signal.aborted && !selection.signal.aborted) setProfileError(reload > 0 ? `资料刷新失败：${error.message}` : error.message); })
       .finally(() => { if (current && !controller.signal.aborted && !selection.signal.aborted) setProfileLoading(false); });
     return () => { current = false; controller.abort(); };
   }, [api, context.caseId, selectedAccount, selection, revision, reload, key, drafts, active]);
@@ -144,26 +158,29 @@ function BoundAccountWorkspace({ context, cases, onSelectCase, revision, actions
       const error = reason as OperationError;
       if (error.code === 'write-unknown' && error.operationId) {
         setLocalUnknown(current => [...current.filter(item => item.operationId !== error.operationId), { operationId: error.operationId!, account: payload.account, kind: payload.kind }]);
-        setActionError('写入结果尚未确认。请核对状态，核对前不能重复提交。'); return 'unknown';
+        feedback.task({ id: `account-operation:${error.operationId}`, operation: 'account', status: 'unknown', title: '账户资料写入结果待核对', detail: '请核对状态，核对前不能重复提交。', announce: false });
+        setActionError(''); return 'unknown';
       }
       setActionError(error.message || '操作失败，请重试。'); return 'failed';
     } finally { if (!lifetime.signal.aborted) setBusy(''); }
   }
   async function reconcile(operation: UnresolvedAccountOperation) {
     if (!active || busy || lifetime.signal.aborted) return;
-    setBusy(`reconcile:${operation.operationId}`); setActionError('');
+    setBusy(`reconcile:${operation.operationId}`); setActionError(''); setUnknownError('');
     try {
       await actions.reconcile(operation.operationId, lifetime.signal);
       if (lifetime.signal.aborted) return;
       setLocalUnknown(current => current.filter(item => item.operationId !== operation.operationId));
+      feedback.task({ id: `account-operation:${operation.operationId}`, operation: 'account', status: 'success', title: '账户资料写入结果已核对', announce: false });
       setStatus('已核对写入结果，资料将重新加载。'); setReload(value => value + 1);
     } catch (reason) {
       if (lifetime.signal.aborted) return;
       const error = reason as OperationError;
       if (error.code === 'write-mismatch' || error.code === 'write-not-applied') {
+        feedback.task({ id: `account-operation:${operation.operationId}`, operation: 'account', status: 'warning', title: '账户资料尚未达到请求状态', detail: '请检查最新资料后重新确认操作。', announce: false });
         setLocalUnknown(current => current.filter(item => item.operationId !== operation.operationId));
         setActionError('已核对：资料尚未达到请求状态。请检查最新资料后重新确认操作。'); setReload(value => value + 1);
-      } else setActionError(error.message || '仍无法确认写入结果，请稍后再次核对。');
+      } else setUnknownError(error.message || '仍无法确认写入结果，请稍后再次核对。');
     } finally { if (!lifetime.signal.aborted) setBusy(''); }
   }
   async function hostAction(name: string, action: (signal: AbortSignal) => void | Promise<void>, readOnly = false) {
@@ -237,7 +254,7 @@ function BoundAccountWorkspace({ context, cases, onSelectCase, revision, actions
   return <>
     <header className="aw-heading"><h1>账户与身份</h1><label className="aw-case-picker">当前案件<select aria-label="当前案件" aria-busy={busy === 'select-case'} value={context.caseId} disabled={writeBlocked} onChange={event => { void hostAction('select-case', () => onSelectCase(event.target.value)); }}>{!cases.some(item => item.id === context.caseId) && <option value={context.caseId}>{context.name}</option>}{cases.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><div className="aw-heading-actions"><button className="aw-button primary" aria-busy={busy === 'import-identity'} disabled={writeBlocked || caseHasDrafts} onClick={() => void hostAction('import-identity', actions.importIdentity)}>{icon('upload')}导入身份证对照表</button><button className="aw-text-button" aria-busy={busy === 'download-template'} disabled={!!busy} onClick={() => void hostAction('download-template', actions.downloadTemplate, true)}>{icon('download')}下载模板</button></div></header>
     {caseHasDrafts && <p className="aw-draft-note">有未保存的身份证号修改。导入对照表或管理主账号前，请保存或放弃修改。<button className="aw-text-button" disabled={writeBlocked} onClick={() => setDiscardCaseDrafts(true)}>放弃本案未提交修改</button></p>}
-    {unknown.length > 0 && <div className="aw-unknown" role="alert"><strong>有 {unknown.length} 项写入结果尚未确认</strong><p>核对前暂停本案的新写入与案件切换；不会自动重放操作。</p>{unknown.map(operation => <div key={operation.operationId}><span className="mono">{operation.account}</span><span>{operationLabel(operation.kind)}</span><button className="aw-button" aria-busy={busy === `reconcile:${operation.operationId}`} disabled={!!busy} onClick={() => void reconcile(operation)}>核对状态</button></div>)}</div>}
+    {unknown.length > 0 && <div className="aw-unknown" role="alert"><strong>有 {unknown.length} 项写入结果尚未确认</strong><p>核对前暂停本案的新写入与案件切换；不会自动重放操作。</p>{unknownError && <p>{unknownError}</p>}{unknown.map(operation => <div key={operation.operationId}><span className="mono">{operation.account}</span><span>{operationLabel(operation.kind)}</span><button className="aw-button" aria-busy={busy === `reconcile:${operation.operationId}`} disabled={!!busy} onClick={() => void reconcile(operation)}>核对状态</button></div>)}</div>}
     {actionError && <p className="aw-error" role="alert">{actionError}</p>}{visibleStatus && <p className="aw-status" role="status" aria-busy={!!busy}>{visibleStatus}</p>}
     <div className="aw-columns">
       <section className="aw-list" aria-label="账户列表"><div className="aw-list-toolbar"><div className="aw-tabs" role="tablist" aria-label="账户来源">{([{ value: 'flows', label: '本案流水账户' }, { value: 'identity', label: '身份证对照记录' }] as const).map(tab => <button key={tab.value} ref={node => { sourceTabs.current[tab.value] = node; }} id={`${sourceId}-${tab.value}`} role="tab" aria-selected={source === tab.value} aria-controls={`${sourceId}-panel`} tabIndex={source === tab.value ? 0 : -1} disabled={!!busy} onKeyDown={sourceKey} onClick={() => selectSource(tab.value)}>{tab.label}</button>)}</div><button className="aw-button" aria-busy={busy === 'main-accounts'} disabled={writeBlocked || caseHasDrafts} onClick={() => void hostAction('main-accounts', actions.openMainAccounts)}>{icon('settings')}主账号管理</button></div>

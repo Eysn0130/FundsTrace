@@ -70,25 +70,28 @@ function moneyHtml(value, currency) { return esc(moneyLabel(value, currency)); }
 function totalsHtml(totals, fallback, currency) { return esc(totalLabel(totals, fallback, currency)).replace(/\n/g, '<br>'); }
 function fmtTime(s) { return s ? String(s).slice(0, 19) : ''; }   // 含年月日时分秒
 
-function toast(msg, type = 'ok') {
-  const d = document.createElement('div');
-  d.className = 'toast ' + type;
-  d.textContent = msg;
-  $('#toasts').appendChild(d);
-  setTimeout(() => d.classList.add('fade'), 2800);
-  setTimeout(() => d.remove(), 3400);
+function toast(msg, type = 'ok', scope = caseContext()) {
+  if (scope && !isCurrentCase(scope, scope.canvasId !== undefined)) return false;
+  return window.FundsFeedback?.notify({ scope, severity: ({ ok: 'success', err: 'error', warn: 'warning', info: 'info' })[type] || 'info',
+    title: String(msg), dedupeKey: String(type) + ':' + String(msg) });
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, opts);
-  if (!res.ok) {
-    let msg = await res.text();
-    try { msg = JSON.parse(msg).detail || msg; } catch (e) { /* 纯文本 */ }
-    toast(String(msg).slice(0, 200), 'err');
-    throw new Error(msg);
-  }
-  const ct = res.headers.get('content-type') || '';
-  return ct.includes('json') ? res.json() : res;
+  // Transport never chooses a presentation. The owning operation may retry or
+  // show an inline error; uncaught errors retain their original binding.
+  const scope = caseContext();
+  let res;
+  try { res = await fetch(path, opts); }
+  catch (error) { if (error && typeof error === 'object') error.feedbackScope = scope; throw error; }
+  try {
+    if (!res.ok) {
+      let msg = await res.text();
+      try { msg = JSON.parse(msg).detail || msg; } catch (e) { /* 纯文本 */ }
+      throw Object.assign(new Error(String(msg)), { status: res.status, feedbackScope: scope });
+    }
+    const ct = res.headers.get('content-type') || '';
+    return ct.includes('json') ? await res.json() : res;
+  } catch (error) { if (error && typeof error === 'object') error.feedbackScope = scope; throw error; }
 }
 const jsonOpts = body => ({ headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
@@ -99,6 +102,27 @@ function isCurrentCase(context, canvas = true) {
   return context.caseId === state.caseId && context.generation === state.caseGeneration
     && (!canvas || (context.canvasId === state.canvasId && context.canvasGeneration === state.canvasGeneration));
 }
+function bindFeedback() {
+  const context = caseContext();
+  window.FundsFeedback?.setModalBlocked?.(false);
+  window.FundsFeedback?.bind(context);
+  if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent('funds:feedback-binding', { detail: context }));
+}
+function operationFeedbackChanged() {
+  if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent('funds:operation-state', { detail: null }));
+}
+async function confirmFeedback({ title, message, accept = '确认', danger = false, scope = caseContext() }) {
+  if (!isCurrentCase(scope)) return false;
+  const result = window.FundsFeedbackDialogs
+    ? await window.FundsFeedbackDialogs.confirm({ title, message, accept, danger, scope })
+    : await confirm(message);
+  return result === true && isCurrentCase(scope);
+}
+window.addEventListener('unhandledrejection', event => {
+  const error = event.reason;
+  if (error?.name === 'AbortError' || !error?.feedbackScope || !isCurrentCase(error.feedbackScope)) return;
+  toast(error.message || '当前操作未完成，请重试读取或查看详情。', 'err', error.feedbackScope);
+});
 function selectCase(caseId) {
   revokePendingGraphTarget();
   window.FundsMainAccountsActions?.revoke();
@@ -114,6 +138,7 @@ function selectCase(caseId) {
   state.canvasName = '';
   state.layout = 'auto';
   state.canvasGeneration += 1;
+  bindFeedback();
   resetGraphView();
   state.presentation = newGraphPresentation();
   revokePhotoCrop(true);
@@ -546,7 +571,7 @@ function activateCanvas(id) {
   state.justAdded = null; state.forceFit = true;
   if (state.graph) state.graph.clear();
   state.graphInited = false;
-  state.canvasId = id; state.canvasGeneration += 1; resetGraphView(); revokePhotoCrop(true);
+  state.canvasId = id; state.canvasGeneration += 1; bindFeedback(); resetGraphView(); revokePhotoCrop(true);
   updateHeader(); updateGraphViewStatus();
 }
 function graphMetric(phase, extra = {}) {
@@ -2406,6 +2431,7 @@ function bindCanvases() {
   const view = window.FundsCanvasWorkspace.createView(document, { context: caseContext, readName: () => state.canvasName, isCurrent: isCurrentCase });
   const sync = status => {
     view.onState(status);
+    operationFeedbackChanged();
     const unavailable = !ready() || status.pending || status.unknown;
     for (const id of ['btnCanvasNew', 'btnCanvasClone', 'btnCanvasSave']) $('#' + id).disabled = unavailable;
     // 删除画布对默认画布不可用：默认画布是案件数据的落点，需先“另存为”再删。
@@ -2453,7 +2479,7 @@ function bindCanvases() {
         const selected = $('#canvasSel').selectedOptions[0];
         if (selected) selected.textContent = result.name;
         try { await refreshCanvasList(context.canvasId); }
-        catch (_) { if (isCurrentCase(context)) toast('画布已保存，列表暂未刷新', 'err'); return; }
+        catch (_) { if (isCurrentCase(context)) toast('画布已保存，列表暂未刷新', 'warn', context); return; }
         if (isCurrentCase(context)) toast(action === 'rename' ? '画布已重命名' : '画布形态已保存');
         return;
       }
@@ -2471,7 +2497,7 @@ function bindCanvases() {
         if (action === 'delete') { window.FundsWorkspaceSession?.restore(); await doSearch(state.search.page || 1); }
         toast(action === 'delete' ? '画布已删除，原始流水已保留' : action === 'new' ? '空白画布已创建' : '已另存为新画布，源画布已保留');
       } catch (_) {
-        if (isCurrentCase(activated)) toast('画布操作已完成，部分数据未刷新，请重新调阅画布', 'err');
+        if (isCurrentCase(activated)) toast('画布操作已完成，部分数据未刷新，请重新调阅画布', 'warn', activated);
       }
     }
   });
@@ -4692,7 +4718,7 @@ async function deleteBatch(batch, context) {
   setBatchBusy();
   let deleted = false;
   try {
-    const accepted = await confirm(`删除批次「${batch.filename}」？\n\n将移除该批次的 ${fmtCount(batch.rows_imported ?? 0)} 笔流水及对应的图谱引用。此操作无法撤销。`);
+    const accepted = await confirmFeedback({ title: '删除导入批次', message: `删除批次「${batch.filename}」？\n\n将移除该批次的 ${fmtCount(batch.rows_imported ?? 0)} 笔流水及对应的图谱引用。此操作无法撤销。`, accept: '删除批次', danger: true, scope: context });
     if (!current() || !accepted || window.FundsMainAccountsActions?.blocked(context) || window.FundsAccountActions?.blocked(context)) return;
     showBatchFeedback('正在删除批次…');
     await batchRequest(`/api/batches/${encodeURIComponent(batch.id)}?case_id=${encodeURIComponent(context.caseId)}`, { method: 'DELETE' });
@@ -4803,6 +4829,7 @@ function installExportWorkspace(options) {
     busyLabel.hidden = !pending;
     const busyText = busyLabel.querySelector('span');
     if (busyText) busyText.textContent = phase === 'capturing' ? '正在采样图谱…' : '正在生成文件，可收起此窗口';
+    operationFeedbackChanged();
   }
   function close() {
     if (pending && phase === 'capturing') return;
@@ -4935,13 +4962,13 @@ async function openManagedCase(id, context, options = {}) {
     window.FundsWorkspaceSession?.restore();
     await doSearch(state.search.page || 1);
     if (isCurrentCase(opened) && $('#tab-batches').style.display === 'flex') await loadBatches();
-  } catch (_) { if (isCurrentCase(opened)) toast('案件已打开，部分数据加载失败，请刷新后重试', 'err'); }
+  } catch (_) { if (isCurrentCase(opened)) toast('案件已打开，部分数据加载失败，请刷新后重试', 'warn', opened); }
   return true;
 }
 
 function installCaseWorkspace() {
   return window.FundsCaseWorkspace.create({
-    document, context: caseContext, isCurrent: isCurrentCase, autoOpenCreated: true,
+    document, context: caseContext, isCurrent: isCurrentCase, autoOpenCreated: true, onState: operationFeedbackChanged,
     readSummary: () => ({ name: state.cases.find(item => item.id === state.caseId)?.name || String(state.caseId || '未选择'),
       canvasName: state.canvasName || '默认画布', flows: state.stats.flows || 0,
       accounts: state.stats.accounts || 0, defaultCase: state.caseId === 1 }),
@@ -4977,7 +5004,7 @@ function installCaseWorkspace() {
       if (isCurrentCase(context)) {
         if (context.canvasId) state.canvasName = result.name;
         await refreshCanvasList(context.canvasId).catch(() => {
-          if (isCurrentCase(context)) toast('画布已保存，画布列表暂未刷新', 'err');
+          if (isCurrentCase(context)) toast('画布已保存，画布列表暂未刷新', 'warn', context);
         });
       }
       return result;
@@ -5111,6 +5138,7 @@ function installMainAccounts() {
     },
     request: caseRequest, show: view.show, dismiss: view.dismiss, publish: refreshMainAccountRoles,
     onState: next => {
+      operationFeedbackChanged();
       view.onState(next); syncNodeWorkspaceControls(); dataToolsWorkspace?.sync();
       // Refresh the shared history/membership controls from the same lock.
       window.dispatchEvent(new CustomEvent('funds:main-accounts-state', { detail: { blocked: next.pending || next.unknown } }));
@@ -5165,6 +5193,7 @@ function installDataTools() {
     request: caseRequest, show: view.show, dismiss: view.dismiss, pickFile: view.pickFile,
     notify: toast,
     onState: value => {
+      operationFeedbackChanged();
       view.onState(value); syncNodeWorkspaceControls();
       const otherCase = value.blocked && !sameCase(value.operationContext);
       for (const id of ['btnImportIds', 'btnSample']) {

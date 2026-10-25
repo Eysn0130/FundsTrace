@@ -57,6 +57,11 @@ def test_all_retained_html_dependencies_are_packaged():
     assert "graph-selection.js" in required
     # This worker is launched from app.js rather than an HTML script element.
     required.add("graph-layout-worker.js")
+    # The shared feedback renderer imports its store as an ES module; the core
+    # is not named by HTML and must remain present in distributed backends.
+    feedback_ui = (builder.ROOT / "static" / "feedback-ui.mjs").read_text(encoding="utf-8")
+    assert "from './feedback-core.mjs'" in feedback_ui
+    required.add("feedback-core.mjs")
     worker = (builder.ROOT / "static" / "graph-layout-worker.js").read_text(encoding="utf-8")
     for kernel in ("graph-layout.js", "graph-layout-quality.js", "graph-routing.js"):
         assert f"/static/{kernel}?v=" in worker

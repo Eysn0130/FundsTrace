@@ -66,8 +66,10 @@ function harness() {
   const membership = { snapshot: () => ({ desiredIds: [], pendingIds: [], failures: {}, available: true }),
     subscribe(callback) { callback(); return () => {}; } };
   const sandbox = { state, document: doc, $, $$, URL, URLSearchParams, Event: class { constructor(type) { this.type = type; } },
+    CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
     location: { href: 'http://synthetic.local/', origin: 'http://synthetic.local' }, history,
     window: { location: { href: 'http://synthetic.local/' }, history,
+      dispatchEvent(event) { for (const callback of callbacks.get(event.type) || []) callback(event); return true; },
       addEventListener(type, callback) { const list = callbacks.get(type) || []; list.push(callback); callbacks.set(type, list); } },
     setTimeout(callback) { timers.push(callback); return timers.length; }, clearTimeout() {}, requestAnimationFrame: callback => callback(),
     preferenceStorage: { setItem() {} }, exportWorkspace: null, caseWorkspace: null, layoutSequence: 0, layoutJob: null,
