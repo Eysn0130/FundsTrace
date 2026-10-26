@@ -225,7 +225,7 @@ function harness() {
     syncEdgeTypeControl() {}, syncFlowCkCount() {}, updateHeader() {}, resetBatchView() {},
     scheduleGraphLabels() {}, syncGraphEdgeLabel() {}, rebuildGraphViewport() {}, applyGraphLabels() {}, nodePhotoUrl: node => node.photo_at ? '/synthetic-photo.png' : '',
     jsonOpts: value => ({ headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) }),
-    switchTab: tab => { state.tab = tab; }, doSearch: page => { searches.push({ page, fields: Object.fromEntries(['fAccount', 'fName', 'fCounter', 'fKw', 'fMin', 'fMax', 'fFrom', 'fTo'].map(id => [id, document.getElementById(id).value])), tracked: document.getElementById('fTracked').checked }); },
+    switchTab: tab => { state.tab = tab; }, doSearch: (page, options) => { searches.push({ page, options, fields: Object.fromEntries(['fAccount', 'fName', 'fCounter', 'fKw', 'fMin', 'fMax', 'fFrom', 'fTo'].map(id => [id, document.getElementById(id).value])), tracked: document.getElementById('fTracked').checked }); },
     exploreNeighborhood: account => contextOpens.push(account),
     loadGraph: async () => { graphReads += 1; await graphLoader?.(); }, renderGraph: () => { paints += 1; return graphRenderer?.(); },
     refreshStats: async () => {}, refreshCanvasList: async () => {}, loadBatches() {},
@@ -877,6 +877,7 @@ test('bulk identity refresh patches live labels and the clean drawer without cha
   assert.equal(h.run('nodeWorkspace.draft.idBase'), '111111111111111'); assert.equal(h.run('nodeWorkspace.draft.focusValue'), before.focus);
   assert.equal(h.element('ndDirty').textContent, ''); assert.equal(h.graphReads, 0); assert.equal(h.paints, 0);
   assert.equal(autoPaint, true); assert.ok(paintCount > 0);
+  assert.equal(h.searches.at(-1).options.refresh, true, 'identity changes retire the applied table window without submitting a draft');
 });
 
 test('a same-case bulk identity write disables account controls and guards stale account-save callbacks', async () => {

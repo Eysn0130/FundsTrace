@@ -318,6 +318,11 @@ function section(start, end) {
   assert.ok(from >= 0 && to > from, `missing source section ${start}`); return appSource.slice(from, to);
 }
 
+function installFeedbackAdapters(context) {
+  vm.runInContext(section('function operationFeedbackChanged()', "window.addEventListener('unhandledrejection'"), context,
+    { filename: 'app.js:feedback-adapters' });
+}
+
 test('legacy drawer writes, crop submit, main tools and case destructive actions honor the parent unknown lock', async () => {
   const h = factoryHarness(); h.setWrite(async () => { throw new Error('lost'); });
   await assert.rejects(h.actions.mutate(identityMutation(), h.context()), { code: 'write-unknown' });
@@ -344,6 +349,7 @@ test('legacy drawer writes, crop submit, main tools and case destructive actions
     refreshAccountIdentity() {}, syncNodeWorkspaceControls() {}, nodeWorkspaceIsCurrent: () => true, FormData, jsonOpts: body => ({ body: JSON.stringify(body) }),
     closeNodeMenu() {}, dataToolsWorkspace: null, pcLayout() {}, revokePhotoCrop() {},
   });
+  installFeedbackAdapters(context);
   vm.runInContext(section('async function nodeWorkspaceRequest(', 'function confirmNodeAction('), context);
   await assert.rejects(vm.runInContext("nodeWorkspaceRequest('/api/account-ids/set',{method:'POST',body:JSON.stringify({case_id:1,account:'SYN-A',id_no:'new'})})", context), /尚未确认/);
   vm.runInContext(section('async function writeNodeWorkspace(', 'function nodeRelatedIds('), context);
@@ -384,6 +390,7 @@ test('parent unknown lock also blocks graph exports, canvas commands and the dir
     fmtCount: String, caseContext: binding, isCurrentCase: () => true, layoutJob: null, hasNodeDrafts: () => false,
     caseRequest: async () => ({}), toast() {}, activateCanvas(id) { state.canvasId = id; }, loadGraph: async () => {}, doSearch: async () => {},
   });
+  installFeedbackAdapters(context);
   vm.runInContext(section('function installExportWorkspace(options)', 'function downloadBlob('), context);
   context.exportOptions = { getContext: binding, isCurrent: () => true,
     getScope: () => ({ graphReady: true, graphAccounts: 1, graphRelations: 0, trackedFlows: 1 }), getLabels: () => ({}),
@@ -410,11 +417,13 @@ test('batch deletion checks the account unknown lock both at entry and after con
     const batchView = { rows: [batch], deleting: null, request: 0, phase: 'ready' };
     const context = vm.createContext({ window: { FundsAccountActions: h.actions, FundsMainAccountsActions: { blocked: () => false } },
       batchView, batchCurrent: h.current, currentBatch: batch, binding: h.context(), fmtCount: String,
+      caseContext: h.context, isCurrentCase: h.current,
       closeBatchMenu() {}, setBatchBusy() {}, showBatchFeedback() {}, toast() {}, renderBatchRows() {},
       confirm: () => { confirmations++; return confirmation.promise; },
       batchRequest: async (path, options) => { if (options.method === 'DELETE') deletes.push(path); },
       document: { activeElement: { isConnected: true }, body: {} },
     });
+    installFeedbackAdapters(context);
     vm.runInContext(section('async function deleteBatch(', 'function bindBatchUI('), context);
     const pending = vm.runInContext('deleteBatch(currentBatch,binding)', context); await tick();
     if (!lockAtEntry) {

@@ -54,7 +54,7 @@
         if (value.committed) {
           if (current(value)) {
             options.complete?.();
-            options.notify('画布操作已完成，界面刷新未完成；请重新调阅画布', 'err');
+            options.notify('画布操作已完成，界面刷新未完成；请重新调阅画布', 'warn', value.context);
           }
           return true;
         }

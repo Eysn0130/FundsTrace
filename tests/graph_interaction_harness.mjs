@@ -2252,7 +2252,8 @@ test('layout pipeline camera: fixed-screen shadows cannot inflate canonical circ
 });
 
 test('layout pipeline quality: the rendered receipt measures actual visible text at the committed zoom',async()=>{
-  const f=layoutFailureScene(),{pending}=await f.begin();
+  const f=layoutFailureScene(); f.state.graphView.labelMode='all';
+  const {pending}=await f.begin(); f.state.graph.zoomTo(.1);
   f.workers[0].deliver(f.calculate(f.workers[0].message.input));await f.drain(pending);
   const fonts=[];
   for(const item of [...f.state.graph.getNodes(),...f.state.graph.getEdges()])for(const shape of item.getContainer().children) {
@@ -2262,7 +2263,10 @@ test('layout pipeline quality: the rendered receipt measures actual visible text
   const zoom=f.state.graph.getZoom(),rendered=f.state.graphView.layoutQuality.rendered;
   assert.equal(rendered.zoom,zoom);assert.equal(rendered.visibleLabels,fonts.length);
   assert.ok(Math.abs(rendered.minimumFontPixels-Math.min(...fonts)*Math.abs(zoom))<1e-7,'rendered readability uses real text font size times final zoom');
+  assert.ok(rendered.minimumFontPixels<10, 'small text remains measurable without a canvas reading instruction');
   assert.equal(f.history.status().count,1);assert.equal(f.h.run('layoutJob'),null);
+  assert.equal(f.h.element('#graphLayoutStatus').textContent, '', 'successful layout leaves no canvas completion or reading instruction');
+  assert.equal(f.h.element('#graphLayoutStatus').hidden, true);
 });
 
 // These contracts use the rendered quadratic path, body and text boxes from

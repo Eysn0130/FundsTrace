@@ -53,6 +53,13 @@
     if (typeof source.tracked === 'boolean') result.tracked = source.tracked;
     if (typeof source.accountExact === 'boolean') result.accountExact = source.accountExact;
     if (Array.isArray(source.anchorIds)) result.anchorIds = ids(source.anchorIds);
+    if (object(source.viewport)) {
+      const view = source.viewport;
+      if (typeof view.rowId === 'string' && view.rowId !== '' && Number.isSafeInteger(view.page) && view.page > 0
+          && finite(view.offset) && finite(view.scrollLeft) && view.scrollLeft >= 0) {
+        result.viewport = { rowId: view.rowId, page: view.page, offset: view.offset, scrollLeft: view.scrollLeft };
+      }
+    }
     if (['source', 'target'].includes(source.bulkDir)) result.bulkDir = source.bulkDir;
     if (['compact', 'comfortable'].includes(source.density)) result.density = source.density;
     if (['single', 'wrap'].includes(source.wrap)) result.wrap = source.wrap;

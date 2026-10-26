@@ -1449,3 +1449,34 @@ to {
 :where(.funds-trace) .main-accounts,
 :where(.funds-trace) .source-record,
 :where(.funds-trace) .history-description p { font-size: var(--font-size-meta); }
+
+/* Feedback stays inside the embedding slot and shares the host's theme. */
+:where(.funds-trace) .modal {
+  --modal-surface: var(--funds-surface-raised, var(--surface-raised));
+  --modal-text: var(--funds-text-primary, var(--text-primary));
+  background: var(--modal-surface);
+  color: var(--modal-text);
+}
+:where(.funds-trace) .modal :is(.modal-heading, .modal-footer) {
+  background: var(--modal-surface);
+  color: var(--modal-text);
+}
+:where(.funds-trace) .warning-banner {
+  margin: 16px 24px;
+  padding: 12px 16px;
+  border: 1px solid var(--state-warning-border);
+  border-radius: var(--control-radius);
+  background: var(--state-warning-surface);
+  color: var(--state-warning);
+  overflow-wrap: anywhere;
+}
+:where(.funds-trace) .warning-banner p { margin-top: 6px; }
+:where(.funds-trace) .warning-banner button {
+  color: inherit;
+  background: transparent;
+  border: 0;
+  padding: 6px 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+:where(.funds-trace) .import-progress progress { accent-color: var(--accent); }

@@ -16,7 +16,8 @@
     captureNodeDraft();
     const query = Object.fromEntries(Object.entries(fields).map(([key,id]) => [key,$('#'+id)?.value || '']));
     Object.assign(query, { tracked:$('#fTracked').checked, page:state.search.page, size:state.search.size,
-      anchorIds:window.FundsTableDrafts?.capture() || [], accountExact:$('#fAccount').dataset.exactAccount===$('#fAccount').value && !!$('#fAccount').value });
+      anchorIds:window.FundsTableDrafts?.capture() || [], viewport:window.FundsTableDrafts?.captureViewport?.(),
+      accountExact:$('#fAccount').dataset.exactAccount===$('#fAccount').value && !!$('#fAccount').value });
     const inputs = new Map(retainedNodeInputs);
     for (const [key,draft] of nodeDrafts) if (nodeDraftDirty(draft)) {
       const account = JSON.parse(key).at(-1);
@@ -69,7 +70,9 @@
       $('#fTracked').checked = draft.query.tracked;
       if ($('#fAccount')?.dataset) { if (draft.query.accountExact) $('#fAccount').dataset.exactAccount=$('#fAccount').value; else delete $('#fAccount').dataset.exactAccount; }
       state.search.page = draft.query.page || 1;
+      state.search.size = draft.query.size || 50;
       window.FundsTableDrafts?.restore(draft.query.anchorIds);
+      window.FundsTableDrafts?.restoreViewport?.(draft.query.viewport);
       for (const id of ['flowTableDensity','flowTableWrap']) $('#'+id)?.dispatchEvent(new Event('change'));
       window.FundsCanvasEditor.syncControls();
       state.graph?.paint(); rebuildGraphViewport(); scheduleGraphViewport(); scheduleGraphLabels();

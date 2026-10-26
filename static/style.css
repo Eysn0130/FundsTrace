@@ -17,7 +17,7 @@
   --required-label: #ddb46c;
   --required-asterisk: #e18c91;
   --control-radius: 6px;
-  --dialog-radius: 18px;
+  --dialog-radius: 12px;
   --surface-table-header: #202d3c;
   --focus-ring: #7ab8f0;
   --selection-surface: color-mix(in srgb, var(--accent) 14%, var(--surface-raised));
@@ -533,14 +533,12 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 #workspace[data-workspace-view="split"] #workspaceSidebarResize { inset: 3px 0; cursor: row-resize; }
 #workspace[data-workspace-view="split"] #workspaceSidebarResize::after { width: 100%; height: 2px; position: absolute; top: 50%; }
 #workspace[data-workspace-view="split"] #btnSidebarToggle { top: 2px; left: 50%; width: 48px; height: 27px; transform: translateX(-50%); }
-#workspace[data-workspace-view="split"] #tab-search { display: grid; grid-template-columns: minmax(0,1fr) auto; grid-template-rows: auto max-content auto auto minmax(48px,1fr) auto; gap: 0 16px; padding: 8px 12px; }
+#workspace[data-workspace-view="split"] #tab-search { display: grid; grid-template-columns: minmax(0,1fr) auto; grid-template-rows: auto max-content auto minmax(48px,1fr); gap: 0 16px; padding: 8px 12px; }
 #workspace[data-workspace-view="split"] #tab-search > .query-disclosure-head { grid-area: 1 / 1 / auto / -1; margin: 0 0 4px; }
 #workspace[data-workspace-view="split"] #queryFields { grid-area: 2 / 1 / auto / -1; }
 #workspace[data-workspace-view="split"] #bulkTrackBar { grid-area: 3 / 1; flex-wrap: wrap; align-content: center; padding: 3px 0; margin: 0; border-top: 0; }
 #workspace[data-workspace-view="split"] .flow-table-tools { grid-area: 3 / 2; margin: 0; align-self: center; }
-#workspace[data-workspace-view="split"] .flow-table-hint { grid-area: 4 / 1 / auto / -1; margin: 0 0 3px; }
-#workspace[data-workspace-view="split"] #flowTableScroll { grid-area: 5 / 1 / auto / -1; min-height: 48px; }
-#workspace[data-workspace-view="split"] #tab-search > .pager { grid-area: 6 / 1 / auto / -1; padding: 5px 0 0; }
+#workspace[data-workspace-view="split"] #flowTableScroll { grid-area: 4 / 1 / auto / -1; min-height: 48px; }
 #workspace[data-workspace-view="split"] #left > .tabs .tab { padding-top: 6px; padding-bottom: 5px; }
 #workspace.workspace-view-changing #left, #workspace.workspace-view-changing #workspaceSidebarEdge { transition: none; }
 #graphPage:has(#workspace.workspace-view-changing) #editorToolbar { transition: none; }
@@ -550,12 +548,10 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 #workspace[data-workspace-view="split"] .query-disclosure.is-collapsed { display: none; }
 #workspace[data-workspace-view="split"] .query-disclosure:not(.is-collapsed) .query-controls { overflow: visible; }
 @container (max-width: 760px) {
-  #workspace[data-workspace-view="split"] #tab-search { grid-template-columns: minmax(0,1fr); grid-template-rows: auto max-content auto auto auto minmax(48px,1fr) auto; }
+  #workspace[data-workspace-view="split"] #tab-search { grid-template-columns: minmax(0,1fr); grid-template-rows: auto max-content auto auto minmax(48px,1fr); }
   #workspace[data-workspace-view="split"] #bulkTrackBar { grid-area: 3 / 1; }
   #workspace[data-workspace-view="split"] .flow-table-tools { grid-area: 4 / 1; }
-  #workspace[data-workspace-view="split"] .flow-table-hint { grid-area: 5 / 1; }
-  #workspace[data-workspace-view="split"] #flowTableScroll { grid-area: 6 / 1; }
-  #workspace[data-workspace-view="split"] #tab-search > .pager { grid-area: 7 / 1; }
+  #workspace[data-workspace-view="split"] #flowTableScroll { grid-area: 5 / 1; }
 }
 
 .tabs { display: flex; flex: none; border-bottom: 1px solid var(--border); min-width: 0; }
@@ -615,24 +611,32 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 .query-disclosure-head { flex: none; display: flex; align-items: center; gap: 9px; min-height: 32px; margin-bottom: 5px; }
 .query-toggle { gap: 4px; padding: 3px 6px; background: transparent; border-color: transparent; }
 .query-toggle .ui-icon { width: 16px; height: 16px; }
-.query-summary { min-width: 0; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .query-disclosure { flex: 0 1 auto; min-height: 100px; display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--workspace-ease), min-height var(--workspace-ease), visibility var(--workspace-ease); }
 .query-disclosure.is-collapsed { min-height: 0; grid-template-rows: 0fr; visibility: hidden; }
 .query-controls { min-height: 0; overflow-y: auto; overflow-x: hidden; }
 #tab-search > .tbl-wrap { flex: 1 0 110px; min-height: 110px; }
+/* Keep the user's disclosure state, while giving the table the remaining slot.
+   The existing filter fields scroll within their own expanded region. */
+#workspace[data-workspace-view="standard"] #queryFields:not(.is-collapsed) { flex: 0 1 200px; min-height: 80px; max-height: 200px; }
+#workspace[data-workspace-view="standard"] .query-controls { overscroll-behavior: contain; }
+#workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex: 1 0 240px; min-height: 240px; }
+@media (max-height: 600px) {
+  #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 180px; min-height: 180px; }
+}
 .flow-table-tools { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 4px 0 3px; font-size: 12px; color: var(--text-primary); }
 .flow-table-tools .result-info { flex: 1; min-width: 50px; overflow-wrap: anywhere; }
 .flow-table-tools select { height: 28px; padding: 2px 24px 2px 6px; font-size: 12px; }
 .flow-table-hint { flex: none; color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0 0 3px; }
-.flow-table-scroll { position: relative; scrollbar-width: thin; scrollbar-color: var(--border) var(--border); overscroll-behavior: contain; }
+.flow-table-scroll { position: relative; scrollbar-width: thin; scrollbar-color: var(--border-strong) var(--surface-raised); overscroll-behavior: contain; }
 .flow-table-scroll::-webkit-scrollbar { width: 7px; height: 8px; }
 .flow-table-scroll::-webkit-scrollbar-track { background: var(--surface-raised); }
-.flow-table-scroll::-webkit-scrollbar-thumb { background: var(--surface-raised); border-radius: 6px; }
+.flow-table-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 6px; }
 .flow-table-scroll:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 #flowTable { width: 100%; min-width: 760px; table-layout: auto; border-collapse: separate; border-spacing: 0; font-size: 12px; }
 #flowTable th { z-index: 2; padding: 6px 4px; height: 34px; color: var(--text-primary); background: var(--surface-table-header); font-size: 12px; line-height: 1.35; white-space: normal; }
 #flowTable th, #flowTable td { border-right: 1px solid var(--border); }
 #flowTable td { padding: 5px 4px; vertical-align: middle; background: var(--surface-raised); line-height: 1.4; }
+#flowTableScroll[data-flow-wrap="wrap"] #flowTable td { vertical-align: top; }
 #flowTable th:first-child, #flowTable td:first-child { position: sticky; left: 0; width: 40px; min-width: 40px; padding: 4px 6px; z-index: 1; border-right-color: var(--border-strong); }
 #flowTable th:first-child { z-index: 3; background: var(--surface-table-header); }
 #flowTable th:nth-child(2), #flowTable td:nth-child(2) { width: 86px; min-width: 86px; }
@@ -663,6 +667,38 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 #flowTable tr[data-id]:focus-visible > td { background: var(--surface-raised); box-shadow: inset 0 1px var(--accent), inset 0 -1px var(--accent); }
 #flowTable tr[data-id]:has(.flow-ck:checked) > td { background: var(--selection-surface); }
 #flowTable .flow-ck { width: 16px; height: 16px; vertical-align: middle; accent-color: var(--accent); }
+/* Mouse/keyboard density: preserve query fields and return chrome space to data. */
+@media (hover: hover) and (pointer: fine) {
+  #workspace[data-workspace-view="standard"] #left { position: relative; }
+  #workspace[data-workspace-view="standard"] #left > .tabs { padding-right: 72px; }
+  #workspace[data-workspace-view="standard"] #left > .tabs .tab { padding: 6px 14px; }
+  #workspace[data-workspace-view="standard"] #tab-search { padding: 8px; }
+  #workspace[data-workspace-view="standard"] .query-disclosure-head { position: absolute; top: 0; right: 8px; height: 34px; min-height: 34px; margin: 0; }
+  #workspace[data-workspace-view="standard"] .query-toggle { min-height: 26px; height: 26px; padding: 2px 4px; }
+  #workspace[data-workspace-view="standard"] #bulkTrackBar { padding: 4px 0; }
+  #workspace[data-workspace-view="standard"] .bulk-selection { min-height: 20px; margin-bottom: 3px; }
+  #workspace[data-workspace-view="standard"] #bulkDir { width: 112px; }
+  #workspace[data-workspace-view="standard"] #bulkX { width: 44px; }
+  #workspace[data-workspace-view="standard"] .flow-table-tools { gap: 4px; padding: 2px 0; }
+  #workspace[data-workspace-view="standard"] .flow-table-tools select,
+  #workspace[data-workspace-view="standard"] #btnFlowOverview { min-height: 28px; height: 28px; }
+  #workspace[data-workspace-view="standard"] #btnFlowOverview { width: 28px; }
+  #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 310px; min-height: 310px; }
+  #flowTable th { height: 32px; padding: 5px 4px; color: var(--muted); font-weight: 500; }
+  #flowTable th:nth-child(2) { white-space: nowrap; }
+  #flowTable th:nth-child(2) br { display: none; }
+  #flowTable th, #flowTable td { border-right-color: color-mix(in srgb, var(--border) 70%, transparent); }
+  #flowTableScroll[data-flow-density="compact"] #flowTable td { padding-top: 4px; padding-bottom: 4px; }
+}
+@media (hover: hover) and (pointer: fine) and (max-height: 700px) {
+  #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 180px; min-height: 180px; }
+}
+#left > .tabs .tab { transition: color 120ms var(--interaction-ease), border-color 120ms var(--interaction-ease); }
+#left .query-disclosure { transition: grid-template-rows 160ms var(--interaction-ease), min-height 160ms var(--interaction-ease), visibility 160ms var(--interaction-ease); }
+#flowTable tr[data-id] > td { transition: background-color 100ms var(--interaction-ease); }
+@media (prefers-reduced-motion: reduce) {
+  #left > .tabs .tab, #left .query-disclosure, #flowTable tr[data-id] > td { transition: none; }
+}
 /* Each table keeps its native overflow:auto viewport as the only horizontal
    scroll control. Legacy range bindings remain dormant to preserve callers. */
 .flow-horizontal-scroll { flex: none; display: none; align-items: center; gap: 5px; height: 25px; margin-top: 3px; padding: 0; }
@@ -675,7 +711,6 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 .flow-horizontal-scroll input[type="range"]::-moz-range-thumb { width: 50px; height: 8px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--surface-input); }
 .flow-horizontal-scroll input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .flow-horizontal-scroll input[type="range"]:disabled { opacity: .4; cursor: default; }
-#left .pager { flex: none; gap: 10px; padding: 9px 0 0; }
 
 /* ---------- 表格 ---------- */
 .tbl-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 6px; min-height: 120px; }
@@ -952,7 +987,7 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 .el-ck input { margin: 0; width: 16px; height: 16px; padding: 0; }
 
 /* ---------- Toast ---------- */
-#toasts { position: fixed; right: 16px; bottom: 16px; z-index: 99; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+#toasts { display: none; }
 .toast {
   background: var(--state-success-surface); color: var(--state-success); border: 1px solid var(--state-success-border);
   padding: 9px 14px; border-radius: 8px; max-width: 380px;
@@ -960,6 +995,12 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 }
 .toast.err { background: var(--state-danger-surface); border-color: var(--state-danger-border); color: var(--state-danger); }
 .toast.fade { opacity: 0; }
+.feedback-confirm h2 { font-size: 16px; line-height: 1.5; }
+.feedback-confirm p { margin-top: 14px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-primary); font-size: 14px; line-height: 1.7; }
+.feedback-confirm footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+.feedback-confirm[open] { animation: feedback-dialog-enter 180ms ease-out; }
+@keyframes feedback-dialog-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .feedback-confirm[open] { animation: none; } }
 
 /* The overview moves the same table here; its column meaning is explicit. */
 .icon-button { width: 32px; padding: 4px !important; }
@@ -969,7 +1010,7 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 .flow-overview .action-dialog-context { margin: 3px 0 0; }
 .flow-overview-content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .flow-overview-content .flow-table-scroll { flex: 1; min-height: 80px; }
-.flow-overview #btnFlowOverview, .flow-overview #flowTableHint { display: none; }
+.flow-overview #btnFlowOverview { display: none; }
 .overview-membership-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding-bottom: 8px; }
 #overviewMembershipStatus { flex: 1; color: var(--muted); font-size: 12px; }
 .membership-status { display: none; }
@@ -987,7 +1028,6 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 .flow-overview #flowTable .act-track, .flow-overview #flowTable .tag.on { display: none; }
 .flow-overview #flowTable .membership-pending > td { background: var(--surface-raised); }
 .flow-overview #flowTable .membership-failed > td:first-child { box-shadow: inset 3px 0 var(--state-danger); }
-.flow-overview .pager { padding-bottom: 0; }
 .modal-box, .action-dialog { overscroll-behavior: contain; }
 .modal-head { position: sticky; top: -16px; padding-top: 4px; padding-bottom: 8px; background: var(--surface); z-index: 4; }
 .flow-overview .modal-head { position: static; padding: 0; background: transparent; }
