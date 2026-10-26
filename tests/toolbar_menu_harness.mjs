@@ -4,16 +4,19 @@ import vm from 'node:vm';
 import test from 'node:test';
 
 const source = readFileSync(new URL('../static/toolbar-menu.js', import.meta.url), 'utf8');
+const ribbonSource = readFileSync(new URL('../static/ribbon.js', import.meta.url), 'utf8');
 
 // Execute the production script unchanged, modeling capture/bubble propagation,
 // visible geometry, body portals, focus and browser-compatible pointer events.
-function harness({ width = 1000, height = 700, withForm = false } = {}) {
+function harness({ width = 1000, height = 700, withForm = false, withRibbon = false } = {}) {
   let doc, now = 1000, frameId = 0;
   const frames = new Map();
   class Element {
     constructor(tag = 'div', id = '') {
       this.tagName = tag.toUpperCase(); this.id = id; this.children = []; this.parentElement = null;
-      this.attributes = new Map(); this.listeners = new Map(); this.style = {}; this.hidden = false; this.inert = false;
+      this.attributes = new Map(); this.listeners = new Map(); this.dataset = {};
+      this.style = { setProperty(key, value) { this[key] = String(value); }, getPropertyValue(key) { return this[key] || ''; } };
+      this.hidden = false; this.inert = false; this.value = ''; this.checked = false;
       this.disabled = false; this.rect = { left: 20, top: 20, width: 240, height: 140 };
       this.classList = { add: value => this.attributes.set('class', [...new Set([...this.classes(), value])].join(' ')),
         remove: value => this.attributes.set('class', this.classes().filter(item => item !== value).join(' ')), contains: value => this.classes().includes(value) };
@@ -26,9 +29,23 @@ function harness({ width = 1000, height = 700, withForm = false } = {}) {
       if (node.parentElement) node.parentElement.children.splice(node.parentElement.children.indexOf(node), 1);
       node.parentElement = this; this.children.push(node); return node;
     }
+    insertBefore(node, next) {
+      if (!next) return this.appendChild(node);
+      if (node.parentElement) node.parentElement.children.splice(node.parentElement.children.indexOf(node), 1);
+      node.parentElement = this; this.children.splice(this.children.indexOf(next), 0, node); return node;
+    }
+    get nextSibling() { return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1] || null; }
     remove() { if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1); this.parentElement = null; }
-    setAttribute(key, value) { this.attributes.set(key, String(value)); }
-    removeAttribute(key) { this.attributes.delete(key); }
+    setAttribute(key, value) {
+      this.attributes.set(key, String(value));
+      if (key.startsWith('data-')) this.dataset[key.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = String(value);
+      if (key === 'type') this.type = String(value);
+    }
+    removeAttribute(key) {
+      this.attributes.delete(key);
+      if (key.startsWith('data-')) delete this.dataset[key.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())];
+    }
+    hasAttribute(key) { return key === 'hidden' ? this.hidden : key === 'inert' ? this.inert : this.attributes.has(key); }
     getAttribute(key) { return this.attributes.get(key) ?? null; }
     contains(node) { return node === this || this.children.some(child => child.contains(node)); }
     matches(selector) {
@@ -124,6 +141,42 @@ function harness({ width = 1000, height = 700, withForm = false } = {}) {
     maximum = add(formPanel, 'input', 'relationMaximum', { type: 'text' });
     apply = add(formPanel, 'button', 'relationApply');
   }
+  let ribbon;
+  if (withRibbon) {
+    const tabbar = add(toolbar, 'div', 'ribbonTabbar');
+    const tabs = add(tabbar, 'div', 'ribbonTabs');
+    const panels = add(toolbar, 'div', 'ribbonPanels');
+    const compact = add(toolbar, 'div', 'ribbonCompact'); compact.hidden = true;
+    compact.style.overflowX = 'auto'; compact.style.overflowY = 'hidden';
+    const storage = add(toolbar, 'div', 'ribbonStorage'); storage.hidden = true;
+    for (const name of ['common', 'trace', 'style', 'view']) {
+      add(tabs, 'button', 'ribbonTab-' + name, { 'data-ribbon-tab': name });
+      add(panels, 'div', 'ribbonPanel-' + name, { class: 'ribbon-panel' });
+    }
+    const makeBundle = (name, home, panelId, triggerId) => {
+      add(doc.getElementById('ribbonPanel-' + home), 'div', name + 'HomeSlot', { 'data-ribbon-slot': name });
+      add(compact, 'div', name + 'CompactSlot', { 'data-ribbon-slot': name });
+      const bundle = add(storage, 'div', name + 'Bundle', { 'data-ribbon-bundle': name, 'data-ribbon-home': home });
+      const trigger = add(bundle, 'button', triggerId, { 'data-ribbon-popover': panelId, 'aria-expanded': 'false' });
+      trigger.rect = { left: name === 'labels' ? 180 : 300, top: 55, width: 60, height: 28 };
+      const panel = add(bundle, 'div', panelId, { class: 'ribbon-popover ribbon-adaptive-popover', role: 'dialog' });
+      return { trigger, panel, home: bundle };
+    };
+    const display = makeBundle('labels', 'view', 'toolbarDisplayExtra', 'btnDisplayActions');
+    display.first = add(display.panel, 'input', 'showIdCk', { type: 'checkbox' }); display.first.checked = true;
+    display.last = add(display.panel, 'input', 'showPhotoCk', { type: 'checkbox' }); display.last.checked = true;
+    const text = makeBundle('text', 'style', 'textStylePopover', 'btnTextStyle');
+    add(text.panel, 'input', 'unavailableFont').disabled = true;
+    add(text.panel, 'input', 'hiddenFont').hidden = true;
+    text.first = add(text.panel, 'select', 'labelFontFamily', { 'data-ribbon-command': 'labelFontFamily' }); text.first.value = 'Arial';
+    text.last = add(text.panel, 'button', 'labelBold', { 'data-ribbon-command': 'labelBold', 'aria-pressed': 'false' });
+    const more = { trigger: add(compact, 'button', 'btnRibbonMore', { 'data-ribbon-popover': 'ribbonMore', 'aria-expanded': 'false' }), home: toolbar };
+    more.panel = add(toolbar, 'div', 'ribbonMore', { class: 'ribbon-popover', role: 'dialog' });
+    more.arrange = add(more.panel, 'button', 'btnArrangeLabels');
+    more.action = add(more.panel, 'button', 'moreAccountDetails', { 'data-ribbon-command': 'accountDetails' });
+    const after = add(compact, 'button', 'afterRibbonPopovers');
+    ribbon = { display, text, more, after, compact };
+  }
   const graph = add(doc.body, 'section', 'graphContainer'); graph.tabIndex = 0;
   const node = add(graph, 'canvas', 'node'), minimap = add(doc.body, 'aside', 'graphMinimapPanel');
   let ribbonCloses = 0;
@@ -132,14 +185,22 @@ function harness({ width = 1000, height = 700, withForm = false } = {}) {
     FundsRibbon: { closePopovers() { ribbonCloses++; } },
     requestAnimationFrame(callback) { frames.set(++frameId, callback); return frameId; },
     cancelAnimationFrame(id) { frames.delete(id); },
-    getComputedStyle: element => ({ display: element.style.display || 'block', visibility: element.style.visibility || 'visible' }) });
+    getComputedStyle: element => ({ display: element.style.display || 'block', visibility: element.style.visibility || 'visible',
+      overflowX: element.style.overflowX || element.style.overflow || 'visible',
+      overflowY: element.style.overflowY || element.style.overflow || 'visible' }) });
   const context = vm.createContext({ window, Date: { now: () => now }, console });
   vm.runInContext(source, context, { filename: 'toolbar-menu.js' });
   const api = window.FundsToolbarMenu;
+  if (withRibbon) {
+    vm.runInContext(ribbonSource, context, { filename: 'ribbon.js' });
+    ribbon.api = window.FundsRibbon;
+    ribbon.api.setStatus({ selectionCount: 1 });
+    ribbon.api.setCollapsed(true);
+  }
   const tick = () => { const pending = [...frames.values()]; frames.clear(); for (const callback of pending) callback(); };
   return { window, document: doc, api, toolbar, before, trigger, svg, after, second, panel, rename, disabled, separator, copy, secondPanel, other,
     formTrigger, formAfter, formPanel, formDisabled, formHidden, currency, minimum, maximum, apply,
-    graph, node, minimap, add, tick, frames, advance: ms => { now += ms; }, ribbonCloses: () => ribbonCloses };
+    graph, node, minimap, add, tick, frames, ribbon, advance: ms => { now += ms; }, ribbonCloses: () => ribbonCloses };
 }
 
 test('mount is idempotent, portals menus and opens from the SVG with current availability', () => {
@@ -398,4 +459,166 @@ test('late-bound menus use current attributes and shared placement also works fo
   f.api.place(form, lateTrigger);
   assert.equal(form.getAttribute('role'), 'dialog'); assert.equal(form.hidden, false);
   assert.equal(form.style.top, '166px'); assert.equal(f.api.isOpen(), false);
+});
+
+// A real button's Enter default synthesizes its click unless the controller has
+// handled keydown. Model that default so both pre-fix and shared-controller
+// implementations are exercised through the same keyboard interaction.
+function keyboardOpen(trigger) {
+  trigger.focus();
+  const event = trigger.fire('keydown', { key: 'Enter' });
+  if (!event.defaultPrevented) trigger.click();
+  return event;
+}
+
+for (const name of ['text', 'display']) {
+  test(`compact ribbon ${name} opens from the keyboard into its first available field and Escape returns focus`, () => {
+    const f = harness({ withRibbon: true }), entry = f.ribbon[name];
+    keyboardOpen(entry.trigger);
+    assert.equal(entry.panel.hidden, false);
+    assert.ok(entry.panel.parentElement === f.document.body);
+    assert.equal(f.document.activeElement?.id, entry.first.id, 'the body portal must receive focus when its trigger is activated');
+    assert.equal(entry.trigger.getAttribute('aria-expanded'), 'true');
+    const escape = entry.first.fire('keydown', { key: 'Escape' });
+    assert.equal(escape.defaultPrevented, true);
+    assert.equal(entry.panel.hidden, true); assert.equal(entry.panel.inert, true);
+    assert.ok(entry.panel.parentElement === entry.home, 'closing restores the same panel to its retained bundle');
+    assert.equal(f.document.activeElement?.id, entry.trigger.id);
+    assert.equal(entry.trigger.getAttribute('aria-expanded'), 'false');
+  });
+}
+
+test('compact ribbon form Tab boundaries follow the original trigger rather than the body portal', () => {
+  const f = harness({ withRibbon: true }), { text, display, more } = f.ribbon;
+  for (const [entry, next] of [[text, more.trigger], [display, text.trigger]]) {
+    keyboardOpen(entry.trigger); entry.last.focus();
+    assert.equal(entry.last.fire('keydown', { key: 'Tab' }).defaultPrevented, true);
+    assert.equal(entry.panel.hidden, true); assert.equal(f.document.activeElement?.id, next.id);
+    keyboardOpen(entry.trigger);
+    assert.equal(entry.first.fire('keydown', { key: 'Tab', shiftKey: true }).defaultPrevented, true);
+    assert.equal(entry.panel.hidden, true); assert.equal(f.document.activeElement?.id, entry.trigger.id);
+  }
+});
+
+test('compact ribbon and another toolbar menu switch in one click without reopening the old surface', () => {
+  const f = harness({ withRibbon: true }), { text, display } = f.ribbon;
+  keyboardOpen(text.trigger);
+  f.second.fire('pointerdown'); f.second.focus(); f.second.click();
+  assert.equal(text.panel.hidden, true); assert.ok(text.panel.parentElement === text.home);
+  assert.equal(text.trigger.getAttribute('aria-expanded'), 'false');
+  assert.equal(f.api.getState().menuId, 'secondMenu'); assert.equal(f.document.activeElement?.id, f.other.id);
+  f.ribbon.api.closePopovers();
+  assert.equal(f.api.getState().menuId, 'secondMenu'); assert.equal(f.document.activeElement?.id, f.other.id);
+  display.trigger.fire('pointerdown'); display.trigger.focus(); display.trigger.click();
+  assert.equal(f.secondPanel.hidden, true); assert.equal(f.second.getAttribute('aria-expanded'), 'false');
+  assert.equal(display.panel.hidden, false); assert.equal(f.document.activeElement?.id, display.first.id);
+  assert.equal(display.trigger.getAttribute('aria-expanded'), 'true');
+});
+
+test('the first complete graph gesture only dismisses a compact ribbon form', () => {
+  const f = harness({ withRibbon: true }), entry = f.ribbon.text;
+  const types = ['pointerdown', 'mousedown', 'pointermove', 'mousemove', 'pointerup', 'mouseup', 'click'];
+  const graphEvents = [];
+  for (const type of types) f.graph.addEventListener(type, () => graphEvents.push(type));
+  keyboardOpen(entry.trigger);
+  assert.equal(entry.panel.hidden, false);
+  for (const type of types) {
+    const pointerId = type.startsWith('pointer') ? 1 : undefined;
+    assert.equal(f.node.fire(type, { pointerId }).defaultPrevented, true, type);
+  }
+  assert.deepEqual(graphEvents, [], 'closing the form must not select, drag or pan the graph');
+  assert.equal(entry.panel.hidden, true); assert.ok(entry.panel.parentElement === entry.home);
+  f.advance(600); f.node.fire('pointerdown');
+  assert.deepEqual(graphEvents, ['pointerdown'], 'a later deliberate graph gesture remains available');
+});
+
+test('expanding the ribbon restores the original inputs, values and inline group roles', () => {
+  const f = harness({ withRibbon: true }), { text, display } = f.ribbon;
+  const font = text.first, showId = display.first, commands = [];
+  f.document.addEventListener('funds:ribbon-command', event => commands.push(event.detail));
+  font.value = 'Microsoft YaHei'; showId.checked = false;
+  keyboardOpen(text.trigger);
+  f.ribbon.api.setCollapsed(false);
+  for (const entry of [text, display]) {
+    assert.ok(entry.panel.parentElement === entry.home);
+    assert.equal(entry.panel.getAttribute('role'), 'group');
+    assert.equal(entry.panel.hidden, false); assert.equal(entry.panel.inert, false);
+    assert.equal(entry.panel.classList.contains('toolbar-menu'), false);
+    for (const property of ['left', 'top', 'maxWidth', 'maxHeight', 'transformOrigin']) assert.equal(entry.panel.style[property], '');
+    assert.equal(entry.trigger.getAttribute('aria-expanded'), 'false');
+  }
+  assert.ok(f.document.getElementById('labelFontFamily') === font); assert.equal(font.value, 'Microsoft YaHei');
+  assert.ok(f.document.getElementById('showIdCk') === showId); assert.equal(showId.checked, false);
+  assert.equal(f.document.querySelectorAll('#labelFontFamily').length, 1);
+  assert.equal(f.document.querySelectorAll('#showIdCk').length, 1);
+  assert.equal(f.api.isOpen(), false); assert.deepEqual(commands, [], 'moving controls never emits editing commands');
+});
+
+test('a compact More command relinquishes its surface before the next modal callback takes focus', () => {
+  const f = harness({ withRibbon: true }), { more } = f.ribbon;
+  const dialog = f.add(f.document.body, 'dialog', 'nextCommandDialog'); dialog.hidden = true;
+  const input = f.add(dialog, 'input', 'nextCommandInput');
+  let calls = 0;
+  f.document.addEventListener('funds:ribbon-command', event => {
+    if (event.detail.command !== 'accountDetails') return;
+    calls++;
+    assert.equal(f.api.isOpen(), false, 'the command callback must not inherit an open toolbar form');
+    assert.equal(more.panel.hidden, true); assert.ok(more.panel.parentElement === more.home);
+    assert.equal(more.trigger.getAttribute('aria-expanded'), 'false');
+    // This callback models the next native dialog's focus handoff; real native
+    // modal close/restoration remains a separate browser verification.
+    dialog.hidden = false; dialog.open = true; input.focus();
+  });
+  keyboardOpen(more.trigger); assert.equal(f.document.activeElement?.id, more.arrange.id);
+  more.action.click();
+  assert.equal(calls, 1); assert.equal(dialog.open, true);
+  f.ribbon.api.closePopovers(); f.tick();
+  assert.equal(f.document.activeElement?.id, input.id, 'late popover cleanup cannot reclaim the modal focus');
+});
+
+test('the independent More arrange onclick runs once after the surface has closed and returned home', () => {
+  const f = harness({ withRibbon: true }), { more } = f.ribbon;
+  let calls = 0, commands = 0;
+  f.document.addEventListener('funds:ribbon-command', () => commands++);
+  more.arrange.onclick = () => {
+    calls++;
+    assert.equal(f.api.isOpen(), false, 'layout must start after the More surface relinquishes control');
+    assert.equal(more.panel.hidden, true); assert.equal(more.panel.inert, true);
+    assert.ok(more.panel.parentElement === more.home);
+    assert.equal(more.trigger.getAttribute('aria-expanded'), 'false');
+  };
+  keyboardOpen(more.trigger); more.arrange.click();
+  assert.equal(calls, 1); assert.equal(commands, 0, 'the retained native onclick is not converted into a second ribbon command');
+});
+
+test('a queued scroll from an unchanged compact ancestor preserves the newly opened form and field focus', () => {
+  const f = harness({ withRibbon: true }), { text, compact } = f.ribbon;
+  // The browser has already scrolled the trigger into view before Enter. Its
+  // queued scroll notification arrives after the form used that final geometry.
+  text.trigger.rect.left = 120;
+  keyboardOpen(text.trigger);
+  const position = [text.panel.style.left, text.panel.style.top];
+  compact.fire('scroll');
+  assert.equal(f.api.isOpen(), true);
+  assert.equal(text.panel.hidden, false); assert.equal(text.panel.inert, false);
+  assert.equal(text.trigger.getAttribute('aria-expanded'), 'true');
+  assert.equal(f.document.activeElement?.id, text.first.id);
+  assert.deepEqual([text.panel.style.left, text.panel.style.top], position);
+});
+
+test('scrolling the same compact ancestor closes a form when its trigger really moves', () => {
+  const f = harness({ withRibbon: true }), { text, compact } = f.ribbon;
+  keyboardOpen(text.trigger);
+  text.trigger.rect.left -= 30;
+  compact.fire('scroll');
+  assert.equal(f.api.isOpen(), false);
+  assert.equal(text.panel.hidden, true); assert.equal(text.trigger.getAttribute('aria-expanded'), 'false');
+});
+
+test('an unrelated external scroll still closes a compact form with an unchanged trigger', () => {
+  const f = harness({ withRibbon: true }), { text } = f.ribbon;
+  keyboardOpen(text.trigger);
+  f.graph.fire('scroll');
+  assert.equal(f.api.isOpen(), false);
+  assert.equal(text.panel.hidden, true); assert.equal(text.trigger.getAttribute('aria-expanded'), 'false');
 });
