@@ -37,6 +37,7 @@ UI_ICON_NAMES = (
 STATIC_NAMES = (
     "navigation.css", "appearance.css", "appearance.js", "analysis-link.js", "import-workflow.js",
     "workspace-drafts.js", "workspace-session.js", "account-workspace.js", "app-navigation.js",
+    "feedback-core.mjs", "feedback-ui.mjs", "feedback-workspace.js", "feedback-dialogs.js", "feedback.css",
     "index.html", "analysis.html", "license.html", "license.js", "app.js",
     "analysis.js", "analysis.css", "case-workspace.js", "table-scroll.js", "style.css", "money.js", "graph-view.js", "graph-layout.js", "graph-layout-worker.js", "graph-layout-quality.js", "graph-routing.js", "graph-route-quality.js",
     "graph-labels.js", "graph-viewport.js", "graph-minimap.js", "minimap-navigation.js", "graph-selection.js", "logo.png", "favicon.ico", "favicon-32.png",

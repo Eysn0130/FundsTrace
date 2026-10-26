@@ -100,7 +100,7 @@ test('the actual native wrapper never accepts unavailable maximize or restore in
 });
 
 function startupFlow(overrides={}) {
-  const start=appSource.indexOf('async function nativeStartupBounds('),end=appSource.indexOf('\nfunction readWorkspaceTools()',start);
+  const start=appSource.indexOf('async function nativeStartupBounds('),end=appSource.indexOf('\nfunction readWorkspaceTools(',start);
   assert.ok(start>=0&&end>start);
   const actions=[],report={startup:{}},captionChecks=[];
   let current=maximized();

@@ -12,6 +12,8 @@
 <link rel="stylesheet" href="/static/appearance.css">
 <link rel="stylesheet" href="/static/entity-picker.css">
 <link rel="stylesheet" href="/static/entity-search.css">
+<link rel="stylesheet" href="/static/feedback.css">
+<script type="module" src="/static/feedback-ui.mjs"></script>
 <script src="/static/appearance.js"></script>
 <script defer src="/static/desktop-updates.js"></script>
 <script src="/static/vendor/g6.min.js"></script>
@@ -330,7 +332,6 @@
     <div id="tab-search" class="tab-body">
       <div class="query-disclosure-head">
         <button class="btn small query-toggle" id="btnQueryToggle" type="button" aria-expanded="true" aria-controls="queryFields"><img class="ui-icon" src="/static/ui-icons/chevron-up.svg" alt=""><span>筛选</span></button>
-        <span class="stats query-stat-line" id="statLine">加载中…</span><span id="querySummary" class="query-summary">全部流水</span>
       </div>
       <p class="workflow-status" id="importCoverageNote" role="note" hidden></p>
       <div class="query-disclosure" id="queryFields"><div class="query-controls">
@@ -350,7 +351,7 @@
       </div>
       </div></div>
       <div id="bulkTrackBar">
-        <div class="bulk-selection"><label class="el-ck" title="选择作为批量追踪起点的流水，不代表是否已上图"><input type="checkbox" id="flowCkAll">本页锚点</label><span class="muted" id="flowCkCount">已选锚点 0 笔</span></div>
+        <div class="bulk-selection"><label class="el-ck" title="只勾选当前已显示的流水，不包含尚未载入的结果；滚出显示范围的已选锚点保留"><input type="checkbox" id="flowCkAll">当前显示锚点</label><span class="muted" id="flowCkCount">已选锚点 0 笔</span></div>
         <div class="bulk-options">
           <label for="bulkDir">方向</label><select id="bulkDir" title="去向：以收款方为主账号追踪后续转出；来源：以付款方为主账号追踪此前转入">
             <option value="target">去向·收款方</option><option value="source">来源·付款方</option>
@@ -365,17 +366,11 @@
         <label for="flowTableWrap">文本</label><select id="flowTableWrap"><option value="wrap">完整换行</option><option value="single">完整单行</option></select>
         <button class="btn small icon-button" id="btnFlowOverview" type="button" aria-label="展开流水表" aria-haspopup="dialog" title="展开流水表 · 勾选即时上图"><img class="ui-icon" src="/static/ui-icons/arrows-maximize.svg" alt=""></button>
       </div>
-      <p class="flow-table-hint" id="flowTableHint">底部横滚查看全部 7 列 · 空格勾选，Enter 详情</p>
-      <div class="tbl-wrap flow-table-scroll" id="flowTableScroll" data-flow-density="compact" data-flow-wrap="wrap" tabindex="0" role="region" aria-label="流水查询结果表格" aria-describedby="flowTableHint">
+      <div class="tbl-wrap flow-table-scroll" id="flowTableScroll" data-flow-density="compact" data-flow-wrap="wrap" tabindex="0" role="region" aria-label="流水查询结果表格">
         <table class="tbl" id="flowTable">
           <thead><tr><th scope="col" aria-label="追踪锚点" id="flowSelectionHeader"><span class="sr-only">锚点</span></th><th scope="col">交易<br>时间</th><th scope="col">付款方</th><th scope="col">收款方</th><th scope="col">金额</th><th scope="col">摘要</th><th scope="col">操作</th></tr></thead>
           <tbody id="flowTbody"></tbody>
         </table>
-      </div>
-      <div class="pager">
-        <button class="btn small" id="btnPrev">上一页</button>
-        <span id="pageInfo"></span>
-        <button class="btn small" id="btnNext">下一页</button>
       </div>
     </div>
     <div id="tab-batches" class="tab-body" style="display:none">
@@ -452,7 +447,7 @@
 <div class="modal flow-overview" id="flowOverview" style="display:none" role="dialog" aria-modal="true" aria-labelledby="flowOverviewTitle" aria-describedby="flowOverviewHelp">
   <section class="modal-box flow-overview-box">
     <div class="modal-head"><div><h2 id="flowOverviewTitle">流水全览</h2><p class="action-dialog-context" id="flowOverviewContext"></p></div><button class="btn small icon-button" id="btnCloseFlowOverview" type="button" aria-label="关闭流水全览" title="关闭 · Escape"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></div>
-    <div class="overview-membership-tools"><label class="el-ck"><input type="checkbox" id="overviewTrackAll">本页全部上图</label><span id="overviewMembershipStatus" role="status" aria-live="polite"></span><button class="btn small" id="btnOverviewUndo" type="button" disabled>撤销</button><button class="btn small" id="btnOverviewRedo" type="button" disabled>重做</button></div>
+    <div class="overview-membership-tools"><label class="el-ck"><input type="checkbox" id="overviewTrackAll">当前显示全部上图</label><span id="overviewMembershipStatus" role="status" aria-live="polite"></span><button class="btn small" id="btnOverviewUndo" type="button" disabled>撤销</button><button class="btn small" id="btnOverviewRedo" type="button" disabled>重做</button></div>
     <p class="flow-table-hint" id="flowOverviewHelp">勾选加入当前画布，取消勾选移除；可撤销。关闭只收起视图，选择继续生效。</p>
     <div id="flowOverviewContent" class="flow-overview-content"></div>
   </section>
@@ -745,6 +740,8 @@
 <script src="/static/table-workspace.js?v=neighborhood-search-1"></script>
 <script src="/static/workspace-session.js"></script>
 <script src="/static/account-workspace.js"></script>
+<script src="/static/feedback-dialogs.js"></script>
+<script src="/static/feedback-workspace.js"></script>
 <script src="/static/app-navigation.js"></script>
 <script src="/static/ui-dialogs.js?v=export-workspace-1"></script>
 <script src="/static/workflow-ui.js?v=main-accounts-1"></script>

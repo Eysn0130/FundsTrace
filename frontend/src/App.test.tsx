@@ -302,7 +302,7 @@ describe('FundsTrace case workspace', () => {
       render(<App api={api} embedded />); h.bind(); await screen.findByRole('button', { name: '核对流水 SYN-1' });
       await h.upload(); await h.answer('import-acquire'); await screen.findByText('合成提交未确认');
       expect(h.requests().filter(request => request.action === 'import-release')).toHaveLength(0);
-      fireEvent.click(screen.getByRole('button', { name: '取消' }));
+      fireEvent.click(screen.getByRole('button', { name: '关闭进度' }));
       const notice = screen.getByRole('region', { name: '待核对导入' });
       fireEvent.click(within(notice).getByRole('button', { name: /核对导入结果/ }));
       await h.answer('import-release', false, '合成任务仍在运行'); await screen.findByText('合成任务仍在运行');
@@ -320,7 +320,7 @@ describe('FundsTrace case workspace', () => {
       render(<App api={api} embedded />); h.bind(); await screen.findByRole('button', { name: '核对流水 SYN-1' });
       await h.upload(); await h.answer('import-acquire');
       const release = await h.answer('import-release'); expect(release.payload).toEqual({ importId: preview.import_id, rejected: true });
-      await screen.findByText('合成请求被拒绝'); fireEvent.click(screen.getByRole('button', { name: '取消' }));
+      await screen.findByText('合成请求被拒绝'); fireEvent.click(screen.getByRole('button', { name: '关闭进度' }));
       expect(screen.queryByRole('region', { name: '待核对导入' })).toBeNull(); expect(api.commit).toHaveBeenCalledOnce();
     } finally { h.close(); }
   });
@@ -709,5 +709,104 @@ describe('FundsTrace case workspace', () => {
     await act(async () => { pending.resolve(completed); });
     await screen.findByText('流水已写入当前案件');
     expect(commit).not.toHaveBeenCalled();
+  });
+});
+
+describe('parent-owned import feedback', () => {
+  it('opens a closed original progress task on a scoped host command without any new POST', async () => {
+    const h = embeddedHost(), api = fakeApi();
+    const commit = vi.spyOn(api, 'commit'), repreview = vi.spyOn(api, 'repreview');
+    const imports = vi.spyOn(api, 'imports').mockResolvedValue({ case_id: '1', items: [session({ stage: 'importing', recoverable: false })] });
+    const job = vi.spyOn(api, 'job').mockResolvedValue({ ...completed, stage: 'importing', done: 0, total: 0, result: null });
+    try {
+      const view = render(<App api={api} embedded />); h.bind();
+      await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      h.send({ type: 'feedback-open-import', caseId: '1', generation: 0, importId: preview.import_id });
+      expect(imports).not.toHaveBeenCalled();
+      h.send({ type: 'feedback-open-import', caseId: '1', generation: 1, importId: preview.import_id });
+      await screen.findByRole('dialog', { name: '导入流水' });
+      await waitFor(() => expect(job).toHaveBeenCalledWith('1', preview.import_id, expect.any(AbortSignal)));
+      fireEvent.click(screen.getByRole('button', { name: '关闭进度' }));
+      expect(screen.queryByRole('dialog', { name: '导入流水' })).toBeNull();
+      h.send({ type: 'feedback-open-import', caseId: '1', generation: 1, importId: preview.import_id });
+      await screen.findByRole('dialog', { name: '导入流水' });
+      expect(commit).not.toHaveBeenCalled(); expect(repreview).not.toHaveBeenCalled();
+      expect(h.messages.mock.calls.some(([message]) => message.type === 'feedback' && message.event?.importId === preview.import_id)).toBe(true);
+      expect(document.querySelector('.ff-dock')).toBeNull();
+      view.unmount();
+    } finally { h.close(); }
+  });
+});
+
+describe('verified parent import settlement', () => {
+  it('clears only the original local unknown banner after a trusted current parent settlement without posting again', async () => {
+    const h = embeddedHost(), api = fakeApi();
+    api.commit = vi.fn(async () => { throw new ApiError('synthetic_lost_receipt', '合成提交回执丢失'); });
+    try {
+      render(<App api={api} embedded />); h.bind(); await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      await h.upload(); await h.answer('import-acquire'); await screen.findByText('合成提交回执丢失');
+      fireEvent.click(screen.getByRole('button', { name: '关闭进度' }));
+      h.bind({ pendingImports: [] });
+      expect(screen.getByRole('region', { name: '待核对导入' })).toBeTruthy();
+      expect(screen.getByText(/导入提交结果尚未确认/)).toBeTruthy();
+      for (const message of [
+        { caseId: '2', generation: 1, importId: preview.import_id },
+        { caseId: '1', generation: 0, importId: preview.import_id },
+        { caseId: '1', generation: 1, importId: 'abcdefabcdef' },
+      ]) {
+        h.send({ type: 'feedback-import-settled', ...message });
+        expect(screen.getByRole('region', { name: '待核对导入' })).toBeTruthy();
+        expect(screen.getByText(/导入提交结果尚未确认/)).toBeTruthy();
+      }
+      const requests = h.requests().length;
+      h.send({ type: 'feedback-import-settled', caseId: '1', generation: 1, importId: preview.import_id });
+      await waitFor(() => expect(screen.queryByRole('region', { name: '待核对导入' })).toBeNull());
+      expect(screen.queryByText(/导入提交结果尚未确认/)).toBeNull();
+      expect(h.requests()).toHaveLength(requests); expect(api.commit).toHaveBeenCalledOnce();
+    } finally { h.close(); }
+  });
+});
+
+describe('late local import transport replies', () => {
+  it('does not revive a local unknown banner when the parent already verified and settled the original import', async () => {
+    const h = embeddedHost(), api = fakeApi();
+    let reject!: (reason: Error) => void;
+    api.commit = vi.fn(() => new Promise<Awaited<ReturnType<FundsApi['commit']>>>((_resolve, fail) => { reject = fail; }));
+    try {
+      render(<App api={api} embedded />); h.bind(); await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      await h.upload(); await h.answer('import-acquire'); await waitFor(() => expect(api.commit).toHaveBeenCalledOnce());
+      h.send({ type: 'feedback-import-settled', caseId: '1', generation: 1, importId: preview.import_id });
+      expect(screen.queryByRole('region', { name: '待核对导入' })).toBeNull();
+      await act(async () => reject(new Error('合成本地回执迟到失败')));
+      await screen.findByText('流水已写入当前案件');
+      expect(screen.queryByText('合成本地回执迟到失败')).toBeNull();
+      expect(screen.queryByRole('button', { name: '重新查询进度' })).toBeNull();
+      expect(screen.queryByRole('region', { name: '待核对导入' })).toBeNull();
+      expect(screen.queryByText(/导入提交结果尚未确认/)).toBeNull();
+      expect(api.commit).toHaveBeenCalledOnce();
+    } finally { h.close(); }
+  });
+});
+
+
+describe('settled original import result observation', () => {
+  it.each(['done', 'error'] as const)('reads the real %s receipt into an already-open unknown dialog without another POST or release request', async stage => {
+    const h = embeddedHost(), api = fakeApi();
+    api.commit = vi.fn(async () => { throw new Error('合成POST回执丢失'); });
+    api.job = vi.fn(async (): Promise<ImportJob> => stage === 'done' ? completed : { ...completed, stage: 'error', error: '合成服务端确认失败', result: null });
+    try {
+      render(<App api={api} embedded />); h.bind(); await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      await h.upload(); await h.answer('import-acquire'); await screen.findByText('合成POST回执丢失');
+      const requests = h.requests().length, feedbackBefore = h.messages.mock.calls.length;
+      h.send({ type: 'feedback-import-settled', caseId: '1', generation: 1, importId: preview.import_id });
+      if (stage === 'done') await screen.findByText('流水已写入当前案件');
+      else await screen.findByText('合成服务端确认失败');
+      expect(api.job).toHaveBeenCalledWith('1', preview.import_id, expect.any(AbortSignal));
+      expect(api.commit).toHaveBeenCalledOnce(); expect(h.requests()).toHaveLength(requests);
+      expect(h.messages.mock.calls.slice(feedbackBefore).filter(([message]) => message.type === 'feedback' && message.event?.kind === 'task').every(([message]) => ['success', 'error'].includes(message.event.status))).toBe(true);
+      expect(screen.queryByText('合成POST回执丢失')).toBeNull();
+      expect(screen.queryByRole('button', { name: '重新查询进度' })).toBeNull();
+      expect(screen.queryByRole('region', { name: '待核对导入' })).toBeNull();
+    } finally { h.close(); }
   });
 });

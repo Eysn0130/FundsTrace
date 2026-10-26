@@ -178,12 +178,14 @@ function harness({ execute, withDialogs = false } = {}) {
   let executeIO = execute || (async (_format, task) => { task.setPhase('generating'); return { downloadStarted: true }; });
   const window = new Element('#window'); window.appendChild(document.root);
   const context = vm.createContext({ window, document, console,
+    CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
     getComputedStyle: node => ({ display: node.hidden ? 'none' : node.style.display || 'block' }),
     MutationObserver: class { constructor(callback) { this.callback = callback; } observe(target) { assert.ok(target); } disconnect() {} },
     setTimeout: (callback, delay = 0) => { timers.push({ callback, delay }); return timers.length; }, clearTimeout() {},
   });
   vm.runInContext(money, context, { filename: 'money.js' });
   vm.runInContext("const $ = selector => document.querySelector(selector); const $$ = selector => [...document.querySelectorAll(selector)]; const fmtCount = value => FundsMoney.count(value);", context);
+  vm.runInContext(declaredFunction('operationFeedbackChanged'), context, { filename: 'app.js:operationFeedbackChanged' });
   vm.runInContext(declaredFunction('installExportWorkspace'), context, { filename: 'app.js:installExportWorkspace' });
   context.exportHost = {
     getContext: () => ({ ...current }),

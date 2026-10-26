@@ -17,7 +17,7 @@
   --required-label: #ddb46c;
   --required-asterisk: #e18c91;
   --control-radius: 6px;
-  --dialog-radius: 18px;
+  --dialog-radius: 12px;
   --surface-table-header: #202d3c;
   --focus-ring: #7ab8f0;
   --selection-surface: color-mix(in srgb, var(--accent) 14%, var(--surface-raised));
@@ -104,6 +104,7 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 /* Shared topbar secondary-menu shell. Command rows retain the product SVG set. */
 .toolbar-menu, .toolbar-form { position: fixed; margin: 0; width: var(--menu-width); padding: 6px; border: 1px solid var(--border); border-radius: var(--menu-radius); background: var(--surface-raised); color: var(--text-primary); box-shadow: var(--menu-shadow); overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .toolbar-menu { z-index: var(--layer-toolbar-menu); }
+.toolbar-menu:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .toolbar-menu.is-open, .toolbar-form[open] { animation: toolbar-menu-enter var(--menu-motion); }
 .toolbar-menu-item { display: flex; align-items: center; gap: 12px; width: 100%; min-height: var(--menu-row-height); padding: 8px 12px; border: 0; border-radius: var(--control-radius); background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; font: inherit; font-size: 14px; line-height: 1.5; }
 .toolbar-menu-item .ui-icon { width: var(--menu-icon-size); height: var(--menu-icon-size); }
@@ -346,14 +347,13 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 @media (prefers-reduced-motion: reduce) { .data-tools-dialog[open], .data-tools-progress .ui-icon { animation: none !important; } }
 
 /* ---------- Four-tab ribbon and single-row compact tools ---------- */
-.workspace-toolbar { position: relative; flex: 0 0 auto; min-width: 0; height: 148px; background: var(--surface-raised); border-bottom: 1px solid var(--border-strong); z-index: 21; transition: height var(--workspace-ease); }
-/* Keep the approved 1280px tool composition when Windows has less usable space.
-   CSS zoom participates in flow, so the canvas receives the scaled bar height. */
-#topbar, .workspace-toolbar { width: var(--toolbar-fit-width, 100%); zoom: var(--toolbar-fit-scale, 1); }
+.workspace-toolbar { position: relative; flex: 0 0 auto; min-width: 0; height: 127px; background: var(--surface-raised); border-bottom: 1px solid var(--border-strong); z-index: 21; transition: height var(--workspace-ease); }
+/* Fit the slot without scaling text, controls or hit areas. */
+#topbar, .workspace-toolbar { width: var(--toolbar-fit-width, 100%); }
 #graphToolbar { height: 100%; min-width: 0; }
-.ribbon-tabbar { height: 35px; display: flex; align-items: stretch; border-bottom: 1px solid var(--border-strong); padding: 0 8px; gap: 8px; }
+.ribbon-tabbar { height: 34px; display: flex; align-items: center; border-bottom: 1px solid var(--border); padding: 0 8px; gap: 6px; }
 #ribbonTabs { display: flex; flex: none; }
-#ribbonTabs [role="tab"] { background: transparent; border: 0; border-bottom: 3px solid transparent; color: var(--text-primary); cursor: pointer; font: inherit; padding: 0 14px; min-width: 68px; }
+#ribbonTabs [role="tab"] { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); cursor: pointer; font: inherit; padding: 0 10px; min-width: 56px; min-height: 34px; }
 #ribbonTabs [role="tab"][aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--accent); background: var(--selection-surface); }
 #ribbonTabs [role="tab"]:hover { background: var(--surface-control-hover); }
 #ribbonTabs [role="tab"]:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -3px; }
@@ -371,24 +371,27 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .workspace-view-option[aria-checked="true"] { background: var(--selection-surface); }
 .workspace-view-option[aria-checked="true"] .workspace-view-check { opacity: 1; filter: var(--icon-accent-filter); }
 
-.ribbon-collapse-button { flex: none; border: 0; background: transparent; color: var(--text-primary); font-size: 11px; min-height: 30px; padding: 2px 6px; }
+.ribbon-collapse-button { flex: none; border: 0; background: transparent; color: var(--muted); font-size: 11px; width: 28px; min-height: 28px; padding: 2px; }
+.ribbon-collapse-button > span, .ribbon-inspect > span { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+#editorToolbar .ribbon-inspect { min-height: 28px; height: 28px; width: 28px; padding: 3px !important; }
 .ribbon-collapse-button .ui-icon { width: 15px; height: 15px; }
-#ribbonPanels { height: 112px; }
+#ribbonPanels { height: 92px; }
 #ribbonPanels[hidden] { display: none !important; }
-.ribbon-panel { height: 112px; display: flex; padding: 7px 10px 4px; overflow: hidden; }
-.ribbon-group { display: flex; flex-direction: column; justify-content: space-between; min-width: max-content; flex: 0 0 auto; border-right: 1px solid var(--border-strong); padding: 0 12px; }
+.ribbon-panel { height: 92px; display: flex; padding: 4px 10px 3px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.ribbon-group { display: flex; flex-direction: column; justify-content: space-between; min-width: max-content; flex: 0 0 auto; border-right: 1px solid var(--border); padding: 0 10px; }
 .ribbon-group:first-child { padding-left: 2px; }
 .ribbon-group:last-child { border-right: 0; }
 .ribbon-group-body, .ribbon-bundle, .ribbon-inline { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .ribbon-group-body { flex: 1; }
-.ribbon-group-label { text-align: center; color: var(--muted); font-size: 11px; line-height: 19px; white-space: nowrap; }
-.ribbon-small-stack { display: flex; flex-direction: column; align-items: stretch; gap: 3px; }
-.ribbon-small-stack .ribbon-action { flex-direction: row; justify-content: flex-start; min-height: 29px; gap: 6px; padding: 3px 16px 3px 5px; }
+.ribbon-group-label { text-align: center; color: var(--muted); font-size: 11px; line-height: 14px; white-space: nowrap; }
+.ribbon-small-stack { display: grid; grid-auto-flow: column; grid-template-rows: repeat(2, auto); align-content: center; gap: 3px; }
+.ribbon-small-stack .ribbon-action { flex-direction: row; justify-content: flex-start; min-height: 26px; gap: 5px; padding: 1px 8px 1px 4px; }
 .ribbon-small-stack .ribbon-action .ui-icon { width: 18px; height: 18px; }
 .ribbon-small-stack .ribbon-planned { width: 5px; height: 5px; top: 5px; right: 4px; }
 .ribbon-slot { display: contents; }
-.ribbon-action { position: relative; flex-direction: column; gap: 5px; min-width: 49px; min-height: 64px; padding: 6px 7px; border-color: transparent; background: transparent; font-size: 12px; }
-.ribbon-action .ui-icon { width: 27px; height: 27px; }
+.ribbon-action { position: relative; flex-direction: column; gap: 4px; min-width: 49px; min-height: 56px; padding: 4px 6px; border-color: transparent; background: transparent; font-size: 12px; }
+.ribbon-action .ui-icon { width: 24px; height: 24px; }
+#editorToolbar .toolbar-menu-chevron { width: 12px; height: 12px; }
 .ribbon-action:hover:not(:disabled) { background: var(--surface-control-hover); border-color: var(--border-strong); }
 .ribbon-action[aria-pressed="true"] { background: var(--selection-surface); border-color: var(--accent); }
 .ribbon-action.planned { opacity: 1; color: var(--muted); }
@@ -400,8 +403,8 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 #btnClearGraph:hover { background: var(--state-danger-surface); border-color: var(--state-danger-border); }
 #ribbonLayoutControls select { width: 104px; }
 .ribbon-field { display: flex; align-items: center; gap: 7px; color: var(--text-primary); font-size: 12px; white-space: nowrap; }
-.ribbon-field input, .ribbon-field select { height: 31px; }
-.ribbon-stack { display: flex; flex-direction: column; gap: 7px; }
+.ribbon-field input, .ribbon-field select { min-height: 28px; height: 28px; }
+.ribbon-stack { display: flex; flex-direction: column; gap: 4px; }
 .ribbon-labels { gap: 8px; }
 .el-group { display: inline-flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
 .el-ck { color: var(--text-primary); user-select: none; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; cursor: pointer; font-size: 12px; }
@@ -435,7 +438,7 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 #edgeTypeSel { width: 76px; }
 #edgeWidth { width: 84px; }
 #edgeDash { width: 70px; }
-.ribbon-popover.is-open { display: flex; flex-wrap: wrap; align-items: center; position: fixed; z-index: 90; max-width: min(440px,calc(100vw - 16px)); min-width: 210px; overflow: auto; padding: 15px; gap: 12px; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 6px; box-shadow: 0 10px 36px var(--shadow-color); }
+.ribbon-popover.is-open { display: flex; flex-wrap: wrap; align-items: center; position: fixed; z-index: var(--layer-toolbar-menu); width: max-content; max-width: min(440px,calc(100vw - 16px)); min-width: min(210px,calc(100vw - 16px)); overflow: auto; padding: 12px; gap: 10px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: var(--menu-radius); box-shadow: var(--menu-shadow); }
 .ribbon-popover-title { flex-basis: 100%; color: var(--text-primary); font-weight: 600; }
 .ribbon-popover p { flex-basis: 100%; color: var(--muted); font-size: 11px; max-width: 320px; }
 .ribbon-popover .ribbon-field { flex-basis: 100%; justify-content: space-between; }
@@ -455,12 +458,12 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .ribbon-quick .ribbon-action span { display: none; }
 .ribbon-quick .ribbon-action .ui-icon { width: 21px; height: 21px; }
 #btnCanvasSave .ui-icon { filter:var(--icon-accent-filter); }
-.funds-ribbon.is-collapsed { height: 66px; }
-#ribbonCompact { display: flex; align-items: center; height: 31px; overflow: hidden; padding: 1px 8px; gap: 2px; }
+.funds-ribbon.is-collapsed { height: 77px; }
+#ribbonCompact { display: flex; align-items: center; height: 42px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; padding: 2px 8px; gap: 3px; }
 /* The always-visible top row already owns the details action. */
 #ribbonCompact > [data-ribbon-command="inspectSelection"] { display: none; }
 #ribbonCompact .ribbon-bundle { flex: none; }
-#ribbonCompact .ribbon-action { min-height: 28px; min-width: 42px; flex-direction: row; font-size: 11px; gap: 3px; padding: 2px 5px; }
+#ribbonCompact .ribbon-action { min-height: 28px; min-width: 42px; flex-direction: row; font-size: 12px; gap: 3px; padding: 2px 5px; }
 #ribbonCompact .ribbon-action .ui-icon { width: 17px; height: 17px; }
 #ribbonCompact #edgeLabelGroup { max-width: none; flex-wrap: nowrap; }
 #ribbonCompact #btnDisplayActions { flex-direction: row; min-height: 28px; }
@@ -474,6 +477,8 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 #ribbonCompact select, #ribbonCompact input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]) { min-height: 26px; height: 26px; }
 #ribbonCompact .ribbon-divider { height: 23px; }
 #ribbonCompact .ribbon-expand-button { display: none; }
+.ribbon-panel::-webkit-scrollbar, #ribbonCompact::-webkit-scrollbar { height: 8px; }
+.ribbon-panel::-webkit-scrollbar-thumb, #ribbonCompact::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 6px; }
 
 .ribbon-divider { flex: 0 0 1px; width: 1px; height: 39px; background: var(--surface-raised); margin: 0 2px; }
 .ribbon-expand-button { margin-left: auto; align-self: stretch; min-width: 120px; border: 0; border-left: 1px solid var(--border-strong); border-radius: 0; background: var(--surface-control); color: var(--text-primary); font-size: 12px; padding: 4px 10px; }
@@ -505,6 +510,53 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
   .ribbon-panel .ribbon-action { padding-left: 4px; padding-right: 4px; }
 }
 
+#editorToolbar #graphToolbar .case-box { margin-left: 12px; gap: 6px; }
+#editorToolbar #graphToolbar .case-box select { width: 145px; }
+#editorToolbar #graphToolbar #canvasSel { width: 130px; }
+#editorToolbar .ribbon-panel select { min-height: 28px; height: 28px; }
+/* The context row reflows inside its slot; commands keep their own scroller. */
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) { height: 129px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]).is-collapsed { height: 99px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-tabbar { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(80px,auto) 28px; grid-template-rows: 28px 28px; height: 56px; gap: 0 6px; align-items: center; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #ribbonTabs { grid-area: 1 / 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #ribbonTabs [role="tab"] { min-height: 28px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-quick { grid-area: 1 / 2; margin: 0; padding-left: 6px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #btnWorkspaceView { grid-area: 1 / 3; justify-self: end; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #btnWorkspaceView > :first-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-collapse-button { grid-area: 1 / 4; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #graphToolbar .case-box { grid-area: 2 / 1 / auto / 3; width: 100%; margin: 0; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .case-box label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #graphToolbar .case-box select { flex: 1 1 140px; width: 0; min-width: 96px; max-width: 240px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #ribbonSelectionStatus { grid-area: 2 / 3; margin: 0; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-inspect { grid-area: 2 / 4; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #ribbonPanels,
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel { height: 72px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-group-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel { padding: 3px 8px 2px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-group { padding-left: 4px; padding-right: 4px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel .ribbon-action:not(.ribbon-type-button) { min-height: 52px; gap: 3px; padding: 3px 4px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel .ribbon-action > .ui-icon { width: 22px; height: 22px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel .ribbon-small-stack .ribbon-action { min-height: 26px; padding: 1px 8px 1px 4px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-stack { flex-direction: row; align-items: center; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) :is(#edgeLabelGroup,#toolbarDisplayExtra) { flex-wrap: nowrap; max-width: none; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #toolbarDisplayExtra .ribbon-field { flex-basis: auto; }
+/* These two commands remain in the adjacent canvas menu in a narrow slot. */
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) :is(#btnCanvasClone,#btnCanvasRemove) { display: none; }
+/* Medium slots retain one context row, with names yielding space to history. */
+#editorToolbar[data-ribbon-layout="narrow"] { height: 107px; }
+#editorToolbar[data-ribbon-layout="narrow"].is-collapsed { height: 77px; }
+#editorToolbar[data-ribbon-layout="narrow"] .ribbon-tabbar { display: flex; height: 34px; gap: 5px; }
+#editorToolbar[data-ribbon-layout="narrow"] #ribbonTabs [role="tab"] { min-width: 48px; padding-left: 8px; padding-right: 8px; min-height: 34px; }
+#editorToolbar[data-ribbon-layout="narrow"] #graphToolbar .case-box { flex: 1 1 242px; width: auto; min-width: 198px; }
+#editorToolbar[data-ribbon-layout="narrow"] #graphToolbar .case-box select { max-width: 160px; }
+#editorToolbar[data-ribbon-layout="narrow"] #ribbonSelectionStatus { flex: 0 1 auto; max-width: 70px; }
+@media (hover: hover) and (pointer: fine) {
+  .toolbar-menu:not([data-toolbar-panel="form"]) { --menu-row-height: 34px; padding: 5px; }
+  .toolbar-menu-item { font-size: 13px; padding: 6px 10px; gap: 10px; }
+  .workspace-view-option { min-height: 52px; }
+  .toolbar-menu-separator { margin: 4px 7px; }
+}
+
 /* ---------- Query and graph regions ---------- */
 main { flex: 1; display: flex; min-width: 0; min-height: 0; position: relative; overflow: hidden; }
 #workspace { overflow: clip; --sidebar-effective-width: min(var(--sidebar-width), var(--sidebar-maximum-width, 760px)); }
@@ -533,14 +585,12 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 #workspace[data-workspace-view="split"] #workspaceSidebarResize { inset: 3px 0; cursor: row-resize; }
 #workspace[data-workspace-view="split"] #workspaceSidebarResize::after { width: 100%; height: 2px; position: absolute; top: 50%; }
 #workspace[data-workspace-view="split"] #btnSidebarToggle { top: 2px; left: 50%; width: 48px; height: 27px; transform: translateX(-50%); }
-#workspace[data-workspace-view="split"] #tab-search { display: grid; grid-template-columns: minmax(0,1fr) auto; grid-template-rows: auto max-content auto auto minmax(48px,1fr) auto; gap: 0 16px; padding: 8px 12px; }
+#workspace[data-workspace-view="split"] #tab-search { display: grid; grid-template-columns: minmax(0,1fr) auto; grid-template-rows: auto max-content auto minmax(48px,1fr); gap: 0 16px; padding: 8px 12px; }
 #workspace[data-workspace-view="split"] #tab-search > .query-disclosure-head { grid-area: 1 / 1 / auto / -1; margin: 0 0 4px; }
 #workspace[data-workspace-view="split"] #queryFields { grid-area: 2 / 1 / auto / -1; }
 #workspace[data-workspace-view="split"] #bulkTrackBar { grid-area: 3 / 1; flex-wrap: wrap; align-content: center; padding: 3px 0; margin: 0; border-top: 0; }
 #workspace[data-workspace-view="split"] .flow-table-tools { grid-area: 3 / 2; margin: 0; align-self: center; }
-#workspace[data-workspace-view="split"] .flow-table-hint { grid-area: 4 / 1 / auto / -1; margin: 0 0 3px; }
-#workspace[data-workspace-view="split"] #flowTableScroll { grid-area: 5 / 1 / auto / -1; min-height: 48px; }
-#workspace[data-workspace-view="split"] #tab-search > .pager { grid-area: 6 / 1 / auto / -1; padding: 5px 0 0; }
+#workspace[data-workspace-view="split"] #flowTableScroll { grid-area: 4 / 1 / auto / -1; min-height: 48px; }
 #workspace[data-workspace-view="split"] #left > .tabs .tab { padding-top: 6px; padding-bottom: 5px; }
 #workspace.workspace-view-changing #left, #workspace.workspace-view-changing #workspaceSidebarEdge { transition: none; }
 #graphPage:has(#workspace.workspace-view-changing) #editorToolbar { transition: none; }
@@ -550,12 +600,10 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 #workspace[data-workspace-view="split"] .query-disclosure.is-collapsed { display: none; }
 #workspace[data-workspace-view="split"] .query-disclosure:not(.is-collapsed) .query-controls { overflow: visible; }
 @container (max-width: 760px) {
-  #workspace[data-workspace-view="split"] #tab-search { grid-template-columns: minmax(0,1fr); grid-template-rows: auto max-content auto auto auto minmax(48px,1fr) auto; }
+  #workspace[data-workspace-view="split"] #tab-search { grid-template-columns: minmax(0,1fr); grid-template-rows: auto max-content auto auto minmax(48px,1fr); }
   #workspace[data-workspace-view="split"] #bulkTrackBar { grid-area: 3 / 1; }
   #workspace[data-workspace-view="split"] .flow-table-tools { grid-area: 4 / 1; }
-  #workspace[data-workspace-view="split"] .flow-table-hint { grid-area: 5 / 1; }
-  #workspace[data-workspace-view="split"] #flowTableScroll { grid-area: 6 / 1; }
-  #workspace[data-workspace-view="split"] #tab-search > .pager { grid-area: 7 / 1; }
+  #workspace[data-workspace-view="split"] #flowTableScroll { grid-area: 5 / 1; }
 }
 
 .tabs { display: flex; flex: none; border-bottom: 1px solid var(--border); min-width: 0; }
@@ -615,24 +663,32 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 .query-disclosure-head { flex: none; display: flex; align-items: center; gap: 9px; min-height: 32px; margin-bottom: 5px; }
 .query-toggle { gap: 4px; padding: 3px 6px; background: transparent; border-color: transparent; }
 .query-toggle .ui-icon { width: 16px; height: 16px; }
-.query-summary { min-width: 0; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .query-disclosure { flex: 0 1 auto; min-height: 100px; display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--workspace-ease), min-height var(--workspace-ease), visibility var(--workspace-ease); }
 .query-disclosure.is-collapsed { min-height: 0; grid-template-rows: 0fr; visibility: hidden; }
 .query-controls { min-height: 0; overflow-y: auto; overflow-x: hidden; }
 #tab-search > .tbl-wrap { flex: 1 0 110px; min-height: 110px; }
+/* Keep the user's disclosure state, while giving the table the remaining slot.
+   The existing filter fields scroll within their own expanded region. */
+#workspace[data-workspace-view="standard"] #queryFields:not(.is-collapsed) { flex: 0 1 200px; min-height: 80px; max-height: 200px; }
+#workspace[data-workspace-view="standard"] .query-controls { overscroll-behavior: contain; }
+#workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex: 1 0 240px; min-height: 240px; }
+@media (max-height: 600px) {
+  #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 180px; min-height: 180px; }
+}
 .flow-table-tools { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 4px 0 3px; font-size: 12px; color: var(--text-primary); }
 .flow-table-tools .result-info { flex: 1; min-width: 50px; overflow-wrap: anywhere; }
 .flow-table-tools select { height: 28px; padding: 2px 24px 2px 6px; font-size: 12px; }
 .flow-table-hint { flex: none; color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0 0 3px; }
-.flow-table-scroll { position: relative; scrollbar-width: thin; scrollbar-color: var(--border) var(--border); overscroll-behavior: contain; }
+.flow-table-scroll { position: relative; scrollbar-width: thin; scrollbar-color: var(--border-strong) var(--surface-raised); overscroll-behavior: contain; }
 .flow-table-scroll::-webkit-scrollbar { width: 7px; height: 8px; }
 .flow-table-scroll::-webkit-scrollbar-track { background: var(--surface-raised); }
-.flow-table-scroll::-webkit-scrollbar-thumb { background: var(--surface-raised); border-radius: 6px; }
+.flow-table-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 6px; }
 .flow-table-scroll:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 #flowTable { width: 100%; min-width: 760px; table-layout: auto; border-collapse: separate; border-spacing: 0; font-size: 12px; }
 #flowTable th { z-index: 2; padding: 6px 4px; height: 34px; color: var(--text-primary); background: var(--surface-table-header); font-size: 12px; line-height: 1.35; white-space: normal; }
 #flowTable th, #flowTable td { border-right: 1px solid var(--border); }
 #flowTable td { padding: 5px 4px; vertical-align: middle; background: var(--surface-raised); line-height: 1.4; }
+#flowTableScroll[data-flow-wrap="wrap"] #flowTable td { vertical-align: top; }
 #flowTable th:first-child, #flowTable td:first-child { position: sticky; left: 0; width: 40px; min-width: 40px; padding: 4px 6px; z-index: 1; border-right-color: var(--border-strong); }
 #flowTable th:first-child { z-index: 3; background: var(--surface-table-header); }
 #flowTable th:nth-child(2), #flowTable td:nth-child(2) { width: 86px; min-width: 86px; }
@@ -663,6 +719,38 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 #flowTable tr[data-id]:focus-visible > td { background: var(--surface-raised); box-shadow: inset 0 1px var(--accent), inset 0 -1px var(--accent); }
 #flowTable tr[data-id]:has(.flow-ck:checked) > td { background: var(--selection-surface); }
 #flowTable .flow-ck { width: 16px; height: 16px; vertical-align: middle; accent-color: var(--accent); }
+/* Mouse/keyboard density: preserve query fields and return chrome space to data. */
+@media (hover: hover) and (pointer: fine) {
+  #workspace[data-workspace-view="standard"] #left { position: relative; }
+  #workspace[data-workspace-view="standard"] #left > .tabs { padding-right: 72px; }
+  #workspace[data-workspace-view="standard"] #left > .tabs .tab { padding: 6px 14px; }
+  #workspace[data-workspace-view="standard"] #tab-search { padding: 8px; }
+  #workspace[data-workspace-view="standard"] .query-disclosure-head { position: absolute; top: 0; right: 8px; height: 34px; min-height: 34px; margin: 0; }
+  #workspace[data-workspace-view="standard"] .query-toggle { min-height: 26px; height: 26px; padding: 2px 4px; }
+  #workspace[data-workspace-view="standard"] #bulkTrackBar { padding: 4px 0; }
+  #workspace[data-workspace-view="standard"] .bulk-selection { min-height: 20px; margin-bottom: 3px; }
+  #workspace[data-workspace-view="standard"] #bulkDir { width: 112px; }
+  #workspace[data-workspace-view="standard"] #bulkX { width: 44px; }
+  #workspace[data-workspace-view="standard"] .flow-table-tools { gap: 4px; padding: 2px 0; }
+  #workspace[data-workspace-view="standard"] .flow-table-tools select,
+  #workspace[data-workspace-view="standard"] #btnFlowOverview { min-height: 28px; height: 28px; }
+  #workspace[data-workspace-view="standard"] #btnFlowOverview { width: 28px; }
+  #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 310px; min-height: 310px; }
+  #flowTable th { height: 32px; padding: 5px 4px; color: var(--muted); font-weight: 500; }
+  #flowTable th:nth-child(2) { white-space: nowrap; }
+  #flowTable th:nth-child(2) br { display: none; }
+  #flowTable th, #flowTable td { border-right-color: color-mix(in srgb, var(--border) 70%, transparent); }
+  #flowTableScroll[data-flow-density="compact"] #flowTable td { padding-top: 4px; padding-bottom: 4px; }
+}
+@media (hover: hover) and (pointer: fine) and (max-height: 700px) {
+  #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 180px; min-height: 180px; }
+}
+#left > .tabs .tab { transition: color 120ms var(--interaction-ease), border-color 120ms var(--interaction-ease); }
+#left .query-disclosure { transition: grid-template-rows 160ms var(--interaction-ease), min-height 160ms var(--interaction-ease), visibility 160ms var(--interaction-ease); }
+#flowTable tr[data-id] > td { transition: background-color 100ms var(--interaction-ease); }
+@media (prefers-reduced-motion: reduce) {
+  #left > .tabs .tab, #left .query-disclosure, #flowTable tr[data-id] > td { transition: none; }
+}
 /* Each table keeps its native overflow:auto viewport as the only horizontal
    scroll control. Legacy range bindings remain dormant to preserve callers. */
 .flow-horizontal-scroll { flex: none; display: none; align-items: center; gap: 5px; height: 25px; margin-top: 3px; padding: 0; }
@@ -675,7 +763,6 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 .flow-horizontal-scroll input[type="range"]::-moz-range-thumb { width: 50px; height: 8px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--surface-input); }
 .flow-horizontal-scroll input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .flow-horizontal-scroll input[type="range"]:disabled { opacity: .4; cursor: default; }
-#left .pager { flex: none; gap: 10px; padding: 9px 0 0; }
 
 /* ---------- 表格 ---------- */
 .tbl-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 6px; min-height: 120px; }
@@ -952,7 +1039,7 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 .el-ck input { margin: 0; width: 16px; height: 16px; padding: 0; }
 
 /* ---------- Toast ---------- */
-#toasts { position: fixed; right: 16px; bottom: 16px; z-index: 99; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+#toasts { display: none; }
 .toast {
   background: var(--state-success-surface); color: var(--state-success); border: 1px solid var(--state-success-border);
   padding: 9px 14px; border-radius: 8px; max-width: 380px;
@@ -960,6 +1047,12 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 }
 .toast.err { background: var(--state-danger-surface); border-color: var(--state-danger-border); color: var(--state-danger); }
 .toast.fade { opacity: 0; }
+.feedback-confirm h2 { font-size: 16px; line-height: 1.5; }
+.feedback-confirm p { margin-top: 14px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-primary); font-size: 14px; line-height: 1.7; }
+.feedback-confirm footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+.feedback-confirm[open] { animation: feedback-dialog-enter 180ms ease-out; }
+@keyframes feedback-dialog-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .feedback-confirm[open] { animation: none; } }
 
 /* The overview moves the same table here; its column meaning is explicit. */
 .icon-button { width: 32px; padding: 4px !important; }
@@ -969,7 +1062,7 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 .flow-overview .action-dialog-context { margin: 3px 0 0; }
 .flow-overview-content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .flow-overview-content .flow-table-scroll { flex: 1; min-height: 80px; }
-.flow-overview #btnFlowOverview, .flow-overview #flowTableHint { display: none; }
+.flow-overview #btnFlowOverview { display: none; }
 .overview-membership-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding-bottom: 8px; }
 #overviewMembershipStatus { flex: 1; color: var(--muted); font-size: 12px; }
 .membership-status { display: none; }
@@ -987,7 +1080,6 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 .flow-overview #flowTable .act-track, .flow-overview #flowTable .tag.on { display: none; }
 .flow-overview #flowTable .membership-pending > td { background: var(--surface-raised); }
 .flow-overview #flowTable .membership-failed > td:first-child { box-shadow: inset 3px 0 var(--state-danger); }
-.flow-overview .pager { padding-bottom: 0; }
 .modal-box, .action-dialog { overscroll-behavior: contain; }
 .modal-head { position: sticky; top: -16px; padding-top: 4px; padding-bottom: 8px; background: var(--surface); z-index: 4; }
 .flow-overview .modal-head { position: static; padding: 0; background: transparent; }

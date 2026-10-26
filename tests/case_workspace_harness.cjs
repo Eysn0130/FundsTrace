@@ -17,7 +17,7 @@ const clone = value => JSON.parse(JSON.stringify(value));
 const decode = value => value.replace(/&(amp|lt|gt|quot|#39);/g, (_match, key) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }[key]));
 
 // Real case-management markup and events; only host IO is synthetic.
-function harness({ withDialogs = false } = {}) {
+function harness({ withDialogs = false, autoOpenCreated = false } = {}) {
   let document;
   const matches = (node, selector) => {
     if (!node || node.tagName === '#TEXT') return false;
@@ -166,6 +166,7 @@ function harness({ withDialogs = false } = {}) {
   document.body.innerHTML = withDialogs ? page.match(/<body\b[^>]*>([\s\S]*)<\/body>/)[1]
     : page.match(/<button\b[^>]*id="btnCaseActions"[\s\S]*?<\/button>/)[0] + dialog[0] + page.match(/<input\b[^>]*id="casePkgFile"[^>]*>/)[0];
   const downloads = [], timers = [], calls = Object.fromEntries(['summary', 'list', 'canvasList', 'create', 'import', 'delete', 'export', 'save', 'open', 'leave', 'download', 'notify'].map(name => [name, []]));
+  const states = [];
   const current = { caseId: 2, canvasId: 7, generation: 1, canvasGeneration: 1 };
   const summary = { name: '合成案件 <乙>', canvasName: '合成画布 & 七', flows: 123, accounts: 45, defaultCase: false };
   const cases = [{ id: 1, name: '默认合成案件' }, { id: 2, name: summary.name }];
@@ -186,8 +187,10 @@ function harness({ withDialogs = false } = {}) {
   });
   vm.runInContext(source, context, { filename: 'case-workspace.js' });
   const invoke = (kind, args, record = args) => { calls[kind].push(record); return handlers[kind](...args); };
+  let controller;
   const host = {
     document, context: () => ({ ...current }), isCurrent,
+    autoOpenCreated, onState: () => states.push(clone(controller.status())),
     readSummary: () => invoke('summary', [], clone(current)), listCases: () => invoke('list', []),
     listCanvases: binding => invoke('canvasList', [binding], clone(binding)),
     createCase: name => invoke('create', [name]), importCase: selected => invoke('import', [selected]),
@@ -198,9 +201,10 @@ function harness({ withDialogs = false } = {}) {
     download: (blob, filename) => invoke('download', [blob, filename]),
     notify: (message, type) => invoke('notify', [message, type]),
   };
-  const controller = (context.FundsCaseWorkspace || context.window.FundsCaseWorkspace).create(host), element = id => document.getElementById(id), trigger = element('btnCaseActions');
+  controller = (context.FundsCaseWorkspace || context.window.FundsCaseWorkspace).create(host);
+  const element = id => document.getElementById(id), trigger = element('btnCaseActions');
   if (withDialogs) { vm.runInContext(dialogSource, context, { filename: 'ui-dialogs.js' }); window.fire('DOMContentLoaded'); }
-  return { document, window, controller, element, trigger, current, summary, cases, calls, downloads, timers,
+  return { document, window, controller, element, trigger, current, summary, cases, calls, downloads, timers, states,
     io(kind, handler) { assert.ok(Object.hasOwn(handlers, kind)); handlers[kind] = handler; },
     async open() { controller.open(trigger); await flush(); },
     async view(name) { await element({ new: 'btnNewCase', import: 'btnImportCase', export: 'btnExportCase', delete: 'btnDelCase' }[name]).click(); await flush(); },
@@ -475,3 +479,91 @@ test('closing from either footer or header restores focus without starting an ac
     assert.equal(h.controller.status().dialogOpen, false); assert.equal(h.document.activeElement === h.trigger, true); assert.equal(writes(h), 0);
   }
 });
+
+async function readyOperation(h, action) {
+  if (action === 'new') await readyCreate(h, '合成订阅任务');
+  else { await h.open(); await h.view(action); }
+  if (action === 'import') await h.choose(file('synthetic-subscribed.fundcase'));
+}
+
+for (const [action, io, receipt] of [
+  ['new', 'create', { id: 3, name: '合成订阅任务' }],
+  ['import', 'import', { case_id: 4, name: '合成订阅导入', flows: 17 }],
+  ['delete', 'delete', { deleted_flows: 123 }],
+]) {
+  test(`onState observes a sent pending ${action} before its slow request settles and closing never cancels it`, async () => {
+    const h = harness(), pending = deferred(); await readyOperation(h, action);
+    const binding = clone(h.current), baseline = h.states.length;
+    h.io(io, () => {
+      const observed = h.states.at(-1);
+      assert.equal(observed.view, action); assert.equal(observed.phase, 'pending');
+      assert.equal(observed.pending, true); assert.equal(observed.sent, true);
+      assert.deepEqual(observed.context, binding);
+      return pending.promise;
+    });
+    const submitting = h.submit(); await flush();
+    const pendingStates = h.states.slice(baseline).filter(state => state.phase === 'pending');
+    assert.ok(pendingStates.some(state => state.pending && !state.sent), 'subscribers see preparation before a write is sent');
+    assert.ok(pendingStates.some(state => state.pending && state.sent), 'subscribers see the sent write while its response is still pending');
+    assert.equal(h.calls[io].length, 1);
+    await h.close();
+    assert.equal(h.controller.status().dialogOpen, action === 'delete', 'deletion remains locked; other progress dialogs may close');
+    assert.equal(h.controller.status().pending, true); assert.equal(h.controller.status().sent, true);
+    await h.controller.submit(); assert.equal(h.calls[io].length, 1, 'closing or another submit cannot send a duplicate write');
+    pending.resolve(receipt); await submitting;
+    const settled = h.states.at(-1);
+    assert.equal(settled.phase, 'done'); assert.equal(settled.pending, false); assert.equal(settled.sent, false);
+    assert.equal(h.calls[io].length, 1);
+    if (action === 'new' || action === 'import') assert.equal(settled.result.id, receipt.id ?? receipt.case_id);
+  });
+}
+
+test('onState identifies a readonly pending export while generation continues after its progress dialog closes', async () => {
+  const h = harness(), pending = deferred(); await readyOperation(h, 'export');
+  const binding = clone(h.current);
+  h.io('export', () => {
+    const observed = h.states.at(-1);
+    assert.equal(observed.view, 'export'); assert.equal(observed.phase, 'pending');
+    assert.equal(observed.pending, true); assert.equal(observed.sent, false);
+    assert.deepEqual(observed.context, binding); return pending.promise;
+  });
+  const submitting = h.submit(); await flush();
+  assert.equal(h.calls.export.length, 1); assert.equal(h.calls.download.length, 0);
+  await h.close(); assert.equal(h.controller.status().dialogOpen, false);
+  assert.equal(h.controller.status().pending, true); assert.equal(h.controller.status().view, 'export');
+  await h.controller.submit(); assert.equal(h.calls.export.length, 1);
+  pending.resolve({ blob: new Blob(['synthetic observed package']), filename: 'synthetic-observed.fundcase' }); await submitting;
+  assert.equal(h.calls.download.length, 1); assert.equal(h.calls.download[0][1], 'synthetic-observed.fundcase');
+  assert.equal(h.states.at(-1).phase, 'done'); assert.equal(h.states.at(-1).pending, false);
+  assert.equal(h.states.at(-1).sent, false); assert.equal(writes(h), 0); assert.equal(h.calls.save.length, 0);
+});
+
+for (const [action, io] of [['new', 'create'], ['import', 'import'], ['delete', 'delete']]) {
+  test(`a committed ${action} with a failed case-list refresh stays complete and cannot repeat its write`, async () => {
+    const h = harness(); await readyOperation(h, action);
+    h.io('list', async () => { throw failure('合成案件列表暂不可用', 503); });
+    await h.submit();
+    const completed = h.states.at(-1);
+    assert.equal(completed.phase, 'done'); assert.equal(completed.pending, false);
+    assert.equal(completed.refreshError, '案件列表刷新失败');
+    assert.equal(h.controller.status().phase, 'done'); assert.equal(h.calls[io].length, 1);
+    assert.match(h.element('caseFeedback').textContent, /刷新失败/);
+    if (action !== 'delete') assert.ok(completed.result, 'a saved case receipt survives a failed list refresh');
+    await h.submit(); assert.equal(h.calls[io].length, 1);
+    assert.equal(h.controller.status().phase, 'done'); assert.equal(h.controller.status().refreshError, '案件列表刷新失败');
+  });
+}
+
+for (const [action, io] of [['new', 'create'], ['delete', 'delete']]) {
+  test(`a committed ${action} with a failed automatic open reports refresh trouble without becoming unknown or resending`, async () => {
+    const h = harness({ autoOpenCreated: true }); await readyOperation(h, action);
+    h.io('open', async () => { throw failure('合成工作区暂不可用', 503); });
+    await h.submit();
+    const completed = h.states.at(-1);
+    assert.equal(completed.phase, 'done'); assert.equal(completed.pending, false);
+    assert.equal(completed.refreshError, '界面刷新失败'); assert.match(h.element('caseError').textContent, /操作已完成/);
+    assert.equal(h.calls[io].length, 1); assert.equal(h.calls.open.length, 1);
+    await h.submit(); assert.equal(h.calls[io].length, 1); assert.equal(h.calls.open.length, 1);
+    assert.equal(h.controller.status().phase, 'done');
+  });
+}

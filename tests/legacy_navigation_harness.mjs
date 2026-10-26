@@ -47,7 +47,7 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
       canvasContext[name] = (...args) => canvasCalls.push([name,...args]);
     }
     canvasContext.measureText=text=>({width:String(text).length*6,actualBoundingBoxAscent:9,actualBoundingBoxDescent:2});
-    const node = { value: '', checked: false, disabled: false, innerHTML: '', textContent: '', style: {}, dataset: {}, href: '', download: '',
+    const node = { value: '', checked: false, disabled: false, innerHTML: '', textContent: '', style: { setProperty(name, value) { this[name] = value; } }, dataset: {}, href: '', download: '',
       width:200,height:120,canvasCalls,get ownerDocument(){return document},
       classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
       addEventListener() {}, removeEventListener() {},setAttribute() {},removeAttribute() {},toggleAttribute() {},querySelectorAll() { return []; },
@@ -125,6 +125,38 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
     bindApp() { vm.runInContext("promptText = async () => 'Synthetic new';", context); vm.runInContext('bindPhotoCrop = () => {}; initEdgeLabels = () => {}; refreshStats = async () => {}; loadGraph = async () => {}; refreshCanvasList = async () => {}; doSearch = async () => {}; bindUI();', context); },
   };
 }
+
+test('transport retries stay silent and only an uncaught current owner reports an error', async () => {
+  const h = harness('app.js');
+  h.run('state.caseId=1;globalThis.feedbackNotices=[];window.FundsFeedback={notify:value=>feedbackNotices.push(value)}');
+  h.network(async () => ({ ...response({}), ok: false, status: 503, text: async () => '{"detail":"合成暂时不可用"}' }));
+  const error = await h.run("api('/api/synthetic-read').catch(error=>error)");
+  assert.equal(error.status, 503);
+  assert.equal(h.run('feedbackNotices.length'), 0, 'a handled/retried HTTP error has no transport toast');
+  h.windowEvent('unhandledrejection', { reason: error });
+  assert.equal(h.run('feedbackNotices.length'), 1);
+  assert.equal(h.run('feedbackNotices[0].title'), '合成暂时不可用');
+  h.network(async () => response({ ok: true }));
+  assert.equal((await h.run("api('/api/synthetic-read')")).ok, true);
+  assert.equal(h.run('feedbackNotices.length'), 1, 'successful retry does not repeat feedback');
+});
+
+test('late network and malformed JSON errors retain their original A-B-A binding', async () => {
+  for (const phase of ['network', 'json']) {
+    const h = harness('app.js'), pending = deferred();
+    h.run('state.caseId=1;globalThis.feedbackNotices=[];window.FundsFeedback={bind(){},notify:value=>feedbackNotices.push(value)}');
+    h.network(async () => phase === 'network' ? pending.promise : { ...response({}), json: () => pending.promise });
+    const request = h.run("api('/api/synthetic-read').catch(error=>error)");
+    await flush();
+    h.run('selectCase(2);selectCase(1)');
+    pending.reject(new Error('合成旧响应损坏'));
+    const error = await request;
+    assert.equal(error.feedbackScope.caseId, 1);
+    assert.equal(error.feedbackScope.generation, 0);
+    h.windowEvent('unhandledrejection', { reason: error });
+    assert.equal(h.run('feedbackNotices.length'), 0, phase + ' cannot report into the returned-to case');
+  }
+});
 
 test('sidebar composition bounds include clipped accounts and curved paths but exclude accounts outside the current graph', () => {
   const h=harness('app.js');
@@ -387,7 +419,7 @@ test('a known successful canvas save still exports the case when the following l
   assert.equal(h.run('JSON.stringify(caseContext())===caseSaveBinding'), true);
   assert.equal(h.run('JSON.stringify([...nodeDrafts])===caseSaveDrafts'), true);
   assert.equal(h.run('state.graphView.selectedAccount'), 'SYN-HUB'); assert.equal(h.element('#canvasSel').value, '7');
-  assert.equal(h.run('caseSaveNotices.filter(item=>item[1]==="err" && /已保存.*暂未刷新/.test(item[0])).length'), 1);
+  assert.equal(h.run('caseSaveNotices.filter(item=>item[1]==="warn" && /已保存.*暂未刷新/.test(item[0])).length'), 1);
 });
 
 test('late G6 graph, statistics and batches cannot refill a switched case', async () => {

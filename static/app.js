@@ -70,25 +70,28 @@ function moneyHtml(value, currency) { return esc(moneyLabel(value, currency)); }
 function totalsHtml(totals, fallback, currency) { return esc(totalLabel(totals, fallback, currency)).replace(/\n/g, '<br>'); }
 function fmtTime(s) { return s ? String(s).slice(0, 19) : ''; }   // 含年月日时分秒
 
-function toast(msg, type = 'ok') {
-  const d = document.createElement('div');
-  d.className = 'toast ' + type;
-  d.textContent = msg;
-  $('#toasts').appendChild(d);
-  setTimeout(() => d.classList.add('fade'), 2800);
-  setTimeout(() => d.remove(), 3400);
+function toast(msg, type = 'ok', scope = caseContext()) {
+  if (scope && !isCurrentCase(scope, scope.canvasId !== undefined)) return false;
+  return window.FundsFeedback?.notify({ scope, severity: ({ ok: 'success', err: 'error', warn: 'warning', info: 'info' })[type] || 'info',
+    title: String(msg), dedupeKey: String(type) + ':' + String(msg) });
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, opts);
-  if (!res.ok) {
-    let msg = await res.text();
-    try { msg = JSON.parse(msg).detail || msg; } catch (e) { /* 纯文本 */ }
-    toast(String(msg).slice(0, 200), 'err');
-    throw new Error(msg);
-  }
-  const ct = res.headers.get('content-type') || '';
-  return ct.includes('json') ? res.json() : res;
+  // Transport never chooses a presentation. The owning operation may retry or
+  // show an inline error; uncaught errors retain their original binding.
+  const scope = caseContext();
+  let res;
+  try { res = await fetch(path, opts); }
+  catch (error) { if (error && typeof error === 'object') error.feedbackScope = scope; throw error; }
+  try {
+    if (!res.ok) {
+      let msg = await res.text();
+      try { msg = JSON.parse(msg).detail || msg; } catch (e) { /* 纯文本 */ }
+      throw Object.assign(new Error(String(msg)), { status: res.status, feedbackScope: scope });
+    }
+    const ct = res.headers.get('content-type') || '';
+    return ct.includes('json') ? await res.json() : res;
+  } catch (error) { if (error && typeof error === 'object') error.feedbackScope = scope; throw error; }
 }
 const jsonOpts = body => ({ headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
@@ -99,6 +102,27 @@ function isCurrentCase(context, canvas = true) {
   return context.caseId === state.caseId && context.generation === state.caseGeneration
     && (!canvas || (context.canvasId === state.canvasId && context.canvasGeneration === state.canvasGeneration));
 }
+function bindFeedback() {
+  const context = caseContext();
+  window.FundsFeedback?.setModalBlocked?.(false);
+  window.FundsFeedback?.bind(context);
+  if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent('funds:feedback-binding', { detail: context }));
+}
+function operationFeedbackChanged() {
+  if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent('funds:operation-state', { detail: null }));
+}
+async function confirmFeedback({ title, message, accept = '确认', danger = false, scope = caseContext() }) {
+  if (!isCurrentCase(scope)) return false;
+  const result = window.FundsFeedbackDialogs
+    ? await window.FundsFeedbackDialogs.confirm({ title, message, accept, danger, scope })
+    : await confirm(message);
+  return result === true && isCurrentCase(scope);
+}
+window.addEventListener('unhandledrejection', event => {
+  const error = event.reason;
+  if (error?.name === 'AbortError' || !error?.feedbackScope || !isCurrentCase(error.feedbackScope)) return;
+  toast(error.message || '当前操作未完成，请重试读取或查看详情。', 'err', error.feedbackScope);
+});
 function selectCase(caseId) {
   revokePendingGraphTarget();
   window.FundsMainAccountsActions?.revoke();
@@ -114,6 +138,7 @@ function selectCase(caseId) {
   state.canvasName = '';
   state.layout = 'auto';
   state.canvasGeneration += 1;
+  bindFeedback();
   resetGraphView();
   state.presentation = newGraphPresentation();
   revokePhotoCrop(true);
@@ -227,7 +252,7 @@ async function refreshAll() {
   if (!isCurrentCase(context, false)) return;
   await loadGraph();
   if (!isCurrentCase(context, false)) return;
-  await doSearch(state.search.page || 1);
+  await doSearch(state.search.page || 1, { refresh: true });
   if (!isCurrentCase(context, false)) return;
   await loadBatches();
 }
@@ -319,12 +344,9 @@ async function refreshStats() {
 }
 function updateHeader() {
   const s = state.stats || {};
-  $('#statLine').innerHTML =
-    `流水 <b>${fmtCount(s.flows || 0)}</b> 笔 · 账户 <b>${fmtCount(s.accounts || 0)}</b> 个 · 已上图 <b>${state.tracked.size}</b> 笔`;
   const coverage = s.import_coverage, coverageNote = $('#importCoverageNote');
   if (coverageNote) {
     coverageNote.hidden = coverage?.scope !== 'source_reported_flows' || ![coverage?.unresolved_records, coverage?.cancelled_records, coverage?.excluded_flows, coverage?.non_monetary_records].some(value => value > 0);
-    $('#statLine').title = coverage?.scope === 'source_reported_flows' ? '金额按已接纳来源流水，不代表结算净额；导入明细与处理口径见案件与导入。' : '';
     coverageNote.textContent = coverageNote.hidden ? '' : `${fmtCount(coverage.unresolved_records)} 条资金含义未确定的来源记录未计入统计；金额按已接纳来源流水，不代表结算净额。已配对冲正/撤销 ${fmtCount(coverage.cancelled_records ?? 0)} 条（双方均不计有效资金）。${(coverage.excluded_flows ?? 0) > 0 ? `本案另有 ${fmtCount(coverage.excluded_flows)} 笔历史留存流水已退出有效统计。` : ''}无资金变动的 ${fmtCount(coverage.non_monetary_records)} 条记录已单独保存。`;
   }
   const empty = (s.flows || 0) === 0;
@@ -364,9 +386,7 @@ async function doSearch(page = 1) {
   state.search.page = r.page;
   state.search.total = r.total;
   renderFlows(r.rows);
-  const pages = Math.max(1, Math.ceil(r.total / r.size));
   $('#resultInfo').textContent = `共 ${fmtCount(r.total)} 笔`;
-  $('#pageInfo').textContent = `第 ${page} / ${pages} 页`;
 }
 
 function partyCell(name, acct) {
@@ -546,7 +566,7 @@ function activateCanvas(id) {
   state.justAdded = null; state.forceFit = true;
   if (state.graph) state.graph.clear();
   state.graphInited = false;
-  state.canvasId = id; state.canvasGeneration += 1; resetGraphView(); revokePhotoCrop(true);
+  state.canvasId = id; state.canvasGeneration += 1; bindFeedback(); resetGraphView(); revokePhotoCrop(true);
   updateHeader(); updateGraphViewStatus();
 }
 function graphMetric(phase, extra = {}) {
@@ -2406,6 +2426,7 @@ function bindCanvases() {
   const view = window.FundsCanvasWorkspace.createView(document, { context: caseContext, readName: () => state.canvasName, isCurrent: isCurrentCase });
   const sync = status => {
     view.onState(status);
+    operationFeedbackChanged();
     const unavailable = !ready() || status.pending || status.unknown;
     for (const id of ['btnCanvasNew', 'btnCanvasClone', 'btnCanvasSave']) $('#' + id).disabled = unavailable;
     // 删除画布对默认画布不可用：默认画布是案件数据的落点，需先“另存为”再删。
@@ -2453,7 +2474,7 @@ function bindCanvases() {
         const selected = $('#canvasSel').selectedOptions[0];
         if (selected) selected.textContent = result.name;
         try { await refreshCanvasList(context.canvasId); }
-        catch (_) { if (isCurrentCase(context)) toast('画布已保存，列表暂未刷新', 'err'); return; }
+        catch (_) { if (isCurrentCase(context)) toast('画布已保存，列表暂未刷新', 'warn', context); return; }
         if (isCurrentCase(context)) toast(action === 'rename' ? '画布已重命名' : '画布形态已保存');
         return;
       }
@@ -2468,10 +2489,10 @@ function bindCanvases() {
         await loadGraph(true, activated);
         if (!isCurrentCase(activated)) return;
         if (action === 'clone') applyCanvasSnapshot(snapshot);
-        if (action === 'delete') { window.FundsWorkspaceSession?.restore(); await doSearch(state.search.page || 1); }
+        if (action === 'delete') { window.FundsWorkspaceSession?.restore(); await doSearch(state.search.page || 1, { refresh: true }); }
         toast(action === 'delete' ? '画布已删除，原始流水已保留' : action === 'new' ? '空白画布已创建' : '已另存为新画布，源画布已保留');
       } catch (_) {
-        if (isCurrentCase(activated)) toast('画布操作已完成，部分数据未刷新，请重新调阅画布', 'err');
+        if (isCurrentCase(activated)) toast('画布操作已完成，部分数据未刷新，请重新调阅画布', 'warn', activated);
       }
     }
   });
@@ -2508,7 +2529,7 @@ function bindCanvases() {
       if (!isCurrentCase(activated)) return;
       if (snapshot) applyCanvasSnapshot(snapshot);
       window.FundsWorkspaceSession?.restore();
-      await doSearch(state.search.page || 1);
+      await doSearch(state.search.page || 1, { refresh: true });
       await applyPendingFocusEdge();
     } catch (_) { if (isCurrentCase(activated)) toast('画布未能载入，请重新调阅', 'err'); }
     finally { actions.sync(); }
@@ -3470,10 +3491,7 @@ async function relayout(fit = true, reserveLabels = false, previousLayout = stat
         fits:ownsCamera?view.cameraFit?.fits??null:null};
       view.layoutQuality={requested:input.kind,effective:candidate.kind,assessment:candidate.quality,rendered,
         attempts:job.attempts.map(attempt=>({...attempt})),routing:job.routing?{...job.routing}:null,geometry:'measured-footprint-estimate'};
-      const warning=rendered.fits===false?'图谱跨度超出当前缩放范围，可平移或聚焦账户阅读。'
-        :candidate.quality.overlaps.count?'局部标签空间不足，可放大查看或调整布局。'
-        :rendered.minimumFontPixels!=null&&rendered.minimumFontPixels<10?'图谱布局已完成；文字较小时可放大或聚焦账户阅读。':'';
-      finish(warning);
+      finish();
     } catch(error) {
       // Rendering is a transaction too. Never save half of a candidate.
       state.positions=before.positions;state.edgeLabelPos=before.ratios;state.edgeSnapshotLabels=before.labels;
@@ -4692,7 +4710,7 @@ async function deleteBatch(batch, context) {
   setBatchBusy();
   let deleted = false;
   try {
-    const accepted = await confirm(`删除批次「${batch.filename}」？\n\n将移除该批次的 ${fmtCount(batch.rows_imported ?? 0)} 笔流水及对应的图谱引用。此操作无法撤销。`);
+    const accepted = await confirmFeedback({ title: '删除导入批次', message: `删除批次「${batch.filename}」？\n\n将移除该批次的 ${fmtCount(batch.rows_imported ?? 0)} 笔流水及对应的图谱引用。此操作无法撤销。`, accept: '删除批次', danger: true, scope: context });
     if (!current() || !accepted || window.FundsMainAccountsActions?.blocked(context) || window.FundsAccountActions?.blocked(context)) return;
     showBatchFeedback('正在删除批次…');
     await batchRequest(`/api/batches/${encodeURIComponent(batch.id)}?case_id=${encodeURIComponent(context.caseId)}`, { method: 'DELETE' });
@@ -4803,6 +4821,7 @@ function installExportWorkspace(options) {
     busyLabel.hidden = !pending;
     const busyText = busyLabel.querySelector('span');
     if (busyText) busyText.textContent = phase === 'capturing' ? '正在采样图谱…' : '正在生成文件，可收起此窗口';
+    operationFeedbackChanged();
   }
   function close() {
     if (pending && phase === 'capturing') return;
@@ -4933,15 +4952,15 @@ async function openManagedCase(id, context, options = {}) {
     if (!isCurrentCase(canvasBinding)) return true;
     if (snapshot) applyCanvasSnapshot(snapshot);
     window.FundsWorkspaceSession?.restore();
-    await doSearch(state.search.page || 1);
+    await doSearch(state.search.page || 1, { refresh: true });
     if (isCurrentCase(opened) && $('#tab-batches').style.display === 'flex') await loadBatches();
-  } catch (_) { if (isCurrentCase(opened)) toast('案件已打开，部分数据加载失败，请刷新后重试', 'err'); }
+  } catch (_) { if (isCurrentCase(opened)) toast('案件已打开，部分数据加载失败，请刷新后重试', 'warn', opened); }
   return true;
 }
 
 function installCaseWorkspace() {
   return window.FundsCaseWorkspace.create({
-    document, context: caseContext, isCurrent: isCurrentCase, autoOpenCreated: true,
+    document, context: caseContext, isCurrent: isCurrentCase, autoOpenCreated: true, onState: operationFeedbackChanged,
     readSummary: () => ({ name: state.cases.find(item => item.id === state.caseId)?.name || String(state.caseId || '未选择'),
       canvasName: state.canvasName || '默认画布', flows: state.stats.flows || 0,
       accounts: state.stats.accounts || 0, defaultCase: state.caseId === 1 }),
@@ -4977,7 +4996,7 @@ function installCaseWorkspace() {
       if (isCurrentCase(context)) {
         if (context.canvasId) state.canvasName = result.name;
         await refreshCanvasList(context.canvasId).catch(() => {
-          if (isCurrentCase(context)) toast('画布已保存，画布列表暂未刷新', 'err');
+          if (isCurrentCase(context)) toast('画布已保存，画布列表暂未刷新', 'warn', context);
         });
       }
       return result;
@@ -5024,6 +5043,10 @@ async function refreshAccountIdentity(context, authoritativeRows = null) {
   }
   rebuildGraphViewport(); applyGraphLabels(); state.graphSelection?.refresh();
   syncNodeWorkspaceControls();
+  // Identity is part of the applied entity/counterparty query. Retire its page
+  // window before later scroll reads can mix old and newly matched rows.
+  await doSearch(state.search.page || 1, { refresh: true });
+  if (!isCurrentCase(binding)) return;
   window.FundsAppNavigation?.accountsChanged();
 }
 
@@ -5111,6 +5134,7 @@ function installMainAccounts() {
     },
     request: caseRequest, show: view.show, dismiss: view.dismiss, publish: refreshMainAccountRoles,
     onState: next => {
+      operationFeedbackChanged();
       view.onState(next); syncNodeWorkspaceControls(); dataToolsWorkspace?.sync();
       // Refresh the shared history/membership controls from the same lock.
       window.dispatchEvent(new CustomEvent('funds:main-accounts-state', { detail: { blocked: next.pending || next.unknown } }));
@@ -5165,6 +5189,7 @@ function installDataTools() {
     request: caseRequest, show: view.show, dismiss: view.dismiss, pickFile: view.pickFile,
     notify: toast,
     onState: value => {
+      operationFeedbackChanged();
       view.onState(value); syncNodeWorkspaceControls();
       const otherCase = value.blocked && !sameCase(value.operationContext);
       for (const id of ['btnImportIds', 'btnSample']) {
@@ -5182,7 +5207,7 @@ function installDataTools() {
       if (action === 'import') return refreshAccountIdentity(context);
       await refreshStats();
       if (!isCurrentCase(context, false)) return;
-      await doSearch(state.search.page || 1);
+      await doSearch(state.search.page || 1, { refresh: true });
       if (isCurrentCase(context, false)) { await loadBatches(); await window.FundsAppNavigation?.dataChanged(); }
     },
     reconcile: async (action, context) => {
@@ -5193,7 +5218,7 @@ function installDataTools() {
       if (action === 'import') await refreshAccountIdentity(reader, rows);
       else {
         await refreshStats();
-        if (isCurrentCase(reader)) await doSearch(state.search.page || 1);
+        if (isCurrentCase(reader)) await doSearch(state.search.page || 1, { refresh: true });
         if (isCurrentCase(reader)) await loadBatches();
       }
       return rows;
@@ -5274,8 +5299,6 @@ function bindUI() {
     ['#fAccount', '#fName', '#fCounter', '#fKw', '#fMin', '#fMax', '#fFrom', '#fTo'].forEach(s => $(s).value = '');
     doSearch(1);
   };
-  $('#btnPrev').onclick = () => { if (state.search.page > 1) doSearch(state.search.page - 1); };
-  $('#btnNext').onclick = () => doSearch(state.search.page + 1);
   $('#flowTbody').addEventListener('click', e => {
     const tr = e.target.closest('tr[data-id]');
     if (!tr) return;
@@ -5309,7 +5332,8 @@ function bindUI() {
   };
   // 批量追踪：勾选的每笔流水自动取来源/去向的最近 X 笔（仅本方账单）上图
   $('#btnBulkTrack').onclick = async () => {
-    const ids = $$('#flowTbody .flow-ck').filter(c => c.checked).map(c => Number(c.dataset.id));
+    const ids = window.FundsTableDrafts?.selectedIds?.()
+      ?? $$('#flowTbody .flow-ck').filter(c => c.checked).map(c => c.dataset.id);
     if (!ids.length) return toast('请先勾选要追踪的流水', 'err');
     const dir = $('#bulkDir').value;
     const x = Math.max(1, Math.min(50, Number($('#bulkX').value) || 5));
@@ -5327,7 +5351,7 @@ function bindUI() {
       toast(msg);
       state.forceFit = false;
       await loadGraph();
-      await doSearch(state.search.page || 1);
+      await doSearch(state.search.page || 1, { refresh: true });
     } catch (err2) {
       toast('批量追踪失败：' + err2.message, 'err');
     } finally {

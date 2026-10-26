@@ -192,7 +192,7 @@
     }
     return ![...importLeases].some(lease => String(lease.context.caseId) === String(context.caseId));
   }
-  window.FundsImportWorkflow = Object.freeze({ canWrite, restore });
+  window.FundsImportWorkflow = Object.freeze({ canWrite, restore, open });
 
   function recovery(session, message, retry = false) {
     if (!visible(session)) return;
@@ -225,7 +225,30 @@
     $('#importModal').setAttribute('aria-busy', String(working));
   }
 
+  function publishTask(session) {
+    const feedback = window.FundsFeedback;
+    if (!feedback || !inCase(session)) return;
+    const busy = session.previewing || session.committing || session.polling;
+    if (!busy && !session.recovering && !session.result && !session.errorStage && !session.feedbackTracked) return;
+    session.feedbackTracked = true;
+    const scope = { caseId: session.context.caseId, generation: session.context.generation };
+    const id = session.importId || session.preview?.import_id;
+    const key = id ? 'import:' + session.context.caseId + ':' + id : 'import-upload:' + session.context.caseId + ':' + session.id;
+    if (session.feedbackKey && session.feedbackKey !== key) feedback.task({ id: session.feedbackKey, scope, status: 'success', title: '文件解析已完成', detail: '已进入原导入任务，处理结果保留在任务记录中。' });
+    session.feedbackKey = key;
+    const status = session.result ? 'success' : session.recovering ? 'unknown' : session.errorStage ? 'error' : busy ? 'running' : 'success';
+    const progress = session.progress;
+    feedback.task({ id: key, scope, status, title: status === 'unknown' ? '导入结果待核对' : session.result ? '导入已完成' : status === 'error' ? '导入未完成' : busy ? '正在处理导入' : '文件已就绪',
+      detail: status === 'unknown' ? '尚不能确认是否写入；查询状态不会再次提交。' : session.result ? '处理结果和来源已保留，可返回原任务查看。' : session.previewing ? '正在上传或解析文件…' : session.committing ? '正在提交原导入任务…' : session.polling ? '后台任务运行中，关闭进度界面不会取消任务。' : '',
+      progress: progress?.stage === 'importing' && progress.total > 0 ? { done: progress.done, total: progress.total } : null,
+      actions: [{ id: 'open', label: status === 'unknown' ? '查询状态' : '查看处理结果', run: () => {
+        if (!inCase(session)) return;
+        active = session; session.closed = false; $('#importModal').style.display = 'flex'; controls(session);
+        if (session.recovering && session.importId) return poll(session);
+      } }] });
+  }
   function controls(session) {
+    publishTask(session);
     if (!ownsView(session)) return;
     const busy = !session.result && (pending(session) || session.previewing), complete = !!session.result;
     const classified = !!session.preview?.feedback || !!session.preview?.table_summary, fixed = classified;
@@ -300,10 +323,12 @@
     }
   }
 
-  async function restore() {
-    if (restored) return;
+  async function restore(requestedId) {
+    if (!requestedId && restored) return;
+    if (requestedId && !/^[a-f0-9]{12,64}$/.test(requestedId)) return;
+    if (requestedId && active && inCase(active) && active.importId === requestedId && (pending(active) || active.result)) { open(); return; }
     restored = true;
-    const importId = navigation.get('import_id'), requestedCase = navigation.get('case_id');
+    const importId = requestedId || navigation.get('import_id'), requestedCase = requestedId ? String(caseContext().caseId) : navigation.get('case_id');
     if (importId) {
       const url = new URL(window.location.href);
       if (url.searchParams.get('import_id') === importId) {
@@ -448,6 +473,7 @@
           + '&case_id=' + encodeURIComponent(session.context.caseId));
         releaseTerminal(session.lease, progress);
         if (!inCase(session)) return;
+        session.progress = progress;
         if (progress.stage === 'done') {
           const result = progress.result;
           if (!result || result.ok == null) throw new Error('导入完成回执不完整，请重新读取进度');
@@ -458,7 +484,7 @@
               : `导入完成：新增 ${fmtCount(result.ok)} 笔，跳过 ${fmtCount(result.skipped || 0)} 行，重复 ${fmtCount(result.rows_dup || 0)} 笔`;
           if (result.main_detected?.length) message += result.table_summary ? `已标记本方主账号 ${fmtCount(result.main_detected.length)} 个。` : `；已标记本方主账号：${result.main_detected.map(item => item.name || item.account.slice(-6)).join('、')}`;
           if (visible(session)) { hidePbar(); $('#impResultText').textContent = message; controls(session); }
-          toast(message);
+          if (!visible(session)) toast('导入已完成，可从任务入口查看处理结果。', 'ok', { caseId: session.context.caseId, generation: session.context.generation });
           // Refresh failures cannot relabel a durable completed import as failed.
           try { if(window.FundsAppNavigation) await window.FundsAppNavigation.dataChanged(); else await refreshAll(); } catch (_) { if (visible(session)) recovery(session, '导入已完成，列表刷新失败。关闭后可重新查询。'); }
           return;
@@ -466,12 +492,13 @@
         if (progress.stage === 'error') {
           session.errorStage = 'confirm';
           if (visible(session)) { hidePbar(); recovery(session, '导入失败：' + (progress.error || '任务未完成') + '。请检查文件或映射后，手动确认重试。'); }
-          if (inCase(session)) toast(progress.error || '导入失败', 'err'); return;
+          controls(session); return;
         }
         if (visible(session)) {
           if (progress.stage === 'importing' && progress.total) setPbar(progress.done / progress.total, `写入流水 ${fmtCount(progress.done)} / ${fmtCount(progress.total)} 笔`);
           else setPbarBusy(progress.message || '正在解析文件…');
         }
+        publishTask(session);
         await new Promise(resolve => setTimeout(resolve, 300));
       }
     } catch (error) {

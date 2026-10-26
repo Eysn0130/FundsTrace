@@ -55,6 +55,10 @@ function editor({ relationships = [], navigation = false } = {}) {
   };
   for (const name of ['scheduleGraphViewport', 'scheduleGraphLabels', 'updateGraphViewStatus', 'updateHeader']) env[name] = () => {};
   state.caseId = 1; state.graphLoading = false; state.graphInited = true;
+  // Match production: module and command callbacks share the window realm.
+  h.run(source('feedback-core.mjs').replace('export function createFeedbackStore', 'function createFeedbackStore'));
+  const feedback = h.run('createFeedbackStore()'); feedback.bind(h.run('caseContext()'));
+  env.window.FundsFeedback = feedback;
   state.positions = { 'SYN-A': { x: 3, y: 4 }, 'SYN-B': { x: 5, y: 6 } };
   const tracked = new Map([['1:0', [1]], ['2:0', [90]], ['1:7', [70]]]);
   const graph = ids => ({ tracked_ids: [...ids], nodes: ids.length ? [{ account: 'SYN-A' }, { account: 'SYN-B' }] : [],
@@ -73,7 +77,12 @@ function editor({ relationships = [], navigation = false } = {}) {
     if (path === '/api/track' || path === '/api/track/bulk') {
       if (body.expected_ids && JSON.stringify([...(tracked.get(key) || [])].sort()) !== JSON.stringify([...body.expected_ids].sort())) return response({ detail: 'synthetic bulk conflict' }, 409);
       const ids = new Set(tracked.get(key) || []);
-      for (const id of body.flow_ids) options.method === 'DELETE' ? ids.delete(id) : ids.add(id);
+      // Match the legacy API's integer request model for this harness's small
+      // fixture IDs. The exact-ID/offscreen regression has its own response.
+      for (const raw of body.flow_ids) {
+        const id = Number(raw); assert.ok(Number.isSafeInteger(id));
+        options.method === 'DELETE' ? ids.delete(id) : ids.add(id);
+      }
       tracked.set(key, [...ids].sort()); return response({ ok: true, tracked: ids.size, tracked_ids: [...ids].sort() });
     }
     if (path.startsWith('/api/graph')) {
@@ -104,7 +113,7 @@ function editor({ relationships = [], navigation = false } = {}) {
     h.run(source('app-navigation.js'));
     for (const fn of events.get('DOMContentLoaded')) if (!ready.has(fn)) fn();
   }
-  return { h, env, state, boxes, labels, searches, messages, tracked, snapshot: () => snapshot(), history: env.window.FundsCanvasEditor.history,
+  return { h, env, state, boxes, labels, searches, messages, feedback, tracked, snapshot: () => snapshot(), history: env.window.FundsCanvasEditor.history,
     nav,
     portalDisplay(value = true) { displayPortaled = value; },
     membership: env.window.FundsCanvasEditor.membership,
@@ -749,6 +758,23 @@ test('bulk success feedback retains anchors, direction, skipped accounts and zer
   }
 });
 
+test('bulk tracking uses retained offscreen anchors and sends their exact IDs', async () => {
+  const f = editor(), exact = '9007199254740993999';
+  f.env.window.FundsTableDrafts = { selectedIds: () => ['1', exact] };
+  f.boxes.forEach(box => { box.checked = false; });
+  let sent;
+  f.intercept((path, options) => {
+    if (path !== '/api/track/bulk') return null;
+    sent = JSON.parse(options.body);
+    f.tracked.set('1:0', [1, exact]);
+    return response({ ok: true, anchors: 2, tracked: 2, tracked_ids: [1, exact] });
+  });
+  assert.equal(await f.h.element('#btnBulkTrack').onclick(), true);
+  assert.deepEqual(sent.flow_ids, ['1', exact]);
+  assert.equal(sent.case_id, 1);
+  assert.equal(sent.canvas_id, 0);
+});
+
 test('restore conflict keeps the stack and current display unchanged', async () => {
   const f = editor(); await f.h.run('trackFlows([2])');
   f.conflict(true); const before = JSON.stringify(f.snapshot());
@@ -776,7 +802,7 @@ test('a lost restore write receipt invalidates history and revokes the unconfirm
   assert.equal(await f.h.element('#btnUndo').onclick(), false);
   assert.deepEqual(f.tracked.get('1:0'), [1]); assert.equal(f.history.status().count, 0);
   assert.equal(f.state.graphLoading, true); assert.equal(f.state.tracked.size, 0); assert.equal(f.models.length, 0);
-  assert.ok(f.messages.some(item => item.message.includes('状态无法确认')));
+  assert.ok(f.feedback.snapshot().tasks.some(item => item.status === 'unknown' && item.title === '追踪结果待核对'));
 });
 
 test('a concurrent write between restore CAS and graph read invalidates history without compensating it away', async () => {
@@ -791,7 +817,7 @@ test('a concurrent write between restore CAS and graph read invalidates history 
   assert.equal(f.h.requests.filter(item => item.path === '/api/track/state').length, writes + 1);
   assert.equal(f.history.status().count, 0); assert.equal(f.state.graphLoading, true);
   assert.equal(f.state.tracked.size, 0); assert.equal(f.models.length, 0);
-  assert.ok(f.messages.some(item => item.message.includes('状态无法确认')));
+  assert.ok(f.feedback.snapshot().tasks.some(item => item.status === 'unknown' && item.title === '追踪结果待核对'));
 });
 
 test('restore render failure revokes partial facts and history without another tracked-set write', async () => {
@@ -804,7 +830,7 @@ test('restore render failure revokes partial facts and history without another t
   assert.equal(f.history.status().count, 0); assert.equal(f.history.status().canUndo, false); assert.equal(f.history.status().canRedo, false);
   assert.equal(f.state.graphLoading, true); assert.equal(f.state.tracked.size, 0);
   assert.equal(f.state.lastGraph.nodes.length, 0); assert.equal(f.models.length, 0);
-  assert.ok(f.messages.some(item => item.message.includes('状态无法确认') && item.message.includes('重新加载')));
+  assert.ok(f.feedback.snapshot().tasks.some(item => item.status === 'unknown' && item.actions.some(action => action.label === '重新读取画布')));
   const requests = f.h.requests.length;
   assert.equal(await f.h.element('#btnUndo').onclick(), false); assert.equal(f.h.requests.length, requests);
 });
@@ -850,7 +876,7 @@ test('compensation conflict preserves concurrent tracking and revokes unconfirme
   assert.deepEqual(f.tracked.get('1:0'), [1, 2, 99]);
   assert.equal(f.history.status().count, 0); assert.equal(f.state.tracked.size, 0);
   assert.equal(f.state.lastGraph.nodes.length, 0); assert.equal(f.models.length, 0); assert.equal(f.state.graphLoading, true);
-  assert.ok(f.messages.some(item => item.message.includes('状态无法确认') && item.message.includes('重新加载')));
+  assert.ok(f.feedback.snapshot().tasks.some(item => item.status === 'unknown' && item.actions.some(action => action.label === '重新读取画布')));
 });
 
 test('bulk write-time conflict preserves history and never overwrites pre-existing concurrent tracking', async () => {
@@ -876,7 +902,7 @@ test('a lost write receipt revokes the old graph instead of presenting its state
   assert.equal(await f.h.run('trackFlows([2])'), false);
   assert.deepEqual(f.tracked.get('1:0'), [1, 2]); assert.equal(f.state.tracked.size, 0);
   assert.equal(f.state.graphLoading, true); assert.equal(f.history.status().count, 0);
-  assert.ok(f.messages.some(item => item.message.includes('状态无法确认')));
+  assert.ok(f.feedback.snapshot().tasks.some(item => item.status === 'unknown' && item.title === '追踪结果待核对'));
 });
 
 test('late compensation completion cannot restore old facts or geometry into a new binding', async () => {
