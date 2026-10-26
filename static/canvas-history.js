@@ -10,7 +10,7 @@
       if (!Number.isSafeInteger(value) || value < 0) throw new RangeError('History limits must be non-negative integers.');
     }
 
-    let entries = [], cursor = 0, bytes = 0, generation = 0, pending = 0;
+    let entries = [], cursor = 0, bytes = 0, generation = 0, bindingGeneration = 0, pending = 0;
     let queue = Promise.resolve(), message = '', limitReached = false;
 
     function status() {
@@ -44,7 +44,17 @@
     function reset(_bindingKey) {
       // Every reset is a new binding, including A -> B -> A or a same-key reload.
       generation += 1;
+      bindingGeneration += 1;
       queue = Promise.resolve(); pending = 0;
+      clear(); message = ''; limitReached = false;
+      changed();
+    }
+
+    function invalidate() {
+      // New graph authority retires old snapshots, but an already-running
+      // command still owns its lock until it actually finishes. Later work
+      // stays serialized behind it; old queued work cannot start or record.
+      generation += 1;
       clear(); message = ''; limitReached = false;
       changed();
     }
@@ -80,7 +90,7 @@
     }
 
     function enqueue(operation) {
-      const token = generation;
+      const token = generation, binding = bindingGeneration;
       pending += 1;
       const task = queue.then(async () => {
         try {
@@ -88,7 +98,7 @@
           return await operation(token);
         } finally {
           // A late old-binding completion must not release a new binding's busy state.
-          if (token === generation) { pending -= 1; changed(); }
+          if (binding === bindingGeneration) { pending -= 1; changed(); }
         }
       });
       queue = task.catch(() => {});
@@ -122,7 +132,7 @@
       });
     }
 
-    return Object.freeze({ reset, run, record, undo: () => travel(-1), redo: () => travel(1), status });
+    return Object.freeze({ reset, invalidate, run, record, undo: () => travel(-1), redo: () => travel(1), status });
   }
 
   const api = Object.freeze({ create });

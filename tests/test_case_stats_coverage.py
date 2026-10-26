@@ -300,3 +300,291 @@ def test_public_stats_passes_only_the_current_case_count_under_the_same_database
         assert response.status_code == 200, response.text
         assert response.json()["import_coverage"] == expected[cid]
     assert checked == [(paired, 1), (empty, 0), (paired, 1)]
+
+
+def test_public_stats_classifies_wide_journal_notes_before_coverage_windows(
+        client, database, make_case, monkeypatch):
+    """The public result stays exact; WINDOW must retain classified columns only.
+
+    Direct schema-valid journal history is intentional: this tests an existing
+    stored case reader, not a new parser-admission rule. Existing tests above
+    independently cover version priority, sticky conflicts and physical keys.
+    """
+    import json
+
+    from test_import_coverage import assessment
+
+    cid = make_case("Synthetic wide-note stats reader")
+    other = make_case("Synthetic wide-note stats isolation")
+    size, source_id, member = 512, "wide-note-source", "synthetic/wide.csv"
+    database.x("insert into batches(case_id,filename) values (?,?)", [cid, "synthetic-wide.csv"])
+    database.x("""insert into import_sources(source_id,case_id,filename,sha256,
+                   size_bytes,mode,mapping_json,sheet,parser_version,row_kind)
+                   values (?,?,'synthetic-wide.csv',?,1,'B','{}','',
+                           'funds-trace-table-v19','table_record')""",
+               [source_id, cid, "a" * 64])
+    database.x("""insert into import_members(case_id,source_id,member_path,role,sha256,
+                   size_bytes,encoding,row_count) values (?,?,?,'table',?,1,'utf-8',?)""",
+               [cid, source_id, member, "b" * 64, size + 2])
+    flows = database.q_raw("""insert into flows(case_id,payer_account,payee_account,amount,currency)
+                              select ?,'SYN-WIDE-A','SYN-WIDE-B',10.25,'CNY'
+                              from range(?) returning id""", [cid, size])
+    database.executemany("insert into flow_sources(case_id,source_id,source_row,flow_id,disposition) values (?,?,?,?,'imported')",
+                         [(cid, source_id, row, item["id"]) for row, item in enumerate(flows, 1)])
+    note = "SYNTHETIC-NOTE-" * 2048
+    plain_details = json.dumps({"counterparty_basis": "", "validation_basis": "", "synthetic_note": note})
+    assert len(plain_details.encode("utf-8")) > 30000
+    conflict_details = json.dumps({"counterparty_basis": table_import.HISTORY_CONFLICT_BASIS,
+                                   "validation_basis": "", "synthetic_note": note})
+    records = [(cid, source_id, row, member, row, f"synthetic-wide-key-{row}",
+                "imported", "financial", plain_details) for row in range(1, size + 1)]
+    # This branch must inspect the JSON marker even though a different source
+    # coordinate is non-monetary. The planner cannot discard all classification.
+    records += [(cid, source_id, size + 1, member, size + 1, "synthetic-wide-conflict",
+                 "unresolved", "conflicting_field", conflict_details),
+                (cid, source_id, size + 2, member, size + 2, "synthetic-wide-zero",
+                 "non_monetary", "zero_amount", plain_details)]
+    database.executemany("""insert into import_records(case_id,source_id,record_no,member_path,
+                             source_row,record_key,disposition,reason_code,details_json)
+                             values (?,?,?,?,?,?,?,?,?)""", records)
+    # Unknown rules remain a gap even when imported, but cannot leak into cid.
+    assessment(database, other, "imported", version=99)
+    database.x("""insert into flows(case_id,payer_account,payee_account,amount,currency)
+                   values (?,'SYN-OTHER-A','SYN-OTHER-B',9.99,'USD')""", [other])
+
+    captured = []
+    original_query = database.q_raw
+
+    def capture_coverage(sql, params=None):
+        result = original_query(sql, params)
+        # Identify the observable coverage aggregate, not a candidate CTE name.
+        if all(field in sql for field in ("unresolved_records", "non_monetary_records",
+                                          "cancelled_records", "excluded_flows")):
+            captured.append((sql, params))
+        return result
+
+    monkeypatch.setattr(database, "q_raw", capture_coverage)
+    for case_id, count, amount, currency, batches, expected_coverage in (
+            (cid, size, "5248.00", "CNY", 1, coverage_value(unresolved=1, non_monetary=1)),
+            (other, 1, "9.99", "USD", 0, coverage_value(unresolved=1))):
+        response = client.get(f"/api/v1/cases/{case_id}/stats")
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "case_id": str(case_id), "flows": count, "accounts": 2, "batches": batches,
+            "amount_total": amount, "currency": currency,
+            "amount_totals": [{"currency": currency, "amount": amount}],
+            "import_coverage": expected_coverage,
+        }
+    assert len(captured) == 2
+    sql, params = captured[0]
+    plan = json.loads(database.con().execute(
+        "EXPLAIN (ANALYZE, FORMAT JSON) " + sql, params).fetchone()[1])
+
+    def operators(node):
+        yield node
+        for child in node.get("children", []):
+            yield from operators(child)
+
+    nodes = list(operators(plan))
+    windows = [node for node in nodes if node.get("operator_type") == "WINDOW"]
+    assert windows, "the physical-history priority and conflict windows must actually execute"
+    assert max(node["operator_cardinality"] for node in windows) == size + 2
+    assert any("details_json" in str(node.get("extra_info", {}).get("Projections", ""))
+               for node in nodes if node.get("operator_type") == "TABLE_SCAN"), \
+        "the wide source notes must still be read to classify the conflict marker"
+    wide_windows = [node["extra_info"] for node in windows
+                    if any(marker in json.dumps(node.get("extra_info", {})).lower()
+                           for marker in ("details_json", "json_extract", "json_value"))]
+    assert not wide_windows, (
+        "coverage WINDOW retains or decodes complete journal notes instead of narrow classifications: "
+        + json.dumps(wide_windows, ensure_ascii=False)[:1200])
+
+
+
+def test_public_stats_does_not_hash_build_the_full_wide_journal(client, database, make_case, monkeypatch):
+    """Committed all-imported history exposes a different build-side choice.
+
+    Keep this distribution separate from the mixed-diagnosis/two-case window
+    regression: those extra statistics can make the optimizer pick a small build.
+    The money/coverage oracle is independent of either query plan.
+    """
+    import json
+
+    cid = make_case("Synthetic committed wide-journal build")
+    size = 512
+    database.x("""insert into import_sources(source_id,case_id,filename,sha256,size_bytes,
+                   mode,mapping_json,sheet,parser_version,row_kind)
+                   values ('synthetic-source',?,'synthetic.csv',?,1,'B','{}','',
+                           'funds-trace-table-v19','table_record')""", [cid, "0" * 64])
+    database.x("""insert into import_members(case_id,source_id,member_path,role,sha256,
+                   size_bytes,encoding,row_count)
+                   values (?,'synthetic-source','synthetic.csv','table',?,1,'utf-8',?)""",
+               [cid, "0" * 64, size])
+    database.x("""insert into flows(id,case_id,amount,currency,payer_account,payee_account)
+                   select i+1,?,10.25,'CNY','SYN-A','SYN-B' from range(?) t(i)""", [cid, size])
+    database.x("""insert into flow_sources(case_id,source_id,source_row,flow_id,disposition)
+                   select ?,'synthetic-source',i+1,i+1,'imported' from range(?) t(i)""", [cid, size])
+    details = json.dumps({"counterparty_basis": "", "validation_basis": "",
+                          "synthetic_note": "SYNTHETIC-NOTE-" * 2048})
+    assert len(details.encode("utf-8")) > 30000
+    database.x("""insert into import_records(case_id,source_id,record_no,member_path,source_row,
+                   record_key,disposition,reason_code,details_json)
+                   select ?,'synthetic-source',i+1,'synthetic.csv',i+1,'synthetic-key-'||i,
+                          'imported','financial',? from range(?) t(i)""", [cid, details, size])
+    captured = []
+    original_query = database.q_raw
+
+    def capture_coverage(sql, params=None):
+        result = original_query(sql, params)
+        if all(field in sql for field in ("unresolved_records", "non_monetary_records",
+                                          "cancelled_records", "excluded_flows")):
+            captured.append((sql, params))
+        return result
+
+    monkeypatch.setattr(database, "q_raw", capture_coverage)
+    response = client.get(f"/api/v1/cases/{cid}/stats")
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "case_id": str(cid), "flows": size, "accounts": 2, "batches": 0,
+        "amount_total": "5248.00", "currency": "CNY",
+        "amount_totals": [{"currency": "CNY", "amount": "5248.00"}],
+        "import_coverage": coverage_value(),
+    }
+    assert len(captured) == 1
+    sql, params = captured[0]
+    plan = json.loads(database.con().execute(
+        "EXPLAIN (ANALYZE, FORMAT JSON) " + sql, params).fetchone()[1])
+
+    def operators(node):
+        yield node
+        for child in node.get("children", []):
+            yield from operators(child)
+
+    def scans_raw_notes(node):
+        # Trace actual build-child scan projections. A materialized producer is
+        # a separate pipeline; do not mistake its JSON scan for payload in a
+        # CTE_SCAN of already classified columns. No CTE name is assumed here.
+        projections = node.get("extra_info", {}).get("Projections", [])
+        return (node.get("operator_type") == "TABLE_SCAN" and "details_json" in projections
+                or any(scans_raw_notes(child) for child in node.get("children", [])))
+
+    nodes = list(operators(plan))
+    windows = [node for node in nodes if node.get("operator_type") == "WINDOW"]
+    assert windows and max(node["operator_cardinality"] for node in windows) == size
+    assert any(node.get("operator_type") == "TABLE_SCAN" and scans_raw_notes(node)
+               and node["operator_cardinality"] == size for node in nodes)
+    wide_builds = []
+    for node in nodes:
+        if node.get("operator_type") != "HASH_JOIN":
+            continue
+        build = node["children"][1]
+        # Small cancellation/proof sets may retain original notes. The normal
+        # journal must not become the build payload merely to attach those sets.
+        if build["operator_cardinality"] >= size and scans_raw_notes(build):
+            wide_builds.append({"join": node.get("extra_info", {}),
+                                "build_rows": build["operator_cardinality"],
+                                "build": build.get("extra_info", {})})
+    assert not wide_builds, (
+        "coverage HASH_JOIN builds the full journal with original wide notes before classification: "
+        + json.dumps(wide_builds, ensure_ascii=False))
+
+
+def test_public_stats_keeps_money_and_resolution_in_one_locked_read(
+        client, database, make_case, monkeypatch):
+    """A real queued writer cannot splice its new revision into old totals."""
+    import hashlib
+    import json
+    import threading
+
+    from app import evidence_resolution
+
+    cid = make_case("Synthetic atomic stats and resolution")
+    flow_id = database.q_raw("""insert into flows(case_id,payer_account,payee_account,amount,currency)
+                                values (?,'SYN-RACE-A','SYN-RACE-B',1.25,'CNY') returning id""", [cid])[0]["id"]
+    snapshots = []
+    for label in ("A", "B"):
+        # Schema-valid immutable synthetic audits; their revisions use the
+        # canonical protocol independently of the production hash helper.
+        summary = {"policy": evidence_resolution.POLICY, "entities": 0, "resolved_endpoints": 0,
+                   "unresolved_endpoints": 0, "conflicts": 0, "auxiliary_records": 0,
+                   "evidence_records": 0, "note": "Synthetic committed resolution " + label}
+        canonical = json.dumps([summary, [], []], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        revision = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        summary["revision"] = revision
+        database.x("""insert into resolution_revisions(case_id,revision,summary_json,decisions_json)
+                       values (?,?,?,?)""", [cid, revision, json.dumps(summary), '{"endpoints":[],"entities":[]}'])
+        snapshots.append(summary)
+    before, after = snapshots
+    database.x("insert into resolution_state(case_id,revision) values (?,?)", [cid, before["revision"]])
+
+    coverage_ready, writer_attempted, writer_done, stop = (threading.Event() for _ in range(4))
+    writer_errors, lock_attempts = [], []
+    real_coverage, real_summary = cases.import_coverage, evidence_resolution.summary
+
+    def queued_writer():
+        try:
+            assert coverage_ready.wait(5), "stats never completed the coverage read"
+            if stop.is_set():
+                return
+            acquired = database._lock.acquire(blocking=False)
+            if acquired:
+                database._lock.release()
+            lock_attempts.append(acquired)
+            writer_attempted.set()
+            assert not acquired, "the stats reader must still own its lock after coverage"
+            with database.transaction():
+                if stop.is_set():
+                    return
+                database.x("update flows set amount=2.50 where case_id=? and id=?", [cid, flow_id])
+                database.x("update resolution_state set revision=? where case_id=?", [after["revision"], cid])
+        except BaseException as error:
+            writer_errors.append(error)
+        finally:
+            writer_attempted.set()
+            writer_done.set()
+
+    def coverage_then_release_writer(case_id, *, known_excluded=None):
+        value = real_coverage(case_id, known_excluded=known_excluded)
+        assert database._lock._is_owned()
+        if not coverage_ready.is_set():
+            coverage_ready.set()
+            assert writer_attempted.wait(5), "writer never attempted the held lock"
+            assert not writer_errors, repr(writer_errors)
+            assert lock_attempts == [False]
+        return value
+
+    def summary_after_a_possible_commit(case_id):
+        # Only widen an already possible lock-free scheduling gap. A correctly
+        # locked reader never waits for a writer that is blocked on this lock.
+        if not database._lock._is_owned():
+            assert writer_done.wait(5), "writer could not commit in the unlocked summary gap"
+            assert not writer_errors, repr(writer_errors)
+        return real_summary(case_id)
+
+    monkeypatch.setattr(cases, "import_coverage", coverage_then_release_writer)
+    monkeypatch.setattr(evidence_resolution, "summary", summary_after_a_possible_commit)
+    writer = threading.Thread(target=queued_writer, name="synthetic-stats-writer", daemon=True)
+    writer.start()
+    try:
+        first = client.get(f"/api/v1/cases/{cid}/stats")
+        assert writer_done.wait(5), "writer remained blocked after the stats request returned"
+        writer.join(timeout=5)
+        assert not writer.is_alive()
+        assert not writer_errors, repr(writer_errors)
+        second = client.get(f"/api/v1/cases/{cid}/stats")
+        assert first.status_code == second.status_code == 200, (first.text, second.text)
+
+        def expected(amount, summary):
+            return {"case_id": str(cid), "flows": 1, "accounts": 2, "batches": 0,
+                    "amount_total": amount, "currency": "CNY",
+                    "amount_totals": [{"currency": "CNY", "amount": amount}],
+                    "import_coverage": coverage_value(), "resolution": summary,
+                    "statistics_policy": evidence_resolution.POLICY,
+                    "resolution_revision": summary["revision"]}
+
+        assert [first.json(), second.json()] == [expected("1.25", before), expected("2.50", after)]
+    finally:
+        stop.set()
+        coverage_ready.set()
+        writer.join(timeout=5)
+        assert not writer.is_alive(), "synthetic writer must be joined before database fixture cleanup"

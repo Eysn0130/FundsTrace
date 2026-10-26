@@ -355,7 +355,7 @@ def test_contract_generation_is_current_and_ignores_inherited_data_directory(tmp
     schema = json.loads((root / "contracts/openapi-v1.json").read_text())
     assert all(path.startswith("/api/v1/") for path in schema["paths"])
     operations = [operation for path in schema["paths"].values() for operation in path.values()]
-    assert len(operations) == 14 and len({operation["operationId"] for operation in operations}) == 14
+    assert len(operations) == 16 and len({operation["operationId"] for operation in operations}) == 16
     download = schema["paths"]["/api/v1/cases/{case_id}/sources/{source_id}/file"]["get"]
     assert download["responses"]["200"]["content"]["application/octet-stream"]["schema"] == {"type": "string", "format": "binary"}
     report = schema["paths"]["/api/v1/cases/{case_id}/sources/{source_id}/report"]["get"]

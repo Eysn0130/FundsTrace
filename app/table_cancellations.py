@@ -111,11 +111,11 @@ def _observation(record, source):
                 "cancellation_account_column": column, "cancellation_status": _status(source["交易是否成功"]),
                 "cancellation_action": _action(source), "cancellation_quality": quality,
                 "cancellation_own_account_sha256": account_hash,
-                "cancellation_own_name_sha256": hash_value(source["交易户名"]),
-                "cancellation_own_identity_sha256": hash_value(source["交易证件号码"]),
+                "cancellation_own_name_sha256": hash_value(source.get("交易户名", "")),
+                "cancellation_own_identity_sha256": hash_value(source.get("交易证件号码", "")),
                 "cancellation_counter_account_sha256": hash_value(source["交易对手账卡号"]),
                 "cancellation_counter_identity_sha256": hash_value(source["对手身份证号"]),
-                "cancellation_merchant_sha256": hash_value(source["商户代码"])}
+                "cancellation_merchant_sha256": hash_value(source.get("商户代码", ""))}
     return {"number": record["record_no"], "record": record, "notes": notes, "critical": critical,
             "amount": amount, "balance": balance, "scope": scope, "time": time,
             "reference": notes["cancellation_reference_sha256"], "movement": movement,
@@ -212,22 +212,31 @@ def refresh_stats(plan):
                      "currency_totals": {currency: format(amount, ".2f") for currency, amount in sorted(totals.items())}}
 
 
-def apply(plan, payload):
+def apply(plan, payload, *, allow_feedback28=False):
     """Apply only after the existing reference-aware parser validated the CSV."""
     plan.update(cancelled_rows=[], cancellations=[])
     sheets = table_import._csv(payload, ".csv")
     raw = sheets[0]["rows"]
     def exact(cells):
         columns = [table_import._text(value) for value in cells]
-        return len(columns) == 32 and len(set(columns)) == 32 and frozenset(columns) == table_import.BANK_FEEDBACK_32_COLUMNS
+        from . import feedback_import
+        return (len(columns) == 32 and len(set(columns)) == 32 and frozenset(columns) == table_import.BANK_FEEDBACK_32_COLUMNS
+                or allow_feedback28 and len(columns) == 28 and len(set(columns)) == 28 and frozenset(columns) == frozenset(feedback_import.COLUMNS))
     eligible = bool(raw and exact(raw[0]))
     observations = []
     records = {record["source_row"]: record for record in plan["records"]}
     if eligible:
         headers = [table_import._text(value) for value in raw[0]]
-        for index, cells in enumerate(raw[1:], start=2):
+        for offset in range(1, len(raw)):
+            cells = raw[offset]
+            if allow_feedback28:
+                # All later checks use the complete observations below. Do
+                # not retain another full set of cells (or a raw[1:] slice)
+                # beside those proofs in the evidence-envelope path.
+                raw[offset] = None
+            index = offset + 1
             record = records[index]
-            if len(cells) != 32 or (record["reason_code"] == "repeated_header" and not exact(cells)):
+            if len(cells) != len(headers) or (record["reason_code"] == "repeated_header" and not exact(cells)):
                 eligible = False
                 continue
             if record["reason_code"] == "repeated_header":
@@ -237,6 +246,8 @@ def apply(plan, payload):
             observations.append(observation)
             if not observation["scope"] and observation["movement"] not in {"header", "non_transaction", "zero"}:
                 eligible = False
+    if allow_feedback28:
+        raw.clear()
     references, prior, unlocated = _indexes(observations)
     proved, selected = set(), set()
     rows = {row["_source_row"]: row for row in plan["rows"]}

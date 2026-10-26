@@ -57,7 +57,41 @@ class ImportCoverage(ContractModel):
     financial_interpretation_complete: bool
 
 
+class ResolutionSummary(ContractModel):
+    policy: Literal["typed-account-evidence-v1"]
+    revision: str | None
+    entities: int
+    resolved_endpoints: int
+    unresolved_endpoints: int
+    conflicts: int
+    auxiliary_records: int
+    evidence_records: int
+    note: str
+
+
+class ResolutionEntity(ContractModel):
+    entity_id: str
+    kind: Literal["account", "card", "subaccount", "identifier"]
+    account_number: str
+    display_account: str
+    bank: str
+    cards: list[str]
+    parent_entity_id: str | None
+    name_conflict: bool = False
+    names: list[str]
+    status: str
+
+
+class ResolutionRegistry(ContractModel):
+    case_id: Identifier
+    resolution: ResolutionSummary | None
+    entities: list[ResolutionEntity]
+
+
 class CaseStats(ContractModel):
+    statistics_policy: Literal["typed-account-evidence-v1"] | None = None
+    resolution_revision: str | None = None
+    resolution: ResolutionSummary | None = None
     case_id: Identifier
     flows: int
     accounts: int
@@ -90,6 +124,12 @@ class PreviewFlow(ContractModel):
 
 
 class Flow(PreviewFlow):
+    payer_display_account: str = ""
+    payee_display_account: str = ""
+    self_display_account: str = ""
+    raw_payer_account: str = ""
+    raw_payee_account: str = ""
+    raw_self_account: str = ""
     id: Identifier
     case_id: Identifier
     batch_id: Identifier | None
@@ -161,6 +201,8 @@ class FeedbackSummary(ContractModel):
 
 
 class TableSummary(ContractModel):
+    unsupported_attachments: int = 0
+    non_business_attachments: int = 0
     profile: str
     record_total: int
     accepted: int
@@ -180,6 +222,7 @@ class TableSummary(ContractModel):
 
 
 class ImportPreview(ContractModel):
+    resolution: ResolutionSummary | None = None
     case_id: Identifier
     import_id: str
     filename: str
@@ -218,6 +261,7 @@ class CommitStarted(ContractModel):
 
 
 class ImportResult(ContractModel):
+    resolution: ResolutionSummary | None = None
     total: int
     ok: int
     skipped: int

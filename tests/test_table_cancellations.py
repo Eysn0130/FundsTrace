@@ -47,7 +47,7 @@ def parse(rows, **kwargs):
 
 @pytest.mark.parametrize("profile", sorted(table_archive.CANCELLATION_PROFILES))
 def test_pair_retains_records_and_only_excludes_effective_funds(profile):
-    from app import table_cancellations as policy
+    from app import evidence_resolution, table_cancellations as policy
     plan = parse(round_trip(), profile=profile)
     assert plan["profile"] == profile
     assert plan["cancellations"] == [{"original_record_no": 2, "cancellation_record_no": 3, "witness_record_no": 1}]
@@ -56,8 +56,20 @@ def test_pair_retains_records_and_only_excludes_effective_funds(profile):
     assert plan["stats"]["cancelled"] == 2 and plan["stats"]["accepted"] == 1
     assert plan["stats"]["currency_totals"] == {"CNY": "1.00"}
     assert policy.validate_evidence(plan["records"]) == plan["cancellations"]
+    if profile == table_archive.EVIDENCE_PROFILE:
+        assert all(evidence_resolution.DETAIL_FIELD in record["details"] for record in plan["records"][:2])
     for record in plan["records"]:
-        notes = record["details"]
+        notes = dict(record["details"])
+        if profile == table_archive.EVIDENCE_PROFILE and evidence_resolution.DETAIL_FIELD in notes:
+            evidence = evidence_resolution.validate_evidence(notes.pop(evidence_resolution.DETAIL_FIELD))
+            assert evidence["role"] == "transaction"
+            assert evidence["endpoints"]["self"]["account"] == "SYN-OWN"
+            assert evidence["endpoints"]["self"]["name"] == "Synthetic owner"
+            assert all(set(item) == {"account", "card", "identifier_type", "bank", "name"}
+                       for item in evidence["endpoints"].values())
+            assert not any(value in str(evidence) for value in ("SYN-ID", "SYN-PAIR"))
+        else:
+            assert evidence_resolution.DETAIL_FIELD not in notes
         assert notes["cancellation_policy"] == policy.POLICY
         assert not any(value in str(notes) for value in ("SYN-OWN", "SYN-ID", "SYN-PAIR", "Synthetic owner"))
     for record in plan["records"][1:]:

@@ -3045,3 +3045,173 @@ test('manual polyline labels preserve exact segment positions and legacy sampled
   f.env.invalidLabelEdge=item;
   assert.equal(f.h.run('edgePts(invalidLabelEdge)'),null,'an incomplete curve cannot provide a fabricated anchor');
 });
+
+
+// Candidate regressions: production graph publication, synthetic authorities only.
+function resolutionPublicationScene(before, root) {
+  const f=stableExpansionScene();
+  f.state.lastGraph=before;f.state.tracked=new Set(before.tracked_ids);
+  f.state.positions=Object.fromEntries(before.nodes.map((n,i)=>[n.account,{x:100+i*130,y:100+i%2*220}]));
+  f.state.graphView.visibleIds=new Set([root,'SYN-B']);f.state.graphView.root=root;f.state.graphView.direction='out';
+  f.state.graphView.fullIndex=null;f.state.forceFit=false;
+  f.h.run('renderGraph()');f.settle();f.state.graphSelection.rebind([root]);
+  return f;
+}
+const resolutionScene=(f,revision,edges)=>({
+  resolution_revision:revision.repeat(64),
+  nodes:[...new Set(edges.flatMap(e=>[e.source,e.target]))].map(f.node),
+  edges,tracked_ids:edges.flatMap(e=>e.ids),
+});
+for(const [oldId,newId]of [['SYN-CARD','SYN-ACCOUNT'],['SYN-ACCOUNT','SYN-CARD']]) for(const incoming of [false,true])
+test('resolution publication preserves the same-flow neighborhood and unique selection: '+oldId+' to '+newId+' incoming='+incoming,async()=>{
+  const helper=stableExpansionScene(),id='9007199254740993123',other='9007199254740993124';
+  const before=resolutionScene(helper,'a',[helper.edge(incoming?'SYN-B':oldId,incoming?oldId:'SYN-B',id,'10.25'),helper.edge('SYN-D','SYN-E',other,'20.03')]);
+  const f=resolutionPublicationScene(before,oldId),camera=f.camera,filter={currency:'CNY',min:'1.00',max:'100.00',active:true};
+  f.state.presentation.relationFilter=filter;f.state.graphView.direction=incoming?'in':'out';
+  const after=resolutionScene(f,'b',[f.edge(incoming?'SYN-B':newId,incoming?newId:'SYN-B',id,'10.25'),f.edge('SYN-D','SYN-E',other,'20.03')]);
+  const expected=JSON.stringify(after);
+  f.h.network(path=>response(path.startsWith('/api/graph?')?after:{}));
+  await f.h.run('loadGraph()');f.settle();
+  assert.deepEqual([...f.state.graphView.visibleIds].sort(),[newId,'SYN-B'].sort());
+  assert.equal(f.state.graphView.root,newId);assert.equal(f.state.graphView.direction,incoming?'in':'out');
+  assert.deepEqual([...f.state.graphSelection.ids],[newId]);assert.deepEqual(f.camera,camera);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.state.presentation.relationFilter)),filter);
+  assert.equal(f.state.graph.findById(oldId),undefined);assert.ok(f.state.graph.findById(newId));
+  assert.equal(f.state.graph.getEdges().length,1);assert.equal(JSON.stringify(f.state.lastGraph),expected);
+  assert.deepEqual([...f.state.tracked],[id,other],'large flow identifiers remain exact strings');
+});
+for(const root of ['SYN-B','SYN-A'])
+test('resolution publication follows old to old-and-new without retaining an incomplete root: '+root,async()=>{
+  const helper=stableExpansionScene(),joined=helper.edge('SYN-A','SYN-B','9007199254740993123','30.28');
+  joined.ids=['9007199254740993123','9007199254740993124'];joined.cnt=2;
+  const before=resolutionScene(helper,'a',[joined,helper.edge('SYN-D','SYN-E','9007199254740993125','0.01')]);
+  const f=resolutionPublicationScene(before,root);f.state.graphView.visibleIds=new Set(['SYN-A','SYN-B']);
+  f.state.graphView.direction='in';f.h.run('renderGraph()');f.settle();f.state.graphSelection.rebind([root]);
+  const after=resolutionScene(f,'b',[f.edge('SYN-A','SYN-B','9007199254740993123','10.25'),
+    f.edge('SYN-C','SYN-B','9007199254740993124','20.03'),f.edge('SYN-D','SYN-E','9007199254740993125','0.01')]);
+  f.h.network(path=>response(path.startsWith('/api/graph?')?after:{}));
+  await f.h.run('loadGraph()');f.settle();
+  if(root==='SYN-B'){
+    assert.deepEqual([...f.state.graphView.visibleIds].sort(),['SYN-A','SYN-B','SYN-C']);
+    assert.equal(f.state.graphView.root,'SYN-B');assert.equal(f.state.graphView.direction,'in');
+    assert.deepEqual([...f.state.graphSelection.ids],['SYN-B']);assert.equal(f.state.graph.getEdges().length,2);
+  }else{
+    assert.equal(f.state.graphView.visibleIds,null);assert.equal(f.state.graphView.root,null);
+    assert.equal(f.state.graph.getNodes().length,5);assert.equal(f.state.graph.getEdges().length,3);
+    assert.deepEqual([...f.state.graphSelection.ids],[],'ambiguous identity selection is not guessed');
+  }
+  assert.equal(JSON.stringify(f.state.lastGraph),JSON.stringify(after),'client never adds old monetary totals to the authoritative graph');
+});
+test('resolution publication does not manufacture a successor for removed tracked observations',async()=>{
+  const helper=stableExpansionScene(),before=resolutionScene(helper,'a',[helper.edge('SYN-CARD','SYN-B','1','10.25')]);
+  const f=resolutionPublicationScene(before,'SYN-CARD');
+  const after=resolutionScene(f,'b',[f.edge('SYN-D','SYN-E','2','20.03')]);
+  f.h.network(path=>response(path.startsWith('/api/graph?')?after:{}));
+  await f.h.run('loadGraph()');f.settle();
+  assert.equal(f.state.graphView.visibleIds,null);assert.equal(f.state.graphView.root,null);
+  assert.deepEqual(f.state.graph.getNodes().map(item=>item.getModel().id).sort(),['SYN-D','SYN-E']);
+  assert.equal(f.state.graph.getEdges().length,1);assert.equal(f.state.graph.findById('SYN-CARD'),undefined);
+});
+for(const transition of ['selectCase(2);selectCase(1)','activateCanvas(7);activateCanvas(0)'])
+test('late identity migration cannot cross a replaced case/canvas binding: '+transition,async()=>{
+  const helper=stableExpansionScene(),before=resolutionScene(helper,'a',[helper.edge('SYN-CARD','SYN-B','1','10.25')]);
+  const f=resolutionPublicationScene(before,'SYN-CARD'),pending=deferred();
+  f.h.network(path=>path.startsWith('/api/graph?')?pending.promise:response({}));
+  const read=f.h.run('loadGraph()');f.h.run(transition);f.state.graphLoading=false;
+  const current=resolutionScene(f,'c',[f.edge('SYN-D','SYN-E','2','20.03')]);
+  f.state.lastGraph=current;f.state.tracked=new Set(current.tracked_ids);f.state.graphView.visibleIds=null;
+  f.state.forceFit=false;f.h.run('renderGraph()');f.settle();f.state.graphSelection.rebind(['SYN-D']);
+  pending.resolve(response(resolutionScene(f,'b',[f.edge('SYN-ACCOUNT','SYN-B','1','10.25')])));
+  await read;f.settle();
+  assert.equal(JSON.stringify(f.state.lastGraph),JSON.stringify(current));assert.equal(f.state.graphView.visibleIds,null);
+  assert.deepEqual([...f.state.graphSelection.ids],['SYN-D']);assert.equal(f.state.graph.findById('SYN-ACCOUNT'),undefined);
+});
+
+
+test('unique relation selection follows its shared tracked flow after identity projection',async()=>{
+  const helper=stableExpansionScene(),before=resolutionScene(helper,'a',[helper.edge('SYN-CARD','SYN-B','9007199254740993123','10.25')]);
+  const f=resolutionPublicationScene(before,'SYN-CARD');f.state.graphSelection.clear();f.state.graphView.selectedEdge='SYN-CARD=>SYN-B';
+  const after=resolutionScene(f,'b',[f.edge('SYN-ACCOUNT','SYN-B','9007199254740993123','10.25')]);
+  f.h.network(path=>response(path.startsWith('/api/graph?')?after:{}));await f.h.run('loadGraph()');f.settle();
+  assert.equal(f.state.graphView.selectedEdge,'SYN-ACCOUNT=>SYN-B');assert.equal(f.state.graph.getEdges().length,1);
+  assert.equal(f.state.graph.getEdges()[0].getModel().data.total,'10.25');assert.equal(f.state.graph.findById('SYN-CARD'),undefined);
+});
+
+for(const mode of ['only','hidden'])
+test('identity-only display filters follow a unique same-flow endpoint without a neighborhood: '+mode,async()=>{
+  const helper=stableExpansionScene(),id='9007199254740993123',other='9007199254740993124';
+  const before=resolutionScene(helper,'a',[helper.edge('SYN-CARD','SYN-B',id,'10.25'),helper.edge('SYN-D','SYN-E',other,'20.03')]);
+  const f=resolutionPublicationScene(before,'SYN-CARD');
+  f.state.graphView.visibleIds=null;f.state.graphView.root=null;
+  f.state.presentation.onlyAccounts=mode==='only'?['SYN-CARD','SYN-B']:null;
+  f.state.presentation.hiddenAccounts=mode==='hidden'?['SYN-CARD']:[];
+  const filter={currency:'CNY',min:'1.00',max:'100.00',active:true};f.state.presentation.relationFilter=filter;
+  f.h.run('renderGraph()');f.settle();f.state.graphSelection.rebind(mode==='only'?['SYN-CARD']:['SYN-D']);const camera=f.camera;
+  const after=resolutionScene(f,'b',[f.edge('SYN-ACCOUNT','SYN-B',id,'10.25'),f.edge('SYN-D','SYN-E',other,'20.03')]);
+  f.h.network(path=>response(path.startsWith('/api/graph?')?after:{}));await f.h.run('loadGraph()');f.settle();
+  assert.equal(f.state.graphView.visibleIds,null);assert.equal(f.state.graphView.root,null);
+  assert.deepEqual(plainGraph(f.state.presentation.onlyAccounts),mode==='only'?['SYN-ACCOUNT','SYN-B']:null);
+  assert.deepEqual(plainGraph(f.state.presentation.hiddenAccounts),mode==='hidden'?['SYN-ACCOUNT']:[]);
+  assert.deepEqual(plainGraph(f.state.presentation.relationFilter),filter);assert.deepEqual(f.camera,camera);
+  assert.deepEqual([...f.state.graphSelection.ids],mode==='only'?['SYN-ACCOUNT']:['SYN-D']);
+  assert.deepEqual(f.state.graph.getNodes().map(item=>item.getModel().id).sort(),mode==='only'?['SYN-ACCOUNT','SYN-B']:['SYN-B','SYN-D','SYN-E']);
+  assert.equal(f.state.graph.getEdges().length,1);assert.equal(f.state.graph.findById('SYN-CARD'),undefined);
+  assert.equal(JSON.stringify(f.state.lastGraph),JSON.stringify(after));
+});
+
+for(const kind of ['split','collapse','removed'])
+test('ambiguous or lost identity-only filters restore the complete current graph: '+kind,async()=>{
+  const helper=stableExpansionScene(),id='9007199254740993123',other='9007199254740993124';
+  const joined=helper.edge('SYN-CARD','SYN-B',id,'30.28');joined.ids=[id,other];joined.cnt=2;
+  const before=resolutionScene(helper,'a',kind==='split'?[joined]:[
+    helper.edge('SYN-CARD','SYN-B',id,'10.25'),helper.edge('SYN-OTHER','SYN-B',other,'20.03')]);
+  const f=resolutionPublicationScene(before,'SYN-CARD');f.state.graphView.visibleIds=null;f.state.graphView.root=null;
+  f.state.presentation.onlyAccounts=['SYN-CARD','SYN-B'];f.state.presentation.hiddenAccounts=kind==='collapse'?['SYN-OTHER']:[];
+  f.h.run('renderGraph()');f.settle();f.state.graphSelection.rebind(['SYN-CARD']);
+  const merged=f.edge('SYN-ACCOUNT','SYN-B',id,'30.28');merged.ids=[id,other];merged.cnt=2;
+  const after=resolutionScene(f,'b',kind==='split'?[
+    f.edge('SYN-CARD','SYN-B',id,'10.25'),f.edge('SYN-ACCOUNT','SYN-B',other,'20.03')]:kind==='collapse'?[merged]:[
+    f.edge('SYN-D','SYN-E','9007199254740993125','40.05')]);
+  f.h.network(path=>response(path.startsWith('/api/graph?')?after:{}));await f.h.run('loadGraph()');f.settle();
+  assert.equal(f.state.graphView.visibleIds,null);assert.equal(f.state.graphView.root,null);
+  assert.equal(f.state.presentation.onlyAccounts,null);assert.deepEqual(plainGraph(f.state.presentation.hiddenAccounts),[]);
+  assert.deepEqual(f.state.graph.getNodes().map(item=>item.getModel().id).sort(),after.nodes.map(node=>node.account).sort());
+  assert.equal(f.state.graph.getEdges().length,after.edges.length);assert.deepEqual([...f.state.graphSelection.ids],[]);
+  assert.equal(JSON.stringify(f.state.lastGraph),JSON.stringify(after),'no old money is combined with the new authority');
+});
+
+test('hidden identity merging with an implicitly visible account cannot hide that account observations', async () => {
+  const helper=stableExpansionScene(), before=resolutionScene(helper,'a',[
+    helper.edge('SYN-HIDDEN','SYN-B','1','10.25'),helper.edge('SYN-VISIBLE','SYN-B','2','20.03')]);
+  const f=resolutionPublicationScene(before,'SYN-VISIBLE');
+  f.state.graphView.visibleIds=null;f.state.graphView.root=null;
+  f.state.presentation.hiddenAccounts=['SYN-HIDDEN'];f.state.presentation.onlyAccounts=null;
+  f.h.run('renderGraph()');f.settle();
+  const joined=f.edge('SYN-MERGED','SYN-B','1','30.28');joined.ids=['1','2'];joined.cnt=2;
+  const after=resolutionScene(f,'b',[joined]);
+  f.h.network(path=>response(path.startsWith('/api/graph?')?after:{}));await f.h.run('loadGraph()');f.settle();
+  assert.deepEqual([...f.state.presentation.hiddenAccounts],[]);
+  assert.equal(f.state.graph.getNodes().length,2);assert.equal(f.state.graph.getEdges().length,1);
+  assert.equal(f.state.graph.getEdges()[0].getModel().data.total,'30.28');
+});
+
+for(const savedRevision of ['a'.repeat(64),undefined]) test('reopened named canvas cannot restore stale identity filters: '+savedRevision,()=>{
+  const helper=stableExpansionScene(),current=resolutionScene(helper,'b',[helper.edge('SYN-ACCOUNT','SYN-B','1','10.25')]);
+  const f=resolutionPublicationScene(current,'SYN-ACCOUNT');
+  f.env.staleResolutionSnapshot={nodes:[{id:'SYN-CARD',x:20,y:30},{id:'SYN-B',x:50,y:70}],edges:[],
+    presentation:{onlyAccounts:['SYN-CARD','SYN-B']},view:{resolution_revision:savedRevision}};
+  f.h.run('applyCanvasSnapshot(staleResolutionSnapshot)');f.settle();
+  assert.equal(f.state.presentation.onlyAccounts,null);assert.deepEqual([...f.state.presentation.hiddenAccounts],[]);
+  assert.equal(f.state.graph.getNodes().length,2);assert.equal(f.state.graph.getEdges().length,1);
+  assert.equal(JSON.stringify(f.state.lastGraph),JSON.stringify(current));
+});
+
+test('same-resolution named canvas retains its intentional identity filter',()=>{
+  const helper=stableExpansionScene(),current=resolutionScene(helper,'b',[
+    helper.edge('SYN-ACCOUNT','SYN-B','1','10.25'),helper.edge('SYN-D','SYN-E','2','20.03')]);
+  const f=resolutionPublicationScene(current,'SYN-ACCOUNT');
+  f.env.currentResolutionSnapshot={nodes:[],edges:[],presentation:{onlyAccounts:['SYN-ACCOUNT','SYN-B']},view:{resolution_revision:'b'.repeat(64)}};
+  f.h.run('applyCanvasSnapshot(currentResolutionSnapshot)');f.settle();
+  assert.deepEqual([...f.state.presentation.onlyAccounts],['SYN-ACCOUNT','SYN-B']);
+  assert.equal(f.state.graph.getNodes().length,2);assert.equal(f.state.graph.getEdges().length,1);
+});

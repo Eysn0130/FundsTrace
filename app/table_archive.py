@@ -10,21 +10,26 @@ from pathlib import PurePosixPath
 import stat
 import zipfile
 
-from . import feedback_import, table_import, table_cancellations
+from . import feedback_import, table_import, table_cancellations, import_attachments
 
 
 IDENTITY_PROFILE = "funds-trace-table-archive-v1"
 REFERENCE_PROFILE = "funds-trace-table-archive-v2"
 PREVIOUS_PROFILE = REFERENCE_PROFILE
 CANCELLATION_PROFILE = "funds-trace-table-archive-v3"
-PROFILE = "funds-trace-table-archive-v4"
-CANCELLATION_PROFILES = frozenset((CANCELLATION_PROFILE, PROFILE))
+HEADER_PROFILE = "funds-trace-table-archive-v4"
+EVIDENCE_PROFILE = "funds-trace-table-archive-v5"
+PROFILE = HEADER_PROFILE
+CANCELLATION_PROFILES = frozenset((CANCELLATION_PROFILE, HEADER_PROFILE, EVIDENCE_PROFILE))
 SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, REFERENCE_PROFILE, *CANCELLATION_PROFILES))
 REFERENCE_PROFILES = frozenset((REFERENCE_PROFILE, *CANCELLATION_PROFILES))
 MAX_MEMBERS = 256
+EVIDENCE_MAX_MEMBERS = 2048
 MAX_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_EXPANDED_BYTES = 512 * 1024 * 1024
 MAX_RECORDS = 1_000_000
+EVIDENCE_MAX_RECORDS = 2_000_000
+EVIDENCE_MAX_EXPANDED_BYTES = 1024 * 1024 * 1024
 MAX_DEPTH = 2
 
 _TRANSACTION = frozenset(table_import.BANK_FEEDBACK_32_COLUMNS)
@@ -56,6 +61,17 @@ def should_parse(source):
         source.seek(0)
         with zipfile.ZipFile(source) as archive:
             infos = archive.infolist()
+            if any(info.filename.lower().endswith((".xlsx", ".txt", ".tsv")) for info in infos):
+                return True
+            legacy, ordinary = False, False
+            for info in infos:
+                if info.filename.lower().endswith(".csv") and not info.flag_bits & 1:
+                    with archive.open(info) as stream:
+                        header, _ = _header(stream.read(65536))
+                    legacy = legacy or frozenset(header) == frozenset(feedback_import.COLUMNS)
+                    ordinary = ordinary or bool(header and frozenset(header) not in {frozenset(value) for value in feedback_import.SCHEMAS.values()})
+            if ordinary and not legacy:
+                return True
             if any(not info.is_dir() and info.filename.lower().endswith(".zip") for info in infos):
                 return True
             for info in infos:
@@ -79,7 +95,7 @@ def _path(name):
     return name.rstrip("/")
 
 
-def _auxiliary(payload, path, header, encoding, role):
+def _auxiliary(payload, path, header, encoding, role, *, evidence=False):
     try:
         text = payload.decode(encoding, errors="strict")
         csv.field_size_limit(max(csv.field_size_limit(), table_import.MAX_FIELD))
@@ -87,8 +103,10 @@ def _auxiliary(payload, path, header, encoding, role):
         next(reader)
         digest = hashlib.sha256(payload).hexdigest()
         records = []
+        from . import table_contracts
+        contract_details = table_contracts.compile_contract({}).details() if evidence else {}
         for position, cells in enumerate(reader, start=2):
-            if len(records) >= MAX_RECORDS or any(len(cell) > table_import.MAX_FIELD for cell in cells):
+            if len(records) >= (EVIDENCE_MAX_RECORDS if evidence else MAX_RECORDS) or any(len(cell) > table_import.MAX_FIELD for cell in cells):
                 raise table_import.TableImportError("反馈包记录或字段超出安全处理范围")
             valid = len(cells) == len(header)
             reason = "auxiliary_table" if valid else "column_count_mismatch"
@@ -97,7 +115,13 @@ def _auxiliary(payload, path, header, encoding, role):
                             "disposition": "auxiliary" if valid else "unresolved", "reason_code": reason,
                             "details": {"sheet": "", "source_row": str(position), "source_role": role,
                                         "financial_effect": "not_a_flow" if valid else "undetermined",
-                                        "reason": "辅助来源资料，不生成资金流水" if valid else "辅助记录列数与表头不一致"}})
+                                        "reason": "辅助来源资料，不生成资金流水" if valid else "辅助记录列数与表头不一致",
+                                        **contract_details}})
+            if valid and evidence:
+                from . import evidence_resolution
+                value = evidence_resolution.auxiliary_evidence(header, cells, role)
+                if value:
+                    records[-1]["details"][evidence_resolution.DETAIL_FIELD] = value
     except (UnicodeError, csv.Error, StopIteration):
         raise table_import.TableImportError("反馈包辅助CSV结构损坏，整包未接纳") from None
     return {"rows": [], "records": records,
@@ -115,38 +139,45 @@ def parse(source, profile=PROFILE):
     if profile in CANCELLATION_PROFILES:
         plan.update(cancelled_rows=[], cancellations=[])
     budget = {"members": 0, "bytes": 0}
+    member_limit = EVIDENCE_MAX_MEMBERS if profile == EVIDENCE_PROFILE else MAX_MEMBERS
+    record_limit = EVIDENCE_MAX_RECORDS if profile == EVIDENCE_PROFILE else MAX_RECORDS
+    expanded_limit = EVIDENCE_MAX_EXPANDED_BYTES if profile == EVIDENCE_PROFILE else MAX_EXPANDED_BYTES
     seen = set()
     selected = False
+    from .import_staging import DetailsPool, PackedDetails
+    details_pool = DetailsPool() if profile == EVIDENCE_PROFILE else None
 
-    def merge(part, prefix):
+    def merge(part, prefix, family=""):
         nonlocal selected
         offset = len(plan["records"])
-        if offset + len(part["records"]) > MAX_RECORDS:
+        if offset + len(part["records"]) > record_limit:
             raise table_import.TableImportError("反馈包记录数超出安全处理范围")
         hashes = {member["member_path"]: member["sha256"] for member in part["members"]}
         for record in part["records"]:
             old_path = record["member_path"]
-            path = prefix if old_path == "table.csv" else old_path
+            path = prefix if old_path in {"table.csv", prefix} else f"{prefix}/{old_path}"
             record.update(record_no=offset + record["record_no"], member_path=path,
                           record_key=table_import.record_key(path, hashes[old_path], record["source_row"]))
             for field in ("paired_record_no", "cancellation_witness_record_no"):
                 if field in record["details"]:
                     record["details"][field] = str(offset + int(record["details"][field]))
+            if details_pool is not None and not isinstance(record["details"], PackedDetails):
+                record["details"] = details_pool.pack(record["details"])
         for row in (*part["rows"], *part.get("cancelled_rows", [])):
             record = part["records"][row["_source_row"] - 1]
             row.update(_source_row=record["record_no"], _source_sheet="", _source_row_kind=table_import.ROW_KIND,
                        _record_key=record["record_key"])
         for member in part["members"]:
-            if member["member_path"] == "table.csv":
-                member["member_path"] = prefix
+            member["member_path"] = prefix if member["member_path"] in {"table.csv", prefix} else f"{prefix}/{member['member_path']}"
         for field in ("documents", "mapping_evidence"):
             for entry in part[field]:
-                if entry.get("member_path") == "table.csv":
-                    entry["member_path"] = prefix
+                if entry.get("member_path"):
+                    entry["member_path"] = prefix if entry["member_path"] in {"table.csv", prefix} else f"{prefix}/{entry['member_path']}"
             plan[field].extend(part[field])
         if not selected and part["columns"]:
             plan.update(mode=part["mode"], mapping=part["mapping"], columns=part["columns"])
             selected = True
+        plan.setdefault("_member_families", {}).update({member["member_path"]: family for member in part["members"]})
         for field in ("rows", "records", "members"):
             plan[field].extend(part[field])
         if profile in CANCELLATION_PROFILES:
@@ -160,7 +191,7 @@ def parse(source, profile=PROFILE):
                 local = set()
                 for info in archive.infolist():
                     budget["members"] += 1
-                    if budget["members"] > MAX_MEMBERS:
+                    if budget["members"] > member_limit:
                         raise table_import.TableImportError("反馈包成员数超出安全处理范围")
                     name = _path(info.filename)
                     if name in local:
@@ -175,7 +206,7 @@ def parse(source, profile=PROFILE):
                         raise table_import.TableImportError("反馈包成员来源位置冲突")
                     seen.add(path)
                     suffix = PurePosixPath(name).suffix.lower()
-                    if suffix not in (".csv", ".zip"):
+                    if profile != EVIDENCE_PROFILE and suffix not in (".csv", ".zip"):
                         raise table_import.TableImportError("反馈包包含尚未适配的成员类型，整包未接纳")
                     if not 0 <= info.file_size <= MAX_MEMBER_BYTES:
                         raise table_import.TableImportError("反馈包单成员超出安全处理大小")
@@ -184,48 +215,67 @@ def parse(source, profile=PROFILE):
                         while block := leaf.read(min(1024 * 1024, MAX_MEMBER_BYTES - size + 1)):
                             size += len(block)
                             budget["bytes"] += len(block)
-                            if size > MAX_MEMBER_BYTES or budget["bytes"] > MAX_EXPANDED_BYTES:
+                            if size > MAX_MEMBER_BYTES or budget["bytes"] > expanded_limit:
                                 raise table_import.TableImportError("反馈包累计展开量超出安全处理范围")
                             chunks.append(block)
                     if size != info.file_size:
                         raise table_import.TableImportError("反馈包成员大小校验失败")
                     payload = b"".join(chunks)
+                    # The complete, size-checked payload owns these bytes now.
+                    # Keep no second chunk buffer through member interpretation.
+                    chunks.clear()
                     if suffix == ".zip":
                         if depth >= MAX_DEPTH:
                             raise table_import.TableImportError("反馈包嵌套层数超出安全处理范围")
                         visit(io.BytesIO(payload), path, depth + 1)
+                    elif suffix not in (".csv", ".tsv", ".txt", ".xlsx"):
+                        merge(import_attachments.plan(payload, path), path, prefix)
                     else:
                         header, encoding = _header(payload)
-                        if (len(header) == len(feedback_import.COLUMNS)
+                        if (profile != EVIDENCE_PROFILE and len(header) == len(feedback_import.COLUMNS)
                                 and frozenset(header) == frozenset(feedback_import.COLUMNS)):
                             # Generic mapping cannot downgrade a verified profile's
                             # cancellation/identity semantics inside a new envelope.
                             raise table_import.TableImportError("新反馈包包含需使用原规则的旧版交易表，整包未接纳；未降级解释资金记录")
                         role = _AUXILIARY.get(frozenset(header)) if len(header) == len(set(header)) else None
+                        if profile == EVIDENCE_PROFILE and role is None:
+                            signature = frozenset(header)
+                            role = next((name for name, names in feedback_import.SCHEMAS.items() if name != "transaction" and signature == frozenset(names)), None)
+                            role = {"task": "manifest", "address": "client", "phone": "client"}.get(role, role)
                         with localcontext() as context:
                             if profile in CANCELLATION_PROFILES:
                                 context.prec = max(context.prec, 50)
-                            part = (_auxiliary(payload, path, header, encoding, role) if role
+                            part = (_auxiliary(payload, path, header, encoding, role, evidence=profile == EVIDENCE_PROFILE) if role
                                     else table_import.parse(
-                                        io.BytesIO(payload), suffix=".csv",
-                                        profile=(table_import.ARCHIVE_MEMBER_PROFILE if profile == PROFILE
+                                        io.BytesIO(payload), suffix=suffix,
+                                        profile=(table_import.EVIDENCE_ARCHIVE_PROFILE if profile == EVIDENCE_PROFILE else
+                                                 table_import.ARCHIVE_MEMBER_PROFILE if profile == HEADER_PROFILE
                                                  else table_import.IDENTITY_PROFILE),
                                         reference_policy=(table_import.TRANSACTION_REFERENCE_POLICY
-                                                          if profile in REFERENCE_PROFILES else None)))
-                        if profile in CANCELLATION_PROFILES and not role:
-                            table_cancellations.apply(part, payload)
-                        merge(part, path)
+                                                          if profile in REFERENCE_PROFILES else None),
+                                        _details_pool=details_pool))
+                        if profile in CANCELLATION_PROFILES and not role and suffix == ".csv":
+                            table_cancellations.apply(part, payload, allow_feedback28=profile == EVIDENCE_PROFILE)
+                        merge(part, path, prefix)
         except (zipfile.BadZipFile, RuntimeError, OSError, ValueError) as error:
             if isinstance(error, table_import.TableImportError):
                 raise
             raise table_import.TableImportError("反馈包读取或完整性校验失败，整包未接纳") from None
 
-    source.seek(0)
-    visit(source)
+    try:
+        source.seek(0)
+        visit(source)
+    finally:
+        # Break the recursive function's self-cell: it also owns merge/plan,
+        # which must not wait for cyclic GC after a completed or failed parse.
+        visit = None
     if not plan["members"]:
         raise table_import.TableImportError("反馈包没有可处理的数据成员")
     if profile in CANCELLATION_PROFILES:
         table_cancellations.refresh_stats(plan)
+        if profile == EVIDENCE_PROFILE:
+            from . import evidence_resolution
+            evidence_resolution.bind_occurrences(plan)
         return plan
     counts = {key: 0 for key in ("accepted", "unresolved", "non_monetary", "non_transaction", "auxiliary")}
     reasons, totals, examples = {}, {}, []

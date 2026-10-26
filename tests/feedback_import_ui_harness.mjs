@@ -55,10 +55,10 @@ function harness(url = 'http://127.0.0.1:8300/') {
     hidePbar() {}, setPbarBusy() {}, setPbar() {}, refreshAll: async () => {}, toast: value => notices.push(value),
     fetch: (path, options) => { requests.push({ path, options }); return fetcher(path, options); },
     URL: class extends URL { static createObjectURL() { return 'blob:synthetic'; } static revokeObjectURL() {} },
-    FormData: class { append() {} },
+    FormData: class { constructor() { this.entries = []; } append(...values) { this.entries.push(values); } },
     XMLHttpRequest: class {
       constructor() { this.upload = {}; uploads.push(this); }
-      open() {} send() {}
+      open(method, path) { this.method = method; this.path = path; } send(form) { this.form = form; }
       finish(value) { this.status = 200; this.responseText = JSON.stringify(value); this.onload(); }
     },
   });
@@ -68,7 +68,7 @@ function harness(url = 'http://127.0.0.1:8300/') {
   // Detail drawers are independent of imports and are exercised in their own harness.
   vm.runInContext(workflow.replace('    bindDetailRequests();', ''), context);
   events.get('DOMContentLoaded')();
-  return { element, state, requests, downloads, notices, network(handler) { fetcher = handler; },
+  return { element, state, requests, uploads, downloads, notices, network(handler) { fetcher = handler; },
     restore() { return context.window.FundsImportWorkflow.restore(); },
     open() { element('btnImport').onclick(); },
     async ready(value = preview()) { this.open(); element('impFile').files = [{ name: value.filename }]; const task = element('impFile').onchange(); uploads.at(-1).finish(value); await task; },
@@ -77,6 +77,31 @@ function harness(url = 'http://127.0.0.1:8300/') {
     changeCase() { state.caseId = 2; state.generation += 1; element('importModal').style.display = 'none'; },
   };
 }
+
+test('folder selection retains every relative filename and uses one case-bound import', async () => {
+  const h = harness(), summary = tableSummary();
+  h.network(async path => path.includes('/commit') ? response({ import_id: 'SYN-IMPORT' })
+    : response({ stage: 'done', result: { source_id: 'SYN-SOURCE', ok: 1, table_summary: summary } }));
+  h.open();
+  const files = [{ name: '账户.csv', webkitRelativePath: '资料/银行/账户.csv' },
+    { name: '流水.csv', webkitRelativePath: '资料/银行/流水.csv' }];
+  h.element('impDirectory').files = files;
+  const task = h.element('impDirectory').onchange(), upload = h.uploads.at(-1);
+  assert.equal(upload.path, '/api/import/directory/preview?case_id=1');
+  assert.deepEqual(upload.form.entries.map(([key, file, path]) => [key, file.name, path]), [
+    ['files', '账户.csv', '资料/银行/账户.csv'], ['files', '流水.csv', '资料/银行/流水.csv']]);
+  upload.finish(preview({ automatic: true, feedback: undefined, table_summary: summary })); await task;
+  assert.equal(h.requests.filter(item => item.path.includes('/commit')).length, 1);
+  assert.equal(h.element('impResultTitle').textContent, '自动处理完成');
+});
+
+test('a stale folder preview cannot import into a switched case', async () => {
+  const h = harness(); h.open();
+  h.element('impDirectory').files = [{ name: '交易.csv', webkitRelativePath: '资料/交易.csv' }];
+  const task = h.element('impDirectory').onchange(); h.changeCase();
+  h.uploads.at(-1).finish(preview({ automatic: true, feedback: undefined, table_summary: tableSummary() }));
+  await task; assert.equal(h.requests.length, 0); assert.equal(h.state.imp, null);
+});
 
 test('feedback preview locks fixed mapping, preserves exact totals and labels unknown counterpart with source rows', async () => {
   const h = harness(); await h.ready();
@@ -285,7 +310,7 @@ test('case totals retain the source interpretation note and discard statistics a
   await load;
   assert.equal(navigationSyncs, 1, 'current statistics refresh navigation through its separate owner');
   assert.equal(element('#importCoverageNote').hidden, false);
-  assert.match(element('#importCoverageNote').textContent, /349 条资金含义未确定的来源记录未计入统计/);
+  assert.match(element('#importCoverageNote').textContent, /349 条资金含义未确定的来源条目未计入统计/);
   assert.match(element('#importCoverageNote').textContent, /不代表结算净额/);
   assert.match(element('#importCoverageNote').textContent, /无资金变动的 233 条记录已单独保存/);
   assert.match(element('#importCoverageNote').textContent, /已配对冲正\/撤销 4 条（双方均不计有效资金）/);

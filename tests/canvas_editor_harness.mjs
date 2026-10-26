@@ -237,6 +237,27 @@ test('history completion automatically restores minimap camera controls after tr
   minimap.camera(true, false);
 });
 
+test('history completion releases an already open account finder after tracking and failure', async () => {
+  const f = editor(), search = f.h.element('#btnGraphFindSearch');
+  const refresh = () => { search.disabled = !!f.h.run('graphLocationBlocker()'); };
+  f.env.window.FundsNodeFinderActions = { update: refresh };
+  for (const fails of [false, true]) {
+    const gate = deferred(), started = deferred();
+    const pending = f.history.run('synthetic tracked view update', async () => {
+      started.resolve(); await gate.promise;
+      if (fails) throw new Error('synthetic tracked view failure');
+    });
+    await started.promise;
+    // The user opens the finder while the tracking operation owns the graph.
+    refresh(); assert.equal(search.disabled, true);
+    gate.resolve();
+    if (fails) await assert.rejects(pending, /synthetic tracked view failure/);
+    else await pending;
+    assert.equal(f.h.run('graphLocationBlocker()'), '');
+    assert.equal(search.disabled, false, 'existing finder must recover without retyping or reopening');
+  }
+});
+
 test('history completion retains minimap loading, layout commit, export and empty graph gates', async () => {
   for (const [name, block, busy] of [
     ['loading', 'state.graphLoading = true', true],
@@ -293,7 +314,7 @@ test('canvas editor snapshots include only IDs, geometry and display choices', (
   const snapshot = f.snapshot(), text = JSON.stringify(snapshot);
   assert.equal(snapshot.positions['SYN-A'].x, 44);
   assert.doesNotMatch(text, /PRIVATE|"(?:amount|photo|total|amount_totals)"|999999/);
-  assert.deepEqual(Object.keys(snapshot).sort(), ['autoRoutes','edgeTypes','camera','cameraOffset','cameraTransform','edgeBendPos','edgeLabelPos','edgeLabels','edgeSnapshotLabels','edgeType','graphView','layout','positions','showIds','showPhotos','trackedIds','presentation'].sort());
+  assert.deepEqual(Object.keys(snapshot).sort(), ['autoRoutes','edgeTypes','camera','cameraOffset','cameraTransform','edgeBendPos','edgeLabelPos','edgeLabels','edgeSnapshotLabels','edgeType','graphView','layout','positions','showIds','showPhotos','trackedIds','presentation','resolutionRevision'].sort());
 });
 
 test('canvas editor snapshots sanitize automatic route geometry and reject nonfinite routes', () => {
@@ -1279,4 +1300,72 @@ test('annotations: view revision revocation rolls back a drag without recording 
   f.state.graphView.revision+=1;f.state.presentation.nodeStyles={'SYN-A':{size:48}};
   f.pointer('pointerup',40,y+20);
   assert.equal(note.dx,0);assert.equal(f.history.status().count,1,'a revoked gesture cannot record unrelated later presentation');
+});
+
+function resolutionEditor({ split = false } = {}) {
+  const f = editor();
+  const scene = (revision, ids) => ({ resolution_revision: revision.repeat(64), tracked_ids: [...ids],
+    nodes: [...new Set(ids.flatMap(id => [revision === 'a' ? 'SYN-CARD' : split && id === 1 ? 'SYN-CARD' : 'SYN-ACCOUNT', 'SYN-B']))].map(account => ({ account })),
+    edges: ids.map(id => ({ source: revision === 'a' ? 'SYN-CARD' : split && id === 1 ? 'SYN-CARD' : 'SYN-ACCOUNT', target: 'SYN-B', ids: [id], cnt: 1, amount: '10.25' })),
+    main_accounts: [], focus_nodes: [] });
+  let revision = 'a';
+  f.tracked.set('1:0', split ? [1, 2] : [1]);
+  f.state.lastGraph = scene(revision, f.tracked.get('1:0')); f.state.tracked = new Set(f.tracked.get('1:0'));
+  f.env.renderGraph();
+  f.intercept(path => path.startsWith('/api/graph?') ? response(scene(revision, f.tracked.get('1:0'))) : null);
+  return { ...f, setRevision(value) { revision = value; }, scene };
+}
+
+for (const split of [false, true]) test(`resolution publication invalidates old display history without recording automatic overview: split=${split}`, async () => {
+  const f = resolutionEditor({ split });
+  await f.history.run('old neighborhood', () => {
+    f.state.graphView.visibleIds = new Set(['SYN-CARD', 'SYN-B']); f.state.graphView.root = 'SYN-CARD';
+    f.state.presentation.onlyAccounts = ['SYN-CARD', 'SYN-B'];
+  });
+  f.setRevision('b'); await f.h.run('loadGraph()'); await flush();
+  assert.equal(f.history.status().count, 0);
+  assert.equal(await f.history.undo(), false);
+  assert.equal(f.state.graphView.root, split ? null : 'SYN-ACCOUNT');
+  assert.deepEqual(f.state.presentation.onlyAccounts && [...f.state.presentation.onlyAccounts], split ? null : ['SYN-ACCOUNT', 'SYN-B']);
+  assert.equal(f.state.lastGraph.resolution_revision, 'b'.repeat(64));
+});
+
+test('automatic resolution overview bypasses edit lock while preserving in-flight command serialization', async () => {
+  const f = resolutionEditor({ split: true }), gate = deferred();
+  f.state.graphView.visibleIds = new Set(['SYN-CARD', 'SYN-B']); f.state.graphView.root = 'SYN-CARD';
+  const pending = f.env.window.FundsCanvasEditor.command('in-flight display', () => gate.promise);
+  await flush(); assert.equal(f.history.status().busy, true);
+  f.setRevision('b'); await f.h.run('loadGraph()');
+  assert.equal(f.state.graphView.visibleIds, null); assert.equal(f.state.graphView.root, null);
+  assert.equal(f.history.status().busy, true, 'authority invalidation must not unlock a running edit');
+  gate.resolve(); await pending;
+  assert.equal(f.history.status().busy, false); assert.equal(f.history.status().count, 0);
+});
+
+test('undo that first reads a changed resolution publishes current authority without its old identity scope', async () => {
+  const f = resolutionEditor();
+  f.state.graphView.visibleIds = new Set(['SYN-CARD', 'SYN-B']); f.state.graphView.root = 'SYN-CARD';
+  f.state.presentation.onlyAccounts = ['SYN-CARD', 'SYN-B'];
+  await f.history.run('old labels', () => { f.state.edgeLabels.add('time'); });
+  assert.equal(f.history.status().count, 1);
+  f.setRevision('b'); await f.history.undo();
+  assert.equal(f.state.lastGraph.resolution_revision, 'b'.repeat(64));
+  assert.equal(f.state.graphView.visibleIds, null); assert.equal(f.state.graphView.root, null);
+  assert.equal(f.state.presentation.onlyAccounts, null); assert.equal(f.history.status().count, 0);
+  assert.deepEqual(f.tracked.get('1:0'), [1]);
+});
+
+test('failed tracking render after a changed resolution cannot resurrect the previous financial authority', async () => {
+  const f = resolutionEditor(), render = f.env.renderGraph; let fail = true;
+  f.state.graphView.visibleIds = new Set(['SYN-CARD', 'SYN-B']); f.state.graphView.root = 'SYN-CARD';
+  f.env.renderGraph = () => {
+    if (fail && f.state.lastGraph.resolution_revision === 'b'.repeat(64)) { fail = false; throw new Error('synthetic new resolution render failure'); }
+    return render();
+  };
+  f.setRevision('b'); await f.h.run('trackFlows([2])');
+  assert.deepEqual(f.tracked.get('1:0'), [1], 'only the attempted tracked-set change is compensated');
+  assert.equal(f.state.lastGraph.resolution_revision, 'b'.repeat(64));
+  assert.deepEqual([...f.state.tracked], [1]);
+  assert.equal(f.state.graphView.visibleIds, null); assert.equal(f.state.presentation.onlyAccounts, null);
+  assert.equal(f.history.status().count, 0);
 });

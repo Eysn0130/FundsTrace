@@ -6,7 +6,7 @@ import { createHttpFundsSession } from './http';
 const unused = async (): Promise<never> => { throw new Error('Unexpected synthetic transport call'); };
 const statistics: CaseStats = { case_id: '1', flows: 0, accounts: 0, batches: 0, amount_total: '0.00', currency: null, amount_totals: [] };
 function transport(overrides: Partial<FundsApi> = {}): FundsApi {
-  return { cases: unused, createCase: unused, stats: unused, flows: unused, preview: unused, repreview: unused, commit: unused, job: unused, imports: unused, sources: unused, downloadSource: unused, downloadImportReport: unused, cleanup: unused, ...overrides };
+  return { cases: unused, createCase: unused, stats: unused, flows: unused, preview: unused, previewDirectory: unused, repreview: unused, commit: unused, job: unused, imports: unused, sources: unused, downloadSource: unused, downloadImportReport: unused, cleanup: unused, ...overrides };
 }
 
 describe('case-bound HTTP adapter', () => {
@@ -68,5 +68,18 @@ describe('case-bound HTTP adapter', () => {
     resolve(); await rejected;
     await expect(captured(source)).rejects.toMatchObject({ code: 'session_revoked' });
     expect(download).toHaveBeenCalledOnce();
+  });
+
+  it('binds folder uploads to the case and revokes a captured folder action', async () => {
+    const previewDirectory = vi.fn(unused);
+    const bound = createHttpFundsSession({ context: { caseId: '1', name: 'Synthetic folder case' },
+      scopeKey: 'folder', generation: 1, transport: transport({ previewDirectory }) });
+    const upload = bound.session.client.previewDirectory!;
+    const files = [new File(['synthetic'], 'folder/account.csv')];
+    await expect(upload(files)).rejects.toThrow('Unexpected synthetic transport call');
+    expect(previewDirectory).toHaveBeenCalledWith('1', files, expect.any(AbortSignal));
+    bound.revoke();
+    await expect(upload(files)).rejects.toMatchObject({ code: 'session_revoked' });
+    expect(previewDirectory).toHaveBeenCalledOnce();
   });
 });

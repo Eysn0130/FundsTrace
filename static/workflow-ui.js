@@ -17,6 +17,7 @@
   const pending = session => session.committing || session.polling || session.recovering;
 
   const feedbackReasons = {
+    unsupported_attachment: '附件原件已保留，格式未适配，内部记录数量与资金内容尚未解释', non_business_attachment: 'Finder元数据附件，原件保留，不生成资金流水',
     transaction_valid: '按来源方向与金额识别为资金流水', auxiliary_table: '辅助资料，未作为资金流水', feedback_only: '来源反馈，未包含资金流水',
     negative_reversal_text: '负数与冲正描述缺少一致的来源依据', negative_revocation_text: '负数与撤销描述缺少一致的来源依据',
     negative_reversal_revocation_text: '负数与冲正及撤销描述缺少一致的来源依据', negative_unknown: '来源未明确负号含义',
@@ -79,7 +80,7 @@
     const examples = (summary.unresolved_examples || []).map(row => `<li>${esc(row.member_path)} · 原始第 ${fmtCount(row.source_row)} 行 · ${esc(feedbackReason(row.reason_code))}</li>`).join('');
     const totals = Object.entries(summary.currency_totals || {}).map(([currency, amount]) => `<li>${moneyHtml(amount, currency)}</li>`).join('');
     const documents = (summary.documents || []).slice(0, 50).map(item => `<li>${esc(item.member_path || '来源表格')}${item.sheet ? ` · 工作表：${esc(item.sheet)}` : ''}${item.header_row != null ? ` · 表头第 ${fmtCount(item.header_row)} 行` : ' · 未能唯一识别表头'}${item.row_count != null ? ` · 来源记录 ${fmtCount(item.row_count)} 条` : ''}</li>`).join('');
-    return `<p><strong>表格自动识别 · 全量校验</strong></p><p>来源记录 ${fmtCount(summary.record_total)} 条 · ${tableCounts(summary)}</p>`
+    return `${summary.reason_counts?.unsupported_attachment ? `<p class="warn">${fmtCount(summary.reason_counts.unsupported_attachment)} 份附件格式尚未适配，原件已保留。每份按一个来源条目登记，内部记录数量和金额未知，不能视为整个目录已完整解析。</p>` : ''}<p><strong>表格自动识别 · 全量校验</strong></p><p>来源记录 ${fmtCount(summary.record_total)} 条 · ${tableCounts(summary)}</p>`
       + `<p>${complete ? '自动处理已完成，未计入资金流水的记录已' : '自动处理会正常完成，未计入资金流水的记录会'}保留来源和原因，无需逐条确认；这些记录不参与金额、交易笔数和关系统计。</p>`
       + ((summary.cancelled ?? 0) > 0 ? '<p>已配对记录保留来源和核验依据，双方退出有效资金统计；退款、退货或仅有负号的记录不据此排除。</p>' : '')
       + (complete && (summary.excluded_flows ?? 0) > 0 ? `<p>本案另有 ${fmtCount(summary.excluded_flows)} 笔历史留存流水已退出有效统计。</p>` : '')
@@ -110,13 +111,21 @@
       + (members ? `<details><summary>包内来源文件与校验信息</summary><div class="tbl-wrap"><table class="tbl"><thead><tr><th>来源文件</th><th>记录类型</th><th>记录数</th><th>字节数</th><th>编码</th><th>SHA-256</th></tr></thead><tbody>${members}</tbody></table></div></details>` : '');
   }
 
+  function resolutionHtml(value, complete = false) {
+    if (!value) return '';
+    return `<section aria-label="账户关联结果"><p><strong>${complete ? '账户关联已更新' : '账户资料关联预览'}</strong></p>`
+      + `<p>辅助资料 ${fmtCount(value.auxiliary_records)} 条 · 关联证据 ${fmtCount(value.evidence_records)} 条 · 已定位交易端点 ${fmtCount(value.resolved_endpoints)} 个</p>`
+      + (value.unresolved_endpoints || value.conflicts ? `<p>尚未定位到账务账户的端点 ${fmtCount(value.unresolved_endpoints)} 个 · 身份关系冲突 ${fmtCount(value.conflicts)} 处。已知卡号和原始记录继续保留，补充资料后自动重新关联。</p>` : '')
+      + '<p>图谱与流水按同一账户关联结果统计，金额按币种分别累计。双方账簿中的交易尚未自动认定为同一笔资金事件。</p></section>';
+  }
+
   function renderPreview(result) {
     const feedback = result.feedback, summary = result.table_summary, classified = feedback || summary;
     renderImport(classified ? { ...result, stats: { ...result.stats,
       bad_examples: (result.stats.bad_examples || []).map(example => ({ ...example, reason: feedbackReason(example.reason) })) } } : result);
     $('#impFeedback').hidden = !classified;
     $('#impFeedback').setAttribute('aria-label', feedback ? '银行反馈包识别与处置汇总' : '表格自动识别与全量校验汇总');
-    $('#impFeedback').innerHTML = feedback ? feedbackHtml(feedback) : summary ? tableHtml(summary) : '';
+    $('#impFeedback').innerHTML = (feedback ? feedbackHtml(feedback) : summary ? tableHtml(summary) : '') + resolutionHtml(result.resolution);
     for (const id of ['impMappingSection', 'impMode', 'impSelfLine']) $('#' + id).hidden = !!classified;
     if (!classified) return;
     $('#impPreviewNote').textContent = `前 ${result.preview.length} 条来源已接纳流水 · 原始成员与行号`;
@@ -235,7 +244,10 @@
     $('#impRe').hidden = !session.preview || complete || fixed; $('#impCommit').hidden = !session.preview || complete;
     $$('#impMapping select,input[name=impMode],#impMainSel .mk-acct,#impSelfAccts').forEach(node => { node.disabled = busy; });
     if (fixed) { $$('#impMapping select').forEach(node => { node.disabled = true; }); $$('input[name=impMode]').forEach(node => { node.disabled = true; }); $('#impSelfAccts').disabled = true; }
-    $('#impFile').disabled = !!pending(session); $('#impChangeFile').disabled = busy;
+    const fileBusy = !session.result && (pending(session) || (session.previewing && session.phase !== 'file'));
+    $('#impFile').disabled = fileBusy;
+    if ($('#impDirectory')) $('#impDirectory').disabled = fileBusy;
+    $('#impChangeFile').disabled = busy;
     $('#impRetryProgress').disabled = session.polling;
     $('#impCancel').textContent = complete ? '完成' : busy ? '关闭' : '取消';
     $('#impResult').hidden = !complete;
@@ -250,7 +262,7 @@
     const feedback = session.result?.feedback, summary = session.result?.table_summary;
     $('#impResultFeedback').hidden = !feedback && !summary;
     $('#impResultFeedback').style.textAlign = 'left'; $('#impResultFeedback').style.marginTop = '24px';
-    $('#impResultFeedback').innerHTML = feedback ? feedbackHtml(feedback, true) : summary ? tableHtml(summary, true) + (retainedFacts(session.result) ? `<p>${esc(retainedFacts(session.result))}</p>` : '') : '';
+    $('#impResultFeedback').innerHTML = (feedback ? feedbackHtml(feedback, true) : summary ? tableHtml(summary, true) + (retainedFacts(session.result) ? `<p>${esc(retainedFacts(session.result))}</p>` : '') : '') + resolutionHtml(session.result?.resolution, true);
     $('#impResultDownloads').hidden = (!feedback && !summary) || !session.result?.source_id;
     $('#impDownloadOriginal').textContent = feedback ? '下载原始 ZIP' : '下载原始文件';
     $('#impDownloadReport').disabled = $('#impDownloadOriginal').disabled = !!session.downloading;
@@ -264,6 +276,7 @@
       previewing: false, committing: false, polling: false, recovering: false, importId: null };
     active = session; state.imp = null;
     $('#impSelfAccts').value = ''; $('#impFile').value = ''; $('#impStats').textContent = '';
+    if ($('#impDirectory')) $('#impDirectory').value = '';
     $('#impMapping').innerHTML = ''; $('#impMainSel').innerHTML = ''; $('#impFeedback').hidden = true; $('#impDownloadStatus').textContent = '';
     $('#impPreviewScroll').scrollLeft = 0; $('#impContent').scrollTop = 0;
     $('#impStep1').style.display = 'block'; $('#impStep2').style.display = 'none'; hidePbar();
@@ -360,9 +373,11 @@
     }
   }
 
-  async function upload() {
-    const session = active, file = $('#impFile').files[0];
-    if (!session || !visible(session) || pending(session) || !file) return;
+  async function upload(directory = false) {
+    const session = active, files = Array.from($(directory ? '#impDirectory' : '#impFile').files || []);
+    if (!session || !visible(session) || pending(session) || (session.previewing && session.phase !== 'file') || !files.length) return;
+    // A newer file or directory selection supersedes an unfinished upload;
+    // its request sequence also retires the earlier response and progress.
     const sequence = ++session.request;
     session.phase = 'file'; session.errorStage = null; session.result = null; session.dirty = false;
     session.previewing = true; session.preview = null; state.imp = null;
@@ -371,7 +386,7 @@
     try {
       const result = await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/import/preview?case_id=' + encodeURIComponent(session.context.caseId));
+        xhr.open('POST', '/api/import/' + (directory ? 'directory/' : '') + 'preview?case_id=' + encodeURIComponent(session.context.caseId));
         xhr.upload.onprogress = event => {
           if (!current() || !event.lengthComputable) return;
           if (event.loaded >= event.total) setPbarBusy('上传完成，正在解析文件…');
@@ -384,7 +399,10 @@
         };
         xhr.onerror = () => reject(new Error('网络错误，请重新选择文件'));
         xhr.onabort = () => reject(new Error('文件上传已取消，请重新选择文件'));
-        const form = new FormData(); form.append('file', file); xhr.send(form);
+        const form = new FormData();
+        if (directory) for (const file of files) form.append('files', file, file.webkitRelativePath || file.name);
+        else form.append('file', files[0]);
+        xhr.send(form);
       });
       if (!current()) return;
       session.preview = result; session.filename = result.filename; session.mappingDraft = { ...result.mapping }; state.imp = result; session.phase = 'fields'; renderPreview(result); hidePbar();
@@ -724,7 +742,9 @@
     notice.append(message, retry); $('#impPbar').after(notice);
     $('#btnImport').onclick = open; $('#btnImport2').onclick = open;
     $('#impClose').onclick = close; $('#impCancel').onclick = close;
-    $('#impFile').onchange = upload; $('#impRe').onclick = repreview; $('#impCommit').onclick = commit;
+    $('#impFile').onchange = () => upload(false);
+    if ($('#impDirectory')) $('#impDirectory').onchange = () => upload(true);
+    $('#impRe').onclick = repreview; $('#impCommit').onclick = commit;
     const reportButton = $('#impDownloadReport'), originalButton = $('#impDownloadOriginal');
     if (reportButton) reportButton.onclick = () => downloadResult('report');
     if (originalButton) originalButton.onclick = () => downloadResult('original');

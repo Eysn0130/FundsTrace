@@ -91,7 +91,9 @@ def test_currency_code_keeps_formula_and_explicit_money_currency_checks():
 
 @pytest.mark.parametrize("suffix", [".csv", ".xlsx"])
 def test_old_profiles_keep_ignored_title_and_overlapping_region_facts(suffix):
-    for profile in sorted(table_import.SUPPORTED_PROFILES - {NEW_PROFILE, table_import.XLS_PROFILE}):
+    historical_profiles = {f"funds-trace-table-v{version}" for version in range(5, 17)}
+    assert historical_profiles <= table_import.SUPPORTED_PROFILES
+    for profile in sorted(historical_profiles):
         content = [["date", "payer_account", "payee_account", "amount", "币种代码"],
                    ["2026-01-01", "SYN-A", "SYN-B", "1.23", "USD"]]
         plan = table_import.parse(payload(content, suffix), suffix=suffix, profile=profile)
@@ -100,6 +102,18 @@ def test_old_profiles_keep_ignored_title_and_overlapping_region_facts(suffix):
                               suffix=suffix, profile=OLD_PROFILE)
     assert [row["amount"] for row in plan["rows"]] == [Decimal("1.23"), Decimal("100"), Decimal("99")]
     assert [record["reason_code"] for record in plan["records"]] == ["transaction_valid"] * 3
+
+
+@pytest.mark.parametrize("suffix", [".csv", ".xlsx"])
+def test_evidence_profile_keeps_v17_currency_title_and_ambiguous_region_protection(suffix):
+    profile = table_import.EVIDENCE_PROFILE
+    content = [["date", "payer_account", "payee_account", "amount", "币种代码"],
+               ["2026-01-01", "SYN-A", "SYN-B", "1.23", "USD"]]
+    plan = table_import.parse(payload(content, suffix), suffix=suffix, profile=profile)
+    assert plan["stats"]["currency_totals"] == {"USD": "1.23"}
+    plan = table_import.parse(payload([HEADERS, FIRST, OVERLAP, SECOND], suffix), suffix=suffix, profile=profile)
+    assert [record["reason_code"] for record in plan["records"]] == [
+        "transaction_valid", "ambiguous_region_header", "ambiguous_region_header"]
 
 
 @pytest.mark.parametrize("suffix", [".csv", ".xlsx"])

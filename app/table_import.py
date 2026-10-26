@@ -40,8 +40,11 @@ XLS_PROFILE = "funds-trace-table-v18"
 # Internal archive CSV rule: v5 plus exactly the two header protections below.
 # Keep it outside standalone and financial/identity inheritance collections.
 ARCHIVE_MEMBER_PROFILE = "funds-trace-table-archive-v4"
+EVIDENCE_PROFILE = "funds-trace-table-v19"
+EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v5"
+EVIDENCE_PROFILES = frozenset((EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE))
 PROFILE = CURRENCY_REGION_PROFILE
-CURRENCY_REGION_PROFILES = frozenset((CURRENCY_REGION_PROFILE, XLS_PROFILE))
+CURRENCY_REGION_PROFILES = frozenset((CURRENCY_REGION_PROFILE, XLS_PROFILE, *EVIDENCE_PROFILES))
 CURRENCY_CODE_ALIAS_PROFILES = CURRENCY_REGION_PROFILES | {ARCHIVE_MEMBER_PROFILE}
 OVERLAPPING_HEADER_PROFILES = CURRENCY_REGION_PROFILES | {ARCHIVE_MEMBER_PROFILE}
 REORDERED_TIME_PROFILES = frozenset((REORDERED_TIME_PROFILE, *CURRENCY_REGION_PROFILES))
@@ -55,7 +58,7 @@ DIRECTION_PROFILES = frozenset((DIRECTION_PROFILE, *TIME_FORMAT_PROFILES))
 CONTRACT_PROFILES = frozenset((CONTRACT_PROFILE, *DIRECTION_PROFILES))
 FINANCIAL_PROFILES = frozenset((FINANCIAL_PROFILE, *CONTRACT_PROFILES))
 ROLE_PROFILES = frozenset((ROLE_PROFILE, *FINANCIAL_PROFILES))
-SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, *ROLE_PROFILES))
+SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, *(ROLE_PROFILES - {EVIDENCE_ARCHIVE_PROFILE})))
 ROLE_CONFLICT_BASIS = "显式身份角色或候选字段存在矛盾"
 HISTORY_CONFLICT_BASIS = "同一物理来源已有不同资金解释，保留历史事实，防止重复累计"
 ARCHIVE_HISTORY_CONFLICT_BASIS = "归档v4参与的同一物理来源已有不同资金解释，保留历史事实，防止重复累计"
@@ -70,6 +73,12 @@ FINANCIAL_VALIDATION_ISSUES = frozenset((
 ROW_KIND = "table_record"
 TRANSACTION_REFERENCE_POLICY = "transaction-reference-v1"
 BANK_FEEDBACK_32_COLUMNS = frozenset("交易卡号 交易账号 查询反馈结果原因 交易户名 交易证件号码 交易时间 交易金额 交易余额 收付标志 交易对手账卡号 现金标志 对手户名 对手身份证号 对手开户银行 摘要说明 交易币种 交易网点名称 交易发生地 交易是否成功 传票号 IP地址 MAC地址 对手交易余额 交易流水号 日志号 凭证种类 凭证号 交易柜员号 备注 商户名称 商户代码 交易类型".split())
+BANK_FEEDBACK_31_COLUMNS = frozenset("交易卡号 交易账号 交易方户名 交易方证件号码 交易时间 交易金额 交易余额 收付标志 交易对手账卡号 现金标志 对手户名 对手身份证号 对手开户银行 摘要说明 交易币种 交易网点名称 交易发生地 交易是否成功 传票号 IP地址 MAC地址 对手交易余额 交易流水号 日志号 凭证种类 凭证号 交易柜员号 备注 商户名称 交易类型 查询反馈结果原因".split())
+BANK_FEEDBACK_31_REFERENCE_PROFILE = "bank-feedback31-reference-v1"
+UNIFORM_FEEDBACK_37_COLUMNS = frozenset("姓名(查询条件) 证件号码(查询条件) 查询账号 查询卡号 交易类型 借贷标志 币种 交易金额 交易余额 交易时间 交易流水号 交易对方名称 交易对方账号 交易对方卡号 交易对方证件号码 交易对手余额 交易对方账号开户行 交易摘要 交易网点名称 交易网点代码 日志号 传票号 凭证种类 凭证号 终端号 交易是否成功 交易发生地 商户名称 商户号 IP地址 MAC地址 交易柜员号 备注 本方账号 本方卡号".split()) | {"Unnamed: 35", "Unnamed: 36"}
+UNIFORM_FEEDBACK_37_REFERENCE_PROFILE = "uniform-feedback37-reference-v1"
+UNIFORM_FEEDBACK_35_COLUMNS = UNIFORM_FEEDBACK_37_COLUMNS - {"Unnamed: 35", "Unnamed: 36"}
+UNIFORM_FEEDBACK_35_REFERENCE_PROFILE = "uniform-feedback35-reference-v1"
 MAX_BYTES = 256 * 1024 * 1024
 MAX_RECORDS = 1_000_000
 MAX_COLUMNS = 256
@@ -460,13 +469,14 @@ def _csv(raw, suffix, profile=IDENTITY_PROFILE):
     for delimiter in ("\t", ",", ";", "|"):
         sample = []
         try:
-            reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, strict=True)
-            for index, row in enumerate(reader):
-                if index >= MAX_RECORDS:
-                    raise TableImportError("表格记录数或列数超出安全处理范围")
-                sample.append(row)
-                if index >= 99:
-                    break
+            with io.StringIO(text, newline="") as stream:
+                reader = csv.reader(stream, delimiter=delimiter, strict=True)
+                for index, row in enumerate(reader):
+                    if index >= MAX_RECORDS:
+                        raise TableImportError("表格记录数或列数超出安全处理范围")
+                    sample.append(row)
+                    if index >= 99:
+                        break
         except csv.Error:
             continue
         header, candidates, mode = _locate_header(sample, profile)
@@ -484,7 +494,8 @@ def _csv(raw, suffix, profile=IDENTITY_PROFILE):
         except csv.Error:
             delimiter = "\t" if suffix == ".tsv" else ","
     try:
-        rows = _collect_rows(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, strict=True))
+        with io.StringIO(text, newline="") as stream:
+            rows = _collect_rows(csv.reader(stream, delimiter=delimiter, strict=True))
     except csv.Error:
         raise TableImportError("CSV引号或记录结构损坏，文件未接纳") from None
     return [{"path": "table.csv", "name": "", "rows": rows, "sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw), "encoding": encoding, "delimiter": delimiter}]
@@ -716,8 +727,21 @@ def _reference_field(row, candidates, issues):
     references = candidates.get("trade_no", [])
     primary = [item for item in references if item.get("reference_role") == "source_transaction_id"]
     vouchers = [item for item in references if item.get("reference_role") == "independent_voucher_reference"]
-    transaction = _field(row, {"trade_no": primary}, "trade_no", issues)
-    voucher = _field(row, {"trade_no": vouchers}, "trade_no", issues)
+    closed_missing = any(item.get("reference_profile") in {BANK_FEEDBACK_31_REFERENCE_PROFILE,
+                                                          UNIFORM_FEEDBACK_37_REFERENCE_PROFILE,
+                                                          UNIFORM_FEEDBACK_35_REFERENCE_PROFILE} for item in references)
+    blank_indices = {index for item in references for index in item.get("reference_blank_indices", ())}
+    if any(_cell_present(_value(row, {"index": index})) for index in blank_indices):
+        issues.append("conflicting_field")
+    def value(items):
+        if closed_missing:
+            # Interpret an explicit missing marker in its own reference role;
+            # never edit the retained source cell or suppress its other role.
+            items = [item for item in items if (text := _text(_value(row, item)))
+                     and text.casefold() not in {"null", "none", "nan", "n/a"}
+                     and any(character.isalnum() for character in text)]
+        return _field(row, {"trade_no": items}, "trade_no", issues)
+    transaction, voucher = value(primary), value(vouchers)
     # Keep the already accepted v5 value when the actual transaction ID is blank.
     return (transaction, "source_transaction_id") if transaction else (
         (voucher, "legacy_voucher_fallback") if voucher else ("", "none"))
@@ -822,7 +846,7 @@ def _financial_times(row, candidates, issues):
     return times
 
 
-def _interpret(row, candidates, mode, *, reference_policy=None, financial=False, source_contract=None, source_roles=False, identity_values=None):
+def _interpret(row, candidates, mode, *, reference_policy=None, financial=False, source_contract=None, source_roles=False, identity_values=None, retain_endpoint_role=False):
     issues, notes = [], {}
     if financial:
         candidates, issues = _financial_candidates(row, candidates)
@@ -1094,6 +1118,8 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
         return None, "non_monetary", "zero_amount", {**notes, "financial_effect": "no_movement"}
     result = {key: fields[key] for key in ("trade_no", "payer_name", "payer_account", "payer_bank", "payee_name", "payee_account", "payee_bank", "self_name", "self_account", "summary", "channel")}
     result.update(trade_time=times[0], amount=abs(amount), balance=balance, currency=currency)
+    if retain_endpoint_role:
+        notes["_resolved_own_side"] = "payee" if direction == "in" else "payer" if direction == "out" else ""
     return result, "accepted", "transaction_valid", {**notes, "financial_effect": "source_reported", "flow_sha256": flow_digest(result)}
 
 
@@ -1107,14 +1133,14 @@ def _role_conflict(outcome):
     return None, "unresolved", primary, notes
 
 
-def _interpret_candidates(row, candidates, mode, *, reference_policy=None, financial=False, source_contract=None, source_roles=False):
+def _interpret_candidates(row, candidates, mode, *, reference_policy=None, financial=False, source_contract=None, source_roles=False, retain_endpoint_role=False):
     """Resolve explicit role layouts, never rank them by row acceptance rate.
 
     Financial validation stays in the established interpreter. Only missing
     identities can be completed from another explicitly directed layout.
     """
     selected_identities = {}
-    selected = _interpret(row, candidates, mode, reference_policy=reference_policy, financial=financial, source_contract=source_contract, source_roles=source_roles, identity_values=selected_identities)
+    selected = _interpret(row, candidates, mode, reference_policy=reference_policy, financial=financial, source_contract=source_contract, source_roles=source_roles, identity_values=selected_identities, retain_endpoint_role=retain_endpoint_role)
     party_fields = tuple(side + "_" + field for side in ("payer", "payee") for field in ("name", "account", "bank"))
     if selected[1] == "unresolved":
         identity_issues = []
@@ -1133,7 +1159,7 @@ def _interpret_candidates(row, candidates, mode, *, reference_policy=None, finan
             or selected[1] in {"non_transaction", "non_monetary"}):
         return selected
     peer_identities = selected_identities if mode == "B" else {}
-    peer = selected if mode == "B" else _interpret(row, candidates, "B", reference_policy=reference_policy, financial=financial, source_contract=source_contract, source_roles=source_roles, identity_values=peer_identities)
+    peer = selected if mode == "B" else _interpret(row, candidates, "B", reference_policy=reference_policy, financial=financial, source_contract=source_contract, source_roles=source_roles, identity_values=peer_identities, retain_endpoint_role=retain_endpoint_role)
     if peer[0] is not None:
         merged = dict(peer[0])
         for field in party_fields:
@@ -1268,14 +1294,39 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, profile=ID
         # choice must survive repreview/commit so custom columns are not lost.
         current_mapping.update(pinned_mapping)
     active_reference_policy = None
+    header_names = tuple(_text(_header_value(header, profile)) for header in headers)
+    signature = frozenset(header_names)
+    # The physical XLSX reader pads every row to the worksheet's actual width.
+    # This observed form has exactly the 35 business labels followed by two
+    # empty coordinates; every transaction must also keep both cells empty.
+    uniform35_padding = (profile in EVIDENCE_PROFILES and len(header_names) == 37
+                         and frozenset(header_names[:35]) == UNIFORM_FEEDBACK_35_COLUMNS
+                         and not any(header_names[35:]))
+    closed_reference_family = (len(headers) == len(BANK_FEEDBACK_32_COLUMNS) and signature == BANK_FEEDBACK_32_COLUMNS
+                               or profile in EVIDENCE_PROFILES and len(headers) == len(BANK_FEEDBACK_31_COLUMNS)
+                               and signature == BANK_FEEDBACK_31_COLUMNS
+                               or profile in EVIDENCE_PROFILES and len(headers) == len(UNIFORM_FEEDBACK_37_COLUMNS)
+                               and signature == UNIFORM_FEEDBACK_37_COLUMNS
+                               or profile in EVIDENCE_PROFILES and len(headers) == len(UNIFORM_FEEDBACK_35_COLUMNS)
+                               and signature == UNIFORM_FEEDBACK_35_COLUMNS
+                               or uniform35_padding)
     if ((reference_policy == TRANSACTION_REFERENCE_POLICY
-            and len(headers) == len(BANK_FEEDBACK_32_COLUMNS)
-            and frozenset(_text(_header_value(header, profile)) for header in headers) == BANK_FEEDBACK_32_COLUMNS)
+            and closed_reference_family)
             or source_role in {"transaction_explicit", "transaction_query_only"} and not (mapping and "trade_no" in mapping)):
         active_reference_policy = TRANSACTION_REFERENCE_POLICY
         for item in candidates.get("trade_no", []):
             item["reference_role"] = ("source_transaction_id" if item["source_name"] == "交易流水号"
                                       else "independent_voucher_reference")
+            if profile in EVIDENCE_PROFILES and signature == BANK_FEEDBACK_31_COLUMNS:
+                item["reference_profile"] = BANK_FEEDBACK_31_REFERENCE_PROFILE
+            elif profile in EVIDENCE_PROFILES and signature == UNIFORM_FEEDBACK_37_COLUMNS:
+                item["reference_profile"] = UNIFORM_FEEDBACK_37_REFERENCE_PROFILE
+                item["reference_blank_indices"] = tuple(index for index, header in enumerate(headers)
+                                                       if _text(_header_value(header, profile)) in {"Unnamed: 35", "Unnamed: 36"})
+            elif profile in EVIDENCE_PROFILES and signature == UNIFORM_FEEDBACK_35_COLUMNS or uniform35_padding:
+                item["reference_profile"] = UNIFORM_FEEDBACK_35_REFERENCE_PROFILE
+                if uniform35_padding:
+                    item["reference_blank_indices"] = (35, 36)
         current_mapping["trade_no"] = labels[next(item["index"] for item in candidates["trade_no"]
                                                    if item["source_name"] == "交易流水号")]
     return candidates, labels, actual_mode, current_mapping, error, active_reference_policy
@@ -1385,13 +1436,16 @@ def _region_evidence(headers, candidates, labels, path, header_row):
             for field, items in candidates.items() for item in items]
 
 
-def _append_auxiliary_sheet(plan, sheet):
+def _append_auxiliary_sheet(plan, sheet, *, details_pool=None):
     rows = sheet["rows"]
     header_no = next((index for index, row in enumerate(rows) if any(_cell_present(value) for value in row)), None)
     if header_no is None:
         return False
     headers = rows[header_no]
     role = table_source_roles.classify([_text(_header_value(value, plan["profile"])) for value in headers])
+    if plan["profile"] in EVIDENCE_PROFILES:
+        from . import evidence_resolution
+        role = role or evidence_resolution.classify_auxiliary([_text(value) for value in headers])
     if role not in {"account", "client", "subaccount"}:
         return False
     # A later transaction region must go through the ordinary complete parser.
@@ -1413,16 +1467,20 @@ def _append_auxiliary_sheet(plan, sheet):
         details = {"sheet": sheet["name"], "source_row": str(index), "source_role": role,
                    "financial_effect": "not_a_flow" if valid else "undetermined",
                    "reason": REASONS[reason], **contract.details()}
+        if valid and plan["profile"] in EVIDENCE_PROFILES:
+            value = evidence_resolution.auxiliary_evidence([_text(h) for h in headers], [_raw(v) for v in row], role)
+            if value:
+                details[evidence_resolution.DETAIL_FIELD] = value
         plan["records"].append({"record_no": len(plan["records"]) + 1, "member_path": sheet["path"],
                                 "source_row": index, "record_key": record_key(sheet["path"], sheet["sha256"], index),
                                 "disposition": "auxiliary" if valid else "unresolved", "reason_code": reason,
-                                "details": details})
+                                "details": details_pool.pack(details) if details_pool is not None else details})
     plan["members"].append({"member_path": sheet["path"], "role": "auxiliary", "sha256": sheet["sha256"],
                             "size_bytes": sheet["size"], "encoding": sheet["encoding"], "row_count": len(rows) - 1})
     return True
 
 
-def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=None):
+def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=None, _details_pool=None):
     if profile is None:
         profile = XLS_PROFILE if suffix.lower() == ".xls" else PROFILE
     # New exact cross-field arithmetic is independent of ambient Decimal
@@ -1431,18 +1489,21 @@ def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pro
         with localcontext() as context:
             context.prec = max(context.prec, 50)
             return _parse(source, suffix=suffix, mode=mode, mapping=mapping,
-                          reference_policy=reference_policy, profile=profile)
+                          reference_policy=reference_policy, profile=profile, details_pool=_details_pool)
     return _parse(source, suffix=suffix, mode=mode, mapping=mapping,
-                  reference_policy=reference_policy, profile=profile)
+                  reference_policy=reference_policy, profile=profile, details_pool=_details_pool)
 
 
-def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=PROFILE):
+def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=PROFILE, details_pool=None):
     """Interpret every source record and return a write-free versioned plan."""
     suffix = suffix.lower()
-    archive_member = (profile == ARCHIVE_MEMBER_PROFILE and suffix == ".csv"
+    archive_member = ((profile == ARCHIVE_MEMBER_PROFILE and suffix == ".csv"
+                       or profile == EVIDENCE_ARCHIVE_PROFILE and suffix in {".csv", ".txt", ".tsv", ".xlsx"})
                       and reference_policy == TRANSACTION_REFERENCE_POLICY)
     if profile not in SUPPORTED_PROFILES and not archive_member:
         raise TableImportError("不支持的表格解析规则")
+    if details_pool is not None and profile != EVIDENCE_ARCHIVE_PROFILE:
+        raise TableImportError("临时审计存储仅用于新反馈包规则")
     if suffix not in {".csv", ".tsv", ".txt", ".xlsx", ".xls"}:
         raise TableImportError("表格文件格式不受支持")
     if (profile == XLS_PROFILE) != (suffix == ".xls"):
@@ -1459,7 +1520,9 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
     selected = False
     for sheet in sheets:
         raw_rows = sheet["rows"]
-        if profile in SOURCE_ROLE_PROFILES and _append_auxiliary_sheet(plan, sheet):
+        if profile in SOURCE_ROLE_PROFILES and _append_auxiliary_sheet(plan, sheet, details_pool=details_pool):
+            if profile in EVIDENCE_PROFILES:
+                raw_rows.clear()
             continue
         header_no, _, _ = _locate_header(raw_rows, profile)
         headers = raw_rows[header_no] if header_no is not None else []
@@ -1478,12 +1541,16 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
         member_count = 0
         ambiguous_layouts = {}
         for index, row in enumerate(raw_rows, start=1):
+            if profile in EVIDENCE_PROFILES:
+                # A source row is consumed once. Keep the active header object,
+                # but release processed cells as the immutable plan is built.
+                raw_rows[index - 1] = None
             if header_no is not None and index == header_no + 1:
                 continue
             number = len(plan["records"]) + 1
             key = record_key(sheet["path"], sheet["sha256"], index)
             details = {"sheet": sheet["name"], "source_row": str(index), "financial_effect": "not_a_flow"}
-            result = None
+            result, own_side = None, ""
             if not any(_cell_present(value) for value in row):
                 disposition, reason = "non_transaction", "blank_record"
             elif header_no is not None and index < header_no + 1:
@@ -1521,7 +1588,12 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
             else:
                 interpreter = _interpret_candidates if profile in ROLE_PROFILES else _interpret
                 result, disposition, reason, parsed_details = interpreter(
-                    row, candidates, actual_mode, reference_policy=active_reference_policy, financial=profile in FINANCIAL_PROFILES, source_contract=source_contract, source_roles=profile in SOURCE_ROLE_PROFILES)
+                    row, candidates, actual_mode, reference_policy=active_reference_policy, financial=profile in FINANCIAL_PROFILES, source_contract=source_contract, source_roles=profile in SOURCE_ROLE_PROFILES, retain_endpoint_role=profile in EVIDENCE_PROFILES)
+                if profile == EVIDENCE_ARCHIVE_PROFILE:
+                    from . import feedback_import
+                    if len(headers) == len(feedback_import.COLUMNS) and frozenset(_text(value) for value in headers) == frozenset(feedback_import.COLUMNS):
+                        result, disposition, reason, parsed_details = _feedback_member_outcome(headers, row, (result, disposition, reason, parsed_details))
+                own_side = parsed_details.pop("_resolved_own_side", "")
                 details.update(parsed_details)
                 if source_contract:
                     details.update(source_contract.details())
@@ -1542,13 +1614,29 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                                           for item in items)
                                       else "缺少银行返回的本方账号或卡号；查询条件不证明本笔交易主体。")
                                      + "该笔未计入资金统计和节点关系，收支及关联分析可能不完整")
-            record = {"record_no": number, "member_path": sheet["path"], "source_row": index, "record_key": key, "disposition": disposition, "reason_code": reason, "details": details}
+            if result is not None and profile in EVIDENCE_PROFILES:
+                from . import evidence_resolution
+                from . import feedback_import
+                if profile == EVIDENCE_ARCHIVE_PROFILE and len(headers) == len(feedback_import.COLUMNS) and frozenset(_text(h) for h in headers) == frozenset(feedback_import.COLUMNS):
+                    source_cells = {_text(h): _text(value) for h, value in zip(headers, row)}
+                    details[evidence_resolution.DETAIL_FIELD] = evidence_resolution.feedback_evidence(source_cells, result, ("", "", "in" if source_cells["收付标志"] in {"进", "入"} else "out"))
+                else:
+                    details[evidence_resolution.DETAIL_FIELD] = evidence_resolution.transaction_evidence(
+                        [_text(h) for h in headers], [_raw(v) for v in row], candidates, result, _identity_pair, own_side=own_side)
+            # The envelope owns one bounded decoded cache for all members.
+            # Pack each completed note now: waiting for a large member to
+            # return retains its whole decoded journal beside financial rows.
+            record = {"record_no": number, "member_path": sheet["path"], "source_row": index, "record_key": key, "disposition": disposition, "reason_code": reason,
+                      "details": details_pool.pack(details) if details_pool is not None else details}
             plan["records"].append(record)
             if result is not None:
                 result.update(_source_row=number, _source_sheet=plan["sheet"], _source_row_kind=ROW_KIND, _record_key=key)
                 plan["rows"].append(result)
             member_count += 1
         plan["members"].append({"member_path": sheet["path"], "role": "table", "sha256": sheet["sha256"], "size_bytes": sheet["size"], "encoding": sheet["encoding"], "row_count": member_count})
+    if profile in EVIDENCE_PROFILES:
+        from . import evidence_resolution
+        evidence_resolution.bind_occurrences(plan)
     return refresh_stats(plan)
 
 
@@ -1565,3 +1653,35 @@ def refresh_stats(plan):
         totals[row["currency"]] = totals.get(row["currency"], Decimal(0)) + row["amount"]
     plan["stats"] = {"total": len(plan["records"]), "ok": len(plan["rows"]), "skipped": len(plan["records"]) - len(plan["rows"]), "bad_examples": examples, **counts, "reason_counts": reasons, "currency_totals": {key: format(value, ".2f") for key, value in sorted(totals.items())}}
     return plan
+
+
+def _feedback_member_outcome(headers, cells, generic):
+    """The closed 28-column family keeps its admission/facts in mixed folders.
+
+    The common table journal records this versioned adapter. It does not broaden
+    the bank reader's currency/status/time contract or recompute its summaries.
+    """
+    from . import feedback_import
+    source = {_text(header): _text(value) for header, value in zip(headers, cells)}
+    row, disposition, reason, legacy_details, _context = feedback_import._transaction(source, feedback_import.EVIDENCE_PROFILE)
+    notes = dict(generic[3])
+    notes.pop("flow_sha256", None)
+    notes.pop("validation_issues", None)
+    notes.pop("validation_basis", None)
+    if row is not None:
+        notes.update(financial_effect="source_reported", flow_sha256=flow_digest(row))
+        return row, "accepted", "transaction_valid", notes
+    if disposition == "unresolved":
+        mapped = ("negative_amount" if reason.startswith("negative_") else "invalid_balance" if reason in {"balance_precision", "balance_overflow"}
+                  else generic[2] if reason == "missing_core" and generic[1] == "unresolved" else "missing_identity" if reason == "missing_core" else reason)
+        if mapped not in REASONS:
+            mapped = "unknown_table"
+        notes.update(financial_effect="undetermined", validation_issues=mapped)
+        # Preserve other independently detected faults, so cancellation cannot
+        # treat an invalid negative as a proven two-leg reversal.
+        other_issues = [value for value in generic[3].get("validation_issues", "").split(",") if value and value != mapped]
+        if other_issues:
+            notes["validation_issues"] = ",".join((mapped, *other_issues))
+        return None, "unresolved", mapped, notes
+    notes["financial_effect"] = "no_movement" if disposition == "non_monetary" else "not_a_flow"
+    return None, disposition, reason, notes

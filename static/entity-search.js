@@ -15,11 +15,11 @@
     const seen = new Set();
     const items = data.items.map(item => {
       if (!item || typeof item !== 'object' || typeof item.account !== 'string' || !item.account || typeof item.name !== 'string'
-        || (item.id_no != null && typeof item.id_no !== 'string') || typeof item.matched_text !== 'string'
+        || (item.id_no != null && typeof item.id_no !== 'string') || (item.display_account != null && typeof item.display_account !== 'string') || typeof item.matched_text !== 'string'
         || !['account', 'id', 'name'].includes(item.matched_field) || seen.has(item.account)) throw new Error('候选格式不正确');
       seen.add(item.account);
-      return { key: String(caseId) + ':' + item.account, label: item.name || item.account, value: item.account,
-        account: item.account, idNo: item.id_no || undefined, matchedText: item.matched_text,
+      return { key: String(caseId) + ':' + item.account, label: item.name || item.display_account || item.account, value: item.display_account || item.account,
+        account: item.account, displayAccount: item.display_account, idNo: item.id_no || undefined, matchedText: item.matched_text,
         matchedField: { account: 'account', id: 'idNo', name: 'label' }[item.matched_field],
         detail: item.matched_field === 'name' && item.matched_text !== item.name ? item.matched_text : undefined };
     });
@@ -49,7 +49,8 @@
   function local(items, request) {
     const needle = normalize(request.query), matches = [];
     for (const item of items) {
-      const fields = [['account', item.account], ['idNo', item.idNo], ['label', item.label]];
+      const fields = [['account', item.displayAccount || item.account], ['account', item.accountNumber],
+        ...(item.cards || []).map(card => ['account', card]), ['idNo', item.idNo], ['label', item.label]];
       const hit = fields.map(([field, text]) => ({ field, text: String(text || ''), normalized: normalize(text) }))
         .filter(value => value.normalized.includes(needle) && value.normalized)
         .map(value => ({ ...value, rank: value.normalized === needle ? 0 : value.normalized.startsWith(needle) ? 1 : 2 }))

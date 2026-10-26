@@ -63,7 +63,8 @@
       autoRoutes[id]={source,target,controlPoints};
       if(['screen-right','compact-arc','obstacle-aware'].includes(route.curvePolicy))autoRoutes[id].curvePolicy=route.curvePolicy;
     }
-    return { trackedIds: [...state.tracked].sort(order), positions, edgeLabelPos, edgeBendPos, edgeSnapshotLabels, edgeTypes,
+    return { trackedIds: [...state.tracked].sort(order), resolutionRevision: state.lastGraph.resolution_revision ?? null,
+      positions, edgeLabelPos, edgeBendPos, edgeSnapshotLabels, edgeTypes,
       autoRoutes,
       layout: state.layout, edgeType: state.edgeType, edgeLabels: [...state.edgeLabels].sort(order),
       showIds: state.showIds, showPhotos: state.showPhotos, presentation: newGraphPresentation(state.presentation),
@@ -114,6 +115,7 @@
     window.FundsRibbonCommands?.sync();
     publishMembership();
     window.FundsNeighborhoodActions?.update();
+    window.FundsNodeFinderActions?.update();
   }
 
   function waitLayout(context) {
@@ -212,6 +214,15 @@
         throw new Error('追踪状态无法确认，请重新加载当前画布。');
       }
       if (!isCurrentCase(context)) return null;
+      if (before.resolutionRevision !== (state.lastGraph.resolution_revision ?? null)) {
+        // Compensation changes tracked membership only. It cannot undo newly
+        // imported account evidence or make the previous graph authoritative.
+        try {
+          await loadGraph(false, context);
+          if (isCurrentCase(context)) applyGraphOverview();
+        } catch (_) { uncertain(context); }
+        throw error;
+      }
       // Failed reads leave the old drawing intact; layout/render failure can
       // occur after publication, so that case also redraws the old geometry.
       const published = state.lastGraph !== previous.lastGraph;
@@ -248,6 +259,10 @@
     const context = caseContext();
     const selectedIds = new Set(state.graphSelection?.ids || []);
     if (!state.caseId || state.graphLoading) return false;
+    const revision = state.lastGraph.resolution_revision ?? null;
+    if (target.resolutionRevision !== revision || expected.resolutionRevision !== revision) {
+      invalidateResolution(); return false;
+    }
     try { await replaceTracked(context, expected.trackedIds, target.trackedIds); }
     catch (error) {
       if (error.name === 'TypeError' || error.name === 'SyntaxError') uncertain(context);
@@ -279,6 +294,11 @@
       return false;
     }
     try {
+      if ((graph.resolution_revision ?? null) !== target.resolutionRevision) {
+        await loadGraph(false, context);
+        if (isCurrentCase(context)) { invalidateResolution(); applyGraphOverview(); }
+        return false;
+      }
       closeDrawer(); cancelGraphLayout(); resetGraphView();
       state.lastGraph = graph; state.tracked = new Set(graph.tracked_ids);
       state.mainAccounts = new Set(graph.main_accounts || []);
@@ -410,7 +430,7 @@
             });
             if (!result || token !== membershipToken || !isCurrentCase(context)) return;
             try {
-              restoreCamera(before);
+              if (before.resolutionRevision === (state.lastGraph.resolution_revision ?? null)) restoreCamera(before);
               revealMembership(new Set(batch.filter(([, intent]) => intent.included).map(([id]) => Number(id))));
               state.graph?.paint(); scheduleGraphViewport(); scheduleGraphLabels();
             } catch (error) { uncertain(context); throw error; }
@@ -479,7 +499,12 @@
     try { listener(membershipSnapshot()); } catch (_) { /* Isolate view observers. */ }
     return () => { membershipListeners.delete(listener); };
   } });
-  window.FundsCanvasEditor = Object.freeze({ history, membership, command, syncControls, captureDisplay: () => { const {trackedIds, ...display} = capture(); return display; }, beginDisplayGesture, finishDisplayGesture });
+  function invalidateResolution() {
+    gesture = null;
+    history.invalidate();
+    syncControls();
+  }
+  window.FundsCanvasEditor = Object.freeze({ history, membership, command, syncControls, invalidateResolution, captureDisplay: () => { const {trackedIds, ...display} = capture(); return display; }, beginDisplayGesture, finishDisplayGesture });
 
   const readGraph = loadGraph;
   loadGraph = async function (retry = true, context = caseContext()) {

@@ -106,7 +106,7 @@
       element.dataset.layout = accountMatch ? 'number' : narrow ? 'stack' : 'inline';
       const matched = text(item.matchedField), q = currentQuery;
       if (item.label) element.appendChild(span('fep-name', item.label, ['label', 'name'].includes(matched) ? q : ''));
-      if (item.account) element.appendChild(span('fep-account', item.account, matched === 'account' ? q : ''));
+      if (item.account) element.appendChild(span('fep-account', item.displayAccount || item.account, matched === 'account' ? q : ''));
       if (item.idNo) {
         const identity = span('fep-identity', item.idNo, ['id', 'idNo', 'id_number'].includes(matched) ? q : '');
         const label = doc.createElement('span'); label.className = 'fep-identity-label'; label.textContent = '证 '; identity.prepend(label); element.appendChild(identity);

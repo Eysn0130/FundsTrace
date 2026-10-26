@@ -32,8 +32,12 @@ def _pt(s):
 
 def load_flows(case_id):
     rows = db_q("select id, trade_no, trade_time, amount, balance, currency, self_account, summary, "
-                "payer_account, payer_name, payee_account, payee_name "
-                "from effective_flows where case_id = ? order by trade_time, id", [case_id])
+                "payer_account, payer_name, payee_account, payee_name, payer_display_account, payee_display_account, raw_payer_account, raw_payee_account, "
+                "(select json_extract_string(e.details_json,'$.cards[*]') from resolution_entities e where e.case_id=f.case_id and e.entity_id=f.payer_account) payer_aliases, "
+                "(select json_extract_string(e.details_json,'$.cards[*]') from resolution_entities e where e.case_id=f.case_id and e.entity_id=f.payee_account) payee_aliases, "
+                "(select e.account_number from resolution_entities e where e.case_id=f.case_id and e.entity_id=f.payer_account) payer_account_number, "
+                "(select e.account_number from resolution_entities e where e.case_id=f.case_id and e.entity_id=f.payee_account) payee_account_number "
+                "from effective_flows f where f.case_id = ? order by f.trade_time, f.id", [case_id])
     for row in rows:
         row["amount"] = money_decimal(row["amount"]) if row["amount"] is not None else ZERO
         row["balance"] = money_decimal(row["balance"]) if row["balance"] is not None else None
@@ -124,6 +128,10 @@ def resolve_endpoints(token, flows):
     accounts = {flow[key] for flow in flows for key in ("payer_account", "payee_account") if flow[key]}
     if token in accounts:
         return {token}
+    aliases = {flow[side + "_account"] for flow in flows for side in ("payer", "payee")
+               if flow.get(side + "_account") and token in {flow.get(side + "_display_account"), flow.get("raw_" + side + "_account"), flow.get(side + "_account_number"), *(flow.get(side + "_aliases") or [])}}
+    if aliases:
+        return aliases
     return {flow[account] for flow in flows
             for account, name in (("payer_account", "payer_name"), ("payee_account", "payee_name"))
             if flow[account] and (flow[name] or "").strip() == token}
@@ -424,9 +432,11 @@ def match_fast_flows(case_id, window_minutes=30, tolerance=0.25, min_amount=1000
         raise ValueError("ff_tolerance must be finite and between 0 and 1")
     if min_amount < ZERO:
         raise ValueError("ff_min_amount must be nonnegative")
-    return _grouped(load_flows(case_id) if _flows is None else _flows, _match_fast_flows, "pairs",
+    flows = load_flows(case_id) if _flows is None else _flows
+    selected = set().union(*(resolve_endpoints(subject, flows) for subject in subjects)) if subjects else None
+    return _grouped(flows, _match_fast_flows, "pairs",
                     window_minutes=window_minutes, tolerance=tolerance,
-                    min_amount=min_amount, max_pairs=max_pairs, subjects=subjects)
+                    min_amount=min_amount, max_pairs=max_pairs, subjects=selected)
 
 
 def _match_fast_flows(flows, window_minutes, tolerance, min_amount, max_pairs, subjects):
@@ -438,10 +448,8 @@ def _match_fast_flows(flows, window_minutes, tolerance, min_amount, max_pairs, s
             continue
         by_acct[f["payee_account"]]["in"].append(f)
         by_acct[f["payer_account"]]["out"].append(f)
-    if subjects:
-        sub = {x.strip() for x in subjects if x.strip()}
-        by_acct = {a: d for a, d in by_acct.items()
-                   if a in sub or (d["in"] and any((f.get("payee_name") or "") in sub for f in d["in"]))}
+    if subjects is not None:
+        by_acct = {account: values for account, values in by_acct.items() if account in subjects}
     pairs = []
     used = set()
     for acct, d in sorted(by_acct.items(), key=lambda kv: -sum((f["amount"] or ZERO for f in kv[1]["in"]), ZERO)):
@@ -501,13 +509,7 @@ def account_outliers(case_id, sigma=2.5, top=30, subjects=None, *, _flows=None):
     flows = load_flows(case_id) if _flows is None else _flows
     selected = None
     if subjects:
-        sub = {x.strip() for x in subjects if x.strip()}
-        # Resolve identity from the complete case snapshot before grouping by
-        # currency. Historical aliases and blank names must not discard any
-        # transactions of an account selected by a matching name elsewhere.
-        selected = {f[account] for f in flows
-                    for account, name in (("payer_account", "payer_name"), ("payee_account", "payee_name"))
-                    if f[account] and (f[account] in sub or (f.get(name) or "") in sub)}
+        selected = set().union(*(resolve_endpoints(subject, flows) for subject in subjects))
     return _grouped(flows, _account_outliers, "outliers", sigma=float(sigma),
                     top=top, subjects=selected)
 
