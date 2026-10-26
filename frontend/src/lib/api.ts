@@ -44,6 +44,11 @@ export const api = {
     const body = new FormData(); body.append('file', file);
     return request<ImportPreview>(`${casePath(id)}/imports/preview`, { method: 'POST', body, signal });
   },
+  previewDirectory: (id: string, files: File[], signal?: AbortSignal) => {
+    const body = new FormData();
+    for (const file of files) body.append('files', file, file.webkitRelativePath || file.name);
+    return request<ImportPreview>(`${casePath(id)}/imports/directory/preview`, { method: 'POST', body, signal });
+  },
   repreview: (id: string, importId: string, body: RepreviewRequest, signal?: AbortSignal) =>
     request<ImportPreview>(`${casePath(id)}/imports/${encodeURIComponent(importId)}/preview`, { ...json(body), signal }),
   commit: (id: string, importId: string, body: CommitRequest, signal?: AbortSignal) =>
@@ -60,4 +65,4 @@ export const api = {
   cleanup: (id: string, dryRun = true, signal?: AbortSignal) => request<CleanupResult>(`${casePath(id)}/imports/cleanup`, { ...json({ dry_run: dryRun }), signal }),
 };
 
-export type FundsApi = typeof api;
+export type FundsApi = Omit<typeof api, 'previewDirectory'> & Partial<Pick<typeof api, 'previewDirectory'>>;

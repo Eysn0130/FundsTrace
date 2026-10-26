@@ -198,11 +198,14 @@ function harness(search = '') {
     bindTableHorizontalScroll: () => ({ sync() {}, destroy() {} }),
     setTimeout: (callback, delay) => { timers.push({ callback, delay }); },
     fetch,
-    FormData: class { append() {} },
+    FormData: class {
+      constructor() { this.entries = []; }
+      append(...entry) { this.entries.push(entry); }
+    },
     XMLHttpRequest: class {
       constructor() { this.upload = {}; uploads.push(this); }
       open(method, path) { this.method = method; this.path = path; }
-      send() {}
+      send(form) { this.form = form; }
       finish(result, status = 200) { this.status = status; this.responseText = JSON.stringify(result); this.onload(); }
     },
   });
@@ -260,6 +263,10 @@ function harness(search = '') {
     get search() { return location.search; },
     open() { element('btnImport').onclick(); }, close() { element('impClose').onclick(); },
     upload(name) { element('impFile').files = [{ name }]; return element('impFile').onchange(); },
+    uploadDirectory(paths) {
+      element('impDirectory').files = paths.map(path => ({ name: path.split('/').at(-1), webkitRelativePath: path }));
+      return element('impDirectory').onchange();
+    },
     commit() { return element('impCommit').onclick(); },
     change(id, value) { const node = element(id); node.value = value;
       if (node.name === 'impMode') for (const option of modeControls()) option.checked = option === node;
@@ -300,6 +307,9 @@ test('repreview shows field work, ignores a duplicate click and returns to field
   assert.equal(h.element('importModal').getAttribute('aria-busy'), 'true');
   assert.match(h.element('impFlowStatus').textContent, /识别/);
   assert.equal(h.requests.length, 1);
+  for (const id of ['impFile', 'impDirectory']) assert.equal(h.element(id).disabled, true);
+  await h.upload('BLOCKED.csv'); await h.uploadDirectory(['BLOCKED/rows.csv']);
+  assert.equal(h.uploads.length, 1, 'field repreview must keep both source inputs locked');
   result.resolve(response(preview('SYN-IMPORT'))); await first;
   assert.deepEqual(flowStates(h), ['complete', 'current', 'pending']);
   assertSettled(h);
@@ -557,11 +567,43 @@ test('reopening clears supplementary accounts and a late file A cannot replace f
   assert.deepEqual(flowSnapshot(h), current);
 });
 
-test('a second file selection in the same upload view follows the latest intent', async () => {
-  const h = harness(); h.open(); const a = h.upload('A.csv'), b = h.upload('B.csv');
-  h.uploads[1].finish(preview('B')); await b; h.uploads[0].finish(preview('A')); await a;
-  assert.equal(h.state.imp.import_id, 'B');
-  assert.equal(h.element('impCommit').disabled, false);
+for (const first of ['file', 'directory']) for (const second of ['file', 'directory']) {
+  test(`a second file selection in the same upload view follows the latest intent (${first} to ${second})`, async () => {
+    const h = harness(); h.open();
+    const select = (kind, id) => kind === 'directory' ? h.uploadDirectory([`${id}/rows.csv`]) : h.upload(`${id}.csv`);
+    const a = select(first, 'A');
+    for (const id of ['impFile', 'impDirectory']) assert.equal(h.element(id).disabled, false);
+    const b = select(second, 'B');
+    assert.equal(h.uploads.length, 2, 'both source selections must create a bound preview request');
+    assert.equal(h.uploads[1].path, `/api/import/${second === 'directory' ? 'directory/' : ''}preview?case_id=1`);
+    const [field, file, relative] = h.uploads[1].form.entries[0];
+    assert.equal(field, second === 'directory' ? 'files' : 'file');
+    assert.equal(file.name, second === 'directory' ? 'rows.csv' : 'B.csv');
+    assert.equal(relative, second === 'directory' ? 'B/rows.csv' : undefined);
+    const currentProgress = h.element('impPtext').textContent;
+    h.uploads[0].upload.onprogress({ lengthComputable: true, loaded: 1, total: 2 });
+    assert.equal(h.element('impPtext').textContent, currentProgress);
+    h.uploads[1].finish(preview('B')); await b;
+    const current = flowSnapshot(h);
+    h.uploads[0].finish({ ...preview('A'), automatic: true }); await a;
+    assert.equal(h.state.imp.import_id, 'B');
+    assert.deepEqual(h.rendered.map(item => item.import_id), ['B']);
+    assert.deepEqual(flowSnapshot(h), current);
+    assert.equal(h.requests.length, 0, 'a stale automatic preview must never submit a write');
+    assert.equal(h.element('impCommit').disabled, false);
+  });
+}
+
+test('a superseded automatic preview cannot end the latest upload or submit its import', async () => {
+  const h = harness(); h.open(); const a = h.upload('A.csv'), b = h.uploadDirectory(['B/rows.csv']);
+  h.uploads[0].finish({ ...preview('A'), automatic: true }); await a;
+  assert.equal(h.state.imp, null);
+  assert.deepEqual(h.rendered, []);
+  assert.deepEqual(flowStates(h), ['working', 'pending', 'pending']);
+  assert.equal(h.element('impCommit').disabled, true);
+  assert.equal(h.requests.length, 0);
+  h.uploads[1].finish(preview('B')); await b;
+  assert.equal(h.state.imp.import_id, 'B'); assertSettled(h);
 });
 
 test('A-B-A case navigation invalidates an earlier upload response', async () => {
@@ -581,6 +623,9 @@ test('the commit button locks before its receipt and duplicate clicks send one w
   assert.equal(h.element('impCommit').disabled, true);
   assert.deepEqual(flowStates(h), ['complete', 'complete', 'working']);
   assert.equal(h.requests.filter(item => item.options?.method === 'POST').length, 1);
+  for (const id of ['impFile', 'impDirectory']) assert.equal(h.element(id).disabled, true);
+  await h.upload('BLOCKED.csv'); await h.uploadDirectory(['BLOCKED/rows.csv']);
+  assert.equal(h.uploads.length, 1, 'a submitted write must keep both source inputs locked');
   receipt.resolve(response({ import_id: 'SYN-IMPORT', started: true })); await first;
   assert.equal(h.refreshes, 1); assert.match(h.notices[0].message, /新增 2 笔/);
 });

@@ -18,6 +18,9 @@ const money = (value: unknown): value is string => typeof value === 'string' && 
 const totals = (value: unknown): value is CurrencyTotal[] => Array.isArray(value) && value.every(item => record(item) && typeof item.currency === 'string' && money(item.amount));
 function accountRow(value: unknown): value is AccountRow & Record<string, unknown> {
   return record(value) && identifier(value.account) && typeof value.name === 'string'
+    && (value.display_account === undefined || typeof value.display_account === 'string')
+    && ['account_number', 'bank', 'kind', 'status'].every(key => value[key] === undefined || typeof value[key] === 'string')
+    && ['cards', 'names'].every(key => value[key] === undefined || Array.isArray(value[key]) && value[key].every((item: unknown) => typeof item === 'string'))
     && nullableString(value.id_no) && nullableString(value.identity_updated_at) && nullableString(value.photo_at)
     && typeof value.is_main === 'boolean' && (value.main_source === null || value.main_source === 'auto' || value.main_source === 'manual')
     && nullableString(value.main_marked_at) && typeof value.has_flows === 'boolean';
@@ -34,6 +37,7 @@ export function isAccountProfile(value: unknown): value is AccountProfile {
     && count(value.cnt) && count(value.in_cnt) && count(value.out_cnt) && totals(value.in_totals) && totals(value.out_totals)
     && (value.in_amt === null || money(value.in_amt)) && (value.out_amt === null || money(value.out_amt)) && nullableString(value.tmin) && nullableString(value.tmax)
     && Array.isArray(value.top_counterparties) && value.top_counterparties.every(item => record(item) && identifier(item.acct) && typeof item.name === 'string'
+      && (item.display_account === undefined || typeof item.display_account === 'string')
       && count(item.in_cnt) && count(item.out_cnt) && totals(item.in_totals) && totals(item.out_totals));
 }
 
@@ -41,6 +45,7 @@ export function isAccountSuggestions(value: unknown): value is AccountSuggestion
   return record(value) && identifier(value.case_id) && (value.source === 'flows' || value.source === 'identity')
     && typeof value.query === 'string' && typeof value.has_more === 'boolean' && (value.next_offset === null || count(value.next_offset))
     && Array.isArray(value.items) && value.items.length <= 50 && value.items.every(item => record(item) && identifier(item.account)
+      && (item.display_account === undefined || typeof item.display_account === 'string')
       && typeof item.name === 'string' && nullableString(item.id_no) && ['account', 'name', 'id'].includes(String(item.matched_field)) && typeof item.matched_text === 'string')
     && new Set(value.items.map(item => item.account)).size === value.items.length;
 }

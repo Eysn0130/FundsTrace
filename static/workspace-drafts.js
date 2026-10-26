@@ -77,6 +77,9 @@
       if (typeof root.FundsGraphPresentation?.create !== 'function') throw new Error('工作草稿需要先加载图谱显示设置模块');
       result.presentation = clone(root.FundsGraphPresentation.create(source.presentation));
     }
+    if (source.resolutionRevision === null || typeof source.resolutionRevision === 'string' && /^[0-9a-f]{64}$/.test(source.resolutionRevision)) {
+      result.resolutionRevision = source.resolutionRevision;
+    }
     if (object(source.graphView)) {
       const view = source.graphView, safe = {};
       if (view.visibleIds === null || Array.isArray(view.visibleIds)) safe.visibleIds = view.visibleIds === null ? null : ids(view.visibleIds);

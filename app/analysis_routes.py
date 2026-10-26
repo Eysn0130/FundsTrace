@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from . import analytics, db
+from . import analytics, db, evidence_resolution
 from .money import money_decimal, wire_money
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -88,7 +88,7 @@ def _params(params):
 def run_analysis(body: RunIn):
     """Exact monetary results and explicitly approximate statistical metrics."""
     _require_case(body.case_id)
-    return wire_money(analytics.run_all(body.case_id, _params(body.params)))
+    return wire_money(evidence_resolution.decorate_analysis(body.case_id, analytics.run_all(body.case_id, _params(body.params))))
 
 
 @router.post("/paths")
@@ -97,16 +97,16 @@ def trace_paths(body: PathsIn):
     _require_case(body.case_id)
     if body.order not in analytics.PATH_ORDERS:
         raise HTTPException(status_code=422, detail="order 必须是 amount 或 time")
-    return wire_money(analytics.trace_paths(body.case_id, body.src, body.dst,
+    return wire_money(evidence_resolution.decorate_analysis(body.case_id, analytics.trace_paths(body.case_id, body.src, body.dst,
                                            max_hops=body.max_hops, max_paths=body.max_paths,
-                                           order=body.order))
+                                           order=body.order)))
 
 
 @router.post("/report")
 def download_report(body: RunIn):
     """Self-contained HTML with exact labels and a lossless JSON snapshot."""
     _require_case(body.case_id)
-    results = analytics.run_all(body.case_id, _params(body.params))
+    results = evidence_resolution.decorate_analysis(body.case_id, analytics.run_all(body.case_id, _params(body.params)))
     case_name = db.q("select name from cases where id = ?", [body.case_id])[0]["name"]
     stats = results["source_snapshot"]
     from . import report

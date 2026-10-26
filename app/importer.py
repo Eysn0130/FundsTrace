@@ -25,6 +25,7 @@ from . import db
 _fmt_cache = {"time": None}
 _re_amt_strip = re.compile(r"[^0-9.\-]")
 _CENT = decimal.Decimal("0.01")
+WRITE_CHUNK = 50_000
 PARSER_VERSION = "funds-trace-table-v4"
 
 
@@ -733,8 +734,26 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                     "payee_name, payee_account, payee_bank, amount, balance, currency, summary, channel")
         archive = source is not None and (source["row_kind"] == "archive_record"
                   or source["row_kind"] == "table_record" and source["parser_version"] in table_archive.SUPPORTED_PROFILES)
+        from . import evidence_resolution
+        evidence_source = source is not None and source["parser_version"] in evidence_resolution.PROFILES
         existing = {}
-        if archive:
+        if evidence_source:
+            fields = [name.strip() for name in key_cols.split(",")] + ["self_account", "self_name"]
+            profiles = sorted(evidence_resolution.PROFILES)
+            cursor = con.execute("select m.sha256,r.source_row,f.flow_id,json_extract_string(r.details_json,'$.occurrence_scope')," + ",".join("v." + name for name in fields) + f"""
+                from import_records r join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
+                join flow_sources f on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
+                join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
+                join flows v on v.case_id=f.case_id and v.id=f.flow_id
+                where r.case_id=? and s.parser_version in ({','.join('?' for _ in profiles)})
+                and r.disposition in ('imported','duplicate') order by f.flow_id""", [case_id, *profiles])
+            while candidates := cursor.fetchmany(4096):
+                for digest, position, fid, scope, *values in candidates:
+                    stored = dict(zip(fields, values))
+                    key = (evidence_resolution.occurrence_key(digest, position), scope or "", _row_key(stored),
+                           stored.get("self_account") or "", stored.get("self_name") or "")
+                    existing.setdefault(key, fid)
+        elif archive:
             # A missing counterparty and equal visible fields cannot prove that
             # two source events are the same. Reuse only this exact member's
             # content/path/record identity; retain distinct source occurrences.
@@ -845,7 +864,8 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
         for r in rows:
             # Match the value insertion will persist, without reinterpreting
             # genuinely unknown currency values in an existing database.
-            k = r["_record_key"] if archive else _row_key(r, default_currency="CNY")
+            k = ((r["_occurrence_key"], r.get("_occurrence_scope") or "", _row_key(r, default_currency="CNY"), r.get("self_account") or "", r.get("self_name") or "")
+                 if evidence_source else r["_record_key"] if archive else _row_key(r, default_currency="CNY"))
             if k in existing or k in seen:
                 dup += 1
                 if source:
@@ -855,12 +875,28 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
             final.append(r)
             if source:
                 references.append((r["_source_row"], k, "imported"))
+        if rows:
+            del r, k
 
         # Allocate IDs in one query so provenance can refer to the exact rows
         # inserted, including duplicates later in the same source file.
         flow_ids = [record[0] for record in con.execute(
             "select nextval('flow_seq') from range(?)", [len(final)]).fetchall()]
-        final_ids = {key: flow_ids[index] for key, index in seen.items()}
+        # The index lookup is no longer needed after allocation. Reuse its
+        # dictionary rather than retaining a second full key-to-ID map.
+        final_ids = seen
+        for key, index in final_ids.items():
+            final_ids[key] = flow_ids[index]
+        if final_ids:
+            del key, index
+        # Exact field comparisons and ID allocation are finished. Preserve the
+        # same ordered source links, without carrying all fingerprints (and
+        # their copied time/Decimal values) through the database write phase.
+        for index, (position, key, disposition) in enumerate(references):
+            references[index] = (position, existing.get(key, final_ids.get(key)), disposition)
+        if references:
+            del position, key, disposition
+        del existing, final_ids, seen
         if source:
             con.execute("insert into import_sources(source_id,case_id,filename,sha256,size_bytes,mode,mapping_json,sheet,parser_version,row_kind,origin,imported_at) values (?,?,?,?,?,?,?,?,?,?,'upload',current_timestamp at time zone 'UTC')",
                         [source["source_id"], case_id, filename, source["sha256"], source["size_bytes"], mode,
@@ -875,38 +911,34 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
             cols = ["id", "case_id", "batch_id", "trade_no", "trade_time", "payer_name", "payer_account", "payer_bank",
                     "payee_name", "payee_account", "payee_bank", "amount", "balance", "currency", "summary", "channel",
                     "self_account", "self_name"]
-            data = [[fid, case_id, batch_id, r["trade_no"], r["trade_time"], r["payer_name"], r["payer_account"], r.get("payer_bank") or "",
-                     r["payee_name"], r["payee_account"], r.get("payee_bank") or "",
-                     r["amount"], r.get("balance"), r.get("currency") or "CNY", r.get("summary") or "", r.get("channel") or "",
-                     r.get("self_account") or "", r.get("self_name") or ""] for fid, r in zip(flow_ids, final)]
-            df_ins = pd.DataFrame(data, columns=cols)
-            df_ins["trade_time"] = pd.to_datetime(df_ins["trade_time"])
-            # DuckDB samples pandas object columns and may infer a narrow
-            # DECIMAL before encountering a rare larger value. A nullable text
-            # bridge preserves every Decimal digit; the target DECIMAL(18,2)
-            # columns perform the final exact cast and range validation.
-            for field in ("amount", "balance"):
-                df_ins[field] = df_ins[field].astype("string")
-            CHUNK = 50000
-            done = 0
-            for i in range(0, len(df_ins), CHUNK):
+            for i in range(0, len(final), WRITE_CHUNK):
+                data = [[fid, case_id, batch_id, r["trade_no"], r["trade_time"], r["payer_name"], r["payer_account"], r.get("payer_bank") or "",
+                         r["payee_name"], r["payee_account"], r.get("payee_bank") or "",
+                         r["amount"], r.get("balance"), r.get("currency") or "CNY", r.get("summary") or "", r.get("channel") or "",
+                         r.get("self_account") or "", r.get("self_name") or ""]
+                        for fid, r in zip(flow_ids[i:i + WRITE_CHUNK], final[i:i + WRITE_CHUNK])]
+                df_ins = pd.DataFrame(data, columns=cols)
+                del data
+                df_ins["trade_time"] = pd.to_datetime(df_ins["trade_time"])
+                # Preserve the exact Decimal-to-text bridge in every chunk.
+                for field in ("amount", "balance"):
+                    df_ins[field] = df_ins[field].astype("string")
                 db.set_busy(True)
                 try:
-                    db.insert_dataframe("flows", df_ins.iloc[i:i + CHUNK], cols)
+                    db.insert_dataframe("flows", df_ins, cols)
                 finally:
                     db.set_busy(False)
-                done = min(i + CHUNK, len(df_ins))
+                del df_ins
                 if progress_cb:
-                    progress_cb(done, len(df_ins))
+                    progress_cb(min(i + WRITE_CHUNK, len(final)), len(final))
         if references:
-            reference_frame = pd.DataFrame(
-                [[case_id, source["source_id"], position,
-                  existing.get(key, final_ids.get(key)), disposition]
-                 for position, key, disposition in references],
-                columns=["case_id", "source_id", "source_row", "flow_id", "disposition"])
-            for offset in range(0, len(reference_frame), 50000):
-                db.insert_dataframe("flow_sources", reference_frame.iloc[offset:offset + 50000],
-                                    list(reference_frame.columns))
+            columns = ["case_id", "source_id", "source_row", "flow_id", "disposition"]
+            for offset in range(0, len(references), WRITE_CHUNK):
+                reference_frame = pd.DataFrame(
+                    [[case_id, source["source_id"], position, fid, disposition]
+                     for position, fid, disposition in references[offset:offset + WRITE_CHUNK]], columns=columns)
+                db.insert_dataframe("flow_sources", reference_frame, columns)
+                del reference_frame
         st = dict(stats or {})
         st.update({"ok": len(final), "rows_dup": dup, "batch_id": batch_id})
         # 导入时声明的本方账号（"本方账号"列中出现过的账号）→ 主账号候选。

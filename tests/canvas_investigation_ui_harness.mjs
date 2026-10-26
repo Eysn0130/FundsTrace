@@ -351,3 +351,18 @@ test('ZIP path evidence distinguishes member line from archive record number', a
   assert.match(html, /Sheet 1 · 行 8 · 原记录 7/);
   assert.doesNotMatch(html, /member\.csv · 行 1/);
 });
+
+test('path controls display card aliases and preserve selected internal keys for actions', async () => {
+  const h = fixture();
+  for (const node of h.state.lastGraph.nodes) node.display_account = `SYN-CARD-${node.account}`;
+  h.state.graphSelection.ids = new Set(['A', 'B']);
+  await h.api.execute('findGraphPaths');
+  assert.equal(h.element('pathSource').value, 'SYN-CARD-A');
+  assert.equal(h.element('pathTarget').value, 'SYN-CARD-B');
+  const search = h.element('pathSearch').click(); await flush();
+  assert.equal(h.calls[0].body.start_account, 'A'); assert.equal(h.calls[0].body.end_account, 'B');
+  h.respond(0, { complete: true, paths: [{ accounts: ['A', 'B'], currency: 'CNY', steps: [{ source: 'A', target: 'B', amount: '0.01', flow_ids: [] }] }] });
+  await search;
+  assert.match(h.element('pathResults').innerHTML, /SYN-CARD-A → SYN-CARD-B/);
+  assert.doesNotMatch(h.element('pathResults').innerHTML, />A → B</);
+});

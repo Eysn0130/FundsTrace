@@ -82,7 +82,10 @@ def stats(case_id):
         row = {key: rows[0][key] for key in ("flows", "accounts", "batches")}
         totals = [{"currency": item["currency"], "amount": item["amount"]} for item in rows if item["amount"] is not None]
         coverage = import_coverage(cid, known_excluded=rows[0]["raw_flows"] - row["flows"])
-    return {"case_id": case_id, **row,
+        from app import evidence_resolution
+        resolution = evidence_resolution.summary(cid)
+    return {"case_id": case_id, **({"resolution": resolution, "statistics_policy": evidence_resolution.POLICY,
+            "resolution_revision": resolution["revision"]} if resolution else {}), **row,
             "amount_total": amount(totals[0]["amount"]) if len(totals) == 1 else ("0.00" if not totals else None),
             "currency": totals[0]["currency"] if len(totals) == 1 else None,
             "amount_totals": [{"currency": total["currency"], "amount": amount(total["amount"])} for total in totals],
@@ -104,8 +107,8 @@ def flows(case_id, account, kw, page, page_size):
         cid = require_case(case_id)
         conditions, params = ["case_id=?"], [cid]
         if account.strip():
-            conditions.append("(payer_account ilike ? or payee_account ilike ?)")
-            params += [f"%{account.strip()}%"] * 2
+            conditions.append("(payer_account ilike ? or payee_account ilike ? or payer_display_account ilike ? or payee_display_account ilike ?)")
+            params += [f"%{account.strip()}%"] * 4
         if kw.strip():
             conditions.append("(summary ilike ? or trade_no ilike ?)")
             params += [f"%{kw.strip()}%"] * 2
@@ -115,7 +118,8 @@ def flows(case_id, account, kw, page, page_size):
                          params + [page_size, (page - 1) * page_size])
     return {"case_id": case_id, "total": total, "page": page, "page_size": page_size,
             "items": [{**preview_flow(row), "id": str(row["id"]), "case_id": str(row["case_id"]),
-                       "batch_id": str(row["batch_id"]) if row["batch_id"] is not None else None} for row in rows]}
+                       "batch_id": str(row["batch_id"]) if row["batch_id"] is not None else None,
+                       **{field: row.get(field) or "" for field in ("payer_display_account", "payee_display_account", "self_display_account", "raw_payer_account", "raw_payee_account", "raw_self_account")}} for row in rows]}
 
 
 def flow_sources(case_id, flow_id, page=1, page_size=50):

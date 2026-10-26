@@ -106,6 +106,23 @@
         "title": "BadExample",
         "type": "object"
       },
+      "Body_v1_directory_preview": {
+        "properties": {
+          "files": {
+            "items": {
+              "contentMediaType": "application/octet-stream",
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "title": "Body_v1_directory_preview",
+        "type": "object"
+      },
       "Body_v1_upload_preview": {
         "properties": {
           "file": {
@@ -244,6 +261,39 @@
                 "type": "null"
               }
             ]
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolution_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Revision"
+          },
+          "statistics_policy": {
+            "anyOf": [
+              {
+                "const": "typed-account-evidence-v1",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statistics Policy"
           }
         },
         "required": [
@@ -631,6 +681,11 @@
             "title": "Payee Bank",
             "type": "string"
           },
+          "payee_display_account": {
+            "default": "",
+            "title": "Payee Display Account",
+            "type": "string"
+          },
           "payee_name": {
             "title": "Payee Name",
             "type": "string"
@@ -643,12 +698,37 @@
             "title": "Payer Bank",
             "type": "string"
           },
+          "payer_display_account": {
+            "default": "",
+            "title": "Payer Display Account",
+            "type": "string"
+          },
           "payer_name": {
             "title": "Payer Name",
             "type": "string"
           },
+          "raw_payee_account": {
+            "default": "",
+            "title": "Raw Payee Account",
+            "type": "string"
+          },
+          "raw_payer_account": {
+            "default": "",
+            "title": "Raw Payer Account",
+            "type": "string"
+          },
+          "raw_self_account": {
+            "default": "",
+            "title": "Raw Self Account",
+            "type": "string"
+          },
           "self_account": {
             "title": "Self Account",
+            "type": "string"
+          },
+          "self_display_account": {
+            "default": "",
+            "title": "Self Display Account",
             "type": "string"
           },
           "self_name": {
@@ -1133,6 +1213,16 @@
             "title": "Preview",
             "type": "array"
           },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "self_accounts_in_file": {
             "items": {
               "$ref": "#/components/schemas/AccountCandidate"
@@ -1328,6 +1418,16 @@
           "ok": {
             "title": "Ok",
             "type": "integer"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "rows_dup": {
             "title": "Rows Dup",
@@ -1741,6 +1841,180 @@
         "title": "RepreviewRequest",
         "type": "object"
       },
+      "ResolutionEntity": {
+        "additionalProperties": false,
+        "properties": {
+          "account_number": {
+            "title": "Account Number",
+            "type": "string"
+          },
+          "bank": {
+            "title": "Bank",
+            "type": "string"
+          },
+          "cards": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cards",
+            "type": "array"
+          },
+          "display_account": {
+            "title": "Display Account",
+            "type": "string"
+          },
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "account",
+              "card",
+              "subaccount",
+              "identifier"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name_conflict": {
+            "default": false,
+            "title": "Name Conflict",
+            "type": "boolean"
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Names",
+            "type": "array"
+          },
+          "parent_entity_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Entity Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id",
+          "kind",
+          "account_number",
+          "display_account",
+          "bank",
+          "cards",
+          "parent_entity_id",
+          "names",
+          "status"
+        ],
+        "title": "ResolutionEntity",
+        "type": "object"
+      },
+      "ResolutionRegistry": {
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Case Id",
+            "type": "string"
+          },
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/ResolutionEntity"
+            },
+            "title": "Entities",
+            "type": "array"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "case_id",
+          "resolution",
+          "entities"
+        ],
+        "title": "ResolutionRegistry",
+        "type": "object"
+      },
+      "ResolutionSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "auxiliary_records": {
+            "title": "Auxiliary Records",
+            "type": "integer"
+          },
+          "conflicts": {
+            "title": "Conflicts",
+            "type": "integer"
+          },
+          "entities": {
+            "title": "Entities",
+            "type": "integer"
+          },
+          "evidence_records": {
+            "title": "Evidence Records",
+            "type": "integer"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "policy": {
+            "const": "typed-account-evidence-v1",
+            "title": "Policy",
+            "type": "string"
+          },
+          "resolved_endpoints": {
+            "title": "Resolved Endpoints",
+            "type": "integer"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "unresolved_endpoints": {
+            "title": "Unresolved Endpoints",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "policy",
+          "revision",
+          "entities",
+          "resolved_endpoints",
+          "unresolved_endpoints",
+          "conflicts",
+          "auxiliary_records",
+          "evidence_records",
+          "note"
+        ],
+        "title": "ResolutionSummary",
+        "type": "object"
+      },
       "TableSummary": {
         "additionalProperties": false,
         "properties": {
@@ -1806,6 +2080,11 @@
             "title": "Members",
             "type": "array"
           },
+          "non_business_attachments": {
+            "default": 0,
+            "title": "Non Business Attachments",
+            "type": "integer"
+          },
           "non_monetary": {
             "title": "Non Monetary",
             "type": "integer"
@@ -1839,6 +2118,11 @@
             },
             "title": "Unresolved Examples",
             "type": "array"
+          },
+          "unsupported_attachments": {
+            "default": 0,
+            "title": "Unsupported Attachments",
+            "type": "integer"
           }
         },
         "required": [
@@ -2566,6 +2850,119 @@
         ]
       }
     },
+    "/api/v1/cases/{case_id}/imports/directory/preview": {
+      "post": {
+        "operationId": "v1_directory_preview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_v1_directory_preview"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid file or request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Application is not activated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Case, session or source not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "HTTP method is not supported"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "State conflict or source unavailable"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid parameters or mapping"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Operation failed safely"
+          }
+        },
+        "summary": "Directory Upload",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
     "/api/v1/cases/{case_id}/imports/preview": {
       "post": {
         "operationId": "v1_upload_preview",
@@ -3197,6 +3594,109 @@
           }
         },
         "summary": "Records",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/cases/{case_id}/resolution": {
+      "get": {
+        "operationId": "v1_resolution",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolutionRegistry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid file or request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Application is not activated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Case, session or source not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "HTTP method is not supported"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "State conflict or source unavailable"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid parameters or mapping"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Operation failed safely"
+          }
+        },
+        "summary": "Resolution",
         "tags": [
           "v1"
         ]

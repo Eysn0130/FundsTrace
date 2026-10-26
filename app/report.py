@@ -134,6 +134,8 @@ def build_report(case_id, results, case_info):
     不代表去重后的实际本金。单笔均额按十进制计算并以四舍六入五成双保留两位；Z 分数、时间跨度和图表坐标为近似统计或展示值。
     本报告内嵌可回读的原始精确金额快照。</p>""")
     add('<p class="note">已匹配的冲正／撤销双方退出有效统计，普通退款仍保留；资金效果未确定记录不计入金额。本报告不代表结算净额或完整清算结果。</p>')
+    if stats.get("statistics_policy") == "typed-account-evidence-v1":
+        add(f'<p class="note">统计口径：已接纳账务记录；相同有据原件副本共享记录，双方反馈尚未证明同一经济事件时各自保留。解析修订：{stats.get("resolution_revision", "")}</p>')
     if coverage is not None:
         add(f"""<p class="note">已导入反馈来源中，资金效果未确定记录 {coverage['unresolved_records']:,} 条，
         未计入流水统计；已匹配冲正／撤销事件 {coverage.get('cancelled_records', 0):,} 条，
@@ -150,7 +152,7 @@ def build_report(case_id, results, case_info):
         for index, item in enumerate(paths["paths"]):
             currency = item.get("currency") or "未标明币种"
             steps = "<br>".join(
-                f"{step['from_name'] or step['from']} → {step['to_name'] or step['to']}："
+                f"{step['from_name'] or step.get('from_display_account', step['from'])} → {step['to_name'] or step.get('to_display_account', step['to'])}："
                 f"{currency} {money_display(step['amount'])}（{step['time']}）" for step in item["path"])
             timing = ""
             if time_order:
@@ -167,7 +169,7 @@ def build_report(case_id, results, case_info):
 
         order_note = "按首跳时间排序，时序连续的路径排在前面。" if time_order else ""
         add(f"""<h3>多跳资金路径追踪</h3>
-        <p>起点 <span class="mono">{endpoint(paths['src'], paths.get('src_accounts') or [])}</span> → 终点 <span class="mono">{endpoint(paths['dst'], paths.get('dst_accounts') or [])}</span>；
+        <p>起点 <span class="mono">{endpoint(paths.get('src_display_account', paths['src']), paths.get('src_display_accounts', paths.get('src_accounts')) or [])}</span> → 终点 <span class="mono">{endpoint(paths.get('dst_display_account', paths['dst']), paths.get('dst_display_accounts', paths.get('dst_accounts')) or [])}</span>；
         最多 {paths['max_hops']} 跳，本次返回 {paths['count']} 条同币种路径。{order_note}各边金额合计不等于守恒本金。
         {_search_note(paths)}</p>""")
         if rows:
@@ -202,9 +204,9 @@ def build_report(case_id, results, case_info):
         rows = ""
         for p in ff["pairs"][:40]:
             currency = p.get('currency') or '未标明币种'
-            ins = f"{currency} {money_display(p['in_flow']['amount'])}（{p['in_flow']['time'][5:16]} 来自 {p['in_flow']['from'] or '—'}）"
-            outs = "<br>".join(f"{currency} {money_display(o['amount'])} → {o['to'] or o['to_acct']}" for o in p["out_flows"][:5])
-            rows += (f"<tr><td>{p['account'][-6:]}<br><span class='mono'>{p['account']}</span></td>"
+            ins = f"{currency} {money_display(p['in_flow']['amount'])}（{p['in_flow']['time'][5:16]} 来自 {p['in_flow']['from'] or p['in_flow'].get('from_acct_display_account', p['in_flow']['from_acct']) or '—'}）"
+            outs = "<br>".join(f"{currency} {money_display(o['amount'])} → {o['to'] or o.get('to_acct_display_account', o['to_acct'])}" for o in p["out_flows"][:5])
+            rows += (f"<tr><td>{p.get('display_account', p['account'])[-6:]}<br><span class='mono'>{p.get('display_account', p['account'])}</span></td>"
                      f"<td>{ins}</td><td>{outs}</td><td>{currency} {money_display(p['out_total'])}"
                      f"<br><span class='small'>差额 {money_display(p['diff'])}</span></td>"
                      f"<td>{p['max_delay_min']} 分钟</td></tr>")
@@ -221,7 +223,7 @@ def build_report(case_id, results, case_info):
     ol = cases.get("outliers", {})
     if "outliers" in algorithms and ol.get("count"):
         rows = "".join(
-            f"<tr><td>{o['name'] or ''}<br><span class='mono'>{o['account']}</span></td>"
+            f"<tr><td>{o['name'] or ''}<br><span class='mono'>{o.get('display_account', o['account'])}</span></td>"
             f"<td>{o['explain']}</td><td>"
             f"{(o.get('currency') or '未标明币种') + ' ' + money_display(o['value']) if o['dim'] in ('total', 'avg_amount') else format(o['value'], ',')}"
             f"</td><td><b>{o['z']}</b></td></tr>"

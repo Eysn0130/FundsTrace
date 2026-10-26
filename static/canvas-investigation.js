@@ -319,13 +319,16 @@
     el('investigationNext').disabled ||= playback.index >= playback.times.length - 1;
     strip.parentElement?.style.setProperty('--investigation-transport-height', `${strip.offsetHeight}px`);
   }
+  function accountLabel(id) {
+    return (state.lastGraph?.nodes || []).find(node => String(node.account) === String(id))?.display_account || id || '';
+  }
   function pathDialog() {
     const ids = selected(), nodes = state.graph.getNodes().map(x => x.getModel());
     const currencies = FundsGraphRelations.currencyChoices(state.lastGraph.edges);
     const token = openDialog('图内找路径', 'paths', `${hint('搜索当前画布已追踪流水。路径是待复核线索；各跳金额不能当作同一笔本金，也不自动认定实际控制关系。')}
-      <div class="investigation-form"><label>起点账号<input id="pathSource" list="pathAccounts" value="${esc(ids[0] || '')}" placeholder="完整账号"></label>
-      <label>终点账号<input id="pathTarget" list="pathAccounts" value="${esc(ids[1] || '')}" placeholder="完整账号"></label>
-      <datalist id="pathAccounts">${nodes.slice(0,2000).map(n => `<option value="${esc(n.id)}">${esc(n.data?.name || '')}</option>`).join('')}</datalist>
+      <div class="investigation-form"><label>起点账号<input id="pathSource" list="pathAccounts" value="${esc(accountLabel(ids[0]))}" data-entity="${esc(ids[0] || '')}" data-display="${esc(accountLabel(ids[0]))}" placeholder="完整卡号或账号"></label>
+      <label>终点账号<input id="pathTarget" list="pathAccounts" value="${esc(accountLabel(ids[1]))}" data-entity="${esc(ids[1] || '')}" data-display="${esc(accountLabel(ids[1]))}" placeholder="完整卡号或账号"></label>
+      <datalist id="pathAccounts">${nodes.slice(0,2000).map(n => `<option value="${esc(n.data?.display_account || n.id)}">${esc(n.data?.name || '')}</option>`).join('')}</datalist>
       <label>分析范围<select id="pathScope"><option value="visible">当前显示的账户及关系</option><option value="all">完整追踪图（保留时间窗口）</option></select></label>
       <label>路径口径<select id="pathMode"><option value="topological">有向关系可达</option><option value="chronological">严格时间递增（逐笔）</option></select></label>
       <label>币种<select id="pathCurrency"><option value="all">全部币种（分别搜索）</option>${currencies.map(c => `<option value="currency:${esc(c.value)}">${esc(c.label)}</option>`).join('')}</select></label>
@@ -334,7 +337,8 @@
     const filter = state.presentation.relationFilter;
     if (filter.active) el('pathCurrency').value = 'currency:' + filter.currency;
     on('pathSearch', async (_, t) => {
-      const start = el('pathSource').value.trim(), end = el('pathTarget').value.trim();
+      const endpoint = input => input.dataset.entity && input.value.trim() === input.dataset.display ? input.dataset.entity : input.value.trim();
+      const start = endpoint(el('pathSource')), end = endpoint(el('pathTarget'));
       if (!start || !end) throw new Error('请输入完整的起点和终点账号');
       if (start === end) throw new Error('起点和终点须不同；闭环请使用环路检测');
       const scope = el('pathScope').value, currency = el('pathCurrency').value;
@@ -356,11 +360,11 @@
       const ids = hop.flow_ids || hop.ids || [], rows = ids.slice(0,50).map(id => flowById.get(String(id))).filter(Boolean);
       return `<details class="investigation-evidence"><summary>核查 ${ids.length} 笔依据${ids.length>50?'（屏幕前 50 笔）':''}</summary>${rows.map(f => `<p><b>流水 ${esc(f.id)}</b> · ${esc(f.amount)} ${esc(f.currency || '未标注币种')} · ${esc(f.trade_time || '无时间')}<br>${esc(f.summary || '无摘要')}<br>原始记录：${esc((f.original_ids || [f.id]).join('、'))}</p><ul>${(f.provenance || []).flatMap(record => (record.sources || []).map(source => `<li>${esc(source.filename || '来源未登记')} · ${esc(source.member_path || source.sheet || '')} · 行 ${esc(source.member_path ? source.member_row ?? '未登记' : source.source_row ?? '未登记')}${source.member_path ? ` · 包内记录 ${esc(source.source_row ?? '未登记')}` : ''} · 原记录 ${esc(record.flow_id)}<br><small>解析器 ${esc(source.parser_version || '未登记')} · SHA-256 ${esc(source.sha256 || '未登记')}</small></li>`)).join('') || '<li>未登记原始文件来源</li>'}</ul>`).join('')}</details>`;
     };
-    el('pathResults').innerHTML = `<p class="muted">${esc(parameters.start_account)} → ${esc(parameters.end_account)} · 最多 ${parameters.max_hops} 跳 · ${parameters.mode === 'chronological' ? '严格时间递增；排除无时间、未知币种及非正金额' : '有向关系可达'} · ${parameters.scope === 'visible' ? '当前显示范围' : '完整追踪图'} · ${esc(parameters.start || '不限起点')} — ${esc(parameters.end || '不限终点')}</p>${button('pathDownload','保存本次结果与完整依据 JSON')}` + paths.map((path,index) => {
+    el('pathResults').innerHTML = `<p class="muted">${esc(accountLabel(parameters.start_account))} → ${esc(accountLabel(parameters.end_account))} · 最多 ${parameters.max_hops} 跳 · ${parameters.mode === 'chronological' ? '严格时间递增；排除无时间、未知币种及非正金额' : '有向关系可达'} · ${parameters.scope === 'visible' ? '当前显示范围' : '完整追踪图'} · ${esc(parameters.start || '不限起点')} — ${esc(parameters.end || '不限终点')}</p>${button('pathDownload','保存本次结果与完整依据 JSON')}` + paths.map((path,index) => {
       const hops = path.steps || path.edges || [], accounts = path.accounts || path.nodes || [hops[0]?.source, ...hops.map(h=>h.target)].filter(Boolean);
       return `<section class="investigation-path"><h3>路径 ${index+1} · ${esc(path.currency || '未标注币种')} · ${hops.length} 跳</h3>
-        <p class="investigation-chain">${accounts.map(esc).join(' → ')}</p>
-        <div class="investigation-table-scroll"><table><thead><tr><th>有向交易</th><th>金额 / 币种</th><th>交易时间</th><th>流水依据</th></tr></thead><tbody>${hops.map(h => `<tr><td>${esc(h.source)} → ${esc(h.target)}</td><td>${esc(h.amount ?? h.total ?? '')} ${esc(path.currency ?? h.currency ?? '')}</td><td>${esc(h.trade_time || h.time || `${h.first_time || h.tmin || '—'} — ${h.last_time || h.tmax || '—'}`)}</td><td>${evidence(h)}</td></tr>`).join('')}</tbody></table></div>
+        <p class="investigation-chain">${(path.display_accounts || accounts.map(accountLabel)).map(esc).join(' → ')}</p>
+        <div class="investigation-table-scroll"><table><thead><tr><th>有向交易</th><th>金额 / 币种</th><th>交易时间</th><th>流水依据</th></tr></thead><tbody>${hops.map(h => `<tr><td>${esc(h.source_display_account || accountLabel(h.source))} → ${esc(h.target_display_account || accountLabel(h.target))}</td><td>${esc(h.amount ?? h.total ?? '')} ${esc(path.currency ?? h.currency ?? '')}</td><td>${esc(h.trade_time || h.time || `${h.first_time || h.tmin || '—'} — ${h.last_time || h.tmax || '—'}`)}</td><td>${evidence(h)}</td></tr>`).join('')}</tbody></table></div>
         <footer><button type="button" class="btn small" data-path-focus="${index}">定位并选中路径账户</button><button type="button" class="btn small" data-path-group="${index}">用路径账户新建分组</button></footer></section>`;
     }).join('');
     el('pathDownload').addEventListener('click', () => {

@@ -12,6 +12,7 @@ export interface FundsCaseClientV1 {
   stats(signal?: AbortSignal): Promise<CaseStats>;
   flows(filters: FundsFlowFiltersV1, signal?: AbortSignal): Promise<FlowPage>;
   preview(file: File, signal?: AbortSignal): Promise<ImportPreview>;
+  previewDirectory?(files: File[], signal?: AbortSignal): Promise<ImportPreview>;
   repreview(importId: string, body: RepreviewRequest, signal?: AbortSignal): Promise<ImportPreview>;
   commit(importId: string, body: CommitRequest, signal?: AbortSignal): Promise<{ case_id: string; import_id: string; started: boolean }>;
   job(importId: string, signal?: AbortSignal): Promise<ImportJob>;

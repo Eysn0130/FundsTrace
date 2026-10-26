@@ -48,6 +48,8 @@ export function createHttpFundsSession({ context, scopeKey, generation, transpor
     sources: (flowId, page = 1, signal) => run(signal, combined => transport.sources(caseId, flowId, page, combined)),
     cleanup: (dryRun, signal) => run(signal, combined => transport.cleanup(caseId, dryRun, combined)),
   };
+  const previewDirectory = transport.previewDirectory;
+  if (previewDirectory) client.previewDirectory = (files, signal) => run(signal, combined => previewDirectory(caseId, files, combined));
   const boundActions: FundsHostActionsV1 = {};
   const { openGraph, openLegacyImport, downloadSource, downloadImportReport } = actions;
   if (openGraph) boundActions.openGraph = signal => run(signal, combined => openGraph(combined));

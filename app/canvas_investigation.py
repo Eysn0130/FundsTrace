@@ -11,7 +11,7 @@ from typing import Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import db
+from . import db, evidence_resolution
 from .money import money_string
 
 MAX_FLOWS = 20_000
@@ -92,6 +92,8 @@ def mirror_groups(rows):
     pending, groups = {}, {}
     tolerance = timedelta(seconds=120)
     for row in rows:
+        if row.get("resolution_policy") == "typed-account-evidence-v1":
+            continue
         stamp = row.get("mirror_time", row.get("trade_time"))
         if any(row.get(key) is None for key in ("payer_account", "payee_account", "amount")) or stamp is None:
             continue
@@ -138,7 +140,7 @@ def _load(body):
     if len(rows) > MAX_FLOWS:
         raise HTTPException(413, {"code": "canvas_investigation_limit", "limit": MAX_FLOWS,
                                   "message": "画布有效流水超过研判上限，请将所需流水另存为较小画布；未返回部分金额或路径"})
-    mirrors = mirror_groups(rows)
+    mirrors = {} if evidence_resolution.summary(body.case_id) is not None else mirror_groups(rows)
     duplicate_ids = {item for values in mirrors.values() for item in values}
     for row in rows:
         row["currency"] = row["currency"] or ""
@@ -199,16 +201,52 @@ def _provenance(case_id, ids):
 
 def _flow(row, mirrors, references, by_id):
     original_ids = [row["id"], *mirrors.get(row["id"], [])]
+    payer_display = row.get("payer_display_account") or row["payer_account"]
+    payee_display = row.get("payee_display_account") or row["payee_account"]
     return {
         "id": str(row["id"]), "trade_no": row["trade_no"], "trade_time": _stamp(row["trade_time"]),
         "source": row["payer_account"], "source_name": row["payer_name"],
         "target": row["payee_account"], "target_name": row["payee_name"],
+        "source_display_account": payer_display, "target_display_account": payee_display,
+        "payer_display_account": payer_display, "payee_display_account": payee_display,
+        "self_account": row.get("self_account") or "",
+        "self_display_account": row.get("self_display_account") or row.get("self_account") or "",
         "amount": money_string(row["amount"]), "currency": row["currency"], "summary": row["summary"],
         "original_ids": [str(flow_id) for flow_id in original_ids],
         "mirror_ids": [str(flow_id) for flow_id in mirrors.get(row["id"], [])],
         "provenance": [{"flow_id": str(flow_id), "trade_time": _stamp(by_id[flow_id]["trade_time"]),
                         "sources": references.get(flow_id, [])} for flow_id in original_ids],
     }
+
+
+def _account_metadata(case_id, accounts):
+    """Fetch display aliases only for the already bounded investigation scope."""
+    rows = [{"account": account} for account in sorted(accounts)]
+    evidence_resolution.decorate_accounts(case_id, rows)
+    return {row["account"]: row for row in rows}
+
+
+def _display_account(account, metadata):
+    return metadata.get(account, {}).get("display_account") or account
+
+
+def _resolve_account(token, metadata):
+    """An exact ambiguous identifier expands to every in-scope entity match.
+
+    Names are not identifiers. The current scope and case, rather than the full
+    registry, establish the set which can enter this path query.
+    """
+    token = token.strip()
+    if token in metadata:
+        return {token}
+    return {account for account, item in metadata.items()
+            if token in {item.get("display_account"), item.get("account_number"), *item.get("cards", [])}}
+
+
+def _resolution_metadata(case_id):
+    resolution = evidence_resolution.summary(case_id)
+    return {"statistics_policy": evidence_resolution.POLICY if resolution is not None else "legacy_mirror_fifo",
+            "resolution_revision": resolution["revision"] if resolution is not None else None}
 
 
 def _graph(rows, mirrors):
@@ -251,6 +289,12 @@ def time_projection(body):
     references = _provenance(body.case_id, original_ids)
     by_id = {row["id"]: row for row in rows}
     nodes, edges = _graph(selected, mirrors)
+    evidence_resolution.decorate_accounts(body.case_id, nodes)
+    metadata = {node["account"]: node for node in nodes}
+    for edge in edges:
+        edge["source_display_account"] = _display_account(edge["source"], metadata)
+        edge["target_display_account"] = _display_account(edge["target"], metadata)
+    policy = _resolution_metadata(body.case_id)
     timeline = defaultdict(list)
     for row in selected:
         if row["trade_time"] is not None:
@@ -263,7 +307,11 @@ def time_projection(body):
         "timeline": [{"time": _stamp(stamp), "count": len(values), "amount_totals": _totals(values)}
                      for stamp, values in sorted(timeline.items())],
         "complete": True, "limits": {"max_canvas_flows": MAX_FLOWS, "max_provenance": MAX_PROVENANCE},
-        "semantics": "effective_tracked_flows; graph_fifo_mirror_pairing; canonical_local_time; inclusive_window",
+        **policy,
+        "semantics": "effective_tracked_flows; " +
+                     ("accepted_ledger_records; " if policy["statistics_policy"] == evidence_resolution.POLICY
+                      else "graph_fifo_mirror_pairing; ") +
+                     "canonical_local_time; inclusive_window",
     }
 
 
@@ -281,6 +329,10 @@ def paths(body):
         selected = [row for row in selected if row["trade_time"] is not None and row["currency"] and row["amount"] > 0]
     summary["selected_count"] = len(selected)
     summary["amount_totals"] = _totals(selected)
+    metadata = _account_metadata(body.case_id, {row[side] for row in selected
+                                              for side in ("payer_account", "payee_account")})
+    start_accounts = _resolve_account(body.start_account, metadata)
+    end_accounts = _resolve_account(body.end_account, metadata)
     # A path always stays within one currency, including explicitly unknown "".
     # Topology traverses aggregated directed relations; chronology traverses
     # original canonical occurrences with strictly increasing local timestamps.
@@ -294,8 +346,10 @@ def paths(body):
                 adjacency[source].append((target, currency, [row], row["trade_time"]))
         else:
             adjacency[source].append((target, currency, values, None))
-    queue = deque([(body.start_account, [body.start_account], [], None, None)])
+    queue = deque((account, [account], [], None, None) for account in sorted(start_accounts))
     found, examined, reason = [], 0, None
+    if len(queue) > MAX_SEARCH_STATES:
+        reason = "search_state_limit"
     while queue and reason is None:
         account, visited, steps, currency, last_time = queue.popleft()
         if len(steps) >= body.max_hops:
@@ -311,7 +365,7 @@ def paths(body):
                 continue
             next_steps = steps + [(account, target, edge_currency, values)]
             next_visited = visited + [target]
-            if target == body.end_account:
+            if target in end_accounts:
                 found.append((next_visited, next_steps, edge_currency))
                 if len(found) > body.max_paths:
                     found.pop()
@@ -328,8 +382,12 @@ def paths(body):
     by_id = {row["id"]: row for row in rows}
     result = []
     for accounts, steps, currency in found:
-        result.append({"accounts": accounts, "hops": len(steps), "currency": currency,
+        result.append({"accounts": accounts,
+                       "display_accounts": [_display_account(account, metadata) for account in accounts],
+                       "hops": len(steps), "currency": currency,
                        "steps": [{"source": source, "target": target, "currency": step_currency,
+                                  "source_display_account": _display_account(source, metadata),
+                                  "target_display_account": _display_account(target, metadata),
                                   "count": len(values), "amount": _totals(values)[0]["amount"],
                                   "flow_ids": [str(row["id"]) for row in values],
                                   "first_time": _stamp(min(row["trade_time"] for row in values if row["trade_time"] is not None))
@@ -339,6 +397,9 @@ def paths(body):
                                  for source, target, step_currency, values in steps]})
     evidence_ids = {row["id"] for _, steps, _ in found for _, _, _, values in steps for row in values}
     return {"case_id": str(body.case_id), "canvas_id": str(body.canvas_id), "scope": body.scope,
+            "start_accounts": sorted(start_accounts), "end_accounts": sorted(end_accounts),
+            "start_display_accounts": [_display_account(account, metadata) for account in sorted(start_accounts)],
+            "end_display_accounts": [_display_account(account, metadata) for account in sorted(end_accounts)],
             "mode": body.mode, "currency": body.currency, "paths": result, "complete": reason is None,
             "flows": [_flow(row, mirrors, references, by_id) for row in selected if row["id"] in evidence_ids],
             "truncation_reason": reason, "summary": summary,
@@ -346,6 +407,7 @@ def paths(body):
             "limits": {"max_hops": body.max_hops, "max_paths": body.max_paths, "search_steps": min(examined, MAX_SEARCH_STEPS),
                        "max_search_steps": MAX_SEARCH_STEPS, "max_search_states": MAX_SEARCH_STATES,
                        "max_canvas_flows": MAX_FLOWS},
+            **_resolution_metadata(body.case_id),
             "semantics": "simple_directed_paths; same_currency; " +
                          ("strictly_increasing_local_times; " if body.mode == "chronological" else "topological_only; ") +
                          "no_conserved_principal_attribution"}

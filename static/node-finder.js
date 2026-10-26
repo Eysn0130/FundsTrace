@@ -25,7 +25,10 @@
       for (const item of value?.accounts || []) {
         const account = String(item?.account ?? '').trim();
         if (!account || seen.has(account)) continue;
-        seen.add(account); items.push({ account, name: String(item?.name || ''), ...(item?.idNo ? { idNo: String(item.idNo) } : {}) });
+        seen.add(account); items.push({ account, name: String(item?.name || ''), ...(item?.idNo ? { idNo: String(item.idNo) } : {}),
+          ...(item?.displayAccount ? { displayAccount: String(item.displayAccount) } : {}),
+          ...(item?.accountNumber ? { accountNumber: String(item.accountNumber) } : {}),
+          ...(Array.isArray(item?.cards) && item.cards.length ? { cards: item.cards.map(String) } : {}) });
       }
       dataRevision = revision; accountStamp = stamp(value); accountSource = value?.accounts; accountCache = items; return items;
     }
@@ -53,10 +56,10 @@
     function row(item) {
       const button = doc.createElement('button'); button.type = 'button'; button.className = 'find-result';
       button.setAttribute('data-account', item.account);
-      button.setAttribute('aria-label', `定位 ${item.name || '未填写户名'}，${item.account}`);
+      button.setAttribute('aria-label', `定位 ${item.name || '未填写户名'}，${item.displayAccount || item.account}`);
       const lines = doc.createElement('span'); lines.className = 'find-result-text';
       const name = doc.createElement('span'); name.className = 'find-result-name'; name.textContent = item.name || '未填写户名';
-      const account = doc.createElement('span'); account.className = 'find-result-account'; account.textContent = item.account;
+      const account = doc.createElement('span'); account.className = 'find-result-account'; account.textContent = item.displayAccount || item.account;
       const icon = doc.createElement('img'); icon.className = 'ui-icon'; icon.src = '/static/ui-icons/target.svg'; icon.alt = '';
       lines.replaceChildren(name, account); button.replaceChildren(lines, icon);
       button.addEventListener('click', () => { void locate(item.account); });
@@ -65,7 +68,7 @@
     function renderResults(reason) {
       if (!list) return;
       const visible = results.slice(0, visibleCount);
-      const compatible = rendered.length <= visible.length && rendered.every((item, index) => item.account === visible[index].account && item.name === visible[index].name);
+      const compatible = rendered.length <= visible.length && rendered.every((item, index) => item.account === visible[index].account && item.name === visible[index].name && item.displayAccount === visible[index].displayAccount);
       if (!compatible) { rendered = []; list.replaceChildren(); }
       for (const item of visible.slice(rendered.length)) {
         const entry = row(item); rendered.push(entry); list.appendChild(entry.button);
@@ -174,19 +177,20 @@
       cancelWork(); resetResults(); searched = true;
       if (!needle) { failure = '请输入卡号、账号或户名'; render(); field?.focus({ preventScroll: true }); return false; }
       const items = accounts(), exact = items.find(item => item.account === query.trim());
-      const folded = exact ? [] : items.filter(item => normalize(item.account) === needle);
-      results = exact ? [exact] : folded.length ? folded : items.filter(item => normalize(item.account).includes(needle) || normalize(item.name).includes(needle) || normalize(item.idNo).includes(needle));
+      const numbers = item => [item.account, item.displayAccount, item.accountNumber, ...(item.cards || [])].filter(Boolean).map(normalize);
+      const folded = exact ? [] : items.filter(item => numbers(item).includes(needle));
+      results = exact ? [exact] : folded.length ? folded : items.filter(item => numbers(item).some(value => value.includes(needle)) || normalize(item.name).includes(needle) || normalize(item.idNo).includes(needle));
       visibleCount = Math.min(pageSize, results.length);
       if (!results.length) { message = '当前显示范围内没有匹配账户'; outcome = 'notice'; }
       render();
       if (results.length !== 1) { picker?.open(); return false; }
-      return run('locate', key, [results[0].account], ids => `已定位 · ${results.find(item => item.account === ids[0])?.name || ids[0]}`);
+      return run('locate', key, [results[0].account], () => `已定位 · ${results[0].name || results[0].displayAccount || results[0].account}`);
     }
     function locate(account) {
       update();
       const item = results.find(item => item.account === String(account));
       if (!item) return Promise.resolve(false);
-      return run('locate', `account:${item.account}`, [item.account], () => `已定位 · ${item.name || item.account}`);
+      return run('locate', `account:${item.account}`, [item.account], () => `已定位 · ${item.name || item.displayAccount || item.account}`);
     }
     function locateAll() {
       update();
@@ -243,8 +247,9 @@
         search: async request => {
           const latest = options.read();
           if (!sameStamp(source, stamp(latest))) { update(); return { items: [], hasMore: false }; }
-          return root.FundsEntitySearch.local(accounts().map(item => ({ key: item.account, label: item.name || item.account,
-            value: item.account, account: item.account, idNo: item.idNo || undefined })), request);
+          return root.FundsEntitySearch.local(accounts().map(item => ({ key: item.account, label: item.name || item.displayAccount || item.account,
+            value: item.displayAccount || item.account, account: item.account, displayAccount: item.displayAccount,
+            accountNumber: item.accountNumber, cards: item.cards, idNo: item.idNo || undefined })), request);
         },
         onSelect: item => {
           if (!sameStamp(source, stamp(options.read()))) { update(); return; }

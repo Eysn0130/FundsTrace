@@ -188,3 +188,147 @@ test('capture failures and observer exceptions do not wedge the queue', async ()
   assert.equal(h.status().busy, false); fail = false;
   await h.run('move', () => { state.x = 1; }); await h.undo(); assert.equal(state.x, 0);
 });
+
+test('invalidate clears idle undo and redo without changing the current display', async () => {
+  const f = fixture(), h = f.history;
+  assert.equal(typeof h.invalidate, 'function');
+  await h.run('first', () => { f.state.nodes[0].x = 1; });
+  await h.run('second', () => { f.state.nodes[0].x = 2; });
+  await h.undo();
+  assert.equal(h.status().canUndo, true); assert.equal(h.status().canRedo, true);
+  const current = clone(f.state), restores = f.restores.length;
+  h.invalidate();
+  assert.deepEqual(f.state, current);
+  assert.equal(h.status().busy, false); assert.equal(h.status().count, 0); assert.equal(h.status().bytes, 0);
+  assert.equal(h.status().canUndo, false); assert.equal(h.status().canRedo, false);
+  assert.equal(h.status().undoLabel, ''); assert.equal(h.status().redoLabel, '');
+  assert.equal(await h.undo(), false); assert.equal(await h.redo(), false); assert.equal(f.restores.length, restores);
+  await h.run('current revision', () => { f.state.nodes[0].x = 3; });
+  assert.equal(h.status().count, 1); await h.undo(); assert.deepEqual(f.state, current);
+});
+
+test('invalidate keeps an in-flight lock, cancels old queued run/travel, and queues new work behind the action', async t => {
+  const oldGate = deferred(), oldStart = deferred(), newGate = deferred(), newStart = deferred();
+  t.after(() => { oldGate.resolve(); newGate.resolve(); });
+  let state = { x: 0 }, captures = 0, staleActions = 0, restores = 0;
+  const events = [], changes = [];
+  const h = historyAPI.create({ capture: () => { captures += 1; return state; },
+    restore: async target => { restores += 1; state = target; }, onChange: status => changes.push(status.busy) });
+  assert.equal(typeof h.invalidate, 'function'); h.reset('A');
+  const oldRun = h.run('old running', async () => {
+    events.push('old start'); state.x = 1; oldStart.resolve(); await oldGate.promise; events.push('old end');
+  });
+  const oldQueued = h.run('old queued', () => { staleActions += 1; });
+  const oldTravel = h.undo();
+  await oldStart.promise; const invalidationIndex = changes.length;
+  h.invalidate(); state = { x: 100 };
+  assert.equal(h.status().busy, true); assert.equal(h.status().count, 0);
+  assert.equal(h.record('gesture during action', { x: 100 }, { x: 900 }), false);
+  const fresh = h.run('fresh queued', async () => {
+    events.push('new start'); newStart.resolve(); await newGate.promise; state.x = 101; events.push('new end');
+  });
+  await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(events, ['old start']); assert.equal(captures, 1);
+  oldGate.resolve();
+  assert.equal(await oldRun, false); assert.equal(await oldQueued, false); assert.equal(await oldTravel, false);
+  await newStart.promise;
+  assert.deepEqual(events, ['old start', 'old end', 'new start']);
+  assert.equal(staleActions, 0); assert.equal(restores, 0); assert.equal(captures, 2);
+  assert.equal(h.status().busy, true); assert.equal(h.status().count, 0);
+  assert.ok(changes.slice(invalidationIndex).every(Boolean), 'busy never drops while the old or fresh action is pending');
+  newGate.resolve(); assert.equal(await fresh, true);
+  assert.equal(h.status().busy, false); assert.equal(h.status().count, 1); assert.equal(h.status().undoLabel, 'fresh queued');
+  assert.equal(state.x, 101); await h.undo(); assert.equal(state.x, 100);
+});
+
+test('invalidated in-flight run does not capture or record its obsolete before snapshot', async t => {
+  const gate = deferred(), started = deferred(); t.after(() => gate.resolve());
+  let state = { x: 0 }, captures = 0;
+  const h = historyAPI.create({ capture: () => { captures += 1; return state; }, restore: async target => { state = target; } });
+  assert.equal(typeof h.invalidate, 'function');
+  const oldRun = h.run('obsolete before', async () => { started.resolve(); await gate.promise; });
+  await started.promise; h.invalidate(); state = { x: 50 };
+  gate.resolve(); assert.equal(await oldRun, false);
+  assert.equal(captures, 1, 'obsolete completion must not capture the replacement revision');
+  assert.equal(h.status().busy, false); assert.equal(h.status().count, 0);
+  await h.run('fresh before', () => { state.x = 51; });
+  assert.equal(h.status().count, 1); await h.undo(); assert.equal(state.x, 50);
+  assert.equal(await h.undo(), false, 'there is no route back to the obsolete x=0 snapshot');
+});
+
+test('an invalidated in-flight undo cannot move the replacement history cursor', async t => {
+  const gate = deferred(), started = deferred(); t.after(() => gate.resolve());
+  let state = { x: 0 }, restores = 0;
+  const events = [];
+  const h = historyAPI.create({ capture: () => state, restore: async (target, expected) => {
+    restores += 1;
+    if (restores === 1) {
+      events.push('old restore start'); started.resolve(); await gate.promise; events.push('old restore end');
+      // History cannot undo effects already sent to a case-bound caller. This
+      // completion only acknowledges the old action; replacement facts stay put.
+      return true;
+    }
+    assert.deepEqual(state, expected); state = target;
+  } });
+  assert.equal(typeof h.invalidate, 'function');
+  await h.run('old step', () => { state.x = 1; });
+  const oldUndo = h.undo(), oldRedo = h.redo(); await started.promise;
+  h.invalidate(); state = { x: 100 };
+  const fresh = h.run('new step', () => { events.push('new action'); state.x = 101; });
+  await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(events, ['old restore start']); assert.equal(h.status().busy, true);
+  gate.resolve(); assert.equal(await oldUndo, false); assert.equal(await oldRedo, false); assert.equal(await fresh, true);
+  assert.equal(restores, 1);
+  assert.deepEqual(events, ['old restore start', 'old restore end', 'new action']);
+  assert.equal(h.status().count, 1); assert.equal(h.status().undoLabel, 'new step');
+  assert.equal(h.status().canUndo, true); assert.equal(h.status().canRedo, false);
+  await h.undo(); assert.equal(state.x, 100); assert.equal(h.status().canRedo, true);
+  await h.redo(); assert.equal(state.x, 101); assert.equal(h.status().busy, false);
+});
+
+test('reset after invalidate separates the new binding lock from old pending completions', async t => {
+  const oldGate = deferred(), oldStart = deferred(), newGate = deferred(), newStart = deferred();
+  t.after(() => { oldGate.resolve(); newGate.resolve(); });
+  let state = { x: 0 }, staleActions = 0, captures = 0;
+  const h = historyAPI.create({ capture: () => { captures += 1; return state; }, restore: async target => { state = target; } });
+  assert.equal(typeof h.invalidate, 'function'); h.reset('A');
+  const oldRun = h.run('old binding', async () => { oldStart.resolve(); await oldGate.promise; });
+  const oldQueued = h.run('old queued binding', () => { staleActions += 1; });
+  await oldStart.promise; h.invalidate(); assert.equal(h.status().busy, true);
+  h.reset('B'); state = { x: 100 };
+  const fresh = h.run('new binding', async () => { newStart.resolve(); await newGate.promise; state.x = 101; });
+  await newStart.promise;
+  oldGate.resolve(); assert.equal(await oldRun, false); assert.equal(await oldQueued, false);
+  assert.equal(staleActions, 0); assert.equal(captures, 2);
+  assert.equal(h.status().busy, true); assert.equal(h.status().count, 0);
+  newGate.resolve(); assert.equal(await fresh, true); assert.equal(h.status().busy, false);
+  assert.equal(h.status().count, 1); assert.equal(h.status().undoLabel, 'new binding');
+  await h.undo(); assert.equal(state.x, 100);
+});
+
+for (const operation of ['run', 'undo'])
+test('failure in an invalidated ' + operation + ' releases pending and permits fresh queued work', async t => {
+  const gate = deferred(), started = deferred(); t.after(() => gate.resolve());
+  let state = { x: 0 }, staleActions = 0, failRestore = operation === 'undo';
+  const events = [];
+  const h = historyAPI.create({ capture: () => state, restore: async (target, expected) => {
+    if (failRestore) {
+      failRestore = false; started.resolve(); await gate.promise; throw new Error('invalidated restore failed');
+    }
+    assert.deepEqual(state, expected); state = target;
+  } });
+  assert.equal(typeof h.invalidate, 'function');
+  if (operation === 'undo') await h.run('old step', () => { state.x = 1; });
+  const oldTask = operation === 'run' ? h.run('failing old action', async () => {
+    started.resolve(); await gate.promise; throw new Error('invalidated action failed');
+  }) : h.undo();
+  const rejected = assert.rejects(oldTask, /invalidated (action|restore) failed/);
+  const stale = h.run('stale queued', () => { staleActions += 1; });
+  await started.promise; h.invalidate(); state = { x: 100 };
+  const fresh = h.run('fresh after failure', () => { events.push('new action'); state.x = 101; });
+  await Promise.resolve(); await Promise.resolve(); assert.deepEqual(events, []); assert.equal(h.status().busy, true);
+  gate.resolve(); await rejected; assert.equal(await stale, false); assert.equal(await fresh, true);
+  assert.equal(staleActions, 0); assert.equal(h.status().busy, false); assert.equal(h.status().count, 1);
+  assert.equal(h.status().undoLabel, 'fresh after failure'); assert.equal(h.status().canRedo, false);
+  await h.undo(); assert.equal(state.x, 100); assert.equal(h.status().busy, false);
+});

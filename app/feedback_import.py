@@ -28,15 +28,21 @@ PREVIOUS_PROFILE = "funds-trace-bank-feedback-v2"
 CANCELLATION_PROFILE = "funds-trace-bank-feedback-v3"
 TEXT_PROFILE = "funds-trace-bank-feedback-v4"
 CURRENCY_PROFILE = "funds-trace-bank-feedback-v5"
+EVIDENCE_PROFILE = "funds-trace-bank-feedback-v6"
 PROFILE = CURRENCY_PROFILE
-TEXT_PROFILES = frozenset({TEXT_PROFILE, CURRENCY_PROFILE})
+CURRENCY_PROFILES = frozenset({CURRENCY_PROFILE, EVIDENCE_PROFILE})
+TEXT_PROFILES = frozenset({TEXT_PROFILE, *CURRENCY_PROFILES})
 CANCELLATION_PROFILES = frozenset({CANCELLATION_PROFILE, *TEXT_PROFILES})
 SUPPORTED_PROFILES = frozenset({IDENTITY_PROFILE, PREVIOUS_PROFILE, *CANCELLATION_PROFILES})
 MAX_MEMBERS = 256
+EVIDENCE_MAX_MEMBERS = 2048
 MAX_EXPANDED_BYTES = 300 * 1024 * 1024
+EVIDENCE_MAX_EXPANDED_BYTES = 1024 * 1024 * 1024
 MAX_MEMBER_BYTES = 128 * 1024 * 1024
+EVIDENCE_MAX_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_RECORDS = 300_000
 TEXT_MAX_RECORDS = 1_000_000
+EVIDENCE_MAX_RECORDS = 2_000_000
 MAX_FIELD_BYTES = 1024 * 1024
 
 COLUMNS = (
@@ -124,7 +130,7 @@ class FeedbackImportError(ValueError):
 
 def max_records(profile):
     """A v4/v5 resource allowance; historical limits stay fixed."""
-    return TEXT_MAX_RECORDS if profile in TEXT_PROFILES else MAX_RECORDS
+    return EVIDENCE_MAX_RECORDS if profile == EVIDENCE_PROFILE else TEXT_MAX_RECORDS if profile in TEXT_PROFILES else MAX_RECORDS
 
 
 def currency_details(raw):
@@ -148,9 +154,12 @@ def record_key(member_path: str, member_sha256: str, source_row: int, identity_d
     return hashlib.sha256(framed.encode("utf-8")).hexdigest()
 
 
-def _validate_members(archive):
+def _validate_members(archive, profile=PROFILE):
+    member_limit = EVIDENCE_MAX_MEMBERS if profile == EVIDENCE_PROFILE else MAX_MEMBERS
+    member_bytes = EVIDENCE_MAX_MEMBER_BYTES if profile == EVIDENCE_PROFILE else MAX_MEMBER_BYTES
+    expanded_limit = EVIDENCE_MAX_EXPANDED_BYTES if profile == EVIDENCE_PROFILE else MAX_EXPANDED_BYTES
     infos = archive.infolist()
-    if not infos or len(infos) > MAX_MEMBERS:
+    if not infos or len(infos) > member_limit:
         raise FeedbackImportError("member_count")
     seen, expanded, data_infos = set(), 0, []
     for info in infos:
@@ -181,10 +190,10 @@ def _validate_members(archive):
             continue
         if not name.lower().endswith(".csv"):
             raise FeedbackImportError("non_csv_member")
-        if info.file_size > MAX_MEMBER_BYTES or info.file_size < 0:
+        if info.file_size > member_bytes or info.file_size < 0:
             raise FeedbackImportError("member_size")
         expanded += info.file_size
-        if expanded > MAX_EXPANDED_BYTES:
+        if expanded > expanded_limit:
             raise FeedbackImportError("expanded_size")
         data_infos.append(info)
     if not data_infos:
@@ -192,20 +201,22 @@ def _validate_members(archive):
     return data_infos
 
 
-def _read_member(archive, info, expanded):
+def _read_member(archive, info, expanded, profile=PROFILE):
+    member_bytes = EVIDENCE_MAX_MEMBER_BYTES if profile == EVIDENCE_PROFILE else MAX_MEMBER_BYTES
+    expanded_limit = EVIDENCE_MAX_EXPANDED_BYTES if profile == EVIDENCE_PROFILE else MAX_EXPANDED_BYTES
     chunks, size = [], 0
     with archive.open(info, "r") as member:
         while True:
             # Reading through EOF checks ZIP CRC; the extra byte detects a
             # dishonest size or a resource-bound overrun before further work.
-            chunk = member.read(min(1024 * 1024, MAX_MEMBER_BYTES - size + 1))
+            chunk = member.read(min(1024 * 1024, member_bytes - size + 1))
             if not chunk:
                 break
             size += len(chunk)
             expanded += len(chunk)
-            if size > MAX_MEMBER_BYTES:
+            if size > member_bytes:
                 raise FeedbackImportError("member_size")
-            if expanded > MAX_EXPANDED_BYTES:
+            if expanded > expanded_limit:
                 raise FeedbackImportError("expanded_size")
             chunks.append(chunk)
     if size != info.file_size:
@@ -376,7 +387,7 @@ def _transaction(source, profile=PROFILE):
         return None, "non_transaction", "feedback_only", details, None
 
     currency = source["交易币种"]
-    normalized_currency = currency_details(currency) if profile == CURRENCY_PROFILE else None
+    normalized_currency = currency_details(currency) if profile in CURRENCY_PROFILES else None
     if normalized_currency is not None:
         details.update(normalized_currency)
         currency = normalized_currency["canonical_currency"]
@@ -402,7 +413,7 @@ def _transaction(source, profile=PROFILE):
         reasons.append("invalid_direction")
     if trade_time is None:
         reasons.append("invalid_time")
-    if (normalized_currency is None if profile == CURRENCY_PROFILE else currency not in SUPPORTED_CURRENCIES):
+    if (normalized_currency is None if profile in CURRENCY_PROFILES else currency not in SUPPORTED_CURRENCIES):
         reasons.append("invalid_currency")
     # These codes are reported source codes, not proof of settlement.  No
     # interpretation is assigned to an unknown or absent reported code.
@@ -556,6 +567,10 @@ def parse(source, *, profile=PROFILE) -> dict:
     """
     if profile not in SUPPORTED_PROFILES:
         raise FeedbackImportError("unknown_profile")
+    if profile == EVIDENCE_PROFILE:
+        # The outer original stays registered unchanged; the ephemeral reader
+        # only presents nested CSV leaves to the same semantic interpreter.
+        source = _flatten_family(source)
     record_limit = max_records(profile)
     rows, records, members, contexts, accounts = [], [], [], [], {}
     cancellation_index = CancellationIndex() if profile in CANCELLATION_PROFILES else None
@@ -566,13 +581,15 @@ def parse(source, *, profile=PROFILE) -> dict:
     try:
         source.seek(0)
         with zipfile.ZipFile(source, "r") as archive:
-            infos = _validate_members(archive)
+            infos = (_validate_members(archive, profile) if profile == EVIDENCE_PROFILE
+                     else _validate_members(archive))
             for info in infos:
-                payload, expanded = _read_member(archive, info, expanded)
+                payload, expanded = (_read_member(archive, info, expanded, profile) if profile == EVIDENCE_PROFILE
+                                     else _read_member(archive, info, expanded))
                 digest = hashlib.sha256(payload).hexdigest()
                 text, encoding = _decode(payload, profile=profile)
                 table = _table(text, encoding, profile=profile)
-                role, _ = next(table)
+                role, header = next(table)
                 member = {"member_path": info.filename, "role": role, "sha256": digest,
                           "size_bytes": len(payload), "encoding": encoding, "row_count": 0}
                 members.append(member)
@@ -597,6 +614,12 @@ def parse(source, *, profile=PROFILE) -> dict:
                                         accounts[key] = (*identity, record_no)
                                     elif previous is not None and previous[:2] != identity:
                                         accounts[key] = None
+                    if profile == EVIDENCE_PROFILE:
+                        from . import evidence_resolution
+                        value = (evidence_resolution.feedback_evidence(raw, row, context) if role == "transaction" and row is not None
+                                 else evidence_resolution.auxiliary_evidence(header, [raw[h] for h in header], role))
+                        if value:
+                            details[evidence_resolution.DETAIL_FIELD] = value
                     record = {"record_no": record_no, "member_path": info.filename,
                               "source_row": source_row,
                               "disposition": disposition, "reason_code": reason, "details": details}
@@ -629,7 +652,7 @@ def parse(source, *, profile=PROFILE) -> dict:
                                               member_hashes[record["member_path"]], record["source_row"])
     for row, (column, own_account, direction), record in contexts:
         prefix = "payee_" if direction == "in" else "payer_"
-        identity = accounts.get((column, own_account))
+        identity = accounts.get((column, own_account)) if profile != EVIDENCE_PROFILE else None
         if identity is not None:
             name, bank, identity_record = identity
             row["self_name"] = name
@@ -655,6 +678,8 @@ def parse(source, *, profile=PROFILE) -> dict:
                  key: {direction: format(value, ".2f") for direction, value in totals.items()}
                  for key, totals in direction_totals.items()}}
     plan = {"profile": profile, "rows": rows, "records": records, "members": members, "stats": stats}
+    if profile == EVIDENCE_PROFILE:
+        plan["_member_families"] = getattr(source, "_feedback_families", {})
     if cancellation_index is not None:
         pairs = cancellation_index.pairs()
         originals = {pair["original_record_no"] for pair in pairs}
@@ -671,4 +696,79 @@ def parse(source, *, profile=PROFILE) -> dict:
                                          cancellation_role=role, paired_record_no=str(paired),
                                          cancellation_witness_record_no=str(pair["witness_record_no"]))
         refresh_stats(plan)
+    if profile == EVIDENCE_PROFILE:
+        from . import evidence_resolution
+        evidence_resolution.bind_occurrences(plan)
     return plan
+
+
+def _family_members(source, *, payloads=False):
+    """Walk the closed feedback family without extracting archive paths."""
+    from . import table_archive
+    found, seen = [], set()
+    budget = {"members": 0, "bytes": 0}
+
+    def visit(stream, prefix="", depth=0):
+        with zipfile.ZipFile(stream) as archive:
+            local = set()
+            for info in archive.infolist():
+                budget["members"] += 1
+                name = table_archive._path(info.filename)
+                if (name in local or budget["members"] > EVIDENCE_MAX_MEMBERS or info.filename != info.orig_filename
+                        or info.flag_bits & 1 or stat.S_IFMT(info.external_attr >> 16) not in (0, stat.S_IFDIR if info.is_dir() else stat.S_IFREG)):
+                    raise FeedbackImportError("unsafe_member_path")
+                local.add(name)
+                if info.is_dir():
+                    if info.file_size:
+                        raise FeedbackImportError("directory_payload")
+                    continue
+                path = f"{prefix}/{name}" if prefix else name
+                if path in seen or not 0 <= info.file_size <= table_archive.MAX_MEMBER_BYTES:
+                    raise FeedbackImportError("member_size")
+                seen.add(path)
+                budget["bytes"] += info.file_size
+                if budget["bytes"] > EVIDENCE_MAX_EXPANDED_BYTES:
+                    raise FeedbackImportError("expanded_size")
+                if name.lower().endswith(".zip"):
+                    if depth >= table_archive.MAX_DEPTH:
+                        raise FeedbackImportError("archive_depth")
+                    visit(io.BytesIO(archive.read(info)), path, depth + 1)
+                elif name.lower().endswith(".csv"):
+                    with archive.open(info) as leaf:
+                        sample = leaf.read(65536)
+                        headers, _ = table_archive._header(sample)
+                        if frozenset(headers) not in _SCHEMA_SIGNATURES:
+                            raise FeedbackImportError("unknown_schema")
+                        content = sample + leaf.read() if payloads else None
+                    if payloads and len(content) != info.file_size:
+                        raise FeedbackImportError("member_size_mismatch")
+                    found.append((path, content, prefix))
+                else:
+                    raise FeedbackImportError("non_csv_member")
+    try:
+        source.seek(0)
+        visit(source)
+        return found
+    finally:
+        # The recursive closure owns every discovered payload until its
+        # self-cell is broken, including when traversal rejects a later member.
+        visit = None
+        source.seek(0)
+
+
+def is_family(source):
+    try:
+        return bool(_family_members(source))
+    except (FeedbackImportError, ValueError, OSError, zipfile.BadZipFile, RuntimeError):
+        return False
+
+
+def _flatten_family(source):
+    members = _family_members(source, payloads=True)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        for path, content, _family in members:
+            archive.writestr(path, content)
+    buffer.seek(0)
+    buffer._feedback_families = {path: family for path, _content, family in members}
+    return buffer

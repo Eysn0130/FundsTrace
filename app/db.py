@@ -22,6 +22,34 @@ class TransactionRollbackError(RuntimeError):
 
 
 @contextmanager
+def import_transaction():
+    """Keep import joins in their declared order while new rows lack statistics.
+
+    The outer operation owns the connection through commit/rollback and restores
+    its original settings afterwards, including when a query aborts the SQL
+    transaction (when SET itself is no longer allowed).
+    """
+    with _lock:
+        if getattr(_transaction_state, "depth", 0):
+            # An enclosing operation owns both its transaction and query policy.
+            with transaction() as c:
+                yield c
+            return
+        c = con()
+        previous = c.execute("select current_setting('disabled_optimizers')").fetchone()[0]
+        disabled = [value for value in previous.split(",") if value]
+        for name in ("join_order", "build_side_probe_side"):
+            if name not in disabled:
+                disabled.append(name)
+        c.execute("set disabled_optimizers=?", [",".join(disabled)])
+        try:
+            with transaction() as c:
+                yield c
+        finally:
+            c.execute("set disabled_optimizers=?", [previous])
+
+
+@contextmanager
 def transaction():
     """Hold the shared connection lock for one atomic, reentrant operation.
 
@@ -238,6 +266,33 @@ create table if not exists import_records (
     primary key (case_id, source_id, record_no)
 );
 
+create table if not exists evidence_sources (
+    case_id integer not null, source_id varchar not null, batch_id bigint, active boolean not null,
+    primary key (case_id,source_id)
+);
+create table if not exists resolution_state (
+    case_id integer primary key, revision varchar not null
+);
+create table if not exists resolution_revisions (
+    case_id integer not null, revision varchar not null, summary_json varchar not null,
+    decisions_json varchar not null, created_at timestamp default (current_timestamp at time zone 'UTC'),
+    primary key (case_id, revision)
+);
+create table if not exists resolution_entities (
+    case_id integer not null, entity_id varchar not null, kind varchar not null,
+    account_number varchar not null, display_account varchar not null, bank varchar not null,
+    details_json varchar not null, primary key (case_id, entity_id)
+);
+create table if not exists resolved_endpoints (
+    case_id integer not null, flow_id bigint not null, role varchar not null,
+    entity_id varchar not null, state varchar not null, reason varchar not null,
+    primary key (case_id, flow_id, role)
+);
+create table if not exists resolution_subject_aliases (
+    case_id integer not null, raw_account varchar not null, account varchar not null,
+    primary key (case_id, raw_account)
+);
+
 create table if not exists import_file_gc (
     import_id varchar primary key,
     suffix varchar not null,
@@ -321,26 +376,39 @@ def con():
                 # including a later reimport under an older parser.
                 # Narrow physical links before parsing JSON so metadata hashes
                 # cannot become join-build keys over the complete journal.
+                # Materialize each lookup before joining the next table: new
+                # rows in this transaction can have zero cardinality estimates,
+                # otherwise the optimizer joins every flow by case first.
                 from . import table_cancellation_links
-                candidate.execute(f"""create or replace view effective_flows as
+                candidate.execute(f"""create or replace view source_effective_flows as
                     with recursive {table_cancellation_links.ctes()},
-                    table_cancel_candidates as materialized (
-                      select fs.case_id,fs.source_id,fs.source_row,fs.flow_id,
-                        r.details_json source_details_json,c.details_json cancellation_details_json,
-                        f.self_account,f.self_name
-                      from flow_sources fs
-                      join flows f on f.case_id=fs.case_id and f.id=fs.flow_id
-                      join import_records r on r.case_id=fs.case_id
-                        and r.source_id=fs.source_id and r.record_no=fs.source_row
-                      join import_members rm on rm.case_id=r.case_id and rm.source_id=r.source_id
-                        and rm.member_path=r.member_path
-                      join import_records c on c.case_id=r.case_id and c.record_key=r.record_key
-                        and c.member_path=r.member_path and c.source_row=r.source_row
-                      join import_members cm on cm.case_id=c.case_id and cm.source_id=c.source_id
-                        and cm.member_path=c.member_path and cm.sha256=rm.sha256
+                    table_cancel_proofs as materialized (
+                      select c.case_id,c.record_key,c.member_path,c.source_row,c.details_json,cm.sha256
+                      from import_records c
                       join import_sources p on p.case_id=c.case_id and p.source_id=c.source_id
-                      where p.row_kind='table_record' and p.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4')
+                      join import_members cm on cm.case_id=c.case_id and cm.source_id=c.source_id
+                        and cm.member_path=c.member_path
+                      where p.row_kind='table_record' and p.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5')
                         and c.disposition='cancelled' and c.reason_code='matched_cancellation'
+                    ), table_cancel_positions as materialized (
+                      select c.*,rm.source_id
+                      from table_cancel_proofs c
+                      join import_members rm on rm.case_id=c.case_id and rm.member_path=c.member_path and rm.sha256=c.sha256
+                    ), table_cancel_records as materialized (
+                      select r.case_id,r.source_id,r.record_no,r.details_json source_details_json,
+                        c.details_json cancellation_details_json
+                      from import_records r
+                      join table_cancel_positions c on r.case_id=c.case_id and r.source_id=c.source_id
+                        and r.record_key=c.record_key and r.member_path=c.member_path and r.source_row=c.source_row
+                    ), table_cancel_source_links as materialized (
+                      select r.*,fs.source_row,fs.flow_id
+                      from flow_sources fs
+                      join table_cancel_records r on fs.case_id=r.case_id and fs.source_id=r.source_id and fs.source_row=r.record_no
+                    ), table_cancel_candidates as materialized (
+                      select r.case_id,r.source_id,r.source_row,r.flow_id,r.source_details_json,
+                        r.cancellation_details_json,f.self_account,f.self_name
+                      from flows f
+                      join table_cancel_source_links r on f.case_id=r.case_id and f.id=r.flow_id
                     ), table_same_path_cancelled_links as materialized (
                       select distinct case_id,source_id,source_row,flow_id from table_cancel_candidates
                       where json_extract_string(try_cast(cancellation_details_json as json),'$.cancellation_role')='original'
@@ -368,15 +436,76 @@ def con():
                       join import_sources p on p.case_id=c.case_id and p.source_id=c.source_id
                       where fs.case_id=f.case_id and fs.flow_id=f.id
                         and p.row_kind='archive_record'
-                        and p.parser_version in ('funds-trace-bank-feedback-v3','funds-trace-bank-feedback-v4','funds-trace-bank-feedback-v5')
+                        and p.parser_version in ('funds-trace-bank-feedback-v3','funds-trace-bank-feedback-v4','funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6')
                         and c.disposition='cancelled' and c.reason_code='matched_cancellation'
                         and json_extract_string(try_cast(c.details_json as json),'$.cancellation_role')='original'
                         and json_extract_string(try_cast(c.details_json as json),'$.cancellation_policy')='paired-cancellation-v1'
-                        and (p.parser_version<>'funds-trace-bank-feedback-v5' or
+                        and (p.parser_version not in ('funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6') or
                           json_extract_string(try_cast(c.details_json as json),'$.canonical_currency')=f.currency)
                     ) and not exists (
                       select 1 from table_cancelled_flows c where c.case_id=f.case_id and c.flow_id=f.id
                     )""")
+                candidate.execute("""create or replace view effective_flows as
+                    select f.* exclude(payer_account,payee_account,self_account,payer_bank,payee_bank),
+                      coalesce(pe.entity_id,f.payer_account) payer_account,
+                      coalesce(qe.entity_id,f.payee_account) payee_account,
+                      coalesce(se.entity_id,f.self_account) self_account,
+                      coalesce(nullif(p.bank,''),f.payer_bank) payer_bank,
+                      coalesce(nullif(q.bank,''),f.payee_bank) payee_bank,
+                      f.payer_account raw_payer_account,f.payee_account raw_payee_account,f.self_account raw_self_account,
+                      coalesce(p.display_account,f.payer_account) payer_display_account,
+                      coalesce(q.display_account,f.payee_account) payee_display_account,
+                      coalesce(s.display_account,f.self_account) self_display_account,
+                      case when pe.entity_id is not null or qe.entity_id is not null then 'typed-account-evidence-v1' else null end resolution_policy
+                    from source_effective_flows f
+                    left join resolved_endpoints pe on pe.case_id=f.case_id and pe.flow_id=f.id and pe.role='payer'
+                    left join resolved_endpoints qe on qe.case_id=f.case_id and qe.flow_id=f.id and qe.role='payee'
+                    left join resolved_endpoints se on se.case_id=f.case_id and se.flow_id=f.id and se.role='self'
+                    left join resolution_entities p on p.case_id=f.case_id and p.entity_id=pe.entity_id
+                    left join resolution_entities q on q.case_id=f.case_id and q.entity_id=qe.entity_id
+                    left join resolution_entities s on s.case_id=f.case_id and s.entity_id=se.entity_id""")
+                candidate.execute("""create or replace view effective_account_subjects as
+                    with aliases as (
+                      select distinct f.case_id,f.payer_account raw_account,e.entity_id
+                        from flows f join resolved_endpoints e on e.case_id=f.case_id and e.flow_id=f.id and e.role='payer'
+                      union select distinct f.case_id,f.payee_account,e.entity_id
+                        from flows f join resolved_endpoints e on e.case_id=f.case_id and e.flow_id=f.id and e.role='payee'
+                      union select distinct f.case_id,f.self_account,e.entity_id
+                        from flows f join resolved_endpoints e on e.case_id=f.case_id and e.flow_id=f.id and e.role='self'
+                      union select case_id,raw_account,account from resolution_subject_aliases
+                    ), unique_aliases as (
+                      select case_id,raw_account,min(entity_id) entity_id from aliases
+                        where coalesce(raw_account,'')<>'' and coalesce(entity_id,'')<>''
+                        group by case_id,raw_account having count(distinct entity_id)=1
+                    ), declarations as (
+                      select case_id,account from main_accounts union select case_id,account from account_ids
+                      union select case_id,account from account_photos
+                    ) select case_id,raw_account,entity_id account from unique_aliases
+                      union select d.case_id,d.account,d.account from declarations d
+                        where not exists(select 1 from unique_aliases a where a.case_id=d.case_id and a.raw_account=d.account)""")
+                candidate.execute("""create or replace view effective_account_ids as
+                    with projected as (
+                      select i.*,coalesce(s.account,i.account) projected_account from account_ids i
+                      left join effective_account_subjects s on s.case_id=i.case_id and s.raw_account=i.account
+                    ) select case_id,projected_account account,min(id_no) id_no,max(updated_at) updated_at,
+                        min(account) raw_account from projected group by case_id,projected_account
+                      having count(distinct id_no)=1""")
+                candidate.execute("""create or replace view effective_account_photos as
+                    with projected as (
+                      select p.*,coalesce(s.account,p.account) projected_account from account_photos p
+                      left join effective_account_subjects s on s.case_id=p.case_id and s.raw_account=p.account
+                    ) select case_id,projected_account account,min(fname) fname,min(crop_cx) crop_cx,
+                        min(crop_cy) crop_cy,min(crop_r) crop_r,max(updated_at) updated_at,min(account) raw_account
+                      from projected group by case_id,projected_account
+                      having count(distinct (fname,crop_cx,crop_cy,crop_r))=1""")
+                candidate.execute("""create or replace view effective_main_account_declarations as
+                    select m.case_id,coalesce(s.account,m.account) account,m.name,m.source,m.marked_at,m.account raw_account
+                    from main_accounts m left join effective_account_subjects s on s.case_id=m.case_id and s.raw_account=m.account""")
+                candidate.execute("""create or replace view effective_main_accounts as
+                    with ranked as (
+                      select *,row_number() over(partition by case_id,account order by
+                        source='manual' desc,marked_at desc,raw_account) choice from effective_main_account_declarations
+                    ) select case_id,account,name,source,marked_at,raw_account from ranked where choice=1""")
                 for stmt in INDEXES.strip().split(";"):
                     if stmt.strip():
                         candidate.execute(stmt)
@@ -404,18 +533,19 @@ def set_busy(v):
 
 
 def insert_dataframe(table, df, columns):
-    """Bulk insert through DuckDB's registered pandas scan under the shared lock."""
+    """Bulk scan local data without transaction-long registered-view ownership."""
     with _lock:
         c = con()
         cols = ",".join(columns)
-        c.register("_ins_df", df[columns])
-        try:
-            c.execute(f"insert into {table} ({cols}) select {cols} from _ins_df")
-        finally:
-            try:
-                c.unregister("_ins_df")
-            except Exception:
-                pass
+        # A registered view dropped inside this transaction keeps its pandas
+        # dependency in catalog undo until commit, accumulating every chunk.
+        # The replacement scan uses this local frame without a catalog entry.
+        # Catalog objects resolve first, so reject any colliding table/view.
+        if c.execute("select 1 from information_schema.tables where lower(table_name)=? limit 1",
+                     ["_funds_trace_insert_frame"]).fetchone():
+            raise ValueError("Bulk scan name is already in use")
+        _funds_trace_insert_frame = df[columns]
+        c.execute(f"insert into {table} ({cols}) select {cols} from _funds_trace_insert_frame")
 
 
 def _start_ckpt():

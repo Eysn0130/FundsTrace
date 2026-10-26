@@ -15,7 +15,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 
 // Run the shipped switch/query/session adapters. Only DOM, G6 and GET services
 // are simulated; no copy of the capture, restore or switching implementation.
-function harness() {
+function harness({ legacyRevision = false } = {}) {
   const elements = new Map(), callbacks = new Map(), requests = [], timers = [], notices = [];
   let boxes = [], tableRows = [], matrix = [1, 0, 0, 0, 1, 0, 40, 60, 1], intent = 0, fitCalls = 0;
   const authorities = new Map(), canvasLists = new Map();
@@ -76,7 +76,7 @@ function harness() {
     resetNodeWorkspace() { sandbox.nodeDrafts.clear(); sandbox.retainedNodeInputs.clear(); },
     resetGraphView() { state.graphView = newView(); state.graphSelection = selection; selection.clear(); },
     cancelGraphLayout() {}, revokeZoomOptimization() {}, revokePhotoCrop() {}, closeDrawer() {}, resetBatchView() {},
-    beginDisplayGesture() {}, finishDisplayGesture() {},
+    beginDisplayGesture() {}, finishDisplayGesture() {}, invalidateResolution() {},
     updateHeader() {}, updateGraphViewStatus() {}, syncEdgeTypeControl() {}, rebuildGraphViewport() {}, scheduleGraphViewport() {}, scheduleGraphLabels() {},
     syncFlowTableScroll() {}, fmtCount: String, hasNodeDrafts: () => false, leaveNodeDrafts: async () => true,
     command() {}, syncControls() {}, membership,
@@ -126,6 +126,12 @@ function harness() {
   const exportLine = editor.split('\n').find(line => line.includes('window.FundsCanvasEditor ='));
   vm.runInContext(exportLine, context);
   vm.runInContext(source('table-workspace'), context);
+  if (legacyRevision) {
+    const create=sandbox.window.FundsWorkspaceDrafts.create;
+    sandbox.window.FundsWorkspaceDrafts={create(){
+      const store=create();return {...store,get(...args){const value=store.get(...args);if(value)delete value.resolutionRevision;return value;}};
+    }};
+  }
   vm.runInContext(source('workspace-session'), context);
   for (const callback of callbacks.get('DOMContentLoaded') || []) callback();
   sandbox.window.FundsCanvasWorkspace = {
@@ -208,4 +214,60 @@ test('returning home rereads current facts after a same-case import or deletion'
   assert.deepEqual([...h.state.tracked], ['new-source-flow']);
   assert.deepEqual(plain(h.table.capture()), []);
   assert.ok(h.requests.every(request => request.method === 'GET'));
+});
+
+
+for(const revision of [null,'a'.repeat(64)])
+test('same explicit resolution revision preserves a restored neighborhood: '+revision,async()=>{
+  const h=harness(),graph={...data(),resolution_revision:revision};h.authorities.set('1:0',graph);await h.load();
+  h.state.graphView.visibleIds=new Set(['node-a','node-b']);h.state.graphView.root='node-a';h.state.graphView.direction='in';
+  h.state.graphSelection.rebind(['node-a']);h.setMatrix([2,0,0,0,2,0,91,72,1]);h.session.capture();
+  h.state.graphView.visibleIds=null;h.state.graphView.root=null;h.setMatrix([1,0,0,0,1,0,4,5,1]);
+  assert.equal(h.session.restore(),true);
+  assert.deepEqual([...h.state.graphView.visibleIds],['node-a','node-b']);assert.equal(h.state.graphView.root,'node-a');
+  assert.equal(h.state.graphView.direction,'in');assert.deepEqual([...h.state.graphSelection.ids],['node-a']);
+  assert.deepEqual(h.matrix(),[2,0,0,0,2,0,91,72,1]);assert.ok(h.requests.every(request=>request.method==='GET'));
+});
+for(const kind of ['changed','unknown'])
+test('a stale or unknown session neighborhood restores the complete fresh graph without guessing identity: '+kind,async()=>{
+  const h=harness({legacyRevision:kind==='unknown'});
+  h.authorities.set('1:0',{...data(),resolution_revision:'a'.repeat(64)});await h.load();
+  h.state.graphView.visibleIds=new Set(['node-a','node-b']);h.state.graphView.root='node-a';
+  h.state.graphSelection.rebind(['node-a']);h.setMatrix([2,0,0,0,2,0,91,72,1]);h.session.capture();
+  const fresh={nodes:[{account:'node-c'},{account:'node-b'},{account:'unrelated-current'}],
+    edges:[{source:'node-c',target:'node-b',amount:'1.01'}],tracked_ids:['flow-a'],resolution_revision:kind==='changed'?'b'.repeat(64):'a'.repeat(64)};
+  h.authorities.set('1:0',fresh);await h.load();h.setMatrix([1,0,0,0,1,0,4,5,1]);
+  assert.equal(h.session.restore(),true);
+  assert.equal(h.state.graphView.visibleIds,null);assert.equal(h.state.graphView.root,null);
+  assert.deepEqual([...h.state.graphSelection.ids],[]);assert.deepEqual(plain(h.state.lastGraph),fresh);
+  assert.deepEqual(h.matrix(),[1,0,0,0,1,0,4,5,1],'stale partial-view camera is not reapplied');
+  assert.ok(h.requests.every(request=>request.method==='GET'));
+});
+
+for(const revision of [null,'a'.repeat(64)])
+test('same explicit revision preserves identity-only session filters and camera: '+revision,async()=>{
+  const h=harness(),graph={...data(),resolution_revision:revision};h.authorities.set('1:0',graph);await h.load();
+  h.state.graphView.visibleIds=null;h.state.graphView.root=null;
+  h.state.presentation.onlyAccounts=['node-a','node-b'];h.state.presentation.hiddenAccounts=['node-b'];
+  h.state.graphSelection.rebind(['node-a']);h.setMatrix([2,0,0,0,2,0,91,72,1]);h.session.capture();
+  h.state.presentation=h.context.newGraphPresentation();h.setMatrix([1,0,0,0,1,0,4,5,1]);
+  assert.equal(h.session.restore(),true);assert.equal(h.state.graphView.visibleIds,null);
+  assert.deepEqual(plain(h.state.presentation.onlyAccounts),['node-a','node-b']);assert.deepEqual(plain(h.state.presentation.hiddenAccounts),['node-b']);
+  assert.deepEqual(h.matrix(),[2,0,0,0,2,0,91,72,1]);assert.deepEqual([...h.state.graphSelection.ids],['node-a']);
+  assert.ok(h.requests.every(request=>request.method==='GET'));
+});
+for(const kind of ['changed','unknown']) for(const mode of ['only','hidden'])
+test('stale identity-only session filters restore the complete graph without old fact storage: '+kind+' '+mode,async()=>{
+  const h=harness({legacyRevision:kind==='unknown'});h.authorities.set('1:0',{...data(),resolution_revision:'a'.repeat(64)});await h.load();
+  h.state.graphView.visibleIds=null;h.state.graphView.root=null;
+  h.state.presentation.onlyAccounts=mode==='only'?['node-a','node-b']:null;
+  h.state.presentation.hiddenAccounts=mode==='hidden'?['node-a']:[];
+  h.state.graphSelection.rebind(['node-a']);h.setMatrix([2,0,0,0,2,0,91,72,1]);h.session.capture();
+  const fresh={nodes:[{account:'node-c'},{account:'node-b'},{account:'unrelated-current'}],
+    edges:[{source:'node-c',target:'node-b',amount:'1.01'}],tracked_ids:['flow-a'],resolution_revision:kind==='changed'?'b'.repeat(64):'a'.repeat(64)};
+  h.authorities.set('1:0',fresh);await h.load();h.setMatrix([1,0,0,0,1,0,4,5,1]);
+  assert.equal(h.session.restore(),true);assert.equal(h.state.graphView.visibleIds,null);assert.equal(h.state.graphView.root,null);
+  assert.equal(h.state.presentation.onlyAccounts,null);assert.deepEqual(plain(h.state.presentation.hiddenAccounts),[]);
+  assert.deepEqual([...h.state.graphSelection.ids],[]);assert.deepEqual(plain(h.state.lastGraph),fresh);
+  assert.deepEqual(h.matrix(),[1,0,0,0,1,0,4,5,1]);assert.ok(h.requests.every(request=>request.method==='GET'));
 });

@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 from . import db, importer, sample_data
-from . import canvas_investigation
+from . import canvas_investigation, evidence_resolution
 from .case_packages import CASE_PKG_TABLES, CASE_PKG_COLS, delete_package_case, export_package, import_package, require_case, photo_name
 from . import license as lic
 from .services import imports as import_service
@@ -159,6 +159,10 @@ def stats(case_id: int = 1):
               (select count(*) from batches where case_id = ?) as batches
         """, [case_id, case_id, case_id, case_id])[0]
         result["import_coverage"] = import_coverage(case_id)
+        current_resolution = evidence_resolution.summary(case_id)
+        if current_resolution:
+            result["resolution"] = current_resolution
+            result.update(statistics_policy=evidence_resolution.POLICY, resolution_revision=result["resolution"]["revision"])
         return result
 
 
@@ -245,7 +249,9 @@ def del_batch(batch_id: int, case_id: int = Query(...)):
         db.x("delete from flow_sources where case_id=? and flow_id in "
              "(select id from flows where batch_id=? and case_id=?)", [case_id, batch_id, case_id])
         db.x("delete from flows where batch_id=? and case_id=?", [batch_id, case_id])
+        db.x("update evidence_sources set active=false where case_id=? and batch_id=?", [case_id, batch_id])
         db.x("delete from batches where id=? and case_id=?", [batch_id, case_id])
+        evidence_resolution.rebuild(case_id)
     return {"ok": True}
 
 
@@ -254,6 +260,14 @@ def _legacy_import_result(operation, *args):
         return operation(*args)
     except ServiceError as error:
         raise HTTPException(error.status, error.message) from None
+
+
+@app.post("/api/import/directory/preview")
+async def import_directory_preview(files: List[UploadFile] = File(...), case_id: int = Query(...)):
+    try:
+        return await import_service.upload_directory(case_id, files, surface="legacy")
+    except ServiceError as error:
+        raise HTTPException(error.status, error.message) from error
 
 
 @app.post("/api/import/preview")
@@ -341,8 +355,8 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         return f"%{v.strip()}%"
 
     if account.strip():
-        conds.append("(payer_account = ? or payee_account = ?)" if account_exact else "(payer_account ilike ? or payee_account ilike ?)")
-        params += [account.strip() if account_exact else like(account)] * 2
+        conds.append("(payer_account = ? or payee_account = ?)" if account_exact else "(payer_account ilike ? or payee_account ilike ? or payer_display_account ilike ? or payee_display_account ilike ?)")
+        params += [account.strip() if account_exact else like(account)] * (2 if account_exact else 4)
     entity_query = unicodedata.normalize("NFKC", entity).strip().lower()
     if entity_query:
         # A free query searches complete row facts, independently of the bounded
@@ -350,12 +364,13 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         conds.append("""(
             contains(lower(coalesce(payer_account,'')), ?) or contains(lower(coalesce(payee_account,'')), ?)
             or contains(lower(coalesce(payer_name,'')), ?) or contains(lower(coalesce(payee_name,'')), ?)
-            or exists (select 1 from account_ids identity
+            or contains(lower(coalesce(payer_display_account,'')), ?) or contains(lower(coalesce(payee_display_account,'')), ?)
+            or exists (select 1 from effective_account_ids identity
                 where identity.case_id=flows.case_id
                   and (identity.account=flows.payer_account or identity.account=flows.payee_account)
                   and contains(lower(coalesce(identity.id_no,'')), ?))
         )""")
-        params += [entity_query] * 5
+        params += [entity_query] * 7
     if name.strip():
         conds.append("(payer_name ilike ? or payee_name ilike ?)")
         params += [like(name)] * 2
@@ -365,7 +380,7 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
             params += [counter.strip()] * 2
         else:
             conds.append("""(payer_name ilike ? or payer_account ilike ? or payee_name ilike ? or payee_account ilike ?
-                or exists (select 1 from account_ids identity
+                or exists (select 1 from effective_account_ids identity
                     where identity.case_id=flows.case_id
                       and (identity.account=flows.payer_account or identity.account=flows.payee_account)
                       and contains(lower(coalesce(identity.id_no,'')), ?)))""")
@@ -387,11 +402,13 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         params.append(tto + (" 23:59:59" if len(tto) == 10 else ""))
     where = "where " + " and ".join(conds)
     # Keep the identity subqueries bound to the case-filtered effective rows.
-    total = db.q(f"select count(*) c from effective_flows as flows {where}", params)[0]["c"]
-    off = (page - 1) * size
-    rows = db.q(f"select * from effective_flows as flows {where} order by trade_time desc, id desc limit ? offset ?",
-                params + [size, off])
-    return {"total": total, "page": page, "size": size, "rows": rows}
+    with db._lock:
+        total = db.q(f"select count(*) c from effective_flows as flows {where}", params)[0]["c"]
+        off = (page - 1) * size
+        rows = db.q(f"select * from effective_flows as flows {where} order by trade_time desc, id desc limit ? offset ?",
+                    params + [size, off])
+        resolution = evidence_resolution.summary(case_id)
+    return {"total": total, "page": page, "size": size, "rows": rows, "resolution": resolution}
 
 
 @app.get("/api/accounts/{account}/profile")
@@ -460,6 +477,8 @@ def _profile(account: str, case_id: int):
         group by coalesce(currency, '') order by currency
     """, [account, account, account, account, case_id, account, account])
     r.update(_directional_money(own_totals))
+    evidence_resolution.decorate_accounts(case_id, [r])
+    evidence_resolution.decorate_accounts(case_id, r["top_counterparties"], key="acct")
     return r
 
 
@@ -534,10 +553,10 @@ def auto_detect_all(case_id_in: CaseIdIn):
 _CASE_ACCOUNTS_SQL = """
     with account_rows as (
         select trim(payer_account) as account, trim(coalesce(payer_name, '')) as name
-        from flows where case_id=? and payer_account is not null
+        from effective_flows where case_id=? and payer_account is not null
         union all
         select trim(payee_account), trim(coalesce(payee_name, ''))
-        from flows where case_id=? and payee_account is not null
+        from effective_flows where case_id=? and payee_account is not null
     ), accounts as (
         select account, max(name) as name from account_rows where account<>'' group by account
     )
@@ -558,17 +577,21 @@ def main_account_candidates(case_id: int, q: str = "", exact: bool = False, page
                 select 1 from account_rows names
                 where names.account=a.account and contains(lower(names.name), ?)
             ) or contains(lower(coalesce(m.name,'')), ?) or exists (
-                select 1 from account_ids identity
+                select 1 from effective_account_ids identity
                 where identity.case_id=? and identity.account=a.account
                   and contains(lower(coalesce(identity.id_no,'')), ?)
             )"""
-            search_params = [keyword] * 3 + [case_id, keyword]
+            criterion = "(" + criterion + """ or exists (select 1 from resolution_entities e where e.case_id=? and e.entity_id=a.account and
+                (contains(lower(e.account_number),?) or contains(lower(e.display_account),?)
+                 or contains(lower(array_to_string(json_extract_string(e.details_json,'$.cards[*]'),' ')),?)
+                 or contains(lower(array_to_string(json_extract_string(e.details_json,'$.names[*]'),' ')),?))))"""
+            search_params = [keyword] * 3 + [case_id, keyword, case_id] + [keyword] * 4
         matching = _CASE_ACCOUNTS_SQL + """
             , matching as (
                 select a.account, coalesce(nullif(m.name,''), a.name) as name,
                        m.account is not null as is_main,
                        case when m.account is null then null when m.source='auto' then 'auto' else 'manual' end as source
-                from accounts a left join main_accounts m on m.case_id=? and m.account=a.account
+                from accounts a left join effective_main_accounts m on m.case_id=? and m.account=a.account
                 where """ + criterion + """
             )
         """
@@ -576,20 +599,22 @@ def main_account_candidates(case_id: int, q: str = "", exact: bool = False, page
         total = db.q(matching + "select count(*) total from matching", params)[0]["total"]
         items = db.q(matching + "select * from matching order by account limit ? offset ?",
                      [*params, page_size, (page - 1) * page_size])
+        evidence_resolution.decorate_accounts(case_id, items)
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 @app.get("/api/main-accounts")
 def list_main_accounts(case_id: int = 1):
     with _case_transaction(case_id):
-        return db.q("select case_id, account, name, source, marked_at from main_accounts where case_id = ? order by marked_at, account",
-                    [case_id])
+        rows = db.q("select case_id, account, name, source, marked_at from effective_main_accounts where case_id = ? order by marked_at, account", [case_id])
+        evidence_resolution.decorate_accounts(case_id, rows)
+        return rows
 
 
 @app.post("/api/main-accounts/clear-auto")
 def clear_auto_main_accounts(body: CaseIdIn):
     """清除本案件全部"自动识别"的主账号标记（手动标记保留）"""
     with _case_transaction(body.case_id):
-        n = len(db.q("select account from main_accounts where case_id = ? and source = 'auto'", [body.case_id]))
+        n = len(db.q("select account from effective_main_accounts where case_id = ? and source = 'auto'", [body.case_id]))
         db.x("delete from main_accounts where case_id = ? and source = 'auto'", [body.case_id])
         return {"cleared": n}
 
@@ -621,7 +646,7 @@ def mark_main_account(body: MainAccountIn):
             raise HTTPException(400, "账号不能为空")
         existing_account = db.q(_CASE_ACCOUNTS_SQL + "select name from accounts where account=?",
                                 [body.case_id, body.case_id, acct])
-        existing_mark = db.q("select name from main_accounts where case_id=? and account=?", [body.case_id, acct])
+        existing_mark = db.q("select name from effective_main_accounts where case_id=? and account=?", [body.case_id, acct])
         if not existing_account and not existing_mark:
             raise HTTPException(404, "账号不存在或不属于当前案件")
         name = (body.name.strip() or (existing_mark[0]["name"] if existing_mark else "")
@@ -636,7 +661,9 @@ def unmark_main_account(body: MainAccountIn):
         acct = body.account.strip()
         if not acct:
             raise HTTPException(400, "账号不能为空")
-        db.x("delete from main_accounts where case_id = ? and account = ?", [body.case_id, acct])
+        db.x("delete from main_accounts where case_id=? and (account=? or account in "
+             "(select raw_account from effective_main_account_declarations where case_id=? and account=?))",
+             [body.case_id, acct, body.case_id, acct])
         return {"ok": True}
 
 # ---------------- 图谱 / 追踪 ----------------
@@ -665,10 +692,12 @@ def canvas_investigation_paths(body: canvas_investigation.PathInvestigationIn):
 
 def _graph_mirror_duplicate_ids(case_id: int, canvas_id: int):
     """Pair each tracked row with at most one oldest compatible ledger mirror."""
+    if evidence_resolution.summary(case_id) is not None:
+        return []
     rows = db.q_raw("""
         select f.id, f.payer_account, f.payee_account, f.amount,
                coalesce(f.currency, '') as currency, coalesce(f.self_account, '') as self_account,
-               date_trunc('second', f.trade_time) as mirror_time
+               date_trunc('second', f.trade_time) as mirror_time,f.resolution_policy
         from effective_flows f join tracked_flows tf on tf.flow_id = f.id
         where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?
         order by f.trade_time, f.id
@@ -699,9 +728,9 @@ def _graph(case_id: int, canvas_id: int):
                sum(case when t2.ispay = 0 and not t2.is_dup then 1 else 0 end) as in_cnt,
                coalesce(sum(case when t2.ispay = 1 and not t2.is_dup then t2.amount else 0 end), 0) as out_amt,
                coalesce(sum(case when t2.ispay = 0 and not t2.is_dup then t2.amount else 0 end), 0) as in_amt,
-               max(case when exists(select 1 from main_accounts m
+               max(case when exists(select 1 from effective_main_accounts m
                                     where m.case_id = ? and m.account = t2.account) then 1 else 0 end) as is_main,
-               max(case when exists(select 1 from main_accounts m2
+               max(case when exists(select 1 from effective_main_accounts m2
                                     where m2.case_id = ? and m2.name <> '' and m2.name = t2.name
                                       and m2.account <> t2.account) then 1 else 0 end) as is_same_name,
                max(ai.id_no) as id_no,
@@ -711,8 +740,8 @@ def _graph(case_id: int, canvas_id: int):
             union all
             select payee_account, payee_name, 0, amount, is_dup from nd
         ) t2
-        left join account_ids ai on ai.case_id = ? and ai.account = t2.account
-        left join account_photos ap on ap.case_id = ? and ap.account = t2.account
+        left join effective_account_ids ai on ai.case_id = ? and ai.account = t2.account
+        left join effective_account_photos ap on ap.case_id = ? and ap.account = t2.account
         group by t2.account
     """, [*dedup_params, case_id, case_id, case_id, case_id])
     edges = db.q(dedup_cte + """
@@ -749,10 +778,12 @@ def _graph(case_id: int, canvas_id: int):
         node.update(_directional_money(list(by_node.get(node["account"], {}).values())))
     tracked = [r["flow_id"] for r in db.q(
         "select flow_id from tracked_flows where case_id = ? and canvas_id = ?", [case_id, canvas_id])]
-    mains = [r["account"] for r in db.q("select account from main_accounts where case_id = ?", [case_id])]
+    mains = [r["account"] for r in db.q("select account from effective_main_accounts where case_id = ?", [case_id])]
     focus = [{"account": r["account"], "scale": r.get("scale") or 1.6}
              for r in db.q("select account, scale from focus_nodes where case_id = ?", [case_id])]
-    return {"nodes": nodes, "edges": edges, "tracked_ids": tracked,
+    evidence_resolution.decorate_accounts(case_id, nodes)
+    return {"resolution_revision": (evidence_resolution.summary(case_id) or {}).get("revision"), "resolution": evidence_resolution.summary(case_id), "statistics_policy": evidence_resolution.POLICY if evidence_resolution.summary(case_id) else "legacy_mirror_fifo",
+            "nodes": nodes, "edges": edges, "tracked_ids": tracked,
             "main_accounts": mains, "focus_nodes": focus}
 
 
@@ -1022,7 +1053,7 @@ def track_bulk(body: BulkTrackIn):
         if not anchors:
             raise HTTPException(404, "未找到所选流水")
         _require_graphable(body.case_id, [row["id"] for row in anchors])
-        mains = {r["account"] for r in db.q("select account from main_accounts where case_id = ?",
+        mains = {r["account"] for r in db.q("select account from effective_main_accounts where case_id = ?",
                                             [body.case_id])}
 
         pick_ids = set()
@@ -1293,6 +1324,12 @@ class AccountIdIn(BaseModel):
     id_no: str = ""
 
 
+def _metadata_subject_keys(case_id, account):
+    """Keys covered by this explicit user edit under current unique evidence."""
+    return sorted({account, *(row["raw_account"] for row in db.q_raw(
+        "select raw_account from effective_account_subjects where case_id=? and account=?", [case_id, account]))})
+
+
 @app.post("/api/account-ids/set")
 def account_id_set(body: AccountIdIn):
     """设置/清除单个账号的身份证号（图谱抽屉编辑用）"""
@@ -1303,11 +1340,12 @@ def account_id_set(body: AccountIdIn):
             raise HTTPException(400, "账号不能为空")
         if idno and not _ID_RE.match(idno):
             raise HTTPException(400, "身份证号格式不正确（应为 15 位或 18 位）")
+        subjects = _metadata_subject_keys(body.case_id, acct)
+        db.x("delete from account_ids where case_id=? and account in (select unnest(?::varchar[]))", [body.case_id, subjects])
         if idno:
             db.x("insert or replace into account_ids(case_id, account, id_no) values (?,?,?)",
                  [body.case_id, acct, idno])
             return {"ok": True, "account": acct, "id_no": idno}
-        db.x("delete from account_ids where case_id = ? and account = ?", [body.case_id, acct])
         return {"ok": True, "account": acct, "cleared": True}
 
 @app.get("/api/account-ids/list")
@@ -1467,8 +1505,11 @@ async def account_photo_set(case_id: int = Form(...), account: str = Form(...),
     h = _photo_hash(acct)
     with _photo_transaction(case_id) as directory:
         directory.mkdir(parents=True, exist_ok=True)
-        for old in directory.glob(f"{h}.*"):
-            old.unlink()
+        subjects = _metadata_subject_keys(case_id, acct)
+        for subject in subjects:
+            for old in directory.glob(f"{_photo_hash(subject)}.*"):
+                old.unlink()
+        db.x("delete from account_photos where case_id=? and account in (select unnest(?::varchar[]))", [case_id, subjects])
         orig = directory / f"{h}.orig{ext}"
         orig.write_bytes(content)
         db.x("insert or replace into account_photos(case_id, account, fname, crop_cx, crop_cy, crop_r) "
@@ -1482,10 +1523,11 @@ def account_photo_clear(body: AccountIdIn):
     if not acct:
         raise HTTPException(400, "账号不能为空")
     with _photo_transaction(body.case_id) as directory:
-        h = _photo_hash(acct)
-        for old in directory.glob(f"{h}.*"):
-            old.unlink()
-        db.x("delete from account_photos where case_id = ? and account = ?", [body.case_id, acct])
+        subjects = _metadata_subject_keys(body.case_id, acct)
+        for subject in subjects:
+            for old in directory.glob(f"{_photo_hash(subject)}.*"):
+                old.unlink()
+        db.x("delete from account_photos where case_id=? and account in (select unnest(?::varchar[]))", [body.case_id, subjects])
     return {"ok": True, "cleared": True}
 
 
@@ -1493,7 +1535,7 @@ def account_photo_clear(body: AccountIdIn):
 def account_photo_orig(case_id: int, account: str):
     """原图（重新裁剪用）"""
     with _case_transaction(case_id):
-        row = db.q("select fname from account_photos where case_id = ? and account = ?",
+        row = db.q("select fname from effective_account_photos where case_id = ? and account = ?",
                    [case_id, account])
         if not row:
             raise HTTPException(404, "无照片")
@@ -1512,7 +1554,7 @@ def account_photo_img(case_id: int, account: str, ring: str = "#4caf7d"):
         if not re.match(r"^#[0-9a-fA-F]{6}$", ring):
             ring = "#4caf7d"
         row = db.q("select fname, updated_at, crop_cx, crop_cy, crop_r "
-                   "from account_photos where case_id = ? and account = ?", [case_id, account])
+                   "from effective_account_photos where case_id = ? and account = ?", [case_id, account])
         if not row:
             raise HTTPException(404, "无照片")
         d = _photo_dir(case_id)
@@ -1526,6 +1568,7 @@ def account_photo_img(case_id: int, account: str, ring: str = "#4caf7d"):
         cr = 0.5 if row[0].get("crop_r") is None else row[0]["crop_r"]
         h = _photo_hash(account)
         stamp = str(row[0].get("updated_at") or "").replace("-", "").replace(":", "").replace(" ", "")
+        stamp += _photo_hash(row[0]["fname"] + "|" + repr((cx, cy, cr)))
         cache = d / f"{h}.{stamp}.{ring.lstrip('#')}.png"
         if not cache.exists():
             try:
@@ -1608,6 +1651,8 @@ class GraphExportView(BaseModel):
     visible_nodes: int = Field(ge=0, le=2_147_483_647, strict=True)
     visible_edges: int = Field(ge=0, le=2_147_483_647, strict=True)
     label_mode: Literal["auto", "all", "focus"]
+    statistics_policy: Optional[Literal["typed-account-evidence-v1", "legacy_mirror_fifo"]] = None
+    resolution_revision: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     relation_filter: Optional[GraphRelationFilter] = None
     amount_width: Optional[GraphAmountWidth] = None
     time_window: Optional[GraphTimeWindow] = None
@@ -1656,7 +1701,7 @@ def export_graph_html(body: GraphHtmlIn):
     data = body.model_dump()
     # Keep older export payloads unchanged when optional display metadata is absent.
     if body.view is not None:
-        for key in ("relation_filter", "amount_width", "time_window"):
+        for key in ("relation_filter", "amount_width", "time_window", "statistics_policy", "resolution_revision"):
             if getattr(body.view, key) is None:
                 data["view"].pop(key, None)
     payload = json.dumps(data, ensure_ascii=False)
@@ -1683,6 +1728,10 @@ def export_graph_html(body: GraphHtmlIn):
             amount_range = "、".join(conditions) if conditions else "不限金额"
             prefix = "当前视图筛选设置" if view.scope == "all" else "筛选条件"
             scope_text += f"；{prefix}：按 {currency} 聚合关系金额，{amount_range}（不同币种不相加）"
+        if view.statistics_policy == evidence_resolution.POLICY:
+            scope_text += "; 统计口径：已接纳账务记录，未证同一经济事件的双方反馈各自保留"
+            if view.resolution_revision:
+                scope_text += f"；解析修订：{view.resolution_revision}"
         labels = {"auto": "自动分级", "all": "全部", "focus": "仅重点"}
         scope_text += f" · 标签：{labels[view.label_mode]}"
         if view.time_window is not None:
@@ -1833,13 +1882,24 @@ def export_tracked(case_id: int, canvas_id: int = 0):
         # sheet applies only when this case has versioned import evidence.
         coverage = import_coverage(case_id) if db.q_raw(
             "select 1 from import_sources where case_id=? and row_kind in ('archive_record','table_record') limit 1", [case_id]) else None
-    return _tracked_workbook(case_id, rows, pending, coverage)
+        resolution = evidence_resolution.summary(case_id)
+        registry = {}
+        if resolution:
+            wanted = {row[side + "_account"] for row in rows for side in ("payer", "payee")
+                      if row[side + "_account"]}
+            if "账号" in pending:
+                wanted.update(pending["账号"])
+            metadata = [{"account": account} for account in wanted]
+            evidence_resolution.decorate_accounts(case_id, metadata)
+            registry = {item["account"]: item for item in metadata}
+    return _tracked_workbook(case_id, rows, pending, coverage, resolution, registry)
 
 
 def _tracked_export_data(case_id, canvas_id):
     rows = db.q_raw("""
         select f.trade_time, f.trade_no, f.payer_name, f.payer_account, f.payer_bank,
-               f.payee_name, f.payee_account, f.payee_bank, f.amount, f.currency, f.summary, f.channel, f.id
+               f.payee_name, f.payee_account, f.payee_bank, f.amount, f.currency, f.summary, f.channel, f.id,
+               f.raw_payer_account,f.raw_payee_account,f.payer_display_account,f.payee_display_account
         from effective_flows f join tracked_flows tf on tf.flow_id = f.id
         where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ? order by f.trade_time
     """, [case_id, canvas_id, case_id])
@@ -1848,11 +1908,24 @@ def _tracked_export_data(case_id, canvas_id):
     return rows, _pending_accounts(case_id, canvas_id)
 
 
-def _tracked_workbook(case_id, rows, pending, coverage):
+def _tracked_workbook(case_id, rows, pending, coverage, current_resolution, registry):
     cols = {"trade_time": "交易时间", "trade_no": "交易流水号",
             "payer_name": "付款户名", "payer_account": "付款账号", "payer_bank": "付款开户行",
             "payee_name": "收款户名", "payee_account": "收款账号", "payee_bank": "收款开户行",
             "amount": "交易金额", "currency": "币种", "summary": "摘要", "channel": "渠道", "id": "流水ID"}
+    if current_resolution:
+        rows = [dict(row) for row in rows]
+        for row in rows:
+            for side in ("payer", "payee"):
+                identifier = row[side + "_account"]
+                row[side + "_entity_id"] = identifier
+                row[side + "_account"] = registry.get(identifier, {}).get("account_number", identifier)
+        cols.update(payer_entity_id="付款实体ID", payee_entity_id="收款实体ID", payer_display_account="付款显示标识", payee_display_account="收款显示标识", raw_payer_account="原始付款账号", raw_payee_account="原始收款账号")
+        pending = pending.copy()
+        if "账号" in pending:
+            pending["实体ID"] = pending["账号"]
+            pending["显示标识"] = pending["账号"].map(lambda key: registry.get(key, {}).get("display_account", key))
+            pending["账号"] = pending["账号"].map(lambda key: registry.get(key, {}).get("account_number", key))
     df = pd.DataFrame(rows).rename(columns=cols)[list(cols.values())]
     # Excel numbers cannot preserve all DECIMAL(18,2) cents or bigint IDs.
     df["交易金额"] = df["交易金额"].map(lambda value: format(value, ".2f"))
@@ -1872,7 +1945,8 @@ def _tracked_workbook(case_id, rows, pending, coverage):
                 ("保留原始流水中退出分析的笔数", coverage.get("excluded_flows", 0)),
                 ("已导入来源资金语义是否完整", "是" if coverage["financial_interpretation_complete"] else "否"),
                 ("未确定记录", "资金效果未确定的记录未计入流水统计；非资金事件单独保留，不计入金额与交易笔数。"),
-            ], columns=["项目", "说明"]).to_excel(w, index=False, sheet_name="统计口径")
+            ] + ([("统计策略", evidence_resolution.POLICY), ("解析修订", current_resolution["revision"]),
+                   ("账务记录口径", "相同有据原件副本共享记录；双方反馈未证明同一经济事件时分别保留，不宣称事件净额。")] if current_resolution else []), columns=["项目", "说明"]).to_excel(w, index=False, sheet_name="统计口径")
         # openpyxl otherwise interprets user strings beginning '=' as formulas
         # (and strings such as '#N/A' as errors). Preserve their literal value.
         for sheet in w.sheets.values():
@@ -1892,8 +1966,9 @@ def _pending_accounts(case_id: int, canvas_id: int = 0) -> "pd.DataFrame":
     排除口径：本案仍有以该账号为 self_account 的流水。主账号角色不代表已取得账簿。
     本方流水不限当前画布；同币种内按交易总额降序。"""
     ledgers = {r["account"] for r in db.q("""
-        select distinct self_account as account from flows
-        where case_id = ? and self_account is not null and self_account <> ''
+        select distinct coalesce(e.entity_id,f.self_account) as account from flows f
+        left join resolved_endpoints e on e.case_id=f.case_id and e.flow_id=f.id and e.role='self'
+        where f.case_id = ? and f.self_account is not null and f.self_account <> ''
     """, [case_id])}
     nodes = db.q_raw("""
         with t as (select f.* from effective_flows f join tracked_flows tf on tf.flow_id = f.id
@@ -1904,8 +1979,8 @@ def _pending_accounts(case_id: int, canvas_id: int = 0) -> "pd.DataFrame":
                sum(case when x.ispay = 0 then 1 else 0 end) as in_cnt,
                coalesce(sum(case when x.ispay = 0 then x.amount else 0 end), 0) as in_amt,
                min(x.trade_time) as tmin, max(x.trade_time) as tmax,
-               max(case when exists(select 1 from main_accounts ma where ma.case_id=? and ma.account=x.account) then 1 else 0 end) as is_main,
-               max(case when exists(select 1 from main_accounts ma where ma.case_id=? and ma.account<>x.account and ma.name<>'' and ma.name=x.name) then 1 else 0 end) as is_same_name
+               max(case when exists(select 1 from effective_main_accounts ma where ma.case_id=? and ma.account=x.account) then 1 else 0 end) as is_main,
+               max(case when exists(select 1 from effective_main_accounts ma where ma.case_id=? and ma.account<>x.account and ma.name<>'' and ma.name=x.name) then 1 else 0 end) as is_same_name
         from (
             select payer_account as account, payer_name as name, 1 as ispay, amount, trade_time, currency from t
             union all

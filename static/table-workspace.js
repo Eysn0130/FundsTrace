@@ -27,7 +27,7 @@
     $('#flowCkAll').indeterminate = count > 0 && count < boxes.length;
   }
   function summary() {
-    const values = fields.filter(([key]) => $('#' + key)?.value.trim()).map(([key, label]) => `${key === 'fAccount' && $('#fAccount').dataset.exactAccount === $('#fAccount').value ? '账号（精确）' : label} ${$('#' + key).value.trim()}`);
+    const values = fields.filter(([key]) => $('#' + key)?.value.trim()).map(([key, label]) => `${key === 'fAccount' && ($('#fAccount').dataset.exactValue || $('#fAccount').dataset.exactAccount) === $('#fAccount').value ? '账号（精确）' : label} ${$('#' + key).value.trim()}`);
     if ($('#fTracked')?.checked) values.push('仅已上图');
     return values.join(' · ') || '全部流水';
   }
@@ -268,7 +268,7 @@
       const field = $('#' + key);
       const picker = window.FundsEntitySearch.mount(field, { kind: 'account', source: 'flows', caseId: () => state.caseId,
         scope: () => state.caseId ? JSON.stringify([String(state.caseId), binding]) : null,
-        onSelect: item => { field.dataset.exactAccount = item.account; updateSummary(); },
+        onSelect: item => { field.dataset.exactAccount = item.account; field.dataset.exactValue = item.value; updateSummary(); },
         onSubmit: () => { void doSearch(1, { locate: true }); } });
       if (picker) entityPickers.push(picker);
     }

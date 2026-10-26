@@ -1,7 +1,9 @@
 export type AccountSource = 'flows' | 'identity';
 export type AccountContext = Readonly<{ caseId: string; name: string; generation: number }>;
 export type AccountRow = Readonly<{
-  account: string; name: string; id_no: string | null; identity_updated_at: string | null; photo_at: string | null;
+  account: string; display_account?: string; account_number?: string; cards?: string[]; names?: string[];
+  bank?: string; kind?: string; status?: string;
+  name: string; id_no: string | null; identity_updated_at: string | null; photo_at: string | null;
   is_main: boolean; main_source: 'auto' | 'manual' | null; main_marked_at: string | null; has_flows: boolean;
 }>;
 export type CurrencyTotal = Readonly<{ currency: string; amount: string }>;
@@ -10,7 +12,7 @@ export type AccountProfile = AccountRow & Readonly<{
   case_id: string; photo: null | { updated_at: string; crop_cx: number; crop_cy: number; crop_r: number };
   cnt: number; in_cnt: number; out_cnt: number; in_totals: CurrencyTotal[]; out_totals: CurrencyTotal[];
   in_amt: string | null; out_amt: string | null; tmin: string | null; tmax: string | null;
-  top_counterparties: ReadonlyArray<{ acct: string; name: string; in_cnt: number; out_cnt: number; in_totals: CurrencyTotal[]; out_totals: CurrencyTotal[] }>;
+  top_counterparties: ReadonlyArray<{ acct: string; display_account?: string; name: string; in_cnt: number; out_cnt: number; in_totals: CurrencyTotal[]; out_totals: CurrencyTotal[] }>;
 }>;
 export type PhotoCrop = Readonly<{ cx: number; cy: number; r: number }>;
 export type AccountMutation =
@@ -34,5 +36,5 @@ export type AccountRegistryApi = Readonly<{
   profile(caseId: string, account: string, signal: AbortSignal): Promise<AccountProfile>;
   photoUrl(caseId: string, account: string, updatedAt: string, original?: boolean): string;
 }>;
-export type AccountSuggestion = Readonly<{ account: string; name: string; id_no: string | null; matched_field: 'account' | 'name' | 'id'; matched_text: string }>;
+export type AccountSuggestion = Readonly<{ account: string; display_account?: string; name: string; id_no: string | null; matched_field: 'account' | 'name' | 'id'; matched_text: string }>;
 export type AccountSuggestions = Readonly<{ case_id: string; source: AccountSource; query: string; items: AccountSuggestion[]; has_more: boolean; next_offset: number | null }>;

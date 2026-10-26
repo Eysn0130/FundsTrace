@@ -1,5 +1,7 @@
 # 导入任务、来源追溯与上传留存
 
+文件夹整包、卡账与子账户证据、节点投影及统一统计口径见 [文件夹导入与来源证据关联](folder-evidence-import.md)。
+
 任务及来源的运营时间统一保存为 UTC，并在 API 中带 `Z`、界面中标注 UTC；这不改变原始交易时间，也不补猜历史交易时区。
 
 本文描述当前独立 FundsTrace 的实现与操作入口，不是 Analytix Host 接入合同。原 `fund-tracker` 目录及业务数据保持不动；桌面安装验证与公开版本见 [桌面交付](desktop-delivery.md)，不修改 Analytix。

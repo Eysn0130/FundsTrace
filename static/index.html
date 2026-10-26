@@ -665,8 +665,9 @@
     <div class="import-dialog-content" id="impContent">
       <div id="impStep1" class="import-file-stage">
         <img class="import-file-icon ui-icon" src="/static/ui-icons/upload.svg" alt="">
-        <h3>选择流水文件</h3><p class="muted">CSV、TXT、TSV、Excel 或 ZIP · 自动识别并处理全部记录 · 导入到<span id="impCaseName">当前案件</span></p>
+        <h3>选择文件或整个文件夹</h3><p class="muted">流水、账户和子账户资料一起导入 · CSV、TXT、TSV、Excel 或 ZIP · 导入到<span id="impCaseName">当前案件</span></p>
         <label class="btn primary import-file-picker" for="impFile">选择文件<input type="file" id="impFile" accept=".csv,.txt,.tsv,.xlsx,.xls,.zip" aria-label="选择流水文件"></label>
+        <label class="btn import-file-picker" for="impDirectory">选择整个文件夹<input type="file" id="impDirectory" webkitdirectory multiple aria-label="选择整个文件夹"></label>
       </div>
       <div class="pbar" id="impPbar" style="display:none"><div class="pfill" id="impPfill"></div><span class="ptext" id="impPtext">准备导入</span></div>
       <div id="impStep2" style="display:none">

@@ -15,8 +15,9 @@ import stat
 import threading
 import tempfile
 import uuid
+import zipfile
 
-from app import db, importer, feedback_import, table_import, table_archive, import_validation
+from app import db, importer, feedback_import, table_import, table_archive, import_validation, evidence_resolution
 from .cases import ServiceError, preview_flow, require_case
 from .main_accounts import mark_automatic
 
@@ -25,12 +26,15 @@ OWNER_TOKEN = uuid.uuid4().hex
 TABLE_PROFILE = table_import.PROFILE
 _extensions = {".csv", ".txt", ".tsv", ".xlsx", ".xls", ".zip"}
 _max_upload = 300 * 1024 * 1024
+JOURNAL_CHUNK_RECORDS = 5_000
+JOURNAL_CHUNK_BYTES = 8 * 1024 * 1024
 _active_stages = ("parsing", "importing")
 _messages = {"parsing": "解析文件…", "importing": "写入流水…", "done": "导入完成",
              "error": "导入失败，请检查文件与列映射后重试", "ready": "等待确认导入"}
 _errors = {"import_interrupted": "上次导入被中断，未完成的数据已回滚，请确认后重试",
            "source_changed": "上传文件校验失败，请重新上传文件",
            "source_missing": "上传文件已清理或不存在，请重新上传文件",
+           "evidence_context_overlap": "相同原件的来源范围发生变化，无法安全衔接，未重复入账；请仅补辅助资料或在新案件导入完整目录",
            "no_importable_rows": "没有可导入的数据行，请检查列映射",
            "import_integrity_failed": "入库一致性校验失败，本次写入已全部回滚；原有数据未改动，请重试或联系维护人员",
            "import_failed": _messages["error"]}
@@ -41,7 +45,55 @@ def _now():
 
 
 def _json(value):
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    from app.import_staging import json_default
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=json_default)
+
+
+class _JournalRecords:
+    """Replay a finalized operation journal without retaining its dictionaries.
+
+    Only commit uses this after binding, cancellation proof and summary capture.
+    Anonymous temporary storage is never a registered or reusable source file.
+    """
+    def __init__(self, records):
+        self._stream = tempfile.TemporaryFile(mode="w+b", prefix="funds-trace-journal-", dir=db.DATA_DIR)
+        self._count = len(records)
+        digest = hashlib.sha256()
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(self._stream.fileno(), 0o600)
+            for index in range(self._count):
+                encoded = (_json(records[index]) + "\n").encode("utf-8")
+                if self._stream.write(encoded) != len(encoded):
+                    raise OSError("Incomplete temporary journal write")
+                digest.update(encoded)
+                # The plan and parser share this same list; leave no second
+                # reference to all finalized source dictionaries during write.
+                records[index] = None
+            records.clear()
+            self._stream.flush()
+            self._digest = digest.digest()
+        except BaseException:
+            self._stream.close()
+            raise
+
+    def __len__(self):
+        return self._count
+
+    def __iter__(self):
+        self._stream.seek(0)
+        digest, count = hashlib.sha256(), 0
+        for encoded in self._stream:
+            digest.update(encoded)
+            count += 1
+            if count > self._count:
+                raise importer.ImportError("来源语义临时快照不完整")
+            yield json.loads(encoded)
+        if count != self._count or digest.digest() != self._digest:
+            raise importer.ImportError("来源语义临时快照不完整")
+
+    def close(self):
+        self._stream.close()
 
 
 def _invalid_file():
@@ -203,6 +255,8 @@ def _bind_feedback_plan(case_id, parsed):
     """Prevent changed auxiliary identity from adding the same physical money."""
     frame, _sheet, _mode, _mapping, rows, stats = parsed
     plan = frame.attrs.get("feedback_plan")
+    if case_id is not None:
+        evidence_resolution.reject_historical_overlap(case_id, plan)
     if (case_id is None or plan is None
             or not (rows or plan.get("cancelled_rows"))):
         return
@@ -369,21 +423,12 @@ def _bind_archive_header_history(case_id, plan, rows, stats, source):
                 if _ordinary_csv_member(plan["profile"], source, member)}
     if not archive and not ordinary:
         return
-    positions = {}
-    for row in rows:
-        record = plan["records"][row["_source_row"] - 1]
-        path = record["member_path"]
-        positions[row["_source_row"]] = (path, members[path]["sha256"], record["source_row"])
-    exact_wanted = set(positions.values())
-    bridge_wanted = {(digest, position) for _path, digest, position in exact_wanted}
-    exact, bridge, v4_exact, v4_bridge, blocked_exact, blocked_bridge = {}, {}, set(), set(), set(), set()
-    different = object()
     fields = (*table_import.FLOW_FIELDS, "self_account", "self_name")
     def signature(row, default_currency=""):
         return (importer._row_key(row, default_currency=default_currency),
                 row.get("self_account") or "", row.get("self_name") or "")
     profiles = sorted(table_import.SUPPORTED_PROFILES | table_archive.SUPPORTED_PROFILES)
-    digests = sorted({digest for _path, digest, _position in exact_wanted})
+    digests = sorted({member["sha256"] for member in members.values()})
     cursor = db.con().execute(f"""
         select i.parser_version,i.filename,i.sheet,i.row_kind,i.sha256,
           r.member_path,m.sha256,m.role,m.encoding,r.source_row,r.disposition,r.reason_code,
@@ -397,7 +442,20 @@ def _bind_archive_header_history(case_id, plan, rows, stats, source):
           and m.sha256 in ({','.join('?' for _ in digests)})
           and (i.parser_version=? or r.disposition in ('imported','duplicate') and f.id is not null)
         """, [case_id, table_import.ROW_KIND, *profiles, *digests, table_archive.PROFILE])
-    while batch := cursor.fetchmany(1024):
+    batch = cursor.fetchmany(1024)
+    if not batch:
+        return
+    # Most new packages have no stored interpretations to compare. Only build
+    # physical-position indexes when the same case has relevant history.
+    exact_wanted = set()
+    for row in rows:
+        record = plan["records"][row["_source_row"] - 1]
+        path = record["member_path"]
+        exact_wanted.add((path, members[path]["sha256"], record["source_row"]))
+    bridge_wanted = {(digest, position) for _path, digest, position in exact_wanted}
+    exact, bridge, v4_exact, v4_bridge, blocked_exact, blocked_bridge = {}, {}, set(), set(), set(), set()
+    different = object()
+    while batch:
         for (profile, filename, sheet, row_kind, source_sha, path, digest, role, encoding,
              position, disposition, reason, fid, *facts) in batch:
             prior_archive = profile in table_archive.SUPPORTED_PROFILES
@@ -423,10 +481,12 @@ def _bind_archive_header_history(case_id, plan, rows, stats, source):
             if fid is not None and disposition in ("imported", "duplicate"):
                 value = signature(dict(zip(fields, facts)))
                 history[key] = value if key not in history else history[key] if history[key] == value else different
+        batch = cursor.fetchmany(1024)
     conflicting = set()
     for row in rows:
         number = row["_source_row"]
-        physical = positions[number]
+        record = plan["records"][number - 1]
+        physical = (record["member_path"], members[record["member_path"]]["sha256"], record["source_row"])
         bridged = physical[1:]
         has_v4 = plan["profile"] == table_archive.PROFILE or (physical in v4_exact if archive else bridged in v4_bridge)
         if not has_v4:
@@ -562,6 +622,8 @@ def _bind_table_plan(case_id, parsed, *, source=None):
     """
     frame, _sheet, _mode, _mapping, rows, stats = parsed
     plan = frame.attrs.get("table_plan")
+    if case_id is not None:
+        evidence_resolution.reject_historical_overlap(case_id, plan)
     if case_id is not None and plan is not None:
         _bind_archive_header_history(case_id, plan, rows, stats, source)
         _bind_stored_cancellation_history(case_id, plan, rows, stats, source)
@@ -619,7 +681,8 @@ def _preview_result(session, parsed, legacy=False):
     plan = frame.attrs.get("feedback_plan")
     if plan is not None:
         result["feedback"] = _feedback_summary(plan)
-        positions = {r["record_no"]: r for r in plan["records"]}
+        wanted = {row["_source_row"] for row in rows[:8]}
+        positions = {r["record_no"]: r for r in plan["records"] if r["record_no"] in wanted}
         for preview, row in zip(result["preview"], rows):
             record = positions[row["_source_row"]]
             preview.update(source_member=record["member_path"], source_row=record["source_row"],
@@ -627,11 +690,21 @@ def _preview_result(session, parsed, legacy=False):
     table_plan = frame.attrs.get("table_plan")
     if table_plan is not None:
         result["table_summary"] = _table_summary(table_plan)
-        positions = {r["record_no"]: r for r in table_plan["records"]}
+        wanted = {row["_source_row"] for row in rows[:8]}
+        positions = {r["record_no"]: r for r in table_plan["records"] if r["record_no"] in wanted}
         for preview, row in zip(result["preview"], rows):
             record = positions[row["_source_row"]]
             preview.update(source_member=record["member_path"], source_row=record["source_row"],
                            source_record_no=record["record_no"])
+    if table_plan is not None or plan is not None:
+        active_plan = table_plan or plan
+        if active_plan["profile"] in evidence_resolution.PROFILES:
+            # All preview samples/counts are captured. Identity replay needs
+            # the complete journal, not another copy of financial staging.
+            # Commit independently reparses the retained original.
+            rows.clear()
+            active_plan.get("cancelled_rows", []).clear()
+        result["resolution"] = evidence_resolution.preview(active_plan)
     if not legacy:
         result["case_id"] = str(session["case_id"])
     return result
@@ -646,6 +719,8 @@ def _table_summary(plan):
             "members": plan["members"], "documents": plan["documents"],
             "mapping_evidence": [{key: str(value) for key, value in entry.items()}
                                  for entry in plan["mapping_evidence"]],
+            "unsupported_attachments": stats["reason_counts"].get("unsupported_attachment", 0),
+            "non_business_attachments": stats["reason_counts"].get("non_business_attachment", 0),
             "unresolved_examples": [{key: record[key] for key in ("member_path", "source_row", "reason_code")}
                                     for record in plan["records"] if record["disposition"] == "unresolved"][:10]}
 
@@ -694,26 +769,51 @@ def _feedback_profile(session):
 
 def _write_feedback_journal(cid, source_id, plan):
     """Persist disposition metadata; original cells stay in the uploaded file."""
-    refs = {r["source_row"]: r["disposition"] for r in db.q_raw(
-        "select source_row,disposition from flow_sources where case_id=? and source_id=?", [cid, source_id])}
-    accepted = {r["record_no"] for r in plan["records"] if r["disposition"] == "accepted"}
-    if accepted != set(refs):
+    refs = {}
+    cursor = db.con().execute("select source_row,disposition from flow_sources where case_id=? and source_id=?", [cid, source_id])
+    while batch := cursor.fetchmany(4096):
+        for position, disposition in batch:
+            if disposition not in {"imported", "duplicate"}:
+                raise importer.ImportError("反馈包来源关联处置无效")
+            refs[position] = "imported" if disposition == "imported" else "duplicate"
+    accepted_count = 0
+    for number, record in enumerate(plan["records"], 1):
+        if record["record_no"] != number:
+            raise importer.ImportError("反馈包来源记录序号不连续")
+        if record["disposition"] == "accepted":
+            if record["record_no"] not in refs:
+                raise importer.ImportError("反馈包来源关联不完整")
+            accepted_count += 1
+    if accepted_count != len(refs):
         raise importer.ImportError("反馈包来源关联不完整")
-    for table, values, columns in (
-        ("import_members", [[cid, source_id, *[m[k] for k in ("member_path", "role", "sha256", "size_bytes", "encoding", "row_count")]]
-                            for m in plan["members"]],
-         ["case_id", "source_id", "member_path", "role", "sha256", "size_bytes", "encoding", "row_count"]),
-        ("import_records", [[cid, source_id, r["record_no"], r["member_path"], r["source_row"], r["record_key"],
-                             refs.get(r["record_no"], r["disposition"]), r["reason_code"], _json(r["details"])]
-                            for r in plan["records"]],
-         ["case_id", "source_id", "record_no", "member_path", "source_row", "record_key", "disposition", "reason_code", "details_json"]),
-    ):
+    columns = ["case_id", "source_id", "member_path", "role", "sha256", "size_bytes", "encoding", "row_count"]
+    members = [[cid, source_id, *[member[key] for key in columns[2:]]] for member in plan["members"]]
+    if members:
+        db.insert_dataframe("import_members", importer.pd.DataFrame(members, columns=columns), columns)
+    del members
+    columns = ["case_id", "source_id", "record_no", "member_path", "source_row", "record_key", "disposition", "reason_code", "details_json"]
+    values, encoded_bytes = [], 0
+    def write_batch():
         frame = importer.pd.DataFrame(values, columns=columns)
-        for offset in range(0, len(frame), 50000):
-            db.insert_dataframe(table, frame.iloc[offset:offset + 50000], columns)
+        db.insert_dataframe("import_records", frame, columns)
+        del frame
+        values.clear()
+    for record in plan["records"]:
+        details = _json(record["details"])
+        size = len(details.encode("utf-8"))
+        if size > JOURNAL_CHUNK_BYTES:
+            raise importer.ImportError("来源语义元数据超出处理范围")
+        if values and (len(values) >= JOURNAL_CHUNK_RECORDS or encoded_bytes + size > JOURNAL_CHUNK_BYTES):
+            write_batch()
+            encoded_bytes = 0
+        values.append([cid, source_id, record["record_no"], record["member_path"], record["source_row"], record["record_key"],
+                       refs.get(record["record_no"], record["disposition"]), record["reason_code"], details])
+        encoded_bytes += size
+    if values:
+        write_batch()
 
 
-async def _upload(case_id, file, surface):
+async def _upload(case_id, file, surface, *, resolve_evidence=False):
     cid = _cid(case_id) if case_id is not None else None
     filename = Path((file.filename or "transactions.csv").replace("\\", "/")).name
     extension = Path(filename).suffix
@@ -730,9 +830,12 @@ async def _upload(case_id, file, surface):
     # Preview parsing can be lengthy. Keep its already-buffered input in memory
     # until it succeeds, so exiting during parsing cannot orphan an original.
     with io.BytesIO(content) as source:
-        table_profile = ((table_archive.PROFILE if table_archive.should_parse(source) else None)
-                         if suffix == ".zip" else table_import.XLS_PROFILE if suffix == ".xls" else TABLE_PROFILE)
-        parsed = _parse(source, suffix=suffix, table_profile=table_profile)
+        if suffix == ".zip":
+            resolve_evidence = resolve_evidence or evidence_resolution.complete_family(source)
+        table_profile = (((table_archive.EVIDENCE_PROFILE if resolve_evidence else table_archive.PROFILE) if not (resolve_evidence and feedback_import.is_family(source)) and table_archive.should_parse(source) else None)
+                         if suffix == ".zip" else table_import.XLS_PROFILE if suffix == ".xls" else table_import.EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
+        parsed = _parse(source, suffix=suffix, table_profile=table_profile,
+                        feedback_profile=feedback_import.EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None)
     import_id = uuid.uuid4().hex
     directory = _directory(create=True)
     path = directory / f"{import_id}{suffix}"
@@ -744,6 +847,7 @@ async def _upload(case_id, file, surface):
         now = _now()
         session = {"case_id": cid, "import_id": import_id, "filename": filename,
                    "sha256": hashlib.sha256(content).hexdigest()}
+        evidence_resolution.operation_context(parsed, session["sha256"])
         with db.transaction():
             if cid is not None:
                 _cid(cid)
@@ -757,6 +861,7 @@ async def _upload(case_id, file, surface):
                   _json({"_table_profile": parsed[0].attrs["table_plan"]["profile"]}) if "table_plan" in parsed[0].attrs
                   else _json({"_feedback_profile": parsed[0].attrs["feedback_plan"]["profile"]}) if suffix == ".zip" else None,
                   now, now, now + dt.timedelta(days=7)])
+        evidence_resolution.operation_context(parsed, session["sha256"])
         result = _preview_result(session, parsed, legacy=surface == "legacy")
         result["automatic"] = True
         return result
@@ -772,6 +877,44 @@ async def upload(case_id, file):
 
 async def legacy_upload(file, case_id=None):
     return await _upload(case_id, file, "legacy")
+
+
+async def upload_directory(case_id, files, *, surface="v1"):
+    """Preserve relative paths/bytes in one registered original before preview.
+
+    Starlette admits at most 1000 multipart files. Use the same explicit bound
+    here; larger exports can be supplied as a bounded ZIP archive instead.
+    """
+    _cid(case_id)
+    if not files or len(files) > 1000:
+        raise ServiceError(400, "directory_file_count", "目录一次支持1至1000个文件；更大目录请使用ZIP")
+    names, total = set(), 0
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+        for file in sorted(files, key=lambda item: item.filename or ""):
+            name = file.filename or ""
+            if name.endswith("/"):
+                raise ServiceError(400, "unsafe_directory_path", "目录文件必须有明确的相对文件名")
+            try:
+                name = table_archive._path(name)
+            except table_import.TableImportError:
+                raise ServiceError(400, "unsafe_directory_path", "目录包含不安全或不明确的相对路径") from None
+            if name in names:
+                raise ServiceError(400, "duplicate_directory_path", "目录包含重复相对路径")
+            names.add(name)
+            if len(name.encode("utf-8")) > 4096 or name.endswith("/"):
+                raise ServiceError(400, "unsafe_directory_path", "目录相对路径超出支持范围")
+            # Every selected file is retained. Unsupported attachments receive
+            # an explicit disposition and a financial coverage gap.
+            payload = await file.read(min(table_archive.MAX_MEMBER_BYTES, _max_upload - total) + 1)
+            total += len(payload)
+            if len(payload) > table_archive.MAX_MEMBER_BYTES or total > _max_upload:
+                raise ServiceError(400, "file_too_large", "目录原件累计超过300MB或单文件超过256MB，请分包上传")
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(info, payload)
+    from fastapi import UploadFile
+    return await _upload(case_id, UploadFile(io.BytesIO(buffer.getvalue()), filename="目录原件.zip"), surface, resolve_evidence=True)
 
 
 def _repreview(case_id, import_id, body, surface):
@@ -792,6 +935,7 @@ def _repreview(case_id, import_id, body, surface):
                             body.mapping if not is_table or overrides else None, suffix=session["suffix"],
                             feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
                             table_profile=_table_profile(session))
+        evidence_resolution.operation_context(parsed, session["sha256"])
         _bind_feedback_plan(session["case_id"], parsed)
         _bind_table_plan(session["case_id"], parsed, source=session)
         now = _now()
@@ -851,7 +995,7 @@ def _receipt(raw):
             "bad_examples": raw.get("bad_examples", []), "self_accounts": raw.get("self_accounts", []),
             "self_accounts_count": raw.get("self_accounts_count", 0), "main_matched": raw.get("main_matched", []),
             "accounts_in_batch": raw.get("accounts_in_batch", 0), "main_detected": raw.get("main_detected", [])}
-    for key in ("feedback", "table_summary", "source_id"):
+    for key in ("feedback", "table_summary", "source_id", "resolution"):
         if key in raw:
             result[key] = raw[key]
     return result
@@ -882,6 +1026,7 @@ def _standalone_csv_keys(plan, rows):
 
 
 def _run(import_id):
+    journal_records = None
     try:
         with db._lock:
             found = db.q_raw("select * from import_sessions where import_id=? and owner_token=? and stage='parsing'",
@@ -898,6 +1043,7 @@ def _run(import_id):
                 request["mapping"] if not is_table or overrides else None, suffix=session["suffix"],
                 feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
                 table_profile=_table_profile(session))
+            evidence_resolution.operation_context(parsed, session["sha256"])
             _frame, sheet, mode, mapping, rows, stats = parsed
         plan = _frame.attrs.get("feedback_plan")
         table_plan = _frame.attrs.get("table_plan")
@@ -912,7 +1058,7 @@ def _run(import_id):
                  [processed_total, _now(), import_id])
         # One shared transaction includes the receipt, provenance and account
         # changes. Restart can never observe durable rows without their receipt.
-        with db.transaction():
+        with db.import_transaction():
             current = _session(session["case_id"], import_id, session["surface"])
             if current["owner_token"] != OWNER_TOKEN or current["stage"] != "importing":
                 return
@@ -920,18 +1066,40 @@ def _run(import_id):
             _bind_table_plan(session["case_id"], parsed, source=session)
             manifest = import_validation.table_manifest(table_plan, rows) if table_plan is not None else None
             standalone_keys = (_standalone_csv_keys(table_plan, rows)
-                               if table_plan is not None and table_plan["profile"] in table_archive.SUPPORTED_PROFILES else None)
+                               if table_plan is not None and table_plan["profile"] in table_archive.SUPPORTED_PROFILES
+                               and table_plan["profile"] != table_archive.EVIDENCE_PROFILE else None)
             provenance = {"source_id": import_id, "filename": session["filename"], "sha256": session["sha256"],
                           "size_bytes": session["size_bytes"], "mode": mode, "mapping": mapping,
                           "sheet": sheet, "parser_version": (plan or table_plan)["profile"] if plan or table_plan else getattr(importer, "PARSER_VERSION", "funds-trace-import-v1"),
                           "row_kind": _frame.attrs.get("source_row_kind", "unknown")}
+            summary_snapshot = {}
+            if provenance["parser_version"] in evidence_resolution.PROFILES:
+                if plan is not None:
+                    summary_snapshot["feedback"] = _feedback_summary(plan)
+                if table_plan is not None:
+                    summary_snapshot["table_summary"] = _table_summary(table_plan)
+                # All mutations/proofs of records are finished. Their exact
+                # read-only replay no longer overlaps the financial writer.
+                journal_records = _JournalRecords((plan or table_plan)["records"])
+                (plan or table_plan)["records"] = journal_records
             receipt = importer.commit_rows(session["filename"], mode, rows, stats,
                                            case_id=session["case_id"], provenance=provenance,
                                            standalone_csv_keys=standalone_keys)
             receipt["source_id"] = import_id
+            main_rows = rows
+            if provenance["parser_version"] in evidence_resolution.PROFILES:
+                db.x("insert into evidence_sources(case_id,source_id,batch_id,active) values (?,?,?,true)", [session["case_id"], import_id, receipt["batch_id"]])
+                # Keep only the first self-name declaration needed later; the
+                # immutable manifest and full journal still verify every fact.
+                main_rows = [{"self_account": item["account"], "self_name": item.get("name") or ""}
+                             for item in receipt.get("self_accounts", [])]
+                receipt.update(summary_snapshot)
+                rows.clear()
+                (plan or table_plan).get("cancelled_rows", []).clear()
             if plan is not None:
                 _write_feedback_journal(session["case_id"], import_id, plan)
-                receipt["feedback"] = _feedback_summary(plan)
+                if "feedback" not in receipt:
+                    receipt["feedback"] = _feedback_summary(plan)
                 receipt["feedback"]["excluded_flows"] = db.q_raw("""
                     select (select count(*) from flows where case_id=?) -
                            (select count(*) from effective_flows where case_id=?) n
@@ -939,14 +1107,25 @@ def _run(import_id):
             if table_plan is not None:
                 _write_feedback_journal(session["case_id"], import_id, table_plan)
                 import_validation.verify_table_write(session["case_id"], import_id, table_plan["profile"], manifest)
-                receipt["table_summary"] = _table_summary(table_plan)
+                del manifest
+                if "table_summary" not in receipt:
+                    receipt["table_summary"] = _table_summary(table_plan)
                 receipt["table_summary"].update(
                     excluded_flows=db.q_raw("""select (select count(*) from flows where case_id=?) -
                         (select count(*) from effective_flows where case_id=?) n""",
                         [session["case_id"], session["case_id"]])[0]["n"],
                     effective_added=db.q_raw("select count(*) n from effective_flows where case_id=? and batch_id=?",
                                              [session["case_id"], receipt["batch_id"]])[0]["n"])
-            _mark_mains(session["case_id"], rows, receipt, request)
+            _mark_mains(session["case_id"], main_rows, receipt, request)
+            if provenance["parser_version"] in evidence_resolution.PROFILES:
+                # Provenance/write fidelity and the durable receipt summary are
+                # now fixed. Release parser staging before replaying the journal.
+                rows.clear()
+                (plan or table_plan)["records"] = []
+                (plan or table_plan).get("cancelled_rows", []).clear()
+                journal_records.close()
+                journal_records = None
+            receipt["resolution"] = evidence_resolution.rebuild(session["case_id"])
             receipt = _receipt(receipt)
             db.x("""update import_sessions set stage='done',done=?,total=?,result_json=?,error_code=null,
                       updated_at=?,expires_at=? where import_id=? and owner_token=?""",
@@ -959,6 +1138,9 @@ def _run(import_id):
             db.x("""update import_sessions set stage='error',done=0,result_json=null,error_code=?,updated_at=?,expires_at=?
                       where import_id=? and owner_token=? and stage in ('parsing','importing')""",
                  [code, now, now + dt.timedelta(days=30), import_id, OWNER_TOKEN])
+    finally:
+        if journal_records is not None:
+            journal_records.close()
 
 
 def _commit(case_id, import_id, body, surface):

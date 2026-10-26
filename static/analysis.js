@@ -293,7 +293,7 @@ function renderResultCategory(name) {
   if (!renderedAlgorithms.includes(name) || !renderedResults?.[name]) return;
   activeResult = name; resultRevision += 1; disposeResultTables();
   const res = renderedResults, value = res[name];
-  const subjects = res.subjects?.length && name !== 'paths' ? ` · 对象：${esc(res.subjects.join('、'))}` : '';
+  const subjects = res.subjects?.length && name !== 'paths' ? ` · 对象：${esc((res.display_subjects || res.subjects).join('、'))}` : '';
   $('#analysisScopeNote').textContent = name === 'paths' ? '按交易边累加，非去重本金。' : '';
   let content = '';
   const boundedScope = value.truncated ? '搜索或显示已达上限；排序仅覆盖本次找到的有界候选，未显示结果不代表不存在。' : '排序仅覆盖本次有界搜索返回的候选。';
@@ -315,18 +315,18 @@ function renderResultCategory(name) {
   if (name === 'fast_flows') content = card(`快进快出 · ${esc(value.window_minutes)} 分钟内 ±${esc(percent(value.tolerance))}${subjects}`, '短窗口内按币种配对转入与转出，差额与时间仅作为复核线索。',
     value.pairs.length ? tbl(['过账账户', '转入', '短窗内转出', '转出合计 / 差额', '最大延迟', '明细'], value.pairs.map(item => {
       const ids = [item.in_flow.id, ...item.out_flows.map(flow => flow.id)].map(String).join(',');
-      return `<tr data-ids="${esc(ids)}"><td class="mono">${esc(item.account)}</td><td class="amt">${money(item.in_flow.amount, item.in_flow.currency)}<br><span class="hint">${esc(item.in_flow.from || '')} ${esc(String(item.in_flow.time || '').slice(0, 19))}</span></td><td>${item.out_flows.map(flow => `${money(flow.amount, flow.currency)} → ${esc(flow.to || flow.to_acct)}`).join('<br>')}</td><td class="amt">${money(item.out_total, item.currency)}<br><span class="hint">差额 ${money(item.diff, item.currency)}</span></td><td>${esc(item.max_delay_min)} 分钟</td><td class="analysis-table-action"><button class="btn small btn-detail" type="button" aria-expanded="false">查看明细</button></td></tr>`;
+      return `<tr data-ids="${esc(ids)}"><td class="mono">${esc(item.display_account || item.account)}</td><td class="amt">${money(item.in_flow.amount, item.in_flow.currency)}<br><span class="hint">${esc(item.in_flow.from_display_account || item.in_flow.from || '')} ${esc(String(item.in_flow.time || '').slice(0, 19))}</span></td><td>${item.out_flows.map(flow => `${money(flow.amount, flow.currency)} → ${esc(flow.to_display_account || flow.to_acct_display_account || flow.to || flow.to_acct)}`).join('<br>')}</td><td class="amt">${money(item.out_total, item.currency)}<br><span class="hint">差额 ${money(item.diff, item.currency)}</span></td><td>${esc(item.max_delay_min)} 分钟</td><td class="analysis-table-action"><button class="btn small btn-detail" type="button" aria-expanded="false">查看明细</button></td></tr>`;
     }).join(''), '快进快出') : '<div class="analysis-empty">当前参数下未发现快进快出配对</div>', value.count);
   if (name === 'outliers') content = card(`离群画像 · 偏离 > ${esc(value.sigma)}σ${subjects}`, '按币种比较账户与案件基准；均值与 Z 分数为近似统计值。',
-    value.outliers.length ? tbl(['账户', '币种', '异常维度', '数值', 'Z 分数（近似）'], value.outliers.map(item => `<tr><td>${esc(item.name || '')}<br><span class="mono">${esc(item.account)}</span></td><td>${esc(item.currency || '未知币种')}</td><td>${esc(dimensionLabel(item))}</td><td>${dimensionValue(item)}</td><td>${esc(item.z)}</td></tr>`).join(''), '离群画像') : '<div class="analysis-empty">当前参数下未发现离群账户</div>', value.count);
+    value.outliers.length ? tbl(['账户', '币种', '异常维度', '数值', 'Z 分数（近似）'], value.outliers.map(item => `<tr><td>${esc(item.name || '')}<br><span class="mono">${esc(item.display_account || item.account)}</span></td><td>${esc(item.currency || '未知币种')}</td><td>${esc(dimensionLabel(item))}</td><td>${dimensionValue(item)}</td><td>${esc(item.z)}</td></tr>`).join(''), '离群画像') : '<div class="analysis-empty">当前参数下未发现离群账户</div>', value.count);
   if (name === 'paths') {
     const timeOrder = value.order === 'time';
     const matched = (label, accounts) => accounts && accounts.length > 1
       ? `${esc(label)}（户名匹配 ${esc(accounts.length)} 个账号）` : esc(label);
-    content = card(`${matched(value.src_name || value.src, value.src_accounts)} → ${matched(value.dst_name || value.dst, value.dst_accounts)} · 最大 ${esc(value.max_hops)} 跳 · ${timeOrder ? '时间优先' : '金额优先'}`, boundedScope,
+    content = card(`${matched(value.src_name || value.src_display_account || value.src, value.src_accounts)} → ${matched(value.dst_name || value.dst_display_account || value.dst, value.dst_accounts)} · 最大 ${esc(value.max_hops)} 跳 · ${timeOrder ? '时间优先' : '金额优先'}`, boundedScope,
       value.paths.length ? tbl(['序号', '交易边金额合计', '跳数', '首跳 → 末跳', '路径'], value.paths.map((item, index) => {
         const span = `${esc(item.start_time || '—')} → ${esc(item.end_time || '—')}${timeOrder ? (item.continuous ? '（时序连续）' : '（时序不连续）') : ''}`;
-        return `<tr><td class="analysis-sequence">${String(index + 1).padStart(2, '0')}</td><td class="amt">${money(item.total, item.currency)}</td><td class="analysis-hops">${esc(item.hops)} 跳</td><td>${span}</td><td>${item.path.map(leg => `<span class="analysis-path-leg">${esc(leg.from_name || leg.from)}<span class="hint"> —${money(leg.amount, leg.currency)}→ </span>${esc(leg.to_name || leg.to)}</span>`).join('')}</td></tr>`;
+        return `<tr><td class="analysis-sequence">${String(index + 1).padStart(2, '0')}</td><td class="amt">${money(item.total, item.currency)}</td><td class="analysis-hops">${esc(item.hops)} 跳</td><td>${span}</td><td>${item.path.map(leg => `<span class="analysis-path-leg">${esc(leg.from_name || leg.from_display_account || leg.from)}<span class="hint"> —${money(leg.amount, leg.currency)}→ </span>${esc(leg.to_name || leg.to_display_account || leg.to)}</span>`).join('')}</td></tr>`;
       }).join(''), '路径追踪') : '<div class="analysis-empty">当前有界搜索未返回可达路径</div>');
   }
   $('#results').innerHTML = content; $('#results').setAttribute('aria-labelledby', 'resultTab-' + name);
@@ -338,7 +338,7 @@ function render(result, algorithms) {
   renderResultCategory(preferred);
 }
 function detailTable(rows) {
-  return `<table class="analysis-table mini"><thead><tr>${['时间', '付款方', '收款方', '金额', '余额', '摘要'].map(label => `<th scope="col">${label}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr><td class="nowrap">${esc(String(row.trade_time).slice(0, 19).replace('T', ' '))}</td><td>${esc(row.payer_name || '')}<br><span class="mono">${esc(row.payer_account)}</span></td><td>${esc(row.payee_name || '')}<br><span class="mono">${esc(row.payee_account)}</span></td><td class="amt">${money(row.amount, row.currency)}</td><td class="amt">${row.balance != null ? money(row.balance, row.currency) : '—'}</td><td>${esc(row.summary || '')}</td></tr>`).join('')}</tbody></table>`;
+  return `<table class="analysis-table mini"><thead><tr>${['时间', '付款方', '收款方', '金额', '余额', '摘要'].map(label => `<th scope="col">${label}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr><td class="nowrap">${esc(String(row.trade_time).slice(0, 19).replace('T', ' '))}</td><td>${esc(row.payer_name || '')}<br><span class="mono">${esc(row.payer_display_account || row.payer_account)}</span></td><td>${esc(row.payee_name || '')}<br><span class="mono">${esc(row.payee_display_account || row.payee_account)}</span></td><td class="amt">${money(row.amount, row.currency)}</td><td class="amt">${row.balance != null ? money(row.balance, row.currency) : '—'}</td><td>${esc(row.summary || '')}</td></tr>`).join('')}</tbody></table>`;
 }
 async function toggleAnalysisDetail(button) {
   if (button.disabled || analysisBusy() || confirmation || !lastRun || !isCurrentAnalysis(lastRun) || analysisPhase !== 'done') return;
