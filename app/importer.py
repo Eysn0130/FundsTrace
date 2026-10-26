@@ -964,4 +964,6 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
             mains = {r["account"] for r in db.q("select account from main_accounts where case_id = ?", [case_id])}
             st["main_matched"] = sorted(batch_accts & mains)
             st["accounts_in_batch"] = len(batch_accts)
+        from . import analysis_snapshot
+        analysis_snapshot.invalidate(case_id)
         return st

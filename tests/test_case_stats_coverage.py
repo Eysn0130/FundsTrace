@@ -30,11 +30,15 @@ def assert_stats(client, cid, *, flows, accounts, batches, total, currency, tota
     expected = {"case_id": str(cid), "flows": flows, "accounts": accounts, "batches": batches,
                 "amount_total": total, "currency": currency, "amount_totals": totals,
                 "import_coverage": coverage}
-    assert response.json() == expected
+    value = response.json()
+    revision = value.pop("analysis_revision")
+    assert len(revision) == 32
+    assert value.pop("event_summary") is None
+    assert value == expected
     legacy = client.get("/api/stats", params={"case_id": cid})
     assert legacy.status_code == 200, legacy.text
     assert legacy.json() == {"flows": flows, "accounts": accounts, "batches": batches,
-                             "import_coverage": coverage}
+                             "import_coverage": coverage, "analysis_revision": revision, "event_summary": None}
     return expected
 
 
@@ -369,7 +373,10 @@ def test_public_stats_classifies_wide_journal_notes_before_coverage_windows(
             (other, 1, "9.99", "USD", 0, coverage_value(unresolved=1))):
         response = client.get(f"/api/v1/cases/{case_id}/stats")
         assert response.status_code == 200, response.text
-        assert response.json() == {
+        value = response.json()
+        assert len(value.pop("analysis_revision")) == 32
+        assert value.pop("event_summary") is None
+        assert value == {
             "case_id": str(case_id), "flows": count, "accounts": 2, "batches": batches,
             "amount_total": amount, "currency": currency,
             "amount_totals": [{"currency": currency, "amount": amount}],
@@ -444,7 +451,10 @@ def test_public_stats_does_not_hash_build_the_full_wide_journal(client, database
     monkeypatch.setattr(database, "q_raw", capture_coverage)
     response = client.get(f"/api/v1/cases/{cid}/stats")
     assert response.status_code == 200, response.text
-    assert response.json() == {
+    value = response.json()
+    assert len(value.pop("analysis_revision")) == 32
+    assert value.pop("event_summary") is None
+    assert value == {
         "case_id": str(cid), "flows": size, "accounts": 2, "batches": 0,
         "amount_total": "5248.00", "currency": "CNY",
         "amount_totals": [{"currency": "CNY", "amount": "5248.00"}],
@@ -537,6 +547,8 @@ def test_public_stats_keeps_money_and_resolution_in_one_locked_read(
                     return
                 database.x("update flows set amount=2.50 where case_id=? and id=?", [cid, flow_id])
                 database.x("update resolution_state set revision=? where case_id=?", [after["revision"], cid])
+                from app import analysis_snapshot
+                analysis_snapshot.invalidate(cid)
         except BaseException as error:
             writer_errors.append(error)
         finally:
@@ -582,7 +594,11 @@ def test_public_stats_keeps_money_and_resolution_in_one_locked_read(
                     "statistics_policy": evidence_resolution.POLICY,
                     "resolution_revision": summary["revision"]}
 
-        assert [first.json(), second.json()] == [expected("1.25", before), expected("2.50", after)]
+        values = [first.json(), second.json()]
+        generations = [value.pop("analysis_revision") for value in values]
+        assert all(len(revision) == 32 for revision in generations) and generations[0] != generations[1]
+        assert all(value.pop("event_summary") is None for value in values)
+        assert values == [expected("1.25", before), expected("2.50", after)]
     finally:
         stop.set()
         coverage_ready.set()

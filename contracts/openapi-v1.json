@@ -228,6 +228,17 @@
             "title": "Amount Totals",
             "type": "array"
           },
+          "analysis_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Revision"
+          },
           "batches": {
             "title": "Batches",
             "type": "integer"
@@ -247,6 +258,16 @@
               }
             ],
             "title": "Currency"
+          },
+          "event_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EventSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "flows": {
             "title": "Flows",
@@ -456,6 +477,83 @@
         "title": "CurrencyAmount",
         "type": "object"
       },
+      "EventSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "complete_event_total": {
+            "title": "Complete Event Total",
+            "type": "boolean"
+          },
+          "confirmed_amount_totals": {
+            "items": {
+              "$ref": "#/components/schemas/CurrencyAmount"
+            },
+            "title": "Confirmed Amount Totals",
+            "type": "array"
+          },
+          "confirmed_entries": {
+            "title": "Confirmed Entries",
+            "type": "integer"
+          },
+          "confirmed_events": {
+            "title": "Confirmed Events",
+            "type": "integer"
+          },
+          "conflict_entries": {
+            "title": "Conflict Entries",
+            "type": "integer"
+          },
+          "excluded_reference_entries": {
+            "title": "Excluded Reference Entries",
+            "type": "integer"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "observed_entries": {
+            "title": "Observed Entries",
+            "type": "integer"
+          },
+          "policy": {
+            "title": "Policy",
+            "type": "string"
+          },
+          "reference_observations": {
+            "title": "Reference Observations",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "unknown_entries": {
+            "title": "Unknown Entries",
+            "type": "integer"
+          },
+          "unresolved_reference_observations": {
+            "title": "Unresolved Reference Observations",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "policy",
+          "revision",
+          "confirmed_events",
+          "confirmed_entries",
+          "conflict_entries",
+          "unknown_entries",
+          "observed_entries",
+          "reference_observations",
+          "excluded_reference_entries",
+          "unresolved_reference_observations",
+          "confirmed_amount_totals",
+          "complete_event_total",
+          "note"
+        ],
+        "title": "EventSummary",
+        "type": "object"
+      },
       "FeedbackExample": {
         "additionalProperties": false,
         "properties": {
@@ -631,6 +729,17 @@
             "title": "Amount",
             "type": "string"
           },
+          "analysis_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Revision"
+          },
           "balance": {
             "anyOf": [
               {
@@ -666,6 +775,22 @@
           },
           "currency": {
             "title": "Currency",
+            "type": "string"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "event_state": {
+            "default": "unknown",
+            "title": "Event State",
             "type": "string"
           },
           "id": {

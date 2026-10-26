@@ -73,6 +73,17 @@ def assert_edge(view, count, amount):
     assert edge["amount_totals"] == [{"currency": "CNY", "amount": amount}]
 
 
+def assert_restored_state(before, restored):
+    original_revision = before["stats"]["analysis_revision"]
+    restored_revision = restored["stats"]["analysis_revision"]
+    assert isinstance(original_revision, str) and len(original_revision) == 32
+    assert isinstance(restored_revision, str) and len(restored_revision) == 32
+    assert restored_revision != original_revision
+    # Only the new case's analysis generation changes. All financial facts,
+    # source journals, relationships and every other statistic remain exact.
+    assert {**restored, "stats": {**restored["stats"], "analysis_revision": original_revision}} == before
+
+
 @pytest.mark.parametrize("profile", ["funds-trace-table-v5", "funds-trace-table-v17"])
 def test_unknown_owner_import_append_and_restore_preserve_original_facts_and_sources(
         client, database, make_case, monkeypatch, profile):
@@ -127,7 +138,7 @@ def test_unknown_owner_import_append_and_restore_preserve_original_facts_and_sou
     restored = import_package(client, content)
     assert restored.status_code == 200, restored.text
     restored_id = restored.json()["case_id"]
-    assert case_state(client, database, restored_id) == before
+    assert_restored_state(before, case_state(client, database, restored_id))
     assert case_state(client, database, case_id) == before
     assert_edge(graph(client, restored_id), 3, "300.00")
     restored_named = database.q("select id from canvases where case_id=? and name=?", [
@@ -180,7 +191,7 @@ def test_historical_package_recomputes_unknown_owner_graph_without_rewriting_his
     restored = import_package(client, content)
     assert restored.status_code == 200, restored.text
     restored_id = restored.json()["case_id"]
-    assert case_state(client, database, restored_id) == before
+    assert_restored_state(before, case_state(client, database, restored_id))
     assert case_state(client, database, case_id) == before
     assert_edge(graph(client, restored_id), 2, "200.00")
     restored_named = database.q("select id from canvases where case_id=? and name=?", [

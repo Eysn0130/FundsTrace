@@ -114,6 +114,8 @@ def test_precise_identifiers_amounts_stats_filters_and_stable_pagination(client,
     ]
     database.executemany("insert into flows(id,case_id,batch_id,trade_no,trade_time,payer_account,payee_account,amount,balance,summary) values (?,?,?,?,?,?,?,?,?,?)", values)
     stats = client.get(f"/api/v1/cases/{cid}/stats").json()
+    assert len(stats.pop("analysis_revision")) == 32
+    assert stats.pop("event_summary") is None
     assert stats == {"case_id": str(cid), "flows": 3, "accounts": 5, "batches": 1,
                      "amount_total": "10000000000000001.00", "currency": "CNY",
                      "amount_totals": [{"currency": "CNY", "amount": "10000000000000001.00"}],

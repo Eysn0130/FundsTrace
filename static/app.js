@@ -327,7 +327,7 @@ function updateHeader() {
     coverageNote.hidden = !s.resolution && !hasCoverageGaps;
     $('#statLine').title = coverage?.scope === 'source_reported_flows' ? '金额按已接纳来源流水，不代表结算净额；导入明细与处理口径见案件与导入。' : '';
     coverageNote.textContent = !hasCoverageGaps ? '' : `${fmtCount(coverage?.unresolved_records ?? 0)} 条资金含义未确定的来源条目未计入统计；金额按已接纳来源流水，不代表结算净额。已配对冲正/撤销 ${fmtCount(coverage?.cancelled_records ?? 0)} 条（双方均不计有效资金）。${(coverage?.excluded_flows ?? 0) > 0 ? `本案另有 ${fmtCount(coverage.excluded_flows)} 笔历史留存流水已退出有效统计。` : ''}无资金变动的 ${fmtCount(coverage?.non_monetary_records ?? 0)} 条记录已单独保存。`;
-    if (s.resolution) coverageNote.textContent = `画布汇总已上图且两端标识完整的流水，与流水表同属账务记录口径；双方记录尚未认定为同一资金事件。${s.resolution.unresolved_endpoints ? ` ${fmtCount(s.resolution.unresolved_endpoints)} 个端点的账户关系尚未确定。` : ''} ${coverageNote.textContent}`;
+    if (s.resolution) coverageNote.textContent = `画布与流水表均为账务记录口径，记录合计不等于本金。${s.event_summary ? `已关联 ${fmtCount(s.event_summary.confirmed_events)} 个事件；未确定 ${fmtCount(s.event_summary.unknown_entries)} 条、冲突 ${fmtCount(s.event_summary.conflict_entries)} 条。已关联事件金额另列，不代表全案事件总额。` : '双方记录缺少同笔事件证据。'}${s.resolution.unresolved_endpoints ? ` ${fmtCount(s.resolution.unresolved_endpoints)} 个端点的账户关系尚未确定。` : ''} ${coverageNote.textContent}`;
   }
   const empty = (s.flows || 0) === 0;
   $('#emptyHint').style.display = empty ? 'flex' : 'none';
@@ -497,6 +497,7 @@ function graphImageExportLines() {
   if(filter.active)lines.push(`关系筛选：${filter.currency||'未标注币种'} · ${filter.min||'不限下界'} — ${filter.max||'不限上界'}；仅筛选显示，追踪数据未删除`);
   if(encoding)lines.push(`金额→线宽：${encoding.currency||'未标注币种'} ${encoding.min_amount??'—'} — ${encoding.max_amount??'—'} · sqrt · ${window.FundsInvestigation?.active?.()?'当前时间窗口内':''}全追踪图统一比例 1.5–7`);
   const temporal=window.FundsInvestigation?.description?.();if(temporal)lines.push(temporal);
+  if(state.lastGraph.analysis_revision)lines.push(`分析修订：${state.lastGraph.analysis_revision}；边上记录金额与已关联事件金额分别列示，均不表示来源本金`);
   return lines;
 }
 function newGraphView(labelMode) {
@@ -2832,7 +2833,14 @@ function fmtEdgeSpan(a, b) {
 function edgeLabel(e) {
   const lines = [];
   const s = state.edgeLabels;
-  if (s.has('money')) lines.push(`${fmtCount(e.cnt)}笔·${totalLabel(e.amount_totals, e.total, e.currencies?.[0])}`);
+  if (s.has('money')) {
+    lines.push(`${fmtCount(e.cnt)}${e.event_summary?'条记录':'笔'}·${totalLabel(e.amount_totals, e.total, e.currencies?.[0])}`);
+    if(e.event_summary) {
+      const event=e.event_summary;
+      if(event.confirmed_events)lines.push(`已关联${fmtCount(event.confirmed_events)}事件·${totalLabel(event.confirmed_amount_totals,null)}`);
+      if(event.unknown_entries || event.conflict_entries)lines.push(`事件未定${fmtCount(event.unknown_entries)}条·冲突${fmtCount(event.conflict_entries)}条`);
+    }
+  }
   else if (s.has('currency') && e.currencies?.length) lines.push(e.currencies.join(' / '));
   if (s.has('summary')) {
     const summaries=e.summaries || [], full=summaries.slice(0,2).join(' / '), chars=Array.from(full);
@@ -4485,8 +4493,9 @@ function renderSuggestions(r) {
   const suggestions = r.suggestions || {};
   const item = suggestion => {
     const ids = (suggestion.ids || []).map(String).filter(id => visibleIds.has(id));
-    return `<div class="sg-entry"><button class="sg-item" type="button" data-ids="${esc(ids.join(','))}" aria-pressed="false" aria-label="勾选推荐流水：${esc(suggestion.name || '未知户名')} ${esc(suggestion.account)}">
-      <span class="sg-main"><b>${esc(suggestion.name || '未知户名')}</b><span class="mono">${esc(suggestion.account)}</span></span>
+    const displayAccount = suggestion.display_account || suggestion.account;
+    return `<div class="sg-entry"><button class="sg-item" type="button" data-ids="${esc(ids.join(','))}" aria-pressed="false" aria-label="勾选推荐流水：${esc(suggestion.name || '未知户名')} ${esc(displayAccount)}">
+      <span class="sg-main"><b>${esc(suggestion.name || '未知户名')}</b><span class="mono">${esc(displayAccount)}</span></span>
       <span class="sg-score">评分 <b>${esc(suggestion.score)}</b></span>
       <img class="ui-icon ctx-match-check" src="/static/ui-icons/check.svg" alt="已选" hidden><span class="ctx-match-on" hidden>已上图</span>
       <span class="sg-reason">${(suggestion.reasons || []).map(esc).join(' · ')}</span></button>
@@ -4522,7 +4531,7 @@ function renderCtxRows(r) {
     const counter = row.dir === 'in' ? 'payer' : 'payee';
     const time = fmtTime(row.trade_time).replace('T', ' ').split(' ');
     const checkbox = tracked ? '<span class="ctx-on">已上图</span>'
-      : `<input type="checkbox" class="ctx-ck" data-id="${esc(row.id)}" aria-label="选择${esc(relative)}流水：${esc(fmtTime(row.trade_time))} ${esc(row[counter + '_name'] || row[counter + '_account'] || '')}">`;
+      : `<input type="checkbox" class="ctx-ck" data-id="${esc(row.id)}" aria-label="选择${esc(relative)}流水：${esc(fmtTime(row.trade_time))} ${esc(row[counter + '_name'] || row[counter + '_display_account'] || row[counter + '_account'] || '')}">`;
     return `<tr class="${anchor ? 'anchor' : ''}" data-flow-id="${esc(row.id)}"><td>${checkbox}</td><td class="context-relative">${relative}</td>
       <td class="context-direction">${direction}${ownership ? `<span class="context-ownership">${ownership}</span>` : ''}</td>
       <td class="context-time"><time>${esc(time[0] || '—')}<span>${esc(time[1] || '')}</span></time></td>
@@ -5717,7 +5726,7 @@ function bindUI() {
         ly: !item&&hasRatio?null:text ? +(text.attr('y') || 0).toFixed(2) : savedLabel.ly ?? null,
         bw: background != null ? background.attr('width') : savedLabel.bw ?? null,
         bh: background != null ? background.attr('height') : savedLabel.bh ?? null,
-        data: metadata(scope==='all'?source:m.data || {}, ['cnt', 'ids', 'amount_totals', 'total', 'currencies']),
+        data: metadata(scope==='all'?source:m.data || {}, ['cnt', 'ids', 'amount_totals', 'total', 'currencies', 'event_summary']),
       };
     });
     for (const entry of prepared) {
@@ -5736,11 +5745,11 @@ function bindUI() {
       } catch (_) { if (!current()) return null; /* Photo failure keeps a circle. */ }
     }
     const relationFilter = state.presentation.relationFilter;
-    return current() ? { case_name: caseName, w: width, h: height, nodes: prepared.map(entry => entry.node), edges,
+    return current() ? { case_id: context.caseId, case_name: caseName, w: width, h: height, nodes: prepared.map(entry => entry.node), edges,
       presentation: newGraphPresentation(state.presentation),
       display: { layout:state.layout,edgeType:state.edgeType,edgeLabels:[...state.edgeLabels],showIds:state.showIds,showPhotos:state.showPhotos,
         labelMode:view.labelMode,labelRenderPolicy:'clean-midpoint-v1' },
-      view: {scope, ...(state.lastGraph.resolution ? { statistics_policy: state.lastGraph.statistics_policy, resolution_revision: state.lastGraph.resolution.revision } : {}), mode: graphViewIsFiltered() ? 'filtered' : state.graphView.visibleIds ? 'neighborhood' : 'overview',
+      view: {scope, ...(state.lastGraph.analysis_revision ? {analysis_revision:state.lastGraph.analysis_revision}:{}), ...(state.lastGraph.resolution ? { statistics_policy: state.lastGraph.statistics_policy, resolution_revision: state.lastGraph.resolution.revision } : {}), mode: graphViewIsFiltered() ? 'filtered' : state.graphView.visibleIds ? 'neighborhood' : 'overview',
         ...(scope==='visible'&&window.FundsInvestigation?.exportWindow?.()?{time_window:window.FundsInvestigation.exportWindow()}:{}),
         ...(snapshotWidths?{amount_width:graphAmountWidthMetadata(snapshotWidths)}:{}),
         ...(relationFilter.active ? {relation_filter:{currency:relationFilter.currency,min:relationFilter.min||null,max:relationFilter.max||null}} : {}),
@@ -5768,7 +5777,8 @@ function bindUI() {
     state.graphView.openingFit?.cancel();
     if (format === 'xlsx') {
       task.setPhase('generating');
-      const response = await fetch(`/api/export/tracked.xlsx?case_id=${context.caseId}&canvas_id=${context.canvasId || 0}`);
+      const expected=state.lastGraph.analysis_revision;
+      const response = await fetch(`/api/export/tracked.xlsx?case_id=${context.caseId}&canvas_id=${context.canvasId || 0}${expected?`&expected_revision=${encodeURIComponent(expected)}`:''}`);
       const blob = await exportResponse(response, task.isCurrent);
       if (blob && task.isCurrent()) downloadBlob(blob, `资金追踪流水_案件${context.caseId}_画布${context.canvasId || 0}.xlsx`);
       return;
@@ -5795,7 +5805,7 @@ function bindUI() {
     if (!assertGraph()) return;
     if (!url?.startsWith('data:image/png')) throw new Error('未获得图像数据，请重试');
     task.setPhase('generating');
-    const response = await fetch(`/api/export/graph.${format}`, { method: 'POST', ...jsonOpts({ image: url, description }) });
+    const response = await fetch(`/api/export/graph.${format}`, { method: 'POST', ...jsonOpts({ image: url, description, case_id:context.caseId, expected_revision:state.lastGraph.analysis_revision }) });
     const blob = await exportResponse(response, current);
     if (!assertGraph()) return;
     if (blob) downloadBlob(blob, `${filename}.${format}`);

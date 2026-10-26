@@ -1750,3 +1750,35 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 #canvasWrap .investigation-transport { z-index: 40; }
 
 @media (max-width: 900px) { #graphMinimapPanel { right: 6px; } }
+
+/* Conditional attribution keeps its own scroll area and full exact money. */
+.principal-dialog { width: 840px; padding: 22px; }
+.principal-dialog .action-dialog-head h2 { font-size: 19px; }
+.principal-note { color: var(--muted); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.principal-fields { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 14px; margin: 18px 0; }
+.principal-fields > label { display: grid; gap: 7px; font-size: 13px; }
+.principal-fields input, .principal-fields select { width: 100%; min-width: 0; min-height: 36px; padding: 6px 9px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--surface); color: var(--text-primary); font: inherit; }
+.principal-dialog fieldset { border: 0; margin: 16px 0; padding: 0; min-width: 0; }
+.principal-dialog legend { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.principal-conditions label, #principalTargets label { display: flex; align-items: flex-start; gap: 9px; font-size: 13px; line-height: 1.5; margin: 9px 0; }
+.principal-dialog input[type=checkbox] { flex: none; margin-top: 3px; }
+#principalTargets { max-height: 180px; overflow-y: auto; border-block: 1px solid var(--border); }
+#principalTargets span { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+#principalTargets b { font-weight: 400; font-variant-numeric: tabular-nums; }
+#principalTargets small { color: var(--muted); }
+.principal-dialog footer { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+#principalStatus { display: block; margin: 16px 0 0; line-height: 1.6; font-size: 13px; white-space: pre-line; }
+#principalStatus[data-error=true] { color: var(--state-danger); }
+#principalResults { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 4px; }
+.principal-network { margin: 18px 0; padding-block: 14px; border-block: 1px solid var(--border); }
+.principal-network > summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.principal-network > label:not(.principal-check), #principalAccountConditions fieldset > label:not(.principal-check) { display: grid; gap: 7px; margin: 12px 0; font-size: 13px; }
+.principal-network input:not([type=checkbox]), .principal-network select { min-width: 0; width: 100%; min-height: 36px; padding: 6px 9px; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--surface); color: var(--text-primary); font: inherit; }
+.principal-check { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+#principalAccountChoices { max-height: 170px; overflow-y: auto; margin-block: 12px; }
+#principalAccountConditions fieldset { padding: 12px; border: 1px solid var(--border); }
+.principal-table-scroll { overflow-x: auto; }
+.principal-table-scroll table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+.principal-table-scroll th, .principal-table-scroll td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
+.principal-table-scroll th { color: var(--muted); font-weight: 400; }
+@media (max-width: 700px) { .principal-dialog { padding: 16px; } .principal-fields { grid-template-columns: minmax(0,1fr); } }

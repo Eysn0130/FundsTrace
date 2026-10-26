@@ -84,7 +84,11 @@ def stats(case_id):
         coverage = import_coverage(cid, known_excluded=rows[0]["raw_flows"] - row["flows"])
         from app import evidence_resolution
         resolution = evidence_resolution.summary(cid)
-    return {"case_id": case_id, **({"resolution": resolution, "statistics_policy": evidence_resolution.POLICY,
+        from app import event_resolution, analysis_snapshot
+        event_summary = event_resolution.summary(cid)
+        analysis_revision = analysis_snapshot.revision(cid)
+    return {"case_id": case_id, "event_summary": event_summary, "analysis_revision": analysis_revision,
+            **({"resolution": resolution, "statistics_policy": evidence_resolution.POLICY,
             "resolution_revision": resolution["revision"]} if resolution else {}), **row,
             "amount_total": amount(totals[0]["amount"]) if len(totals) == 1 else ("0.00" if not totals else None),
             "currency": totals[0]["currency"] if len(totals) == 1 else None,
@@ -116,8 +120,13 @@ def flows(case_id, account, kw, page, page_size):
         total = raw_query(f"select count(*) total from effective_flows where {where}", params)[0]["total"]
         rows = raw_query(f"select * from effective_flows where {where} order by trade_time desc nulls last, id desc limit ? offset ?",
                          params + [page_size, (page - 1) * page_size])
+        from app import event_resolution, analysis_snapshot
+        events = {item["flow_id"]: item for item in event_resolution.members(cid, [str(row["id"]) for row in rows])}
+        revision = analysis_snapshot.revision(cid)
     return {"case_id": case_id, "total": total, "page": page, "page_size": page_size,
             "items": [{**preview_flow(row), "id": str(row["id"]), "case_id": str(row["case_id"]),
+                       "analysis_revision": revision, "event_id": events.get(str(row["id"]), {}).get("event_id"),
+                       "event_state": events.get(str(row["id"]), {}).get("status", "unknown"),
                        "batch_id": str(row["batch_id"]) if row["batch_id"] is not None else None,
                        **{field: row.get(field) or "" for field in ("payer_display_account", "payee_display_account", "self_display_account", "raw_payer_account", "raw_payee_account", "raw_self_account")}} for row in rows]}
 

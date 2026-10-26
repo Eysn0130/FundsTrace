@@ -18,9 +18,11 @@ REFERENCE_PROFILE = "funds-trace-table-archive-v2"
 PREVIOUS_PROFILE = REFERENCE_PROFILE
 CANCELLATION_PROFILE = "funds-trace-table-archive-v3"
 HEADER_PROFILE = "funds-trace-table-archive-v4"
-EVIDENCE_PROFILE = "funds-trace-table-archive-v5"
+LEGACY_EVIDENCE_PROFILE = "funds-trace-table-archive-v5"
+EVIDENCE_PROFILE = "funds-trace-table-archive-v6"
+EVIDENCE_PROFILES = frozenset((LEGACY_EVIDENCE_PROFILE, EVIDENCE_PROFILE))
 PROFILE = HEADER_PROFILE
-CANCELLATION_PROFILES = frozenset((CANCELLATION_PROFILE, HEADER_PROFILE, EVIDENCE_PROFILE))
+CANCELLATION_PROFILES = frozenset((CANCELLATION_PROFILE, HEADER_PROFILE, *EVIDENCE_PROFILES))
 SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, REFERENCE_PROFILE, *CANCELLATION_PROFILES))
 REFERENCE_PROFILES = frozenset((REFERENCE_PROFILE, *CANCELLATION_PROFILES))
 MAX_MEMBERS = 256
@@ -139,13 +141,15 @@ def parse(source, profile=PROFILE):
     if profile in CANCELLATION_PROFILES:
         plan.update(cancelled_rows=[], cancellations=[])
     budget = {"members": 0, "bytes": 0}
-    member_limit = EVIDENCE_MAX_MEMBERS if profile == EVIDENCE_PROFILE else MAX_MEMBERS
-    record_limit = EVIDENCE_MAX_RECORDS if profile == EVIDENCE_PROFILE else MAX_RECORDS
-    expanded_limit = EVIDENCE_MAX_EXPANDED_BYTES if profile == EVIDENCE_PROFILE else MAX_EXPANDED_BYTES
+    member_limit = EVIDENCE_MAX_MEMBERS if profile in EVIDENCE_PROFILES else MAX_MEMBERS
+    record_limit = EVIDENCE_MAX_RECORDS if profile in EVIDENCE_PROFILES else MAX_RECORDS
+    expanded_limit = EVIDENCE_MAX_EXPANDED_BYTES if profile in EVIDENCE_PROFILES else MAX_EXPANDED_BYTES
     seen = set()
     selected = False
     from .import_staging import DetailsPool, PackedDetails
-    details_pool = DetailsPool() if profile == EVIDENCE_PROFILE else None
+    details_pool = DetailsPool() if profile in EVIDENCE_PROFILES else None
+    if details_pool is not None:
+        plan["_details_pool"] = details_pool
 
     def merge(part, prefix, family=""):
         nonlocal selected
@@ -206,7 +210,7 @@ def parse(source, profile=PROFILE):
                         raise table_import.TableImportError("反馈包成员来源位置冲突")
                     seen.add(path)
                     suffix = PurePosixPath(name).suffix.lower()
-                    if profile != EVIDENCE_PROFILE and suffix not in (".csv", ".zip"):
+                    if profile not in EVIDENCE_PROFILES and suffix not in (".csv", ".zip"):
                         raise table_import.TableImportError("反馈包包含尚未适配的成员类型，整包未接纳")
                     if not 0 <= info.file_size <= MAX_MEMBER_BYTES:
                         raise table_import.TableImportError("反馈包单成员超出安全处理大小")
@@ -232,30 +236,36 @@ def parse(source, profile=PROFILE):
                         merge(import_attachments.plan(payload, path), path, prefix)
                     else:
                         header, encoding = _header(payload)
-                        if (profile != EVIDENCE_PROFILE and len(header) == len(feedback_import.COLUMNS)
+                        if (profile not in EVIDENCE_PROFILES and len(header) == len(feedback_import.COLUMNS)
                                 and frozenset(header) == frozenset(feedback_import.COLUMNS)):
                             # Generic mapping cannot downgrade a verified profile's
                             # cancellation/identity semantics inside a new envelope.
                             raise table_import.TableImportError("新反馈包包含需使用原规则的旧版交易表，整包未接纳；未降级解释资金记录")
                         role = _AUXILIARY.get(frozenset(header)) if len(header) == len(set(header)) else None
-                        if profile == EVIDENCE_PROFILE and role is None:
+                        if profile in EVIDENCE_PROFILES and role is None:
                             signature = frozenset(header)
                             role = next((name for name, names in feedback_import.SCHEMAS.items() if name != "transaction" and signature == frozenset(names)), None)
                             role = {"task": "manifest", "address": "client", "phone": "client"}.get(role, role)
                         with localcontext() as context:
                             if profile in CANCELLATION_PROFILES:
                                 context.prec = max(context.prec, 50)
-                            part = (_auxiliary(payload, path, header, encoding, role, evidence=profile == EVIDENCE_PROFILE) if role
+                            part = (_auxiliary(payload, path, header, encoding, role, evidence=profile in EVIDENCE_PROFILES) if role
                                     else table_import.parse(
                                         io.BytesIO(payload), suffix=suffix,
-                                        profile=(table_import.EVIDENCE_ARCHIVE_PROFILE if profile == EVIDENCE_PROFILE else
+                                        profile=(profile if profile in EVIDENCE_PROFILES else
                                                  table_import.ARCHIVE_MEMBER_PROFILE if profile == HEADER_PROFILE
                                                  else table_import.IDENTITY_PROFILE),
                                         reference_policy=(table_import.TRANSACTION_REFERENCE_POLICY
                                                           if profile in REFERENCE_PROFILES else None),
-                                        _details_pool=details_pool))
-                        if profile in CANCELLATION_PROFILES and not role and suffix == ".csv":
-                            table_cancellations.apply(part, payload, allow_feedback28=profile == EVIDENCE_PROFILE)
+                                        _details_pool=details_pool,
+                                        _defer_occurrence_binding=profile in EVIDENCE_PROFILES,
+                                        _retain_csv_format=profile in CANCELLATION_PROFILES and suffix == ".csv"))
+                        try:
+                            if profile in CANCELLATION_PROFILES and not role and suffix == ".csv":
+                                table_cancellations.apply(part, payload, allow_feedback28=profile in EVIDENCE_PROFILES,
+                                                          csv_format=part.get("_csv_format"))
+                        finally:
+                            part.pop("_csv_format", None)
                         merge(part, path, prefix)
         except (zipfile.BadZipFile, RuntimeError, OSError, ValueError) as error:
             if isinstance(error, table_import.TableImportError):
@@ -263,33 +273,47 @@ def parse(source, profile=PROFILE):
             raise table_import.TableImportError("反馈包读取或完整性校验失败，整包未接纳") from None
 
     try:
-        source.seek(0)
-        visit(source)
-    finally:
-        # Break the recursive function's self-cell: it also owns merge/plan,
-        # which must not wait for cyclic GC after a completed or failed parse.
-        visit = None
-    if not plan["members"]:
-        raise table_import.TableImportError("反馈包没有可处理的数据成员")
-    if profile in CANCELLATION_PROFILES:
-        table_cancellations.refresh_stats(plan)
-        if profile == EVIDENCE_PROFILE:
-            from . import evidence_resolution
-            evidence_resolution.bind_occurrences(plan)
+        try:
+            source.seek(0)
+            visit(source)
+        finally:
+            # Break the recursive function's self-cell: it also owns merge/plan,
+            # which must not wait for cyclic GC after a completed or failed parse.
+            visit = None
+        if not plan["members"]:
+            raise table_import.TableImportError("反馈包没有可处理的数据成员")
+        if profile in CANCELLATION_PROFILES:
+            table_cancellations.refresh_stats(plan)
+            if profile in EVIDENCE_PROFILES:
+                from . import evidence_resolution
+                # Only the complete envelope knows final member positions and
+                # source families. Cancellation and merge need no early binding.
+                try:
+                    evidence_resolution.bind_occurrences(plan)
+                except (RuntimeError, OSError, ValueError) as error:
+                    if isinstance(error, table_import.TableImportError):
+                        raise
+                    # Deferred member validation keeps the same public failure
+                    # contract it had inside visit(), and the owner closes below.
+                    raise table_import.TableImportError("反馈包读取或完整性校验失败，整包未接纳") from None
+            return plan
+        counts = {key: 0 for key in ("accepted", "unresolved", "non_monetary", "non_transaction", "auxiliary")}
+        reasons, totals, examples = {}, {}, []
+        for record in plan["records"]:
+            counts[record["disposition"]] += 1
+            reasons[record["reason_code"]] = reasons.get(record["reason_code"], 0) + 1
+            if record["disposition"] == "unresolved" and len(examples) < 3:
+                examples.append({"row": "来源记录", "source_row": record["record_no"], "reason": record["details"]["reason"]})
+        with localcontext() as context:
+            context.prec = 40
+            for row in plan["rows"]:
+                totals[row["currency"]] = totals.get(row["currency"], Decimal(0)) + row["amount"]
+        plan["stats"] = {"total": len(plan["records"]), "ok": len(plan["rows"]),
+                         "skipped": len(plan["records"]) - len(plan["rows"]), "bad_examples": examples,
+                         **counts, "reason_counts": reasons,
+                         "currency_totals": {currency: format(amount, ".2f") for currency, amount in sorted(totals.items())}}
         return plan
-    counts = {key: 0 for key in ("accepted", "unresolved", "non_monetary", "non_transaction", "auxiliary")}
-    reasons, totals, examples = {}, {}, []
-    for record in plan["records"]:
-        counts[record["disposition"]] += 1
-        reasons[record["reason_code"]] = reasons.get(record["reason_code"], 0) + 1
-        if record["disposition"] == "unresolved" and len(examples) < 3:
-            examples.append({"row": "来源记录", "source_row": record["record_no"], "reason": record["details"]["reason"]})
-    with localcontext() as context:
-        context.prec = 40
-        for row in plan["rows"]:
-            totals[row["currency"]] = totals.get(row["currency"], Decimal(0)) + row["amount"]
-    plan["stats"] = {"total": len(plan["records"]), "ok": len(plan["rows"]),
-                     "skipped": len(plan["records"]) - len(plan["rows"]), "bad_examples": examples,
-                     **counts, "reason_counts": reasons,
-                     "currency_totals": {currency: format(amount, ".2f") for currency, amount in sorted(totals.items())}}
-    return plan
+    except BaseException:
+        if details_pool is not None:
+            details_pool.close()
+        raise

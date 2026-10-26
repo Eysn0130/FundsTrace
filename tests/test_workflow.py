@@ -69,8 +69,16 @@ def test_file_to_case_to_exports_and_scoped_batch_delete(client, make_case, monk
     exported = client.get("/api/export/tracked.xlsx", params={"case_id": cid})
     assert exported.status_code == 200, exported.text
     sheets = pd.read_excel(io.BytesIO(exported.content), sheet_name=None, dtype=str, keep_default_na=False)
-    expected_sheets = ["追踪流水", "待调取账号"] + ([] if legacy_without_journal else ["统计口径"])
+    expected_sheets = ["追踪流水", "待调取账号", "分析修订"] + ([] if legacy_without_journal else ["统计口径"])
     assert list(sheets) == expected_sheets
+    assert list(sheets["分析修订"].columns) == ["项目", "说明"]
+    assert isinstance(query["analysis_revision"], str) and len(query["analysis_revision"]) == 32
+    assert dict(sheets["分析修订"].itertuples(index=False, name=None)) == {
+        "分析修订": query["analysis_revision"],
+        "金额含义": "追踪表保留记账分录金额；同事件双边分录不相加为本金。事件统计仅说明已导入证据，不表示完整账本。",
+        "事件统计范围": "全案已导入记录；不同于本表当前画布选择范围",
+        "事件证据": "无可确认事件作用域",
+    }
     ledger = sheets["追踪流水"]
     assert len(ledger) == 2
     assert list(ledger["交易流水号"]) == ["SYN-001", "SYN-002"]

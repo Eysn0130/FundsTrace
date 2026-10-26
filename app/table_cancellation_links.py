@@ -49,7 +49,7 @@ def conflict_sql(source="s", record="r"):
     basis = f"json_extract_string({notes},'$.counterparty_basis')"
     archive_profiles = {f"funds-trace-table-archive-v{version}" for version in range(1, 6)}
     return f"""{record}.disposition='unresolved' and (
-        {source}.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5')
+        {source}.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6')
           and {record}.reason_code='cancellation_historical_conflict'
         or
         {source}.parser_version in ({_profiles(table_import.ROLE_PROFILES)})
@@ -80,7 +80,7 @@ def ctes(*, scoped=False):
       from import_sources p
       join import_records o on o.case_id=p.case_id and o.source_id=p.source_id
       join import_members m on m.case_id=o.case_id and m.source_id=o.source_id and m.member_path=o.member_path
-      where p.row_kind='table_record' and p.parser_version in ('{SHARED_PROFILE}','funds-trace-table-archive-v5') {scope}
+      where p.row_kind='table_record' and p.parser_version in ('{SHARED_PROFILE}','funds-trace-table-archive-v5','funds-trace-table-archive-v6') {scope}
         and o.disposition='cancelled' and o.reason_code='matched_cancellation'
         and json_extract_string(try_cast(o.details_json as json),'$.cancellation_policy')='table-paired-cancellation-v1'
         and json_extract_string(try_cast(o.details_json as json),'$.cancellation_role')='original'

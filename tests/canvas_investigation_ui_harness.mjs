@@ -229,6 +229,21 @@ test('equivalent fractional boundaries compare as the same local time and preser
   assert.equal(h.element('investigationStatus').dataset.error, 'false');
 });
 
+for (const policy of ['legacy_mirror_fifo', 'typed-account-evidence-v1', undefined]) {
+  test(`time preview describes the returned statistics policy: ${policy ?? 'unspecified'}`, async () => {
+    const h = fixture(), result = projection();
+    result.statistics_policy = policy;
+    result.summary.selected_count = 1;
+    const opening = h.api.execute('timeWindow'); h.respond(0, result); await opening;
+    await h.element('investigationTimePreview').click();
+    const status = h.element('investigationStatus').textContent;
+    assert.match(status, /2 个账户 · 1 条有向关系 · 1 笔/);
+    assert.equal(status.includes('镜像配对后'), policy === 'legacy_mirror_fifo');
+    assert.equal(status.includes('接纳记账记录'), policy === 'typed-account-evidence-v1');
+    assert.match(status, /CNY 0\.01/);
+  });
+}
+
 test('invalid timestamp syntax is explained before a request and calendar errors are visible', async () => {
   const h = fixture(), opening = h.api.execute('timeWindow'); h.respond(0); await opening;
   h.element('investigationStart').value = '10/23/2026'; await h.element('investigationTimeApply').click();

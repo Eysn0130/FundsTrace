@@ -250,7 +250,7 @@ async function run() {
     const result = await api('/api/analysis/run', { case_id: context.caseId, params: frozenParams });
     if (!current()) return;
     validateAnalysisResult(result, algs, context);
-    lastResults = result; lastRun = { ...context, params: frozenParams, sourceStats: result.source_snapshot ? { ...result.source_snapshot } : null };
+    lastResults = result; lastRun = { ...context, revision: result.analysis_revision, params: frozenParams, sourceStats: result.source_snapshot ? { ...result.source_snapshot } : null };
     render(result, algs); setAnalysisPhase('done');
     $('#resultScope').textContent = lastRun.sourceStats ? `本次结果 · 全部导入流水，${count(lastRun.sourceStats.flows)} 笔 · ${count(lastRun.sourceStats.accounts)} 个账户` : '本次结果 · 全部导入流水';
   } catch (error) {
@@ -313,7 +313,7 @@ function renderResultCategory(name) {
       return `<tr data-ids="${esc(ids)}" data-first="${esc(firstFlow)}"><td class="analysis-sequence">${index + 1}</td><td>${esc(closed.join(' → '))}</td><td class="analysis-hops">${esc(item.len)} 跳</td><td class="amt">${money(item.total, item.currency)}</td><td class="amt" title="${esc(ratioTitle)}">${ratio}</td><td>${timing}</td><td class="analysis-table-action"><button class="btn small btn-detail" type="button" aria-expanded="false">查看明细</button><button class="btn small btn-track" type="button" data-canvas="${esc(canvasName)}" title="把这条闭环的 ${esc(item.len)} 笔流水放到独立画布（不与已有上图混在一起）">一键上图</button></td></tr>`;
     }).join(''), '环路检测') : '<div class="analysis-empty">当前有界搜索未返回资金闭环线索</div>', value.count);
   if (name === 'fast_flows') content = card(`快进快出 · ${esc(value.window_minutes)} 分钟内 ±${esc(percent(value.tolerance))}${subjects}`, '短窗口内按币种配对转入与转出，差额与时间仅作为复核线索。',
-    value.pairs.length ? tbl(['过账账户', '转入', '短窗内转出', '转出合计 / 差额', '最大延迟', '明细'], value.pairs.map(item => {
+    value.pairs.length ? tbl(['配对账户', '转入', '短窗内转出', '转出合计 / 差额', '最大延迟', '明细'], value.pairs.map(item => {
       const ids = [item.in_flow.id, ...item.out_flows.map(flow => flow.id)].map(String).join(',');
       return `<tr data-ids="${esc(ids)}"><td class="mono">${esc(item.display_account || item.account)}</td><td class="amt">${money(item.in_flow.amount, item.in_flow.currency)}<br><span class="hint">${esc(item.in_flow.from_display_account || item.in_flow.from || '')} ${esc(String(item.in_flow.time || '').slice(0, 19))}</span></td><td>${item.out_flows.map(flow => `${money(flow.amount, flow.currency)} → ${esc(flow.to_display_account || flow.to_acct_display_account || flow.to || flow.to_acct)}`).join('<br>')}</td><td class="amt">${money(item.out_total, item.currency)}<br><span class="hint">差额 ${money(item.diff, item.currency)}</span></td><td>${esc(item.max_delay_min)} 分钟</td><td class="analysis-table-action"><button class="btn small btn-detail" type="button" aria-expanded="false">查看明细</button></td></tr>`;
     }).join(''), '快进快出') : '<div class="analysis-empty">当前参数下未发现快进快出配对</div>', value.count);
@@ -375,12 +375,17 @@ async function generateAnalysisReport() {
   const caseName = analysisCases.find(item => String(item.id) === String(run.caseId))?.name || `案件 ${run.caseId}`;
   const algorithms = run.params.algorithms.map(name => analysisMethods[name].label).join('、');
   const accepted = await confirmAnalysisAction({ title: '生成分析报告',
-    message: `${caseName} · ${algorithms}\n${hasAnalysisDraft() ? '当前修改尚未运行，将使用已完成结果的参数。\n' : ''}基于当前案件全部导入流水重新计算并生成 HTML，数据变化可能使报告与屏幕结果不同。`, accept: '重新计算并生成' });
+    message: `${caseName} · ${algorithms}\n${hasAnalysisDraft() ? '当前修改尚未运行，将使用已完成结果的参数。\n' : ''}使用本次结果的参数和来源修订重新计算并生成 HTML；来源更新后须重新分析。`, accept: '重新计算并生成' });
   if (!accepted || !isCurrentAnalysis(run) || lastRun !== run || analysisBusy()) return;
   const current = () => isCurrentAnalysis(run) && lastRun === run && reportPending;
   reportPending = true; $('#reportStatus').textContent = '正在重新计算并生成报告…'; syncAnalysisControls();
   try {
-    const response = await fetch('/api/analysis/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ case_id: run.caseId, params: run.params }) });
+    const response = await fetch('/api/analysis/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ case_id: run.caseId, params: run.params, expected_revision: run.revision }) });
+    if (response.status === 409 && current()) {
+      lastResults = lastRun = renderedResults = null; renderedAlgorithms = []; reportPending = false;
+      clearResults('来源已更新', '请重新运行分析'); setAnalysisPhase('error'); renderResultTabs(); syncAnalysisControls();
+      $('#reportStatus').textContent = '来源或关联已更新，旧结果已失效，请重新分析。'; return;
+    }
     if (!current()) return;
     if (!response.ok) throw new Error(await responseError(response));
     const blob = await response.blob(); if (!current()) return;

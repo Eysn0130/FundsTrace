@@ -80,6 +80,26 @@ def test_fast_flow_pairing_does_not_cross_currency(client, database, make_case):
     assert run(client, case, ff_min_amount="0.01", ff_tolerance=0)["fast_flows"]["pairs"] == []
 
 
+def test_report_describes_unequal_fast_flow_pair_as_a_tolerance_clue(client, database, make_case):
+    case = make_case("Synthetic unequal tolerance pair")
+    insert_flow(database, case, "IN", "HUB", "100.00")
+    insert_flow(database, case, "HUB", "OUT", "125.00", minute=1)
+    params = {"algorithms": ["fast_flows"], "ff_min_amount": "100.00", "ff_tolerance": "0.25"}
+    pairs = run(client, case, **params)["fast_flows"]["pairs"]
+    assert len(pairs) == 1
+    assert (pairs[0]["in_flow"]["amount"], pairs[0]["out_total"], pairs[0]["diff"]) == (
+        "100.00", "125.00", "25.00")
+    response = client.post("/api/analysis/report", json={"case_id": case, "params": params})
+    assert response.status_code == 200
+    assert "快进快出容差配对" in response.text
+    assert "差额 25.00" in response.text
+    assert "±25%" in response.text
+    assert "差额与时间仅作为复核线索" in response.text
+    assert "未使用余额或来源容量约束" in response.text
+    for unsupported in ("金额守恒", "量化证据", "过账账户"):
+        assert unsupported not in response.text
+
+
 def test_cycle_minimum_has_exact_inclusive_cent_boundary(client, database, make_case):
     case = make_case()
     insert_flow(database, case, "A", "B", "0.10")
@@ -112,6 +132,21 @@ def test_monetary_outlier_mean_has_explicit_half_even_rounding(client, database,
     assert row["value"] == "1000.00"
     assert row["currency"] == "CNY"
     assert isinstance(row["z"], float)
+
+
+def test_report_keeps_hub_outlier_relative_to_selected_account_baseline(client, database, make_case):
+    case = make_case("Synthetic ordinary hub")
+    for minute in range(10):
+        insert_flow(database, case, "HUB", f"COUNTERPARTY-{minute}", "100.00", minute=minute)
+    params = {"algorithms": ["outliers"], "out_sigma": 2.5}
+    outliers = run(client, case, **params)["outliers"]["outliers"]
+    assert len(outliers) == 1
+    assert (outliers[0]["account"], outliers[0]["z"]) == ("HUB", 3.16)
+    response = client.post("/api/analysis/report", json={"case_id": case, "params": params})
+    assert response.status_code == 200
+    assert "本次分析范围内的同币种账户" in response.text
+    assert "仅表示相对本次账户基准的统计差异" in response.text
+    assert "正常经营明显不符" not in response.text
 
 
 def test_report_readback_preserves_exact_money_and_script_characters(client, database, make_case):
@@ -214,7 +249,7 @@ def test_selected_algorithms_run_and_report_share_scope_without_executing_others
     snapshot = json.loads(encoded.group(1))["results"]
     assert snapshot == results
     assert snapshot["fast_flows"]["pairs"][0]["in_flow"]["amount"] == "9999999999999999.99"
-    assert "本次分析范围：</b>快进快出金额守恒配对" in response.text
+    assert "本次分析范围：</b>快进快出容差配对" in response.text
     assert "CNY 9,999,999,999,999,999.99" in response.text
     for omitted in ("资金回流环路", "交易行为离群账户", "多跳资金路径追踪", "未发现资金闭环"):
         assert omitted not in response.text
@@ -250,7 +285,7 @@ def test_zero_selected_result_is_scoped_and_legacy_defaults_remain(client, datab
     assert response.status_code == 200
     assert "本次分析范围：</b>资金回流环路检测" in response.text
     assert "未发现符合本次所选算法及参数的结果" in response.text
-    assert "快进快出金额守恒配对" not in response.text
+    assert "快进快出容差配对" not in response.text
     assert "行为离群账户" not in response.text
 
 

@@ -56,11 +56,11 @@ def test_pair_retains_records_and_only_excludes_effective_funds(profile):
     assert plan["stats"]["cancelled"] == 2 and plan["stats"]["accepted"] == 1
     assert plan["stats"]["currency_totals"] == {"CNY": "1.00"}
     assert policy.validate_evidence(plan["records"]) == plan["cancellations"]
-    if profile == table_archive.EVIDENCE_PROFILE:
+    if profile in table_archive.EVIDENCE_PROFILES:
         assert all(evidence_resolution.DETAIL_FIELD in record["details"] for record in plan["records"][:2])
     for record in plan["records"]:
         notes = dict(record["details"])
-        if profile == table_archive.EVIDENCE_PROFILE and evidence_resolution.DETAIL_FIELD in notes:
+        if profile in table_archive.EVIDENCE_PROFILES and evidence_resolution.DETAIL_FIELD in notes:
             evidence = evidence_resolution.validate_evidence(notes.pop(evidence_resolution.DETAIL_FIELD))
             assert evidence["role"] == "transaction"
             assert evidence["endpoints"]["self"]["account"] == "SYN-OWN"

@@ -415,7 +415,10 @@ def test_unscoped_nodes_survive_directory_order_and_zip_timestamp_changes(client
     first = client.get(f"/api/v1/cases/{cid}/flows").json()["items"]
     _, repeated = accepted(client, cid, list(reversed(members)), scope_bank=None)
     assert repeated["ok"] == 0 and repeated["rows_dup"] == 1
-    assert client.get(f"/api/v1/cases/{cid}/flows").json()["items"] == first
+    replayed = client.get(f"/api/v1/cases/{cid}/flows").json()["items"]
+    assert replayed[0]["analysis_revision"] != first[0]["analysis_revision"]
+    assert [{k:v for k,v in row.items() if k != "analysis_revision"} for row in replayed] == [
+        {k:v for k,v in row.items() if k != "analysis_revision"} for row in first]
     # Force the new directory contract through a ZIP, with deliberately changed
     # directory order and ZIP timestamps, retaining every logical member byte.
     changed = io.BytesIO()
@@ -428,7 +431,10 @@ def test_unscoped_nodes_survive_directory_order_and_zip_timestamp_changes(client
     job = complete(client, cid, view.json())
     assert job["stage"] == "done", job
     assert (job["result"]["ok"], job["result"]["rows_dup"]) == (0, 1)
-    assert client.get(f"/api/v1/cases/{cid}/flows").json()["items"] == first
+    packaged_replay = client.get(f"/api/v1/cases/{cid}/flows").json()["items"]
+    assert packaged_replay[0]["analysis_revision"] != replayed[0]["analysis_revision"]
+    assert [{k:v for k,v in row.items() if k != "analysis_revision"} for row in packaged_replay] == [
+        {k:v for k,v in row.items() if k != "analysis_revision"} for row in first]
 
 
 def test_manifest_from_another_logical_source_family_does_not_bind_a_bare_source(client, make_case):

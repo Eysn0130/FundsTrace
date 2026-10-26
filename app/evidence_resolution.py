@@ -20,10 +20,11 @@ from . import db
 
 POLICY = "typed-account-evidence-v1"
 DETAIL_FIELD = "resolution_evidence"
-TABLE_PROFILE = "funds-trace-table-v19"
-ARCHIVE_PROFILE = "funds-trace-table-archive-v5"
+TABLE_PROFILE = "funds-trace-table-v20"
+ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
 FEEDBACK_PROFILE = "funds-trace-bank-feedback-v6"
-PROFILES = frozenset((TABLE_PROFILE, ARCHIVE_PROFILE, FEEDBACK_PROFILE))
+PROFILES = frozenset((TABLE_PROFILE, ARCHIVE_PROFILE, FEEDBACK_PROFILE, "funds-trace-table-v19", "funds-trace-table-archive-v5"))
+_PROFILE_SQL = ",".join("?" for _ in PROFILES)
 _MAX_TEXT = 512
 WRITE_CHUNK = 50_000
 _ENDPOINT_ROLES = {role: role for role in ("payer", "payee", "self")}
@@ -245,10 +246,10 @@ def _entity_id(bank, kind, number):
 # Bound both the blocking sort and DuckDB's result buffer. A fetchmany call
 # alone does not bound a query that has already materialized every audit note.
 REPLAY_CHUNK = 4096
-_EVIDENCE_RANGES = """select r.source_id,min(r.record_no),max(r.record_no)
+_EVIDENCE_RANGES = f"""select r.source_id,min(r.record_no),max(r.record_no)
         from import_records r join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join evidence_sources b on b.case_id=r.case_id and b.source_id=r.source_id and b.active
-        where r.case_id=? and s.parser_version in (?,?,?)
+        where r.case_id=? and s.parser_version in ({_PROFILE_SQL})
         and r.disposition in ('auxiliary','imported','duplicate')"""
 _EVIDENCE_QUERY = """select m.sha256,r.source_row,r.details_json,f.flow_id,r.member_path
         from import_records r join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
@@ -257,7 +258,7 @@ _EVIDENCE_QUERY = """select m.sha256,r.source_row,r.details_json,f.flow_id,r.mem
         left join (select * from flow_sources where case_id=$case_id and source_id=$source_id
                    and source_row between $first and $last) f
             on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
-        where r.case_id=$case_id and s.parser_version in ($table_profile,$archive_profile,$feedback_profile)
+        where r.case_id=$case_id and s.parser_version in (select unnest($profiles))
         and r.disposition in ('auxiliary','imported','duplicate')
         and r.source_id=$source_id and r.record_no between $first and $last"""
 
@@ -279,13 +280,12 @@ class _CaseEvidence:
         # through empty ranges. Only keys and two bounds are materialized here.
         ranges = db.con().execute(_EVIDENCE_RANGES + auxiliary_filter
             + f" group by r.source_id,r.record_no // {REPLAY_CHUNK} order by r.source_id,min(r.record_no)",
-            [self.case_id, TABLE_PROFILE, ARCHIVE_PROFILE, FEEDBACK_PROFILE]).fetchall()
+            [self.case_id, *sorted(PROFILES)]).fetchall()
         query = _EVIDENCE_QUERY + auxiliary_filter + " order by r.source_id,r.record_no"
         seen, namespaces, records, auxiliary = set(), {}, 0, 0
         for source, first, last in ranges:
             cursor = db.con().execute(query, {"case_id": self.case_id, "source_id": source,
-                "first": first, "last": last, "table_profile": TABLE_PROFILE,
-                "archive_profile": ARCHIVE_PROFILE, "feedback_profile": FEEDBACK_PROFILE})
+                "first": first, "last": last, "profiles": sorted(PROFILES)})
             rows = cursor.fetchall()
             for source_id, position, details, flow_id, member_path in rows:
                 metadata = json.loads(details)
@@ -488,7 +488,7 @@ def _materialize_endpoints(projections):
 def rebuild(case_id):
     """Called inside the importing/deleting transaction; no partial revision."""
     evidence = _load(case_id)
-    if (isinstance(evidence, _CaseEvidence) or not evidence) and not db.q_raw("select 1 from import_sources where case_id=? and parser_version in (?,?,?) limit 1", [case_id, *sorted(PROFILES)]):
+    if (isinstance(evidence, _CaseEvidence) or not evidence) and not db.q_raw(f"select 1 from import_sources where case_id=? and parser_version in ({_PROFILE_SQL}) limit 1", [case_id, *sorted(PROFILES)]):
         return None
     entities, endpoints, conflicts, unresolved = _compute(evidence)
     summary = {"policy": POLICY, "entities": len(entities),
@@ -712,7 +712,7 @@ def complete_family(source):
     import csv
     import io
     import zipfile
-    from . import table_archive, feedback_import, table_import
+    from . import table_archive, feedback_import, table_import, event_resolution
     roles, members, declarations = set(), [], set()
     try:
         source.seek(0)
@@ -723,6 +723,8 @@ def complete_family(source):
                         payload = stream.read(65536)
                         headers, encoding = table_archive._header(payload)
                     signature = frozenset(headers)
+                    if all(headers.count(header) == 1 for header in event_resolution.HEADERS.values()):
+                        return True
                     for role in ("account", "subaccount", "transaction"):
                         known = {frozenset(feedback_import.SCHEMAS[role])}
                         if role == "transaction":
@@ -865,7 +867,7 @@ def reject_historical_overlap(case_id, plan):
         join import_records r on r.case_id=m.case_id and r.source_id=m.source_id and r.member_path=m.member_path
         join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join flow_sources fs on fs.case_id=r.case_id and fs.source_id=r.source_id and fs.source_row=r.record_no
-        where r.case_id=? and m.sha256 in ({placeholders}) and s.parser_version not in (?,?,?)""", [case_id, *digests, *sorted(PROFILES)])
+        where r.case_id=? and m.sha256 in ({placeholders}) and s.parser_version not in ({_PROFILE_SQL})""", [case_id, *digests, *sorted(PROFILES)])
     previous = {(row["sha256"], row["source_row"]) for row in rows}
     members = {member["member_path"]: member["sha256"] for member in plan["members"]}
     records = {record["record_no"]: record for record in plan["records"]}
@@ -873,7 +875,7 @@ def reject_historical_overlap(case_id, plan):
         from import_members m join import_records r on r.case_id=m.case_id and r.source_id=m.source_id and r.member_path=m.member_path
         join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join flow_sources fs on fs.case_id=r.case_id and fs.source_id=r.source_id and fs.source_row=r.record_no
-        where r.case_id=? and m.sha256 in ({placeholders}) and s.parser_version in (?,?,?)""", [case_id, *digests, *sorted(PROFILES)])
+        where r.case_id=? and m.sha256 in ({placeholders}) and s.parser_version in ({_PROFILE_SQL})""", [case_id, *digests, *sorted(PROFILES)])
     prior_scopes = defaultdict(set)
     for item in contextual:
         prior_scopes[item["sha256"], item["source_row"]].add(item["occurrence_scope"] or "")

@@ -17,7 +17,7 @@ import zlib
 import duckdb
 from fastapi import HTTPException
 
-from . import db, feedback_import, importer, evidence_resolution, import_attachments
+from . import db, feedback_import, importer, evidence_resolution, import_attachments, event_resolution
 
 CASE_PKG_COLS = {
     "flows": "id, batch_id, trade_no, trade_time, payer_name, payer_account, payer_bank, "
@@ -78,7 +78,7 @@ def export_package(case_id):
                   and parser_version in ({cancellation_supported}) limit 1""", [case_id, *cancellation_profiles]).fetchone())
         has_table_records = bool(con.execute("""select 1 from import_sources where case_id=?
                   and row_kind='table_record' limit 1""", [case_id]).fetchone())
-        has_resolution = bool(con.execute("select 1 from import_sources where case_id=? and parser_version in (?,?,?) limit 1", [case_id, *sorted(evidence_resolution.PROFILES)]).fetchone())
+        has_resolution = bool(con.execute("select 1 from import_sources where case_id=? and parser_version in (" + ",".join("?" for _ in evidence_resolution.PROFILES) + ") limit 1", [case_id, *sorted(evidence_resolution.PROFILES)]).fetchone())
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
             archive.writestr("meta.json", json.dumps({
                 "name": case_name, "exported_at": datetime.datetime.now().isoformat(),
@@ -546,6 +546,7 @@ def _table_journals(check, paths):
         left join flows v on v.id=f.flow_id where s.row_kind='table_record'
         order by r.source_id,r.record_no""")
     sequences, counts, evidence_records, known_facts, current_facts = {}, {}, {}, {}, {}
+    header_regions, previous_source_rows = {}, {}
     accepted = ("imported", "duplicate")
     dispositions = (*accepted, "unresolved", "non_monetary", "non_transaction", "auxiliary", "removed")
     while rows := cursor.fetchmany(1024):
@@ -571,6 +572,15 @@ def _table_journals(check, paths):
                 _invalid("自动表格记录位置或处置无效")
             sequences[source_id] = number
             counts[source_id, path] = counts.get((source_id, path), 0) + 1
+            # The first header is the one omitted journal row; later headers
+            # are retained with their own disposition. A sequence declaration
+            # cannot move an entry into another table region during a replay.
+            previous_row = previous_source_rows.get((source_id, path), 0)
+            if role == "table" and source_row == previous_row + 2:
+                header_regions[source_id, path] = source_row - 1
+            if reason == "repeated_header":
+                header_regions[source_id, path] = source_row
+            previous_source_rows[source_id, path] = source_row
             if key != table_import.record_key(path, member_digest, source_row):
                 _invalid("自动表格记录键与成员或位置不一致")
             if not isinstance(details_json, str) or len(details_json.encode("utf-8")) > 8192:
@@ -586,10 +596,24 @@ def _table_journals(check, paths):
                 detail_fields |= table_cancellations.DETAILS_FIELDS
             if source_profiles[source_id] in evidence_resolution.PROFILES:
                 detail_fields |= {evidence_resolution.DETAIL_FIELD, "occurrence_scope", "evidence_family", "family_member_sha256"} | import_attachments.DETAILS_FIELDS
+            if source_profiles[source_id] in event_resolution.PROFILES:
+                detail_fields |= {event_resolution.DETAIL_FIELD, event_resolution.LEDGER_FIELD}
             if (not isinstance(details, dict) or not set(details).issubset(detail_fields)
-                    or any(not isinstance(value, str) or len(value.encode("utf-8")) > (8192 if field == evidence_resolution.DETAIL_FIELD else 1024)
+                    or any(not isinstance(value, str) or len(value.encode("utf-8")) > (
+                        8192 if field == evidence_resolution.DETAIL_FIELD else 2048 if field == event_resolution.DETAIL_FIELD else 1024)
                            for field, value in details.items())):
                 _invalid("自动表格语义元数据无效")
+            if event_resolution.DETAIL_FIELD in details:
+                event_resolution.validate_reference(details[event_resolution.DETAIL_FIELD])
+                if role != "table" or disposition not in {"imported", "duplicate", "unresolved", "cancelled", "removed", "non_monetary"}:
+                    _invalid("事件参考声明与来源处置不一致")
+            if event_resolution.LEDGER_FIELD in details:
+                ledger_evidence = event_resolution.validate_ledger(details[event_resolution.LEDGER_FIELD])
+                if role != "table" or disposition not in {"imported", "duplicate", "cancelled", "removed"}:
+                    _invalid("账本声明与来源处置不一致")
+                if (ledger_evidence["posting_scope"] and
+                        int(ledger_evidence["posting_scope"]) != header_regions.get((source_id, path))):
+                    _invalid("记账顺序作用域与来源表头区域不一致")
             if source_profiles[source_id] in evidence_resolution.PROFILES and any(not isinstance(details.get(field), str) or not re.fullmatch(r"[0-9a-f]{64}", details[field]) for field in ("evidence_family", "family_member_sha256")):
                 _invalid("身份证据逻辑来源指纹无效")
             if evidence_resolution.DETAIL_FIELD in details:
@@ -913,7 +937,8 @@ def _validate_package(content, directory):
                 f"select 1 from import_sources where parser_version in ({cancellation_supported}) limit 1",
                 cancellation_profiles).fetchone()) if "import_sources" in paths else False
             has_tables = bool(check.execute("select 1 from import_sources where row_kind='table_record' limit 1").fetchone()) if "import_sources" in paths else False
-            has_resolution = bool(check.execute("select 1 from import_sources where parser_version in (?,?,?) limit 1", sorted(evidence_resolution.PROFILES)).fetchone()) if "import_sources" in paths else False
+            resolution_supported = ",".join("?" for _ in evidence_resolution.PROFILES)
+            has_resolution = bool(check.execute(f"select 1 from import_sources where parser_version in ({resolution_supported}) limit 1", sorted(evidence_resolution.PROFILES)).fetchone()) if "import_sources" in paths else False
             if has_resolution:
                 if "evidence_sources" not in paths:
                     _invalid("身份证据来源缺少导入操作关联")
@@ -922,7 +947,7 @@ def _validate_package(content, directory):
                       where s.source_id is null or e.active is null or (e.active and b.id is null) limit 1""").fetchone():
                     _invalid("身份证据导入操作引用无效")
                 profiles = sorted(evidence_resolution.PROFILES)
-                if check.execute("select 1 from import_sources s left join evidence_sources e on e.source_id=s.source_id where s.parser_version in (?,?,?) and e.source_id is null limit 1", profiles).fetchone():
+                if check.execute(f"select 1 from import_sources s left join evidence_sources e on e.source_id=s.source_id where s.parser_version in ({resolution_supported}) and e.source_id is null limit 1", profiles).fetchone():
                     _invalid("身份证据来源未关联导入操作")
             elif "evidence_sources" in paths:
                 _invalid("历史格式不能声明身份证据操作")
@@ -1039,6 +1064,9 @@ def import_package(content):
                             left join {mappings['batches']} b on b.old_id=p.batch_id""", [new_cid,str(paths["evidence_sources"])])
                     if "import_sources" in paths:
                         evidence_resolution.rebuild(new_cid)
+                    event_resolution.rebuild(new_cid)
+                    from . import analysis_snapshot
+                    analysis_snapshot.invalidate(new_cid)
                     for mapping in mappings.values():
                         con.execute(f"drop table {mapping}")
                     destination = photo_root / f"c{new_cid}"
@@ -1073,7 +1101,7 @@ def delete_package_case(case_id):
                     shutil.rmtree(photo_dir)
                 deleted = con.execute("select count(*) from flows where case_id=?", [case_id]).fetchone()[0]
                 con.execute("insert into import_file_gc(import_id,suffix,sha256,delete_after) select import_id,suffix,sha256,current_timestamp at time zone 'UTC' from import_sessions where case_id=? and source_state='retained' on conflict(import_id) do nothing", [case_id])
-                for table in ("evidence_sources", "resolution_state", "resolution_revisions", "resolution_entities", "resolved_endpoints", "resolution_subject_aliases", "import_records", "import_members", "flow_sources", "import_sources", "import_sessions"):
+                for table in ("analysis_state", "event_state", "resolved_events", "event_members", "evidence_sources", "resolution_state", "resolution_revisions", "resolution_entities", "resolved_endpoints", "resolution_subject_aliases", "import_records", "import_members", "flow_sources", "import_sources", "import_sessions"):
                     con.execute(f"delete from {table} where case_id=?", [case_id])
                 for table in CASE_PKG_TABLES:
                     con.execute(f"delete from {table} where case_id=?", [case_id])

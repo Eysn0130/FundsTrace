@@ -88,7 +88,25 @@ class ResolutionRegistry(ContractModel):
     entities: list[ResolutionEntity]
 
 
+class EventSummary(ContractModel):
+    policy: str
+    revision: str
+    confirmed_events: int
+    confirmed_entries: int
+    conflict_entries: int
+    unknown_entries: int
+    observed_entries: int
+    reference_observations: int
+    excluded_reference_entries: int
+    unresolved_reference_observations: int
+    confirmed_amount_totals: list[CurrencyAmount]
+    complete_event_total: bool
+    note: str
+
+
 class CaseStats(ContractModel):
+    analysis_revision: str | None = None
+    event_summary: EventSummary | None = None
     statistics_policy: Literal["typed-account-evidence-v1"] | None = None
     resolution_revision: str | None = None
     resolution: ResolutionSummary | None = None
@@ -124,6 +142,9 @@ class PreviewFlow(ContractModel):
 
 
 class Flow(PreviewFlow):
+    event_id: str | None = None
+    event_state: str = "unknown"
+    analysis_revision: str | None = None
     payer_display_account: str = ""
     payee_display_account: str = ""
     self_display_account: str = ""

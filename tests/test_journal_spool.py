@@ -1,4 +1,5 @@
 """Finalized journals spill locally without changing public import semantics."""
+import copy
 import errno
 import datetime as dt
 import itertools
@@ -119,11 +120,11 @@ def test_spool_io_failure_rolls_back_and_closes_before_explicit_retry(client, da
 
 def test_memory_records_and_disk_replay_preserve_all_journals_receipts_and_revisions(
         client, database, make_case, monkeypatch, tmp_path):
-    # Retain the original finalized objects as the compatibility oracle, rather
-    # than independently implementing serialization or recalculating decisions.
+    # Snapshot finalized values before the staging owner closes. This oracle
+    # uses no JSON serialization and does not recalculate any decisions.
     class MemoryRecords:
         def __init__(self, records):
-            self.records = records
+            self.records = copy.deepcopy(records)
         def __iter__(self):
             return iter(self.records)
         def __len__(self):
@@ -134,7 +135,7 @@ def test_memory_records_and_disk_replay_preserve_all_journals_receipts_and_revis
     tables = ("flows", "batches", "import_sources", "flow_sources", "import_members", "import_records",
               "main_accounts", "account_ids", "evidence_sources", "resolution_entities", "resolved_endpoints",
               "resolution_subject_aliases", "resolution_state", "resolution_revisions")
-    results = []
+    results, analysis_revisions = [], []
     for number, storage in enumerate((MemoryRecords, spool)):
         with database._lock:
             database._con.close()
@@ -176,10 +177,16 @@ def test_memory_records_and_disk_replay_preserve_all_journals_receipts_and_revis
         # flow IDs. Compare its public funds/coverage, while the original full
         # revision, decisions and journals above remain an exact comparison.
         stats = client.get(f"/api/v1/cases/{cid}/stats").json()
+        analysis_revision = stats.pop("analysis_revision")
+        assert isinstance(analysis_revision, str) and len(analysis_revision) == 32
+        analysis_revisions.append(analysis_revision)
         restored = case_packages.import_package(case_packages.export_package(cid)[0])["case_id"]
         portable_stats = client.get(f"/api/v1/cases/{restored}/stats").json()
+        assert isinstance(portable_stats["analysis_revision"], str) and len(portable_stats["analysis_revision"]) == 32
+        assert portable_stats["analysis_revision"] != analysis_revision
         assert portable_stats["import_coverage"] == stats["import_coverage"]
         assert portable_stats["amount_totals"] == stats["amount_totals"]
         results.append({"receipts": receipts, "tables": payload,
                         "stats": stats})
+    assert analysis_revisions[1] != analysis_revisions[0]
     assert results[1] == results[0]

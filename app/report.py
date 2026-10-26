@@ -110,7 +110,7 @@ def build_report(case_id, results, case_info):
                 .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
     cases = _escape_text(results)
     case_info = _escape_text(case_info)
-    names = {"cycles": "资金回流环路检测", "fast_flows": "快进快出金额守恒配对",
+    names = {"cycles": "资金回流环路检测", "fast_flows": "快进快出容差配对",
              "outliers": "交易行为离群账户", "paths": "多跳资金路径追踪"}
     algorithms = cases.get("algorithms", [name for name in names if name in cases])
     scope = "、".join(names[name] for name in algorithms)
@@ -211,13 +211,14 @@ def build_report(case_id, results, case_info):
                      f"<br><span class='small'>差额 {money_display(p['diff'])}</span></td>"
                      f"<td>{p['max_delay_min']} 分钟</td></tr>")
         sub_txt2 = "、".join(ff.get("subjects") or []) if isinstance(ff.get("subjects"), list) else ""
-        add(f"""<h3>快进快出金额守恒配对—— 分析对象：{sub_txt2 or '全案件'}</h3>
-        <p>原理：账户收到大额资金后 {ff['window_minutes']} 分钟内转出，且转出合计与转入金额
-        误差在 ±{ff['tolerance']:.0%} 内（<b>金额守恒</b>）——"代收代付/过账"行为的量化证据。
+        add(f"""<h3>快进快出容差配对—— 分析对象：{sub_txt2 or '全案件'}</h3>
+        <p>原理：按设定的最低转入金额，匹配账户转入后 {ff['window_minutes']} 分钟内的转出，
+        转出合计与转入金额的相对差额在 ±{ff['tolerance']:.0%} 内。
+        本算法未使用余额或来源容量约束；差额与时间仅作为复核线索，不证明同一笔本金归属或交易性质。
         共配对成功 <b>{ff['count']} 组</b>。</p>
-        <table><tr><th>过账账户</th><th>转入</th><th>短窗内转出</th><th>转出合计/差额</th><th>最大延迟</th></tr>{rows}</table>""")
+        <table><tr><th>配对账户</th><th>转入</th><th>短窗内转出</th><th>转出合计/差额</th><th>最大延迟</th></tr>{rows}</table>""")
     elif "fast_flows" in algorithms:
-        add("<h3>快进快出金额守恒配对</h3><p>未发现符合本次快进快出参数的配对。</p>")
+        add("<h3>快进快出容差配对</h3><p>未发现符合本次快进快出参数的配对。</p>")
 
     # ---------- 离群画像 ----------
     ol = cases.get("outliers", {})
@@ -229,10 +230,10 @@ def build_report(case_id, results, case_info):
             f"</td><td><b>{o['z']}</b></td></tr>"
             for o in ol["outliers"])
         add(f"""<h3>交易行为离群账户</h3>
-        <p>原理：对每个账户提取行为特征（交易笔数、总额、深夜交易占比、整数金额占比、对手数量、单笔均额），
-        与案件全体账户的基准分布对比，偏离超过 {ol['sigma']} 个标准差的账户标记为离群——
-        其行为模式与正常经营明显不符。</p>
-        <table><tr><th>账户</th><th>异常维度</th><th>数值</th><th>Z 分数</th></tr>{rows}</table>""")
+        <p>原理：对每个账户提取行为特征（交易笔数、总额、深夜交易笔数、整数金额交易笔数、对手数量、单笔均额），
+        与本次分析范围内的同币种账户基准分布对比，高于均值至少 {ol['sigma']} 个标准差的账户标记为离群。
+        结果仅表示相对本次账户基准的统计差异，不能据此判断经营是否正常或交易性质。</p>
+        <table><tr><th>账户</th><th>离群维度</th><th>数值</th><th>Z 分数</th></tr>{rows}</table>""")
     elif "outliers" in algorithms:
         add("<h3>交易行为离群账户</h3><p>未发现超过本次离群阈值的账户。</p>")
 
@@ -243,7 +244,7 @@ def build_report(case_id, results, case_info):
     if "cycles" in algorithms and cyc.get("count"):
         summary.append(f"发现 {cyc['count']} 个资金回流环路")
     if "fast_flows" in algorithms and ff.get("count"):
-        summary.append(f"{ff['count']} 组金额守恒的快进快出配对")
+        summary.append(f"{ff['count']} 组符合金额容差的快进快出配对")
     if "outliers" in algorithms and ol.get("count"):
         summary.append(f"{ol['count']} 个行为离群账户")
     concl = "；".join(summary) + "。" if summary else "未发现符合本次所选算法及参数的结果。"

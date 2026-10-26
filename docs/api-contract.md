@@ -54,3 +54,11 @@ React 工作台使用 `/api/v1`，G6 工作区继续使用兼容 `/api`。`app/a
 JSON 错误统一为 `{"error":{"code":"...","message":"..."}}`。400 表示文件或请求不能处理，403 未激活，404 案件／会话／来源不存在或不属于当前范围，405 方法不支持，409 状态冲突（案件重名、原文件缺失／变化、已开始会话重新预览等），422 参数或映射无效，500 内部失败。界面可显示 `message` 并根据 `code` 决定恢复动作。响应和任务轮询不返回服务器路径、异常原文或 traceback。应用组装时同时挂载 `router` 并调用 `install_error_handlers(app)`，覆盖 v1 路由级 404／405；旧路径沿用兼容异常格式。
 
 运行 `.venv/bin/python scripts/export_api_contract.py` 更新两个契约文件，运行同一命令追加 `--check` 检测漂移。生成器在导入任何应用模块前强制使用临时 `FUND_DATA_DIR`，只导出 v1 路径和可达 schema，不接触运行中的业务目录；无需 Node 依赖。HTTP 回归使用临时真实 DuckDB 与合成 CSV/Excel，不代表浏览器、安装包或发行验收。
+
+## 条件来源份额与共同修订
+
+新接口 `POST /api/analysis/principal` 及 `/network` 属于独立的条件分析边界，不改变既有路径评分的含义。case/flow ID 与金额均使用字符串；起止时间为保留原始语义的无时区 ISO 时间。单账本按 `account,currency,start,end` 读取全部本方竞争分录，`source_flow_id` 指定入账、`target_flow_ids` 指定展示目标。`conditions` 必须分别明确 `coverage:"complete_declared"`、`opening_balance`、`no_overdraft:true`、`funds_available:true`，`balance_kind` 为 `unknown` 或 `post_book`；默认条件不满足。多账本以 `accounts:[{account,conditions}]` 替代单个账户，并要求 `boundary:"terminal_no_return_declared"`；内部流转必须有已确认双边事件。
+
+响应状态为 `ok`、`unknown`、`inconsistency` 或 `limited`；后三者不含可用的目标分配。`ok` 的每个目标分别给出精确字符串 `amount,min,max,fifo` 和极值见证，多个独立最大值不可相加。单/多账本 `/export` 接口要求 `expected_revision`，返回包含条件、缺口和见证的 HTML。缺少证据不以空余额、号码相似或时序 ID 填补。
+
+`analysis_revision` 绑定案件事实、身份和事件的事务版本；单/多账本响应命名为 `revision`。v1 流水项另带 `event_id/event_state`，统计带 `event_summary`；原交易字段保持。legacy 表、图、时间投影、前后流水和分析报告携带同一修订。当前 UI 的图和追踪 XLSX 导出传入该修订，变化返回 409；XLSX 新增“分析修订”页和事件 ID/状态列，原分录金额不去重。兼容旧图快照的可选修订字段不代表旧调用方已完成版本核验。证据字段、资源上限和保守拒绝范围见[导入与本金契约](folder-evidence-import.md#事件与条件来源份额)。

@@ -256,7 +256,9 @@
   }
   function summary(result) {
     const totals = result.summary?.amount_totals || result.amount_totals || [];
-    return `${result.nodes.length} 个账户 · ${result.edges.length} 条有向关系 · ${result.summary?.selected_count ?? result.flows?.length ?? 0} 笔（镜像配对后） · 无时间 ${result.summary?.missing_time_count ?? 0} 笔${totals.length ? ` · ${totalLabel(totals)}` : ''}`;
+    const policyLabel = result.statistics_policy === 'legacy_mirror_fifo' ? '（镜像配对后）'
+      : result.statistics_policy === 'typed-account-evidence-v1' ? '（接纳记账记录）' : '';
+    return `${result.nodes.length} 个账户 · ${result.edges.length} 条有向关系 · ${result.summary?.selected_count ?? result.flows?.length ?? 0} 笔${policyLabel} · 无时间 ${result.summary?.missing_time_count ?? 0} 笔${totals.length ? ` · ${totalLabel(totals)}` : ''}`;
   }
   async function timeDialog(play = false) {
     resetPreview(true);

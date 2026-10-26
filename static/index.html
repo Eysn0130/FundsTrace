@@ -606,10 +606,37 @@
         <div class="context-table-scroll" id="ctxTableScroll" tabindex="0" role="region" aria-label="前后流水表格，可水平滚动"><table class="tbl" id="ctxTable"><thead><tr><th scope="col"><span class="sr-only">选择或上图状态</span></th><th scope="col">相对</th><th scope="col">方向</th><th scope="col">时间</th><th scope="col" class="amt">金额</th><th scope="col" class="amt">余额</th><th scope="col">对手方</th><th scope="col">摘要</th></tr></thead><tbody id="ctxTbody"></tbody></table></div>
         <div class="flow-horizontal-scroll context-horizontal-scroll" role="group" aria-label="前后流水表格水平滚动"><button class="btn small" id="ctxScrollLeft" type="button" aria-label="前后流水向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><input id="ctxHorizontalPosition" type="range" min="0" max="0" value="0" step="1" disabled aria-label="前后流水水平位置" aria-controls="ctxTableScroll"><button class="btn small" id="ctxScrollRight" type="button" aria-label="前后流水向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div>
       </section>
-      <aside class="context-matches" aria-labelledby="ctxMatchesTitle"><h3 id="ctxMatchesTitle">匹配线索</h3><div id="ctxSuggest"></div><p class="context-score-note">评分仅供匹配参考</p></aside>
+      <aside class="context-matches" aria-labelledby="ctxMatchesTitle"><h3 id="ctxMatchesTitle">匹配线索</h3><div id="ctxSuggest"></div><p class="context-score-note">评分仅供匹配参考</p><button class="btn" id="ctxPrincipal" type="button" disabled>条件来源份额</button><p class="context-score-note">以本方入账为来源，核对其在后续支出中的份额。</p></aside>
     </div>
     <footer class="context-footer"><div class="context-selection"><span id="ctxSelected">已选 0 笔</span><span class="muted" id="ctxTrackedCount">已上图 0 笔</span><span id="ctxTrackStatus" class="workflow-status" role="status" aria-live="polite"></span></div><div class="context-actions"><button class="btn" id="ctxCancel" type="button">取消</button><button class="btn primary" id="ctxTrack" type="button" disabled><img class="ui-icon" src="/static/ui-icons/network.svg" alt=""><span id="ctxTrackLabel">加入图谱</span></button></div></footer>
   </section>
+  <dialog id="principalDialog" class="action-dialog principal-dialog" aria-labelledby="principalTitle">
+    <header class="action-dialog-head"><h2 id="principalTitle">条件来源份额</h2><button id="principalClose" class="btn" type="button">关闭</button></header>
+    <p id="principalContext" class="action-dialog-context"></p>
+    <p class="principal-note">区间须覆盖该账务账户的完整收支，不能把“前后各 X 笔”当作完整账本。未上图和低于显示阈值的竞争交易仍参与计算；余额吻合不能证明无遗漏。</p>
+    <form id="principalForm">
+      <div class="principal-fields">
+        <label for="principalStart">完整账本区间起点<input id="principalStart" type="datetime-local" step="0.000001" required></label>
+        <label for="principalEnd">完整账本区间终点<input id="principalEnd" type="datetime-local" step="0.000001" required></label>
+        <label for="principalOpening">起点前余额<input id="principalOpening" type="text" inputmode="decimal" maxlength="40" autocomplete="off" placeholder="未知；请勿默认填 0"></label>
+        <label for="principalBalanceKind">来源余额含义<select id="principalBalanceKind"><option value="unknown">未知，仅采用来源明确的账面余额</option><option value="post_book">本次声明：均为本笔交易后账面余额</option></select></label>
+      </div>
+      <fieldset class="principal-conditions"><legend>本次计算条件（声明不等于已获独立证明）</legend><label><input id="principalCoverage" type="checkbox">我声明区间内该账务账户、该币种的收支完整</label><label><input id="principalNoOverdraft" type="checkbox">我声明无透支或授信</label><label><input id="principalFundsAvailable" type="checkbox">我已明确资金全额可用（无未建模冻结或在途资金）</label></fieldset>
+      <fieldset class="principal-targets"><legend>目标出账（最多 20 笔）</legend><p class="principal-note">从当前前后流水选择目标，仅决定展示哪些份额，不会排除其他收支。</p><div id="principalTargets"></div></fieldset>
+      <details id="principalNetwork" class="principal-network"><summary>多账户条件分析</summary>
+        <label class="principal-check"><input id="principalNetworkEnabled" type="checkbox">启用多账户来源份额计算</label>
+        <p class="principal-note">当前来源账户沿用上方条件。其他账本从当前图选择，并分别声明条件；未在图上的账本请先加入相关账户。计算仍读取各账户完整区间，不能忽略未上图竞争分录。</p>
+        <label for="principalAccountSearch">按名称或显示号码查找图中账户<input id="principalAccountSearch" type="search" autocomplete="off"></label><div id="principalAccountChoices"></div>
+        <div id="principalAccountConditions"></div>
+        <label for="principalNetworkTargets">目标流水 ID（来自“核对”中的 #流水编号，最多 20 个）<input id="principalNetworkTargets" type="text" autocomplete="off" placeholder="用逗号或空格分隔原流水 ID"></label>
+        <label class="principal-check"><input id="principalBoundary" type="checkbox">本次声明：选定账户以外为终止边界，区间内没有未建模的来源资金回流</label>
+        <p class="principal-note">没有回流依据时保持未勾选。沿途交易份额不能相加为本金；本金按期末留存与终止流出联合核对。</p>
+      </details>
+      <footer><button id="principalExport" class="btn" type="button" disabled>导出本次结果</button><button id="principalRun" class="btn primary" type="submit">计算条件份额</button></footer>
+    </form>
+    <output id="principalStatus" role="status" aria-live="polite"></output>
+    <section id="principalResults" aria-label="条件来源份额结果" hidden></section>
+  </dialog>
 </div>
 
 <!-- 通用文本输入弹窗（画布命名等，不依赖浏览器原生 prompt） -->
@@ -749,6 +776,7 @@
 <script src="/static/app-navigation.js"></script>
 <script src="/static/ui-dialogs.js?v=export-workspace-1"></script>
 <script src="/static/workflow-ui.js?v=main-accounts-1"></script>
+<script src="/static/principal-analysis.js?v=1"></script>
 <script src="/static/import-workflow.js"></script>
 <script src="/static/canvas-investigation.js?v=canvas-open-fit-2"></script>
 <script src="/static/ribbon-commands.js?v=canvas-investigation-1"></script>

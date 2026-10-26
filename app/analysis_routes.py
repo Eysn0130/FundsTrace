@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from . import analytics, db, evidence_resolution
+from . import analytics, db, evidence_resolution, analysis_snapshot, event_resolution
 from .money import money_decimal, wire_money
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -17,6 +17,7 @@ analytics.set_db(db.q_raw)
 class RunIn(BaseModel):
     case_id: int = Field(gt=0, le=2_147_483_647)
     params: dict = Field(default_factory=dict)
+    expected_revision: str | None = Field(default=None, max_length=64)
 
 
 class PathsIn(BaseModel):
@@ -27,6 +28,7 @@ class PathsIn(BaseModel):
     max_hops: int = Field(default=4, ge=1, le=12)
     max_paths: int = Field(default=50, ge=1, le=500)
     order: str = "amount"
+    expected_revision: str | None = Field(default=None, max_length=64)
 
 
 def _require_case(case_id):
@@ -87,31 +89,37 @@ def _params(params):
 @router.post("/run")
 def run_analysis(body: RunIn):
     """Exact monetary results and explicitly approximate statistical metrics."""
-    _require_case(body.case_id)
-    return wire_money(evidence_resolution.decorate_analysis(body.case_id, analytics.run_all(body.case_id, _params(body.params))))
+    with db._lock:
+        revision = analysis_snapshot.revision(body.case_id, body.expected_revision)
+        result = evidence_resolution.decorate_analysis(body.case_id, analytics.run_all(body.case_id, _params(body.params)))
+        return wire_money({**result, "analysis_revision": revision, "case_event_summary": event_resolution.summary(body.case_id)})
 
 
 @router.post("/paths")
 def trace_paths(body: PathsIn):
     """Currency-isolated multi-hop paths; totals sum their transaction legs."""
-    _require_case(body.case_id)
-    if body.order not in analytics.PATH_ORDERS:
-        raise HTTPException(status_code=422, detail="order 必须是 amount 或 time")
-    return wire_money(evidence_resolution.decorate_analysis(body.case_id, analytics.trace_paths(body.case_id, body.src, body.dst,
-                                           max_hops=body.max_hops, max_paths=body.max_paths,
-                                           order=body.order)))
+    with db._lock:
+        revision = analysis_snapshot.revision(body.case_id, body.expected_revision)
+        if body.order not in analytics.PATH_ORDERS:
+            raise HTTPException(status_code=422, detail="order 必须是 amount 或 time")
+        result = evidence_resolution.decorate_analysis(body.case_id, analytics.trace_paths(body.case_id, body.src, body.dst,
+                                                max_hops=body.max_hops, max_paths=body.max_paths,
+                                                order=body.order))
+        return wire_money({**result, "analysis_revision": revision, "case_event_summary": event_resolution.summary(body.case_id)})
 
 
 @router.post("/report")
 def download_report(body: RunIn):
     """Self-contained HTML with exact labels and a lossless JSON snapshot."""
-    _require_case(body.case_id)
-    results = evidence_resolution.decorate_analysis(body.case_id, analytics.run_all(body.case_id, _params(body.params)))
-    case_name = db.q("select name from cases where id = ?", [body.case_id])[0]["name"]
-    stats = results["source_snapshot"]
-    from . import report
-
-    content = report.build_report(body.case_id, results, {"case_name": case_name, "stats": stats})
+    with db._lock:
+        revision = analysis_snapshot.revision(body.case_id, body.expected_revision)
+        results = evidence_resolution.decorate_analysis(body.case_id, analytics.run_all(body.case_id, _params(body.params)))
+        results["analysis_revision"] = revision
+        results["case_event_summary"] = event_resolution.summary(body.case_id)
+        case_name = db.q("select name from cases where id = ?", [body.case_id])[0]["name"]
+        stats = results["source_snapshot"]
+        from . import report
+        content = report.build_report(body.case_id, results, {"case_name": case_name, "stats": stats})
     fname = urllib.parse.quote(f"资金分析报告_{case_name}.html")
     return Response(content, media_type="text/html; charset=utf-8",
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fname}"})

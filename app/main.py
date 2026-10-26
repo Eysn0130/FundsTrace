@@ -51,6 +51,8 @@ from .api.v1 import router as api_v1_router, install_error_handlers
 from .pilot import mount_pilot
 
 app.include_router(api_v1_router)
+from .principal_routes import router as principal_router
+app.include_router(principal_router)
 install_error_handlers(app)
 mount_pilot(app)
 # 智能分析模块（独立新增）：导入失败不影响主系统
@@ -159,6 +161,11 @@ def stats(case_id: int = 1):
               (select count(*) from batches where case_id = ?) as batches
         """, [case_id, case_id, case_id, case_id])[0]
         result["import_coverage"] = import_coverage(case_id)
+        if not db.q_raw("select 1 from cases where id=?", [case_id]):
+            return result  # Preserve the legacy empty response for a missing case.
+        from . import event_resolution, analysis_snapshot
+        result["event_summary"] = event_resolution.summary(case_id)
+        result["analysis_revision"] = analysis_snapshot.revision(case_id)
         current_resolution = evidence_resolution.summary(case_id)
         if current_resolution:
             result["resolution"] = current_resolution
@@ -252,6 +259,9 @@ def del_batch(batch_id: int, case_id: int = Query(...)):
         db.x("update evidence_sources set active=false where case_id=? and batch_id=?", [case_id, batch_id])
         db.x("delete from batches where id=? and case_id=?", [batch_id, case_id])
         evidence_resolution.rebuild(case_id)
+        from . import event_resolution, analysis_snapshot
+        event_resolution.rebuild(case_id)
+        analysis_snapshot.invalidate(case_id)
     return {"ok": True}
 
 
@@ -408,7 +418,15 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         rows = db.q(f"select * from effective_flows as flows {where} order by trade_time desc, id desc limit ? offset ?",
                     params + [size, off])
         resolution = evidence_resolution.summary(case_id)
-    return {"total": total, "page": page, "size": size, "rows": rows, "resolution": resolution}
+        from . import analysis_snapshot, event_resolution
+        revision = analysis_snapshot.revision(case_id)
+        memberships = {item["flow_id"]: item for item in event_resolution.members(case_id, [row["id"] for row in rows])}
+        for row in rows:
+            member = memberships.get(str(row["id"]), {})
+            row.update(event_id=member.get("event_id"), event_state=member.get("status", "unknown"))
+        events = event_resolution.summary(case_id)
+    return {"total": total, "page": page, "size": size, "rows": rows, "resolution": resolution,
+            "analysis_revision": revision, "case_event_summary": events}
 
 
 @app.get("/api/accounts/{account}/profile")
@@ -782,7 +800,13 @@ def _graph(case_id: int, canvas_id: int):
     focus = [{"account": r["account"], "scale": r.get("scale") or 1.6}
              for r in db.q("select account, scale from focus_nodes where case_id = ?", [case_id])]
     evidence_resolution.decorate_accounts(case_id, nodes)
-    return {"resolution_revision": (evidence_resolution.summary(case_id) or {}).get("revision"), "resolution": evidence_resolution.summary(case_id), "statistics_policy": evidence_resolution.POLICY if evidence_resolution.summary(case_id) else "legacy_mirror_fifo",
+    from . import event_resolution, analysis_snapshot
+    current_resolution = evidence_resolution.summary(case_id)
+    event_resolution.decorate_edges(case_id, edges)
+    return {"analysis_revision": analysis_snapshot.revision(case_id),
+            "case_event_summary": event_resolution.summary(case_id),
+            "resolution_revision": (current_resolution or {}).get("revision"), "resolution": current_resolution,
+            "statistics_policy": evidence_resolution.POLICY if current_resolution else "legacy_mirror_fifo",
             "nodes": nodes, "edges": edges, "tracked_ids": tracked,
             "main_accounts": mains, "focus_nodes": focus}
 
@@ -1114,6 +1138,11 @@ def track_bulk(body: BulkTrackIn):
 
 @app.get("/api/context/{flow_id}")
 def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", case_id: int = 1):
+    with db._lock:
+        return _context(flow_id, x, side, case_id)
+
+
+def _context(flow_id, x, side, case_id):
     """某笔流水的交易对手在该账户流水中、位于本笔前后各 X 笔的流水（限当前案件）"""
     f = db.q("select * from effective_flows where id = ? and case_id = ?", [flow_id, case_id])
     if not f:
@@ -1137,6 +1166,7 @@ def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", c
         with acct as (
             select id, trade_no, trade_time, amount, balance, currency, summary, channel,
                    payer_account, payer_name, payee_account, payee_name, self_account,
+                   payer_display_account,payee_display_account,self_display_account,
                    case when payer_account = ? then 'out' else 'in' end as dir,
                    case when self_account = ? then 'self'
                         when coalesce(self_account, '') <> '' then 'counter'
@@ -1150,7 +1180,20 @@ def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", c
     total = db.q("select count(*) c from effective_flows where case_id = ? and (payer_account = ? or payee_account = ?)",
                  [case_id, acct, acct])[0]["c"]
     result = {"anchor": f, "side": side, "account": acct, "total": total, "pos": anchor, "rows": rows}
+    from . import analysis_snapshot
+    result["analysis_revision"] = analysis_snapshot.revision(case_id)
+    result["display_account"] = f.get(side + "_display_account") or acct
+    displays = {}
+    for row in rows:
+        for role in ("payer","payee"):
+            displays[row[role + "_account"]] = row.get(role + "_display_account") or row[role + "_account"]
+        row["counter_display_account"] = row[("payer" if row["dir"] == "in" else "payee") + "_display_account"]
     result["suggestions"] = _suggest_counterparties(rows, f)
+    for items in result["suggestions"].values():
+        if isinstance(items,list):
+            for item in items:
+                if isinstance(item,dict) and item.get("account") in displays:
+                    item["display_account"] = displays[item["account"]]
     return result
 
 
@@ -1653,6 +1696,7 @@ class GraphExportView(BaseModel):
     label_mode: Literal["auto", "all", "focus"]
     statistics_policy: Optional[Literal["typed-account-evidence-v1", "legacy_mirror_fifo"]] = None
     resolution_revision: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    analysis_revision: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{32}$")
     relation_filter: Optional[GraphRelationFilter] = None
     amount_width: Optional[GraphAmountWidth] = None
     time_window: Optional[GraphTimeWindow] = None
@@ -1667,6 +1711,7 @@ class GraphExportView(BaseModel):
 class GraphHtmlIn(BaseModel):
     """前端画布快照：所见即所得导出（保留节点位置/边线型/折点/标注及拖动位置）"""
     case_name: str = "资金图谱"
+    case_id: Optional[int] = Field(default=None, gt=0)
     w: int = 1200
     h: int = 800
     nodes: list = []
@@ -1688,6 +1733,7 @@ class GraphHtmlIn(BaseModel):
 @app.post("/api/export/graph.html")
 def export_graph_html(body: GraphHtmlIn):
     """按前端画布快照导出可交互 HTML：与原图完全一致，节点可拖拽（自包含单文件）"""
+    _check_export_revision(body.case_id, body.view.analysis_revision if body.view else None)
     g6 = (STATIC_DIR / "vendor" / "g6.min.js").read_text(encoding="utf-8")
     g6 = g6.replace("</script", "<\\/script")
     presentation = (STATIC_DIR / "graph-presentation.js").read_text(encoding="utf-8")
@@ -1701,7 +1747,7 @@ def export_graph_html(body: GraphHtmlIn):
     data = body.model_dump()
     # Keep older export payloads unchanged when optional display metadata is absent.
     if body.view is not None:
-        for key in ("relation_filter", "amount_width", "time_window", "statistics_policy", "resolution_revision"):
+        for key in ("relation_filter", "amount_width", "time_window", "statistics_policy", "resolution_revision", "analysis_revision"):
             if getattr(body.view, key) is None:
                 data["view"].pop(key, None)
     payload = json.dumps(data, ensure_ascii=False)
@@ -1732,6 +1778,8 @@ def export_graph_html(body: GraphHtmlIn):
             scope_text += "; 统计口径：已接纳账务记录，未证同一经济事件的双方反馈各自保留"
             if view.resolution_revision:
                 scope_text += f"；解析修订：{view.resolution_revision}"
+        if view.analysis_revision:
+            scope_text += f"；分析修订：{view.analysis_revision}"
         labels = {"auto": "自动分级", "all": "全部", "focus": "仅重点"}
         scope_text += f" · 标签：{labels[view.label_mode]}"
         if view.time_window is not None:
@@ -1773,6 +1821,17 @@ def export_graph_html(body: GraphHtmlIn):
 class GraphPdfIn(BaseModel):
     image: str   # 高清 PNG dataURL
     description: Optional[str] = Field(default=None, max_length=8192, strict=True)
+    case_id: Optional[int] = Field(default=None, gt=0)
+    expected_revision: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+
+
+def _check_export_revision(case_id, expected):
+    if expected is not None:
+        if case_id is None:
+            raise HTTPException(422, "带分析修订的导出必须指定案件")
+        from . import analysis_snapshot
+        with db._lock:
+            analysis_snapshot.revision(case_id, expected)
 
 
 def _graph_png_bytes(image: str) -> bytes:
@@ -1792,6 +1851,7 @@ def _graph_png_bytes(image: str) -> bytes:
 @app.post("/api/export/graph.png")
 def export_graph_png(body: GraphPdfIn):
     """Keep view scope in PNG metadata, leaving the canvas pixels unchanged."""
+    _check_export_revision(body.case_id, body.expected_revision)
     from PIL import Image, PngImagePlugin
     try:
         png = _graph_png_bytes(body.image)
@@ -1811,6 +1871,7 @@ def export_graph_png(body: GraphPdfIn):
 @app.post("/api/export/graph.pdf")
 def export_graph_pdf(body: GraphPdfIn):
     """把前端高清图谱 PNG 包装为单页 PDF，并保存范围元数据。"""
+    _check_export_revision(body.case_id, body.expected_revision)
     try:
         png = _graph_png_bytes(body.image)
         pdf = _png_to_pdf_lossless(png, body.description)
@@ -1875,14 +1936,21 @@ def _png_to_pdf_lossless(png: bytes, description: Optional[str] = None) -> bytes
 
 
 @app.get("/api/export/tracked.xlsx")
-def export_tracked(case_id: int, canvas_id: int = 0):
+def export_tracked(case_id: int, canvas_id: int = 0, expected_revision: Optional[str] = None):
     with db._lock:
+        from . import analysis_snapshot, event_resolution
+        revision = analysis_snapshot.revision(case_id, expected_revision)
         rows, pending = _tracked_export_data(case_id, canvas_id)
         # Preserve the existing CSV/Excel export shape. The additional coverage
         # sheet applies only when this case has versioned import evidence.
         coverage = import_coverage(case_id) if db.q_raw(
             "select 1 from import_sources where case_id=? and row_kind in ('archive_record','table_record') limit 1", [case_id]) else None
         resolution = evidence_resolution.summary(case_id)
+        events = event_resolution.summary(case_id)
+        memberships = {item["flow_id"]: item for item in event_resolution.members(case_id, [row["id"] for row in rows])}
+        for row in rows:
+            member = memberships.get(str(row["id"]), {})
+            row.update(event_id=member.get("event_id", ""), event_state=member.get("status", "unknown"))
         registry = {}
         if resolution:
             wanted = {row[side + "_account"] for row in rows for side in ("payer", "payee")
@@ -1892,7 +1960,8 @@ def export_tracked(case_id: int, canvas_id: int = 0):
             metadata = [{"account": account} for account in wanted]
             evidence_resolution.decorate_accounts(case_id, metadata)
             registry = {item["account"]: item for item in metadata}
-    return _tracked_workbook(case_id, rows, pending, coverage, resolution, registry)
+    snapshot = {"analysis_revision": revision, "case_event_summary": events}
+    return _tracked_workbook(case_id, rows, pending, coverage, resolution, registry, snapshot)
 
 
 def _tracked_export_data(case_id, canvas_id):
@@ -1908,11 +1977,13 @@ def _tracked_export_data(case_id, canvas_id):
     return rows, _pending_accounts(case_id, canvas_id)
 
 
-def _tracked_workbook(case_id, rows, pending, coverage, current_resolution, registry):
+def _tracked_workbook(case_id, rows, pending, coverage, current_resolution, registry, snapshot=None):
     cols = {"trade_time": "交易时间", "trade_no": "交易流水号",
             "payer_name": "付款户名", "payer_account": "付款账号", "payer_bank": "付款开户行",
             "payee_name": "收款户名", "payee_account": "收款账号", "payee_bank": "收款开户行",
             "amount": "交易金额", "currency": "币种", "summary": "摘要", "channel": "渠道", "id": "流水ID"}
+    if snapshot:
+        cols.update(event_id="已关联事件ID", event_state="事件证据状态")
     if current_resolution:
         rows = [dict(row) for row in rows]
         for row in rows:
@@ -1935,6 +2006,14 @@ def _tracked_workbook(case_id, rows, pending, coverage, current_resolution, regi
         df.to_excel(w, index=False, sheet_name="追踪流水")
         # 第二张表：待调取账号（当前画布图谱中出现、但尚未导入其本人流水的对手账户）
         pending.to_excel(w, index=False, sheet_name="待调取账号")
+        if snapshot:
+            events = snapshot.get("case_event_summary")
+            pd.DataFrame([
+                ("分析修订", snapshot["analysis_revision"]),
+                ("金额含义", "追踪表保留记账分录金额；同事件双边分录不相加为本金。事件统计仅说明已导入证据，不表示完整账本。"),
+                ("事件统计范围", "全案已导入记录；不同于本表当前画布选择范围"),
+                ("事件证据", json.dumps(events, ensure_ascii=False) if events else "无可确认事件作用域"),
+            ], columns=["项目", "说明"]).to_excel(w, index=False, sheet_name="分析修订")
         if coverage is not None:
             pd.DataFrame([
                 ("流水口径", "当前画布的有效追踪流水；已匹配的冲正／撤销双方退出统计，普通退款仍保留，不代表结算净额或完整清算结果。"),

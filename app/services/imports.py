@@ -49,6 +49,15 @@ def _json(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=json_default)
 
 
+def _close_staging(parsed):
+    if parsed is not None:
+        for name in ("table_plan", "feedback_plan"):
+            plan = parsed[0].attrs.get(name)
+            pool = plan.pop("_details_pool", None) if plan is not None else None
+            if pool is not None:
+                pool.close()
+
+
 class _JournalRecords:
     """Replay a finalized operation journal without retaining its dictionaries.
 
@@ -217,13 +226,19 @@ def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=Non
             plan = (table_archive.parse(source, profile=table_profile) if table_profile in table_archive.SUPPORTED_PROFILES
                     else table_import.parse(source, suffix=suffix, mode=mode, mapping=mapping,
                                             profile=table_profile))
-            frame = importer.pd.DataFrame(columns=plan["columns"])
-            frame.attrs.update(source_row_kind=table_import.ROW_KIND, table_plan=plan)
-            stats = dict(plan["stats"])
-            stats["bad_examples"] = [{key: value for key, value in example.items()
-                                      if key in ("row", "source_row", "reason")}
-                                     for example in stats["bad_examples"]]
-            return frame, plan["sheet"], plan["mode"], plan["mapping"], plan["rows"], stats
+            try:
+                frame = importer.pd.DataFrame(columns=plan["columns"])
+                frame.attrs.update(source_row_kind=table_import.ROW_KIND, table_plan=plan)
+                stats = dict(plan["stats"])
+                stats["bad_examples"] = [{key: value for key, value in example.items()
+                                          if key in ("row", "source_row", "reason")}
+                                         for example in stats["bad_examples"]]
+                return frame, plan["sheet"], plan["mode"], plan["mapping"], plan["rows"], stats
+            except BaseException:
+                pool = plan.pop("_details_pool", None)
+                if pool is not None:
+                    pool.close()
+                raise
         if suffix == ".zip":
             if mode is not None and (mode != "B" or mapping != feedback_import.MAPPING):
                 raise ServiceError(422, "fixed_feedback_mapping", "资金反馈包使用已验证的固定格式规则，请重新上传预览")
@@ -836,11 +851,11 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
                          if suffix == ".zip" else table_import.XLS_PROFILE if suffix == ".xls" else table_import.EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
         parsed = _parse(source, suffix=suffix, table_profile=table_profile,
                         feedback_profile=feedback_import.EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None)
-    import_id = uuid.uuid4().hex
-    directory = _directory(create=True)
-    path = directory / f"{import_id}{suffix}"
     created = False
     try:
+        import_id = uuid.uuid4().hex
+        directory = _directory(create=True)
+        path = directory / f"{import_id}{suffix}"
         with path.open("xb") as stream:
             created = True
             stream.write(content)
@@ -869,6 +884,8 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
         if created:
             path.unlink(missing_ok=True)
         raise
+    finally:
+        _close_staging(parsed)
 
 
 async def upload(case_id, file):
@@ -935,19 +952,22 @@ def _repreview(case_id, import_id, body, surface):
                             body.mapping if not is_table or overrides else None, suffix=session["suffix"],
                             feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
                             table_profile=_table_profile(session))
-        evidence_resolution.operation_context(parsed, session["sha256"])
-        _bind_feedback_plan(session["case_id"], parsed)
-        _bind_table_plan(session["case_id"], parsed, source=session)
-        now = _now()
-        db.x("""update import_sessions set mode=?,mapping_json=?,columns_json=?,stage='ready',error_code=null,
-                  updated_at=?,expires_at=? where import_id=?""",
-             [parsed[2], _json(parsed[3]), _json(list(parsed[0].columns)), now, now + dt.timedelta(days=7), import_id])
-        db.x("delete from import_file_gc where import_id=?", [import_id])
-        if is_table:
-            request = json.loads(session.get("request_json") or "{}")
-            request["_table_overrides"] = overrides
-            db.x("update import_sessions set request_json=? where import_id=?", [_json(request), import_id])
-        return _preview_result(session, parsed, legacy=surface == "legacy")
+        try:
+            evidence_resolution.operation_context(parsed, session["sha256"])
+            _bind_feedback_plan(session["case_id"], parsed)
+            _bind_table_plan(session["case_id"], parsed, source=session)
+            now = _now()
+            db.x("""update import_sessions set mode=?,mapping_json=?,columns_json=?,stage='ready',error_code=null,
+                      updated_at=?,expires_at=? where import_id=?""",
+                 [parsed[2], _json(parsed[3]), _json(list(parsed[0].columns)), now, now + dt.timedelta(days=7), import_id])
+            db.x("delete from import_file_gc where import_id=?", [import_id])
+            if is_table:
+                request = json.loads(session.get("request_json") or "{}")
+                request["_table_overrides"] = overrides
+                db.x("update import_sessions set request_json=? where import_id=?", [_json(request), import_id])
+            return _preview_result(session, parsed, legacy=surface == "legacy")
+        finally:
+            _close_staging(parsed)
 
 
 def repreview(case_id, import_id, body):
@@ -1027,6 +1047,7 @@ def _standalone_csv_keys(plan, rows):
 
 def _run(import_id):
     journal_records = None
+    parsed = None
     try:
         with db._lock:
             found = db.q_raw("select * from import_sessions where import_id=? and owner_token=? and stage='parsing'",
@@ -1067,7 +1088,7 @@ def _run(import_id):
             manifest = import_validation.table_manifest(table_plan, rows) if table_plan is not None else None
             standalone_keys = (_standalone_csv_keys(table_plan, rows)
                                if table_plan is not None and table_plan["profile"] in table_archive.SUPPORTED_PROFILES
-                               and table_plan["profile"] != table_archive.EVIDENCE_PROFILE else None)
+                               and table_plan["profile"] not in table_archive.EVIDENCE_PROFILES else None)
             provenance = {"source_id": import_id, "filename": session["filename"], "sha256": session["sha256"],
                           "size_bytes": session["size_bytes"], "mode": mode, "mapping": mapping,
                           "sheet": sheet, "parser_version": (plan or table_plan)["profile"] if plan or table_plan else getattr(importer, "PARSER_VERSION", "funds-trace-import-v1"),
@@ -1082,6 +1103,7 @@ def _run(import_id):
                 # read-only replay no longer overlaps the financial writer.
                 journal_records = _JournalRecords((plan or table_plan)["records"])
                 (plan or table_plan)["records"] = journal_records
+                _close_staging(parsed)
             receipt = importer.commit_rows(session["filename"], mode, rows, stats,
                                            case_id=session["case_id"], provenance=provenance,
                                            standalone_csv_keys=standalone_keys)
@@ -1126,6 +1148,8 @@ def _run(import_id):
                 journal_records.close()
                 journal_records = None
             receipt["resolution"] = evidence_resolution.rebuild(session["case_id"])
+            from .. import event_resolution
+            event_resolution.rebuild(session["case_id"])
             receipt = _receipt(receipt)
             db.x("""update import_sessions set stage='done',done=?,total=?,result_json=?,error_code=null,
                       updated_at=?,expires_at=? where import_id=? and owner_token=?""",
@@ -1139,6 +1163,7 @@ def _run(import_id):
                       where import_id=? and owner_token=? and stage in ('parsing','importing')""",
                  [code, now, now + dt.timedelta(days=30), import_id, OWNER_TOKEN])
     finally:
+        _close_staging(parsed)
         if journal_records is not None:
             journal_records.close()
 

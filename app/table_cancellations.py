@@ -6,8 +6,11 @@ an analytical exclusion policy and does not assert bank settlement finality.
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation, localcontext
+import csv
 import hashlib
+import io
 import json
 import re
 
@@ -212,42 +215,90 @@ def refresh_stats(plan):
                      "currency_totals": {currency: format(amount, ".2f") for currency, amount in sorted(totals.items())}}
 
 
-def apply(plan, payload, *, allow_feedback28=False):
+def _validated_format(value):
+    return (isinstance(value, dict) and set(value) == {"encoding", "delimiter"}
+            and isinstance(value["encoding"], str) and value["encoding"] in {"utf-8-sig", "utf-16", "gb18030"}
+            and isinstance(value["delimiter"], str) and value["delimiter"] in {",", "\t", ";", "|"})
+
+
+@contextmanager
+def _source_records(payload, csv_format, *, release_consumed):
+    if csv_format is None:
+        # Old/direct callers without the parser's selected format keep the
+        # existing full detection and validation path.
+        raw = table_import._csv(payload, ".csv")[0]["rows"]
+        def records():
+            for index, cells in enumerate(raw):
+                if release_consumed:
+                    raw[index] = None
+                yield cells
+        try:
+            yield records()
+        finally:
+            if release_consumed:
+                raw.clear()
+        return
+    try:
+        with io.TextIOWrapper(io.BytesIO(payload), encoding=csv_format["encoding"],
+                              errors="strict", newline="") as stream:
+            csv.field_size_limit(max(csv.field_size_limit(), table_import.MAX_FIELD))
+            reader = csv.reader(stream, delimiter=csv_format["delimiter"], strict=True)
+            def records():
+                for number, cells in enumerate(reader, start=1):
+                    table_import._check_row(cells, number)
+                    yield cells
+            yield records()
+    except UnicodeError:
+        raise table_import.TableImportError("CSV编码无法安全识别") from None
+    except csv.Error:
+        raise table_import.TableImportError("CSV引号或记录结构损坏，文件未接纳") from None
+
+
+def apply(plan, payload, *, allow_feedback28=False, csv_format=None):
     """Apply only after the existing reference-aware parser validated the CSV."""
     plan.update(cancelled_rows=[], cancellations=[])
-    sheets = table_import._csv(payload, ".csv")
-    raw = sheets[0]["rows"]
+    csv_format = csv_format if _validated_format(csv_format) else None
     def exact(cells):
         columns = [table_import._text(value) for value in cells]
         from . import feedback_import
         return (len(columns) == 32 and len(set(columns)) == 32 and frozenset(columns) == table_import.BANK_FEEDBACK_32_COLUMNS
                 or allow_feedback28 and len(columns) == 28 and len(set(columns)) == 28 and frozenset(columns) == frozenset(feedback_import.COLUMNS))
-    eligible = bool(raw and exact(raw[0]))
+    documents = plan.get("documents", [])
+    if csv_format is not None and len(documents) == 1:
+        document = documents[0]
+        # A complete primary parse has already checked every cell and byte.
+        # A later header or incompatible first-header width cannot qualify for
+        # this rule, which requires an exact 28/32-column first record.
+        if (document.get("header_row") != 1
+                or len(document.get("columns", [])) not in ({28, 32} if allow_feedback28 else {32})):
+            refresh_stats(plan)
+            return plan
     observations = []
     records = {record["source_row"]: record for record in plan["records"]}
-    if eligible:
-        headers = [table_import._text(value) for value in raw[0]]
-        for offset in range(1, len(raw)):
-            cells = raw[offset]
-            if allow_feedback28:
-                # All later checks use the complete observations below. Do
-                # not retain another full set of cells (or a raw[1:] slice)
-                # beside those proofs in the evidence-envelope path.
-                raw[offset] = None
-            index = offset + 1
-            record = records[index]
-            if len(cells) != len(headers) or (record["reason_code"] == "repeated_header" and not exact(cells)):
-                eligible = False
-                continue
-            if record["reason_code"] == "repeated_header":
-                headers = [table_import._text(value) for value in cells]
-            source = dict(zip(headers, (table_import._text(value) for value in cells)))
-            observation = _observation(record, source)
-            observations.append(observation)
-            if not observation["scope"] and observation["movement"] not in {"header", "non_transaction", "zero"}:
-                eligible = False
-    if allow_feedback28:
-        raw.clear()
+    with _source_records(payload, csv_format, release_consumed=allow_feedback28) as source_records:
+        first = next(source_records, None)
+        eligible = first is not None and exact(first)
+        if eligible:
+            headers = [table_import._text(value) for value in first]
+            # Source positions count logical CSV records, including quoted
+            # newlines and repeated headers, never physical text lines.
+            for index, cells in enumerate(source_records, start=2):
+                record = records[index]
+                if len(cells) != len(headers) or (record["reason_code"] == "repeated_header" and not exact(cells)):
+                    eligible = False
+                    continue
+                if record["reason_code"] == "repeated_header":
+                    headers = [table_import._text(value) for value in cells]
+                source = dict(zip(headers, (table_import._text(value) for value in cells)))
+                observation = _observation(record, source)
+                observations.append(observation)
+                if not observation["scope"] and observation["movement"] not in {"header", "non_transaction", "zero"}:
+                    eligible = False
+        else:
+            # Keep strict whole-file validation when the document metadata did
+            # not already establish that cancellation cannot apply.
+            for _ in source_records:
+                pass
     references, prior, unlocated = _indexes(observations)
     proved, selected = set(), set()
     rows = {row["_source_row"]: row for row in plan["rows"]}

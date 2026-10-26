@@ -244,8 +244,11 @@ def _resolve_account(token, metadata):
 
 
 def _resolution_metadata(case_id):
+    from . import event_resolution, analysis_snapshot
     resolution = evidence_resolution.summary(case_id)
-    return {"statistics_policy": evidence_resolution.POLICY if resolution is not None else "legacy_mirror_fifo",
+    return {"analysis_revision": analysis_snapshot.revision(case_id),
+            "case_event_summary": event_resolution.summary(case_id),
+            "statistics_policy": evidence_resolution.POLICY if resolution is not None else "legacy_mirror_fifo",
             "resolution_revision": resolution["revision"] if resolution is not None else None}
 
 
@@ -289,6 +292,8 @@ def time_projection(body):
     references = _provenance(body.case_id, original_ids)
     by_id = {row["id"]: row for row in rows}
     nodes, edges = _graph(selected, mirrors)
+    from . import event_resolution
+    event_resolution.decorate_edges(body.case_id, edges)
     evidence_resolution.decorate_accounts(body.case_id, nodes)
     metadata = {node["account"]: node for node in nodes}
     for edge in edges:
