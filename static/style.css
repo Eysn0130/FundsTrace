@@ -667,6 +667,38 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 #flowTable tr[data-id]:focus-visible > td { background: var(--surface-raised); box-shadow: inset 0 1px var(--accent), inset 0 -1px var(--accent); }
 #flowTable tr[data-id]:has(.flow-ck:checked) > td { background: var(--selection-surface); }
 #flowTable .flow-ck { width: 16px; height: 16px; vertical-align: middle; accent-color: var(--accent); }
+/* Mouse/keyboard density: preserve query fields and return chrome space to data. */
+@media (hover: hover) and (pointer: fine) {
+  #workspace[data-workspace-view="standard"] #left { position: relative; }
+  #workspace[data-workspace-view="standard"] #left > .tabs { padding-right: 72px; }
+  #workspace[data-workspace-view="standard"] #left > .tabs .tab { padding: 6px 14px; }
+  #workspace[data-workspace-view="standard"] #tab-search { padding: 8px; }
+  #workspace[data-workspace-view="standard"] .query-disclosure-head { position: absolute; top: 0; right: 8px; height: 34px; min-height: 34px; margin: 0; }
+  #workspace[data-workspace-view="standard"] .query-toggle { min-height: 26px; height: 26px; padding: 2px 4px; }
+  #workspace[data-workspace-view="standard"] #bulkTrackBar { padding: 4px 0; }
+  #workspace[data-workspace-view="standard"] .bulk-selection { min-height: 20px; margin-bottom: 3px; }
+  #workspace[data-workspace-view="standard"] #bulkDir { width: 112px; }
+  #workspace[data-workspace-view="standard"] #bulkX { width: 44px; }
+  #workspace[data-workspace-view="standard"] .flow-table-tools { gap: 4px; padding: 2px 0; }
+  #workspace[data-workspace-view="standard"] .flow-table-tools select,
+  #workspace[data-workspace-view="standard"] #btnFlowOverview { min-height: 28px; height: 28px; }
+  #workspace[data-workspace-view="standard"] #btnFlowOverview { width: 28px; }
+  #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 310px; min-height: 310px; }
+  #flowTable th { height: 32px; padding: 5px 4px; color: var(--muted); font-weight: 500; }
+  #flowTable th:nth-child(2) { white-space: nowrap; }
+  #flowTable th:nth-child(2) br { display: none; }
+  #flowTable th, #flowTable td { border-right-color: color-mix(in srgb, var(--border) 70%, transparent); }
+  #flowTableScroll[data-flow-density="compact"] #flowTable td { padding-top: 4px; padding-bottom: 4px; }
+}
+@media (hover: hover) and (pointer: fine) and (max-height: 700px) {
+  #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 180px; min-height: 180px; }
+}
+#left > .tabs .tab { transition: color 120ms var(--interaction-ease), border-color 120ms var(--interaction-ease); }
+#left .query-disclosure { transition: grid-template-rows 160ms var(--interaction-ease), min-height 160ms var(--interaction-ease), visibility 160ms var(--interaction-ease); }
+#flowTable tr[data-id] > td { transition: background-color 100ms var(--interaction-ease); }
+@media (prefers-reduced-motion: reduce) {
+  #left > .tabs .tab, #left .query-disclosure, #flowTable tr[data-id] > td { transition: none; }
+}
 /* Each table keeps its native overflow:auto viewport as the only horizontal
    scroll control. Legacy range bindings remain dormant to preserve callers. */
 .flow-horizontal-scroll { flex: none; display: none; align-items: center; gap: 5px; height: 25px; margin-top: 3px; padding: 0; }

@@ -1,3 +1,46 @@
+# 左侧高密度区域精修 · 2026-10-25
+
+final result: passed
+
+本轮实现仅修改 `static/style.css`。保留搜索字段排列、字号、32px 输入框和原有七列表格；复用现有筛选按钮并置于页签右侧，压缩头尾留白、追踪栏及表格控制区。未增加产品文案、底栏、通知入口或显示模式。该候选建立在下文连续滚动与反馈候选之上，等待并行清洗/账户索引工作结束后再集成 main。
+
+## 研究依据与尺寸预算
+
+借鉴 Open Claude UI 的[容器内压缩与对齐](https://github.com/Caho1/open-claude-ui/blob/c1f923ae0051a871941b98a0e2e3183a545e6a85/code-examples/ContainerResponsiveBar.tsx#L16)，以及 Taste 的[表格对齐](https://github.com/Leonxlnx/taste-skill/blob/main/skills/taste-skill/references/app-screens.md#L689)和[运动克制原则](https://github.com/Leonxlnx/taste-skill/blob/main/skills/taste-skill/references/app-screens.md#L349)。只迁移布局原则，未安装或运行外部 Skill，也未复制聊天布局、资源或动画代码。
+
+实测为同一实际 817×777 CSS 视口、390px 左栏、深色、案件2、默认画布、7笔合成流水、紧凑/完整换行、筛选展开，无选中锚点；全图缩放均为24%。
+
+| 区域 | 本轮前 → 最终 | 取舍 |
+| --- | --- | --- |
+| 页签 | 42.43 → 34.42px | 筛选复用原按钮并入同一行，移除原独立约37px筛选行占位 |
+| 搜索字段区 | 200 → 200px | 字段、顺序、字体、行列间距不变，内部继续原生滚动 |
+| 追踪栏 | 74.19 → 64.19px | 收紧上下padding、选择行及方向/笔数宽度，主按钮仍32px |
+| 表格控制区 | 38.98 → 31.97px | 原结果数/行距/文本/展开保留；鼠标控件统一28px |
+| 表格视口 | 240.28 → 310.28px | 展开筛选时增加70px，约29%；收起时440.28 → 510.28px |
+| 表头 / 紧凑数据行 | 45.01 → 31.99px / 44.81 → 42.81px | 时间表头单行；表头中等字重、次级文字；数据仍12px |
+
+扣除表头后，可见数据面积高度约195 → 278px，约增43%。列内横向padding已为4px，继续保留，避免挤压完整账号和金额。只为紧凑行减少上下各1px；舒展行仍有独立间距。密度仅应用于 fine pointer 桌面；不把26px筛选按钮应用到触控。
+
+## 视觉证据与迭代
+
+- 源真值：`docs/media/sidebar-density/before.webp`；最终实现：`refined.webp`，均817×777像素。`comparison-full.webp` 为1634×809的原尺度并排（顶部32px比较标签），`comparison-sidebar.webp` 将两图各自x55–455/y120–770裁成400×650后原尺度并排。已打开全景及局部合并图比较。
+- IAB截图API本次返回996×947的JPEG缓冲，但DOM实际视口为817×777、内容位于左上817×777；仅裁掉内容外黑色缓冲，未缩放应用内容，再保存为WebP。浏览器报告dpr0.82，不把此工具尺寸覆盖当作真实系统DPI验收。
+- 初版A保留独立筛选行，表格达到280px；最终B将原筛选按钮并入页签，达到310px。两者不改字段排列；推荐B，以减少一行外围而非继续压缩输入控件。
+- [P2，已修复] 初版短窗口仍沿用220px表格下限，实际550px高窗口外层多出约9px滚动。将700px及以下窗口回退到180px下限；最终实际817×550、360px左栏，外层scrollHeight−clientHeight=0，表格底542px；见`short-window.webp`。搜索内部可滚动到所有条件及查询/重置。
+- 最终五项核对：字体栈及数据12px不变，表头单行/中等字重；统一左右边线，压缩外围而非搜索字段；继承现有surface/muted/border/selection语义色，仅减轻列分隔；原品牌、SVG与G6资产保留，无新增装饰；产品文案没有新增，禁止的统计/操作说明/通知控件仍为0。无未处理P0/P1/P2发现。
+
+## 行为验证及边界
+
+- 鼠标点击与Enter展开/收起筛选，Tab从筛选进入账户框；切换导入批次后筛选按钮隐藏，返回查询保留未提交`SYN-DRAFT`及已勾选锚点，再恢复空草稿和无勾选状态。
+- 360px左栏下两个页签与筛选无重叠，追踪按钮未越界；标准/上下分栏切换后筛选恢复normal flow，split仍无折叠过渡。短窗口回退经真实布局复查。
+- 原紧凑/舒展、完整换行/完整单行及全览打开/关闭可用。原生横滚保持锚点列粘性，金额列可完整进入视口，包含`¥9,999,999,999,999,999.99`和`USD 0.20`，见`full-amount.webp`。七列每行文本与本轮前快照逐项一致。
+- 动效为页签颜色120ms、筛选折叠160ms、行状态颜色100ms；不做逐行飞入或数据布局动画。模拟`prefers-reduced-motion:reduce`后这三者computed transition duration均0s，退出后恢复160ms筛选过渡。
+- 浏览器error/warn为空。定向入口`tests/test_workspace_shell.py tests/test_workspace_camera.py tests/test_table_workspace.py`为6 passed，包含现有Node行为harness；有一条既有Starlette/httpx弃用警告。`git diff --check`通过。未为CSS复述性断言新增测试。
+
+范围限于macOS/IAB合成预览和既有定向回归；未重跑大型本机采样，不占用并行清洗的真实数据/运行目录。未新增API、持久化格式或业务写入。未验证Windows安装GUI、原生触控/读屏设备或真实案件。本轮完整远端CI须绑定新PR head，不借用旧head的绿色；不打包发布或提前合并main。
+
+---
+
 # 流水连续滚动与界面精简验收 · 2026-10-25
 
 final result: passed
