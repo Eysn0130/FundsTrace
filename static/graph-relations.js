@@ -80,14 +80,21 @@
     }
   }
 
-  function amountFor(edge, currency) {
-    const totals = Array.isArray(edge.amount_totals) ? edge.amount_totals : [];
+  function amountRange(edge, currency) {
+    const projected = Array.isArray(edge.funds?.totals);
+    const totals = projected ? edge.funds.totals : Array.isArray(edge.amount_totals) ? edge.amount_totals : [];
     const matches = totals.filter(row => row && row.currency === currency);
-    if (!matches.length) return null;
-    if (matches.length !== 1) {
-      throw failure('AMBIGUOUS_CURRENCY_TOTAL', '同一关系包含重复的币种合计，不能确定金额');
+    const unknownCurrency = projected && totals.some(row => row?.currency == null);
+    if (matches.length > 1) throw failure('AMBIGUOUS_CURRENCY_TOTAL', '同一关系包含重复的币种合计，不能确定金额');
+    if (!matches.length) return unknownCurrency ? {lower: 0n, upper: null, exact: false} : null;
+    const row = matches[0];
+    if (!projected || row.amount != null) {
+      const amount = exactAmount(row.amount, 'amount_totals');
+      return {lower: amount, upper: unknownCurrency ? null : amount, exact: !unknownCurrency};
     }
-    return exactAmount(matches[0].amount, 'amount_totals');
+    const lower = exactAmount(row.lower, 'funds.totals'), upper = row.upper == null || unknownCurrency ? null : exactAmount(row.upper, 'funds.totals');
+    if (upper !== null && upper < lower) throw failure('INVALID_AMOUNT', '资金金额范围无效');
+    return {lower, upper, exact: false};
   }
 
   function data(graph = {}, input = {}, options = {}) {
@@ -97,15 +104,17 @@
     const sourceEdges = Array.isArray(graph.edges) ? graph.edges : [];
     const validNodes = new Set(sourceNodes.map(nodeId).filter(id => id !== null));
     const nodeIds = new Set(), edgeKeys = new Set(), edges = [];
-    let missingCurrencyEdges = 0;
+    let missingCurrencyEdges = 0, unresolvedAmountEdges = 0;
     const minimum = filter.min === '' ? null : money.cents(filter.min);
     const maximum = filter.max === '' ? null : money.cents(filter.max);
     for (const edge of sourceEdges) {
       if (filter.active) {
-        const amount = amountFor(edge, filter.currency);
-        if (amount === null) { missingCurrencyEdges += 1; continue; }
-        if (minimum !== null && amount < minimum || maximum !== null && amount > maximum) continue;
+        const range = amountRange(edge, filter.currency);
+        if (range === null) { missingCurrencyEdges += 1; continue; }
+        // Keep every relation whose evidence permits an amount in the requested interval.
+        if (minimum !== null && range.upper !== null && range.upper < minimum || maximum !== null && range.lower > maximum) continue;
         if (!validNodes.has(edge.source) || !validNodes.has(edge.target)) continue;
+        if (!range.exact) unresolvedAmountEdges += 1;
       }
       edges.push(edge); edgeKeys.add(edgeKey(edge));
       if (validNodes.has(edge.source)) nodeIds.add(edge.source);
@@ -119,15 +128,16 @@
     return { nodes, edges, nodeIds, edgeKeys, filter, stats: {
       inputNodes: sourceNodes.length, inputEdges: sourceEdges.length,
       visibleNodes: nodes.length, visibleEdges: edges.length,
-      excludedEdges: sourceEdges.length - edges.length, missingCurrencyEdges,
+      excludedEdges: sourceEdges.length - edges.length, missingCurrencyEdges, unresolvedAmountEdges,
     } };
   }
 
   function currencyChoices(edges = []) {
     const currencies = new Set();
     for (const edge of edges || []) {
-      for (const total of Array.isArray(edge.amount_totals) ? edge.amount_totals : []) {
+      for (const total of Array.isArray(edge.funds?.totals) ? edge.funds.totals : Array.isArray(edge.amount_totals) ? edge.amount_totals : []) {
         if (total && typeof total.currency === 'string') currencies.add(total.currency);
+        else if (total && total.currency == null && edge.funds) currencies.add('');
       }
     }
     return [...currencies].sort((a, b) => a < b ? -1 : a > b ? 1 : 0)
@@ -142,14 +152,16 @@
       || !Number.isFinite(maxWidth) || minWidth <= 0 || maxWidth < minWidth) {
       throw failure('INVALID_WIDTH_RANGE', '线宽范围须为正数，且最小线宽不能大于最大线宽');
     }
-    const amounts = new Map(), widths = new Map(), missing = new Set(), invalid = new Map();
+    const amounts = new Map(), widths = new Map(), missing = new Set(), invalid = new Map(), unresolved = new Set();
     let minimum = null, maximum = null;
     for (const edge of edges || []) {
       const key = edgeKey(edge);
-      let amount;
-      try { amount = amountFor(edge, currency); }
+      let range;
+      try { range = amountRange(edge, currency); }
       catch (error) { invalid.set(key, error.message); continue; }
-      if (amount === null) { missing.add(key); continue; }
+      if (range === null) { missing.add(key); continue; }
+      if (!range.exact) { unresolved.add(key); continue; }
+      const amount = range.lower;
       amounts.set(key, amount);
       if (minimum === null || amount < minimum) minimum = amount;
       if (maximum === null || amount > maximum) maximum = amount;
@@ -163,11 +175,11 @@
       widths.set(key, normalized === null ? equalWidth
         : minWidth + Math.sqrt(normalized) * (maxWidth - minWidth));
     }
-    return { widths, missing, invalid, legend: {
+    return { widths, missing, invalid, unresolved, legend: {
       currency, scale: 'sqrt', minAmount: minimum === null ? null : decimal(minimum),
       maxAmount: maximum === null ? null : decimal(maximum), minWidth, maxWidth,
       equalWidth: minimum !== null && minimum === maximum ? equalWidth : null,
-      encodedCount: widths.size, missingCount: missing.size, invalidCount: invalid.size,
+      encodedCount: widths.size, missingCount: missing.size, invalidCount: invalid.size, unresolvedCount: unresolved.size,
     } };
   }
 

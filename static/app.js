@@ -68,6 +68,9 @@ const moneyLabel = (value, currency) => FundsMoney.currency(value, currency);
 const totalLabel = (totals, fallback, currency) => FundsMoney.totals(totals, fallback, currency);
 function moneyHtml(value, currency) { return esc(moneyLabel(value, currency)); }
 function totalsHtml(totals, fallback, currency) { return esc(totalLabel(totals, fallback, currency)).replace(/\n/g, '<br>'); }
+function fundsCount(funds, fallback) { return funds && window.FundsFacts ? window.FundsFacts.count(funds) : fallback == null ? '事件数待定' : `${fmtCount(fallback)} 笔`; }
+function fundsTotal(funds, totals, fallback, currency) { return funds && window.FundsFacts ? window.FundsFacts.totals(funds) : totalLabel(totals, fallback, currency); }
+function fundsTotalHtml(funds, totals, fallback, currency) { return esc(fundsTotal(funds, totals, fallback, currency)).replace(/\n/g, '<br>'); }
 function fmtTime(s) { return s ? String(s).slice(0, 19) : ''; }   // 含年月日时分秒
 
 function toast(msg, type = 'ok') {
@@ -320,16 +323,16 @@ async function refreshStats() {
 function updateHeader() {
   const s = state.stats || {};
   $('#statLine').innerHTML =
-    `流水 <b>${fmtCount(s.flows || 0)}</b> 笔 · 账户 <b>${fmtCount(s.accounts || 0)}</b> 个 · 已上图 <b>${state.tracked.size}</b> 笔`;
+    `流水 <b>${esc(fundsCount(s.funds, s.flows ?? 0))}</b>${s.funds ? ` · ${esc(fundsTotal(s.funds))}` : ''} · 账户 <b>${fmtCount(s.accounts || 0)}</b> 个 · 已上图 <b>${esc(fundsCount(state.lastGraph?.funds, state.tracked.size))}</b>`;
   const coverage = s.import_coverage, coverageNote = $('#importCoverageNote');
   const hasCoverageGaps = coverage?.scope === 'source_reported_flows' && [coverage?.unresolved_records, coverage?.cancelled_records, coverage?.excluded_flows, coverage?.non_monetary_records].some(value => value > 0);
   if (coverageNote) {
-    coverageNote.hidden = !s.resolution && !hasCoverageGaps;
+    coverageNote.hidden = !s.funds && !hasCoverageGaps;
     $('#statLine').title = coverage?.scope === 'source_reported_flows' ? '金额按已接纳来源流水，不代表结算净额；导入明细与处理口径见案件与导入。' : '';
     coverageNote.textContent = !hasCoverageGaps ? '' : `${fmtCount(coverage?.unresolved_records ?? 0)} 条资金含义未确定的来源条目未计入统计；金额按已接纳来源流水，不代表结算净额。已配对冲正/撤销 ${fmtCount(coverage?.cancelled_records ?? 0)} 条（双方均不计有效资金）。${(coverage?.excluded_flows ?? 0) > 0 ? `本案另有 ${fmtCount(coverage.excluded_flows)} 笔历史留存流水已退出有效统计。` : ''}无资金变动的 ${fmtCount(coverage?.non_monetary_records ?? 0)} 条记录已单独保存。`;
-    if (s.resolution) coverageNote.textContent = `画布与流水表均为账务记录口径，记录合计不等于本金。${s.event_summary ? `已关联 ${fmtCount(s.event_summary.confirmed_events)} 个事件；未确定 ${fmtCount(s.event_summary.unknown_entries)} 条、冲突 ${fmtCount(s.event_summary.conflict_entries)} 条。已关联事件金额另列，不代表全案事件总额。` : '双方记录缺少同笔事件证据。'}${s.resolution.unresolved_endpoints ? ` ${fmtCount(s.resolution.unresolved_endpoints)} 个端点的账户关系尚未确定。` : ''} ${coverageNote.textContent}`;
+    if (s.funds) coverageNote.textContent = `有据关联的双方流水按同一事件统计；证据不足部分显示范围。原账簿记录与余额仍可核对，交易额不代表本金。${s.resolution?.unresolved_endpoints ? ` ${fmtCount(s.resolution.unresolved_endpoints)} 个端点的账户关系尚未确定。` : ''} ${coverageNote.textContent}`;
   }
-  const empty = (s.flows || 0) === 0;
+  const empty = (s.funds?.observation_count ?? s.flows ?? 0) === 0;
   $('#emptyHint').style.display = empty ? 'flex' : 'none';
   $('#canvasWrap').classList.toggle('case-empty', empty);
   syncMinimapNavigation();
@@ -367,7 +370,7 @@ async function doSearch(page = 1) {
   state.search.total = r.total;
   renderFlows(r.rows);
   const pages = Math.max(1, Math.ceil(r.total / r.size));
-  $('#resultInfo').textContent = `共 ${fmtCount(r.total)} 笔`;
+  $('#resultInfo').textContent = r.funds ? `${fundsCount(r.funds)} · ${fundsTotal(r.funds)}` : `共 ${fmtCount(r.total)} 笔`;
   $('#pageInfo').textContent = `第 ${page} / ${pages} 页`;
 }
 
@@ -409,16 +412,17 @@ function flowTimeCell(value) {
 }
 
 function renderFlows(rows) {
+  const tracked = new Set([...state.tracked].map(String));
   $('#flowTbody').innerHTML = rows.length ? rows.map(r => `
-    <tr data-id="${r.id}" class="clickable" tabindex="0" aria-label="流水 ${esc(fmtTime(r.trade_time))}，Enter 查看详情，空格勾选">
-      <td><input type="checkbox" class="flow-ck" data-id="${r.id}"></td>
+    <tr data-id="${esc(r.id)}" data-observation-ids="${esc(flowObservationIds(r).join(','))}" class="clickable" tabindex="0" aria-label="流水 ${esc(fmtTime(r.trade_time))}，Enter 查看详情，空格勾选">
+      <td><input type="checkbox" class="flow-ck" data-id="${esc(r.id)}" data-observation-ids="${esc(flowObservationIds(r).join(','))}"></td>
       <td title="${esc(fmtTime(r.trade_time))}">${flowTimeCell(r.trade_time)}</td>
       <td>${partyCell(r.payer_name, r.payer_display_account || r.payer_account)}</td>
       <td>${partyCell(r.payee_name, r.payee_display_account || r.payee_account)}</td>
       <td class="amt">${moneyHtml(r.amount, r.currency)}</td>
       <td class="sum" title="${esc(r.summary)}"><span class="flow-summary">${esc(r.summary || '')}</span></td>
       <td class="acts"><span class="flow-row-actions">
-        ${state.tracked.has(r.id)
+        ${flowObservationIds(r).some(id => tracked.has(String(id)))
           ? '<span class="tag on">已上图</span>'
           : '<button class="btn tiny primary act-track">上图</button>'}
         <button class="btn tiny act-ctx" title="查看前后 X 笔流水" aria-label="查看前后 X 笔流水">前后</button>
@@ -429,6 +433,12 @@ function renderFlows(rows) {
   $('#flowCkAll').indeterminate = false;
   syncFlowCkCount();
   syncFlowTableScroll();
+}
+
+function flowObservationIds(row) {
+  if (Array.isArray(row.observation_ids)) return [...new Set(row.observation_ids.map(String))];
+  if (row.dataset?.observationIds !== undefined) return [...new Set(row.dataset.observationIds.split(',').filter(Boolean))];
+  return [row.dataset?.id ?? row.id];
 }
 
 /* ---------------- 追踪上图 ---------------- */
@@ -494,10 +504,10 @@ function graphImageExportLines() {
   const view=state.graphView,filter=state.presentation.relationFilter,encoding=graphAmountWidthMetadata();
   if(!view.index || state.graphLoading)return [];
   const lines=[`FundsTrace · ${graphViewIsFiltered()?'当前筛选视图':view.visibleIds?'当前邻域视图':'全部图谱'} ${view.index.nodeIds.size}/${state.lastGraph.nodes.length} 个账户 · ${view.index.edgeKeys.size}/${state.lastGraph.edges.length} 条关系 · 导出全部标签（屏幕：${{auto:'自动分级',focus:'关注邻域',all:'全部标签'}[view.labelMode]}）`];
-  if(filter.active)lines.push(`关系筛选：${filter.currency||'未标注币种'} · ${filter.min||'不限下界'} — ${filter.max||'不限上界'}；仅筛选显示，追踪数据未删除`);
-  if(encoding)lines.push(`金额→线宽：${encoding.currency||'未标注币种'} ${encoding.min_amount??'—'} — ${encoding.max_amount??'—'} · sqrt · ${window.FundsInvestigation?.active?.()?'当前时间窗口内':''}全追踪图统一比例 1.5–7`);
+  if(filter.active)lines.push(`关系筛选：${filter.currency||'未标注币种'} · ${filter.min||'不限下界'} — ${filter.max||'不限上界'}；金额范围相交的关系保留待核；追踪数据未删除`);
+  if(encoding)lines.push(`金额→线宽：${encoding.currency||'未标注币种'} ${encoding.min_amount??'—'} — ${encoding.max_amount??'—'} · sqrt · ${window.FundsInvestigation?.active?.()?'当前时间窗口内':''}全追踪图统一比例 1.5–7；未确定金额不映射线宽`);
   const temporal=window.FundsInvestigation?.description?.();if(temporal)lines.push(temporal);
-  if(state.lastGraph.analysis_revision)lines.push(`分析修订：${state.lastGraph.analysis_revision}；边上记录金额与已关联事件金额分别列示，均不表示来源本金`);
+  if(state.lastGraph.analysis_revision)lines.push(`分析修订：${state.lastGraph.analysis_revision}；金额按证据显示精确值或范围，不表示来源本金`);
   return lines;
 }
 function newGraphView(labelMode) {
@@ -2682,7 +2692,8 @@ async function loadGraph(retry = true, context = caseContext()) {
 }
 
 function nodeStyle(n) {
-  const role=n.out_cnt>0&&n.in_cnt>0?'mid':n.out_cnt>0?'src':'sink';
+  const outgoing=n.out_observation_count ?? n.out_cnt ?? 0, incoming=n.in_observation_count ?? n.in_cnt ?? 0;
+  const role=outgoing>0&&incoming>0?'mid':outgoing>0?'src':'sink';
   const fill={src:'#d77d79',mid:'#63b69d',sink:'#7ca6d5'}[role];
   const stroke=n.is_main===1?'#e8c46a':n.is_same_name===1?'#a79be0':{src:'#e7a19a',mid:'#9bd6bf',sink:'#b0c8e5'}[role];
   const {shape,icon,...custom}=state.presentation.nodeStyles?.[n.account]||{};
@@ -2793,7 +2804,8 @@ function syncNodeIdentityRings() {
 function nodeRing(n) {
   if (n.is_main === 1) return '#e8c46a';
   if (n.is_same_name === 1) return '#a79be0';
-  return (n.out_cnt > 0 && n.in_cnt > 0) ? '#63b69d' : (n.out_cnt > 0 ? '#d77d79' : '#7ca6d5');
+  const outgoing=n.out_observation_count ?? n.out_cnt ?? 0, incoming=n.in_observation_count ?? n.in_cnt ?? 0;
+  return (outgoing > 0 && incoming > 0) ? '#63b69d' : (outgoing > 0 ? '#d77d79' : '#7ca6d5');
 }
 
 // 有照片且开关打开时，节点用圆形头像替代圆点
@@ -2805,7 +2817,7 @@ function nodePhotoUrl(n) {
 
 function nodeSize(n) {
   const scale=state.focusNodes.get(n.account)||1;
-  const base=state.presentation.nodeStyles?.[n.account]?.size ?? (28+Math.min(24,(n.in_cnt+n.out_cnt)*2)+(n.is_main===1?6:n.is_same_name===1?3:0));
+  const base=state.presentation.nodeStyles?.[n.account]?.size ?? (28+Math.min(24,((n.in_observation_count ?? n.in_cnt ?? 0)+(n.out_observation_count ?? n.out_cnt ?? 0))*2)+(n.is_main===1?6:n.is_same_name===1?3:0));
   return Math.max(Math.round(base*scale),nodePhotoUrl(n)?Math.round(40*scale):0);
 }
 function nodeRenderSize(n) {
@@ -2834,12 +2846,7 @@ function edgeLabel(e) {
   const lines = [];
   const s = state.edgeLabels;
   if (s.has('money')) {
-    lines.push(`${fmtCount(e.cnt)}${e.event_summary?'条记录':'笔'}·${totalLabel(e.amount_totals, e.total, e.currencies?.[0])}`);
-    if(e.event_summary) {
-      const event=e.event_summary;
-      if(event.confirmed_events)lines.push(`已关联${fmtCount(event.confirmed_events)}事件·${totalLabel(event.confirmed_amount_totals,null)}`);
-      if(event.unknown_entries || event.conflict_entries)lines.push(`事件未定${fmtCount(event.unknown_entries)}条·冲突${fmtCount(event.conflict_entries)}条`);
-    }
+    lines.push(`${fundsCount(e.funds, e.cnt)}·${fundsTotal(e.funds, e.amount_totals, e.total, e.currencies?.[0])}`);
   }
   else if (s.has('currency') && e.currencies?.length) lines.push(e.currencies.join(' / '));
   if (s.has('summary')) {
@@ -2851,7 +2858,7 @@ function edgeLabel(e) {
     const t = fmtEdgeSpan(e.tmin, e.tmax);
     if (t) lines.push(t);
   }
-  return lines.join('\n') || `${e.cnt}笔`;
+  return lines.join('\n') || fundsCount(e.funds, e.cnt);
 }
 
 function renderGraph(rebinding = null) {
@@ -3926,13 +3933,11 @@ function renderNodeStats(workspace = nodeWorkspace) {
   if (!nodeWorkspaceIsCurrent(workspace) || !workspace.profile) return;
   const graph = workspace.scope === 'graph', values = graph ? workspace.node : workspace.profile;
   $('#ndScopeCase').setAttribute('aria-pressed', String(!graph)); $('#ndScopeGraph').setAttribute('aria-pressed', String(graph));
-  $('#ndStats').innerHTML = `<div><span>转入 ${fmtCount(values.in_cnt || 0)} 笔</span><strong>${totalsHtml(values.in_totals, values.in_amt)}</strong></div>
-    <div><span>转出 ${fmtCount(values.out_cnt || 0)} 笔</span><strong>${totalsHtml(values.out_totals, values.out_amt)}</strong></div>
+  $('#ndStats').innerHTML = `<div><span>转入 ${esc(fundsCount(values.in_funds, values.in_cnt))}</span><strong>${fundsTotalHtml(values.in_funds, values.in_totals, values.in_amt)}</strong></div>
+    <div><span>转出 ${esc(fundsCount(values.out_funds, values.out_cnt))}</span><strong>${fundsTotalHtml(values.out_funds, values.out_totals, values.out_amt)}</strong></div>
     <dl><div><dt>首笔时间</dt><dd>${esc(fmtTime(workspace.profile.tmin) || '—')}</dd></div><div><dt>末笔时间</dt><dd>${esc(fmtTime(workspace.profile.tmax) || '—')}</dd></div></dl>`;
   $('#ndStatsScope').hidden = !graph;
-  $('#ndStatsScope').textContent = graph ? state.lastGraph?.resolution
-    ? '已追踪流水 · 与流水表相同账务记录口径；时间范围为本案件'
-    : '已追踪流水 · 同一笔双方流水合并统计；时间范围为本案件' : '本案件全部流水';
+  $('#ndStatsScope').textContent = graph ? '已追踪流水 · 有据关联按事件统计，未确定部分显示范围；时间范围为本案件' : '本案件全部流水';
 }
 function renderNodeWorkspace(workspace) {
   if (!nodeWorkspaceIsCurrent(workspace)) return;
@@ -3956,7 +3961,7 @@ function renderNodeWorkspace(workspace) {
     <section class="node-section"><h3>身份资料</h3><div class="node-form-grid"><div><label for="ndIdInput">身份证号</label><div class="node-field"><input id="ndIdInput" placeholder="未填写" autocomplete="off" value="${esc(draft.idValue)}"><button class="btn small primary" id="ndIdSave" data-node-action type="button">保存</button></div></div><div class="node-photo"><span class="node-field-label">节点照片</span><div class="node-field">${photo ? `<img id="ndPhotoImg" class="node-photo-thumb" src="${esc(photo)}" alt="当前节点照片">` : ''}<span class="muted">${photo ? '已设置照片' : '未设置照片'}</span><input type="file" id="ndPhotoFile" accept=".jpg,.jpeg,.png,.webp,.bmp" hidden><button class="btn small" id="ndPhotoUp" data-node-action type="button">选择照片</button><button class="btn small icon-button" id="ndPhotoMore" data-node-action type="button" aria-label="照片操作" aria-haspopup="menu" aria-controls="nodePhotoMenu" aria-expanded="false"><img class="ui-icon" src="/static/ui-icons/dots.svg" alt=""></button></div></div></div></section>
     <section class="node-section"><h3>图谱显示</h3><div class="node-form-grid"><div><span class="node-field-label">主账号</span><div class="node-field"><span class="muted">${node.is_main === 1 ? '已标记' : '未标记'}</span><button class="btn small" id="ndToggleMain" data-node-action type="button">${node.is_main === 1 ? '取消主账号标记' : '设为主账号'}</button></div></div><div><label for="ndFocusScale">重点展示</label><div class="node-field"><select id="ndFocusScale"><option value="1">正常大小</option>${[1.5,2,2.5,3,3.5,4].map(value => `<option value="${value}" ${draft.focusValue === value ? 'selected' : ''}>放大 ${value} 倍</option>`).join('')}</select><button class="btn small primary" id="ndFocusApply" data-node-action type="button">应用</button></div></div></div></section>
     <section class="node-section node-statistics"><div class="node-section-head"><h3>交易统计</h3><div class="node-scope" role="group" aria-label="统计范围"><button id="ndScopeCase" class="btn small" type="button" aria-pressed="true">本案件</button><button id="ndScopeGraph" class="btn small" type="button" aria-pressed="false">当前图谱</button></div></div><div id="ndStats" class="node-stats"></div><p id="ndStatsScope" class="muted"></p></section>
-    <section class="node-ledger" aria-labelledby="ndCounterTitle"><h3 id="ndCounterTitle">交易对手 TOP20 <span>本案件</span></h3><div id="ndCounterScroll" class="node-table-scroll" tabindex="0" role="region" aria-label="账户交易对手，可水平滚动"><table id="ndCounterTable" class="tbl"><thead><tr><th>对手</th><th>转入</th><th>转出</th><th>操作</th></tr></thead><tbody id="ndCounterTbody">${(profile.top_counterparties || []).map(counter => `<tr><td><b>${esc(counter.name || '(未知)')}</b><span class="mono">${esc(counter.display_account || counter.acct)}</span></td><td>${fmtCount(counter.in_cnt || 0)} 笔<br><span class="amt">${totalsHtml(counter.in_totals, counter.in_amt)}</span></td><td>${fmtCount(counter.out_cnt || 0)} 笔<br><span class="amt">${totalsHtml(counter.out_totals, counter.out_amt)}</span></td><td class="node-counter-action"><button class="btn small" type="button" data-node-action data-node-counter="${esc(counter.acct)}" aria-label="查看与${esc(counter.name || counter.display_account || counter.acct)}的交易流水">查看流水</button></td></tr>`).join('') || '<tr><td colspan="4" class="edge-empty">暂无交易对手</td></tr>'}</tbody></table></div><div class="flow-horizontal-scroll node-horizontal-scroll" role="group" aria-label="账户交易对手表格水平滚动"><button id="ndScrollLeft" class="btn small icon-button" type="button" aria-label="账户交易对手向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><input id="ndHorizontalPosition" type="range" min="0" max="0" value="0" aria-label="账户交易对手水平位置"><button id="ndScrollRight" class="btn small icon-button" type="button" aria-label="账户交易对手向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div></section>
+    <section class="node-ledger" aria-labelledby="ndCounterTitle"><h3 id="ndCounterTitle">交易对手 TOP20 <span>本案件</span></h3><div id="ndCounterScroll" class="node-table-scroll" tabindex="0" role="region" aria-label="账户交易对手，可水平滚动"><table id="ndCounterTable" class="tbl"><thead><tr><th>对手</th><th>转入</th><th>转出</th><th>操作</th></tr></thead><tbody id="ndCounterTbody">${(profile.top_counterparties || []).map(counter => `<tr><td><b>${esc(counter.name || '(未知)')}</b><span class="mono">${esc(counter.display_account || counter.acct)}</span></td><td>${esc(fundsCount(counter.in_funds, counter.in_cnt))}<br><span class="amt">${fundsTotalHtml(counter.in_funds, counter.in_totals, counter.in_amt)}</span></td><td>${esc(fundsCount(counter.out_funds, counter.out_cnt))}<br><span class="amt">${fundsTotalHtml(counter.out_funds, counter.out_totals, counter.out_amt)}</span></td><td class="node-counter-action"><button class="btn small" type="button" data-node-action data-node-counter="${esc(counter.acct)}" aria-label="查看与${esc(counter.name || counter.display_account || counter.acct)}的交易流水">查看流水</button></td></tr>`).join('') || '<tr><td colspan="4" class="edge-empty">暂无交易对手</td></tr>'}</tbody></table></div><div class="flow-horizontal-scroll node-horizontal-scroll" role="group" aria-label="账户交易对手表格水平滚动"><button id="ndScrollLeft" class="btn small icon-button" type="button" aria-label="账户交易对手向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><input id="ndHorizontalPosition" type="range" min="0" max="0" value="0" aria-label="账户交易对手水平位置"><button id="ndScrollRight" class="btn small icon-button" type="button" aria-label="账户交易对手向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div></section>
     <div class="node-status-row"><span id="ndDirty" role="status"></span><span id="ndStatus" role="status" aria-live="polite">${esc(draft.status || '')}</span></div><footer class="node-footer"><span>仅当前案件</span><button id="ndMore" class="btn small" data-node-action type="button" aria-label="账户更多操作" aria-haspopup="menu" aria-controls="nodeMenu" aria-expanded="false"><img class="ui-icon" src="/static/ui-icons/dots.svg" alt="">更多操作</button></footer>`;
   $('#ndFocusScale').value = String(draft.focusValue);
   const capture = () => { captureNodeDraft(workspace); draft.status = ''; $('#ndStatus').textContent = ''; syncNodeWorkspaceControls(workspace); };
@@ -4274,11 +4279,10 @@ async function showEdgeDrawer(model, item) {
   for (const draft of nodeDrafts.values()) draft.focusIntent = null;
   disposeEdgeWorkspace(); selectItem(item);
   const view = state.graphView, data = model.data || model;
+  const displayAccount = account => (state.lastGraph?.nodes || []).find(node => String(node.account) === String(account))?.display_account || account;
   const start = fmtTime(data.tmin), end = fmtTime(data.tmax);
   const span = start && end ? `${start} — ${start.slice(0, 10) === end.slice(0, 10) ? end.slice(11) : end}` : start || end || '—';
-  const totals = Array.isArray(data.amount_totals) && data.amount_totals.length
-    ? data.amount_totals.map(total => `<span>${moneyHtml(total.amount, total.currency)}</span>`).join('')
-    : `<span>${totalsHtml(null, data.total, data.currencies?.[0])}</span>`;
+  const totals = `<span>${fundsTotalHtml(data.funds, data.amount_totals, data.total, data.currencies?.[0])}</span>`;
   const workspace = edgeWorkspace = { context: caseContext(), sequence: ++drawerSequence, view,
     revision: view.revision, key: edgeKey(model), data, ids: [...(model.ids || data.ids || [])],
     rows: [], total: data.cnt || 0, readSequence: 0, phase: 'loading', menu: null, closed: false };
@@ -4289,9 +4293,9 @@ async function showEdgeDrawer(model, item) {
   $('#drawer').classList.remove('account-detail');
   $('#drawer').classList.add('edge-detail', 'open'); $('#drawer').inert = false;
   $('#drawer').setAttribute('aria-hidden', 'false');
-  $('#drawerBody').innerHTML = `<div class="edge-parties"><div><span>付款方</span><b>${esc(data.source_name || '未提供户名')}</b><span class="mono">${esc(data.source || model.source)}</span></div><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt="转至"><div><span>收款方</span><b>${esc(data.target_name || '未提供户名')}</b><span class="mono">${esc(data.target || model.target)}</span></div></div>
-    <dl class="edge-facts"><div class="edge-coverage"><dt>已追踪</dt><dd>${fmtCount(data.cnt || 0)} 笔</dd></div><div class="edge-totals"><dt class="sr-only">分币种合计</dt><dd>${totals}</dd></div><div class="edge-span"><dt>时间跨度</dt><dd>${esc(span)}</dd></div></dl>
-    <section class="edge-ledger" aria-labelledby="edgeLedgerTitle"><h3 id="edgeLedgerTitle">已追踪流水<span>${fmtCount(data.cnt || 0)} 笔</span></h3>
+  $('#drawerBody').innerHTML = `<div class="edge-parties"><div><span>付款方</span><b>${esc(data.source_name || '未提供户名')}</b><span class="mono">${esc(displayAccount(data.source || model.source))}</span></div><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt="转至"><div><span>收款方</span><b>${esc(data.target_name || '未提供户名')}</b><span class="mono">${esc(displayAccount(data.target || model.target))}</span></div></div>
+    <dl class="edge-facts"><div class="edge-coverage"><dt>已追踪</dt><dd>${esc(fundsCount(data.funds, data.cnt))}</dd></div><div class="edge-totals"><dt class="sr-only">分币种合计</dt><dd>${totals}</dd></div><div class="edge-span"><dt>时间跨度</dt><dd>${esc(span)}</dd></div></dl>
+    <section class="edge-ledger" aria-labelledby="edgeLedgerTitle"><h3 id="edgeLedgerTitle">已追踪流水<span>${esc(fundsCount(data.funds, data.cnt))}</span></h3>
       <div class="edge-table-scroll" id="edgeTableScroll" tabindex="0" role="region" aria-label="资金流向已追踪流水，可水平滚动"><table class="tbl" id="edgeTable"><thead><tr><th scope="col">时间</th><th scope="col" class="amt">金额</th><th scope="col">摘要</th><th scope="col">操作</th></tr></thead><tbody id="edgeTbody"></tbody></table></div>
       <div class="flow-horizontal-scroll edge-horizontal-scroll" role="group" aria-label="资金流向表格水平滚动"><button class="btn small" id="edgeScrollLeft" type="button" aria-label="资金流向向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><input id="edgeHorizontalPosition" type="range" min="0" max="0" value="0" step="1" disabled aria-label="资金流向水平位置" aria-controls="edgeTableScroll"><button class="btn small" id="edgeScrollRight" type="button" aria-label="资金流向向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div>
     </section><p class="workflow-status" id="edgeStatus" role="status" aria-live="polite"></p><footer class="edge-footer"><span id="edgeDisplayed"></span><span>仅当前图谱</span></footer>`;
@@ -4322,7 +4326,7 @@ async function removeEdgeFlow() {
   closeEdgeMenu(true); workspace.phase = 'removing';
   $('#edgeStatus').textContent = '正在移出当前图谱…'; syncEdgeWorkspaceControls(workspace);
   try {
-    const result = await untrackFlows([flow.id]);
+    const result = await untrackFlows(flowObservationIds(flow));
     if (!edgeWorkspaceIsCurrent(workspace)) return;
     if (result === true) {
       const item = state.graphView.edgeItems.get(workspace.key);
@@ -4506,7 +4510,9 @@ function renderSuggestions(r) {
     return `<section class="sgroup"><h4 class="sg-title">${title}<span>${note}</span></h4>${visible.length
       ? `<div class="sg-items">${visible.map(item).join('')}</div>` : '<p class="sg-empty">当前范围暂无匹配线索</p>'}</section>`;
   };
-  wrap.innerHTML = group('疑似来源', '锚点前转入', suggestions.sources) + group('疑似去向', '锚点后转出', suggestions.targets);
+  const principalNote = window.FundsFacts?.principal(r.principal) || '';
+  wrap.innerHTML = group('疑似来源', '锚点前转入', suggestions.sources) + group('疑似去向', '锚点后转出', suggestions.targets)
+    + (principalNote ? `<p class="context-score-note">${esc(principalNote).replaceAll('\n', '<br>')}</p>` : '');
   wrap.querySelectorAll('.sg-item').forEach(button => {
     button.onclick = () => {
       if (!contextIsCurrent(selection, context) || selection.phase !== 'ready' || !button.isConnected || button.disabled) return;
@@ -4892,9 +4898,9 @@ function installExportWorkspace(options) {
     $('#exportContext').textContent = `当前案件：${labels.caseName} · 画布：${labels.canvasName}`;
     $('#exportScope').textContent = format === 'xlsx' ? '当前画布的全部追踪流水' : scope.description || '当前图谱范围';
     $('#exportContents').textContent = format === 'xlsx'
-      ? `${count(scope.trackedFlows)} 笔追踪流水 · 待调取账号`
+      ? `${window.FundsFacts.count(scope.funds)} · ${count(scope.funds?.observation_count ?? scope.trackedFlows)} 条原始观察 · 待调取账号`
       : `${count(scope.graphAccounts)} 个账户 · ${count(scope.graphRelations)} 条关系`;
-    $('#exportPreserves').textContent = format === 'xlsx' ? '追踪流水、待调取账号两张工作表'
+    $('#exportPreserves').textContent = format === 'xlsx' ? '追踪流水、资金统计、原始账簿观察、待调取账号及修订／口径说明'
       : format === 'html' ? '当前布局、样式及当前可见标签' : '当前布局、样式及全部标签';
     for (const input of inputs) { input.checked = input.value === format; input.disabled = !!pending; }
     const locked = !!pending && phase === 'capturing';
@@ -5050,7 +5056,7 @@ function installCaseWorkspace() {
   return window.FundsCaseWorkspace.create({
     document, context: caseContext, isCurrent: isCurrentCase, autoOpenCreated: true,
     readSummary: () => ({ name: state.cases.find(item => item.id === state.caseId)?.name || String(state.caseId || '未选择'),
-      canvasName: state.canvasName || '默认画布', flows: state.stats.flows || 0,
+      canvasName: state.canvasName || '默认画布', flows: state.stats.flows, funds: state.stats.funds,
       accounts: state.stats.accounts || 0, defaultCase: state.caseId === 1 }),
     listCases: refreshManagedCases,
     listCanvases: context => caseRequest(`/api/canvases?case_id=${context.caseId}`),
@@ -5387,7 +5393,7 @@ function bindUI() {
     const tr = e.target.closest('tr[data-id]');
     if (!tr) return;
     const id = Number(tr.dataset.id);
-    if (e.target.closest('.act-track')) { trackFlows([id]); return; }
+    if (e.target.closest('.act-track')) { trackFlows(flowObservationIds(tr)); return; }
     openContext(id);
   });
   $('#flowTbody').addEventListener('keydown', event => {
@@ -5416,7 +5422,7 @@ function bindUI() {
   };
   // 批量追踪：勾选的每笔流水自动取来源/去向的最近 X 笔（仅本方账单）上图
   $('#btnBulkTrack').onclick = async () => {
-    const ids = $$('#flowTbody .flow-ck').filter(c => c.checked).map(c => Number(c.dataset.id));
+    const ids = [...new Set($$('#flowTbody .flow-ck').filter(c => c.checked).flatMap(flowObservationIds))];
     if (!ids.length) return toast('请先勾选要追踪的流水', 'err');
     const dir = $('#bulkDir').value;
     const x = Math.max(1, Math.min(50, Number($('#bulkX').value) || 5));
@@ -5667,6 +5673,10 @@ function bindUI() {
       return JSON.parse(JSON.stringify(result));
     };
     const scope = options.scope === 'all' ? 'all' : 'visible', embedPhotos=options.embedPhotos!==false;
+    const projection = scope === 'visible' ? window.FundsInvestigation?.displayGraph(state.lastGraph) || state.lastGraph : state.lastGraph;
+    const projectionMetadata = metadata(projection, ['analysis_revision', 'statistics_policy']);
+    if (projection.funds) Object.assign(projectionMetadata, { source_funds: metadata(projection, ['funds']).funds,
+      source_funds_scope: scope === 'visible' && window.FundsInvestigation?.active?.() ? 'time_window_selection' : 'tracked_selection' });
     const liveNodes = g.getNodes(), liveEdges = g.getEdges();
     const nodeItems=new Map(liveNodes.map(item=>[item.getModel().id,item]));
     const nodeModels = new Map(liveNodes.map(item => [item.getModel().id, item.getModel()]));
@@ -5694,7 +5704,7 @@ function bindUI() {
         labelOffset:{x:offset?offset.x-offset.baseX:0,y:offset?offset.y-offset.baseY:0},
         ...(nodePhotoUrl(source)&&custom?{photoBorder:{stroke:custom.stroke||nodeRing(source),lineWidth:custom.lineWidth||1.5}}:{}),
         labelVisible: scope === 'all' || !state.graphView.policy || state.graphView.policy.nodeIds.has(m.id),
-        data: metadata(source, ['out_cnt', 'in_cnt', 'out_amt', 'in_amt', 'out_totals', 'in_totals', 'is_main', 'is_same_name']),
+        data: metadata(source, ['out_cnt', 'in_cnt', 'out_amt', 'in_amt', 'out_totals', 'in_totals', 'out_funds', 'in_funds', 'out_observation_count', 'in_observation_count', 'is_main', 'is_same_name']),
       } };
     });
     const edgeSources = scope === 'all' ? state.lastGraph.edges : liveEdges.map(item => item.getModel().data || item.getModel());
@@ -5726,7 +5736,7 @@ function bindUI() {
         ly: !item&&hasRatio?null:text ? +(text.attr('y') || 0).toFixed(2) : savedLabel.ly ?? null,
         bw: background != null ? background.attr('width') : savedLabel.bw ?? null,
         bh: background != null ? background.attr('height') : savedLabel.bh ?? null,
-        data: metadata(scope==='all'?source:m.data || {}, ['cnt', 'ids', 'amount_totals', 'total', 'currencies', 'event_summary']),
+        data: metadata(scope==='all'?source:m.data || {}, ['cnt', 'ids', 'amount_totals', 'total', 'currencies', 'funds', 'event_summary']),
       };
     });
     for (const entry of prepared) {
@@ -5749,7 +5759,7 @@ function bindUI() {
       presentation: newGraphPresentation(state.presentation),
       display: { layout:state.layout,edgeType:state.edgeType,edgeLabels:[...state.edgeLabels],showIds:state.showIds,showPhotos:state.showPhotos,
         labelMode:view.labelMode,labelRenderPolicy:'clean-midpoint-v1' },
-      view: {scope, ...(state.lastGraph.analysis_revision ? {analysis_revision:state.lastGraph.analysis_revision}:{}), ...(state.lastGraph.resolution ? { statistics_policy: state.lastGraph.statistics_policy, resolution_revision: state.lastGraph.resolution.revision } : {}), mode: graphViewIsFiltered() ? 'filtered' : state.graphView.visibleIds ? 'neighborhood' : 'overview',
+      view: {scope, ...projectionMetadata, ...(state.lastGraph.resolution ? { statistics_policy: state.lastGraph.statistics_policy, resolution_revision: state.lastGraph.resolution.revision } : {}), mode: graphViewIsFiltered() ? 'filtered' : state.graphView.visibleIds ? 'neighborhood' : 'overview',
         ...(scope==='visible'&&window.FundsInvestigation?.exportWindow?.()?{time_window:window.FundsInvestigation.exportWindow()}:{}),
         ...(snapshotWidths?{amount_width:graphAmountWidthMetadata(snapshotWidths)}:{}),
         ...(relationFilter.active ? {relation_filter:{currency:relationFilter.currency,min:relationFilter.min||null,max:relationFilter.max||null}} : {}),
@@ -5815,7 +5825,7 @@ function bindUI() {
     getLabels: () => ({ caseName: state.cases.find(item => item.id === state.caseId)?.name || String(state.caseId || '未选择'),
       canvasName: state.canvasName || '默认画布' }),
     getScope: () => ({ graphAccounts: state.graph?.getNodes?.().length || 0,
-      graphRelations: state.graph?.getEdges?.().length || 0, trackedFlows: state.tracked.size,
+      graphRelations: state.graph?.getEdges?.().length || 0, trackedFlows: state.tracked.size, funds: state.lastGraph?.funds,
       description: graphImageExportLines().join('\n'),
       pendingLayout: !!layoutJob,
       graphReady: !!state.graph && state.graphInited && !state.graphLoading && !cancelAnnotationDrag

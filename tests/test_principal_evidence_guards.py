@@ -2,10 +2,11 @@
 import csv
 import io
 import json
+from datetime import datetime
 
 import pytest
 
-from app import event_resolution
+from app import event_resolution, principal, principal_ledger
 from test_event_import import csv_rows, transaction
 from test_folder_evidence import accepted
 
@@ -37,6 +38,23 @@ def analyze(client, case_id):
     response = client.post("/api/analysis/principal", json=request_for(client, case_id))
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def conditioned_order(client, case_id):
+    """Test local order evidence without declaring public ledger completeness."""
+    body = request_for(client, case_id)
+    loaded = principal_ledger.read(case_id, body["account"], body["currency"],
+        datetime.fromisoformat(body["start"]), datetime.fromisoformat(body["end"]))
+    assert loaded["status"] == "ready", loaded
+    metadata = event_resolution.ledger_metadata(case_id, [row["id"] for row in loaded["rows"]])
+    return principal_ledger.ordered(loaded["rows"], 0, metadata, "unknown")
+
+
+def conditioned_targets(client, case_id):
+    entries, reason = conditioned_order(client, case_id)
+    assert reason is None
+    body = request_for(client, case_id)
+    return principal.allocate_ledger(0, entries, {body["source_flow_id"]}, body["target_flow_ids"])["targets"]
 
 
 def competing_rows():
@@ -71,8 +89,9 @@ def test_same_upload_different_members_do_not_share_posting_order(client, make_c
     accepted(client, cid, [(f"ledger-{index}.csv", csv_rows([row]))
                            for index, row in enumerate(competing_rows())], scope_bank=None)
     result = analyze(client, cid)
-    assert result["status"] == "unknown" and result["reasons"] == ["posting_order_unknown"]
+    assert result["status"] == "unknown" and "ledger_coverage_unknown" in result["reasons"]
     assert result["targets"] == []
+    assert conditioned_order(client, cid) == (None, "posting_order_unknown")
 
 
 def test_one_member_one_region_order_survives_replay_and_package(client, make_case):
@@ -80,17 +99,22 @@ def test_one_member_one_region_order_survives_replay_and_package(client, make_ca
     inputs = [("ledger.csv", csv_rows(competing_rows()))]
     accepted(client, cid, inputs, scope_bank=None)
     result = analyze(client, cid)
-    assert result["status"] == "ok"
-    assert (result["targets"][0]["min"], result["targets"][0]["max"], result["targets"][0]["fifo"]) == ("0.00", "0.00", "0.00")
+    assert result["status"] == "unknown" and "ledger_coverage_unknown" in result["reasons"]
+    assert result["targets"] == []
+    targets = conditioned_targets(client, cid)
+    assert (targets[0]["min"], targets[0]["max"], targets[0]["fifo"]) == (0, 0, 0)
     _, replay = accepted(client, cid, inputs, scope_bank=None, zipped=True)
     assert (replay["ok"], replay["rows_dup"]) == (0, 4)
     assert analyze(client, cid)["targets"] == result["targets"]
+    assert conditioned_targets(client, cid) == targets
     package = client.get(f"/api/cases/{cid}/export")
     assert package.status_code == 200
     restored = client.post("/api/cases/import", files={"file": ("synthetic.fundcase", package.content)})
     assert restored.status_code == 200, restored.text
     restored_result = analyze(client, restored.json()["case_id"])
-    assert restored_result["status"] == "ok" and restored_result["targets"][0]["max"] == "0.00"
+    assert restored_result["status"] == "unknown" and restored_result["targets"] == []
+    restored_targets = conditioned_targets(client, restored.json()["case_id"])
+    assert (restored_targets[0]["min"], restored_targets[0]["max"], restored_targets[0]["fifo"]) == (0, 0, 0)
     report = client.post("/api/analysis/principal/export", json={**request_for(client, cid), "expected_revision": analyze(client, cid)["revision"]})
     assert report.status_code == 200
     assert "order_scopes" not in report.text and "posting_scope" not in report.text
@@ -107,15 +131,17 @@ def test_repeated_header_starts_an_independent_posting_region(client, database, 
     writer.writerows(rows[2:])
     accepted(client, cid, [("ledger.csv", output.getvalue().encode("utf-8-sig"))], scope_bank=None)
     result = analyze(client, cid)
-    assert result["status"] == "unknown" and result["reasons"] == ["posting_order_unknown"]
+    assert result["status"] == "unknown" and "ledger_coverage_unknown" in result["reasons"]
     assert result["targets"] == []
+    assert conditioned_order(client, cid) == (None, "posting_order_unknown")
     declarations = database.q_raw("select details_json from import_records where case_id=? and disposition='imported' order by source_row", [cid])
     assert [json.loads(json.loads(row["details_json"])[event_resolution.LEDGER_FIELD])["posting_scope"]
             for row in declarations] == ["1", "1", "4", "4"]
     package = client.get(f"/api/cases/{cid}/export")
     restored = client.post("/api/cases/import", files={"file": ("synthetic.fundcase", package.content)})
     assert restored.status_code == 200, restored.text
-    assert analyze(client, restored.json()["case_id"])["reasons"] == ["posting_order_unknown"]
+    assert "ledger_coverage_unknown" in analyze(client, restored.json()["case_id"])["reasons"]
+    assert conditioned_order(client, restored.json()["case_id"]) == (None, "posting_order_unknown")
 
 
 @pytest.mark.parametrize("scope", ["2", "999999", ""])

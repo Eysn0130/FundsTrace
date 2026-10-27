@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """智能分析算法集：资金追踪第一梯队（图结构）+ 第二梯队（统计模式）
 
-所有算法基于当前案件的双边流水（DuckDB），输出 JSON 可序列化的结构化结果。
+所有算法基于当前案件的已确认事件和未决观察，输出 JSON 可序列化的结构化结果。
 设计原则：可解释优先——每个结果都附带可用于办案的量化依据。
 """
 import re
@@ -12,6 +12,7 @@ from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 
 from .money import money_decimal
+from . import funds_projection
 
 ZERO = Decimal("0.00")
 CENT = Decimal("0.01")
@@ -20,7 +21,8 @@ MONEY_CONTRACT = {
     "version": "funds-money.v1",
     "amounts": "exact decimal strings with two fractional digits",
     "currency": "independent groups; no implicit conversion or cross-currency pairing",
-    "totals": "exact sum of the displayed transaction legs, not conserved principal",
+    "totals": "evidence-bounded sum of distinct transaction events; unresolved observations are ranges, not conserved principal",
+    "temporal_basis": "representative observation timestamps; rule candidates, not proven event order",
     "avg_amount": "decimal mean rounded to cents using ROUND_HALF_EVEN",
     "approximate_metrics": ["z", "sigma", "span_days", "max_delay_min", "tolerance", "return_ratio"],
 }
@@ -31,20 +33,79 @@ def _pt(s):
 
 
 def load_flows(case_id):
-    rows = db_q("select id, trade_no, trade_time, amount, balance, currency, self_account, summary, "
-                "payer_account, payer_name, payee_account, payee_name, payer_display_account, payee_display_account, raw_payer_account, raw_payee_account, "
+    rows = db_q(funds_projection.cte("select * from effective_flows where case_id = ?") +
+                "select f.*, "
                 "(select json_extract_string(e.details_json,'$.cards[*]') from resolution_entities e where e.case_id=f.case_id and e.entity_id=f.payer_account) payer_aliases, "
                 "(select json_extract_string(e.details_json,'$.cards[*]') from resolution_entities e where e.case_id=f.case_id and e.entity_id=f.payee_account) payee_aliases, "
                 "(select e.account_number from resolution_entities e where e.case_id=f.case_id and e.entity_id=f.payer_account) payer_account_number, "
                 "(select e.account_number from resolution_entities e where e.case_id=f.case_id and e.entity_id=f.payee_account) payee_account_number "
-                "from effective_flows f where f.case_id = ? order by f.trade_time, f.id", [case_id])
+                "from selected_facts f order by f.trade_time, f.id", [case_id])
     for row in rows:
-        row["amount"] = money_decimal(row["amount"]) if row["amount"] is not None else ZERO
+        row["amount"] = money_decimal(row["amount"]) if row["amount"] is not None else None
         row["balance"] = money_decimal(row["balance"]) if row["balance"] is not None else None
-        row["currency"] = row.get("currency") or ""
         if isinstance(row["trade_time"], _dt):
             row["trade_time"] = row["trade_time"].strftime("%Y-%m-%d %H:%M:%S")
+        elif row["trade_time"] is None:
+            row["trade_time"] = ""
     return rows
+
+
+def _project_results(rows, result_key, group):
+    """Expose evidence ranges without turning observed rule candidates into facts."""
+    if rows and any("fact_status" not in row for row in rows):
+        return
+    by_id = {str(row["id"]): row for row in rows}
+
+    def project(selected):
+        return funds_projection.summarize_rows(selected)
+
+    def scalar(funds):
+        value = funds_projection.public_fields(funds)["total"]
+        return money_decimal(value) if value is not None else None
+
+    def leg(value):
+        selected = by_id.get(str(value.get("id")))
+        if selected is None:
+            return
+        value["funds"] = project([selected])
+        value["granularity"] = "confirmed_event" if selected["fact_status"] == "confirmed" else "unresolved_observation"
+        value["observation_count"] = selected["observation_count"]
+        value["observation_amount"] = selected.get("observation_amount", selected["amount"])
+        value["amount"] = scalar(value["funds"])
+
+    group["funds"] = project(rows)
+    group["statistics_policy"] = funds_projection.POLICY
+    for item in group[result_key]:
+        if result_key in {"paths", "cycles"}:
+            legs = item["path" if result_key == "paths" else "edges"]
+            selected = [by_id[key] for key in dict.fromkeys(str(value["id"]) for value in legs)]
+            item["funds"] = project(selected)
+            item["total"] = scalar(item["funds"])
+            item["metric_basis"] = "confirmed_events" if item["funds"]["status"] == "exact" else "observation_clue"
+            for value in legs:
+                leg(value)
+            if result_key == "cycles":
+                item["first_outflow"] = legs[0]["amount"]
+                item["last_inflow"] = legs[-1]["amount"]
+        elif result_key == "pairs":
+            incoming, outgoing = item["in_flow"], item["out_flows"]
+            item["in_funds"] = project([by_id[str(incoming["id"])]])
+            item["out_funds"] = project([by_id[str(value["id"])] for value in outgoing])
+            item["funds"] = project([by_id[str(value["id"])] for value in [incoming, *outgoing]])
+            item["out_total"] = scalar(item["out_funds"])
+            item["metric_basis"] = "confirmed_events" if item["funds"]["status"] == "exact" else "observation_clue"
+            leg(incoming)
+            for value in outgoing:
+                leg(value)
+            if item["metric_basis"] != "confirmed_events":
+                item["diff"] = None
+        elif result_key == "outliers":
+            selected = [row for row in rows if item["account"] in (row["payer_account"], row["payee_account"])]
+            item["funds"] = project(selected)
+            item["metric_basis"] = "confirmed_events" if item["funds"]["status"] == "exact" else "observation_clue"
+            if item["metric_basis"] == "observation_clue":
+                item["observation_value"] = item["value"]
+                item["value"] = None
 
 
 def _grouped(flows, algorithm, result_key, **options):
@@ -55,7 +116,7 @@ def _grouped(flows, algorithm, result_key, **options):
     """
     groups = defaultdict(list)
     for flow in flows:
-        groups[flow["currency"]].append(flow)
+        groups[flow.get("currency") or ""].append(flow)
     by_currency = []
     combined = []
     # DECIMAL(18,2) rows can produce larger totals; do not inherit a small
@@ -63,7 +124,13 @@ def _grouped(flows, algorithm, result_key, **options):
     with localcontext() as context:
         context.prec = 50
         for currency, rows in sorted(groups.items()):
-            group = algorithm(rows, **options)
+            candidates = [row for row in rows if row["amount"] is not None and row["amount"] >= 0
+                          and (result_key not in {"cycles", "pairs"} or row.get("trade_time"))]
+            group = algorithm(candidates, **options)
+            candidate_ids = {row["id"] for row in candidates}
+            group["unassessed_observations"] = sum(row.get("observation_count", 1) for row in rows
+                                                   if row["id"] not in candidate_ids)
+            _project_results(rows, result_key, group)
             for result in group[result_key]:
                 result["currency"] = currency
             group["currency"] = currency
@@ -79,8 +146,12 @@ def _grouped(flows, algorithm, result_key, **options):
                           else sum(search[key] for search in searches)
                           for key in searches[0]}
         base["truncated"] = any(group["truncated"] for group in by_currency)
-    return {**base, result_key: combined, "count": len(combined),
-            "by_currency": by_currency, "money_contract": MONEY_CONTRACT}
+    result = {**base, result_key: combined, "count": len(combined),
+              "by_currency": by_currency, "money_contract": MONEY_CONTRACT,
+              "unassessed_observations": sum(group.get("unassessed_observations", 0) for group in by_currency)}
+    if not flows or all("fact_status" in row for row in flows):
+        result["funds"] = funds_projection.summarize_rows(flows)
+    return result
 
 
 # db 由 analysis_routes 注入，避免循环导入
@@ -233,7 +304,7 @@ def _trace_paths(flows, src, dst, max_hops, max_paths, neighbor_limit, order="am
             if nxt in visited:
                 continue
             visited.add(nxt)
-            path.append({"from": node, "from_name": names.get(node, ""), "to": nxt,
+            path.append({"id": f["id"], "from": node, "from_name": names.get(node, ""), "to": nxt,
                          "to_name": names.get(nxt, ""), "amount": amt,
                          "time": f["trade_time"], "no": f["trade_no"] or "",
                          "currency": f["currency"]})
@@ -521,7 +592,7 @@ def _account_outliers(flows, sigma, top, subjects):
                                  "counter": set(), "amts": []})
     for f in flows:
         a = f["amount"] or ZERO
-        parties = (f["payer_account"], f["payee_account"])
+        parties = tuple(dict.fromkeys((f["payer_account"], f["payee_account"])))
         if sub is not None:
             parties = tuple(x for x in parties if x in sub)
         for acct in parties:
@@ -531,8 +602,9 @@ def _account_outliers(flows, sigma, top, subjects):
             x["cnt"] += 1
             x["total"] += a
             x["amts"].append(a)
-            hh = int(f["trade_time"][11:13])
-            if hh >= 22 or hh < 6:
+            hour = str(f.get("trade_time") or "")[11:13]
+            hh = int(hour) if hour.isdigit() else None
+            if hh is not None and (hh >= 22 or hh < 6):
                 x["night"] += 1
             if a > 0 and (a % 10000) == 0:
                 x["round"] += 1
@@ -607,8 +679,12 @@ def run_all(case_id, params=None):
         flows = load_flows(case_id)
         coverage = import_coverage(case_id)
     accounts = {flow[key] for flow in flows for key in ("payer_account", "payee_account") if flow[key]}
-    out = {"case_id": case_id, "subjects": subjects, "algorithms": list(algorithms), "money_contract": MONEY_CONTRACT,
-           "source_snapshot": {"flows": len(flows), "accounts": len(accounts), "import_coverage": coverage}}
+    funds = funds_projection.summarize_rows(flows)
+    fields = funds_projection.public_fields(funds)
+    out = {"case_id": case_id, "funds": funds, "statistics_policy": funds_projection.POLICY, "subjects": subjects, "algorithms": list(algorithms), "money_contract": MONEY_CONTRACT,
+           "source_snapshot": {"flows": fields["cnt"], "accounts": len(accounts), "import_coverage": coverage,
+               "funds": funds, "amount_total": fields["total"], "amount_totals": fields["amount_totals"],
+               "statistics_policy": funds_projection.POLICY}}
     if "cycles" in algorithms:
         out["cycles"] = find_cycles(case_id, max_len=p.get("cycle_max_len", 4), max_cycles=p.get("cycle_max", 30),
                                     window_days=p.get("cycle_window_days", 7), min_total=p.get("cycle_min_total", 0),

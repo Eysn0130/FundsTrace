@@ -695,7 +695,8 @@ def _provenance_metadata(provenance, filename, mode, rows):
         from .feedback_import import SUPPORTED_PROFILES, MAPPING
         if source["parser_version"] not in SUPPORTED_PROFILES or mode != "B" or mapping != MAPPING:
             raise ImportError("反馈包来源规则无效")
-    positions = set()
+    from .import_staging import StagedSequence
+    positions = rows.store.mapping() if isinstance(rows, StagedSequence) else set()
     for row in rows:
         position = row.get("_source_row")
         if (type(position) is not int or position <= 0 or position in positions
@@ -704,7 +705,10 @@ def _provenance_metadata(provenance, filename, mode, rows):
             raise ImportError("来源行号或工作表无效")
         if source["row_kind"] in ("archive_record", "table_record") and not re.fullmatch(r"[0-9a-f]{64}", row.get("_record_key", "")):
             raise ImportError("反馈包记录身份无效")
-        positions.add(position)
+        if isinstance(positions, set):
+            positions.add(position)
+        else:
+            positions[position] = True
     return source
 
 
@@ -718,6 +722,12 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
     去重规则：所有导入列完全一致才判为重复——任一列（如余额、摘要、对手）不同均视为不同流水。"""
     source = _provenance_metadata(provenance, filename, mode, rows) if provenance is not None else None
     from . import table_archive, table_import
+    from . import evidence_resolution
+    from .import_staging import StagedSequence
+    if isinstance(rows, StagedSequence) and source is not None and source["parser_version"] in evidence_resolution.PROFILES:
+        if standalone_csv_keys is not None:
+            raise ImportError("证据来源不接受历史CSV替代身份")
+        return _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, source)
     if standalone_csv_keys is not None:
         if (source is None or source["row_kind"] != table_import.ROW_KIND
                 or source["parser_version"] not in table_archive.SUPPORTED_PROFILES
@@ -967,3 +977,111 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
         from . import analysis_snapshot
         analysis_snapshot.invalidate(case_id)
         return st
+
+
+def _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, source):
+    """Bounded writer, retaining one source/batch and the caller's transaction."""
+    from . import evidence_resolution, analysis_snapshot
+    from .import_staging import PLAN_CHUNK_BYTES, _encode_value
+    fields = ["trade_no", "trade_time", "payer_name", "payer_account", "payer_bank",
+              "payee_name", "payee_account", "payee_bank", "amount", "balance", "currency", "summary", "channel",
+              "self_account", "self_name"]
+    def identity(row, occurrence, scope, *, incoming=False):
+        return (occurrence, scope or "", _row_key(row, default_currency="CNY" if incoming else ""),
+                row.get("self_account") or "", row.get("self_name") or "")
+    with db.transaction() as con:
+        if not db.q("select id from cases where id=?", [case_id]):
+            raise ImportError("案件不存在，无法导入流水")
+        known = rows.store.mapping()
+        profiles = sorted(evidence_resolution.PROFILES)
+        cursor = con.execute("select m.sha256,r.source_row,f.flow_id,json_extract_string(r.details_json,'$.occurrence_scope')," + ",".join("v." + name for name in fields) + f"""
+            from import_records r join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
+            join flow_sources f on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
+            join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
+            join flows v on v.case_id=f.case_id and v.id=f.flow_id
+            where r.case_id=? and s.parser_version in ({','.join('?' for _ in profiles)})
+            and r.disposition in ('imported','duplicate') order by f.flow_id""", [case_id, *profiles])
+        while values := cursor.fetchmany(WRITE_CHUNK):
+            for digest, position, fid, scope, *facts in values:
+                key = identity(dict(zip(fields, facts)), evidence_resolution.occurrence_key(digest, position), scope)
+                if key not in known:
+                    known[key] = fid
+        con.execute("insert into import_sources(source_id,case_id,filename,sha256,size_bytes,mode,mapping_json,sheet,parser_version,row_kind,origin,imported_at) values (?,?,?,?,?,?,?,?,?,?,'upload',current_timestamp at time zone 'UTC')",
+                    [source["source_id"], case_id, filename, source["sha256"], source["size_bytes"], mode,
+                     json.dumps(source["mapping"], ensure_ascii=False, sort_keys=True), source["sheet"], source["parser_version"], source["row_kind"]])
+        batch_id = con.execute("select nextval('batch_seq')").fetchone()[0]
+        con.execute("insert into batches(id,case_id,filename,mode,rows_total,rows_imported,rows_skipped,rows_dup) values (?,?,?,?,?,0,?,0)",
+                    [batch_id, case_id, filename, mode, (stats or {}).get("total", len(rows)), (stats or {}).get("skipped", 0)])
+        columns = ["id", "case_id", "batch_id", *fields]
+        ref_columns = ["case_id", "source_id", "source_row", "flow_id", "disposition"]
+        self_map, batch_accounts = {}, set()
+        imported = duplicate = 0
+        pending, final, references = {}, [], []
+        encoded_bytes = 0
+        def write_chunk():
+            nonlocal imported
+            ids = [item[0] for item in con.execute("select nextval('flow_seq') from range(?)", [len(final)]).fetchall()]
+            for key, index in pending.items():
+                known[key] = ids[index]
+            if final:
+                data = []
+                for fid, row in zip(ids, final):
+                    values = [row.get(name) for name in fields]
+                    for index, name in enumerate(fields):
+                        if name not in {"trade_time", "amount", "balance"}:
+                            values[index] = values[index] or ("CNY" if name == "currency" else "")
+                    data.append([fid, case_id, batch_id, *values])
+                frame = pd.DataFrame(data, columns=columns)
+                frame["trade_time"] = pd.to_datetime(frame["trade_time"])
+                for field in ("amount", "balance"):
+                    frame[field] = frame[field].astype("string")
+                db.set_busy(True)
+                try:
+                    db.insert_dataframe("flows", frame, columns)
+                finally:
+                    db.set_busy(False)
+                imported += len(final)
+            if references:
+                frame = pd.DataFrame([[case_id, source["source_id"], position,
+                    ids[value] if local else value, disposition]
+                    for position, value, local, disposition in references], columns=ref_columns)
+                db.insert_dataframe("flow_sources", frame, ref_columns)
+            pending.clear()
+            final.clear()
+            references.clear()
+        for row in rows:
+            size = len(_encode_value(row))
+            if references and (len(references) >= WRITE_CHUNK or encoded_bytes + size > PLAN_CHUNK_BYTES):
+                write_chunk()
+                encoded_bytes = 0
+            key = identity(row, row["_occurrence_key"], row.get("_occurrence_scope"), incoming=True)
+            old = known.get(key)
+            if old is not None:
+                duplicate += 1
+                references.append((row["_source_row"], old, False, "duplicate"))
+            elif key in pending:
+                duplicate += 1
+                references.append((row["_source_row"], pending[key], True, "duplicate"))
+            else:
+                pending[key] = len(final)
+                references.append((row["_source_row"], len(final), True, "imported"))
+                final.append(row)
+                batch_accounts.update(value for value in (row.get("payer_account"), row.get("payee_account")) if value)
+            account = (row.get("self_account") or "").strip()
+            if account:
+                self_map.setdefault(account, (row.get("self_name") or "").strip())
+            encoded_bytes += size
+        if references:
+            write_chunk()
+        con.execute("update batches set rows_imported=?,rows_dup=? where case_id=? and id=?", [imported, duplicate, case_id, batch_id])
+        result = dict(stats or {})
+        result.update(ok=imported, rows_dup=duplicate, batch_id=batch_id,
+                      self_accounts=[{"account": account, "name": name} for account, name in self_map.items()],
+                      self_accounts_count=len(self_map))
+        if batch_accounts:
+            mains = {item["account"] for item in db.q("select account from main_accounts where case_id=?", [case_id])}
+            result.update(main_matched=sorted(batch_accounts & mains), accounts_in_batch=len(batch_accounts))
+        if progress_cb:
+            progress_cb(imported, imported)
+        analysis_snapshot.invalidate(case_id)
+        return result

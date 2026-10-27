@@ -1484,8 +1484,50 @@ def _append_auxiliary_sheet(plan, sheet, *, details_pool=None):
     return True
 
 
+def _declares_event_contract(sheets, profile):
+    """Inspect actual financial regions in the already decoded source.
+
+    The entire workbook selects one interpretation before any row is consumed.
+    Reuse the interpreter's regional guards: contract words in ordinary data or
+    in an ambiguous competing layout cannot opt a file into identity evidence.
+    """
+    from .event_resolution import HEADERS
+
+    def declared(headers, candidates):
+        names = [_text(value) for value in headers]
+        return bool(_shape(candidates, profile)) and all(names.count(name) == 1 for name in HEADERS.values())
+
+    for sheet in sheets:
+        rows = sheet["rows"]
+        header_no, _, _ = _locate_header(rows, profile)
+        if header_no is None:
+            continue
+        candidates, *_ = _region(rows[header_no], None, None, strict=True, profile=profile)
+        if declared(rows[header_no], candidates):
+            return True
+        ambiguous_layouts = {}
+        for index in range(header_no + 1, len(rows)):
+            row = rows[index]
+            if not any(_cell_present(value) for value in row):
+                continue
+            if _overlapping_header(row, candidates, profile):
+                _remember_layout(ambiguous_layouts, candidates)
+                _remember_layout(ambiguous_layouts, _candidates(row, profile))
+            elif ((ambiguous_layouts and _unmistakable_header(row, profile, ambiguous_layouts))
+                  or not ambiguous_layouts and _later_header(row, candidates, profile)):
+                ambiguous_layouts.clear()
+                candidates, *_ = _region(row, None, None, strict=False, profile=profile)
+                if declared(row, candidates):
+                    return True
+            elif ambiguous_layouts:
+                found = _candidates(row, profile)
+                if _shape(found, profile):
+                    _remember_layout(ambiguous_layouts, found)
+    return False
+
+
 def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=None, _details_pool=None,
-          _defer_occurrence_binding=False, _retain_csv_format=False):
+          _defer_occurrence_binding=False, _retain_csv_format=False, _auto_event_profile=False):
     if profile is None:
         profile = XLS_PROFILE if suffix.lower() == ".xls" else PROFILE
     # New exact cross-field arithmetic is independent of ambient Decimal
@@ -1495,14 +1537,16 @@ def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pro
             context.prec = max(context.prec, 50)
             return _parse(source, suffix=suffix, mode=mode, mapping=mapping,
                           reference_policy=reference_policy, profile=profile, details_pool=_details_pool,
-                          defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format)
+                          defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format,
+                          auto_event_profile=_auto_event_profile)
     return _parse(source, suffix=suffix, mode=mode, mapping=mapping,
                   reference_policy=reference_policy, profile=profile, details_pool=_details_pool,
-                  defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format)
+                  defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format,
+                  auto_event_profile=_auto_event_profile)
 
 
 def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=PROFILE, details_pool=None,
-           defer_occurrence_binding=False, retain_csv_format=False):
+           defer_occurrence_binding=False, retain_csv_format=False, auto_event_profile=False):
     """Interpret every source record and return a write-free versioned plan."""
     suffix = suffix.lower()
     archive_member = ((profile == ARCHIVE_MEMBER_PROFILE and suffix == ".csv"
@@ -1527,8 +1571,14 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
         raise TableImportError("表格引用策略无效")
     if reference_policy is not None and mapping and "trade_no" in mapping:
         raise TableImportError("表格引用策略不能与交易号映射同时使用")
+    if (type(auto_event_profile) is not bool or auto_event_profile and
+            (profile != CURRENCY_REGION_PROFILE or suffix not in {".csv", ".tsv", ".txt", ".xlsx"}
+             or mode is not None or mapping is not None or reference_policy is not None)):
+        raise TableImportError("事件合同自动识别仅用于普通表格的首次自动预览")
     raw = _bytes(source)
     sheets = _excel(raw, suffix) if suffix in {".xlsx", ".xls"} else _csv(raw, suffix, profile)
+    if auto_event_profile and _declares_event_contract(sheets, profile):
+        profile = EVIDENCE_PROFILE
     plan = {"profile": profile, "mode": "B", "mapping": {}, "columns": [], "sheet": "workbook" if suffix in {".xlsx", ".xls"} else "", "rows": [], "records": [], "members": [], "documents": [], "mapping_evidence": []}
     if retain_csv_format:
         # The envelope's cancellation pass may replay this already validated

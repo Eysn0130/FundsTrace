@@ -210,6 +210,12 @@ function harness(search = '') {
     },
   });
   const app = readFileSync(new URL('../static/app.js', import.meta.url), 'utf8');
+  for (const helper of ['money.js', 'principal-analysis.js']) {
+    vm.runInContext(readFileSync(new URL('../static/' + helper, import.meta.url), 'utf8'), context);
+  }
+  context.window.FundsFacts = context.FundsFacts;
+  vm.runInContext(app.slice(app.indexOf('function esc('), app.indexOf('function toast(')), context);
+  vm.runInContext(app.slice(app.indexOf('function flowObservationIds('), app.indexOf('/* ---------------- 追踪上图')), context);
   // Load the complete account/crop dependencies. The former close-only section
   // marker no longer exists, and slicing to -1 silently included context state.
   for (const [start, end] of [['function syncEdgeTypeControl(', 'function findEdgeShapes('],

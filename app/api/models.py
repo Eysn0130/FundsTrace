@@ -48,6 +48,31 @@ class CurrencyAmount(ContractModel):
     amount: Amount
 
 
+class ProjectedCurrencyAmount(ContractModel):
+    currency: str | None
+    amount: Amount | None
+
+
+class FundsAmount(ProjectedCurrencyAmount):
+    lower: Amount
+    upper: Amount | None
+
+
+class FundsCount(ContractModel):
+    lower: int
+    upper: int
+
+
+class FundsProjection(ContractModel):
+    policy: Literal["evidence-bounded-funds-v1"]
+    status: Literal["exact", "bounded", "unknown"]
+    observation_count: int
+    confirmed_event_count: int
+    unresolved_observation_count: int
+    count: FundsCount
+    totals: list[FundsAmount]
+
+
 class ImportCoverage(ContractModel):
     scope: Literal["source_reported_flows"]
     unresolved_records: int
@@ -105,18 +130,19 @@ class EventSummary(ContractModel):
 
 
 class CaseStats(ContractModel):
+    funds: FundsProjection | None = None
     analysis_revision: str | None = None
     event_summary: EventSummary | None = None
-    statistics_policy: Literal["typed-account-evidence-v1"] | None = None
+    statistics_policy: Literal["typed-account-evidence-v1", "evidence-bounded-funds-v1"] | None = None
     resolution_revision: str | None = None
     resolution: ResolutionSummary | None = None
     case_id: Identifier
-    flows: int
+    flows: int | None
     accounts: int
     batches: int
     amount_total: Amount | None
     currency: str | None
-    amount_totals: list[CurrencyAmount]
+    amount_totals: list[ProjectedCurrencyAmount]
     import_coverage: ImportCoverage | None = None
 
 
@@ -142,6 +168,10 @@ class PreviewFlow(ContractModel):
 
 
 class Flow(PreviewFlow):
+    amount: Amount | None
+    observation_ids: list[Identifier] = Field(default_factory=list)
+    observation_count: int = 1
+    granularity: Literal["confirmed_event", "unresolved_observation", "observation"] = "observation"
     event_id: str | None = None
     event_state: str = "unknown"
     analysis_revision: str | None = None
@@ -157,6 +187,8 @@ class Flow(PreviewFlow):
 
 
 class FlowPage(ContractModel):
+    funds: FundsProjection | None = None
+    analysis_revision: str | None = None
     case_id: Identifier
     items: list[Flow]
     total: int
@@ -352,6 +384,11 @@ class CleanupResult(ContractModel):
 
 
 class FlowSource(ContractModel):
+    observation_flow_id: Identifier | None = None
+    observation_amount: Amount | None = None
+    observation_balance: Amount | None = None
+    observation_currency: str | None = None
+    observation_account: str | None = None
     source_id: str
     filename: str
     sha256: str

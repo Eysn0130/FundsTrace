@@ -57,7 +57,7 @@ def test_pending_accounts_follow_remaining_own_ledger_not_stale_or_manual_roles(
     assert client.delete(f"/api/batches/{own['batch_id']}", params={"case_id": cid}).status_code == 200
     after = records(workbook(client, cid)["待调取账号"])
     assert {r["账号"] for r in after} == {"SYN-A", "SYN-MANUAL"}
-    assert next(r for r in after if r["账号"] == "SYN-A")["交易总额"] == "0.02"
+    assert next(r for r in after if r["账号"] == "SYN-A")["交易总额"] == "0.00—0.02"
     roles = client.get("/api/main-accounts", params={"case_id": cid}).json()
     assert {r["account"] for r in roles} >= {"SYN-A", "SYN-B", "SYN-MANUAL"}
     assert next(r for r in roles if r["account"] == "SYN-MANUAL")["source"] == "manual"

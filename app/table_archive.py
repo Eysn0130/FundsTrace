@@ -133,13 +133,16 @@ def _auxiliary(payload, path, header, encoding, role, *, evidence=False):
             "mapping_evidence": [], "columns": [], "mapping": {}, "mode": "B"}
 
 
-def parse(source, profile=PROFILE):
+def parse(source, profile=PROFILE, *, _stage=False):
     if profile not in SUPPORTED_PROFILES:
         raise table_import.TableImportError("不支持的反馈包解析规则")
     plan = {"profile": profile, "mode": "B", "mapping": {}, "columns": [], "sheet": "",
             "rows": [], "records": [], "members": [], "documents": [], "mapping_evidence": []}
     if profile in CANCELLATION_PROFILES:
         plan.update(cancelled_rows=[], cancellations=[])
+    if _stage and profile in EVIDENCE_PROFILES:
+        from .import_staging import stage_plan
+        stage_plan(plan)
     budget = {"members": 0, "bytes": 0}
     member_limit = EVIDENCE_MAX_MEMBERS if profile in EVIDENCE_PROFILES else MAX_MEMBERS
     record_limit = EVIDENCE_MAX_RECORDS if profile in EVIDENCE_PROFILES else MAX_RECORDS
@@ -151,8 +154,16 @@ def parse(source, profile=PROFILE):
     if details_pool is not None:
         plan["_details_pool"] = details_pool
 
+    def working_pool():
+        nonlocal details_pool
+        if details_pool is not None and details_pool._closed:
+            details_pool = DetailsPool()
+            plan["_details_pool"] = details_pool
+        return details_pool
+
     def merge(part, prefix, family=""):
         nonlocal selected
+        working_pool()
         offset = len(plan["records"])
         if offset + len(part["records"]) > record_limit:
             raise table_import.TableImportError("反馈包记录数超出安全处理范围")
@@ -167,7 +178,8 @@ def parse(source, profile=PROFILE):
                     record["details"][field] = str(offset + int(record["details"][field]))
             if details_pool is not None and not isinstance(record["details"], PackedDetails):
                 record["details"] = details_pool.pack(record["details"])
-        for row in (*part["rows"], *part.get("cancelled_rows", [])):
+        from itertools import chain
+        for row in chain(part["rows"], part.get("cancelled_rows", [])):
             record = part["records"][row["_source_row"] - 1]
             row.update(_source_row=record["record_no"], _source_sheet="", _source_row_kind=table_import.ROW_KIND,
                        _record_key=record["record_key"])
@@ -188,6 +200,16 @@ def parse(source, profile=PROFILE):
             plan["cancelled_rows"].extend(part.get("cancelled_rows", []))
             plan["cancellations"].extend({key: value + offset for key, value in pair.items()}
                                          for pair in part.get("cancellations", []))
+        if "_plan_store" in plan:
+            # visit() retains its previous `part` while parsing the next RHS.
+            # Release the just-staged member before starting that next parser.
+            for key in ("rows", "records", "cancelled_rows", "cancellations"):
+                part.get(key, []).clear()
+            # All note bytes now belong to the complete plan. The member's
+            # packing spill need not duplicate the entire archive on disk.
+            if details_pool is not None:
+                plan["_plan_store"].member_note_encoded_bytes += details_pool._memory_bytes + details_pool._spool_bytes
+                details_pool.close()
 
     def visit(stream, prefix="", depth=0):
         try:
@@ -249,6 +271,7 @@ def parse(source, profile=PROFILE):
                         with localcontext() as context:
                             if profile in CANCELLATION_PROFILES:
                                 context.prec = max(context.prec, 50)
+                            working_pool()
                             part = (_auxiliary(payload, path, header, encoding, role, evidence=profile in EVIDENCE_PROFILES) if role
                                     else table_import.parse(
                                         io.BytesIO(payload), suffix=suffix,
@@ -267,6 +290,7 @@ def parse(source, profile=PROFILE):
                         finally:
                             part.pop("_csv_format", None)
                         merge(part, path, prefix)
+                    payload = None
         except (zipfile.BadZipFile, RuntimeError, OSError, ValueError) as error:
             if isinstance(error, table_import.TableImportError):
                 raise
@@ -316,4 +340,6 @@ def parse(source, profile=PROFILE):
     except BaseException:
         if details_pool is not None:
             details_pool.close()
+        if plan.get("_plan_store") is not None:
+            plan["_plan_store"].close()
         raise

@@ -6,6 +6,7 @@ import pytest
 from app import table_import
 from app.import_coverage import import_coverage
 from app.services import cases
+from funds_assertions import unresolved_funds
 from test_archive_profile_upgrade import frozen_preview
 from test_automatic_table_import import preview
 from test_feedback_import_api import complete
@@ -24,12 +25,24 @@ def coverage_value(*, unresolved=0, non_monetary=0, cancelled=0, excluded=0):
             "excluded_flows": excluded, "financial_interpretation_complete": unresolved == 0}
 
 
-def assert_stats(client, cid, *, flows, accounts, batches, total, currency, totals, coverage):
+def stats_value(cid, *, observations, accounts, batches, bounds, coverage, resolution=None):
+    # Each fixture supplies literal observation counts and independent bounds;
+    # neither an order number nor a source row establishes a confirmed event.
+    funds = unresolved_funds(observations, *bounds)
+    return {"case_id": str(cid), "flows": None if observations else 0, "accounts": accounts, "batches": batches,
+            "amount_total": None if bounds else "0.00",
+            "currency": bounds[0][0] if len(bounds) == 1 else None,
+            "amount_totals": [{"currency": code, "amount": "0.00" if upper == "0.00" else None}
+                              for code, upper in bounds],
+            "funds": funds, "statistics_policy": "evidence-bounded-funds-v1",
+            "resolution": resolution, "resolution_revision": resolution["revision"] if resolution else None,
+            "import_coverage": coverage}
+
+
+def assert_stats(client, cid, **arguments):
     response = client.get(f"/api/v1/cases/{cid}/stats")
     assert response.status_code == 200, response.text
-    expected = {"case_id": str(cid), "flows": flows, "accounts": accounts, "batches": batches,
-                "amount_total": total, "currency": currency, "amount_totals": totals,
-                "import_coverage": coverage}
+    expected = stats_value(cid, **arguments)
     value = response.json()
     revision = value.pop("analysis_revision")
     assert len(revision) == 32
@@ -37,8 +50,9 @@ def assert_stats(client, cid, *, flows, accounts, batches, total, currency, tota
     assert value == expected
     legacy = client.get("/api/stats", params={"case_id": cid})
     assert legacy.status_code == 200, legacy.text
-    assert legacy.json() == {"flows": flows, "accounts": accounts, "batches": batches,
-                             "import_coverage": coverage, "analysis_revision": revision, "event_summary": None}
+    assert legacy.json() == {**{key: expected[key] for key in (
+        "flows", "accounts", "batches", "funds", "statistics_policy", "import_coverage")},
+        "analysis_revision": revision, "event_summary": None}
     return expected
 
 
@@ -81,8 +95,7 @@ def test_stats_empty_effective_subset_still_reports_its_independent_batch_count(
     for index in range(batches):
         database.x("insert into batches(case_id,filename) values (?,?)", [cid, f"synthetic-empty-{index}.csv"])
     expected = coverage_value()
-    assert_stats(client, cid, flows=0, accounts=0, batches=batches, total="0.00", currency=None,
-                 totals=[], coverage=expected)
+    assert_stats(client, cid, observations=0, accounts=0, batches=batches, bounds=[], coverage=expected)
     assert_coverage_branches(database, cid, expected)
 
 
@@ -95,31 +108,28 @@ def test_all_raw_money_excluded_by_a_zero_witness_pair_is_an_empty_currency_resu
     # Coverage keeps each non-monetary source coordinate; A02 discharges only
     # the ordinary negative diagnosis, without merging these two path records.
     expected = coverage_value(non_monetary=2, cancelled=2, excluded=1)
-    assert_stats(client, cid, flows=0, accounts=0, batches=2, total="0.00", currency=None,
-                 totals=[], coverage=expected)
+    assert_stats(client, cid, observations=0, accounts=0, batches=2, bounds=[], coverage=expected)
     assert_coverage_branches(database, cid, expected)
 
 
-@pytest.mark.parametrize("rows,total,currency,totals", [
-    ([("1.01", "USD"), ("2.02", "USD")], "3.03", "USD",
-     [{"currency": "USD", "amount": "3.03"}]),
-    ([("1.01", ""), ("2.02", None)], "3.03", "",
-     [{"currency": "", "amount": "3.03"}]),
-    ([("0.01", None), ("0.02", ""), ("1.01", "CNY"), ("2.02", "USD"), ("3.03", "CNY")], None, None,
-     [{"currency": "", "amount": "0.03"}, {"currency": "CNY", "amount": "4.04"},
-      {"currency": "USD", "amount": "2.02"}]),
-    ([(None, "USD")], "0.00", "USD", [{"currency": "USD", "amount": "0.00"}]),
-], ids=["single-currency", "empty-currency-group", "multiple-currencies", "legacy-null-amount-group"])
-def test_stats_keeps_each_currency_group_and_legacy_null_aggregation(
-        client, database, make_case, rows, total, currency, totals):
+@pytest.mark.parametrize("rows,bounds", [
+    ([("1.01", "USD"), ("2.02", "USD")], [("USD", "3.03")]),
+    ([("1.01", ""), ("2.02", None)], [(None, None)]),
+    ([("0.01", None), ("0.02", ""), ("1.01", "CNY"), ("2.02", "USD"), ("3.03", "CNY")],
+     [("CNY", None), ("USD", None), (None, None)]),
+    ([(None, "USD")], [("USD", None)]),
+    ([('-1.00', "USD")], [("USD", None)]),
+], ids=["single-currency", "empty-currency-group", "multiple-currencies", "legacy-null-amount-group",
+        "legacy-negative-amount-group"])
+def test_stats_keeps_each_currency_group_and_unknown_legacy_amount_explicit(
+        client, database, make_case, rows, bounds):
     cid = make_case("Synthetic stats currency grouping")
     # Storage permits legacy NULL amounts and absent accounts. This is a
     # statistics contract fixture, not a new import acceptance rule.
     database.executemany("insert into flows(case_id,amount,currency) values (?,?,?)", [
         (cid, Decimal(value) if value is not None else None, code) for value, code in rows])
     expected = coverage_value()
-    assert_stats(client, cid, flows=len(rows), accounts=0, batches=0, total=total, currency=currency,
-                 totals=totals, coverage=expected)
+    assert_stats(client, cid, observations=len(rows), accounts=0, batches=0, bounds=bounds, coverage=expected)
     assert_coverage_branches(database, cid, expected)
 
 
@@ -136,8 +146,8 @@ def test_stats_preserves_decimal_sum_and_exact_distinct_account_meaning(client, 
             (cid, " SYN-A ", "syn-a", Decimal("0.02")),
         ])
     expected = coverage_value()
-    assert_stats(client, cid, flows=6, accounts=4, batches=1, total="10000000000000001.27", currency="CNY",
-                 totals=[{"currency": "CNY", "amount": "10000000000000001.27"}], coverage=expected)
+    assert_stats(client, cid, observations=6, accounts=4, batches=1,
+                 bounds=[("CNY", "10000000000000001.27")], coverage=expected)
     assert_coverage_branches(database, cid, expected)
 
 
@@ -154,8 +164,8 @@ def test_interleaved_case_stats_do_not_reuse_another_cases_subset_or_currency(cl
         (first, 2, 3, 1, "3.03", "CNY"), (second, 1, 2, 2, "999.99", "USD"),
         (first, 2, 3, 1, "3.03", "CNY"),
     ]:
-        assert_stats(client, cid, flows=flows, accounts=accounts, batches=batches, total=amount, currency=currency,
-                     totals=[{"currency": currency, "amount": amount}], coverage=coverage_value())
+        assert_stats(client, cid, observations=flows, accounts=accounts, batches=batches,
+                     bounds=[(currency, amount)], coverage=coverage_value())
 
 
 @pytest.mark.parametrize("case_id", ["2147483647", "9999999999999999999"])
@@ -181,8 +191,8 @@ def test_default_and_known_excluded_coverage_preserve_versioned_proof_diagnostic
     current = V4 in profiles
     expected = coverage_value(unresolved=0 if current else 1, cancelled=2, excluded=1 if current else 0)
     amount = "1.00" if current else "11.00"
-    assert_stats(client, cid, flows=1 if current else 2, accounts=2, batches=1 + len(profiles),
-                 total=amount, currency="CNY", totals=[{"currency": "CNY", "amount": amount}], coverage=expected)
+    assert_stats(client, cid, observations=1 if current else 2, accounts=2, batches=1 + len(profiles),
+                 bounds=[("CNY", amount)], coverage=expected)
     assert_coverage_branches(database, cid, expected)
 
 
@@ -220,8 +230,8 @@ def test_known_excluded_count_does_not_change_old_and_new_history_marker_scopes(
     assert (record["disposition"], record["reason_code"], record["flow_id"]) == ("unresolved", "conflicting_field", None)
     assert record["details"]["counterparty_basis"] == marker
     expected = coverage_value(unresolved=unresolved, cancelled=2, excluded=1)
-    assert_stats(client, cid, flows=2, accounts=4, batches=4, total=total, currency="CNY",
-                 totals=[{"currency": "CNY", "amount": total}], coverage=expected)
+    assert_stats(client, cid, observations=2, accounts=4, batches=4,
+                 bounds=[("CNY", total)], coverage=expected)
     assert_coverage_branches(database, cid, expected)
 
 
@@ -269,8 +279,8 @@ def test_known_excluded_still_runs_all_unrelated_financial_role_and_rule_diagnos
     future = diagnosis == "future-profile"
     total = "3.00" if future else "1.00"
     expected = coverage_value(unresolved=1, cancelled=2, excluded=1)
-    assert_stats(client, cid, flows=2 if future else 1, accounts=4 if future else 2, batches=3,
-                 total=total, currency="CNY", totals=[{"currency": "CNY", "amount": total}], coverage=expected)
+    assert_stats(client, cid, observations=2 if future else 1, accounts=4 if future else 2, batches=3,
+                 bounds=[("CNY", total)], coverage=expected)
     assert_coverage_branches(database, cid, expected)
 
 
@@ -376,12 +386,8 @@ def test_public_stats_classifies_wide_journal_notes_before_coverage_windows(
         value = response.json()
         assert len(value.pop("analysis_revision")) == 32
         assert value.pop("event_summary") is None
-        assert value == {
-            "case_id": str(case_id), "flows": count, "accounts": 2, "batches": batches,
-            "amount_total": amount, "currency": currency,
-            "amount_totals": [{"currency": currency, "amount": amount}],
-            "import_coverage": expected_coverage,
-        }
+        assert value == stats_value(case_id, observations=count, accounts=2, batches=batches,
+                                    bounds=[(currency, amount)], coverage=expected_coverage)
     assert len(captured) == 2
     sql, params = captured[0]
     plan = json.loads(database.con().execute(
@@ -454,12 +460,8 @@ def test_public_stats_does_not_hash_build_the_full_wide_journal(client, database
     value = response.json()
     assert len(value.pop("analysis_revision")) == 32
     assert value.pop("event_summary") is None
-    assert value == {
-        "case_id": str(cid), "flows": size, "accounts": 2, "batches": 0,
-        "amount_total": "5248.00", "currency": "CNY",
-        "amount_totals": [{"currency": "CNY", "amount": "5248.00"}],
-        "import_coverage": coverage_value(),
-    }
+    assert value == stats_value(cid, observations=size, accounts=2, batches=0,
+                                bounds=[("CNY", "5248.00")], coverage=coverage_value())
     assert len(captured) == 1
     sql, params = captured[0]
     plan = json.loads(database.con().execute(
@@ -587,12 +589,8 @@ def test_public_stats_keeps_money_and_resolution_in_one_locked_read(
         assert first.status_code == second.status_code == 200, (first.text, second.text)
 
         def expected(amount, summary):
-            return {"case_id": str(cid), "flows": 1, "accounts": 2, "batches": 0,
-                    "amount_total": amount, "currency": "CNY",
-                    "amount_totals": [{"currency": "CNY", "amount": amount}],
-                    "import_coverage": coverage_value(), "resolution": summary,
-                    "statistics_policy": evidence_resolution.POLICY,
-                    "resolution_revision": summary["revision"]}
+            return stats_value(cid, observations=1, accounts=2, batches=0,
+                               bounds=[("CNY", amount)], coverage=coverage_value(), resolution=summary)
 
         values = [first.json(), second.json()]
         generations = [value.pop("analysis_revision") for value in values]

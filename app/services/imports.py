@@ -16,6 +16,7 @@ import threading
 import tempfile
 import uuid
 import zipfile
+from itertools import islice
 
 from app import db, importer, feedback_import, table_import, table_archive, import_validation, evidence_resolution
 from .cases import ServiceError, preview_flow, require_case
@@ -56,6 +57,9 @@ def _close_staging(parsed):
             pool = plan.pop("_details_pool", None) if plan is not None else None
             if pool is not None:
                 pool.close()
+            store = plan.pop("_plan_store", None) if plan is not None else None
+            if store is not None:
+                store.close()
 
 
 class _JournalRecords:
@@ -218,15 +222,20 @@ def _accounts(rows):
     return sorted(seen.values(), key=lambda entry: -entry["count"])
 
 
-def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=None, table_profile=None):
+def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=None, table_profile=None,
+           _auto_event_profile=False):
     try:
         if table_profile not in (None, importer.PARSER_VERSION, *table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
             raise ServiceError(400, "invalid_table_file", "来源解析规则不受支持，请重新上传预览")
         if table_profile in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
-            plan = (table_archive.parse(source, profile=table_profile) if table_profile in table_archive.SUPPORTED_PROFILES
+            plan = (table_archive.parse(source, profile=table_profile, _stage=True) if table_profile in table_archive.SUPPORTED_PROFILES
                     else table_import.parse(source, suffix=suffix, mode=mode, mapping=mapping,
-                                            profile=table_profile))
+                                            profile=table_profile,
+                                            **({"_auto_event_profile": True} if _auto_event_profile else {})))
             try:
+                if plan["profile"] in evidence_resolution.PROFILES and "_plan_store" not in plan:
+                    from app.import_staging import stage_plan
+                    stage_plan(plan)
                 frame = importer.pd.DataFrame(columns=plan["columns"])
                 frame.attrs.update(source_row_kind=table_import.ROW_KIND, table_plan=plan)
                 stats = dict(plan["stats"])
@@ -238,6 +247,8 @@ def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=Non
                 pool = plan.pop("_details_pool", None)
                 if pool is not None:
                     pool.close()
+                if plan.get("_plan_store") is not None:
+                    plan["_plan_store"].close()
                 raise
         if suffix == ".zip":
             if mode is not None and (mode != "B" or mapping != feedback_import.MAPPING):
@@ -401,11 +412,17 @@ def _table_history_conflicts(plan, rows, stats, conflicting, *, basis=table_impo
         record["details"].update(financial_effect="undetermined", validation_issues="conflicting_field",
                                  counterparty_basis=basis,
                                  reason="同一来源已存在不同资金解释，本次未新增流水，防止重复累计")
-    rows[:] = [row for row in rows if row["_source_row"] not in conflicting]
+    from app.import_staging import StagedSequence
+    if isinstance(rows, StagedSequence):
+        rows.remove_numbers(conflicting)
+    else:
+        rows[:] = [row for row in rows if row["_source_row"] not in conflicting]
     if plan["profile"] in table_archive.CANCELLATION_PROFILES:
         from app import table_cancellations
-        dependent = [pair["original_record_no"] for pair in plan.get("cancellations", [])
-                     if pair["witness_record_no"] in conflicting]
+        dependent = plan["_plan_store"].mapping() if plan.get("_plan_store") is not None else set()
+        for pair in plan.get("cancellations", []):
+            if pair["witness_record_no"] in conflicting:
+                dependent.add(pair["original_record_no"])
         if dependent:
             table_cancellations.revoke_pairs(plan, dependent, reason="cancellation_historical_conflict")
         else:
@@ -462,14 +479,17 @@ def _bind_archive_header_history(case_id, plan, rows, stats, source):
         return
     # Most new packages have no stored interpretations to compare. Only build
     # physical-position indexes when the same case has relevant history.
-    exact_wanted = set()
+    store = plan.get("_plan_store")
+    exact_wanted = store.mapping() if store is not None else {}
     for row in rows:
         record = plan["records"][row["_source_row"] - 1]
         path = record["member_path"]
-        exact_wanted.add((path, members[path]["sha256"], record["source_row"]))
-    bridge_wanted = {(digest, position) for _path, digest, position in exact_wanted}
-    exact, bridge, v4_exact, v4_bridge, blocked_exact, blocked_bridge = {}, {}, set(), set(), set(), set()
-    different = object()
+        exact_wanted[path, members[path]["sha256"], record["source_row"]] = True
+    bridge_wanted = store.mapping() if store is not None else {}
+    for _path, digest, position in exact_wanted:
+        bridge_wanted[digest, position] = True
+    exact, bridge, v4_exact, v4_bridge, blocked_exact, blocked_bridge = [store.mapping() if store is not None else {} for _ in range(6)]
+    different = "conflicting historical interpretations"
     while batch:
         for (profile, filename, sheet, row_kind, source_sha, path, digest, role, encoding,
              position, disposition, reason, fid, *facts) in batch:
@@ -490,14 +510,14 @@ def _bind_archive_header_history(case_id, plan, rows, stats, source):
             else:
                 continue
             if profile == table_archive.PROFILE:
-                presence.add(key)
+                presence[key] = True
                 if disposition == "unresolved" and reason in ("ambiguous_region_header", "invalid_currency"):
-                    blocked.add(key)
+                    blocked[key] = True
             if fid is not None and disposition in ("imported", "duplicate"):
                 value = signature(dict(zip(fields, facts)))
                 history[key] = value if key not in history else history[key] if history[key] == value else different
         batch = cursor.fetchmany(1024)
-    conflicting = set()
+    conflicting = store.mapping() if store is not None else set()
     for row in rows:
         number = row["_source_row"]
         record = plan["records"][number - 1]
@@ -522,8 +542,11 @@ def _bind_table_history(case_id, plan, rows, stats):
     """
     if not rows:
         return
-    requested = {(record["member_path"], record["source_row"]): row
-                 for row in rows for record in [plan["records"][row["_source_row"] - 1]]}
+    store = plan.get("_plan_store")
+    requested = store.mapping() if store is not None else {}
+    for row in rows:
+        record = plan["records"][row["_source_row"] - 1]
+        requested[record["member_path"], record["source_row"]] = row
     members = [(member["member_path"], member["sha256"]) for member in plan["members"]]
     wanted = ",".join("(?,?)" for _ in members)
     fields = table_import.FLOW_FIELDS
@@ -540,7 +563,7 @@ def _bind_table_history(case_id, plan, rows, stats):
         where r.case_id=? and (? in ({roles}) or i.parser_version in ({roles}))
         """, [value for member in members for value in member]
               + [case_id, plan["profile"], *role_profiles, *role_profiles])
-    conflicting = set()
+    conflicting = store.mapping() if store is not None else set()
     while batch := cursor.fetchmany(1024):
         for path, position, *facts in batch:
             row = requested.get((path, position))
@@ -557,16 +580,25 @@ def _bind_stored_cancellation_history(case_id, plan, rows, stats, source):
     archive = plan["profile"] in table_archive.SUPPORTED_PROFILES
     if not rows or not (ordinary or archive):
         return
-    expected = {}
-    for proof in db.q_raw(f"""with recursive {table_cancellation_links.ctes(scoped=True)}
-            select member_path,sha256,original_row,cancellation_row,original_details from a02_valid""", [case_id]):
-        notes = json.loads(proof["original_details"])
-        identity = (None if ordinary else proof["member_path"], proof["sha256"])
-        original = (*identity, proof["original_row"])
-        expected.setdefault(original, set()).add((notes.get("flow_sha256"),
-            notes.get("cancellation_own_account_sha256"), notes.get("cancellation_own_name_sha256")))
-        expected.setdefault((*identity, proof["cancellation_row"]), set()).add(None)
-    conflicting = set()
+    store = plan.get("_plan_store")
+    expected = store.mapping() if store is not None else {}
+    cursor = db.con().execute(f"""with recursive {table_cancellation_links.ctes(scoped=True)}
+            select member_path,sha256,original_row,cancellation_row,original_details from a02_valid""", [case_id])
+    while proofs := cursor.fetchmany(1024):
+        for path, digest, original_row, cancellation_row, details in proofs:
+            notes = json.loads(details)
+            identity = (None if ordinary else path, digest)
+            original = (*identity, original_row)
+            values = expected.get(original, set())
+            values.add((notes.get("flow_sha256"), notes.get("cancellation_own_account_sha256"), notes.get("cancellation_own_name_sha256")))
+            expected[original] = values
+            cancelled = (*identity, cancellation_row)
+            values = expected.get(cancelled, set())
+            values.add(None)
+            expected[cancelled] = values
+    if not expected:
+        return
+    conflicting = store.mapping() if store is not None else set()
     for row in rows:
         record = plan["records"][row["_source_row"] - 1]
         member = members[record["member_path"]]
@@ -581,7 +613,8 @@ def _bind_stored_cancellation_history(case_id, plan, rows, stats, source):
 def _bind_shared_cancellation_plan_history(case_id, plan, stats):
     """Recheck all three proof positions against direct actual history before write."""
     from app import table_cancellation_links, table_cancellations
-    records = {record["record_no"]: record for record in plan["records"]}
+    from app.import_staging import record_map
+    records = record_map(plan)
     members = {member["member_path"]: member["sha256"] for member in plan["members"]}
     exact, bridge = {}, {}
     for pair in plan["cancellations"]:
@@ -652,18 +685,22 @@ def _bind_table_plan(case_id, parsed, *, source=None):
     if plan["profile"] == table_archive.PROFILE:
         _bind_shared_cancellation_plan_history(case_id, plan, stats)
         return
-    records = {record["record_no"]: record for record in plan["records"]}
+    from app.import_staging import record_map
+    records = record_map(plan)
     members = {member["member_path"]: member["sha256"] for member in plan["members"]}
-    requested = {(record["member_path"], members[record["member_path"]], record["source_row"]): (row["_source_row"], row)
-                 for row in plan["cancelled_rows"] for record in [records[row["_source_row"]]]}
+    store = plan.get("_plan_store")
+    requested = store.mapping() if store is not None else {}
+    for row in plan["cancelled_rows"]:
+        record = records[row["_source_row"]]
+        requested[record["member_path"], members[record["member_path"]], record["source_row"]] = (row["_source_row"], row)
     for pair in plan.get("cancellations", []):
         record = records[pair["cancellation_record_no"]]
         requested[(record["member_path"], members[record["member_path"]], record["source_row"])] = (pair["original_record_no"], None)
     wanted_members = sorted({(path, digest) for path, digest, _row in requested})
     wanted = ",".join("(?,?)" for _ in wanted_members)
     fields = (*table_import.FLOW_FIELDS, "self_account", "self_name")
-    conflicting = set()
-    for previous in db.q_raw(f"""
+    conflicting = store.mapping() if store is not None else set()
+    cursor = db.con().execute(f"""
             select r.member_path,m.sha256,r.source_row,{','.join('f.' + key for key in fields)}
             from import_records r
             join import_members m on m.case_id=r.case_id and m.source_id=r.source_id
@@ -673,14 +710,17 @@ def _bind_table_plan(case_id, parsed, *, source=None):
             join flow_sources s on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
             join flows f on f.case_id=s.case_id and f.id=s.flow_id
             where r.case_id=?
-            """, [value for member in wanted_members for value in member] + [case_id]):
-        physical = (previous["member_path"], previous["sha256"], previous["source_row"])
-        if physical not in requested:
-            continue
-        original_no, row = requested[physical]
-        if (row is None or importer._row_key(previous) != importer._row_key(row)
-                or any((previous.get(key) or "") != (row.get(key) or "") for key in ("self_account", "self_name"))):
-            conflicting.add(original_no)
+            """, [value for member in wanted_members for value in member] + [case_id])
+    while batch := cursor.fetchmany(1024):
+        for path, digest, position, *facts in batch:
+            physical = (path, digest, position)
+            if physical not in requested:
+                continue
+            original_no, row = requested[physical]
+            previous = dict(zip(fields, facts))
+            if (row is None or importer._row_key(previous) != importer._row_key(row)
+                    or any((previous.get(key) or "") != (row.get(key) or "") for key in ("self_account", "self_name"))):
+                conflicting.add(original_no)
     if conflicting:
         table_cancellations.revoke_pairs(plan, conflicting, reason="cancellation_historical_conflict")
         stats.clear()
@@ -737,7 +777,8 @@ def _table_summary(plan):
             "unsupported_attachments": stats["reason_counts"].get("unsupported_attachment", 0),
             "non_business_attachments": stats["reason_counts"].get("non_business_attachment", 0),
             "unresolved_examples": [{key: record[key] for key in ("member_path", "source_row", "reason_code")}
-                                    for record in plan["records"] if record["disposition"] == "unresolved"][:10]}
+                                    for record in islice((record for record in plan["records"]
+                                                        if record["disposition"] == "unresolved"), 10)]}
 
 
 def _table_profile(session):
@@ -784,7 +825,7 @@ def _feedback_profile(session):
 
 def _write_feedback_journal(cid, source_id, plan):
     """Persist disposition metadata; original cells stay in the uploaded file."""
-    refs = {}
+    refs = plan["_plan_store"].mapping() if plan.get("_plan_store") is not None else {}
     cursor = db.con().execute("select source_row,disposition from flow_sources where case_id=? and source_id=?", [cid, source_id])
     while batch := cursor.fetchmany(4096):
         for position, disposition in batch:
@@ -850,7 +891,9 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
         table_profile = (((table_archive.EVIDENCE_PROFILE if resolve_evidence else table_archive.PROFILE) if not (resolve_evidence and feedback_import.is_family(source)) and table_archive.should_parse(source) else None)
                          if suffix == ".zip" else table_import.XLS_PROFILE if suffix == ".xls" else table_import.EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
         parsed = _parse(source, suffix=suffix, table_profile=table_profile,
-                        feedback_profile=feedback_import.EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None)
+                        feedback_profile=feedback_import.EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None,
+                        _auto_event_profile=table_profile == table_import.CURRENCY_REGION_PROFILE
+                        and suffix in {".csv", ".tsv", ".txt", ".xlsx"})
     created = False
     try:
         import_id = uuid.uuid4().hex
@@ -876,8 +919,10 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
                   _json({"_table_profile": parsed[0].attrs["table_plan"]["profile"]}) if "table_plan" in parsed[0].attrs
                   else _json({"_feedback_profile": parsed[0].attrs["feedback_plan"]["profile"]}) if suffix == ".zip" else None,
                   now, now, now + dt.timedelta(days=7)])
-        evidence_resolution.operation_context(parsed, session["sha256"])
-        result = _preview_result(session, parsed, legacy=surface == "legacy")
+            # Preview still consumes operation-private staging. A late disk
+            # failure must roll back the ready session with its retained file.
+            evidence_resolution.operation_context(parsed, session["sha256"])
+            result = _preview_result(session, parsed, legacy=surface == "legacy")
         result["automatic"] = True
         return result
     except BaseException:
@@ -1101,9 +1146,10 @@ def _run(import_id):
                     summary_snapshot["table_summary"] = _table_summary(table_plan)
                 # All mutations/proofs of records are finished. Their exact
                 # read-only replay no longer overlaps the financial writer.
-                journal_records = _JournalRecords((plan or table_plan)["records"])
-                (plan or table_plan)["records"] = journal_records
-                _close_staging(parsed)
+                if "_plan_store" not in (plan or table_plan):
+                    journal_records = _JournalRecords((plan or table_plan)["records"])
+                    (plan or table_plan)["records"] = journal_records
+                    _close_staging(parsed)
             receipt = importer.commit_rows(session["filename"], mode, rows, stats,
                                            case_id=session["case_id"], provenance=provenance,
                                            standalone_csv_keys=standalone_keys)
@@ -1145,11 +1191,13 @@ def _run(import_id):
                 rows.clear()
                 (plan or table_plan)["records"] = []
                 (plan or table_plan).get("cancelled_rows", []).clear()
-                journal_records.close()
-                journal_records = None
+                if journal_records is not None:
+                    journal_records.close()
+                    journal_records = None
+                _close_staging(parsed)
             receipt["resolution"] = evidence_resolution.rebuild(session["case_id"])
             from .. import event_resolution
-            event_resolution.rebuild(session["case_id"])
+            event_resolution.rebuild(session["case_id"], changed_sources=[import_id])
             receipt = _receipt(receipt)
             db.x("""update import_sessions set stage='done',done=?,total=?,result_json=?,error_code=null,
                       updated_at=?,expires_at=? where import_id=? and owner_token=?""",

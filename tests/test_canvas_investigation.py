@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 
 from app import canvas_investigation
+from funds_assertions import unresolved_funds
 
 
 def seed(database, case_id, records, canvas_id=0):
@@ -52,20 +53,21 @@ def test_time_projection_reaggregates_rows_not_edge_ranges_and_preserves_money(c
         {"trade_time": None, "amount": Decimal("0.30")},
     ])
     full = request(client, case_id)
-    assert full["edges"][0]["amount_totals"] == [
-        {"currency": "CNY", "amount": "10000000000000000.30"}, {"currency": "USD", "amount": "0.20"}]
+    assert full["edges"][0]["funds"] == unresolved_funds(4, ("CNY", "10000000000000000.30"), ("USD", "0.20"))
+    assert full["edges"][0]["total"] is None
     result = request(client, case_id, start="2026-01-02T10:00:00", end="2026-01-02T10:00:00", include_undated=False)
-    assert result["edges"][0]["total"] == "0.01"
+    assert result["edges"][0]["total"] is None
+    assert result["edges"][0]["funds"] == unresolved_funds(1, ("CNY", "0.01"))
     assert result["edges"][0]["ids"] == [str(ids[1])]
     assert result["summary"]["selected_count"] == 1
     assert result["summary"]["excluded_undated_count"] == 1
     assert result["summary"]["time_min"] == "2026-01-01 10:00:00"
-    assert result["timeline"] == [{"time": "2026-01-02 10:00:00", "count": 1,
-                                   "amount_totals": [{"currency": "CNY", "amount": "0.01"}]}]
+    assert result["timeline"] == [{"time": "2026-01-02 10:00:00", "cnt": None, "total": None,
+        "funds": unresolved_funds(1, ("CNY", "0.01")), "amount_totals": [{"currency": "CNY", "amount": None}]}]
     assert database.q("select count(*) n from tracked_flows where case_id=?", [case_id])[0]["n"] == 4
 
 
-def test_mirror_pairing_matches_graph_and_keeps_original_source_links(client, database, make_case):
+def test_unproven_mirrors_match_graph_bounds_and_keep_original_source_links(client, database, make_case):
     case_id = make_case()
     ids = seed(database, case_id, [
         {}, {"self_account": "SYN-B", "trade_time": "2026-01-01 10:00:01"},
@@ -76,17 +78,20 @@ def test_mirror_pairing_matches_graph_and_keeps_original_source_links(client, da
     before = database.q_raw("select * from flows order by id")
     result = request(client, case_id)
     legacy = client.get("/api/graph", params={"case_id": case_id}).json()
-    assert result["edges"][0]["cnt"] == legacy["edges"][0]["cnt"] == 4
+    assert result["edges"][0]["cnt"] is legacy["edges"][0]["cnt"] is None
+    assert result["edges"][0]["funds"] == legacy["edges"][0]["funds"] == unresolved_funds(6, ("CNY", "0.60"))
     assert result["edges"][0]["amount_totals"] == legacy["edges"][0]["amount_totals"]
     assert sorted(result["edges"][0]["ids"]) == sorted(map(str, ids))
     canonical = result["flows"][0]
-    assert canonical["mirror_ids"] == [str(ids[1])]
+    assert canonical["mirror_ids"] == []
+    assert len(result["flows"]) == 6
     assert canonical["provenance"][0]["sources"][0]["source_row"] == "1"
     assert canonical["provenance"][0]["sources"][0]["member_row"] == "2"
     assert canonical["provenance"][0]["sources"][0]["filename"] == "synthetic.zip"
-    # A date window cannot resurrect a mirror whose canonical record is outside.
+    # Without confirmed event evidence, each observation retains its own date.
     later = request(client, case_id, start="2026-01-01T10:00:01", include_undated=False)
-    assert later["flows"] == []
+    assert [row["id"] for row in later["flows"]] == [str(ids[1]), str(ids[3])]
+    assert later["funds"] == unresolved_funds(2, ("CNY", "0.20"))
     assert database.q_raw("select * from flows order by id") == before
 
 
@@ -95,9 +100,11 @@ def test_cancellation_and_non_graphable_rows_do_not_enter_investigation(client, 
     ids = seed(database, case_id, [{}, {"payer_account": ""}, {"amount": None}])
     source(database, case_id, ids[0], cancelled=True)
     result = request(client, case_id)
-    assert result["edges"] == result["flows"] == []
+    assert len(result["edges"]) == len(result["flows"]) == 1
+    assert result["flows"][0]["id"] == str(ids[2]) and result["flows"][0]["amount"] is None
+    assert result["funds"] == unresolved_funds(1, ("CNY", None))
     assert result["summary"]["tracked_effective_count"] == 2
-    assert result["summary"]["excluded_non_graphable_count"] == 2
+    assert result["summary"]["excluded_non_graphable_count"] == 1
 
 
 @pytest.mark.parametrize("endpoint", ["time", "paths"])
@@ -141,8 +148,9 @@ def test_paths_distinguish_topology_strict_time_and_currency(client, database, m
     topology = request(client, case_id, **body)
     assert topology["complete"] is True
     assert topology["paths"][0]["accounts"] == ["SYN-A", "SYN-B", "SYN-C"]
-    assert topology["paths"][0]["steps"][1]["count"] == 2
-    assert topology["paths"][0]["steps"][1]["amount"] == "0.13"
+    assert topology["paths"][0]["steps"][1]["count"] is None
+    assert topology["paths"][0]["steps"][1]["amount"] is None
+    assert topology["paths"][0]["steps"][1]["funds"] == unresolved_funds(2, ("CNY", "0.13"))
     chronological = request(client, case_id, mode="chronological", **body)
     assert len(chronological["paths"]) == 1
     assert chronological["paths"][0]["steps"][1]["flow_ids"] == [str(ids[2])]
@@ -243,10 +251,12 @@ def test_case_package_round_trip_preserves_display_choices_and_full_tracked_fact
     assert set(imported_ids).isdisjoint(map(str, ids))
     full = request(client, restored_case, canvas_id=restored_canvas)
     assert full["summary"]["selected_count"] == 2
-    assert full["edges"][0]["amount_totals"] == [{"currency": "CNY", "amount": "0.30"}]
+    assert full["edges"][0]["funds"] == unresolved_funds(2, ("CNY", "0.30"))
+    assert full["edges"][0]["total"] is None
     window = loaded["presentation"]["timeWindow"]
     projected = request(client, restored_case, canvas_id=restored_canvas, start=window["start"], end=window["end"],
                         include_undated=window["includeUndated"])
-    assert projected["edges"][0]["total"] == "0.10"
+    assert projected["edges"][0]["total"] is None
+    assert projected["edges"][0]["funds"] == unresolved_funds(1, ("CNY", "0.10"))
     assert projected["flows"][0]["trade_time"] == "2026-01-01 10:00:00.123456"
     assert projected["flows"][0]["id"] == imported_ids[0]

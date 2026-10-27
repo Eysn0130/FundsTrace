@@ -171,6 +171,8 @@ function harness() {
     setTimeout: callback => { callback(); return 0; }, clearTimeout() {}, requestAnimationFrame: callback => { callback(); return 0; },
   });
   vm.runInContext(money, context);
+  vm.runInContext(readFileSync(new URL('../static/principal-analysis.js', import.meta.url), 'utf8'), context);
+  window.FundsFacts = context.FundsFacts;
   vm.runInContext(section('function esc(', 'function toast('), context);
   vm.runInContext(section('let pendingCanvasId = 0;', 'async function loadCases()'), context);
   vm.runInContext(section('function caseContext()', '/* ---------------- 初始化'), context);
@@ -201,6 +203,7 @@ function result(account = 'SYN-CURRENT') {
   const anchor = flow(12, 3, 'out', 'self');
   return { account, anchor, total: 9, pos: 3, rows: [flow(11, 2, 'in', 'self'), anchor,
     flow(13, 4, 'out', 'counter', { balance: '-10000000000000.01' }), flow(14, 5, 'out', 'self')],
+    principal: { status: 'unknown', assessment: [{ status: 'unknown', message: `合成来源证据-${account}` }], targets: [{ amount: '100.00', min: '0.00', max: '100.00', fifo: null }], currency: 'CNY' },
     suggestions: { sources: [{ ids: [11, 12, 99], account: 'SYN-SOURCE', name: '合成来源', score: 88, reasons: ['合成原因'], tags: ['拆分'] }],
       targets: [{ ids: [13], account: 'SYN-TARGET', name: '合成去向', score: 62, reasons: ['合成去向原因'], tags: [] }] } };
 }
@@ -284,6 +287,8 @@ test('A-B-A and canvas navigation invalidate pending context responses', async (
     await opened(h, result('SYN-CURRENT-BINDING')); const heading = h.element('ctxPos').textContent;
     older.resolve(result('SYN-STALE-BINDING')); await pending;
     assert.equal(h.element('ctxPos').textContent, heading); assert.equal(h.state.ctx.data.account, 'SYN-CURRENT-BINDING');
+    assert.match(h.element('ctxSuggest').textContent, /合成来源证据-SYN-CURRENT-BINDING/);
+    assert.doesNotMatch(h.element('ctxSuggest').textContent, /合成来源证据-SYN-STALE-BINDING/);
   }
 });
 
@@ -312,4 +317,16 @@ test('late tracking completion cannot close or unlock a reopened context session
   const current = h.state.ctx; tracking.resolve(true); await pending;
   assert.equal(h.state.ctx, current); assert.equal(h.element('ctxModal').style.display, 'flex'); assert.equal(h.element('ctxTrack').disabled, true);
   assert.equal(h.box(11).checked, false); assert.equal(h.state.ctx.phase, 'ready');
+});
+
+test('automatic source assessment uses the existing context read and keeps original balances and scores', async () => {
+  const h = harness(); await opened(h);
+  assert.equal(h.requests.length, 1);
+  assert.match(h.element('ctxSuggest').textContent, /来源份额尚不能确定/);
+  assert.match(h.element('ctxSuggest').textContent, /FIFO 证据不足/);
+  assert.match(h.element('ctxSuggest').textContent, /88/);
+  assert.match(h.rows()[2].textContent, /-10,000,000,000,000.01/);
+  await h.change('ctxBook', 'self');
+  assert.equal(h.requests.length, 1, 'local filtering adds no analysis request');
+  assert.match(h.element('ctxSuggest').textContent, /来源份额尚不能确定/);
 });

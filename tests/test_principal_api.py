@@ -1,9 +1,14 @@
 """Public source-share behavior; synthetic own-account ledgers only."""
 from decimal import Decimal
+from datetime import datetime
 
 import pytest
 
-from app import analysis_snapshot, importer
+from app import analysis_snapshot, importer, principal, principal_ledger
+
+
+def own_rows(case_id):
+    return principal_ledger.read(case_id, "SYN-B", "CNY", datetime(2026, 1, 1), datetime(2026, 1, 2))["rows"]
 
 
 def ledger(database, case_id, rows):
@@ -31,23 +36,29 @@ def run(client, request):
     return response.json()
 
 
-def test_untracked_competing_debits_are_included_with_exact_witnesses(client, database, make_case):
+def test_untracked_competitors_remain_complete_but_client_conditions_do_not_prove_coverage(client, database, make_case):
     case_id = make_case()
     ids = ledger(database, case_id, [("in","100.00","140.00"),("out","50.00","90.00"),("out","90.00","0.00")])
     request = body(case_id, ids)
     request["conditions"]["opening_balance"] = "40.00"
     result = run(client, request)
-    assert result["status"] == "ok"
+    assert result["status"] == "unknown" and result["targets"] == []
     assert result["ledger_count"] == 3
-    target = result["targets"][0]
-    assert (target["amount"], target["min"], target["max"], target["fifo"]) == ("90.00","50.00","90.00","90.00")
+    assert "ledger_coverage_unknown" in result["reasons"]
+    # The internal conditional model remains independently testable; this is
+    # not source evidence and is never injected into the public assessment.
+    entries, reason = principal_ledger.ordered(own_rows(case_id), 4000, {}, "post_book")
+    assert reason is None
+    modeled = principal.allocate_ledger(4000, entries, {ids[0]}, [ids[-1]])
+    target = modeled["targets"][0]
+    assert (target["amount"], target["min"], target["max"], target["fifo"]) == (9000, 5000, 9000, 9000)
     assert len(target["min_witness"]["entries"]) == 3
-    assert target["min_witness"]["opening_balance"] == "40.00"
-    assert result["fifo_witness"]["closing_source_balance"] == "0.00"
-    assert all(isinstance(item["id"], str) for item in result["fifo_witness"]["entries"])
+    assert target["min_witness"]["opening_balance"] == 4000
+    assert modeled["fifo_witness"]["closing_source_balance"] == 0
+    assert all(isinstance(item["id"], str) for item in modeled["fifo_witness"]["entries"])
     exported = client.post("/api/analysis/principal/export", json={**request,"expected_revision":result["revision"]})
     assert exported.status_code == 200
-    assert result["revision"] in exported.text and "50.00" in exported.text
+    assert result["revision"] in exported.text and "ledger_coverage_unknown" in exported.text
 
 
 @pytest.mark.parametrize("change,reason", [
@@ -103,7 +114,9 @@ def test_unknown_currency_competitor_cannot_be_filtered_out_of_known_ledger(clie
         assert result["status"] == "unknown" and result["targets"] == []
         assert "currency_evidence_unknown" in result["reasons"]
     else:
-        assert result["status"] == "ok" and result["targets"][0]["max"] == "90.00"
+        assert result["status"] == "unknown" and result["targets"] == []
+        assert "currency_evidence_unknown" not in result["reasons"]
+        assert result["ledger_count"] == 2
 
 
 @pytest.mark.parametrize("amount", [None, Decimal("-1.00")])
@@ -116,11 +129,15 @@ def test_legacy_missing_or_signed_amount_does_not_become_a_source_share(client,d
     assert "amount_evidence_unknown" in result["reasons"]
 
 
-def test_contradictory_final_balance_is_inconsistent_not_zero_attribution(client,database,make_case):
+def test_untyped_balance_is_unknown_and_explicit_book_model_detects_inconsistency(client,database,make_case):
     case_id = make_case()
     ids = ledger(database,case_id,[("in","100.00","100.00"),("out","100.00","50.00")])
     result = run(client,body(case_id,ids))
-    assert result["status"] == "inconsistency" and result["targets"] == []
+    assert result["status"] == "unknown" and result["targets"] == []
+    assert result["conditions"]["balance_kind"] == "unknown"
+    entries, reason = principal_ledger.ordered(own_rows(case_id), 0, {}, "post_book")
+    assert reason is None
+    assert principal.allocate_ledger(0, entries, {ids[0]}, [ids[-1]])["status"] == "inconsistency"
 
 
 def test_same_timestamp_is_inferred_only_when_unique_not_by_id(client,database,make_case):
@@ -128,10 +145,14 @@ def test_same_timestamp_is_inferred_only_when_unique_not_by_id(client,database,m
     ids = ledger(database,case_id,[("out","100.00",None),("in","100.00",None)])
     database.x("update flows set trade_time='2026-01-01 10:00:00' where case_id=?",[case_id])
     result = run(client,body(case_id,list(reversed(ids))))
-    assert result["status"] == "ok" and result["targets"][0]["min"] == "100.00"
+    assert result["status"] == "unknown" and result["targets"] == []
+    entries, reason = principal_ledger.ordered(own_rows(case_id), 0, {}, "unknown")
+    assert reason is None
+    assert principal.allocate_ledger(0, entries, {ids[-1]}, [ids[0]])["targets"][0]["min"] == 10000
     request = body(case_id,list(reversed(ids)))
     request["conditions"]["opening_balance"] = "100.00"
-    assert run(client,request)["reasons"] == ["posting_order_unknown"]
+    assert run(client,request)["status"] == "unknown"
+    assert principal_ledger.ordered(own_rows(case_id), 10000, {}, "unknown")[1] == "posting_order_unknown"
 
 
 def test_other_currency_and_other_cases_never_contribute(client,database,make_case):
@@ -141,7 +162,7 @@ def test_other_currency_and_other_cases_never_contribute(client,database,make_ca
     database.x("insert into flows(case_id,trade_time,self_account,payer_account,payee_account,amount,currency) "
                "values (?,'2026-01-01 10:00:30','SYN-B','SYN-B','SYN-X',900,'USD')",[case_id])
     result = run(client,body(case_id,ids))
-    assert result["status"] == "ok" and result["ledger_count"] == 2
+    assert result["status"] == "unknown" and result["ledger_count"] == 2
     result = run(client,body(case_id,ids,target_flow_ids=other_ids))
     assert result["status"] == "unknown" and not result["targets"]
 

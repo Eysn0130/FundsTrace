@@ -183,10 +183,13 @@ function harness() {
     setTimeout: callback => { callback(); return 0; }, clearTimeout() {}, requestAnimationFrame: callback => { callback(); return 0; },
   });
   vm.runInContext(money, context);
+  vm.runInContext(readFileSync(new URL('../static/principal-analysis.js', import.meta.url), 'utf8'), context);
+  window.FundsFacts = context.FundsFacts;
   vm.runInContext(section('function esc(', 'function toast('), context);
   vm.runInContext(section('let pendingCanvasId = 0;', 'async function loadCases()'), context);
   vm.runInContext(section('function caseContext()', '/* ---------------- 初始化'), context);
   vm.runInContext(section('function edgeKey(', 'function graphEdgeType('), context);
+  vm.runInContext(section('function flowObservationIds(', '/* ---------------- 追踪上图'), context);
   // Include the account/crop lifecycle dependencies used by closeDrawer and
   // case revocation exactly once, rather than slicing at an obsolete comment.
   vm.runInContext(section('let _selItem = null;', '/* ---------------- 交易上下文'), context);
@@ -217,6 +220,17 @@ const flow = (id, extra = {}) => ({ id, trade_time: '2026-10-17 12:34:56', amoun
 async function opened(h, model = edge(), rows = [flow(17), flow(18, { amount: '12.34', currency: 'USD' })], total = 7) {
   h.network(async () => ({ rows, total })); await h.open(model);
 }
+
+test('typed edge parties use their source display numbers while requests retain entity IDs', async () => {
+  const h = harness(), model = edge('fte_SYN');
+  h.state.lastGraph.nodes = [{ account: model.data.source, display_account: 'SYN-A' },
+    { account: model.data.target, display_account: 'SYN-B' }];
+  await opened(h, model);
+  const parties = h.element('drawerBody').querySelector('.edge-parties').textContent;
+  assert.match(parties, /SYN-A/); assert.match(parties, /SYN-B/);
+  assert.doesNotMatch(parties, /fte_SYN/);
+  assert.equal(new URL(h.requests[0].path, 'http://synthetic.invalid').searchParams.get('ids'), '17,18');
+});
 
 test('edge workspace renders four complete columns, exact per-currency totals and returned versus total coverage', async () => {
   const h = harness(), model = edge(), long = 'SYN-' + '1234567890'.repeat(12), hostile = '<img src=x onerror="SYN"> & "合成"';
@@ -347,4 +361,33 @@ test('a late removal receipt cannot alter a newly opened edge', async () => {
   pending.resolve(true); await flush();
   assert.equal(h.element('drawerBody').innerHTML, body); assert.equal(h.element('drawer').classList.contains('open'), true);
   assert.deepEqual(h.rows().map(row => row.dataset.flowId), ['18']);
+});
+
+for (const exact of [true, false]) test(`edge facts display ${exact ? 'one confirmed event' : 'an unresolved range'} while retaining ledger rows`, async () => {
+  const h = harness(), model = edge();
+  model.data.funds = { status: exact ? 'exact' : 'bounded', count: { lower: exact ? 1 : 0, upper: exact ? 1 : 2 },
+    totals: [{ currency: 'CNY', amount: exact ? '100.00' : null, lower: exact ? '100.00' : '0.00', upper: exact ? '100.00' : '200.00' }] };
+  model.data.cnt = exact ? 1 : null; model.data.total = exact ? '100.00' : null;
+  model.data.amount_totals = [{ currency: 'CNY', amount: '200.00' }];
+  await opened(h, model, [flow(17, {amount:'100.00'}), flow(18, {amount:'100.00'})], 2);
+  const facts = h.document.querySelector('.edge-facts').textContent;
+  assert.match(facts, exact ? /1 个事件.*100\.00/s : /0–2 个事件（待核）.*0\.00–200\.00（待核）/s);
+  if (exact) assert.doesNotMatch(facts, /200\.00/);
+  assert.equal(h.rows().length, 2); assert.equal(h.requests.length, 1);
+});
+
+test('removing a confirmed edge row removes every selected observation and context keeps its representative', async () => {
+  const h = harness();
+  await opened(h, edge(), [flow(17, {observation_ids:['17','18'],granularity:'confirmed_event'})], 1);
+  await h.context(17); assert.deepEqual(h.contextOpens, [17]);
+  await h.more(17); await h.removeClick(); await flush();
+  assert.deepEqual(h.removals.map(call => call.ids.map(String)), [['17','18']]);
+  assert.equal(h.requests.length, 1);
+});
+
+test('a filtered confirmed edge row acts only on the observation returned in its selection', async () => {
+  const h = harness();
+  await opened(h, edge('SYN-SELECTED', [18]), [flow(18, {observation_ids:['18'],granularity:'confirmed_event'})], 1);
+  await h.more(18); await h.removeClick(); await flush();
+  assert.deepEqual(h.removals.map(call => call.ids.map(String)), [['18']]);
 });

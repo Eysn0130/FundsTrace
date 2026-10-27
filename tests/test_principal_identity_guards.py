@@ -1,5 +1,9 @@
 """Public imports cannot turn known card/identity uncertainty into a ledger."""
 import pytest
+from datetime import datetime
+
+from app import principal, principal_ledger, principal_multihop
+from app.principal_routes import NetworkIn
 
 from test_folder_evidence import accepted, account, entities, table, transaction
 
@@ -37,6 +41,34 @@ def analyze(client, case_id, network=False):
     return key, response.json()
 
 
+def assert_usable_model(client, case_id, *, network=False, body=None, expected=(10000, 10000, 10000)):
+    """Identity can support a conditional model without proving coverage."""
+    key, default = request(client, case_id, network)
+    body = body or default
+    if network:
+        result = principal_multihop._calculate_conditioned(case_id, NetworkIn(**body))
+        assert result["status"] == "ok", result
+        target = result["targets"][0]
+        assert expected == (10000, 10000, 10000)
+        assert tuple(target[field] for field in ("min", "max", "fifo")) == ("100.00", "100.00", "100.00")
+        assert result["ledger_count"] == 2
+    else:
+        loaded = principal_ledger.read(case_id, key, "CNY", datetime.fromisoformat(body["start"]), datetime.fromisoformat(body["end"]))
+        assert loaded["status"] == "ready", loaded
+        assert len(loaded["rows"]) == 2
+        opening = principal_ledger.units(body["conditions"]["opening_balance"])
+        entries, reason = principal_ledger.ordered(loaded["rows"], opening, {}, body["conditions"]["balance_kind"])
+        assert reason is None
+        target = principal.allocate_ledger(opening, entries, {body["source_flow_id"]}, body["target_flow_ids"])["targets"][0]
+        assert tuple(target[field] for field in ("min", "max", "fifo")) == expected
+
+
+def assert_missing_source_evidence(result, network=False):
+    assert result["status"] == "unknown" and result["targets"] == []
+    assert "account_ledger_identity_unknown" not in result["reasons"]
+    assert ("complete_own_ledgers_and_opening_balances_required" if network else "ledger_coverage_unknown") in result["reasons"]
+
+
 @pytest.mark.parametrize("network", [False, True])
 def test_one_card_multiple_ledgers_cannot_be_declared_one_complete_account(client, database, make_case, network):
     case_id = make_case("Synthetic ambiguous card ledger")
@@ -48,7 +80,7 @@ def test_one_card_multiple_ledgers_cannot_be_declared_one_complete_account(clien
     states = database.q_raw("select state from resolved_endpoints where case_id=? and role='self'", [case_id])
     assert {item["state"] for item in states} == {"card_only"}
     assert result["status"] == "unknown"
-    assert result["reasons"] == ["account_ledger_identity_unknown"]
+    assert "account_ledger_identity_unknown" in result["reasons"]
     assert result["targets"] == []
 
 
@@ -68,9 +100,8 @@ def test_explicit_account_and_subaccount_remain_separate_usable_ledgers(client, 
     assert own["kind"] == kind and own["status"] == "resolved"
     if kind == "subaccount":
         assert own["parent_entity_id"] and own["parent_entity_id"] != key
-    assert result["status"] == "ok", result
-    assert result["ledger_count"] == 2
-    assert (result["targets"][0]["min"], result["targets"][0]["max"], result["targets"][0]["fifo"]) == ("100.00",) * 3
+    assert_missing_source_evidence(result, network)
+    assert_usable_model(client, case_id, network=network)
 
 
 def test_another_card_target_does_not_erase_an_explicit_account(client, make_case):
@@ -78,14 +109,16 @@ def test_another_card_target_does_not_erase_an_explicit_account(client, make_cas
     accepted(client, case_id, [("flows.csv", table("transaction", movements("SYN-A"))),
                               ("accounts.csv", table("account", [account(number="SYN-A")]))])
     _, before = analyze(client, case_id)
-    assert before["status"] == "ok"
+    assert_missing_source_evidence(before)
+    assert_usable_model(client, case_id)
     accepted(client, case_id, [("contradiction.csv", table("account", [account(number="SYN-OTHER")]))])
     key, after = analyze(client, case_id)
     own = next(item for item in entities(client, case_id)["entities"] if item["entity_id"] == key)
     # Explicit A remains A: no rewrite to the competing declaration is allowed.
     assert own["kind"] == "account" and own["account_number"] == "SYN-A"
     # A second card target alone does not contradict the separately stated A.
-    assert after["status"] == "ok"
+    assert_missing_source_evidence(after)
+    assert_usable_model(client, case_id)
 
 
 def test_explicit_account_with_only_contradicting_card_declaration_is_unknown(client, database, make_case):
@@ -143,9 +176,9 @@ def test_uncertain_own_entry_outside_currency_or_interval_does_not_block(client,
     response = client.post("/api/analysis/principal", json=body)
     assert response.status_code == 200, response.text
     result = response.json()
-    assert result["status"] == "ok", result
+    assert_missing_source_evidence(result)
     assert result["ledger_count"] == 2
-    assert (result["targets"][0]["min"], result["targets"][0]["max"], result["targets"][0]["fifo"]) == ("50.00", "100.00", "50.00")
+    assert_usable_model(client, case_id, body=body, expected=(5000, 10000, 5000))
 
 
 def test_unscoped_explicit_number_is_not_a_proven_typed_ledger(client, make_case):
@@ -165,8 +198,8 @@ def test_different_names_do_not_erase_resolved_account_identity(client, make_cas
     key, result = analyze(client, case_id)
     own = next(item for item in entities(client, case_id)["entities"] if item["entity_id"] == key)
     assert own["kind"] == "account" and own["status"] == "name_conflict"
-    assert result["status"] == "ok", result
-    assert result["targets"][0]["min"] == result["targets"][0]["max"] == "100.00"
+    assert_missing_source_evidence(result)
+    assert_usable_model(client, case_id)
 
 
 @pytest.mark.parametrize("network", [False, True])
@@ -191,4 +224,4 @@ def test_historical_review_record_cannot_be_overridden_by_complete_ledger_declar
     assert client.get(f"/api/v1/cases/{case_id}/stats").json()["import_coverage"]["unresolved_records"] == 1
     _, result = analyze(client, case_id, network)
     assert result["status"] == "unknown" and result["targets"] == []
-    assert result["reasons"] == ["unresolved_source_records"]
+    assert "unresolved_source_records" in result["reasons"]

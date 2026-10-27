@@ -5,6 +5,8 @@ from PIL import Image
 import pytest
 
 from test_cases import insert_flow
+from funds_assertions import unresolved_funds
+from decimal import Decimal
 
 
 def listing(client, case_id, **params):
@@ -99,16 +101,26 @@ def test_profile_preserves_large_decimal_totals_and_separates_currencies(client,
                 trade_no="SYN-IN", trade_time="2026-01-06 10:00:00", amount="4.56", currency="CNY")
     insert_flow(database, other, flow_row, payer_account=account, amount="100.00")
     value = profile(client, cid, account)
-    expected = [{"currency": "", "amount": "0.03"}, {"currency": "CNY", "amount": "19999999999999999.98"},
-                {"currency": "USD", "amount": "0.01"}]
+    expected = [{"currency": "CNY", "amount": None}, {"currency": "USD", "amount": None},
+                {"currency": None, "amount": None}]
     assert value["account"] == account
-    assert (value["cnt"], value["out_cnt"], value["in_cnt"]) == (6, 5, 1)
+    assert (value["cnt"], value["out_cnt"], value["in_cnt"]) == (None, None, None)
+    assert value["funds"] == unresolved_funds(6, ("CNY", None), ("USD", None), (None, None))
+    assert value["out_funds"] == unresolved_funds(5, ("CNY", None), ("USD", None), (None, None))
+    observed = client.get("/api/flows", params={"case_id": cid, "granularity": "observations"}).json()["rows"]
+    assert sum(Decimal(row["amount"]) for row in observed if row["currency"] == "CNY" and row["payer_account"] == account) == Decimal("19999999999999999.98")
+    assert sorted((row["trade_no"], row["amount"], row["currency"]) for row in observed) == [
+        ("SYN-1", "9999999999999999.99", "CNY"), ("SYN-2", "9999999999999999.99", "CNY"),
+        ("SYN-3", "0.01", "USD"), ("SYN-4", "0.01", None), ("SYN-5", "0.02", ""),
+        ("SYN-IN", "4.56", "CNY")]
     assert value["out_totals"] == expected and value["out_amt"] is None
-    assert value["in_totals"] == [{"currency": "CNY", "amount": "4.56"}] and value["in_amt"] == "4.56"
+    assert value["in_totals"] == [{"currency": "CNY", "amount": None}] and value["in_amt"] is None
+    assert value["in_funds"] == unresolved_funds(1, ("CNY", "4.56"))
     assert value["tmin"] == "2026-01-01 10:00:00" and value["tmax"] == "2026-01-06 10:00:00"
     counter = value["top_counterparties"][0]
     assert counter["acct"] == "000-COUNTER" and counter["out_totals"] == expected
-    assert (counter["out_cnt"], counter["in_cnt"], counter["in_amt"]) == (5, 1, "4.56")
+    assert (counter["out_cnt"], counter["in_cnt"], counter["in_amt"]) == (None, None, None)
+    assert counter["out_funds"] == value["out_funds"] and counter["in_funds"] == value["in_funds"]
     assert counter["out_amt"] is None
 
 
@@ -177,10 +189,13 @@ def test_profile_counts_current_flow_facts_in_both_directions_without_tracking(c
                                  ("OTHER", "SELF", "3.03")):
         insert_flow(database, cid, flow_row, payer_account=payer, payee_account=payee, amount=amount)
     value = profile(client, cid, "SELF")
-    assert (value["cnt"], value["out_cnt"], value["in_cnt"]) == (3, 2, 2)
-    assert value["out_totals"] == [{"currency": "CNY", "amount": "3.03"}]
-    assert value["in_totals"] == [{"currency": "CNY", "amount": "4.04"}]
-    assert client.get("/api/flows", params={"case_id": cid, "account": "SELF", "account_exact": 1}).json()["total"] == value["cnt"]
+    assert (value["cnt"], value["out_cnt"], value["in_cnt"]) == (None, None, None)
+    assert value["funds"] == unresolved_funds(3, ("CNY", "6.06"))
+    assert value["out_funds"] == unresolved_funds(2, ("CNY", "3.03"))
+    assert value["in_funds"] == unresolved_funds(2, ("CNY", "4.04"))
+    assert value["out_totals"] == [{"currency": "CNY", "amount": None}]
+    assert value["in_totals"] == [{"currency": "CNY", "amount": None}]
+    assert client.get("/api/flows", params={"case_id": cid, "account": "SELF", "account_exact": 1}).json()["total"] == value["funds"]["observation_count"]
     assert database.q("select count(*) n from tracked_flows where case_id=?", [cid])[0]["n"] == 0
 
 

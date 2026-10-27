@@ -14,8 +14,8 @@ def test_table_graph_and_exports_share_revision_and_reject_old_generation(client
     imported_network(client, cid)
     table = client.get('/api/flows', params={'case_id': cid}).json()
     revision = table['analysis_revision']
-    assert sum(row['event_state'] == 'confirmed' for row in table['rows']) == 2
-    assert client.post('/api/track', json={'case_id': cid, 'flow_ids': [row['id'] for row in table['rows']]}).status_code == 200
+    assert sum(row['event_state'] == 'confirmed' for row in table['rows']) == 1
+    assert client.post('/api/track', json={'case_id': cid, 'flow_ids': [fid for row in table['rows'] for fid in row['observation_ids']]}).status_code == 200
     graph = client.get('/api/graph', params={'case_id': cid}).json()
     assert graph['analysis_revision'] == revision
     assert graph['case_event_summary'] == table['case_event_summary']
@@ -26,7 +26,10 @@ def test_table_graph_and_exports_share_revision_and_reject_old_generation(client
     assert dict(list(book['分析修订'].values)[1:])['分析修订'] == revision
     values = list(book['追踪流水'].values)
     exported = [dict(zip(values[0], row)) for row in values[1:]]
-    assert sum(row['事件证据状态'] == 'confirmed' for row in exported) == 2
+    assert sum(row['事件证据状态'] == 'confirmed' for row in exported) == 1
+    originals = list(book['原始账簿观察'].values)
+    assert len(originals) == 5
+    assert graph['funds'] == table['funds']
     snapshot = graph_snapshot()
     snapshot.update(case_id=cid)
     snapshot['view']['analysis_revision'] = revision

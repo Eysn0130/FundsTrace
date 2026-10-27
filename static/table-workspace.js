@@ -2,7 +2,7 @@
  * Graph writes belong exclusively to the canvas editor's binding-scoped commands. */
 (function () {
   'use strict';
-  let rows = [], request = 0, anchors = new Set(), applied = '', draft = false, inputRevision = 0;
+  let rows = [], resultFunds = null, request = 0, anchors = new Set(), applied = '', draft = false, inputRevision = 0;
   let open = false, mounted = false, binding = 0, membership = null, rendering = false, refreshBinding = null;
   let scrolls = { sidebar: [0, 0], overview: [0, 0] }, slots = [];
   let workspaceView = 'standard';
@@ -33,37 +33,42 @@
   }
   function updateSummary() {
     if (!mounted) return;
-    const text = `${draft ? '待查询 · ' + summary() + ' · 上次结果 ' : (applied || summary()) + ' · '}${fmtCount(state.search.total)} 笔`;
+    const text = `${draft ? '待查询 · ' + summary() + ' · 上次结果 ' : (applied || summary()) + ' · '}${resultSummary()}`;
     $('#querySummary').textContent = text; $('#querySummary').title = text;
+  }
+  function resultSummary() {
+    return resultFunds ? `${window.FundsFacts.count(resultFunds)} · ${window.FundsFacts.totals(resultFunds)}`
+      : `${fmtCount(state.search.total)} 笔`;
   }
   function updateMembership() {
     if (!mounted) return;
     const status = member(), desired = new Set(status.desiredIds.map(id)), pending = new Set(status.pendingIds.map(id));
     for (const tr of $$('#flowTbody tr[data-id]')) {
       const key = id(tr.dataset.id), box = tr.querySelector('.flow-ck'), line = tr.querySelector('.membership-status');
+      const ids = flowObservationIds(tr).map(id), included = ids.some(value => desired.has(value)), waiting = ids.some(value => pending.has(value));
       if (!box) continue;
       if (open) {
-        box.checked = desired.has(key); box.disabled = !status.available;
+        box.checked = included; box.disabled = !status.available;
         box.setAttribute('aria-label', `${box.checked ? '从当前画布移除' : '加入当前画布'}，流水 ${key}`);
       } else {
         box.checked = anchors.has(key); box.disabled = false;
         box.setAttribute('aria-label', `选为追踪锚点，流水 ${key}`);
       }
-      const error = status.failures[key];
-      tr.classList.toggle('membership-pending', pending.has(key));
+      const error = ids.map(value => status.failures[value]).find(Boolean);
+      tr.classList.toggle('membership-pending', waiting);
       tr.classList.toggle('membership-failed', !!error);
       if (line) {
-        line.textContent = error ? '失败 · 重试' : pending.has(key) ? (desired.has(key) ? '添加中' : '移除中') : desired.has(key) ? '已上图' : '未上图';
+        line.textContent = error ? '失败 · 重试' : waiting ? (included ? '添加中' : '移除中') : included ? '已上图' : '未上图';
         line.title = error || ''; line.classList.toggle('is-error', !!error);
       }
     }
-    const all = $('#overviewTrackAll'), pageIds = rows.map(row => id(row.id));
-    const count = pageIds.filter(key => desired.has(key)).length;
-    all.checked = pageIds.length > 0 && count === pageIds.length;
-    all.indeterminate = count > 0 && count < pageIds.length;
-    all.disabled = !pageIds.length || !status.available;
+    const all = $('#overviewTrackAll');
+    const count = rows.filter(row => flowObservationIds(row).some(value => desired.has(id(value)))).length;
+    all.checked = rows.length > 0 && count === rows.length;
+    all.indeterminate = count > 0 && count < rows.length;
+    all.disabled = !rows.length || !status.available;
     const failCount = Object.keys(status.failures).length;
-    $('#overviewMembershipStatus').textContent = pending.size ? `${pending.size} 笔处理中，可继续选择` : failCount ? `${failCount} 笔操作失败，已回退；勾选可重试` : `本页 ${count}/${pageIds.length} 笔已上图`;
+    $('#overviewMembershipStatus').textContent = pending.size ? `${pending.size} 笔处理中，可继续选择` : failCount ? `${failCount} 笔操作失败，已回退；勾选可重试` : `本页 ${count}/${rows.length} 笔已上图`;
     const history = window.FundsCanvasEditor?.history.status();
     $('#btnOverviewUndo').disabled = !history?.canUndo || history.busy || status.busy;
     $('#btnOverviewRedo').disabled = !history?.canRedo || history.busy || status.busy;
@@ -120,9 +125,10 @@
       const result = await api('/api/flows?' + parameters);
       if (generation !== binding || sequence !== request || !isCurrentCase(context)) return false;
       rememberAnchors(); state.search.page = result.page; state.search.total = result.total;
+      resultFunds = result.funds || null;
       applied = requestedSummary; draft = summary() !== requestedSummary; renderFlows(result.rows);
       const pages = Math.max(1, Math.ceil(result.total / result.size));
-      $('#resultInfo').textContent = `共 ${fmtCount(result.total)} 笔`;
+      $('#resultInfo').textContent = `共 ${resultSummary()}`;
       $('#pageInfo').textContent = `第 ${result.page} / ${pages} 页`;
       $('#btnPrev').disabled = result.page <= 1; $('#btnNext').disabled = result.page >= pages;
       updateSummary();
@@ -132,7 +138,8 @@
       return true;
     } catch (error) {
       if (generation !== binding || sequence !== request || !isCurrentCase(context)) return false;
-      $('#resultInfo').textContent = rows.length ? '查询失败 · 保留上次结果' : '查询失败 · 请重试';
+      $('#resultInfo').textContent = resultFunds ? `查询失败 · 保留上次结果 · ${resultSummary()}`
+        : rows.length ? '查询失败 · 保留上次结果' : '查询失败 · 请重试';
       return false;
     } finally {
       if (generation === binding && sequence === request && mounted) $('#flowTableScroll').setAttribute('aria-busy', 'false');
@@ -201,7 +208,7 @@
   function invalidate() {
     entityPickers.forEach(picker => picker.invalidate());
     for (const key of ['fAccount', 'fCounter']) if ($('#' + key)?.dataset) delete $('#' + key).dataset.exactAccount;
-    binding++; request++; rows = []; applied = ''; draft = false;
+    binding++; request++; rows = []; resultFunds = null; applied = ''; draft = false;
     setOpen(false, false); scrolls = { sidebar: [0, 0], overview: [0, 0] };
     viewScrolls.clear();
     state.search.page = 1; state.search.total = 0;
@@ -247,7 +254,7 @@
     $('#btnCloseFlowOverview').onclick = () => setOpen(false);
     $('#btnOverviewUndo').onclick = () => $('#btnUndo').click();
     $('#btnOverviewRedo').onclick = () => $('#btnRedo').click();
-    $('#overviewTrackAll').onchange = event => membership.set(rows.map(row => row.id), event.target.checked);
+    $('#overviewTrackAll').onchange = event => membership.set([...new Set(rows.flatMap(flowObservationIds).map(id))], event.target.checked);
     $('#flowCkAll').onchange = event => {
       selectedRows().forEach(box => { box.checked = event.target.checked; }); rememberAnchors(); anchorStatus();
     };
@@ -278,14 +285,14 @@
     $('#flowTbody').addEventListener('change', event => {
       const box = event.target;
       if (!box.matches('.flow-ck')) return;
-      if (open) { event.stopImmediatePropagation(); membership.set([box.dataset.id], box.checked); }
+      if (open) { event.stopImmediatePropagation(); membership.set(flowObservationIds(box), box.checked); }
       else { rememberAnchors(); anchorStatus(); }
     }, true);
     $('#flowTableScroll').addEventListener('keydown', event => {
       const tr = event.target.closest('tr[data-id]');
       if (open && tr && event.target === tr && event.key === ' ') {
         event.preventDefault(); event.stopImmediatePropagation();
-        const box = tr.querySelector('.flow-ck'); if (!box.disabled) membership.set([tr.dataset.id], !box.checked);
+        const box = tr.querySelector('.flow-ck'); if (!box.disabled) membership.set(flowObservationIds(tr), !box.checked);
       }
     }, true);
     membership.subscribe(updateMembership);

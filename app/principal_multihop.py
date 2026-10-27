@@ -14,6 +14,29 @@ MAX_EVENTS = 20_000
 
 
 def calculate(case_id, request):
+    """Evaluate retained source evidence; client declarations grant no facts."""
+    from . import principal_evidence
+    start, end = datetime.fromisoformat(request.start), datetime.fromisoformat(request.end)
+    assessments, reasons = [], []
+    status = "unknown"
+    for item in request.accounts:
+        loaded = principal_ledger.read(case_id, item.account, request.currency, start, end)
+        conditions, evidence = principal_evidence.assess(case_id, loaded["rows"])
+        assessments.append({"account": item.account, "conditions": conditions, "assessment": evidence})
+        reasons.extend(loaded["reasons"])
+        if loaded["status"] == "limited":
+            status = "limited"
+    # A selected set of accounts does not prove that outside accounts are
+    # terminal, even when their currently observed transfers do not return.
+    reasons.extend(("complete_own_ledgers_and_opening_balances_required", "external_boundary_returns_unknown"))
+    return {"policy": "source-evidence-multiledger-v1", "condition_basis": "source_evidence",
+            "status": status, "currency": request.currency, "targets": [], "accounts": assessments,
+            "assessment": [{"condition": "boundary", "status": "unknown", "kind": "missing_evidence", "source_ids": [],
+                            "message": "缺少分析账户之外资金无回流的证据，不能把边界自行设为终止"}],
+            "reasons": sorted(set(reasons)), "interval": {"start": request.start, "end": request.end}}
+
+
+def _calculate_conditioned(case_id, request):
     from . import principal_network
     accounts = {item.account: item.conditions for item in request.accounts}
     output = {"policy": "conditional-multiledger-v1", "currency": request.currency, "targets": [],

@@ -67,6 +67,14 @@ def money_text(value):
     return f"{value // 100}.{value % 100:02d}"
 
 
+def expected_unresolved_funds(count, amount_cents):
+    """Independent expectation for this fixture: observations have no event proof."""
+    return {"policy": "evidence-bounded-funds-v1", "status": "bounded" if count else "exact",
+            "observation_count": count, "confirmed_event_count": 0, "unresolved_observation_count": count,
+            "count": {"lower": 0, "upper": count},
+            "totals": [{"currency": "CNY", "amount": None, "lower": "0.00", "upper": money_text(amount_cents)}] if count else []}
+
+
 def semantic_digest(metrics):
     return hashlib.sha256(json.dumps(metrics, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -279,8 +287,8 @@ def run_sample(args):
             del rows
 
             def statistics_query():
-                # SQL equivalent of the existing stats path, plus exact raw
-                # DECIMAL sums. No HTTP/client/new-query-API dependency.
+                # Raw-observation integrity measurement, separate from evidence-bounded
+                # public funds. Keep exact DECIMAL sums for every imported row.
                 return connection.execute("""
                     select count(*), sum(amount),
                            count(*) filter (where payer_account = ?),
@@ -321,11 +329,37 @@ def run_sample(args):
             graph = measure(stages, "graph_prepare", lambda: main.graph(case_id=case_id, canvas_id=0))
             graph_cents = sum(cents(i, args.seed) for i in graph_indices)
             require(len(graph["tracked_ids"]) == len(graph_indices), "Graph tracked count differs")
-            require(sum(edge["cnt"] for edge in graph["edges"]) == len(graph_indices), "Graph transaction count differs")
-            require(sum(to_cents(edge["total"]) for edge in graph["edges"]) == graph_cents, "Graph aggregate amount differs")
-            require(sum(to_cents(node["out_amt"]) for node in graph["nodes"]) == graph_cents, "Graph node amount differs")
+            expected_pairs, expected_nodes = {}, {}
+            for index in graph_indices:
+                counter = f"{1000 + (index * 37 + args.seed) % 256:016d}"
+                source, target = (SELF_ACCOUNT, counter) if index % 2 == 0 else (counter, SELF_ACCOUNT)
+                pair = expected_pairs.setdefault((source, target), [0, 0])
+                pair[0] += 1
+                pair[1] += cents(index, args.seed)
+                for account, direction in ((source, "out"), (target, "in")):
+                    values = expected_nodes.setdefault(account, {"in": [0, 0], "out": [0, 0]})[direction]
+                    values[0] += 1
+                    values[1] += cents(index, args.seed)
+            require(graph["funds"] == expected_unresolved_funds(len(graph_indices), graph_cents), "Graph evidence bounds differ")
+            require({(edge["source"], edge["target"]) for edge in graph["edges"]} == set(expected_pairs), "Graph relations differ")
+            for edge in graph["edges"]:
+                count, amount = expected_pairs[(edge["source"], edge["target"])]
+                require((edge["cnt"], edge["total"]) == (None, None), "Graph falsely certifies observation aggregates")
+                require(edge["amount_totals"] == [{"currency": "CNY", "amount": None}], "Graph exact currency amount differs")
+                require(edge["funds"] == expected_unresolved_funds(count, amount), "Graph relation evidence bounds differ")
+            require({node["account"] for node in graph["nodes"]} == set(expected_nodes), "Graph accounts differ")
+            for node in graph["nodes"]:
+                for direction in ("in", "out"):
+                    count, amount = expected_nodes[node["account"]][direction]
+                    require(node[direction + "_funds"] == expected_unresolved_funds(count, amount), "Graph direction evidence bounds differ")
+                    require(node[direction + "_observation_count"] == count, "Graph direction observation count differs")
+                    require((node[direction + "_cnt"], node[direction + "_amt"]) == ((None, None) if count else (0, "0.00")), "Graph direction falsely certifies observations")
+            tracked_ids = [row[0] for row in connection.execute("select flow_id from tracked_flows where case_id=? and canvas_id=0 order by flow_id", [case_id]).fetchall()]
+            require(sorted(graph["tracked_ids"]) == tracked_ids, "Graph tracked membership differs")
+            require(sorted(flow_id for edge in graph["edges"] for flow_id in edge["ids"]) == tracked_ids, "Graph lost original observations")
             require(not main.graph(case_id=other_case, canvas_id=0)["tracked_ids"], "Graph leaked another case")
-            graph_sizes = {"rows": len(graph_indices), "nodes": len(graph["nodes"]), "edges": len(graph["edges"])}
+            graph_sizes = {"rows": len(graph_indices), "nodes": len(graph["nodes"]), "edges": len(graph["edges"]),
+                           "funds": graph["funds"]}
             del graph
 
             xlsx_path = sandbox / "synthetic-export.xlsx"
@@ -408,6 +442,21 @@ def run_sample(args):
                 for payer, payee, index in zip(exported["付款账号"], exported["收款账号"], export_indices):
                     counter = f"{1000 + (index * 37 + args.seed) % 256:016d}"
                     require((payer, payee) == ((SELF_ACCOUNT, counter) if index % 2 == 0 else (counter, SELF_ACCOUNT)), "Excel account or direction differs")
+                require(list(exported["所选原分录数"]) == [1] * len(excel_indices), "Excel observation granularity differs")
+                require(not (exported["事件证据状态"] == "confirmed").any(), "Excel falsely certifies observation rows")
+                originals = pd.read_excel(xlsx_path, sheet_name="原始账簿观察", dtype=str)
+                require(len(originals) == len(excel_indices), "Excel original observation count differs")
+                require(list(originals["原流水号"]) == list(exported["交易流水号"]), "Excel original source ordering differs")
+                require([to_cents(value) for value in originals["观察金额"]] == [cents(i, args.seed) for i in excel_indices], "Excel original per-row cents differ")
+                require(list(originals["付款账号"]) == list(exported["付款账号"]) and list(originals["收款账号"]) == list(exported["收款账号"]), "Excel original accounts or direction differ")
+                for value, index in zip(originals["本方原余额"], excel_indices):
+                    require(pd.isna(value) if index % 13 == 0 else to_cents(value) == 50_000_000 + index, "Excel original missing or exact balance differs")
+                funds_sheet = pd.read_excel(xlsx_path, sheet_name="资金统计", dtype=str)
+                require(len(funds_sheet) == 1 and funds_sheet.iloc[0]["币种"] == "CNY", "Excel funds currency differs")
+                part = funds_sheet.iloc[0]
+                require(pd.isna(part["精确事件金额"]) and part["已确认下界"] == "0.00" and to_cents(part["可能上界"]) == expected_export_total, "Excel funds money bounds differ")
+                require((part["事件数下界"], part["事件数上界"], part["所选原分录数"]) == ("0", str(len(excel_indices)), str(len(excel_indices))), "Excel funds count bounds differ")
+                require(isinstance(part["修订"], str) and len(part["修订"]) == 32, "Excel analysis revision is missing")
                 require(len(pd.read_excel(xlsx_path, sheet_name="待调取账号")) > 0, "Excel pending-account sheet is missing")
                 public_aggregates = {key: str(value) if key.endswith("_cents") else value for key, value in actual.items()}
                 return {

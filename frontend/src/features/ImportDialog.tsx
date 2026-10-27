@@ -83,7 +83,7 @@ function ResolutionSummary({ value, complete }: { value: NonNullable<ImportPrevi
     <p><strong>{complete ? '账户关联已更新' : '账户资料关联预览'}</strong></p>
     <p>辅助资料 {value.auxiliary_records} 条 · 关联证据 {value.evidence_records} 条 · 已定位交易端点 {value.resolved_endpoints} 个</p>
     {(value.unresolved_endpoints > 0 || value.conflicts > 0) && <p>尚未定位到账务账户的端点 {value.unresolved_endpoints} 个 · 身份关系冲突 {value.conflicts} 处。已知卡号和原始记录继续保留，补充资料后自动重新关联。</p>}
-    <p>图谱与流水按同一账户关联结果统计，金额按币种分别累计。双方账簿中的交易尚未自动认定为同一笔资金事件。</p>
+    <p>图谱与流水按同一账户关联结果统计，金额按币种分别累计。有据关联的双方流水按同一事件统计；证据不足部分显示范围，原账簿记录与余额保留。</p>
   </section>;
 }
 

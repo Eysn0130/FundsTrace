@@ -15,6 +15,7 @@ import pytest
 from app import main
 from app import license as licensing
 from app.services import cases, imports
+from funds_assertions import unresolved_funds
 
 
 def assert_error(response, status, code=None):
@@ -116,9 +117,12 @@ def test_precise_identifiers_amounts_stats_filters_and_stable_pagination(client,
     stats = client.get(f"/api/v1/cases/{cid}/stats").json()
     assert len(stats.pop("analysis_revision")) == 32
     assert stats.pop("event_summary") is None
-    assert stats == {"case_id": str(cid), "flows": 3, "accounts": 5, "batches": 1,
-                     "amount_total": "10000000000000001.00", "currency": "CNY",
-                     "amount_totals": [{"currency": "CNY", "amount": "10000000000000001.00"}],
+    assert stats == {"case_id": str(cid), "flows": None, "accounts": 5, "batches": 1,
+                     "amount_total": None, "currency": "CNY",
+                     "amount_totals": [{"currency": "CNY", "amount": None}],
+                     "funds": unresolved_funds(3, ("CNY", "10000000000000001.00")),
+                     "statistics_policy": "evidence-bounded-funds-v1",
+                     "resolution": None, "resolution_revision": None,
                      "import_coverage": {"scope": "source_reported_flows", "unresolved_records": 0,
                                          "non_monetary_records": 0, "cancelled_records": 0,
                                          "excluded_flows": 0, "financial_interpretation_complete": True}}
@@ -133,22 +137,30 @@ def test_precise_identifiers_amounts_stats_filters_and_stable_pagination(client,
     assert nullable["trade_time"] is None and nullable["batch_id"] is None and nullable["summary"] == "" and nullable["payer_name"] == ""
     filtered = client.get(f"/api/v1/cases/{cid}/flows", params={"account": "000a", "kw": "needle"}).json()
     assert filtered["total"] == 1 and filtered["items"][0]["id"] == str(high)
-    assert client.get(f"/api/v1/cases/{other}/stats").json()["amount_total"] == "50.00"
+    other_stats = client.get(f"/api/v1/cases/{other}/stats").json()
+    assert other_stats["amount_total"] is None
+    assert other_stats["funds"] == unresolved_funds(1, ("CNY", "50.00"))
 
 
 def test_case_stats_keep_currencies_separate_and_empty_case_explicit(client, database, make_case):
     cid = make_case()
     empty = client.get(f"/api/v1/cases/{cid}/stats").json()
     assert empty["amount_total"] == "0.00" and empty["currency"] is None and empty["amount_totals"] == []
+    assert empty["flows"] == 0 and empty["funds"] == unresolved_funds(0)
+    assert empty["statistics_policy"] == "evidence-bounded-funds-v1"
     database.executemany("insert into flows(case_id,amount,currency) values (?,?,?)", [
         (cid, Decimal("12.34"), "CNY"), (cid, Decimal("0.01"), "CNY"), (cid, Decimal("9.87"), "USD")])
     mixed = client.get(f"/api/v1/cases/{cid}/stats").json()
     assert mixed["amount_total"] is None and mixed["currency"] is None
-    assert mixed["amount_totals"] == [{"currency": "CNY", "amount": "12.35"}, {"currency": "USD", "amount": "9.87"}]
+    assert mixed["amount_totals"] == [{"currency": "CNY", "amount": None}, {"currency": "USD", "amount": None}]
+    assert mixed["flows"] is None
+    assert mixed["funds"] == unresolved_funds(3, ("CNY", "12.35"), ("USD", "9.87"))
     database.x("update flows set currency=null where currency='USD'")
     unknown = client.get(f"/api/v1/cases/{cid}/stats").json()
     assert unknown["amount_total"] is None
-    assert unknown["amount_totals"] == [{"currency": "", "amount": "9.87"}, {"currency": "CNY", "amount": "12.35"}]
+    assert unknown["amount_totals"] == [{"currency": "CNY", "amount": None}, {"currency": None, "amount": None}]
+    # Missing currency could belong to CNY, so its upper bound is unknown too.
+    assert unknown["funds"] == unresolved_funds(3, ("CNY", None), (None, None))
 
 
 @pytest.mark.parametrize("query", [{"page": 0}, {"page": -1}, {"page": 2147483648}, {"page_size": 0}, {"page_size": 201}, {"page": "no"}])
@@ -196,7 +208,9 @@ def test_bound_import_preview_repreview_commit_poll_and_exact_decimal(client, da
     assert client.post(f"{base}/commit", json={"mode": "A", "mapping": mapping}).json()["started"] is False
     flows = client.get(f"/api/v1/cases/{cid}/flows").json()["items"]
     assert {row["amount"] for row in flows} == {"9999999999999999.99", "0.01"}
-    assert client.get(f"/api/v1/cases/{cid}/stats").json()["amount_total"] == "10000000000000000.00"
+    stats = client.get(f"/api/v1/cases/{cid}/stats").json()
+    assert stats["amount_total"] is None and stats["flows"] is None
+    assert stats["funds"] == unresolved_funds(2, ("CNY", "10000000000000000.00"))
 
 
 def test_mode_b_direction_and_default_main_marking(client, make_case):
@@ -370,4 +384,6 @@ def test_contract_generation_is_current_and_ignores_inherited_data_directory(tmp
         for status in ("400", "403", "404", "405", "409", "422", "500"):
             assert operation["responses"][status]["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/ApiError"}
     properties = schema["components"]["schemas"]["Flow"]["properties"]
-    assert properties["id"]["type"] == "string" and properties["amount"]["type"] == "string"
+    assert properties["id"]["type"] == "string"
+    assert properties["amount"]["anyOf"] == [
+        {"type": "string", "pattern": r"^-?[0-9]+\.[0-9]{2}$"}, {"type": "null"}]

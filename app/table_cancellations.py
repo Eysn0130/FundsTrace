@@ -473,6 +473,36 @@ def revoke_pairs(plan, original_record_nos, reason="cancellation_historical_conf
     """Fail closed for incompatible historical facts, including dependent chains."""
     if reason not in REASONS or reason == "matched_cancellation":
         raise ValueError("invalid cancellation revocation reason")
+    if plan.get("_plan_store") is not None:
+        # Proof dependencies never cross a physical member. Replay the exact
+        # existing rule one member at a time and persist only its removals.
+        from itertools import groupby
+        from .import_staging import record_map
+        records = record_map(plan)
+        requested = original_record_nos
+        if not hasattr(requested, "__contains__"):
+            index = plan["_plan_store"].mapping()
+            for number in requested:
+                index[number] = True
+            requested = index
+        for member, pairs in groupby(plan["cancellations"],
+                                     key=lambda pair: records[pair["original_record_no"]]["member_path"]):
+            pairs = list(pairs)
+            selected = [pair["original_record_no"] for pair in pairs if pair["original_record_no"] in requested]
+            if not selected:
+                continue
+            member_records = list(plan["records"].select(member=member))
+            first, last = member_records[0]["record_no"], member_records[-1]["record_no"]
+            local = dict(plan, records=member_records, rows=[], cancellations=pairs,
+                         cancelled_rows=list(plan["cancelled_rows"].select(lower=first, upper=last)))
+            local.pop("_plan_store")
+            revoke_pairs(local, selected, reason=reason)
+            retained = {pair["cancellation_record_no"] for pair in local["cancellations"]}
+            revoked = [pair for pair in pairs if pair["cancellation_record_no"] not in retained]
+            plan["cancellations"].remove_positions(pair._staged_identity[1] for pair in revoked)
+            plan["cancelled_rows"].remove_numbers(pair["original_record_no"] for pair in revoked)
+        refresh_stats(plan)
+        return
     requested = set(original_record_nos)
     rejected = {pair["cancellation_record_no"] for pair in plan.get("cancellations", []) if pair["original_record_no"] in requested}
     dependents = defaultdict(list)

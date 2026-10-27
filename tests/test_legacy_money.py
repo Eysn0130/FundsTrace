@@ -9,6 +9,7 @@ from threading import Event
 import openpyxl
 import pytest
 
+from funds_assertions import unresolved_funds
 from app import importer
 from app.money import money_decimal, money_string
 
@@ -55,9 +56,9 @@ def test_graph_profile_context_and_excel_keep_cents_without_currency_mixing(clie
     assert client.post("/api/track", json={"case_id": cid, "flow_ids": ids}).status_code == 200
     graph = client.get("/api/graph", params={"case_id": cid}).json()
     edge = graph["edges"][0]
-    expected = [{"currency": "CNY", "amount": "20000000000000000.28"},
-                {"currency": "USD", "amount": "9999999999999999.99"}]
-    assert edge["cnt"] == 6
+    expected = [{"currency": "CNY", "amount": None}, {"currency": "USD", "amount": None}]
+    assert edge["funds"] == unresolved_funds(6, ("CNY", "20000000000000000.28"), ("USD", "9999999999999999.99"))
+    assert edge["cnt"] is None
     assert edge["total"] is None
     assert edge["amount_totals"] == expected
     sender = next(row for row in graph["nodes"] if row["account"] == "SYN-A")
@@ -105,7 +106,7 @@ def test_money_boundary_never_accepts_binary_float():
     assert money_string(Decimal("-0.00")) == "0.00"
 
 
-def test_unknown_currencies_share_one_exact_group(client, database, make_case):
+def test_unknown_currencies_remain_unbounded_without_fabricated_currency_group(client, database, make_case):
     cid = make_case("Synthetic unknown currency")
     for currency, amount in [(None, "1.01"), ("", "2.02")]:
         database.x("insert into flows(case_id,trade_time,payer_account,payee_account,amount,currency) "
@@ -113,9 +114,14 @@ def test_unknown_currencies_share_one_exact_group(client, database, make_case):
     ids = [row["id"] for row in database.q("select id from flows where case_id=?", [cid])]
     client.post("/api/track", json={"case_id": cid, "flow_ids": ids})
     edge = client.get("/api/graph", params={"case_id": cid}).json()["edges"][0]
-    assert edge["total"] == "3.03" and edge["amount_totals"] == [{"currency": "", "amount": "3.03"}]
+    assert edge["total"] is None and edge["amount_totals"] == [{"currency": None, "amount": None}]
+    assert edge["funds"] == unresolved_funds(2, (None, None))
     profile = client.get("/api/accounts/UNKNOWN-A/profile", params={"case_id": cid}).json()
-    assert profile["out_totals"] == [{"currency": "", "amount": "3.03"}]
+    assert profile["out_totals"] == [{"currency": None, "amount": None}]
+    assert profile["out_funds"] == edge["funds"]
+    originals = client.get("/api/flows", params={"case_id": cid, "granularity": "observations"}).json()["rows"]
+    assert sorted((row["id"], row["amount"], row["currency"]) for row in originals) == [
+        (ids[0], "1.01", None), (ids[1], "2.02", "")]
     workbook = openpyxl.load_workbook(io.BytesIO(client.get("/api/export/tracked.xlsx", params={"case_id": cid}).content))
     records = list(workbook["待调取账号"].values)
     assert len(records) == 3  # One row per account, rather than duplicated NULL/empty groups.
@@ -161,7 +167,7 @@ def test_graph_reads_one_state_while_background_delete_waits(client, database, m
 
         def interleave(sql, params=None):
             rows = read(sql, params)
-            if "with t as" in sql and not futures:
+            if "from selected_facts" in sql and not futures:
                 futures.append(pool.submit(delete))
                 assert attempted.wait(1)
                 finished.wait(0.05)  # Without the whole-read lock deletion finishes before the next query.
@@ -170,8 +176,9 @@ def test_graph_reads_one_state_while_background_delete_waits(client, database, m
         monkeypatch.setattr(database, "q_raw", interleave)
         result = client.get("/api/graph", params={"case_id": cid}).json()
         assert result["tracked_ids"] == [fid]
-        assert result["edges"][0]["cnt"] == 1
-        assert result["edges"][0]["total"] == "0.01"
+        assert result["edges"][0]["cnt"] is None
+        assert result["edges"][0]["total"] is None
+        assert result["edges"][0]["funds"] == unresolved_funds(1, ("CNY", "0.01"))
         assert result["edges"][0]["ids"] == [fid]
         futures[0].result(timeout=2)
     assert finished.is_set()

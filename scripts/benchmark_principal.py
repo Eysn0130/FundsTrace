@@ -59,8 +59,9 @@ def main():
                 if response.status_code != 200:
                     raise AssertionError("synthetic query failed")
                 value=response.json()
-                assert value["status"]=="ok" and value["ledger_count"]==100
-                assert (value["targets"][0]["min"],value["targets"][0]["max"],value["targets"][0]["fifo"]) == ("0.00",)*3
+                assert value["status"]=="unknown" and value["ledger_count"]==100
+                assert value["condition_basis"]=="source_evidence" and value["targets"]==[]
+                assert "ledger_coverage_unknown" in value["reasons"]
             count,total=connection.execute("select count(*),sum(amount) from flows where case_id=1").fetchone()
             assert count==args.rows and str(total)==f"{args.rows//100}.00"
         usage=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -70,7 +71,7 @@ def main():
                           "rows":args.rows,"account_rows":100,"storage_seconds":storage_seconds,
                           "first_query_seconds":timings[0],"warm_query_seconds":timings[1:],
                           "peak_rss_bytes":rss_bytes,"runtime_disk_bytes":disk_bytes,
-                          "exact_total":str(total),"principal_result":"0.00",
+                          "observation_total":str(total),"principal_result":"unknown_without_source_coverage",
                           "limits":{"duckdb_memory":"2GB","threads":2,"duckdb_temp":"8GB"}},sort_keys=True))
         connection.close(); db._con=None
 

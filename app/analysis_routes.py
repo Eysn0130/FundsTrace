@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Case-scoped analysis, with explicit exact-money JSON boundaries."""
+"""Case-scoped analysis, with evidence-bounded decimal-money JSON boundaries."""
 import urllib.parse
 from decimal import Decimal, InvalidOperation
 
@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from . import analytics, db, evidence_resolution, analysis_snapshot, event_resolution
+from . import analytics, db, evidence_resolution, analysis_snapshot, event_resolution, funds_projection
 from .money import money_decimal, wire_money
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -88,10 +88,12 @@ def _params(params):
 
 @router.post("/run")
 def run_analysis(body: RunIn):
-    """Exact monetary results and explicitly approximate statistical metrics."""
+    """Evidence-bounded money and explicitly approximate statistical metrics."""
     with db._lock:
         revision = analysis_snapshot.revision(body.case_id, body.expected_revision)
         result = evidence_resolution.decorate_analysis(body.case_id, analytics.run_all(body.case_id, _params(body.params)))
+        result["statistics_policy"] = funds_projection.POLICY
+        result["source_snapshot"]["statistics_policy"] = funds_projection.POLICY
         return wire_money({**result, "analysis_revision": revision, "case_event_summary": event_resolution.summary(body.case_id)})
 
 
@@ -105,15 +107,18 @@ def trace_paths(body: PathsIn):
         result = evidence_resolution.decorate_analysis(body.case_id, analytics.trace_paths(body.case_id, body.src, body.dst,
                                                 max_hops=body.max_hops, max_paths=body.max_paths,
                                                 order=body.order))
+        result["statistics_policy"] = funds_projection.POLICY
         return wire_money({**result, "analysis_revision": revision, "case_event_summary": event_resolution.summary(body.case_id)})
 
 
 @router.post("/report")
 def download_report(body: RunIn):
-    """Self-contained HTML with exact labels and a lossless JSON snapshot."""
+    """Self-contained HTML with evidence ranges and a lossless JSON snapshot."""
     with db._lock:
         revision = analysis_snapshot.revision(body.case_id, body.expected_revision)
         results = evidence_resolution.decorate_analysis(body.case_id, analytics.run_all(body.case_id, _params(body.params)))
+        results["statistics_policy"] = funds_projection.POLICY
+        results["source_snapshot"]["statistics_policy"] = funds_projection.POLICY
         results["analysis_revision"] = revision
         results["case_event_summary"] = event_resolution.summary(body.case_id)
         case_name = db.q("select name from cases where id = ?", [body.case_id])[0]["name"]

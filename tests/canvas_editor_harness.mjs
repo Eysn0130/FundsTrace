@@ -64,6 +64,15 @@ function editor({ relationships = [], navigation = false } = {}) {
   h.network(async (path, options) => {
     if (intercept) { const result = intercept(path, options); if (result) return result; }
     const body = options.body ? JSON.parse(options.body) : {};
+    // The real legacy endpoints decode these List[int] fields before their CAS
+    // checks. Preserve that service boundary when new row members arrive as strings.
+    for (const key of ['flow_ids', 'expected_ids', 'desired_ids']) if (Array.isArray(body[key])) {
+      body[key] = body[key].map(value => {
+        assert.match(String(value), /^\d+$/);
+        const decoded = Number(value); assert.equal(Number.isSafeInteger(decoded) && decoded > 0, true);
+        return decoded;
+      });
+    }
     const query = new URL(path, 'http://synthetic.local').searchParams;
     const key = `${body.case_id ?? query.get('case_id')}:${body.canvas_id ?? query.get('canvas_id') ?? 0}`;
     if (path === '/api/track/state') {

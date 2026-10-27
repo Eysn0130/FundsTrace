@@ -1,7 +1,7 @@
 """Read complete account intervals, independently of graph/display filters.
 
-Coverage and no-credit assertions are explicit *conditions*, not facts inferred
-from matching balances. Only the account's own observations carry its balance.
+Coverage and no-credit conditions require retained source evidence, not client
+assertions or matching balances. Only own observations carry the account balance.
 Matched cancellation journals cannot reconstruct historical availability: fail
 closed until that history is supplied, rather than reading effective_flows.
 """
@@ -14,7 +14,7 @@ from . import db
 
 MAX_LEDGER_ROWS = 100_000
 MAX_WITNESS_CELLS = 500_000
-POLICY = "conditional-book-ledger-v1"
+POLICY = "source-evidence-book-ledger-v1"
 UNKNOWN_CURRENCIES = ("", "unknown", "未知", "未知币种", "n/a", "none", "null", "nan")
 
 
@@ -40,8 +40,8 @@ def _metadata(case_id, ids):
 def read(case_id, account, currency, start, end):
     """Require a resolved accounting identity whenever typed evidence exists.
 
-    A legacy explicit self-account without typed metadata remains conditional
-    on the caller's ledger declarations; this does not certify its identity.
+    A legacy explicit self-account without typed metadata can identify observed
+    entries but does not certify ledger coverage or historical availability.
     Known card carriers, ambiguous identifiers and conflicts cannot be promoted
     to accounting ledgers merely by asserting complete coverage. Until uncertain
     own entries can be excluded by evidence, they conservatively block the same
@@ -173,14 +173,14 @@ def ordered(rows, opening, metadata, balance_kind):
 
 
 def calculate(case_id, request):
-    from . import principal
+    from . import principal, principal_evidence
     start, end = datetime.fromisoformat(request.start), datetime.fromisoformat(request.end)
     loaded = read(case_id, request.account, request.currency, start, end)
     rows = loaded.pop("rows")
-    conditions = request.conditions.model_dump()
+    conditions, assessment = principal_evidence.assess(case_id, rows)
     output = {"policy": POLICY, "currency": request.currency, "account": request.account,
               "interval": {"start": request.start, "end": request.end}, "conditions": conditions,
-              "condition_basis": "user_declared_not_independently_certified",
+              "condition_basis": "source_evidence", "assessment": assessment,
               "ledger_count": len(rows), "targets": [], **loaded}
     if loaded["status"] != "ready":
         return output

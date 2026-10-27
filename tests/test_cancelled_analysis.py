@@ -5,6 +5,7 @@ import json
 import openpyxl
 
 from test_cases import insert_flow
+from test_folder_evidence import assert_unresolved_funds
 
 
 def source(database, case_id, source_id, version):
@@ -60,23 +61,32 @@ def test_public_effective_readers_share_one_exclusion_and_keep_original_source(c
     active = {anchor, kept, refund}
     legacy = client.get("/api/stats", params={"case_id": cid}).json()
     versioned = client.get(f"/api/v1/cases/{cid}/stats").json()
-    assert (legacy["flows"], legacy["accounts"]) == (3, 3)
-    assert (versioned["flows"], versioned["accounts"], versioned["amount_total"]) == (3, 3, "23.00")
+    assert (legacy["flows"], legacy["accounts"]) == (None, 3)
+    assert (versioned["flows"], versioned["accounts"], versioned["amount_total"]) == (None, 3, None)
+    assert legacy["funds"] == versioned["funds"]
+    assert_unresolved_funds(legacy["funds"], 3, [("CNY", "23.00")])
     assert legacy["import_coverage"] == versioned["import_coverage"]
     assert legacy["import_coverage"]["cancelled_records"] == 2
     assert legacy["import_coverage"]["excluded_flows"] == 1
     assert {r["id"] for r in client.get("/api/flows", params={"case_id": cid}).json()["rows"]} == active
     assert {int(r["id"]) for r in client.get(f"/api/v1/cases/{cid}/flows").json()["items"]} == active
+    assert sorted(r["amount"] for r in client.get(f"/api/v1/cases/{cid}/flows").json()["items"]) == ["10.00", "10.00", "3.00"]
 
     profile = client.get("/api/accounts/B/profile", params={"case_id": cid}).json()
-    assert (profile["cnt"], profile["out_amt"], profile["in_amt"]) == (3, "10.00", "13.00")
+    assert (profile["cnt"], profile["out_amt"], profile["in_amt"]) == (None, None, None)
+    assert_unresolved_funds(profile["funds"], 3, [("CNY", "23.00")])
+    assert_unresolved_funds(profile["out_funds"], 1, [("CNY", "10.00")])
+    assert_unresolved_funds(profile["in_funds"], 2, [("CNY", "13.00")])
     assert {r["acct"] for r in profile["top_counterparties"]} == {"A", "C"}
     graph = client.get("/api/graph", params={"case_id": cid}).json()
     assert set(graph["tracked_ids"]) == active | {cancelled}
     assert {r["account"] for r in graph["nodes"]} == {"A", "B", "C"}
     assert {fid for edge in graph["edges"] for fid in edge["ids"]} == active
-    assert {(r["source"], r["target"], r["total"]) for r in graph["edges"]} == {
+    assert all(edge["cnt"] is edge["total"] is None for edge in graph["edges"])
+    assert {(r["source"], r["target"], r["funds"]["totals"][0]["upper"]) for r in graph["edges"]} == {
         ("A", "B", "10.00"), ("B", "C", "10.00"), ("C", "B", "3.00")}
+    for edge in graph["edges"]:
+        assert_unresolved_funds(edge["funds"], 1, [("CNY", "3.00" if edge["source"] == "C" else "10.00")])
     assert database.q("select id from flows where case_id=? and id=?", [cid, cancelled]) == [{"id": cancelled}]
     provenance = client.get(f"/api/v1/cases/{cid}/flows/{cancelled}/sources")
     assert provenance.status_code == 200, provenance.text
@@ -92,11 +102,15 @@ def test_analysis_context_bulk_and_workbook_exclude_cancellation_but_keep_refund
     assert client.get(f"/api/context/{cancelled}", params={"case_id": cid}).status_code == 404
     paths = client.post("/api/analysis/paths", json={"case_id": cid, "src": "A", "dst": "C"})
     assert paths.status_code == 200, paths.text
-    assert paths.json()["paths"][0]["total"] == "20.00"
+    path = paths.json()["paths"][0]
+    assert path["total"] is None
+    assert_unresolved_funds(path["funds"], 2, [("CNY", "20.00")])
+    assert [row["observation_amount"] for row in path["path"]] == ["10.00", "10.00"]
     excluded_path = client.post("/api/analysis/paths", json={"case_id": cid, "src": "A", "dst": "CANCELLED-ONLY"})
     assert excluded_path.json()["paths"] == []
     analysis = client.post("/api/analysis/run", json={"case_id": cid, "params": {"algorithms": ["cycles"]}}).json()
-    assert analysis["source_snapshot"]["flows"] == 3
+    assert analysis["source_snapshot"]["flows"] is None
+    assert_unresolved_funds(analysis["source_snapshot"]["funds"], 3, [("CNY", "23.00")])
     assert "CANCELLED-ONLY" not in json.dumps(analysis)
 
     export = client.get("/api/export/tracked.xlsx", params={"case_id": cid})
@@ -167,5 +181,6 @@ def test_excluded_original_cannot_consume_an_effective_ledger_mirror(client, dat
     assert response.status_code == 200, response.text
     graph = client.get("/api/graph", params={"case_id": cid}).json()
     edge = next(edge for edge in graph["edges"] if edge["target"] == "CANCELLED-ONLY")
-    assert (edge["cnt"], edge["total"], edge["ids"]) == (1, "900.00", [real])
+    assert (edge["cnt"], edge["total"], edge["ids"]) == (None, None, [real])
+    assert_unresolved_funds(edge["funds"], 1, [("CNY", "900.00")])
     assert cancelled in graph["tracked_ids"]

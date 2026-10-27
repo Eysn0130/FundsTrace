@@ -96,7 +96,11 @@ def test_main_account_workspace_uses_effective_money_and_keeps_original_provenan
     profile = client.get('/api/account-registry/profile', params={'case_id': cid, 'account': 'B'})
     assert profile.status_code == 200
     value = profile.json()
-    assert (value['cnt'], value['out_amt'], value['in_amt']) == (3, '10.00', '13.00')
+    assert (value['cnt'], value['out_amt'], value['in_amt']) == (None, None, None)
+    from funds_assertions import unresolved_funds
+    assert value['funds'] == unresolved_funds(3, ('CNY', '23.00'))
+    assert value['out_funds'] == unresolved_funds(1, ('CNY', '10.00'))
+    assert value['in_funds'] == unresolved_funds(2, ('CNY', '13.00'))
     assert {row['acct'] for row in value['top_counterparties']} == {'A', 'C'}
     assert database.q_raw('select id from flows where case_id=? and id=?', [cid, cancelled]) == [{'id': cancelled}]
     sources = client.get(f'/api/v1/cases/{cid}/flows/{cancelled}/sources')

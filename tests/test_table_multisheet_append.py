@@ -171,8 +171,9 @@ def test_mixed_sheets_append_repreview_full_validation_and_analysis_stay_case_bo
     assert client.post('/api/track', json={'case_id': cid, 'flow_ids': ids}).status_code == 200
     graph = client.get('/api/graph', params={'case_id': cid}).json()
     edge = next(row for row in graph['edges'] if (row['source'], row['target']) == ('SYN-OWN', 'SYN-C1'))
-    assert (edge['cnt'], edge['total'], edge['amount_totals']) == (
-        104, '356.58', [{'currency': 'CNY', 'amount': '356.58'}])
+    assert (edge['cnt'], edge['total'], edge['amount_totals']) == (None, None, [{'currency': 'CNY', 'amount': None}])
+    from funds_assertions import unresolved_funds
+    assert edge['funds'] == unresolved_funds(104, ('CNY', '356.58'))
 
     other = make_case('Synthetic isolated append')
     assert client.get(f"/api/v1/cases/{other}/sources/{second['import_id']}/report").status_code == 404

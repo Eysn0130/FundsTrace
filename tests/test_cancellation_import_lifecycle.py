@@ -56,7 +56,9 @@ def test_v2_upgrade_excludes_original_without_rewriting_facts_receipts_or_reviva
     assert database.q_raw("select * from flows where case_id=? order by id", [cid]) == before
     assert count(database, "effective_flows", cid) == 1
     stats = client.get(f"/api/v1/cases/{cid}/stats").json()
-    assert stats["flows"] == 1 and stats["amount_totals"] == [{"currency": "CNY", "amount": "1.00"}]
+    assert stats["flows"] is None and stats["amount_totals"] == [{"currency": "CNY", "amount": None}]
+    from funds_assertions import unresolved_funds
+    assert stats["funds"] == unresolved_funds(1, ("CNY", "1.00"))
     assert stats["import_coverage"]["cancelled_records"] == 2
     assert stats["import_coverage"]["unresolved_records"] == 0
     assert client.get(f"/api/v1/cases/{cid}/imports/{old_view['import_id']}").json()["result"] == old_job["result"]

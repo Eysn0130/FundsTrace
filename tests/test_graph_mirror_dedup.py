@@ -1,8 +1,11 @@
-"""Graph display pairs synthetic ledger mirrors without consuming later trades."""
+"""Legacy mirror candidates remain clues; public graph funds require event evidence."""
 from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
+
+from app.canvas_investigation import mirror_groups
+from funds_assertions import unresolved_funds
 
 
 def seed_graph(client, database, make_case, rows):
@@ -33,7 +36,43 @@ def seed_graph(client, database, make_case, rows):
     raw = client.get("/api/flows", params={"case_id": case_id}).json()
     assert raw["total"] == len(ids)
     assert sorted(row["id"] for row in raw["rows"]) == ids
-    return graph
+    assert_unresolved_graph(graph, before)
+    return graph, mirror_candidates(before)
+
+
+def mirror_candidates(rows):
+    ordered = sorted(rows, key=lambda row: (row["trade_time"] is None, row["trade_time"] or datetime.max, row["id"]))
+    groups = mirror_groups(ordered)
+    duplicates = {flow_id for group in groups.values() for flow_id in group}
+    return [row for row in ordered if row["id"] not in duplicates]
+
+
+def expected_observations(rows):
+    # Independent sums of the synthetic ledger facts, never projection output.
+    totals = {}
+    for row in rows:
+        currency = row["currency"] or None
+        totals[currency] = totals.get(currency, Decimal(0)) + row["amount"]
+    return unresolved_funds(len(rows), *[(currency, None if None in totals else format(total, ".2f"))
+        for currency, total in sorted(totals.items(), key=lambda item: (item[0] is None, item[0] or ""))])
+
+
+def assert_unresolved_graph(graph, rows):
+    assert graph["funds"] == expected_observations(rows)
+    pairs = {(row["payer_account"], row["payee_account"]) for row in rows}
+    assert {(edge["source"], edge["target"]) for edge in graph["edges"]} == pairs
+    for edge in graph["edges"]:
+        selected = [row for row in rows if (row["payer_account"], row["payee_account"]) == (edge["source"], edge["target"])]
+        expected = expected_observations(selected)
+        assert (edge["cnt"], edge["total"]) == (None, None)
+        assert edge["funds"] == expected
+        assert edge["amount_totals"] == [{"currency": item["currency"], "amount": None} for item in expected["totals"]]
+    for node in graph["nodes"]:
+        for direction, party in (("in", "payee_account"), ("out", "payer_account")):
+            selected = [row for row in rows if row[party] == node["account"]]
+            assert node[direction + "_funds"] == expected_observations(selected)
+            assert node[direction + "_observation_count"] == len(selected)
+            assert (node[direction + "_cnt"], node[direction + "_amt"]) == ((None, None) if selected else (0, "0.00"))
 
 
 @pytest.mark.parametrize("ledgers,expected_count", [
@@ -50,16 +89,10 @@ def seed_graph(client, database, make_case, rows):
     (["SYN-A", "SYN-B", "SYN-C"], 2),
 ])
 def test_each_record_can_only_mirror_one_other_record(client, database, make_case, ledgers, expected_count):
-    graph = seed_graph(client, database, make_case, [{"self_account": ledger} for ledger in ledgers])
-    edge = graph["edges"][0]
-    expected_total = f"{expected_count * 100}.00"
-    assert edge["cnt"] == expected_count
-    assert edge["total"] == expected_total
-    assert edge["amount_totals"] == [{"currency": "CNY", "amount": expected_total}]
-    sender = next(node for node in graph["nodes"] if node["account"] == "SYN-A")
-    recipient = next(node for node in graph["nodes"] if node["account"] == "SYN-B")
-    assert (sender["out_cnt"], sender["out_amt"]) == (expected_count, expected_total)
-    assert (recipient["in_cnt"], recipient["in_amt"]) == (expected_count, expected_total)
+    graph, candidates = seed_graph(client, database, make_case, [{"self_account": ledger} for ledger in ledgers])
+    # The original FIFO heuristic is tested directly; it does not certify these events.
+    assert len(candidates) == expected_count
+    assert sum(row["amount"] for row in candidates) == Decimal(expected_count * 100)
 
 
 @pytest.mark.parametrize("ledgers", [
@@ -72,20 +105,15 @@ def test_each_record_can_only_mirror_one_other_record(client, database, make_cas
     [" SYN-A", "SYN-B"],
 ])
 def test_missing_or_third_party_owner_never_justifies_a_mirror(client, database, make_case, ledgers):
-    graph = seed_graph(client, database, make_case, [{"self_account": ledger} for ledger in ledgers])
-    edge = graph["edges"][0]
-    assert (edge["cnt"], edge["total"]) == (2, "200.00")
-    assert edge["amount_totals"] == [{"currency": "CNY", "amount": "200.00"}]
-    sender = next(node for node in graph["nodes"] if node["account"] == "SYN-A")
-    recipient = next(node for node in graph["nodes"] if node["account"] == "SYN-B")
-    assert (sender["out_cnt"], sender["out_amt"]) == (2, "200.00")
-    assert (recipient["in_cnt"], recipient["in_amt"]) == (2, "200.00")
+    graph, candidates = seed_graph(client, database, make_case, [{"self_account": ledger} for ledger in ledgers])
+    assert len(candidates) == 2
+    assert sum(row["amount"] for row in candidates) == Decimal("200.00")
 
 
 def test_unproven_owners_do_not_consume_the_valid_fifo(client, database, make_case):
     # The two established A/B mirrors still pair 0/120 and 110/220.
     # Unknown/third-party rows are independently retained, never FIFO entries.
-    graph = seed_graph(client, database, make_case, [
+    graph, candidates = seed_graph(client, database, make_case, [
         {"self_account": "SYN-A", "second": 0},
         {"self_account": "", "second": 1},
         {"self_account": "SYN-C", "second": 2},
@@ -94,46 +122,47 @@ def test_unproven_owners_do_not_consume_the_valid_fifo(client, database, make_ca
         {"self_account": "SYN-B", "second": 120},
         {"self_account": "SYN-B", "second": 220},
     ])
-    assert (graph["edges"][0]["cnt"], graph["edges"][0]["total"]) == (5, "500.00")
+    assert len(candidates) == 5
+    assert sum(row["amount"] for row in candidates) == Decimal("500.00")
 
 
 def test_pairing_uses_time_then_id_and_oldest_unmatched_record(client, database, make_case):
     # Import order differs from time order. FIFO pairs 0/120 and 110/220;
     # choosing the nearest record would leave the final mirror unpaired.
-    graph = seed_graph(client, database, make_case, [
+    graph, candidates = seed_graph(client, database, make_case, [
         {"self_account": "SYN-B", "second": 220},
         {"self_account": "SYN-A", "second": 110},
         {"self_account": "SYN-B", "second": 120},
         {"self_account": "SYN-A", "second": 0},
     ])
-    assert graph["edges"][0]["cnt"] == 2
-    assert graph["edges"][0]["total"] == "200.00"
+    assert len(candidates) == 2
+    assert sum(row["amount"] for row in candidates) == Decimal("200.00")
 
 
 @pytest.mark.parametrize("seconds,expected_count", [(120, 1), (120.9, 1), (121, 2)])
 def test_existing_120_second_boundary_is_preserved(client, database, make_case, seconds, expected_count):
-    graph = seed_graph(client, database, make_case, [
+    graph, candidates = seed_graph(client, database, make_case, [
         {"self_account": "SYN-A", "second": 0},
         {"self_account": "SYN-B", "second": seconds},
     ])
-    assert graph["edges"][0]["cnt"] == expected_count
+    assert len(candidates) == expected_count
 
 
 @pytest.mark.parametrize("currencies,expected_count", [(["CNY", "USD"], 2), ([None, ""], 1)])
 def test_same_amount_currency_matching_keeps_existing_normalization(client, database, make_case, currencies, expected_count):
-    graph = seed_graph(client, database, make_case, [
+    graph, candidates = seed_graph(client, database, make_case, [
         {"self_account": ledger, "currency": currency}
         for ledger, currency in zip(["SYN-A", "SYN-B"], currencies)
     ])
-    assert graph["edges"][0]["cnt"] == expected_count
+    assert len(candidates) == expected_count
 
 
 def test_equal_timestamps_and_null_times_are_handled_without_losing_records(client, database, make_case):
-    graph = seed_graph(client, database, make_case, [
+    graph, candidates = seed_graph(client, database, make_case, [
         {"self_account": ledger, "second": 0} for ledger in ["SYN-A", "SYN-B", "SYN-A", "SYN-B"]
     ] + [{"self_account": ledger, "trade_time": None} for ledger in ["SYN-A", "SYN-B"]])
-    assert graph["edges"][0]["cnt"] == 4
-    assert graph["edges"][0]["total"] == "400.00"
+    assert len(candidates) == 4
+    assert sum(row["amount"] for row in candidates) == Decimal("400.00")
 
 
 def test_adding_later_real_transaction_then_its_mirror_updates_graph(client, database, make_case):
@@ -151,47 +180,51 @@ def test_adding_later_real_transaction_then_its_mirror_updates_graph(client, dat
         graph = response.json()
         assert sorted(graph["tracked_ids"]) == ids[:index + 1]
         assert sorted(graph["edges"][0]["ids"]) == ids[:index + 1]
-        assert graph["edges"][0]["cnt"] == expected_count
-        assert graph["edges"][0]["total"] == f"{expected_count * 100}.00"
+        selected = database.q_raw("select * from flows where id in (select unnest(?::bigint[])) order by id", [ids[:index + 1]])
+        assert_unresolved_graph(graph, selected)
+        candidates = mirror_candidates(selected)
+        assert len(candidates) == expected_count
+        assert sum(row["amount"] for row in candidates) == Decimal(expected_count * 100)
 
 
 def test_currencies_and_decimal_cents_remain_separate(client, database, make_case):
-    graph = seed_graph(client, database, make_case, [
+    graph, candidates = seed_graph(client, database, make_case, [
         {"self_account": ledger, "currency": currency, "amount": Decimal(amount)}
         for currency, amount in [("CNY", "9999999999999999.99"), ("CNY", "9999999999999999.99"),
                                   ("USD", "0.01"), (None, "0.10"), ("", "0.20")]
         for ledger in ["SYN-A", "SYN-B"]
     ])
-    edge = graph["edges"][0]
-    assert edge["cnt"] == 5
-    assert edge["total"] is None
-    assert edge["amount_totals"] == [
-        {"currency": "", "amount": "0.30"},
-        {"currency": "CNY", "amount": "19999999999999999.98"},
-        {"currency": "USD", "amount": "0.01"},
-    ]
+    assert len(candidates) == 5
+    candidate_totals = {}
+    for row in candidates:
+        currency = row["currency"] or ""
+        candidate_totals[currency] = candidate_totals.get(currency, Decimal(0)) + row["amount"]
+    assert candidate_totals == {"": Decimal("0.30"), "CNY": Decimal("19999999999999999.98"), "USD": Decimal("0.01")}
+    assert graph["edges"][0]["funds"] == unresolved_funds(10, ("CNY", None), ("USD", None), (None, None))
 
 
 def test_different_counterparties_and_reverse_direction_never_pair(client, database, make_case):
-    graph = seed_graph(client, database, make_case, [
+    graph, candidates = seed_graph(client, database, make_case, [
         {"payer_account": source, "payee_account": target, "self_account": ledger}
         for source, target in [("SYN-A", "SYN-B"), ("SYN-A", "SYN-C"), ("SYN-B", "SYN-A")]
         for ledger in [source, target]
     ])
-    assert {(edge["source"], edge["target"], edge["cnt"], edge["total"]) for edge in graph["edges"]} == {
-        ("SYN-A", "SYN-B", 1, "100.00"),
-        ("SYN-A", "SYN-C", 1, "100.00"),
-        ("SYN-B", "SYN-A", 1, "100.00"),
+    assert {(row["payer_account"], row["payee_account"], row["amount"]) for row in candidates} == {
+        ("SYN-A", "SYN-B", Decimal("100.00")),
+        ("SYN-A", "SYN-C", Decimal("100.00")),
+        ("SYN-B", "SYN-A", Decimal("100.00")),
     }
+    assert len(candidates) == 3
 
 
 @pytest.mark.parametrize("ledgers", [["SYN-A", "SYN-A"], ["SYN-A", "SYN-B"], ["", None]])
 def test_self_transfer_cannot_establish_two_distinct_ledger_owners(client, database, make_case, ledgers):
-    graph = seed_graph(client, database, make_case, [
+    graph, candidates = seed_graph(client, database, make_case, [
         {"payer_account": "SYN-A", "payee_account": "SYN-A", "self_account": ledger}
         for ledger in ledgers
     ])
-    assert (graph["edges"][0]["cnt"], graph["edges"][0]["total"]) == (2, "200.00")
+    assert len(candidates) == 2
+    assert sum(row["amount"] for row in candidates) == Decimal("200.00")
 
 
 @pytest.mark.parametrize("source,target", [(None, "SYN-B"), ("SYN-A", ""), ("", "")])
@@ -214,5 +247,7 @@ def test_missing_party_facts_remain_ungraphable_and_historical_tracking_preserve
     assert response.status_code == 200, response.text
     assert response.json()["nodes"] == response.json()["edges"] == []
     assert sorted(response.json()["tracked_ids"]) == ids
-    assert client.get("/api/stats", params={"case_id": case_id}).json()["flows"] == 2
+    stats = client.get("/api/stats", params={"case_id": case_id}).json()
+    assert stats["flows"] is None
+    assert stats["funds"] == unresolved_funds(2, ("CNY", "200.00"))
     assert database.q_raw("select * from flows where case_id=? order by id", [case_id]) == before

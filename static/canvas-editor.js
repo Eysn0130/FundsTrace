@@ -543,9 +543,13 @@
     ids = [...ids];
     return command(remove ? '移除流水' : '流水上图', async context => {
       const result = await mutateTracked(context, before => {
-        const desired = new Set(before);
-        for (const id of ids) remove ? desired.delete(id) : desired.add(id);
-        return replaceTracked(context, before, [...desired].sort(order));
+        const desired = new Map(before.map(id => [String(id), id]));
+        for (const id of ids) {
+          const key = String(id);
+          if (remove) desired.delete(key);
+          else if (!desired.has(key)) desired.set(key, id);
+        }
+        return replaceTracked(context, before, [...desired.values()].sort(order));
       }, () => { if (!remove) { state.justAdded = new Set(ids); state.forceFit = false; } });
       if (result && isCurrentCase(context)) {
         if (remove) closeDrawer();
@@ -636,7 +640,7 @@
     wrap('#showIdCk', 'onchange', '切换证件号显示'); wrap('#showPhotoCk', 'onchange', '切换照片显示');
     wrap('#graphLabelMode', 'onchange', '更改标注模式');
     $('#btnBulkTrack').onclick = () => {
-      const ids = $$('#flowTbody .flow-ck').filter(node => node.checked).map(node => Number(node.dataset.id));
+      const ids = [...new Set($$('#flowTbody .flow-ck').filter(node => node.checked).flatMap(flowObservationIds).map(String))];
       if (!ids.length) { toast('请先勾选要追踪的流水', 'err'); return Promise.resolve(false); }
       const direction = $('#bulkDir').value, x = Math.max(1, Math.min(50, Number($('#bulkX').value) || 5));
       return command('批量追踪', async context => {

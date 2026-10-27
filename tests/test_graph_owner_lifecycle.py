@@ -6,6 +6,7 @@ import json
 import pytest
 
 from app import table_import
+from funds_assertions import unresolved_funds
 from test_automatic_table_import import preview
 from test_canvas_management import create_canvas
 from test_cases import archive_of, exported, import_package, insert_flow, members
@@ -69,8 +70,9 @@ def assert_edge(view, count, amount):
     assert len(view["edges"]) == 1
     edge = view["edges"][0]
     assert (edge["source"], edge["target"], edge["cnt"], edge["total"]) == (
-        "SYN-A", "SYN-B", count, amount)
-    assert edge["amount_totals"] == [{"currency": "CNY", "amount": amount}]
+        "SYN-A", "SYN-B", None, None)
+    assert edge["amount_totals"] == [{"currency": "CNY", "amount": None}]
+    assert edge["funds"] == view["funds"] == unresolved_funds(count, ("CNY", amount))
 
 
 def assert_restored_state(before, restored):
@@ -102,7 +104,7 @@ def test_unknown_owner_import_append_and_restore_preserve_original_facts_and_sou
     ids = [row["id"] for row in initial_facts]
     assert [row["self_account"] for row in initial_facts] == ["", ""]
     track(client, case_id, ids)
-    # G01 changes the former unsupported 1/100 display to the two recorded facts.
+    # Both original observations remain; neither owner nor timing certifies an event.
     assert_edge(graph(client, case_id), 2, "200.00")
     named = create_canvas(client, case_id, "Synthetic independent canvas")
     track(client, case_id, ids[:1], named)
@@ -115,7 +117,7 @@ def test_unknown_owner_import_append_and_restore_preserve_original_facts_and_sou
     assert appended["stage"] == "done" and (appended["result"]["ok"], appended["result"]["rows_dup"]) == (2, 0)
     all_ids = [row["id"] for row in database.q("select id from flows where case_id=? order by id", [case_id])]
     track(client, case_id, all_ids)
-    assert_edge(graph(client, case_id), 3, "300.00")
+    assert_edge(graph(client, case_id), 4, "400.00")
     assert_edge(graph(client, case_id, named), 1, "100.00")
     # The B ledger is not a mirror of this canvas's sole earlier unknown ledger.
     track(client, case_id, all_ids[-1:], named)
@@ -131,8 +133,9 @@ def test_unknown_owner_import_append_and_restore_preserve_original_facts_and_sou
     receipt = client.get(f"/api/v1/cases/{case_id}/imports/{view['import_id']}")
     assert receipt.status_code == 200 and receipt.json()["result"] == first["result"]
     before = case_state(client, database, case_id)
-    assert before["stats"]["flows"] == 4
-    assert before["stats"]["amount_totals"] == [{"currency": "CNY", "amount": "400.00"}]
+    assert before["stats"]["flows"] is None
+    assert before["stats"]["amount_totals"] == [{"currency": "CNY", "amount": None}]
+    assert before["stats"]["funds"] == unresolved_funds(4, ("CNY", "400.00"))
     content = exported(client, case_id)
     assert json.loads(members(content)["meta.json"])["format"] == 4
     restored = import_package(client, content)
@@ -140,7 +143,7 @@ def test_unknown_owner_import_append_and_restore_preserve_original_facts_and_sou
     restored_id = restored.json()["case_id"]
     assert_restored_state(before, case_state(client, database, restored_id))
     assert case_state(client, database, case_id) == before
-    assert_edge(graph(client, restored_id), 3, "300.00")
+    assert_edge(graph(client, restored_id), 4, "400.00")
     restored_named = database.q("select id from canvases where case_id=? and name=?", [
         restored_id, "Synthetic independent canvas"])[0]["id"]
     assert_edge(graph(client, restored_id, restored_named), 2, "200.00")
@@ -148,7 +151,7 @@ def test_unknown_owner_import_append_and_restore_preserve_original_facts_and_sou
         repeated = complete(client, restored_id, preview(client, restored_id, content, name))
         assert repeated["stage"] == "done" and (repeated["result"]["ok"], repeated["result"]["rows_dup"]) == (0, 2)
     assert database.q_raw("select count(*) n from flows where case_id=?", [restored_id]) == [{"n": 4}]
-    assert_edge(graph(client, restored_id), 3, "300.00")
+    assert_edge(graph(client, restored_id), 4, "400.00")
 
 
 @pytest.mark.parametrize("format_version", [1, 2, 3, 4])

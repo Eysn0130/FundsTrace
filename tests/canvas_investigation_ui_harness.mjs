@@ -114,7 +114,11 @@ function fixture() {
     renderGraph() { renderCount++; fitRequests.push(state.forceFit === true); visible = window.FundsInvestigation.displayGraph(state.lastGraph); state.graphView.revision++;
       for (const fn of windowListeners.get('funds:graph-metric') || []) fn({ type: 'funds:graph-metric' }); },
   };
-  vm.createContext(env); vm.runInContext(controllerSource, env, { filename: 'canvas-investigation.js' });
+  vm.createContext(env);
+  vm.runInContext(readFileSync(new URL('../static/money.js', import.meta.url), 'utf8'), env);
+  vm.runInContext(readFileSync(new URL('../static/principal-analysis.js', import.meta.url), 'utf8'), env);
+  window.FundsFacts = env.FundsFacts;
+  vm.runInContext(controllerSource, env, { filename: 'canvas-investigation.js' });
   const respond = (index, payload = projection(), status = 200) => calls[index].resolve({ ok: status === 200, status, json: async () => clone(payload) });
   const reject = (index, error = new Error('synthetic unavailable')) => calls[index].reject(error);
   return { api: window.FundsInvestigation, state, env, element, calls, toasts, commands, fitRequests, timers, respond, reject,
@@ -229,18 +233,20 @@ test('equivalent fractional boundaries compare as the same local time and preser
   assert.equal(h.element('investigationStatus').dataset.error, 'false');
 });
 
-for (const policy of ['legacy_mirror_fifo', 'typed-account-evidence-v1', undefined]) {
-  test(`time preview describes the returned statistics policy: ${policy ?? 'unspecified'}`, async () => {
+for (const exact of [true, false]) {
+  test(`time preview uses the evidence projection as its only primary amount: ${exact ? 'confirmed' : 'unresolved'}`, async () => {
     const h = fixture(), result = projection();
-    result.statistics_policy = policy;
-    result.summary.selected_count = 1;
+    const funds = { status: exact ? 'exact' : 'bounded', observation_count: 2, count: { lower: exact ? 1 : 0, upper: exact ? 1 : 2 },
+      totals: [{ currency: 'CNY', amount: exact ? '100.00' : null, lower: exact ? '100.00' : '0.00', upper: exact ? '100.00' : '200.00' }] };
+    result.funds = result.summary.funds = funds; result.analysis_revision = 'synthetic-current-revision';
+    result.summary.selected_count = 2; result.summary.amount_totals = [{ currency: 'CNY', amount: '200.00' }];
     const opening = h.api.execute('timeWindow'); h.respond(0, result); await opening;
     await h.element('investigationTimePreview').click();
     const status = h.element('investigationStatus').textContent;
-    assert.match(status, /2 个账户 · 1 条有向关系 · 1 笔/);
-    assert.equal(status.includes('镜像配对后'), policy === 'legacy_mirror_fifo');
-    assert.equal(status.includes('接纳记账记录'), policy === 'typed-account-evidence-v1');
-    assert.match(status, /CNY 0\.01/);
+    assert.match(status, exact ? /1 个事件 · ¥100\.00/ : /0–2 个事件（待核） · CNY 0\.00–200\.00（待核）/);
+    assert.doesNotMatch(status, /2 笔|镜像配对后|接纳记账记录/);
+    if (exact) assert.doesNotMatch(status, /200\.00/);
+    assert.equal(h.calls.length, 1, 'formatting and cached preview add no request');
   });
 }
 
@@ -350,6 +356,17 @@ for (const mode of ['layout', 'history', 'export', 'drag']) test(`ending playbac
   await h.element('investigationStop').click();
   assert.equal(h.renders(), before + 1); assert.equal(h.api.exportWindow(), null);
   assert.equal(h.currentVisible(), h.state.lastGraph);
+});
+
+test('path step displays unresolved bounds instead of an observation sum', async () => {
+  const h = fixture(); await h.api.execute('findGraphPaths');
+  h.element('pathSource').value = 'A'; h.element('pathTarget').value = 'B';
+  const search = h.element('pathSearch').click(); await flush();
+  h.respond(0, {complete:true, paths:[{accounts:['A','B'],currency:'CNY',steps:[{
+    source:'A',target:'B',amount:null,count:null,flow_ids:[],funds:{status:'bounded',count:{lower:0,upper:2},
+      totals:[{currency:'CNY',amount:null,lower:'0.00',upper:'200.00'}]}}]}],flows:[]});
+  await search;
+  assert.match(h.element('pathResults').innerHTML, /CNY 0\.00–200\.00（待核）/);
 });
 
 test('ZIP path evidence distinguishes member line from archive record number', async () => {

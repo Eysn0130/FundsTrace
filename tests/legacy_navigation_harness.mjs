@@ -79,7 +79,8 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
     confirm: () => true, prompt: () => 'Synthetic new', alert() {},
     fetch: async (path, options = {}) => { requests.push({ path, options }); return fetcher(path, options); }, };
   const context = vm.createContext(sandbox);
-  for (const helper of ['money.js', 'table-scroll.js', 'case-workspace.js', 'canvas-workspace.js', 'data-tools.js', 'main-accounts.js', 'workspace-camera.js', 'graph-relations.js', 'graph-presentation.js', 'graph-layout.js', 'graph-layout-quality.js', 'graph-routing.js', 'graph-route-quality.js', 'graph-view.js','graph-viewport.js','graph-minimap.js','graph-labels.js','graph-label-geometry.js','graph-export-geometry.js']) vm.runInContext(readFileSync(`${root}static/${helper}`, 'utf8'), context, { filename: helper });
+  for (const helper of ['money.js', 'principal-analysis.js', 'table-scroll.js', 'case-workspace.js', 'canvas-workspace.js', 'data-tools.js', 'main-accounts.js', 'workspace-camera.js', 'graph-relations.js', 'graph-presentation.js', 'graph-layout.js', 'graph-layout-quality.js', 'graph-routing.js', 'graph-route-quality.js', 'graph-view.js','graph-viewport.js','graph-minimap.js','graph-labels.js','graph-label-geometry.js','graph-export-geometry.js']) vm.runInContext(readFileSync(`${root}static/${helper}`, 'utf8'), context, { filename: helper });
+  context.window.FundsFacts = context.FundsFacts;
   context.FundsGraphRelations = context.window.FundsGraphRelations;
   context.FundsGraphPresentation = context.window.FundsGraphPresentation;
   context.FundsGraphView = context.window.FundsGraphView;
@@ -125,6 +126,41 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
     bindApp() { vm.runInContext("promptText = async () => 'Synthetic new';", context); vm.runInContext('bindPhotoCrop = () => {}; initEdgeLabels = () => {}; refreshStats = async () => {}; loadGraph = async () => {}; refreshCanvasList = async () => {}; doSearch = async () => {}; bindUI();', context); },
   };
 }
+
+test('unresolved observations keep the actual canvas visible while a genuinely empty case shows its empty state', () => {
+  const h = harness('app.js'), toggles = [];
+  h.element('#canvasWrap').classList.toggle = (name, enabled) => toggles.push([name, enabled]);
+  h.run(`state.stats = { flows: null, accounts: 2, funds: {
+    observation_count: 2, count: { lower: 0, upper: 2 },
+    totals: [{ currency: 'CNY', amount: null, lower: '0.00', upper: '200.00' }]
+  } }; updateHeader();`);
+  assert.equal(h.element('#emptyHint').style.display, 'none');
+  assert.deepEqual(toggles.at(-1), ['case-empty', false]);
+  assert.match(h.element('#statLine').innerHTML, /0–2 个事件/);
+  h.run(`state.stats = { flows: 0, accounts: 0, funds: {
+    observation_count: 0, count: { lower: 0, upper: 0 }, totals: []
+  } }; updateHeader();`);
+  assert.equal(h.element('#emptyHint').style.display, 'flex');
+  assert.deepEqual(toggles.at(-1), ['case-empty', true]);
+  h.run('state.stats = { flows: 2, accounts: 2 }; updateHeader();');
+  assert.equal(h.element('#emptyHint').style.display, 'none', 'legacy responses retain their observed-row fallback');
+});
+
+test('case and deletion summaries retain unresolved event bounds and original observation coverage', () => {
+  const h = harness('app.js'); h.bindApp();
+  h.run(`state.stats = { flows: null, accounts: 2, funds: {
+    observation_count: 2, count: { lower: 0, upper: 2 }
+  } }; caseWorkspace.open();`);
+  assert.match(h.element('#caseCounts').textContent, /0–2 个事件/);
+  assert.match(h.element('#caseCounts').textContent, /2 条原始观察/);
+  assert.doesNotMatch(h.element('#caseCounts').textContent, /流水 0 笔/);
+  assert.match(h.element('#caseDeleteScope').textContent, /0–2 个事件/);
+  assert.match(h.element('#caseDeleteScope').textContent, /2 条原始观察/);
+  h.run(`state.stats = { flows: 0, accounts: 0, funds: {
+    observation_count: 0, count: { lower: 0, upper: 0 }
+  } }; caseWorkspace.refresh();`);
+  assert.match(h.element('#caseCounts').textContent, /0 个事件 · 0 条原始观察/);
+});
 
 test('sidebar composition bounds include clipped accounts and curved paths but exclude accounts outside the current graph', () => {
   const h=harness('app.js');
@@ -469,9 +505,9 @@ test('legacy exact money preserves huge cents, sign, zero and rejects floats', (
 
 test('graph labels keep exact cents and separate currency totals', () => {
   const h = harness('app.js');
-  assert.equal(h.run("edgeLabel({cnt:2,total:'10000000000000000.01',currencies:['CNY'],amount_totals:[{currency:'CNY',amount:'10000000000000000.01'}]})"), '2笔·¥10,000,000,000,000,000.01');
+  assert.equal(h.run("edgeLabel({cnt:2,total:'10000000000000000.01',currencies:['CNY'],amount_totals:[{currency:'CNY',amount:'10000000000000000.01'}]})"), '2 笔·¥10,000,000,000,000,000.01');
   const mixed = h.run("edgeLabel({cnt:3,total:null,currencies:['CNY','USD'],amount_totals:[{currency:'CNY',amount:'0.01'},{currency:'USD',amount:'9999999999999999.99'}]})");
-  assert.equal(mixed, '3笔·¥0.01\nUSD 9,999,999,999,999,999.99');
+  assert.equal(mixed, '3 笔·¥0.01\nUSD 9,999,999,999,999,999.99');
   h.run("renderFlows([{id:1,amount:'9999999999999999.99',currency:'USD'}])");
   assert.match(h.element('#flowTbody').innerHTML, /USD 9,999,999,999,999,999\.99/);
   assert.doesNotMatch(h.element('#flowTbody').innerHTML, /¥/);
@@ -604,7 +640,7 @@ test('unknown currency is never silently relabelled as CNY', () => {
   const h = harness('app.js');
   assert.equal(h.run("moneyLabel('0.01','')"), '未标注币种 0.01');
   assert.equal(h.run("moneyLabel('0.01',null)"), '未标注币种 0.01');
-  assert.equal(h.run("edgeLabel({cnt:1,total:'0.01',currencies:[''],amount_totals:[{currency:'',amount:'0.01'}]})"), '1笔·未标注币种 0.01');
+  assert.equal(h.run("edgeLabel({cnt:1,total:'0.01',currencies:[''],amount_totals:[{currency:'',amount:'0.01'}]})"), '1 笔·未标注币种 0.01');
   h.run("renderFlows([{id:1,amount:'0.01',currency:''}])");
   assert.match(h.element('#flowTbody').innerHTML, /未标注币种 0\.01/);
   assert.doesNotMatch(h.element('#flowTbody').innerHTML, /¥/);
@@ -1008,7 +1044,7 @@ test('G6 label visibility keeps canonical money intact through selection and hov
   assert.equal(h.run('state.graphView.policy.edgeKeys.size'), 0);
   assert.equal(h.run('state.graph.getEdges()[0].shapes.length'), 0);
   assert.equal(h.run('state.graph.getEdges()[0].getModel().label'), undefined);
-  assert.equal(h.run('state.graph.getEdges()[0].getModel().fundsLabel'), '2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+  assert.equal(h.run('state.graph.getEdges()[0].getModel().fundsLabel'), '2 笔·¥10,000,000,000,000,000.01\nUSD 0.01');
   h.run(`selectItem(state.graph.getEdges()[0]);applyGraphLabels();`);
   assert.equal(h.run('state.graph.getEdges()[0].shapes[0].visible'), true);
   assert.equal(h.run('state.graph.getEdges()[0].shapes.some(shape=>shape.get("name")==="text-bg-shape")'), false);
@@ -1355,7 +1391,7 @@ test('initial G6 item creation honors the label budget and public label modes ad
   h.timers.findLast(timer=>timer.delay===0).callback();
   assert.equal(h.run('state.graph.getNodes().filter(item=>item.shapes.length===1).length'), 1000);
   assert.equal(h.run('state.graph.getEdges().filter(item=>item.shapes.length===1).length'), 999);
-  assert.equal(h.run('state.graph.getEdges()[0].getModel().label'), '2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+  assert.equal(h.run('state.graph.getEdges()[0].getModel().label'), '2 笔·¥10,000,000,000,000,000.01\nUSD 0.01');
   h.element('#graphLabelMode').onchange({target:{value:'focus'}});
   h.timers.findLast(timer=>timer.delay===0).callback();
   assert.equal(h.run('[...state.graph.getNodes(),...state.graph.getEdges()].every(item=>item.shapes.length===0)'), true);
@@ -1555,7 +1591,7 @@ test('viewport clipping retains a crossing edge and both snapshot scopes preserv
     assert.equal(snapshot.nodes.length,1000); assert.equal(snapshot.edges.length,999);
     assert.equal(snapshot.nodes.find(node=>node.id==='SYN-HUB').x,-4000);
     assert.equal(snapshot.nodes.find(node=>node.id==='SYN-00000').x,5000);
-    assert.equal(snapshot.edges[0].label,'2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+    assert.equal(snapshot.edges[0].label,'2 笔·¥10,000,000,000,000,000.01\nUSD 0.01');
     assert.equal(snapshot.edges[0].data.amount_totals[0].amount,'10000000000000000.01');
     assert.equal(snapshot.edges[0].data.amount_totals[1].amount,'0.01');
     assert.equal(snapshot.edges[0].data.amount_totals[1].currency,'USD');
@@ -1641,7 +1677,7 @@ test('panning away and back preserves a projected legacy path ratio and exact ca
     assert.equal(h.run('state.graph.getEdges()[0].shapes[0].attr("y")'),200);
     const snapshot=await h.run('window.__collectSnapshot()');
     assert.equal(snapshot.edges[0].lx,170);assert.equal(snapshot.edges[0].ly,200);
-    assert.equal(snapshot.edges[0].label,'2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+    assert.equal(snapshot.edges[0].label,'2 笔·¥10,000,000,000,000,000.01\nUSD 0.01');
     assert.equal(snapshot.edges[0].data.amount_totals[0].amount,'10000000000000000.01');
   }
 });
@@ -1662,12 +1698,12 @@ test('all and selected focus labels retain exact crossing-edge amounts while bot
     assert.equal(h.run('state.graph.getEdges()[0].getContainer().get("visible")'),true);
     assert.equal(h.run('state.graph.getEdges()[0].shapes.length'),1);
     assert.equal(h.run('state.graph.getEdges()[0].shapes.every(shape=>shape.visible)'),true);
-    assert.equal(h.run('state.graph.getEdges()[0].getModel().fundsLabel'),'2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
-    assert.equal(h.run('state.graph.getEdges()[0].getModel().label'),'2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+    assert.equal(h.run('state.graph.getEdges()[0].getModel().fundsLabel'),'2 笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+    assert.equal(h.run('state.graph.getEdges()[0].getModel().label'),'2 笔·¥10,000,000,000,000,000.01\nUSD 0.01');
     const snapshot=await h.run('window.__collectSnapshot()');
     assert.equal(snapshot.nodes.length,2);assert.equal(snapshot.edges.length,1);
     assert.equal(snapshot.edges[0].labelVisible,true);
-    assert.equal(snapshot.edges[0].label,'2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+    assert.equal(snapshot.edges[0].label,'2 笔·¥10,000,000,000,000,000.01\nUSD 0.01');
     assert.equal(snapshot.edges[0].data.amount_totals[0].amount,'10000000000000000.01');
     assert.equal(snapshot.edges[0].data.amount_totals[1].amount,'0.01');
     assert.equal(snapshot.edges[0].data.amount_totals[1].currency,'USD');
@@ -1755,7 +1791,7 @@ test('dense overview defers arrows but selected, hovered, all, neighborhood and 
     assert.equal(h.run('state.graph.getEdges().every(item=>item.getModel().style.endArrow===false)'),true);
     const full=await h.run('window.__collectSnapshot({scope:"all"})');
     assert.equal(full.nodes.length,1002);assert.equal(full.edges.length,1001);
-    assert.equal(full.edges[0].label,'2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+    assert.equal(full.edges[0].label,'2 笔·¥10,000,000,000,000,000.01\nUSD 0.01');
     assert.equal(full.edges[0].data.amount_totals[0].amount,'10000000000000000.01');
     assert.equal(full.edges[0].data.amount_totals[1].currency,'USD');
     assert.equal(h.run('JSON.stringify(state.lastGraph)===originalGraphFacts'),true);
@@ -1882,7 +1918,7 @@ test('screen label collisions preserve required focus, explicit all and image ex
   const visible=await h.run('window.__collectSnapshot()'),full=await h.run('window.__collectSnapshot({scope:"all"})');
   for(const snapshot of [visible,full]) {
     assert.equal(snapshot.nodes.length,3);assert.equal(snapshot.edges.length,2);
-    assert.equal(snapshot.edges[0].label,'2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+    assert.equal(snapshot.edges[0].label,'2 笔·¥10,000,000,000,000,000.01\nUSD 0.01');
     assert.equal(snapshot.edges[0].data.amount_totals[0].amount,'10000000000000000.01');
     assert.equal(snapshot.edges[0].data.amount_totals[1].amount,'0.01');
     assert.equal(snapshot.edges[0].data.amount_totals[1].currency,'USD');
@@ -1930,7 +1966,7 @@ async function assertPairSnapshot(h, expectedX, expectedY) {
   assert.equal(snapshot.nodes.length,2);assert.equal(snapshot.edges.length,1);
   assert.equal(snapshot.edges[0].lx,rendered?Number(expectedX.toFixed(2)):expectedX);
   assert.equal(snapshot.edges[0].ly,rendered?Number(expectedY.toFixed(2)):expectedY);
-  assert.equal(snapshot.edges[0].label,'2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+  assert.equal(snapshot.edges[0].label,'2 笔·¥10,000,000,000,000,000.01\nUSD 0.01');
   assert.equal(snapshot.edges[0].data.amount_totals[0].amount,'10000000000000000.01');
   assert.equal(snapshot.edges[0].data.amount_totals[1].amount,'0.01');
   assert.equal(snapshot.edges[0].data.amount_totals[1].currency,'USD');
@@ -1984,8 +2020,8 @@ test('ordinary small-graph relayout reserves node and relationship text extents 
     assert.ok(node.height>node.size,'the two-line node text contributes vertical spacing');
     assert.ok(node.offsetY>0,'text below the circle has an asymmetric envelope');
   }
-  assert.ok(Math.abs(input.edges[0].labelWidth-186)<1e-9,
-    'the 29-character full amount uses the harness six-pixel glyph metric plus the text padding');
+  assert.ok(Math.abs(input.edges[0].labelWidth-192)<1e-9,
+    'the 30-character full amount uses the harness six-pixel glyph metric plus the text padding');
   assert.equal(h.run('JSON.stringify(state.lastGraph)'),before,'measurement does not rewrite transaction facts');
   h.run('cancelGraphLayout()');
 });
@@ -2184,7 +2220,7 @@ test('short relationship labels keep path ownership despite endpoint and third-n
   const visible=await h.run('window.__collectSnapshot()'),full=await h.run('window.__collectSnapshot({scope:"all"})');
   for(const snapshot of [visible,full]) {
     assert.equal(snapshot.nodes.length,3);assert.equal(snapshot.edges.length,1);
-    assert.equal(snapshot.edges[0].label,'2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+    assert.equal(snapshot.edges[0].label,'2 笔·¥10,000,000,000,000,000.01\nUSD 0.01');
     assert.equal(snapshot.edges[0].data.amount_totals[0].amount,'10000000000000000.01');
     assert.equal(snapshot.edges[0].data.amount_totals[1].amount,'0.01');
     assert.equal(snapshot.edges[0].data.amount_totals[1].currency,'USD');
@@ -2193,7 +2229,7 @@ test('short relationship labels keep path ownership despite endpoint and third-n
   h.run('selectItem(state.graph.getEdges()[0])');h.timers.findLast(timer=>timer.delay===0).callback();
   assert.equal(h.run('state.graph.getEdges()[0].shapes.length'),1,'selected edge remains required');
   assertAppliedLabelPlacements(h);
-  assert.equal(h.run('state.graph.getEdges()[0].getModel().fundsLabel'),'2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+  assert.equal(h.run('state.graph.getEdges()[0].getModel().fundsLabel'),'2 笔·¥10,000,000,000,000,000.01\nUSD 0.01');
   h.run('selectItem(null)');h.element('#graphLabelMode').onchange({target:{value:'all'}});h.timers.findLast(timer=>timer.delay===0).callback();
   assert.equal(h.run('state.graph.getEdges()[0].shapes.length'),1,'all retains its exact amount');
   assertAppliedLabelPlacements(h,{retainAll:true});
@@ -2565,7 +2601,7 @@ test('saved mixed edge types, bends and label geometry survive redraw and full s
   let snapshot=await h.run('window.__collectSnapshot({scope:"all"})');
   assert.deepEqual(Array.from(snapshot.edges,edge=>edge.type),['line','polyline','quadratic','quadratic','loop']);
   assert.deepEqual(JSON.parse(JSON.stringify(snapshot.edges[1].controlPoints)),[{x:7,y:8}]);
-  assert.equal(snapshot.edges[0].lx,123.25);assert.equal(snapshot.edges[0].label,'2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
+  assert.equal(snapshot.edges[0].lx,123.25);assert.equal(snapshot.edges[0].label,'2 笔·¥10,000,000,000,000,000.01\nUSD 0.01');
   h.element('#edgeTypeSel').onchange({target:{value:'line'}});
   snapshot=await h.run('window.__collectSnapshot({scope:"all"})');
   assert.deepEqual(Array.from(snapshot.edges,edge=>edge.type),['line','polyline','quadratic','quadratic','loop'],

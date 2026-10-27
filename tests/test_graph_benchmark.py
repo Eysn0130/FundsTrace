@@ -9,6 +9,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
+from funds_assertions import unresolved_funds
+
 from scripts.preview_synthetic import (fixture_summary, graph_fixture_rows, parse_args,
                                       GRAPH_ASSET_FILES, register_preview_routes, source_fingerprint)
 
@@ -31,15 +33,22 @@ def test_graph_fixture_preserves_exact_money_and_isolation(client, database, mak
         graph = client.get(f"/api/graph?case_id={case_id}").json()
         assert len(graph["nodes"]) == 17
         assert len(graph["edges"]) == 16
-        assert all(isinstance(part["amount"], str) for edge in graph["edges"] for part in edge["amount_totals"])
+        assert all(part["amount"] is None for edge in graph["edges"] for part in edge["amount_totals"])
         expected = {}
         for row in rows:
             expected[row["currency"]] = expected.get(row["currency"], 0) + int(row["amount"] * 100)
         actual = {}
         for edge in graph["edges"]:
-            for part in edge["amount_totals"]:
-                actual[part["currency"]] = actual.get(part["currency"], 0) + int(Decimal(part["amount"]) * 100)
+            assert (edge["cnt"], edge["total"]) == (None, None)
+            assert edge["funds"]["count"] == {"lower": 0, "upper": 1}
+            assert edge["funds"]["observation_count"] == 1
+            for part in edge["funds"]["totals"]:
+                assert part["amount"] is None and part["lower"] == "0.00"
+                actual[part["currency"]] = actual.get(part["currency"], 0) + int(Decimal(part["upper"]) * 100)
         assert actual == expected
+        assert graph["funds"] == unresolved_funds(16, *[(currency, format(Decimal(value) / 100, ".2f")) for currency, value in sorted(expected.items())])
+        originals = database.q_raw("select trade_no,payer_account,payee_account,amount,balance,currency from flows where case_id=? order by trade_no", [case_id])
+        assert originals == [{key: row[key] for key in ("trade_no", "payer_account", "payee_account", "amount", "balance", "currency")} for row in rows]
         summary = fixture_summary(case_id, rows, shape, 2026)
         assert summary["nodes"] == 17 and summary["edges"] == 16
         assert {currency: int(Decimal(value) * 100) for currency, value in summary["totalsByCurrency"].items()} == expected
