@@ -856,6 +856,16 @@
             "title": "Payee Bank",
             "type": "string"
           },
+          "payee_card": {
+            "default": "",
+            "title": "Payee Card",
+            "type": "string"
+          },
+          "payee_card_state": {
+            "default": "",
+            "title": "Payee Card State",
+            "type": "string"
+          },
           "payee_display_account": {
             "default": "",
             "title": "Payee Display Account",
@@ -863,6 +873,11 @@
           },
           "payee_name": {
             "title": "Payee Name",
+            "type": "string"
+          },
+          "payee_source_account": {
+            "default": "",
+            "title": "Payee Source Account",
             "type": "string"
           },
           "payer_account": {
@@ -873,6 +888,16 @@
             "title": "Payer Bank",
             "type": "string"
           },
+          "payer_card": {
+            "default": "",
+            "title": "Payer Card",
+            "type": "string"
+          },
+          "payer_card_state": {
+            "default": "",
+            "title": "Payer Card State",
+            "type": "string"
+          },
           "payer_display_account": {
             "default": "",
             "title": "Payer Display Account",
@@ -880,6 +905,11 @@
           },
           "payer_name": {
             "title": "Payer Name",
+            "type": "string"
+          },
+          "payer_source_account": {
+            "default": "",
+            "title": "Payer Source Account",
             "type": "string"
           },
           "raw_payee_account": {
@@ -901,6 +931,16 @@
             "title": "Self Account",
             "type": "string"
           },
+          "self_card": {
+            "default": "",
+            "title": "Self Card",
+            "type": "string"
+          },
+          "self_card_state": {
+            "default": "",
+            "title": "Self Card State",
+            "type": "string"
+          },
           "self_display_account": {
             "default": "",
             "title": "Self Display Account",
@@ -908,6 +948,11 @@
           },
           "self_name": {
             "title": "Self Name",
+            "type": "string"
+          },
+          "self_source_account": {
+            "default": "",
+            "title": "Self Source Account",
             "type": "string"
           },
           "source_member": {
@@ -2274,6 +2319,28 @@
           "display_account": {
             "title": "Display Account",
             "type": "string"
+          },
+          "display_basis": {
+            "default": "account_number",
+            "title": "Display Basis",
+            "type": "string"
+          },
+          "display_card_candidates": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Display Card Candidates",
+            "type": "array"
+          },
+          "display_card_order": {
+            "default": "none",
+            "title": "Display Card Order",
+            "type": "string"
+          },
+          "display_card_tied": {
+            "default": false,
+            "title": "Display Card Tied",
+            "type": "boolean"
           },
           "entity_id": {
             "title": "Entity Id",

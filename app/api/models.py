@@ -99,6 +99,10 @@ class ResolutionEntity(ContractModel):
     kind: Literal["account", "card", "subaccount", "identifier"]
     account_number: str
     display_account: str
+    display_basis: str = "account_number"
+    display_card_tied: bool = False
+    display_card_candidates: list[str] = Field(default_factory=list)
+    display_card_order: str = "none"
     bank: str
     cards: list[str]
     parent_entity_id: str | None
@@ -181,6 +185,15 @@ class Flow(PreviewFlow):
     raw_payer_account: str = ""
     raw_payee_account: str = ""
     raw_self_account: str = ""
+    payer_card: str = ""
+    payee_card: str = ""
+    self_card: str = ""
+    payer_source_account: str = ""
+    payee_source_account: str = ""
+    self_source_account: str = ""
+    payer_card_state: str = ""
+    payee_card_state: str = ""
+    self_card_state: str = ""
     id: Identifier
     case_id: Identifier
     batch_id: Identifier | None

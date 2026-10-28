@@ -67,7 +67,7 @@ def _balance_chart(flows, account, name):
     if len(pts) < 3:
         return None
     pts.sort(key=lambda x: x[0])
-    xs = [datetime.strptime(t, "%Y-%m-%d %H:%M:%S") for t, _ in pts]
+    xs = [t if isinstance(t, datetime) else datetime.fromisoformat(t) for t, _ in pts]
     ys = [float(b) for _, b in pts]
     fig, ax = plt.subplots(figsize=(9, 3.4))
     ax.plot(xs, ys, color="#e25656", linewidth=1.2, marker="o", markersize=2.5)
@@ -198,7 +198,8 @@ def build_report(case_id, results, case_info):
             timing = ""
             if time_order:
                 span = f"{item.get('start_time') or '—'} → {item.get('end_time') or '—'}"
-                timing = f"<td>{span}{'（时序连续）' if item.get('continuous') else '（时序不连续）'}</td>"
+                timing_label = "时序未确定" if item.get("continuous") is None else "时序连续" if item["continuous"] else "时序不连续"
+                timing = f"<td>{span}（{timing_label}）</td>"
             rows += (f"<tr><td>{index + 1}</td><td>{steps}</td><td>{item['hops']} 跳</td>"
                      f"<td>{_funds_money(item.get('funds'), item['total'], item.get('currency'))}</td>{timing}</tr>")
 
@@ -226,12 +227,14 @@ def build_report(case_id, results, case_info):
             f"<tr><td>{k + 1}</td><td>{' → '.join(c.get('loop_names') or c['accounts_names'] + c['accounts_names'][:1])}</td>"
             f"<td>{c['len']} 跳</td><td>{_funds_money(c.get('funds'), c['total'], c.get('currency'))}</td>"
             f"<td>{'—' if c.get('return_ratio') is None else format(c['return_ratio'] * 100, '.1f') + '%'}</td>"
-            f"<td>{c.get('start_time', '—')} → {c.get('end_time', '—')}（{c.get('span_days', '—')} 天）</td></tr>"
+            f"<td>{c.get('start_time', '—')} → {c.get('end_time', '—')}（{c.get('span_days', '—')} 天）"
+            f"{'（时序未确定）' if c.get('continuous') is None else ''}</td></tr>"
             for k, c in enumerate(cyc["cycles"]))
         sub_txt = "、".join(cases.get("subjects") or []) or "全案件"
-        add(f"""<h3>资金回流环路检测（闭环对敲，{cyc.get('window_days', 7)} 天内按时序走完）—— 分析对象：{sub_txt}</h3>
-        <p>原理：交易方向构成<b>回到起点</b>的闭环，环上全部交易在时限内完成，且<b>每一跳都不早于上一跳</b>。
-        分析对象筛选包含该账户的闭环，展示从实际时序起点开始；同一账户环保留本次候选中回转比例最接近 100% 的交易组合。
+        add(f"""<h3>资金回流环路检测（{cyc.get('window_days', 7)} 天内的时序相容线索）—— 分析对象：{sub_txt}</h3>
+        <p>原理：交易方向构成<b>回到起点</b>的闭环，记录时间跨度在时限内，且未发现已确证的逆序。
+        分析对象筛选包含该账户的闭环；有明确先后时展示从实际时序起点开始。同一账户环保留本次候选中回转比例最接近 100% 的交易组合。
+        同刻交易缺少共同账簿的明确顺序时标为时序未确定，不认定已按该顺序流转。
         <b>回转比例（近似值）</b> = 最后一笔回流 ÷ 第一笔转出，结果按该比例接近 100% 的程度排序。
         时序和比例仅作为复核线索，不证明同一笔本金流转或交易异常性质。
         本次返回 <b>{cyc['count']} 个环路</b>。{_search_note(cyc)}</p>

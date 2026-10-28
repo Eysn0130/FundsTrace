@@ -847,6 +847,8 @@ test('bulk identity refresh patches live labels and the clean drawer without cha
   const input = h.element('ndIdInput'); input.focus();
   const models = h.state.lastGraph.nodes.map((node, index) => ({ id: node.account, x: index ? 111 : 17, y: index ? 157 : 23,
     data: node, fundsLabel: 'old canonical label', ...(index ? {} : { label: 'old visible label' }) }));
+  h.state.lastGraph.nodes[0].display_account = 'SYN-NEW-CARD';
+  models[0].data = { ...models[0].data, display_account: 'SYN-OLD-CARD', out_cnt: 1 };
   const camera = [1.75, 0, 0, 0, 1.75, 0, 149, -87, 1];
   const history = h.run('window.FundsCanvasHistory.create({capture:()=>({positions:state.positions}),restore:async()=>true})');
   history.record('合成样式修改', { fill: '#111111' }, { fill: '#222222' });
@@ -867,6 +869,7 @@ test('bulk identity refresh patches live labels and the clean drawer without cha
 
   assert.equal(h.state.lastGraph.nodes[0].id_no, '111111111111111'); assert.match(models[0].label, /111111111111111/);
   assert.equal(models[0].fundsLabel, models[0].label); assert.match(models[1].fundsLabel, /222222222222222/);
+  assert.match(models[0].fundsLabel, /SYN-OLD-CARD/); assert.equal(models[0].data.out_cnt, 1);
   assert.equal(Object.hasOwn(models[1], 'label'), false, 'an absent LOD label remains absent');
   assert.deepEqual(models.map(model => [model.x, model.y]), [[17, 23], [111, 157]]);
   assert.equal(JSON.stringify(h.state.positions), before.positions); assert.equal(JSON.stringify(camera), before.camera);
@@ -997,4 +1000,20 @@ test('a single associated card remains in the existing details while the sourced
   const details=identity.querySelector('details');
   assert.ok(details); assert.match(details.textContent,/关联卡号/);
   assert.match(details.textContent,/000SYN-CARD/);
+});
+
+test('node detail and graph statistics use the selected scoped node without rewriting case facts', async () => {
+  const h = harness(); await ready(h, { display_account: 'SYN-NEW-CARD' });
+  const scoped = graphNode('SYN-A', { display_account: 'SYN-OLD-CARD', cards: ['SYN-OLD-CARD', 'SYN-NEW-CARD'], display_basis: 'transaction_card', out_cnt: 1,
+    out_totals: [{ currency: 'CNY', amount: '10.25' }] });
+  h.state.graph = { findById: () => ({ getModel: () => ({ data: scoped }) }) };
+  await h.open();
+  assert.match(h.element('drawerBody').textContent, /SYN-OLD-CARD/);
+  assert.equal(h.run('nodeWorkspace.node.display_account'), 'SYN-OLD-CARD');
+  await h.element('ndScopeGraph').click();
+  assert.match(h.element('ndStats').textContent, /10.25/);
+  assert.doesNotMatch(h.element('ndStats').textContent, /9,007,199,254,740,993\.07/);
+  await h.element('ndScopeCase').click();
+  assert.match(h.element('ndStats').textContent, /9,007,199,254,740,993\.07/);
+  assert.equal(h.state.lastGraph.nodes[0].display_account, 'SYN-NEW-CARD');
 });

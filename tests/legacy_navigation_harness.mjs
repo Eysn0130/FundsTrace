@@ -864,6 +864,9 @@ test('main-account role refresh patches authoritative roles while retaining work
     roleFresh.nodes[0].is_main=0;roleFresh.nodes[0].is_same_name=1;
     roleFresh.nodes[1].is_main=1;roleFresh.nodes[1].is_same_name=0;
     roleFresh.nodes[1].name='Synthetic unrelated changed name';
+    state.lastGraph.nodes[0].display_account='SYN-NEW-CARD';
+    const scopedItem=state.graph.getNodes()[0],scopedModel=scopedItem.getModel();
+    scopedModel.data={...scopedModel.data,display_account:'SYN-OLD-CARD',out_cnt:1};
     globalThis.roleRows=[{account:'SYN-00000',name:'Synthetic 0',source:'manual'},
       {account:'SYN-OFF-CANVAS',name:'Synthetic external',source:'auto'}];
   `);
@@ -885,6 +888,8 @@ test('main-account role refresh patches authoritative roles while retaining work
   assert.equal(h.run('state.lastGraph.nodes[0].is_main'), 0); assert.equal(h.run('state.lastGraph.nodes[0].is_same_name'), 1);
   assert.equal(h.run('state.lastGraph.nodes[1].is_main'), 1);
   assert.match(h.run('state.graph.getNodes()[0].getModel().fundsLabel'), /^◆ /);
+  assert.match(h.run('state.graph.getNodes()[0].getModel().fundsLabel'), /SYN-OLD-CARD/);
+  assert.equal(h.run('state.graph.getNodes()[0].getModel().data.out_cnt'), 1);
   assert.match(h.run('state.graph.getNodes()[1].getModel().fundsLabel'), /^★ /);
   assert.equal(h.run('state.graph.getNodes()[0].getModel().style.fill'), '#234567');
   assert.equal(h.run('state.graph.getNodes()[0].getModel().style.stroke'), '#abcdef');

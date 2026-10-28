@@ -10,6 +10,7 @@ from collections import defaultdict, deque
 from datetime import datetime as _dt
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_EVEN, localcontext
+from itertools import groupby
 
 from .money import money_decimal
 from . import funds_projection
@@ -22,14 +23,75 @@ MONEY_CONTRACT = {
     "amounts": "exact decimal strings with two fractional digits",
     "currency": "independent groups; no implicit conversion or cross-currency pairing",
     "totals": "evidence-bounded sum of distinct transaction events; unresolved observations are ranges, not conserved principal",
-    "temporal_basis": "representative observation timestamps; rule candidates, not proven event order",
+    "temporal_basis": "recorded timestamps; equal times require shared own-ledger source order; rule candidates, not real-world attribution",
     "avg_amount": "decimal mean rounded to cents using ROUND_HALF_EVEN",
     "approximate_metrics": ["z", "sigma", "span_days", "max_delay_min", "tolerance", "return_ratio"],
 }
 
 
 def _pt(s):
-    return s if isinstance(s, _dt) else _dt.strptime(s, "%Y-%m-%d %H:%M:%S")
+    return s if isinstance(s, _dt) else _dt.fromisoformat(s)
+
+
+def _load_posting_orders(case_id, flows):
+    """Read source order for observations that connect or compete at equal times.
+
+    A confirmed event can have an own entry on either ledger. Its representative
+    ID is only a display choice, so look up the shared account's original entry.
+    """
+    occurrences = defaultdict(int)
+    for row in flows:
+        if row["trade_time"]:
+            for account in (row["payer_account"], row["payee_account"]):
+                if account:
+                    occurrences[account, row["currency"], row["trade_time"]] += 1
+    tied = [row for row in flows if row["trade_time"] and (
+        occurrences[row["payee_account"], row["currency"], row["trade_time"]] > 1
+        or occurrences[row["payer_account"], row["currency"], row["trade_time"]] > 1)]
+    if not tied:
+        return
+    ids = [row["id"] for row in tied]
+    events = list({row["fact_event_id"] for row in tied if row.get("fact_event_id")})
+    entries = db_q("""select cast(f.id as varchar) id,f.self_account,m.event_id
+        from effective_flows f left join event_members m
+          on m.case_id=f.case_id and m.flow_id=f.id and m.status='confirmed'
+        where f.case_id=? and (f.id in (select unnest(?::bigint[]))
+            or m.event_id in (select unnest(?::varchar[])))""", [case_id, ids, events])
+    from . import event_resolution
+    metadata = event_resolution.ledger_metadata(case_id, [row["id"] for row in entries])
+    by_fact = defaultdict(lambda: defaultdict(list))
+    for row in entries:
+        if row["self_account"]:
+            key = ("event", row["event_id"]) if row["event_id"] else ("flow", row["id"])
+            by_fact[key][row["self_account"]].append({"id": row["id"], **metadata.get(row["id"], {})})
+    for row in tied:
+        key = ("event", row["fact_event_id"]) if row.get("fact_event_id") else ("flow", str(row["id"]))
+        row["_ledger_orders"] = {account: entries[0] for account, entries in by_fact[key].items()
+                                  if len(entries) == 1}
+
+
+def _time_relation(left, right, account):
+    """-1 means proved earlier, 1 later; equal-time uncertainty stays None."""
+    if not left.get("trade_time") or not right.get("trade_time"):
+        return None
+    a = left.get("_parsed_time") or _pt(left["trade_time"])
+    b = right.get("_parsed_time") or _pt(right["trade_time"])
+    if a != b:
+        return -1 if a < b else 1
+    first, second = (row.get("_ledger_orders", {}).get(account) for row in (left, right))
+    if not first or not second or first["id"] == second["id"]:
+        return None
+    from . import principal_ledger
+    ordered = principal_ledger.source_order([first, second], {item["id"]: item for item in (first, second)})
+    return (-1 if ordered[0]["id"] == first["id"] else 1) if ordered else None
+
+
+def _sequence_timing(flows):
+    relations = [_time_relation(left, right, left["payee_account"])
+                 for left, right in zip(flows, flows[1:])]
+    status = ("reversed" if 1 in relations else "unknown" if None in relations
+              or any(not row.get("trade_time") for row in flows) else "continuous")
+    return {"continuous": None if status == "unknown" else status == "continuous", "temporal_status": status}
 
 
 def load_flows(case_id):
@@ -43,10 +105,12 @@ def load_flows(case_id):
     for row in rows:
         row["amount"] = money_decimal(row["amount"]) if row["amount"] is not None else None
         row["balance"] = money_decimal(row["balance"]) if row["balance"] is not None else None
+        row["_parsed_time"] = _pt(row["trade_time"]) if row["trade_time"] is not None else None
         if isinstance(row["trade_time"], _dt):
-            row["trade_time"] = row["trade_time"].strftime("%Y-%m-%d %H:%M:%S")
+            row["trade_time"] = row["trade_time"].isoformat(sep=" ")
         elif row["trade_time"] is None:
             row["trade_time"] = ""
+    _load_posting_orders(case_id, rows)
     return rows
 
 
@@ -234,6 +298,7 @@ def trace_paths(case_id, src, dst, max_hops=4, max_paths=50, neighbor_limit=20, 
 def _trace_paths(flows, src, dst, max_hops, max_paths, neighbor_limit, order="amount",
                  src_accounts=None, dst_accounts=None, src_name="", dst_name=""):
     adj, radj, names = build_adjacency(flows)
+    by_id = {row["id"]: row for row in flows}
     srcs = set(src_accounts) if src_accounts is not None else resolve_endpoints(src, flows)
     dsts = set(dst_accounts) if dst_accounts is not None else resolve_endpoints(dst, flows)
     search = {"budget": PATH_SEARCH_BUDGET, "steps": 0, "budget_exhausted": False,
@@ -284,8 +349,7 @@ def _trace_paths(flows, src, dst, max_hops, max_paths, neighbor_limit, order="am
             item = {
                 "path": steps, "total": round(total, 2), "hops": len(steps),
                 "start_time": times[0], "end_time": times[-1],
-                # 时序连续：每跳时间都不早于上一跳；单跳路径自然连续。
-                "continuous": all(a and b and a <= b for a, b in zip(times, times[1:]))}
+                **_sequence_timing([by_id[step["id"]] for step in steps])}
             search["matches_considered"] += 1
             rank = ((0 if item["continuous"] else 1, item["start_time"] or "~", -total)
                     if order == "time" else (-total,))
@@ -331,8 +395,8 @@ def _trace_paths(flows, src, dst, max_hops, max_paths, neighbor_limit, order="am
 def find_cycles(case_id, max_len=4, max_cycles=30, min_total=0, window_days=7,
                 budget=1_500_000, start_top=300, subjects=None, *, _flows=None):
     """检测资金闭环（对敲/回流特征）。只考虑进出均有的账户，环规范化去重。
-    时间约束：环上全部交易须在 window_days 天内完成，且必须能按时间顺序走完
-    （每一跳不早于上一跳；首尾相接 + 时间顺序才构成真实资金链）。刻意对敲通常
+    时间约束：环上记录须落在 window_days 天内，排除已证实的逆序；同刻缺序的
+    候选明确标为未知，不据此认定真实资金链。刻意对敲通常
     短窗完成，跨月才凑成的闭环更可能是正常经营往来。结果按"回转比例"（最后一笔
     回流 / 第一笔转出）接近 1 的程度排序，其次按金额合计降序。
     subjects：自定义分析对象（账号或户名列表）。给定后保留包含这些账户的环路，
@@ -350,6 +414,7 @@ def find_cycles(case_id, max_len=4, max_cycles=30, min_total=0, window_days=7,
 def _find_cycles(flows, max_len, max_cycles, min_total, window_days, budget, start_top, subjects,
                  subject_accounts=None):
     adj, radj, names = build_adjacency(flows)
+    by_id = {row["id"]: row for row in flows}
     indeg = defaultdict(int)
     for s, edges in adj.items():
         for d, _a, _f in edges:
@@ -416,7 +481,7 @@ def _find_cycles(flows, max_len, max_cycles, min_total, window_days, budget, sta
         return (0 if first else 1, distance, -cycle["total"],
                 tuple(edge["id"] for edge in cycle["edges"]))
 
-    def dfs(start, node, nodes_seq, edges_seq, depth, total, last_time):
+    def dfs(start, node, nodes_seq, edges_seq, depth, total):
         if selected is not None and not selected.intersection(nodes_seq) and to_subject[node] > max_len - depth:
             return
         for nxt, amt, f in outgoing.get(node, []):
@@ -426,12 +491,14 @@ def _find_cycles(flows, max_len, max_cycles, min_total, window_days, budget, sta
             search["steps"] += 1
             # 时间顺序在遍历时就剪枝：早于上一跳的流水不可能出现在同一条
             # 按时间走完的资金链上，直接跳过（比事后拒绝整个环快得多）。
-            if f["trade_time"] < last_time:
+            if edges_seq and _time_relation(by_id[edges_seq[-1]["id"]], f, node) == 1:
                 continue
             if edges_seq and (parsed_time(f["trade_time"]) - parsed_time(edges_seq[0]["time"])).total_seconds() > window_days * 86400:
                 continue
             if nxt == start and depth >= 2:
                 if selected is not None and not selected.intersection(nodes_seq):
+                    continue
+                if _time_relation(by_id[edges_seq[0]["id"]], f, start) == 1:
                     continue
                 total_c = total + amt
                 if total_c < min_total:
@@ -451,7 +518,8 @@ def _find_cycles(flows, max_len, max_cycles, min_total, window_days, budget, sta
                     # 回转比例 = 最后一笔回流 / 第一笔转出（近似值，见 money_contract）。
                     # 1.0 表示原样回流，最像对敲；首笔为 0 时无从比较，返回 None。
                     "first_outflow": first_out, "last_inflow": amt,
-                    "return_ratio": round(float(amt / first_out), 4) if first_out else None}
+                    "return_ratio": round(float(amt / first_out), 4) if first_out else None,
+                    **_sequence_timing([by_id[edge["id"]] for edge in edges_seq] + [f])}
                 search["matches_considered"] += 1
                 rank = closeness(cycle)
                 if key in best:
@@ -472,12 +540,12 @@ def _find_cycles(flows, max_len, max_cycles, min_total, window_days, budget, sta
                 continue
             dfs(start, nxt, nodes_seq + [nxt], edges_seq + [
                 {"id": f["id"], "from": node, "to": nxt, "amount": amt, "time": f["trade_time"], "currency": f["currency"]}],
-                depth + 1, total + amt, f["trade_time"])
+                depth + 1, total + amt)
             if search["budget_exhausted"]:
                 return
 
     for s in candidates:
-        dfs(s, s, [s], [], 1, ZERO, "")
+        dfs(s, s, [s], [], 1, ZERO)
         if search["budget_exhausted"]:
             break
     cycles = sorted(best.values(), key=closeness)
@@ -512,6 +580,18 @@ def match_fast_flows(case_id, window_minutes=30, tolerance=0.25, min_amount=1000
 
 def _match_fast_flows(flows, window_minutes, tolerance, min_amount, max_pairs, subjects):
     import bisect
+
+    def source_order(group, account):
+        if len(group) <= 1:
+            return group
+        notes = [row.get("_ledger_orders", {}).get(account) for row in group]
+        if not all(notes) or len({note["id"] for note in notes}) != len(group):
+            return None
+        from . import principal_ledger
+        ordered = principal_ledger.source_order(notes, {note["id"]: note for note in notes})
+        by_id = {note["id"]: row for note, row in zip(notes, group)}
+        return [by_id[note["id"]] for note in ordered] if ordered is not None else None
+
     by_acct = defaultdict(lambda: {"in": [], "out": []})
     for f in flows:
         a = f["amount"] or ZERO
@@ -524,10 +604,22 @@ def _match_fast_flows(flows, window_minutes, tolerance, min_amount, max_pairs, s
     pairs = []
     used = set()
     for acct, d in sorted(by_acct.items(), key=lambda kv: -sum((f["amount"] or ZERO for f in kv[1]["in"]), ZERO)):
-        d["in"].sort(key=lambda x: x["trade_time"])
-        d["out"].sort(key=lambda x: x["trade_time"])
-        out_times = [_pt(fo["trade_time"]) for fo in d["out"]]
-        for fin in d["in"]:
+        d["in"].sort(key=lambda x: _pt(x["trade_time"]))
+        d["out"].sort(key=lambda x: _pt(x["trade_time"]))
+        incoming = []
+        for _, group in groupby(d["in"], key=lambda row: _pt(row["trade_time"])):
+            ordered = source_order(list(group), acct)
+            # Otherwise reusing an outflow would pick one same-time source
+            # by import ID. Keep the unresolved group out of greedy pairing.
+            if ordered is not None:
+                incoming.extend(ordered)
+        out_groups = []
+        for stamp, group in groupby(d["out"], key=lambda row: _pt(row["trade_time"])):
+            group = list(group)
+            ordered = source_order(group, acct)
+            out_groups.append((stamp, ordered if ordered is not None else group, ordered is not None))
+        out_times = [stamp for stamp, _, _ in out_groups]
+        for fin in incoming:
             if len(pairs) >= max_pairs:
                 break
             fid = fin["id"]
@@ -540,15 +632,18 @@ def _match_fast_flows(flows, window_minutes, tolerance, min_amount, max_pairs, s
             hi = bisect.bisect_right(out_times, t_end)
             acc, chosen = ZERO, []
             for k in range(lo, hi):   # 只扫窗口内的转出
-                fo = d["out"][k]
-                # A self-transfer occurs in both lists, but one source record
-                # cannot be evidence for both legs of a pass-through pair.
-                if fo["id"] == fid or fo["id"] in used:
-                    continue
                 if acc >= amt * (1 + tolerance):
                     break
-                chosen.append(fo)
-                acc += fo["amount"] or ZERO
+                _, group, proved = out_groups[k]
+                eligible = [fo for fo in group if fo["id"] != fid and fo["id"] not in used
+                            and _time_relation(fin, fo, acct) == -1]
+                for fo in eligible:
+                    # Unknown same-time outgoing order permits the whole
+                    # eligible group, never an arbitrary matching prefix.
+                    chosen.append(fo)
+                    acc += fo["amount"] or ZERO
+                    if proved and acc >= amt * (1 - tolerance):
+                        break
                 if acc >= amt * (1 - tolerance):
                     break
             if chosen and abs(acc - amt) <= amt * tolerance:

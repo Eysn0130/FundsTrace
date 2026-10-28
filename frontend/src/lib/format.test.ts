@@ -20,6 +20,7 @@ describe('timestamp presentation', () => {
     expect(displayOperationalTime('2026-10-14 21:30:00')).toBe('2026-10-14 21:30:00');
     expect(displayOperationalTime(null)).toBe('—');
     expect(displayTime('2026-01-01T10:00:00')).toBe('2026-01-01 10:00:00');
+    expect(displayTime('2026-01-01T10:00:00.123456')).toBe('2026-01-01 10:00:00.123456');
     expect(displayTime('2026-01-01T10:00:00Z')).toBe('2026-01-01 10:00:00');
   });
 });

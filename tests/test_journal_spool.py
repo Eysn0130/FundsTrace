@@ -340,7 +340,7 @@ def test_late_preview_staging_failure_removes_only_new_operation(
             return getattr(self.connection, name)
 
         def execute(self, query, *args):
-            if failure == "read" and query.startswith("select position,payload from items"):
+            if failure == "read" and query.startswith("select position,payload") and " from items" in query:
                 attempts.append(failure)
                 raise sqlite3.OperationalError("Synthetic late staged read failure")
             return self.connection.execute(query, *args)

@@ -19,6 +19,8 @@ import unicodedata
 from . import db
 
 POLICY = "typed-account-evidence-v1"
+CARD_PROJECTION = "endpoint-cards-v4-scoped-order"
+_SCOPED_EQUAL_REASON = "scoped_equal_account_card_declaration"
 DETAIL_FIELD = "resolution_evidence"
 TABLE_PROFILE = "funds-trace-table-v20"
 ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
@@ -201,13 +203,11 @@ def occurrence_key(member_sha, position):
 
 
 def bind_occurrences(plan):
-    from .import_staging import record_map
-    from itertools import chain
+    from .import_staging import auxiliary_records, row_records
     bind_families(plan)
     members = {member["member_path"]: member["sha256"] for member in plan["members"]}
-    records = record_map(plan)
     declarations = defaultdict(set)
-    for record in plan["records"]:
+    for record in auxiliary_records(plan):
         if record["disposition"] != "auxiliary" or DETAIL_FIELD not in record["details"]:
             continue
         data = _projection_evidence(validate_evidence(record["details"][DETAIL_FIELD]))
@@ -215,7 +215,7 @@ def bind_occurrences(plan):
             declarations[record["details"]["evidence_family"]].add((data["request"], data["bank"]))
     bindings = {}
     denied = set()
-    for record in plan["records"]:
+    for record in auxiliary_records(plan):
         if record["disposition"] != "auxiliary" or DETAIL_FIELD not in record["details"]:
             continue
         data = _projection_evidence(validate_evidence(record["details"][DETAIL_FIELD]))
@@ -224,8 +224,7 @@ def bind_occurrences(plan):
             binding = source_scope(record["member_path"], data["role"], declarations[family])
             if binding and data["bank"] and data["bank"] != binding["bank"]:
                 denied.add((family, binding["request"], binding["bank"]))
-    for row in chain(plan["rows"], plan.get("cancelled_rows", [])):
-        record = records[row["_source_row"]]
+    for row, record in row_records(plan):
         value = record["details"].get(DETAIL_FIELD)
         data = _projection_evidence(validate_evidence(value)) if value else None
         family = record["details"]["evidence_family"]
@@ -277,6 +276,7 @@ class _ResolutionStaging:
                 create table resolution_seen(namespace integer, identity blob,
                     primary key(namespace,identity)) without rowid;
                 create table resolution_endpoints(flow_id integer,role text,entity_id text,state text,reason text,
+                    endpoint_account text,endpoint_card text,card_state text,
                     primary key(flow_id,role)) without rowid;
             """)
         except BaseException:
@@ -315,11 +315,11 @@ class _ResolutionStaging:
     def get(self, key):
         if key in self.pending:
             return self.pending[key]
-        return self.connection.execute("select entity_id,state,reason from resolution_endpoints where flow_id=? and role=?", key).fetchone()
+        return self.connection.execute("select entity_id,state,reason,endpoint_account,endpoint_card,card_state from resolution_endpoints where flow_id=? and role=?", key).fetchone()
 
     def __setitem__(self, key, value):
         from .import_staging import PLAN_CHUNK
-        self.pending[key] = value
+        self.pending[key] = (*value, "", "", "missing") if len(value) == 3 else value
         self.peak_pending = max(self.peak_pending, len(self.pending))
         if len(self.pending) >= PLAN_CHUNK:
             self.flush()
@@ -333,7 +333,7 @@ class _ResolutionStaging:
 
     def flush(self):
         if self.pending:
-            self.connection.executemany("insert or replace into resolution_endpoints values (?,?,?,?,?)",
+            self.connection.executemany("insert or replace into resolution_endpoints values (?,?,?,?,?,?,?,?)",
                 ((*key, *value) for key, value in self.pending.items()))
             self.pending.clear()
 
@@ -359,10 +359,11 @@ class _EndpointRows(list):
 
     def __iter__(self):
         cursor = self.staging.connection.execute(
-            "select flow_id,role,entity_id,state,reason from resolution_endpoints order by flow_id,role")
+            "select flow_id,role,entity_id,state,reason,endpoint_account,endpoint_card,card_state from resolution_endpoints order by flow_id,role")
         try:
-            for flow_id, role, entity_id, state, reason in cursor:
-                yield {"flow_id": flow_id, "role": role, "entity_id": entity_id, "state": state, "reason": reason}
+            for flow_id, role, entity_id, state, reason, account, card, card_state in cursor:
+                yield {"flow_id": flow_id, "role": role, "entity_id": entity_id, "state": state, "reason": reason,
+                       "endpoint_account": account, "endpoint_card": card, "card_state": card_state}
         finally:
             if not self.staging.owner._closed:
                 cursor.close()
@@ -435,7 +436,7 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
     if isinstance(evidence, _CaseEvidence):
         evidence.staging = staging
     evidence = contextualize(evidence)
-    card_targets, parent_claims = defaultdict(set), []
+    card_targets, scoped_card_targets, parent_claims = defaultdict(set), defaultdict(set), []
     declarations = []
     explicit_accounts, source_conflicts = set(), 0
     for source_id, position, flow_id, data in evidence:
@@ -450,7 +451,11 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
     for scope, item in declarations:
         possible = {item["bank"]} if item["bank"] else {"unscoped:" + scope}
         if item["account"] and item["card"] and len(possible) == 1 and not item.get("_source_scope_conflict"):
-            card_targets[next(iter(possible)), item["card"]].add(item["account"])
+            bank = next(iter(possible))
+            card_targets[bank, item["card"]].add(item["account"])
+            context = _scoped_relation_context(item, bank)
+            if context is not None:
+                scoped_card_targets[context, item["card"]].add(item["account"])
     parents, subaccounts, parent_accounts, incomplete_parents = defaultdict(set), set(), set(), set()
     for scope, item in parent_claims:
         possible = {item["bank"]} if item["bank"] else {"unscoped:" + scope}
@@ -475,7 +480,7 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
             raise ValueError("empty typed entity identifier")
         key = _entity_id(bank, kind, number)
         target = entities.setdefault(key, {"entity_id": key, "kind": kind, "account_number": number,
-                   "display_account": number, "bank": "" if bank.startswith("unscoped:") else bank, "cards": set(), "parent_entity_id": None,
+                   "display_account": number, "bank": "" if bank.startswith("unscoped:") else bank, "cards": set(), "reliable_cards": set(), "parent_entity_id": None,
                    "names": set(), "status": "unscoped" if bank.startswith("unscoped:") else "resolved"})
         return target
     for scope, item in declarations:
@@ -485,6 +490,9 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
             target = entity(bank, "subaccount" if (bank, item["account"]) in subaccounts else "account", item["account"])
             if item["card"]:
                 target["cards"].add(item["card"])
+                if (not bank.startswith("unscoped:") and not item.get("_source_scope_conflict")
+                        and card_targets.get((bank, item["card"])) == {item["account"]}):
+                    target["reliable_cards"].add(item["card"])
                 if item.get("_source_scope_conflict"):
                     target["status"] = "conflict"
             if item["name"]:
@@ -502,76 +510,127 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
             target["status"] = "conflict"
     projections, conflicts, unresolved = (staging if staging is not None else {}), source_conflicts, 0
     endpoint_count = 0
-    for source_id, position, flow_id, data in evidence:
-        if flow_id is None or data["role"] != "transaction":
-            continue
-        for role, item in data["endpoints"].items():
-            role = _ENDPOINT_ROLES.get(role, role)
-            number, card, bank = item["account"], item["card"], item["bank"]
-            if not number and not card:
-                if role != "self":
-                    if collect_endpoints:
-                        projections.setdefault((flow_id, role), ("", "identifier_unresolved", "source_identifier_not_resolved"))
+    # Read proven scoped role bindings before weaker duplicate observations.
+    # Otherwise weak-card + explicit-account may create an irreversible source
+    # conflict before their retained scoped declaration arrives. Replay twice
+    # instead of keeping a flow-sized Python cache or guessing out of conflicts.
+    for scoped_first in ((True, False) if collect_endpoints else (False,)):
+        for source_id, position, flow_id, data in evidence:
+            if flow_id is None or data["role"] != "transaction":
+                continue
+            for role, item in data["endpoints"].items():
+                role = _ENDPOINT_ROLES.get(role, role)
+                number, card, bank = item["account"], item["card"], item["bank"]
+                if not number and not card:
+                    if scoped_first:
+                        continue
+                    if role != "self":
+                        if collect_endpoints:
+                            projections.setdefault((flow_id, role), ("", "identifier_unresolved", "source_identifier_not_resolved", "", "", "missing"))
+                        else:
+                            endpoint_count += 1
+                            unresolved += 1
+                    continue
+                if not bank:
+                    bank = "unscoped:" + source_id
+                mixed = item["identifier_type"] == "account_or_card"
+                ambiguity = False
+                reason = "explicit_account" if number else "card_only"
+                if mixed:
+                    carrier = number or card
+                    direct = {carrier} if (bank, carrier) in typed_accounts else set()
+                    linked = card_targets.get((bank, carrier), set())
+                    candidates = direct | linked
+                    if len(candidates) == 1 and (bank, next(iter(candidates))) not in child_parents and (not linked or next(iter(candidates)) != carrier):
+                        number, card, reason = next(iter(candidates)), carrier if linked else "", "typed_identifier_relation"
+                    elif not direct and linked:
+                        number, card, reason = "", carrier, "card_ledger_undetermined"
                     else:
-                        endpoint_count += 1
-                        unresolved += 1
-                continue
-            if not bank:
-                bank = "unscoped:" + source_id
-            mixed = item["identifier_type"] == "account_or_card"
-            ambiguity = False
-            reason = "explicit_account" if number else "card_only"
-            if mixed:
-                carrier = number or card
-                direct = {carrier} if (bank, carrier) in typed_accounts else set()
-                linked = card_targets.get((bank, carrier), set())
-                candidates = direct | linked
-                if len(candidates) == 1 and (bank, next(iter(candidates))) not in child_parents and (not linked or next(iter(candidates)) != carrier):
-                    number, card, reason = next(iter(candidates)), carrier if linked else "", "typed_identifier_relation"
-                elif not direct and linked:
-                    number, card, reason = "", carrier, "card_ledger_undetermined"
+                        number, card, reason, ambiguity = carrier, "", "mixed_identifier_undetermined", True
+                scoped_equal = False
+                if not number:
+                    targets = card_targets.get((bank, card), set())
+                    context = _scoped_relation_context(data, bank)
+                    scoped_targets = scoped_card_targets.get((context, card), set()) if context is not None else set()
+                    # Text equality has no identity authority. Only a native,
+                    # manifest-bound typed declaration in this exact source scope
+                    # can supply the missing account when its two fields coincide.
+                    # An explicitly declared account can also be a parent. This
+                    # establishes that account only, never one of its child ledgers.
+                    if not item["account"] and item["card"] and scoped_targets == {card}:
+                        number, reason, scoped_equal = card, _SCOPED_EQUAL_REASON, True
+                    elif len(targets) == 1 and next(iter(targets)) != card and (bank, next(iter(targets))) not in child_parents:
+                        number, reason = next(iter(targets)), "account_card_declaration"
+                if collect_endpoints and (reason == _SCOPED_EQUAL_REASON) != scoped_first:
+                    continue
+                kind = "identifier" if ambiguity else "subaccount" if (bank, number) in subaccounts else "account" if number else "card"
+                target = entity(bank, kind, number or card)
+                if card:
+                    target["cards"].add(card)
+                if item["name"]:
+                    target["names"].add(item["name"])
+                # Contradictory explicit C/A must not rewrite A to a declared parent.
+                # The allowed parent->child edge explains only an already supplied A.
+                targets = scoped_targets if scoped_equal else card_targets.get((bank, card), set()) if card else set()
+                allowed = targets | {child for (b, child), ps in parents.items() if b == bank and ps & targets}
+                conflict = bool(number and targets and number not in allowed) or mixed and ambiguity and bool(card_targets.get((bank, number), set()))
+                state = "conflict" if conflict else "unscoped" if bank.startswith("unscoped:") else "identifier_undetermined" if kind == "identifier" else "card_only" if kind == "card" else "resolved"
+                if conflict or target["status"] != "conflict" and state != "resolved":
+                    target["status"] = state
+                if not collect_endpoints:
+                    endpoint_count += 1
+                    conflicts += state == "conflict"
+                    unresolved += state != "resolved"
+                    continue
+                card_state = ("missing" if not card else "conflict" if conflict or len(targets) > 1 or data.get("_source_scope_conflict")
+                              else "confirmed" if state == "resolved" else "unresolved")
+                observed = (item["account"], card, card_state)
+                key = (flow_id, role)
+                existing = projections.get(key)
+                if existing is None:
+                    projections[key] = (target["entity_id"], state, reason, *observed)
+                elif existing[0] != target["entity_id"]:
+                    previous = entities.get(existing[0], {})
+                    # A duplicate source without an account declaration is absence
+                    # of support, not contrary evidence. Supersede only a typed
+                    # card-only endpoint for this identical observation and role,
+                    # with the same explicit institution and card. Unknown banks,
+                    # conflicting cards and other account claims stay unresolved.
+                    if (_same_scoped_card_observation(existing, previous, observed, target)
+                            and state == "resolved" and reason == _SCOPED_EQUAL_REASON):
+                        projections[key] = (target["entity_id"], state, reason, *observed)
+                    elif (_same_scoped_card_observation((target["entity_id"], state, reason, *observed), target,
+                                                        existing[3:], previous)
+                            and existing[1] == "resolved" and existing[2] == _SCOPED_EQUAL_REASON):
+                        pass
+                    else:
+                        uncertain = entity("uncertain:" + str(flow_id) + ":" + role, "identifier", item["account"] or item["card"])
+                        uncertain["status"] = "conflict"
+                        projections[key] = (uncertain["entity_id"], "conflict", "conflicting_source_context", "", "", "conflict")
                 else:
-                    number, card, reason, ambiguity = carrier, "", "mixed_identifier_undetermined", True
-            if not number:
-                targets = card_targets.get((bank, card), set())
-                if len(targets) == 1 and next(iter(targets)) != card and (bank, next(iter(targets))) not in child_parents:
-                    number, reason = next(iter(targets)), "account_card_declaration"
-            kind = "identifier" if ambiguity else "subaccount" if (bank, number) in subaccounts else "account" if number else "card"
-            target = entity(bank, kind, number or card)
-            if card:
-                target["cards"].add(card)
-            if item["name"]:
-                target["names"].add(item["name"])
-            # Contradictory explicit C/A must not rewrite A to a declared parent.
-            # The allowed parent->child edge explains only an already supplied A.
-            targets = card_targets.get((bank, card), set()) if card else set()
-            allowed = targets | {child for (b, child), ps in parents.items() if b == bank and ps & targets}
-            conflict = bool(number and targets and number not in allowed) or mixed and ambiguity and bool(card_targets.get((bank, number), set()))
-            state = "conflict" if conflict else "unscoped" if bank.startswith("unscoped:") else "identifier_undetermined" if kind == "identifier" else "card_only" if kind == "card" else "resolved"
-            if conflict or target["status"] != "conflict" and state != "resolved":
-                target["status"] = state
-            if not collect_endpoints:
-                endpoint_count += 1
-                conflicts += state == "conflict"
-                unresolved += state != "resolved"
-                continue
-            key = (flow_id, role)
-            existing = projections.get(key)
-            if existing is None:
-                projections[key] = (target["entity_id"], state, reason)
-            elif existing[0] != target["entity_id"]:
-                uncertain = entity("uncertain:" + str(flow_id) + ":" + role, "identifier", item["account"] or item["card"])
-                uncertain["status"] = "conflict"
-                projections[key] = (uncertain["entity_id"], "conflict", "conflicting_source_context")
-            elif state == "conflict":
-                projections[key] = (existing[0], "conflict", min(reason, existing[2]))
+                    old_account, old_card, old_card_state = existing[3:]
+                    account = min(value for value in (old_account, item["account"]) if value) if old_account or item["account"] else ""
+                    cards_disagree = bool(old_card and card and old_card != card)
+                    unresolved_disagreement = old_card_state == "conflict" and not old_card or card_state == "conflict" and not card
+                    merged_card = "" if cards_disagree or unresolved_disagreement else old_card or card
+                    merged_card_state = ("conflict" if cards_disagree or "conflict" in (old_card_state, card_state)
+                                         else "confirmed" if "confirmed" in (old_card_state, card_state)
+                                         else "unresolved" if merged_card else "missing")
+                    merged_state = "conflict" if "conflict" in (state, existing[1]) else existing[1]
+                    merged_reason = _SCOPED_EQUAL_REASON if _SCOPED_EQUAL_REASON in (reason, existing[2]) else min(reason, existing[2])
+                    projections[key] = (existing[0], merged_state, merged_reason, account, merged_card, merged_card_state)
     endpoints = _materialize_endpoints(projections) if collect_endpoints else endpoint_count
     del projections
     if collect_endpoints:
+        for projection in endpoints:
+            if projection["card_state"] == "confirmed" and projection["entity_id"] in entities:
+                entities[projection["entity_id"]]["reliable_cards"].add(projection["endpoint_card"])
+        projection = None  # Do not retain the final streamed endpoint during later passes.
         conflicts += sum(item["state"] == "conflict" for item in endpoints)
         unresolved = sum(item["state"] != "resolved" for item in endpoints)
     for target in entities.values():
         target["cards"] = sorted(target["cards"])
+        target["reliable_cards"] = sorted(target["reliable_cards"])
         target["names"] = sorted(target["names"])
         # Use the typed ledger number. Source associations do not establish
         # which card is current; a sorted card list is not a temporal history.
@@ -581,19 +640,27 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
     return sorted(entities.values(), key=lambda item: item["entity_id"]), endpoints, conflicts, unresolved
 
 
+def _same_scoped_card_observation(weak, weak_entity, strong_observed, strong_entity):
+    return (weak[1] == "card_only" and weak[3] == "" and weak[5] == "unresolved"
+            and weak_entity.get("kind") == "card" and strong_entity.get("kind") in {"account", "subaccount"}
+            and bool(weak_entity.get("bank")) and weak_entity["bank"] == strong_entity.get("bank")
+            and bool(weak[4]) and weak[4] == strong_observed[1] == weak_entity.get("account_number") == strong_entity.get("account_number")
+            and strong_observed[2] == "confirmed")
+
+
 def _materialize_endpoints(projections):
     if isinstance(projections, _ResolutionStaging):
         return projections.rows()
-    # Replay needs only three values per (flow, role), not millions of repeated
+    # Replay keeps a compact tuple per (flow, role), not millions of repeated
     # dictionaries and JSON-decoded role strings. Expand after the replay's
     # deduplication set is released, consuming keys and values as we go.
     keys, endpoints = sorted(projections), []
     for index, key in enumerate(keys):
-        entity_id, state, reason = projections.pop(key)
+        entity_id, state, reason, account, card, card_state = projections.pop(key)
         flow_id, role = key
         keys[index] = None
         endpoints.append({"flow_id": flow_id, "role": role, "entity_id": entity_id,
-                          "state": state, "reason": reason})
+                          "state": state, "reason": reason, "endpoint_account": account, "endpoint_card": card, "card_state": card_state})
     projections.clear()
     return endpoints
 
@@ -635,8 +702,8 @@ def _rebuild(case_id, evidence, staging):
             _insert_projection("resolution_entities", ["case_id", "entity_id", "kind", "account_number", "display_account", "bank", "details_json"],
                                ([case_id, item["entity_id"], item["kind"], item["account_number"], item["display_account"], item["bank"], _json(item)] for item in _consume_projection(entities)))
         if endpoints:
-            _insert_projection("resolved_endpoints", ["case_id", "flow_id", "role", "entity_id", "state", "reason"],
-                               ([case_id, item["flow_id"], item["role"], item["entity_id"], item["state"], item["reason"]] for item in _consume_projection(endpoints)))
+            _insert_projection("resolved_endpoints", ["case_id", "flow_id", "role", "entity_id", "state", "reason", "endpoint_account", "endpoint_card", "card_state"],
+                               ([case_id, item["flow_id"], item["role"], item["entity_id"], item["state"], item["reason"], item["endpoint_account"], item["endpoint_card"], item["card_state"]] for item in _consume_projection(endpoints)))
         if subject_aliases:
             _insert_projection("resolution_subject_aliases", ["case_id", "raw_account", "account"],
                                ([case_id, alias, account] for alias, account in _consume_projection(subject_aliases)))
@@ -653,6 +720,8 @@ def _rebuild(case_id, evidence, staging):
             if inserted != [{"revision": revision}]:
                 raise ValueError("Resolution snapshot was not persisted")
     db.x("insert into resolution_state(case_id,revision) values (?,?) on conflict(case_id) do update set revision=excluded.revision", [case_id, revision])
+    db.x("insert into resolution_projection_versions values (?,?) on conflict(case_id) do update set card_version=excluded.card_version",
+         [case_id, CARD_PROJECTION])
     return summary
 
 
@@ -744,6 +813,18 @@ def _subject_aliases(entities):
     return sorted((alias, next(iter(targets))) for alias, targets in candidates.items() if len(targets) == 1)
 
 
+def ensure_card_projection():
+    """Upgrade derived endpoint/display state once when an old DB opens."""
+    stale = db.q_raw("""select s.case_id from resolution_state s
+        left join resolution_projection_versions v on v.case_id=s.case_id
+        where coalesce(v.card_version,'')<>?""", [CARD_PROJECTION])
+    if stale:
+        with db.transaction():
+            for row in stale:
+                rebuild(row["case_id"])
+        db.con().execute("checkpoint")
+
+
 def summary(case_id):
     rows = db.q_raw("select r.summary_json from resolution_state s join resolution_revisions r on r.case_id=s.case_id and r.revision=s.revision where s.case_id=?", [case_id])
     return json.loads(rows[0]["summary_json"]) if rows else None
@@ -753,8 +834,14 @@ def registry(case_id):
     from .services.cases import require_case
     with db._lock:
         cid = require_case(str(case_id))
-        return {"case_id": str(cid), "resolution": summary(cid),
-                "entities": [_display_details(item["details_json"]) for item in db.q_raw("select details_json from resolution_entities where case_id=? order by entity_id", [cid])]}
+        from . import representative_cards
+        items = [_display_details(item["details_json"]) for item in db.q_raw(
+            "select details_json from resolution_entities where case_id=? order by entity_id", [cid])]
+        representative_cards.decorate(cid, items, key="entity_id",
+            source_sql="select * from effective_flows where case_id=?", params=[cid])
+        for item in items:
+            item.pop("reliable_cards", None)
+        return {"case_id": str(cid), "resolution": summary(cid), "entities": items}
 
 
 class _PreviewEvidence:
@@ -773,8 +860,9 @@ class _PreviewEvidence:
         return self._iterate(True)
 
     def _iterate(self, auxiliary_only):
+        from .import_staging import auxiliary_records
         records = auxiliary = 0
-        for record in self.plan["records"]:
+        for record in auxiliary_records(self.plan) if auxiliary_only else self.plan["records"]:
             if (auxiliary_only and record["disposition"] != "auxiliary"
                     or DETAIL_FIELD not in record["details"]):
                 continue
@@ -809,7 +897,7 @@ def _display_details(value):
     return item
 
 
-def decorate_accounts(case_id, rows, *, key="account"):
+def decorate_accounts(case_id, rows, *, key="account", source_sql=None, params=None):
     """Keep query keys opaque while exposing original display identifiers."""
     ids = sorted({row.get(key) for row in rows if row.get(key)})
     if not ids:
@@ -828,7 +916,10 @@ def decorate_accounts(case_id, rows, *, key="account"):
             row["name"] = "多个来源户名"
         if item and len(item["names"]) == 1 and not row.get("name"):
             row["name"] = item["names"][0]
-    return rows
+    from . import representative_cards
+    return representative_cards.decorate(case_id, rows, key=key,
+        source_sql=source_sql or "select * from effective_flows where case_id=?",
+        params=[case_id] if source_sql is None else params)
 
 
 def complete_family(source):
@@ -924,6 +1015,37 @@ def source_scope(member_path, role, declarations):
         return None
     request, bank = next(iter(candidates))
     return {"policy": _SCOPE_POLICY, "request": request, "bank": bank, "role": role}
+
+
+def _scoped_relation_context(data, bank):
+    """A native member's family, full request-prefix path and exact bank.
+
+    The binding has already passed the complete manifest/role grammar. Retain
+    its full request path as well, so repeated request text under another root
+    never supplies a typed relation to this member.
+    """
+    binding, family = data.get("_source_scope"), data.get("_family")
+    if (not binding or binding.get("policy") != _SCOPE_POLICY or not family
+            or binding.get("bank") != bank or not bank or data.get("_source_scope_conflict")):
+        return None
+    path, role = data.get("_member_path"), data.get("role")
+    if not isinstance(path, str) or role not in _ROLE_SUFFIXES:
+        return None
+    alternatives = {path}
+    try:
+        encoded = path.encode("cp437", errors="strict")
+        decoded = encoded.decode("gb18030", errors="strict")
+        if decoded.encode("gb18030") == encoded:
+            alternatives.add(decoded)
+    except (UnicodeError, LookupError):
+        pass
+    prefixes = set()
+    for value in alternatives:
+        *parents, basename = value.split("/")
+        if basename == bank + _ROLE_SUFFIXES[role]:
+            prefixes.update(tuple(parents[:index + 1]) for index, component in enumerate(parents)
+                            if component == binding["request"])
+    return (family, next(iter(prefixes)), bank) if len(prefixes) == 1 else None
 
 
 class _ContextualEvidence:
@@ -1068,14 +1190,12 @@ def decorate_analysis(case_id, result):
 
 
 def operation_context(parsed, original_sha):
-    from .import_staging import record_map
+    from .import_staging import row_records
     plan = parsed[0].attrs.get("feedback_plan") or parsed[0].attrs.get("table_plan")
     if not plan or plan["profile"] not in PROFILES:
         return
-    records = record_map(plan)
     unscoped = {}
-    for row in plan["rows"]:
-        record = records[row["_source_row"]]
+    for row, record in row_records(plan, kinds=("rows",)):
         if not row.get("_occurrence_scope"):
             # Without an institution declaration, only the original registered
             # envelope and its complete member position attest a repeated copy.
@@ -1107,6 +1227,12 @@ def bind_families(plan):
     tokens = {container: hashlib.sha256(_json(["logical-source-family-v1", sorted(members)]).encode()).hexdigest()
               for container, members in grouped.items()}
     member_hashes = {path: hashlib.sha256(within.encode()).hexdigest() for path, within in relative.items()}
+    from .import_staging import StagedSequence
+    if isinstance(plan["records"], StagedSequence):
+        plan["records"].store.set_member_details({path: {
+            "evidence_family": tokens[contexts.get(path, "")], "family_member_sha256": member_hashes[path]}
+            for path in relative})
+        return
     for record in plan["records"]:
         path = record["member_path"]
         record["details"].update(evidence_family=tokens[contexts.get(path, "")],

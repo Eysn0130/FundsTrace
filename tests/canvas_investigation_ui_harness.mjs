@@ -155,8 +155,54 @@ test('projection merges original account metadata and leaves the complete source
   assert.equal(display.edges[0].ids[0], '9007199254740993'); assert.equal(display.tracked_ids, h.state.lastGraph.tracked_ids);
   assert.equal(JSON.stringify(h.state.lastGraph), original); assert.equal(h.calls.length, 1);
   assert.equal(h.api.exportWindow().end, time1); assert.equal(h.api.exportWindow().preview, false);
+  h.state.lastGraph.nodes[0].id_no = 'SYN-UPDATED-ID'; h.state.lastGraph.nodes[0].is_main = 1;
+  const refreshed = h.api.displayGraph(h.state.lastGraph).nodes[0];
+  assert.equal(refreshed.id_no, 'SYN-UPDATED-ID'); assert.equal(refreshed.is_main, 1);
+  assert.equal(refreshed.out_totals[0].amount, '9007199254740993.01'); assert.equal(h.calls.length, 1);
   h.state.presentation.timeWindow = { start: '', end: '', includeUndated: true };
   assert.equal(h.api.displayGraph(h.state.lastGraph), h.state.lastGraph, 'clearing the display restriction reveals the original graph');
+});
+
+test('relationship scope selects backend cards and amounts without viewport or page inputs', async () => {
+  const h = fixture(), full = h.state.lastGraph;
+  full.nodes.push({ account: 'C', display_account: 'SYN-C' });
+  full.edges.push({ source: 'A', target: 'C', ids: ['99'] });
+  const subset = { nodes: full.nodes.slice(0,2), edges: full.edges.slice(0,1) };
+  assert.equal(h.api.scopeGraph(subset, full).nodes.length, 0);
+  assert.equal(h.api.projectionReady(), false);
+  assert.equal(h.calls[0].path, '/api/graph/view');
+  assert.deepEqual(clone(h.calls[0].body.visible_accounts), ['A','B']);
+  assert.deepEqual(clone(h.calls[0].body.visible_edges), [{source:'A',target:'B'}]);
+  assert.equal(Object.hasOwn(h.calls[0].body, 'viewport'), false);
+  const result = projection(); result.nodes[0].display_account = 'SYN-OLD';
+  h.respond(0,result); await flush();
+  const selected = h.api.scopeGraph(subset,full);
+  assert.equal(selected.nodes[0].display_account, 'SYN-OLD');
+  assert.equal(selected.nodes[0].out_totals[0].amount, '0.01');
+  assert.equal(selected.nodes[0].id_no, 'SYNTHETIC-ID');
+  assert.equal(h.api.projectionReady(), true);
+  for(let i=0;i<4;i++) h.api.scopeGraph(subset,full);
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.api.scopeGraph(full,full), full);
+  assert.equal(full.nodes[0].display_account, undefined);
+  full.nodes[0].id_no = 'SYN-UPDATED-ID'; full.nodes[0].is_main = 1;
+  const refreshed = h.api.scopeGraph(subset, full).nodes[0];
+  assert.equal(refreshed.id_no, 'SYN-UPDATED-ID'); assert.equal(refreshed.is_main, 1);
+  assert.equal(refreshed.display_account, 'SYN-OLD'); assert.equal(refreshed.out_totals[0].amount, '0.01');
+  assert.equal(h.calls.length, 1);
+});
+
+test('relationship projection cannot publish after A-B-A or source replacement', async () => {
+  const h = fixture(), full = h.state.lastGraph;
+  const subset = { nodes: full.nodes.slice(0,1), edges: [] };
+  h.api.scopeGraph(subset,full);
+  h.rebind(2); h.rebind(1);
+  assert.equal(h.calls[0].options.signal.aborted, true);
+  h.api.scopeGraph(subset,full);
+  h.respond(0,projection('111.11')); await flush();
+  assert.equal(h.api.scopeGraph(subset,full).nodes.length, 0);
+  h.respond(1,projection('222.22')); await flush();
+  assert.equal(h.api.scopeGraph(subset,full).nodes[0].out_totals[0].amount, '222.22');
 });
 
 for (const change of ['A-B-A', 'source-replacement']) test(`${change} discards a delayed projection without poisoning the new binding cache`, async () => {

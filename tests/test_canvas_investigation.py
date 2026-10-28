@@ -154,7 +154,8 @@ def test_paths_distinguish_topology_strict_time_and_currency(client, database, m
     chronological = request(client, case_id, mode="chronological", **body)
     assert len(chronological["paths"]) == 1
     assert chronological["paths"][0]["steps"][1]["flow_ids"] == [str(ids[2])]
-    assert "no_conserved_principal_attribution" in chronological["semantics"]
+    assert "relationship_amounts_are_not_principal" in chronological["semantics"]
+    assert "separate_recorded_book_first_exit_attribution" in chronological["semantics"]
     assert request(client, case_id, endpoint="paths", start_account="SYN-A", end_account="SYN-D")["paths"] == []
     assert request(client, case_id, endpoint="paths", mode="chronological", start_account="SYN-A", end_account="SYN-E")["paths"] == []
 

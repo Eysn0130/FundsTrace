@@ -379,8 +379,10 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
             or exists (select 1 from resolution_entities e,
                 unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
                 where e.case_id=flows.case_id and e.entity_id in (flows.payer_account,flows.payee_account)
-                  and card.value ilike ?))""")
-        params += [account.strip() if account_exact else like(account)] * (2 if account_exact else 5)
+                  and card.value ilike ?)
+            or exists (select 1 from resolution_entities e where e.case_id=flows.case_id
+                and e.entity_id in (flows.payer_account,flows.payee_account) and e.account_number ilike ?))""")
+        params += [account.strip() if account_exact else like(account)] * (2 if account_exact else 6)
     entity_query = unicodedata.normalize("NFKC", entity).strip().lower()
     if entity_query:
         # A free query searches complete row facts, independently of the bounded
@@ -393,12 +395,15 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
                 unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
                 where e.case_id=flows.case_id and e.entity_id in (flows.payer_account,flows.payee_account)
                   and contains(lower(card.value), ?))
+            or exists (select 1 from resolution_entities e where e.case_id=flows.case_id
+                and e.entity_id in (flows.payer_account,flows.payee_account)
+                and contains(lower(e.account_number), ?))
             or exists (select 1 from effective_account_ids identity
                 where identity.case_id=flows.case_id
                   and (identity.account=flows.payer_account or identity.account=flows.payee_account)
                   and contains(lower(coalesce(identity.id_no,'')), ?))
         )""")
-        params += [entity_query] * 8
+        params += [entity_query] * 9
     if name.strip():
         conds.append("(payer_name ilike ? or payee_name ilike ?)")
         params += [like(name)] * 2
@@ -412,11 +417,14 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
                     unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
                     where e.case_id=flows.case_id and e.entity_id in (flows.payer_account,flows.payee_account)
                       and contains(lower(card.value), ?))
+                or exists (select 1 from resolution_entities e where e.case_id=flows.case_id
+                    and e.entity_id in (flows.payer_account,flows.payee_account)
+                    and contains(lower(e.account_number), ?))
                 or exists (select 1 from effective_account_ids identity
                     where identity.case_id=flows.case_id
                       and (identity.account=flows.payer_account or identity.account=flows.payee_account)
                       and contains(lower(coalesce(identity.id_no,'')), ?)))""")
-            params += [like(counter)] * 4 + [unicodedata.normalize("NFKC", counter).strip().lower()] * 2
+            params += [like(counter)] * 4 + [unicodedata.normalize("NFKC", counter).strip().lower()] * 3
     if kw.strip():
         conds.append("(summary ilike ? or trade_no ilike ?)")
         params += [like(kw)] * 2
@@ -473,8 +481,6 @@ def _profile(account: str, case_id: int):
     prefix = funds_projection.cte(source)
     def _query(sql, params):
         return db.q(prefix + sql, [*selection, *params])
-    def _raw_query(sql, params):
-        return db.q_raw(prefix + sql, [*selection, *params])
     if not account:
         raise HTTPException(422, "账号缺失，无法定位账户画像")
     r = _query("""
@@ -508,42 +514,14 @@ def _profile(account: str, case_id: int):
             from selected_facts where case_id = ? and payee_account = ?
         ) where coalesce(acct,'')<>'' group by acct order by out_cnt desc, in_cnt desc, acct limit 20
     """, [case_id, account, case_id, account])
-    money_rows = _raw_query("""
-        select acct, coalesce(currency, '') currency,
-          count(*) filter (where dir='out') out_cnt,
-          coalesce(sum(amount) filter (where dir='out'), 0) out_amt,
-          count(*) filter (where dir='in') in_cnt,
-          coalesce(sum(amount) filter (where dir='in'), 0) in_amt
-        from (
-          select payee_account acct, currency, amount, 'out' dir
-            from selected_facts where case_id=? and payer_account=?
-          union all
-          select payer_account, currency, amount, 'in'
-            from selected_facts where case_id=? and payee_account=?
-        ) where coalesce(acct,'')<>'' group by acct, coalesce(currency, '') order by currency
-    """, [case_id, account, case_id, account])
-    for counterparty in r["top_counterparties"]:
-        counterparty.update(_directional_money([row for row in money_rows if row["acct"] == counterparty["acct"]]))
-    own_totals = _raw_query("""
-        select coalesce(currency, '') currency,
-          count(*) filter (where payer_account=?) out_cnt,
-          coalesce(sum(amount) filter (where payer_account=?), 0) out_amt,
-          count(*) filter (where payee_account=?) in_cnt,
-          coalesce(sum(amount) filter (where payee_account=?), 0) in_amt
-        from selected_facts where case_id=? and (payer_account=? or payee_account=?)
-        group by coalesce(currency, '') order by currency
-    """, [account, account, account, account, case_id, account, account])
-    r.update(_directional_money(own_totals))
-    r["funds"] = funds_projection.summary(source, selection)
-    r["cnt"] = funds_projection.public_fields(r["funds"])["cnt"]
-    incoming = funds_projection.summary(source + " and payee_account=?", [*selection, account])
-    outgoing = funds_projection.summary(source + " and payer_account=?", [*selection, account])
-    r.update(_funds_directional(incoming, outgoing))
-    in_counter = funds_projection.grouped_summary(source + " and payee_account=?", [*selection, account], ("payer_account",))
-    out_counter = funds_projection.grouped_summary(source + " and payer_account=?", [*selection, account], ("payee_account",))
+    rollups = funds_projection.account_summaries(source, selection)
     empty = funds_projection.summarize_rows([])
+    r["funds"] = rollups[(3, None, None)]
+    r["cnt"] = funds_projection.public_fields(r["funds"])["cnt"]
+    r.update(_funds_directional(rollups.get((2, None, account), empty), rollups.get((1, account, None), empty)))
     for counter in r["top_counterparties"]:
-        counter.update(_funds_directional(in_counter.get((counter["acct"],), empty), out_counter.get((counter["acct"],), empty)))
+        counter.update(_funds_directional(rollups.get((0, counter["acct"], account), empty),
+                                          rollups.get((0, account, counter["acct"]), empty)))
     r["analysis_revision"] = analysis_snapshot.revision(case_id)
     r["statistics_policy"] = funds_projection.POLICY
     evidence_resolution.decorate_accounts(case_id, [r])
@@ -779,13 +757,42 @@ def _funds_directional(incoming, outgoing):
     return directional_fields(incoming, outgoing)
 
 
-def _graph(case_id: int, canvas_id: int):
+@app.post("/api/graph/view")
+def graph_view(body: canvas_investigation.TimeInvestigationIn):
+    """Read the active business view; viewport culling is never a scope input."""
+    with db._lock:
+        require_case(body.case_id)
+        _require_canvas(body.case_id, body.canvas_id)
+        return _graph(body.case_id, body.canvas_id, body)
+
+
+def _graph(case_id: int, canvas_id: int, view=None):
     from . import funds_projection, event_resolution, analysis_snapshot
     source = """select f.* from effective_flows f join tracked_flows t
         on t.case_id=f.case_id and t.flow_id=f.id
         where f.case_id=? and t.canvas_id=?
           and coalesce(f.payer_account,'')<>'' and coalesce(f.payee_account,'')<>''"""
     params = [case_id, canvas_id]
+    if view is not None:
+        dated, time_params = [], []
+        if view.start is not None:
+            dated.append("f.trade_time>=?")
+            time_params.append(view.start)
+        if view.end is not None:
+            dated.append("f.trade_time<=?")
+            time_params.append(view.end)
+        if dated:
+            source += " and ((" + " and ".join(dated) + ")" + (" or f.trade_time is null)" if view.include_undated else ")")
+            params += time_params
+        elif not view.include_undated:
+            source += " and f.trade_time is not null"
+        if view.scope == "visible":
+            accounts = set(view.visible_accounts)
+            if any(edge.source not in accounts or edge.target not in accounts for edge in view.visible_edges):
+                raise HTTPException(422, "可见关系的两端须包含在可见账号集合中")
+            source += """ and exists (select 1 from (select unnest(?::varchar[]) as src,unnest(?::varchar[]) as dst) v
+                where v.src=f.payer_account and v.dst=f.payee_account)"""
+            params += [[edge.source for edge in view.visible_edges], [edge.target for edge in view.visible_edges]]
     prefix = funds_projection.cte(source)
     nodes = db.q(prefix + """
         select n.account,max(n.name) as name,
@@ -799,31 +806,43 @@ def _graph(case_id: int, canvas_id: int):
         left join effective_account_ids ai on ai.case_id=? and ai.account=n.account
         left join effective_account_photos ap on ap.case_id=? and ap.account=n.account
         group by n.account""", [*params, case_id, case_id, case_id, case_id])
+    if view is not None and view.scope == "visible":
+        # A relationship filter can retain an isolated node. Its current-view
+        # totals are zero and its card falls back to an evidenced association;
+        # do not leak the removed edge's latest card or totals back into it.
+        present = {node["account"] for node in nodes}
+        missing = [account for account in view.visible_accounts if account not in present]
+        if missing:
+            nodes.extend(db.q("""with canvas as (
+                select f.* from effective_flows f join tracked_flows t on t.case_id=f.case_id and t.flow_id=f.id
+                where f.case_id=? and t.canvas_id=?), subjects as (
+                select payer_account account,payer_name as name from canvas
+                union all select payee_account,payee_name from canvas)
+                select account,max(name) as name from subjects where account in (select unnest(?::varchar[]))
+                group by account""", [case_id, canvas_id, missing]))
     edges = db.q(prefix + """select payer_account as source,max(payer_name) as source_name,
         payee_account as target,max(payee_name) as target_name,min(trade_time) tmin,max(trade_time) tmax,
         list(distinct summary) filter(where summary is not null and summary<>'') summaries,
         list(id order by id) ids
         from selected_observations group by payer_account,payee_account""", params)
-    groups = funds_projection.grouped_summary(source, params, ("payer_account", "payee_account"))
-    outgoing = funds_projection.grouped_summary(source, params, ("payer_account",))
-    incoming = funds_projection.grouped_summary(source, params, ("payee_account",))
+    rollups = funds_projection.account_summaries(source, params)
     empty = funds_projection.summarize_rows([])
     for edge in edges:
-        funds = groups[(edge["source"], edge["target"])]
+        funds = rollups[(0, edge["source"], edge["target"])]
         edge.update(funds=funds, **funds_projection.public_fields(funds))
         edge["currencies"] = [item["currency"] for item in funds["totals"] if item["currency"]]
     for node in nodes:
-        node.update(_funds_directional(incoming.get((node["account"],), empty), outgoing.get((node["account"],), empty)))
+        node.update(_funds_directional(rollups.get((2, None, node["account"]), empty), rollups.get((1, node["account"], None), empty)))
     tracked = [r["flow_id"] for r in db.q(
-        "select flow_id from tracked_flows where case_id=? and canvas_id=?", params)]
+        "select flow_id from tracked_flows where case_id=? and canvas_id=?", [case_id, canvas_id])]
     mains = [r["account"] for r in db.q("select account from effective_main_accounts where case_id=?", [case_id])]
     focus = [{"account": r["account"], "scale": r.get("scale") or 1.6}
              for r in db.q("select account,scale from focus_nodes where case_id=?", [case_id])]
-    evidence_resolution.decorate_accounts(case_id, nodes)
+    evidence_resolution.decorate_accounts(case_id, nodes, source_sql=source, params=params)
     event_resolution.decorate_edges(case_id, edges)
     current_resolution = evidence_resolution.summary(case_id)
     return {"analysis_revision": analysis_snapshot.revision(case_id),
-            "funds": funds_projection.summary(source, params),
+            "funds": rollups[(3, None, None)],
             "case_event_summary": event_resolution.summary(case_id),
             "resolution_revision": (current_resolution or {}).get("revision"), "resolution": current_resolution,
             "statistics_policy": funds_projection.POLICY, "nodes": nodes, "edges": edges,
@@ -1093,7 +1112,9 @@ def track_bulk(body: BulkTrackIn):
             raise HTTPException(400, "direction 应为 source 或 target")
         x = max(1, min(50, body.x))
         id_str = ",".join(str(int(i)) for i in body.flow_ids)
-        anchors = db.q(f"select * from effective_flows where case_id = ? and id in ({id_str})", [body.case_id])
+        anchors = db.q(f"select *,cast(trade_time as varchar) _precise_time from effective_flows where case_id = ? and id in ({id_str})", [body.case_id])
+        for row in anchors:
+            row["trade_time"] = row.pop("_precise_time")
         if not anchors:
             raise HTTPException(404, "未找到所选流水")
         _require_graphable(body.case_id, [row["id"] for row in anchors])
@@ -1113,23 +1134,12 @@ def track_bulk(body: BulkTrackIn):
                 acct = f["payee_account"]
                 acct_label = "收款方"
             picked = 0
+            rows = []
+            navigation = {"status": "not_main", "reasons": []}
             if acct in mains:
-                if body.direction == "source":
-                    rows = db.q("""
-                        select id from effective_flows
-                        where case_id = ? and payee_account = ? and self_account = ?
-                          and coalesce(payer_account,'')<>'' and coalesce(payee_account,'')<>''
-                          and (trade_time < ? or (trade_time = ? and id < ?))
-                        order by trade_time desc, id desc limit ?
-                    """, [body.case_id, acct, acct, f["trade_time"], f["trade_time"], f["id"], x])
-                else:
-                    rows = db.q("""
-                        select id from effective_flows
-                        where case_id = ? and payer_account = ? and self_account = ?
-                          and coalesce(payer_account,'')<>'' and coalesce(payee_account,'')<>''
-                          and (trade_time > ? or (trade_time = ? and id > ?))
-                        order by trade_time asc, id asc limit ?
-                    """, [body.case_id, acct, acct, f["trade_time"], f["trade_time"], f["id"], x])
+                from . import ledger_navigation
+                navigation = ledger_navigation.neighbors(body.case_id, acct, f, body.direction, x)
+                rows = navigation["rows"]
                 for r in rows:
                     pick_ids.add(r["id"])
                 picked = len(rows)
@@ -1142,7 +1152,11 @@ def track_bulk(body: BulkTrackIn):
                 "counter_kind": "in" if body.direction == "source" else "out",
                 "picked": picked,
                 "is_main": acct in mains,
+                "ordering": {key: navigation[key] for key in ("status", "reasons")},
             })
+            if acct in mains:
+                from . import principal_evidence
+                detail[-1]["principal"] = principal_evidence.tracking_result(body.case_id, acct, f, rows, body.direction)
             pick_ids.add(f["id"])   # 锚点本身（本笔交易）也上图
 
         if pick_ids:
@@ -1164,10 +1178,11 @@ def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", c
 
 def _context(flow_id, x, side, case_id):
     """某笔流水的交易对手在该账户流水中、位于本笔前后各 X 笔的流水（限当前案件）"""
-    f = db.q("select * from effective_flows where id = ? and case_id = ?", [flow_id, case_id])
+    f = db.q("select *,cast(trade_time as varchar) _precise_time from effective_flows where id = ? and case_id = ?", [flow_id, case_id])
     if not f:
         raise HTTPException(404, "流水不存在")
     f = f[0]
+    f["trade_time"] = f.pop("_precise_time")
     if side == "payer":
         acct = f["payer_account"]
     else:
@@ -1175,31 +1190,14 @@ def _context(flow_id, x, side, case_id):
         acct = f["payee_account"]
     if not acct:
         raise HTTPException(422, "该侧账号缺失，无法定位账户流水；原交易仍保留在明细中")
-    anchor = db.q("""
-        with acct as (select id, trade_time from effective_flows
-                      where case_id = ? and (payer_account = ? or payee_account = ?))
-        select count(*) as c from acct
-        where trade_time < (select trade_time from effective_flows where id = ?)
-           or (trade_time = (select trade_time from effective_flows where id = ?) and id < ?)
-    """, [case_id, acct, acct, flow_id, flow_id, flow_id])[0]["c"] + 1
-    rows = db.q("""
-        with acct as (
-            select id, trade_no, trade_time, amount, balance, currency, summary, channel,
-                   payer_account, payer_name, payee_account, payee_name, self_account,
-                   payer_display_account,payee_display_account,self_display_account,
-                   case when payer_account = ? then 'out' else 'in' end as dir,
-                   case when self_account = ? then 'self'
-                        when coalesce(self_account, '') <> '' then 'counter'
-                        else '' end as book
-            from effective_flows where case_id = ? and (payer_account = ? or payee_account = ?)
-        ), ranked as (
-            select *, row_number() over (order by trade_time, id) as rn from acct
-        )
-        select * from ranked where rn between ? and ? order by rn
-    """, [acct, acct, case_id, acct, acct, anchor - x, anchor + x])
-    total = db.q("select count(*) c from effective_flows where case_id = ? and (payer_account = ? or payee_account = ?)",
-                 [case_id, acct, acct])[0]["c"]
-    result = {"anchor": f, "side": side, "account": acct, "total": total, "pos": anchor, "rows": rows}
+    from . import ledger_navigation
+    own = ledger_navigation.own_anchor(case_id, acct, f)
+    window = ledger_navigation.context_window(case_id, acct, f, x, own_entry=own)
+    rows = window["rows"]
+    for row in rows:
+        row["dir"] = "out" if row["payer_account"] == acct else "in"
+        row["book"] = "self" if row["self_account"] == acct else "counter" if row["self_account"] else ""
+    result = {"anchor": f, "side": side, "account": acct, **window}
     from . import analysis_snapshot
     result["analysis_revision"] = analysis_snapshot.revision(case_id)
     result["display_account"] = f.get(side + "_display_account") or acct
@@ -1210,15 +1208,6 @@ def _context(flow_id, x, side, case_id):
         row["event_state"] = member.get("status", "unknown")
         row["event_id"] = member.get("event_id") if member.get("status") == "confirmed" else None
         row["context_group"] = "event:" + row["event_id"] if row["event_id"] else "record:" + str(row["id"])
-    for row in rows:
-        # Stable row IDs order presentation only; they do not establish time or
-        # join two ledgers. Only the proved event membership joins source rows.
-        row["context_relation"] = (
-            "anchor" if row["id"] == f["id"] else
-            "same_transaction" if row["event_id"] and row["event_id"] == f["event_id"] else
-            "unordered" if not row["trade_time"] or not f["trade_time"] else
-            "same_time" if row["trade_time"] == f["trade_time"] else
-            "before" if row["trade_time"] < f["trade_time"] else "after")
     displays = {}
     for row in rows:
         for role in ("payer","payee"):
@@ -1238,7 +1227,13 @@ def _context(flow_id, x, side, case_id):
                     item.update(observation_count=item["cnt"], observation_total=item["total"],
                                 metric_basis="observation_clue", funds=funds, **funds_projection.public_fields(funds))
     from . import principal_evidence
-    result["principal"] = principal_evidence.context_result(case_id, acct, f, rows)
+    result["principal"] = principal_evidence.context_result(case_id, acct, f, rows, own_entry=own)
+    if side == "payer":
+        from . import ledger_navigation
+        candidates = ledger_navigation.neighbors(case_id, acct, f, "source", x)
+        visible = {str(row["id"]) for row in rows}
+        result["principal"] = principal_evidence.tracking_result(case_id, acct, f,
+            [row for row in candidates["rows"] if str(row["id"]) in visible], "source")
     return result
 
 
@@ -1285,17 +1280,17 @@ def amt_is_close(ratio, lo, hi):
 def _suggest_counterparties(rows, anchor):
     """在前后 X 笔候选中，按启发式规则推荐疑似来源 / 去向对手（可解释评分）"""
     try:
-        at = _dt.strptime(anchor["trade_time"], "%Y-%m-%d %H:%M:%S")
+        at = _dt.fromisoformat(anchor["trade_time"])
     except (TypeError, ValueError):
         return {"sources": [], "targets": []}
     amt = money_decimal(anchor["amount"] or "0")
 
-    groups = {}
+    groups, times = {}, {}
     for r in rows:
         if r["id"] == anchor["id"]:
             continue
         try:
-            _dt.strptime(r["trade_time"], "%Y-%m-%d %H:%M:%S")
+            times[r["id"]] = _dt.fromisoformat(r["trade_time"])
         except (TypeError, ValueError):
             continue
         if (r.get("currency") or "") != (anchor.get("currency") or ""):
@@ -1316,16 +1311,16 @@ def _suggest_counterparties(rows, anchor):
         if not fs:
             return None
         if kind == "source":
-            fs = [f for f in fs if f["trade_time"] < anchor["trade_time"]]
+            fs = [f for f in fs if f.get("context_relation") == "before" or not f.get("context_relation") and times[f["id"]] < at]
         else:
-            fs = [f for f in fs if f["trade_time"] > anchor["trade_time"]]
+            fs = [f for f in fs if f.get("context_relation") == "after" or not f.get("context_relation") and times[f["id"]] > at]
         if not fs:
             return None
         ids = [f["id"] for f in fs]
         total = sum((money_decimal(f["amount"] or "0") for f in fs), money_decimal("0"))
         n = len(fs)
         ratio = (total / amt) if amt else 0
-        dt_min = min(abs((_dt.strptime(f["trade_time"], "%Y-%m-%d %H:%M:%S") - at).total_seconds()) for f in fs) / 60
+        dt_min = min(abs((times[f["id"]] - at).total_seconds()) for f in fs) / 60
         score = 40 + _tscore(dt_min) + _ascore(ratio)
         reasons = []
         tags = []
@@ -1343,7 +1338,7 @@ def _suggest_counterparties(rows, anchor):
         # 快进快出：本账户在锚点附近既有转入又有转出
         other = [f for f in g["flows"] if f["dir"] != rel]
         if other:
-            o_dt = min(abs((_dt.strptime(f["trade_time"], "%Y-%m-%d %H:%M:%S") - at).total_seconds()) for f in other) / 60
+            o_dt = min(abs((times[f["id"]] - at).total_seconds()) for f in other) / 60
             if o_dt <= 60:
                 tags.append("疑似过账")
                 score += 10
@@ -1365,8 +1360,7 @@ def _suggest_counterparties(rows, anchor):
         t = build(g, "target")
         if t:
             targets.append(t)
-    # 组合模式识别：按时间顺序累加，前缀合计 ≈ 锚点金额（分散转出 / 归集转入）
-    # —— 快进快出场景资金按时间流出，前缀匹配可排除期间无关大额的干扰
+    # 组合金额线索：对手分组可能交错发生，不能称为逐笔时序前缀。
     for kind, lst in (("source", sources), ("target", targets)):
         if amt and len(lst) >= 2:
             acc, picked = money_decimal("0"), []
@@ -1375,8 +1369,8 @@ def _suggest_counterparties(rows, anchor):
                 picked.append(x)
                 r_acc = acc / amt
                 if money_decimal("0.85") <= r_acc <= money_decimal("1.05"):
-                    tag = ("前 {} 个来源合计 ≈ 锚点金额的 {:.0%}，疑似归集转入".format(len(picked), r_acc) if kind == "source"
-                           else "前 {} 个去向合计 ≈ 锚点金额的 {:.0%}，疑似分散转出".format(len(picked), r_acc))
+                    tag = ("其中 {} 个来源合计 ≈ 锚点金额的 {:.0%}，仅为归集金额组合线索".format(len(picked), r_acc) if kind == "source"
+                           else "其中 {} 个去向合计 ≈ 锚点金额的 {:.0%}，仅为分散金额组合线索".format(len(picked), r_acc))
                     for y in picked:
                         if tag not in y["tags"]:
                             y["tags"].append(tag)
@@ -2015,7 +2009,9 @@ def export_tracked(case_id: int, canvas_id: int = 0, expected_revision: Optional
             if "账号" in pending:
                 wanted.update(pending["账号"])
             metadata = [{"account": account} for account in wanted]
-            evidence_resolution.decorate_accounts(case_id, metadata)
+            evidence_resolution.decorate_accounts(case_id, metadata,
+                source_sql="select f.* from effective_flows f join tracked_flows tf on tf.flow_id=f.id where tf.case_id=? and tf.canvas_id=? and f.case_id=?",
+                params=[case_id, canvas_id, case_id])
             registry = {item["account"]: item for item in metadata}
     snapshot = {"analysis_revision": revision, "case_event_summary": events, "funds": funds, "observations": original_rows}
     return _tracked_workbook(case_id, rows, pending, coverage, resolution, registry, snapshot)
@@ -2025,7 +2021,8 @@ def _tracked_export_data(case_id, canvas_id):
     rows = db.q_raw("""
         select f.case_id, f.self_account, f.balance, f.trade_time, f.trade_no, f.payer_name, f.payer_account, f.payer_bank,
                f.payee_name, f.payee_account, f.payee_bank, f.amount, f.currency, f.summary, f.channel, f.id,
-               f.raw_self_account,f.raw_payer_account,f.raw_payee_account,f.payer_display_account,f.payee_display_account
+               f.raw_self_account,f.raw_payer_account,f.raw_payee_account,f.payer_display_account,f.payee_display_account,
+               f.payer_card,f.payee_card,f.self_card,f.payer_source_account,f.payee_source_account,f.self_source_account
         from effective_flows f join tracked_flows tf on tf.flow_id = f.id
         where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ? order by f.trade_time
     """, [case_id, canvas_id, case_id])
@@ -2049,12 +2046,21 @@ def _tracked_workbook(case_id, rows, pending, coverage, current_resolution, regi
                 row[side + "_entity_id"] = identifier
                 row[side + "_account"] = registry.get(identifier, {}).get("account_number", identifier)
         cols.update(payer_entity_id="付款实体ID", payee_entity_id="收款实体ID", payer_display_account="付款显示标识", payee_display_account="收款显示标识", raw_payer_account="原始付款账号", raw_payee_account="原始收款账号")
+        cols.update(payer_card="当笔付款卡号", payee_card="当笔收款卡号", self_card="当笔本方卡号",
+                    payer_source_account="来源付款账号", payee_source_account="来源收款账号", self_source_account="来源本方账号")
         pending = pending.copy()
         if "账号" in pending:
             pending["实体ID"] = pending["账号"]
             pending["显示标识"] = pending["账号"].map(lambda key: registry.get(key, {}).get("display_account", key))
             pending["账号"] = pending["账号"].map(lambda key: registry.get(key, {}).get("account_number", key))
     df = pd.DataFrame(rows).rename(columns=cols)[list(cols.values())]
+    # Excel's datetime representation/readers round to milliseconds. Preserve
+    # the original timestamp as text, just as exact money and IDs below.
+    def timestamp_text(value):
+        if value is None or pd.isna(value):
+            return None
+        return value.isoformat(sep=" ") if hasattr(value, "isoformat") else str(value)
+    df["交易时间"] = df["交易时间"].map(timestamp_text)
     # Excel numbers cannot preserve all DECIMAL(18,2) cents or bigint IDs.
     df["交易金额"] = df["交易金额"].map(lambda value: money_string(value) if value is not None and not pd.isna(value) else None)
     df["流水ID"] = df["流水ID"].map(str)
@@ -2075,6 +2081,7 @@ def _tracked_workbook(case_id, rows, pending, coverage, current_resolution, regi
             for key in ("amount", "balance"):
                 original[key] = original[key].map(lambda value: money_string(value) if value is not None and not pd.isna(value) else None)
             original["id"] = original["id"].map(str)
+            original["trade_time"] = original["trade_time"].map(timestamp_text)
             original[list(original_cols)].rename(columns=original_cols).to_excel(w, index=False, sheet_name="原始账簿观察")
         # 待调取账号：当前画布出现、但尚未导入其本人流水的对手账户。
         pending.to_excel(w, index=False, sheet_name="待调取账号")

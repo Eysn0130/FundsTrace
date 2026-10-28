@@ -69,7 +69,7 @@ def test_public_resolution_releases_projection_before_native_snapshot_insert(cli
     stored = query("select revision,summary_json,decisions_json from resolution_revisions where case_id=?", [cid])[0]
     entities = [json.loads(row["details_json"]) for row in query(
         "select details_json from resolution_entities where case_id=? order by entity_id", [cid])]
-    endpoints = query("select flow_id,role,entity_id,state,reason from resolved_endpoints where case_id=? order by flow_id,role", [cid])
+    endpoints = query("select flow_id,role,entity_id,state,reason,endpoint_account,endpoint_card,card_state from resolved_endpoints where case_id=? order by flow_id,role", [cid])
     summary = json.loads(stored["summary_json"])
     assert summary.pop("revision") == stored["revision"]
     canonical = lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

@@ -651,10 +651,13 @@
         if (result && isCurrentCase(context)) {
           const dirLabel = direction === 'source' ? '来源' : '去向';
           const notMain = (result.skipped_not_main || []).length;
-          const zero = (result.detail || []).filter(item => item.picked === 0 && item.is_main).length;
+          const uncertain = (result.detail || []).filter(item => item.ordering?.reasons?.length).length;
+          const zero = (result.detail || []).filter(item => item.picked === 0 && item.is_main && !item.ordering?.reasons?.length).length;
           let message = `批量追踪完成：${result.anchors} 条起点记录及其${dirLabel}记录共上图 ${result.tracked} 条`;
           if (notMain) message += `；${notMain} 条起点记录被跳过（${dirLabel === '来源' ? '付款' : '收款'}方不是主账号，无法追踪）`;
           if (zero) message += `；${zero} 条起点记录在本方账单中无${dirLabel}流水（仅上图了该记录）`;
+          if (uncertain) message += `；${uncertain} 条起点的部分同刻先后尚无依据，未按导入顺序选取`;
+          message += window.FundsFacts?.tracking?.(result.detail) || '';
           toast(message);
         }
       });

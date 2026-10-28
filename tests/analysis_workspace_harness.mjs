@@ -868,6 +868,20 @@ test('bounded cycle and path searches disclose limits even when they return no f
   }
 });
 
+test('path evidence distinguishes unknown chronology and preserves fractional timestamps', async () => {
+  const h = harness(); await h.ready();
+  for (const [continuous, label] of [[true, '时序连续'], [false, '时序不连续'], [null, '时序未确定']]) {
+    const value = emptyResult(['paths']);
+    Object.assign(value.paths, {order:'time', paths:[{continuous, hops:2, path:[],
+      start_time:'2026-01-01 10:00:00.900001', end_time:'2026-01-01 10:00:00.100002'}]});
+    h.run(`render(${JSON.stringify(value)},['paths'])`);
+    assert.ok(h.element('results').textContent.includes(label));
+    assert.ok(h.element('results').textContent.includes('10:00:00.900001'));
+  }
+  const html = h.run("detailTable([{trade_time:'2026-01-01 10:00:00.100002', amount:'1.00',currency:'CNY'}])");
+  assert.ok(html.includes('10:00:00.100002'));
+});
+
 test('cycle details span their seven-column result table', async () => {
   const h = harness(); await h.ready(); await finishedRun(h, cycleResult());
   h.network(() => response({rows: [], total: 0}));

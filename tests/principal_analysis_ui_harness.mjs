@@ -48,6 +48,19 @@ test('backend reasons and exact large ranges are presented without fabricating F
   assert.doesNotMatch(conditional,/来源份额已.*确定/);
 });
 
+test('path principal detail explains first exit, independent sources and bounded omissions', () => {
+  const text = facts.principal({status:'ok', model_scope:{note:'路径内部账户首次退出边界'},
+    source_candidates:[{source_flow_id:'1', status:'ok',currency:'CNY',
+      limitations:['external_boundary_returns_unknown'],targets:[{amount:'100.00',min:'20.00',max:'70.00',fifo:'70.00'}]}]});
+  assert.match(text,/路径内部账户首次退出边界/);
+  assert.match(text,/各来源、路径和目标的上界不可相加/);
+  assert.match(text,/20\.00–70\.00/);
+  assert.match(text,/回流不恢复来源标记/);
+  const limited = facts.principal({status:'limited',reasons:['path_principal_budget_limit'],source_candidates:[]});
+  assert.match(limited,/这条路径的份额尚未计算/);
+  assert.doesNotMatch(limited,/path_principal_budget_limit/);
+});
+
 test('the actual edge label uses one primary projection and geometric observation counts stay separate', () => {
   const scope = vm.createContext({ window: { FundsFacts: facts }, FundsMoney: context.FundsMoney, state: {edgeLabels:new Set(['money'])} });
   const section = (start, end) => app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start)));
@@ -89,11 +102,13 @@ test('the existing case header and search result render only the authoritative p
   assert.match(element('#importCoverageNote').textContent,/1 处冲突/);
 });
 
-test('node labels keep the name and a sourced account without choosing a current card', () => {
+test('node labels use the scoped representative card and retain account fallback', () => {
   const scope=vm.createContext({state:{showIds:false},fmtCount:String});
   vm.runInContext(app.slice(app.indexOf('function nodeLabel('),app.indexOf('/* ---------- 边标签')),scope);
   scope.node={account:'fte_INTERNAL',account_number:'000SYN-ACCOUNT',display_account:'000SYN-CARD-1',
     name:'合成户名',kind:'subaccount',status:'conflict',cards:['000SYN-CARD-1','000SYN-CARD-2']};
+  assert.equal(vm.runInContext('nodeLabel(node)',scope),'合成户名\n000SYN-CARD-1');
+  delete scope.node.display_account;
   assert.equal(vm.runInContext('nodeLabel(node)',scope),'合成户名\n000SYN-ACCOUNT');
   delete scope.node.account_number;
   assert.equal(vm.runInContext('nodeLabel(node)',scope),'合成户名\n—');
