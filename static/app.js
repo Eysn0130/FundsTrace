@@ -71,7 +71,7 @@ function totalsHtml(totals, fallback, currency) { return esc(totalLabel(totals, 
 function fundsCount(funds, fallback) { return funds && window.FundsFacts ? window.FundsFacts.displayCount(funds) : fallback == null ? '—' : `${fmtCount(fallback)} 笔`; }
 function fundsTotal(funds, totals, fallback, currency) { return funds && window.FundsFacts ? window.FundsFacts.totals(funds) : totalLabel(totals, fallback, currency); }
 function fundsTotalHtml(funds, totals, fallback, currency) { return esc(fundsTotal(funds, totals, fallback, currency)).replace(/\n/g, '<br>'); }
-function fmtTime(s) { return s ? String(s).slice(0, 19) : ''; }   // 含年月日时分秒
+function fmtTime(s) { return s ? String(s).replace('T', ' ') : ''; }   // 保留来源小数秒
 
 function toast(msg, type = 'ok') {
   const d = document.createElement('div');
@@ -4487,6 +4487,16 @@ async function loadContext() {
     <div class="context-amount"><span>交易金额</span><b>${moneyHtml(a.amount, a.currency)}</b></div>`;
   const name = side === 'payee' ? a.payee_name : a.payer_name;
   $('#ctxPos').textContent = `${name || (side === 'payee' ? '收款方' : '付款方')} · ${r.display_account || a[side + '_display_account'] || r.account} · 共 ${fmtCount(r.total)} 条来源记录`;
+  const orderingNotes = {
+    posting_order_unknown: '同刻记录先后未确定，并列记录单独展示',
+    neighbor_boundary_order_unknown: '边界同刻记录无法排序，未任意截取；可增加前后笔数查看',
+    anchor_tie_window_limit: '本笔同刻记录超过窗口上限，暂仅展示本笔',
+    neighbor_interval_resource_limit: '附近记录超过本次读取上限，暂仅展示本笔',
+    anchor_time_unknown: '本笔时间缺失，无法确定前后流水',
+    undated_context_entries: '存在缺少时间的记录，未纳入前后顺序'
+  };
+  const orderingNote = (r.ordering?.reasons || []).map(key => orderingNotes[key]).filter(Boolean).join('；');
+  if (orderingNote) $('#ctxPos').textContent += ' · ' + orderingNote;
   renderCtxRows(r); renderSuggestions(r);
 }
 

@@ -7,11 +7,11 @@ export function formatMoney(value: string): string {
 }
 
 export function displayTime(value: string | null): string {
-  return value?.replace('T', ' ').slice(0, 19) || '—';
+  return value?.replace('T', ' ').replace(/Z$/, '') || '—';
 }
 
 /** Operational timestamps carry UTC explicitly; do not reinterpret legacy times. */
 export function displayOperationalTime(value: string | null): string {
-  const time = displayTime(value);
+  const time = value?.replace('T', ' ').slice(0, 19) || '—';
   return value?.endsWith('Z') ? `${time} UTC` : time;
 }

@@ -5,6 +5,7 @@ credit terms or historical availability. Missing evidence stays explicit. This
 module performs no allocation policy selection and never writes source facts.
 """
 from types import SimpleNamespace
+from datetime import datetime
 
 from . import db, event_resolution, principal_ledger
 
@@ -159,3 +160,106 @@ def tracking_result(case_id, account, anchor, candidates, direction):
     statuses = {item["status"] for item in values}
     return {**result, "status": "ok" if statuses <= {"ok", "determined"} else "unknown",
             "source_candidates": values}
+
+
+def path_result(case_id, body, path, by_id, *, budget=None):
+    """Evaluate a path's explicit first postings in one complete book network.
+
+    The path's intermediate accounts define this model's first-exit boundary;
+    its first and last relationships select source candidates and targets only.
+    Every recorded own entry in the interval participates, including untracked
+    branches and internal returns. Different candidates are never combined.
+    Callers hold the case snapshot lock and share ``remaining`` across paths.
+    """
+    from . import analysis_snapshot, ledger_navigation
+    from .principal_routes import NetworkIn, calculate_network
+
+    revision = analysis_snapshot.revision(case_id)
+    accounts = list(dict.fromkeys(path.get("accounts", [])[1:-1]))
+    currency = path.get("currency") or ""
+    output = {"status": "unknown", "revision": revision, "currency": currency,
+        "source_candidates": [], "reasons": [], "condition_basis": "source_evidence",
+        "candidate_semantics": "independent_conditional_source_shares",
+        "model_scope": {"kind": "recorded_book_network", "boundary": "first_exit",
+            "accounts": accounts, "account_selection": "path_intermediate_accounts",
+            "entries": "all_recorded_own_entries_in_requested_interval",
+            "real_world_attribution": "unknown",
+            "note": "以该路径内部账户集合为首次退出边界；完整账面竞争与内部回转参与，边界外再入不恢复来源标签。"},
+        "joint_warning": "各首笔候选、不同路径及各目标的上界不可相加；沿途交易额不是本金，FIFO不是实际来源证明。"}
+
+    def unavailable(reason, *, limited=False):
+        return {**output, "status": "limited" if limited else "unknown", "reasons": [reason]}
+
+    if not accounts:
+        return unavailable("path_has_no_internal_ledger")
+    if len(accounts) > 20:
+        return unavailable("path_account_resource_limit", limited=True)
+    if currency.strip().casefold() in principal_ledger.UNKNOWN_CURRENCIES:
+        return unavailable("currency_evidence_unknown")
+    steps = path.get("steps", [])
+    if len(steps) < 2:
+        return unavailable("path_has_no_internal_ledger")
+
+    def own_postings(step, account, direction):
+        observed, mapped = {}, {}
+        for flow_id in step.get("flow_ids", []):
+            original = by_id.get(flow_id)
+            if original is None:
+                original = by_id.get(str(flow_id))
+            if original is None and str(flow_id).isascii() and str(flow_id).isdigit():
+                original = by_id.get(int(flow_id))
+            if original is None:
+                return None
+            own = ledger_navigation.own_anchor(case_id, account, original)
+            if (not own or own.get("currency") != currency
+                    or own.get("payee_account" if direction == "in" else "payer_account") != account
+                    or own.get("payer_account") == own.get("payee_account")):
+                return None
+            stamp = own.get("trade_time")
+            stamp = datetime.fromisoformat(stamp) if isinstance(stamp, str) else stamp
+            if (stamp is None or body.start is not None and stamp < body.start
+                    or body.end is not None and stamp > body.end):
+                return None
+            identifier = str(own["id"])
+            mapped[identifier] = own
+            observed.setdefault(identifier, []).append(str(flow_id))
+        return (mapped, observed) if mapped else None
+
+    sources = own_postings(steps[0], accounts[0], "in")
+    if sources is None:
+        return unavailable("source_own_entry_not_established")
+    targets = own_postings(steps[-1], accounts[-1], "out")
+    if targets is None:
+        return unavailable("target_own_entry_not_established")
+    source_rows, source_observations = sources
+    target_rows, target_observations = targets
+    if len(source_rows) > 20 or len(target_rows) > 20:
+        return unavailable("path_candidate_resource_limit", limited=True)
+    budget = {"remaining": 20} if budget is None else budget
+    remaining = min(20, budget.get("remaining", 0))
+    if len(source_rows) > remaining:
+        return unavailable("path_principal_budget_limit", limited=True)
+
+    span = db.q_raw("""select min(f.trade_time) lo,max(f.trade_time) hi from flows f
+        left join resolved_endpoints s on s.case_id=f.case_id and s.flow_id=f.id and s.role='self'
+        where f.case_id=? and f.currency=?
+          and coalesce(s.entity_id,f.self_account) in (select unnest(?::varchar[]))""",
+        [case_id, currency, accounts])[0]
+    start, end = body.start or span["lo"], body.end or span["hi"]
+    if start is None or end is None or start > end:
+        return unavailable("no_own_ledger_entries_in_window")
+    values = []
+    for source_id in sorted(source_rows, key=int):
+        request = NetworkIn(case_id=str(case_id), currency=currency,
+            start=start.isoformat(), end=end.isoformat(), source_flow_id=source_id,
+            target_flow_ids=sorted(target_rows, key=int),
+            accounts=[{"account": account} for account in accounts], expected_revision=revision)
+        budget["remaining"] = remaining = remaining - 1
+        value = calculate_network(request)
+        values.append({**value, "source_flow_id": source_id,
+            "source_observation_ids": source_observations[source_id],
+            "target_observation_ids": target_observations})
+    statuses = {value["status"] for value in values}
+    status = "ok" if statuses <= {"ok", "determined"} else "limited" if "limited" in statuses else "unknown"
+    return {**output, "status": status, "source_candidates": values,
+            "reasons": sorted({reason for value in values for reason in value.get("reasons", [])})}

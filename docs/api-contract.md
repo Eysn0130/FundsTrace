@@ -63,6 +63,10 @@ JSON 错误统一为 `{"error":{"code":"...","message":"..."}}`。400 表示文�
 
 原“追踪去向”以明确入账锚点自动评估所选出账的条件份额；原“追踪来源”及出账侧前后流水分别评估有界入账候选，不选择评分最高者作为真实来源。批量追踪回执的 `detail[].principal` 与前后流水共享该服务；同刻先后仅由本方共同来源记账顺序建立，未知项不按导入 ID 选取。关系路径继续表示探索线索。
 
+`GET /api/context/{flow_id}` 在来源排序后截取前后各 `x` 条。无法确定顺序的边界组不能任选成员：`ordering.status/reasons` 说明省略原因；锚点同刻未定观察至多另保留 `2*x+1` 条，超过时只保留锚点，整个窗口最多 `4*x+1` 条。`pos` 在锚点同刻位置未知时为 `null`；`context_relation` 区分 `anchor/same_transaction/before/after/same_time`。该窗口不是完整本金账簿，条件模型另读全部适用竞争分录。
+
+全案分析路径和环路的 `temporal_status` 为 `continuous/reversed/unknown`，对应 `continuous` 为 `true/false/null`；小数秒不截断。同刻未知不等于连续。原图内路径响应的 `principal` 以该路径内部账户集合为 `model_scope.accounts`，在请求时间区间内独立计算每个首笔候选的多账簿份额；无显式区间时使用这些账户的已记录账簿时间跨度。该集合采用 `first_exit`，外部再入不恢复来源标签。原 JSON 下载保留模型范围、候选、限制和 witness；路径金额和评分仍是关系探索量，不能与本金混用。
+
 响应状态为 `ok`、`unknown`、`inconsistency` 或 `limited`；后三者不含可用的目标分配。`ok` 的每个目标分别给出精确字符串 `amount,min,max,fifo` 和极值见证，多个独立最大值不可相加。单/多账本 `/export` 接口要求 `expected_revision`，返回包含条件、缺口和见证的 HTML。缺少证据不以空余额、号码相似或时序 ID 填补。
 
 `analysis_revision` 绑定案件事实、身份和事件的事务版本；单/多账本响应命名为 `revision`。v1 流水项另带 `event_id/event_state`，统计带 `event_summary`；原交易字段保持。legacy 表、图、时间投影、前后流水和分析报告携带同一修订。当前 UI 的图和追踪 XLSX 导出传入该修订，变化返回 409；XLSX 新增“分析修订”页和事件 ID/状态列，原分录金额不去重。兼容旧图快照的可选修订字段不代表旧调用方已完成版本核验。证据字段、资源上限和保守拒绝范围见[导入与本金契约](folder-evidence-import.md#事件与条件来源份额)。

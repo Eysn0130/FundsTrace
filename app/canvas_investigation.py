@@ -399,6 +399,7 @@ def paths(body):
     references = _provenance(body.case_id, original_ids)
     by_id = {row["id"]: row for row in rows}
     result = []
+    principal_budget = {"remaining": 20}
     for accounts, steps, currency in found:
         result.append({"accounts": accounts,
                        "display_accounts": [_display_account(account, metadata) for account in accounts],
@@ -415,6 +416,9 @@ def paths(body):
                                   "last_time": _stamp(max(row["trade_time"] for row in values if row["trade_time"] is not None))
                                       if any(row["trade_time"] is not None for row in values) else None}
                                  for source, target, step_currency, values in steps]})
+        from . import principal_evidence
+        result[-1]["principal"] = principal_evidence.path_result(
+            body.case_id, body, result[-1], by_id, budget=principal_budget)
     evidence_ids = {row["id"] for _, steps, _ in found for _, _, _, values in steps for row in values}
     return {"case_id": str(body.case_id), "canvas_id": str(body.canvas_id), "scope": body.scope,
             "start_accounts": sorted(start_accounts), "end_accounts": sorted(end_accounts),
@@ -430,4 +434,4 @@ def paths(body):
             **_resolution_metadata(body.case_id),
             "semantics": "simple_directed_paths; same_currency; " +
                          ("strictly_increasing_local_times; " if body.mode == "chronological" else "topological_only; ") +
-                         "no_conserved_principal_attribution"}
+                         "relationship_amounts_are_not_principal; separate_recorded_book_first_exit_attribution"}

@@ -638,7 +638,7 @@ def clean(v):
     if isinstance(v, (list, tuple)):
         return [clean(x) for x in v]
     if isinstance(v, datetime.datetime):
-        return v.strftime("%Y-%m-%d %H:%M:%S")
+        return v.isoformat(sep=" ")
     if isinstance(v, datetime.date):
         return v.strftime("%Y-%m-%d")
     if isinstance(v, decimal.Decimal):

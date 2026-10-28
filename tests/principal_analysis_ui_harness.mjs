@@ -48,6 +48,19 @@ test('backend reasons and exact large ranges are presented without fabricating F
   assert.doesNotMatch(conditional,/来源份额已.*确定/);
 });
 
+test('path principal detail explains first exit, independent sources and bounded omissions', () => {
+  const text = facts.principal({status:'ok', model_scope:{note:'路径内部账户首次退出边界'},
+    source_candidates:[{source_flow_id:'1', status:'ok',currency:'CNY',
+      limitations:['external_boundary_returns_unknown'],targets:[{amount:'100.00',min:'20.00',max:'70.00',fifo:'70.00'}]}]});
+  assert.match(text,/路径内部账户首次退出边界/);
+  assert.match(text,/各来源、路径和目标的上界不可相加/);
+  assert.match(text,/20\.00–70\.00/);
+  assert.match(text,/回流不恢复来源标记/);
+  const limited = facts.principal({status:'limited',reasons:['path_principal_budget_limit'],source_candidates:[]});
+  assert.match(limited,/这条路径的份额尚未计算/);
+  assert.doesNotMatch(limited,/path_principal_budget_limit/);
+});
+
 test('the actual edge label uses one primary projection and geometric observation counts stay separate', () => {
   const scope = vm.createContext({ window: { FundsFacts: facts }, FundsMoney: context.FundsMoney, state: {edgeLabels:new Set(['money'])} });
   const section = (start, end) => app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start)));

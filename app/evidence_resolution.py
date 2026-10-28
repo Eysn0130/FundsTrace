@@ -203,13 +203,11 @@ def occurrence_key(member_sha, position):
 
 
 def bind_occurrences(plan):
-    from .import_staging import record_map
-    from itertools import chain
+    from .import_staging import auxiliary_records, row_records
     bind_families(plan)
     members = {member["member_path"]: member["sha256"] for member in plan["members"]}
-    records = record_map(plan)
     declarations = defaultdict(set)
-    for record in plan["records"]:
+    for record in auxiliary_records(plan):
         if record["disposition"] != "auxiliary" or DETAIL_FIELD not in record["details"]:
             continue
         data = _projection_evidence(validate_evidence(record["details"][DETAIL_FIELD]))
@@ -217,7 +215,7 @@ def bind_occurrences(plan):
             declarations[record["details"]["evidence_family"]].add((data["request"], data["bank"]))
     bindings = {}
     denied = set()
-    for record in plan["records"]:
+    for record in auxiliary_records(plan):
         if record["disposition"] != "auxiliary" or DETAIL_FIELD not in record["details"]:
             continue
         data = _projection_evidence(validate_evidence(record["details"][DETAIL_FIELD]))
@@ -226,8 +224,7 @@ def bind_occurrences(plan):
             binding = source_scope(record["member_path"], data["role"], declarations[family])
             if binding and data["bank"] and data["bank"] != binding["bank"]:
                 denied.add((family, binding["request"], binding["bank"]))
-    for row in chain(plan["rows"], plan.get("cancelled_rows", [])):
-        record = records[row["_source_row"]]
+    for row, record in row_records(plan):
         value = record["details"].get(DETAIL_FIELD)
         data = _projection_evidence(validate_evidence(value)) if value else None
         family = record["details"]["evidence_family"]
@@ -863,8 +860,9 @@ class _PreviewEvidence:
         return self._iterate(True)
 
     def _iterate(self, auxiliary_only):
+        from .import_staging import auxiliary_records
         records = auxiliary = 0
-        for record in self.plan["records"]:
+        for record in auxiliary_records(self.plan) if auxiliary_only else self.plan["records"]:
             if (auxiliary_only and record["disposition"] != "auxiliary"
                     or DETAIL_FIELD not in record["details"]):
                 continue
@@ -1192,14 +1190,12 @@ def decorate_analysis(case_id, result):
 
 
 def operation_context(parsed, original_sha):
-    from .import_staging import record_map
+    from .import_staging import row_records
     plan = parsed[0].attrs.get("feedback_plan") or parsed[0].attrs.get("table_plan")
     if not plan or plan["profile"] not in PROFILES:
         return
-    records = record_map(plan)
     unscoped = {}
-    for row in plan["rows"]:
-        record = records[row["_source_row"]]
+    for row, record in row_records(plan, kinds=("rows",)):
         if not row.get("_occurrence_scope"):
             # Without an institution declaration, only the original registered
             # envelope and its complete member position attest a repeated copy.
@@ -1231,6 +1227,12 @@ def bind_families(plan):
     tokens = {container: hashlib.sha256(_json(["logical-source-family-v1", sorted(members)]).encode()).hexdigest()
               for container, members in grouped.items()}
     member_hashes = {path: hashlib.sha256(within.encode()).hexdigest() for path, within in relative.items()}
+    from .import_staging import StagedSequence
+    if isinstance(plan["records"], StagedSequence):
+        plan["records"].store.set_member_details({path: {
+            "evidence_family": tokens[contexts.get(path, "")], "family_member_sha256": member_hashes[path]}
+            for path in relative})
+        return
     for record in plan["records"]:
         path = record["member_path"]
         record["details"].update(evidence_family=tokens[contexts.get(path, "")],

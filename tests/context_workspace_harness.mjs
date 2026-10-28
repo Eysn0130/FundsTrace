@@ -209,6 +209,14 @@ function result(account = 'SYN-CURRENT') {
       targets: [{ ids: [13], account: 'SYN-TARGET', name: '合成去向', score: 62, reasons: ['合成去向原因'], tags: [] }] } };
 }
 async function opened(h, data = result()) { h.network(async () => data); await h.open(); }
+
+test('bounded unknown posting windows disclose omitted ties in the existing detail', async () => {
+  const h = harness(), data = result();
+  data.ordering = {status:'partial', reasons:['neighbor_boundary_order_unknown', 'posting_order_unknown']};
+  await opened(h, data);
+  assert.match(h.element('ctxPos').textContent, /边界同刻记录无法排序，未任意截取/);
+  assert.match(h.element('ctxPos').textContent, /同刻记录先后未确定/);
+});
 const cells = row => row.querySelectorAll('td');
 const picked = card => card.getAttribute('aria-pressed') === 'true' || card.classList.contains('picked');
 const sourceCard = h => h.cards().find(card => (card.dataset.ids || '').split(',').includes('11'));

@@ -415,6 +415,7 @@
       const hops = path.steps || path.edges || [], accounts = path.accounts || path.nodes || [hops[0]?.source, ...hops.map(h=>h.target)].filter(Boolean);
       return `<section class="investigation-path"><h3>路径 ${index+1} · ${esc(path.currency || '未标注币种')} · ${hops.length} 跳</h3>
         <p class="investigation-chain">${(path.display_accounts || accounts.map(accountLabel)).map(esc).join(' → ')}</p>
+        ${path.principal ? `<details class="investigation-evidence"><summary>核查来源份额与限制</summary><p>${esc(root.FundsFacts?.principal(path.principal) || '本次来源份额尚未确定').replaceAll('\n','<br>')}</p></details>` : ''}
         <div class="investigation-table-scroll"><table><thead><tr><th>有向交易</th><th>金额 / 币种</th><th>交易时间</th><th>流水依据</th></tr></thead><tbody>${hops.map(h => `<tr><td>${esc(h.source_display_account || accountLabel(h.source))} → ${esc(h.target_display_account || accountLabel(h.target))}</td><td>${esc(h.funds && root.FundsFacts ? root.FundsFacts.totals(h.funds) : `${h.amount ?? h.total ?? '金额待定'} ${path.currency ?? h.currency ?? ''}`)}</td><td>${esc(h.trade_time || h.time || `${h.first_time || h.tmin || '—'} — ${h.last_time || h.tmax || '—'}`)}</td><td>${evidence(h)}</td></tr>`).join('')}</tbody></table></div>
         <footer><button type="button" class="btn small" data-path-focus="${index}">定位并选中路径账户</button><button type="button" class="btn small" data-path-group="${index}">用路径账户新建分组</button></footer></section>`;
     }).join('');

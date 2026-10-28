@@ -1190,33 +1190,14 @@ def _context(flow_id, x, side, case_id):
         acct = f["payee_account"]
     if not acct:
         raise HTTPException(422, "该侧账号缺失，无法定位账户流水；原交易仍保留在明细中")
-    position = db.q("""
-        with acct as (select id, trade_time from effective_flows
-                      where case_id = ? and (payer_account = ? or payee_account = ?))
-        select count(*) filter(where trade_time < cast(? as timestamp)
-           or (trade_time = cast(? as timestamp) and id < ?)) as c, count(*) total from acct
-    """, [case_id, acct, acct, f["trade_time"], f["trade_time"], flow_id])[0]
-    anchor = position["c"] + 1
-    rows = db.q("""
-        with acct as (
-            select id, trade_no, trade_time, cast(trade_time as varchar) _precise_time, amount, balance, currency, summary, channel,
-                   payer_account, payer_name, payee_account, payee_name, self_account,
-                   payer_display_account,payee_display_account,self_display_account,
-                   payer_card,payee_card,self_card,payer_source_account,payee_source_account,self_source_account,
-                   case when payer_account = ? then 'out' else 'in' end as dir,
-                   case when self_account = ? then 'self'
-                        when coalesce(self_account, '') <> '' then 'counter'
-                        else '' end as book
-            from effective_flows where case_id = ? and (payer_account = ? or payee_account = ?)
-        ), ranked as (
-            select *, row_number() over (order by trade_time, id) as rn from acct
-        )
-        select * from ranked where rn between ? and ? order by rn
-    """, [acct, acct, case_id, acct, acct, anchor - x, anchor + x])
+    from . import ledger_navigation
+    own = ledger_navigation.own_anchor(case_id, acct, f)
+    window = ledger_navigation.context_window(case_id, acct, f, x, own_entry=own)
+    rows = window["rows"]
     for row in rows:
-        row["trade_time"] = row.pop("_precise_time")
-    total = position["total"]
-    result = {"anchor": f, "side": side, "account": acct, "total": total, "pos": anchor, "rows": rows}
+        row["dir"] = "out" if row["payer_account"] == acct else "in"
+        row["book"] = "self" if row["self_account"] == acct else "counter" if row["self_account"] else ""
+    result = {"anchor": f, "side": side, "account": acct, **window}
     from . import analysis_snapshot
     result["analysis_revision"] = analysis_snapshot.revision(case_id)
     result["display_account"] = f.get(side + "_display_account") or acct
@@ -1227,23 +1208,6 @@ def _context(flow_id, x, side, case_id):
         row["event_state"] = member.get("status", "unknown")
         row["event_id"] = member.get("event_id") if member.get("status") == "confirmed" else None
         row["context_group"] = "event:" + row["event_id"] if row["event_id"] else "record:" + str(row["id"])
-    from . import ledger_navigation, principal_ledger
-    own = ledger_navigation.own_anchor(case_id, acct, f)
-    same_time_own = [row for row in rows if row["self_account"] == acct and row["trade_time"] == f["trade_time"]]
-    order_metadata = event_resolution.ledger_metadata(case_id, [own["id"], *(row["id"] for row in same_time_own)]) if own else {}
-    for row in rows:
-        # Stable row IDs order presentation only; they do not establish time or
-        # join two ledgers. Only the proved event membership joins source rows.
-        row["context_relation"] = (
-            "anchor" if row["id"] == f["id"] else
-            "same_transaction" if row["event_id"] and row["event_id"] == f["event_id"] else
-            "unordered" if not row["trade_time"] or not f["trade_time"] else
-            "same_time" if row["trade_time"] == f["trade_time"] else
-            "before" if row["trade_time"] < f["trade_time"] else "after")
-        if row["context_relation"] == "same_time" and own and row["self_account"] == acct:
-            pair = principal_ledger.source_order([{"id": str(own["id"])}, {"id": str(row["id"])}], order_metadata)
-            if pair:
-                row["context_relation"] = "before" if pair[0]["id"] == str(row["id"]) else "after"
     displays = {}
     for row in rows:
         for role in ("payer","payee"):
@@ -1396,8 +1360,7 @@ def _suggest_counterparties(rows, anchor):
         t = build(g, "target")
         if t:
             targets.append(t)
-    # 组合模式识别：按时间顺序累加，前缀合计 ≈ 锚点金额（分散转出 / 归集转入）
-    # —— 快进快出场景资金按时间流出，前缀匹配可排除期间无关大额的干扰
+    # 组合金额线索：对手分组可能交错发生，不能称为逐笔时序前缀。
     for kind, lst in (("source", sources), ("target", targets)):
         if amt and len(lst) >= 2:
             acc, picked = money_decimal("0"), []
@@ -1406,8 +1369,8 @@ def _suggest_counterparties(rows, anchor):
                 picked.append(x)
                 r_acc = acc / amt
                 if money_decimal("0.85") <= r_acc <= money_decimal("1.05"):
-                    tag = ("前 {} 个来源合计 ≈ 锚点金额的 {:.0%}，疑似归集转入".format(len(picked), r_acc) if kind == "source"
-                           else "前 {} 个去向合计 ≈ 锚点金额的 {:.0%}，疑似分散转出".format(len(picked), r_acc))
+                    tag = ("其中 {} 个来源合计 ≈ 锚点金额的 {:.0%}，仅为归集金额组合线索".format(len(picked), r_acc) if kind == "source"
+                           else "其中 {} 个去向合计 ≈ 锚点金额的 {:.0%}，仅为分散金额组合线索".format(len(picked), r_acc))
                     for y in picked:
                         if tag not in y["tags"]:
                             y["tags"].append(tag)
@@ -2091,6 +2054,13 @@ def _tracked_workbook(case_id, rows, pending, coverage, current_resolution, regi
             pending["显示标识"] = pending["账号"].map(lambda key: registry.get(key, {}).get("display_account", key))
             pending["账号"] = pending["账号"].map(lambda key: registry.get(key, {}).get("account_number", key))
     df = pd.DataFrame(rows).rename(columns=cols)[list(cols.values())]
+    # Excel's datetime representation/readers round to milliseconds. Preserve
+    # the original timestamp as text, just as exact money and IDs below.
+    def timestamp_text(value):
+        if value is None or pd.isna(value):
+            return None
+        return value.isoformat(sep=" ") if hasattr(value, "isoformat") else str(value)
+    df["交易时间"] = df["交易时间"].map(timestamp_text)
     # Excel numbers cannot preserve all DECIMAL(18,2) cents or bigint IDs.
     df["交易金额"] = df["交易金额"].map(lambda value: money_string(value) if value is not None and not pd.isna(value) else None)
     df["流水ID"] = df["流水ID"].map(str)
@@ -2111,6 +2081,7 @@ def _tracked_workbook(case_id, rows, pending, coverage, current_resolution, regi
             for key in ("amount", "balance"):
                 original[key] = original[key].map(lambda value: money_string(value) if value is not None and not pd.isna(value) else None)
             original["id"] = original["id"].map(str)
+            original["trade_time"] = original["trade_time"].map(timestamp_text)
             original[list(original_cols)].rename(columns=original_cols).to_excel(w, index=False, sheet_name="原始账簿观察")
         # 待调取账号：当前画布出现、但尚未导入其本人流水的对手账户。
         pending.to_excel(w, index=False, sheet_name="待调取账号")
