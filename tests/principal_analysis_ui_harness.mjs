@@ -89,11 +89,13 @@ test('the existing case header and search result render only the authoritative p
   assert.match(element('#importCoverageNote').textContent,/1 处冲突/);
 });
 
-test('node labels keep the name and a sourced account without choosing a current card', () => {
+test('node labels use the scoped representative card and retain account fallback', () => {
   const scope=vm.createContext({state:{showIds:false},fmtCount:String});
   vm.runInContext(app.slice(app.indexOf('function nodeLabel('),app.indexOf('/* ---------- 边标签')),scope);
   scope.node={account:'fte_INTERNAL',account_number:'000SYN-ACCOUNT',display_account:'000SYN-CARD-1',
     name:'合成户名',kind:'subaccount',status:'conflict',cards:['000SYN-CARD-1','000SYN-CARD-2']};
+  assert.equal(vm.runInContext('nodeLabel(node)',scope),'合成户名\n000SYN-CARD-1');
+  delete scope.node.display_account;
   assert.equal(vm.runInContext('nodeLabel(node)',scope),'合成户名\n000SYN-ACCOUNT');
   delete scope.node.account_number;
   assert.equal(vm.runInContext('nodeLabel(node)',scope),'合成户名\n—');

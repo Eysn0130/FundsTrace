@@ -129,7 +129,7 @@ def test_directory_auxiliary_late_replay_card_account_nodes_and_consistent_money
     keys = {row["payer_account"] for row in after}
     assert len(keys) == 1 and next(iter(keys)).startswith("fte_")
     assert {row["raw_payer_account"] for row in after} == {"SYN-A", "SYN-C1"}
-    assert {row["payer_display_account"] for row in after} == {"SYN-A"}
+    assert {row["payer_display_account"] for row in after} == {"SYN-C1", "SYN-C2", "SYN-A"}
     own = next(item for item in entities(client, cid)["entities"] if item["entity_id"] in keys)
     assert own["kind"] == "account" and own["account_number"] == "SYN-A"
     assert own["cards"] == ["SYN-C1", "SYN-C2"]
@@ -705,7 +705,7 @@ def test_missing_marker_rule_retains_literal_alphanumeric_and_zero_identifiers(c
     accepted(client, cid, [("tx.csv", table("transaction", [transaction(**{"交易账号": number, "交易卡号": card})])),
                            ("acc.csv", table("account", [account(number=number, card=card)]))])
     own = next(row for row in entities(client, cid)["entities"] if row["account_number"] == number)
-    assert own["cards"] == [card] and own["display_account"] == number
+    assert own["cards"] == [card] and own["display_account"] == card
     assert client.get(f"/api/v1/cases/{cid}/flows").json()["items"][0]["raw_payer_account"] == number
 
 

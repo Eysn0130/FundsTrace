@@ -73,8 +73,8 @@ def test_display_account_card_alias_and_internal_key_produce_same_paths(client, 
     assert aliases["paths"][0]["steps"][0]["target_display_account"] == "SYN-ACCOUNT-B"
     assert aliases["statistics_policy"] == "evidence-bounded-funds-v1"
     assert aliases["resolution_revision"] == current_revision
-    assert aliases["flows"][0]["payer_display_account"] == "SYN-ACCOUNT-A"
-    assert aliases["flows"][0]["self_display_account"] == "SYN-ACCOUNT-A"
+    assert aliases["flows"][0]["payer_display_account"] == "RAW-" + keys[0]
+    assert aliases["flows"][0]["self_display_account"] == "RAW-" + keys[0]
 
 
 def test_nonunique_alias_expands_all_in_scope_entities_without_name_or_case_guess(client, database, make_case):
@@ -124,7 +124,7 @@ def test_time_uses_ledger_record_policy_and_display_metadata_without_fifo_claim(
     assert "selected_confirmed_events_and_unresolved_observations" in result["semantics"] and "graph_fifo_mirror_pairing" not in result["semantics"]
     assert {node["display_account"] for node in result["nodes"]} == {"SYN-A", "SYN-B"}
     assert result["edges"][0]["source_display_account"] == "SYN-A"
-    assert result["flows"][0]["source"] == payer and result["flows"][0]["source_display_account"] == "SYN-A"
+    assert result["flows"][0]["source"] == payer and result["flows"][0]["source_display_account"] == "RAW-" + payer
 
 
 def test_legacy_time_semantics_apply_the_same_evidence_bounded_policy(client, database, make_case):
@@ -219,7 +219,7 @@ def test_public_flow_query_keeps_count_rows_and_resolution_in_one_read(
     value = response.json()
     assert value["total"] == 1
     assert [(row["id"], row["amount"], row["payer_account"], row["payer_display_account"])
-            for row in value["rows"]] == [(identifier, "10.25", payer, "SYN-ACCOUNT-A")]
+            for row in value["rows"]] == [(identifier, "10.25", payer, "RAW-" + payer)]
     assert value["resolution"]["revision"] == old_revision
     assert evidence_resolution.summary(cid)["revision"] == "b" * 64
     assert database.q_raw("select count(*) n from flows where case_id=?", [cid])[0]["n"] == 2
@@ -263,7 +263,7 @@ def test_tracked_workbook_uses_captured_resolution_and_endpoint_metadata(
         values = list(workbook["追踪流水"].values)
         row = dict(zip(values[0], values[1]))
         assert (row["交易金额"], row["付款账号"], row["收款账号"], row["付款显示标识"], row["付款实体ID"]) == (
-            "10.25", "SYN-ACCOUNT-A", "SYN-ACCOUNT-B", "SYN-ACCOUNT-A", payer)
+            "10.25", "SYN-ACCOUNT-A", "SYN-ACCOUNT-B", "RAW-" + payer, payer)
         pending = list(workbook["待调取账号"].values)
         row = dict(zip(pending[0], pending[1]))
         assert (row["账号"], row["显示标识"], row["实体ID"], row["交易总额"]) == (

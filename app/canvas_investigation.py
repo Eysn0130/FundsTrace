@@ -231,10 +231,13 @@ def _flow(row, mirrors, references, by_id):
     }
 
 
-def _account_metadata(case_id, accounts):
+def _account_metadata(case_id, accounts, observation_ids=None):
     """Fetch display aliases only for the already bounded investigation scope."""
     rows = [{"account": account} for account in sorted(accounts)]
-    evidence_resolution.decorate_accounts(case_id, rows)
+    scope = {} if observation_ids is None else {
+        "source_sql": "select * from effective_flows where case_id=? and id in (select unnest(?::bigint[]))",
+        "params": [case_id, list(observation_ids)]}
+    evidence_resolution.decorate_accounts(case_id, rows, **scope)
     return {row["account"]: row for row in rows}
 
 
@@ -300,7 +303,9 @@ def time_projection(body):
     nodes, edges = _graph(selected, mirrors)
     from . import event_resolution, funds_projection
     event_resolution.decorate_edges(body.case_id, edges)
-    evidence_resolution.decorate_accounts(body.case_id, nodes)
+    evidence_resolution.decorate_accounts(body.case_id, nodes,
+        source_sql="select * from effective_flows where case_id=? and id in (select unnest(?::bigint[]))",
+        params=[body.case_id, list(original_ids)])
     metadata = {node["account"]: node for node in nodes}
     for edge in edges:
         edge["source_display_account"] = _display_account(edge["source"], metadata)
@@ -342,7 +347,8 @@ def paths(body):
     summary["funds"] = funds_projection.summarize_rows(selected)
     summary["amount_totals"] = funds_projection.public_fields(summary["funds"])["amount_totals"]
     metadata = _account_metadata(body.case_id, {row[side] for row in selected
-                                              for side in ("payer_account", "payee_account")})
+                                              for side in ("payer_account", "payee_account")},
+                                 {flow_id for row in selected for flow_id in [row["id"], *mirrors.get(row["id"], [])]})
     start_accounts = _resolve_account(body.start_account, metadata)
     end_accounts = _resolve_account(body.end_account, metadata)
     # A path always stays within one currency, including explicitly unknown "".

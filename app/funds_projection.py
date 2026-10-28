@@ -93,18 +93,26 @@ def _result(aggregates):
             "count": {"lower": confirmed, "upper": confirmed + unresolved}, "totals": totals}
 
 
-def summary_query(source_sql, group_by=()):
+def summary_query(source_sql, group_by=(), *, rollup_groups=None):
     """Aggregation SQL; decode each selected group's small result separately."""
     if any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name) for name in group_by):
         raise ValueError("invalid funds grouping column")
     columns = ",".join(group_by)
     prefix = columns + "," if columns else ""
+    grouping_sets = f"({columns}),({prefix}funds_currency)"
+    grouping_marker = ""
+    if rollup_groups is not None:
+        if not group_by or any(not set(group) <= set(group_by) for group in rollup_groups):
+            raise ValueError("rollup keys must belong to selected groups")
+        grouping_sets = ",".join("(" + ",".join(group) + ")" for keys in rollup_groups
+                                 for group in (tuple(keys), (*keys, "funds_currency")))
+        grouping_marker = f"grouping_id({columns}) _account_group,"
     return cte(source_sql) + f""", _funds_grouped as (
         select *,case when currency in {_CURRENCIES_SQL} then currency end funds_currency,
             count(distinct case_id) over () _funds_case_count,
             bool_or(case_id is null) over () _funds_missing_case
         from selected_facts
-    ) select {prefix}grouping(funds_currency) is_total,funds_currency,
+    ) select {prefix}{grouping_marker}grouping(funds_currency) is_total,funds_currency,
         coalesce(max(_funds_case_count),0) case_count,bool_or(_funds_missing_case) missing_case,
         sum(observation_count) observations,
         count(*) filter(where fact_status='confirmed') confirmed,
@@ -113,7 +121,7 @@ def summary_query(source_sql, group_by=()):
         count(*) filter(where amount is null or amount<0) unknown_amount,
         sum(case when fact_status='confirmed' then amount else 0 end) lower_amount,
         sum(case when fact_status='unresolved' and amount>=0 then amount else 0 end) unresolved_amount
-        from _funds_grouped group by grouping sets (({columns}),({prefix}funds_currency))"""
+        from _funds_grouped group by grouping sets ({grouping_sets})"""
 
 
 def decode_summary(aggregates):
@@ -134,6 +142,43 @@ def grouped_summary(source_sql, params=None, group_by=()):
         groups = {}
         for row in rows:
             groups.setdefault(tuple(row[name] for name in group_by), []).append(row)
+        return {key: decode_summary(values) for key, values in groups.items()}
+
+
+def account_summaries(source_sql, params=None):
+    """Compute total, payer, payee and pair funds from one selected-facts scan.
+
+    Grouping flags distinguish an absent key from a genuine null endpoint.
+    Aggregation stays in DuckDB; no observation-sized Python list or cache.
+    """
+    with db._lock:
+        rows = db.q_raw(summary_query(source_sql, ("payer_account", "payee_account"),
+            rollup_groups=((), ("payer_account",), ("payee_account",), ("payer_account", "payee_account"))), params)
+        groups = {}
+        for row in rows:
+            key = (row["_account_group"], row["payer_account"], row["payee_account"])
+            groups.setdefault(key, []).append(row)
+        return {key: decode_summary(values) for key, values in groups.items()}
+
+
+def profile_summaries(source_sql, params, account):
+    """Trim the selected own key while retaining original counterparty keys."""
+    source = f"""select f.*,trim(payer_account)=? _own_payer,trim(payee_account)=? _own_payee
+        from ({source_sql}) f"""
+    columns = ("payer_account", "payee_account", "_own_payer", "_own_payee")
+    groupings = ((), ("_own_payer",), ("_own_payee",),
+                 ("payer_account", "_own_payee"), ("payee_account", "_own_payer"))
+    with db._lock:
+        rows = db.q_raw(summary_query(source, columns, rollup_groups=groupings), [account, account, *params])
+        groups = {}
+        for row in rows:
+            flag = row["_account_group"]
+            # Omitted-key bits: 15 total, 14 incoming, 13 outgoing,
+            # 6 incoming by original payer, 9 outgoing by original payee.
+            if flag != 15 and not row["_own_payee" if flag in (6, 14) else "_own_payer"]:
+                continue
+            key = (flag, row["payer_account"] if flag == 6 else row["payee_account"] if flag == 9 else None)
+            groups.setdefault(key, []).append(row)
         return {key: decode_summary(values) for key, values in groups.items()}
 
 

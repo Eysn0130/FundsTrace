@@ -229,7 +229,7 @@ describe('FundsPanel host isolation', () => {
     await screen.findByRole('heading', { name: '自动处理完成' });
     await waitFor(() => expect(statistics).toHaveBeenCalledTimes(2));
     expect(commit).toHaveBeenCalledOnce(); expect(job).toHaveBeenCalledOnce();
-    expect(screen.getByText(/已保存 1 条记录 · 新增资金流水/).textContent).toContain('新增资金流水 0 笔');
+    expect(screen.getByText(/已保存 1 条记录 · 新增流水记录/).textContent).toContain('新增流水记录 0 条');
   });
 
   it('does not start polling after an old in-flight commit returns following unmount', async () => {

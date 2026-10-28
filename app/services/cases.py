@@ -105,8 +105,11 @@ def flows(case_id, account, kw, page, page_size, granularity="events"):
                     unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
                     where e.case_id=effective_flows.case_id
                       and e.entity_id in (effective_flows.payer_account,effective_flows.payee_account)
-                      and card.value ilike ?))""")
-            params += [f"%{account.strip()}%"] * 5
+                      and card.value ilike ?)
+                or exists (select 1 from resolution_entities e where e.case_id=effective_flows.case_id
+                    and e.entity_id in (effective_flows.payer_account,effective_flows.payee_account)
+                    and e.account_number ilike ?))""")
+            params += [f"%{account.strip()}%"] * 6
         if kw.strip():
             conditions.append("(summary ilike ? or trade_no ilike ?)")
             params += [f"%{kw.strip()}%"] * 2
@@ -130,7 +133,9 @@ def flows(case_id, account, kw, page, page_size, granularity="events"):
                        "event_id": events.get(str(row["id"]), {}).get("event_id"),
                        "event_state": events.get(str(row["id"]), {}).get("status", "unknown"),
                        "batch_id": str(row["batch_id"]) if row["batch_id"] is not None else None,
-                       **{field: row.get(field) or "" for field in ("payer_display_account", "payee_display_account", "self_display_account", "raw_payer_account", "raw_payee_account", "raw_self_account")}} for row in rows]}
+                       **{field: row.get(field) or "" for field in ("payer_display_account", "payee_display_account", "self_display_account", "raw_payer_account", "raw_payee_account", "raw_self_account",
+                           "payer_card", "payee_card", "self_card", "payer_source_account", "payee_source_account", "self_source_account",
+                           "payer_card_state", "payee_card_state", "self_card_state")}} for row in rows]}
 
 
 def flow_sources(case_id, flow_id, page=1, page_size=50):

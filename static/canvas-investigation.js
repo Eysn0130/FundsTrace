@@ -12,6 +12,7 @@
   const el = id => document.getElementById(id);
   let dialogContext = null, dialogSource = null, dialogRevision = 0, dialogToken = 0, kind = '';
   let cacheSource = null, cacheBinding = '', cache = new Map(), inflight = new Map(), errors = new Map();
+  let activeScopeKey = '';
   let preview = null, playback = null, frameToken = 0, timer = null, lastWindow = '';
   let lastScope = '', mounted = false, committing = false;
   const controllers = new Set();
@@ -38,12 +39,13 @@
     if (cacheSource === state.lastGraph && cacheBinding === key) return;
     for (const controller of controllers) controller.abort(); controllers.clear();
     cacheSource = state.lastGraph; cacheBinding = key; cache = new Map(); inflight = new Map(); errors = new Map();
+    activeScopeKey = '';
     resetPreview();
     if (dialogContext && !live(dialogContext, dialogSource)) closeDialog();
   }
   function effectiveWindow() { return normalizeWindow(preview || state.presentation.timeWindow); }
   function active() { return hasWindow(effectiveWindow()); }
-  function projectionReady() { return !active() || cache.has(windowKey(effectiveWindow())); }
+  function projectionReady() { return (!active() || cache.has(windowKey(effectiveWindow()))) && (!activeScopeKey || cache.has(activeScopeKey)); }
   function exportWindow() {
     const value = effectiveWindow();
     return active() ? { start: value.start || null, end: value.end || null,
@@ -102,7 +104,7 @@
     const value = effectiveWindow();
     if (!hasWindow(value)) return full;
     const key = windowKey(value), found = cache.get(key);
-    if (found) return { ...full, nodes: found.nodes, edges: found.edges, funds: found.funds || found.summary?.funds, analysis_revision: found.analysis_revision || full.analysis_revision };
+    if (found) return { ...full, nodes: withCurrentMetadata(found.nodes), edges: found.edges, funds: found.funds || found.summary?.funds, analysis_revision: found.analysis_revision || full.analysis_revision };
     if (!inflight.has(key) && !errors.has(key)) {
       const context = caseContext(), source = full;
       void loadProjection(value).then(() => {
@@ -115,6 +117,50 @@
     }
     // Never draw old/full-period totals under a narrower time label.
     return { ...full, nodes: [], edges: [], funds: null };
+  }
+  function withCurrentMetadata(nodes) {
+    const originals = new Map(state.lastGraph.nodes.map(node => [String(node.account), node]));
+    return nodes.map(node => {
+      const current = originals.get(String(node.account));
+      if (!current) return node;
+      return { ...node, id_no: current.id_no, is_main: current.is_main, is_same_name: current.is_same_name,
+        photo_at: current.photo_at };
+    });
+  }
+  function scopeGraph(graph, projected) {
+    ensureSource();
+    // Business relationship/neighborhood filters change the facts included in
+    // this view. Drawing culling, zoom and paging never enter this request.
+    if (graph.nodes.length === projected.nodes.length && graph.edges.length === projected.edges.length) {
+      activeScopeKey = ''; return graph;
+    }
+    const accounts = graph.nodes.map(node => String(node.account)).sort();
+    const edges = graph.edges.map(edge => ({ source: String(edge.source), target: String(edge.target) }))
+      .sort((a,b) => a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
+    const body = { ...requestBody(effectiveWindow()), scope: 'visible', visible_accounts: accounts, visible_edges: edges };
+    const key = 'scope:' + JSON.stringify(body), context = caseContext(), source = state.lastGraph;
+    activeScopeKey = key;
+    const found = cache.get(key);
+    if (found) {
+      const byAccount = new Map(found.nodes.map(node => [String(node.account), node]));
+      return { ...graph, funds: found.funds, analysis_revision: found.analysis_revision,
+        nodes: withCurrentMetadata(graph.nodes.map(node => ({ ...node, ...byAccount.get(String(node.account)) }))), edges: found.edges };
+    }
+    if (!inflight.has(key) && !errors.has(key)) {
+      const promise = read('/api/graph/view', body).then(result => {
+        if (!live(context, source)) return;
+        cache.set(key, result); errors.delete(key);
+        while (cache.size > 12) cache.delete(cache.keys().next().value);
+        if (activeScopeKey === key) { state.forceFit = false; renderGraph(); }
+      }).catch(error => {
+        if (live(context, source) && error.name !== 'AbortError') {
+          errors.set(key, error.message); toast(error.message, 'err'); sync();
+        }
+      }).finally(() => { if (live(context, source)) inflight.delete(key); });
+      inflight.set(key, promise);
+    }
+    // As for time windows, never present an earlier scope's cards or totals.
+    return { ...graph, nodes: [], edges: [], funds: null };
   }
   async function edit(label, change, context = caseContext(), source = state.lastGraph) {
     if (!ready() || !live(context, source)) throw new Error('画布正在更新，请稍后重试');
@@ -388,9 +434,9 @@
     if (lastWindow && lastWindow !== w && preview) resetPreview();
     lastWindow = w;
     if (dialogContext && el('investigationDialog')?.open && (!live(dialogContext,dialogSource) || !committing && dialogRevision !== state.graphView.revision)) closeDialog();
-    const scope = el('investigationScope'), key = windowKey(effectiveWindow());
+    const scope = el('investigationScope'), key = errors.has(activeScopeKey) ? activeScopeKey : windowKey(effectiveWindow());
     if (scope) {
-      scope.hidden = !active();
+      scope.hidden = !active() && !errors.has(activeScopeKey);
       const message = description() + (errors.has(key) ? ` · ${errors.get(key)}；点击重试` : inflight.has(key) ? ' · 正在读取…' : '');
       if (lastScope !== message) { scope.textContent = message; lastScope = message; }
     }
@@ -432,7 +478,7 @@
       } catch (error) { if (live(context, source)) toast(error.message, 'err'); }
     });
     const scope = document.createElement('button'); scope.id = 'investigationScope'; scope.type = 'button'; scope.className = 'investigation-scope'; scope.hidden = true;
-    scope.addEventListener('click', () => { const key = windowKey(effectiveWindow()); if (errors.has(key)) { errors.delete(key); renderGraph(); } else void execute('timeWindow'); });
+    scope.addEventListener('click', () => { const key = errors.has(activeScopeKey) ? activeScopeKey : windowKey(effectiveWindow()); if (errors.has(key)) { errors.delete(key); renderGraph(); } else void execute('timeWindow'); });
     el('graphContainer').parentElement.appendChild(scope);
     // Keep the transport inside the graph region so window resize/collapsed panes compose.
     el('graphContainer').parentElement.appendChild(el('investigationTransport'));
@@ -449,7 +495,7 @@
     root.addEventListener('fundstrace:workspace-resize', () => pause());
     sync();
   }
-  root.FundsInvestigation = Object.freeze({ execute, sync, active, displayGraph, description, exportWindow, resetPreview,
+  root.FundsInvestigation = Object.freeze({ execute, sync, active, displayGraph, scopeGraph, description, exportWindow, resetPreview,
     normalizeWindow, hasWindow, windowKey, requestBody, projectionReady });
   if (document.readyState === 'loading') root.addEventListener('DOMContentLoaded', mount, { once: true }); else mount();
 })(window);

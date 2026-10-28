@@ -80,7 +80,7 @@ def book_scope(assessment):
             "note": "仅对已记录账面模型计算条件范围与FIFO，来源标签首次出账后不因再入账恢复；未证明现实区间完整、历史可用资金或实际来源。"}
 
 
-def context_result(case_id, account, anchor, visible_rows):
+def context_result(case_id, account, anchor, visible_rows, *, own_entry=...):
     """Use the existing anchor/window only to choose results, never coverage."""
     currency = anchor.get("currency") or ""
     source_id = str(anchor["id"])
@@ -90,14 +90,11 @@ def context_result(case_id, account, anchor, visible_rows):
                             "message": "当前锚点是出账；匹配评分不能指定其中某笔入账为已确认来源"}]}
     # An opposite observation can identify the own entry only through a
     # confirmed event. Similar amount/time or a copied balance is insufficient.
-    source = db.q_raw("""select f.id from effective_flows f where f.case_id=? and f.self_account=?
-        and (f.id=? or f.id in (
-          select m.flow_id from event_members m join event_members a
-            on a.case_id=m.case_id and a.event_id=m.event_id
-          where a.case_id=? and a.flow_id=? and a.status='confirmed' and m.status='confirmed'))
-        order by f.id limit 2""", [case_id, account, source_id, case_id, source_id])
-    if len(source) == 1:
-        source_id = str(source[0]["id"])
+    if own_entry is ...:
+        from . import ledger_navigation
+        own_entry = ledger_navigation.own_anchor(case_id, account, anchor)
+    if own_entry:
+        source_id = str(own_entry["id"])
     targets = list(dict.fromkeys(str(row["id"]) for row in visible_rows
         if row.get("self_account") == account and row.get("payer_account") == account
         and row.get("payee_account") != account and row.get("currency") == currency))
@@ -114,3 +111,51 @@ def context_result(case_id, account, anchor, visible_rows):
     request = SimpleNamespace(account=account, currency=currency, source_flow_id=source_id, target_flow_ids=targets,
         start=span["lo"].isoformat(), end=span["hi"].isoformat())
     return principal_ledger.calculate(case_id, request)
+
+
+def tracking_result(case_id, account, anchor, candidates, direction):
+    """Allocate only the anchor/candidates the existing action identifies.
+
+    Reverse tracking labels each credit independently. It does not pick one
+    credit as the actual source or sum independently attainable upper bounds.
+    The complete own ledger (including untracked competitors) is read once.
+    """
+    from . import analysis_snapshot, ledger_navigation
+    revision = analysis_snapshot.revision(case_id)
+    if direction == "target":
+        value = context_result(case_id, account, anchor, candidates)
+        return {**value, "revision": revision}
+    own = ledger_navigation.own_anchor(case_id, account, anchor)
+    currency = anchor.get("currency") or ""
+    sources = {str(row["id"]): row for row in candidates
+               if row.get("self_account") == account and row.get("payee_account") == account
+               and row.get("payer_account") != account and row.get("currency") == currency}
+    result = {"currency": currency, "revision": revision, "status": "unknown", "targets": [],
+              "source_candidates": [], "candidate_semantics": "independent_conditional_source_shares",
+              "reasons": []}
+    if not own or own.get("payer_account") != account:
+        return {**result, "reasons": ["target_not_in_own_ledger"]}
+    if not sources:
+        return {**result, "reasons": ["no_proven_earlier_credit_candidates"]}
+    if len(sources) > 20:
+        return {**result, "status": "limited", "reasons": ["source_candidate_resource_limit"]}
+    span = db.q_raw("""select min(trade_time) lo,max(trade_time) hi from effective_flows
+        where case_id=? and self_account=? and currency=?""", [case_id, account, currency])[0]
+    if span["lo"] is None or span["hi"] is None:
+        return {**result, "reasons": ["no_own_ledger_entries"]}
+    request = SimpleNamespace(account=account, currency=currency, source_flow_id=next(iter(sources)),
+        target_flow_ids=[str(own["id"])], start=span["lo"].isoformat(), end=span["hi"].isoformat())
+    prepared = principal_ledger.prepare(case_id, request)
+    if len(prepared[1]) * 3 * len(sources) > principal_ledger.MAX_WITNESS_CELLS:
+        return {**result, "status": "limited", "reasons": ["witness_resource_limit"]}
+    values = []
+    for source_id in sources:
+        request.source_flow_id = source_id
+        value = principal_ledger.calculate(case_id, request, prepared=prepared)
+        # The original detail exposes amounts and limits, not a repeated full
+        # witness for every candidate. The revision-bound analysis API retains it.
+        value.pop("fifo_witness", None)
+        values.append({**value, "source_flow_id": source_id})
+    statuses = {item["status"] for item in values}
+    return {**result, "status": "ok" if statuses <= {"ok", "determined"} else "unknown",
+            "source_candidates": values}

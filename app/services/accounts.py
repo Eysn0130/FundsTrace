@@ -104,7 +104,6 @@ def account_profile(case_id, account):
         if not found:
             raise ServiceError(404, "account_not_found", "账号不存在或不属于当前案件")
         metadata = found[0]
-        evidence_resolution.decorate_accounts(cid, [metadata])
         result = {"case_id": str(cid), **_item(metadata)}
         result["photo"] = None if metadata["photo_at"] is None else {
             "updated_at": metadata["photo_at"],
@@ -114,30 +113,31 @@ def account_profile(case_id, account):
         from app import funds_projection, analysis_snapshot
         source = "select * from effective_flows where case_id=? and (trim(payer_account)=? or trim(payee_account)=?)"
         selection = [cid, account, account]
-        funds = funds_projection.summary(source, selection)
+        rollups = funds_projection.profile_summaries(source, selection, account)
+        funds = rollups[(15, None)]
         result.update(funds=funds, cnt=funds_projection.public_fields(funds)["cnt"],
                       analysis_revision=analysis_snapshot.revision(cid), statistics_policy=funds_projection.POLICY)
         result.update(db.q(funds_projection.cte(source) +
                           "select min(trade_time) tmin,max(trade_time) tmax from selected_facts", selection)[0])
-        incoming = source + " and trim(payee_account)=?"
-        outgoing = source + " and trim(payer_account)=?"
+        empty = funds_projection.summarize_rows([])
         result.update(funds_projection.directional_fields(
-            funds_projection.summary(incoming, [*selection, account]),
-            funds_projection.summary(outgoing, [*selection, account])))
-        ins = funds_projection.grouped_summary(incoming, [*selection, account], ("payer_account",))
-        outs = funds_projection.grouped_summary(outgoing, [*selection, account], ("payee_account",))
+            rollups.get((14, None), empty), rollups.get((13, None), empty)))
         names = db.q(funds_projection.cte(source) + """
             select acct,max(name) as name from (
                 select payer_account as acct,payer_name as name from selected_facts where trim(payee_account)=?
                 union all select payee_account,payee_name from selected_facts where trim(payer_account)=?
             ) where coalesce(acct,'')<>'' group by acct""", [*selection, account, account])
-        empty = funds_projection.summarize_rows([])
         result["top_counterparties"] = [{"acct": row["acct"], "name": row["name"] or "",
-            **funds_projection.directional_fields(ins.get((row["acct"],), empty), outs.get((row["acct"],), empty))}
+            **funds_projection.directional_fields(rollups.get((6, row["acct"]), empty), rollups.get((9, row["acct"]), empty))}
             for row in names]
         # Counts of selected source observations order candidates only; they do
         # not become a claim that these are distinct economic events.
         result["top_counterparties"].sort(key=lambda row: (-row["out_observation_count"], -row["in_observation_count"], row["acct"]))
         result["top_counterparties"] = result["top_counterparties"][:20]
-        evidence_resolution.decorate_accounts(cid, result["top_counterparties"], key="acct")
+        # Resolve labels for the own account and its counterparties in one
+        # scoped batch. The temporary alias never enters the response shape.
+        metadata["acct"] = metadata["account"]
+        evidence_resolution.decorate_accounts(cid, [metadata, *result["top_counterparties"]], key="acct")
+        metadata.pop("acct")
+        result.update(_item(metadata))
         return result

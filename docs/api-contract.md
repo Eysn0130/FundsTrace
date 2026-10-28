@@ -59,7 +59,9 @@ JSON 错误统一为 `{"error":{"code":"...","message":"..."}}`。400 表示文�
 
 ## 条件来源份额与共同修订
 
-新接口 `POST /api/analysis/principal` 及 `/network` 属于独立的条件分析边界，不改变既有路径评分的含义。case/flow ID 与金额均使用字符串；起止时间为保留原始语义的无时区 ISO 时间。单账本按 `account,currency,start,end` 读取全部本方竞争分录，`source_flow_id` 指定入账、`target_flow_ids` 指定展示目标。`conditions` 必须分别明确 `coverage:"complete_declared"`、`opening_balance`、`no_overdraft:true`、`funds_available:true`，`balance_kind` 为 `unknown` 或 `post_book`；默认条件不满足。多账本以 `accounts:[{account,conditions}]` 替代单个账户，并要求 `boundary:"terminal_no_return_declared"`；内部流转必须有已确认双边事件。
+新接口 `POST /api/analysis/principal` 及 `/network` 属于独立的条件分析边界，不改变既有路径评分的含义。case/flow ID 与金额均使用字符串；起止时间为保留原始语义的无时区 ISO 时间。单账本按 `account,currency,start,end` 读取全部本方竞争分录，`source_flow_id` 指定入账、`target_flow_ids` 指定展示目标。`conditions` 与 `boundary` 保留请求兼容，但调用方声明不构成来源事实。后端从来源明确的本笔后账面余额、同账簿可比记账顺序反推首记录紧邻前余额，在非负账面容量模型下计算；覆盖完整性、授信和实际可用性仍可为未知。多账本以 `accounts:[{account,conditions}]` 指定账簿集合，内部流转须有已确认双边事件；采用首次退出边界，不宣称外部资金实际不回流。
+
+原“追踪去向”以明确入账锚点自动评估所选出账的条件份额；原“追踪来源”及出账侧前后流水分别评估有界入账候选，不选择评分最高者作为真实来源。批量追踪回执的 `detail[].principal` 与前后流水共享该服务；同刻先后仅由本方共同来源记账顺序建立，未知项不按导入 ID 选取。关系路径继续表示探索线索。
 
 响应状态为 `ok`、`unknown`、`inconsistency` 或 `limited`；后三者不含可用的目标分配。`ok` 的每个目标分别给出精确字符串 `amount,min,max,fifo` 和极值见证，多个独立最大值不可相加。单/多账本 `/export` 接口要求 `expected_revision`，返回包含条件、缺口和见证的 HTML。缺少证据不以空余额、号码相似或时序 ID 填补。
 

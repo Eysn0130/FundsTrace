@@ -39,6 +39,7 @@ def all_paths(database, cid, ids):
     original = database.q_raw(sql + " order by id", params)
     projected, result = funds.from_rows(cid, list(reversed(original)))
     assert funds.summary(sql, params) == result == funds.summarize_rows(projected)
+    assert funds.account_summaries(sql, params)[(3, None, None)] == result
     sql_rows = database.q_raw(funds.cte(sql) + "select * from selected_facts order by id", params)
     assert sql_rows == projected
     assert database.q_raw(sql + " order by id", params) == original
@@ -204,3 +205,42 @@ def test_public_event_rebuild_withdraws_default_projection_after_conflict(client
         totals=[total("CNY", "0.00", "200.00")])
     assert client.delete(f"/api/batches/{conflict['batch_id']}", params={"case_id": cid}).status_code == 200
     assert funds.summary(*selected(cid, ids))["status"] == "exact"
+
+
+def test_account_rollups_keep_events_null_endpoints_currencies_and_case_scope(database, make_case):
+    cid = make_case('Synthetic account rollups')
+    other = make_case('Synthetic separate rollups')
+    flow(database, cid, 1); flow(database, cid, 2)
+    event(database, cid, 'SYN-CONFIRMED', [1, 2])
+    flow(database, cid, 3, '5.03', 'USD', payer='SYN-B', payee='SYN-A')
+    flow(database, cid, 4, '7.01', payer=None, payee='SYN-B')
+    flow(database, other, 5, '999.99')
+    sql, params = selected(cid, [1, 2, 3, 4])
+    result = funds.account_summaries(sql, params)
+    assert result[(0, 'SYN-A', 'SYN-B')] == expected(observations=2, confirmed=1, unresolved=0,
+        status='exact', totals=[total('CNY', '100.00', '100.00', '100.00')])
+    assert result[(0, None, 'SYN-B')] == expected(observations=1, confirmed=0, unresolved=1,
+        totals=[total('CNY', '0.00', '7.01')])
+    assert result[(2, None, 'SYN-B')] == expected(observations=3, confirmed=1, unresolved=1,
+        totals=[total('CNY', '100.00', '107.01')])
+    assert result[(1, 'SYN-B', None)] == expected(observations=1, confirmed=0, unresolved=1,
+        totals=[total('USD', '0.00', '5.03')])
+    assert result[(3, None, None)] == expected(observations=4, confirmed=1, unresolved=2,
+        totals=[total('CNY', '100.00', '107.01'), total('USD', '0.00', '5.03')])
+    empty = funds.account_summaries(*selected(cid, []))
+    assert empty == {(3, None, None): expected(observations=0, confirmed=0, unresolved=0, totals=[], status='exact')}
+
+
+def test_profile_rollups_keep_trimmed_own_and_original_counterparty_keys(database, make_case):
+    cid = make_case('Synthetic padded own account')
+    flow(database, cid, 1, '1.01', payer=' SYN-A ', payee='SYN-B')
+    flow(database, cid, 2, '2.02', payer='SYN-B', payee='SYN-A')
+    flow(database, cid, 3, '3.03', payer='SYN-A', payee=' SYN-A ')
+    sql, params = selected(cid, [1, 2, 3])
+    groups = funds.profile_summaries(sql, params, 'SYN-A')
+    for key, count, amount in [((15, None), 3, '6.06'), ((14, None), 2, '5.05'),
+                              ((13, None), 2, '4.04'), ((6, 'SYN-B'), 1, '2.02'),
+                              ((9, 'SYN-B'), 1, '1.01'), ((6, 'SYN-A'), 1, '3.03'),
+                              ((9, ' SYN-A '), 1, '3.03')]:
+        assert groups[key] == expected(observations=count, confirmed=0, unresolved=count,
+                                      totals=[total('CNY', '0.00', amount)])

@@ -180,13 +180,20 @@ def ordered(rows, opening, metadata, balance_kind, *, allow_inference=True):
     return result, None
 
 
-def calculate(case_id, request):
-    from . import principal, principal_evidence
+def prepare(case_id, request):
+    """Read one complete interval for bounded, independently labelled sources."""
+    from . import principal_evidence
     start, end = datetime.fromisoformat(request.start), datetime.fromisoformat(request.end)
     loaded = read(case_id, request.account, request.currency, start, end)
     rows = loaded.pop("rows")
     metadata = _metadata(case_id, [row["id"] for row in rows])
     conditions, assessment = principal_evidence.assess(case_id, rows, metadata)
+    return loaded, rows, metadata, conditions, assessment
+
+
+def calculate(case_id, request, *, prepared=None):
+    from . import principal, principal_evidence
+    loaded, rows, metadata, conditions, assessment = prepared if prepared is not None else prepare(case_id, request)
     output = {"policy": POLICY, "currency": request.currency, "account": request.account,
               "interval": {"start": request.start, "end": request.end}, "conditions": conditions,
               "condition_basis": "source_evidence", "assessment": assessment,

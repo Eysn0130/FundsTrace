@@ -319,7 +319,12 @@ create table if not exists resolution_entities (
 create table if not exists resolved_endpoints (
     case_id integer not null, flow_id bigint not null, role varchar not null,
     entity_id varchar not null, state varchar not null, reason varchar not null,
+    endpoint_account varchar not null default '', endpoint_card varchar not null default '',
+    card_state varchar not null default 'missing',
     primary key (case_id, flow_id, role)
+);
+create table if not exists resolution_projection_versions (
+    case_id integer primary key, card_version varchar not null
 );
 create table if not exists resolution_subject_aliases (
     case_id integer not null, raw_account varchar not null, account varchar not null,
@@ -355,7 +360,10 @@ def _migrate(c):
                             ("batches", "case_id", "integer default 1"),
                             ("flows", "self_account", "varchar"),
                             ("flows", "self_name", "varchar"),
-                            ("main_accounts", "source", "varchar default 'manual'")):
+                            ("main_accounts", "source", "varchar default 'manual'"),
+                            ("resolved_endpoints", "endpoint_account", "varchar default ''"),
+                            ("resolved_endpoints", "endpoint_card", "varchar default ''"),
+                            ("resolved_endpoints", "card_state", "varchar default 'missing'")):
         cols = {r[1] for r in c.execute(f"pragma table_info('{table}')").fetchall()}
         if cols and col not in cols:
             c.execute(f"alter table {table} add column {col} {ddl}")
@@ -486,9 +494,16 @@ def con():
                       coalesce(nullif(p.bank,''),f.payer_bank) payer_bank,
                       coalesce(nullif(q.bank,''),f.payee_bank) payee_bank,
                       f.payer_account raw_payer_account,f.payee_account raw_payee_account,f.self_account raw_self_account,
-                      coalesce(p.account_number,f.payer_account) payer_display_account,
-                      coalesce(q.account_number,f.payee_account) payee_display_account,
-                      coalesce(s.account_number,f.self_account) self_display_account,
+                      coalesce(case when pe.card_state='confirmed' then nullif(pe.endpoint_card,'') end,
+                        nullif(pe.endpoint_account,''),f.payer_account) payer_display_account,
+                      coalesce(case when qe.card_state='confirmed' then nullif(qe.endpoint_card,'') end,
+                        nullif(qe.endpoint_account,''),f.payee_account) payee_display_account,
+                      coalesce(case when se.card_state='confirmed' then nullif(se.endpoint_card,'') end,
+                        nullif(se.endpoint_account,''),f.self_account) self_display_account,
+                      pe.endpoint_card payer_card,qe.endpoint_card payee_card,se.endpoint_card self_card,
+                      pe.endpoint_account payer_source_account,qe.endpoint_account payee_source_account,
+                      se.endpoint_account self_source_account,
+                      pe.card_state payer_card_state,qe.card_state payee_card_state,se.card_state self_card_state,
                       case when pe.entity_id is not null or qe.entity_id is not null then 'typed-account-evidence-v1' else null end resolution_policy
                     from source_effective_flows f
                     left join resolved_endpoints pe on pe.case_id=f.case_id and pe.flow_id=f.id and pe.role='payer'
@@ -552,6 +567,16 @@ def con():
                 candidate.close()
                 raise
             _con = candidate
+            try:
+                # Views and the connection must exist before replay uses the
+                # normal transaction API. Only stale derived projections replay;
+                # immutable earlier revisions and source facts stay untouched.
+                from . import evidence_resolution
+                evidence_resolution.ensure_card_projection()
+            except BaseException:
+                _con = None
+                candidate.close()
+                raise
             _start_ckpt()
         return _con
 

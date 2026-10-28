@@ -2826,7 +2826,7 @@ function nodeRenderSize(n) {
 function nodeLabel(n) {
   const star = n.is_main === 1 ? '★ ' : (n.is_same_name === 1 ? '◆ ' : '');
   const name = Array.from(n.name || '(未知)').reduce((text,char,i)=>text+(i&&i%14===0?'\n':'')+char,'');
-  const number = n.account_number || (n.cards?.length > 1 ? '' : n.display_account) || (String(n.account || '').startsWith('fte_') ? '—' : n.account || '');
+  const number = n.display_account || n.account_number || (String(n.account || '').startsWith('fte_') ? '—' : n.account || '');
   let t = `${star}${name}\n${number}`;   // 户名 / 卡号或账号，内部实体标识不作号码展示。
   if (state.showIds && n.id_no) t += `\n证件 ${n.id_no}`;   // 身份证号（可在工具栏开关）
   return t;
@@ -2898,8 +2898,9 @@ function renderGraph(rebinding = null) {
     nodes: projected.nodes.filter(node => view.visibleIds.has(node.account)),
     edges: projected.edges.filter(edge => view.visibleIds.has(edge.source) && view.visibleIds.has(edge.target)),
   } : projected;
-  const g = typeof FundsGraphPresentation !== 'undefined'
+  const filtered = typeof FundsGraphPresentation !== 'undefined'
     ? FundsGraphPresentation.displayData(scoped, state.presentation) : scoped;
+  const g = window.FundsInvestigation?.scopeGraph?.(filtered, projected) || filtered;
   view.index = projected!==full || view.visibleIds || graphViewIsFiltered() ? FundsGraphView.createIndex(g)
     : (view.fullIndex || FundsGraphView.createIndex(g));
   view.amountWidths = typeof FundsGraphRelations !== 'undefined' && state.presentation.amountWidth.enabled
@@ -3935,7 +3936,7 @@ function renderNodeStats(workspace = nodeWorkspace) {
     <div><span>转出 ${esc(fundsCount(values.out_funds, values.out_cnt))}</span><strong>${fundsTotalHtml(values.out_funds, values.out_totals, values.out_amt)}</strong></div>
     <dl><div><dt>首笔时间</dt><dd>${esc(fmtTime(workspace.profile.tmin) || '—')}</dd></div><div><dt>末笔时间</dt><dd>${esc(fmtTime(workspace.profile.tmax) || '—')}</dd></div></dl>`;
   $('#ndStatsScope').hidden = !graph;
-  $('#ndStatsScope').textContent = graph ? '已追踪流水 · 有据关联按事件统计，未确定部分显示范围；时间范围为本案件' : '本案件全部流水';
+  $('#ndStatsScope').textContent = graph ? '当前图谱范围 · 有据关联按事件统计，未确定部分显示范围；首末时间为本案件' : '本案件全部流水';
 }
 function renderNodeWorkspace(workspace) {
   if (!nodeWorkspaceIsCurrent(workspace)) return;
@@ -3953,9 +3954,10 @@ function renderNodeWorkspace(workspace) {
   workspace.draft = draft;
   const name = profile.name || node.name || '(未知)', photo = nodePhotoUrl(node);
   const badge = node.is_main === 1 ? `主账号${mainInfo ? mainInfo.source === 'auto' ? ' · 自动识别' : ' · 手动标记' : ''}` : node.is_same_name === 1 ? (state.lastGraph?.resolution ? '来源户名相同' : '同户名账号 · 本人流水未导入') : '';
+  const cardBasis = node.display_card_order === 'undated' ? '当前范围的明确交易卡号缺少时间，稳定选取一张代表卡。' : ({transaction_card: '代表卡取自当前范围最后一笔明确卡号的交易，不表示银行当前有效状态。', tied_transaction_cards: '同刻卡号缺少可比先后依据，稳定选取一张代表卡。', associated_card: '当前范围没有明确交易卡号，使用有依据的关联卡。'})[node.display_basis] || '';
   const avatar = photo ? `<img class="node-avatar" src="${esc(photo)}" alt="${esc(name)}的节点照片">` : '<span class="node-avatar node-avatar-empty"><img class="ui-icon" src="/static/ui-icons/user-search.svg" alt=""></span>';
   $('#drawerBody').innerHTML = `
-    <section class="node-identity"><div class="node-person">${avatar}<div><h2>${esc(name)}</h2><div class="mono">${esc(profile.account_number || node.account_number || profile.display_account || node.display_account || account)}</div>${(profile.cards || node.cards || []).length > 0 ? `<details><summary>关联卡号</summary><p>未推定当前使用的卡号</p><p class="mono">${(profile.cards || node.cards).map(esc).join('<br>')}</p></details>` : ''}${profile.kind === 'subaccount' || node.kind === 'subaccount' ? `<p class="mono">子账户 ${esc(profile.account_number || node.account_number)}</p>` : ''}${profile.status === 'conflict' || node.status === 'conflict' ? '<p>卡账关系存在冲突，已保留来源声明</p>' : ''}${badge ? `<span class="node-badge">${esc(badge)}</span>` : ''}</div></div><div class="node-quick"><button class="btn small" id="ndBrowse" data-node-action type="button">查看流水</button><button class="btn small" id="ndNeighborhood" data-node-action type="button">展开邻域</button></div></section>
+    <section class="node-identity"><div class="node-person">${avatar}<div><h2>${esc(name)}</h2><div class="mono">${esc(node.display_account || profile.display_account || node.account_number || profile.account_number || account)}</div>${(profile.cards || node.cards || []).length > 0 ? `<details><summary>账号与关联卡号</summary><p class="mono">原账号 ${esc(profile.account_number || node.account_number || '—')}</p><p>${esc(cardBasis)}</p><p class="mono">${(profile.cards || node.cards).map(esc).join('<br>')}</p></details>` : ''}${profile.kind === 'subaccount' || node.kind === 'subaccount' ? `<p class="mono">子账户 ${esc(profile.account_number || node.account_number)}</p>` : ''}${profile.status === 'conflict' || node.status === 'conflict' ? '<p>卡账关系存在冲突，已保留来源声明</p>' : ''}${badge ? `<span class="node-badge">${esc(badge)}</span>` : ''}</div></div><div class="node-quick"><button class="btn small" id="ndBrowse" data-node-action type="button">查看流水</button><button class="btn small" id="ndNeighborhood" data-node-action type="button">展开邻域</button></div></section>
     <section class="node-section"><h3>身份资料</h3><div class="node-form-grid"><div><label for="ndIdInput">身份证号</label><div class="node-field"><input id="ndIdInput" placeholder="未填写" autocomplete="off" value="${esc(draft.idValue)}"><button class="btn small primary" id="ndIdSave" data-node-action type="button">保存</button></div></div><div class="node-photo"><span class="node-field-label">节点照片</span><div class="node-field">${photo ? `<img id="ndPhotoImg" class="node-photo-thumb" src="${esc(photo)}" alt="当前节点照片">` : ''}<span class="muted">${photo ? '已设置照片' : '未设置照片'}</span><input type="file" id="ndPhotoFile" accept=".jpg,.jpeg,.png,.webp,.bmp" hidden><button class="btn small" id="ndPhotoUp" data-node-action type="button">选择照片</button><button class="btn small icon-button" id="ndPhotoMore" data-node-action type="button" aria-label="照片操作" aria-haspopup="menu" aria-controls="nodePhotoMenu" aria-expanded="false"><img class="ui-icon" src="/static/ui-icons/dots.svg" alt=""></button></div></div></div></section>
     <section class="node-section"><h3>图谱显示</h3><div class="node-form-grid"><div><span class="node-field-label">主账号</span><div class="node-field"><span class="muted">${node.is_main === 1 ? '已标记' : '未标记'}</span><button class="btn small" id="ndToggleMain" data-node-action type="button">${node.is_main === 1 ? '取消主账号标记' : '设为主账号'}</button></div></div><div><label for="ndFocusScale">重点展示</label><div class="node-field"><select id="ndFocusScale"><option value="1">正常大小</option>${[1.5,2,2.5,3,3.5,4].map(value => `<option value="${value}" ${draft.focusValue === value ? 'selected' : ''}>放大 ${value} 倍</option>`).join('')}</select><button class="btn small primary" id="ndFocusApply" data-node-action type="button">应用</button></div></div></div></section>
     <section class="node-section node-statistics"><div class="node-section-head"><h3>交易统计</h3><div class="node-scope" role="group" aria-label="统计范围"><button id="ndScopeCase" class="btn small" type="button" aria-pressed="true">本案件</button><button id="ndScopeGraph" class="btn small" type="button" aria-pressed="false">当前图谱</button></div></div><div id="ndStats" class="node-stats"></div><p id="ndStatsScope" class="muted"></p></section>
@@ -3993,7 +3995,8 @@ async function loadNodeWorkspace(workspace = nodeWorkspace) {
       nodeWorkspaceRequest(`/api/main-accounts?case_id=${workspace.context.caseId}`),
     ]);
     if (!nodeWorkspaceIsCurrent(workspace) || workspace.readSequence !== read) return;
-    workspace.profile = profile; workspace.node = { ...(state.lastGraph.nodes.find(node => node.account === workspace.account) || {}) };
+    const rendered = state.graph?.findById?.(workspace.account)?.getModel?.()?.data;
+    workspace.profile = profile; workspace.node = { ...(rendered || state.lastGraph.nodes.find(node => node.account === workspace.account) || {}) };
     workspace.mainInfo = mainAccounts.find(info => info.account === workspace.account); workspace.phase = 'ready';
     renderNodeWorkspace(workspace);
   } catch (error) {
@@ -5127,7 +5130,8 @@ async function refreshAccountIdentity(context, authoritativeRows = null) {
   try { for (const item of graph?.getNodes?.() || []) {
     const model = item.getModel(), source = nodes.get(String(model.id));
     if (!source) continue;
-    const text = nodeLabel(source), update = { data: source, fundsLabel: text };
+    const data = { ...(model.data || source), id_no: source.id_no };
+    const text = nodeLabel(data), update = { data, fundsLabel: text };
     // Preserve LOD's absent label instead of revealing every hidden label.
     if (model.label !== undefined) update.label = text;
     graph.updateItem(item, update);
@@ -5175,8 +5179,9 @@ async function refreshMainAccountRoles(context, rows) {
     applied = true;
     for (const item of graph?.getNodes?.() || []) {
       const model = item.getModel(), source = nodes.get(String(model.id)); if (!source) continue;
-      const text = nodeLabel(source), photo = nodePhotoUrl(source);
-      const update = { data: source, fundsLabel: text, size: nodeSize(source), style: photo ? {} : nodeStyle(source) };
+      const data = { ...(model.data || source), is_main: source.is_main, is_same_name: source.is_same_name };
+      const text = nodeLabel(data), photo = nodePhotoUrl(data);
+      const update = { data, fundsLabel: text, size: nodeSize(data), style: photo ? {} : nodeStyle(data) };
       if (model.label !== undefined) update.label = text;
       if (photo) update.img = photo;
       graph.updateItem(item, update);
@@ -5189,14 +5194,14 @@ async function refreshMainAccountRoles(context, rows) {
     for (const edge of graph?.getEdges?.() || []) edge.refresh?.();
     syncNodeIdentityRings(); syncGraphEdgeLabels(); restoreEdgeLabelPositions();
     view.fullIndex = FundsGraphView.createIndex(state.lastGraph);
-    const visible = new Set((graph?.getNodes?.() || []).map(item => String(item.getModel().id)));
-    view.index = FundsGraphView.createIndex({ nodes: state.lastGraph.nodes.filter(node => visible.has(String(node.account))),
-      edges: state.lastGraph.edges.filter(edge => visible.has(String(edge.source)) && visible.has(String(edge.target))) });
+    view.index = FundsGraphView.createIndex({ nodes: (graph?.getNodes?.() || []).map(item => item.getModel().data),
+      edges: (graph?.getEdges?.() || []).map(item => item.getModel().data).filter(Boolean) });
     rebuildGraphViewport(); applyGraphLabels(); state.graphSelection?.refresh();
   } finally { graph?.setAutoPaint?.(autoPaint); if (autoPaint) graph?.paint?.(); }
   if (nodeDetail) {
     nodeDetail.revision = view.revision; nodeDetail.readSequence += 1;
-    nodeDetail.node = { ...nodeDetail.node, ...(nodes.get(String(nodeDetail.account)) || {}) };
+    const role = nodes.get(String(nodeDetail.account));
+    if (role) nodeDetail.node = { ...nodeDetail.node, is_main: role.is_main, is_same_name: role.is_same_name };
     nodeDetail.mainInfo = rows.find(row => row.account === nodeDetail.account);
     if (nodeDetail.phase === 'ready') { nodeDetail.scroll?.destroy(); renderNodeWorkspace(nodeDetail); }
     else if (nodeDetail.phase === 'loading') await loadNodeWorkspace(nodeDetail);

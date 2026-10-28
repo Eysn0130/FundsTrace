@@ -11,7 +11,7 @@ def test_funds_window_with_joined_between_filter(database, make_case):
     cid = make_case("Synthetic joined range filter")
     database.x("""insert into flows(case_id,payer_account,payee_account,amount,currency)
         select ?, 'SYN-A', 'SYN-B', i + 1, 'CNY' from range(65) r(i)""", [cid])
-    database.x("""insert into resolved_endpoints
+    database.x("""insert into resolved_endpoints(case_id,flow_id,role,entity_id,state,reason)
         select ?, id, 'payer', 'SYN-M', 'resolved', 'synthetic' from flows where id % 2 = 0""", [cid])
     source = """select f.* from flows f left join resolved_endpoints e
         on e.case_id=f.case_id and e.flow_id=f.id and e.role='payer'

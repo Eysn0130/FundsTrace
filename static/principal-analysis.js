@@ -28,6 +28,10 @@
   }
   function principal(value) {
     if (!value) return '';
+    if (value.source_candidates?.length) {
+      return '逐笔入账的独立条件份额（不认定实际来源，上界不可相加）。\n' + value.source_candidates.map(candidate =>
+        `入账记录 #${candidate.source_flow_id}\n${principal(candidate)}`).join('\n');
+    }
     const reasons = (value.assessment || []).filter(item => item.status !== 'established').map(item => item.message).filter(Boolean);
     const lines = [value.status === 'ok' || value.status === 'determined' ? '账面规则下的条件范围。' : '账面规则范围：—。'];
     const limitationText = {ledger_coverage_unknown: '账簿覆盖完整性未确定', credit_availability_unknown: '透支或授信条件未确定', funds_availability_unknown: '资金实际可用性未确定'};
@@ -41,5 +45,17 @@
     if (value.targets?.length) lines.push('范围基于账面记录和规则条件；各笔上界不可相加，FIFO 是规则分配。');
     return lines.join('\n');
   }
-  root.FundsFacts = Object.freeze({ count, totals, displayCount, displayTotals, principal });
+  function tracking(detail) {
+    const values = (detail || []).flatMap(item => item.principal?.source_candidates?.length
+      ? item.principal.source_candidates : item.principal ? [item.principal] : []);
+    const known = values.filter(value => ['ok', 'determined'].includes(value.status) && value.targets?.length);
+    if (!known.length) return '';
+    const targets = known.flatMap(value => value.targets.map(target => ({ ...target, currency: value.currency })));
+    if (targets.length === 1) {
+      const target = targets[0];
+      return `；账面条件份额 ${target.currency} ${money().format(target.min)}–${money().format(target.max)}，FIFO ${money().format(target.fifo)}（规则分配，非实际来源认定）`;
+    }
+    return `；已计算 ${targets.length} 项独立账面条件份额，详情见原“前后流水”（各项上界不可相加）`;
+  }
+  root.FundsFacts = Object.freeze({ count, totals, displayCount, displayTotals, principal, tracking });
 })(typeof globalThis === 'undefined' ? self : globalThis);
