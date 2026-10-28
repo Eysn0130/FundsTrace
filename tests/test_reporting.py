@@ -43,18 +43,25 @@ with TestClient(app) as client:
     assert response.headers["content-type"].startswith("text/html")
     assert response.headers["content-disposition"].startswith("attachment; filename*=UTF-8''")
     assert "资金回流环路" in response.text
-    assert "CNY 250.02" in response.text
+    assert "CNY 0.00–250.02（待核）" in response.text
     encoded = re.search(r'<script type="application/json" id="funds-trace-report-data">(.*?)</script>', response.text, re.S)
     assert encoded is not None
     snapshot = json.loads(encoded.group(1))
     assert snapshot["schema_version"] == "funds-report.v1"
     assert snapshot["case_id"] == str(cid)
     assert snapshot["case"]["case_name"] == "Synthetic lazy report"
-    assert snapshot["case"]["stats"] == {"flows": 2, "accounts": 2, "import_coverage": {
+    expected_funds = {"policy": "evidence-bounded-funds-v1", "status": "bounded",
+        "observation_count": 2, "confirmed_event_count": 0, "unresolved_observation_count": 2,
+        "count": {"lower": 0, "upper": 2},
+        "totals": [{"currency": "CNY", "amount": None, "lower": "0.00", "upper": "250.02"}]}
+    assert snapshot["case"]["stats"] == {"flows": None, "funds": expected_funds,
+        "statistics_policy": "evidence-bounded-funds-v1", "amount_total": None,
+        "amount_totals": [{"currency": "CNY", "amount": None}], "accounts": 2, "import_coverage": {
         "scope": "source_reported_flows", "unresolved_records": 0, "non_monetary_records": 0,
         "cancelled_records": 0, "excluded_flows": 0, "financial_interpretation_complete": True}}
     assert snapshot["results"]["source_snapshot"] == snapshot["case"]["stats"]
-    assert snapshot["results"]["cycles"]["cycles"][0]["total"] == "250.02"
+    assert snapshot["results"]["cycles"]["cycles"][0]["total"] is None
+    assert snapshot["results"]["cycles"]["cycles"][0]["funds"] == expected_funds
     assert "app.report" in sys.modules
     assert "matplotlib.pyplot" in sys.modules
 '''

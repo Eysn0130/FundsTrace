@@ -126,7 +126,7 @@ def _totals(rows):
         context.prec = 40
         for row in rows:
             totals[row["currency"]] += row["amount"]
-    return [{"currency": currency, "amount": money_string(amount)} for currency, amount in sorted(totals.items())]
+    return [{"currency": currency, "amount": money_string(amount)} for currency, amount in sorted(totals.items(), key=lambda item: item[0] or "")]
 
 
 def _load(body):
@@ -140,19 +140,17 @@ def _load(body):
     if len(rows) > MAX_FLOWS:
         raise HTTPException(413, {"code": "canvas_investigation_limit", "limit": MAX_FLOWS,
                                   "message": "画布有效流水超过研判上限，请将所需流水另存为较小画布；未返回部分金额或路径"})
-    mirrors = {} if evidence_resolution.summary(body.case_id) is not None else mirror_groups(rows)
-    duplicate_ids = {item for values in mirrors.values() for item in values}
-    for row in rows:
-        row["currency"] = row["currency"] or ""
-    graphable = [row for row in rows if row["payer_account"] and row["payee_account"] and row["amount"] is not None]
+    from . import funds_projection, event_resolution
+    mirrors = {}
+    graphable = [row for row in rows if row["payer_account"] and row["payee_account"]]
     if body.scope == "visible":
         accounts = set(body.visible_accounts)
         allowed = {(edge.source, edge.target) for edge in body.visible_edges}
         if any(source not in accounts or target not in accounts for source, target in allowed):
             raise HTTPException(422, "可见关系的两端须包含在可见账号集合中")
         graphable = [row for row in graphable if (row["payer_account"], row["payee_account"]) in allowed]
-    canonical = [row for row in graphable if row["id"] not in duplicate_ids]
-    scope_rows = canonical
+    scope_rows, scope_funds = funds_projection.from_rows(body.case_id, graphable)
+    canonical = graphable
     selected = []
     for row in canonical:
         stamp = row["trade_time"]
@@ -161,6 +159,17 @@ def _load(body):
                 selected.append(row)
         elif (body.start is None or stamp >= body.start) and (body.end is None or stamp <= body.end):
             selected.append(row)
+    selected_raw = selected
+    selected, selected_funds = funds_projection.from_rows(body.case_id, selected_raw)
+    memberships = {item["flow_id"]: item for item in event_resolution.members(body.case_id, [row["id"] for row in selected_raw])}
+    by_event = defaultdict(list)
+    for row in selected_raw:
+        member = memberships.get(str(row["id"]), {})
+        if member.get("status") == "confirmed":
+            by_event[member["event_id"]].append(row["id"])
+    for row in selected:
+        if row.get("fact_event_id"):
+            mirrors[row["id"]] = [item for item in by_event[row["fact_event_id"]] if item != row["id"]]
     dated = [row["trade_time"] for row in scope_rows if row["trade_time"] is not None]
     summary = {
         "tracked_effective_count": len(rows), "scope_raw_count": len(graphable),
@@ -168,9 +177,10 @@ def _load(body):
         "mirror_duplicate_count": len(graphable) - len(scope_rows),
         "missing_time_count": sum(row["trade_time"] is None for row in scope_rows),
         "excluded_undated_count": sum(row["trade_time"] is None for row in scope_rows) if not body.include_undated else 0,
-        "excluded_non_graphable_count": len(rows) - sum(bool(row["payer_account"] and row["payee_account"] and row["amount"] is not None) for row in rows),
+        "excluded_non_graphable_count": len(rows) - sum(bool(row["payer_account"] and row["payee_account"]) for row in rows),
         "time_min": _stamp(min(dated)) if dated else None, "time_max": _stamp(max(dated)) if dated else None,
-        "amount_totals": _totals(selected),
+        "funds": selected_funds, "scope_funds": scope_funds,
+        "amount_totals": funds_projection.public_fields(selected_funds)["amount_totals"],
     }
     return rows, selected, mirrors, summary
 
@@ -211,7 +221,9 @@ def _flow(row, mirrors, references, by_id):
         "payer_display_account": payer_display, "payee_display_account": payee_display,
         "self_account": row.get("self_account") or "",
         "self_display_account": row.get("self_display_account") or row.get("self_account") or "",
-        "amount": money_string(row["amount"]), "currency": row["currency"], "summary": row["summary"],
+        "amount": money_string(row["amount"]) if row["amount"] is not None else None, "currency": row["currency"], "summary": row["summary"],
+        "granularity": "confirmed_event" if row.get("fact_status") == "confirmed" else "unresolved_observation",
+        "observation_count": row.get("observation_count", 1),
         "original_ids": [str(flow_id) for flow_id in original_ids],
         "mirror_ids": [str(flow_id) for flow_id in mirrors.get(row["id"], [])],
         "provenance": [{"flow_id": str(flow_id), "trade_time": _stamp(by_id[flow_id]["trade_time"]),
@@ -244,8 +256,11 @@ def _resolve_account(token, metadata):
 
 
 def _resolution_metadata(case_id):
+    from . import event_resolution, analysis_snapshot, funds_projection
     resolution = evidence_resolution.summary(case_id)
-    return {"statistics_policy": evidence_resolution.POLICY if resolution is not None else "legacy_mirror_fifo",
+    return {"analysis_revision": analysis_snapshot.revision(case_id),
+            "case_event_summary": event_resolution.summary(case_id),
+            "statistics_policy": funds_projection.POLICY,
             "resolution_revision": resolution["revision"] if resolution is not None else None}
 
 
@@ -258,25 +273,19 @@ def _graph(rows, mirrors):
             node = accounts.setdefault(account, {"account": account, "name": name or "", "in": [], "out": []})
             node["name"] = max(node["name"], name or "")
             node[direction].append(row)
-    nodes = []
-    for account, node in sorted(accounts.items()):
-        currencies = sorted({row["currency"] for row in node["in"] + node["out"]})
-        incoming = {value["currency"]: value["amount"] for value in _totals(node["in"])}
-        outgoing = {value["currency"]: value["amount"] for value in _totals(node["out"])}
-        nodes.append({"account": account, "name": node["name"], "in_cnt": len(node["in"]), "out_cnt": len(node["out"]),
-                      "in_totals": _totals(node["in"]), "out_totals": _totals(node["out"]),
-                      "in_amt": next(iter(incoming.values())) if len(incoming) == 1 else (None if incoming else "0.00"),
-                      "out_amt": next(iter(outgoing.values())) if len(outgoing) == 1 else (None if outgoing else "0.00"),
-                      "currency_totals": [{"currency": currency, "in_amt": incoming.get(currency, "0.00"),
-                                           "out_amt": outgoing.get(currency, "0.00")} for currency in currencies]})
+    from . import funds_projection
+    nodes = [{"account": account, "name": node["name"],
+              **funds_projection.directional_fields(funds_projection.summarize_rows(node["in"]),
+                                                     funds_projection.summarize_rows(node["out"]))}
+             for account, node in sorted(accounts.items())]
     edges = []
     for (source, target), values in sorted(grouped.items()):
         dated = [row["trade_time"] for row in values if row["trade_time"] is not None]
-        totals = _totals(values)
+        funds = funds_projection.summarize_rows(values)
         edges.append({"source": source, "target": target, "source_name": max(row["payer_name"] or "" for row in values),
-                      "target_name": max(row["payee_name"] or "" for row in values), "cnt": len(values),
-                      "amount_totals": totals, "currencies": [value["currency"] for value in totals],
-                      "total": totals[0]["amount"] if len(totals) == 1 else None,
+                      "target_name": max(row["payee_name"] or "" for row in values),
+                      "funds": funds, **funds_projection.public_fields(funds),
+                      "currencies": [value["currency"] for value in funds["totals"]],
                       "tmin": _stamp(min(dated)) if dated else None, "tmax": _stamp(max(dated)) if dated else None,
                       "ids": [str(flow_id) for row in values for flow_id in [row["id"], *mirrors.get(row["id"], [])]],
                       "summaries": sorted({row["summary"] for row in values if row["summary"]})})
@@ -289,6 +298,8 @@ def time_projection(body):
     references = _provenance(body.case_id, original_ids)
     by_id = {row["id"]: row for row in rows}
     nodes, edges = _graph(selected, mirrors)
+    from . import event_resolution, funds_projection
+    event_resolution.decorate_edges(body.case_id, edges)
     evidence_resolution.decorate_accounts(body.case_id, nodes)
     metadata = {node["account"]: node for node in nodes}
     for edge in edges:
@@ -302,20 +313,20 @@ def time_projection(body):
     return {
         "case_id": str(body.case_id), "canvas_id": str(body.canvas_id), "scope": body.scope,
         "window": {"start": _stamp(body.start), "end": _stamp(body.end), "include_undated": body.include_undated},
-        "summary": summary, "time_min": summary["time_min"], "time_max": summary["time_max"],
+        "summary": summary, "funds": summary["funds"], "time_min": summary["time_min"], "time_max": summary["time_max"],
         "nodes": nodes, "edges": edges, "flows": [_flow(row, mirrors, references, by_id) for row in selected],
-        "timeline": [{"time": _stamp(stamp), "count": len(values), "amount_totals": _totals(values)}
+        "timeline": [{"time": _stamp(stamp), "funds": funds_projection.summarize_rows(values),
+                      **funds_projection.public_fields(funds_projection.summarize_rows(values))}
                      for stamp, values in sorted(timeline.items())],
         "complete": True, "limits": {"max_canvas_flows": MAX_FLOWS, "max_provenance": MAX_PROVENANCE},
         **policy,
-        "semantics": "effective_tracked_flows; " +
-                     ("accepted_ledger_records; " if policy["statistics_policy"] == evidence_resolution.POLICY
-                      else "graph_fifo_mirror_pairing; ") +
-                     "canonical_local_time; inclusive_window",
+        "semantics": "selected_confirmed_events_and_unresolved_observations; canonical_local_time; inclusive_window",
     }
 
 
 def paths(body):
+    from . import funds_projection
+    from .table_import import _ISO_CURRENCIES
     rows, selected, mirrors, summary = _load(body)
     summary["time_window_count"] = len(selected)
     summary["excluded_by_currency_count"] = 0
@@ -324,11 +335,12 @@ def paths(body):
         selected = [row for row in selected if row["currency"] == body.currency]
     if body.mode == "chronological":
         summary["excluded_undated_for_chronology_count"] = sum(row["trade_time"] is None for row in selected)
-        summary["excluded_unknown_currency_for_chronology_count"] = sum(not row["currency"] for row in selected)
-        summary["excluded_nonpositive_for_chronology_count"] = sum(row["amount"] <= 0 for row in selected)
-        selected = [row for row in selected if row["trade_time"] is not None and row["currency"] and row["amount"] > 0]
+        summary["excluded_unknown_currency_for_chronology_count"] = sum(row["currency"] not in _ISO_CURRENCIES for row in selected)
+        summary["excluded_nonpositive_for_chronology_count"] = sum(row["amount"] is None or row["amount"] <= 0 for row in selected)
+        selected = [row for row in selected if row["trade_time"] is not None and row["currency"] in _ISO_CURRENCIES and row["amount"] is not None and row["amount"] > 0]
     summary["selected_count"] = len(selected)
-    summary["amount_totals"] = _totals(selected)
+    summary["funds"] = funds_projection.summarize_rows(selected)
+    summary["amount_totals"] = funds_projection.public_fields(summary["funds"])["amount_totals"]
     metadata = _account_metadata(body.case_id, {row[side] for row in selected
                                               for side in ("payer_account", "payee_account")})
     start_accounts = _resolve_account(body.start_account, metadata)
@@ -340,7 +352,7 @@ def paths(body):
     for row in selected:
         grouped[(row["payer_account"], row["payee_account"], row["currency"])].append(row)
     adjacency = defaultdict(list)
-    for (source, target, currency), values in sorted(grouped.items()):
+    for (source, target, currency), values in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1], item[0][2] or "")):
         if body.mode == "chronological":
             for row in values:
                 adjacency[source].append((target, currency, [row], row["trade_time"]))
@@ -359,7 +371,7 @@ def paths(body):
             if examined > MAX_SEARCH_STEPS:
                 reason = "search_step_limit"
                 break
-            if target in visited or (currency is not None and currency != edge_currency):
+            if target in visited or (steps and currency != edge_currency):
                 continue
             if body.mode == "chronological" and last_time is not None and stamp <= last_time:
                 continue
@@ -388,7 +400,9 @@ def paths(body):
                        "steps": [{"source": source, "target": target, "currency": step_currency,
                                   "source_display_account": _display_account(source, metadata),
                                   "target_display_account": _display_account(target, metadata),
-                                  "count": len(values), "amount": _totals(values)[0]["amount"],
+                                  "funds": funds_projection.summarize_rows(values),
+                                  "count": funds_projection.public_fields(funds_projection.summarize_rows(values))["cnt"],
+                                  "amount": funds_projection.public_fields(funds_projection.summarize_rows(values))["total"],
                                   "flow_ids": [str(row["id"]) for row in values],
                                   "first_time": _stamp(min(row["trade_time"] for row in values if row["trade_time"] is not None))
                                       if any(row["trade_time"] is not None for row in values) else None,

@@ -20,7 +20,9 @@
       else dialog.removeAttribute('data-capture-locked');
       $('caseClose').disabled = $('caseCloseFooter').disabled = deletionLocked();
       $('caseContext').textContent = `当前案件：${summary.name || '未选择案件'} · 画布：${summary.canvasName || '默认画布'}`;
-      $('caseCounts').textContent = `流水 ${count(summary.flows)} 笔 · 账户 ${count(summary.accounts)} 个`;
+      const flows = summary.funds ? `${root.FundsFacts.count(summary.funds)} · ${count(summary.funds.observation_count)} 条原始观察`
+        : summary.flows == null ? '流水笔数待定' : `流水 ${count(summary.flows)} 笔`;
+      $('caseCounts').textContent = `${flows} · 账户 ${count(summary.accounts)} 个`;
       $('caseHome').hidden = view !== 'home';
       $('caseHomeFooter').hidden = view !== 'home';
       $('caseDetail').hidden = view === 'home';
@@ -38,7 +40,7 @@
       $('caseDeleteGroup').hidden = view !== 'delete' || phase === 'done';
       $('caseFileName').textContent = file?.name || '尚未选择案件包';
       $('caseCanvasNameGroup').hidden = !($('caseSaveCanvas').checked && !context?.canvasId);
-      $('caseDeleteScope').textContent = `流水 ${count(summary.flows)} 笔、导入批次、账户资料与照片、全部画布及追踪记录。`;
+      $('caseDeleteScope').textContent = `${flows}、导入批次、账户资料与照片、全部画布及追踪记录。`;
       $('caseResult').hidden = phase !== 'done';
       $('caseResultText').textContent = result ? `「${result.name}」${view === 'new' ? '已创建' : '已导入'}${result.flows != null ? ` · ${count(result.flows)} 笔流水` : ''}` : '';
       $('caseOpenResult').hidden = !result || phase !== 'done';

@@ -223,10 +223,21 @@
           },
           "amount_totals": {
             "items": {
-              "$ref": "#/components/schemas/CurrencyAmount"
+              "$ref": "#/components/schemas/ProjectedCurrencyAmount"
             },
             "title": "Amount Totals",
             "type": "array"
+          },
+          "analysis_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Revision"
           },
           "batches": {
             "title": "Batches",
@@ -248,9 +259,36 @@
             ],
             "title": "Currency"
           },
+          "event_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EventSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "flows": {
-            "title": "Flows",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flows"
+          },
+          "funds": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FundsProjection"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "import_coverage": {
             "anyOf": [
@@ -286,7 +324,10 @@
           "statistics_policy": {
             "anyOf": [
               {
-                "const": "typed-account-evidence-v1",
+                "enum": [
+                  "typed-account-evidence-v1",
+                  "evidence-bounded-funds-v1"
+                ],
                 "type": "string"
               },
               {
@@ -454,6 +495,83 @@
           "amount"
         ],
         "title": "CurrencyAmount",
+        "type": "object"
+      },
+      "EventSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "complete_event_total": {
+            "title": "Complete Event Total",
+            "type": "boolean"
+          },
+          "confirmed_amount_totals": {
+            "items": {
+              "$ref": "#/components/schemas/CurrencyAmount"
+            },
+            "title": "Confirmed Amount Totals",
+            "type": "array"
+          },
+          "confirmed_entries": {
+            "title": "Confirmed Entries",
+            "type": "integer"
+          },
+          "confirmed_events": {
+            "title": "Confirmed Events",
+            "type": "integer"
+          },
+          "conflict_entries": {
+            "title": "Conflict Entries",
+            "type": "integer"
+          },
+          "excluded_reference_entries": {
+            "title": "Excluded Reference Entries",
+            "type": "integer"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "observed_entries": {
+            "title": "Observed Entries",
+            "type": "integer"
+          },
+          "policy": {
+            "title": "Policy",
+            "type": "string"
+          },
+          "reference_observations": {
+            "title": "Reference Observations",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "unknown_entries": {
+            "title": "Unknown Entries",
+            "type": "integer"
+          },
+          "unresolved_reference_observations": {
+            "title": "Unresolved Reference Observations",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "policy",
+          "revision",
+          "confirmed_events",
+          "confirmed_entries",
+          "conflict_entries",
+          "unknown_entries",
+          "observed_entries",
+          "reference_observations",
+          "excluded_reference_entries",
+          "unresolved_reference_observations",
+          "confirmed_amount_totals",
+          "complete_event_total",
+          "note"
+        ],
+        "title": "EventSummary",
         "type": "object"
       },
       "FeedbackExample": {
@@ -627,9 +745,27 @@
         "additionalProperties": false,
         "properties": {
           "amount": {
-            "pattern": "^-?[0-9]+\\.[0-9]{2}$",
-            "title": "Amount",
-            "type": "string"
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "analysis_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Revision"
           },
           "balance": {
             "anyOf": [
@@ -668,10 +804,49 @@
             "title": "Currency",
             "type": "string"
           },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "event_state": {
+            "default": "unknown",
+            "title": "Event State",
+            "type": "string"
+          },
+          "granularity": {
+            "default": "observation",
+            "enum": [
+              "confirmed_event",
+              "unresolved_observation",
+              "observation"
+            ],
+            "title": "Granularity",
+            "type": "string"
+          },
           "id": {
             "pattern": "^[1-9][0-9]*$",
             "title": "Id",
             "type": "string"
+          },
+          "observation_count": {
+            "default": 1,
+            "title": "Observation Count",
+            "type": "integer"
+          },
+          "observation_ids": {
+            "items": {
+              "pattern": "^[1-9][0-9]*$",
+              "type": "string"
+            },
+            "title": "Observation Ids",
+            "type": "array"
           },
           "payee_account": {
             "title": "Payee Account",
@@ -814,10 +989,31 @@
       "FlowPage": {
         "additionalProperties": false,
         "properties": {
+          "analysis_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Revision"
+          },
           "case_id": {
             "pattern": "^[1-9][0-9]*$",
             "title": "Case Id",
             "type": "string"
+          },
+          "funds": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FundsProjection"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "items": {
             "items": {
@@ -904,6 +1100,64 @@
             ],
             "title": "Mode",
             "type": "string"
+          },
+          "observation_account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Account"
+          },
+          "observation_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Amount"
+          },
+          "observation_balance": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Balance"
+          },
+          "observation_currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Currency"
+          },
+          "observation_flow_id": {
+            "anyOf": [
+              {
+                "pattern": "^[1-9][0-9]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Flow Id"
           },
           "origin": {
             "enum": [
@@ -1021,6 +1275,130 @@
           "page_size"
         ],
         "title": "FlowSourceList",
+        "type": "object"
+      },
+      "FundsAmount": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "lower": {
+            "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+            "title": "Lower",
+            "type": "string"
+          },
+          "upper": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upper"
+          }
+        },
+        "required": [
+          "currency",
+          "amount",
+          "lower",
+          "upper"
+        ],
+        "title": "FundsAmount",
+        "type": "object"
+      },
+      "FundsCount": {
+        "additionalProperties": false,
+        "properties": {
+          "lower": {
+            "title": "Lower",
+            "type": "integer"
+          },
+          "upper": {
+            "title": "Upper",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lower",
+          "upper"
+        ],
+        "title": "FundsCount",
+        "type": "object"
+      },
+      "FundsProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed_event_count": {
+            "title": "Confirmed Event Count",
+            "type": "integer"
+          },
+          "count": {
+            "$ref": "#/components/schemas/FundsCount"
+          },
+          "observation_count": {
+            "title": "Observation Count",
+            "type": "integer"
+          },
+          "policy": {
+            "const": "evidence-bounded-funds-v1",
+            "title": "Policy",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "exact",
+              "bounded",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "totals": {
+            "items": {
+              "$ref": "#/components/schemas/FundsAmount"
+            },
+            "title": "Totals",
+            "type": "array"
+          },
+          "unresolved_observation_count": {
+            "title": "Unresolved Observation Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "policy",
+          "status",
+          "observation_count",
+          "confirmed_event_count",
+          "unresolved_observation_count",
+          "count",
+          "totals"
+        ],
+        "title": "FundsProjection",
         "type": "object"
       },
       "ImportCoverage": {
@@ -1815,6 +2193,40 @@
         "title": "PreviewStats",
         "type": "object"
       },
+      "ProjectedCurrencyAmount": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          }
+        },
+        "required": [
+          "currency",
+          "amount"
+        ],
+        "title": "ProjectedCurrencyAmount",
+        "type": "object"
+      },
       "RepreviewRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2394,6 +2806,20 @@
               "minimum": 1,
               "title": "Page Size",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "granularity",
+            "required": false,
+            "schema": {
+              "default": "events",
+              "enum": [
+                "events",
+                "observations"
+              ],
+              "title": "Granularity",
+              "type": "string"
             }
           }
         ],

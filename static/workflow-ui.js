@@ -72,7 +72,7 @@
 
   const effectiveAdded = result => result.table_summary?.effective_added ?? result.ok;
   const retainedFacts = result => result.table_summary?.effective_added != null && result.table_summary.effective_added !== result.ok
-    ? `本次保留流水事实 ${fmtCount(result.ok)} 笔，其中新增有效资金流水 ${fmtCount(result.table_summary.effective_added)} 笔；已有配对依据的记录不重复进入统计。` : '';
+    ? `本次保留来源流水记录 ${fmtCount(result.ok)} 条，其中新增有效流水记录 ${fmtCount(result.table_summary.effective_added)} 条；已有配对依据的记录不重复进入统计。` : '';
 
   function tableHtml(summary, complete = false) {
     const reasons = Object.entries(summary.reason_counts || {}).map(([reason, count]) => `<li>${esc(feedbackReason(reason))}：${fmtCount(count)} 条</li>`).join('');
@@ -112,11 +112,9 @@
   }
 
   function resolutionHtml(value, complete = false) {
-    if (!value) return '';
+    if (!value || !(value.unresolved_endpoints || value.conflicts)) return '';
     return `<section aria-label="账户关联结果"><p><strong>${complete ? '账户关联已更新' : '账户资料关联预览'}</strong></p>`
-      + `<p>辅助资料 ${fmtCount(value.auxiliary_records)} 条 · 关联证据 ${fmtCount(value.evidence_records)} 条 · 已定位交易端点 ${fmtCount(value.resolved_endpoints)} 个</p>`
-      + (value.unresolved_endpoints || value.conflicts ? `<p>尚未定位到账务账户的端点 ${fmtCount(value.unresolved_endpoints)} 个 · 身份关系冲突 ${fmtCount(value.conflicts)} 处。已知卡号和原始记录继续保留，补充资料后自动重新关联。</p>` : '')
-      + '<p>图谱与流水按同一账户关联结果统计，金额按币种分别累计。双方账簿中的交易尚未自动认定为同一笔资金事件。</p></section>';
+      + `<p>有 ${fmtCount(value.unresolved_endpoints)} 个账户标识尚未关联，${fmtCount(value.conflicts)} 处资料冲突。已知卡号和原始记录继续保留，可在账户详情中核对。</p></section>`;
   }
 
   function renderPreview(result) {
@@ -255,9 +253,9 @@
       $('#impStep1').style.display = 'none'; $('#impStep2').style.display = 'none'; $('#impStats').textContent = '';
       $('#impResultTitle').textContent = session.result.feedback || session.result.table_summary ? '自动处理完成' : '导入完成';
       $('#impResultText').textContent = session.result.feedback
-        ? `已保存 ${fmtCount(session.result.feedback.record_total)} 条记录 · 新增资金流水 ${fmtCount(session.result.ok)} 笔 · 重复 ${fmtCount(session.result.rows_dup || 0)} 笔 · ${feedbackCounts(session.result.feedback)}`
-        : session.result.table_summary ? `已保存 ${fmtCount(session.result.table_summary.record_total)} 条记录 · 新增资金流水 ${fmtCount(effectiveAdded(session.result))} 笔 · 重复 ${fmtCount(session.result.rows_dup || 0)} 笔 · 未计入资金流水 ${fmtCount(session.result.table_summary.unresolved)} 条 · 已配对冲正/撤销 ${fmtCount(session.result.table_summary.cancelled ?? 0)} 条（双方均不计有效资金） · 无资金变动 ${fmtCount(session.result.table_summary.non_monetary)} 条 · 非交易记录 ${fmtCount(session.result.table_summary.non_transaction)} 条 · 辅助资料 ${fmtCount(session.result.table_summary.auxiliary)} 条`
-          : `新增 ${fmtCount(session.result.ok)} 笔 · 重复 ${fmtCount(session.result.rows_dup || 0)} 笔 · 跳过 ${fmtCount(session.result.skipped || 0)} 行`;
+        ? `已保存 ${fmtCount(session.result.feedback.record_total)} 条记录 · 新增流水记录 ${fmtCount(session.result.ok)} 条 · 重复 ${fmtCount(session.result.rows_dup || 0)} 条 · ${feedbackCounts(session.result.feedback)}`
+        : session.result.table_summary ? `已保存 ${fmtCount(session.result.table_summary.record_total)} 条记录 · 新增流水记录 ${fmtCount(effectiveAdded(session.result))} 条 · 重复 ${fmtCount(session.result.rows_dup || 0)} 条 · 未计入资金流水 ${fmtCount(session.result.table_summary.unresolved)} 条 · 已配对冲正/撤销 ${fmtCount(session.result.table_summary.cancelled ?? 0)} 条（双方均不计有效资金） · 无资金变动 ${fmtCount(session.result.table_summary.non_monetary)} 条 · 非交易记录 ${fmtCount(session.result.table_summary.non_transaction)} 条 · 辅助资料 ${fmtCount(session.result.table_summary.auxiliary)} 条`
+          : `新增流水记录 ${fmtCount(session.result.ok)} 条 · 重复 ${fmtCount(session.result.rows_dup || 0)} 条 · 跳过 ${fmtCount(session.result.skipped || 0)} 行`;
     }
     const feedback = session.result?.feedback, summary = session.result?.table_summary;
     $('#impResultFeedback').hidden = !feedback && !summary;
@@ -471,9 +469,9 @@
           if (!result || result.ok == null) throw new Error('导入完成回执不完整，请重新读取进度');
           session.result = result; session.preview = null;
           let message = result.feedback
-            ? `自动处理完成：已保存 ${fmtCount(result.feedback.record_total)} 条记录 · 新增资金流水 ${fmtCount(result.ok)} 笔 · 重复 ${fmtCount(result.rows_dup || 0)} 笔 · ${feedbackCounts(result.feedback)}`
-            : result.table_summary ? `自动处理完成：新增 ${fmtCount(effectiveAdded(result))} 笔 · 重复 ${fmtCount(result.rows_dup || 0)} 笔 · 未计入资金流水 ${fmtCount(result.table_summary.unresolved)} 条，原因见处理结果。`
-              : `导入完成：新增 ${fmtCount(result.ok)} 笔，跳过 ${fmtCount(result.skipped || 0)} 行，重复 ${fmtCount(result.rows_dup || 0)} 笔`;
+            ? `自动处理完成：已保存 ${fmtCount(result.feedback.record_total)} 条记录 · 新增流水记录 ${fmtCount(result.ok)} 条 · 重复 ${fmtCount(result.rows_dup || 0)} 条 · ${feedbackCounts(result.feedback)}`
+            : result.table_summary ? `自动处理完成：新增流水记录 ${fmtCount(effectiveAdded(result))} 条 · 重复 ${fmtCount(result.rows_dup || 0)} 条 · 未计入资金流水 ${fmtCount(result.table_summary.unresolved)} 条，原因见处理结果。`
+              : `导入完成：新增流水记录 ${fmtCount(result.ok)} 条，跳过 ${fmtCount(result.skipped || 0)} 行，重复 ${fmtCount(result.rows_dup || 0)} 条`;
           if (result.main_detected?.length) message += result.table_summary ? `已标记本方主账号 ${fmtCount(result.main_detected.length)} 个。` : `；已标记本方主账号：${result.main_detected.map(item => item.name || item.account.slice(-6)).join('、')}`;
           if (visible(session)) { hidePbar(); $('#impResultText').textContent = message; controls(session); }
           toast(message);

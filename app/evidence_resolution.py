@@ -6,7 +6,7 @@ ledger entities. Names, balances and proximity are never identity evidence.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from contextlib import contextmanager, nullcontext
 import glob
 import hashlib
@@ -20,10 +20,11 @@ from . import db
 
 POLICY = "typed-account-evidence-v1"
 DETAIL_FIELD = "resolution_evidence"
-TABLE_PROFILE = "funds-trace-table-v19"
-ARCHIVE_PROFILE = "funds-trace-table-archive-v5"
+TABLE_PROFILE = "funds-trace-table-v20"
+ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
 FEEDBACK_PROFILE = "funds-trace-bank-feedback-v6"
-PROFILES = frozenset((TABLE_PROFILE, ARCHIVE_PROFILE, FEEDBACK_PROFILE))
+PROFILES = frozenset((TABLE_PROFILE, ARCHIVE_PROFILE, FEEDBACK_PROFILE, "funds-trace-table-v19", "funds-trace-table-archive-v5", "funds-trace-table-archive-v7"))
+_PROFILE_SQL = ",".join("?" for _ in PROFILES)
 _MAX_TEXT = 512
 WRITE_CHUNK = 50_000
 _ENDPOINT_ROLES = {role: role for role in ("payer", "payee", "self")}
@@ -200,27 +201,30 @@ def occurrence_key(member_sha, position):
 
 
 def bind_occurrences(plan):
+    from .import_staging import record_map
+    from itertools import chain
     bind_families(plan)
     members = {member["member_path"]: member["sha256"] for member in plan["members"]}
-    records = {record["record_no"]: record for record in plan["records"]}
+    records = record_map(plan)
     declarations = defaultdict(set)
-    auxiliary = []
     for record in plan["records"]:
         if record["disposition"] != "auxiliary" or DETAIL_FIELD not in record["details"]:
             continue
         data = _projection_evidence(validate_evidence(record["details"][DETAIL_FIELD]))
-        auxiliary.append((record, data))
         if data["role"] == "manifest" and data["scope_eligible"] == "yes":
             declarations[record["details"]["evidence_family"]].add((data["request"], data["bank"]))
     bindings = {}
     denied = set()
-    for record, data in auxiliary:
+    for record in plan["records"]:
+        if record["disposition"] != "auxiliary" or DETAIL_FIELD not in record["details"]:
+            continue
+        data = _projection_evidence(validate_evidence(record["details"][DETAIL_FIELD]))
         if data["role"] in {"account", "subaccount"} and data["scope_eligible"] == "yes":
             family = record["details"]["evidence_family"]
             binding = source_scope(record["member_path"], data["role"], declarations[family])
             if binding and data["bank"] and data["bank"] != binding["bank"]:
                 denied.add((family, binding["request"], binding["bank"]))
-    for row in (*plan["rows"], *plan.get("cancelled_rows", [])):
+    for row in chain(plan["rows"], plan.get("cancelled_rows", [])):
         record = records[row["_source_row"]]
         value = record["details"].get(DETAIL_FIELD)
         data = _projection_evidence(validate_evidence(value)) if value else None
@@ -245,10 +249,10 @@ def _entity_id(bank, kind, number):
 # Bound both the blocking sort and DuckDB's result buffer. A fetchmany call
 # alone does not bound a query that has already materialized every audit note.
 REPLAY_CHUNK = 4096
-_EVIDENCE_RANGES = """select r.source_id,min(r.record_no),max(r.record_no)
+_EVIDENCE_RANGES = f"""select r.source_id,min(r.record_no),max(r.record_no)
         from import_records r join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join evidence_sources b on b.case_id=r.case_id and b.source_id=r.source_id and b.active
-        where r.case_id=? and s.parser_version in (?,?,?)
+        where r.case_id=? and s.parser_version in ({_PROFILE_SQL})
         and r.disposition in ('auxiliary','imported','duplicate')"""
 _EVIDENCE_QUERY = """select m.sha256,r.source_row,r.details_json,f.flow_id,r.member_path
         from import_records r join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
@@ -257,15 +261,122 @@ _EVIDENCE_QUERY = """select m.sha256,r.source_row,r.details_json,f.flow_id,r.mem
         left join (select * from flow_sources where case_id=$case_id and source_id=$source_id
                    and source_row between $first and $last) f
             on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
-        where r.case_id=$case_id and s.parser_version in ($table_profile,$archive_profile,$feedback_profile)
+        where r.case_id=$case_id and s.parser_version in (select unnest($profiles))
         and r.disposition in ('auxiliary','imported','duplicate')
         and r.source_id=$source_id and r.record_no between $first and $last"""
+
+
+class _ResolutionStaging:
+    """Operation-local indexes for flow-sized replay state, never case state."""
+    def __init__(self):
+        from .import_staging import PlanStore
+        self.owner = PlanStore()
+        try:
+            self.connection = self.owner._con
+            self.connection.executescript("""
+                create table resolution_seen(namespace integer, identity blob,
+                    primary key(namespace,identity)) without rowid;
+                create table resolution_endpoints(flow_id integer,role text,entity_id text,state text,reason text,
+                    primary key(flow_id,role)) without rowid;
+            """)
+        except BaseException:
+            self.owner.close()
+            raise
+        self._namespace = 0
+        self.pending = OrderedDict()
+        self.peak_pending = 0
+        self.seen_inserts = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.pending.clear()
+        self.owner.close()
+
+    @contextmanager
+    def seen(self):
+        self._namespace += 1
+        namespace = self._namespace
+        staging = self
+        class Seen:
+            def admit(self, identity):
+                scope, position, flow_id, digest = identity
+                key = _json([scope, position, flow_id, digest.hex()]).encode()
+                staging.seen_inserts += 1
+                return bool(staging.connection.execute(
+                    "insert or ignore into resolution_seen values (?,?)", [namespace, key]).rowcount)
+        try:
+            yield Seen()
+        finally:
+            if not self.owner._closed:
+                self.connection.execute("delete from resolution_seen where namespace=?", [namespace])
+
+    def get(self, key):
+        if key in self.pending:
+            return self.pending[key]
+        return self.connection.execute("select entity_id,state,reason from resolution_endpoints where flow_id=? and role=?", key).fetchone()
+
+    def __setitem__(self, key, value):
+        from .import_staging import PLAN_CHUNK
+        self.pending[key] = value
+        self.peak_pending = max(self.peak_pending, len(self.pending))
+        if len(self.pending) >= PLAN_CHUNK:
+            self.flush()
+
+    def setdefault(self, key, value):
+        previous = self.get(key)
+        if previous is None:
+            self[key] = value
+            return value
+        return previous
+
+    def flush(self):
+        if self.pending:
+            self.connection.executemany("insert or replace into resolution_endpoints values (?,?,?,?,?)",
+                ((*key, *value) for key, value in self.pending.items()))
+            self.pending.clear()
+
+    def rows(self):
+        self.flush()
+        return _EndpointRows(self)
+
+
+class _EndpointRows(list):
+    """Replayable ordered JSON array with no resident list of endpoint dicts.
+
+    JSONEncoder.iterencode's list protocol uses __iter__; the empty backing
+    list is intentional. Persistence consumes this stream only after hashing
+    and the audit snapshot have both finished.
+    """
+    def __init__(self, staging):
+        super().__init__()
+        self.staging = staging
+        self.count = staging.connection.execute("select count(*) from resolution_endpoints").fetchone()[0]
+
+    def __len__(self):
+        return self.count
+
+    def __iter__(self):
+        cursor = self.staging.connection.execute(
+            "select flow_id,role,entity_id,state,reason from resolution_endpoints order by flow_id,role")
+        try:
+            for flow_id, role, entity_id, state, reason in cursor:
+                yield {"flow_id": flow_id, "role": role, "entity_id": entity_id, "state": state, "reason": reason}
+        finally:
+            if not self.staging.owner._closed:
+                cursor.close()
+
+    def clear(self):
+        self.staging.connection.execute("delete from resolution_endpoints")
+        self.count = 0
 
 class _CaseEvidence:
     """Re-read the same transaction snapshot without retaining decoded rows."""
     def __init__(self, case_id):
         self.case_id = case_id
         self.record_count = self.auxiliary_count = 0
+        self.staging = None
 
     def __iter__(self):
         return self._iterate(False)
@@ -279,34 +390,38 @@ class _CaseEvidence:
         # through empty ranges. Only keys and two bounds are materialized here.
         ranges = db.con().execute(_EVIDENCE_RANGES + auxiliary_filter
             + f" group by r.source_id,r.record_no // {REPLAY_CHUNK} order by r.source_id,min(r.record_no)",
-            [self.case_id, TABLE_PROFILE, ARCHIVE_PROFILE, FEEDBACK_PROFILE]).fetchall()
+            [self.case_id, *sorted(PROFILES)]).fetchall()
         query = _EVIDENCE_QUERY + auxiliary_filter + " order by r.source_id,r.record_no"
-        seen, namespaces, records, auxiliary = set(), {}, 0, 0
-        for source, first, last in ranges:
-            cursor = db.con().execute(query, {"case_id": self.case_id, "source_id": source,
-                "first": first, "last": last, "table_profile": TABLE_PROFILE,
-                "archive_profile": ARCHIVE_PROFILE, "feedback_profile": FEEDBACK_PROFILE})
-            rows = cursor.fetchall()
-            for source_id, position, details, flow_id, member_path in rows:
-                metadata = json.loads(details)
-                value = metadata.get(DETAIL_FIELD)
-                if not value:
-                    continue
-                data = validate_evidence(value)
-                data["_member_path"] = member_path
-                data["_family"] = metadata.get("evidence_family", "")
-                namespace_key = (data["_family"], metadata.get("family_member_sha256", member_path), source_id)
-                if namespace_key not in namespaces:
-                    namespaces[namespace_key] = hashlib.sha256(_json(namespace_key).encode()).hexdigest()
-                scope = namespaces[namespace_key]
-                identity = (scope, position, flow_id, hashlib.sha256(value.encode()).digest())
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                records += 1
-                auxiliary += data["role"] != "transaction"
-                yield scope, position, flow_id, data
-            del rows
+        namespaces, records, auxiliary = {}, 0, 0
+        with self.staging.seen() if self.staging is not None else nullcontext(set()) as seen:
+            for source, first, last in ranges:
+                cursor = db.con().execute(query, {"case_id": self.case_id, "source_id": source,
+                    "first": first, "last": last, "profiles": sorted(PROFILES)})
+                rows = cursor.fetchall()
+                for source_id, position, details, flow_id, member_path in rows:
+                    metadata = json.loads(details)
+                    value = metadata.get(DETAIL_FIELD)
+                    if not value:
+                        continue
+                    data = validate_evidence(value)
+                    data["_member_path"] = member_path
+                    data["_family"] = metadata.get("evidence_family", "")
+                    namespace_key = (data["_family"], metadata.get("family_member_sha256", member_path), source_id)
+                    if namespace_key not in namespaces:
+                        namespaces[namespace_key] = hashlib.sha256(_json(namespace_key).encode()).hexdigest()
+                    scope = namespaces[namespace_key]
+                    identity = (scope, position, flow_id, hashlib.sha256(value.encode()).digest())
+                    if self.staging is not None:
+                        if not seen.admit(identity):
+                            continue
+                    else:
+                        if identity in seen:
+                            continue
+                        seen.add(identity)
+                    records += 1
+                    auxiliary += data["role"] != "transaction"
+                    yield scope, position, flow_id, data
+                del rows
         if not auxiliary_only:
             self.record_count, self.auxiliary_count = records, auxiliary
 
@@ -315,8 +430,10 @@ def _load(case_id):
     return _CaseEvidence(case_id)
 
 
-def _compute(evidence, *, collect_endpoints=True):
+def _compute(evidence, *, collect_endpoints=True, staging=None):
     """Replay all current declarations, so late conflicts revoke earlier links."""
+    if isinstance(evidence, _CaseEvidence):
+        evidence.staging = staging
     evidence = contextualize(evidence)
     card_targets, parent_claims = defaultdict(set), []
     declarations = []
@@ -358,7 +475,7 @@ def _compute(evidence, *, collect_endpoints=True):
             raise ValueError("empty typed entity identifier")
         key = _entity_id(bank, kind, number)
         target = entities.setdefault(key, {"entity_id": key, "kind": kind, "account_number": number,
-                   "display_account": number, "bank": "" if bank.startswith("unscoped:") else bank, "cards": set(), "_display_cards": set(), "parent_entity_id": None,
+                   "display_account": number, "bank": "" if bank.startswith("unscoped:") else bank, "cards": set(), "parent_entity_id": None,
                    "names": set(), "status": "unscoped" if bank.startswith("unscoped:") else "resolved"})
         return target
     for scope, item in declarations:
@@ -368,9 +485,7 @@ def _compute(evidence, *, collect_endpoints=True):
             target = entity(bank, "subaccount" if (bank, item["account"]) in subaccounts else "account", item["account"])
             if item["card"]:
                 target["cards"].add(item["card"])
-                if not item.get("_source_scope_conflict"):
-                    target["_display_cards"].add(item["card"])
-                else:
+                if item.get("_source_scope_conflict"):
                     target["status"] = "conflict"
             if item["name"]:
                 target["names"].add(item["name"])
@@ -385,7 +500,7 @@ def _compute(evidence, *, collect_endpoints=True):
             target["parent_entity_id"] = parent["entity_id"]
         else:
             target["status"] = "conflict"
-    projections, conflicts, unresolved = {}, source_conflicts, 0
+    projections, conflicts, unresolved = (staging if staging is not None else {}), source_conflicts, 0
     endpoint_count = 0
     for source_id, position, flow_id, data in evidence:
         if flow_id is None or data["role"] != "transaction":
@@ -435,8 +550,6 @@ def _compute(evidence, *, collect_endpoints=True):
             state = "conflict" if conflict else "unscoped" if bank.startswith("unscoped:") else "identifier_undetermined" if kind == "identifier" else "card_only" if kind == "card" else "resolved"
             if conflict or target["status"] != "conflict" and state != "resolved":
                 target["status"] = state
-            if card and not conflict:
-                target["_display_cards"].add(card)
             if not collect_endpoints:
                 endpoint_count += 1
                 conflicts += state == "conflict"
@@ -460,10 +573,8 @@ def _compute(evidence, *, collect_endpoints=True):
     for target in entities.values():
         target["cards"] = sorted(target["cards"])
         target["names"] = sorted(target["names"])
-        # A supported card is a display label, never the query key or ledger ID.
-        display_cards = sorted(target.pop("_display_cards", ()))
-        if display_cards:
-            target["display_account"] = display_cards[0]
+        # Use the typed ledger number. Source associations do not establish
+        # which card is current; a sorted card list is not a temporal history.
         target["name_conflict"] = len(target["names"]) > 1
         if target["name_conflict"] and target["status"] == "resolved":
             target["status"] = "name_conflict"
@@ -471,6 +582,8 @@ def _compute(evidence, *, collect_endpoints=True):
 
 
 def _materialize_endpoints(projections):
+    if isinstance(projections, _ResolutionStaging):
+        return projections.rows()
     # Replay needs only three values per (flow, role), not millions of repeated
     # dictionaries and JSON-decoded role strings. Expand after the replay's
     # deduplication set is released, consuming keys and values as we go.
@@ -488,9 +601,14 @@ def _materialize_endpoints(projections):
 def rebuild(case_id):
     """Called inside the importing/deleting transaction; no partial revision."""
     evidence = _load(case_id)
-    if (isinstance(evidence, _CaseEvidence) or not evidence) and not db.q_raw("select 1 from import_sources where case_id=? and parser_version in (?,?,?) limit 1", [case_id, *sorted(PROFILES)]):
+    if (isinstance(evidence, _CaseEvidence) or not evidence) and not db.q_raw(f"select 1 from import_sources where case_id=? and parser_version in ({_PROFILE_SQL}) limit 1", [case_id, *sorted(PROFILES)]):
         return None
-    entities, endpoints, conflicts, unresolved = _compute(evidence)
+    with _ResolutionStaging() as staging:
+        return _rebuild(case_id, evidence, staging)
+
+
+def _rebuild(case_id, evidence, staging):
+    entities, endpoints, conflicts, unresolved = _compute(evidence, staging=staging)
     summary = {"policy": POLICY, "entities": len(entities),
                "resolved_endpoints": len(endpoints) - unresolved, "unresolved_endpoints": unresolved,
                "conflicts": conflicts,
@@ -583,6 +701,10 @@ def _consume_projection(values):
     # The immutable audit and revision are already complete. Release each
     # Python row as its database batch is formed, instead of retaining the
     # entire object graph while the native projection grows.
+    if isinstance(values, _EndpointRows):
+        yield from values
+        values.clear()
+        return
     for index, value in enumerate(values):
         values[index] = None
         yield value
@@ -632,7 +754,7 @@ def registry(case_id):
     with db._lock:
         cid = require_case(str(case_id))
         return {"case_id": str(cid), "resolution": summary(cid),
-                "entities": [json.loads(item["details_json"]) for item in db.q_raw("select details_json from resolution_entities where case_id=? order by entity_id", [cid])]}
+                "entities": [_display_details(item["details_json"]) for item in db.q_raw("select details_json from resolution_entities where case_id=? order by entity_id", [cid])]}
 
 
 class _PreviewEvidence:
@@ -679,13 +801,21 @@ def preview(plan):
             "note": "预览本次来源声明；提交时结合案件已保留资料原子重算。"}
 
 
+def _display_details(value):
+    item = json.loads(value)
+    # Old derived records may retain the former first-card label. Their typed
+    # identity and source history are unchanged; display never implies expiry.
+    item["display_account"] = item["account_number"]
+    return item
+
+
 def decorate_accounts(case_id, rows, *, key="account"):
     """Keep query keys opaque while exposing original display identifiers."""
     ids = sorted({row.get(key) for row in rows if row.get(key)})
     if not ids:
         return rows
     placeholders = ",".join("?" for _ in ids)
-    details = {row["entity_id"]: json.loads(row["details_json"]) for row in db.q_raw(
+    details = {row["entity_id"]: _display_details(row["details_json"]) for row in db.q_raw(
         f"select entity_id,details_json from resolution_entities where case_id=? and entity_id in ({placeholders})", [case_id, *ids])}
     for row in rows:
         account = row.get(key) or ""
@@ -712,7 +842,7 @@ def complete_family(source):
     import csv
     import io
     import zipfile
-    from . import table_archive, feedback_import, table_import
+    from . import table_archive, feedback_import, table_import, event_resolution
     roles, members, declarations = set(), [], set()
     try:
         source.seek(0)
@@ -723,6 +853,8 @@ def complete_family(source):
                         payload = stream.read(65536)
                         headers, encoding = table_archive._header(payload)
                     signature = frozenset(headers)
+                    if all(headers.count(header) == 1 for header in event_resolution.HEADERS.values()):
+                        return True
                     for role in ("account", "subaccount", "transaction"):
                         known = {frozenset(feedback_import.SCHEMAS[role])}
                         if role == "transaction":
@@ -861,30 +993,40 @@ def reject_historical_overlap(case_id, plan):
         return
     digests = sorted({member["sha256"] for member in plan["members"]})
     placeholders = ",".join("?" for _ in digests)
-    rows = db.q_raw(f"""select distinct m.sha256,r.source_row from import_members m
+    from .import_staging import record_map
+    store = plan.get("_plan_store")
+    previous = store.mapping() if store is not None else {}
+    cursor = db.con().execute(f"""select distinct m.sha256,r.source_row from import_members m
         join import_records r on r.case_id=m.case_id and r.source_id=m.source_id and r.member_path=m.member_path
         join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join flow_sources fs on fs.case_id=r.case_id and fs.source_id=r.source_id and fs.source_row=r.record_no
-        where r.case_id=? and m.sha256 in ({placeholders}) and s.parser_version not in (?,?,?)""", [case_id, *digests, *sorted(PROFILES)])
-    previous = {(row["sha256"], row["source_row"]) for row in rows}
+        where r.case_id=? and m.sha256 in ({placeholders}) and s.parser_version not in ({_PROFILE_SQL})""", [case_id, *digests, *sorted(PROFILES)])
+    while batch := cursor.fetchmany(1024):
+        for digest, position in batch:
+            previous[digest, position] = True
     members = {member["member_path"]: member["sha256"] for member in plan["members"]}
-    records = {record["record_no"]: record for record in plan["records"]}
-    contextual = db.q_raw(f"""select distinct m.sha256,r.source_row,json_extract_string(r.details_json,'$.occurrence_scope') occurrence_scope
+    records = record_map(plan)
+    cursor = db.con().execute(f"""select distinct m.sha256,r.source_row,json_extract_string(r.details_json,'$.occurrence_scope') occurrence_scope
         from import_members m join import_records r on r.case_id=m.case_id and r.source_id=m.source_id and r.member_path=m.member_path
         join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join flow_sources fs on fs.case_id=r.case_id and fs.source_id=r.source_id and fs.source_row=r.record_no
-        where r.case_id=? and m.sha256 in ({placeholders}) and s.parser_version in (?,?,?)""", [case_id, *digests, *sorted(PROFILES)])
-    prior_scopes = defaultdict(set)
-    for item in contextual:
-        prior_scopes[item["sha256"], item["source_row"]].add(item["occurrence_scope"] or "")
-    for row in plan["rows"]:
-        record = records[row["_source_row"]]
-        current_scope = row.get("_occurrence_scope") or ""
-        for old_scope in prior_scopes.get((members[record["member_path"]], record["source_row"]), set()):
-            if current_scope != old_scope and (not current_scope or not old_scope or current_scope.startswith("unscoped:") or old_scope.startswith("unscoped:")):
-                from .services.cases import ServiceError
-                raise ServiceError(409, "evidence_context_overlap", "相同原件已有未确定的来源范围，本次补充上下文无法安全衔接，未重复入账；请仅补辅助资料，或在新案件导入完整目录")
-    if any((members[records[row["_source_row"]]["member_path"]], records[row["_source_row"]]["source_row"]) in previous for row in plan["rows"]):
+        where r.case_id=? and m.sha256 in ({placeholders}) and s.parser_version in ({_PROFILE_SQL})""", [case_id, *digests, *sorted(PROFILES)])
+    prior_scopes = store.mapping() if store is not None else {}
+    while batch := cursor.fetchmany(1024):
+        for digest, position, scope in batch:
+            key = digest, position
+            values = prior_scopes.get(key, set())
+            values.add(scope or "")
+            prior_scopes[key] = values
+    if prior_scopes:
+        for row in plan["rows"]:
+            record = records[row["_source_row"]]
+            current_scope = row.get("_occurrence_scope") or ""
+            for old_scope in prior_scopes.get((members[record["member_path"]], record["source_row"]), set()):
+                if current_scope != old_scope and (not current_scope or not old_scope or current_scope.startswith("unscoped:") or old_scope.startswith("unscoped:")):
+                    from .services.cases import ServiceError
+                    raise ServiceError(409, "evidence_context_overlap", "相同原件已有未确定的来源范围，本次补充上下文无法安全衔接，未重复入账；请仅补辅助资料，或在新案件导入完整目录")
+    if previous and any((members[records[row["_source_row"]]["member_path"]], records[row["_source_row"]]["source_row"]) in previous for row in plan["rows"]):
         from .services.cases import ServiceError
         raise ServiceError(409, "historical_evidence_overlap", "本案已有相同原件的历史资金解释，无法安全自动迁移；请在新案件导入完整目录，原案件和回执已保留")
 
@@ -926,10 +1068,11 @@ def decorate_analysis(case_id, result):
 
 
 def operation_context(parsed, original_sha):
+    from .import_staging import record_map
     plan = parsed[0].attrs.get("feedback_plan") or parsed[0].attrs.get("table_plan")
     if not plan or plan["profile"] not in PROFILES:
         return
-    records = {item["record_no"]: item for item in plan["records"]}
+    records = record_map(plan)
     unscoped = {}
     for row in plan["rows"]:
         record = records[row["_source_row"]]

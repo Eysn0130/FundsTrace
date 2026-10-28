@@ -1,5 +1,6 @@
 """Imported synthetic money reaches graph totals only after full validation."""
 
+from funds_assertions import unresolved_funds
 from test_automatic_table_import import preview
 from test_feedback_import_api import complete
 from test_table_financial_mapping import table_bytes
@@ -39,12 +40,13 @@ def test_imported_refund_signed_amount_and_gaps_keep_graph_money_exact(client, m
     edges = {(edge["source"], edge["target"]): edge for edge in graph["edges"]}
     assert set(edges) == {("SYN-A", "SYN-B"), ("SYN-B", "SYN-A")}
     outward = edges[("SYN-A", "SYN-B")]
-    assert outward["cnt"] == 3 and outward["total"] is None
-    assert outward["amount_totals"] == [
-        {"currency": "CNY", "amount": "102.39"}, {"currency": "USD", "amount": "0.02"}]
+    assert outward["cnt"] is None and outward["total"] is None
+    assert outward["funds"] == unresolved_funds(3, ("CNY", "102.39"), ("USD", "0.02"))
+    assert outward["amount_totals"] == [{"currency": "CNY", "amount": None}, {"currency": "USD", "amount": None}]
     reverse = edges[("SYN-B", "SYN-A")]
-    assert (reverse["cnt"], reverse["total"], reverse["amount_totals"]) == (
-        2, "3.78", [{"currency": "CNY", "amount": "3.78"}])
+    assert reverse["cnt"] is None and reverse["total"] is None
+    assert reverse["funds"] == unresolved_funds(2, ("CNY", "3.78"))
+    assert reverse["amount_totals"] == [{"currency": "CNY", "amount": None}]
     records = client.get(f"/api/v1/cases/{cid}/sources/{first['import_id']}/report").json()["items"]
     assert [record["reason_code"] for record in records[3:]] == ["negative_amount", "missing_amount", "missing_time"]
     assert all(record["disposition"] == "unresolved" and record["flow_id"] is None for record in records[3:])

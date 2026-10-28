@@ -102,7 +102,7 @@
     const value = effectiveWindow();
     if (!hasWindow(value)) return full;
     const key = windowKey(value), found = cache.get(key);
-    if (found) return { ...full, nodes: found.nodes, edges: found.edges };
+    if (found) return { ...full, nodes: found.nodes, edges: found.edges, funds: found.funds || found.summary?.funds, analysis_revision: found.analysis_revision || full.analysis_revision };
     if (!inflight.has(key) && !errors.has(key)) {
       const context = caseContext(), source = full;
       void loadProjection(value).then(() => {
@@ -114,7 +114,7 @@
       }).catch(() => sync());
     }
     // Never draw old/full-period totals under a narrower time label.
-    return { ...full, nodes: [], edges: [] };
+    return { ...full, nodes: [], edges: [], funds: null };
   }
   async function edit(label, change, context = caseContext(), source = state.lastGraph) {
     if (!ready() || !live(context, source)) throw new Error('画布正在更新，请稍后重试');
@@ -256,7 +256,10 @@
   }
   function summary(result) {
     const totals = result.summary?.amount_totals || result.amount_totals || [];
-    return `${result.nodes.length} 个账户 · ${result.edges.length} 条有向关系 · ${result.summary?.selected_count ?? result.flows?.length ?? 0} 笔（镜像配对后） · 无时间 ${result.summary?.missing_time_count ?? 0} 笔${totals.length ? ` · ${totalLabel(totals)}` : ''}`;
+    const funds = result.summary?.funds || result.funds;
+    const facts = funds && root.FundsFacts ? `${root.FundsFacts.count(funds)} · ${root.FundsFacts.totals(funds)}`
+      : `${result.summary?.selected_count ?? result.flows?.length ?? 0} 笔${totals.length ? ` · ${totalLabel(totals)}` : ''}`;
+    return `${result.nodes.length} 个账户 · ${result.edges.length} 条有向关系 · ${facts} · 无时间 ${result.summary?.missing_time_count ?? 0} 条记录`;
   }
   async function timeDialog(play = false) {
     resetPreview(true);
@@ -311,7 +314,9 @@
     const strip = el('investigationTransport'); if (!strip) return;
     strip.hidden = !playback;
     if (!playback) return;
-    el('investigationFrame').textContent = playback.loading ? '正在读取当前时刻…' : `累计至 ${playback.times[Math.max(0,playback.index)]} · ${playback.index + 1}/${playback.times.length} · 临时预览`;
+    const frame = cache.get(windowKey(effectiveWindow())), funds = frame?.funds || frame?.summary?.funds;
+    const amount = funds && root.FundsFacts ? ` · ${root.FundsFacts.count(funds)} · ${root.FundsFacts.totals(funds)}` : '';
+    el('investigationFrame').textContent = playback.loading ? '正在读取当前时刻…' : `累计至 ${playback.times[Math.max(0,playback.index)]} · ${playback.index + 1}/${playback.times.length}${amount} · 临时预览`;
     el('investigationSeek').max = String(playback.times.length - 1); el('investigationSeek').value = String(Math.max(0,playback.index));
     el('investigationPlay').textContent = playback.playing || playback.loading ? '暂停' : '播放';
     for (const id of ['investigationSeek','investigationPrevious','investigationNext','investigationKeep']) el(id).disabled = !!playback.loading;
@@ -358,13 +363,13 @@
     const flowById = new Map((result.flows || []).map(flow => [flow.id, flow]));
     const evidence = hop => {
       const ids = hop.flow_ids || hop.ids || [], rows = ids.slice(0,50).map(id => flowById.get(String(id))).filter(Boolean);
-      return `<details class="investigation-evidence"><summary>核查 ${ids.length} 笔依据${ids.length>50?'（屏幕前 50 笔）':''}</summary>${rows.map(f => `<p><b>流水 ${esc(f.id)}</b> · ${esc(f.amount)} ${esc(f.currency || '未标注币种')} · ${esc(f.trade_time || '无时间')}<br>${esc(f.summary || '无摘要')}<br>原始记录：${esc((f.original_ids || [f.id]).join('、'))}</p><ul>${(f.provenance || []).flatMap(record => (record.sources || []).map(source => `<li>${esc(source.filename || '来源未登记')} · ${esc(source.member_path || source.sheet || '')} · 行 ${esc(source.member_path ? source.member_row ?? '未登记' : source.source_row ?? '未登记')}${source.member_path ? ` · 包内记录 ${esc(source.source_row ?? '未登记')}` : ''} · 原记录 ${esc(record.flow_id)}<br><small>解析器 ${esc(source.parser_version || '未登记')} · SHA-256 ${esc(source.sha256 || '未登记')}</small></li>`)).join('') || '<li>未登记原始文件来源</li>'}</ul>`).join('')}</details>`;
+      return `<details class="investigation-evidence"><summary>核查 ${ids.length} 笔依据${ids.length>50?'（屏幕前 50 笔）':''}</summary>${rows.map(f => `<p><b>流水 ${esc(f.id)}</b> · ${esc(f.amount ?? '金额待定')} ${esc(f.currency || '未标注币种')} · ${esc(f.trade_time || '无时间')}<br>${esc(f.summary || '无摘要')}<br>原始记录：${esc((f.original_ids || [f.id]).join('、'))}</p><ul>${(f.provenance || []).flatMap(record => (record.sources || []).map(source => `<li>${esc(source.filename || '来源未登记')} · ${esc(source.member_path || source.sheet || '')} · 行 ${esc(source.member_path ? source.member_row ?? '未登记' : source.source_row ?? '未登记')}${source.member_path ? ` · 包内记录 ${esc(source.source_row ?? '未登记')}` : ''} · 原记录 ${esc(record.flow_id)}<br><small>解析器 ${esc(source.parser_version || '未登记')} · SHA-256 ${esc(source.sha256 || '未登记')}</small></li>`)).join('') || '<li>未登记原始文件来源</li>'}</ul>`).join('')}</details>`;
     };
     el('pathResults').innerHTML = `<p class="muted">${esc(accountLabel(parameters.start_account))} → ${esc(accountLabel(parameters.end_account))} · 最多 ${parameters.max_hops} 跳 · ${parameters.mode === 'chronological' ? '严格时间递增；排除无时间、未知币种及非正金额' : '有向关系可达'} · ${parameters.scope === 'visible' ? '当前显示范围' : '完整追踪图'} · ${esc(parameters.start || '不限起点')} — ${esc(parameters.end || '不限终点')}</p>${button('pathDownload','保存本次结果与完整依据 JSON')}` + paths.map((path,index) => {
       const hops = path.steps || path.edges || [], accounts = path.accounts || path.nodes || [hops[0]?.source, ...hops.map(h=>h.target)].filter(Boolean);
       return `<section class="investigation-path"><h3>路径 ${index+1} · ${esc(path.currency || '未标注币种')} · ${hops.length} 跳</h3>
         <p class="investigation-chain">${(path.display_accounts || accounts.map(accountLabel)).map(esc).join(' → ')}</p>
-        <div class="investigation-table-scroll"><table><thead><tr><th>有向交易</th><th>金额 / 币种</th><th>交易时间</th><th>流水依据</th></tr></thead><tbody>${hops.map(h => `<tr><td>${esc(h.source_display_account || accountLabel(h.source))} → ${esc(h.target_display_account || accountLabel(h.target))}</td><td>${esc(h.amount ?? h.total ?? '')} ${esc(path.currency ?? h.currency ?? '')}</td><td>${esc(h.trade_time || h.time || `${h.first_time || h.tmin || '—'} — ${h.last_time || h.tmax || '—'}`)}</td><td>${evidence(h)}</td></tr>`).join('')}</tbody></table></div>
+        <div class="investigation-table-scroll"><table><thead><tr><th>有向交易</th><th>金额 / 币种</th><th>交易时间</th><th>流水依据</th></tr></thead><tbody>${hops.map(h => `<tr><td>${esc(h.source_display_account || accountLabel(h.source))} → ${esc(h.target_display_account || accountLabel(h.target))}</td><td>${esc(h.funds && root.FundsFacts ? root.FundsFacts.totals(h.funds) : `${h.amount ?? h.total ?? '金额待定'} ${path.currency ?? h.currency ?? ''}`)}</td><td>${esc(h.trade_time || h.time || `${h.first_time || h.tmin || '—'} — ${h.last_time || h.tmax || '—'}`)}</td><td>${evidence(h)}</td></tr>`).join('')}</tbody></table></div>
         <footer><button type="button" class="btn small" data-path-focus="${index}">定位并选中路径账户</button><button type="button" class="btn small" data-path-group="${index}">用路径账户新建分组</button></footer></section>`;
     }).join('');
     el('pathDownload').addEventListener('click', () => {

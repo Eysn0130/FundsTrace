@@ -58,8 +58,12 @@ def test_repeated_table_proofs_keep_public_totals_and_bound_json_join_work(clien
         assert job["result"]["table_summary"]["cancelled"] == 4
         assert job["result"]["table_summary"]["excluded_flows"] == 1
     stats = client.get(f"/api/v1/cases/{cid}/stats").json()
-    assert stats["flows"] == 21 and stats["amount_totals"] == [{"currency": "CNY", "amount": "48.00"}]
-    assert client.get(f"/api/v1/cases/{other}/stats").json()["flows"] == 22
+    assert stats["flows"] is None and stats["amount_totals"] == [{"currency": "CNY", "amount": None}]
+    from funds_assertions import unresolved_funds
+    assert stats["funds"] == unresolved_funds(21, ("CNY", "48.00"))
+    other_stats = client.get(f"/api/v1/cases/{other}/stats").json()
+    assert other_stats["flows"] is None
+    assert other_stats["funds"] == unresolved_funds(22, ("CNY", "55.00"))
     public_rows = client.get(f"/api/v1/cases/{cid}/flows", params={"page_size": 100}).json()
     assert public_rows["total"] == 21
     numbers = {row["trade_no"] for row in public_rows["items"]}

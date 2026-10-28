@@ -5,6 +5,8 @@ from decimal import Decimal
 import pytest
 
 from test_cases import insert_flow
+from app.canvas_investigation import mirror_groups
+from funds_assertions import unresolved_funds
 
 
 def seed_tracked_source(client, database, make_case, flow_row, owners, *, seconds=None):
@@ -52,6 +54,8 @@ def assert_flow_evidence(flows, source_id, ids, groups):
     assert [flow["id"] for flow in flows] == [group[0] for group in expected]
     for flow, original_ids in zip(flows, expected):
         assert flow["amount"] == "100.00"
+        assert flow["granularity"] == "unresolved_observation"
+        assert flow["observation_count"] == 1
         assert flow["original_ids"] == original_ids
         assert flow["mirror_ids"] == original_ids[1:]
         assert [entry["flow_id"] for entry in flow["provenance"]] == original_ids
@@ -61,40 +65,49 @@ def assert_flow_evidence(flows, source_id, ids, groups):
             assert entry["sources"][0]["source_row"] == str(ids.index(int(entry["flow_id"])) + 1)
 
 
+def assert_public_observations(value, endpoint, source_id, ids, indices):
+    selected_ids = [ids[index] for index in indices]
+    expected = unresolved_funds(len(indices), ("CNY", f"{len(indices) * 100}.00"))
+    if endpoint == "paths":
+        assert len(value["paths"]) == 1
+        path = value["paths"][0]
+        assert (path["accounts"], path["hops"], path["currency"]) == (["SYN-A", "SYN-B"], 1, "CNY")
+        step = path["steps"][0]
+        assert (step["count"], step["amount"]) == (None, None)
+        assert step["funds"] == expected
+        assert step["flow_ids"] == [str(flow_id) for flow_id in selected_ids]
+    else:
+        assert len(value["edges"]) == 1
+        edge = value["edges"][0]
+        assert (edge["source"], edge["target"], edge["cnt"], edge["total"]) == ("SYN-A", "SYN-B", None, None)
+        assert edge["funds"] == value["funds"] == expected
+        assert edge["amount_totals"] == [{"currency": "CNY", "amount": None}]
+        assert sorted(map(int, edge["ids"])) == selected_ids
+        if endpoint == "graph":
+            assert sorted(value["tracked_ids"]) == selected_ids
+    if endpoint != "graph":
+        assert value["summary"]["selected_count"] == len(indices)
+        assert value["summary"]["funds"] == expected
+        assert_flow_evidence(value["flows"], source_id, ids, [[index] for index in indices])
+
+
 @pytest.mark.parametrize("endpoint", ["graph", "time", "paths"])
 @pytest.mark.parametrize("owners,count,groups", [
     (["", None], 2, [[0], [1]]),
     (["SYN-C", "SYN-D"], 2, [[0], [1]]),
     (["SYN-A", "SYN-B"], 1, [[0, 1]]),
-], ids=["undeclared-owners", "third-party-owners", "established-a-b-mirrors"])
-def test_graph_time_and_paths_share_owner_eligibility_without_rewriting_tracked_sources(
+], ids=["undeclared-owners", "third-party-owners", "established-a-b-mirror-candidates"])
+def test_graph_time_and_paths_keep_mirror_candidates_unresolved_without_rewriting_sources(
         client, database, make_case, flow_row, endpoint, owners, count, groups):
     cid, source_id, ids = seed_tracked_source(client, database, make_case, flow_row, owners)
     before = source_snapshot(database, cid)
     value = request_entry(client, cid, endpoint)
     assert source_snapshot(database, cid) == before
-    expected_amount = "200.00" if count == 2 else "100.00"
-    if endpoint == "paths":
-        assert len(value["paths"]) == 1
-        path = value["paths"][0]
-        assert path["accounts"] == ["SYN-A", "SYN-B"]
-        assert path["hops"] == 1
-        assert path["currency"] == "CNY"
-        step = path["steps"][0]
-        assert (step["count"], step["amount"]) == (count, expected_amount)
-        assert step["flow_ids"] == [str(ids[group[0]]) for group in groups]
-    else:
-        assert len(value["edges"]) == 1
-        edge = value["edges"][0]
-        assert (edge["source"], edge["target"], edge["cnt"], edge["total"]) == (
-            "SYN-A", "SYN-B", count, expected_amount)
-        assert edge["amount_totals"] == [{"currency": "CNY", "amount": expected_amount}]
-        assert sorted(map(int, edge["ids"])) == ids
-        if endpoint == "graph":
-            assert sorted(value["tracked_ids"]) == ids
-    if endpoint != "graph":
-        assert value["summary"]["selected_count"] == count
-        assert_flow_evidence(value["flows"], source_id, ids, groups)
+    # Keep the original heuristic's contract independent from evidence-backed funds.
+    assert mirror_groups(before["flows"]) == {ids[group[0]]: [ids[index] for index in group[1:]]
+                                             for group in groups if len(group) > 1}
+    assert len(groups) == count
+    assert_public_observations(value, endpoint, source_id, ids, list(range(len(ids))))
 
 
 @pytest.mark.parametrize("endpoint", ["graph", "time", "paths"])
@@ -106,30 +119,15 @@ def test_unproven_rows_cannot_consume_the_established_fifo_in_any_public_entry(
     before = source_snapshot(database, cid)
     value = request_entry(client, cid, endpoint)
     assert source_snapshot(database, cid) == before
-    # Legal FIFO pairs are 0/120 and 110/220. Three unproven rows remain
-    # independent and cannot enter, expire, or consume that pending queue.
-    groups = [[0, 5], [1], [2], [3, 6], [4]]
-    if endpoint == "paths":
-        assert len(value["paths"]) == 1
-        step = value["paths"][0]["steps"][0]
-        assert (step["count"], step["amount"]) == (5, "500.00")
-        assert step["flow_ids"] == [str(ids[group[0]]) for group in groups]
-    else:
-        assert len(value["edges"]) == 1
-        edge = value["edges"][0]
-        assert (edge["cnt"], edge["total"]) == (5, "500.00")
-        assert edge["amount_totals"] == [{"currency": "CNY", "amount": "500.00"}]
-        assert sorted(map(int, edge["ids"])) == ids
-        if endpoint == "graph":
-            assert sorted(value["tracked_ids"]) == ids
-    if endpoint != "graph":
-        assert value["summary"]["selected_count"] == 5
-        assert_flow_evidence(value["flows"], source_id, ids, groups)
+    # FIFO still proposes 0/120 and 110/220 without consuming unknown owners.
+    # No supporting event evidence makes those proposed pairs confirmed events.
+    assert mirror_groups(before["flows"]) == {ids[0]: [ids[5]], ids[3]: [ids[6]]}
+    assert_public_observations(value, endpoint, source_id, ids, list(range(7)))
 
 
 @pytest.mark.parametrize("endpoint", ["time", "paths"])
 @pytest.mark.parametrize("include_unknown", [False, True], ids=["mirror-alone-in-window", "unknown-and-mirror-in-window"])
-def test_window_uses_full_canvas_pairs_and_canonical_time_without_resurrecting_a_mirror(
+def test_window_keeps_each_unconfirmed_observation_at_its_original_time(
         client, database, make_case, flow_row, endpoint, include_unknown):
     owners = ["SYN-A", None, "SYN-B"] if include_unknown else ["SYN-A", "SYN-B"]
     seconds = [0, 119, 120] if include_unknown else [0, 120]
@@ -137,43 +135,23 @@ def test_window_uses_full_canvas_pairs_and_canonical_time_without_resurrecting_a
         client, database, make_case, flow_row, owners, seconds=seconds)
     before = source_snapshot(database, cid)
     mirror_index = len(ids) - 1
+    assert mirror_groups(before["flows"]) == {ids[0]: [ids[mirror_index]]}
     full = request_entry(client, cid, endpoint)
-    full_groups = [[0, mirror_index], [1]] if include_unknown else [[0, mirror_index]]
-    assert full["summary"]["selected_count"] == (2 if include_unknown else 1)
-    assert_flow_evidence(full["flows"], source_id, ids, full_groups)
+    assert_public_observations(full, endpoint, source_id, ids, list(range(len(ids))))
 
-    canonical = request_entry(client, cid, endpoint, start="2026-01-01T10:00:00",
-                              end="2026-01-01T10:00:00", include_undated=False)
-    assert canonical["summary"]["selected_count"] == 1
-    # The mirror is outside the window but its source reference belongs to
-    # the canonical payment, so neither its ID nor provenance is discarded.
-    assert_flow_evidence(canonical["flows"], source_id, ids, [[0, mirror_index]])
-    if endpoint == "paths":
-        step = canonical["paths"][0]["steps"][0]
-        assert (step["count"], step["amount"], step["flow_ids"]) == (1, "100.00", [str(ids[0])])
-    else:
-        assert (canonical["edges"][0]["cnt"], canonical["edges"][0]["total"]) == (1, "100.00")
-        assert canonical["edges"][0]["ids"] == [str(ids[0]), str(ids[mirror_index])]
-
+    early = request_entry(client, cid, endpoint, start="2026-01-01T10:00:00",
+                          end="2026-01-01T10:00:00", include_undated=False)
+    assert_public_observations(early, endpoint, source_id, ids, [0])
+    # An unconfirmed opposite-side observation cannot be suppressed or have its
+    # provenance moved into the early window solely by the legacy FIFO rule.
     late = request_entry(client, cid, endpoint,
                          start="2026-01-01T10:01:59" if include_unknown else "2026-01-01T10:02:00",
                          end="2026-01-01T10:02:00", include_undated=False)
-    assert late["summary"]["selected_count"] == (1 if include_unknown else 0)
-    assert_flow_evidence(late["flows"], source_id, ids, [[1]] if include_unknown else [])
-    if include_unknown:
-        if endpoint == "paths":
-            step = late["paths"][0]["steps"][0]
-            assert (step["count"], step["amount"], step["flow_ids"]) == (1, "100.00", [str(ids[1])])
-        else:
-            assert (late["edges"][0]["cnt"], late["edges"][0]["total"]) == (1, "100.00")
-            assert late["edges"][0]["ids"] == [str(ids[1])]
-    elif endpoint == "paths":
-        assert late["paths"] == []
-    else:
-        assert late["edges"] == late["timeline"] == []
+    assert_public_observations(late, endpoint, source_id, ids, [1, 2] if include_unknown else [1])
+    if endpoint == "time":
+        assert len(late["timeline"]) == (2 if include_unknown else 1)
+        assert all(point["funds"] == unresolved_funds(1, ("CNY", "100.00")) for point in late["timeline"])
 
     graph = request_entry(client, cid, "graph")
-    assert (graph["edges"][0]["cnt"], graph["edges"][0]["total"]) == (
-        2 if include_unknown else 1, "200.00" if include_unknown else "100.00")
-    assert sorted(graph["tracked_ids"]) == ids
+    assert_public_observations(graph, "graph", source_id, ids, list(range(len(ids))))
     assert source_snapshot(database, cid) == before

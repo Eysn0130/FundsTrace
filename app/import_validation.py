@@ -60,6 +60,8 @@ def _facts(row):
 
 def table_manifest(plan, rows):
     """Freeze compact expected facts before the writer can mutate its input."""
+    if plan.get("_plan_store") is not None:
+        return _staged_manifest(plan, rows)
     accepted = {}
     for number, record in enumerate(plan["records"], 1):
         if record["record_no"] != number:
@@ -82,6 +84,41 @@ def table_manifest(plan, rows):
             # historical original from effective_flows. This reuses the package
             # proof checker; the separate write readback below is independent.
             table_cancellations.validate_evidence(plan["records"])
+        except (ValueError, KeyError, TypeError) as error:
+            raise IntegrityError("invalid cancellation evidence") from error
+    return manifest
+
+
+def _staged_manifest(plan, rows):
+    from .import_staging import record_map
+    from itertools import groupby
+    records = record_map(plan)
+    accepted = 0
+    for number, record in enumerate(plan["records"], 1):
+        if record["record_no"] != number:
+            raise IntegrityError("non-consecutive source records")
+        accepted += record["disposition"] == "accepted"
+    manifest = plan["_plan_store"].mapping()
+    for row in rows:
+        position = row["_source_row"]
+        record = records.get(position)
+        if (record is None or record["disposition"] != "accepted" or position in manifest
+                or row["_record_key"] != record["record_key"]
+                or record["details"].get("flow_sha256") != table_import.flow_digest(row)):
+            raise IntegrityError("accepted source facts disagree")
+        manifest[position] = _facts(row)
+    if len(manifest) != accepted:
+        raise IntegrityError("accepted source facts missing")
+    if plan["profile"] in table_archive.CANCELLATION_PROFILES:
+        # Archive merge emits each unique member contiguously. The cancellation
+        # contract is member-local; retain only one member's proof indexes.
+        seen_members = set()
+        try:
+            for member, values in groupby(plan["records"], key=lambda item: item["member_path"]):
+                if member in seen_members:
+                    raise ValueError("non-contiguous staged member")
+                seen_members.add(member)
+                table_cancellations.validate_evidence(values)
         except (ValueError, KeyError, TypeError) as error:
             raise IntegrityError("invalid cancellation evidence") from error
     return manifest

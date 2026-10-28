@@ -270,6 +270,39 @@ create table if not exists evidence_sources (
     case_id integer not null, source_id varchar not null, batch_id bigint, active boolean not null,
     primary key (case_id,source_id)
 );
+create table if not exists analysis_state (
+    case_id integer primary key, revision varchar not null
+);
+create table if not exists event_state (
+    case_id integer primary key, revision varchar not null, summary_json varchar not null
+);
+create table if not exists resolved_events (
+    case_id integer not null, event_id varchar not null,
+    payer_account varchar, payee_account varchar, currency varchar,
+    amount decimal(18,2), trade_time timestamp, evidence_json varchar,
+    primary key (case_id,event_id)
+);
+create table if not exists event_members (
+    case_id integer not null, flow_id bigint not null, event_id varchar,
+    status varchar not null, reason varchar not null,
+    primary key (case_id,flow_id)
+);
+-- Disposable event-maintenance cache. Source journals remain authoritative;
+-- case packages exclude these tables and rebuild them after restoration.
+create table if not exists event_projection_cache_state (
+    case_id integer primary key, version varchar not null, sources_json varchar not null default '{}'
+);
+alter table event_projection_cache_state add column if not exists sources_json varchar default '{}';
+create table if not exists event_observation_cache (
+    case_id integer not null, source_id varchar not null, record_no bigint not null,
+    reference_key varchar not null, flow_id bigint, effective boolean not null,
+    payer_account varchar, payee_account varchar, self_account varchar,
+    currency varchar, amount decimal(18,2), trade_time timestamp,
+    source_typed boolean not null, typed_accounts boolean not null, evidence varchar not null,
+    primary key (case_id,source_id,record_no)
+);
+create index if not exists event_observation_cache_reference on event_observation_cache(case_id,reference_key);
+create index if not exists event_observation_cache_flow on event_observation_cache(case_id,flow_id);
 create table if not exists resolution_state (
     case_id integer primary key, revision varchar not null
 );
@@ -388,7 +421,7 @@ def con():
                       join import_sources p on p.case_id=c.case_id and p.source_id=c.source_id
                       join import_members cm on cm.case_id=c.case_id and cm.source_id=c.source_id
                         and cm.member_path=c.member_path
-                      where p.row_kind='table_record' and p.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5')
+                      where p.row_kind='table_record' and p.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7')
                         and c.disposition='cancelled' and c.reason_code='matched_cancellation'
                     ), table_cancel_positions as materialized (
                       select c.*,rm.source_id
@@ -453,9 +486,9 @@ def con():
                       coalesce(nullif(p.bank,''),f.payer_bank) payer_bank,
                       coalesce(nullif(q.bank,''),f.payee_bank) payee_bank,
                       f.payer_account raw_payer_account,f.payee_account raw_payee_account,f.self_account raw_self_account,
-                      coalesce(p.display_account,f.payer_account) payer_display_account,
-                      coalesce(q.display_account,f.payee_account) payee_display_account,
-                      coalesce(s.display_account,f.self_account) self_display_account,
+                      coalesce(p.account_number,f.payer_account) payer_display_account,
+                      coalesce(q.account_number,f.payee_account) payee_display_account,
+                      coalesce(s.account_number,f.self_account) self_display_account,
                       case when pe.entity_id is not null or qe.entity_id is not null then 'typed-account-evidence-v1' else null end resolution_policy
                     from source_effective_flows f
                     left join resolved_endpoints pe on pe.case_id=f.case_id and pe.flow_id=f.id and pe.role='payer'

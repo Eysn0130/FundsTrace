@@ -3,7 +3,6 @@
 import unicodedata
 
 from app import db, evidence_resolution
-from app.money import money_string
 from .cases import ServiceError, require_case
 
 
@@ -90,16 +89,6 @@ def list_registry(case_id, source="flows", q="", page=1, page_size=30, account_e
                 "page_size": page_size, "items": [_item(row) for row in rows]}
 
 
-def _directional_money(rows):
-    result = {}
-    for direction in ("in", "out"):
-        totals = [{"currency": row["currency"], "amount": money_string(row[direction + "_amt"])}
-                  for row in rows if row[direction + "_cnt"]]
-        result[direction + "_totals"] = totals
-        result[direction + "_amt"] = totals[0]["amount"] if len(totals) == 1 else None if totals else "0.00"
-    return result
-
-
 def account_profile(case_id, account):
     with db._lock:
         cid = require_case(str(case_id))
@@ -122,44 +111,33 @@ def account_profile(case_id, account):
             **{key: 0.5 if metadata[key] is None else metadata[key]
                for key in ("crop_cx", "crop_cy", "crop_r")},
         }
-        counts = db.q("""select count(*) cnt,
-            count(*) filter (where trim(payer_account)=?) out_cnt,
-            count(*) filter (where trim(payee_account)=?) in_cnt,
-            min(trade_time) tmin, max(trade_time) tmax
-            from effective_flows where case_id=? and (trim(payer_account)=? or trim(payee_account)=?)""",
-                      [account, account, cid, account, account])[0]
-        result.update(counts)
-        own_money = db.q_raw("""select coalesce(currency,'') currency,
-            count(*) filter (where trim(payer_account)=?) out_cnt,
-            coalesce(sum(amount) filter (where trim(payer_account)=?),0) out_amt,
-            count(*) filter (where trim(payee_account)=?) in_cnt,
-            coalesce(sum(amount) filter (where trim(payee_account)=?),0) in_amt
-            from effective_flows where case_id=? and (trim(payer_account)=? or trim(payee_account)=?)
-            group by coalesce(currency,'') order by currency""",
-                             [account, account, account, account, cid, account, account])
-        result.update(_directional_money(own_money))
-        counterparties = db.q_raw("""select acct, max(name) as name, coalesce(currency,'') currency,
-            count(*) filter (where direction='out') out_cnt,
-            coalesce(sum(amount) filter (where direction='out'),0) out_amt,
-            count(*) filter (where direction='in') in_cnt,
-            coalesce(sum(amount) filter (where direction='in'),0) in_amt
-            from (
-              select trim(payee_account) acct, payee_name as name, currency, amount, 'out' direction
-              from effective_flows where case_id=? and trim(payer_account)=?
-              union all
-              select trim(payer_account), payer_name, currency, amount, 'in'
-              from effective_flows where case_id=? and trim(payee_account)=?
-            ) where coalesce(acct,'')<>'' group by acct, coalesce(currency,'') order by currency""",
-                                  [cid, account, cid, account])
-        grouped = {}
-        for row in counterparties:
-            target = grouped.setdefault(row["acct"], {"acct": row["acct"], "name": "", "in_cnt": 0, "out_cnt": 0, "money": []})
-            target["name"] = max(target["name"], row["name"] or "")
-            target["in_cnt"] += row["in_cnt"]
-            target["out_cnt"] += row["out_cnt"]
-            target["money"].append(row)
-        ordered = sorted(grouped.values(), key=lambda row: (-row["out_cnt"], -row["in_cnt"], row["acct"]))[:20]
-        result["top_counterparties"] = [{key: value for key, value in row.items() if key != "money"}
-                                        | _directional_money(row["money"]) for row in ordered]
+        from app import funds_projection, analysis_snapshot
+        source = "select * from effective_flows where case_id=? and (trim(payer_account)=? or trim(payee_account)=?)"
+        selection = [cid, account, account]
+        funds = funds_projection.summary(source, selection)
+        result.update(funds=funds, cnt=funds_projection.public_fields(funds)["cnt"],
+                      analysis_revision=analysis_snapshot.revision(cid), statistics_policy=funds_projection.POLICY)
+        result.update(db.q(funds_projection.cte(source) +
+                          "select min(trade_time) tmin,max(trade_time) tmax from selected_facts", selection)[0])
+        incoming = source + " and trim(payee_account)=?"
+        outgoing = source + " and trim(payer_account)=?"
+        result.update(funds_projection.directional_fields(
+            funds_projection.summary(incoming, [*selection, account]),
+            funds_projection.summary(outgoing, [*selection, account])))
+        ins = funds_projection.grouped_summary(incoming, [*selection, account], ("payer_account",))
+        outs = funds_projection.grouped_summary(outgoing, [*selection, account], ("payee_account",))
+        names = db.q(funds_projection.cte(source) + """
+            select acct,max(name) as name from (
+                select payer_account as acct,payer_name as name from selected_facts where trim(payee_account)=?
+                union all select payee_account,payee_name from selected_facts where trim(payer_account)=?
+            ) where coalesce(acct,'')<>'' group by acct""", [*selection, account, account])
+        empty = funds_projection.summarize_rows([])
+        result["top_counterparties"] = [{"acct": row["acct"], "name": row["name"] or "",
+            **funds_projection.directional_fields(ins.get((row["acct"],), empty), outs.get((row["acct"],), empty))}
+            for row in names]
+        # Counts of selected source observations order candidates only; they do
+        # not become a claim that these are distinct economic events.
+        result["top_counterparties"].sort(key=lambda row: (-row["out_observation_count"], -row["in_observation_count"], row["acct"]))
+        result["top_counterparties"] = result["top_counterparties"][:20]
         evidence_resolution.decorate_accounts(cid, result["top_counterparties"], key="acct")
         return result

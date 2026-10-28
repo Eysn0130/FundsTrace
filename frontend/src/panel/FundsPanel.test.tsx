@@ -1,12 +1,12 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
-import type { CaseStats, Flow, FlowPage, ImportJob, ImportSession } from '../../../contracts/api-v1';
+import type { CaseStats, Flow, FlowPage, FundsProjection, ImportJob, ImportSession } from '../../../contracts/api-v1';
 import { FundsPanel } from './FundsPanel';
 import { FUNDS_PANEL_VERSION, type FundsCaseClientV1, type FundsHostActionsV1, type FundsPanelSessionV1 } from './host';
 
 const stats = (id: string): CaseStats => ({ case_id: id, flows: 1, accounts: 2, batches: 1, amount_total: '9999999999999999.99', currency: 'CNY', amount_totals: [{ currency: 'CNY', amount: '9999999999999999.99' }] });
-const flow = (id: string, tradeNo = `HOST-${id}`): Flow => ({ case_id: id, id: '9007199254740993', batch_id: '9007199254740994', trade_no: tradeNo, trade_time: '2026-01-01 10:00:00', payer_account: '000HOST-A', payer_name: 'Synthetic host sender', payer_bank: '', payee_account: '000HOST-B', payee_name: 'Synthetic host recipient', payee_bank: '', amount: '9999999999999999.99', balance: null, currency: 'CNY', summary: 'Synthetic host record', channel: '', self_account: '', self_name: '' });
+const flow = (id: string, tradeNo = `HOST-${id}`): Flow & { amount: string } => ({ case_id: id, id: '9007199254740993', batch_id: '9007199254740994', trade_no: tradeNo, trade_time: '2026-01-01 10:00:00', payer_account: '000HOST-A', payer_name: 'Synthetic host sender', payer_bank: '', payee_account: '000HOST-B', payee_name: 'Synthetic host recipient', payee_bank: '', amount: '9999999999999999.99', balance: null, currency: 'CNY', summary: 'Synthetic host record', channel: '', self_account: '', self_name: '' });
 const page = (id: string, tradeNo?: string): FlowPage => ({ case_id: id, items: [flow(id, tradeNo)], total: 1, page: 1, page_size: 50 });
 const mapping = { trade_time: '交易时间', payer_account: '付款账号', payee_account: '收款账号', amount: '金额' };
 const record = (id: string, stage: ImportSession['stage'] = 'importing', surface: ImportSession['surface'] = 'v1'): ImportSession => ({ case_id: id, import_id: '0123456789abcdef0123456789abcdef', surface, filename: 'host-synthetic.csv', mode: 'A', mapping, stage, source_state: 'retained', created_at: '2026-01-01T10:00:00Z', expires_at: null, error_code: null, attempt: 1, source_available: true, recoverable: true, request: { mode: 'A', mapping, mark_accounts: [], self_accounts: [] }, result: null });
@@ -423,5 +423,32 @@ describe('FundsPanel host isolation', () => {
     act(() => { bound.controller.abort(); button.click(); });
     expect(openGraph).not.toHaveBeenCalled();
     unmount(); button.click(); expect(openGraph).not.toHaveBeenCalled();
+  });
+});
+
+describe('evidence bounded funds in existing panel', () => {
+  it.each([true, false])('uses the projection as the only primary summary, confirmed=%s', async exact => {
+    const funds: FundsProjection = { policy:'evidence-bounded-funds-v1', status:exact ? 'exact' as const : 'bounded' as const, observation_count:2,
+      confirmed_event_count:exact ? 1 : 0, unresolved_observation_count:exact ? 0 : 2, count:{lower:exact ? 1 : 0, upper:exact ? 1 : 2},
+      totals:[{currency:'CNY',amount:exact ? '100.00' : null,lower:exact ? '100.00' : '0.00',upper:exact ? '100.00' : '200.00'}] };
+    const statistics = vi.fn(async () => ({...stats('1'),flows:2,amount_total:'200.00',amount_totals:[{currency:'CNY',amount:'200.00'}],funds}));
+    const flows = vi.fn(async () => ({...page('1'),funds, items:[{...flow('1'),amount:'100.00',balance:'73.25'}]}));
+    const bound = session('1', 'funds-projection', 0, {stats:statistics, flows});
+    const sources = vi.spyOn(bound.client,'sources');
+    render(<FundsPanel host={host(bound.value)} />);
+    await screen.findByRole('button', {name:'核对流水 HOST-1'});
+    const summary = screen.getByLabelText('案件汇总');
+    expect(summary.textContent).toContain(exact ? '1 笔' : '—');
+    expect(summary.textContent).toContain(exact ? 'CNY 100.00' : 'CNY —');
+    expect(summary.textContent).not.toContain('200.00');
+    expect(screen.queryByLabelText('事件关联口径')).toBeNull();
+    expect(within(screen.getByLabelText('流水明细')).getByRole('heading', {level:2}).textContent).toContain(exact ? '1 笔' : '—');
+    expect(statistics).toHaveBeenCalledTimes(1); expect(flows).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', {name:/本金|来源份额/})).toBeNull();
+    fireEvent.click(screen.getByRole('button',{name:'核对流水 HOST-1'}));
+    expect(await screen.findByRole('dialog',{name:'流水核对'})).toBeTruthy();
+    expect(screen.getByText('73.25')).toBeTruthy();
+    await waitFor(() => expect(sources).toHaveBeenCalledWith('9007199254740993',1,expect.any(AbortSignal)));
+    expect(statistics).toHaveBeenCalledTimes(1); expect(flows).toHaveBeenCalledTimes(1);
   });
 });

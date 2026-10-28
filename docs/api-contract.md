@@ -25,7 +25,9 @@ React 工作台使用 `/api/v1`，G6 工作区继续使用兼容 `/api`。`app/a
 
 ## 无损数据与分页
 
-案件、流水、批次 ID 是十进制字符串；上传／来源 ID 是 opaque 十六进制字符串，不是授权。账户始终是文本。金额和余额使用固定两位十进制字符串，禁止客户端将资金数值或 ID 转成 JavaScript `number`。缺失余额、交易时间及案件创建时间为 `null`；其余流水文本空值规范化为空字符串。查询在存储层提取原始 Decimal 后序列化，避免经过旧 API 的浮点转换。统计的 `amount_totals` 按币种分别累加当前案件全部原始流水，不按图谱显示去重，不换汇。只有单币种时 `amount_total` 才是该币种的合计，`currency` 是其币种；多币种时两者均为 `null`。空案件返回 `amount_total:"0.00"`、`currency:null`、`amount_totals:[]`。历史缺失币种按空字符串归组，不能据此假定为人民币；现有导入器的默认币种规则保留。
+案件、流水、批次 ID 是十进制字符串；上传／来源 ID 是 opaque 十六进制字符串，不是授权。账户始终是文本。金额和余额使用固定两位十进制字符串，禁止客户端将资金数值或 ID 转成 JavaScript `number`。缺失余额、交易时间及案件创建时间为 `null`；其余流水文本空值规范化为空字符串。查询在存储层提取原始 Decimal 后序列化，避免经过旧 API 的浮点转换。统计、默认流水页、图与时间投影使用同一 `funds` 契约。选择范围内确认同笔的双边观察计一次；未决观察保留，不能推定为独立经济事件。`funds.count` 给事件数下/上界，`funds.totals` 按币种给精确金额（可为 `null`）、下界和上界（可为 `null`）。统计的 `flows` 和旧金额聚合字段只在可精确确认时给值，否则为 `null`；分页 `total` 仍是可显示行数，即确认事件行加未决观察行，不能作为经济事件数。空案件返回 `amount_total:"0.00"`、`currency:null`、`amount_totals:[]`。未知币种以 `null` 表达，不能归为人民币或据此宣称同币种精确合计；既有导入器明确的默认币种规则保留。
+
+流水页默认 `granularity=events`；确认事件行不选用某一方的账簿余额，`balance:null`，并提供 `observation_count`。`observation_ids` 只包含当前查询选择内的原观察，事件行的上图/移出以此集合操作；过滤为单侧时不能扩大到未选择的对向分录。历史缺失金额保持 `amount:null`，不能补零。`granularity=observations` 返回原始观察。既有来源详情会列出确认事件涉及的原观察 ID、原金额、本方原余额与本方账号，不能把这些余额相加为事件余额。`analysis_revision` 绑定资金投影和来源状态。
 
 流水按 `trade_time DESC NULLS LAST, id DESC` 排序。`page` 为 1 至 2147483647，`page_size` 为 1 至 200；`account` 在付款及收款账号上按包含匹配，`kw` 在摘要及流水号上按包含匹配。过滤、计数和分页保持同一案件范围。案件不存在返回 404，不伪装成空列表。
 
@@ -54,3 +56,11 @@ React 工作台使用 `/api/v1`，G6 工作区继续使用兼容 `/api`。`app/a
 JSON 错误统一为 `{"error":{"code":"...","message":"..."}}`。400 表示文件或请求不能处理，403 未激活，404 案件／会话／来源不存在或不属于当前范围，405 方法不支持，409 状态冲突（案件重名、原文件缺失／变化、已开始会话重新预览等），422 参数或映射无效，500 内部失败。界面可显示 `message` 并根据 `code` 决定恢复动作。响应和任务轮询不返回服务器路径、异常原文或 traceback。应用组装时同时挂载 `router` 并调用 `install_error_handlers(app)`，覆盖 v1 路由级 404／405；旧路径沿用兼容异常格式。
 
 运行 `.venv/bin/python scripts/export_api_contract.py` 更新两个契约文件，运行同一命令追加 `--check` 检测漂移。生成器在导入任何应用模块前强制使用临时 `FUND_DATA_DIR`，只导出 v1 路径和可达 schema，不接触运行中的业务目录；无需 Node 依赖。HTTP 回归使用临时真实 DuckDB 与合成 CSV/Excel，不代表浏览器、安装包或发行验收。
+
+## 条件来源份额与共同修订
+
+新接口 `POST /api/analysis/principal` 及 `/network` 属于独立的条件分析边界，不改变既有路径评分的含义。case/flow ID 与金额均使用字符串；起止时间为保留原始语义的无时区 ISO 时间。单账本按 `account,currency,start,end` 读取全部本方竞争分录，`source_flow_id` 指定入账、`target_flow_ids` 指定展示目标。`conditions` 必须分别明确 `coverage:"complete_declared"`、`opening_balance`、`no_overdraft:true`、`funds_available:true`，`balance_kind` 为 `unknown` 或 `post_book`；默认条件不满足。多账本以 `accounts:[{account,conditions}]` 替代单个账户，并要求 `boundary:"terminal_no_return_declared"`；内部流转必须有已确认双边事件。
+
+响应状态为 `ok`、`unknown`、`inconsistency` 或 `limited`；后三者不含可用的目标分配。`ok` 的每个目标分别给出精确字符串 `amount,min,max,fifo` 和极值见证，多个独立最大值不可相加。单/多账本 `/export` 接口要求 `expected_revision`，返回包含条件、缺口和见证的 HTML。缺少证据不以空余额、号码相似或时序 ID 填补。
+
+`analysis_revision` 绑定案件事实、身份和事件的事务版本；单/多账本响应命名为 `revision`。v1 流水项另带 `event_id/event_state`，统计带 `event_summary`；原交易字段保持。legacy 表、图、时间投影、前后流水和分析报告携带同一修订。当前 UI 的图和追踪 XLSX 导出传入该修订，变化返回 409；XLSX 新增“分析修订”页和事件 ID/状态列，原分录金额不去重。兼容旧图快照的可选修订字段不代表旧调用方已完成版本核验。证据字段、资源上限和保守拒绝范围见[导入与本金契约](folder-evidence-import.md#事件与条件来源份额)。

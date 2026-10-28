@@ -384,6 +384,10 @@ test('parent unknown lock also blocks graph exports, canvas commands and the dir
     fmtCount: String, caseContext: binding, isCurrentCase: () => true, layoutJob: null, hasNodeDrafts: () => false,
     caseRequest: async () => ({}), toast() {}, activateCanvas(id) { state.canvasId = id; }, loadGraph: async () => {}, doSearch: async () => {},
   });
+  for (const helper of ['money.js', 'principal-analysis.js']) {
+    vm.runInContext(readFileSync(new URL(`../static/${helper}`, import.meta.url), 'utf8'), context, { filename: helper });
+  }
+  root.FundsFacts = context.FundsFacts;
   vm.runInContext(section('function installExportWorkspace(options)', 'function downloadBlob('), context);
   context.exportOptions = { getContext: binding, isCurrent: () => true,
     getScope: () => ({ graphReady: true, graphAccounts: 1, graphRelations: 0, trackedFlows: 1 }), getLabels: () => ({}),

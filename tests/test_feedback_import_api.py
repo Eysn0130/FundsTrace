@@ -128,7 +128,8 @@ def test_zip_missing_counterparty_preserves_facts_without_graph_connections(clie
     assert client.get(f"/api/context/{ids[1]}", params={"case_id": cid, "side": "payer"}).status_code == 422
     assert client.get(f"/api/context/{ids[1]}", params={"case_id": cid, "side": "payee"}).status_code == 200
     profile = client.get("/api/accounts/SYN-A/profile", params={"case_id": cid}).json()
-    assert profile["cnt"] == 4 and all(r["acct"] for r in profile["top_counterparties"])
+    assert profile["cnt"] is None and profile["funds"]["count"] == {"lower": 0, "upper": 4}
+    assert profile["funds"]["observation_count"] == 4 and all(r["acct"] for r in profile["top_counterparties"])
     # Old snapshots/collections can contain incomplete rows; graph still guards.
     for fid in ids:
         database.x("insert into tracked_flows(case_id,flow_id) values (?,?)", [cid, fid])

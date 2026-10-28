@@ -188,19 +188,39 @@ def test_replay_bounds_each_sorted_result_and_preserves_sparse_source_order(clie
 
 def test_public_replay_keeps_the_endpoint_index_within_its_memory_budget(client, database, make_case, monkeypatch):
     import sys
+    import weakref
+    from app import import_staging
     materialize = e._materialize_endpoints
-    sizes = []
+    sizes, owners, references = [], [], []
+    monkeypatch.setattr(import_staging, "PLAN_CHUNK", 5)
+
+    class Endpoint(dict):
+        pass
+
+    iterate = e._EndpointRows.__iter__
+    def streamed(self):
+        assert list.__len__(self) == 0, "The endpoint stream must not retain a backing list"
+        for item in iterate(self):
+            value = Endpoint(item)
+            references.append(weakref.ref(value))
+            assert sum(reference() is not None for reference in references) <= 2
+            yield value
+    monkeypatch.setattr(e._EndpointRows, "__iter__", streamed)
 
     def bounded(projections):
-        count = len(projections)
-        # This is the live index at the end of actual replay, before ordinary
-        # output dictionaries are serialized. Leave headroom for Python maps,
-        # but exclude retaining a separate full dictionary for every endpoint.
-        shallow_bytes = sys.getsizeof(projections) + sum(
-            sys.getsizeof(key) + sys.getsizeof(value) for key, value in projections.items())
-        assert shallow_bytes <= 256 * count
+        assert isinstance(projections, e._ResolutionStaging)
+        owners.append(projections.owner)
+        # Only the pending write chunk lives in Python. The complete endpoint
+        # index is private disk state, consumed through a replayable stream.
+        pending = projections.pending
+        assert projections.peak_pending <= import_staging.PLAN_CHUNK
+        shallow_bytes = sys.getsizeof(pending) + sum(
+            sys.getsizeof(key) + sys.getsizeof(value) for key, value in pending.items())
+        assert shallow_bytes <= 512 * import_staging.PLAN_CHUNK
+        count = projections.connection.execute("select count(*) from resolution_endpoints").fetchone()[0] + len(pending)
         result = materialize(projections)
-        assert projections == {} and len(result) == count
+        assert not pending and len(result) == count
+        assert isinstance(result, e._EndpointRows) and list.__len__(result) == 0
         sizes.append(count)
         return result
 
@@ -210,3 +230,5 @@ def test_public_replay_keeps_the_endpoint_index_within_its_memory_budget(client,
     accepted(client, cid, [("tx.csv", table("transaction", rows))])
     assert sizes == [750]
     assert database.q_raw("select count(*) n from resolved_endpoints where case_id=?", [cid]) == [{"n": 750}]
+    assert references and all(reference() is None for reference in references)
+    assert owners and all(owner._closed for owner in owners)

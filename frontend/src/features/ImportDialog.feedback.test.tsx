@@ -84,7 +84,7 @@ describe('bank feedback ZIP import dialog', () => {
     await screen.findByRole('heading', { name: '自动处理完成' });
     expect(screen.queryByText('流水已写入当前案件')).toBeNull();
     expect(screen.queryByText(/跳过/)).toBeNull();
-    expect(screen.getByText(/已保存 3 条记录 · 新增资金流水/)).toBeTruthy();
+    expect(screen.getByText(/已保存 3 条记录 · 新增流水记录/)).toBeTruthy();
     expect(screen.getByText(/自动处理已完成，未计入资金流水的记录已保留来源和原因，无需逐条确认/)).toBeTruthy();
     expect(screen.queryByText(/待复核|需复核|保存处置结果/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '下载完整处理报告（JSON）' }));
@@ -111,7 +111,7 @@ describe('bank feedback ZIP import dialog', () => {
     expect((save as HTMLButtonElement).disabled).toBe(false); fireEvent.click(save);
     await screen.findByRole('heading', { name: '自动处理完成' });
     const status = screen.getByRole('status');
-    expect(status.textContent).toContain('已保存 2 条记录 · 新增资金流水 0 笔 · 重复 0 笔');
+    expect(status.textContent).toContain('已保存 2 条记录 · 新增流水记录 0 条 · 重复 0 条');
     expect(status.textContent).toContain('已配对冲正/撤销 2 条（双方均不计有效资金）');
     expect(status.textContent).toContain('无资金变动 0 条 · 未计入资金流水 0 条');
     expect(screen.queryByText(/历史留存流水已退出有效统计/)).toBeNull();
@@ -126,7 +126,7 @@ describe('bank feedback ZIP import dialog', () => {
       error_code: null, attempt: 1, request: null, result: result(summary, 0) };
     show(clientFor(), { resume: source });
     await screen.findByRole('heading', { name: '自动处理完成' });
-    expect(screen.getByRole('status').textContent).toContain('新增资金流水 0 笔');
+    expect(screen.getByRole('status').textContent).toContain('新增流水记录 0 条');
     expect(screen.getByText('本案另有 1 笔历史留存流水已退出有效统计。')).toBeTruthy();
     expect(screen.getByText(/普通退款按来源记账方向与金额处理/)).toBeTruthy();
   });
@@ -164,8 +164,8 @@ describe('bank feedback ZIP import dialog', () => {
       result: { ...result(), ok: 0, rows_dup: 2 } }));
     show(client); await upload(); fireEvent.click(screen.getByRole('button', { name: '开始导入' }));
     await screen.findByRole('heading', { name: '自动处理完成' });
-    const status = screen.getByText(/已保存 6 条记录 · 新增资金流水/);
-    expect(status.textContent).toContain('新增资金流水 0 笔 · 重复 2 笔');
+    const status = screen.getByText(/已保存 6 条记录 · 新增流水记录/);
+    expect(status.textContent).toContain('新增流水记录 0 条 · 重复 2 条');
     expect(status.textContent).toContain('无资金变动 1 条 · 未计入资金流水 1 条 · 来源反馈 1 条 · 辅助资料 1 条');
     expect(screen.getByText('9,007,199,254,740,993.07 CNY')).toBeTruthy();
     expect(screen.getByText(/配对双方保留来源记录/)).toBeTruthy();
@@ -196,7 +196,7 @@ describe('bank feedback ZIP import dialog', () => {
     const client = clientFor(); client.imports = vi.fn(async () => ({ case_id: '1', items: [record] }));
     render(<ImportHistoryDialog target={{ caseId: '1', name: '合成案件' }} client={client} scopeSignal={new AbortController().signal} onClose={vi.fn()} onOpen={vi.fn()} />);
     const article = (await screen.findByText('synthetic.zip')).closest('article')!;
-    expect(within(article).getByText(/新增资金流水 0 笔 · 重复 0 笔 · 已配对冲正\/撤销 2 条（双方均不计有效资金）/)).toBeTruthy();
+    expect(within(article).getByText(/新增流水记录 0 条 · 重复 0 条 · 已配对冲正\/撤销 2 条（双方均不计有效资金）/)).toBeTruthy();
     expect(within(article).getByText('本案另有 1 笔历史留存流水已退出有效统计。')).toBeTruthy();
     expect(within(article).queryByText(/跳过|待复核|需复核/)).toBeNull();
   });

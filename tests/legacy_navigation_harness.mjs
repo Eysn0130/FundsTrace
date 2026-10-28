@@ -79,7 +79,8 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
     confirm: () => true, prompt: () => 'Synthetic new', alert() {},
     fetch: async (path, options = {}) => { requests.push({ path, options }); return fetcher(path, options); }, };
   const context = vm.createContext(sandbox);
-  for (const helper of ['money.js', 'table-scroll.js', 'case-workspace.js', 'canvas-workspace.js', 'data-tools.js', 'main-accounts.js', 'workspace-camera.js', 'graph-relations.js', 'graph-presentation.js', 'graph-layout.js', 'graph-layout-quality.js', 'graph-routing.js', 'graph-route-quality.js', 'graph-view.js','graph-viewport.js','graph-minimap.js','graph-labels.js','graph-label-geometry.js','graph-export-geometry.js']) vm.runInContext(readFileSync(`${root}static/${helper}`, 'utf8'), context, { filename: helper });
+  for (const helper of ['money.js', 'principal-analysis.js', 'table-scroll.js', 'case-workspace.js', 'canvas-workspace.js', 'data-tools.js', 'main-accounts.js', 'workspace-camera.js', 'graph-relations.js', 'graph-presentation.js', 'graph-layout.js', 'graph-layout-quality.js', 'graph-routing.js', 'graph-route-quality.js', 'graph-view.js','graph-viewport.js','graph-minimap.js','graph-labels.js','graph-label-geometry.js','graph-export-geometry.js']) vm.runInContext(readFileSync(`${root}static/${helper}`, 'utf8'), context, { filename: helper });
+  context.window.FundsFacts = context.FundsFacts;
   context.FundsGraphRelations = context.window.FundsGraphRelations;
   context.FundsGraphPresentation = context.window.FundsGraphPresentation;
   context.FundsGraphView = context.window.FundsGraphView;
@@ -125,6 +126,41 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
     bindApp() { vm.runInContext("promptText = async () => 'Synthetic new';", context); vm.runInContext('bindPhotoCrop = () => {}; initEdgeLabels = () => {}; refreshStats = async () => {}; loadGraph = async () => {}; refreshCanvasList = async () => {}; doSearch = async () => {}; bindUI();', context); },
   };
 }
+
+test('unresolved observations keep the actual canvas visible while a genuinely empty case shows its empty state', () => {
+  const h = harness('app.js'), toggles = [];
+  h.element('#canvasWrap').classList.toggle = (name, enabled) => toggles.push([name, enabled]);
+  h.run(`state.stats = { flows: null, accounts: 2, funds: {
+    observation_count: 2, count: { lower: 0, upper: 2 },
+    totals: [{ currency: 'CNY', amount: null, lower: '0.00', upper: '200.00' }]
+  } }; updateHeader();`);
+  assert.equal(h.element('#emptyHint').style.display, 'none');
+  assert.deepEqual(toggles.at(-1), ['case-empty', false]);
+  assert.match(h.element('#statLine').innerHTML, /流水 <b>—<\/b>/);
+  h.run(`state.stats = { flows: 0, accounts: 0, funds: {
+    observation_count: 0, count: { lower: 0, upper: 0 }, totals: []
+  } }; updateHeader();`);
+  assert.equal(h.element('#emptyHint').style.display, 'flex');
+  assert.deepEqual(toggles.at(-1), ['case-empty', true]);
+  h.run('state.stats = { flows: 2, accounts: 2 }; updateHeader();');
+  assert.equal(h.element('#emptyHint').style.display, 'none', 'legacy responses retain their observed-row fallback');
+});
+
+test('case and deletion summaries retain unresolved event bounds and original observation coverage', () => {
+  const h = harness('app.js'); h.bindApp();
+  h.run(`state.stats = { flows: null, accounts: 2, funds: {
+    observation_count: 2, count: { lower: 0, upper: 2 }
+  } }; caseWorkspace.open();`);
+  assert.match(h.element('#caseCounts').textContent, /0–2 个事件/);
+  assert.match(h.element('#caseCounts').textContent, /2 条原始观察/);
+  assert.doesNotMatch(h.element('#caseCounts').textContent, /流水 0 笔/);
+  assert.match(h.element('#caseDeleteScope').textContent, /0–2 个事件/);
+  assert.match(h.element('#caseDeleteScope').textContent, /2 条原始观察/);
+  h.run(`state.stats = { flows: 0, accounts: 0, funds: {
+    observation_count: 0, count: { lower: 0, upper: 0 }
+  } }; caseWorkspace.refresh();`);
+  assert.match(h.element('#caseCounts').textContent, /0 个事件 · 0 条原始观察/);
+});
 
 test('sidebar composition bounds include clipped accounts and curved paths but exclude accounts outside the current graph', () => {
   const h=harness('app.js');
@@ -1984,8 +2020,12 @@ test('ordinary small-graph relayout reserves node and relationship text extents 
     assert.ok(node.height>node.size,'the two-line node text contributes vertical spacing');
     assert.ok(node.offsetY>0,'text below the circle has an asymmetric envelope');
   }
-  assert.ok(Math.abs(input.edges[0].labelWidth-186)<1e-9,
-    'the 29-character full amount uses the harness six-pixel glyph metric plus the text padding');
+  const expectedLabel='2笔·¥10,000,000,000,000,000.01\nUSD 0.01';
+  assert.equal(h.run('state.graph.getEdges()[0].getModel().fundsLabel'),expectedLabel,
+    'hidden relationship text retains the compact count and both exact currency amounts');
+  const expectedWidth=Math.max(...expectedLabel.split('\n').map(line=>line.length))*6+12;
+  assert.ok(Math.abs(input.edges[0].labelWidth-expectedWidth)<1e-9,
+    'the complete expected label uses the harness six-pixel glyph metric plus the text padding');
   assert.equal(h.run('JSON.stringify(state.lastGraph)'),before,'measurement does not rewrite transaction facts');
   h.run('cancelGraphLayout()');
 });

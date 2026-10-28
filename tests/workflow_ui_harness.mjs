@@ -210,6 +210,12 @@ function harness(search = '') {
     },
   });
   const app = readFileSync(new URL('../static/app.js', import.meta.url), 'utf8');
+  for (const helper of ['money.js', 'principal-analysis.js']) {
+    vm.runInContext(readFileSync(new URL('../static/' + helper, import.meta.url), 'utf8'), context);
+  }
+  context.window.FundsFacts = context.FundsFacts;
+  vm.runInContext(app.slice(app.indexOf('function esc('), app.indexOf('function toast(')), context);
+  vm.runInContext(app.slice(app.indexOf('function flowObservationIds('), app.indexOf('/* ---------------- 追踪上图')), context);
   // Load the complete account/crop dependencies. The former close-only section
   // marker no longer exists, and slicing to -1 silently included context state.
   for (const [start, end] of [['function syncEdgeTypeControl(', 'function findEdgeShapes('],
@@ -436,7 +442,7 @@ test('done completes every import step and keeps the completion receipt availabl
   assertSettled(h);
   assert.match(h.element('impFlowStatus').textContent, /导入完成/);
   assert.equal(h.element('impResult').hidden, false);
-  assert.match(h.element('impResultText').textContent, /新增 2 笔/);
+  assert.match(h.element('impResultText').textContent, /新增流水记录 2 条/);
   assert.equal(h.element('impCommit').disabled, true);
   for (const timer of h.timers) timer.callback();
   assert.equal(h.element('importModal').style.display, 'flex', 'completion remains available until explicitly dismissed');
@@ -627,7 +633,7 @@ test('the commit button locks before its receipt and duplicate clicks send one w
   await h.upload('BLOCKED.csv'); await h.uploadDirectory(['BLOCKED/rows.csv']);
   assert.equal(h.uploads.length, 1, 'a submitted write must keep both source inputs locked');
   receipt.resolve(response({ import_id: 'SYN-IMPORT', started: true })); await first;
-  assert.equal(h.refreshes, 1); assert.match(h.notices[0].message, /新增 2 笔/);
+  assert.equal(h.refreshes, 1); assert.match(h.notices[0].message, /新增流水记录 2 条/);
 });
 
 test('failed progress has a read-only recovery action without a second commit', async () => {

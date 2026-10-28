@@ -5,9 +5,16 @@ const $$ = selector => [...document.querySelectorAll(selector)];
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (value, currency) => esc(FundsMoney.currency(value, currency));
 const count = value => FundsMoney.count(value);
+const sourceSummary = stats => stats?.funds && window.FundsFacts ? `${window.FundsFacts.count(stats.funds)} · ${window.FundsFacts.totals(stats.funds)}` : `${count(stats?.flows)} 笔`;
 const percent = value => new Intl.NumberFormat('zh-CN', { style: 'percent', maximumSignificantDigits: 15, useGrouping: false }).format(value);
+const fundsMoney = (funds, amount, currency) => funds && window.FundsFacts ? esc(window.FundsFacts.totals(funds)) : money(amount, currency);
 const dimensionValue = row => {
   const dimension = row.dim || row.dimension;
+  if (row.metric_basis === 'observation_clue') {
+    if (dimension === 'total') return fundsMoney(row.funds);
+    if (dimension === 'cnt' && window.FundsFacts) return esc(window.FundsFacts.count(row.funds));
+    return `${dimension === 'avg_amount' ? money(row.observation_value, row.currency) : esc(row.observation_value)}（观察线索，待核）`;
+  }
   if (['total', 'avg_amount'].includes(dimension)) return money(row.value, row.currency);
   return esc(String(row.value)) + (['cnt', 'night', 'round'].includes(dimension) ? ' 笔' : dimension === 'counter_size' ? ' 个' : '');
 };
@@ -192,7 +199,7 @@ async function showStats() {
     const stats = await getJson(`/api/stats?case_id=${context.caseId}`);
     if (!isCurrentAnalysis(context) || request !== statsRequest) return;
     currentStats = stats;
-    $('#caseStats').textContent = `全部导入流水，${count(stats.flows)} 笔 · ${count(stats.accounts)} 个账户`;
+    $('#caseStats').textContent = `全部导入流水，${sourceSummary(stats)} · ${count(stats.accounts)} 个账户`;
     if (!lastRun && analysisPhase !== 'running' && String(stats.flows) === '0') clearResults('当前案件暂无已导入流水');
   } catch (error) {
     if (!isCurrentAnalysis(context) || request !== statsRequest) return;
@@ -250,9 +257,9 @@ async function run() {
     const result = await api('/api/analysis/run', { case_id: context.caseId, params: frozenParams });
     if (!current()) return;
     validateAnalysisResult(result, algs, context);
-    lastResults = result; lastRun = { ...context, params: frozenParams, sourceStats: result.source_snapshot ? { ...result.source_snapshot } : null };
+    lastResults = result; lastRun = { ...context, revision: result.analysis_revision, params: frozenParams, sourceStats: result.source_snapshot ? { ...result.source_snapshot } : null };
     render(result, algs); setAnalysisPhase('done');
-    $('#resultScope').textContent = lastRun.sourceStats ? `本次结果 · 全部导入流水，${count(lastRun.sourceStats.flows)} 笔 · ${count(lastRun.sourceStats.accounts)} 个账户` : '本次结果 · 全部导入流水';
+    $('#resultScope').textContent = lastRun.sourceStats ? `本次结果 · 全部导入流水，${sourceSummary(lastRun.sourceStats)} · ${count(lastRun.sourceStats.accounts)} 个账户` : '本次结果 · 全部导入流水';
   } catch (error) {
     if (!current()) return;
     lastResults = lastRun = renderedResults = null; renderedAlgorithms = [];
@@ -294,9 +301,10 @@ function renderResultCategory(name) {
   activeResult = name; resultRevision += 1; disposeResultTables();
   const res = renderedResults, value = res[name];
   const subjects = res.subjects?.length && name !== 'paths' ? ` · 对象：${esc((res.display_subjects || res.subjects).join('、'))}` : '';
-  $('#analysisScopeNote').textContent = name === 'paths' ? '按交易边累加，非去重本金。' : '';
+  $('#analysisScopeNote').textContent = `${name === 'paths' ? '按交易段累加，非去重本金。' : ''}${value.funds?.status && value.funds.status !== 'exact' ? '含未决观察；金额显示证据范围，排序与评分仅作线索。' : ''}`;
   let content = '';
-  const boundedScope = value.truncated ? '搜索或显示已达上限；排序仅覆盖本次找到的有界候选，未显示结果不代表不存在。' : '排序仅覆盖本次有界搜索返回的候选。';
+  const deferredNote = value.unassessed_observations ? `${count(value.unassessed_observations)} 条观察缺少本规则所需的有效金额或时间，未参与候选计算。` : '';
+  const boundedScope = deferredNote + (value.truncated ? '搜索或显示已达上限；排序仅覆盖本次找到的有界候选，未显示结果不代表不存在。' : '排序仅覆盖本次有界搜索返回的候选。');
   if (name === 'cycles') content = card(`环路检测 · ${esc(value.window_days ?? 7)} 天内按时序走完${subjects}`, `时序相容的闭环线索：每跳不早于上一跳；回转比例为近似值，时序与比例不证明同一笔本金或异常性质。${boundedScope}`,
     value.cycles.length ? tbl(['序号', '环路路径', '跳数', '交易边金额合计', '回转比例', '时序（起 → 止）', '明细'], value.cycles.map((item, index) => {
       const ids = item.edges.map(edge => String(edge.id)).join(',');
@@ -310,14 +318,14 @@ function renderResultCategory(name) {
         : item.span_days != null ? `${esc(item.span_days)} 天` : '—';
       const canvasName = `环流 ${closed.join('→')}`.slice(0, 60);
       const firstFlow = String(item.edges?.[0]?.id || '');
-      return `<tr data-ids="${esc(ids)}" data-first="${esc(firstFlow)}"><td class="analysis-sequence">${index + 1}</td><td>${esc(closed.join(' → '))}</td><td class="analysis-hops">${esc(item.len)} 跳</td><td class="amt">${money(item.total, item.currency)}</td><td class="amt" title="${esc(ratioTitle)}">${ratio}</td><td>${timing}</td><td class="analysis-table-action"><button class="btn small btn-detail" type="button" aria-expanded="false">查看明细</button><button class="btn small btn-track" type="button" data-canvas="${esc(canvasName)}" title="把这条闭环的 ${esc(item.len)} 笔流水放到独立画布（不与已有上图混在一起）">一键上图</button></td></tr>`;
+      return `<tr data-ids="${esc(ids)}" data-first="${esc(firstFlow)}"><td class="analysis-sequence">${index + 1}</td><td>${esc(closed.join(' → '))}</td><td class="analysis-hops">${esc(item.len)} 跳</td><td class="amt">${fundsMoney(item.funds, item.total, item.currency)}</td><td class="amt" title="${esc(ratioTitle)}">${ratio}</td><td>${timing}</td><td class="analysis-table-action"><button class="btn small btn-detail" type="button" aria-expanded="false">查看明细</button><button class="btn small btn-track" type="button" data-canvas="${esc(canvasName)}" title="把这条闭环的 ${esc(item.len)} 笔流水放到独立画布（不与已有上图混在一起）">一键上图</button></td></tr>`;
     }).join(''), '环路检测') : '<div class="analysis-empty">当前有界搜索未返回资金闭环线索</div>', value.count);
-  if (name === 'fast_flows') content = card(`快进快出 · ${esc(value.window_minutes)} 分钟内 ±${esc(percent(value.tolerance))}${subjects}`, '短窗口内按币种配对转入与转出，差额与时间仅作为复核线索。',
-    value.pairs.length ? tbl(['过账账户', '转入', '短窗内转出', '转出合计 / 差额', '最大延迟', '明细'], value.pairs.map(item => {
+  if (name === 'fast_flows') content = card(`快进快出 · ${esc(value.window_minutes)} 分钟内 ±${esc(percent(value.tolerance))}${subjects}`, `短窗口内按币种配对转入与转出，差额与时间仅作为复核线索。${deferredNote}`,
+    value.pairs.length ? tbl(['配对账户', '转入', '短窗内转出', '转出合计 / 差额', '最大延迟', '明细'], value.pairs.map(item => {
       const ids = [item.in_flow.id, ...item.out_flows.map(flow => flow.id)].map(String).join(',');
-      return `<tr data-ids="${esc(ids)}"><td class="mono">${esc(item.display_account || item.account)}</td><td class="amt">${money(item.in_flow.amount, item.in_flow.currency)}<br><span class="hint">${esc(item.in_flow.from_display_account || item.in_flow.from || '')} ${esc(String(item.in_flow.time || '').slice(0, 19))}</span></td><td>${item.out_flows.map(flow => `${money(flow.amount, flow.currency)} → ${esc(flow.to_display_account || flow.to_acct_display_account || flow.to || flow.to_acct)}`).join('<br>')}</td><td class="amt">${money(item.out_total, item.currency)}<br><span class="hint">差额 ${money(item.diff, item.currency)}</span></td><td>${esc(item.max_delay_min)} 分钟</td><td class="analysis-table-action"><button class="btn small btn-detail" type="button" aria-expanded="false">查看明细</button></td></tr>`;
+      return `<tr data-ids="${esc(ids)}"><td class="mono">${esc(item.display_account || item.account)}</td><td class="amt">${fundsMoney(item.in_flow.funds, item.in_flow.amount, item.in_flow.currency)}<br><span class="hint">${esc(item.in_flow.from_display_account || item.in_flow.from || '')} ${esc(String(item.in_flow.time || '').slice(0, 19))}</span></td><td>${item.out_flows.map(flow => `${fundsMoney(flow.funds, flow.amount, flow.currency)} → ${esc(flow.to_display_account || flow.to_acct_display_account || flow.to || flow.to_acct)}`).join('<br>')}</td><td class="amt">${fundsMoney(item.out_funds, item.out_total, item.currency)}<br><span class="hint">${item.diff == null ? '差额待核' : `差额 ${money(item.diff, item.currency)}`}</span></td><td>${esc(item.max_delay_min)} 分钟</td><td class="analysis-table-action"><button class="btn small btn-detail" type="button" aria-expanded="false">查看明细</button></td></tr>`;
     }).join(''), '快进快出') : '<div class="analysis-empty">当前参数下未发现快进快出配对</div>', value.count);
-  if (name === 'outliers') content = card(`离群画像 · 偏离 > ${esc(value.sigma)}σ${subjects}`, '按币种比较账户与案件基准；均值与 Z 分数为近似统计值。',
+  if (name === 'outliers') content = card(`离群画像 · 偏离 > ${esc(value.sigma)}σ${subjects}`, `按币种比较账户与案件基准；均值与 Z 分数为近似统计值。${deferredNote}`,
     value.outliers.length ? tbl(['账户', '币种', '异常维度', '数值', 'Z 分数（近似）'], value.outliers.map(item => `<tr><td>${esc(item.name || '')}<br><span class="mono">${esc(item.display_account || item.account)}</span></td><td>${esc(item.currency || '未知币种')}</td><td>${esc(dimensionLabel(item))}</td><td>${dimensionValue(item)}</td><td>${esc(item.z)}</td></tr>`).join(''), '离群画像') : '<div class="analysis-empty">当前参数下未发现离群账户</div>', value.count);
   if (name === 'paths') {
     const timeOrder = value.order === 'time';
@@ -326,7 +334,7 @@ function renderResultCategory(name) {
     content = card(`${matched(value.src_name || value.src_display_account || value.src, value.src_accounts)} → ${matched(value.dst_name || value.dst_display_account || value.dst, value.dst_accounts)} · 最大 ${esc(value.max_hops)} 跳 · ${timeOrder ? '时间优先' : '金额优先'}`, boundedScope,
       value.paths.length ? tbl(['序号', '交易边金额合计', '跳数', '首跳 → 末跳', '路径'], value.paths.map((item, index) => {
         const span = `${esc(item.start_time || '—')} → ${esc(item.end_time || '—')}${timeOrder ? (item.continuous ? '（时序连续）' : '（时序不连续）') : ''}`;
-        return `<tr><td class="analysis-sequence">${String(index + 1).padStart(2, '0')}</td><td class="amt">${money(item.total, item.currency)}</td><td class="analysis-hops">${esc(item.hops)} 跳</td><td>${span}</td><td>${item.path.map(leg => `<span class="analysis-path-leg">${esc(leg.from_name || leg.from_display_account || leg.from)}<span class="hint"> —${money(leg.amount, leg.currency)}→ </span>${esc(leg.to_name || leg.to_display_account || leg.to)}</span>`).join('')}</td></tr>`;
+        return `<tr><td class="analysis-sequence">${String(index + 1).padStart(2, '0')}</td><td class="amt">${fundsMoney(item.funds, item.total, item.currency)}</td><td class="analysis-hops">${esc(item.hops)} 跳</td><td>${span}</td><td>${item.path.map(leg => `<span class="analysis-path-leg">${esc(leg.from_name || leg.from_display_account || leg.from)}<span class="hint"> —${fundsMoney(leg.funds, leg.amount, leg.currency)}→ </span>${esc(leg.to_name || leg.to_display_account || leg.to)}</span>`).join('')}</td></tr>`;
       }).join(''), '路径追踪') : '<div class="analysis-empty">当前有界搜索未返回可达路径</div>');
   }
   $('#results').innerHTML = content; $('#results').setAttribute('aria-labelledby', 'resultTab-' + name);
@@ -375,12 +383,17 @@ async function generateAnalysisReport() {
   const caseName = analysisCases.find(item => String(item.id) === String(run.caseId))?.name || `案件 ${run.caseId}`;
   const algorithms = run.params.algorithms.map(name => analysisMethods[name].label).join('、');
   const accepted = await confirmAnalysisAction({ title: '生成分析报告',
-    message: `${caseName} · ${algorithms}\n${hasAnalysisDraft() ? '当前修改尚未运行，将使用已完成结果的参数。\n' : ''}基于当前案件全部导入流水重新计算并生成 HTML，数据变化可能使报告与屏幕结果不同。`, accept: '重新计算并生成' });
+    message: `${caseName} · ${algorithms}\n${hasAnalysisDraft() ? '当前修改尚未运行，将使用已完成结果的参数。\n' : ''}使用本次结果的参数和来源修订重新计算并生成 HTML；来源更新后须重新分析。`, accept: '重新计算并生成' });
   if (!accepted || !isCurrentAnalysis(run) || lastRun !== run || analysisBusy()) return;
   const current = () => isCurrentAnalysis(run) && lastRun === run && reportPending;
   reportPending = true; $('#reportStatus').textContent = '正在重新计算并生成报告…'; syncAnalysisControls();
   try {
-    const response = await fetch('/api/analysis/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ case_id: run.caseId, params: run.params }) });
+    const response = await fetch('/api/analysis/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ case_id: run.caseId, params: run.params, expected_revision: run.revision }) });
+    if (response.status === 409 && current()) {
+      lastResults = lastRun = renderedResults = null; renderedAlgorithms = []; reportPending = false;
+      clearResults('来源已更新', '请重新运行分析'); setAnalysisPhase('error'); renderResultTabs(); syncAnalysisControls();
+      $('#reportStatus').textContent = '来源或关联已更新，旧结果已失效，请重新分析。'; return;
+    }
     if (!current()) return;
     if (!response.ok) throw new Error(await responseError(response));
     const blob = await response.blob(); if (!current()) return;

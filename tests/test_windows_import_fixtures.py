@@ -116,9 +116,11 @@ def test_public_chain_has_independent_literal_raw_and_effective_oracles(client, 
         assert complete(client, cid, view)['stage'] == 'done'
     assert client.get(f'/api/v1/cases/{cid}/sources/{zipped["import_id"]}/report').json() == before
     stats = client.get(f'/api/v1/cases/{cid}/stats').json()
-    assert stats['flows'] == (4 if conflict else 2)
+    assert stats['flows'] is None
+    from funds_assertions import unresolved_funds
+    assert stats['funds'] == unresolved_funds(4 if conflict else 2, ('CNY', '33.00' if conflict else '3.00'))
     assert stats['accounts'] == 3
-    assert stats['amount_totals'] == [{'currency': 'CNY', 'amount': '33.00' if conflict else '3.00'}]
+    assert stats['amount_totals'] == [{'currency': 'CNY', 'amount': None}]
     coverage = stats['import_coverage']
     assert (coverage['unresolved_records'], coverage['cancelled_records'], coverage['excluded_flows']) == ((7, 2, 1) if conflict else (0, 6, 3))
     package = public_package(client, cid, tmp_path)

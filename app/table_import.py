@@ -40,9 +40,15 @@ XLS_PROFILE = "funds-trace-table-v18"
 # Internal archive CSV rule: v5 plus exactly the two header protections below.
 # Keep it outside standalone and financial/identity inheritance collections.
 ARCHIVE_MEMBER_PROFILE = "funds-trace-table-archive-v4"
-EVIDENCE_PROFILE = "funds-trace-table-v19"
-EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v5"
-EVIDENCE_PROFILES = frozenset((EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE))
+LEGACY_EVIDENCE_PROFILE = "funds-trace-table-v19"
+LEGACY_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v5"
+EVIDENCE_PROFILE = "funds-trace-table-v20"
+EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
+XLS_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v7"
+XLS_READER_PROFILES = frozenset((XLS_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE))
+EVENT_PROFILES = frozenset((EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE))
+EVIDENCE_ARCHIVE_PROFILES = frozenset((LEGACY_EVIDENCE_ARCHIVE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE))
+EVIDENCE_PROFILES = frozenset((LEGACY_EVIDENCE_PROFILE, *EVIDENCE_ARCHIVE_PROFILES, EVIDENCE_PROFILE))
 PROFILE = CURRENCY_REGION_PROFILE
 CURRENCY_REGION_PROFILES = frozenset((CURRENCY_REGION_PROFILE, XLS_PROFILE, *EVIDENCE_PROFILES))
 CURRENCY_CODE_ALIAS_PROFILES = CURRENCY_REGION_PROFILES | {ARCHIVE_MEMBER_PROFILE}
@@ -58,7 +64,7 @@ DIRECTION_PROFILES = frozenset((DIRECTION_PROFILE, *TIME_FORMAT_PROFILES))
 CONTRACT_PROFILES = frozenset((CONTRACT_PROFILE, *DIRECTION_PROFILES))
 FINANCIAL_PROFILES = frozenset((FINANCIAL_PROFILE, *CONTRACT_PROFILES))
 ROLE_PROFILES = frozenset((ROLE_PROFILE, *FINANCIAL_PROFILES))
-SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, *(ROLE_PROFILES - {EVIDENCE_ARCHIVE_PROFILE})))
+SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, *(ROLE_PROFILES - EVIDENCE_ARCHIVE_PROFILES)))
 ROLE_CONFLICT_BASIS = "显式身份角色或候选字段存在矛盾"
 HISTORY_CONFLICT_BASIS = "同一物理来源已有不同资金解释，保留历史事实，防止重复累计"
 ARCHIVE_HISTORY_CONFLICT_BASIS = "归档v4参与的同一物理来源已有不同资金解释，保留历史事实，防止重复累计"
@@ -270,7 +276,15 @@ def _cell_present(value):
 
 def _header_value(value, profile):
     # Cached formula results and invalid typed cells cannot declare a schema.
-    return "" if profile == XLS_PROFILE and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type) else value
+    return "" if profile in XLS_READER_PROFILES and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type) else value
+
+
+def _evidence_value(value, profile):
+    # v7 adds evidence to the XLS reader without granting its formula cache
+    # authority over identities, event references or posting-order declarations.
+    if profile == XLS_EVIDENCE_ARCHIVE_PROFILE and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type):
+        return None
+    return _raw(value)
 
 
 def _header_parts(value, profile=IDENTITY_PROFILE):
@@ -1445,7 +1459,7 @@ def _append_auxiliary_sheet(plan, sheet, *, details_pool=None):
     role = table_source_roles.classify([_text(_header_value(value, plan["profile"])) for value in headers])
     if plan["profile"] in EVIDENCE_PROFILES:
         from . import evidence_resolution
-        role = role or evidence_resolution.classify_auxiliary([_text(value) for value in headers])
+        role = role or evidence_resolution.classify_auxiliary([_text(_header_value(value, plan["profile"])) for value in headers])
     if role not in {"account", "client", "subaccount"}:
         return False
     # A later transaction region must go through the ordinary complete parser.
@@ -1464,11 +1478,19 @@ def _append_auxiliary_sheet(plan, sheet, *, details_pool=None):
             continue
         valid = len(row) == width and not any(_cell_present(value) for value in row[meaningful_width:])
         reason = "auxiliary_table" if valid else "column_count_mismatch"
+        if valid and plan["profile"] == XLS_EVIDENCE_ARCHIVE_PROFILE:
+            if any(isinstance(value, _WorkbookValue) and value.formula for value in row[:meaningful_width]):
+                valid, reason = False, "formula_value"
+            elif any(isinstance(value, _WorkbookValue) and value.invalid_type for value in row[:meaningful_width]):
+                valid, reason = False, "invalid_cell_type"
         details = {"sheet": sheet["name"], "source_row": str(index), "source_role": role,
                    "financial_effect": "not_a_flow" if valid else "undetermined",
                    "reason": REASONS[reason], **contract.details()}
+        if reason in {"formula_value", "invalid_cell_type"}:
+            details["validation_issues"] = reason
         if valid and plan["profile"] in EVIDENCE_PROFILES:
-            value = evidence_resolution.auxiliary_evidence([_text(h) for h in headers], [_raw(v) for v in row], role)
+            value = evidence_resolution.auxiliary_evidence([_text(_header_value(h, plan["profile"])) for h in headers],
+                                                         [_evidence_value(v, plan["profile"]) for v in row], role)
             if value:
                 details[evidence_resolution.DETAIL_FIELD] = value
         plan["records"].append({"record_no": len(plan["records"]) + 1, "member_path": sheet["path"],
@@ -1480,7 +1502,50 @@ def _append_auxiliary_sheet(plan, sheet, *, details_pool=None):
     return True
 
 
-def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=None, _details_pool=None):
+def _declares_event_contract(sheets, profile):
+    """Inspect actual financial regions in the already decoded source.
+
+    The entire workbook selects one interpretation before any row is consumed.
+    Reuse the interpreter's regional guards: contract words in ordinary data or
+    in an ambiguous competing layout cannot opt a file into identity evidence.
+    """
+    from .event_resolution import HEADERS
+
+    def declared(headers, candidates):
+        names = [_text(value) for value in headers]
+        return bool(_shape(candidates, profile)) and all(names.count(name) == 1 for name in HEADERS.values())
+
+    for sheet in sheets:
+        rows = sheet["rows"]
+        header_no, _, _ = _locate_header(rows, profile)
+        if header_no is None:
+            continue
+        candidates, *_ = _region(rows[header_no], None, None, strict=True, profile=profile)
+        if declared(rows[header_no], candidates):
+            return True
+        ambiguous_layouts = {}
+        for index in range(header_no + 1, len(rows)):
+            row = rows[index]
+            if not any(_cell_present(value) for value in row):
+                continue
+            if _overlapping_header(row, candidates, profile):
+                _remember_layout(ambiguous_layouts, candidates)
+                _remember_layout(ambiguous_layouts, _candidates(row, profile))
+            elif ((ambiguous_layouts and _unmistakable_header(row, profile, ambiguous_layouts))
+                  or not ambiguous_layouts and _later_header(row, candidates, profile)):
+                ambiguous_layouts.clear()
+                candidates, *_ = _region(row, None, None, strict=False, profile=profile)
+                if declared(row, candidates):
+                    return True
+            elif ambiguous_layouts:
+                found = _candidates(row, profile)
+                if _shape(found, profile):
+                    _remember_layout(ambiguous_layouts, found)
+    return False
+
+
+def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=None, _details_pool=None,
+          _defer_occurrence_binding=False, _retain_csv_format=False, _auto_event_profile=False):
     if profile is None:
         profile = XLS_PROFILE if suffix.lower() == ".xls" else PROFILE
     # New exact cross-field arithmetic is independent of ambient Decimal
@@ -1489,34 +1554,56 @@ def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pro
         with localcontext() as context:
             context.prec = max(context.prec, 50)
             return _parse(source, suffix=suffix, mode=mode, mapping=mapping,
-                          reference_policy=reference_policy, profile=profile, details_pool=_details_pool)
+                          reference_policy=reference_policy, profile=profile, details_pool=_details_pool,
+                          defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format,
+                          auto_event_profile=_auto_event_profile)
     return _parse(source, suffix=suffix, mode=mode, mapping=mapping,
-                  reference_policy=reference_policy, profile=profile, details_pool=_details_pool)
+                  reference_policy=reference_policy, profile=profile, details_pool=_details_pool,
+                  defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format,
+                  auto_event_profile=_auto_event_profile)
 
 
-def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=PROFILE, details_pool=None):
+def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=PROFILE, details_pool=None,
+           defer_occurrence_binding=False, retain_csv_format=False, auto_event_profile=False):
     """Interpret every source record and return a write-free versioned plan."""
     suffix = suffix.lower()
     archive_member = ((profile == ARCHIVE_MEMBER_PROFILE and suffix == ".csv"
-                       or profile == EVIDENCE_ARCHIVE_PROFILE and suffix in {".csv", ".txt", ".tsv", ".xlsx"})
+                       or profile in EVIDENCE_ARCHIVE_PROFILES and suffix in {".csv", ".txt", ".tsv", ".xlsx"}
+                       or profile == XLS_EVIDENCE_ARCHIVE_PROFILE and suffix == ".xls")
                       and reference_policy == TRANSACTION_REFERENCE_POLICY)
     if profile not in SUPPORTED_PROFILES and not archive_member:
         raise TableImportError("不支持的表格解析规则")
-    if details_pool is not None and profile != EVIDENCE_ARCHIVE_PROFILE:
+    if details_pool is not None and profile not in EVIDENCE_ARCHIVE_PROFILES:
         raise TableImportError("临时审计存储仅用于新反馈包规则")
+    if (type(defer_occurrence_binding) is not bool
+            or defer_occurrence_binding and not (archive_member and profile in EVIDENCE_ARCHIVE_PROFILES)):
+        raise TableImportError("延后来源绑定仅用于完整证据反馈包的成员解析")
+    if type(retain_csv_format) is not bool or retain_csv_format and suffix != ".csv":
+        raise TableImportError("临时CSV格式仅用于CSV成员复读")
     if suffix not in {".csv", ".tsv", ".txt", ".xlsx", ".xls"}:
         raise TableImportError("表格文件格式不受支持")
-    if (profile == XLS_PROFILE) != (suffix == ".xls"):
-        raise TableImportError("XLS仅支持v18读取规则；历史规则及其他格式保持原解释")
+    if profile == XLS_PROFILE and suffix != ".xls" or suffix == ".xls" and profile not in XLS_READER_PROFILES:
+        raise TableImportError("XLS仅支持单文件v18或证据归档v7读取规则；历史规则保持原解释")
     if mode not in (None, "A", "B") or (mapping is not None and not isinstance(mapping, dict)):
         raise TableImportError("表格映射参数无效")
     if reference_policy is not None and reference_policy != TRANSACTION_REFERENCE_POLICY:
         raise TableImportError("表格引用策略无效")
     if reference_policy is not None and mapping and "trade_no" in mapping:
         raise TableImportError("表格引用策略不能与交易号映射同时使用")
+    if (type(auto_event_profile) is not bool or auto_event_profile and
+            (profile != CURRENCY_REGION_PROFILE or suffix not in {".csv", ".tsv", ".txt", ".xlsx"}
+             or mode is not None or mapping is not None or reference_policy is not None)):
+        raise TableImportError("事件合同自动识别仅用于普通表格的首次自动预览")
     raw = _bytes(source)
     sheets = _excel(raw, suffix) if suffix in {".xlsx", ".xls"} else _csv(raw, suffix, profile)
+    if auto_event_profile and _declares_event_contract(sheets, profile):
+        profile = EVIDENCE_PROFILE
     plan = {"profile": profile, "mode": "B", "mapping": {}, "columns": [], "sheet": "workbook" if suffix in {".xlsx", ".xls"} else "", "rows": [], "records": [], "members": [], "documents": [], "mapping_evidence": []}
+    if retain_csv_format:
+        # The envelope's cancellation pass may replay this already validated
+        # CSV with the exact selected format, without materializing cells again.
+        # This operation-local hint never enters documents or persisted notes.
+        plan["_csv_format"] = {key: sheets[0][key] for key in ("encoding", "delimiter")}
     selected = False
     for sheet in sheets:
         raw_rows = sheet["rows"]
@@ -1589,9 +1676,11 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                 interpreter = _interpret_candidates if profile in ROLE_PROFILES else _interpret
                 result, disposition, reason, parsed_details = interpreter(
                     row, candidates, actual_mode, reference_policy=active_reference_policy, financial=profile in FINANCIAL_PROFILES, source_contract=source_contract, source_roles=profile in SOURCE_ROLE_PROFILES, retain_endpoint_role=profile in EVIDENCE_PROFILES)
-                if profile == EVIDENCE_ARCHIVE_PROFILE:
+                if profile in EVIDENCE_ARCHIVE_PROFILES:
                     from . import feedback_import
-                    if len(headers) == len(feedback_import.COLUMNS) and frozenset(_text(value) for value in headers) == frozenset(feedback_import.COLUMNS):
+                    if (len(headers) == len(feedback_import.COLUMNS)
+                            and frozenset(_text(_header_value(value, profile)) for value in headers) == frozenset(feedback_import.COLUMNS)
+                            and not (profile == XLS_EVIDENCE_ARCHIVE_PROFILE and reason in {"formula_value", "invalid_cell_type"})):
                         result, disposition, reason, parsed_details = _feedback_member_outcome(headers, row, (result, disposition, reason, parsed_details))
                 own_side = parsed_details.pop("_resolved_own_side", "")
                 details.update(parsed_details)
@@ -1617,12 +1706,20 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
             if result is not None and profile in EVIDENCE_PROFILES:
                 from . import evidence_resolution
                 from . import feedback_import
-                if profile == EVIDENCE_ARCHIVE_PROFILE and len(headers) == len(feedback_import.COLUMNS) and frozenset(_text(h) for h in headers) == frozenset(feedback_import.COLUMNS):
-                    source_cells = {_text(h): _text(value) for h, value in zip(headers, row)}
+                if profile in EVIDENCE_ARCHIVE_PROFILES and len(headers) == len(feedback_import.COLUMNS) and frozenset(_text(_header_value(h, profile)) for h in headers) == frozenset(feedback_import.COLUMNS):
+                    source_cells = {_text(_header_value(h, profile)): _text(_evidence_value(value, profile)) for h, value in zip(headers, row)}
                     details[evidence_resolution.DETAIL_FIELD] = evidence_resolution.feedback_evidence(source_cells, result, ("", "", "in" if source_cells["收付标志"] in {"进", "入"} else "out"))
                 else:
                     details[evidence_resolution.DETAIL_FIELD] = evidence_resolution.transaction_evidence(
-                        [_text(h) for h in headers], [_raw(v) for v in row], candidates, result, _identity_pair, own_side=own_side)
+                        [_text(_header_value(h, profile)) for h in headers], [_evidence_value(v, profile) for v in row], candidates, result, _identity_pair, own_side=own_side)
+            if (profile in EVENT_PROFILES and header_no is not None and len(row) == len(headers)
+                    and disposition in {"accepted", "unresolved", "non_monetary"}
+                    and reason not in {"preamble", "blank_record", "repeated_header", "ambiguous_region_header"}):
+                from . import event_resolution
+                details.update(event_resolution.parse_fields(
+                    [_text(_header_value(h, profile)) for h in headers],
+                    [None if isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type) else _raw(value) for value in row],
+                    accepted=result is not None, posting_scope=document["header_rows"][-1]))
             # The envelope owns one bounded decoded cache for all members.
             # Pack each completed note now: waiting for a large member to
             # return retains its whole decoded journal beside financial rows.
@@ -1634,7 +1731,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                 plan["rows"].append(result)
             member_count += 1
         plan["members"].append({"member_path": sheet["path"], "role": "table", "sha256": sheet["sha256"], "size_bytes": sheet["size"], "encoding": sheet["encoding"], "row_count": member_count})
-    if profile in EVIDENCE_PROFILES:
+    if profile in EVIDENCE_PROFILES and not defer_occurrence_binding:
         from . import evidence_resolution
         evidence_resolution.bind_occurrences(plan)
     return refresh_stats(plan)

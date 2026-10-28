@@ -163,7 +163,8 @@ def test_owned_process_reports_real_listener_and_exits_on_parent_eof(tmp_path, s
             assert {case["name"] for case in cases} >= {"合成演示 · 流水核对", "合成演示 · 同账号隔离对照"}
             graph = json.load(get("/api/graph?case_id=2"))
             assert (len(graph["nodes"]), len(graph["edges"])) == (200, 199)
-            assert any(t["amount"] == "9999999999999999.99" for e in graph["edges"] for t in e["amount_totals"])
+            assert all(e["cnt"] is None and e["total"] is None for e in graph["edges"])
+            assert any(t["lower"] == "0.00" and t["upper"] == "9999999999999999.99" for e in graph["edges"] for t in e["funds"]["totals"])
         else:
             info = json.load(get("/api/license/info"))
             assert info["activated"] is False and info["activation_required"] is False

@@ -3,6 +3,7 @@ import json
 
 from app import evidence_resolution
 from test_account_registry import listing, profile
+from funds_assertions import unresolved_funds
 from test_account_suggestions import suggestions
 
 
@@ -71,9 +72,10 @@ def test_registry_profiles_and_suggestions_follow_reversible_card_metadata_proje
     current = entity(database, cid, "account", LEDGER, cards=[CARD])
     endpoint(database, cid, flow_id, current)
     value = profile(client, cid, current)
-    assert value["account"] == current and value["display_account"] == CARD
+    assert value["account"] == current and value["display_account"] == LEDGER
     assert value["id_no"] == before["id_no"] and value["photo"] == before["photo"]
-    assert (value["cnt"], value["out_amt"]) == (1, "1.25")
+    assert (value["cnt"], value["out_amt"]) == (None, None)
+    assert value["out_funds"] == unresolved_funds(1, ("CNY", "1.25"))
     identities = listing(client, cid, source="identity")
     assert identities["total"] == 1 and identities["items"][0]["account"] == current
     assert listing(client, cid, q="SYN-METADATA-ID")["items"][0]["account"] == current

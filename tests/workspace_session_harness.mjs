@@ -112,12 +112,14 @@ function harness({ legacyRevision = false } = {}) {
   };
   sandbox.caseRequest = sandbox.api;
   context = vm.createContext(sandbox);
-  for (const name of ['money', 'graph-relations', 'graph-presentation', 'workspace-drafts']) vm.runInContext(source(name), context);
+  for (const name of ['money', 'principal-analysis', 'graph-relations', 'graph-presentation', 'workspace-drafts']) vm.runInContext(source(name), context);
+  sandbox.window.FundsFacts = context.FundsFacts;
   sandbox.newGraphPresentation = value => sandbox.window.FundsGraphPresentation.create(value); state.presentation = sandbox.newGraphPresentation();
   vm.runInContext(section(app, 'function caseContext()', '/* ---------------- 初始化'), context);
   vm.runInContext(section(app, 'let pendingCanvasId =', 'async function loadCases('), context);
   vm.runInContext(section(app, 'function activateCanvas(', 'function graphMetric('), context);
   vm.runInContext(section(app, 'function searchParams(', 'async function doSearch('), context);
+  vm.runInContext(section(app, 'function flowObservationIds(', '/* ---------------- 追踪上图'), context);
   sandbox.doSearch = async () => {};
   vm.runInContext(section(app, 'async function refreshCanvasList(', 'async function loadCanvas('), context);
   vm.runInContext(section(app, 'async function openManagedCase(', 'function installCaseWorkspace('), context);

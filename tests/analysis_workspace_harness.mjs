@@ -193,6 +193,8 @@ function harness({ url = 'http://synthetic.invalid/analysis?case_id=1', initialC
     requestAnimationFrame: callback => { callback(); return 0; }, cancelAnimationFrame() {},
   });
   vm.runInContext(money, context, { filename: 'money.js' });
+  vm.runInContext(readFileSync(new URL('../static/principal-analysis.js', import.meta.url), 'utf8'), context);
+  window.FundsFacts = context.FundsFacts;
   vm.runInContext(tableScroll, context, { filename: 'table-scroll.js' });
   vm.runInContext(source, context, { filename: 'analysis.js' });
   const element = id => document.getElementById(id);
@@ -511,6 +513,17 @@ test('confirmed report uses frozen parameters and prevents duplicate confirmatio
   for (const timer of [...h.timers]) timer.callback(); assert.deepEqual(h.revokedUrls, h.objectUrls.map(item => item.url));
 });
 
+test('report binds the completed revision and invalidates results on source change', async () => {
+  const h = harness(); await h.ready();
+  await finishedRun(h, { ...result(), analysis_revision: 'synthetic-revision' });
+  h.network(() => response({ detail: '来源已更新' }, 409));
+  const reporting = h.element('btnReport').click(); await flush(); await h.accept(); await reporting;
+  assert.equal(JSON.parse(posts(h, '/api/analysis/report')[0].options.body).expected_revision, 'synthetic-revision');
+  assert.equal(h.downloads.length, 0);
+  assert.equal(h.element('btnReport').disabled, true);
+  assert.match(h.element('reportStatus').textContent, /失效.*重新分析/);
+});
+
 test('a report confirmation from an old A binding cannot submit after A to B to A', async () => {
   const h = harness(); await h.ready(); await finishedRun(h); const reporting = h.element('btnReport').click(); await flush();
   h.run('selectAnalysisCase(2); selectAnalysisCase(1)');
@@ -619,6 +632,7 @@ test('nonempty algorithm fields preserve exact multi-currency values and explici
   assert.match(h.element('results').textContent, /¥10,000,000,000,000,000\.01/); assert.match(h.element('results').textContent, /USD 10,000,000,000,000,000\.01/);
   assert.match(h.element('analysisScopeNote').textContent, /非去重本金/);
   await h.element('resultTab-fast_flows').click(); const pair = h.element('results').textContent;
+  assert.match(pair, /配对账户/); assert.match(pair, /仅作为复核线索/); assert.doesNotMatch(pair, /过账账户|金额守恒/);
   assert.match(pair, /9,999,999,999,999,999\.99/); assert.match(pair, /9,999,999,999,999,999\.98/); assert.match(pair, /USD 0\.01/); assert.match(pair, /25%/);
   await h.element('resultTab-outliers').click(); assert.match(h.element('results').textContent, /10,000,000,000,000,000\.01/); assert.match(h.element('results').textContent, /3\.125/); assert.match(h.element('results').textContent, /近似/);
   assert.match(h.element('results').textContent, /<合成>/); assert.equal(!!h.element('results').querySelector('script'), false);
@@ -859,4 +873,28 @@ test('cycle details span their seven-column result table', async () => {
   h.network(() => response({rows: [], total: 0}));
   await h.element('results').querySelector('.btn-detail').click(); await flush();
   assert.equal(h.element('results').querySelector('.detail-row td')?.getAttribute('colspan'), '7');
+});
+
+test('analysis header and immutable result scope use the same evidence-bounded projection', async () => {
+  const exact = {status:'exact',count:{lower:1,upper:1},totals:[{currency:'CNY',amount:'100.00',lower:'100.00',upper:'100.00'}]};
+  const h = harness({initialNetwork:path => path === '/api/cases' ? cases : {flows:2,accounts:2,funds:exact}}); await h.ready();
+  assert.match(h.element('caseStats').textContent, /1 个事件.*100\.00/);
+  assert.doesNotMatch(h.element('caseStats').textContent, /2 笔|200\.00/);
+  const value = result(); value.source_snapshot = {flows:2,accounts:2,funds:exact}; await finishedRun(h,value);
+  assert.match(h.element('resultScope').textContent, /1 个事件.*100\.00/);
+  h.network(() => ({flows:2,accounts:2,funds:{status:'bounded',count:{lower:0,upper:2},totals:[{currency:'CNY',amount:null,lower:'0.00',upper:'200.00'}]}}));
+  await h.run('showStats()');
+  assert.match(h.element('caseStats').textContent, /0–2 个事件（待核）.*0\.00–200\.00/);
+  assert.match(h.element('resultScope').textContent, /1 个事件.*100\.00/);
+});
+
+test('existing algorithm results display unresolved funds ranges instead of exact observed totals', async () => {
+  const funds = {status:'bounded',count:{lower:0,upper:2},totals:[{currency:'CNY',amount:null,lower:'0.00',upper:'200.00'}]};
+  const h = harness(); await h.ready();
+  const value = cycleResult(); value.cycles.funds = funds; Object.assign(value.cycles.cycles[0],{total:null,funds,metric_basis:'observation_clue'});
+  await finishedRun(h,value);
+  assert.match(h.element('results').textContent,/CNY 0\.00–200\.00（待核）/);
+  assert.doesNotMatch(h.element('results').textContent,/¥300\.00/);
+  assert.match(h.element('analysisScopeNote').textContent,/含未决观察/);
+  assert.match(h.element('results').textContent,/98\.8%/);
 });

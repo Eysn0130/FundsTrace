@@ -103,6 +103,17 @@ def entities(client, cid):
     return response.json()
 
 
+def assert_unresolved_funds(funds, observations, totals):
+    """Source identity evidence alone does not confirm economic events."""
+    assert funds == {
+        "policy": "evidence-bounded-funds-v1", "status": "bounded",
+        "observation_count": observations, "confirmed_event_count": 0,
+        "unresolved_observation_count": observations, "count": {"lower": 0, "upper": observations},
+        "totals": [{"currency": currency, "amount": None, "lower": "0.00", "upper": amount}
+                   for currency, amount in totals],
+    }
+
+
 def test_directory_auxiliary_late_replay_card_account_nodes_and_consistent_money(client, database, make_case):
     cid = make_case("Synthetic folder")
     transactions = table("transaction", [transaction(**{"交易账号": ""}),
@@ -118,7 +129,7 @@ def test_directory_auxiliary_late_replay_card_account_nodes_and_consistent_money
     keys = {row["payer_account"] for row in after}
     assert len(keys) == 1 and next(iter(keys)).startswith("fte_")
     assert {row["raw_payer_account"] for row in after} == {"SYN-A", "SYN-C1"}
-    assert {row["payer_display_account"] for row in after} == {"SYN-C1"}
+    assert {row["payer_display_account"] for row in after} == {"SYN-A"}
     own = next(item for item in entities(client, cid)["entities"] if item["entity_id"] in keys)
     assert own["kind"] == "account" and own["account_number"] == "SYN-A"
     assert own["cards"] == ["SYN-C1", "SYN-C2"]
@@ -126,14 +137,19 @@ def test_directory_auxiliary_late_replay_card_account_nodes_and_consistent_money
     ids = [row["id"] for row in after]
     assert client.post("/api/track", json={"case_id": cid, "flow_ids": ids}).status_code == 200
     graph = client.get("/api/graph", params={"case_id": cid}).json()
-    assert graph["statistics_policy"] == evidence_resolution.POLICY
-    assert len(graph["edges"]) == 1 and graph["edges"][0]["cnt"] == 3
-    assert graph["edges"][0]["amount_totals"] == [{"currency": "CNY", "amount": "20.50"}, {"currency": "USD", "amount": "20.03"}]
+    assert graph["statistics_policy"] == "evidence-bounded-funds-v1"
+    assert len(graph["edges"]) == 1 and graph["edges"][0]["cnt"] is None
+    assert graph["edges"][0]["total"] is None
+    assert graph["edges"][0]["amount_totals"] == [{"currency": "CNY", "amount": None}, {"currency": "USD", "amount": None}]
+    assert_unresolved_funds(graph["edges"][0]["funds"], 3, [("CNY", "20.50"), ("USD", "20.03")])
     stats = client.get(f"/api/v1/cases/{cid}/stats").json()
+    assert stats["flows"] is stats["amount_total"] is None
+    assert stats["funds"] == graph["edges"][0]["funds"]
     assert stats["amount_totals"] == graph["edges"][0]["amount_totals"]
     profile = client.get("/api/account-registry/profile", params={"case_id": cid, "account": own["entity_id"]})
     assert profile.status_code == 200, profile.text
     assert profile.json()["out_totals"] == stats["amount_totals"]
+    assert profile.json()["out_funds"] == stats["funds"]
     assert client.get(f"/api/v1/cases/{cid}/flows", params={"account": "SYN-C1"}).json()["total"] == 3
 
 
@@ -283,8 +299,13 @@ def test_new_projection_uses_accepted_ledger_records_without_temporal_mirror_gue
     assert client.post("/api/track", json={"case_id": cid, "flow_ids": [row["id"] for row in flows]}).status_code == 200
     graph = client.get("/api/graph", params={"case_id": cid}).json()
     stats = client.get(f"/api/v1/cases/{cid}/stats").json()
-    assert graph["edges"][0]["cnt"] == 2 and graph["edges"][0]["amount_totals"] == [{"currency": "CNY", "amount": "200.00"}]
-    assert stats["flows"] == 2 and stats["amount_totals"] == graph["edges"][0]["amount_totals"]
+    assert len(flows) == 2 and [row["amount"] for row in flows] == ["100.00", "100.00"]
+    assert graph["edges"][0]["cnt"] is graph["edges"][0]["total"] is None
+    assert graph["edges"][0]["amount_totals"] == [{"currency": "CNY", "amount": None}]
+    assert_unresolved_funds(graph["edges"][0]["funds"], 2, [("CNY", "200.00")])
+    assert stats["flows"] is stats["amount_total"] is None
+    assert stats["funds"] == graph["edges"][0]["funds"]
+    assert stats["amount_totals"] == graph["edges"][0]["amount_totals"]
     resolution = graph["resolution"]
     assert resolution["policy"] == evidence_resolution.POLICY
     investigation = client.post("/api/canvas/investigation/time", json={"case_id": cid, "canvas_id": 0})
@@ -292,6 +313,7 @@ def test_new_projection_uses_accepted_ledger_records_without_temporal_mirror_gue
     body = investigation.json()
     assert body["summary"]["mirror_duplicate_count"] == 0
     assert body["summary"]["amount_totals"] == stats["amount_totals"]
+    assert body["summary"]["funds"] == stats["funds"]
 
 
 def test_mixed_counterparty_card_and_explicit_ledger_share_entity_without_event_dedup(client, make_case):
@@ -309,7 +331,10 @@ def test_mixed_counterparty_card_and_explicit_ledger_share_entity_without_event_
     assert rows[0]["raw_payee_account"] == "SYN-CB" and rows[1]["raw_payee_account"] == "SYN-B"
     assert client.post("/api/track", json={"case_id": cid, "flow_ids": [row["id"] for row in rows]}).status_code == 200
     graph = client.get("/api/graph", params={"case_id": cid}).json()
-    assert len(graph["nodes"]) == 2 and graph["edges"][0]["cnt"] == 2
+    assert len(graph["nodes"]) == 2 and graph["edges"][0]["cnt"] is None
+    assert graph["edges"][0]["total"] is None
+    assert [row["amount"] for row in rows] == ["10.25", "10.25"]
+    assert_unresolved_funds(graph["edges"][0]["funds"], 2, [("CNY", "20.50")])
 
 
 def test_single_observed_bank_is_not_an_institution_proof(client, make_case):
@@ -399,12 +424,14 @@ def test_new_case_policy_covers_legacy_unprojected_rows_and_export_revision(clie
     ids = [row["id"] for row in database.q_raw("select id from flows where case_id=?", [cid])]
     assert client.post("/api/track", json={"case_id": cid, "flow_ids": ids}).status_code == 200
     graph = client.get("/api/graph", params={"case_id": cid}).json()
-    assert graph["edges"][0]["cnt"] == 2 and graph["edges"][0]["total"] == "200.00"
+    assert graph["edges"][0]["cnt"] is graph["edges"][0]["total"] is None
+    assert_unresolved_funds(graph["edges"][0]["funds"], 2, [("CNY", "200.00")])
+    assert [row["amount"] for row in database.q_raw("select amount from flows where case_id=? order by id", [cid])] == [Decimal("100.00"), Decimal("100.00")]
     exported = client.get("/api/export/tracked.xlsx", params={"case_id": cid})
     assert exported.status_code == 200, exported.text
     sheets = pd.read_excel(io.BytesIO(exported.content), sheet_name=None, dtype=str, keep_default_na=False)
     notes = dict(sheets["统计口径"].itertuples(index=False, name=None))
-    assert notes["统计策略"] == evidence_resolution.POLICY and notes["解析修订"] == graph["resolution"]["revision"]
+    assert notes["统计策略"] == "evidence-bounded-funds-v1" and notes["解析修订"] == graph["resolution"]["revision"]
 
 
 def test_unscoped_nodes_survive_directory_order_and_zip_timestamp_changes(client, make_case):
@@ -415,7 +442,10 @@ def test_unscoped_nodes_survive_directory_order_and_zip_timestamp_changes(client
     first = client.get(f"/api/v1/cases/{cid}/flows").json()["items"]
     _, repeated = accepted(client, cid, list(reversed(members)), scope_bank=None)
     assert repeated["ok"] == 0 and repeated["rows_dup"] == 1
-    assert client.get(f"/api/v1/cases/{cid}/flows").json()["items"] == first
+    replayed = client.get(f"/api/v1/cases/{cid}/flows").json()["items"]
+    assert replayed[0]["analysis_revision"] != first[0]["analysis_revision"]
+    assert [{k:v for k,v in row.items() if k != "analysis_revision"} for row in replayed] == [
+        {k:v for k,v in row.items() if k != "analysis_revision"} for row in first]
     # Force the new directory contract through a ZIP, with deliberately changed
     # directory order and ZIP timestamps, retaining every logical member byte.
     changed = io.BytesIO()
@@ -428,7 +458,10 @@ def test_unscoped_nodes_survive_directory_order_and_zip_timestamp_changes(client
     job = complete(client, cid, view.json())
     assert job["stage"] == "done", job
     assert (job["result"]["ok"], job["result"]["rows_dup"]) == (0, 1)
-    assert client.get(f"/api/v1/cases/{cid}/flows").json()["items"] == first
+    packaged_replay = client.get(f"/api/v1/cases/{cid}/flows").json()["items"]
+    assert packaged_replay[0]["analysis_revision"] != replayed[0]["analysis_revision"]
+    assert [{k:v for k,v in row.items() if k != "analysis_revision"} for row in packaged_replay] == [
+        {k:v for k,v in row.items() if k != "analysis_revision"} for row in first]
 
 
 def test_manifest_from_another_logical_source_family_does_not_bind_a_bare_source(client, make_case):
@@ -453,7 +486,12 @@ def test_legacy_feedback_cancellation_counts_survive_mixed_workbook_envelope(cli
     _, mixed = accepted(client, other, [*members, ("other.xlsx", empty_workbook.getvalue()), ("legacy.rar", b"Rar!unsupported")], scope_bank=None)
     assert plain["ok"] == mixed["ok"] == 1
     assert plain["feedback"]["cancelled"] == mixed["table_summary"]["cancelled"] == 2
-    assert client.get(f"/api/v1/cases/{cid}/stats").json()["amount_totals"] == client.get(f"/api/v1/cases/{other}/stats").json()["amount_totals"] == [{"currency": "CNY", "amount": "1.00"}]
+    for case_id in (cid, other):
+        stats = client.get(f"/api/v1/cases/{case_id}/stats").json()
+        assert stats["flows"] is stats["amount_total"] is None
+        assert stats["amount_totals"] == [{"currency": "CNY", "amount": None}]
+        assert_unresolved_funds(stats["funds"], 1, [("CNY", "1.00")])
+        assert [row["amount"] for row in client.get(f"/api/v1/cases/{case_id}/flows").json()["items"]] == ["1.00"]
 
 
 def test_updated_whole_folder_cannot_silently_duplicate_unscoped_original(client, database, make_case):
@@ -550,9 +588,12 @@ def test_deleted_auxiliary_policy_survives_package_roundtrip(client, make_case, 
     restored = client.post("/api/cases/import", files={"file": ("synthetic.fundcase", package.content)})
     assert restored.status_code == 200, restored.text
     after = client.get("/api/graph", params={"case_id": restored.json()["case_id"]}).json()
-    assert before["statistics_policy"] == after["statistics_policy"] == evidence_resolution.POLICY
-    assert before["edges"][0]["cnt"] == after["edges"][0]["cnt"] == 2
-    assert before["edges"][0]["total"] == after["edges"][0]["total"] == "200.00"
+    assert before["statistics_policy"] == after["statistics_policy"] == "evidence-bounded-funds-v1"
+    assert before["edges"][0]["cnt"] is after["edges"][0]["cnt"] is None
+    assert before["edges"][0]["total"] is after["edges"][0]["total"] is None
+    assert before["edges"][0]["funds"] == after["edges"][0]["funds"]
+    assert_unresolved_funds(before["edges"][0]["funds"], 2, [("CNY", "200.00")])
+    assert [row["amount"] for row in source_rows] == ["100.00", "100.00"]
 
 
 def test_missing_counterparty_is_an_endpoint_gap_without_a_fabricated_node(client, make_case):
@@ -664,7 +705,7 @@ def test_missing_marker_rule_retains_literal_alphanumeric_and_zero_identifiers(c
     accepted(client, cid, [("tx.csv", table("transaction", [transaction(**{"交易账号": number, "交易卡号": card})])),
                            ("acc.csv", table("account", [account(number=number, card=card)]))])
     own = next(row for row in entities(client, cid)["entities"] if row["account_number"] == number)
-    assert own["cards"] == [card] and own["display_account"] == card
+    assert own["cards"] == [card] and own["display_account"] == number
     assert client.get(f"/api/v1/cases/{cid}/flows").json()["items"][0]["raw_payer_account"] == number
 
 
@@ -723,11 +764,16 @@ def test_missing_counterparty_markers_preserve_observations_without_graph_endpoi
     assert client.post("/api/track", json={"case_id": cid, "flow_ids": [row["id"] for row in flows]}).status_code == 200
     graph = client.get("/api/graph", params={"case_id": cid}).json()
     assert len(graph["nodes"]) == 2 and len(graph["edges"]) == 1
-    assert sum(row["cnt"] for row in graph["edges"]) == 1  # 3 admitted minus 2 missing endpoints
-    assert graph["edges"][0]["amount_totals"] == [{"currency": "CNY", "amount": "10.25"}]
+    assert graph["edges"][0]["cnt"] is graph["edges"][0]["total"] is None
+    # Three source observations remain; only one has both graph endpoints.
+    assert_unresolved_funds(graph["edges"][0]["funds"], 1, [("CNY", "10.25")])
+    assert graph["edges"][0]["amount_totals"] == [{"currency": "CNY", "amount": None}]
     assert not any(row["account_number"] in {"--", "/"} for row in entities(client, cid)["entities"])
     stats = client.get(f"/api/v1/cases/{cid}/stats").json()
-    assert stats["flows"] == 3 and stats["amount_totals"] == [{"currency": "CNY", "amount": "30.75"}]
+    assert stats["flows"] is stats["amount_total"] is None
+    assert stats["amount_totals"] == [{"currency": "CNY", "amount": None}]
+    assert_unresolved_funds(stats["funds"], 3, [("CNY", "30.75")])
+    assert [row["amount"] for row in raw] == [Decimal("10.25")] * 3
     assert database.q_raw("select trade_no,payee_account,amount,currency from flows where case_id=? order by trade_no", [cid]) == raw
 
 

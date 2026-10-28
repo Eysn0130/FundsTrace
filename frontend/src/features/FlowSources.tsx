@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FlowSourceList } from '../../../contracts/api-v1';
 import type { FundsCaseClientV1, FundsHostActionsV1 } from '../panel/host';
-import { displayOperationalTime } from '../lib/format';
+import { displayOperationalTime, formatMoney } from '../lib/format';
 import { linkAbortSignal } from '../panel/cancellation';
 
 export function FlowSources({ caseId, flowId, client, scopeSignal, actions }: { caseId: string; flowId: string; client: FundsCaseClientV1; scopeSignal: AbortSignal; actions?: FundsHostActionsV1 }) {
@@ -47,8 +47,9 @@ export function FlowSources({ caseId, flowId, client, scopeSignal, actions }: { 
     {error && <div role="alert" className="error-banner">{error}<button onClick={() => setReload(value => value + 1)}>重试来源查询</button></div>}
     {downloadError && <div role="alert" className="error-banner">{downloadError}</div>}
     {data && !data.total && <p className="source-empty">未记录来源。历史流水无法据此还原原始文件或源行位置。</p>}
-    {data?.items.map(source => <article className="source-record" key={`${source.source_id}:${source.source_row}`}>
+    {data?.items.map(source => <article className="source-record" key={`${source.source_id}:${source.source_row}:${source.observation_flow_id || flowId}`}>
       <div className="source-record-heading"><strong>{source.filename}</strong><span className="status-label">{source.disposition === 'duplicate' ? '重复记录关联' : '首次导入关联'}</span></div>
+      {source.observation_flow_id && <p>来源记录 #{source.observation_flow_id} · 本方 {source.observation_account || '未提供'} · 金额 {source.observation_amount == null ? '未知' : formatMoney(source.observation_amount)} {source.observation_currency || '币种待定'} · 原余额 {source.observation_balance == null ? '未提供' : formatMoney(source.observation_balance)}</p>}
       <p>{source.row_kind === 'table_record'
         ? source.record_details?.sheet
           ? `工作表「${source.record_details.sheet}」 · 第 ${source.member_row} 行`

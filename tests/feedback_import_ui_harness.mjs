@@ -144,7 +144,7 @@ for (const suffix of ['csv', 'xlsx', 'zip']) {
       table_summary: summary, stats: { total: 3, ok: 1, skipped: 2 } }));
     assert.deepEqual(h.requests.map(item => item.path), ['/api/import/commit', '/api/import/progress?import_id=SYN-IMPORT&case_id=1']);
     assert.equal(h.element('impResultTitle').textContent, '自动处理完成');
-    assert.match(h.element('impResultText').textContent, /已保存 3 条记录 · 新增资金流水 1 笔/);
+    assert.match(h.element('impResultText').textContent, /已保存 3 条记录 · 新增流水记录 1 条/);
     assert.match(h.element('impResultFeedback').innerHTML, /未计入资金流水 1 条 · 无资金变动 1 条/);
     assert.match(h.element('impResultFeedback').innerHTML, /金额单位换算系数：0.01/);
     assert.match(h.element('impResultFeedback').innerHTML, /9,007,199,254,740,993\.07/);
@@ -161,7 +161,7 @@ test('an entirely unresolved automatic table still saves its closed source ledge
   await h.ready(preview({ filename: 'synthetic.csv', automatic: true, feedback: undefined, table_summary: summary,
     preview: [], stats: { total: 3, ok: 0, skipped: 3 } }));
   assert.equal(h.requests.filter(item => item.path.includes('/commit')).length, 1);
-  assert.match(h.element('impResultText').textContent, /已保存 3 条记录 · 新增资金流水 0 笔/);
+  assert.match(h.element('impResultText').textContent, /已保存 3 条记录 · 新增流水记录 0 条/);
   assert.match(h.element('impResultFeedback').innerHTML, /未计入资金流水 3 条/);
   assert.equal(/需复核|待复核/.test(h.element('impResultFeedback').innerHTML), false);
 });
@@ -228,7 +228,7 @@ test('entirely unresolved packages complete automatically after import authoriza
   assert.equal(h.element('impResultDownloads').hidden, false);
   assert.match(h.element('impResultFeedback').innerHTML, /未计入资金流水 3 条/);
   assert.match(h.element('impResultFeedback').innerHTML, /自动处理已完成，未计入资金流水的记录已保留来源和原因，无需逐条确认；这些记录不参与金额、交易笔数和关系统计/);
-  assert.match(h.element('impResultText').textContent, /已保存 3 条记录 · 新增资金流水 0 笔/);
+  assert.match(h.element('impResultText').textContent, /已保存 3 条记录 · 新增流水记录 0 条/);
   assert.match(h.element('impResultText').textContent, /未计入资金流水 3 条 · 来源反馈 0 条 · 辅助资料 0 条/);
   assert.equal(/待复核|需复核|保存处置结果/.test(h.element('impResultFeedback').innerHTML), false);
   assert.equal(h.element('impResultText').textContent.includes('跳过'), false);
@@ -250,7 +250,7 @@ test('paired cancellations save automatically with zero new flows and keep histo
   assert.equal(/待复核|需复核|不自动抵扣或推定配对|历史留存流水已退出有效统计/.test(h.element('impFeedback').innerHTML), false);
   h.network(async path => path.includes('/commit') ? response({ import_id: 'SYN-IMPORT' }) : response({ stage: 'done', result: { source_id: 'SYN-SOURCE', ok: 0, rows_dup: 0, feedback: { ...summary, excluded_flows: 1 } } }));
   await h.commit();
-  assert.match(h.element('impResultText').textContent, /已保存 2 条记录 · 新增资金流水 0 笔 · 重复 0 笔 · 已配对冲正\/撤销 2 条（双方均不计有效资金）/);
+  assert.match(h.element('impResultText').textContent, /已保存 2 条记录 · 新增流水记录 0 条 · 重复 0 条 · 已配对冲正\/撤销 2 条（双方均不计有效资金）/);
   assert.match(h.element('impResultFeedback').innerHTML, /本案另有 1 笔历史留存流水已退出有效统计/);
   assert.match(h.element('impResultFeedback').innerHTML, /普通退款按来源记账方向与金额处理/);
   assert.match(h.element('impResultFeedback').innerHTML, /无资金变动 0 条 · 未计入资金流水 0 条/);

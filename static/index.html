@@ -245,9 +245,9 @@
             <aside class="relation-filter-preview" aria-label="筛选预计结果"><h3>预计显示</h3><div class="relation-filter-metrics" aria-live="polite"><div><output id="relationPreviewEdges">—</output><span>条关系</span></div><div><output id="relationPreviewNodes">—</output><span>个账户</span></div></div><p id="relationCurrentCounts"></p><span id="relationDraftState">已应用</span></aside>
           </div>
           <p id="relationFilterBusy" class="relation-filter-feedback" role="status" hidden></p><output id="relationFilterStatus" role="status" aria-live="polite"></output>
-          <footer class="relation-filter-footer"><button type="button" class="btn small" id="btnRelationClear" disabled><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt="">清除关系筛选</button><span>按有向关系的单币种累计金额</span><button type="button" class="btn small primary" id="btnRelationApply" disabled>应用筛选</button></footer>
+          <footer class="relation-filter-footer"><button type="button" class="btn small" id="btnRelationClear" disabled><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt="">清除关系筛选</button><span>单币种金额；范围相交的关系保留待核</span><button type="button" class="btn small primary" id="btnRelationApply" disabled>应用筛选</button></footer>
         </section>
-        <label class="ribbon-field ribbon-width-currency" for="widthCurrency">币种<select id="widthCurrency" aria-label="线宽映射币种"><option>CNY</option><option>USD</option><option>EUR</option><option>HKD</option><option>JPY</option><option>GBP</option></select></label><label class="el-ck ribbon-switch" title="按指定币种的关系累计金额映射线宽，不合并币种"><input type="checkbox" id="amountWidthCk"><span>金额→线宽</span></label>
+        <label class="ribbon-field ribbon-width-currency" for="widthCurrency">币种<select id="widthCurrency" aria-label="线宽映射币种"><option>CNY</option><option>USD</option><option>EUR</option><option>HKD</option><option>JPY</option><option>GBP</option></select></label><label class="el-ck ribbon-switch" title="按指定币种的确定金额映射线宽；未确定金额不编码，不合并币种"><input type="checkbox" id="amountWidthCk"><span>金额→线宽</span></label>
         <button type="button" class="btn ribbon-action" data-ribbon-command="timeWindow"><img class="ui-icon" src="/static/ui-icons/calendar.svg" alt=""><span>时间窗口</span></button>
       </div>
       <div id="ribbonNeighborhood" class="ribbon-bundle" data-ribbon-bundle="neighborhood" data-ribbon-home="trace">
@@ -350,7 +350,7 @@
       </div>
       </div></div>
       <div id="bulkTrackBar">
-        <div class="bulk-selection"><label class="el-ck" title="选择作为批量追踪起点的流水，不代表是否已上图"><input type="checkbox" id="flowCkAll">本页锚点</label><span class="muted" id="flowCkCount">已选锚点 0 笔</span></div>
+        <div class="bulk-selection"><label class="el-ck" title="选择作为批量追踪起点的流水，不代表是否已上图"><input type="checkbox" id="flowCkAll">本页锚点</label><span class="muted" id="flowCkCount">已选锚点 0 条记录</span></div>
         <div class="bulk-options">
           <label for="bulkDir">方向</label><select id="bulkDir" title="去向：以收款方为主账号追踪后续转出；来源：以付款方为主账号追踪此前转入">
             <option value="target">去向·收款方</option><option value="source">来源·付款方</option>
@@ -599,16 +599,16 @@
       <section class="context-ledger" aria-label="前后流水明细">
         <div class="context-controls">
           <div class="side-tabs" id="ctxTabs" role="group" aria-label="账户视角"><button type="button" class="stab active" data-side="payee" aria-pressed="true">收款方视角</button><button type="button" class="stab" data-side="payer" aria-pressed="false">付款方视角</button></div>
-          <div class="context-window"><label for="ctxX">前后各</label><input id="ctxX" type="number" min="1" max="50" step="1" value="5"><span>笔</span></div>
+          <div class="context-window"><label for="ctxX">前后各</label><input id="ctxX" type="number" min="1" max="50" step="1" value="5"><span>条记录</span></div>
           <div class="context-book"><label for="ctxBook">流水归属</label><select id="ctxBook"><option value="all">全部</option><option value="self">仅本方（锚点）流水</option><option value="counter">仅对手方流水</option></select></div>
           <p class="context-position" id="ctxPos"></p>
         </div>
-        <div class="context-table-scroll" id="ctxTableScroll" tabindex="0" role="region" aria-label="前后流水表格，可水平滚动"><table class="tbl" id="ctxTable"><thead><tr><th scope="col"><span class="sr-only">选择或上图状态</span></th><th scope="col">相对</th><th scope="col">方向</th><th scope="col">时间</th><th scope="col" class="amt">金额</th><th scope="col" class="amt">余额</th><th scope="col">对手方</th><th scope="col">摘要</th></tr></thead><tbody id="ctxTbody"></tbody></table></div>
+        <div class="context-table-scroll" id="ctxTableScroll" tabindex="0" role="region" aria-label="前后流水表格，可水平滚动"><table class="tbl" id="ctxTable"><thead><tr><th scope="col"><span class="sr-only">选择或上图状态</span></th><th scope="col">相对</th><th scope="col">方向</th><th scope="col">时间</th><th scope="col" class="amt">金额</th><th scope="col" class="amt">该记录余额</th><th scope="col">对手方</th><th scope="col">摘要</th></tr></thead><tbody id="ctxTbody"></tbody></table></div>
         <div class="flow-horizontal-scroll context-horizontal-scroll" role="group" aria-label="前后流水表格水平滚动"><button class="btn small" id="ctxScrollLeft" type="button" aria-label="前后流水向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><input id="ctxHorizontalPosition" type="range" min="0" max="0" value="0" step="1" disabled aria-label="前后流水水平位置" aria-controls="ctxTableScroll"><button class="btn small" id="ctxScrollRight" type="button" aria-label="前后流水向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div>
       </section>
       <aside class="context-matches" aria-labelledby="ctxMatchesTitle"><h3 id="ctxMatchesTitle">匹配线索</h3><div id="ctxSuggest"></div><p class="context-score-note">评分仅供匹配参考</p></aside>
     </div>
-    <footer class="context-footer"><div class="context-selection"><span id="ctxSelected">已选 0 笔</span><span class="muted" id="ctxTrackedCount">已上图 0 笔</span><span id="ctxTrackStatus" class="workflow-status" role="status" aria-live="polite"></span></div><div class="context-actions"><button class="btn" id="ctxCancel" type="button">取消</button><button class="btn primary" id="ctxTrack" type="button" disabled><img class="ui-icon" src="/static/ui-icons/network.svg" alt=""><span id="ctxTrackLabel">加入图谱</span></button></div></footer>
+    <footer class="context-footer"><div class="context-selection"><span id="ctxSelected">已选 0 条记录</span><span class="muted" id="ctxTrackedCount">已上图 0 条记录</span><span id="ctxTrackStatus" class="workflow-status" role="status" aria-live="polite"></span></div><div class="context-actions"><button class="btn" id="ctxCancel" type="button">取消</button><button class="btn primary" id="ctxTrack" type="button" disabled><img class="ui-icon" src="/static/ui-icons/network.svg" alt=""><span id="ctxTrackLabel">加入图谱</span></button></div></footer>
   </section>
 </div>
 
@@ -740,7 +740,8 @@
 <script src="/static/main-accounts.js?v=1"></script>
 <script src="/static/main-accounts-view.js?v=neighborhood-search-1"></script>
 <script src="/static/workspace-drafts.js"></script>
-<script src="/static/app.js?v=minimap-integrated-6"></script>
+<script src="/static/principal-analysis.js?v=2"></script>
+<script src="/static/app.js?v=funds-projection-1"></script>
 <script src="/static/canvas-history.js?v=1"></script>
 <script src="/static/canvas-editor.js?v=neighborhood-search-1"></script>
 <script src="/static/table-workspace.js?v=neighborhood-search-1"></script>

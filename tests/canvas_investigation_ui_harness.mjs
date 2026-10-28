@@ -114,7 +114,11 @@ function fixture() {
     renderGraph() { renderCount++; fitRequests.push(state.forceFit === true); visible = window.FundsInvestigation.displayGraph(state.lastGraph); state.graphView.revision++;
       for (const fn of windowListeners.get('funds:graph-metric') || []) fn({ type: 'funds:graph-metric' }); },
   };
-  vm.createContext(env); vm.runInContext(controllerSource, env, { filename: 'canvas-investigation.js' });
+  vm.createContext(env);
+  vm.runInContext(readFileSync(new URL('../static/money.js', import.meta.url), 'utf8'), env);
+  vm.runInContext(readFileSync(new URL('../static/principal-analysis.js', import.meta.url), 'utf8'), env);
+  window.FundsFacts = env.FundsFacts;
+  vm.runInContext(controllerSource, env, { filename: 'canvas-investigation.js' });
   const respond = (index, payload = projection(), status = 200) => calls[index].resolve({ ok: status === 200, status, json: async () => clone(payload) });
   const reject = (index, error = new Error('synthetic unavailable')) => calls[index].reject(error);
   return { api: window.FundsInvestigation, state, env, element, calls, toasts, commands, fitRequests, timers, respond, reject,
@@ -229,6 +233,23 @@ test('equivalent fractional boundaries compare as the same local time and preser
   assert.equal(h.element('investigationStatus').dataset.error, 'false');
 });
 
+for (const exact of [true, false]) {
+  test(`time preview uses the evidence projection as its only primary amount: ${exact ? 'confirmed' : 'unresolved'}`, async () => {
+    const h = fixture(), result = projection();
+    const funds = { status: exact ? 'exact' : 'bounded', observation_count: 2, count: { lower: exact ? 1 : 0, upper: exact ? 1 : 2 },
+      totals: [{ currency: 'CNY', amount: exact ? '100.00' : null, lower: exact ? '100.00' : '0.00', upper: exact ? '100.00' : '200.00' }] };
+    result.funds = result.summary.funds = funds; result.analysis_revision = 'synthetic-current-revision';
+    result.summary.selected_count = 2; result.summary.amount_totals = [{ currency: 'CNY', amount: '200.00' }];
+    const opening = h.api.execute('timeWindow'); h.respond(0, result); await opening;
+    await h.element('investigationTimePreview').click();
+    const status = h.element('investigationStatus').textContent;
+    assert.match(status, exact ? /1 个事件 · ¥100\.00/ : /0–2 个事件（待核） · CNY 0\.00–200\.00（待核）/);
+    assert.doesNotMatch(status, /2 笔|镜像配对后|接纳记账记录/);
+    if (exact) assert.doesNotMatch(status, /200\.00/);
+    assert.equal(h.calls.length, 1, 'formatting and cached preview add no request');
+  });
+}
+
 test('invalid timestamp syntax is explained before a request and calendar errors are visible', async () => {
   const h = fixture(), opening = h.api.execute('timeWindow'); h.respond(0); await opening;
   h.element('investigationStart').value = '10/23/2026'; await h.element('investigationTimeApply').click();
@@ -335,6 +356,17 @@ for (const mode of ['layout', 'history', 'export', 'drag']) test(`ending playbac
   await h.element('investigationStop').click();
   assert.equal(h.renders(), before + 1); assert.equal(h.api.exportWindow(), null);
   assert.equal(h.currentVisible(), h.state.lastGraph);
+});
+
+test('path step displays unresolved bounds instead of an observation sum', async () => {
+  const h = fixture(); await h.api.execute('findGraphPaths');
+  h.element('pathSource').value = 'A'; h.element('pathTarget').value = 'B';
+  const search = h.element('pathSearch').click(); await flush();
+  h.respond(0, {complete:true, paths:[{accounts:['A','B'],currency:'CNY',steps:[{
+    source:'A',target:'B',amount:null,count:null,flow_ids:[],funds:{status:'bounded',count:{lower:0,upper:2},
+      totals:[{currency:'CNY',amount:null,lower:'0.00',upper:'200.00'}]}}]}],flows:[]});
+  await search;
+  assert.match(h.element('pathResults').innerHTML, /CNY 0\.00–200\.00（待核）/);
 });
 
 test('ZIP path evidence distinguishes member line from archive record number', async () => {

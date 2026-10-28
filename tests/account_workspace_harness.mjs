@@ -234,6 +234,8 @@ function harness() {
     setTimeout: callback => { callback(); return 0; }, clearTimeout() {}, requestAnimationFrame: callback => { callback(); return 0; },
   });
   vm.runInContext(money, context);
+  vm.runInContext(readFileSync(new URL('../static/principal-analysis.js', import.meta.url), 'utf8'), context);
+  window.FundsFacts = context.FundsFacts;
   vm.runInContext(section('function esc(', 'function toast('), context);
   vm.runInContext(section('let pendingCanvasId = 0;', 'async function loadCases()'), context);
   vm.runInContext(section('async function applyPendingFocusEdge()', 'async function refreshStats()'), context);
@@ -972,4 +974,27 @@ test('an unsubmitted crop reports an expired revision without starting a request
   await h.element('pcConfirm').click(); await flush();
   assert.equal(writes(h).length, 0); assert.equal(h.element('pcClose').disabled, false); assert.equal(h.element('pcConfirm').disabled, true);
   assert.match(h.element('pcStatus').textContent, /重新打开|已变化|已失效/);
+});
+
+test('account and counterparty primary summaries use evidence ranges without losing original facts', async () => {
+  const h = harness();
+  const exact = {status:'exact',count:{lower:1,upper:1},totals:[{currency:'CNY',amount:'100.00',lower:'100.00',upper:'100.00'}]};
+  const bounded = {status:'bounded',count:{lower:0,upper:2},totals:[{currency:'CNY',amount:null,lower:'0.00',upper:'200.00'}]};
+  const data = profile({in_funds:exact,out_funds:bounded, top_counterparties:[{acct:'SYN-COUNTER',name:'合成对手',in_funds:exact,out_funds:bounded,
+    in_cnt:2,out_cnt:2,in_amt:'200.00',out_amt:'200.00'}]});
+  networkReady(h, () => data); await h.open();
+  assert.match(h.element('ndStats').textContent, /转入 1 笔.*¥100\.00.*转出 —.*0\.00–200\.00（待核）/s);
+  assert.match(h.element('ndCounterTbody').textContent, /1 笔.*¥100\.00.*—.*0\.00–200\.00（待核）/s);
+  assert.equal(data.in_cnt,13); assert.equal(data.out_cnt,12);
+});
+
+test('a single associated card remains in the existing details while the sourced account is the heading', async () => {
+  const h=harness();
+  networkReady(h,()=>profile({account_number:'000SYN-ACCOUNT',display_account:'000SYN-CARD',cards:['000SYN-CARD']}));
+  await h.open();
+  const identity=h.element('drawerBody').querySelector('.node-identity');
+  assert.match(identity.textContent,/000SYN-ACCOUNT/);
+  const details=identity.querySelector('details');
+  assert.ok(details); assert.match(details.textContent,/关联卡号/);
+  assert.match(details.textContent,/000SYN-CARD/);
 });

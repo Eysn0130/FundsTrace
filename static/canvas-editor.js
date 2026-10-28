@@ -543,13 +543,17 @@
     ids = [...ids];
     return command(remove ? '移除流水' : '流水上图', async context => {
       const result = await mutateTracked(context, before => {
-        const desired = new Set(before);
-        for (const id of ids) remove ? desired.delete(id) : desired.add(id);
-        return replaceTracked(context, before, [...desired].sort(order));
+        const desired = new Map(before.map(id => [String(id), id]));
+        for (const id of ids) {
+          const key = String(id);
+          if (remove) desired.delete(key);
+          else if (!desired.has(key)) desired.set(key, id);
+        }
+        return replaceTracked(context, before, [...desired.values()].sort(order));
       }, () => { if (!remove) { state.justAdded = new Set(ids); state.forceFit = false; } });
       if (result && isCurrentCase(context)) {
         if (remove) closeDrawer();
-        toast(remove ? `已移除 ${ids.length} 笔` : `已上图 ${ids.length} 笔流水`);
+        toast(remove ? `已移除 ${ids.length} 条记录` : `已上图 ${ids.length} 条记录`);
       }
     });
   }
@@ -636,7 +640,7 @@
     wrap('#showIdCk', 'onchange', '切换证件号显示'); wrap('#showPhotoCk', 'onchange', '切换照片显示');
     wrap('#graphLabelMode', 'onchange', '更改标注模式');
     $('#btnBulkTrack').onclick = () => {
-      const ids = $$('#flowTbody .flow-ck').filter(node => node.checked).map(node => Number(node.dataset.id));
+      const ids = [...new Set($$('#flowTbody .flow-ck').filter(node => node.checked).flatMap(flowObservationIds).map(String))];
       if (!ids.length) { toast('请先勾选要追踪的流水', 'err'); return Promise.resolve(false); }
       const direction = $('#bulkDir').value, x = Math.max(1, Math.min(50, Number($('#bulkX').value) || 5));
       return command('批量追踪', async context => {
@@ -648,9 +652,9 @@
           const dirLabel = direction === 'source' ? '来源' : '去向';
           const notMain = (result.skipped_not_main || []).length;
           const zero = (result.detail || []).filter(item => item.picked === 0 && item.is_main).length;
-          let message = `批量追踪完成：${result.anchors} 笔交易及其${dirLabel}流水共上图 ${result.tracked} 笔`;
-          if (notMain) message += `；${notMain} 笔被跳过（${dirLabel === '来源' ? '付款' : '收款'}方不是主账号，无法追踪）`;
-          if (zero) message += `；${zero} 笔锚点在本方账单中无${dirLabel}流水（仅上图了本笔）`;
+          let message = `批量追踪完成：${result.anchors} 条起点记录及其${dirLabel}记录共上图 ${result.tracked} 条`;
+          if (notMain) message += `；${notMain} 条起点记录被跳过（${dirLabel === '来源' ? '付款' : '收款'}方不是主账号，无法追踪）`;
+          if (zero) message += `；${zero} 条起点记录在本方账单中无${dirLabel}流水（仅上图了该记录）`;
           toast(message);
         }
       });

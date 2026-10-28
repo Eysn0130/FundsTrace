@@ -151,20 +151,23 @@ def test_json_fallback_does_not_silently_encode_unrelated_objects():
         imports._json({"unexpected": object()})
 
 
-def test_corrupted_notes_abort_public_commit_and_close_partial_journal(client, database, make_case, monkeypatch):
+def test_corrupted_notes_abort_public_commit_and_close_staged_plan(client, database, make_case, monkeypatch):
     cid = make_case("Synthetic staging corruption")
     view = preview(client, cid, [("rows.csv", source(round_trip())[0])], scope_bank=None)
-    initialize, attempts = imports._JournalRecords.__init__, []
-    def corrupt(self, records):
-        assert isinstance(records[1]["details"], staging.PackedDetails)
-        records[1]["details"]._payload += b"corrupt"
-        try:
-            return initialize(self, records)
-        finally:
-            attempts.append(self._stream.closed)
-    monkeypatch.setattr(imports._JournalRecords, "__init__", corrupt)
+    write_journal, owners = imports._write_feedback_journal, []
+    def corrupt(case_id, source_id, plan):
+        store = plan["_plan_store"]
+        owners.append(store)
+        store.flush()
+        store._con.execute("update items set payload=? where kind='records' and position=2", [b"corrupt"])
+        store._cache.clear()
+        store._sizes.clear()
+        store._read_bytes = 0
+        return write_journal(case_id, source_id, plan)
+    monkeypatch.setattr(imports, "_write_feedback_journal", corrupt)
     job = complete(client, cid, view)
-    assert job["stage"] == "error" and job["done"] == 0 and attempts == [True]
+    assert job["stage"] == "error" and job["done"] == 0
+    assert len(owners) == 1 and owners[0]._closed
     for name in ("flows", "batches", "import_sources", "flow_sources", "import_members",
                  "import_records", "evidence_sources", "resolution_entities", "resolved_endpoints"):
         assert database.q_raw(f"select count(*) n from {name} where case_id=?", [cid])[0]["n"] == 0

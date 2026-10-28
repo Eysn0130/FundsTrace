@@ -87,8 +87,8 @@ def stats(case_id: CaseId):
 
 @router.get("/cases/{case_id}/flows", response_model=FlowPage, operation_id="v1_list_flows")
 def flows(case_id: CaseId, account: str = "", kw: str = "", page: int = Query(1, ge=1, le=2_147_483_647),
-          page_size: int = Query(50, ge=1, le=200)):
-    return cases.flows(case_id, account, kw, page, page_size)
+          page_size: int = Query(50, ge=1, le=200), granularity: Literal["events", "observations"] = "events"):
+    return cases.flows(case_id, account, kw, page, page_size, granularity)
 
 
 @router.get("/cases/{case_id}/flows/{flow_id}/sources", response_model=FlowSourceList, operation_id="v1_flow_sources")

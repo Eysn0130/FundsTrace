@@ -6,6 +6,9 @@ import test from 'node:test';
 const source = readFileSync(new URL('../static/table-workspace.js', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../static/app.js', import.meta.url), 'utf8');
 const entitySearch = readFileSync(new URL('../static/entity-search.js', import.meta.url), 'utf8');
+const editor = readFileSync(new URL('../static/canvas-editor.js', import.meta.url), 'utf8');
+const money = readFileSync(new URL('../static/money.js', import.meta.url), 'utf8');
+const facts = readFileSync(new URL('../static/principal-analysis.js', import.meta.url), 'utf8');
 const section = (start, end) => app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start)));
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
@@ -17,11 +20,13 @@ const flow = id => ({ id, trade_time: '2026-01-01 12:00:00', payer_name: 'Synthe
   payer_account: 'SYN-00000000000000000001', payee_name: 'Synthetic payee', payee_account: 'SYN-00000000000000000002',
   amount: '9999999999999999.99', currency: 'CNY', summary: 'Synthetic transaction' });
 
+const eventRow = (id=17, observation_ids=['17','18']) => ({...flow(id),observation_ids,granularity:'confirmed_event'});
+
 // A small DOM with real ancestry, moved-node identity and capture/bubble order.
 // The frozen app's actual renderer, search parameters and table handlers run in
 // this harness; only HTML parsing and network/graph boundaries are synthetic.
 function harness({ entityInputs = false } = {}) {
-  const byId = new Map(), ready = [], requests = [], graphCalls = [], membershipCalls = [], windowListeners = new Map();
+  const byId = new Map(), ready = [], requests = [], graphCalls = [], membershipCalls = [], contextCalls = [], writes = [], windowListeners = new Map();
   const membershipListeners = new Set();
   let doc, context, membershipToken = 0;
   let status = { confirmedIds: [], desiredIds: [], pendingIds: [], failures: {}, available: true, busy: false };
@@ -115,12 +120,16 @@ function harness({ entityInputs = false } = {}) {
     set innerHTML(value) {
       for (const child of [...this.children]) child.remove();
       if (this.id !== 'flowTbody') return;
-      for (const match of value.matchAll(/<tr data-id="([^"]+)"/g)) {
+      for (const match of value.matchAll(/<tr data-id="([^"]+)"([^>]*)>([\s\S]*?)<\/tr>/g)) {
         const tr = this.appendChild(new Element('tr')); tr.dataset.id = match[1];
+        const members = match[2].match(/data-observation-ids="([^"]*)"/)?.[1];
+        if (members !== undefined) tr.dataset.observationIds = members;
         const td = tr.appendChild(new Element('td')), box = td.appendChild(new Element('input'));
         box.className = 'flow-ck'; box.dataset.id = match[1];
+        const checkboxMembers = match[3].match(/class="flow-ck"[^>]*data-observation-ids="([^"]*)"/)?.[1];
+        if (checkboxMembers !== undefined) box.dataset.observationIds = checkboxMembers;
         const actions = tr.appendChild(new Element('td'));
-        if (!context?.state.tracked.has(Number(match[1]))) {
+        if (match[3].includes('act-track')) {
           const track = actions.appendChild(new Element('button')); track.className = 'act-track';
         }
         const details = actions.appendChild(new Element('button')); details.className = 'act-ctx';
@@ -149,6 +158,8 @@ function harness({ entityInputs = false } = {}) {
   const overview = add(doc.body, 'flowOverview'); overview.style.display = 'none';
   for (const id of ['flowOverviewContext', 'btnCloseFlowOverview', 'overviewTrackAll', 'overviewMembershipStatus', 'btnOverviewUndo', 'btnOverviewRedo', 'flowOverviewContent']) add(overview, id);
   add(doc.body, 'btnUndo', 'button'); add(doc.body, 'btnRedo', 'button');
+  add(doc.body, 'btnBulkTrack', 'button'); add(doc.body, 'bulkDir', 'input').value = 'source';
+  add(doc.body, 'bulkX', 'input').value = '5';
   const publish = () => { for (const callback of membershipListeners) callback(status); };
   const state = { caseId: 1, caseGeneration: 1, canvasId: 0, canvasGeneration: 1, canvasName: '', graphLoading: false,
     cases: [{ id: 1, name: 'Synthetic A' }, { id: 2, name: 'Synthetic B' }], tracked: new Set(), search: { page: 1, size: 50, total: 0 } };
@@ -178,7 +189,7 @@ function harness({ entityInputs = false } = {}) {
     $: selector => doc.querySelector(selector), $$: selector => doc.querySelectorAll(selector),
     fmtCount: String, fmtTime: String, flowTimeCell: String, moneyHtml: String,
     esc: value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;'),
-    syncFlowTableScroll() {}, openContext() {}, trackFlows() {},
+    syncFlowTableScroll() {}, openContext(value) { contextCalls.push(value); }, trackFlows() {},
     selectCase(value) {
       state.caseId = Number(value); state.caseGeneration++; state.canvasId = 0; state.canvasGeneration++;
       state.graphLoading = true; state.tracked = new Set(); resetMembership();
@@ -192,6 +203,8 @@ function harness({ entityInputs = false } = {}) {
     async api(path) { requests.push(path); return fetchFlows(new URL(path, 'http://synthetic.local').searchParams); },
   };
   context = vm.createContext(sandbox);
+  vm.runInContext(money, context); vm.runInContext(facts, context);
+  sandbox.window.FundsFacts = context.FundsFacts;
   const pickerOptions = new Map(), pickerSelections = new Map(), invalidated = [];
   if (entityInputs) {
     sandbox.window.FundsEntityPicker = { create(options) {
@@ -209,7 +222,28 @@ function harness({ entityInputs = false } = {}) {
   vm.runInContext(section("  $('#flowTbody').addEventListener('click'", '  // 批量追踪'), context);
   vm.runInContext(source, context, { filename: 'table-workspace.js' });
   for (const callback of ready) callback();
-  return { context, state, doc, element, requests, graphCalls, membershipCalls, pickerOptions, invalidated,
+  return { context, state, doc, element, requests, graphCalls, membershipCalls, contextCalls, writes, pickerOptions, invalidated,
+    installEditorCommands() {
+      const originalApi = sandbox.api;
+      Object.assign(sandbox, {
+        toast() {}, closeDrawer() {}, jsonOpts: value => ({body:JSON.stringify(value)}),
+        command: (_label, action) => action(sandbox.caseContext()),
+        mutateTracked: async (_binding, write, prepare) => { const value = await write([...state.tracked]); prepare?.(); return value; },
+        trackedWrite: (_binding, write) => write(),
+        replaceTracked: async (binding, expected, desired) => {
+          writes.push({path:'/api/track/state', caseId:binding.caseId, canvasId:binding.canvasId, expected:[...expected], desired:[...desired]});
+          return {tracked_ids:desired};
+        },
+        order: (a,b) => a < b ? -1 : a > b ? 1 : 0,
+        api: async (path, options) => {
+          if (path !== '/api/track/bulk') return originalApi(path, options);
+          const body = JSON.parse(options.body); writes.push({path,...body});
+          return {tracked_ids:body.flow_ids, anchors:body.flow_ids.length, tracked:body.flow_ids.length};
+        },
+      });
+      vm.runInContext(editor.slice(editor.indexOf('  function track(ids, remove)'), editor.indexOf('  const neighborhood =')), context);
+      vm.runInContext(editor.slice(editor.indexOf("    $('#btnBulkTrack').onclick = () => {"), editor.indexOf("    $('#btnClearGraph').onclick = () => {")), context);
+    },
     chooseCandidate(id, item) {
       const field = element(id); field.value = item.value; field.fire('input');
       pickerSelections.set(id, item); pickerOptions.get(id).onSelect(item);
@@ -251,7 +285,7 @@ test('renderer refresh and page returns retain independent sidebar anchors with 
   assert.equal(f.box(1).getAttribute('aria-label'), '选为追踪锚点，流水 1');
   f.toggleAnchor(1, true); await f.search();
   assert.equal(f.box(1).checked, true); assert.equal(f.box(2).checked, false);
-  assert.equal(f.element('flowCkCount').textContent, '已选锚点 1 笔');
+  assert.equal(f.element('flowCkCount').textContent, '已选锚点 1 条记录');
   f.network(async params => ({ page: Number(params.get('page')), size: 2, total: 4,
     rows: params.get('page') === '2' ? [flow(3), flow(4)] : [flow(1), flow(2)] }));
   await f.search(2); f.toggleAnchor(3, true); await f.search(1);
@@ -297,7 +331,7 @@ test('overview checkbox and row Space request membership once while closing leav
   const box = f.box(1); box.checked = false; box.fire('click'); box.fire('change');
   assert.equal(f.membershipCalls.length, 2); assert.equal(f.membershipCalls[1].included, false);
   f.membershipCalls[1].gate.resolve(); await flush(); f.close();
-  assert.equal(f.box(1).checked, true); assert.equal(f.element('flowCkCount').textContent, '已选锚点 1 笔');
+  assert.equal(f.box(1).checked, true); assert.equal(f.element('flowCkCount').textContent, '已选锚点 1 条记录');
 });
 
 test('membership failures roll back the overview row without clearing anchors and page-all uses visible IDs only', async () => {
@@ -376,7 +410,7 @@ test('canvas invalidation clears real rows immediately and graph readiness refre
   const old = deferred(); f.network(() => old.promise); const stale = f.search();
   f.context.activateCanvas(7);
   assert.equal(f.element('flowOverview').style.display, 'none'); assert.equal(f.rows().length, 0);
-  assert.equal(f.state.search.total, 0); assert.equal(f.element('flowCkCount').textContent, '已选锚点 0 笔');
+  assert.equal(f.state.search.total, 0); assert.equal(f.element('flowCkCount').textContent, '已选锚点 0 条记录');
   f.open(); assert.equal(f.element('overviewTrackAll').disabled, true); assert.match(f.element('overviewMembershipStatus').textContent, /0\/0/);
   f.close(); f.network(async params => ({ page: 1, size: 50, total: 1, rows: [flow(7)] }));
   const before = f.requests.length; await f.context.loadGraph();
@@ -391,7 +425,7 @@ test('switching a canvas from the sidebar clears anchors even when the same flow
   f.context.activateCanvas(7); assert.equal(f.rows().length, 0);
   await f.context.loadGraph();
   assert.equal(f.box(1).checked, false); assert.equal(f.box(2).checked, false);
-  assert.equal(f.element('flowCkCount').textContent, '已选锚点 0 笔');
+  assert.equal(f.element('flowCkCount').textContent, '已选锚点 0 条记录');
 });
 
 test('case A-B-A rejects old reads and graph completions without republishing another binding', async () => {
@@ -604,4 +638,109 @@ test('a successful empty query does not move the camera to an account excluded b
   f.network(async () => ({ page: 1, size: 50, total: 0, rows: [] }));
   assert.equal(await f.search(1, { locate: true }), true);
   assert.equal(f.rows().length, 0); assert.deepEqual(previews, []);
+});
+
+test('a confirmed row is already tracked when only its other selected observation is tracked', async () => {
+  const f = harness(); f.state.tracked = new Set([18]);
+  f.setStatus({confirmedIds:['18'],desiredIds:['18']});
+  f.render([eventRow()]);
+  assert.equal(!!f.rows()[0].querySelector('.act-track'), false);
+  assert.equal(f.rows()[0].querySelector('.membership-status').textContent, '已上图');
+  f.open(); assert.equal(f.box(17).checked, true);
+  f.box(17).checked = false; f.box(17).fire('change');
+  assert.deepEqual(f.membershipCalls[0].ids, ['17','18']);
+  assert.equal(f.membershipCalls[0].included, false);
+  f.membershipCalls[0].gate.resolve(); await flush();
+  assert.equal(f.box(17).checked, false);
+});
+
+test('row tracking and bulk anchors send all selected observations while source context stays singular', async () => {
+  const f = harness(); f.installEditorCommands();
+  f.render([eventRow(), flow(20)]);
+  f.rows()[0].querySelector('.act-track').click(); await flush();
+  assert.deepEqual(f.writes[0].desired.map(String), ['17','18']);
+  f.rows()[0].querySelector('.act-ctx').click();
+  assert.deepEqual(f.contextCalls, [17]);
+  f.toggleAnchor(17,true); f.toggleAnchor(20,true);
+  await f.element('btnBulkTrack').onclick();
+  const bulk = f.writes.find(write => write.path === '/api/track/bulk');
+  assert.deepEqual(bulk.flow_ids.map(String), ['17','18','20']);
+  assert.deepEqual(bulk.expected_ids, []);
+});
+
+test('removal compares selected string observation IDs with numeric tracked IDs without changing other membership', async () => {
+  const f = harness(); f.installEditorCommands(); f.state.tracked = new Set([17,18,99]);
+  await f.context.untrackFlows(['17','18']);
+  assert.deepEqual(f.writes[0].expected, [17,18,99]);
+  assert.deepEqual(f.writes[0].desired, [99]);
+});
+
+test('overview page-all and keyboard membership use selected observation sets without expanding a filtered event', async () => {
+  const f = harness(); f.render([eventRow(18,['18']),flow(20)]); f.open();
+  f.rows()[0].fire('keydown',{key:' '});
+  assert.deepEqual(f.membershipCalls[0].ids,['18']);
+  f.membershipCalls[0].gate.resolve(); await flush();
+  const all=f.element('overviewTrackAll'); all.checked=true; all.fire('change');
+  assert.deepEqual(f.membershipCalls[1].ids,['18','20']);
+  f.membershipCalls[1].gate.resolve(); await flush();
+  f.close(); f.render([eventRow(),flow(20)]); f.open();
+  all.checked=false; all.fire('change');
+  assert.deepEqual(f.membershipCalls[2].ids,['17','18','20']);
+});
+
+const exactFunds = {policy:'evidence-bounded-funds-v1',status:'exact',observation_count:2,confirmed_event_count:1,
+  unresolved_observation_count:0,count:{lower:1,upper:1},totals:[{currency:'CNY',amount:'100.00',lower:'100.00',upper:'100.00'}]};
+const boundedFunds = {...exactFunds,status:'bounded',confirmed_event_count:0,unresolved_observation_count:2,
+  count:{lower:0,upper:2},totals:[{currency:'CNY',amount:null,lower:'0.00',upper:'200.00'}]};
+
+test('actual query headings use confirmed event funds while pagination retains returned row totals', async () => {
+  const f = harness();
+  f.network(async () => ({page:1,size:1,total:2,rows:[eventRow()],funds:exactFunds}));
+  assert.equal(await f.search(),true);
+  for (const key of ['resultInfo','querySummary']) {
+    assert.match(f.element(key).textContent,/1 笔/);
+    assert.doesNotMatch(f.element(key).textContent,/2 笔|200\.00/);
+  }
+  assert.equal(f.state.search.total,2);
+  assert.equal(f.element('pageInfo').textContent,'第 1 / 2 页');
+  assert.equal(f.element('btnNext').disabled,false);
+});
+
+test('unresolved query funds remain bounded across draft edits and a failed query', async () => {
+  const f = harness();
+  f.network(async () => ({page:1,size:50,total:2,rows:[flow(17),flow(18)],funds:boundedFunds}));
+  await f.search();
+  const expected=/—$/;
+  for (const key of ['resultInfo','querySummary']) assert.match(f.element(key).textContent,expected);
+  const reads=f.requests.length;
+  f.element('fAccount').value='SYN-DRAFT'; f.element('fAccount').fire('input');
+  assert.equal(f.requests.length,reads);
+  assert.match(f.element('querySummary').textContent,/待查询.*SYN-DRAFT.*上次结果/);
+  assert.match(f.element('querySummary').textContent,expected);
+  f.network(async () => {throw new Error('Synthetic failed query');});
+  assert.equal(await f.search(),false);
+  assert.match(f.element('resultInfo').textContent,/查询失败 · 保留上次结果/);
+  for (const key of ['resultInfo','querySummary']) {
+    assert.match(f.element(key).textContent,expected);
+    assert.doesNotMatch(f.element(key).textContent,/共 2 笔/);
+  }
+});
+
+test('canvas and case A-B-A invalidation revoke query funds and reject late old summaries', async () => {
+  for (const invalidate of [f => f.context.activateCanvas(7), f => {f.context.selectCase(2); f.context.selectCase(1);}]) {
+    const f=harness();
+    f.network(async () => ({page:1,size:50,total:1,rows:[eventRow()],funds:exactFunds}));
+    await f.search();
+    const late=deferred(); f.network(() => late.promise); const pending=f.search();
+    invalidate(f);
+    for (const key of ['resultInfo','querySummary']) assert.doesNotMatch(f.element(key).textContent,/100\.00|1 笔/);
+    f.network(async () => ({page:1,size:50,total:2,rows:[flow(17),flow(18)],funds:boundedFunds}));
+    await f.context.loadGraph();
+    late.resolve({page:1,size:50,total:1,rows:[eventRow()],funds:exactFunds});
+    assert.equal(await pending,false);
+    for (const key of ['resultInfo','querySummary']) {
+      assert.match(f.element(key).textContent,/—$/);
+      assert.doesNotMatch(f.element(key).textContent,/CNY 100\.00/);
+    }
+  }
 });
