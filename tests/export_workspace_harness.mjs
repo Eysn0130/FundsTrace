@@ -245,8 +245,8 @@ test('Excel description distinguishes one confirmed event from two retained obse
   const h = harness(); h.scope.trackedFlows = 2;
   h.scope.funds = { count: { lower: 1, upper: 1 } };
   h.open(); await h.choose('xlsx');
-  assert.match(h.element('exportContents').textContent, /1 个事件/);
-  assert.match(h.element('exportContents').textContent, /2 条原始观察/);
+  assert.match(h.element('exportContents').textContent, /1 笔追踪流水/);
+  assert.match(h.element('exportContents').textContent, /2 条来源记录/);
   assert.doesNotMatch(h.element('exportContents').textContent, /2 笔追踪流水/);
   assert.match(h.element('exportPreserves').textContent, /资金统计/);
   assert.match(h.element('exportPreserves').textContent, /原始账簿观察/);
@@ -257,9 +257,9 @@ test('Excel description preserves unresolved bounds and does not invent an exact
   const h = harness(); h.scope.trackedFlows = 2;
   h.scope.funds = { observation_count: 2, count: { lower: 0, upper: 2 } };
   h.open(); await h.choose('xlsx');
-  assert.match(h.element('exportContents').textContent, /0–2 个事件（待核） · 2 条原始观察/);
+  assert.match(h.element('exportContents').textContent, /—追踪流水 · 2 条来源记录/);
   delete h.scope.funds; h.controller.refresh();
-  assert.match(h.element('exportContents').textContent, /事件数待定 · 2 条原始观察/);
+  assert.match(h.element('exportContents').textContent, /—追踪流水 · 2 条来源记录/);
   assert.doesNotMatch(h.element('exportContents').textContent, /2 个事件|2 笔/);
 });
 

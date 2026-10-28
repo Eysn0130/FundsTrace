@@ -28,7 +28,9 @@ def cte(source_sql, *, include_ids=False):
     """
     selected_ids = """,list(cast(id as varchar) order by id) over (partition by case_id,fact_event_id,
         case when fact_event_id is null then id end) observation_ids""" if include_ids else ""
-    return f"""with _funds_source as ({source_sql}),
+    # Isolate joined source filters from DuckDB 1.5.6's window rewrite, whose
+    # nullability analysis can miscast a BETWEEN expression.
+    return f"""with _funds_source as materialized ({source_sql}),
     _funds_selected as (
         select * from _funds_source
         qualify row_number() over (partition by case_id,id order by id)=1

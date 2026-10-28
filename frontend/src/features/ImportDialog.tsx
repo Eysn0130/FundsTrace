@@ -79,11 +79,10 @@ const documentExplanation = (item: Record<string, unknown>) => [
 ].filter(Boolean).join(' · ');
 
 function ResolutionSummary({ value, complete }: { value: NonNullable<ImportPreview['resolution']>; complete: boolean }) {
+  if (!(value.unresolved_endpoints || value.conflicts)) return null;
   return <section className="resume-summary" aria-label="账户关联结果">
     <p><strong>{complete ? '账户关联已更新' : '账户资料关联预览'}</strong></p>
-    <p>辅助资料 {value.auxiliary_records} 条 · 关联证据 {value.evidence_records} 条 · 已定位交易端点 {value.resolved_endpoints} 个</p>
-    {(value.unresolved_endpoints > 0 || value.conflicts > 0) && <p>尚未定位到账务账户的端点 {value.unresolved_endpoints} 个 · 身份关系冲突 {value.conflicts} 处。已知卡号和原始记录继续保留，补充资料后自动重新关联。</p>}
-    <p>图谱与流水按同一账户关联结果统计，金额按币种分别累计。有据关联的双方流水按同一事件统计；证据不足部分显示范围，原账簿记录与余额保留。</p>
+    <p>有 {value.unresolved_endpoints} 个账户标识尚未关联，{value.conflicts} 处资料冲突。已知卡号和原始记录继续保留，可在账户详情中核对。</p>
   </section>;
 }
 
@@ -273,8 +272,8 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
     {error && <div role="alert" className="error-banner"><span>{error}</span>{awaitingStatus && <p>导入结果暂无法确认，请重新查询进度，确认前不会再次提交。</p>}{!working && activeJob ? <button onClick={() => { setError(''); void poll(resume?.import_id ?? preview!.import_id, ++operation.current); }}>重新查询进度</button> : !working && job?.stage === 'error' && job.recoverable !== false ? <button onClick={() => void (preview ? repreview() : restorePreview())}>重新预览后重试</button> : !working && resume && !preview && !complete && <button onClick={() => void restorePreview()}>重试恢复预览</button>}</div>}
     {complete ? <>
       <div className="import-complete" role="status"><span className="success-symbol">✓</span><h3>{classified ? '自动处理完成' : '流水已写入当前案件'}</h3>
-        <p>{classified && <>已保存 {feedback?.record_total ?? tableSummary!.record_total} 条记录 · </>}{classified ? '新增资金流水' : '新增'} <strong>{tableSummary?.effective_added ?? job.result?.ok ?? 0}</strong> 笔 · 重复 {job.result?.rows_dup ?? 0} 笔 · {feedback ? <>已配对冲正/撤销 {feedback.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {feedback.non_monetary ?? 0} 条 · 未计入资金流水 {unresolvedCount(feedback)} 条 · 来源反馈 {feedback.non_transaction} 条 · 辅助资料 {feedback.auxiliary} 条</> : tableSummary ? <>未计入资金流水 {tableSummary.unresolved} 条 · 已配对冲正/撤销 {tableSummary.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {tableSummary.non_monetary} 条 · 非交易记录 {tableSummary.non_transaction} 条 · 辅助资料 {tableSummary.auxiliary} 条</> : <>跳过 {job.result?.skipped ?? 0} 行</>}</p>
-        {tableSummary?.effective_added != null && tableSummary.effective_added !== job.result?.ok && <p>本次保留流水事实 {job.result?.ok ?? 0} 笔，其中新增有效资金流水 {tableSummary.effective_added} 笔；已有配对依据的记录不重复进入统计。</p>}
+        <p>{classified && <>已保存 {feedback?.record_total ?? tableSummary!.record_total} 条记录 · </>}新增流水记录 <strong>{tableSummary?.effective_added ?? job.result?.ok ?? 0}</strong> 条 · 重复 {job.result?.rows_dup ?? 0} 条 · {feedback ? <>已配对冲正/撤销 {feedback.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {feedback.non_monetary ?? 0} 条 · 未计入资金流水 {unresolvedCount(feedback)} 条 · 来源反馈 {feedback.non_transaction} 条 · 辅助资料 {feedback.auxiliary} 条</> : tableSummary ? <>未计入资金流水 {tableSummary.unresolved} 条 · 已配对冲正/撤销 {tableSummary.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {tableSummary.non_monetary} 条 · 非交易记录 {tableSummary.non_transaction} 条 · 辅助资料 {tableSummary.auxiliary} 条</> : <>跳过 {job.result?.skipped ?? 0} 行</>}</p>
+        {tableSummary?.effective_added != null && tableSummary.effective_added !== job.result?.ok && <p>本次保留来源流水记录 {job.result?.ok ?? 0} 条，其中新增有效流水记录 {tableSummary.effective_added} 条；已有配对依据的记录不重复进入统计。</p>}
         <p className="muted">批次 {job.result?.batch_id} · {preview?.filename ?? resume?.filename}</p>
       </div>
       {resolution && <ResolutionSummary value={resolution} complete />}

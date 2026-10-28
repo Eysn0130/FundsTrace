@@ -22,7 +22,7 @@
   function anchorStatus() {
     if (!mounted) return;
     const boxes = selectedRows(), count = boxes.filter(box => anchors.has(id(box.dataset.id))).length;
-    $('#flowCkCount').textContent = `已选锚点 ${count} 笔`;
+    $('#flowCkCount').textContent = `已选锚点 ${count} 条记录`;
     $('#flowCkAll').checked = boxes.length > 0 && count === boxes.length;
     $('#flowCkAll').indeterminate = count > 0 && count < boxes.length;
   }
@@ -37,7 +37,7 @@
     $('#querySummary').textContent = text; $('#querySummary').title = text;
   }
   function resultSummary() {
-    return resultFunds ? `${window.FundsFacts.count(resultFunds)} · ${window.FundsFacts.totals(resultFunds)}`
+    return resultFunds ? window.FundsFacts.displayCount(resultFunds)
       : `${fmtCount(state.search.total)} 笔`;
   }
   function updateMembership() {

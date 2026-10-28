@@ -44,8 +44,10 @@ LEGACY_EVIDENCE_PROFILE = "funds-trace-table-v19"
 LEGACY_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v5"
 EVIDENCE_PROFILE = "funds-trace-table-v20"
 EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
-EVENT_PROFILES = frozenset((EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE))
-EVIDENCE_ARCHIVE_PROFILES = frozenset((LEGACY_EVIDENCE_ARCHIVE_PROFILE, EVIDENCE_ARCHIVE_PROFILE))
+XLS_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v7"
+XLS_READER_PROFILES = frozenset((XLS_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE))
+EVENT_PROFILES = frozenset((EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE))
+EVIDENCE_ARCHIVE_PROFILES = frozenset((LEGACY_EVIDENCE_ARCHIVE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE))
 EVIDENCE_PROFILES = frozenset((LEGACY_EVIDENCE_PROFILE, *EVIDENCE_ARCHIVE_PROFILES, EVIDENCE_PROFILE))
 PROFILE = CURRENCY_REGION_PROFILE
 CURRENCY_REGION_PROFILES = frozenset((CURRENCY_REGION_PROFILE, XLS_PROFILE, *EVIDENCE_PROFILES))
@@ -274,7 +276,15 @@ def _cell_present(value):
 
 def _header_value(value, profile):
     # Cached formula results and invalid typed cells cannot declare a schema.
-    return "" if profile == XLS_PROFILE and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type) else value
+    return "" if profile in XLS_READER_PROFILES and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type) else value
+
+
+def _evidence_value(value, profile):
+    # v7 adds evidence to the XLS reader without granting its formula cache
+    # authority over identities, event references or posting-order declarations.
+    if profile == XLS_EVIDENCE_ARCHIVE_PROFILE and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type):
+        return None
+    return _raw(value)
 
 
 def _header_parts(value, profile=IDENTITY_PROFILE):
@@ -1449,7 +1459,7 @@ def _append_auxiliary_sheet(plan, sheet, *, details_pool=None):
     role = table_source_roles.classify([_text(_header_value(value, plan["profile"])) for value in headers])
     if plan["profile"] in EVIDENCE_PROFILES:
         from . import evidence_resolution
-        role = role or evidence_resolution.classify_auxiliary([_text(value) for value in headers])
+        role = role or evidence_resolution.classify_auxiliary([_text(_header_value(value, plan["profile"])) for value in headers])
     if role not in {"account", "client", "subaccount"}:
         return False
     # A later transaction region must go through the ordinary complete parser.
@@ -1468,11 +1478,19 @@ def _append_auxiliary_sheet(plan, sheet, *, details_pool=None):
             continue
         valid = len(row) == width and not any(_cell_present(value) for value in row[meaningful_width:])
         reason = "auxiliary_table" if valid else "column_count_mismatch"
+        if valid and plan["profile"] == XLS_EVIDENCE_ARCHIVE_PROFILE:
+            if any(isinstance(value, _WorkbookValue) and value.formula for value in row[:meaningful_width]):
+                valid, reason = False, "formula_value"
+            elif any(isinstance(value, _WorkbookValue) and value.invalid_type for value in row[:meaningful_width]):
+                valid, reason = False, "invalid_cell_type"
         details = {"sheet": sheet["name"], "source_row": str(index), "source_role": role,
                    "financial_effect": "not_a_flow" if valid else "undetermined",
                    "reason": REASONS[reason], **contract.details()}
+        if reason in {"formula_value", "invalid_cell_type"}:
+            details["validation_issues"] = reason
         if valid and plan["profile"] in EVIDENCE_PROFILES:
-            value = evidence_resolution.auxiliary_evidence([_text(h) for h in headers], [_raw(v) for v in row], role)
+            value = evidence_resolution.auxiliary_evidence([_text(_header_value(h, plan["profile"])) for h in headers],
+                                                         [_evidence_value(v, plan["profile"]) for v in row], role)
             if value:
                 details[evidence_resolution.DETAIL_FIELD] = value
         plan["records"].append({"record_no": len(plan["records"]) + 1, "member_path": sheet["path"],
@@ -1550,7 +1568,8 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
     """Interpret every source record and return a write-free versioned plan."""
     suffix = suffix.lower()
     archive_member = ((profile == ARCHIVE_MEMBER_PROFILE and suffix == ".csv"
-                       or profile in EVIDENCE_ARCHIVE_PROFILES and suffix in {".csv", ".txt", ".tsv", ".xlsx"})
+                       or profile in EVIDENCE_ARCHIVE_PROFILES and suffix in {".csv", ".txt", ".tsv", ".xlsx"}
+                       or profile == XLS_EVIDENCE_ARCHIVE_PROFILE and suffix == ".xls")
                       and reference_policy == TRANSACTION_REFERENCE_POLICY)
     if profile not in SUPPORTED_PROFILES and not archive_member:
         raise TableImportError("不支持的表格解析规则")
@@ -1563,8 +1582,8 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
         raise TableImportError("临时CSV格式仅用于CSV成员复读")
     if suffix not in {".csv", ".tsv", ".txt", ".xlsx", ".xls"}:
         raise TableImportError("表格文件格式不受支持")
-    if (profile == XLS_PROFILE) != (suffix == ".xls"):
-        raise TableImportError("XLS仅支持v18读取规则；历史规则及其他格式保持原解释")
+    if profile == XLS_PROFILE and suffix != ".xls" or suffix == ".xls" and profile not in XLS_READER_PROFILES:
+        raise TableImportError("XLS仅支持单文件v18或证据归档v7读取规则；历史规则保持原解释")
     if mode not in (None, "A", "B") or (mapping is not None and not isinstance(mapping, dict)):
         raise TableImportError("表格映射参数无效")
     if reference_policy is not None and reference_policy != TRANSACTION_REFERENCE_POLICY:
@@ -1659,7 +1678,9 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                     row, candidates, actual_mode, reference_policy=active_reference_policy, financial=profile in FINANCIAL_PROFILES, source_contract=source_contract, source_roles=profile in SOURCE_ROLE_PROFILES, retain_endpoint_role=profile in EVIDENCE_PROFILES)
                 if profile in EVIDENCE_ARCHIVE_PROFILES:
                     from . import feedback_import
-                    if len(headers) == len(feedback_import.COLUMNS) and frozenset(_text(value) for value in headers) == frozenset(feedback_import.COLUMNS):
+                    if (len(headers) == len(feedback_import.COLUMNS)
+                            and frozenset(_text(_header_value(value, profile)) for value in headers) == frozenset(feedback_import.COLUMNS)
+                            and not (profile == XLS_EVIDENCE_ARCHIVE_PROFILE and reason in {"formula_value", "invalid_cell_type"})):
                         result, disposition, reason, parsed_details = _feedback_member_outcome(headers, row, (result, disposition, reason, parsed_details))
                 own_side = parsed_details.pop("_resolved_own_side", "")
                 details.update(parsed_details)
@@ -1685,18 +1706,18 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
             if result is not None and profile in EVIDENCE_PROFILES:
                 from . import evidence_resolution
                 from . import feedback_import
-                if profile in EVIDENCE_ARCHIVE_PROFILES and len(headers) == len(feedback_import.COLUMNS) and frozenset(_text(h) for h in headers) == frozenset(feedback_import.COLUMNS):
-                    source_cells = {_text(h): _text(value) for h, value in zip(headers, row)}
+                if profile in EVIDENCE_ARCHIVE_PROFILES and len(headers) == len(feedback_import.COLUMNS) and frozenset(_text(_header_value(h, profile)) for h in headers) == frozenset(feedback_import.COLUMNS):
+                    source_cells = {_text(_header_value(h, profile)): _text(_evidence_value(value, profile)) for h, value in zip(headers, row)}
                     details[evidence_resolution.DETAIL_FIELD] = evidence_resolution.feedback_evidence(source_cells, result, ("", "", "in" if source_cells["收付标志"] in {"进", "入"} else "out"))
                 else:
                     details[evidence_resolution.DETAIL_FIELD] = evidence_resolution.transaction_evidence(
-                        [_text(h) for h in headers], [_raw(v) for v in row], candidates, result, _identity_pair, own_side=own_side)
+                        [_text(_header_value(h, profile)) for h in headers], [_evidence_value(v, profile) for v in row], candidates, result, _identity_pair, own_side=own_side)
             if (profile in EVENT_PROFILES and header_no is not None and len(row) == len(headers)
                     and disposition in {"accepted", "unresolved", "non_monetary"}
                     and reason not in {"preamble", "blank_record", "repeated_header", "ambiguous_region_header"}):
                 from . import event_resolution
                 details.update(event_resolution.parse_fields(
-                    [_text(h) for h in headers],
+                    [_text(_header_value(h, profile)) for h in headers],
                     [None if isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type) else _raw(value) for value in row],
                     accepted=result is not None, posting_scope=document["header_rows"][-1]))
             # The envelope owns one bounded decoded cache for all members.

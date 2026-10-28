@@ -353,6 +353,7 @@ test('tracking, undo and redo preserve checked rows, filters, page and camera', 
   const f = editor(); f.state.search.page = 3; f.h.element('#fAccount').value = 'SYN-FILTER';
   f.boxes[1].checked = false;
   await f.h.run('trackFlows([2])');
+  assert.ok(f.messages.some(item => item.message === '已上图 1 条记录'));
   assert.deepEqual(f.tracked.get('1:0'), [1, 2]); assert.equal(f.history.status().count, 1);
   assert.equal(f.boxes[0].checked, true); assert.equal(f.boxes[1].checked, false);
   f.matrix = [2, 0, 0, 0, 2, 0, 80, 90, 1];
@@ -773,9 +774,9 @@ test('bulk success feedback retains anchors, direction, skipped accounts and zer
         detail: [{ is_main: true, picked: 0 }, { is_main: false, picked: 0 }] });
     });
     assert.equal(await f.h.element('#btnBulkTrack').onclick(), true);
-    assert.ok(f.messages.some(item => item.message === `批量追踪完成：2 笔交易及其${label}流水共上图 2 笔`
-      + `；1 笔被跳过（${party}方不是主账号，无法追踪）`
-      + `；1 笔锚点在本方账单中无${label}流水（仅上图了本笔）`));
+    assert.ok(f.messages.some(item => item.message === `批量追踪完成：2 条起点记录及其${label}记录共上图 2 条`
+      + `；1 条起点记录被跳过（${party}方不是主账号，无法追踪）`
+      + `；1 条起点记录在本方账单中无${label}流水（仅上图了该记录）`));
   }
 });
 

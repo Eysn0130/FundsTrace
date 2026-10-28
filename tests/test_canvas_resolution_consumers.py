@@ -66,15 +66,15 @@ def test_display_account_card_alias_and_internal_key_produce_same_paths(client, 
     aliases = request(client, cid, start_account="SYN-OLDER-A", end_account="SYN-ACCOUNT-C")
     assert internal["paths"] == aliases["paths"]
     assert aliases["start_accounts"] == [keys[0]] and aliases["end_accounts"] == [keys[2]]
-    assert aliases["start_display_accounts"] == ["SYN-CARD-A"]
+    assert aliases["start_display_accounts"] == ["SYN-ACCOUNT-A"]
     assert aliases["paths"][0]["accounts"] == keys
-    assert aliases["paths"][0]["display_accounts"] == ["SYN-CARD-A", "SYN-CARD-B", "SYN-CARD-C"]
-    assert aliases["paths"][0]["steps"][0]["source_display_account"] == "SYN-CARD-A"
-    assert aliases["paths"][0]["steps"][0]["target_display_account"] == "SYN-CARD-B"
+    assert aliases["paths"][0]["display_accounts"] == ["SYN-ACCOUNT-A", "SYN-ACCOUNT-B", "SYN-ACCOUNT-C"]
+    assert aliases["paths"][0]["steps"][0]["source_display_account"] == "SYN-ACCOUNT-A"
+    assert aliases["paths"][0]["steps"][0]["target_display_account"] == "SYN-ACCOUNT-B"
     assert aliases["statistics_policy"] == "evidence-bounded-funds-v1"
     assert aliases["resolution_revision"] == current_revision
-    assert aliases["flows"][0]["payer_display_account"] == "SYN-CARD-A"
-    assert aliases["flows"][0]["self_display_account"] == "SYN-CARD-A"
+    assert aliases["flows"][0]["payer_display_account"] == "SYN-ACCOUNT-A"
+    assert aliases["flows"][0]["self_display_account"] == "SYN-ACCOUNT-A"
 
 
 def test_nonunique_alias_expands_all_in_scope_entities_without_name_or_case_guess(client, database, make_case):
@@ -82,7 +82,7 @@ def test_nonunique_alias_expands_all_in_scope_entities_without_name_or_case_gues
     a1, a2, target, hidden, foreign = ["fte_" + digit * 32 for digit in "abcde"]
     for key, suffix in ((a1, "A1"), (a2, "A2"), (hidden, "HIDDEN")):
         entity(database, cid, key, "SYN-ACCOUNT-" + suffix, "SHARED-CARD", cards=["SHARED-CARD"])
-    entity(database, cid, target, "SYN-TARGET", "TARGET-CARD")
+    entity(database, cid, target, "SYN-TARGET", "TARGET-CARD", cards=["TARGET-CARD"])
     entity(database, other, foreign, "SYN-FOREIGN", "SHARED-CARD", cards=["SHARED-CARD"])
     revision(database, cid)
     flow(database, cid, a1, target)
@@ -122,9 +122,9 @@ def test_time_uses_ledger_record_policy_and_display_metadata_without_fifo_claim(
     assert result["statistics_policy"] == "evidence-bounded-funds-v1"
     assert result["resolution_revision"] == current_revision
     assert "selected_confirmed_events_and_unresolved_observations" in result["semantics"] and "graph_fifo_mirror_pairing" not in result["semantics"]
-    assert {node["display_account"] for node in result["nodes"]} == {"SYN-CARD-A", "SYN-CARD-B"}
-    assert result["edges"][0]["source_display_account"] == "SYN-CARD-A"
-    assert result["flows"][0]["source"] == payer and result["flows"][0]["source_display_account"] == "SYN-CARD-A"
+    assert {node["display_account"] for node in result["nodes"]} == {"SYN-A", "SYN-B"}
+    assert result["edges"][0]["source_display_account"] == "SYN-A"
+    assert result["flows"][0]["source"] == payer and result["flows"][0]["source_display_account"] == "SYN-A"
 
 
 def test_legacy_time_semantics_apply_the_same_evidence_bounded_policy(client, database, make_case):
@@ -219,7 +219,7 @@ def test_public_flow_query_keeps_count_rows_and_resolution_in_one_read(
     value = response.json()
     assert value["total"] == 1
     assert [(row["id"], row["amount"], row["payer_account"], row["payer_display_account"])
-            for row in value["rows"]] == [(identifier, "10.25", payer, "SYN-CARD-A")]
+            for row in value["rows"]] == [(identifier, "10.25", payer, "SYN-ACCOUNT-A")]
     assert value["resolution"]["revision"] == old_revision
     assert evidence_resolution.summary(cid)["revision"] == "b" * 64
     assert database.q_raw("select count(*) n from flows where case_id=?", [cid])[0]["n"] == 2
@@ -263,11 +263,11 @@ def test_tracked_workbook_uses_captured_resolution_and_endpoint_metadata(
         values = list(workbook["追踪流水"].values)
         row = dict(zip(values[0], values[1]))
         assert (row["交易金额"], row["付款账号"], row["收款账号"], row["付款显示标识"], row["付款实体ID"]) == (
-            "10.25", "SYN-ACCOUNT-A", "SYN-ACCOUNT-B", "SYN-CARD-A", payer)
+            "10.25", "SYN-ACCOUNT-A", "SYN-ACCOUNT-B", "SYN-ACCOUNT-A", payer)
         pending = list(workbook["待调取账号"].values)
         row = dict(zip(pending[0], pending[1]))
         assert (row["账号"], row["显示标识"], row["实体ID"], row["交易总额"]) == (
-            "SYN-ACCOUNT-B", "SYN-CARD-B", payee, "0.00—10.25")
+            "SYN-ACCOUNT-B", "SYN-ACCOUNT-B", payee, "0.00—10.25")
         notes = dict(list(workbook["统计口径"].values)[1:])
         assert notes["解析修订"] == old_revision
     finally:

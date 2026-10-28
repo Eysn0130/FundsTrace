@@ -199,10 +199,11 @@ function harness() {
 function result(account = 'SYN-CURRENT') {
   const flow = (id, rn, dir, book, extra = {}) => ({ id, rn, dir, book, trade_time: '2026-10-17 12:34:56',
     payer_name: '合成来款方', payer_account: 'SYN-PAYER', payee_name: '合成收款方', payee_account: 'SYN-PAYEE',
+    self_account: book === 'self' ? (dir === 'in' ? 'SYN-PAYEE' : 'SYN-PAYER') : (dir === 'in' ? 'SYN-PAYER' : 'SYN-PAYEE'),
     amount: '9007199254740993.07', currency: 'CNY', balance: null, summary: '合成交易摘要', ...extra });
   const anchor = flow(12, 3, 'out', 'self');
-  return { account, anchor, total: 9, pos: 3, rows: [flow(11, 2, 'in', 'self'), anchor,
-    flow(13, 4, 'out', 'counter', { balance: '-10000000000000.01' }), flow(14, 5, 'out', 'self')],
+  return { account, anchor, total: 9, pos: 3, rows: [flow(11, 2, 'in', 'self', {trade_time: '2026-10-17 12:33:56'}), anchor,
+    flow(13, 4, 'out', 'counter', { balance: '-10000000000000.01', trade_time: '2026-10-17 12:35:56' }), flow(14, 5, 'out', 'self', {trade_time: '2026-10-17 12:36:56'})],
     principal: { status: 'unknown', assessment: [{ status: 'unknown', message: `合成来源证据-${account}` }], targets: [{ amount: '100.00', min: '0.00', max: '100.00', fifo: null }], currency: 'CNY' },
     suggestions: { sources: [{ ids: [11, 12, 99], account: 'SYN-SOURCE', name: '合成来源', score: 88, reasons: ['合成原因'], tags: ['拆分'] }],
       targets: [{ ids: [13], account: 'SYN-TARGET', name: '合成去向', score: 62, reasons: ['合成去向原因'], tags: [] }] } };
@@ -217,27 +218,55 @@ test('context rows retain eight full columns, exact money, relative direction, a
   data.rows[0].payer_name = '<b>合成来款方</b>'; await opened(h, data);
   const rows = h.rows(); assert.equal(rows.length, 4);
   for (const row of rows) assert.equal(cells(row).length, 8);
-  assert.match(cells(rows[0])[1].textContent, /前\s*1/); assert.match(cells(rows[1])[1].textContent, /本笔|锚点/);
-  assert.match(cells(rows[2])[1].textContent, /后\s*1/);
-  assert.match(cells(rows[0])[2].textContent, /转入|收入/); assert.match(cells(rows[0])[2].textContent, /本方/);
-  assert.match(cells(rows[2])[2].textContent, /转出|支出/); assert.match(cells(rows[2])[2].textContent, /对手|对方/);
+  assert.match(cells(rows[0])[1].textContent, /之前/); assert.match(cells(rows[1])[1].textContent, /本笔|锚点/);
+  assert.match(cells(rows[2])[1].textContent, /之后/);
+  assert.match(cells(rows[0])[2].textContent, /转入|收入/); assert.match(cells(rows[0])[2].textContent, /收款方记录 · SYN-PAYEE/);
+  assert.match(cells(rows[2])[2].textContent, /转出|支出/); assert.match(cells(rows[2])[2].textContent, /收款方记录 · SYN-PAYEE/);
   assert.match(cells(rows[0])[4].textContent, /9,007,199,254,740,993\.07/);
   assert.equal(cells(rows[0])[5].textContent.trim(), '—'); assert.match(cells(rows[2])[5].textContent, /-10,000,000,000,000\.01/);
   assert.equal(cells(rows[0])[7].textContent, data.rows[0].summary); assert.equal(h.element('ctxTbody').innerHTML.includes('<img src=x'), false);
   assert.equal(h.element('ctxTbody').innerHTML.includes('<b>合成来款方</b>'), false);
-  assert.equal(h.box(12), null); assert.match(rows[1].textContent, /已上图/); assert.match(h.element('ctxTrackedCount').textContent, /1/);
+  assert.equal(h.box(12), null); assert.match(rows[1].textContent, /已上图/); assert.equal(h.element('ctxTrackedCount').textContent, '已上图 1 条记录');
 });
 
 test('manual selection updates its count and CTA while recommendations stay synchronized', async () => {
   const h = harness(); await opened(h);
-  assert.equal(h.element('ctxTrack').disabled, true); assert.match(h.element('ctxSelected').textContent, /0/);
+  assert.equal(h.element('ctxTrack').disabled, true); assert.equal(h.element('ctxSelected').textContent, '已选 0 条记录');
   const card = sourceCard(h); assert.ok(card); assert.equal(card.tagName, 'BUTTON');
   await card.click(); assert.equal(h.box(11).checked, true); assert.equal(h.box(13).checked, false);
-  assert.equal(picked(card), true); assert.match(h.element('ctxSelected').textContent, /1/); assert.equal(h.element('ctxTrack').disabled, false);
+  assert.equal(picked(card), true); assert.equal(h.element('ctxSelected').textContent, '已选 1 条记录'); assert.equal(h.element('ctxTrack').disabled, false);
   await h.check(11, false); assert.equal(picked(card), false); assert.equal(h.element('ctxTrack').disabled, true);
   await h.check(11, true); assert.equal(picked(card), true);
   await card.click(); assert.equal(h.box(11).checked, false); assert.equal(h.box(12), null);
   assert.equal(h.element('ctxTrack').disabled, true);
+});
+
+test('proved same-transaction sources stay together with their own balances and individual tracking IDs', async () => {
+  const h = harness(), data = result();
+  const first = {...data.anchor, amount:'100.00', balance:'50.00', self_account:'SYN-PAYER',
+    event_id:'SYN-PROVED', event_state:'confirmed', context_group:'event:SYN-PROVED', context_relation:'anchor'};
+  const second = {...data.rows[2], trade_time:first.trade_time, amount:'100.00', balance:'200.00', self_account:'SYN-PAYEE',
+    event_id:'SYN-PROVED', event_state:'confirmed', context_group:'event:SYN-PROVED', context_relation:'same_transaction'};
+  data.anchor=first; data.rows=[first,second]; data.total=2;
+  await opened(h,data);
+  assert.match(h.element('ctxPos').textContent,/共 2 条来源记录/);
+  assert.doesNotMatch(h.element('ctxPos').textContent,/共 2 笔|第/);
+  assert.deepEqual(h.rows().map(row=>cells(row)[1].textContent),['本笔','本笔']);
+  assert.match(cells(h.rows()[0])[2].textContent,/付款方记录 · SYN-PAYER/);
+  assert.match(cells(h.rows()[1])[2].textContent,/收款方记录 · SYN-PAYEE/);
+  assert.equal(cells(h.rows()[0])[5].textContent,'¥50.00');
+  assert.equal(cells(h.rows()[1])[5].textContent,'¥200.00');
+  assert.equal(h.box(12),null); assert.equal(h.box(13).dataset.id,'13');
+  assert.equal(h.requests.length,1);
+});
+
+test('same-time unresolved sources never acquire a previous or next relation from their IDs', async () => {
+  const h=harness(), data=result();
+  data.rows.forEach(row=>{row.trade_time=data.anchor.trade_time;});
+  await opened(h,data);
+  assert.deepEqual(h.rows().map(row=>cells(row)[1].textContent),['同时间','本笔','同时间','同时间']);
+  assert.equal(h.rows().length,4);
+  assert.equal(h.requests.length,1);
 });
 
 test('attribution filtering is local and removes recommendations with no current untracked candidates', async () => {
@@ -322,11 +351,11 @@ test('late tracking completion cannot close or unlock a reopened context session
 test('automatic source assessment uses the existing context read and keeps original balances and scores', async () => {
   const h = harness(); await opened(h);
   assert.equal(h.requests.length, 1);
-  assert.match(h.element('ctxSuggest').textContent, /来源份额尚不能确定/);
+  assert.match(h.element('ctxSuggest').textContent, /账面规则范围：—/);
   assert.match(h.element('ctxSuggest').textContent, /FIFO 证据不足/);
   assert.match(h.element('ctxSuggest').textContent, /88/);
   assert.match(h.rows()[2].textContent, /-10,000,000,000,000.01/);
   await h.change('ctxBook', 'self');
   assert.equal(h.requests.length, 1, 'local filtering adds no analysis request');
-  assert.match(h.element('ctxSuggest').textContent, /来源份额尚不能确定/);
+  assert.match(h.element('ctxSuggest').textContent, /账面规则范围：—/);
 });

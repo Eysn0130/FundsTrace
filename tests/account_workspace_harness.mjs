@@ -983,7 +983,18 @@ test('account and counterparty primary summaries use evidence ranges without los
   const data = profile({in_funds:exact,out_funds:bounded, top_counterparties:[{acct:'SYN-COUNTER',name:'合成对手',in_funds:exact,out_funds:bounded,
     in_cnt:2,out_cnt:2,in_amt:'200.00',out_amt:'200.00'}]});
   networkReady(h, () => data); await h.open();
-  assert.match(h.element('ndStats').textContent, /转入 1 个事件.*¥100\.00.*转出 0–2 个事件（待核）.*0\.00–200\.00（待核）/s);
-  assert.match(h.element('ndCounterTbody').textContent, /1 个事件.*¥100\.00.*0–2 个事件（待核）.*0\.00–200\.00（待核）/s);
+  assert.match(h.element('ndStats').textContent, /转入 1 笔.*¥100\.00.*转出 —.*0\.00–200\.00（待核）/s);
+  assert.match(h.element('ndCounterTbody').textContent, /1 笔.*¥100\.00.*—.*0\.00–200\.00（待核）/s);
   assert.equal(data.in_cnt,13); assert.equal(data.out_cnt,12);
+});
+
+test('a single associated card remains in the existing details while the sourced account is the heading', async () => {
+  const h=harness();
+  networkReady(h,()=>profile({account_number:'000SYN-ACCOUNT',display_account:'000SYN-CARD',cards:['000SYN-CARD']}));
+  await h.open();
+  const identity=h.element('drawerBody').querySelector('.node-identity');
+  assert.match(identity.textContent,/000SYN-ACCOUNT/);
+  const details=identity.querySelector('details');
+  assert.ok(details); assert.match(details.textContent,/关联卡号/);
+  assert.match(details.textContent,/000SYN-CARD/);
 });

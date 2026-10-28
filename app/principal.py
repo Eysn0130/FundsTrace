@@ -1,11 +1,12 @@
-"""Conditional source attribution for a complete, ordered, single-currency ledger.
+"""Conditional source attribution for an ordered, single-currency ledger model.
 
-The caller must establish the accounting account/subaccount, interval coverage,
-available opening balance, entry order, and the meaning of each post-balance.
-Every entry must represent an actual change in available funds, including fees
-and competing transactions. No overdraft, freezes, FX, missing entries, unknown
-opening balance, or unresolved reversal semantics are inferred here. Opening
-funds belong to other sources. Selected incoming entries form one source pool.
+The caller establishes the model's account/subaccount, included entries, opening
+balance, order, and post-balance meaning. Book balances support a recorded book
+model, not historical availability. Every modeled fee and competing transaction
+participates. Nonnegative capacity is a model constraint, not evidence of credit
+terms or freezes. No missing entries, FX, unknown openings or unresolved reversal
+semantics are inferred here. Opening funds belong to other sources. Selected
+incoming entries form one source pool.
 
 Amounts are exact nonnegative Python integers in one caller-supplied scale
 (FundsTrace uses cents, scale 2). This module does not read a database or apply

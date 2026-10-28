@@ -553,7 +553,7 @@
       }, () => { if (!remove) { state.justAdded = new Set(ids); state.forceFit = false; } });
       if (result && isCurrentCase(context)) {
         if (remove) closeDrawer();
-        toast(remove ? `已移除 ${ids.length} 笔` : `已上图 ${ids.length} 笔流水`);
+        toast(remove ? `已移除 ${ids.length} 条记录` : `已上图 ${ids.length} 条记录`);
       }
     });
   }
@@ -652,9 +652,9 @@
           const dirLabel = direction === 'source' ? '来源' : '去向';
           const notMain = (result.skipped_not_main || []).length;
           const zero = (result.detail || []).filter(item => item.picked === 0 && item.is_main).length;
-          let message = `批量追踪完成：${result.anchors} 笔交易及其${dirLabel}流水共上图 ${result.tracked} 笔`;
-          if (notMain) message += `；${notMain} 笔被跳过（${dirLabel === '来源' ? '付款' : '收款'}方不是主账号，无法追踪）`;
-          if (zero) message += `；${zero} 笔锚点在本方账单中无${dirLabel}流水（仅上图了本笔）`;
+          let message = `批量追踪完成：${result.anchors} 条起点记录及其${dirLabel}记录共上图 ${result.tracked} 条`;
+          if (notMain) message += `；${notMain} 条起点记录被跳过（${dirLabel === '来源' ? '付款' : '收款'}方不是主账号，无法追踪）`;
+          if (zero) message += `；${zero} 条起点记录在本方账单中无${dirLabel}流水（仅上图了该记录）`;
           toast(message);
         }
       });

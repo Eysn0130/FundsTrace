@@ -66,7 +66,7 @@ def assert_usable_model(client, case_id, *, network=False, body=None, expected=(
 def assert_missing_source_evidence(result, network=False):
     assert result["status"] == "unknown" and result["targets"] == []
     assert "account_ledger_identity_unknown" not in result["reasons"]
-    assert ("complete_own_ledgers_and_opening_balances_required" if network else "ledger_coverage_unknown") in result["reasons"]
+    assert ("opening_balance_unknown" if network else "ledger_coverage_unknown") in result["reasons"]
 
 
 @pytest.mark.parametrize("network", [False, True])

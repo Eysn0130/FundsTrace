@@ -1,11 +1,13 @@
-"""Exact conditional multi-account attribution in an ordered available ledger.
+"""Exact conditional multi-account attribution in an ordered ledger model.
 
-The caller proves one currency/scale, complete accounting-account coverage,
-opening available balances, event identity, and a real total event order. None
-denotes an external boundary, not an unknown account. Refunds and fees are
-ordinary transfers; unresolved reversals, FX, credit, freezes, or tied events
-without a proven order must be rejected by the caller. Integer amounts use one
-caller-supplied scale (FundsTrace: scale 2). No source documents are read here.
+The caller establishes one currency/scale, all included accounting entries,
+opening model balances, event identity and order. Book models do not establish
+real-world coverage, credit or availability. None denotes a first-exit model
+boundary, not an unknown internal account: the source label stops there and
+external re-entry does not restore it. Refunds and fees are ordinary transfers;
+unresolved reversals, FX or tied events without an established model order must
+be rejected by the caller. Integer amounts use one caller-supplied scale
+(FundsTrace: scale 2). No source documents are read here.
 
 Only the selected event introduces source funds, at its recipient. All earlier
 funds are other funds, including the selected event's payer funds before that
@@ -305,7 +307,7 @@ def allocate_network(opening: dict[str, int], events: list[dict], source_event_i
     """Return conditional multi-hop ranges and independent conserving witnesses.
 
     Events contain id, payer, payee, amount; optional payer_post_balance and
-    payee_post_balance mean available balances after the entire event. Internal
+    payee_post_balance mean model balances after the entire event. Internal
     accounts require explicit openings. The selected event's recipient receives
     its full amount as the selected source. Targets occur later and have an
     internal payer. Source and target IDs must be unique, exact strings.
@@ -320,8 +322,9 @@ def allocate_network(opening: dict[str, int], events: list[dict], source_event_i
     Iterative augmenting paths avoid recursive stack limits. Their worst-case
     complexity is not constant or linear; examined residual arcs, path updates,
     cloned residual entries, FIFO fragments, and witness edges share max_steps.
-    Bounds are exact only when status is ok. The caller must reject incomplete
-    ledgers, unknown order or semantics rather than clipping inputs to fit.
+    Bounds are exact only for the declared model when status is ok. The caller
+    must reject known gaps, unknown order or semantics rather than clipping
+    inputs to fit, and must not claim unproved real-world completeness.
     """
     if not isinstance(opening, dict) or not isinstance(events, list) or not isinstance(target_ids, list):
         raise ValueError("opening must be a dictionary; events and target_ids must be lists")

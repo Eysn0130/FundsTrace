@@ -19,7 +19,7 @@ POLICY = "scoped-event-reference-v1"
 LEDGER_POLICY = "explicit-ledger-fields-v1"
 DETAIL_FIELD = "event_reference_evidence"
 LEDGER_FIELD = "analysis_evidence"
-PROFILES = frozenset(("funds-trace-table-v20", "funds-trace-table-archive-v6"))
+PROFILES = frozenset(("funds-trace-table-v20", "funds-trace-table-archive-v6", "funds-trace-table-archive-v7"))
 HEADERS = {"issuer": "参考号机构", "channel": "参考号渠道", "business_scope": "参考号业务域",
            "reference": "跨账簿事件参考号"}
 POST_BALANCE_HEADERS = frozenset(("交易后账面余额", "本笔交易后账面余额"))

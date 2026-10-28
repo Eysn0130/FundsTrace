@@ -39,9 +39,12 @@ def test_same_process_import_does_not_certify_coverage_and_export_retains_gaps(c
     result=client.post("/api/analysis/principal/network",json=request)
     assert result.status_code==200,result.text
     value=result.json()
-    assert value["status"]=="unknown" and value["targets"]==[]
+    assert value["status"]=="ok", value
     assert value["condition_basis"]=="source_evidence"
     assert all(item["conditions"]["coverage"]=="unknown" for item in value["accounts"])
+    assert value["model_scope"]["boundary"] == "first_exit"
+    assert value["targets"][0]["min"] == value["targets"][0]["max"] == "100.00"
+    assert "external_boundary_returns_unknown" in value["limitations"]
     # This internal model has explicit assumptions. It is not a public source
     # proof; keep the exact allocation integration covered separately.
     model=principal_multihop._calculate_conditioned(cid,NetworkIn.model_validate(request))
@@ -67,18 +70,20 @@ def test_internal_pair_without_scoped_evidence_is_unknown(client,make_case):
     request=imported_network(client,cid,references=False)
     value=client.post("/api/analysis/principal/network",json=request).json()
     assert value["status"]=="unknown" and value["targets"]==[]
-    assert "complete_own_ledgers_and_opening_balances_required" in value["reasons"]
+    assert value["reasons"] == ["internal_transfer_requires_confirmed_opposite_ledgers"]
     assert principal_multihop._calculate_conditioned(cid,NetworkIn.model_validate(request))["reasons"]==["internal_transfer_requires_confirmed_opposite_ledgers"]
 
 
-def test_boundary_and_account_openings_are_not_assumed(client,make_case):
+def test_request_boundary_and_openings_do_not_override_source_book_model(client,make_case):
     cid=make_case()
     request=imported_network(client,cid)
     request["boundary"]="unknown"
     value=client.post("/api/analysis/principal/network",json=request).json()
-    assert "external_boundary_returns_unknown" in value["reasons"]
+    assert value["status"] == "ok"
+    assert "external_boundary_returns_unknown" in value["limitations"]
     request["boundary"]="terminal_no_return_declared"
     request["accounts"][0]["conditions"]["opening_balance"]=None
     value=client.post("/api/analysis/principal/network",json=request).json()
-    assert value["status"]=="unknown" and value["targets"]==[]
-    assert "external_boundary_returns_unknown" in value["reasons"]
+    assert value["status"] == "ok"
+    assert "external_boundary_returns_unknown" in value["limitations"]
+    assert all(item["conditions"]["opening_balance"] == "0.00" for item in value["accounts"])

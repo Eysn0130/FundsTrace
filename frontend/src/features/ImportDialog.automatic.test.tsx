@@ -35,6 +35,21 @@ function show(client: FundsCaseClientV1, signal = new AbortController().signal, 
 function upload() { fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } }); }
 
 describe('automatic table import', () => {
+  it.each([0, 1])('keeps the existing account reminder only for actual conflicts: %s', async conflicts => {
+    const client = clientFor();
+    const resolution: NonNullable<ImportPreview['resolution']> = { policy: 'typed-account-evidence-v1', revision: 'synthetic-resolution',
+      entities: 2, resolved_endpoints: 2, unresolved_endpoints: 0, conflicts, auxiliary_records: 0, evidence_records: 2, note: '' };
+    vi.mocked(client.preview).mockResolvedValue({ ...preview, resolution });
+    vi.mocked(client.job).mockResolvedValue({ case_id: '1', import_id: preview.import_id, stage: 'done', done: 3, total: 3,
+      message: '完成', error: null, result: { ...result, resolution } });
+    show(client); upload();
+    await screen.findByRole('heading', { name: '自动处理完成' });
+    const reminder = screen.queryByLabelText('账户关联结果');
+    if (conflicts) expect(reminder?.textContent).toContain('1 处资料冲突');
+    else expect(reminder).toBeNull();
+    expect(screen.getByLabelText('表格自动识别与全量校验汇总').textContent).toContain('未计入资金流水 2 条');
+  });
+
   it('keeps every existing file suffix and advertises XLS in the file picker', () => {
     show(clientFor());
     const input = screen.getByLabelText('选择流水文件') as HTMLInputElement;
@@ -84,7 +99,7 @@ describe('automatic table import', () => {
     expect(client.job).toHaveBeenCalledTimes(failure === 'commit receipt lost' ? 1 : 2);
     expect(client.job).toHaveBeenLastCalledWith(preview.import_id, expect.any(AbortSignal));
     expect(imported).toHaveBeenCalledOnce();
-    expect(screen.getByText(/已保存 3 条记录 · 新增资金流水/)).toBeTruthy();
+    expect(screen.getByText(/已保存 3 条记录 · 新增流水记录/)).toBeTruthy();
   });
 
   it('unlocks an explicitly unstarted session without automatically resubmitting', async () => {
@@ -182,8 +197,8 @@ describe('automatic table import', () => {
     const done = { ...session('done'), result: receipt };
     show(client, undefined, done);
     await screen.findByRole('heading', { name: '自动处理完成' });
-    expect(screen.getByText(/已保存 3 条记录 · 新增资金流水/).textContent).toContain('新增资金流水 0 笔');
-    expect(screen.getByText(/本次保留流水事实 1 笔，其中新增有效资金流水 0 笔/)).toBeTruthy();
+    expect(screen.getByText(/已保存 3 条记录 · 新增流水记录/).textContent).toContain('新增流水记录 0 条');
+    expect(screen.getByText(/本次保留来源流水记录 1 条，其中新增有效流水记录 0 条/)).toBeTruthy();
     expect(screen.getByText('本案另有 1 笔历史留存流水已退出有效统计。')).toBeTruthy();
     expect(screen.getByText('余额变化不能核实完整冲回：1 条')).toBeTruthy();
     expect(client.commit).not.toHaveBeenCalled();
@@ -195,8 +210,8 @@ describe('automatic table import', () => {
       result: { ...result, ok: 1, table_summary: { ...summary, effective_added: 0, cancelled: 2, excluded_flows: 1 } } }] }));
     render(<ImportHistoryDialog target={{ caseId: '1', name: '合成案件' }} client={client} scopeSignal={new AbortController().signal} onClose={vi.fn()} onOpen={vi.fn()} />);
     await screen.findByText('自动处理完成 · 已保存 3 条记录');
-    expect(screen.getByText(/新增资金流水 0 笔 · 重复/).textContent).toContain('已配对冲正/撤销 2 条');
-    expect(screen.getByText(/本次保留流水事实 1 笔，其中新增有效资金流水 0 笔/)).toBeTruthy();
+    expect(screen.getByText(/新增流水记录 0 条 · 重复/).textContent).toContain('已配对冲正/撤销 2 条');
+    expect(screen.getByText(/本次保留来源流水记录 1 条，其中新增有效流水记录 0 条/)).toBeTruthy();
     expect(screen.getByText('本案另有 1 笔历史留存流水已退出有效统计。')).toBeTruthy();
   });
 
@@ -205,7 +220,7 @@ describe('automatic table import', () => {
     await screen.findByRole('heading', { name: '自动处理完成' });
     expect(client.commit).toHaveBeenCalledOnce(); expect(client.repreview).not.toHaveBeenCalled();
     expect(imported).toHaveBeenCalledOnce();
-    expect(screen.getByText(/已保存 3 条记录 · 新增资金流水/).textContent).toContain('未计入资金流水 2 条');
+    expect(screen.getByText(/已保存 3 条记录 · 新增流水记录/).textContent).toContain('未计入资金流水 2 条');
     expect(screen.getByText('金额单位相互冲突：1 条')).toBeTruthy();
     expect(screen.getByText('方向字段与金额含义冲突：1 条')).toBeTruthy();
     expect(screen.getByText(/未计入不代表金额为零或没有发生交易/)).toBeTruthy();
@@ -240,7 +255,7 @@ describe('automatic table import', () => {
     show(client); upload();
     await screen.findByRole('heading', { name: '自动处理完成' });
     expect(client.commit).toHaveBeenCalledOnce();
-    expect(screen.getByRole('status').textContent).toContain('新增资金流水 0 笔');
+    expect(screen.getByRole('status').textContent).toContain('新增流水记录 0 条');
     expect(screen.getByRole('status').textContent).toContain('未计入资金流水 8 条');
     for (const label of Object.values(reasons)) expect(screen.getByText(`${label}：1 条`)).toBeTruthy();
     expect(screen.getByText('其他自动分类结果，详见完整处理报告：1 条')).toBeTruthy();

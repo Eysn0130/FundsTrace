@@ -128,8 +128,8 @@ def export_snapshot(value):
     rows = "".join("<tr>" + "".join(f"<td>{escape(str(target.get(key, '')))}</td>"
                    for key in ("id", "amount", "min", "max", "fifo")) + "</tr>" for target in value["targets"])
     content = ("<!doctype html><html lang='zh-CN'><meta charset='utf-8'><title>条件来源份额</title>"
-               "<h1>条件来源份额</h1><p>只有账本完整、期初余额、顺序、无透支及资金全额可用等条件明确时才计算；条件与缺口见下文，不认证来源真实性。"
-               "独立上界不可相加；FIFO为规则结果，不是来源证明。</p>"
+               "<h1>条件来源份额</h1><p>结果是在已记录账面模型下的条件范围与 FIFO 规则分配；现实账本覆盖及资金可用性缺口仍见下文，不认证真实资金来源。"
+               "多账户模型在资金首次离开所选账户集合时停止归属，不推断边界外回流。独立上界不可相加；FIFO 为规则结果，不是来源证明。</p>"
                f"<p>状态：{escape(value['status'])} · 修订：{escape(value['revision'])}</p>"
                "<table><thead><tr><th>出账ID</th><th>交易金额</th><th>最小来源份额</th><th>最大来源份额</th><th>FIFO</th></tr></thead>"
                f"<tbody>{rows}</tbody></table><h2>约束、缺口与完整分配见证</h2><pre>{escape(payload)}</pre></html>")

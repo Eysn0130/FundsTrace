@@ -9,8 +9,9 @@ from types import SimpleNamespace
 from . import db, event_resolution, principal_ledger
 
 
-def assess(case_id, rows):
-    metadata = event_resolution.ledger_metadata(case_id, [row["id"] for row in rows])
+def assess(case_id, rows, metadata=None):
+    if metadata is None:
+        metadata = event_resolution.ledger_metadata(case_id, [row["id"] for row in rows])
     refs = sorted({source for item in metadata.values() for source in item.get("source_ids", [])})
     conditions = {"coverage": "unknown", "no_overdraft": False, "funds_available": False,
                   "opening_balance": None, "balance_kind": "unknown"}
@@ -28,24 +29,55 @@ def assess(case_id, rows):
     assessment.append({"condition": "balance_kind", "status": "established" if book else "unknown",
         "kind": "source_declaration" if book else "missing_evidence", "source_ids": refs if book else [],
         "message": "来源明确声明本笔交易后账面余额" if book else "余额字段尚未明确为本笔交易后账面余额"})
-    # A unique first posting with an explicit after-book balance can establish
-    # the immediately preceding book balance, but never coverage/availability.
+    # The source-ordered first posting anchors the recorded model, not the
+    # requested interval's start or any unobserved history before this posting.
     opening = None
-    if rows and rows[0].get("trade_time") is not None and (len(rows) == 1 or rows[0]["trade_time"] != rows[1]["trade_time"]):
-        first = rows[0]
+    first, opening_error = None, None
+    if rows and rows[0].get("trade_time") is not None:
+        first_group = []
+        for row in rows:
+            if row["trade_time"] != rows[0]["trade_time"]:
+                break
+            first_group.append(row)
+        ordered = principal_ledger.source_order(first_group, metadata)
+        first = ordered[0] if ordered else None
+    if first:
         if metadata.get(first["id"], {}).get("balance_kind") == "post_book" and first.get("balance") is not None and first.get("direction"):
             try:
                 value = principal_ledger.units(first["balance"]) - first["amount"] * (1 if first["direction"] == "in" else -1)
                 if value >= 0:
                     opening = principal_ledger.money(value)
+                else:
+                    opening_error = "negative_opening_book_balance"
             except (ValueError, TypeError):
                 pass
+    negative = [row for row in rows if metadata.get(row["id"], {}).get("balance_kind") == "post_book"
+                and row.get("balance") is not None and row["balance"] < 0]
+    if negative:
+        assessment.append({"condition": "book_balance", "status": "inconsistency", "kind": "source_declaration",
+            "reason": "negative_book_balance", "source_ids": sorted({source for row in negative
+                for source in metadata.get(row["id"], {}).get("source_ids", [])}),
+            "message": "来源声明的负账面余额不适用于非负账面容量模型"})
     conditions["opening_balance"] = opening
-    assessment.append({"condition": "opening_balance", "status": "established" if opening is not None else "unknown",
-        "kind": "derived_from_source" if opening is not None else "missing_evidence",
-        "source_ids": metadata.get(rows[0]["id"], {}).get("source_ids", []) if opening is not None else [],
-        "message": "由首笔明确的交易后账面余额及方向反推紧邻前余额" if opening is not None else "区间起点前账面余额未知"})
+    assessment.append({"condition": "opening_balance", "status": "inconsistency" if opening_error else "established" if opening is not None else "unknown",
+        "kind": "derived_from_source" if opening is not None or opening_error else "missing_evidence",
+        "source_ids": metadata.get(first["id"], {}).get("source_ids", []) if first else [],
+        **({"reason": opening_error} if opening_error else {}),
+        **({"flow_id": first["id"], "trade_time": first["trade_time"].isoformat()} if first else {}),
+        "message": "由首笔明确的交易后账面余额及方向反推紧邻前余额" if opening is not None else
+            "来源反推首记录前余额为负，不适用于非负账面容量模型" if opening_error else "首条记录紧邻前的账面余额未知"})
     return conditions, assessment
+
+
+def book_scope(assessment):
+    opening = next(item for item in assessment if item["condition"] == "opening_balance")
+    return {"kind": "recorded_book_ledger", "entries": "all_recorded_own_entries_in_requested_interval",
+            "boundary": "first_exit",
+            "opening_boundary": "immediately_before_first_recorded_entry",
+            "opening_record": {key: opening[key] for key in ("flow_id", "trade_time") if key in opening},
+            "capacity": "nonnegative_book_balance", "order": "source_time_and_scoped_posting_order",
+            "real_world_attribution": "unknown",
+            "note": "仅对已记录账面模型计算条件范围与FIFO，来源标签首次出账后不因再入账恢复；未证明现实区间完整、历史可用资金或实际来源。"}
 
 
 def context_result(case_id, account, anchor, visible_rows):

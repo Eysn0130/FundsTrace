@@ -285,7 +285,7 @@ test('renderer refresh and page returns retain independent sidebar anchors with 
   assert.equal(f.box(1).getAttribute('aria-label'), '选为追踪锚点，流水 1');
   f.toggleAnchor(1, true); await f.search();
   assert.equal(f.box(1).checked, true); assert.equal(f.box(2).checked, false);
-  assert.equal(f.element('flowCkCount').textContent, '已选锚点 1 笔');
+  assert.equal(f.element('flowCkCount').textContent, '已选锚点 1 条记录');
   f.network(async params => ({ page: Number(params.get('page')), size: 2, total: 4,
     rows: params.get('page') === '2' ? [flow(3), flow(4)] : [flow(1), flow(2)] }));
   await f.search(2); f.toggleAnchor(3, true); await f.search(1);
@@ -331,7 +331,7 @@ test('overview checkbox and row Space request membership once while closing leav
   const box = f.box(1); box.checked = false; box.fire('click'); box.fire('change');
   assert.equal(f.membershipCalls.length, 2); assert.equal(f.membershipCalls[1].included, false);
   f.membershipCalls[1].gate.resolve(); await flush(); f.close();
-  assert.equal(f.box(1).checked, true); assert.equal(f.element('flowCkCount').textContent, '已选锚点 1 笔');
+  assert.equal(f.box(1).checked, true); assert.equal(f.element('flowCkCount').textContent, '已选锚点 1 条记录');
 });
 
 test('membership failures roll back the overview row without clearing anchors and page-all uses visible IDs only', async () => {
@@ -410,7 +410,7 @@ test('canvas invalidation clears real rows immediately and graph readiness refre
   const old = deferred(); f.network(() => old.promise); const stale = f.search();
   f.context.activateCanvas(7);
   assert.equal(f.element('flowOverview').style.display, 'none'); assert.equal(f.rows().length, 0);
-  assert.equal(f.state.search.total, 0); assert.equal(f.element('flowCkCount').textContent, '已选锚点 0 笔');
+  assert.equal(f.state.search.total, 0); assert.equal(f.element('flowCkCount').textContent, '已选锚点 0 条记录');
   f.open(); assert.equal(f.element('overviewTrackAll').disabled, true); assert.match(f.element('overviewMembershipStatus').textContent, /0\/0/);
   f.close(); f.network(async params => ({ page: 1, size: 50, total: 1, rows: [flow(7)] }));
   const before = f.requests.length; await f.context.loadGraph();
@@ -425,7 +425,7 @@ test('switching a canvas from the sidebar clears anchors even when the same flow
   f.context.activateCanvas(7); assert.equal(f.rows().length, 0);
   await f.context.loadGraph();
   assert.equal(f.box(1).checked, false); assert.equal(f.box(2).checked, false);
-  assert.equal(f.element('flowCkCount').textContent, '已选锚点 0 笔');
+  assert.equal(f.element('flowCkCount').textContent, '已选锚点 0 条记录');
 });
 
 test('case A-B-A rejects old reads and graph completions without republishing another binding', async () => {
@@ -698,7 +698,7 @@ test('actual query headings use confirmed event funds while pagination retains r
   f.network(async () => ({page:1,size:1,total:2,rows:[eventRow()],funds:exactFunds}));
   assert.equal(await f.search(),true);
   for (const key of ['resultInfo','querySummary']) {
-    assert.match(f.element(key).textContent,/1 个事件 · ¥100\.00/);
+    assert.match(f.element(key).textContent,/1 笔/);
     assert.doesNotMatch(f.element(key).textContent,/2 笔|200\.00/);
   }
   assert.equal(f.state.search.total,2);
@@ -710,7 +710,7 @@ test('unresolved query funds remain bounded across draft edits and a failed quer
   const f = harness();
   f.network(async () => ({page:1,size:50,total:2,rows:[flow(17),flow(18)],funds:boundedFunds}));
   await f.search();
-  const expected=/0–2 个事件（待核） · CNY 0\.00–200\.00（待核）/;
+  const expected=/—$/;
   for (const key of ['resultInfo','querySummary']) assert.match(f.element(key).textContent,expected);
   const reads=f.requests.length;
   f.element('fAccount').value='SYN-DRAFT'; f.element('fAccount').fire('input');
@@ -733,13 +733,13 @@ test('canvas and case A-B-A invalidation revoke query funds and reject late old 
     await f.search();
     const late=deferred(); f.network(() => late.promise); const pending=f.search();
     invalidate(f);
-    for (const key of ['resultInfo','querySummary']) assert.doesNotMatch(f.element(key).textContent,/100\.00|1 个事件/);
+    for (const key of ['resultInfo','querySummary']) assert.doesNotMatch(f.element(key).textContent,/100\.00|1 笔/);
     f.network(async () => ({page:1,size:50,total:2,rows:[flow(17),flow(18)],funds:boundedFunds}));
     await f.context.loadGraph();
     late.resolve({page:1,size:50,total:1,rows:[eventRow()],funds:exactFunds});
     assert.equal(await pending,false);
     for (const key of ['resultInfo','querySummary']) {
-      assert.match(f.element(key).textContent,/0–2 个事件（待核）.*0\.00–200\.00（待核）/);
+      assert.match(f.element(key).textContent,/—$/);
       assert.doesNotMatch(f.element(key).textContent,/CNY 100\.00/);
     }
   }

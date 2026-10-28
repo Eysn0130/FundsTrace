@@ -503,7 +503,7 @@ def _table_journals(check, paths):
     members = check.execute("""select m.source_id,m.member_path,m.role,m.sha256,m.size_bytes,m.encoding,m.row_count
         from import_members m join import_sources s on s.source_id=m.source_id
         where s.row_kind='table_record'""").fetchall()
-    member_rows, by_source = {}, {}
+    member_rows, by_source, xls_members = {}, {}, set()
     for source_id, path, role, digest, size, encoding, count in members:
         if (not isinstance(path, str) or not path or len(path) > 65535
                 or "\\" in path or ":" in path
@@ -514,8 +514,13 @@ def _table_journals(check, paths):
                 or size is None or not 0 <= size <= table_archive.MAX_MEMBER_BYTES
                 or count is None or not 0 <= count <= table_import.MAX_RECORDS
                 or encoding not in (("binary",) if role == "attachment" else ("utf-8-sig", "gb18030", "utf-16", "xlsx", "xls"))
-                or (encoding == "xls") != (source_profiles[source_id] == table_import.XLS_PROFILE)):
+                or encoding == "xls" and source_profiles[source_id] not in table_import.XLS_READER_PROFILES
+                or source_profiles[source_id] == table_import.XLS_PROFILE and encoding != "xls"
+                or encoding == "xls" and source_profiles[source_id] == table_import.XLS_EVIDENCE_ARCHIVE_PROFILE
+                   and not re.search(r"\.xls/worksheets/[0-9]{4}$", path, re.IGNORECASE)):
             _invalid("自动表格成员元数据无效")
+        if encoding == "xls":
+            xls_members.add((source_id, path))
         member_rows[source_id, path] = (role, digest, count)
         by_source.setdefault(source_id, []).append((size, count))
     if set(by_source) != {row[0] for row in tables}:
@@ -562,7 +567,7 @@ def _table_journals(check, paths):
                                                         if cancellation_rule else frozenset())
             if source_profiles[source_id] in evidence_resolution.PROFILES:
                 reason_codes |= frozenset(import_attachments.REASONS)
-            if source_profiles[source_id] != table_import.XLS_PROFILE:
+            if (source_id, path) not in xls_members:
                 reason_codes -= {"invalid_cell_type"}
             record_dispositions = (*dispositions, *(('cancelled',) if cancellation_rule else ()))
             if (number is None or number != sequences.get(source_id, 0) + 1

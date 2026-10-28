@@ -438,10 +438,11 @@ describe('evidence bounded funds in existing panel', () => {
     render(<FundsPanel host={host(bound.value)} />);
     await screen.findByRole('button', {name:'核对流水 HOST-1'});
     const summary = screen.getByLabelText('案件汇总');
-    expect(summary.textContent).toContain(exact ? '1 个事件' : '0–2 个事件（待核）');
-    expect(summary.textContent).toContain(exact ? 'CNY 100.00' : 'CNY 0.00–200.00（待核）');
-    if (exact) expect(summary.textContent).not.toContain('200.00');
-    expect(within(screen.getByLabelText('流水明细')).getByRole('heading', {level:2}).textContent).toContain(exact ? '1 个事件' : '0–2 个事件（待核）');
+    expect(summary.textContent).toContain(exact ? '1 笔' : '—');
+    expect(summary.textContent).toContain(exact ? 'CNY 100.00' : 'CNY —');
+    expect(summary.textContent).not.toContain('200.00');
+    expect(screen.queryByLabelText('事件关联口径')).toBeNull();
+    expect(within(screen.getByLabelText('流水明细')).getByRole('heading', {level:2}).textContent).toContain(exact ? '1 笔' : '—');
     expect(statistics).toHaveBeenCalledTimes(1); expect(flows).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('button', {name:/本金|来源份额/})).toBeNull();
     fireEvent.click(screen.getByRole('button',{name:'核对流水 HOST-1'}));

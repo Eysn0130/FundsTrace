@@ -14,7 +14,8 @@ from . import db
 
 MAX_LEDGER_ROWS = 100_000
 MAX_WITNESS_CELLS = 500_000
-POLICY = "source-evidence-book-ledger-v1"
+POLICY = "source-evidence-book-ledger-v2"
+EVIDENCE_LIMITATIONS = ("ledger_coverage_unknown", "credit_availability_unknown", "funds_availability_unknown")
 UNKNOWN_CURRENCIES = ("", "unknown", "未知", "未知币种", "n/a", "none", "null", "nan")
 
 
@@ -120,7 +121,20 @@ def read(case_id, account, currency, start, end):
     return {"status": "unknown" if reasons else "ready", "reasons": sorted(set(reasons)), "rows": rows}
 
 
-def ordered(rows, opening, metadata, balance_kind):
+def source_order(group, metadata):
+    """Order one timestamp group only by a shared source posting scope."""
+    if len(group) <= 1:
+        return list(group)
+    notes = [metadata.get(row["id"], {}) for row in group]
+    source_sets = [set(note.get("order_scopes", [])) for note in notes]
+    common = set.intersection(*source_sets) if all(source_sets) else set()
+    seq = [note.get("posting_order") for note in notes]
+    if common and all(seq) and len(set(seq)) == len(seq):
+        return sorted(group, key=lambda row: int(metadata[row["id"]]["posting_order"]))
+    return None
+
+
+def ordered(rows, opening, metadata, balance_kind, *, allow_inference=True):
     """Use proven source order or a unique no-overdraft/balance-feasible step.
 
     IDs stabilize database reads only. They never settle a timestamp tie.
@@ -130,18 +144,12 @@ def ordered(rows, opening, metadata, balance_kind):
     result, balance = [], opening
     for _, group in groupby(rows, key=lambda row: row["trade_time"]):
         pending = list(group)
-        if len(pending) > 1:
-            notes = [metadata.get(row["id"], {}) for row in pending]
-            source_sets = [set(note.get("order_scopes", [])) for note in notes]
-            common = set.intersection(*source_sets) if all(source_sets) else set()
-            seq = [note.get("posting_order") for note in notes]
-            if common and all(seq) and len(set(seq)) == len(seq):
-                pending.sort(key=lambda row: int(metadata[row["id"]]["posting_order"]))
-                proven = True
-            else:
-                proven = False
-        else:
-            proven = True
+        sourced = source_order(pending, metadata)
+        proven = sourced is not None
+        if proven:
+            pending = sourced
+        elif not allow_inference:
+            return None, "posting_order_unknown"
         while pending:
             if proven:
                 row = pending.pop(0)
@@ -177,31 +185,28 @@ def calculate(case_id, request):
     start, end = datetime.fromisoformat(request.start), datetime.fromisoformat(request.end)
     loaded = read(case_id, request.account, request.currency, start, end)
     rows = loaded.pop("rows")
-    conditions, assessment = principal_evidence.assess(case_id, rows)
+    metadata = _metadata(case_id, [row["id"] for row in rows])
+    conditions, assessment = principal_evidence.assess(case_id, rows, metadata)
     output = {"policy": POLICY, "currency": request.currency, "account": request.account,
               "interval": {"start": request.start, "end": request.end}, "conditions": conditions,
               "condition_basis": "source_evidence", "assessment": assessment,
+              "model_scope": principal_evidence.book_scope(assessment),
+              "limitations": list(EVIDENCE_LIMITATIONS),
               "ledger_count": len(rows), "targets": [], **loaded}
     if loaded["status"] != "ready":
         return output
-    reasons = []
-    if conditions["coverage"] != "complete_declared":
-        reasons.append("ledger_coverage_unknown")
-    if not conditions["no_overdraft"]:
-        reasons.append("credit_availability_unknown")
-    if not conditions["funds_available"]:
-        reasons.append("funds_availability_unknown")
-    if conditions["opening_balance"] is None:
-        reasons.append("opening_balance_unknown")
+    reasons = [item["reason"] for item in assessment if item["status"] == "inconsistency"]
     if reasons:
-        return {**output, "status": "unknown", "reasons": reasons}
+        return {**output, "status": "inconsistency", "reasons": reasons}
+    if conditions["opening_balance"] is None:
+        return {**output, "status": "unknown", "reasons": [*EVIDENCE_LIMITATIONS, "opening_balance_unknown"]}
     if len(rows) * (2 * len(request.target_flow_ids) + 1) > MAX_WITNESS_CELLS:
         return {**output, "status": "limited", "reasons": ["witness_resource_limit"]}
     ids = {row["id"] for row in rows}
     if request.source_flow_id not in ids or not set(request.target_flow_ids) <= ids:
         return {**output, "status": "unknown", "reasons": ["source_or_target_not_in_own_interval"]}
-    metadata = _metadata(case_id, list(ids))
-    entries, reason = ordered(rows, units(conditions["opening_balance"]), metadata, conditions["balance_kind"])
+    entries, reason = ordered(rows, units(conditions["opening_balance"]), metadata, conditions["balance_kind"],
+                              allow_inference=False)
     if reason:
         return {**output, "status": "inconsistency" if reason in {"inconsistent_order_constraints", "negative_book_balance"} else "unknown", "reasons": [reason]}
     try:

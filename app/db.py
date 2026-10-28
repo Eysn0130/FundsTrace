@@ -421,7 +421,7 @@ def con():
                       join import_sources p on p.case_id=c.case_id and p.source_id=c.source_id
                       join import_members cm on cm.case_id=c.case_id and cm.source_id=c.source_id
                         and cm.member_path=c.member_path
-                      where p.row_kind='table_record' and p.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6')
+                      where p.row_kind='table_record' and p.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7')
                         and c.disposition='cancelled' and c.reason_code='matched_cancellation'
                     ), table_cancel_positions as materialized (
                       select c.*,rm.source_id
@@ -486,9 +486,9 @@ def con():
                       coalesce(nullif(p.bank,''),f.payer_bank) payer_bank,
                       coalesce(nullif(q.bank,''),f.payee_bank) payee_bank,
                       f.payer_account raw_payer_account,f.payee_account raw_payee_account,f.self_account raw_self_account,
-                      coalesce(p.display_account,f.payer_account) payer_display_account,
-                      coalesce(q.display_account,f.payee_account) payee_display_account,
-                      coalesce(s.display_account,f.self_account) self_display_account,
+                      coalesce(p.account_number,f.payer_account) payer_display_account,
+                      coalesce(q.account_number,f.payee_account) payee_display_account,
+                      coalesce(s.account_number,f.self_account) self_display_account,
                       case when pe.entity_id is not null or qe.entity_id is not null then 'typed-account-evidence-v1' else null end resolution_policy
                     from source_effective_flows f
                     left join resolved_endpoints pe on pe.case_id=f.case_id and pe.flow_id=f.id and pe.role='payer'

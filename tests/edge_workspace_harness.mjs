@@ -371,7 +371,7 @@ for (const exact of [true, false]) test(`edge facts display ${exact ? 'one confi
   model.data.amount_totals = [{ currency: 'CNY', amount: '200.00' }];
   await opened(h, model, [flow(17, {amount:'100.00'}), flow(18, {amount:'100.00'})], 2);
   const facts = h.document.querySelector('.edge-facts').textContent;
-  assert.match(facts, exact ? /1 个事件.*100\.00/s : /0–2 个事件（待核）.*0\.00–200\.00（待核）/s);
+  assert.match(facts, exact ? /1 笔.*100\.00/s : /已追踪—.*0\.00–200\.00（待核）/s);
   if (exact) assert.doesNotMatch(facts, /200\.00/);
   assert.equal(h.rows().length, 2); assert.equal(h.requests.length, 1);
 });

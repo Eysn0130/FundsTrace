@@ -20,7 +20,8 @@ CANCELLATION_PROFILE = "funds-trace-table-archive-v3"
 HEADER_PROFILE = "funds-trace-table-archive-v4"
 LEGACY_EVIDENCE_PROFILE = "funds-trace-table-archive-v5"
 EVIDENCE_PROFILE = "funds-trace-table-archive-v6"
-EVIDENCE_PROFILES = frozenset((LEGACY_EVIDENCE_PROFILE, EVIDENCE_PROFILE))
+XLS_EVIDENCE_PROFILE = "funds-trace-table-archive-v7"
+EVIDENCE_PROFILES = frozenset((LEGACY_EVIDENCE_PROFILE, EVIDENCE_PROFILE, XLS_EVIDENCE_PROFILE))
 PROFILE = HEADER_PROFILE
 CANCELLATION_PROFILES = frozenset((CANCELLATION_PROFILE, HEADER_PROFILE, *EVIDENCE_PROFILES))
 SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, REFERENCE_PROFILE, *CANCELLATION_PROFILES))
@@ -63,7 +64,7 @@ def should_parse(source):
         source.seek(0)
         with zipfile.ZipFile(source) as archive:
             infos = archive.infolist()
-            if any(info.filename.lower().endswith((".xlsx", ".txt", ".tsv")) for info in infos):
+            if any(info.filename.lower().endswith((".xlsx", ".xls", ".txt", ".tsv")) for info in infos):
                 return True
             legacy, ordinary = False, False
             for info in infos:
@@ -87,6 +88,58 @@ def should_parse(source):
     finally:
         source.seek(0)
     return False
+
+
+def evidence_profile(source):
+    """Opt actual XLS members into v7 without reading business table payloads.
+
+    Only nested ZIP payloads are opened to inspect their member metadata. The
+    normal parser still validates every leaf and owns the public error. A
+    container by itself must not upgrade historical CSV interpretation.
+    """
+    budget = {"members": 0, "bytes": 0}
+
+    def contains_xls(stream, depth=0):
+        with zipfile.ZipFile(stream) as archive:
+            names = set()
+            for info in archive.infolist():
+                budget["members"] += 1
+                if budget["members"] > EVIDENCE_MAX_MEMBERS:
+                    raise ValueError("profile_member_limit")
+                name = _path(info.orig_filename)
+                if name in names or info.flag_bits & 1 or stat.S_IFMT(info.external_attr >> 16) == stat.S_IFLNK:
+                    raise ValueError("invalid_profile_member")
+                names.add(name)
+                if info.is_dir():
+                    continue
+                if not 0 <= info.file_size <= MAX_MEMBER_BYTES:
+                    raise ValueError("profile_member_size_limit")
+                budget["bytes"] += info.file_size
+                if budget["bytes"] > EVIDENCE_MAX_EXPANDED_BYTES:
+                    raise ValueError("profile_expanded_size_limit")
+                suffix = PurePosixPath(name).suffix.lower()
+                if suffix == ".xls":
+                    return True
+                if suffix == ".zip":
+                    if depth >= MAX_DEPTH:
+                        raise ValueError("profile_depth_limit")
+                    with archive.open(info) as member:
+                        payload = member.read(MAX_MEMBER_BYTES + 1)
+                    if len(payload) != info.file_size:
+                        raise ValueError("profile_member_size_mismatch")
+                    if contains_xls(io.BytesIO(payload), depth + 1):
+                        return True
+            return False
+
+    try:
+        source.seek(0)
+        if contains_xls(source):
+            return XLS_EVIDENCE_PROFILE
+    except (OSError, ValueError, zipfile.BadZipFile, RuntimeError):
+        pass  # The normal parser owns archive validation and its public error.
+    finally:
+        source.seek(0)
+    return EVIDENCE_PROFILE
 
 
 def _path(name):
@@ -219,7 +272,9 @@ def parse(source, profile=PROFILE, *, _stage=False):
                     budget["members"] += 1
                     if budget["members"] > member_limit:
                         raise table_import.TableImportError("反馈包成员数超出安全处理范围")
-                    name = _path(info.filename)
+                    # ZipInfo.filename may already truncate a NUL or normalize
+                    # a platform separator. Validate the retained raw name.
+                    name = _path(info.orig_filename)
                     if name in local:
                         raise table_import.TableImportError("反馈包包含重复成员路径")
                     local.add(name)
@@ -254,10 +309,13 @@ def parse(source, profile=PROFILE, *, _stage=False):
                         if depth >= MAX_DEPTH:
                             raise table_import.TableImportError("反馈包嵌套层数超出安全处理范围")
                         visit(io.BytesIO(payload), path, depth + 1)
-                    elif suffix not in (".csv", ".tsv", ".txt", ".xlsx"):
+                    elif suffix not in (".csv", ".tsv", ".txt", ".xlsx") and not (
+                            suffix == ".xls" and profile == XLS_EVIDENCE_PROFILE):
                         merge(import_attachments.plan(payload, path), path, prefix)
                     else:
-                        header, encoding = _header(payload)
+                        # XLS always goes through the typed BIFF reader, even
+                        # when its bytes resemble a recognized auxiliary CSV.
+                        header, encoding = ([], None) if suffix == ".xls" else _header(payload)
                         if (profile not in EVIDENCE_PROFILES and len(header) == len(feedback_import.COLUMNS)
                                 and frozenset(header) == frozenset(feedback_import.COLUMNS)):
                             # Generic mapping cannot downgrade a verified profile's

@@ -68,7 +68,7 @@ const moneyLabel = (value, currency) => FundsMoney.currency(value, currency);
 const totalLabel = (totals, fallback, currency) => FundsMoney.totals(totals, fallback, currency);
 function moneyHtml(value, currency) { return esc(moneyLabel(value, currency)); }
 function totalsHtml(totals, fallback, currency) { return esc(totalLabel(totals, fallback, currency)).replace(/\n/g, '<br>'); }
-function fundsCount(funds, fallback) { return funds && window.FundsFacts ? window.FundsFacts.count(funds) : fallback == null ? '事件数待定' : `${fmtCount(fallback)} 笔`; }
+function fundsCount(funds, fallback) { return funds && window.FundsFacts ? window.FundsFacts.displayCount(funds) : fallback == null ? '—' : `${fmtCount(fallback)} 笔`; }
 function fundsTotal(funds, totals, fallback, currency) { return funds && window.FundsFacts ? window.FundsFacts.totals(funds) : totalLabel(totals, fallback, currency); }
 function fundsTotalHtml(funds, totals, fallback, currency) { return esc(fundsTotal(funds, totals, fallback, currency)).replace(/\n/g, '<br>'); }
 function fmtTime(s) { return s ? String(s).slice(0, 19) : ''; }   // 含年月日时分秒
@@ -323,14 +323,14 @@ async function refreshStats() {
 function updateHeader() {
   const s = state.stats || {};
   $('#statLine').innerHTML =
-    `流水 <b>${esc(fundsCount(s.funds, s.flows ?? 0))}</b>${s.funds ? ` · ${esc(fundsTotal(s.funds))}` : ''} · 账户 <b>${fmtCount(s.accounts || 0)}</b> 个 · 已上图 <b>${esc(fundsCount(state.lastGraph?.funds, state.tracked.size))}</b>`;
+    `流水 <b>${esc(fundsCount(s.funds, s.flows))}</b> · 账户 <b>${fmtCount(s.accounts || 0)}</b> 个 · 已上图 <b>${esc(fundsCount(state.lastGraph?.funds, state.tracked.size))}</b>`;
   const coverage = s.import_coverage, coverageNote = $('#importCoverageNote');
   const hasCoverageGaps = coverage?.scope === 'source_reported_flows' && [coverage?.unresolved_records, coverage?.cancelled_records, coverage?.excluded_flows, coverage?.non_monetary_records].some(value => value > 0);
   if (coverageNote) {
-    coverageNote.hidden = !s.funds && !hasCoverageGaps;
+    coverageNote.hidden = !hasCoverageGaps && !s.resolution?.conflicts;
     $('#statLine').title = coverage?.scope === 'source_reported_flows' ? '金额按已接纳来源流水，不代表结算净额；导入明细与处理口径见案件与导入。' : '';
     coverageNote.textContent = !hasCoverageGaps ? '' : `${fmtCount(coverage?.unresolved_records ?? 0)} 条资金含义未确定的来源条目未计入统计；金额按已接纳来源流水，不代表结算净额。已配对冲正/撤销 ${fmtCount(coverage?.cancelled_records ?? 0)} 条（双方均不计有效资金）。${(coverage?.excluded_flows ?? 0) > 0 ? `本案另有 ${fmtCount(coverage.excluded_flows)} 笔历史留存流水已退出有效统计。` : ''}无资金变动的 ${fmtCount(coverage?.non_monetary_records ?? 0)} 条记录已单独保存。`;
-    if (s.funds) coverageNote.textContent = `有据关联的双方流水按同一事件统计；证据不足部分显示范围。原账簿记录与余额仍可核对，交易额不代表本金。${s.resolution?.unresolved_endpoints ? ` ${fmtCount(s.resolution.unresolved_endpoints)} 个端点的账户关系尚未确定。` : ''} ${coverageNote.textContent}`;
+    if (s.resolution?.conflicts) coverageNote.textContent += ` 账户资料有 ${fmtCount(s.resolution.conflicts)} 处冲突，原始记录已保留，可在账户详情中核对。`;
   }
   const empty = (s.funds?.observation_count ?? s.flows ?? 0) === 0;
   $('#emptyHint').style.display = empty ? 'flex' : 'none';
@@ -370,7 +370,7 @@ async function doSearch(page = 1) {
   state.search.total = r.total;
   renderFlows(r.rows);
   const pages = Math.max(1, Math.ceil(r.total / r.size));
-  $('#resultInfo').textContent = r.funds ? `${fundsCount(r.funds)} · ${fundsTotal(r.funds)}` : `共 ${fmtCount(r.total)} 笔`;
+  $('#resultInfo').textContent = r.funds ? `共 ${fundsCount(r.funds)}` : `共 ${fmtCount(r.total)} 笔`;
   $('#pageInfo').textContent = `第 ${page} / ${pages} 页`;
 }
 
@@ -454,7 +454,7 @@ async function trackFlows(ids) {
   if(!isCurrentCase(context))return;
   state.justAdded = new Set(ids);
   state.forceFit = false;  // 追加保持相机；首批无坐标图谱由初布局适配。
-  toast(`已上图 ${ids.length} 笔流水${state.canvasName ? `（画布「${state.canvasName}」）` : ''}`);
+  toast(`已上图 ${ids.length} 条记录${state.canvasName ? `（画布「${state.canvasName}」）` : ''}`);
   await loadGraph();
 }
 
@@ -507,7 +507,6 @@ function graphImageExportLines() {
   if(filter.active)lines.push(`关系筛选：${filter.currency||'未标注币种'} · ${filter.min||'不限下界'} — ${filter.max||'不限上界'}；金额范围相交的关系保留待核；追踪数据未删除`);
   if(encoding)lines.push(`金额→线宽：${encoding.currency||'未标注币种'} ${encoding.min_amount??'—'} — ${encoding.max_amount??'—'} · sqrt · ${window.FundsInvestigation?.active?.()?'当前时间窗口内':''}全追踪图统一比例 1.5–7；未确定金额不映射线宽`);
   const temporal=window.FundsInvestigation?.description?.();if(temporal)lines.push(temporal);
-  if(state.lastGraph.analysis_revision)lines.push(`分析修订：${state.lastGraph.analysis_revision}；金额按证据显示精确值或范围，不表示来源本金`);
   return lines;
 }
 function newGraphView(labelMode) {
@@ -2827,10 +2826,8 @@ function nodeRenderSize(n) {
 function nodeLabel(n) {
   const star = n.is_main === 1 ? '★ ' : (n.is_same_name === 1 ? '◆ ' : '');
   const name = Array.from(n.name || '(未知)').reduce((text,char,i)=>text+(i&&i%14===0?'\n':'')+char,'');
-  let t = `${star}${name}\n${n.display_account || n.account || ''}${n.cards?.length > 1 ? ` 等${fmtCount(n.cards.length)}张卡` : ''}`;   // 显示号码与节点内部ID分离。
-  if (n.kind === 'subaccount' && n.account_number) t += `\n子账户 ${n.account_number}`;
-  if (n.status === 'conflict') t += '\n卡账关系存在冲突';
-  if (n.kind === 'identifier') t += '\n账卡类型待定';
+  const number = n.account_number || (n.cards?.length > 1 ? '' : n.display_account) || (String(n.account || '').startsWith('fte_') ? '—' : n.account || '');
+  let t = `${star}${name}\n${number}`;   // 户名 / 卡号或账号，内部实体标识不作号码展示。
   if (state.showIds && n.id_no) t += `\n证件 ${n.id_no}`;   // 身份证号（可在工具栏开关）
   return t;
 }
@@ -2846,7 +2843,8 @@ function edgeLabel(e) {
   const lines = [];
   const s = state.edgeLabels;
   if (s.has('money')) {
-    lines.push(`${fundsCount(e.funds, e.cnt)}·${fundsTotal(e.funds, e.amount_totals, e.total, e.currencies?.[0])}`);
+    const amount = e.funds ? window.FundsFacts.displayTotals(e.funds) : totalLabel(e.amount_totals, e.total, e.currencies?.[0]);
+    lines.push(`${fundsCount(e.funds, e.cnt).replace(' 笔', '笔')}·${amount}`);
   }
   else if (s.has('currency') && e.currencies?.length) lines.push(e.currencies.join(' / '));
   if (s.has('summary')) {
@@ -2858,7 +2856,7 @@ function edgeLabel(e) {
     const t = fmtEdgeSpan(e.tmin, e.tmax);
     if (t) lines.push(t);
   }
-  return lines.join('\n') || fundsCount(e.funds, e.cnt);
+  return lines.join('\n') || fundsCount(e.funds, e.cnt).replace(' 笔', '笔');
 }
 
 function renderGraph(rebinding = null) {
@@ -3957,7 +3955,7 @@ function renderNodeWorkspace(workspace) {
   const badge = node.is_main === 1 ? `主账号${mainInfo ? mainInfo.source === 'auto' ? ' · 自动识别' : ' · 手动标记' : ''}` : node.is_same_name === 1 ? (state.lastGraph?.resolution ? '来源户名相同' : '同户名账号 · 本人流水未导入') : '';
   const avatar = photo ? `<img class="node-avatar" src="${esc(photo)}" alt="${esc(name)}的节点照片">` : '<span class="node-avatar node-avatar-empty"><img class="ui-icon" src="/static/ui-icons/user-search.svg" alt=""></span>';
   $('#drawerBody').innerHTML = `
-    <section class="node-identity"><div class="node-person">${avatar}<div><h2>${esc(name)}</h2><div class="mono">${esc(profile.display_account || node.display_account || account)}</div>${(profile.cards || node.cards || []).length > 1 ? `<details><summary>关联 ${(profile.cards || node.cards).length} 张卡（未推定当前卡）</summary><p class="mono">${(profile.cards || node.cards).map(esc).join('<br>')}</p></details>` : ''}${profile.kind === 'subaccount' || node.kind === 'subaccount' ? `<p class="mono">子账户 ${esc(profile.account_number || node.account_number)}</p>` : ''}${profile.status === 'conflict' || node.status === 'conflict' ? '<p>卡账关系存在冲突，已保留来源声明</p>' : ''}${badge ? `<span class="node-badge">${esc(badge)}</span>` : ''}</div></div><div class="node-quick"><button class="btn small" id="ndBrowse" data-node-action type="button">查看流水</button><button class="btn small" id="ndNeighborhood" data-node-action type="button">展开邻域</button></div></section>
+    <section class="node-identity"><div class="node-person">${avatar}<div><h2>${esc(name)}</h2><div class="mono">${esc(profile.account_number || node.account_number || profile.display_account || node.display_account || account)}</div>${(profile.cards || node.cards || []).length > 0 ? `<details><summary>关联卡号</summary><p>未推定当前使用的卡号</p><p class="mono">${(profile.cards || node.cards).map(esc).join('<br>')}</p></details>` : ''}${profile.kind === 'subaccount' || node.kind === 'subaccount' ? `<p class="mono">子账户 ${esc(profile.account_number || node.account_number)}</p>` : ''}${profile.status === 'conflict' || node.status === 'conflict' ? '<p>卡账关系存在冲突，已保留来源声明</p>' : ''}${badge ? `<span class="node-badge">${esc(badge)}</span>` : ''}</div></div><div class="node-quick"><button class="btn small" id="ndBrowse" data-node-action type="button">查看流水</button><button class="btn small" id="ndNeighborhood" data-node-action type="button">展开邻域</button></div></section>
     <section class="node-section"><h3>身份资料</h3><div class="node-form-grid"><div><label for="ndIdInput">身份证号</label><div class="node-field"><input id="ndIdInput" placeholder="未填写" autocomplete="off" value="${esc(draft.idValue)}"><button class="btn small primary" id="ndIdSave" data-node-action type="button">保存</button></div></div><div class="node-photo"><span class="node-field-label">节点照片</span><div class="node-field">${photo ? `<img id="ndPhotoImg" class="node-photo-thumb" src="${esc(photo)}" alt="当前节点照片">` : ''}<span class="muted">${photo ? '已设置照片' : '未设置照片'}</span><input type="file" id="ndPhotoFile" accept=".jpg,.jpeg,.png,.webp,.bmp" hidden><button class="btn small" id="ndPhotoUp" data-node-action type="button">选择照片</button><button class="btn small icon-button" id="ndPhotoMore" data-node-action type="button" aria-label="照片操作" aria-haspopup="menu" aria-controls="nodePhotoMenu" aria-expanded="false"><img class="ui-icon" src="/static/ui-icons/dots.svg" alt=""></button></div></div></div></section>
     <section class="node-section"><h3>图谱显示</h3><div class="node-form-grid"><div><span class="node-field-label">主账号</span><div class="node-field"><span class="muted">${node.is_main === 1 ? '已标记' : '未标记'}</span><button class="btn small" id="ndToggleMain" data-node-action type="button">${node.is_main === 1 ? '取消主账号标记' : '设为主账号'}</button></div></div><div><label for="ndFocusScale">重点展示</label><div class="node-field"><select id="ndFocusScale"><option value="1">正常大小</option>${[1.5,2,2.5,3,3.5,4].map(value => `<option value="${value}" ${draft.focusValue === value ? 'selected' : ''}>放大 ${value} 倍</option>`).join('')}</select><button class="btn small primary" id="ndFocusApply" data-node-action type="button">应用</button></div></div></div></section>
     <section class="node-section node-statistics"><div class="node-section-head"><h3>交易统计</h3><div class="node-scope" role="group" aria-label="统计范围"><button id="ndScopeCase" class="btn small" type="button" aria-pressed="true">本案件</button><button id="ndScopeGraph" class="btn small" type="button" aria-pressed="false">当前图谱</button></div></div><div id="ndStats" class="node-stats"></div><p id="ndStatsScope" class="muted"></p></section>
@@ -4403,10 +4401,10 @@ function syncContextSelection() {
     && (!selection.context || isCurrentCase(selection.context));
   const tracking = selection?.phase === 'tracking';
   const boxes = $$('#ctxTbody .ctx-ck'), picked = boxes.filter(box => box.checked);
-  $('#ctxSelected').textContent = `已选 ${fmtCount(picked.length)} 笔`;
+  $('#ctxSelected').textContent = `已选 ${fmtCount(picked.length)} 条记录`;
   const rows = selection?.data?.rows || [];
   const shown = rows.filter(row => selection.book === 'all' || row.book === selection.book);
-  $('#ctxTrackedCount').textContent = `已上图 ${fmtCount(shown.filter(row => state.tracked.has(row.id)).length)} 笔`;
+  $('#ctxTrackedCount').textContent = `已上图 ${fmtCount(shown.filter(row => state.tracked.has(row.id)).length)} 条记录`;
   $('#ctxTrack').disabled = !ready || !picked.length;
   $('#ctxTrackLabel').textContent = tracking ? '正在上图…' : picked.length ? `加入图谱（${fmtCount(picked.length)}）` : '加入图谱';
   $('#ctxModal').setAttribute('aria-busy', String(selection?.phase === 'loading' || tracking));
@@ -4485,7 +4483,7 @@ async function loadContext() {
     <div class="context-party"><span>收款方</span><b>${esc(a.payee_name || '未提供户名')}</b><span class="mono">${esc(a.payee_display_account ?? a.payee_account ?? '—')}</span></div>
     <div class="context-amount"><span>交易金额</span><b>${moneyHtml(a.amount, a.currency)}</b></div>`;
   const name = side === 'payee' ? a.payee_name : a.payer_name;
-  $('#ctxPos').textContent = `${name || (side === 'payee' ? '收款方' : '付款方')} · ${r.display_account || a[side + '_display_account'] || r.account} · 共 ${fmtCount(r.total)} 笔 · 本笔第 ${fmtCount(r.pos)} 笔`;
+  $('#ctxPos').textContent = `${name || (side === 'payee' ? '收款方' : '付款方')} · ${r.display_account || a[side + '_display_account'] || r.account} · 共 ${fmtCount(r.total)} 条来源记录`;
   renderCtxRows(r); renderSuggestions(r);
 }
 
@@ -4528,12 +4526,22 @@ function renderSuggestions(r) {
 
 function renderCtxRows(r) {
   const book = state.ctx?.book || 'all';
-  const rows = r.rows.filter(row => book === 'all' || row.book === book);
+  const groups = new Map();
+  for (const row of r.rows.filter(row => book === 'all' || row.book === book)) {
+    const key = row.event_state === 'confirmed' && row.event_id ? (row.context_group || `event:${row.event_id}`) : `record:${row.id}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  const rows = [...groups.values()].flat(), trackedIds = new Set([...state.tracked].map(String));
   $('#ctxTbody').innerHTML = rows.length ? rows.map(row => {
-    const anchor = row.id === r.anchor.id;
-    const relative = anchor ? '本笔' : row.rn < r.pos ? `前${fmtCount(r.pos - row.rn)}` : `后${fmtCount(row.rn - r.pos)}`;
-    const tracked = state.tracked.has(row.id), direction = row.dir === 'in' ? '转入' : '转出';
-    const ownership = row.book === 'self' ? '本方' : row.book === 'counter' ? '对手' : '';
+    const relation = row.context_relation || (String(row.id) === String(r.anchor.id) ? 'anchor'
+      : !row.trade_time || !r.anchor.trade_time ? 'unordered' : row.trade_time === r.anchor.trade_time ? 'same_time'
+      : row.trade_time < r.anchor.trade_time ? 'before' : 'after');
+    const anchor = relation === 'anchor' || relation === 'same_transaction';
+    const relative = ({anchor: '本笔', same_transaction: '本笔', same_time: '同时间', before: '之前', after: '之后'})[relation] || '—';
+    const tracked = trackedIds.has(String(row.id)), direction = row.dir === 'in' ? '转入' : '转出';
+    const owner = row.self_display_account || row.self_account;
+    const ownership = owner ? `${row.self_account === row.payer_account ? '付款方' : row.self_account === row.payee_account ? '收款方' : '本方'}记录 · ${owner}` : '来源账户未标注';
     const counter = row.dir === 'in' ? 'payer' : 'payee';
     const time = fmtTime(row.trade_time).replace('T', ' ').split(' ');
     const checkbox = tracked ? '<span class="ctx-on">已上图</span>'
@@ -4898,7 +4906,7 @@ function installExportWorkspace(options) {
     $('#exportContext').textContent = `当前案件：${labels.caseName} · 画布：${labels.canvasName}`;
     $('#exportScope').textContent = format === 'xlsx' ? '当前画布的全部追踪流水' : scope.description || '当前图谱范围';
     $('#exportContents').textContent = format === 'xlsx'
-      ? `${window.FundsFacts.count(scope.funds)} · ${count(scope.funds?.observation_count ?? scope.trackedFlows)} 条原始观察 · 待调取账号`
+      ? `${window.FundsFacts.displayCount(scope.funds)}追踪流水 · ${count(scope.funds?.observation_count ?? scope.trackedFlows)} 条来源记录 · 待调取账号`
       : `${count(scope.graphAccounts)} 个账户 · ${count(scope.graphRelations)} 条关系`;
     $('#exportPreserves').textContent = format === 'xlsx' ? '追踪流水、资金统计、原始账簿观察、待调取账号及修订／口径说明'
       : format === 'html' ? '当前布局、样式及当前可见标签' : '当前布局、样式及全部标签';
@@ -5434,9 +5442,9 @@ function bindUI() {
       const dirLabel = dir === 'source' ? '来源' : '去向';
       const notMain = (r.skipped_not_main || []).length;
       const zero = (r.detail || []).filter(d => d.picked === 0 && d.is_main).length;
-      let msg = `批量追踪完成：${r.anchors} 笔交易及其${dirLabel}流水共上图 ${r.tracked} 笔`;
-      if (notMain) msg += `；${notMain} 笔被跳过（${dirLabel === '来源' ? '付款' : '收款'}方不是主账号，无法追踪）`;
-      if (zero) msg += `；${zero} 笔锚点在本方账单中无${dirLabel}流水（仅上图了本笔）`;
+      let msg = `批量追踪完成：${r.anchors} 条起点记录及其${dirLabel}记录共上图 ${r.tracked} 条`;
+      if (notMain) msg += `；${notMain} 条起点记录被跳过（${dirLabel === '来源' ? '付款' : '收款'}方不是主账号，无法追踪）`;
+      if (zero) msg += `；${zero} 条起点记录在本方账单中无${dirLabel}流水（仅上图了该记录）`;
       toast(msg);
       state.forceFit = false;
       await loadGraph();
@@ -5927,14 +5935,14 @@ function bindUI() {
         setPbar(p.total ? p.done / p.total : 0.1, `写入数据库 ${fmtCount(p.done)} / ${fmtCount(p.total)} 笔`);
       } else if (p.stage === 'done') {
         const r = p.result;
-        setPbar(1, `导入完成：新增 ${fmtCount(r.ok)} 笔`);
-        let msg = `导入完成：新增 ${fmtCount(r.ok)} 笔，跳过 ${fmtCount(r.skipped || 0)} 行，重复 ${fmtCount(r.rows_dup || 0)} 笔`;
+        setPbar(1, `导入完成：新增流水记录 ${fmtCount(r.ok)} 条`);
+        let msg = `导入完成：新增流水记录 ${fmtCount(r.ok)} 条，跳过 ${fmtCount(r.skipped || 0)} 行，重复 ${fmtCount(r.rows_dup || 0)} 条`;
         if (r.main_detected && r.main_detected.length) {
           const names = r.main_detected.map(d => d.name || d.account.slice(-6)).join('、');
-          msg = `已将本方账号标为主账号：${names}（金色★标记）。新增 ${fmtCount(r.ok)} 笔，重复 ${fmtCount(r.rows_dup || 0)} 笔`;
+          msg = `已将本方账号标为主账号：${names}（金色★标记）。新增流水记录 ${fmtCount(r.ok)} 条，重复 ${fmtCount(r.rows_dup || 0)} 条`;
         } else if (r.self_accounts_count > 1) {
           msg = `本方账号列含 ${r.self_accounts_count} 个不同账号（混合文件），未自动标记主账号。` +
-                `新增 ${fmtCount(r.ok)} 笔，重复 ${fmtCount(r.rows_dup || 0)} 笔`;
+                `新增流水记录 ${fmtCount(r.ok)} 条，重复 ${fmtCount(r.rows_dup || 0)} 条`;
         } else if (r.main_matched && r.main_matched.length) {
           msg += `；含 ${r.main_matched.length} 个已标记主账号（标记已保持）`;
         }

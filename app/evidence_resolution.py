@@ -23,7 +23,7 @@ DETAIL_FIELD = "resolution_evidence"
 TABLE_PROFILE = "funds-trace-table-v20"
 ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
 FEEDBACK_PROFILE = "funds-trace-bank-feedback-v6"
-PROFILES = frozenset((TABLE_PROFILE, ARCHIVE_PROFILE, FEEDBACK_PROFILE, "funds-trace-table-v19", "funds-trace-table-archive-v5"))
+PROFILES = frozenset((TABLE_PROFILE, ARCHIVE_PROFILE, FEEDBACK_PROFILE, "funds-trace-table-v19", "funds-trace-table-archive-v5", "funds-trace-table-archive-v7"))
 _PROFILE_SQL = ",".join("?" for _ in PROFILES)
 _MAX_TEXT = 512
 WRITE_CHUNK = 50_000
@@ -475,7 +475,7 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
             raise ValueError("empty typed entity identifier")
         key = _entity_id(bank, kind, number)
         target = entities.setdefault(key, {"entity_id": key, "kind": kind, "account_number": number,
-                   "display_account": number, "bank": "" if bank.startswith("unscoped:") else bank, "cards": set(), "_display_cards": set(), "parent_entity_id": None,
+                   "display_account": number, "bank": "" if bank.startswith("unscoped:") else bank, "cards": set(), "parent_entity_id": None,
                    "names": set(), "status": "unscoped" if bank.startswith("unscoped:") else "resolved"})
         return target
     for scope, item in declarations:
@@ -485,9 +485,7 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
             target = entity(bank, "subaccount" if (bank, item["account"]) in subaccounts else "account", item["account"])
             if item["card"]:
                 target["cards"].add(item["card"])
-                if not item.get("_source_scope_conflict"):
-                    target["_display_cards"].add(item["card"])
-                else:
+                if item.get("_source_scope_conflict"):
                     target["status"] = "conflict"
             if item["name"]:
                 target["names"].add(item["name"])
@@ -552,8 +550,6 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
             state = "conflict" if conflict else "unscoped" if bank.startswith("unscoped:") else "identifier_undetermined" if kind == "identifier" else "card_only" if kind == "card" else "resolved"
             if conflict or target["status"] != "conflict" and state != "resolved":
                 target["status"] = state
-            if card and not conflict:
-                target["_display_cards"].add(card)
             if not collect_endpoints:
                 endpoint_count += 1
                 conflicts += state == "conflict"
@@ -577,10 +573,8 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
     for target in entities.values():
         target["cards"] = sorted(target["cards"])
         target["names"] = sorted(target["names"])
-        # A supported card is a display label, never the query key or ledger ID.
-        display_cards = sorted(target.pop("_display_cards", ()))
-        if display_cards:
-            target["display_account"] = display_cards[0]
+        # Use the typed ledger number. Source associations do not establish
+        # which card is current; a sorted card list is not a temporal history.
         target["name_conflict"] = len(target["names"]) > 1
         if target["name_conflict"] and target["status"] == "resolved":
             target["status"] = "name_conflict"
@@ -760,7 +754,7 @@ def registry(case_id):
     with db._lock:
         cid = require_case(str(case_id))
         return {"case_id": str(cid), "resolution": summary(cid),
-                "entities": [json.loads(item["details_json"]) for item in db.q_raw("select details_json from resolution_entities where case_id=? order by entity_id", [cid])]}
+                "entities": [_display_details(item["details_json"]) for item in db.q_raw("select details_json from resolution_entities where case_id=? order by entity_id", [cid])]}
 
 
 class _PreviewEvidence:
@@ -807,13 +801,21 @@ def preview(plan):
             "note": "预览本次来源声明；提交时结合案件已保留资料原子重算。"}
 
 
+def _display_details(value):
+    item = json.loads(value)
+    # Old derived records may retain the former first-card label. Their typed
+    # identity and source history are unchanged; display never implies expiry.
+    item["display_account"] = item["account_number"]
+    return item
+
+
 def decorate_accounts(case_id, rows, *, key="account"):
     """Keep query keys opaque while exposing original display identifiers."""
     ids = sorted({row.get(key) for row in rows if row.get(key)})
     if not ids:
         return rows
     placeholders = ",".join("?" for _ in ids)
-    details = {row["entity_id"]: json.loads(row["details_json"]) for row in db.q_raw(
+    details = {row["entity_id"]: _display_details(row["details_json"]) for row in db.q_raw(
         f"select entity_id,details_json from resolution_entities where case_id=? and entity_id in ({placeholders})", [case_id, *ids])}
     for row in rows:
         account = row.get(key) or ""

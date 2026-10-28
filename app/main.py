@@ -375,8 +375,12 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         return f"%{v.strip()}%"
 
     if account.strip():
-        conds.append("(payer_account = ? or payee_account = ?)" if account_exact else "(payer_account ilike ? or payee_account ilike ? or payer_display_account ilike ? or payee_display_account ilike ?)")
-        params += [account.strip() if account_exact else like(account)] * (2 if account_exact else 4)
+        conds.append("(payer_account = ? or payee_account = ?)" if account_exact else """(payer_account ilike ? or payee_account ilike ? or payer_display_account ilike ? or payee_display_account ilike ?
+            or exists (select 1 from resolution_entities e,
+                unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
+                where e.case_id=flows.case_id and e.entity_id in (flows.payer_account,flows.payee_account)
+                  and card.value ilike ?))""")
+        params += [account.strip() if account_exact else like(account)] * (2 if account_exact else 5)
     entity_query = unicodedata.normalize("NFKC", entity).strip().lower()
     if entity_query:
         # A free query searches complete row facts, independently of the bounded
@@ -385,12 +389,16 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
             contains(lower(coalesce(payer_account,'')), ?) or contains(lower(coalesce(payee_account,'')), ?)
             or contains(lower(coalesce(payer_name,'')), ?) or contains(lower(coalesce(payee_name,'')), ?)
             or contains(lower(coalesce(payer_display_account,'')), ?) or contains(lower(coalesce(payee_display_account,'')), ?)
+            or exists (select 1 from resolution_entities e,
+                unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
+                where e.case_id=flows.case_id and e.entity_id in (flows.payer_account,flows.payee_account)
+                  and contains(lower(card.value), ?))
             or exists (select 1 from effective_account_ids identity
                 where identity.case_id=flows.case_id
                   and (identity.account=flows.payer_account or identity.account=flows.payee_account)
                   and contains(lower(coalesce(identity.id_no,'')), ?))
         )""")
-        params += [entity_query] * 7
+        params += [entity_query] * 8
     if name.strip():
         conds.append("(payer_name ilike ? or payee_name ilike ?)")
         params += [like(name)] * 2
@@ -400,11 +408,15 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
             params += [counter.strip()] * 2
         else:
             conds.append("""(payer_name ilike ? or payer_account ilike ? or payee_name ilike ? or payee_account ilike ?
+                or exists (select 1 from resolution_entities e,
+                    unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
+                    where e.case_id=flows.case_id and e.entity_id in (flows.payer_account,flows.payee_account)
+                      and contains(lower(card.value), ?))
                 or exists (select 1 from effective_account_ids identity
                     where identity.case_id=flows.case_id
                       and (identity.account=flows.payer_account or identity.account=flows.payee_account)
                       and contains(lower(coalesce(identity.id_no,'')), ?)))""")
-            params += [like(counter)] * 4 + [unicodedata.normalize("NFKC", counter).strip().lower()]
+            params += [like(counter)] * 4 + [unicodedata.normalize("NFKC", counter).strip().lower()] * 2
     if kw.strip():
         conds.append("(summary ilike ? or trade_no ilike ?)")
         params += [like(kw)] * 2
@@ -1191,6 +1203,22 @@ def _context(flow_id, x, side, case_id):
     from . import analysis_snapshot
     result["analysis_revision"] = analysis_snapshot.revision(case_id)
     result["display_account"] = f.get(side + "_display_account") or acct
+    from . import event_resolution
+    members = {row["flow_id"]: row for row in event_resolution.members(case_id, [f["id"], *(row["id"] for row in rows)])}
+    for row in [f, *rows]:
+        member = members.get(str(row["id"]), {})
+        row["event_state"] = member.get("status", "unknown")
+        row["event_id"] = member.get("event_id") if member.get("status") == "confirmed" else None
+        row["context_group"] = "event:" + row["event_id"] if row["event_id"] else "record:" + str(row["id"])
+    for row in rows:
+        # Stable row IDs order presentation only; they do not establish time or
+        # join two ledgers. Only the proved event membership joins source rows.
+        row["context_relation"] = (
+            "anchor" if row["id"] == f["id"] else
+            "same_transaction" if row["event_id"] and row["event_id"] == f["event_id"] else
+            "unordered" if not row["trade_time"] or not f["trade_time"] else
+            "same_time" if row["trade_time"] == f["trade_time"] else
+            "before" if row["trade_time"] < f["trade_time"] else "after")
     displays = {}
     for row in rows:
         for role in ("payer","payee"):

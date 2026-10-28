@@ -72,7 +72,7 @@ def test_registry_profiles_and_suggestions_follow_reversible_card_metadata_proje
     current = entity(database, cid, "account", LEDGER, cards=[CARD])
     endpoint(database, cid, flow_id, current)
     value = profile(client, cid, current)
-    assert value["account"] == current and value["display_account"] == CARD
+    assert value["account"] == current and value["display_account"] == LEDGER
     assert value["id_no"] == before["id_no"] and value["photo"] == before["photo"]
     assert (value["cnt"], value["out_amt"]) == (None, None)
     assert value["out_funds"] == unresolved_funds(1, ("CNY", "1.25"))
