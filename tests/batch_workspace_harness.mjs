@@ -274,6 +274,15 @@ test('a pending confirmation is deduplicated and cancel leaves the batch intact'
   assert.equal(writes(h).length, 0); assert.equal(h.rows().length, 1);
 });
 
+test('withdrawal confirmation explains remaining support even for a duplicate-only batch', async () => {
+  const h = harness(); await listed(h, [batch(17, { rows_imported: 0, rows_dup: 7 })]);
+  h.confirm(() => false); await menuFor(h); await h.click('batchDelete');
+  assert.match(h.confirmations[0], /撤回这次导入的流水和资料/);
+  assert.match(h.confirmations[0], /其他导入仍有支持的流水及其图谱引用会保留/);
+  assert.doesNotMatch(h.confirmations[0], /移除该批次的 0 笔流水/);
+  assert.equal(writes(h).length, 0);
+});
+
 test('an old asynchronous confirmation after A-B-A cannot submit or alter the new list', async () => {
   const h = harness(); await listed(h); const answer = deferred(); h.confirm(() => answer.promise);
   await menuFor(h); const remove = h.click('batchDelete'); await flush();

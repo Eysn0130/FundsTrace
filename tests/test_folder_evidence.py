@@ -259,6 +259,8 @@ def test_order_wrapper_idempotence_package_roundtrip_and_batch_delete(client, da
     restored_rows = client.get(f"/api/v1/cases/{target}/flows").json()["items"]
     assert {row["payer_account"] for row in restored_rows} == {row["payer_account"] for row in rows}
     assert client.delete(f"/api/batches/{first['batch_id']}", params={"case_id": cid}).status_code == 200
+    assert client.get(f"/api/v1/cases/{cid}/flows").json()["total"] == 2
+    assert client.delete(f"/api/batches/{repeated['batch_id']}", params={"case_id": cid}).status_code == 200
     assert client.get(f"/api/v1/cases/{cid}/flows").json()["total"] == 0
     assert client.get(f"/api/v1/cases/{target}/flows").json()["total"] == 2
 

@@ -61,6 +61,8 @@ def test_scoped_opposite_ledger_event_replay_conflict_withdrawal_and_package(cli
     assert len(event_resolution.members(new_cid)) == 2
     assert {row["event_id"] for row in event_resolution.members(new_cid)} == {row["event_id"] for row in event_resolution.members(cid)}
     assert client.delete(f"/api/batches/{first['batch_id']}", params={"case_id": cid}).status_code == 200
+    assert event_resolution.summary(cid)["confirmed_events"] == 1
+    assert client.delete(f"/api/batches/{replay['batch_id']}", params={"case_id": cid}).status_code == 200
     assert event_resolution.summary(cid)["confirmed_events"] == 0
     assert event_resolution.summary(new_cid)["confirmed_events"] == 1
 

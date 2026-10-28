@@ -257,16 +257,31 @@ def del_batch(batch_id: int, case_id: int = Query(...)):
               where s.case_id=? and f.batch_id=?
             union select source_id from evidence_sources where case_id=? and batch_id=?
             """, [case_id, batch_id, case_id, batch_id])]
+        # Withdraw this operation's support first. A retained source metadata
+        # row alone is not support: require a live operation and its flow link.
+        db.x("update evidence_sources set active=false where case_id=? and batch_id=?", [case_id, batch_id])
+        db.x("""update flows as f set batch_id=s.batch_id from (
+                 select fs.flow_id,min(e.batch_id) batch_id from flow_sources fs
+                 join evidence_sources e on e.case_id=fs.case_id and e.source_id=fs.source_id and e.active
+                 join batches b on b.case_id=e.case_id and b.id=e.batch_id
+                 where fs.case_id=? group by fs.flow_id
+                 ) s where f.case_id=? and f.batch_id=? and f.id=s.flow_id""", [case_id, case_id, batch_id])
+        # batch_id is retained storage ownership, not the historical receipt.
+        # Unlinked legacy imports keep their existing deletion behavior; never
+        # infer another operation from filenames or resurrect removed facts.
         db.x("delete from tracked_flows where case_id=? and flow_id in "
              "(select id from flows where batch_id=? and case_id=?)", [case_id, batch_id, case_id])
         db.x("""update import_records set disposition='removed',reason_code='flow_deleted'
                  where case_id=? and (source_id,record_no) in
                  (select s.source_id,s.source_row from flow_sources s join flows f on f.id=s.flow_id and f.case_id=s.case_id
-                  where s.case_id=? and f.batch_id=?)""", [case_id, case_id, batch_id])
-        db.x("delete from flow_sources where case_id=? and flow_id in "
-             "(select id from flows where batch_id=? and case_id=?)", [case_id, batch_id, case_id])
+                  where s.case_id=? and (f.batch_id=? or s.source_id in
+                    (select source_id from evidence_sources where case_id=? and batch_id=?)))""",
+             [case_id, case_id, batch_id, case_id, batch_id])
+        db.x("""delete from flow_sources where case_id=? and
+                 (flow_id in (select id from flows where batch_id=? and case_id=?) or
+                  source_id in (select source_id from evidence_sources where case_id=? and batch_id=?))""",
+             [case_id, batch_id, case_id, case_id, batch_id])
         db.x("delete from flows where batch_id=? and case_id=?", [batch_id, case_id])
-        db.x("update evidence_sources set active=false where case_id=? and batch_id=?", [case_id, batch_id])
         db.x("delete from batches where id=? and case_id=?", [batch_id, case_id])
         evidence_resolution.rebuild(case_id)
         from . import event_resolution, analysis_snapshot
