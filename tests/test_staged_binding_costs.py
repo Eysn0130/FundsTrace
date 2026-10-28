@@ -224,3 +224,152 @@ def test_public_complete_import_persists_independent_family_and_money_expectatio
         assert details["family_member_sha256"] == hashlib.sha256(within.encode()).hexdigest()
         if within == members[0][0]:
             assert details["occurrence_scope"] == "Synthetic bank"
+
+
+def test_source_position_binding_keeps_payloads_and_live_aliases_lossless(database, monkeypatch):
+    import datetime as dt
+    monkeypatch.setattr(staging, "PLAN_CHUNK", 2)
+    expected = simple_plan(9)
+    expected["rows"] = [{"_source_row": n, "amount": Decimal("9007199254740993.01"),
+        "trade_time": dt.datetime(2026, 1, 1, microsecond=123456), "balance": None}
+        for n in (8, 1, 5)]
+    expected["cancelled_rows"] = [{"_source_row": 3, "amount": Decimal("-0.01")}]
+    actual = staging.stage_plan(copy.deepcopy(expected))
+    store = actual["_plan_store"]
+    try:
+        row_alias = actual["rows"][0]
+        note_alias = actual["records"][7]["details"]
+        before = store._con.execute("select kind,position,payload from items order by kind,position").fetchall()
+        evidence_resolution.bind_occurrences(expected)
+        evidence_resolution.bind_occurrences(actual)
+        store.flush()
+        after = store._con.execute("select kind,position,payload from items order by kind,position").fetchall()
+        # Derived source-position fields must not rewrite the complete financial
+        # or source payload. This assertion fails on the original implementation.
+        assert after == before
+        assert row_alias["_occurrence_key"] == expected["rows"][0]["_occurrence_key"]
+        assert note_alias["occurrence_scope"] == ""
+        for kind in ("records", "rows", "cancelled_rows"):
+            assert copy.deepcopy(list(actual[kind])) == expected[kind]
+        # Ordinary late edits/deletions supersede the binding until rebinding.
+        del row_alias["_occurrence_key"]
+        note_alias["occurrence_scope"] = "Synthetic explicit edit"
+        store.flush()
+        for _ in actual["records"]:
+            pass
+        assert "_occurrence_key" not in actual["rows"][0]
+        assert actual["records"][7]["details"]["occurrence_scope"] == "Synthetic explicit edit"
+        actual["members"][0]["sha256"] = expected["members"][0]["sha256"] = "b" * 64
+        for plan in (actual, expected):
+            evidence_resolution.bind_occurrences(plan)
+        assert note_alias["occurrence_scope"] == ""
+        for kind in ("records", "rows", "cancelled_rows"):
+            assert copy.deepcopy(list(actual[kind])) == expected[kind]
+    finally:
+        close(actual)
+
+
+@pytest.mark.parametrize("binding", ['{"amount":"12.00"}', '{"occurrence_scope":5}', '{'])
+def test_damaged_occurrence_overlay_fails_closed(database, binding):
+    plan = staging.stage_plan(simple_plan(1))
+    try:
+        plan["_plan_store"]._con.execute("update items set binding=?", [binding])
+        with pytest.raises(ValueError):
+            list(plan["records"])
+    finally:
+        close(plan)
+
+
+def test_public_occurrence_write_failure_closes_staging_and_preserves_case(client, database, make_case, monkeypatch):
+    from test_import_chunk_transactions import snapshot
+    cid = make_case("Synthetic occurrence binding write failure")
+    view = preview(client, cid, [("rows.csv", source([transaction()])[0]),
+        ("second.csv", source([transaction(**{"交易流水号": "SYN-SECOND"})])[0])], scope_bank=None)
+    before = snapshot(database, cid)
+    initialize, stores = staging.PlanStore.__init__, []
+    def fail_binding(self):
+        initialize(self)
+        stores.append(self)
+        self._con.execute("""create trigger fail_binding before update of binding on items
+            begin select raise(abort, 'Synthetic binding write failure'); end""")
+    monkeypatch.setattr(staging.PlanStore, "__init__", fail_binding)
+    job = complete(client, cid, view)
+    assert job["stage"] == "error"
+    assert snapshot(database, cid) == before
+    assert stores and all(store._closed for store in stores)
+
+
+def test_staging_serializes_packed_notes_with_one_read_per_record(database, monkeypatch):
+    pool = staging.DetailsPool()
+    notes = pool.pack({f"synthetic-{n}": str(n) for n in range(80)})
+    reads = []
+    original = pool._decode
+    def read(*args):
+        reads.append(1)
+        return original(*args)
+    monkeypatch.setattr(pool, "_decode", read)
+    store = staging.PlanStore()
+    try:
+        store.sequence("records").append({"record_no": 1, "details": notes})
+        assert len(reads) == 1
+        assert store.sequence("records")[0]["details"].copy() == {f"synthetic-{n}": str(n) for n in range(80)}
+    finally:
+        store.close()
+        pool.close()
+
+
+def test_operation_scope_binding_keeps_full_payloads_and_list_semantics(database):
+    from types import SimpleNamespace
+    expected = simple_plan(7)
+    expected['profile'] = table_archive.EVIDENCE_PROFILE
+    expected['rows'] = [{'_source_row': n, 'amount': Decimal('10.03')} for n in (2, 7)]
+    evidence_resolution.bind_occurrences(expected)
+    actual = staging.stage_plan(copy.deepcopy(expected))
+    store = actual['_plan_store']
+    try:
+        before = store._con.execute('select kind,position,payload from items order by kind,position').fetchall()
+        for plan in (expected, actual):
+            evidence_resolution.operation_context((SimpleNamespace(attrs={'table_plan': plan}),), 'synthetic-envelope')
+        store.flush()
+        assert store._con.execute('select kind,position,payload from items order by kind,position').fetchall() == before
+        for kind in ('records', 'rows'):
+            assert copy.deepcopy(list(actual[kind])) == expected[kind]
+        assert all(row['_occurrence_scope'].startswith('unscoped:') for row in actual['rows'])
+    finally:
+        close(actual)
+
+
+def test_preview_source_samples_do_not_scan_complete_staged_journal(database, monkeypatch):
+    from app.services import imports
+    content = archive([('synthetic.csv', source([transaction(**{'交易流水号': f'SYN-{n}'}) for n in range(31)])[0])])
+    parsed = imports._parse(io.BytesIO(content), suffix='.zip', table_profile=table_archive.EVIDENCE_PROFILE)
+    # Isolate sample lookup from the separate complete evidence projection;
+    # the public lifecycle regressions exercise that projection without mocks.
+    monkeypatch.setattr(evidence_resolution, 'preview', lambda plan: {})
+    scanned = []
+    iterate = staging.StagedSequence.__iter__
+    def observe(self):
+        for item in iterate(self):
+            if self.kind == 'records':scanned.append(item['record_no'])
+            yield item
+    monkeypatch.setattr(staging.StagedSequence, '__iter__', observe)
+    try:
+        value = imports._preview_result({'import_id':'synthetic', 'filename':'synthetic.zip', 'case_id':1}, parsed)
+        assert [(row['source_record_no'], row['source_row']) for row in value['preview']] == [(n,n+1) for n in range(1,9)]
+        assert scanned == []
+    finally:
+        imports._close_staging(parsed)
+
+
+def test_summary_retains_first_ten_unresolved_source_positions(database):
+    from app.services import imports
+    rows = [transaction(**{'交易流水号':f'SYN-{n}', '交易金额':'-10.03' if n % 2 else '10.03'}) for n in range(31)]
+    content = archive([('synthetic.csv', source(rows)[0])])
+    parsed = imports._parse(io.BytesIO(content), suffix='.zip', table_profile=table_archive.EVIDENCE_PROFILE)
+    try:
+        summary = imports._table_summary(parsed[0].attrs['table_plan'])
+        assert [r['source_row'] for r in summary['unresolved_examples']] == list(range(3,23,2))
+        assert len(summary['unresolved_examples']) == 10
+        assert [(r['member_path'], r['reason_code']) for r in summary['unresolved_examples']] == [('synthetic.csv', 'cancellation_action_unproven')] * 10
+    finally:
+        imports._close_staging(parsed)

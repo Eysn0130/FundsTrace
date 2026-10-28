@@ -203,7 +203,7 @@ def occurrence_key(member_sha, position):
 
 
 def bind_occurrences(plan):
-    from .import_staging import auxiliary_records, row_records
+    from .import_staging import auxiliary_records, row_records, bind_occurrence_fields
     bind_families(plan)
     members = {member["member_path"]: member["sha256"] for member in plan["members"]}
     declarations = defaultdict(set)
@@ -235,9 +235,9 @@ def bind_occurrences(plan):
         if binding and (family, binding["request"], binding["bank"]) in denied:
             binding = None
         own_bank = data["endpoints"]["self"]["bank"] if data and data["role"] == "transaction" else ""
-        row["_occurrence_key"] = occurrence_key(members[record["member_path"]], record["source_row"])
-        row["_occurrence_scope"] = own_bank or (binding["bank"] if binding else "")
-        record["details"]["occurrence_scope"] = row["_occurrence_scope"]
+        bind_occurrence_fields(row, record,
+            occurrence_key(members[record["member_path"]], record["source_row"]),
+            own_bank or (binding["bank"] if binding else ""))
     return plan
 
 
@@ -1190,7 +1190,7 @@ def decorate_analysis(case_id, result):
 
 
 def operation_context(parsed, original_sha):
-    from .import_staging import row_records
+    from .import_staging import row_records, bind_occurrence_fields
     plan = parsed[0].attrs.get("feedback_plan") or parsed[0].attrs.get("table_plan")
     if not plan or plan["profile"] not in PROFILES:
         return
@@ -1203,8 +1203,7 @@ def operation_context(parsed, original_sha):
             if key not in unscoped:
                 unscoped[key] = "unscoped:" + hashlib.sha256(_json(key).encode()).hexdigest()
             scope = unscoped[key]
-            row["_occurrence_scope"] = scope
-            record["details"]["occurrence_scope"] = scope
+            bind_occurrence_fields(row, record, None, scope)
 
 
 def bind_families(plan):

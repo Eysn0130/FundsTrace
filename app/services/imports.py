@@ -728,6 +728,7 @@ def _bind_table_plan(case_id, parsed, *, source=None):
 
 
 def _preview_result(session, parsed, legacy=False):
+    from app.import_staging import record_map
     frame, _sheet, mode, mapping, rows, stats = parsed
     result = {"import_id": session["import_id"], "filename": session["filename"],
               "columns": list(frame.columns), "mode": mode, "mapping": mapping,
@@ -736,8 +737,7 @@ def _preview_result(session, parsed, legacy=False):
     plan = frame.attrs.get("feedback_plan")
     if plan is not None:
         result["feedback"] = _feedback_summary(plan)
-        wanted = {row["_source_row"] for row in rows[:8]}
-        positions = {r["record_no"]: r for r in plan["records"] if r["record_no"] in wanted}
+        positions = record_map(plan)
         for preview, row in zip(result["preview"], rows):
             record = positions[row["_source_row"]]
             preview.update(source_member=record["member_path"], source_row=record["source_row"],
@@ -745,8 +745,7 @@ def _preview_result(session, parsed, legacy=False):
     table_plan = frame.attrs.get("table_plan")
     if table_plan is not None:
         result["table_summary"] = _table_summary(table_plan)
-        wanted = {row["_source_row"] for row in rows[:8]}
-        positions = {r["record_no"]: r for r in table_plan["records"] if r["record_no"] in wanted}
+        positions = record_map(table_plan)
         for preview, row in zip(result["preview"], rows):
             record = positions[row["_source_row"]]
             preview.update(source_member=record["member_path"], source_row=record["source_row"],
@@ -766,7 +765,11 @@ def _preview_result(session, parsed, legacy=False):
 
 
 def _table_summary(plan):
+    from app.import_staging import StagedSequence
     stats = plan["stats"]
+    records = plan["records"]
+    unresolved = (records.select(disposition="unresolved") if isinstance(records, StagedSequence)
+                  else (record for record in records if record["disposition"] == "unresolved"))
     return {"profile": plan["profile"], "record_total": len(plan["records"]),
             "accepted": len(plan["rows"]),
             "cancelled": stats.get("cancelled", 0), "excluded_flows": 0, "effective_added": None,
@@ -777,8 +780,7 @@ def _table_summary(plan):
             "unsupported_attachments": stats["reason_counts"].get("unsupported_attachment", 0),
             "non_business_attachments": stats["reason_counts"].get("non_business_attachment", 0),
             "unresolved_examples": [{key: record[key] for key in ("member_path", "source_row", "reason_code")}
-                                    for record in islice((record for record in plan["records"]
-                                                        if record["disposition"] == "unresolved"), 10)]}
+                                    for record in islice(unresolved, 10)]}
 
 
 def _table_profile(session):

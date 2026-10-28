@@ -192,8 +192,15 @@ PLAN_CHUNK_BYTES = 2 * 1024 * 1024
 
 
 def _wire(value):
+    if value is None or type(value) in (str, int, bool, float):
+        return ["v", value]
+    # Snapshot a packed note once, rather than invoking its decoder for every
+    # key through MutableMapping.items(). Encoding never mutates tracked data.
+    if isinstance(value, (PackedDetails, _TrackedChild)):
+        value = value.copy()
     if isinstance(value, Mapping):
-        return ["d", [[key, _wire(item)] for key, item in value.items()]]
+        items = dict.items(value) if isinstance(value, dict) else value.items()
+        return ["d", [[key, _wire(item)] for key, item in items]]
     if isinstance(value, tuple):
         return ["t", [_wire(item) for item in value]]
     if isinstance(value, list):
@@ -206,13 +213,13 @@ def _wire(value):
         return ["z", value.isoformat()]
     if isinstance(value, bytes):
         return ["b", value.hex()]
-    if value is None or type(value) in (str, int, bool, float):
-        return ["v", value]
     raise ValueError("unsupported staged value")
 
 
 def _unwire(value):
     tag, item = value
+    if tag == "v":
+        return item
     if tag == "d":
         return {key: _unwire(child) for key, child in item}
     if tag in ("t", "l", "s"):
@@ -223,8 +230,6 @@ def _unwire(value):
         return dt.datetime.fromisoformat(item)
     if tag == "b":
         return bytes.fromhex(item)
-    if tag == "v":
-        return item
     raise ValueError("invalid staged value")
 
 
@@ -370,7 +375,7 @@ class PlanStore:
             self._con.executescript("""pragma journal_mode=off; pragma synchronous=off;
                 pragma cache_size=-4096; pragma temp_store=file; pragma mmap_size=0;
                 create table items(kind text,position integer,number integer,member text,disposition text,
-                                   details_version integer,payload blob,
+                                   details_version integer,payload blob,binding text,
                                    primary key(kind,position)) without rowid;
                 create index item_numbers on items(kind,number);
                 create index item_members on items(kind,member,position);
@@ -386,6 +391,8 @@ class PlanStore:
         self._finalizer = weakref.finalize(self, _dispose_plan, self._con, directory)
         self._closed = False
         self._dirty = OrderedDict()
+        self._bindings = OrderedDict()
+        self._binding_bytes = 0
         self._cache = OrderedDict()
         self._live = weakref.WeakValueDictionary()
         self._counts = {}
@@ -453,7 +460,7 @@ class PlanStore:
         dict.__getitem__(item, "details").update(self._member_details[dict.__getitem__(item, "member_path")])
         item._staged_details_version = self._details_version
 
-    def _track(self, kind, position, payload, details_version=0):
+    def _track(self, kind, position, payload, details_version=0, binding=None):
         identity = kind, position
         cached = self._live.get(identity)
         if cached is not None:
@@ -486,10 +493,21 @@ class PlanStore:
                 store.flush()
         result = _TrackedDict(value, changed, ensure)
         result._staged_identity = identity
+        result._staged_store = owner
+        result._staged_binding = _validate(json.loads(binding)) if binding else {}
+        expected_fields = {"occurrence_scope"} if kind == "records" else {"_occurrence_key", "_occurrence_scope"}
+        required_field = "occurrence_scope" if kind == "records" else "_occurrence_scope"
+        if binding and (required_field not in result._staged_binding or not set(result._staged_binding) <= expected_fields):
+            raise ValueError("invalid staged occurrence binding")
+        result._staged_binding_size = len(binding.encode("utf-8")) if binding else 0
         result._staged_details_version = details_version
         if kind == "records" and details_version < self._details_version:
             self._apply_member_details(result)
             size += self._member_details_sizes[value["member_path"]]
+        if result._staged_binding:
+            target = dict.__getitem__(result, "details") if kind == "records" else result
+            dict.update(target, result._staged_binding)
+            size += len(binding.encode("utf-8"))
         result_ref = weakref.ref(result)
         self._live[identity] = result
         self._cache[identity] = result
@@ -502,8 +520,46 @@ class PlanStore:
         self.peak_read_bytes = max(self.peak_read_bytes, self._read_bytes)
         return result
 
+    def bind_occurrence_fields(self, item, fields):
+        """Store small derived bindings separately from immutable source payloads.
+
+        Ordinary mutations still flush the complete effective object, consuming
+        its overlay. Thus retained aliases, explicit deletion and rebinding have
+        the same behavior as an ordinary list plan.
+        """
+        self._check()
+        identity = item._staged_identity
+        if identity in self._dirty:
+            self.flush()
+        target = dict.__getitem__(item, "details") if identity[0] == "records" else item
+        dict.update(target, fields)
+        item._staged_binding.update(fields)
+        encoded = json.dumps(item._staged_binding, ensure_ascii=False, separators=(",", ":"))
+        encoded_size = len(encoded.encode("utf-8"))
+        if identity in self._cache:
+            delta = encoded_size - item._staged_binding_size
+            self._sizes[identity] += delta
+            self._read_bytes += delta
+            while len(self._cache) > 1 and self._read_bytes > PLAN_CHUNK_BYTES:
+                key, _value = self._cache.popitem(last=False)
+                self._read_bytes -= self._sizes.pop(key)
+            self.peak_read_bytes = max(self.peak_read_bytes, self._read_bytes)
+        item._staged_binding_size = encoded_size
+        previous = self._bindings.get(identity, "")
+        self._binding_bytes += encoded_size - len(previous.encode("utf-8"))
+        self._bindings[identity] = encoded
+        if len(self._bindings) >= PLAN_CHUNK or self._binding_bytes >= PLAN_CHUNK_BYTES:
+            self.flush()
+
     def flush(self):
         self._check()
+        if self._bindings:
+            self._con.executemany("update items set binding=? where kind=? and position=?",
+                ((value, kind, position) for (kind, position), value in self._bindings.items()))
+            self.update_encoded_bytes += self._binding_bytes
+            self.write_batches += 1
+            self._bindings.clear()
+            self._binding_bytes = 0
         if not self._dirty:
             return
         values = []
@@ -513,8 +569,10 @@ class PlanStore:
             values.append((payload, item.get("member_path", ""), item.get("disposition", ""),
                            item.get("record_no", item.get("_source_row", position)),
                            item._staged_details_version, kind, position))
-        self._con.executemany("update items set payload=?,member=?,disposition=?,number=?,details_version=? where kind=? and position=?", values)
+        self._con.executemany("update items set payload=?,member=?,disposition=?,number=?,details_version=?,binding=null where kind=? and position=?", values)
         self.write_batches += 1
+        for item in self._dirty.values():
+            item._staged_binding.clear()
         self._dirty.clear()
         self._dirty_bytes = 0
 
@@ -523,6 +581,8 @@ class PlanStore:
             return
         # A closed owner is never readable, including through a cached object.
         self._closed = True
+        self._bindings.clear()
+        self._binding_bytes = 0
         self._dirty.clear()
         self._cache.clear()
         self._sizes.clear()
@@ -558,11 +618,11 @@ class StagedSequence(Sequence):
         store = self.store
         store.flush()
         store.read_queries += 1
-        cursor = store._con.execute("select position,payload,details_version from items where kind=? order by position", (self.kind,))
+        cursor = store._con.execute("select position,payload,details_version,binding from items where kind=? order by position", (self.kind,))
         try:
-            for position, payload, version in cursor:
+            for position, payload, version, binding in cursor:
                 store._check()
-                yield store._track(self.kind, position, payload, version)
+                yield store._track(self.kind, position, payload, version, binding)
         finally:
             cursor.close()
 
@@ -586,24 +646,24 @@ class StagedSequence(Sequence):
             store.read_queries += 1
             start = index // PLAN_CHUNK * PLAN_CHUNK + 1
             result = None
-            for position, payload, version in store._con.execute(
-                    "select position,payload,details_version from items where kind=? and position>=? and position<? order by position",
+            for position, payload, version, binding in store._con.execute(
+                    "select position,payload,details_version,binding from items where kind=? and position>=? and position<? order by position",
                     (self.kind, start, start + PLAN_CHUNK)):
-                item = store._track(self.kind, position, payload, version)
+                item = store._track(self.kind, position, payload, version, binding)
                 if position == index + 1:
                     result = item
                 if store._read_bytes >= PLAN_CHUNK_BYTES:
                     break
             if result is not None:
                 return result
-            position, payload, version = store._con.execute("select position,payload,details_version from items where kind=? and position=?", identity).fetchone()
-            return store._track(self.kind, position, payload, version)
+            position, payload, version, binding = store._con.execute("select position,payload,details_version,binding from items where kind=? and position=?", identity).fetchone()
+            return store._track(self.kind, position, payload, version, binding)
         store.flush()
         store.read_queries += 1
-        position, payload, version = store._con.execute(
-            "select position,payload,details_version from items where kind=? order by position limit 1 offset ?",
+        position, payload, version, binding = store._con.execute(
+            "select position,payload,details_version,binding from items where kind=? order by position limit 1 offset ?",
             (self.kind, index)).fetchone()
-        return store._track(self.kind, position, payload, version)
+        return store._track(self.kind, position, payload, version, binding)
 
     def select(self, *, member=None, lower=None, upper=None, disposition=None):
         store = self.store
@@ -618,11 +678,11 @@ class StagedSequence(Sequence):
         if disposition is not None:
             clause += " and disposition=?"
             args.append(disposition)
-        cursor = store._con.execute(f"select position,payload,details_version from items where {clause} order by position", args)
+        cursor = store._con.execute(f"select position,payload,details_version,binding from items where {clause} order by position", args)
         store.read_queries += 1
         try:
-            for position, payload, version in cursor:
-                yield store._track(self.kind, position, payload, version)
+            for position, payload, version, binding in cursor:
+                yield store._track(self.kind, position, payload, version, binding)
         finally:
             cursor.close()
 
@@ -633,17 +693,17 @@ class StagedSequence(Sequence):
             raise ValueError("source records belong to another staged plan")
         store.flush()
         store.read_queries += 1
-        cursor = store._con.execute("""select r.position,r.payload,r.details_version,
-                j.position,j.payload,j.details_version from items r left join items j
+        cursor = store._con.execute("""select r.position,r.payload,r.details_version,r.binding,
+                j.position,j.payload,j.details_version,j.binding from items r left join items j
                 on j.kind='records' and j.position=r.number
                 where r.kind=? order by r.position""", (self.kind,))
         try:
-            for position, payload, version, record_position, record_payload, record_version in cursor:
-                row = store._track(self.kind, position, payload, version)
+            for position, payload, version, binding, record_position, record_payload, record_version, record_binding in cursor:
+                row = store._track(self.kind, position, payload, version, binding)
                 number = row["_source_row"]
                 if type(number) is not int or number <= 0 or number > len(records) or record_position is None:
                     raise KeyError(number)
-                record = store._track("records", record_position, record_payload, record_version)
+                record = store._track("records", record_position, record_payload, record_version, record_binding)
                 if record["record_no"] != number:
                     raise ValueError("non-consecutive staged source records")
                 yield row, record
@@ -656,7 +716,7 @@ class StagedSequence(Sequence):
         position = store._ends.get(self.kind, 0)
         pending, size = [], 0
         def write():
-            store._con.executemany("insert into items values (?,?,?,?,?,?,?)", pending)
+            store._con.executemany("insert into items(kind,position,number,member,disposition,details_version,payload) values (?,?,?,?,?,?,?)", pending)
             store.write_batches += 1
             store._counts[self.kind] = store._counts.get(self.kind, 0) + len(pending)
             pending.clear()
@@ -794,6 +854,19 @@ def auxiliary_records(plan):
     records = plan["records"]
     return (records.select(disposition="auxiliary") if isinstance(records, StagedSequence)
             else (record for record in records if record["disposition"] == "auxiliary"))
+
+
+def bind_occurrence_fields(row, record, key, scope):
+    fields = {"_occurrence_key": key} if key is not None else {}
+    fields["_occurrence_scope"] = scope
+    for item, values in ((row, fields), (record, {"occurrence_scope": scope})):
+        if isinstance(item, _TrackedDict):
+            item._ensure()
+            item._staged_store().bind_occurrence_fields(item, values)
+        elif item is record:
+            item["details"].update(values)
+        else:
+            item.update(values)
 
 
 def row_records(plan, *, kinds=("rows", "cancelled_rows")):
