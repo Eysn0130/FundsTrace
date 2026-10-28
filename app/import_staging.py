@@ -686,17 +686,22 @@ class StagedSequence(Sequence):
         finally:
             cursor.close()
 
-    def with_records(self, records):
+    def with_records(self, records, *, missing_scope_only=False):
         """Pair financial rows with their exact journal positions in one scan."""
         store = self.store
         if records.store is not store or records.kind != "records":
             raise ValueError("source records belong to another staged plan")
         store.flush()
         store.read_queries += 1
-        cursor = store._con.execute("""select r.position,r.payload,r.details_version,r.binding,
+        # This overlay is written only by the closed occurrence-binding helper.
+        # Ordinary edits consume it during flush, so late changes take the full
+        # decoding path. Keep broken row/journal references on that path too.
+        scope_filter = """and (coalesce(json_extract(r.binding,'$._occurrence_scope'),'')=''
+            or j.position is null or j.number is null or j.number!=r.number or r.number<=0)""" if missing_scope_only else ""
+        cursor = store._con.execute(f"""select r.position,r.payload,r.details_version,r.binding,
                 j.position,j.payload,j.details_version,j.binding from items r left join items j
                 on j.kind='records' and j.position=r.number
-                where r.kind=? order by r.position""", (self.kind,))
+                where r.kind=? {scope_filter} order by r.position""", (self.kind,))
         try:
             for position, payload, version, binding, record_position, record_payload, record_version, record_binding in cursor:
                 row = store._track(self.kind, position, payload, version, binding)
@@ -869,12 +874,12 @@ def bind_occurrence_fields(row, record, key, scope):
             item.update(values)
 
 
-def row_records(plan, *, kinds=("rows", "cancelled_rows")):
+def row_records(plan, *, kinds=("rows", "cancelled_rows"), missing_scope_only=False):
     records, indexed = plan["records"], None
     for kind in kinds:
         rows = plan.get(kind, ())
         if isinstance(rows, StagedSequence) and isinstance(records, StagedSequence):
-            yield from rows.with_records(records)
+            yield from rows.with_records(records, missing_scope_only=missing_scope_only)
         else:
             if indexed is None:
                 indexed = record_map(plan)

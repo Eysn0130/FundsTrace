@@ -597,7 +597,7 @@ def test_xls_v18_format4_public_export_restores_to_clean_database_and_replay_add
     assert response.status_code == 200
     package = response.content
     members = _members(package)
-    assert json.loads(members["meta.json"])["format"] == 4
+    assert json.loads(members["meta.json"])["format"] == 6
     assert json.loads(members["meta.json"])["source_files"] == "not_included"
     assert not any(name.endswith(".xls") for name in members)
     with database._lock:
@@ -703,6 +703,12 @@ def test_new_xls_support_keeps_each_existing_package_format_readable(
             b"date,payer_account,payee_account,amount\n2026-01-01,SYN-A,SYN-B,1.23\n"))["stage"] == "done"
     expected = facts(database, cid)
     members = _members(case_packages.export_package(cid)[0])
+    if format_version in (3, 4):
+        meta = json.loads(members["meta.json"])
+        assert meta["format"] == 6
+        members.pop("import_source_operations.parquet")
+        meta["format"] = format_version
+        members["meta.json"] = json.dumps(meta).encode()
     if format_version == 1:
         meta = json.loads(members["meta.json"])
         assert meta["format"] == 2

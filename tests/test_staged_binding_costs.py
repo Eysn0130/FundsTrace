@@ -373,3 +373,40 @@ def test_summary_retains_first_ten_unresolved_source_positions(database):
         assert [(r['member_path'], r['reason_code']) for r in summary['unresolved_examples']] == [('synthetic.csv', 'cancellation_action_unproven')] * 10
     finally:
         imports._close_staging(parsed)
+
+
+def test_operation_context_skips_bound_payloads_but_keeps_late_edits_and_broken_links(database, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(staging, 'PLAN_CHUNK', 1)
+    expected = simple_plan(31)
+    expected['profile'] = table_archive.EVIDENCE_PROFILE
+    expected['rows'] = [{'_source_row': n, 'amount': Decimal('100.01')} for n in range(1, 32)]
+    expected['cancelled_rows'] = [{'_source_row': 31, 'amount': Decimal('100.01')}]
+    actual = staging.stage_plan(copy.deepcopy(expected))
+    def context(plan):
+        evidence_resolution.operation_context((SimpleNamespace(attrs={'table_plan': plan}),), 'synthetic')
+    try:
+        for plan in (actual, expected):
+            evidence_resolution.bind_occurrences(plan)
+            for row, record in staging.row_records(plan):
+                staging.bind_occurrence_fields(row, record, row['_occurrence_key'], 'Synthetic bank')
+        store = actual['_plan_store']; store.flush()
+        before = store.metrics()
+        context(actual); context(expected)
+        after = store.metrics()
+        assert after['decode_calls'] == before['decode_calls']
+        print('synthetic_bound_operation_context_cost', {'financial': 31, 'extra_decodes': after['decode_calls'] - before['decode_calls']})
+        row_alias = actual['rows'][0]
+        for plan in (actual, expected):
+            del plan['rows'][0]['_occurrence_scope']
+            plan['rows'][0]['amount'] = Decimal('200.02')
+            plan['records'][1]['details']['reason'] = 'Synthetic late journal note'
+            context(plan)
+        assert row_alias['_occurrence_scope'].startswith('unscoped:')
+        for kind in ('rows', 'records', 'cancelled_rows'):
+            assert copy.deepcopy(list(actual[kind])) == expected[kind]
+        actual['records'][2]['record_no'] = 999
+        with pytest.raises(ValueError, match='non-consecutive'):
+            context(actual)
+    finally:
+        close(actual)

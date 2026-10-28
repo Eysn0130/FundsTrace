@@ -107,7 +107,7 @@ def test_explicit_source_roles_automatically_import_exact_money_and_validate_las
     assert coverage(client, cid)["unresolved_records"] == 1
     package = case_packages.export_package(cid)[0]
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
-        assert json.loads(archive.read("meta.json"))["format"] == 4
+        assert json.loads(archive.read("meta.json"))["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     assert facts(database, restored) == before
     assert coverage(client, restored) == coverage(client, cid)

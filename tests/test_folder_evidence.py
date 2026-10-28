@@ -252,7 +252,7 @@ def test_order_wrapper_idempotence_package_roundtrip_and_batch_delete(client, da
     exported = client.get(f"/api/cases/{cid}/export")
     assert exported.status_code == 200, exported.text
     with zipfile.ZipFile(io.BytesIO(exported.content)) as package:
-        assert json.loads(package.read("meta.json"))["format"] == 5
+        assert json.loads(package.read("meta.json"))["format"] == 6
     restored = client.post("/api/cases/import", files={"file": ("synthetic.fundcase", exported.content)})
     assert restored.status_code == 200, restored.text
     target = restored.json()["case_id"]

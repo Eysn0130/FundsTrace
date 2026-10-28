@@ -79,7 +79,7 @@ def test_bank_alias_automatic_commit_retains_full_source_mapping_and_facts(
     assert client.get(f"/api/v1/cases/{cid}/imports/{view['import_id']}").json()["result"] == job["result"]
     package = case_packages.export_package(cid)[0]
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
-        assert json.loads(archive.read("meta.json"))["format"] == 4
+        assert json.loads(archive.read("meta.json"))["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     assert facts(database, restored) == before and coverage(client, restored) == coverage(client, cid)
     restored_source = database.q_raw(

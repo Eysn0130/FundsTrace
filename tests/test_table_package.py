@@ -122,7 +122,7 @@ def test_public_automatic_table_import_then_package_round_trip(client, database,
     assert job["stage"] == "done", job
     assert job["result"]["ok"] == 1
     content = case_packages.export_package(case_id)[0]
-    assert json.loads(_members(content)["meta.json"])["format"] == 4
+    assert json.loads(_members(content)["meta.json"])["format"] == 6
     restored = case_packages.import_package(content)["case_id"]
     fields = ",".join(table_import.FLOW_FIELDS)
     assert database.q(f"select {fields} from flows where case_id=?", [restored]) == database.q(

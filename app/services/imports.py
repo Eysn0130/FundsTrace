@@ -1157,6 +1157,8 @@ def _run(import_id):
                                            case_id=session["case_id"], provenance=provenance,
                                            standalone_csv_keys=standalone_keys)
             receipt["source_id"] = import_id
+            db.x("insert into import_source_operations(case_id,source_id,batch_id,active) values (?,?,?,true)",
+                 [session["case_id"], import_id, receipt["batch_id"]])
             main_rows = rows
             if provenance["parser_version"] in evidence_resolution.PROFILES:
                 db.x("insert into evidence_sources(case_id,source_id,batch_id,active) values (?,?,?,true)", [session["case_id"], import_id, receipt["batch_id"]])

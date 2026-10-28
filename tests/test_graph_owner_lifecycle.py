@@ -137,7 +137,7 @@ def test_unknown_owner_import_append_and_restore_preserve_original_facts_and_sou
     assert before["stats"]["amount_totals"] == [{"currency": "CNY", "amount": None}]
     assert before["stats"]["funds"] == unresolved_funds(4, ("CNY", "400.00"))
     content = exported(client, case_id)
-    assert json.loads(members(content)["meta.json"])["format"] == 4
+    assert json.loads(members(content)["meta.json"])["format"] == 6
     restored = import_package(client, content)
     assert restored.status_code == 200, restored.text
     restored_id = restored.json()["case_id"]
@@ -181,6 +181,12 @@ def test_historical_package_recomputes_unknown_owner_graph_without_rewriting_his
     content = exported(client, case_id)
     entries = members(content)
     meta = json.loads(entries["meta.json"])
+    if format_version in (3, 4):
+        assert meta["format"] == 6
+        entries.pop("import_source_operations.parquet")
+        meta["format"] = format_version
+        entries["meta.json"] = json.dumps(meta).encode()
+        content = archive_of(entries)
     if format_version == 1:
         assert meta["format"] == 2
         meta["format"] = 1

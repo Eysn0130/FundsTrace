@@ -56,7 +56,7 @@ def test_last_support_controls_observations_graph_events_and_package(client, dat
 def test_withdrawal_failure_rolls_back_support_ownership_and_graph(client, database, make_case, monkeypatch):
     cid = make_case("Synthetic atomic support withdrawal")
     first, _, _ = setup_pair(client, cid)
-    tables = ("flows", "flow_sources", "import_records", "evidence_sources", "batches", "tracked_flows")
+    tables = ("flows", "flow_sources", "import_records", "evidence_sources", "import_source_operations", "batches", "tracked_flows")
     def snapshot():
         return {name: database.q_raw(f"select * from {name} where case_id=? order by all", [cid]) for name in tables}
     before = snapshot()

@@ -72,7 +72,7 @@ def test_declared_units_and_time_import_automatically_and_preserve_source_and_fo
     assert coverage(client, cid)["financial_interpretation_complete"]
     package = case_packages.export_package(cid)[0]
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
-        assert json.loads(archive.read("meta.json"))["format"] == 4
+        assert json.loads(archive.read("meta.json"))["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     assert facts(database, restored) == expected
     assert coverage(client, restored) == coverage(client, cid)

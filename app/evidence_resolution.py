@@ -1195,7 +1195,7 @@ def operation_context(parsed, original_sha):
     if not plan or plan["profile"] not in PROFILES:
         return
     unscoped = {}
-    for row, record in row_records(plan, kinds=("rows",)):
+    for row, record in row_records(plan, kinds=("rows",), missing_scope_only=True):
         if not row.get("_occurrence_scope"):
             # Without an institution declaration, only the original registered
             # envelope and its complete member position attest a repeated copy.

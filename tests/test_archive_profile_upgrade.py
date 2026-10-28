@@ -180,7 +180,7 @@ def test_mixed_v1_v2_package_keeps_versions_notes_and_no_originals(client, datab
     complete(client, cid, preview(client, cid, content, "synthetic.zip"))
     package = case_packages.export_package(cid)[0]
     members = _members(package)
-    assert json.loads(members["meta.json"])["format"] == 4
+    assert json.loads(members["meta.json"])["format"] == 6
     assert json.loads(members["meta.json"])["source_files"] == "not_included"
     assert not any(path.endswith((".csv", ".zip")) for path in members)
     restored = case_packages.import_package(package)["case_id"]

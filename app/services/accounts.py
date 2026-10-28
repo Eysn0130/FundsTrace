@@ -117,16 +117,22 @@ def account_profile(case_id, account):
         funds = rollups[(15, None)]
         result.update(funds=funds, cnt=funds_projection.public_fields(funds)["cnt"],
                       analysis_revision=analysis_snapshot.revision(cid), statistics_policy=funds_projection.POLICY)
-        result.update(db.q(funds_projection.cte(source) +
-                          "select min(trade_time) tmin,max(trade_time) tmax from selected_facts", selection)[0])
         empty = funds_projection.summarize_rows([])
         result.update(funds_projection.directional_fields(
             rollups.get((14, None), empty), rollups.get((13, None), empty)))
-        names = db.q(funds_projection.cte(source) + """
-            select acct,max(name) as name from (
+        # Range and counterparty labels use exactly the same selected facts.
+        # Share that selection instead of replaying its source/event joins.
+        details = db.q(funds_projection.cte(source) + """
+            select 0 detail_kind,null::varchar acct,null::varchar as name,
+                   min(trade_time) tmin,max(trade_time) tmax from selected_facts
+            union all
+            select 1 detail_kind,acct,max(name) as name,null::timestamp tmin,null::timestamp tmax from (
                 select payer_account as acct,payer_name as name from selected_facts where trim(payee_account)=?
                 union all select payee_account,payee_name from selected_facts where trim(payer_account)=?
             ) where coalesce(acct,'')<>'' group by acct""", [*selection, account, account])
+        bounds = next(row for row in details if row["detail_kind"] == 0)
+        result.update(tmin=bounds["tmin"], tmax=bounds["tmax"])
+        names = (row for row in details if row["detail_kind"] == 1)
         result["top_counterparties"] = [{"acct": row["acct"], "name": row["name"] or "",
             **funds_projection.directional_fields(rollups.get((6, row["acct"]), empty), rollups.get((9, row["acct"]), empty))}
             for row in names]

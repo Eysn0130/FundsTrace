@@ -287,7 +287,7 @@ def test_envelope_replay_does_not_reuse_different_facts_from_manual_table_mappin
     assert source_snapshot(database, cid, view["import_id"]) == frozen
     assert receipt(client, cid, view["import_id"]) == first["result"]
     archive = case_packages.export_package(cid)[0]
-    assert json.loads(_members(archive)["meta.json"])["format"] == 4
+    assert json.loads(_members(archive)["meta.json"])["format"] == 6
     restored = case_packages.import_package(archive)["case_id"]
     if archive_profile == "funds-trace-table-archive-v3":
         assert len(client.get(f"/api/v1/cases/{restored}/flows").json()["items"]) == 2

@@ -104,7 +104,7 @@ def test_v5_public_exact_totals_repeat_original_history_and_format_round_trip(
         assert response.status_code == 200, response.text
         assert complete(client, cid, response.json())["stage"] == "done"
     package = case_packages.export_package(cid)[0]
-    assert json.loads(_members(package)["meta.json"])["format"] == (4 if with_table else 3)
+    assert json.loads(_members(package)["meta.json"])["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     assert database.q_raw("select currency,sum(amount) amount from effective_flows where case_id=? group by currency order by currency", [restored]) == [
         {"currency": "AUD", "amount": Decimal("90071992547409.91")},
