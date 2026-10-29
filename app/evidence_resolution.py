@@ -390,6 +390,7 @@ class _CaseEvidence:
         self.case_id = case_id
         self.record_count = self.auxiliary_count = 0
         self.staging = None
+        self._validated_values = None
 
     def __iter__(self):
         return self._iterate(False)
@@ -416,7 +417,20 @@ class _CaseEvidence:
                     value = metadata.get(DETAIL_FIELD)
                     if not value:
                         continue
-                    data = validate_evidence(value)
+                    validated = self._validated_values
+                    if validated is not None and type(value) is str and value in validated:
+                        # Only exact, individually admitted source strings are
+                        # reusable. Decode anew: contextualization mutates data.
+                        data = json.loads(value)
+                    else:
+                        data = validate_evidence(value)
+                        if validated is not None and type(value) is str:
+                            # Admission limits each string to 8192 UTF-8 bytes.
+                            # FIFO bounds retained originals, including when
+                            # every row contains different identity evidence.
+                            if len(validated) == 128:
+                                del validated[next(iter(validated))]
+                            validated[value] = None
                     data["_member_path"] = member_path
                     data["_family"] = metadata.get("evidence_family", "")
                     namespace_key = (data["_family"], metadata.get("family_member_sha256", member_path), source_id)
@@ -683,7 +697,14 @@ def rebuild(case_id):
     if (isinstance(evidence, _CaseEvidence) or not evidence) and not db.q_raw(f"select 1 from import_sources where case_id=? and parser_version in ({_PROFILE_SQL}) limit 1", [case_id, *sorted(PROFILES)]):
         return None
     with _ResolutionStaging() as staging:
-        return _rebuild(case_id, evidence, staging)
+        if isinstance(evidence, _CaseEvidence):
+            evidence._validated_values = {}
+        try:
+            return _rebuild(case_id, evidence, staging)
+        finally:
+            if isinstance(evidence, _CaseEvidence):
+                evidence._validated_values.clear()
+                evidence._validated_values = None
 
 
 def _rebuild(case_id, evidence, staging):

@@ -262,6 +262,8 @@ def _raw(value):
 
 
 def _text(value):
+    if type(value) is str:
+        return value.strip()
     value = _raw(value)
     if value is None:
         return ""
