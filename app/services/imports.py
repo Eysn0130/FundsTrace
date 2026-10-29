@@ -19,6 +19,7 @@ import zipfile
 from itertools import islice
 
 from app import db, importer, feedback_import, table_import, table_archive, import_validation, evidence_resolution
+from app import import_preview_cache
 from .cases import ServiceError, preview_flow, require_case
 from .main_accounts import mark_automatic
 
@@ -224,11 +225,13 @@ def _accounts(rows):
 
 def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=None, table_profile=None,
            _auto_event_profile=False):
+    # Never retain a previous large preview beside a newly parsed plan.
+    import_preview_cache.discard()
     try:
         if table_profile not in (None, importer.PARSER_VERSION, *table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
             raise ServiceError(400, "invalid_table_file", "来源解析规则不受支持，请重新上传预览")
         if table_profile in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
-            plan = (table_archive.parse(source, profile=table_profile, _stage=True) if table_profile in table_archive.SUPPORTED_PROFILES
+            plan = (table_archive.parse(source, profile=table_profile, _stage=True, _operation_scopes=True) if table_profile in table_archive.SUPPORTED_PROFILES
                     else table_import.parse(source, suffix=suffix, mode=mode, mapping=mapping,
                                             profile=table_profile,
                                             **({"_auto_event_profile": True} if _auto_event_profile else {})))
@@ -727,7 +730,7 @@ def _bind_table_plan(case_id, parsed, *, source=None):
         stats.update(plan["stats"])
 
 
-def _preview_result(session, parsed, legacy=False):
+def _preview_result(session, parsed, legacy=False, *, preserve_staging=False):
     from app.import_staging import record_map
     frame, _sheet, mode, mapping, rows, stats = parsed
     result = {"import_id": session["import_id"], "filename": session["filename"],
@@ -752,7 +755,7 @@ def _preview_result(session, parsed, legacy=False):
                            source_record_no=record["record_no"])
     if table_plan is not None or plan is not None:
         active_plan = table_plan or plan
-        if active_plan["profile"] in evidence_resolution.PROFILES:
+        if active_plan["profile"] in evidence_resolution.PROFILES and not preserve_staging:
             # All preview samples/counts are captured. Identity replay needs
             # the complete journal, not another copy of financial staging.
             # Commit independently reparses the retained original.
@@ -909,6 +912,7 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
         session = {"case_id": cid, "import_id": import_id, "filename": filename,
                    "sha256": hashlib.sha256(content).hexdigest()}
         evidence_resolution.operation_context(parsed, session["sha256"])
+        pure_stamp = import_preview_cache.stamp(parsed)
         with db.transaction():
             if cid is not None:
                 _cid(cid)
@@ -925,11 +929,18 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
             # Preview still consumes operation-private staging. A late disk
             # failure must roll back the ready session with its retained file.
             evidence_resolution.operation_context(parsed, session["sha256"])
-            result = _preview_result(session, parsed, legacy=surface == "legacy")
+            result = _preview_result(session, parsed, legacy=surface == "legacy", preserve_staging=pure_stamp is not None)
+            if pure_stamp is not None:
+                cache_session = db.q_raw("select * from import_sessions where import_id=?", [import_id])[0]
+                if import_preview_cache.retain(
+                        import_preview_cache.key(cache_session, _table_profile(cache_session), _table_overrides(cache_session)),
+                        parsed, pure_stamp):
+                    parsed = None  # The finite cache now owns this one original plan.
         result["automatic"] = True
         return result
     except BaseException:
         if created:
+            import_preview_cache.discard(import_id)
             path.unlink(missing_ok=True)
         raise
     finally:
@@ -987,6 +998,7 @@ def _repreview(case_id, import_id, body, surface):
         session = _session(case_id, import_id, surface, bind=True)
         if session["stage"] in _active_stages or session["stage"] == "done":
             raise ServiceError(409, "import_already_started", "任务已开始或已完成，请查看导入进度")
+        import_preview_cache.discard(import_id)
         with _source(session, snapshot=True) as source:
             is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
             overrides = is_table and (_table_overrides(session) or body.mode != session["mode"]
@@ -1107,11 +1119,16 @@ def _run(import_id):
         is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
         overrides = _table_overrides(session)
         with _source(session, snapshot=True) as source:
-            parsed = _parse(
-                source, request["mode"] if not is_table or overrides else None,
-                request["mapping"] if not is_table or overrides else None, suffix=session["suffix"],
-                feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
-                table_profile=_table_profile(session))
+            try:
+                parsed = import_preview_cache.take(import_preview_cache.key(session, _table_profile(session), overrides))
+            except (OSError, ValueError):
+                raise import_validation.IntegrityError("preview scratch failed integrity verification") from None
+            if parsed is None:
+                parsed = _parse(
+                    source, request["mode"] if not is_table or overrides else None,
+                    request["mapping"] if not is_table or overrides else None, suffix=session["suffix"],
+                    feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
+                    table_profile=_table_profile(session))
             evidence_resolution.operation_context(parsed, session["sha256"])
             _frame, sheet, mode, mapping, rows, stats = parsed
         plan = _frame.attrs.get("feedback_plan")
@@ -1216,6 +1233,7 @@ def _run(import_id):
                       where import_id=? and owner_token=? and stage in ('parsing','importing')""",
                  [code, now, now + dt.timedelta(days=30), import_id, OWNER_TOKEN])
     finally:
+        import_preview_cache.discard(import_id)
         _close_staging(parsed)
         if journal_records is not None:
             journal_records.close()
@@ -1249,6 +1267,7 @@ def _commit(case_id, import_id, body, surface):
         try:
             threading.Thread(target=_run, args=(import_id,), daemon=True, name=f"import-{import_id[:8]}").start()
         except Exception:
+            import_preview_cache.discard(import_id)
             with db.transaction():
                 now = _now()
                 db.x("""update import_sessions set stage='error',error_code='import_failed',updated_at=?,expires_at=?
@@ -1432,6 +1451,7 @@ def list_sessions(case_id, limit=100):
 
 def recover_interrupted():
     """Call once during startup, after the single database owner is established."""
+    import_preview_cache.discard()
     with db.transaction():
         now = _now()
         rows = db.q_raw("""update import_sessions set stage='error',done=0,result_json=null,error_code='import_interrupted',
@@ -1481,6 +1501,7 @@ def cleanup_uploads(case_id=None, now=None, dry_run=True):
             counts["queued"] += 1
             if dry_run:
                 continue
+            import_preview_cache.discard(item["import_id"])
             try:
                 path = _path(item["import_id"], item["suffix"])
                 # Never follow or remove an attacker-controlled symlink.

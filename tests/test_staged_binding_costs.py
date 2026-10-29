@@ -285,6 +285,10 @@ def test_public_occurrence_write_failure_closes_staging_and_preserves_case(clien
     cid = make_case("Synthetic occurrence binding write failure")
     view = preview(client, cid, [("rows.csv", source([transaction()])[0]),
         ("second.csv", source([transaction(**{"交易流水号": "SYN-SECOND"})])[0])], scope_bank=None)
+    # Exercise the still-supported cache-miss parser/write failure path.
+    # Cache-hit corruption and writer rollback have separate public regressions.
+    from app import import_preview_cache
+    import_preview_cache.discard()
     before = snapshot(database, cid)
     initialize, stores = staging.PlanStore.__init__, []
     def fail_binding(self):
@@ -410,3 +414,65 @@ def test_operation_context_skips_bound_payloads_but_keeps_late_edits_and_broken_
             context(actual)
     finally:
         close(actual)
+
+
+@pytest.mark.parametrize('kind', ['cancellation', 'duplicate-bytes', 'auxiliary-only', 'omitted-bank', 'parent-child', 'nested'])
+@pytest.mark.parametrize('profile', sorted(table_archive.EVIDENCE_PROFILES))
+def test_runtime_scope_fusion_equals_full_decode_path(database, monkeypatch, kind, profile):
+    from types import SimpleNamespace
+    from test_archive_binding_once import members
+    monkeypatch.setattr(staging, 'PLAN_CHUNK', 1)
+    content = archive(members(kind))
+    expected = table_archive.parse(io.BytesIO(content), profile=profile)
+    actual = table_archive.parse(io.BytesIO(content), profile=profile, _stage=True, _operation_scopes=True)
+    try:
+        def context(plan):
+            evidence_resolution.operation_context((SimpleNamespace(attrs={'table_plan': plan}),), 'synthetic')
+        context(expected)
+        store = actual['_plan_store']; store.flush()
+        before = store.metrics()
+        context(actual)
+        assert store.metrics()['decode_calls'] == before['decode_calls']
+        for field in ('rows', 'records', 'cancelled_rows', 'cancellations'):
+            assert copy.deepcopy(list(actual[field])) == copy.deepcopy(expected[field])
+        assert actual['stats'] == expected['stats']
+        if actual['rows']:
+            # Case-bound cancellation/history may later change a staged row.
+            # Revalidation must still observe edits, aliases, and bad references.
+            held = actual['rows'][0]
+            for plan in (expected, actual):
+                del plan['rows'][0]['_occurrence_scope']
+                plan['rows'][0]['amount'] = Decimal('123.45')
+                context(plan)
+            assert held['_occurrence_scope'] == expected['rows'][0]['_occurrence_scope']
+            assert copy.deepcopy(list(actual['rows'])) == expected['rows']
+            actual['rows'][0]['_source_row'] = 0
+            with pytest.raises(KeyError):
+                context(actual)
+    finally:
+        close(actual)
+        close(expected)
+
+
+def test_merged_statistics_match_independent_complete_journal_totals(database):
+    from collections import Counter
+    from test_archive_binding_once import members
+    content = archive([*members('nested'), ('extra.csv', source([
+        transaction(**{'交易流水号':'SYN-USD', '交易币种':'USD', '交易金额':'9007199254740993.01'}),
+        transaction(**{'交易时间':'invalid'}), transaction(**{'交易金额':'0'}),
+        transaction(**{'交易时间':'invalid-again'})])[0])])
+    plan = table_archive.parse(io.BytesIO(content), profile=table_archive.EVIDENCE_PROFILE, _stage=True)
+    try:
+        journal = copy.deepcopy(list(plan['records'])); rows = list(plan['rows'])
+        counts = Counter(item['disposition'] for item in journal)
+        stats = plan['stats']
+        assert stats['total'] == len(journal) and stats['ok'] == len(rows)
+        assert stats['skipped'] == len(journal) - len(rows)
+        assert stats['reason_counts'] == dict(Counter(item['reason_code'] for item in journal))
+        for disposition in ('accepted', 'unresolved', 'non_monetary', 'non_transaction', 'auxiliary', 'cancelled'):
+            assert stats[disposition] == counts[disposition]
+        assert stats['currency_totals']['USD'] == '9007199254740993.01'
+        unresolved = [item for item in journal if item['disposition'] == 'unresolved'][:3]
+        assert stats['bad_examples'] == [{'row':'来源记录', 'source_row':item['record_no'], 'reason':item['details']['reason']} for item in unresolved]
+    finally:
+        close(plan)

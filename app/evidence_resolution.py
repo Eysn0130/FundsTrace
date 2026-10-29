@@ -202,7 +202,7 @@ def occurrence_key(member_sha, position):
     return hashlib.sha256(_json([POLICY, member_sha, position]).encode()).hexdigest()
 
 
-def bind_occurrences(plan):
+def bind_occurrences(plan, *, operation_scopes=False):
     from .import_staging import auxiliary_records, row_records, bind_occurrence_fields
     bind_families(plan)
     members = {member["member_path"]: member["sha256"] for member in plan["members"]}
@@ -224,7 +224,10 @@ def bind_occurrences(plan):
             binding = source_scope(record["member_path"], data["role"], declarations[family])
             if binding and data["bank"] and data["bank"] != binding["bank"]:
                 denied.add((family, binding["request"], binding["bank"]))
-    for row, record in row_records(plan):
+    unscoped = {}
+    pairs = ((row, record, kind) for kind in ("rows", "cancelled_rows")
+             for row, record in row_records(plan, kinds=(kind,)))
+    for row, record, kind in pairs:
         value = record["details"].get(DETAIL_FIELD)
         data = _projection_evidence(validate_evidence(value)) if value else None
         family = record["details"]["evidence_family"]
@@ -235,9 +238,12 @@ def bind_occurrences(plan):
         if binding and (family, binding["request"], binding["bank"]) in denied:
             binding = None
         own_bank = data["endpoints"]["self"]["bank"] if data and data["role"] == "transaction" else ""
+        scope = own_bank or (binding["bank"] if binding else "")
+        if operation_scopes and kind == "rows" and not scope:
+            scope = _operation_scope(record, unscoped)
         bind_occurrence_fields(row, record,
             occurrence_key(members[record["member_path"]], record["source_row"]),
-            own_bank or (binding["bank"] if binding else ""))
+            scope)
     return plan
 
 
@@ -1189,6 +1195,15 @@ def decorate_analysis(case_id, result):
     return result
 
 
+def _operation_scope(record, unscoped):
+    # The logical family includes complete member positions and original hashes;
+    # it is independent of the current case and its import/withdrawal history.
+    key = record["details"]["evidence_family"], record["details"]["family_member_sha256"]
+    if key not in unscoped:
+        unscoped[key] = "unscoped:" + hashlib.sha256(_json(key).encode()).hexdigest()
+    return unscoped[key]
+
+
 def operation_context(parsed, original_sha):
     from .import_staging import row_records, bind_occurrence_fields
     plan = parsed[0].attrs.get("feedback_plan") or parsed[0].attrs.get("table_plan")
@@ -1199,11 +1214,7 @@ def operation_context(parsed, original_sha):
         if not row.get("_occurrence_scope"):
             # Without an institution declaration, only the original registered
             # envelope and its complete member position attest a repeated copy.
-            key = record["details"]["evidence_family"], record["details"]["family_member_sha256"]
-            if key not in unscoped:
-                unscoped[key] = "unscoped:" + hashlib.sha256(_json(key).encode()).hexdigest()
-            scope = unscoped[key]
-            bind_occurrence_fields(row, record, None, scope)
+            bind_occurrence_fields(row, record, None, _operation_scope(record, unscoped))
 
 
 def bind_families(plan):

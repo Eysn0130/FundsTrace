@@ -197,22 +197,36 @@ def _pair_failure(cancellation, references, prior, unlocated, proved):
     return None, original, witness
 
 
+class Statistics:
+    """Accumulate finalized members before their complete payloads are staged."""
+    def __init__(self):
+        self.counts = dict.fromkeys(("accepted", "unresolved", "non_monetary", "non_transaction", "auxiliary", "cancelled"), 0)
+        self.reasons, self.totals, self.examples = {}, {}, []
+        self.total = self.ok = 0
+
+    def add(self, plan):
+        for record in plan["records"]:
+            self.counts[record["disposition"]] += 1
+            self.reasons[record["reason_code"]] = self.reasons.get(record["reason_code"], 0) + 1
+            if record["disposition"] == "unresolved" and len(self.examples) < 3:
+                self.examples.append({"row": "来源记录", "source_row": record["record_no"], "reason": record["details"]["reason"]})
+        with localcontext() as context:
+            context.prec = 50
+            for row in plan["rows"]:
+                self.totals[row["currency"]] = self.totals.get(row["currency"], Decimal(0)) + row["amount"]
+        self.total += len(plan["records"])
+        self.ok += len(plan["rows"])
+
+    def result(self):
+        return {"total": self.total, "ok": self.ok, "skipped": self.total - self.ok,
+                "bad_examples": self.examples, **self.counts, "reason_counts": self.reasons,
+                "currency_totals": {currency: format(amount, ".2f") for currency, amount in sorted(self.totals.items())}}
+
+
 def refresh_stats(plan):
-    counts = {key: 0 for key in ("accepted", "unresolved", "non_monetary", "non_transaction", "auxiliary", "cancelled")}
-    reasons, totals, examples = {}, {}, []
-    for record in plan["records"]:
-        counts[record["disposition"]] += 1
-        reasons[record["reason_code"]] = reasons.get(record["reason_code"], 0) + 1
-        if record["disposition"] == "unresolved" and len(examples) < 3:
-            examples.append({"row": "来源记录", "source_row": record["record_no"], "reason": record["details"]["reason"]})
-    with localcontext() as context:
-        context.prec = 50
-        for row in plan["rows"]:
-            totals[row["currency"]] = totals.get(row["currency"], Decimal(0)) + row["amount"]
-    plan["stats"] = {"total": len(plan["records"]), "ok": len(plan["rows"]),
-                     "skipped": len(plan["records"]) - len(plan["rows"]), "bad_examples": examples,
-                     **counts, "reason_counts": reasons,
-                     "currency_totals": {currency: format(amount, ".2f") for currency, amount in sorted(totals.items())}}
+    statistics = Statistics()
+    statistics.add(plan)
+    plan["stats"] = statistics.result()
 
 
 def _validated_format(value):

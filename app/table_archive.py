@@ -186,7 +186,7 @@ def _auxiliary(payload, path, header, encoding, role, *, evidence=False):
             "mapping_evidence": [], "columns": [], "mapping": {}, "mode": "B"}
 
 
-def parse(source, profile=PROFILE, *, _stage=False):
+def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
     if profile not in SUPPORTED_PROFILES:
         raise table_import.TableImportError("不支持的反馈包解析规则")
     plan = {"profile": profile, "mode": "B", "mapping": {}, "columns": [], "sheet": "",
@@ -202,6 +202,7 @@ def parse(source, profile=PROFILE, *, _stage=False):
     expanded_limit = EVIDENCE_MAX_EXPANDED_BYTES if profile in EVIDENCE_PROFILES else MAX_EXPANDED_BYTES
     seen = set()
     selected = False
+    statistics = table_cancellations.Statistics() if profile in CANCELLATION_PROFILES else None
     from .import_staging import DetailsPool, PackedDetails
     details_pool = DetailsPool() if profile in EVIDENCE_PROFILES else None
     if details_pool is not None:
@@ -247,6 +248,8 @@ def parse(source, profile=PROFILE, *, _stage=False):
             plan.update(mode=part["mode"], mapping=part["mapping"], columns=part["columns"])
             selected = True
         plan.setdefault("_member_families", {}).update({member["member_path"]: family for member in part["members"]})
+        if statistics is not None:
+            statistics.add(part)
         for field in ("rows", "records", "members"):
             plan[field].extend(part[field])
         if profile in CANCELLATION_PROFILES:
@@ -365,13 +368,16 @@ def parse(source, profile=PROFILE, *, _stage=False):
         if not plan["members"]:
             raise table_import.TableImportError("反馈包没有可处理的数据成员")
         if profile in CANCELLATION_PROFILES:
-            table_cancellations.refresh_stats(plan)
+            plan["stats"] = statistics.result()
             if profile in EVIDENCE_PROFILES:
                 from . import evidence_resolution
                 # Only the complete envelope knows final member positions and
                 # source families. Cancellation and merge need no early binding.
                 try:
-                    evidence_resolution.bind_occurrences(plan)
+                    if _operation_scopes:
+                        evidence_resolution.bind_occurrences(plan, operation_scopes=True)
+                    else:
+                        evidence_resolution.bind_occurrences(plan)
                 except (RuntimeError, OSError, ValueError) as error:
                     if isinstance(error, table_import.TableImportError):
                         raise

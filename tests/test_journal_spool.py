@@ -351,7 +351,7 @@ def test_late_preview_staging_failure_removes_only_new_operation(
                 raise sqlite3.OperationalError("Synthetic late staged flush failure")
             return self.connection.executemany(query, values)
 
-    def fail_late(session, parsed, legacy=False):
+    def fail_late(session, parsed, legacy=False, *, preserve_staging=False):
         # Arm only after parsing, source retention and session insertion. A
         # transaction may still own this new row; that is the required fix.
         assert database.q_raw("select stage from import_sessions where import_id=?", [session["import_id"]]) == [{"stage": "ready"}]
@@ -365,7 +365,7 @@ def test_late_preview_staging_failure_removes_only_new_operation(
             record["reason_code"] = record["reason_code"]
             assert store._dirty
         store._con = Fault(store._con)
-        return preview_result(session, parsed, legacy=legacy)
+        return preview_result(session, parsed, legacy=legacy, preserve_staging=preserve_staging)
 
     monkeypatch.setattr(imports, "_preview_result", fail_late)
     monkeypatch.setattr(imports, "TABLE_PROFILE", table_import.EVIDENCE_PROFILE)
