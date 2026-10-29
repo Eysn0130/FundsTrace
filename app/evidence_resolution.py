@@ -41,7 +41,13 @@ def _text(value):
     if not isinstance(value, str):
         return ""
     value = value.strip()
-    return value if len(value) <= _MAX_TEXT and not any(unicodedata.category(c) in {"Cc", "Cf"} for c in value) else ""
+    if len(value) > _MAX_TEXT:
+        return ""
+    # ASCII has no Cf characters: its non-printable characters are exactly Cc.
+    # Keep the Unicode-category rule for non-ASCII spaces and other categories.
+    if value.isascii():
+        return value if value.isprintable() else ""
+    return value if not any(unicodedata.category(c) in {"Cc", "Cf"} for c in value) else ""
 
 
 def _projection_evidence(data):

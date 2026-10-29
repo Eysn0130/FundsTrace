@@ -95,4 +95,8 @@ def test_mixed_batch_and_cross_case_with_three_supports(client, database, make_c
     for receipt, remaining in ((second, 2), (third, 0)):
         assert client.delete(f"/api/batches/{receipt['batch_id']}", params={"case_id": cid}).status_code == 200
         assert client.get("/api/flows", params={"case_id": cid, "granularity": "observations"}).json()["total"] == remaining
-    assert client.get("/api/graph", params={"case_id": other}).json() == other_before
+    other_after = client.get("/api/graph", params={"case_id": other}).json()
+    # Grouped graph nodes have no ordering contract. Compare every field and
+    # retain duplicates, while ignoring only this incidental SQL row order.
+    assert {**other_after, "nodes": sorted(other_after["nodes"], key=lambda node: node["account"])} == {
+        **other_before, "nodes": sorted(other_before["nodes"], key=lambda node: node["account"])}
