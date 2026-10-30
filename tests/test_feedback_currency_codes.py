@@ -30,7 +30,7 @@ def test_v5_exact_currency_rules_preserve_source_and_freeze_all_older_profiles(c
         assert old["records"][0]["reason_code"] == "invalid_currency"
         assert "source_currency" not in old["records"][0]["details"]
     current = _parse(rows)
-    assert feedback.PROFILE == V5
+    assert feedback.CURRENCY_PROFILE == V5
     assert current["rows"][0]["currency"] == canonical
     details = current["records"][0]["details"]
     assert details["source_currency"] == currency and details["canonical_currency"] == canonical
@@ -80,7 +80,8 @@ def test_new_currency_never_bypasses_existing_financial_vetoes(currency, changes
 
 @pytest.mark.parametrize("with_table", [False, True])
 def test_v5_public_exact_totals_repeat_original_history_and_format_round_trip(
-        client, database, make_case, with_table):
+        client, database, make_case, with_table, monkeypatch):
+    monkeypatch.setattr(feedback, "PROFILE", V5)
     cid = make_case("Synthetic v5 exact currency totals")
     content = archive([
         transaction(**{"交易流水号": "SYN-RMB", "交易币种": "RMB", "交易金额": "0.10", "交易发生地": "Synthetic\x1clocation"}),
@@ -104,7 +105,7 @@ def test_v5_public_exact_totals_repeat_original_history_and_format_round_trip(
         assert response.status_code == 200, response.text
         assert complete(client, cid, response.json())["stage"] == "done"
     package = case_packages.export_package(cid)[0]
-    assert json.loads(_members(package)["meta.json"])["format"] == (4 if with_table else 3)
+    assert json.loads(_members(package)["meta.json"])["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     assert database.q_raw("select currency,sum(amount) amount from effective_flows where case_id=? group by currency order by currency", [restored]) == [
         {"currency": "AUD", "amount": Decimal("90071992547409.91")},
@@ -122,6 +123,7 @@ def test_pinned_v4_ready_rejects_new_codes_and_v5_upgrade_keeps_old_receipt(clie
     old_job = complete(client, cid, view)
     assert old_job["stage"] == "done" and old_job["result"]["feedback"]["profile"] == V4
     before = database.q_raw("select * from import_records where source_id=? order by record_no", [view["import_id"]])
+    monkeypatch.setattr(feedback, "PROFILE", V5)
     current = complete(client, cid, preview(client, cid, content))
     assert current["result"]["ok"] == 2 and current["result"]["feedback"]["profile"] == V5
     assert before == database.q_raw("select * from import_records where source_id=? order by record_no", [view["import_id"]])

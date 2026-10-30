@@ -59,7 +59,7 @@ def restore_and_replay(client, database, cid, data, view, records, expected_dupl
     before, before_coverage = facts(database, cid), coverage(client, cid)
     package = case_packages.export_package(cid)[0]
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
-        assert json.loads(archive.read("meta.json"))["format"] == 4
+        assert json.loads(archive.read("meta.json"))["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     assert facts(database, restored) == before
     assert coverage(client, restored) == before_coverage

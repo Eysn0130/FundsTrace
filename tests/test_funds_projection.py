@@ -207,6 +207,44 @@ def test_public_event_rebuild_withdraws_default_projection_after_conflict(client
     assert funds.summary(*selected(cid, ids))["status"] == "exact"
 
 
+@pytest.mark.parametrize("granularity,ordered_ids", [("observations", [4, 3, 2, 1]), ("events", [4, 3, 1])])
+def test_public_pages_keep_event_counts_funds_and_empty_pages(client, database, make_case, granularity, ordered_ids):
+    cid, other, empty = (make_case(name) for name in ("Synthetic page bounds", "Synthetic foreign page", "Synthetic empty page"))
+    for number in (1, 2):
+        flow(database, cid, number, "90071992547409.91")
+    event(database, cid, "SYN-PAGE-EVENT", [1, 2], "90071992547409.91")
+    flow(database, cid, 3, "0.03", "USD")
+    flow(database, cid, 4, None, None)
+    flow(database, other, 5, "999.99")
+    database.x("update flows set trade_no='SYN-ONE-SIDE' where id=2")
+    expected_funds = expected(observations=4, confirmed=1, unresolved=2, status="unknown", totals=[
+        total("CNY", "90071992547409.91", None), total("USD", "0.00", None), total(None, "0.00", None)])
+    for page in range(1, len(ordered_ids) + 2):
+        response = client.get(f"/api/v1/cases/{cid}/flows", params={"granularity": granularity, "page": page, "page_size": 1})
+        assert response.status_code == 200
+        value = response.json()
+        assert value["total"] == len(ordered_ids)
+        assert value["funds"] == expected_funds
+        assert [item["id"] for item in value["items"]] == [str(n) for n in ordered_ids[page - 1:page]]
+    selected_side = client.get(f"/api/v1/cases/{cid}/flows", params={"granularity": granularity, "kw": "SYN-ONE-SIDE"}).json()
+    assert selected_side["total"] == 1 and selected_side["items"][0]["id"] == "2"
+    assert selected_side["funds"] == expected(observations=1, confirmed=1, unresolved=0, status="exact",
+        totals=[total("CNY", "90071992547409.91", "90071992547409.91", "90071992547409.91")])
+    for scope, filters in ((cid, {"account": "SYN-ABSENT"}), (empty, {})):
+        value = client.get(f"/api/v1/cases/{scope}/flows", params={"granularity": granularity, **filters}).json()
+        assert value["total"] == 0 and value["items"] == []
+        assert value["funds"] == expected(observations=0, confirmed=0, unresolved=0, status="exact", totals=[])
+    # A fresh request must see current event membership, then the restored state.
+    database.x("update event_members set status='conflict' where case_id=?", [cid])
+    changed = client.get(f"/api/v1/cases/{cid}/flows", params={"granularity": granularity}).json()
+    assert changed["total"] == 4 and changed["funds"]["confirmed_event_count"] == 0
+    foreign = client.get(f"/api/v1/cases/{other}/flows", params={"granularity": granularity}).json()
+    assert foreign["total"] == 1 and foreign["items"][0]["id"] == "5"
+    database.x("update event_members set status='confirmed' where case_id=?", [cid])
+    restored = client.get(f"/api/v1/cases/{cid}/flows", params={"granularity": granularity}).json()
+    assert restored["total"] == len(ordered_ids) and restored["funds"] == expected_funds
+
+
 def test_account_rollups_keep_events_null_endpoints_currencies_and_case_scope(database, make_case):
     cid = make_case('Synthetic account rollups')
     other = make_case('Synthetic separate rollups')

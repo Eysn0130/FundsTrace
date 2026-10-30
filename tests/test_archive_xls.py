@@ -13,7 +13,7 @@ from test_table_write_integrity import persisted
 from xls_fixtures import Cell, Error, workbook
 
 
-V7 = "funds-trace-table-archive-v7"
+CURRENT_XLS = "funds-trace-table-archive-v9"
 
 
 def payload(rows):
@@ -25,7 +25,7 @@ def test_directory_xls_public_repreview_commit_and_package_keep_source_evidence(
     cid = make_case("Synthetic directory XLS")
     data = payload([transaction("SYN-A"), transaction("SYN-B")])
     view = preview(client, cid, [("folder/synthetic.xls", data)], scope_bank=None)
-    assert view["table_summary"]["profile"] == V7
+    assert view["table_summary"]["profile"] == CURRENT_XLS
     assert (view["table_summary"]["accepted"], view["table_summary"]["unresolved"]) == (2, 0)
     refreshed = client.post(f"/api/v1/cases/{cid}/imports/{view['import_id']}/preview",
                            json={"mode": view["mode"], "mapping": view["mapping"]})
@@ -48,7 +48,7 @@ def test_directory_xls_public_repreview_commit_and_package_keep_source_evidence(
     restored_id = restored.json()["case_id"]
     assert event_resolution.summary(restored_id)["confirmed_events"] == 1
     assert database.q_raw("select amount,balance from flows where case_id=? order by balance", [restored_id]) == facts
-    assert database.q_raw("select distinct parser_version from import_sources where case_id=?", [restored_id]) == [{"parser_version": V7}]
+    assert database.q_raw("select distinct parser_version from import_sources where case_id=?", [restored_id]) == [{"parser_version": CURRENT_XLS}]
     assert client.get(f"/api/v1/cases/{restored_id}/stats").json()["import_coverage"]["financial_interpretation_complete"]
     replay = complete(client, cid, preview(client, cid, [("folder/synthetic.xls", data)], scope_bank=None))
     assert replay["stage"] == "done" and (replay["result"]["ok"], replay["result"]["rows_dup"]) == (0, 2)
@@ -56,7 +56,7 @@ def test_directory_xls_public_repreview_commit_and_package_keep_source_evidence(
 
 def commit_directory(client, cid, data):
     view = preview(client, cid, [("synthetic.xls", data)], scope_bank=None)
-    assert view["table_summary"]["profile"] == V7
+    assert view["table_summary"]["profile"] == CURRENT_XLS
     job = complete(client, cid, view)
     assert job["stage"] == "done", job
     records = client.get(f"/api/v1/cases/{cid}/imports/{view['import_id']}/records").json()["items"]
@@ -64,12 +64,12 @@ def commit_directory(client, cid, data):
 
 
 @pytest.mark.parametrize("zipped", [False, True])
-def test_nested_zip_xls_uses_v7_and_retains_all_member_positions(client, database, make_case, zipped):
+def test_nested_zip_xls_uses_current_xls_and_retains_all_member_positions(client, database, make_case, zipped):
     cid = make_case("Synthetic nested XLS")
     data = payload([transaction("SYN-A"), transaction("SYN-B")])
     members = [("bundle.zip", archive([("nested.zip", archive([("ledger.xls", data)]))]))]
     view = preview(client, cid, members, zipped=zipped, scope_bank=None)
-    assert view["table_summary"]["profile"] == V7
+    assert view["table_summary"]["profile"] == CURRENT_XLS
     assert (view["table_summary"]["accepted"], view["table_summary"]["unresolved"]) == (2, 0)
     job = complete(client, cid, view)
     assert job["stage"] == "done" and job["result"]["ok"] == 2, job
@@ -77,14 +77,14 @@ def test_nested_zip_xls_uses_v7_and_retains_all_member_positions(client, databas
     assert [item["source_row"] for item in records] == [2, 3]
     assert all(item["member_path"].startswith("bundle.zip/nested.zip/ledger.xls/worksheets/") for item in records)
     assert event_resolution.summary(cid)["confirmed_events"] == 1
-    assert database.q_raw("select distinct parser_version from import_sources where case_id=?", [cid]) == [{"parser_version": V7}]
+    assert database.q_raw("select distinct parser_version from import_sources where case_id=?", [cid]) == [{"parser_version": CURRENT_XLS}]
 
 
-def test_new_flat_zip_xls_uses_v7_but_plain_csv_zip_keeps_v4(client, make_case):
+def test_new_flat_zip_xls_uses_current_xls_but_plain_csv_zip_keeps_v4(client, make_case):
     cid = make_case("Synthetic flat XLS ZIP")
     view = preview(client, cid, [("ledger.xls", payload([transaction("SYN-A"), transaction("SYN-B")]))],
                    zipped=True, scope_bank=None)
-    assert view["table_summary"]["profile"] == V7
+    assert view["table_summary"]["profile"] == CURRENT_XLS
     assert complete(client, cid, view)["result"]["ok"] == 2
     assert event_resolution.summary(cid)["confirmed_events"] == 1
     ordinary = make_case("Synthetic unchanged ordinary ZIP")
@@ -101,7 +101,7 @@ def test_nested_csv_without_xls_keeps_existing_profile(client, make_case, zipped
     plain = csv_rows([{"date": "2026-01-01", "payer_account": "SYN-A", "payee_account": "SYN-B", "amount": "12.34"}])
     view = preview(client, cid, [("bundle.zip", archive([("nested.zip", archive([("ledger.csv", plain)]))]))],
                    zipped=zipped, scope_bank=None)
-    assert view["table_summary"]["profile"] == (table_archive.PROFILE if zipped else table_archive.EVIDENCE_PROFILE)
+    assert view["table_summary"]["profile"] == (table_archive.PROFILE if zipped else table_archive.MICROSECOND_PROFILE)
     assert complete(client, cid, view)["result"]["ok"] == 1
 
 
@@ -119,7 +119,7 @@ def test_profile_selection_only_opens_nested_containers(monkeypatch, contains_xl
     data = archive([("outer.csv", b"not read"), ("bundle.zip", archive([("nested.zip", archive([(leaf, b"not read")]))]))])
     monkeypatch.setattr(zipfile.ZipFile, "open", containers_only)
     stream = io.BytesIO(data)
-    assert table_archive.evidence_profile(stream) == (V7 if contains_xls else table_archive.EVIDENCE_PROFILE)
+    assert table_archive.evidence_profile(stream) == (CURRENT_XLS if contains_xls else table_archive.MICROSECOND_PROFILE)
     assert opened == ["bundle.zip", "nested.zip"]
     assert stream.tell() == 0
 
@@ -186,7 +186,7 @@ def test_ready_v4_nested_zip_keeps_its_pinned_interpretation(client, make_case, 
     (True, "invalid_cell_type"), (Error(), "invalid_cell_type"),
     (Cell(60, "yyyy-mm-dd"), "invalid_cell_type"), (xlwt.Formula("1+2"), "formula_value"),
 ])
-def test_v7_critical_formula_and_invalid_cells_never_enter_flows(client, database, make_case, bad, reason):
+def test_xls_critical_formula_and_invalid_cells_never_enter_flows(client, database, make_case, bad, reason):
     cid = make_case("Synthetic XLS typed rejection")
     valid = transaction("SYN-A")
     invalid = transaction("SYN-B", **{"交易金额": bad})
@@ -225,7 +225,7 @@ def test_cached_formula_header_cannot_declare_financial_or_ledger_schema(client,
             assert not ledger or '"balance_kind":"unknown"' in ledger
 
 
-def test_v7_formula_auxiliary_account_does_not_create_identity_evidence(client, make_case):
+def test_xls_formula_auxiliary_account_does_not_create_identity_evidence(client, make_case):
     from app import evidence_resolution
     cid = make_case("Synthetic auxiliary XLS cache")
     data = workbook([("Synthetic account evidence", [
@@ -239,7 +239,7 @@ def test_v7_formula_auxiliary_account_does_not_create_identity_evidence(client, 
 
 
 @pytest.mark.parametrize("formula", [False, True])
-def test_v7_closed_feedback_adapter_keeps_xls_typed_rejection(client, database, make_case, formula):
+def test_xls_closed_feedback_adapter_keeps_xls_typed_rejection(client, database, make_case, formula):
     from app import feedback_import
     from test_folder_evidence import transaction as feedback_transaction
     cid = make_case("Synthetic XLS feedback adapter")
@@ -270,7 +270,7 @@ def test_malformed_xls_rolls_back_entire_directory_before_writes(client, databas
     assert not list((database.DATA_DIR / "uploads").glob("*"))
 
 
-def test_v7_package_cannot_mislabel_xls_as_v6(client, make_case, tmp_path):
+def test_xls_package_cannot_mislabel_xls_as_v6(client, make_case, tmp_path):
     from test_feedback_package import _archive, _members, _mutate
     cid = make_case("Synthetic XLS package profile")
     commit_directory(client, cid, payload([transaction("SYN-B")]))

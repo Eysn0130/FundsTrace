@@ -727,7 +727,7 @@ def test_package_rejects_archive_history_marker_without_its_required_conflict_di
     response = client.get(f"/api/cases/{cid}/export")
     assert response.status_code == 200
     members = _members(response.content)
-    assert json.loads(members["meta.json"])["format"] == 4
+    assert json.loads(members["meta.json"])["format"] == 6
     # The unchanged journal is valid: only the added marker makes the copy invalid.
     restored = client.post("/api/cases/import", files={"file": ("valid-control.fundcase", response.content)})
     assert restored.status_code == 200, restored.text

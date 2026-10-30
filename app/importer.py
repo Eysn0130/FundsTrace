@@ -10,9 +10,11 @@ import csv
 import decimal
 import itertools
 import io
+import hashlib
 import json
 import math
 import re
+import zlib
 from collections import deque
 from pathlib import Path
 from contextlib import contextmanager
@@ -979,6 +981,71 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
         return st
 
 
+def _staged_identity_digest(encoded):
+    return hashlib.sha256(encoded).digest()
+
+
+class _StagedIdentityIndex:
+    """Candidate lookup only; every hit verifies the complete encoded identity.
+
+    A rowid table keeps the compressed identity out of the B-tree search key.
+    This index belongs to one writer and uses its existing bounded scratch.
+    """
+    def __init__(self, store):
+        self.store = store
+        store._check()
+        store._namespace += 1
+        self.namespace = str(store._namespace)
+        store._con.execute("""create table if not exists evidence_identities(
+            namespace text, digest blob, identity blob, flow_id integer)""")
+        store._con.execute("""create index if not exists evidence_identity_candidates
+            on evidence_identities(namespace,digest)""")
+        self.pending = {}
+        self.pending_bytes = 0
+
+    def get(self, key):
+        from .import_staging import _encode_value, _unpack_value
+        self.store._check()
+        encoded = _encode_value(key)
+        if encoded in self.pending:
+            return self.pending[encoded][2]
+        self.store.read_queries += 1
+        cursor = self.store._con.execute("""select identity,flow_id from evidence_identities
+            where namespace=? and digest=? order by rowid""",
+            (self.namespace, _staged_identity_digest(encoded)))
+        try:
+            for payload, flow_id in cursor:
+                if _unpack_value(payload) == encoded:
+                    return flow_id
+        finally:
+            cursor.close()
+        return None
+
+    def add(self, key, flow_id):
+        from .import_staging import _encode_value, PLAN_CHUNK, PLAN_CHUNK_BYTES
+        self.store._check()
+        encoded = _encode_value(key)
+        if self.pending and self.pending_bytes + len(encoded) > PLAN_CHUNK_BYTES:
+            self.flush()
+        digest = _staged_identity_digest(encoded)
+        payload = len(encoded).to_bytes(8, "big") + zlib.compress(encoded, 1)
+        self.pending[encoded] = (digest, payload, flow_id)
+        self.pending_bytes += len(encoded)
+        self.store.index_encoded_bytes += len(digest) + len(payload) + len(_encode_value(flow_id))
+        if len(self.pending) >= PLAN_CHUNK or self.pending_bytes >= PLAN_CHUNK_BYTES:
+            self.flush()
+
+    def flush(self):
+        self.store._check()
+        if self.pending:
+            self.store._con.executemany("insert into evidence_identities values (?,?,?,?)",
+                ((self.namespace, digest, payload, flow_id)
+                 for digest, payload, flow_id in self.pending.values()))
+            self.store.write_batches += 1
+            self.pending.clear()
+            self.pending_bytes = 0
+
+
 def _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, source):
     """Bounded writer, retaining one source/batch and the caller's transaction."""
     from . import evidence_resolution, analysis_snapshot
@@ -992,7 +1059,7 @@ def _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, s
     with db.transaction() as con:
         if not db.q("select id from cases where id=?", [case_id]):
             raise ImportError("案件不存在，无法导入流水")
-        known = rows.store.mapping()
+        known = _StagedIdentityIndex(rows.store)
         profiles = sorted(evidence_resolution.PROFILES)
         cursor = con.execute("select m.sha256,r.source_row,f.flow_id,json_extract_string(r.details_json,'$.occurrence_scope')," + ",".join("v." + name for name in fields) + f"""
             from import_records r join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
@@ -1004,8 +1071,8 @@ def _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, s
         while values := cursor.fetchmany(WRITE_CHUNK):
             for digest, position, fid, scope, *facts in values:
                 key = identity(dict(zip(fields, facts)), evidence_resolution.occurrence_key(digest, position), scope)
-                if key not in known:
-                    known[key] = fid
+                if known.get(key) is None:
+                    known.add(key, fid)
         con.execute("insert into import_sources(source_id,case_id,filename,sha256,size_bytes,mode,mapping_json,sheet,parser_version,row_kind,origin,imported_at) values (?,?,?,?,?,?,?,?,?,?,'upload',current_timestamp at time zone 'UTC')",
                     [source["source_id"], case_id, filename, source["sha256"], source["size_bytes"], mode,
                      json.dumps(source["mapping"], ensure_ascii=False, sort_keys=True), source["sheet"], source["parser_version"], source["row_kind"]])
@@ -1022,7 +1089,7 @@ def _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, s
             nonlocal imported
             ids = [item[0] for item in con.execute("select nextval('flow_seq') from range(?)", [len(final)]).fetchall()]
             for key, index in pending.items():
-                known[key] = ids[index]
+                known.add(key, ids[index])
             if final:
                 data = []
                 for fid, row in zip(ids, final):

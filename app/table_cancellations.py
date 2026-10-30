@@ -81,11 +81,15 @@ def _status(value):
         "text_success" if value in {"成功", "交易成功", "success", "succeeded"} else "other")
 
 
-def _observation(record, source):
+def _observation(record, source, *, fractional_feedback=False):
     money = {"factor": Decimal(1)}
     amount, _ = table_import._money(source["交易金额"], money)
     balance, _ = table_import._money(source["交易余额"], money)
-    time = table_import._time(source["交易时间"])
+    if fractional_feedback:
+        from . import feedback_import
+        time = feedback_import._time(source["交易时间"], fractional=True)
+    else:
+        time = table_import._time(source["交易时间"])
     direction = table_import._enum(source["收付标志"])
     direction = "in" if direction in table_import._IN else "out" if direction in table_import._OUT else ""
     currency_raw = source["交易币种"]
@@ -197,22 +201,36 @@ def _pair_failure(cancellation, references, prior, unlocated, proved):
     return None, original, witness
 
 
+class Statistics:
+    """Accumulate finalized members before their complete payloads are staged."""
+    def __init__(self):
+        self.counts = dict.fromkeys(("accepted", "unresolved", "non_monetary", "non_transaction", "auxiliary", "cancelled"), 0)
+        self.reasons, self.totals, self.examples = {}, {}, []
+        self.total = self.ok = 0
+
+    def add(self, plan):
+        for record in plan["records"]:
+            self.counts[record["disposition"]] += 1
+            self.reasons[record["reason_code"]] = self.reasons.get(record["reason_code"], 0) + 1
+            if record["disposition"] == "unresolved" and len(self.examples) < 3:
+                self.examples.append({"row": "来源记录", "source_row": record["record_no"], "reason": record["details"]["reason"]})
+        with localcontext() as context:
+            context.prec = 50
+            for row in plan["rows"]:
+                self.totals[row["currency"]] = self.totals.get(row["currency"], Decimal(0)) + row["amount"]
+        self.total += len(plan["records"])
+        self.ok += len(plan["rows"])
+
+    def result(self):
+        return {"total": self.total, "ok": self.ok, "skipped": self.total - self.ok,
+                "bad_examples": self.examples, **self.counts, "reason_counts": self.reasons,
+                "currency_totals": {currency: format(amount, ".2f") for currency, amount in sorted(self.totals.items())}}
+
+
 def refresh_stats(plan):
-    counts = {key: 0 for key in ("accepted", "unresolved", "non_monetary", "non_transaction", "auxiliary", "cancelled")}
-    reasons, totals, examples = {}, {}, []
-    for record in plan["records"]:
-        counts[record["disposition"]] += 1
-        reasons[record["reason_code"]] = reasons.get(record["reason_code"], 0) + 1
-        if record["disposition"] == "unresolved" and len(examples) < 3:
-            examples.append({"row": "来源记录", "source_row": record["record_no"], "reason": record["details"]["reason"]})
-    with localcontext() as context:
-        context.prec = 50
-        for row in plan["rows"]:
-            totals[row["currency"]] = totals.get(row["currency"], Decimal(0)) + row["amount"]
-    plan["stats"] = {"total": len(plan["records"]), "ok": len(plan["rows"]),
-                     "skipped": len(plan["records"]) - len(plan["rows"]), "bad_examples": examples,
-                     **counts, "reason_counts": reasons,
-                     "currency_totals": {currency: format(amount, ".2f") for currency, amount in sorted(totals.items())}}
+    statistics = Statistics()
+    statistics.add(plan)
+    plan["stats"] = statistics.result()
 
 
 def _validated_format(value):
@@ -290,7 +308,9 @@ def apply(plan, payload, *, allow_feedback28=False, csv_format=None):
                 if record["reason_code"] == "repeated_header":
                     headers = [table_import._text(value) for value in cells]
                 source = dict(zip(headers, (table_import._text(value) for value in cells)))
-                observation = _observation(record, source)
+                observation = _observation(
+                    record, source, fractional_feedback=len(headers) == 28
+                    and plan["profile"] in table_import.MICROSECOND_ARCHIVE_PROFILES)
                 observations.append(observation)
                 if not observation["scope"] and observation["movement"] not in {"header", "non_transaction", "zero"}:
                     eligible = False

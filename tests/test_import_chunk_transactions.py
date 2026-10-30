@@ -14,7 +14,7 @@ from test_table_write_integrity import csv_data, row
 AMOUNTS = [("900719925474099.91", "CNY"), ("0.01", "USD"), ("10.25", "CNY"),
            ("11.01", "USD"), ("2.00", "CNY")]
 TABLES = ("flows", "batches", "import_sources", "flow_sources", "import_members", "import_records",
-          "main_accounts", "evidence_sources", "resolution_entities", "resolved_endpoints",
+          "main_accounts", "evidence_sources", "import_source_operations", "resolution_entities", "resolved_endpoints",
           "resolution_subject_aliases", "resolution_state", "resolution_revisions")
 
 

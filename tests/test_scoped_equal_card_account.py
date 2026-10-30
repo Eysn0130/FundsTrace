@@ -87,8 +87,6 @@ def test_scoped_support_replay_withdrawal_is_per_observation_and_reversible(clie
     if strong_first:
         _, first = accepted(client, cid, strong, scope_bank=None)
         accepted(client, cid, weak, scope_bank=None)
-        # The first observation owns its batch. Keep its flow while removing
-        # support with source activation as the public deletion path does.
     else:
         accepted(client, cid, weak, scope_bank=None)
         _, first = accepted(client, cid, strong, scope_bank=None)
@@ -99,20 +97,13 @@ def test_scoped_support_replay_withdrawal_is_per_observation_and_reversible(clie
     assert observed_own(client, cid)[1]["kind"] == "account"
     assert client.delete(f"/api/batches/{second['batch_id']}", params={"case_id": cid}).status_code == 200
     assert observed_own(client, cid)[1]["kind"] == "account"
-    if strong_first:
-        # Deleting the original flow's owning batch removes that observation by
-        # the existing public contract. Exercise the exact support withdrawal
-        # through the same replay, without inventing an alternate delete API.
-        from app import evidence_resolution
-        with database.transaction():
-            database.x("update evidence_sources set active=false where case_id=? and batch_id=?", [cid, first["batch_id"]])
-            evidence_resolution.rebuild(cid)
-    else:
-        assert client.delete(f"/api/batches/{first['batch_id']}", params={"case_id": cid}).status_code == 200
+    assert client.delete(f"/api/batches/{first['batch_id']}", params={"case_id": cid}).status_code == 200
     after_row, after = observed_own(client, cid)
     assert after["kind"] == "card"
     assert after_row["self_account"] != row["self_account"]
-    assert database.q_raw("select * from flows where case_id=? order by id", [cid]) == before_raw
+    # Storage ownership can move to the remaining batch; source fields cannot.
+    without_owner = lambda rows: [{key: value for key, value in row.items() if key != "batch_id"} for row in rows]
+    assert without_owner(database.q_raw("select * from flows where case_id=? order by id", [cid])) == without_owner(before_raw)
 
 
 def test_scoped_equal_case_package_and_older_derived_version_keep_immutable_audit(client, database, make_case):

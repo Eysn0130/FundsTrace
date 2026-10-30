@@ -21,7 +21,11 @@ HEADER_PROFILE = "funds-trace-table-archive-v4"
 LEGACY_EVIDENCE_PROFILE = "funds-trace-table-archive-v5"
 EVIDENCE_PROFILE = "funds-trace-table-archive-v6"
 XLS_EVIDENCE_PROFILE = "funds-trace-table-archive-v7"
-EVIDENCE_PROFILES = frozenset((LEGACY_EVIDENCE_PROFILE, EVIDENCE_PROFILE, XLS_EVIDENCE_PROFILE))
+MICROSECOND_PROFILE = table_import.MICROSECOND_ARCHIVE_PROFILE
+MICROSECOND_XLS_PROFILE = table_import.MICROSECOND_XLS_ARCHIVE_PROFILE
+XLS_EVIDENCE_PROFILES = table_import.XLS_EVIDENCE_ARCHIVE_PROFILES
+EVIDENCE_PROFILES = frozenset((LEGACY_EVIDENCE_PROFILE, EVIDENCE_PROFILE, XLS_EVIDENCE_PROFILE,
+                               MICROSECOND_PROFILE, MICROSECOND_XLS_PROFILE))
 PROFILE = HEADER_PROFILE
 CANCELLATION_PROFILES = frozenset((CANCELLATION_PROFILE, HEADER_PROFILE, *EVIDENCE_PROFILES))
 SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, REFERENCE_PROFILE, *CANCELLATION_PROFILES))
@@ -91,7 +95,7 @@ def should_parse(source):
 
 
 def evidence_profile(source):
-    """Opt actual XLS members into v7 without reading business table payloads.
+    """Opt actual XLS members into the XLS-capable profile without reading business table payloads.
 
     Only nested ZIP payloads are opened to inspect their member metadata. The
     normal parser still validates every leaf and owns the public error. A
@@ -134,12 +138,12 @@ def evidence_profile(source):
     try:
         source.seek(0)
         if contains_xls(source):
-            return XLS_EVIDENCE_PROFILE
+            return MICROSECOND_XLS_PROFILE
     except (OSError, ValueError, zipfile.BadZipFile, RuntimeError):
         pass  # The normal parser owns archive validation and its public error.
     finally:
         source.seek(0)
-    return EVIDENCE_PROFILE
+    return MICROSECOND_PROFILE
 
 
 def _path(name):
@@ -186,7 +190,7 @@ def _auxiliary(payload, path, header, encoding, role, *, evidence=False):
             "mapping_evidence": [], "columns": [], "mapping": {}, "mode": "B"}
 
 
-def parse(source, profile=PROFILE, *, _stage=False):
+def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
     if profile not in SUPPORTED_PROFILES:
         raise table_import.TableImportError("不支持的反馈包解析规则")
     plan = {"profile": profile, "mode": "B", "mapping": {}, "columns": [], "sheet": "",
@@ -202,6 +206,7 @@ def parse(source, profile=PROFILE, *, _stage=False):
     expanded_limit = EVIDENCE_MAX_EXPANDED_BYTES if profile in EVIDENCE_PROFILES else MAX_EXPANDED_BYTES
     seen = set()
     selected = False
+    statistics = table_cancellations.Statistics() if profile in CANCELLATION_PROFILES else None
     from .import_staging import DetailsPool, PackedDetails
     details_pool = DetailsPool() if profile in EVIDENCE_PROFILES else None
     if details_pool is not None:
@@ -247,6 +252,8 @@ def parse(source, profile=PROFILE, *, _stage=False):
             plan.update(mode=part["mode"], mapping=part["mapping"], columns=part["columns"])
             selected = True
         plan.setdefault("_member_families", {}).update({member["member_path"]: family for member in part["members"]})
+        if statistics is not None:
+            statistics.add(part)
         for field in ("rows", "records", "members"):
             plan[field].extend(part[field])
         if profile in CANCELLATION_PROFILES:
@@ -310,7 +317,7 @@ def parse(source, profile=PROFILE, *, _stage=False):
                             raise table_import.TableImportError("反馈包嵌套层数超出安全处理范围")
                         visit(io.BytesIO(payload), path, depth + 1)
                     elif suffix not in (".csv", ".tsv", ".txt", ".xlsx") and not (
-                            suffix == ".xls" and profile == XLS_EVIDENCE_PROFILE):
+                            suffix == ".xls" and profile in XLS_EVIDENCE_PROFILES):
                         merge(import_attachments.plan(payload, path), path, prefix)
                     else:
                         # XLS always goes through the typed BIFF reader, even
@@ -365,13 +372,16 @@ def parse(source, profile=PROFILE, *, _stage=False):
         if not plan["members"]:
             raise table_import.TableImportError("反馈包没有可处理的数据成员")
         if profile in CANCELLATION_PROFILES:
-            table_cancellations.refresh_stats(plan)
+            plan["stats"] = statistics.result()
             if profile in EVIDENCE_PROFILES:
                 from . import evidence_resolution
                 # Only the complete envelope knows final member positions and
                 # source families. Cancellation and merge need no early binding.
                 try:
-                    evidence_resolution.bind_occurrences(plan)
+                    if _operation_scopes:
+                        evidence_resolution.bind_occurrences(plan, operation_scopes=True)
+                    else:
+                        evidence_resolution.bind_occurrences(plan)
                 except (RuntimeError, OSError, ValueError) as error:
                     if isinstance(error, table_import.TableImportError):
                         raise

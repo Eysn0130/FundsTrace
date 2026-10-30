@@ -156,8 +156,8 @@ def test_inspector_rejects_non_fixed_public_packages(tmp_path, defect):
             fixtures.inspect_package(file)
         return
     with zipfile.ZipFile(file, 'w') as archive:
-        archive.writestr('meta.json', json.dumps({'format': 3 if defect == 'version' else 4, 'source_files': 'not_included'}))
-        for table in fixtures.TABLES:
+        archive.writestr('meta.json', json.dumps({'format': 3 if defect == 'version' else 6, 'source_files': 'not_included'}))
+        for table in (*fixtures.TABLES, 'import_source_operations'):
             if defect != 'missing' or table != 'flows':
                 archive.writestr(table + '.parquet', b'not read if structural validation fails')
         if defect == 'extra':

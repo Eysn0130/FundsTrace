@@ -25,7 +25,7 @@ DETAIL_FIELD = "resolution_evidence"
 TABLE_PROFILE = "funds-trace-table-v20"
 ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
 FEEDBACK_PROFILE = "funds-trace-bank-feedback-v6"
-PROFILES = frozenset((TABLE_PROFILE, ARCHIVE_PROFILE, FEEDBACK_PROFILE, "funds-trace-table-v19", "funds-trace-table-archive-v5", "funds-trace-table-archive-v7"))
+PROFILES = frozenset((TABLE_PROFILE, ARCHIVE_PROFILE, FEEDBACK_PROFILE, "funds-trace-table-v19", "funds-trace-table-archive-v5", "funds-trace-table-archive-v7", "funds-trace-table-archive-v8", "funds-trace-table-archive-v9", "funds-trace-bank-feedback-v8"))
 _PROFILE_SQL = ",".join("?" for _ in PROFILES)
 _MAX_TEXT = 512
 WRITE_CHUNK = 50_000
@@ -41,7 +41,13 @@ def _text(value):
     if not isinstance(value, str):
         return ""
     value = value.strip()
-    return value if len(value) <= _MAX_TEXT and not any(unicodedata.category(c) in {"Cc", "Cf"} for c in value) else ""
+    if len(value) > _MAX_TEXT:
+        return ""
+    # ASCII has no Cf characters: its non-printable characters are exactly Cc.
+    # Keep the Unicode-category rule for non-ASCII spaces and other categories.
+    if value.isascii():
+        return value if value.isprintable() else ""
+    return value if not any(unicodedata.category(c) in {"Cc", "Cf"} for c in value) else ""
 
 
 def _projection_evidence(data):
@@ -202,8 +208,8 @@ def occurrence_key(member_sha, position):
     return hashlib.sha256(_json([POLICY, member_sha, position]).encode()).hexdigest()
 
 
-def bind_occurrences(plan):
-    from .import_staging import auxiliary_records, row_records
+def bind_occurrences(plan, *, operation_scopes=False):
+    from .import_staging import auxiliary_records, row_records, bind_occurrence_fields
     bind_families(plan)
     members = {member["member_path"]: member["sha256"] for member in plan["members"]}
     declarations = defaultdict(set)
@@ -224,7 +230,10 @@ def bind_occurrences(plan):
             binding = source_scope(record["member_path"], data["role"], declarations[family])
             if binding and data["bank"] and data["bank"] != binding["bank"]:
                 denied.add((family, binding["request"], binding["bank"]))
-    for row, record in row_records(plan):
+    unscoped = {}
+    pairs = ((row, record, kind) for kind in ("rows", "cancelled_rows")
+             for row, record in row_records(plan, kinds=(kind,)))
+    for row, record, kind in pairs:
         value = record["details"].get(DETAIL_FIELD)
         data = _projection_evidence(validate_evidence(value)) if value else None
         family = record["details"]["evidence_family"]
@@ -235,9 +244,12 @@ def bind_occurrences(plan):
         if binding and (family, binding["request"], binding["bank"]) in denied:
             binding = None
         own_bank = data["endpoints"]["self"]["bank"] if data and data["role"] == "transaction" else ""
-        row["_occurrence_key"] = occurrence_key(members[record["member_path"]], record["source_row"])
-        row["_occurrence_scope"] = own_bank or (binding["bank"] if binding else "")
-        record["details"]["occurrence_scope"] = row["_occurrence_scope"]
+        scope = own_bank or (binding["bank"] if binding else "")
+        if operation_scopes and kind == "rows" and not scope:
+            scope = _operation_scope(record, unscoped)
+        bind_occurrence_fields(row, record,
+            occurrence_key(members[record["member_path"]], record["source_row"]),
+            scope)
     return plan
 
 
@@ -378,6 +390,7 @@ class _CaseEvidence:
         self.case_id = case_id
         self.record_count = self.auxiliary_count = 0
         self.staging = None
+        self._validated_values = None
 
     def __iter__(self):
         return self._iterate(False)
@@ -404,7 +417,20 @@ class _CaseEvidence:
                     value = metadata.get(DETAIL_FIELD)
                     if not value:
                         continue
-                    data = validate_evidence(value)
+                    validated = self._validated_values
+                    if validated is not None and type(value) is str and value in validated:
+                        # Only exact, individually admitted source strings are
+                        # reusable. Decode anew: contextualization mutates data.
+                        data = json.loads(value)
+                    else:
+                        data = validate_evidence(value)
+                        if validated is not None and type(value) is str:
+                            # Admission limits each string to 8192 UTF-8 bytes.
+                            # FIFO bounds retained originals, including when
+                            # every row contains different identity evidence.
+                            if len(validated) == 128:
+                                del validated[next(iter(validated))]
+                            validated[value] = None
                     data["_member_path"] = member_path
                     data["_family"] = metadata.get("evidence_family", "")
                     namespace_key = (data["_family"], metadata.get("family_member_sha256", member_path), source_id)
@@ -474,6 +500,12 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
     typed_accounts.update(parent_accounts)
     typed_accounts.update(explicit_accounts)
     child_parents = { (bank, parent) for (bank, child), values in parents.items() for parent in values }
+    # The complete relation set is fixed for this replay. Keep every direct
+    # edge, including conflicting parents; do not infer a transitive closure.
+    children_by_parent = defaultdict(set)
+    for (bank, child), values in parents.items():
+        for parent in values:
+            children_by_parent[bank, parent].add(child)
     entities = {}
     def entity(bank, kind, number):
         if not number:
@@ -572,7 +604,9 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
                 # Contradictory explicit C/A must not rewrite A to a declared parent.
                 # The allowed parent->child edge explains only an already supplied A.
                 targets = scoped_targets if scoped_equal else card_targets.get((bank, card), set()) if card else set()
-                allowed = targets | {child for (b, child), ps in parents.items() if b == bank and ps & targets}
+                allowed = set(targets)
+                for parent in targets:
+                    allowed.update(children_by_parent.get((bank, parent), ()))
                 conflict = bool(number and targets and number not in allowed) or mixed and ambiguity and bool(card_targets.get((bank, number), set()))
                 state = "conflict" if conflict else "unscoped" if bank.startswith("unscoped:") else "identifier_undetermined" if kind == "identifier" else "card_only" if kind == "card" else "resolved"
                 if conflict or target["status"] != "conflict" and state != "resolved":
@@ -671,7 +705,14 @@ def rebuild(case_id):
     if (isinstance(evidence, _CaseEvidence) or not evidence) and not db.q_raw(f"select 1 from import_sources where case_id=? and parser_version in ({_PROFILE_SQL}) limit 1", [case_id, *sorted(PROFILES)]):
         return None
     with _ResolutionStaging() as staging:
-        return _rebuild(case_id, evidence, staging)
+        if isinstance(evidence, _CaseEvidence):
+            evidence._validated_values = {}
+        try:
+            return _rebuild(case_id, evidence, staging)
+        finally:
+            if isinstance(evidence, _CaseEvidence):
+                evidence._validated_values.clear()
+                evidence._validated_values = None
 
 
 def _rebuild(case_id, evidence, staging):
@@ -1189,22 +1230,26 @@ def decorate_analysis(case_id, result):
     return result
 
 
+def _operation_scope(record, unscoped):
+    # The logical family includes complete member positions and original hashes;
+    # it is independent of the current case and its import/withdrawal history.
+    key = record["details"]["evidence_family"], record["details"]["family_member_sha256"]
+    if key not in unscoped:
+        unscoped[key] = "unscoped:" + hashlib.sha256(_json(key).encode()).hexdigest()
+    return unscoped[key]
+
+
 def operation_context(parsed, original_sha):
-    from .import_staging import row_records
+    from .import_staging import row_records, bind_occurrence_fields
     plan = parsed[0].attrs.get("feedback_plan") or parsed[0].attrs.get("table_plan")
     if not plan or plan["profile"] not in PROFILES:
         return
     unscoped = {}
-    for row, record in row_records(plan, kinds=("rows",)):
+    for row, record in row_records(plan, kinds=("rows",), missing_scope_only=True):
         if not row.get("_occurrence_scope"):
             # Without an institution declaration, only the original registered
             # envelope and its complete member position attest a repeated copy.
-            key = record["details"]["evidence_family"], record["details"]["family_member_sha256"]
-            if key not in unscoped:
-                unscoped[key] = "unscoped:" + hashlib.sha256(_json(key).encode()).hexdigest()
-            scope = unscoped[key]
-            row["_occurrence_scope"] = scope
-            record["details"]["occurrence_scope"] = scope
+            bind_occurrence_fields(row, record, None, _operation_scope(record, unscoped))
 
 
 def bind_families(plan):

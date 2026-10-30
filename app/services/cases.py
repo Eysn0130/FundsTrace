@@ -116,12 +116,13 @@ def flows(case_id, account, kw, page, page_size, granularity="events"):
         where = " and ".join(conditions)
         from app import funds_projection
         source = f"select * from effective_flows where {where}"
-        prefix = funds_projection.cte(source, include_ids=True)
-        relation = "selected_observations" if granularity == "observations" else "selected_facts"
-        total = raw_query(prefix + f"select count(*) total from {relation}", params)[0]["total"]
-        rows = raw_query(prefix + f"select * from {relation} order by trade_time desc nulls last,id desc limit ? offset ?",
-                         params + [page_size, (page - 1) * page_size])
-        funds = funds_projection.summary(source, params)
+        # effective_flows preserves one row per case/id: its source is flows
+        # with existence filters and endpoint/entity joins on unique keys.
+        rows, funds = funds_projection.page_with_summary(source, params, page_size, (page - 1) * page_size,
+                                                        observations=granularity == "observations", unique_source=True)
+        # The same locked selection already counts observations and one row per
+        # confirmed event or unresolved observation, including on an empty page.
+        total = funds["observation_count"] if granularity == "observations" else funds["count"]["upper"]
         from app import event_resolution, analysis_snapshot
         events = {item["flow_id"]: item for item in event_resolution.members(cid, [str(row["id"]) for row in rows])}
         revision = analysis_snapshot.revision(cid)

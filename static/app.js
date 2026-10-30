@@ -4826,7 +4826,7 @@ async function deleteBatch(batch, context) {
   setBatchBusy();
   let deleted = false;
   try {
-    const accepted = await confirm(`删除批次「${batch.filename}」？\n\n将移除该批次的 ${fmtCount(batch.rows_imported ?? 0)} 笔流水及对应的图谱引用。此操作无法撤销。`);
+    const accepted = await confirm(`删除批次「${batch.filename}」？\n\n将撤回这次导入的流水和资料。其他导入仍有支持的流水及其图谱引用会保留；失去最后一份有效支持的流水会移除。此操作无法撤销。`);
     if (!current() || !accepted || window.FundsMainAccountsActions?.blocked(context) || window.FundsAccountActions?.blocked(context)) return;
     showBatchFeedback('正在删除批次…');
     await batchRequest(`/api/batches/${encodeURIComponent(batch.id)}?case_id=${encodeURIComponent(context.caseId)}`, { method: 'DELETE' });

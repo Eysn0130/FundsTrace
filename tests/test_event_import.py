@@ -61,6 +61,8 @@ def test_scoped_opposite_ledger_event_replay_conflict_withdrawal_and_package(cli
     assert len(event_resolution.members(new_cid)) == 2
     assert {row["event_id"] for row in event_resolution.members(new_cid)} == {row["event_id"] for row in event_resolution.members(cid)}
     assert client.delete(f"/api/batches/{first['batch_id']}", params={"case_id": cid}).status_code == 200
+    assert event_resolution.summary(cid)["confirmed_events"] == 1
+    assert client.delete(f"/api/batches/{replay['batch_id']}", params={"case_id": cid}).status_code == 200
     assert event_resolution.summary(cid)["confirmed_events"] == 0
     assert event_resolution.summary(new_cid)["confirmed_events"] == 1
 
@@ -105,7 +107,7 @@ def test_legacy_evidence_reimport_adds_declaration_without_rewriting_ledger(clie
     cid = make_case("Synthetic parser-version upgrade")
     inputs = [("ledgers.csv", csv_rows([transaction("SYN-A"), transaction("SYN-B")]))]
     with monkeypatch.context() as previous:
-        previous.setattr(table_archive, "EVIDENCE_PROFILE", table_archive.LEGACY_EVIDENCE_PROFILE)
+        previous.setattr(table_archive, "evidence_profile", lambda _: table_archive.LEGACY_EVIDENCE_PROFILE)
         accepted(client, cid, inputs, scope_bank=None)
     original = database.q_raw("select * from flows where case_id=? order by id", [cid])
     assert event_resolution.summary(cid) is None

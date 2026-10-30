@@ -101,7 +101,7 @@ def test_transaction_balance_pair_recovers_actual_direction_and_round_trips_with
     assert coverage(client, cid)["unresolved_records"] == 0
     package = case_packages.export_package(cid)[0]
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
-        assert json.loads(archive.read("meta.json"))["format"] == 4
+        assert json.loads(archive.read("meta.json"))["format"] == 6
         assert not any(name.endswith("synthetic.csv") for name in archive.namelist())
     restored = case_packages.import_package(package)["case_id"]
     assert facts(database, restored) == before
@@ -238,7 +238,7 @@ def test_unknown_and_blank_records_without_contract_metadata_round_trip_in_forma
     assert not any(table_contracts.DETAILS_FIELDS.intersection(record["details"]) for record in records)
     package = case_packages.export_package(cid)[0]
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
-        assert json.loads(archive.read("meta.json"))["format"] == 4
+        assert json.loads(archive.read("meta.json"))["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     restored_source = database.q_raw("select source_id from import_sources where case_id=?", [restored])[0]["source_id"]
     assert source_records(client, restored, restored_source) == records

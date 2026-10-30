@@ -41,7 +41,8 @@ JOURNAL_PKG_COLS = {
     "import_records": "source_id, record_no, member_path, source_row, record_key, disposition, reason_code, details_json",
 }
 EVIDENCE_PKG_COLS = {"evidence_sources": "source_id, batch_id, active"}
-_ALL_PKG_COLS = {**CASE_PKG_COLS, **PROVENANCE_PKG_COLS, **JOURNAL_PKG_COLS, **EVIDENCE_PKG_COLS}
+OPERATION_PKG_COLS = {"import_source_operations": "source_id, batch_id, active"}
+_ALL_PKG_COLS = {**CASE_PKG_COLS, **PROVENANCE_PKG_COLS, **JOURNAL_PKG_COLS, **EVIDENCE_PKG_COLS, **OPERATION_PKG_COLS}
 _PHOTO_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.(?:jpg|jpeg|png|webp|bmp)", re.I)
 _TYPES = {
     "id": "bigint", "flow_id": "bigint", "batch_id": "bigint", "canvas_id": "bigint",
@@ -80,14 +81,17 @@ def export_package(case_id):
                   and row_kind='table_record' limit 1""", [case_id]).fetchone())
         has_resolution = bool(con.execute("select 1 from import_sources where case_id=? and parser_version in (" + ",".join("?" for _ in evidence_resolution.PROFILES) + ") limit 1", [case_id, *sorted(evidence_resolution.PROFILES)]).fetchone())
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            has_operations = bool(con.execute("select 1 from import_source_operations where case_id=? limit 1", [case_id]).fetchone())
             archive.writestr("meta.json", json.dumps({
                 "name": case_name, "exported_at": datetime.datetime.now().isoformat(),
-                "format": 5 if has_resolution else 4 if has_table_records else 3 if has_cancellation_rules else 2,
+                "format": 6 if has_operations else 5 if has_resolution else 4 if has_table_records else 3 if has_cancellation_rules else 2,
                 "source_files": "not_included",
             }, ensure_ascii=False))
             has_journals = any(con.execute(f"select 1 from {table} where case_id=? limit 1", [case_id]).fetchone()
                                for table in JOURNAL_PKG_COLS)
             for table, cols in _ALL_PKG_COLS.items():
+                if table in OPERATION_PKG_COLS and not has_operations:
+                    continue
                 if table in EVIDENCE_PKG_COLS and not has_resolution:
                     continue
                 if table in JOURNAL_PKG_COLS and not has_journals:
@@ -223,7 +227,7 @@ def _feedback_journals(check, paths):
         return
     for table in ("import_members", "import_records"):
         totals = check.execute(f"select source_id,count(*) from {table} where source_id in (select source_id from import_sources where row_kind='archive_record') group by source_id").fetchall()
-        if any(count > ((feedback_import.EVIDENCE_MAX_MEMBERS if archives[source_id] == feedback_import.EVIDENCE_PROFILE else feedback_import.MAX_MEMBERS) if table == "import_members"
+        if any(count > ((feedback_import.EVIDENCE_MAX_MEMBERS if archives[source_id] in feedback_import.EVIDENCE_PROFILES else feedback_import.MAX_MEMBERS) if table == "import_members"
                         else feedback_import.max_records(archives[source_id])) for source_id, count in totals):
             _invalid("反馈包日志总量超出限制")
     members = check.execute("select m.source_id,m.member_path,m.role,m.sha256,m.size_bytes,m.encoding,m.row_count from import_members m join import_sources s on s.source_id=m.source_id where s.row_kind='archive_record'").fetchall()
@@ -237,7 +241,7 @@ def _feedback_journals(check, paths):
                 or Path(path).suffix.lower() != ".csv"
                 or role not in feedback_import.ROLES
                 or not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256)
-                or size is None or not 0 <= size <= (feedback_import.EVIDENCE_MAX_MEMBER_BYTES if archives[source_id] == feedback_import.EVIDENCE_PROFILE else feedback_import.MAX_MEMBER_BYTES)
+                or size is None or not 0 <= size <= (feedback_import.EVIDENCE_MAX_MEMBER_BYTES if archives[source_id] in feedback_import.EVIDENCE_PROFILES else feedback_import.MAX_MEMBER_BYTES)
                 or count is None or not 0 <= count <= feedback_import.max_records(archives[source_id])
                 or encoding not in ("utf-8-sig", "gb18030")):
             _invalid("反馈包成员元数据无效")
@@ -249,8 +253,8 @@ def _feedback_journals(check, paths):
     if set(by_source) != set(archives):
         _invalid("反馈包来源与成员不一致")
     for source_id, values in by_source.items():
-        if (len(values) > (feedback_import.EVIDENCE_MAX_MEMBERS if archives[source_id] == feedback_import.EVIDENCE_PROFILE else feedback_import.MAX_MEMBERS)
-                or sum(value[1] for value in values) > (feedback_import.EVIDENCE_MAX_EXPANDED_BYTES if archives[source_id] == feedback_import.EVIDENCE_PROFILE else feedback_import.MAX_EXPANDED_BYTES)
+        if (len(values) > (feedback_import.EVIDENCE_MAX_MEMBERS if archives[source_id] in feedback_import.EVIDENCE_PROFILES else feedback_import.MAX_MEMBERS)
+                or sum(value[1] for value in values) > (feedback_import.EVIDENCE_MAX_EXPANDED_BYTES if archives[source_id] in feedback_import.EVIDENCE_PROFILES else feedback_import.MAX_EXPANDED_BYTES)
                 or sum(value[2] for value in values) > feedback_import.max_records(archives[source_id])):
             _invalid("反馈包成员总量超出限制")
     linked_flows = {(source_id, row): (disposition, name or "", account or "",
@@ -516,7 +520,7 @@ def _table_journals(check, paths):
                 or encoding not in (("binary",) if role == "attachment" else ("utf-8-sig", "gb18030", "utf-16", "xlsx", "xls"))
                 or encoding == "xls" and source_profiles[source_id] not in table_import.XLS_READER_PROFILES
                 or source_profiles[source_id] == table_import.XLS_PROFILE and encoding != "xls"
-                or encoding == "xls" and source_profiles[source_id] == table_import.XLS_EVIDENCE_ARCHIVE_PROFILE
+                or encoding == "xls" and source_profiles[source_id] in table_import.XLS_EVIDENCE_ARCHIVE_PROFILES
                    and not re.search(r"\.xls/worksheets/[0-9]{4}$", path, re.IGNORECASE)):
             _invalid("自动表格成员元数据无效")
         if encoding == "xls":
@@ -823,15 +827,15 @@ def _validate_package(content, directory):
             if not {"meta.json", "flows.parquet"}.issubset(names):
                 _invalid("缺少 meta.json / flows.parquet")
             meta = json.loads(archive.read("meta.json").decode("utf-8"))
-            if not isinstance(meta, dict) or type(meta.get("format")) is not int or meta["format"] not in (1, 2, 3, 4, 5):
+            if not isinstance(meta, dict) or type(meta.get("format")) is not int or meta["format"] not in (1, 2, 3, 4, 5, 6):
                 _invalid("不支持的格式版本")
             source_members = {f"{table}.parquet" for table in PROVENANCE_PKG_COLS} & set(names)
-            if source_members and (meta["format"] not in (2, 3, 4, 5) or len(source_members) != 2):
+            if source_members and (meta["format"] not in (2, 3, 4, 5, 6) or len(source_members) != 2):
                 _invalid("来源追溯表必须在格式 2、3、4 中成对提供")
             journal_members = {f"{table}.parquet" for table in JOURNAL_PKG_COLS} & set(names)
             if journal_members and (len(journal_members) != 2 or len(source_members) != 2):
                 _invalid("反馈包日志须与来源追溯表成对提供")
-            if meta["format"] in (2, 3, 4, 5) and meta.get("source_files") != "not_included":
+            if meta["format"] in (2, 3, 4, 5, 6) and meta.get("source_files") != "not_included":
                 _invalid("来源文件策略无效")
             if not isinstance(meta.get("name"), str) or not meta["name"].strip():
                 _invalid("案件名无效")
@@ -864,7 +868,7 @@ def _validate_package(content, directory):
                 check.execute(f"create table {table} as select {casts} from read_parquet(?)", [str(path)])
                 key = ("id" if table in ("flows", "batches", "canvases")
                        else "flow_id,canvas_id" if table == "tracked_flows"
-                       else "source_id" if table in ("import_sources", "evidence_sources")
+                       else "source_id" if table in ("import_sources", "evidence_sources", "import_source_operations")
                        else "source_id,source_row" if table == "flow_sources"
                        else "source_id,member_path" if table == "import_members"
                        else "source_id,record_no" if table == "import_records" else "account")
@@ -956,11 +960,31 @@ def _validate_package(content, directory):
                     _invalid("身份证据来源未关联导入操作")
             elif "evidence_sources" in paths:
                 _invalid("历史格式不能声明身份证据操作")
-            if has_resolution != (meta["format"] == 5):
+            has_operations = "import_source_operations" in paths
+            if has_operations != (meta["format"] == 6):
+                _invalid("导入操作关联须使用格式6保留支持生命周期")
+            if has_operations:
+                if "import_sources" not in paths or "batches" not in paths:
+                    _invalid("导入操作缺少来源或批次")
+                if check.execute("""select 1 from import_source_operations o
+                      left join import_sources s on s.source_id=o.source_id
+                      left join batches b on b.id=o.batch_id
+                      where s.source_id is null or o.active is null
+                        or (o.active and b.id is null) or (not o.active and b.id is not null) limit 1""").fetchone():
+                    _invalid("导入操作引用无效")
+                if check.execute("""select 1 from flow_sources f join import_source_operations o using(source_id)
+                      where not o.active limit 1""").fetchone():
+                    _invalid("已撤回的导入操作仍含活动来源链接")
+                if has_resolution and check.execute("""select 1 from evidence_sources e
+                      left join import_source_operations o using(source_id)
+                      where o.source_id is null or o.active is distinct from e.active
+                        or o.batch_id is distinct from e.batch_id limit 1""").fetchone():
+                    _invalid("身份证据与导入操作关联不一致")
+            if meta["format"] != 6 and has_resolution != (meta["format"] == 5):
                 _invalid("身份证据规则须使用格式5保留完整语义")
-            if has_tables != (meta["format"] == 4 or meta["format"] == 5 and has_tables):
+            if meta["format"] != 6 and has_tables != (meta["format"] == 4 or meta["format"] == 5 and has_tables):
                 _invalid("自动表格记录须使用格式4保留完整语义")
-            if not has_tables and not has_resolution and has_cancellations != (meta["format"] == 3):
+            if meta["format"] != 6 and not has_tables and not has_resolution and has_cancellations != (meta["format"] == 3):
                 _invalid("配对冲正规则须使用格式3保留完整语义")
             if "import_sources" in paths:
                 for table in JOURNAL_PKG_COLS:
@@ -1067,6 +1091,15 @@ def import_package(content):
                             select ?,s.new_id,b.new_id,p.active from read_parquet(?) p
                             join {mappings['import_sources']} s on s.old_id=p.source_id
                             left join {mappings['batches']} b on b.old_id=p.batch_id""", [new_cid,str(paths["evidence_sources"])])
+                    # Format 5 already carries explicit operation evidence;
+                    # older ordinary sources have no portable batch mapping.
+                    operation_table = ("import_source_operations" if "import_source_operations" in paths
+                                       else "evidence_sources" if "evidence_sources" in paths else None)
+                    if operation_table:
+                        con.execute(f"""insert into import_source_operations(case_id,source_id,batch_id,active)
+                            select ?,s.new_id,b.new_id,p.active from read_parquet(?) p
+                            join {mappings['import_sources']} s on s.old_id=p.source_id
+                            left join {mappings['batches']} b on b.old_id=p.batch_id""", [new_cid,str(paths[operation_table])])
                     if "import_sources" in paths:
                         evidence_resolution.rebuild(new_cid)
                     event_resolution.rebuild(new_cid)
@@ -1106,7 +1139,7 @@ def delete_package_case(case_id):
                     shutil.rmtree(photo_dir)
                 deleted = con.execute("select count(*) from flows where case_id=?", [case_id]).fetchone()[0]
                 con.execute("insert into import_file_gc(import_id,suffix,sha256,delete_after) select import_id,suffix,sha256,current_timestamp at time zone 'UTC' from import_sessions where case_id=? and source_state='retained' on conflict(import_id) do nothing", [case_id])
-                for table in ("analysis_state", "event_projection_cache_state", "event_observation_cache", "event_state", "resolved_events", "event_members", "evidence_sources", "resolution_state", "resolution_revisions", "resolution_entities", "resolved_endpoints", "resolution_subject_aliases", "import_records", "import_members", "flow_sources", "import_sources", "import_sessions"):
+                for table in ("analysis_state", "event_projection_cache_state", "event_observation_cache", "event_state", "resolved_events", "event_members", "evidence_sources", "import_source_operations", "resolution_state", "resolution_revisions", "resolution_entities", "resolved_endpoints", "resolution_subject_aliases", "import_records", "import_members", "flow_sources", "import_sources", "import_sessions"):
                     con.execute(f"delete from {table} where case_id=?", [case_id])
                 for table in CASE_PKG_TABLES:
                     con.execute(f"delete from {table} where case_id=?", [case_id])

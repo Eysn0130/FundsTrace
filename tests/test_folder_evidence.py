@@ -204,7 +204,7 @@ def test_ordinary_zip_large_manifest_uses_complete_bounded_csv_records(client, d
                ("accounts.csv", table("account", [account()])), ("manifest.csv", manifest)]
     view, receipt = accepted(client, cid, members, zipped=True, scope_bank=None)
     assert view["resolution"] and receipt["resolution"]["auxiliary_records"] == 701
-    assert database.q_raw("select parser_version from import_sources where case_id=?", [cid])[0]["parser_version"] == feedback_import.EVIDENCE_PROFILE
+    assert database.q_raw("select parser_version from import_sources where case_id=?", [cid])[0]["parser_version"] == feedback_import.MICROSECOND_EVIDENCE_PROFILE
     row = client.get(f"/api/v1/cases/{cid}/flows").json()["items"][0]
     own = next(item for item in entities(client, cid)["entities"] if item["entity_id"] == row["payer_account"])
     assert own["bank"] == "Synthetic bank" and own["kind"] == "account"
@@ -252,13 +252,15 @@ def test_order_wrapper_idempotence_package_roundtrip_and_batch_delete(client, da
     exported = client.get(f"/api/cases/{cid}/export")
     assert exported.status_code == 200, exported.text
     with zipfile.ZipFile(io.BytesIO(exported.content)) as package:
-        assert json.loads(package.read("meta.json"))["format"] == 5
+        assert json.loads(package.read("meta.json"))["format"] == 6
     restored = client.post("/api/cases/import", files={"file": ("synthetic.fundcase", exported.content)})
     assert restored.status_code == 200, restored.text
     target = restored.json()["case_id"]
     restored_rows = client.get(f"/api/v1/cases/{target}/flows").json()["items"]
     assert {row["payer_account"] for row in restored_rows} == {row["payer_account"] for row in rows}
     assert client.delete(f"/api/batches/{first['batch_id']}", params={"case_id": cid}).status_code == 200
+    assert client.get(f"/api/v1/cases/{cid}/flows").json()["total"] == 2
+    assert client.delete(f"/api/batches/{repeated['batch_id']}", params={"case_id": cid}).status_code == 200
     assert client.get(f"/api/v1/cases/{cid}/flows").json()["total"] == 0
     assert client.get(f"/api/v1/cases/{target}/flows").json()["total"] == 2
 

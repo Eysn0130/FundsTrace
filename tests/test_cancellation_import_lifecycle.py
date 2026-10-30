@@ -148,7 +148,7 @@ def test_cancellation_package_round_trip_preserves_effective_exclusion_and_ids_r
     import_version(client, cid, content, monkeypatch, feedback_import.PREVIOUS_PROFILE)
     import_version(client, cid, content, monkeypatch, feedback_import.CANCELLATION_PROFILE)
     package, _ = case_packages.export_package(cid)
-    assert json.loads(_members(package)["meta.json"])["format"] == 3
+    assert json.loads(_members(package)["meta.json"])["format"] == 6
     result = case_packages.import_package(package)
     restored = result["case_id"]
     assert restored != cid

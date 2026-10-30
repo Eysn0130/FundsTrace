@@ -80,16 +80,16 @@ def test_archive_member_optins_do_not_enter_standalone_or_advanced_inheritance()
     assert table_archive.PROFILE == table_import.ARCHIVE_MEMBER_PROFILE == V4
     assert table_archive.CANCELLATION_PROFILE == V3
     assert table_archive.CANCELLATION_PROFILES == {
-        V3, V4, table_archive.LEGACY_EVIDENCE_PROFILE, table_archive.EVIDENCE_PROFILE, table_archive.XLS_EVIDENCE_PROFILE}
+        V3, V4, table_archive.LEGACY_EVIDENCE_PROFILE, table_archive.EVIDENCE_PROFILE, table_archive.XLS_EVIDENCE_PROFILE, *table_import.MICROSECOND_ARCHIVE_PROFILES}
     assert V4 not in table_import.SUPPORTED_PROFILES
     assert table_import.CURRENCY_CODE_ALIAS_PROFILES == {
         table_import.CURRENCY_REGION_PROFILE, table_import.XLS_PROFILE, V4,
         table_import.LEGACY_EVIDENCE_PROFILE, table_archive.LEGACY_EVIDENCE_PROFILE,
-        table_import.EVIDENCE_PROFILE, table_archive.EVIDENCE_PROFILE, table_archive.XLS_EVIDENCE_PROFILE}
+        table_import.EVIDENCE_PROFILE, table_archive.EVIDENCE_PROFILE, table_archive.XLS_EVIDENCE_PROFILE, *table_import.MICROSECOND_ARCHIVE_PROFILES}
     assert table_import.OVERLAPPING_HEADER_PROFILES == {
         table_import.CURRENCY_REGION_PROFILE, table_import.XLS_PROFILE, V4,
         table_import.LEGACY_EVIDENCE_PROFILE, table_archive.LEGACY_EVIDENCE_PROFILE,
-        table_import.EVIDENCE_PROFILE, table_archive.EVIDENCE_PROFILE, table_archive.XLS_EVIDENCE_PROFILE}
+        table_import.EVIDENCE_PROFILE, table_archive.EVIDENCE_PROFILE, table_archive.XLS_EVIDENCE_PROFILE, *table_import.MICROSECOND_ARCHIVE_PROFILES}
     for collection in (
             table_import.ROLE_PROFILES, table_import.FINANCIAL_PROFILES,
             table_import.CONTRACT_PROFILES, table_import.DIRECTION_PROFILES,

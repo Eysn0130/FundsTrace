@@ -2,6 +2,7 @@
 """DuckDB 存储层：连接、建表、旧库迁移、线程安全的通用查询"""
 import datetime
 import decimal
+import json
 import threading
 from contextlib import contextmanager
 
@@ -266,6 +267,10 @@ create table if not exists import_records (
     primary key (case_id, source_id, record_no)
 );
 
+create table if not exists import_source_operations (
+    case_id integer not null, source_id varchar not null, batch_id bigint, active boolean not null,
+    primary key (case_id,source_id)
+);
 create table if not exists evidence_sources (
     case_id integer not null, source_id varchar not null, batch_id bigint, active boolean not null,
     primary key (case_id,source_id)
@@ -400,6 +405,45 @@ def _migrate(c):
         c.execute("alter table tracked_flows_new rename to tracked_flows")
 
 
+def _migrate_source_operations(c):
+    # Only explicit operation evidence is portable. Never infer ownership from
+    # a filename, a financial row's current storage batch, or retained bytes.
+    c.execute("""insert into import_source_operations
+        select e.* from evidence_sources e
+        where not exists (select 1 from import_source_operations o
+                          where o.case_id=e.case_id and o.source_id=e.source_id)""")
+    rows = c.execute("""select s.case_id,s.source_id,j.result_json from import_sources s
+        join import_sessions j on j.case_id=s.case_id and j.import_id=s.source_id
+          and j.sha256=s.sha256 and j.size_bytes=s.size_bytes and j.stage='done'
+        where not exists (select 1 from import_source_operations o
+                          where o.case_id=s.case_id and o.source_id=s.source_id)""").fetchall()
+    for case_id, source_id, result in rows:
+        try:
+            receipt = json.loads(result)
+            batch = receipt.get("batch_id")
+            if (receipt.get("source_id") != source_id or not isinstance(batch, str)
+                    or not batch.isascii() or not batch.isdecimal()
+                    or not 0 < int(batch) < 2**63):
+                continue
+        except (TypeError, ValueError, AttributeError):
+            continue
+        batch_id = int(batch)
+        batch_owner = c.execute("select case_id from batches where id=?", [batch_id]).fetchone()
+        if batch_owner and batch_owner[0] != case_id:
+            continue
+        active = bool(batch_owner)
+        c.execute("insert into import_source_operations values (?,?,?,?)", [case_id, source_id, batch_id, active])
+        if not active:
+            # Older replay withdrawal could leave links behind. The receipt's
+            # retired batch is explicit evidence to retire those links, not to
+            # recreate any facts previously deleted by that implementation.
+            c.execute("""update import_records set disposition='removed',reason_code='flow_deleted'
+                where case_id=? and source_id=? and record_no in
+                (select source_row from flow_sources where case_id=? and source_id=?)""",
+                [case_id, source_id, case_id, source_id])
+            c.execute("delete from flow_sources where case_id=? and source_id=?", [case_id, source_id])
+
+
 def con():
     global _con, _ckpt_started
     with _lock:
@@ -411,6 +455,7 @@ def con():
                     if stmt.strip():
                         candidate.execute(stmt)
                 _migrate(candidate)
+                _migrate_source_operations(candidate)
                 # Keep original facts and source links immutable. A versioned
                 # paired-cancellation journal excludes the same physical
                 # original occurrence from every effective-money reader,
@@ -429,7 +474,7 @@ def con():
                       join import_sources p on p.case_id=c.case_id and p.source_id=c.source_id
                       join import_members cm on cm.case_id=c.case_id and cm.source_id=c.source_id
                         and cm.member_path=c.member_path
-                      where p.row_kind='table_record' and p.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7')
+                      where p.row_kind='table_record' and p.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7','funds-trace-table-archive-v8','funds-trace-table-archive-v9')
                         and c.disposition='cancelled' and c.reason_code='matched_cancellation'
                     ), table_cancel_positions as materialized (
                       select c.*,rm.source_id
@@ -477,11 +522,11 @@ def con():
                       join import_sources p on p.case_id=c.case_id and p.source_id=c.source_id
                       where fs.case_id=f.case_id and fs.flow_id=f.id
                         and p.row_kind='archive_record'
-                        and p.parser_version in ('funds-trace-bank-feedback-v3','funds-trace-bank-feedback-v4','funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6')
+                        and p.parser_version in ('funds-trace-bank-feedback-v3','funds-trace-bank-feedback-v4','funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6','funds-trace-bank-feedback-v7','funds-trace-bank-feedback-v8')
                         and c.disposition='cancelled' and c.reason_code='matched_cancellation'
                         and json_extract_string(try_cast(c.details_json as json),'$.cancellation_role')='original'
                         and json_extract_string(try_cast(c.details_json as json),'$.cancellation_policy')='paired-cancellation-v1'
-                        and (p.parser_version not in ('funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6') or
+                        and (p.parser_version not in ('funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6','funds-trace-bank-feedback-v7','funds-trace-bank-feedback-v8') or
                           json_extract_string(try_cast(c.details_json as json),'$.canonical_currency')=f.currency)
                     ) and not exists (
                       select 1 from table_cancelled_flows c where c.case_id=f.case_id and c.flow_id=f.id

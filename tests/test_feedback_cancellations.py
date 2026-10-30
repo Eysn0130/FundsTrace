@@ -103,8 +103,8 @@ def test_historical_profiles_keep_their_previous_dispositions_and_record_keys():
     payload = source(round_trip())
     plans = {profile: feedback.parse(io.BytesIO(payload), profile=profile)
              for profile in (feedback.IDENTITY_PROFILE, feedback.PREVIOUS_PROFILE, feedback.CANCELLATION_PROFILE,
-                             feedback.TEXT_PROFILE, feedback.PROFILE)}
-    assert feedback.SUPPORTED_PROFILES == frozenset(plans) | {feedback.EVIDENCE_PROFILE}
+                             feedback.TEXT_PROFILE, feedback.CURRENCY_PROFILE, feedback.PROFILE)}
+    assert feedback.SUPPORTED_PROFILES == frozenset(plans) | feedback.EVIDENCE_PROFILES
     assert feedback.PREVIOUS_PROFILE == "funds-trace-bank-feedback-v2"
     for profile in (feedback.IDENTITY_PROFILE, feedback.PREVIOUS_PROFILE):
         old = plans[profile]

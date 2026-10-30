@@ -29,8 +29,12 @@ CANCELLATION_PROFILE = "funds-trace-bank-feedback-v3"
 TEXT_PROFILE = "funds-trace-bank-feedback-v4"
 CURRENCY_PROFILE = "funds-trace-bank-feedback-v5"
 EVIDENCE_PROFILE = "funds-trace-bank-feedback-v6"
-PROFILE = CURRENCY_PROFILE
-CURRENCY_PROFILES = frozenset({CURRENCY_PROFILE, EVIDENCE_PROFILE})
+MICROSECOND_PROFILE = "funds-trace-bank-feedback-v7"
+MICROSECOND_EVIDENCE_PROFILE = "funds-trace-bank-feedback-v8"
+MICROSECOND_PROFILES = frozenset({MICROSECOND_PROFILE, MICROSECOND_EVIDENCE_PROFILE})
+EVIDENCE_PROFILES = frozenset({EVIDENCE_PROFILE, MICROSECOND_EVIDENCE_PROFILE})
+PROFILE = MICROSECOND_PROFILE
+CURRENCY_PROFILES = frozenset({CURRENCY_PROFILE, EVIDENCE_PROFILE, *MICROSECOND_PROFILES})
 TEXT_PROFILES = frozenset({TEXT_PROFILE, *CURRENCY_PROFILES})
 CANCELLATION_PROFILES = frozenset({CANCELLATION_PROFILE, *TEXT_PROFILES})
 SUPPORTED_PROFILES = frozenset({IDENTITY_PROFILE, PREVIOUS_PROFILE, *CANCELLATION_PROFILES})
@@ -114,6 +118,7 @@ DETAILS_FIELDS = frozenset({
 
 _SCHEMA_SIGNATURES = {frozenset(headers): role for role, headers in SCHEMAS.items()}
 _TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\Z")
+_FRACTIONAL_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?\Z")
 _AMOUNT = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)\Z")
 _CENT = Decimal("0.01")
 _MAX_MONEY = Decimal("9999999999999999.99")
@@ -130,7 +135,7 @@ class FeedbackImportError(ValueError):
 
 def max_records(profile):
     """A v4/v5 resource allowance; historical limits stay fixed."""
-    return EVIDENCE_MAX_RECORDS if profile == EVIDENCE_PROFILE else TEXT_MAX_RECORDS if profile in TEXT_PROFILES else MAX_RECORDS
+    return EVIDENCE_MAX_RECORDS if profile in EVIDENCE_PROFILES else TEXT_MAX_RECORDS if profile in TEXT_PROFILES else MAX_RECORDS
 
 
 def currency_details(raw):
@@ -155,9 +160,9 @@ def record_key(member_path: str, member_sha256: str, source_row: int, identity_d
 
 
 def _validate_members(archive, profile=PROFILE):
-    member_limit = EVIDENCE_MAX_MEMBERS if profile == EVIDENCE_PROFILE else MAX_MEMBERS
-    member_bytes = EVIDENCE_MAX_MEMBER_BYTES if profile == EVIDENCE_PROFILE else MAX_MEMBER_BYTES
-    expanded_limit = EVIDENCE_MAX_EXPANDED_BYTES if profile == EVIDENCE_PROFILE else MAX_EXPANDED_BYTES
+    member_limit = EVIDENCE_MAX_MEMBERS if profile in EVIDENCE_PROFILES else MAX_MEMBERS
+    member_bytes = EVIDENCE_MAX_MEMBER_BYTES if profile in EVIDENCE_PROFILES else MAX_MEMBER_BYTES
+    expanded_limit = EVIDENCE_MAX_EXPANDED_BYTES if profile in EVIDENCE_PROFILES else MAX_EXPANDED_BYTES
     infos = archive.infolist()
     if not infos or len(infos) > member_limit:
         raise FeedbackImportError("member_count")
@@ -202,8 +207,8 @@ def _validate_members(archive, profile=PROFILE):
 
 
 def _read_member(archive, info, expanded, profile=PROFILE):
-    member_bytes = EVIDENCE_MAX_MEMBER_BYTES if profile == EVIDENCE_PROFILE else MAX_MEMBER_BYTES
-    expanded_limit = EVIDENCE_MAX_EXPANDED_BYTES if profile == EVIDENCE_PROFILE else MAX_EXPANDED_BYTES
+    member_bytes = EVIDENCE_MAX_MEMBER_BYTES if profile in EVIDENCE_PROFILES else MAX_MEMBER_BYTES
+    expanded_limit = EVIDENCE_MAX_EXPANDED_BYTES if profile in EVIDENCE_PROFILES else MAX_EXPANDED_BYTES
     chunks, size = [], 0
     with archive.open(info, "r") as member:
         while True:
@@ -339,11 +344,12 @@ def _money(value, field):
         return None, f"invalid_{field}"
 
 
-def _time(value):
-    if not _TIME.fullmatch(value) or not 1900 <= int(value[:4]) <= 2100:
+def _time(value, *, fractional=False):
+    pattern = _FRACTIONAL_TIME if fractional else _TIME
+    if not pattern.fullmatch(value) or not 1900 <= int(value[:4]) <= 2100:
         return None
     try:
-        return datetime.datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+        return datetime.datetime.strptime(value, "%Y-%m-%d %H:%M:%S.%f" if fractional and "." in value else "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return None
 
@@ -394,7 +400,7 @@ def _transaction(source, profile=PROFILE):
     amount, amount_reason = _money(source["交易金额"], "amount")
     balance, balance_reason = (_money(source["交易余额"], "balance")
                                if source["交易余额"] else (None, None))
-    trade_time = _time(source["交易时间"])
+    trade_time = _time(source["交易时间"], fractional=profile in MICROSECOND_PROFILES)
     direction = {"进": "in", "入": "in", "出": "out"}.get(source["收付标志"])
     reasons = []
     if amount is not None and amount < 0:
@@ -462,7 +468,7 @@ def _transaction(source, profile=PROFILE):
     return row, "accepted", "transaction_valid", details, (account_column, own_account, direction)
 
 
-def _cancellation_observation(source, record):
+def _cancellation_observation(source, record, profile=PROFILE):
     column = "交易账号" if source["交易账号"] else "交易卡号"
     # Keep the physical source token as the cancellation scope, even when v5
     # maps RMB to CNY for totals. Normalization never creates a cross-token pair.
@@ -475,7 +481,7 @@ def _cancellation_observation(source, record):
                 and issues[0] in {"negative_reversal_text", "negative_revocation_text",
                                   "negative_reversal_revocation_text"}
                 and cancellation_text(source))
-    return Observation(record["record_no"], scope, source["交易流水号"], _time(source["交易时间"]),
+    return Observation(record["record_no"], scope, source["交易流水号"], _time(source["交易时间"], fractional=profile in MICROSECOND_PROFILES),
                        amount if amount_issue is None else None,
                        balance if balance_issue is None else None,
                        {"进": "in", "入": "in", "出": "out"}.get(source["收付标志"]),
@@ -567,7 +573,7 @@ def parse(source, *, profile=PROFILE) -> dict:
     """
     if profile not in SUPPORTED_PROFILES:
         raise FeedbackImportError("unknown_profile")
-    if profile == EVIDENCE_PROFILE:
+    if profile in EVIDENCE_PROFILES:
         # The outer original stays registered unchanged; the ephemeral reader
         # only presents nested CSV leaves to the same semantic interpreter.
         source = _flatten_family(source)
@@ -581,10 +587,10 @@ def parse(source, *, profile=PROFILE) -> dict:
     try:
         source.seek(0)
         with zipfile.ZipFile(source, "r") as archive:
-            infos = (_validate_members(archive, profile) if profile == EVIDENCE_PROFILE
+            infos = (_validate_members(archive, profile) if profile in EVIDENCE_PROFILES
                      else _validate_members(archive))
             for info in infos:
-                payload, expanded = (_read_member(archive, info, expanded, profile) if profile == EVIDENCE_PROFILE
+                payload, expanded = (_read_member(archive, info, expanded, profile) if profile in EVIDENCE_PROFILES
                                      else _read_member(archive, info, expanded))
                 digest = hashlib.sha256(payload).hexdigest()
                 text, encoding = _decode(payload, profile=profile)
@@ -614,7 +620,7 @@ def parse(source, *, profile=PROFILE) -> dict:
                                         accounts[key] = (*identity, record_no)
                                     elif previous is not None and previous[:2] != identity:
                                         accounts[key] = None
-                    if profile == EVIDENCE_PROFILE:
+                    if profile in EVIDENCE_PROFILES:
                         from . import evidence_resolution
                         value = (evidence_resolution.feedback_evidence(raw, row, context) if role == "transaction" and row is not None
                                  else evidence_resolution.auxiliary_evidence(header, [raw[h] for h in header], role))
@@ -625,7 +631,7 @@ def parse(source, *, profile=PROFILE) -> dict:
                               "disposition": disposition, "reason_code": reason, "details": details}
                     records.append(record)
                     if cancellation_index is not None and role == "transaction":
-                        cancellation_index.add(_cancellation_observation(raw, record))
+                        cancellation_index.add(_cancellation_observation(raw, record, profile))
                     counts[disposition] += 1
                     reason_counts[reason] = reason_counts.get(reason, 0) + 1
                     if row is not None:
@@ -652,7 +658,7 @@ def parse(source, *, profile=PROFILE) -> dict:
                                               member_hashes[record["member_path"]], record["source_row"])
     for row, (column, own_account, direction), record in contexts:
         prefix = "payee_" if direction == "in" else "payer_"
-        identity = accounts.get((column, own_account)) if profile != EVIDENCE_PROFILE else None
+        identity = accounts.get((column, own_account)) if profile not in EVIDENCE_PROFILES else None
         if identity is not None:
             name, bank, identity_record = identity
             row["self_name"] = name
@@ -678,7 +684,7 @@ def parse(source, *, profile=PROFILE) -> dict:
                  key: {direction: format(value, ".2f") for direction, value in totals.items()}
                  for key, totals in direction_totals.items()}}
     plan = {"profile": profile, "rows": rows, "records": records, "members": members, "stats": stats}
-    if profile == EVIDENCE_PROFILE:
+    if profile in EVIDENCE_PROFILES:
         plan["_member_families"] = getattr(source, "_feedback_families", {})
     if cancellation_index is not None:
         pairs = cancellation_index.pairs()
@@ -696,7 +702,7 @@ def parse(source, *, profile=PROFILE) -> dict:
                                          cancellation_role=role, paired_record_no=str(paired),
                                          cancellation_witness_record_no=str(pair["witness_record_no"]))
         refresh_stats(plan)
-    if profile == EVIDENCE_PROFILE:
+    if profile in EVIDENCE_PROFILES:
         from . import evidence_resolution
         evidence_resolution.bind_occurrences(plan)
     return plan

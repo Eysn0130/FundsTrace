@@ -219,9 +219,11 @@ def test_staging_scan_and_update_use_chunk_queries_not_one_query_per_record(data
         store.close()
 
 
-def test_public_import_reports_actual_stage_io_without_source_values(client, database, make_case, monkeypatch):
+@pytest.mark.parametrize("reuse", [False, True], ids=["cache-miss", "cache-hit"])
+def test_public_import_reports_actual_stage_io_without_source_values(client, database, make_case, monkeypatch, reuse):
     """Count the real read/write shape separately from the index micro-probe."""
-    metrics, phases = [], {}
+    from app import import_preview_cache
+    metrics, phases, calls = [], {}, {}
     original_close = staging.PlanStore.close
     def observed_close(self):
         # Identity replay uses its own private indexes in the same owner type;
@@ -234,6 +236,7 @@ def test_public_import_reports_actual_stage_io_without_source_values(client, dat
         original = getattr(imports, name)
         def measure(*args, _name=name, _original=original, **kwargs):
             started = time.monotonic()
+            calls[_name] = calls.get(_name, 0) + 1
             try:
                 return _original(*args, **kwargs)
             finally:
@@ -243,13 +246,19 @@ def test_public_import_reports_actual_stage_io_without_source_values(client, dat
     members = [(f"member-{member}.csv", source([round_trip()[0] | {"交易流水号": f"SYN-{member}-{row}"}
                                                for row in range(128)])[0]) for member in range(4)]
     view = preview(client, cid, members, scope_bank=None)
+    assert import_preview_cache._slot is not None
+    if not reuse:
+        import_preview_cache.discard(view["import_id"])
     job = complete(client, cid, view)
     assert job["stage"] == "done", job
     assert job["result"]["ok"] == 512
-    assert len(metrics) == 2
+    assert len(metrics) == (1 if reuse else 2)
+    assert calls == {"_parse": 1 if reuse else 2, "_bind_table_plan": 2, "_write_feedback_journal": 1}
+    assert import_preview_cache._slot is None
     assert all(item["peak_read_records"] <= staging.PLAN_CHUNK for item in metrics)
     assert all(item["member_note_encoded_bytes"] > 0 for item in metrics)
-    print("synthetic_public_operation_io", {"preview": metrics[0], "commit": metrics[1], "phase_seconds": phases})
+    print("synthetic_public_operation_io", {"cache_reused": reuse, "closed_plans": metrics,
+                                           "phase_seconds": phases, "calls": calls})
 
 
 @pytest.mark.parametrize("nested_only", [False, True])

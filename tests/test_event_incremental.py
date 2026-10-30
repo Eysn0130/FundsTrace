@@ -88,9 +88,14 @@ def test_append_replay_conflict_and_batch_delete_recompute_only_affected_groups(
 
     calls.clear()
     assert client.delete(f"/api/batches/{initial['batch_id']}", params={"case_id": cid}).status_code == 200
-    # Removing the original batch also removes links from its replay source.
-    # All four vanished groups are withdrawn; the independent new event stays.
+    # The replay still supports E2; only the other three original groups vanish.
     assert all(source is not None for source in calls.sources)
+    calls.only({"SYN-E2"})
+    assert events.summary(cid)["confirmed_events"] == 2
+    assert events.summary(cid)["reference_observations"] == 4
+    assert_full_equal(database, cid)
+    calls.clear()
+    assert client.delete(f"/api/batches/{replay['batch_id']}", params={"case_id": cid}).status_code == 200
     assert len(calls.groups) == 1 and calls.groups[0] == []
     assert events.summary(cid)["confirmed_events"] == 1
     assert events.summary(cid)["reference_observations"] == 2

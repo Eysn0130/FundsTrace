@@ -171,7 +171,7 @@ def test_v4_larger_resource_cap_round_trips_mixed_versions_per_source(
         assert complete(client, cid, response.json())["stage"] == "done"
     package = case_packages.export_package(cid)[0]
     members = _members(package)
-    assert json.loads(members["meta.json"])["format"] == (4 if with_table else 3)
+    assert json.loads(members["meta.json"])["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     assert count(database, "import_records", restored) == (6 if with_table else 5)
     assert database.q_raw("""select s.parser_version,sum(m.row_count) n from import_sources s
@@ -307,7 +307,7 @@ def test_v4_cancellation_package_preserves_existing_format_rules(client, databas
         assert response.status_code == 200, response.text
         assert complete(client, cid, response.json())["stage"] == "done"
     package = case_packages.export_package(cid)[0]
-    assert json.loads(_members(package)["meta.json"])["format"] == (4 if with_table else 3)
+    assert json.loads(_members(package)["meta.json"])["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     assert count(database, "effective_flows", restored) == (2 if with_table else 1)
     assert count(database, "import_records", restored) == count(database, "import_records", cid)

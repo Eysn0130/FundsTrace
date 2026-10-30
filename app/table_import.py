@@ -45,9 +45,13 @@ LEGACY_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v5"
 EVIDENCE_PROFILE = "funds-trace-table-v20"
 EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
 XLS_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v7"
-XLS_READER_PROFILES = frozenset((XLS_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE))
-EVENT_PROFILES = frozenset((EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE))
-EVIDENCE_ARCHIVE_PROFILES = frozenset((LEGACY_EVIDENCE_ARCHIVE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE))
+MICROSECOND_ARCHIVE_PROFILE = "funds-trace-table-archive-v8"
+MICROSECOND_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v9"
+MICROSECOND_ARCHIVE_PROFILES = frozenset((MICROSECOND_ARCHIVE_PROFILE, MICROSECOND_XLS_ARCHIVE_PROFILE))
+XLS_EVIDENCE_ARCHIVE_PROFILES = frozenset((XLS_EVIDENCE_ARCHIVE_PROFILE, MICROSECOND_XLS_ARCHIVE_PROFILE))
+XLS_READER_PROFILES = frozenset((XLS_PROFILE, *XLS_EVIDENCE_ARCHIVE_PROFILES))
+EVENT_PROFILES = frozenset((EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, *MICROSECOND_ARCHIVE_PROFILES))
+EVIDENCE_ARCHIVE_PROFILES = frozenset((LEGACY_EVIDENCE_ARCHIVE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, *MICROSECOND_ARCHIVE_PROFILES))
 EVIDENCE_PROFILES = frozenset((LEGACY_EVIDENCE_PROFILE, *EVIDENCE_ARCHIVE_PROFILES, EVIDENCE_PROFILE))
 PROFILE = CURRENCY_REGION_PROFILE
 CURRENCY_REGION_PROFILES = frozenset((CURRENCY_REGION_PROFILE, XLS_PROFILE, *EVIDENCE_PROFILES))
@@ -262,6 +266,8 @@ def _raw(value):
 
 
 def _text(value):
+    if type(value) is str:
+        return value.strip()
     value = _raw(value)
     if value is None:
         return ""
@@ -282,7 +288,7 @@ def _header_value(value, profile):
 def _evidence_value(value, profile):
     # v7 adds evidence to the XLS reader without granting its formula cache
     # authority over identities, event references or posting-order declarations.
-    if profile == XLS_EVIDENCE_ARCHIVE_PROFILE and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type):
+    if profile in XLS_EVIDENCE_ARCHIVE_PROFILES and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type):
         return None
     return _raw(value)
 
@@ -1478,7 +1484,7 @@ def _append_auxiliary_sheet(plan, sheet, *, details_pool=None):
             continue
         valid = len(row) == width and not any(_cell_present(value) for value in row[meaningful_width:])
         reason = "auxiliary_table" if valid else "column_count_mismatch"
-        if valid and plan["profile"] == XLS_EVIDENCE_ARCHIVE_PROFILE:
+        if valid and plan["profile"] in XLS_EVIDENCE_ARCHIVE_PROFILES:
             if any(isinstance(value, _WorkbookValue) and value.formula for value in row[:meaningful_width]):
                 valid, reason = False, "formula_value"
             elif any(isinstance(value, _WorkbookValue) and value.invalid_type for value in row[:meaningful_width]):
@@ -1563,13 +1569,26 @@ def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pro
                   auto_event_profile=_auto_event_profile)
 
 
+def _region_row_headers(headers, profile):
+    """Immutable header-only inputs for rows in one active table region."""
+    names = tuple(_text(_header_value(header, profile)) for header in headers) if profile in EVIDENCE_PROFILES else ()
+    feedback_names = None
+    if profile in EVIDENCE_ARCHIVE_PROFILES:
+        from . import feedback_import
+        if len(headers) == len(feedback_import.COLUMNS) and frozenset(names) == frozenset(feedback_import.COLUMNS):
+            # The closed adapter historically reads raw headers, without the
+            # XLS schema filter used by identity and event evidence.
+            feedback_names = tuple(_text(header) for header in headers)
+    return names, feedback_names
+
+
 def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=PROFILE, details_pool=None,
            defer_occurrence_binding=False, retain_csv_format=False, auto_event_profile=False):
     """Interpret every source record and return a write-free versioned plan."""
     suffix = suffix.lower()
     archive_member = ((profile == ARCHIVE_MEMBER_PROFILE and suffix == ".csv"
                        or profile in EVIDENCE_ARCHIVE_PROFILES and suffix in {".csv", ".txt", ".tsv", ".xlsx"}
-                       or profile == XLS_EVIDENCE_ARCHIVE_PROFILE and suffix == ".xls")
+                       or profile in XLS_EVIDENCE_ARCHIVE_PROFILES and suffix == ".xls")
                       and reference_policy == TRANSACTION_REFERENCE_POLICY)
     if profile not in SUPPORTED_PROFILES and not archive_member:
         raise TableImportError("不支持的表格解析规则")
@@ -1616,6 +1635,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
         candidates, labels, actual_mode, current_mapping, region_error, active_reference_policy = _region(
             headers, mode, mapping, strict=True, reference_policy=reference_policy, profile=profile)
         source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
+        header_names, feedback_header_names = _region_row_headers(headers, profile)
         if not selected and header_no is not None:
             plan.update(mode=actual_mode or "B", mapping=current_mapping, columns=labels)
             selected = True
@@ -1657,6 +1677,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                 candidates, labels, actual_mode, current_mapping, region_error, active_reference_policy = _region(
                     headers, mode, mapping, strict=False, reference_policy=reference_policy, profile=profile)
                 source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
+                header_names, feedback_header_names = _region_row_headers(headers, profile)
                 document["header_rows"].append(index)
                 plan["mapping_evidence"].extend(_region_evidence(headers, candidates, labels, sheet["path"], index))
                 disposition, reason = "non_transaction", "repeated_header"
@@ -1677,11 +1698,9 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                 result, disposition, reason, parsed_details = interpreter(
                     row, candidates, actual_mode, reference_policy=active_reference_policy, financial=profile in FINANCIAL_PROFILES, source_contract=source_contract, source_roles=profile in SOURCE_ROLE_PROFILES, retain_endpoint_role=profile in EVIDENCE_PROFILES)
                 if profile in EVIDENCE_ARCHIVE_PROFILES:
-                    from . import feedback_import
-                    if (len(headers) == len(feedback_import.COLUMNS)
-                            and frozenset(_text(_header_value(value, profile)) for value in headers) == frozenset(feedback_import.COLUMNS)
-                            and not (profile == XLS_EVIDENCE_ARCHIVE_PROFILE and reason in {"formula_value", "invalid_cell_type"})):
-                        result, disposition, reason, parsed_details = _feedback_member_outcome(headers, row, (result, disposition, reason, parsed_details))
+                    if (feedback_header_names is not None
+                            and not (profile in XLS_EVIDENCE_ARCHIVE_PROFILES and reason in {"formula_value", "invalid_cell_type"})):
+                        result, disposition, reason, parsed_details = _feedback_member_outcome(headers, row, (result, disposition, reason, parsed_details), profile, header_names=feedback_header_names)
                 own_side = parsed_details.pop("_resolved_own_side", "")
                 details.update(parsed_details)
                 if source_contract:
@@ -1705,19 +1724,18 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                                      + "该笔未计入资金统计和节点关系，收支及关联分析可能不完整")
             if result is not None and profile in EVIDENCE_PROFILES:
                 from . import evidence_resolution
-                from . import feedback_import
-                if profile in EVIDENCE_ARCHIVE_PROFILES and len(headers) == len(feedback_import.COLUMNS) and frozenset(_text(_header_value(h, profile)) for h in headers) == frozenset(feedback_import.COLUMNS):
-                    source_cells = {_text(_header_value(h, profile)): _text(_evidence_value(value, profile)) for h, value in zip(headers, row)}
+                if feedback_header_names is not None:
+                    source_cells = {name: _text(_evidence_value(value, profile)) for name, value in zip(header_names, row)}
                     details[evidence_resolution.DETAIL_FIELD] = evidence_resolution.feedback_evidence(source_cells, result, ("", "", "in" if source_cells["收付标志"] in {"进", "入"} else "out"))
                 else:
                     details[evidence_resolution.DETAIL_FIELD] = evidence_resolution.transaction_evidence(
-                        [_text(_header_value(h, profile)) for h in headers], [_evidence_value(v, profile) for v in row], candidates, result, _identity_pair, own_side=own_side)
+                        header_names, [_evidence_value(v, profile) for v in row], candidates, result, _identity_pair, own_side=own_side)
             if (profile in EVENT_PROFILES and header_no is not None and len(row) == len(headers)
                     and disposition in {"accepted", "unresolved", "non_monetary"}
                     and reason not in {"preamble", "blank_record", "repeated_header", "ambiguous_region_header"}):
                 from . import event_resolution
                 details.update(event_resolution.parse_fields(
-                    [_text(_header_value(h, profile)) for h in headers],
+                    header_names,
                     [None if isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type) else _raw(value) for value in row],
                     accepted=result is not None, posting_scope=document["header_rows"][-1]))
             # The envelope owns one bounded decoded cache for all members.
@@ -1752,19 +1770,28 @@ def refresh_stats(plan):
     return plan
 
 
-def _feedback_member_outcome(headers, cells, generic):
+def _feedback_member_outcome(headers, cells, generic, profile, *, header_names=None):
     """The closed 28-column family keeps its admission/facts in mixed folders.
 
     The common table journal records this versioned adapter. It does not broaden
     the bank reader's currency/status/time contract or recompute its summaries.
     """
     from . import feedback_import
-    source = {_text(header): _text(value) for header, value in zip(headers, cells)}
-    row, disposition, reason, legacy_details, _context = feedback_import._transaction(source, feedback_import.EVIDENCE_PROFILE)
+    if header_names is None:
+        header_names = (_text(header) for header in headers)
+    source = {header: _text(value) for header, value in zip(header_names, cells)}
+    row, disposition, reason, legacy_details, _context = feedback_import._transaction(
+        source, feedback_import.MICROSECOND_EVIDENCE_PROFILE if profile in MICROSECOND_ARCHIVE_PROFILES
+        else feedback_import.EVIDENCE_PROFILE)
     notes = dict(generic[3])
     notes.pop("flow_sha256", None)
     notes.pop("validation_issues", None)
     notes.pop("validation_basis", None)
+    if profile in MICROSECOND_ARCHIVE_PROFILES:
+        # The closed adapter owns the reference even when generic inference
+        # could not interpret this row. Cancellation package verification must
+        # bind to the actual source transaction ID, never a voucher fallback.
+        notes["trade_no_basis"] = "source_transaction_id" if source["交易流水号"] else "none"
     if row is not None:
         notes.update(financial_effect="source_reported", flow_sha256=flow_digest(row))
         return row, "accepted", "transaction_valid", notes

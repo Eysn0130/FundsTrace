@@ -165,6 +165,11 @@ def test_spill_write_failure_aborts_public_operation_without_partial_state(clien
     files = [("rows.csv", source(round_trip())[0])]
     if phase == "commit":
         view = preview(client, cid, files, scope_bank=None)
+        # A note-spool construction fault requires reparsing, not a cache hit.
+        from app import import_preview_cache
+        owner = import_preview_cache._slot[1][0].attrs["table_plan"]["_plan_store"]
+        import_preview_cache.discard()
+        assert owner._closed
     monkeypatch.setattr(staging, "MEMORY_PAYLOAD_BYTES", 0)
     original, attempts = staging.tempfile.TemporaryFile, []
 
