@@ -500,6 +500,12 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
     typed_accounts.update(parent_accounts)
     typed_accounts.update(explicit_accounts)
     child_parents = { (bank, parent) for (bank, child), values in parents.items() for parent in values }
+    # The complete relation set is fixed for this replay. Keep every direct
+    # edge, including conflicting parents; do not infer a transitive closure.
+    children_by_parent = defaultdict(set)
+    for (bank, child), values in parents.items():
+        for parent in values:
+            children_by_parent[bank, parent].add(child)
     entities = {}
     def entity(bank, kind, number):
         if not number:
@@ -598,7 +604,9 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
                 # Contradictory explicit C/A must not rewrite A to a declared parent.
                 # The allowed parent->child edge explains only an already supplied A.
                 targets = scoped_targets if scoped_equal else card_targets.get((bank, card), set()) if card else set()
-                allowed = targets | {child for (b, child), ps in parents.items() if b == bank and ps & targets}
+                allowed = set(targets)
+                for parent in targets:
+                    allowed.update(children_by_parent.get((bank, parent), ()))
                 conflict = bool(number and targets and number not in allowed) or mixed and ambiguity and bool(card_targets.get((bank, number), set()))
                 state = "conflict" if conflict else "unscoped" if bank.startswith("unscoped:") else "identifier_undetermined" if kind == "identifier" else "card_only" if kind == "card" else "resolved"
                 if conflict or target["status"] != "conflict" and state != "resolved":
