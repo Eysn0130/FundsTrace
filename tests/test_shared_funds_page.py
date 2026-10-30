@@ -90,7 +90,8 @@ def test_public_pages_see_auxiliary_only_write_rollback_withdrawal_and_reopen(cl
     assert client.get(f'/api/v1/cases/{copy_id}/flows').json()['total'] == 1
 
 
-def test_page_totals_event_metadata_and_revision_hold_one_snapshot(database, make_case, monkeypatch):
+@pytest.mark.parametrize('granularity', ['observations', 'events'])
+def test_page_totals_event_metadata_and_revision_hold_one_snapshot(database, make_case, monkeypatch, granularity):
     cid = make_case('Synthetic locked page snapshot')
     flow(database, cid, 1, '10.25')
     before_revision = analysis_snapshot.revision(cid)
@@ -113,14 +114,14 @@ def test_page_totals_event_metadata_and_revision_hold_one_snapshot(database, mak
         return result
     with monkeypatch.context() as patch:
         patch.setattr(funds, 'page_with_summary', observed)
-        value = cases.flows(str(cid), '', '', 1, 10)
+        value = cases.flows(str(cid), '', '', 1, 10, granularity)
     writer.join(2)
     assert not writer.is_alive() and acquired.is_set()
     assert value['analysis_revision'] == before_revision
     assert value['items'][0]['amount'] == '10.25'
     assert value['items'][0]['analysis_revision'] == before_revision
     assert value['funds']['totals'][0]['upper'] == '10.25'
-    fresh = cases.flows(str(cid), '', '', 1, 10)
+    fresh = cases.flows(str(cid), '', '', 1, 10, granularity)
     assert fresh['analysis_revision'] != before_revision
     assert fresh['items'][0]['amount'] == fresh['funds']['totals'][0]['upper'] == '20.50'
 
@@ -146,3 +147,83 @@ def test_public_page_keeps_unknown_negative_and_exact_cents_outside_page(client,
             assert value['items'][0]['amount'] == '-1.01'
         elif page == 2:
             assert value['items'][0]['amount'] is None
+
+
+@pytest.mark.parametrize('selected', [[1], [2], [1, 2]])
+def test_late_payload_preserves_unique_source_projection_and_selected_event_scope(database, make_case, selected):
+    cid = make_case('Synthetic projected source')
+    flow(database, cid, 1, '100.01')
+    flow(database, cid, 2, '100.01')
+    event(database, cid, 'SYN-SELECTED-EVENT', [1, 2], '100.01')
+    database.x("update flows set balance=null,trade_time=timestamp '2026-01-01 12:00:00.123456' where case_id=?", [cid])
+    source = """select f.* replace ('SYN-PROJECTED' as payer_account,
+        'source projection ' || cast(id as varchar) as summary)
+        from flows f where case_id=? and id in (select unnest(?::bigint[]))"""
+    params = [cid, selected]
+    for offset in (0, 1, 99):
+        rows, summary = funds.page_with_summary(source, params, 1, offset,
+                                                observations=True, unique_source=True)
+        assert summary == expected(observations=len(selected), confirmed=1, unresolved=0,
+            status='exact', totals=[total('CNY', '100.01', '100.01', '100.01')])
+        wanted = sorted(selected, reverse=True)[offset:offset+1]
+        assert [row['id'] for row in rows] == wanted
+        for row in rows:
+            assert row['payer_account'] == 'SYN-PROJECTED'
+            assert row['summary'] == f"source projection {row['id']}"
+            assert row['amount'] == Decimal('100.01') and row['balance'] is None
+            assert row['trade_time'].microsecond == 123456
+        reference = database.q_raw(funds.cte(source) +
+            'select * from selected_observations order by trade_time desc nulls last,id desc limit ? offset ?',
+            [*params, 1, offset])
+        assert rows == reference
+
+
+def test_generic_join_projection_keeps_one_coherent_payload(database, make_case):
+    cid = make_case('Synthetic nonunique projected payload')
+    flow(database, cid, 1, '1.23')
+    source = """select f.* replace ('SYN-PARTY-' || cast(n as varchar) as payer_account,
+        'SYN-NOTE-' || cast(n as varchar) as summary)
+        from flows f cross join (values (1),(2)) copies(n) where case_id=?"""
+    rows, summary = funds.page_with_summary(source, [cid], 1, 0, observations=True)
+    assert len(rows) == summary['observation_count'] == 1
+    assert (rows[0]['payer_account'], rows[0]['summary']) in {
+        ('SYN-PARTY-1', 'SYN-NOTE-1'), ('SYN-PARTY-2', 'SYN-NOTE-2')}
+
+
+def test_public_late_payload_matches_all_fields_with_card_keyword_and_case_filters(client, database, make_case, monkeypatch):
+    cid = make_case('Synthetic complete projected API')
+    other = make_case('Synthetic same names other case')
+    members = [('tx.csv', table('transaction', [transaction(**{
+        '交易账号': '', '交易余额': '',
+        '摘要说明': 'SYN-KEYWORD-' + 'x' * 2049})])),
+        ('account.csv', table('account', [account()]))]
+    _, imported = accepted(client, cid, members)
+    _, other_imported = accepted(client, other, members)
+    assert imported['ok'] == other_imported['ok'] == 1
+    # This read-boundary test seeds subsecond precision independently; the
+    # closed 28-column fixture reader intentionally accepts whole seconds.
+    database.x("update flows set trade_time=timestamp '2026-01-01 10:00:00.123456' where case_id in (?,?)", [cid, other])
+    analysis_snapshot.invalidate(cid)
+    analysis_snapshot.invalidate(other)
+    original = funds.page_with_summary
+    def wide_reference(*args, **kwargs):
+        kwargs['unique_source'] = False
+        return original(*args, **kwargs)
+    for params in ({}, {'account': 'SYN-A'}, {'account': 'SYN-C1'}, {'kw': 'SYN-KEYWORD'},
+                   {'kw': 'SYN-MISSING'}, {'page': 99}):
+        query = {'granularity': 'observations', 'page_size': 1, **params}
+        response = client.get(f'/api/v1/cases/{cid}/flows', params=query)
+        assert response.status_code == 200
+        value = response.json()
+        with monkeypatch.context() as patch:
+            patch.setattr(funds, 'page_with_summary', wide_reference)
+            reference = client.get(f'/api/v1/cases/{cid}/flows', params=query)
+        assert reference.status_code == 200 and value == reference.json()
+        assert value['total'] == (0 if params.get('kw') == 'SYN-MISSING' else 1), params
+        if value['items']:
+            row = value['items'][0]
+            assert row['case_id'] == str(cid) and row['raw_payer_account'] == 'SYN-C1'
+            assert row['payer_source_account'] == '' and row['payer_card'] == 'SYN-C1'
+            assert row['payer_display_account'] == 'SYN-C1' and row['payer_card_state'] == 'confirmed'
+            assert row['amount'] == '10.25' and row['balance'] is None
+            assert row['trade_time'].endswith('.123456') and 'SYN-KEYWORD-' in row['summary']

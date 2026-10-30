@@ -130,14 +130,36 @@ def _summary_parts(group_by=(), *, rollup_groups=None):
         from _funds_grouped group by grouping sets ({grouping_sets})"""
 
 
-def page_with_summary(source_sql, params, page_size, offset, *, observations=False):
+def page_with_summary(source_sql, params, page_size, offset, *, observations=False, unique_source=False):
     """Share a request's database selection; return only its page and totals.
 
     The two independent scalar aggregates keep totals on an empty/overflow
     page. Structs preserve Decimal and list types without a JSON conversion or
     a union that coerces page values to the summary's column types.
     """
+    # Late payload lookup requires source columns to depend on (case_id,id).
+    # Generic joined/projection sources can have different payloads for a
+    # repeated key, so they retain the single selected-row interpretation.
     grouped, aggregate = _summary_parts()
+    if observations and unique_source:
+        narrow = f"select case_id,id,trade_time,amount,currency,balance from ({source_sql}) _funds_input"
+        query = cte(narrow) + grouped + f""",
+            _funds_summary as ({aggregate}),
+            _funds_page_keys as materialized (select * from selected_observations
+                order by trade_time desc nulls last,id desc limit ? offset ?),
+            _funds_payload as materialized (
+                select s.* from ({source_sql}) s join _funds_page_keys p
+                    on s.case_id=p.case_id and s.id=p.id
+            ), _funds_page as (
+                select s.*,p.fact_status,p.fact_event_id,p.fact_amount,p.fact_currency
+                from _funds_payload s join _funds_page_keys p
+                    on s.case_id=p.case_id and s.id=p.id
+            )
+            select (select list(p order by trade_time desc nulls last,id desc) from _funds_page p) page,
+                   (select list(s) from _funds_summary s) summary"""
+        with db._lock:
+            result = db.q_raw(query, [*params, page_size, offset, *params])[0]
+            return result["page"] or [], decode_summary(result["summary"])
     relation = "selected_observations" if observations else "selected_facts"
     query = cte(source_sql, include_ids=not observations) + grouped + f""",
         _funds_summary as ({aggregate}),
