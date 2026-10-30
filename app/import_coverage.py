@@ -191,7 +191,7 @@ def import_coverage(case_id, *, known_excluded=None):
                                               'funds-trace-bank-feedback-v2',
                                               'funds-trace-bank-feedback-v3',
                                               'funds-trace-bank-feedback-v4',
-                                              'funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6',
+                                              'funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6','funds-trace-bank-feedback-v7','funds-trace-bank-feedback-v8',
                                               'funds-trace-table-v5',
                                               'funds-trace-table-v6',
                                               'funds-trace-table-v7',
@@ -209,19 +209,19 @@ def import_coverage(case_id, *, known_excluded=None):
                                               'funds-trace-table-archive-v1',
                                               'funds-trace-table-archive-v2',
                                               'funds-trace-table-archive-v3',
-                                              'funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7')
+                                              'funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7','funds-trace-table-archive-v8','funds-trace-table-archive-v9')
                   and (s.parser_version!='funds-trace-table-v18' or ends_with(lower(s.filename),'.xls'))
                   then false else true end as unsupported_rule,
                 case when s.parser_version in ('funds-trace-bank-feedback-v1',
                                                   'funds-trace-bank-feedback-v2',
-                                                  'funds-trace-bank-feedback-v3','funds-trace-bank-feedback-v4','funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6')
+                                                  'funds-trace-bank-feedback-v3','funds-trace-bank-feedback-v4','funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6','funds-trace-bank-feedback-v7','funds-trace-bank-feedback-v8')
                               and r.reason_code='own_identity_conflict'
-                            or s.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7')
+                            or s.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7','funds-trace-table-archive-v8','funds-trace-table-archive-v9')
                               and r.reason_code='cancellation_historical_conflict'
                             or s.parser_version in ('funds-trace-table-v6','funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18','funds-trace-table-v19','funds-trace-table-v20')
                               and r.disposition='unresolved'
                               and json_extract_string(r.details_json,'$.counterparty_basis') in (?,?)
-                            or s.parser_version in ('funds-trace-table-v5','funds-trace-table-v6','funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18','funds-trace-table-v19','funds-trace-table-v20','funds-trace-table-archive-v1','funds-trace-table-archive-v2','funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7')
+                            or s.parser_version in ('funds-trace-table-v5','funds-trace-table-v6','funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18','funds-trace-table-v19','funds-trace-table-v20','funds-trace-table-archive-v1','funds-trace-table-archive-v2','funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7','funds-trace-table-archive-v8','funds-trace-table-archive-v9')
                               and r.disposition='unresolved'
                               and r.reason_code='conflicting_field'
                               and json_extract_string(r.details_json,'$.counterparty_basis')=?
@@ -234,6 +234,8 @@ def import_coverage(case_id, *, known_excluded=None):
                     when 'funds-trace-bank-feedback-v4' then 4
                     when 'funds-trace-bank-feedback-v5' then 4.5
                     when 'funds-trace-bank-feedback-v6' then 4.75
+                    when 'funds-trace-bank-feedback-v7' then 4.875
+                    when 'funds-trace-bank-feedback-v8' then 4.9375
                     when 'funds-trace-table-v5' then 5
                     when 'funds-trace-table-v6' then 5.5
                     when 'funds-trace-table-v7' then 5.75
@@ -257,6 +259,8 @@ def import_coverage(case_id, *, known_excluded=None):
                     when 'funds-trace-table-archive-v5' then 8.75
                     when 'funds-trace-table-archive-v6' then 8.875
                     when 'funds-trace-table-archive-v7' then 8.9375
+                    when 'funds-trace-table-archive-v8' then 8.96875
+                    when 'funds-trace-table-archive-v9' then 8.984375
                     when 'funds-trace-bank-feedback-v2' then 2
                     when 'funds-trace-bank-feedback-v1' then 1 else 9 end as priority
               from import_records r
@@ -281,7 +285,7 @@ def import_coverage(case_id, *, known_excluded=None):
                   order by priority desc,imported_at desc nulls last,source_id desc) assessment_rank
               from classified
             )
-            select count(*) filter (where parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7') and disposition='cancelled') table_proofs,
+            select count(*) filter (where parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7','funds-trace-table-archive-v8','funds-trace-table-archive-v9') and disposition='cancelled') table_proofs,
                    count(*) filter (where unsupported_rule or identity_conflict=1
                                           or disposition in ('review','unresolved')) unresolved_records,
                    count(*) filter (where not unsupported_rule and identity_conflict=0

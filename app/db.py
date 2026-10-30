@@ -474,7 +474,7 @@ def con():
                       join import_sources p on p.case_id=c.case_id and p.source_id=c.source_id
                       join import_members cm on cm.case_id=c.case_id and cm.source_id=c.source_id
                         and cm.member_path=c.member_path
-                      where p.row_kind='table_record' and p.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7')
+                      where p.row_kind='table_record' and p.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7','funds-trace-table-archive-v8','funds-trace-table-archive-v9')
                         and c.disposition='cancelled' and c.reason_code='matched_cancellation'
                     ), table_cancel_positions as materialized (
                       select c.*,rm.source_id
@@ -522,11 +522,11 @@ def con():
                       join import_sources p on p.case_id=c.case_id and p.source_id=c.source_id
                       where fs.case_id=f.case_id and fs.flow_id=f.id
                         and p.row_kind='archive_record'
-                        and p.parser_version in ('funds-trace-bank-feedback-v3','funds-trace-bank-feedback-v4','funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6')
+                        and p.parser_version in ('funds-trace-bank-feedback-v3','funds-trace-bank-feedback-v4','funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6','funds-trace-bank-feedback-v7','funds-trace-bank-feedback-v8')
                         and c.disposition='cancelled' and c.reason_code='matched_cancellation'
                         and json_extract_string(try_cast(c.details_json as json),'$.cancellation_role')='original'
                         and json_extract_string(try_cast(c.details_json as json),'$.cancellation_policy')='paired-cancellation-v1'
-                        and (p.parser_version not in ('funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6') or
+                        and (p.parser_version not in ('funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6','funds-trace-bank-feedback-v7','funds-trace-bank-feedback-v8') or
                           json_extract_string(try_cast(c.details_json as json),'$.canonical_currency')=f.currency)
                     ) and not exists (
                       select 1 from table_cancelled_flows c where c.case_id=f.case_id and c.flow_id=f.id

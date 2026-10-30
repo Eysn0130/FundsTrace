@@ -21,7 +21,11 @@ HEADER_PROFILE = "funds-trace-table-archive-v4"
 LEGACY_EVIDENCE_PROFILE = "funds-trace-table-archive-v5"
 EVIDENCE_PROFILE = "funds-trace-table-archive-v6"
 XLS_EVIDENCE_PROFILE = "funds-trace-table-archive-v7"
-EVIDENCE_PROFILES = frozenset((LEGACY_EVIDENCE_PROFILE, EVIDENCE_PROFILE, XLS_EVIDENCE_PROFILE))
+MICROSECOND_PROFILE = table_import.MICROSECOND_ARCHIVE_PROFILE
+MICROSECOND_XLS_PROFILE = table_import.MICROSECOND_XLS_ARCHIVE_PROFILE
+XLS_EVIDENCE_PROFILES = table_import.XLS_EVIDENCE_ARCHIVE_PROFILES
+EVIDENCE_PROFILES = frozenset((LEGACY_EVIDENCE_PROFILE, EVIDENCE_PROFILE, XLS_EVIDENCE_PROFILE,
+                               MICROSECOND_PROFILE, MICROSECOND_XLS_PROFILE))
 PROFILE = HEADER_PROFILE
 CANCELLATION_PROFILES = frozenset((CANCELLATION_PROFILE, HEADER_PROFILE, *EVIDENCE_PROFILES))
 SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, REFERENCE_PROFILE, *CANCELLATION_PROFILES))
@@ -91,7 +95,7 @@ def should_parse(source):
 
 
 def evidence_profile(source):
-    """Opt actual XLS members into v7 without reading business table payloads.
+    """Opt actual XLS members into the XLS-capable profile without reading business table payloads.
 
     Only nested ZIP payloads are opened to inspect their member metadata. The
     normal parser still validates every leaf and owns the public error. A
@@ -134,12 +138,12 @@ def evidence_profile(source):
     try:
         source.seek(0)
         if contains_xls(source):
-            return XLS_EVIDENCE_PROFILE
+            return MICROSECOND_XLS_PROFILE
     except (OSError, ValueError, zipfile.BadZipFile, RuntimeError):
         pass  # The normal parser owns archive validation and its public error.
     finally:
         source.seek(0)
-    return EVIDENCE_PROFILE
+    return MICROSECOND_PROFILE
 
 
 def _path(name):
@@ -313,7 +317,7 @@ def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
                             raise table_import.TableImportError("反馈包嵌套层数超出安全处理范围")
                         visit(io.BytesIO(payload), path, depth + 1)
                     elif suffix not in (".csv", ".tsv", ".txt", ".xlsx") and not (
-                            suffix == ".xls" and profile == XLS_EVIDENCE_PROFILE):
+                            suffix == ".xls" and profile in XLS_EVIDENCE_PROFILES):
                         merge(import_attachments.plan(payload, path), path, prefix)
                     else:
                         # XLS always goes through the typed BIFF reader, even

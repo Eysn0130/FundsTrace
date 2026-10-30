@@ -227,7 +227,7 @@ def _feedback_journals(check, paths):
         return
     for table in ("import_members", "import_records"):
         totals = check.execute(f"select source_id,count(*) from {table} where source_id in (select source_id from import_sources where row_kind='archive_record') group by source_id").fetchall()
-        if any(count > ((feedback_import.EVIDENCE_MAX_MEMBERS if archives[source_id] == feedback_import.EVIDENCE_PROFILE else feedback_import.MAX_MEMBERS) if table == "import_members"
+        if any(count > ((feedback_import.EVIDENCE_MAX_MEMBERS if archives[source_id] in feedback_import.EVIDENCE_PROFILES else feedback_import.MAX_MEMBERS) if table == "import_members"
                         else feedback_import.max_records(archives[source_id])) for source_id, count in totals):
             _invalid("反馈包日志总量超出限制")
     members = check.execute("select m.source_id,m.member_path,m.role,m.sha256,m.size_bytes,m.encoding,m.row_count from import_members m join import_sources s on s.source_id=m.source_id where s.row_kind='archive_record'").fetchall()
@@ -241,7 +241,7 @@ def _feedback_journals(check, paths):
                 or Path(path).suffix.lower() != ".csv"
                 or role not in feedback_import.ROLES
                 or not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256)
-                or size is None or not 0 <= size <= (feedback_import.EVIDENCE_MAX_MEMBER_BYTES if archives[source_id] == feedback_import.EVIDENCE_PROFILE else feedback_import.MAX_MEMBER_BYTES)
+                or size is None or not 0 <= size <= (feedback_import.EVIDENCE_MAX_MEMBER_BYTES if archives[source_id] in feedback_import.EVIDENCE_PROFILES else feedback_import.MAX_MEMBER_BYTES)
                 or count is None or not 0 <= count <= feedback_import.max_records(archives[source_id])
                 or encoding not in ("utf-8-sig", "gb18030")):
             _invalid("反馈包成员元数据无效")
@@ -253,8 +253,8 @@ def _feedback_journals(check, paths):
     if set(by_source) != set(archives):
         _invalid("反馈包来源与成员不一致")
     for source_id, values in by_source.items():
-        if (len(values) > (feedback_import.EVIDENCE_MAX_MEMBERS if archives[source_id] == feedback_import.EVIDENCE_PROFILE else feedback_import.MAX_MEMBERS)
-                or sum(value[1] for value in values) > (feedback_import.EVIDENCE_MAX_EXPANDED_BYTES if archives[source_id] == feedback_import.EVIDENCE_PROFILE else feedback_import.MAX_EXPANDED_BYTES)
+        if (len(values) > (feedback_import.EVIDENCE_MAX_MEMBERS if archives[source_id] in feedback_import.EVIDENCE_PROFILES else feedback_import.MAX_MEMBERS)
+                or sum(value[1] for value in values) > (feedback_import.EVIDENCE_MAX_EXPANDED_BYTES if archives[source_id] in feedback_import.EVIDENCE_PROFILES else feedback_import.MAX_EXPANDED_BYTES)
                 or sum(value[2] for value in values) > feedback_import.max_records(archives[source_id])):
             _invalid("反馈包成员总量超出限制")
     linked_flows = {(source_id, row): (disposition, name or "", account or "",
@@ -520,7 +520,7 @@ def _table_journals(check, paths):
                 or encoding not in (("binary",) if role == "attachment" else ("utf-8-sig", "gb18030", "utf-16", "xlsx", "xls"))
                 or encoding == "xls" and source_profiles[source_id] not in table_import.XLS_READER_PROFILES
                 or source_profiles[source_id] == table_import.XLS_PROFILE and encoding != "xls"
-                or encoding == "xls" and source_profiles[source_id] == table_import.XLS_EVIDENCE_ARCHIVE_PROFILE
+                or encoding == "xls" and source_profiles[source_id] in table_import.XLS_EVIDENCE_ARCHIVE_PROFILES
                    and not re.search(r"\.xls/worksheets/[0-9]{4}$", path, re.IGNORECASE)):
             _invalid("自动表格成员元数据无效")
         if encoding == "xls":

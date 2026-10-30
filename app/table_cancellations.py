@@ -81,11 +81,15 @@ def _status(value):
         "text_success" if value in {"成功", "交易成功", "success", "succeeded"} else "other")
 
 
-def _observation(record, source):
+def _observation(record, source, *, fractional_feedback=False):
     money = {"factor": Decimal(1)}
     amount, _ = table_import._money(source["交易金额"], money)
     balance, _ = table_import._money(source["交易余额"], money)
-    time = table_import._time(source["交易时间"])
+    if fractional_feedback:
+        from . import feedback_import
+        time = feedback_import._time(source["交易时间"], fractional=True)
+    else:
+        time = table_import._time(source["交易时间"])
     direction = table_import._enum(source["收付标志"])
     direction = "in" if direction in table_import._IN else "out" if direction in table_import._OUT else ""
     currency_raw = source["交易币种"]
@@ -304,7 +308,9 @@ def apply(plan, payload, *, allow_feedback28=False, csv_format=None):
                 if record["reason_code"] == "repeated_header":
                     headers = [table_import._text(value) for value in cells]
                 source = dict(zip(headers, (table_import._text(value) for value in cells)))
-                observation = _observation(record, source)
+                observation = _observation(
+                    record, source, fractional_feedback=len(headers) == 28
+                    and plan["profile"] in table_import.MICROSECOND_ARCHIVE_PROFILES)
                 observations.append(observation)
                 if not observation["scope"] and observation["movement"] not in {"header", "non_transaction", "zero"}:
                     eligible = False

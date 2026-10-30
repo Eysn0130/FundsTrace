@@ -10,15 +10,22 @@ from test_folder_evidence import accepted, account, table, transaction
 
 
 def list_load(database, cid):
-    # The frozen v9 supplier, retained independently as a compatibility oracle.
-    query = """select m.sha256,r.source_row,r.details_json,f.flow_id,r.member_path
+    # The frozen v9 supplier algorithm, with an explicit version allowlist so
+    # current imports cannot silently disappear from this independent oracle.
+    profiles = ("funds-trace-table-v19", "funds-trace-table-v20",
+                "funds-trace-table-archive-v5", "funds-trace-table-archive-v6",
+                "funds-trace-table-archive-v7", "funds-trace-table-archive-v8",
+                "funds-trace-table-archive-v9", "funds-trace-bank-feedback-v6",
+                "funds-trace-bank-feedback-v8")
+    assert e.PROFILES == frozenset(profiles)
+    query = f"""select m.sha256,r.source_row,r.details_json,f.flow_id,r.member_path
         from import_records r join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join evidence_sources b on b.case_id=r.case_id and b.source_id=r.source_id and b.active
         join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
         left join flow_sources f on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
-        where r.case_id=? and s.parser_version in (?,?,?) and r.disposition in ('auxiliary','imported','duplicate')
+        where r.case_id=? and s.parser_version in ({','.join('?' for _ in profiles)}) and r.disposition in ('auxiliary','imported','duplicate')
         order by r.source_id,r.record_no"""
-    cursor = database.con().execute(query, [cid, e.TABLE_PROFILE, e.ARCHIVE_PROFILE, e.FEEDBACK_PROFILE])
+    cursor = database.con().execute(query, [cid, *profiles])
     result, seen, namespaces = [], set(), {}
     while batch := cursor.fetchmany(4096):
         for digest, position, details, flow_id, path in batch:

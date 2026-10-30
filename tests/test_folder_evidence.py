@@ -204,7 +204,7 @@ def test_ordinary_zip_large_manifest_uses_complete_bounded_csv_records(client, d
                ("accounts.csv", table("account", [account()])), ("manifest.csv", manifest)]
     view, receipt = accepted(client, cid, members, zipped=True, scope_bank=None)
     assert view["resolution"] and receipt["resolution"]["auxiliary_records"] == 701
-    assert database.q_raw("select parser_version from import_sources where case_id=?", [cid])[0]["parser_version"] == feedback_import.EVIDENCE_PROFILE
+    assert database.q_raw("select parser_version from import_sources where case_id=?", [cid])[0]["parser_version"] == feedback_import.MICROSECOND_EVIDENCE_PROFILE
     row = client.get(f"/api/v1/cases/{cid}/flows").json()["items"][0]
     own = next(item for item in entities(client, cid)["entities"] if item["entity_id"] == row["payer_account"])
     assert own["bank"] == "Synthetic bank" and own["kind"] == "account"

@@ -894,10 +894,10 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
         if suffix == ".zip":
             resolve_evidence = resolve_evidence or evidence_resolution.complete_family(source)
             archive_profile = table_archive.evidence_profile(source)
-        table_profile = (((archive_profile if resolve_evidence or archive_profile == table_archive.XLS_EVIDENCE_PROFILE else table_archive.PROFILE) if not (resolve_evidence and feedback_import.is_family(source)) and table_archive.should_parse(source) else None)
+        table_profile = (((archive_profile if resolve_evidence or archive_profile in table_archive.XLS_EVIDENCE_PROFILES else table_archive.PROFILE) if not (resolve_evidence and feedback_import.is_family(source)) and table_archive.should_parse(source) else None)
                          if suffix == ".zip" else table_import.XLS_PROFILE if suffix == ".xls" else table_import.EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
         parsed = _parse(source, suffix=suffix, table_profile=table_profile,
-                        feedback_profile=feedback_import.EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None,
+                        feedback_profile=feedback_import.MICROSECOND_EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None,
                         _auto_event_profile=table_profile == table_import.CURRENCY_REGION_PROFILE
                         and suffix in {".csv", ".tsv", ".txt", ".xlsx"})
     created = False

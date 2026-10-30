@@ -107,7 +107,7 @@ def test_legacy_evidence_reimport_adds_declaration_without_rewriting_ledger(clie
     cid = make_case("Synthetic parser-version upgrade")
     inputs = [("ledgers.csv", csv_rows([transaction("SYN-A"), transaction("SYN-B")]))]
     with monkeypatch.context() as previous:
-        previous.setattr(table_archive, "EVIDENCE_PROFILE", table_archive.LEGACY_EVIDENCE_PROFILE)
+        previous.setattr(table_archive, "evidence_profile", lambda _: table_archive.LEGACY_EVIDENCE_PROFILE)
         accepted(client, cid, inputs, scope_bank=None)
     original = database.q_raw("select * from flows where case_id=? order by id", [cid])
     assert event_resolution.summary(cid) is None

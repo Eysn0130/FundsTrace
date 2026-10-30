@@ -45,9 +45,13 @@ LEGACY_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v5"
 EVIDENCE_PROFILE = "funds-trace-table-v20"
 EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
 XLS_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v7"
-XLS_READER_PROFILES = frozenset((XLS_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE))
-EVENT_PROFILES = frozenset((EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE))
-EVIDENCE_ARCHIVE_PROFILES = frozenset((LEGACY_EVIDENCE_ARCHIVE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE))
+MICROSECOND_ARCHIVE_PROFILE = "funds-trace-table-archive-v8"
+MICROSECOND_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v9"
+MICROSECOND_ARCHIVE_PROFILES = frozenset((MICROSECOND_ARCHIVE_PROFILE, MICROSECOND_XLS_ARCHIVE_PROFILE))
+XLS_EVIDENCE_ARCHIVE_PROFILES = frozenset((XLS_EVIDENCE_ARCHIVE_PROFILE, MICROSECOND_XLS_ARCHIVE_PROFILE))
+XLS_READER_PROFILES = frozenset((XLS_PROFILE, *XLS_EVIDENCE_ARCHIVE_PROFILES))
+EVENT_PROFILES = frozenset((EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, *MICROSECOND_ARCHIVE_PROFILES))
+EVIDENCE_ARCHIVE_PROFILES = frozenset((LEGACY_EVIDENCE_ARCHIVE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, *MICROSECOND_ARCHIVE_PROFILES))
 EVIDENCE_PROFILES = frozenset((LEGACY_EVIDENCE_PROFILE, *EVIDENCE_ARCHIVE_PROFILES, EVIDENCE_PROFILE))
 PROFILE = CURRENCY_REGION_PROFILE
 CURRENCY_REGION_PROFILES = frozenset((CURRENCY_REGION_PROFILE, XLS_PROFILE, *EVIDENCE_PROFILES))
@@ -284,7 +288,7 @@ def _header_value(value, profile):
 def _evidence_value(value, profile):
     # v7 adds evidence to the XLS reader without granting its formula cache
     # authority over identities, event references or posting-order declarations.
-    if profile == XLS_EVIDENCE_ARCHIVE_PROFILE and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type):
+    if profile in XLS_EVIDENCE_ARCHIVE_PROFILES and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type):
         return None
     return _raw(value)
 
@@ -1480,7 +1484,7 @@ def _append_auxiliary_sheet(plan, sheet, *, details_pool=None):
             continue
         valid = len(row) == width and not any(_cell_present(value) for value in row[meaningful_width:])
         reason = "auxiliary_table" if valid else "column_count_mismatch"
-        if valid and plan["profile"] == XLS_EVIDENCE_ARCHIVE_PROFILE:
+        if valid and plan["profile"] in XLS_EVIDENCE_ARCHIVE_PROFILES:
             if any(isinstance(value, _WorkbookValue) and value.formula for value in row[:meaningful_width]):
                 valid, reason = False, "formula_value"
             elif any(isinstance(value, _WorkbookValue) and value.invalid_type for value in row[:meaningful_width]):
@@ -1571,7 +1575,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
     suffix = suffix.lower()
     archive_member = ((profile == ARCHIVE_MEMBER_PROFILE and suffix == ".csv"
                        or profile in EVIDENCE_ARCHIVE_PROFILES and suffix in {".csv", ".txt", ".tsv", ".xlsx"}
-                       or profile == XLS_EVIDENCE_ARCHIVE_PROFILE and suffix == ".xls")
+                       or profile in XLS_EVIDENCE_ARCHIVE_PROFILES and suffix == ".xls")
                       and reference_policy == TRANSACTION_REFERENCE_POLICY)
     if profile not in SUPPORTED_PROFILES and not archive_member:
         raise TableImportError("不支持的表格解析规则")
@@ -1682,8 +1686,8 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                     from . import feedback_import
                     if (len(headers) == len(feedback_import.COLUMNS)
                             and frozenset(_text(_header_value(value, profile)) for value in headers) == frozenset(feedback_import.COLUMNS)
-                            and not (profile == XLS_EVIDENCE_ARCHIVE_PROFILE and reason in {"formula_value", "invalid_cell_type"})):
-                        result, disposition, reason, parsed_details = _feedback_member_outcome(headers, row, (result, disposition, reason, parsed_details))
+                            and not (profile in XLS_EVIDENCE_ARCHIVE_PROFILES and reason in {"formula_value", "invalid_cell_type"})):
+                        result, disposition, reason, parsed_details = _feedback_member_outcome(headers, row, (result, disposition, reason, parsed_details), profile)
                 own_side = parsed_details.pop("_resolved_own_side", "")
                 details.update(parsed_details)
                 if source_contract:
@@ -1754,7 +1758,7 @@ def refresh_stats(plan):
     return plan
 
 
-def _feedback_member_outcome(headers, cells, generic):
+def _feedback_member_outcome(headers, cells, generic, profile):
     """The closed 28-column family keeps its admission/facts in mixed folders.
 
     The common table journal records this versioned adapter. It does not broaden
@@ -1762,11 +1766,18 @@ def _feedback_member_outcome(headers, cells, generic):
     """
     from . import feedback_import
     source = {_text(header): _text(value) for header, value in zip(headers, cells)}
-    row, disposition, reason, legacy_details, _context = feedback_import._transaction(source, feedback_import.EVIDENCE_PROFILE)
+    row, disposition, reason, legacy_details, _context = feedback_import._transaction(
+        source, feedback_import.MICROSECOND_EVIDENCE_PROFILE if profile in MICROSECOND_ARCHIVE_PROFILES
+        else feedback_import.EVIDENCE_PROFILE)
     notes = dict(generic[3])
     notes.pop("flow_sha256", None)
     notes.pop("validation_issues", None)
     notes.pop("validation_basis", None)
+    if profile in MICROSECOND_ARCHIVE_PROFILES:
+        # The closed adapter owns the reference even when generic inference
+        # could not interpret this row. Cancellation package verification must
+        # bind to the actual source transaction ID, never a voucher fallback.
+        notes["trade_no_basis"] = "source_transaction_id" if source["交易流水号"] else "none"
     if row is not None:
         notes.update(financial_effect="source_reported", flow_sha256=flow_digest(row))
         return row, "accepted", "transaction_valid", notes
