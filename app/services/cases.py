@@ -116,11 +116,8 @@ def flows(case_id, account, kw, page, page_size, granularity="events"):
         where = " and ".join(conditions)
         from app import funds_projection
         source = f"select * from effective_flows where {where}"
-        prefix = funds_projection.cte(source, include_ids=True)
-        relation = "selected_observations" if granularity == "observations" else "selected_facts"
-        rows = raw_query(prefix + f"select * from {relation} order by trade_time desc nulls last,id desc limit ? offset ?",
-                         params + [page_size, (page - 1) * page_size])
-        funds = funds_projection.summary(source, params)
+        rows, funds = funds_projection.page_with_summary(source, params, page_size, (page - 1) * page_size,
+                                                        observations=granularity == "observations")
         # The same locked selection already counts observations and one row per
         # confirmed event or unresolved observation, including on an empty page.
         total = funds["observation_count"] if granularity == "observations" else funds["count"]["upper"]

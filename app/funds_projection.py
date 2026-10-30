@@ -95,6 +95,11 @@ def _result(aggregates):
 
 def summary_query(source_sql, group_by=(), *, rollup_groups=None):
     """Aggregation SQL; decode each selected group's small result separately."""
+    grouped, aggregate = _summary_parts(group_by, rollup_groups=rollup_groups)
+    return cte(source_sql) + grouped + aggregate
+
+
+def _summary_parts(group_by=(), *, rollup_groups=None):
     if any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name) for name in group_by):
         raise ValueError("invalid funds grouping column")
     columns = ",".join(group_by)
@@ -107,12 +112,13 @@ def summary_query(source_sql, group_by=(), *, rollup_groups=None):
         grouping_sets = ",".join("(" + ",".join(group) + ")" for keys in rollup_groups
                                  for group in (tuple(keys), (*keys, "funds_currency")))
         grouping_marker = f"grouping_id({columns}) _account_group,"
-    return cte(source_sql) + f""", _funds_grouped as (
+    grouped = f""", _funds_grouped as (
         select *,case when currency in {_CURRENCIES_SQL} then currency end funds_currency,
             count(distinct case_id) over () _funds_case_count,
             bool_or(case_id is null) over () _funds_missing_case
         from selected_facts
-    ) select {prefix}{grouping_marker}grouping(funds_currency) is_total,funds_currency,
+    ) """
+    return grouped, f"""select {prefix}{grouping_marker}grouping(funds_currency) is_total,funds_currency,
         coalesce(max(_funds_case_count),0) case_count,bool_or(_funds_missing_case) missing_case,
         sum(observation_count) observations,
         count(*) filter(where fact_status='confirmed') confirmed,
@@ -122,6 +128,26 @@ def summary_query(source_sql, group_by=(), *, rollup_groups=None):
         sum(case when fact_status='confirmed' then amount else 0 end) lower_amount,
         sum(case when fact_status='unresolved' and amount>=0 then amount else 0 end) unresolved_amount
         from _funds_grouped group by grouping sets ({grouping_sets})"""
+
+
+def page_with_summary(source_sql, params, page_size, offset, *, observations=False):
+    """Share a request's database selection; return only its page and totals.
+
+    The two independent scalar aggregates keep totals on an empty/overflow
+    page. Structs preserve Decimal and list types without a JSON conversion or
+    a union that coerces page values to the summary's column types.
+    """
+    grouped, aggregate = _summary_parts()
+    relation = "selected_observations" if observations else "selected_facts"
+    query = cte(source_sql, include_ids=not observations) + grouped + f""",
+        _funds_summary as ({aggregate}),
+        _funds_page as (select * from {relation}
+            order by trade_time desc nulls last,id desc limit ? offset ?)
+        select (select list(p order by trade_time desc nulls last,id desc) from _funds_page p) page,
+               (select list(s) from _funds_summary s) summary"""
+    with db._lock:
+        result = db.q_raw(query, [*params, page_size, offset])[0]
+        return result["page"] or [], decode_summary(result["summary"])
 
 
 def decode_summary(aggregates):
