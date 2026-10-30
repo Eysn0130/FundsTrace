@@ -374,9 +374,9 @@ class PlanStore:
             self._con = connection = sqlite3.connect(path, check_same_thread=False)
             self._con.executescript("""pragma journal_mode=off; pragma synchronous=off;
                 pragma cache_size=-4096; pragma temp_store=file; pragma mmap_size=0;
-                create table items(kind text,position integer,number integer,member text,disposition text,
+                create table items(kind text not null,position integer not null,number integer,member text,disposition text,
                                    details_version integer,payload blob,binding text,
-                                   primary key(kind,position)) without rowid;
+                                   primary key(kind,position));
                 create index item_numbers on items(kind,number);
                 create index item_members on items(kind,member,position);
                 create index item_auxiliary on items(kind,position) where disposition='auxiliary';
