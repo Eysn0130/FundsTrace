@@ -12,7 +12,7 @@ import uuid
 
 import pytest
 
-from app import case_packages, import_staging, table_import
+from app import case_packages, import_preview_cache, import_staging, table_import
 from app.services import imports
 from test_folder_evidence import account, complete, preview, table, transaction
 from test_import_chunk_transactions import snapshot
@@ -90,11 +90,14 @@ def test_spool_is_private_replayable_and_released_with_full_provenance(client, d
             assert imports._json(list(records)) == frozen
     monkeypatch.setattr(imports, "_write_feedback_journal", replay)
     view = request(client, cid, family, monkeypatch)
+    if family == "archive":
+        assert import_preview_cache._slot is not None
+        assert import_preview_cache._slot[1][0].attrs["table_plan"]["_plan_store"] is owners[0][0]
     job = complete(client, cid, view)
     assert job["stage"] == "done", job
     assert len(streams) == (1 if family == "feedback" else 0)
     assert len(staged_journals) == (1 if family in {"archive", "table"} else 0)
-    assert sum("records" in owner._counts for owner, _, _ in owners) == (2 if family in {"archive", "table"} else 0)
+    assert sum("records" in owner._counts for owner, _, _ in owners) == (1 if family == "archive" else 2 if family == "table" else 0)
     assert all(stream.closed for stream in streams)
     assert_plan_stores_closed(owners)
     assert_receipt(database, view["import_id"], job)
@@ -135,6 +138,16 @@ def test_spool_io_failure_rolls_back_and_closes_before_explicit_retry(client, da
     session = database.q_raw("select * from import_sessions where import_id=?", [view["import_id"]])[0]
     path = imports._path(session["import_id"], session["suffix"])
     source_bytes = path.read_bytes()
+    cached_owner = None
+    if backend == "plan" and import_preview_cache._slot is not None:
+        owner = import_preview_cache._slot[1][0].attrs["table_plan"]["_plan_store"]
+        cached_owner = (owner, owner._con, Path(owner._con.execute("pragma database_list").fetchone()[2]))
+        if failure in {"write", "flush"}:
+            # Construction faults require the supported cache-miss parse path.
+            # Read/verification faults below still exercise the cached owner.
+            import_preview_cache.discard()
+            assert_plan_stores_closed([cached_owner])
+            cached_owner = None
     temporary, streams, failures = imports.tempfile.TemporaryFile, [], []
     class Fault:
         def __init__(self, stream):
@@ -167,6 +180,8 @@ def test_spool_io_failure_rolls_back_and_closes_before_explicit_retry(client, da
         return Fault(stream)
     with monkeypatch.context() as fail:
         owners = observe_plan_stores(fail)
+        if cached_owner is not None:
+            owners.append(cached_owner)
         if backend == "journal":
             fail.setattr(imports.tempfile, "TemporaryFile", create)
         elif failure in {"write", "flush"}:

@@ -4,6 +4,7 @@ Only decoded working notes are cached. Original bytes, canonical financial rows
 and persisted journal JSON are unchanged; this is not a new source format.
 """
 from collections import OrderedDict
+from contextlib import contextmanager
 from collections.abc import MutableMapping
 import json
 import os
@@ -401,6 +402,7 @@ class PlanStore:
         self._dirty_bytes = 0
         self._ends = {}
         self._namespace = 0
+        self._working_store = None
         self._member_details = {}
         self._member_details_sizes = {}
         self._details_version = 0
@@ -425,8 +427,36 @@ class PlanStore:
         return StagedSequence(self, kind)
 
     def mapping(self):
+        if self._working_store is not None:
+            return self._working_store.mapping()
         self._namespace += 1
         return StagedMap(self, str(self._namespace))
+
+    @contextmanager
+    def working_maps(self):
+        """Case-dependent indexes never become part of the reusable plan."""
+        self._check()
+        if self._working_store is not None:
+            raise ValueError("staged working maps already active")
+        limit = self._con.execute("pragma max_page_count").fetchone()[0]
+        scratch = _WorkingMaps(self)
+        self._working_store = scratch
+        try:
+            yield
+        finally:
+            self._working_store = None
+            scratch.close()
+            if not self._closed and scratch.plan_limit_changed:
+                self._con.execute(f"pragma max_page_count={limit}")
+
+    def _prepare_write(self):
+        self._check()
+        if self._working_store is not None:
+            scratch = self._working_store
+            limit = min(self._con.execute("pragma max_page_count").fetchone()[0],
+                        MAX_SPOOL_BYTES // 4096 - scratch.pages())
+            _limit_pages(self._con, limit)
+            scratch.plan_limit_changed = True
 
     def set_member_details(self, values):
         """Present member-constant notes without rewriting every source record.
@@ -554,6 +584,7 @@ class PlanStore:
     def flush(self):
         self._check()
         if self._bindings:
+            self._prepare_write()
             self._con.executemany("update items set binding=? where kind=? and position=?",
                 ((value, kind, position) for (kind, position), value in self._bindings.items()))
             self.update_encoded_bytes += self._binding_bytes
@@ -562,6 +593,7 @@ class PlanStore:
             self._binding_bytes = 0
         if not self._dirty:
             return
+        self._prepare_write()
         values = []
         for (kind, position), item in self._dirty.items():
             payload = _pack_value(item)
@@ -581,6 +613,8 @@ class PlanStore:
             return
         # A closed owner is never readable, including through a cached object.
         self._closed = True
+        if self._working_store is not None:
+            self._working_store.close()
         self._bindings.clear()
         self._binding_bytes = 0
         self._dirty.clear()
@@ -721,6 +755,7 @@ class StagedSequence(Sequence):
         position = store._ends.get(self.kind, 0)
         pending, size = [], 0
         def write():
+            store._prepare_write()
             store._con.executemany("insert into items(kind,position,number,member,disposition,details_version,payload) values (?,?,?,?,?,?,?)", pending)
             store.write_batches += 1
             store._counts[self.kind] = store._counts.get(self.kind, 0) + len(pending)
@@ -774,6 +809,62 @@ class StagedSequence(Sequence):
         store._read_bytes = 0
 
 
+def _limit_pages(connection, limit):
+    if limit < connection.execute("pragma page_count").fetchone()[0] or limit < 1:
+        raise sqlite3.OperationalError("staged import disk budget exhausted")
+    connection.execute(f"pragma max_page_count={limit}")
+
+
+class _WorkingMaps:
+    """One binding owns its scratch; both SQLite files share the plan budget."""
+    def __init__(self, plan):
+        from . import db
+        self.plan = plan
+        self._closed = False
+        self._namespace = 0
+        self.plan_limit_changed = False
+        self.read_queries = self.write_batches = self.index_encoded_bytes = 0
+        directory = tempfile.TemporaryDirectory(prefix="funds-trace-binding-", dir=db.DATA_DIR)
+        connection = None
+        try:
+            path = os.path.join(directory.name, "lookup.sqlite")
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+            os.close(descriptor)
+            self._con = connection = sqlite3.connect(path, check_same_thread=False)
+            self._con.executescript("""pragma journal_mode=off; pragma synchronous=off;
+                pragma cache_size=-4096; pragma temp_store=file; pragma mmap_size=0;""")
+            self._prepare_write()
+            self._con.execute("create table lookup(namespace text,key blob,value blob,primary key(namespace,key)) without rowid")
+        except BaseException:
+            if connection is not None:
+                connection.close()
+            directory.cleanup()
+            raise
+        self._finalizer = weakref.finalize(self, _dispose_plan, self._con, directory)
+
+    def _check(self):
+        self.plan._check()
+        if self._closed:
+            raise ValueError("staged working maps are closed")
+
+    def pages(self):
+        return self._con.execute("pragma page_count").fetchone()[0]
+
+    def _prepare_write(self):
+        self._check()
+        _limit_pages(self._con, MAX_SPOOL_BYTES // 4096 - self.plan._con.execute("pragma page_count").fetchone()[0])
+
+    def mapping(self):
+        self._check()
+        self._namespace += 1
+        return StagedMap(self, str(self._namespace))
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            self._finalizer()
+
+
 class StagedMap(MutableMapping):
     """Disk index with a bounded write buffer, for facts and dedup identities."""
     def __init__(self, store, namespace):
@@ -783,6 +874,7 @@ class StagedMap(MutableMapping):
     def flush(self):
         self.store._check()
         if self._pending:
+            self.store._prepare_write()
             self.store._con.executemany("insert or replace into lookup values (?,?,?)",
                 ((self.namespace, key, value) for key, value in self._pending.items()))
             self.store.write_batches += 1

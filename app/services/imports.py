@@ -4,6 +4,7 @@ The database owns session state; disk filenames never grant access. A completed
 receipt is committed with its flows and remains readable after source cleanup.
 """
 import datetime as dt
+from contextlib import nullcontext
 from decimal import Decimal, localcontext
 import hashlib
 import io
@@ -666,6 +667,13 @@ def _bind_shared_cancellation_plan_history(case_id, plan, stats):
 
 
 def _bind_table_plan(case_id, parsed, *, source=None):
+    plan = parsed[0].attrs.get("table_plan")
+    store = plan.get("_plan_store") if plan is not None else None
+    with store.working_maps() if store is not None and case_id is not None else nullcontext():
+        _bind_table_plan_history(case_id, parsed, source=source)
+
+
+def _bind_table_plan_history(case_id, parsed, *, source=None):
     """Bind cancellation evidence to every stored interpretation of its original.
 
     A physical source occurrence can have several historical mappings. None of
