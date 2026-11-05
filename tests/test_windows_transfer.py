@@ -54,6 +54,23 @@ def test_transfer_accepts_the_actual_packager_license_resources(tmp_path, monkey
                             "docs/licensing.md", "docs/licensing.en.md", "static/graph-selection.js"}
 
 
+def test_transfer_requires_complete_source_bound_windows_decoder():
+    files, resources = backend_resources(licenses=transfer.WINDOWS_RAR_RESOURCES)
+    verify = lambda: transfer.verify_backend_resources(resources, files.__getitem__, require_rar=True)
+    assert verify() == len(files)
+    for name in transfer.WINDOWS_RAR_RESOURCES:
+        original = resources.pop(name)
+        with pytest.raises(AssertionError):
+            verify()
+        resources[name] = "0" * 64
+        with pytest.raises(AssertionError):
+            verify()
+        resources[name] = original
+    resources["resources/rar-decoder/win32-x64/extra.exe"] = "0" * 64
+    with pytest.raises(AssertionError):
+        verify()
+
+
 def test_backend_resource_transfer_preserves_historical_manifest():
     files, resources = backend_resources()
     checked = []

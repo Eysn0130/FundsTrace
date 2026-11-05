@@ -257,15 +257,30 @@ def variants(value):
     return values
 
 
-def verify_backend_resources(resources, source_file):
+WINDOWS_RAR_RESOURCES = {
+    "resources/rar-decoder/LICENSE.txt",
+    "resources/rar-decoder/LGPL-2.1.txt",
+    "resources/rar-decoder/win32-x64/manifest.json",
+    "resources/rar-decoder/win32-x64/7z.exe",
+    "resources/rar-decoder/win32-x64/7z.dll",
+}
+
+
+def verify_backend_resources(resources, source_file, *, require_rar=False):
     """Verify the declared backend resources against their reviewed source bytes."""
+    decoder_files = WINDOWS_RAR_RESOURCES if require_rar else set()
+    assert decoder_files <= resources.keys(), "Missing Windows RAR decoder resources"
     sources_checked = 0
     for name, sha in resources.items():
         assert not PurePosixPath(name).is_absolute() and ".." not in PurePosixPath(name).parts
         if name.startswith("frontend/dist/"):
             continue  # The Windows build verified these actual compiled resources, then installed them.
-        assert name in SOURCE_DOCUMENT_NAMES or name.startswith("static/")
-        assert sha in variants(source_file(name))
+        assert name in SOURCE_DOCUMENT_NAMES or name.startswith("static/") or name in decoder_files
+        content = source_file(name)
+        if name.endswith((".exe", ".dll")):
+            assert sha == hashlib.sha256(content).hexdigest()
+        else:
+            assert sha in variants(content)
         sources_checked += 1
     assert "static/graph-selection.js" in resources
     assert len(resources) == sources_checked + 3
@@ -391,7 +406,8 @@ def main():
         manifest = data(manifest_path)
         assert manifest["platform"] == "win32" and manifest["arch"] == "x64" and manifest["protocol"] == 1
         sources_checked = verify_backend_resources(manifest["resources"], lambda name:
-            subprocess.check_output(["git", "show", f"{source}:{name}"]))
+            subprocess.check_output(["git", "show", f"{source}:{name}"]),
+            require_rar=tuple(map(int, source_package["version"].split("."))) >= (0, 1, 15))
         assert manifest["sourceEntrySha256"] in variants(subprocess.check_output(["git", "show", f"{source}:desktop_backend.py"]))
 
         host_path = base / "packaged-host-resources.json"
