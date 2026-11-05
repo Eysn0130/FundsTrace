@@ -24,16 +24,20 @@ function request({ origin, token }, endpoint, options = {}) {
 }
 
 async function checkNormalStartup(ready) {
+  const bootStage = stage;
   const endpoints = ['/__desktop/health', '/', '/analysis', '/workspace/', '/api/cases', '/api/v1/cases'];
   for (const endpoint of endpoints) {
+    stage = bootStage + ':unauthenticated:' + endpoint;
     const denied = await fetch(`${ready.origin}${endpoint}`, { redirect: 'manual', signal: AbortSignal.timeout(10000) });
     assert.equal(denied.status, 403, endpoint);
     await denied.arrayBuffer();
   }
+  stage = bootStage + ':health';
   const health = await request(ready, '/__desktop/health');
   assert.equal(health.status, 200);
   assert.deepEqual(await health.json(), { protocol: 1, service: 'FundsTrace', ready: true });
   for (const endpoint of ['/', '/analysis', '/workspace/']) {
+    stage = bootStage + ':entry:' + endpoint;
     const page = await request(ready, endpoint);
     assert.equal(page.status, 200, endpoint);
     assert.match(page.headers.get('content-type'), /text\/html/, endpoint);
@@ -41,20 +45,25 @@ async function checkNormalStartup(ready) {
     for (const match of html.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["']/gi)) {
       const url = new URL(match[1], `${ready.origin}${endpoint}`);
       assert.equal(url.origin, ready.origin, 'entry scripts must remain local');
+      stage = bootStage + ':script:' + path.extname(url.pathname) + ':http';
       const script = await request(ready, `${url.pathname}${url.search}`);
       assert.equal(script.status, 200, 'packaged entry script must be served');
+      stage = bootStage + ':script:' + path.extname(url.pathname) + ':mime';
       assert.match(script.headers.get('content-type'), /javascript/);
       await script.arrayBuffer();
     }
   }
+  stage = bootStage + ':legacy-cases';
   const legacy = await request(ready, '/api/cases');
   assert.equal(legacy.status, 200);
   const legacyCases = await legacy.json();
   assert.ok(Array.isArray(legacyCases));
+  stage = bootStage + ':versioned-cases';
   const versioned = await request(ready, '/api/v1/cases');
   assert.equal(versioned.status, 200);
   const { items: versionedCases } = await versioned.json();
   assert.ok(Array.isArray(versionedCases));
+  stage = bootStage + ':license-info';
   const info = await request(ready, '/api/license/info');
   assert.equal(info.status, 200);
   const licenseInfo = await info.json();
