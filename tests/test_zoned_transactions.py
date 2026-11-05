@@ -209,10 +209,12 @@ def test_strong_event_reference_compares_instants_and_keeps_balances(client, mak
         else:
             assert {item["status"] for item in members} == {"unknown"}
             assert {item["reason"] for item in members} == {"time_basis_incomparable"}
-            assert stats["amount_total"] is None
-            assert stats["flows"] is None and stats["funds"]["observation_count"] == 2
+            assert stats["amount_total"] == "200.00"
+            assert stats["flows"] == 2 and stats["funds"]["observation_count"] == 2
+            assert stats["funds"]["confirmed_event_count"] == 0 and stats["funds"]["totals"][0]["amount"] is None
             legacy_stats = client.get("/api/stats", params={"case_id": cid}).json()
-            assert legacy_stats["flows"] is None and legacy_stats["funds"]["observation_count"] == 2
+            assert legacy_stats["flows"] == 2 and legacy_stats["funds"]["observation_count"] == 2
+            assert legacy_stats["funds"]["confirmed_event_count"] == 0
             assert stats["event_summary"]["conflict_entries"] == 0
             for row in observations["items"]:
                 source = client.get(f"/api/v1/cases/{cid}/flows/{row['id']}/sources").json()["items"][0]
@@ -220,7 +222,8 @@ def test_strong_event_reference_compares_instants_and_keeps_balances(client, mak
             client.post("/api/track", json={"case_id": cid, "flow_ids": [row["id"] for row in observations["items"]]})
             graph = client.get("/api/graph", params={"case_id": cid}).json()
             assert len(graph["edges"]) == 1
-            assert graph["edges"][0]["cnt"] is None and graph["edges"][0]["total"] is None
+            assert (graph["edges"][0]["cnt"], graph["edges"][0]["total"]) == (2, "200.00")
+            assert graph["funds"]["confirmed_event_count"] == 0
             assert graph["edges"][0]["time_basis_pending"] is True
             assert len(set(graph["edges"][0]["ids"])) == 2
             from urllib.parse import quote
@@ -241,8 +244,9 @@ def test_strong_event_reference_compares_instants_and_keeps_balances(client, mak
             with monkeypatch.context() as chunks:
                 chunks.setattr(funds_projection, "CHUNK", 1)
                 full = client.post("/api/canvas/investigation/time", json={"case_id": cid}).json()
-            assert full["summary"]["transactions"]["total"] is None
-            assert full["summary"]["transactions"]["cnt"] is None
+            assert full["summary"]["transactions"]["total"] == "200.00"
+            assert full["summary"]["transactions"]["cnt"] == 2
+            assert full["summary"]["transactions"]["pending_observation_count"] == 2
             one = client.post("/api/canvas/investigation/time", json={"case_id": cid,
                 "start": "2026-04-05T16:02:03.456789Z", "end": "2026-04-05T16:02:03.456789Z"}).json()
             assert one["summary"]["transactions"]["cnt"] == 1
@@ -259,14 +263,16 @@ const root=process.argv[1],data=JSON.parse(fs.readFileSync(0,'utf8'));
 const source=fs.readFileSync(root+'/static/app.js','utf8');
 const start=source.indexOf('function edgeLabel(e) {'),end=source.indexOf('\nfunction renderGraph(',start);
 const constants=source.slice(source.indexOf('const fmtMoney ='),source.indexOf('function moneyHtml('));
+const countStart=source.indexOf('function fundsCount('),countEnd=source.indexOf('\nfunction fundsTotal(',countStart);
 const context=vm.createContext({state:{edgeLabels:new Set(['money'])}});
 vm.runInContext(fs.readFileSync(root+'/static/money.js','utf8'),context);
-vm.runInContext(constants+'\n'+source.slice(start,end),context);
-assert.equal(context.edgeLabel(data.uncertain),'');
+vm.runInContext(constants+'\n'+source.slice(countStart,countEnd)+'\n'+source.slice(start,end),context);
+assert.equal(context.edgeLabel(data.uncertain),'2笔·¥200.00');
 assert.equal(context.edgeLabel(data.known),'3笔·¥9.06');
 """
-            subprocess.run(["node", "-e", script, str(root)], input=json.dumps({"uncertain": graph["edges"][0],
-                "known": known_graph["edges"][0]}), text=True, check=True, capture_output=True)
+            rendered = subprocess.run(["node", "-e", script, str(root)], input=json.dumps({"uncertain": graph["edges"][0],
+                "known": known_graph["edges"][0]}), text=True, capture_output=True)
+            assert rendered.returncode == 0, rendered.stderr
 
     _, repeated = accepted(client, cid, files[::-1], scope_bank=None, zipped=True)
     assert (repeated["ok"], repeated["rows_dup"]) == (0, 2)

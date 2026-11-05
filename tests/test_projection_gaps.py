@@ -68,8 +68,10 @@ def test_unclassified_direction_cannot_be_zero_in_a_known_currency(client, datab
         values = list(book["待调取账号"].values)
         pending = [dict(zip(values[0], row)) for row in values[1:]]
         cny = next(row for row in pending if row["账号"] == "SYN-B" and row["币种"] == "CNY")
-        assert cny["转出金额"] == cny["交易总额"] == "≥0.00（上界未知）"
-        assert cny["转出笔数"] == "0—1"
+        assert (cny["转出金额"], cny["转入金额"], cny["交易总额"]) == ("0.00", "0.10", "0.10")
+        assert (cny["转出笔数"], cny["转入笔数"]) == ("0", "1")
+        ledger = list(book["追踪流水"].values)
+        assert [row[ledger[0].index("交易金额")] for row in ledger[1:]] == ["0.10", "0.10"]
     finally:
         book.close()
 

@@ -13,6 +13,7 @@ from test_feedback_import_api import complete
 from test_table_contract_lifecycle import facts, source_records
 from test_table_currency_region_lifecycle import receipt, repreview_unchanged, source_snapshot
 from test_table_mapping_coverage import coverage
+from test_table_mapping_versions import profile_preview
 from test_table_multisheet_append import encoded
 from test_table_write_integrity import persisted
 from test_feedback_package import _archive, _members, _mutate
@@ -461,7 +462,7 @@ def test_xls_inherits_exact_financial_rules_without_weakening_conflicts(
         view, job, records = committed_xls(client, cid, data)
     else:
         with monkeypatch.context() as historical:
-            historical.setattr(table_import, "NATIVE31_XLS_PROFILE", table_import.ZONED_XLS_PROFILE)
+            historical.setattr(table_import, "SOURCE_OBSERVATION_XLS_PROFILE", table_import.ZONED_XLS_PROFILE)
             view = preview(client, cid, data, "synthetic.xls")
         assert view["table_summary"]["profile"] == "funds-trace-table-v37"
         view = repreview_unchanged(client, cid, view)
@@ -702,7 +703,7 @@ def test_invalid_cell_type_reason_does_not_expand_acceptance_of_any_historical_p
 
 @pytest.mark.parametrize("format_version", [1, 2, 3, 4])
 def test_new_xls_support_keeps_each_existing_package_format_readable(
-        client, database, make_case, tmp_path, format_version, legacy_feedback_reader):
+        client, database, make_case, tmp_path, format_version, legacy_feedback_reader, monkeypatch):
     if format_version in (1, 2):
         from test_import_provenance import commit_source, csv_source, read_rows
 
@@ -716,8 +717,10 @@ def test_new_xls_support_keeps_each_existing_package_format_readable(
         assert complete(client, cid, preview(client, cid, data, "synthetic.zip"))["stage"] == "done"
     else:
         cid = make_case("Synthetic existing v17 table package")
-        assert complete(client, cid, preview(client, cid,
-            b"date,payer_account,payee_account,amount\n2026-01-01,SYN-A,SYN-B,1.23\n"))["stage"] == "done"
+        historical = profile_preview(client, cid,
+            b"date,payer_account,payee_account,amount\n2026-01-01,SYN-A,SYN-B,1.23\n", monkeypatch, FROZEN_PROFILE)
+        assert historical["table_summary"]["profile"] == FROZEN_PROFILE
+        assert complete(client, cid, historical)["stage"] == "done"
     expected = facts(database, cid)
     members = _members(case_packages.export_package(cid)[0])
     if format_version in (3, 4):

@@ -10,7 +10,7 @@ import zipfile
 from openpyxl import Workbook
 import pytest
 
-from app import table_import as tables, table_contracts
+from app import evidence_resolution, table_import as tables, table_contracts
 
 
 def csv_plan(headers, records, *, encoding="utf-8", delimiter=",", prefix=(), **options):
@@ -36,12 +36,15 @@ def assert_conserved(plan):
     detail_fields = tables.DETAILS_FIELDS | (table_contracts.DETAILS_FIELDS
                                             if plan["profile"] in tables.CONTRACT_PROFILES else frozenset())
     if plan["profile"] in tables.REFERENCE_ROLE_PROFILES:
-        detail_fields |= tables.FIELD_EVIDENCE_DETAILS
+        detail_fields |= tables.FIELD_EVIDENCE_DETAILS | tables.REFERENCE_DETAILS_FIELDS
     if plan["profile"] in tables.TIME_ROLE_PROFILES:
         detail_fields |= tables.TIME_EVIDENCE_DETAILS
     if plan["profile"] in tables.SOURCE_LEDGER_PROFILES:
         detail_fields |= {"source_ledger_evidence"}
-    assert all(record["details"].keys() <= detail_fields for record in plan["records"])
+    if plan["profile"] in evidence_resolution.PROFILES:
+        detail_fields |= {evidence_resolution.DETAIL_FIELD, "evidence_family", "family_member_sha256"}
+    for record in plan["records"]:
+        assert record["details"].keys() <= detail_fields, record["details"].keys() - detail_fields
     if plan["profile"] in tables.CONTRACT_PROFILES:
         assert all(table_contracts.validate_details(record["details"], record["disposition"], record["reason_code"])
                    for record in plan["records"])
