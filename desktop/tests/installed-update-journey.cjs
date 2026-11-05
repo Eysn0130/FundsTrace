@@ -77,13 +77,13 @@ async function createUpdateFixture(filename) {
     close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
 }
 
-async function nativeButton(pid, choice) {
+async function nativeButton(pid, choice, waitSeconds = 20) {
   const helper = path.resolve(__dirname, '../../scripts/click-windows-update-dialog.ps1');
   const child = spawn('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', helper,
-    '-ApplicationPid', String(pid), '-Choice', choice], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    '-ApplicationPid', String(pid), '-Choice', choice, '-WaitSeconds', String(waitSeconds)], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   child.stdout.resume(); child.stderr.resume();
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { child.kill(); reject(new Error('UPDATE_DIALOG_TIMEOUT')); }, 25000);
+    const timer = setTimeout(() => { child.kill(); reject(new Error('UPDATE_DIALOG_TIMEOUT')); }, (waitSeconds + 5) * 1000);
     child.once('error', () => { clearTimeout(timer); reject(new Error('UPDATE_DIALOG_FAILED')); });
     child.once('exit', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error('UPDATE_DIALOG_FAILED')); });
   });

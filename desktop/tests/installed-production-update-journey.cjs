@@ -48,6 +48,9 @@ async function runInstalledProductionUpdateJourney({ configFile, primary, evalua
     assert.ok(!primary.child.spawnargs.some(argument => /^--(?:host-resolver-rules|ignore-certificate-errors(?:-spki-list)?|allow-insecure-localhost)(?:=|$)/.test(argument)));
     return value;
   });
+  // The released client reads the public feed both at startup and before
+  // opening each native confirmation. Bound each public request separately.
+  const feedWaitSeconds = 120;
   const filename = `FundsTrace-${config.version}-windows-x64-unsigned.exe`;
   const pending = path.join(process.env.LOCALAPPDATA, config.cacheDirectoryName, 'pending');
   const button = `document.querySelector('funds-desktop-update .funds-update-capsule')`;
@@ -77,7 +80,7 @@ async function runInstalledProductionUpdateJourney({ configFile, primary, evalua
   }
   await check('installedProductionUpgradePreferencesBefore', preferencesMatch);
   await check('installedProductionUpdateAvailable', async () => {
-    await waitPhase('available', 45000);
+    await waitPhase('available', feedWaitSeconds * 1000);
     const value = await status();
     assert.equal(value.version, config.version);
     assert.ok((await evaluate(`${button}.title`)).includes(`${config.currentVersion} → ${config.version}`));
@@ -128,7 +131,7 @@ async function runInstalledProductionUpdateJourney({ configFile, primary, evalua
       await check('installedProductionUpdateRecheckedAfterError', async () => {
         await click();
         await until(async () => (await status()).phase !== 'error', 5000);
-        await waitPhase('available', 45000);
+        await waitPhase('available', feedWaitSeconds * 1000);
         assert.equal((await status()).version, config.version);
       });
     }
@@ -144,12 +147,12 @@ async function runInstalledProductionUpdateJourney({ configFile, primary, evalua
     assert.deepEqual(actual, { bytes: config.installerBytes, sha256: config.installerSha256, sha512: config.installerSha512 });
   });
   await check('installedProductionUpdateLaterRetainsApplication', async () => {
-    await click(); await nativeButton(primary.child.pid, 'later'); await waitPhase('ready');
+    await click(); await nativeButton(primary.child.pid, 'later', feedWaitSeconds); await waitPhase('ready');
     assert.equal(await evaluate(`document.readyState === 'complete' && !!document.querySelector('#graphContainer')`), true);
     await preferencesMatch();
   });
   await check('installedProductionUpdateConfirmedRestart', async () => {
-    await click(); await nativeButton(primary.child.pid, 'restart');
+    await click(); await nativeButton(primary.child.pid, 'restart', feedWaitSeconds);
     await until(() => primary.done, 30000);
     assert.deepEqual(await primary.exited, { code: 0, signal: null });
   });

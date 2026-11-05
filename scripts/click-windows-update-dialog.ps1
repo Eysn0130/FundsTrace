@@ -1,6 +1,7 @@
 #Requires -Version 7.0
 param([Parameter(Mandatory=$true)][int]$ApplicationPid,
-    [Parameter(Mandatory=$true)][ValidateSet('later','restart')][string]$Choice)
+    [Parameter(Mandatory=$true)][ValidateSet('later','restart')][string]$Choice,
+    [ValidateRange(20, 120)][int]$WaitSeconds = 20)
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows -or $env:GITHUB_ACTIONS -cne 'true') { throw 'Disposable Windows CI only.' }
 Add-Type @'
@@ -29,7 +30,7 @@ public static class FundsUpdateDialog {
 }
 '@
 $Label = $(if ($Choice -eq 'later') { '稍后' } else { '重启更新' })
-$Deadline = [DateTime]::UtcNow.AddSeconds(20)
+$Deadline = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
 $Clicked = [IntPtr]::Zero
 do {
     if ($Clicked -eq [IntPtr]::Zero) { $Clicked = [FundsUpdateDialog]::Click([uint32]$ApplicationPid, $Label) }
