@@ -609,7 +609,14 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       // user's explicit framing action, without changing selection or members.
       step = 'graph-facts';
       await until(async () => {
-        try { assertTrackedGraph(await evaluate(GRAPH_PROBE), ids, count); return true; }
+        try {
+          const snapshot = await evaluate(GRAPH_PROBE);
+          assertTrackedGraph(snapshot, ids, count);
+          // A scoped view loads its own amounts asynchronously. Search its
+          // rendered members only after the requested projection has arrived.
+          assert.deepEqual(sorted(snapshot.renderedNodes.map(node => node.id)), sorted(visible));
+          return true;
+        }
         catch { return false; }
       }, 20000);
       const selectionProbe = `({ nodes: [...state.graphSelection.ids].map(String).sort(), edge: state.graphView.selectedEdge })`;
