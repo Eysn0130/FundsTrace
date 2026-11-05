@@ -13,7 +13,7 @@ from test_table_write_integrity import persisted
 from xls_fixtures import Cell, Error, workbook
 
 
-CURRENT_XLS = "funds-trace-table-archive-v56"
+CURRENT_XLS = "funds-trace-table-archive-v59"
 
 
 def payload(rows):
@@ -90,7 +90,7 @@ def test_new_flat_zip_xls_uses_current_xls_but_plain_csv_zip_uses_guarded_profil
     ordinary = make_case("Synthetic unchanged ordinary ZIP")
     plain = csv_rows([{"date": "2026-01-01", "payer_account": "SYN-A", "payee_account": "SYN-B", "amount": "12.34"}])
     view = preview(client, ordinary, [("ledger.csv", plain)], zipped=True, scope_bank=None)
-    assert view["table_summary"]["profile"] == table_archive.PROFILE == "funds-trace-table-archive-v54"
+    assert view["table_summary"]["profile"] == table_archive.PROFILE == "funds-trace-table-archive-v57"
     assert complete(client, ordinary, view)["result"]["ok"] == 1
     assert event_resolution.summary(ordinary) is None
 
@@ -101,7 +101,7 @@ def test_nested_csv_without_xls_keeps_existing_profile(client, make_case, zipped
     plain = csv_rows([{"date": "2026-01-01", "payer_account": "SYN-A", "payee_account": "SYN-B", "amount": "12.34"}])
     view = preview(client, cid, [("bundle.zip", archive([("nested.zip", archive([("ledger.csv", plain)]))]))],
                    zipped=zipped, scope_bank=None)
-    assert view["table_summary"]["profile"] == (table_archive.PROFILE if zipped else table_archive.NATIVE31_EVIDENCE_PROFILE)
+    assert view["table_summary"]["profile"] == (table_archive.PROFILE if zipped else table_archive.SOURCE_OBSERVATION_EVIDENCE_PROFILE)
     assert complete(client, cid, view)["result"]["ok"] == 1
 
 
@@ -119,7 +119,7 @@ def test_profile_selection_only_opens_nested_containers(monkeypatch, contains_xl
     data = archive([("outer.csv", b"not read"), ("bundle.zip", archive([("nested.zip", archive([(leaf, b"not read")]))]))])
     monkeypatch.setattr(zipfile.ZipFile, "open", containers_only)
     stream = io.BytesIO(data)
-    assert table_archive.evidence_profile(stream) == (CURRENT_XLS if contains_xls else table_archive.NATIVE31_EVIDENCE_PROFILE)
+    assert table_archive.evidence_profile(stream) == (CURRENT_XLS if contains_xls else table_archive.SOURCE_OBSERVATION_EVIDENCE_PROFILE)
     assert opened == ["bundle.zip", "nested.zip"]
     assert stream.tell() == 0
 
@@ -160,7 +160,7 @@ def test_ready_v6_retains_xls_attachment_and_single_xls_uses_guarded_profile(cli
     single = make_case("Synthetic unchanged single XLS")
     response = client.post(f"/api/v1/cases/{single}/imports/preview", files={"file": ("synthetic.xls", data)})
     assert response.status_code == 200, response.text
-    assert response.json()["table_summary"]["profile"] == table_import.NATIVE31_XLS_PROFILE == "funds-trace-table-v64"
+    assert response.json()["table_summary"]["profile"] == table_import.SOURCE_OBSERVATION_XLS_PROFILE == "funds-trace-table-v67"
     assert complete(client, single, response.json())["stage"] == "done"
     assert event_resolution.summary(single) is None
     with pytest.raises(table_import.TableImportError):

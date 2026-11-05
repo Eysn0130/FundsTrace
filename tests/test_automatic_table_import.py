@@ -239,7 +239,7 @@ def test_envelope_replay_does_not_reuse_different_facts_from_manual_table_mappin
     content = b"date,payer_account,payee_account,amount\n2026-01-01,SYN-A,SYN-B,1.00\n"
     cid = make_case("Synthetic changed interpretation")
     view = preview(client, cid, content)
-    assert view["table_summary"]["profile"] == table_import.NATIVE31_PROFILE
+    assert view["table_summary"]["profile"] == table_import.SOURCE_OBSERVATION_PROFILE
     response = client.post(f"/api/v1/cases/{cid}/imports/{view['import_id']}/preview", json={
         "mode": "A", "mapping": {**view["mapping"], "payer_account": "payee_account", "payee_account": "payer_account"}})
     assert response.status_code == 200, response.text

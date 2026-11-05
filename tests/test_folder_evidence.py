@@ -204,7 +204,7 @@ def test_ordinary_zip_large_manifest_uses_complete_bounded_csv_records(client, d
                ("accounts.csv", table("account", [account()])), ("manifest.csv", manifest)]
     view, receipt = accepted(client, cid, members, zipped=True, scope_bank=None)
     assert view["resolution"] and receipt["resolution"]["auxiliary_records"] == 701
-    assert database.q_raw("select parser_version from import_sources where case_id=?", [cid])[0]["parser_version"] == table_archive.NATIVE31_EVIDENCE_PROFILE
+    assert database.q_raw("select parser_version from import_sources where case_id=?", [cid])[0]["parser_version"] == table_archive.SOURCE_OBSERVATION_EVIDENCE_PROFILE
     row = client.get(f"/api/v1/cases/{cid}/flows").json()["items"][0]
     own = next(item for item in entities(client, cid)["entities"] if item["entity_id"] == row["payer_account"])
     assert own["bank"] == "Synthetic bank" and own["kind"] == "account"
@@ -367,12 +367,14 @@ def test_equal_card_account_text_remains_card_and_auxiliary_delete_revokes_relat
     assert database.q_raw("select active from evidence_sources where case_id=? and batch_id=?", [other, auxiliary["batch_id"]])[0]["active"] is False
 
 
-def test_historical_financial_occurrence_overlap_is_explicitly_rejected(client, database, make_case):
+def test_historical_financial_occurrence_overlap_is_explicitly_rejected(client, database, make_case, legacy_feedback_reader):
     cid = make_case("Synthetic legacy migration boundary")
     members = [("tx.csv", table("transaction", [transaction()]))]
     old = client.post(f"/api/v1/cases/{cid}/imports/preview", files={"file": ("old.zip", archive(members))})
     assert old.status_code == 200, old.text
     assert complete(client, cid, old.json())["stage"] == "done"
+    assert database.q_raw("select parser_version from import_sources where case_id=?", [cid]) == [
+        {"parser_version": feedback_import.PROFILE}]
     response = client.post(f"/api/v1/cases/{cid}/imports/directory/preview", files=[("files", (name, content)) for name, content in scoped(members, "Synthetic bank")])
     assert response.status_code == 409, response.text
     assert response.json()["error"]["code"] == "historical_evidence_overlap"

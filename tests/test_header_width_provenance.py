@@ -32,7 +32,7 @@ def materials(xls=False, *, conflicting_account=False):
 
 def selected(xls, old=False):
     return ((table_archive.MICROSECOND_XLS_PROFILE if xls else table_archive.MICROSECOND_PROFILE)
-            if old else (table_archive.NATIVE31_XLS_PROFILE if xls else table_archive.NATIVE31_EVIDENCE_PROFILE))
+            if old else (table_archive.SOURCE_OBSERVATION_XLS_PROFILE if xls else table_archive.SOURCE_OBSERVATION_EVIDENCE_PROFILE))
 
 
 def ingest(client, cid, members, *, zipped=False):

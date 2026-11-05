@@ -245,15 +245,16 @@ def test_new_archive_event_reference_keeps_microsecond_distinctions(client, make
     assert result["ok"] == 2
     assert event_resolution.summary(cid)["confirmed_events"] == confirmed
     # A contradictory exact time under the same explicit event reference
-    # revokes the group's definite transaction display, not its source rows.
-    assert flows(client, cid, "events")["total"] == confirmed
+    # revokes event confirmation; ordinary queries retain both original rows.
+    ordinary_count = 1 if confirmed else 2
+    assert flows(client, cid, "events")["total"] == ordinary_count
     assert flows(client, cid, "observations")["total"] == 2
     assert event_resolution.summary(cid)["conflict_entries"] == (0 if confirmed else 2)
     package = client.get(f"/api/cases/{cid}/export")
     restored = client.post("/api/cases/import", files={"file": ("synthetic.fundcase", package.content)})
     assert restored.status_code == 200, restored.text
     assert event_resolution.summary(restored.json()["case_id"])["confirmed_events"] == confirmed
-    assert flows(client, restored.json()["case_id"], "events")["total"] == confirmed
+    assert flows(client, restored.json()["case_id"], "events")["total"] == ordinary_count
     assert flows(client, restored.json()["case_id"], "observations")["total"] == 2
 
 

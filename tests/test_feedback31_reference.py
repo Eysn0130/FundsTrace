@@ -142,7 +142,7 @@ def test_auxiliary_scope_upgrade_keeps_old_session_receipt_and_package(client, d
         assert (flow["amount"], flow["balance"], flow["trade_no"]) == ("12.34", "9999999999999999.99", "SYN-TRANSACTION")
     current = make_case("Synthetic restored auxiliary scope")
     current_view, current_receipt = accepted(client, current, members, scope_bank=None)
-    assert current_view["table_summary"]["profile"] == "funds-trace-table-archive-v55"
+    assert current_view["table_summary"]["profile"] == "funds-trace-table-archive-v58"
     assert current_receipt["ok"] == 1
     flow = client.get(f"/api/v1/cases/{current}/flows").json()["items"][0]
     assert (flow["amount"], flow["balance"], flow["trade_no"]) == ("12.34", "9999999999999999.99", "SYN-TRANSACTION")

@@ -156,7 +156,7 @@ def test_unknown_owner_import_append_and_restore_preserve_original_facts_and_sou
 
 @pytest.mark.parametrize("format_version", [1, 2, 3, 4])
 def test_historical_package_recomputes_unknown_owner_graph_without_rewriting_history(
-        client, database, make_case, flow_row, format_version, legacy_feedback_reader):
+        client, database, make_case, flow_row, format_version, legacy_feedback_reader, monkeypatch):
     case_id = make_case(f"Synthetic historical owner package {format_version}")
     if format_version == 3:
         view = feedback_preview(client, case_id, archive([transaction(**{
@@ -165,7 +165,9 @@ def test_historical_package_recomputes_unknown_owner_graph_without_rewriting_his
         assert complete(client, case_id, view)["stage"] == "done"
     elif format_version == 4:
         payload = table_bytes([["2026-01-02 10:00:00", "SYN-A", "SYN-Z", "12.34", "CNY", "SYN-A", "SYN-SOURCE"]])
-        assert complete(client, case_id, preview(client, case_id, payload))["stage"] == "done"
+        view = profile_preview(client, case_id, payload, monkeypatch, table_import.NATIVE31_PROFILE)
+        assert view["table_summary"]["profile"] == table_import.NATIVE31_PROFILE
+        assert complete(client, case_id, view)["stage"] == "done"
     # These unaltered legacy facts need no inferred owner to remain visible.
     ids = [insert_flow(database, case_id, flow_row, trade_no=f"SYN-UNKNOWN-{index}",
                        trade_time=f"2026-01-01 10:00:0{index}", self_account=owner,

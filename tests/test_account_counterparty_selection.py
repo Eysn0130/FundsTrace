@@ -1,4 +1,4 @@
-"""TOP20 ranks the same proved transactions that its ordinary counts display."""
+"""TOP20 ranks ordinary selected transactions and retains conflicted sources."""
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
@@ -16,7 +16,7 @@ def entry(peer, index, event, own, *, amount='100.00'):
 
 
 @pytest.mark.parametrize('surface', ['legacy', 'registry'])
-def test_top_counterparties_rank_canonical_counts_before_limit_and_keep_conflicts_out(client, make_case, surface):
+def test_top_counterparties_rank_canonical_counts_before_limit_and_retain_conflicted_sources(client, make_case, surface):
     cid = make_case('Synthetic TOP20 transaction selection')
     rows = [entry(f'SYN-P{i:02d}', i, event, own)
             for i in range(20) for event in range(2) for own in ('SYN-A', f'SYN-P{i:02d}')]
@@ -45,9 +45,15 @@ def test_top_counterparties_rank_canonical_counts_before_limit_and_keep_conflict
 
     accepted(client, cid, [('conflict.csv', csv_rows([entry('SYN-P00', 0, 0, 'SYN-A', amount='101.00')]))], scope_bank=None)
     stats = client.get(f'/api/v1/cases/{cid}/stats').json()
-    assert stats['flows'] == 42 and stats['amount_totals'] == [{'currency': 'CNY', 'amount': '3903.00'}]
+    # 39 unaffected events + 3 single observations + 3 conflicted source rows.
+    assert stats['flows'] == 45 and stats['amount_totals'] == [{'currency': 'CNY', 'amount': '4204.00'}]
     assert stats['event_summary']['conflict_entries'] == 3
+    assert stats['event_summary']['confirmed_events'] == stats['funds']['confirmed_event_count'] == 39
+    assert stats['funds']['totals'][0]['amount'] is None
     assert client.get(f'/api/v1/cases/{cid}/flows', params={'granularity': 'observations'}).json()['total'] == 84
     top = profile()['top_counterparties']
-    assert len(top) == 20 and top[0]['acct'] == counterparties['SYN-Z']
-    assert counterparties['SYN-P00'] not in {row['acct'] for row in top}
+    assert len(top) == 20
+    assert [row['acct'] for row in top[:2]] == [counterparties['SYN-P00'], counterparties['SYN-Z']]
+    assert (top[0]['out_cnt'], top[0]['out_amt'], top[0]['out_observation_count']) == (4, '401.00', 5)
+    assert (top[1]['out_cnt'], top[1]['out_amt'], top[1]['out_observation_count']) == (3, '3.00', 3)
+    assert all((row['out_cnt'], row['out_amt'], row['out_observation_count']) == (2, '200.00', 4) for row in top[2:])

@@ -267,7 +267,7 @@ def test_tracked_workbook_uses_captured_resolution_and_endpoint_metadata(
         pending = list(workbook["待调取账号"].values)
         row = dict(zip(pending[0], pending[1]))
         assert (row["账号"], row["显示标识"], row["实体ID"], row["交易总额"]) == (
-            "SYN-ACCOUNT-B", "SYN-ACCOUNT-B", payee, "0.00—10.25")
+            "SYN-ACCOUNT-B", "SYN-ACCOUNT-B", payee, "10.25")
         notes = dict(list(workbook["统计口径"].values)[1:])
         assert notes["解析修订"] == old_revision
     finally:
