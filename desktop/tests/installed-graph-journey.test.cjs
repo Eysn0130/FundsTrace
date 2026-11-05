@@ -965,7 +965,7 @@ for (const newline of ['LF', 'CRLF']) test(`the exact clone and save predicates 
       let admitted, statusReads = 0;
       const context = vm.createContext({ CANVAS: cloneCanvas, state: { canvasId: 9, canvasName: cloneCanvas, graphLoading: false },
         window: { FundsCanvasActions: { status: () => { statusReads++; return action; } } },
-        document: { querySelectorAll: () => [{ textContent: '形态已保存' }] },
+        document: { querySelectorAll: selector => selector === '.ff-toast-stack:not([hidden]) .ff-toast[data-status=success] .ff-title' ? [{ textContent: '画布形态已保存' }] : [] },
         until: async (predicate, ms) => { assert.equal(ms, deadline); admitted = await predicate(); } });
       context.evaluate = expression => vm.runInContext(expression, context);
       const statement = newline === 'CRLF' ? match[0].replace(/\n/g, '\r\n') : match[0];
@@ -987,7 +987,7 @@ for (const newline of ['LF', 'CRLF']) test(`the real default and named restore s
   const context = vm.createContext({ assert, GRAPH_PROBE: 'SYN_WORKSPACE_PROBE', CANVAS: cloneCanvas, editedEdge: cloneKeys[0],
     defaultWorkspace, savedAnnotation: expectedAnnotation, flowIds: ['71', '72', '73'],
     state: { edgeTypes: { [cloneKeys[0]]: 'polyline' }, graphLoading: false, graphInited: true, graph: {}, graphSelection: {} }, window: { FundsCanvasActions: { status: () => ({ pending: false, unknown: false }) } },
-    document: { querySelectorAll: () => [{ textContent: '形态已保存' }] },
+    document: { querySelectorAll: selector => selector === '.ff-toast-stack:not([hidden]) .ff-toast[data-status=success] .ff-title' ? [{ textContent: '画布形态已保存' }] : [] },
     check: async (_name, action) => action(), type: async () => Object.fromEntries(cloneKeys.map(key => [key, 'polyline'])), prompt: async () => {},
     annotation: async () => { if (!target) savedReads++; return current; },
     positions: value => value.renderedNodes.map(node => [node.id, node.x, node.y]).sort((a, b) => a[0].localeCompare(b[0])),

@@ -619,6 +619,10 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
         }
         catch { return false; }
       }, 20000);
+      // Canvas restoration also refreshes the ledger and restores its scroll.
+      // Let that scroll finish before opening a menu dismissed by outside scrolls.
+      await until(() => evaluate(`document.querySelector('#flowTableScroll').getAttribute('aria-busy') !== 'true'`), 15000);
+      await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
       const selectionProbe = `({ nodes: [...state.graphSelection.ids].map(String).sort(), edge: state.graphView.selectedEdge })`;
       const selection = await evaluate(selectionProbe);
       step = 'finder-open';
@@ -1261,7 +1265,7 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
         savedTypes = await type('polyline'); await prompt('#btnCanvasSave', CANVAS);
         await until(() => evaluate(`(() => {
           const action = window.FundsCanvasActions?.status?.();
-          return [...document.querySelectorAll('#toasts .toast')].some(node => node.textContent.includes('形态已保存'))
+          return [...document.querySelectorAll('.ff-toast-stack:not([hidden]) .ff-toast[data-status=success] .ff-title')].some(node => node.textContent === '画布形态已保存')
             && action?.pending === false && action?.unknown === false;
         })()`), 10000);
         savedWorkspace = await annotation(savedAnnotation);
