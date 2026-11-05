@@ -394,8 +394,10 @@ function assertAutomaticNodeLabel(snapshot, id) {
   const bounds = node.labelShape.bounds, viewport = snapshot.viewport;
   assert.ok(bounds && Object.values(bounds).every(Number.isFinite)
     && bounds.maxX > bounds.minX && bounds.maxY > bounds.minY);
-  assert.ok(bounds.minX >= 4 && bounds.maxX <= viewport.width - 4
-    && bounds.minY >= 4 && bounds.maxY <= viewport.height - 4);
+  assert.ok(bounds.minX >= 4);
+  assert.ok(bounds.maxX <= viewport.width - 4);
+  assert.ok(bounds.minY >= 4);
+  assert.ok(bounds.maxY <= viewport.height - 4);
   const intersects = other => other && bounds.minX <= other.maxX && bounds.maxX >= other.minX
     && bounds.minY <= other.maxY && bounds.maxY >= other.minY;
   // This leaf's label must have room in automatic mode. Requiring its actual
@@ -749,7 +751,7 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       && state.graphView.labelTimer == null && !state.graphView.zoomSettling`), 10000);
     // Stage the three synthetic nodes with the same user drag used by the editor.
     // A must be far enough from B/C to cross the clip margin at the tested zoom.
-    for (const [id, x, y] of [[ACCOUNTS[0], .16, .48], [ACCOUNTS[1], .60, .32], [ACCOUNTS[2], .61, .68]]) {
+    for (const [id, x, y] of [[ACCOUNTS[0], .16, .48], [ACCOUNTS[1], .58, .39], [ACCOUNTS[2], .58, .60]]) {
       const gesture = await evaluate(`(() => {
         const box = document.querySelector('#graphContainer').getBoundingClientRect();
         const model = state.graph.findById(${JSON.stringify(id)}).getModel();
@@ -789,7 +791,7 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       const center = state.graph.getClientByPoint(model.x,model.y);
       const bounds = state.graph.getNodes().flatMap(node => node.getContainer().get('children')
         .map(shape => shape.getCanvasBBox?.())).filter(Boolean);
-      for (const [dx,dy] of [[0,-48],[0,48],[-48,0],[48,0],[0,-96],[0,96]]) {
+      for (const [dx,dy] of [[-48,0],[48,0],[0,-48],[0,48],[0,-96],[0,96]]) {
         const point = { x: Math.round(center.x + dx), y: Math.round(center.y + dy) };
         const x = point.x - box.left, y = point.y - box.top;
         if (x < 24 || x > box.width - 24 || y < 24 || y > box.height - 24
