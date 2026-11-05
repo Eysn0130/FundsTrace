@@ -63,7 +63,8 @@ jobs:
           uv venv --python 3.11
           uv pip sync --python .venv/bin/python --require-hashes requirements-dev.lock
       - name: Run synthetic Python and G6 regressions
-        run: .venv/bin/python scripts/test.py -v --tb=short
+        # Each synthetic case can create a database. Keep failed cases for diagnosis.
+        run: .venv/bin/python scripts/test.py -v --tb=short -o tmp_path_retention_policy=failed
       - name: Check generated API and pinned G6
         run: |
           .venv/bin/python scripts/export_api_contract.py --check
