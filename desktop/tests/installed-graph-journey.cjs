@@ -1126,7 +1126,21 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     const appendZoom = await evaluate(`state.graph.getZoom()`);
     await check('installedSecondTrackVisible', async () => { await track(1); await graph(2, flowIds); });
     await check('installedAutomaticNodeLabelRecovery', async () => { await automaticNodeLabelRecovery(flowIds); });
-    await check('installedPartialViewportNodeLabels', async () => { await partialViewportNodeLabels(flowIds,appendZoom); });
+    await check('installedPartialViewportNodeLabels', async () => {
+      // The preceding screenshot deliberately uses 960 x 500. This distinct
+      // gesture needs room for two full labels plus the 120px culling margin.
+      const previous = await evaluate('({width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio})');
+      const viewport = async metrics => {
+        await cdp.send('Emulation.setDeviceMetricsOverride', { ...metrics, mobile: false,
+          screenWidth: metrics.width, screenHeight: metrics.height }, page.sessionId);
+        await until(() => evaluate(`innerWidth === ${metrics.width} && innerHeight === ${metrics.height}
+          && Math.abs(state.graph.getWidth() - document.querySelector('#graphContainer').clientWidth) <= 1`), 5000);
+      };
+      try {
+        await viewport({width: 1440, height: 900, deviceScaleFactor: 1});
+        await partialViewportNodeLabels(flowIds, appendZoom);
+      } finally { await viewport(previous); }
+    });
     await check('installedContextTrackedConsistent', async () => {
       await rowAction(flowIds[1], 'act-ctx');
       await until(() => evaluate(`document.querySelector('#ctxModal').style.display === 'flex'
