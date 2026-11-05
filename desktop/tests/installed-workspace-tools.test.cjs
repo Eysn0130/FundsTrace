@@ -184,13 +184,13 @@ test('reachability restores a previously scrolled command row, not just zero',as
 });
 
 test('native file input remains enabled and exactly associated with its visible label despite its clipped size',async()=>{
-  const fixture=await toolsFixture(),input={id:'synthetic-file',type:'file',accept:'.csv,.tsv,.txt,.xlsx,.xls,.zip',disabled:false};
+  const fixture=await toolsFixture(),input={id:'synthetic-file',type:'file',accept:'.csv,.tsv,.txt,.xlsx,.xls,.zip,.rar',disabled:false};
   const label={htmlFor:input.id,control:input,querySelector:()=>input};
   fixture.nodes.set(input.id,input);
   const query=fixture.document.querySelector;
   fixture.document.querySelector=selector=>selector==='dialog[open] label.file-drop'?label:query(selector);
   assert.deepEqual(JSON.parse(JSON.stringify(fixture.readImport())),
-    {associated:true,type:'file',accept:'.csv,.tsv,.txt,.xlsx,.xls,.zip',enabled:true});
+    {associated:true,type:'file',accept:'.csv,.tsv,.txt,.xlsx,.xls,.zip,.rar',enabled:true});
   label.htmlFor='another-input';assert.equal(fixture.readImport().associated,false);
   label.htmlFor=input.id;label.control=null;assert.equal(fixture.readImport().associated,false);
   label.control=input;input.disabled=true;assert.equal(fixture.readImport().enabled,false);
@@ -359,7 +359,7 @@ async function importEntryContractFixture(sourceText) {
   const start=source.indexOf("  await check('reactEmptyCaseImportEntry'"),end=source.indexOf("  await check('workspaceGraphLinkOpened'",start);
   const readerStart=source.indexOf('function readImportEntry() {'),readerEnd=source.indexOf('function argumentsOf() {',readerStart);
   assert.ok(start>=0&&end>start&&readerStart>=0&&readerEnd>readerStart);
-  const input={id:'synthetic-file',type:'file',accept:'.csv,.tsv,.txt,.xlsx,.xls,.zip',disabled:false};
+  const input={id:'synthetic-file',type:'file',accept:'.csv,.tsv,.txt,.xlsx,.xls,.zip,.rar',disabled:false};
   const label=childDocument.querySelector('#action'),events=[];
   label.style={...label.style};label.htmlFor=input.id;label.control=input;
   label.querySelector=selector=>{assert.equal(selector,'input[type="file"]');return input;};
@@ -388,7 +388,7 @@ async function importEntryContractFixture(sourceText) {
     run:()=>vm.runInContext(`(async()=>{${source.slice(start,end)}})()`,context)};
 }
 
-for(const newline of ['LF','CRLF'])test(`the exact native empty-case import block accepts all six suffixes with ${newline} source`,async()=>{
+for(const newline of ['LF','CRLF'])test(`the exact native empty-case import block accepts all seven suffixes with ${newline} source`,async()=>{
   const source=(await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8')).replace(/\r\n/g,'\n');
   const fixture=await importEntryContractFixture(newline==='CRLF'?source.replace(/\n/g,'\r\n'):source);
   await fixture.run();
@@ -397,8 +397,9 @@ for(const newline of ['LF','CRLF'])test(`the exact native empty-case import bloc
 });
 
 for(const [name,change] of [
-  ['missing XLS',value=>{value.input.accept='.csv,.tsv,.txt,.xlsx,.zip';}],
-  ['missing ZIP',value=>{value.input.accept='.csv,.tsv,.txt,.xlsx,.xls';}],
+  ['missing XLS',value=>{value.input.accept='.csv,.tsv,.txt,.xlsx,.zip,.rar';}],
+  ['missing ZIP',value=>{value.input.accept='.csv,.tsv,.txt,.xlsx,.xls,.rar';}],
+  ['missing RAR',value=>{value.input.accept='.csv,.tsv,.txt,.xlsx,.xls,.zip';}],
   ['extra EXE',value=>{value.input.accept+=',.exe';}],
   ['wrong label association',value=>{value.label.htmlFor='another-input';}],
   ['disabled input',value=>{value.input.disabled=true;}],
