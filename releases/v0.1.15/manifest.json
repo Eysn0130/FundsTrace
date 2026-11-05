@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "tag": "v0.1.15",
+  "sourceCommit": "91c7f3f5a4b3e1171637203d5ec1c9a652e27b79",
+  "sourceRun": "42023489965",
+  "installer": {
+    "name": "FundsTrace-0.1.15-windows-x64-unsigned.exe",
+    "bytes": 164334886,
+    "sha256": "a6ef33d0740d2c96cc07ddb8126bfe96dd210ad9894ac45721484019cd70e01d"
+  },
+  "files": [
+    {
+      "path": "evidence/build-manifest.json",
+      "bytes": 15266,
+      "sha256": "7a96700887d30512e20187aca9d406ebc7ec4ad19bdbd2bbd77c99e419e7d0d7"
+    },
+    {
+      "path": "evidence/fresh-user-compatibility.zip",
+      "bytes": 1271747,
+      "sha256": "0def9fbd7997be801f4f92abdf454f0ee2bbb06fc73befac65c7e552f0260a8e"
+    },
+    {
+      "path": "evidence/native-backend-smoke.json",
+      "bytes": 908,
+      "sha256": "6400e5c2f4b6ee3be47a4be235cc655b61556df5edf2558b665f46e99c35ce21"
+    },
+    {
+      "path": "evidence/native-icon-resources.json",
+      "bytes": 5069,
+      "sha256": "3f6d09c443d81ee5af710e85ba20b24d5572a6d49a3dc31deec92f7e151e65d9"
+    },
+    {
+      "path": "evidence/native-import-recovery-smoke.json",
+      "bytes": 1606,
+      "sha256": "977e303342124bb06be5ad88711bae673a7501659c0f9fdfbf7a413af49c07ea"
+    },
+    {
+      "path": "evidence/native-installed-app-smoke.json",
+      "bytes": 1135320,
+      "sha256": "b8a677423723ad41d4d5bf49d88608413df6ec485c564138666dfd5440a0c32e"
+    },
+    {
+      "path": "evidence/native-installed-app.graph.png",
+      "bytes": 162496,
+      "sha256": "267a733ad717bda9facaef72e3645b5c85014051214c3eb00c5edfd223324f47"
+    },
+    {
+      "path": "evidence/native-installed-app.png",
+      "bytes": 68957,
+      "sha256": "607fb9482a522f6fba43cf3fd3f0fcaa8dd0f57be72f997e7d29605182777141"
+    },
+    {
+      "path": "evidence/native-installed-app.startup-minimum.png",
+      "bytes": 305022,
+      "sha256": "5d197ea7be1c62d22a345548033a438b8d2d9619fde06c6521d06c2d67decda3"
+    },
+    {
+      "path": "evidence/native-installed-app.startup-normal.png",
+      "bytes": 569085,
+      "sha256": "78080e6e6ce6d5a4bd9970c96e4e0d210b42319c84684d07adf3e773eb9da20e"
+    },
+    {
+      "path": "evidence/native-installed-app.startup-small.png",
+      "bytes": 127513,
+      "sha256": "5548b61ab16a5e7179498f2cdfaeb2bfd327cdd613033a16cbf68de18ee5ca93"
+    },
+    {
+      "path": "evidence/native-installed-app.taskbar.png",
+      "bytes": 14672,
+      "sha256": "824c84c852d465c302d59cbea6dc26477767794f8447ec00089318c6d331483d"
+    },
+    {
+      "path": "evidence/native-installed-app.update-downloading.png",
+      "bytes": 81280,
+      "sha256": "92156ae2cfe130f9989baba185d9c3fdff8b142dae4133273aac1109803de97d"
+    },
+    {
+      "path": "evidence/native-installed-app.update-ready.png",
+      "bytes": 81309,
+      "sha256": "c019a6758356ca122f683db57701b88d3b57e785e4edf5e0aa2d12cd91cf0873"
+    },
+    {
+      "path": "evidence/native-installer-smoke.json",
+      "bytes": 12428,
+      "sha256": "bd0d56d50bc68c157da80ceeaca6d67b2dcbf57b295208caa34d31e2c6c80fe3"
+    },
+    {
+      "path": "evidence/packaged-host-resources.json",
+      "bytes": 2148,
+      "sha256": "1cd569ebe8277f94558e355ec8b29d12f5cc1b4e9fa6753b2a3255f02eb1a310"
+    },
+    {
+      "path": "evidence/release-verification.json",
+      "bytes": 1247,
+      "sha256": "d30d4b6c050e2b18d7ee3f3880e01dbedf10b1bdb89fb5fcc2c46af2ddff1e60"
+    },
+    {
+      "path": "evidence/standard-user-compatibility.zip",
+      "bytes": 1426490,
+      "sha256": "0677e608bd9c8eb4a6d1bf1b99c11e58a909f4ab5f36f136de67a3331149fa6c"
+    },
+    {
+      "path": "evidence/windows-candidate.json",
+      "bytes": 384927,
+      "sha256": "1a0f945996c04fac0cce309131606443b411f1474e88b8f3685e3c7fa1798d7f"
+    },
+    {
+      "path": "evidence/windows-candidate.sha256",
+      "bytes": 270095,
+      "sha256": "987f4dcd47cb93f717df443a3e22f43ad94fbe60d2fd616adf716b7c54a2c582"
+    }
+  ]
+}
