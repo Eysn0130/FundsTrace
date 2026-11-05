@@ -3,6 +3,7 @@ import json
 import re
 
 from test_analysis_money import insert_flow
+from funds_assertions import unresolved_funds
 
 
 def test_cycle_report_preserves_exact_legs_and_explains_subject_and_ratio_scope(client, database, make_case):
@@ -18,8 +19,10 @@ def test_cycle_report_preserves_exact_legs_and_explains_subject_and_ratio_scope(
     result = json.loads(encoded.group(1))["results"]
     cycle = result["cycles"]["cycles"][0]
     assert cycle["accounts"] == ["B", "C", "A"]
-    assert cycle["total"] == "300.03"
-    assert cycle["first_outflow"] == cycle["last_inflow"] == "100.01"
+    assert cycle["total"] is None
+    assert cycle["funds"] == unresolved_funds(3, ("CNY", "300.03"))
+    assert cycle["first_outflow"] is cycle["last_inflow"] is None
+    assert [edge["observation_amount"] for edge in cycle["edges"]] == ["100.01"] * 3
     for phrase in ("回转比例（近似值）", "不证明同一笔本金", "本次有界搜索候选", "实际时序起点"):
         assert phrase in response.text
 

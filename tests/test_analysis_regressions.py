@@ -9,6 +9,7 @@ from decimal import Decimal
 import pytest
 
 from app import analytics
+from test_folder_evidence import assert_unresolved_funds
 
 
 def import_csv(client, case_id, rows):
@@ -72,9 +73,14 @@ def test_cycle_subject_limits_starts_but_retains_intermediate_accounts(client, m
     assert result["count"] == 1
     cycle = result["cycles"][0]
     assert cycle["accounts"] == ["A", "B", "C"]
-    assert (cycle["total"], cycle["currency"], cycle["len"]) == ("1000.06", "CNY", 3)
+    assert (cycle["total"], cycle["currency"], cycle["len"]) == (None, "CNY", 3)
+    assert_unresolved_funds(cycle["funds"], 3, [("CNY", "1000.06")])
     assert {edge["from"] for edge in cycle["edges"]} == {"A", "B", "C"}
-    assert {edge["amount"] for edge in cycle["edges"]} == {"1000.01", "0.02", "0.03"}
+    assert {edge["amount"] for edge in cycle["edges"]} == {None}
+    assert {edge["observation_amount"] for edge in cycle["edges"]} == {"1000.01", "0.02", "0.03"}
+    for edge in cycle["edges"]:
+        assert edge["granularity"] == "unresolved_observation"
+        assert_unresolved_funds(edge["funds"], 1, [("CNY", edge["observation_amount"])])
     for override in ({"cycle_min_total": "1000.07"}, {"cycle_max_len": 2},
                      {"subjects": ["Unknown subject"]}):
         assert analyze(client, case_id, endpoint, **{**params, **override})["cycles"]["cycles"] == []
@@ -120,10 +126,13 @@ def test_outlier_name_resolves_all_accounts_before_currency_and_alias_aggregatio
     expected = analyze(client, case_id, endpoint, **params, subjects=[f"P{i}" for i in range(6)])["outliers"]
     named = analyze(client, case_id, endpoint, **params, subjects=["Synthetic shared owner"])["outliers"]
     assert named == expected
-    assert [(row["account"], row["currency"], row["dim"], row["value"])
+    assert [(row["account"], row["currency"], row["dim"], row["observation_value"])
             for row in named["outliers"]] == [
         ("P0", "CNY", "total", "3000.03"), ("P0", "USD", "total", "1700.09"),
     ]
+    for row in named["outliers"]:
+        assert row["value"] is None and row["metric_basis"] == "observation_clue"
+        assert_unresolved_funds(row["funds"], 2, [(row["currency"], row["observation_value"])])
     for unknown in ("Unknown owner", "Synthetic shared"):
         assert analyze(client, case_id, endpoint, **params, subjects=[unknown])["outliers"]["outliers"] == []
 
@@ -145,7 +154,12 @@ def test_fast_flow_self_transfer_cannot_pair_with_its_own_source_id(client, make
     assert result["count"] == 1
     pair = result["pairs"][0]
     assert (pair["account"], pair["currency"], pair["in_flow"]["amount"], pair["out_total"], pair["diff"]) == (
-        "HUB", "CNY", "2000.02", "2000.02", "0.00")
+        "HUB", "CNY", None, None, None)
+    assert pair["in_flow"]["observation_amount"] == "2000.02"
+    assert [row["observation_amount"] for row in pair["out_flows"]] == ["2000.02"]
+    assert_unresolved_funds(pair["in_funds"], 1, [("CNY", "2000.02")])
+    assert_unresolved_funds(pair["out_funds"], 1, [("CNY", "2000.02")])
+    assert_unresolved_funds(pair["funds"], 2, [("CNY", "4000.04")])
     assert all(pair["in_flow"]["id"] != out["id"] for out in pair["out_flows"])
     assert analyze(client, case_id, endpoint, **params, subjects=["SELF"])["fast_flows"]["pairs"] == []
     assert analyze(client, case_id, endpoint, **params, ff_max_pairs=0)["fast_flows"]["pairs"] == []

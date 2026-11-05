@@ -39,6 +39,23 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('AccountWorkspace', () => {
+  it('shows card numbers while sending the stable entity key for exact queries and account actions', async () => {
+    const h = fixture(), key = 'fte_synthetic_a', display = '000SYN-CARD-A';
+    h.api.list = vi.fn(async (caseId, query) => ({ case_id: caseId, source: query.source, total: 1, page: 1, page_size: 30, items: [row(key, { display_account: display })] }));
+    h.api.profile = vi.fn(async (caseId, account) => profile(account, caseId, { display_account: display }));
+    h.api.suggestions = vi.fn(async (caseId, query) => ({ ...suggestionPage(caseId, query.q), items: [{ account: key, display_account: display, name: '合成同名主体', id_no: null, matched_field: 'account' as const, matched_text: display }] }));
+    render(<AccountWorkspace {...h.props} />); await ready();
+    expect(within(details()).getByText(display)).toBeTruthy();
+    expect(within(details()).queryByText(key)).toBeNull();
+    const input = screen.getByLabelText('搜索户名或账号'); measureSearch(input); input.focus();
+    fireEvent.input(input, { target: { value: '000SYN' } });
+    fireEvent.click(await screen.findByRole('option', { name: new RegExp(display) }));
+    expect((input as HTMLInputElement).value).toBe(display);
+    fireEvent.click(screen.getByRole('button', { name: '查询账户' }));
+    await waitFor(() => expect(h.api.list).toHaveBeenLastCalledWith('1', { source: 'flows', q: key, page: 1, pageSize: 30, accountExact: true }, expect.any(AbortSignal)));
+    expect(h.api.profile).toHaveBeenCalledWith('1', key, expect.any(AbortSignal));
+  });
+
   it.each(['SVG', 'Enter'])('only fills the chosen account until %s submits, and clears its exact binding after manual editing', async submit => {
     const h = fixture();
     h.api.suggestions = vi.fn(async (caseId, query) => suggestionPage(caseId, query.q, query.source));

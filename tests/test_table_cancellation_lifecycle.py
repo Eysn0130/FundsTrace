@@ -56,7 +56,8 @@ def test_v2_upgrade_keeps_facts_and_receipt_but_excludes_effective_original(clie
     assert (job["result"]["ok"], job["result"]["rows_dup"]) == (0, 1)
     assert job["result"]["table_summary"]["effective_added"] == 0
     assert job["result"]["table_summary"]["excluded_flows"] == 1
-    assert database.q_raw("select * from flows where case_id=? order by id", [cid]) == before
+    assert database.q_raw("select * from flows where case_id=? order by id limit ?", [cid, len(before)]) == before
+    assert count(database, "flows", cid) == 3
     assert count(database, "effective_flows", cid) == 1
     assert client.get(f"/api/v1/cases/{cid}/imports/{old['import_id']}").json()["result"] == old_job["result"]
     assert [r["disposition"] for r in report(client, cid, view)["items"]] == ["duplicate", "cancelled", "cancelled"]
@@ -70,14 +71,14 @@ def test_fresh_pair_repeat_and_old_reimport_never_add_effective_money(client, da
     first = complete(client, cid, preview(client, cid, content, "synthetic.zip"))
     assert first["stage"] == "done"
     assert first["result"]["ok"] == first["result"]["table_summary"]["effective_added"] == 1
-    assert count(database, "flows", cid) == count(database, "effective_flows", cid) == 1
+    assert count(database, "flows", cid) == 3 and count(database, "effective_flows", cid) == 1
     _, old = import_version(client, cid, content, monkeypatch, table_archive.REFERENCE_PROFILE)
     assert old["result"]["ok"] == 1 and old["result"]["table_summary"]["effective_added"] == 0
-    assert old["result"]["table_summary"]["excluded_flows"] == 1
-    assert count(database, "flows", cid) == 2 and count(database, "effective_flows", cid) == 1
+    assert old["result"]["table_summary"]["excluded_flows"] == 2
+    assert count(database, "flows", cid) == 4 and count(database, "effective_flows", cid) == 1
     repeated = complete(client, cid, preview(client, cid, content, "repeat.zip"))
     assert repeated["result"]["ok"] == repeated["result"]["table_summary"]["effective_added"] == 0
-    assert count(database, "flows", cid) == 2 and count(database, "effective_flows", cid) == 1
+    assert count(database, "flows", cid) == 4 and count(database, "effective_flows", cid) == 1
     import_version(client, other, content, monkeypatch, table_archive.REFERENCE_PROFILE)
     assert count(database, "effective_flows", other) == 2
     assert client.get(f"/api/v1/cases/{other}/imports/{first['import_id']}").status_code == 404
@@ -94,7 +95,7 @@ def test_conflicting_historical_manual_facts_revoke_pair_and_remain_a_gap(client
     assert view["table_summary"]["reason_counts"]["cancellation_historical_conflict"] == 2
     assert complete(client, cid, view)["stage"] == "done"
     assert database.q_raw("select * from flows where case_id=? order by id limit ?", [cid, len(before)]) == before
-    assert count(database, "effective_flows", cid) == count(database, "flows", cid)
+    assert count(database, "effective_flows", cid) == 3 and count(database, "flows", cid) == 4
     assert not coverage(client, cid)["financial_interpretation_complete"]
     import_version(client, cid, content, monkeypatch, table_archive.REFERENCE_PROFILE)
     assert coverage(client, cid)["unresolved_records"] >= 2
@@ -141,7 +142,7 @@ def test_shared_ordinary_flow_with_an_uncancelled_occurrence_stays_effective(cli
         database.x("delete from import_members where case_id=? and source_id=?", [cid, legacy_source])
         database.x("update import_sources set row_kind='csv_record',parser_version='funds-trace-table-v4' where source_id=?",
                    [legacy_source])
-    assert count(database, "flows", cid) == 2
+    assert count(database, "flows", cid) == 3
     job = complete(client, cid, preview(client, cid, content, "synthetic.zip"))
     assert job["stage"] == "done" and job["result"]["table_summary"]["cancelled"] == 2
     assert job["result"]["table_summary"]["excluded_flows"] == 0
@@ -189,7 +190,7 @@ def test_empty_own_name_hash_matches_the_frozen_actual_fact(client, database, ma
     view = preview(client, cid, content, "synthetic.zip")
     assert view["table_summary"]["cancelled"] == 2
     assert complete(client, cid, view)["stage"] == "done"
-    assert count(database, "flows", cid) == 2 and count(database, "effective_flows", cid) == 1
+    assert count(database, "flows", cid) == 3 and count(database, "effective_flows", cid) == 1
 
 
 def test_journal_failure_rolls_back_exclusion_and_cancelled_original_is_retained(client, database, make_case, monkeypatch):

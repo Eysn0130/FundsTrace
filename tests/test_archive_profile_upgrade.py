@@ -114,10 +114,11 @@ def test_v2_adds_only_prior_unresolved_and_repeated_v1_cannot_restore_old_covera
     assert database.q_raw("select * from flows where case_id=? order by id", [cid]) == after
 
 
-def test_ordinary_csv_upgrades_by_same_physical_key_without_readding_accepted_facts(client, database, make_case):
+def test_ordinary_csv_upgrades_by_same_physical_key_without_readding_accepted_facts(client, database, make_case, monkeypatch):
     cid = make_case("Synthetic CSV archive promotion")
     payload, content = source([transaction("SYN-KEEP", "SYN-KEEP", "2.02"), transaction()])
-    ordinary = complete(client, cid, preview(client, cid, payload))
+    from test_table_mapping_versions import profile_preview
+    ordinary = complete(client, cid, profile_preview(client, cid, payload, monkeypatch, table_import.PRECISE_PROFILE))
     assert ordinary["stage"] == "done" and ordinary["result"]["ok"] == 1
     original = database.q_raw("select * from flows where case_id=?", [cid])[0]
     upgraded = complete(client, cid, preview(client, cid, content, "synthetic.zip"))
@@ -180,7 +181,7 @@ def test_mixed_v1_v2_package_keeps_versions_notes_and_no_originals(client, datab
     complete(client, cid, preview(client, cid, content, "synthetic.zip"))
     package = case_packages.export_package(cid)[0]
     members = _members(package)
-    assert json.loads(members["meta.json"])["format"] == 4
+    assert json.loads(members["meta.json"])["format"] == 6
     assert json.loads(members["meta.json"])["source_files"] == "not_included"
     assert not any(path.endswith((".csv", ".zip")) for path in members)
     restored = case_packages.import_package(package)["case_id"]
@@ -194,6 +195,7 @@ def test_mixed_v1_v2_package_keeps_versions_notes_and_no_originals(client, datab
 
 
 @pytest.mark.parametrize("profile,filename", [(table_archive.IDENTITY_PROFILE, "synthetic.zip"),
+                                             (table_import.IDENTITY_PROFILE, "synthetic.csv"),
                                              (table_import.PROFILE, "synthetic.csv"),
                                              (table_archive.PROFILE, "synthetic.zip")])
 def test_package_rejects_new_notes_disguised_as_old_or_unknown_basis(client, database, make_case, tmp_path, profile, filename):
@@ -201,7 +203,7 @@ def test_package_rejects_new_notes_disguised_as_old_or_unknown_basis(client, dat
     _, content = source([transaction("SYN-KEEP", "SYN-KEEP")])
     complete(client, cid, preview(client, cid, content, "synthetic.zip"))
     members = _members(case_packages.export_package(cid)[0])
-    basis = "guessed" if profile == table_archive.PROFILE else "source_transaction_id"
+    basis = "guessed" if profile in (table_archive.PROFILE, table_import.PROFILE) else "source_transaction_id"
     _mutate(members, "import_sources", f"update entries set parser_version='{profile}',filename='{filename}'", tmp_path)
     _mutate(members, "import_records", "update entries set details_json=json_merge_patch(details_json,'"
             + json.dumps({"trade_no_basis": basis}) + "')", tmp_path)

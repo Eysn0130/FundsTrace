@@ -58,14 +58,19 @@ def test_repeated_table_proofs_keep_public_totals_and_bound_json_join_work(clien
         assert job["result"]["table_summary"]["cancelled"] == 4
         assert job["result"]["table_summary"]["excluded_flows"] == 1
     stats = client.get(f"/api/v1/cases/{cid}/stats").json()
-    assert stats["flows"] == 21 and stats["amount_totals"] == [{"currency": "CNY", "amount": "48.00"}]
-    assert client.get(f"/api/v1/cases/{other}/stats").json()["flows"] == 22
+    assert stats["flows"] == 21 and stats["amount_totals"] == [{"currency": "CNY", "amount": '48.00'}]
+    from funds_assertions import unresolved_funds
+    assert stats["funds"] == unresolved_funds(21, ("CNY", "48.00"))
+    other_stats = client.get(f"/api/v1/cases/{other}/stats").json()
+    assert other_stats["flows"] == 22
+    assert other_stats["funds"] == unresolved_funds(22, ("CNY", "55.00"))
     public_rows = client.get(f"/api/v1/cases/{cid}/flows", params={"page_size": 100}).json()
-    assert public_rows["total"] == 21
-    numbers = {row["trade_no"] for row in public_rows["items"]}
+    assert public_rows["total"] == 24 and public_rows["funds"]["observation_count"] == 21
+    assert sorted(row["amount"] for row in public_rows["items"] if row["source_ledger"]) == ["-10.00", "-7.00", "7.00"]
+    numbers = {row["trade_no"] for row in public_rows["items"] if not row["source_ledger"]}
     assert "SYN-PROTECTED" in numbers and "SYN-EXCLUDED" not in numbers
     assert database.q_raw("select count(*) n,sum(amount) amount from flows where case_id=?", [cid]) == [
-        {"n": 22, "amount": Decimal("55.00")}]
+        {"n": 24, "amount": Decimal("38.00")}]
 
     plan = json.loads(database.con().execute(
         "EXPLAIN (FORMAT JSON) select count(*) from effective_flows where case_id=?", [cid]).fetchone()[1])

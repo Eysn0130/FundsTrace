@@ -234,13 +234,15 @@ def test_public_import_automates_new_headers_and_retains_unresolved_sources_with
     assert job["stage"] == "done", job
     assert job["result"]["ok"] == 1
     rows = database.q_raw("select payer_account,payee_account,amount,currency from flows where case_id=?", [cid])
-    assert rows == [{"payer_account": B_ROW[1], "payee_account": B_ROW[3], "amount": Decimal("1.23"), "currency": "CNY"}]
+    assert rows == [{"payer_account": B_ROW[1], "payee_account": B_ROW[3], "amount": Decimal("1.23"), "currency": "CNY"},
+                    {"payer_account": B_ROW[1], "payee_account": B_ROW[3], "amount": Decimal("-1.23"), "currency": ""}]
+    assert client.get(f"/api/v1/cases/{cid}/stats").json()["amount_total"] == "1.23"
     report = client.get(f"/api/v1/cases/{cid}/sources/{view['import_id']}/report").json()
     assert [record["source_row"] for record in report["items"]] == [2, 3, 4, 5]
     assert [record["disposition"] for record in report["items"]] == ["imported", "unresolved", "unresolved", "unresolved"]
     for record, issue in zip(report["items"][1:], ("negative_amount", "conflicting_field", "unknown_status")):
         assert_issue(record, issue)
-        assert record["flow_id"] is None
+        assert (record["flow_id"] is not None) == (issue == "negative_amount")
     assert client.get(f"/api/v1/cases/{cid}/sources/{view['import_id']}/file").content == content
     coverage = client.get(f"/api/v1/cases/{cid}/stats").json()["import_coverage"]
     assert coverage["unresolved_records"] == 3

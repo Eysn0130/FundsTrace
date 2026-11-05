@@ -9,11 +9,22 @@ import pytest
 
 from app import case_packages, table_import
 from app.services import imports
-from test_automatic_table_import import preview
+from test_automatic_table_import import preview as current_preview
 from test_feedback_import_api import complete
 from test_table_mapping_coverage import coverage, envelope
 from test_table_mapping_versions import profile_preview
 
+
+def preview(client, cid, payload, filename="synthetic.csv"):
+    if filename.endswith(".zip"):
+        with pytest.MonkeyPatch.context() as historical:
+            original = imports._parse
+            def pinned(*args, **options):
+                options["table_profile"] = "funds-trace-table-archive-v4"
+                return original(*args, **options)
+            historical.setattr(imports, "_parse", pinned)
+            return current_preview(client, cid, payload, filename)
+    return current_preview(client, cid, payload, filename)
 
 def test_ready_v6_repreview_and_commit_keep_old_money_after_v11_is_default(client, database, make_case, monkeypatch):
     cid = make_case("Synthetic frozen financial ready session")
@@ -21,7 +32,7 @@ def test_ready_v6_repreview_and_commit_keep_old_money_after_v11_is_default(clien
                "2026-01-01,SYN-A,SYN-B,1.01,万元\n").encode()
     old = profile_preview(client, cid, payload, monkeypatch, table_import.ROLE_PROFILE)
     assert old["stats"]["ok"] == 1 and old["table_summary"]["currency_totals"] == {"CNY": "1.01"}
-    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v17"
+    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v66"
     rechecked = client.post(f"/api/v1/cases/{cid}/imports/{old['import_id']}/preview", json={
         "mode": old["mode"], "mapping": old["mapping"]})
     assert rechecked.status_code == 200, rechecked.text

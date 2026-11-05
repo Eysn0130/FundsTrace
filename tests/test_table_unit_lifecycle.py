@@ -72,7 +72,7 @@ def test_declared_units_and_time_import_automatically_and_preserve_source_and_fo
     assert coverage(client, cid)["financial_interpretation_complete"]
     package = case_packages.export_package(cid)[0]
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
-        assert json.loads(archive.read("meta.json"))["format"] == 4
+        assert json.loads(archive.read("meta.json"))["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     assert facts(database, restored) == expected
     assert coverage(client, restored) == coverage(client, cid)
@@ -217,11 +217,12 @@ def test_v11_retains_only_the_exact_proven_direction_header_resolution(
 @pytest.mark.parametrize("newest_first", [False, True])
 def test_v11_financial_conflict_is_sticky_across_older_assessment_orders(
         client, database, make_case, monkeypatch, legacy, newest_first):
+    from test_archive_profile_upgrade import frozen_preview
     cid = make_case("Synthetic v11 strict brackets coverage")
     payload = encoded_table(("date", "payer account", "payee account", "amount(分]"),
                             [["2026-03-01 10:20:30", "SYN-A", "SYN-B", "123"]])
     for profile in (("v11", legacy) if newest_first else (legacy, "v11")):
-        view = (preview(client, cid, envelope(payload), "synthetic.zip") if profile == "archive"
+        view = (frozen_preview(client, cid, envelope(payload), monkeypatch, 'funds-trace-table-archive-v3') if profile == "archive"
                 else profile_preview(client, cid, payload, monkeypatch, "funds-trace-table-" + profile))
         job = complete(client, cid, view)
         assert job["stage"] == "done"
@@ -238,6 +239,10 @@ def test_v11_financial_conflict_is_sticky_across_older_assessment_orders(
     restored = case_packages.import_package(case_packages.export_package(cid)[0])["case_id"]
     assert facts(database, restored) == facts(database, cid)
     assert coverage(client, restored) == coverage(client, cid)
+    current_case = make_case('Synthetic current envelope rejects malformed financial unit')
+    current = preview(client, current_case, envelope(payload), 'current.zip')
+    assert current['table_summary']['unresolved'] == 1
+    assert complete(client, current_case, current)['result']['ok'] == 0
 
 
 @pytest.mark.parametrize("difference", [

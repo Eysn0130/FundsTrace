@@ -63,7 +63,8 @@
       autoRoutes[id]={source,target,controlPoints};
       if(['screen-right','compact-arc','obstacle-aware'].includes(route.curvePolicy))autoRoutes[id].curvePolicy=route.curvePolicy;
     }
-    return { trackedIds: [...state.tracked].sort(order), positions, edgeLabelPos, edgeBendPos, edgeSnapshotLabels, edgeTypes,
+    return { trackedIds: [...state.tracked].sort(order), resolutionRevision: state.lastGraph.resolution_revision ?? null,
+      positions, edgeLabelPos, edgeBendPos, edgeSnapshotLabels, edgeTypes,
       autoRoutes,
       layout: state.layout, edgeType: state.edgeType, edgeLabels: [...state.edgeLabels].sort(order),
       showIds: state.showIds, showPhotos: state.showPhotos, presentation: newGraphPresentation(state.presentation),
@@ -114,6 +115,7 @@
     window.FundsRibbonCommands?.sync();
     publishMembership();
     window.FundsNeighborhoodActions?.update();
+    window.FundsNodeFinderActions?.update();
   }
 
   function waitLayout(context) {
@@ -212,6 +214,15 @@
         throw new Error('追踪状态无法确认，请重新加载当前画布。');
       }
       if (!isCurrentCase(context)) return null;
+      if (before.resolutionRevision !== (state.lastGraph.resolution_revision ?? null)) {
+        // Compensation changes tracked membership only. It cannot undo newly
+        // imported account evidence or make the previous graph authoritative.
+        try {
+          await loadGraph(false, context);
+          if (isCurrentCase(context)) applyGraphOverview();
+        } catch (_) { uncertain(context); }
+        throw error;
+      }
       // Failed reads leave the old drawing intact; layout/render failure can
       // occur after publication, so that case also redraws the old geometry.
       const published = state.lastGraph !== previous.lastGraph;
@@ -248,6 +259,10 @@
     const context = caseContext();
     const selectedIds = new Set(state.graphSelection?.ids || []);
     if (!state.caseId || state.graphLoading) return false;
+    const revision = state.lastGraph.resolution_revision ?? null;
+    if (target.resolutionRevision !== revision || expected.resolutionRevision !== revision) {
+      invalidateResolution(); return false;
+    }
     try { await replaceTracked(context, expected.trackedIds, target.trackedIds); }
     catch (error) {
       if (error.name === 'TypeError' || error.name === 'SyntaxError') uncertain(context);
@@ -279,6 +294,11 @@
       return false;
     }
     try {
+      if ((graph.resolution_revision ?? null) !== target.resolutionRevision) {
+        await loadGraph(false, context);
+        if (isCurrentCase(context)) { invalidateResolution(); applyGraphOverview(); }
+        return false;
+      }
       closeDrawer(); cancelGraphLayout(); resetGraphView();
       state.lastGraph = graph; state.tracked = new Set(graph.tracked_ids);
       state.mainAccounts = new Set(graph.main_accounts || []);
@@ -410,7 +430,7 @@
             });
             if (!result || token !== membershipToken || !isCurrentCase(context)) return;
             try {
-              restoreCamera(before);
+              if (before.resolutionRevision === (state.lastGraph.resolution_revision ?? null)) restoreCamera(before);
               revealMembership(new Set(batch.filter(([, intent]) => intent.included).map(([id]) => Number(id))));
               state.graph?.paint(); scheduleGraphViewport(); scheduleGraphLabels();
             } catch (error) { uncertain(context); throw error; }
@@ -479,7 +499,12 @@
     try { listener(membershipSnapshot()); } catch (_) { /* Isolate view observers. */ }
     return () => { membershipListeners.delete(listener); };
   } });
-  window.FundsCanvasEditor = Object.freeze({ history, membership, command, syncControls, captureDisplay: () => { const {trackedIds, ...display} = capture(); return display; }, beginDisplayGesture, finishDisplayGesture });
+  function invalidateResolution() {
+    gesture = null;
+    history.invalidate();
+    syncControls();
+  }
+  window.FundsCanvasEditor = Object.freeze({ history, membership, command, syncControls, invalidateResolution, captureDisplay: () => { const {trackedIds, ...display} = capture(); return display; }, beginDisplayGesture, finishDisplayGesture });
 
   const readGraph = loadGraph;
   loadGraph = async function (retry = true, context = caseContext()) {
@@ -518,13 +543,17 @@
     ids = [...ids];
     return command(remove ? '移除流水' : '流水上图', async context => {
       const result = await mutateTracked(context, before => {
-        const desired = new Set(before);
-        for (const id of ids) remove ? desired.delete(id) : desired.add(id);
-        return replaceTracked(context, before, [...desired].sort(order));
+        const desired = new Map(before.map(id => [String(id), id]));
+        for (const id of ids) {
+          const key = String(id);
+          if (remove) desired.delete(key);
+          else if (!desired.has(key)) desired.set(key, id);
+        }
+        return replaceTracked(context, before, [...desired.values()].sort(order));
       }, () => { if (!remove) { state.justAdded = new Set(ids); state.forceFit = false; } });
       if (result && isCurrentCase(context)) {
         if (remove) closeDrawer();
-        toast(remove ? `已移除 ${ids.length} 笔` : `已上图 ${ids.length} 笔流水`);
+        toast(remove ? `已移除 ${ids.length} 条记录` : `已上图 ${ids.length} 条记录`);
       }
     });
   }
@@ -611,7 +640,7 @@
     wrap('#showIdCk', 'onchange', '切换证件号显示'); wrap('#showPhotoCk', 'onchange', '切换照片显示');
     wrap('#graphLabelMode', 'onchange', '更改标注模式');
     $('#btnBulkTrack').onclick = () => {
-      const ids = $$('#flowTbody .flow-ck').filter(node => node.checked).map(node => Number(node.dataset.id));
+      const ids = [...new Set($$('#flowTbody .flow-ck').filter(node => node.checked).flatMap(flowObservationIds).map(String))];
       if (!ids.length) { toast('请先勾选要追踪的流水', 'err'); return Promise.resolve(false); }
       const direction = $('#bulkDir').value, x = Math.max(1, Math.min(50, Number($('#bulkX').value) || 5));
       return command('批量追踪', async context => {
@@ -622,10 +651,13 @@
         if (result && isCurrentCase(context)) {
           const dirLabel = direction === 'source' ? '来源' : '去向';
           const notMain = (result.skipped_not_main || []).length;
-          const zero = (result.detail || []).filter(item => item.picked === 0 && item.is_main).length;
-          let message = `批量追踪完成：${result.anchors} 笔交易及其${dirLabel}流水共上图 ${result.tracked} 笔`;
-          if (notMain) message += `；${notMain} 笔被跳过（${dirLabel === '来源' ? '付款' : '收款'}方不是主账号，无法追踪）`;
-          if (zero) message += `；${zero} 笔锚点在本方账单中无${dirLabel}流水（仅上图了本笔）`;
+          const uncertain = (result.detail || []).filter(item => item.ordering?.reasons?.length).length;
+          const zero = (result.detail || []).filter(item => item.picked === 0 && item.is_main && !item.ordering?.reasons?.length).length;
+          let message = `批量追踪完成：${result.anchors} 条起点记录及其${dirLabel}记录共上图 ${result.tracked} 条`;
+          if (notMain) message += `；${notMain} 条起点记录被跳过（${dirLabel === '来源' ? '付款' : '收款'}方不是主账号，无法追踪）`;
+          if (zero) message += `；${zero} 条起点记录在本方账单中无${dirLabel}流水（仅上图了该记录）`;
+          if (uncertain) message += `；${uncertain} 条起点的部分同刻先后尚无依据，未按导入顺序选取`;
+          message += window.FundsFacts?.tracking?.(result.detail) || '';
           toast(message);
         }
       });

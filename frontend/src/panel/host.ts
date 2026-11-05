@@ -1,4 +1,4 @@
-import type { CaseStats, CleanupResult, CommitRequest, FlowPage, FlowSourceList, ImportJob, ImportPreview, ImportSessionList, RepreviewRequest } from '../../../contracts/api-v1';
+import type { CaseStats, CleanupResult, CommitRequest, FlowPage, FlowSourceList, ImportJob, ImportPreview, ImportRecordPage, ImportSessionList, RepreviewRequest } from '../../../contracts/api-v1';
 
 export const FUNDS_PANEL_VERSION = 'funds-panel.v1' as const;
 
@@ -12,10 +12,12 @@ export interface FundsCaseClientV1 {
   stats(signal?: AbortSignal): Promise<CaseStats>;
   flows(filters: FundsFlowFiltersV1, signal?: AbortSignal): Promise<FlowPage>;
   preview(file: File, signal?: AbortSignal): Promise<ImportPreview>;
+  previewDirectory?(files: File[], signal?: AbortSignal): Promise<ImportPreview>;
   repreview(importId: string, body: RepreviewRequest, signal?: AbortSignal): Promise<ImportPreview>;
   commit(importId: string, body: CommitRequest, signal?: AbortSignal): Promise<{ case_id: string; import_id: string; started: boolean }>;
   job(importId: string, signal?: AbortSignal): Promise<ImportJob>;
   imports(signal?: AbortSignal): Promise<ImportSessionList>;
+  importRecords?(sourceId: string, page?: number, signal?: AbortSignal): Promise<ImportRecordPage>;
   sources(flowId: string, page?: number, signal?: AbortSignal): Promise<FlowSourceList>;
   cleanup(dryRun: boolean, signal?: AbortSignal): Promise<CleanupResult>;
 }

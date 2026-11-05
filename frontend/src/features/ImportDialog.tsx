@@ -1,15 +1,17 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import type { ImportPreview, ImportJob, ImportSession, TableSummary as TableSummaryData } from '../../../contracts/api-v1';
+import type { ImportPreview, ImportJob, ImportRecordPage, ImportSession, TableSummary as TableSummaryData } from '../../../contracts/api-v1';
 import { Modal } from '../components/Modal';
 import type { FundsCaseClientV1, FundsCaseContextV1, FundsHostActionsV1 } from '../panel/host';
 import { formatMoney, displayTime } from '../lib/format';
 import { linkAbortSignal, waitForNextPoll } from '../panel/cancellation';
+import { captureDroppedFiles } from '../lib/directory-files';
+import { SourceFieldEvidence } from './SourceFieldEvidence';
 
 const fieldNames: Record<string, string> = {
   trade_no: '流水号', trade_time: '交易时间', time_part: '交易时刻', _time2: '时间补充', amount: '交易金额', balance: '交易后余额', currency: '币种',
   payer_name: '付款户名', payer_account: '付款账号', payer_bank: '付款开户行', payee_name: '收款户名', payee_account: '收款账号', payee_bank: '收款开户行',
   self_account: '本方账号', self_name: '本方户名', counter_account: '对手账号', counter_name: '对手户名', counter_bank: '对手开户行',
-  direction: '收支方向', income_amt: '收入金额', expense_amt: '支出金额', summary: '摘要', channel: '渠道', status: '交易状态', voucher_reference: '凭证引用',
+  direction: '收支方向', income_amt: '收入金额', expense_amt: '支出金额', summary: '摘要', remark: '备注', voucher_type: '凭证种类', channel: '渠道', status: '交易状态', voucher_reference: '凭证引用',
 };
 const fieldsA = ['trade_time', '_time2', 'payer_account', 'payer_name', 'payee_account', 'payee_name', 'amount', 'trade_no', 'balance', 'currency', 'self_account', 'self_name', 'summary'];
 const fieldsB = ['trade_time', '_time2', 'self_account', 'self_name', 'counter_account', 'counter_name', 'direction', 'amount', 'income_amt', 'expense_amt', 'trade_no', 'balance', 'currency', 'summary'];
@@ -18,11 +20,14 @@ const modeFields = {
   B: new Set([...fieldsB, 'counter_bank', 'channel', '_time2']),
 };
 const feedbackReasons: Record<string, string> = {
-  transaction_valid: '按来源方向与金额识别为资金流水', auxiliary_table: '辅助资料，未作为资金流水', feedback_only: '来源反馈，未包含资金流水',
+  unsupported_attachment: '附件原件已保留，格式未适配，内部记录数量与资金内容尚未解释', non_business_attachment: 'Finder元数据附件，原件保留，不生成资金流水',
+    transaction_valid: '按来源方向与金额识别为资金流水', auxiliary_table: '辅助资料，未作为资金流水', feedback_only: '来源反馈，未包含资金流水',
   negative_reversal_text: '负数与冲正描述缺少一致的来源依据', negative_revocation_text: '负数与撤销描述缺少一致的来源依据',
   negative_reversal_revocation_text: '负数与冲正及撤销描述缺少一致的来源依据', negative_unknown: '来源未明确负号含义',
   missing_core: '缺少形成资金流水必需的信息', invalid_amount: '交易金额格式无效', amount_precision: '交易金额超过分精度',
   amount_overflow: '交易金额超出支持范围', zero_amount: '零金额，无资金变动', invalid_direction: '收付方向无法识别',
+  unsupported_time_role: '只有记账、受理等其他时间，未提供交易时间；未计入资金统计和资金图',
+  unsupported_timezone: '显式偏移和UTC瞬间已保留；尚未进入资金统计、资金图或跨无区时间排序',
   invalid_time: '交易时间无效', invalid_currency: '币种无法识别', unknown_status: '交易状态含义缺少适用的来源依据',
   invalid_balance: '交易余额格式无效', balance_precision: '交易余额超过分精度', balance_overflow: '交易余额超出支持范围',
   reversal_text_requires_review: '历史冲正或撤销记录缺少可确定资金效果的依据',
@@ -63,9 +68,10 @@ const feedbackReason = (reason: string) => feedbackReasons[reason] || '其他自
 const feedbackRoles: Record<string, string> = { transaction: '交易明细', account: '账户信息', client: '客户资料', subaccount: '子账户', address: '地址', phone: '联系方式', task: '查询任务', freeze: '冻结信息' };
 const unresolvedCount = (feedback: NonNullable<ImportPreview['feedback']>) => (feedback.unresolved ?? 0) + (feedback.review ?? 0);
 
-const mappingBasis: Record<string, string> = { exact_header_alias: '按完整表头别名识别并校验', source_transaction_id: '使用来源交易流水号', independent_voucher_reference: '凭证号为独立引用，不与交易流水号判冲突', explicit_time_format: '明确的日期时间格式' };
+const mappingRoleNames: Record<string, string> = { source_slip_reference: '传票号', source_log_reference: '日志号', independent_voucher_type: '凭证种类' };
+const mappingBasis: Record<string, string> = { exact_header_alias: '按完整表头别名识别并校验', source_transaction_id: '使用来源交易流水号', independent_voucher_reference: '凭证号为独立引用，不与交易流水号判冲突', independent_voucher_type: '保留来源凭证种类', source_slip_reference: '独立保留来源传票号', source_log_reference: '独立保留来源日志号', summary: '保留来源摘要原文', remark: '独立保留来源备注原文', explicit_time_format: '明确的日期时间格式' };
 const mappingExplanation = (item: Record<string, string>) => [
-  item.member_path, `${fieldNames[item.field] || item.field || '字段'} ← ${item.column || '未识别'}`,
+  item.member_path, `${mappingRoleNames[item.basis] || fieldNames[item.field] || item.field || '字段'} ← ${item.column || '未识别'}`,
   item.time_format ? `时间格式：${item.time_format}` : '',
   item.unit && ['amount', 'balance', 'income_amt', 'expense_amt'].includes(item.field) ? `来源单位：${item.unit}` : '', item.unit_factor && ['amount', 'balance', 'income_amt', 'expense_amt'].includes(item.field) ? `金额单位换算系数：${item.unit_factor}` : '',
   item.candidate_count ? `候选列：${item.candidate_count}` : '', mappingBasis[item.basis] || item.basis,
@@ -76,20 +82,29 @@ const documentExplanation = (item: Record<string, unknown>) => [
   item.row_count != null ? `来源记录 ${String(item.row_count)} 条` : '',
 ].filter(Boolean).join(' · ');
 
+function ResolutionSummary({ value, complete }: { value: NonNullable<ImportPreview['resolution']>; complete: boolean }) {
+  if (!(value.unresolved_endpoints || value.conflicts)) return null;
+  return <section className="resume-summary" aria-label="账户关联结果">
+    <p><strong>{complete ? '账户关联已更新' : '账户资料关联预览'}</strong></p>
+    <p>有 {value.unresolved_endpoints} 个账户标识尚未关联，{value.conflicts} 处资料冲突。已知卡号和原始记录继续保留，可在账户详情中核对。</p>
+  </section>;
+}
+
 function TableSummary({ summary, complete = false }: { summary: TableSummaryData; complete?: boolean }) {
   const evidence = summary.mapping_evidence ?? [], documents = summary.documents ?? [], examples = summary.unresolved_examples ?? [];
   return <section className="resume-summary" aria-label="表格自动识别与全量校验汇总">
     <p><strong>表格自动识别 · 全量校验</strong></p>
     <p>来源记录 {summary.record_total} 条 · 可靠识别流水 {summary.accepted} 条 · 已配对冲正/撤销 {summary.cancelled ?? 0} 条（双方均不计有效资金） · 未计入资金流水 {summary.unresolved} 条 · 无资金变动 {summary.non_monetary} 条 · 非交易记录 {summary.non_transaction} 条 · 辅助资料 {summary.auxiliary} 条</p>
+    {(summary.reason_counts.unsupported_attachment ?? 0) > 0 && <p role="note">有 {summary.reason_counts.unsupported_attachment} 份附件格式尚未适配，已保留原件。每份按一个来源条目登记，内部交易数量与金额未知，不能将此结果理解为整个目录已完整解析。</p>}
     <p>{complete ? '自动处理已完成，未计入资金流水的记录已' : '自动处理会正常完成，未计入资金流水的记录会'}保留来源和原因，无需逐条确认；这些记录不参与金额、交易笔数和关系统计。</p>
     {(summary.cancelled ?? 0) > 0 && <p>已配对记录保留来源和核验依据，双方退出有效资金统计；退款、退货或仅有负号的记录不据此排除。</p>}
-    {complete && (summary.excluded_flows ?? 0) > 0 && <p>本案另有 {summary.excluded_flows} 笔历史留存流水已退出有效统计。</p>}
+    {complete && (summary.excluded_flows ?? 0) > 0 && <p>本案有 {summary.excluded_flows} 条留存来源流水未计入有效统计。</p>}
     {summary.unresolved > 0 && <p role="note">分析仅使用可靠识别的有效流水，可能无法反映完整资金流向、金额和关联关系。未计入不代表金额为零或没有发生交易。</p>}
     {summary.accepted === 0 && <p>文件{complete ? '已处理' : '可保存处理结果'}，暂无可可靠计入的流水。</p>}
     {Object.keys(summary.currency_totals).length > 0 && <><p>可靠识别流水金额合计（按币种，含重复；非本次新增金额或净结算金额）：</p><ul>{Object.entries(summary.currency_totals).map(([currency, amount]) => <li key={currency} className="mono">{formatMoney(amount)} {currency || '未标注币种'}</li>)}</ul></>}
     {evidence.length > 0 && <details open><summary>字段映射、金额单位与方向依据（共 {evidence.length} 项）</summary><ul>{evidence.slice(0, 50).map((item, index) => <li key={index}>{mappingExplanation(item)}</li>)}</ul>{evidence.length > 50 && <p>显示前50项，完整依据见处理报告。</p>}</details>}
     {Object.keys(summary.reason_counts).length > 0 && <details open><summary>全量校验与未计入原因</summary><ul>{Object.entries(summary.reason_counts).map(([reason, count]) => <li key={reason}>{feedbackReason(reason)}：{count} 条</li>)}</ul></details>}
-    {examples.length > 0 && <details><summary>未计入记录的来源位置</summary><ul>{examples.map((row, index) => <li key={index}>{row.member_path} · 原始第 {row.source_row} 行 · {feedbackReason(row.reason_code)}</li>)}</ul></details>}
+    {examples.length > 0 && <details><summary>未计入记录的来源位置</summary><ul>{examples.map((row, index) => <li key={index}>{row.member_path} · 原始第 {row.source_row} 行 · {feedbackReason(row.reason_code)}<SourceFieldEvidence details={row.details} /></li>)}</ul></details>}
     {documents.length > 0 && <details><summary>已检查的来源文件与工作表（共 {documents.length} 项）</summary><ul>{documents.slice(0, 50).map((item, index) => <li key={index}>{documentExplanation(item)}</li>)}</ul>{documents.length > 50 && <p>显示前50项，完整清单见处理报告。</p>}</details>}
   </section>;
 }
@@ -102,7 +117,7 @@ function FeedbackSummary({ feedback, complete = false }: { feedback: NonNullable
     <p>{complete ? '自动处理已完成，未计入资金流水的记录已' : '自动处理会正常完成，未计入资金流水的记录会'}保留来源和原因，无需逐条确认；这些记录不参与金额、交易笔数和关系统计。</p>
     <p className="muted">仅按完整来源信息唯一配对冲正/撤销；配对双方保留来源记录，不计入有效资金统计。普通退款按来源记账方向与金额处理，不因摘要含“退款”自动排除。</p>
     {unresolvedCount(feedback) > 0 && <p role="note">分析仅使用可靠识别的有效流水，可能无法反映完整资金流向、金额和关联关系。未计入不代表金额为零或没有发生交易。</p>}
-    {complete && (feedback.excluded_flows ?? 0) > 0 && <p>本案另有 {feedback.excluded_flows} 笔历史留存流水已退出有效统计。</p>}
+    {complete && (feedback.excluded_flows ?? 0) > 0 && <p>本案有 {feedback.excluded_flows} 条留存来源流水未计入有效统计。</p>}
     {Object.entries(feedback.currency_totals).length ? <><p>来源已接纳流水金额合计（按币种，含重复记录，已排除配对冲正/撤销双方；非本次新增金额或净结算金额）：</p><ul>{Object.entries(feedback.currency_totals).map(([currency, amount]) => <li key={currency} className="mono">{formatMoney(amount)} {currency || '未标注币种'}</li>)}</ul></> : <p>当前没有来源已接纳流水金额。</p>}
     {Object.entries(feedback.reason_counts).length > 0 && <details open><summary>自动分类依据</summary><ul>{Object.entries(feedback.reason_counts).map(([reason, count]) => <li key={reason}>{feedbackReason(reason)}：{count} 条</li>)}</ul></details>}
     {examples.length > 0 && <details><summary>未计入记录的来源示例（前 {examples.length} 条）</summary><ul>{examples.map((row, index) => <li key={index}>{row.member_path} · 原始第 {row.source_row} 行 · {feedbackReason(row.reason_code)}</li>)}</ul></details>}
@@ -110,8 +125,38 @@ function FeedbackSummary({ feedback, complete = false }: { feedback: NonNullable
   </section>;
 }
 
+function ImportRecordEvidence({ caseId, sourceId, client, scopeSignal }: { caseId: string; sourceId: string; client: FundsCaseClientV1; scopeSignal: AbortSignal }) {
+  const [open, setOpen] = useState(false), [page, setPage] = useState(1), [reload, setReload] = useState(0);
+  const [data, setData] = useState<ImportRecordPage | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!open || !client.importRecords || scopeSignal.aborted) return;
+    const controller = new AbortController(); let active = true;
+    const unlink = linkAbortSignal(scopeSignal, controller);
+    const revoke = () => { setData(null); setOpen(false); };
+    scopeSignal.addEventListener('abort', revoke, { once: true });
+    setData(null); setError(''); setLoading(true);
+    client.importRecords(sourceId, page, controller.signal).then(value => {
+      if (!active || controller.signal.aborted) return;
+      if (value.case_id !== caseId || value.source_id !== sourceId) throw new Error('来源记录与当前案件导入不一致。');
+      setData(value);
+    }).catch(reason => { if (active && !controller.signal.aborted && reason.name !== 'AbortError') setError(reason.message); })
+      .finally(() => { if (active && !controller.signal.aborted) setLoading(false); });
+    return () => { active = false; scopeSignal.removeEventListener('abort', revoke); unlink(); controller.abort(); };
+  }, [client, caseId, sourceId, scopeSignal, page, open, reload]);
+  if (!client.importRecords || scopeSignal.aborted) return null;
+  return <details open={open} onToggle={event => setOpen(event.currentTarget.open)}><summary>来源记录与关联依据</summary>
+    <p>以下为当前保留的来源记录与关联资料，导入当时统计不变。</p>
+    {loading && <p role="status">正在加载来源记录…</p>}
+    {error && <p role="alert">{error}<button onClick={() => setReload(value => value + 1)}>重试来源记录</button></p>}
+    {data?.items.map(row => <article key={row.record_no}><p>{row.member_path} · 原始第 {row.source_row} 行 · {feedbackReason(row.reason_code)}</p><SourceFieldEvidence details={row.details} /></article>)}
+    {data && data.total === 0 && <p>未保留可查询的来源记录。</p>}
+    {data && data.total > data.page_size && <div className="source-pagination"><button aria-label="来源记录上一页" disabled={loading || page <= 1} onClick={() => setPage(value => value - 1)}>上一页</button><span>第 {data.page} / {Math.ceil(data.total / data.page_size)} 页</span><button aria-label="来源记录下一页" disabled={loading || page * data.page_size >= data.total} onClick={() => setPage(value => value + 1)}>下一页</button></div>}
+  </details>;
+}
+
 export function ImportDialog({ target, client, scopeSignal, resume, actions, onClose, onImported, active = true }: { target: FundsCaseContextV1; client: FundsCaseClientV1; scopeSignal: AbortSignal; resume?: ImportSession; actions?: FundsHostActionsV1; onClose: () => void; onImported: () => void; active?: boolean }) {
   const fileId = useId();
+  const directoryId = useId();
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [mode, setMode] = useState<'A' | 'B'>('A');
@@ -189,13 +234,18 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
     }
     return () => { alive.current = false; operation.current += 1; unlink(); controller.abort(); };
   }, [scopeSignal]);
-  const upload = async (file: File | undefined) => {
-    if (!file || lifetime.current.signal.aborted || scopeSignal.aborted) return;
+  const upload = async (read: () => File[] | Promise<File[]>, directory = false) => {
+    if (busy || polling || awaitingStatus || lifetime.current.signal.aborted || scopeSignal.aborted) return;
     const token = ++operation.current;
     setBusy(true); setError(''); setJob(null);
     selectionInitialized.current = false;
     try {
-      const value = await client.preview(file, lifetime.current.signal);
+      const selected = read();
+      const files = Array.isArray(selected) ? selected : await selected;
+      if (!valid(token) || !files.length) return;
+      if (directory && !client.previewDirectory) throw new Error('当前宿主尚未提供文件夹导入，请选择单个文件或反馈包。');
+      const value = directory ? await client.previewDirectory!(files, lifetime.current.signal)
+        : await client.preview(files[0], lifetime.current.signal);
       if (!valid(token)) return;
       acceptPreview(value);
       // Only the response to this new upload can authorize the one automatic
@@ -237,8 +287,10 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const working = busy || polling;
   const feedback = complete ? job.result?.feedback : preview?.feedback;
   const tableSummary = complete ? job.result?.table_summary : preview?.table_summary;
+  const resolution = complete ? job.result?.resolution : preview?.resolution;
   const classified = !!feedback || !!tableSummary;
   const originalAvailable = !resume || resume.source_available;
+  const historicalReceipt = resume?.stage === 'done';
   const download = async (kind: 'report' | 'original') => {
     const sourceId = job?.result?.source_id, action = kind === 'report' ? actions?.downloadImportReport : actions?.downloadSource;
     if (!sourceId || !action || (kind === 'original' && !originalAvailable) || downloading || lifetime.current.signal.aborted || scopeSignal.aborted) return;
@@ -248,17 +300,19 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
     catch (reason) { if (valid(token)) setError((reason as Error).message); }
     finally { if (valid(token)) setDownloading(''); }
   };
-  return active ? <Modal title="导入流水" onClose={onClose} busy={busy}>
-    <div className="modal-context">导入到 <strong>{target.name}</strong><span>当前案件内去重</span></div>
+  return active ? <Modal title={historicalReceipt ? '历史导入回执' : '导入流水'} onClose={onClose} busy={busy}>
+    <div className="modal-context">{historicalReceipt ? '历史回执 · ' : '导入到 '}<strong>{target.name}</strong><span>{historicalReceipt ? '导入当时结果；当前有效流水以案件统计为准' : '当前案件内去重'}</span></div>
     <ol className="import-steps" aria-label="导入步骤"><li className={complete && classified ? 'done' : !preview ? 'active' : 'done'}>1 <span>选择文件</span></li><li className={preview && !job ? 'active' : ''}>2 <span>{classified ? '自动识别与校验' : '映射与预览'}</span></li><li className={job ? 'active' : ''}>3 <span>{classified ? '处理结果' : '核对结果'}</span></li></ol>
     {error && <div role="alert" className="error-banner"><span>{error}</span>{awaitingStatus && <p>导入结果暂无法确认，请重新查询进度，确认前不会再次提交。</p>}{!working && activeJob ? <button onClick={() => { setError(''); void poll(resume?.import_id ?? preview!.import_id, ++operation.current); }}>重新查询进度</button> : !working && job?.stage === 'error' && job.recoverable !== false ? <button onClick={() => void (preview ? repreview() : restorePreview())}>重新预览后重试</button> : !working && resume && !preview && !complete && <button onClick={() => void restorePreview()}>重试恢复预览</button>}</div>}
     {complete ? <>
       <div className="import-complete" role="status"><span className="success-symbol">✓</span><h3>{classified ? '自动处理完成' : '流水已写入当前案件'}</h3>
-        <p>{classified && <>已保存 {feedback?.record_total ?? tableSummary!.record_total} 条记录 · </>}{classified ? '新增资金流水' : '新增'} <strong>{tableSummary?.effective_added ?? job.result?.ok ?? 0}</strong> 笔 · 重复 {job.result?.rows_dup ?? 0} 笔 · {feedback ? <>已配对冲正/撤销 {feedback.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {feedback.non_monetary ?? 0} 条 · 未计入资金流水 {unresolvedCount(feedback)} 条 · 来源反馈 {feedback.non_transaction} 条 · 辅助资料 {feedback.auxiliary} 条</> : tableSummary ? <>未计入资金流水 {tableSummary.unresolved} 条 · 已配对冲正/撤销 {tableSummary.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {tableSummary.non_monetary} 条 · 非交易记录 {tableSummary.non_transaction} 条 · 辅助资料 {tableSummary.auxiliary} 条</> : <>跳过 {job.result?.skipped ?? 0} 行</>}</p>
-        {tableSummary?.effective_added != null && tableSummary.effective_added !== job.result?.ok && <p>本次保留流水事实 {job.result?.ok ?? 0} 笔，其中新增有效资金流水 {tableSummary.effective_added} 笔；已有配对依据的记录不重复进入统计。</p>}
+        <p>{classified && <>已保存 {feedback?.record_total ?? tableSummary!.record_total} 条记录 · </>}新增流水记录 <strong>{tableSummary?.effective_added ?? job.result?.ok ?? 0}</strong> 条 · 重复 {job.result?.rows_dup ?? 0} 条 · {feedback ? <>已配对冲正/撤销 {feedback.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {feedback.non_monetary ?? 0} 条 · 未计入资金流水 {unresolvedCount(feedback)} 条 · 来源反馈 {feedback.non_transaction} 条 · 辅助资料 {feedback.auxiliary} 条</> : tableSummary ? <>未计入资金流水 {tableSummary.unresolved} 条 · 已配对冲正/撤销 {tableSummary.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {tableSummary.non_monetary} 条 · 非交易记录 {tableSummary.non_transaction} 条 · 辅助资料 {tableSummary.auxiliary} 条</> : <>跳过 {job.result?.skipped ?? 0} 行</>}</p>
+        {tableSummary?.effective_added != null && tableSummary.effective_added !== job.result?.ok && <p>本次保留来源流水记录 {job.result?.ok ?? 0} 条，其中新增有效流水记录 {tableSummary.effective_added} 条；已有配对依据的记录不重复进入统计。</p>}
         <p className="muted">批次 {job.result?.batch_id} · {preview?.filename ?? resume?.filename}</p>
       </div>
+      {resolution && <ResolutionSummary value={resolution} complete />}
       {classified && <>{feedback ? <FeedbackSummary feedback={feedback} complete /> : <TableSummary summary={tableSummary!} complete />}<div className="resume-summary" aria-label={feedback ? '反馈包文件下载' : '导入来源与处理报告下载'}><p>自动分类与来源记录已保存。完整处理报告包含全部记录、来源行号与分类依据，可用于追溯。</p>
+        {job.result?.source_id && <ImportRecordEvidence key={`${target.caseId}:${job.result.source_id}:${client.binding.scopeKey}:${client.binding.generation}`} caseId={target.caseId} sourceId={job.result.source_id} client={client} scopeSignal={scopeSignal} />}
         <button className="button secondary" disabled={!job.result?.source_id || !actions?.downloadImportReport || !!downloading} onClick={() => void download('report')}>下载完整处理报告（JSON）</button>
         <button className="button secondary" disabled={!job.result?.source_id || !actions?.downloadSource || !originalAvailable || !!downloading} onClick={() => void download('original')}>{feedback ? '下载原始 ZIP' : '下载原始文件'}</button>
         {(!actions?.downloadImportReport || !actions?.downloadSource) && <p className="muted">宿主未提供{!actions?.downloadImportReport ? '处理报告' : ''}{!actions?.downloadImportReport && !actions?.downloadSource ? '和' : ''}{!actions?.downloadSource ? '原件' : ''}下载能力。</p>}
@@ -266,10 +320,19 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
       </div></>}
     </>
       : !preview ? resume ? <div className="resume-summary"><strong>{resume.filename}</strong><p className="muted">{working ? activeJob ? '正在查询原任务，关闭窗口后任务仍继续。' : '正在用原始上传与已保存映射重新预览…' : '请核对任务状态后继续。'}</p></div>
-        : <label className="file-drop" htmlFor={fileId} aria-busy={working}><span className="upload-symbol">↑</span><strong>{busy ? '正在解析文件…' : '选择 CSV、Excel 或银行反馈 ZIP'}</strong><span id={`${fileId}-hint`}>支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP</span><input id={fileId} aria-label="选择流水文件" aria-describedby={`${fileId}-hint`} type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,.zip" disabled={working} onChange={event => void upload(event.target.files?.[0])} /></label>
+        : <div className="import-drop-area" onDragOver={event => { event.preventDefault(); }} onDrop={event => {
+          event.preventDefault();
+          if (working || activeJob) return;
+          const dropped = captureDroppedFiles(event.dataTransfer);
+          void upload(() => dropped.read(lifetime.current.signal), dropped.directory);
+        }}>
+          <label className="file-drop" htmlFor={fileId} aria-busy={working}><span className="upload-symbol">↑</span><strong>{busy ? '正在解析文件…' : '选择 CSV、Excel、ZIP 或 RAR'}</strong><span id={`${fileId}-hint`}>支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP／RAR</span><input id={fileId} aria-label="选择流水文件" aria-describedby={`${fileId}-hint`} type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,.zip,.rar" disabled={working} onChange={event => { const files = Array.from(event.target.files ?? []); void upload(() => files); }} /></label>
+          {client.previewDirectory && <div className="directory-picker"><label className="button secondary" htmlFor={directoryId}>选择整个文件夹<input id={directoryId} aria-label="选择整个文件夹" type="file" multiple ref={element => { element?.setAttribute('webkitdirectory', ''); }} disabled={working} onChange={event => { const files = Array.from(event.target.files ?? []); void upload(() => files, true); }} /></label><p>可将文件夹拖入此处。流水、账户和子账户资料一起导入，保留原始目录关系。</p></div>}
+        </div>
       : <>
         <div className="file-summary"><strong>{preview.filename}</strong><span>{preview.feedback ? <>原始记录 {preview.feedback.record_total} 条 · 来源已接纳流水 {preview.feedback.accepted} 条 · 已配对冲正/撤销 {preview.feedback.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {preview.feedback.non_monetary ?? 0} 条 · 未计入资金流水 {unresolvedCount(preview.feedback)} 条 · 来源反馈 {preview.feedback.non_transaction} 条 · 辅助资料 {preview.feedback.auxiliary} 条</> : tableSummary ? <>来源记录 {tableSummary.record_total} 条 · 可靠识别流水 {tableSummary.accepted} 条 · 未计入资金流水 {tableSummary.unresolved} 条</> : <>{preview.stats.total} 行 · 可导入 {preview.stats.ok} 行 · 跳过 {preview.stats.skipped} 行</>}</span></div>
         {tableSummary && <TableSummary summary={tableSummary} />}
+        {resolution && <ResolutionSummary value={resolution} complete={false} />}
         {preview.feedback ? <FeedbackSummary feedback={preview.feedback} /> : <><label className="mode-field">文件类型<select aria-label="流水文件类型" value={mode} disabled={working || activeJob} onChange={event => { const next = event.target.value as 'A' | 'B'; setMode(next); setMapping(value => Object.fromEntries(Object.entries(value).filter(([field]) => modeFields[next].has(field)))); setDirty(true); }}><option value="A">双边流水（付款方 → 收款方）</option><option value="B">单账户流水（本方与交易对手）</option></select></label>
         <details className="mapping"><summary>{tableSummary ? '高级：调整解释' : '检查字段映射'} <span>{dirty ? '已修改，请重新预览' : '已自动识别，可调整'}</span></summary><div className="mapping-grid">{(mode === 'A' ? fieldsA : fieldsB).map(field => <label key={field}>{fieldNames[field]}<select aria-label={`映射${fieldNames[field]}`} value={mapping[field] || ''} disabled={working || activeJob} onChange={event => { setMapping(value => ({ ...value, [field]: event.target.value })); setDirty(true); }}><option value="">不使用</option>{preview.columns.map(column => <option key={column}>{column}</option>)}</select></label>)}</div></details>
         {dirty && <button className="button secondary" onClick={() => void repreview()} disabled={working || activeJob}>按当前映射重新预览</button>}</>}

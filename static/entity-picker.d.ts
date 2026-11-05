@@ -3,6 +3,7 @@ export interface EntityPickerItem {
   label: string;
   value: string;
   account?: string;
+  displayAccount?: string;
   idNo?: string;
   number?: string;
   detail?: string;

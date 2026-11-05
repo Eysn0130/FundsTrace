@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import duckdb
 
-from app import db
+from app import db, transaction_time
 from app.import_coverage import import_coverage
 
 
@@ -60,33 +60,41 @@ def create_case(name):
 
 
 def stats(case_id):
+    from app import analysis_snapshot, evidence_resolution, event_resolution, funds_projection
     with db._lock:
         cid = require_case(case_id)
-        rows = raw_query("""
-            with case_flows as materialized (
-              select payer_account,payee_account,currency,amount from effective_flows where case_id=?
-            ), totals as (
-              select coalesce(currency,'') currency,coalesce(sum(amount),0::decimal(18,2)) amount
-              from case_flows group by coalesce(currency,'')
-            ), summary as (
-              select (select count(*) from case_flows) flows,
-              (select count(distinct account) from (
-                select payer_account account from case_flows
-                union all select payee_account from case_flows
-              ) where account is not null and account <> '') accounts,
-              (select count(*) from batches where case_id=?) batches,
-              (select count(*) from flows where case_id=?) raw_flows
-            )
-            select summary.*,totals.currency,totals.amount from summary left join totals on true order by totals.currency
-        """, [cid] * 3)
-        row = {key: rows[0][key] for key in ("flows", "accounts", "batches")}
-        totals = [{"currency": item["currency"], "amount": item["amount"]} for item in rows if item["amount"] is not None]
-        coverage = import_coverage(cid, known_excluded=rows[0]["raw_flows"] - row["flows"])
-    return {"case_id": case_id, **row,
-            "amount_total": amount(totals[0]["amount"]) if len(totals) == 1 else ("0.00" if not totals else None),
-            "currency": totals[0]["currency"] if len(totals) == 1 else None,
-            "amount_totals": [{"currency": total["currency"], "amount": amount(total["amount"])} for total in totals],
-            "import_coverage": coverage}
+        source = "select * from effective_flows where case_id=?"
+        funds = funds_projection.summary(source, [cid])
+        fields = funds_projection.summary(source, [cid], selected=True)
+        rows = raw_query(funds_projection.cte(source) + """select
+            (select count(distinct account) from (
+                select payer_account account from ordinary_facts union all select payee_account from ordinary_facts
+            ) where account is not null and account<>'') accounts,
+            (select count(*) from batches where case_id=?) batches,
+            (select count(*) from flows where case_id=?) raw_flows""", [cid,cid,cid])
+        row = rows[0]
+        row["flows"] = fields["cnt"]
+        from app import source_ledger
+        row["source_ledger"] = source_ledger.summary(cid)
+        row["accounts"] = raw_query(funds_projection.cte(source) + """select count(distinct account) accounts from (
+            select payer_account account from ordinary_facts union all
+            select payee_account from ordinary_facts union all
+            select f.payer_account from effective_visible_flows f join source_ledger_index l
+              on l.case_id=f.case_id and l.flow_id=f.id where f.case_id=? union all
+            select f.payee_account from effective_visible_flows f join source_ledger_index l
+              on l.case_id=f.case_id and l.flow_id=f.id where f.case_id=? union all
+            select f.self_account from effective_visible_flows f join source_ledger_index l
+              on l.case_id=f.case_id and l.flow_id=f.id where f.case_id=? union all
+            select f.source_counter_id from effective_visible_flows f where f.case_id=?
+            ) where coalesce(account,'')<>''""", [cid, cid, cid, cid, cid])[0]["accounts"]
+        coverage = import_coverage(cid, known_excluded=row.pop("raw_flows") - funds["observation_count"] - source_ledger.nonpositive_count(cid))
+        resolution = evidence_resolution.summary(cid)
+        return {"case_id": case_id, "funds": funds, "event_summary": event_resolution.summary(cid),
+                "analysis_revision": analysis_snapshot.revision(cid), "statistics_policy": funds_projection.SELECTION_POLICY,
+                "resolution": resolution, "resolution_revision": resolution["revision"] if resolution else None,
+                **row, "amount_total": fields["total"],
+                "currency": fields["amount_totals"][0]["currency"] if len(fields["amount_totals"]) == 1 else None,
+                "amount_totals": fields["amount_totals"], "import_coverage": coverage}
 
 
 TEXT_FIELDS = ("trade_no", "payer_name", "payer_account", "payer_bank", "payee_name", "payee_account",
@@ -95,30 +103,61 @@ TEXT_FIELDS = ("trade_no", "payer_name", "payer_account", "payer_bank", "payee_n
 
 def preview_flow(row):
     return {**{field: row.get(field) or "" for field in TEXT_FIELDS},
-            "trade_time": timestamp(row.get("trade_time")), "amount": amount(row["amount"]),
+            **transaction_time.public(row), "amount": amount(row["amount"]) if row["amount"] is not None else None,
             "balance": amount(row["balance"]) if row.get("balance") is not None else None}
 
 
-def flows(case_id, account, kw, page, page_size):
+def flows(case_id, account, kw, page, page_size, granularity="events"):
     with db._lock:
         cid = require_case(case_id)
         conditions, params = ["case_id=?"], [cid]
         if account.strip():
-            conditions.append("(payer_account ilike ? or payee_account ilike ?)")
-            params += [f"%{account.strip()}%"] * 2
+            conditions.append("""(payer_account ilike ? or payee_account ilike ? or payer_display_account ilike ? or payee_display_account ilike ? or source_counter_account ilike ? or source_counter_id ilike ?
+                or self_account ilike ? or raw_self_account ilike ?
+                or exists (select 1 from resolution_entities e,
+                    unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
+                    where e.case_id=effective_visible_flows.case_id
+                      and e.entity_id in (effective_visible_flows.payer_account,effective_visible_flows.payee_account,effective_visible_flows.self_account)
+                      and card.value ilike ?)
+                or exists (select 1 from resolution_entities e where e.case_id=effective_visible_flows.case_id
+                    and e.entity_id in (effective_visible_flows.payer_account,effective_visible_flows.payee_account,effective_visible_flows.self_account)
+                    and e.account_number ilike ?))""")
+            params += [f"%{account.strip()}%"] * 10
         if kw.strip():
             conditions.append("(summary ilike ? or trade_no ilike ?)")
             params += [f"%{kw.strip()}%"] * 2
         where = " and ".join(conditions)
-        total = raw_query(f"select count(*) total from effective_flows where {where}", params)[0]["total"]
-        rows = raw_query(f"select * from effective_flows where {where} order by trade_time desc nulls last, id desc limit ? offset ?",
-                         params + [page_size, (page - 1) * page_size])
-    return {"case_id": case_id, "total": total, "page": page, "page_size": page_size,
+        from app import funds_projection
+        source = f"select * from effective_visible_flows where {where}"
+        # effective_visible_flows preserves one row per case/id: its source is flows
+        # with existence filters and endpoint/entity joins on unique keys.
+        rows, funds = funds_projection.page_with_summary(source, params, page_size, (page - 1) * page_size,
+                                                        observations=granularity == "observations", unique_source=True)
+        # The same locked selection already counts observations and one row per
+        # confirmed event or unresolved observation, including on an empty page.
+        total = funds["observation_count"] if granularity == "observations" else funds["count"]["upper"]
+        from app import event_resolution, analysis_snapshot
+        events = {item["flow_id"]: item for item in event_resolution.members(cid, [str(row["id"]) for row in rows])}
+        revision = analysis_snapshot.revision(cid)
+        from app import source_ledger
+        funds = funds_projection.summary(source_ledger.financial_source(source), params)
+        source_ledger.decorate(cid, rows)
+    return {"case_id": case_id, "total": total, "page": page, "page_size": page_size, "funds": funds, "analysis_revision": revision,
             "items": [{**preview_flow(row), "id": str(row["id"]), "case_id": str(row["case_id"]),
-                       "batch_id": str(row["batch_id"]) if row["batch_id"] is not None else None} for row in rows]}
+                       "analysis_revision": revision, "observation_count": row.get("observation_count", 1),
+                       "observation_ids": row.get("observation_ids", [str(row["id"])]),
+                       "source_ledger": row.get("source_ledger"),
+                       "granularity": "observation" if granularity == "observations" else "confirmed_event" if row["fact_status"] == "confirmed" else "unresolved_observation",
+                       "event_id": events.get(str(row["id"]), {}).get("event_id"),
+                       "event_state": events.get(str(row["id"]), {}).get("status", "unknown"),
+                       "batch_id": str(row["batch_id"]) if row["batch_id"] is not None else None,
+                       **{field: row.get(field) or "" for field in ("payer_display_account", "payee_display_account", "self_display_account", "raw_payer_account", "raw_payee_account", "raw_self_account",
+                           "payer_card", "payee_card", "self_card", "payer_source_account", "payee_source_account", "self_source_account",
+                           "payer_card_state", "payee_card_state", "self_card_state")}} for row in rows]}
 
 
 def flow_sources(case_id, flow_id, page=1, page_size=50):
+    from app import bank_posting_pairs
     from .imports import source_is_available
 
     with db._lock:
@@ -126,18 +165,54 @@ def flow_sources(case_id, flow_id, page=1, page_size=50):
         if len(flow_id) > 19 or int(flow_id) > 9_223_372_036_854_775_807 or not raw_query(
                 "select id from flows where case_id=? and id=?", [cid, int(flow_id)]):
             raise ServiceError(404, "flow_not_found", "流水不存在或不属于当前案件")
-        total = raw_query("select count(*) n from flow_sources where case_id=? and flow_id=?", [cid, int(flow_id)])[0]["n"]
-        rows = raw_query("""select s.*,f.source_row,f.disposition,r.member_path,r.source_row member_row,r.details_json from flow_sources f
+        selected = """with observed_ids as (
+            select ?::bigint flow_id union
+            select member.flow_id from event_members anchor join event_members member
+                on member.case_id=anchor.case_id and member.event_id=anchor.event_id
+            where anchor.case_id=? and anchor.flow_id=?
+                and anchor.status='confirmed' and member.status='confirmed'
+            union select member.flow_id from event_members anchor join event_members member
+                on member.case_id=anchor.case_id and member.pending_group=anchor.pending_group
+            where anchor.case_id=? and anchor.flow_id=? and anchor.status='unknown' and member.status='unknown'
+                and anchor.pending_group is not null) """
+        scope = [int(flow_id), cid, int(flow_id), cid, int(flow_id), cid]
+        total = raw_query(selected + "select count(*) n from flow_sources where case_id=? and flow_id in (select flow_id from observed_ids)", scope)[0]["n"]
+        rows = raw_query(selected + """select s.*,f.flow_id,f.source_row,f.disposition,r.member_path,r.source_row member_row,r.details_json,em.status current_event_state,em.reason current_event_reason,
+                            ev.evidence_json current_event_proof,em.pending_group current_pending_group,
+                            original.amount observation_amount,original.balance observation_balance,
+                            original.currency observation_currency,original.self_account observation_account
+                            from flow_sources f
                             join import_sources s on s.source_id=f.source_id and s.case_id=f.case_id
+                            join flows original on original.case_id=f.case_id and original.id=f.flow_id
+                            left join event_members em on em.case_id=f.case_id and em.flow_id=f.flow_id
+                            left join resolved_events ev on ev.case_id=em.case_id and ev.event_id=em.event_id and em.status='confirmed'
                             left join import_records r on r.case_id=f.case_id and r.source_id=f.source_id and r.record_no=f.source_row
-                            where f.case_id=? and f.flow_id=? order by s.imported_at,s.source_id,f.source_row
-                            limit ? offset ?""",
-                         [cid, int(flow_id), page_size, (page - 1) * page_size])
+                            where f.case_id=? and f.flow_id in (select flow_id from observed_ids)
+                            order by s.imported_at,s.source_id,f.source_row,f.flow_id limit ? offset ?""",
+                         [*scope, page_size, (page - 1) * page_size])
         items = []
         for row in rows:
+            proof = json.loads(row["current_event_proof"]) if row["current_event_proof"] else None
+            pair_proof = ({bank_posting_pairs.PROOF_FIELD: row["current_event_proof"]}
+                          if proof and proof.get("policy") == bank_posting_pairs.POLICY else {})
+            from .. import bank_single_postings
+            if proof and proof.get("policy") == bank_single_postings.POLICY:
+                pair_proof[bank_single_postings.PROOF_FIELD] = row["current_event_proof"]
+            if row["current_pending_group"] and row["current_event_state"] == "unknown":
+                field = bank_single_postings.PENDING_FIELD if (row["current_event_reason"] or '').startswith('single_posting_') else bank_posting_pairs.PENDING_FIELD
+                pair_proof[field] = row["current_event_reason"]
             items.append({key: row[key] for key in ("source_id", "filename", "sha256", "size_bytes", "mode", "sheet",
                                                    "row_kind", "source_row", "parser_version", "disposition", "origin")})
+            items[-1].update(observation_flow_id=str(row["flow_id"]),
+                             observation_amount=amount(row["observation_amount"]) if row["observation_amount"] is not None else None,
+                             observation_balance=amount(row["observation_balance"]) if row["observation_balance"] is not None else None,
+                             observation_currency=row["observation_currency"], observation_account=row["observation_account"])
             items[-1].update(mapping=json.loads(row["mapping_json"]), imported_at=row["imported_at"].isoformat(timespec="seconds") + "Z",
                              source_available=source_is_available(case_id, row["source_id"]), member_path=row["member_path"],
-                             member_row=row["member_row"], record_details=json.loads(row["details_json"]) if row["details_json"] else {})
+                             member_row=row["member_row"], record_details={**(json.loads(row["details_json"]) if row["details_json"] else {}), **pair_proof,
+                                 **({"current_event_state": row["current_event_state"], "current_event_reason": row["current_event_reason"]}
+                                    if (row["current_event_reason"] or '').startswith('single_posting_') else {}),
+                                 **({"current_event_state": "unknown", "current_event_reason": "time_basis_incomparable"}
+                                    if row["current_event_reason"] == "time_basis_incomparable" else
+                                    {"current_event_state": "conflict"} if row["current_event_state"] == "conflict" else {})})
     return {"case_id": case_id, "flow_id": flow_id, "items": items, "total": total, "page": page, "page_size": page_size}

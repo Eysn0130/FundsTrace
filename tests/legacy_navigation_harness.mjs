@@ -79,7 +79,8 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
     confirm: () => true, prompt: () => 'Synthetic new', alert() {},
     fetch: async (path, options = {}) => { requests.push({ path, options }); return fetcher(path, options); }, };
   const context = vm.createContext(sandbox);
-  for (const helper of ['money.js', 'table-scroll.js', 'case-workspace.js', 'canvas-workspace.js', 'data-tools.js', 'main-accounts.js', 'workspace-camera.js', 'graph-relations.js', 'graph-presentation.js', 'graph-layout.js', 'graph-layout-quality.js', 'graph-routing.js', 'graph-route-quality.js', 'graph-view.js','graph-viewport.js','graph-minimap.js','graph-labels.js','graph-label-geometry.js','graph-export-geometry.js']) vm.runInContext(readFileSync(`${root}static/${helper}`, 'utf8'), context, { filename: helper });
+  for (const helper of ['money.js', 'principal-analysis.js', 'table-scroll.js', 'case-workspace.js', 'canvas-workspace.js', 'data-tools.js', 'main-accounts.js', 'workspace-camera.js', 'graph-relations.js', 'graph-presentation.js', 'graph-layout.js', 'graph-layout-quality.js', 'graph-routing.js', 'graph-route-quality.js', 'graph-view.js','graph-viewport.js','graph-minimap.js','graph-labels.js','graph-label-geometry.js','graph-export-geometry.js']) vm.runInContext(readFileSync(`${root}static/${helper}`, 'utf8'), context, { filename: helper });
+  context.window.FundsFacts = context.FundsFacts;
   context.FundsGraphRelations = context.window.FundsGraphRelations;
   context.FundsGraphPresentation = context.window.FundsGraphPresentation;
   context.FundsGraphView = context.window.FundsGraphView;
@@ -125,6 +126,39 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
     bindApp() { vm.runInContext("promptText = async () => 'Synthetic new';", context); vm.runInContext('bindPhotoCrop = () => {}; initEdgeLabels = () => {}; refreshStats = async () => {}; loadGraph = async () => {}; refreshCanvasList = async () => {}; doSearch = async () => {}; bindUI();', context); },
   };
 }
+
+test('unresolved observations keep the actual canvas visible while a genuinely empty case shows its empty state', () => {
+  const h = harness('app.js'), toggles = [];
+  h.element('#canvasWrap').classList.toggle = (name, enabled) => toggles.push([name, enabled]);
+  h.run(`state.stats = { flows: null, accounts: 2, funds: {
+    observation_count: 2, count: { lower: 0, upper: 2 },
+    totals: [{ currency: 'CNY', amount: null, lower: '0.00', upper: '200.00' }]
+  } }; updateHeader();`);
+  assert.equal(h.element('#emptyHint').style.display, 'none');
+  assert.deepEqual(toggles.at(-1), ['case-empty', false]);
+  assert.match(h.element('#statLine').innerHTML, /来源观察 <b>2 条<\/b>/);
+  h.run(`state.stats = { flows: 0, accounts: 0, funds: {
+    observation_count: 0, count: { lower: 0, upper: 0 }, totals: []
+  } }; updateHeader();`);
+  assert.equal(h.element('#emptyHint').style.display, 'flex');
+  assert.deepEqual(toggles.at(-1), ['case-empty', true]);
+  h.run('state.stats = { flows: 2, accounts: 2 }; updateHeader();');
+  assert.equal(h.element('#emptyHint').style.display, 'none', 'legacy responses retain their observed-row fallback');
+});
+
+test('case and deletion summaries keep unavailable ordinary counts distinct from zero', () => {
+  const h = harness('app.js'); h.bindApp();
+  h.run(`state.stats = { flows: null, accounts: 2, funds: {
+    observation_count: 2, count: { lower: 0, upper: 2 }
+  } }; caseWorkspace.open();`);
+  assert.match(h.element('#caseCounts').textContent, /流水笔数待定/);
+  assert.doesNotMatch(h.element('#caseCounts').textContent, /流水 0 笔/);
+  assert.match(h.element('#caseDeleteScope').textContent, /流水笔数待定/);
+  h.run(`state.stats = { flows: 0, accounts: 0, funds: {
+    observation_count: 0, count: { lower: 0, upper: 0 }
+  } }; caseWorkspace.refresh();`);
+  assert.match(h.element('#caseCounts').textContent, /流水 0 笔/);
+});
 
 test('sidebar composition bounds include clipped accounts and curved paths but exclude accounts outside the current graph', () => {
   const h=harness('app.js');
@@ -828,6 +862,9 @@ test('main-account role refresh patches authoritative roles while retaining work
     roleFresh.nodes[0].is_main=0;roleFresh.nodes[0].is_same_name=1;
     roleFresh.nodes[1].is_main=1;roleFresh.nodes[1].is_same_name=0;
     roleFresh.nodes[1].name='Synthetic unrelated changed name';
+    state.lastGraph.nodes[0].display_account='SYN-NEW-CARD';
+    const scopedItem=state.graph.getNodes()[0],scopedModel=scopedItem.getModel();
+    scopedModel.data={...scopedModel.data,display_account:'SYN-OLD-CARD',out_cnt:1};
     globalThis.roleRows=[{account:'SYN-00000',name:'Synthetic 0',source:'manual'},
       {account:'SYN-OFF-CANVAS',name:'Synthetic external',source:'auto'}];
   `);
@@ -849,6 +886,8 @@ test('main-account role refresh patches authoritative roles while retaining work
   assert.equal(h.run('state.lastGraph.nodes[0].is_main'), 0); assert.equal(h.run('state.lastGraph.nodes[0].is_same_name'), 1);
   assert.equal(h.run('state.lastGraph.nodes[1].is_main'), 1);
   assert.match(h.run('state.graph.getNodes()[0].getModel().fundsLabel'), /^◆ /);
+  assert.match(h.run('state.graph.getNodes()[0].getModel().fundsLabel'), /SYN-OLD-CARD/);
+  assert.equal(h.run('state.graph.getNodes()[0].getModel().data.out_cnt'), 1);
   assert.match(h.run('state.graph.getNodes()[1].getModel().fundsLabel'), /^★ /);
   assert.equal(h.run('state.graph.getNodes()[0].getModel().style.fill'), '#234567');
   assert.equal(h.run('state.graph.getNodes()[0].getModel().style.stroke'), '#abcdef');
@@ -1984,8 +2023,12 @@ test('ordinary small-graph relayout reserves node and relationship text extents 
     assert.ok(node.height>node.size,'the two-line node text contributes vertical spacing');
     assert.ok(node.offsetY>0,'text below the circle has an asymmetric envelope');
   }
-  assert.ok(Math.abs(input.edges[0].labelWidth-186)<1e-9,
-    'the 29-character full amount uses the harness six-pixel glyph metric plus the text padding');
+  const expectedLabel='2笔·¥10,000,000,000,000,000.01\nUSD 0.01';
+  assert.equal(h.run('state.graph.getEdges()[0].getModel().fundsLabel'),expectedLabel,
+    'hidden relationship text retains the compact count and both exact currency amounts');
+  const expectedWidth=Math.max(...expectedLabel.split('\n').map(line=>line.length))*6+12;
+  assert.ok(Math.abs(input.edges[0].labelWidth-expectedWidth)<1e-9,
+    'the complete expected label uses the harness six-pixel glyph metric plus the text padding');
   assert.equal(h.run('JSON.stringify(state.lastGraph)'),before,'measurement does not rewrite transaction facts');
   h.run('cancelGraphLayout()');
 });
@@ -2446,6 +2489,15 @@ test('import preview retains all thirteen normalized columns and complete text a
   assert.equal(h.requests.length,0);
 });
 
+test('unknown direction source row shows original own account and amount without a transfer arrow', () => {
+  const h = harness('app.js');
+  h.run(`renderFlows([{id:91,trade_time:'2026-01-01 10:00:00',payer_account:'',payee_account:'',raw_self_account:'SYN-OWN',amount:'12.34',currency:'CNY',summary:'SYN source',source_ledger:{direction:'unknown',source_direction:'',self_account:'SYN-OWN',signed_amount:'12.34',economic_effect:'unknown',balance_change:{status:'unknown',difference:null}}}])`);
+  const html = h.element('#flowTbody').innerHTML;
+  assert.equal((html.match(/<td(?:\s|>)/g) || []).length, 7);
+  assert.match(html, /方向未提供 · 本方 SYN-OWN · 原值 12\.34 · 资金影响未确定/);
+  assert.doesNotMatch(html, /chevron-right|转至|→/);
+});
+
 test('dense flow rows retain native columns, complete date and seconds, exact money, and full account titles', () => {
   const h=harness('app.js');h.run(`renderFlows([{id:9,trade_time:'2026-10-15 08:09:07',payer_name:'Synthetic payer',payer_account:'000012345678901234567890',payee_name:'Synthetic payee',payee_account:'SYN-B',amount:'9999999999999999.99',currency:'USD',summary:'Synthetic summary'}])`);
   const html=h.element('#flowTbody').innerHTML;
@@ -2454,7 +2506,7 @@ test('dense flow rows retain native columns, complete date and seconds, exact mo
   assert.match(html,/USD 9,999,999,999,999,999\.99/);
   assert.match(html,/title="000012345678901234567890"/);
   assert.match(html,/class="btn tiny primary act-track">上图/);
-  assert.match(html,/aria-label="查看前后 X 笔流水">前后<\/button>/);
+  assert.match(html,/aria-label="查看前后 X 条记录">前后<\/button>/);
 });
 
 test('flow display choices apply without replacing selections and retain all source text and exact money after rendering', () => {
@@ -2494,20 +2546,20 @@ test('query and reset clear page selection and its master state while display ch
   await h.element('#btnSearch').onclick();
   const master=h.element('#flowCkAll');
   const selectPage=()=>{master.checked=true;master.onchange({target:master});master.indeterminate=true;};
-  selectPage();assert.equal(h.element('#flowCkCount').textContent,'已勾选 1 笔');
+  selectPage();assert.equal(h.element('#flowCkCount').textContent,'已勾选 1 条记录');
   const density=h.element('#flowTableDensity'),wrap=h.element('#flowTableWrap');
   density.value='comfortable';density.onchange();wrap.value='single';wrap.onchange();
   assert.equal(h.run('pageCheckboxes[0].checked'),true);assert.equal(master.checked,true);
-  assert.equal(h.element('#flowCkCount').textContent,'已勾选 1 笔');
+  assert.equal(h.element('#flowCkCount').textContent,'已勾选 1 条记录');
   await h.element('#btnSearch').onclick();
   assert.equal(h.run('pageCheckboxes[0].checked'),false);assert.equal(master.checked,false);assert.equal(master.indeterminate,false);
-  assert.equal(h.element('#flowCkCount').textContent,'已勾选 0 笔');
+  assert.equal(h.element('#flowCkCount').textContent,'已勾选 0 条记录');
   selectPage();h.element('#btnReset').onclick();await flush();
   assert.equal(h.run('pageCheckboxes[0].checked'),false);assert.equal(master.checked,false);assert.equal(master.indeterminate,false);
-  assert.equal(h.element('#flowCkCount').textContent,'已勾选 0 笔');
+  assert.equal(h.element('#flowCkCount').textContent,'已勾选 0 条记录');
   selectPage();h.run('selectCase(2)');
   assert.equal(h.run('pageCheckboxes.length'),0);assert.equal(master.checked,false);assert.equal(master.indeterminate,false);
-  assert.equal(h.element('#flowCkCount').textContent,'已勾选 0 笔');
+  assert.equal(h.element('#flowCkCount').textContent,'已勾选 0 条记录');
 });
 
 // Audit regression: a valid empty canvas is different from an invalidated capture.

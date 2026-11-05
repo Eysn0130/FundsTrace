@@ -48,6 +48,31 @@ class CurrencyAmount(ContractModel):
     amount: Amount
 
 
+class ProjectedCurrencyAmount(ContractModel):
+    currency: str | None
+    amount: Amount | None
+
+
+class FundsAmount(ProjectedCurrencyAmount):
+    lower: Amount
+    upper: Amount | None
+
+
+class FundsCount(ContractModel):
+    lower: int
+    upper: int
+
+
+class FundsProjection(ContractModel):
+    policy: Literal["evidence-bounded-funds-v1"]
+    status: Literal["exact", "bounded", "unknown"]
+    observation_count: int
+    confirmed_event_count: int
+    unresolved_observation_count: int
+    count: FundsCount
+    totals: list[FundsAmount]
+
+
 class ImportCoverage(ContractModel):
     scope: Literal["source_reported_flows"]
     unresolved_records: int
@@ -57,20 +82,119 @@ class ImportCoverage(ContractModel):
     financial_interpretation_complete: bool
 
 
-class CaseStats(ContractModel):
+class ResolutionSummary(ContractModel):
+    policy: Literal["typed-account-evidence-v1"]
+    revision: str | None
+    entities: int
+    resolved_endpoints: int
+    unresolved_endpoints: int
+    conflicts: int
+    auxiliary_records: int
+    evidence_records: int
+    note: str
+
+
+class ResolutionEntity(ContractModel):
+    entity_id: str
+    kind: Literal["account", "card", "subaccount", "identifier"]
+    account_number: str
+    display_account: str
+    display_basis: str = "account_number"
+    display_card_tied: bool = False
+    display_card_candidates: list[str] = Field(default_factory=list)
+    display_card_order: str = "none"
+    bank: str
+    cards: list[str]
+    parent_entity_id: str | None
+    name_conflict: bool = False
+    names: list[str]
+    status: str
+
+
+class ResolutionRegistry(ContractModel):
     case_id: Identifier
-    flows: int
+    resolution: ResolutionSummary | None
+    entities: list[ResolutionEntity]
+
+
+class EventSummary(ContractModel):
+    policy: str
+    revision: str
+    confirmed_events: int
+    confirmed_entries: int
+    conflict_entries: int
+    unknown_entries: int
+    observed_entries: int
+    reference_observations: int
+    excluded_reference_entries: int
+    unresolved_reference_observations: int
+    confirmed_amount_totals: list[CurrencyAmount]
+    complete_event_total: bool
+    note: str
+
+
+class SourceLedgerSummary(ContractModel):
+    count: int
+    unknown_effect_count: int
+    zero_count: int
+    paired_count: int
+
+
+class CaseStats(ContractModel):
+    source_ledger: SourceLedgerSummary | None = None
+    funds: FundsProjection | None = None
+    analysis_revision: str | None = None
+    event_summary: EventSummary | None = None
+    statistics_policy: Literal["typed-account-evidence-v1", "evidence-bounded-funds-v1", "source-observations-v1", "selected-transactions-v1"] | None = None
+    resolution_revision: str | None = None
+    resolution: ResolutionSummary | None = None
+    case_id: Identifier
+    flows: int | None
     accounts: int
     batches: int
     amount_total: Amount | None
     currency: str | None
-    amount_totals: list[CurrencyAmount]
+    amount_totals: list[ProjectedCurrencyAmount]
     import_coverage: ImportCoverage | None = None
+
+
+class SourceBalanceChange(ContractModel):
+    status: Literal["observed", "unknown"]
+    difference: Amount | None
+    before: Amount | None
+    after: Amount | None
+    basis: str | None
+    reason: str | None
+    source_id: str
+    previous_source_row: int | None
+
+
+class SourceLedgerInfo(ContractModel):
+    policy: Literal["source-ledger-observations-v1", "source-ledger-unoriented-v1", "source-ledger-unoriented-v2"]
+    signed_amount: Amount
+    source_direction: str
+    self_account: str
+    counter_account: str = ""
+    counter_name: str = ""
+    counter_bank: str = ""
+    direction: Literal["in", "out", "unknown"]
+    economic_effect: Literal["unknown", "no_movement", "paired_cancellation"]
+    economic_amount: Amount | None
+    reported_status: str
+    balance_change: SourceBalanceChange
+    source_id: str
+    member_path: str
+    source_row: int
 
 
 class PreviewFlow(ContractModel):
     trade_no: str
     trade_time: str | None
+    trade_time_wall: str | None = None
+    trade_time_utc: str | None = None
+    trade_time_original: str | None = None
+    trade_time_offset: str | None = None
+    trade_time_basis: Literal["utc", "unqualified"] = "unqualified"
     payer_name: str
     payer_account: str
     payer_bank: str
@@ -90,12 +214,37 @@ class PreviewFlow(ContractModel):
 
 
 class Flow(PreviewFlow):
+    source_ledger: SourceLedgerInfo | None = None
+    amount: Amount | None
+    observation_ids: list[Identifier] = Field(default_factory=list)
+    observation_count: int = 1
+    granularity: Literal["confirmed_event", "unresolved_observation", "observation"] = "observation"
+    event_id: str | None = None
+    event_state: str = "unknown"
+    analysis_revision: str | None = None
+    payer_display_account: str = ""
+    payee_display_account: str = ""
+    self_display_account: str = ""
+    raw_payer_account: str = ""
+    raw_payee_account: str = ""
+    raw_self_account: str = ""
+    payer_card: str = ""
+    payee_card: str = ""
+    self_card: str = ""
+    payer_source_account: str = ""
+    payee_source_account: str = ""
+    self_source_account: str = ""
+    payer_card_state: str = ""
+    payee_card_state: str = ""
+    self_card_state: str = ""
     id: Identifier
     case_id: Identifier
     batch_id: Identifier | None
 
 
 class FlowPage(ContractModel):
+    funds: FundsProjection | None = None
+    analysis_revision: str | None = None
     case_id: Identifier
     items: list[Flow]
     total: int
@@ -139,6 +288,7 @@ class FeedbackExample(ContractModel):
     member_path: str
     source_row: int
     reason_code: str
+    details: dict[str, str] = Field(default_factory=dict)
 
 
 class FeedbackSummary(ContractModel):
@@ -161,6 +311,8 @@ class FeedbackSummary(ContractModel):
 
 
 class TableSummary(ContractModel):
+    unsupported_attachments: int = 0
+    non_business_attachments: int = 0
     profile: str
     record_total: int
     accepted: int
@@ -180,6 +332,7 @@ class TableSummary(ContractModel):
 
 
 class ImportPreview(ContractModel):
+    resolution: ResolutionSummary | None = None
     case_id: Identifier
     import_id: str
     filename: str
@@ -218,6 +371,7 @@ class CommitStarted(ContractModel):
 
 
 class ImportResult(ContractModel):
+    resolution: ResolutionSummary | None = None
     total: int
     ok: int
     skipped: int
@@ -287,6 +441,11 @@ class CleanupResult(ContractModel):
 
 
 class FlowSource(ContractModel):
+    observation_flow_id: Identifier | None = None
+    observation_amount: Amount | None = None
+    observation_balance: Amount | None = None
+    observation_currency: str | None = None
+    observation_account: str | None = None
     source_id: str
     filename: str
     sha256: str

@@ -5,6 +5,8 @@ from PIL import Image
 import pytest
 
 from test_cases import insert_flow
+from funds_assertions import unresolved_funds
+from decimal import Decimal
 
 
 def listing(client, case_id, **params):
@@ -103,12 +105,22 @@ def test_profile_preserves_large_decimal_totals_and_separates_currencies(client,
                 {"currency": "USD", "amount": "0.01"}]
     assert value["account"] == account
     assert (value["cnt"], value["out_cnt"], value["in_cnt"]) == (6, 5, 1)
+    assert value["funds"] == unresolved_funds(6, ("CNY", None), ("USD", None), (None, None))
+    assert value["out_funds"] == unresolved_funds(5, ("CNY", None), ("USD", None), (None, None))
+    observed = client.get("/api/flows", params={"case_id": cid, "granularity": "observations"}).json()["rows"]
+    assert sum(Decimal(row["amount"]) for row in observed if row["currency"] == "CNY" and row["payer_account"] == account) == Decimal("19999999999999999.98")
+    assert sorted((row["trade_no"], row["amount"], row["currency"]) for row in observed) == [
+        ("SYN-1", "9999999999999999.99", "CNY"), ("SYN-2", "9999999999999999.99", "CNY"),
+        ("SYN-3", "0.01", "USD"), ("SYN-4", "0.01", None), ("SYN-5", "0.02", ""),
+        ("SYN-IN", "4.56", "CNY")]
     assert value["out_totals"] == expected and value["out_amt"] is None
     assert value["in_totals"] == [{"currency": "CNY", "amount": "4.56"}] and value["in_amt"] == "4.56"
+    assert value["in_funds"] == unresolved_funds(1, ("CNY", "4.56"))
     assert value["tmin"] == "2026-01-01 10:00:00" and value["tmax"] == "2026-01-06 10:00:00"
     counter = value["top_counterparties"][0]
     assert counter["acct"] == "000-COUNTER" and counter["out_totals"] == expected
     assert (counter["out_cnt"], counter["in_cnt"], counter["in_amt"]) == (5, 1, "4.56")
+    assert counter["out_funds"] == value["out_funds"] and counter["in_funds"] == value["in_funds"]
     assert counter["out_amt"] is None
 
 
@@ -178,9 +190,12 @@ def test_profile_counts_current_flow_facts_in_both_directions_without_tracking(c
         insert_flow(database, cid, flow_row, payer_account=payer, payee_account=payee, amount=amount)
     value = profile(client, cid, "SELF")
     assert (value["cnt"], value["out_cnt"], value["in_cnt"]) == (3, 2, 2)
+    assert value["funds"] == unresolved_funds(3, ("CNY", "6.06"))
+    assert value["out_funds"] == unresolved_funds(2, ("CNY", "3.03"))
+    assert value["in_funds"] == unresolved_funds(2, ("CNY", "4.04"))
     assert value["out_totals"] == [{"currency": "CNY", "amount": "3.03"}]
     assert value["in_totals"] == [{"currency": "CNY", "amount": "4.04"}]
-    assert client.get("/api/flows", params={"case_id": cid, "account": "SELF", "account_exact": 1}).json()["total"] == value["cnt"]
+    assert client.get("/api/flows", params={"case_id": cid, "account": "SELF", "account_exact": 1}).json()["total"] == value["funds"]["observation_count"]
     assert database.q("select count(*) n from tracked_flows where case_id=?", [cid])[0]["n"] == 0
 
 
@@ -380,3 +395,84 @@ def test_exact_account_mode_composes_with_every_existing_flow_filter(client, dat
         "ids": ",".join(map(str, included)),
     }).json()
     assert value["total"] == 1 and [row["id"] for row in value["rows"]] == [kept]
+
+
+def test_default_empty_registry_count_avoids_metadata_before_paginating(
+        client, database, make_case, flow_row, monkeypatch):
+    """An unsearched flow-account count does not need identity/photo/mark joins."""
+    import json
+
+    cid, other = make_case("Synthetic empty registry count"), make_case("Synthetic registry count isolation")
+    for account, name in (("0001", "Synthetic first flow name"), ("0002", "Synthetic second flow name")):
+        insert_flow(database, cid, flow_row, payer_account=account, payer_name=name,
+                    payee_account="", payee_name="")
+    insert_flow(database, other, flow_row, payer_account="0001", payer_name="Synthetic foreign flow name",
+                payee_account="", payee_name="")
+    identity(database, cid, "0001", "SYN-ID-LOCAL")
+    identity(database, other, "0001", "SYN-ID-FOREIGN")
+    database.executemany("insert into account_photos(case_id,account,fname,crop_cx,crop_cy,crop_r) values (?,'0001',?,0,0.75,0.25)",
+                         [(cid, "synthetic-local.png"), (other, "synthetic-foreign.png")])
+    database.executemany("insert into main_accounts(case_id,account,name,source) values (?,'0001',?,?)",
+                         [(cid, "Synthetic local manual name", "manual"), (other, "Synthetic foreign auto name", "auto")])
+    captured = []
+    original_query = database.q_raw
+
+    def capture_registry_count(sql, params=None):
+        result = original_query(sql, params)
+        if len(result) == 1 and set(result[0]) == {"total"}:
+            captured.append((sql, params))
+        return result
+
+    monkeypatch.setattr(database, "q_raw", capture_registry_count)
+    primary_count_queries, baseline_pages = [], []
+    for keyword in ("", "\u3000"):
+        pages = []
+        for page, expected_account in ((1, "0001"), (2, "0002"), (3, None)):
+            value = listing(client, cid, q=keyword, page=page, page_size=1)
+            assert (value["case_id"], value["source"], value["total"], value["page"], value["page_size"]) == (
+                str(cid), "flows", 2, page, 1)
+            assert [item["account"] for item in value["items"]] == ([] if expected_account is None else [expected_account])
+            if page == 1:
+                primary_count_queries.append(captured[-1])
+                row = value["items"][0]
+                assert (row["name"], row["id_no"], row["is_main"], row["main_source"], row["has_flows"]) == (
+                    "Synthetic local manual name", "SYN-ID-LOCAL", True, "manual", True)
+                assert row["identity_updated_at"] and row["photo_at"] and row["main_marked_at"]
+            elif page == 2:
+                row = value["items"][0]
+                assert row["name"] == "Synthetic second flow name" and row["has_flows"] is True
+                assert row["id_no"] is None and row["photo_at"] is None
+                assert row["is_main"] is False and row["main_source"] is None
+            pages.append(value)
+        if keyword == "":
+            baseline_pages = pages
+        else:
+            assert pages == baseline_pages, "NFKC-empty text has the same complete paginated response"
+        foreign = listing(client, other, q=keyword, page_size=1)
+        assert foreign["total"] == 1 and foreign["case_id"] == str(other)
+        row = foreign["items"][0]
+        assert (row["account"], row["name"], row["id_no"], row["main_source"]) == (
+            "0001", "Synthetic foreign auto name", "SYN-ID-FOREIGN", "auto")
+        assert row["photo_at"] and row["is_main"] is True
+    assert len(captured) == 8
+
+    def operators(node):
+        yield node
+        for child in node.get("children", []):
+            yield from operators(child)
+
+    forbidden = {"account_ids", "account_photos", "main_accounts", "resolution_subject_aliases"}
+    examined = set()
+    for sql, params in primary_count_queries:
+        signature = (sql, tuple(params))
+        if signature in examined:
+            continue
+        examined.add(signature)
+        plan = json.loads(database.con().execute(
+            "EXPLAIN (ANALYZE, FORMAT JSON) " + sql, params).fetchone()[1])
+        metadata_scans = [node["extra_info"] for node in operators(plan)
+                          if node.get("operator_type") == "TABLE_SCAN"
+                          and str(node.get("extra_info", {}).get("Table", "")).rsplit(".", 1)[-1].strip('"') in forbidden]
+        assert not metadata_scans, (
+            "default flow registry count scans unrelated metadata before pagination: "
+            + json.dumps(metadata_scans, ensure_ascii=False))

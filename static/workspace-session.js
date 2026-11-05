@@ -23,6 +23,7 @@
       inputs.set(account,{account,idValue:draft.idValue,focusValue:draft.focusValue});
     }
     return drafts.capture(caseContext(), { ...window.FundsCanvasEditor.captureDisplay(), query,
+      resolutionRevision: state.lastGraph.resolution_revision ?? null,
       selection:{nodeIds:[...(state.graphSelection?.ids || [])],edgeKey:state.graphView.selectedEdge,account:state.graphView.selectedAccount},
       nodeDrafts:[...inputs.values()] });
   }
@@ -37,18 +38,26 @@
       for (const key of ['edgeLabelPos','edgeBendPos','edgeSnapshotLabels','edgeTypes']) state[key] = draft[key];
       for (const key of ['layout','edgeType','showIds','showPhotos']) state[key] = draft[key];
       state.edgeLabels = new Set(draft.edgeLabels);
-      state.presentation = newGraphPresentation(draft.presentation);
-      const view = state.graphView, saved = draft.graphView;
+      const view = state.graphView, saved = draft.graphView, presentation = newGraphPresentation(draft.presentation);
+      const sameResolution = Object.prototype.hasOwnProperty.call(draft, 'resolutionRevision')
+        && draft.resolutionRevision === (state.lastGraph.resolution_revision ?? null);
+      const identityFiltered = presentation.hiddenAccounts.length > 0 || presentation.onlyAccounts !== null;
+      const expiredScope = (!sameResolution && (saved.visibleIds !== null || identityFiltered))
+        || (saved.visibleIds !== null && !nodes.has(saved.root));
+      state.presentation = newGraphPresentation(expiredScope ? {
+        ...presentation, relationFilter: {}, hiddenAccounts: [], onlyAccounts: null,
+        timeWindow: { start: '', end: '', includeUndated: true },
+      } : presentation);
       view.autoRoutes = draft.autoRoutes;
-      view.visibleIds = saved.visibleIds ? new Set(saved.visibleIds.filter(id => nodes.has(id))) : null;
-      view.root = nodes.has(saved.root) ? saved.root : null;
-      view.direction = saved.direction; view.labelMode = saved.labelMode;
-      state.forceFit = false; state.forceRebuild = true; state.justAdded = null;
+      view.visibleIds = expiredScope ? null : saved.visibleIds ? new Set(saved.visibleIds.filter(id => nodes.has(id))) : null;
+      view.root = expiredScope ? null : nodes.has(saved.root) ? saved.root : null;
+      view.direction = expiredScope ? 'both' : saved.direction; view.labelMode = saved.labelMode;
+      state.forceFit = expiredScope; state.forceRebuild = true; state.justAdded = null;
       renderGraph();
       // Invalidates the opening snapshot's delayed fit, while respecting chrome
       // resizing already accounted for by the shared camera controller.
       state.graphCamera?.cancelFocus?.('workspace-restore');
-      const matrix = draft.camera?.slice(), current = state.graphCamera?.getTransform?.() || {scale:1,x:0,y:0};
+      const matrix = expiredScope ? null : draft.camera?.slice(), current = state.graphCamera?.getTransform?.() || {scale:1,x:0,y:0};
       const captured = draft.cameraTransform || {scale:1,...draft.cameraOffset};
       if (matrix && captured.scale > 0) {
         const scale = current.scale/captured.scale;
@@ -57,9 +66,9 @@
         matrix[7] = (matrix[7]-captured.y)*scale+current.y;
         state.graph?.get?.('group')?.setMatrix?.(matrix);
       }
-      state.graphSelection?.rebind(draft.selection.nodeIds.filter(id => nodes.has(id)));
-      state.graphView.selectedAccount = nodes.has(draft.selection.account) ? draft.selection.account : null;
-      state.graphView.selectedEdge = state.graphView.edgeItems.has(draft.selection.edgeKey) ? draft.selection.edgeKey : null;
+      state.graphSelection?.rebind(expiredScope ? [] : draft.selection.nodeIds.filter(id => nodes.has(id)));
+      state.graphView.selectedAccount = !expiredScope && nodes.has(draft.selection.account) ? draft.selection.account : null;
+      state.graphView.selectedEdge = !expiredScope && state.graphView.edgeItems.has(draft.selection.edgeKey) ? draft.selection.edgeKey : null;
       if (state.graphView.selectedEdge && !state.graphSelection?.ids.size) {
         selectItem(state.graphView.edgeItems.get(state.graphView.selectedEdge)); refreshSelectedEdgeAppearance();
       }

@@ -97,6 +97,10 @@ def test_main_account_workspace_uses_effective_money_and_keeps_original_provenan
     assert profile.status_code == 200
     value = profile.json()
     assert (value['cnt'], value['out_amt'], value['in_amt']) == (3, '10.00', '13.00')
+    from funds_assertions import unresolved_funds
+    assert value['funds'] == unresolved_funds(3, ('CNY', '23.00'))
+    assert value['out_funds'] == unresolved_funds(1, ('CNY', '10.00'))
+    assert value['in_funds'] == unresolved_funds(2, ('CNY', '13.00'))
     assert {row['acct'] for row in value['top_counterparties']} == {'A', 'C'}
     assert database.q_raw('select id from flows where case_id=? and id=?', [cid, cancelled]) == [{'id': cancelled}]
     sources = client.get(f'/api/v1/cases/{cid}/flows/{cancelled}/sources')
@@ -123,8 +127,14 @@ def test_main_analysis_canvas_creation_keeps_its_retry_contract_and_rejects_excl
     database.x("update flows set payee_account='' where case_id=? and id=?", [cid, anchor])
     body.update(name='Synthetic missing counterparty', flow_ids=[anchor])
     before = database.q_raw('select * from canvases where case_id=? order by id', [cid])
-    assert client.post('/api/canvases/from-flows', json=body).status_code == 422
-    assert database.q_raw('select * from canvases where case_id=? order by id', [cid]) == before
+    facts = database.q_raw('select * from flows where case_id=? order by id', [cid])
+    created = client.post('/api/canvases/from-flows', json=body)
+    assert created.status_code == 200, created.text
+    shown = client.get('/api/graph', params={'case_id': cid, 'canvas_id': created.json()['canvas_id']}).json()
+    assert {node['account'] for node in shown['nodes']} == {'A'} and shown['edges'] == []
+    after = database.q_raw('select * from canvases where case_id=? order by id', [cid])
+    assert after[:len(before)] == before and len(after) == len(before) + 1
+    assert database.q_raw('select * from flows where case_id=? order by id', [cid]) == facts
 
 
 def test_table_only_tracked_export_discloses_unresolved_source_coverage(

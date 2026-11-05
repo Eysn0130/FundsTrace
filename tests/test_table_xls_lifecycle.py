@@ -21,6 +21,8 @@ from xls_fixtures import Cell, Error, workbook
 
 
 XLS_PROFILE = "funds-trace-table-v18"
+CURRENT_XLS_PROFILE = "funds-trace-table-v64"
+CURRENT_TABLE_PROFILE = "funds-trace-table-v63"
 FROZEN_PROFILE = "funds-trace-table-v17"
 HEADERS = ["date", "payer_account", "payee_account", "amount", "currency"]
 
@@ -32,21 +34,21 @@ def money_facts(rows):
 
 def committed_xls(client, cid, data, filename="synthetic.xls"):
     view = preview(client, cid, data, filename)
-    assert view["automatic"] and view["table_summary"]["profile"] == XLS_PROFILE
+    assert view["automatic"] and view["table_summary"]["profile"] == CURRENT_XLS_PROFILE
     view = repreview_unchanged(client, cid, view)
     job = complete(client, cid, view)
     assert job["stage"] == "done", job
     return view, job, source_records(client, cid, view["import_id"])
 
 
-def test_xls_public_preview_automatically_pins_v18_and_commits_exact_facts(client, database, make_case):
+def test_xls_public_preview_automatically_pins_current_version_and_commits_exact_facts(client, database, make_case):
     cid = make_case("Synthetic XLS public introduction")
     data = workbook([("Synthetic transactions", [
         HEADERS, ["2026-01-01 10:00:00", "00123456789012345678", "SYN-B", "1.23", "USD"],
     ])])
     view = preview(client, cid, data, "synthetic.xls")
     assert view["automatic"] is True and view["mode"] == "A"
-    assert view["table_summary"]["profile"] == XLS_PROFILE
+    assert view["table_summary"]["profile"] == CURRENT_XLS_PROFILE
     assert (view["table_summary"]["accepted"], view["table_summary"]["unresolved"]) == (1, 0)
     assert view["table_summary"]["currency_totals"] == {"USD": "1.23"}
     job = complete(client, cid, view)
@@ -59,11 +61,11 @@ def test_xls_public_preview_automatically_pins_v18_and_commits_exact_facts(clien
     assert (record["source_row"], record["reason_code"], record["disposition"]) == (
         2, "transaction_valid", "imported")
     source = client.get(f"/api/v1/cases/{cid}/flows/{record['flow_id']}/sources").json()["items"][0]
-    assert source["parser_version"] == XLS_PROFILE
+    assert source["parser_version"] == CURRENT_XLS_PROFILE
     assert source["member_row"] == 2 and source["member_path"] == record["member_path"]
 
 
-def test_csv_and_xlsx_default_stay_v17_when_appended_in_the_same_case(client, database, make_case):
+def test_csv_and_xlsx_default_use_current_version_when_appended_in_the_same_case(client, database, make_case):
     cid = make_case("Synthetic existing CSV XLSX contracts")
     frozen = None
     for index, suffix in enumerate((".csv", ".xlsx"), 1):
@@ -71,7 +73,7 @@ def test_csv_and_xlsx_default_stay_v17_when_appended_in_the_same_case(client, da
             HEADERS, [f"2026-02-0{index} 11:00:00", "SYN-A", f"SYN-{index}", "2.03", "CNY"],
         ])], suffix)
         view = preview(client, cid, data, "synthetic" + suffix)
-        assert view["automatic"] and view["table_summary"]["profile"] == FROZEN_PROFILE
+        assert view["automatic"] and view["table_summary"]["profile"] == CURRENT_TABLE_PROFILE
         job = complete(client, cid, view)
         assert job["stage"] == "done" and (job["result"]["ok"], job["result"]["rows_dup"]) == (1, 0)
         if frozen is None:
@@ -449,16 +451,31 @@ def test_xls_all_sheets_reordered_regions_signed_units_and_last_conflict_are_ful
     (["date", "交易时间", "payer_account", "payee_account", "amount"],
      ["2026-05-06", "2026-05-07", "SYN-A", "SYN-NO", "1.23"], "conflicting_time"),
 ], ids=["signed-direction", "unsigned-negative", "precision", "overflow", "currency", "time"])
+@pytest.mark.parametrize("current", [False, True])
 def test_xls_inherits_exact_financial_rules_without_weakening_conflicts(
-        client, database, make_case, headers, invalid, reason):
+        client, database, make_case, monkeypatch, headers, invalid, reason, current):
     cid = make_case("Synthetic XLS inherited financial conflict")
     data = workbook([("Explicit conflict", [headers, invalid]),
                      ("Independent valid", [HEADERS, ["2026-05-08", "SYN-P", "SYN-Q", "2.03", "USD"]])])
-    view, job, records = committed_xls(client, cid, data)
+    if current:
+        view, job, records = committed_xls(client, cid, data)
+    else:
+        with monkeypatch.context() as historical:
+            historical.setattr(table_import, "NATIVE31_XLS_PROFILE", table_import.ZONED_XLS_PROFILE)
+            view = preview(client, cid, data, "synthetic.xls")
+        assert view["table_summary"]["profile"] == "funds-trace-table-v37"
+        view = repreview_unchanged(client, cid, view)
+        job = complete(client, cid, view)
+        assert job["stage"] == "done", job
+        records = source_records(client, cid, view["import_id"])
     assert (job["result"]["ok"], view["table_summary"]["unresolved"]) == (1, 1)
-    assert records[0]["reason_code"] == reason and records[0]["flow_id"] is None
-    assert money_facts(facts(database, cid)) == [
-        (datetime(2026, 5, 8), "SYN-P", "SYN-Q", Decimal("2.03"), "USD")]
+    assert records[0]["reason_code"] == reason
+    assert (records[0]["flow_id"] is not None) == (current and reason == "negative_amount")
+    expected = [(datetime(2026, 5, 8), "SYN-P", "SYN-Q", Decimal("2.03"), "USD")]
+    if current and reason == "negative_amount":
+        expected.append((datetime(2026, 5, 6), "SYN-A", "SYN-NO", Decimal("-1.23"), ""))
+    assert money_facts(facts(database, cid)) == sorted(expected, key=lambda row: row[0])
+    assert client.get(f"/api/v1/cases/{cid}/stats").json()["amount_totals"] == [{"currency": "USD", "amount": "2.03"}]
 
 
 def test_mixed_csv_xlsx_xls_append_and_replay_preserve_first_facts_sources_and_receipts(
@@ -475,7 +492,7 @@ def test_mixed_csv_xlsx_xls_append_and_replay_preserve_first_facts_sources_and_r
     for matrix, suffix in zip(matrices, (".csv", ".xlsx", ".xls")):
         data = workbook([("Synthetic append", matrix)]) if suffix == ".xls" else encoded([("Synthetic append", matrix)], suffix)
         view = preview(client, cid, data, "synthetic" + suffix)
-        assert view["table_summary"]["profile"] == (XLS_PROFILE if suffix == ".xls" else FROZEN_PROFILE)
+        assert view["table_summary"]["profile"] == (CURRENT_XLS_PROFILE if suffix == ".xls" else CURRENT_TABLE_PROFILE)
         job = complete(client, cid, repreview_unchanged(client, cid, view))
         assert job["stage"] == "done" and (job["result"]["ok"], job["result"]["rows_dup"]) == (
             1, 0 if suffix == ".csv" else 1)
@@ -597,7 +614,7 @@ def test_xls_v18_format4_public_export_restores_to_clean_database_and_replay_add
     assert response.status_code == 200
     package = response.content
     members = _members(package)
-    assert json.loads(members["meta.json"])["format"] == 4
+    assert json.loads(members["meta.json"])["format"] == 6
     assert json.loads(members["meta.json"])["source_files"] == "not_included"
     assert not any(name.endswith(".xls") for name in members)
     with database._lock:
@@ -617,7 +634,7 @@ def test_xls_v18_format4_public_export_restores_to_clean_database_and_replay_add
             assert coverage(client, restored) == original_coverage
             assert database.q_raw("select * from import_sessions") == []
             source = database.q_raw("select source_id,parser_version from import_sources where case_id=?", [restored])[0]
-            assert source["parser_version"] == XLS_PROFILE
+            assert source["parser_version"] == CURRENT_XLS_PROFILE
             restored_records = source_records(client, restored, source["source_id"])
             without_ids = lambda items: [{key: value for key, value in record.items() if key != "flow_id"} for record in items]
             assert without_ids(restored_records) == without_ids(records)
@@ -685,7 +702,7 @@ def test_invalid_cell_type_reason_does_not_expand_acceptance_of_any_historical_p
 
 @pytest.mark.parametrize("format_version", [1, 2, 3, 4])
 def test_new_xls_support_keeps_each_existing_package_format_readable(
-        client, database, make_case, tmp_path, format_version):
+        client, database, make_case, tmp_path, format_version, legacy_feedback_reader):
     if format_version in (1, 2):
         from test_import_provenance import commit_source, csv_source, read_rows
 
@@ -703,6 +720,12 @@ def test_new_xls_support_keeps_each_existing_package_format_readable(
             b"date,payer_account,payee_account,amount\n2026-01-01,SYN-A,SYN-B,1.23\n"))["stage"] == "done"
     expected = facts(database, cid)
     members = _members(case_packages.export_package(cid)[0])
+    if format_version in (3, 4):
+        meta = json.loads(members["meta.json"])
+        assert meta["format"] == 6
+        members.pop("import_source_operations.parquet")
+        meta["format"] = format_version
+        members["meta.json"] = json.dumps(meta).encode()
     if format_version == 1:
         meta = json.loads(members["meta.json"])
         assert meta["format"] == 2

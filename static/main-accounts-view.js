@@ -48,7 +48,7 @@
     }
     function identity(row) {
       const cell = doc.createElement('td'), name = doc.createElement('strong'), account = doc.createElement('span');
-      name.textContent = row.name || '未提供户名'; account.textContent = row.account;
+      name.textContent = row.name || '未提供户名'; account.textContent = row.display_account || row.account;
       account.className = 'main-accounts-number'; cell.append(name, account); return cell;
     }
     function renderRows(next) {
@@ -121,7 +121,7 @@
       const action = value.action;
       el('maConfirmTitle').textContent = action === 'remove' ? '取消这个账号的主账号标记？' : action === 'clear-auto' ? '清除自动标记？' : '自动识别主账号？';
       el('maConfirmAccount').hidden = action !== 'remove';
-      el('maConfirmAccount').textContent = `${value.name || '未提供户名'}\n${value.account || ''}`;
+      el('maConfirmAccount').textContent = `${value.name || '未提供户名'}\n${value.display_account || value.account || ''}`;
       el('maConfirmText').textContent = action === 'remove' ? '仅取消此账号的标记。同户名的其他主账号、原始流水和画布追踪记录会保留。'
         : action === 'clear-auto' ? `清除本案件 ${next.counts.auto} 个自动识别的主账号标记，保留全部手动设置。原始流水和画布追踪记录会保留。`
           : '识别本案件的单账户流水批次，保留已有手动设置。双边流水不参与自动识别。';
@@ -195,12 +195,12 @@
     const doSearch = (query = el('maQuery').value, selected = picker?.getSelected()) => {
       if (composing || !state?.visible || state.screen !== 'search' || !dialog.open || !current(binding) || state.pending || state.unknown || state.loading) return false;
       const value = String(query).trim(), selectedAccount = typeof selected?.account === 'string' ? selected.account : '';
-      if (selectedAccount && value === selectedAccount) exactAccount = selectedAccount;
-      exactQuery = !!exactAccount && value === exactAccount; return controller.search(value, 1, exactQuery);
+      if (selectedAccount && value === selected.value) exactAccount = selectedAccount;
+      exactQuery = !!exactAccount && (value === exactAccount || value === selected?.value); return controller.search(exactQuery ? exactAccount : value, 1, exactQuery);
     };
     picker = root.FundsEntitySearch?.mount(el('maQuery'), {
       caseId: () => binding?.caseId, scope: queryScope, source: 'flows', kind: 'account',
-      onSelect(item) { exactAccount = typeof item.account === 'string' && el('maQuery').value === item.account ? item.account : ''; },
+      onSelect(item) { exactAccount = typeof item.account === 'string' && el('maQuery').value === item.value ? item.account : ''; },
       onSubmit: (query, selected) => { void doSearch(query, selected); },
     }) || null;
     const searchButton = el('maSearchForm').querySelector('button');

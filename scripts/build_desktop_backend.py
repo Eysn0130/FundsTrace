@@ -10,6 +10,7 @@ import importlib.metadata
 import json
 import platform
 import re
+import shutil
 from pathlib import Path
 import subprocess
 import struct
@@ -38,7 +39,7 @@ STATIC_NAMES = (
     "navigation.css", "appearance.css", "appearance.js", "analysis-link.js", "import-workflow.js",
     "workspace-drafts.js", "workspace-session.js", "account-workspace.js", "app-navigation.js",
     "index.html", "analysis.html", "license.html", "license.js", "app.js",
-    "analysis.js", "analysis.css", "case-workspace.js", "table-scroll.js", "style.css", "money.js", "graph-view.js", "graph-layout.js", "graph-layout-worker.js", "graph-layout-quality.js", "graph-routing.js", "graph-route-quality.js",
+    "analysis.js", "analysis.css", "principal-analysis.js", "case-workspace.js", "table-scroll.js", "style.css", "money.js", "graph-view.js", "graph-layout.js", "graph-layout-worker.js", "graph-layout-quality.js", "graph-routing.js", "graph-route-quality.js",
     "graph-labels.js", "graph-viewport.js", "graph-minimap.js", "minimap-navigation.js", "graph-selection.js", "logo.png", "favicon.ico", "favicon-32.png",
     "vendor/g6.min.js", "vendor/G6-PATCH.md", "vendor/G6-LICENSE",
     "workspace-shell.js", "canvas-history.js", "canvas-editor.js", "canvas-investigation.js", "desktop-updates.js", "desktop-updates.css",
@@ -97,6 +98,15 @@ def resource_files() -> list[tuple[Path, str]]:
     return resources
 
 
+def copy_decoder_resources(resources, backend_root):
+    # Keep the external decoder's pinned bytes and executable mode. PyInstaller
+    # can thin or re-sign collected Mach-O binaries, changing their digest.
+    for source, relative in resources:
+        target = backend_root / "_internal" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
 def main() -> None:
     if sys.version_info[:2] != (3, 11):
         raise SystemExit("Use Python 3.11 with requirements-desktop.lock")
@@ -109,6 +119,9 @@ def main() -> None:
         raise SystemExit("desktop_backend.py is missing")
     arch = native_arch()
     resources = resource_files()
+    from app.rar_archive import decoder_resources
+    decoder_files = decoder_resources()
+    resources.extend(decoder_files)
     for location in (BUILD, BUILD / "backend", BUILD / "work", BUILD / "spec"):
         if location.is_symlink():
             raise SystemExit("Desktop build paths must not be symlinks")
@@ -118,13 +131,15 @@ def main() -> None:
             "--collect-all", "duckdb", "--collect-all", "uvicorn", "--collect-data", "matplotlib",
             "--hidden-import", "app.analysis_routes", "--hidden-import", "openpyxl",
             "--exclude-module", "desktop_synthetic", "--exclude-module", "scripts.preview_synthetic"]
-    for package in ("duckdb", "fastapi", "uvicorn", "pandas", "openpyxl", "xlrd", "olefile", "python-multipart", "matplotlib", "cryptography"):
+    for package in ("duckdb", "fastapi", "uvicorn", "pandas", "openpyxl", "xlrd", "olefile", "rarfile", "python-multipart", "matplotlib", "cryptography"):
         args.extend(["--recursive-copy-metadata", package])
     for source, relative in resources:
         destination = str(Path(relative).parent)
-        args.extend(["--add-data", f"{source}:{destination}"])
+        binary = source.name in {"7zz", "7z.exe", "7z.dll"}
+        args.extend(["--add-binary" if binary else "--add-data", f"{source}:{destination}"])
     args.append(str(entry))
     subprocess.run(args, cwd=ROOT, check=True)
+    copy_decoder_resources(decoder_files, BUILD / "backend" / "funds-trace-backend")
     manifest = {"protocol": 1, "platform": sys.platform, "arch": arch,
                 "python": platform.python_version(), "pyinstaller": "6.22.3",
                 "sourceEntrySha256": hashlib.sha256(entry.read_bytes()).hexdigest(),

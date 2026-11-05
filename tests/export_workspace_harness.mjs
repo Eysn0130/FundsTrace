@@ -183,7 +183,10 @@ function harness({ execute, withDialogs = false } = {}) {
     setTimeout: (callback, delay = 0) => { timers.push({ callback, delay }); return timers.length; }, clearTimeout() {},
   });
   vm.runInContext(money, context, { filename: 'money.js' });
+  vm.runInContext(readFileSync(new URL('../static/principal-analysis.js', import.meta.url), 'utf8'), context);
+  window.FundsFacts = context.FundsFacts;
   vm.runInContext("const $ = selector => document.querySelector(selector); const $$ = selector => [...document.querySelectorAll(selector)]; const fmtCount = value => FundsMoney.count(value);", context);
+  vm.runInContext(declaredFunction('fundsCount'), context);
   vm.runInContext(declaredFunction('installExportWorkspace'), context, { filename: 'app.js:installExportWorkspace' });
   context.exportHost = {
     getContext: () => ({ ...current }),
@@ -237,6 +240,82 @@ test('graph scope and tracked Excel scope remain visibly distinct', async () => 
   assert.match(excel, /9/); assert.match(excel, /追踪/); assert.match(excel, /待调取/); assert.notEqual(excel, graph);
   await h.choose('html'); assert.match(h.element('exportPreserves').textContent, /当前.*标签|标签.*当前/);
   assert.doesNotMatch(h.element('exportPreserves').textContent, /全部标签/);
+});
+
+for (const mixed of [false, true]) test(`Excel description uses the existing count with ${mixed ? 'mixed' : 'confirmed'} sources`, async () => {
+  const h = harness(); h.scope.trackedFlows = mixed ? 3 : 2; h.scope.transactionCount = mixed ? 2 : 1;
+  h.scope.funds = { status: mixed ? 'bounded' : 'exact', observation_count: mixed ? 3 : 2,
+    confirmed_event_count: 1, unresolved_observation_count: mixed ? 1 : 0, count: { lower: 1, upper: mixed ? 2 : 1 } };
+  h.open(); await h.choose('xlsx');
+  assert.match(h.element('exportContents').textContent, mixed ? /2 笔资金交易/ : /1 笔资金交易/);
+  assert.match(h.element('exportContents').textContent, mixed ? /3 条来源记录/ : /2 条来源记录/);
+  assert.doesNotMatch(h.element('exportContents').textContent, mixed ? /3 笔资金交易|1笔＋1条|待核/ : /2 笔资金交易|待核/);
+  assert.match(h.element('exportPreserves').textContent, /资金统计/);
+  assert.match(h.element('exportPreserves').textContent, /原始账簿观察/);
+  assert.doesNotMatch(h.element('exportPreserves').textContent, /两张/);
+});
+
+test('Excel description includes source-only observations without counting financial transactions', async () => {
+  const h = harness(); h.scope.trackedFlows = 2; h.scope.transactionCount = 0; h.scope.sourceLedgerCount = 2;
+  h.scope.funds = { observation_count: 0, count: { lower: 0, upper: 0 } };
+  h.open(); await h.choose('xlsx');
+  assert.match(h.element('exportContents').textContent, /2 条来源记录/);
+  assert.match(h.element('exportContents').textContent, /0 笔资金交易/);
+  assert.match(h.element('exportContents').textContent, /来源记账 2 条/);
+  assert.equal(h.element('btnExportSubmit').disabled, false);
+  delete h.scope.funds; delete h.scope.transactionCount; h.controller.refresh();
+  assert.match(h.element('exportContents').textContent, /0 笔资金交易 · 2 条来源记录/);
+});
+
+test('Excel description combines confirmed financial observations and source ledger records once', async () => {
+  const h = harness(); h.scope.trackedFlows = 4; h.scope.transactionCount = 1; h.scope.sourceLedgerCount = 2;
+  h.scope.funds = { observation_count: 2, count: { lower: 1, upper: 1 } };
+  h.open(); await h.choose('xlsx');
+  assert.match(h.element('exportContents').textContent, /4 条来源记录/);
+  assert.match(h.element('exportContents').textContent, /1 笔资金交易/);
+  assert.match(h.element('exportContents').textContent, /来源记账 2 条/);
+  delete h.scope.funds; h.controller.refresh();
+  assert.match(h.element('exportContents').textContent, /1 笔资金交易 · 4 条来源记录/);
+});
+
+test('the actual export host supplies the current canvas source ledger count', () => {
+  const start = source.indexOf('    getScope: () => ({', source.indexOf('  exportWorkspace = installExportWorkspace('));
+  const end = source.indexOf('\n    setLegacyFormat:', start);
+  assert.ok(start >= 0 && end > start);
+  const host = vm.runInNewContext('({' + source.slice(start, end) + '})', {
+    state: { tracked: new Set(['SYN-1', 'SYN-2']), lastGraph: { transaction_count: 0, funds: { observation_count: 0 }, source_ledger: { count: 2 } } },
+    graphImageExportLines: () => [], layoutJob: null, cancelAnnotationDrag: null, window: {},
+  });
+  assert.equal(host.getScope().sourceLedgerCount, 2);
+});
+
+test('the actual null transaction count remains uncertain in the Excel description', async () => {
+  const start = source.indexOf('    getScope: () => ({', source.indexOf('  exportWorkspace = installExportWorkspace('));
+  const end = source.indexOf('\n    setLegacyFormat:', start);
+  assert.ok(start >= 0 && end > start);
+  const host = vm.runInNewContext('({' + source.slice(start, end) + '})', {
+    state: { tracked: new Set(['SYN-PENDING-1', 'SYN-PENDING-2']),
+      lastGraph: { transaction_count: null, funds: { observation_count: 2, count: { lower: 0, upper: 2 } } } },
+    graphImageExportLines: () => [], layoutJob: null, cancelAnnotationDrag: null, window: {},
+  });
+  const scope = host.getScope();
+  assert.equal(scope.transactionCount, null);
+  assert.equal(scope.funds.count.lower, 0); assert.equal(scope.funds.count.upper, 2);
+  const h = harness(); Object.assign(h.scope, scope); h.open(); await h.choose('xlsx');
+  assert.match(h.element('exportContents').textContent, /资金交易笔数未确定/);
+  assert.match(h.element('exportContents').textContent, /2 条来源记录/);
+  assert.doesNotMatch(h.element('exportContents').textContent, /2 笔资金交易/);
+  assert.equal(h.element('btnExportSubmit').disabled, false);
+});
+
+test('Excel description retains source counts with unresolved events and source fallback', async () => {
+  const h = harness(); h.scope.trackedFlows = 2;
+  h.scope.funds = { observation_count: 2, count: { lower: 0, upper: 2 } };
+  h.open(); await h.choose('xlsx');
+  assert.match(h.element('exportContents').textContent, /2 笔资金交易 · 2 条来源记录/);
+  delete h.scope.funds; h.controller.refresh();
+  assert.match(h.element('exportContents').textContent, /2 笔资金交易 · 2 条来源记录/);
+  assert.doesNotMatch(h.element('exportContents').textContent, /个事件|待核/);
 });
 
 test('working failure and completion feedback stay outside the scrolling export body above its footer', async () => {

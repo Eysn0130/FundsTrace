@@ -20,7 +20,7 @@ HEADERS = ["date", "payer_account", "payee_account", "amount", "unused"]
 FIRST = ["2026-01-01", "SYN-A", "SYN-B", "1.23", "original"]
 LATER_HEADERS = ["date", "payee_account", "payer_account", "123", "amount"]
 SECOND = ["2026-01-02", "SYN-C", "SYN-D", "9.87", "2.34"]
-NEW_PROFILE = "funds-trace-table-v17"
+NEW_PROFILE = "funds-trace-table-v63"
 OLD_PROFILE = "funds-trace-table-v14"
 
 
@@ -128,7 +128,7 @@ def test_automatic_region_import_persists_exact_facts_source_positions_and_forma
     assert client.get(f"/api/v1/cases/{cid}/imports/{view['import_id']}").json()["result"] == job["result"]
     package = case_packages.export_package(cid)[0]
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
-        assert json.loads(archive.read("meta.json"))["format"] == 4
+        assert json.loads(archive.read("meta.json"))["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     assert facts(database, restored) == before and coverage(client, restored) == coverage(client, cid)
     restored_source = database.q_raw(

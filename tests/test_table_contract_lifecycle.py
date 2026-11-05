@@ -11,6 +11,7 @@ import pytest
 from app import case_packages, table_contracts, table_import
 from app.services import imports
 from test_automatic_table_import import preview
+from test_archive_profile_upgrade import frozen_preview
 from test_feedback_import_api import complete
 from test_table_mapping_coverage import coverage, envelope
 from test_table_mapping_versions import profile_preview
@@ -56,7 +57,7 @@ def test_ready_v7_session_keeps_its_financial_interpretation_after_v11_is_defaul
                "2026-02-01 10:00:00,SYN-OWN,SYN-OTHER,-123,out,CNY\n").encode()
     old = profile_preview(client, cid, payload, monkeypatch, "funds-trace-table-v7")
     assert old["table_summary"]["accepted"] == 1
-    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v17"
+    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v63"
     rechecked = client.post(f"/api/v1/cases/{cid}/imports/{old['import_id']}/preview", json={
         "mode": old["mode"], "mapping": old["mapping"]})
     assert rechecked.status_code == 200, rechecked.text
@@ -101,7 +102,7 @@ def test_transaction_balance_pair_recovers_actual_direction_and_round_trips_with
     assert coverage(client, cid)["unresolved_records"] == 0
     package = case_packages.export_package(cid)[0]
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
-        assert json.loads(archive.read("meta.json"))["format"] == 4
+        assert json.loads(archive.read("meta.json"))["format"] == 6
         assert not any(name.endswith("synthetic.csv") for name in archive.namelist())
     restored = case_packages.import_package(package)["case_id"]
     assert facts(database, restored) == before
@@ -124,7 +125,7 @@ def test_balance_conflict_remains_visible_after_older_interpretation_and_package
     archive = envelope(payload)
     for kind in (("contract", legacy) if contract_first else (legacy, "contract")):
         if kind == "archive":
-            view = preview(client, cid, archive, "synthetic.zip")
+            view = frozen_preview(client, cid, archive, monkeypatch, "funds-trace-table-archive-v4")
         elif kind == "v7":
             view = profile_preview(client, cid, payload, monkeypatch, "funds-trace-table-v7")
         else:
@@ -238,7 +239,7 @@ def test_unknown_and_blank_records_without_contract_metadata_round_trip_in_forma
     assert not any(table_contracts.DETAILS_FIELDS.intersection(record["details"]) for record in records)
     package = case_packages.export_package(cid)[0]
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
-        assert json.loads(archive.read("meta.json"))["format"] == 4
+        assert json.loads(archive.read("meta.json"))["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     restored_source = database.q_raw("select source_id from import_sources where case_id=?", [restored])[0]["source_id"]
     assert source_records(client, restored, restored_source) == records

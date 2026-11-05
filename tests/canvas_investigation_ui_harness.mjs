@@ -114,7 +114,11 @@ function fixture() {
     renderGraph() { renderCount++; fitRequests.push(state.forceFit === true); visible = window.FundsInvestigation.displayGraph(state.lastGraph); state.graphView.revision++;
       for (const fn of windowListeners.get('funds:graph-metric') || []) fn({ type: 'funds:graph-metric' }); },
   };
-  vm.createContext(env); vm.runInContext(controllerSource, env, { filename: 'canvas-investigation.js' });
+  vm.createContext(env);
+  vm.runInContext(readFileSync(new URL('../static/money.js', import.meta.url), 'utf8'), env);
+  vm.runInContext(readFileSync(new URL('../static/principal-analysis.js', import.meta.url), 'utf8'), env);
+  window.FundsFacts = env.FundsFacts;
+  vm.runInContext(controllerSource, env, { filename: 'canvas-investigation.js' });
   const respond = (index, payload = projection(), status = 200) => calls[index].resolve({ ok: status === 200, status, json: async () => clone(payload) });
   const reject = (index, error = new Error('synthetic unavailable')) => calls[index].reject(error);
   return { api: window.FundsInvestigation, state, env, element, calls, toasts, commands, fitRequests, timers, respond, reject,
@@ -151,8 +155,54 @@ test('projection merges original account metadata and leaves the complete source
   assert.equal(display.edges[0].ids[0], '9007199254740993'); assert.equal(display.tracked_ids, h.state.lastGraph.tracked_ids);
   assert.equal(JSON.stringify(h.state.lastGraph), original); assert.equal(h.calls.length, 1);
   assert.equal(h.api.exportWindow().end, time1); assert.equal(h.api.exportWindow().preview, false);
+  h.state.lastGraph.nodes[0].id_no = 'SYN-UPDATED-ID'; h.state.lastGraph.nodes[0].is_main = 1;
+  const refreshed = h.api.displayGraph(h.state.lastGraph).nodes[0];
+  assert.equal(refreshed.id_no, 'SYN-UPDATED-ID'); assert.equal(refreshed.is_main, 1);
+  assert.equal(refreshed.out_totals[0].amount, '9007199254740993.01'); assert.equal(h.calls.length, 1);
   h.state.presentation.timeWindow = { start: '', end: '', includeUndated: true };
   assert.equal(h.api.displayGraph(h.state.lastGraph), h.state.lastGraph, 'clearing the display restriction reveals the original graph');
+});
+
+test('relationship scope selects backend cards and amounts without viewport or page inputs', async () => {
+  const h = fixture(), full = h.state.lastGraph;
+  full.nodes.push({ account: 'C', display_account: 'SYN-C' });
+  full.edges.push({ source: 'A', target: 'C', ids: ['99'] });
+  const subset = { nodes: full.nodes.slice(0,2), edges: full.edges.slice(0,1) };
+  assert.equal(h.api.scopeGraph(subset, full).nodes.length, 0);
+  assert.equal(h.api.projectionReady(), false);
+  assert.equal(h.calls[0].path, '/api/graph/view');
+  assert.deepEqual(clone(h.calls[0].body.visible_accounts), ['A','B']);
+  assert.deepEqual(clone(h.calls[0].body.visible_edges), [{source:'A',target:'B'}]);
+  assert.equal(Object.hasOwn(h.calls[0].body, 'viewport'), false);
+  const result = projection(); result.nodes[0].display_account = 'SYN-OLD';
+  h.respond(0,result); await flush();
+  const selected = h.api.scopeGraph(subset,full);
+  assert.equal(selected.nodes[0].display_account, 'SYN-OLD');
+  assert.equal(selected.nodes[0].out_totals[0].amount, '0.01');
+  assert.equal(selected.nodes[0].id_no, 'SYNTHETIC-ID');
+  assert.equal(h.api.projectionReady(), true);
+  for(let i=0;i<4;i++) h.api.scopeGraph(subset,full);
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.api.scopeGraph(full,full), full);
+  assert.equal(full.nodes[0].display_account, undefined);
+  full.nodes[0].id_no = 'SYN-UPDATED-ID'; full.nodes[0].is_main = 1;
+  const refreshed = h.api.scopeGraph(subset, full).nodes[0];
+  assert.equal(refreshed.id_no, 'SYN-UPDATED-ID'); assert.equal(refreshed.is_main, 1);
+  assert.equal(refreshed.display_account, 'SYN-OLD'); assert.equal(refreshed.out_totals[0].amount, '0.01');
+  assert.equal(h.calls.length, 1);
+});
+
+test('relationship projection cannot publish after A-B-A or source replacement', async () => {
+  const h = fixture(), full = h.state.lastGraph;
+  const subset = { nodes: full.nodes.slice(0,1), edges: [] };
+  h.api.scopeGraph(subset,full);
+  h.rebind(2); h.rebind(1);
+  assert.equal(h.calls[0].options.signal.aborted, true);
+  h.api.scopeGraph(subset,full);
+  h.respond(0,projection('111.11')); await flush();
+  assert.equal(h.api.scopeGraph(subset,full).nodes.length, 0);
+  h.respond(1,projection('222.22')); await flush();
+  assert.equal(h.api.scopeGraph(subset,full).nodes[0].out_totals[0].amount, '222.22');
 });
 
 for (const change of ['A-B-A', 'source-replacement']) test(`${change} discards a delayed projection without poisoning the new binding cache`, async () => {
@@ -228,6 +278,23 @@ test('equivalent fractional boundaries compare as the same local time and preser
   assert.equal(h.calls[1].body.end, '2026-10-23 10:00:00.1'); h.respond(1); await checking;
   assert.equal(h.element('investigationStatus').dataset.error, 'false');
 });
+
+for (const exact of [true, false]) {
+  test(`time preview uses the evidence projection as its only primary amount: ${exact ? 'confirmed' : 'unresolved'}`, async () => {
+    const h = fixture(), result = projection();
+    const funds = { status: exact ? 'exact' : 'bounded', observation_count: 2, count: { lower: exact ? 1 : 0, upper: exact ? 1 : 2 },
+      totals: [{ currency: 'CNY', amount: exact ? '100.00' : null, lower: exact ? '100.00' : '0.00', upper: exact ? '100.00' : '200.00' }] };
+    result.funds = result.summary.funds = funds; result.analysis_revision = 'synthetic-current-revision';
+    result.summary.selected_count = 2; result.summary.amount_totals = [{ currency: 'CNY', amount: '200.00' }];
+    const opening = h.api.execute('timeWindow'); h.respond(0, result); await opening;
+    await h.element('investigationTimePreview').click();
+    const status = h.element('investigationStatus').textContent;
+    assert.match(status, exact ? /1 个事件 · ¥100\.00/ : /0–2 个事件（待核） · CNY 0\.00–200\.00（待核）/);
+    assert.doesNotMatch(status, /2 笔|镜像配对后|接纳记账记录/);
+    if (exact) assert.doesNotMatch(status, /200\.00/);
+    assert.equal(h.calls.length, 1, 'formatting and cached preview add no request');
+  });
+}
 
 test('invalid timestamp syntax is explained before a request and calendar errors are visible', async () => {
   const h = fixture(), opening = h.api.execute('timeWindow'); h.respond(0); await opening;
@@ -337,6 +404,17 @@ for (const mode of ['layout', 'history', 'export', 'drag']) test(`ending playbac
   assert.equal(h.currentVisible(), h.state.lastGraph);
 });
 
+test('path step displays unresolved bounds instead of an observation sum', async () => {
+  const h = fixture(); await h.api.execute('findGraphPaths');
+  h.element('pathSource').value = 'A'; h.element('pathTarget').value = 'B';
+  const search = h.element('pathSearch').click(); await flush();
+  h.respond(0, {complete:true, paths:[{accounts:['A','B'],currency:'CNY',steps:[{
+    source:'A',target:'B',amount:null,count:null,flow_ids:[],funds:{status:'bounded',count:{lower:0,upper:2},
+      totals:[{currency:'CNY',amount:null,lower:'0.00',upper:'200.00'}]}}]}],flows:[]});
+  await search;
+  assert.match(h.element('pathResults').innerHTML, /CNY 0\.00–200\.00（待核）/);
+});
+
 test('ZIP path evidence distinguishes member line from archive record number', async () => {
   const h = fixture(); await h.api.execute('findGraphPaths');
   h.element('pathSource').value = 'A'; h.element('pathTarget').value = 'B';
@@ -350,4 +428,37 @@ test('ZIP path evidence distinguishes member line from archive record number', a
   assert.match(html, /member\.csv · 行 2 · 包内记录 1/);
   assert.match(html, /Sheet 1 · 行 8 · 原记录 7/);
   assert.doesNotMatch(html, /member\.csv · 行 1/);
+});
+
+test('path controls display card aliases and preserve selected internal keys for actions', async () => {
+  const h = fixture();
+  for (const node of h.state.lastGraph.nodes) node.display_account = `SYN-CARD-${node.account}`;
+  h.state.graphSelection.ids = new Set(['A', 'B']);
+  await h.api.execute('findGraphPaths');
+  assert.equal(h.element('pathSource').value, 'SYN-CARD-A');
+  assert.equal(h.element('pathTarget').value, 'SYN-CARD-B');
+  const search = h.element('pathSearch').click(); await flush();
+  assert.equal(h.calls[0].body.start_account, 'A'); assert.equal(h.calls[0].body.end_account, 'B');
+  h.respond(0, { complete: true, paths: [{ accounts: ['A', 'B'], currency: 'CNY', steps: [{ source: 'A', target: 'B', amount: '0.01', flow_ids: [] }] }] });
+  await search;
+  assert.match(h.element('pathResults').innerHTML, /SYN-CARD-A → SYN-CARD-B/);
+  assert.doesNotMatch(h.element('pathResults').innerHTML, />A → B</);
+});
+
+
+test('UTC preview displays selected transaction facts and replaces the initial mixed-domain explanation', async () => {
+  const h = fixture(), opening = h.api.execute('timeWindow');
+  const mixed = projection(); mixed.timeline = []; mixed.summary.time_basis = 'mixed';
+  h.respond(0, mixed); await opening;
+  assert.match(h.element('investigationTimeRange').textContent, /不能共同播放/);
+  h.element('investigationStart').value = '2026-04-05T00:00:00Z';
+  h.element('investigationEnd').value = '2026-04-05T23:59:59.999999Z';
+  const checking = h.element('investigationTimePreview').click(); await flush();
+  const selected = projection('9.06'); selected.timeline = [{time:'2026-04-05 16:02:03.456789+00:00'}];
+  selected.summary = {time_basis:'utc',time_incomparable_count:1,transactions:{cnt:3,total:'9.06',amount_totals:[{currency:'CNY',amount:'9.06'}]}};
+  h.respond(1, selected); await checking;
+  assert.match(h.element('investigationStatus').textContent, /3 笔.*CNY 9.06/);
+  assert.match(h.element('investigationStatus').textContent, /1 条未标时区记录未参与UTC比较/);
+  assert.doesNotMatch(h.element('investigationTimeRange').textContent, /不能共同播放/);
+  assert.match(h.element('investigationTimeRange').textContent, /16:02:03.456789\+00:00/);
 });

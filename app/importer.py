@@ -10,9 +10,11 @@ import csv
 import decimal
 import itertools
 import io
+import hashlib
 import json
 import math
 import re
+import zlib
 from collections import deque
 from pathlib import Path
 from contextlib import contextmanager
@@ -25,6 +27,7 @@ from . import db
 _fmt_cache = {"time": None}
 _re_amt_strip = re.compile(r"[^0-9.\-]")
 _CENT = decimal.Decimal("0.01")
+WRITE_CHUNK = 50_000
 PARSER_VERSION = "funds-trace-table-v4"
 
 
@@ -557,8 +560,8 @@ def build_rows(df, mode, mapping=None):
         exp = [parse_amount(v) for v in col_list("expense_amt")]
 
     # ---- 各字段列预提取，按行解包为字典（行内 O(1) 取值） ----
-    cols = {f: col_list(f) for f in set(sum([MODE_FIELDS[mode], ["_time2", "self_account", "self_name"]], []))}
-    fieldnames = list(dict.fromkeys(sum([MODE_FIELDS[mode], ["_time2", "self_account", "self_name"]], [])))
+    cols = {f: col_list(f) for f in set(sum([MODE_FIELDS[mode], ["_time2", "self_account", "self_name", "trade_time_utc", "trade_time_original", "trade_time_offset"]], []))}
+    fieldnames = list(dict.fromkeys(sum([MODE_FIELDS[mode], ["_time2", "self_account", "self_name", "trade_time_utc", "trade_time_original", "trade_time_offset"]], [])))
     col_lists = [cols.get(f, [""] * n) for f in fieldnames]
     row_dicts = (dict(zip(fieldnames, vals)) for vals in zip(*col_lists))
 
@@ -647,12 +650,13 @@ def build_rows(df, mode, mapping=None):
 def _row_key(r, default_currency=""):
     """全列指纹：所有导入列完全一致才视为同一笔（重复）流水"""
     bal = r.get("balance")
-    return (r.get("trade_no") or "", _tkey(r.get("trade_time")),
+    key = (r.get("trade_no") or "", _tkey(r.get("trade_time")),
             r.get("payer_name") or "", r.get("payer_account") or "", r.get("payer_bank") or "",
             r.get("payee_name") or "", r.get("payee_account") or "", r.get("payee_bank") or "",
             decimal.Decimal(str(r.get("amount") or 0)).quantize(_CENT),
             decimal.Decimal(str(bal)).quantize(_CENT) if bal is not None else None,
             r.get("currency") or default_currency, r.get("summary") or "", r.get("channel") or "")
+    return key + ("explicit_offset", _tkey(r["trade_time_utc"]), r.get("trade_time_original"), r.get("trade_time_offset")) if r.get("trade_time_utc") is not None else key
 
 
 def _provenance_metadata(provenance, filename, mode, rows):
@@ -666,6 +670,7 @@ def _provenance_metadata(provenance, filename, mode, rows):
     # Extensionless uploads use CSV in the service; preserve that same format
     # contract without inventing an extension in the recorded source name.
     suffix = (Path(filename).suffix.lower() or ".csv") if isinstance(filename, str) else ""
+    archive_suffix = suffix in (".zip", ".rar")
     if (not isinstance(source.get("source_id"), str)
             or not re.fullmatch(r"[0-9a-f]{12,32}", source["source_id"])
             or not isinstance(source.get("sha256"), str)
@@ -682,19 +687,21 @@ def _provenance_metadata(provenance, filename, mode, rows):
             or any(k not in (table_import.MAPPING_FIELDS if table_source else (*MODE_FIELDS.get(mode, []), "_time2", "self_account", "self_name"))
                    or not isinstance(v, str) or not v.strip() for k, v in mapping.items())
             or (not table_source and not _validate(mapping, mode))
-            or suffix not in (".csv", ".tsv", ".txt", ".xlsx", ".xls", ".zip")
-            or (source.get("parser_version") == table_import.XLS_PROFILE and suffix != ".xls")
+            or suffix not in (".csv", ".tsv", ".txt", ".xlsx", ".xls", ".zip", ".rar")
+            or (source.get("parser_version") in table_import.STANDALONE_XLS_PROFILES and suffix != ".xls")
             or (suffix in (".xlsx", ".xls")) != bool(source.get("sheet"))
             or (source["row_kind"] == "worksheet_row" and suffix not in (".xlsx", ".xls"))
-            or (source["row_kind"] == "csv_record" and suffix in (".xlsx", ".xls", ".zip"))
-            or (suffix == ".zip") != (source["row_kind"] == "archive_record" or table_source and source["parser_version"] in table_archive.SUPPORTED_PROFILES)
-            or (table_source and (source["parser_version"] in table_archive.SUPPORTED_PROFILES) != (suffix == ".zip"))):
+            or (source["row_kind"] == "csv_record" and suffix in (".xlsx", ".xls", ".zip", ".rar"))
+            or archive_suffix != (source["row_kind"] == "archive_record" or table_source and source["parser_version"] in table_archive.SUPPORTED_PROFILES)
+            or (table_source and (source["parser_version"] in table_archive.SUPPORTED_PROFILES) != archive_suffix)
+            or (suffix == ".rar" and not (table_source and source["parser_version"] in table_import.NATIVE_OBSERVATION_PROFILES))):
         raise ImportError("来源元数据无效")
     if suffix == ".zip" and not table_source:
         from .feedback_import import SUPPORTED_PROFILES, MAPPING
         if source["parser_version"] not in SUPPORTED_PROFILES or mode != "B" or mapping != MAPPING:
             raise ImportError("反馈包来源规则无效")
-    positions = set()
+    from .import_staging import StagedSequence
+    positions = rows.store.mapping() if isinstance(rows, StagedSequence) else set()
     for row in rows:
         position = row.get("_source_row")
         if (type(position) is not int or position <= 0 or position in positions
@@ -703,7 +710,10 @@ def _provenance_metadata(provenance, filename, mode, rows):
             raise ImportError("来源行号或工作表无效")
         if source["row_kind"] in ("archive_record", "table_record") and not re.fullmatch(r"[0-9a-f]{64}", row.get("_record_key", "")):
             raise ImportError("反馈包记录身份无效")
-        positions.add(position)
+        if isinstance(positions, set):
+            positions.add(position)
+        else:
+            positions[position] = True
     return source
 
 
@@ -717,6 +727,12 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
     去重规则：所有导入列完全一致才判为重复——任一列（如余额、摘要、对手）不同均视为不同流水。"""
     source = _provenance_metadata(provenance, filename, mode, rows) if provenance is not None else None
     from . import table_archive, table_import
+    from . import evidence_resolution
+    from .import_staging import StagedSequence
+    if isinstance(rows, StagedSequence) and source is not None and source["parser_version"] in evidence_resolution.OCCURRENCE_PROFILES:
+        if standalone_csv_keys is not None:
+            raise ImportError("证据来源不接受历史CSV替代身份")
+        return _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, source)
     if standalone_csv_keys is not None:
         if (source is None or source["row_kind"] != table_import.ROW_KIND
                 or source["parser_version"] not in table_archive.SUPPORTED_PROFILES
@@ -730,11 +746,29 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
         if not db.q("select id from cases where id = ?", [case_id]):
             raise ImportError("案件不存在，无法导入流水")
         key_cols = ("trade_no, trade_time, payer_name, payer_account, payer_bank, "
-                    "payee_name, payee_account, payee_bank, amount, balance, currency, summary, channel")
+                    "payee_name, payee_account, payee_bank, amount, balance, currency, summary, channel, trade_time_utc, trade_time_original, trade_time_offset")
         archive = source is not None and (source["row_kind"] == "archive_record"
                   or source["row_kind"] == "table_record" and source["parser_version"] in table_archive.SUPPORTED_PROFILES)
+        from . import evidence_resolution
+        evidence_source = source is not None and source["parser_version"] in evidence_resolution.OCCURRENCE_PROFILES
         existing = {}
-        if archive:
+        if evidence_source:
+            fields = [name.strip() for name in key_cols.split(",")] + ["self_account", "self_name"]
+            profiles = sorted(evidence_resolution.OCCURRENCE_PROFILES)
+            cursor = con.execute("select m.sha256,r.source_row,f.flow_id,json_extract_string(r.details_json,'$.occurrence_scope')," + ",".join("v." + name for name in fields) + f"""
+                from import_records r join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
+                join flow_sources f on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
+                join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
+                join flows v on v.case_id=f.case_id and v.id=f.flow_id
+                where r.case_id=? and s.parser_version in ({','.join('?' for _ in profiles)})
+                and r.disposition in ('imported','duplicate') order by f.flow_id""", [case_id, *profiles])
+            while candidates := cursor.fetchmany(4096):
+                for digest, position, fid, scope, *values in candidates:
+                    stored = dict(zip(fields, values))
+                    key = (evidence_resolution.occurrence_key(digest, position), scope or "", _row_key(stored),
+                           stored.get("self_account") or "", stored.get("self_name") or "")
+                    existing.setdefault(key, fid)
+        elif archive:
             # A missing counterparty and equal visible fields cannot prove that
             # two source events are the same. Reuse only this exact member's
             # content/path/record identity; retain distinct source occurrences.
@@ -751,7 +785,7 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                 # A shared physical key alone cannot establish equal facts
                 # after an ordinary table's advanced mapping was changed.
                 facts = [name.strip() for name in key_cols.split(",")] + ["self_account", "self_name"]
-                archive_profiles = sorted(table_archive.SUPPORTED_PROFILES, reverse=True)
+                archive_profiles = table_archive.PROFILE_PRECEDENCE
                 table_profiles = sorted(table_import.SUPPORTED_PROFILES, reverse=True)
                 supported = ",".join("?" for _ in (*archive_profiles, *table_profiles))
                 precedence = " ".join(f"when ? then {rank}" for rank in range(len(archive_profiles)))
@@ -798,7 +832,7 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                 if pending:
                     # Only ordinary CSV journals qualify, never another
                     # archive path, Excel sheet, or a merely similar source.
-                    csv_profiles = [profile for profile in table_profiles if profile != table_import.XLS_PROFILE]
+                    csv_profiles = [profile for profile in table_profiles if profile not in table_import.STANDALONE_XLS_PROFILES]
                     supported = ",".join("?" for _ in csv_profiles)
                     signatures, available = set(pending.values()), {}
                     cursor = con.execute("select r.record_key,f.flow_id,m.sha256,r.source_row,s.filename," + ",".join("v." + name for name in facts) + f"""
@@ -845,7 +879,8 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
         for r in rows:
             # Match the value insertion will persist, without reinterpreting
             # genuinely unknown currency values in an existing database.
-            k = r["_record_key"] if archive else _row_key(r, default_currency="CNY")
+            k = ((r["_occurrence_key"], r.get("_occurrence_scope") or "", _row_key(r, default_currency="CNY"), r.get("self_account") or "", r.get("self_name") or "")
+                 if evidence_source else r.get("_source_posting_record_key", r["_record_key"]) if archive else _row_key(r, default_currency="CNY"))
             if k in existing or k in seen:
                 dup += 1
                 if source:
@@ -855,12 +890,28 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
             final.append(r)
             if source:
                 references.append((r["_source_row"], k, "imported"))
+        if rows:
+            del r, k
 
         # Allocate IDs in one query so provenance can refer to the exact rows
         # inserted, including duplicates later in the same source file.
         flow_ids = [record[0] for record in con.execute(
             "select nextval('flow_seq') from range(?)", [len(final)]).fetchall()]
-        final_ids = {key: flow_ids[index] for key, index in seen.items()}
+        # The index lookup is no longer needed after allocation. Reuse its
+        # dictionary rather than retaining a second full key-to-ID map.
+        final_ids = seen
+        for key, index in final_ids.items():
+            final_ids[key] = flow_ids[index]
+        if final_ids:
+            del key, index
+        # Exact field comparisons and ID allocation are finished. Preserve the
+        # same ordered source links, without carrying all fingerprints (and
+        # their copied time/Decimal values) through the database write phase.
+        for index, (position, key, disposition) in enumerate(references):
+            references[index] = (position, existing.get(key, final_ids.get(key)), disposition)
+        if references:
+            del position, key, disposition
+        del existing, final_ids, seen
         if source:
             con.execute("insert into import_sources(source_id,case_id,filename,sha256,size_bytes,mode,mapping_json,sheet,parser_version,row_kind,origin,imported_at) values (?,?,?,?,?,?,?,?,?,?,'upload',current_timestamp at time zone 'UTC')",
                         [source["source_id"], case_id, filename, source["sha256"], source["size_bytes"], mode,
@@ -874,39 +925,36 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
             # 批量插入，保持整批事务边界。
             cols = ["id", "case_id", "batch_id", "trade_no", "trade_time", "payer_name", "payer_account", "payer_bank",
                     "payee_name", "payee_account", "payee_bank", "amount", "balance", "currency", "summary", "channel",
-                    "self_account", "self_name"]
-            data = [[fid, case_id, batch_id, r["trade_no"], r["trade_time"], r["payer_name"], r["payer_account"], r.get("payer_bank") or "",
-                     r["payee_name"], r["payee_account"], r.get("payee_bank") or "",
-                     r["amount"], r.get("balance"), r.get("currency") or "CNY", r.get("summary") or "", r.get("channel") or "",
-                     r.get("self_account") or "", r.get("self_name") or ""] for fid, r in zip(flow_ids, final)]
-            df_ins = pd.DataFrame(data, columns=cols)
-            df_ins["trade_time"] = pd.to_datetime(df_ins["trade_time"])
-            # DuckDB samples pandas object columns and may infer a narrow
-            # DECIMAL before encountering a rare larger value. A nullable text
-            # bridge preserves every Decimal digit; the target DECIMAL(18,2)
-            # columns perform the final exact cast and range validation.
-            for field in ("amount", "balance"):
-                df_ins[field] = df_ins[field].astype("string")
-            CHUNK = 50000
-            done = 0
-            for i in range(0, len(df_ins), CHUNK):
+                    "self_account", "self_name", "trade_time_utc", "trade_time_original", "trade_time_offset"]
+            for i in range(0, len(final), WRITE_CHUNK):
+                data = [[fid, case_id, batch_id, r["trade_no"], r["trade_time"], r["payer_name"], r["payer_account"], r.get("payer_bank") or "",
+                         r["payee_name"], r["payee_account"], r.get("payee_bank") or "",
+                         r["amount"], r.get("balance"), r.get("currency") or "CNY", r.get("summary") or "", r.get("channel") or "",
+                         r.get("self_account") or "", r.get("self_name") or "", r.get("trade_time_utc"), r.get("trade_time_original"), r.get("trade_time_offset")]
+                        for fid, r in zip(flow_ids[i:i + WRITE_CHUNK], final[i:i + WRITE_CHUNK])]
+                df_ins = pd.DataFrame(data, columns=cols)
+                del data
+                df_ins["trade_time"] = pd.to_datetime(df_ins["trade_time"])
+                df_ins["trade_time_utc"] = pd.to_datetime(df_ins["trade_time_utc"])
+                # Preserve the exact Decimal-to-text bridge in every chunk.
+                for field in ("amount", "balance"):
+                    df_ins[field] = df_ins[field].astype("string")
                 db.set_busy(True)
                 try:
-                    db.insert_dataframe("flows", df_ins.iloc[i:i + CHUNK], cols)
+                    db.insert_dataframe("flows", df_ins, cols)
                 finally:
                     db.set_busy(False)
-                done = min(i + CHUNK, len(df_ins))
+                del df_ins
                 if progress_cb:
-                    progress_cb(done, len(df_ins))
+                    progress_cb(min(i + WRITE_CHUNK, len(final)), len(final))
         if references:
-            reference_frame = pd.DataFrame(
-                [[case_id, source["source_id"], position,
-                  existing.get(key, final_ids.get(key)), disposition]
-                 for position, key, disposition in references],
-                columns=["case_id", "source_id", "source_row", "flow_id", "disposition"])
-            for offset in range(0, len(reference_frame), 50000):
-                db.insert_dataframe("flow_sources", reference_frame.iloc[offset:offset + 50000],
-                                    list(reference_frame.columns))
+            columns = ["case_id", "source_id", "source_row", "flow_id", "disposition"]
+            for offset in range(0, len(references), WRITE_CHUNK):
+                reference_frame = pd.DataFrame(
+                    [[case_id, source["source_id"], position, fid, disposition]
+                     for position, fid, disposition in references[offset:offset + WRITE_CHUNK]], columns=columns)
+                db.insert_dataframe("flow_sources", reference_frame, columns)
+                del reference_frame
         st = dict(stats or {})
         st.update({"ok": len(final), "rows_dup": dup, "batch_id": batch_id})
         # 导入时声明的本方账号（"本方账号"列中出现过的账号）→ 主账号候选。
@@ -932,4 +980,180 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
             mains = {r["account"] for r in db.q("select account from main_accounts where case_id = ?", [case_id])}
             st["main_matched"] = sorted(batch_accts & mains)
             st["accounts_in_batch"] = len(batch_accts)
+        from . import analysis_snapshot
+        analysis_snapshot.invalidate(case_id)
         return st
+
+
+def _staged_identity_digest(encoded):
+    return hashlib.sha256(encoded).digest()
+
+
+class _StagedIdentityIndex:
+    """Candidate lookup only; every hit verifies the complete encoded identity.
+
+    A rowid table keeps the compressed identity out of the B-tree search key.
+    This index belongs to one writer and uses its existing bounded scratch.
+    """
+    def __init__(self, store):
+        self.store = store
+        store._check()
+        store._namespace += 1
+        self.namespace = str(store._namespace)
+        store._con.execute("""create table if not exists evidence_identities(
+            namespace text, digest blob, identity blob, flow_id integer)""")
+        store._con.execute("""create index if not exists evidence_identity_candidates
+            on evidence_identities(namespace,digest)""")
+        self.pending = {}
+        self.pending_bytes = 0
+
+    def get(self, key):
+        from .import_staging import _encode_value, _unpack_value
+        self.store._check()
+        encoded = _encode_value(key)
+        if encoded in self.pending:
+            return self.pending[encoded][2]
+        self.store.read_queries += 1
+        cursor = self.store._con.execute("""select identity,flow_id from evidence_identities
+            where namespace=? and digest=? order by rowid""",
+            (self.namespace, _staged_identity_digest(encoded)))
+        try:
+            for payload, flow_id in cursor:
+                if _unpack_value(payload) == encoded:
+                    return flow_id
+        finally:
+            cursor.close()
+        return None
+
+    def add(self, key, flow_id):
+        from .import_staging import _encode_value, PLAN_CHUNK, PLAN_CHUNK_BYTES
+        self.store._check()
+        encoded = _encode_value(key)
+        if self.pending and self.pending_bytes + len(encoded) > PLAN_CHUNK_BYTES:
+            self.flush()
+        digest = _staged_identity_digest(encoded)
+        payload = len(encoded).to_bytes(8, "big") + zlib.compress(encoded, 1)
+        self.pending[encoded] = (digest, payload, flow_id)
+        self.pending_bytes += len(encoded)
+        self.store.index_encoded_bytes += len(digest) + len(payload) + len(_encode_value(flow_id))
+        if len(self.pending) >= PLAN_CHUNK or self.pending_bytes >= PLAN_CHUNK_BYTES:
+            self.flush()
+
+    def flush(self):
+        self.store._check()
+        if self.pending:
+            self.store._con.executemany("insert into evidence_identities values (?,?,?,?)",
+                ((self.namespace, digest, payload, flow_id)
+                 for digest, payload, flow_id in self.pending.values()))
+            self.store.write_batches += 1
+            self.pending.clear()
+            self.pending_bytes = 0
+
+
+def _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, source):
+    """Bounded writer, retaining one source/batch and the caller's transaction."""
+    from . import evidence_resolution, analysis_snapshot
+    from .import_staging import PLAN_CHUNK_BYTES, _encode_value
+    fields = ["trade_no", "trade_time", "payer_name", "payer_account", "payer_bank",
+              "payee_name", "payee_account", "payee_bank", "amount", "balance", "currency", "summary", "channel",
+              "self_account", "self_name", "trade_time_utc", "trade_time_original", "trade_time_offset"]
+    def identity(row, occurrence, scope, *, incoming=False):
+        return (occurrence, scope or "", _row_key(row, default_currency="CNY" if incoming else ""),
+                row.get("self_account") or "", row.get("self_name") or "")
+    with db.transaction() as con:
+        if not db.q("select id from cases where id=?", [case_id]):
+            raise ImportError("案件不存在，无法导入流水")
+        known = _StagedIdentityIndex(rows.store)
+        profiles = sorted(evidence_resolution.OCCURRENCE_PROFILES)
+        cursor = con.execute("select m.sha256,r.source_row,f.flow_id,json_extract_string(r.details_json,'$.occurrence_scope')," + ",".join("v." + name for name in fields) + f"""
+            from import_records r join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
+            join flow_sources f on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
+            join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
+            join flows v on v.case_id=f.case_id and v.id=f.flow_id
+            where r.case_id=? and s.parser_version in ({','.join('?' for _ in profiles)})
+            and r.disposition in ('imported','duplicate') order by f.flow_id""", [case_id, *profiles])
+        while values := cursor.fetchmany(WRITE_CHUNK):
+            for digest, position, fid, scope, *facts in values:
+                key = identity(dict(zip(fields, facts)), evidence_resolution.occurrence_key(digest, position), scope)
+                if known.get(key) is None:
+                    known.add(key, fid)
+        con.execute("insert into import_sources(source_id,case_id,filename,sha256,size_bytes,mode,mapping_json,sheet,parser_version,row_kind,origin,imported_at) values (?,?,?,?,?,?,?,?,?,?,'upload',current_timestamp at time zone 'UTC')",
+                    [source["source_id"], case_id, filename, source["sha256"], source["size_bytes"], mode,
+                     json.dumps(source["mapping"], ensure_ascii=False, sort_keys=True), source["sheet"], source["parser_version"], source["row_kind"]])
+        batch_id = con.execute("select nextval('batch_seq')").fetchone()[0]
+        con.execute("insert into batches(id,case_id,filename,mode,rows_total,rows_imported,rows_skipped,rows_dup) values (?,?,?,?,?,0,?,0)",
+                    [batch_id, case_id, filename, mode, (stats or {}).get("total", len(rows)), (stats or {}).get("skipped", 0)])
+        columns = ["id", "case_id", "batch_id", *fields]
+        ref_columns = ["case_id", "source_id", "source_row", "flow_id", "disposition"]
+        self_map, batch_accounts = {}, set()
+        imported = duplicate = 0
+        pending, final, references = {}, [], []
+        encoded_bytes = 0
+        def write_chunk():
+            nonlocal imported
+            ids = [item[0] for item in con.execute("select nextval('flow_seq') from range(?)", [len(final)]).fetchall()]
+            for key, index in pending.items():
+                known.add(key, ids[index])
+            if final:
+                data = []
+                for fid, row in zip(ids, final):
+                    values = [row.get(name) for name in fields]
+                    for index, name in enumerate(fields):
+                        if name not in {"trade_time", "amount", "balance", "trade_time_utc", "trade_time_original", "trade_time_offset"}:
+                            values[index] = values[index] or ("CNY" if name == "currency" else "")
+                    data.append([fid, case_id, batch_id, *values])
+                frame = pd.DataFrame(data, columns=columns)
+                frame["trade_time"] = pd.to_datetime(frame["trade_time"])
+                frame["trade_time_utc"] = pd.to_datetime(frame["trade_time_utc"])
+                for field in ("amount", "balance"):
+                    frame[field] = frame[field].astype("string")
+                db.set_busy(True)
+                try:
+                    db.insert_dataframe("flows", frame, columns)
+                finally:
+                    db.set_busy(False)
+                imported += len(final)
+            if references:
+                frame = pd.DataFrame([[case_id, source["source_id"], position,
+                    ids[value] if local else value, disposition]
+                    for position, value, local, disposition in references], columns=ref_columns)
+                db.insert_dataframe("flow_sources", frame, ref_columns)
+            pending.clear()
+            final.clear()
+            references.clear()
+        for row in rows:
+            size = len(_encode_value(row))
+            if references and (len(references) >= WRITE_CHUNK or encoded_bytes + size > PLAN_CHUNK_BYTES):
+                write_chunk()
+                encoded_bytes = 0
+            key = identity(row, row["_occurrence_key"], row.get("_occurrence_scope"), incoming=True)
+            old = known.get(key)
+            if old is not None:
+                duplicate += 1
+                references.append((row["_source_row"], old, False, "duplicate"))
+            elif key in pending:
+                duplicate += 1
+                references.append((row["_source_row"], pending[key], True, "duplicate"))
+            else:
+                pending[key] = len(final)
+                references.append((row["_source_row"], len(final), True, "imported"))
+                final.append(row)
+                batch_accounts.update(value for value in (row.get("payer_account"), row.get("payee_account")) if value)
+            account = (row.get("self_account") or "").strip()
+            if account:
+                self_map.setdefault(account, (row.get("self_name") or "").strip())
+            encoded_bytes += size
+        if references:
+            write_chunk()
+        con.execute("update batches set rows_imported=?,rows_dup=? where case_id=? and id=?", [imported, duplicate, case_id, batch_id])
+        result = dict(stats or {})
+        result.update(ok=imported, rows_dup=duplicate, batch_id=batch_id,
+                      self_accounts=[{"account": account, "name": name} for account, name in self_map.items()],
+                      self_accounts_count=len(self_map))
+        if batch_accounts:
+            mains = {item["account"] for item in db.q("select account from main_accounts where case_id=?", [case_id])}
+            result.update(main_matched=sorted(batch_accounts & mains), accounts_in_batch=len(batch_accounts))
+        if progress_cb:
+            progress_cb(imported, imported)
+        analysis_snapshot.invalidate(case_id)
+        return result

@@ -98,8 +98,16 @@ def test_public_controls_preserve_reasons_and_do_not_poison_neighbors(client, ma
         assert client.get(f'/api/v1/cases/{cid}/flows').json()['items'][0]['payer_account'] == '00011112222333344445'
 
 
+@pytest.mark.parametrize('current', [False, True])
 @pytest.mark.parametrize('conflict', [False, True])
-def test_public_chain_has_independent_literal_raw_and_effective_oracles(client, make_case, fixture_dir, tmp_path, conflict):
+def test_public_chain_has_independent_literal_raw_and_effective_oracles(client, make_case, fixture_dir, tmp_path, monkeypatch, conflict, current):
+    from app import table_archive, table_import
+    from app.services import imports
+    if not current:
+        # Preserve the original five-row/40.00 raw-storage oracle on its
+        # historical profile; current signed observations have a separate oracle.
+        monkeypatch.setattr(imports, 'TABLE_PROFILE', table_import.ZONED_PROFILE)
+        monkeypatch.setattr(table_archive, 'PROFILE', table_archive.ZONED_PROFILE)
     cid = make_case('SYN Windows public cancellation')
     prefix = 'chain-conflict' if conflict else 'chain'
     view = preview(client, cid, (fixture_dir / (prefix + '.csv')).read_bytes(), 'ordinary.csv')
@@ -116,17 +124,60 @@ def test_public_chain_has_independent_literal_raw_and_effective_oracles(client, 
         assert complete(client, cid, view)['stage'] == 'done'
     assert client.get(f'/api/v1/cases/{cid}/sources/{zipped["import_id"]}/report').json() == before
     stats = client.get(f'/api/v1/cases/{cid}/stats').json()
-    assert stats['flows'] == (4 if conflict else 2)
+    # Literal effective rows below are the ordinary transaction oracle. The
+    # separate conditional event bounds remain unresolved for these records.
+    effective = [('SYN-W', '1.00'), ('SYN-XW', '2.00')]
+    if conflict:
+        effective += [('SYN-P', '10.00'), ('SYN-Q', '20.00')]
+    assert stats['flows'] == len(effective)
+    from funds_assertions import unresolved_funds
+    assert stats['funds'] == unresolved_funds(4 if conflict else 2, ('CNY', '33.00' if conflict else '3.00'))
     assert stats['accounts'] == 3
-    assert stats['amount_totals'] == [{'currency': 'CNY', 'amount': '33.00' if conflict else '3.00'}]
+    from decimal import Decimal
+    effective_amount = sum((Decimal(amount) for _, amount in effective), Decimal('0.00'))
+    assert stats['amount_totals'] == [{'currency': 'CNY', 'amount': format(effective_amount, '.2f')}]
+    observed = client.get(f'/api/v1/cases/{cid}/flows', params={'granularity': 'observations'}).json()['items']
+    financial = [row for row in observed if not row['source_ledger']] if current else observed
+    assert sorted((row['trade_no'], row['amount']) for row in financial) == sorted(effective)
+    if current:
+        # The standalone table.csv and ZIP bank/renamed.csv are distinct source
+        # coordinates; their signed negative observations remain separate.
+        assert len(observed) == 11
+        assert sorted((row['trade_no'], row['amount']) for row in observed if row['amount'].startswith('-')) == sorted([
+            ('SYN-P', '-10.00'), ('SYN-Q', '-20.00'), ('SYN-XP', '-7.00')] * 2)
+        _, replay = upload(client, cid, fixture_dir, prefix + '.zip', 'nested.zip')
+        assert replay['result']['ok'] == 0
+        repeated = client.get(f'/api/v1/cases/{cid}/flows', params={'granularity': 'observations'}).json()['items']
+        assert {row['id'] for row in repeated} == {row['id'] for row in observed}
+        assert client.get(f'/api/v1/cases/{cid}/stats').json()['amount_totals'] == stats['amount_totals']
     coverage = stats['import_coverage']
-    assert (coverage['unresolved_records'], coverage['cancelled_records'], coverage['excluded_flows']) == ((7, 2, 1) if conflict else (0, 6, 3))
+    assert (coverage['unresolved_records'], coverage['cancelled_records'], coverage['excluded_flows']) == ((7, 2, 1) if conflict else (0, 6, 6 if current else 3))
     package = public_package(client, cid, tmp_path)
-    assert package['rawFlows'] == 5
-    assert package['rawAmountTotals'] == [{'currency': 'CNY', 'amount': '40.00'}]
-    assert sorted((row['trade_no'], row['amount'], row['balance'], row['self_account']) for row in package['tables']['flows']) == [
+    if current:
+        assert package['rawFlows'] == (11 if conflict else 14)
+        assert package['rawAmountTotals'] == [{'currency': 'CNY', 'amount': '-34.00' if conflict else '3.00'}]
+    else:
+        assert package['rawFlows'] == 5
+        assert package['rawAmountTotals'] == [{'currency': 'CNY', 'amount': '40.00'}]
+    expected_raw = [
         ('SYN-P', '10.00', '90.00', 'SYN-A'), ('SYN-Q', '20.00', '80.00', 'SYN-A'),
         ('SYN-W', '1.00', '100.00', 'SYN-A'), ('SYN-XP', '7.00', '193.00', 'SYN-X'), ('SYN-XW', '2.00', '200.00', 'SYN-X')]
+
+    if current:
+        expected_raw += [('SYN-P', '-10.00', '100.00', 'SYN-A'),
+                         ('SYN-Q', '-20.00', '100.00', 'SYN-A'),
+                         ('SYN-XP', '-7.00', '200.00', 'SYN-X')] * 2
+        if not conflict:
+            expected_raw += [('SYN-P', '10.00', '90.00', 'SYN-A'),
+                             ('SYN-Q', '20.00', '80.00', 'SYN-A'),
+                             ('SYN-XP', '7.00', '193.00', 'SYN-X')]
+    assert sorted((row['trade_no'], row['amount'], row['balance'], row['self_account'])
+                  for row in package['tables']['flows']) == sorted(expected_raw)
+    if current:
+        restored = client.post('/api/cases/import', files={'file': ('chain.fundcase', (tmp_path / 'synthetic.fundcase').read_bytes())})
+        assert restored.status_code == 200, restored.text
+        current_stats = client.get(f"/api/v1/cases/{restored.json()['case_id']}/stats").json()
+        assert current_stats['funds'] == stats['funds'] and current_stats['amount_totals'] == stats['amount_totals']
 
 
 def test_public_suffixless_package_retains_source_and_replay_adds_zero(client, make_case, fixture_dir, tmp_path):
@@ -136,7 +187,7 @@ def test_public_suffixless_package_retains_source_and_replay_adds_zero(client, m
     source = package['tables']['import_sources'][0]
     assert source['filename'] == 'ordinary' and source['size_bytes'] == (fixture_dir / 'ordinary').stat().st_size
     assert source['sha256'] == hashlib.sha256((fixture_dir / 'ordinary').read_bytes()).hexdigest()
-    assert source['parser_version'] == 'funds-trace-table-v17'
+    assert source['parser_version'] == 'funds-trace-table-v63'
     assert package['tables']['import_records'][0]['member_path'] == 'table.csv'
     assert package['rawAmountTotals'] == [{'currency': 'USD', 'amount': '2.03'}]
     restored = client.post('/api/cases/import', files={'file': ('synthetic.fundcase', (tmp_path / 'synthetic.fundcase').read_bytes())})
@@ -154,8 +205,8 @@ def test_inspector_rejects_non_fixed_public_packages(tmp_path, defect):
             fixtures.inspect_package(file)
         return
     with zipfile.ZipFile(file, 'w') as archive:
-        archive.writestr('meta.json', json.dumps({'format': 3 if defect == 'version' else 4, 'source_files': 'not_included'}))
-        for table in fixtures.TABLES:
+        archive.writestr('meta.json', json.dumps({'format': 3 if defect == 'version' else 6, 'source_files': 'not_included'}))
+        for table in (*fixtures.TABLES, 'import_source_operations'):
             if defect != 'missing' or table != 'flows':
                 archive.writestr(table + '.parquet', b'not read if structural validation fails')
         if defect == 'extra':

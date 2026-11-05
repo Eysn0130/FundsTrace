@@ -1,4 +1,4 @@
-import type { Case, CaseList, CaseStats, FlowPage, ImportPreview, ImportJob, CommitRequest, RepreviewRequest, ImportSessionList, FlowSourceList, CleanupResult } from '../../../contracts/api-v1';
+import type { Case, CaseList, CaseStats, FlowPage, ImportPreview, ImportJob, ImportRecordPage, CommitRequest, RepreviewRequest, ImportSessionList, FlowSourceList, CleanupResult } from '../../../contracts/api-v1';
 
 export class ApiError extends Error {
   constructor(public code: string, message: string, public status?: number) { super(message); }
@@ -39,10 +39,15 @@ export const api = {
   createCase: (name: string, signal?: AbortSignal) => request<Case>('/cases', { ...json({ name }), signal }),
   stats: (id: string, signal?: AbortSignal) => request<CaseStats>(`${casePath(id)}/stats`, { signal }),
   flows: (id: string, filters: { account: string; kw: string; page: number }, signal?: AbortSignal) =>
-    request<FlowPage>(`${casePath(id)}/flows?${new URLSearchParams({ ...filters, page: String(filters.page), page_size: '50' })}`, { signal }),
+    request<FlowPage>(`${casePath(id)}/flows?${new URLSearchParams({ ...filters, page: String(filters.page), page_size: '50', granularity: 'events' })}`, { signal }),
   preview: (id: string, file: File, signal?: AbortSignal) => {
     const body = new FormData(); body.append('file', file);
     return request<ImportPreview>(`${casePath(id)}/imports/preview`, { method: 'POST', body, signal });
+  },
+  previewDirectory: (id: string, files: File[], signal?: AbortSignal) => {
+    const body = new FormData();
+    for (const file of files) body.append('files', file, file.webkitRelativePath || file.name);
+    return request<ImportPreview>(`${casePath(id)}/imports/directory/preview`, { method: 'POST', body, signal });
   },
   repreview: (id: string, importId: string, body: RepreviewRequest, signal?: AbortSignal) =>
     request<ImportPreview>(`${casePath(id)}/imports/${encodeURIComponent(importId)}/preview`, { ...json(body), signal }),
@@ -51,6 +56,8 @@ export const api = {
   job: (id: string, importId: string, signal?: AbortSignal) =>
     request<ImportJob>(`${casePath(id)}/imports/${encodeURIComponent(importId)}`, { signal }),
   imports: (id: string, signal?: AbortSignal) => request<ImportSessionList>(`${casePath(id)}/imports?limit=100`, { signal }),
+  importRecords: (id: string, sourceId: string, page = 1, signal?: AbortSignal) =>
+    request<ImportRecordPage>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/records?page=${page}&page_size=50`, { signal }),
   sources: (id: string, flowId: string, page = 1, signal?: AbortSignal) =>
     request<FlowSourceList>(`${casePath(id)}/flows/${encodeURIComponent(flowId)}/sources?page=${page}&page_size=50`, { signal }),
   downloadSource: (id: string, sourceId: string, filename: string, signal?: AbortSignal): Promise<void> =>
@@ -60,4 +67,4 @@ export const api = {
   cleanup: (id: string, dryRun = true, signal?: AbortSignal) => request<CleanupResult>(`${casePath(id)}/imports/cleanup`, { ...json({ dry_run: dryRun }), signal }),
 };
 
-export type FundsApi = typeof api;
+export type FundsApi = Omit<typeof api, 'previewDirectory' | 'importRecords'> & Partial<Pick<typeof api, 'previewDirectory' | 'importRecords'>>;

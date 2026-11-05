@@ -1,0 +1,5 @@
+﻿交易卡号,交易账号,交易时间,交易金额,交易余额,收付标志,交易对手账卡号,现金标志,对手户名,对手身份证号,对手开户银行,摘要说明,交易币种,交易网点名称,交易发生地,交易是否成功,传票号,IP地址,MAC地址,对手交易余额,交易流水号,日志号,凭证种类,凭证号,交易柜员号,备注,交易类型,查询反馈结果原因
+SYN-UI-CARD,SYN-UI-A,2026-01-01 10:00:00,12.34,100.00,出,,,,,,SYN 原摘要	,CNY,,,01,SYN-SLIP-0,,,,0,SYN-LOG-0,,SYN-VOUCHER-0,,SYN independent remark 0,,
+SYN-UI-CARD,SYN-UI-A,2026-01-01 10:01:00,-2.30,100.00,出,,,,,,SYN summary 1,CNY,,,01,SYN-SLIP-1,,,,SYN-NEG,SYN-LOG-1,,SYN-VOUCHER-1,,SYN independent remark 1,,
+SYN-UI-CARD,SYN-UI-A,2026-01-01 10:02:00,0.00,100.00,出,,,,,,SYN summary 2,CNY,,,01,SYN-SLIP-2,,,,SYN-ZERO,SYN-LOG-2,,SYN-VOUCHER-2,,SYN independent remark 2,,
+SYN-UI-CARD,SYN-UI-A,2026-01-01 10:03:00,3.45,100.00,进,SYN-UI-B,,SYN counterparty,,Synthetic counter bank,SYN summary 3,EUR,,,01,SYN-SLIP-3,,,,SYN-EUR,SYN-LOG-3,,SYN-VOUCHER-3,,SYN independent remark 3,,

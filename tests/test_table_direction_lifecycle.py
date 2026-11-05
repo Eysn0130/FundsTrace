@@ -8,6 +8,7 @@ import pytest
 from app import case_packages, table_contracts, table_import
 from app.services import imports
 from test_automatic_table_import import preview
+from test_archive_profile_upgrade import frozen_preview
 from test_feedback_import_api import complete
 from test_table_contract_lifecycle import facts, source_records
 from test_table_mapping_coverage import coverage, envelope
@@ -31,7 +32,7 @@ def test_direction_headers_complete_automatically_preserve_signs_and_round_trip(
         ["2026-03-01 11:00:00", "SYN-OWN", "SYN-USD", "234", "CREDIT", "USD"],
     ], suffix)
     view = preview(client, cid, payload, "synthetic" + suffix)
-    assert view["automatic"] and view["table_summary"]["profile"] == "funds-trace-table-v17"
+    assert view["automatic"] and view["table_summary"]["profile"] == "funds-trace-table-v63"
     assert view["table_summary"]["accepted"] == 2
     job = complete(client, cid, view)
     assert job["stage"] == "done" and (job["result"]["ok"], job["result"]["rows_dup"]) == (2, 0)
@@ -55,7 +56,7 @@ def test_direction_headers_complete_automatically_preserve_signs_and_round_trip(
     assert facts(database, restored) == expected
     assert coverage(client, restored) == coverage(client, cid)
     assert {item["parser_version"] for item in database.q_raw(
-        "select parser_version from import_sources where case_id=?", [restored])} == {"funds-trace-table-v17"}
+        "select parser_version from import_sources where case_id=?", [restored])} == {"funds-trace-table-v63"}
 
 
 @pytest.mark.parametrize("alias,reason", [
@@ -70,7 +71,7 @@ def test_ready_v8_direction_diagnostics_remain_frozen_after_v11_default(
     payload = encoded_table((*OWN, "amount", alias), [[*ROW, "1.23", "DEBIT"]])
     old = profile_preview(client, cid, payload, monkeypatch, "funds-trace-table-v8")
     assert old["table_summary"]["accepted"] == 0
-    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v17"
+    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v63"
     rechecked = client.post(f"/api/v1/cases/{cid}/imports/{old['import_id']}/preview", json={
         "mode": old["mode"], "mapping": old["mapping"]})
     assert rechecked.status_code == 200, rechecked.text
@@ -210,7 +211,12 @@ def test_direction_header_gap_requires_an_actually_admitted_current_evaluation(
     assert complete(client, cid, current)["stage"] == "done"
     record = source_records(client, cid, current["import_id"])[0]
     assert record["disposition"] == disposition
-    assert not facts(database, cid)
+    stored = facts(database, cid)
+    if disposition == "non_monetary":
+        assert len(stored) == 1 and stored[0]["amount"] == Decimal("0.00")
+        assert client.get(f"/api/v1/cases/{cid}/stats").json()["flows"] == 0
+    else:
+        assert not stored
     assert coverage(client, cid)["unresolved_records"] == 1
     restored = case_packages.import_package(case_packages.export_package(cid)[0])["case_id"]
     assert coverage(client, restored) == coverage(client, cid)
@@ -258,7 +264,7 @@ def test_new_direction_conflict_cannot_be_hidden_by_advanced_mapping_or_older_ev
     legacy_kind = legacy
     for kind in (("current", legacy_kind) if newest_first else (legacy_kind, "current")):
         if kind == "archive":
-            view = preview(client, cid, archived, "synthetic.zip")
+            view = frozen_preview(client, cid, archived, monkeypatch, "funds-trace-table-archive-v4")
         elif kind == "v8":
             view = profile_preview(client, cid, payload, monkeypatch, "funds-trace-table-v8")
         else:
@@ -283,7 +289,7 @@ def test_new_direction_conflict_cannot_be_hidden_by_advanced_mapping_or_older_ev
     expected = facts(database, cid)
     assert len(expected) == 1 and expected[0]["amount"] == Decimal("1.23")
     assert coverage(client, cid)["unresolved_records"] == 1
-    repeated = (preview(client, cid, archived, "synthetic-repeat.zip") if legacy == "archive"
+    repeated = (frozen_preview(client, cid, archived, monkeypatch, "funds-trace-table-archive-v4") if legacy == "archive"
                 else profile_preview(client, cid, payload, monkeypatch, "funds-trace-table-v8"))
     assert complete(client, cid, repeated)["stage"] == "done"
     assert facts(database, cid) == expected

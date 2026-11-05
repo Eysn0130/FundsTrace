@@ -44,6 +44,26 @@ def track(client, cid):
     return flows
 
 
+def test_pending_account_excel_preserves_first_and_last_transaction_times(client, make_case):
+    cid = make_case("Synthetic precise pending times")
+    first = "2026-01-01 10:00:00.123456"
+    last = "2026-01-02 11:02:03.654321"
+    whole = "2026-01-03 12:00:00"
+    imported(client, cid, ["交易时间", "本方账号", "对方账号", "收支标志", "金额"],
+             [[first, "SYN-A", "SYN-C", "支出", "0.01"],
+              [last, "SYN-A", "SYN-C", "支出", "0.02"],
+              [whole, "SYN-A", "SYN-D", "支出", "0.03"]])
+    track(client, cid)
+    wb = workbook(client, cid)
+    pending = {row["账号"]: row for row in records(wb["待调取账号"])}
+    assert set(pending) == {"SYN-C", "SYN-D"}
+    assert pending["SYN-C"]["首次交易"] == first
+    assert pending["SYN-C"]["末次交易"] == last
+    assert pending["SYN-D"]["首次交易"] == pending["SYN-D"]["末次交易"] == whole
+    for name in ("追踪流水", "原始账簿观察"):
+        assert {row["交易时间"] for row in records(wb[name])} == {first, last, whole}
+
+
 def test_pending_accounts_follow_remaining_own_ledger_not_stale_or_manual_roles(client, make_case):
     cid = make_case("Synthetic pending ledgers")
     headers = ["交易时间", "本方账号", "对方账号", "收支标志", "金额"]

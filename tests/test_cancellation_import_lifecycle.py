@@ -9,6 +9,9 @@ from app import case_packages, feedback_import
 from test_feedback_import_api import archive, complete, preview, transaction
 from test_feedback_package import _archive, _members, _mutate
 
+# These regressions exercise historical feedback profiles, not new native28 intake.
+pytestmark = pytest.mark.usefixtures("legacy_feedback_reader")
+
 
 def paired_source(**options):
     return archive([
@@ -56,7 +59,9 @@ def test_v2_upgrade_excludes_original_without_rewriting_facts_receipts_or_reviva
     assert database.q_raw("select * from flows where case_id=? order by id", [cid]) == before
     assert count(database, "effective_flows", cid) == 1
     stats = client.get(f"/api/v1/cases/{cid}/stats").json()
-    assert stats["flows"] == 1 and stats["amount_totals"] == [{"currency": "CNY", "amount": "1.00"}]
+    assert stats["flows"] == 1 and stats["amount_totals"] == [{"currency": "CNY", "amount": '1.00'}]
+    from funds_assertions import unresolved_funds
+    assert stats["funds"] == unresolved_funds(1, ("CNY", "1.00"))
     assert stats["import_coverage"]["cancelled_records"] == 2
     assert stats["import_coverage"]["unresolved_records"] == 0
     assert client.get(f"/api/v1/cases/{cid}/imports/{old_view['import_id']}").json()["result"] == old_job["result"]
@@ -146,7 +151,7 @@ def test_cancellation_package_round_trip_preserves_effective_exclusion_and_ids_r
     import_version(client, cid, content, monkeypatch, feedback_import.PREVIOUS_PROFILE)
     import_version(client, cid, content, monkeypatch, feedback_import.CANCELLATION_PROFILE)
     package, _ = case_packages.export_package(cid)
-    assert json.loads(_members(package)["meta.json"])["format"] == 3
+    assert json.loads(_members(package)["meta.json"])["format"] == 6
     result = case_packages.import_package(package)
     restored = result["case_id"]
     assert restored != cid

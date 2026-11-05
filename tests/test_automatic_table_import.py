@@ -34,7 +34,9 @@ def test_automatic_csv_units_conflicts_full_disposition_and_exact_coverage(clien
     assert (job["done"], job["total"], job["result"]["ok"]) == (4, 4, 1)
     source = view["import_id"]
     flows = client.get(f"/api/v1/cases/{cid}/flows").json()["items"]
-    assert len(flows) == 1 and flows[0]["amount"] == "1.00" and flows[0]["payer_account"] == "000SYN-A"
+    assert len(flows) == 2 and {row["amount"] for row in flows} == {"0.00", "1.00"}
+    assert all(row["payer_account"] == "000SYN-A" for row in flows)
+    assert next(row for row in flows if row["amount"] == "0.00")["source_ledger"]["economic_amount"] == "0.00"
     report = client.get(f"/api/v1/cases/{cid}/sources/{source}/report").json()
     assert [r["disposition"] for r in report["items"]] == ["imported", "unresolved", "unresolved", "non_monetary"]
     assert [r["source_row"] for r in report["items"]] == [2, 3, 4, 5]
@@ -46,7 +48,7 @@ def test_automatic_csv_units_conflicts_full_disposition_and_exact_coverage(clien
     repeated = complete(client, cid, other)
     assert repeated["result"]["ok"] == 0 and repeated["result"]["rows_dup"] == 1
     assert client.get(f"/api/v1/cases/{cid}/stats").json()["import_coverage"] == coverage
-    assert database.q_raw("select count(*) n from flows where case_id=?", [cid])[0]["n"] == 1
+    assert database.q_raw("select count(*) n from flows where case_id=?", [cid])[0]["n"] == 2
     assert client.delete(f"/api/batches/{job['result']['batch_id']}", params={"case_id": cid}).status_code == 200
     database.x("update import_sessions set expires_at=current_timestamp-interval '1 day' where case_id=?", [cid])
     cleanup = client.post(f"/api/v1/cases/{cid}/imports/cleanup", json={"dry_run": False}).json()
@@ -152,8 +154,21 @@ def test_adding_nested_container_cannot_downgrade_old_feedback_reversal_policy(c
             package.writestr(info.filename, original.read(info))
         package.writestr("extra.zip", leaf.getvalue())
     response = client.post(f"/api/v1/cases/{cid}/imports/preview", files={"file": ("synthetic.zip", mixed.getvalue())})
-    assert response.status_code == 400
-    assert "原规则" in response.json()["error"]["message"]
+    # Old envelope replay retains its downgrade rejection. New native28
+    # observations can retain the full source and prove the same cancellation.
+    with pytest.raises(table_import.TableImportError, match="原规则"):
+        table_archive.parse(io.BytesIO(mixed.getvalue()), profile=table_archive.AUXILIARY_SCOPE_PROFILE)
+    assert response.status_code == 200, response.text
+    view = response.json()
+    assert view["table_summary"]["cancelled"] == 2
+    job = complete(client, cid, view)
+    assert job["stage"] == "done", job
+    rows = client.get(f"/api/v1/cases/{cid}/flows", params={"granularity": "observations"}).json()["items"]
+    assert [row["amount"] for row in rows if not row["source_ledger"]] == ["1.00"]
+    assert sorted(row["amount"] for row in rows if row["source_ledger"]) == ["-10.00", "10.00"]
+    records = client.get(f"/api/v1/cases/{cid}/sources/{view['import_id']}/report").json()["items"]
+    assert sum(item["disposition"] == "cancelled" for item in records) == 2
+    assert any(item["member_path"] == "extra.zip/unknown.csv" and item["disposition"] == "unresolved" for item in records)
 
 
 def test_feedback_envelope_keeps_distinct_source_events_but_normal_csv_retains_fact_dedup(client, make_case):
@@ -209,8 +224,8 @@ def test_same_physical_csv_in_envelope_promotes_folded_rows_without_double_count
     assert len(flows) == 2 and sum(Decimal(row["amount"]) for row in flows) == Decimal("2.00")
 
 
-@pytest.mark.parametrize("archive_profile", ["funds-trace-table-archive-v3", "funds-trace-table-archive-v4"],
-                         ids=["frozen-v3", "default-v4"])
+@pytest.mark.parametrize("archive_profile", ["funds-trace-table-archive-v3", "funds-trace-table-archive-v4", "funds-trace-table-archive-v15", "funds-trace-table-archive-v18"],
+                         ids=["frozen-v3", "frozen-v4", "frozen-v15", "default-v18"])
 def test_envelope_replay_does_not_reuse_different_facts_from_manual_table_mapping(
         client, database, make_case, monkeypatch, archive_profile):
     import json
@@ -224,7 +239,7 @@ def test_envelope_replay_does_not_reuse_different_facts_from_manual_table_mappin
     content = b"date,payer_account,payee_account,amount\n2026-01-01,SYN-A,SYN-B,1.00\n"
     cid = make_case("Synthetic changed interpretation")
     view = preview(client, cid, content)
-    assert view["table_summary"]["profile"] == "funds-trace-table-v17"
+    assert view["table_summary"]["profile"] == table_import.NATIVE31_PROFILE
     response = client.post(f"/api/v1/cases/{cid}/imports/{view['import_id']}/preview", json={
         "mode": "A", "mapping": {**view["mapping"], "payer_account": "payee_account", "payee_account": "payer_account"}})
     assert response.status_code == 200, response.text
@@ -242,7 +257,7 @@ def test_envelope_replay_does_not_reuse_different_facts_from_manual_table_mappin
         package.writestr("table.csv", content)
         package.writestr("nested.zip", nested.getvalue())
     def archive_preview(case_id, filename):
-        if archive_profile == "funds-trace-table-archive-v3":
+        if archive_profile != table_archive.PROFILE:
             current = frozen_preview(client, case_id, envelope.getvalue(), monkeypatch, archive_profile)
         else:
             current = preview(client, case_id, envelope.getvalue(), filename)
@@ -269,13 +284,22 @@ def test_envelope_replay_does_not_reuse_different_facts_from_manual_table_mappin
         assert records[0]["details"]["counterparty_basis"] == table_import.ARCHIVE_HISTORY_CONFLICT_BASIS
         assert records[0]["details"]["financial_effect"] == "undetermined"
         assert "conflicting_field" in records[0]["details"]["validation_issues"].split(",")
+        if archive_profile == table_archive.REFERENCE_ROLE_PROFILE:
+            from app import table_cancellation_links
+            # This real public reimport produced a competing interpretation.
+            # The shared cancellation reader must retain the same blocking
+            # assessment instead of discharging it as an ordinary negative.
+            blocking = database.q_raw(f"""select ({table_cancellation_links.conflict_sql('s', 'r')}) blocked
+                from import_records r join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
+                where r.case_id=? and r.source_id=?""", [cid, automatic['import_id']])
+            assert blocking == [{"blocked": True}]
         assert coverage(client, cid)["unresolved_records"] > 0
         assert coverage(client, cid)["financial_interpretation_complete"] is False
     repeated_view = archive_preview(cid, "repeat.zip")
     repeated = complete(client, cid, repeated_view)
     assert repeated["stage"] == "done" and repeated["result"]["ok"] == 0
     assert repeated["result"]["rows_dup"] == (1 if archive_profile == "funds-trace-table-archive-v3" else 0)
-    if archive_profile == "funds-trace-table-archive-v4":
+    if archive_profile != "funds-trace-table-archive-v3":
         repeated_records = client.get(
             f"/api/v1/cases/{cid}/imports/{repeated_view['import_id']}/records").json()["items"]
         assert (repeated_records[0]["disposition"], repeated_records[0]["reason_code"], repeated_records[0]["flow_id"]) == (
@@ -287,7 +311,7 @@ def test_envelope_replay_does_not_reuse_different_facts_from_manual_table_mappin
     assert source_snapshot(database, cid, view["import_id"]) == frozen
     assert receipt(client, cid, view["import_id"]) == first["result"]
     archive = case_packages.export_package(cid)[0]
-    assert json.loads(_members(archive)["meta.json"])["format"] == 4
+    assert json.loads(_members(archive)["meta.json"])["format"] == 6
     restored = case_packages.import_package(archive)["case_id"]
     if archive_profile == "funds-trace-table-archive-v3":
         assert len(client.get(f"/api/v1/cases/{restored}/flows").json()["items"]) == 2

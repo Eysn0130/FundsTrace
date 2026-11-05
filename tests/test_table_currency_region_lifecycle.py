@@ -12,10 +12,12 @@ from app.services import imports
 from test_automatic_table_import import preview
 from test_feedback_import_api import complete
 from test_table_contract_lifecycle import facts, source_records
-from test_table_currency_region_v17 import FIRST, HEADERS, NEW_PROFILE, OLD_PROFILE, OVERLAP, SECOND
+from test_table_currency_region_v17 import FIRST, HEADERS, OLD_PROFILE, OVERLAP, SECOND
 from test_table_mapping_coverage import coverage
 from test_table_region_headers import payload
 
+
+NEW_PROFILE = "funds-trace-table-v63"
 
 def repreview_unchanged(client, cid, view):
     response = client.post(f"/api/v1/cases/{cid}/imports/{view['import_id']}/preview", json={
@@ -59,7 +61,7 @@ def restore_and_replay(client, database, cid, data, view, records, expected_dupl
     before, before_coverage = facts(database, cid), coverage(client, cid)
     package = case_packages.export_package(cid)[0]
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
-        assert json.loads(archive.read("meta.json"))["format"] == 4
+        assert json.loads(archive.read("meta.json"))["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     assert facts(database, restored) == before
     assert coverage(client, restored) == before_coverage

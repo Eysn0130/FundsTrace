@@ -1,12 +1,12 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
-import type { CaseStats, Flow, FlowPage, ImportJob, ImportSession } from '../../../contracts/api-v1';
+import type { CaseStats, Flow, FlowPage, FundsProjection, ImportJob, ImportSession } from '../../../contracts/api-v1';
 import { FundsPanel } from './FundsPanel';
 import { FUNDS_PANEL_VERSION, type FundsCaseClientV1, type FundsHostActionsV1, type FundsPanelSessionV1 } from './host';
 
 const stats = (id: string): CaseStats => ({ case_id: id, flows: 1, accounts: 2, batches: 1, amount_total: '9999999999999999.99', currency: 'CNY', amount_totals: [{ currency: 'CNY', amount: '9999999999999999.99' }] });
-const flow = (id: string, tradeNo = `HOST-${id}`): Flow => ({ case_id: id, id: '9007199254740993', batch_id: '9007199254740994', trade_no: tradeNo, trade_time: '2026-01-01 10:00:00', payer_account: '000HOST-A', payer_name: 'Synthetic host sender', payer_bank: '', payee_account: '000HOST-B', payee_name: 'Synthetic host recipient', payee_bank: '', amount: '9999999999999999.99', balance: null, currency: 'CNY', summary: 'Synthetic host record', channel: '', self_account: '', self_name: '' });
+const flow = (id: string, tradeNo = `HOST-${id}`): Flow & { amount: string } => ({ case_id: id, id: '9007199254740993', batch_id: '9007199254740994', trade_no: tradeNo, trade_time: '2026-01-01 10:00:00', payer_account: '000HOST-A', payer_name: 'Synthetic host sender', payer_bank: '', payee_account: '000HOST-B', payee_name: 'Synthetic host recipient', payee_bank: '', amount: '9999999999999999.99', balance: null, currency: 'CNY', summary: 'Synthetic host record', channel: '', self_account: '', self_name: '' });
 const page = (id: string, tradeNo?: string): FlowPage => ({ case_id: id, items: [flow(id, tradeNo)], total: 1, page: 1, page_size: 50 });
 const mapping = { trade_time: '交易时间', payer_account: '付款账号', payee_account: '收款账号', amount: '金额' };
 const record = (id: string, stage: ImportSession['stage'] = 'importing', surface: ImportSession['surface'] = 'v1'): ImportSession => ({ case_id: id, import_id: '0123456789abcdef0123456789abcdef', surface, filename: 'host-synthetic.csv', mode: 'A', mapping, stage, source_state: 'retained', created_at: '2026-01-01T10:00:00Z', expires_at: null, error_code: null, attempt: 1, source_available: true, recoverable: true, request: { mode: 'A', mapping, mark_accounts: [], self_accounts: [] }, result: null });
@@ -41,6 +41,36 @@ function renderedClick(button: HTMLButtonElement) {
 }
 
 describe('FundsPanel host isolation', () => {
+  it('shows unknown direction with the supplied own account and no transfer arrow', async () => {
+    const item: Flow = { ...flow('1'), payer_account: '', payer_name: '', payee_account: '', payee_name: '',
+      raw_self_account: 'SYN-OWN', amount: '12.34', source_ledger: {
+        policy: 'source-ledger-unoriented-v1', signed_amount: '12.34', source_direction: '', self_account: 'SYN-OWN',
+        direction: 'unknown', economic_effect: 'unknown', economic_amount: null, reported_status: 'success',
+        source_id: 'SYN-SOURCE', member_path: 'SYN.csv', source_row: 2,
+        balance_change: { status: 'unknown', difference: null, before: null, after: null, basis: null,
+          reason: 'direction_unknown', source_id: 'SYN-SOURCE', previous_source_row: null } } };
+    const bound = session('1', 'unknown-direction', 0, { flows: async () => ({ ...page('1'), items: [item] }) });
+    render(<FundsPanel host={host(bound.value)} />);
+    const button = await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    const row = button.closest('tr')!;
+    expect(row.textContent).toContain('方向未提供 · 本方 SYN-OWN');
+    expect(row.textContent).toContain('资金影响未确定');
+    expect(row.querySelector('.flow-arrow')?.textContent).toBe('—');
+    fireEvent.click(button);
+    expect(within(await screen.findByRole('dialog', { name: '流水核对' })).getByText(/方向未提供 · 本方 SYN-OWN/)).toBeTruthy();
+  });
+
+  it.each(['confirmed_event', 'observation'] as const)('keeps the null balance description accurate for %s', async granularity => {
+    const item = { ...flow('1'), granularity, balance: null };
+    const bound = session('1', 'balance-context', 0, { flows: async () => ({ ...page('1'), items: [item] }) });
+    render(<FundsPanel host={host(bound.value)} />);
+    fireEvent.click(await screen.findByRole('button', { name: '核对流水 HOST-1' }));
+    const dialog = await screen.findByRole('dialog', { name: '流水核对' });
+    expect(within(dialog).getByText('交易后余额').nextElementSibling?.textContent)
+      .toBe(granularity === 'confirmed_event' ? '见各来源流水' : '未提供');
+    expect(item.balance).toBeNull();
+  });
+
   it('keeps the Chinese file selection area associated with the native input and locks it during parsing', async () => {
     const pending = deferred<Awaited<ReturnType<FundsCaseClientV1['preview']>>>();
     const bound = session('1', 'upload-label', 0, { preview: vi.fn(() => pending.promise) });
@@ -48,9 +78,9 @@ describe('FundsPanel host isolation', () => {
     await screen.findByRole('button', { name: '核对流水 HOST-1' });
     fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
     const input = screen.getByLabelText<HTMLInputElement>('选择流水文件'), area = input.labels![0];
-    expect(area.htmlFor).toBe(input.id); expect(area.textContent).toContain('选择 CSV、Excel 或银行反馈 ZIP');
-    expect(document.getElementById(input.getAttribute('aria-describedby')!)?.textContent).toBe('支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP');
-    expect(input.accept).toBe('.csv,.tsv,.txt,.xlsx,.xls,.zip'); input.focus(); expect(document.activeElement).toBe(input);
+    expect(area.htmlFor).toBe(input.id); expect(area.textContent).toContain('选择 CSV、Excel、ZIP 或 RAR');
+    expect(document.getElementById(input.getAttribute('aria-describedby')!)?.textContent).toBe('支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP／RAR');
+    expect(input.accept).toBe('.csv,.tsv,.txt,.xlsx,.xls,.zip,.rar'); input.focus(); expect(document.activeElement).toBe(input);
     const file = new File(['synthetic'], '中文合成流水.csv', { type: 'text/csv' });
     fireEvent.change(input, { target: { files: [file] } });
     expect(input.disabled).toBe(true); expect(area.getAttribute('aria-busy')).toBe('true');
@@ -229,7 +259,7 @@ describe('FundsPanel host isolation', () => {
     await screen.findByRole('heading', { name: '自动处理完成' });
     await waitFor(() => expect(statistics).toHaveBeenCalledTimes(2));
     expect(commit).toHaveBeenCalledOnce(); expect(job).toHaveBeenCalledOnce();
-    expect(screen.getByText(/已保存 1 条记录 · 新增资金流水/).textContent).toContain('新增资金流水 0 笔');
+    expect(screen.getByText(/已保存 1 条记录 · 新增流水记录/).textContent).toContain('新增流水记录 0 条');
   });
 
   it('does not start polling after an old in-flight commit returns following unmount', async () => {
@@ -423,5 +453,33 @@ describe('FundsPanel host isolation', () => {
     act(() => { bound.controller.abort(); button.click(); });
     expect(openGraph).not.toHaveBeenCalled();
     unmount(); button.click(); expect(openGraph).not.toHaveBeenCalled();
+  });
+});
+
+describe('selected transaction summaries in existing panel', () => {
+  it.each([true, false])('counts confirmed pairs once and keeps unresolved records, confirmed=%s', async exact => {
+    const funds: FundsProjection = { policy:'evidence-bounded-funds-v1', status:exact ? 'exact' as const : 'bounded' as const, observation_count:2,
+      confirmed_event_count:exact ? 1 : 0, unresolved_observation_count:exact ? 0 : 2, count:{lower:exact ? 1 : 0, upper:exact ? 1 : 2},
+      totals:[{currency:'CNY',amount:exact ? '100.00' : null,lower:exact ? '100.00' : '0.00',upper:exact ? '100.00' : '200.00'}] };
+    const total = exact ? '100.00' : '200.00';
+    const statistics = vi.fn(async () => ({...stats('1'),flows:exact ? 1 : 2,amount_total:total,amount_totals:[{currency:'CNY',amount:total}],funds}));
+    const flows = vi.fn(async () => ({...page('1'),funds, items:[{...flow('1'),amount:'100.00',balance:'73.25'}]}));
+    const bound = session('1', 'funds-projection', 0, {stats:statistics, flows});
+    const sources = vi.spyOn(bound.client,'sources');
+    render(<FundsPanel host={host(bound.value)} />);
+    await screen.findByRole('button', {name:'核对流水 HOST-1'});
+    const summary = screen.getByLabelText('案件汇总');
+    expect(summary.textContent).toContain(exact ? '1 笔' : '2 笔');
+    expect(summary.textContent).toContain(`${total} CNY`);
+    expect(summary.textContent).not.toMatch(/待核/);
+    expect(screen.queryByLabelText('事件关联口径')).toBeNull();
+    expect(within(screen.getByLabelText('流水明细')).getByRole('heading', {level:2}).textContent).toBe('交易明细 1');
+    expect(statistics).toHaveBeenCalledTimes(1); expect(flows).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', {name:/本金|来源份额/})).toBeNull();
+    fireEvent.click(screen.getByRole('button',{name:'核对流水 HOST-1'}));
+    expect(await screen.findByRole('dialog',{name:'流水核对'})).toBeTruthy();
+    expect(screen.getByText('73.25')).toBeTruthy();
+    await waitFor(() => expect(sources).toHaveBeenCalledWith('9007199254740993',1,expect.any(AbortSignal)));
+    expect(statistics).toHaveBeenCalledTimes(1); expect(flows).toHaveBeenCalledTimes(1);
   });
 });

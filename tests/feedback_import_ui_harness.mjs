@@ -55,10 +55,10 @@ function harness(url = 'http://127.0.0.1:8300/') {
     hidePbar() {}, setPbarBusy() {}, setPbar() {}, refreshAll: async () => {}, toast: value => notices.push(value),
     fetch: (path, options) => { requests.push({ path, options }); return fetcher(path, options); },
     URL: class extends URL { static createObjectURL() { return 'blob:synthetic'; } static revokeObjectURL() {} },
-    FormData: class { append() {} },
+    FormData: class { constructor() { this.entries = []; } append(...values) { this.entries.push(values); } },
     XMLHttpRequest: class {
       constructor() { this.upload = {}; uploads.push(this); }
-      open() {} send() {}
+      open(method, path) { this.method = method; this.path = path; } send(form) { this.form = form; }
       finish(value) { this.status = 200; this.responseText = JSON.stringify(value); this.onload(); }
     },
   });
@@ -68,7 +68,7 @@ function harness(url = 'http://127.0.0.1:8300/') {
   // Detail drawers are independent of imports and are exercised in their own harness.
   vm.runInContext(workflow.replace('    bindDetailRequests();', ''), context);
   events.get('DOMContentLoaded')();
-  return { element, state, requests, downloads, notices, network(handler) { fetcher = handler; },
+  return { element, state, requests, uploads, downloads, notices, network(handler) { fetcher = handler; },
     restore() { return context.window.FundsImportWorkflow.restore(); },
     open() { element('btnImport').onclick(); },
     async ready(value = preview()) { this.open(); element('impFile').files = [{ name: value.filename }]; const task = element('impFile').onchange(); uploads.at(-1).finish(value); await task; },
@@ -77,6 +77,31 @@ function harness(url = 'http://127.0.0.1:8300/') {
     changeCase() { state.caseId = 2; state.generation += 1; element('importModal').style.display = 'none'; },
   };
 }
+
+test('folder selection retains every relative filename and uses one case-bound import', async () => {
+  const h = harness(), summary = tableSummary();
+  h.network(async path => path.includes('/commit') ? response({ import_id: 'SYN-IMPORT' })
+    : response({ stage: 'done', result: { source_id: 'SYN-SOURCE', ok: 1, table_summary: summary } }));
+  h.open();
+  const files = [{ name: '账户.csv', webkitRelativePath: '资料/银行/账户.csv' },
+    { name: '流水.csv', webkitRelativePath: '资料/银行/流水.csv' }];
+  h.element('impDirectory').files = files;
+  const task = h.element('impDirectory').onchange(), upload = h.uploads.at(-1);
+  assert.equal(upload.path, '/api/import/directory/preview?case_id=1');
+  assert.deepEqual(upload.form.entries.map(([key, file, path]) => [key, file.name, path]), [
+    ['files', '账户.csv', '资料/银行/账户.csv'], ['files', '流水.csv', '资料/银行/流水.csv']]);
+  upload.finish(preview({ automatic: true, feedback: undefined, table_summary: summary })); await task;
+  assert.equal(h.requests.filter(item => item.path.includes('/commit')).length, 1);
+  assert.equal(h.element('impResultTitle').textContent, '自动处理完成');
+});
+
+test('a stale folder preview cannot import into a switched case', async () => {
+  const h = harness(); h.open();
+  h.element('impDirectory').files = [{ name: '交易.csv', webkitRelativePath: '资料/交易.csv' }];
+  const task = h.element('impDirectory').onchange(); h.changeCase();
+  h.uploads.at(-1).finish(preview({ automatic: true, feedback: undefined, table_summary: tableSummary() }));
+  await task; assert.equal(h.requests.length, 0); assert.equal(h.state.imp, null);
+});
 
 test('feedback preview locks fixed mapping, preserves exact totals and labels unknown counterpart with source rows', async () => {
   const h = harness(); await h.ready();
@@ -104,7 +129,11 @@ function tableSummary(overrides = {}) {
   return { record_total: 3, accepted: 1, unresolved: 1, non_monetary: 1, non_transaction: 0,
     auxiliary: 0, cancelled: 0, reason_counts: { invalid_direction: 1, zero_amount: 1 },
     currency_totals: { CNY: '9007199254740993.07' },
-    mapping_evidence: [{ member_path: 'synthetic/table.csv', field: 'amount', column: '交易金额（分）', unit_factor: '0.01' }],
+    mapping_evidence: [{ member_path: 'synthetic/table.csv', field: 'amount', column: '交易金额（分）', unit_factor: '0.01' },
+      { field: 'trade_no', column: '传票号', basis: 'source_slip_reference' },
+      { field: 'trade_no', column: '日志号', basis: 'source_log_reference' },
+      { field: 'voucher_type', column: '凭证种类', basis: 'independent_voucher_type' },
+      { field: 'remark', column: '备注', basis: 'remark' }],
     documents: [{ member_path: 'synthetic/table.csv', sheet: '', header_row: 1, row_count: 3 }],
     unresolved_examples: [{ member_path: 'synthetic/table.csv', source_row: 3, reason_code: 'invalid_direction' }],
     ...overrides };
@@ -119,9 +148,14 @@ for (const suffix of ['csv', 'xlsx', 'zip']) {
       table_summary: summary, stats: { total: 3, ok: 1, skipped: 2 } }));
     assert.deepEqual(h.requests.map(item => item.path), ['/api/import/commit', '/api/import/progress?import_id=SYN-IMPORT&case_id=1']);
     assert.equal(h.element('impResultTitle').textContent, '自动处理完成');
-    assert.match(h.element('impResultText').textContent, /已保存 3 条记录 · 新增资金流水 1 笔/);
+    assert.match(h.element('impResultText').textContent, /已保存 3 条记录 · 新增流水记录 1 条/);
     assert.match(h.element('impResultFeedback').innerHTML, /未计入资金流水 1 条 · 无资金变动 1 条/);
     assert.match(h.element('impResultFeedback').innerHTML, /金额单位换算系数：0.01/);
+    assert.match(h.element('impResultFeedback').innerHTML, /传票号 ← 传票号.*独立保留来源传票号/);
+    assert.match(h.element('impResultFeedback').innerHTML, /日志号 ← 日志号.*独立保留来源日志号/);
+    assert.match(h.element('impResultFeedback').innerHTML, /凭证种类 ← 凭证种类.*保留来源凭证种类/);
+    assert.match(h.element('impResultFeedback').innerHTML, /备注 ← 备注.*独立保留来源备注原文/);
+    assert.doesNotMatch(h.element('impResultFeedback').innerHTML, /流水号 ← (传票号|日志号)|source_slip_reference|source_log_reference|independent_voucher_type/);
     assert.match(h.element('impResultFeedback').innerHTML, /9,007,199,254,740,993\.07/);
     assert.equal(h.element('impResultDownloads').hidden, false);
     await h.commit();
@@ -136,7 +170,7 @@ test('an entirely unresolved automatic table still saves its closed source ledge
   await h.ready(preview({ filename: 'synthetic.csv', automatic: true, feedback: undefined, table_summary: summary,
     preview: [], stats: { total: 3, ok: 0, skipped: 3 } }));
   assert.equal(h.requests.filter(item => item.path.includes('/commit')).length, 1);
-  assert.match(h.element('impResultText').textContent, /已保存 3 条记录 · 新增资金流水 0 笔/);
+  assert.match(h.element('impResultText').textContent, /已保存 3 条记录 · 新增流水记录 0 条/);
   assert.match(h.element('impResultFeedback').innerHTML, /未计入资金流水 3 条/);
   assert.equal(/需复核|待复核/.test(h.element('impResultFeedback').innerHTML), false);
 });
@@ -203,7 +237,7 @@ test('entirely unresolved packages complete automatically after import authoriza
   assert.equal(h.element('impResultDownloads').hidden, false);
   assert.match(h.element('impResultFeedback').innerHTML, /未计入资金流水 3 条/);
   assert.match(h.element('impResultFeedback').innerHTML, /自动处理已完成，未计入资金流水的记录已保留来源和原因，无需逐条确认；这些记录不参与金额、交易笔数和关系统计/);
-  assert.match(h.element('impResultText').textContent, /已保存 3 条记录 · 新增资金流水 0 笔/);
+  assert.match(h.element('impResultText').textContent, /已保存 3 条记录 · 新增流水记录 0 条/);
   assert.match(h.element('impResultText').textContent, /未计入资金流水 3 条 · 来源反馈 0 条 · 辅助资料 0 条/);
   assert.equal(/待复核|需复核|保存处置结果/.test(h.element('impResultFeedback').innerHTML), false);
   assert.equal(h.element('impResultText').textContent.includes('跳过'), false);
@@ -222,11 +256,11 @@ test('paired cancellations save automatically with zero new flows and keep histo
   assert.equal(h.element('impCommit').disabled, false);
   assert.match(h.element('impFeedback').innerHTML, /已配对冲正\/撤销 2 条（双方均不计有效资金）/);
   assert.match(h.element('impFeedback').innerHTML, /已配对冲正\/撤销，双方均不计有效资金：2 条/);
-  assert.equal(/待复核|需复核|不自动抵扣或推定配对|历史留存流水已退出有效统计/.test(h.element('impFeedback').innerHTML), false);
+  assert.equal(/待复核|需复核|不自动抵扣或推定配对|留存来源流水未计入有效统计/.test(h.element('impFeedback').innerHTML), false);
   h.network(async path => path.includes('/commit') ? response({ import_id: 'SYN-IMPORT' }) : response({ stage: 'done', result: { source_id: 'SYN-SOURCE', ok: 0, rows_dup: 0, feedback: { ...summary, excluded_flows: 1 } } }));
   await h.commit();
-  assert.match(h.element('impResultText').textContent, /已保存 2 条记录 · 新增资金流水 0 笔 · 重复 0 笔 · 已配对冲正\/撤销 2 条（双方均不计有效资金）/);
-  assert.match(h.element('impResultFeedback').innerHTML, /本案另有 1 笔历史留存流水已退出有效统计/);
+  assert.match(h.element('impResultText').textContent, /已保存 2 条记录 · 新增流水记录 0 条 · 重复 0 条 · 已配对冲正\/撤销 2 条（双方均不计有效资金）/);
+  assert.match(h.element('impResultFeedback').innerHTML, /本案有 1 条留存来源流水未计入有效统计/);
   assert.match(h.element('impResultFeedback').innerHTML, /普通退款按来源记账方向与金额处理/);
   assert.match(h.element('impResultFeedback').innerHTML, /无资金变动 0 条 · 未计入资金流水 0 条/);
 });
@@ -285,19 +319,49 @@ test('case totals retain the source interpretation note and discard statistics a
   await load;
   assert.equal(navigationSyncs, 1, 'current statistics refresh navigation through its separate owner');
   assert.equal(element('#importCoverageNote').hidden, false);
-  assert.match(element('#importCoverageNote').textContent, /349 条资金含义未确定的来源记录未计入统计/);
+  assert.match(element('#importCoverageNote').textContent, /当前流水 80 笔（已确认同笔只计一次）/);
+  assert.match(element('#importCoverageNote').textContent, /来源审计保留 349 条资金含义未确定的条目/);
   assert.match(element('#importCoverageNote').textContent, /不代表结算净额/);
-  assert.match(element('#importCoverageNote').textContent, /无资金变动的 233 条记录已单独保存/);
-  assert.match(element('#importCoverageNote').textContent, /已配对冲正\/撤销 4 条（双方均不计有效资金）/);
-  assert.match(element('#importCoverageNote').textContent, /本案另有 2 笔历史留存流水已退出有效统计/);
+  assert.match(element('#importCoverageNote').textContent, /233 条无资金变动记录/);
+  assert.match(element('#importCoverageNote').textContent, /4 条已配对冲正\/撤销记录/);
+  assert.match(element('#importCoverageNote').textContent, /撤回后仍保留，不表示当前仍有对应流水或历史问题已解决/);
+  assert.match(element('#importCoverageNote').textContent, /本案有 2 条留存来源流水未计入有效统计/);
+  state.stats = { flows: null, accounts: 2, funds: { observation_count: 2 },
+    import_coverage: { scope: 'source_reported_flows', unresolved_records: 1 } };
+  vm.runInContext('updateHeader()', context);
+  assert.match(element('#statLine').innerHTML, /来源观察 <b>2 条<\/b>/);
+  assert.doesNotMatch(element('#statLine').innerHTML, /流水 <b>2/);
+  assert.match(element('#statLine').title, /来源观察条数/);
+  assert.doesNotMatch(element('#statLine').title, /展示合计保留原始金额/);
+  assert.equal(element('#importCoverageNote').hidden, false);
+  assert.match(element('#importCoverageNote').textContent, /当前有效交易笔数未确定；来源观察 2 条/);
+  assert.match(element('#importCoverageNote').textContent, /来源审计保留 1 条资金含义未确定的条目/);
+  assert.match(element('#importCoverageNote').textContent, /同笔关系未确定，金额是否确定及其范围以当前资金统计为准/);
+  assert.doesNotMatch(element('#importCoverageNote').textContent, /当前有效交易 0 笔|展示合计保留原始金额/);
+  state.stats.flows = 2;
+  Object.assign(state.stats.funds, { status: 'bounded', confirmed_event_count: 1, unresolved_observation_count: 1, observation_count: 3 });
+  vm.runInContext('updateHeader()', context);
+  assert.match(element('#statLine').innerHTML, /流水 <b>2 笔<\/b>/);
+  assert.match(element('#importCoverageNote').textContent, /当前流水 2 笔/);
+  assert.doesNotMatch(element('#statLine').innerHTML, /1笔＋1条|流水 <b>1 笔/);
+  for (const flows of [0, 3]) {
+    state.stats.flows = flows;
+    state.stats.funds.observation_count = flows;
+    vm.runInContext('updateHeader()', context);
+    assert.equal(element('#importCoverageNote').hidden, false);
+    assert.ok(element('#importCoverageNote').textContent.includes(`当前流水 ${flows} 笔（已确认同笔只计一次）`));
+    assert.match(element('#importCoverageNote').textContent, /展示合计保留原始金额/);
+    assert.doesNotMatch(element('#importCoverageNote').textContent, /笔数未确定|；来源观察/);
+  }
   const oldLoad = vm.runInContext('refreshStats()', context);
   state.caseId = 2; state.generation += 1; state.stats = {};
   vm.runInContext('updateHeader()', context);
   assert.equal(element('#importCoverageNote').hidden, true);
   assert.equal(element('#importCoverageNote').textContent, '');
+  const beforeStaleNavigation = navigationSyncs;
   pending({ flows: 80, accounts: 2, import_coverage: { scope: 'source_reported_flows', unresolved_records: 349, non_monetary_records: 233, financial_interpretation_complete: false } });
   await oldLoad;
-  assert.equal(navigationSyncs, 2, 'a stale statistics response cannot refresh navigation for the new case');
+  assert.equal(navigationSyncs, beforeStaleNavigation, 'a stale statistics response cannot refresh navigation for the new case');
   assert.equal(element('#importCoverageNote').hidden, true);
   assert.equal(element('#importCoverageNote').textContent, '');
 });

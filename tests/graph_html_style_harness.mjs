@@ -758,3 +758,49 @@ graph.edges[0].model.labelVisible=false;graph.emit('viewportchange',{action:'zoo
 assert.equal(text(graph.edges[0]).visible,false);
 graph.edges[0].model.labelVisible=true;graph.emit('viewportchange',{action:'zoom'});assertExportManualOnCurve();
 graph.drag('SYN-B',300,120);assertExportManualOnCurve();
+
+// The actual canvas label function preserves existing financial labels when
+// source postings share its endpoints. Pure source relationships have no
+// amount label. Run both labels through the downloaded HTML's renderer too.
+const appLabels = readFileSync(new URL('../static/app.js', import.meta.url), 'utf8');
+const labelStart = appLabels.indexOf('function fmtEdgeSpan(');
+const labelEnd = appLabels.indexOf('function renderGraph(', labelStart);
+assert.ok(labelStart >= 0 && labelEnd > labelStart);
+const labelContext = { state: {edgeLabels: new Set(['money'])} };
+const helperStart = appLabels.indexOf('function fundsCount('), helperEnd = appLabels.indexOf('function fundsTotal(', helperStart);
+vm.runInNewContext(readFileSync(new URL('../static/money.js', import.meta.url), 'utf8') +
+  '\nconst fmtCount = v => FundsMoney.count(v);\nconst totalLabel = (totals, fallback, currency) => FundsMoney.totals(totals, fallback, currency);\n' +
+  appLabels.slice(helperStart, helperEnd) + appLabels.slice(labelStart, labelEnd), labelContext);
+const financial = {cnt:1,total:'10.00',amount_totals:[{currency:'CNY',amount:'10.00'}],currencies:['CNY']};
+const ledger = {count:1,records:[{signed_amount:'-5.00',source_direction:'出',economic_effect:'unknown'}]};
+const mixed = {...financial,source_ledger:ledger,source_ledger_label:'来源记账 · -5.00 · 资金影响未确定'};
+const sourceOnly = {kind:'source_ledger',cnt:0,total:null,amount_totals:[],source_ledger:ledger,source_ledger_label:mixed.source_ledger_label};
+assert.equal(labelContext.edgeLabel(financial),'1笔·¥10.00');
+assert.equal(labelContext.edgeLabel(mixed),'1笔·¥10.00');
+assert.equal(labelContext.edgeLabel(sourceOnly),'');
+labelContext.state.edgeLabels = new Set(['money','time','summary','currency']);
+assert.equal(labelContext.edgeLabel(sourceOnly),'');
+const sourceSnapshot = plain(oldData);
+sourceSnapshot.edges = [
+  {...oldData.edges[0],label:labelContext.edgeLabel(mixed),data:mixed},
+  {...oldData.edges[0],source:'SYN-B',target:'SYN-A',label:labelContext.edgeLabel(sourceOnly),data:sourceOnly},
+];
+vm.runInNewContext(withData(sourceSnapshot),context);
+assert.equal(text(graph.edges[0]).attr('text'),'1笔·¥10.00');
+assert.ok(!text(graph.edges[1])?.attr('text'));
+assert.equal(graph.edges[1].model.data.source_ledger.records[0].signed_amount,'-5.00');
+
+for (const [data, expectedLabel] of [
+  [{cnt:2,total:'74.82',amount_totals:[{currency:'CNY',amount:'74.82'}],funds:{status:'bounded',confirmed_event_count:0,unresolved_observation_count:2,observation_count:2}},'2笔·¥74.82'],
+  [{cnt:2,total:'107.00',amount_totals:[{currency:'CNY',amount:'107.00'}],funds:{status:'bounded',confirmed_event_count:1,unresolved_observation_count:1,observation_count:3}},'2笔·¥107.00'],
+]) {
+  labelContext.state.edgeLabels = new Set(['money']);
+  const label = labelContext.edgeLabel(data);
+  assert.equal(label, expectedLabel);
+  const snapshot = plain(oldData);
+  snapshot.edges = [{...oldData.edges[0],label,data}];
+  vm.runInNewContext(withData(snapshot),context);
+  assert.equal(text(graph.edges[0]).attr('text'),expectedLabel);
+  assert.equal(graph.edges[0].model.data.total,data.total);
+  assert.equal(graph.edges[0].model.data.funds.observation_count,data.funds.observation_count);
+}

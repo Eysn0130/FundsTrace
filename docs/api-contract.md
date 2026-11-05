@@ -25,9 +25,11 @@ React 工作台使用 `/api/v1`，G6 工作区继续使用兼容 `/api`。`app/a
 
 ## 无损数据与分页
 
-案件、流水、批次 ID 是十进制字符串；上传／来源 ID 是 opaque 十六进制字符串，不是授权。账户始终是文本。金额和余额使用固定两位十进制字符串，禁止客户端将资金数值或 ID 转成 JavaScript `number`。缺失余额、交易时间及案件创建时间为 `null`；其余流水文本空值规范化为空字符串。查询在存储层提取原始 Decimal 后序列化，避免经过旧 API 的浮点转换。统计的 `amount_totals` 按币种分别累加当前案件全部原始流水，不按图谱显示去重，不换汇。只有单币种时 `amount_total` 才是该币种的合计，`currency` 是其币种；多币种时两者均为 `null`。空案件返回 `amount_total:"0.00"`、`currency:null`、`amount_totals:[]`。历史缺失币种按空字符串归组，不能据此假定为人民币；现有导入器的默认币种规则保留。
+案件、流水、批次 ID 是十进制字符串；上传／来源 ID 是 opaque 十六进制字符串，不是授权。账户始终是文本。金额和余额使用固定两位十进制字符串，禁止客户端将资金数值或 ID 转成 JavaScript `number`。缺失余额、交易时间及案件创建时间为 `null`；其余流水文本空值规范化为空字符串。查询在存储层提取原始 Decimal 后序列化，避免经过旧 API 的浮点转换。统计、默认流水页、图与时间投影使用同一 `funds` 契约。选择范围内确认同笔的双边观察计一次；未决观察保留，不能推定为独立经济事件。`funds.count` 给事件数下/上界，`funds.totals` 按币种给精确金额（可为 `null`）、下界和上界（可为 `null`）。统计的 `flows` 和旧金额聚合字段使用原始记录展示口径：确认同笔在所选范围内计一次，其余来源分别保留；它们不是经济事件数或去除未证重复后的资金总额。冲突撤销确认而保留原行、原账号、方向和金额；混合币种合计仍为 `null`，按币种分列；分页 `total` 仍是可显示行数，即确认事件行加未决观察行，不能作为经济事件数。空案件返回 `amount_total:"0.00"`、`currency:null`、`amount_totals:[]`。未知币种以 `null` 表达，不能归为人民币或据此宣称同币种精确合计；既有导入器明确的默认币种规则保留。
 
-流水按 `trade_time DESC NULLS LAST, id DESC` 排序。`page` 为 1 至 2147483647，`page_size` 为 1 至 200；`account` 在付款及收款账号上按包含匹配，`kw` 在摘要及流水号上按包含匹配。过滤、计数和分页保持同一案件范围。案件不存在返回 404，不伪装成空列表。
+流水页默认 `granularity=events`；确认事件行不选用某一方的账簿余额，`balance:null`，并提供 `observation_count`。`observation_ids` 只包含当前查询选择内的原观察，事件行的上图/移出以此集合操作；过滤为单侧时不能扩大到未选择的对向分录。历史缺失金额保持 `amount:null`，不能补零。`granularity=observations` 返回原始观察。既有来源详情会列出确认事件涉及的原观察 ID、原金额、本方原余额与本方账号，不能把这些余额相加为事件余额。`analysis_revision` 绑定资金投影和来源状态。
+
+流水按 `trade_time DESC NULLS LAST, id DESC` 排序。`page` 为 1 至 2147483647，`page_size` 为 1 至 200；`account` 在付款、收款、本方及已知中性对方账号上按包含匹配，`kw` 在摘要及流水号上按包含匹配。过滤、计数和分页保持同一案件范围。案件不存在返回 404，不伪装成空列表。
 
 ## 导入、恢复与兼容路由
 
@@ -54,3 +56,19 @@ React 工作台使用 `/api/v1`，G6 工作区继续使用兼容 `/api`。`app/a
 JSON 错误统一为 `{"error":{"code":"...","message":"..."}}`。400 表示文件或请求不能处理，403 未激活，404 案件／会话／来源不存在或不属于当前范围，405 方法不支持，409 状态冲突（案件重名、原文件缺失／变化、已开始会话重新预览等），422 参数或映射无效，500 内部失败。界面可显示 `message` 并根据 `code` 决定恢复动作。响应和任务轮询不返回服务器路径、异常原文或 traceback。应用组装时同时挂载 `router` 并调用 `install_error_handlers(app)`，覆盖 v1 路由级 404／405；旧路径沿用兼容异常格式。
 
 运行 `.venv/bin/python scripts/export_api_contract.py` 更新两个契约文件，运行同一命令追加 `--check` 检测漂移。生成器在导入任何应用模块前强制使用临时 `FUND_DATA_DIR`，只导出 v1 路径和可达 schema，不接触运行中的业务目录；无需 Node 依赖。HTTP 回归使用临时真实 DuckDB 与合成 CSV/Excel，不代表浏览器、安装包或发行验收。
+
+## 条件来源份额与共同修订
+
+新接口 `POST /api/analysis/principal` 及 `/network` 属于独立的条件分析边界，不改变既有路径评分的含义。case/flow ID 与金额均使用字符串；起止时间为保留原始语义的无时区 ISO 时间。单账本按 `account,currency,start,end` 读取全部本方竞争分录，`source_flow_id` 指定入账、`target_flow_ids` 指定展示目标。`conditions` 与 `boundary` 保留请求兼容，但调用方声明不构成来源事实。后端从来源明确的本笔后账面余额、同账簿可比记账顺序反推首记录紧邻前余额，在非负账面容量模型下计算；覆盖完整性、授信和实际可用性仍可为未知。多账本以 `accounts:[{account,conditions}]` 指定账簿集合，内部流转须有已确认双边事件；采用首次退出边界，不宣称外部资金实际不回流。
+
+原“追踪去向”以明确入账锚点自动评估所选出账的条件份额；原“追踪来源”及出账侧前后流水分别评估有界入账候选，不选择评分最高者作为真实来源。批量追踪回执的 `detail[].principal` 与前后流水共享该服务；同刻先后仅由本方共同来源记账顺序建立，未知项不按导入 ID 选取。关系路径继续表示探索线索。
+
+`GET /api/context/{flow_id}` 在来源排序后截取前后各 `x` 条。无法确定顺序的边界组不能任选成员：`ordering.status/reasons` 说明省略原因；锚点同刻未定观察至多另保留 `2*x+1` 条，超过时只保留锚点，整个窗口最多 `4*x+1` 条。`pos` 在锚点同刻位置未知时为 `null`；`context_relation` 区分 `anchor/same_transaction/before/after/same_time`。该窗口不是完整本金账簿，条件模型另读全部适用竞争分录。
+
+全案分析路径和环路的 `temporal_status` 为 `continuous/reversed/unknown`，对应 `continuous` 为 `true/false/null`；小数秒不截断。同刻未知不等于连续。原图内路径响应的 `principal` 以该路径内部账户集合为 `model_scope.accounts`，在请求时间区间内独立计算每个首笔候选的多账簿份额；无显式区间时使用这些账户的已记录账簿时间跨度。该集合采用 `first_exit`，外部再入不恢复来源标签。原 JSON 下载保留模型范围、候选、限制和 witness；路径金额和评分仍是关系探索量，不能与本金混用。
+
+响应状态为 `ok`、`unknown`、`inconsistency` 或 `limited`；后三者不含可用的目标分配。`ok` 的每个目标分别给出精确字符串 `amount,min,max,fifo` 和极值见证，多个独立最大值不可相加。单/多账本 `/export` 接口要求 `expected_revision`，返回包含条件、缺口和见证的 HTML。缺少证据不以空余额、号码相似或时序 ID 填补。
+
+`analysis_revision` 绑定案件事实、身份和事件的事务版本；单/多账本响应命名为 `revision`。v1 流水项另带 `event_id/event_state`，统计带 `event_summary`；原交易字段保持。legacy 表、图、时间投影、前后流水和分析报告携带同一修订。当前 UI 的图和追踪 XLSX 导出传入该修订，变化返回 409；XLSX 新增“分析修订”页和事件 ID/状态列，原分录金额不去重。兼容旧图快照的可选修订字段不代表旧调用方已完成版本核验。证据字段、资源上限和保守拒绝范围见[导入与本金契约](folder-evidence-import.md#事件与条件来源份额)。
+
+方向未知的原始观察以 `source_ledger.policy=source-ledger-unoriented-v2` 返回，原方向码在 `source_direction`，已知对方在 `counter_account/counter_name/counter_bank`；不填付款／收款角色，不生成定向资金边。这些记录可查询、追踪和导出，独立于经济事件统计。旧版来源仍按原解析版本解释。

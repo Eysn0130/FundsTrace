@@ -92,6 +92,29 @@ test('typing keeps the canvas and selection unchanged', () => {
   assert.equal(h.el('btnGraphFindSearch').disabled, false); assert.equal(h.el('btnGraphFindAll').disabled, true);
 });
 
+test('card and ledger searches locate the same internal entity without exposing its key', async () => {
+  const h = harness();
+  h.state.accounts = [{ account: 'fte_synthetic', displayAccount: '000CARD-A', accountNumber: '000LEDGER-A', cards: ['000CARD-A', '000CARD-B'], name: '' }];
+  h.open();
+  for (const query of ['000LEDGER-A', '000CARD-B']) {
+    h.input(query); assert.equal(await h.controller.search(), true);
+    assert.deepEqual(h.locates.at(-1).ids, ['fte_synthetic']);
+    assert.equal(h.el('graphFindStatus').textContent, '已定位 · 000CARD-A');
+    assert.ok(h.el('graphFindResults').textContent.includes('000CARD-A'));
+    assert.ok(!h.el('graphFindResults').textContent.includes('fte_synthetic'));
+  }
+});
+
+test('enhanced finder suggestions include historical cards but select the entity key', async () => {
+  const h = harness({ entityInputs: true });
+  h.state.accounts = [{ account: 'fte_synthetic', displayAccount: '000CARD-A', accountNumber: '000LEDGER-A', cards: ['000CARD-A', '000CARD-B'], name: '' }];
+  h.open();
+  const result = await h.picker().search({ query: '000CARD-B', offset: 0, limit: 30, signal: new AbortController().signal, scope: h.picker().scope() });
+  assert.equal(result.items.length, 1); assert.equal(result.items[0].value, '000CARD-A');
+  h.picker().onSelect(result.items[0]); await flush();
+  assert.deepEqual(h.locates[0].ids, ['fte_synthetic']);
+});
+
 test('replacing the authoritative accounts array refreshes its cache even with an unchanged stamp', async () => {
   const h = harness(); h.open();
   h.state.accounts = [{ account: '00090071992547409931234567890', name: '新合成主体' }]; h.controller.update();

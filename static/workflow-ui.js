@@ -17,12 +17,13 @@
   const pending = session => session.committing || session.polling || session.recovering;
 
   const feedbackReasons = {
+    unsupported_attachment: '附件原件已保留，格式未适配，内部记录数量与资金内容尚未解释', non_business_attachment: 'Finder元数据附件，原件保留，不生成资金流水',
     transaction_valid: '按来源方向与金额识别为资金流水', auxiliary_table: '辅助资料，未作为资金流水', feedback_only: '来源反馈，未包含资金流水',
     negative_reversal_text: '负数与冲正描述缺少一致的来源依据', negative_revocation_text: '负数与撤销描述缺少一致的来源依据',
     negative_reversal_revocation_text: '负数与冲正及撤销描述缺少一致的来源依据', negative_unknown: '来源未明确负号含义',
     missing_core: '缺少形成资金流水必需的信息', invalid_amount: '交易金额格式无效', amount_precision: '交易金额超过分精度',
     amount_overflow: '交易金额超出支持范围', zero_amount: '零金额，无资金变动', invalid_direction: '收付方向无法识别',
-    invalid_time: '交易时间无效', invalid_currency: '币种无法识别', unknown_status: '交易状态含义缺少适用的来源依据',
+    unsupported_time_role: '只有记账、受理等其他时间，未提供交易时间；未计入资金统计和资金图', unsupported_timezone: '显式偏移和UTC瞬间已保留；尚未进入资金统计、资金图或跨无区时间排序', invalid_time: '交易时间无效', invalid_currency: '币种无法识别', unknown_status: '交易状态含义缺少适用的来源依据',
     invalid_balance: '交易余额格式无效', balance_precision: '交易余额超过分精度', balance_overflow: '交易余额超出支持范围',
     reversal_text_requires_review: '历史冲正或撤销记录缺少可确定资金效果的依据',
     own_identity_conflict: '同一来源记录的本方身份资料冲突，已保留且未重复计入金额',
@@ -63,26 +64,58 @@
   const mappingNames = { trade_no: '流水号', trade_time: '交易时间', time_part: '交易时刻', _time2: '时间补充', amount: '交易金额', balance: '交易后余额', currency: '币种',
     payer_name: '付款户名', payer_account: '付款账号', payer_bank: '付款开户行', payee_name: '收款户名', payee_account: '收款账号', payee_bank: '收款开户行',
     self_account: '本方账号', self_name: '本方户名', counter_account: '对手账号', counter_name: '对手户名', counter_bank: '对手开户行',
-    direction: '收支方向', income_amt: '收入金额', expense_amt: '支出金额', summary: '摘要', channel: '渠道', status: '交易状态', voucher_reference: '凭证引用' };
-  const mappingBasis = { exact_header_alias: '按完整表头别名识别并校验', source_transaction_id: '使用来源交易流水号', independent_voucher_reference: '凭证号为独立引用，不与交易流水号判冲突', explicit_time_format: '明确的日期时间格式' };
+    direction: '收支方向', income_amt: '收入金额', expense_amt: '支出金额', summary: '摘要', remark: '备注', voucher_type: '凭证种类', channel: '渠道', status: '交易状态', voucher_reference: '凭证引用' };
+  const mappingRoleNames = { source_slip_reference: '传票号', source_log_reference: '日志号', independent_voucher_type: '凭证种类' };
+  const mappingBasis = { exact_header_alias: '按完整表头别名识别并校验', source_transaction_id: '使用来源交易流水号', independent_voucher_reference: '凭证号为独立引用，不与交易流水号判冲突', independent_voucher_type: '保留来源凭证种类', source_slip_reference: '独立保留来源传票号', source_log_reference: '独立保留来源日志号', summary: '保留来源摘要原文', remark: '独立保留来源备注原文', explicit_time_format: '明确的日期时间格式' };
   const unresolvedCount = feedback => (feedback.unresolved || 0) + (feedback.review || 0);
   const feedbackCounts = feedback => `已配对冲正/撤销 ${fmtCount(feedback.cancelled ?? 0)} 条（双方均不计有效资金） · 无资金变动 ${fmtCount(feedback.non_monetary || 0)} 条 · 未计入资金流水 ${fmtCount(unresolvedCount(feedback))} 条 · 来源反馈 ${fmtCount(feedback.non_transaction)} 条 · 辅助资料 ${fmtCount(feedback.auxiliary)} 条`;
   const tableCounts = summary => `可靠识别流水 ${fmtCount(summary.accepted)} 条 · 已配对冲正/撤销 ${fmtCount(summary.cancelled ?? 0)} 条（双方均不计有效资金） · 未计入资金流水 ${fmtCount(summary.unresolved)} 条 · 无资金变动 ${fmtCount(summary.non_monetary)} 条 · 非交易记录 ${fmtCount(summary.non_transaction)} 条 · 辅助资料 ${fmtCount(summary.auxiliary)} 条`;
 
   const effectiveAdded = result => result.table_summary?.effective_added ?? result.ok;
   const retainedFacts = result => result.table_summary?.effective_added != null && result.table_summary.effective_added !== result.ok
-    ? `本次保留流水事实 ${fmtCount(result.ok)} 笔，其中新增有效资金流水 ${fmtCount(result.table_summary.effective_added)} 笔；已有配对依据的记录不重复进入统计。` : '';
+    ? `本次保留来源流水记录 ${fmtCount(result.ok)} 条，其中新增有效流水记录 ${fmtCount(result.table_summary.effective_added)} 条；已有配对依据的记录不重复进入统计。` : '';
+
+  function sourceEvidenceHtml(details = {}) {
+    const roles = { source_transaction_id: '主交易标识', independent_voucher_reference: '独立凭证', independent_voucher_type: '凭证种类', row_time_role_declaration: '本行来源的时间角色声明', trade_no: '交易编号候选', amount: '交易金额', direction: '收支方向', summary: '摘要', remark: '备注', source_slip_reference: '传票号', source_log_reference: '日志号', self_account: '本方账号', counter_account: '对手账号', account: '账号', card: '卡号' };
+    let items = [];
+    try {
+      const parsed = JSON.parse(details.source_field_evidence || '[]');
+      if (Array.isArray(parsed)) items = parsed.filter(item => item && typeof item.role === 'string' && typeof item.column === 'string' && Number.isInteger(item.column_index) && typeof item.raw === 'string');
+    } catch (_) { /* Historical records have no field excerpts. */ }
+    let times = [];
+    try {
+      const value = JSON.parse(details.source_time_evidence || 'null');
+      if (value && value.policy === 'source-time-roles-v1' && Array.isArray(value.values)) times = value.values.filter(item => item
+        && ['transaction', 'posting', 'receipt', 'settlement', 'unspecified'].includes(item.role) && typeof item.column === 'string' && Number.isInteger(item.column_index)
+        && typeof item.raw === 'string' && typeof item.wall_clock === 'string' && (item.offset === null || typeof item.offset === 'string')
+        && (item.utc === null || typeof item.utc === 'string'));
+    } catch (_) { /* Historical records may have no time-role evidence. */ }
+    const timeHtml = times.length ? `<p>来源时间与角色；无偏移的时间不推定设备时区，同一瞬间不证明同笔交易。</p><ul>${times.map(item => `<li>${item.role === 'posting' ? '记账时间' : item.role === 'receipt' ? '受理时间' : item.role === 'settlement' ? '结算时间' : item.role === 'transaction' ? '交易时间' : '来源时间（角色未明确）'} · 第 ${fmtCount(item.column_index)} 列「${esc(item.column)}」 · 原值 <code>${esc(JSON.stringify(item.raw))}</code> · 壁钟 <code>${esc(JSON.stringify(item.wall_clock))}</code> · 偏移 ${esc(item.offset ?? '未提供')} · UTC瞬间 ${esc(item.utc ?? '未确定')}</li>`).join('')}</ul>` : '';
+    const eventFields = { reference: '跨账簿事件参考号', issuer: '参考号机构', channel: '参考号渠道', business_scope: '参考号业务域' };
+    let declaration = null;
+    try {
+      const value = JSON.parse(details.event_reference_evidence || 'null');
+      if (value && !Array.isArray(value) && value.policy === 'scoped-event-reference-v1' && Object.keys(value).length === 5
+        && Object.keys(eventFields).every(key => typeof value[key] === 'string' && value[key].trim() === value[key]
+          && value[key].length > 0 && Array.from(value[key]).length <= 128)) declaration = value;
+    } catch (_) { /* Missing or damaged historical declarations convey no claim. */ }
+    const incomparable = details.current_event_reason === 'time_basis_incomparable' ? '<p>有区与未标时区的来源时间不可比较，尚不能确定是否同一笔；两份来源原值保留，累计金额待核对。</p>' : '';
+    const conflict = details.current_event_state === 'conflict' ? '<p>同笔关联资料存在矛盾，暂不计入有效资金统计；原始记录与原值保留。</p>' : '';
+    if (!items.length && !declaration && !times.length && !details.source_time_evidence_limited && !details.source_field_evidence_limited && !conflict && !incomparable) return '';
+    const event = declaration ? `<p>来源声明的同笔关联依据</p><dl>${Object.entries(eventFields).map(([key, label]) => `<div><dt>${esc(label)}</dt><dd><code>${esc(JSON.stringify(declaration[key]))}</code></dd></div>`).join('')}</dl>` : '';
+    return `<details><summary>来源字段与校验依据</summary>${incomparable}${conflict}${timeHtml}${details.source_time_evidence_limited ? '<p>时间字段仅显示部分原值，完整记录见原始文件。</p>' : ''}<ul>${items.map(item => `<li>${esc(roles[item.role] || item.role)} · 第 ${fmtCount(item.column_index)} 列「${esc(item.column)}」 · 原值 <code>${esc(JSON.stringify(item.raw))}</code></li>`).join('')}</ul>${event}${details.source_field_evidence_limited ? '<p>这里只显示部分候选字段，完整原值见原始文件。</p>' : ''}</details>`;
+  }
 
   function tableHtml(summary, complete = false) {
     const reasons = Object.entries(summary.reason_counts || {}).map(([reason, count]) => `<li>${esc(feedbackReason(reason))}：${fmtCount(count)} 条</li>`).join('');
-    const evidence = (summary.mapping_evidence || []).slice(0, 50).map(item => `<li>${esc(item.member_path || '')} · ${esc(mappingNames[item.field] || item.field || '字段')} ← ${esc(item.column || '未识别')}${item.time_format ? ` · 时间格式：${esc(item.time_format)}` : ''}${item.unit && ['amount', 'balance', 'income_amt', 'expense_amt'].includes(item.field) ? ` · 来源单位：${esc(item.unit)}` : ''}${item.unit_factor && ['amount', 'balance', 'income_amt', 'expense_amt'].includes(item.field) ? ` · 金额单位换算系数：${esc(item.unit_factor)}` : ''}${item.candidate_count ? ` · 候选列：${esc(item.candidate_count)}` : ''}${mappingBasis[item.basis] ? ` · ${esc(mappingBasis[item.basis])}` : ''}</li>`).join('');
-    const examples = (summary.unresolved_examples || []).map(row => `<li>${esc(row.member_path)} · 原始第 ${fmtCount(row.source_row)} 行 · ${esc(feedbackReason(row.reason_code))}</li>`).join('');
+    const evidence = (summary.mapping_evidence || []).slice(0, 50).map(item => `<li>${esc(item.member_path || '')} · ${esc(mappingRoleNames[item.basis] || mappingNames[item.field] || item.field || '字段')} ← ${esc(item.column || '未识别')}${item.time_format ? ` · 时间格式：${esc(item.time_format)}` : ''}${item.unit && ['amount', 'balance', 'income_amt', 'expense_amt'].includes(item.field) ? ` · 来源单位：${esc(item.unit)}` : ''}${item.unit_factor && ['amount', 'balance', 'income_amt', 'expense_amt'].includes(item.field) ? ` · 金额单位换算系数：${esc(item.unit_factor)}` : ''}${item.candidate_count ? ` · 候选列：${esc(item.candidate_count)}` : ''}${mappingBasis[item.basis] ? ` · ${esc(mappingBasis[item.basis])}` : ''}</li>`).join('');
+    const examples = (summary.unresolved_examples || []).map(row => `<li>${esc(row.member_path)} · 原始第 ${fmtCount(row.source_row)} 行 · ${esc(feedbackReason(row.reason_code))}${sourceEvidenceHtml(row.details)}</li>`).join('');
     const totals = Object.entries(summary.currency_totals || {}).map(([currency, amount]) => `<li>${moneyHtml(amount, currency)}</li>`).join('');
     const documents = (summary.documents || []).slice(0, 50).map(item => `<li>${esc(item.member_path || '来源表格')}${item.sheet ? ` · 工作表：${esc(item.sheet)}` : ''}${item.header_row != null ? ` · 表头第 ${fmtCount(item.header_row)} 行` : ' · 未能唯一识别表头'}${item.row_count != null ? ` · 来源记录 ${fmtCount(item.row_count)} 条` : ''}</li>`).join('');
-    return `<p><strong>表格自动识别 · 全量校验</strong></p><p>来源记录 ${fmtCount(summary.record_total)} 条 · ${tableCounts(summary)}</p>`
+    return `${summary.reason_counts?.unsupported_attachment ? `<p class="warn">${fmtCount(summary.reason_counts.unsupported_attachment)} 份附件格式尚未适配，原件已保留。每份按一个来源条目登记，内部记录数量和金额未知，不能视为整个目录已完整解析。</p>` : ''}<p><strong>表格自动识别 · 全量校验</strong></p><p>来源记录 ${fmtCount(summary.record_total)} 条 · ${tableCounts(summary)}</p>`
       + `<p>${complete ? '自动处理已完成，未计入资金流水的记录已' : '自动处理会正常完成，未计入资金流水的记录会'}保留来源和原因，无需逐条确认；这些记录不参与金额、交易笔数和关系统计。</p>`
       + ((summary.cancelled ?? 0) > 0 ? '<p>已配对记录保留来源和核验依据，双方退出有效资金统计；退款、退货或仅有负号的记录不据此排除。</p>' : '')
-      + (complete && (summary.excluded_flows ?? 0) > 0 ? `<p>本案另有 ${fmtCount(summary.excluded_flows)} 笔历史留存流水已退出有效统计。</p>` : '')
+      + (complete && (summary.excluded_flows ?? 0) > 0 ? `<p>本案有 ${fmtCount(summary.excluded_flows)} 条留存来源流水未计入有效统计。</p>` : '')
       + (summary.unresolved > 0 ? '<p>分析仅使用可靠识别的有效流水，可能无法反映完整资金流向、金额和关联关系。未计入不代表金额为零或没有发生交易。</p>' : '')
       + (summary.accepted === 0 ? `<p>文件${complete ? '已处理' : '可保存处理结果'}，暂无可可靠计入的流水。</p>` : '')
       + (totals ? `<p>可靠识别流水金额合计（按币种，含重复；非本次新增金额或净结算金额）：</p><ul>${totals}</ul>` : '')
@@ -103,11 +136,17 @@
       + `<p>${complete ? '自动处理已完成，未计入资金流水的记录已' : '自动处理会正常完成，未计入资金流水的记录会'}保留来源和原因，无需逐条确认；这些记录不参与金额、交易笔数和关系统计。</p>`
       + '<p>仅按完整来源信息唯一配对冲正/撤销；配对双方保留来源记录，不计入有效资金统计。普通退款按来源记账方向与金额处理，不因摘要含“退款”自动排除。</p>'
       + (unresolvedCount(feedback) > 0 ? '<p>分析仅使用可靠识别的有效流水，可能无法反映完整资金流向、金额和关联关系。未计入不代表金额为零或没有发生交易。</p>' : '')
-      + (complete && (feedback.excluded_flows ?? 0) > 0 ? `<p>本案另有 ${fmtCount(feedback.excluded_flows)} 笔历史留存流水已退出有效统计。</p>` : '')
+      + (complete && (feedback.excluded_flows ?? 0) > 0 ? `<p>本案有 ${fmtCount(feedback.excluded_flows)} 条留存来源流水未计入有效统计。</p>` : '')
       + (totals ? `<p>来源已接纳流水金额合计（按币种，含重复记录，已排除配对冲正/撤销双方；非本次新增金额或净结算金额）：</p><ul>${totals}</ul>` : '<p>当前没有来源已接纳流水金额。</p>')
       + (reasons ? `<details open><summary>自动分类依据</summary><ul>${reasons}</ul></details>` : '')
       + (examples ? `<details><summary>未计入记录的来源示例（前 ${sourceExamples.length} 条）</summary><ul>${examples}</ul></details>` : '')
       + (members ? `<details><summary>包内来源文件与校验信息</summary><div class="tbl-wrap"><table class="tbl"><thead><tr><th>来源文件</th><th>记录类型</th><th>记录数</th><th>字节数</th><th>编码</th><th>SHA-256</th></tr></thead><tbody>${members}</tbody></table></div></details>` : '');
+  }
+
+  function resolutionHtml(value, complete = false) {
+    if (!value || !(value.unresolved_endpoints || value.conflicts)) return '';
+    return `<section aria-label="账户关联结果"><p><strong>${complete ? '账户关联已更新' : '账户资料关联预览'}</strong></p>`
+      + `<p>有 ${fmtCount(value.unresolved_endpoints)} 个账户标识尚未关联，${fmtCount(value.conflicts)} 处资料冲突。已知卡号和原始记录继续保留，可在账户详情中核对。</p></section>`;
   }
 
   function renderPreview(result) {
@@ -116,7 +155,7 @@
       bad_examples: (result.stats.bad_examples || []).map(example => ({ ...example, reason: feedbackReason(example.reason) })) } } : result);
     $('#impFeedback').hidden = !classified;
     $('#impFeedback').setAttribute('aria-label', feedback ? '银行反馈包识别与处置汇总' : '表格自动识别与全量校验汇总');
-    $('#impFeedback').innerHTML = feedback ? feedbackHtml(feedback) : summary ? tableHtml(summary) : '';
+    $('#impFeedback').innerHTML = (feedback ? feedbackHtml(feedback) : summary ? tableHtml(summary) : '') + resolutionHtml(result.resolution);
     for (const id of ['impMappingSection', 'impMode', 'impSelfLine']) $('#' + id).hidden = !!classified;
     if (!classified) return;
     $('#impPreviewNote').textContent = `前 ${result.preview.length} 条来源已接纳流水 · 原始成员与行号`;
@@ -235,7 +274,10 @@
     $('#impRe').hidden = !session.preview || complete || fixed; $('#impCommit').hidden = !session.preview || complete;
     $$('#impMapping select,input[name=impMode],#impMainSel .mk-acct,#impSelfAccts').forEach(node => { node.disabled = busy; });
     if (fixed) { $$('#impMapping select').forEach(node => { node.disabled = true; }); $$('input[name=impMode]').forEach(node => { node.disabled = true; }); $('#impSelfAccts').disabled = true; }
-    $('#impFile').disabled = !!pending(session); $('#impChangeFile').disabled = busy;
+    const fileBusy = !session.result && (pending(session) || (session.previewing && session.phase !== 'file'));
+    $('#impFile').disabled = fileBusy;
+    if ($('#impDirectory')) $('#impDirectory').disabled = fileBusy;
+    $('#impChangeFile').disabled = busy;
     $('#impRetryProgress').disabled = session.polling;
     $('#impCancel').textContent = complete ? '完成' : busy ? '关闭' : '取消';
     $('#impResult').hidden = !complete;
@@ -243,14 +285,14 @@
       $('#impStep1').style.display = 'none'; $('#impStep2').style.display = 'none'; $('#impStats').textContent = '';
       $('#impResultTitle').textContent = session.result.feedback || session.result.table_summary ? '自动处理完成' : '导入完成';
       $('#impResultText').textContent = session.result.feedback
-        ? `已保存 ${fmtCount(session.result.feedback.record_total)} 条记录 · 新增资金流水 ${fmtCount(session.result.ok)} 笔 · 重复 ${fmtCount(session.result.rows_dup || 0)} 笔 · ${feedbackCounts(session.result.feedback)}`
-        : session.result.table_summary ? `已保存 ${fmtCount(session.result.table_summary.record_total)} 条记录 · 新增资金流水 ${fmtCount(effectiveAdded(session.result))} 笔 · 重复 ${fmtCount(session.result.rows_dup || 0)} 笔 · 未计入资金流水 ${fmtCount(session.result.table_summary.unresolved)} 条 · 已配对冲正/撤销 ${fmtCount(session.result.table_summary.cancelled ?? 0)} 条（双方均不计有效资金） · 无资金变动 ${fmtCount(session.result.table_summary.non_monetary)} 条 · 非交易记录 ${fmtCount(session.result.table_summary.non_transaction)} 条 · 辅助资料 ${fmtCount(session.result.table_summary.auxiliary)} 条`
-          : `新增 ${fmtCount(session.result.ok)} 笔 · 重复 ${fmtCount(session.result.rows_dup || 0)} 笔 · 跳过 ${fmtCount(session.result.skipped || 0)} 行`;
+        ? `已保存 ${fmtCount(session.result.feedback.record_total)} 条记录 · 新增流水记录 ${fmtCount(session.result.ok)} 条 · 重复 ${fmtCount(session.result.rows_dup || 0)} 条 · ${feedbackCounts(session.result.feedback)}`
+        : session.result.table_summary ? `已保存 ${fmtCount(session.result.table_summary.record_total)} 条记录 · 新增流水记录 ${fmtCount(effectiveAdded(session.result))} 条 · 重复 ${fmtCount(session.result.rows_dup || 0)} 条 · 未计入资金流水 ${fmtCount(session.result.table_summary.unresolved)} 条 · 已配对冲正/撤销 ${fmtCount(session.result.table_summary.cancelled ?? 0)} 条（双方均不计有效资金） · 无资金变动 ${fmtCount(session.result.table_summary.non_monetary)} 条 · 非交易记录 ${fmtCount(session.result.table_summary.non_transaction)} 条 · 辅助资料 ${fmtCount(session.result.table_summary.auxiliary)} 条`
+          : `新增流水记录 ${fmtCount(session.result.ok)} 条 · 重复 ${fmtCount(session.result.rows_dup || 0)} 条 · 跳过 ${fmtCount(session.result.skipped || 0)} 行`;
     }
     const feedback = session.result?.feedback, summary = session.result?.table_summary;
     $('#impResultFeedback').hidden = !feedback && !summary;
     $('#impResultFeedback').style.textAlign = 'left'; $('#impResultFeedback').style.marginTop = '24px';
-    $('#impResultFeedback').innerHTML = feedback ? feedbackHtml(feedback, true) : summary ? tableHtml(summary, true) + (retainedFacts(session.result) ? `<p>${esc(retainedFacts(session.result))}</p>` : '') : '';
+    $('#impResultFeedback').innerHTML = (feedback ? feedbackHtml(feedback, true) : summary ? tableHtml(summary, true) + (retainedFacts(session.result) ? `<p>${esc(retainedFacts(session.result))}</p>` : '') : '') + resolutionHtml(session.result?.resolution, true);
     $('#impResultDownloads').hidden = (!feedback && !summary) || !session.result?.source_id;
     $('#impDownloadOriginal').textContent = feedback ? '下载原始 ZIP' : '下载原始文件';
     $('#impDownloadReport').disabled = $('#impDownloadOriginal').disabled = !!session.downloading;
@@ -264,6 +306,7 @@
       previewing: false, committing: false, polling: false, recovering: false, importId: null };
     active = session; state.imp = null;
     $('#impSelfAccts').value = ''; $('#impFile').value = ''; $('#impStats').textContent = '';
+    if ($('#impDirectory')) $('#impDirectory').value = '';
     $('#impMapping').innerHTML = ''; $('#impMainSel').innerHTML = ''; $('#impFeedback').hidden = true; $('#impDownloadStatus').textContent = '';
     $('#impPreviewScroll').scrollLeft = 0; $('#impContent').scrollTop = 0;
     $('#impStep1').style.display = 'block'; $('#impStep2').style.display = 'none'; hidePbar();
@@ -360,9 +403,11 @@
     }
   }
 
-  async function upload() {
-    const session = active, file = $('#impFile').files[0];
-    if (!session || !visible(session) || pending(session) || !file) return;
+  async function upload(directory = false) {
+    const session = active, files = Array.from($(directory ? '#impDirectory' : '#impFile').files || []);
+    if (!session || !visible(session) || pending(session) || (session.previewing && session.phase !== 'file') || !files.length) return;
+    // A newer file or directory selection supersedes an unfinished upload;
+    // its request sequence also retires the earlier response and progress.
     const sequence = ++session.request;
     session.phase = 'file'; session.errorStage = null; session.result = null; session.dirty = false;
     session.previewing = true; session.preview = null; state.imp = null;
@@ -371,7 +416,7 @@
     try {
       const result = await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/import/preview?case_id=' + encodeURIComponent(session.context.caseId));
+        xhr.open('POST', '/api/import/' + (directory ? 'directory/' : '') + 'preview?case_id=' + encodeURIComponent(session.context.caseId));
         xhr.upload.onprogress = event => {
           if (!current() || !event.lengthComputable) return;
           if (event.loaded >= event.total) setPbarBusy('上传完成，正在解析文件…');
@@ -384,7 +429,10 @@
         };
         xhr.onerror = () => reject(new Error('网络错误，请重新选择文件'));
         xhr.onabort = () => reject(new Error('文件上传已取消，请重新选择文件'));
-        const form = new FormData(); form.append('file', file); xhr.send(form);
+        const form = new FormData();
+        if (directory) for (const file of files) form.append('files', file, file.webkitRelativePath || file.name);
+        else form.append('file', files[0]);
+        xhr.send(form);
       });
       if (!current()) return;
       session.preview = result; session.filename = result.filename; session.mappingDraft = { ...result.mapping }; state.imp = result; session.phase = 'fields'; renderPreview(result); hidePbar();
@@ -453,9 +501,9 @@
           if (!result || result.ok == null) throw new Error('导入完成回执不完整，请重新读取进度');
           session.result = result; session.preview = null;
           let message = result.feedback
-            ? `自动处理完成：已保存 ${fmtCount(result.feedback.record_total)} 条记录 · 新增资金流水 ${fmtCount(result.ok)} 笔 · 重复 ${fmtCount(result.rows_dup || 0)} 笔 · ${feedbackCounts(result.feedback)}`
-            : result.table_summary ? `自动处理完成：新增 ${fmtCount(effectiveAdded(result))} 笔 · 重复 ${fmtCount(result.rows_dup || 0)} 笔 · 未计入资金流水 ${fmtCount(result.table_summary.unresolved)} 条，原因见处理结果。`
-              : `导入完成：新增 ${fmtCount(result.ok)} 笔，跳过 ${fmtCount(result.skipped || 0)} 行，重复 ${fmtCount(result.rows_dup || 0)} 笔`;
+            ? `自动处理完成：已保存 ${fmtCount(result.feedback.record_total)} 条记录 · 新增流水记录 ${fmtCount(result.ok)} 条 · 重复 ${fmtCount(result.rows_dup || 0)} 条 · ${feedbackCounts(result.feedback)}`
+            : result.table_summary ? `自动处理完成：新增流水记录 ${fmtCount(effectiveAdded(result))} 条 · 重复 ${fmtCount(result.rows_dup || 0)} 条 · 未计入资金流水 ${fmtCount(result.table_summary.unresolved)} 条，原因见处理结果。`
+              : `导入完成：新增流水记录 ${fmtCount(result.ok)} 条，跳过 ${fmtCount(result.skipped || 0)} 行，重复 ${fmtCount(result.rows_dup || 0)} 条`;
           if (result.main_detected?.length) message += result.table_summary ? `已标记本方主账号 ${fmtCount(result.main_detected.length)} 个。` : `；已标记本方主账号：${result.main_detected.map(item => item.name || item.account.slice(-6)).join('、')}`;
           if (visible(session)) { hidePbar(); $('#impResultText').textContent = message; controls(session); }
           toast(message);
@@ -724,7 +772,9 @@
     notice.append(message, retry); $('#impPbar').after(notice);
     $('#btnImport').onclick = open; $('#btnImport2').onclick = open;
     $('#impClose').onclick = close; $('#impCancel').onclick = close;
-    $('#impFile').onchange = upload; $('#impRe').onclick = repreview; $('#impCommit').onclick = commit;
+    $('#impFile').onchange = () => upload(false);
+    if ($('#impDirectory')) $('#impDirectory').onchange = () => upload(true);
+    $('#impRe').onclick = repreview; $('#impCommit').onclick = commit;
     const reportButton = $('#impDownloadReport'), originalButton = $('#impDownloadOriginal');
     if (reportButton) reportButton.onclick = () => downloadResult('report');
     if (originalButton) originalButton.onclick = () => downloadResult('original');

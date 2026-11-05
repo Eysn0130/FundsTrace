@@ -7,7 +7,7 @@ import pytest
 from app import case_packages, table_import
 from app.services import imports
 from test_archive_profile_upgrade import frozen_preview
-from test_automatic_table_import import preview
+from test_automatic_table_import import preview as current_preview
 from test_feedback_import_api import complete
 from test_table_container_identity import archive_bytes, case_flows
 from test_table_contract_lifecycle import facts, source_records
@@ -20,6 +20,18 @@ from test_table_write_integrity import persisted
 
 OLD_PROFILE = "funds-trace-table-archive-v3"
 NEW_PROFILE = "funds-trace-table-archive-v4"
+
+
+def preview(client, cid, payload, filename="synthetic.csv"):
+    if filename.endswith(".zip"):
+        with pytest.MonkeyPatch.context() as historical:
+            original = imports._parse
+            def pinned(*args, **options):
+                options["table_profile"] = NEW_PROFILE
+                return original(*args, **options)
+            historical.setattr(imports, "_parse", pinned)
+            return current_preview(client, cid, payload, filename)
+    return current_preview(client, cid, payload, filename)
 
 
 def csv_data(rows):
@@ -618,6 +630,45 @@ def test_v4_history_conflicting_root_revokes_only_its_chain_and_keeps_independen
     assert_clean_cancellation_package_restore(client, database, cid, monkeypatch, tmp_path)
 
 
+@pytest.mark.parametrize("zero_witness,field,value", [
+    (False, "amount", "-9.99"),
+    (False, "balance", "100.01"),
+    (True, "balance", "100.01"),
+])
+def test_v4_proof_without_ledger_field_still_rejects_changed_historical_snapshot(
+        client, database, make_case, zero_witness, field, value):
+    from test_table_cancellations import round_trip, source
+
+    rows = round_trip()
+    if zero_witness:
+        rows[0]["交易金额"] = "0.00"
+    payload, content = source(rows, path="table.csv")
+    cid = make_case("Synthetic v4 proof with changed historical source ledger")
+    historical = preview(client, cid, payload, "historical.csv")
+    history_job = commit_view(client, cid, historical)
+    historical_receipt = receipt(client, cid, historical["import_id"])
+    history_records = source_records(client, cid, historical["import_id"])
+    original = preview(client, cid, content, "original.zip")
+    original_job = commit_view(client, cid, original)
+    assert original["table_summary"]["profile"] == NEW_PROFILE
+    assert original_job["result"]["table_summary"]["cancelled"] == 2
+    proof_records = source_records(client, cid, original["import_id"])
+    assert all("source_ledger_evidence" not in record["details"] for record in proof_records)
+    assert client.get(f"/api/v1/cases/{cid}/stats").json()["amount_total"] == ("0.00" if zero_witness else "1.00")
+    amount = Decimal("0.00" if zero_witness else "-10.00")
+    target = database.q_raw("select id from flows where case_id=? and amount=?", [cid, amount])[0]["id"]
+    database.x(f"update flows set {field}=? where case_id=? and id=?", [Decimal(value), cid, target])
+    changed = case_flows(database, cid)
+    current = preview(client, cid, content, "rechecked.zip")
+    assert current["table_summary"]["cancelled"] == 0
+    job = commit_view(client, cid, current)
+    assert job["result"]["table_summary"]["cancelled"] == 0
+    assert case_flows(database, cid) == changed
+    assert source_records(client, cid, historical["import_id"]) == history_records
+    assert receipt(client, cid, historical["import_id"]) == historical_receipt == history_job["result"]
+    assert receipt(client, cid, original["import_id"]) == original_job["result"]
+
+
 def test_v4_nonwitness_observer_history_conflict_keeps_valid_pair_and_old_observer_fact(
         client, database, make_case, monkeypatch, tmp_path):
     from test_table_cancellations import round_trip, source, transaction
@@ -631,7 +682,8 @@ def test_v4_nonwitness_observer_history_conflict_keeps_valid_pair_and_old_observ
     rows[3]["商户名称"] = "SYN-HISTORICAL-OBSERVER"
     payload, content = source(rows, path="table.csv")
     cid = make_case("Synthetic v4 nonwitness observer preservation")
-    old = preview(client, cid, payload, "historical.csv")
+    from test_table_mapping_versions import profile_preview
+    old = profile_preview(client, cid, payload, monkeypatch, table_import.PRECISE_PROFILE)
     response = client.post(f"/api/v1/cases/{cid}/imports/{old['import_id']}/preview", json={
         "mode": old["mode"], "mapping": {**old["mapping"], "trade_no": "商户名称"}})
     assert response.status_code == 200, response.text
@@ -727,7 +779,7 @@ def test_package_rejects_archive_history_marker_without_its_required_conflict_di
     response = client.get(f"/api/cases/{cid}/export")
     assert response.status_code == 200
     members = _members(response.content)
-    assert json.loads(members["meta.json"])["format"] == 4
+    assert json.loads(members["meta.json"])["format"] == 6
     # The unchanged journal is valid: only the added marker makes the copy invalid.
     restored = client.post("/api/cases/import", files={"file": ("valid-control.fundcase", response.content)})
     assert restored.status_code == 200, restored.text

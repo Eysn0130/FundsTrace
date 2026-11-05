@@ -204,7 +204,9 @@ def test_undetermined_financial_meaning_is_retained_without_blocking_storage(cli
     records = client.get(f"/api/v1/cases/{cid}/imports/{view['import_id']}/records").json()["items"]
     assert [record["disposition"] for record in records] == ["imported", "unresolved", "unresolved", "unresolved"]
     assert {record["reason_code"] for record in records[1:]} == {"negative_amount", "missing_direction", "unknown_status"}
-    assert database.q_raw("select amount from flows where case_id=?", [cid]) == [{"amount": Decimal("1.01")}]
+    assert database.q_raw("select amount from flows where case_id=? order by id", [cid]) == [
+        {"amount": Decimal("1.01")}, {"amount": Decimal("-2.02")}]
+    assert client.get(f"/api/v1/cases/{cid}/stats").json()["amount_total"] == "1.01"
 
 
 CHINESE = dict(zip(FIELDS, (

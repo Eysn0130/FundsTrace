@@ -115,3 +115,18 @@ test('retention is session-local and capturing many other canvases never silentl
   assert.equal(store.lastCanvas('other'), '149');
   assert.equal(create().get('first', '0'), null, 'a fresh session store has no previous user work');
 });
+
+
+test('resolution freshness retains explicit null and valid hashes but not unknown revision or graph facts',()=>{
+  const store=create(),scope={caseId:'case',canvasId:'canvas'},view={visibleIds:['node'],root:'node',direction:'out'};
+  store.capture(scope,{graphView:view});
+  assert.equal(Object.hasOwn(store.get('case','canvas'),'resolutionRevision'),false);
+  for(const revision of [null,'a'.repeat(64)]){
+    store.capture(scope,{graphView:view,resolutionRevision:revision,graphData:{private:'must not retain'},lastGraph:{amount:'must not retain'}});
+    const draft=store.get('case','canvas');assert.equal(Object.hasOwn(draft,'resolutionRevision'),true);
+    assert.equal(draft.resolutionRevision,revision);assert.equal('graphData' in draft,false);assert.equal('lastGraph' in draft,false);
+  }
+  for(const revision of [1,{},'invalid',false]){
+    store.capture(scope,{graphView:view,resolutionRevision:revision});assert.equal(Object.hasOwn(store.get('case','canvas'),'resolutionRevision'),false);
+  }
+});

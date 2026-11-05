@@ -577,7 +577,7 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 .query-time > label { flex: none; color: var(--text-primary); font-size: 12px; }
 .date-range { flex: 1; }
 .date-range input { flex: 1 1 125px; width: 125px; min-width: 125px; height: 32px; padding: 5px 6px; }
-.query-actions { display: flex; align-items: center; gap: 8px; flex: 1 1 100%; }
+.query-actions { display: flex; align-items: center; gap: 8px; flex: 1 1 100%; padding-inline-end: 32px; }
 .query-actions > .el-ck { flex: 1; }
 @container (min-width: 570px) {
   .query-fields { grid-template-columns: repeat(3, minmax(0,1fr)); }
@@ -1750,3 +1750,5 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 #canvasWrap .investigation-transport { z-index: 40; }
 
 @media (max-width: 900px) { #graphMinimapPanel { right: 6px; } }
+
+.source-ledger-note { display: block; white-space: normal; font-size: 11px; line-height: 1.5; color: var(--muted, #6e8293); margin-top: 4px; }

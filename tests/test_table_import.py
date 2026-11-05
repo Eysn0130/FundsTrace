@@ -3,6 +3,7 @@ import csv
 import datetime as dt
 from decimal import Decimal
 import io
+import json
 import re
 import zipfile
 
@@ -34,6 +35,12 @@ def assert_conserved(plan):
     assert plan["stats"]["total"] == sum(plan["stats"][key] for key in ("accepted", "unresolved", "non_monetary", "non_transaction", "auxiliary"))
     detail_fields = tables.DETAILS_FIELDS | (table_contracts.DETAILS_FIELDS
                                             if plan["profile"] in tables.CONTRACT_PROFILES else frozenset())
+    if plan["profile"] in tables.REFERENCE_ROLE_PROFILES:
+        detail_fields |= tables.FIELD_EVIDENCE_DETAILS
+    if plan["profile"] in tables.TIME_ROLE_PROFILES:
+        detail_fields |= tables.TIME_EVIDENCE_DETAILS
+    if plan["profile"] in tables.SOURCE_LEDGER_PROFILES:
+        detail_fields |= {"source_ledger_evidence"}
     assert all(record["details"].keys() <= detail_fields for record in plan["records"])
     if plan["profile"] in tables.CONTRACT_PROFILES:
         assert all(table_contracts.validate_details(record["details"], record["disposition"], record["reason_code"])
@@ -96,6 +103,9 @@ def test_two_amount_candidates_compare_exactly_after_units_on_every_row():
     assert plan["records"][1]["reason_code"] == "conflicting_amount"
     assert "amount" not in plan["mapping"]
     assert [evidence["candidate_count"] for evidence in plan["mapping_evidence"] if evidence["field"] == "amount"] == [2, 2]
+    assert json.loads(plan['records'][1]['details']['source_field_evidence']) == [
+        {'field': 'amount', 'role': 'amount', 'column': '交易金额', 'column_index': 4, 'raw': '1.23'},
+        {'field': 'amount', 'role': 'amount', 'column': '发生金额(分)', 'column_index': 5, 'raw': '124'}]
     assert_conserved(plan)
 
 
@@ -174,10 +184,15 @@ def test_validation_is_full_not_first_thirty_samples_and_examples_are_only_displ
 
 
 @pytest.mark.parametrize("encoding,delimiter", [("utf-8-sig", ","), ("gb18030", "\t"), ("utf-16", ";"), ("utf-8", "|")])
-def test_encodings_delimiters_preamble_blank_repeated_header_and_bad_width(encoding, delimiter):
+@pytest.mark.parametrize("profile", ["funds-trace-table-v36", "funds-trace-table-v54"])
+def test_encodings_delimiters_preamble_blank_repeated_header_and_bad_width(encoding, delimiter, profile):
     header = ["交易时间", "付款账号", "收款账号", "金额"]
-    plan = csv_plan(header, [["2026-01-01", "A", "B", "1"], [], header, ["2026-01-02", "A", "B", "2", "extra"], ["2026-01-03", "A"]],
-                    prefix=[["测试说明"], []], encoding=encoding, delimiter=delimiter)
+    records = [["2026-01-01", "A", "B", "1"], [], header, ["2026-01-02", "A", "B", "2", "extra"], ["2026-01-03", "A"]]
+    if profile == "funds-trace-table-v54":
+        with pytest.raises(tables.TableImportError, match="CSV已识别表头与数据列数不一致"):
+            csv_plan(header, records, prefix=[["测试说明"], []], encoding=encoding, delimiter=delimiter, profile=profile)
+        return
+    plan = csv_plan(header, records, prefix=[["测试说明"], []], encoding=encoding, delimiter=delimiter, profile=profile)
     assert [record["reason_code"] for record in plan["records"]] == ["preamble", "blank_record", "transaction_valid", "blank_record", "repeated_header", "row_width", "row_width"]
     assert plan["members"][0]["row_count"] == 7
     assert_conserved(plan)
@@ -260,12 +275,36 @@ def test_feedback_status_and_card_fallback_have_closed_meanings():
     assert plan["records"][1]["reason_code"] == "unknown_status"
     assert plan["records"][2]["reason_code"] == "feedback_only"
     assert_conserved(plan)
+    audit = csv_plan(headers, [["2026-01-01", "", "CARD-A", "Synthetic own", "1.23", "9.87", "收", "02", "摘要甲", "备注乙", ""]])
+    assert not audit['rows'] and audit['records'][0]['reason_code'] == 'unknown_status'
+    evidence = json.loads(audit['records'][0]['details']['source_field_evidence'])
+    assert [entry for entry in evidence if entry['field'] == 'summary'] == [
+        {'field': 'summary', 'role': 'summary', 'column': '摘要说明', 'column_index': 9, 'raw': '摘要甲'},
+        {'field': 'summary', 'role': 'summary', 'column': '备注', 'column_index': 10, 'raw': '备注乙'}]
+    assert_conserved(audit)
 
 
-def test_numeric_status_codes_are_not_assumed_for_an_unknown_generic_status_column():
+def test_numeric_status_codes_are_not_assumed_for_an_unknown_generic_status_column(client, make_case):
     plan = a(["date", "payer_account", "payee_account", "amount", "status"], [["2026-01-01", "A", "B", "10", "1"]])
-    assert not plan["rows"]
-    assert plan["records"][0]["reason_code"] == "unknown_status"
+    assert len(plan['rows']) == 1 and plan['rows'][0]['amount'] == Decimal('10.00')
+    assert plan['records'][0]['details']['reported_status'] == 'unknown'
+    historical = a(["date", "payer_account", "payee_account", "amount", "status"],
+                   [["2026-01-01", "A", "B", "10", "1"]], profile=tables.IDENTITY_PROFILE)
+    assert not historical['rows'] and historical['records'][0]['reason_code'] == 'unknown_status'
+    # Public ingress retains this exact unknown numeric state and amount,
+    # without turning the observation into a source-reported success.
+    from test_automatic_table_import import preview
+    from test_feedback_import_api import complete
+    cid = make_case('Synthetic generic numeric status observation')
+    payload = b'date,payer_account,payee_account,amount,status\n2026-01-01,A,B,10,1\n'
+    view = preview(client, cid, payload)
+    assert complete(client, cid, view)['stage'] == 'done'
+    rows = client.get(f'/api/v1/cases/{cid}/flows', params={'granularity': 'observations'}).json()['items']
+    assert len(rows) == 1 and (rows[0]['amount'], rows[0]['payer_account'], rows[0]['payee_account']) == ('10.00', 'A', 'B')
+    records = client.get(f"/api/v1/cases/{cid}/sources/{view['import_id']}/report").json()['items']
+    assert records[0]['details']['reported_status'] == 'unknown'
+    assert 'source_reported_success' not in json.dumps(records)
+    assert client.get(f"/api/v1/cases/{cid}/sources/{view['import_id']}/file").content == payload
 
 
 def test_zero_never_becomes_missing_amount():

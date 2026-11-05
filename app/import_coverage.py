@@ -2,7 +2,7 @@
 import hashlib
 import json
 
-from . import db, table_import, table_cancellation_links
+from . import db, table_import, table_archive, table_cancellation_links
 
 
 def _table_cancellation_conflicts(case_id):
@@ -19,7 +19,7 @@ def _table_cancellation_conflicts(case_id):
     for record in proofs:
         record["details"] = json.loads(record["details_json"])
         by_source.setdefault(record["source_id"], {})[record["record_no"]] = record
-    fields = ",".join("f." + key for key in (*table_import.FLOW_FIELDS, "self_account", "self_name"))
+    fields = ",".join("f." + key for key in (*table_import.STORED_FLOW_FIELDS, "self_account", "self_name"))
     conflicting = set()
     for previous in db.q_raw(f"""select distinct c.source_id proof_source_id,c.record_no proof_record_no,{fields}
         from import_records c
@@ -77,8 +77,8 @@ def _header_resolution_pairs(case_id):
         join import_members m on m.case_id=s.case_id and m.source_id=s.source_id
         join import_members nm on nm.case_id=m.case_id and nm.member_path=m.member_path and nm.sha256=m.sha256
         join import_sources n on n.case_id=nm.case_id and n.source_id=nm.source_id
-          and n.parser_version in ('funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18')
-          and (n.parser_version!='funds-trace-table-v18' or ends_with(lower(n.filename),'.xls'))
+          and n.parser_version in ('funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18','funds-trace-table-v19','funds-trace-table-v20','funds-trace-table-v21','funds-trace-table-v22','funds-trace-table-v23','funds-trace-table-v24','funds-trace-table-v25','funds-trace-table-v26','funds-trace-table-v27','funds-trace-table-v28','funds-trace-table-v29','funds-trace-table-v30','funds-trace-table-v31','funds-trace-table-v32','funds-trace-table-v33','funds-trace-table-v34','funds-trace-table-v35','funds-trace-table-v36','funds-trace-table-v37','funds-trace-table-v38','funds-trace-table-v39','funds-trace-table-v40','funds-trace-table-v41','funds-trace-table-v42','funds-trace-table-v43','funds-trace-table-v44','funds-trace-table-v45','funds-trace-table-v46','funds-trace-table-v47','funds-trace-table-v48','funds-trace-table-v49','funds-trace-table-v50','funds-trace-table-v51','funds-trace-table-v52','funds-trace-table-v53','funds-trace-table-v54','funds-trace-table-v57','funds-trace-table-v66','funds-trace-table-v63','funds-trace-table-v60','funds-trace-table-v55','funds-trace-table-v58','funds-trace-table-v67','funds-trace-table-v64','funds-trace-table-v61','funds-trace-table-v56','funds-trace-table-v59','funds-trace-table-v68','funds-trace-table-v65','funds-trace-table-v62')
+          and (n.parser_version not in ('funds-trace-table-v18','funds-trace-table-v22','funds-trace-table-v25','funds-trace-table-v28','funds-trace-table-v31','funds-trace-table-v34','funds-trace-table-v37','funds-trace-table-v43','funds-trace-table-v46','funds-trace-table-v49','funds-trace-table-v52','funds-trace-table-v55','funds-trace-table-v58','funds-trace-table-v67','funds-trace-table-v64','funds-trace-table-v61') or ends_with(lower(n.filename),'.xls'))
           and n.row_kind='table_record' and n.mode=s.mode
         where s.case_id=? and s.row_kind='table_record'
           and s.parser_version in ('funds-trace-table-v7','funds-trace-table-v8',
@@ -153,9 +153,11 @@ def import_coverage(case_id, *, known_excluded=None):
                            "select null::varchar,null::varchar,null::bigint where false")
         pair_values = ("values " + ",".join("(?,?,?)" for _ in resolution_pairs) if resolution_pairs else
                        "select null::varchar,null::varchar,null::varchar where false")
+        from . import source_ledger
+        ledger_observations = source_ledger.nonpositive_count(case_id)
         excluded_sql = ("?" if known_excluded is not None else
-                        "(select count(*) from flows where case_id=?) - (select count(*) from effective_flows where case_id=?)")
-        excluded_params = [known_excluded] if known_excluded is not None else [case_id, case_id]
+                        "(select count(*) from flows where case_id=?) - (select count(*) from effective_flows where case_id=?) - ?")
+        excluded_params = [known_excluded] if known_excluded is not None else [case_id, case_id, ledger_observations]
         return db.q_raw(f"""
             with recursive {table_cancellation_links.ctes(scoped=True)},
               conflicts(member_path,sha256,source_row) as (
@@ -183,14 +185,15 @@ def import_coverage(case_id, *, known_excluded=None):
                     or (p.proof='unit' and json_extract_string(r.details_json,'$.validation_issues') in (
                     'unknown_unit','unknown_unit,missing_amount')))
                   and nr.disposition in ('imported','duplicate','removed')
-              ), evaluations as (
-              select case when n.record_no is not null then 'resolved_cancellation' else r.disposition end disposition,
+              ), source_classifications as materialized (
+              select r.case_id,r.record_no,r.member_path,m.sha256,r.source_row,s.imported_at,s.source_id,
+                r.disposition,
                 s.parser_version,
                 case when s.parser_version in ('funds-trace-bank-feedback-v1',
                                               'funds-trace-bank-feedback-v2',
                                               'funds-trace-bank-feedback-v3',
                                               'funds-trace-bank-feedback-v4',
-                                              'funds-trace-bank-feedback-v5',
+                                              'funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6','funds-trace-bank-feedback-v7','funds-trace-bank-feedback-v8',
                                               'funds-trace-table-v5',
                                               'funds-trace-table-v6',
                                               'funds-trace-table-v7',
@@ -204,39 +207,37 @@ def import_coverage(case_id, *, known_excluded=None):
                                               'funds-trace-table-v15',
                                               'funds-trace-table-v16',
                                               'funds-trace-table-v17',
-                                              'funds-trace-table-v18',
+                                              'funds-trace-table-v18','funds-trace-table-v19','funds-trace-table-v20','funds-trace-table-v21','funds-trace-table-v22','funds-trace-table-v23','funds-trace-table-v24','funds-trace-table-v25','funds-trace-table-v26','funds-trace-table-v27','funds-trace-table-v28','funds-trace-table-v29','funds-trace-table-v30','funds-trace-table-v31','funds-trace-table-v32','funds-trace-table-v33','funds-trace-table-v34','funds-trace-table-v35','funds-trace-table-v36','funds-trace-table-v37','funds-trace-table-v38','funds-trace-table-v39','funds-trace-table-v40','funds-trace-table-v41','funds-trace-table-v42','funds-trace-table-v43','funds-trace-table-v44','funds-trace-table-v45','funds-trace-table-v46','funds-trace-table-v47','funds-trace-table-v48','funds-trace-table-v49','funds-trace-table-v50','funds-trace-table-v51','funds-trace-table-v52','funds-trace-table-v53','funds-trace-table-v54','funds-trace-table-v57','funds-trace-table-v66','funds-trace-table-v63','funds-trace-table-v60','funds-trace-table-v55','funds-trace-table-v58','funds-trace-table-v67','funds-trace-table-v64','funds-trace-table-v61','funds-trace-table-v56','funds-trace-table-v59','funds-trace-table-v68','funds-trace-table-v65','funds-trace-table-v62',
                                               'funds-trace-table-archive-v1',
                                               'funds-trace-table-archive-v2',
                                               'funds-trace-table-archive-v3',
-                                              'funds-trace-table-archive-v4')
-                  and (s.parser_version!='funds-trace-table-v18' or ends_with(lower(s.filename),'.xls'))
+                                              'funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7','funds-trace-table-archive-v8','funds-trace-table-archive-v9','funds-trace-table-archive-v10','funds-trace-table-archive-v11','funds-trace-table-archive-v12','funds-trace-table-archive-v13','funds-trace-table-archive-v14','funds-trace-table-archive-v15','funds-trace-table-archive-v16','funds-trace-table-archive-v17','funds-trace-table-archive-v18','funds-trace-table-archive-v19','funds-trace-table-archive-v20','funds-trace-table-archive-v21','funds-trace-table-archive-v22','funds-trace-table-archive-v23','funds-trace-table-archive-v24','funds-trace-table-archive-v25','funds-trace-table-archive-v26','funds-trace-table-archive-v27','funds-trace-table-archive-v28','funds-trace-table-archive-v29','funds-trace-table-archive-v30','funds-trace-table-archive-v31','funds-trace-table-archive-v32','funds-trace-table-archive-v33','funds-trace-table-archive-v34','funds-trace-table-archive-v35','funds-trace-table-archive-v36','funds-trace-table-archive-v37','funds-trace-table-archive-v38','funds-trace-table-archive-v39','funds-trace-table-archive-v40','funds-trace-table-archive-v41','funds-trace-table-archive-v42','funds-trace-table-archive-v43','funds-trace-table-archive-v44','funds-trace-table-archive-v45','funds-trace-table-archive-v48','funds-trace-table-archive-v57','funds-trace-table-archive-v54','funds-trace-table-archive-v51','funds-trace-table-archive-v46','funds-trace-table-archive-v49','funds-trace-table-archive-v58','funds-trace-table-archive-v55','funds-trace-table-archive-v52','funds-trace-table-archive-v47','funds-trace-table-archive-v50','funds-trace-table-archive-v59','funds-trace-table-archive-v56','funds-trace-table-archive-v53')
+                  and (s.parser_version not in ('funds-trace-table-v18','funds-trace-table-v22','funds-trace-table-v25','funds-trace-table-v28','funds-trace-table-v31','funds-trace-table-v34','funds-trace-table-v37','funds-trace-table-v43','funds-trace-table-v46','funds-trace-table-v49','funds-trace-table-v52','funds-trace-table-v55','funds-trace-table-v58','funds-trace-table-v67','funds-trace-table-v64','funds-trace-table-v61') or ends_with(lower(s.filename),'.xls'))
                   then false else true end as unsupported_rule,
-                max(case when s.parser_version in ('funds-trace-bank-feedback-v1',
+                case when s.parser_version in ('funds-trace-bank-feedback-v1',
                                                   'funds-trace-bank-feedback-v2',
-                                                  'funds-trace-bank-feedback-v3','funds-trace-bank-feedback-v4','funds-trace-bank-feedback-v5')
+                                                  'funds-trace-bank-feedback-v3','funds-trace-bank-feedback-v4','funds-trace-bank-feedback-v5','funds-trace-bank-feedback-v6','funds-trace-bank-feedback-v7','funds-trace-bank-feedback-v8')
                               and r.reason_code='own_identity_conflict'
-                            or s.parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4')
+                            or s.parser_version in ({table_cancellation_links._profiles(table_archive.CANCELLATION_PROFILES)})
                               and r.reason_code='cancellation_historical_conflict'
-                            or s.parser_version in ('funds-trace-table-v6','funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18')
+                            or s.parser_version in ('funds-trace-table-v6','funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18','funds-trace-table-v19','funds-trace-table-v20','funds-trace-table-v21','funds-trace-table-v22','funds-trace-table-v23','funds-trace-table-v24','funds-trace-table-v25','funds-trace-table-v26','funds-trace-table-v27','funds-trace-table-v28','funds-trace-table-v29','funds-trace-table-v30','funds-trace-table-v31','funds-trace-table-v32','funds-trace-table-v33','funds-trace-table-v34','funds-trace-table-v35','funds-trace-table-v36','funds-trace-table-v37','funds-trace-table-v38','funds-trace-table-v39','funds-trace-table-v40','funds-trace-table-v41','funds-trace-table-v42','funds-trace-table-v43','funds-trace-table-v44','funds-trace-table-v45','funds-trace-table-v46','funds-trace-table-v47','funds-trace-table-v48','funds-trace-table-v49','funds-trace-table-v50','funds-trace-table-v51','funds-trace-table-v52','funds-trace-table-v53','funds-trace-table-v54','funds-trace-table-v57','funds-trace-table-v66','funds-trace-table-v63','funds-trace-table-v60','funds-trace-table-v55','funds-trace-table-v58','funds-trace-table-v67','funds-trace-table-v64','funds-trace-table-v61','funds-trace-table-v56','funds-trace-table-v59','funds-trace-table-v68','funds-trace-table-v65','funds-trace-table-v62')
                               and r.disposition='unresolved'
                               and json_extract_string(r.details_json,'$.counterparty_basis') in (?,?)
-                            or s.parser_version in ('funds-trace-table-v5','funds-trace-table-v6','funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18','funds-trace-table-archive-v1','funds-trace-table-archive-v2','funds-trace-table-archive-v3','funds-trace-table-archive-v4')
+                            or s.parser_version in ('funds-trace-table-v5','funds-trace-table-v6','funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18','funds-trace-table-v19','funds-trace-table-v20','funds-trace-table-v21','funds-trace-table-v22','funds-trace-table-v23','funds-trace-table-v24','funds-trace-table-v25','funds-trace-table-v26','funds-trace-table-v27','funds-trace-table-v28','funds-trace-table-v29','funds-trace-table-v30','funds-trace-table-v31','funds-trace-table-v32','funds-trace-table-v33','funds-trace-table-v34','funds-trace-table-v35','funds-trace-table-v36','funds-trace-table-v37','funds-trace-table-v38','funds-trace-table-v39','funds-trace-table-v40','funds-trace-table-v41','funds-trace-table-v42','funds-trace-table-v43','funds-trace-table-v44','funds-trace-table-v45','funds-trace-table-v46','funds-trace-table-v47','funds-trace-table-v48','funds-trace-table-v49','funds-trace-table-v50','funds-trace-table-v51','funds-trace-table-v52','funds-trace-table-v53','funds-trace-table-v54','funds-trace-table-v57','funds-trace-table-v66','funds-trace-table-v63','funds-trace-table-v60','funds-trace-table-v55','funds-trace-table-v58','funds-trace-table-v67','funds-trace-table-v64','funds-trace-table-v61','funds-trace-table-v56','funds-trace-table-v59','funds-trace-table-v68','funds-trace-table-v65','funds-trace-table-v62','funds-trace-table-archive-v1','funds-trace-table-archive-v2','funds-trace-table-archive-v3','funds-trace-table-archive-v4','funds-trace-table-archive-v5','funds-trace-table-archive-v6','funds-trace-table-archive-v7','funds-trace-table-archive-v8','funds-trace-table-archive-v9','funds-trace-table-archive-v10','funds-trace-table-archive-v11','funds-trace-table-archive-v12','funds-trace-table-archive-v13','funds-trace-table-archive-v14','funds-trace-table-archive-v15','funds-trace-table-archive-v16','funds-trace-table-archive-v17','funds-trace-table-archive-v18','funds-trace-table-archive-v19','funds-trace-table-archive-v20','funds-trace-table-archive-v21','funds-trace-table-archive-v22','funds-trace-table-archive-v23','funds-trace-table-archive-v24','funds-trace-table-archive-v25','funds-trace-table-archive-v26','funds-trace-table-archive-v27','funds-trace-table-archive-v28','funds-trace-table-archive-v29','funds-trace-table-archive-v30','funds-trace-table-archive-v31','funds-trace-table-archive-v32','funds-trace-table-archive-v33','funds-trace-table-archive-v34','funds-trace-table-archive-v35','funds-trace-table-archive-v36','funds-trace-table-archive-v37','funds-trace-table-archive-v38','funds-trace-table-archive-v39','funds-trace-table-archive-v40','funds-trace-table-archive-v41','funds-trace-table-archive-v42','funds-trace-table-archive-v43','funds-trace-table-archive-v44','funds-trace-table-archive-v45','funds-trace-table-archive-v48','funds-trace-table-archive-v57','funds-trace-table-archive-v54','funds-trace-table-archive-v51','funds-trace-table-archive-v46','funds-trace-table-archive-v49','funds-trace-table-archive-v58','funds-trace-table-archive-v55','funds-trace-table-archive-v52','funds-trace-table-archive-v47','funds-trace-table-archive-v50','funds-trace-table-archive-v59','funds-trace-table-archive-v56','funds-trace-table-archive-v53')
                               and r.disposition='unresolved'
                               and r.reason_code='conflicting_field'
                               and json_extract_string(r.details_json,'$.counterparty_basis')=?
-                            or s.parser_version in ('funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18') and r.disposition='unresolved'
+                         then 1 else 0 end as direct_conflict,
+                case when s.parser_version in ('funds-trace-table-v7','funds-trace-table-v8','funds-trace-table-v9','funds-trace-table-v10','funds-trace-table-v11','funds-trace-table-v12','funds-trace-table-v13','funds-trace-table-v14','funds-trace-table-v15','funds-trace-table-v16','funds-trace-table-v17','funds-trace-table-v18','funds-trace-table-v19','funds-trace-table-v20','funds-trace-table-v21','funds-trace-table-v22','funds-trace-table-v23','funds-trace-table-v24','funds-trace-table-v25','funds-trace-table-v26','funds-trace-table-v27','funds-trace-table-v28','funds-trace-table-v29','funds-trace-table-v30','funds-trace-table-v31','funds-trace-table-v32','funds-trace-table-v33','funds-trace-table-v34','funds-trace-table-v35','funds-trace-table-v36','funds-trace-table-v37','funds-trace-table-v38','funds-trace-table-v39','funds-trace-table-v40','funds-trace-table-v41','funds-trace-table-v42','funds-trace-table-v43','funds-trace-table-v44','funds-trace-table-v45','funds-trace-table-v46','funds-trace-table-v47','funds-trace-table-v48','funds-trace-table-v49','funds-trace-table-v50','funds-trace-table-v51','funds-trace-table-v52','funds-trace-table-v53','funds-trace-table-v54','funds-trace-table-v57','funds-trace-table-v66','funds-trace-table-v63','funds-trace-table-v60','funds-trace-table-v55','funds-trace-table-v58','funds-trace-table-v67','funds-trace-table-v64','funds-trace-table-v61','funds-trace-table-v56','funds-trace-table-v59','funds-trace-table-v68','funds-trace-table-v65','funds-trace-table-v62') and r.disposition='unresolved'
                               and json_extract_string(r.details_json,'$.validation_basis')=?
-                              and h.record_no is null
-                            or c.source_row is not null
-                         then 1 else 0 end) over (
-                  partition by r.member_path, m.sha256, r.source_row
-                ) as identity_conflict,
-                row_number() over (
-                  partition by r.member_path, m.sha256, r.source_row
-                  order by case s.parser_version
+                         then 1 else 0 end as header_conflict,
+                case s.parser_version
                     when 'funds-trace-bank-feedback-v3' then 3
                     when 'funds-trace-bank-feedback-v4' then 4
                     when 'funds-trace-bank-feedback-v5' then 4.5
+                    when 'funds-trace-bank-feedback-v6' then 4.75
+                    when 'funds-trace-bank-feedback-v7' then 4.875
+                    when 'funds-trace-bank-feedback-v8' then 4.9375
                     when 'funds-trace-table-v5' then 5
                     when 'funds-trace-table-v6' then 5.5
                     when 'funds-trace-table-v7' then 5.75
@@ -251,24 +252,140 @@ def import_coverage(case_id, *, known_excluded=None):
                     when 'funds-trace-table-v16' then 5.99951171875
                     when 'funds-trace-table-v17' then 5.999755859375
                     when 'funds-trace-table-v18' then 5.9998779296875
+                    when 'funds-trace-table-v19' then 5.99993896484375
+                    when 'funds-trace-table-v20' then 5.999969482421875
+                    when 'funds-trace-table-v21' then 5.9999847412109375
+                    when 'funds-trace-table-v22' then 5.999992370605469
+                    when 'funds-trace-table-v23' then 5.999996185302734
+                    when 'funds-trace-table-v24' then 5.999998092651367
+                    when 'funds-trace-table-v25' then 5.999999046325684
+                    when 'funds-trace-table-v26' then 5.999999523162842
+                    when 'funds-trace-table-v27' then 5.999999761581421
+                    when 'funds-trace-table-v28' then 5.99999988079071
+                    when 'funds-trace-table-v29' then 5.999999940395355
+                    when 'funds-trace-table-v30' then 5.999999970197678
+                    when 'funds-trace-table-v31' then 5.999999985098839
+                    when 'funds-trace-table-v32' then 5.999999992549419
+                    when 'funds-trace-table-v33' then 5.999999996274710
+                    when 'funds-trace-table-v34' then 5.999999998137355
+                    when 'funds-trace-table-v35' then 5.999999999068678
+                    when 'funds-trace-table-v36' then 5.999999999534339
+                    when 'funds-trace-table-v37' then 5.999999999767169
+                    when 'funds-trace-table-v38' then 5.999999999883585
+                    when 'funds-trace-table-v39' then 5.999999999941792
+                    when 'funds-trace-table-v40' then 5.999999999970896
+                    when 'funds-trace-table-v41' then 5.999999999985448
+                    when 'funds-trace-table-v42' then 5.999999999992724
+                    when 'funds-trace-table-v43' then 5.999999999996362
+                    when 'funds-trace-table-v44' then 5.999999999998181
+                    when 'funds-trace-table-v45' then 5.9999999999990905
+                    when 'funds-trace-table-v46' then 5.999999999999545
+                    when 'funds-trace-table-v47' then 5.999999999999773
+                    when 'funds-trace-table-v48' then 5.999999999999886
+                    when 'funds-trace-table-v49' then 5.999999999999943
+                    when 'funds-trace-table-v50' then 5.999999999999972
+                    when 'funds-trace-table-v51' then 5.999999999999973
+                    when 'funds-trace-table-v52' then 5.999999999999974
+                    when 'funds-trace-table-v53' then 5.999999999999975
+                    when 'funds-trace-table-v54' then 8.9999999999991
+                    when 'funds-trace-table-v55' then 8.9999999999992
+                    when 'funds-trace-table-v56' then 8.9999999999993
+                    when 'funds-trace-table-v57' then 9.9999999999991
+                    when 'funds-trace-table-v58' then 9.9999999999992
+                    when 'funds-trace-table-v59' then 9.9999999999993
+                    when 'funds-trace-table-v60' then 10.9999999999991
+                    when 'funds-trace-table-v66' then 12.9999999999991
+                    when 'funds-trace-table-v63' then 11.9999999999991
+                    when 'funds-trace-table-v61' then 10.9999999999992
+                    when 'funds-trace-table-v67' then 12.9999999999992
+                    when 'funds-trace-table-v64' then 11.9999999999992
+                    when 'funds-trace-table-v62' then 10.9999999999993
+                    when 'funds-trace-table-v68' then 12.9999999999993
+                    when 'funds-trace-table-v65' then 11.9999999999993
                     when 'funds-trace-table-archive-v1' then 6
                     when 'funds-trace-table-archive-v2' then 7
                     when 'funds-trace-table-archive-v3' then 8
                     when 'funds-trace-table-archive-v4' then 8.5
+                    when 'funds-trace-table-archive-v5' then 8.75
+                    when 'funds-trace-table-archive-v6' then 8.875
+                    when 'funds-trace-table-archive-v7' then 8.9375
+                    when 'funds-trace-table-archive-v8' then 8.96875
+                    when 'funds-trace-table-archive-v9' then 8.984375
+                    when 'funds-trace-table-archive-v10' then 8.9921875
+                    when 'funds-trace-table-archive-v11' then 8.99609375
+                    when 'funds-trace-table-archive-v12' then 8.998046875
+                    when 'funds-trace-table-archive-v13' then 8.9990234375
+                    when 'funds-trace-table-archive-v14' then 8.99951171875
+                    when 'funds-trace-table-archive-v15' then 8.999755859375
+                    when 'funds-trace-table-archive-v16' then 8.9998779296875
+                    when 'funds-trace-table-archive-v17' then 8.99993896484375
+                    when 'funds-trace-table-archive-v18' then 8.999969482421875
+                    when 'funds-trace-table-archive-v19' then 8.999984741210938
+                    when 'funds-trace-table-archive-v20' then 8.999992370605469
+                    when 'funds-trace-table-archive-v21' then 8.999996185302734
+                    when 'funds-trace-table-archive-v22' then 8.999998092651367
+                    when 'funds-trace-table-archive-v23' then 8.999999046325684
+                    when 'funds-trace-table-archive-v24' then 8.999999523162842
+                    when 'funds-trace-table-archive-v25' then 8.999999761581421
+                    when 'funds-trace-table-archive-v26' then 8.999999880790711
+                    when 'funds-trace-table-archive-v27' then 8.999999940395355
+                    when 'funds-trace-table-archive-v28' then 8.999999970197678
+                    when 'funds-trace-table-archive-v29' then 8.999999985098839
+                    when 'funds-trace-table-archive-v30' then 8.99999999254942
+                    when 'funds-trace-table-archive-v31' then 8.99999999627471
+                    when 'funds-trace-table-archive-v32' then 8.999999998137355
+                    when 'funds-trace-table-archive-v33' then 8.999999999068677
+                    when 'funds-trace-table-archive-v34' then 8.999999999534339
+                    when 'funds-trace-table-archive-v35' then 8.99999999976717
+                    when 'funds-trace-table-archive-v36' then 8.999999999883585
+                    when 'funds-trace-table-archive-v37' then 8.999999999941792
+                    when 'funds-trace-table-archive-v38' then 8.999999999970896
+                    when 'funds-trace-table-archive-v39' then 8.999999999985448
+                    when 'funds-trace-table-archive-v40' then 8.999999999992724
+                    when 'funds-trace-table-archive-v41' then 8.999999999996362
+                    when 'funds-trace-table-archive-v42' then 8.999999999997
+                    when 'funds-trace-table-archive-v43' then 8.999999999998
+                    when 'funds-trace-table-archive-v44' then 8.999999999999
+                    when 'funds-trace-table-archive-v45' then 8.9999999999991
+                    when 'funds-trace-table-archive-v46' then 8.9999999999992
+                    when 'funds-trace-table-archive-v47' then 8.9999999999993
+                    when 'funds-trace-table-archive-v48' then 9.9999999999991
+                    when 'funds-trace-table-archive-v49' then 9.9999999999992
+                    when 'funds-trace-table-archive-v50' then 9.9999999999993
+                    when 'funds-trace-table-archive-v51' then 10.9999999999991
+                    when 'funds-trace-table-archive-v57' then 12.9999999999991
+                    when 'funds-trace-table-archive-v54' then 11.9999999999991
+                    when 'funds-trace-table-archive-v52' then 10.9999999999992
+                    when 'funds-trace-table-archive-v58' then 12.9999999999992
+                    when 'funds-trace-table-archive-v55' then 11.9999999999992
+                    when 'funds-trace-table-archive-v53' then 10.9999999999993
+                    when 'funds-trace-table-archive-v59' then 12.9999999999993
+                    when 'funds-trace-table-archive-v56' then 11.9999999999993
                     when 'funds-trace-bank-feedback-v2' then 2
-                    when 'funds-trace-bank-feedback-v1' then 1 else 9 end desc,
-                    s.imported_at desc nulls last, s.source_id desc
-                ) as assessment_rank
+                    when 'funds-trace-bank-feedback-v1' then 1 else 9 end as priority
               from import_records r
               join import_members m on m.case_id=r.case_id and m.source_id=r.source_id
                 and m.member_path=r.member_path
               join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
-              left join conflicts c on c.member_path=r.member_path and c.sha256=m.sha256 and c.source_row=r.source_row
+              where r.case_id=? and s.row_kind in ('archive_record','table_record')
+            ), classified as materialized (
+              select r.member_path,r.sha256,r.source_row,r.imported_at,r.source_id,
+                case when n.record_no is not null then 'resolved_cancellation' else r.disposition end disposition,
+                r.parser_version,r.unsupported_rule,r.priority,
+                case when r.direct_conflict=1 or r.header_conflict=1 and h.record_no is null
+                          or c.source_row is not null then 1 else 0 end row_conflict
+              from source_classifications r
+              left join conflicts c on c.member_path=r.member_path and c.sha256=r.sha256 and c.source_row=r.source_row
               left join resolved h on h.source_id=r.source_id and h.record_no=r.record_no
               left join a02_resolved_negative n on n.case_id=r.case_id and n.source_id=r.source_id and n.record_no=r.record_no
-              where r.case_id=? and s.row_kind in ('archive_record','table_record')
+            ), evaluations as (
+              select disposition,parser_version,unsupported_rule,
+                max(row_conflict) over (partition by member_path,sha256,source_row) identity_conflict,
+                row_number() over (partition by member_path,sha256,source_row
+                  order by unsupported_rule desc,priority desc,imported_at desc nulls last,source_id desc) assessment_rank
+              from classified
             )
-            select count(*) filter (where parser_version in ('funds-trace-table-archive-v3','funds-trace-table-archive-v4') and disposition='cancelled') table_proofs,
+            select count(*) filter (where parser_version in ({table_cancellation_links._profiles(table_archive.CANCELLATION_PROFILES)}) and disposition='cancelled') table_proofs,
                    count(*) filter (where unsupported_rule or identity_conflict=1
                                           or disposition in ('review','unresolved')) unresolved_records,
                    count(*) filter (where not unsupported_rule and identity_conflict=0
@@ -285,6 +402,8 @@ def import_coverage(case_id, *, known_excluded=None):
     with db._lock:
         resolution_pairs = _header_resolution_pairs(case_id)
         row = read_coverage(set(), resolution_pairs)
+        event_conflicts = db.q_raw("""select count(*) n from event_members m join effective_flows f
+            on f.case_id=m.case_id and f.id=m.flow_id where m.case_id=? and m.status='conflict'""", [case_id])[0]['n']
         if row["table_proofs"]:
             conflicts = _table_cancellation_conflicts(case_id)
             if conflicts:
@@ -293,4 +412,4 @@ def import_coverage(case_id, *, known_excluded=None):
             "unresolved_records": row["unresolved_records"],
             "non_monetary_records": row["non_monetary_records"],
             "cancelled_records": row["cancelled_records"], "excluded_flows": row["excluded_flows"],
-            "financial_interpretation_complete": row["unresolved_records"] == 0}
+            "financial_interpretation_complete": row["unresolved_records"] == 0 and event_conflicts == 0}

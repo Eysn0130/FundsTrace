@@ -72,3 +72,13 @@ describe('account registry read adapter', () => {
     await expect(accountRegistryApi.profile(caseId, account, new AbortController().signal)).rejects.toThrow(/账户资料响应不完整/);
   });
 });
+
+
+it('keeps an unknown event count and amount distinct from known source observations', async () => {
+  const value = { ...accountProfile, cnt: null, in_cnt: null, in_amt: null,
+    in_totals: [{ currency: 'CNY', amount: null }], funds: { observation_count: 2 } };
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(value), { status: 200 }));
+  const result = await accountRegistryApi.profile(caseId, account, new AbortController().signal);
+  expect(result.cnt).toBeNull(); expect(result.in_totals[0].amount).toBeNull();
+  expect(result.funds?.observation_count).toBe(2);
+});

@@ -106,6 +106,23 @@
         "title": "BadExample",
         "type": "object"
       },
+      "Body_v1_directory_preview": {
+        "properties": {
+          "files": {
+            "items": {
+              "contentMediaType": "application/octet-stream",
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "title": "Body_v1_directory_preview",
+        "type": "object"
+      },
       "Body_v1_upload_preview": {
         "properties": {
           "file": {
@@ -206,10 +223,21 @@
           },
           "amount_totals": {
             "items": {
-              "$ref": "#/components/schemas/CurrencyAmount"
+              "$ref": "#/components/schemas/ProjectedCurrencyAmount"
             },
             "title": "Amount Totals",
             "type": "array"
+          },
+          "analysis_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Revision"
           },
           "batches": {
             "title": "Batches",
@@ -231,9 +259,36 @@
             ],
             "title": "Currency"
           },
+          "event_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EventSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "flows": {
-            "title": "Flows",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flows"
+          },
+          "funds": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FundsProjection"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "import_coverage": {
             "anyOf": [
@@ -244,6 +299,54 @@
                 "type": "null"
               }
             ]
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolution_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Revision"
+          },
+          "source_ledger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceLedgerSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "statistics_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "typed-account-evidence-v1",
+                  "evidence-bounded-funds-v1",
+                  "source-observations-v1",
+                  "selected-transactions-v1"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statistics Policy"
           }
         },
         "required": [
@@ -406,9 +509,93 @@
         "title": "CurrencyAmount",
         "type": "object"
       },
+      "EventSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "complete_event_total": {
+            "title": "Complete Event Total",
+            "type": "boolean"
+          },
+          "confirmed_amount_totals": {
+            "items": {
+              "$ref": "#/components/schemas/CurrencyAmount"
+            },
+            "title": "Confirmed Amount Totals",
+            "type": "array"
+          },
+          "confirmed_entries": {
+            "title": "Confirmed Entries",
+            "type": "integer"
+          },
+          "confirmed_events": {
+            "title": "Confirmed Events",
+            "type": "integer"
+          },
+          "conflict_entries": {
+            "title": "Conflict Entries",
+            "type": "integer"
+          },
+          "excluded_reference_entries": {
+            "title": "Excluded Reference Entries",
+            "type": "integer"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "observed_entries": {
+            "title": "Observed Entries",
+            "type": "integer"
+          },
+          "policy": {
+            "title": "Policy",
+            "type": "string"
+          },
+          "reference_observations": {
+            "title": "Reference Observations",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "unknown_entries": {
+            "title": "Unknown Entries",
+            "type": "integer"
+          },
+          "unresolved_reference_observations": {
+            "title": "Unresolved Reference Observations",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "policy",
+          "revision",
+          "confirmed_events",
+          "confirmed_entries",
+          "conflict_entries",
+          "unknown_entries",
+          "observed_entries",
+          "reference_observations",
+          "excluded_reference_entries",
+          "unresolved_reference_observations",
+          "confirmed_amount_totals",
+          "complete_event_total",
+          "note"
+        ],
+        "title": "EventSummary",
+        "type": "object"
+      },
       "FeedbackExample": {
         "additionalProperties": false,
         "properties": {
+          "details": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Details",
+            "type": "object"
+          },
           "member_path": {
             "title": "Member Path",
             "type": "string"
@@ -577,9 +764,27 @@
         "additionalProperties": false,
         "properties": {
           "amount": {
-            "pattern": "^-?[0-9]+\\.[0-9]{2}$",
-            "title": "Amount",
-            "type": "string"
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "analysis_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Revision"
           },
           "balance": {
             "anyOf": [
@@ -618,10 +823,49 @@
             "title": "Currency",
             "type": "string"
           },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "event_state": {
+            "default": "unknown",
+            "title": "Event State",
+            "type": "string"
+          },
+          "granularity": {
+            "default": "observation",
+            "enum": [
+              "confirmed_event",
+              "unresolved_observation",
+              "observation"
+            ],
+            "title": "Granularity",
+            "type": "string"
+          },
           "id": {
             "pattern": "^[1-9][0-9]*$",
             "title": "Id",
             "type": "string"
+          },
+          "observation_count": {
+            "default": 1,
+            "title": "Observation Count",
+            "type": "integer"
+          },
+          "observation_ids": {
+            "items": {
+              "pattern": "^[1-9][0-9]*$",
+              "type": "string"
+            },
+            "title": "Observation Ids",
+            "type": "array"
           },
           "payee_account": {
             "title": "Payee Account",
@@ -631,8 +875,28 @@
             "title": "Payee Bank",
             "type": "string"
           },
+          "payee_card": {
+            "default": "",
+            "title": "Payee Card",
+            "type": "string"
+          },
+          "payee_card_state": {
+            "default": "",
+            "title": "Payee Card State",
+            "type": "string"
+          },
+          "payee_display_account": {
+            "default": "",
+            "title": "Payee Display Account",
+            "type": "string"
+          },
           "payee_name": {
             "title": "Payee Name",
+            "type": "string"
+          },
+          "payee_source_account": {
+            "default": "",
+            "title": "Payee Source Account",
             "type": "string"
           },
           "payer_account": {
@@ -643,17 +907,82 @@
             "title": "Payer Bank",
             "type": "string"
           },
+          "payer_card": {
+            "default": "",
+            "title": "Payer Card",
+            "type": "string"
+          },
+          "payer_card_state": {
+            "default": "",
+            "title": "Payer Card State",
+            "type": "string"
+          },
+          "payer_display_account": {
+            "default": "",
+            "title": "Payer Display Account",
+            "type": "string"
+          },
           "payer_name": {
             "title": "Payer Name",
+            "type": "string"
+          },
+          "payer_source_account": {
+            "default": "",
+            "title": "Payer Source Account",
+            "type": "string"
+          },
+          "raw_payee_account": {
+            "default": "",
+            "title": "Raw Payee Account",
+            "type": "string"
+          },
+          "raw_payer_account": {
+            "default": "",
+            "title": "Raw Payer Account",
+            "type": "string"
+          },
+          "raw_self_account": {
+            "default": "",
+            "title": "Raw Self Account",
             "type": "string"
           },
           "self_account": {
             "title": "Self Account",
             "type": "string"
           },
+          "self_card": {
+            "default": "",
+            "title": "Self Card",
+            "type": "string"
+          },
+          "self_card_state": {
+            "default": "",
+            "title": "Self Card State",
+            "type": "string"
+          },
+          "self_display_account": {
+            "default": "",
+            "title": "Self Display Account",
+            "type": "string"
+          },
           "self_name": {
             "title": "Self Name",
             "type": "string"
+          },
+          "self_source_account": {
+            "default": "",
+            "title": "Self Source Account",
+            "type": "string"
+          },
+          "source_ledger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceLedgerInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "source_member": {
             "anyOf": [
@@ -706,6 +1035,59 @@
               }
             ],
             "title": "Trade Time"
+          },
+          "trade_time_basis": {
+            "default": "unqualified",
+            "enum": [
+              "utc",
+              "unqualified"
+            ],
+            "title": "Trade Time Basis",
+            "type": "string"
+          },
+          "trade_time_offset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Time Offset"
+          },
+          "trade_time_original": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Time Original"
+          },
+          "trade_time_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Time Utc"
+          },
+          "trade_time_wall": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Time Wall"
           }
         },
         "required": [
@@ -734,10 +1116,31 @@
       "FlowPage": {
         "additionalProperties": false,
         "properties": {
+          "analysis_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Revision"
+          },
           "case_id": {
             "pattern": "^[1-9][0-9]*$",
             "title": "Case Id",
             "type": "string"
+          },
+          "funds": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FundsProjection"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "items": {
             "items": {
@@ -824,6 +1227,64 @@
             ],
             "title": "Mode",
             "type": "string"
+          },
+          "observation_account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Account"
+          },
+          "observation_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Amount"
+          },
+          "observation_balance": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Balance"
+          },
+          "observation_currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Currency"
+          },
+          "observation_flow_id": {
+            "anyOf": [
+              {
+                "pattern": "^[1-9][0-9]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observation Flow Id"
           },
           "origin": {
             "enum": [
@@ -941,6 +1402,130 @@
           "page_size"
         ],
         "title": "FlowSourceList",
+        "type": "object"
+      },
+      "FundsAmount": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "lower": {
+            "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+            "title": "Lower",
+            "type": "string"
+          },
+          "upper": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upper"
+          }
+        },
+        "required": [
+          "currency",
+          "amount",
+          "lower",
+          "upper"
+        ],
+        "title": "FundsAmount",
+        "type": "object"
+      },
+      "FundsCount": {
+        "additionalProperties": false,
+        "properties": {
+          "lower": {
+            "title": "Lower",
+            "type": "integer"
+          },
+          "upper": {
+            "title": "Upper",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lower",
+          "upper"
+        ],
+        "title": "FundsCount",
+        "type": "object"
+      },
+      "FundsProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed_event_count": {
+            "title": "Confirmed Event Count",
+            "type": "integer"
+          },
+          "count": {
+            "$ref": "#/components/schemas/FundsCount"
+          },
+          "observation_count": {
+            "title": "Observation Count",
+            "type": "integer"
+          },
+          "policy": {
+            "const": "evidence-bounded-funds-v1",
+            "title": "Policy",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "exact",
+              "bounded",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "totals": {
+            "items": {
+              "$ref": "#/components/schemas/FundsAmount"
+            },
+            "title": "Totals",
+            "type": "array"
+          },
+          "unresolved_observation_count": {
+            "title": "Unresolved Observation Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "policy",
+          "status",
+          "observation_count",
+          "confirmed_event_count",
+          "unresolved_observation_count",
+          "count",
+          "totals"
+        ],
+        "title": "FundsProjection",
         "type": "object"
       },
       "ImportCoverage": {
@@ -1132,6 +1717,16 @@
             },
             "title": "Preview",
             "type": "array"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "self_accounts_in_file": {
             "items": {
@@ -1328,6 +1923,16 @@
           "ok": {
             "title": "Ok",
             "type": "integer"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "rows_dup": {
             "title": "Rows Dup",
@@ -1662,6 +2267,59 @@
               }
             ],
             "title": "Trade Time"
+          },
+          "trade_time_basis": {
+            "default": "unqualified",
+            "enum": [
+              "utc",
+              "unqualified"
+            ],
+            "title": "Trade Time Basis",
+            "type": "string"
+          },
+          "trade_time_offset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Time Offset"
+          },
+          "trade_time_original": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Time Original"
+          },
+          "trade_time_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Time Utc"
+          },
+          "trade_time_wall": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Time Wall"
           }
         },
         "required": [
@@ -1715,6 +2373,40 @@
         "title": "PreviewStats",
         "type": "object"
       },
+      "ProjectedCurrencyAmount": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          }
+        },
+        "required": [
+          "currency",
+          "amount"
+        ],
+        "title": "ProjectedCurrencyAmount",
+        "type": "object"
+      },
       "RepreviewRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1739,6 +2431,436 @@
           "mapping"
         ],
         "title": "RepreviewRequest",
+        "type": "object"
+      },
+      "ResolutionEntity": {
+        "additionalProperties": false,
+        "properties": {
+          "account_number": {
+            "title": "Account Number",
+            "type": "string"
+          },
+          "bank": {
+            "title": "Bank",
+            "type": "string"
+          },
+          "cards": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cards",
+            "type": "array"
+          },
+          "display_account": {
+            "title": "Display Account",
+            "type": "string"
+          },
+          "display_basis": {
+            "default": "account_number",
+            "title": "Display Basis",
+            "type": "string"
+          },
+          "display_card_candidates": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Display Card Candidates",
+            "type": "array"
+          },
+          "display_card_order": {
+            "default": "none",
+            "title": "Display Card Order",
+            "type": "string"
+          },
+          "display_card_tied": {
+            "default": false,
+            "title": "Display Card Tied",
+            "type": "boolean"
+          },
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "account",
+              "card",
+              "subaccount",
+              "identifier"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name_conflict": {
+            "default": false,
+            "title": "Name Conflict",
+            "type": "boolean"
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Names",
+            "type": "array"
+          },
+          "parent_entity_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Entity Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id",
+          "kind",
+          "account_number",
+          "display_account",
+          "bank",
+          "cards",
+          "parent_entity_id",
+          "names",
+          "status"
+        ],
+        "title": "ResolutionEntity",
+        "type": "object"
+      },
+      "ResolutionRegistry": {
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Case Id",
+            "type": "string"
+          },
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/ResolutionEntity"
+            },
+            "title": "Entities",
+            "type": "array"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "case_id",
+          "resolution",
+          "entities"
+        ],
+        "title": "ResolutionRegistry",
+        "type": "object"
+      },
+      "ResolutionSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "auxiliary_records": {
+            "title": "Auxiliary Records",
+            "type": "integer"
+          },
+          "conflicts": {
+            "title": "Conflicts",
+            "type": "integer"
+          },
+          "entities": {
+            "title": "Entities",
+            "type": "integer"
+          },
+          "evidence_records": {
+            "title": "Evidence Records",
+            "type": "integer"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "policy": {
+            "const": "typed-account-evidence-v1",
+            "title": "Policy",
+            "type": "string"
+          },
+          "resolved_endpoints": {
+            "title": "Resolved Endpoints",
+            "type": "integer"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "unresolved_endpoints": {
+            "title": "Unresolved Endpoints",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "policy",
+          "revision",
+          "entities",
+          "resolved_endpoints",
+          "unresolved_endpoints",
+          "conflicts",
+          "auxiliary_records",
+          "evidence_records",
+          "note"
+        ],
+        "title": "ResolutionSummary",
+        "type": "object"
+      },
+      "SourceBalanceChange": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After"
+          },
+          "basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Basis"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before"
+          },
+          "difference": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Difference"
+          },
+          "previous_source_row": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Source Row"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "observed",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "difference",
+          "before",
+          "after",
+          "basis",
+          "reason",
+          "source_id",
+          "previous_source_row"
+        ],
+        "title": "SourceBalanceChange",
+        "type": "object"
+      },
+      "SourceLedgerInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "balance_change": {
+            "$ref": "#/components/schemas/SourceBalanceChange"
+          },
+          "counter_account": {
+            "default": "",
+            "title": "Counter Account",
+            "type": "string"
+          },
+          "counter_bank": {
+            "default": "",
+            "title": "Counter Bank",
+            "type": "string"
+          },
+          "counter_name": {
+            "default": "",
+            "title": "Counter Name",
+            "type": "string"
+          },
+          "direction": {
+            "enum": [
+              "in",
+              "out",
+              "unknown"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "economic_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Economic Amount"
+          },
+          "economic_effect": {
+            "enum": [
+              "unknown",
+              "no_movement",
+              "paired_cancellation"
+            ],
+            "title": "Economic Effect",
+            "type": "string"
+          },
+          "member_path": {
+            "title": "Member Path",
+            "type": "string"
+          },
+          "policy": {
+            "enum": [
+              "source-ledger-observations-v1",
+              "source-ledger-unoriented-v1",
+              "source-ledger-unoriented-v2"
+            ],
+            "title": "Policy",
+            "type": "string"
+          },
+          "reported_status": {
+            "title": "Reported Status",
+            "type": "string"
+          },
+          "self_account": {
+            "title": "Self Account",
+            "type": "string"
+          },
+          "signed_amount": {
+            "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+            "title": "Signed Amount",
+            "type": "string"
+          },
+          "source_direction": {
+            "title": "Source Direction",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_row": {
+            "title": "Source Row",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "policy",
+          "signed_amount",
+          "source_direction",
+          "self_account",
+          "direction",
+          "economic_effect",
+          "economic_amount",
+          "reported_status",
+          "balance_change",
+          "source_id",
+          "member_path",
+          "source_row"
+        ],
+        "title": "SourceLedgerInfo",
+        "type": "object"
+      },
+      "SourceLedgerSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "paired_count": {
+            "title": "Paired Count",
+            "type": "integer"
+          },
+          "unknown_effect_count": {
+            "title": "Unknown Effect Count",
+            "type": "integer"
+          },
+          "zero_count": {
+            "title": "Zero Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "unknown_effect_count",
+          "zero_count",
+          "paired_count"
+        ],
+        "title": "SourceLedgerSummary",
         "type": "object"
       },
       "TableSummary": {
@@ -1806,6 +2928,11 @@
             "title": "Members",
             "type": "array"
           },
+          "non_business_attachments": {
+            "default": 0,
+            "title": "Non Business Attachments",
+            "type": "integer"
+          },
           "non_monetary": {
             "title": "Non Monetary",
             "type": "integer"
@@ -1839,6 +2966,11 @@
             },
             "title": "Unresolved Examples",
             "type": "array"
+          },
+          "unsupported_attachments": {
+            "default": 0,
+            "title": "Unsupported Attachments",
+            "type": "integer"
           }
         },
         "required": [
@@ -2110,6 +3242,20 @@
               "minimum": 1,
               "title": "Page Size",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "granularity",
+            "required": false,
+            "schema": {
+              "default": "events",
+              "enum": [
+                "events",
+                "observations"
+              ],
+              "title": "Granularity",
+              "type": "string"
             }
           }
         ],
@@ -2561,6 +3707,119 @@
           }
         },
         "summary": "Cleanup",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/cases/{case_id}/imports/directory/preview": {
+      "post": {
+        "operationId": "v1_directory_preview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_v1_directory_preview"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid file or request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Application is not activated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Case, session or source not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "HTTP method is not supported"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "State conflict or source unavailable"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid parameters or mapping"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Operation failed safely"
+          }
+        },
+        "summary": "Directory Upload",
         "tags": [
           "v1"
         ]
@@ -3197,6 +4456,109 @@
           }
         },
         "summary": "Records",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/cases/{case_id}/resolution": {
+      "get": {
+        "operationId": "v1_resolution",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolutionRegistry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid file or request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Application is not activated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Case, session or source not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "HTTP method is not supported"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "State conflict or source unavailable"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid parameters or mapping"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Operation failed safely"
+          }
+        },
+        "summary": "Resolution",
         "tags": [
           "v1"
         ]

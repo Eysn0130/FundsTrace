@@ -9,3 +9,7 @@
 *.bat text eol=crlf
 *.png binary
 *.ico binary
+
+# Preserve hash-pinned input and upstream notice bytes across Git checkouts.
+tests/fixtures/native-bank/native-small.csv -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+resources/rar-decoder/LICENSE.txt -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

@@ -1,0 +1,130 @@
+{
+  "description": "Independently chosen synthetic native28 facts; no real original values",
+  "rows": [
+    {
+      "交易卡号": "SYN-UI-CARD",
+      "交易账号": "SYN-UI-A",
+      "交易时间": "2026-01-01 10:00:00",
+      "交易金额": "12.34",
+      "交易余额": "100.00",
+      "收付标志": "出",
+      "交易对手账卡号": "",
+      "对手户名": "",
+      "对手开户银行": "",
+      "交易币种": "CNY",
+      "交易是否成功": "01",
+      "交易流水号": "0",
+      "凭证号": "SYN-VOUCHER-0",
+      "凭证种类": "",
+      "摘要说明": "SYN 原摘要\t",
+      "备注": "SYN independent remark 0",
+      "传票号": "SYN-SLIP-0",
+      "日志号": "SYN-LOG-0"
+    },
+    {
+      "交易卡号": "SYN-UI-CARD",
+      "交易账号": "SYN-UI-A",
+      "交易时间": "2026-01-01 10:01:00",
+      "交易金额": "-2.30",
+      "交易余额": "100.00",
+      "收付标志": "出",
+      "交易对手账卡号": "",
+      "对手户名": "",
+      "对手开户银行": "",
+      "交易币种": "CNY",
+      "交易是否成功": "01",
+      "交易流水号": "SYN-NEG",
+      "凭证号": "SYN-VOUCHER-1",
+      "凭证种类": "",
+      "摘要说明": "SYN summary 1",
+      "备注": "SYN independent remark 1",
+      "传票号": "SYN-SLIP-1",
+      "日志号": "SYN-LOG-1"
+    },
+    {
+      "交易卡号": "SYN-UI-CARD",
+      "交易账号": "SYN-UI-A",
+      "交易时间": "2026-01-01 10:02:00",
+      "交易金额": "0.00",
+      "交易余额": "100.00",
+      "收付标志": "出",
+      "交易对手账卡号": "",
+      "对手户名": "",
+      "对手开户银行": "",
+      "交易币种": "CNY",
+      "交易是否成功": "01",
+      "交易流水号": "SYN-ZERO",
+      "凭证号": "SYN-VOUCHER-2",
+      "凭证种类": "",
+      "摘要说明": "SYN summary 2",
+      "备注": "SYN independent remark 2",
+      "传票号": "SYN-SLIP-2",
+      "日志号": "SYN-LOG-2"
+    },
+    {
+      "交易卡号": "SYN-UI-CARD",
+      "交易账号": "SYN-UI-A",
+      "交易时间": "2026-01-01 10:03:00",
+      "交易金额": "3.45",
+      "交易余额": "100.00",
+      "收付标志": "进",
+      "交易对手账卡号": "SYN-UI-B",
+      "对手户名": "SYN counterparty",
+      "对手开户银行": "Synthetic counter bank",
+      "交易币种": "EUR",
+      "交易是否成功": "01",
+      "交易流水号": "SYN-EUR",
+      "凭证号": "SYN-VOUCHER-3",
+      "凭证种类": "",
+      "摘要说明": "SYN summary 3",
+      "备注": "SYN independent remark 3",
+      "传票号": "SYN-SLIP-3",
+      "日志号": "SYN-LOG-3"
+    }
+  ],
+  "record_count": 4,
+  "flow_count": 4,
+  "financial_observation_count": 2,
+  "source_ledger_count": 2,
+  "amount_totals": {
+    "CNY": "12.34",
+    "EUR": "3.45"
+  },
+  "primary_references": [
+    "0",
+    "SYN-NEG",
+    "SYN-ZERO",
+    "SYN-EUR"
+  ],
+  "signed_amounts": [
+    "12.34",
+    "-2.30",
+    "0.00",
+    "3.45"
+  ],
+  "own_account": "SYN-UI-A",
+  "summary0": "SYN 原摘要\t",
+  "remark0": "SYN independent remark 0",
+  "rar_members": {
+    "native-rar3.rar": {
+      "entry": "native-small.csv",
+      "source_bytes": 1094,
+      "compressed_bytes": 529,
+      "compression_type": 51
+    },
+    "native-rar5.rar": {
+      "entry": "native-small.csv",
+      "source_bytes": 1094,
+      "compressed_bytes": 530,
+      "compression_type": 51
+    }
+  },
+  "files": {
+    "native-small.zip": "2457d941af2382fcda76850f8dd087fb0c86cc1e0987014ebb90074277966389",
+    "native-small.csv": "fe6e5d5c8f0677428e3b7f0a6ac175de731548ceb1ec5fc5116a64b51e473ef6",
+    "native-rar3.rar": "446393890fa74d3bdc6af0d9917d00084f5e0918f3e5e4e70cbe518ce849ca9f",
+    "native-rar5.rar": "8114c0de82de685327088069ee87c115d41b4c6fc8e60b3fbb6d5174621b95b6",
+    "native-small.xls": "dd2a12274677b6b5ffcea2c5496a7d5ae16f785950e6bde1cecd30fd0e7ea5e4",
+    "native-small.xlsx": "29e2ef814baca0799abfa4429379d8482eecd7b663cc3e1b56b38b9aa2a39232"
+  }
+}

@@ -2,18 +2,26 @@
 
 import unicodedata
 
-from app import db
-from app.money import money_string
+from app import db, transaction_time, evidence_resolution
 from .cases import ServiceError, require_case
 
 
 _FLOW_ACCOUNTS = """
-with flow_names as (
+with case_flows as materialized (
+    select case_id,id,payer_account,payer_name,payee_account,payee_name,self_account,self_name,source_counter_id,source_counter_name
+    from effective_visible_flows where case_id=?
+), flow_names as (
     select trim(payer_account) as account, trim(coalesce(payer_name, '')) as name
-    from effective_flows where case_id=? and payer_account is not null
+    from case_flows where payer_account is not null
     union all
     select trim(payee_account), trim(coalesce(payee_name, ''))
-    from effective_flows where case_id=? and payee_account is not null
+    from case_flows where payee_account is not null
+    union all
+    select trim(f.self_account), trim(coalesce(f.self_name, ''))
+    from case_flows f join source_ledger_index l on l.case_id=f.case_id and l.flow_id=f.id
+    where coalesce(f.self_account,'')<>''
+    union all
+    select source_counter_id,source_counter_name from case_flows where source_counter_id<>''
 ), flow_accounts as (
     select account, max(name) as name from flow_names where account<>'' group by account
 )
@@ -33,14 +41,14 @@ def _metadata(source):
       m.marked_at main_marked_at, f.account is not null has_flows
     from {source} a
     left join flow_accounts f on f.account=a.account
-    left join account_ids i on i.case_id=? and i.account=a.account
-    left join account_photos p on p.case_id=? and p.account=a.account
-    left join main_accounts m on m.case_id=? and m.account=a.account
+    left join effective_account_ids i on i.case_id=? and i.account=a.account
+    left join effective_account_photos p on p.case_id=? and p.account=a.account
+    left join effective_main_accounts m on m.case_id=? and m.account=a.account
     """
 
 
 def _item(row):
-    return {key: row[key] for key in _ITEM_KEYS}
+    return {key: row[key] for key in (*_ITEM_KEYS, "display_account", "account_number", "bank", "kind", "cards", "names", "status") if key in row}
 
 
 def list_registry(case_id, source="flows", q="", page=1, page_size=30, account_exact=False):
@@ -48,34 +56,43 @@ def list_registry(case_id, source="flows", q="", page=1, page_size=30, account_e
         cid = require_case(str(case_id))
         if source not in {"flows", "identity"}:
             raise ServiceError(422, "invalid_account_source", "账户来源无效")
-        source_sql = "flow_accounts" if source == "flows" else "(select account from account_ids where case_id=? and account<>'')"
-        params = [cid, cid] + ([cid] if source == "identity" else []) + [cid] * 3
-        keyword = q.strip()
+        keyword = q.strip() if account_exact else unicodedata.normalize("NFKC", q).strip().lower()
+        if source == "flows" and not account_exact and not keyword:
+            # Metadata is at most one row per account and cannot affect an
+            # unfiltered count or page membership. Attach it after pagination.
+            total = db.q_raw(_FLOW_ACCOUNTS + "select count(*) total from flow_accounts", [cid])[0]["total"]
+            query = _FLOW_ACCOUNTS + """, page_accounts as materialized (
+                select account from flow_accounts order by account limit ? offset ?
+            ) """ + _metadata("page_accounts") + " order by a.account"
+            rows = db.q(query, [cid, page_size, (page - 1) * page_size, cid, cid, cid])
+            evidence_resolution.decorate_accounts(cid, rows)
+            return {"case_id": str(cid), "source": source, "total": total, "page": page,
+                    "page_size": page_size, "items": [_item(row) for row in rows]}
+        source_sql = "flow_accounts" if source == "flows" else """(
+            select distinct s.account from effective_account_subjects s
+            join account_ids i on i.case_id=s.case_id and i.account=s.raw_account
+            where s.case_id=? and s.account<>''
+        )"""
+        params = [cid] + ([cid] if source == "identity" else []) + [cid] * 3
         if account_exact:
             predicate = "where a.account=?"
             params += [keyword]
         else:
-            keyword = unicodedata.normalize("NFKC", q).strip().lower()
             predicate = """where contains(lower(a.account), ?) or contains(lower(coalesce(i.id_no,'')), ?)
               or contains(lower(coalesce(m.name,'')), ?)
-              or exists (select 1 from flow_names n where n.account=a.account and contains(lower(n.name), ?))"""
-            params += [keyword] * 4
+              or exists (select 1 from flow_names n where n.account=a.account and contains(lower(n.name), ?))
+              or exists (select 1 from resolution_entities e where e.case_id=? and e.entity_id=a.account and
+                (contains(lower(e.account_number),?) or contains(lower(e.display_account),?)
+                or contains(lower(array_to_string(json_extract_string(e.details_json,'$.cards[*]'),' ')),?)
+                or contains(lower(array_to_string(json_extract_string(e.details_json,'$.names[*]'),' ')),?)))"""
+            params += [keyword] * 4 + [cid] + [keyword] * 4
         query = _FLOW_ACCOUNTS + ", registry as (" + _metadata(source_sql) + predicate + ") "
         total = db.q_raw(query + "select count(*) total from registry", params)[0]["total"]
         rows = db.q(query + "select * from registry order by account limit ? offset ?",
                     [*params, page_size, (page - 1) * page_size])
+        evidence_resolution.decorate_accounts(cid, rows)
         return {"case_id": str(cid), "source": source, "total": total, "page": page,
                 "page_size": page_size, "items": [_item(row) for row in rows]}
-
-
-def _directional_money(rows):
-    result = {}
-    for direction in ("in", "out"):
-        totals = [{"currency": row["currency"], "amount": money_string(row[direction + "_amt"])}
-                  for row in rows if row[direction + "_cnt"]]
-        result[direction + "_totals"] = totals
-        result[direction + "_amt"] = totals[0]["amount"] if len(totals) == 1 else None if totals else "0.00"
-    return result
 
 
 def account_profile(case_id, account):
@@ -85,12 +102,11 @@ def account_profile(case_id, account):
         # Metadata-only accounts are known without fabricating a transaction or node.
         query = _FLOW_ACCOUNTS + """, known_accounts as (
             select account from flow_accounts
-            union select account from account_ids where case_id=?
-            union select account from account_photos where case_id=?
-            union select account from main_accounts where case_id=?
+            union select account from effective_account_subjects where case_id=?
+            union select account from effective_main_accounts where case_id=?
             union select account from focus_nodes where case_id=?
         ) """ + _metadata("known_accounts") + " where a.account=? and a.account<>''"
-        found = db.q(query, [cid] * 9 + [account])
+        found = db.q(query, [cid] * 7 + [account])
         if not found:
             raise ServiceError(404, "account_not_found", "账号不存在或不属于当前案件")
         metadata = found[0]
@@ -100,43 +116,47 @@ def account_profile(case_id, account):
             **{key: 0.5 if metadata[key] is None else metadata[key]
                for key in ("crop_cx", "crop_cy", "crop_r")},
         }
-        counts = db.q("""select count(*) cnt,
-            count(*) filter (where trim(payer_account)=?) out_cnt,
-            count(*) filter (where trim(payee_account)=?) in_cnt,
-            min(trade_time) tmin, max(trade_time) tmax
-            from effective_flows where case_id=? and (trim(payer_account)=? or trim(payee_account)=?)""",
-                      [account, account, cid, account, account])[0]
-        result.update(counts)
-        own_money = db.q_raw("""select coalesce(currency,'') currency,
-            count(*) filter (where trim(payer_account)=?) out_cnt,
-            coalesce(sum(amount) filter (where trim(payer_account)=?),0) out_amt,
-            count(*) filter (where trim(payee_account)=?) in_cnt,
-            coalesce(sum(amount) filter (where trim(payee_account)=?),0) in_amt
-            from effective_flows where case_id=? and (trim(payer_account)=? or trim(payee_account)=?)
-            group by coalesce(currency,'') order by currency""",
-                             [account, account, account, account, cid, account, account])
-        result.update(_directional_money(own_money))
-        counterparties = db.q_raw("""select acct, max(name) as name, coalesce(currency,'') currency,
-            count(*) filter (where direction='out') out_cnt,
-            coalesce(sum(amount) filter (where direction='out'),0) out_amt,
-            count(*) filter (where direction='in') in_cnt,
-            coalesce(sum(amount) filter (where direction='in'),0) in_amt
-            from (
-              select trim(payee_account) acct, payee_name as name, currency, amount, 'out' direction
-              from effective_flows where case_id=? and trim(payer_account)=?
-              union all
-              select trim(payer_account), payer_name, currency, amount, 'in'
-              from effective_flows where case_id=? and trim(payee_account)=?
-            ) where coalesce(acct,'')<>'' group by acct, coalesce(currency,'') order by currency""",
-                                  [cid, account, cid, account])
-        grouped = {}
-        for row in counterparties:
-            target = grouped.setdefault(row["acct"], {"acct": row["acct"], "name": "", "in_cnt": 0, "out_cnt": 0, "money": []})
-            target["name"] = max(target["name"], row["name"] or "")
-            target["in_cnt"] += row["in_cnt"]
-            target["out_cnt"] += row["out_cnt"]
-            target["money"].append(row)
-        ordered = sorted(grouped.values(), key=lambda row: (-row["out_cnt"], -row["in_cnt"], row["acct"]))[:20]
-        result["top_counterparties"] = [{key: value for key, value in row.items() if key != "money"}
-                                        | _directional_money(row["money"]) for row in ordered]
+        from app import funds_projection, analysis_snapshot
+        source = "select * from effective_flows where case_id=? and (trim(payer_account)=? or trim(payee_account)=?)"
+        selection = [cid, account, account]
+        rollups = funds_projection.profile_summaries(source, selection, account)
+        funds = rollups[(15, None)]
+        sources = funds_projection.profile_summaries(source, selection, account, selected=True)
+        source_empty = funds_projection.empty_source_summary()
+        result.update(funds=funds, cnt=sources[(15, None)]["cnt"],
+                      analysis_revision=analysis_snapshot.revision(cid), statistics_policy=funds_projection.SELECTION_POLICY)
+        empty = funds_projection.summarize_rows([])
+        result.update(funds_projection.directional_fields(
+            rollups.get((14, None), empty), rollups.get((13, None), empty)))
+        result.update(funds_projection.source_directional_fields(sources.get((14, None), source_empty), sources.get((13, None), source_empty)))
+        # Range and counterparty labels use exactly the same selected facts.
+        # Share that selection instead of replaying its source/event joins.
+        details = db.q(funds_projection.cte(source) + f"""
+            select 0 detail_kind,null::varchar acct,null::varchar as name,
+                   {transaction_time.sql_bounds()} from ordinary_facts
+            union all
+            select 1 detail_kind,acct,max(name) as name,null::varchar tmin,null::varchar tmax,null::varchar time_basis from (
+                select payer_account as acct,payer_name as name from ordinary_facts where trim(payee_account)=?
+                union all select payee_account,payee_name from ordinary_facts where trim(payer_account)=?
+            ) where coalesce(acct,'')<>'' group by acct""", [*selection, account, account])
+        bounds = next(row for row in details if row["detail_kind"] == 0)
+        result.update(tmin=bounds["tmin"], tmax=bounds["tmax"], time_basis=bounds["time_basis"])
+        names = (row for row in details if row["detail_kind"] == 1)
+        result["top_counterparties"] = [{"acct": row["acct"], "name": row["name"] or "",
+            **funds_projection.directional_fields(rollups.get((6, row["acct"]), empty), rollups.get((9, row["acct"]), empty))}
+            for row in names]
+        for counter in result["top_counterparties"]:
+            counter.update(funds_projection.source_directional_fields(sources.get((6, counter["acct"]), source_empty), sources.get((9, counter["acct"]), source_empty)))
+        # Rank by the ordinary transaction counts displayed in this profile.
+        # Source observation counts remain available for audit.
+        result["top_counterparties"].sort(key=lambda row: (-(row["out_cnt"] or 0), -(row["in_cnt"] or 0), row["acct"]))
+        result["top_counterparties"] = result["top_counterparties"][:20]
+        # Resolve labels for the own account and its counterparties in one
+        # scoped batch. The temporary alias never enters the response shape.
+        metadata["acct"] = metadata["account"]
+        evidence_resolution.decorate_accounts(cid, [metadata, *result["top_counterparties"]], key="acct")
+        metadata.pop("acct")
+        result.update(_item(metadata))
+        from app import source_ledger
+        result["source_ledger"] = source_ledger.summary(cid, account=account, include_rows=True)
         return result
