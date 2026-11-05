@@ -225,7 +225,8 @@ function harness(search = '') {
     api: async (path, options) => { const result = await fetch(path, options); if (!result.ok) throw new Error('合成读取失败'); return result.json(); },
     refreshAll: async () => { refreshes += 1; await refresher?.(); },
     bindTableHorizontalScroll: () => ({ sync() {}, destroy() {} }),
-    setTimeout: (callback, delay) => { timers.push({ callback, delay }); },
+    setTimeout: (callback, delay) => { timers.push({ callback, delay }); return timers.length; },
+    clearTimeout: id => { if (timers[id - 1]) timers[id - 1].cancelled = true; },
     fetch,
     FormData: class {
       constructor() { this.entries = []; }
@@ -245,6 +246,9 @@ function harness(search = '') {
   context.window.FundsFacts = context.FundsFacts;
   vm.runInContext(app.slice(app.indexOf('function esc('), app.indexOf('function toast(')), context);
   vm.runInContext(app.slice(app.indexOf('function flowObservationIds('), app.indexOf('/* ---------------- 追踪上图')), context);
+  vm.runInContext(readFileSync(new URL('../static/feedback-core.mjs', import.meta.url), 'utf8').replace('export function createFeedbackStore', 'function createFeedbackStore'), context);
+  const feedback = vm.runInContext('createFeedbackStore()', context);
+  feedback.bind(vm.runInContext('caseContext()', context)); context.window.FundsFeedback = feedback;
   // Load the complete account/crop dependencies. The former close-only section
   // marker no longer exists, and slicing to -1 silently included context state.
   for (const [start, end] of [['function syncEdgeTypeControl(', 'function findEdgeShapes('],
@@ -263,7 +267,7 @@ function harness(search = '') {
   vm.runInContext(source, context, { filename: 'workflow-ui.js' });
   vm.runInContext(mainAccountsSource, context, { filename: 'main-accounts.js' });
   events.get('DOMContentLoaded')();
-  return { element, state, uploads, requests, notices, rendered, timers, contextRows, document, photoOpens, mainStates, mainPublications,
+  return { element, state, uploads, requests, notices, feedback, rendered, timers, contextRows, document, photoOpens, mainStates, mainPublications,
     get refreshes() { return refreshes; },
     get graphReads() { return graphReads; }, get paints() { return paints; },
     network(handler) { fetcher = handler; },
@@ -662,7 +666,9 @@ test('the commit button locks before its receipt and duplicate clicks send one w
   await h.upload('BLOCKED.csv'); await h.uploadDirectory(['BLOCKED/rows.csv']);
   assert.equal(h.uploads.length, 1, 'a submitted write must keep both source inputs locked');
   receipt.resolve(response({ import_id: 'SYN-IMPORT', started: true })); await first;
-  assert.equal(h.refreshes, 1); assert.match(h.notices[0].message, /新增流水记录 2 条/);
+  assert.equal(h.refreshes, 1); assert.equal(h.notices.length, 0, 'the visible result does not also announce a duplicate Toast');
+  assert.match(h.element('impResultText').textContent, /新增流水记录 2 条/);
+  assert.ok(h.feedback.snapshot().tasks.some(item => item.status === 'success' && item.title === '导入已完成'));
 });
 
 test('failed progress has a read-only recovery action without a second commit', async () => {

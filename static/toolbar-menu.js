@@ -94,11 +94,14 @@
     function open(value, edge = 'first') {
       const trigger = typeof value === 'string' ? doc.getElementById(value) : value;
       if (!visible(trigger) || unavailable(trigger)) return false;
-      const panel = prepare(trigger);
+      const panel = doc.getElementById(trigger.getAttribute('data-toolbar-menu'));
       if (!panel) return false;
       if (current?.trigger === trigger) return true;
       close('switch');
       root.FundsRibbon?.closePopovers?.();
+      // Closing an adaptive ribbon surface may return its controls home. Portal
+      // the next surface only after that handoff, keeping one focus owner.
+      prepare(trigger);
       dismissed = null;
       panel.hidden = false; panel.inert = false;
       panel.classList.add('is-open'); trigger.setAttribute('aria-expanded', 'true');
@@ -224,7 +227,16 @@
       if (current && !current.panel.contains(event.target) && !current.trigger.contains(event.target)) close('focus-out');
     }, true);
     doc.addEventListener('scroll', event => {
-      if (current && event.target !== current.panel && !current.panel.contains(event.target)) close('scroll');
+      if (!current || event.target === current.panel || current.panel.contains(event.target)) return;
+      // Focus can scroll a trigger into view before opening. A queued scroll
+      // notification for that already-measured position must not dismiss it.
+      if (event.target?.getBoundingClientRect && event.target.contains(current.trigger)) {
+        const style = root.getComputedStyle?.(event.target);
+        const rect = current.trigger.getBoundingClientRect();
+        if ([style?.overflowX, style?.overflowY].some(value => /^(auto|scroll)$/.test(value)) &&
+          [rect.left, rect.top, rect.width, rect.height].join(',') === current.anchor) return;
+      }
+      close('scroll');
     }, true);
     doc.addEventListener('funds:toolbar-menu-close', () => close('external'));
     root.addEventListener('resize', () => close('resize'));

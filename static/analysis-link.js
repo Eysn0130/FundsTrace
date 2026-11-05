@@ -3,10 +3,34 @@
   'use strict';
   if(root.parent===root || new URLSearchParams(location.search).get('embedded')!=='1') return;
   const channel='fundstrace:workspace', version=1, pending=new Map();
-  let binding=null, serial=0, applying=false, dataRevision=-1;
+  const instanceId=root.crypto.randomUUID();
+  let binding=null, serial=0, applying=false, dataRevision=-1, feedbackEpoch=0;
   const drafts=new Map();
   const fields=['subjects','cycDays','ffWin','ffTol','pSrc','pDst','pHops','pOrder'];
   const post=message=>parent.postMessage({channel,version,...message},location.origin);
+  const postReady=()=>post({type:'ready',instanceId});
+  let modalSignature='', modalObserver;
+  function publishModal(force=false,open=!!document.querySelector('dialog[open]')){
+    if(!binding)return;
+    const signature=JSON.stringify([binding.caseId,binding.generation,open]);
+    if(!force && signature===modalSignature)return;
+    modalSignature=signature;
+    post({type:'feedback-modal',caseId:binding.caseId,generation:binding.generation,instanceId,open});
+  }
+  if(typeof root.MutationObserver==='function'){
+    modalObserver=new root.MutationObserver(()=>publishModal());
+    modalObserver.observe(document.body,{attributes:true,attributeFilter:['open'],childList:true,subtree:true});
+  }
+  const feedbackCurrent=token=>!!token && !!binding && token.epoch===feedbackEpoch
+    && token.caseId===binding.caseId && token.generation===binding.generation && token.revision===binding.revision;
+  root.FundsAnalysisFeedback=Object.freeze({
+    capture:()=>binding ? {caseId:binding.caseId,generation:binding.generation,revision:binding.revision,epoch:feedbackEpoch} : null,
+    isCurrent:feedbackCurrent,
+    publish:(event,token)=>{
+      if(!feedbackCurrent(token))return false;
+      post({type:'feedback',caseId:token.caseId,generation:token.generation,instanceId,event});return true;
+    },
+  });
   const request=(action,payload={})=>new Promise((resolve,reject)=>{
     if(!binding) return reject(new Error('工作区尚未连接'));
     const requestId='analysis:'+Date.now()+':'+(++serial);
@@ -24,19 +48,24 @@
     draftBaseline=saved.baseline;syncAlgorithmFields();
   }
   function applyContext(message,captureCurrent=true){
-    if(!analysisCases.length) {binding=message;return;}
+    if(!analysisCases.length) {binding=message;publishModal();return;}
     if(String(caseId)!==message.caseId || binding?.generation!==message.generation){
       if(captureCurrent)capture(); applying=true;
       try {
         selectAnalysisCase(message.caseId);
         restoreDraft(message.caseId); void showStats();
       } finally {applying=false;}
+      feedbackEpoch++;
     }
-    binding=message;
     if(dataRevision!==-1 && message.revision!==dataRevision) invalidate();
+    binding=message;
     dataRevision=message.revision;
+    publishModal();
   }
   function invalidate(){
+    revokeAnalysisFeedback('案件数据已更新，原任务的结果未确认；服务端请求可能仍在执行。');
+    feedbackEpoch++; caseGeneration++;
+    bindAnalysisFeedback();
     analysisRequest++;statsRequest++;resultRevision++;
     lastRun=lastResults=null;reportPending=false;
     if(analysisPhase==='running') $('#pbar').hidden=true;
@@ -49,7 +78,8 @@
   root.addEventListener('message',event=>{
     if(event.origin!==location.origin || event.source!==parent || event.data?.channel!==channel || event.data.version!==version)return;
     const message=event.data;
-    if(message.type==='context' && typeof message.caseId==='string' && Number.isSafeInteger(message.generation))applyContext(message);
+    if(message.type==='feedback-hello'){postReady();publishModal(true);}
+    else if(message.type==='context' && typeof message.caseId==='string' && Number.isSafeInteger(message.generation))applyContext(message);
     else if(message.type==='result'){
       const item=pending.get(message.requestId);if(!item)return;pending.delete(message.requestId);
       if(item.binding.caseId!==binding?.caseId || item.binding.generation!==binding?.generation){item.resolve(undefined);return;}
@@ -87,8 +117,8 @@
     event.preventDefault();if(link.getAttribute('aria-disabled')==='true')return;const url=new URL(link.href,location.href);
     try{await request('open-canvas',{canvasId:url.searchParams.get('canvas_id'),flowId:url.searchParams.get('focus_edge')});}catch(error){analysisError(error.message);}
   });
-  root.addEventListener('pagehide',()=>{for(const item of pending.values())item.reject(new Error('分析页面已关闭'));pending.clear();});
-  post({type:'ready'});
+  root.addEventListener('pagehide',()=>{publishModal(true,false);modalObserver?.disconnect();for(const item of pending.values())item.reject(new Error('分析页面已关闭'));pending.clear();});
+  postReady();
   // Initial async loading may already have started before this adapter loads.
   void loadCases();
 })(window);

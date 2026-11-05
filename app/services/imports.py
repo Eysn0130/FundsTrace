@@ -1476,10 +1476,13 @@ def _source_references(source_id):
                     [source_id, source_id, *profiles])[0]["n"]
 
 
-def list_sessions(case_id, limit=100):
+def list_sessions(case_id, limit=100, import_id=None):
     cid = _cid(case_id)
     limit = max(1, min(int(limit), 200))
-    rows = db.q_raw("""select * from import_sessions where case_id=? order by created_at desc,import_id desc limit ?""", [cid, limit])
+    if import_id is None:
+        rows = db.q_raw("select * from import_sessions where case_id=? order by created_at desc,import_id desc limit ?", [cid, limit])
+    else:
+        rows = db.q_raw("select * from import_sessions where case_id=? and import_id=?", [cid, import_id])
     items = []
     for row in rows:
         available = _source_available(row)

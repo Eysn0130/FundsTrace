@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useState, useRef, useCallback, type FormEvent, type ReactNode } from 'react';
 import type { CaseStats, Flow, FlowPage, ImportSession } from '../../../contracts/api-v1';
 import { formatMoney, displayTime } from '../lib/format';
 import { Modal } from '../components/Modal';
@@ -7,18 +7,19 @@ import { ImportHistoryDialog } from '../features/ImportHistoryDialog';
 import { FlowSources } from '../features/FlowSources';
 import { FUNDS_PANEL_VERSION, type FundsPanelHostV1, type FundsPanelSessionV1 } from './host';
 import { linkAbortSignal, runUnlessAborted } from './cancellation';
+import { FeedbackBoundary, type FundsFeedbackPort } from '../feedback/Feedback';
 
 
 type Filters = { account: string; kw: string; page: number };
 const emptyFilters: Filters = { account: '', kw: '', page: 1 };
 export type FundsQueryDraft = Readonly<{ filters: Filters; account: string; keyword: string }>;
-type WorkspacePresentation = { initialDraft?: FundsQueryDraft; onDraftChange?: (draft: FundsQueryDraft) => void; caseActions?: ReactNode; retained?: boolean; navigationPending?: boolean };
+type WorkspacePresentation = { initialDraft?: FundsQueryDraft; onDraftChange?: (draft: FundsQueryDraft) => void; caseActions?: ReactNode; retained?: boolean; navigationPending?: boolean; openImportRequest?: { importId: string; sequence: number }; importSettlement?: { importId: string; sequence: number } };
 
-export function FundsPanel({ host, workspace, active = true, revision = 0 }: { host: FundsPanelHostV1; workspace?: WorkspacePresentation; active?: boolean; revision?: number }) {
+export function FundsPanel({ host, workspace, feedback, active = true, revision = 0 }: { host: FundsPanelHostV1; workspace?: WorkspacePresentation; feedback?: FundsFeedbackPort; active?: boolean; revision?: number }) {
   const session = host.session;
   const binding = session?.client.binding;
   const valid = host.version === FUNDS_PANEL_VERSION && session && binding?.caseId === session.context.caseId && binding.scopeKey === session.scopeKey && binding.generation === session.generation;
-  return <div className="funds-trace funds-panel">{valid ? <SessionBoundary key={JSON.stringify([session.context.caseId, session.scopeKey, session.generation])} session={session} workspace={workspace} active={active} revision={revision} />
+  return <div className="funds-trace funds-panel">{valid ? <FeedbackBoundary key={JSON.stringify([session.context.caseId, session.scopeKey, session.generation])} port={feedback} scope={{ caseId: session.context.caseId, generation: session.generation }} signal={session.signal}><SessionBoundary session={session} workspace={workspace} active={active} revision={revision} /></FeedbackBoundary>
     : <section className="main-workspace"><div className="empty-state"><h2>{session ? '案件会话绑定无效' : '未选择案件'}</h2><p>请由宿主提供当前案件会话。</p></div></section>}</div>;
 }
 
@@ -46,8 +47,11 @@ function BoundFundsPanel({ session, workspace, active, revision }: { session: Fu
   const [selectedFlow, setSelectedFlow] = useState<Flow | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyImportId, setHistoryImportId] = useState<string | undefined>();
   const [resumeSession, setResumeSession] = useState<ImportSession | undefined>();
   const [returnToHistory, setReturnToHistory] = useState(false);
+  const importObservation = useRef(0);
+  const openedRequest = useRef<number | undefined>(undefined);
   const [graphError, setGraphError] = useState('');
   const [graphBusy, setGraphBusy] = useState(false);
   const lifetime = useRef(new AbortController());
@@ -75,8 +79,34 @@ function BoundFundsPanel({ session, workspace, active, revision }: { session: Fu
       .finally(() => { if (live && !controller.signal.aborted) setLoading(false); });
     return () => { live = false; unlink(); controller.abort(); };
   }, [client, context.caseId, filters, reload, session.signal, active, revision]);
-  const openImport = () => { setImportOpen(true); setResumeSession(undefined); setReturnToHistory(false); setHistoryOpen(false); };
+  const openOriginalImport = useCallback(async (importId: string, signal = lifetime.current.signal) => {
+    const token = ++importObservation.current;
+    if (signal.aborted || session.signal.aborted) return;
+    setHistoryImportId(importId);
+    try {
+      const value = await client.imports(signal, importId);
+      if (signal.aborted || session.signal.aborted || token !== importObservation.current) return;
+      if (value.case_id !== context.caseId || value.items.some(item => item.case_id !== context.caseId)) throw new Error('导入记录与当前案件不一致。');
+      const item = value.items.find(item => item.import_id === importId && item.surface === 'v1' && ['parsing', 'importing', 'done'].includes(item.stage));
+      if (item) { setResumeSession(item); setReturnToHistory(true); setHistoryOpen(false); setImportOpen(true); }
+      else { setImportOpen(false); setResumeSession(undefined); setHistoryOpen(true); }
+    } catch (reason) { if (!signal.aborted && !session.signal.aborted && token === importObservation.current) { setError((reason as Error).message); setHistoryOpen(true); } }
+  }, [client, context.caseId, session.signal]);
+  useEffect(() => {
+    const request = workspace?.openImportRequest;
+    if (!request || !active || session.signal.aborted || openedRequest.current === request.sequence) return;
+    openedRequest.current = request.sequence;
+    const controller = new AbortController();
+    const unlink = linkAbortSignal(session.signal, controller);
+    let settled = false;
+    // Opening the original task only reads sessions; it never restores a POST.
+    void openOriginalImport(request.importId, controller.signal).then(() => { settled = true; });
+    return () => { if (!settled && openedRequest.current === request.sequence) openedRequest.current = undefined; unlink(); controller.abort(); };
+  }, [workspace?.openImportRequest?.sequence, active, openOriginalImport, session.signal]);
+  const openHistory = () => { importObservation.current += 1; setHistoryImportId(undefined); setHistoryOpen(true); };
+  const openImport = () => { importObservation.current += 1; setImportOpen(true); setResumeSession(undefined); setReturnToHistory(false); setHistoryOpen(false); };
   const closeImport = () => {
+    importObservation.current += 1;
     if (returnToHistory) setHistoryOpen(true);
     setImportOpen(false); setResumeSession(undefined); setReturnToHistory(false); setReload(value => value + 1);
   };
@@ -96,13 +126,13 @@ function BoundFundsPanel({ session, workspace, active, revision }: { session: Fu
     <section className="main-workspace" aria-label="资金流水面板">
 
       {!workspace && <div className="topline"><span>案件工作区 <span className="breadcrumb">/</span> 流水核对</span><span className="local-label">本地数据</span></div>}
-      <header className="workspace-heading"><div><p className="eyebrow">{workspace ? '当前案件' : '流水核对'}</p><h1>{context.name}</h1><p className="description">{workspace ? <>案件 ID：<span className="mono">{context.caseId}</span>{workspace.retained && <span className="work-retained">工作已保留</span>}</> : '核对交易明细，再进入关系图谱追踪资金流向。'}</p></div><div className="heading-actions">{!workspace && <button className="button secondary" onClick={() => setHistoryOpen(true)}>导入记录</button>}<button className="button primary" onClick={openImport}>{workspace ? <img className="ui-icon" src="/static/ui-icons/upload.svg" alt="" /> : <span aria-hidden="true">＋</span>} 导入流水</button><button className="button secondary" disabled={!actions?.openGraph || graphBusy || workspace?.navigationPending} onClick={() => void openGraph()}>{workspace ? '进入画图' : '打开 G6 图谱'} {workspace ? <img className="ui-icon" src="/static/ui-icons/chevron-right.svg" alt="" /> : <span aria-hidden="true">↗</span>}</button>{workspace?.caseActions}</div></header>
+      <header className="workspace-heading"><div><p className="eyebrow">{workspace ? '当前案件' : '流水核对'}</p><h1>{context.name}</h1><p className="description">{workspace ? <>案件 ID：<span className="mono">{context.caseId}</span>{workspace.retained && <span className="work-retained">工作已保留</span>}</> : '核对交易明细，再进入关系图谱追踪资金流向。'}</p></div><div className="heading-actions">{!workspace && <button className="button secondary" onClick={openHistory}>导入记录</button>}<button className="button primary" onClick={openImport}>{workspace ? <img className="ui-icon" src="/static/ui-icons/upload.svg" alt="" /> : <span aria-hidden="true">＋</span>} 导入流水</button><button className="button secondary" disabled={!actions?.openGraph || graphBusy || workspace?.navigationPending} onClick={() => void openGraph()}>{workspace ? '进入画图' : '打开 G6 图谱'} {workspace ? <img className="ui-icon" src="/static/ui-icons/chevron-right.svg" alt="" /> : <span aria-hidden="true">↗</span>}</button>{workspace?.caseActions}</div></header>
       {!actions?.openGraph && <p className="muted">宿主未提供图谱导航能力。</p>}
       {error && <div role="alert" className="error-banner">{error}<button onClick={() => setReload(value => value + 1)}>重新加载</button></div>}
       {graphError && <div role="alert" className="error-banner">{graphError}</div>}
       <section className="case-facts" aria-label="案件汇总" title={stats?.flows === null ? '显示来源观察数量；同笔关系尚未确定，事件笔数和累计金额未确定。' : '当前有效交易，已确认同笔只计一次；来源行和各自余额见来源追溯。'}><div><span>{stats?.flows === null ? '来源观察' : '有效交易笔数'}</span><strong>{stats ? stats.flows == null ? stats.funds ? `${stats.funds.observation_count.toLocaleString('zh-CN')} 条` : '—' : `${stats.flows.toLocaleString('zh-CN')} 笔` : '—'}</strong></div><div><span>涉及账户</span><strong>{stats ? stats.accounts.toLocaleString('zh-CN') : '—'}</strong></div><div><span>导入批次</span><strong>{stats ? stats.batches.toLocaleString('zh-CN') : '—'}</strong></div><div className="money-fact"><span>交易金额合计 <small>按币种</small></span><strong>{!stats ? '—' : !totals.length ? '0.00' : totals.map(total => <span key={total.currency} className="currency-total">{total.amount == null ? '金额待定' : formatMoney(total.amount)} <small>{total.currency || '未标注币种'}</small></span>)}</strong></div></section>
-      {!!stats?.event_summary?.conflict_entries && <p className="source-note">{stats.event_summary.conflict_entries} 条来源的同笔关联资料存在矛盾，暂不计入有效资金统计和图谱。请在导入记录中核对原行与原值。</p>}
-      {workspace && <div className="case-workspace-tabs"><span className="active">流水核对</span><button onClick={() => setHistoryOpen(true)}>导入记录</button><span className="case-tabs-hint">核对原始流水与来源</span></div>}
+      {!!stats?.event_summary?.conflict_entries && <p className="source-note">{stats.event_summary.conflict_entries} 条来源的同笔关联资料存在矛盾，同笔结论未确定；原行、账号、方向与金额仍保留。请在导入记录中核对原行与原值。</p>}
+      {workspace && <div className="case-workspace-tabs"><span className="active">流水核对</span><button onClick={openHistory}>导入记录</button><span className="case-tabs-hint">核对原始流水与来源</span></div>}
       <section className="transactions" aria-label="流水明细">
         <div className="table-heading"><h2>交易明细 <span>{page?.total.toLocaleString('zh-CN') ?? '—'}</span></h2><span className="muted">流水明细</span></div>
         <form className="filters" onSubmit={search}><label><span className="sr-only">账号筛选</span><input aria-label="账号筛选" placeholder="付款或收款账号" value={accountDraft} onChange={event => setAccountDraft(event.target.value)} /></label><label className="keyword-filter"><span className="sr-only">摘要或流水号</span><input aria-label="摘要或流水号" placeholder="搜索摘要或流水号…" value={keywordDraft} onChange={event => setKeywordDraft(event.target.value)} /></label><button className="button secondary" disabled={loading}>查询</button>{(filters.account || filters.kw) && <button type="button" className="text-button" onClick={() => { setAccountDraft(''); setKeywordDraft(''); setFilters(emptyFilters); }}>清除筛选</button>}</form>
@@ -113,8 +143,8 @@ function BoundFundsPanel({ session, workspace, active, revision }: { session: Fu
       <footer className="workspace-footnote">金额保留原始精度，可在流水核对中查看来源。</footer>
 
     </section>
-    {active && historyOpen && <ImportHistoryDialog target={context} client={client} scopeSignal={session.signal} actions={actions} onClose={() => { setHistoryOpen(false); setReload(value => value + 1); }} onOpen={session => { setImportOpen(true); setResumeSession(session); setReturnToHistory(true); setHistoryOpen(false); }} />}
-    {importOpen && <ImportDialog key={resumeSession?.import_id ?? 'new'} target={context} client={client} scopeSignal={session.signal} resume={resumeSession} actions={actions} active={active} onClose={closeImport} onImported={() => setReload(value => value + 1)} />}
+    {active && historyOpen && <ImportHistoryDialog key={historyImportId ?? 'recent'} target={context} client={client} scopeSignal={session.signal} importId={historyImportId} actions={actions} onShowAll={openHistory} onClose={() => { setHistoryOpen(false); setHistoryImportId(undefined); setReload(value => value + 1); }} onOpen={session => { setImportOpen(true); setResumeSession(session); setReturnToHistory(true); setHistoryOpen(false); }} />}
+    {importOpen && <ImportDialog key={resumeSession?.import_id ?? 'new'} target={context} client={client} scopeSignal={session.signal} resume={resumeSession} settlementHint={workspace?.importSettlement} actions={actions} active={active} onClose={closeImport} onImported={() => setReload(value => value + 1)} onOpenImport={openOriginalImport} />}
     {active && selectedFlow && <Modal title="流水核对" onClose={() => setSelectedFlow(null)}><dl className="flow-details">{Object.entries({ '所属案件': context.name, '流水 ID': selectedFlow.id, '批次 ID': selectedFlow.batch_id, '交易流水号': selectedFlow.trade_no, '交易时间': displayTime(selectedFlow.trade_time), ...(selectedFlow.trade_time_utc ? { 'UTC瞬间': displayTime(selectedFlow.trade_time_utc), '来源偏移': selectedFlow.trade_time_offset || '' } : { '时间依据': '来源未标明时区' }), '付款户名': selectedFlow.payer_name, '付款账号／卡号': selectedFlow.payer_display_account || selectedFlow.payer_account, '来源付款标识': selectedFlow.raw_payer_account || selectedFlow.payer_account, '收款户名': selectedFlow.payee_name, '收款账号／卡号': selectedFlow.payee_display_account || selectedFlow.payee_account, '来源收款标识': selectedFlow.raw_payee_account || selectedFlow.payee_account, '交易金额': `${selectedFlow.amount == null ? '—' : formatMoney(selectedFlow.amount)} ${selectedFlow.currency}`, '交易后余额': selectedFlow.balance === null ? (selectedFlow.granularity === 'confirmed_event' ? '见各来源流水' : '未提供') : formatMoney(selectedFlow.balance), ...(selectedFlow.source_ledger ? { '来源记账': sourceLedgerText(selectedFlow) } : {}), '摘要': selectedFlow.summary, '渠道': selectedFlow.channel }).map(([label, value]) => <div key={label}><dt>{label}</dt><dd className={label.includes('金额') || label.includes('ID') || label.includes('账号') ? 'mono' : ''}>{value || '—'}</dd></div>)}</dl><FlowSources key={`${selectedFlow.case_id}:${selectedFlow.id}`} caseId={selectedFlow.case_id} flowId={selectedFlow.id} client={client} scopeSignal={session.signal} actions={actions} /><footer className="modal-footer"><button className="button primary" onClick={() => setSelectedFlow(null)}>核对完成</button></footer></Modal>}
   </>;
 }

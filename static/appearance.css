@@ -6,7 +6,7 @@
   --font-size-section-title:18px; --line-height-section-title:26px;
   --font-size-body:13px; --line-height-body:20px; --font-size-meta:12px; --line-height-meta:18px;
   --control-height-compact:28px; --control-height-default:32px; --control-height-comfortable:36px;
-  --control-radius:6px; --menu-radius:8px; --panel-radius:10px; --dialog-radius:18px;
+  --control-radius:6px; --menu-radius:8px; --panel-radius:10px; --dialog-radius:12px;
   --space-4:4px; --space-8:8px; --space-12:12px; --space-16:16px; --space-24:24px; --space-32:32px;
   --focus-width:2px; --focus-offset:2px;
   --motion-fast:120ms; --motion-menu:160ms; --motion-dialog:200ms; --motion-workspace:220ms;

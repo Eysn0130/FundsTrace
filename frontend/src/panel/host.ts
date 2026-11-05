@@ -16,7 +16,7 @@ export interface FundsCaseClientV1 {
   repreview(importId: string, body: RepreviewRequest, signal?: AbortSignal): Promise<ImportPreview>;
   commit(importId: string, body: CommitRequest, signal?: AbortSignal): Promise<{ case_id: string; import_id: string; started: boolean }>;
   job(importId: string, signal?: AbortSignal): Promise<ImportJob>;
-  imports(signal?: AbortSignal): Promise<ImportSessionList>;
+  imports(signal?: AbortSignal, importId?: string): Promise<ImportSessionList>;
   importRecords?(sourceId: string, page?: number, signal?: AbortSignal): Promise<ImportRecordPage>;
   sources(flowId: string, page?: number, signal?: AbortSignal): Promise<FlowSourceList>;
   cleanup(dryRun: boolean, signal?: AbortSignal): Promise<CleanupResult>;

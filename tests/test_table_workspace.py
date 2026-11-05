@@ -35,6 +35,9 @@ def test_flow_table_has_one_keyboard_reachable_native_scroll_viewport():
     assert viewport['role'] == 'region'
     assert page.columns == 7
     assert not {'flowScrollLeft', 'flowHorizontalPosition', 'flowScrollRight'} & page.controls.keys()
+    assert not {'btnPrev', 'btnNext', 'pageInfo', 'btnFlowRetry', 'flowTableHint', 'querySummary'} & page.controls.keys()
+    assert 'query-stat-line' in page.controls['statLine']['class'].split()
+    assert page.controls['importCoverageNote']['role'] == 'note'
 
 
 def test_table_workspace_behavior():

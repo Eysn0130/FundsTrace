@@ -1,4 +1,5 @@
 import type { AccountMutation, UnresolvedAccountOperation } from '../accounts/types';
+import type { FundsFeedbackEvent } from '../feedback/Feedback';
 export const WORKSPACE_CHANNEL = 'fundstrace:workspace' as const;
 export const WORKSPACE_VERSION = 1 as const;
 
@@ -16,6 +17,7 @@ type Requests = {
 export interface WorkspaceBridge {
   readonly context: WorkspaceContext | null;
   request<A extends keyof Requests>(action: A, payload: Requests[A], signal?: AbortSignal): Promise<void>;
+  publishFeedback(event: FundsFeedbackEvent, binding?: Pick<WorkspaceContext, 'caseId' | 'generation'>): boolean;
   dispose(): void;
 }
 
@@ -33,11 +35,13 @@ function validContext(value: Record<string, unknown>): value is Record<string, u
 }
 
 /** Only the same-origin, direct parent may bind this case workspace. */
-export function createWorkspaceBridge({ onContext, onCasesChanged, onAccountsChanged, onDataChanged, target = window }: {
+export function createWorkspaceBridge({ onContext, onCasesChanged, onAccountsChanged, onDataChanged, onOpenImport, onImportSettled, target = window }: {
   onContext: (context: WorkspaceContext) => void;
   onCasesChanged: () => void;
   onAccountsChanged?: () => void;
   onDataChanged?: () => void;
+  onOpenImport?: (importId: string) => void;
+  onImportSettled?: (importId: string) => void;
   target?: Window;
 }): WorkspaceBridge {
   const parent = target.parent;
@@ -46,8 +50,17 @@ export function createWorkspaceBridge({ onContext, onCasesChanged, onAccountsCha
   const instanceId = crypto.randomUUID();
   let sequence = 0;
   let disposed = false;
+  let modalOpen = !!target.document?.querySelector('dialog[open]');
   const pending = new Map<string, { context: WorkspaceContext; selectedCase?: string; resolve: () => void; reject: (error: Error) => void; cleanup: () => void }>();
   const send = (message: Record<string, unknown>) => parent.postMessage({ channel: WORKSPACE_CHANNEL, version: WORKSPACE_VERSION, ...message }, origin);
+  const sendModal = () => {
+    if (!disposed && context) send({ type: 'feedback-modal', caseId: context.caseId, generation: context.generation, instanceId, open: modalOpen });
+  };
+  const receiveModal = (event: Event) => {
+    const detail: unknown = (event as CustomEvent).detail;
+    if (disposed || !record(detail) || typeof detail.open !== 'boolean') return;
+    modalOpen = detail.open; sendModal();
+  };
   const settle = (id: string, error?: Error) => {
     const item = pending.get(id);
     if (!item) return;
@@ -58,7 +71,10 @@ export function createWorkspaceBridge({ onContext, onCasesChanged, onAccountsCha
     if (disposed || event.source !== parent || event.origin !== origin || !record(event.data)) return;
     const data = event.data;
     if (data.channel !== WORKSPACE_CHANNEL || data.version !== WORKSPACE_VERSION) return;
-    if (data.type === 'context' && validContext(data)) {
+    if (data.type === 'feedback-hello') {
+      send({ type: 'ready', instanceId });
+      if (modalOpen) sendModal();
+    } else if (data.type === 'context' && validContext(data)) {
       if (context && (data.generation < context.generation || (data.generation === context.generation && (data.caseId !== context.caseId || data.name !== context.name)))) return;
       const next = { caseId: data.caseId, name: data.name, generation: data.generation, retainedCaseIds: [...data.retainedCaseIds], surface: data.surface, active: data.active, navigationPending: Object.prototype.hasOwnProperty.call(data, 'navigationPending') && data.navigationPending === true, unresolvedOperations: data.unresolvedOperations?.map(item => ({...item})), pendingImports: data.pendingImports?.map(item => ({...item})) };
       const changed = !context || next.generation !== context.generation || next.caseId !== context.caseId || next.name !== context.name;
@@ -67,6 +83,7 @@ export function createWorkspaceBridge({ onContext, onCasesChanged, onAccountsCha
         for (const [id, item] of pending) settle(id, item.selectedCase === next.caseId ? undefined : abortError());
       }
       onContext(next);
+      if (changed && modalOpen) sendModal();
     } else if (data.type === 'result' && identifier(data.requestId) && typeof data.ok === 'boolean' && (data.error === undefined || typeof data.error === 'string')) {
       const item = pending.get(data.requestId);
       if (!item || item.context.caseId !== context?.caseId || item.context.generation !== context.generation) return;
@@ -75,11 +92,21 @@ export function createWorkspaceBridge({ onContext, onCasesChanged, onAccountsCha
     } else if (data.type === 'cases-changed') onCasesChanged();
     else if (data.type === 'accounts-changed' && data.caseId === context?.caseId && data.generation === context?.generation) onAccountsChanged?.();
     else if (data.type === 'data-changed' && data.caseId === context?.caseId && data.generation === context?.generation) onDataChanged?.();
+    else if (data.type === 'feedback-open-import' && context && data.caseId === context.caseId && data.generation === context.generation && typeof data.importId === 'string' && /^[a-f0-9]{12,64}$/.test(data.importId)) onOpenImport?.(data.importId);
+    else if (data.type === 'feedback-import-settled' && context && data.caseId === context.caseId && data.generation === context.generation && typeof data.importId === 'string' && /^[a-f0-9]{12,64}$/.test(data.importId)) onImportSettled?.(data.importId);
   };
   target.addEventListener('message', receive);
-  send({ type: 'ready' });
+  target.addEventListener('funds:feedback-modal', receiveModal);
+  send({ type: 'ready', instanceId });
   return {
     get context() { return context; },
+    publishFeedback(event, binding = context ?? undefined) {
+      if (disposed || !context || !binding || binding.caseId !== context.caseId || binding.generation !== context.generation) return false;
+      // Only explicit scalar feedback metadata crosses the iframe boundary.
+      const safeEvent = { id: event.id, kind: event.kind, operation: event.operation, status: event.status, severity: event.severity, title: event.title, detail: event.detail, progress: event.progress ? { done: event.progress.done, total: event.progress.total } : undefined, importId: event.importId };
+      try { send({ type: 'feedback', caseId: binding.caseId, generation: binding.generation, instanceId, event: safeEvent }); return true; }
+      catch { return false; }
+    },
     request(action, payload, signal) {
       if (disposed || !context || signal?.aborted) return Promise.reject(abortError());
       const binding = context;
@@ -94,7 +121,8 @@ export function createWorkspaceBridge({ onContext, onCasesChanged, onAccountsCha
       });
     },
     dispose() {
-      disposed = true; target.removeEventListener('message', receive);
+      if (modalOpen) { modalOpen = false; sendModal(); }
+      disposed = true; target.removeEventListener('message', receive); target.removeEventListener('funds:feedback-modal', receiveModal);
       for (const id of pending.keys()) settle(id, abortError());
     },
   };

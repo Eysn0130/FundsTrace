@@ -47,7 +47,7 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
       canvasContext[name] = (...args) => canvasCalls.push([name,...args]);
     }
     canvasContext.measureText=text=>({width:String(text).length*6,actualBoundingBoxAscent:9,actualBoundingBoxDescent:2});
-    const node = { value: '', checked: false, disabled: false, innerHTML: '', textContent: '', style: {}, dataset: {}, href: '', download: '',
+    const node = { value: '', checked: false, disabled: false, innerHTML: '', textContent: '', style: { setProperty(name, value) { this[name] = value; } }, dataset: {}, href: '', download: '',
       width:200,height:120,canvasCalls,get ownerDocument(){return document},
       classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
       addEventListener() {}, removeEventListener() {},setAttribute() {},removeAttribute() {},toggleAttribute() {},querySelectorAll() { return []; },
@@ -128,6 +128,13 @@ export function harness(file, url = 'http://127.0.0.1:8300/', stored = '1', extr
 }
 
 test('unresolved observations keep the actual canvas visible while a genuinely empty case shows its empty state', () => {
+  const html = readFileSync(`${root}static/index.html`, 'utf8');
+  const source = readFileSync(`${root}static/app.js`, 'utf8');
+  const header = source.slice(source.indexOf('function updateHeader()'), source.indexOf('/* ---------------- 流水查询'));
+  for (const [, id] of header.matchAll(/\$\('#([^']+)'\)/g)) {
+    assert.equal([...html.matchAll(new RegExp(`\\bid="${id}"`, 'g'))].length, 1,
+      `updateHeader requires exactly one real #${id} node`);
+  }
   const h = harness('app.js'), toggles = [];
   h.element('#canvasWrap').classList.toggle = (name, enabled) => toggles.push([name, enabled]);
   h.run(`state.stats = { flows: null, accounts: 2, funds: {
@@ -158,6 +165,38 @@ test('case and deletion summaries keep unavailable ordinary counts distinct from
     observation_count: 0, count: { lower: 0, upper: 0 }
   } }; caseWorkspace.refresh();`);
   assert.match(h.element('#caseCounts').textContent, /流水 0 笔/);
+});
+
+test('transport retries stay silent and only an uncaught current owner reports an error', async () => {
+  const h = harness('app.js');
+  h.run('state.caseId=1;globalThis.feedbackNotices=[];window.FundsFeedback={notify:value=>feedbackNotices.push(value)}');
+  h.network(async () => ({ ...response({}), ok: false, status: 503, text: async () => '{"detail":"合成暂时不可用"}' }));
+  const error = await h.run("api('/api/synthetic-read').catch(error=>error)");
+  assert.equal(error.status, 503);
+  assert.equal(h.run('feedbackNotices.length'), 0, 'a handled/retried HTTP error has no transport toast');
+  h.windowEvent('unhandledrejection', { reason: error });
+  assert.equal(h.run('feedbackNotices.length'), 1);
+  assert.equal(h.run('feedbackNotices[0].title'), '合成暂时不可用');
+  h.network(async () => response({ ok: true }));
+  assert.equal((await h.run("api('/api/synthetic-read')")).ok, true);
+  assert.equal(h.run('feedbackNotices.length'), 1, 'successful retry does not repeat feedback');
+});
+
+test('late network and malformed JSON errors retain their original A-B-A binding', async () => {
+  for (const phase of ['network', 'json']) {
+    const h = harness('app.js'), pending = deferred();
+    h.run('state.caseId=1;globalThis.feedbackNotices=[];window.FundsFeedback={bind(){},notify:value=>feedbackNotices.push(value)}');
+    h.network(async () => phase === 'network' ? pending.promise : { ...response({}), json: () => pending.promise });
+    const request = h.run("api('/api/synthetic-read').catch(error=>error)");
+    await flush();
+    h.run('selectCase(2);selectCase(1)');
+    pending.reject(new Error('合成旧响应损坏'));
+    const error = await request;
+    assert.equal(error.feedbackScope.caseId, 1);
+    assert.equal(error.feedbackScope.generation, 0);
+    h.windowEvent('unhandledrejection', { reason: error });
+    assert.equal(h.run('feedbackNotices.length'), 0, phase + ' cannot report into the returned-to case');
+  }
 });
 
 test('sidebar composition bounds include clipped accounts and curved paths but exclude accounts outside the current graph', () => {
@@ -421,7 +460,7 @@ test('a known successful canvas save still exports the case when the following l
   assert.equal(h.run('JSON.stringify(caseContext())===caseSaveBinding'), true);
   assert.equal(h.run('JSON.stringify([...nodeDrafts])===caseSaveDrafts'), true);
   assert.equal(h.run('state.graphView.selectedAccount'), 'SYN-HUB'); assert.equal(h.element('#canvasSel').value, '7');
-  assert.equal(h.run('caseSaveNotices.filter(item=>item[1]==="err" && /已保存.*暂未刷新/.test(item[0])).length'), 1);
+  assert.equal(h.run('caseSaveNotices.filter(item=>item[1]==="warn" && /已保存.*暂未刷新/.test(item[0])).length'), 1);
 });
 
 test('late G6 graph, statistics and batches cannot refill a switched case', async () => {

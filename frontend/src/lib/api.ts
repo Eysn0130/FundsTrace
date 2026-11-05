@@ -55,7 +55,8 @@ export const api = {
     request<{ case_id: string; import_id: string; started: boolean }>(`${casePath(id)}/imports/${encodeURIComponent(importId)}/commit`, { ...json(body), signal }),
   job: (id: string, importId: string, signal?: AbortSignal) =>
     request<ImportJob>(`${casePath(id)}/imports/${encodeURIComponent(importId)}`, { signal }),
-  imports: (id: string, signal?: AbortSignal) => request<ImportSessionList>(`${casePath(id)}/imports?limit=100`, { signal }),
+  imports: (id: string, signal?: AbortSignal, importId?: string) =>
+    request<ImportSessionList>(`${casePath(id)}/imports?${importId === undefined ? 'limit=100' : 'import_id=' + encodeURIComponent(importId)}`, { signal }),
   importRecords: (id: string, sourceId: string, page = 1, signal?: AbortSignal) =>
     request<ImportRecordPage>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/records?page=${page}&page_size=50`, { signal }),
   sources: (id: string, flowId: string, page = 1, signal?: AbortSignal) =>

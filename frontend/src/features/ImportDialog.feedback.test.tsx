@@ -65,7 +65,7 @@ describe('bank feedback ZIP import dialog', () => {
     expect(screen.getByText('账号缺失')).toBeTruthy();
     expect(screen.getByText('冻结信息')).toBeTruthy();
     expect(screen.getByText(/来源已接纳流水金额合计.*非本次新增金额或净结算金额/)).toBeTruthy();
-    expect(screen.getByText(/自动处理会正常完成，未计入资金流水的记录会保留来源和原因，无需逐条确认/)).toBeTruthy();
+    expect(screen.getByText(/未计入资金流水的记录按规则保留来源和原因，无需逐条确认/)).toBeTruthy();
     expect(screen.getByText(/未计入不代表金额为零或没有发生交易/)).toBeTruthy();
     expect(screen.getByText('未计入记录的来源示例（前 1 条）').closest('details')?.open).toBe(false);
     expect(screen.queryByText(feedback.profile)).toBeNull();

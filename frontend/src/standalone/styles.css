@@ -223,3 +223,6 @@ html[data-ft-theme="light"] .cases-workspace :is(.modal-heading, .modal-footer, 
 @media (prefers-reduced-motion: reduce) {
   .cases-workspace :is(.case-item, .case-actions summary, .case-actions-menu button, .case-workspace-tabs button):not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) { transition: none; }
 }
+
+.cases-workspace .standalone-main > .warning-banner { margin: 15px 29px 0; }
+.cases-workspace .modal :is(.modal-heading, .modal-footer) { background: var(--modal-surface); color: var(--modal-text); }

@@ -19,7 +19,7 @@
     }
     function basePath(context) { return '/api/v1/cases/' + encodeURIComponent(context.caseId) + '/imports'; }
     async function session(context, importId) {
-      const value = await json(basePath(context) + '?limit=200');
+      const value = await json(basePath(context) + '?import_id=' + encodeURIComponent(importId));
       if (value.case_id !== String(context.caseId) || !Array.isArray(value.items)) throw failure('导入记录与当前案件不一致。');
       const item = value.items.find(row => row.import_id === importId && row.case_id === String(context.caseId) && row.surface === 'v1');
       if (!item || !Number.isSafeInteger(item.attempt) || item.attempt < 0) throw failure('无法核对本案导入记录，请重新打开导入记录。');

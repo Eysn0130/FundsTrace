@@ -5,99 +5,182 @@ const fs=require('node:fs/promises');
 const path=require('node:path');
 const vm=require('node:vm');
 
-function workspace({collapsed=false,slotLeft=56,width=1024,scale=.75625}={}) {
+function workspace({collapsed=false,slotLeft=56,width=1024,scale=1,scrolling=false,tabScroll=false}={}) {
   const nodes=new Map(),box=(left,top,width,height)=>({left,top,right:left+width,bottom:top+height,width,height});
-  const node=(id,bounds,parent=null)=>{
-    const value={id,bounds,parentElement:parent,hidden:false,clientWidth:bounds.width,scrollWidth:bounds.width,
+  const node=(id,bounds,parent=null,control=false)=>{
+    const value={id,bounds,parentElement:parent,hidden:false,control,clientWidth:bounds.width,clientHeight:bounds.height,clientTop:0,scrollWidth:bounds.width,_scrollLeft:0,scrollWrites:[],
       style:{visibility:'visible',overflowX:'visible',overflowY:'visible'},selectors:new Map(),children:[],
-      getBoundingClientRect(){return this.bounds;},getClientRects(){return this.hidden?[]:[this.bounds];},
+      getBoundingClientRect(){let left=0;for(let p=this.parentElement;p;p=p.parentElement)left+=p.scrollLeft||0;
+        return {...this.bounds,left:this.bounds.left-left,right:this.bounds.right-left};},
+      getClientRects(){for(let p=this;p;p=p.parentElement)if(p.hidden)return [];return [this.getBoundingClientRect()];},
       querySelector(selector){return this.selectors.get(selector)||null;},
-      querySelectorAll(selector){return selector==='button,input,select,a'?this.children:[];},
-      contains(other){return other===this||this.children.includes(other);}};
-    nodes.set(id,value);return value;
+      querySelectorAll(selector){return selector==='button,input,select,a'?[...nodes.values()].filter(item=>item.control&&this.contains(item)):[];},
+      contains(other){for(let p=other;p;p=p.parentElement)if(p===this)return true;return false;},
+      getAttribute(name){return this.attributes?.[name]??null;}};
+    Object.defineProperty(value,'scrollLeft',{get(){return this._scrollLeft;},set(left){this.scrollWrites.push(left);
+      if(!this.scrollLocked&&!(this.restoreLocked&&this._scrollLeft>0&&left===0))this._scrollLeft=Math.max(0,Math.min(left,this.scrollWidth-this.clientWidth));}});
+    nodes.set(id,value);if(parent?.children)parent.children.push(value);return value;
   };
-  const slot=node('graphPage',box(slotLeft,0,width-slotLeft,688));
-  const toolbar=node('editorToolbar',box(slotLeft,0,1280*scale,(collapsed?66:148)*scale),slot);
-  toolbar.clientWidth=1280;toolbar.style.height=String(collapsed?66:148);
+  const slotWidth=width-slotLeft,narrow=slotWidth<1200,stacked=slotWidth<720,headerHeight=stacked?56:34,
+    height=collapsed?(stacked?99:77):(stacked?129:narrow?107:127);
+  const slot=node('graphPage',box(slotLeft,0,slotWidth,688));
+  const toolbar=node('editorToolbar',box(slotLeft,0,slotWidth*scale,height*scale),slot);
+  toolbar.clientWidth=slotWidth;toolbar.style.height=String(height);toolbar.attributes={'data-ribbon-layout':stacked?'stacked':narrow?'narrow':'wide'};
   toolbar.style.getPropertyValue=key=>key==='--toolbar-fit-scale'?String(scale):'';
   toolbar.classList={contains:name=>name==='is-collapsed'&&collapsed};
-  const header=node('ribbon-tabbar',box(slotLeft,0,1280*scale,35*scale),toolbar);
-  header.clientWidth=1280;header.scrollWidth=1280;header.style.overflowX='auto';
-  const panel=node('ribbonPanel-common',box(slotLeft,35*scale,1280*scale,112*scale),toolbar);
-  panel.clientWidth=1280;panel.scrollWidth=1280;panel.hidden=collapsed;panel.style.overflowX='hidden';
-  const compact=node('ribbonCompact',box(slotLeft,35*scale,1280*scale,31*scale),toolbar);
-  compact.clientWidth=1280;compact.scrollWidth=1280;compact.hidden=!collapsed;compact.style.overflowX='hidden';
-  const required=['caseSelect','canvasSel','btnCanvasSave','btnUndo','btnRedo','btnWorkspaceView',
-    'ribbonTab-common','ribbonTab-trace','ribbonTab-style','ribbonTab-view'];
-  for(const [index,id] of required.entries()) header.children.push(node(id,box(slotLeft+(index*60+8)*scale,3*scale,50*scale,28*scale),header));
-  const inspect=node('inspect',box(slotLeft+1000*scale,3*scale,60*scale,28*scale),header);
-  const fold=node('fold',box(slotLeft+1100*scale,3*scale,90*scale,28*scale),header);
-  header.children.push(inspect,fold);header.selectors.set('[data-ribbon-command="inspectSelection"]',inspect);
-  header.selectors.set('[data-ribbon-collapse]',fold);
-  const action=node('action',box(slotLeft+8*scale,42*scale,60*scale,64*scale),panel);
-  action.style.flexDirection='column';action.style.fontSize='12px';panel.children.push(action);
-  const icon=node('icon',box(slotLeft+8*scale,42*scale,27*scale,27*scale),action);icon.style.width='27px';
+  const header=node('ribbon-tabbar',box(slotLeft,0,slotWidth,headerHeight),toolbar);
+  const tabs=node('ribbonTabs',box(slotLeft+8,0,tabScroll?120:240,28),header);
+  tabs.style.overflowX='auto';tabs.scrollWidth=240;header.selectors.set('#ribbonTabs',tabs);
+  for(const [index,id] of ['ribbonTab-common','ribbonTab-trace','ribbonTab-style','ribbonTab-view'].entries())
+    node(id,box(slotLeft+8+index*60,0,56,28),tabs,true);
+  const required=['caseSelect','canvasSel','btnCanvasSave','btnUndo','btnRedo','btnWorkspaceView'];
+  for(const [index,id] of required.entries())node(id,box(slotLeft+(stacked?8:250)+index*(narrow&&!stacked?50:90),stacked?28:3,narrow&&!stacked?44:80,28),header,true);
+  const inspect=node('inspect',box(slotLeft+slotWidth-104,0,28,28),header,true);
+  const fold=node('fold',box(slotLeft+slotWidth-36,0,28,28),header,true);
+  header.selectors.set('[data-ribbon-command="inspectSelection"]',inspect);header.selectors.set('[data-ribbon-collapse]',fold);
+  const panel=node('ribbonPanel-common',box(slotLeft,headerHeight,slotWidth,narrow?72:92),toolbar);
+  panel.hidden=collapsed;panel.style.overflowX='auto';panel.style.overflowY='hidden';
+  const compact=node('ribbonCompact',box(slotLeft,headerHeight,slotWidth,42),toolbar);
+  compact.hidden=!collapsed;compact.style.overflowX='auto';compact.style.overflowY='hidden';
+  const action=node('action',box(slotLeft+8,headerHeight+4,60,52),panel,true);
+  action.style.flexDirection='column';action.style.fontSize='12px';
+  const icon=node('icon',box(slotLeft+8,headerHeight+4,narrow?22:24,narrow?22:24),action);icon.style.width=narrow?'22px':'24px';
   action.selectors.set('.ui-icon',icon);panel.selectors.set('.ribbon-action',action);
-  const compactAction=node('compactAction',box(slotLeft+8*scale,36*scale,60*scale,28*scale),compact);
-  compact.children.push(compactAction);
+  node('compactAction',box(slotLeft+8,headerHeight+2,60,28),compact,true);
+  for(const [index,id] of ['btnCanvasClone','btnCanvasRemove'].entries()){
+    const direct=node(id,box(slotLeft+80+index*70,headerHeight+4,60,52),panel,true);direct.hidden=narrow;
+  }
+  const menu=node('canvasActions',box(0,0,240,100));menu.hidden=true;
+  node('btnCanvasMenuClone',box(0,0,200,32),menu,true);node('btnCanvasDel',box(0,32,200,32),menu,true);
+  if(scrolling){const bar=collapsed?compact:panel;bar.scrollWidth=slotWidth+200;bar.clientHeight-=8;
+    node('farAction',box(slotLeft+slotWidth+120,headerHeight+4,60,28),bar,true);}
   const table=node('flowTableScroll',box(slotLeft,250,560,400));table.style.overflowX='auto';table.tabIndex=0;
-  const document={querySelector:selector=>({'#editorToolbar':toolbar,'#editorToolbar .ribbon-tabbar':header,
-    '#ribbonCompact':compact,'#flowTableScroll':table}[selector]||null),
-    querySelectorAll:selector=>({'#editorToolbar .ribbon-panel:not([hidden])':collapsed?[]:[panel],
-      '#flowTable thead th':Array(7).fill({}),'.flow-horizontal-scroll':[]}[selector]||[]),
+  const document={tableColumns:7,duplicateScrollControls:[],querySelector:selector=>({'#editorToolbar':toolbar,'#editorToolbar .ribbon-tabbar':header,
+    '#ribbonCompact':compact,'#flowTableScroll':table,'#canvasActions':menu}[selector]||null),
+    querySelectorAll(selector){return {'#editorToolbar .ribbon-panel:not([hidden])':collapsed?[]:[panel],
+      '#flowTable thead th':Array(this.tableColumns).fill({}),'.flow-horizontal-scroll':this.duplicateScrollControls}[selector]||[];},
     getElementById:id=>nodes.get(id)||null};
-  return {nodes,document,innerWidth:width,innerHeight:688,devicePixelRatio:1,getComputedStyle:value=>value.style};
+  return {nodes,document,innerWidth:width,innerHeight:688,devicePixelRatio:1,getComputedStyle:value=>value.style,requestAnimationFrame:fn=>fn()};
 }
 async function toolsFixture(options) {
   const source=await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8');
-  const start=source.indexOf('function readWorkspaceTools() {'),end=source.indexOf('function argumentsOf() {',start);
+  const start=source.indexOf('function readWorkspaceTools(target) {'),end=source.indexOf('function argumentsOf() {',start);
   assert.ok(start>=0&&end>start);
   const fixture=workspace(options),context=vm.createContext({...fixture,assert});
   vm.runInContext(source.slice(start,end),context);
-  return {...fixture,read:()=>context.readWorkspaceTools(),readImport:()=>context.readImportEntry(),check:value=>context.assertWorkspaceTools(value,
-    {tab:'common',collapsed:options?.collapsed===true})};
+  return {...fixture,read:()=>context.readWorkspaceTools(),verify:()=>context.verifyWorkspaceToolReachability(context.readWorkspaceTools),
+    readImport:()=>context.readImportEntry(),check:value=>context.assertWorkspaceTools(value,{tab:'common',collapsed:options?.collapsed===true})};
 }
 
-test('the actual installed projection sees the current persistent top row and scaled slot with no legacy topbar',async()=>{
-  for(const options of [{},{scale:1,width:1336},{collapsed:true}]) {
-    const fixture=await toolsFixture(options),value=fixture.read();
-    assert.equal(fixture.nodes.has('topbar'),false);
-    assert.equal(value.bars[0].id,'ribbon-tabbar');
-    assert.equal(value.bars.length,2);
-    assert.equal(value.clippedControls,0);
-    fixture.check(value);
+test('installed projection keeps full-size controls at both three-layout boundaries without legacy topbar scaling',async()=>{
+  const cases=[{slot:719,layout:'stacked',expanded:129,collapsed:99},
+    {slot:720,layout:'narrow',expanded:107,collapsed:77},{slot:817,layout:'narrow',expanded:107,collapsed:77},
+    {slot:1199,layout:'narrow',expanded:107,collapsed:77},{slot:1200,layout:'wide',expanded:127,collapsed:77}];
+  for(const expected of cases)for(const collapsed of [false,true]) {
+    const fixture=await toolsFixture({width:expected.slot+56,collapsed}),value=fixture.read();
+    assert.equal(value.layout,expected.layout);assert.equal(value.cssHeight,collapsed?expected.collapsed:expected.expanded);
+    assert.equal(fixture.nodes.has('topbar'),false);assert.equal(value.bars[0].id,'ribbon-tabbar');
+    assert.equal(value.bars.length,2);assert.equal(value.clippedControls,0);assert.equal(value.scale,1);
+    assert.equal(value.logicalWidth,value.slotClientWidth);fixture.check(value);
   }
+  const scaled=await toolsFixture({scale:.8});assert.throws(()=>scaled.check(scaled.read()),/WORKSPACE_TOOLBAR_SLOT_CLIPPED|WORKSPACE_TOOLBAR_SCALE/);
 });
 
-test('the actual installed assertion rejects toolbar overflow into its rail despite fitting the viewport',async()=>{
+test('installed assertion rejects toolbar overflow into its rail despite fitting the viewport',async()=>{
   const fixture=await toolsFixture(),toolbar=fixture.nodes.get('editorToolbar');
   toolbar.bounds={...toolbar.bounds,left:0,width:1024,right:1024};
   assert.throws(()=>fixture.check(fixture.read()),/WORKSPACE_TOOLBAR_SLOT_CLIPPED/);
 });
 
-test('visible controls must fit their own row and every clipped parent, not merely the viewport',async()=>{
+test('permanent horizontal or vertical clipping remains a failure outside legal native scroll areas',async()=>{
   for(const target of ['caseSelect','action','compactAction']) {
     const fixture=await toolsFixture({collapsed:target==='compactAction'}),control=fixture.nodes.get(target);
     control.bounds={...control.bounds,left:20,right:50,width:30};
-    const value=fixture.read();
-    assert.ok(value.clippedControls>0,'a control behind the rail is still within the viewport');
+    const value=fixture.read();assert.ok(value.clippedControls>0);
     assert.throws(()=>fixture.check(value),/WORKSPACE_TOOLBAR_CLIPPED/);
   }
   const fixture=await toolsFixture(),control=fixture.nodes.get('caseSelect');
-  const wrapper={bounds:{left:56,top:0,right:80,bottom:35,width:24,height:35},
-    parentElement:control.parentElement,style:{overflowX:'hidden',overflowY:'visible'},
-    getBoundingClientRect(){return this.bounds;}};
-  control.parentElement=wrapper;
+  control.parentElement={bounds:{left:56,top:0,right:80,bottom:56,width:24,height:56},parentElement:control.parentElement,
+    style:{overflowX:'hidden',overflowY:'visible'},getBoundingClientRect(){return this.bounds;}};
   assert.throws(()=>fixture.check(fixture.read()),/WORKSPACE_TOOLBAR_CLIPPED/);
+  const vertical=await toolsFixture({scrolling:true});vertical.nodes.get('farAction').bounds.bottom=200;
+  assert.throws(()=>vertical.check(vertical.read()),/WORKSPACE_TOOLBAR_CLIPPED/);
 });
 
-test('row overflow, missing persistent commands and the seven-column table remain required',async()=>{
+test('native horizontal command scrolling and narrow tab scrolling require observed reachability and restore position',async()=>{
+  for(const options of [{scrolling:true},{scrolling:true,collapsed:true},{tabScroll:true},{width:775,tabScroll:true},{width:1336,scrolling:true}]) {
+    const fixture=await toolsFixture(options),value=fixture.read();
+    assert.ok(value.clippedControls>0);assert.equal(value.permanentClippedControls,0);
+    assert.throws(()=>fixture.check(value),/WORKSPACE_TOOLBAR_UNREACHABLE/);
+    value.reachability=await fixture.verify();fixture.check(value);
+    assert.equal(value.reachability.reached,value.clippedControls);assert.equal(value.reachability.restored,true);
+    for(const node of fixture.nodes.values())assert.equal(node.scrollLeft,0);
+    assert.ok([...fixture.nodes.values()].some(node=>node.scrollWrites.some(left=>left>0)));
+  }
+});
+
+test('scrolling does not excuse frozen scrolling, a hidden clipping parent, oversized commands or failed restoration',async()=>{
+  for(const fault of ['frozen','hidden-parent','oversized','restore']) {
+    const fixture=await toolsFixture({scrolling:true}),bar=fixture.nodes.get('ribbonPanel-common'),control=fixture.nodes.get('farAction');
+    if(fault==='frozen')bar.scrollLocked=true;
+    if(fault==='restore')bar.restoreLocked=true;
+    if(fault==='oversized')control.bounds={...control.bounds,width:1200,right:control.bounds.left+1200};
+    if(fault==='hidden-parent')control.parentElement={parentElement:bar,style:{overflowX:'hidden',overflowY:'visible'},
+      getBoundingClientRect:()=>({left:56,top:56,right:100,bottom:120})};
+    const value=fixture.read();value.reachability=await fixture.verify();
+    assert.throws(()=>fixture.check(value),/WORKSPACE_TOOLBAR_UNREACHABLE/);
+    if(fault!=='restore')assert.equal(value.reachability.restored,true);
+  }
+});
+
+test('horizontal reachability cannot excuse a native scrollbar clipping the command vertically',async()=>{
+  const fixture=await toolsFixture({scrolling:true,collapsed:true}),compact=fixture.nodes.get('ribbonCompact');
+  const fitting=fixture.read();fitting.reachability=await fixture.verify();fixture.check(fitting);
+  // The outer 42px box still fits, but its native scrollport now exposes only 26px of content.
+  compact.clientHeight=26;
+  const clipped=fixture.read();
+  assert.ok(clipped.permanentClippedControls>0);
+  assert.throws(()=>fixture.check(clipped),/WORKSPACE_TOOLBAR_CLIPPED/);
+});
+
+test('row overflow, persistent commands, management fallback and the seven-column single-scroll table remain required',async()=>{
   const overflow=await toolsFixture();overflow.nodes.get('ribbon-tabbar').scrollWidth=1290;
   assert.throws(()=>overflow.check(overflow.read()),/WORKSPACE_TOOLBAR_OVERFLOW/);
+  const hidden=await toolsFixture({scrolling:true});hidden.nodes.get('ribbonPanel-common').style.overflowX='hidden';
+  assert.throws(()=>hidden.check(hidden.read()),/WORKSPACE_TOOLBAR_OVERFLOW/);
   const missing=await toolsFixture();missing.nodes.get('btnUndo').hidden=true;
   assert.throws(()=>missing.check(missing.read()),/WORKSPACE_TOOLBAR_CONTROLS_MISSING/);
-  const table=await toolsFixture();table.nodes.get('flowTableScroll').tabIndex=-1;
-  assert.throws(()=>table.check(table.read()),{code:'ERR_ASSERTION'});
+  const direct=await toolsFixture();direct.nodes.get('btnCanvasClone').hidden=false;
+  assert.throws(()=>direct.check(direct.read()),/WORKSPACE_CANVAS_DIRECT_CONTROLS/);
+  const menu=await toolsFixture();menu.nodes.delete('btnCanvasMenuClone');
+  assert.throws(()=>menu.check(menu.read()),/WORKSPACE_CANVAS_MENU_COMMANDS/);
+  for(const fault of ['focus','columns','duplicate']) {
+    const fixture=await toolsFixture();
+    if(fault==='focus')fixture.nodes.get('flowTableScroll').tabIndex=-1;
+    if(fault==='columns')fixture.document.tableColumns=6;
+    if(fault==='duplicate')fixture.document.duplicateScrollControls.push(fixture.nodes.get('flowTableScroll'));
+    assert.throws(()=>fixture.check(fixture.read()),{code:'ERR_ASSERTION'});
+  }
+});
+
+test('slot metadata, exact action sizes and three-layout heights remain enforced',async()=>{
+  for(const fault of ['layout','logicalWidth','height','font','icon','direction']) {
+    const fixture=await toolsFixture(),value=fixture.read();
+    if(fault==='layout')value.layout='wide';
+    if(fault==='logicalWidth')value.logicalWidth=1280;
+    if(fault==='height')value.cssHeight=133;
+    if(fault==='font')value.action.font=11;
+    if(fault==='icon')value.action.icon=27;
+    if(fault==='direction')value.action.direction='row';
+    assert.throws(()=>fixture.check(value),{code:'ERR_ASSERTION'});
+  }
+});
+
+test('reachability restores a previously scrolled command row, not just zero',async()=>{
+  const fixture=await toolsFixture({scrolling:true}),bar=fixture.nodes.get('ribbonPanel-common');
+  bar.scrollLeft=83;
+  const value=fixture.read();value.reachability=await fixture.verify();fixture.check(value);
+  assert.equal(bar.scrollLeft,83);assert.equal(value.reachability.restored,true);
 });
 
 test('native file input remains enabled and exactly associated with its visible label despite its clipped size',async()=>{
@@ -130,7 +213,7 @@ test('the actual pointer helper preserves ordinary clicks and dispatches Ctrl on
   await assert.rejects(context.clickElement('SYN_ELEMENT',page,{modifiers:32}),/POINTER_MODIFIERS_INVALID/);
 });
 
-test('the actual inspection waits for settled height and slot scaling without waiting away clipping failures',async()=>{
+test('inspection waits for settled height and unscaled slot width without waiting away clipping failures',async()=>{
   const source=(await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8')).replace(/\r\n/g,'\n');
   const start=source.indexOf('const inspect = async (label,expected) => {');
   const end=source.indexOf('    try {\n      for(const size',start);
@@ -142,14 +225,31 @@ test('the actual inspection waits for settled height and slot scaling without wa
     const context=vm.createContext({samples,assertWorkspaceTools:value=>fixture.check(value),
       readWorkspaceTools(){},evaluate:async()=>{
         const value=fixture.read();
-        if(++reads===1){if(pending==='height')value.cssHeight=100;else value.scale=1;}
+        if(++reads===1){if(pending==='height')value.cssHeight=100;else value.scale=.8;}
         return value;
       },
       until:async check=>{for(let attempt=0;attempt<3;attempt++)if(await check())return;throw new Error('TIMEOUT');}});
     vm.runInContext(`${source.slice(start,end)};globalThis.inspect=inspect;`,context);
     if(clipping)await assert.rejects(context.inspect('synthetic',{tab:'common',collapsed:false}),/WORKSPACE_TOOLBAR_CLIPPED/);
     else await context.inspect('synthetic',{tab:'common',collapsed:false});
-    assert.equal(reads,2);assert.equal(samples.length,1);assert.equal(samples[0].cssHeight,148);
+    assert.equal(reads,2);assert.equal(samples.length,1);assert.equal(samples[0].cssHeight,107);
+  }
+});
+
+test('the actual inspection records bounded reachability evidence instead of accepting scroll metadata alone',async()=>{
+  const source=(await fs.readFile(path.join(__dirname,'installed-app-smoke.cjs'),'utf8')).replace(/\r\n/g,'\n');
+  const start=source.indexOf('const inspect = async (label,expected) => {'),end=source.indexOf('    try {\n      for(const size',start);
+  assert.ok(start>=0&&end>start);
+  for(const frozen of [false,true]) {
+    const fixture=await toolsFixture({scrolling:true}),samples=[];let probes=0;
+    fixture.nodes.get('ribbonPanel-common').scrollLocked=frozen;
+    const context=vm.createContext({samples,readWorkspaceTools(){},verifyWorkspaceToolReachability(){},
+      assertWorkspaceTools:value=>fixture.check(value),until:async check=>{assert.equal(await check(),true);},
+      evaluate:async expression=>{if(expression.includes('verifyWorkspaceToolReachability')){probes++;return fixture.verify();}return fixture.read();}});
+    vm.runInContext(`${source.slice(start,end)};globalThis.inspect=inspect;`,context);
+    if(frozen)await assert.rejects(context.inspect('synthetic',{tab:'common',collapsed:false}),/WORKSPACE_TOOLBAR_UNREACHABLE/);
+    else await context.inspect('synthetic',{tab:'common',collapsed:false});
+    assert.equal(probes,1);assert.equal(samples.length,1);assert.equal(samples[0].reachability.restored,true);
   }
 });
 
