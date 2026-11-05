@@ -143,7 +143,8 @@ def test_two_restorations_with_same_expected_set_have_one_winner(client, databas
 
 
 @pytest.mark.parametrize("private_canvas", [False, True])
-def test_bulk_tracking_returns_complete_canvas_set_for_compensation(client, database, make_case, flow_row, private_canvas):
+@pytest.mark.parametrize("text_ids", [False, True])
+def test_bulk_tracking_returns_complete_canvas_set_for_compensation(client, database, make_case, flow_row, private_canvas, text_ids):
     case_id = make_case()
     canvas_id = create_canvas(client, case_id) if private_canvas else 0
     unrelated = insert_flow(database, case_id, flow_row, payer_account="SYN-C", payee_account="SYN-D")
@@ -157,7 +158,7 @@ def test_bulk_tracking_returns_complete_canvas_set_for_compensation(client, data
     database.x("insert into main_accounts(case_id,account,name) values (?,'SYN-B','Synthetic recipient')", [case_id])
 
     response = client.post("/api/track/bulk", json={"case_id": case_id, "canvas_id": canvas_id,
-                                                   "flow_ids": [anchor], "direction": "target", "x": 1})
+                                                   "flow_ids": [str(anchor) if text_ids else anchor], "direction": "target", "x": 1})
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["tracked_ids"] == [unrelated, anchor, next_flow]

@@ -130,3 +130,16 @@ test('resolution freshness retains explicit null and valid hashes but not unknow
     store.capture(scope,{graphView:view,resolutionRevision:revision});assert.equal(Object.hasOwn(store.get('case','canvas'),'resolutionRevision'),false);
   }
 });
+
+test('table viewport retains only an exact row identifier and valid geometry', () => {
+  const store = create(), rowId = '0009007199254740993999';
+  const viewport = { rowId, page: 137, offset: -12.25, scrollLeft: 421, rows: [{ amount: 'PRIVATE_SYNTHETIC_FACT' }], total: 999 };
+  store.capture({ caseId: 'A', canvasId: '0' }, { query: { viewport } });
+  viewport.offset = 999;
+  assert.deepEqual(plain(store.get('A', '0').query.viewport), { rowId, page: 137, offset: -12.25, scrollLeft: 421 });
+  assert.equal(JSON.stringify(store.get('A', '0')).includes('PRIVATE_SYNTHETIC_FACT'), false);
+  for (const bad of [{ rowId: 42 }, { page: 0 }, { page: 1.5 }, { offset: NaN }, { scrollLeft: -1 }]) {
+    store.capture({ caseId: 'A', canvasId: '0' }, { query: { viewport: { ...viewport, ...bad } } });
+    assert.equal(store.get('A', '0').query.viewport, undefined);
+  }
+});

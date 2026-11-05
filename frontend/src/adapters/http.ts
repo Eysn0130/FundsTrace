@@ -44,7 +44,7 @@ export function createHttpFundsSession({ context, scopeKey, generation, transpor
     repreview: (importId, body, signal) => run(signal, combined => transport.repreview(caseId, importId, body, combined)),
     commit: (importId, body, signal) => run(signal, combined => transport.commit(caseId, importId, body, combined)),
     job: (importId, signal) => run(signal, combined => transport.job(caseId, importId, combined)),
-    imports: signal => run(signal, combined => transport.imports(caseId, combined)),
+    imports: (signal, importId) => run(signal, combined => transport.imports(caseId, combined, importId)),
     sources: (flowId, page = 1, signal) => run(signal, combined => transport.sources(caseId, flowId, page, combined)),
     cleanup: (dryRun, signal) => run(signal, combined => transport.cleanup(caseId, dryRun, combined)),
   };

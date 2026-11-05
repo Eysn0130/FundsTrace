@@ -18,33 +18,37 @@
     const status = { tab: 'common', collapsed: false, selectionCount: 0, edgeSelectionCount: 0, busy: false, cameraReady:false };
     const commandOverrides = new Map();
     const mixedOptions = new WeakMap(), mixedTitles = new WeakMap();
-    let currentPopover = null, toolbarScale = null;
+    let toolbarWidth = null;
     const popoverHomes = new Map();
     for (const trigger of triggers) {
       const panel = doc.getElementById(trigger.dataset.ribbonPopover);
-      if (panel) popoverHomes.set(panel, { parent: panel.parentElement, next: panel.nextSibling });
+      if (panel) {
+        popoverHomes.set(panel, { parent: panel.parentElement, next: panel.nextSibling });
+        trigger.setAttribute('data-toolbar-menu', panel.id);
+        panel.setAttribute('data-toolbar-panel', 'form');
+      }
     }
 
     function updateToolbarFit(notify = true) {
       // The navigation rail occupies viewport space outside the toolbar's slot.
-      // Measure the unscaled host; reading the toolbar would feed its own zoom
-      // back into the next measurement. Hidden slots wait for visible geometry.
+      // Read the host so chrome cannot feed its own geometry back into sizing.
+      // Narrow slots reflow context and scroll commands; text is never scaled.
       const hostWidth = toolbarHost?.clientWidth;
       const width = Number.isFinite(hostWidth) ? hostWidth : doc.documentElement?.clientWidth || root.innerWidth || 1280;
       if (width <= 0) return;
-      const scale = Math.min(1, width / 1280);
-      const changed = toolbarScale !== null && scale !== toolbarScale;
+      const changed = toolbarWidth !== null && width !== toolbarWidth;
       const announce = phase => root.dispatchEvent(new root.CustomEvent('fundstrace:workspace-resize', {
         detail: { ...doc.getElementById('workspace')?.fundsWorkspaceShell?.getState?.(),
           toolbarCollapsed: status.collapsed, reason: 'toolbar-fit', phase }
       }));
       if (changed && notify) announce('prepare');
-      toolbarScale = scale;
+      toolbarWidth = width;
       for (const bar of [topbar, toolbar]) {
         if (!bar) continue;
-        bar.style.setProperty('--toolbar-fit-width', `${Math.max(1280, width)}px`);
-        bar.style.setProperty('--toolbar-fit-scale', String(scale));
+        bar.style.setProperty('--toolbar-fit-width', `${width}px`);
+        bar.style.setProperty('--toolbar-fit-scale', '1');
       }
+      toolbar.setAttribute('data-ribbon-layout', width < 720 ? 'stacked' : width < 1200 ? 'narrow' : 'wide');
       if (changed && notify) announce('start');
     }
 
@@ -54,13 +58,17 @@
         (!node.getClientRects || node.getClientRects().length);
     }
     function closePopovers(restore = false) {
+      const menu = root.FundsToolbarMenu?.getState?.();
+      const ownsMenu = triggers.some(trigger => trigger.dataset.ribbonPopover === menu?.menuId);
       for (const trigger of triggers) {
         const panel = doc.getElementById(trigger.dataset.ribbonPopover);
         if (!panel) continue;
         const open = trigger.getAttribute('aria-expanded') === 'true';
-        if (open && (restore || panel.contains(doc.activeElement)) && validFocus(trigger)) trigger.focus();
+        if (open && (restore || panel.contains(doc.activeElement)) && validFocus(trigger)) trigger.focus({ preventScroll: true });
         trigger.setAttribute('aria-expanded', 'false');
         panel.classList.remove('is-open');
+        panel.classList.remove('toolbar-menu');
+        for (const property of ['left', 'top', 'maxWidth', 'maxHeight', 'transformOrigin']) panel.style[property] = '';
         const inline = adaptiveInline(panel);
         panel.setAttribute('role', inline ? 'group' : 'dialog');
         panel.hidden = !inline;
@@ -70,33 +78,7 @@
           home.parent.insertBefore(panel, home.next?.parentElement === home.parent ? home.next : null);
         }
       }
-      currentPopover = null;
-    }
-    function placePopover(panel, trigger) {
-      const rect = trigger.getBoundingClientRect();
-      const panelRect = panel.getBoundingClientRect();
-      const left = Math.max(8, Math.min(rect.left, root.innerWidth - panelRect.width - 8));
-      const top = Math.max(8, Math.min(rect.bottom + 6, root.innerHeight - panelRect.height - 8));
-      panel.style.left = `${left}px`;
-      panel.style.top = `${top}px`;
-      panel.style.maxHeight = `${Math.max(120, root.innerHeight - top - 8)}px`;
-    }
-    function openPopover(trigger) {
-      root.FundsToolbarMenu?.close('ribbon');
-      const panel = doc.getElementById(trigger.dataset.ribbonPopover);
-      if (!panel || adaptiveInline(panel)) return;
-      const opening = trigger.getAttribute('aria-expanded') !== 'true';
-      closePopovers();
-      if (!opening) return;
-      // Like the shared toolbar menus, floating surfaces use unscaled viewport
-      // coordinates. Return the same controls home when closing or expanding.
-      doc.body.appendChild(panel);
-      panel.hidden = false;
-      panel.inert = false;
-      panel.classList.add('is-open');
-      trigger.setAttribute('aria-expanded', 'true');
-      placePopover(panel, trigger);
-      currentPopover = { panel, trigger };
+      if (ownsMenu) root.FundsToolbarMenu.close('ribbon');
     }
     function render() {
       closePopovers();
@@ -117,6 +99,7 @@
         fold.setAttribute('aria-expanded', String(!status.collapsed));
         const label = doc.getElementById('ribbonCollapseLabel');
         if (label) label.textContent = status.collapsed ? '展开功能区' : '收起功能区';
+        fold.title = label?.textContent || '';
         const image = fold.querySelector('img');
         if (image) image.src = `/static/ui-icons/chevron-${status.collapsed ? 'down' : 'up'}.svg`;
       }
@@ -175,8 +158,11 @@
         node.disabled = status.busy&&!(status.cameraReady&&cameraCommands.has(command)) || !allowed;
       }
       const output = doc.getElementById('ribbonSelectionStatus');
-      if (output) output.textContent = status.busy ? '正在更新画布…' : status.selectionCount ? `已选 ${status.selectionCount} 个节点` :
-        status.edgeSelectionCount ? `已选 ${status.edgeSelectionCount} 条关系` : '未选择节点';
+      if (output) {
+        output.textContent = status.busy ? '正在更新画布…' : status.selectionCount ? `已选 ${status.selectionCount} 个节点` :
+          status.edgeSelectionCount ? `已选 ${status.edgeSelectionCount} 条关系` : '';
+        output.title = output.textContent;
+      }
     }
     function setStatus(values = {}) {
       if ('selectionCount' in values) status.selectionCount = Math.max(0, Number(values.selectionCount) || 0);
@@ -245,7 +231,6 @@
       activateTab(button.dataset.ribbonExpandTab);
       doc.getElementById('workspace')?.fundsWorkspaceShell?.setToolbarCollapsed(false);
     });
-    for (const trigger of triggers) trigger.addEventListener('click', () => openPopover(trigger));
     for (const button of doc.querySelectorAll('[data-ribbon-proxy]')) button.addEventListener('click', () => {
       const target = doc.getElementById(button.dataset.ribbonProxy);
       if (!target || target.disabled) return;
@@ -269,15 +254,13 @@
         sendCommand(node.dataset.ribbonCommand, value);
       });
     }
-    doc.addEventListener('pointerdown', event => {
-      if (currentPopover && !currentPopover.panel.contains(event.target) && !currentPopover.trigger.contains(event.target)) closePopovers();
-    });
-    doc.addEventListener('keydown', event => {
-      if (event.key === 'Escape' && currentPopover) {
-        event.preventDefault();
-        event.stopPropagation();
-        closePopovers(true);
-      }
+    const more = doc.getElementById('ribbonMore');
+    more?.addEventListener('click', event => {
+      const action = event.target?.closest?.('button,a[href]');
+      if (action && !action.disabled && action.getAttribute('aria-disabled') !== 'true') closePopovers();
+    }, true);
+    doc.addEventListener('funds:toolbar-menu-change', event => {
+      if (!event.detail.open && triggers.some(trigger => trigger.dataset.ribbonPopover === event.detail.menuId)) closePopovers();
     });
     root.addEventListener('resize', () => { closePopovers(); updateToolbarFit(); });
     if (root.ResizeObserver && toolbarHost) {
@@ -286,7 +269,6 @@
       const fitObserver = new root.ResizeObserver(() => { closePopovers(); updateToolbarFit(); });
       fitObserver.observe(toolbarHost);
     }
-    for (const node of [...panels, compact]) node.addEventListener('scroll', () => closePopovers());
     root.addEventListener('fundstrace:workspace-resize', event => setCollapsed(event.detail.toolbarCollapsed));
     const api = { activateTab, setCollapsed, closePopovers, setStatus, setValues, setCommandEnabled, getState: () => ({ ...status }) };
     toolbar.fundsRibbon = api;

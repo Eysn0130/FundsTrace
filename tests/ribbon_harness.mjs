@@ -54,7 +54,13 @@ function harness({ slotWidth = 1144, hidden = false, resizeObserver = true } = {
     }
     addEventListener(name, fn) { const list = this.handlers.get(name) || []; list.push(fn); this.handlers.set(name, list); }
     fire(name, detail = {}) { const event = { target: this, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...detail }; for (const fn of this.handlers.get(name) || []) fn(event); return event; }
-    click() { if (!this.disabled) { this.clicks++; this.fire('click'); } }
+    click() {
+      if (this.disabled) return;
+      this.clicks++;
+      // The shared controller captures real menu triggers before bubble handlers.
+      if (this.hasAttribute('data-toolbar-menu')) window.FundsToolbarMenu.open(this);
+      else this.fire('click');
+    }
   }
   const documentRoot = new Element('document');
   const stack = [documentRoot];
@@ -67,7 +73,7 @@ function harness({ slotWidth = 1144, hidden = false, resizeObserver = true } = {
     const node = new Element(tag, attrs); stack.at(-1).appendChild(node);
     if (!voidTags.has(tag.toLowerCase()) && !raw.endsWith('/')) stack.push(node);
   }
-  doc = { activeElement: null, body: all.find(n => n.tagName === 'BODY'), documentElement: all.find(n => n.tagName === 'HTML'), createElement: tag => new Element(tag), getElementById: id => all.find(n => n.id === id), querySelectorAll: selector => all.filter(n => matches(n, selector)), querySelector: selector => all.find(n => matches(n, selector)), addEventListener(name, fn) { const list = listeners.get(name) || []; list.push(fn); listeners.set(name, list); }, dispatchEvent(event) { events.push(event); for (const fn of listeners.get(event.type) || []) fn(event); }, fire(name, detail = {}) { const event = { preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...detail }; for (const fn of listeners.get(name) || []) fn(event); return event; } };
+  doc = { activeElement: null, body: all.find(n => n.tagName === 'BODY'), documentElement: all.find(n => n.tagName === 'HTML'), createElement: tag => new Element(tag), getElementById: id => all.find(n => n.id === id), querySelectorAll: selector => all.filter(n => matches(n, selector)), querySelector: selector => all.find(n => matches(n, selector)), addEventListener(name, fn) { const list = listeners.get(name) || []; list.push(fn); listeners.set(name, list); }, dispatchEvent(event) { if (event.type === 'funds:ribbon-command') events.push(event); for (const fn of listeners.get(event.type) || []) fn(event); }, fire(name, detail = {}) { const event = { preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...detail }; for (const fn of listeners.get(name) || []) fn(event); return event; } };
   const windowHandlers = new Map();
   const window = { document: doc, innerWidth: 1200, innerHeight: 800, CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } }, addEventListener(name, fn) { const list = windowHandlers.get(name) || []; list.push(fn); windowHandlers.set(name, list); }, dispatchEvent(event) { windowEvents.push(event); for (const fn of windowHandlers.get(event.type) || []) fn(event); } };
   Object.defineProperty(doc.documentElement, 'clientWidth', { get: () => window.innerWidth });
@@ -82,13 +88,33 @@ function harness({ slotWidth = 1144, hidden = false, resizeObserver = true } = {
   const notifySlotResize = () => {
     for (const observer of observers) if (observer.targets.has(host)) observer.callback([{ target: host, contentRect: host.getBoundingClientRect() }]);
   };
+  // Keep ribbon unit tests focused on ownership/reflow. Real capture, focus,
+  // placement and dismissal run with both production scripts in toolbar_menu_harness.
+  let menu = null;
+  window.FundsToolbarMenu = {
+    getState: () => ({ open: !!menu, menuId: menu?.panel.id || null, triggerId: menu?.trigger.id || null }),
+    close() {
+      if (!menu) return;
+      const previous = menu; menu = null;
+      previous.trigger.setAttribute('aria-expanded', 'false');
+      previous.panel.hidden = previous.panel.inert = true;
+      doc.dispatchEvent({ type: 'funds:toolbar-menu-change', detail: { open: false, menuId: previous.panel.id } });
+    },
+    open(trigger) {
+      this.close(); window.FundsRibbon?.closePopovers();
+      const panel = doc.getElementById(trigger.getAttribute('data-toolbar-menu'));
+      doc.body.appendChild(panel); panel.hidden = panel.inert = false;
+      panel.classList.add('toolbar-menu'); panel.classList.add('is-open');
+      trigger.setAttribute('aria-expanded', 'true'); menu = { trigger, panel };
+    },
+  };
   vm.runInNewContext(source, { window });
   return { doc, window, events, windowEvents, observers, notifySlotResize,
     resizeSlot(width, notify = true) { slotWidth = width; if (notify) notifySlotResize(); },
     api: window.FundsRibbon, node: id => doc.getElementById(id), fireWindow(name, detail = {}) { for (const fn of windowHandlers.get(name) || []) fn(detail); } };
 }
 
-test('the retained ribbon preserves a 1280 logical width without scaling the rail, caption or content', () => {
+test('the ribbon follows its slot without scaling text, the rail, caption or content', () => {
   const h = harness(), layout = h.node('layoutSel');
   assert.equal(h.node('topbar'), undefined, 'the old stacked app header is replaced by the navigation rail');
   assert.ok(h.node('appRail'));
@@ -96,7 +122,8 @@ test('the retained ribbon preserves a 1280 logical width without scaling the rai
   layout.value = 'dagre';
   for (const [viewportWidth, availableWidth, logicalWidth, expectedScale] of [
     [1512, 1456, 1456, 1], [1336, 1280, 1280, 1], [1920, 1864, 1864, 1],
-    [1024, 968, 1280, 0.75625], [960, 904, 1280, 0.70625], [1336, 1280, 1280, 1]
+    [1024, 968, 968, 1], [960, 904, 904, 1], [775, 719, 719, 1], [776, 720, 720, 1],
+    [1255, 1199, 1199, 1], [1256, 1200, 1200, 1], [1336, 1280, 1280, 1]
   ]) {
     h.window.innerWidth = viewportWidth;
     h.resizeSlot(availableWidth, false);
@@ -109,6 +136,7 @@ test('the retained ribbon preserves a 1280 logical width without scaling the rai
       assert.equal(scale, expectedScale);
       assert.equal(h.node(id).getBoundingClientRect().right, viewportWidth, 'the complete toolbar fits beside the 56px rail');
       assert.equal(h.node(id).getBoundingClientRect().width, availableWidth);
+      assert.equal(h.node(id).getAttribute('data-ribbon-layout'), availableWidth < 720 ? 'stacked' : availableWidth < 1200 ? 'narrow' : 'wide');
     }
     assert.equal(h.doc.body.style.getPropertyValue('--toolbar-fit-scale'), '');
     assert.equal(h.node('appRail').style.getPropertyValue('--toolbar-fit-scale'), '');
@@ -122,7 +150,7 @@ test('the retained ribbon preserves a 1280 logical width without scaling the rai
   assert.ok(h.windowEvents.some(event => event.detail.reason === 'toolbar-fit' && event.detail.phase === 'start'));
 });
 
-test('slot resizing fits the ribbon without a window resize and coordinates the canvas before scaling', () => {
+test('slot resizing reflows the ribbon without a window resize and coordinates the canvas first', () => {
   const h = harness({ slotWidth: 1456 }), toolbar = h.node('editorToolbar'), layout = h.node('layoutSel');
   h.window.innerWidth = 1512;
   layout.value = 'dagre';
@@ -180,7 +208,7 @@ test('slot resizing closes a floating popover and returns focus without replacin
   assert.equal(h.events.length, 0);
 });
 
-test('floating controls leave scaled chrome temporarily and return home with identity and focus intact', () => {
+test('floating controls delegate to the shared controller and return home with identity and focus intact', () => {
   const h = harness(); h.api.setCollapsed(true);
   const trigger = h.node('btnDisplayActions'), panel = h.node('toolbarDisplayExtra');
   const originalParent = panel.parentElement, originalNext = panel.nextSibling, checkbox = h.node('showIdCk');
@@ -189,7 +217,9 @@ test('floating controls leave scaled chrome temporarily and return home with ide
   trigger.click();
   assert.equal(panel.parentElement, h.doc.body);
   assert.equal(panel.hidden, false);
-  assert.equal(panel.style.left, '696px', 'anchored popover uses unscaled viewport coordinates');
+  assert.equal(h.window.FundsToolbarMenu.getState().menuId, panel.id);
+  assert.equal(trigger.getAttribute('data-toolbar-menu'), panel.id);
+  assert.equal(panel.getAttribute('data-toolbar-panel'), 'form');
   checkbox.focus();
   h.window.innerWidth = 960; h.fireWindow('resize');
   assert.equal(panel.hidden, true);
@@ -307,17 +337,16 @@ test('the top fold button toggles the shell and keeps its next action and access
   assert.equal(h.events.length, 0);
 });
 
-test('compact popovers close on Escape, resize and outside click with valid focus restoration', () => {
+test('compact popovers close through the ribbon API, resize and tab changes with valid focus restoration', () => {
   const h = harness(); h.api.setCollapsed(true);
   const button = h.node('btnDisplayActions'), panel = h.node('toolbarDisplayExtra');
   button.click(); assert.equal(panel.hidden, false); assert.equal(button.getAttribute('aria-expanded'), 'true');
   h.node('showIdCk').focus();
-  const escape = h.doc.fire('keydown', { key: 'Escape' });
+  h.api.closePopovers(true);
   assert.equal(panel.hidden, true); assert.equal(h.doc.activeElement, button);
-  assert.equal(escape.prevented, true); assert.equal(escape.stopped, true);
   button.click(); h.node('showIdCk').focus(); h.fireWindow('resize');
   assert.equal(h.doc.activeElement, button); assert.equal(panel.hidden, true);
-  button.click(); h.doc.fire('pointerdown', { target: h.node('left') }); assert.equal(panel.hidden, true);
+  button.click(); h.api.activateTab('view'); assert.equal(panel.hidden, true);
   h.api.setCollapsed(false); assert.equal(panel.hidden, false, 'expanded labels are inline');
 });
 
@@ -410,7 +439,7 @@ test('selected relationships have an accurate status and only compatible fallbac
   assert.equal(command('fitSelection').disabled, false);
   assert.equal(command('accountDetails').disabled, true);
   h.api.setStatus({ edgeSelectionCount: 0 });
-  assert.equal(h.node('ribbonSelectionStatus').textContent, '未选择节点');
+  assert.equal(h.node('ribbonSelectionStatus').textContent, '', 'empty selection does not add a standing instruction');
 });
 
 test('expanded and compact details entries share exact selection availability and the command route', () => {

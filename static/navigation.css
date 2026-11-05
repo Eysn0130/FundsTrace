@@ -46,7 +46,7 @@
 #analysisFrame[hidden]{display:none}
 
 #browserCaption[hidden]{display:none}
-.query-stat-line{font-size:var(--font-size-meta);color:var(--muted);white-space:nowrap}
+.query-stat-line{flex:1;min-width:0;font-size:var(--font-size-meta);color:var(--muted);white-space:normal;overflow-wrap:anywhere}
 
 /* Surface separation replaces heavy frames without changing the canvas slot. */
 html[data-ft-theme="light"] #graphPage :is(.ribbon-tabbar,.workspace-toolbar) {border-bottom-color:var(--border)}

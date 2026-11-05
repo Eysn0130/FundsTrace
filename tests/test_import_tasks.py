@@ -358,6 +358,26 @@ def test_nonempty_session_listing_matches_public_contract(client, database, make
     assert response.json() == listing
 
 
+def test_known_import_receipt_is_available_outside_recent_window_only_in_its_case(client, database, make_case):
+    cid, other = make_case("Synthetic retained receipt"), make_case("Synthetic foreign receipt")
+    target = upload(cid)
+    iid = target["import_id"]
+    assert imports.commit(str(cid), iid, body(target))["started"]
+    assert poll(cid, iid)["stage"] == "done"
+    receipt = client.get(f"/api/v1/cases/{cid}/imports/{iid}").json()
+    assert receipt["result"]["ok"] == 2
+    latest = upload(cid)
+    foreign = upload(other)
+    url = f"/api/v1/cases/{cid}/imports"
+    assert [x["import_id"] for x in client.get(url, params={"limit": 1}).json()["items"]] == [latest["import_id"]]
+    exact = client.get(url, params={"limit": 1, "import_id": iid})
+    assert exact.status_code == 200
+    item, = exact.json()["items"]
+    assert (item["import_id"], item["case_id"], item["attempt"], item["stage"], item["result"]) == (
+        iid, str(cid), 1, "done", receipt["result"])
+    assert client.get(url, params={"import_id": foreign["import_id"]}).json()["items"] == []
+
+
 def test_failed_gc_queue_cannot_delete_session_renewed_by_repreview(database, make_case, monkeypatch):
     cid = make_case()
     preview = upload(cid)

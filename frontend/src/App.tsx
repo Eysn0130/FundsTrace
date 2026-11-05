@@ -10,15 +10,17 @@ import { createBrowserFundsActions } from './standalone/browserActions';
 import { FUNDS_PANEL_VERSION, FundsPanel, type FundsCaseContextV1, type FundsHostActionsV1 } from './panel';
 import type { FundsQueryDraft } from './panel/FundsPanel';
 import { createWorkspaceBridge, type PendingImport, type WorkspaceBridge, type WorkspaceContext } from './standalone/workspaceBridge';
+import { createFeedbackChannel, FeedbackViewport, type FundsFeedbackPort } from './feedback/Feedback';
 
 export function App({ api = defaultApi, actionsForCase, embedded = new URLSearchParams(window.location.search).get('embedded') === '1' && window.parent !== window }: { api?: FundsApi; actionsForCase?: (context: FundsCaseContextV1) => FundsHostActionsV1; embedded?: boolean }) {
   const [surface, setSurface] = useState<'cases'|'accounts'>(new URLSearchParams(window.location.search).get('surface') === 'accounts' ? 'accounts' : 'cases');
   const [accountRevision, setAccountRevision] = useState(0);
   const [dataRevision, setDataRevision] = useState(0);
   const [localImports, setLocalImports] = useState<(PendingImport & { caseId: string })[]>([]);
-  const [importError, setImportError] = useState('');
+  const [importError, setImportError] = useState<{ caseId: string; importId: string; message: string } | null>(null);
   const [checkingImport, setCheckingImport] = useState<string | null>(null);
   const notifiedImports = useRef(new Set<string>());
+  const settledImports = useRef(new Set<string>());
   const [cases, setCases] = useState<Case[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [generation, setGeneration] = useState(0);
@@ -41,6 +43,9 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
   const [uncertainCreate, setUncertainCreate] = useState<{ name: string; checked: boolean; matches: Case[] } | null>(null);
   const [hostContext, setHostContext] = useState<WorkspaceContext | null>(null);
   const [operationBusy, setOperationBusy] = useState(false);
+  const [openImportRequest, setOpenImportRequest] = useState<{ caseId: string; generation: number; importId: string; sequence: number }>();
+  const [importSettlement, setImportSettlement] = useState<{ caseId: string; generation: number; importId: string; sequence: number }>();
+  const nextImportSettlement = useRef(0);
   const bridge = useRef<WorkspaceBridge | null>(null);
   const queryDrafts = useRef(new Map<string, FundsQueryDraft>());
   const retainedCaseIds = hostContext?.retainedCaseIds ?? [];
@@ -54,12 +59,12 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
     document.addEventListener('pointerdown', closeOutside);
     return () => document.removeEventListener('pointerdown', closeOutside);
   }, [caseActionsOpen]);
-  const [connection, setConnection] = useState<{ binding: ReturnType<typeof createHttpFundsSession>; transport: FundsApi; actionsFactory: typeof actionsForCase } | null>(null);
+  const [connection, setConnection] = useState<{ binding: ReturnType<typeof createHttpFundsSession>; feedback: ReturnType<typeof createFeedbackChannel>; transport: FundsApi; actionsFactory: typeof actionsForCase } | null>(null);
   const currentBinding = useRef<ReturnType<typeof createHttpFundsSession> | null>(null);
   const nextBinding = useRef(0);
   const lifetime = useRef(new AbortController());
   const selected = embedded ? hostContext ? { id: hostContext.caseId, name: hostContext.name, created_at: null } : undefined : cases.find(item => item.id === selectedId);
-  useEffect(() => { setImportError(''); setCheckingImport(null); }, [selectedId, generation]);
+  useEffect(() => { setImportError(null); setCheckingImport(null); }, [selectedId, generation]);
   useEffect(() => {
     if (!embedded) return;
     const connection = createWorkspaceBridge({
@@ -70,6 +75,18 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
       onCasesChanged: () => setListReload(value => value + 1),
       onAccountsChanged: () => setAccountRevision(value => value + 1),
       onDataChanged: () => { setDataRevision(value => value + 1); setAccountRevision(value => value + 1); },
+      onOpenImport: importId => {
+        const owner = bridge.current?.context;
+        if (owner) { setSurface('cases'); setOpenImportRequest(current => ({ caseId: owner.caseId, generation: owner.generation, importId, sequence: (current?.sequence ?? 0) + 1 })); }
+      },
+      onImportSettled: importId => {
+        const owner = bridge.current?.context;
+        if (!owner) return;
+        settledImports.current.add(JSON.stringify([owner.caseId, owner.generation, importId]));
+        setLocalImports(items => items.filter(item => item.caseId !== owner.caseId || item.importId !== importId));
+        setImportError(current => current?.caseId === owner.caseId && current.importId === importId ? null : current);
+        setImportSettlement({ caseId: owner.caseId, generation: owner.generation, importId, sequence: ++nextImportSettlement.current });
+      },
     });
     bridge.current = connection;
     return () => { connection.dispose(); bridge.current = null; currentBinding.current?.revoke(); };
@@ -77,29 +94,40 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
   useEffect(() => {
     if (!selected) { setConnection(null); return; }
     const context = { caseId: selected.id, name: selected.name };
+    let feedbackPort: FundsFeedbackPort | undefined;
+    const importFeedback = (importId: string, status: 'running' | 'unknown' | 'success' | 'error', detail?: string, progress?: { done: number; total: number }) => feedbackPort?.task({ id: `import:${importId}`, operation: 'import', importId, status, title: status === 'success' ? '流水导入已完成' : status === 'unknown' ? '导入结果待核对' : status === 'error' ? '流水导入未完成' : '正在导入流水', detail, progress, announce: false });
     const isOwnContext = () => bridge.current?.context?.caseId === context.caseId && bridge.current.context.generation === generation;
     const ownBridge = () => {
       const owner = bridge.current;
       if (!owner || owner.context?.caseId !== context.caseId || owner.context.generation !== generation) throw new DOMException('案件工作区已切换。', 'AbortError');
       return owner;
     };
-    const forgetImport = (importId: string) => setLocalImports(items => items.filter(item => item.caseId !== context.caseId || item.importId !== importId));
+    const importSettled = (importId: string) => settledImports.current.has(JSON.stringify([context.caseId, generation, importId]));
+    const forgetImport = (importId: string) => {
+      setLocalImports(items => items.filter(item => item.caseId !== context.caseId || item.importId !== importId));
+      setImportError(current => current?.caseId === context.caseId && current.importId === importId ? null : current);
+    };
     const transport: FundsApi = embedded ? { ...api,
       commit: async (caseId, importId, body, signal) => {
         await ownBridge().request('import-acquire', { importId }, signal);
+        settledImports.current.delete(JSON.stringify([caseId, generation, importId]));
+        setImportSettlement(current => current?.caseId === caseId && current.generation === generation && current.importId === importId ? undefined : current);
+        importFeedback(importId, 'running', '正在提交导入，请等待原任务结果。');
         setLocalImports(items => [...items.filter(item => item.caseId !== caseId || item.importId !== importId), { caseId, importId, phase: 'pending' }]);
         try {
           if (signal?.aborted) throw new DOMException('操作已中止。', 'AbortError');
           return await api.commit(caseId, importId, body, signal);
         } catch (reason) {
-          if (!isOwnContext()) throw reason;
+          if (!isOwnContext() || importSettled(importId)) throw reason;
           const status = reason instanceof ApiError ? reason.status : undefined;
           if (status !== undefined && status >= 400 && status < 500) {
+            importFeedback(importId, 'error', '导入提交已被拒绝。');
             try { await ownBridge().request('import-release', { importId, rejected: true }); forgetImport(importId); }
-            catch { setImportError('提交已被拒绝，但宿主尚未核对记录；请核对原任务后再操作。'); }
+            catch { if (!importSettled(importId)) setImportError({ caseId, importId, message: '提交已被拒绝，但宿主尚未核对记录；请核对原任务后再操作。' }); }
           } else {
+            importFeedback(importId, 'unknown', '只查询原任务进度，确认前不会再次提交。');
             setLocalImports(items => items.map(item => item.caseId === caseId && item.importId === importId ? { ...item, phase: 'unknown' } : item));
-            setImportError('导入提交结果尚未确认。请核对原任务；核对只读取进度，不会重新提交。');
+            setImportError({ caseId, importId, message: '导入提交结果尚未确认。请核对原任务；核对只读取进度，不会重新提交。' });
           }
           throw reason;
         }
@@ -107,14 +135,15 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
       job: async (caseId, importId, signal) => {
         const job = await api.job(caseId, importId, signal);
         if (job.case_id !== caseId || job.import_id !== importId) throw new Error('导入进度与当前案件不一致。');
-        if (job.stage === 'done' || job.stage === 'error') {
+        if (job.stage === 'done' || job.stage === 'error' || !importSettled(importId)) importFeedback(importId, job.stage === 'done' ? 'success' : job.stage === 'error' ? 'error' : 'running', job.stage === 'error' ? '任务未完成，请打开原任务核对结果。' : job.stage === 'done' ? '处理结果已保存，可打开原任务查看。' : '关闭进度后任务仍继续。', job.total > 0 ? { done: job.done, total: job.total } : undefined);
+        if ((job.stage === 'done' || job.stage === 'error') && !importSettled(importId)) {
           try {
             await ownBridge().request('import-release', { importId, jobId: job.import_id }, signal); forgetImport(importId);
             const key = `${caseId}:${generation}:${importId}`;
             if (job.stage === 'done' && !notifiedImports.current.has(key)) {
               await ownBridge().request('data-changed', {}, signal); notifiedImports.current.add(key);
             }
-          } catch (reason) { if (!signal?.aborted && isOwnContext()) setImportError(`导入结果已读取，宿主核对或刷新尚未完成。${(reason as Error).message}`); }
+          } catch (reason) { if (!signal?.aborted && isOwnContext() && !importSettled(importId)) setImportError({ caseId, importId, message: `导入结果已读取，宿主核对或刷新尚未完成。${(reason as Error).message}` }); }
         }
         return job;
       },
@@ -126,8 +155,11 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
         openLegacyImport: (_importId, signal) => bridge.current?.request('open-graph', {}, signal),
       } : createBrowserFundsActions(context, api) });
     currentBinding.current = binding;
-    setConnection({ binding, transport: api, actionsFactory: actionsForCase });
-    return binding.revoke;
+    const feedbackBinding = { caseId: context.caseId, generation };
+    const feedback = createFeedbackChannel({ scope: feedbackBinding, signal: binding.session.signal, publish: embedded ? event => bridge.current?.publishFeedback(event, feedbackBinding) ?? false : undefined });
+    feedbackPort = feedback.port;
+    setConnection({ binding, feedback, transport: api, actionsFactory: actionsForCase });
+    return () => { binding.revoke(); feedback.dispose(); };
   }, [api, selected?.id, selected?.name, generation, actionsForCase, embedded]);
   const binding = connection?.binding;
   const session = connection?.transport === api && connection.actionsFactory === actionsForCase && binding?.session.context.caseId === selectedId && binding.session.context.name === selected?.name && binding.session.generation === generation ? binding.session : null;
@@ -241,13 +273,13 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
     if (!bridge.current || checkingImport) return;
     const owner = bridge.current, starting = owner.context;
     const current = () => starting?.caseId === owner.context?.caseId && starting?.generation === owner.context?.generation;
-    setCheckingImport(importId); setImportError('');
+    setCheckingImport(importId); setImportError(current => current?.caseId === selectedId && current.importId === importId ? null : current);
     try {
       await owner.request('import-release', { importId, jobId: importId }, lifetime.current.signal);
       if (!current()) return;
       setLocalImports(items => items.filter(item => item.caseId !== selectedId || item.importId !== importId));
       await owner.request('data-changed', {}, lifetime.current.signal);
-    } catch (reason) { if (current() && (reason as Error).name !== 'AbortError') setImportError((reason as Error).message); }
+    } catch (reason) { if (current() && (reason as Error).name !== 'AbortError' && !settledImports.current.has(JSON.stringify([selectedId, starting?.generation, importId]))) setImportError({ caseId: selectedId, importId, message: (reason as Error).message }); }
     finally { if (!lifetime.current.signal.aborted) setCheckingImport(null); }
   };
   const accountActions = useMemo<AccountWorkspaceActions>(() => {
@@ -289,7 +321,7 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
   };
   const caseSuggestionScope = pageActive && surface === 'cases' && !operationBusy && !casesLoading ? JSON.stringify(['cases', selectedId, generation, dataRevision, listReload, cases.length]) : null;
   return <>
-    <div className="funds-trace standalone-surface" hidden={surface !== 'accounts'}>{selected ? <AccountWorkspace active={pageActive && surface === 'accounts'} context={{caseId:selected.id,name:selected.name,generation}} cases={cases} onSelectCase={selectCase} revision={accountRevision} actions={accountActions} unresolvedOperations={hostContext?.unresolvedOperations} /> : <div role="status">正在连接案件账户工作区…</div>}</div>
+    <div className="funds-trace standalone-surface" hidden={surface !== 'accounts'}>{selected ? <AccountWorkspace feedback={session ? connection?.feedback.port : undefined} active={pageActive && surface === 'accounts'} context={{caseId:selected.id,name:selected.name,generation}} cases={cases} onSelectCase={selectCase} revision={accountRevision} actions={accountActions} unresolvedOperations={hostContext?.unresolvedOperations} /> : <div role="status">正在连接案件账户工作区…</div>}</div>
     <div hidden={surface !== 'cases'} className={`funds-trace app-shell cases-workspace${embedded ? ' embedded-workspace' : ''}`}>
     <aside className="sidebar" aria-label="案件导航">
       <div className="case-section"><div className="section-heading"><h2>案件</h2><span>{cases.length}</span><button className="button primary new-case-button" onClick={() => { setCreating(true); if (!uncertainCreate) { setCreateError(''); setCreatedCase(null); setCaseName(''); } }}><img className="ui-icon" src="/static/ui-icons/file-plus.svg" alt="" />新建案件</button></div><form className="case-filter-field" onSubmit={event => { event.preventDefault(); submitCaseSearch(); }}><EntityPicker className="case-filter" aria-label="筛选案件" placeholder="案件名称或 ID" value={caseSearch} onValueChange={setCaseSearch} scope={caseSuggestionScope} search={searchCaseSuggestions} kind="case" onSelect={item => { setCaseSearch(item.label); setCaseQuery({ text: '', id: item.key }); }} onSubmit={submitCaseSearch} onCompositionChange={value => { caseSearchComposing.current = value; }} disabled={operationBusy || !pageActive} /><button type="submit" className="case-filter-submit" aria-label="查询案件" disabled={operationBusy || !pageActive}><img className="ui-icon" src="/static/ui-icons/search.svg" alt="" /></button></form><div className="case-list" aria-label="案件列表">{casesLoading ? <p className="sidebar-hint">正在加载案件…</p> : visibleCases.map(item => <button key={item.id} className={`case-item ${selectedId === item.id ? 'selected' : ''}`} aria-label={item.name} aria-pressed={selectedId === item.id} disabled={operationBusy} onClick={() => void chooseCase(item.id)}><img className="case-glyph ui-icon" src="/static/ui-icons/folder.svg" alt="" /><span className="case-label">{item.name}<small>案件 ID {item.id} · {selectedId === item.id ? '当前案件' : retainedCaseIds.includes(item.id) ? '工作已保留 · 可继续' : '点击打开案件'}</small></span>{retainedCaseIds.includes(item.id) && <span className="retained-dot" title="工作已保留" />}</button>)}{!casesLoading && !cases.length && <p className="sidebar-hint">新建案件或导入案件包后开始核对。</p>}{!casesLoading && !!cases.length && !visibleCases.length && <p className="sidebar-hint">没有匹配的案件。</p>}</div></div>
@@ -298,11 +330,11 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
     <main className="standalone-main">
       <div className="case-context-bar"><span>案件与导入</span>{selected && <span className="current-case-label">当前案件 <strong>{selected.name}</strong></span>}</div>
       {error && <div role="alert" className="error-banner">{error}<button onClick={() => setListReload(value => value + 1)}>重新加载案件</button></div>}
-      {pendingImports.length > 0 && <section aria-label="待核对导入" className="error-banner"><p>本案导入尚未结束或提交结果未确认；请核对原任务后继续写入。</p>{pendingImports.map(item => <button key={item.importId} disabled={!!checkingImport} onClick={() => void checkImport(item.importId)}>{checkingImport === item.importId ? '正在核对…' : '核对导入结果'} · {item.importId}</button>)}</section>}
-      {importError && <p role="alert" className="error-banner">{importError}</p>}
-      <FundsPanel active={pageActive && surface === 'cases'} revision={dataRevision} host={{ version: FUNDS_PANEL_VERSION, session }} workspace={{ initialDraft: queryDrafts.current.get(selectedId), onDraftChange: draft => { if (selectedId) queryDrafts.current.set(selectedId, draft); }, caseActions, retained: retainedCaseIds.includes(selectedId), navigationPending: hostContext?.navigationPending ?? false }} />
+      {pendingImports.length > 0 && <section aria-label="待核对导入" className="warning-banner"><p>本案导入尚未结束或提交结果未确认；请核对原任务后继续写入。</p>{pendingImports.map(item => <button key={item.importId} disabled={!!checkingImport} onClick={() => void checkImport(item.importId)}>{checkingImport === item.importId ? '正在核对…' : '核对导入结果'} · {item.importId}</button>)}</section>}
+      {importError?.caseId === selectedId && <p role="alert" className="warning-banner">{importError.message}</p>}
+      <FundsPanel feedback={session ? connection?.feedback.port : undefined} active={pageActive && surface === 'cases'} revision={dataRevision} host={{ version: FUNDS_PANEL_VERSION, session }} workspace={{ importSettlement: importSettlement?.caseId === selectedId && importSettlement.generation === generation ? importSettlement : undefined, openImportRequest: openImportRequest?.caseId === selectedId && openImportRequest.generation === generation ? openImportRequest : undefined, initialDraft: queryDrafts.current.get(selectedId), onDraftChange: draft => { if (selectedId) queryDrafts.current.set(selectedId, draft); }, caseActions, retained: retainedCaseIds.includes(selectedId), navigationPending: hostContext?.navigationPending ?? false }} />
     </main>
     {pageActive && surface === 'cases' && caseInfoOpen && selected && <Modal title="案件信息" onClose={() => setCaseInfoOpen(false)}><dl className="case-info"><dt>案件名称</dt><dd>{selected.name}</dd><dt>案件 ID</dt><dd className="mono">{selected.id}</dd><dt>创建时间</dt><dd>{cases.find(item => item.id === selected.id)?.created_at || '未提供'}</dd></dl><p className="case-info-note">本案件的流水、账户资料和画布独立保存。当前会话内保留的编辑现场，请在退出前保存画布。</p><footer className="modal-footer"><button className="button secondary" onClick={() => setCaseInfoOpen(false)}>关闭</button></footer></Modal>}
     {pageActive && surface === 'cases' && creating && <Modal title="新建案件" busy={createBusy} onClose={() => setCreating(false)}><form onSubmit={event => void create(event)} className="create-case-form"><label>案件名称<input autoFocus aria-label="案件名称" maxLength={200} disabled={!!createdCase || !!uncertainCreate} value={caseName} onChange={event => setCaseName(event.target.value)} placeholder="输入便于识别的案件名称" /></label>{uncertainCreate && <section className="uncertain-create" aria-label="核对新建案件结果"><p>创建结果尚未确认，请核对“{uncertainCreate.name}”。本次核对只读取案件列表。</p>{uncertainCreate.checked && (uncertainCreate.matches.length ? <><p>找到同名案件，请核对后选择打开：</p>{uncertainCreate.matches.map(item => <button key={item.id} type="button" className="button secondary" disabled={createBusy} onClick={() => void openCheckedCase(item)}>打开 {item.name} · ID {item.id}</button>)}</> : <p>当前列表未找到同名案件。可稍后再次核对，或确认后返回填写。</p>)}</section>}{createdCase && <p className="created-case-note">案件已创建，正在打开工作区。打开失败时可重试，或稍后从案件列表继续。</p>}{createError && <p role="alert" className="error-banner">{createError}</p>}<footer className="modal-footer"><button type="button" className="button secondary" disabled={createBusy} onClick={() => setCreating(false)}>取消</button>{uncertainCreate ? <><button type="button" className="button primary" disabled={createBusy} onClick={() => void checkUncertainCreate()}>{createBusy ? '正在核对…' : '核对案件列表'}</button>{uncertainCreate.checked && !uncertainCreate.matches.length && <button type="button" className="button secondary" disabled={createBusy} onClick={() => { setUncertainCreate(null); setCreateError(''); setCaseName(''); }}>已核对，重新填写</button>}</> : <button className="button primary" disabled={createBusy || !caseName.trim()}>{createBusy ? createdCase ? '正在打开…' : '正在创建…' : createdCase ? '打开已创建案件' : '创建案件'}</button>}</footer></form></Modal>}
-  </div></>;
+  </div>{!embedded && session && connection && <FeedbackViewport store={connection.feedback.store} />}</>;
 }

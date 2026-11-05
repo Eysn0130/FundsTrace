@@ -115,8 +115,9 @@ def source_file(case_id: CaseId, source_id: ImportId):
 
 
 @router.get("/cases/{case_id}/imports", response_model=ImportSessionList, operation_id="v1_import_sessions")
-def sessions(case_id: CaseId, limit: int = Query(100, ge=1, le=200)):
-    return imports.list_sessions(case_id, limit)
+def sessions(case_id: CaseId, limit: int = Query(100, ge=1, le=200),
+             import_id: str | None = Query(None, pattern=r"^[0-9a-f]{12,32}$")):
+    return imports.list_sessions(case_id, limit, import_id)
 
 
 @router.get("/cases/{case_id}/imports/{source_id}/records", response_model=ImportRecordPage,

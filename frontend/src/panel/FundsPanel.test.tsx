@@ -483,3 +483,97 @@ describe('selected transaction summaries in existing panel', () => {
     expect(statistics).toHaveBeenCalledTimes(1); expect(flows).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('FundsPanel feedback ports', () => {
+  it.each(['ready', 'error'] as const)('reads and displays an exact older %s task without automatically previewing or writing', async stage => {
+    const older = { ...record('1', stage), filename: `synthetic-older-${stage}.csv` };
+    const recent = { ...record('1', 'done'), import_id: 'fedcba9876543210fedcba9876543210', filename: 'synthetic-recent.csv' };
+    const imports = vi.fn(async (_signal: AbortSignal, importId?: string) => ({ case_id: '1', items: importId ? [older] : [recent] }));
+    const bound = session('1', 'older-task', 0, { imports });
+    const preview = vi.spyOn(bound.client, 'preview'), repreview = vi.spyOn(bound.client, 'repreview');
+    const commit = vi.spyOn(bound.client, 'commit'), job = vi.spyOn(bound.client, 'job');
+    render(<FundsPanel host={host(bound.value)} workspace={{ openImportRequest: { importId: older.import_id, sequence: 1 } }} />);
+    const dialog = await screen.findByRole('dialog', { name: '导入记录' });
+    expect(await within(dialog).findByText(older.filename)).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: `继续导入 ${older.filename}` })).toHaveProperty('disabled', false);
+    expect(imports).toHaveBeenCalledWith(expect.any(AbortSignal), older.import_id);
+    expect(imports.mock.calls.every(([, importId]) => importId === older.import_id)).toBe(true);
+    expect(preview).not.toHaveBeenCalled(); expect(repreview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled(); expect(job).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: '查看最近导入记录' }));
+    expect(await screen.findByText(recent.filename)).toBeTruthy();
+    expect(screen.queryByText(older.filename)).toBeNull();
+    expect(imports.mock.calls.at(-1)).toHaveLength(1);
+    expect(commit).not.toHaveBeenCalled(); expect(repreview).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing', 'foreign', 'different', 'legacy'] as const)('does not substitute another record for an exact %s task', async kind => {
+    const original = record('1', 'ready');
+    const unexpected = { ...original, filename: 'SYN-DO-NOT-PUBLISH.csv',
+      case_id: kind === 'foreign' ? '2' : '1',
+      import_id: kind === 'different' ? 'fedcba9876543210fedcba9876543210' : original.import_id,
+      surface: kind === 'legacy' ? 'legacy' as const : 'v1' as const };
+    const imports = vi.fn(async () => ({ case_id: '1', items: kind === 'missing' ? [] : [unexpected] }));
+    const bound = session('1', 'exact-task-boundary', 0, { imports });
+    const preview = vi.spyOn(bound.client, 'preview'), commit = vi.spyOn(bound.client, 'commit');
+    render(<FundsPanel host={host(bound.value)} workspace={{ openImportRequest: { importId: original.import_id, sequence: 1 } }} />);
+    const dialog = await screen.findByRole('dialog', { name: '导入记录' });
+    if (kind === 'foreign') await within(dialog).findByText('导入记录与当前案件不一致。');
+    else await within(dialog).findByText('未找到可在此核对的本案导入记录。');
+    expect(screen.queryByText(unexpected.filename)).toBeNull();
+    expect(preview).not.toHaveBeenCalled(); expect(commit).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('routes an unknown original import through its optional host port (%s)', hosted => {
+    const port = { notify: vi.fn(), task: vi.fn() };
+    const bound = session('1', 'feedback-scope', 1, { commit: vi.fn(async () => { throw new Error('合成提交回执丢失'); }) });
+    const view = render(<FundsPanel host={host(bound.value)} feedback={hosted ? port : undefined} />);
+    return (async () => {
+      await screen.findByRole('button', { name: '核对流水 HOST-1' });
+      fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
+      fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } });
+      fireEvent.click(await screen.findByRole('button', { name: '确认导入' }));
+      await screen.findByText('合成提交回执丢失');
+      if (hosted) {
+        await waitFor(() => expect(port.task).toHaveBeenCalledWith(expect.objectContaining({ id: `import:${record('1').import_id}`, status: 'unknown' })));
+        expect(document.querySelector('.ff-dock')).toBeNull();
+      } else {
+        expect(await screen.findByText(/导入结果暂无法确认/)).toBeTruthy();
+        expect(screen.getByRole('button', { name: '重新查询进度' })).toBeTruthy();
+        expect(document.querySelector('.ff-entry,.ff-panel,.ff-dock')).toBeNull();
+      }
+      fireEvent.click(screen.getByRole('button', { name: '关闭进度' }));
+      expect(screen.queryByRole('dialog', { name: '导入流水' })).toBeNull();
+      expect(bound.client.commit).toHaveBeenCalledOnce();
+      act(() => bound.controller.abort());
+      expect(screen.queryByText('导入结果待核对')).toBeNull();
+      view.unmount();
+    })();
+  });
+});
+
+describe('settlement hint lifetime', () => {
+  it('never reopens a closed dialog or applies a previous hint to an explicit new attempt using the same import ID', async () => {
+    const bound = session('1', 'settlement-lifetime', 1, {
+      commit: vi.fn(async () => { throw new Error('合成提交未确认'); }),
+      job: vi.fn(async (): Promise<ImportJob> => ({ case_id: '1', import_id: record('1').import_id, stage: 'error', done: 0, total: 1, message: '失败', error: '合成最新任务确认失败', result: null })),
+    });
+    const view = render(<FundsPanel host={host(bound.value)} workspace={{}} />);
+    await screen.findByRole('button', { name: '核对流水 HOST-1' });
+    fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
+    fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: '确认导入' })); await screen.findByText('合成提交未确认');
+    fireEvent.click(screen.getByRole('button', { name: '关闭进度' }));
+    const hint = { importId: record('1').import_id, sequence: 1 };
+    view.rerender(<FundsPanel host={host(bound.value)} workspace={{ importSettlement: hint }} />);
+    expect(screen.queryByRole('dialog', { name: '导入流水' })).toBeNull(); expect(bound.client.job).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
+    fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: '确认导入' })); await screen.findByText('合成提交未确认');
+    expect(bound.client.commit).toHaveBeenCalledTimes(2); expect(bound.client.job).not.toHaveBeenCalled();
+    view.rerender(<FundsPanel host={host(bound.value)} workspace={{ importSettlement: { ...hint, sequence: 2 } }} />);
+    await screen.findByText('合成最新任务确认失败');
+    expect(bound.client.job).toHaveBeenCalledOnce(); expect(bound.client.commit).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+});

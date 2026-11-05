@@ -14,7 +14,7 @@ function harness() {
   const window = { addEventListener() {} };
   vm.runInNewContext(source, { window, fetch() { throw new Error('Unexpected global fetch'); } });
   let stage = 'ready', attempt = 0, jobStage = null, owner = '1', blocked = false, active = true, hostPending = false;
-  let beforeFetch = async () => {}, legacyRead = async () => true, networkError = false;
+  let beforeFetch = async () => {}, legacyRead = async () => true, networkError = false, inRecent = true;
   const requests = [], restore = () => {};
   const workflow = window.FundsImportLease.create({ legacy: { canWrite: (...args) => legacyRead(...args), restore },
     accountBlocked: () => blocked, isCurrent: () => active, hostPending: () => hostPending,
@@ -22,13 +22,13 @@ function harness() {
       requests.push(path); await beforeFetch();
       if (networkError) throw new Error('Synthetic disconnected transport');
       if (path.includes('?')) return { ok: true, json: async () => ({ case_id: owner,
-        items: [{ case_id: owner, import_id: importId, surface: 'v1', stage, attempt }] }) };
+        items: inRecent || path.includes('import_id=' + importId) ? [{ case_id: owner, import_id: importId, surface: 'v1', stage, attempt }] : [] }) };
       return { ok: stage !== 'ready', json: async () => ({ case_id: owner, import_id: importId, stage: jobStage || stage }) };
     } });
   return { workflow, requests, restore,
     state(next) { ({ stage = stage, attempt = attempt, owner = owner, blocked = blocked, active = active,
       networkError = networkError, jobStage = jobStage, hostPending = hostPending } = next); },
-    before(fn) { beforeFetch = fn; }, legacy(fn) { legacyRead = fn; } };
+    before(fn) { beforeFetch = fn; }, legacy(fn) { legacyRead = fn; }, leaveRecent() { inRecent = false; } };
 }
 
 test('the real account controller can complete its own reserved write but blocks imports while unknown', async () => {
@@ -113,6 +113,16 @@ test('terminal proof must belong to this case, import and a newer durable attemp
   const h = harness(); await h.workflow.acquireExternal(context, importId);
   await assert.rejects(h.workflow.releaseExternal(context, importId, 'wrong-job'));
   assert.equal(h.requests.length, 1);
+});
+
+test('a terminal job outside recent history requires an advanced matching attempt to release', async () => {
+  const h = harness(); await h.workflow.acquireExternal(context, importId);
+  h.leaveRecent(); h.state({ stage: 'done', attempt: 0 });
+  await assert.rejects(h.workflow.releaseExternal(context, importId, importId));
+  assert.equal(await h.workflow.canWrite(context), false);
+  h.state({ stage: 'done', attempt: 1 });
+  await h.workflow.releaseExternal(context, importId, importId);
+  assert.equal(await h.workflow.canWrite(context), true);
 });
 
 test('a confirmed 4xx rejection only releases the unchanged ready attempt', async () => {

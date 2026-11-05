@@ -19,12 +19,14 @@ export function Modal({ title, children, onClose, busy = false }: { title: strin
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const scope = previous?.closest('.funds-trace') || element?.closest('.funds-trace');
     element?.showModal();
+    window.dispatchEvent(new CustomEvent('funds:feedback-modal', { detail: { open: !!document.querySelector('dialog[open]') } }));
     // Start at the title of long verification/import dialogs, keeping the
     // native dialog focus trap and Escape behavior inside this document.
     const initial = element?.querySelector<HTMLElement>('[autofocus]') || element;
     initial?.focus({ preventScroll: true });
     return () => {
       element?.close();
+      window.dispatchEvent(new CustomEvent('funds:feedback-modal', { detail: { open: !!document.querySelector('dialog[open]') } }));
       const candidates = (root: Element) => [...root.querySelectorAll<HTMLElement>('button,input,select,textarea,a[href],summary,[tabindex]')]
         .find(node => !element?.contains(node) && (node.tabIndex >= 0 || node.matches('summary')) && availableFocus(node));
       const target = previous && availableFocus(previous) ? previous : (scope && candidates(scope)) || candidates(document.body);

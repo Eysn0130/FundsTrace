@@ -7,8 +7,8 @@ import { linkAbortSignal } from '../panel/cancellation';
 
 const stages = { ready: '等待确认', parsing: '正在解析', importing: '正在写入', done: '已完成', error: '未完成' };
 
-export function ImportHistoryDialog({ target, client, scopeSignal, actions, onClose, onOpen }: {
-  target: FundsCaseContextV1; client: FundsCaseClientV1; scopeSignal: AbortSignal; actions?: FundsHostActionsV1; onClose: () => void; onOpen: (session: ImportSession) => void;
+export function ImportHistoryDialog({ target, client, scopeSignal, importId, actions, onClose, onOpen, onShowAll }: {
+  target: FundsCaseContextV1; client: FundsCaseClientV1; scopeSignal: AbortSignal; importId?: string; actions?: FundsHostActionsV1; onClose: () => void; onOpen: (session: ImportSession) => void; onShowAll?: () => void;
 }) {
   const [items, setItems] = useState<ImportSession[]>([]);
   const [loading, setLoading] = useState(true);
@@ -33,17 +33,18 @@ export function ImportHistoryDialog({ target, client, scopeSignal, actions, onCl
     const load = async () => {
       if (!active || controller.signal.aborted) return;
       try {
-        const value = await client.imports(controller.signal);
+        const value = await (importId ? client.imports(controller.signal, importId) : client.imports(controller.signal));
         if (!active || controller.signal.aborted) return;
         if (value.case_id !== target.caseId || value.items.some(item => item.case_id !== target.caseId)) throw new Error('导入记录与当前案件不一致。');
-        setItems(value.items); setError('');
-        if (value.items.some(item => item.stage === 'parsing' || item.stage === 'importing')) timer = setTimeout(() => void load(), 1500);
+        const current = importId ? value.items.filter(item => item.import_id === importId && item.surface === 'v1') : value.items;
+        setItems(current); setError('');
+        if (current.some(item => item.stage === 'parsing' || item.stage === 'importing')) timer = setTimeout(() => void load(), 1500);
       } catch (reason) { if (active && !controller.signal.aborted && (reason as Error).name !== 'AbortError') setError((reason as Error).message); }
       finally { if (active && !controller.signal.aborted) setLoading(false); }
     };
     void load();
     return () => { active = false; clearTimeout(timer); unlink(); controller.abort(); };
-  }, [client, target.caseId, reload, scopeSignal]);
+  }, [client, target.caseId, importId, reload, scopeSignal]);
   const clean = async (dryRun: boolean) => {
     const signal = lifetime.current.signal;
     if (signal.aborted || scopeSignal.aborted) return;
@@ -62,13 +63,13 @@ export function ImportHistoryDialog({ target, client, scopeSignal, actions, onCl
     finally { if (!signal.aborted) setActionBusy(''); }
   };
   return <Modal title="导入记录" onClose={onClose} busy={cleanBusy}>
-    <div className="modal-context">当前案件 <strong>{target.name}</strong><span>最近 100 条 · 仅本案</span></div>
+    <div className="modal-context">当前案件 <strong>{target.name}</strong><span>{importId ? '指定导入记录 · 仅本案' : '最近 100 条 · 仅本案'}</span>{importId && onShowAll && <button className="text-button" onClick={onShowAll}>查看最近导入记录</button>}</div>
     <div className="history-toolbar"><p className="muted">继续导入前会重新预览，不会自动写入。下列为导入当时的历史回执，撤回后仍保留；当前有效流水以案件统计和现有来源关联为准，保留回执不表示历史问题已解决。</p><button className="button secondary" disabled={loading} onClick={() => setReload(value => value + 1)}>刷新记录</button></div>
     {error && <div role="alert" className="error-banner">{error}<button onClick={() => setReload(value => value + 1)}>重试记录查询</button></div>}
     {actionError && <div role="alert" className="error-banner">{actionError}</div>}
     <div className="import-history" aria-busy={loading}>
       {loading && <p role="status" className="source-empty">正在加载本案导入记录…</p>}
-      {!loading && !items.length && !error && <p className="source-empty">当前案件没有导入记录。</p>}
+      {!loading && !items.length && !error && <p className="source-empty">{importId ? '未找到可在此核对的本案导入记录。' : '当前案件没有导入记录。'}</p>}
       {items.map(item => <article className="history-record" key={item.import_id}>
         <div className="history-description"><strong>{item.filename}</strong><p>{displayOperationalTime(item.created_at)} · {stages[item.stage]}{item.attempt > 0 ? ` · 已尝试 ${item.attempt} 次` : ''}</p>
           {item.result && (item.result.feedback ? <><p>自动处理完成 · 已保存 {item.result.feedback.record_total} 条记录</p><p>新增流水记录 {item.result.ok} 条 · 重复 {item.result.rows_dup} 条 · 已配对冲正/撤销 {item.result.feedback.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {item.result.feedback.non_monetary ?? 0} 条 · 含义未确定 {(item.result.feedback.unresolved ?? 0) + (item.result.feedback.review ?? 0)} 条 · 来源反馈 {item.result.feedback.non_transaction} 条 · 辅助资料 {item.result.feedback.auxiliary} 条</p>{(item.result.feedback.excluded_flows ?? 0) > 0 && <p className="source-note">本案有 {item.result.feedback.excluded_flows} 条留存来源流水未计入有效统计。</p>}<p className="source-note">含义未确定的记录已独立保留，不计入资金统计。</p></> : item.result.table_summary ? (() => {
