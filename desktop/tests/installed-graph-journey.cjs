@@ -741,17 +741,12 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     // also exceeds the zoom at which the append originally built its geometry,
     // so shrinking and rebuilding cannot mask a cached screen-shadow defect.
     await clickElement(`document.querySelector('#ribbonTab-view')`);
-    const sidebarExpanded = await evaluate(`document.querySelector('#btnSidebarToggle').getAttribute('aria-expanded') === 'true'`);
-    if (sidebarExpanded) {
-      await clickElement(`document.querySelector('#btnSidebarToggle')`);
-      await until(() => evaluate(`document.querySelector('#left').getBoundingClientRect().width < 1`), 5000);
-    }
     await clickElement(`document.querySelector('#btnFit')`);
     await until(() => evaluate(`!layoutJob && state.graphView.viewportFrame == null
       && state.graphView.labelTimer == null && !state.graphView.zoomSettling`), 10000);
-    // Stage the three synthetic nodes with the same user drag used by the editor.
-    // A must be far enough from B/C to cross the clip margin at the tested zoom.
-    for (const [id, x, y] of [[ACCOUNTS[0], .16, .48], [ACCOUNTS[1], .58, .39], [ACCOUNTS[2], .58, .60]]) {
+    // Use a horizontal chain so the B–C edge text clears B’s node label.
+    // Leave enough room to clip A while B and C stay fully visible.
+    for (const [id, x, y] of [[ACCOUNTS[0], .15, .48], [ACCOUNTS[1], .52, .48], [ACCOUNTS[2], .79, .48]]) {
       const gesture = await evaluate(`(() => {
         const box = document.querySelector('#graphContainer').getBoundingClientRect();
         const model = state.graph.findById(${JSON.stringify(id)}).getModel();
@@ -918,11 +913,6 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     assert.equal(returned.zoom, zoomed.zoom);
     returned.camera.forEach((value,i) => assert.ok(Math.abs(value - zoomed.camera[i]) <= (i === translation ? capacity / 12 + 1 : .01)));
     for (const id of ACCOUNTS.slice(0, 2)) assertAutomaticNodeLabel(returned, id);
-    if (sidebarExpanded) {
-      await clickElement(`document.querySelector('#btnSidebarToggle')`);
-      await until(() => evaluate(`document.querySelector('#left').getBoundingClientRect().width >= 360
-        && document.querySelector('#left').getAnimations().length === 0`), 5000);
-    }
     // Leave the following journeys at the same ordinary Fit reading frame.
     await clickElement(`document.querySelector('#btnFit')`);
     await graph(2,ids,undefined,{ frame: false });
@@ -1126,21 +1116,7 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     const appendZoom = await evaluate(`state.graph.getZoom()`);
     await check('installedSecondTrackVisible', async () => { await track(1); await graph(2, flowIds); });
     await check('installedAutomaticNodeLabelRecovery', async () => { await automaticNodeLabelRecovery(flowIds); });
-    await check('installedPartialViewportNodeLabels', async () => {
-      // The preceding screenshot deliberately uses 960 x 500. This distinct
-      // gesture needs room for two full labels plus the 120px culling margin.
-      const previous = await evaluate('({width: innerWidth, height: innerHeight, deviceScaleFactor: devicePixelRatio})');
-      const viewport = async metrics => {
-        await cdp.send('Emulation.setDeviceMetricsOverride', { ...metrics, mobile: false,
-          screenWidth: metrics.width, screenHeight: metrics.height }, page.sessionId);
-        await until(() => evaluate(`innerWidth === ${metrics.width} && innerHeight === ${metrics.height}
-          && Math.abs(state.graph.getWidth() - document.querySelector('#graphContainer').clientWidth) <= 1`), 5000);
-      };
-      try {
-        await viewport({width: 1440, height: 900, deviceScaleFactor: 1});
-        await partialViewportNodeLabels(flowIds, appendZoom);
-      } finally { await viewport(previous); }
-    });
+    await check('installedPartialViewportNodeLabels', async () => { await partialViewportNodeLabels(flowIds,appendZoom); });
     await check('installedContextTrackedConsistent', async () => {
       await rowAction(flowIds[1], 'act-ctx');
       await until(() => evaluate(`document.querySelector('#ctxModal').style.display === 'flex'
