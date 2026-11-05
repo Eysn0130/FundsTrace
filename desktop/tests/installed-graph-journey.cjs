@@ -739,9 +739,32 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     // also exceeds the zoom at which the append originally built its geometry,
     // so shrinking and rebuilding cannot mask a cached screen-shadow defect.
     await clickElement(`document.querySelector('#ribbonTab-view')`);
+    const sidebarExpanded = await evaluate(`document.querySelector('#btnSidebarToggle').getAttribute('aria-expanded') === 'true'`);
+    if (sidebarExpanded) {
+      await clickElement(`document.querySelector('#btnSidebarToggle')`);
+      await until(() => evaluate(`document.querySelector('#left').getBoundingClientRect().width < 1`), 5000);
+    }
     await clickElement(`document.querySelector('#btnFit')`);
     await until(() => evaluate(`!layoutJob && state.graphView.viewportFrame == null
       && state.graphView.labelTimer == null && !state.graphView.zoomSettling`), 10000);
+    // Stage the three synthetic nodes with the same user drag used by the editor.
+    // A must be far enough from B/C to cross the clip margin at the tested zoom.
+    for (const [id, x, y] of [[ACCOUNTS[0], .16, .48], [ACCOUNTS[1], .60, .32], [ACCOUNTS[2], .61, .68]]) {
+      const gesture = await evaluate(`(() => {
+        const box = document.querySelector('#graphContainer').getBoundingClientRect();
+        const model = state.graph.findById(${JSON.stringify(id)}).getModel();
+        return { from: state.graph.getClientByPoint(model.x,model.y),
+          to: { x: box.left + box.width * ${x}, y: box.top + box.height * ${y} } };
+      })()`);
+      await pointerDrag(gesture.from, gesture.to);
+    }
+    const blank = await evaluate(`(() => {
+      const box = document.querySelector('#graphContainer').getBoundingClientRect();
+      return { x: box.left + box.width * .32, y: box.top + box.height * .15 };
+    })()`);
+    await pointerClick(blank);
+    await until(() => evaluate(`!state.graphSelection.ids.size && state.graphView.hoveredAccount === null
+      && state.graphView.viewportFrame == null && state.graphView.labelTimer == null`), 10000);
     const before = await evaluate(GRAPH_PROBE);
     assertGraph(before, ids, 2);
     for (const id of ACCOUNTS.slice(0, 3)) assertAutomaticNodeLabel(before, id);
@@ -893,6 +916,11 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     assert.equal(returned.zoom, zoomed.zoom);
     returned.camera.forEach((value,i) => assert.ok(Math.abs(value - zoomed.camera[i]) <= (i === translation ? capacity / 12 + 1 : .01)));
     for (const id of ACCOUNTS.slice(0, 2)) assertAutomaticNodeLabel(returned, id);
+    if (sidebarExpanded) {
+      await clickElement(`document.querySelector('#btnSidebarToggle')`);
+      await until(() => evaluate(`document.querySelector('#left').getBoundingClientRect().width >= 360
+        && document.querySelector('#left').getAnimations().length === 0`), 5000);
+    }
     // Leave the following journeys at the same ordinary Fit reading frame.
     await clickElement(`document.querySelector('#btnFit')`);
     await graph(2,ids,undefined,{ frame: false });
