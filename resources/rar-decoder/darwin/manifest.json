@@ -1,0 +1,9 @@
+{
+  "version": "26.05",
+  "upstream": "https://github.com/ip7z/7zip/releases/download/26.05/7z2605-mac.tar.xz",
+  "upstream_sha256": "12ef6830317743cfd3f0ab1724bde43fcc270d8b6d8564f8c12c2a2b7f993570",
+  "source": "https://github.com/ip7z/7zip/releases/tag/26.05",
+  "files": {
+    "7zz": "8e495531e1b2b8cb169ca583493922d4ab386007756418c15b95f07f642c35fb"
+  }
+}

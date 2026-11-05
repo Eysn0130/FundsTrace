@@ -9,6 +9,8 @@ from app import table_import as tables, table_contracts
 
 
 POLICY = "transaction-reference-v1"
+# The test's owning commit 72abd18a used this profile as its process default.
+HISTORICAL_PROFILE = "funds-trace-table-v16"
 COLUMNS = tuple("交易卡号 交易账号 查询反馈结果原因 交易户名 交易证件号码 交易时间 交易金额 交易余额 收付标志 交易对手账卡号 现金标志 对手户名 对手身份证号 对手开户银行 摘要说明 交易币种 交易网点名称 交易发生地 交易是否成功 传票号 IP地址 MAC地址 对手交易余额 交易流水号 日志号 凭证种类 凭证号 交易柜员号 备注 商户名称 商户代码 交易类型".split())
 
 
@@ -33,6 +35,7 @@ def payload(rows, headers=COLUMNS):
 
 
 def parse(rows, headers=COLUMNS, **options):
+    options.setdefault('profile', HISTORICAL_PROFILE)
     return tables.parse(payload(rows, headers), suffix=".csv", **options)
 
 
@@ -127,8 +130,8 @@ def test_policy_is_rechecked_at_every_region_boundary():
         tuple(reversed(COLUMNS)), [values.get(column, "") for column in reversed(COLUMNS)],
     ])
     data = output.getvalue().encode("utf-8")
-    default = tables.parse(data, suffix=".csv")
-    policy = tables.parse(data, suffix=".csv", reference_policy=POLICY)
+    default = tables.parse(data, suffix=".csv", profile=HISTORICAL_PROFILE)
+    policy = tables.parse(data, suffix=".csv", reference_policy=POLICY, profile=HISTORICAL_PROFILE)
     assert [record["disposition"] for record in policy["records"]] == [
         "accepted", "non_transaction", "unresolved", "non_transaction", "accepted",
     ]

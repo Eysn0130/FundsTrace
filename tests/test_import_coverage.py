@@ -48,9 +48,10 @@ def test_coverage_is_case_scoped_and_counts_physical_occurrences_once(database, 
 
     monkeypatch.setattr(database, "q_raw", count_query)
     assert import_coverage(cid) == expected(3)
-    # One source-pair metadata query plus one set-based coverage query. The
+    # Source-pair metadata, source-ledger count, set-based coverage, and one
+    # case event-conflict query. The
     # resolver must never issue a query for every physical transaction row.
-    assert len(queries) == 2
+    assert len(queries) == 4
 
 
 def test_supported_version_precedes_time_and_latest_same_version_includes_removal(database, make_case):

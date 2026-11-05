@@ -307,6 +307,7 @@ def test_revoked_pair_preserves_a_different_manual_history_without_reinterpretin
 @pytest.mark.parametrize("history_difference", ["witness_summary", "observer_trade_no"])
 def test_public_lifecycle_round_trip_keeps_other_source_interpretations(client, database, make_case, history_difference, monkeypatch):
     from test_archive_profile_upgrade import frozen_preview
+    from test_table_mapping_versions import profile_preview
     rows = round_trip()
     for row in rows:
         row["凭证号"] = row["交易流水号"]
@@ -325,7 +326,7 @@ def test_public_lifecycle_round_trip_keeps_other_source_interpretations(client, 
         field, column, changed_number = "trade_no", "商户名称", 4
     payload, archive = source(rows, path="table.csv")
     cid = make_case("Synthetic independent source interpretation package")
-    old = preview(client, cid, payload)
+    old = profile_preview(client, cid, payload, monkeypatch, table_import.PRECISE_PROFILE)
     response = client.post(f"/api/v1/cases/{cid}/imports/{old['import_id']}/preview", json={
         "mode": old["mode"], "mapping": {**old["mapping"], field: column}})
     assert response.status_code == 200, response.text
@@ -425,7 +426,7 @@ def test_public_later_competing_original_preserves_proof_history_and_coverage_ga
     if archive_profile == table_archive.PROFILE:
         # v4 protects both the witness and the cancelled original from a later
         # competing interpretation; the explicit v3 expectations stay frozen.
-        expected_gaps, expected_flows = 3, 1
+        expected_gaps, expected_flows = 3, 3
         records = client.get(f"/api/v1/cases/{cid}/sources/{later['import_id']}/report").json()["items"]
         for record in records[:2]:
             assert record["disposition"] == "unresolved"
@@ -436,7 +437,7 @@ def test_public_later_competing_original_preserves_proof_history_and_coverage_ga
         assert client.get(f"/api/v1/cases/{cid}/imports/{proof['import_id']}").json()["result"] == proof_job["result"]
         for table in ("flows", "effective_flows"):
             assert database.q_raw(f"select count(*) n,sum(amount) amount from {table} where case_id=?", [cid]) == [
-                {"n": 1, "amount": Decimal("1.00")}]
+                {"n": 3 if table == "flows" else 1, "amount": Decimal("1.00")}]
     assert database.q_raw("select count(*) n from flows where case_id=?", [cid])[0]["n"] == expected_flows
     coverage = client.get(f"/api/v1/cases/{cid}/stats").json()["import_coverage"]
     assert coverage["unresolved_records"] == expected_gaps and not coverage["financial_interpretation_complete"]

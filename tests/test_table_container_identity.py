@@ -254,9 +254,7 @@ def test_equal_sha_and_position_with_advanced_mapping_cannot_reuse_changed_full_
     frozen = source_snapshot(database, cid, view["import_id"])
     assert before[0]["summary"] == "Synthetic alternate mapped summary"
     content = archive_bytes([("bank/original.csv", payload)], nested=True)
-    current = (frozen_preview(client, cid, content, monkeypatch, archive_profile)
-               if archive_profile == "funds-trace-table-archive-v3"
-               else preview(client, cid, content, "synthetic.zip"))
+    current = frozen_preview(client, cid, content, monkeypatch, archive_profile)
     assert current["table_summary"]["profile"] == archive_profile
     second = complete(client, cid, current)
     assert second["stage"] == "done", second
@@ -308,9 +306,7 @@ def test_standalone_fallback_compares_every_stored_fact_and_both_self_identity_f
     before = case_flows(database, cid)
     frozen = source_snapshot(database, cid, first["import_id"])
     content = archive_bytes([("bank/full-facts.csv", payload)])
-    view = (frozen_preview(client, cid, content, monkeypatch, archive_profile)
-            if archive_profile == "funds-trace-table-archive-v3"
-            else preview(client, cid, content, "synthetic.zip"))
+    view = frozen_preview(client, cid, content, monkeypatch, archive_profile)
     assert view["table_summary"]["profile"] == archive_profile
     second = complete(client, cid, view)
     assert second["stage"] == "done", second
@@ -511,6 +507,7 @@ db._start_ckpt=lambda:None
 from app.main import app
 from fastapi.testclient import TestClient
 from test_table_container_identity import ingest
+from test_folder_evidence import assert_unresolved_funds
 data=json.load(sys.stdin)
 fields=(*table_import.FLOW_FIELDS,'self_account','self_name')
 def facts(client,cid):
@@ -534,8 +531,11 @@ with TestClient(app) as client:
             assert (job['result']['ok'],job['result']['rows_dup'])==(0,2)
         assert facts(client,cid)==data['expected']
         stats=client.get(f'/api/v1/cases/{cid}/stats').json()
-        assert stats['flows']==2 and stats['amount_totals']==[{'currency':'CNY','amount':'2.46'}]
-        result.append({'flows':stats['flows'],'amount_totals':stats['amount_totals']})
+        assert (stats['flows'],stats['amount_total']) == (2,'2.46')
+        assert stats['amount_totals']==[{'currency':'CNY','amount':'2.46'}]
+        assert_unresolved_funds(stats['funds'],2,[('CNY','2.46')])
+        assert [row['amount'] for row in facts(client,cid)]==['1.23','1.23']
+        result.append({'flows':stats['flows'],'amount_totals':stats['amount_totals'],'funds':stats['funds']})
 print('D01_RESULT='+json.dumps({'database':str(db.DB_PATH),'cases':result}))
 db._con.close()
 db._con=None
@@ -579,5 +579,10 @@ def test_container_identity_survives_format4_restore_in_new_process_and_clean_da
     result = json.loads(next(line.removeprefix("D01_RESULT=") for line in child.stdout.splitlines()
                              if line.startswith("D01_RESULT=")))
     assert Path(result["database"]) == paths["FUND_DATA_DIR"] / "fund.duckdb"
-    assert result["cases"] == [{"flows": 2, "amount_totals": [{"currency": "CNY", "amount": "2.46"}]}] * 2
+    assert result["cases"][0] == result["cases"][1]
+    for stats in result["cases"]:
+        assert stats["flows"] == 2
+        assert stats["amount_totals"] == [{"currency": "CNY", "amount": '2.46'}]
+        assert stats["funds"]["count"] == {"lower": 0, "upper": 2}
+        assert stats["funds"]["totals"] == [{"currency": "CNY", "amount": None, "lower": "0.00", "upper": "2.46"}]
     assert persisted(database) == before

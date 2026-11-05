@@ -17,7 +17,7 @@ import zlib
 import duckdb
 from fastapi import HTTPException
 
-from . import db, feedback_import, importer
+from . import db, feedback_import, importer, evidence_resolution, import_attachments, event_resolution
 
 CASE_PKG_COLS = {
     "flows": "id, batch_id, trade_no, trade_time, payer_name, payer_account, payer_bank, "
@@ -31,6 +31,7 @@ CASE_PKG_COLS = {
     "account_photos": "account, fname, updated_at, crop_cx, crop_cy, crop_r",
     "focus_nodes": "account, scale",
 }
+ZONED_FLOW_COLS = CASE_PKG_COLS["flows"] + ", trade_time_utc, trade_time_original, trade_time_offset"
 CASE_PKG_TABLES = list(CASE_PKG_COLS)
 PROVENANCE_PKG_COLS = {
     "import_sources": "source_id, filename, sha256, size_bytes, mode, mapping_json, sheet, parser_version, row_kind, imported_at",
@@ -40,16 +41,18 @@ JOURNAL_PKG_COLS = {
     "import_members": "source_id, member_path, role, sha256, size_bytes, encoding, row_count",
     "import_records": "source_id, record_no, member_path, source_row, record_key, disposition, reason_code, details_json",
 }
-_ALL_PKG_COLS = {**CASE_PKG_COLS, **PROVENANCE_PKG_COLS, **JOURNAL_PKG_COLS}
+EVIDENCE_PKG_COLS = {"evidence_sources": "source_id, batch_id, active"}
+OPERATION_PKG_COLS = {"import_source_operations": "source_id, batch_id, active"}
+_ALL_PKG_COLS = {**CASE_PKG_COLS, **PROVENANCE_PKG_COLS, **JOURNAL_PKG_COLS, **EVIDENCE_PKG_COLS, **OPERATION_PKG_COLS}
 _PHOTO_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.(?:jpg|jpeg|png|webp|bmp)", re.I)
 _TYPES = {
     "id": "bigint", "flow_id": "bigint", "batch_id": "bigint", "canvas_id": "bigint",
-    "trade_time": "timestamp", "tracked_at": "timestamp", "imported_at": "timestamp",
+    "trade_time_utc": "timestamp", "trade_time": "timestamp", "tracked_at": "timestamp", "imported_at": "timestamp",
     "updated_at": "timestamp", "marked_at": "timestamp", "amount": "decimal(18,2)",
     "balance": "decimal(18,2)", "rows_total": "bigint", "rows_imported": "bigint",
     "rows_skipped": "bigint", "rows_dup": "bigint", "crop_cx": "double",
     "crop_cy": "double", "crop_r": "double", "scale": "double",
-    "source_row": "bigint", "size_bytes": "bigint", "record_no": "bigint", "row_count": "bigint",
+    "active": "boolean", "source_row": "bigint", "size_bytes": "bigint", "record_no": "bigint", "row_count": "bigint",
 }
 _BIGINT_MIN, _BIGINT_MAX = -(2**63), 2**63 - 1
 
@@ -70,6 +73,7 @@ def export_package(case_id):
     # The lock spans every table and photo read, so writers cannot split the snapshot.
     with tempfile.TemporaryDirectory(prefix="fundcase-export-") as tmp, db.transaction() as con:
         case_name = require_case(case_id)["name"]
+        has_zoned = bool(con.execute("select 1 from flows where case_id=? and trade_time_utc is not null limit 1", [case_id]).fetchone())
         buf = io.BytesIO()
         cancellation_profiles = sorted(feedback_import.CANCELLATION_PROFILES)
         cancellation_supported = ",".join("?" for _ in cancellation_profiles)
@@ -77,15 +81,23 @@ def export_package(case_id):
                   and parser_version in ({cancellation_supported}) limit 1""", [case_id, *cancellation_profiles]).fetchone())
         has_table_records = bool(con.execute("""select 1 from import_sources where case_id=?
                   and row_kind='table_record' limit 1""", [case_id]).fetchone())
+        has_resolution = bool(con.execute("select 1 from import_sources where case_id=? and parser_version in (" + ",".join("?" for _ in evidence_resolution.PROFILES) + ") limit 1", [case_id, *sorted(evidence_resolution.PROFILES)]).fetchone())
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            has_operations = bool(con.execute("select 1 from import_source_operations where case_id=? limit 1", [case_id]).fetchone())
             archive.writestr("meta.json", json.dumps({
                 "name": case_name, "exported_at": datetime.datetime.now().isoformat(),
-                "format": 4 if has_table_records else 3 if has_cancellation_rules else 2,
+                "format": 7 if has_zoned else 6 if has_operations else 5 if has_resolution else 4 if has_table_records else 3 if has_cancellation_rules else 2,
                 "source_files": "not_included",
             }, ensure_ascii=False))
             has_journals = any(con.execute(f"select 1 from {table} where case_id=? limit 1", [case_id]).fetchone()
                                for table in JOURNAL_PKG_COLS)
             for table, cols in _ALL_PKG_COLS.items():
+                if table == "flows" and has_zoned:
+                    cols = ZONED_FLOW_COLS
+                if table in OPERATION_PKG_COLS and not has_operations:
+                    continue
+                if table in EVIDENCE_PKG_COLS and not has_resolution:
+                    continue
                 if table in JOURNAL_PKG_COLS and not has_journals:
                     continue
                 path = Path(tmp) / f"{table}.parquet"
@@ -219,7 +231,7 @@ def _feedback_journals(check, paths):
         return
     for table in ("import_members", "import_records"):
         totals = check.execute(f"select source_id,count(*) from {table} where source_id in (select source_id from import_sources where row_kind='archive_record') group by source_id").fetchall()
-        if any(count > (feedback_import.MAX_MEMBERS if table == "import_members"
+        if any(count > ((feedback_import.EVIDENCE_MAX_MEMBERS if archives[source_id] in feedback_import.EVIDENCE_PROFILES else feedback_import.MAX_MEMBERS) if table == "import_members"
                         else feedback_import.max_records(archives[source_id])) for source_id, count in totals):
             _invalid("反馈包日志总量超出限制")
     members = check.execute("select m.source_id,m.member_path,m.role,m.sha256,m.size_bytes,m.encoding,m.row_count from import_members m join import_sources s on s.source_id=m.source_id where s.row_kind='archive_record'").fetchall()
@@ -233,7 +245,7 @@ def _feedback_journals(check, paths):
                 or Path(path).suffix.lower() != ".csv"
                 or role not in feedback_import.ROLES
                 or not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256)
-                or size is None or not 0 <= size <= feedback_import.MAX_MEMBER_BYTES
+                or size is None or not 0 <= size <= (feedback_import.EVIDENCE_MAX_MEMBER_BYTES if archives[source_id] in feedback_import.EVIDENCE_PROFILES else feedback_import.MAX_MEMBER_BYTES)
                 or count is None or not 0 <= count <= feedback_import.max_records(archives[source_id])
                 or encoding not in ("utf-8-sig", "gb18030")):
             _invalid("反馈包成员元数据无效")
@@ -245,8 +257,8 @@ def _feedback_journals(check, paths):
     if set(by_source) != set(archives):
         _invalid("反馈包来源与成员不一致")
     for source_id, values in by_source.items():
-        if (len(values) > feedback_import.MAX_MEMBERS
-                or sum(value[1] for value in values) > feedback_import.MAX_EXPANDED_BYTES
+        if (len(values) > (feedback_import.EVIDENCE_MAX_MEMBERS if archives[source_id] in feedback_import.EVIDENCE_PROFILES else feedback_import.MAX_MEMBERS)
+                or sum(value[1] for value in values) > (feedback_import.EVIDENCE_MAX_EXPANDED_BYTES if archives[source_id] in feedback_import.EVIDENCE_PROFILES else feedback_import.MAX_EXPANDED_BYTES)
                 or sum(value[2] for value in values) > feedback_import.max_records(archives[source_id])):
             _invalid("反馈包成员总量超出限制")
     linked_flows = {(source_id, row): (disposition, name or "", account or "",
@@ -267,7 +279,7 @@ def _feedback_journals(check, paths):
             _invalid("反馈包记录引用了不存在的成员")
         role, member_hash, row_count = member
         legacy = archives[source_id] == feedback_import.IDENTITY_PROFILE
-        currency_rule = archives[source_id] == feedback_import.CURRENCY_PROFILE
+        currency_rule = archives[source_id] in feedback_import.CURRENCY_PROFILES
         cancellation_rule = archives[source_id] in feedback_import.CANCELLATION_PROFILES
         dispositions = ("review",) if legacy else ("non_monetary", "unresolved", *(('cancelled',) if cancellation_rule else ()))
         if (number is None or number != sequences.get(source_id, 0) + 1
@@ -296,13 +308,21 @@ def _feedback_journals(check, paths):
             {"financial_effect", "validation_issues", "canonical_amount"} if legacy else {"review_reasons"})
         if not currency_rule:
             detail_fields -= feedback_import.CURRENCY_DETAILS_FIELDS
+        if archives[source_id] in evidence_resolution.PROFILES:
+            detail_fields |= {evidence_resolution.DETAIL_FIELD, "occurrence_scope", "evidence_family", "family_member_sha256"}
+        if archives[source_id] in evidence_resolution.PROFILES and (not isinstance(details, dict) or any(not isinstance(details.get(field), str) or not re.fullmatch(r"[0-9a-f]{64}", details[field]) for field in ("evidence_family", "family_member_sha256"))):
+            _invalid("身份证据逻辑来源指纹无效")
         if not isinstance(details, dict) or not set(details).issubset(detail_fields):
             _invalid("反馈包记录语义元数据无效")
         if disposition != "cancelled" and set(details) & cancellation_fields:
             _invalid("非配对排除记录不能声明冲正关联")
         for field, value in details.items():
-            if not isinstance(value, str) or len(value.encode("utf-8")) > 1024:
+            if not isinstance(value, str) or len(value.encode("utf-8")) > (8192 if field == evidence_resolution.DETAIL_FIELD else 1024):
                 _invalid("反馈包记录语义值无效")
+            if field == evidence_resolution.DETAIL_FIELD:
+                evidence = evidence_resolution.validate_evidence(value)
+                if evidence["role"] != ("transaction" if role == "transaction" else "manifest" if role == "task" else role):
+                    _invalid("反馈包身份声明与来源角色不一致")
             if field == "role" and value != role:
                 _invalid("反馈包记录角色不一致")
             if field == "source_account_column" and value not in ("", "交易账号", "交易卡号"):
@@ -360,7 +380,7 @@ def _feedback_journals(check, paths):
                                                           "source_direction_sha256", "source_direction_length",
                                                           "validation_issues"))):
                 _invalid("查询反馈记录不能包含交易金额、方向或未解决问题")
-            if disposition == "auxiliary" and details != {"role": role}:
+            if disposition == "auxiliary" and {field: value for field, value in details.items() if field not in {evidence_resolution.DETAIL_FIELD, "evidence_family", "family_member_sha256"}} != {"role": role}:
                 _invalid("辅助记录只能保留其来源角色")
             issues = details.get("validation_issues", "").split(",")
             if disposition == "non_monetary" and (canonical_amount != Decimal("0.00") or "zero_amount" not in issues):
@@ -440,7 +460,7 @@ def _feedback_journals(check, paths):
                 or (paired[1]["source_direction"] == "出") != (details["source_direction"] == "出")
                 or paired[1].get("source_account_column") != details.get("source_account_column")):
             _invalid("冲正排除配对须双向完整、同来源且等额异号")
-        if archives[source_id] == feedback_import.CURRENCY_PROFILE:
+        if archives[source_id] in feedback_import.CURRENCY_PROFILES:
             scope_currency = record_currencies[source_id, number]
             if (record_currencies.get((source_id, paired_no)) != scope_currency
                     or record_currencies.get((source_id, witness_no)) != scope_currency):
@@ -455,7 +475,7 @@ def _feedback_journals(check, paths):
                 identity = feedback_import.identity_digest(name, own_bank)
                 if (old_amount != amount or (old_direction == "出") != (details["source_direction"] == "出")
                         or own_name != name or own_account != account
-                        or (archives[source_id] == feedback_import.CURRENCY_PROFILE
+                        or (archives[source_id] in feedback_import.CURRENCY_PROFILES
                             and old_currency != details["canonical_currency"])
                         or identity != details["own_identity_sha256"]):
                     _invalid("冲正排除与保留原流水的金额、方向或身份不一致")
@@ -479,39 +499,45 @@ def _table_journals(check, paths):
         return
     if not set(JOURNAL_PKG_COLS).issubset(paths):
         _invalid("自动表格来源缺少成员与记录日志")
-    from . import table_import, table_archive, table_cancellations, table_contracts
+    from . import table_import, table_archive, table_cancellations, table_contracts, source_ledger, bank_posting_pairs
     source_profiles = {source_id: profile for source_id, profile, _time in tables}
     source_times = {source_id: time for source_id, _profile, time in tables}
     has_cancellation_profile = bool(table_archive.CANCELLATION_PROFILES.intersection(source_profiles.values()))
 
-    for table, limit in (("import_members", table_archive.MAX_MEMBERS),
-                         ("import_records", table_import.MAX_RECORDS)):
+    for table, limit in (("import_members", table_archive.EVIDENCE_MAX_MEMBERS),
+                         ("import_records", table_archive.EVIDENCE_MAX_RECORDS)):
         if check.execute(f"select 1 from {table} j join import_sources s on s.source_id=j.source_id where s.row_kind='table_record' group by j.source_id having count(*)>? limit 1", [limit]).fetchone():
             _invalid("自动表格日志总量超出限制")
     members = check.execute("""select m.source_id,m.member_path,m.role,m.sha256,m.size_bytes,m.encoding,m.row_count
         from import_members m join import_sources s on s.source_id=m.source_id
         where s.row_kind='table_record'""").fetchall()
-    member_rows, by_source = {}, {}
+    member_rows, by_source, xls_members = {}, {}, set()
     for source_id, path, role, digest, size, encoding, count in members:
         if (not isinstance(path, str) or not path or len(path) > 65535
                 or "\\" in path or ":" in path
                 or any(ord(char) < 32 or ord(char) == 127 for char in path)
                 or any(part in ("", ".", "..") for part in path.split("/"))
-                or role not in ("table", "auxiliary")
+                or role not in (("table", "auxiliary", "attachment") if source_profiles[source_id] in evidence_resolution.PROFILES else ("table", "auxiliary"))
                 or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
                 or size is None or not 0 <= size <= table_archive.MAX_MEMBER_BYTES
                 or count is None or not 0 <= count <= table_import.MAX_RECORDS
-                or encoding not in ("utf-8-sig", "gb18030", "utf-16", "xlsx", "xls")
-                or (encoding == "xls") != (source_profiles[source_id] == table_import.XLS_PROFILE)):
+                or encoding not in (("binary",) if role == "attachment" else ("utf-8-sig", "gb18030", "utf-16", "xlsx", "xls"))
+                or encoding == "xls" and source_profiles[source_id] not in table_import.XLS_READER_PROFILES
+                or source_profiles[source_id] in table_import.STANDALONE_XLS_PROFILES and encoding != "xls"
+                or encoding == "xls" and source_profiles[source_id] in table_import.XLS_EVIDENCE_ARCHIVE_PROFILES
+                   and not re.search(r"\.xls/worksheets/[0-9]{4}$", path, re.IGNORECASE)):
             _invalid("自动表格成员元数据无效")
+        if encoding == "xls":
+            xls_members.add((source_id, path))
         member_rows[source_id, path] = (role, digest, count)
         by_source.setdefault(source_id, []).append((size, count))
     if set(by_source) != {row[0] for row in tables}:
         _invalid("自动表格来源与成员不一致")
-    for values in by_source.values():
-        if (len(values) > table_archive.MAX_MEMBERS
-                or sum(size for size, _ in values) > table_archive.MAX_EXPANDED_BYTES
-                or sum(count for _, count in values) > table_import.MAX_RECORDS):
+    for source_id, values in by_source.items():
+        modern = source_profiles[source_id] in evidence_resolution.PROFILES
+        if (len(values) > (table_archive.EVIDENCE_MAX_MEMBERS if modern else table_archive.MAX_MEMBERS)
+                or sum(size for size, _ in values) > (table_archive.EVIDENCE_MAX_EXPANDED_BYTES if modern else table_archive.MAX_EXPANDED_BYTES)
+                or sum(count for _, count in values) > (table_archive.EVIDENCE_MAX_RECORDS if modern else table_import.MAX_RECORDS)):
             _invalid("自动表格成员总量超出限制")
     if check.execute("""select 1 from import_records r join import_sources s on s.source_id=r.source_id
             where s.row_kind='table_record' group by r.source_id,r.member_path,r.source_row
@@ -520,10 +546,11 @@ def _table_journals(check, paths):
     if check.execute("""select 1 from flow_sources f join import_sources s on s.source_id=f.source_id
             left join import_records r on r.source_id=f.source_id and r.record_no=f.source_row
             where s.row_kind='table_record' and (r.record_no is null
-                or r.disposition not in ('imported','duplicate') or r.disposition<>f.disposition) limit 1""").fetchone():
+                or (s.parser_version not in (""" + source_ledger._profiles() + """) and
+                    (r.disposition not in ('imported','duplicate') or r.disposition<>f.disposition))) limit 1""").fetchone():
         _invalid("自动表格流水来源与记录处置不一致")
 
-    flow_fields = tuple(field.strip() for field in CASE_PKG_COLS["flows"].split(",")
+    flow_fields = tuple(field.strip() for field in ZONED_FLOW_COLS.split(",")
                         if field.strip() not in ("id", "batch_id"))
     cursor = check.execute("""select r.source_id,r.record_no,r.member_path,r.source_row,r.record_key,
             r.disposition,r.reason_code,r.details_json,f.disposition,f.flow_id,"""
@@ -533,6 +560,7 @@ def _table_journals(check, paths):
         left join flows v on v.id=f.flow_id where s.row_kind='table_record'
         order by r.source_id,r.record_no""")
     sequences, counts, evidence_records, known_facts, current_facts = {}, {}, {}, {}, {}
+    header_regions, previous_source_rows = {}, {}
     accepted = ("imported", "duplicate")
     dispositions = (*accepted, "unresolved", "non_monetary", "non_transaction", "auxiliary", "removed")
     while rows := cursor.fetchmany(1024):
@@ -546,7 +574,9 @@ def _table_journals(check, paths):
             cancellation_rule = source_profiles[source_id] in table_archive.CANCELLATION_PROFILES
             reason_codes = table_import.REASON_CODES | (frozenset(table_cancellations.REASONS)
                                                         if cancellation_rule else frozenset())
-            if source_profiles[source_id] != table_import.XLS_PROFILE:
+            if source_profiles[source_id] in evidence_resolution.PROFILES:
+                reason_codes |= frozenset(import_attachments.REASONS)
+            if (source_id, path) not in xls_members:
                 reason_codes -= {"invalid_cell_type"}
             record_dispositions = (*dispositions, *(('cancelled',) if cancellation_rule else ()))
             if (number is None or number != sequences.get(source_id, 0) + 1
@@ -556,12 +586,32 @@ def _table_journals(check, paths):
                 _invalid("自动表格记录位置或处置无效")
             sequences[source_id] = number
             counts[source_id, path] = counts.get((source_id, path), 0) + 1
+            # The first header is the one omitted journal row; later headers
+            # are retained with their own disposition. A sequence declaration
+            # cannot move an entry into another table region during a replay.
+            previous_row = previous_source_rows.get((source_id, path), 0)
+            if role == "table" and source_row == previous_row + 2:
+                header_regions[source_id, path] = source_row - 1
+            if reason == "repeated_header":
+                header_regions[source_id, path] = source_row
+            previous_source_rows[source_id, path] = source_row
             if key != table_import.record_key(path, member_digest, source_row):
                 _invalid("自动表格记录键与成员或位置不一致")
-            if not isinstance(details_json, str) or len(details_json.encode("utf-8")) > 8192:
+            ledger_rule = source_profiles[source_id] in table_import.SOURCE_LEDGER_PROFILES
+            if not isinstance(details_json, str) or len(details_json.encode("utf-8")) > (source_ledger.MAX_BYTES + 8192 if ledger_rule else 8192):
                 _invalid("自动表格语义元数据过大或无效")
             details = json.loads(details_json)
             detail_fields = table_import.DETAILS_FIELDS
+            if ledger_rule:
+                detail_fields |= {source_ledger.FIELD}
+            if source_profiles[source_id] in bank_posting_pairs.PROFILES:
+                detail_fields |= {bank_posting_pairs.FIELD}
+            if source_profiles[source_id] in table_import.PRECISE_PROFILES:
+                detail_fields |= {table_import.table_sign_declarations.DETAIL_FIELD}
+            if source_profiles[source_id] in table_import.REFERENCE_ROLE_PROFILES:
+                detail_fields |= table_import.FIELD_EVIDENCE_DETAILS
+            if source_profiles[source_id] in table_import.TIME_ROLE_PROFILES:
+                detail_fields |= table_import.TIME_EVIDENCE_DETAILS
             contract_rule = source_profiles[source_id] in table_import.CONTRACT_PROFILES
             if contract_rule:
                 detail_fields |= table_contracts.DETAILS_FIELDS
@@ -569,11 +619,93 @@ def _table_journals(check, paths):
                 detail_fields |= table_import.REFERENCE_DETAILS_FIELDS
             if cancellation_rule:
                 detail_fields |= table_cancellations.DETAILS_FIELDS
+            if source_profiles[source_id] in evidence_resolution.PROFILES:
+                detail_fields |= {evidence_resolution.DETAIL_FIELD, "occurrence_scope", "evidence_family", "family_member_sha256"} | import_attachments.DETAILS_FIELDS
+            if source_profiles[source_id] in event_resolution.PROFILES:
+                detail_fields |= {event_resolution.DETAIL_FIELD, event_resolution.LEDGER_FIELD}
             if (not isinstance(details, dict) or not set(details).issubset(detail_fields)
-                    or any(not isinstance(value, str) or len(value.encode("utf-8")) > 1024
-                           for value in details.values())):
+                    or any(not isinstance(value, str) or len(value.encode("utf-8")) > (
+                        source_ledger.MAX_BYTES if field == source_ledger.FIELD else 8192 if field == evidence_resolution.DETAIL_FIELD else 2048 if field in {bank_posting_pairs.FIELD, event_resolution.DETAIL_FIELD, table_import.table_sign_declarations.DETAIL_FIELD, "source_field_evidence", "source_time_evidence"} else 1024)
+                           for field, value in details.items())):
                 _invalid("自动表格语义元数据无效")
-            if contract_rule and not table_contracts.validate_details(details, disposition, reason):
+            ledger_entry = None
+            if source_ledger.FIELD in details:
+                try:
+                    ledger_entry = source_ledger.validate(details[source_ledger.FIELD])
+                except (ValueError, TypeError, KeyError):
+                    _invalid("来源记账语义无效")
+                if ledger_entry["policy"] == source_ledger.UNORIENTED_POLICY and source_profiles[source_id] not in table_import.UNORIENTED_PROFILES:
+                    _invalid("未知方向来源记账与解析版本不符")
+                if ledger_entry["policy"] == source_ledger.SOURCE_OBSERVATION_POLICY and source_profiles[source_id] not in table_import.SOURCE_OBSERVATION_PROFILES:
+                    _invalid("原始观察与解析版本不符")
+                if ledger_entry["header_scope"] != header_regions.get((source_id, path)):
+                    _invalid("来源记账范围与来源表头不一致")
+                if flow_id is not None and (ledger_entry["kind"] == "context"
+                        or table_import.flow_digest(ledger_entry["row"]) != table_import.flow_digest(dict(zip(flow_fields, facts)))
+                        or any(ledger_entry["row"][field] != dict(zip(flow_fields, facts)).get(field, "")
+                               for field in ("self_account", "self_name"))):
+                    _invalid("来源记账与保留原始分录不一致")
+            if bank_posting_pairs.FIELD in details:
+                try:
+                    pair_contract = bank_posting_pairs.validate(details[bank_posting_pairs.FIELD])
+                except (ValueError, TypeError, KeyError):
+                    _invalid("银行双侧过账契约无效")
+                try:
+                    source_fields = json.loads(details.get("source_field_evidence", "[]"))
+                except ValueError:
+                    _invalid("银行双侧过账的来源字段依据无效")
+                if not isinstance(source_fields, list) or any(not isinstance(item, dict)
+                        or not isinstance(item.get("role"), str) or not isinstance(item.get("raw"), str) for item in source_fields):
+                    _invalid("银行双侧过账的来源字段依据无效")
+                if not pair_contract["independent_references"] and any(
+                        item.get("role") == "independent_voucher_reference"
+                        and bank_posting_pairs.independent_reference(item.get("raw")) for item in source_fields):
+                    _invalid("独立凭证与银行双侧过账契约不一致")
+                if ledger_entry and ledger_entry["kind"] == "financial" and (
+                        pair_contract["source_primary_reference"] != bank_posting_pairs._identifier(ledger_entry["row"]["trade_no"])
+                        or pair_contract["source_counterparty_bank"] != bank_posting_pairs._identifier(ledger_entry["row"][
+                            "payee_bank" if ledger_entry["direction"] == "out" else "payer_bank"])):
+                    _invalid("银行双侧过账契约与来源事实不一致")
+            if ("source_time_evidence" in details and not table_import.table_time_formats.validate_source_time_evidence(details["source_time_evidence"])):
+                _invalid("来源时间依据无效")
+            if table_import.table_sign_declarations.DETAIL_FIELD in details:
+                if not table_import.table_sign_declarations.validate_proof(details[table_import.table_sign_declarations.DETAIL_FIELD]):
+                    _invalid("金额符号来源声明无效")
+            if event_resolution.DETAIL_FIELD in details:
+                event_resolution.validate_reference(details[event_resolution.DETAIL_FIELD])
+                if role != "table" or disposition not in {"imported", "duplicate", "unresolved", "cancelled", "removed", "non_monetary"}:
+                    _invalid("事件参考声明与来源处置不一致")
+            if event_resolution.LEDGER_FIELD in details:
+                ledger_evidence = event_resolution.validate_ledger(details[event_resolution.LEDGER_FIELD])
+                if role != "table" or disposition not in {"imported", "duplicate", "cancelled", "removed"}:
+                    _invalid("账本声明与来源处置不一致")
+                if (ledger_evidence["posting_scope"] and
+                        int(ledger_evidence["posting_scope"]) != header_regions.get((source_id, path))):
+                    _invalid("记账顺序作用域与来源表头区域不一致")
+            if source_profiles[source_id] in evidence_resolution.PROFILES and any(not isinstance(details.get(field), str) or not re.fullmatch(r"[0-9a-f]{64}", details[field]) for field in ("evidence_family", "family_member_sha256")):
+                _invalid("身份证据逻辑来源指纹无效")
+            if evidence_resolution.DETAIL_FIELD in details:
+                evidence = evidence_resolution.validate_evidence(details[evidence_resolution.DETAIL_FIELD])
+                expected_role = details.get("source_role") if role == "auxiliary" else "transaction"
+                if evidence["role"] != expected_role:
+                    _invalid("自动表格身份声明与来源角色不一致")
+                if flow_id is not None:
+                    original = dict(zip(flow_fields, facts))
+                    for side, item in evidence.get("endpoints", {}).items():
+                        if side == "counter":
+                            if (source_profiles[source_id] not in table_import.SOURCE_OBSERVATION_PROFILES
+                                    or source_ledger.FIELD not in details or ledger_entry["direction"] != "unknown"
+                                    or any(item[key] != ledger_entry.get("counterparty", {}).get(key, "") for key in ("account", "name", "bank"))
+                                    or item["card"]):
+                                _invalid("中性对方声明与来源观察不一致")
+                            continue
+                        if (item["account"] or item["card"]) != (original.get(side + "_account") or ""):
+                            _invalid("身份声明与保留流水端点不一致")
+            # Auxiliary members can carry no money contract. Validate any
+            # contract they do carry; table members keep the full requirement.
+            if (contract_rule and role != "attachment"
+                    and (role != "auxiliary" or table_contracts.DETAILS_FIELDS.intersection(details))
+                    and not table_contracts.validate_details(details, disposition, reason)):
                 _invalid("自动表格来源契约元数据无效")
             if ("trade_no_basis" in details and details["trade_no_basis"] not in (
                     "source_transaction_id", "legacy_voucher_fallback", "none")):
@@ -592,23 +724,28 @@ def _table_journals(check, paths):
                     or disposition == "non_monetary" and reason != "zero_amount"
                     or disposition == "non_transaction" and reason not in (
                         "blank_record", "repeated_header", "feedback_only", "failed_transaction")
-                    or disposition == "auxiliary" and reason not in ("preamble", "auxiliary_table")
+                    or disposition == "auxiliary" and reason not in ("preamble", "auxiliary_table", "non_business_attachment")
                     or disposition == "unresolved" and reason in (
                         "transaction_valid", "flow_deleted", "zero_amount", "blank_record",
                         "repeated_header", "preamble", "auxiliary_table", "feedback_only", "failed_transaction")):
                 _invalid("自动表格原因与处置不一致")
             if (reason == "failed_transaction" and details.get("reported_status") != "explicit_failure"
                     or "reported_status" in details and details["reported_status"] not in (
-                        "source_reported_success", "explicit_failure")
+                        "source_reported_success", "explicit_failure",
+                        *( ("unknown",) if source_profiles[source_id] in table_import.PRECISE_PROFILES else () ))
                     or details.get("reported_status") == "explicit_failure" and reason != "failed_transaction"):
                 _invalid("自动表格交易状态与处置不一致")
             auxiliary_disposition = (disposition == "auxiliary" and reason == "auxiliary_table"
                                      or disposition == "unresolved" and reason in ("row_width", "column_count_mismatch"))
+            if role == "attachment":
+                expected = "non_business_attachment" if details.get("attachment_kind") == "finder_metadata" else "unsupported_attachment"
+                if source_profiles[source_id] not in evidence_resolution.PROFILES or details.get("source_role") != "attachment" or reason != expected or disposition != ("auxiliary" if expected == "non_business_attachment" else "unresolved"):
+                    _invalid("附件处置与保全记录不一致")
             if (role == "auxiliary" and not auxiliary_disposition
                     or role == "table" and reason == "auxiliary_table"
                     or role == "auxiliary" and details.get("source_role") not in (
                         "account", "client", "manifest", "subaccount", "freeze")
-                    or role != "auxiliary" and "source_role" in details):
+                    or role not in ("auxiliary", "attachment") and "source_role" in details):
                 _invalid("自动表格辅助来源角色不一致")
             issues = details.get("validation_issues")
             if (not contract_rule and (reason in table_contracts.VALIDATION_ISSUES
@@ -657,7 +794,10 @@ def _table_journals(check, paths):
                     known_facts.setdefault(key, []).append((source_id, flow))
                 if cancellation_rule:
                     current_facts[source_id, number] = flow
-            elif flow_id is not None:
+            elif flow_id is not None and not (ledger_rule and ledger_entry
+                    and ledger_entry["kind"] != "context" and role == "table"
+                    and (ledger_entry["kind"] == "ledger" or cancelled_original)
+                    and linked_disposition in accepted):
                 _invalid("非有效交易记录不能关联分析流水")
             if cancellation_rule:
                 evidence_records.setdefault(source_id, []).append({
@@ -761,15 +901,15 @@ def _validate_package(content, directory):
             if not {"meta.json", "flows.parquet"}.issubset(names):
                 _invalid("缺少 meta.json / flows.parquet")
             meta = json.loads(archive.read("meta.json").decode("utf-8"))
-            if not isinstance(meta, dict) or type(meta.get("format")) is not int or meta["format"] not in (1, 2, 3, 4):
+            if not isinstance(meta, dict) or type(meta.get("format")) is not int or meta["format"] not in (1, 2, 3, 4, 5, 6, 7):
                 _invalid("不支持的格式版本")
             source_members = {f"{table}.parquet" for table in PROVENANCE_PKG_COLS} & set(names)
-            if source_members and (meta["format"] not in (2, 3, 4) or len(source_members) != 2):
+            if source_members and (meta["format"] not in (2, 3, 4, 5, 6, 7) or len(source_members) != 2):
                 _invalid("来源追溯表必须在格式 2、3、4 中成对提供")
             journal_members = {f"{table}.parquet" for table in JOURNAL_PKG_COLS} & set(names)
             if journal_members and (len(journal_members) != 2 or len(source_members) != 2):
                 _invalid("反馈包日志须与来源追溯表成对提供")
-            if meta["format"] in (2, 3, 4) and meta.get("source_files") != "not_included":
+            if meta["format"] in (2, 3, 4, 5, 6, 7) and meta.get("source_files") != "not_included":
                 _invalid("来源文件策略无效")
             if not isinstance(meta.get("name"), str) or not meta["name"].strip():
                 _invalid("案件名无效")
@@ -788,7 +928,7 @@ def _validate_package(content, directory):
     try:
         with duckdb.connect(config={"threads": 1}) as check:
             for table, path in paths.items():
-                cols = [c.strip() for c in _ALL_PKG_COLS[table].split(",")]
+                cols = [c.strip() for c in (ZONED_FLOW_COLS if table == "flows" and meta["format"] == 7 else _ALL_PKG_COLS[table]).split(",")]
                 actual = [r[0] for r in check.execute("describe select * from read_parquet(?)", [str(path)]).fetchall()]
                 if len(actual) != len(cols) or set(actual) != set(cols):
                     _invalid(f"{table} 列不符合格式")
@@ -800,9 +940,19 @@ def _validate_package(content, directory):
                             _invalid(f"{table} 整数字段无效")
                 casts = ",".join(f"cast({c} as {_TYPES.get(c, 'varchar')}) as {c}" for c in cols)
                 check.execute(f"create table {table} as select {casts} from read_parquet(?)", [str(path)])
+                if table == "flows":
+                    if meta["format"] != 7:
+                        for field in ("trade_time_utc", "trade_time_original", "trade_time_offset"):
+                            check.execute(f"alter table flows add column {field} {_TYPES.get(field, 'varchar')}")
+                    from . import import_validation
+                    for row in _query_package_rows(check, "select * from flows where trade_time_utc is not null or trade_time_original is not null or trade_time_offset is not null"):
+                        try:
+                            import_validation._facts(row)
+                        except (ValueError, TypeError, KeyError):
+                            _invalid("交易时间原文、壁钟、偏移与UTC不一致")
                 key = ("id" if table in ("flows", "batches", "canvases")
                        else "flow_id,canvas_id" if table == "tracked_flows"
-                       else "source_id" if table == "import_sources"
+                       else "source_id" if table in ("import_sources", "evidence_sources", "import_source_operations")
                        else "source_id,source_row" if table == "flow_sources"
                        else "source_id,member_path" if table == "import_members"
                        else "source_id,record_no" if table == "import_records" else "account")
@@ -830,7 +980,7 @@ def _validate_package(content, directory):
                         # validation below still applies.
                         suffixless_text = (row_kind == "table_record" and suffix == "" and sheet == ""
                                            and parser_version in table_import.SUPPORTED_PROFILES
-                                           and parser_version != table_import.XLS_PROFILE
+                                           and parser_version not in table_import.STANDALONE_XLS_PROFILES
                                            and set(JOURNAL_PKG_COLS).issubset(paths))
                         if suffixless_text:
                             text_members = check.execute("""select member_path,role,sha256,size_bytes,encoding
@@ -842,10 +992,11 @@ def _validate_package(content, directory):
                                                and text_members[0][3] == size_bytes
                                                and text_members[0][4] in ("utf-8-sig", "gb18030", "utf-16"))
                         source_format_valid = (row_kind == "table_record"
-                                               and ((suffix == ".zip" and parser_version in table_archive.SUPPORTED_PROFILES and sheet == "")
+                                               and ((suffix in (".zip", ".rar") and parser_version in table_archive.SUPPORTED_PROFILES and sheet == ""
+                                                     and (suffix == ".zip" or parser_version in table_import.NATIVE_OBSERVATION_PROFILES))
                                                     or (suffix in (".csv", ".tsv", ".txt", ".xlsx", ".xls")
                                                         and parser_version in table_import.SUPPORTED_PROFILES
-                                                        and (parser_version != table_import.XLS_PROFILE or suffix == ".xls")
+                                                        and (parser_version not in table_import.STANDALONE_XLS_PROFILES or suffix == ".xls")
                                                         and (suffix in (".xlsx", ".xls")) == bool(sheet))
                                                     or suffixless_text))
                     elif archive_source:
@@ -880,9 +1031,47 @@ def _validate_package(content, directory):
                 f"select 1 from import_sources where parser_version in ({cancellation_supported}) limit 1",
                 cancellation_profiles).fetchone()) if "import_sources" in paths else False
             has_tables = bool(check.execute("select 1 from import_sources where row_kind='table_record' limit 1").fetchone()) if "import_sources" in paths else False
-            if has_tables != (meta["format"] == 4):
+            resolution_supported = ",".join("?" for _ in evidence_resolution.PROFILES)
+            has_resolution = bool(check.execute(f"select 1 from import_sources where parser_version in ({resolution_supported}) limit 1", sorted(evidence_resolution.PROFILES)).fetchone()) if "import_sources" in paths else False
+            if has_resolution:
+                if "evidence_sources" not in paths:
+                    _invalid("身份证据来源缺少导入操作关联")
+                if check.execute("""select 1 from evidence_sources e left join import_sources s on s.source_id=e.source_id
+                      left join batches b on b.id=e.batch_id
+                      where s.source_id is null or e.active is null or (e.active and b.id is null) limit 1""").fetchone():
+                    _invalid("身份证据导入操作引用无效")
+                profiles = sorted(evidence_resolution.PROFILES)
+                if check.execute(f"select 1 from import_sources s left join evidence_sources e on e.source_id=s.source_id where s.parser_version in ({resolution_supported}) and e.source_id is null limit 1", profiles).fetchone():
+                    _invalid("身份证据来源未关联导入操作")
+            elif "evidence_sources" in paths:
+                _invalid("历史格式不能声明身份证据操作")
+            has_operations = "import_source_operations" in paths
+            if meta["format"] == 7 and "import_sources" in paths and not has_operations:
+                _invalid("有来源的格式7须保留导入操作关联")
+            if meta["format"] != 7 and has_operations != (meta["format"] == 6):
+                _invalid("导入操作关联须使用格式6保留支持生命周期")
+            if has_operations:
+                if "import_sources" not in paths or "batches" not in paths:
+                    _invalid("导入操作缺少来源或批次")
+                if check.execute("""select 1 from import_source_operations o
+                      left join import_sources s on s.source_id=o.source_id
+                      left join batches b on b.id=o.batch_id
+                      where s.source_id is null or o.active is null
+                        or (o.active and b.id is null) or (not o.active and b.id is not null) limit 1""").fetchone():
+                    _invalid("导入操作引用无效")
+                if check.execute("""select 1 from flow_sources f join import_source_operations o using(source_id)
+                      where not o.active limit 1""").fetchone():
+                    _invalid("已撤回的导入操作仍含活动来源链接")
+                if has_resolution and check.execute("""select 1 from evidence_sources e
+                      left join import_source_operations o using(source_id)
+                      where o.source_id is null or o.active is distinct from e.active
+                        or o.batch_id is distinct from e.batch_id limit 1""").fetchone():
+                    _invalid("身份证据与导入操作关联不一致")
+            if meta["format"] not in (6, 7) and has_resolution != (meta["format"] == 5):
+                _invalid("身份证据规则须使用格式5保留完整语义")
+            if meta["format"] not in (6, 7) and has_tables != (meta["format"] == 4 or meta["format"] == 5 and has_tables):
                 _invalid("自动表格记录须使用格式4保留完整语义")
-            if not has_tables and has_cancellations != (meta["format"] == 3):
+            if meta["format"] not in (6, 7) and not has_tables and not has_resolution and has_cancellations != (meta["format"] == 3):
                 _invalid("配对冲正规则须使用格式3保留完整语义")
             if "import_sources" in paths:
                 for table in JOURNAL_PKG_COLS:
@@ -965,7 +1154,8 @@ def import_package(content):
                                 continue
                             cols = [c.strip() for c in CASE_PKG_COLS[table].split(",") if c.strip() != "id"]
                             con.execute(f"insert into {table}(id,case_id,{','.join(cols)}) select m.new_id,?,{','.join('p.'+c for c in cols)} from read_parquet(?) p join {mappings[table]} m on p.id=m.old_id", [new_cid, str(paths[table])])
-                    cols = [c.strip() for c in CASE_PKG_COLS["flows"].split(",") if c.strip() not in ("id", "batch_id")]
+                    available = {item[0] for item in con.execute("describe select * from read_parquet(?)", [str(paths["flows"])]).fetchall()}
+                    cols = [c.strip() for c in ZONED_FLOW_COLS.split(",") if c.strip() in available and c.strip() not in ("id", "batch_id")]
                     con.execute(f"insert into flows(id,case_id,batch_id,{','.join(cols)}) select m.new_id,?,b.new_id,{','.join('p.'+c for c in cols)} from read_parquet(?) p join {mappings['flows']} m on p.id=m.old_id left join {mappings['batches']} b on p.batch_id=b.old_id", [new_cid, str(paths["flows"])])
                     if "tracked_flows" in paths:
                         con.execute(f"insert into tracked_flows(case_id,flow_id,canvas_id,tracked_at) select ?,f.new_id,case when p.canvas_id=0 then 0 else c.new_id end,p.tracked_at from read_parquet(?) p join {mappings['flows']} f on p.flow_id=f.old_id left join {mappings['canvases']} c on p.canvas_id=c.old_id", [new_cid, str(paths["tracked_flows"])])
@@ -984,6 +1174,27 @@ def import_package(content):
                             if table in paths:
                                 cols = [field.strip() for field in fields.split(",") if field.strip() != "source_id"]
                                 con.execute(f"insert into {table}(case_id,source_id,{','.join(cols)}) select ?,s.new_id,{','.join('p.'+field for field in cols)} from read_parquet(?) p join {mapping} s on p.source_id=s.old_id", [new_cid, str(paths[table])])
+                    if "evidence_sources" in paths:
+                        con.execute(f"""insert into evidence_sources(case_id,source_id,batch_id,active)
+                            select ?,s.new_id,b.new_id,p.active from read_parquet(?) p
+                            join {mappings['import_sources']} s on s.old_id=p.source_id
+                            left join {mappings['batches']} b on b.old_id=p.batch_id""", [new_cid,str(paths["evidence_sources"])])
+                    # Format 5 already carries explicit operation evidence;
+                    # older ordinary sources have no portable batch mapping.
+                    operation_table = ("import_source_operations" if "import_source_operations" in paths
+                                       else "evidence_sources" if "evidence_sources" in paths else None)
+                    if operation_table:
+                        con.execute(f"""insert into import_source_operations(case_id,source_id,batch_id,active)
+                            select ?,s.new_id,b.new_id,p.active from read_parquet(?) p
+                            join {mappings['import_sources']} s on s.old_id=p.source_id
+                            left join {mappings['batches']} b on b.old_id=p.batch_id""", [new_cid,str(paths[operation_table])])
+                    from . import source_ledger
+                    source_ledger.refresh_index(con, new_cid)
+                    if "import_sources" in paths:
+                        evidence_resolution.rebuild(new_cid)
+                    event_resolution.rebuild(new_cid)
+                    from . import analysis_snapshot
+                    analysis_snapshot.invalidate(new_cid)
                     for mapping in mappings.values():
                         con.execute(f"drop table {mapping}")
                     destination = photo_root / f"c{new_cid}"
@@ -1018,7 +1229,7 @@ def delete_package_case(case_id):
                     shutil.rmtree(photo_dir)
                 deleted = con.execute("select count(*) from flows where case_id=?", [case_id]).fetchone()[0]
                 con.execute("insert into import_file_gc(import_id,suffix,sha256,delete_after) select import_id,suffix,sha256,current_timestamp at time zone 'UTC' from import_sessions where case_id=? and source_state='retained' on conflict(import_id) do nothing", [case_id])
-                for table in ("import_records", "import_members", "flow_sources", "import_sources", "import_sessions"):
+                for table in ("source_ledger_index", "analysis_state", "event_projection_cache_state", "event_observation_cache", "event_state", "resolved_events", "event_members", "evidence_sources", "import_source_operations", "resolution_state", "resolution_revisions", "resolution_entities", "resolved_endpoints", "resolution_subject_aliases", "import_records", "import_members", "flow_sources", "import_sources", "import_sessions"):
                     con.execute(f"delete from {table} where case_id=?", [case_id])
                 for table in CASE_PKG_TABLES:
                     con.execute(f"delete from {table} where case_id=?", [case_id])
@@ -1028,3 +1239,11 @@ def delete_package_case(case_id):
                 shutil.copytree(backup, photo_dir, dirs_exist_ok=True)
             raise
     return {"ok": True, "deleted_flows": deleted}
+
+
+def _query_package_rows(connection, sql):
+    cursor = connection.execute(sql)
+    names = [item[0] for item in cursor.description]
+    while rows := cursor.fetchmany(1024):
+        for row in rows:
+            yield dict(zip(names, row))

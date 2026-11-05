@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from app import case_packages, table_import
+from app import case_packages, table_archive, table_import
 from app.services import imports
 from test_archive_profile_upgrade import frozen_preview
 from test_automatic_table_import import preview
@@ -26,6 +26,17 @@ from test_table_write_integrity import persisted
 
 V3 = "funds-trace-table-archive-v3"
 V4 = "funds-trace-table-archive-v4"
+
+
+@pytest.fixture(autouse=True)
+def historical_pre_ledger_container_contract(monkeypatch):
+    """Keep this suite's raw-storage assertions on its original money rules.
+
+    Current signed observations and the same cross-container proof/withdrawal
+    behavior are tested explicitly in test_source_ledger.
+    """
+    monkeypatch.setattr(imports, "TABLE_PROFILE", table_import.ZONED_PROFILE)
+    monkeypatch.setattr(table_archive, "PROFILE", table_archive.ZONED_PROFILE)
 
 
 def done(client, cid, view):
@@ -134,7 +145,7 @@ def test_identical_csv_and_renamed_archive_pair_share_effective_proof_without_re
     first = preview(client, cid, *materials[0])
     assert first["automatic"] is True
     assert first["table_summary"]["profile"] == (
-        "funds-trace-table-archive-v4" if archive_first else "funds-trace-table-v17")
+        "funds-trace-table-archive-v27" if archive_first else "funds-trace-table-v36")
     first_job = complete(client, cid, first)
     assert first_job["stage"] == "done", first_job
     before = database.q_raw("select * from flows where case_id=? order by id", [cid])
@@ -210,7 +221,8 @@ def test_v3_renamed_path_keeps_old_meaning_until_current_v4_is_appended(
     restored = case_packages.import_package(case_packages.export_package(cid)[0])["case_id"]
     assert_effective(database, restored, 2, "11.00")
     assert coverage(client, restored) == old_gap
-    current, job = ingest(client, cid, content, "current.zip")
+    current = frozen_preview(client, cid, content, monkeypatch, V4)
+    job = done(client, cid, current)
     assert current["table_summary"]["profile"] == V4
     assert job["result"]["ok"] == 0
     assert raw(database, cid) == before
@@ -603,6 +615,10 @@ sys.path.insert(0,str(Path.cwd()/'tests'))
 from app import db
 db._start_ckpt=lambda:None
 from app.main import app
+from app import table_archive, table_import
+from app.services import imports
+imports.TABLE_PROFILE=table_import.ZONED_PROFILE
+table_archive.PROFILE=table_archive.ZONED_PROFILE
 from fastapi.testclient import TestClient
 from test_table_cancellation_container import ingest,raw,effective
 from test_table_currency_region_lifecycle import source_snapshot

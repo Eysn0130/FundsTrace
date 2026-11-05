@@ -16,6 +16,19 @@ const flush = async () => { for (let i = 0; i < 20; i += 1) await Promise.resolv
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 const decode = value => value.replace(/&(amp|lt|gt|quot|#39);/g, (_match, key) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }[key]));
 
+test('ordinary money labels retain known source values and omit missing legacy scalars', () => {
+  const context = vm.createContext({ state: {edgeLabels: new Set(['money'])}, fmtCount: String,
+    totalLabel: (_totals, value) => `¥${value}` });
+  vm.runInContext(section('function fundsCount(', 'function fundsTotal('), context);
+  vm.runInContext(section('function edgeLabel(', 'function renderGraph('), context);
+  assert.equal(context.edgeLabel({cnt:2,total:'288.00'}), '2笔·¥288.00');
+  assert.equal(context.edgeLabel({cnt:2,total:'74.82',funds:{status:'bounded'},pending_observation_count:2}), '2笔·¥74.82');
+  assert.equal(context.edgeLabel({cnt:null,total:null,pending_observation_count:2}), '');
+  context.state.edgeLabels = new Set();
+  assert.equal(context.edgeLabel({cnt:null,total:null,pending_observation_count:1}), '');
+  assert.equal(context.edgeLabel({cnt:1,total:'11.13'}), '1笔');
+});
+
 // The DOM preserves real ancestry, detached-control identity and event order.
 // Rendering, drawer selection and workflow orchestration are real.
 function harness() {
@@ -158,6 +171,7 @@ function harness() {
   const requests = [], removals = [], contextOpens = [], notices = [];
   let network = async () => { throw new Error('Unexpected request'); }, remover = async () => false, scrollDisposals = 0;
   const state = { caseId: 1, caseName: '合成甲案', caseGeneration: 1, canvasId: 0, canvasGeneration: 1, ctx: null,
+    edgeLabels: new Set(['money']),
     graphView: { revision: 1, selectedEdge: null, selectedAccount: null, edgeItems: new Map() },
     lastGraph: { nodes: [], edges: [] }, focusNodes: new Map(), search: { page: 1 }, cases: [{ id: 1, name: '合成甲案' }, { id: 2, name: '合成乙案' }] };
   state.graphSelection = { ids: new Set(), clear() { this.ids.clear(); }, select(id) { this.ids = new Set([id]); } };
@@ -183,10 +197,14 @@ function harness() {
     setTimeout: callback => { callback(); return 0; }, clearTimeout() {}, requestAnimationFrame: callback => { callback(); return 0; },
   });
   vm.runInContext(money, context);
+  vm.runInContext(readFileSync(new URL('../static/principal-analysis.js', import.meta.url), 'utf8'), context);
+  window.FundsFacts = context.FundsFacts;
   vm.runInContext(section('function esc(', 'function toast('), context);
   vm.runInContext(section('let pendingCanvasId = 0;', 'async function loadCases()'), context);
   vm.runInContext(section('function caseContext()', '/* ---------------- 初始化'), context);
   vm.runInContext(section('function edgeKey(', 'function graphEdgeType('), context);
+  vm.runInContext(section('function fmtEdgeSpan(', 'function renderGraph('), context);
+  vm.runInContext(section('function flowObservationIds(', '/* ---------------- 追踪上图'), context);
   // Include the account/crop lifecycle dependencies used by closeDrawer and
   // case revocation exactly once, rather than slicing at an obsolete comment.
   vm.runInContext(section('let _selItem = null;', '/* ---------------- 交易上下文'), context);
@@ -218,6 +236,17 @@ async function opened(h, model = edge(), rows = [flow(17), flow(18, { amount: '1
   h.network(async () => ({ rows, total })); await h.open(model);
 }
 
+test('typed edge parties use their source display numbers while requests retain entity IDs', async () => {
+  const h = harness(), model = edge('fte_SYN');
+  h.state.lastGraph.nodes = [{ account: model.data.source, display_account: 'SYN-A' },
+    { account: model.data.target, display_account: 'SYN-B' }];
+  await opened(h, model);
+  const parties = h.element('drawerBody').querySelector('.edge-parties').textContent;
+  assert.match(parties, /SYN-A/); assert.match(parties, /SYN-B/);
+  assert.doesNotMatch(parties, /fte_SYN/);
+  assert.equal(new URL(h.requests[0].path, 'http://synthetic.invalid').searchParams.get('ids'), '17,18');
+});
+
 test('edge workspace renders four complete columns, exact per-currency totals and returned versus total coverage', async () => {
   const h = harness(), model = edge(), long = 'SYN-' + '1234567890'.repeat(12), hostile = '<img src=x onerror="SYN"> & "合成"';
   model.data.source = long; model.data.target = hostile; model.data.source_name = ''; model.data.target_name = '<b>合成对方</b>';
@@ -228,7 +257,7 @@ test('edge workspace renders four complete columns, exact per-currency totals an
   assert.equal(text.includes(long), true); assert.equal(text.includes(hostile), true); assert.match(text, /未提供户名/);
   assert.equal(html.includes('<img src=x'), false); assert.equal(html.includes('<b>合成对方</b>'), false);
   assert.match(text, /9,007,199,254,740,993\.07/); assert.match(text, /USD 12\.34/);
-  assert.match(h.element('edgeDisplayed').textContent, /2\s*\/\s*7/);
+  assert.match(h.element('edgeDisplayed').textContent, /2\s*\/\s*7 条记录/);
   assert.match(h.row(18).textContent, /—/); assert.match(text, /仅当前图谱/);
   const request = new URL(h.requests[0].path, 'http://synthetic.invalid');
   assert.equal(request.searchParams.get('case_id'), '1'); assert.equal(request.searchParams.get('ids'), '17,18'); assert.equal(request.searchParams.get('size'), '500');
@@ -347,4 +376,84 @@ test('a late removal receipt cannot alter a newly opened edge', async () => {
   pending.resolve(true); await flush();
   assert.equal(h.element('drawerBody').innerHTML, body); assert.equal(h.element('drawer').classList.contains('open'), true);
   assert.deepEqual(h.rows().map(row => row.dataset.flowId), ['18']);
+});
+
+for (const exact of [true, false]) test(`edge facts count ${exact ? 'one confirmed transfer' : 'two unresolved records'}`, async () => {
+  const h = harness(), model = edge();
+  model.data.funds = { status: exact ? 'exact' : 'bounded', count: { lower: exact ? 1 : 0, upper: exact ? 1 : 2 },
+    totals: [{ currency: 'CNY', amount: exact ? '100.00' : null, lower: exact ? '100.00' : '0.00', upper: exact ? '100.00' : '200.00' }] };
+  model.data.cnt = exact ? 1 : 2; model.data.total = exact ? '100.00' : '200.00';
+  model.data.amount_totals = [{ currency: 'CNY', amount: model.data.total }];
+  const rows = exact ? [flow(17, {amount:'100.00',observation_ids:['17','18'],granularity:'confirmed_event'})]
+    : [flow(17, {amount:'100.00'}), flow(18, {amount:'100.00'})];
+  await opened(h, model, rows, model.data.cnt);
+  const facts = h.document.querySelector('.edge-facts').textContent;
+  assert.match(facts, exact ? /1 笔.*100\.00/s : /2 笔.*200\.00/s);
+  assert.doesNotMatch(facts, /待核/);
+  assert.equal(h.rows().length, exact ? 1 : 2); assert.equal(h.requests.length, 1);
+});
+
+test('removing a confirmed edge row removes every selected observation and context keeps its representative', async () => {
+  const h = harness();
+  await opened(h, edge(), [flow(17, {observation_ids:['17','18'],granularity:'confirmed_event'})], 1);
+  await h.context(17); assert.deepEqual(h.contextOpens, [17]);
+  await h.more(17); await h.removeClick(); await flush();
+  assert.deepEqual(h.removals.map(call => call.ids.map(String)), [['17','18']]);
+  assert.equal(h.requests.length, 1);
+});
+
+test('a filtered confirmed edge row acts only on the observation returned in its selection', async () => {
+  const h = harness();
+  await opened(h, edge('SYN-SELECTED', [18]), [flow(18, {observation_ids:['18'],granularity:'confirmed_event'})], 1);
+  await h.more(18); await h.removeClick(); await flush();
+  assert.deepEqual(h.removals.map(call => call.ids.map(String)), [['18']]);
+});
+
+test('unresolved bilateral detail retains two original records and their known money without a pending banner', async () => {
+  const h = harness(), model = edge('SYN-PENDING', [17, 18]);
+  Object.assign(model.data, {cnt:2,total:'74.82',amount_totals:[{currency:'CNY',amount:'74.82'}],currencies:['CNY'],
+    pending_observation_count:2,pending_pair_observation_count:2,funds_pending:true,
+    funds:{status:'bounded',observation_count:2,confirmed_event_count:0,unresolved_observation_count:2,count:{lower:0,upper:2},totals:[{currency:'CNY',amount:null,lower:'0.00',upper:'74.82'}]}});
+  await opened(h, model, [flow(17,{amount:'37.41'}),flow(18,{amount:'37.41'})], 2);
+  assert.equal(h.document.querySelector('.source-ledger-note'), null);
+  assert.match(h.document.querySelector('.edge-facts').textContent, /2 笔.*74\.82/s);
+  assert.equal(h.run('edgeLabel(fixtureModel.data)'), '2笔·¥74.82');
+  assert.equal(h.rows().length, 2);
+  assert.match(h.element('edgeDisplayed').textContent, /2 \/ 2 条记录/);
+});
+
+test('mixed confirmed and original detail uses its existing count and retains all three sources', async () => {
+  const h = harness(), model = edge('SYN-MIXED', [17,18,19]);
+  Object.assign(model.data, {cnt:2,total:'107.00',amount_totals:[{currency:'CNY',amount:'107.00'}],currencies:['CNY'],
+    funds:{status:'bounded',observation_count:3,confirmed_event_count:1,unresolved_observation_count:1}});
+  await opened(h, model, [flow(17,{amount:'100.00',observation_ids:['17','18']}),flow(19,{amount:'7.00'})], 2);
+  assert.match(h.document.querySelector('.edge-facts').textContent, /2 笔（来源 3 条）.*107\.00/s);
+  assert.equal(h.run('edgeLabel(fixtureModel.data)'), '2笔·¥107.00');
+});
+
+for (const pure of [true, false]) test(`source observations keep ${pure ? 'pure source' : 'mixed'} detail counts separate from financial transactions`, async () => {
+  const h = harness(), model = edge('SYN-SOURCE', pure ? [18] : [17, 18]);
+  model.data.cnt = pure ? 0 : 1;
+  model.data.total = pure ? null : '10.00';
+  model.data.amount_totals = pure ? [] : [{currency:'CNY',amount:'10.00'}];
+  model.data.currencies = pure ? [] : ['CNY'];
+  model.data.source_ledger = {count:1};
+  model.data.source_ledger_label = '来源标注出 · 原值 -4.23 · 资金影响未确定';
+  if (pure) model.data.kind = 'source_ledger';
+  const source = flow(18, {amount:'-4.23',source_ledger:{source_direction:'出',economic_effect:'unknown'}});
+  await opened(h, model, pure ? [source] : [flow(17,{amount:'10.00'}), source], pure ? 1 : 2);
+  assert.match(h.document.querySelector('.edge-coverage').textContent, pure ? /有效交易0 笔/ : /有效交易1 笔/);
+  const detailCount = pure ? '1 条（含 1 条来源观察）' : '2 条（含 1 条来源观察）';
+  assert.equal(h.element('edgeSourceCounts').textContent, detailCount);
+  assert.equal(h.element('edgeLedgerCount').textContent, detailCount);
+  assert.match(h.element('edgeLedgerTitle').textContent, /已追踪明细/);
+  assert.doesNotMatch(h.element('edgeLedgerTitle').textContent, /0 笔/);
+  assert.equal(h.rows().length, pure ? 1 : 2);
+  assert.match(h.row(18).textContent, /-4\.23/);
+  if (pure) {
+    assert.match(h.document.querySelector('.edge-parties').textContent, /来源标注付款方.*来源标注收款方/s);
+    assert.match(h.element('drawerBody').textContent, /不表示已证实资金转移/);
+  } else {
+    assert.match(h.document.querySelector('.edge-totals').textContent, /¥10\.00/);
+  }
 });

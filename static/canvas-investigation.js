@@ -12,6 +12,7 @@
   const el = id => document.getElementById(id);
   let dialogContext = null, dialogSource = null, dialogRevision = 0, dialogToken = 0, kind = '';
   let cacheSource = null, cacheBinding = '', cache = new Map(), inflight = new Map(), errors = new Map();
+  let activeScopeKey = '';
   let preview = null, playback = null, frameToken = 0, timer = null, lastWindow = '';
   let lastScope = '', mounted = false, committing = false;
   const controllers = new Set();
@@ -38,12 +39,13 @@
     if (cacheSource === state.lastGraph && cacheBinding === key) return;
     for (const controller of controllers) controller.abort(); controllers.clear();
     cacheSource = state.lastGraph; cacheBinding = key; cache = new Map(); inflight = new Map(); errors = new Map();
+    activeScopeKey = '';
     resetPreview();
     if (dialogContext && !live(dialogContext, dialogSource)) closeDialog();
   }
   function effectiveWindow() { return normalizeWindow(preview || state.presentation.timeWindow); }
   function active() { return hasWindow(effectiveWindow()); }
-  function projectionReady() { return !active() || cache.has(windowKey(effectiveWindow())); }
+  function projectionReady() { return (!active() || cache.has(windowKey(effectiveWindow()))) && (!activeScopeKey || cache.has(activeScopeKey)); }
   function exportWindow() {
     const value = effectiveWindow();
     return active() ? { start: value.start || null, end: value.end || null,
@@ -102,7 +104,7 @@
     const value = effectiveWindow();
     if (!hasWindow(value)) return full;
     const key = windowKey(value), found = cache.get(key);
-    if (found) return { ...full, nodes: found.nodes, edges: found.edges };
+    if (found) return { ...full, nodes: withCurrentMetadata(found.nodes), edges: found.edges, funds: found.funds || found.summary?.funds, analysis_revision: found.analysis_revision || full.analysis_revision };
     if (!inflight.has(key) && !errors.has(key)) {
       const context = caseContext(), source = full;
       void loadProjection(value).then(() => {
@@ -114,7 +116,51 @@
       }).catch(() => sync());
     }
     // Never draw old/full-period totals under a narrower time label.
-    return { ...full, nodes: [], edges: [] };
+    return { ...full, nodes: [], edges: [], funds: null };
+  }
+  function withCurrentMetadata(nodes) {
+    const originals = new Map(state.lastGraph.nodes.map(node => [String(node.account), node]));
+    return nodes.map(node => {
+      const current = originals.get(String(node.account));
+      if (!current) return node;
+      return { ...node, id_no: current.id_no, is_main: current.is_main, is_same_name: current.is_same_name,
+        photo_at: current.photo_at };
+    });
+  }
+  function scopeGraph(graph, projected) {
+    ensureSource();
+    // Business relationship/neighborhood filters change the facts included in
+    // this view. Drawing culling, zoom and paging never enter this request.
+    if (graph.nodes.length === projected.nodes.length && graph.edges.length === projected.edges.length) {
+      activeScopeKey = ''; return graph;
+    }
+    const accounts = graph.nodes.map(node => String(node.account)).sort();
+    const edges = graph.edges.map(edge => ({ source: String(edge.source), target: String(edge.target) }))
+      .sort((a,b) => a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
+    const body = { ...requestBody(effectiveWindow()), scope: 'visible', visible_accounts: accounts, visible_edges: edges };
+    const key = 'scope:' + JSON.stringify(body), context = caseContext(), source = state.lastGraph;
+    activeScopeKey = key;
+    const found = cache.get(key);
+    if (found) {
+      const byAccount = new Map(found.nodes.map(node => [String(node.account), node]));
+      return { ...graph, funds: found.funds, analysis_revision: found.analysis_revision,
+        nodes: withCurrentMetadata(graph.nodes.map(node => ({ ...node, ...byAccount.get(String(node.account)) }))), edges: found.edges };
+    }
+    if (!inflight.has(key) && !errors.has(key)) {
+      const promise = read('/api/graph/view', body).then(result => {
+        if (!live(context, source)) return;
+        cache.set(key, result); errors.delete(key);
+        while (cache.size > 12) cache.delete(cache.keys().next().value);
+        if (activeScopeKey === key) { state.forceFit = false; renderGraph(); }
+      }).catch(error => {
+        if (live(context, source) && error.name !== 'AbortError') {
+          errors.set(key, error.message); toast(error.message, 'err'); sync();
+        }
+      }).finally(() => { if (live(context, source)) inflight.delete(key); });
+      inflight.set(key, promise);
+    }
+    // As for time windows, never present an earlier scope's cards or totals.
+    return { ...graph, nodes: [], edges: [], funds: null };
   }
   async function edit(label, change, context = caseContext(), source = state.lastGraph) {
     if (!ready() || !live(context, source)) throw new Error('画布正在更新，请稍后重试');
@@ -237,34 +283,47 @@
     const value = normalizeWindow(w);
     // Native datetime-local inputs reject six-digit fractions and would silently
     // empty a saved microsecond boundary. Plain text preserves the source value.
-    return `<div class="investigation-form"><label>开始时间（含）<input id="investigationStart" type="text" maxlength="26" placeholder="YYYY-MM-DD HH:mm:ss" aria-describedby="investigationTimeFormat" value="${esc(value.start)}"></label>
-      <label>结束时间（含）<input id="investigationEnd" type="text" maxlength="26" placeholder="YYYY-MM-DD HH:mm:ss" aria-describedby="investigationTimeFormat" value="${esc(value.end)}"></label>
-      <small class="wide muted" id="investigationTimeFormat">按原始交易时间填写，如 2026-01-03 10:02:00；秒可省略，支持最多六位小数秒，空白表示不限。</small>
+    return `<div class="investigation-form"><label>开始时间（含）<input id="investigationStart" type="text" maxlength="32" placeholder="YYYY-MM-DD HH:mm:ss" aria-describedby="investigationTimeFormat" value="${esc(value.start)}"></label>
+      <label>结束时间（含）<input id="investigationEnd" type="text" maxlength="32" placeholder="YYYY-MM-DD HH:mm:ss" aria-describedby="investigationTimeFormat" value="${esc(value.end)}"></label>
+      <small class="wide muted" id="investigationTimeFormat">无偏移按来源壁钟筛选；Z 或 ±HH:mm 按绝对时刻筛选，仅含有区记录。支持六位小数秒，空白表示不限，不使用设备时区。</small>
       <label class="wide check"><input id="investigationUndated" type="checkbox" ${value.includeUndated ? 'checked' : ''}>包含无交易时间的记录</label></div>`;
   }
   function readWindow() {
     const w = { start: el('investigationStart').value.trim().replace('T',' '), end: el('investigationEnd').value.trim().replace('T',' '), includeUndated: el('investigationUndated').checked };
     const comparable = value => {
       if (!value) return '';
-      const match = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?$/.exec(value);
+      const match = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?(Z|[+-]\d{2}:\d{2})?$/.exec(value);
       if (!match) throw new Error('请按 YYYY-MM-DD HH:mm:ss 填写原始交易时间；秒可省略，小数秒最多六位');
-      return `${match[1]}:${match[2] || '00'}.${(match[3] || '').padEnd(6,'0')}`;
+      return {value:`${match[1]}:${match[2] || '00'}.${(match[3] || '').padEnd(6,'0')}`,offset:match[4] || ''};
     };
     const start = comparable(w.start), end = comparable(w.end);
-    if (start && end && start > end) throw new Error('开始时间不能晚于结束时间');
+    if (start && end && !!start.offset !== !!end.offset) throw new Error('两个边界须同为来源壁钟或同带显式偏移');
+    if (start && end && !start.offset && start.value > end.value) throw new Error('开始时间不能晚于结束时间');
     return w;
   }
   function summary(result) {
     const totals = result.summary?.amount_totals || result.amount_totals || [];
-    return `${result.nodes.length} 个账户 · ${result.edges.length} 条有向关系 · ${result.summary?.selected_count ?? result.flows?.length ?? 0} 笔（镜像配对后） · 无时间 ${result.summary?.missing_time_count ?? 0} 笔${totals.length ? ` · ${totalLabel(totals)}` : ''}`;
+    const funds = result.summary?.funds || result.funds;
+    const transactions = result.summary?.transactions;
+    const facts = transactions && transactions.cnt !== null ? `${transactions.cnt} 笔 · ${totalLabel(transactions.amount_totals || [])}` : funds && root.FundsFacts ? `${root.FundsFacts.count(funds)} · ${root.FundsFacts.totals(funds)}`
+      : `${result.summary?.selected_count ?? result.flows?.length ?? 0} 笔${totals.length ? ` · ${totalLabel(totals)}` : ''}`;
+    return `${result.nodes.length} 个账户 · ${result.edges.length} 条有向关系 · ${facts} ${transactions?.pending_observation_count ? ` · ${transactions.pending_observation_count} 条来源观察的同笔关系待核对` : ''} · 无时间 ${result.summary?.missing_time_count ?? 0} 条记录${result.summary?.time_incomparable_count ? ` · ${result.summary.time_incomparable_count} 条未标时区记录未参与UTC比较` : ''}`;
+  }
+  function updateTimeRange(result) {
+    const node = el('investigationTimeRange'); if (!node) return;
+    const times = (result.timeline || []).map(item => item.time).filter(Boolean);
+    node.textContent = result.summary?.time_basis === 'mixed'
+      ? '含有区与未标时区记录，绝对先后未知，不能共同播放；每笔来源时间仍保留，可按来源壁钟筛选。'
+      : times.length ? `当前所选交易时间：${times[0]} — ${times.at(-1)} · ${times.length} 个时间点；播放按时间累计，排除无时间记录。`
+      : '当前窗口没有命中的带时间交易记录。';
   }
   async function timeDialog(play = false) {
     resetPreview(true);
-    const token = openDialog(play ? '时间播放' : '时间窗口', 'time', `${hint('按当前画布已追踪流水的原交易时间筛选，金额按币种重新汇总。空边界表示不限；不受左侧待查询条件影响。')}
+    const token = openDialog(play ? '时间播放' : '时间窗口', 'time', `${hint('按当前画布已追踪流水筛选并按币种汇总。无偏移边界按来源壁钟，带偏移边界按绝对时刻；无区记录不推定时区。空边界不限。')}
       ${windowFields(state.presentation.timeWindow)}<p id="investigationTimeRange" class="muted">正在读取时间范围…</p>
       <footer>${button('investigationTimePreview','预览范围')}${button('investigationTimeClear','清除时间窗口')}${button('investigationTimeApply','应用窗口',true)}${button('investigationStartPlayback','打开时间播放')}</footer>`);
     const context = dialogContext, source = dialogSource;
-    on('investigationTimePreview', async (_, t) => { const result = await loadProjection(readWindow()); if (currentDialog(t)) dialogStatus(summary(result)); });
+    on('investigationTimePreview', async (_, t) => { const result = await loadProjection(readWindow()); if (currentDialog(t)) { updateTimeRange(result); dialogStatus(summary(result)); } });
     on('investigationTimeClear', async () => { resetPreview(); await edit('清除时间窗口', p => { p.timeWindow = emptyWindow(); }, context, source); });
     on('investigationTimeApply', async (_, t) => {
       const w = readWindow(); dialogStatus('正在核对窗口内流水…');
@@ -275,6 +334,7 @@
     on('investigationStartPlayback', async (_, t) => {
       const w = { ...readWindow(), includeUndated: false };
       const result = await loadProjection(w); if (!currentDialog(t)) return;
+      if (result.summary?.time_basis === 'mixed') throw new Error('含未标时区的记录，绝对先后未知，无法共同播放；可用来源壁钟窗口核对');
       const times = [...new Set((result.timeline || []).map(item => item.time).filter(Boolean))].sort();
       if (!times.length) throw new Error('此范围没有可播放的带时间流水');
       closeDialog(); playback = { times, index: -1, context, source, base: w, playing: false };
@@ -283,8 +343,7 @@
     try {
       const result = await loadProjection(emptyWindow());
       if (!currentDialog(token)) return;
-      const times = (result.timeline || []).map(x => x.time).filter(Boolean);
-      el('investigationTimeRange').textContent = times.length ? `可用交易时间：${times[0]} — ${times.at(-1)} · ${times.length} 个时间点；播放按时间累计，排除无时间记录。` : '画布内没有带时间的交易记录。';
+      updateTimeRange(result);
     } catch (error) { if (currentDialog(token)) dialogStatus(error.message, true); }
   }
   async function showFrame(index) {
@@ -311,7 +370,10 @@
     const strip = el('investigationTransport'); if (!strip) return;
     strip.hidden = !playback;
     if (!playback) return;
-    el('investigationFrame').textContent = playback.loading ? '正在读取当前时刻…' : `累计至 ${playback.times[Math.max(0,playback.index)]} · ${playback.index + 1}/${playback.times.length} · 临时预览`;
+    const frame = cache.get(windowKey(effectiveWindow())), funds = frame?.funds || frame?.summary?.funds;
+    const transactions = frame?.summary?.transactions;
+    const amount = transactions && transactions.cnt !== null ? ` · ${transactions.cnt} 笔 · ${totalLabel(transactions.amount_totals || [])}` : funds && root.FundsFacts ? ` · ${root.FundsFacts.count(funds)} · ${root.FundsFacts.totals(funds)}` : '';
+    el('investigationFrame').textContent = playback.loading ? '正在读取当前时刻…' : `累计至 ${playback.times[Math.max(0,playback.index)]} · ${playback.index + 1}/${playback.times.length}${amount} · 临时预览`;
     el('investigationSeek').max = String(playback.times.length - 1); el('investigationSeek').value = String(Math.max(0,playback.index));
     el('investigationPlay').textContent = playback.playing || playback.loading ? '暂停' : '播放';
     for (const id of ['investigationSeek','investigationPrevious','investigationNext','investigationKeep']) el(id).disabled = !!playback.loading;
@@ -319,13 +381,16 @@
     el('investigationNext').disabled ||= playback.index >= playback.times.length - 1;
     strip.parentElement?.style.setProperty('--investigation-transport-height', `${strip.offsetHeight}px`);
   }
+  function accountLabel(id) {
+    return (state.lastGraph?.nodes || []).find(node => String(node.account) === String(id))?.display_account || id || '';
+  }
   function pathDialog() {
     const ids = selected(), nodes = state.graph.getNodes().map(x => x.getModel());
     const currencies = FundsGraphRelations.currencyChoices(state.lastGraph.edges);
     const token = openDialog('图内找路径', 'paths', `${hint('搜索当前画布已追踪流水。路径是待复核线索；各跳金额不能当作同一笔本金，也不自动认定实际控制关系。')}
-      <div class="investigation-form"><label>起点账号<input id="pathSource" list="pathAccounts" value="${esc(ids[0] || '')}" placeholder="完整账号"></label>
-      <label>终点账号<input id="pathTarget" list="pathAccounts" value="${esc(ids[1] || '')}" placeholder="完整账号"></label>
-      <datalist id="pathAccounts">${nodes.slice(0,2000).map(n => `<option value="${esc(n.id)}">${esc(n.data?.name || '')}</option>`).join('')}</datalist>
+      <div class="investigation-form"><label>起点账号<input id="pathSource" list="pathAccounts" value="${esc(accountLabel(ids[0]))}" data-entity="${esc(ids[0] || '')}" data-display="${esc(accountLabel(ids[0]))}" placeholder="完整卡号或账号"></label>
+      <label>终点账号<input id="pathTarget" list="pathAccounts" value="${esc(accountLabel(ids[1]))}" data-entity="${esc(ids[1] || '')}" data-display="${esc(accountLabel(ids[1]))}" placeholder="完整卡号或账号"></label>
+      <datalist id="pathAccounts">${nodes.slice(0,2000).map(n => `<option value="${esc(n.data?.display_account || n.id)}">${esc(n.data?.name || '')}</option>`).join('')}</datalist>
       <label>分析范围<select id="pathScope"><option value="visible">当前显示的账户及关系</option><option value="all">完整追踪图（保留时间窗口）</option></select></label>
       <label>路径口径<select id="pathMode"><option value="topological">有向关系可达</option><option value="chronological">严格时间递增（逐笔）</option></select></label>
       <label>币种<select id="pathCurrency"><option value="all">全部币种（分别搜索）</option>${currencies.map(c => `<option value="currency:${esc(c.value)}">${esc(c.label)}</option>`).join('')}</select></label>
@@ -334,7 +399,8 @@
     const filter = state.presentation.relationFilter;
     if (filter.active) el('pathCurrency').value = 'currency:' + filter.currency;
     on('pathSearch', async (_, t) => {
-      const start = el('pathSource').value.trim(), end = el('pathTarget').value.trim();
+      const endpoint = input => input.dataset.entity && input.value.trim() === input.dataset.display ? input.dataset.entity : input.value.trim();
+      const start = endpoint(el('pathSource')), end = endpoint(el('pathTarget'));
       if (!start || !end) throw new Error('请输入完整的起点和终点账号');
       if (start === end) throw new Error('起点和终点须不同；闭环请使用环路检测');
       const scope = el('pathScope').value, currency = el('pathCurrency').value;
@@ -354,13 +420,14 @@
     const flowById = new Map((result.flows || []).map(flow => [flow.id, flow]));
     const evidence = hop => {
       const ids = hop.flow_ids || hop.ids || [], rows = ids.slice(0,50).map(id => flowById.get(String(id))).filter(Boolean);
-      return `<details class="investigation-evidence"><summary>核查 ${ids.length} 笔依据${ids.length>50?'（屏幕前 50 笔）':''}</summary>${rows.map(f => `<p><b>流水 ${esc(f.id)}</b> · ${esc(f.amount)} ${esc(f.currency || '未标注币种')} · ${esc(f.trade_time || '无时间')}<br>${esc(f.summary || '无摘要')}<br>原始记录：${esc((f.original_ids || [f.id]).join('、'))}</p><ul>${(f.provenance || []).flatMap(record => (record.sources || []).map(source => `<li>${esc(source.filename || '来源未登记')} · ${esc(source.member_path || source.sheet || '')} · 行 ${esc(source.member_path ? source.member_row ?? '未登记' : source.source_row ?? '未登记')}${source.member_path ? ` · 包内记录 ${esc(source.source_row ?? '未登记')}` : ''} · 原记录 ${esc(record.flow_id)}<br><small>解析器 ${esc(source.parser_version || '未登记')} · SHA-256 ${esc(source.sha256 || '未登记')}</small></li>`)).join('') || '<li>未登记原始文件来源</li>'}</ul>`).join('')}</details>`;
+      return `<details class="investigation-evidence"><summary>核查 ${ids.length} 笔依据${ids.length>50?'（屏幕前 50 笔）':''}</summary>${rows.map(f => `<p><b>流水 ${esc(f.id)}</b> · ${esc(f.amount ?? '金额待定')} ${esc(f.currency || '未标注币种')} · ${esc(f.trade_time || '无时间')}<br>${esc(f.summary || '无摘要')}<br>原始记录：${esc((f.original_ids || [f.id]).join('、'))}</p><ul>${(f.provenance || []).flatMap(record => (record.sources || []).map(source => `<li>${esc(source.filename || '来源未登记')} · ${esc(source.member_path || source.sheet || '')} · 行 ${esc(source.member_path ? source.member_row ?? '未登记' : source.source_row ?? '未登记')}${source.member_path ? ` · 包内记录 ${esc(source.source_row ?? '未登记')}` : ''} · 原记录 ${esc(record.flow_id)}<br><small>解析器 ${esc(source.parser_version || '未登记')} · SHA-256 ${esc(source.sha256 || '未登记')}</small></li>`)).join('') || '<li>未登记原始文件来源</li>'}</ul>`).join('')}</details>`;
     };
-    el('pathResults').innerHTML = `<p class="muted">${esc(parameters.start_account)} → ${esc(parameters.end_account)} · 最多 ${parameters.max_hops} 跳 · ${parameters.mode === 'chronological' ? '严格时间递增；排除无时间、未知币种及非正金额' : '有向关系可达'} · ${parameters.scope === 'visible' ? '当前显示范围' : '完整追踪图'} · ${esc(parameters.start || '不限起点')} — ${esc(parameters.end || '不限终点')}</p>${button('pathDownload','保存本次结果与完整依据 JSON')}` + paths.map((path,index) => {
+    el('pathResults').innerHTML = `<p class="muted">${esc(accountLabel(parameters.start_account))} → ${esc(accountLabel(parameters.end_account))} · 最多 ${parameters.max_hops} 跳 · ${parameters.mode === 'chronological' ? '严格时间递增；排除无时间、未知币种及非正金额' : '有向关系可达'} · ${parameters.scope === 'visible' ? '当前显示范围' : '完整追踪图'} · ${esc(parameters.start || '不限起点')} — ${esc(parameters.end || '不限终点')}</p>${button('pathDownload','保存本次结果与完整依据 JSON')}` + paths.map((path,index) => {
       const hops = path.steps || path.edges || [], accounts = path.accounts || path.nodes || [hops[0]?.source, ...hops.map(h=>h.target)].filter(Boolean);
       return `<section class="investigation-path"><h3>路径 ${index+1} · ${esc(path.currency || '未标注币种')} · ${hops.length} 跳</h3>
-        <p class="investigation-chain">${accounts.map(esc).join(' → ')}</p>
-        <div class="investigation-table-scroll"><table><thead><tr><th>有向交易</th><th>金额 / 币种</th><th>交易时间</th><th>流水依据</th></tr></thead><tbody>${hops.map(h => `<tr><td>${esc(h.source)} → ${esc(h.target)}</td><td>${esc(h.amount ?? h.total ?? '')} ${esc(path.currency ?? h.currency ?? '')}</td><td>${esc(h.trade_time || h.time || `${h.first_time || h.tmin || '—'} — ${h.last_time || h.tmax || '—'}`)}</td><td>${evidence(h)}</td></tr>`).join('')}</tbody></table></div>
+        <p class="investigation-chain">${(path.display_accounts || accounts.map(accountLabel)).map(esc).join(' → ')}</p>
+        ${path.principal ? `<details class="investigation-evidence"><summary>核查来源份额与限制</summary><p>${esc(root.FundsFacts?.principal(path.principal) || '本次来源份额尚未确定').replaceAll('\n','<br>')}</p></details>` : ''}
+        <div class="investigation-table-scroll"><table><thead><tr><th>有向交易</th><th>金额 / 币种</th><th>交易时间</th><th>流水依据</th></tr></thead><tbody>${hops.map(h => `<tr><td>${esc(h.source_display_account || accountLabel(h.source))} → ${esc(h.target_display_account || accountLabel(h.target))}</td><td>${esc(h.funds && root.FundsFacts ? root.FundsFacts.totals(h.funds) : `${h.amount ?? h.total ?? '金额待定'} ${path.currency ?? h.currency ?? ''}`)}</td><td>${esc(h.trade_time || h.time || `${h.first_time || h.tmin || '—'} — ${h.last_time || h.tmax || '—'}`)}</td><td>${evidence(h)}</td></tr>`).join('')}</tbody></table></div>
         <footer><button type="button" class="btn small" data-path-focus="${index}">定位并选中路径账户</button><button type="button" class="btn small" data-path-group="${index}">用路径账户新建分组</button></footer></section>`;
     }).join('');
     el('pathDownload').addEventListener('click', () => {
@@ -379,9 +446,9 @@
     if (lastWindow && lastWindow !== w && preview) resetPreview();
     lastWindow = w;
     if (dialogContext && el('investigationDialog')?.open && (!live(dialogContext,dialogSource) || !committing && dialogRevision !== state.graphView.revision)) closeDialog();
-    const scope = el('investigationScope'), key = windowKey(effectiveWindow());
+    const scope = el('investigationScope'), key = errors.has(activeScopeKey) ? activeScopeKey : windowKey(effectiveWindow());
     if (scope) {
-      scope.hidden = !active();
+      scope.hidden = !active() && !errors.has(activeScopeKey);
       const message = description() + (errors.has(key) ? ` · ${errors.get(key)}；点击重试` : inflight.has(key) ? ' · 正在读取…' : '');
       if (lastScope !== message) { scope.textContent = message; lastScope = message; }
     }
@@ -423,7 +490,7 @@
       } catch (error) { if (live(context, source)) toast(error.message, 'err'); }
     });
     const scope = document.createElement('button'); scope.id = 'investigationScope'; scope.type = 'button'; scope.className = 'investigation-scope'; scope.hidden = true;
-    scope.addEventListener('click', () => { const key = windowKey(effectiveWindow()); if (errors.has(key)) { errors.delete(key); renderGraph(); } else void execute('timeWindow'); });
+    scope.addEventListener('click', () => { const key = errors.has(activeScopeKey) ? activeScopeKey : windowKey(effectiveWindow()); if (errors.has(key)) { errors.delete(key); renderGraph(); } else void execute('timeWindow'); });
     el('graphContainer').parentElement.appendChild(scope);
     // Keep the transport inside the graph region so window resize/collapsed panes compose.
     el('graphContainer').parentElement.appendChild(el('investigationTransport'));
@@ -440,7 +507,7 @@
     root.addEventListener('fundstrace:workspace-resize', () => pause());
     sync();
   }
-  root.FundsInvestigation = Object.freeze({ execute, sync, active, displayGraph, description, exportWindow, resetPreview,
+  root.FundsInvestigation = Object.freeze({ execute, sync, active, displayGraph, scopeGraph, description, exportWindow, resetPreview,
     normalizeWindow, hasWindow, windowKey, requestBody, projectionReady });
   if (document.readyState === 'loading') root.addEventListener('DOMContentLoaded', mount, { once: true }); else mount();
 })(window);

@@ -56,7 +56,9 @@ def compile_contract(candidates):
     # No source cell values or unchecked user declaration confer authority.
     layout = {field: [{key: str(item.get(key, "")) for key in
                       ("index", "factor", "unit", "signed", "reference_role", "same_entry_after", "same_entry_before",
-                       *(("time_format",) if "time_format" in item else ()))}
+                       *(("time_format",) if "time_format" in item else ()),
+                       *(("reference_profile",) if "reference_profile" in item else ()),
+                       *(("reference_blank_indices",) if "reference_blank_indices" in item else ()))}
                      for item in items] for field, items in sorted(candidates.items())}
     digest = hashlib.sha256(json.dumps([VERSION, model, layout], sort_keys=True,
                                       separators=(",", ":")).encode()).hexdigest()

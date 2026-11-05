@@ -153,3 +153,20 @@ test('equal positive amounts share a middle width; zero amounts use minimum widt
     assert.throws(() => relations.encodeWidths([], 'CNY', options), { code: 'INVALID_WIDTH_RANGE' });
   }
 });
+
+test('evidence ranges conservatively intersect filters and unknown amounts never become zero-width money', () => {
+  const projected = (source,target,lower,upper,currency='CNY',amount=null) => edge(source,target,null,currency,{funds:{status:amount == null ? 'bounded':'exact',
+    totals:[{currency,amount,lower,upper}]}});
+  const exact=projected('A','B','100.00','100.00','CNY','100.00'), bounded=projected('B','C','0.00','200.00'),
+    open=projected('C','D','10.00',null), unknown=projected('D','A','0.00',null,null);
+  const source={nodes:['A','B','C','D'].map(account=>({account})),edges:[exact,bounded,open,unknown]}, before=JSON.stringify(source);
+  assert.deepEqual(relations.data(source,{currency:'CNY',min:'100.00',max:'100.00'}).edges.map(key),['A=>B','B=>C','C=>D','D=>A']);
+  assert.deepEqual(relations.data(source,{currency:'CNY',min:'200.01'}).edges.map(key),['C=>D','D=>A']);
+  assert.deepEqual(relations.data(source,{currency:'CNY',max:'9.99'}).edges.map(key),['B=>C','D=>A']);
+  assert.deepEqual(relations.data(source,{currency:'USD',min:'9999999999999999.99'}).edges.map(key),['D=>A']);
+  assert.equal(relations.data(source,{currency:'CNY'}).stats.unresolvedAmountEdges,3);
+  const encoded=relations.encodeWidths(source.edges,'CNY');
+  assert.deepEqual([...encoded.widths.keys()],['A=>B']); assert.equal(encoded.legend.minAmount,'100.00');
+  assert.deepEqual([...encoded.unresolved],['B=>C','C=>D','D=>A']); assert.equal(encoded.invalid.size,0);assert.equal(encoded.missing.size,0);
+  assert.equal(JSON.stringify(source),before);
+});

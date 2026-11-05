@@ -1,11 +1,14 @@
 """Public exact case statistics and their same-read coverage counting contract."""
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 
-from app import table_import
+from app import table_import, table_archive
+from app.services import imports
 from app.import_coverage import import_coverage
 from app.services import cases
+from funds_assertions import unresolved_funds
 from test_archive_profile_upgrade import frozen_preview
 from test_automatic_table_import import preview
 from test_feedback_import_api import complete
@@ -24,17 +27,49 @@ def coverage_value(*, unresolved=0, non_monetary=0, cancelled=0, excluded=0):
             "excluded_flows": excluded, "financial_interpretation_complete": unresolved == 0}
 
 
-def assert_stats(client, cid, *, flows, accounts, batches, total, currency, totals, coverage):
+def stats_value(cid, *, observations, accounts, batches, bounds, coverage, resolution=None, ordinary=()):
+    # Each fixture supplies literal observation counts and independent bounds;
+    # neither an order number nor a source row establishes a confirmed event.
+    funds = unresolved_funds(observations, *bounds)
+    # Ordinary totals are separately supplied from literal fixture facts;
+    # never read them back from a conditional bound or an API response.
+    assert ordinary or observations == 0
+    totals = [{'currency': code or '', 'amount': value} for code, value in ordinary]
+    return {"source_ledger": {"count": 0, "paired_count": 0, "unknown_effect_count": 0, "zero_count": 0},
+            "case_id": str(cid), "flows": observations, "accounts": accounts, "batches": batches,
+            "amount_total": '0.00' if not observations else totals[0]['amount'] if len(totals) == 1 and totals[0]['currency'] else None,
+            "currency": totals[0]['currency'] if len(totals) == 1 else None,
+            "amount_totals": totals,
+            "funds": funds, "statistics_policy": "selected-transactions-v1",
+            "resolution": resolution, "resolution_revision": resolution["revision"] if resolution else None,
+            "import_coverage": coverage}
+
+
+def assert_stats(client, cid, **arguments):
     response = client.get(f"/api/v1/cases/{cid}/stats")
     assert response.status_code == 200, response.text
-    expected = {"case_id": str(cid), "flows": flows, "accounts": accounts, "batches": batches,
-                "amount_total": total, "currency": currency, "amount_totals": totals,
-                "import_coverage": coverage}
-    assert response.json() == expected
+    expected = stats_value(cid, **arguments)
+    value = response.json()
+    revision = value.pop("analysis_revision")
+    assert len(revision) == 32
+    assert value.pop("event_summary") is None
+    if expected['resolution'] is None and value.get('resolution') is not None:
+        # New source-observation profiles register identity replay even when
+        # this fixture supplies no typed facts. Check that registry separately;
+        # financial counts, amounts and coverage below remain literal expectations.
+        registry = value['resolution']
+        assert registry['policy'] == 'typed-account-evidence-v1'
+        assert all(registry[key] == 0 for key in ('entities', 'resolved_endpoints', 'unresolved_endpoints',
+                                                'conflicts', 'auxiliary_records', 'evidence_records'))
+        assert len(registry['revision']) == 64 and registry['revision'] == value['resolution_revision']
+        expected.update(resolution=registry, resolution_revision=registry['revision'])
+    assert value == expected
     legacy = client.get("/api/stats", params={"case_id": cid})
     assert legacy.status_code == 200, legacy.text
-    assert legacy.json() == {"flows": flows, "accounts": accounts, "batches": batches,
-                             "import_coverage": coverage}
+    assert legacy.json() == {**{key: expected[key] for key in (
+        "flows", "accounts", "batches", "funds", "statistics_policy", "import_coverage", "source_ledger")},
+        **({key: expected[key] for key in ('resolution', 'resolution_revision')} if expected['resolution'] is not None else {}),
+        "analysis_revision": revision, "event_summary": None}
     return expected
 
 
@@ -62,10 +97,16 @@ def shared_pair(client, cid, *, profile=V4, zero_witness=False, monkeypatch=None
     if zero_witness:
         rows[0]["交易金额"] = "0.00"
     payload, archive = source(rows, path="bank/renamed.csv")
-    ordinary = preview(client, cid, payload, "standalone.csv")
+    # This fixture is specifically the historical v3/v4 cancellation contract.
+    # New ledger observations are covered separately by test_source_ledger.
+    with patch.object(imports, "TABLE_PROFILE", table_import.ZONED_PROFILE):
+        ordinary = preview(client, cid, payload, "standalone.csv")
     done(client, cid, ordinary)
-    proof = (frozen_preview(client, cid, archive, monkeypatch, profile)
-             if profile == V3 else preview(client, cid, archive, "synthetic.zip"))
+    if profile == V3:
+        proof = frozen_preview(client, cid, archive, monkeypatch, profile)
+    else:
+        with patch.object(table_archive, "PROFILE", V4):
+            proof = preview(client, cid, archive, "synthetic.zip")
     done(client, cid, proof)
     return ordinary, proof, payload, archive
 
@@ -77,8 +118,7 @@ def test_stats_empty_effective_subset_still_reports_its_independent_batch_count(
     for index in range(batches):
         database.x("insert into batches(case_id,filename) values (?,?)", [cid, f"synthetic-empty-{index}.csv"])
     expected = coverage_value()
-    assert_stats(client, cid, flows=0, accounts=0, batches=batches, total="0.00", currency=None,
-                 totals=[], coverage=expected)
+    assert_stats(client, cid, observations=0, accounts=0, batches=batches, bounds=[], coverage=expected)
     assert_coverage_branches(database, cid, expected)
 
 
@@ -91,31 +131,35 @@ def test_all_raw_money_excluded_by_a_zero_witness_pair_is_an_empty_currency_resu
     # Coverage keeps each non-monetary source coordinate; A02 discharges only
     # the ordinary negative diagnosis, without merging these two path records.
     expected = coverage_value(non_monetary=2, cancelled=2, excluded=1)
-    assert_stats(client, cid, flows=0, accounts=0, batches=2, total="0.00", currency=None,
-                 totals=[], coverage=expected)
+    assert_stats(client, cid, observations=0, accounts=0, batches=2, bounds=[], coverage=expected)
     assert_coverage_branches(database, cid, expected)
 
 
-@pytest.mark.parametrize("rows,total,currency,totals", [
-    ([("1.01", "USD"), ("2.02", "USD")], "3.03", "USD",
-     [{"currency": "USD", "amount": "3.03"}]),
-    ([("1.01", ""), ("2.02", None)], "3.03", "",
-     [{"currency": "", "amount": "3.03"}]),
-    ([("0.01", None), ("0.02", ""), ("1.01", "CNY"), ("2.02", "USD"), ("3.03", "CNY")], None, None,
-     [{"currency": "", "amount": "0.03"}, {"currency": "CNY", "amount": "4.04"},
-      {"currency": "USD", "amount": "2.02"}]),
-    ([(None, "USD")], "0.00", "USD", [{"currency": "USD", "amount": "0.00"}]),
-], ids=["single-currency", "empty-currency-group", "multiple-currencies", "legacy-null-amount-group"])
-def test_stats_keeps_each_currency_group_and_legacy_null_aggregation(
-        client, database, make_case, rows, total, currency, totals):
+@pytest.mark.parametrize("rows,bounds", [
+    ([("1.01", "USD"), ("2.02", "USD")], [("USD", "3.03")]),
+    ([("1.01", ""), ("2.02", None)], [(None, None)]),
+    ([("0.01", None), ("0.02", ""), ("1.01", "CNY"), ("2.02", "USD"), ("3.03", "CNY")],
+     [("CNY", None), ("USD", None), (None, None)]),
+    ([(None, "USD")], [("USD", None)]),
+    ([('-1.00', "USD")], [("USD", None)]),
+], ids=["single-currency", "empty-currency-group", "multiple-currencies", "legacy-null-amount-group",
+        "legacy-negative-amount-group"])
+def test_stats_keeps_each_currency_group_and_unknown_legacy_amount_explicit(
+        client, database, make_case, rows, bounds):
     cid = make_case("Synthetic stats currency grouping")
     # Storage permits legacy NULL amounts and absent accounts. This is a
     # statistics contract fixture, not a new import acceptance rule.
     database.executemany("insert into flows(case_id,amount,currency) values (?,?,?)", [
         (cid, Decimal(value) if value is not None else None, code) for value, code in rows])
     expected = coverage_value()
-    assert_stats(client, cid, flows=len(rows), accounts=0, batches=0, total=total, currency=currency,
-                 totals=totals, coverage=expected)
+    grouped = {}
+    for amount, currency in rows:
+        currency = currency or ''
+        value = Decimal(amount) if amount is not None else None
+        previous = grouped.get(currency, Decimal(0))
+        grouped[currency] = previous + value if previous is not None and value is not None else None
+    ordinary = [(currency, format(amount, '.2f') if amount is not None else None) for currency, amount in sorted(grouped.items())]
+    assert_stats(client, cid, observations=len(rows), accounts=0, batches=0, bounds=bounds, coverage=expected, ordinary=ordinary)
     assert_coverage_branches(database, cid, expected)
 
 
@@ -132,8 +176,8 @@ def test_stats_preserves_decimal_sum_and_exact_distinct_account_meaning(client, 
             (cid, " SYN-A ", "syn-a", Decimal("0.02")),
         ])
     expected = coverage_value()
-    assert_stats(client, cid, flows=6, accounts=4, batches=1, total="10000000000000001.27", currency="CNY",
-                 totals=[{"currency": "CNY", "amount": "10000000000000001.27"}], coverage=expected)
+    assert_stats(client, cid, observations=6, accounts=4, batches=1,
+                 bounds=[("CNY", "10000000000000001.27")], coverage=expected, ordinary=[('CNY', '10000000000000001.27')])
     assert_coverage_branches(database, cid, expected)
 
 
@@ -150,8 +194,8 @@ def test_interleaved_case_stats_do_not_reuse_another_cases_subset_or_currency(cl
         (first, 2, 3, 1, "3.03", "CNY"), (second, 1, 2, 2, "999.99", "USD"),
         (first, 2, 3, 1, "3.03", "CNY"),
     ]:
-        assert_stats(client, cid, flows=flows, accounts=accounts, batches=batches, total=amount, currency=currency,
-                     totals=[{"currency": currency, "amount": amount}], coverage=coverage_value())
+        assert_stats(client, cid, observations=flows, accounts=accounts, batches=batches,
+                     bounds=[(currency, amount)], coverage=coverage_value(), ordinary=[(currency, amount)])
 
 
 @pytest.mark.parametrize("case_id", ["2147483647", "9999999999999999999"])
@@ -173,12 +217,12 @@ def test_default_and_known_excluded_coverage_preserve_versioned_proof_diagnostic
     cid = make_case("Synthetic stats versioned cancellation coverage")
     _ordinary, _proof, _payload, archive = shared_pair(client, cid, profile=profiles[0], monkeypatch=monkeypatch)
     if len(profiles) == 2:
-        done(client, cid, preview(client, cid, archive, "current.zip"))
+        done(client, cid, frozen_preview(client, cid, archive, monkeypatch, V4))
     current = V4 in profiles
     expected = coverage_value(unresolved=0 if current else 1, cancelled=2, excluded=1 if current else 0)
     amount = "1.00" if current else "11.00"
-    assert_stats(client, cid, flows=1 if current else 2, accounts=2, batches=1 + len(profiles),
-                 total=amount, currency="CNY", totals=[{"currency": "CNY", "amount": amount}], coverage=expected)
+    assert_stats(client, cid, observations=1 if current else 2, accounts=2, batches=1 + len(profiles),
+                 bounds=[("CNY", amount)], coverage=expected, ordinary=[('CNY', amount)])
     assert_coverage_branches(database, cid, expected)
 
 
@@ -196,7 +240,7 @@ def test_known_excluded_count_does_not_change_old_and_new_history_marker_scopes(
         content = archive_bytes([("bank/currency.csv", payload)], nested=True)
         old = frozen_preview(client, cid, content, monkeypatch, V3)
         first = done(client, cid, old)
-        later = preview(client, cid, content, "current-headers.zip")
+        later = frozen_preview(client, cid, content, monkeypatch, V4)
         assert later["table_summary"]["profile"] == V4
         second = done(client, cid, later)
         assert (first["result"]["ok"], second["result"]["ok"]) == (1, 0)
@@ -216,8 +260,8 @@ def test_known_excluded_count_does_not_change_old_and_new_history_marker_scopes(
     assert (record["disposition"], record["reason_code"], record["flow_id"]) == ("unresolved", "conflicting_field", None)
     assert record["details"]["counterparty_basis"] == marker
     expected = coverage_value(unresolved=unresolved, cancelled=2, excluded=1)
-    assert_stats(client, cid, flows=2, accounts=4, batches=4, total=total, currency="CNY",
-                 totals=[{"currency": "CNY", "amount": total}], coverage=expected)
+    assert_stats(client, cid, observations=2, accounts=4, batches=4,
+                 bounds=[("CNY", total)], coverage=expected, ordinary=[('CNY', total)])
     assert_coverage_branches(database, cid, expected)
 
 
@@ -265,8 +309,8 @@ def test_known_excluded_still_runs_all_unrelated_financial_role_and_rule_diagnos
     future = diagnosis == "future-profile"
     total = "3.00" if future else "1.00"
     expected = coverage_value(unresolved=1, cancelled=2, excluded=1)
-    assert_stats(client, cid, flows=2 if future else 1, accounts=4 if future else 2, batches=3,
-                 total=total, currency="CNY", totals=[{"currency": "CNY", "amount": total}], coverage=expected)
+    assert_stats(client, cid, observations=2 if future else 1, accounts=4 if future else 2, batches=3,
+                 bounds=[("CNY", total)], coverage=expected, ordinary=[('CNY', total)])
     assert_coverage_branches(database, cid, expected)
 
 
@@ -300,3 +344,291 @@ def test_public_stats_passes_only_the_current_case_count_under_the_same_database
         assert response.status_code == 200, response.text
         assert response.json()["import_coverage"] == expected[cid]
     assert checked == [(paired, 1), (empty, 0), (paired, 1)]
+
+
+def test_public_stats_classifies_wide_journal_notes_before_coverage_windows(
+        client, database, make_case, monkeypatch):
+    """The public result stays exact; WINDOW must retain classified columns only.
+
+    Direct schema-valid journal history is intentional: this tests an existing
+    stored case reader, not a new parser-admission rule. Existing tests above
+    independently cover version priority, sticky conflicts and physical keys.
+    """
+    import json
+
+    from test_import_coverage import assessment
+
+    cid = make_case("Synthetic wide-note stats reader")
+    other = make_case("Synthetic wide-note stats isolation")
+    size, source_id, member = 512, "wide-note-source", "synthetic/wide.csv"
+    database.x("insert into batches(case_id,filename) values (?,?)", [cid, "synthetic-wide.csv"])
+    database.x("""insert into import_sources(source_id,case_id,filename,sha256,
+                   size_bytes,mode,mapping_json,sheet,parser_version,row_kind)
+                   values (?,?,'synthetic-wide.csv',?,1,'B','{}','',
+                           'funds-trace-table-v19','table_record')""",
+               [source_id, cid, "a" * 64])
+    database.x("""insert into import_members(case_id,source_id,member_path,role,sha256,
+                   size_bytes,encoding,row_count) values (?,?,?,'table',?,1,'utf-8',?)""",
+               [cid, source_id, member, "b" * 64, size + 2])
+    flows = database.q_raw("""insert into flows(case_id,payer_account,payee_account,amount,currency)
+                              select ?,'SYN-WIDE-A','SYN-WIDE-B',10.25,'CNY'
+                              from range(?) returning id""", [cid, size])
+    database.executemany("insert into flow_sources(case_id,source_id,source_row,flow_id,disposition) values (?,?,?,?,'imported')",
+                         [(cid, source_id, row, item["id"]) for row, item in enumerate(flows, 1)])
+    note = "SYNTHETIC-NOTE-" * 2048
+    plain_details = json.dumps({"counterparty_basis": "", "validation_basis": "", "synthetic_note": note})
+    assert len(plain_details.encode("utf-8")) > 30000
+    conflict_details = json.dumps({"counterparty_basis": table_import.HISTORY_CONFLICT_BASIS,
+                                   "validation_basis": "", "synthetic_note": note})
+    records = [(cid, source_id, row, member, row, f"synthetic-wide-key-{row}",
+                "imported", "financial", plain_details) for row in range(1, size + 1)]
+    # This branch must inspect the JSON marker even though a different source
+    # coordinate is non-monetary. The planner cannot discard all classification.
+    records += [(cid, source_id, size + 1, member, size + 1, "synthetic-wide-conflict",
+                 "unresolved", "conflicting_field", conflict_details),
+                (cid, source_id, size + 2, member, size + 2, "synthetic-wide-zero",
+                 "non_monetary", "zero_amount", plain_details)]
+    database.executemany("""insert into import_records(case_id,source_id,record_no,member_path,
+                             source_row,record_key,disposition,reason_code,details_json)
+                             values (?,?,?,?,?,?,?,?,?)""", records)
+    # Unknown rules remain a gap even when imported, but cannot leak into cid.
+    assessment(database, other, "imported", version=99)
+    database.x("""insert into flows(case_id,payer_account,payee_account,amount,currency)
+                   values (?,'SYN-OTHER-A','SYN-OTHER-B',9.99,'USD')""", [other])
+
+    captured = []
+    original_query = database.q_raw
+
+    def capture_coverage(sql, params=None):
+        result = original_query(sql, params)
+        # Identify the observable coverage aggregate, not a candidate CTE name.
+        if all(field in sql for field in ("unresolved_records", "non_monetary_records",
+                                          "cancelled_records", "excluded_flows")):
+            captured.append((sql, params))
+        return result
+
+    monkeypatch.setattr(database, "q_raw", capture_coverage)
+    for case_id, count, amount, currency, batches, expected_coverage in (
+            (cid, size, "5248.00", "CNY", 1, coverage_value(unresolved=1, non_monetary=1)),
+            (other, 1, "9.99", "USD", 0, coverage_value(unresolved=1))):
+        response = client.get(f"/api/v1/cases/{case_id}/stats")
+        assert response.status_code == 200, response.text
+        value = response.json()
+        assert len(value.pop("analysis_revision")) == 32
+        assert value.pop("event_summary") is None
+        assert value == stats_value(case_id, observations=count, accounts=2, batches=batches,
+                                    bounds=[(currency, amount)], coverage=expected_coverage, ordinary=[(currency, amount)])
+    assert len(captured) == 2
+    sql, params = captured[0]
+    plan = json.loads(database.con().execute(
+        "EXPLAIN (ANALYZE, FORMAT JSON) " + sql, params).fetchone()[1])
+
+    def operators(node):
+        yield node
+        for child in node.get("children", []):
+            yield from operators(child)
+
+    nodes = list(operators(plan))
+    windows = [node for node in nodes if node.get("operator_type") == "WINDOW"]
+    assert windows, "the physical-history priority and conflict windows must actually execute"
+    assert max(node["operator_cardinality"] for node in windows) == size + 2
+    assert any("details_json" in str(node.get("extra_info", {}).get("Projections", ""))
+               for node in nodes if node.get("operator_type") == "TABLE_SCAN"), \
+        "the wide source notes must still be read to classify the conflict marker"
+    wide_windows = [node["extra_info"] for node in windows
+                    if any(marker in json.dumps(node.get("extra_info", {})).lower()
+                           for marker in ("details_json", "json_extract", "json_value"))]
+    assert not wide_windows, (
+        "coverage WINDOW retains or decodes complete journal notes instead of narrow classifications: "
+        + json.dumps(wide_windows, ensure_ascii=False)[:1200])
+
+
+
+def test_public_stats_does_not_hash_build_the_full_wide_journal(client, database, make_case, monkeypatch):
+    """Committed all-imported history exposes a different build-side choice.
+
+    Keep this distribution separate from the mixed-diagnosis/two-case window
+    regression: those extra statistics can make the optimizer pick a small build.
+    The money/coverage oracle is independent of either query plan.
+    """
+    import json
+
+    cid = make_case("Synthetic committed wide-journal build")
+    size = 512
+    database.x("""insert into import_sources(source_id,case_id,filename,sha256,size_bytes,
+                   mode,mapping_json,sheet,parser_version,row_kind)
+                   values ('synthetic-source',?,'synthetic.csv',?,1,'B','{}','',
+                           'funds-trace-table-v19','table_record')""", [cid, "0" * 64])
+    database.x("""insert into import_members(case_id,source_id,member_path,role,sha256,
+                   size_bytes,encoding,row_count)
+                   values (?,'synthetic-source','synthetic.csv','table',?,1,'utf-8',?)""",
+               [cid, "0" * 64, size])
+    database.x("""insert into flows(id,case_id,amount,currency,payer_account,payee_account)
+                   select i+1,?,10.25,'CNY','SYN-A','SYN-B' from range(?) t(i)""", [cid, size])
+    database.x("""insert into flow_sources(case_id,source_id,source_row,flow_id,disposition)
+                   select ?,'synthetic-source',i+1,i+1,'imported' from range(?) t(i)""", [cid, size])
+    details = json.dumps({"counterparty_basis": "", "validation_basis": "",
+                          "synthetic_note": "SYNTHETIC-NOTE-" * 2048})
+    assert len(details.encode("utf-8")) > 30000
+    database.x("""insert into import_records(case_id,source_id,record_no,member_path,source_row,
+                   record_key,disposition,reason_code,details_json)
+                   select ?,'synthetic-source',i+1,'synthetic.csv',i+1,'synthetic-key-'||i,
+                          'imported','financial',? from range(?) t(i)""", [cid, details, size])
+    captured = []
+    original_query = database.q_raw
+
+    def capture_coverage(sql, params=None):
+        result = original_query(sql, params)
+        if all(field in sql for field in ("unresolved_records", "non_monetary_records",
+                                          "cancelled_records", "excluded_flows")):
+            captured.append((sql, params))
+        return result
+
+    monkeypatch.setattr(database, "q_raw", capture_coverage)
+    response = client.get(f"/api/v1/cases/{cid}/stats")
+    assert response.status_code == 200, response.text
+    value = response.json()
+    assert len(value.pop("analysis_revision")) == 32
+    assert value.pop("event_summary") is None
+    assert value == stats_value(cid, observations=size, accounts=2, batches=0,
+                                bounds=[("CNY", "5248.00")], coverage=coverage_value(), ordinary=[('CNY', '5248.00')])
+    assert len(captured) == 1
+    sql, params = captured[0]
+    plan = json.loads(database.con().execute(
+        "EXPLAIN (ANALYZE, FORMAT JSON) " + sql, params).fetchone()[1])
+
+    def operators(node):
+        yield node
+        for child in node.get("children", []):
+            yield from operators(child)
+
+    def scans_raw_notes(node):
+        # Trace actual build-child scan projections. A materialized producer is
+        # a separate pipeline; do not mistake its JSON scan for payload in a
+        # CTE_SCAN of already classified columns. No CTE name is assumed here.
+        projections = node.get("extra_info", {}).get("Projections", [])
+        return (node.get("operator_type") == "TABLE_SCAN" and "details_json" in projections
+                or any(scans_raw_notes(child) for child in node.get("children", [])))
+
+    nodes = list(operators(plan))
+    windows = [node for node in nodes if node.get("operator_type") == "WINDOW"]
+    assert windows and max(node["operator_cardinality"] for node in windows) == size
+    assert any(node.get("operator_type") == "TABLE_SCAN" and scans_raw_notes(node)
+               and node["operator_cardinality"] == size for node in nodes)
+    wide_builds = []
+    for node in nodes:
+        if node.get("operator_type") != "HASH_JOIN":
+            continue
+        build = node["children"][1]
+        # Small cancellation/proof sets may retain original notes. The normal
+        # journal must not become the build payload merely to attach those sets.
+        if build["operator_cardinality"] >= size and scans_raw_notes(build):
+            wide_builds.append({"join": node.get("extra_info", {}),
+                                "build_rows": build["operator_cardinality"],
+                                "build": build.get("extra_info", {})})
+    assert not wide_builds, (
+        "coverage HASH_JOIN builds the full journal with original wide notes before classification: "
+        + json.dumps(wide_builds, ensure_ascii=False))
+
+
+def test_public_stats_keeps_money_and_resolution_in_one_locked_read(
+        client, database, make_case, monkeypatch):
+    """A real queued writer cannot splice its new revision into old totals."""
+    import hashlib
+    import json
+    import threading
+
+    from app import evidence_resolution
+
+    cid = make_case("Synthetic atomic stats and resolution")
+    flow_id = database.q_raw("""insert into flows(case_id,payer_account,payee_account,amount,currency)
+                                values (?,'SYN-RACE-A','SYN-RACE-B',1.25,'CNY') returning id""", [cid])[0]["id"]
+    snapshots = []
+    for label in ("A", "B"):
+        # Schema-valid immutable synthetic audits; their revisions use the
+        # canonical protocol independently of the production hash helper.
+        summary = {"policy": evidence_resolution.POLICY, "entities": 0, "resolved_endpoints": 0,
+                   "unresolved_endpoints": 0, "conflicts": 0, "auxiliary_records": 0,
+                   "evidence_records": 0, "note": "Synthetic committed resolution " + label}
+        canonical = json.dumps([summary, [], []], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        revision = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        summary["revision"] = revision
+        database.x("""insert into resolution_revisions(case_id,revision,summary_json,decisions_json)
+                       values (?,?,?,?)""", [cid, revision, json.dumps(summary), '{"endpoints":[],"entities":[]}'])
+        snapshots.append(summary)
+    before, after = snapshots
+    database.x("insert into resolution_state(case_id,revision) values (?,?)", [cid, before["revision"]])
+
+    coverage_ready, writer_attempted, writer_done, stop = (threading.Event() for _ in range(4))
+    writer_errors, lock_attempts = [], []
+    real_coverage, real_summary = cases.import_coverage, evidence_resolution.summary
+
+    def queued_writer():
+        try:
+            assert coverage_ready.wait(5), "stats never completed the coverage read"
+            if stop.is_set():
+                return
+            acquired = database._lock.acquire(blocking=False)
+            if acquired:
+                database._lock.release()
+            lock_attempts.append(acquired)
+            writer_attempted.set()
+            assert not acquired, "the stats reader must still own its lock after coverage"
+            with database.transaction():
+                if stop.is_set():
+                    return
+                database.x("update flows set amount=2.50 where case_id=? and id=?", [cid, flow_id])
+                database.x("update resolution_state set revision=? where case_id=?", [after["revision"], cid])
+                from app import analysis_snapshot
+                analysis_snapshot.invalidate(cid)
+        except BaseException as error:
+            writer_errors.append(error)
+        finally:
+            writer_attempted.set()
+            writer_done.set()
+
+    def coverage_then_release_writer(case_id, *, known_excluded=None):
+        value = real_coverage(case_id, known_excluded=known_excluded)
+        assert database._lock._is_owned()
+        if not coverage_ready.is_set():
+            coverage_ready.set()
+            assert writer_attempted.wait(5), "writer never attempted the held lock"
+            assert not writer_errors, repr(writer_errors)
+            assert lock_attempts == [False]
+        return value
+
+    def summary_after_a_possible_commit(case_id):
+        # Only widen an already possible lock-free scheduling gap. A correctly
+        # locked reader never waits for a writer that is blocked on this lock.
+        if not database._lock._is_owned():
+            assert writer_done.wait(5), "writer could not commit in the unlocked summary gap"
+            assert not writer_errors, repr(writer_errors)
+        return real_summary(case_id)
+
+    monkeypatch.setattr(cases, "import_coverage", coverage_then_release_writer)
+    monkeypatch.setattr(evidence_resolution, "summary", summary_after_a_possible_commit)
+    writer = threading.Thread(target=queued_writer, name="synthetic-stats-writer", daemon=True)
+    writer.start()
+    try:
+        first = client.get(f"/api/v1/cases/{cid}/stats")
+        assert writer_done.wait(5), "writer remained blocked after the stats request returned"
+        writer.join(timeout=5)
+        assert not writer.is_alive()
+        assert not writer_errors, repr(writer_errors)
+        second = client.get(f"/api/v1/cases/{cid}/stats")
+        assert first.status_code == second.status_code == 200, (first.text, second.text)
+
+        def expected(amount, summary):
+            return stats_value(cid, observations=1, accounts=2, batches=0,
+                               bounds=[("CNY", amount)], coverage=coverage_value(), resolution=summary, ordinary=[('CNY', amount)])
+
+        values = [first.json(), second.json()]
+        generations = [value.pop("analysis_revision") for value in values]
+        assert all(len(revision) == 32 for revision in generations) and generations[0] != generations[1]
+        assert all(value.pop("event_summary") is None for value in values)
+        assert values == [expected("1.25", before), expected("2.50", after)]
+    finally:
+        stop.set()
+        coverage_ready.set()
+        writer.join(timeout=5)
+        assert not writer.is_alive(), "synthetic writer must be joined before database fixture cleanup"

@@ -240,7 +240,10 @@ def test_http_mode_b_keeps_direction_amount_column_and_signed_amount_contract(
         ]
         assert [record["disposition"] for record in records] == ["unresolved", "imported", "unresolved", "unresolved", "unresolved", "unresolved"]
         assert set(records[0]["details"]["validation_issues"].split(",")) == {"conflicting_direction", "conflicting_amount"}
-        assert all(record["flow_id"] is None for record in records if record["disposition"] == "unresolved")
+        assert all(records[index]["flow_id"] is None for index in (0, 2, 3))
+        assert all(records[index]["flow_id"] is not None for index in (4, 5))
+        expected |= {("SYN-SELF", "SYN-NEGATIVE", "-5.05"), ("SYN-BRACKETS", "SYN-SELF", "-6.06")}
+        assert client.get(f"/api/v1/cases/{case_id}/stats").json()["amount_total"] == "2.02"
     assert {(row["payer_account"], row["payee_account"], row["amount"]) for row in flows(client, case_id)} == expected
 
 

@@ -355,15 +355,18 @@ def test_public_automatic_financial_import_retains_gaps_reimports_and_package(cl
         {"payer_account": "SYN-A", "payee_account": "SYN-B", "amount": Decimal("1.23"), "currency": "CNY"},
         {"payer_account": "SYN-B", "payee_account": "SYN-A", "amount": Decimal("1.23"), "currency": "USD"},
     ]
+    expected.append({"payer_account": "SYN-B", "payee_account": "SYN-A", "amount": Decimal("-1.23"), "currency": "CNY"})
     query = "select payer_account,payee_account,amount,currency from flows where case_id=? order by id"
     assert database.q_raw(query, [cid]) == expected
+    assert client.get(f"/api/v1/cases/{cid}/stats").json()["amount_totals"] == [
+        {"currency": "CNY", "amount": "1.23"}, {"currency": "USD", "amount": "1.23"}]
     source = view["import_id"]
     report = client.get(f"/api/v1/cases/{cid}/sources/{source}/report").json()
     assert [record["source_row"] for record in report["items"]] == source_rows
     assert [record["disposition"] for record in report["items"]] == ["imported", "imported", "unresolved", "unresolved", "unresolved"]
     for record, issue in zip(report["items"][2:], ("negative_amount", "missing_amount", "missing_time")):
         assert_unresolved(record, issue)
-        assert record["flow_id"] is None
+        assert (record["flow_id"] is not None) == (issue == "negative_amount")
     assert client.get(f"/api/v1/cases/{cid}/sources/{source}/file").content == content
     before = client.get(f"/api/v1/cases/{cid}/stats").json()["import_coverage"]
     assert before["unresolved_records"] == 3

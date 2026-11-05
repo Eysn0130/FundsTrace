@@ -18,7 +18,7 @@ class IntegrityError(ValueError):
 
 _TEXT_FIELDS = ("trade_no", "payer_name", "payer_account", "payer_bank",
                 "payee_name", "payee_account", "payee_bank", "currency", "summary", "channel")
-_STORED_FIELDS = (*table_import.FLOW_FIELDS, "self_account", "self_name")
+_STORED_FIELDS = (*table_import.STORED_FLOW_FIELDS, "self_account", "self_name")
 
 
 def _text(value):
@@ -52,7 +52,22 @@ def _facts(row):
         raise IntegrityError("invalid canonical time")
     if row["amount"] is None or row["amount"] <= 0:
         raise IntegrityError("non-positive canonical amount")
-    return (_hash([timestamp.isoformat(timespec="microseconds"),
+    from . import transaction_time
+    utc = row.get("trade_time_utc")
+    extra = []
+    if utc is not None:
+        if not isinstance(utc, dt.datetime) or utc.tzinfo is not None:
+            raise IntegrityError("invalid canonical UTC time")
+        from .table_time_formats import source_time_value
+        evidence = source_time_value(row.get("trade_time_original") or "")
+        if (evidence["basis"] != "explicit_offset" or evidence["offset"] != row.get("trade_time_offset")
+                or transaction_time.parsed(evidence["wall_clock"]) != timestamp
+                or evidence["utc"] != utc.isoformat(timespec="microseconds") + "Z"):
+            raise IntegrityError("explicit time metadata disagrees")
+        extra = [utc.isoformat(timespec="microseconds"), row["trade_time_original"], row["trade_time_offset"]]
+    elif row.get("trade_time_original") or row.get("trade_time_offset"):
+        raise IntegrityError("partial explicit time metadata")
+    return (_hash([*extra, timestamp.isoformat(timespec="microseconds"),
                    *[_text(row[field]) for field in _TEXT_FIELDS],
                    _money(row["amount"]), _money(row.get("balance"), nullable=True)]),
             _hash([_text(row.get("self_account")), _text(row.get("self_name"))]))
@@ -60,6 +75,8 @@ def _facts(row):
 
 def table_manifest(plan, rows):
     """Freeze compact expected facts before the writer can mutate its input."""
+    if plan.get("_plan_store") is not None:
+        return _staged_manifest(plan, rows)
     accepted = {}
     for number, record in enumerate(plan["records"], 1):
         if record["record_no"] != number:
@@ -84,6 +101,52 @@ def table_manifest(plan, rows):
             table_cancellations.validate_evidence(plan["records"])
         except (ValueError, KeyError, TypeError) as error:
             raise IntegrityError("invalid cancellation evidence") from error
+    return manifest
+
+
+def _staged_manifest(plan, rows):
+    from .import_staging import record_map
+    from itertools import groupby
+    records = record_map(plan)
+    accepted = 0
+
+    def checked_records():
+        nonlocal accepted
+        for number, record in enumerate(plan["records"], 1):
+            if record["record_no"] != number:
+                raise IntegrityError("non-consecutive source records")
+            accepted += record["disposition"] == "accepted"
+            yield record
+
+    if plan["profile"] in table_archive.CANCELLATION_PROFILES:
+        # Archive merge emits each unique member contiguously. The cancellation
+        # contract is member-local; retain only one member's proof indexes and
+        # check sequence/counts on that same complete journal scan.
+        seen_members = set()
+        try:
+            for member, values in groupby(checked_records(), key=lambda item: item["member_path"]):
+                if member in seen_members:
+                    raise ValueError("non-contiguous staged member")
+                seen_members.add(member)
+                table_cancellations.validate_evidence(values)
+        except IntegrityError:
+            raise
+        except (ValueError, KeyError, TypeError) as error:
+            raise IntegrityError("invalid cancellation evidence") from error
+    else:
+        for _ in checked_records():
+            pass
+    manifest = plan["_plan_store"].mapping()
+    for row in rows:
+        position = row["_source_row"]
+        record = records.get(position)
+        if (record is None or record["disposition"] != "accepted" or position in manifest
+                or row["_record_key"] != record["record_key"]
+                or record["details"].get("flow_sha256") != table_import.flow_digest(row)):
+            raise IntegrityError("accepted source facts disagree")
+        manifest[position] = _facts(row)
+    if len(manifest) != accepted:
+        raise IntegrityError("accepted source facts missing")
     return manifest
 
 

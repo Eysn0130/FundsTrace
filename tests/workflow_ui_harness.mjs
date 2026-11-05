@@ -14,6 +14,35 @@ const preview = id => ({ import_id: id, filename: `${id}.csv`, mode: 'A', mappin
   self_accounts_in_file: [{ account: 'SYN-A', name: '合成本方', count: 2 }] });
 const done = () => response({ stage: 'done', result: { ok: 2, rows_dup: 1 } });
 
+for (const length of [128, 129]) test(`source declaration evidence uses the Unicode code-point contract: ${length}`, async () => {
+  const h = harness(), reference = 'X' + '😀'.repeat(length - 1); h.open();
+  const pending = h.upload('synthetic.csv');
+  h.uploads[0].finish({ ...preview('SYN-UNICODE'), stats: { total: 1, ok: 0, skipped: 1 }, preview: [],
+    table_summary: { record_total: 1, accepted: 0, unresolved: 1, non_monetary: 0, non_transaction: 0, auxiliary: 0,
+      reason_counts: { conflicting_field: 1 }, currency_totals: {}, unresolved_examples: [{ member_path: 'synthetic.csv', source_row: 2,
+        reason_code: 'conflicting_field', details: { event_reference_evidence: JSON.stringify({ policy: 'scoped-event-reference-v1',
+          reference, issuer: 'SYN Issuer', channel: 'SYN Rail', business_scope: 'SYN Scope' }) } }] } });
+  await pending;
+  const html = h.element('impFeedback').innerHTML;
+  assert.equal(html.includes(reference), length === 128);
+  assert.equal(html.includes('来源声明的同笔关联依据'), length === 128);
+});
+
+test('source declaration evidence is visible and escaped in the existing legacy import detail', async () => {
+  const h = harness(); h.open();
+  const pending = h.upload('synthetic.csv');
+  h.uploads[0].finish({ ...preview('SYN-DECLARATION'), stats: { total: 1, ok: 0, skipped: 1 }, preview: [],
+    table_summary: { record_total: 1, accepted: 0, unresolved: 1, non_monetary: 0, non_transaction: 0, auxiliary: 0,
+      reason_counts: { conflicting_field: 1 }, currency_totals: {}, unresolved_examples: [{ member_path: 'synthetic.csv', source_row: 2,
+        reason_code: 'conflicting_field', details: { current_event_state: 'conflict', event_reference_evidence: JSON.stringify({
+          policy: 'scoped-event-reference-v1', reference: '<img src=x onerror="SYN">', issuer: 'SYN Issuer', channel: 'SYN Rail', business_scope: 'SYN Scope' }) } }] } });
+  await pending;
+  const html = h.element('impFeedback').innerHTML;
+  for (const label of ['来源声明的同笔关联依据', '跨账簿事件参考号', '参考号机构', '参考号渠道', '参考号业务域']) assert.ok(html.includes(label), label);
+  assert.match(html, /&lt;img/); assert.doesNotMatch(html, /<img/);
+  assert.match(html, /同笔关联资料存在矛盾/); assert.doesNotMatch(html, /已确认同笔|已确认事件/);
+});
+
 function harness(search = '') {
   const nodes = new Map(), events = new Map(), timers = [], uploads = [], requests = [], notices = [], rendered = [], contextRows = [], photoOpens = [], mainStates = [], mainPublications = [];
   let fetcher = () => { throw new Error('Unexpected request'); }, tracker = async () => true, graphLoader = null, graphRenderer = null, refresher = null, refreshes = 0, graphReads = 0, paints = 0;
@@ -198,15 +227,24 @@ function harness(search = '') {
     bindTableHorizontalScroll: () => ({ sync() {}, destroy() {} }),
     setTimeout: (callback, delay) => { timers.push({ callback, delay }); },
     fetch,
-    FormData: class { append() {} },
+    FormData: class {
+      constructor() { this.entries = []; }
+      append(...entry) { this.entries.push(entry); }
+    },
     XMLHttpRequest: class {
       constructor() { this.upload = {}; uploads.push(this); }
       open(method, path) { this.method = method; this.path = path; }
-      send() {}
+      send(form) { this.form = form; }
       finish(result, status = 200) { this.status = status; this.responseText = JSON.stringify(result); this.onload(); }
     },
   });
   const app = readFileSync(new URL('../static/app.js', import.meta.url), 'utf8');
+  for (const helper of ['money.js', 'principal-analysis.js']) {
+    vm.runInContext(readFileSync(new URL('../static/' + helper, import.meta.url), 'utf8'), context);
+  }
+  context.window.FundsFacts = context.FundsFacts;
+  vm.runInContext(app.slice(app.indexOf('function esc('), app.indexOf('function toast(')), context);
+  vm.runInContext(app.slice(app.indexOf('function flowObservationIds('), app.indexOf('/* ---------------- 追踪上图')), context);
   // Load the complete account/crop dependencies. The former close-only section
   // marker no longer exists, and slicing to -1 silently included context state.
   for (const [start, end] of [['function syncEdgeTypeControl(', 'function findEdgeShapes('],
@@ -260,6 +298,10 @@ function harness(search = '') {
     get search() { return location.search; },
     open() { element('btnImport').onclick(); }, close() { element('impClose').onclick(); },
     upload(name) { element('impFile').files = [{ name }]; return element('impFile').onchange(); },
+    uploadDirectory(paths) {
+      element('impDirectory').files = paths.map(path => ({ name: path.split('/').at(-1), webkitRelativePath: path }));
+      return element('impDirectory').onchange();
+    },
     commit() { return element('impCommit').onclick(); },
     change(id, value) { const node = element(id); node.value = value;
       if (node.name === 'impMode') for (const option of modeControls()) option.checked = option === node;
@@ -300,6 +342,9 @@ test('repreview shows field work, ignores a duplicate click and returns to field
   assert.equal(h.element('importModal').getAttribute('aria-busy'), 'true');
   assert.match(h.element('impFlowStatus').textContent, /识别/);
   assert.equal(h.requests.length, 1);
+  for (const id of ['impFile', 'impDirectory']) assert.equal(h.element(id).disabled, true);
+  await h.upload('BLOCKED.csv'); await h.uploadDirectory(['BLOCKED/rows.csv']);
+  assert.equal(h.uploads.length, 1, 'field repreview must keep both source inputs locked');
   result.resolve(response(preview('SYN-IMPORT'))); await first;
   assert.deepEqual(flowStates(h), ['complete', 'current', 'pending']);
   assertSettled(h);
@@ -426,7 +471,7 @@ test('done completes every import step and keeps the completion receipt availabl
   assertSettled(h);
   assert.match(h.element('impFlowStatus').textContent, /导入完成/);
   assert.equal(h.element('impResult').hidden, false);
-  assert.match(h.element('impResultText').textContent, /新增 2 笔/);
+  assert.match(h.element('impResultText').textContent, /新增流水记录 2 条/);
   assert.equal(h.element('impCommit').disabled, true);
   for (const timer of h.timers) timer.callback();
   assert.equal(h.element('importModal').style.display, 'flex', 'completion remains available until explicitly dismissed');
@@ -557,11 +602,43 @@ test('reopening clears supplementary accounts and a late file A cannot replace f
   assert.deepEqual(flowSnapshot(h), current);
 });
 
-test('a second file selection in the same upload view follows the latest intent', async () => {
-  const h = harness(); h.open(); const a = h.upload('A.csv'), b = h.upload('B.csv');
-  h.uploads[1].finish(preview('B')); await b; h.uploads[0].finish(preview('A')); await a;
-  assert.equal(h.state.imp.import_id, 'B');
-  assert.equal(h.element('impCommit').disabled, false);
+for (const first of ['file', 'directory']) for (const second of ['file', 'directory']) {
+  test(`a second file selection in the same upload view follows the latest intent (${first} to ${second})`, async () => {
+    const h = harness(); h.open();
+    const select = (kind, id) => kind === 'directory' ? h.uploadDirectory([`${id}/rows.csv`]) : h.upload(`${id}.csv`);
+    const a = select(first, 'A');
+    for (const id of ['impFile', 'impDirectory']) assert.equal(h.element(id).disabled, false);
+    const b = select(second, 'B');
+    assert.equal(h.uploads.length, 2, 'both source selections must create a bound preview request');
+    assert.equal(h.uploads[1].path, `/api/import/${second === 'directory' ? 'directory/' : ''}preview?case_id=1`);
+    const [field, file, relative] = h.uploads[1].form.entries[0];
+    assert.equal(field, second === 'directory' ? 'files' : 'file');
+    assert.equal(file.name, second === 'directory' ? 'rows.csv' : 'B.csv');
+    assert.equal(relative, second === 'directory' ? 'B/rows.csv' : undefined);
+    const currentProgress = h.element('impPtext').textContent;
+    h.uploads[0].upload.onprogress({ lengthComputable: true, loaded: 1, total: 2 });
+    assert.equal(h.element('impPtext').textContent, currentProgress);
+    h.uploads[1].finish(preview('B')); await b;
+    const current = flowSnapshot(h);
+    h.uploads[0].finish({ ...preview('A'), automatic: true }); await a;
+    assert.equal(h.state.imp.import_id, 'B');
+    assert.deepEqual(h.rendered.map(item => item.import_id), ['B']);
+    assert.deepEqual(flowSnapshot(h), current);
+    assert.equal(h.requests.length, 0, 'a stale automatic preview must never submit a write');
+    assert.equal(h.element('impCommit').disabled, false);
+  });
+}
+
+test('a superseded automatic preview cannot end the latest upload or submit its import', async () => {
+  const h = harness(); h.open(); const a = h.upload('A.csv'), b = h.uploadDirectory(['B/rows.csv']);
+  h.uploads[0].finish({ ...preview('A'), automatic: true }); await a;
+  assert.equal(h.state.imp, null);
+  assert.deepEqual(h.rendered, []);
+  assert.deepEqual(flowStates(h), ['working', 'pending', 'pending']);
+  assert.equal(h.element('impCommit').disabled, true);
+  assert.equal(h.requests.length, 0);
+  h.uploads[1].finish(preview('B')); await b;
+  assert.equal(h.state.imp.import_id, 'B'); assertSettled(h);
 });
 
 test('A-B-A case navigation invalidates an earlier upload response', async () => {
@@ -581,8 +658,11 @@ test('the commit button locks before its receipt and duplicate clicks send one w
   assert.equal(h.element('impCommit').disabled, true);
   assert.deepEqual(flowStates(h), ['complete', 'complete', 'working']);
   assert.equal(h.requests.filter(item => item.options?.method === 'POST').length, 1);
+  for (const id of ['impFile', 'impDirectory']) assert.equal(h.element(id).disabled, true);
+  await h.upload('BLOCKED.csv'); await h.uploadDirectory(['BLOCKED/rows.csv']);
+  assert.equal(h.uploads.length, 1, 'a submitted write must keep both source inputs locked');
   receipt.resolve(response({ import_id: 'SYN-IMPORT', started: true })); await first;
-  assert.equal(h.refreshes, 1); assert.match(h.notices[0].message, /新增 2 笔/);
+  assert.equal(h.refreshes, 1); assert.match(h.notices[0].message, /新增流水记录 2 条/);
 });
 
 test('failed progress has a read-only recovery action without a second commit', async () => {

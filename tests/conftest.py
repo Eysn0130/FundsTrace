@@ -19,6 +19,18 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 
 @pytest.fixture
+def legacy_feedback_reader(monkeypatch):
+    """Create pinned feedback sessions through their historical upload route.
+
+    New native28 uploads use table profiles. Compatibility tests explicitly
+    select the feedback reader rather than changing their original source facts.
+    """
+    from app import table_archive
+    select = table_archive.should_parse
+    monkeypatch.setattr(table_archive, "should_parse", lambda source, **_: select(source, native_observations=False))
+
+
+@pytest.fixture
 def database(tmp_path, monkeypatch):
     """One database per test, with no checkpoint thread sharing a closed handle."""
     with db._lock:

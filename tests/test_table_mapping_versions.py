@@ -51,17 +51,19 @@ def test_ready_v5_repreview_and_commit_remain_frozen_after_role_profile_is_defau
     assert client.get(f"/api/v1/cases/{cid}/stats").json()["import_coverage"] == coverage
 
 
-def test_v5_v6_v7_share_physical_keys_reuse_facts_and_round_trip_in_format4(client, database, make_case, monkeypatch):
+def test_historical_csv_profiles_share_physical_keys_reuse_facts_and_round_trip(client, database, make_case, monkeypatch):
     cid = make_case("Synthetic compatible mapping package")
     content = b"date,payer_account,payee_account,amount\n2026-01-01,SYN-A,SYN-B,1.01\n"
-    # The new XLS-only profile cannot reinterpret these historical CSV bytes.
-    csv_profiles = table_import.SUPPORTED_PROFILES - {table_import.XLS_PROFILE}
+    # Historical CSV interpretations share facts. XLS/archive-only rules do not
+    # consume these bytes, and v19 explicitly refuses a historical overlap.
+    csv_profiles = {f"funds-trace-table-v{version}" for version in range(5, 18)}
+    assert csv_profiles <= table_import.SUPPORTED_PROFILES
     plans = [table_import.parse(io.BytesIO(content), suffix=".csv", profile=profile)
              for profile in sorted(csv_profiles)]
     assert len({plan["records"][0]["record_key"] for plan in plans}) == 1
     old = legacy_preview(client, cid, content, monkeypatch)
     assert complete(client, cid, old)["result"]["ok"] == 1
-    for profile in sorted(table_import.ROLE_PROFILES - {table_import.XLS_PROFILE}):
+    for profile in sorted(csv_profiles - {table_import.IDENTITY_PROFILE}):
         current = profile_preview(client, cid, content, monkeypatch, profile)
         job = complete(client, cid, current)
         assert job["stage"] == "done" and (job["result"]["ok"], job["result"]["rows_dup"]) == (0, 1)
@@ -75,6 +77,20 @@ def test_v5_v6_v7_share_physical_keys_reuse_facts_and_round_trip_in_format4(clie
     assert {record["parser_version"] for record in database.q_raw("select parser_version from import_sources where case_id=?", [restored])} == csv_profiles
     coverage = client.get(f"/api/v1/cases/{restored}/stats").json()["import_coverage"]
     assert coverage["unresolved_records"] == 0 and coverage["financial_interpretation_complete"]
+
+
+def test_new_evidence_csv_cannot_reinterpret_historical_money_in_place(client, database, make_case, monkeypatch):
+    cid = make_case("Synthetic evidence history boundary")
+    content = b"date,payer_account,payee_account,amount\n2026-01-01,SYN-A,SYN-B,1.01\n"
+    old = legacy_preview(client, cid, content, monkeypatch)
+    assert complete(client, cid, old)["result"]["ok"] == 1
+    before = database.q_raw("select * from flows where case_id=?", [cid])
+    monkeypatch.setattr(imports, "TABLE_PROFILE", table_import.EVIDENCE_PROFILE)
+    response = client.post(f"/api/v1/cases/{cid}/imports/preview", files={"file": ("synthetic.csv", content, "text/csv")})
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "historical_evidence_overlap"
+    assert database.q_raw("select * from flows where case_id=?", [cid]) == before
+    assert database.q_raw("select count(*) n from import_sources where case_id=?", [cid])[0]["n"] == 1
 
 
 @pytest.mark.parametrize("profile", ["funds-trace-table-v6", "funds-trace-table-v7"])

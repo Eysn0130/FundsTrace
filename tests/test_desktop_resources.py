@@ -9,6 +9,21 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from scripts import build_desktop_backend as builder
 
 
+@pytest.mark.skipif(__import__('sys').platform not in {'darwin', 'win32'}, reason='RAR decoder resources currently target macOS and Windows x64')
+def test_external_rar_decoder_copy_preserves_pinned_bytes_and_executable_mode(tmp_path, monkeypatch):
+    import hashlib
+    import os
+    from app import rar_archive
+    resources = rar_archive.decoder_resources()
+    builder.copy_decoder_resources(resources, tmp_path)
+    for source, relative in resources:
+        target = tmp_path / "_internal" / relative
+        assert hashlib.sha256(target.read_bytes()).digest() == hashlib.sha256(source.read_bytes()).digest()
+        assert os.access(target, os.X_OK) == os.access(source, os.X_OK)
+    monkeypatch.setattr(rar_archive, "RESOURCE_ROOT", tmp_path / "_internal/resources/rar-decoder")
+    assert rar_archive._decoder().is_file()
+
+
 def test_resource_boundary_includes_runtime_html_scripts(tmp_path, monkeypatch):
     class ScriptSources(HTMLParser):
         def handle_starttag(self, tag, attrs):

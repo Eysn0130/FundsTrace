@@ -97,7 +97,7 @@ def test_uniform_query_owner_automatic_import_exact_facts_sources_and_package(
     assert client.get(f"/api/v1/cases/{cid}/imports/{view['import_id']}").json()["result"] == job["result"]
     package = case_packages.export_package(cid)[0]
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
-        assert json.loads(archive.read("meta.json"))["format"] == 4
+        assert json.loads(archive.read("meta.json"))["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     assert facts(database, restored) == before and coverage(client, restored) == coverage(client, cid)
     restored_source = database.q_raw("select source_id,mapping_json,parser_version from import_sources "

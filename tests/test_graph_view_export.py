@@ -52,6 +52,20 @@ def test_visible_neighborhood_export_marks_partial_scope_without_losing_money(cl
     assert decoded["edges"] == snapshot["edges"]
 
 
+@pytest.mark.parametrize('count', [0, 2])
+def test_selected_transaction_count_preserves_zero_and_present_metadata(client, count):
+    snapshot = graph_snapshot()
+    if count == 0:
+        snapshot['nodes'] = []
+        snapshot['edges'] = []
+        snapshot['view'].update(total_nodes=0, total_edges=0, visible_nodes=0, visible_edges=0)
+    snapshot['view'].update(statistics_policy='selected-transactions-v1', transaction_count=count)
+    response = client.post('/api/export/graph.html', json=snapshot)
+    assert response.status_code == 200, response.text
+    assert export_data(response.text)['view'] == snapshot['view']
+    assert f'追踪选择 {count} 笔' in response.text
+
+
 def test_legacy_export_without_view_remains_compatible(client):
     snapshot = graph_snapshot()
     del snapshot["view"]

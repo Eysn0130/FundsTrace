@@ -99,8 +99,8 @@
 
   function timeWindow(input) {
     const source=object(input)?input:{};
-    // These are original transaction-local civil times, never converted to UTC.
-    const civil=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?)?$/.test(value)?value.replace('T',' '):'';
+    // Bare bounds retain source wall time; explicit offsets remain verbatim. No device zone.
+    const civil=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/.test(value)?value.replace('T',' '):'';
     return {start:civil(source.start),end:civil(source.end),includeUndated:source.includeUndated!==false};
   }
 

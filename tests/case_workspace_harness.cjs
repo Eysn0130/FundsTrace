@@ -475,3 +475,18 @@ test('closing from either footer or header restores focus without starting an ac
     assert.equal(h.controller.status().dialogOpen, false); assert.equal(h.document.activeElement === h.trigger, true); assert.equal(writes(h), 0);
   }
 });
+
+
+test('case counts use one confirmed transfer or two unresolved records', async () => {
+  for (const count of [{lower:1,upper:1},{lower:0,upper:2}]) {
+    const h=harness();
+    const flows=count.lower===1 ? 1 : 2;
+    h.io('summary',()=>({name:'Synthetic source case',canvasName:'Synthetic canvas',flows,accounts:2,funds:{observation_count:2,count}}));
+    await h.open();
+    assert.equal(h.element('caseCounts').textContent,`流水 ${flows} 笔 · 账户 2 个`);
+    await h.view('delete');
+    assert.ok(h.element('caseDeleteScope').textContent.includes(`流水 ${flows} 笔`));
+    assert.doesNotMatch(h.element('caseDeleteScope').textContent,/事件|待核/);
+    assert.equal(writes(h),0);
+  }
+});

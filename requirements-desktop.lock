@@ -1264,3 +1264,7 @@ xlrd==2.0.2 \
     # via
     #   -c requirements-dev.lock
     #   -r requirements.txt
+rarfile==4.5 \
+    --hash=sha256:7425d0afa180f0092db903abb1526a130b36858980aad90b3694f48e41420155 \
+    --hash=sha256:c74341f4b9a3a3ebb35ef396d59daf059eb028f34995a7162950a41d97b84de9
+    # via -r requirements.txt

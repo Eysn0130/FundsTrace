@@ -1,0 +1,10 @@
+{
+  "version": "26.05",
+  "upstream": "https://github.com/ip7z/7zip/releases/download/26.05/7z2605-x64.exe",
+  "upstream_sha256": "fd99e86f57d8f429ef5ed045bf98315af962e2309b0f1ba87a147a44c71647d0",
+  "source": "https://github.com/ip7z/7zip/releases/tag/26.05",
+  "files": {
+    "7z.exe": "94205cfc054dd3bbeb978905bc619a65b3f04e9e73bb2717841110b6f46d962e",
+    "7z.dll": "78bf6b668d75801e3aa180b4ccb16e6d8395fba80dec8a065055bb6f8dfabb82"
+  }
+}

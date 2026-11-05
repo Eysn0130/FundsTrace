@@ -5,6 +5,7 @@
 """
 import base64
 import datetime
+from . import transaction_time
 from contextlib import asynccontextmanager, contextmanager
 from html import escape
 import shutil
@@ -29,13 +30,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 from . import db, importer, sample_data
-from . import canvas_investigation
+from . import canvas_investigation, evidence_resolution
 from .case_packages import CASE_PKG_TABLES, CASE_PKG_COLS, delete_package_case, export_package, import_package, require_case, photo_name
 from . import license as lic
 from .services import imports as import_service
 from .services import accounts as account_service
 from .services import account_suggestions as account_suggestion_service
 from .services.cases import ServiceError
+from .api.models import FundsProjection
 from .services.main_accounts import mark_automatic
 from .money import money_decimal, money_string, money_display
 from .import_coverage import import_coverage
@@ -51,6 +53,8 @@ from .api.v1 import router as api_v1_router, install_error_handlers
 from .pilot import mount_pilot
 
 app.include_router(api_v1_router)
+from .principal_routes import router as principal_router
+app.include_router(principal_router)
 install_error_handlers(app)
 mount_pilot(app)
 # 智能分析模块（独立新增）：导入失败不影响主系统
@@ -149,16 +153,41 @@ def index():
 @app.get("/api/stats")
 def stats(case_id: int = 1):
     with db._lock:
-        result = db.q("""
+        from . import funds_projection
+        result = db.q(funds_projection.cte("select * from effective_flows where case_id=?") + """
             select
-              (select count(*) from effective_flows where case_id = ?) as flows,
+              (select count(*) from ordinary_facts) as flows,
               (select count(distinct a) from (
-                  select payer_account as a from effective_flows where case_id = ?
-                  union all select payee_account as a from effective_flows where case_id = ?
+                  select payer_account as a from ordinary_facts
+                  union all select payee_account as a from ordinary_facts
                ) where a is not null and a <> '') as accounts,
               (select count(*) from batches where case_id = ?) as batches
-        """, [case_id, case_id, case_id, case_id])[0]
+        """, [case_id, case_id])[0]
         result["import_coverage"] = import_coverage(case_id)
+        if not db.q_raw("select 1 from cases where id=?", [case_id]):
+            return result  # Preserve the legacy empty response for a missing case.
+        from . import event_resolution, analysis_snapshot
+        result["event_summary"] = event_resolution.summary(case_id)
+        result["analysis_revision"] = analysis_snapshot.revision(case_id)
+        current_resolution = evidence_resolution.summary(case_id)
+        if current_resolution:
+            result["resolution"] = current_resolution
+            result.update(statistics_policy=evidence_resolution.POLICY, resolution_revision=result["resolution"]["revision"])
+        result["funds"] = funds_projection.summary("select * from effective_flows where case_id=?", [case_id])
+        result["statistics_policy"] = funds_projection.SELECTION_POLICY
+        from . import source_ledger
+        result["source_ledger"] = source_ledger.summary(case_id)
+        result["accounts"] = db.q_raw(funds_projection.cte("select * from effective_flows where case_id=?") + """select count(distinct a) accounts from (
+            select payer_account a from ordinary_facts union all
+            select payee_account from ordinary_facts union all
+            select f.payer_account from effective_visible_flows f join source_ledger_index l
+              on l.case_id=f.case_id and l.flow_id=f.id where f.case_id=? union all
+            select f.payee_account from effective_visible_flows f join source_ledger_index l
+              on l.case_id=f.case_id and l.flow_id=f.id where f.case_id=? union all
+            select f.self_account from effective_visible_flows f join source_ledger_index l
+              on l.case_id=f.case_id and l.flow_id=f.id where f.case_id=? union all
+            select f.source_counter_id from effective_visible_flows f where f.case_id=?
+            ) where coalesce(a,'')<>''""", [case_id, case_id, case_id, case_id, case_id])[0]["accounts"]
         return result
 
 
@@ -183,7 +212,7 @@ def _require_flows(case_id, flow_ids, *, effective=False):
     ids = list(dict.fromkeys(int(i) for i in flow_ids))
     if ids:
         marks = ",".join("?" for _ in ids)
-        table = "effective_flows" if effective else "flows"
+        table = "effective_visible_flows" if effective else "flows"
         owned = db.q(f"select id from {table} where case_id=? and id in ({marks})", [case_id, *ids])
         if len(owned) != len(ids):
             raise HTTPException(404, "流水不存在、已匹配冲正撤销或不属于当前案件" if effective
@@ -195,8 +224,10 @@ def _require_graphable(case_id, ids):
     if ids:
         marks = ",".join("?" for _ in ids)
         if db.q(f"select id from flows where case_id=? and id in ({marks}) "
-                "and (coalesce(payer_account,'')='' or coalesce(payee_account,'')='') limit 1", [case_id, *ids]):
-            raise HTTPException(422, "所选流水含缺失账号的交易，事实已保留在明细中；补足身份依据后才能上图")
+                "and coalesce(payer_account,'')='' and coalesce(payee_account,'')='' "
+                "and not exists(select 1 from source_ledger_index l where l.case_id=flows.case_id and l.flow_id=flows.id "
+                "and coalesce(flows.self_account,'')<>'') limit 1", [case_id, *ids]):
+            raise HTTPException(422, "所选流水没有可显示的账号，原始事实仍保留在明细中")
 
 
 @app.post("/api/cases")
@@ -236,16 +267,47 @@ def del_batch(batch_id: int, case_id: int = Query(...)):
     with _case_transaction(case_id):
         if not db.q("select id from batches where id=? and case_id=?", [batch_id, case_id]):
             raise HTTPException(404, "批次不存在")
+        changed_sources = [row["source_id"] for row in db.q_raw("""
+            select s.source_id from flow_sources s join flows f on f.id=s.flow_id and f.case_id=s.case_id
+              where s.case_id=? and f.batch_id=?
+            union select source_id from import_source_operations where case_id=? and batch_id=?
+            """, [case_id, batch_id, case_id, batch_id])]
+        # Withdraw this operation's support first. A retained source metadata
+        # row alone is not support: require a live operation and its flow link.
+        db.x("update import_source_operations set active=false where case_id=? and batch_id=?", [case_id, batch_id])
+        db.x("update evidence_sources set active=false where case_id=? and batch_id=?", [case_id, batch_id])
+        db.x("""update flows as f set batch_id=s.batch_id from (
+                 select fs.flow_id,min(e.batch_id) batch_id from flow_sources fs
+                 join import_source_operations e on e.case_id=fs.case_id and e.source_id=fs.source_id and e.active
+                 join batches b on b.case_id=e.case_id and b.id=e.batch_id
+                 where fs.case_id=? group by fs.flow_id
+                 ) s where f.case_id=? and f.batch_id=? and f.id=s.flow_id""", [case_id, case_id, batch_id])
+        # batch_id is retained storage ownership, not the historical receipt.
+        # Unlinked legacy imports keep their existing deletion behavior; never
+        # infer another operation from filenames or resurrect removed facts.
         db.x("delete from tracked_flows where case_id=? and flow_id in "
              "(select id from flows where batch_id=? and case_id=?)", [case_id, batch_id, case_id])
+        from . import source_ledger
         db.x("""update import_records set disposition='removed',reason_code='flow_deleted'
-                 where case_id=? and (source_id,record_no) in
+                 where case_id=? and not (
+                    disposition in ('unresolved','non_monetary','cancelled')
+                    and json_extract_string(details_json,'$.source_ledger_evidence') is not null
+                    and source_id in (select source_id from import_sources where parser_version in (""" + source_ledger._profiles() + """)))
+                 and (source_id,record_no) in
                  (select s.source_id,s.source_row from flow_sources s join flows f on f.id=s.flow_id and f.case_id=s.case_id
-                  where s.case_id=? and f.batch_id=?)""", [case_id, case_id, batch_id])
-        db.x("delete from flow_sources where case_id=? and flow_id in "
-             "(select id from flows where batch_id=? and case_id=?)", [case_id, batch_id, case_id])
+                  where s.case_id=? and (f.batch_id=? or s.source_id in
+                    (select source_id from import_source_operations where case_id=? and batch_id=?)))""",
+             [case_id, case_id, batch_id, case_id, batch_id])
+        db.x("""delete from flow_sources where case_id=? and
+                 (flow_id in (select id from flows where batch_id=? and case_id=?) or
+                  source_id in (select source_id from import_source_operations where case_id=? and batch_id=?))""",
+             [case_id, batch_id, case_id, case_id, batch_id])
         db.x("delete from flows where batch_id=? and case_id=?", [batch_id, case_id])
         db.x("delete from batches where id=? and case_id=?", [batch_id, case_id])
+        evidence_resolution.rebuild(case_id)
+        from . import event_resolution, analysis_snapshot
+        event_resolution.rebuild(case_id, changed_sources=changed_sources)
+        analysis_snapshot.invalidate(case_id)
     return {"ok": True}
 
 
@@ -254,6 +316,14 @@ def _legacy_import_result(operation, *args):
         return operation(*args)
     except ServiceError as error:
         raise HTTPException(error.status, error.message) from None
+
+
+@app.post("/api/import/directory/preview")
+async def import_directory_preview(files: List[UploadFile] = File(...), case_id: int = Query(...)):
+    try:
+        return await import_service.upload_directory(case_id, files, surface="legacy")
+    except ServiceError as error:
+        raise HTTPException(error.status, error.message) from error
 
 
 @app.post("/api/import/preview")
@@ -319,7 +389,7 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
           tfrom: str = "", tto: str = "", ids: str = "", case_id: int = 1,
           tracked: int = 0, canvas_id: int = 0,
           page: int = 1, size: int = Query(50, le=500), account_exact: bool = False,
-          counter_exact: bool = False, entity: str = ""):
+          counter_exact: bool = False, entity: str = "", granularity: str = "events"):
     try:
         lower = money_decimal(min_amount) if min_amount not in (None, "") else None
         upper = money_decimal(max_amount) if max_amount not in (None, "") else None
@@ -341,7 +411,15 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         return f"%{v.strip()}%"
 
     if account.strip():
-        conds.append("(payer_account = ? or payee_account = ?)" if account_exact else "(payer_account ilike ? or payee_account ilike ?)")
+        conds.append("(payer_account = ? or payee_account = ? or self_account = ? or raw_self_account = ?)" if account_exact else """(payer_account ilike ? or payee_account ilike ? or self_account ilike ? or raw_self_account ilike ? or payer_display_account ilike ? or payee_display_account ilike ?
+            or exists (select 1 from resolution_entities e,
+                unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
+                where e.case_id=flows.case_id and e.entity_id in (flows.payer_account,flows.payee_account,flows.self_account)
+                  and card.value ilike ?)
+            or exists (select 1 from resolution_entities e where e.case_id=flows.case_id
+                and e.entity_id in (flows.payer_account,flows.payee_account,flows.self_account) and e.account_number ilike ?))""")
+        params += [account.strip() if account_exact else like(account)] * (4 if account_exact else 8)
+        conds[-1] = "(" + conds[-1] + (" or source_counter_account = ? or source_counter_id = ?)" if account_exact else " or source_counter_account ilike ? or source_counter_id ilike ?)")
         params += [account.strip() if account_exact else like(account)] * 2
     entity_query = unicodedata.normalize("NFKC", entity).strip().lower()
     if entity_query:
@@ -350,12 +428,20 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         conds.append("""(
             contains(lower(coalesce(payer_account,'')), ?) or contains(lower(coalesce(payee_account,'')), ?)
             or contains(lower(coalesce(payer_name,'')), ?) or contains(lower(coalesce(payee_name,'')), ?)
-            or exists (select 1 from account_ids identity
+            or contains(lower(coalesce(payer_display_account,'')), ?) or contains(lower(coalesce(payee_display_account,'')), ?)
+            or exists (select 1 from resolution_entities e,
+                unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
+                where e.case_id=flows.case_id and e.entity_id in (flows.payer_account,flows.payee_account)
+                  and contains(lower(card.value), ?))
+            or exists (select 1 from resolution_entities e where e.case_id=flows.case_id
+                and e.entity_id in (flows.payer_account,flows.payee_account)
+                and contains(lower(e.account_number), ?))
+            or exists (select 1 from effective_account_ids identity
                 where identity.case_id=flows.case_id
                   and (identity.account=flows.payer_account or identity.account=flows.payee_account)
                   and contains(lower(coalesce(identity.id_no,'')), ?))
         )""")
-        params += [entity_query] * 5
+        params += [entity_query] * 9
     if name.strip():
         conds.append("(payer_name ilike ? or payee_name ilike ?)")
         params += [like(name)] * 2
@@ -365,11 +451,20 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
             params += [counter.strip()] * 2
         else:
             conds.append("""(payer_name ilike ? or payer_account ilike ? or payee_name ilike ? or payee_account ilike ?
-                or exists (select 1 from account_ids identity
+                or exists (select 1 from resolution_entities e,
+                    unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
+                    where e.case_id=flows.case_id and e.entity_id in (flows.payer_account,flows.payee_account)
+                      and contains(lower(card.value), ?))
+                or exists (select 1 from resolution_entities e where e.case_id=flows.case_id
+                    and e.entity_id in (flows.payer_account,flows.payee_account)
+                    and contains(lower(e.account_number), ?))
+                or exists (select 1 from effective_account_ids identity
                     where identity.case_id=flows.case_id
                       and (identity.account=flows.payer_account or identity.account=flows.payee_account)
                       and contains(lower(coalesce(identity.id_no,'')), ?)))""")
-            params += [like(counter)] * 4 + [unicodedata.normalize("NFKC", counter).strip().lower()]
+            params += [like(counter)] * 4 + [unicodedata.normalize("NFKC", counter).strip().lower()] * 3
+        conds[-1] = "(" + conds[-1] + (" or source_counter_account = ? or source_counter_id = ?)" if counter_exact else " or source_counter_account ilike ? or source_counter_id ilike ?)")
+        params += [counter.strip() if counter_exact else like(counter)] * 2
     if kw.strip():
         conds.append("(summary ilike ? or trade_no ilike ?)")
         params += [like(kw)] * 2
@@ -379,19 +474,45 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
     if upper is not None:
         conds.append("amount <= ?")
         params.append(upper)
-    if tfrom:
-        conds.append("trade_time >= ?")
-        params.append(tfrom)
-    if tto:
-        conds.append("trade_time <= ?")
-        params.append(tto + (" 23:59:59" if len(tto) == 10 else ""))
+    try:
+        time_clause, time_params, time_filter_basis = transaction_time.window(tfrom, tto)
+    except (ValueError, TypeError):
+        raise HTTPException(422, "时间格式无效，或时间边界混用了来源壁钟与显式偏移") from None
+    if time_filter_basis == "utc" and not db.q_raw(
+            "select 1 from effective_visible_flows as flows where " + " and ".join(conds) + " and trade_time_utc is not null limit 1", params):
+        raise HTTPException(422, {"code": "time_basis_incomparable", "message": "当前范围没有可与UTC窗口比较的显式时区记录"})
+    if time_clause:
+        conds.append(time_clause)
+        params.extend(time_params)
     where = "where " + " and ".join(conds)
     # Keep the identity subqueries bound to the case-filtered effective rows.
-    total = db.q(f"select count(*) c from effective_flows as flows {where}", params)[0]["c"]
-    off = (page - 1) * size
-    rows = db.q(f"select * from effective_flows as flows {where} order by trade_time desc, id desc limit ? offset ?",
-                params + [size, off])
-    return {"total": total, "page": page, "size": size, "rows": rows}
+    with db._lock:
+        from . import funds_projection
+        if granularity not in {"events", "observations"}:
+            raise HTTPException(422, "无效的明细粒度")
+        source = f"select * from effective_visible_flows as flows {where}"
+        prefix = funds_projection.cte(source, include_ids=True)
+        relation = "selected_observations" if granularity == "observations" else "ordinary_facts"
+        total = db.q(prefix + f"select count(*) c from {relation}", params)[0]["c"]
+        off = (page - 1) * size
+        rows = db.q(prefix + f"select * from {relation} order by {transaction_time.sql_order()} limit ? offset ?",
+                    params + [size, off])
+        from . import source_ledger
+        funds = funds_projection.summary(source_ledger.financial_source(source), params)
+        resolution = evidence_resolution.summary(case_id)
+        from . import analysis_snapshot, event_resolution
+        revision = analysis_snapshot.revision(case_id)
+        memberships = {item["flow_id"]: item for item in event_resolution.members(case_id, [row["id"] for row in rows])}
+        for row in rows:
+            member = memberships.get(str(row["id"]), {})
+            row.update(event_id=member.get("event_id"), event_state=member.get("status", "unknown"),
+                       observation_ids=row.get("observation_ids", [str(row["id"])]),
+                       granularity="observation" if granularity == "observations" else "confirmed_event" if row["fact_status"] == "confirmed" else "unresolved_observation")
+        events = event_resolution.summary(case_id)
+        from . import source_ledger
+        source_ledger.decorate(case_id, rows)
+    return {"total": total, "page": page, "size": size, "rows": rows, "resolution": resolution,
+            "analysis_revision": revision, "case_event_summary": events, "funds": funds, "time_filter_basis": time_filter_basis, "time_ordering": "within_basis"}
 
 
 @app.get("/api/accounts/{account}/profile")
@@ -401,26 +522,32 @@ def profile(account: str, case_id: int = 1):
 
 
 def _profile(account: str, case_id: int):
+    from . import funds_projection, analysis_snapshot
+    source = "select * from effective_flows where case_id=? and (payer_account=? or payee_account=?)"
+    selection = [case_id, account, account]
+    prefix = funds_projection.cte(source)
+    def _query(sql, params):
+        return db.q(prefix + sql, [*selection, *params])
     if not account:
         raise HTTPException(422, "账号缺失，无法定位账户画像")
-    r = db.q("""
+    r = _query(f"""
         select count(*) as cnt,
           count(case when payer_account = ? then 1 end) as out_cnt,
           count(case when payee_account = ? then 1 end) as in_cnt,
           coalesce(sum(case when payer_account = ? then amount end), 0) as out_amt,
           coalesce(sum(case when payee_account = ? then amount end), 0) as in_amt,
-          min(trade_time) as tmin, max(trade_time) as tmax
-        from effective_flows where case_id = ? and (payer_account = ? or payee_account = ?)
+          {transaction_time.sql_bounds()}
+        from selected_observations where case_id = ? and (payer_account = ? or payee_account = ?)
     """, [account, account, account, account, case_id, account, account])[0]
-    nm = db.q("""
+    nm = _query("""
         select name from (
-          select payer_name as name from effective_flows where case_id = ? and payer_account = ?
-          union all select payee_name from effective_flows where case_id = ? and payee_account = ?
+          select payer_name as name from selected_observations where case_id = ? and payer_account = ?
+          union all select payee_name from selected_observations where case_id = ? and payee_account = ?
         ) where name is not null and name <> '' group by name order by count(*) desc limit 1
     """, [case_id, account, case_id, account])
     r["account"] = account
     r["name"] = nm[0]["name"] if nm else ""
-    r["top_counterparties"] = db.q("""
+    r["top_counterparties"] = _query("""
         select acct, max(nm) as name,
           sum(case when dir = 'out' then 1 else 0 end) as out_cnt,
           coalesce(sum(case when dir = 'out' then amt else 0 end), 0) as out_amt,
@@ -428,38 +555,34 @@ def _profile(account: str, case_id: int):
           coalesce(sum(case when dir = 'in' then amt else 0 end), 0) as in_amt
         from (
           select payee_account as acct, payee_name as nm, 'out' as dir, amount as amt
-            from effective_flows where case_id = ? and payer_account = ?
+            from ordinary_facts where case_id = ? and payer_account = ?
           union all
           select payer_account, payer_name, 'in', amount
-            from effective_flows where case_id = ? and payee_account = ?
+            from ordinary_facts where case_id = ? and payee_account = ?
         ) where coalesce(acct,'')<>'' group by acct order by out_cnt desc, in_cnt desc, acct limit 20
     """, [case_id, account, case_id, account])
-    money_rows = db.q_raw("""
-        select acct, coalesce(currency, '') currency,
-          count(*) filter (where dir='out') out_cnt,
-          coalesce(sum(amount) filter (where dir='out'), 0) out_amt,
-          count(*) filter (where dir='in') in_cnt,
-          coalesce(sum(amount) filter (where dir='in'), 0) in_amt
-        from (
-          select payee_account acct, currency, amount, 'out' dir
-            from effective_flows where case_id=? and payer_account=?
-          union all
-          select payer_account, currency, amount, 'in'
-            from effective_flows where case_id=? and payee_account=?
-        ) where coalesce(acct,'')<>'' group by acct, coalesce(currency, '') order by currency
-    """, [case_id, account, case_id, account])
-    for counterparty in r["top_counterparties"]:
-        counterparty.update(_directional_money([row for row in money_rows if row["acct"] == counterparty["acct"]]))
-    own_totals = db.q_raw("""
-        select coalesce(currency, '') currency,
-          count(*) filter (where payer_account=?) out_cnt,
-          coalesce(sum(amount) filter (where payer_account=?), 0) out_amt,
-          count(*) filter (where payee_account=?) in_cnt,
-          coalesce(sum(amount) filter (where payee_account=?), 0) in_amt
-        from effective_flows where case_id=? and (payer_account=? or payee_account=?)
-        group by coalesce(currency, '') order by currency
-    """, [account, account, account, account, case_id, account, account])
-    r.update(_directional_money(own_totals))
+    rollups = funds_projection.account_summaries(source, selection)
+    empty = funds_projection.summarize_rows([])
+    sources = funds_projection.account_summaries(source, selection, selected=True)
+    source_empty = funds_projection.empty_source_summary()
+    r["funds"] = rollups[(3, None, None)]
+    r["cnt"] = sources[(3, None, None)]["cnt"]
+    r.update(_funds_directional(rollups.get((2, None, account), empty), rollups.get((1, account, None), empty)))
+    for counter in r["top_counterparties"]:
+        counter.update(_funds_directional(rollups.get((0, counter["acct"], account), empty),
+                                          rollups.get((0, account, counter["acct"]), empty)))
+    r.update(funds_projection.source_directional_fields(sources.get((2, None, account), source_empty), sources.get((1, account, None), source_empty)))
+    for counter in r["top_counterparties"]:
+        counter.update(funds_projection.source_directional_fields(sources.get((0, counter["acct"], account), source_empty), sources.get((0, account, counter["acct"]), source_empty)))
+    r["analysis_revision"] = analysis_snapshot.revision(case_id)
+    r["statistics_policy"] = funds_projection.SELECTION_POLICY
+    from . import source_ledger
+    r["source_ledger"] = source_ledger.summary(case_id, account=account, include_rows=True)
+    if not r["name"]:
+        names = db.q("select payer_name as name from effective_visible_flows where case_id=? and payer_account=? union all select payee_name from effective_visible_flows where case_id=? and payee_account=? limit 1", [case_id, account, case_id, account])
+        r["name"] = names[0]["name"] if names else ""
+    evidence_resolution.decorate_accounts(case_id, [r])
+    evidence_resolution.decorate_accounts(case_id, r["top_counterparties"], key="acct")
     return r
 
 
@@ -534,10 +657,14 @@ def auto_detect_all(case_id_in: CaseIdIn):
 _CASE_ACCOUNTS_SQL = """
     with account_rows as (
         select trim(payer_account) as account, trim(coalesce(payer_name, '')) as name
-        from flows where case_id=? and payer_account is not null
+        from effective_visible_flows where case_id=? and payer_account is not null
         union all
         select trim(payee_account), trim(coalesce(payee_name, ''))
-        from flows where case_id=? and payee_account is not null
+        from effective_visible_flows where case_id=? and payee_account is not null
+        union all
+        select trim(f.self_account), trim(coalesce(f.self_name, ''))
+        from effective_visible_flows f join source_ledger_index l on l.case_id=f.case_id and l.flow_id=f.id
+        where f.case_id=? and coalesce(f.self_account,'')<>''
     ), accounts as (
         select account, max(name) as name from account_rows where account<>'' group by account
     )
@@ -558,38 +685,44 @@ def main_account_candidates(case_id: int, q: str = "", exact: bool = False, page
                 select 1 from account_rows names
                 where names.account=a.account and contains(lower(names.name), ?)
             ) or contains(lower(coalesce(m.name,'')), ?) or exists (
-                select 1 from account_ids identity
+                select 1 from effective_account_ids identity
                 where identity.case_id=? and identity.account=a.account
                   and contains(lower(coalesce(identity.id_no,'')), ?)
             )"""
-            search_params = [keyword] * 3 + [case_id, keyword]
+            criterion = "(" + criterion + """ or exists (select 1 from resolution_entities e where e.case_id=? and e.entity_id=a.account and
+                (contains(lower(e.account_number),?) or contains(lower(e.display_account),?)
+                 or contains(lower(array_to_string(json_extract_string(e.details_json,'$.cards[*]'),' ')),?)
+                 or contains(lower(array_to_string(json_extract_string(e.details_json,'$.names[*]'),' ')),?))))"""
+            search_params = [keyword] * 3 + [case_id, keyword, case_id] + [keyword] * 4
         matching = _CASE_ACCOUNTS_SQL + """
             , matching as (
                 select a.account, coalesce(nullif(m.name,''), a.name) as name,
                        m.account is not null as is_main,
                        case when m.account is null then null when m.source='auto' then 'auto' else 'manual' end as source
-                from accounts a left join main_accounts m on m.case_id=? and m.account=a.account
+                from accounts a left join effective_main_accounts m on m.case_id=? and m.account=a.account
                 where """ + criterion + """
             )
         """
-        params = [case_id, case_id, case_id, *search_params]
+        params = [case_id, case_id, case_id, case_id, *search_params]
         total = db.q(matching + "select count(*) total from matching", params)[0]["total"]
         items = db.q(matching + "select * from matching order by account limit ? offset ?",
                      [*params, page_size, (page - 1) * page_size])
+        evidence_resolution.decorate_accounts(case_id, items)
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 @app.get("/api/main-accounts")
 def list_main_accounts(case_id: int = 1):
     with _case_transaction(case_id):
-        return db.q("select case_id, account, name, source, marked_at from main_accounts where case_id = ? order by marked_at, account",
-                    [case_id])
+        rows = db.q("select case_id, account, name, source, marked_at from effective_main_accounts where case_id = ? order by marked_at, account", [case_id])
+        evidence_resolution.decorate_accounts(case_id, rows)
+        return rows
 
 
 @app.post("/api/main-accounts/clear-auto")
 def clear_auto_main_accounts(body: CaseIdIn):
     """清除本案件全部"自动识别"的主账号标记（手动标记保留）"""
     with _case_transaction(body.case_id):
-        n = len(db.q("select account from main_accounts where case_id = ? and source = 'auto'", [body.case_id]))
+        n = len(db.q("select account from effective_main_accounts where case_id = ? and source = 'auto'", [body.case_id]))
         db.x("delete from main_accounts where case_id = ? and source = 'auto'", [body.case_id])
         return {"cleared": n}
 
@@ -620,8 +753,8 @@ def mark_main_account(body: MainAccountIn):
         if not acct:
             raise HTTPException(400, "账号不能为空")
         existing_account = db.q(_CASE_ACCOUNTS_SQL + "select name from accounts where account=?",
-                                [body.case_id, body.case_id, acct])
-        existing_mark = db.q("select name from main_accounts where case_id=? and account=?", [body.case_id, acct])
+                                [body.case_id, body.case_id, body.case_id, acct])
+        existing_mark = db.q("select name from effective_main_accounts where case_id=? and account=?", [body.case_id, acct])
         if not existing_account and not existing_mark:
             raise HTTPException(404, "账号不存在或不属于当前案件")
         name = (body.name.strip() or (existing_mark[0]["name"] if existing_mark else "")
@@ -636,7 +769,9 @@ def unmark_main_account(body: MainAccountIn):
         acct = body.account.strip()
         if not acct:
             raise HTTPException(400, "账号不能为空")
-        db.x("delete from main_accounts where case_id = ? and account = ?", [body.case_id, acct])
+        db.x("delete from main_accounts where case_id=? and (account=? or account in "
+             "(select raw_account from effective_main_account_declarations where case_id=? and account=?))",
+             [body.case_id, acct, body.case_id, acct])
         return {"ok": True}
 
 # ---------------- 图谱 / 追踪 ----------------
@@ -665,10 +800,12 @@ def canvas_investigation_paths(body: canvas_investigation.PathInvestigationIn):
 
 def _graph_mirror_duplicate_ids(case_id: int, canvas_id: int):
     """Pair each tracked row with at most one oldest compatible ledger mirror."""
+    if evidence_resolution.summary(case_id) is not None:
+        return []
     rows = db.q_raw("""
         select f.id, f.payer_account, f.payee_account, f.amount,
                coalesce(f.currency, '') as currency, coalesce(f.self_account, '') as self_account,
-               date_trunc('second', f.trade_time) as mirror_time
+               date_trunc('second', coalesce(f.trade_time_utc,f.trade_time)) as mirror_time,f.trade_time_utc,f.resolution_policy
         from effective_flows f join tracked_flows tf on tf.flow_id = f.id
         where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?
         order by f.trade_time, f.id
@@ -676,84 +813,124 @@ def _graph_mirror_duplicate_ids(case_id: int, canvas_id: int):
     return [flow_id for ids in canvas_investigation.mirror_groups(rows).values() for flow_id in ids]
 
 
-def _graph(case_id: int, canvas_id: int):
-    # 统计口径修正（两处历史问题）：
-    # 1) 双方流水都导入时，同一笔交易会以两份记录入库（时间差秒级、余额/摘要/流水号不同，
-    #    不满足全列去重）→ 同 付款方+收款方+金额 且时间相差 ≤120 秒、且本方账号均明确属于
-    #    不同的付款/收款方（非自转账）的两行配对只计一笔（is_dup，保留较早一行）。每条记录最多配对一次，
-    #    不能让已配对的镜像吞掉后续真实交易。同一 self_account 的连续多笔不相互合并。
-    # 2) main_accounts 的 OR 连接（账号或户名匹配）在同户名多账号时会把行数放大数倍，
-    #    导致笔数/金额虚增 → 改用 EXISTS 子查询，只做标记、不复制行。
-    # 画布维度：只统计当前画布追踪的流水（canvas_id 0 = 默认画布）。
-    dedup_params = [case_id, canvas_id, case_id, _graph_mirror_duplicate_ids(case_id, canvas_id)]
-    dedup_cte = """
-        with t as (select f.* from effective_flows f join tracked_flows tf on tf.flow_id = f.id
-                   where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?
-                     and coalesce(f.payer_account,'')<>'' and coalesce(f.payee_account,'')<>''),
-        nd as (select f.*, f.id in (select unnest(?::bigint[])) as is_dup
-               from t f)
-    """
-    nodes = db.q(dedup_cte + """
-        select t2.account, max(t2.name) as name,
-               sum(case when t2.ispay = 1 and not t2.is_dup then 1 else 0 end) as out_cnt,
-               sum(case when t2.ispay = 0 and not t2.is_dup then 1 else 0 end) as in_cnt,
-               coalesce(sum(case when t2.ispay = 1 and not t2.is_dup then t2.amount else 0 end), 0) as out_amt,
-               coalesce(sum(case when t2.ispay = 0 and not t2.is_dup then t2.amount else 0 end), 0) as in_amt,
-               max(case when exists(select 1 from main_accounts m
-                                    where m.case_id = ? and m.account = t2.account) then 1 else 0 end) as is_main,
-               max(case when exists(select 1 from main_accounts m2
-                                    where m2.case_id = ? and m2.name <> '' and m2.name = t2.name
-                                      and m2.account <> t2.account) then 1 else 0 end) as is_same_name,
-               max(ai.id_no) as id_no,
-               max(ap.updated_at) as photo_at
-        from (
-            select payer_account as account, payer_name as name, 1 as ispay, amount, is_dup from nd
-            union all
-            select payee_account, payee_name, 0, amount, is_dup from nd
-        ) t2
-        left join account_ids ai on ai.case_id = ? and ai.account = t2.account
-        left join account_photos ap on ap.case_id = ? and ap.account = t2.account
-        group by t2.account
-    """, [*dedup_params, case_id, case_id, case_id, case_id])
-    edges = db.q(dedup_cte + """
-        select payer_account as source, max(payer_name) as source_name,
-               payee_account as target, max(payee_name) as target_name,
-               count(*) filter (where not is_dup) as cnt,
-               sum(amount) filter (where not is_dup) as total,
-               min(trade_time) as tmin, max(trade_time) as tmax,
-               list(distinct summary) filter (summary is not null and summary <> '') as summaries,
-               list(distinct currency) filter (currency is not null and currency <> '' and currency <> 'CNY') as currencies,
-               list(id) as ids
-        from nd group by payer_account, payee_account
-    """, dedup_params)
-    amounts = db.q_raw(dedup_cte + """
-        select payer_account as source, payee_account as target, coalesce(currency, '') currency,
-               sum(amount) amount
-        from nd where not is_dup group by payer_account, payee_account, coalesce(currency, '') order by currency
-    """, dedup_params)
-    by_pair, by_node = {}, {}
-    for row in amounts:
-        total = {"currency": row["currency"], "amount": money_string(row["amount"])}
-        by_pair.setdefault((row["source"], row["target"]), []).append(total)
-        for account, direction in ((row["source"], "out"), (row["target"], "in")):
-            grouped = by_node.setdefault(account, {}).setdefault(row["currency"], {
-                "currency": row["currency"], "out_cnt": 0, "in_cnt": 0,
-                "out_amt": money_decimal("0"), "in_amt": money_decimal("0")})
-            grouped[direction + "_cnt"] += 1
-            grouped[direction + "_amt"] += row["amount"]
+def _funds_directional(incoming, outgoing):
+    from .funds_projection import directional_fields
+    return directional_fields(incoming, outgoing)
+
+
+@app.post("/api/graph/view")
+def graph_view(body: canvas_investigation.TimeInvestigationIn):
+    """Read the active business view; viewport culling is never a scope input."""
+    with db._lock:
+        require_case(body.case_id)
+        _require_canvas(body.case_id, body.canvas_id)
+        return _graph(body.case_id, body.canvas_id, body)
+
+
+def _graph(case_id: int, canvas_id: int, view=None):
+    from . import funds_projection, event_resolution, analysis_snapshot
+    source = """select f.* from effective_flows f join tracked_flows t
+        on t.case_id=f.case_id and t.flow_id=f.id
+        where f.case_id=? and t.canvas_id=?"""
+    params = [case_id, canvas_id]
+    if view is not None:
+        if view.scope == "visible":
+            accounts = set(view.visible_accounts)
+            if any(edge.source not in accounts or edge.target not in accounts for edge in view.visible_edges):
+                raise HTTPException(422, "可见关系的两端须包含在可见账号集合中")
+            source += """ and (((coalesce(f.payer_account,'')='' or coalesce(f.payee_account,'')='')
+                and coalesce(nullif(f.payer_account,''),nullif(f.payee_account,'')) in (select unnest(?::varchar[])))
+                or exists (select 1 from (select unnest(?::varchar[]) as src,unnest(?::varchar[]) as dst) v
+                where v.src=f.payer_account and v.dst=f.payee_account))"""
+            params += [view.visible_accounts, [edge.source for edge in view.visible_edges], [edge.target for edge in view.visible_edges]]
+        try:
+            time_clause, time_params, time_basis = transaction_time.window(view.start, view.end, "f")
+        except ValueError:
+            raise HTTPException(422, "时间窗口的边界须使用相同时间依据") from None
+        if time_basis == "utc" and not db.q_raw("select 1 from (" + source + ") s where trade_time_utc is not null limit 1", params):
+            from . import source_ledger
+            ledger_rows = source_ledger.selected_rows(case_id, canvas_id=canvas_id)
+            if view.scope == "visible":
+                accounts = set(view.visible_accounts)
+                pairs = {(edge.source, edge.target) for edge in view.visible_edges}
+                ledger_rows = [row for row in ledger_rows
+                    if all(not row[side] or row[side] in accounts for side in ("payer_account", "payee_account"))
+                    and (not row["payer_account"] or not row["payee_account"] or (row["payer_account"], row["payee_account"]) in pairs)]
+            if not any(row["trade_time_utc"] is not None for row in ledger_rows):
+                raise HTTPException(422, {"code": "time_basis_incomparable", "message": "当前范围没有可与UTC窗口比较的显式时区记录"})
+        if time_clause:
+            source += " and ((" + time_clause + ")" + (" or f.trade_time is null)" if view.include_undated else ")")
+            params += time_params
+        elif not view.include_undated:
+            source += " and f.trade_time is not null"
+    prefix = funds_projection.cte(source)
+    nodes = db.q(prefix + """
+        select n.account,max(n.name) as name,
+            max(case when exists(select 1 from effective_main_accounts m
+                where m.case_id=? and m.account=n.account) then 1 else 0 end) is_main,
+            max(case when exists(select 1 from effective_main_accounts m
+                where m.case_id=? and m.name<>'' and m.name=n.name and m.account<>n.account) then 1 else 0 end) is_same_name,
+            max(ai.id_no) id_no,max(ap.updated_at) photo_at
+        from (select payer_account account,payer_name as name from selected_observations
+              union all select payee_account,payee_name from selected_observations) n
+        left join effective_account_ids ai on ai.case_id=? and ai.account=n.account
+        left join effective_account_photos ap on ap.case_id=? and ap.account=n.account
+        where coalesce(n.account,'')<>''
+        group by n.account""", [*params, case_id, case_id, case_id, case_id])
+    if view is not None and view.scope == "visible":
+        # A relationship filter can retain an isolated node. Its current-view
+        # totals are zero and its card falls back to an evidenced association;
+        # do not leak the removed edge's latest card or totals back into it.
+        present = {node["account"] for node in nodes}
+        missing = [account for account in view.visible_accounts if account not in present]
+        if missing:
+            nodes.extend(db.q("""with canvas as (
+                select f.* from effective_flows f join tracked_flows t on t.case_id=f.case_id and t.flow_id=f.id
+                where f.case_id=? and t.canvas_id=?), subjects as (
+                select payer_account account,payer_name as name from canvas
+                union all select payee_account,payee_name from canvas)
+                select account,max(name) as name from subjects where account in (select unnest(?::varchar[]))
+                group by account""", [case_id, canvas_id, missing]))
+    edges = db.q(prefix + f"""select payer_account as source,max(payer_name) as source_name,
+        payee_account as target,max(payee_name) as target_name,{transaction_time.sql_bounds()},
+        list(distinct summary) filter(where summary is not null and summary<>'') summaries,
+        list(id order by id) ids
+        from selected_observations
+        where coalesce(payer_account,'')<>'' and coalesce(payee_account,'')<>''
+        group by payer_account,payee_account""", params)
+    rollups = funds_projection.account_summaries(source, params)
+    empty = funds_projection.summarize_rows([])
+    sources = funds_projection.account_summaries(source, params, selected=True)
+    source_empty = funds_projection.empty_source_summary()
     for edge in edges:
-        edge["amount_totals"] = by_pair.get((edge["source"], edge["target"]), [])
-        edge["currencies"] = [row["currency"] for row in edge["amount_totals"]]
-        edge["total"] = edge["amount_totals"][0]["amount"] if len(edge["amount_totals"]) == 1 else None
+        funds = rollups[(0, edge["source"], edge["target"])]
+        edge.update(funds=funds, **sources[(0, edge["source"], edge["target"])])
+        edge["currencies"] = [item["currency"] for item in edge["amount_totals"] if item["currency"]]
+        if edge.get("pending_observation_count"):
+            edge["funds_pending"] = True
+            if edge["pending_observation_count"] > edge.get("pending_pair_observation_count", 0):
+                edge["time_basis_pending"] = True
     for node in nodes:
-        node.update(_directional_money(list(by_node.get(node["account"], {}).values())))
+        node.update(_funds_directional(rollups.get((2, None, node["account"]), empty), rollups.get((1, node["account"], None), empty)))
+        node.update(funds_projection.source_directional_fields(sources.get((2, None, node["account"]), source_empty), sources.get((1, node["account"], None), source_empty)))
     tracked = [r["flow_id"] for r in db.q(
-        "select flow_id from tracked_flows where case_id = ? and canvas_id = ?", [case_id, canvas_id])]
-    mains = [r["account"] for r in db.q("select account from main_accounts where case_id = ?", [case_id])]
+        "select flow_id from tracked_flows where case_id=? and canvas_id=?", [case_id, canvas_id])]
+    mains = [r["account"] for r in db.q("select account from effective_main_accounts where case_id=?", [case_id])]
     focus = [{"account": r["account"], "scale": r.get("scale") or 1.6}
-             for r in db.q("select account, scale from focus_nodes where case_id = ?", [case_id])]
-    return {"nodes": nodes, "edges": edges, "tracked_ids": tracked,
-            "main_accounts": mains, "focus_nodes": focus}
+             for r in db.q("select account,scale from focus_nodes where case_id=?", [case_id])]
+    evidence_resolution.decorate_accounts(case_id, nodes, source_sql=source, params=params)
+    event_resolution.decorate_edges(case_id, edges)
+    current_resolution = evidence_resolution.summary(case_id)
+    from . import source_ledger
+    result = {"analysis_revision": analysis_snapshot.revision(case_id),
+            "funds": rollups[(3, None, None)],
+            "case_event_summary": event_resolution.summary(case_id),
+            "resolution_revision": (current_resolution or {}).get("revision"), "resolution": current_resolution,
+            "statistics_policy": funds_projection.SELECTION_POLICY, "transaction_count": sources[(3, None, None)]["cnt"], "nodes": nodes, "edges": edges,
+            "tracked_ids": tracked, "main_accounts": mains, "focus_nodes": focus}
+    source_ledger.attach_graph(case_id, canvas_id, result, view)
+    return result
+
 
 
 class FocusIn(BaseModel):
@@ -844,7 +1021,7 @@ def canvas_from_flows(body: CanvasFromFlowsIn):
                          [body.case_id, name, json.dumps(snapshot, ensure_ascii=False)])[0]["id"]
         marks = ",".join("?" for _ in ids)
         db.x(f"insert into tracked_flows(case_id,flow_id,canvas_id) "
-             f"select ?,id,? from effective_flows where case_id=? and id in ({marks})",
+             f"select ?,id,? from effective_visible_flows where case_id=? and id in ({marks})",
              [body.case_id, canvas_id, body.case_id, *ids])
         return {"ok": True, "canvas_id": canvas_id, "name": name, "added": len(ids)}
 
@@ -935,7 +1112,7 @@ def track(body: TrackIn):
             marks = ",".join("?" for _ in ids)
             before = db.q("select count(*) n from tracked_flows where case_id=? and canvas_id=?", [body.case_id, body.canvas_id])[0]["n"]
             db.x(f"insert or ignore into tracked_flows(case_id,flow_id,canvas_id) "
-                 f"select ?,id,? from effective_flows where case_id=? and id in ({marks})",
+                 f"select ?,id,? from effective_visible_flows where case_id=? and id in ({marks})",
                  [body.case_id, body.canvas_id, body.case_id, *ids])
             after = db.q("select count(*) n from tracked_flows where case_id=? and canvas_id=?", [body.case_id, body.canvas_id])[0]["n"]
             return {"ok": True, "added": after - before}
@@ -975,7 +1152,7 @@ def restore_track_state(body: TrackStateIn):
         if added:
             marks = ",".join("?" for _ in added)
             db.x(f"insert into tracked_flows(case_id,flow_id,canvas_id) "
-                 f"select ?,id,? from effective_flows where case_id=? and id in ({marks})",
+                 f"select ?,id,? from effective_visible_flows where case_id=? and id in ({marks})",
                  [body.case_id, body.canvas_id, body.case_id, *added])
         return {"ok": True, "tracked_ids": sorted(desired)}
 
@@ -1012,17 +1189,23 @@ def track_bulk(body: BulkTrackIn):
             if current != set(body.expected_ids):
                 raise HTTPException(409, "画布追踪已变更，请刷新后重试")
         _require_flows(body.case_id, body.flow_ids, effective=True)
+        from . import source_ledger
+        if source_ledger.information(body.case_id, body.flow_ids):
+            raise HTTPException(422, "来源记账的资金影响未确定或已抵销，请使用上图查看来源关系；不能据此追踪资金来源去向")
         if not body.flow_ids:
             raise HTTPException(404, "未找到所选流水")
         if body.direction not in ("source", "target"):
             raise HTTPException(400, "direction 应为 source 或 target")
         x = max(1, min(50, body.x))
         id_str = ",".join(str(int(i)) for i in body.flow_ids)
-        anchors = db.q(f"select * from effective_flows where case_id = ? and id in ({id_str})", [body.case_id])
+        anchors = db.q(f"select *,cast(trade_time as varchar) _precise_time from effective_flows where case_id = ? and id in ({id_str})", [body.case_id])
+        for row in anchors:
+            precise = row.pop("_precise_time")
+            row["trade_time"] = row.get("trade_time_original") or precise
         if not anchors:
             raise HTTPException(404, "未找到所选流水")
         _require_graphable(body.case_id, [row["id"] for row in anchors])
-        mains = {r["account"] for r in db.q("select account from main_accounts where case_id = ?",
+        mains = {r["account"] for r in db.q("select account from effective_main_accounts where case_id = ?",
                                             [body.case_id])}
 
         pick_ids = set()
@@ -1038,23 +1221,12 @@ def track_bulk(body: BulkTrackIn):
                 acct = f["payee_account"]
                 acct_label = "收款方"
             picked = 0
+            rows = []
+            navigation = {"status": "not_main", "reasons": []}
             if acct in mains:
-                if body.direction == "source":
-                    rows = db.q("""
-                        select id from effective_flows
-                        where case_id = ? and payee_account = ? and self_account = ?
-                          and coalesce(payer_account,'')<>'' and coalesce(payee_account,'')<>''
-                          and (trade_time < ? or (trade_time = ? and id < ?))
-                        order by trade_time desc, id desc limit ?
-                    """, [body.case_id, acct, acct, f["trade_time"], f["trade_time"], f["id"], x])
-                else:
-                    rows = db.q("""
-                        select id from effective_flows
-                        where case_id = ? and payer_account = ? and self_account = ?
-                          and coalesce(payer_account,'')<>'' and coalesce(payee_account,'')<>''
-                          and (trade_time > ? or (trade_time = ? and id > ?))
-                        order by trade_time asc, id asc limit ?
-                    """, [body.case_id, acct, acct, f["trade_time"], f["trade_time"], f["id"], x])
+                from . import ledger_navigation
+                navigation = ledger_navigation.neighbors(body.case_id, acct, f, body.direction, x)
+                rows = navigation["rows"]
                 for r in rows:
                     pick_ids.add(r["id"])
                 picked = len(rows)
@@ -1067,7 +1239,11 @@ def track_bulk(body: BulkTrackIn):
                 "counter_kind": "in" if body.direction == "source" else "out",
                 "picked": picked,
                 "is_main": acct in mains,
+                "ordering": {key: navigation[key] for key in ("status", "reasons")},
             })
+            if acct in mains:
+                from . import principal_evidence
+                detail[-1]["principal"] = principal_evidence.tracking_result(body.case_id, acct, f, rows, body.direction)
             pick_ids.add(f["id"])   # 锚点本身（本笔交易）也上图
 
         if pick_ids:
@@ -1083,11 +1259,22 @@ def track_bulk(body: BulkTrackIn):
 
 @app.get("/api/context/{flow_id}")
 def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", case_id: int = 1):
+    with db._lock:
+        return _context(flow_id, x, side, case_id)
+
+
+def _context(flow_id, x, side, case_id):
     """某笔流水的交易对手在该账户流水中、位于本笔前后各 X 笔的流水（限当前案件）"""
-    f = db.q("select * from effective_flows where id = ? and case_id = ?", [flow_id, case_id])
+    f = db.q("select *,cast(trade_time as varchar) _precise_time from effective_visible_flows where id = ? and case_id = ?", [flow_id, case_id])
     if not f:
         raise HTTPException(404, "流水不存在")
     f = f[0]
+    from . import source_ledger
+    source_ledger.decorate(case_id, [f])
+    precise = f.pop("_precise_time")
+    f["trade_time"] = f.get("trade_time_original") or precise
+    if f.get("source_ledger") and not f.get(("payer" if side == "payer" else "payee") + "_account"):
+        side = "payer" if f["payer_account"] else "payee"
     if side == "payer":
         acct = f["payer_account"]
     else:
@@ -1095,31 +1282,57 @@ def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", c
         acct = f["payee_account"]
     if not acct:
         raise HTTPException(422, "该侧账号缺失，无法定位账户流水；原交易仍保留在明细中")
-    anchor = db.q("""
-        with acct as (select id, trade_time from effective_flows
-                      where case_id = ? and (payer_account = ? or payee_account = ?))
-        select count(*) as c from acct
-        where trade_time < (select trade_time from effective_flows where id = ?)
-           or (trade_time = (select trade_time from effective_flows where id = ?) and id < ?)
-    """, [case_id, acct, acct, flow_id, flow_id, flow_id])[0]["c"] + 1
-    rows = db.q("""
-        with acct as (
-            select id, trade_no, trade_time, amount, balance, currency, summary, channel,
-                   payer_account, payer_name, payee_account, payee_name, self_account,
-                   case when payer_account = ? then 'out' else 'in' end as dir,
-                   case when self_account = ? then 'self'
-                        when coalesce(self_account, '') <> '' then 'counter'
-                        else '' end as book
-            from effective_flows where case_id = ? and (payer_account = ? or payee_account = ?)
-        ), ranked as (
-            select *, row_number() over (order by trade_time, id) as rn from acct
-        )
-        select * from ranked where rn between ? and ? order by rn
-    """, [acct, acct, case_id, acct, acct, anchor - x, anchor + x])
-    total = db.q("select count(*) c from effective_flows where case_id = ? and (payer_account = ? or payee_account = ?)",
-                 [case_id, acct, acct])[0]["c"]
-    result = {"anchor": f, "side": side, "account": acct, "total": total, "pos": anchor, "rows": rows}
-    result["suggestions"] = _suggest_counterparties(rows, f)
+    from . import ledger_navigation
+    own = ledger_navigation.own_anchor(case_id, acct, f)
+    window = ledger_navigation.context_window(case_id, acct, f, x, own_entry=own)
+    rows = window["rows"]
+    source_ledger.decorate(case_id, rows)
+    for row in rows:
+        row["dir"] = "out" if row["payer_account"] == acct else "in"
+        row["book"] = "self" if row["self_account"] == acct else "counter" if row["self_account"] else ""
+    result = {"anchor": f, "side": side, "account": acct, **window}
+    from . import analysis_snapshot
+    result["analysis_revision"] = analysis_snapshot.revision(case_id)
+    result["display_account"] = f.get(side + "_display_account") or acct
+    from . import event_resolution
+    members = {row["flow_id"]: row for row in event_resolution.members(case_id, [f["id"], *(row["id"] for row in rows)])}
+    for row in [f, *rows]:
+        member = members.get(str(row["id"]), {})
+        row["event_state"] = member.get("status", "unknown")
+        row["event_id"] = member.get("event_id") if member.get("status") == "confirmed" else None
+        row["context_group"] = "event:" + row["event_id"] if row["event_id"] else "record:" + str(row["id"])
+    displays = {}
+    for row in rows:
+        for role in ("payer","payee"):
+            displays[row[role + "_account"]] = row.get(role + "_display_account") or row[role + "_account"]
+        row["counter_display_account"] = row[("payer" if row["dir"] == "in" else "payee") + "_display_account"]
+    financial_rows = [row for row in rows if not row.get("source_ledger")]
+    result["suggestions"] = _suggest_counterparties(financial_rows, f) if not f.get("source_ledger") else {}
+    from . import funds_projection
+    _, result["funds"] = funds_projection.from_rows(case_id, financial_rows)
+    observed_by_id = {str(row["id"]): row for row in rows}
+    for items in result["suggestions"].values():
+        if isinstance(items,list):
+            for item in items:
+                if isinstance(item,dict) and item.get("account") in displays:
+                    item["display_account"] = displays[item["account"]]
+                if isinstance(item, dict) and "ids" in item:
+                    _, funds = funds_projection.from_rows(case_id, [observed_by_id[str(key)] for key in item["ids"]])
+                    item.update(observation_count=item["cnt"], observation_total=item["total"],
+                                metric_basis="observation_clue", funds=funds, **funds_projection.public_fields(funds))
+    from . import principal_evidence
+    if f.get("source_ledger"):
+        result["principal"] = {"status": "unknown", "currency": f["currency"], "targets": [], "condition_basis": "source_evidence",
+            "assessment": [{"condition": "economic_effect", "status": "unknown", "kind": "missing_evidence", "source_ids": [],
+                            "message": "本笔为来源记账记录，资金影响未确定或已抵销，不用于本金归因"}]}
+        return result
+    result["principal"] = principal_evidence.context_result(case_id, acct, f, financial_rows, own_entry=own)
+    if side == "payer":
+        from . import ledger_navigation
+        candidates = ledger_navigation.neighbors(case_id, acct, f, "source", x)
+        visible = {str(row["id"]) for row in rows}
+        result["principal"] = principal_evidence.tracking_result(case_id, acct, f,
+            [row for row in candidates["rows"] if str(row["id"]) in visible], "source")
     return result
 
 
@@ -1166,17 +1379,17 @@ def amt_is_close(ratio, lo, hi):
 def _suggest_counterparties(rows, anchor):
     """在前后 X 笔候选中，按启发式规则推荐疑似来源 / 去向对手（可解释评分）"""
     try:
-        at = _dt.strptime(anchor["trade_time"], "%Y-%m-%d %H:%M:%S")
+        at = _dt.fromisoformat(anchor["trade_time"])
     except (TypeError, ValueError):
         return {"sources": [], "targets": []}
     amt = money_decimal(anchor["amount"] or "0")
 
-    groups = {}
+    groups, times = {}, {}
     for r in rows:
-        if r["id"] == anchor["id"]:
+        if r["id"] == anchor["id"] or r.get("context_relation") == "unordered" or transaction_time.basis(r) != transaction_time.basis(anchor):
             continue
         try:
-            _dt.strptime(r["trade_time"], "%Y-%m-%d %H:%M:%S")
+            times[r["id"]] = _dt.fromisoformat(r["trade_time"])
         except (TypeError, ValueError):
             continue
         if (r.get("currency") or "") != (anchor.get("currency") or ""):
@@ -1197,16 +1410,16 @@ def _suggest_counterparties(rows, anchor):
         if not fs:
             return None
         if kind == "source":
-            fs = [f for f in fs if f["trade_time"] < anchor["trade_time"]]
+            fs = [f for f in fs if f.get("context_relation") == "before" or not f.get("context_relation") and times[f["id"]] < at]
         else:
-            fs = [f for f in fs if f["trade_time"] > anchor["trade_time"]]
+            fs = [f for f in fs if f.get("context_relation") == "after" or not f.get("context_relation") and times[f["id"]] > at]
         if not fs:
             return None
         ids = [f["id"] for f in fs]
         total = sum((money_decimal(f["amount"] or "0") for f in fs), money_decimal("0"))
         n = len(fs)
         ratio = (total / amt) if amt else 0
-        dt_min = min(abs((_dt.strptime(f["trade_time"], "%Y-%m-%d %H:%M:%S") - at).total_seconds()) for f in fs) / 60
+        dt_min = min(abs((times[f["id"]] - at).total_seconds()) for f in fs) / 60
         score = 40 + _tscore(dt_min) + _ascore(ratio)
         reasons = []
         tags = []
@@ -1224,7 +1437,7 @@ def _suggest_counterparties(rows, anchor):
         # 快进快出：本账户在锚点附近既有转入又有转出
         other = [f for f in g["flows"] if f["dir"] != rel]
         if other:
-            o_dt = min(abs((_dt.strptime(f["trade_time"], "%Y-%m-%d %H:%M:%S") - at).total_seconds()) for f in other) / 60
+            o_dt = min(abs((times[f["id"]] - at).total_seconds()) for f in other) / 60
             if o_dt <= 60:
                 tags.append("疑似过账")
                 score += 10
@@ -1246,8 +1459,7 @@ def _suggest_counterparties(rows, anchor):
         t = build(g, "target")
         if t:
             targets.append(t)
-    # 组合模式识别：按时间顺序累加，前缀合计 ≈ 锚点金额（分散转出 / 归集转入）
-    # —— 快进快出场景资金按时间流出，前缀匹配可排除期间无关大额的干扰
+    # 组合金额线索：对手分组可能交错发生，不能称为逐笔时序前缀。
     for kind, lst in (("source", sources), ("target", targets)):
         if amt and len(lst) >= 2:
             acc, picked = money_decimal("0"), []
@@ -1256,8 +1468,8 @@ def _suggest_counterparties(rows, anchor):
                 picked.append(x)
                 r_acc = acc / amt
                 if money_decimal("0.85") <= r_acc <= money_decimal("1.05"):
-                    tag = ("前 {} 个来源合计 ≈ 锚点金额的 {:.0%}，疑似归集转入".format(len(picked), r_acc) if kind == "source"
-                           else "前 {} 个去向合计 ≈ 锚点金额的 {:.0%}，疑似分散转出".format(len(picked), r_acc))
+                    tag = ("其中 {} 个来源合计 ≈ 锚点金额的 {:.0%}，仅为归集金额组合线索".format(len(picked), r_acc) if kind == "source"
+                           else "其中 {} 个去向合计 ≈ 锚点金额的 {:.0%}，仅为分散金额组合线索".format(len(picked), r_acc))
                     for y in picked:
                         if tag not in y["tags"]:
                             y["tags"].append(tag)
@@ -1293,6 +1505,12 @@ class AccountIdIn(BaseModel):
     id_no: str = ""
 
 
+def _metadata_subject_keys(case_id, account):
+    """Keys covered by this explicit user edit under current unique evidence."""
+    return sorted({account, *(row["raw_account"] for row in db.q_raw(
+        "select raw_account from effective_account_subjects where case_id=? and account=?", [case_id, account]))})
+
+
 @app.post("/api/account-ids/set")
 def account_id_set(body: AccountIdIn):
     """设置/清除单个账号的身份证号（图谱抽屉编辑用）"""
@@ -1303,11 +1521,12 @@ def account_id_set(body: AccountIdIn):
             raise HTTPException(400, "账号不能为空")
         if idno and not _ID_RE.match(idno):
             raise HTTPException(400, "身份证号格式不正确（应为 15 位或 18 位）")
+        subjects = _metadata_subject_keys(body.case_id, acct)
+        db.x("delete from account_ids where case_id=? and account in (select unnest(?::varchar[]))", [body.case_id, subjects])
         if idno:
             db.x("insert or replace into account_ids(case_id, account, id_no) values (?,?,?)",
                  [body.case_id, acct, idno])
             return {"ok": True, "account": acct, "id_no": idno}
-        db.x("delete from account_ids where case_id = ? and account = ?", [body.case_id, acct])
         return {"ok": True, "account": acct, "cleared": True}
 
 @app.get("/api/account-ids/list")
@@ -1467,8 +1686,11 @@ async def account_photo_set(case_id: int = Form(...), account: str = Form(...),
     h = _photo_hash(acct)
     with _photo_transaction(case_id) as directory:
         directory.mkdir(parents=True, exist_ok=True)
-        for old in directory.glob(f"{h}.*"):
-            old.unlink()
+        subjects = _metadata_subject_keys(case_id, acct)
+        for subject in subjects:
+            for old in directory.glob(f"{_photo_hash(subject)}.*"):
+                old.unlink()
+        db.x("delete from account_photos where case_id=? and account in (select unnest(?::varchar[]))", [case_id, subjects])
         orig = directory / f"{h}.orig{ext}"
         orig.write_bytes(content)
         db.x("insert or replace into account_photos(case_id, account, fname, crop_cx, crop_cy, crop_r) "
@@ -1482,10 +1704,11 @@ def account_photo_clear(body: AccountIdIn):
     if not acct:
         raise HTTPException(400, "账号不能为空")
     with _photo_transaction(body.case_id) as directory:
-        h = _photo_hash(acct)
-        for old in directory.glob(f"{h}.*"):
-            old.unlink()
-        db.x("delete from account_photos where case_id = ? and account = ?", [body.case_id, acct])
+        subjects = _metadata_subject_keys(body.case_id, acct)
+        for subject in subjects:
+            for old in directory.glob(f"{_photo_hash(subject)}.*"):
+                old.unlink()
+        db.x("delete from account_photos where case_id=? and account in (select unnest(?::varchar[]))", [body.case_id, subjects])
     return {"ok": True, "cleared": True}
 
 
@@ -1493,7 +1716,7 @@ def account_photo_clear(body: AccountIdIn):
 def account_photo_orig(case_id: int, account: str):
     """原图（重新裁剪用）"""
     with _case_transaction(case_id):
-        row = db.q("select fname from account_photos where case_id = ? and account = ?",
+        row = db.q("select fname from effective_account_photos where case_id = ? and account = ?",
                    [case_id, account])
         if not row:
             raise HTTPException(404, "无照片")
@@ -1512,7 +1735,7 @@ def account_photo_img(case_id: int, account: str, ring: str = "#4caf7d"):
         if not re.match(r"^#[0-9a-fA-F]{6}$", ring):
             ring = "#4caf7d"
         row = db.q("select fname, updated_at, crop_cx, crop_cy, crop_r "
-                   "from account_photos where case_id = ? and account = ?", [case_id, account])
+                   "from effective_account_photos where case_id = ? and account = ?", [case_id, account])
         if not row:
             raise HTTPException(404, "无照片")
         d = _photo_dir(case_id)
@@ -1526,6 +1749,7 @@ def account_photo_img(case_id: int, account: str, ring: str = "#4caf7d"):
         cr = 0.5 if row[0].get("crop_r") is None else row[0]["crop_r"]
         h = _photo_hash(account)
         stamp = str(row[0].get("updated_at") or "").replace("-", "").replace(":", "").replace(" ", "")
+        stamp += _photo_hash(row[0]["fname"] + "|" + repr((cx, cy, cr)))
         cache = d / f"{h}.{stamp}.{ring.lstrip('#')}.png"
         if not cache.exists():
             try:
@@ -1608,6 +1832,12 @@ class GraphExportView(BaseModel):
     visible_nodes: int = Field(ge=0, le=2_147_483_647, strict=True)
     visible_edges: int = Field(ge=0, le=2_147_483_647, strict=True)
     label_mode: Literal["auto", "all", "focus"]
+    statistics_policy: Optional[Literal["typed-account-evidence-v1", "legacy_mirror_fifo", "evidence-bounded-funds-v1", "selected-transactions-v1"]] = None
+    resolution_revision: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    analysis_revision: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    source_funds: Optional[FundsProjection] = None
+    transaction_count: Optional[int] = Field(default=None, ge=0, le=2_147_483_647, strict=True)
+    source_funds_scope: Optional[Literal["tracked_selection", "time_window_selection"]] = None
     relation_filter: Optional[GraphRelationFilter] = None
     amount_width: Optional[GraphAmountWidth] = None
     time_window: Optional[GraphTimeWindow] = None
@@ -1622,6 +1852,7 @@ class GraphExportView(BaseModel):
 class GraphHtmlIn(BaseModel):
     """前端画布快照：所见即所得导出（保留节点位置/边线型/折点/标注及拖动位置）"""
     case_name: str = "资金图谱"
+    case_id: Optional[int] = Field(default=None, gt=0)
     w: int = 1200
     h: int = 800
     nodes: list = []
@@ -1643,6 +1874,7 @@ class GraphHtmlIn(BaseModel):
 @app.post("/api/export/graph.html")
 def export_graph_html(body: GraphHtmlIn):
     """按前端画布快照导出可交互 HTML：与原图完全一致，节点可拖拽（自包含单文件）"""
+    _check_export_revision(body.case_id, body.view.analysis_revision if body.view else None)
     g6 = (STATIC_DIR / "vendor" / "g6.min.js").read_text(encoding="utf-8")
     g6 = g6.replace("</script", "<\\/script")
     presentation = (STATIC_DIR / "graph-presentation.js").read_text(encoding="utf-8")
@@ -1656,7 +1888,7 @@ def export_graph_html(body: GraphHtmlIn):
     data = body.model_dump()
     # Keep older export payloads unchanged when optional display metadata is absent.
     if body.view is not None:
-        for key in ("relation_filter", "amount_width", "time_window"):
+        for key in ("relation_filter", "amount_width", "time_window", "statistics_policy", "resolution_revision", "analysis_revision", "source_funds", "source_funds_scope", "transaction_count"):
             if getattr(body.view, key) is None:
                 data["view"].pop(key, None)
     payload = json.dumps(data, ensure_ascii=False)
@@ -1683,6 +1915,25 @@ def export_graph_html(body: GraphHtmlIn):
             amount_range = "、".join(conditions) if conditions else "不限金额"
             prefix = "当前视图筛选设置" if view.scope == "all" else "筛选条件"
             scope_text += f"；{prefix}：按 {currency} 聚合关系金额，{amount_range}（不同币种不相加）"
+        if view.statistics_policy == evidence_resolution.POLICY:
+            scope_text += "; 统计口径：已接纳账务记录，未证同一经济事件的双方反馈各自保留"
+            if view.resolution_revision:
+                scope_text += f"；解析修订：{view.resolution_revision}"
+        if view.statistics_policy == "selected-transactions-v1":
+            scope_text += "；统计口径：已确认同笔计一次，其他有效流水分别保留，按原币种合计；交易额不等于来源本金"
+            if view.transaction_count is not None:
+                scope_text += f"；追踪选择 {view.transaction_count} 笔"
+            if view.source_funds is not None:
+                scope_text += f"，所选原观察 {view.source_funds.observation_count} 条（该统计范围可能大于当前可见子图）"
+        if view.statistics_policy == "evidence-bounded-funds-v1":
+            scope_text += "；统计口径：确认事件计一次，未决观察保留可确认范围；交易额不等于来源本金"
+            if view.source_funds is not None:
+                source_scope = "时间窗内追踪选择" if view.source_funds_scope == "time_window_selection" else "追踪选择"
+                bounds = view.source_funds.count
+                count = str(bounds.lower) if bounds.lower == bounds.upper else f"{bounds.lower}—{bounds.upper}"
+                scope_text += f"；{source_scope}事件数 {count}，原观察 {view.source_funds.observation_count} 条（该统计范围可能大于当前可见子图）"
+        if view.analysis_revision:
+            scope_text += f"；分析修订：{view.analysis_revision}"
         labels = {"auto": "自动分级", "all": "全部", "focus": "仅重点"}
         scope_text += f" · 标签：{labels[view.label_mode]}"
         if view.time_window is not None:
@@ -1724,6 +1975,17 @@ def export_graph_html(body: GraphHtmlIn):
 class GraphPdfIn(BaseModel):
     image: str   # 高清 PNG dataURL
     description: Optional[str] = Field(default=None, max_length=8192, strict=True)
+    case_id: Optional[int] = Field(default=None, gt=0)
+    expected_revision: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+
+
+def _check_export_revision(case_id, expected):
+    if expected is not None:
+        if case_id is None:
+            raise HTTPException(422, "带分析修订的导出必须指定案件")
+        from . import analysis_snapshot
+        with db._lock:
+            analysis_snapshot.revision(case_id, expected)
 
 
 def _graph_png_bytes(image: str) -> bytes:
@@ -1743,6 +2005,7 @@ def _graph_png_bytes(image: str) -> bytes:
 @app.post("/api/export/graph.png")
 def export_graph_png(body: GraphPdfIn):
     """Keep view scope in PNG metadata, leaving the canvas pixels unchanged."""
+    _check_export_revision(body.case_id, body.expected_revision)
     from PIL import Image, PngImagePlugin
     try:
         png = _graph_png_bytes(body.image)
@@ -1762,6 +2025,7 @@ def export_graph_png(body: GraphPdfIn):
 @app.post("/api/export/graph.pdf")
 def export_graph_pdf(body: GraphPdfIn):
     """把前端高清图谱 PNG 包装为单页 PDF，并保存范围元数据。"""
+    _check_export_revision(body.case_id, body.expected_revision)
     try:
         png = _graph_png_bytes(body.image)
         pdf = _png_to_pdf_lossless(png, body.description)
@@ -1826,21 +2090,51 @@ def _png_to_pdf_lossless(png: bytes, description: Optional[str] = None) -> bytes
 
 
 @app.get("/api/export/tracked.xlsx")
-def export_tracked(case_id: int, canvas_id: int = 0):
+def export_tracked(case_id: int, canvas_id: int = 0, expected_revision: Optional[str] = None):
     with db._lock:
+        from . import analysis_snapshot, event_resolution, funds_projection
+        revision = analysis_snapshot.revision(case_id, expected_revision)
         rows, pending = _tracked_export_data(case_id, canvas_id)
+        original_rows = rows
+        from . import source_ledger
+        source_ledger.decorate(case_id, rows)
+        ledger_rows = [row for row in rows if row.get("source_ledger")]
+        rows, funds = funds_projection.from_rows(case_id, [row for row in rows if not row.get("source_ledger")])
+        rows = [*rows, *ledger_rows]
+        rows.sort(key=lambda row: (row["trade_time"] is None, row["trade_time"], row["id"]))
         # Preserve the existing CSV/Excel export shape. The additional coverage
         # sheet applies only when this case has versioned import evidence.
         coverage = import_coverage(case_id) if db.q_raw(
             "select 1 from import_sources where case_id=? and row_kind in ('archive_record','table_record') limit 1", [case_id]) else None
-    return _tracked_workbook(case_id, rows, pending, coverage)
+        resolution = evidence_resolution.summary(case_id)
+        events = event_resolution.summary(case_id)
+        memberships = {item["flow_id"]: item for item in event_resolution.members(case_id, [row["id"] for row in rows])}
+        for row in rows:
+            member = memberships.get(str(row["id"]), {})
+            row.update(event_id=member.get("event_id", ""), event_state=member.get("status", "unknown"))
+        registry = {}
+        if resolution:
+            wanted = {row[side + "_account"] for row in rows for side in ("payer", "payee")
+                      if row[side + "_account"]}
+            if "账号" in pending:
+                wanted.update(pending["账号"])
+            metadata = [{"account": account} for account in wanted]
+            evidence_resolution.decorate_accounts(case_id, metadata,
+                source_sql="select f.* from effective_flows f join tracked_flows tf on tf.flow_id=f.id where tf.case_id=? and tf.canvas_id=? and f.case_id=?",
+                params=[case_id, canvas_id, case_id])
+            registry = {item["account"]: item for item in metadata}
+    snapshot = {"analysis_revision": revision, "case_event_summary": events, "funds": funds, "observations": original_rows}
+    return _tracked_workbook(case_id, rows, pending, coverage, resolution, registry, snapshot)
 
 
 def _tracked_export_data(case_id, canvas_id):
     rows = db.q_raw("""
-        select f.trade_time, f.trade_no, f.payer_name, f.payer_account, f.payer_bank,
-               f.payee_name, f.payee_account, f.payee_bank, f.amount, f.currency, f.summary, f.channel, f.id
-        from effective_flows f join tracked_flows tf on tf.flow_id = f.id
+        select f.case_id, f.self_account, f.balance, f.trade_time, f.trade_time_utc, f.trade_time_original, f.trade_time_offset, f.trade_no, f.payer_name, f.payer_account, f.payer_bank,
+               f.payee_name, f.payee_account, f.payee_bank, f.amount, f.currency, f.summary, f.channel, f.id,
+               f.raw_self_account,f.raw_payer_account,f.raw_payee_account,f.payer_display_account,f.payee_display_account,
+               f.payer_card,f.payee_card,f.self_card,f.payer_source_account,f.payee_source_account,f.self_source_account,
+               f.source_counter_account,f.source_counter_name,f.source_counter_bank
+        from effective_visible_flows f join tracked_flows tf on tf.flow_id = f.id
         where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ? order by f.trade_time
     """, [case_id, canvas_id, case_id])
     if not rows:
@@ -1848,20 +2142,108 @@ def _tracked_export_data(case_id, canvas_id):
     return rows, _pending_accounts(case_id, canvas_id)
 
 
-def _tracked_workbook(case_id, rows, pending, coverage):
+def _tracked_workbook(case_id, rows, pending, coverage, current_resolution, registry, snapshot=None):
     cols = {"trade_time": "交易时间", "trade_no": "交易流水号",
             "payer_name": "付款户名", "payer_account": "付款账号", "payer_bank": "付款开户行",
             "payee_name": "收款户名", "payee_account": "收款账号", "payee_bank": "收款开户行",
             "amount": "交易金额", "currency": "币种", "summary": "摘要", "channel": "渠道", "id": "流水ID"}
-    df = pd.DataFrame(rows).rename(columns=cols)[list(cols.values())]
+    if any(row.get("source_ledger") for row in rows):
+        rows = [dict(row) for row in rows]
+        for row in rows:
+            info = row.get("source_ledger")
+            row.update(source_kind="来源记账" if info else "有效交易",
+                       source_direction=info["source_direction"] if info else "",
+                       source_counter_account=info["counter_account"] if info else "",
+                       source_counter_name=info["counter_name"] if info else "",
+                       source_counter_bank=info["counter_bank"] if info else "",
+                       source_direction_status=info["direction"] if info else "",
+                       source_effect={"unknown": "未确定", "no_movement": "零额", "paired_cancellation": "已匹配抵销"}[info["economic_effect"]] if info else "按资金统计",
+                       source_balance_change=info["balance_change"]["difference"] if info else None,
+                       source_balance_basis=info["balance_change"]["basis"] or info["balance_change"]["reason"] if info else "")
+        cols.update(raw_self_account="本方账号", source_kind="记录含义", source_direction="来源标注方向", source_direction_status="方向状态", source_effect="资金影响",
+                    source_counter_account="来源对方账号", source_counter_name="来源对方户名", source_counter_bank="来源对方开户行",
+                    source_balance_change="本方客观余额差", source_balance_basis="余额差依据")
+    if snapshot:
+        cols.update(event_id="已关联事件ID", event_state="事件证据状态", observation_count="所选原分录数")
+    if any(row.get("fact_pair_pending") for row in rows):
+        rows = [{**row,
+                 "pending_note": "来源记录金额；经济事件结论见资金统计" if row.get("fact_pair_pending") else ""}
+                for row in rows]
+        cols["pending_note"] = "资金关联说明"
+    if current_resolution:
+        rows = [dict(row) for row in rows]
+        for row in rows:
+            for side in ("payer", "payee"):
+                identifier = row[side + "_account"]
+                row[side + "_entity_id"] = identifier
+                row[side + "_account"] = registry.get(identifier, {}).get("account_number", identifier)
+        cols.update(payer_entity_id="付款实体ID", payee_entity_id="收款实体ID", payer_display_account="付款显示标识", payee_display_account="收款显示标识", raw_payer_account="原始付款账号", raw_payee_account="原始收款账号")
+        cols.update(payer_card="当笔付款卡号", payee_card="当笔收款卡号", self_card="当笔本方卡号",
+                    payer_source_account="来源付款账号", payee_source_account="来源收款账号", self_source_account="来源本方账号")
+        pending = pending.copy()
+        if "账号" in pending:
+            pending["实体ID"] = pending["账号"]
+            pending["显示标识"] = pending["账号"].map(lambda key: registry.get(key, {}).get("display_account", key))
+            pending["账号"] = pending["账号"].map(lambda key: registry.get(key, {}).get("account_number", key))
+    if any(row.get("trade_time_utc") is not None for row in rows):
+        rows = [{**row, **transaction_time.public(row)} for row in rows]
+        cols.update(trade_time_wall="来源壁钟", trade_time_original="来源时间原文", trade_time_offset="来源偏移",
+                    trade_time_utc="UTC瞬间", trade_time_basis="时间依据")
+    df = pd.DataFrame(rows, columns=list(cols)).rename(columns=cols)[list(cols.values())]
+    # Excel's datetime representation/readers round to milliseconds. Preserve
+    # the original timestamp as text, just as exact money and IDs below.
+    def timestamp_text(value):
+        if value is None or pd.isna(value):
+            return None
+        return value.isoformat(sep=" ") if hasattr(value, "isoformat") else str(value)
+    df["交易时间"] = df["交易时间"].map(timestamp_text)
     # Excel numbers cannot preserve all DECIMAL(18,2) cents or bigint IDs.
-    df["交易金额"] = df["交易金额"].map(lambda value: format(value, ".2f"))
+    df["交易金额"] = df["交易金额"].map(lambda value: money_string(value) if value is not None and not pd.isna(value) else None)
     df["流水ID"] = df["流水ID"].map(str)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
         df.to_excel(w, index=False, sheet_name="追踪流水")
-        # 第二张表：待调取账号（当前画布图谱中出现、但尚未导入其本人流水的对手账户）
+        if snapshot and "funds" in snapshot:
+            funds = snapshot["funds"]
+            pd.DataFrame([{"币种": item["currency"] or "币种待定", "精确事件金额": item["amount"],
+                           "已确认下界": item["lower"], "可能上界": item["upper"],
+                           "事件数下界": funds["count"]["lower"], "事件数上界": funds["count"]["upper"],
+                           "所选原分录数": funds["observation_count"], "修订": snapshot["analysis_revision"]}
+                          for item in funds["totals"]]).to_excel(w, index=False, sheet_name="资金统计")
+            originals = snapshot["observations"]
+            if any(row.get("trade_time_utc") is not None for row in originals):
+                originals = [{**row, **transaction_time.public(row)} for row in originals]
+            original_cols = {"id": "原流水ID", "trade_time": "交易时间", "raw_self_account": "本方账号",
+                             "amount": "观察金额", "balance": "本方原余额", "currency": "币种",
+                             "raw_payer_account": "付款账号", "raw_payee_account": "收款账号", "trade_no": "原流水号"}
+            if any(row.get("source_ledger") for row in originals):
+                originals = [{**row, "source_direction": row.get("source_ledger", {}).get("source_direction", "")} for row in originals]
+                original_cols.update(source_counter_account="来源对方账号", source_counter_name="来源对方户名",
+                                     source_counter_bank="来源对方开户行", source_direction="来源标注方向")
+            if any(row.get("trade_time_utc") is not None for row in originals):
+                original_cols.update(trade_time_wall="来源壁钟", trade_time_original="来源时间原文", trade_time_offset="来源偏移",
+                                     trade_time_utc="UTC瞬间", trade_time_basis="时间依据")
+            original = pd.DataFrame(originals)
+            for key in ("amount", "balance"):
+                original[key] = original[key].map(lambda value: money_string(value) if value is not None and not pd.isna(value) else None)
+            original["id"] = original["id"].map(str)
+            original["trade_time"] = original["trade_time"].map(timestamp_text)
+            original[list(original_cols)].rename(columns=original_cols).to_excel(w, index=False, sheet_name="原始账簿观察")
+        # 待调取账号：当前画布出现、但尚未导入其本人流水的对手账户。
+        pending = pending.copy()
+        for column in ("首次交易", "末次交易"):
+            if column in pending:
+                pending[column] = pending[column].map(timestamp_text)
         pending.to_excel(w, index=False, sheet_name="待调取账号")
+        if snapshot:
+            events = snapshot.get("case_event_summary")
+            pd.DataFrame([
+                ("分析修订", snapshot["analysis_revision"]),
+                ("金额含义", "有效交易按已确认事件计一次；来源记账保留原值和标注方向，不直接相加认定资金总额。零额贡献为零；只有完整抵销依据才认定已匹配抵销。客观余额差不是跨账户资金流量或本金。"),
+                ("事件统计范围", "当前画布选择中的有效交易进入资金统计；来源记账另列，原始账簿观察完整保留各自金额和余额。"),
+                ("统一资金投影", json.dumps(snapshot.get("funds"), ensure_ascii=False)),
+                ("事件证据", json.dumps(events, ensure_ascii=False) if events else "无可确认事件作用域"),
+            ], columns=["项目", "说明"]).to_excel(w, index=False, sheet_name="分析修订")
         if coverage is not None:
             pd.DataFrame([
                 ("流水口径", "当前画布的有效追踪流水；已匹配的冲正／撤销双方退出统计，普通退款仍保留，不代表结算净额或完整清算结果。"),
@@ -1872,7 +2254,9 @@ def _tracked_workbook(case_id, rows, pending, coverage):
                 ("保留原始流水中退出分析的笔数", coverage.get("excluded_flows", 0)),
                 ("已导入来源资金语义是否完整", "是" if coverage["financial_interpretation_complete"] else "否"),
                 ("未确定记录", "资金效果未确定的记录未计入流水统计；非资金事件单独保留，不计入金额与交易笔数。"),
-            ], columns=["项目", "说明"]).to_excel(w, index=False, sheet_name="统计口径")
+                ("统计策略", "evidence-bounded-funds-v1"),
+            ] + ([("解析修订", current_resolution["revision"]),
+                   ("账务记录口径", "相同有据原件副本共享记录；双方反馈未证明同一经济事件时分别保留，不宣称事件净额。")] if current_resolution else []), columns=["项目", "说明"]).to_excel(w, index=False, sheet_name="统计口径")
         # openpyxl otherwise interprets user strings beginning '=' as formulas
         # (and strings such as '#N/A' as errors). Preserve their literal value.
         for sheet in w.sheets.values():
@@ -1892,24 +2276,26 @@ def _pending_accounts(case_id: int, canvas_id: int = 0) -> "pd.DataFrame":
     排除口径：本案仍有以该账号为 self_account 的流水。主账号角色不代表已取得账簿。
     本方流水不限当前画布；同币种内按交易总额降序。"""
     ledgers = {r["account"] for r in db.q("""
-        select distinct self_account as account from flows
-        where case_id = ? and self_account is not null and self_account <> ''
+        select distinct coalesce(e.entity_id,f.self_account) as account from flows f
+        left join resolved_endpoints e on e.case_id=f.case_id and e.flow_id=f.id and e.role='self'
+        where f.case_id = ? and f.self_account is not null and f.self_account <> ''
     """, [case_id])}
-    nodes = db.q_raw("""
-        with t as (select f.* from effective_flows f join tracked_flows tf on tf.flow_id = f.id
-                   where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ?)
+    from . import funds_projection
+    source = """select f.* exclude(currency),coalesce(f.currency,'') currency from effective_flows f join tracked_flows tf on tf.flow_id=f.id
+        where tf.case_id=? and tf.canvas_id=? and f.case_id=?"""
+    nodes = db.q_raw(funds_projection.cte(source) + f""", t as (select * from selected_facts)
         select x.account as account, coalesce(x.currency, '') currency, max(x.name) as name,
                sum(case when x.ispay = 1 then 1 else 0 end) as out_cnt,
                coalesce(sum(case when x.ispay = 1 then x.amount else 0 end), 0) as out_amt,
                sum(case when x.ispay = 0 then 1 else 0 end) as in_cnt,
                coalesce(sum(case when x.ispay = 0 then x.amount else 0 end), 0) as in_amt,
-               min(x.trade_time) as tmin, max(x.trade_time) as tmax,
-               max(case when exists(select 1 from main_accounts ma where ma.case_id=? and ma.account=x.account) then 1 else 0 end) as is_main,
-               max(case when exists(select 1 from main_accounts ma where ma.case_id=? and ma.account<>x.account and ma.name<>'' and ma.name=x.name) then 1 else 0 end) as is_same_name
+               {transaction_time.sql_bounds("x")},
+               max(case when exists(select 1 from effective_main_accounts ma where ma.case_id=? and ma.account=x.account) then 1 else 0 end) as is_main,
+               max(case when exists(select 1 from effective_main_accounts ma where ma.case_id=? and ma.account<>x.account and ma.name<>'' and ma.name=x.name) then 1 else 0 end) as is_same_name
         from (
-            select payer_account as account, payer_name as name, 1 as ispay, amount, trade_time, currency from t
+            select payer_account as account, payer_name as name, 1 as ispay, amount, trade_time, trade_time_utc, currency from t
             union all
-            select payee_account, payee_name, 0, amount, trade_time, currency from t
+            select payee_account, payee_name, 0, amount, trade_time, trade_time_utc, currency from t
         ) x where coalesce(x.account,'')<>''
         group by x.account, coalesce(x.currency, '')
     """, [case_id, canvas_id, case_id, case_id, case_id])
@@ -1925,14 +2311,14 @@ def _pending_accounts(case_id: int, canvas_id: int = 0) -> "pd.DataFrame":
             "户名": n.get("name") or "",
             "账号": n["account"],
             "币种": n["currency"],
-            "转出笔数": n["out_cnt"],
-            "转出金额": format(n["out_amt"] or 0, ".2f"),
-            "转入笔数": n["in_cnt"],
-            "转入金额": format(n["in_amt"] or 0, ".2f"),
-            "交易总额": format((n["out_amt"] or 0) + (n["in_amt"] or 0), ".2f"),
+            "转出笔数": str(n["out_cnt"]),
+            "转出金额": money_string(n["out_amt"]),
+            "转入笔数": str(n["in_cnt"]),
+            "转入金额": money_string(n["in_amt"]),
+            "交易总额": money_string(money_decimal(n["out_amt"]) + money_decimal(n["in_amt"])),
             "首次交易": n["tmin"],
             "末次交易": n["tmax"],
-            "备注": note,
+            "备注": note + "；来源记录合计，确认同笔计一次；经济事件结论见资金统计；收支合计不代表本金。",
         })
     return pd.DataFrame(out)
 

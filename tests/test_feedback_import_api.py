@@ -14,6 +14,9 @@ from app import db, case_packages
 from app.feedback_import import COLUMNS, SCHEMAS
 from app.services import imports
 
+# These regressions exercise historical feedback profiles, not new native28 intake.
+pytestmark = pytest.mark.usefixtures("legacy_feedback_reader")
+
 
 def transaction(**changes):
     row = {column: "" for column in COLUMNS}
@@ -123,18 +126,19 @@ def test_zip_missing_counterparty_preserves_facts_without_graph_connections(clie
     assert job["stage"] == "done"
     rows = database.q("select id,payer_account,payee_account from flows where case_id=? order by id", [cid])
     ids = [r["id"] for r in rows]
-    assert client.post("/api/track", json={"case_id": cid, "flow_ids": ids}).status_code == 422
-    assert database.q("select count(*) n from tracked_flows where case_id=?", [cid]) == [{"n": 0}]
+    facts = database.q_raw("select * from flows where case_id=? order by id", [cid])
+    assert client.post("/api/track", json={"case_id": cid, "flow_ids": ids}).status_code == 200
+    assert database.q("select count(*) n from tracked_flows where case_id=?", [cid]) == [{"n": 4}]
     assert client.get(f"/api/context/{ids[1]}", params={"case_id": cid, "side": "payer"}).status_code == 422
     assert client.get(f"/api/context/{ids[1]}", params={"case_id": cid, "side": "payee"}).status_code == 200
     profile = client.get("/api/accounts/SYN-A/profile", params={"case_id": cid}).json()
-    assert profile["cnt"] == 4 and all(r["acct"] for r in profile["top_counterparties"])
-    # Old snapshots/collections can contain incomplete rows; graph still guards.
-    for fid in ids:
-        database.x("insert into tracked_flows(case_id,flow_id) values (?,?)", [cid, fid])
+    assert profile["cnt"] == 4 and profile["funds"]["count"] == {"lower": 0, "upper": 4}
+    assert profile["funds"]["observation_count"] == 4 and all(r["acct"] for r in profile["top_counterparties"])
+    # Known parties remain visible; incomplete observations add no anonymous edge.
     graph = client.get("/api/graph", params={"case_id": cid}).json()
     assert {n["account"] for n in graph["nodes"]} == {"SYN-A", "SYN-B"}
     assert {(e["source"], e["target"]) for e in graph["edges"]} == {("SYN-A", "SYN-B")}
+    assert database.q_raw("select * from flows where case_id=? order by id", [cid]) == facts
 
 
 def test_all_unresolved_completes_automatically_and_protects_original(client, database, make_case):

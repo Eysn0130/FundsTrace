@@ -32,6 +32,7 @@ def coverage(client, cid):
 @pytest.mark.parametrize("profile", ["funds-trace-table-v6", "funds-trace-table-v7"])
 @pytest.mark.parametrize("kind", ["layouts", "candidates"])
 def test_identity_gap_survives_old_envelope_precedence_and_package(client, database, make_case, monkeypatch, first, profile, kind):
+    from test_archive_profile_upgrade import frozen_preview
     cid = make_case("Synthetic mapping gap precedence")
     if kind == "layouts":
         payload = (b"date,payer_account,payee_account,account,counterparty account,direction,amount\n"
@@ -41,7 +42,9 @@ def test_identity_gap_survives_old_envelope_precedence_and_package(client, datab
                    "2026-01-01,SYN-A,SYN-B,SYN-A,SYN-B,SYN-X,out,1.01\n").encode()
     archive_payload = envelope(payload)
     for kind_to_import in (first, "ordinary" if first == "archive" else "archive"):
-        view = (preview(client, cid, archive_payload, "synthetic.zip") if kind_to_import == "archive"
+        # The owning test's original archive rule was v3; a current parser must
+        # not replace that historical envelope interpretation.
+        view = (frozen_preview(client, cid, archive_payload, monkeypatch, "funds-trace-table-archive-v3") if kind_to_import == "archive"
                 else profile_preview(client, cid, payload, monkeypatch, profile))
         job = complete(client, cid, view)
         assert job["stage"] == "done"
@@ -54,7 +57,7 @@ def test_identity_gap_survives_old_envelope_precedence_and_package(client, datab
     assert len(expected) == 1 and expected[0]["amount"] == Decimal("1.01")
     assert coverage(client, cid)["unresolved_records"] == 1
     assert not coverage(client, cid)["financial_interpretation_complete"]
-    repeated = complete(client, cid, preview(client, cid, archive_payload, "repeat.zip"))
+    repeated = complete(client, cid, frozen_preview(client, cid, archive_payload, monkeypatch, "funds-trace-table-archive-v3"))
     assert repeated["stage"] == "done" and repeated["result"]["ok"] == 0
     assert database.q_raw("select * from flows where case_id=?", [cid]) == expected
     assert coverage(client, cid)["unresolved_records"] == 1
@@ -62,6 +65,11 @@ def test_identity_gap_survives_old_envelope_precedence_and_package(client, datab
     restored = case_packages.import_package(case_packages.export_package(cid)[0])["case_id"]
     assert coverage(client, restored)["unresolved_records"] == 1
     assert not coverage(client, restored)["financial_interpretation_complete"]
+    current_case = make_case('Synthetic current envelope keeps the real identity conflict')
+    current_view = preview(client, current_case, archive_payload, 'current.zip')
+    assert current_view['table_summary']['unresolved'] == 1
+    assert complete(client, current_case, current_view)['result']['ok'] == 0
+    assert client.get(f'/api/v1/cases/{current_case}/flows', params={'granularity': 'observations'}).json()['total'] == 0
 
 
 @pytest.mark.parametrize("profile", ["funds-trace-table-v6", "funds-trace-table-v7"])

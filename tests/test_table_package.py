@@ -14,6 +14,88 @@ from test_feedback_package import _archive, _journal, _members, _mutate, _seed a
 from test_feedback_import_api import complete
 
 
+def _source_auxiliary_package(client, make_case, monkeypatch, profile):
+    from app import table_archive
+    from test_source_contract_68 import payload
+    headers = {
+        "account": "账户开户名称 开户人证件号码 交易卡号 交易账号 账号开户时间 账户余额 可用余额 币种 开户网点代码 开户网点 账户状态 钞汇标志名称 开户人证件类型 销户日期 账户类型 开户联系方式 通信地址 联系电话 代理人 代理人电话 备注 开户省份 开户城市 账号开户银行 客户代码 法人代表 客户工商执照号码 法人代表证件号码 住宅地址 邮政编码 代办人证件号码 邮箱地址 关联资金账户 地税纳税号 单位电话 代办人证件类型 住宅电话 法人代表证件类型 国税纳税号 单位地址 工作单位 销户网点 最后交易时间 账户销户银行 任务流水号",
+        "freeze": "银行名称 账号 冻结措施类型 冻结措施类型名称 冻结金额 冻结机关 冻结开始日期 冻结截止日期 措施序号 备注 任务流水号 查控主体类别",
+        "client": "开户名称 证照类型 证照号码 联系电话",
+        "subaccount": "银行名称 开户账号 子账户账号 余额 可用余额 子账户类别 子账户序号 币种 钞汇标识 账户状态 账户人姓名 账户序号 备注",
+        "manifest": "任务流水号 银行名称 主体类别 证账号码 账卡号 发送时间 反馈时间 反馈结果 反馈非明细结果 反馈明细结果 入库时间 入库状态 请求单号 查询结果",
+    }
+    members = {"transactions.csv": payload()}
+    for role, names in headers.items():
+        columns = names.split()
+        stream = io.StringIO(newline="")
+        csv.writer(stream).writerows([columns, ["SYN-AUX-" + role, *([""] * (len(columns) - 1))]])
+        members[role + ".csv"] = stream.getvalue().encode("utf-8-sig")
+    cid = make_case("SYN auxiliary source package")
+    with monkeypatch.context() as source_profile:
+        source_profile.setattr(table_archive, "PROFILE", profile)
+        source_profile.setattr(table_archive, "evidence_profile", lambda source: profile)
+        view = client.post(f"/api/v1/cases/{cid}/imports/preview", files={"file": ("source.zip", _archive(members))})
+    assert view.status_code == 200, view.text
+    view = view.json()
+    assert view["table_summary"]["profile"] == profile
+    assert view["table_summary"]["auxiliary"] == 5
+    assert complete(client, cid, view)["stage"] == "done"
+    records = client.get(f"/api/v1/cases/{cid}/imports/{view['import_id']}/records").json()["items"]
+    auxiliary = [record for record in records if record["disposition"] == "auxiliary"]
+    assert len(auxiliary) == 5 and {record["details"]["source_role"] for record in auxiliary} == set(headers)
+    assert all(record["flow_id"] is None and record["details"]["financial_effect"] == "not_a_flow"
+               and not {"source_contract", "contract_sha256", "amount_model", "candidate_scope", "direction_basis", "balance_basis"}.intersection(record["details"])
+               for record in auxiliary)
+    package = client.get(f"/api/cases/{cid}/export")
+    assert package.status_code == 200, package.text
+    return cid, records, package.content
+
+
+@pytest.mark.parametrize("profile", ["funds-trace-table-archive-v30", "funds-trace-table-archive-v31",
+                                     "funds-trace-table-archive-v33", "funds-trace-table-archive-v34"])
+def test_public_package_restores_source_auxiliary_without_inventing_financial_contract(client, make_case, monkeypatch, profile):
+    cid, records, content = _source_auxiliary_package(client, make_case, monkeypatch, profile)
+    restored = client.post("/api/cases/import", files={"file": ("source.fundcase", content)})
+    assert restored.status_code == 200, restored.text
+    new_case = restored.json()["case_id"]
+    assert client.get(f"/api/v1/cases/{new_case}/stats").json()["amount_total"] == "39.31"
+    flows = client.get(f"/api/v1/cases/{new_case}/flows").json()
+    assert flows["total"] == 3
+    sources = client.get(f"/api/v1/cases/{new_case}/flows/{flows['items'][0]['id']}/sources").json()["items"]
+    source_id = sources[0]["source_id"]
+    assert {source["source_id"] for source in sources} == {source_id}
+    imported = client.get(f"/api/v1/cases/{new_case}/imports/{source_id}/records").json()["items"]
+    assert [(r["member_path"], r["source_row"], r["disposition"], r["reason_code"], r["details"]) for r in imported] == [
+        (r["member_path"], r["source_row"], r["disposition"], r["reason_code"], r["details"]) for r in records]
+
+
+@pytest.mark.parametrize("mutation", ["table_missing_contract", "aux_partial_contract", "aux_invalid_contract",
+                                     "aux_bad_source_role", "aux_claims_transaction", "aux_member_role", "aux_flow_link"])
+def test_public_package_rejects_tampered_auxiliary_and_missing_table_contract_without_partial_case(
+        client, database, make_case, monkeypatch, tmp_path, mutation):
+    _, records, content = _source_auxiliary_package(client, make_case, monkeypatch, "funds-trace-table-archive-v33")
+    members = _members(content)
+    if mutation == "aux_member_role":
+        table, sql = "import_members", "update entries set role='table' where role='auxiliary'"
+    elif mutation == "aux_flow_link":
+        position = next(record["record_no"] for record in records if record["disposition"] == "auxiliary")
+        table, sql = "flow_sources", f"insert into entries select source_id,{position},flow_id,'imported' from entries limit 1"
+    else:
+        table = "import_records"
+        sql = {
+            "table_missing_contract": "update entries set details_json=cast(json_merge_patch(details_json,'{\"source_contract\":null,\"contract_sha256\":null,\"amount_model\":null,\"candidate_scope\":null,\"direction_basis\":null,\"balance_basis\":null}') as varchar) where disposition in ('imported','duplicate')",
+            "aux_partial_contract": "update entries set details_json=cast(json_merge_patch(details_json,'{\"source_contract\":\"funds-trace-source-contract-v1\"}') as varchar) where disposition='auxiliary'",
+            "aux_invalid_contract": "update entries set details_json=cast(json_merge_patch(details_json,'{\"source_contract\":\"funds-trace-source-contract-v1\",\"contract_sha256\":\"invalid\",\"amount_model\":\"legacy_magnitude\",\"candidate_scope\":\"all_region_candidates\"}') as varchar) where disposition='auxiliary'",
+            "aux_bad_source_role": "update entries set details_json=cast(json_merge_patch(details_json,'{\"source_role\":\"transaction\"}') as varchar) where disposition='auxiliary'",
+            "aux_claims_transaction": "update entries set disposition='imported',reason_code='transaction_valid' where disposition='auxiliary'",
+        }[mutation]
+    _mutate(members, table, sql, tmp_path)
+    before = database.q("select count(*) as n from cases")[0]["n"]
+    response = client.post("/api/cases/import", files={"file": ("tampered.fundcase", _archive(members))})
+    assert response.status_code == 400, response.text
+    assert database.q("select count(*) as n from cases")[0]["n"] == before
+
+
 def _seed_table(database, make_case, flow_row, *, case_id=None, mapping=None,
                 profile="funds-trace-table-v5", filename="synthetic-table.csv", sheet=""):
     case_id = case_id or make_case("Synthetic automatic table package")
@@ -122,7 +204,7 @@ def test_public_automatic_table_import_then_package_round_trip(client, database,
     assert job["stage"] == "done", job
     assert job["result"]["ok"] == 1
     content = case_packages.export_package(case_id)[0]
-    assert json.loads(_members(content)["meta.json"])["format"] == 4
+    assert json.loads(_members(content)["meta.json"])["format"] == 6
     restored = case_packages.import_package(content)["case_id"]
     fields = ",".join(table_import.FLOW_FIELDS)
     assert database.q(f"select {fields} from flows where case_id=?", [restored]) == database.q(

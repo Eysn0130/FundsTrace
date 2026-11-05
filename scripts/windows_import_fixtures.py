@@ -1,4 +1,4 @@
-"""CI-only literal import fixtures and public format-4 package inspection.
+"""CI-only literal import fixtures and public format-6 package inspection.
 
 No application imports or live database access. xlwt is a development dependency.
 """
@@ -161,14 +161,14 @@ def inspect_package(package):
         raise ValueError('Expected a regular public package')
     with zipfile.ZipFile(package) as archive:
         names = archive.namelist()
-        expected = {'meta.json', *(table + '.parquet' for table in TABLES)}
-        if len(names) != len(set(names)) or set(names) != expected:
+        expected = {'meta.json', 'import_source_operations.parquet', *(table + '.parquet' for table in TABLES)}
+        if len(names) != len(set(names)) or set(names) not in (expected, expected | {'evidence_sources.parquet'}):
             raise ValueError('Unexpected or missing synthetic package members')
         if any(entry.file_size > 32 * 1024 * 1024 for entry in archive.infolist()):
             raise ValueError('Oversized synthetic package')
         meta = json.loads(archive.read('meta.json'))
-        if meta.get('format') != 4 or meta.get('source_files') != 'not_included':
-            raise ValueError('Expected public format-4 export')
+        if meta.get('format') != 6 or meta.get('source_files') != 'not_included':
+            raise ValueError('Expected public format-6 export')
         tables = {}
         # Only fixed literal basenames are written; no archive extraction/path use.
         with tempfile.TemporaryDirectory(prefix='fundstrace-package-facts-') as temporary:
@@ -191,7 +191,8 @@ def inspect_package(package):
     totals = {}
     for row in tables['flows']:
         money = Decimal(row['amount'])
-        if not money.is_finite() or money < 0:
+        # Raw source observations may be signed; this is not a financial total.
+        if not money.is_finite():
             raise ValueError('Invalid raw public monetary fact')
         totals[row['currency']] = totals.get(row['currency'], Decimal(0)) + money
     return {'format': 1, 'packageSha256': digest(package.read_bytes()), 'meta': meta, 'tables': tables,

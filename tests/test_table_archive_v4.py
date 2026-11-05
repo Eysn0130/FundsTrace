@@ -31,7 +31,7 @@ def envelope(members):
     return outer.getvalue()
 
 
-def parsed(rows, *, profile=None):
+def parsed(rows, *, profile=V4):
     raw = csv_bytes(rows)
     kwargs = {} if profile is None else {"profile": profile}
     return table_archive.parse(io.BytesIO(envelope([("bank/flows.csv", raw)])), **kwargs), raw
@@ -77,14 +77,32 @@ def test_archive_v4_retains_overlapping_layouts_until_an_unmistakable_header():
 
 
 def test_archive_member_optins_do_not_enter_standalone_or_advanced_inheritance():
-    assert table_archive.PROFILE == table_import.ARCHIVE_MEMBER_PROFILE == V4
+    assert table_archive.PROFILE == "funds-trace-table-archive-v57"
+    assert table_import.ARCHIVE_MEMBER_PROFILE == V4
     assert table_archive.CANCELLATION_PROFILE == V3
-    assert table_archive.CANCELLATION_PROFILES == {V3, V4}
+    assert table_archive.CANCELLATION_PROFILES == {
+        *[f"funds-trace-table-archive-v{v}" for v in (30, 33, 36, 39, 42, 45, 48, 51, 54, 57)], V3, V4, table_archive.TIME_ROLE_PROFILE, table_archive.ZONED_PROFILE, table_archive.OPTIONAL_REFERENCE_PROFILE, table_archive.REFERENCE_ROLE_PROFILE, table_archive.GUARDED_PROFILE, table_archive.PRECISE_PROFILE, table_archive.LEGACY_EVIDENCE_PROFILE, table_archive.EVIDENCE_PROFILE, table_archive.XLS_EVIDENCE_PROFILE, *table_import.MICROSECOND_ARCHIVE_PROFILES}
     assert V4 not in table_import.SUPPORTED_PROFILES
     assert table_import.CURRENCY_CODE_ALIAS_PROFILES == {
-        table_import.CURRENCY_REGION_PROFILE, table_import.XLS_PROFILE, V4}
+        table_import.CURRENCY_REGION_PROFILE, *table_import.SOURCE_CONTRACT_PROFILES, *table_import.STANDALONE_XLS_PROFILES, V4,
+        table_import.GUARDED_PROFILE, table_import.GUARDED_EVIDENCE_PROFILE, table_import.GUARDED_ARCHIVE_PROFILE,
+        table_import.PRECISE_PROFILE, table_import.PRECISE_EVIDENCE_PROFILE, table_import.PRECISE_ARCHIVE_PROFILE,
+        table_import.REFERENCE_ROLE_PROFILE, table_import.REFERENCE_ROLE_EVIDENCE_PROFILE, table_import.REFERENCE_ROLE_ARCHIVE_PROFILE,
+        table_import.OPTIONAL_REFERENCE_PROFILE, table_import.OPTIONAL_REFERENCE_EVIDENCE_PROFILE, table_import.OPTIONAL_REFERENCE_ARCHIVE_PROFILE,
+        table_import.TIME_ROLE_PROFILE, table_import.TIME_ROLE_EVIDENCE_PROFILE, table_import.TIME_ROLE_ARCHIVE_PROFILE,
+        table_import.ZONED_PROFILE, table_import.ZONED_EVIDENCE_PROFILE, table_import.ZONED_ARCHIVE_PROFILE,
+        table_import.LEGACY_EVIDENCE_PROFILE, table_archive.LEGACY_EVIDENCE_PROFILE,
+        table_import.EVIDENCE_PROFILE, table_archive.EVIDENCE_PROFILE, table_archive.XLS_EVIDENCE_PROFILE, *table_import.MICROSECOND_ARCHIVE_PROFILES}
     assert table_import.OVERLAPPING_HEADER_PROFILES == {
-        table_import.CURRENCY_REGION_PROFILE, table_import.XLS_PROFILE, V4}
+        table_import.CURRENCY_REGION_PROFILE, *table_import.SOURCE_CONTRACT_PROFILES, *table_import.STANDALONE_XLS_PROFILES, V4,
+        table_import.GUARDED_PROFILE, table_import.GUARDED_EVIDENCE_PROFILE, table_import.GUARDED_ARCHIVE_PROFILE,
+        table_import.PRECISE_PROFILE, table_import.PRECISE_EVIDENCE_PROFILE, table_import.PRECISE_ARCHIVE_PROFILE,
+        table_import.REFERENCE_ROLE_PROFILE, table_import.REFERENCE_ROLE_EVIDENCE_PROFILE, table_import.REFERENCE_ROLE_ARCHIVE_PROFILE,
+        table_import.OPTIONAL_REFERENCE_PROFILE, table_import.OPTIONAL_REFERENCE_EVIDENCE_PROFILE, table_import.OPTIONAL_REFERENCE_ARCHIVE_PROFILE,
+        table_import.TIME_ROLE_PROFILE, table_import.TIME_ROLE_EVIDENCE_PROFILE, table_import.TIME_ROLE_ARCHIVE_PROFILE,
+        table_import.ZONED_PROFILE, table_import.ZONED_EVIDENCE_PROFILE, table_import.ZONED_ARCHIVE_PROFILE,
+        table_import.LEGACY_EVIDENCE_PROFILE, table_archive.LEGACY_EVIDENCE_PROFILE,
+        table_import.EVIDENCE_PROFILE, table_archive.EVIDENCE_PROFILE, table_archive.XLS_EVIDENCE_PROFILE, *table_import.MICROSECOND_ARCHIVE_PROFILES}
     for collection in (
             table_import.ROLE_PROFILES, table_import.FINANCIAL_PROFILES,
             table_import.CONTRACT_PROFILES, table_import.DIRECTION_PROFILES,
@@ -93,7 +111,7 @@ def test_archive_member_optins_do_not_enter_standalone_or_advanced_inheritance()
             table_import.QUERY_OWNER_PROFILES, table_import.REGION_HEADER_PROFILES,
             table_import.REORDERED_TIME_PROFILES, table_import.CURRENCY_REGION_PROFILES):
         assert V4 not in collection
-    assert table_import.PROFILE == "funds-trace-table-v17"
+    assert table_import.PROFILE == "funds-trace-table-v66"
     assert table_import.XLS_PROFILE == "funds-trace-table-v18"
 
 
@@ -192,7 +210,7 @@ def test_archive_v4_ambiguity_stays_inside_its_member_and_independent_header_is_
     first = csv_bytes([HEADERS, FIRST, OVERLAP, SECOND])
     second = csv_bytes([OVERLAP, SECOND])
     plan = table_archive.parse(io.BytesIO(envelope([
-        ("bank/ambiguous.csv", first), ("bank/independent.csv", second)])))
+        ("bank/ambiguous.csv", first), ("bank/independent.csv", second)])), profile=V4)
     assert plan["stats"]["currency_totals"] == {"CNY": "3.57"}
     assert (plan["stats"]["accepted"], plan["stats"]["unresolved"]) == (2, 2)
     assert [(row["payer_account"], row["payee_account"], row["amount"])
@@ -207,7 +225,7 @@ def test_archive_v3_cancellation_and_v4_use_the_identical_closed_policy():
 
     raw = source(round_trip())[1]
     previous = table_archive.parse(io.BytesIO(raw), profile=V3)
-    current = table_archive.parse(io.BytesIO(raw))
+    current = table_archive.parse(io.BytesIO(raw), profile=V4)
     assert previous["stats"]["cancelled"] == current["stats"]["cancelled"] == 2
     assert current["cancellations"] == [{
         "original_record_no": 2, "cancellation_record_no": 3, "witness_record_no": 1}]

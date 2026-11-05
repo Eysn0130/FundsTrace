@@ -11,9 +11,10 @@ from fastapi.routing import APIRoute
 from starlette.exceptions import HTTPException
 
 from app.services import cases, imports
+from app import evidence_resolution
 from .models import (ApiError, Case, CaseCreate, CaseList, CaseStats, CommitRequest,
                      CommitStarted, FlowPage, ImportJob, ImportPreview, RepreviewRequest,
-                     ImportSessionList, CleanupRequest, CleanupResult, FlowSourceList, ImportRecordPage)
+                     ImportSessionList, CleanupRequest, CleanupResult, FlowSourceList, ImportRecordPage, ResolutionRegistry)
 
 
 def error_response(status, code, message):
@@ -79,15 +80,15 @@ def create_case(body: CaseCreate):
     return cases.create_case(body.name)
 
 
-@router.get("/cases/{case_id}/stats", response_model=CaseStats, operation_id="v1_case_stats")
+@router.get("/cases/{case_id}/stats", response_model=CaseStats, response_model_exclude_unset=True, operation_id="v1_case_stats")
 def stats(case_id: CaseId):
     return cases.stats(case_id)
 
 
 @router.get("/cases/{case_id}/flows", response_model=FlowPage, operation_id="v1_list_flows")
 def flows(case_id: CaseId, account: str = "", kw: str = "", page: int = Query(1, ge=1, le=2_147_483_647),
-          page_size: int = Query(50, ge=1, le=200)):
-    return cases.flows(case_id, account, kw, page, page_size)
+          page_size: int = Query(50, ge=1, le=200), granularity: Literal["events", "observations"] = "events"):
+    return cases.flows(case_id, account, kw, page, page_size, granularity)
 
 
 @router.get("/cases/{case_id}/flows/{flow_id}/sources", response_model=FlowSourceList, operation_id="v1_flow_sources")
@@ -146,6 +147,16 @@ def report(case_id: CaseId, source_id: ImportId):
 @router.post("/cases/{case_id}/imports/cleanup", response_model=CleanupResult, operation_id="v1_cleanup_uploads")
 def cleanup(case_id: CaseId, body: CleanupRequest):
     return imports.cleanup_uploads(case_id=case_id, dry_run=body.dry_run)
+
+
+@router.get("/cases/{case_id}/resolution", response_model=ResolutionRegistry, operation_id="v1_resolution")
+def resolution(case_id: CaseId):
+    return evidence_resolution.registry(case_id)
+
+
+@router.post("/cases/{case_id}/imports/directory/preview", response_model=ImportPreview, operation_id="v1_directory_preview")
+async def directory_upload(case_id: CaseId, files: list[UploadFile] = File(...)):
+    return await imports.upload_directory(case_id, files)
 
 
 @router.post("/cases/{case_id}/imports/preview", response_model=ImportPreview, operation_id="v1_upload_preview")

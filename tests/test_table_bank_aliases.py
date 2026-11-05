@@ -50,7 +50,7 @@ def test_exact_bank_column_is_automatically_mapped_to_its_directed_counterparty(
     if reverse:
         headers, row = list(reversed(headers)), list(reversed(row))
     result = parse(headers, [row], suffix)
-    assert result["profile"] == "funds-trace-table-v17" and result["stats"]["accepted"] == 1
+    assert result["profile"] == "funds-trace-table-v66" and result["stats"]["accepted"] == 1
     flow = result["rows"][0]
     assert flow[counter_side + "_account"] == "SYN-OTHER"
     assert flow[counter_side + "_bank"] == "Synthetic source bank"

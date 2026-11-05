@@ -1,0 +1,286 @@
+"""Independent synthetic bounds distinguish observations from economic events."""
+from decimal import Decimal
+
+import pytest
+
+from app import funds_projection as funds
+
+
+def flow(database, cid, number, amount="100.00", currency="CNY", *, payer="SYN-A", payee="SYN-B", balance="150.00"):
+    database.x("insert into flows(id,case_id,payer_account,payee_account,self_account,amount,currency,balance,trade_time) "
+               "values (?,?,?,?,?,?,?,?,timestamp '2026-01-01 12:00:00')",
+               [number, cid, payer, payee, payer if number % 2 else payee,
+                Decimal(amount) if amount is not None else None, currency, Decimal(balance)])
+
+
+def event(database, cid, name, ids, amount="100.00", currency="CNY", *, payer="SYN-A", payee="SYN-B"):
+    database.x("insert into resolved_events(case_id,event_id,payer_account,payee_account,amount,currency) values (?,?,?,?,?,?)",
+               [cid, name, payer, payee, Decimal(amount), currency])
+    for number in ids:
+        database.x("insert into event_members(case_id,flow_id,event_id,status,reason) values (?,?,?,'confirmed','synthetic scoped proof')", [cid, number, name])
+
+
+def selected(cid, ids):
+    return "select * from flows where case_id=? and id in (select unnest(?::bigint[]))", [cid, ids]
+
+
+def expected(*, observations, confirmed, unresolved, totals, status="bounded"):
+    return {"policy": funds.POLICY, "status": status, "observation_count": observations,
+            "confirmed_event_count": confirmed, "unresolved_observation_count": unresolved,
+            "count": {"lower": confirmed, "upper": confirmed + unresolved}, "totals": totals}
+
+
+def total(currency, lower, upper, amount=None):
+    return {"currency": currency, "amount": amount, "lower": lower, "upper": upper}
+
+
+def all_paths(database, cid, ids):
+    sql, params = selected(cid, ids)
+    original = database.q_raw(sql + " order by id", params)
+    projected, result = funds.from_rows(cid, list(reversed(original)))
+    assert funds.summary(sql, params) == result == funds.summarize_rows(projected)
+    assert funds.account_summaries(sql, params)[(3, None, None)] == result
+    sql_rows = database.q_raw(funds.cte(sql) + "select * from selected_facts order by id", params)
+    assert sql_rows == projected
+    assert database.q_raw(sql + " order by id", params) == original
+    return projected, result
+
+
+@pytest.mark.parametrize("ids", [[1], [2], [1, 2], [2, 1, 1]])
+def test_confirmed_event_counts_once_even_if_one_side_selected(database, make_case, ids):
+    cid = make_case("Synthetic one economic event")
+    flow(database, cid, 1, balance="150.00")
+    flow(database, cid, 2, balance="900.00")
+    event(database, cid, "SYN-E1", [1, 2])
+    rows, result = all_paths(database, cid, ids)
+    assert result == expected(observations=len(set(ids)), confirmed=1, unresolved=0, status="exact",
+                              totals=[total("CNY", "100.00", "100.00", "100.00")])
+    assert len(rows) == 1 and rows[0]["id"] == min(ids)
+    assert rows[0]["balance"] is None
+    assert rows[0]["observation_amount"] == Decimal("100.00")
+    assert rows[0]["observation_balance"] == (Decimal("150.00") if min(ids) == 1 else Decimal("900.00"))
+    assert funds.public_fields(result) == {"cnt": 1, "total": "100.00", "amount_totals": [{"currency": "CNY", "amount": "100.00"}]}
+
+
+def test_ordinary_same_time_same_amount_rows_remain_bounded_observations(database, make_case):
+    cid = make_case("Synthetic ordinary observations")
+    flow(database, cid, 1)
+    flow(database, cid, 2)
+    rows, result = all_paths(database, cid, [1, 2])
+    assert result == expected(observations=2, confirmed=0, unresolved=2,
+                              totals=[total("CNY", "0.00", "200.00")])
+    assert len(rows) == 2 and {row["fact_status"] for row in rows} == {"unresolved"}
+    assert all(row["balance"] == Decimal("150.00") for row in rows)
+    assert funds.public_fields(result) == {"cnt": None, "total": None, "amount_totals": [{"currency": "CNY", "amount": None}]}
+
+
+def test_distinct_confirmed_steps_are_two_events_not_one_net_transfer(database, make_case):
+    cid = make_case("Synthetic two economic steps")
+    for number in (1, 2):
+        flow(database, cid, number)
+    for number in (3, 4):
+        flow(database, cid, number, payer="SYN-B", payee="SYN-C")
+    event(database, cid, "SYN-AB", [1, 2])
+    event(database, cid, "SYN-BC", [3, 4], payer="SYN-B", payee="SYN-C")
+    rows, result = all_paths(database, cid, [1, 2, 3, 4])
+    assert len(rows) == 2
+    assert result == expected(observations=4, confirmed=2, unresolved=0, status="exact",
+                              totals=[total("CNY", "200.00", "200.00", "200.00")])
+    groups = funds.grouped_summary(*selected(cid, [1, 2, 3, 4]), group_by=("payer_account", "payee_account"))
+    assert set(groups) == {("SYN-A", "SYN-B"), ("SYN-B", "SYN-C")}
+    assert all(value["confirmed_event_count"] == 1 and value["totals"][0]["amount"] == "100.00" for value in groups.values())
+
+
+def test_mixed_confirmed_unknown_and_conflict_bounds_keep_all_observations(database, make_case):
+    cid = make_case("Synthetic bounded mixed evidence")
+    for number, amount in enumerate(("100.00", "100.00", "7.00", "8.00", "9.00"), 1):
+        flow(database, cid, number, amount)
+    event(database, cid, "SYN-E1", [1, 2])
+    for number in (4, 5):
+        # A stale event_id on a conflict must never confer event authority.
+        database.x("insert into event_members(case_id,flow_id,event_id,status,reason) values (?,?,?,'conflict','synthetic conflicting proof')", [cid, number, "SYN-E1"])
+    rows, result = all_paths(database, cid, [1, 2, 3, 4, 5])
+    assert len(rows) == 4
+    assert result == expected(observations=5, confirmed=1, unresolved=3,
+                              totals=[total("CNY", "100.00", "124.00")])
+
+
+def test_multicurrency_and_large_cents_never_mix_or_round(database, make_case):
+    cid = make_case("Synthetic exact per currency")
+    for number in (1, 2):
+        flow(database, cid, number, "90071992547409.91")
+    for number in (3, 4):
+        flow(database, cid, number, "0.10", "USD")
+    flow(database, cid, 5, "0.03", "USD")
+    event(database, cid, "SYN-CNY", [1, 2], "90071992547409.91")
+    event(database, cid, "SYN-USD", [3, 4], "0.10", "USD")
+    _, result = all_paths(database, cid, [1, 2, 3, 4, 5])
+    assert result == expected(observations=5, confirmed=2, unresolved=1,
+        totals=[total("CNY", "90071992547409.91", "90071992547409.91", "90071992547409.91"), total("USD", "0.10", "0.13")])
+    assert funds.public_fields(result)["total"] is None
+
+
+@pytest.mark.parametrize("amount", [None, "-1.00"])
+def test_unknown_or_negative_amount_has_no_false_upper_bound(database, make_case, amount):
+    cid = make_case("Synthetic unknown amount")
+    flow(database, cid, 1)
+    flow(database, cid, 2)
+    flow(database, cid, 3, amount)
+    event(database, cid, "SYN-E1", [1, 2])
+    _, result = all_paths(database, cid, [1, 2, 3])
+    assert result == expected(observations=3, confirmed=1, unresolved=1, status="unknown",
+                              totals=[total("CNY", "100.00", None)])
+
+
+@pytest.mark.parametrize("currency", [None, "", "unknown", "XXX"])
+def test_unknown_currency_cannot_be_assigned_zero_or_excluded_from_known_upper(database, make_case, currency):
+    cid = make_case("Synthetic unknown currency")
+    flow(database, cid, 1)
+    flow(database, cid, 2)
+    flow(database, cid, 3, "12.00", currency)
+    event(database, cid, "SYN-E1", [1, 2])
+    _, result = all_paths(database, cid, [1, 2, 3])
+    assert result == expected(observations=3, confirmed=1, unresolved=1, status="unknown",
+                              totals=[total("CNY", "100.00", None), total(None, "0.00", None)])
+
+
+def test_unselected_and_foreign_events_do_not_leak_and_mixed_case_sql_fails(database, make_case):
+    cid, other = make_case("Synthetic selected scope"), make_case("Synthetic foreign scope")
+    for number in (1, 2, 3, 4):
+        flow(database, cid, number)
+    for number in (5, 6):
+        flow(database, other, number, "999.00")
+    event(database, cid, "SYN-SAME-ID", [1, 2])
+    event(database, cid, "SYN-UNSELECTED", [3, 4])
+    event(database, other, "SYN-SAME-ID", [5, 6], "999.00")
+    loaded = database.q_raw("select * from flows where id in (2,5,6) order by id")
+    projected, result = funds.from_rows(cid, loaded)
+    assert [row["id"] for row in projected] == [2]
+    assert result["observation_count"] == result["confirmed_event_count"] == 1
+    assert result["totals"] == [total("CNY", "100.00", "100.00", "100.00")]
+    assert result == funds.summary(*selected(cid, [2, 5, 6]))
+    with pytest.raises(ValueError, match="one case scope"):
+        funds.summary("select * from flows")
+    with pytest.raises(ValueError, match="one case scope"):
+        funds.grouped_summary("select * from flows", group_by=("self_account",))
+
+
+def test_repeated_source_join_is_one_observation_and_empty_selection_is_exact(database, make_case):
+    cid = make_case("Synthetic repeated selection")
+    flow(database, cid, 1)
+    sql = "select f.* from flows f cross join (values (1),(2)) copies(n) where f.case_id=?"
+    assert funds.summary(sql, [cid]) == expected(observations=1, confirmed=0, unresolved=1,
+                                                totals=[total("CNY", "0.00", "100.00")])
+    projected, result = all_paths(database, cid, [])
+    assert projected == []
+    assert result == expected(observations=0, confirmed=0, unresolved=0, status="exact", totals=[])
+
+
+def test_from_rows_is_chunked_preserves_wire_money_and_detects_stale_money(database, make_case, monkeypatch):
+    cid = make_case("Synthetic chunked selected rows")
+    for number in (1, 2, 3, 4):
+        flow(database, cid, number)
+    event(database, cid, "SYN-E1", [1, 4])
+    monkeypatch.setattr(funds, "CHUNK", 2)
+    original = database.q_raw("select * from flows where case_id=? order by id", [cid])
+    wire = [{**row, "id": str(row["id"]), "amount": format(row["amount"], ".2f"), "balance": format(row["balance"], ".2f")} for row in original]
+    rows, result = funds.from_rows(cid, wire)
+    assert len(rows) == 3 and rows[0]["observation_count"] == 2 and rows[0]["amount"] == "100.00"
+    assert funds.summarize_rows(rows) == result == funds.summary(*selected(cid, [1, 2, 3, 4]))
+    wire[0]["amount"] = "100.01"
+    with pytest.raises(ValueError, match="snapshot"):
+        funds.from_rows(cid, wire)
+
+
+def test_public_event_rebuild_withdraws_default_projection_after_conflict(client, database, make_case):
+    from test_event_import import csv_rows, transaction
+    from test_folder_evidence import accepted
+    cid = make_case("Synthetic public projection withdrawal")
+    rows = [transaction(own) for own in ("SYN-A", "SYN-B")]
+    accepted(client, cid, [("events.csv", csv_rows(rows))], scope_bank=None)
+    ids = [row["id"] for row in database.q_raw("select id from flows where case_id=? order by id", [cid])]
+    assert funds.summary(*selected(cid, ids))["totals"] == [total("CNY", "100.00", "100.00", "100.00")]
+    _, conflict = accepted(client, cid, [("conflict.csv", csv_rows([transaction("SYN-A", **{"交易金额": "101.00"})]))], scope_bank=None)
+    assert funds.summary(*selected(cid, ids)) == expected(observations=2, confirmed=0, unresolved=2,
+        totals=[total("CNY", "0.00", "200.00")])
+    assert client.delete(f"/api/batches/{conflict['batch_id']}", params={"case_id": cid}).status_code == 200
+    assert funds.summary(*selected(cid, ids))["status"] == "exact"
+
+
+@pytest.mark.parametrize("granularity,ordered_ids", [("observations", [4, 3, 2, 1]), ("events", [4, 3, 1])])
+def test_public_pages_keep_event_counts_funds_and_empty_pages(client, database, make_case, granularity, ordered_ids):
+    cid, other, empty = (make_case(name) for name in ("Synthetic page bounds", "Synthetic foreign page", "Synthetic empty page"))
+    for number in (1, 2):
+        flow(database, cid, number, "90071992547409.91")
+    event(database, cid, "SYN-PAGE-EVENT", [1, 2], "90071992547409.91")
+    flow(database, cid, 3, "0.03", "USD")
+    flow(database, cid, 4, None, None)
+    flow(database, other, 5, "999.99")
+    database.x("update flows set trade_no='SYN-ONE-SIDE' where id=2")
+    expected_funds = expected(observations=4, confirmed=1, unresolved=2, status="unknown", totals=[
+        total("CNY", "90071992547409.91", None), total("USD", "0.00", None), total(None, "0.00", None)])
+    for page in range(1, len(ordered_ids) + 2):
+        response = client.get(f"/api/v1/cases/{cid}/flows", params={"granularity": granularity, "page": page, "page_size": 1})
+        assert response.status_code == 200
+        value = response.json()
+        assert value["total"] == len(ordered_ids)
+        assert value["funds"] == expected_funds
+        assert [item["id"] for item in value["items"]] == [str(n) for n in ordered_ids[page - 1:page]]
+    selected_side = client.get(f"/api/v1/cases/{cid}/flows", params={"granularity": granularity, "kw": "SYN-ONE-SIDE"}).json()
+    assert selected_side["total"] == 1 and selected_side["items"][0]["id"] == "2"
+    assert selected_side["funds"] == expected(observations=1, confirmed=1, unresolved=0, status="exact",
+        totals=[total("CNY", "90071992547409.91", "90071992547409.91", "90071992547409.91")])
+    for scope, filters in ((cid, {"account": "SYN-ABSENT"}), (empty, {})):
+        value = client.get(f"/api/v1/cases/{scope}/flows", params={"granularity": granularity, **filters}).json()
+        assert value["total"] == 0 and value["items"] == []
+        assert value["funds"] == expected(observations=0, confirmed=0, unresolved=0, status="exact", totals=[])
+    # A fresh request must see current event membership, then the restored state.
+    database.x("update event_members set status='conflict' where case_id=?", [cid])
+    changed = client.get(f"/api/v1/cases/{cid}/flows", params={"granularity": granularity}).json()
+    # Revoking the event confirmation preserves every original record in both views.
+    assert changed["total"] == 4
+    assert changed["funds"]["confirmed_event_count"] == 0
+    foreign = client.get(f"/api/v1/cases/{other}/flows", params={"granularity": granularity}).json()
+    assert foreign["total"] == 1 and foreign["items"][0]["id"] == "5"
+    database.x("update event_members set status='confirmed' where case_id=?", [cid])
+    restored = client.get(f"/api/v1/cases/{cid}/flows", params={"granularity": granularity}).json()
+    assert restored["total"] == len(ordered_ids) and restored["funds"] == expected_funds
+
+
+def test_account_rollups_keep_events_null_endpoints_currencies_and_case_scope(database, make_case):
+    cid = make_case('Synthetic account rollups')
+    other = make_case('Synthetic separate rollups')
+    flow(database, cid, 1); flow(database, cid, 2)
+    event(database, cid, 'SYN-CONFIRMED', [1, 2])
+    flow(database, cid, 3, '5.03', 'USD', payer='SYN-B', payee='SYN-A')
+    flow(database, cid, 4, '7.01', payer=None, payee='SYN-B')
+    flow(database, other, 5, '999.99')
+    sql, params = selected(cid, [1, 2, 3, 4])
+    result = funds.account_summaries(sql, params)
+    assert result[(0, 'SYN-A', 'SYN-B')] == expected(observations=2, confirmed=1, unresolved=0,
+        status='exact', totals=[total('CNY', '100.00', '100.00', '100.00')])
+    assert result[(0, None, 'SYN-B')] == expected(observations=1, confirmed=0, unresolved=1,
+        totals=[total('CNY', '0.00', '7.01')])
+    assert result[(2, None, 'SYN-B')] == expected(observations=3, confirmed=1, unresolved=1,
+        totals=[total('CNY', '100.00', '107.01')])
+    assert result[(1, 'SYN-B', None)] == expected(observations=1, confirmed=0, unresolved=1,
+        totals=[total('USD', '0.00', '5.03')])
+    assert result[(3, None, None)] == expected(observations=4, confirmed=1, unresolved=2,
+        totals=[total('CNY', '100.00', '107.01'), total('USD', '0.00', '5.03')])
+    empty = funds.account_summaries(*selected(cid, []))
+    assert empty == {(3, None, None): expected(observations=0, confirmed=0, unresolved=0, totals=[], status='exact')}
+
+
+def test_profile_rollups_keep_trimmed_own_and_original_counterparty_keys(database, make_case):
+    cid = make_case('Synthetic padded own account')
+    flow(database, cid, 1, '1.01', payer=' SYN-A ', payee='SYN-B')
+    flow(database, cid, 2, '2.02', payer='SYN-B', payee='SYN-A')
+    flow(database, cid, 3, '3.03', payer='SYN-A', payee=' SYN-A ')
+    sql, params = selected(cid, [1, 2, 3])
+    groups = funds.profile_summaries(sql, params, 'SYN-A')
+    for key, count, amount in [((15, None), 3, '6.06'), ((14, None), 2, '5.05'),
+                              ((13, None), 2, '4.04'), ((6, 'SYN-B'), 1, '2.02'),
+                              ((9, 'SYN-B'), 1, '1.01'), ((6, 'SYN-A'), 1, '3.03'),
+                              ((9, ' SYN-A '), 1, '3.03')]:
+        assert groups[key] == expected(observations=count, confirmed=0, unresolved=count,
+                                      totals=[total('CNY', '0.00', amount)])

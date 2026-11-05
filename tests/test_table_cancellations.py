@@ -3,6 +3,7 @@ import copy
 import csv
 from decimal import Decimal, localcontext
 import io
+import json
 import zipfile
 
 import pytest
@@ -47,7 +48,7 @@ def parse(rows, **kwargs):
 
 @pytest.mark.parametrize("profile", sorted(table_archive.CANCELLATION_PROFILES))
 def test_pair_retains_records_and_only_excludes_effective_funds(profile):
-    from app import table_cancellations as policy
+    from app import evidence_resolution, table_cancellations as policy
     plan = parse(round_trip(), profile=profile)
     assert plan["profile"] == profile
     assert plan["cancellations"] == [{"original_record_no": 2, "cancellation_record_no": 3, "witness_record_no": 1}]
@@ -56,8 +57,41 @@ def test_pair_retains_records_and_only_excludes_effective_funds(profile):
     assert plan["stats"]["cancelled"] == 2 and plan["stats"]["accepted"] == 1
     assert plan["stats"]["currency_totals"] == {"CNY": "1.00"}
     assert policy.validate_evidence(plan["records"]) == plan["cancellations"]
-    for record in plan["records"]:
-        notes = record["details"]
+    if profile in table_archive.EVIDENCE_PROFILES:
+        assert all(evidence_resolution.DETAIL_FIELD in record["details"] for record in plan["records"][:2])
+    for number, record in enumerate(plan["records"]):
+        notes = dict(record["details"])
+        if profile in table_import.REFERENCE_ROLE_PROFILES:
+            # This bounded audit field explicitly retains the source's two
+            # reference roles and positions. No other note gains permission to
+            # copy identities or reference values.
+            expected = ([{'field': 'summary', 'role': 'summary', 'column': '摘要说明', 'column_index': 15, 'raw': '冲正'},
+                         {'field': 'summary', 'role': 'summary', 'column': '备注', 'column_index': 29, 'raw': ''}]
+                        if number == 2 else [])
+            expected += [
+                {'field': 'trade_no', 'role': 'source_transaction_id', 'column': '交易流水号',
+                 'column_index': 24, 'raw': 'SYN-WITNESS' if number == 0 else 'SYN-PAIR'},
+                {'field': 'trade_no', 'role': 'independent_voucher_reference', 'column': '凭证号',
+                 'column_index': 27, 'raw': ''}]
+            assert json.loads(notes.pop('source_field_evidence')) == expected
+            assert 'source_field_evidence_limited' not in notes
+        else:
+            assert 'source_field_evidence' not in notes
+        if profile in table_archive.EVIDENCE_PROFILES and evidence_resolution.DETAIL_FIELD in notes:
+            evidence = evidence_resolution.validate_evidence(notes.pop(evidence_resolution.DETAIL_FIELD))
+            assert evidence["role"] == "transaction"
+            assert evidence["endpoints"]["self"]["account"] == "SYN-OWN"
+            assert evidence["endpoints"]["self"]["name"] == "Synthetic owner"
+            assert all(set(item) == {"account", "card", "identifier_type", "bank", "name"}
+                       for item in evidence["endpoints"].values())
+            assert not any(value in str(evidence) for value in ("SYN-ID", "SYN-PAIR"))
+        else:
+            assert evidence_resolution.DETAIL_FIELD not in notes
+        if profile in table_import.SOURCE_LEDGER_PROFILES:
+            from app import source_ledger
+            snapshot = source_ledger.validate(notes.pop(source_ledger.FIELD))
+            assert snapshot['signed_amount'] == ('1.00', '10.00', '-10.00')[number]
+            assert snapshot['row']['self_account'] == 'SYN-OWN'
         assert notes["cancellation_policy"] == policy.POLICY
         assert not any(value in str(notes) for value in ("SYN-OWN", "SYN-ID", "SYN-PAIR", "Synthetic owner"))
     for record in plan["records"][1:]:
@@ -99,7 +133,13 @@ def test_complete_member_index_blocks_hidden_ambiguity(kind):
         tail = [("交易账号", "交易时间", "交易金额")]
     else:
         rows.append(dict.fromkeys(COLUMNS, "") | {"摘要说明": "Unknown source record"})
-    plan = parse(rows, tail=tail)
+    if kind == "bad_width":
+        with pytest.raises(table_import.TableImportError, match="CSV"):
+            parse(rows, tail=tail)
+        # Keep the original tolerant version's complete-member regression.
+        plan = parse(rows, tail=tail, profile=table_archive.ZONED_PROFILE)
+    else:
+        plan = parse(rows, tail=tail)
     assert plan["cancellations"] == []
     assert plan["records"][2]["reason_code"] != "matched_cancellation"
 

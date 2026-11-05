@@ -49,7 +49,7 @@ def test_bank_alias_automatic_commit_retains_full_source_mapping_and_facts(
         row["凭证号"] = row["交易流水号"]
     data = csv_bytes(headers, rows) if suffix == ".csv" else workbook(headers, rows)
     view = preview(client, cid, data, "synthetic-bank" + suffix)
-    assert view["automatic"] and view["table_summary"]["profile"] == "funds-trace-table-v17"
+    assert view["automatic"] and view["table_summary"]["profile"] == "funds-trace-table-v66"
     assert view["mapping"]["counter_bank"] == "交易对方账号开户行"
     summary = view["table_summary"]
     assert (summary["accepted"], summary["unresolved"], summary["record_total"]) == (2, 1, 3)
@@ -79,7 +79,7 @@ def test_bank_alias_automatic_commit_retains_full_source_mapping_and_facts(
     assert client.get(f"/api/v1/cases/{cid}/imports/{view['import_id']}").json()["result"] == job["result"]
     package = case_packages.export_package(cid)[0]
     with zipfile.ZipFile(io.BytesIO(package)) as archive:
-        assert json.loads(archive.read("meta.json"))["format"] == 4
+        assert json.loads(archive.read("meta.json"))["format"] == 6
     restored = case_packages.import_package(package)["case_id"]
     assert facts(database, restored) == before and coverage(client, restored) == coverage(client, cid)
     restored_source = database.q_raw(

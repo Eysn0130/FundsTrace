@@ -20,7 +20,7 @@ import zipfile
 
 from .importer import FIELD_SYNONYMS, _row_key
 from .table_mapping import identity_field
-from . import table_financial, table_contracts, table_time_formats, table_source_roles
+from . import table_financial, table_contracts, table_time_formats, table_source_roles, table_sign_declarations
 
 
 IDENTITY_PROFILE = "funds-trace-table-v5"
@@ -37,11 +37,173 @@ REGION_HEADER_PROFILE = "funds-trace-table-v15"
 REORDERED_TIME_PROFILE = "funds-trace-table-v16"
 CURRENCY_REGION_PROFILE = "funds-trace-table-v17"
 XLS_PROFILE = "funds-trace-table-v18"
+GUARDED_PROFILE = "funds-trace-table-v21"
+GUARDED_XLS_PROFILE = "funds-trace-table-v22"
+GUARDED_EVIDENCE_PROFILE = "funds-trace-table-v23"
 # Internal archive CSV rule: v5 plus exactly the two header protections below.
 # Keep it outside standalone and financial/identity inheritance collections.
 ARCHIVE_MEMBER_PROFILE = "funds-trace-table-archive-v4"
-PROFILE = CURRENCY_REGION_PROFILE
-CURRENCY_REGION_PROFILES = frozenset((CURRENCY_REGION_PROFILE, XLS_PROFILE))
+LEGACY_EVIDENCE_PROFILE = "funds-trace-table-v19"
+LEGACY_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v5"
+EVIDENCE_PROFILE = "funds-trace-table-v20"
+EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
+XLS_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v7"
+MICROSECOND_ARCHIVE_PROFILE = "funds-trace-table-archive-v8"
+MICROSECOND_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v9"
+HEADER_WIDTH_ARCHIVE_PROFILE = "funds-trace-table-archive-v10"
+HEADER_WIDTH_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v11"
+GUARDED_ARCHIVE_PROFILE = "funds-trace-table-archive-v12"
+GUARDED_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v13"
+GUARDED_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v14"
+PRECISE_PROFILE = "funds-trace-table-v24"
+PRECISE_XLS_PROFILE = "funds-trace-table-v25"
+PRECISE_EVIDENCE_PROFILE = "funds-trace-table-v26"
+PRECISE_ARCHIVE_PROFILE = "funds-trace-table-archive-v15"
+PRECISE_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v16"
+PRECISE_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v17"
+REFERENCE_ROLE_PROFILE = "funds-trace-table-v27"
+REFERENCE_ROLE_XLS_PROFILE = "funds-trace-table-v28"
+REFERENCE_ROLE_EVIDENCE_PROFILE = "funds-trace-table-v29"
+REFERENCE_ROLE_ARCHIVE_PROFILE = "funds-trace-table-archive-v18"
+REFERENCE_ROLE_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v19"
+REFERENCE_ROLE_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v20"
+OPTIONAL_REFERENCE_PROFILE = "funds-trace-table-v30"
+OPTIONAL_REFERENCE_XLS_PROFILE = "funds-trace-table-v31"
+OPTIONAL_REFERENCE_EVIDENCE_PROFILE = "funds-trace-table-v32"
+OPTIONAL_REFERENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v21"
+OPTIONAL_REFERENCE_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v22"
+OPTIONAL_REFERENCE_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v23"
+TIME_ROLE_PROFILE = "funds-trace-table-v33"
+TIME_ROLE_XLS_PROFILE = "funds-trace-table-v34"
+TIME_ROLE_EVIDENCE_PROFILE = "funds-trace-table-v35"
+TIME_ROLE_ARCHIVE_PROFILE = "funds-trace-table-archive-v24"
+TIME_ROLE_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v25"
+TIME_ROLE_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v26"
+ZONED_PROFILE = "funds-trace-table-v36"
+ZONED_XLS_PROFILE = "funds-trace-table-v37"
+ZONED_EVIDENCE_PROFILE = "funds-trace-table-v38"
+ZONED_ARCHIVE_PROFILE = "funds-trace-table-archive-v27"
+ZONED_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v28"
+ZONED_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v29"
+SOURCE_CONTRACT_PROFILE = "funds-trace-table-v39"
+SOURCE_CONTRACT_XLS_PROFILE = "funds-trace-table-v40"
+SOURCE_CONTRACT_EVIDENCE_PROFILE = "funds-trace-table-v41"
+SOURCE_CONTRACT_ARCHIVE_PROFILE = "funds-trace-table-archive-v30"
+SOURCE_CONTRACT_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v31"
+SOURCE_CONTRACT_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v32"
+SOURCE_TEXT_PROFILE = "funds-trace-table-v42"
+SOURCE_TEXT_XLS_PROFILE = "funds-trace-table-v43"
+SOURCE_TEXT_EVIDENCE_PROFILE = "funds-trace-table-v44"
+SOURCE_TEXT_ARCHIVE_PROFILE = "funds-trace-table-archive-v33"
+SOURCE_TEXT_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v34"
+SOURCE_TEXT_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v35"
+BANK31_VARIANT_PROFILE = "funds-trace-table-v45"
+BANK31_VARIANT_XLS_PROFILE = "funds-trace-table-v46"
+BANK31_VARIANT_EVIDENCE_PROFILE = "funds-trace-table-v47"
+BANK31_VARIANT_ARCHIVE_PROFILE = "funds-trace-table-archive-v36"
+BANK31_VARIANT_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v37"
+BANK31_VARIANT_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v38"
+SOURCE_LEDGER_PROFILE = "funds-trace-table-v48"
+SOURCE_LEDGER_XLS_PROFILE = "funds-trace-table-v49"
+SOURCE_LEDGER_EVIDENCE_PROFILE = "funds-trace-table-v50"
+SOURCE_LEDGER_ARCHIVE_PROFILE = "funds-trace-table-archive-v39"
+SOURCE_LEDGER_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v40"
+SOURCE_LEDGER_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v41"
+POSTING_PAIR_PROFILE = "funds-trace-table-v51"
+POSTING_PAIR_XLS_PROFILE = "funds-trace-table-v52"
+POSTING_PAIR_EVIDENCE_PROFILE = "funds-trace-table-v53"
+POSTING_PAIR_ARCHIVE_PROFILE = "funds-trace-table-archive-v42"
+POSTING_PAIR_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v43"
+POSTING_PAIR_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v44"
+# Restore recognized auxiliary scope evidence without reinterpreting old receipts.
+AUXILIARY_SCOPE_PROFILE = "funds-trace-table-v54"
+AUXILIARY_SCOPE_XLS_PROFILE = "funds-trace-table-v55"
+AUXILIARY_SCOPE_EVIDENCE_PROFILE = "funds-trace-table-v56"
+AUXILIARY_SCOPE_ARCHIVE_PROFILE = "funds-trace-table-archive-v45"
+AUXILIARY_SCOPE_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v46"
+AUXILIARY_SCOPE_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v47"
+# Native bank observations share field roles across standalone and archive input.
+# Earlier parser versions retain their original receipts and replay semantics.
+NATIVE_OBSERVATION_PROFILE = "funds-trace-table-v57"
+NATIVE_OBSERVATION_XLS_PROFILE = "funds-trace-table-v58"
+NATIVE_OBSERVATION_EVIDENCE_PROFILE = "funds-trace-table-v59"
+NATIVE_OBSERVATION_ARCHIVE_PROFILE = "funds-trace-table-archive-v48"
+NATIVE_OBSERVATION_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v49"
+NATIVE_OBSERVATION_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v50"
+UNORIENTED_PROFILE = "funds-trace-table-v60"
+UNORIENTED_XLS_PROFILE = "funds-trace-table-v61"
+UNORIENTED_EVIDENCE_PROFILE = "funds-trace-table-v62"
+UNORIENTED_ARCHIVE_PROFILE = "funds-trace-table-archive-v51"
+UNORIENTED_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v52"
+UNORIENTED_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v53"
+# Native31 adds unoriented observations and member-local proved role bindings.
+# v60-v62 / archive-v51-v53 keep their original native28-only behavior.
+NATIVE31_PROFILE = "funds-trace-table-v63"
+NATIVE31_XLS_PROFILE = "funds-trace-table-v64"
+NATIVE31_EVIDENCE_PROFILE = "funds-trace-table-v65"
+NATIVE31_ARCHIVE_PROFILE = "funds-trace-table-archive-v54"
+NATIVE31_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v55"
+NATIVE31_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v56"
+SOURCE_OBSERVATION_PROFILE = "funds-trace-table-v66"
+SOURCE_OBSERVATION_XLS_PROFILE = "funds-trace-table-v67"
+SOURCE_OBSERVATION_EVIDENCE_PROFILE = "funds-trace-table-v68"
+SOURCE_OBSERVATION_ARCHIVE_PROFILE = "funds-trace-table-archive-v57"
+SOURCE_OBSERVATION_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v58"
+SOURCE_OBSERVATION_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v59"
+SOURCE_OBSERVATION_PROFILES = frozenset((SOURCE_OBSERVATION_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE,
+    SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE,
+    SOURCE_OBSERVATION_EVIDENCE_ARCHIVE_PROFILE, SOURCE_OBSERVATION_XLS_ARCHIVE_PROFILE))
+NATIVE31_PROFILES = frozenset((*SOURCE_OBSERVATION_PROFILES, NATIVE31_PROFILE, NATIVE31_XLS_PROFILE, NATIVE31_EVIDENCE_PROFILE,
+    NATIVE31_ARCHIVE_PROFILE, NATIVE31_EVIDENCE_ARCHIVE_PROFILE, NATIVE31_XLS_ARCHIVE_PROFILE))
+UNORIENTED_PROFILES = frozenset((*NATIVE31_PROFILES, UNORIENTED_PROFILE, UNORIENTED_XLS_PROFILE, UNORIENTED_EVIDENCE_PROFILE,
+    UNORIENTED_ARCHIVE_PROFILE, UNORIENTED_EVIDENCE_ARCHIVE_PROFILE, UNORIENTED_XLS_ARCHIVE_PROFILE))
+NATIVE_OBSERVATION_PROFILES = frozenset((*UNORIENTED_PROFILES, NATIVE_OBSERVATION_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE,
+    NATIVE_OBSERVATION_EVIDENCE_PROFILE, NATIVE_OBSERVATION_ARCHIVE_PROFILE,
+    NATIVE_OBSERVATION_EVIDENCE_ARCHIVE_PROFILE, NATIVE_OBSERVATION_XLS_ARCHIVE_PROFILE))
+AUXILIARY_SCOPE_PROFILES = frozenset((*NATIVE_OBSERVATION_PROFILES, AUXILIARY_SCOPE_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE,
+    AUXILIARY_SCOPE_EVIDENCE_PROFILE, AUXILIARY_SCOPE_ARCHIVE_PROFILE,
+    AUXILIARY_SCOPE_EVIDENCE_ARCHIVE_PROFILE, AUXILIARY_SCOPE_XLS_ARCHIVE_PROFILE))
+POSTING_PAIR_PROFILES = frozenset((*AUXILIARY_SCOPE_PROFILES, POSTING_PAIR_PROFILE, POSTING_PAIR_XLS_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE,
+    POSTING_PAIR_ARCHIVE_PROFILE, POSTING_PAIR_EVIDENCE_ARCHIVE_PROFILE, POSTING_PAIR_XLS_ARCHIVE_PROFILE))
+SOURCE_LEDGER_PROFILES = frozenset((*POSTING_PAIR_PROFILES, SOURCE_LEDGER_PROFILE, SOURCE_LEDGER_XLS_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE,
+    SOURCE_LEDGER_ARCHIVE_PROFILE, SOURCE_LEDGER_EVIDENCE_ARCHIVE_PROFILE, SOURCE_LEDGER_XLS_ARCHIVE_PROFILE))
+BANK31_VARIANT_PROFILES = frozenset((*SOURCE_LEDGER_PROFILES, BANK31_VARIANT_PROFILE, BANK31_VARIANT_XLS_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE,
+    BANK31_VARIANT_ARCHIVE_PROFILE, BANK31_VARIANT_EVIDENCE_ARCHIVE_PROFILE, BANK31_VARIANT_XLS_ARCHIVE_PROFILE))
+SOURCE_TEXT_PROFILES = frozenset((*BANK31_VARIANT_PROFILES, SOURCE_TEXT_PROFILE, SOURCE_TEXT_XLS_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE,
+    SOURCE_TEXT_ARCHIVE_PROFILE, SOURCE_TEXT_EVIDENCE_ARCHIVE_PROFILE, SOURCE_TEXT_XLS_ARCHIVE_PROFILE))
+SOURCE_CONTRACT_PROFILES = frozenset((*SOURCE_TEXT_PROFILES, SOURCE_CONTRACT_PROFILE, SOURCE_CONTRACT_XLS_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE,
+    SOURCE_CONTRACT_ARCHIVE_PROFILE, SOURCE_CONTRACT_EVIDENCE_ARCHIVE_PROFILE, SOURCE_CONTRACT_XLS_ARCHIVE_PROFILE))
+ZONED_PROFILES = frozenset((*SOURCE_CONTRACT_PROFILES, ZONED_PROFILE, ZONED_XLS_PROFILE, ZONED_EVIDENCE_PROFILE,
+    ZONED_ARCHIVE_PROFILE, ZONED_EVIDENCE_ARCHIVE_PROFILE, ZONED_XLS_ARCHIVE_PROFILE, SOURCE_CONTRACT_EVIDENCE_ARCHIVE_PROFILE, SOURCE_CONTRACT_XLS_ARCHIVE_PROFILE))
+TIME_ROLE_PROFILES = frozenset((*ZONED_PROFILES, TIME_ROLE_PROFILE, TIME_ROLE_XLS_PROFILE, TIME_ROLE_EVIDENCE_PROFILE,
+    TIME_ROLE_ARCHIVE_PROFILE, TIME_ROLE_EVIDENCE_ARCHIVE_PROFILE, TIME_ROLE_XLS_ARCHIVE_PROFILE, ZONED_EVIDENCE_ARCHIVE_PROFILE, ZONED_XLS_ARCHIVE_PROFILE, SOURCE_CONTRACT_EVIDENCE_ARCHIVE_PROFILE, SOURCE_CONTRACT_XLS_ARCHIVE_PROFILE))
+OPTIONAL_REFERENCE_PROFILES = frozenset((OPTIONAL_REFERENCE_PROFILE, OPTIONAL_REFERENCE_XLS_PROFILE,
+    OPTIONAL_REFERENCE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_ARCHIVE_PROFILE,
+    OPTIONAL_REFERENCE_EVIDENCE_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_XLS_ARCHIVE_PROFILE, *TIME_ROLE_PROFILES))
+REFERENCE_ROLE_PROFILES = frozenset((REFERENCE_ROLE_PROFILE, REFERENCE_ROLE_XLS_PROFILE,
+    REFERENCE_ROLE_EVIDENCE_PROFILE, REFERENCE_ROLE_ARCHIVE_PROFILE,
+    REFERENCE_ROLE_EVIDENCE_ARCHIVE_PROFILE, REFERENCE_ROLE_XLS_ARCHIVE_PROFILE, *OPTIONAL_REFERENCE_PROFILES))
+PRECISE_PROFILES = frozenset((PRECISE_PROFILE, PRECISE_XLS_PROFILE, PRECISE_EVIDENCE_PROFILE,
+                              PRECISE_ARCHIVE_PROFILE, PRECISE_EVIDENCE_ARCHIVE_PROFILE,
+                              PRECISE_XLS_ARCHIVE_PROFILE, *REFERENCE_ROLE_PROFILES))
+DECLARATION_GUARD_PROFILES = frozenset((GUARDED_PROFILE, GUARDED_XLS_PROFILE, GUARDED_EVIDENCE_PROFILE,
+                                      GUARDED_ARCHIVE_PROFILE, GUARDED_EVIDENCE_ARCHIVE_PROFILE,
+                                      GUARDED_XLS_ARCHIVE_PROFILE, *PRECISE_PROFILES))
+HEADER_WIDTH_PROFILES = frozenset((SOURCE_OBSERVATION_EVIDENCE_ARCHIVE_PROFILE, SOURCE_OBSERVATION_XLS_ARCHIVE_PROFILE, NATIVE31_XLS_ARCHIVE_PROFILE, NATIVE31_EVIDENCE_ARCHIVE_PROFILE, UNORIENTED_EVIDENCE_ARCHIVE_PROFILE, UNORIENTED_XLS_ARCHIVE_PROFILE, NATIVE_OBSERVATION_EVIDENCE_ARCHIVE_PROFILE, NATIVE_OBSERVATION_XLS_ARCHIVE_PROFILE, AUXILIARY_SCOPE_EVIDENCE_ARCHIVE_PROFILE, AUXILIARY_SCOPE_XLS_ARCHIVE_PROFILE, POSTING_PAIR_EVIDENCE_ARCHIVE_PROFILE, POSTING_PAIR_XLS_ARCHIVE_PROFILE, SOURCE_LEDGER_EVIDENCE_ARCHIVE_PROFILE, SOURCE_LEDGER_XLS_ARCHIVE_PROFILE, BANK31_VARIANT_EVIDENCE_ARCHIVE_PROFILE, BANK31_VARIANT_XLS_ARCHIVE_PROFILE, SOURCE_TEXT_EVIDENCE_ARCHIVE_PROFILE, SOURCE_TEXT_XLS_ARCHIVE_PROFILE, HEADER_WIDTH_ARCHIVE_PROFILE, HEADER_WIDTH_XLS_ARCHIVE_PROFILE,
+                                 GUARDED_EVIDENCE_ARCHIVE_PROFILE, GUARDED_XLS_ARCHIVE_PROFILE,
+                                 PRECISE_EVIDENCE_ARCHIVE_PROFILE, PRECISE_XLS_ARCHIVE_PROFILE, REFERENCE_ROLE_EVIDENCE_ARCHIVE_PROFILE, REFERENCE_ROLE_XLS_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_XLS_ARCHIVE_PROFILE, TIME_ROLE_EVIDENCE_ARCHIVE_PROFILE, TIME_ROLE_XLS_ARCHIVE_PROFILE, ZONED_EVIDENCE_ARCHIVE_PROFILE, ZONED_XLS_ARCHIVE_PROFILE, SOURCE_CONTRACT_EVIDENCE_ARCHIVE_PROFILE, SOURCE_CONTRACT_XLS_ARCHIVE_PROFILE))
+MICROSECOND_ARCHIVE_PROFILES = frozenset((MICROSECOND_ARCHIVE_PROFILE, MICROSECOND_XLS_ARCHIVE_PROFILE,
+                                         *HEADER_WIDTH_PROFILES))
+XLS_EVIDENCE_ARCHIVE_PROFILES = frozenset((SOURCE_OBSERVATION_XLS_ARCHIVE_PROFILE, NATIVE31_XLS_ARCHIVE_PROFILE, UNORIENTED_XLS_ARCHIVE_PROFILE, NATIVE_OBSERVATION_XLS_ARCHIVE_PROFILE, AUXILIARY_SCOPE_XLS_ARCHIVE_PROFILE, POSTING_PAIR_XLS_ARCHIVE_PROFILE, SOURCE_LEDGER_XLS_ARCHIVE_PROFILE, BANK31_VARIANT_XLS_ARCHIVE_PROFILE, SOURCE_TEXT_XLS_ARCHIVE_PROFILE, SOURCE_CONTRACT_XLS_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, MICROSECOND_XLS_ARCHIVE_PROFILE,
+                                         HEADER_WIDTH_XLS_ARCHIVE_PROFILE, GUARDED_XLS_ARCHIVE_PROFILE, PRECISE_XLS_ARCHIVE_PROFILE, REFERENCE_ROLE_XLS_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_XLS_ARCHIVE_PROFILE, TIME_ROLE_XLS_ARCHIVE_PROFILE, ZONED_XLS_ARCHIVE_PROFILE))
+STANDALONE_XLS_PROFILES = frozenset((SOURCE_OBSERVATION_XLS_PROFILE, NATIVE31_XLS_PROFILE, UNORIENTED_XLS_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, POSTING_PAIR_XLS_PROFILE, SOURCE_LEDGER_XLS_PROFILE, BANK31_VARIANT_XLS_PROFILE, SOURCE_TEXT_XLS_PROFILE, SOURCE_CONTRACT_XLS_PROFILE, XLS_PROFILE, GUARDED_XLS_PROFILE, PRECISE_XLS_PROFILE, REFERENCE_ROLE_XLS_PROFILE, OPTIONAL_REFERENCE_XLS_PROFILE, TIME_ROLE_XLS_PROFILE, ZONED_XLS_PROFILE))
+XLS_READER_PROFILES = frozenset((*STANDALONE_XLS_PROFILES, *XLS_EVIDENCE_ARCHIVE_PROFILES))
+EVENT_PROFILES = frozenset((SOURCE_OBSERVATION_EVIDENCE_PROFILE, NATIVE31_EVIDENCE_PROFILE, UNORIENTED_EVIDENCE_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, ZONED_EVIDENCE_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, EVIDENCE_PROFILE, GUARDED_EVIDENCE_PROFILE, PRECISE_EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, *MICROSECOND_ARCHIVE_PROFILES))
+EVIDENCE_ARCHIVE_PROFILES = frozenset((LEGACY_EVIDENCE_ARCHIVE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, *MICROSECOND_ARCHIVE_PROFILES))
+EVIDENCE_PROFILES = frozenset((SOURCE_OBSERVATION_EVIDENCE_PROFILE, NATIVE31_EVIDENCE_PROFILE, UNORIENTED_EVIDENCE_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, ZONED_EVIDENCE_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, LEGACY_EVIDENCE_PROFILE, *EVIDENCE_ARCHIVE_PROFILES, EVIDENCE_PROFILE, GUARDED_EVIDENCE_PROFILE, PRECISE_EVIDENCE_PROFILE))
+PROFILE = SOURCE_OBSERVATION_PROFILE
+CURRENCY_REGION_PROFILES = frozenset((SOURCE_OBSERVATION_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE, NATIVE31_PROFILE, NATIVE31_ARCHIVE_PROFILE, UNORIENTED_PROFILE, UNORIENTED_ARCHIVE_PROFILE, NATIVE_OBSERVATION_PROFILE, NATIVE_OBSERVATION_ARCHIVE_PROFILE, AUXILIARY_SCOPE_PROFILE, AUXILIARY_SCOPE_ARCHIVE_PROFILE, POSTING_PAIR_PROFILE, POSTING_PAIR_ARCHIVE_PROFILE, SOURCE_LEDGER_PROFILE, SOURCE_LEDGER_ARCHIVE_PROFILE, BANK31_VARIANT_PROFILE, BANK31_VARIANT_ARCHIVE_PROFILE, SOURCE_TEXT_PROFILE, SOURCE_TEXT_ARCHIVE_PROFILE, CURRENCY_REGION_PROFILE, *STANDALONE_XLS_PROFILES, GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, TIME_ROLE_ARCHIVE_PROFILE, ZONED_PROFILE, ZONED_ARCHIVE_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_CONTRACT_ARCHIVE_PROFILE,
+                                     GUARDED_ARCHIVE_PROFILE, PRECISE_ARCHIVE_PROFILE, REFERENCE_ROLE_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_ARCHIVE_PROFILE, *EVIDENCE_PROFILES))
 CURRENCY_CODE_ALIAS_PROFILES = CURRENCY_REGION_PROFILES | {ARCHIVE_MEMBER_PROFILE}
 OVERLAPPING_HEADER_PROFILES = CURRENCY_REGION_PROFILES | {ARCHIVE_MEMBER_PROFILE}
 REORDERED_TIME_PROFILES = frozenset((REORDERED_TIME_PROFILE, *CURRENCY_REGION_PROFILES))
@@ -55,7 +217,7 @@ DIRECTION_PROFILES = frozenset((DIRECTION_PROFILE, *TIME_FORMAT_PROFILES))
 CONTRACT_PROFILES = frozenset((CONTRACT_PROFILE, *DIRECTION_PROFILES))
 FINANCIAL_PROFILES = frozenset((FINANCIAL_PROFILE, *CONTRACT_PROFILES))
 ROLE_PROFILES = frozenset((ROLE_PROFILE, *FINANCIAL_PROFILES))
-SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, *ROLE_PROFILES))
+SUPPORTED_PROFILES = frozenset((IDENTITY_PROFILE, *(ROLE_PROFILES - EVIDENCE_ARCHIVE_PROFILES - {GUARDED_ARCHIVE_PROFILE, PRECISE_ARCHIVE_PROFILE, REFERENCE_ROLE_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_ARCHIVE_PROFILE, TIME_ROLE_ARCHIVE_PROFILE, ZONED_ARCHIVE_PROFILE, SOURCE_CONTRACT_ARCHIVE_PROFILE, SOURCE_TEXT_ARCHIVE_PROFILE, BANK31_VARIANT_ARCHIVE_PROFILE, SOURCE_LEDGER_ARCHIVE_PROFILE, POSTING_PAIR_ARCHIVE_PROFILE, AUXILIARY_SCOPE_ARCHIVE_PROFILE, NATIVE_OBSERVATION_ARCHIVE_PROFILE, UNORIENTED_ARCHIVE_PROFILE, NATIVE31_ARCHIVE_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE})))
 ROLE_CONFLICT_BASIS = "显式身份角色或候选字段存在矛盾"
 HISTORY_CONFLICT_BASIS = "同一物理来源已有不同资金解释，保留历史事实，防止重复累计"
 ARCHIVE_HISTORY_CONFLICT_BASIS = "归档v4参与的同一物理来源已有不同资金解释，保留历史事实，防止重复累计"
@@ -70,6 +232,19 @@ FINANCIAL_VALIDATION_ISSUES = frozenset((
 ROW_KIND = "table_record"
 TRANSACTION_REFERENCE_POLICY = "transaction-reference-v1"
 BANK_FEEDBACK_32_COLUMNS = frozenset("交易卡号 交易账号 查询反馈结果原因 交易户名 交易证件号码 交易时间 交易金额 交易余额 收付标志 交易对手账卡号 现金标志 对手户名 对手身份证号 对手开户银行 摘要说明 交易币种 交易网点名称 交易发生地 交易是否成功 传票号 IP地址 MAC地址 对手交易余额 交易流水号 日志号 凭证种类 凭证号 交易柜员号 备注 商户名称 商户代码 交易类型".split())
+BANK_FEEDBACK_31_COLUMNS = frozenset("交易卡号 交易账号 交易方户名 交易方证件号码 交易时间 交易金额 交易余额 收付标志 交易对手账卡号 现金标志 对手户名 对手身份证号 对手开户银行 摘要说明 交易币种 交易网点名称 交易发生地 交易是否成功 传票号 IP地址 MAC地址 对手交易余额 交易流水号 日志号 凭证种类 凭证号 交易柜员号 备注 商户名称 交易类型 查询反馈结果原因".split())
+FEEDBACK_31_COLUMNS = BANK_FEEDBACK_32_COLUMNS - {"查询反馈结果原因"}
+FEEDBACK_31_REFERENCE_PROFILE = "feedback31-independent-references-v1"
+OPTIONAL_FEEDBACK_REFERENCE_PROFILE = "feedback-optional-references-v1"
+# These auxiliary labels confer no amount, identity, or reference authority.
+_FEEDBACK_OPTIONAL = frozenset("IP地址 MAC地址 日志号 传票号 凭证种类 交易柜员号 备注 商户名称 商户代码 交易网点名称 交易发生地 查询反馈结果原因".split())
+_FEEDBACK_REQUIRED = FEEDBACK_31_COLUMNS - _FEEDBACK_OPTIONAL
+BANK_FEEDBACK_31_REFERENCE_PROFILE = "bank-feedback31-reference-v1"
+BANK_FEEDBACK_28_REFERENCE_PROFILE = "bank-feedback28-reference-v1"
+UNIFORM_FEEDBACK_37_COLUMNS = frozenset("姓名(查询条件) 证件号码(查询条件) 查询账号 查询卡号 交易类型 借贷标志 币种 交易金额 交易余额 交易时间 交易流水号 交易对方名称 交易对方账号 交易对方卡号 交易对方证件号码 交易对手余额 交易对方账号开户行 交易摘要 交易网点名称 交易网点代码 日志号 传票号 凭证种类 凭证号 终端号 交易是否成功 交易发生地 商户名称 商户号 IP地址 MAC地址 交易柜员号 备注 本方账号 本方卡号".split()) | {"Unnamed: 35", "Unnamed: 36"}
+UNIFORM_FEEDBACK_37_REFERENCE_PROFILE = "uniform-feedback37-reference-v1"
+UNIFORM_FEEDBACK_35_COLUMNS = UNIFORM_FEEDBACK_37_COLUMNS - {"Unnamed: 35", "Unnamed: 36"}
+UNIFORM_FEEDBACK_35_REFERENCE_PROFILE = "uniform-feedback35-reference-v1"
 MAX_BYTES = 256 * 1024 * 1024
 MAX_RECORDS = 1_000_000
 MAX_COLUMNS = 256
@@ -82,6 +257,8 @@ REASONS = {
     "unknown_table": "表格结构尚不能唯一识别，未计入资金统计",
     "missing_time": "缺少交易时间，未计入资金统计",
     "invalid_time": "交易时间格式无效或日期含义不明确，未计入资金统计",
+    "unsupported_time_role": "未确定可用的交易时刻；保留来源时间及记账、受理等角色，未计入资金统计和资金图",
+    "unsupported_timezone": "来源的显式时区和对应UTC瞬间已保留；尚不支持与无时区交易共同投影，未计入资金统计和资金图",
     "conflicting_time": "多个时间字段不一致，未计入资金统计",
     "missing_amount": "缺少交易金额，未计入资金统计",
     "invalid_amount": "金额格式无法精确解析，未计入资金统计",
@@ -212,7 +389,10 @@ MAPPING_FIELDS = FINANCIAL_MAPPING_FIELDS | frozenset(_CONTRACT_ALIASES) | {"cou
 REASON_CODES = frozenset(REASONS)
 DETAILS_FIELDS = frozenset({"sheet", "source_row", "financial_effect", "reason", "validation_issues", "validation_basis", "currency_basis", "counterparty_basis", "sign_convention", "flow_sha256", "source_account_column", "reported_status", "source_role"})
 REFERENCE_DETAILS_FIELDS = frozenset({"trade_no_basis"})
+FIELD_EVIDENCE_DETAILS = frozenset({"source_field_evidence", "source_field_evidence_limited"})
+TIME_EVIDENCE_DETAILS = frozenset({"source_time_evidence", "source_time_evidence_limited"})
 FLOW_FIELDS = ("trade_no", "trade_time", "payer_name", "payer_account", "payer_bank", "payee_name", "payee_account", "payee_bank", "amount", "balance", "currency", "summary", "channel")
+STORED_FLOW_FIELDS = (*FLOW_FIELDS, "trade_time_utc", "trade_time_original", "trade_time_offset")
 
 
 def mapping_fields(profile):
@@ -247,6 +427,8 @@ def _raw(value):
 
 
 def _text(value):
+    if type(value) is str:
+        return value.strip()
     value = _raw(value)
     if value is None:
         return ""
@@ -261,7 +443,15 @@ def _cell_present(value):
 
 def _header_value(value, profile):
     # Cached formula results and invalid typed cells cannot declare a schema.
-    return "" if profile == XLS_PROFILE and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type) else value
+    return "" if profile in XLS_READER_PROFILES and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type) else value
+
+
+def _evidence_value(value, profile):
+    # v7 adds evidence to the XLS reader without granting its formula cache
+    # authority over identities, event references or posting-order declarations.
+    if profile in XLS_EVIDENCE_ARCHIVE_PROFILES and isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type):
+        return None
+    return _raw(value)
 
 
 def _header_parts(value, profile=IDENTITY_PROFILE):
@@ -326,16 +516,35 @@ def _header_parts(value, profile=IDENTITY_PROFILE):
 def _declared_time_header(value, profile):
     if profile not in TIME_FORMAT_PROFILES:
         return None
-    declaration = table_time_formats.header_parts(_text(value))
+    declaration = table_time_formats.header_parts(_text(value), precise=profile in PRECISE_PROFILES)
     if declaration is None:
         return None
     base, spec = declaration
     base = _norm(base)
     clocks = _ALIASES["time_part"] | _FINANCIAL_ALIASES.get("time_part", set())
     dates = _ALIASES["trade_time"] | _FINANCIAL_ALIASES.get("trade_time", set())
-    if spec in {"HH:MM:SS", "HHMMSS"}:
+    if spec in {"HH:MM:SS", "HHMMSS", "HHMMSSFFFFFF"}:
         return (base, spec) if base in clocks | _CLOCK_HEADERS else None
     return (base, spec) if base in dates else None
+
+
+def _unsupported_time_declaration(headers, profile):
+    """An unrecognized clock annotation cannot silently become a missing clock."""
+    if profile not in DECLARATION_GUARD_PROFILES:
+        return False
+    aliases = (_ALIASES["trade_time"] | _ALIASES["time_part"] | _CLOCK_HEADERS
+               | _FINANCIAL_ALIASES["trade_time"] | _FINANCIAL_ALIASES.get("time_part", set()))
+    query_owner = (profile in QUERY_OWNER_PROFILES and table_source_roles.classify(
+        [_text(_header_value(header, profile)) for header in headers], query_conditions=True)
+        in {"transaction_query_only", "transaction_explicit"})
+    for header in headers:
+        raw = unicodedata.normalize("NFKC", _text(_header_value(header, profile)))
+        if query_owner and table_source_roles.query_condition(raw):
+            continue
+        match = re.fullmatch(r"([^()\[\]]+?)\s*(?:\(([^()\[\]]+)\)|\[([^()\[\]]+)\])", raw)
+        if match and _norm(match[1]) in aliases and _declared_time_header(raw, profile) is None:
+            return True
+    return False
 
 
 def _columns(headers, profile=IDENTITY_PROFILE):
@@ -346,6 +555,22 @@ def _columns(headers, profile=IDENTITY_PROFILE):
         counts[label] = counts.get(label, 0) + 1
         labels.append(label)
     return [f"{label} [列{i + 1}]" if counts[label] > 1 else label for i, label in enumerate(labels)]
+
+
+def _source_time_role(base):
+    if base in {_norm(value) for value in ("记账时间", "记账日期", "posting date", "posting time")}:
+        return "posting"
+    if base in {_norm(value) for value in ("受理时间", "受理日期")}:
+        return "receipt"
+    if base in {_norm(value) for value in ("结算时间", "结算日期")}:
+        return "settlement"
+    if base in {_norm(value) for value in ("交易日期时间", "交易时间", "交易日期", "交易发生日期", "交易时分秒", "交易时刻",
+            "转账时间", "转账日期", "transaction date", "transaction time", "transaction datetime", "trade time", "trade_time", "tradedate", "transdate")}:
+        return "transaction"
+    return "unspecified"
+
+
+_TIME_CORROBORATION_HEADERS = frozenset(_norm(value) for value in ("date", "datetime", "timestamp", "time", "time of day"))
 
 
 def _candidates(headers, profile=IDENTITY_PROFILE):
@@ -399,10 +624,21 @@ def _candidates(headers, profile=IDENTITY_PROFILE):
             found.setdefault(field, []).append({"index": index, "factor": factor, "unit": unit, "signed": base in _SIGNED, "unit_currency": "CNY" if unit in {"人民币元", "cny"} else "", "basis": basis, **({"same_entry_after": field == "balance" and base in _AFTER_HEADERS,
                                   "same_entry_before": field == "balance_before" and base in _BEFORE_HEADERS}
                                  if profile in CONTRACT_PROFILES else {}),
-                                 **({"time_format": declared_time[1]} if declared_time else {}),
+                                 **({"time_format": declared_time[1], "precise_time": profile in PRECISE_PROFILES} if declared_time else {}),
+                                 **({"time_role": _source_time_role(base), "time_corroborates": profile in ZONED_PROFILES and base in _TIME_CORROBORATION_HEADERS, "zoned_time": profile in ZONED_PROFILES, "time_note_indices": tuple(i for i, value in enumerate(headers)
+                                      if _text(value) in {"备注", "说明"})} if profile in TIME_ROLE_PROFILES and field in {"trade_time", "time_part"} else {}),
                                  **({"identity_kind": "card" if field == "self_card" else "account",
                                      "contract_owner": True}
                                     if query_owner and field in {"self_account", "self_card"} else {})})
+    if profile in PRECISE_PROFILES:
+        owner_indices = tuple(index for index, header in enumerate(headers)
+                              if _norm(_text(header)) in {"本方账号", "交易账号", "本方卡号", "交易卡号"})
+        if owner_indices and any(found.get(field) for field in ("direction", "income_amt", "expense_amt")):
+            for index, header in enumerate(headers):
+                if _norm(_text(header)) == "账户开户名称":
+                    found.setdefault("self_name", []).append({"index": index, "factor": Decimal(1),
+                        "unit": "元/默认基础单位", "signed": False, "unit_currency": "",
+                        "basis": "explicit_identity_role", "owner_name_anchor_indices": owner_indices})
     return found
 
 
@@ -419,6 +655,12 @@ def _shape(candidates, profile=IDENTITY_PROFILE):
 
 def _locate_header(raw, profile=IDENTITY_PROFILE):
     for index, row in enumerate(raw):
+        # One ordinary cell cannot supply both time and money candidates.
+        # Keep historical profiles and unproved/custom types on the old path.
+        if (type(profile) is str and profile in HEADER_WIDTH_PROFILES
+                and type(row) in (list, tuple) and len(row) < 2
+                and (not row or type(row[0]) is str)):
+            continue
         candidates = _candidates(row, profile)
         if candidates.get("trade_time") and any(candidates.get(k) for k in ("amount", "income_amt", "expense_amt")):
             return index, candidates, _shape(candidates, profile)
@@ -442,6 +684,57 @@ def _bytes(source):
     return raw
 
 
+def _strict_source_csv(text, profile):
+    """Use complete quoted records and recognized column structure as evidence."""
+    from . import feedback_import, table_archive
+    auxiliary = set(table_archive._AUXILIARY) | set(table_archive._SOURCE_AUXILIARY)
+    auxiliary |= {frozenset(names) for names in feedback_import.SCHEMAS.values()}
+    choices = []
+    damaged_recognized = False
+    for delimiter in (",", "\t", ";", "|"):
+        try:
+            feedback_import._validate_csv_quotes(text, delimiter)
+            rows = _collect_rows(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, strict=True))
+        except (csv.Error, feedback_import.FeedbackImportError):
+            continue
+        if not rows:
+            continue
+        header, _, mode = _locate_header(rows, profile)
+        known_auxiliary = frozenset(cell.strip() for cell in rows[0]) in auxiliary and len(rows[0]) == len(set(rows[0]))
+        recognized = header is not None or known_auxiliary
+        start = header if header is not None else 0
+        width = len(rows[start])
+        valid = True
+        for row in rows[start + 1:]:
+            if not row or not any(cell.strip() for cell in row):
+                continue
+            if not known_auxiliary:
+                regional, _, _ = _locate_header([row], profile)
+                if regional is not None:
+                    width = len(row)
+            if len(row) != width:
+                valid = False
+                break
+        if recognized and not valid:
+            damaged_recognized = True
+        if valid:
+            choices.append((recognized, max(map(len, rows)) > 1, rows, delimiter))
+    if any(item[0] for item in choices):
+        choices = [item for item in choices if item[0]]
+    elif damaged_recognized:
+        raise TableImportError("CSV已识别表头与数据列数不一致，文件未接纳")
+    elif any(item[1] for item in choices):
+        choices = [item for item in choices if item[1]]
+    distinct = {}
+    for recognized, multiple, rows, delimiter in choices:
+        distinct.setdefault(tuple(map(tuple, rows)), (rows, delimiter))
+    if len(distinct) > 1:
+        raise TableImportError("CSV分隔符存在歧义，无法安全识别")
+    if not distinct:
+        raise TableImportError("CSV引号或记录结构损坏，文件未接纳")
+    return next(iter(distinct.values()))
+
+
 def _csv(raw, suffix, profile=IDENTITY_PROFILE):
     if b"\x00" in raw[:4096] and not raw.startswith((b"\xff\xfe", b"\xfe\xff")):
         raise TableImportError("CSV编码无法安全识别")
@@ -456,17 +749,21 @@ def _csv(raw, suffix, profile=IDENTITY_PROFILE):
     if text is None or "\x00" in text:
         raise TableImportError("CSV编码无法安全识别")
     csv.field_size_limit(max(csv.field_size_limit(), MAX_FIELD))
+    if profile in SOURCE_CONTRACT_PROFILES:
+        rows, delimiter = _strict_source_csv(text, profile)
+        return [{"path": "table.csv", "name": "", "rows": rows, "sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw), "encoding": encoding, "delimiter": delimiter}]
     choices = []
     for delimiter in ("\t", ",", ";", "|"):
         sample = []
         try:
-            reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, strict=True)
-            for index, row in enumerate(reader):
-                if index >= MAX_RECORDS:
-                    raise TableImportError("表格记录数或列数超出安全处理范围")
-                sample.append(row)
-                if index >= 99:
-                    break
+            with io.StringIO(text, newline="") as stream:
+                reader = csv.reader(stream, delimiter=delimiter, strict=True)
+                for index, row in enumerate(reader):
+                    if index >= MAX_RECORDS:
+                        raise TableImportError("表格记录数或列数超出安全处理范围")
+                    sample.append(row)
+                    if index >= 99:
+                        break
         except csv.Error:
             continue
         header, candidates, mode = _locate_header(sample, profile)
@@ -484,7 +781,8 @@ def _csv(raw, suffix, profile=IDENTITY_PROFILE):
         except csv.Error:
             delimiter = "\t" if suffix == ".tsv" else ","
     try:
-        rows = _collect_rows(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, strict=True))
+        with io.StringIO(text, newline="") as stream:
+            rows = _collect_rows(csv.reader(stream, delimiter=delimiter, strict=True))
     except csv.Error:
         raise TableImportError("CSV引号或记录结构损坏，文件未接纳") from None
     return [{"path": "table.csv", "name": "", "rows": rows, "sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw), "encoding": encoding, "delimiter": delimiter}]
@@ -647,6 +945,9 @@ def _date_only(value):
 
 
 def _value(row, candidate):
+    anchors = candidate.get("owner_name_anchor_indices")
+    if anchors is not None and not any(index < len(row) and _text(row[index]) for index in anchors):
+        return ""
     return row[candidate["index"]] if candidate["index"] < len(row) else ""
 
 
@@ -716,8 +1017,24 @@ def _reference_field(row, candidates, issues):
     references = candidates.get("trade_no", [])
     primary = [item for item in references if item.get("reference_role") == "source_transaction_id"]
     vouchers = [item for item in references if item.get("reference_role") == "independent_voucher_reference"]
-    transaction = _field(row, {"trade_no": primary}, "trade_no", issues)
-    voucher = _field(row, {"trade_no": vouchers}, "trade_no", issues)
+    closed_missing = any(item.get("reference_profile") in {BANK_FEEDBACK_28_REFERENCE_PROFILE, OPTIONAL_FEEDBACK_REFERENCE_PROFILE, FEEDBACK_31_REFERENCE_PROFILE, BANK_FEEDBACK_31_REFERENCE_PROFILE,
+                                                          UNIFORM_FEEDBACK_37_REFERENCE_PROFILE,
+                                                          UNIFORM_FEEDBACK_35_REFERENCE_PROFILE} for item in references)
+    blank_indices = {index for item in references for index in item.get("reference_blank_indices", ())}
+    if any(_cell_present(_value(row, {"index": index})) for index in blank_indices):
+        issues.append("conflicting_field")
+    def value(items):
+        if closed_missing:
+            # Interpret an explicit missing marker in its own reference role;
+            # never edit the retained source cell or suppress its other role.
+            items = [item for item in items if (text := _text(_value(row, item)))
+                     and text.casefold() not in {"null", "none", "nan", "n/a"}
+                     and any(character.isalnum() for character in text)]
+        return _field(row, {"trade_no": items}, "trade_no", issues)
+    transaction, voucher = value(primary), value(vouchers)
+    if any(item.get("reference_profile") == BANK_FEEDBACK_28_REFERENCE_PROFILE for item in references):
+        # A voucher is independently traceable even when the primary is absent.
+        return transaction, "source_transaction_id" if transaction else "none"
     # Keep the already accepted v5 value when the actual transaction ID is blank.
     return (transaction, "source_transaction_id") if transaction else (
         (voucher, "legacy_voucher_fallback") if voucher else ("", "none"))
@@ -772,10 +1089,11 @@ def _financial_times(row, candidates, issues):
         if raw:
             present = True
             if item.get("time_format") and not table_time_formats.validate(
-                    _raw(source), item["time_format"], date_only=_date_only(source)):
+                    _raw(source), item["time_format"], date_only=_date_only(source), precise=item.get("precise_time", False)):
                 issues.append("invalid_time")
                 continue
-            value = table_financial.clock(raw)
+            value = (table_time_formats.precise_clock(raw) if item.get("precise_time") and item.get("time_format") == "HHMMSSFFFFFF"
+                     else table_financial.clock(raw))
             if value is None:
                 issues.append("invalid_time")
             else:
@@ -787,7 +1105,7 @@ def _financial_times(row, candidates, issues):
             continue
         present = True
         if item.get("time_format") and not table_time_formats.validate(
-                _raw(value), item["time_format"], date_only=_date_only(value)):
+                _raw(value), item["time_format"], date_only=_date_only(value), precise=item.get("precise_time", False)):
             issues.append("invalid_time")
             continue
         clock = table_financial.clock(raw)
@@ -797,9 +1115,11 @@ def _financial_times(row, candidates, issues):
             dates.append((value, item.get("time_format") in {"YYYY-MM-DD", "YYYY/MM/DD", "YYYYMMDD"}))
     if len(set(clocks)) > 1:
         issues.append("conflicting_time")
-    times, kinds = [], []
+    times, kinds, instants = [], [], []
     for value, declared_date in dates:
-        parsed = _time(value)
+        zoned = table_time_formats.source_time_value(_text(value))
+        parsed = (_time(zoned["wall_clock"]) if any(item.get("zoned_time") for item in candidates.get("trade_time", []))
+                  and zoned["basis"] == "explicit_offset" else _time(value))
         if parsed is None:
             issues.append("invalid_time")
             continue
@@ -811,8 +1131,13 @@ def _financial_times(row, candidates, issues):
                 issues.append("conflicting_time")
         times.append(parsed)
         kinds.append(only_date and not clocks)
+        instants.append(zoned["utc"] if any(item.get("zoned_time") for item in candidates.get("trade_time", []))
+                        and zoned["basis"] == "explicit_offset" else None)
     if not times:
         issues.append("invalid_time" if present else "missing_time")
+    elif any(instants):
+        if not all(instants) or len(set(instants)) > 1:
+            issues.append("conflicting_time")
     elif len(set(times)) > 1:
         detailed = {value for value, date_only in zip(times, kinds) if not date_only}
         if len(detailed) == 1 and all(value.date() == next(iter(detailed)).date() for value in times):
@@ -822,10 +1147,37 @@ def _financial_times(row, candidates, issues):
     return times
 
 
-def _interpret(row, candidates, mode, *, reference_policy=None, financial=False, source_contract=None, source_roles=False, identity_values=None):
+def _zoned_fields(row, time_candidates, financial):
+    zoned = [(item, table_time_formats.source_time_value(_text(_value(row, item))))
+             for item in time_candidates.get("trade_time", []) if item.get("zoned_time") and _text(_value(row, item))] if financial else []
+    explicit = [value for _, value in zoned if value["basis"] == "explicit_offset"]
+    if explicit:
+        if len(explicit) != len(zoned) or len({value["utc"] for value in explicit}) > 1:
+            return {}, "conflicting_time"
+        value = explicit[0]
+        original = _text(_value(row, zoned[0][0]))
+        return {"trade_time_utc": dt.datetime.fromisoformat(value["utc"].replace("Z", "+00:00")).replace(tzinfo=None),
+                "trade_time_original": original, "trade_time_offset": value["offset"]}, None
+    return {}, None
+
+
+def _interpret(row, candidates, mode, *, reference_policy=None, financial=False, source_contract=None, source_roles=False, identity_values=None, retain_endpoint_role=False, sign_contract=None, source_ledger=False):
     issues, notes = [], {}
+    if sign_contract:
+        if sign_contract.get("error"):
+            issues.append(sign_contract["error"])
+        else:
+            notes[table_sign_declarations.DETAIL_FIELD] = sign_contract["proof"]
+            candidates = {field: [dict(item) for item in items] for field, items in candidates.items()}
+            for item in candidates.get("amount", []):
+                declared_factor = Decimal(sign_contract["factor"])
+                if item["unit"] != "元/默认基础单位" and item["factor"] != declared_factor:
+                    issues.append("conflicting_unit")
+                elif item["unit"] == "元/默认基础单位":
+                    item.update(factor=declared_factor, unit="来源声明单位")
     if financial:
-        candidates, issues = _financial_candidates(row, candidates)
+        candidates, financial_issues = _financial_candidates(row, candidates)
+        issues.extend(financial_issues)
     critical_fields = set(candidates) - {"summary", "channel", "feedback_reason"}
     if any(isinstance(value := _value(row, item), _WorkbookValue) and value.formula for field in critical_fields for item in candidates[field]):
         return None, "unresolved", "formula_value", {"financial_effect": "undetermined", "validation_issues": "formula_value"}
@@ -840,16 +1192,61 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
     statuses = [_text(_value(row, item)) for item in status_candidates]
     if statuses:
         status_values = {_enum(value) for value in statuses}
-        code_basis = all(item.get("source_name") == "交易是否成功" for item in status_candidates)
+        code_basis = all(item.get("source_name") == "交易是否成功"
+                         and item.get("numeric_status_policy", "historical") != "unknown"
+                         for item in status_candidates)
         positive_statuses = {"成功", "交易成功", "success", "succeeded"} | ({"01", "1"} if code_basis else set())
-        if not status_values <= positive_statuses:
+        ledger_status = all(item.get("source_posting_status") for item in status_candidates)
+        ledger_fields = all(any(_text(_value(row, item)) for item in candidates.get(field, []))
+                            for field in ("trade_time", "amount", "balance", "direction", "trade_no"))
+        ledger_owner = any(_text(_value(row, item)) for field in ("self_account", "self_card") for item in candidates.get(field, []))
+        if ledger_status and ledger_fields and ledger_owner and all(not value or re.fullmatch(r"[0-9]+", value) for value in status_values):
+            notes["reported_status"] = "unknown"
+        elif not code_basis and status_values <= {"01", "1"} and all(
+                item.get("numeric_status_policy") == "unknown" for item in status_candidates):
+            # Preserve exact source observations, without inventing a platform
+            # codebook or promoting the literal state to reported success.
+            notes["reported_status"] = "unknown"
+        elif not status_values <= positive_statuses:
             if status_values and status_values <= {"失败", "交易失败", "failed", "failure", "不成功"}:
                 return None, "non_transaction", "failed_transaction", {"financial_effect": "not_a_flow", "reported_status": "explicit_failure"}
             issues.append("unknown_status")
         else:
             notes["reported_status"] = "source_reported_success"
     if financial:
-        times = _financial_times(row, candidates, issues)
+        time_candidates = candidates
+        if any("time_role" in item for field in ("trade_time", "time_part") for item in candidates.get(field, [])):
+            time_candidates = {field: list(items) for field, items in candidates.items()}
+            explicit_transaction = any(item.get("time_role") == "transaction" and _text(_value(row, item))
+                and (_time(_value(row, item)) is not None and not _date_only(_value(row, item))
+                     or table_time_formats.source_time_value(_text(_value(row, item)))["basis"] == "explicit_offset")
+                for item in candidates.get("trade_time", []))
+            transaction, posting, explicit_zone = False, False, False
+            for field in ("trade_time", "time_part"):
+                selected = []
+                for item in candidates.get(field, []):
+                    value = _text(_value(row, item))
+                    if item.get("time_role") in {"posting", "receipt", "settlement"}:
+                        posting |= bool(value)
+                        continue
+                    if explicit_transaction and item.get("time_role") == "unspecified" and not item.get("time_corroborates"):
+                        continue
+                    transaction |= bool(value)
+                    if table_time_formats.source_time_value(value)["basis"] == "explicit_offset":
+                        explicit_zone = True
+                        if not item.get("zoned_time"):
+                            continue
+                    selected.append(item)
+                time_candidates[field] = selected
+            if posting and not transaction:
+                issues.append("unsupported_time_role")
+            if explicit_zone and not any(item.get("zoned_time") for item in time_candidates.get("trade_time", [])):
+                issues.append("unsupported_timezone")
+            time_issues = []
+            times = _financial_times(row, time_candidates, time_issues)
+            issues.extend(issue for issue in time_issues if issue != "missing_time" or not (posting and not transaction or explicit_zone))
+        else:
+            times = _financial_times(row, time_candidates, issues)
     else:
         times, time_kinds = [], []
         time_parts = [_text(_value(row, candidate)) for candidate in candidates.get("time_part", []) if _text(_value(row, candidate))]
@@ -921,13 +1318,20 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
     explicit_direction = direction
     signed = any(candidate["signed"] and _money(_value(row, candidate), candidate)[0] is not None for candidate in candidates.get("amount", []))
     sign_direction = "in" if amount is not None and amount > 0 else "out" if amount is not None and amount < 0 else None
+    if sign_contract and not sign_contract.get("error") and sign_direction:
+        declared_direction = sign_contract["positive" if amount > 0 else "negative"]
+        if signed and declared_direction != sign_direction:
+            issues.append("conflicting_direction")
+        sign_direction = declared_direction
+        signed = True
     if amount is not None and amount < 0 and (not signed or mode != "B"):
         issues.append("negative_amount")
     if signed and sign_direction:
         if direction and direction != sign_direction:
             issues.append("conflicting_direction")
         direction = direction or sign_direction
-        notes["sign_convention"] = "表头明示带符号金额：正收入、负支出"
+        notes["sign_convention"] = ("来源闭式声明：" + ("正收入、负支出" if sign_contract["positive"] == "in" else "正支出、负收入")
+                                    if sign_contract and not sign_contract.get("error") else "表头明示带符号金额：正收入、负支出")
     if split_direction:
         if direction and direction != split_direction:
             issues.append("conflicting_direction")
@@ -951,8 +1355,14 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
         else:
             fields[field] = _field(row, candidates, field, issues)
     for field in ("summary", "channel"):
-        fragments = list(dict.fromkeys(_text(_value(row, item)) for item in candidates.get(field, []) if _text(_value(row, item))))
-        fields[field] = "；".join(fragments)
+        source_summary = [item for item in candidates.get(field, []) if item.get("source_text_role") == "summary"]
+        if field == "summary" and source_summary:
+            _field(row, {field: source_summary}, field, issues)
+            value = _raw(_value(row, source_summary[0]))
+            fields[field] = value if isinstance(value, str) else _text(value)
+        else:
+            fragments = list(dict.fromkeys(_text(_value(row, item)) for item in candidates.get(field, []) if _text(_value(row, item))))
+            fields[field] = "；".join(fragments)
     if not fields["self_account"] and candidates.get("self_card") and candidates.get("self_account"):
         # This fallback is bounded to the explicit source pair, not arbitrary cards.
         account_columns = candidates["self_account"]
@@ -1068,11 +1478,14 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
             currencies.append(currency)
     if len(set(currencies)) > 1:
         issues.append("invalid_currency")
-    currency = currencies[0] if currencies else "CNY"
+    required_currency = any(item.get("required_source_currency") for item in candidates.get("currency", []))
+    if required_currency and not currencies:
+        issues.append("invalid_currency")
+    currency = currencies[0] if currencies else "" if required_currency else "CNY"
     unit_currencies = {candidate.get("unit_currency") for name in (*table_financial.MONEY_FIELDS, *(table_contracts.MONEY_FIELDS if source_contract else ())) for candidate in candidates.get(name, []) if candidate.get("unit_currency") and _text(_value(row, candidate))}
     if unit_currencies and unit_currencies != {currency}:
         issues.append("currency_unit_conflict")
-    if not currencies:
+    if not currencies and not required_currency:
         notes["currency_basis"] = "沿用普通表格历史默认币种CNY；来源未提供币种"
     if mode == "B":
         own = (fields["self_name"], fields["self_account"], "")
@@ -1087,13 +1500,38 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
             notes["counterparty_basis"] = "来源未提供对手账号；保留为空，不以姓名代造账号"
     if source_roles and identity_values is not None:
         identity_values.update(identities)
+    zoned_fields, zone_error = _zoned_fields(row, time_candidates if financial else candidates, financial)
+    if source_ledger and zone_error:
+        issues.insert(0, zone_error)
     issues = list(dict.fromkeys(issues))
+    if source_ledger:
+        from . import source_ledger as ledger
+        raw_direction = next((_text(_value(row, item)) for item in candidates.get("direction", [])
+                              if _text(_value(row, item))), "")
+        if (mode == "B" and amount == 0 and not direction and not raw_direction
+                and any(item.get("allow_unoriented") for item in candidates.get("direction", []))):
+            issues.append("missing_direction")
+        snapshot = ledger.capture(fields, amount=amount, balance=balance, currency=currency,
+            source_currency=currencies[0] if currencies else "", stamp=times[0] if times else None,
+            direction=explicit_direction, raw_direction=raw_direction, card=_field(row, candidates, "self_card", []),
+            issues=issues, signed=signed, mode=mode, reported_status=notes.get("reported_status"), before=before, zoned=zoned_fields,
+            allow_unoriented=any(item.get("allow_unoriented") for item in candidates.get("direction", [])),
+            allow_source_observation=any(item.get("allow_source_observation") for item in candidates.get("direction", [])),
+            original_direction=next((str(_value(row, item)) for item in candidates.get("direction", [])
+                                     if _value(row, item) is not None), ""))
+        if snapshot:
+            notes[ledger.FIELD] = snapshot
     if issues:
         return None, "unresolved", issues[0], {**notes, "validation_issues": ",".join(issues), "financial_effect": "undetermined"}
     if amount == 0:
         return None, "non_monetary", "zero_amount", {**notes, "financial_effect": "no_movement"}
     result = {key: fields[key] for key in ("trade_no", "payer_name", "payer_account", "payer_bank", "payee_name", "payee_account", "payee_bank", "self_name", "self_account", "summary", "channel")}
     result.update(trade_time=times[0], amount=abs(amount), balance=balance, currency=currency)
+    if zone_error:
+        return None, "unresolved", zone_error, {**notes, "financial_effect": "undetermined", "validation_issues": zone_error}
+    result.update(zoned_fields)
+    if retain_endpoint_role:
+        notes["_resolved_own_side"] = "payee" if direction == "in" else "payer" if direction == "out" else ""
     return result, "accepted", "transaction_valid", {**notes, "financial_effect": "source_reported", "flow_sha256": flow_digest(result)}
 
 
@@ -1102,19 +1540,20 @@ def _role_conflict(outcome):
     issues = list(filter(None, notes.get("validation_issues", "").split(",")))
     primary = outcome[2] if issues and set(issues) - {"missing_identity", "conflicting_direction"} else "conflicting_field"
     notes.pop("flow_sha256", None)
+    notes.pop("source_ledger_evidence", None)
     notes.update(financial_effect="undetermined", counterparty_basis=ROLE_CONFLICT_BASIS,
                  validation_issues=",".join(dict.fromkeys([primary, *issues, "conflicting_field"])))
     return None, "unresolved", primary, notes
 
 
-def _interpret_candidates(row, candidates, mode, *, reference_policy=None, financial=False, source_contract=None, source_roles=False):
+def _interpret_candidates(row, candidates, mode, *, reference_policy=None, financial=False, source_contract=None, source_roles=False, retain_endpoint_role=False, sign_contract=None, source_ledger=False):
     """Resolve explicit role layouts, never rank them by row acceptance rate.
 
     Financial validation stays in the established interpreter. Only missing
     identities can be completed from another explicitly directed layout.
     """
     selected_identities = {}
-    selected = _interpret(row, candidates, mode, reference_policy=reference_policy, financial=financial, source_contract=source_contract, source_roles=source_roles, identity_values=selected_identities)
+    selected = _interpret(row, candidates, mode, reference_policy=reference_policy, financial=financial, source_contract=source_contract, source_roles=source_roles, identity_values=selected_identities, retain_endpoint_role=retain_endpoint_role, sign_contract=sign_contract, source_ledger=source_ledger)
     party_fields = tuple(side + "_" + field for side in ("payer", "payee") for field in ("name", "account", "bank"))
     if selected[1] == "unresolved":
         identity_issues = []
@@ -1133,7 +1572,7 @@ def _interpret_candidates(row, candidates, mode, *, reference_policy=None, finan
             or selected[1] in {"non_transaction", "non_monetary"}):
         return selected
     peer_identities = selected_identities if mode == "B" else {}
-    peer = selected if mode == "B" else _interpret(row, candidates, "B", reference_policy=reference_policy, financial=financial, source_contract=source_contract, source_roles=source_roles, identity_values=peer_identities)
+    peer = selected if mode == "B" else _interpret(row, candidates, "B", reference_policy=reference_policy, financial=financial, source_contract=source_contract, source_roles=source_roles, identity_values=peer_identities, retain_endpoint_role=retain_endpoint_role, sign_contract=sign_contract, source_ledger=source_ledger)
     if peer[0] is not None:
         merged = dict(peer[0])
         for field in party_fields:
@@ -1198,6 +1637,54 @@ def _interpret_candidates(row, candidates, mode, *, reference_policy=None, finan
 def _region(headers, mode, mapping, *, strict, reference_policy=None, profile=IDENTITY_PROFILE):
     """Resolve labels against this region's positions, never an earlier region."""
     candidates = _candidates(headers, profile)
+    header_names = tuple(_text(_header_value(header, profile)) for header in headers)
+    signature = frozenset(header_names)
+    # Complete source schema, including identity/direction/status columns.
+    # Repeated role columns remain validators. Additional unknown columns must
+    # be empty on every admitted row; their names confer no reference authority.
+    contract_names = tuple(_header_parts(header, profile)[0] for header in headers)
+    contract_signature = frozenset(contract_names)
+    from .feedback_import import COLUMNS as native_columns
+    bank31_names = {_norm(name) for name in BANK_FEEDBACK_31_COLUMNS}
+    # The feedback-result label remains a source-family marker, even when its
+    # cells are empty; an unknown replacement cannot authorize blank statuses.
+    bank31_variant = (profile in BANK31_VARIANT_PROFILES
+        and {_norm(name) for name in (BANK_FEEDBACK_31_COLUMNS - _FEEDBACK_OPTIONAL) | {"查询反馈结果原因"}} <= contract_signature)
+    bank31_blank_indices = tuple(index for index, name in enumerate(contract_names) if name not in bank31_names)
+    if bank31_variant and bank31_blank_indices:
+        from . import event_resolution
+        # Extra semantic declarations keep their existing parser path. Only
+        # unrecognized, empty extension cells can extend this source family.
+        semantic_indices = {item["index"] for items in candidates.values() for item in items}
+        event_names = set(event_resolution.HEADERS.values()) | event_resolution.POST_BALANCE_HEADERS | {"记账顺序号"}
+        bank31_variant = not any(index in semantic_indices or header_names[index] in event_names
+                                 for index in bank31_blank_indices)
+    closed_bank31 = (profile in SOURCE_CONTRACT_PROFILES and contract_signature == bank31_names or bank31_variant)
+    if closed_bank31:
+        for index, name in enumerate(contract_names):
+            if name == _norm("交易方户名") and index not in {item["index"] for item in candidates.get("self_name", [])}:
+                candidates.setdefault("self_name", []).append({"index": index, "factor": Decimal(1),
+                    "unit": "元/默认基础单位", "signed": False, "basis": "explicit_identity_role"})
+    native_typed_family = profile in TIME_ROLE_PROFILES and contract_signature == {_norm(name) for name in native_columns}
+    closed_native28 = (profile in NATIVE_OBSERVATION_PROFILES and len(headers) == len(native_columns)
+                       and contract_signature == {_norm(name) for name in native_columns})
+    closed_unoriented31 = (profile in NATIVE31_PROFILES and len(headers) == len(bank31_names)
+                           and contract_signature == bank31_names)
+    if closed_native28 or closed_unoriented31:
+        for item in candidates.get("direction", []):
+            item["allow_unoriented"] = profile in UNORIENTED_PROFILES
+            item["allow_source_observation"] = profile in SOURCE_OBSERVATION_PROFILES
+    if closed_native28:
+        for item in candidates.get("currency", []):
+            item["required_source_currency"] = True
+    if native_typed_family:
+        type_indices = tuple(index for index, name in enumerate(contract_names) if name == _norm("凭证种类"))
+        for item in candidates.get("trade_no", []):
+            item["native_voucher_type_indices"] = type_indices
+    known_feedback = {_norm(name) for name in FEEDBACK_31_COLUMNS | _FEEDBACK_OPTIONAL}
+    optional_references = (profile in OPTIONAL_REFERENCE_PROFILES
+        and {_norm(name) for name in _FEEDBACK_REQUIRED} <= contract_signature)
+    feedback_references = (closed_native28 or closed_bank31 or optional_references or profile in REFERENCE_ROLE_PROFILES and signature == FEEDBACK_31_COLUMNS)
     source_role = table_source_roles.classify(
         [_text(_header_value(header, profile)) for header in headers], query_conditions=profile in QUERY_OWNER_PROFILES
     ) if profile in SOURCE_ROLE_PROFILES else None
@@ -1207,6 +1694,15 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, profile=ID
     for items in candidates.values():
         for candidate in items:
             candidate["source_name"] = _text(headers[candidate["index"]])
+    if (closed_bank31 or closed_native28) and profile in SOURCE_TEXT_PROFILES:
+        for item in candidates.get("summary", []):
+            item["source_text_role"] = "summary" if contract_names[item["index"]] == _norm("摘要说明") else "remark"
+    if profile in NATIVE_OBSERVATION_PROFILES and (closed_bank31 or closed_native28):
+        for index, name in enumerate(contract_names):
+            role = {_norm("传票号"): "source_slip_reference", _norm("日志号"): "source_log_reference"}.get(name)
+            if role and index not in {item["index"] for item in candidates.get("trade_no", [])}:
+                candidates.setdefault("trade_no", []).append({"index": index, "source_name": _text(headers[index]),
+                    "factor": Decimal(1), "unit": "元/默认基础单位", "signed": False, "reference_role": role})
     error = None
     pinned_mapping = {}
     for field, column in (mapping or {}).items():
@@ -1237,11 +1733,16 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, profile=ID
         pinned_mapping[field] = column
         base, factor, unit = _header_parts(headers[index], profile)
         explicit = {"index": index, "factor": factor, "unit": unit, "signed": base in _SIGNED, "source_name": _text(headers[index]), "unit_currency": "CNY" if unit in {"人民币元", "cny"} else ""}
+        if profile in TIME_ROLE_PROFILES and field in {"trade_time", "time_part"}:
+            explicit["time_role"] = _source_time_role(base)
+            explicit["time_corroborates"] = profile in ZONED_PROFILES and base in _TIME_CORROBORATION_HEADERS
+            explicit["zoned_time"] = profile in ZONED_PROFILES
         if query_owner and identity:
             explicit.update(identity_kind=identity["identity_kind"], contract_owner=True)
         declaration = _declared_time_header(headers[index], profile)
         if declaration and field in {"trade_time", "time_part"}:
             explicit["time_format"] = declaration[1]
+            explicit["precise_time"] = profile in PRECISE_PROFILES
         if profile in FINANCIAL_PROFILES and field in {
                 *table_financial.MONEY_FIELDS, "trade_time", "time_part", "direction",
                 "currency", "status", "amount_unit", "income_amt_unit", "expense_amt_unit", "balance_unit"}:
@@ -1257,6 +1758,12 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, profile=ID
                      ({"trade_time", "time_part", "direction", "currency", "status", "amount_unit", "income_amt_unit", "expense_amt_unit", "balance_unit"} if profile in FINANCIAL_PROFILES else set())):
             if index not in {item["index"] for item in candidates.get(field, [])}:
                 candidates.setdefault(field, []).append(explicit)
+        elif (feedback_references or native_typed_family) and field == "trade_no":
+            reference_name = contract_names[index] if optional_references or native_typed_family else explicit["source_name"]
+            if reference_name != "交易流水号":
+                raise TableImportError("来源合同的主交易号映射不能替换为独立凭证")
+            # Repreview's derived primary mapping cannot erase voucher or
+            # additional same-role validators from the source contract.
         else:
             candidates[field] = [explicit]
     actual_mode = mode or _shape(candidates, profile)
@@ -1268,16 +1775,71 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, profile=ID
         # choice must survive repreview/commit so custom columns are not lost.
         current_mapping.update(pinned_mapping)
     active_reference_policy = None
-    if ((reference_policy == TRANSACTION_REFERENCE_POLICY
-            and len(headers) == len(BANK_FEEDBACK_32_COLUMNS)
-            and frozenset(_text(_header_value(header, profile)) for header in headers) == BANK_FEEDBACK_32_COLUMNS)
+    header_names = tuple(_text(_header_value(header, profile)) for header in headers)
+    signature = frozenset(header_names)
+    # The physical XLSX reader pads every row to the worksheet's actual width.
+    # This observed form has exactly the 35 business labels followed by two
+    # empty coordinates; every transaction must also keep both cells empty.
+    uniform35_padding = (profile in EVIDENCE_PROFILES and len(header_names) == 37
+                         and frozenset(header_names[:35]) == UNIFORM_FEEDBACK_35_COLUMNS
+                         and not any(header_names[35:]))
+    closed_reference_family = (len(headers) == len(BANK_FEEDBACK_32_COLUMNS) and signature == BANK_FEEDBACK_32_COLUMNS
+                               or profile in EVIDENCE_PROFILES and len(headers) == len(BANK_FEEDBACK_31_COLUMNS)
+                               and signature == BANK_FEEDBACK_31_COLUMNS
+                               or profile in EVIDENCE_PROFILES and len(headers) == len(UNIFORM_FEEDBACK_37_COLUMNS)
+                               and signature == UNIFORM_FEEDBACK_37_COLUMNS
+                               or profile in EVIDENCE_PROFILES and len(headers) == len(UNIFORM_FEEDBACK_35_COLUMNS)
+                               and signature == UNIFORM_FEEDBACK_35_COLUMNS
+                               or uniform35_padding)
+    if (feedback_references or (reference_policy == TRANSACTION_REFERENCE_POLICY
+            and closed_reference_family)
             or source_role in {"transaction_explicit", "transaction_query_only"} and not (mapping and "trade_no" in mapping)):
         active_reference_policy = TRANSACTION_REFERENCE_POLICY
         for item in candidates.get("trade_no", []):
-            item["reference_role"] = ("source_transaction_id" if item["source_name"] == "交易流水号"
+            if item.get("reference_role") in {"source_slip_reference", "source_log_reference"}:
+                continue
+            source_name = contract_names[item["index"]] if closed_native28 or optional_references or bank31_variant else item["source_name"]
+            item["reference_role"] = ("source_transaction_id" if source_name == "交易流水号"
                                       else "independent_voucher_reference")
+            if closed_native28:
+                item["reference_profile"] = BANK_FEEDBACK_28_REFERENCE_PROFILE
+            elif closed_bank31:
+                item["reference_profile"] = BANK_FEEDBACK_31_REFERENCE_PROFILE
+                if bank31_variant:
+                    item["reference_blank_indices"] = bank31_blank_indices
+            elif optional_references:
+                item["reference_profile"] = OPTIONAL_FEEDBACK_REFERENCE_PROFILE
+                item["reference_blank_indices"] = tuple(index for index, name in enumerate(contract_names)
+                                                       if name not in known_feedback)
+            elif feedback_references:
+                item["reference_profile"] = FEEDBACK_31_REFERENCE_PROFILE
+            elif closed_bank31 or profile in EVIDENCE_PROFILES and signature == BANK_FEEDBACK_31_COLUMNS:
+                item["reference_profile"] = BANK_FEEDBACK_31_REFERENCE_PROFILE
+            elif profile in EVIDENCE_PROFILES and signature == UNIFORM_FEEDBACK_37_COLUMNS:
+                item["reference_profile"] = UNIFORM_FEEDBACK_37_REFERENCE_PROFILE
+                item["reference_blank_indices"] = tuple(index for index, header in enumerate(headers)
+                                                       if _text(_header_value(header, profile)) in {"Unnamed: 35", "Unnamed: 36"})
+            elif profile in EVIDENCE_PROFILES and signature == UNIFORM_FEEDBACK_35_COLUMNS or uniform35_padding:
+                item["reference_profile"] = UNIFORM_FEEDBACK_35_REFERENCE_PROFILE
+                if uniform35_padding:
+                    item["reference_blank_indices"] = (35, 36)
         current_mapping["trade_no"] = labels[next(item["index"] for item in candidates["trade_no"]
-                                                   if item["source_name"] == "交易流水号")]
+                                                  if item["reference_role"] == "source_transaction_id")]
+        if profile in NATIVE_OBSERVATION_PROFILES and (closed_bank31 or closed_native28):
+            candidates["voucher_type"] = [{"index": index, "source_name": _text(headers[index]),
+                "factor": Decimal(1), "unit": "元/默认基础单位", "signed": False,
+                "reference_role": "independent_voucher_type"}
+                for index, name in enumerate(contract_names) if name == _norm("凭证种类")]
+    if closed_bank31 or closed_native28:
+        for item in candidates.get("status", []):
+            item["source_posting_status"] = True
+    if profile in PRECISE_PROFILES:
+        # A structural schema match is not a verified platform codebook.
+        # Keep numeric source observations without asserting reported success.
+        for item in candidates.get("status", []):
+            item["numeric_status_policy"] = "unknown"
+    if _unsupported_time_declaration(headers, profile):
+        error = "invalid_time"
     return candidates, labels, actual_mode, current_mapping, error, active_reference_policy
 
 
@@ -1375,23 +1937,87 @@ def _unmistakable_header(row, profile, layouts):
 
 
 def _region_evidence(headers, candidates, labels, path, header_row):
-    return [{"field": "voucher_reference" if item.get("reference_role") == "independent_voucher_reference" else field,
+    return [{"field": "voucher_reference" if item.get("reference_role") == "independent_voucher_reference" else item.get("source_text_role", field),
              "column": labels[item["index"]], "column_index": item["index"] + 1,
              "unit": item["unit"], "unit_factor": str(item["factor"]) if item["factor"] is not None else "",
-             "candidate_count": sum(other.get("reference_role") == item["reference_role"] for other in items) if "reference_role" in item else len(items),
-             "basis": item.get("reference_role", item.get("basis", "exact_header_alias")), "member_path": path,
+             "candidate_count": (sum(other.get("reference_role") == item["reference_role"] for other in items) if "reference_role" in item else
+                                 sum(other.get("source_text_role") == item["source_text_role"] for other in items) if "source_text_role" in item else len(items)),
+             "basis": item.get("reference_role", item.get("source_text_role", item.get("basis", "exact_header_alias"))), "member_path": path,
              "header_row": header_row,
              **({"time_format": item["time_format"]} if "time_format" in item else {})}
             for field, items in candidates.items() for item in items]
 
 
-def _append_auxiliary_sheet(plan, sheet):
+def _row_field_evidence(headers, row, candidates, disposition):
+    """Bounded source excerpts for role checking; the retained original is complete."""
+    evidence, limited = [], False
+    for field, items in candidates.items():
+        if field not in {"trade_no", "voucher_type", "time_role_declaration"} and not any(item.get("source_text_role") for item in items) and not (disposition == "unresolved" and len(items) > 1):
+            continue
+        for item in items:
+            index = item["index"]
+            value = _value(row, item)
+            raw = value if isinstance(value, str) else _text(value)
+            entry = {"field": item.get("source_text_role", field), "role": item.get("reference_role", item.get("source_text_role", item.get("identity_kind", field))),
+                     "column": _text(headers[index]), "column_index": index + 1, "raw": raw}
+            proposed = json.dumps([*evidence, entry], ensure_ascii=False, separators=(",", ":"))
+            if len(proposed.encode("utf-8")) > 2048:
+                limited = True
+                continue
+            evidence.append(entry)
+    return {**({"source_field_evidence": json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))} if evidence else {}),
+            **({"source_field_evidence_limited": "true"} if limited else {})}
+
+
+def _typed_native_references(row, candidates, reference_policy):
+    references = candidates.get("trade_no", [])
+    if any(item.get("reference_profile") == BANK_FEEDBACK_28_REFERENCE_PROFILE for item in references):
+        return candidates, reference_policy
+    type_indices = {index for item in references for index in item.get("native_voucher_type_indices", ())}
+    kinds = {_text(_value(row, {"index": index})) for index in type_indices} - {""}
+    primary = [item for item in references if _norm(item.get("source_name", "")) == _norm("交易流水号")]
+    voucher = [item for item in references if _norm(item.get("source_name", "")) == _norm("凭证号")]
+    positive = lambda value: value and value.casefold() not in {"null", "none", "nan", "n/a"} and any(char.isalnum() for char in value)
+    if (len(kinds) != 1 or not positive(next(iter(kinds), ""))
+            or not any(positive(_text(_value(row, item))) for item in primary)
+            or not any(positive(_text(_value(row, item))) for item in voucher)):
+        return candidates, reference_policy
+    selected = dict(candidates)
+    selected["trade_no"] = [{**item, "reference_role": "source_transaction_id" if item in primary else "independent_voucher_reference"}
+                            for item in references]
+    selected["voucher_type"] = [{"index": index, "reference_role": "independent_voucher_type"} for index in sorted(type_indices)]
+    return selected, TRANSACTION_REFERENCE_POLICY
+
+
+def _row_time_declaration(row, candidates):
+    # A closed, verbatim source claim is a reason to withhold this row's
+    # transaction-time projection. It is not a verified platform codebook and
+    # never changes another row, sheet, institution or case.
+    statement = "本文件交易时间表示受理时间，不是交易完成时间或记账时间。"
+    affected = [item for item in candidates.get("trade_time", [])
+                if "time_role" in item and _norm(item.get("source_name", "")) == _norm("交易时间")]
+    note_indices = {index for item in affected for index in item.get("time_note_indices", ())
+                    if _text(_value(row, {"index": index})) == statement}
+    if not note_indices:
+        return candidates
+    selected = dict(candidates)
+    selected["trade_time"] = [{**item, "time_role": "receipt"} if item in affected else item
+                              for item in candidates.get("trade_time", [])]
+    selected["time_role_declaration"] = [{"index": index, "reference_role": "row_time_role_declaration"} for index in sorted(note_indices)]
+    return selected
+
+
+def _append_auxiliary_sheet(plan, sheet, *, details_pool=None):
     rows = sheet["rows"]
     header_no = next((index for index, row in enumerate(rows) if any(_cell_present(value) for value in row)), None)
     if header_no is None:
         return False
     headers = rows[header_no]
     role = table_source_roles.classify([_text(_header_value(value, plan["profile"])) for value in headers])
+    if plan["profile"] in EVIDENCE_PROFILES:
+        from . import evidence_resolution
+        role = role or evidence_resolution.classify_auxiliary([_text(_header_value(value, plan["profile"])) for value in headers],
+                                                             native_observations=plan["profile"] in NATIVE_OBSERVATION_PROFILES)
     if role not in {"account", "client", "subaccount"}:
         return False
     # A later transaction region must go through the ordinary complete parser.
@@ -1410,67 +2036,215 @@ def _append_auxiliary_sheet(plan, sheet):
             continue
         valid = len(row) == width and not any(_cell_present(value) for value in row[meaningful_width:])
         reason = "auxiliary_table" if valid else "column_count_mismatch"
+        if valid and plan["profile"] in XLS_EVIDENCE_ARCHIVE_PROFILES:
+            if any(isinstance(value, _WorkbookValue) and value.formula for value in row[:meaningful_width]):
+                valid, reason = False, "formula_value"
+            elif any(isinstance(value, _WorkbookValue) and value.invalid_type for value in row[:meaningful_width]):
+                valid, reason = False, "invalid_cell_type"
         details = {"sheet": sheet["name"], "source_row": str(index), "source_role": role,
                    "financial_effect": "not_a_flow" if valid else "undetermined",
                    "reason": REASONS[reason], **contract.details()}
+        if reason in {"formula_value", "invalid_cell_type"}:
+            details["validation_issues"] = reason
+        if valid and plan["profile"] in EVIDENCE_PROFILES:
+            value = evidence_resolution.auxiliary_evidence([_text(_header_value(h, plan["profile"])) for h in headers],
+                                                         [_evidence_value(v, plan["profile"]) for v in row], role,
+                                                         native_observations=plan["profile"] in NATIVE_OBSERVATION_PROFILES)
+            if value:
+                details[evidence_resolution.DETAIL_FIELD] = value
         plan["records"].append({"record_no": len(plan["records"]) + 1, "member_path": sheet["path"],
                                 "source_row": index, "record_key": record_key(sheet["path"], sheet["sha256"], index),
                                 "disposition": "auxiliary" if valid else "unresolved", "reason_code": reason,
-                                "details": details})
+                                "details": details_pool.pack(details) if details_pool is not None else details})
     plan["members"].append({"member_path": sheet["path"], "role": "auxiliary", "sha256": sheet["sha256"],
                             "size_bytes": sheet["size"], "encoding": sheet["encoding"], "row_count": len(rows) - 1})
     return True
 
 
-def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=None):
+def _declares_event_contract(sheets, profile):
+    """Inspect actual financial regions in the already decoded source.
+
+    The entire workbook selects one interpretation before any row is consumed.
+    Reuse the interpreter's regional guards: contract words in ordinary data or
+    in an ambiguous competing layout cannot opt a file into identity evidence.
+    """
+    from .event_resolution import HEADERS
+
+    def declared(headers, candidates):
+        names = [_text(value) for value in headers]
+        return bool(_shape(candidates, profile)) and all(names.count(name) == 1 for name in HEADERS.values())
+
+    for sheet in sheets:
+        rows = sheet["rows"]
+        header_no, _, _ = _locate_header(rows, profile)
+        if header_no is None:
+            continue
+        candidates, *_ = _region(rows[header_no], None, None, strict=True, profile=profile)
+        if declared(rows[header_no], candidates):
+            return True
+        ambiguous_layouts = {}
+        for index in range(header_no + 1, len(rows)):
+            row = rows[index]
+            if not any(_cell_present(value) for value in row):
+                continue
+            if _overlapping_header(row, candidates, profile):
+                _remember_layout(ambiguous_layouts, candidates)
+                _remember_layout(ambiguous_layouts, _candidates(row, profile))
+            elif ((ambiguous_layouts and _unmistakable_header(row, profile, ambiguous_layouts))
+                  or not ambiguous_layouts and _later_header(row, candidates, profile)):
+                ambiguous_layouts.clear()
+                candidates, *_ = _region(row, None, None, strict=False, profile=profile)
+                if declared(row, candidates):
+                    return True
+            elif ambiguous_layouts:
+                found = _candidates(row, profile)
+                if _shape(found, profile):
+                    _remember_layout(ambiguous_layouts, found)
+    return False
+
+
+def _source_sign_contracts(sheets, profile):
+    if profile not in PRECISE_PROFILES:
+        return {}
+    layouts = []
+    for sheet in sheets:
+        rows = sheet["rows"]
+        header_no, _, _ = _locate_header(rows, profile)
+        headers = rows[header_no] if header_no is not None else []
+        candidates = _candidates(headers, profile)
+        amount = candidates.get("amount", [])
+        single_region = header_no is not None and not any(
+            _later_header(row, candidates, profile) or _overlapping_header(row, candidates, profile)
+            for row in rows[header_no + 1:])
+        layouts.append({"member": sheet["path"], "rows": [[_raw(cell) for cell in row] for row in rows],
+                        "invalid_cells": {(r + 1, c + 1) for r, row in enumerate(rows) for c, cell in enumerate(row)
+                                          if isinstance(cell, _WorkbookValue) and (cell.formula or cell.invalid_type)},
+                        "header_row": header_no + 1 if header_no is not None else 0,
+                        "note_indices": {index for index, h in enumerate(headers)
+                                         if _text(_header_value(h, profile)) in table_sign_declarations.NOTE_HEADERS},
+                        "single_region": single_region,
+                        "amount_header": _header_parts(headers[amount[0]["index"]], profile)[0] if len(amount) == 1 else ""})
+    return table_sign_declarations.compile_sources(layouts)
+
+
+def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=None, _details_pool=None,
+          _defer_occurrence_binding=False, _retain_csv_format=False, _auto_event_profile=False):
     if profile is None:
-        profile = XLS_PROFILE if suffix.lower() == ".xls" else PROFILE
+        profile = TIME_ROLE_XLS_PROFILE if suffix.lower() == ".xls" else PROFILE
     # New exact cross-field arithmetic is independent of ambient Decimal
     # precision. Historical parsers keep their original behavior and receipts.
     if profile in CONTRACT_PROFILES:
         with localcontext() as context:
             context.prec = max(context.prec, 50)
             return _parse(source, suffix=suffix, mode=mode, mapping=mapping,
-                          reference_policy=reference_policy, profile=profile)
+                          reference_policy=reference_policy, profile=profile, details_pool=_details_pool,
+                          defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format,
+                          auto_event_profile=_auto_event_profile)
     return _parse(source, suffix=suffix, mode=mode, mapping=mapping,
-                  reference_policy=reference_policy, profile=profile)
+                  reference_policy=reference_policy, profile=profile, details_pool=_details_pool,
+                  defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format,
+                  auto_event_profile=_auto_event_profile)
 
 
-def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=PROFILE):
+def _region_row_headers(headers, profile):
+    """Immutable header-only inputs for rows in one active table region."""
+    names = tuple(_text(_header_value(header, profile)) for header in headers) if profile in EVIDENCE_PROFILES or profile in SOURCE_CONTRACT_PROFILES else ()
+    feedback_names = None
+    if profile in EVIDENCE_ARCHIVE_PROFILES:
+        from . import feedback_import
+        if len(headers) == len(feedback_import.COLUMNS) and frozenset(names) == frozenset(feedback_import.COLUMNS):
+            # The closed adapter historically reads raw headers, without the
+            # XLS schema filter used by identity and event evidence.
+            feedback_names = tuple(_text(header) for header in headers)
+    return names, feedback_names
+
+
+def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=PROFILE, details_pool=None,
+           defer_occurrence_binding=False, retain_csv_format=False, auto_event_profile=False):
     """Interpret every source record and return a write-free versioned plan."""
     suffix = suffix.lower()
-    archive_member = (profile == ARCHIVE_MEMBER_PROFILE and suffix == ".csv"
+    archive_member = ((profile in {ARCHIVE_MEMBER_PROFILE, GUARDED_ARCHIVE_PROFILE, PRECISE_ARCHIVE_PROFILE, REFERENCE_ROLE_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_ARCHIVE_PROFILE, TIME_ROLE_ARCHIVE_PROFILE, ZONED_ARCHIVE_PROFILE, SOURCE_CONTRACT_ARCHIVE_PROFILE, SOURCE_TEXT_ARCHIVE_PROFILE, BANK31_VARIANT_ARCHIVE_PROFILE, SOURCE_LEDGER_ARCHIVE_PROFILE, POSTING_PAIR_ARCHIVE_PROFILE, AUXILIARY_SCOPE_ARCHIVE_PROFILE, NATIVE_OBSERVATION_ARCHIVE_PROFILE, UNORIENTED_ARCHIVE_PROFILE, NATIVE31_ARCHIVE_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE} and suffix == ".csv"
+                       or profile in EVIDENCE_ARCHIVE_PROFILES and suffix in {".csv", ".txt", ".tsv", ".xlsx"}
+                       or profile in XLS_EVIDENCE_ARCHIVE_PROFILES and suffix == ".xls")
                       and reference_policy == TRANSACTION_REFERENCE_POLICY)
     if profile not in SUPPORTED_PROFILES and not archive_member:
         raise TableImportError("不支持的表格解析规则")
+    if details_pool is not None and profile not in EVIDENCE_ARCHIVE_PROFILES:
+        raise TableImportError("临时审计存储仅用于新反馈包规则")
+    if (type(defer_occurrence_binding) is not bool
+            or defer_occurrence_binding and not (archive_member and profile in EVIDENCE_ARCHIVE_PROFILES)):
+        raise TableImportError("延后来源绑定仅用于完整证据反馈包的成员解析")
+    if type(retain_csv_format) is not bool or retain_csv_format and suffix != ".csv":
+        raise TableImportError("临时CSV格式仅用于CSV成员复读")
     if suffix not in {".csv", ".tsv", ".txt", ".xlsx", ".xls"}:
         raise TableImportError("表格文件格式不受支持")
-    if (profile == XLS_PROFILE) != (suffix == ".xls"):
-        raise TableImportError("XLS仅支持v18读取规则；历史规则及其他格式保持原解释")
+    if profile in STANDALONE_XLS_PROFILES and suffix != ".xls" or suffix == ".xls" and profile not in XLS_READER_PROFILES:
+        raise TableImportError("XLS仅支持单文件v18或证据归档v7读取规则；历史规则保持原解释")
     if mode not in (None, "A", "B") or (mapping is not None and not isinstance(mapping, dict)):
         raise TableImportError("表格映射参数无效")
     if reference_policy is not None and reference_policy != TRANSACTION_REFERENCE_POLICY:
         raise TableImportError("表格引用策略无效")
     if reference_policy is not None and mapping and "trade_no" in mapping:
         raise TableImportError("表格引用策略不能与交易号映射同时使用")
+    if (type(auto_event_profile) is not bool or auto_event_profile and
+            (profile not in {CURRENCY_REGION_PROFILE, GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, ZONED_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_TEXT_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_LEDGER_PROFILE, POSTING_PAIR_PROFILE, AUXILIARY_SCOPE_PROFILE, NATIVE_OBSERVATION_PROFILE, UNORIENTED_PROFILE, NATIVE31_PROFILE, SOURCE_OBSERVATION_PROFILE} or suffix not in {".csv", ".tsv", ".txt", ".xlsx"}
+             or mode is not None or mapping is not None or reference_policy is not None)):
+        raise TableImportError("事件合同自动识别仅用于普通表格的首次自动预览")
     raw = _bytes(source)
     sheets = _excel(raw, suffix) if suffix in {".xlsx", ".xls"} else _csv(raw, suffix, profile)
+    if auto_event_profile and _declares_event_contract(sheets, profile):
+        profile = (SOURCE_OBSERVATION_EVIDENCE_PROFILE if profile == SOURCE_OBSERVATION_PROFILE else
+                   NATIVE31_EVIDENCE_PROFILE if profile == NATIVE31_PROFILE else
+                   UNORIENTED_EVIDENCE_PROFILE if profile == UNORIENTED_PROFILE else
+                   NATIVE_OBSERVATION_EVIDENCE_PROFILE if profile == NATIVE_OBSERVATION_PROFILE else
+                   AUXILIARY_SCOPE_EVIDENCE_PROFILE if profile == AUXILIARY_SCOPE_PROFILE else
+                   POSTING_PAIR_EVIDENCE_PROFILE if profile == POSTING_PAIR_PROFILE else
+                   SOURCE_LEDGER_EVIDENCE_PROFILE if profile == SOURCE_LEDGER_PROFILE else
+                   BANK31_VARIANT_EVIDENCE_PROFILE if profile == BANK31_VARIANT_PROFILE else
+                   SOURCE_TEXT_EVIDENCE_PROFILE if profile == SOURCE_TEXT_PROFILE else
+                   SOURCE_CONTRACT_EVIDENCE_PROFILE if profile == SOURCE_CONTRACT_PROFILE else
+                   ZONED_EVIDENCE_PROFILE if profile == ZONED_PROFILE else
+                   TIME_ROLE_EVIDENCE_PROFILE if profile == TIME_ROLE_PROFILE else
+                   OPTIONAL_REFERENCE_EVIDENCE_PROFILE if profile == OPTIONAL_REFERENCE_PROFILE else
+                   REFERENCE_ROLE_EVIDENCE_PROFILE if profile == REFERENCE_ROLE_PROFILE else
+                   PRECISE_EVIDENCE_PROFILE if profile == PRECISE_PROFILE else
+                   GUARDED_EVIDENCE_PROFILE if profile == GUARDED_PROFILE else EVIDENCE_PROFILE)
     plan = {"profile": profile, "mode": "B", "mapping": {}, "columns": [], "sheet": "workbook" if suffix in {".xlsx", ".xls"} else "", "rows": [], "records": [], "members": [], "documents": [], "mapping_evidence": []}
+    if retain_csv_format:
+        # The envelope's cancellation pass may replay this already validated
+        # CSV with the exact selected format, without materializing cells again.
+        # This operation-local hint never enters documents or persisted notes.
+        plan["_csv_format"] = {key: sheets[0][key] for key in ("encoding", "delimiter")}
+    sign_contracts = _source_sign_contracts(sheets, profile)
     selected = False
     for sheet in sheets:
         raw_rows = sheet["rows"]
-        if profile in SOURCE_ROLE_PROFILES and _append_auxiliary_sheet(plan, sheet):
+        if profile in SOURCE_ROLE_PROFILES and _append_auxiliary_sheet(plan, sheet, details_pool=details_pool):
+            if profile in EVIDENCE_PROFILES:
+                raw_rows.clear()
             continue
         header_no, _, _ = _locate_header(raw_rows, profile)
         headers = raw_rows[header_no] if header_no is not None else []
         candidates, labels, actual_mode, current_mapping, region_error, active_reference_policy = _region(
             headers, mode, mapping, strict=True, reference_policy=reference_policy, profile=profile)
         source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
+        header_names, feedback_header_names = _region_row_headers(headers, profile)
         if not selected and header_no is not None:
             plan.update(mode=actual_mode or "B", mapping=current_mapping, columns=labels)
             selected = True
         plan["mapping_evidence"].extend(_region_evidence(headers, candidates, labels, sheet["path"], header_no + 1 if header_no is not None else None))
         document = {"member_path": sheet["path"], "sheet": sheet["name"], "header_row": header_no + 1 if header_no is not None else None, "header_rows": [header_no + 1] if header_no is not None else [], "columns": labels, "mapping": current_mapping, "mode": actual_mode or "", "source_rows": len(raw_rows), "row_count": len(raw_rows) - (1 if header_no is not None else 0)}
+        if any(item.get("reference_profile") == BANK_FEEDBACK_28_REFERENCE_PROFILE for item in candidates.get("trade_no", [])):
+            document.update(reference_profile=BANK_FEEDBACK_28_REFERENCE_PROFILE,
+                            source_text_profile="bank-feedback28-summary-remark-v1")
+        if profile in SOURCE_CONTRACT_PROFILES and (frozenset(header_names) == BANK_FEEDBACK_31_COLUMNS
+                or profile in BANK31_VARIANT_PROFILES and any(item.get("reference_profile") == BANK_FEEDBACK_31_REFERENCE_PROFILE
+                                                            for item in candidates.get("trade_no", []))):
+            document["reference_profile"] = BANK_FEEDBACK_31_REFERENCE_PROFILE
+            if profile in SOURCE_TEXT_PROFILES:
+                document["source_text_profile"] = "bank-feedback31-summary-remark-v1"
+            if profile in BANK31_VARIANT_PROFILES:
+                document["source_shape_profile"] = "bank-feedback31-optional-metadata-v1"
         if source_contract:
             document.update(source_contract=table_contracts.VERSION, contract_sha256=source_contract.digest,
                             amount_model=source_contract.amount_model, candidate_scope="all_region_candidates")
@@ -1478,12 +2252,16 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
         member_count = 0
         ambiguous_layouts = {}
         for index, row in enumerate(raw_rows, start=1):
+            if profile in EVIDENCE_PROFILES:
+                # A source row is consumed once. Keep the active header object,
+                # but release processed cells as the immutable plan is built.
+                raw_rows[index - 1] = None
             if header_no is not None and index == header_no + 1:
                 continue
             number = len(plan["records"]) + 1
             key = record_key(sheet["path"], sheet["sha256"], index)
             details = {"sheet": sheet["name"], "source_row": str(index), "financial_effect": "not_a_flow"}
-            result = None
+            result, own_side = None, ""
             if not any(_cell_present(value) for value in row):
                 disposition, reason = "non_transaction", "blank_record"
             elif header_no is not None and index < header_no + 1:
@@ -1503,6 +2281,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                 candidates, labels, actual_mode, current_mapping, region_error, active_reference_policy = _region(
                     headers, mode, mapping, strict=False, reference_policy=reference_policy, profile=profile)
                 source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
+                header_names, feedback_header_names = _region_row_headers(headers, profile)
                 document["header_rows"].append(index)
                 plan["mapping_evidence"].extend(_region_evidence(headers, candidates, labels, sheet["path"], index))
                 disposition, reason = "non_transaction", "repeated_header"
@@ -1520,9 +2299,49 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                 details.update(financial_effect="undetermined", validation_issues=region_error)
             else:
                 interpreter = _interpret_candidates if profile in ROLE_PROFILES else _interpret
+                row_candidates, row_reference_policy = _typed_native_references(row, candidates, active_reference_policy)
+                row_candidates = _row_time_declaration(row, row_candidates)
                 result, disposition, reason, parsed_details = interpreter(
-                    row, candidates, actual_mode, reference_policy=active_reference_policy, financial=profile in FINANCIAL_PROFILES, source_contract=source_contract, source_roles=profile in SOURCE_ROLE_PROFILES)
+                    row, row_candidates, actual_mode, reference_policy=row_reference_policy, financial=profile in FINANCIAL_PROFILES, source_contract=source_contract, source_roles=profile in SOURCE_ROLE_PROFILES, retain_endpoint_role=profile in EVIDENCE_PROFILES, sign_contract=sign_contracts.get(sheet["path"]), source_ledger=profile in SOURCE_LEDGER_PROFILES)
+                if profile in EVIDENCE_ARCHIVE_PROFILES:
+                    if (profile not in NATIVE_OBSERVATION_PROFILES
+                            and feedback_header_names is not None and "time_role_declaration" not in row_candidates
+                            and not (profile in XLS_EVIDENCE_ARCHIVE_PROFILES and reason in {"formula_value", "invalid_cell_type"})):
+                        result, disposition, reason, parsed_details = _feedback_member_outcome(headers, row, (result, disposition, reason, parsed_details), profile, header_names=feedback_header_names)
+                own_side = parsed_details.pop("_resolved_own_side", "")
+                if profile in SOURCE_LEDGER_PROFILES and "source_ledger_evidence" in parsed_details:
+                    observed = json.loads(parsed_details["source_ledger_evidence"])
+                    observed["header_scope"] = document["header_rows"][-1]
+                    if result is not None:
+                        for field in ("trade_time_utc", "trade_time_original", "trade_time_offset"):
+                            value = result.get(field)
+                            observed["row"][field] = value.isoformat(sep=" ") if isinstance(value, dt.datetime) else value
+                    parsed_details["source_ledger_evidence"] = json.dumps(observed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                 details.update(parsed_details)
+                if profile in TIME_ROLE_PROFILES:
+                    values, limited = [], False
+                    for field in ("trade_time", "time_part"):
+                        for item in row_candidates.get(field, []):
+                            value = _text(_value(row, item))
+                            if not value:
+                                continue
+                            entry = {"role": item.get("time_role", "unspecified"), "column": _text(headers[item["index"]]),
+                                     "column_index": item["index"] + 1, "raw": value,
+                                     **table_time_formats.source_time_value(value)}
+                            if len(json.dumps([*values, entry], ensure_ascii=False).encode()) > 1800:
+                                limited = True
+                            else:
+                                values.append(entry)
+                    details["source_time_evidence"] = json.dumps({"policy": "source-time-roles-v1",
+                        "ordinary_time_role": ("transaction" if any(value["role"] == "transaction" for value in values) else "unspecified") if result is not None else None, "values": values},
+                        ensure_ascii=False, separators=(",", ":"))
+                    if limited:
+                        details["source_time_evidence_limited"] = "true"
+                    if reason == "invalid_time" and any(value["role"] != "posting" and value["basis"] == "explicit_offset" for value in values):
+                        reason = "unsupported_timezone"
+                        details["validation_issues"] = ",".join([reason, *[issue for issue in details.get("validation_issues", "").split(",") if issue and issue != "invalid_time"]])
+                if profile in REFERENCE_ROLE_PROFILES:
+                    details.update(_row_field_evidence(headers, row, row_candidates, disposition))
                 if source_contract:
                     details.update(source_contract.details())
                 if (profile in FINANCIAL_PROFILES and disposition == "unresolved"
@@ -1542,13 +2361,69 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                                           for item in items)
                                       else "缺少银行返回的本方账号或卡号；查询条件不证明本笔交易主体。")
                                      + "该笔未计入资金统计和节点关系，收支及关联分析可能不完整")
-            record = {"record_no": number, "member_path": sheet["path"], "source_row": index, "record_key": key, "disposition": disposition, "reason_code": reason, "details": details}
+            identity_result = result
+            if identity_result is None and profile in SOURCE_LEDGER_PROFILES and "source_ledger_evidence" in details:
+                observed = json.loads(details["source_ledger_evidence"])
+                if observed["kind"] == "ledger":
+                    identity_result = observed["row"]
+                    own_side = "" if observed["direction"] == "unknown" else "payee" if observed["direction"] == "in" else "payer"
+                    if observed["direction"] == "unknown":
+                        identity_result = {**identity_result, **{"counter_" + key: value for key, value in observed.get("counterparty", {}).items()}}
+                        details["reason"] = "来源未提供收付方向；保留本方、原金额和来源记账，不推定收支或对手。零额无资金变动，非零资金影响未确定。"
+            neutral_observation = (profile in SOURCE_OBSERVATION_PROFILES and "source_ledger_evidence" in details
+                                   and json.loads(details["source_ledger_evidence"])["direction"] == "unknown")
+            if identity_result is not None and (profile in EVIDENCE_PROFILES or neutral_observation):
+                from . import evidence_resolution
+                include_counter = neutral_observation
+                if feedback_header_names is not None:
+                    source_cells = {name: _text(_evidence_value(value, profile)) for name, value in zip(header_names, row)}
+                    details[evidence_resolution.DETAIL_FIELD] = evidence_resolution.feedback_evidence(source_cells, identity_result, ("", "", "unknown" if own_side == "" and "source_ledger_evidence" in details and json.loads(details["source_ledger_evidence"])["direction"] == "unknown" else "in" if source_cells["收付标志"] in {"进", "入"} else "out"), include_counter=include_counter)
+                else:
+                    details[evidence_resolution.DETAIL_FIELD] = evidence_resolution.transaction_evidence(
+                        header_names, [_evidence_value(v, profile) for v in row], candidates, identity_result, _identity_pair, own_side=own_side, include_counter=include_counter)
+            if (profile in EVENT_PROFILES and header_no is not None and len(row) == len(headers)
+                    and disposition in {"accepted", "unresolved", "non_monetary"}
+                    and reason not in {"preamble", "blank_record", "repeated_header", "ambiguous_region_header"}):
+                from . import event_resolution
+                details.update(event_resolution.parse_fields(
+                    header_names,
+                    [None if isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type) else _raw(value) for value in row],
+                    accepted=result is not None, posting_scope=document["header_rows"][-1]))
+            if (profile in POSTING_PAIR_PROFILES and len(row) == len(headers)
+                    and disposition in {"accepted", "unresolved", "non_monetary"}
+                    and reason not in {"preamble", "blank_record", "repeated_header", "ambiguous_region_header"}):
+                from . import bank_posting_pairs
+                pair_contract = bank_posting_pairs.capture(header_names, [_text(_evidence_value(v, profile)) for v in row])
+                if pair_contract is not None:
+                    details[bank_posting_pairs.FIELD] = pair_contract
+            # The envelope owns one bounded decoded cache for all members.
+            # Pack each completed note now: waiting for a large member to
+            # return retains its whole decoded journal beside financial rows.
+            record = {"record_no": number, "member_path": sheet["path"], "source_row": index, "record_key": key, "disposition": disposition, "reason_code": reason,
+                      "details": details_pool.pack(details) if details_pool is not None else details}
             plan["records"].append(record)
+            if (result is not None and profile in SOURCE_CONTRACT_PROFILES
+                    and suffix in {".csv", ".tsv", ".txt"}
+                    and frozenset(header_names) == BANK_FEEDBACK_31_COLUMNS
+                    and parsed_details.get("trade_no_basis") == "source_transaction_id"
+                    and result.get("trade_no") and result.get("self_account") and result.get("balance") is not None):
+                # One complete source member may report a posting twice with
+                # only its branch label changed. Preserve both physical rows.
+                observed = [(name, _raw(_evidence_value(cell, profile))) for name, cell in zip(header_names, row)
+                            if name != "交易网点名称"]
+                result["_source_posting_repeat_key"] = hashlib.sha256(json.dumps(observed, ensure_ascii=False,
+                    separators=(",", ":"), default=str).encode()).hexdigest()
             if result is not None:
                 result.update(_source_row=number, _source_sheet=plan["sheet"], _source_row_kind=ROW_KIND, _record_key=key)
                 plan["rows"].append(result)
             member_count += 1
         plan["members"].append({"member_path": sheet["path"], "role": "table", "sha256": sheet["sha256"], "size_bytes": sheet["size"], "encoding": sheet["encoding"], "row_count": member_count})
+    if not defer_occurrence_binding and profile in EVIDENCE_PROFILES | SOURCE_OBSERVATION_PROFILES:
+        from . import evidence_resolution
+        if profile in EVIDENCE_PROFILES:
+            evidence_resolution.bind_occurrences(plan)
+        else:
+            evidence_resolution.bind_families(plan)
     return refresh_stats(plan)
 
 
@@ -1565,3 +2440,44 @@ def refresh_stats(plan):
         totals[row["currency"]] = totals.get(row["currency"], Decimal(0)) + row["amount"]
     plan["stats"] = {"total": len(plan["records"]), "ok": len(plan["rows"]), "skipped": len(plan["records"]) - len(plan["rows"]), "bad_examples": examples, **counts, "reason_counts": reasons, "currency_totals": {key: format(value, ".2f") for key, value in sorted(totals.items())}}
     return plan
+
+
+def _feedback_member_outcome(headers, cells, generic, profile, *, header_names=None):
+    """The closed 28-column family keeps its admission/facts in mixed folders.
+
+    The common table journal records this versioned adapter. It does not broaden
+    the bank reader's currency/status/time contract or recompute its summaries.
+    """
+    from . import feedback_import
+    if header_names is None:
+        header_names = (_text(header) for header in headers)
+    source = {header: _text(value) for header, value in zip(header_names, cells)}
+    row, disposition, reason, legacy_details, _context = feedback_import._transaction(
+        source, feedback_import.MICROSECOND_EVIDENCE_PROFILE if profile in MICROSECOND_ARCHIVE_PROFILES
+        else feedback_import.EVIDENCE_PROFILE)
+    notes = dict(generic[3])
+    notes.pop("flow_sha256", None)
+    notes.pop("validation_issues", None)
+    notes.pop("validation_basis", None)
+    if profile in MICROSECOND_ARCHIVE_PROFILES:
+        # The closed adapter owns the reference even when generic inference
+        # could not interpret this row. Cancellation package verification must
+        # bind to the actual source transaction ID, never a voucher fallback.
+        notes["trade_no_basis"] = "source_transaction_id" if source["交易流水号"] else "none"
+    if row is not None:
+        notes.update(financial_effect="source_reported", flow_sha256=flow_digest(row))
+        return row, "accepted", "transaction_valid", notes
+    if disposition == "unresolved":
+        mapped = ("negative_amount" if reason.startswith("negative_") else "invalid_balance" if reason in {"balance_precision", "balance_overflow"}
+                  else generic[2] if reason == "missing_core" and generic[1] == "unresolved" else "missing_identity" if reason == "missing_core" else reason)
+        if mapped not in REASONS:
+            mapped = "unknown_table"
+        notes.update(financial_effect="undetermined", validation_issues=mapped)
+        # Preserve other independently detected faults, so cancellation cannot
+        # treat an invalid negative as a proven two-leg reversal.
+        other_issues = [value for value in generic[3].get("validation_issues", "").split(",") if value and value != mapped]
+        if other_issues:
+            notes["validation_issues"] = ",".join((mapped, *other_issues))
+        return None, "unresolved", mapped, notes
+    notes["financial_effect"] = "no_movement" if disposition == "non_monetary" else "not_a_flow"
+    return None, disposition, reason, notes

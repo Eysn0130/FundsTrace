@@ -234,6 +234,8 @@ function harness() {
     setTimeout: callback => { callback(); return 0; }, clearTimeout() {}, requestAnimationFrame: callback => { callback(); return 0; },
   });
   vm.runInContext(money, context);
+  vm.runInContext(readFileSync(new URL('../static/principal-analysis.js', import.meta.url), 'utf8'), context);
+  window.FundsFacts = context.FundsFacts;
   vm.runInContext(section('function esc(', 'function toast('), context);
   vm.runInContext(section('let pendingCanvasId = 0;', 'async function loadCases()'), context);
   vm.runInContext(section('async function applyPendingFocusEdge()', 'async function refreshStats()'), context);
@@ -432,6 +434,7 @@ test('case and graph scopes display separate exact totals without mixing currenc
   assert.match(caseText, /9,007,199,254,740,993\.07/); assert.match(caseText, /USD 12\.34/); assert.match(caseText, /12/);
   await h.element('ndScopeGraph').click();
   const graphText = h.element('ndStats').textContent;
+  assert.match(h.element('ndStatsScope').textContent, /原始金额展示合计.*已确认同笔只计一次/);
   assert.match(graphText, /1\.01/); assert.match(graphText, /USD 2\.02/);
   assert.equal(graphText.includes('9,007,199,254,740,993.07'), false); assert.equal(graphText.includes('12.34'), false);
   assert.equal(JSON.stringify(h.state.lastGraph), before); assert.equal(writes(h).length, 0);
@@ -845,6 +848,8 @@ test('bulk identity refresh patches live labels and the clean drawer without cha
   const input = h.element('ndIdInput'); input.focus();
   const models = h.state.lastGraph.nodes.map((node, index) => ({ id: node.account, x: index ? 111 : 17, y: index ? 157 : 23,
     data: node, fundsLabel: 'old canonical label', ...(index ? {} : { label: 'old visible label' }) }));
+  h.state.lastGraph.nodes[0].display_account = 'SYN-NEW-CARD';
+  models[0].data = { ...models[0].data, display_account: 'SYN-OLD-CARD', out_cnt: 1 };
   const camera = [1.75, 0, 0, 0, 1.75, 0, 149, -87, 1];
   const history = h.run('window.FundsCanvasHistory.create({capture:()=>({positions:state.positions}),restore:async()=>true})');
   history.record('合成样式修改', { fill: '#111111' }, { fill: '#222222' });
@@ -865,6 +870,7 @@ test('bulk identity refresh patches live labels and the clean drawer without cha
 
   assert.equal(h.state.lastGraph.nodes[0].id_no, '111111111111111'); assert.match(models[0].label, /111111111111111/);
   assert.equal(models[0].fundsLabel, models[0].label); assert.match(models[1].fundsLabel, /222222222222222/);
+  assert.match(models[0].fundsLabel, /SYN-OLD-CARD/); assert.equal(models[0].data.out_cnt, 1);
   assert.equal(Object.hasOwn(models[1], 'label'), false, 'an absent LOD label remains absent');
   assert.deepEqual(models.map(model => [model.x, model.y]), [[17, 23], [111, 157]]);
   assert.equal(JSON.stringify(h.state.positions), before.positions); assert.equal(JSON.stringify(camera), before.camera);
@@ -972,4 +978,44 @@ test('an unsubmitted crop reports an expired revision without starting a request
   await h.element('pcConfirm').click(); await flush();
   assert.equal(writes(h).length, 0); assert.equal(h.element('pcClose').disabled, false); assert.equal(h.element('pcConfirm').disabled, true);
   assert.match(h.element('pcStatus').textContent, /重新打开|已变化|已失效/);
+});
+
+test('account and counterparty primary fields remain distinct from conditional ranges', async () => {
+  const h = harness();
+  const exact = {status:'exact',count:{lower:1,upper:1},totals:[{currency:'CNY',amount:'100.00',lower:'100.00',upper:'100.00'}]};
+  const bounded = {status:'bounded',count:{lower:0,upper:2},totals:[{currency:'CNY',amount:null,lower:'0.00',upper:'200.00'}]};
+  const data = profile({in_funds:exact,out_funds:bounded, top_counterparties:[{acct:'SYN-COUNTER',name:'合成对手',in_funds:exact,out_funds:bounded,
+    in_cnt:2,out_cnt:2,in_amt:'200.00',out_amt:'200.00'}]});
+  networkReady(h, () => data); await h.open();
+  assert.match(h.element('ndStats').textContent, /转入 13 笔.*¥56\.78.*转出 12 笔.*9,007,199,254,740,993\.07.*USD 12\.34/s);
+  assert.match(h.element('ndCounterTbody').textContent, /2 笔.*¥200\.00.*2 笔.*¥200\.00/s);
+  assert.doesNotMatch(h.element('ndStats').textContent, /0\.00–200\.00/);
+  assert.equal(data.in_cnt,13); assert.equal(data.out_cnt,12);
+});
+
+test('a single associated card remains in the existing details while the sourced account is the heading', async () => {
+  const h=harness();
+  networkReady(h,()=>profile({account_number:'000SYN-ACCOUNT',display_account:'000SYN-CARD',cards:['000SYN-CARD']}));
+  await h.open();
+  const identity=h.element('drawerBody').querySelector('.node-identity');
+  assert.match(identity.textContent,/000SYN-ACCOUNT/);
+  const details=identity.querySelector('details');
+  assert.ok(details); assert.match(details.textContent,/关联卡号/);
+  assert.match(details.textContent,/000SYN-CARD/);
+});
+
+test('node detail and graph statistics use the selected scoped node without rewriting case facts', async () => {
+  const h = harness(); await ready(h, { display_account: 'SYN-NEW-CARD' });
+  const scoped = graphNode('SYN-A', { display_account: 'SYN-OLD-CARD', cards: ['SYN-OLD-CARD', 'SYN-NEW-CARD'], display_basis: 'transaction_card', out_cnt: 1,
+    out_totals: [{ currency: 'CNY', amount: '10.25' }] });
+  h.state.graph = { findById: () => ({ getModel: () => ({ data: scoped }) }) };
+  await h.open();
+  assert.match(h.element('drawerBody').textContent, /SYN-OLD-CARD/);
+  assert.equal(h.run('nodeWorkspace.node.display_account'), 'SYN-OLD-CARD');
+  await h.element('ndScopeGraph').click();
+  assert.match(h.element('ndStats').textContent, /10.25/);
+  assert.doesNotMatch(h.element('ndStats').textContent, /9,007,199,254,740,993\.07/);
+  await h.element('ndScopeCase').click();
+  assert.match(h.element('ndStats').textContent, /9,007,199,254,740,993\.07/);
+  assert.equal(h.state.lastGraph.nodes[0].display_account, 'SYN-NEW-CARD');
 });

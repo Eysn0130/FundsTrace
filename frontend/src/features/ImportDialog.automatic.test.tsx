@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { ImportJob, ImportPreview, ImportSession } from '../../../contracts/api-v1';
+import type { ImportJob, ImportPreview, ImportRecordPage, ImportSession } from '../../../contracts/api-v1';
 import type { FundsCaseClientV1 } from '../panel/host';
 import { ImportDialog } from './ImportDialog';
 import { ImportHistoryDialog } from './ImportHistoryDialog';
@@ -13,6 +13,10 @@ const summary: NonNullable<ImportPreview['table_summary']> = { profile: 'funds-t
     { field: 'direction', column: '收支方向', unit: '元/默认基础单位', unit_factor: '1' },
     { field: 'trade_no', column: '交易流水号', basis: 'source_transaction_id' },
     { field: 'voucher_reference', column: '凭证号', basis: 'independent_voucher_reference' },
+    { field: 'trade_no', column: '传票号', basis: 'source_slip_reference' },
+    { field: 'trade_no', column: '日志号', basis: 'source_log_reference' },
+    { field: 'voucher_type', column: '凭证种类', basis: 'independent_voucher_type' },
+    { field: 'remark', column: '备注', basis: 'remark' },
     { field: 'trade_time', column: '成交日期', time_format: 'DD/MM/YYYY', unit: '元/默认基础单位', unit_factor: '1', basis: 'explicit_time_format' }] };
 const preview = { case_id: '1', import_id: 'SYN-AUTO', filename: 'synthetic.csv', mode: 'B', automatic: true,
   columns: ['交易时间', '本方账号', '对手账号', '交易金额（分）'], mapping: { amount: '交易金额（分）' },
@@ -33,13 +37,111 @@ function show(client: FundsCaseClientV1, signal = new AbortController().signal, 
   return render(<ImportDialog target={{ caseId: '1', name: '合成案件' }} client={client} scopeSignal={signal} resume={resume} onClose={vi.fn()} onImported={onImported} />);
 }
 function upload() { fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } }); }
+const proofPage = (page = 1): ImportRecordPage => ({ case_id: '1', source_id: 'SYN-SOURCE', total: 2, page, page_size: 1,
+  items: [{ record_no: page, member_path: 'synthetic.csv', source_row: page + 1, record_key: `SYN-${page}`, disposition: 'imported',
+    reason_code: 'transaction_valid', flow_id: String(page), details: { event_reference_evidence: JSON.stringify({
+      policy: 'scoped-event-reference-v1', reference: `SYN-P${page}`, issuer: 'SYN Issuer', channel: 'SYN Rail', business_scope: 'SYN Scope' }) } }] });
+function openRecords() {
+  const detail = screen.getByText('来源记录与关联依据').closest('details')!;
+  detail.open = true; fireEvent(detail, new Event('toggle'));
+}
 
 describe('automatic table import', () => {
-  it('keeps every existing file suffix and advertises XLS in the file picker', () => {
+  it('reads current source declarations inside a historical receipt without replaying import or changing its result', async () => {
+    const client = clientFor(), stored = session('done'), before = structuredClone(stored);
+    const records = vi.fn(async () => ({ case_id: '1', source_id: 'SYN-SOURCE', total: 1, page: 1, page_size: 50,
+      items: [{ record_no: 3, member_path: 'synthetic.csv', source_row: 4, record_key: 'SYN-ROW', disposition: 'imported',
+        reason_code: 'transaction_valid', flow_id: '3', details: { current_event_state: 'conflict',
+          event_reference_evidence: JSON.stringify({ policy: 'scoped-event-reference-v1', reference: 'SYN-HOLD-E1',
+            issuer: 'Synthetic Holdout Issuer', channel: 'Synthetic Holdout Rail', business_scope: 'Synthetic Holdout Transfers' }) } }] }));
+    Object.assign(client, { importRecords: records });
+    show(client, undefined, stored);
+    await screen.findByRole('heading', { name: '自动处理完成' });
+    expect(records).not.toHaveBeenCalled();
+    openRecords();
+    await screen.findByText('"SYN-HOLD-E1"');
+    expect(screen.getByText(/同笔关联资料存在矛盾/)).toBeTruthy();
+    expect(screen.getByText(/synthetic.csv · 原始第 4 行/)).toBeTruthy();
+    expect(records).toHaveBeenCalledWith('SYN-SOURCE', 1, expect.any(AbortSignal));
+    expect(stored).toEqual(before);
+    expect(client.commit).not.toHaveBeenCalled();
+    expect(client.repreview).not.toHaveBeenCalled();
+  });
+
+  it('pages retained source records and rejects a mismatched case before displaying its evidence', async () => {
+    const client = clientFor(), records = vi.fn(async (_source: string, page = 1) => page === 1 ? proofPage(1) : { ...proofPage(2), case_id: '2' });
+    Object.assign(client, { importRecords: records });
+    show(client, undefined, session('done')); await screen.findByRole('heading', { name: '自动处理完成' }); openRecords();
+    await screen.findByText('"SYN-P1"');
+    fireEvent.click(screen.getByRole('button', { name: '来源记录下一页' }));
+    await screen.findByRole('alert');
+    expect(screen.queryByText('"SYN-P1"')).toBeNull();
+    expect(screen.queryByText('"SYN-P2"')).toBeNull();
+    expect(records).toHaveBeenLastCalledWith('SYN-SOURCE', 2, expect.any(AbortSignal));
+    records.mockResolvedValue(proofPage(2)); fireEvent.click(screen.getByRole('button', { name: '重试来源记录' }));
+    await screen.findByText('"SYN-P2"');
+  });
+
+  it('aborts an in-flight source read and discards a late result when its case session is revoked', async () => {
+    const client = clientFor(), controller = new AbortController(); let finish!: (page: ImportRecordPage) => void, requestSignal: AbortSignal | undefined;
+    const records = vi.fn((_source: string, _page: number, signal?: AbortSignal) => { requestSignal = signal; return new Promise<ImportRecordPage>(resolve => { finish = resolve; }); });
+    Object.assign(client, { importRecords: records });
+    show(client, controller.signal, session('done')); await screen.findByRole('heading', { name: '自动处理完成' }); openRecords();
+    await waitFor(() => expect(records).toHaveBeenCalledOnce());
+    await act(async () => { controller.abort(); finish(proofPage()); });
+    expect(requestSignal?.aborted).toBe(true);
+    expect(screen.queryByText('"SYN-P1"')).toBeNull();
+    expect(screen.queryByText('来源记录与关联依据')).toBeNull();
+  });
+
+  it('resets source evidence across same-case rebinding and rejects the previous binding response', async () => {
+    const oldClient = clientFor(), nextClient = clientFor(); let finish!: (page: ImportRecordPage) => void;
+    const oldRecords = vi.fn(() => new Promise<ImportRecordPage>(resolve => { finish = resolve; }));
+    Object.assign(oldClient, { importRecords: oldRecords });
+    Object.assign(nextClient, { binding: { caseId: '1', scopeKey: 'synthetic-auto', generation: 1 }, importRecords: vi.fn(async () => proofPage(2)) });
+    const view = show(oldClient, undefined, session('done')); await screen.findByRole('heading', { name: '自动处理完成' }); openRecords();
+    await waitFor(() => expect(oldRecords).toHaveBeenCalledOnce());
+    view.rerender(<ImportDialog target={{ caseId: '1', name: '合成案件' }} client={nextClient} scopeSignal={new AbortController().signal} resume={session('done')} onClose={vi.fn()} onImported={vi.fn()} />);
+    await act(async () => { finish(proofPage(1)); });
+    expect(screen.queryByText('"SYN-P1"')).toBeNull();
+    openRecords(); await screen.findByText('"SYN-P2"');
+  });
+
+  it('keeps the historical context and original counts when a completed receipt is reopened', async () => {
+    const client = clientFor();
+    const stored = { ...session('done'), result: { ...result, ok: 1,
+      table_summary: { ...summary, accepted: 1, unresolved: 1 } } };
+    const before = structuredClone(stored);
+    show(client, undefined, stored);
+    await screen.findByRole('dialog', { name: '历史导入回执' });
+    expect(screen.getByText('导入当时结果；当前有效流水以案件统计为准')).toBeTruthy();
+    await screen.findByRole('heading', { name: '自动处理完成' });
+    expect(screen.getByText(/已保存 3 条记录 · 新增流水记录/).textContent).toContain('新增流水记录 1 条');
+    expect(stored).toEqual(before);
+    expect(client.commit).not.toHaveBeenCalled();
+    expect(client.repreview).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 1])('keeps the existing account reminder only for actual conflicts: %s', async conflicts => {
+    const client = clientFor();
+    const resolution: NonNullable<ImportPreview['resolution']> = { policy: 'typed-account-evidence-v1', revision: 'synthetic-resolution',
+      entities: 2, resolved_endpoints: 2, unresolved_endpoints: 0, conflicts, auxiliary_records: 0, evidence_records: 2, note: '' };
+    vi.mocked(client.preview).mockResolvedValue({ ...preview, resolution });
+    vi.mocked(client.job).mockResolvedValue({ case_id: '1', import_id: preview.import_id, stage: 'done', done: 3, total: 3,
+      message: '完成', error: null, result: { ...result, resolution } });
+    show(client); upload();
+    await screen.findByRole('heading', { name: '自动处理完成' });
+    const reminder = screen.queryByLabelText('账户关联结果');
+    if (conflicts) expect(reminder?.textContent).toContain('1 处资料冲突');
+    else expect(reminder).toBeNull();
+    expect(screen.getByLabelText('表格自动识别与全量校验汇总').textContent).toContain('未计入资金流水 2 条');
+  });
+
+  it('keeps every existing file suffix and advertises XLS and RAR in the file picker', () => {
     show(clientFor());
     const input = screen.getByLabelText('选择流水文件') as HTMLInputElement;
-    expect(input.accept.split(',')).toEqual(['.csv', '.tsv', '.txt', '.xlsx', '.xls', '.zip']);
-    expect(screen.getByText('支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP')).toBeTruthy();
+    expect(input.accept.split(',')).toEqual(['.csv', '.tsv', '.txt', '.xlsx', '.xls', '.zip', '.rar']);
+    expect(screen.getByText('支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP／RAR')).toBeTruthy();
   });
 
   it('previews the same XLS File and completes one automatic commit without remapping', async () => {
@@ -84,7 +186,7 @@ describe('automatic table import', () => {
     expect(client.job).toHaveBeenCalledTimes(failure === 'commit receipt lost' ? 1 : 2);
     expect(client.job).toHaveBeenLastCalledWith(preview.import_id, expect.any(AbortSignal));
     expect(imported).toHaveBeenCalledOnce();
-    expect(screen.getByText(/已保存 3 条记录 · 新增资金流水/)).toBeTruthy();
+    expect(screen.getByText(/已保存 3 条记录 · 新增流水记录/)).toBeTruthy();
   });
 
   it('unlocks an explicitly unstarted session without automatically resubmitting', async () => {
@@ -182,9 +284,9 @@ describe('automatic table import', () => {
     const done = { ...session('done'), result: receipt };
     show(client, undefined, done);
     await screen.findByRole('heading', { name: '自动处理完成' });
-    expect(screen.getByText(/已保存 3 条记录 · 新增资金流水/).textContent).toContain('新增资金流水 0 笔');
-    expect(screen.getByText(/本次保留流水事实 1 笔，其中新增有效资金流水 0 笔/)).toBeTruthy();
-    expect(screen.getByText('本案另有 1 笔历史留存流水已退出有效统计。')).toBeTruthy();
+    expect(screen.getByText(/已保存 3 条记录 · 新增流水记录/).textContent).toContain('新增流水记录 0 条');
+    expect(screen.getByText(/本次保留来源流水记录 1 条，其中新增有效流水记录 0 条/)).toBeTruthy();
+    expect(screen.getByText('本案有 1 条留存来源流水未计入有效统计。')).toBeTruthy();
     expect(screen.getByText('余额变化不能核实完整冲回：1 条')).toBeTruthy();
     expect(client.commit).not.toHaveBeenCalled();
   });
@@ -195,9 +297,9 @@ describe('automatic table import', () => {
       result: { ...result, ok: 1, table_summary: { ...summary, effective_added: 0, cancelled: 2, excluded_flows: 1 } } }] }));
     render(<ImportHistoryDialog target={{ caseId: '1', name: '合成案件' }} client={client} scopeSignal={new AbortController().signal} onClose={vi.fn()} onOpen={vi.fn()} />);
     await screen.findByText('自动处理完成 · 已保存 3 条记录');
-    expect(screen.getByText(/新增资金流水 0 笔 · 重复/).textContent).toContain('已配对冲正/撤销 2 条');
-    expect(screen.getByText(/本次保留流水事实 1 笔，其中新增有效资金流水 0 笔/)).toBeTruthy();
-    expect(screen.getByText('本案另有 1 笔历史留存流水已退出有效统计。')).toBeTruthy();
+    expect(screen.getByText(/新增流水记录 0 条 · 重复/).textContent).toContain('已配对冲正/撤销 2 条');
+    expect(screen.getByText(/本次保留来源流水记录 1 条，其中新增有效流水记录 0 条/)).toBeTruthy();
+    expect(screen.getByText('本案有 1 条留存来源流水未计入有效统计。')).toBeTruthy();
   });
 
   it('automatically saves all-unresolved records once and refreshes analysis inputs despite zero added flows', async () => {
@@ -205,7 +307,7 @@ describe('automatic table import', () => {
     await screen.findByRole('heading', { name: '自动处理完成' });
     expect(client.commit).toHaveBeenCalledOnce(); expect(client.repreview).not.toHaveBeenCalled();
     expect(imported).toHaveBeenCalledOnce();
-    expect(screen.getByText(/已保存 3 条记录 · 新增资金流水/).textContent).toContain('未计入资金流水 2 条');
+    expect(screen.getByText(/已保存 3 条记录 · 新增流水记录/).textContent).toContain('未计入资金流水 2 条');
     expect(screen.getByText('金额单位相互冲突：1 条')).toBeTruthy();
     expect(screen.getByText('方向字段与金额含义冲突：1 条')).toBeTruthy();
     expect(screen.getByText(/未计入不代表金额为零或没有发生交易/)).toBeTruthy();
@@ -217,6 +319,12 @@ describe('automatic table import', () => {
     expect(screen.getByText(/收支方向 ← 收支方向/).textContent).not.toContain('来源单位');
     expect(screen.getByText(/流水号 ← 交易流水号.*使用来源交易流水号/)).toBeTruthy();
     expect(screen.getByText(/凭证引用 ← 凭证号.*独立引用/)).toBeTruthy();
+    expect(screen.getByText(/传票号 ← 传票号.*独立保留来源传票号/)).toBeTruthy();
+    expect(screen.getByText(/日志号 ← 日志号.*独立保留来源日志号/)).toBeTruthy();
+    expect(screen.getByText(/凭证种类 ← 凭证种类.*保留来源凭证种类/)).toBeTruthy();
+    expect(screen.getByText(/备注 ← 备注.*独立保留来源备注原文/)).toBeTruthy();
+    expect(screen.queryByText(/流水号 ← (传票号|日志号)/)).toBeNull();
+    expect(screen.queryByText(/source_slip_reference|source_log_reference|independent_voucher_type/)).toBeNull();
     expect(screen.getByText(/交易时间 ← 成交日期.*时间格式：DD\/MM\/YYYY.*明确的日期时间格式/).textContent).not.toContain('来源单位');
     expect(screen.queryByText(/跳过|等待用户确认|逐条审核/)).toBeNull();
   });
@@ -240,7 +348,7 @@ describe('automatic table import', () => {
     show(client); upload();
     await screen.findByRole('heading', { name: '自动处理完成' });
     expect(client.commit).toHaveBeenCalledOnce();
-    expect(screen.getByRole('status').textContent).toContain('新增资金流水 0 笔');
+    expect(screen.getByRole('status').textContent).toContain('新增流水记录 0 条');
     expect(screen.getByRole('status').textContent).toContain('未计入资金流水 8 条');
     for (const label of Object.values(reasons)) expect(screen.getByText(`${label}：1 条`)).toBeTruthy();
     expect(screen.getByText('其他自动分类结果，详见完整处理报告：1 条')).toBeTruthy();

@@ -9,6 +9,7 @@ import sys
 import pytest
 
 from benchmarks import runner
+from funds_assertions import unresolved_funds
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,11 @@ def test_check_runner_replaces_inherited_state_and_reports_only_aggregates(tmp_p
     assert sample["checks"]["exact_decimal_and_large_sentinel"] is True
     assert sample["checks"]["failed_import_rollback"] is True
     assert sample["graph_sample"]["rows"] == 87
+    indices = list(runner.unique_valid_indices(100))
+    graph_upper = runner.money_text(sum(runner.cents(index, runner.DEFAULT_SEED) for index in indices if index != 2))
+    assert sample["graph_sample"]["funds"] == unresolved_funds(87, ("CNY", graph_upper))
+    assert sample["checks"]["graph_bounded_aggregate"] is True
+    assert sample["checks"]["excel_bounded_round_trip"] is True
     assert sample["excel_sample_rows"] == 88
     assert sample["file_sizes"]["duckdb_bytes"] > 0
     assert report["process_summary"]["peak_rss_bytes_max"] > 0
