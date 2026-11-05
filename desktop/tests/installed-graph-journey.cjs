@@ -493,7 +493,7 @@ function assertAutomaticImportCompletion(receipt) {
   assert.equal(receipt.action, '完成'); assert.equal(receipt.title, '自动处理完成');
   assert.equal(receipt.status, '自动处理完成，全部记录已保存');
   assert.deepEqual(receipt.steps, ['complete', 'complete', 'complete']);
-  assert.equal(receipt.summary, '已保存 3 条记录 · 新增资金流水 3 笔 · 重复 0 笔 · 未计入资金流水 0 条 · 已配对冲正/撤销 0 条（双方均不计有效资金） · 无资金变动 0 条 · 非交易记录 0 条 · 辅助资料 0 条');
+  assert.equal(receipt.summary, '已保存 3 条记录 · 新增流水记录 3 条 · 重复 0 条 · 未计入资金流水 0 条 · 已配对冲正/撤销 0 条（双方均不计有效资金） · 无资金变动 0 条 · 非交易记录 0 条 · 辅助资料 0 条');
 }
 // Inspect the retained preview and visible completion separately; never mutate import state.
 const AUTOMATIC_IMPORT_PROBE = `(() => {

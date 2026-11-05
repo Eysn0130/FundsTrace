@@ -61,7 +61,7 @@ function expectedFacts(rows, chain = false) {
   return rows.map(values => {
     const row = Object.fromEntries(FIELDS.map(key => [key, key === 'balance' ? null : '']));
     ['trade_no', 'trade_time', 'payer_account', 'payee_account', 'amount', 'balance', 'currency', 'self_account'].forEach((key, index) => { row[key] = values[index]; });
-    if (chain) { row.payer_name = row.self_name = 'Synthetic owner'; row.summary = 'Synthetic summary'; }
+    if (chain) { row.payer_name = row.self_name = 'Synthetic owner'; row.summary = row.amount.startsWith('-') ? '冲正' : 'Synthetic summary'; }
     return row;
   });
 }
@@ -75,7 +75,7 @@ function statFacts(value) {
 function sourceKey(source) { return JSON.stringify([source.filename, source.sha256, source.parser_version || source.profile]); }
 function assertFourFormatSources(pkg, committed, inputs) {
   const filenames = ['formats.csv', 'formats.xlsx', 'formats.xls', 'formats.zip'];
-  const profiles = ['funds-trace-table-v17', 'funds-trace-table-v17', 'funds-trace-table-v18', 'funds-trace-table-archive-v4'];
+  const profiles = ['funds-trace-table-v66', 'funds-trace-table-v66', 'funds-trace-table-v67', 'funds-trace-table-archive-v57'];
   const tables = pkg.tables;
   assert.equal(committed.length, 4);
   assert.equal(new Set(committed.map(item => item.sourceId)).size, 4);
@@ -322,19 +322,22 @@ async function run(options) {
       assert.deepEqual(item.value.rawAmountTotals, rawTotals);
       const expectedEffective = label === 'chain' ? CHAIN.filter(row => ['SYN-W', 'SYN-XW'].includes(row[0]))
         : label === 'chain-conflict' ? CHAIN.filter(row => row[0] !== 'SYN-XP') : expectedRaw;
-      const effectiveRows = (await json(ready, `/api/v1/cases/${cid}/flows?page_size=200`)).items;
+      const listedRows = (await json(ready, `/api/v1/cases/${cid}/flows?page_size=200`)).items;
+      const effectiveRows = listedRows.filter(row => !row.source_ledger);
       assert.deepEqual(effectiveFacts(effectiveRows), literalFacts(expectedFacts(expectedEffective, label.startsWith('chain'))));
+      // Source-only observations remain visible without contributing to the funds total.
+      if (label.startsWith('chain')) assert.equal(listedRows.length, 11);
       const exactStats = await json(ready, `/api/v1/cases/${cid}/stats`);
       assert.equal(exactStats.flows, expectedEffective.length); assert.equal(exactStats.accounts, label === 'suffixless' ? 2 : 3);
       const snapshot = { package: canonicalPackage(item.value), provenance: await provenance(ready, cid, item.value),
-        effective: effectiveFacts(effectiveRows), stats: statFacts(exactStats) };
+        effective: effectiveFacts(listedRows), stats: statFacts(exactStats) };
       exported.push({ cid, label, ...item, snapshot }); return item.value;
     }
     stage = 'four-formats'; const simple = await create(ready, 'four formats'), fourFormatImports = [];
     for (const [index, file] of ['formats.csv', 'formats.xlsx', 'formats.xls', 'formats.zip'].entries()) {
       const { view, job } = await upload(ready, simple, file);
       assert.equal(job.result.ok, index === 0 ? 3 : 0); assert.equal(job.result.rows_dup, index === 0 ? 0 : 3);
-      assert.equal(view.table_summary.profile, file.endsWith('.xls') ? 'funds-trace-table-v18' : file.endsWith('.zip') ? 'funds-trace-table-archive-v4' : 'funds-trace-table-v17');
+      assert.equal(view.table_summary.profile, file.endsWith('.xls') ? 'funds-trace-table-v67' : file.endsWith('.zip') ? 'funds-trace-table-archive-v57' : 'funds-trace-table-v66');
       assert.equal(view.table_summary.unresolved, 0);
       fourFormatImports.push({ sourceId: view.import_id, filename: file, profile: view.table_summary.profile });
       assertMoney((await json(ready, `/api/v1/cases/${simple}/flows?page_size=200`)).items, SIMPLE);
@@ -373,16 +376,23 @@ async function run(options) {
       const zipJournalBefore = await json(ready, `/api/v1/cases/${cid}/sources/${zip.view.import_id}/report`);
       if (conflict) await complete(ready, cid, view);
       const expected = { unresolved_records: conflict ? 7 : 0, cancelled_records: conflict ? 2 : 6,
-        excluded_flows: conflict ? 1 : 3, financial_interpretation_complete: !conflict };
+        excluded_flows: conflict ? 1 : 6, financial_interpretation_complete: !conflict };
       const state = await stats(ready, cid, conflict ? 4 : 2, [{ currency: 'CNY', amount: conflict ? '33.00' : '3.00' }], expected); assert.equal(state.accounts, 3);
       const ordinary = await json(ready, `/api/v1/cases/${cid}/sources/${view.import_id}/report`);
       const zipJournal = await json(ready, `/api/v1/cases/${cid}/sources/${zip.view.import_id}/report`); assert.deepEqual(zipJournal, zipJournalBefore);
-      assert.deepEqual(journalCounts(ordinary), conflict ? { 'unresolved/conflicting_field': 1, 'imported/transaction_valid': 3, 'unresolved/negative_amount': 3, 'duplicate/transaction_valid': 1 }
+      assert.deepEqual(journalCounts(ordinary), conflict ? { 'unresolved/conflicting_field': 1, 'unresolved/negative_amount': 3, 'duplicate/transaction_valid': 4 }
         : { 'imported/transaction_valid': 5, 'unresolved/negative_amount': 3 });
       assert.deepEqual(journalCounts(zipJournal), conflict ? { 'imported/transaction_valid': 2, 'cancelled/matched_cancellation': 6 }
         : { 'duplicate/transaction_valid': 2, 'cancelled/matched_cancellation': 6 });
-      assertMoney((await json(ready, `/api/v1/cases/${cid}/flows?page_size=200`)).items, CHAIN.filter(row => conflict ? row[0] !== 'SYN-XP' : ['SYN-W', 'SYN-XW'].includes(row[0])));
-      const rawPackage = await save(cid, prefix, CHAIN, [{ currency: 'CNY', amount: '40.00' }]);
+      assertMoney((await json(ready, `/api/v1/cases/${cid}/flows?page_size=200`)).items.filter(row => !row.source_ledger), CHAIN.filter(row => conflict ? row[0] !== 'SYN-XP' : ['SYN-W', 'SYN-XW'].includes(row[0])));
+      const negative = [
+        ['SYN-P', '2026-01-01T10:02:00', 'SYN-A', 'SYN-OTHER', '-10.00', '100.00', 'CNY', 'SYN-A'],
+        ['SYN-Q', '2026-01-01T10:04:00', 'SYN-A', 'SYN-OTHER', '-20.00', '100.00', 'CNY', 'SYN-A'],
+        ['SYN-XP', '2026-01-01T11:02:00', 'SYN-X', 'SYN-OTHER', '-7.00', '200.00', 'CNY', 'SYN-X'],
+      ];
+      const pairedPositive = conflict ? [] : [CHAIN[1], CHAIN[2], CHAIN[4]];
+      const rawPackage = await save(cid, prefix, [...CHAIN, ...negative, ...negative, ...pairedPositive],
+        [{ currency: 'CNY', amount: conflict ? '-34.00' : '3.00' }]);
       for (const source of rawPackage.tables.import_sources) {
         const input = source.filename === 'ordinary.csv' ? `${prefix}.csv` : `${prefix}.zip`;
         assert.equal(source.sha256, digest(inputs.get(input))); assert.equal(source.size_bytes, inputs.get(input).length);
@@ -397,7 +407,7 @@ async function run(options) {
     const p01pkg = await save(p01, 'suffixless', p01raw, [{ currency: 'USD', amount: '2.03' }]);
     assert.equal(p01pkg.tables.import_sources[0].filename, 'ordinary'); assert.equal(p01pkg.tables.import_sources[0].sha256, digest(inputs.get('ordinary')));
     assert.equal(p01pkg.tables.import_sources[0].size_bytes, inputs.get('ordinary').length);
-    assert.equal(p01pkg.tables.import_sources[0].parser_version, 'funds-trace-table-v17');
+    assert.equal(p01pkg.tables.import_sources[0].parser_version, 'funds-trace-table-v66');
     assert.equal(p01pkg.tables.import_records[0].member_path, 'table.csv'); assert.equal(p01pkg.tables.import_records[0].source_row, 2);
     report.checks.suffixlessPackageExact = report.checks.sourceReportsAndTraces = report.checks.publicRawPackageFacts = true;
     await eof(first);

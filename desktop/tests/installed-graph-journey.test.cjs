@@ -79,7 +79,7 @@ function automaticObservation() {
     ], mappingHidden: true,
     receipt: { open: true, busy: false, resultVisible: true, commitHidden: true, action: '完成',
       title: '自动处理完成', status: '自动处理完成，全部记录已保存', steps: ['complete', 'complete', 'complete'],
-      summary: '已保存 3 条记录 · 新增资金流水 3 笔 · 重复 0 笔 · 未计入资金流水 0 条 · 已配对冲正/撤销 0 条（双方均不计有效资金） · 无资金变动 0 条 · 非交易记录 0 条 · 辅助资料 0 条' } };
+      summary: '已保存 3 条记录 · 新增流水记录 3 条 · 重复 0 条 · 未计入资金流水 0 条 · 已配对冲正/撤销 0 条（双方均不计有效资金） · 无资金变动 0 条 · 非交易记录 0 条 · 辅助资料 0 条' } };
 }
 
 test('automatic acceptance checks every mapped transaction, exact total, source row and classified column', () => {
@@ -171,8 +171,8 @@ for (const [name, mutate] of [
 });
 
 test('automatic completion requires every exact saved, added and disposition count', () => {
-  for (const [from, to] of [['已保存 3 条记录', '已保存 2 条记录'], ['新增资金流水 3 笔', '新增资金流水 2 笔'],
-    ['重复 0 笔', '重复 1 笔'], ['未计入资金流水 0 条', '未计入资金流水 1 条'],
+  for (const [from, to] of [['已保存 3 条记录', '已保存 2 条记录'], ['新增流水记录 3 条', '新增流水记录 2 条'],
+    ['重复 0 条', '重复 1 条'], ['未计入资金流水 0 条', '未计入资金流水 1 条'],
     ['已配对冲正/撤销 0 条', '已配对冲正/撤销 1 条'], ['无资金变动 0 条', '无资金变动 1 条'],
     ['非交易记录 0 条', '非交易记录 1 条'], ['辅助资料 0 条', '辅助资料 1 条']]) {
     const receipt = automaticObservation().receipt; receipt.summary = receipt.summary.replace(from, to);
