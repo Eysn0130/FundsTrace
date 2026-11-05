@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import io
 import json
+import mimetypes
 import os
 import re
 import sys
@@ -2339,6 +2340,8 @@ async def import_case(file: UploadFile = File(...)):
     return import_package(await file.read())
 
 
+# Windows MIME registrations can classify ES modules as non-executable content.
+mimetypes.add_type("text/javascript", ".mjs")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
