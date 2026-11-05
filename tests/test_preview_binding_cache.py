@@ -97,7 +97,7 @@ def test_pure_cancellation_preview_is_reused_without_case_facts(client,database,
     cid = make_case('Synthetic binding cache')
     seen = observe(monkeypatch)
     view = preview(client,cid,members(cancelled),zipped=zipped,scope_bank=None)
-    assert view['table_summary']['profile'] == table_archive.NATIVE31_EVIDENCE_PROFILE
+    assert view['table_summary']['profile'] == table_archive.SOURCE_OBSERVATION_EVIDENCE_PROFILE
     assert view['table_summary']['accepted'] == 2
     assert view['table_summary']['cancelled'] == (2 if cancelled else 0)
     job = complete(client,cid,view)

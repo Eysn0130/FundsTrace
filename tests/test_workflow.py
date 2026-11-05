@@ -94,9 +94,9 @@ def test_file_to_case_to_exports_and_scoped_batch_delete(client, make_case, monk
         "所选原分录数": "2", "修订": query["analysis_revision"]}]
     pending = sheets["待调取账号"]
     assert pending[["账号", "转出笔数", "转出金额", "转入笔数", "转入金额", "交易总额"]].to_dict("records") == [
-        {"账号": "000SYN-B", "转出笔数": "0—1", "转出金额": "0.00—67.89", "转入笔数": "0—1", "转入金额": "0.00—123.45", "交易总额": "0.00—191.34"},
-        {"账号": "000SYN-A", "转出笔数": "0—1", "转出金额": "0.00—123.45", "转入笔数": "0", "转入金额": "0.00", "交易总额": "0.00—123.45"},
-        {"账号": "000SYN-C", "转出笔数": "0", "转出金额": "0.00", "转入笔数": "0—1", "转入金额": "0.00—67.89", "交易总额": "0.00—67.89"}]
+        {"账号": "000SYN-B", "转出笔数": "1", "转出金额": "67.89", "转入笔数": "1", "转入金额": "123.45", "交易总额": "191.34"},
+        {"账号": "000SYN-A", "转出笔数": "1", "转出金额": "123.45", "转入笔数": "0", "转入金额": "0.00", "交易总额": "123.45"},
+        {"账号": "000SYN-C", "转出笔数": "0", "转出金额": "0.00", "转入笔数": "1", "转入金额": "67.89", "交易总额": "67.89"}]
     if not legacy_without_journal:
         assert list(sheets["统计口径"].columns) == ["项目", "说明"]
         notes = dict(sheets["统计口径"].itertuples(index=False, name=None))
@@ -106,7 +106,9 @@ def test_file_to_case_to_exports_and_scoped_batch_delete(client, make_case, monk
             "资金效果未确定记录数": "0", "非资金事件记录数": "0", "已匹配冲正撤销事件数": "0",
             "保留原始流水中退出分析的笔数": "0", "已导入来源资金语义是否完整": "是",
             "未确定记录": "资金效果未确定的记录未计入流水统计；非资金事件单独保留，不计入金额与交易笔数。",
-            "统计策略": "evidence-bounded-funds-v1"}
+            "统计策略": "evidence-bounded-funds-v1",
+            "解析修订": client.get(f"/api/v1/cases/{cid}/resolution").json()["resolution"]["revision"],
+            "账务记录口径": "相同有据原件副本共享记录；双方反馈未证明同一经济事件时分别保留，不宣称事件净额。"}
 
     package = client.get(f"/api/cases/{cid}/export")
     assert package.status_code == 200

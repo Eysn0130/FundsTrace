@@ -69,7 +69,7 @@ def test_currency_code_validates_every_nonempty_candidate(suffix, code, other, e
         ["date", "payer_account", "payee_account", "amount", "币种代码", "币种"],
         ["2026-01-01", "000SYN-A", "000SYN-B", "1.23", code, other],
     ], suffix), suffix=suffix)
-    assert plan["profile"] == table_import.NATIVE31_PROFILE
+    assert plan["profile"] == table_import.SOURCE_OBSERVATION_PROFILE
     assert plan["records"][0]["reason_code"] == reason
     assert [(row["currency"], row["payer_account"], row["payee_account"], row["amount"])
             for row in plan["rows"]] == (

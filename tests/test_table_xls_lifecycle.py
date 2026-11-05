@@ -21,8 +21,8 @@ from xls_fixtures import Cell, Error, workbook
 
 
 XLS_PROFILE = "funds-trace-table-v18"
-CURRENT_XLS_PROFILE = "funds-trace-table-v64"
-CURRENT_TABLE_PROFILE = "funds-trace-table-v63"
+CURRENT_XLS_PROFILE = "funds-trace-table-v67"
+CURRENT_TABLE_PROFILE = "funds-trace-table-v66"
 FROZEN_PROFILE = "funds-trace-table-v17"
 HEADERS = ["date", "payer_account", "payee_account", "amount", "currency"]
 

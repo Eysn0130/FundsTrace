@@ -162,7 +162,7 @@ def inspect_package(package):
     with zipfile.ZipFile(package) as archive:
         names = archive.namelist()
         expected = {'meta.json', 'import_source_operations.parquet', *(table + '.parquet' for table in TABLES)}
-        if len(names) != len(set(names)) or set(names) != expected:
+        if len(names) != len(set(names)) or set(names) not in (expected, expected | {'evidence_sources.parquet'}):
             raise ValueError('Unexpected or missing synthetic package members')
         if any(entry.file_size > 32 * 1024 * 1024 for entry in archive.infolist()):
             raise ValueError('Oversized synthetic package')

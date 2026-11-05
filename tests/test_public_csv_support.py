@@ -3,6 +3,9 @@ import time
 
 import pytest
 
+from app import table_import
+from app.services import imports
+
 
 CSV = ("交易时间,付款账号,收款账号,交易金额\n"
        "2026-01-01 10:00:00.123456,SYN-COMMANDER-A,SYN-COMMANDER-B,100.01\n").encode()
@@ -154,7 +157,7 @@ def test_mixed_parser_operations_do_not_change_profile_or_support(client, databa
     # Different original bytes may coexist under both profile contracts;
     # the existing same-original profile-switch rejection stays in force.
     before = database.q_raw('select source_id,flow_id from flow_sources where case_id=? order by all', [cid])
-    assert database.q_raw('select parser_version from import_sources where source_id=?', [ordinary['source_id']]) == [{'parser_version': 'funds-trace-table-v63'}]
+    assert database.q_raw('select parser_version from import_sources where source_id=?', [ordinary['source_id']]) == [{'parser_version': 'funds-trace-table-v66'}]
     removed, kept = (evidence, ordinary) if evidence_first else (ordinary, evidence)
     expected = {r['flow_id'] for r in before if r['source_id'] == kept['source_id']}
     assert client.delete(f"/api/batches/{removed['batch_id']}", params={'case_id': cid}).status_code == 200
@@ -230,11 +233,15 @@ def test_format5_explicit_evidence_operations_remain_portable(client, database, 
     assert client.get(f'/api/v1/cases/{other}/flows').json()['total'] == 0
 
 
-def test_retired_receipt_migration_clears_stale_links_without_guessing_unknown_sources(client, database):
+def test_retired_receipt_migration_clears_stale_links_without_guessing_unknown_sources(client, database, monkeypatch):
     import json
+    monkeypatch.setattr(imports, 'TABLE_PROFILE', table_import.NATIVE31_PROFILE)
     cid = client.post('/api/cases', json={'name': 'Synthetic retired historical replay'}).json()['id']
     first_id, first = import_csv(client, cid)
     second_id, second = import_csv(client, cid)
+    assert database.q_raw('select distinct parser_version from import_sources where case_id=?', [cid]) == [
+        {'parser_version': table_import.NATIVE31_PROFILE}]
+    assert database.q_raw('select * from evidence_sources where case_id=?', [cid]) == []
     # Exact prior failure: removing the replay batch left both flow links.
     database.x('delete from batches where case_id=? and id=?', [cid, second['batch_id']])
     database.x('drop table import_source_operations')
@@ -252,12 +259,16 @@ def test_retired_receipt_migration_clears_stale_links_without_guessing_unknown_s
     assert client.get(f'/api/v1/cases/{cid}/flows').json()['total'] == 1
 
 
-def test_migration_never_treats_another_cases_batch_as_retired_support(client, database):
+def test_migration_never_treats_another_cases_batch_as_retired_support(client, database, monkeypatch):
     import json
+    monkeypatch.setattr(imports, 'TABLE_PROFILE', table_import.NATIVE31_PROFILE)
     cid = client.post('/api/cases', json={'name': 'Synthetic migration case isolation'}).json()['id']
     other = client.post('/api/cases', json={'name': 'Synthetic other operation'}).json()['id']
     sid, _ = import_csv(client, cid)
     _, other_receipt = import_csv(client, other)
+    assert database.q_raw('select distinct parser_version from import_sources where case_id in (?,?)', [cid, other]) == [
+        {'parser_version': table_import.NATIVE31_PROFILE}]
+    assert database.q_raw('select * from evidence_sources where case_id in (?,?)', [cid, other]) == []
     database.x('delete from import_source_operations where source_id=?', [sid])
     database.x('update import_sessions set result_json=? where import_id=?', [json.dumps({'source_id': sid, 'batch_id': other_receipt['batch_id']}), sid])
     reopen(database)

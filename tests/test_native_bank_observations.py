@@ -110,13 +110,31 @@ def test_native28_zero_identifier_and_currency_are_literal_source_fields(client,
     base = f"/api/v1/cases/{cid}"
     flows = client.get(base + "/flows", params={"granularity": "observations"}).json()["items"]
     assert {item["trade_no"]: (item["amount"], item["currency"]) for item in flows} == {
-        "0": ("10.00", "CNY"), "SYN-USD": ("2.34", "USD"), "SYN-EUR": ("3.45", "EUR")}
+        "0": ("10.00", "CNY"), "SYN-USD": ("2.34", "USD"), "SYN-EUR": ("3.45", "EUR"),
+        "SYN-NO-DIR": ("7.00", "CNY")}
+    unknown = next(item for item in flows if item["trade_no"] == "SYN-NO-DIR")
+    assert unknown["raw_self_account"] == "SYN-A"
+    assert all(unknown[side + "_" + field] == "" for side in ("payer", "payee")
+               for field in ("account", "name", "bank"))
+    info = unknown["source_ledger"]
+    assert (info["signed_amount"], info["direction"], info["source_direction"]) == ("7.00", "unknown", "")
+    assert (info["counter_account"], info["counter_name"], info["counter_bank"]) == (
+        "SYN-B", "Synthetic counterparty", "Synthetic other bank")
+    assert (info["economic_effect"], info["economic_amount"]) == ("unknown", None)
     records = client.get(base + f"/sources/{job['result']['source_id']}/report").json()["items"]
     assert records[0]["details"]["reported_status"] == "unknown"
     assert records[3]["reason_code"] == "invalid_currency"
+    assert records[3]["disposition"] == "unresolved" and records[3]["flow_id"] is None
     assert records[4]["reason_code"] == "missing_direction"
     assert json.loads(records[3]["details"]["source_ledger_evidence"])["row"]["currency"] == ""
-    assert client.get(base + "/stats").json()["amount_total"] is None
+    stats = client.get(base + "/stats").json()
+    assert stats["amount_total"] is None
+    assert {item["currency"]: item["amount"] for item in stats["amount_totals"]} == {
+        "CNY": "10.00", "USD": "2.34", "EUR": "3.45"}
+    track(client, cid, [unknown])
+    result = graph(client, cid)
+    assert result["edges"] == [] and result["transaction_count"] == 0
+    assert client.get(base + f"/sources/{job['result']['source_id']}/file").content == raw
 
 
 def test_native28_reciprocal_balance_witnesses_do_not_authorize_posting_pair(client, make_case):
@@ -147,7 +165,7 @@ def test_full_closed31_auxiliary_variants_have_explicit_zip_scope(client, make_c
                ("manifest.csv", table("task", [{"请求单号": "SYN-REQUEST", "银行名称": "Synthetic bank"}]))]
     raw = archive(members)
     view, job = add_source(client, cid, raw, "complete.zip")
-    assert view["table_summary"]["profile"] == (table_archive.NATIVE31_EVIDENCE_PROFILE if bound else table_archive.PROFILE)
+    assert view["table_summary"]["profile"] == (table_archive.SOURCE_OBSERVATION_EVIDENCE_PROFILE if bound else table_archive.PROFILE)
     report = client.get(f"/api/v1/cases/{cid}/sources/{job['result']['source_id']}/report").json()["items"]
     assert len(report) == 4 and sum(item["disposition"] == "auxiliary" for item in report) == 3
     entities = client.get(f"/api/v1/cases/{cid}/resolution").json().get("entities", [])

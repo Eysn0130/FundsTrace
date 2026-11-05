@@ -87,19 +87,26 @@ def test_global_late_conflict_cannot_be_hidden_by_filter_or_selection(client, ma
     cid = make_case('Synthetic global contradiction')
     source, receipt = accepted(client, cid, [('pair.csv', csv_rows([transaction('SYN-A'), transaction('SYN-B')]))], scope_bank=None)
     selected = observations(client, cid)
+    assert {row['balance'] for row in selected} == {'50.00', '200.00'}
     assert_pair_graph(track(client, cid, selected))
     _, conflict = accepted(client, cid, [('late.csv', csv_rows([transaction('SYN-A', **{'交易金额': '101.00'})]))], scope_bank=None)
     graph = client.get('/api/graph', params={'case_id': cid}).json()
-    assert graph['edges'] == [] and graph['nodes'] == []
-    assert graph['transaction_count'] == 0 and len(graph['tracked_ids']) == 2
+    assert_pair_graph(graph, count=2, amount='200.00')
+    assert len(graph['nodes']) == 2 and len(graph['tracked_ids']) == 2
+    assert graph['funds']['confirmed_event_count'] == 0
     stats = client.get(f'/api/v1/cases/{cid}/stats').json()
-    assert stats['flows'] == 0 and stats['amount_totals'] == []
-    assert stats['accounts'] == 0 and stats['funds']['observation_count'] == 3
+    assert stats['flows'] == 3 and stats['amount_totals'] == [{'currency': 'CNY', 'amount': '301.00'}]
+    assert stats['accounts'] == 2 and stats['funds']['observation_count'] == 3
+    assert stats['funds']['confirmed_event_count'] == 0 and stats['funds']['totals'][0]['amount'] is None
     legacy = client.get('/api/stats', params={'case_id': cid}).json()
-    assert legacy['flows'] == 0 and legacy['accounts'] == 0 and legacy['funds']['observation_count'] == 3
+    assert legacy['flows'] == 3 and legacy['accounts'] == 2 and legacy['funds']['observation_count'] == 3
+    assert legacy['funds']['confirmed_event_count'] == 0 and legacy['funds']['totals'][0]['amount'] is None
     for endpoint in ('/api/account-registry/profile', f"/api/accounts/{selected[0]['payer_account']}/profile"):
         profile = client.get(endpoint, params={'case_id': cid, 'account': selected[0]['payer_account']}).json()
-        assert profile['top_counterparties'] == [] and profile['tmin'] is profile['tmax'] is None
+        peer, = profile['top_counterparties']
+        assert (peer['acct'], peer['out_cnt'], peer['out_amt'], peer['out_observation_count']) == (
+            selected[0]['payee_account'], 3, '301.00', 3)
+        assert profile['tmin'] is not None and profile['tmin'] == profile['tmax']
     assert stats['event_summary']['conflict_entries'] == 3
     assert not stats['import_coverage']['financial_interpretation_complete']
     assert len(observations(client, cid)) == 3
@@ -107,27 +114,39 @@ def test_global_late_conflict_cannot_be_hidden_by_filter_or_selection(client, ma
     assert all(row['details']['current_event_state'] == 'conflict' for row in record_view['items'])
     assert client.get(f"/api/v1/cases/{cid}/imports/{source['import_id']}").json()['result'] == receipt
     filtered = client.get('/api/flows', params={'case_id': cid, 'max_amount': '100.00', 'tracked': 1}).json()
-    assert filtered['total'] == 0 and filtered['funds']['confirmed_event_count'] == 0
+    assert filtered['total'] == 2 and filtered['funds']['confirmed_event_count'] == 0
+    assert {str(row['id']) for row in filtered['rows']} == {row['id'] for row in selected}
+    assert [row['amount'] for row in filtered['rows']] == ['100.00', '100.00']
     window = client.post('/api/canvas/investigation/time', json={'case_id': cid}).json()
-    assert window['edges'] == [] and window['nodes'] == []
-    assert window['summary']['selected_count'] == 0 and window['summary']['amount_totals'] == []
+    edge, = window['edges']
+    assert len(window['nodes']) == 2 and (edge['cnt'], edge['total']) == (2, '200.00')
+    assert window['summary']['selected_count'] == 2
+    assert window['summary']['amount_totals'] == [{'currency': 'CNY', 'amount': '200.00'}]
     for row in selected:
         sources = client.get(f"/api/v1/cases/{cid}/flows/{row['id']}/sources").json()
         assert sources['items'][0]['observation_amount'] == '100.00'
     snapshot = client.get('/api/export/tracked.xlsx', params={'case_id': cid})
     assert snapshot.status_code == 200, snapshot.text
     book = load_workbook(io.BytesIO(snapshot.content), read_only=True)
-    assert len(list(book['追踪流水'].values)) == 1
+    ledger = list(book['追踪流水'].values)
+    assert len(ledger) == 3
+    assert [row[ledger[0].index('交易金额')] for row in ledger[1:]] == ['100.00', '100.00']
     assert len(list(book['原始账簿观察'].values)) == 3
     book.close()
     package = client.get(f'/api/cases/{cid}/export')
     restored = client.post('/api/cases/import', files={'file': ('conflict.fundcase', package.content)})
     assert restored.status_code == 200, restored.text
     reopened = restored.json()['case_id']
-    assert client.get(f'/api/v1/cases/{reopened}/stats').json()['flows'] == 0
-    assert client.get('/api/graph', params={'case_id': reopened}).json()['edges'] == []
+    reopened_stats = client.get(f'/api/v1/cases/{reopened}/stats').json()
+    assert reopened_stats['flows'] == 3 and reopened_stats['amount_totals'] == [{'currency': 'CNY', 'amount': '301.00'}]
+    assert reopened_stats['funds']['confirmed_event_count'] == 0
+    assert_pair_graph(client.get('/api/graph', params={'case_id': reopened}).json(), count=2, amount='200.00')
     assert len(observations(client, reopened)) == 3
+    assert {row['balance'] for row in observations(client, reopened)} == {'50.00', '200.00'}
     assert client.delete(f"/api/batches/{conflict['batch_id']}", params={'case_id': cid}).status_code == 200
     assert_pair_graph(client.get('/api/graph', params={'case_id': cid}).json())
+    restored_stats = client.get(f'/api/v1/cases/{cid}/stats').json()
+    assert restored_stats['flows'] == 1 and restored_stats['funds']['confirmed_event_count'] == 1
+    assert restored_stats['amount_totals'] == [{'currency': 'CNY', 'amount': '100.00'}]
     record_view = client.get(f"/api/v1/cases/{cid}/imports/{source['import_id']}/records").json()
     assert all('current_event_state' not in row['details'] for row in record_view['items'])

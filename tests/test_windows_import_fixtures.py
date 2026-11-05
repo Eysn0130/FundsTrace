@@ -187,7 +187,7 @@ def test_public_suffixless_package_retains_source_and_replay_adds_zero(client, m
     source = package['tables']['import_sources'][0]
     assert source['filename'] == 'ordinary' and source['size_bytes'] == (fixture_dir / 'ordinary').stat().st_size
     assert source['sha256'] == hashlib.sha256((fixture_dir / 'ordinary').read_bytes()).hexdigest()
-    assert source['parser_version'] == 'funds-trace-table-v63'
+    assert source['parser_version'] == 'funds-trace-table-v66'
     assert package['tables']['import_records'][0]['member_path'] == 'table.csv'
     assert package['rawAmountTotals'] == [{'currency': 'USD', 'amount': '2.03'}]
     restored = client.post('/api/cases/import', files={'file': ('synthetic.fundcase', (tmp_path / 'synthetic.fundcase').read_bytes())})
@@ -196,21 +196,28 @@ def test_public_suffixless_package_retains_source_and_replay_adds_zero(client, m
     assert repeated['result']['ok'] == 0
 
 
-@pytest.mark.parametrize('defect', ['duplicate', 'missing', 'extra', 'version', 'live'])
-def test_inspector_rejects_non_fixed_public_packages(tmp_path, defect):
+@pytest.mark.parametrize('evidence', [False, True])
+@pytest.mark.parametrize('defect', ['duplicate', 'missing', 'extra', 'extra-parquet', 'version', 'source-files', 'oversized', 'live'])
+def test_inspector_rejects_non_fixed_public_packages(tmp_path, defect, evidence):
     file = tmp_path / 'synthetic.fundcase'
     if defect == 'live':
         file.write_bytes(b'not a public zip package')
         with pytest.raises(zipfile.BadZipFile):
             fixtures.inspect_package(file)
         return
-    with zipfile.ZipFile(file, 'w') as archive:
-        archive.writestr('meta.json', json.dumps({'format': 3 if defect == 'version' else 6, 'source_files': 'not_included'}))
+    with zipfile.ZipFile(file, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('meta.json', json.dumps({'format': 3 if defect == 'version' else 6,
+            'source_files': 'included' if defect == 'source-files' else 'not_included'}))
         for table in (*fixtures.TABLES, 'import_source_operations'):
             if defect != 'missing' or table != 'flows':
-                archive.writestr(table + '.parquet', b'not read if structural validation fails')
+                content = b'0' * (32 * 1024 * 1024 + 1) if defect == 'oversized' and table == 'flows' else b'not read if structural validation fails'
+                archive.writestr(table + '.parquet', content)
+        if evidence:
+            archive.writestr('evidence_sources.parquet', b'fixed optional public evidence table')
         if defect == 'extra':
             archive.writestr('../fund.duckdb', b'not extracted')
+        if defect == 'extra-parquet':
+            archive.writestr('unexpected.parquet', b'not extracted')
         if defect == 'duplicate':
             with pytest.warns(UserWarning, match='Duplicate'):
                 archive.writestr('flows.parquet', b'duplicate')

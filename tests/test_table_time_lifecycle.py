@@ -85,7 +85,7 @@ def test_ready_v9_direction_session_keeps_its_version_after_v11_default(
                             [["2026-03-01 10:20:30", "SYN-OWN", "SYN-OTHER", "-123", "DEBIT"]])
     old = profile_preview(client, cid, payload, monkeypatch, "funds-trace-table-v9")
     assert old["table_summary"]["accepted"] == 1
-    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v63"
+    assert imports.TABLE_PROFILE == table_import.PROFILE == "funds-trace-table-v66"
     response = client.post(f"/api/v1/cases/{cid}/imports/{old['import_id']}/preview", json={
         "mode": old["mode"], "mapping": old["mapping"]})
     assert response.status_code == 200, response.text
@@ -106,7 +106,7 @@ def test_ready_v9_direction_session_keeps_its_version_after_v11_default(
     assert coverage(client, restored) == coverage(client, cid)
     assert {row["parser_version"] for row in database.q_raw(
         "select parser_version from import_sources where case_id=?", [restored])} == {
-            "funds-trace-table-v9", "funds-trace-table-v63"}
+            "funds-trace-table-v9", "funds-trace-table-v66"}
 
 
 @pytest.mark.parametrize("newest_first", [False, True])

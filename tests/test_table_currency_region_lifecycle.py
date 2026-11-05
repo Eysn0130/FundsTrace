@@ -17,7 +17,7 @@ from test_table_mapping_coverage import coverage
 from test_table_region_headers import payload
 
 
-NEW_PROFILE = "funds-trace-table-v63"
+NEW_PROFILE = "funds-trace-table-v66"
 
 def repreview_unchanged(client, cid, view):
     response = client.post(f"/api/v1/cases/{cid}/imports/{view['import_id']}/preview", json={
