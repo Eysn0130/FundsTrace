@@ -19,7 +19,7 @@ def list_load(database, cid):
                 "funds-trace-table-archive-v9", "funds-trace-table-archive-v10",
                 "funds-trace-table-archive-v11", "funds-trace-bank-feedback-v6",
                 "funds-trace-bank-feedback-v8",
-                *[f"funds-trace-table-v{v}" for v in (41, 44, 47, 50, 53, 56, 59, 62, 65, 66, 67, 68)],
+                *[f"funds-trace-table-v{v}" for v in (41, 44, 47, 50, 53, 56, 59, 62, 65, 66, 67, 68, 69, 70, 71)],
                 *[f"funds-trace-table-archive-v{v}" for v in (31, 32, 34, 35, 37, 38, 40, 41, 43, 44, 46, 47, 49, 50, 52, 53, 55, 56, 57, 58, 59)])
     assert e.PROFILES == frozenset(profiles)
     query = f"""select m.sha256,r.source_row,r.details_json,f.flow_id,r.member_path

@@ -19,6 +19,11 @@ with flow_names as (
     select distinct s.account from effective_account_subjects s
     join account_ids i on i.case_id=s.case_id and i.account=s.raw_account
     where s.case_id=? and s.account is not null and trim(s.account)<>''
+), source_cards as (
+    select c.account, c.own_card as card
+    from effective_visible_flows f
+    join flow_source_card_aliases c on c.case_id=f.case_id and c.flow_id=f.id
+    where f.case_id=?
 ), eligible_accounts as (
     {source_sql}
 ), metadata as (
@@ -37,6 +42,8 @@ with flow_names as (
     union all
     select e.entity_id, card.value, 'account', 0 from resolution_entities e join metadata m on m.account=e.entity_id,
       unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value) where e.case_id=?
+    union all
+    select sc.account, sc.card, 'account', 0 from source_cards sc join metadata m on m.account=sc.account
     union all
     select account, id_no, 'id', 1 from metadata where id_no is not null and trim(id_no)<>''
     union
@@ -82,7 +89,7 @@ def suggest_accounts(case_id, q="", source="flows", page_size=30, offset=0):
         }[source]
         keyword = query.lower()
         rows = db.q_raw(_CANDIDATES.format(source_sql=source_sql),
-                        [cid] * 8 + [keyword] * 3 + [page_size + 1, offset])
+                        [cid] * 9 + [keyword] * 3 + [page_size + 1, offset])
         evidence_resolution.decorate_accounts(cid, rows)
         result["items"] = rows[:page_size]
         result["has_more"] = len(rows) > page_size

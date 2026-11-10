@@ -241,9 +241,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     await loadCases();
     void window.FundsImportWorkflow?.restore();
     await refreshStats();
-    await loadGraph();
-    await applyPendingFocusEdge();
-    await refreshCanvasList(null).catch(() => {});
+    const startupContext = caseContext();
+    await loadGraph(true, startupContext, { tableQuery: 'caller' });
+    try {
+      await applyPendingFocusEdge();
+      await refreshCanvasList(null).catch(() => {});
+    } catch (error) {
+      try { if (isCurrentCase(startupContext) && !state.graphLoading) await doSearch(1); }
+      finally { throw error; }
+    }
     await doSearch(1);
     window.dispatchEvent(new CustomEvent('funds-trace:workbench', { detail: 'ready' }));
   } catch (error) {
@@ -2531,10 +2537,18 @@ function bindCanvases() {
       try {
         await refreshCanvasList(id);
         if (!isCurrentCase(activated)) return;
-        await loadGraph(true, activated);
+        await loadGraph(true, activated, action === 'delete' ? { tableQuery: 'caller' } : {});
         if (!isCurrentCase(activated)) return;
         if (action === 'clone') applyCanvasSnapshot(snapshot);
-        if (action === 'delete') { window.FundsWorkspaceSession?.restore(); await doSearch(state.search.page || 1, { refresh: true }); }
+        if (action === 'delete') {
+          try { window.FundsWorkspaceSession?.restore(); }
+          catch (error) {
+            try { if (isCurrentCase(activated) && !state.graphLoading) await doSearch(1); }
+            finally { throw error; }
+          }
+          await doSearch(state.search.page || 1, { refresh: true });
+          if (!isCurrentCase(activated)) return;
+        }
         toast(action === 'delete' ? '画布已删除，原始流水已保留' : action === 'new' ? '空白画布已创建' : '已另存为新画布，源画布已保留');
       } catch (_) {
         if (isCurrentCase(activated)) toast('画布操作已完成，部分数据未刷新，请重新调阅画布', 'warn', activated);
@@ -2570,11 +2584,17 @@ function bindCanvases() {
         if (Array.isArray(result.snapshot?.nodes) && Array.isArray(result.snapshot?.edges)) snapshot = result.snapshot;
       }
       if (!isCurrentCase(activated)) return;
-      await loadGraph(true, activated);
+      await loadGraph(true, activated, { tableQuery: 'caller' });
       if (!isCurrentCase(activated)) return;
-      if (snapshot) applyCanvasSnapshot(snapshot);
-      window.FundsWorkspaceSession?.restore();
+      try {
+        if (snapshot) applyCanvasSnapshot(snapshot);
+        window.FundsWorkspaceSession?.restore();
+      } catch (error) {
+        try { if (isCurrentCase(activated) && !state.graphLoading) await doSearch(1); }
+        finally { throw error; }
+      }
       await doSearch(state.search.page || 1, { refresh: true });
+      if (!isCurrentCase(activated)) return;
       await applyPendingFocusEdge();
     } catch (_) { if (isCurrentCase(activated)) toast('画布未能载入，请重新调阅', 'err'); }
     finally { actions.sync(); }
@@ -3993,10 +4013,10 @@ function renderNodeWorkspace(workspace) {
   workspace.draft = draft;
   const name = profile.name || node.name || '(未知)', photo = nodePhotoUrl(node);
   const badge = node.is_main === 1 ? `主账号${mainInfo ? mainInfo.source === 'auto' ? ' · 自动识别' : ' · 手动标记' : ''}` : node.is_same_name === 1 ? (state.lastGraph?.resolution ? '来源户名相同' : '同户名账号 · 本人流水未导入') : '';
-  const cardBasis = node.display_card_order === 'undated' ? '当前范围的明确交易卡号缺少时间，稳定选取一张代表卡。' : ({transaction_card: '代表卡取自当前范围最后一笔明确卡号的交易，不表示银行当前有效状态。', tied_transaction_cards: '同刻卡号缺少可比先后依据，稳定选取一张代表卡。', associated_card: '当前范围没有明确交易卡号，使用有依据的关联卡。'})[node.display_basis] || '';
+  const cardBasis = node.display_card_order === 'undated' ? '当前范围的明确交易卡号缺少时间，稳定选取一张代表卡。' : ({transaction_card: '代表卡取自当前范围最后一笔明确卡号的交易，不表示银行当前有效状态。', tied_transaction_cards: '同刻卡号缺少可比先后依据，稳定选取一张代表卡。', conflicting_transaction_cards: '当前范围的来源卡号存在冲突，已回退账号；卡号保留供检索和复核。', associated_card: '当前范围没有明确交易卡号，使用有依据的关联卡。'})[node.display_basis] || '';
   const avatar = photo ? `<img class="node-avatar" src="${esc(photo)}" alt="${esc(name)}的节点照片">` : '<span class="node-avatar node-avatar-empty"><img class="ui-icon" src="/static/ui-icons/user-search.svg" alt=""></span>';
   $('#drawerBody').innerHTML = `
-    <section class="node-identity"><div class="node-person">${avatar}<div><h2>${esc(name)}</h2><div class="mono">${esc(node.display_account || profile.display_account || node.account_number || profile.account_number || account)}</div>${(profile.cards || node.cards || []).length > 0 ? `<details><summary>账号与关联卡号</summary><p class="mono">原账号 ${esc(profile.account_number || node.account_number || '—')}</p><p>${esc(cardBasis)}</p><p class="mono">${(profile.cards || node.cards).map(esc).join('<br>')}</p></details>` : ''}${profile.kind === 'subaccount' || node.kind === 'subaccount' ? `<p class="mono">子账户 ${esc(profile.account_number || node.account_number)}</p>` : ''}${profile.status === 'conflict' || node.status === 'conflict' ? '<p>卡账关系存在冲突，已保留来源声明</p>' : ''}${badge ? `<span class="node-badge">${esc(badge)}</span>` : ''}</div></div><div class="node-quick"><button class="btn small" id="ndBrowse" data-node-action type="button">查看流水</button><button class="btn small" id="ndNeighborhood" data-node-action type="button">展开邻域</button></div></section>
+    <section class="node-identity"><div class="node-person">${avatar}<div><h2>${esc(name)}</h2><div class="mono">${esc(node.display_account || profile.display_account || node.account_number || profile.account_number || account)}</div>${(profile.cards || node.cards || []).length > 0 ? `<details><summary>账号与关联卡号</summary><p class="mono">原账号 ${esc(profile.account_number || node.account_number || '—')}</p><p>${esc(cardBasis)}</p><p class="mono">${(profile.cards || node.cards).map(esc).join('<br>')}</p>${(node.shared_accounts || []).length ? `<p>同卡其他账号</p><p class="mono">${node.shared_accounts.map(esc).join('<br>')}</p>` : ''}</details>` : ''}${profile.kind === 'subaccount' || node.kind === 'subaccount' ? `<p class="mono">子账户 ${esc(profile.account_number || node.account_number)}</p>` : ''}${profile.status === 'conflict' || node.status === 'conflict' ? '<p>卡账关系存在冲突，已保留来源声明</p>' : ''}${badge ? `<span class="node-badge">${esc(badge)}</span>` : ''}</div></div><div class="node-quick"><button class="btn small" id="ndBrowse" data-node-action type="button">查看流水</button><button class="btn small" id="ndNeighborhood" data-node-action type="button">展开邻域</button></div></section>
     <section class="node-section"><h3>身份资料</h3><div class="node-form-grid"><div><label for="ndIdInput">身份证号</label><div class="node-field"><input id="ndIdInput" placeholder="未填写" autocomplete="off" value="${esc(draft.idValue)}"><button class="btn small primary" id="ndIdSave" data-node-action type="button">保存</button></div></div><div class="node-photo"><span class="node-field-label">节点照片</span><div class="node-field">${photo ? `<img id="ndPhotoImg" class="node-photo-thumb" src="${esc(photo)}" alt="当前节点照片">` : ''}<span class="muted">${photo ? '已设置照片' : '未设置照片'}</span><input type="file" id="ndPhotoFile" accept=".jpg,.jpeg,.png,.webp,.bmp" hidden><button class="btn small" id="ndPhotoUp" data-node-action type="button">选择照片</button><button class="btn small icon-button" id="ndPhotoMore" data-node-action type="button" aria-label="照片操作" aria-haspopup="menu" aria-controls="nodePhotoMenu" aria-expanded="false"><img class="ui-icon" src="/static/ui-icons/dots.svg" alt=""></button></div></div></div></section>
     <section class="node-section"><h3>图谱显示</h3><div class="node-form-grid"><div><span class="node-field-label">主账号</span><div class="node-field"><span class="muted">${node.is_main === 1 ? '已标记' : '未标记'}</span><button class="btn small" id="ndToggleMain" data-node-action type="button">${node.is_main === 1 ? '取消主账号标记' : '设为主账号'}</button></div></div><div><label for="ndFocusScale">重点展示</label><div class="node-field"><select id="ndFocusScale"><option value="1">正常大小</option>${[1.5,2,2.5,3,3.5,4].map(value => `<option value="${value}" ${draft.focusValue === value ? 'selected' : ''}>放大 ${value} 倍</option>`).join('')}</select><button class="btn small primary" id="ndFocusApply" data-node-action type="button">应用</button></div></div></div></section>
     <section class="node-section node-statistics"><div class="node-section-head"><h3>交易统计</h3><div class="node-scope" role="group" aria-label="统计范围"><button id="ndScopeCase" class="btn small" type="button" aria-pressed="true">本案件</button><button id="ndScopeGraph" class="btn small" type="button" aria-pressed="false">当前图谱</button></div></div><div id="ndStats" class="node-stats"></div><p id="ndStatsScope" class="muted"></p></section>
@@ -5114,12 +5134,14 @@ async function openManagedCase(id, context, options = {}) {
   selectCase(id);
   if (options.discardApproved && !state.cases.some(item => String(item.id) === String(context.caseId))) window.FundsWorkspaceSession?.removeCase(context.caseId);
   const opened = caseContext();
+  let restoreContext = opened;
   try {
     await refreshStats();
     if (!isCurrentCase(opened)) return true;
     const retainedCanvas = window.FundsWorkspaceSession?.lastCanvas(id);
     await refreshCanvasList(retainedCanvas);
     const canvasBinding = caseContext();
+    restoreContext = canvasBinding;
     if (!isCurrentCase(opened, false)) return true;
     let snapshot = null;
     if (state.canvasId) {
@@ -5127,13 +5149,18 @@ async function openManagedCase(id, context, options = {}) {
       if (!isCurrentCase(canvasBinding)) return true;
       snapshot = saved.snapshot;
     }
-    await loadGraph(true, canvasBinding);
+    await loadGraph(true, canvasBinding, { tableQuery: 'caller' });
     if (!isCurrentCase(canvasBinding)) return true;
-    if (snapshot) applyCanvasSnapshot(snapshot);
-    window.FundsWorkspaceSession?.restore();
+    try {
+      if (snapshot) applyCanvasSnapshot(snapshot);
+      window.FundsWorkspaceSession?.restore();
+    } catch (error) {
+      try { if (isCurrentCase(canvasBinding) && !state.graphLoading) await doSearch(1); }
+      finally { throw error; }
+    }
     await doSearch(state.search.page || 1, { refresh: true });
     if (isCurrentCase(opened) && $('#tab-batches').style.display === 'flex') await loadBatches();
-  } catch (_) { if (isCurrentCase(opened)) toast('案件已打开，部分数据加载失败，请刷新后重试', 'warn', opened); }
+  } catch (_) { if (isCurrentCase(restoreContext)) toast('案件已打开，部分数据加载失败，请刷新后重试', 'warn', restoreContext); }
   return true;
 }
 

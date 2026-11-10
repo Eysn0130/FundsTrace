@@ -1,17 +1,20 @@
 """Public import boundaries for an optional, single-owner pure preview cache."""
 import datetime as dt
+from decimal import Decimal
 import hashlib
+import io
 import os
 from pathlib import Path
 import time
 
 import pytest
 
-from app import import_preview_cache as cache, importer, table_archive
+from app import import_preview_cache as cache, import_staging, importer, table_archive
 from app.services import imports
 from test_folder_evidence import complete, preview, transaction
 from test_table_cancellations import source
 from test_import_chunk_transactions import snapshot
+from test_automatic_table_import import preview as standalone_preview
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +31,111 @@ def view(client, cid, number='SYN-CACHE'):
 
 def no_parse(*args, **kwargs):
     raise AssertionError('a sealed pure preview should be reused')
+
+
+def standalone_content(kind):
+    rows = [["交易流水号", "date", "payer_account", "payee_account", "amount", "currency"],
+            ["SYN-CACHE-ONE", "2026-01-01 10:00:00.123456", "000001", "SYN-B", "1.01", "CNY"],
+            ["SYN-CACHE-TWO", "2026-01-02 10:00:00.123456", "000001", "SYN-C", "2.03", "USD"]]
+    if kind == "csv":
+        import csv
+        stream = io.StringIO(newline="")
+        csv.writer(stream).writerows(rows)
+        return stream.getvalue().encode()
+    if kind == "xls":
+        from xls_fixtures import workbook
+        return workbook([("Synthetic transactions", rows)])
+    from openpyxl import Workbook
+    book = Workbook()
+    for row in rows:
+        book.active.append(row)
+    book.active.append(["SYN-CACHE-FORMULA", "2026-01-03", "000001", "SYN-D", "=1+1", "CNY"])
+    output = io.BytesIO()
+    book.save(output)
+    book.close()
+    return output.getvalue()
+
+
+@pytest.mark.parametrize("kind", ["csv", "xlsx", "xls"])
+def test_public_standalone_commit_reuses_sealed_preview_and_preserves_facts_and_replay(
+        client, database, make_case, monkeypatch, kind):
+    cid = make_case("Synthetic standalone preview reuse")
+    payload = standalone_content(kind)
+    for attempt in range(2):
+        v = standalone_preview(client, cid, payload, f"synthetic.{kind}")
+        assert cache._slot is not None
+        plan = cache._slot[1][0].attrs["table_plan"]
+        assert "cancelled_rows" not in plan and "cancellations" not in plan
+        store = plan["_plan_store"]
+        with monkeypatch.context() as hit:
+            hit.setattr(imports, "_parse", no_parse)
+            job = complete(client, cid, v)
+        assert job["stage"] == "done", job
+        assert (job["result"]["ok"], job["result"]["rows_dup"]) == ((2, 0) if attempt == 0 else (0, 2))
+        assert store._closed and cache._slot is None
+        assert database.q_raw("select trade_no,trade_time,payer_account,payee_account,amount,currency from flows where case_id=? order by trade_no", [cid]) == [
+            {"trade_no": "SYN-CACHE-ONE", "trade_time": dt.datetime(2026, 1, 1, 10, 0, 0, 123456), "payer_account": "000001", "payee_account": "SYN-B", "amount": Decimal("1.01"), "currency": "CNY"},
+            {"trade_no": "SYN-CACHE-TWO", "trade_time": dt.datetime(2026, 1, 2, 10, 0, 0, 123456), "payer_account": "000001", "payee_account": "SYN-C", "amount": Decimal("2.03"), "currency": "USD"}]
+        records = database.q_raw("select source_row,disposition,reason_code from import_records where case_id=? and source_id=? order by record_no", [cid, v["import_id"]])
+        assert records == [{"source_row": number, "disposition": "imported" if attempt == 0 else "duplicate", "reason_code": "transaction_valid"} for number in (2, 3)] + (
+            [{"source_row": 4, "disposition": "unresolved", "reason_code": "formula_value"}] if kind == "xlsx" else [])
+        assert client.get(f"/api/v1/cases/{cid}/imports/{v['import_id']}").json()["result"] == job["result"]
+
+
+@pytest.mark.parametrize("kind", ["cancelled_rows", "cancellations"])
+@pytest.mark.parametrize("damage", ["none", "list", "foreign_owner", "wrong_kind", "added_empty", "unrepresented_data"])
+def test_optional_sequence_corruption_cannot_consume_standalone_preview(
+        client, database, make_case, kind, damage):
+    cid = make_case("Synthetic optional cache sequence")
+    v = standalone_preview(client, cid, standalone_content("csv"), "synthetic.csv")
+    assert cache._slot is not None
+    parsed = cache._slot[1]
+    plan = parsed[0].attrs["table_plan"]
+    store = plan["_plan_store"]
+    other = import_staging.PlanStore()
+    before = snapshot(database, cid)
+    try:
+        if damage == "none":
+            plan[kind] = None
+        elif damage == "list":
+            plan[kind] = []
+        elif damage == "foreign_owner":
+            plan[kind] = other.sequence(kind)
+        elif damage == "wrong_kind":
+            plan[kind] = store.sequence("records")
+        elif damage == "added_empty":
+            plan[kind] = store.sequence(kind)
+        else:
+            store.sequence(kind).append({"_source_row": 1})
+        if damage != "added_empty":
+            assert cache.stamp(parsed) is None
+        failed = complete(client, cid, v)
+        assert failed["stage"] == "error" and failed["error_code"] == "import_integrity_failed"
+        assert snapshot(database, cid) == before
+        assert store._closed and cache._slot is None
+    finally:
+        other.close()
+
+
+@pytest.mark.parametrize("kind", ["cancelled_rows", "cancellations"])
+def test_removing_empty_optional_wrapper_invalidates_the_archive_seal(client, database, make_case, kind):
+    cid = make_case("Synthetic removed optional wrapper")
+    v = view(client, cid)
+    plan = cache._slot[1][0].attrs["table_plan"]
+    assert len(plan[kind]) == 0
+    del plan[kind]
+    before = snapshot(database, cid)
+    failed = complete(client, cid, v)
+    assert failed["stage"] == "error" and failed["error_code"] == "import_integrity_failed"
+    assert snapshot(database, cid) == before
+
+
+def test_wrong_required_sequence_kind_is_not_a_valid_seal(client, database, make_case):
+    cid = make_case("Synthetic wrong required cache sequence")
+    v = view(client, cid)
+    parsed = cache._slot[1]
+    parsed[0].attrs["table_plan"]["records"] = parsed[4]
+    assert cache.stamp(parsed) is None
 
 
 def test_public_commit_reuses_one_plan_and_keeps_original_receipt_and_sources(client, database, make_case, monkeypatch):

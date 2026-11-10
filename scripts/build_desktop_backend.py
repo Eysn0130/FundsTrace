@@ -36,7 +36,7 @@ UI_ICON_NAMES = (
     "target", "font-text", "home", "folder", "minimap-map", "minimap-minus", "minimap-plus",
 )
 STATIC_NAMES = (
-    "navigation.css", "appearance.css", "appearance.js", "analysis-link.js", "import-workflow.js",
+    "navigation.css", "appearance.css", "appearance.js", "analysis-link.js", "import-workflow.js", "import-queue.js",
     "workspace-drafts.js", "workspace-session.js", "account-workspace.js", "app-navigation.js",
     "feedback-core.mjs", "feedback-ui.mjs", "feedback-workspace.js", "feedback-dialogs.js", "feedback.css",
     "index.html", "analysis.html", "license.html", "license.js", "app.js",

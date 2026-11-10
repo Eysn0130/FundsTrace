@@ -113,14 +113,14 @@ def test_manifest_fusion_still_checks_entire_source_journal(
     before = snapshot(database, cid)
     manifest = import_validation.table_manifest
 
-    def damaged(plan, rows):
+    def damaged(plan, rows, **kwargs):
         assert plan["_plan_store"] is not None
         if damage == "nonaccepted_tail":
             assert plan["records"][-1]["disposition"] != "accepted"
             plan["records"][-1]["record_no"] = 99
         else:
             plan["records"][1]["member_path"] = "synthetic-other.csv"
-        return manifest(plan, rows)
+        return manifest(plan, rows, **kwargs)
 
     with monkeypatch.context() as patch:
         patch.setattr(import_validation, "table_manifest", damaged)

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from fastapi import UploadFile
 import pytest
 
-from app import importer
+from app import importer, import_preview_cache
 from app.services import imports
 from app.services.cases import ServiceError
 
@@ -326,6 +326,7 @@ def test_commit_returns_before_background_parse_and_does_not_clean_twice(databas
     cid = make_case()
     preview = upload(cid)
     iid = preview["import_id"]
+    import_preview_cache.discard(iid)  # Exercise the verified reparse fallback.
     entered, release = threading.Event(), threading.Event()
     parse_threads = []
     original = imports._parse
@@ -426,6 +427,7 @@ def test_background_parser_reads_verified_snapshot_after_canonical_path_replaced
     cid = make_case()
     preview = upload(cid)
     iid = preview["import_id"]
+    import_preview_cache.discard(iid)  # Exercise the verified reparse fallback.
     path = database.DATA_DIR / "uploads" / f"{iid}.csv"
     target = database.DATA_DIR / "replacement.csv"
     target.write_bytes(CSV.replace(b"9999999999999999.99", b"1.00"))

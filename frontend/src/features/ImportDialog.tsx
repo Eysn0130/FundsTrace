@@ -168,6 +168,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const [error, setError] = useState('');
   const [job, setJob] = useState<ImportJob | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [referencePolicy, setReferencePolicy] = useState(false);
   const [polling, setPolling] = useState(false);
   const [awaitingStatus, setAwaitingStatus] = useState(false);
   const [downloading, setDownloading] = useState('');
@@ -181,7 +182,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const valid = (token: number) => alive.current && token === operation.current && !lifetime.current.signal.aborted && !scopeSignal.aborted;
   const acceptPreview = (value: ImportPreview) => {
     if (value.case_id !== target.caseId || (resume && value.import_id !== resume.import_id)) throw new Error('预览与当前案件导入记录不一致。');
-    setPreview(value); setMapping(value.mapping); setMode(value.mode); setDirty(false);
+    setPreview(value); setMapping(value.mapping); setMode(value.mode); setReferencePolicy(value.reference_policy === 'transaction-reference-v1'); setDirty(false);
     if (!selectionInitialized.current) { setMarked(value.self_accounts_in_file.map(account => account.account)); selectionInitialized.current = true; }
   };
   const poll = async (importId: string, token: number, signal = lifetime.current.signal) => {
@@ -218,7 +219,8 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
     const token = ++operation.current;
     setBusy(true); setError(''); setJob(null);
     try {
-      const value = await client.repreview(resume.import_id, { mode: resume.request?.mode ?? resume.mode, mapping: resume.request?.mapping ?? resume.mapping }, lifetime.current.signal);
+      const value = await client.repreview(resume.import_id, { mode: resume.request?.mode ?? resume.mode, mapping: resume.request?.mapping ?? resume.mapping,
+        ...(resume.request?.reference_policy !== undefined ? { reference_policy: resume.request.reference_policy } : {}) }, lifetime.current.signal);
       if (valid(token)) acceptPreview(value);
     } catch (reason) { if (valid(token)) setError((reason as Error).message); }
     finally { if (valid(token)) setBusy(false); }
@@ -248,6 +250,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
       const selected = read();
       const files = Array.isArray(selected) ? selected : await selected;
       if (!valid(token) || !files.length) return;
+      if (!directory && files.length > 1) throw new Error('当前工作台普通导入每次仅支持一个文件。批量独立文件请使用画布工作台的多文件导入；关联资料请选择整个文件夹。');
       if (directory && !client.previewDirectory) throw new Error('当前宿主尚未提供文件夹导入，请选择单个文件或反馈包。');
       const value = directory ? await client.previewDirectory!(files, lifetime.current.signal)
         : await client.preview(files[0], lifetime.current.signal);
@@ -265,7 +268,12 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
     if (!preview || awaitingStatus || lifetime.current.signal.aborted || scopeSignal.aborted) return;
     const token = ++operation.current;
     setBusy(true); setError(''); setJob(null);
-    try { const value = await client.repreview(preview.import_id, preview.feedback ? { mode: preview.mode, mapping: preview.mapping } : { mode, mapping }, lifetime.current.signal); if (valid(token)) acceptPreview(value); }
+    try {
+      const body = preview.feedback ? { mode: preview.mode, mapping: preview.mapping }
+        : { mode, mapping, ...(preview.reference_policy_available ? { reference_policy: referencePolicy ? 'transaction-reference-v1' as const : null } : {}) };
+      const value = await client.repreview(preview.import_id, body, lifetime.current.signal);
+      if (valid(token)) acceptPreview(value);
+    }
     catch (reason) { if (valid(token)) setError((reason as Error).message); }
     finally { if (valid(token)) setBusy(false); }
   };
@@ -351,14 +359,16 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
         : <div className="import-drop-area" onDragOver={event => { event.preventDefault(); }} onDrop={event => {
           event.preventDefault();
           if (working || activeJob) return;
+          const directory = Array.from(event.dataTransfer.items ?? []).some(item => item.webkitGetAsEntry?.()?.isDirectory);
           const dropped = captureDroppedFiles(event.dataTransfer);
-          void upload(() => dropped.read(lifetime.current.signal), dropped.directory);
+          void upload(() => dropped.read(lifetime.current.signal), directory);
         }}>
-          <label className="file-drop" htmlFor={fileId} aria-busy={working}><span className="upload-symbol">↑</span><strong>{busy ? '正在解析文件…' : '选择 CSV、Excel、ZIP 或 RAR'}</strong><span id={`${fileId}-hint`}>支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP／RAR</span><input id={fileId} aria-label="选择流水文件" aria-describedby={`${fileId}-hint`} type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,.zip,.rar" disabled={working} onChange={event => { const files = Array.from(event.target.files ?? []); void upload(() => files); }} /></label>
+          <label className="file-drop" htmlFor={fileId} aria-busy={working}><span className="upload-symbol">↑</span><strong>{busy ? '正在解析文件…' : '选择 CSV、Excel、ZIP 或 RAR'}</strong><span id={`${fileId}-hint`}>支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP／RAR</span><span id={`${fileId}-boundary`}>普通文件每次选择一个；批量独立文件请使用画布工作台的多文件导入。</span><input id={fileId} aria-label="选择流水文件" aria-describedby={`${fileId}-hint ${fileId}-boundary`} type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,.zip,.rar" disabled={working} onChange={event => { const files = Array.from(event.target.files ?? []); void upload(() => files); }} /></label>
           {client.previewDirectory && <div className="directory-picker"><label className="button secondary" htmlFor={directoryId}>选择整个文件夹<input id={directoryId} aria-label="选择整个文件夹" type="file" multiple ref={element => { element?.setAttribute('webkitdirectory', ''); }} disabled={working} onChange={event => { const files = Array.from(event.target.files ?? []); void upload(() => files, true); }} /></label><p>可将文件夹拖入此处。流水、账户和子账户资料一起导入，保留原始目录关系。</p></div>}
         </div>
       : <>
         <div className="file-summary"><strong>{preview.filename}</strong><span>{preview.feedback ? <>原始记录 {preview.feedback.record_total} 条 · 来源已接纳流水 {preview.feedback.accepted} 条 · 已配对冲正/撤销 {preview.feedback.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {preview.feedback.non_monetary ?? 0} 条 · 未计入资金流水 {unresolvedCount(preview.feedback)} 条 · 来源反馈 {preview.feedback.non_transaction} 条 · 辅助资料 {preview.feedback.auxiliary} 条</> : tableSummary ? <>来源记录 {tableSummary.record_total} 条 · 可靠识别流水 {tableSummary.accepted} 条 · 未计入资金流水 {tableSummary.unresolved} 条</> : <>{preview.stats.total} 行 · 可导入 {preview.stats.ok} 行 · 跳过 {preview.stats.skipped} 行</>}</span></div>
+        {!preview.feedback && preview.reference_policy_available && <div className="resume-summary reference-policy"><label><input type="checkbox" checked={referencePolicy} disabled={working || activeJob} onChange={event => { setReferencePolicy(event.target.checked); setDirty(true); }} />凭证号作为独立引用（不与交易流水号比较）</label><p className="muted">可保持默认并直接开始导入；勾选后请重新预览，凭证号将独立保留。</p></div>}
         {tableSummary && <TableSummary summary={tableSummary} uncertain={awaitingStatus} />}
         {resolution && <ResolutionSummary value={resolution} complete={false} />}
         {preview.feedback ? <FeedbackSummary feedback={preview.feedback} uncertain={awaitingStatus} /> : <><label className="mode-field">文件类型<select aria-label="流水文件类型" value={mode} disabled={working || activeJob} onChange={event => { const next = event.target.value as 'A' | 'B'; setMode(next); setMapping(value => Object.fromEntries(Object.entries(value).filter(([field]) => modeFields[next].has(field)))); setDirty(true); }}><option value="A">双边流水（付款方 → 收款方）</option><option value="B">单账户流水（本方与交易对手）</option></select></label>
