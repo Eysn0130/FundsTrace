@@ -30,7 +30,7 @@ test('maximized bounds use independent work area at several DPI levels and negat
     [1.5,{x:-2880,y:0,width:2880,height:1560}], [2,{x:-2560,y:-1440,width:2560,height:1400}]]) {
     const value=maximized(scale,area);
     assertNativeMaximizedWindowBounds(value);
-    assertNativeClientGeometry(value,{width:area.width/scale,height:area.height/scale-32,dpr:scale});
+    assertNativeClientGeometry(value,{width:area.width/scale,height:area.height/scale-44,dpr:scale});
     assert.equal(value.electronWindow,null);
     assert.equal(value.electronMinTrack,null);
   }
@@ -117,7 +117,7 @@ function startupFlow(overrides={}) {
       if(overrides.native) return overrides.native(structuredClone(current),options);
       return structuredClone(current);
     },evaluate:async expression=>expression.startsWith('new Promise')?undefined:
-      {width:current.client.width,height:current.client.height-32,dpr:1}};
+      {width:current.client.width,height:current.client.height-44,dpr:1}};
   const run=vm.runInNewContext(`(${appSource.slice(start,end)})`,context);
   return {run:()=>run({installRoot:'C:/synthetic-install'},{child:{pid:123}},{}),actions,report,captionChecks};
 }

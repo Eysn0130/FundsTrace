@@ -14,11 +14,11 @@ function caption() {
     document:{readyState:'complete',visibilityState:'visible',secureContext:true,standardsMode:true,fontStatus:'loaded'},
     dom:{bar:true,content:true,name:true,icon:true,menu:true},
     bridge:{type:'object',onAppearance:'function'},
-    overlay:{supported:true,visible:true,rectMethod:'function',areaReadFailed:false,area:{x:0,y:0,width:1142,height:32}},
-    bar:{x:0,y:0,width:1280,height:32},content:{x:0,y:0,width:1142,height:32},
-    icon:{x:8,y:7,width:18,height:18},name:{x:33,y:7,width:108,height:18},
-    menu:{x:150,y:3,width:28,height:26},text:'循迹 FundsTrace',opacity:1,visibility:'visible',
-    fontSize:13,fontWeight:'400',color:'rgb(213, 222, 232)',drag:'drag',menuDrag:'drag',
+    overlay:{supported:true,visible:true,rectMethod:'function',areaReadFailed:false,area:{x:0,y:0,width:1142,height:44}},
+    bar:{x:0,y:0,width:1280,height:44},content:{x:0,y:0,width:1142,height:44},
+    icon:{x:14,y:10,width:24,height:24},name:{x:48,y:13,width:116,height:18},
+    menu:{x:176,y:11,width:56,height:22},text:'循迹 FundsTrace',opacity:1,visibility:'visible',
+    fontSize:14,fontWeight:'400',color:'rgb(238, 238, 238)',drag:'drag',menuDrag:'drag',
     menuDisabled:true,iconLoaded:true,stylesheetLoaded:true,
     image:{complete:true,naturalWidth:1024,naturalHeight:1024,decode:'decoded'}};
 }
@@ -33,17 +33,20 @@ test('permanent caption classification is separate from startup, business and un
   }
 });
 
-test('the fixed caption fits its real native overlay safe area and remains separate from the 32 DIP body inset',()=>{
+test('the fixed caption fits its real native overlay safe area and remains separate from the 44 DIP body inset',()=>{
   const value=caption();assertCaption(value);
-  assertCaptionBody(value,{width:1280,height:688,dpr:1},{client:{width:1280,height:720},scaleFactor:1});
+  assertCaptionBody(value,{width:1280,height:676,dpr:1},{client:{width:1280,height:720},scaleFactor:1});
   const scaled=caption();scaled.viewport.dpr=1.5;
-  assertCaptionBody(scaled,{width:1280,height:688,dpr:1.5},{client:{width:1920,height:1080},scaleFactor:1.5});
+  assertCaptionBody(scaled,{width:1280,height:676,dpr:1.5},{client:{width:1920,height:1080},scaleFactor:1.5});
 });
 
 test('caption checks reject hidden overlay, wrong height, faded branding and native-button overlap',()=>{
   for(const [mutate,expected] of [
     [v=>{v.overlay.visible=false;},/TITLEBAR_NATIVE_OVERLAY_MISSING/],
     [v=>{v.bar.height=26;},/TITLEBAR_FIXED_CAPTION/],
+    [v=>{v.bar.height=32;},/TITLEBAR_FIXED_CAPTION/],
+    [v=>{v.icon.width=18;v.icon.height=18;},/TITLEBAR_BRAND_SIZE/],
+    [v=>{v.fontSize=13;},/TITLEBAR_BRAND_SIZE/],
     [v=>{v.opacity=.5;},/TITLEBAR_PARTICIPATED_IN_FADE/],
     [v=>{v.menu.x=1140;},/TITLEBAR_CONTENT_OVERLAPS_NATIVE_CONTROLS/],
     [v=>{v.overlay.area.width=1280;},/TITLEBAR_NATIVE_CONTROLS_SAFE_AREA/],
@@ -66,8 +69,8 @@ test('body geometry rejects a second menu inset, overlap, emulated DPR and a mis
   const value=caption();
   assert.throws(()=>assertCaptionBody(value,{width:1280,height:662,dpr:1}),/TITLEBAR_BODY_VIEWPORT/);
   assert.throws(()=>assertCaptionBody(value,{width:1280,height:720,dpr:1}),/TITLEBAR_BODY_VIEWPORT/);
-  assert.throws(()=>assertCaptionBody(value,{width:1280,height:688,dpr:2}),/TITLEBAR_BODY_DPR/);
-  assert.throws(()=>assertCaptionBody(value,{width:1280,height:688,dpr:1},
+  assert.throws(()=>assertCaptionBody(value,{width:1280,height:676,dpr:2}),/TITLEBAR_BODY_DPR/);
+  assert.throws(()=>assertCaptionBody(value,{width:1280,height:676,dpr:1},
     {client:{width:1280,height:746},scaleFactor:1}),/TITLEBAR_NATIVE_CLIENT/);
 });
 
@@ -77,12 +80,12 @@ test('caption/body layout uses actual cleared viewports without an unsupported b
   const cdp={send:async(method,params,sessionId)=>{assert.notEqual(method,unsupported);calls.push({method,params,sessionId});return {};}};
   const probe=await createInstalledTitlebarProbe({cdp,target:{targetId:'caption',sessionId:'caption-session'},
     evaluate:async expression=>expression===READ_CAPTION ? caption() : expression==='({width:innerWidth,height:innerHeight,dpr:devicePixelRatio})'
-      ? {width:1280,height:688,dpr:1} : true,
+      ? {width:1280,height:676,dpr:1} : true,
     until:async check=>{assert.equal(await check(),true);}});
   const result=await probe.checkBody({targetId:'body',sessionId:'body-session'},
     {client:{width:1280,height:720},scaleFactor:1});
   assert.equal(result.sameCaptionDocument,true);
-  assert.equal(result.bodyInsetDip,32);
+  assert.equal(result.bodyInsetDip,44);
   assert.equal(result.layoutMatches,true);
   assert.equal(result.nativeClientMatched,true);
   assert.equal(Object.hasOwn(result,'sameNativeWindow'),false);
@@ -115,15 +118,15 @@ function captionDocument({overlay=true,stylesheet=true,complete=true,naturalWidt
   const context=vm.createContext({document,window:{FundsTraceTitlebar:{onAppearance(){}}},
     navigator:overlay?{windowControlsOverlay:{visible:true,getTitlebarAreaRect:()=>sample.overlay.area}}:{},
     innerWidth:1280,innerHeight:720,devicePixelRatio:1,isSecureContext:true,
-    performance:{now:()=>1000,timeOrigin:9000},getComputedStyle:element=>({opacity:'1',visibility:'visible',fontSize:'13px',
-      fontWeight:'400',color:'rgb(213, 222, 232)',getPropertyValue:()=> 'drag'})});
+    performance:{now:()=>1000,timeOrigin:9000},getComputedStyle:element=>({opacity:'1',visibility:'visible',fontSize:'14px',
+      fontWeight:'400',color:'rgb(238, 238, 238)',getPropertyValue:()=> 'drag'})});
   return ()=>vm.runInContext(READ_CAPTION,context);
 }
 
 test('the real DOM projection still reports fixed geometry when the overlay API is missing',()=>{
   const value=captionDocument({overlay:false})();
   assert.ok(value);
-  assert.equal(value.bar.height,32);
+  assert.equal(value.bar.height,44);
   assert.equal(value.overlay.supported,false);
   assert.equal(value.document.secureContext,true);
   assert.equal(value.bridge.onAppearance,'function');
@@ -166,12 +169,12 @@ test('a timed-out readiness probe preserves the 15 second gate and captures only
       assert.equal(error.message,'TITLEBAR_OVERLAY_API_UNAVAILABLE');
       assert.equal(error.titlebarFailure.attempts,2);
       assert.equal(error.titlebarFailure.readFailures,0);
-      assert.equal(error.titlebarFailure.observation.bar.height,32);
+      assert.equal(error.titlebarFailure.observation.bar.height,44);
       assert.equal(error.titlebarFailure.screenshot.captured,true);
       return true;
     });
     assert.deepEqual(calls,[{method:'Page.captureScreenshot',params:{format:'png',fromSurface:true,captureBeyondViewport:false,
-      clip:{x:0,y:0,width:1280,height:32,scale:1}},sessionId:'caption-session',timeout:3000}]);
+      clip:{x:0,y:0,width:1280,height:44,scale:1}},sessionId:'caption-session',timeout:3000}]);
     assert.deepEqual(await fs.readFile(screenshotPath),png);
     assert.ok(!JSON.stringify(observed.titlebarFailure).includes('SYN_TIMEOUT_PRIVATE_URL'));
   } finally {await fs.rm(directory,{recursive:true,force:true});}
@@ -303,7 +306,7 @@ function nativeCaptionJourney(interaction) {
   const calls=[];
   return {calls,run:()=>runInstalledTitlebarJourney({
     cdp:{send:async method=>{calls.push(method);return {};}},page:{sessionId:'body'},
-    probe:{checkBody:async()=>({sameCaptionDocument:true,bodyInsetDip:32,layoutMatches:true,caption:caption()}),
+    probe:{checkBody:async()=>({sameCaptionDocument:true,bodyInsetDip:44,layoutMatches:true,caption:caption()}),
       read:async()=>caption()},
     evaluate:async expression=>expression==='({width:innerWidth,dpr:devicePixelRatio})' ? {width:1280,dpr:1} : true,
     until:async check=>assert.ok(await check()),

@@ -29,7 +29,7 @@
   --menu-motion: var(--motion-menu,160ms) var(--interaction-ease,cubic-bezier(.2,.65,.35,1));
   --menu-shadow: 0 12px 32px #0006;
   --layer-toolbar-menu: 120;
-  --sidebar-width: clamp(420px, 41vw, 680px);
+  --sidebar-width: clamp(400px, 34vw, 560px);
   --toolbar-expanded-height: 102px;
   --toolbar-compact-height: 58px;
   --workspace-ease: 220ms cubic-bezier(.2,.75,.25,1);
@@ -347,13 +347,14 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 @media (prefers-reduced-motion: reduce) { .data-tools-dialog[open], .data-tools-progress .ui-icon { animation: none !important; } }
 
 /* ---------- Four-tab ribbon and single-row compact tools ---------- */
-.workspace-toolbar { position: relative; flex: 0 0 auto; min-width: 0; height: 127px; background: var(--surface-raised); border-bottom: 1px solid var(--border-strong); z-index: 21; transition: height var(--workspace-ease); }
+.workspace-toolbar { --ribbon-context-height: 44px; --ribbon-panel-height: 72px; position: relative; flex: 0 0 auto; min-width: 0; height: calc(var(--ribbon-context-height) + var(--ribbon-panel-height) + 1px); background: var(--surface); border-bottom: 1px solid var(--border); z-index: 21; transition: height var(--workspace-ease); }
+.workspace-toolbar:has(#ribbonPanel-common:not([hidden])) { --ribbon-panel-height: 52px; }
 /* Fit the slot without scaling text, controls or hit areas. */
 #topbar, .workspace-toolbar { width: var(--toolbar-fit-width, 100%); }
 #graphToolbar { height: 100%; min-width: 0; }
-.ribbon-tabbar { height: 34px; display: flex; align-items: center; border-bottom: 1px solid var(--border); padding: 0 8px; gap: 6px; }
+.ribbon-tabbar { height: var(--ribbon-context-height); display: flex; align-items: center; border-bottom: 1px solid var(--border); padding: 0 8px; gap: 6px; }
 #ribbonTabs { display: flex; flex: none; }
-#ribbonTabs [role="tab"] { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); cursor: pointer; font: inherit; padding: 0 10px; min-width: 56px; min-height: 34px; }
+#ribbonTabs [role="tab"] { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); cursor: pointer; font: inherit; padding: 0 10px; min-width: 56px; min-height: 44px; }
 #ribbonTabs [role="tab"][aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--accent); background: var(--selection-surface); }
 #ribbonTabs [role="tab"]:hover { background: var(--surface-control-hover); }
 #ribbonTabs [role="tab"]:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -3px; }
@@ -375,22 +376,22 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .ribbon-collapse-button > span, .ribbon-inspect > span { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 #editorToolbar .ribbon-inspect { min-height: 28px; height: 28px; width: 28px; padding: 3px !important; }
 .ribbon-collapse-button .ui-icon { width: 15px; height: 15px; }
-#ribbonPanels { height: 92px; }
+#ribbonPanels { height: var(--ribbon-panel-height); }
 #ribbonPanels[hidden] { display: none !important; }
-.ribbon-panel { height: 92px; display: flex; padding: 4px 10px 3px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.ribbon-panel { height: var(--ribbon-panel-height); display: flex; padding: 4px 10px 3px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 .ribbon-group { display: flex; flex-direction: column; justify-content: space-between; min-width: max-content; flex: 0 0 auto; border-right: 1px solid var(--border); padding: 0 10px; }
 .ribbon-group:first-child { padding-left: 2px; }
 .ribbon-group:last-child { border-right: 0; }
 .ribbon-group-body, .ribbon-bundle, .ribbon-inline { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .ribbon-group-body { flex: 1; }
-.ribbon-group-label { text-align: center; color: var(--muted); font-size: 11px; line-height: 14px; white-space: nowrap; }
+.ribbon-group-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .ribbon-small-stack { display: grid; grid-auto-flow: column; grid-template-rows: repeat(2, auto); align-content: center; gap: 3px; }
 .ribbon-small-stack .ribbon-action { flex-direction: row; justify-content: flex-start; min-height: 26px; gap: 5px; padding: 1px 8px 1px 4px; }
 .ribbon-small-stack .ribbon-action .ui-icon { width: 18px; height: 18px; }
 .ribbon-small-stack .ribbon-planned { width: 5px; height: 5px; top: 5px; right: 4px; }
 .ribbon-slot { display: contents; }
-.ribbon-action { position: relative; flex-direction: column; gap: 4px; min-width: 49px; min-height: 56px; padding: 4px 6px; border-color: transparent; background: transparent; font-size: 12px; }
-.ribbon-action .ui-icon { width: 24px; height: 24px; }
+.ribbon-action { position: relative; flex-direction: row; gap: 6px; min-width: 32px; min-height: 32px; padding: 4px 6px; border-color: transparent; background: transparent; font-size: 13px; }
+.ribbon-action .ui-icon { width: 18px; height: 18px; }
 #editorToolbar .toolbar-menu-chevron { width: 12px; height: 12px; }
 .ribbon-action:hover:not(:disabled) { background: var(--surface-control-hover); border-color: var(--border-strong); }
 .ribbon-action[aria-pressed="true"] { background: var(--selection-surface); border-color: var(--accent); }
@@ -458,7 +459,7 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .ribbon-quick .ribbon-action span { display: none; }
 .ribbon-quick .ribbon-action .ui-icon { width: 21px; height: 21px; }
 #btnCanvasSave .ui-icon { filter:var(--icon-accent-filter); }
-.funds-ribbon.is-collapsed { height: 77px; }
+.funds-ribbon.is-collapsed { height: calc(var(--ribbon-context-height) + 43px); }
 #ribbonCompact { display: flex; align-items: center; height: 42px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; padding: 2px 8px; gap: 3px; }
 /* The always-visible top row already owns the details action. */
 #ribbonCompact > [data-ribbon-command="inspectSelection"] { display: none; }
@@ -515,11 +516,11 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 #editorToolbar #graphToolbar #canvasSel { width: 130px; }
 #editorToolbar .ribbon-panel select { min-height: 28px; height: 28px; }
 /* The context row reflows inside its slot; commands keep their own scroller. */
-#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) { height: 129px; }
-#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]).is-collapsed { height: 99px; }
-#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-tabbar { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(80px,auto) 28px; grid-template-rows: 28px 28px; height: 56px; gap: 0 6px; align-items: center; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) { --ribbon-context-height: 72px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]).is-collapsed { height: calc(var(--ribbon-context-height) + 43px); }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-tabbar { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(80px,auto) 28px; grid-template-rows: 36px 36px; height: var(--ribbon-context-height); gap: 0 6px; align-items: center; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #ribbonTabs { grid-area: 1 / 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
-#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #ribbonTabs [role="tab"] { min-height: 28px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #ribbonTabs [role="tab"] { min-height: 36px; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-quick { grid-area: 1 / 2; margin: 0; padding-left: 6px; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #btnWorkspaceView { grid-area: 1 / 3; justify-self: end; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #btnWorkspaceView > :first-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
@@ -530,12 +531,12 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #ribbonSelectionStatus { grid-area: 2 / 3; margin: 0; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-inspect { grid-area: 2 / 4; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #ribbonPanels,
-#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel { height: 72px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel { height: var(--ribbon-panel-height); }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-group-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel { padding: 3px 8px 2px; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-group { padding-left: 4px; padding-right: 4px; }
-#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel .ribbon-action:not(.ribbon-type-button) { min-height: 52px; gap: 3px; padding: 3px 4px; }
-#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel .ribbon-action > .ui-icon { width: 22px; height: 22px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel .ribbon-action:not(.ribbon-type-button) { min-height: 32px; gap: 5px; padding: 3px 4px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel .ribbon-action > .ui-icon { width: 18px; height: 18px; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel .ribbon-small-stack .ribbon-action { min-height: 26px; padding: 1px 8px 1px 4px; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-stack { flex-direction: row; align-items: center; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) :is(#edgeLabelGroup,#toolbarDisplayExtra) { flex-wrap: nowrap; max-width: none; }
@@ -543,10 +544,10 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 /* These two commands remain in the adjacent canvas menu in a narrow slot. */
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) :is(#btnCanvasClone,#btnCanvasRemove) { display: none; }
 /* Medium slots retain one context row, with names yielding space to history. */
-#editorToolbar[data-ribbon-layout="narrow"] { height: 107px; }
-#editorToolbar[data-ribbon-layout="narrow"].is-collapsed { height: 77px; }
-#editorToolbar[data-ribbon-layout="narrow"] .ribbon-tabbar { display: flex; height: 34px; gap: 5px; }
-#editorToolbar[data-ribbon-layout="narrow"] #ribbonTabs [role="tab"] { min-width: 48px; padding-left: 8px; padding-right: 8px; min-height: 34px; }
+#editorToolbar[data-ribbon-layout="narrow"] { --ribbon-context-height: 44px; }
+#editorToolbar[data-ribbon-layout="narrow"].is-collapsed { height: calc(var(--ribbon-context-height) + 43px); }
+#editorToolbar[data-ribbon-layout="narrow"] .ribbon-tabbar { display: flex; height: var(--ribbon-context-height); gap: 5px; }
+#editorToolbar[data-ribbon-layout="narrow"] #ribbonTabs [role="tab"] { min-width: 48px; padding-left: 8px; padding-right: 8px; min-height: 44px; }
 #editorToolbar[data-ribbon-layout="narrow"] #graphToolbar .case-box { flex: 1 1 242px; width: auto; min-width: 198px; }
 #editorToolbar[data-ribbon-layout="narrow"] #graphToolbar .case-box select { max-width: 160px; }
 #editorToolbar[data-ribbon-layout="narrow"] #ribbonSelectionStatus { flex: 0 1 auto; max-width: 70px; }
@@ -559,7 +560,7 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 
 /* ---------- Query and graph regions ---------- */
 main { flex: 1; display: flex; min-width: 0; min-height: 0; position: relative; overflow: hidden; }
-#workspace { overflow: clip; --sidebar-effective-width: min(var(--sidebar-width), var(--sidebar-maximum-width, 760px)); }
+#workspace { overflow: clip; background: var(--surface); --sidebar-effective-width: min(var(--sidebar-width), var(--sidebar-maximum-width, 760px)); }
 #left { width: var(--sidebar-effective-width); min-width: 0; flex: 0 0 auto; background: var(--surface-raised); border-right: 1px solid var(--border-strong); display: flex; flex-direction: column; min-height: 0; overflow: hidden; container-type: inline-size; transition: width var(--workspace-ease), opacity var(--workspace-ease); }
 #workspace.sidebar-collapsed { --sidebar-effective-width: 0px; }
 #workspace.sidebar-collapsed #left { opacity: 0; border-right: 0; pointer-events: none; }
@@ -804,9 +805,9 @@ tr.detail-row td { background: var(--surface); }
 
 /* Print-paper light canvas; role colours and user-authored styles remain independent. */
 :root {
-  --graph-paper:#101922; --graph-ink:#dfe3ea; --graph-secondary-ink:#b6cce5;
-  --graph-rule:#30465e; --graph-overlay:#111d28e8; --graph-status-surface:#202f42;
-  --graph-mini-paper:#172639; --graph-selection:#66d9ef;
+  --graph-paper:#181818; --graph-ink:#dfe3ea; --graph-secondary-ink:#b6cce5;
+  --graph-rule:#3a3a3a; --graph-overlay:#222222ef; --graph-status-surface:#282828;
+  --graph-mini-paper:#222222; --graph-selection:#66d9ef;
   --graph-selection-surface:rgb(102 217 239 / 7%); --graph-preview-ink:#d5f7ff; --graph-line-sample:#71a9e9;
 }
 html[data-ft-theme="light"] {
@@ -816,7 +817,7 @@ html[data-ft-theme="light"] {
   --graph-selection-surface:rgb(35 103 173 / 7%); --graph-preview-ink:#174e85; --graph-line-sample:#7f8b99;
 }
 /* ---------- Graph workspace ---------- */
-#canvasWrap { flex: 1; position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); background: var(--graph-paper); container: graph-slot / inline-size; }
+#canvasWrap { flex: 1; position: relative; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); background: var(--graph-paper); border-start-start-radius: 12px; overflow: clip; container: graph-slot / inline-size; }
 #graphContainer { grid-area: 1 / 1; position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 #graphContainer:focus-visible { outline: 2px solid var(--graph-selection); outline-offset: -2px; }
 .graph-selection-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 2; }
@@ -870,10 +871,10 @@ html[data-ft-theme="light"] {
   font: 13px/1.5 var(--font-family-ui, system-ui, sans-serif);
 }
 #graphMinimapPanel[data-theme="graphite"] {
-  --mm-surface: rgba(32, 43, 58, .94); --mm-solid: #202b3a;
-  --mm-capsule: rgba(32, 43, 58, .96); --mm-map: rgba(12, 23, 37, .24);
-  --mm-edge: rgba(154, 181, 216, .28); --mm-highlight: rgba(214, 231, 255, .09); --mm-inset: rgba(180, 202, 226, .1);
-  --mm-text: #dce5ef; --mm-hover: rgba(171, 195, 226, .12); --mm-muted: #74859b;
+  --mm-surface: rgba(34, 34, 34, .94); --mm-solid: #222222;
+  --mm-capsule: rgba(34, 34, 34, .96); --mm-map: rgba(24, 24, 24, .24);
+  --mm-edge: rgba(255, 255, 255, .14); --mm-highlight: rgba(255, 255, 255, .06); --mm-inset: rgba(255, 255, 255, .08);
+  --mm-text: #eeeeee; --mm-hover: rgba(255, 255, 255, .08); --mm-muted: #999999;
   --mm-accent: var(--action-fill); --mm-accent-hover: var(--action-hover); --mm-focus: var(--focus-ring);
   --mm-icon: brightness(0) saturate(100%) invert(91%); --mm-active-icon: brightness(0) invert(1);
   color-scheme: dark;
@@ -921,7 +922,10 @@ html[data-ft-theme="light"] {
 #btnMinimapFit { background: var(--mm-hover); }
 .minimap-divider { width: 1px; height: 17px; background: var(--mm-inset); flex: none; margin: 0 3px; }
 @keyframes minimap-loading { to { transform: rotate(360deg); } }
-@container graph-slot (max-width: 620px) { #graphMinimapPanel { bottom: 72px; } }
+@container graph-slot (max-width: 620px) {
+  #graphMinimapPanel { bottom: 88px; }
+  #legend { max-width: calc(100% - 32px); }
+}
 @media (prefers-reduced-motion: reduce) { #minimapEmpty[data-loading="true"]::after { animation: none; } #graphMinimapPopover, .minimap-capsule, .minimap-button, #minimapTarget { transition: none; } #minimapTarget { display: none; } }
 @media (prefers-reduced-transparency: reduce) { #graphMinimapPopover, .minimap-capsule { background: var(--mm-solid); backdrop-filter: none; } }
 @media (forced-colors: active) {
@@ -934,7 +938,7 @@ html[data-ft-theme="light"] {
 }
 html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucency="false"] .minimap-capsule { background: var(--mm-solid); backdrop-filter: none; }
 #canvasWrap.case-empty #legend { display: none; }
-#emptyHint { grid-area: 1 / 1; position: absolute; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center; background: var(--surface); overflow: auto; padding: 16px; }
+#emptyHint { grid-area: 1 / 1; position: absolute; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center; background: var(--graph-paper); overflow: auto; padding: 16px; }
 #emptyHint .card { padding: 26px 30px; max-width: 430px; text-align: center; }
 #emptyHint .h { font-size: 17px; margin-bottom: 8px; }
 #emptyHint p { color: var(--muted); margin-bottom: 14px; }
@@ -1091,7 +1095,7 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 
 /* Narrow windows keep independent local scroll regions and readable controls. */
 @media (max-width: 1150px) {
-  :root { --sidebar-width: clamp(390px, 43vw, 560px); }
+  :root { --sidebar-width: clamp(360px, 34vw, 520px); }
 
 }
 @media (max-width: 700px) {

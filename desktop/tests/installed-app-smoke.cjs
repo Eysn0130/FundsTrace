@@ -13,7 +13,7 @@ const { pathToFileURL } = require('node:url');
 const { startupTarget, createInstalledStartupProbe, assertNativeClientGeometry, assertNativeWindowBounds,
   assertNativeMaximizedWindowBounds, assertNativeCaptionState, assertSavedPresentationWindow, expectedStartupBounds } = require('./installed-startup-journey.cjs');
 const { readWindowState } = require('../preferences.cjs');
-const { titlebarTarget, createInstalledTitlebarProbe, runInstalledTitlebarJourney, safeTitlebarFailure,
+const { HEIGHT: CAPTION_HEIGHT, titlebarTarget, createInstalledTitlebarProbe, runInstalledTitlebarJourney, safeTitlebarFailure,
   safeProtocolMethod, protocolError, safeInstalledFailure, createMainErrorMarkerProbe } = require('./installed-titlebar-journey.cjs');
 const { runInstalledGraphJourney, safeJourneyFailure } = require('./installed-graph-journey.cjs');
 const { createUpdateFixture, runInstalledUpdateJourney } = require('./installed-update-journey.cjs');
@@ -884,7 +884,7 @@ async function restorePresentationPreferences(snapshot) {
       report.startup = { deliberatelyHeldBusinessRenderer:true, measuredUserColdStart:false };
       titlebarProbe = await createInstalledTitlebarProbe({cdp,target:titlebarPage,evaluate,until,
         failureScreenshotPath:config.screenshot ? `${config.screenshot.slice(0,-4)}.startup-caption-failure.png` : undefined});
-      report.titlebar = {heightDip:32,limits:{windows11Snap:false,windows10And11Interactive:false,actualSystemDpiValidated:false}};
+      report.titlebar = {heightDip:CAPTION_HEIGHT,limits:{windows11Snap:false,windows10And11Interactive:false,actualSystemDpiValidated:false}};
       const environmentReducedMotion = await evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches", startup);
       await cdp.send('Emulation.setEmulatedMedia', {
         features:[{ name:'prefers-reduced-motion', value:'no-preference' }],

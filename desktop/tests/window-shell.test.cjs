@@ -99,7 +99,7 @@ test('shell keeps the real business WebContents separate from the local caption 
   const fake = harness(); const shell = create(fake);
   await shell.loaded;
   const { win, contents } = shell;
-  assert.equal(HEIGHT, 32);
+  assert.equal(HEIGHT, 44);
   assert.notEqual(contents, win.webContents);
   assert.equal(fake.views[0].webContents, contents);
   assert.deepEqual(fake.views[0].options.webPreferences, shell.preferences);
@@ -111,7 +111,7 @@ test('shell keeps the real business WebContents separate from the local caption 
   assert.equal(win.webContents.loadedFile, path.join(desktop, 'titlebar/index.html'));
   assert.equal(win.options.show, false);
   assert.deepEqual(win.contentView.children, [fake.views[0]]);
-  assert.equal(fake.views[0].background, '#10171f');
+  assert.equal(fake.views[0].background, '#333333');
   win.destroy();
 });
 
@@ -123,7 +123,7 @@ test('native caption controls stay enabled while caller business preferences can
     await shell.loaded;
     assert.equal(shell.win.options.frame, true);
     assert.equal(shell.win.options.titleBarStyle, 'hidden');
-    assert.deepEqual(shell.win.options.titleBarOverlay, platform === 'darwin' ? true : { color: '#151d27', symbolColor: '#cdd7e3', height: 32 });
+    assert.deepEqual(shell.win.options.titleBarOverlay, platform === 'darwin' ? true : { color: '#333333', symbolColor: '#eeeeee', height: 44 });
     assert.equal(shell.win.options.autoHideMenuBar, true);
     if (platform !== 'darwin') assert.equal(shell.win.menu, null);
     const rootPreferences = shell.win.options.webPreferences;
@@ -176,16 +176,16 @@ test('caption session strips desktop authentication headers without mutating ren
   shell.win.destroy();
 });
 
-test('business bounds reserve exactly 32 DIP through resize and content bounds changes', async () => {
+test('business bounds reserve exactly 44 DIP through resize and content bounds changes', async () => {
   const fake = harness(); const shell = create(fake); await shell.loaded;
   const view = fake.views[0];
-  assert.deepEqual(view.bounds, { x: 0, y: 32, width: 1280, height: 688 });
+  assert.deepEqual(view.bounds, { x: 0, y: 44, width: 1280, height: 676 });
   shell.win.bounds = { width: 960, height: 640 }; shell.win.emit('resize');
-  assert.deepEqual(view.bounds, { x: 0, y: 32, width: 960, height: 608 });
+  assert.deepEqual(view.bounds, { x: 0, y: 44, width: 960, height: 596 });
   shell.win.bounds = { width: 683, height: 324 }; shell.win.contentView.emit('bounds-changed');
-  assert.deepEqual(view.bounds, { x: 0, y: 32, width: 683, height: 292 });
+  assert.deepEqual(view.bounds, { x: 0, y: 44, width: 683, height: 280 });
   shell.win.bounds = { width: 400, height: 16 }; shell.win.emit('resize');
-  assert.deepEqual(view.bounds, { x: 0, y: 32, width: 400, height: 0 });
+  assert.deepEqual(view.bounds, { x: 0, y: 44, width: 400, height: 0 });
   shell.win.destroy();
   const count = view.boundsHistory.length;
   shell.win.emit('resize'); shell.win.contentView.emit('bounds-changed');
@@ -200,7 +200,7 @@ test('caption accepts only pure resolved appearance and never registers a menu c
   assert.equal(shell.setAppearance({version:1,theme:'light',accent:'teal',translucency:true}), true);
   assert.deepEqual(root.sent.at(-1), ['funds-trace:appearance', {version:1,theme:'light',accent:'teal',translucency:true}]);
   for (const value of [null, true, {version:1,theme:'system',accent:'teal',translucency:true}, {version:1,theme:'dark',accent:'blue',translucency:false,token:'SYN'}]) assert.equal(shell.setAppearance(value), false);
-  assert.deepEqual(fake.views[0].bounds, {x:0,y:32,width:1280,height:688});
+  assert.deepEqual(fake.views[0].bounds, {x:0,y:44,width:1280,height:676});
   shell.win.destroy();
 });
 
@@ -210,7 +210,7 @@ test('appearance changes preserve caption geometry, survive load completion and 
   shell.setAppearance(next); await shell.loaded;
   assert.deepEqual(shell.win.webContents.sent.at(-1), ['funds-trace:appearance',next]);
   assert.equal(fake.views[0].background, '#fcfcfb');
-  assert.deepEqual(fake.views[0].bounds,{x:0,y:32,width:1280,height:688});
+  assert.deepEqual(fake.views[0].bounds,{x:0,y:44,width:1280,height:676});
   shell.win.destroy(); const count=shell.win.webContents.sent.length;
   assert.equal(shell.setAppearance(next),false); shell.win.webContents.emit('did-finish-load');
   assert.equal(shell.win.webContents.sent.length,count);

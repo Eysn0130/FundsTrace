@@ -1,20 +1,21 @@
 /* Shared application navigation. Keep the live graph at its original size while
    another page is in front, so hidden-page resizing cannot move its camera. */
-#browserCaption {height:32px;flex:0 0 32px;display:flex;align-items:center;gap:var(--space-8);padding:0 12px;background:var(--surface-rail);border-bottom:1px solid var(--border);font-size:var(--font-size-meta)}
-#browserCaption img {width:14px;height:14px}
+#browserCaption {height:44px;flex:0 0 44px;display:flex;align-items:center;gap:10px;padding:0 14px;background:var(--surface-rail);font-size:14px}
+#browserCaption img {width:24px;height:24px}
 .preview-badge {font-size:10px;color:var(--muted);background:var(--surface-control);padding:2px 6px;border-radius:4px}
-#appShell {flex:1;display:flex;min-width:0;min-height:0;overflow:hidden}
-#appRail {width:56px;flex:0 0 56px;display:flex;flex-direction:column;align-items:center;gap:var(--space-8);padding:12px 0 10px;background:var(--surface-rail);border-right:1px solid var(--border)}
-#appRail button {width:38px;height:38px;flex:0 0 38px;border:0;border-radius:var(--control-radius);background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center}
+#appShell {flex:1;display:flex;min-width:0;min-height:0;overflow:hidden;background:var(--surface-rail)}
+#appRail {width:52px;flex:0 0 52px;display:flex;flex-direction:column;align-items:center;gap:var(--space-8);padding:8px 0;background:var(--surface-rail)}
+#appRail button {width:36px;height:36px;flex:0 0 36px;border:0;border-radius:var(--control-radius);background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center}
 #appRail button:hover {background:var(--surface-hover)}
 #appRail button:focus-visible {outline:var(--focus-width) solid var(--focus-ring);outline-offset:var(--focus-offset)}
-#appRail button[aria-current="page"] {background:var(--selection-surface);box-shadow:inset 2px 0 var(--accent)}
-#appRail img {width:21px;height:21px;filter:var(--icon-filter)}
-#appRail button[aria-current="page"] img {filter:var(--icon-filter)}
+#appRail button[aria-current="page"] {background:var(--action-fill);border-radius:8px}
+#appRail button[aria-current="page"]:hover {background:var(--action-hover)}
+#appRail img {width:20px;height:20px;filter:var(--icon-filter)}
+#appRail button[aria-current="page"] img {filter:var(--icon-on-filter)}
 #appRail .rail-update {background:var(--action-fill);border-radius:50%;width:30px;height:30px;flex-basis:30px;margin-bottom:2px}
 #appRail .rail-update img {filter:invert(100%);width:18px;height:18px}
 .rail-spacer {flex:1}
-#appPageHost {position:relative;flex:1;min-width:0;min-height:0;overflow:hidden}
+#appPageHost {position:relative;flex:1;min-width:0;min-height:0;margin:0 4px 4px 0;border-radius:12px;background:var(--surface);overflow:hidden}
 #graphPage {position:absolute;inset:0;display:flex;flex-direction:column;min-width:0;min-height:0}
 #graphPage.page-inactive {visibility:hidden;pointer-events:none}
 /* Override #drawer.open visibility while keeping its draft for return home. */
@@ -26,7 +27,7 @@
 #ribbonTabs {flex:0 0 auto}
 #graphPage .case-box {margin-left:24px;gap:7px;flex:0 0 auto;white-space:nowrap}
 #graphPage .case-box label {font-size:var(--font-size-meta);color:var(--muted)}
-#graphPage .case-box select {height:var(--control-height-compact);min-height:var(--control-height-compact);font-size:var(--font-size-meta);padding:2px 24px 2px 8px;width:160px;max-width:180px}
+#graphPage .case-box select {height:var(--control-height-default);min-height:var(--control-height-default);font-size:var(--font-size-meta);padding:2px 24px 2px 8px;width:160px;max-width:180px}
 #graphPage #caseSelect {font-weight:600}
 #graphPage #canvasSel {width:145px}
 #graphPage .ribbon-quick {display:flex;flex:0 0 auto;gap:3px;margin:0 10px}

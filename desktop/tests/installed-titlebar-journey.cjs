@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { installedLocalTarget } = require('./installed-startup-journey.cjs');
-const HEIGHT = 32;
+const HEIGHT = 44;
 const titlebarTarget = value => installedLocalTarget(value, 'titlebar');
 const near = (actual, expected, tolerance = 1) => Number.isFinite(actual) && Math.abs(actual - expected) <= tolerance;
 const KEY = '__fundsTraceCaptionObservation';
@@ -172,7 +172,7 @@ function assertCaption(value, reference) {
     && near(value.bar.width, value.viewport.width), 'TITLEBAR_FIXED_CAPTION');
   assert.ok(value.opacity === 1 && value.visibility === 'visible', 'TITLEBAR_PARTICIPATED_IN_FADE');
   assert.equal(value.text, '循迹 FundsTrace', 'TITLEBAR_BRAND_TEXT');
-  assert.ok(near(value.icon.width, 18) && near(value.icon.height, 18) && near(value.fontSize, 13), 'TITLEBAR_BRAND_SIZE');
+  assert.ok(near(value.icon.width, 24) && near(value.icon.height, 24) && near(value.fontSize, 14), 'TITLEBAR_BRAND_SIZE');
   assert.equal(value.drag, 'drag', 'TITLEBAR_DRAG_REGION');
   assert.equal(value.menuDrag, 'drag', 'TITLEBAR_PREVIEW_DRAG_REGION');
   const area = value.overlay.area;
@@ -281,7 +281,7 @@ async function createInstalledTitlebarProbe({cdp, target, evaluate, until, failu
       assert.ok(value.samples.length >= 4, 'TITLEBAR_STARTUP_SAMPLES_MISSING');
       for (const sample of value.samples) {
         assert.ok(near(sample.height, HEIGHT) && near(sample.y, 0) && sample.opacity === 1
-          && sample.visibility === 'visible' && near(sample.fontSize, 13)
+          && sample.visibility === 'visible' && near(sample.fontSize, 14)
           && sample.timeOrigin === initial.timeOrigin, 'TITLEBAR_STARTUP_CHANGED');
       }
       return {persistentThroughWaitingHandoffAndReady:true,samples:value.samples,ready:await this.read()};

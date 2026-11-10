@@ -629,10 +629,10 @@ test('startup waits for initialized main workbench, rejects unrelated frames and
 test('startup overlay follows content bounds through resize and releases its listeners on cancel', async () => {
   const harness = mainHarness({ workbenchReady: false }); await harness.flush();
   const win = harness.state.windows[0], view = harness.state.startupViews[0];
-  assert.deepEqual(view.bounds, { x: 0, y: 32, width: 1440, height: 718 });
+  assert.deepEqual(view.bounds, { x: 0, y: 44, width: 1440, height: 706 });
   win.bounds = { x: -100, y: 30, width: 683, height: 344 };
   win.contentView.emit('bounds-changed');
-  assert.deepEqual(view.bounds, { x: 0, y: 32, width: 683, height: 252 });
+  assert.deepEqual(view.bounds, { x: 0, y: 44, width: 683, height: 240 });
   assert.equal(view.options.webPreferences.sandbox, true);
   assert.equal(view.options.webPreferences.nodeIntegration, false);
   assert.equal(view.popup({ url: 'https://example.com' }).action, 'deny');
@@ -646,18 +646,18 @@ test('startup overlay follows content bounds through resize and releases its lis
   assert.equal(harness.ipcMain.listenerCount('funds-trace:startup'), 0);
 });
 
-test('Main preserves the same native 32 DIP caption through backend readiness and the startup fade', async () => {
+test('Main preserves the same native 44 DIP caption through backend readiness and the startup fade', async () => {
   const harness = mainHarness({ workbenchReady: false, completeStartup: false }); await harness.flush();
   const win = harness.state.windows[0], root = win.webContents, business = win.businessView;
   const startup = harness.state.startupViews[0];
   const rootUrl = root.getURL();
   assert.ok(rootUrl.endsWith('/titlebar/index.html'));
   assert.notEqual(root, business.webContents);
-  assert.deepEqual(win.options.titleBarOverlay, { color: '#151d27', symbolColor: '#cdd7e3', height: 32 });
+  assert.deepEqual(win.options.titleBarOverlay, { color: '#333333', symbolColor: '#eeeeee', height: 44 });
   assert.equal(win.options.titleBarStyle, 'hidden');
   assert.equal(win.menu, null);
   assert.deepEqual(startup.bounds, business.bounds);
-  assert.equal(business.bounds.y, 32);
+  assert.equal(business.bounds.y, 44);
   assert.notEqual(win.options.webPreferences.session, business.options.webPreferences.session);
   assert.notEqual(win.options.webPreferences.session, startup.options.webPreferences.session);
   root.emit('before-input-event', {preventDefault() {}}, {type:'keyDown',key:'F10'});
@@ -709,7 +709,7 @@ test('caption menus target the selected native window and its separate business 
   primaryBusiness.emit('before-input-event', {preventDefault() {}}, {type:'keyDown',key:'F10'});
   const primaryMenu = harness.state.menuPopups.at(-1);
   assert.equal(primaryMenu.options.window, primary);
-  assert.equal(primaryMenu.options.x, 8); assert.equal(primaryMenu.options.y, 32);
+  assert.equal(primaryMenu.options.x, 8); assert.equal(primaryMenu.options.y, 44);
   assert.equal(primaryBusiness.focusCount, primaryFocus + 1);
   assert.equal(primary.webContents.focusCount, 0);
   assert.equal(primary.businessView.popup({ url: `${origin}/analysis?case_id=1` }).action, 'deny');
@@ -996,7 +996,7 @@ test('Main applies saved appearance before startup and system changes never sign
   const initial=JSON.parse(startup.options.webPreferences.additionalArguments[0].split('--funds-appearance=')[1]);
   assert.deepEqual(initial,{...value,theme:'light'});
   harness.nativeTheme.shouldUseDarkColors=true;harness.nativeTheme.emit('updated');
-  assert.equal(win.overlay.color,'#151d27');assert.equal(win.overlay.height,32);
+  assert.equal(win.overlay.color,'#333333');assert.equal(win.overlay.height,44);
   assert.equal(startup.messages.at(-1).value.theme,'dark');
   assert.equal(startup.messages.filter(item=>item.channel==='funds-trace:startup').length,0);
   assert.ok(startup.messages.every(item=>Object.keys(item.value).sort().join()==='accent,theme,translucency,version'));
@@ -1051,16 +1051,16 @@ test('only successful appearance commits broadcast pure snapshots to owned windo
   const system={...saved,theme:'system'};
   assert.equal(request('set','fund_appearance',JSON.stringify(system)),true);
   harness.nativeTheme.shouldUseDarkColors=true;harness.nativeTheme.emit('updated');
-  assert.equal(win.overlay.color,'#151d27');assert.equal(second.messages.at(-1).value.theme,'dark');
+  assert.equal(win.overlay.color,'#333333');assert.equal(second.messages.at(-1).value.theme,'dark');
   assert.equal(JSON.parse(values.get('fund_appearance')).theme,'system');
   assert.equal(request('set','fund_appearance',raw),true);
   assert.equal(win.overlay.color,'#f4f3ef');
   assert.equal(request('remove','fund_appearance'),true);
   assert.equal(values.has('fund_appearance'),false);
   for(const current of [win,second]) {
-    assert.equal(current.overlay.color,'#151d27');assert.equal(current.overlay.symbolColor,'#cdd7e3');
-    assert.equal(current.backgroundColor,'#10171f');
-    assert.equal(current.businessView.backgroundColor,'#10171f');
+    assert.equal(current.overlay.color,'#333333');assert.equal(current.overlay.symbolColor,'#eeeeee');
+    assert.equal(current.backgroundColor,'#333333');
+    assert.equal(current.businessView.backgroundColor,'#333333');
     const publicValue=current.businessView.messages.filter(item=>item.channel==='funds-trace:appearance').at(-1).value;
     assert.deepEqual(JSON.parse(publicValue.value),require('../appearance.cjs').DEFAULT);
     assert.deepEqual(current.messages.at(-1).value,require('../appearance.cjs').DEFAULT);
