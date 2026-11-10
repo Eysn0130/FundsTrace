@@ -234,6 +234,16 @@ TRANSACTION_REFERENCE_POLICY = "transaction-reference-v1"
 BANK_FEEDBACK_32_COLUMNS = frozenset("交易卡号 交易账号 查询反馈结果原因 交易户名 交易证件号码 交易时间 交易金额 交易余额 收付标志 交易对手账卡号 现金标志 对手户名 对手身份证号 对手开户银行 摘要说明 交易币种 交易网点名称 交易发生地 交易是否成功 传票号 IP地址 MAC地址 对手交易余额 交易流水号 日志号 凭证种类 凭证号 交易柜员号 备注 商户名称 商户代码 交易类型".split())
 BANK_FEEDBACK_31_COLUMNS = frozenset("交易卡号 交易账号 交易方户名 交易方证件号码 交易时间 交易金额 交易余额 收付标志 交易对手账卡号 现金标志 对手户名 对手身份证号 对手开户银行 摘要说明 交易币种 交易网点名称 交易发生地 交易是否成功 传票号 IP地址 MAC地址 对手交易余额 交易流水号 日志号 凭证种类 凭证号 交易柜员号 备注 商户名称 交易类型 查询反馈结果原因".split())
 FEEDBACK_31_COLUMNS = BANK_FEEDBACK_32_COLUMNS - {"查询反馈结果原因"}
+# A 39-column case-investigation export used by several banks adds the account
+# holder, a signed net amount and query-state columns to the 32-column feedback
+# family. Only the complete label set may claim reference roles: a near-miss
+# layout must stay on the conservative conflicting-field path.
+BANK_FEEDBACK_39_COLUMNS = frozenset(
+    "交易卡号 交易账号 主户名 开户人证件号码 交易日期 交易时间 交易净额 交易金额 交易余额 "
+    "收付标志 交易对手账卡号 现金标志 对手户名 是否调取 已调取账号对手身份 对手身份证号 "
+    "对手开户银行 摘要说明 交易币种 交易网点名称 交易发生地 交易是否成功 传票号 IP地址 "
+    "MAC地址 对手交易余额 交易流水号 日志号 凭证种类 凭证号 交易柜员号 备注 商户名称 "
+    "交易类型 查询反馈结果原因 备用字段1 备用字段2 备用字段3 重点字样".split())
 FEEDBACK_31_REFERENCE_PROFILE = "feedback31-independent-references-v1"
 OPTIONAL_FEEDBACK_REFERENCE_PROFILE = "feedback-optional-references-v1"
 # These auxiliary labels confer no amount, identity, or reference authority.
@@ -1783,7 +1793,10 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, profile=ID
     uniform35_padding = (profile in EVIDENCE_PROFILES and len(header_names) == 37
                          and frozenset(header_names[:35]) == UNIFORM_FEEDBACK_35_COLUMNS
                          and not any(header_names[35:]))
-    closed_reference_family = (len(headers) == len(BANK_FEEDBACK_32_COLUMNS) and signature == BANK_FEEDBACK_32_COLUMNS
+    feedback39_reference_family = (len(headers) == len(BANK_FEEDBACK_39_COLUMNS)
+                                   and signature == BANK_FEEDBACK_39_COLUMNS)
+    closed_reference_family = (feedback39_reference_family
+                               or len(headers) == len(BANK_FEEDBACK_32_COLUMNS) and signature == BANK_FEEDBACK_32_COLUMNS
                                or profile in EVIDENCE_PROFILES and len(headers) == len(BANK_FEEDBACK_31_COLUMNS)
                                and signature == BANK_FEEDBACK_31_COLUMNS
                                or profile in EVIDENCE_PROFILES and len(headers) == len(UNIFORM_FEEDBACK_37_COLUMNS)
@@ -1791,7 +1804,7 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, profile=ID
                                or profile in EVIDENCE_PROFILES and len(headers) == len(UNIFORM_FEEDBACK_35_COLUMNS)
                                and signature == UNIFORM_FEEDBACK_35_COLUMNS
                                or uniform35_padding)
-    if (feedback_references or (reference_policy == TRANSACTION_REFERENCE_POLICY
+    if (feedback39_reference_family or feedback_references or (reference_policy == TRANSACTION_REFERENCE_POLICY
             and closed_reference_family)
             or source_role in {"transaction_explicit", "transaction_query_only"} and not (mapping and "trade_no" in mapping)):
         active_reference_policy = TRANSACTION_REFERENCE_POLICY
