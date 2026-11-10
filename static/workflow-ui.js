@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  let active = null, serial = 0, previewScroll = null;
+  let active = null, serial = 0, previewScroll = null, batch = null;
   // Preserve the deep link before case selection updates its URL.
   const navigation = new URL(window.location.href).searchParams;
   let restored = false;
@@ -15,6 +15,81 @@
   const visible = session => ownsView(session) && !session.closed && $('#importModal').style.display !== 'none';
   const text = error => String(error?.message || error || '请求失败').slice(0, 200);
   const pending = session => session.committing || session.polling || session.recovering;
+  const queueRunning = () => batch && isCurrentCase(batch.context, false) && batch.snapshot().running;
+
+  function queueResult(session) {
+    if (session.queueTerminal) return session.queueTerminal;
+    const importId = session.importId || session.preview?.import_id;
+    if (session.result) return completedItem(importId, session.result);
+    if (session.previewError) {
+      const fileFailure = session.previewError.failureKind === 'file' && session.previewError.status === 400
+        && ['invalid_table_file', 'invalid_feedback_archive'].includes(session.previewError.code);
+      return { state: fileFailure ? 'failed' : 'unknown', message: text(session.previewError), stop: !fileFailure };
+    }
+    if (session.errorStage === 'confirm') return { state: 'failed', importId, message: '导入未完成，请从原记录核对后手动重试', stop: true };
+    if (session.lease || session.recovering) return { state: 'unknown', importId, message: '写入结果待确认，请从原记录查询状态', stop: true };
+    if (importId) return { state: 'waiting', importId, message: '已上传，等待核对字段或确认导入' };
+    return { state: 'unknown', message: '未取得可靠上传回执，请核对导入记录', stop: true };
+  }
+
+  function completedItem(importId, result) {
+    return { state: 'done', importId, message: `新增 ${fmtCount(result.ok)} 条 · 重复 ${fmtCount(result.rows_dup || 0)} 条 · 跳过 ${fmtCount(result.skipped || 0)} 行`,
+      counts: { ok: result.ok, rows_dup: result.rows_dup || 0, skipped: result.skipped || 0 } };
+  }
+
+  function reportQueue(session) {
+    if (session.queueEntry) session.queueEntry.owner.update(session.queueEntry.id, queueResult(session));
+  }
+
+  function renderQueue() {
+    const panel = $('#impQueue'), view = batch?.snapshot();
+    panel.hidden = !view || !isCurrentCase(view.context, false);
+    if (panel.hidden) return;
+    const counts = Object.fromEntries(['queued', 'working', 'done', 'waiting', 'failed', 'unknown', 'skipped'].map(status => [status, view.items.filter(item => item.state === status).length]));
+    $('#impQueueSummary').textContent = `共 ${view.items.length} 个文件 · 完成 ${counts.done} · 待确认 ${counts.waiting} · 失败 ${counts.failed} · 结果待核对 ${counts.unknown} · 未上传 ${counts.skipped} · 排队 ${counts.queued} · 处理中 ${counts.working}`;
+    $('#impQueueReason').textContent = view.reason || '每次处理一个文件；待确认的文件可在队列结束后继续，或从导入记录恢复。';
+    $('#impQueueStop').hidden = !view.running || view.stopped;
+    const labels = { queued: '排队中', working: '处理中', done: '已完成', waiting: '待确认', failed: '失败', unknown: '结果待核对', skipped: '未上传' };
+    $('#impQueueList').replaceChildren(...view.items.map(item => {
+      const row = document.createElement('li'); row.dataset.state = item.state;
+      const name = document.createElement('strong'); name.textContent = item.name;
+      const status = document.createElement('span'); status.textContent = labels[item.state] + (item.message ? ' · ' + item.message : '');
+      row.append(name, status);
+      if (item.importId) {
+        const owner = batch, button = document.createElement('button'); button.type = 'button'; button.className = 'btn small';
+        button.textContent = item.state === 'waiting' ? '继续确认' : '查看记录'; button.disabled = view.running;
+        button.onclick = async () => {
+          if (owner.snapshot().running || !isCurrentCase(owner.context, false)) return;
+          await restore(item.importId);
+          if (active && inCase(active) && active.importId === item.importId) {
+            active.queueEntry = { owner, id: item.id }; reportQueue(active);
+          }
+        };
+        row.append(button);
+      }
+      return row;
+    }));
+  }
+
+  async function queueAdmission(context) {
+    const blocked = () => window.FundsAccountActions?.blocked(context)
+      || window.FundsDataToolsActions?.blocked(context) || window.FundsMainAccountsActions?.blocked(context)
+      || window.FundsAppNavigation?.importBlocker?.(context);
+    return !blocked() && await window.FundsImportWorkflow.canWrite(context) && !blocked();
+  }
+
+  function createQueue(files) {
+    const owner = window.FundsImportQueue.create(files, { context: caseContext(), isCurrent: context => isCurrentCase(context, false),
+      changed() { if (batch === owner) { renderQueue(); if (active) controls(active); } },
+      async run(item, file) {
+        if (!await queueAdmission(owner.context) || owner.snapshot().stopped || !isCurrentCase(owner.context, false)) {
+          return { state: 'skipped', message: '尚有未确认操作或案件已变化，未上传', stop: true };
+        }
+        const session = newSession(); session.queueEntry = { owner, id: item.id }; session.filename = item.name;
+        return uploadSource(session, file, false);
+      } });
+    files = null; batch = owner; return owner;
+  }
 
   const feedbackReasons = {
     unsupported_attachment: '附件原件已保留，格式未适配，内部记录数量与资金内容尚未解释', non_business_attachment: 'Finder元数据附件，原件保留，不生成资金流水',
@@ -260,6 +335,14 @@
       if (['current', 'working', 'error', 'warning'].includes(value)) node.setAttribute('aria-current', 'step');
       else node.removeAttribute('aria-current');
     });
+    const queued = batch && isCurrentCase(batch.context, false);
+    $('#impCurrentFile').hidden = !queued || !session.queueEntry;
+    $('#impCurrentFile').textContent = queued && session.queueEntry ? '当前文件：' + (session.filename || '正在准备') : '';
+    $('#impFlow').setAttribute('aria-label', queued && session.queueEntry ? $('#impCurrentFile').textContent + '的导入进度' : '导入进度');
+    if (queued) {
+      const view = batch.snapshot();
+      status = (view.running ? '队列处理中' : view.stopped ? '队列已停止' : '队列处理结束') + ' · ' + $('#impQueueSummary').textContent;
+    }
     $('#impFlowStatus').textContent = status;
     $('#importModal').setAttribute('aria-busy', String(working));
   }
@@ -291,16 +374,16 @@
     if (!ownsView(session)) return;
     const busy = !session.result && (pending(session) || session.previewing), complete = !!session.result;
     const classified = !!session.preview?.feedback || !!session.preview?.table_summary, fixed = classified;
-    $('#impCommit').disabled = busy || !session.preview || session.dirty || (!classified && session.preview.stats?.ok === 0);
+    $('#impCommit').disabled = queueRunning() || busy || !session.preview || session.dirty || (!classified && session.preview.stats?.ok === 0);
     $('#impCommit').textContent = classified ? '开始导入' : '确认导入';
-    $('#impRe').disabled = busy || !session.preview || fixed;
+    $('#impRe').disabled = queueRunning() || busy || !session.preview || fixed;
     $('#impRe').hidden = !session.preview || complete || fixed; $('#impCommit').hidden = !session.preview || complete;
-    $$('#impMapping select,input[name=impMode],#impMainSel .mk-acct,#impSelfAccts').forEach(node => { node.disabled = busy; });
+    $$('#impMapping select,input[name=impMode],#impMainSel .mk-acct,#impSelfAccts').forEach(node => { node.disabled = queueRunning() || busy; });
     if (fixed) { $$('#impMapping select').forEach(node => { node.disabled = true; }); $$('input[name=impMode]').forEach(node => { node.disabled = true; }); $('#impSelfAccts').disabled = true; }
-    const fileBusy = !session.result && (pending(session) || (session.previewing && session.phase !== 'file'));
+    const fileBusy = queueRunning() || !session.result && (pending(session) || (session.previewing && session.phase !== 'file'));
     $('#impFile').disabled = fileBusy;
     if ($('#impDirectory')) $('#impDirectory').disabled = fileBusy;
-    $('#impChangeFile').disabled = busy;
+    $('#impChangeFile').disabled = queueRunning() || busy;
     $('#impRetryProgress').disabled = session.polling;
     $('#impCancel').textContent = complete ? '完成' : busy ? '关闭' : '取消';
     $('#impResult').hidden = !complete;
@@ -320,7 +403,7 @@
     $('#impDownloadOriginal').textContent = feedback ? '下载原始 ZIP' : '下载原始文件';
     $('#impDownloadReport').disabled = $('#impDownloadOriginal').disabled = !!session.downloading;
     if (session.dirty) $('#impPreviewNote').textContent = '映射已变更 · 预览待更新';
-    flow(session); previewScroll?.sync();
+    renderQueue(); flow(session); previewScroll?.sync();
   }
 
   function newSession() {
@@ -342,7 +425,7 @@
   function open() {
     // A submitted or uncertain task retains its identity. Completion remains
     // visible until explicitly dismissed so the check transition is observable.
-    if (active && inCase(active) && (pending(active) || active.result) && !active.dismissed) {
+    if (active && inCase(active) && (queueRunning() || pending(active) || active.result) && !active.dismissed) {
       active.closed = false; $('#importModal').style.display = 'flex'; controls(active);
       if (active.recovering) recovery(active, '进度暂不可用，导入可能仍在进行。请重新读取进度；此操作不会再次提交导入。', true);
       return;
@@ -351,6 +434,7 @@
   }
 
   function close() {
+    if (queueRunning()) batch.stop('已关闭队列；未启动的文件不会上传，已提交任务仍按原回执结算');
     if (active) { active.closed = true; if (active.result) active.dismissed = true; }
     $('#importModal').style.display = 'none';
   }
@@ -429,11 +513,24 @@
   }
 
   async function upload(directory = false) {
-    const session = active, files = Array.from($(directory ? '#impDirectory' : '#impFile').files || []);
-    if (!session || !visible(session) || pending(session) || (session.previewing && session.phase !== 'file') || !files.length) return;
+    let session = active;
+    const input = $(directory ? '#impDirectory' : '#impFile');
+    let files = Array.from(input.files || []);
+    if (!session || !visible(session) || queueRunning() || pending(session) || (session.previewing && session.phase !== 'file') || !files.length) return;
+    input.value = '';
+    if (!directory && files.length > 1) {
+      const owner = createQueue(files); files = null; return owner.start();
+    }
+    if (batch && isCurrentCase(batch.context, false)) batch = null;
+    if (session.queueEntry) session = newSession();
+    return uploadSource(session, directory ? files : files[0], directory);
+  }
+
+  async function uploadSource(session, source, directory) {
     // A newer file or directory selection supersedes an unfinished upload;
     // its request sequence also retires the earlier response and progress.
     const sequence = ++session.request;
+    session.previewError = null;
     session.phase = 'file'; session.errorStage = null; session.result = null; session.dirty = false;
     session.previewing = true; session.preview = null; state.imp = null;
     controls(session); recovery(session, ''); setPbarBusy('正在上传并解析文件…');
@@ -450,33 +547,48 @@
         xhr.onload = () => {
           let result; try { result = JSON.parse(xhr.responseText); } catch (_) { /* invalid receipt */ }
           if (xhr.status === 200 && result) resolve(result);
-          else reject(new Error(result?.detail || `解析失败（HTTP ${xhr.status}）`));
+          else reject(Object.assign(new Error(result?.detail || `解析失败（HTTP ${xhr.status}）`), {
+            status: xhr.status, code: xhr.getResponseHeader?.('X-FundsTrace-Import-Error-Code'),
+            failureKind: xhr.getResponseHeader?.('X-FundsTrace-Import-Failure-Kind') || 'unknown' }));
         };
         xhr.onerror = () => reject(new Error('网络错误，请重新选择文件'));
         xhr.onabort = () => reject(new Error('文件上传已取消，请重新选择文件'));
         const form = new FormData();
-        if (directory) for (const file of files) form.append('files', file, file.webkitRelativePath || file.name);
-        else form.append('file', files[0]);
+        if (directory) for (const file of source) form.append('files', file, file.webkitRelativePath || file.name);
+        else form.append('file', source);
         xhr.send(form);
       });
+      if (session.queueEntry) {
+        session.importId = result.import_id;
+        session.queueEntry.owner.update(session.queueEntry.id, { importId: result.import_id });
+        if (!current() || session.queueEntry.owner.snapshot().stopped) return { ...queueResult(session), stop: true };
+      }
       if (!current()) return;
       session.preview = result; session.filename = result.filename; session.mappingDraft = { ...result.mapping }; state.imp = result; session.phase = 'fields'; renderPreview(result); hidePbar();
       if (result.automatic === true) {
         // Only a fresh upload response can trigger this write. Repreview and
         // progress recovery retain their explicit, task-bound continuation.
         session.previewing = false;
-        await commit();
+        if (session.queueEntry) {
+          if (!await queueAdmission(session.context) || !current() || session.queueEntry.owner.snapshot().stopped) {
+            return { ...queueResult(session), message: '文件已就绪，后续调度已停止；请从原记录手动确认', stop: true };
+          }
+          await commit(true);
+        } else await commit();
       }
     } catch (error) {
+      session.previewError = error;
       if (current()) { session.errorStage = 'file'; hidePbar(); recovery(session, '文件预览失败：' + text(error) + '。可重新选择文件。'); }
     } finally {
+      if (session.queueEntry && sequence === session.request) session.previewing = false;
       if (current()) { session.previewing = false; controls(session); }
     }
+    if (session.queueEntry) return queueResult(session);
   }
 
   function mappingChanged(modeChanged = false) {
     const session = active;
-    if (!session || !visible(session) || !session.preview || session.preview.feedback || session.preview.table_summary || pending(session) || session.previewing) return;
+    if (!session || queueRunning() || !visible(session) || !session.preview || session.preview.feedback || session.preview.table_summary || pending(session) || session.previewing) return;
     session.dirty = true; session.errorStage = null; session.phase = 'fields';
     const { mode } = collectMapping();
     $$('#impMapping select').forEach(node => { session.mappingDraft[node.dataset.field] = node.value; });
@@ -490,7 +602,7 @@
 
   async function repreview() {
     const session = active;
-    if (!session || !visible(session) || !session.preview || session.preview.feedback || session.preview.table_summary || pending(session) || session.previewing) return;
+    if (!session || queueRunning() || !visible(session) || !session.preview || session.preview.feedback || session.preview.table_summary || pending(session) || session.previewing) return;
     const sequence = ++session.request, { mode, mapping } = collectMapping();
     const marked = new Map($$('#impMainSel .mk-acct').map(node => [node.value, node.checked]));
     session.phase = 'fields'; session.errorStage = null; session.dirty = true; session.previewing = true;
@@ -519,7 +631,12 @@
       while (inCase(session)) {
         const progress = await request('/api/import/progress?import_id=' + encodeURIComponent(session.importId)
           + '&case_id=' + encodeURIComponent(session.context.caseId));
+        if (progress.import_id && progress.import_id !== session.importId) throw new Error('导入进度回执不匹配，请重新读取进度确认');
         releaseTerminal(session.lease, progress);
+        if (session.queueEntry) {
+          if (progress.stage === 'done' && progress.result?.ok != null) session.queueTerminal = completedItem(session.importId, progress.result);
+          else if (progress.stage === 'error') session.queueTerminal = { state: 'failed', importId: session.importId, message: '导入任务失败，请查看原记录', stop: true };
+        }
         if (!inCase(session)) return;
         session.progress = progress;
         if (progress.stage === 'done') {
@@ -556,11 +673,12 @@
       if (visible(session)) { hidePbar(); recovery(session, session.recovering
         ? '进度读取失败：' + text(error) + '。导入可能仍在进行，请重新读取进度；不会再次提交导入。'
         : '未找到已启动的导入任务：' + text(error) + '。请检查文件或映射后，手动确认重试。', session.recovering); }
-    } finally { session.polling = false; releaseSettledLease(session.lease); controls(session); }
+    } finally { session.polling = false; releaseSettledLease(session.lease); reportQueue(session); controls(session); }
   }
 
-  async function commit() {
+  async function commit(queueAttempt = false) {
     const session = active;
+    if (queueRunning() && queueAttempt !== true) return;
     if (!session || !visible(session) || !session.preview || session.dirty || (!session.preview.feedback && !session.preview.table_summary && session.preview.stats?.ok === 0) || pending(session) || session.previewing) return;
     if (window.FundsDataToolsActions?.blocked(session.context) || window.FundsMainAccountsActions?.blocked(session.context)) {
       recovery(session, '该案件的资料更新尚未结束。请先完成或核对数据工具、主账号标记操作，再提交流水导入。');
@@ -573,6 +691,7 @@
       self_accounts: $('#impSelfAccts').value.trim(),
       mark_accounts: $$('#impMainSel .mk-acct').filter(node => node.checked).map(node => node.value).join(',') };
     session.committing = true; session.phase = 'confirm'; session.errorStage = null; session.importId = payload.import_id;
+    session.queueTerminal = null;
     const lease = session.lease = { context: { ...session.context }, session, importId: payload.import_id, requestPending: true, probe: null };
     importLeases.add(lease);
     controls(session); recovery(session, ''); setPbarBusy('正在提交导入…');
@@ -591,7 +710,7 @@
       if (visible(session)) { hidePbar(); recovery(session, session.recovering
         ? '导入提交结果暂无法确认：' + text(error) + '。请重新读取进度；不会再次提交导入。'
         : '导入未提交：' + text(error) + '。请检查文件或映射后重试。', session.recovering); }
-    } finally { lease.requestPending = false; session.committing = false; releaseSettledLease(lease); controls(session); }
+    } finally { lease.requestPending = false; session.committing = false; releaseSettledLease(lease); reportQueue(session); controls(session); }
   }
 
   function bindDetailRequests() {
@@ -799,13 +918,14 @@
     notice.append(message, retry); $('#impPbar').after(notice);
     $('#btnImport').onclick = open; $('#btnImport2').onclick = open;
     $('#impClose').onclick = close; $('#impCancel').onclick = close;
+    $('#impQueueStop').onclick = () => batch?.stop('已停止后续文件；已上传或提交的任务保留在原导入记录中');
     $('#impFile').onchange = () => upload(false);
     if ($('#impDirectory')) $('#impDirectory').onchange = () => upload(true);
     $('#impRe').onclick = repreview; $('#impCommit').onclick = commit;
     const reportButton = $('#impDownloadReport'), originalButton = $('#impDownloadOriginal');
     if (reportButton) reportButton.onclick = () => downloadResult('report');
     if (originalButton) originalButton.onclick = () => downloadResult('original');
-    $('#impChangeFile').onclick = () => { if (active && !pending(active) && !active.previewing) { newSession(); $('#impFile').click(); } };
+    $('#impChangeFile').onclick = () => { if (active && !queueRunning() && !pending(active) && !active.previewing) { newSession(); $('#impFile').click(); } };
     $('#impMapping').addEventListener('change', () => mappingChanged());
     $$('input[name=impMode]').forEach(input => { input.onchange = () => mappingChanged(true); });
     if (typeof bindTableHorizontalScroll === 'function') previewScroll = bindTableHorizontalScroll({
@@ -813,4 +933,9 @@
     // The shared modal layer owns focus, Escape and genuine backdrop gestures.
     bindDetailRequests();
   });
+  window.addEventListener('funds:feedback-binding', () => {
+    if (batch && !isCurrentCase(batch.context, false)) batch.stop('案件绑定已失效，未启动的文件不会上传');
+    renderQueue();
+  });
+  window.addEventListener('pagehide', () => batch?.stop('页面已离开，未上传的文件需重新选择；已有任务可从导入记录恢复'));
 })();

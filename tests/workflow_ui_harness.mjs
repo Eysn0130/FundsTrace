@@ -13,6 +13,155 @@ const response = (value, status = 200) => ({ ok: status === 200, status,
 const preview = id => ({ import_id: id, filename: `${id}.csv`, mode: 'A', mapping: { amount: '合成金额' },
   self_accounts_in_file: [{ account: 'SYN-A', name: '合成本方', count: 2 }] });
 const done = () => response({ stage: 'done', result: { ok: 2, rows_dup: 1 } });
+const settle = () => new Promise(setImmediate);
+const queueStates = h => h.element('impQueueList').children.map(row => row.dataset.state);
+
+test('ordinary multi-selection completes each file before uploading the next', async () => {
+  const h = harness(), receipt = deferred(); h.open();
+  h.network(path => path.startsWith('/api/import/commit') ? response({ import_id: 'a'.repeat(32) }) : receipt.promise);
+  h.element('impFile').files = [{ name: 'first.csv' }, { name: 'second.xlsx' }];
+  const pending = h.element('impFile').onchange(); await flush();
+  assert.equal(h.uploads.length, 1);
+  h.uploads[0].finish({ ...preview('a'.repeat(32)), automatic: true }); await flush();
+  assert.equal(h.uploads.length, 1, 'a submitted file must retain its slot until its durable receipt');
+  receipt.resolve(done()); await settle();
+  assert.equal(h.uploads.length, 2, 'every selected independent file must be uploaded');
+  h.uploads[1].finish(preview('b'.repeat(32))); await pending;
+  assert.match(h.element('impQueueSummary').textContent, /完成 1/);
+  assert.match(h.element('impQueueSummary').textContent, /待确认 1/);
+});
+
+test('a mixed queue retains waiting imports, continues a classified bad file and restores explicit confirmation', async () => {
+  const h = harness(), waitingId = 'a'.repeat(32), autoId = 'c'.repeat(32); h.open();
+  let committed = '';
+  h.network((path, options) => {
+    if (path === '/api/import/commit') { committed = JSON.parse(options.body).import_id; return response({ import_id: committed }); }
+    if (path.startsWith('/api/import/progress')) return response({ stage: 'done', result: { ok: 2, rows_dup: 1,
+      table_summary: { record_total: 3, accepted: 3, unresolved: 0, cancelled: 0, non_monetary: 0,
+        non_transaction: 0, auxiliary: 0, reason_counts: {}, currency_totals: { CNY: '3.00' },
+        mapping_evidence: [], unresolved_examples: [], documents: [] } } });
+    if (path.startsWith('/api/v1/cases/1/imports')) return response({ case_id: '1', items: [{
+      case_id: '1', import_id: waitingId, surface: 'legacy', filename: 'needs-mapping.csv', stage: 'ready', source_available: true, mode: 'A', mapping: {} }] });
+    if (path === '/api/import/repreview') return response(preview(waitingId));
+    throw new Error('Unexpected ' + path);
+  });
+  const pending = h.uploadMultiple(['needs-mapping.csv', 'bad.csv', 'automatic.zip']); await settle();
+  h.uploads[0].finish(preview(waitingId)); await settle();
+  h.uploads[1].finish({ detail: '合成列数错误' }, 400, { 'X-FundsTrace-Import-Error-Code': 'invalid_table_file', 'X-FundsTrace-Import-Failure-Kind': 'file' }); await settle();
+  h.uploads[2].finish({ ...preview(autoId), automatic: true }); await pending;
+  assert.deepEqual(queueStates(h), ['waiting', 'failed', 'done']);
+  assert.match(h.element('impFlowStatus').textContent, /待确认 1/);
+  assert.match(h.element('impFlowStatus').textContent, /失败 1/);
+  assert.doesNotMatch(h.element('impFlowStatus').textContent, /全部记录已保存/);
+  assert.equal(h.element('impCurrentFile').hidden, false);
+  assert.match(h.element('impCurrentFile').textContent, /当前文件：/);
+  assert.equal(h.element('impFlow').getAttribute('aria-label'), h.element('impCurrentFile').textContent + '的导入进度');
+  assert.equal(committed, autoId);
+  const resume = h.element('impQueueList').children[0].children[2]; await resume.onclick();
+  assert.equal(h.rendered.at(-1).import_id, waitingId);
+  assert.equal(committed, autoId, 'restoring a waiting entry must not replay its write');
+  await h.commit();
+  assert.equal(committed, waitingId);
+  assert.deepEqual(queueStates(h), ['done', 'failed', 'done']);
+  h.close(); h.open();
+  assert.match(h.element('impFlowStatus').textContent, /队列处理结束/);
+});
+
+for (const failure of ['generic-400', 'wrapped-resource', 'server', 'network']) test(`${failure} stops later files without inferring safety from an error message`, async () => {
+  const h = harness(); h.open();
+  const pending = h.uploadMultiple(['first.xlsx', 'later.csv']); await settle();
+  if (failure === 'network') h.uploads[0].onerror();
+  else h.uploads[0].finish({ detail: '文件格式错误' }, failure === 'server' ? 503 : 400,
+    failure === 'generic-400' ? {} : { 'X-FundsTrace-Import-Error-Code': 'invalid_table_file',
+      'X-FundsTrace-Import-Failure-Kind': failure === 'wrapped-resource' ? 'unknown' : 'file' });
+  await pending;
+  assert.equal(h.uploads.length, 1);
+  assert.deepEqual(queueStates(h), ['unknown', 'skipped']);
+  assert.equal(h.requests.length, 0);
+});
+
+test('stopping an upload preserves its ready import ID and never automatically commits its late preview', async () => {
+  const h = harness(); h.open();
+  const pending = h.uploadMultiple(['first.csv', 'later.csv']); await settle();
+  h.element('impQueueStop').onclick();
+  h.uploads[0].finish({ ...preview('a'.repeat(32)), automatic: true }); await pending;
+  assert.equal(h.uploads.length, 1); assert.equal(h.requests.length, 0);
+  assert.deepEqual(queueStates(h), ['waiting', 'skipped']);
+  assert.equal(h.element('impQueueList').children[0].children[2].textContent, '继续确认');
+});
+
+for (const action of ['stop', 'close', 'case-change']) test(`${action} during a submitted queue item preserves its durable completion`, async () => {
+  const h = harness(), receipt = deferred(); h.open();
+  h.network(path => path === '/api/import/commit' ? response({ import_id: 'a'.repeat(32) }) : receipt.promise);
+  const pending = h.uploadMultiple(['first.csv', 'later.csv']); await settle();
+  h.uploads[0].finish({ ...preview('a'.repeat(32)), automatic: true }); await settle();
+  assert.ok(h.requests.some(item => item.path.startsWith('/api/import/progress')));
+  if (action === 'stop') h.element('impQueueStop').onclick();
+  else if (action === 'close') h.close();
+  else h.switchCase(2);
+  receipt.resolve(done()); await pending;
+  assert.equal(h.uploads.length, 1);
+  if (action === 'case-change') {
+    assert.equal(h.element('impQueue').hidden, true);
+    assert.equal(h.state.imp, null); assert.equal(h.refreshes, 0);
+  } else assert.deepEqual(queueStates(h), ['done', 'skipped']);
+  assert.equal(await h.canWrite(1), true);
+});
+
+test('an admission change after preview leaves the ready item explicit and stops new uploads', async () => {
+  const h = harness(); h.open(); let allowed = true;
+  h.importAdmission(async () => allowed);
+  const pending = h.uploadMultiple(['first.csv', 'later.csv']); await settle();
+  allowed = false; h.uploads[0].finish({ ...preview('a'.repeat(32)), automatic: true }); await pending;
+  assert.equal(h.uploads.length, 1); assert.equal(h.requests.length, 0);
+  assert.deepEqual(queueStates(h), ['waiting', 'skipped']);
+});
+
+test('a rejected queue admission reports every unstarted file as not uploaded', async () => {
+  const h = harness(); h.open(); h.importAdmission(async () => false);
+  await h.uploadMultiple(['first.csv', 'later.csv']);
+  assert.equal(h.uploads.length, 0); assert.equal(h.requests.length, 0);
+  assert.deepEqual(queueStates(h), ['skipped', 'skipped']);
+  assert.match(h.element('impQueueSummary').textContent, /结果待核对 0/);
+});
+
+for (const previous of ['done', 'stopped']) for (const entry of ['single', 'directory']) test(`a new ${entry} upload retires the previous ${previous} queue view`, async () => {
+  const h = harness(); h.open();
+  h.network((path, options) => path === '/api/import/commit'
+    ? response({ import_id: JSON.parse(options.body).import_id }) : done());
+  const batch = h.uploadMultiple(['first.csv', 'second.csv']); await settle();
+  if (previous === 'stopped') h.element('impQueueStop').onclick();
+  h.uploads[0].finish({ ...preview('a'.repeat(32)), automatic: true }); await settle();
+  if (previous === 'done') h.uploads[1].finish({ ...preview('b'.repeat(32)), automatic: true });
+  await batch;
+  assert.equal(h.element('impQueue').hidden, false);
+  assert.match(h.element('impFlowStatus').textContent, /队列/);
+  const next = entry === 'single' ? h.upload('fresh.csv') : h.uploadDirectory(['fresh/bank.csv', 'fresh/platform.csv']);
+  assert.equal(h.element('impQueue').hidden, true, 'an explicit new source must retire the old queue view');
+  assert.equal(h.element('impCurrentFile').hidden, true);
+  assert.match(h.element('impFlowStatus').textContent, /正在上传或解析文件/);
+  assert.doesNotMatch(h.element('impFlowStatus').textContent, /队列/);
+  h.uploads.at(-1).finish(preview('c'.repeat(32))); await next;
+  assert.equal(h.element('impQueue').hidden, true);
+  assert.match(h.element('impFlowStatus').textContent, /核对字段与数据预览/);
+  await h.commit();
+  assert.equal(h.element('impFlowStatus').textContent, '导入完成');
+});
+
+test('an uncertain commit and a mismatched progress receipt each stop the queue and retain the original lease', async () => {
+  for (const phase of ['commit', 'progress']) {
+    const h = harness(); h.open();
+    h.network(path => {
+      if (path === '/api/import/commit') return phase === 'commit' ? Promise.reject(new Error('SYN-NETWORK')) : response({ import_id: 'a'.repeat(32) });
+      return response({ import_id: 'b'.repeat(32), stage: 'done', result: { ok: 2 } });
+    });
+    const pending = h.uploadMultiple(['first.csv', 'later.csv']); await settle();
+    h.uploads[0].finish({ ...preview('a'.repeat(32)), automatic: true }); await pending;
+    assert.equal(h.uploads.length, 1);
+    assert.deepEqual(queueStates(h), ['unknown', 'skipped']);
+    assert.equal(await h.canWrite(1), false);
+  }
+});
 
 for (const length of [128, 129]) test(`source declaration evidence uses the Unicode code-point contract: ${length}`, async () => {
   const h = harness(), reference = 'X' + '😀'.repeat(length - 1); h.open();
@@ -236,7 +385,8 @@ function harness(search = '') {
       constructor() { this.upload = {}; uploads.push(this); }
       open(method, path) { this.method = method; this.path = path; }
       send(form) { this.form = form; }
-      finish(result, status = 200) { this.status = status; this.responseText = JSON.stringify(result); this.onload(); }
+      getResponseHeader(name) { return this.headers?.[name] ?? null; }
+      finish(result, status = 200, headers = {}) { this.headers = headers; this.status = status; this.responseText = JSON.stringify(result); this.onload(); }
     },
   });
   const app = readFileSync(new URL('../static/app.js', import.meta.url), 'utf8');
@@ -264,6 +414,7 @@ function harness(search = '') {
   for (const id of ['ndPhotoRe', 'ndPhotoClr', 'ndRemove', 'ndConfirmTitle', 'ndConfirmMessage', 'ndConfirmAccept', 'ndConfirmCancel', 'ndConfirmClose']) element(id);
   context.recordPhotoOpen = (...args) => photoOpens.push(args);
   vm.runInContext('selectItem = () => {}; const originalPhotoOpen = openPhotoCrop; openPhotoCrop = (...args) => { recordPhotoOpen(...args); return originalPhotoOpen(...args); }; bindNodeWorkspaceUI();', context);
+  vm.runInContext(readFileSync(new URL('../static/import-queue.js', import.meta.url), 'utf8'), context);
   vm.runInContext(source, context, { filename: 'workflow-ui.js' });
   vm.runInContext(mainAccountsSource, context, { filename: 'main-accounts.js' });
   events.get('DOMContentLoaded')();
@@ -277,6 +428,7 @@ function harness(search = '') {
     onRefresh(handler) { refresher = handler; },
     dataToolsBlocked(handler) { context.window.FundsDataToolsActions = { blocked: handler }; },
     mainAccountsBlocked(handler) { context.window.FundsMainAccountsActions = { blocked: handler }; },
+    importAdmission(handler) { context.window.FundsImportWorkflow = { ...context.window.FundsImportWorkflow, canWrite: handler }; },
     enableMainAccounts() {
       // Exercise the real shared controller and the app's drawer entry adapter.
       // This view records state and applies the same drawer-control refresh as
@@ -302,6 +454,7 @@ function harness(search = '') {
     get search() { return location.search; },
     open() { element('btnImport').onclick(); }, close() { element('impClose').onclick(); },
     upload(name) { element('impFile').files = [{ name }]; return element('impFile').onchange(); },
+    uploadMultiple(names) { element('impFile').files = names.map(name => ({ name })); return element('impFile').onchange(); },
     uploadDirectory(paths) {
       element('impDirectory').files = paths.map(path => ({ name: path.split('/').at(-1), webkitRelativePath: path }));
       return element('impDirectory').onchange();
@@ -310,7 +463,7 @@ function harness(search = '') {
     change(id, value) { const node = element(id); node.value = value;
       if (node.name === 'impMode') for (const option of modeControls()) option.checked = option === node;
       node.dispatchEvent({ type: 'change', bubbles: true }); },
-    switchCase(id) { state.caseId = id; state.caseGeneration += 1; state.imp = null; element('importModal').style.display = 'none'; },
+    switchCase(id) { state.caseId = id; state.caseGeneration += 1; state.imp = null; element('importModal').style.display = 'none'; events.get('funds:feedback-binding')?.(); },
   };
 }
 

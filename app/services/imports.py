@@ -3,11 +3,13 @@
 The database owns session state; disk filenames never grant access. A completed
 receipt is committed with its flows and remains readable after source cleanup.
 """
+import asyncio
 import datetime as dt
+import csv
 from contextlib import nullcontext
+from copy import deepcopy
 from decimal import Decimal, localcontext
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
@@ -19,6 +21,8 @@ import uuid
 import zipfile
 from itertools import islice
 
+import anyio
+
 from app import db, importer, feedback_import, table_import, table_archive, import_validation, evidence_resolution
 from app import import_preview_cache, rar_archive
 from .cases import ServiceError, preview_flow, require_case
@@ -29,6 +33,7 @@ OWNER_TOKEN = uuid.uuid4().hex
 TABLE_PROFILE = table_import.PROFILE
 _extensions = {".csv", ".txt", ".tsv", ".xlsx", ".xls", ".zip", ".rar"}
 _max_upload = 300 * 1024 * 1024
+_preview_lock = threading.Lock()
 JOURNAL_CHUNK_RECORDS = 5_000
 JOURNAL_CHUNK_BYTES = 8 * 1024 * 1024
 _active_stages = ("parsing", "importing")
@@ -113,6 +118,29 @@ class _JournalRecords:
 
 def _invalid_file():
     return ServiceError(400, "invalid_import_file", "无法读取流水文件，请检查文件格式、交易时间和列映射")
+
+
+def _known_file_failure(error):
+    """Trust only explicit format errors and their complete format-only chain."""
+    known = (table_import.TableImportError, feedback_import.FeedbackImportError,
+             csv.Error, UnicodeError, zipfile.BadZipFile)
+    visiting, checked = set(), set()
+
+    def visit(value):
+        identity = id(value)
+        if identity in visiting or not isinstance(value, known):
+            return False
+        if identity in checked:
+            return True
+        visiting.add(identity)
+        if any(child is not None and not visit(child)
+               for child in (value.__cause__, value.__context__)):
+            return False
+        visiting.remove(identity)
+        checked.add(identity)
+        return True
+
+    return visit(error)
 
 
 def _missing():
@@ -273,10 +301,11 @@ def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=Non
         mapping = _mapping(mode, mapping, list(frame.columns))
         rows, stats = importer.build_rows(frame, mode, mapping)
         return frame, sheet, mode, mapping, rows, stats
-    except feedback_import.FeedbackImportError as error:
-        raise ServiceError(400, "invalid_feedback_archive", str(error)) from None
-    except table_import.TableImportError as error:
-        raise ServiceError(400, "invalid_table_file", str(error)) from None
+    except (feedback_import.FeedbackImportError, table_import.TableImportError) as error:
+        code = "invalid_feedback_archive" if isinstance(error, feedback_import.FeedbackImportError) else "invalid_table_file"
+        failure = ServiceError(400, code, str(error))
+        failure.failure_kind = "file" if _known_file_failure(error) else "unknown"
+        raise failure from None
     except ServiceError:
         raise
     except Exception:
@@ -790,7 +819,9 @@ def _preview_result(session, parsed, legacy=False, *, preserve_staging=False):
         result["resolution"] = evidence_resolution.preview(active_plan)
     if not legacy:
         result["case_id"] = str(session["case_id"])
-    return result
+    # Detach only the response metadata, never the parser's full rows/staging.
+    # In-process callers must not mutate a sealed plan through this result.
+    return deepcopy(result)
 
 
 def _table_summary(plan):
@@ -904,9 +935,49 @@ def _write_feedback_journal(cid, source_id, plan):
         write_batch()
 
 
-async def _upload(case_id, file, surface, *, resolve_evidence=False):
+class _PreviewCancelled(Exception):
+    pass
+
+
+async def _execute_preview(operation, *args):
+    # One admitted preview, with no queue of large parser plans or ZIP copies.
+    # This also covers directory construction; it must not re-enter admission.
+    if not _preview_lock.acquire(blocking=False):
+        raise ServiceError(409, "preview_busy", "另一个文件正在预览，请等待完成后重试")
+    cancelled = threading.Event()
+    try:
+        worker = asyncio.create_task(anyio.to_thread.run_sync(operation, cancelled, *args))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancelled.set()
+            # FastAPI closes request UploadFiles when this call unwinds. Both
+            # raw Task.cancel and AnyIO cancellation must wait for the worker.
+            with anyio.CancelScope(shield=True):
+                while not worker.done():
+                    try:
+                        await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+            if not worker.cancelled():
+                worker.exception()
+            raise
+    finally:
+        _preview_lock.release()
+
+
+def _upload_size(source):
+    source.seek(0, os.SEEK_END)
+    size = source.tell()
+    source.seek(0)
+    return size
+
+
+def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence=False):
     cid = _cid(case_id) if case_id is not None else None
-    filename = Path((file.filename or "transactions.csv").replace("\\", "/")).name
+    filename = Path((filename or "transactions.csv").replace("\\", "/")).name
     extension = Path(filename).suffix
     suffix = extension.lower() or ".csv"
     if suffix not in _extensions:
@@ -915,12 +986,14 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
     # the real extension (including an unsupported one) by truncation.
     filename = (filename[:-len(extension)][:240 - len(extension)] + extension
                 if extension else filename[:240])
-    content = await file.read(_max_upload + 1)
-    if len(content) > _max_upload:
+    if _upload_size(source) > _max_upload:
         raise ServiceError(400, "file_too_large", "文件超过 300MB，请拆分后重新上传")
-    # Preview parsing can be lengthy. Keep its already-buffered input in memory
-    # until it succeeds, so exiting during parsing cannot orphan an original.
-    with io.BytesIO(content) as source:
+    # The request owns this seekable spool until the worker has returned.
+    # Failed parsing never creates a retained original.
+    parsed, created = None, False
+    try:
+        if cancelled.is_set():
+            raise _PreviewCancelled()
         if suffix in {".zip", ".rar"}:
             resolve_evidence = (resolve_evidence or evidence_resolution.complete_family(source)
                                 or evidence_resolution.declared_auxiliary_family(source))
@@ -932,20 +1005,32 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
                         feedback_profile=feedback_import.MICROSECOND_EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None,
                         _auto_event_profile=table_profile == table_import.PROFILE
                         and suffix in {".csv", ".tsv", ".txt", ".xlsx"})
-    created = False
-    try:
+        if cancelled.is_set():
+            raise _PreviewCancelled()
         import_id = uuid.uuid4().hex
         directory = _directory(create=True)
         path = directory / f"{import_id}{suffix}"
+        digest, size = hashlib.sha256(), 0
+        source.seek(0)
         with path.open("xb") as stream:
             created = True
-            stream.write(content)
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                if cancelled.is_set():
+                    raise _PreviewCancelled()
+                size += len(block)
+                if size > _max_upload:
+                    raise ServiceError(400, "file_too_large", "文件超过 300MB，请拆分后重新上传")
+                if stream.write(block) != len(block):
+                    raise OSError("Incomplete retained upload write")
+                digest.update(block)
         now = _now()
         session = {"case_id": cid, "import_id": import_id, "filename": filename,
-                   "sha256": hashlib.sha256(content).hexdigest()}
+                   "sha256": digest.hexdigest()}
         evidence_resolution.operation_context(parsed, session["sha256"])
         pure_stamp = import_preview_cache.stamp(parsed)
         with db.transaction():
+            if cancelled.is_set():
+                raise _PreviewCancelled()
             if cid is not None:
                 _cid(cid)
                 _bind_feedback_plan(cid, parsed)
@@ -953,7 +1038,7 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
             db.x("""insert into import_sessions(import_id,case_id,surface,filename,suffix,sha256,size_bytes,
                       mode,mapping_json,columns_json,request_json,stage,created_at,updated_at,expires_at,source_state)
                     values (?,?,?,?,?,?,?,?,?,?,?,'ready',?,?,?,'retained')""",
-                 [import_id, cid, surface, filename, suffix, hashlib.sha256(content).hexdigest(), len(content),
+                 [import_id, cid, surface, filename, suffix, session["sha256"], size,
                   parsed[2], _json(parsed[3]), _json(list(parsed[0].columns)),
                   _json({"_table_profile": parsed[0].attrs["table_plan"]["profile"]}) if "table_plan" in parsed[0].attrs
                   else _json({"_feedback_profile": parsed[0].attrs["feedback_plan"]["profile"]}) if suffix == ".zip" else None,
@@ -979,6 +1064,10 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
         _close_staging(parsed)
 
 
+async def _upload(case_id, file, surface, *, resolve_evidence=False):
+    return await _execute_preview(_upload_sync, case_id, file.file, file.filename, surface, resolve_evidence)
+
+
 async def upload(case_id, file):
     return await _upload(case_id, file, "v1")
 
@@ -987,7 +1076,7 @@ async def legacy_upload(file, case_id=None):
     return await _upload(case_id, file, "legacy")
 
 
-async def upload_directory(case_id, files, *, surface="v1"):
+def _directory_preview_sync(cancelled, case_id, files, surface):
     """Preserve relative paths/bytes in one registered original before preview.
 
     Starlette admits at most 1000 multipart files. Use the same explicit bound
@@ -996,33 +1085,50 @@ async def upload_directory(case_id, files, *, surface="v1"):
     _cid(case_id)
     if not files or len(files) > 1000:
         raise ServiceError(400, "directory_file_count", "目录一次支持1至1000个文件；更大目录请使用ZIP")
-    names, total = set(), 0
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-        for file in sorted(files, key=lambda item: item.filename or ""):
-            name = file.filename or ""
-            if name.endswith("/"):
-                raise ServiceError(400, "unsafe_directory_path", "目录文件必须有明确的相对文件名")
-            try:
-                name = table_archive._path(name)
-            except table_import.TableImportError:
-                raise ServiceError(400, "unsafe_directory_path", "目录包含不安全或不明确的相对路径") from None
-            if name in names:
-                raise ServiceError(400, "duplicate_directory_path", "目录包含重复相对路径")
-            names.add(name)
-            if len(name.encode("utf-8")) > 4096 or name.endswith("/"):
-                raise ServiceError(400, "unsafe_directory_path", "目录相对路径超出支持范围")
-            # Every selected file is retained. Unsupported attachments receive
-            # an explicit disposition and a financial coverage gap.
-            payload = await file.read(min(table_archive.MAX_MEMBER_BYTES, _max_upload - total) + 1)
-            total += len(payload)
-            if len(payload) > table_archive.MAX_MEMBER_BYTES or total > _max_upload:
-                raise ServiceError(400, "file_too_large", "目录原件累计超过300MB或单文件超过256MB，请分包上传")
-            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(info, payload)
-    from fastapi import UploadFile
-    return await _upload(case_id, UploadFile(io.BytesIO(buffer.getvalue()), filename="目录原件.zip"), surface, resolve_evidence=True)
+    names, total, members = set(), 0, []
+    for file in sorted(files, key=lambda item: item.filename or ""):
+        name = file.filename or ""
+        if name.endswith("/"):
+            raise ServiceError(400, "unsafe_directory_path", "目录文件必须有明确的相对文件名")
+        try:
+            name = table_archive._path(name)
+        except table_import.TableImportError:
+            raise ServiceError(400, "unsafe_directory_path", "目录包含不安全或不明确的相对路径") from None
+        if name in names:
+            raise ServiceError(400, "duplicate_directory_path", "目录包含重复相对路径")
+        names.add(name)
+        if len(name.encode("utf-8")) > 4096 or name.endswith("/"):
+            raise ServiceError(400, "unsafe_directory_path", "目录相对路径超出支持范围")
+        size = _upload_size(file.file)
+        total += size
+        if size > table_archive.MAX_MEMBER_BYTES or total > _max_upload:
+            raise ServiceError(400, "file_too_large", "目录原件累计超过300MB或单文件超过256MB，请分包上传")
+        members.append((name, file.file))
+    # Anonymous, operation-private disk storage; no complete ZIP in memory and
+    # no unregistered permanent original if construction or parsing fails.
+    with tempfile.TemporaryFile(mode="w+b", prefix="funds-trace-preview-", dir=db.DATA_DIR) as source:
+        total = 0
+        with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            for name, member in members:
+                if cancelled.is_set():
+                    raise _PreviewCancelled()
+                info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_DEFLATED
+                size = 0
+                with archive.open(info, "w") as target:
+                    for block in iter(lambda: member.read(1024 * 1024), b""):
+                        if cancelled.is_set():
+                            raise _PreviewCancelled()
+                        size += len(block)
+                        total += len(block)
+                        if size > table_archive.MAX_MEMBER_BYTES or total > _max_upload:
+                            raise ServiceError(400, "file_too_large", "目录原件累计超过300MB或单文件超过256MB，请分包上传")
+                        target.write(block)
+        return _upload_sync(cancelled, case_id, source, "目录原件.zip", surface, True)
+
+
+async def upload_directory(case_id, files, *, surface="v1"):
+    return await _execute_preview(_directory_preview_sync, case_id, files, surface)
 
 
 def _repreview(case_id, import_id, body, surface):
@@ -1113,30 +1219,6 @@ def _receipt(raw):
     return result
 
 
-def _standalone_csv_keys(plan, rows):
-    """Bind archive rows to the same bytes and physical rows as a plain CSV.
-
-    These keys exist only during commit. The journal keeps the full archive
-    member path and its original record identity.
-    """
-    members = {member["member_path"]: member for member in plan["members"]}
-    keys = {}
-    for row in rows:
-        position = row["_source_row"]
-        record = plan["records"][position - 1]
-        member = members[record["member_path"]]
-        source_row, digest = record["source_row"], member["sha256"]
-        if (record["record_no"] != position or record["disposition"] != "accepted"
-                or type(source_row) is not int or source_row <= 0
-                or member["role"] != "table"
-                or member["encoding"] not in ("utf-8-sig", "gb18030", "utf-16")
-                or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
-                or record["record_key"] != table_import.record_key(record["member_path"], digest, source_row)):
-            raise import_validation.IntegrityError("invalid archive CSV identity")
-        keys[position] = table_import.record_key("table.csv", digest, source_row)
-    return keys
-
-
 def _run(import_id):
     journal_records = None
     parsed = None
@@ -1182,10 +1264,11 @@ def _run(import_id):
                 return
             _bind_feedback_plan(session["case_id"], parsed)
             _bind_table_plan(session["case_id"], parsed, source=session)
-            manifest = import_validation.table_manifest(table_plan, rows) if table_plan is not None else None
-            standalone_keys = (_standalone_csv_keys(table_plan, rows)
+            standalone_keys = ({}
                                if table_plan is not None and table_plan["profile"] in table_archive.SUPPORTED_PROFILES
                                and table_plan["profile"] not in table_archive.EVIDENCE_PROFILES else None)
+            manifest = (import_validation.table_manifest(table_plan, rows, standalone_csv_keys=standalone_keys)
+                        if table_plan is not None else None)
             provenance = {"source_id": import_id, "filename": session["filename"], "sha256": session["sha256"],
                           "size_bytes": session["size_bytes"], "mode": mode, "mapping": mapping,
                           "sheet": sheet, "parser_version": (plan or table_plan)["profile"] if plan or table_plan else getattr(importer, "PARSER_VERSION", "funds-trace-import-v1"),

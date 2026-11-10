@@ -135,7 +135,7 @@ def test_auxiliary_later_transaction_and_reordered_header_are_retained(profile):
 
 
 @pytest.mark.parametrize('profile', sorted(t.HEADER_WIDTH_PROFILES))
-def test_four_100_row_probes_still_collect_complete_input(monkeypatch, profile):
+def test_distinct_delimiter_probes_still_collect_complete_input(monkeypatch, profile):
     reader = t.csv.reader
     counts = []
     def observed(*args, **kwargs):
@@ -146,9 +146,64 @@ def test_four_100_row_probes_still_collect_complete_input(monkeypatch, profile):
             yield row
     monkeypatch.setattr(t.csv, 'reader', observed)
     plan = parse(csv_bytes([['note']] * 101 + [HEAD, ROW]), profile)
-    assert counts == ([103] * 4 if profile in t.SOURCE_CONTRACT_PROFILES else [100, 100, 100, 100, 103])
+    assert counts == ([103] * 2 if profile in t.SOURCE_CONTRACT_PROFILES else [100, 100, 100, 100, 103])
     assert plan['records'][-1]['source_row'] == 103
     assert len(plan['rows']) == 1
+
+
+@pytest.mark.parametrize('delimiter', [',', '\t', ';', '|'])
+def test_source_csv_checks_each_present_delimiter_and_first_absent(monkeypatch, delimiter):
+    original = t.csv.reader
+    attempted = []
+    def observed(*args, **kwargs):
+        attempted.append(kwargs['delimiter'])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(t.csv, 'reader', observed)
+    plan = parse(csv_bytes([HEAD, ROW], delimiter), t.PROFILE)
+    assert attempted == ([',', '\t'] if delimiter in {',', '\t'} else [',', delimiter])
+    assert plan['rows'][0]['amount'] == Decimal('90071992547409.93')
+    assert plan['rows'][0]['payer_account'] == '0001'
+    assert plan['documents'][0]['source_rows'] == 2
+
+
+def test_delimiters_inside_quotes_are_still_checked_and_records_remain_complete(monkeypatch):
+    from app import feedback_import
+    original = feedback_import._validate_csv_quotes
+    attempted = []
+    def observed(text, delimiter):
+        attempted.append(delimiter)
+        return original(text, delimiter)
+    monkeypatch.setattr(feedback_import, '_validate_csv_quotes', observed)
+    raw = csv_bytes([HEAD + ['description'], ROW + ['quoted ,\t;|\nsecond line']])
+    plan = parse(raw, t.PROFILE)
+    assert attempted == [',', '\t', ';', '|']
+    assert len(plan['rows']) == 1
+    assert plan['records'][0]['source_row'] == 2
+    assert plan['rows'][0]['summary'] == 'quoted ,\t;|\nsecond line'
+
+
+def test_no_delimiter_retains_first_complete_interpretation(monkeypatch):
+    original = t.csv.reader
+    attempted = []
+    def observed(*args, **kwargs):
+        attempted.append(kwargs['delimiter'])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(t.csv, 'reader', observed)
+    plan = parse(csv_bytes([['note'], ['quoted "value"'], ['more\nlines']]), t.PROFILE)
+    assert attempted == [',']
+    assert plan['rows'] == []
+    assert [r['source_row'] for r in plan['records']] == [1, 2, 3]
+
+
+@pytest.mark.parametrize('limit,value,rows,message', [
+    ('MAX_RECORDS', 2, [['note'], ['second'], ['third']], '记录数或列数'),
+    ('MAX_FIELD', 8, [['X' * 9]], '字段超出'),
+    ('MAX_COLUMNS', 2, [['a', 'b', 'c']], '记录数或列数'),
+])
+def test_first_absent_probe_keeps_resource_errors(monkeypatch, limit, value, rows, message):
+    monkeypatch.setattr(t, limit, value)
+    with pytest.raises(t.TableImportError, match=message):
+        parse(csv_bytes(rows, ';'), t.PROFILE)
 
 
 @pytest.mark.parametrize('profile', sorted(t.HEADER_WIDTH_PROFILES))

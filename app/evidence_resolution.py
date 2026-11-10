@@ -304,14 +304,28 @@ def _entity_id(bank, kind, number):
 # Bound both the blocking sort and DuckDB's result buffer. A fetchmany call
 # alone does not bound a query that has already materialized every audit note.
 REPLAY_CHUNK = 4096
+# DuckDB also accepts Inf and trailing commas. Only a missing-key object in
+# this strict, flat string subset can bypass Python; every other shape keeps
+# the original decoder/validation failures. Keys are decoded by json_keys,
+# never matched as text, and any duplicate typed key keeps the original row.
+_REPLAY_STRING = r'"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"'
+_REPLAY_SPACE = r'[ \t\r\n]*'
+_REPLAY_PAIR = _REPLAY_STRING + _REPLAY_SPACE + ':' + _REPLAY_SPACE + _REPLAY_STRING
+_REPLAY_STRING_OBJECT = (_REPLAY_SPACE + r'\{' + _REPLAY_SPACE + '(?:' + _REPLAY_PAIR
+    + '(?:' + _REPLAY_SPACE + ',' + _REPLAY_SPACE + _REPLAY_PAIR + ')*)?'
+    + _REPLAY_SPACE + r'\}' + _REPLAY_SPACE)
+_REPLAY_METADATA_FILTER = f"""case
+    when coalesce(list_contains(json_keys(try_cast(r.details_json as JSON)), '{DETAIL_FIELD}'), true) then true
+    else not regexp_full_match(r.details_json, '{_REPLAY_STRING_OBJECT}') end"""
 _EVIDENCE_RANGES = f"""select r.source_id,min(r.record_no),max(r.record_no)
         from import_records r join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join evidence_sources b on b.case_id=r.case_id and b.source_id=r.source_id and b.active
         where r.case_id=? and s.parser_version in ({_PROFILE_SQL})
+        and ({_REPLAY_METADATA_FILTER})
         and (r.disposition in ('auxiliary','imported','duplicate') or exists(
             select 1 from flow_sources fs join source_ledger_index l on l.case_id=fs.case_id and l.flow_id=fs.flow_id
             where fs.case_id=r.case_id and fs.source_id=r.source_id and fs.source_row=r.record_no))"""
-_EVIDENCE_QUERY = """select m.sha256,r.source_row,r.details_json,f.flow_id,r.member_path
+_EVIDENCE_QUERY = f"""select m.sha256,r.source_row,r.details_json,f.flow_id,r.member_path
         from import_records r join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join evidence_sources b on b.case_id=r.case_id and b.source_id=r.source_id and b.active
         join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
@@ -319,6 +333,7 @@ _EVIDENCE_QUERY = """select m.sha256,r.source_row,r.details_json,f.flow_id,r.mem
                    and source_row between $first and $last) f
             on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
         where r.case_id=$case_id and s.parser_version in (select unnest($profiles))
+        and ({_REPLAY_METADATA_FILTER})
         and (r.disposition in ('auxiliary','imported','duplicate') or exists(
             select 1 from source_ledger_index l where l.case_id=r.case_id and l.flow_id=f.flow_id))
         and r.source_id=$source_id and r.record_no between $first and $last"""
@@ -337,6 +352,8 @@ class _ResolutionStaging:
                 create table resolution_endpoints(flow_id integer,role text,entity_id text,state text,reason text,
                     endpoint_account text,endpoint_card text,card_state text,
                     primary key(flow_id,role)) without rowid;
+                create table resolution_ranges(namespace integer,ordinal integer,source_id text,
+                    first_record integer,last_record integer,primary key(namespace,ordinal)) without rowid;
             """)
         except BaseException:
             self.owner.close()
@@ -345,6 +362,7 @@ class _ResolutionStaging:
         self.pending = OrderedDict()
         self.peak_pending = 0
         self.seen_inserts = 0
+        self.range_query_count = self.range_row_count = self.peak_range_batch = 0
 
     def __enter__(self):
         return self
@@ -352,6 +370,42 @@ class _ResolutionStaging:
     def __exit__(self, *args):
         self.pending.clear()
         self.owner.close()
+
+    def stage_ranges(self, case_id, auxiliary_only):
+        """Drain the shared DuckDB cursor before any raw evidence query.
+
+        Only source keys and bounds enter the existing operation-private,
+        page-limited SQLite store. Python retains one PLAN_CHUNK at a time.
+        """
+        from .import_staging import PLAN_CHUNK
+        self._namespace += 1
+        namespace, ordinal = self._namespace, 0
+        auxiliary_filter = " and r.disposition='auxiliary'" if auxiliary_only else ""
+        self.range_query_count += 1
+        cursor = db.con().execute(_EVIDENCE_RANGES + auxiliary_filter
+            + f" group by r.source_id,r.record_no // {REPLAY_CHUNK} order by r.source_id,min(r.record_no)",
+            [case_id, *sorted(PROFILES)])
+        while chunk := cursor.fetchmany(PLAN_CHUNK):
+            self.owner._prepare_write()
+            self.peak_range_batch = max(self.peak_range_batch, len(chunk))
+            self.connection.executemany("insert into resolution_ranges values (?,?,?,?,?)",
+                ((namespace, ordinal + index, source, first, last)
+                 for index, (source, first, last) in enumerate(chunk, 1)))
+            ordinal += len(chunk)
+            self.range_row_count += len(chunk)
+        return namespace
+
+    def ranges(self, namespace):
+        cursor = self.connection.execute("select source_id,first_record,last_record from resolution_ranges where namespace=? order by ordinal", [namespace])
+        try:
+            yield from cursor
+        finally:
+            if not self.owner._closed:
+                cursor.close()
+
+    def discard_ranges(self, namespace):
+        if not self.owner._closed:
+            self.connection.execute("delete from resolution_ranges where namespace=?", [namespace])
 
     @contextmanager
     def seen(self):
@@ -438,6 +492,34 @@ class _CaseEvidence:
         self.record_count = self.auxiliary_count = 0
         self.staging = None
         self._validated_values = None
+        self._range_state = None
+
+    @contextmanager
+    def _fixed_ranges(self, staging):
+        # Only _rebuild's immutable computation opts into reuse. Restoring
+        # these fields also makes a retained supplier fresh after that scope.
+        previous, previous_staging = self._range_state, self.staging
+        loaded = {}
+        self._range_state, self.staging = (staging, loaded), staging
+        try:
+            yield
+        finally:
+            self._range_state, self.staging = previous, previous_staging
+            for namespace in loaded.values():
+                staging.discard_ranges(namespace)
+
+    def _ranges(self, auxiliary_only):
+        if self._range_state is not None:
+            staging, loaded = self._range_state
+            if auxiliary_only not in loaded:
+                loaded[auxiliary_only] = staging.stage_ranges(self.case_id, auxiliary_only)
+            yield from staging.ranges(loaded[auxiliary_only])
+        else:
+            # Ordinary suppliers do not have an immutable rebuild contract.
+            # Bound their range buffer too, but never retain it for a later pass.
+            with _ResolutionStaging() as staging:
+                namespace = staging.stage_ranges(self.case_id, auxiliary_only)
+                yield from staging.ranges(namespace)
 
     def __iter__(self):
         return self._iterate(False)
@@ -447,15 +529,10 @@ class _CaseEvidence:
 
     def _iterate(self, auxiliary_only):
         auxiliary_filter = " and r.disposition='auxiliary'" if auxiliary_only else ""
-        # Integer buckets also handle sparse source positions without stepping
-        # through empty ranges. Only keys and two bounds are materialized here.
-        ranges = db.con().execute(_EVIDENCE_RANGES + auxiliary_filter
-            + f" group by r.source_id,r.record_no // {REPLAY_CHUNK} order by r.source_id,min(r.record_no)",
-            [self.case_id, *sorted(PROFILES)]).fetchall()
         query = _EVIDENCE_QUERY + auxiliary_filter + " order by r.source_id,r.record_no"
         namespaces, records, auxiliary = {}, 0, 0
         with self.staging.seen() if self.staging is not None else nullcontext(set()) as seen:
-            for source, first, last in ranges:
+            for source, first, last in self._ranges(auxiliary_only):
                 cursor = db.con().execute(query, {"case_id": self.case_id, "source_id": source,
                     "first": first, "last": last, "profiles": sorted(PROFILES)})
                 rows = cursor.fetchall()
@@ -763,7 +840,8 @@ def rebuild(case_id):
 
 
 def _rebuild(case_id, evidence, staging):
-    entities, endpoints, conflicts, unresolved = _compute(evidence, staging=staging)
+    with evidence._fixed_ranges(staging) if isinstance(evidence, _CaseEvidence) else nullcontext():
+        entities, endpoints, conflicts, unresolved = _compute(evidence, staging=staging)
     summary = {"policy": POLICY, "entities": len(entities),
                "resolved_endpoints": len(endpoints) - unresolved, "unresolved_endpoints": unresolved,
                "conflicts": conflicts,

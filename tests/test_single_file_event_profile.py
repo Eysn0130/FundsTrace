@@ -7,7 +7,7 @@ from decimal import Decimal
 from openpyxl import Workbook
 import pytest
 
-from app import event_resolution, evidence_resolution, table_import
+from app import event_resolution, evidence_resolution, import_preview_cache, table_import
 from app.services import imports
 from test_event_import import transaction
 from test_folder_evidence import complete
@@ -78,8 +78,9 @@ def assert_event_pair(client, database, cid):
 
 
 @pytest.mark.parametrize("suffix", [".csv", ".tsv", ".txt", ".xlsx"])
+@pytest.mark.parametrize("reuse_preview", [False, True], ids=["cache-miss", "cache-hit"])
 def test_fresh_single_file_contract_selects_current_profile_once_and_confirms_event(
-        client, database, make_case, monkeypatch, suffix):
+        client, database, make_case, monkeypatch, suffix, reuse_preview):
     cid = make_case("Synthetic ordinary entry explicit event")
     content = payload([("Both ledgers", matrix([transaction("SYN-A"), transaction("SYN-B")]))], suffix)
     reader_name = "_excel" if suffix == ".xlsx" else "_csv"
@@ -93,10 +94,13 @@ def test_fresh_single_file_contract_selects_current_profile_once_and_confirms_ev
     view = response.json()
     assert view["table_summary"]["profile"] == table_import.SOURCE_OBSERVATION_EVIDENCE_PROFILE
     assert reads == [reader_name], "Profile admission must reuse the one decoded source"
+    assert import_preview_cache._slot is not None
+    if not reuse_preview:
+        import_preview_cache.discard(view["import_id"])
     job = complete(client, cid, view)
     assert job["stage"] == "done", job
     assert job["result"]["ok"] == 2
-    assert reads == [reader_name, reader_name]
+    assert reads == [reader_name] * (1 if reuse_preview else 2)
     assert all(event_resolution.DETAIL_FIELD in notes for notes in source_notes(database, cid))
     assert_event_pair(client, database, cid)
 

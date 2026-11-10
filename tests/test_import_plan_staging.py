@@ -9,7 +9,7 @@ from decimal import Decimal
 
 import pytest
 
-from app import import_staging as staging, table_archive, table_cancellations
+from app import importer, import_staging as staging, import_validation, table_archive, table_cancellations
 from app.services import imports
 from test_folder_evidence import archive, complete, preview, table, transaction
 from test_table_cancellations import round_trip, source
@@ -221,6 +221,52 @@ def test_staging_scan_and_update_use_chunk_queries_not_one_query_per_record(data
         store.close()
 
 
+def test_public_commit_shares_bounded_reads_for_manifest_and_csv_identity(
+        client, database, make_case, monkeypatch):
+    monkeypatch.setattr(staging, "PLAN_CHUNK", 2)
+    cid = make_case("Synthetic shared commit preparation")
+    members, expected = [], []
+    for member in ("first.csv", "second.csv"):
+        values = []
+        for number in range(1, 10):
+            reference = f"SYN-{member}-{number}"
+            values.append(transaction(**{"交易流水号": reference, "交易金额": f"{number}.01"}))
+            expected.append((member, number + 1, reference, Decimal(f"{number}.01"), "SYN-A", "SYN-B"))
+        members.append((member, source(values)[0]))
+    observed = {}
+    manifest, commit = import_validation.table_manifest, importer.commit_rows
+
+    def prepare(plan, rows, *args, **kwargs):
+        observed["store"] = plan["_plan_store"]
+        observed["before"] = observed["store"].decode_calls
+        return manifest(plan, rows, *args, **kwargs)
+
+    def write(*args, **kwargs):
+        observed["decodes"] = observed["store"].decode_calls - observed["before"]
+        observed["metrics"] = observed["store"].metrics()
+        return commit(*args, **kwargs)
+
+    monkeypatch.setattr(import_validation, "table_manifest", prepare)
+    monkeypatch.setattr(importer, "commit_rows", write)
+    view = preview(client, cid, members, zipped=True, scope_bank=None)
+    job = complete(client, cid, view)
+    assert job["stage"] == "done", job
+    assert (job["result"]["ok"], job["result"]["rows_dup"]) == (18, 0)
+    actual = database.con().execute("""
+        select r.member_path,r.source_row,f.trade_no,f.amount,f.payer_account,f.payee_account
+        from import_records r join flow_sources s
+          on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
+        join flows f on f.case_id=s.case_id and f.id=s.flow_id
+        where r.case_id=? and r.source_id=? order by r.record_no
+        """, [cid, view["import_id"]]).fetchall()
+    assert actual == expected
+    # One complete journal proof plus one joined row/record scan. A second
+    # identity replay would exceed this bound even with the tiny tail cache.
+    assert observed["decodes"] <= 3 * len(expected), observed["decodes"]
+    assert observed["metrics"]["peak_read_records"] <= 2
+    assert observed["store"]._closed
+
+
 @pytest.mark.parametrize("reuse", [False, True], ids=["cache-miss", "cache-hit"])
 def test_public_import_reports_actual_stage_io_without_source_values(client, database, make_case, monkeypatch, reuse):
     """Count the real read/write shape separately from the index micro-probe."""
@@ -286,3 +332,106 @@ def test_evicted_live_aliases_share_updates_and_closed_owner_rejects_mutation(da
     store.close()
     with pytest.raises(ValueError, match="closed"):
         (old if nested_only else old["details"])["after_close"] = "forbidden"
+
+
+def test_public_ordinary_writer_reuses_validated_row_objects(client, database, make_case, monkeypatch):
+    from test_import_history_filter import data, package, accepted
+    monkeypatch.setattr(staging, "PLAN_CHUNK", 2)
+    original_meta, original_commit = importer._provenance_metadata, importer.commit_rows
+    observed = {}
+    def metadata(provenance, filename, mode, rows, **kwargs):
+        assert type(rows) is staging.StagedSequence
+        observed.update(store=rows.store, before=rows.store.decode_calls)
+        source = original_meta(provenance, filename, mode, rows, **kwargs)
+        assert set(source) == set(provenance)
+        return source
+    def write(*args, **kwargs):
+        result = original_commit(*args, **kwargs)
+        observed["decodes"] = observed["store"].decode_calls-observed["before"]
+        return result
+    monkeypatch.setattr(importer, "_provenance_metadata", metadata)
+    monkeypatch.setattr(importer, "commit_rows", write)
+    cid, count = make_case("Synthetic validated row reuse"), 257
+    _, receipt = accepted(client, cid, package([("rows.csv", data("reuse", count))]))
+    assert (receipt["ok"], receipt["rows_dup"]) == (count, 0)
+    assert database.q_raw("select count(*) n,sum(amount) amount from flows where case_id=?", [cid]) == [{"n": count, "amount": Decimal(count)}]
+    assert observed["decodes"] <= count + staging.PLAN_CHUNK, observed["decodes"]
+    assert observed["store"]._closed
+
+
+def staged_writer_input(content, cid):
+    import hashlib
+    import uuid
+    plan = table_archive.parse(io.BytesIO(content), _stage=True)
+    if "_plan_store" not in plan:
+        staging.stage_plan(plan)
+    keys = {}
+    import_validation.table_manifest(plan, plan["rows"], standalone_csv_keys=keys)
+    source = dict(source_id=uuid.uuid4().hex, filename="synthetic.zip", sha256=hashlib.sha256(content).hexdigest(),
+                  size_bytes=len(content), mode=plan["mode"], mapping=plan["mapping"], sheet=plan["sheet"],
+                  parser_version=plan["profile"], row_kind="table_record")
+    return plan, {"case_id": cid, "provenance": source, "standalone_csv_keys": keys}
+
+
+@pytest.mark.parametrize("mutation", ["tracked", "flushed", "replace"])
+def test_late_row_alias_and_replacement_keep_original_requested_rebuild(client, database, make_case, monkeypatch, mutation):
+    from test_import_history_filter import data, package, accepted
+    cid, raw = make_case("Synthetic late validated alias"), data("alias")
+    first, _ = accepted(client, cid, package([("original.csv", raw)]))
+    key = database.q_raw("select record_key from import_records where case_id=? and source_id=?", [cid, first["import_id"]])[0]["record_key"]
+    plan, kwargs = staged_writer_input(package([("moved.csv", raw)]), cid)
+    original = importer._provenance_metadata
+    def metadata(*args, **kw):
+        result = original(*args, **kw)
+        row = args[3][0]; row["_record_key"] = key
+        if mutation == "flushed": plan["_plan_store"].flush()
+        if mutation == "replace":
+            replacement = dict(row)
+            args[3].clear(); args[3].extend([replacement])
+        return result
+    monkeypatch.setattr(importer, "_provenance_metadata", metadata)
+    try:
+        result = importer.commit_rows("synthetic.zip", plan["mode"], plan["rows"], **kwargs)
+        assert (result["ok"], result["rows_dup"]) == (0, 1)
+        assert database.q_raw("select count(*) n from flows where case_id=?", [cid]) == [{"n": 1}]
+    finally:
+        close_plan(plan)
+
+
+@pytest.mark.parametrize("field,value", [("_source_row", 0), ("_record_key", "invalid"), ("_source_sheet", "SYN-other")])
+def test_invalid_later_staged_row_never_writes_partial_source(database, make_case, field, value):
+    from test_import_history_filter import data, package
+    cid = make_case("Synthetic invalid validated tail")
+    plan, kwargs = staged_writer_input(package([("rows.csv", data("invalid", 2))]), cid)
+    plan["rows"][1][field] = value
+    try:
+        with pytest.raises(importer.ImportError):
+            importer.commit_rows("synthetic.zip", plan["mode"], plan["rows"], **kwargs)
+        for name in ["flows", "batches", "import_sources", "flow_sources"]:
+            assert database.q_raw(f"select count(*) n from {name} where case_id=?", [cid]) == [{"n": 0}]
+    finally:
+        close_plan(plan)
+
+
+@pytest.mark.parametrize("when", ["before", "transaction"])
+def test_closed_staged_owner_still_fails_before_business_writes(database, make_case, monkeypatch, when):
+    from contextlib import contextmanager
+    from test_import_history_filter import data, package
+    cid = make_case("Synthetic closed validated owner")
+    plan, kwargs = staged_writer_input(package([("rows.csv", data("closed"))]), cid)
+    if when == "before": plan["_plan_store"].close()
+    else:
+        original = database.transaction
+        @contextmanager
+        def transaction():
+            with original() as connection:
+                plan["_plan_store"].close()
+                yield connection
+        monkeypatch.setattr(database, "transaction", transaction)
+    try:
+        with pytest.raises(ValueError, match="closed"):
+            importer.commit_rows("synthetic.zip", plan["mode"], plan["rows"], **kwargs)
+        for name in ["flows", "batches", "import_sources", "flow_sources"]:
+            assert database.q_raw(f"select count(*) n from {name} where case_id=?", [cid]) == [{"n": 0}]
+    finally:
+        close_plan(plan)

@@ -47,6 +47,39 @@ function openRecords() {
 }
 
 describe('automatic table import', () => {
+  it.each(['selection', 'drop'])('explicitly rejects ordinary multiple files from %s before any upload', async source => {
+    const client = clientFor(), previewDirectory = vi.fn(async () => preview);
+    Object.assign(client, { previewDirectory });
+    show(client);
+    const files = [new File(['first'], 'first.csv'), new File(['second'], 'second.xlsx')];
+    if (source === 'selection') fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files } });
+    else fireEvent.drop(document.querySelector('.import-drop-area')!, { dataTransfer: { files, items: [] } });
+    expect((await screen.findByRole('alert')).textContent).toMatch(/每次.*一个文件/);
+    expect(client.preview).not.toHaveBeenCalled();
+    expect(previewDirectory).not.toHaveBeenCalled();
+    expect(client.commit).not.toHaveBeenCalled();
+  });
+
+  it.each(['selection', 'drop'])('retains the complete-directory group from %s', async source => {
+    const client = clientFor(), previewDirectory = vi.fn(async () => preview);
+    Object.assign(client, { previewDirectory }); show(client);
+    const files = [new File(['first'], 'first.csv'), new File(['second'], 'second.xlsx')];
+    if (source === 'selection') fireEvent.change(screen.getByLabelText('选择整个文件夹'), { target: { files } });
+    else {
+      const children = files.map(file => ({ name: file.name, isFile: true, file: (callback: (value: File) => void) => callback(file) }));
+      const entry = { name: 'synthetic-folder', isDirectory: true, createReader() {
+        let first = true;
+        return { readEntries(callback: (entries: unknown[]) => void) { callback(first ? children : []); first = false; } };
+      } };
+      fireEvent.drop(document.querySelector('.import-drop-area')!, { dataTransfer: { files: [], items: [{ kind: 'file', getAsFile: () => null, webkitGetAsEntry: () => entry }] } });
+    }
+    await screen.findByRole('heading', { name: '自动处理完成' });
+    expect(previewDirectory).toHaveBeenCalledOnce(); expect(client.preview).not.toHaveBeenCalled();
+    const uploaded = previewDirectory.mock.calls[0] as unknown as [File[], AbortSignal];
+    expect(uploaded[0].map(file => file.name)).toEqual(files.map(file => source === 'drop' ? `synthetic-folder/${file.name}` : file.name));
+    expect(client.commit).toHaveBeenCalledOnce();
+  });
+
   it('reads current source declarations inside a historical receipt without replaying import or changing its result', async () => {
     const client = clientFor(), stored = session('done'), before = structuredClone(stored);
     const records = vi.fn(async () => ({ case_id: '1', source_id: 'SYN-SOURCE', total: 1, page: 1, page_size: 50,
