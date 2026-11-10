@@ -10,6 +10,13 @@ _FLOW_ACCOUNTS = """
 with case_flows as materialized (
     select case_id,id,payer_account,payer_name,payee_account,payee_name,self_account,self_name,source_counter_id,source_counter_name
     from effective_visible_flows where case_id=?
+), own_card_names as (
+    select f.self_account as account, list(distinct c.own_card) as cards,
+           arg_max(c.own_card, coalesce(f.trade_time_utc, f.trade_time)) as latest_card
+    from effective_visible_flows f
+    join flow_source_cards c on c.case_id=f.case_id and c.flow_id=f.id
+    where f.case_id=? and coalesce(c.own_card,'')<>'' and c.own_card<>f.self_account
+    group by f.self_account
 ), flow_names as (
     select trim(payer_account) as account, trim(coalesce(payer_name, '')) as name
     from case_flows where payer_account is not null
@@ -38,13 +45,28 @@ def _metadata(source):
       p.crop_cx, p.crop_cy, p.crop_r,
       m.account is not null is_main,
       case when m.account is null then null when m.source='auto' then 'auto' else 'manual' end main_source,
-      m.marked_at main_marked_at, f.account is not null has_flows
+      m.marked_at main_marked_at, f.account is not null has_flows,
+      oc.cards source_cards, oc.latest_card
     from {source} a
     left join flow_accounts f on f.account=a.account
     left join effective_account_ids i on i.case_id=? and i.account=a.account
     left join effective_account_photos p on p.case_id=? and p.account=a.account
     left join effective_main_accounts m on m.case_id=? and m.account=a.account
+    left join own_card_names oc on oc.account=a.account
     """
+
+
+def _apply_source_cards(rows):
+    """Source cards are display aliases; the account stays the registry key."""
+    for row in rows:
+        cards = row.pop("source_cards", None) or []
+        latest = row.pop("latest_card", None)
+        if cards and not row.get("cards"):
+            row["cards"] = sorted(cards)
+        if latest and not row.get("display_account"):
+            row["display_account"] = latest
+            row.setdefault("account_number", row.get("account") or "")
+    return rows
 
 
 def _item(row):
@@ -60,12 +82,13 @@ def list_registry(case_id, source="flows", q="", page=1, page_size=30, account_e
         if source == "flows" and not account_exact and not keyword:
             # Metadata is at most one row per account and cannot affect an
             # unfiltered count or page membership. Attach it after pagination.
-            total = db.q_raw(_FLOW_ACCOUNTS + "select count(*) total from flow_accounts", [cid])[0]["total"]
+            total = db.q_raw(_FLOW_ACCOUNTS + "select count(*) total from flow_accounts", [cid, cid])[0]["total"]
             query = _FLOW_ACCOUNTS + """, page_accounts as materialized (
                 select account from flow_accounts order by account limit ? offset ?
             ) """ + _metadata("page_accounts") + " order by a.account"
-            rows = db.q(query, [cid, page_size, (page - 1) * page_size, cid, cid, cid])
+            rows = db.q(query, [cid, cid, page_size, (page - 1) * page_size, cid, cid, cid])
             evidence_resolution.decorate_accounts(cid, rows)
+            _apply_source_cards(rows)
             return {"case_id": str(cid), "source": source, "total": total, "page": page,
                     "page_size": page_size, "items": [_item(row) for row in rows]}
         source_sql = "flow_accounts" if source == "flows" else """(
@@ -73,7 +96,7 @@ def list_registry(case_id, source="flows", q="", page=1, page_size=30, account_e
             join account_ids i on i.case_id=s.case_id and i.account=s.raw_account
             where s.case_id=? and s.account<>''
         )"""
-        params = [cid] + ([cid] if source == "identity" else []) + [cid] * 3
+        params = [cid, cid] + ([cid] if source == "identity" else []) + [cid] * 3
         if account_exact:
             predicate = "where a.account=?"
             params += [keyword]
@@ -81,16 +104,18 @@ def list_registry(case_id, source="flows", q="", page=1, page_size=30, account_e
             predicate = """where contains(lower(a.account), ?) or contains(lower(coalesce(i.id_no,'')), ?)
               or contains(lower(coalesce(m.name,'')), ?)
               or exists (select 1 from flow_names n where n.account=a.account and contains(lower(n.name), ?))
+              or exists (select 1 from own_card_names oc where oc.account=a.account and contains(lower(array_to_string(oc.cards,' ')), ?))
               or exists (select 1 from resolution_entities e where e.case_id=? and e.entity_id=a.account and
                 (contains(lower(e.account_number),?) or contains(lower(e.display_account),?)
                 or contains(lower(array_to_string(json_extract_string(e.details_json,'$.cards[*]'),' ')),?)
                 or contains(lower(array_to_string(json_extract_string(e.details_json,'$.names[*]'),' ')),?)))"""
-            params += [keyword] * 4 + [cid] + [keyword] * 4
+            params += [keyword] * 5 + [cid] + [keyword] * 4
         query = _FLOW_ACCOUNTS + ", registry as (" + _metadata(source_sql) + predicate + ") "
         total = db.q_raw(query + "select count(*) total from registry", params)[0]["total"]
         rows = db.q(query + "select * from registry order by account limit ? offset ?",
                     [*params, page_size, (page - 1) * page_size])
         evidence_resolution.decorate_accounts(cid, rows)
+        _apply_source_cards(rows)
         return {"case_id": str(cid), "source": source, "total": total, "page": page,
                 "page_size": page_size, "items": [_item(row) for row in rows]}
 
@@ -106,10 +131,10 @@ def account_profile(case_id, account):
             union select account from effective_main_accounts where case_id=?
             union select account from focus_nodes where case_id=?
         ) """ + _metadata("known_accounts") + " where a.account=? and a.account<>''"
-        found = db.q(query, [cid] * 7 + [account])
+        found = db.q(query, [cid] * 8 + [account])
         if not found:
             raise ServiceError(404, "account_not_found", "账号不存在或不属于当前案件")
-        metadata = found[0]
+        metadata = _apply_source_cards(found)[0]
         result = {"case_id": str(cid), **_item(metadata)}
         result["photo"] = None if metadata["photo_at"] is None else {
             "updated_at": metadata["photo_at"],

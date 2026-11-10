@@ -919,6 +919,20 @@ def _graph(case_id: int, canvas_id: int, view=None):
     focus = [{"account": r["account"], "scale": r.get("scale") or 1.6}
              for r in db.q("select account,scale from focus_nodes where case_id=?", [case_id])]
     evidence_resolution.decorate_accounts(case_id, nodes, source_sql=source, params=params)
+    cards = sorted({card for node in nodes for card in (node.get("cards") or []) if card})
+    shared = {}
+    if cards:
+        for row in db.q_raw("""select c.own_card card, f.self_account account
+                from effective_visible_flows f join flow_source_cards c
+                  on c.case_id=f.case_id and c.flow_id=f.id
+                where c.case_id=? and c.own_card in (select unnest(?::varchar[])) and f.self_account<>''
+                group by 1,2""", [case_id, cards]):
+            shared.setdefault(row["card"], set()).add(row["account"])
+    for node in nodes:
+        # A card can outlive or span account numbers (reissue, sub-account).
+        # Keep those accounts visible in details; identity and totals stay per account.
+        node["shared_accounts"] = sorted({account for card in node.get("cards") or []
+                                          for account in shared.get(card, set())} - {node["account"]})[:20]
     event_resolution.decorate_edges(case_id, edges)
     current_resolution = evidence_resolution.summary(case_id)
     from . import source_ledger
@@ -2132,7 +2146,7 @@ def _tracked_export_data(case_id, canvas_id):
         select f.case_id, f.self_account, f.balance, f.trade_time, f.trade_time_utc, f.trade_time_original, f.trade_time_offset, f.trade_no, f.payer_name, f.payer_account, f.payer_bank,
                f.payee_name, f.payee_account, f.payee_bank, f.amount, f.currency, f.summary, f.channel, f.id,
                f.raw_self_account,f.raw_payer_account,f.raw_payee_account,f.payer_display_account,f.payee_display_account,
-               f.payer_card,f.payee_card,f.self_card,f.payer_source_account,f.payee_source_account,f.self_source_account,
+               f.payer_card,f.payee_card,coalesce(f.self_card,f.self_source_card) self_card,f.payer_source_account,f.payee_source_account,f.self_source_account,
                f.source_counter_account,f.source_counter_name,f.source_counter_bank
         from effective_visible_flows f join tracked_flows tf on tf.flow_id = f.id
         where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ? order by f.trade_time

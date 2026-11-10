@@ -551,18 +551,22 @@ def con():
                       coalesce(nullif(p.bank,''),f.payer_bank) payer_bank,
                       coalesce(nullif(q.bank,''),f.payee_bank) payee_bank,
                       f.payer_account raw_payer_account,f.payee_account raw_payee_account,f.self_account raw_self_account,
+                      nullif(c.own_card,'') self_source_card,
                       coalesce(case when pe.card_state='confirmed' then nullif(pe.endpoint_card,'') end,
+                        case when f.self_account is not distinct from f.payer_account then nullif(c.own_card,'') end,
                         nullif(pe.endpoint_account,''),f.payer_account) payer_display_account,
                       coalesce(case when qe.card_state='confirmed' then nullif(qe.endpoint_card,'') end,
+                        case when f.self_account is not distinct from f.payee_account then nullif(c.own_card,'') end,
                         nullif(qe.endpoint_account,''),f.payee_account) payee_display_account,
                       coalesce(case when se.card_state='confirmed' then nullif(se.endpoint_card,'') end,
-                        nullif(se.endpoint_account,''),f.self_account) self_display_account,
+                        nullif(c.own_card,''),nullif(se.endpoint_account,''),f.self_account) self_display_account,
                       pe.endpoint_card payer_card,qe.endpoint_card payee_card,se.endpoint_card self_card,
                       pe.endpoint_account payer_source_account,qe.endpoint_account payee_source_account,
                       se.endpoint_account self_source_account,
                       pe.card_state payer_card_state,qe.card_state payee_card_state,se.card_state self_card_state,
                       case when pe.entity_id is not null or qe.entity_id is not null then 'typed-account-evidence-v1' else null end resolution_policy
                     from source_effective_flows f
+                    left join flow_source_cards c on c.case_id=f.case_id and c.flow_id=f.id
                     left join resolved_endpoints pe on pe.case_id=f.case_id and pe.flow_id=f.id and pe.role='payer'
                     left join resolved_endpoints qe on qe.case_id=f.case_id and qe.flow_id=f.id and qe.role='payee'
                     left join resolved_endpoints se on se.case_id=f.case_id and se.flow_id=f.id and se.role='self'

@@ -163,6 +163,11 @@ def install_source_views(connection):
         case_id bigint not null,flow_id bigint not null,primary key(case_id,flow_id))""")
     for column in ("counter_account", "counter_name", "counter_bank"):
         connection.execute(f"alter table source_ledger_index add column if not exists {column} varchar")
+    # Per-posting own card is a display/search alias for the account, never a
+    # new identity. It is kept beside the ledger index because financial
+    # observations also carry it while source_ledger_index stays ledger-only.
+    connection.execute("""create table if not exists flow_source_cards (
+        case_id bigint not null,flow_id bigint not null,own_card varchar not null,primary key(case_id,flow_id))""")
     refresh_index(connection)
 
 
@@ -178,6 +183,19 @@ def refresh_index(connection, case_id=None):
           on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
         where (json_extract_string(r.ledger_evidence,'$.kind')='ledger' or r.disposition='cancelled')""" +
         (" and r.case_id=?" if case_id is not None else "") + " group by f.case_id,f.flow_id", parameters)
+    refresh_cards(connection, case_id)
+
+
+def refresh_cards(connection, case_id=None):
+    """Project the posting's own card once; ordinary table sources keep it too."""
+    scope, parameters = (" where case_id=?", [case_id]) if case_id is not None else ("", [])
+    connection.execute("delete from flow_source_cards" + scope, parameters)
+    connection.execute("""insert into flow_source_cards(case_id,flow_id,own_card)
+        select f.case_id,f.flow_id,max(nullif(json_extract_string(r.ledger_evidence,'$.own_card'),''))
+        from source_ledger_records r join flow_sources f
+          on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
+        where nullif(json_extract_string(r.ledger_evidence,'$.own_card'),'') is not null""" +
+        (" and r.case_id=?" if case_id is not None else "") + " group by f.case_id,f.flow_id", parameters)
 
 
 def install_visible_view(connection, projection_sql):
@@ -187,8 +205,10 @@ def install_visible_view(connection, projection_sql):
         visible as (select * from financial union all select l.* from ledger l
             where not exists(select 1 from financial e where e.case_id=l.case_id and e.id=l.id))
         select f.*,coalesce(l.counter_account,'') source_counter_account,
-            coalesce(l.counter_name,'') source_counter_name,coalesce(l.counter_bank,'') source_counter_bank
-        from visible f left join source_ledger_index l on l.case_id=f.case_id and l.flow_id=f.id""")
+            coalesce(l.counter_name,'') source_counter_name,coalesce(l.counter_bank,'') source_counter_bank,
+            coalesce(c.own_card,'') source_own_card
+        from visible f left join source_ledger_index l on l.case_id=f.case_id and l.flow_id=f.id
+        left join flow_source_cards c on c.case_id=f.case_id and c.flow_id=f.id""")
     connection.execute("create or replace view effective_visible_flows as " +
         "select f.*,coalesce(e.entity_id,'') source_counter_id from (" +
         projection_sql.replace("from source_effective_flows f", "from source_visible_flows f") +

@@ -1005,9 +1005,14 @@ def decorate_accounts(case_id, rows, *, key="account", source_sql=None, params=N
         if item and len(item["names"]) == 1 and not row.get("name"):
             row["name"] = item["names"][0]
     from . import representative_cards
-    return representative_cards.decorate(case_id, rows, key=key,
+    rows = representative_cards.decorate(case_id, rows, key=key,
         source_sql=source_sql or "select * from effective_flows where case_id=?",
         params=[case_id] if source_sql is None else params)
+    for row in rows:
+        # Only a card display alias needs the underlying account beside it.
+        if row.get("display_account") and row.get("account") and row["display_account"] != row["account"]:
+            row.setdefault("account_number", row["account"])
+    return rows
 
 
 def declared_auxiliary_family(source):
