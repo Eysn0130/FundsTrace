@@ -43,11 +43,13 @@ function fixture() {
 test('only available updates occupy the capsule, retaining download and restart actions', async () => {
   const { view, button, status, calls, bridge, available, emit } = fixture();
   await flush();
+  assert.equal(view.hidden, true, 'passively reading the current version leaves the update entry hidden');
   for (const phase of ['idle', 'checking', 'current', 'unavailable', 'error']) {
     emit({ phase, currentVersion: '0.1.9', version: '' });
     assert.equal(view.hidden, true, `${phase} must not add an update prompt`);
     assert.equal(view.textContent, '');
   }
+  assert.deepEqual(calls, [], 'hidden update states never start an update check or download');
   emit(available);
   assert.equal(view.hidden, false); assert.equal(button.textContent, '更新');
   let finish;

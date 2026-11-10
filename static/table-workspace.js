@@ -369,7 +369,7 @@
     modePositions[open ? 'overview' : 'sidebar'] = capturePosition();
     open = next;
     if (next) {
-      slots = ['.flow-table-tools', '#flowTableScroll'].flatMap(selector => {
+      slots = ['.flow-table-tools', '#flowTableScroll', '#flowHorizontalScroll'].flatMap(selector => {
         const node = document.querySelector('#tab-search ' + selector);
         if (!node) return [];
         const marker = document.createComment('table workspace slot');

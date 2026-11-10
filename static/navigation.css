@@ -12,8 +12,6 @@
 #appRail button[aria-current="page"]:hover {background:var(--action-hover)}
 #appRail img {width:20px;height:20px;filter:var(--icon-filter)}
 #appRail button[aria-current="page"] img {filter:var(--icon-on-filter)}
-#appRail .rail-update {background:var(--action-fill);border-radius:50%;width:30px;height:30px;flex-basis:30px;margin-bottom:2px}
-#appRail .rail-update img {filter:invert(100%);width:18px;height:18px}
 .rail-spacer {flex:1}
 #appPageHost {position:relative;flex:1;min-width:0;min-height:0;margin:0 4px 4px 0;border-radius:12px;background:var(--surface);overflow:hidden}
 #graphPage {position:absolute;inset:0;display:flex;flex-direction:column;min-width:0;min-height:0}
@@ -55,13 +53,13 @@ html[data-ft-theme="light"] #graphPage .ribbon-tabbar {background:var(--surface-
 html[data-ft-theme="light"] #graphPage .ribbon-group {border-right-color:var(--border)}
 html[data-ft-theme="light"] #graphPage #left {border-right-color:var(--border)}
 #ribbonTabs [role="tab"][aria-selected="true"]:hover {background:var(--selection-surface)}
-#appRail :is([data-nav-page],#navAnalysis,#navSettings,#navUpdate):not(:disabled),#ribbonTabs [role="tab"],#editorToolbar .btn:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {transition:background-color var(--motion-fast) var(--interaction-ease),border-color var(--motion-fast) var(--interaction-ease),color var(--motion-fast) var(--interaction-ease)}
+#appRail :is([data-nav-page],#navAnalysis,#navSettings):not(:disabled),#ribbonTabs [role="tab"],#editorToolbar .btn:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {transition:background-color var(--motion-fast) var(--interaction-ease),border-color var(--motion-fast) var(--interaction-ease),color var(--motion-fast) var(--interaction-ease)}
 #editorToolbar .btn:is(:disabled,[aria-disabled="true"],[aria-busy="true"]) {transition:none}
-@media(prefers-reduced-motion:reduce) {#appRail :is([data-nav-page],#navAnalysis,#navSettings,#navUpdate):not(:disabled),#ribbonTabs [role="tab"],#editorToolbar .btn:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {transition:none}}
+@media(prefers-reduced-motion:reduce) {#appRail :is([data-nav-page],#navAnalysis,#navSettings):not(:disabled),#ribbonTabs [role="tab"],#editorToolbar .btn:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {transition:none}}
 
 .rail-update-slot{position:relative;width:38px;height:34px;flex:0 0 34px;display:flex;align-items:center;justify-content:center}
+.rail-update-slot:not(:has(funds-desktop-update:not([hidden]))){display:none}
 .rail-update-slot funds-desktop-update:not([hidden]){position:absolute;inset:2px 4px;width:30px;height:30px}
-.rail-update-slot:has(funds-desktop-update:not([hidden])) #navUpdate{visibility:hidden}
 #appRail .funds-update-capsule{width:30px;height:30px;min-height:30px;flex:0 0 30px;padding:0;border:0;border-radius:50%;background:var(--action-fill);color:var(--action-on)}
 #appRail .funds-update-capsule > span:last-child{position:absolute;overflow:hidden;clip-path:inset(50%);width:1px;height:1px}
 #appRail .funds-update-capsule:not([data-phase="downloading"]):not([data-phase="installing"])::before{content:"";width:17px;height:17px;background:var(--action-on);mask:url('/static/ui-icons/download.svg') center/contain no-repeat}

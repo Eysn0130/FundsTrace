@@ -1,4 +1,33 @@
-# 三层工作区与 Mac 本机参考尺寸 · 2026-11-10
+# 三层工作区后续密度与标注修正 · 2026-11-10
+
+final result: passed
+
+范围为已确认外壳基础上的缩略图／图例减半、默认查询区缩小 20%，以及四处浏览器标注。实际界面见 [深色](docs/media/three-zone-workspace/compact-dark.png)、[浅色](docs/media/three-zone-workspace/compact-light.png)、[700×947](docs/media/three-zone-workspace/compact-narrow.png)、[599×650](docs/media/three-zone-workspace/compact-small.png) 和 [七列全览](docs/media/three-zone-workspace/compact-overview.png)。截图均来自隔离合成案件；[compact-layout.json](docs/media/three-zone-workspace/compact-layout.json) 记录本轮实测，后文保留先前交付记录。
+
+## 本轮视觉与交互核对
+
+| 项目 | 结果 |
+| --- | --- |
+| 布局／间距 | 1512×949 下查询区从 514.078125px 改为 411.2578125px，即原宽度的 80%；700px 和 599px 窗口默认 288px。手动宽度仍保留。缩略图展开外框及占位从 272×226 改为 136×113，地图 131×80、卡片 136×85、胶囊 136×23、间距 5px；不是仅在原容器中缩小图片。 |
+| 字体／排版 | 原数据与工具字号保留；仅左下图例按要求整体缩为 50%，文字、圆点、内边距和背景一起缩放。700×947 下图例 142.5×18，与 136×113 缩略图区无交集。 |
+| 颜色／令牌 | 延续 #333333／#222222／#181818 三层；深浅主题下滚动条均可见，使用既有 muted、surface 和 focus 令牌。 |
+| 图像／图标 | Logo、导航选中块和四角尺寸沿用已确认版本；缩略图按钮和图标随整个控件减半，原位图坐标与点击／键盘／缩放操作保留。 |
+| 文案／内容 | 左侧概括行隐藏且空行高度为 0，内部 statLine 节点保留以兼容标题刷新；来源覆盖说明没有删除。七列、金额、原命令与业务语义保留。无更新时导航入口与占位均消失，设置中仍有手动检查更新入口。 |
+
+- 700×947 下首行复选框中心与单元格中心仅有 x=-0.5px、y=0.168px 的栅格／基线偏差；首列使用水平居中和垂直居中，长文本列继续顶部对齐。
+- 底部 18px 横向控件常驻。键盘 End 实测原生 scrollLeft、range 值和最大值均为 532，右按钮禁用；鼠标实际拖动后 scrollLeft 与 range 值均为 416。Home 可返回左端。
+- 全览移动原表格和原滚动控件，实际数量为 1 张表、7 个表头、1 个底部控件；关闭后 SYN-DRAFT 草稿和已选锚点恢复。完整金额包括 `¥9,999,999,999,999,999.99` 与 `USD 0.20`。宽屏上下分栏下 7 列全部容纳时，滚动条禁用，外层溢出为 0。
+- **发现并修复：短窗口新增底部控件挤出可视区。** 将短窗口的表格下限由 180 改为 159px，为 18px 控件与 3px 间距预留空间。599×650 下底部控件 y=621–639，工作区底部 y=646，完整可见，外层溢出为 0。缩略图与图例无交集。
+- 实际浏览器无桌面更新桥时，更新槽 display 为 none；关于页仍显示“检查更新”（浏览器环境禁用）。桌面控件合成测试覆盖 idle／checking／current／unavailable／无版本 error 隐藏，有版本 available／下载／待重启可见，已发现版本下载失败仍可重试；未发起真实检查、下载或安装。
+- 最终恢复深色，清空验证草稿及锚点，已重置临时视口覆盖；浏览器 error／warn 为空。
+
+## 本轮检查与边界
+
+- Python 定向运行 workspace shell、graph minimap、table workspace、workspace camera、minimap navigation、graph label collision、app navigation、account navigation、legacy navigation：**13 passed**，1 条既有 Starlette/httpx 弃用警告。其中 legacy harness 覆盖滚动同步、边界禁用、尺寸观察及重绑定；table harness 覆盖全览移动时保留同一条控件。
+- `node --test desktop/tests/update-capsule.test.cjs`：**5 passed**，只使用合成更新状态；原生 Main 更新桥及版本判断没有改变。
+- 其余原生标题／安装探针、前端构建与外观测试复用下面初始交付记录；本轮没有重新执行真实 macOS 安装或 Windows GUI／DPI、正式打包与发布。
+
+# 三层工作区与 Mac 本机参考尺寸 · 初始交付记录 · 2026-11-10
 
 final result: passed
 

@@ -29,7 +29,7 @@
   --menu-motion: var(--motion-menu,160ms) var(--interaction-ease,cubic-bezier(.2,.65,.35,1));
   --menu-shadow: 0 12px 32px #0006;
   --layer-toolbar-menu: 120;
-  --sidebar-width: clamp(400px, 34vw, 560px);
+  --sidebar-width: clamp(320px, 27.2vw, 448px);
   --toolbar-expanded-height: 102px;
   --toolbar-compact-height: 58px;
   --workspace-ease: 220ms cubic-bezier(.2,.75,.25,1);
@@ -586,12 +586,13 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 #workspace[data-workspace-view="split"] #workspaceSidebarResize { inset: 3px 0; cursor: row-resize; }
 #workspace[data-workspace-view="split"] #workspaceSidebarResize::after { width: 100%; height: 2px; position: absolute; top: 50%; }
 #workspace[data-workspace-view="split"] #btnSidebarToggle { top: 2px; left: 50%; width: 48px; height: 27px; transform: translateX(-50%); }
-#workspace[data-workspace-view="split"] #tab-search { display: grid; grid-template-columns: minmax(0,1fr) auto; grid-template-rows: auto max-content auto minmax(48px,1fr); gap: 0 16px; padding: 8px 12px; }
+#workspace[data-workspace-view="split"] #tab-search { display: grid; grid-template-columns: minmax(0,1fr) auto; grid-template-rows: auto max-content auto minmax(48px,1fr) auto; gap: 0 16px; padding: 8px 12px; }
 #workspace[data-workspace-view="split"] #tab-search > .query-disclosure-head { grid-area: 1 / 1 / auto / -1; margin: 0 0 4px; }
 #workspace[data-workspace-view="split"] #queryFields { grid-area: 2 / 1 / auto / -1; }
 #workspace[data-workspace-view="split"] #bulkTrackBar { grid-area: 3 / 1; flex-wrap: wrap; align-content: center; padding: 3px 0; margin: 0; border-top: 0; }
 #workspace[data-workspace-view="split"] .flow-table-tools { grid-area: 3 / 2; margin: 0; align-self: center; }
 #workspace[data-workspace-view="split"] #flowTableScroll { grid-area: 4 / 1 / auto / -1; min-height: 48px; }
+#workspace[data-workspace-view="split"] #flowHorizontalScroll { grid-area: 5 / 1 / auto / -1; }
 #workspace[data-workspace-view="split"] #left > .tabs .tab { padding-top: 6px; padding-bottom: 5px; }
 #workspace.workspace-view-changing #left, #workspace.workspace-view-changing #workspaceSidebarEdge { transition: none; }
 #graphPage:has(#workspace.workspace-view-changing) #editorToolbar { transition: none; }
@@ -601,10 +602,11 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 #workspace[data-workspace-view="split"] .query-disclosure.is-collapsed { display: none; }
 #workspace[data-workspace-view="split"] .query-disclosure:not(.is-collapsed) .query-controls { overflow: visible; }
 @container (max-width: 760px) {
-  #workspace[data-workspace-view="split"] #tab-search { grid-template-columns: minmax(0,1fr); grid-template-rows: auto max-content auto auto minmax(48px,1fr); }
+  #workspace[data-workspace-view="split"] #tab-search { grid-template-columns: minmax(0,1fr); grid-template-rows: auto max-content auto auto minmax(48px,1fr) auto; }
   #workspace[data-workspace-view="split"] #bulkTrackBar { grid-area: 3 / 1; }
   #workspace[data-workspace-view="split"] .flow-table-tools { grid-area: 4 / 1; }
   #workspace[data-workspace-view="split"] #flowTableScroll { grid-area: 5 / 1; }
+  #workspace[data-workspace-view="split"] #flowHorizontalScroll { grid-area: 6 / 1; }
 }
 
 .tabs { display: flex; flex: none; border-bottom: 1px solid var(--border); min-width: 0; }
@@ -675,7 +677,7 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 #workspace[data-workspace-view="standard"] .query-controls { overscroll-behavior: contain; }
 #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex: 1 0 240px; min-height: 240px; }
 @media (max-height: 600px) {
-  #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 180px; min-height: 180px; }
+  #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 159px; min-height: 159px; }
 }
 .flow-table-tools { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 4px 0 3px; font-size: 12px; color: var(--text-primary); }
 .flow-table-tools .result-info { flex: 1; min-width: 50px; overflow-wrap: anywhere; }
@@ -691,7 +693,8 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 #flowTable th, #flowTable td { border-right: 1px solid var(--border); }
 #flowTable td { padding: 5px 4px; vertical-align: middle; background: var(--surface-raised); line-height: 1.4; }
 #flowTableScroll[data-flow-wrap="wrap"] #flowTable td { vertical-align: top; }
-#flowTable th:first-child, #flowTable td:first-child { position: sticky; left: 0; width: 40px; min-width: 40px; padding: 4px 6px; z-index: 1; border-right-color: var(--border-strong); }
+#flowTable th:first-child, #flowTable td:first-child { position: sticky; left: 0; width: 40px; min-width: 40px; padding: 4px 6px; z-index: 1; border-right-color: var(--border-strong); text-align: center; }
+#flowTableScroll #flowTable td:first-child { vertical-align: middle; }
 #flowTable th:first-child { z-index: 3; background: var(--surface-table-header); }
 #flowTable th:nth-child(2), #flowTable td:nth-child(2) { width: 86px; min-width: 86px; }
 #flowTable .flow-date, #flowTable .flow-clock { display: block; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -720,7 +723,7 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 #flowTable tr[data-id]:focus-visible { outline: 0; }
 #flowTable tr[data-id]:focus-visible > td { background: var(--surface-raised); box-shadow: inset 0 1px var(--accent), inset 0 -1px var(--accent); }
 #flowTable tr[data-id]:has(.flow-ck:checked) > td { background: var(--selection-surface); }
-#flowTable .flow-ck { width: 16px; height: 16px; vertical-align: middle; accent-color: var(--accent); }
+#flowTable .flow-ck { width: 16px; height: 16px; margin: 0; vertical-align: middle; accent-color: var(--accent); }
 /* Mouse/keyboard density: preserve query fields and return chrome space to data. */
 @media (hover: hover) and (pointer: fine) {
   #workspace[data-workspace-view="standard"] #left { position: relative; }
@@ -728,6 +731,7 @@ body.workspace-resizing-vertical { cursor: row-resize; }
   #workspace[data-workspace-view="standard"] #left > .tabs .tab { padding: 6px 14px; }
   #workspace[data-workspace-view="standard"] #tab-search { padding: 8px; }
   #workspace[data-workspace-view="standard"] .query-disclosure-head { min-height: 20px; }
+  #workspace[data-workspace-view="standard"] .query-disclosure-head:has(#importCoverageNote[hidden]) { min-height: 0; margin-bottom: 0; }
   #workspace[data-workspace-view="standard"] .query-toggle { position: absolute; top: 4px; right: 8px; min-height: 26px; height: 26px; padding: 2px 4px; }
   #workspace[data-workspace-view="standard"] #bulkTrackBar { padding: 4px 0; }
   #workspace[data-workspace-view="standard"] .bulk-selection { min-height: 20px; margin-bottom: 3px; }
@@ -745,7 +749,8 @@ body.workspace-resizing-vertical { cursor: row-resize; }
   #flowTableScroll[data-flow-density="compact"] #flowTable td { padding-top: 4px; padding-bottom: 4px; }
 }
 @media (hover: hover) and (pointer: fine) and (max-height: 700px) {
-  #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 180px; min-height: 180px; }
+  /* Reserve the footer's 18px control plus its 3px gap in short windows. */
+  #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 159px; min-height: 159px; }
 }
 #left > .tabs .tab { transition: color 120ms var(--interaction-ease), border-color 120ms var(--interaction-ease); }
 #left .query-disclosure { transition: grid-template-rows 160ms var(--interaction-ease), min-height 160ms var(--interaction-ease), visibility 160ms var(--interaction-ease); }
@@ -753,9 +758,15 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 @media (prefers-reduced-motion: reduce) {
   #left > .tabs .tab, #left .query-disclosure, #flowTable tr[data-id] > td { transition: none; }
 }
-/* Each table keeps its native overflow:auto viewport as the only horizontal
-   scroll control. Legacy range bindings remain dormant to preserve callers. */
+/* The query table exposes its existing native scroll position in a persistent
+   footer, including on systems whose native scrollbars disappear when idle. */
 .flow-horizontal-scroll { flex: none; display: none; align-items: center; gap: 5px; height: 25px; margin-top: 3px; padding: 0; }
+#flowHorizontalScroll { display: flex; height: 18px; }
+#flowHorizontalScroll .btn { width: 18px; min-width: 18px; height: 18px; min-height: 18px; padding: 0; }
+#flowHorizontalScroll .ui-icon { width: 12px; height: 12px; }
+#flowHorizontalScroll input[type="range"] { height: 18px; }
+#flowHorizontalScroll input[type="range"]::-webkit-slider-thumb { background: var(--muted); }
+#flowHorizontalScroll input[type="range"]::-moz-range-thumb { background: var(--muted); }
 .flow-horizontal-scroll .btn { min-width: 25px; min-height: 25px; padding: 0 4px; border: 0; background: transparent; color: var(--text-primary); }
 .flow-horizontal-scroll .btn:hover { background: var(--surface-control-hover); }
 .flow-horizontal-scroll input[type="range"] { appearance: none; -webkit-appearance: none; flex: 1; min-width: 0; height: 24px; padding: 0; border: 0; background: transparent; cursor: ew-resize; }
@@ -838,7 +849,7 @@ html[data-ft-theme="light"] {
 .graph-explorer input { width: 160px; }
 #neighborDirection { width: 104px; }
 #graphLabelMode { width: 115px; }
-#legend { flex-wrap: wrap; position: absolute; left: 16px; bottom: 15px; z-index: 13; display: flex; align-items: center; gap: 12px; max-width: calc(100% - 244px); background: var(--graph-overlay); padding: 9px 12px; border: 1px solid var(--graph-rule); border-radius: 4px; pointer-events: none; }
+#legend { flex-wrap: wrap; position: absolute; left: 16px; bottom: 15px; z-index: 13; display: flex; align-items: center; gap: 12px; max-width: calc(100% - 244px); background: var(--graph-overlay); padding: 9px 12px; border: 1px solid var(--graph-rule); border-radius: 4px; transform: scale(.5); transform-origin: left bottom; pointer-events: none; }
 #legend[hidden] { display: none !important; }
 .amount-width-legend { flex-basis: 100%; max-width: min(340px,100%); border-top: 1px solid var(--graph-rule); padding-top: 5px; color: var(--graph-secondary-ink); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .amount-width-legend:empty { display: none; }
@@ -855,15 +866,15 @@ html[data-ft-theme="light"] {
 #graphLayoutStatus { grid-area: 1 / 1; position: absolute; top: 12px; left: 16px; z-index: 7; max-width: calc(100% - 32px); padding: 7px 10px; border: 1px solid var(--graph-rule); border-radius: 4px; background: var(--graph-status-surface); color: var(--graph-ink); font-size: 12px; pointer-events: none; }
 /* A quiet floating utility layer; palettes never change graph meaning. */
 #graphMinimapPanel {
-  --mm-width: 272px; --mm-map-height: 170px; --mm-controls-height: 46px; --mm-gap: 10px;
+  --mm-width: 136px; --mm-map-height: 85px; --mm-controls-height: 23px; --mm-gap: 5px;
   --mm-surface: rgba(249, 247, 242, .93); --mm-solid: #f9f7f2;
   --mm-capsule: rgba(246, 243, 237, .95); --mm-map: rgba(224, 227, 230, .32);
   --mm-edge: rgba(255, 255, 255, .56); --mm-highlight: rgba(255, 255, 255, .6); --mm-inset: rgba(109, 105, 95, .12);
   --mm-text: #45453f; --mm-hover: rgba(120, 113, 98, .1); --mm-muted: #a7aaa9;
   --mm-accent: var(--action-fill); --mm-accent-hover: var(--action-hover); --mm-focus: var(--focus-ring);
   --mm-icon: brightness(0) saturate(100%) invert(27%); --mm-active-icon: brightness(0) invert(1);
-  --mm-shadow: 0 16px 40px -14px #0007, 0 4px 12px -4px #0005, inset 0 1px 0 var(--mm-highlight);
-  --mm-capsule-shadow: 0 8px 22px -8px #0007, 0 2px 5px -2px #0005, inset 0 1px 0 var(--mm-highlight);
+  --mm-shadow: 0 8px 20px -7px #0007, 0 2px 6px -2px #0005, inset 0 1px 0 var(--mm-highlight);
+  --mm-capsule-shadow: 0 4px 11px -4px #0007, 0 1px 3px -1px #0005, inset 0 1px 0 var(--mm-highlight);
   position: absolute; right: 20px; bottom: 20px; z-index: 14;
   width: var(--mm-width); flex: none;
   display: flex; flex-direction: column; gap: var(--mm-gap); pointer-events: none;
@@ -888,43 +899,46 @@ html[data-ft-theme="light"] {
   --mm-icon: brightness(0) saturate(100%) invert(29%); --mm-active-icon: brightness(0) invert(1);
 }
 #graphMinimapPopover {
-  width: 100%; height: var(--mm-map-height); flex: none; pointer-events: auto; overflow: hidden; border: 1px solid var(--mm-edge); border-radius: 18px;
+  width: 100%; height: var(--mm-map-height); flex: none; pointer-events: auto; overflow: hidden; border: 1px solid var(--mm-edge); border-radius: 9px;
   background: var(--mm-surface); box-shadow: var(--mm-shadow);
-  backdrop-filter: blur(24px) saturate(1.08); transform-origin: 25px calc(100% + 33px);
+  backdrop-filter: blur(12px) saturate(1.08); transform-origin: 13px calc(100% + 16.5px);
   transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
 }
 #graphMinimapPopover[aria-hidden="true"] { pointer-events: none; }
-.minimap-content { padding: 4px; }
-.minimap-map { position: relative; overflow: hidden; border-radius: 14px; }
-#graphMinimap { display: block; width: 262px; height: 160px; touch-action: none; cursor: grab; outline-offset: -3px; }
+.minimap-content { padding: 1.5px; }
+.minimap-map { position: relative; overflow: hidden; border-radius: 7px; }
+/* Half-sized presentation; retain the backing bitmap and its coordinate mapping. */
+#graphMinimap { display: block; width: 131px; height: 80px; touch-action: none; cursor: grab; outline-offset: -3px; }
 #graphMinimap:active { cursor: grabbing; }
 #graphMinimap[aria-disabled="true"] { cursor: default; }
-#minimapTarget { position: absolute; width: 14px; height: 14px; border: 1.5px solid var(--mm-accent); border-radius: 50%; pointer-events: none; opacity: 0; transform: translate(-50%, -50%) scale(.7); transition: opacity 120ms ease, transform 200ms cubic-bezier(.2,.8,.2,1); }
+#minimapTarget { position: absolute; width: 7px; height: 7px; border: 1px solid var(--mm-accent); border-radius: 50%; pointer-events: none; opacity: 0; transform: translate(-50%, -50%) scale(.7); transition: opacity 120ms ease, transform 200ms cubic-bezier(.2,.8,.2,1); }
 #graphMinimapPanel[data-navigating="true"] #minimapTarget { opacity: .85; transform: translate(-50%, -50%) scale(1); }
 #minimapEmpty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--mm-muted); pointer-events: none; }
-#minimapEmpty .ui-icon { width: 24px; height: 24px; filter: var(--mm-icon); opacity: .35; }
+#minimapEmpty .ui-icon { width: 12px; height: 12px; filter: var(--mm-icon); opacity: .35; }
 #minimapEmpty[data-loading="true"] .ui-icon { visibility: hidden; }
-#minimapEmpty[data-loading="true"]::after { content: ""; position: absolute; width: 16px; height: 16px; border: 1.5px solid var(--mm-muted); border-right-color: transparent; border-radius: 50%; animation: minimap-loading 800ms linear infinite; }
-#minimapRecovery { position: absolute; right: 7px; bottom: 7px; min-width: 28px; width: 28px; height: 28px; border: 1px solid var(--mm-edge); border-radius: 50%; background: var(--mm-solid); box-shadow: 0 2px 8px #0002; }
-#minimapRecovery .ui-icon { width: 16px; height: 16px; }
-.minimap-capsule { pointer-events: auto; width: 100%; height: var(--mm-controls-height); flex: none; align-self: flex-end; display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 2px; padding: 5px 7px; border: 1px solid var(--mm-edge); border-radius: 28px; background: var(--mm-capsule); box-shadow: var(--mm-capsule-shadow); backdrop-filter: blur(24px) saturate(1.08); transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease; }
-.minimap-button { display: inline-flex; align-items: center; justify-content: center; flex: none; min-width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--mm-text); font: inherit; cursor: pointer; transition: background-color 160ms ease, transform 160ms cubic-bezier(.2,.8,.2,1), box-shadow 160ms ease; }
-.minimap-button .ui-icon { width: 18px; height: 18px; filter: var(--mm-icon); pointer-events: none; }
+#minimapEmpty[data-loading="true"]::after { content: ""; position: absolute; width: 8px; height: 8px; border: 1px solid var(--mm-muted); border-right-color: transparent; border-radius: 50%; animation: minimap-loading 800ms linear infinite; }
+#minimapRecovery { position: absolute; right: 3.5px; bottom: 3.5px; min-width: 14px; width: 14px; height: 14px; border: 1px solid var(--mm-edge); border-radius: 50%; background: var(--mm-solid); box-shadow: 0 1px 4px #0002; }
+#minimapRecovery .ui-icon { width: 8px; height: 8px; }
+.minimap-capsule { pointer-events: auto; width: 100%; height: var(--mm-controls-height); flex: none; align-self: flex-end; display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 1px; padding: 2px 3.5px; border: 1px solid var(--mm-edge); border-radius: 14px; background: var(--mm-capsule); box-shadow: var(--mm-capsule-shadow); backdrop-filter: blur(12px) saturate(1.08); transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease; }
+.minimap-button { display: inline-flex; align-items: center; justify-content: center; flex: none; min-width: 17px; height: 17px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--mm-text); font: inherit; cursor: pointer; transition: background-color 160ms ease, transform 160ms cubic-bezier(.2,.8,.2,1), box-shadow 160ms ease; }
+.minimap-button .ui-icon { width: 9px; height: 9px; filter: var(--mm-icon); pointer-events: none; }
 .minimap-button:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--mm-hover); }
 .minimap-button:active:not(:disabled):not([aria-disabled="true"]) { transform: scale(.96); }
 .minimap-button:focus-visible { outline: 2px solid var(--mm-focus); outline-offset: 2px; }
-#graphMinimap:focus-visible { outline: 2px solid var(--mm-focus); outline-offset: -3px; border-radius: 14px; }
+#graphMinimap:focus-visible { outline: 2px solid var(--mm-focus); outline-offset: -3px; border-radius: 7px; }
 .minimap-button:disabled, .minimap-button[aria-disabled="true"] { opacity: .35; cursor: default; }
-.minimap-toggle { width: 34px; border-radius: 50%; background: var(--mm-hover); }
+.minimap-toggle { width: 17px; border-radius: 50%; background: var(--mm-hover); }
 .minimap-toggle[aria-expanded="true"] { background: var(--mm-accent); box-shadow: 0 2px 5px #00000014; }
 .minimap-toggle[aria-expanded="true"] .ui-icon { filter: var(--mm-active-icon); }
 .minimap-toggle[aria-expanded="true"]:hover { background: var(--mm-accent-hover); }
 #btnMinimapFit { background: var(--mm-hover); }
-.minimap-divider { width: 1px; height: 17px; background: var(--mm-inset); flex: none; margin: 0 3px; }
+.minimap-divider { width: 1px; height: 8.5px; background: var(--mm-inset); flex: none; margin: 0 1.5px; }
 @keyframes minimap-loading { to { transform: rotate(360deg); } }
 @container graph-slot (max-width: 620px) {
-  #graphMinimapPanel { bottom: 88px; }
   #legend { max-width: calc(100% - 32px); }
+}
+@container graph-slot (max-width: 340px) {
+  #graphMinimapPanel { bottom: 44px; }
 }
 @media (prefers-reduced-motion: reduce) { #minimapEmpty[data-loading="true"]::after { animation: none; } #graphMinimapPopover, .minimap-capsule, .minimap-button, #minimapTarget { transition: none; } #minimapTarget { display: none; } }
 @media (prefers-reduced-transparency: reduce) { #graphMinimapPopover, .minimap-capsule { background: var(--mm-solid); backdrop-filter: none; } }
@@ -1095,11 +1109,9 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 
 /* Narrow windows keep independent local scroll regions and readable controls. */
 @media (max-width: 1150px) {
-  :root { --sidebar-width: clamp(360px, 34vw, 520px); }
-
+  :root { --sidebar-width: clamp(288px, 27.2vw, 416px); }
 }
 @media (max-width: 700px) {
-  :root { --sidebar-width: calc(100vw - 44px); }
   body { height: 100dvh; overflow: hidden; }
   #left { border-right: 1px solid var(--border-strong); }
   .tab-body { padding: 10px; }

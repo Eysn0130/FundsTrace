@@ -194,6 +194,8 @@ function harness({ entityInputs = false, geometry = false } = {}) {
   density.onchange = () => { viewport.dataset.flowDensity = density.value; viewport.scrollLeft = viewport.scrollLeft; };
   wrap.onchange = () => { viewport.dataset.flowWrap = wrap.value; viewport.scrollLeft = viewport.scrollLeft; };
   const table = add(viewport, 'flowTable', 'table'), head = add(table, 'flowTableHead', 'thead'), heading = add(head, 'flowTableHeading', 'tr');
+  const horizontal = add(tab, 'flowHorizontalScroll', 'div', 'flow-horizontal-scroll');
+  add(horizontal, 'flowScrollLeft', 'button'); add(horizontal, 'flowHorizontalPosition', 'input'); add(horizontal, 'flowScrollRight', 'button');
   add(heading, 'flowSelectionHeader', 'th'); for (let column = 1; column < 7; column++) add(heading, 'flowHeader' + column, 'th');
   add(table, 'flowTbody', 'tbody');
   const overview = add(doc.body, 'flowOverview'); overview.style.display = 'none';
@@ -345,11 +347,13 @@ test('overview moves the same table nodes and retains separate scroll positions 
   const f = harness(); await f.search(); f.toggleAnchor(1, true);
   f.setStatus({ confirmedIds: ['2'], desiredIds: ['2'] });
   const viewport = f.element('flowTableScroll'), table = f.element('flowTable'), row = f.rows()[0];
-  assert.equal(f.doc.querySelector('.flow-horizontal-scroll'), null, 'the flow table has only its native scroll viewport');
+  const horizontal = f.element('flowHorizontalScroll');
+  assert.equal(horizontal.parentElement, f.element('tab-search'));
   assert.equal(viewport.fire('keydown', { key: 'ArrowRight' }).defaultPrevented, false, 'native horizontal keys remain available');
   viewport.scrollLeft = 83; viewport.scrollTop = 41;
   f.open();
   assert.equal(viewport.parentElement, f.element('flowOverviewContent'));
+  assert.equal(horizontal.parentElement, viewport.parentElement, 'the same horizontal control follows its table into overview');
   assert.equal(f.element('flowTable'), table); assert.equal(f.rows()[0], row);
   assert.equal(viewport.scrollLeft, 0); assert.equal(viewport.scrollTop, 0);
   assert.equal(f.box(1).checked, false); assert.equal(f.box(2).checked, true);
@@ -357,11 +361,13 @@ test('overview moves the same table nodes and retains separate scroll positions 
   assert.equal(f.element('flowSelectionHeader').textContent, '上图');
   viewport.scrollLeft = 17; viewport.scrollTop = 200; f.close();
   assert.equal(viewport.parentElement, f.element('tab-search')); assert.equal(f.element('flowTable'), table);
+  assert.equal(horizontal.parentElement, viewport.parentElement);
   assert.equal(f.box(1).checked, true); assert.equal(f.box(2).checked, false);
   assert.equal(viewport.scrollLeft, 83); assert.equal(viewport.scrollTop, 41);
   assert.equal(f.doc.activeElement, f.element('btnFlowOverview'));
   f.open(); assert.equal(viewport.scrollLeft, 17); assert.equal(viewport.scrollTop, 200);
-  assert.equal(f.doc.querySelector('.flow-horizontal-scroll'), null, 'opening the overview does not add another scroll control');
+  assert.equal(f.doc.querySelectorAll('.flow-horizontal-scroll').length, 1, 'overview reuses the existing control without duplicate IDs');
+  assert.equal(f.element('flowHorizontalScroll'), horizontal);
   assert.equal(viewport.fire('keydown', { key: 'ArrowLeft' }).defaultPrevented, false);
 });
 

@@ -27,7 +27,7 @@
   <button type="button" id="navAccounts" data-nav-page="accounts" aria-label="账户与身份" title="账户与身份"><img src="/static/ui-icons/user-search.svg" alt=""></button>
   <button type="button" id="navAnalysis" data-nav-page="analysis" aria-label="全案分析" title="全案分析"><img src="/static/ui-icons/network.svg" alt=""></button>
   <div class="rail-spacer"></div>
-  <div class="rail-update-slot"><button type="button" id="navUpdate" class="rail-update" aria-label="更新" title="更新"><img src="/static/ui-icons/download.svg" alt=""></button><funds-desktop-update hidden></funds-desktop-update></div>
+  <div class="rail-update-slot"><funds-desktop-update hidden></funds-desktop-update></div>
   <button type="button" id="navSettings" aria-label="设置" title="设置"><img src="/static/ui-icons/settings.svg" alt=""></button>
 </nav>
 <div id="appPageHost"><div id="graphPage">
@@ -332,7 +332,7 @@
     <div id="tab-search" class="tab-body">
       <div class="query-disclosure-head">
         <button class="btn small query-toggle" id="btnQueryToggle" type="button" aria-expanded="true" aria-controls="queryFields"><img class="ui-icon" src="/static/ui-icons/chevron-up.svg" alt=""><span>筛选</span></button>
-        <span class="stats query-stat-line" id="statLine">加载中…</span>
+        <span class="stats query-stat-line" id="statLine" hidden></span>
         <p class="workflow-status" id="importCoverageNote" role="note" hidden></p>
       </div>
       <div class="query-disclosure" id="queryFields"><div class="query-controls">
@@ -373,6 +373,7 @@
           <tbody id="flowTbody"></tbody>
         </table>
       </div>
+      <div class="flow-horizontal-scroll" id="flowHorizontalScroll" role="group" aria-label="流水表格水平滚动"><button class="btn small" id="flowScrollLeft" type="button" aria-label="流水表格向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><input id="flowHorizontalPosition" type="range" min="0" max="0" value="0" step="1" disabled aria-label="流水表格水平位置" aria-controls="flowTableScroll"><button class="btn small" id="flowScrollRight" type="button" aria-label="流水表格向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div>
     </div>
     <div id="tab-batches" class="tab-body" style="display:none">
       <header class="batch-heading"><div><h2>导入批次</h2><span id="batchCount" class="muted"></span></div><button class="btn primary" id="btnBatchImport" type="button"><img class="ui-icon" src="/static/ui-icons/upload.svg" alt="">导入流水</button></header>
