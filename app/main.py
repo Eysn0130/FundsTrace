@@ -420,13 +420,15 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
 
     if account.strip():
         conds.append("(payer_account = ? or payee_account = ? or self_account = ? or raw_self_account = ?)" if account_exact else """(payer_account ilike ? or payee_account ilike ? or self_account ilike ? or raw_self_account ilike ? or payer_display_account ilike ? or payee_display_account ilike ?
+            or exists (select 1 from flow_source_card_aliases c where c.case_id=flows.case_id
+                and c.flow_id=flows.id and c.own_card ilike ?)
             or exists (select 1 from resolution_entities e,
                 unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
                 where e.case_id=flows.case_id and e.entity_id in (flows.payer_account,flows.payee_account,flows.self_account)
                   and card.value ilike ?)
             or exists (select 1 from resolution_entities e where e.case_id=flows.case_id
                 and e.entity_id in (flows.payer_account,flows.payee_account,flows.self_account) and e.account_number ilike ?))""")
-        params += [account.strip() if account_exact else like(account)] * (4 if account_exact else 8)
+        params += [account.strip() if account_exact else like(account)] * (4 if account_exact else 9)
         conds[-1] = "(" + conds[-1] + (" or source_counter_account = ? or source_counter_id = ?)" if account_exact else " or source_counter_account ilike ? or source_counter_id ilike ?)")
         params += [account.strip() if account_exact else like(account)] * 2
     entity_query = unicodedata.normalize("NFKC", entity).strip().lower()
@@ -437,6 +439,8 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
             contains(lower(coalesce(payer_account,'')), ?) or contains(lower(coalesce(payee_account,'')), ?)
             or contains(lower(coalesce(payer_name,'')), ?) or contains(lower(coalesce(payee_name,'')), ?)
             or contains(lower(coalesce(payer_display_account,'')), ?) or contains(lower(coalesce(payee_display_account,'')), ?)
+            or exists (select 1 from flow_source_card_aliases c where c.case_id=flows.case_id
+                and c.flow_id=flows.id and contains(lower(c.own_card), ?))
             or exists (select 1 from resolution_entities e,
                 unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
                 where e.case_id=flows.case_id and e.entity_id in (flows.payer_account,flows.payee_account)
@@ -449,7 +453,7 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
                   and (identity.account=flows.payer_account or identity.account=flows.payee_account)
                   and contains(lower(coalesce(identity.id_no,'')), ?))
         )""")
-        params += [entity_query] * 9
+        params += [entity_query] * 10
     if name.strip():
         conds.append("(payer_name ilike ? or payee_name ilike ?)")
         params += [like(name)] * 2
@@ -932,6 +936,20 @@ def _graph(case_id: int, canvas_id: int, view=None):
     focus = [{"account": r["account"], "scale": r.get("scale") or 1.6}
              for r in db.q("select account,scale from focus_nodes where case_id=?", [case_id])]
     evidence_resolution.decorate_accounts(case_id, nodes, source_sql=source, params=params)
+    cards = sorted({card for node in nodes for card in (node.get("cards") or []) if card})
+    shared = {}
+    if cards:
+        for row in db.q_raw("""select c.own_card card, c.account
+                from effective_visible_flows f join flow_source_card_aliases c
+                  on c.case_id=f.case_id and c.flow_id=f.id
+                where c.case_id=? and c.own_card in (select unnest(?::varchar[])) and c.account<>''
+                group by 1,2""", [case_id, cards]):
+            shared.setdefault(row["card"], set()).add(row["account"])
+    for node in nodes:
+        # A card can outlive or span account numbers (reissue, sub-account).
+        # Keep those accounts visible in details; identity and totals stay per account.
+        node["shared_accounts"] = sorted({account for card in node.get("cards") or []
+                                          for account in shared.get(card, set())} - {node["account"]})[:20]
     event_resolution.decorate_edges(case_id, edges)
     current_resolution = evidence_resolution.summary(case_id)
     from . import source_ledger
@@ -2145,7 +2163,7 @@ def _tracked_export_data(case_id, canvas_id):
         select f.case_id, f.self_account, f.balance, f.trade_time, f.trade_time_utc, f.trade_time_original, f.trade_time_offset, f.trade_no, f.payer_name, f.payer_account, f.payer_bank,
                f.payee_name, f.payee_account, f.payee_bank, f.amount, f.currency, f.summary, f.channel, f.id,
                f.raw_self_account,f.raw_payer_account,f.raw_payee_account,f.payer_display_account,f.payee_display_account,
-               f.payer_card,f.payee_card,f.self_card,f.payer_source_account,f.payee_source_account,f.self_source_account,
+               f.payer_card,f.payee_card,coalesce(case when f.self_card_state='confirmed' then nullif(f.self_card,'') end,f.self_source_card) self_card,f.payer_source_account,f.payee_source_account,f.self_source_account,
                f.source_counter_account,f.source_counter_name,f.source_counter_bank
         from effective_visible_flows f join tracked_flows tf on tf.flow_id = f.id
         where tf.case_id = ? and tf.canvas_id = ? and f.case_id = ? order by f.trade_time

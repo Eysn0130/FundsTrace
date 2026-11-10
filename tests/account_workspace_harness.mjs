@@ -1020,3 +1020,16 @@ test('node detail and graph statistics use the selected scoped node without rewr
   assert.match(h.element('ndStats').textContent, /9,007,199,254,740,993\.07/);
   assert.equal(h.state.lastGraph.nodes[0].display_account, 'SYN-NEW-CARD');
 });
+
+test('conflicting source cards keep the account heading and explain the retained aliases in details', async () => {
+  const h = harness();
+  await ready(h, { display_account: 'SYN-A', account_number: 'SYN-A', cards: ['SYN-C1', 'SYN-C2'],
+    display_basis: 'conflicting_transaction_cards', display_card_order: 'conflict', display_card_tied: true });
+  const identity = h.element('drawerBody').querySelector('.node-identity');
+  const heading = identity.querySelector('.mono');
+  assert.equal(heading.textContent, 'SYN-A');
+  const details = identity.querySelector('details');
+  assert.match(details.textContent, /冲突.*回退账号/);
+  assert.match(details.textContent, /SYN-C1/); assert.match(details.textContent, /SYN-C2/);
+  assert.equal(writes(h).length, 0);
+});

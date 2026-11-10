@@ -164,7 +164,35 @@ def install_source_views(connection):
         case_id bigint not null,flow_id bigint not null,primary key(case_id,flow_id))""")
     for column in ("counter_account", "counter_name", "counter_bank"):
         connection.execute(f"alter table source_ledger_index add column if not exists {column} varchar")
+    # Financial deduplication can link opposing own ledgers to one flow. Keep
+    # each source role/account and every card, rather than max(card) per flow.
+    columns = {row[0] for row in connection.execute("""select column_name from information_schema.columns
+        where table_schema='main' and table_name='flow_source_cards'""").fetchall()}
+    if columns and not {"role", "own_account"} <= columns:
+        connection.execute("drop table flow_source_cards")
+    connection.execute("""create table if not exists flow_source_cards (
+        case_id bigint not null,flow_id bigint not null,role varchar not null,
+        own_account varchar not null,own_card varchar not null,
+        primary key(case_id,flow_id,role,own_account,own_card))""")
     refresh_index(connection)
+    connection.execute("""create or replace view flow_source_card_aliases as
+        select c.*,coalesce(e.entity_id,c.own_account) account,
+            coalesce(e.card_state,'')<>'conflict' and
+              count(distinct c.own_card) over(partition by c.case_id,c.flow_id,c.role,c.own_account)=1 display_eligible
+        from flow_source_cards c join flows f on f.case_id=c.case_id and f.id=c.flow_id
+        left join resolved_endpoints e on e.case_id=c.case_id and e.flow_id=c.flow_id and e.role=c.role
+        where c.own_card<>c.own_account and c.own_account=case c.role
+            when 'payer' then f.payer_account when 'payee' then f.payee_account when 'self' then f.self_account end""")
+    # Aggregate before joining a flow reader: aliases must not multiply money
+    # rows. Multiple cards for one posting/owner have no preferred card.
+    connection.execute("""create or replace view flow_source_card_projection as
+        select c.case_id,c.flow_id,
+            min(c.own_card) filter(where c.role='payer') payer_card,
+            min(c.own_card) filter(where c.role='payee') payee_card,
+            case when count(distinct c.own_card) filter(where c.own_account=f.self_account)=1
+                then min(c.own_card) filter(where c.own_account=f.self_account) end self_card
+        from flow_source_card_aliases c join flows f on f.case_id=c.case_id and f.id=c.flow_id
+        where c.display_eligible group by c.case_id,c.flow_id""")
 
 
 def refresh_index(connection, case_id=None):
@@ -179,6 +207,24 @@ def refresh_index(connection, case_id=None):
           on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
         where (json_extract_string(r.ledger_evidence,'$.kind')='ledger' or r.disposition='cancelled')""" +
         (" and r.case_id=?" if case_id is not None else "") + " group by f.case_id,f.flow_id", parameters)
+    refresh_cards(connection, case_id)
+
+
+def refresh_cards(connection, case_id=None):
+    """Keep source-owned card aliases independently of financial deduplication."""
+    scope, parameters = (" where case_id=?", [case_id]) if case_id is not None else ("", [])
+    connection.execute("delete from flow_source_cards" + scope, parameters)
+    connection.execute("""insert into flow_source_cards(case_id,flow_id,role,own_account,own_card)
+        select distinct f.case_id,f.flow_id,
+            case json_extract_string(r.ledger_evidence,'$.direction') when 'out' then 'payer'
+                when 'in' then 'payee' else 'self' end,
+            json_extract_string(r.ledger_evidence,'$.row.self_account'),
+            json_extract_string(r.ledger_evidence,'$.own_card')
+        from source_ledger_records r join flow_sources f
+          on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
+        where nullif(json_extract_string(r.ledger_evidence,'$.own_card'),'') is not null
+          and nullif(json_extract_string(r.ledger_evidence,'$.row.self_account'),'') is not null""" +
+        (" and r.case_id=?" if case_id is not None else ""), parameters)
 
 
 def install_visible_view(connection, projection_sql):
@@ -188,8 +234,10 @@ def install_visible_view(connection, projection_sql):
         visible as (select * from financial union all select l.* from ledger l
             where not exists(select 1 from financial e where e.case_id=l.case_id and e.id=l.id))
         select f.*,coalesce(l.counter_account,'') source_counter_account,
-            coalesce(l.counter_name,'') source_counter_name,coalesce(l.counter_bank,'') source_counter_bank
-        from visible f left join source_ledger_index l on l.case_id=f.case_id and l.flow_id=f.id""")
+            coalesce(l.counter_name,'') source_counter_name,coalesce(l.counter_bank,'') source_counter_bank,
+            coalesce(c.self_card,'') source_own_card
+        from visible f left join source_ledger_index l on l.case_id=f.case_id and l.flow_id=f.id
+        left join flow_source_card_projection c on c.case_id=f.case_id and c.flow_id=f.id""")
     connection.execute("create or replace view effective_visible_flows as " +
         "select f.*,coalesce(e.entity_id,'') source_counter_id from (" +
         projection_sql.replace("from source_effective_flows f", "from source_visible_flows f") +
