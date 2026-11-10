@@ -1,6 +1,6 @@
-# 合成数据性能基线
+# 合成数据性能记录
 
-**本页数值是统一持久导入任务、来源追溯和上传生命周期改造前的历史基线，绑定下方源码指纹。当前候选已经改变，尚未重采三档计时，不能声称保持相同性能或按旧数值证明没有回归。** 历史 JSON 保留原貌，不覆盖成新候选证据。
+本页按日期区分源码、负载和测量边界。下方 2026-10-15 三档数据是持久导入任务、来源追溯和上传生命周期改造前的历史基线，不能证明当前性能；2026-11-05—10 的导入与读取候选另见[本批记录](#import-read-candidate)。不同阶段的收益不相加，历史结果不覆盖成新候选证据。
 
 基准入口是 `scripts/benchmark.py`，测量 Python 业务函数与 DuckDB SQL。数据由固定 seed 的整数规则生成；不连接现有数据库、业务服务或真实 Provider。CSV、临时数据库和 Excel 均随每个子进程的临时目录清理，JSON 只保存环境、策略、聚合校验与性能指标。
 
@@ -60,11 +60,7 @@ CSV 有 21 列，包含中文、8 个额外宽字段、可空银行/余额/币�
 - `requirements-dev.lock`：`858ce7c5ec295dddcbb17481e5ee1cfaa3cbc414c4d27cf6ce7280201b5f67dd`
 - `requirements.txt`：`fea9a66281baa21a559fc0fd2d0d49f23d9811dab3b152eb9802dc5750abd811`
 
-本地聚合 JSON：
-
-- [baseline-10k.json](../output/benchmarks/baseline-10k.json)
-- [baseline-100k.json](../output/benchmarks/baseline-100k.json)
-- [capacity-1m.json](../output/benchmarks/capacity-1m.json)
+历史聚合 JSON（`baseline-10k.json`、`baseline-100k.json`、`capacity-1m.json`）及下文按本地目录命名的诊断工件由维护者留存，不随源码分发。克隆仓库后请用上方命令生成新候选结果；没有原历史源码与工件时，不能声称复现了该历史采样。
 
 输入与主案件校验结果（各重复均相同且全部通过）：
 
@@ -254,3 +250,88 @@ v30 在冻结产品快照中仅替换 `_locate_header`，使用原 profile 标�
 B1 原结果保留；后续轮次为控制交付空间，仅在计时结束后将完整结果无损压缩保存，工具版本差异和精确比较已记录。64MiB DetailsPool 阈值不变，此输入最大池内存 53,198 字节、spool 为 0，不覆盖默认溢写。该结果限于 v30 的函数副本、旧标签和预览工作量。
 
 正式候选仅对新归档 v10／v11 启用短路，分别继承 v8／v9；旧版本与 standalone 不启用。本轮版本接线、来源持久化、历史重导及案件包兼容通过常规项目 runner 的独立合成回归检查，不追加性能采样；上述 41.77% 不是新产品候选的实测值。新候选须另经冻结后的统一完整回归，旧 43／4891／API 结果不能替代。真实 99 份／600 秒、Windows、安装与发布资格均未由本轮建立。
+
+
+<a id="import-read-candidate"></a>
+
+## 2026-11-05—10：导入与读取候选
+
+基点为 `c9fca2cc11eac9fc75e667d15765f6400d9d5134`。本批覆盖普通多文件队列、首次预览执行、既有暂存复用、来源写入与历史查询，以及 G6 流水／图请求的已提交快照。以下记录来自固定种子的合成输入；它们有各自的前态与候选，不能都标为原 main 对照。
+
+最终运行源码／基准的 65 项内容指纹为 `1ca7688a28bf32e3ce820f495b17e17ff727fa92e44e1f9e58785d5faffe3fec`，这是文件内容摘要，不是 Git 提交。它不包含 UI、全部测试或本文，不能单独证明完整集成内容。原始运行库、截图、诊断脚本、失败现场和撤回原型由维护者本地留存，不随源码分发，也不是克隆仓库后可用的复现依赖。
+
+### 保留的行为与兼容边界
+
+| 范围 | 最终行为与对应检查 |
+| --- | --- |
+| CSV 识别与成员解码 | 仅在列宽变化时重新推断宽度，检查所有实际出现的分隔符及首个缺席分隔符；归档成员复用同一字节、同 profile 的一次解码。正式区域解释、引号、限额、歧义、辅助表和撤销证明保持。见 `tests/test_strict_csv_width.py`、`tests/test_header_width_prefilter.py`、`tests/test_source_contract_68.py`。 |
+| G6 多文件队列 | 独立文件串行上传并取得任务结果；目录仍为一个关联组。明确格式失败可以继续，写入或结果不明时停止。关闭、离页及换案停止后续调度；已提交任务依持久回执结算。React 普通多选明确拒绝并说明入口。见 `tests/test_import_queue.py`、`tests/test_workflow_ui.py` 及 React automatic import 测试。 |
+| 首次预览执行 | 普通／目录共用一个后台准入槽，直接解析请求的可寻址文件，目录流式写操作私有 ZIP。解析成功后分块保存原件并计算摘要；主动取消等待工作线程释放文件，普通 TCP 断连可留下已注册 ready／attempt=0 任务。见 `tests/test_import_preview_execution.py` 和[生命周期说明](import-lifecycle.md)。 |
+| 暂存与来源验证 | 接受缺省但确实为空的可选序列；返回预览元数据与封存计划脱离。manifest 联读同时生成既有 CSV 兼容身份。普通 envelope 来源校验暂持已读取行对象，到原 requested 字典建成即释放额外引用。完整性、别名更新、原件核验、案件绑定和写后 readback 保持。见 `tests/test_import_preview_cache.py`、`tests/test_import_plan_staging.py`、`tests/test_table_manifest_integrity.py`。 |
+| 来源重放与写入 | 仅排除可证没有顶层 typed 证据的严格字符串审计对象；在单次不变重建内复用有界来源范围。来源记账按最多 128 个不同物理位置批量匹配／写入，重复位置先发布前批；固定查询签名预计算，无声明的已物化文本矩阵省去布局预扫描。见 replay filter、range reuse、source ledger batch、source roles 与 source sign 回归。 |
+| 普通归档历史键 | 用已构造的 requested 键集合筛去无关历史；原 profile 优先级、最低匹配 ID、完整事实、self 和一次分配约束保持。见 `tests/test_import_history_filter.py`。 |
+| 流水与图读取 | `/api/flows`、GET `/api/graph` 和 POST `/api/graph/view` 共用单读者准入与请求私有只读事务，返回同一完整提交状态。缺代际初始化及不支持只读语法时走完整受锁路径；其它错误传播并释放资源。v1、其它读取、导出及写操作内部调用保留原锁边界。见 `tests/test_flow_read_snapshot.py`、`tests/test_graph_read_snapshot.py`。 |
+| 表格与桌面资源 | 启动、重开及画布恢复的最终查询归调用方，异常时仅为当前绑定补查。七列表格、精确金额和 G6 绘制策略保持；新 `static/import-queue.js` 已进入桌面后端资源白名单。见 table workspace harness 和 `tests/test_desktop_resources.py`。 |
+
+API 金额／ID 类型、数据库 schema、`.fundcase`、解析 profile、正常免激活启动和桌面管道认证未改变；不引入 Rust 或其它原生构建依赖。未知方向仍可查询，不能据此生成有向资金边；双边同笔与合法同额独立交易仍须分别保持 1 笔与 2 笔。
+
+### 已观察结果
+
+本机 macOS arm64、Python 3.11.15、DuckDB 1.5.6、Node 22.22.1。HTTP 连续等待从 multipart 上传前开始，经提交、完成、独立持久回执读取，到首次流水响应完整解码；输入生成、启动、停服后全量核对在计时外。诊断计时、GUI 交互及纯模块计时另外标明。
+
+| 阶段与负载 | 前态 → 候选 | 解释与限制 |
+| --- | ---: | --- |
+| 严格列宽修复，10k／50k 普通上传 | 25.632 → 14.000 s／127.556 → 68.986 s | 各一次，主要减少预览；提交阶段未改善。这是早期候选，不是最终候选新成绩。 |
+| 单文件预览缓存，20k XLSX | 19.742 → 14.090 s | 同一工作簿各一次；确认等待 11.646 → 5.955 s，来自省去重复解析。 |
+| 来源记账批处理，775 行复杂输入及重导 | 3.227724 → 1.754704 s | 带轻量观测代码；首次／重复历史匹配均从 768 次降至 6 次，不外推普通金融输入。 |
+| 写入期间流水请求 | 7.042 → 0.635 s | 真实写事务后触发，各一次；新请求返回完整旧提交，不是 GUI 或单条 SQL 时间。 |
+| 写入期间非空图请求 | 5.164977 → 0.790112 s | 两条图路由使用相同范围复用候选；含单读者准入等待，各一次。 |
+| 画布切换到图与表格完成 | 1.722 → 1.104 s | macOS 源码 Electron，各一次；流水查询 2 次变 1 次，不是 Windows 安装后验收。 |
+
+接续前曾冻结两档正常队列观察，均为 100k 合成事实：
+
+| 分片 | 初始队列基线 → 该阶段冻结候选 | 初始 → 候选采样树峰值 |
+| --- | ---: | ---: |
+| 2 × 50k | 66.149355 → 62.480544 s | 2149.78 → 2095.84 MiB |
+| 10 × 10k | 90.547052 → 78.178429 s | 2201.97 → 2153.36 MiB |
+
+初始队列基线已含此前的语义修正和队列功能。后续来源记账、表头、历史筛选与行对象复用没有重跑这两档，不能把旧数值移到最终指纹下。10 × 10k 的首次末轮因磁盘采样遇到正常消失的操作私有目录而失败；修复采样器并保留失败后，仅补该档一次。对已消失子目录的不完整遍历不计有效峰值，根目录、权限和 I/O 错误仍失败。
+
+最终 100k 存量追加 10k 的连续观察依次为 **9.682089 → 9.105493 → 8.986349 s**，分别为历史筛选前、筛选后、行对象复用后；采样树峰值为 1538.578125 → 1578.109375 → 1518.968750 MiB。末项仅少约 119 ms，完成等待 4.430076 → 4.284069 s，首查反而为 1.602761 → 1.660450 s；不能把全部差值归于两个改动。这一追加试验复用了冻结基础库及输入，当前公开 CLI 不自动重建该历史现场，数值作为历史观察保留。
+
+该末项 87 项定向回归及最终公共画布判例通过。257 行公共回归在旧实现实际解码 771 次，候选不超过 259 次；没有据此外推已实测的 10k 解码数。三份 110k 结果的全部 21 个非运行时钟流水字段、完整来源日志／关联、九张相关表和完整回执一致；仅按经原件 SHA 验证的来源 ID 及明确运行时钟归一。性能输入为 0 个确认事件／110k 个未决观察，复杂资金含义另由公共判例检查，不能拿这一性能输入替代它。
+
+RSS 是约每 50 ms 读取自有服务进程树的同时 RSS 之和，实际间隔随调度变化；峰值是采样下界，共享页可能重复计数。目录与匿名文件大小是非原子的逻辑字节观察，不是物理磁盘可用空间。少量前后观察均不构成稳定提速、P95 或内存收益保证；未清 OS 文件缓存或独占工作站。已有完整字段、来源及回执对照复用，没有为本次集成重跑大样本或真实业务包。
+
+### 可从源码执行的检查与新观察
+
+使用 [CONTRIBUTING.md](../CONTRIBUTING.md) 的 Python 3.11、Node 与锁文件。下面的回归仅使用合成临时状态，源码包含其全部依赖；文件名是仓库路径，不依赖本机研究目录：
+
+```sh
+.venv/bin/python scripts/test.py tests/test_import_upload_benchmark.py tests/test_import_queue_benchmark.py tests/test_import_preview_execution.py tests/test_flow_read_snapshot.py tests/test_graph_read_snapshot.py tests/test_source_ledger_batch.py -q
+.venv/bin/python scripts/export_api_contract.py --check
+.venv/bin/python scripts/patch_g6_validation.py --check
+npm --prefix frontend run build
+npm --prefix frontend test
+npm --prefix desktop test
+```
+
+[单包驱动](../benchmarks/import_upload.py)和[队列驱动](../benchmarks/import_queue.py)从整数分规则生成输入、独立预期和全量资金／来源核对。没有业务库或外部 Provider 依赖。队列按全局索引切分同一事实集合，各包哈希不同；不以重复导入的快速路径代替新数据负载。普通 CI 只运行小型正确性与工具边界检查，不运行下面的大样本。
+
+需要新性能观察时，先停止其他测试／构建／采样，使用 POSIX 的 `ps`、`lsof` 和互不重名的输出目录；这些目录由命令新建，不是随仓库提供的历史工件：
+
+```sh
+.venv/bin/python -B -m benchmarks.import_upload --rows 10000 --seed 20261105 --timeout 180 --rss-interval 0.05 --output output/benchmarks/current-upload-10k
+.venv/bin/python -B -m benchmarks.import_queue --rows 100000 --packages 2 --seed 20261105 --timeout 600 --max-rss-mib 4096 --max-disk-mib 4096 --output output/benchmarks/current-queue-2x50k
+.venv/bin/python -B -m benchmarks.import_queue --rows 100000 --packages 10 --seed 20261105 --timeout 600 --max-rss-mib 4096 --max-disk-mib 4096 --output output/benchmarks/current-queue-10x10k
+```
+
+输出已存在时拒绝覆盖。先检查 `result.json` 的 `status=passed`、全部独立检查、输入 manifest、服务已退出和前后内容指纹，再比较相同输入、设置与测量边界。`--expected-head` 可检查基点提交，但未提交候选仍必须核对内容指纹。失败不生成吞吐成绩；输出保留隔离库、上传原件及失败信息，只在本地管理，不作为产品资源或提交内容。Windows 上计时 CLI 明确拒绝；平台无关的资金烟测仍由公共接口回归覆盖。
+
+### 未采用的试验
+
+完整 Rust 暂存模块及一次表示边界修正均实际接入过。包含 FFI 和 Python 对象恢复的冻结批对照仍比 Python 慢约 6.7%，未建立可归因的采用收益，因此恢复 Python。随后来源记账原生校验／投影在复杂 775 行与金融 10k 模块比较中分别改善约 42.10%／45.02%，但两组金融 10k 整链只改善 0.31%／2.04%，RSS 方向不一致；净收益不足以承担双语言规则、兼容层和平台构建成本，亦已撤回。两者不在活跃候选中，没有遗留扩展加载或 Rust 锁文件依赖。
+
+两项流水页 SQL 原型也因实测无收益或退步撤回，不叠加到最终实现。新的性能工作需要新的可验证瓶颈和代表负载；不能把 HTTP 预览、DuckDB 执行或必要资金校验全部当作可迁移的 Python CPU。迁移取舍见[演进建议](evolution.md#2026-11-06-渐进迁移调整)。
+
+上述源码／HTTP／macOS 源码 GUI 证据各自独立。它们不构成远端 `PR required`、Windows x64 离线加载、安装后 GUI／DPI、真实原包、所有银行格式或发行资格；提交、审阅、合并和发行按各自实际结果记录。

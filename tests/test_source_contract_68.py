@@ -1,5 +1,6 @@
 """Synthetic source postings, complete CSV structure and historical replay."""
 import csv
+import copy
 import io
 import json
 import zipfile
@@ -96,8 +97,8 @@ def test_old_ready_source_session_keeps_its_version_and_receipt_after_text_upgra
 
 
 @pytest.mark.parametrize("suffix,archive,profile", [
-    (".xlsx", False, "funds-trace-table-v66"),
-    (".xls", False, "funds-trace-table-v67"),
+    (".xlsx", False, "funds-trace-table-v69"),
+    (".xls", False, "funds-trace-table-v70"),
     (".xls", True, "funds-trace-table-archive-v59"),
 ])
 def test_source_text_version_routes_workbooks_without_merging_remark(client, make_case, suffix, archive, profile):
@@ -257,3 +258,143 @@ def test_current_source_profiles_keep_the_frozen_zoned_and_mixed_totals(client, 
     assert client.post("/api/track", json={"case_id": cid, "flow_ids": [r["id"] for r in flows]}).status_code == 200
     edge = client.get("/api/graph", params={"case_id": cid}).json()["edges"]
     assert len(edge) == 1 and edge[0]["cnt"] == count and edge[0]["total"] == amount
+
+
+@pytest.mark.parametrize("profile", sorted(table_archive.SUPPORTED_PROFILES & table_import.SOURCE_CONTRACT_PROFILES))
+def test_archive_decodes_each_same_profile_csv_member_once(monkeypatch, profile):
+    data = payload()
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as package:
+        package.writestr("first.csv", data)
+        package.writestr("second.csv", data)
+    original, calls = table_import._csv, []
+    def observed(raw, suffix, selected):
+        calls.append((raw, suffix, selected))
+        return original(raw, suffix, selected)
+    monkeypatch.setattr(table_import, "_csv", observed)
+    plan = table_archive.parse(io.BytesIO(stream.getvalue()), profile=profile)
+    try:
+        # Equal bytes in separate members retain independent source records.
+        assert calls == [(data, ".csv", profile), (data, ".csv", profile)]
+        assert len(plan["records"]) == 8
+        assert [r["member_path"] for r in plan["records"]] == ["first.csv"] * 4 + ["second.csv"] * 4
+        assert [r["source_row"] for r in plan["records"]] == [2, 3, 4, 5] * 2
+    finally:
+        if plan.get("_details_pool") is not None:
+            plan["_details_pool"].close()
+
+
+@pytest.mark.parametrize("profile", [table_archive.SOURCE_CONTRACT_PROFILE, table_archive.PROFILE,
+                                    table_archive.SOURCE_OBSERVATION_EVIDENCE_PROFILE])
+@pytest.mark.parametrize("kind", ["cancellation", "duplicate-bytes", "auxiliary-only", "nested"])
+def test_archive_csv_reuse_matches_fresh_decode_for_every_plan_field(monkeypatch, profile, kind):
+    from test_archive_binding_once import members
+    from test_folder_evidence import archive
+    data = archive(members(kind))
+    def freeze():
+        if kind == "nested" and profile == table_archive.SOURCE_CONTRACT_PROFILE:
+            with pytest.raises(table_import.TableImportError, match="需使用原规则") as caught:
+                table_archive.parse(io.BytesIO(data), profile=profile)
+            return str(caught.value)
+        plan = table_archive.parse(io.BytesIO(data), profile=profile)
+        try:
+            return copy.deepcopy({key: value for key, value in plan.items() if key != "_details_pool"})
+        finally:
+            if plan.get("_details_pool") is not None:
+                plan["_details_pool"].close()
+    actual = freeze()
+    original = table_import.parse
+    def fresh_decode(*args, **kwargs):
+        kwargs.pop("_decoded_csv", None)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(table_import, "parse", fresh_decode)
+    assert freeze() == actual
+
+
+def test_auxiliary_csv_keeps_its_specialized_interpreter(monkeypatch):
+    text = io.StringIO(newline="")
+    writer = csv.writer(text, delimiter="\t")
+    writer.writerow(table_archive.AUXILIARY_SCHEMAS["freeze"])
+    writer.writerow(["SYN"] * len(table_archive.AUXILIARY_SCHEMAS["freeze"]))
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as package:
+        package.writestr("freeze.csv", text.getvalue().encode("utf-8-sig"))
+    def unexpected(*args, **kwargs):
+        pytest.fail("auxiliary input must retain its specialized parser")
+    monkeypatch.setattr(table_import, "parse", unexpected)
+    plan = table_archive.parse(io.BytesIO(stream.getvalue()))
+    assert plan["rows"] == []
+    assert len(plan["records"]) == 1
+    assert plan["records"][0]["disposition"] == "auxiliary"
+    assert plan["records"][0]["details"]["source_role"] == "freeze"
+
+
+@pytest.mark.parametrize("profile", [table_archive.IDENTITY_PROFILE, table_archive.REFERENCE_PROFILE])
+def test_historical_different_member_profile_decodes_normally(monkeypatch, profile):
+    data = b"date,payer_account,payee_account,amount\n2026-01-01,0001,0002,2.34\n"
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as package:
+        package.writestr("source.csv", data)
+    original, selected = table_import.parse, []
+    def observed(*args, **kwargs):
+        assert kwargs.get("_decoded_csv") is None
+        selected.append(kwargs["profile"])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(table_import, "parse", observed)
+    plan = table_archive.parse(io.BytesIO(stream.getvalue()), profile=profile)
+    assert selected == [table_import.IDENTITY_PROFILE]
+    assert len(plan["rows"]) == 1
+    assert plan["rows"][0]["payer_account"] == "0001"
+    assert str(plan["rows"][0]["amount"]) == "2.34"
+
+
+@pytest.mark.parametrize("mismatch", ["bytes", "suffix", "profile", "type"])
+def test_decoded_csv_cannot_cross_source_or_profile_binding(mismatch):
+    data, profile = payload(), table_archive.SOURCE_OBSERVATION_EVIDENCE_PROFILE
+    decoded = table_import._DecodedCSV(data, ".csv", profile)
+    options = dict(suffix=".csv", profile=profile, reference_policy=table_import.TRANSACTION_REFERENCE_POLICY,
+                   _decoded_csv=decoded)
+    if mismatch == "bytes":
+        data += b"\r\n"
+    elif mismatch == "suffix":
+        options["suffix"] = ".txt"
+    elif mismatch == "profile":
+        options["profile"] = table_archive.SOURCE_TEXT_PROFILE
+    else:
+        options["_decoded_csv"] = {"rows": []}
+    with pytest.raises(table_import.TableImportError, match="临时CSV解码与来源或规则不匹配"):
+        table_import.parse(data, **options)
+
+
+def test_decoded_csv_is_consumed_once_and_still_checks_source_size(monkeypatch):
+    data, profile = payload(), table_archive.PROFILE
+    decoded = table_import._DecodedCSV(data, ".csv", profile)
+    options = dict(suffix=".csv", profile=profile, reference_policy=table_import.TRANSACTION_REFERENCE_POLICY,
+                   _decoded_csv=decoded)
+    with monkeypatch.context() as limited:
+        limited.setattr(table_import, "MAX_BYTES", len(data)-1)
+        with pytest.raises(table_import.TableImportError, match="超出安全处理大小"):
+            table_import.parse(io.BytesIO(data), **options)
+    plan = table_import.parse(io.BytesIO(data), **options)
+    assert len(plan["records"]) == 4
+    assert decoded._raw is decoded._sheets is decoded.header is None
+    with pytest.raises(table_import.TableImportError, match="临时CSV解码与来源或规则不匹配"):
+        table_import.parse(data, **options)
+
+
+@pytest.mark.parametrize("owner,limit,value,message", [
+    (table_archive, "MAX_MEMBER_BYTES", -1, "单成员"),
+    (table_archive, "MAX_EXPANDED_BYTES", -1, "累计展开量"),
+    (table_import, "MAX_BYTES", -1, "表格文件超出"),
+    (table_import, "MAX_RECORDS", 4, "记录数或列数"),
+    (table_import, "MAX_COLUMNS", len(HEADERS)-1, "记录数或列数"),
+    (table_import, "MAX_FIELD", 8, "字段超出"),
+])
+def test_archive_csv_reuse_preserves_member_and_table_limits(monkeypatch, owner, limit, value, message):
+    data = payload()
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as package:
+        package.writestr("source.csv", data)
+    monkeypatch.setattr(owner, limit, len(data)-1 if value == -1 else value)
+    with pytest.raises(table_import.TableImportError, match=message):
+        table_archive.parse(io.BytesIO(stream.getvalue()))

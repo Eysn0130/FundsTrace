@@ -12,6 +12,7 @@ UNORIENTED_POLICY = "source-ledger-unoriented-v1"
 SOURCE_OBSERVATION_POLICY = "source-ledger-unoriented-v2"
 FIELD = "source_ledger_evidence"
 MAX_BYTES = 8 * 1024 * 1024
+_COMMIT_CHUNK = 128
 FLOW_FIELDS = ("trade_no", "trade_time", "payer_name", "payer_account", "payer_bank", "payee_name",
                "payee_account", "payee_bank", "amount", "balance", "currency", "summary", "channel",
                "self_account", "self_name", "trade_time_utc", "trade_time_original", "trade_time_offset")
@@ -243,47 +244,100 @@ def install_visible_view(connection, projection_sql):
         ") f left join resolved_endpoints e on e.case_id=f.case_id and e.flow_id=f.id and e.role='counter'")
 
 
+def _commit_records(case_id, source_id, batch_id, records):
+    """Match and write one bounded set of distinct physical source positions."""
+    import pandas as pd
+    from . import table_import
+    supported = {item["source_row"] for item in db.q_raw("""select source_row from flow_sources
+        where case_id=? and source_id=? and source_row in (select unnest(?::bigint[]))""",
+        [case_id, source_id, [record["record_no"] for record, _ in records]])}
+    records = [(record, row) for record, row in records if record["record_no"] not in supported]
+    if not records:
+        return 0, 0
+    expected = {record["record_no"]: table_import.flow_digest(row) for record, row in records}
+    remaining = {record["record_no"]: record for record, _ in records}
+    matched, after = {}, None
+    # Exact source position is support identity. Bound candidate results too:
+    # one position may have arbitrarily many historical links or changed facts.
+    while remaining:
+        requested = list(remaining.values())
+        parameters = [[record[key] for record in requested]
+                      for key in ("record_no", "member_path", "member_sha256", "source_row")]
+        parameters.append(case_id)
+        condition = ""
+        if after is not None:
+            condition = " and (requested.record_no,f.id)>(?,?)"
+            parameters.extend(after)
+        parameters.append(_COMMIT_CHUNK)
+        candidates = db.q_raw("""select distinct requested.record_no matched_record_no,f.id,""" +
+            ",".join("f." + field for field in FLOW_FIELDS) + """
+            from (select unnest(?::bigint[]) record_no,unnest(?::varchar[]) member_path,
+                         unnest(?::varchar[]) member_sha256,unnest(?::bigint[]) source_row) requested
+            join import_records r on r.member_path=requested.member_path and r.source_row=requested.source_row
+            join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
+              and m.sha256=requested.member_sha256
+            join flow_sources s on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
+            join flows f on f.case_id=s.case_id and f.id=s.flow_id
+            where r.case_id=?""" + condition + " order by matched_record_no,f.id limit ?", parameters)
+        for prior in candidates:
+            number = prior["matched_record_no"]
+            if number in remaining and table_import.flow_digest(prior) == expected[number]:
+                matched[number] = prior["id"]
+                del remaining[number]
+        if len(candidates) < _COMMIT_CHUNK:
+            break
+        after = candidates[-1]["matched_record_no"], candidates[-1]["id"]
+    new = [(record, row) for record, row in records if record["record_no"] not in matched]
+    ids = db.q_raw("select nextval('flow_seq') id from range(?)", [len(new)]) if new else []
+    columns = ["id", "case_id", "batch_id", *FLOW_FIELDS]
+    if new:
+        data = [[item["id"], case_id, batch_id, *[row[key] for key in FLOW_FIELDS]]
+                for item, (_, row) in zip(ids, new)]
+        db.insert_dataframe("flows", pd.DataFrame(data, columns=columns, dtype=object), columns)
+    assigned = {record["record_no"]: item["id"] for item, (record, _) in zip(ids, new)}
+    columns = ["case_id", "source_id", "source_row", "flow_id", "disposition"]
+    data = [[case_id, source_id, record["record_no"],
+             matched.get(record["record_no"], assigned.get(record["record_no"])),
+             "duplicate" if record["record_no"] in matched else "imported"] for record, _ in records]
+    db.insert_dataframe("flow_sources", pd.DataFrame(data, columns=columns, dtype=object), columns)
+    return len(new), len(matched)
+
+
 def commit(case_id, source_id, batch_id):
     """Publish typed observations in the same transaction as their journal."""
     records = db.q_raw("""select record_no,member_path,member_sha256,source_row,disposition,ledger_evidence
         from source_ledger_records where case_id=? and source_id=? order by record_no""",
                        [case_id, source_id])
     added = duplicates = 0
+    pending, positions = [], set()
+    def publish():
+        nonlocal added, duplicates
+        if pending:
+            new, reused = _commit_records(case_id, source_id, batch_id, pending)
+            added += new
+            duplicates += reused
+            pending.clear()
+            positions.clear()
     for record in records:
-        evidence = validate(record.pop("ledger_evidence"))
+        try:
+            evidence = validate(record.pop("ledger_evidence"))
+        except (ValueError, TypeError, ArithmeticError):
+            # Preserve sequence consumption by the valid prefix; the caller's
+            # enclosing import transaction still rolls all its writes back.
+            publish()
+            raise
         if evidence["kind"] != "ledger" and record["disposition"] != "cancelled":
             continue
-        row = evidence["row"]
-        if db.q_raw("select 1 from flow_sources where case_id=? and source_id=? and source_row=?",
-                    [case_id, source_id, record["record_no"]]):
-            continue
-        # Exact source position is support identity. References, amounts and
-        # balances cannot merge two source ledger observations.
-        matches = db.q_raw("""select distinct f.id from import_records r
-            join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
-            join flow_sources s on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
-            join flows f on f.case_id=s.case_id and f.id=s.flow_id
-            where r.case_id=? and r.member_path=? and m.sha256=? and r.source_row=? order by f.id""",
-            [case_id, record["member_path"], record["member_sha256"], record["source_row"]])
-        fid = None
-        from . import table_import
-        expected = table_import.flow_digest(row)
-        for match in matches:
-            prior = db.q_raw("select * from flows where case_id=? and id=?", [case_id, match["id"]])[0]
-            if table_import.flow_digest(prior) == expected:
-                fid = prior["id"]
-                break
-        reused = fid is not None
-        if fid is None:
-            fid = db.q_raw("select nextval('flow_seq') id")[0]["id"]
-            columns = ",".join(FLOW_FIELDS)
-            db.x(f"insert into flows(id,case_id,batch_id,{columns}) values (?,?,?,{','.join('?' for _ in FLOW_FIELDS)})",
-                 [fid, case_id, batch_id, *[row[key] for key in FLOW_FIELDS]])
-            added += 1
-        else:
-            duplicates += 1
-        db.x("insert into flow_sources(case_id,source_id,source_row,flow_id,disposition) values (?,?,?,?,?)",
-             [case_id, source_id, record["record_no"], fid, "duplicate" if reused else "imported"])
+        position = record["member_path"], record["member_sha256"], record["source_row"]
+        if position in positions:
+            # Read a repeated position only after the earlier write is visible,
+            # using its actual persisted facts and the established digest.
+            publish()
+        pending.append((record, evidence["row"]))
+        positions.add(position)
+        if len(pending) == _COMMIT_CHUNK:
+            publish()
+    publish()
     refresh_index(db.con(), case_id)
     return {"added": added, "duplicates": duplicates}
 

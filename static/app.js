@@ -241,9 +241,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     await loadCases();
     void window.FundsImportWorkflow?.restore();
     await refreshStats();
-    await loadGraph();
-    await applyPendingFocusEdge();
-    await refreshCanvasList(null).catch(() => {});
+    const startupContext = caseContext();
+    await loadGraph(true, startupContext, { tableQuery: 'caller' });
+    try {
+      await applyPendingFocusEdge();
+      await refreshCanvasList(null).catch(() => {});
+    } catch (error) {
+      try { if (isCurrentCase(startupContext) && !state.graphLoading) await doSearch(1); }
+      finally { throw error; }
+    }
     await doSearch(1);
     window.dispatchEvent(new CustomEvent('funds-trace:workbench', { detail: 'ready' }));
   } catch (error) {
@@ -2532,10 +2538,18 @@ function bindCanvases() {
       try {
         await refreshCanvasList(id);
         if (!isCurrentCase(activated)) return;
-        await loadGraph(true, activated);
+        await loadGraph(true, activated, action === 'delete' ? { tableQuery: 'caller' } : {});
         if (!isCurrentCase(activated)) return;
         if (action === 'clone') applyCanvasSnapshot(snapshot);
-        if (action === 'delete') { window.FundsWorkspaceSession?.restore(); await doSearch(state.search.page || 1, { refresh: true }); }
+        if (action === 'delete') {
+          try { window.FundsWorkspaceSession?.restore(); }
+          catch (error) {
+            try { if (isCurrentCase(activated) && !state.graphLoading) await doSearch(1); }
+            finally { throw error; }
+          }
+          await doSearch(state.search.page || 1, { refresh: true });
+          if (!isCurrentCase(activated)) return;
+        }
         toast(action === 'delete' ? '画布已删除，原始流水已保留' : action === 'new' ? '空白画布已创建' : '已另存为新画布，源画布已保留');
       } catch (_) {
         if (isCurrentCase(activated)) toast('画布操作已完成，部分数据未刷新，请重新调阅画布', 'warn', activated);
@@ -2571,11 +2585,17 @@ function bindCanvases() {
         if (Array.isArray(result.snapshot?.nodes) && Array.isArray(result.snapshot?.edges)) snapshot = result.snapshot;
       }
       if (!isCurrentCase(activated)) return;
-      await loadGraph(true, activated);
+      await loadGraph(true, activated, { tableQuery: 'caller' });
       if (!isCurrentCase(activated)) return;
-      if (snapshot) applyCanvasSnapshot(snapshot);
-      window.FundsWorkspaceSession?.restore();
+      try {
+        if (snapshot) applyCanvasSnapshot(snapshot);
+        window.FundsWorkspaceSession?.restore();
+      } catch (error) {
+        try { if (isCurrentCase(activated) && !state.graphLoading) await doSearch(1); }
+        finally { throw error; }
+      }
       await doSearch(state.search.page || 1, { refresh: true });
+      if (!isCurrentCase(activated)) return;
       await applyPendingFocusEdge();
     } catch (_) { if (isCurrentCase(activated)) toast('画布未能载入，请重新调阅', 'err'); }
     finally { actions.sync(); }
@@ -5116,12 +5136,14 @@ async function openManagedCase(id, context, options = {}) {
   selectCase(id);
   if (options.discardApproved && !state.cases.some(item => String(item.id) === String(context.caseId))) window.FundsWorkspaceSession?.removeCase(context.caseId);
   const opened = caseContext();
+  let restoreContext = opened;
   try {
     await refreshStats();
     if (!isCurrentCase(opened)) return true;
     const retainedCanvas = window.FundsWorkspaceSession?.lastCanvas(id);
     await refreshCanvasList(retainedCanvas);
     const canvasBinding = caseContext();
+    restoreContext = canvasBinding;
     if (!isCurrentCase(opened, false)) return true;
     let snapshot = null;
     if (state.canvasId) {
@@ -5129,13 +5151,18 @@ async function openManagedCase(id, context, options = {}) {
       if (!isCurrentCase(canvasBinding)) return true;
       snapshot = saved.snapshot;
     }
-    await loadGraph(true, canvasBinding);
+    await loadGraph(true, canvasBinding, { tableQuery: 'caller' });
     if (!isCurrentCase(canvasBinding)) return true;
-    if (snapshot) applyCanvasSnapshot(snapshot);
-    window.FundsWorkspaceSession?.restore();
+    try {
+      if (snapshot) applyCanvasSnapshot(snapshot);
+      window.FundsWorkspaceSession?.restore();
+    } catch (error) {
+      try { if (isCurrentCase(canvasBinding) && !state.graphLoading) await doSearch(1); }
+      finally { throw error; }
+    }
     await doSearch(state.search.page || 1, { refresh: true });
     if (isCurrentCase(opened) && $('#tab-batches').style.display === 'flex') await loadBatches();
-  } catch (_) { if (isCurrentCase(opened)) toast('案件已打开，部分数据加载失败，请刷新后重试', 'warn', opened); }
+  } catch (_) { if (isCurrentCase(restoreContext)) toast('案件已打开，部分数据加载失败，请刷新后重试', 'warn', restoreContext); }
   return true;
 }
 

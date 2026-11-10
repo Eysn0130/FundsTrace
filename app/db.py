@@ -16,6 +16,74 @@ DB_PATH = DATA_DIR / "fund.duckdb"
 _lock = threading.RLock()
 _con = None
 _transaction_state = threading.local()
+_read_state = threading.local()
+_read_ready = None
+_read_admission = threading.RLock()
+
+
+def in_read_snapshot():
+    return getattr(_read_state, "connection", None) is not None
+
+
+def _require_writable():
+    if in_read_snapshot():
+        raise RuntimeError("Write/shared connection access is forbidden in a read snapshot")
+
+
+def _require_snapshot_entry():
+    if in_read_snapshot() or getattr(_transaction_state, "depth", 0):
+        raise RuntimeError("Cannot nest a read snapshot or enter from a write transaction")
+
+
+@contextmanager
+def read_lock():
+    """Keep the normal lock unless this thread already owns a private snapshot."""
+    if in_read_snapshot():
+        yield
+    else:
+        with _lock:
+            yield
+
+
+@contextmanager
+def read_snapshot():
+    """One request-owned committed reader, or the complete old locked path.
+
+    Only unsupported READ ONLY syntax falls back. No writable private
+    transaction, persistent connection or global optimizer change is used.
+    """
+    _require_snapshot_entry()
+    with _read_admission:
+        ready = _read_ready
+        if ready is None or ready[0] is not _con or ready[1] != DB_PATH:
+            con()  # First initialization still owns the existing schema/write lock.
+            ready = _read_ready
+        if ready is None or ready[0] is not _con or ready[1] != DB_PATH:
+            raise RuntimeError("Database initialization has not completed")
+        reader = duckdb.connect(str(ready[1]))
+        try:
+            if ready[0] is not _con or ready[1] != DB_PATH:
+                raise RuntimeError("Database binding changed while opening a read snapshot")
+            try:
+                reader.execute("begin transaction read only")
+            except duckdb.ParserException:
+                # The declared unlocked dependency includes engines lacking this
+                # syntax. Close before waiting for the old shared connection lock.
+                unsupported, reader = reader, None
+                unsupported.close()
+            if reader is None:
+                with _lock:
+                    yield False
+            else:
+                _read_state.connection = reader
+                try:
+                    yield True
+                finally:
+                    _read_state.connection = None
+                    reader.execute("rollback")
+        finally:
+            if reader is not None:
+                reader.close()
 
 
 class TransactionRollbackError(RuntimeError):
@@ -30,6 +98,7 @@ def import_transaction():
     its original settings afterwards, including when a query aborts the SQL
     transaction (when SET itself is no longer allowed).
     """
+    _require_writable()
     with _lock:
         if getattr(_transaction_state, "depth", 0):
             # An enclosing operation owns both its transaction and query policy.
@@ -58,6 +127,7 @@ def transaction():
     context marks the whole operation rollback-only, even if its caller catches
     that failure before leaving the outer context.
     """
+    _require_writable()
     with _lock:
         c = con()
         state = _transaction_state
@@ -451,7 +521,8 @@ def _migrate_source_operations(c):
 
 
 def con():
-    global _con, _ckpt_started
+    global _con, _ckpt_started, _read_ready
+    _require_writable()
     with _lock:
         if _con is None:
             candidate = duckdb.connect(str(DB_PATH))
@@ -642,6 +713,7 @@ def con():
                 candidate.close()
                 raise
             _start_ckpt()
+            _read_ready = (_con, DB_PATH)
         return _con
 
 
@@ -656,6 +728,7 @@ def set_busy(v):
 
 def insert_dataframe(table, df, columns):
     """Bulk scan local data without transaction-long registered-view ownership."""
+    _require_writable()
     with _lock:
         c = con()
         cols = ",".join(columns)
@@ -723,8 +796,13 @@ def q(sql, params=None):
 
 def q_raw(sql, params=None):
     """Query without lossy JSON conversion; monetary contracts retain Decimal."""
-    with _lock:
-        cur = con().execute(sql, params or [])
+    with read_lock():
+        reader = getattr(_read_state, "connection", None)
+        if reader is not None:
+            statements = reader.extract_statements(sql)
+            if len(statements) != 1 or str(statements[0].type) != "StatementType.SELECT":
+                raise RuntimeError("Only one SELECT is allowed in a read snapshot")
+        cur = (reader if reader is not None else con()).execute(sql, params or [])
         cols = [d[0] for d in cur.description] if cur.description else []
         rows = cur.fetchall()
     return [dict(zip(cols, row)) for row in rows]
@@ -732,10 +810,12 @@ def q_raw(sql, params=None):
 
 def x(sql, params=None):
     """执行写语句"""
+    _require_writable()
     with _lock:
         con().execute(sql, params or [])
 
 
 def executemany(sql, seq):
+    _require_writable()
     with _lock:
         con().executemany(sql, seq)

@@ -169,7 +169,7 @@ function harness() {
   const menu = add(drawer, 'edgeMenu'); menu.hidden = true; menu.setAttribute('role', 'menu');
   add(menu, 'edgeRemove', 'button').setAttribute('role', 'menuitem');
   for (const id of ['graphContainer', 'ctxModal', 'ctxTrack', 'ctxTrackStatus', 'ctxTbody', 'ctxSuggest', 'btnImport', 'btnImport2', 'importModal',
-    'impPbar', 'impClose', 'impCancel', 'impFile', 'impRe', 'impCommit', 'impChangeFile', 'impMapping', 'impPreviewScroll', 'impHorizontalPosition',
+    'impPbar', 'impClose', 'impCancel', 'impQueue', 'impQueueStop', 'impFile', 'impRe', 'impCommit', 'impChangeFile', 'impMapping', 'impPreviewScroll', 'impHorizontalPosition',
     'impScrollLeft', 'impScrollRight', 'impPreviewTable', 'pcCircle', 'flowTbody', 'canvasSel', 'flowCkAll', 'caseSelect', 'analysisLink', 'batchList', 'tab-batches',
     'btnCanvasClone', 'btnCanvasSave', 'btnCanvasNew', 'btnCanvasRename', 'btnCanvasDel', 'btnCanvasActions', 'btnCanvasMenuClone',
     'btnDataActions', 'btnImportIds', 'btnIdTpl', 'btnSample', 'btnSample2', 'btnMainActions']) add(document.body, id);

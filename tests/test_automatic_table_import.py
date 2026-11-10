@@ -239,7 +239,7 @@ def test_envelope_replay_does_not_reuse_different_facts_from_manual_table_mappin
     content = b"date,payer_account,payee_account,amount\n2026-01-01,SYN-A,SYN-B,1.00\n"
     cid = make_case("Synthetic changed interpretation")
     view = preview(client, cid, content)
-    assert view["table_summary"]["profile"] == table_import.SOURCE_OBSERVATION_PROFILE
+    assert view["table_summary"]["profile"] == table_import.VOUCHER_REFERENCE_PROFILE
     response = client.post(f"/api/v1/cases/{cid}/imports/{view['import_id']}/preview", json={
         "mode": "A", "mapping": {**view["mapping"], "payer_account": "payee_account", "payee_account": "payer_account"}})
     assert response.status_code == 200, response.text
@@ -351,3 +351,221 @@ def test_new_envelope_rejects_unsafe_structure_before_writes(client, database, m
     response = client.post(f"/api/v1/cases/{cid}/imports/preview", files={"file": ("synthetic.zip", data)})
     assert response.status_code == 400
     assert database.q_raw("select count(*) n from import_sessions where case_id=?", [cid])[0]["n"] == 0
+
+
+@pytest.mark.parametrize("declared_event", [False, True])
+def test_repreview_can_separate_voucher_reference_and_commit_keeps_it(client, database, make_case, declared_event):
+    cid = make_case("Synthetic voucher reference choice")
+    content = ("交易账号,交易时间,交易金额,交易余额,收付标志,交易对手账卡号,对手户名,摘要说明,"
+               "交易流水号,凭证号,交易币种,交易是否成功\n"
+               "SYN-A,2026-01-02 03:04:05,12.34,100.00,出,SYN-B,Synthetic counter,x,SYN-T,6222001,CNY,01\n").encode()
+    if declared_event:
+        header, row = content.decode().splitlines()
+        content = (header + ",参考号机构,参考号渠道,参考号业务域,跨账簿事件参考号\n" +
+                   row + ",SYN issuer,SYN rail,SYN scope,SYN event\n").encode()
+    view = preview(client, cid, content)
+    assert view["automatic"] is False
+    assert view["stats"]["accepted"] == 0 and view["table_summary"]["unresolved"] == 1
+    assert view["table_summary"]["reason_counts"] == {"conflicting_field": 1}
+    assert view["table_summary"]["profile"] == ("funds-trace-table-v71" if declared_event else "funds-trace-table-v69")
+
+    base = f"/api/v1/cases/{cid}/imports/{view['import_id']}"
+    response = client.post(base + "/preview", json={"mode": view["mode"], "mapping": view["mapping"],
+                                                    "reference_policy": "transaction-reference-v1"})
+    assert response.status_code == 200, response.text
+    resolved = response.json()
+    assert resolved["stats"]["accepted"] == 1 and resolved["table_summary"]["unresolved"] == 0
+    assert resolved["mapping"]["trade_no"] == "交易流水号"
+
+    job = complete(client, cid, resolved)
+    assert job["stage"] == "done" and job["result"]["ok"] == 1, job
+    flows = client.get(f"/api/v1/cases/{cid}/flows").json()["items"]
+    assert [row["trade_no"] for row in flows] == ["SYN-T"] and flows[0]["amount"] == "12.34"
+    package = client.get(f"/api/cases/{cid}/export")
+    restored = client.post("/api/cases/import", files={"file": ("synthetic.fundcase", package.content)})
+    assert restored.status_code == 200, restored.text
+    assert client.get(f"/api/v1/cases/{restored.json()['case_id']}/flows").json()["items"][0]["trade_no"] == "SYN-T"
+
+
+@pytest.mark.parametrize("custom_mapping", [False, True])
+def test_reference_choice_survives_ready_reopen_and_explicit_null_revokes_it(client, database, make_case, custom_mapping):
+    cid = make_case("Synthetic reopened voucher choice")
+    content = ("交易时间,付款方账号,收款方账号,交易金额,交易流水号,凭证号,自定义金额\n"
+               "2026-01-02 03:04:05,SYN-A,SYN-B,12.34,SYN-T,SYN-V,12.34\n").encode()
+    view = preview(client, cid, content)
+    assert view["automatic"] is False and view["reference_policy_available"] is True
+    base = f"/api/v1/cases/{cid}/imports/{view['import_id']}"
+    body = {"mode": view["mode"], "mapping": view["mapping"], "reference_policy": "transaction-reference-v1"}
+    if custom_mapping:
+        body["mapping"] = {**view["mapping"], "amount": "自定义金额", "trade_no": "交易流水号"}
+    resolved = client.post(base + "/preview", json=body).json()
+    assert resolved["stats"]["accepted"] == 1
+    assert resolved["reference_policy"] == "transaction-reference-v1"
+    stored = client.get(f"/api/v1/cases/{cid}/imports", params={"import_id": view["import_id"]}).json()["items"][0]
+    assert stored["request"]["reference_policy"] == "transaction-reference-v1"
+    restored = client.post(base + "/preview", json={"mode": stored["mode"], "mapping": stored["mapping"]}).json()
+    assert restored["stats"]["accepted"] == 1 and restored["reference_policy"] == "transaction-reference-v1"
+    default = client.post(base + "/preview", json={"mode": restored["mode"], "mapping": restored["mapping"],
+                                                   "reference_policy": None}).json()
+    assert default["stats"]["accepted"] == 0 and default["reference_policy"] is None
+
+
+def test_selected_reference_policy_survives_failure_and_database_reopen(client, database, make_case, monkeypatch):
+    cid = make_case("Synthetic durable reference choice")
+    content = ("交易时间,付款方账号,收款方账号,交易金额,交易流水号,凭证号,自定义金额\n"
+               "2026-01-02 03:04:05,SYN-A,SYN-B,12.34,SYN-T,SYN-V,12.34\n").encode()
+    view = preview(client, cid, content)
+    base = f"/api/v1/cases/{cid}/imports/{view['import_id']}"
+    response = client.post(base + "/preview", json={"mode": view["mode"],
+        "mapping": {**view["mapping"], "amount": "自定义金额", "trade_no": "交易流水号"},
+        "reference_policy": "transaction-reference-v1"})
+    assert response.status_code == 200, response.text
+    selected = response.json()
+    assert selected["stats"]["accepted"] == 1
+    def fail(*args, **kwargs):
+        raise RuntimeError("Synthetic write failure")
+    with monkeypatch.context() as failure:
+        failure.setattr(importer, "commit_rows", fail)
+        failed = complete(client, cid, selected)
+    assert failed["stage"] == "error"
+    assert database.q_raw("select count(*) n from flows where case_id=?", [cid]) == [{"n": 0}]
+    with database._lock:
+        database._con.close()
+        database._con = None
+        database.con()
+    stored = client.get(f"/api/v1/cases/{cid}/imports", params={"import_id": view["import_id"]}).json()["items"][0]
+    assert stored["request"]["reference_policy"] == "transaction-reference-v1"
+    restored = client.post(base + "/preview", json={"mode": stored["mode"], "mapping": stored["mapping"]}).json()
+    assert restored["stats"]["accepted"] == 1 and restored["reference_policy"] == "transaction-reference-v1"
+    job = complete(client, cid, restored)
+    assert job["stage"] == "done" and job["result"]["ok"] == 1
+    assert client.get(f"/api/v1/cases/{cid}/flows").json()["items"][0]["trade_no"] == "SYN-T"
+
+
+def test_old_ready39_and_new_source_keep_separate_versions_and_receipts(client, database, make_case, monkeypatch):
+    from test_open_table_voucher_reference import payload, source_row
+    cid = make_case("Synthetic pinned 39 source")
+    content = payload([source_row()])
+    with monkeypatch.context() as historical:
+        historical.setattr(imports, "TABLE_PROFILE", table_import.SOURCE_OBSERVATION_PROFILE)
+        old = preview(client, cid, content)
+    old_base = f"/api/v1/cases/{cid}/imports/{old['import_id']}"
+    old = client.post(old_base + "/preview", json={"mode": old["mode"], "mapping": old["mapping"]}).json()
+    assert old["table_summary"]["profile"] == "funds-trace-table-v66" and old["stats"]["accepted"] == 0
+    receipt = complete(client, cid, old)
+    assert receipt["stage"] == "done" and receipt["result"]["table_summary"]["unresolved"] == 1
+    current = preview(client, cid, content)
+    assert current["table_summary"]["profile"] == "funds-trace-table-v69" and current["stats"]["accepted"] == 1
+    job = complete(client, cid, current)
+    assert job["stage"] == "done" and job["result"]["ok"] == 1
+    assert client.get(old_base).json()["result"] == receipt["result"]
+    coverage = client.get(f"/api/v1/cases/{cid}/stats").json()["import_coverage"]
+    assert coverage["unresolved_records"] == 0 and coverage["financial_interpretation_complete"] is True
+
+
+def test_cataloged_references_keep_automatic_processing_without_a_redundant_choice(client, make_case):
+    from test_open_table_voucher_reference import payload, source_row
+    cid = make_case("Synthetic automatic 39 references")
+    view = preview(client, cid, payload([source_row()]))
+    assert view["table_summary"]["reason_counts"] == {"transaction_valid": 1}
+    assert view["reference_policy_available"] is False and view["automatic"] is True
+
+
+def test_commit_cannot_change_reference_choice_without_repreview(client, database, make_case):
+    cid = make_case("Synthetic unpreviewed reference choice")
+    content = ("交易时间,付款方账号,收款方账号,交易金额,交易流水号,凭证号\n"
+               "2026-01-02 03:04:05,SYN-A,SYN-B,12.34,SYN-T,SYN-V\n").encode()
+    view = preview(client, cid, content)
+    response = client.post(f"/api/v1/cases/{cid}/imports/{view['import_id']}/commit",
+                           json={"mode": view["mode"], "mapping": view["mapping"],
+                                 "reference_policy": "transaction-reference-v1"})
+    assert response.status_code == 409, response.text
+    assert database.q_raw("select stage from import_sessions where import_id=?", [view["import_id"]]) == [{"stage": "ready"}]
+
+
+@pytest.mark.parametrize("surface", ["v1", "legacy"])
+def test_archive_reference_choice_is_rejected_instead_of_ignored(client, make_case, surface):
+    cid = make_case("Synthetic archive policy rejection")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("synthetic.csv", "交易时间,付款方账号,收款方账号,交易金额\n2026-01-01,SYN-A,SYN-B,1.00\n")
+    if surface == "v1":
+        view = preview(client, cid, buffer.getvalue(), "synthetic.zip")
+        endpoint = f"/api/v1/cases/{cid}/imports/{view['import_id']}/preview"
+    else:
+        view = client.post("/api/import/preview", params={"case_id": cid}, files={"file": ("synthetic.zip", buffer.getvalue())}).json()
+        endpoint = "/api/import/repreview"
+    body = {"mode": view["mode"], "mapping": view["mapping"], "reference_policy": "transaction-reference-v1"}
+    if surface == "legacy":
+        body.update(case_id=cid, import_id=view["import_id"])
+    response = client.post(endpoint, json=body)
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_reference_choice_rejects_legacy_and_historical_single_file_sessions(client, make_case, monkeypatch, historical):
+    cid = make_case("Synthetic unsupported single file policy")
+    content = ("交易时间,付款方账号,收款方账号,交易金额,交易流水号,凭证号\n"
+               "2026-01-02 03:04:05,SYN-A,SYN-B,12.34,SYN-T,SYN-V\n").encode()
+    if historical:
+        with monkeypatch.context() as previous:
+            previous.setattr(imports, "TABLE_PROFILE", table_import.SOURCE_OBSERVATION_PROFILE)
+            view = preview(client, cid, content)
+        endpoint = f"/api/v1/cases/{cid}/imports/{view['import_id']}/preview"
+    else:
+        view = client.post("/api/import/preview", params={"case_id": cid}, files={"file": ("synthetic.csv", content)}).json()
+        endpoint = "/api/import/repreview"
+    body = {"mode": view["mode"], "mapping": view["mapping"], "reference_policy": "transaction-reference-v1"}
+    if not historical:
+        body.update(case_id=cid, import_id=view["import_id"])
+    response = client.post(endpoint, json=body)
+    assert response.status_code == 422, response.text
+
+
+def test_reference_policy_is_a_no_op_without_a_voucher_column(client, database, make_case):
+    cid = make_case("Synthetic policy without voucher")
+    content = ("交易时间,付款方账号,收款方账号,交易金额,币种\n2026-01-01 10:00:00,SYN-A,SYN-B,1.00,CNY\n").encode()
+    view = preview(client, cid, content)
+    base = f"/api/v1/cases/{cid}/imports/{view['import_id']}"
+    response = client.post(base + "/preview", json={"mode": view["mode"], "mapping": view["mapping"],
+                                                    "reference_policy": "transaction-reference-v1"})
+    assert response.status_code == 200, response.text
+    same = response.json()
+    assert same["stats"]["accepted"] == view["stats"]["accepted"] == 1
+    assert same["mapping"] == view["mapping"]
+
+
+@pytest.mark.parametrize("suffix", [".csv", ".xlsx", ".xls"])
+def test_complete39_reference_roles_survive_package_round_trip(client, database, make_case, suffix):
+    cid = make_case("Synthetic 39 column package")
+    headers = ("交易卡号,交易账号,主户名,开户人证件号码,交易日期,交易时间,交易净额,交易金额,交易余额,收付标志,"
+               "交易对手账卡号,现金标志,对手户名,是否调取,已调取账号对手身份,对手身份证号,对手开户银行,摘要说明,"
+               "交易币种,交易网点名称,交易发生地,交易是否成功,传票号,IP地址,MAC地址,对手交易余额,交易流水号,"
+               "日志号,凭证种类,凭证号,交易柜员号,备注,商户名称,交易类型,查询反馈结果原因,备用字段1,备用字段2,"
+               "备用字段3,重点字样")
+    rows = [",".join(["SYN-CARD", "SYN-A", "Synthetic own", "SYN-ID", "2026-01-02", "2026-01-02 03:04:05",
+                      "-12.34", "12.34", "100.00", "出", "SYN-B", "00", "Synthetic counter", "未调取", "",
+                      "", "Synthetic bank", "transfer", "CNY", "Synthetic branch", "", "01", "", "", "", "",
+                      "SYN-T", "", "4001", "SYN-CARD", "", "", "Synthetic merchant", "转账", "成功", "", "", "", ""])]
+    content = (headers + "\n" + "\n".join(rows) + "\n").encode()
+    if suffix != ".csv":
+        import csv
+        cells = list(csv.reader(io.StringIO(content.decode())))
+        if suffix == ".xls":
+            from xls_fixtures import workbook
+            content = workbook([("Synthetic39", cells)])
+        else:
+            from test_table_multisheet_append import encoded
+            content = encoded([("Synthetic39", cells)], suffix)
+    view = preview(client, cid, content, "synthetic" + suffix)
+    assert view["table_summary"]["profile"] == ("funds-trace-table-v70" if suffix == ".xls" else "funds-trace-table-v69")
+    assert view["stats"]["accepted"] == 1 and view["table_summary"]["unresolved"] == 0
+    job = complete(client, cid, view)
+    assert job["result"]["ok"] == 1, job
+
+    package = client.get(f"/api/cases/{cid}/export")
+    assert package.status_code == 200, package.text
+    restored = client.post("/api/cases/import", files={"file": ("synthetic.fundcase", package.content)})
+    assert restored.status_code == 200, restored.text
+    flows = client.get(f"/api/v1/cases/{restored.json()['case_id']}/flows").json()["items"]
+    assert [(row["trade_no"], row["amount"]) for row in flows] == [("SYN-T", "12.34")]
