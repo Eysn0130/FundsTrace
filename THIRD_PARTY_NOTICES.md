@@ -73,3 +73,33 @@ The earlier FundsTrace wordmarks used Manrope and Noto Sans SC, both under SIL O
 ## Minimap navigation icons
 
 `static/ui-icons/minimap-map.svg`, `minimap-minus.svg` and `minimap-plus.svg` are the map, minus and plus icons from Tabler Icons 3.35.0 (MIT), retained locally with `static/ui-icons/LICENSE`. No external icon request is required.
+
+## Filee radial donut menu
+
+`static/graph-radial-menu.js` adapts the donut geometry, spring integrator, open/hover/group timing and hit-testing rules from [Filee](https://github.com/KnifeLemon/Filee), geometry baseline pinned at commit `301249e925ea01016926afce11823d0f69bad987` (release 2.4.0, 2026-11-10); Material You palette and DonutMenu surface rendering follow Filee main `9ca14cddec03a68928d3b4fcb35ed76c1c571f6f` (2026-11-10). Copyright (c) 2026 Myeonggu Kim (KnifeLemon) and Filee contributors; MIT. The complete Filee MIT notice is retained verbatim in `LICENSES/Filee-MIT.txt`, in the source-file header of `static/graph-radial-menu.js`, and below.
+
+FundsTrace changes: the C#/Avalonia control was re-implemented in TypeScript/SVG; the trigger is the in-app G6 node/edge context menu instead of Filee's global Ctrl+drag gesture and Explorer shell entry; native windowing, OS drag/drop, format conversion, flip faces and progress rings were not ported; Material You styling is adapted from Filee's `MaterialYouPalette.cs` (tonal palette generated from an accent seed) and `DonutMenu.cs` (Surface slices, SubtleBorder, center, hover accent overlay, OnAccent labels, slice corner radius, soft shadow and group chevron), with the seed taken from FundsTrace's selected accent. The adapted portions continue to be offered under the Filee MIT notice; the rest of this repository remains under the FundsTrace Community Use and Source License 1.0. Filee icons, logos, screenshots and demo media were not copied.
+
+```text
+MIT License
+
+Copyright (c) 2026 Myeonggu Kim (KnifeLemon) and Filee contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

@@ -253,15 +253,125 @@
       state.forceFit=false; renderGraph();
     });
   }
+  function executeCanvasAction(value) {
+    const document_ = root.document;
+    const byId = id => document_.getElementById(id);
+    const shell = () => byId('workspace')?.fundsWorkspaceShell;
+    if (value === 'selectAll') {
+      if (!state.graph || !state.graphSelection) return false;
+      state.graphSelection.rebind(state.graph.getNodes().map(item => item.getModel().id));
+      return true;
+    }
+    if (value === 'view') {
+      const api = shell();
+      if (!api) return false;
+      const current = api.getState().view;
+      api.setView(current === 'split' ? 'standard' : 'split');
+      return true;
+    }
+    if (value === 'legend') {
+      const legend = byId('legend');
+      if (!legend) return false;
+      legend.hidden = !legend.hidden;
+      return true;
+    }
+    if (value === 'minimap') {
+      const toggle = byId('btnMinimapToggle');
+      if (!toggle) return false;
+      toggle.click();
+      return true;
+    }
+    if (value === 'sidebar') {
+      const api = shell();
+      if (!api) return false;
+      const current = api.getState();
+      api.setSidebarCollapsed(!current.sidebarCollapsed);
+      return true;
+    }
+    const click = id => {
+      const button = byId(id);
+      if (!button || button.disabled) return false;
+      button.click();
+      return true;
+    };
+    if (value === 'fit') return click('btnFit');
+    if (value === 'relayout') return click('btnRelayout');
+    if (value === 'undo') return click('btnUndo');
+    if (value === 'save') return click('btnCanvasSave');
+    if (value === 'export') return click('btnExportActions');
+    return false;
+  }
   async function execute(command,value) {
     if (['createGroup','addToGroup','manageGroups','findGraphPaths','timeWindow','timePlayback','nodeShape','nodeIcon'].includes(command)) return root.FundsInvestigation?.execute(command);
     if (command === 'labelUnderline') return root.FundsCanvasDisplay?.setUnderline(value);
     if (command === 'fixLayout' || command === 'unfixLayout') return root.FundsCanvasDisplay?.setPinned(command === 'fixLayout');
     if (command === 'presetDefault' || command === 'presetReport') return root.FundsCanvasDisplay?.preset(command === 'presetReport' ? 'report' : 'default');
     if (command === 'findNode') return root.FundsNodeFinderActions?.search(value) ?? false;
+    if (command === 'canvasAction') return executeCanvasAction(value);
     const cameraCommand=['zoomIn','zoomOut','zoomReset','fitSelection','focusSelection','locateNew'].includes(command);
     if (!(cameraCommand?graphCameraInteractionAllowed():ready())) { sync(); return false; }
     const ids=selected(),edge=selectedEdge();
+    if(command==='expandNeighborhood'){
+      if(ids.length!==1)return false;
+      const id=ids[0],direction=['in','out','both'].includes(value)?value:'both';
+      if(value==='more'){
+        if(!state.graphView.visibleIds||String(state.graphView.root)!==String(id)||!(Number(state.graphView.remaining)>0))return false;
+        return exploreNeighborhood(state.graphView.root,false,{direction:state.graphView.direction});
+      }
+      return exploreNeighborhood(id,true,{direction});
+    }
+    if(command==='inspectEdgeEndpoint'){
+      if(!edge)return false;
+      const model=edge.getModel(),data=model.data||model;
+      const raw=value==='target'?(model.target??data.target):(model.source??data.source);
+      const account=String(raw??'');
+      if(!account)return false;
+      const node=state.graph.findById?.(account);
+      if(!node)return false;
+      const context=caseContext();
+      await showNodeDrawer(account,node);
+      return isCurrentCase(context)&&state.graphView.selectedAccount===account;
+    }
+    if(command==='edgeType'){
+      const key=state.graphView.selectedEdge,item=key&&state.graphView.edgeItems.get(key),model=item?.getModel?.();
+      if(!key||!item||!model||!['line','polyline','quadratic'].includes(value)||model.source===model.target)return false;
+      const work=()=>{captureEdgeLabelRatios();savePositions();state.edgeTypes[key]=value;state.forceFit=false;renderGraph();};
+      if(window.FundsCanvasEditor?.command)return window.FundsCanvasEditor.command('修改所选关系线型',work);
+      work();return true;
+    }
+    if(command==='removeEdgeFromCanvas'){
+      if(ids.length||!edge)return false;
+      const key=String(state.graphView.selectedEdge||''),model=edge.getModel(),data=model.data||model,context=caseContext();
+      const flowIds=[...new Set([...(model.ids||[]),...(data.ids||[])].map(String).filter(Boolean))];
+      if(!flowIds.length)return false;
+      const blocked=neighborhoodBlocker(true);
+      if(blocked){toast(blocked,'err');return false;}
+      const sourceName=data.source_name||String(data.source??model.source??''),targetName=data.target_name||String(data.target??model.target??'');
+      const confirmed=await confirmFeedback({title:data.kind==='source_ledger'?'移出来源记账关系？':'移出该关系？',
+        message:`将移出「${sourceName} → ${targetName}」关系下的 ${flowIds.length} 条已追踪记录。原始流水保留，可通过撤销恢复。`,
+        accept:'移出关系',danger:true,scope:context});
+      if(!confirmed||!isCurrentCase(context)||state.graphView.selectedEdge!==key)return false;
+      return await untrackFlows(flowIds)===true;
+    }
+    if(command==='removeNodeFromCanvas'){
+      if(ids.length!==1||edge)return false;
+      const id=String(ids[0]),context=caseContext();
+      if(!state.graphView.nodeItems?.has(id))return false;
+      const blocked=neighborhoodBlocker(true);
+      if(blocked){toast(blocked,'err');return false;}
+      const flowIds=nodeRelatedIds(id);
+      if(!flowIds.length){toast('该账户在当前画布没有已追踪记录可移出','err');return false;}
+      const node=state.lastGraph?.nodes?.find(value=>String(value.account??value.id)===id);
+      const name=node?.name||node?.display_account||id;
+      const fingerprint=values=>values.map(value=>`${typeof value}:${value}`).sort().join('|');
+      const before=fingerprint(flowIds);
+      const confirmed=await confirmFeedback({title:'从图谱移出账户？',
+        message:`将移出「${name}」关联的 ${flowIds.length} 条已追踪记录。原始流水保留，可通过撤销恢复。`,
+        accept:'移出图谱',danger:true,scope:context});
+      if(!confirmed||!isCurrentCase(context)||!state.graphView.nodeItems?.has(id))return false;
+      if(fingerprint(nodeRelatedIds(id))!==before){toast('图谱已变化，请重新打开菜单确认移出范围','err');return false;}
+      return await untrackFlows(flowIds)===true;
+    }
     if(command==='inspectSelection'){
       const target=inspectionTarget();
       if(!inspectingAllowed()||!target)return false;

@@ -212,3 +212,13 @@ Fit 只写相机；从相同倍率起点在单次命令内有界计算固定屏�
 单个或少量搜索结果的标签临时获得可读优先级，不加入选中集合、不打开资料、不写历史或保存设置；画布手势、选中变化和重绘清除该优先级。范围外或未上图账户提示原因，保留相机和筛选，不自动清条件或追踪原始数据。搜索令牌同时校验案件/画布代次、图和视图实例、显示revision、相机意图与矩阵；输入变更、迟到查询及A→B→A切换不会挪动当前画布。
 
 应用邻域继续通过现有CanvasEditor历史边界，等待相机完成后采集操作后快照；资料草稿、写入、裁剪、确认、布局和忙态阻止应用。共享浮层处理Esc、焦点及完整的首次画布关闭手势，避免关闭后同一手势触发节点选择或拖动。
+
+## 2026-11-10 节点/边/空白画布右键环形菜单
+
+新增画布环形上下文菜单：右键**节点**、**连线**或**空白画布**打开 Material You 风格的菜单；节点/连线各保留一个分组子环（节点“展开邻域”，连线“线型”），空白不设分组。空白右键**不再保留系统菜单**，由菜单接管“全选 / 视图切换 / 图例 / 缩略图 / 查询区 / 适应画布 / 重新布局 / 撤回 / 保存画布 / 导出”。菜单是 `static/graph-radial-menu.js` 创建的 body-portal DOM/SVG 覆盖层（z-index 40），不进入 G6 绘制；几何、弹簧与开合/悬停/分组时序移植自 MIT 许可的 Filee（版权与参数见 `THIRD_PARTY_NOTICES.md`、`LICENSES/Filee-MIT.txt`）。
+
+- 内容：节点 9 项（详情、查流水、展开邻域▸、适应选择、重点展示、添加标注、隐藏选中、只看选中、移出图谱）；连线 7 项（详情、付款方、收款方、适应选择、线型▸、标签加粗/取消加粗、移出该关系）；空白 10 项（全选、切换上下/标准、显示/隐藏图例、显示/隐藏缩略、显示/隐藏查询、适应画布、重新布局、撤回、保存画布、导出）。空白标签用 4 字是为了在 Filee 默认 R150 单环内不重叠。
+- 命令：菜单项只通过既有 `funds:ribbon-command` → `FundsRibbonCommands.execute()` 分发；新增适配命令 `expandNeighborhood`、`edgeType`、`removeEdgeFromCanvas`、`removeNodeFromCanvas`、`inspectEdgeEndpoint`、`canvasAction`，全部复用现有命令/历史/画布 API，不新建平行状态。危险动作（移出图谱/移出该关系）先确认。
+- 打开语义：节点/连线先同步选择；空白不改变选择。菜单位置优先限制在画布容器内；空白菜单 342px 在上下分栏 350px 画布内可完整放下；节点/连线菜单因预留 62px 子环空间为 466px，在上下分栏会超出画布高度并覆盖查询区（不遮工具栏）。关闭信号包括 Esc、外点、`viewportchange`、拖动、绑定变更（`funds:graph-metric` reset / `funds:feedback-binding`）、窗口 resize/blur、页面隐藏、工作区 resize、顶栏菜单事件和 `funds-appearance-change`；关闭菜单的第一次左键手势被消费。
+- 外观：直接复刻 Filee Material You 主题源码（`MaterialYouPalette.cs` + `DonutMenu.cs`）：打开时由 FundsTrace 当前 `--accent` 和 `data-ftTheme` 生成 Filee light/dark palette；扇区使用 Filee `Surface` 填充、85% 不透明度（用户设定）、`SubtleBorder` 1px 描边；中心 hub 使用 `Surface`（不是自加 accent 容器）；hover 使用 `Accent` 0.82 覆盖，hot 标签/分组标记切 `OnAccent`；主题圆角 18 按 Filee `SliceCornerRadius=corner/2` 渲染为 9px；菜单外缘有 Filee 径向渐变阴影，分组扇区有向外 chevron。没有自加底板/图标。`prefers-reduced-motion` 下直接落定。键盘：打开后方向键/Home/End/Enter/Escape/Tab；`Shift+F10` / `ContextMenu` 可按当前选择打开节点/连线/空白菜单；焦点返回 `#graphContainer`。
+- 打包清单 `scripts/build_desktop_backend.py` 的 `STATIC_NAMES` 必须包含 `graph-radial-menu.js`。UI 变更的用户流程验证与性能采样记录另附；本段不把源码呈现当作安装版验收。

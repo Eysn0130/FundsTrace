@@ -45,6 +45,7 @@ STATIC_NAMES = (
     "vendor/g6.min.js", "vendor/G6-PATCH.md", "vendor/G6-LICENSE",
     "workspace-shell.js", "canvas-history.js", "canvas-editor.js", "canvas-investigation.js", "desktop-updates.js", "desktop-updates.css",
     "graph-relations.js", "graph-presentation.js", "graph-label-geometry.js", "graph-export-geometry.js", "ribbon.js", "ribbon-commands.js",
+    "graph-radial-menu.js",
     "toolbar-menu.js", "relation-filter.js", "neighborhood.js", "node-finder.js", "canvas-workspace.js", "data-tools.js", "workspace-camera.js", "main-accounts.js", "main-accounts-view.js",
     "table-workspace.js", "ui-dialogs.js", "workflow-ui.js", "ui-icons/LICENSE",
     "entity-picker.js", "entity-picker.css", "entity-search.js", "entity-search.css",
