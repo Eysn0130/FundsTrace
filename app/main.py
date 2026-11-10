@@ -141,6 +141,7 @@ class RePreviewIn(BaseModel):
     case_id: int = 1
     self_accounts: str = ""    # 手动填写的本方账号（可选，逗号分隔）
     mark_accounts: Optional[str] = None    # 预览中勾选的本方账号（逗号分隔），显式标记为主账号
+    reference_policy: Literal["transaction-reference-v1"] | None = None
 
 
 @app.get("/")

@@ -22,8 +22,8 @@ from xls_fixtures import Cell, Error, workbook
 
 
 XLS_PROFILE = "funds-trace-table-v18"
-CURRENT_XLS_PROFILE = "funds-trace-table-v67"
-CURRENT_TABLE_PROFILE = "funds-trace-table-v66"
+CURRENT_XLS_PROFILE = "funds-trace-table-v70"
+CURRENT_TABLE_PROFILE = "funds-trace-table-v69"
 FROZEN_PROFILE = "funds-trace-table-v17"
 HEADERS = ["date", "payer_account", "payee_account", "amount", "currency"]
 
@@ -462,7 +462,7 @@ def test_xls_inherits_exact_financial_rules_without_weakening_conflicts(
         view, job, records = committed_xls(client, cid, data)
     else:
         with monkeypatch.context() as historical:
-            historical.setattr(table_import, "SOURCE_OBSERVATION_XLS_PROFILE", table_import.ZONED_XLS_PROFILE)
+            historical.setattr(table_import, "VOUCHER_REFERENCE_XLS_PROFILE", table_import.ZONED_XLS_PROFILE)
             view = preview(client, cid, data, "synthetic.xls")
         assert view["table_summary"]["profile"] == "funds-trace-table-v37"
         view = repreview_unchanged(client, cid, view)

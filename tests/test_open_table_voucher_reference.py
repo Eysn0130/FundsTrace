@@ -8,6 +8,8 @@ must keep the conservative conflicting-field path.
 import csv
 import io
 
+import pytest
+
 from app import table_import as tables
 
 
@@ -102,3 +104,40 @@ def test_explicit_reference_policy_resolves_a_near_miss_layout():
     plan = parse([source_row()], headers=headers, voucher_reference=True)
     assert plan["rows"][0]["trade_no"] == "SYN-TRANSACTION"
     assert plan["records"][0]["details"]["trade_no_basis"] == "source_transaction_id"
+
+
+@pytest.mark.parametrize("profile", ["funds-trace-table-v5", "funds-trace-table-v66", "funds-trace-table-v68"])
+def test_complete39_does_not_reinterpret_historical_profiles(profile):
+    plan = parse([source_row()], profile=profile)
+    assert not plan["rows"]
+    assert plan["records"][0]["reason_code"] == "conflicting_field"
+
+
+def test_opt_in_keeps_other_transaction_id_columns_as_validators():
+    headers = ("交易时间", "付款方账号", "收款方账号", "交易金额", "交易流水号", "凭证号", "交易单号")
+    values = {"交易时间": "2026-01-02 03:04:05", "付款方账号": "SYN-A", "收款方账号": "SYN-B",
+              "交易金额": "12.34", "交易流水号": "SYN-T", "凭证号": "SYN-V", "交易单号": "SYN-V"}
+    plan = parse([values], headers, voucher_reference=True)
+    assert not plan["rows"]
+    assert plan["records"][0]["reason_code"] == "conflicting_field"
+
+
+def test_explicit_policy_and_custom_mapping_keep_reference_roles():
+    values = source_row(**{"自定义金额": "100.00"})
+    plan = parse([values], COLUMNS + ("自定义金额",), voucher_reference=True,
+                 mode="B", mapping={"amount": "自定义金额", "trade_no": "交易流水号"})
+    assert plan["rows"][0]["trade_no"] == "SYN-TRANSACTION"
+    evidence = {entry["column"]: entry for entry in plan["mapping_evidence"]}
+    assert evidence["凭证号"]["field"] == "voucher_reference"
+
+
+def test_archive39_keeps_its_historical_member_interpretation():
+    import zipfile
+    from app import table_archive
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("synthetic.csv", payload([source_row()]))
+    stream.seek(0)
+    plan = table_archive.parse(stream)
+    assert not plan["rows"]
+    assert plan["records"][0]["reason_code"] == "conflicting_field"

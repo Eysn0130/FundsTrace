@@ -35,7 +35,7 @@ def test_only_width_capability_is_added_to_inherited_profile(old, new):
                                        'funds-trace-table-archive-v13', 'funds-trace-table-archive-v14', 'funds-trace-table-archive-v16', 'funds-trace-table-archive-v17', 'funds-trace-table-archive-v19', 'funds-trace-table-archive-v20', 'funds-trace-table-archive-v22', 'funds-trace-table-archive-v23', 'funds-trace-table-archive-v25', 'funds-trace-table-archive-v26', 'funds-trace-table-archive-v28', 'funds-trace-table-archive-v29', *{f'funds-trace-table-archive-v{v}' for v in (31, 32, 34, 35, 37, 38, 40, 41, 43, 44, 46, 47, 49, 50, 52, 53, 55, 56, 58, 59)}}
     assert new in evidence_resolution.PROFILES
     assert new in event_resolution.PROFILES
-    assert t.PROFILE == 'funds-trace-table-v66'
+    assert t.PROFILE == 'funds-trace-table-v69'
     assert table_archive.PROFILE == 'funds-trace-table-archive-v57'
     assert set(table_archive.PROFILE_PRECEDENCE) == table_archive.SUPPORTED_PROFILES
     assert table_archive.PROFILE_PRECEDENCE == tuple(f'funds-trace-table-archive-v{v}' for v in range(59, 0, -1))

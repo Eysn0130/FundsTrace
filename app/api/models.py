@@ -345,6 +345,8 @@ class ImportPreview(ContractModel):
     feedback: FeedbackSummary | None = None
     table_summary: TableSummary | None = None
     automatic: bool = False
+    reference_policy_available: bool = False
+    reference_policy: Literal["transaction-reference-v1"] | None = None
 
 
 class RepreviewRequest(ContractModel):

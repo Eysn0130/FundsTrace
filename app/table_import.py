@@ -150,7 +150,14 @@ SOURCE_OBSERVATION_EVIDENCE_PROFILE = "funds-trace-table-v68"
 SOURCE_OBSERVATION_ARCHIVE_PROFILE = "funds-trace-table-archive-v57"
 SOURCE_OBSERVATION_EVIDENCE_ARCHIVE_PROFILE = "funds-trace-table-archive-v58"
 SOURCE_OBSERVATION_XLS_ARCHIVE_PROFILE = "funds-trace-table-archive-v59"
-SOURCE_OBSERVATION_PROFILES = frozenset((SOURCE_OBSERVATION_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE,
+# New standalone reference interpretations must not change pinned old sessions
+# or archive-member rules. These profiles inherit the existing source contracts.
+VOUCHER_REFERENCE_PROFILE = "funds-trace-table-v69"
+VOUCHER_REFERENCE_XLS_PROFILE = "funds-trace-table-v70"
+VOUCHER_REFERENCE_EVIDENCE_PROFILE = "funds-trace-table-v71"
+VOUCHER_REFERENCE_PROFILES = frozenset((VOUCHER_REFERENCE_PROFILE, VOUCHER_REFERENCE_XLS_PROFILE,
+    VOUCHER_REFERENCE_EVIDENCE_PROFILE))
+SOURCE_OBSERVATION_PROFILES = frozenset((*VOUCHER_REFERENCE_PROFILES, SOURCE_OBSERVATION_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE,
     SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE,
     SOURCE_OBSERVATION_EVIDENCE_ARCHIVE_PROFILE, SOURCE_OBSERVATION_XLS_ARCHIVE_PROFILE))
 NATIVE31_PROFILES = frozenset((*SOURCE_OBSERVATION_PROFILES, NATIVE31_PROFILE, NATIVE31_XLS_PROFILE, NATIVE31_EVIDENCE_PROFILE,
@@ -196,13 +203,13 @@ MICROSECOND_ARCHIVE_PROFILES = frozenset((MICROSECOND_ARCHIVE_PROFILE, MICROSECO
                                          *HEADER_WIDTH_PROFILES))
 XLS_EVIDENCE_ARCHIVE_PROFILES = frozenset((SOURCE_OBSERVATION_XLS_ARCHIVE_PROFILE, NATIVE31_XLS_ARCHIVE_PROFILE, UNORIENTED_XLS_ARCHIVE_PROFILE, NATIVE_OBSERVATION_XLS_ARCHIVE_PROFILE, AUXILIARY_SCOPE_XLS_ARCHIVE_PROFILE, POSTING_PAIR_XLS_ARCHIVE_PROFILE, SOURCE_LEDGER_XLS_ARCHIVE_PROFILE, BANK31_VARIANT_XLS_ARCHIVE_PROFILE, SOURCE_TEXT_XLS_ARCHIVE_PROFILE, SOURCE_CONTRACT_XLS_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, MICROSECOND_XLS_ARCHIVE_PROFILE,
                                          HEADER_WIDTH_XLS_ARCHIVE_PROFILE, GUARDED_XLS_ARCHIVE_PROFILE, PRECISE_XLS_ARCHIVE_PROFILE, REFERENCE_ROLE_XLS_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_XLS_ARCHIVE_PROFILE, TIME_ROLE_XLS_ARCHIVE_PROFILE, ZONED_XLS_ARCHIVE_PROFILE))
-STANDALONE_XLS_PROFILES = frozenset((SOURCE_OBSERVATION_XLS_PROFILE, NATIVE31_XLS_PROFILE, UNORIENTED_XLS_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, POSTING_PAIR_XLS_PROFILE, SOURCE_LEDGER_XLS_PROFILE, BANK31_VARIANT_XLS_PROFILE, SOURCE_TEXT_XLS_PROFILE, SOURCE_CONTRACT_XLS_PROFILE, XLS_PROFILE, GUARDED_XLS_PROFILE, PRECISE_XLS_PROFILE, REFERENCE_ROLE_XLS_PROFILE, OPTIONAL_REFERENCE_XLS_PROFILE, TIME_ROLE_XLS_PROFILE, ZONED_XLS_PROFILE))
+STANDALONE_XLS_PROFILES = frozenset((VOUCHER_REFERENCE_XLS_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE, NATIVE31_XLS_PROFILE, UNORIENTED_XLS_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, POSTING_PAIR_XLS_PROFILE, SOURCE_LEDGER_XLS_PROFILE, BANK31_VARIANT_XLS_PROFILE, SOURCE_TEXT_XLS_PROFILE, SOURCE_CONTRACT_XLS_PROFILE, XLS_PROFILE, GUARDED_XLS_PROFILE, PRECISE_XLS_PROFILE, REFERENCE_ROLE_XLS_PROFILE, OPTIONAL_REFERENCE_XLS_PROFILE, TIME_ROLE_XLS_PROFILE, ZONED_XLS_PROFILE))
 XLS_READER_PROFILES = frozenset((*STANDALONE_XLS_PROFILES, *XLS_EVIDENCE_ARCHIVE_PROFILES))
-EVENT_PROFILES = frozenset((SOURCE_OBSERVATION_EVIDENCE_PROFILE, NATIVE31_EVIDENCE_PROFILE, UNORIENTED_EVIDENCE_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, ZONED_EVIDENCE_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, EVIDENCE_PROFILE, GUARDED_EVIDENCE_PROFILE, PRECISE_EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, *MICROSECOND_ARCHIVE_PROFILES))
+EVENT_PROFILES = frozenset((VOUCHER_REFERENCE_EVIDENCE_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, NATIVE31_EVIDENCE_PROFILE, UNORIENTED_EVIDENCE_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, ZONED_EVIDENCE_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, EVIDENCE_PROFILE, GUARDED_EVIDENCE_PROFILE, PRECISE_EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, *MICROSECOND_ARCHIVE_PROFILES))
 EVIDENCE_ARCHIVE_PROFILES = frozenset((LEGACY_EVIDENCE_ARCHIVE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, *MICROSECOND_ARCHIVE_PROFILES))
-EVIDENCE_PROFILES = frozenset((SOURCE_OBSERVATION_EVIDENCE_PROFILE, NATIVE31_EVIDENCE_PROFILE, UNORIENTED_EVIDENCE_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, ZONED_EVIDENCE_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, LEGACY_EVIDENCE_PROFILE, *EVIDENCE_ARCHIVE_PROFILES, EVIDENCE_PROFILE, GUARDED_EVIDENCE_PROFILE, PRECISE_EVIDENCE_PROFILE))
-PROFILE = SOURCE_OBSERVATION_PROFILE
-CURRENCY_REGION_PROFILES = frozenset((SOURCE_OBSERVATION_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE, NATIVE31_PROFILE, NATIVE31_ARCHIVE_PROFILE, UNORIENTED_PROFILE, UNORIENTED_ARCHIVE_PROFILE, NATIVE_OBSERVATION_PROFILE, NATIVE_OBSERVATION_ARCHIVE_PROFILE, AUXILIARY_SCOPE_PROFILE, AUXILIARY_SCOPE_ARCHIVE_PROFILE, POSTING_PAIR_PROFILE, POSTING_PAIR_ARCHIVE_PROFILE, SOURCE_LEDGER_PROFILE, SOURCE_LEDGER_ARCHIVE_PROFILE, BANK31_VARIANT_PROFILE, BANK31_VARIANT_ARCHIVE_PROFILE, SOURCE_TEXT_PROFILE, SOURCE_TEXT_ARCHIVE_PROFILE, CURRENCY_REGION_PROFILE, *STANDALONE_XLS_PROFILES, GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, TIME_ROLE_ARCHIVE_PROFILE, ZONED_PROFILE, ZONED_ARCHIVE_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_CONTRACT_ARCHIVE_PROFILE,
+EVIDENCE_PROFILES = frozenset((VOUCHER_REFERENCE_EVIDENCE_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, NATIVE31_EVIDENCE_PROFILE, UNORIENTED_EVIDENCE_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, ZONED_EVIDENCE_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, LEGACY_EVIDENCE_PROFILE, *EVIDENCE_ARCHIVE_PROFILES, EVIDENCE_PROFILE, GUARDED_EVIDENCE_PROFILE, PRECISE_EVIDENCE_PROFILE))
+PROFILE = VOUCHER_REFERENCE_PROFILE
+CURRENCY_REGION_PROFILES = frozenset((VOUCHER_REFERENCE_PROFILE, SOURCE_OBSERVATION_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE, NATIVE31_PROFILE, NATIVE31_ARCHIVE_PROFILE, UNORIENTED_PROFILE, UNORIENTED_ARCHIVE_PROFILE, NATIVE_OBSERVATION_PROFILE, NATIVE_OBSERVATION_ARCHIVE_PROFILE, AUXILIARY_SCOPE_PROFILE, AUXILIARY_SCOPE_ARCHIVE_PROFILE, POSTING_PAIR_PROFILE, POSTING_PAIR_ARCHIVE_PROFILE, SOURCE_LEDGER_PROFILE, SOURCE_LEDGER_ARCHIVE_PROFILE, BANK31_VARIANT_PROFILE, BANK31_VARIANT_ARCHIVE_PROFILE, SOURCE_TEXT_PROFILE, SOURCE_TEXT_ARCHIVE_PROFILE, CURRENCY_REGION_PROFILE, *STANDALONE_XLS_PROFILES, GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, TIME_ROLE_ARCHIVE_PROFILE, ZONED_PROFILE, ZONED_ARCHIVE_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_CONTRACT_ARCHIVE_PROFILE,
                                      GUARDED_ARCHIVE_PROFILE, PRECISE_ARCHIVE_PROFILE, REFERENCE_ROLE_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_ARCHIVE_PROFILE, *EVIDENCE_PROFILES))
 CURRENCY_CODE_ALIAS_PROFILES = CURRENCY_REGION_PROFILES | {ARCHIVE_MEMBER_PROFILE}
 OVERLAPPING_HEADER_PROFILES = CURRENCY_REGION_PROFILES | {ARCHIVE_MEMBER_PROFILE}
@@ -1649,6 +1656,14 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, voucher_re
     candidates = _candidates(headers, profile)
     header_names = tuple(_text(_header_value(header, profile)) for header in headers)
     signature = frozenset(header_names)
+    feedback39_reference_family = (profile in VOUCHER_REFERENCE_PROFILES
+                                   and len(headers) == len(BANK_FEEDBACK_39_COLUMNS)
+                                   and signature == BANK_FEEDBACK_39_COLUMNS)
+    reference_names = {_norm(_text(headers[item["index"]])) for item in candidates.get("trade_no", [])}
+    voucher_names = frozenset((_norm("凭证号"), _norm("凭证编号")))
+    separable_references = (profile in VOUCHER_REFERENCE_PROFILES
+        and _norm("交易流水号") in reference_names and bool(reference_names & voucher_names))
+    explicit_reference_roles = voucher_reference is True and separable_references
     # Complete source schema, including identity/direction/status columns.
     # Repeated role columns remain validators. Additional unknown columns must
     # be empty on every admitted row; their names confer no reference authority.
@@ -1768,7 +1783,8 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, voucher_re
                      ({"trade_time", "time_part", "direction", "currency", "status", "amount_unit", "income_amt_unit", "expense_amt_unit", "balance_unit"} if profile in FINANCIAL_PROFILES else set())):
             if index not in {item["index"] for item in candidates.get(field, [])}:
                 candidates.setdefault(field, []).append(explicit)
-        elif (feedback_references or native_typed_family) and field == "trade_no":
+        elif (feedback_references or native_typed_family or feedback39_reference_family or explicit_reference_roles
+              or separable_references and not query_owner) and field == "trade_no":
             reference_name = contract_names[index] if optional_references or native_typed_family else explicit["source_name"]
             if reference_name != "交易流水号":
                 raise TableImportError("来源合同的主交易号映射不能替换为独立凭证")
@@ -1793,8 +1809,6 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, voucher_re
     uniform35_padding = (profile in EVIDENCE_PROFILES and len(header_names) == 37
                          and frozenset(header_names[:35]) == UNIFORM_FEEDBACK_35_COLUMNS
                          and not any(header_names[35:]))
-    feedback39_reference_family = (len(headers) == len(BANK_FEEDBACK_39_COLUMNS)
-                                   and signature == BANK_FEEDBACK_39_COLUMNS)
     closed_reference_family = (feedback39_reference_family
                                or len(headers) == len(BANK_FEEDBACK_32_COLUMNS) and signature == BANK_FEEDBACK_32_COLUMNS
                                or profile in EVIDENCE_PROFILES and len(headers) == len(BANK_FEEDBACK_31_COLUMNS)
@@ -1804,10 +1818,6 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, voucher_re
                                or profile in EVIDENCE_PROFILES and len(headers) == len(UNIFORM_FEEDBACK_35_COLUMNS)
                                and signature == UNIFORM_FEEDBACK_35_COLUMNS
                                or uniform35_padding)
-    reference_names = {_norm(_text(item.get("source_name", ""))) for item in candidates.get("trade_no", [])}
-    voucher_names = frozenset((_norm("凭证号"), _norm("凭证编号")))
-    explicit_reference_roles = (voucher_reference is True
-        and _norm("交易流水号") in reference_names and bool(reference_names & voucher_names))
     if explicit_reference_roles:
         # The caller asked for this layout explicitly (repreview), so role the
         # references apart without inferring anything from cell values. The
@@ -1815,10 +1825,10 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, voucher_re
         active_reference_policy = TRANSACTION_REFERENCE_POLICY
         for item in candidates.get("trade_no", []):
             name = _norm(_text(item.get("source_name", "")))
-            item["reference_role"] = ("source_transaction_id" if name == _norm("交易流水号")
+            item["reference_role"] = ("independent_voucher_reference" if name in voucher_names
                                       else "source_slip_reference" if name == _norm("传票号")
                                       else "source_log_reference" if name == _norm("日志号")
-                                      else "independent_voucher_reference")
+                                      else "source_transaction_id")
         current_mapping["trade_no"] = labels[next(item["index"] for item in candidates["trade_no"]
                                                   if item.get("reference_role") == "source_transaction_id")]
     elif (feedback39_reference_family or feedback_references or (reference_policy == TRANSACTION_REFERENCE_POLICY
@@ -2218,16 +2228,19 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
         raise TableImportError("表格映射参数无效")
     if reference_policy is not None and reference_policy != TRANSACTION_REFERENCE_POLICY:
         raise TableImportError("表格引用策略无效")
+    if type(voucher_reference) is not bool or voucher_reference and profile not in VOUCHER_REFERENCE_PROFILES:
+        raise TableImportError("凭证独立引用选择仅适用于新版单文件表格规则，请重新上传预览")
     if reference_policy is not None and mapping and "trade_no" in mapping:
         raise TableImportError("表格引用策略不能与交易号映射同时使用")
     if (type(auto_event_profile) is not bool or auto_event_profile and
-            (profile not in {CURRENCY_REGION_PROFILE, GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, ZONED_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_TEXT_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_LEDGER_PROFILE, POSTING_PAIR_PROFILE, AUXILIARY_SCOPE_PROFILE, NATIVE_OBSERVATION_PROFILE, UNORIENTED_PROFILE, NATIVE31_PROFILE, SOURCE_OBSERVATION_PROFILE} or suffix not in {".csv", ".tsv", ".txt", ".xlsx"}
+            (profile not in {VOUCHER_REFERENCE_PROFILE, CURRENCY_REGION_PROFILE, GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, ZONED_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_TEXT_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_LEDGER_PROFILE, POSTING_PAIR_PROFILE, AUXILIARY_SCOPE_PROFILE, NATIVE_OBSERVATION_PROFILE, UNORIENTED_PROFILE, NATIVE31_PROFILE, SOURCE_OBSERVATION_PROFILE} or suffix not in {".csv", ".tsv", ".txt", ".xlsx"}
              or mode is not None or mapping is not None or reference_policy is not None)):
         raise TableImportError("事件合同自动识别仅用于普通表格的首次自动预览")
     raw = _bytes(source)
     sheets = _excel(raw, suffix) if suffix in {".xlsx", ".xls"} else _csv(raw, suffix, profile)
     if auto_event_profile and _declares_event_contract(sheets, profile):
-        profile = (SOURCE_OBSERVATION_EVIDENCE_PROFILE if profile == SOURCE_OBSERVATION_PROFILE else
+        profile = (VOUCHER_REFERENCE_EVIDENCE_PROFILE if profile == VOUCHER_REFERENCE_PROFILE else
+                   SOURCE_OBSERVATION_EVIDENCE_PROFILE if profile == SOURCE_OBSERVATION_PROFILE else
                    NATIVE31_EVIDENCE_PROFILE if profile == NATIVE31_PROFILE else
                    UNORIENTED_EVIDENCE_PROFILE if profile == UNORIENTED_PROFILE else
                    NATIVE_OBSERVATION_EVIDENCE_PROFILE if profile == NATIVE_OBSERVATION_PROFILE else
@@ -2339,6 +2352,18 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                 row_candidates = _row_time_declaration(row, row_candidates)
                 result, disposition, reason, parsed_details = interpreter(
                     row, row_candidates, actual_mode, reference_policy=row_reference_policy, financial=profile in FINANCIAL_PROFILES, source_contract=source_contract, source_roles=profile in SOURCE_ROLE_PROFILES, retain_endpoint_role=profile in EVIDENCE_PROFILES, sign_contract=sign_contracts.get(sheet["path"]), source_ledger=profile in SOURCE_LEDGER_PROFILES)
+                if (profile in VOUCHER_REFERENCE_PROFILES and row_reference_policy is None
+                        and reason == "conflicting_field" and not plan.get("_reference_choice_conflict")):
+                    # This only offers a preview choice. An unrelated identity
+                    # or bank conflict must not stop ordinary automatic intake.
+                    references = row_candidates.get("trade_no", [])
+                    voucher_names = {_norm("凭证号"), _norm("凭证编号")}
+                    primary_values = {_text(_value(row, item)) for item in references
+                                      if _norm(item.get("source_name", "")) not in voucher_names} - {""}
+                    voucher_values = {_text(_value(row, item)) for item in references
+                                      if _norm(item.get("source_name", "")) in voucher_names} - {""}
+                    if len(primary_values) == len(voucher_values) == 1 and primary_values != voucher_values:
+                        plan["_reference_choice_conflict"] = True
                 if profile in EVIDENCE_ARCHIVE_PROFILES:
                     if (profile not in NATIVE_OBSERVATION_PROFILES
                             and feedback_header_names is not None and "time_role_declaration" not in row_candidates

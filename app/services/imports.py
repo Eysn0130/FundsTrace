@@ -229,6 +229,8 @@ def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=Non
     # Never retain a previous large preview beside a newly parsed plan.
     import_preview_cache.discard()
     try:
+        if reference_policy is not None and table_profile not in table_import.VOUCHER_REFERENCE_PROFILES:
+            raise ServiceError(422, "invalid_reference_policy", "引用策略仅适用于新版单文件表格，请重新上传预览")
         if table_profile not in (None, importer.PARSER_VERSION, *table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
             raise ServiceError(400, "invalid_table_file", "来源解析规则不受支持，请重新上传预览")
         if table_profile in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
@@ -236,7 +238,7 @@ def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=Non
                 raise table_import.TableImportError("RAR文件签名不符，整包未接纳")
             plan = (table_archive.parse(source, profile=table_profile, _stage=True, _operation_scopes=True) if table_profile in table_archive.SUPPORTED_PROFILES
                     else table_import.parse(source, suffix=suffix, mode=mode, mapping=mapping,
-                                            profile=table_profile, reference_policy=reference_policy,
+                                            profile=table_profile,
                                             voucher_reference=reference_policy is not None,
                                             **({"_auto_event_profile": True} if _auto_event_profile else {})))
             try:
@@ -775,6 +777,13 @@ def _preview_result(session, parsed, legacy=False, *, preserve_staging=False):
     table_plan = frame.attrs.get("table_plan")
     if table_plan is not None:
         result["table_summary"] = _table_summary(table_plan)
+        result["reference_policy"] = json.loads(session.get("request_json") or "{}").get("reference_policy")
+        regions = {}
+        for entry in table_plan["mapping_evidence"]:
+            if entry["field"] == "trade_no" or result["reference_policy"] is not None and entry["field"] == "voucher_reference":
+                regions.setdefault((entry["member_path"], entry["header_row"]), set()).add(table_import._norm(entry["column"]))
+        result["reference_policy_available"] = (not legacy and table_plan["profile"] in table_import.VOUCHER_REFERENCE_PROFILES
+            and any("交易流水号" in names and names & {"凭证号", "凭证编号"} for names in regions.values()))
         positions = record_map(table_plan)
         for preview, row in zip(result["preview"], rows):
             record = positions[row["_source_row"]]
@@ -928,7 +937,7 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
             archive_profile = table_archive.evidence_profile(source)
         table_profile = (((archive_profile if resolve_evidence or archive_profile in table_archive.XLS_EVIDENCE_PROFILES else table_archive.PROFILE)
                           if suffix == ".rar" or table_archive.should_parse(source, native_observations=True) else None)
-                         if suffix in {".zip", ".rar"} else table_import.SOURCE_OBSERVATION_XLS_PROFILE if suffix == ".xls" else table_import.SOURCE_OBSERVATION_EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
+                         if suffix in {".zip", ".rar"} else table_import.VOUCHER_REFERENCE_XLS_PROFILE if suffix == ".xls" else table_import.VOUCHER_REFERENCE_EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
         parsed = _parse(source, suffix=suffix, table_profile=table_profile,
                         feedback_profile=feedback_import.MICROSECOND_EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None,
                         _auto_event_profile=table_profile == table_import.PROFILE
@@ -962,6 +971,7 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
             # Preview still consumes operation-private staging. A late disk
             # failure must roll back the ready session with its retained file.
             evidence_resolution.operation_context(parsed, session["sha256"])
+            reference_choice_conflict = parsed[0].attrs.get("table_plan", {}).get("_reference_choice_conflict", False)
             result = _preview_result(session, parsed, legacy=surface == "legacy", preserve_staging=pure_stamp is not None)
             if pure_stamp is not None:
                 cache_session = db.q_raw("select * from import_sessions where import_id=?", [import_id])[0]
@@ -969,7 +979,8 @@ async def _upload(case_id, file, surface, *, resolve_evidence=False):
                         import_preview_cache.key(cache_session, _table_profile(cache_session), _table_overrides(cache_session)),
                         parsed, pure_stamp):
                     parsed = None  # The finite cache now owns this one original plan.
-        result["automatic"] = True
+        result["automatic"] = not (result.get("reference_policy_available")
+            and reference_choice_conflict)
         return result
     except BaseException:
         if created:
@@ -1041,9 +1052,11 @@ def _repreview(case_id, import_id, body, surface):
                                profile=_table_profile(session))
                 if overrides and _table_profile(session) in table_archive.SUPPORTED_PROFILES:
                     raise ServiceError(422, "invalid_mapping", "反馈包按成员独立校验，不能使用整包字段覆盖")
-            reference_policy = getattr(body, "reference_policy", None)
-            if reference_policy is not None and not is_table:
-                raise ServiceError(422, "invalid_reference_policy", "引用策略仅适用于表格流水来源")
+            request = json.loads(session.get("request_json") or "{}")
+            reference_policy = (body.reference_policy if "reference_policy" in getattr(body, "model_fields_set", vars(body))
+                                else request.get("reference_policy"))
+            if reference_policy is not None and (surface != "v1" or _table_profile(session) not in table_import.VOUCHER_REFERENCE_PROFILES):
+                raise ServiceError(422, "invalid_reference_policy", "引用策略仅适用于新版单文件表格的 v1 预览")
             parsed = _parse(source, body.mode if not is_table or overrides else None,
                             body.mapping if not is_table or overrides else None, suffix=session["suffix"],
                             feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
@@ -1058,13 +1071,13 @@ def _repreview(case_id, import_id, body, surface):
                  [parsed[2], _json(parsed[3]), _json(list(parsed[0].columns)), now, now + dt.timedelta(days=7), import_id])
             db.x("delete from import_file_gc where import_id=?", [import_id])
             if is_table:
-                request = json.loads(session.get("request_json") or "{}")
-                request["_table_overrides"] = overrides
+                request.update(mode=parsed[2], mapping=parsed[3], _table_overrides=overrides)
                 if reference_policy is None:
                     request.pop("reference_policy", None)
                 else:
                     request["reference_policy"] = reference_policy
                 db.x("update import_sessions set request_json=? where import_id=?", [_json(request), import_id])
+                session["request_json"] = _json(request)
             return _preview_result(session, parsed, legacy=surface == "legacy")
         finally:
             _close_staging(parsed)
@@ -1293,6 +1306,12 @@ def _commit(case_id, import_id, body, surface):
         else:
             _source(session)
             is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
+            stored_policy = json.loads(session.get("request_json") or "{}").get("reference_policy")
+            if "reference_policy" in getattr(body, "model_fields_set", vars(body)):
+                if body.reference_policy is not None and (surface != "v1" or _table_profile(session) not in table_import.VOUCHER_REFERENCE_PROFILES):
+                    raise ServiceError(422, "invalid_reference_policy", "引用策略仅适用于新版单文件表格的 v1 预览")
+                if body.reference_policy != stored_policy:
+                    raise ServiceError(409, "preview_changed", "引用策略与已校验预览不同，请先重新预览")
             mapping = (_table_mapping(body.mode, body.mapping, json.loads(session["columns_json"] or "[]"),
                                       profile=_table_profile(session)) if is_table
                        else _mapping(body.mode, body.mapping, json.loads(session["columns_json"] or "[]")))
@@ -1305,7 +1324,6 @@ def _commit(case_id, import_id, body, surface):
                 request["_feedback_profile"] = _feedback_profile(session)
             if is_table:
                 request.update(_table_profile=_table_profile(session), _table_overrides=_table_overrides(session))
-                stored_policy = json.loads(session.get("request_json") or "{}").get("reference_policy")
                 if stored_policy is not None:
                     request["reference_policy"] = stored_policy
             db.x("""update import_sessions set mode=?,mapping_json=?,request_json=?,stage='parsing',done=0,total=0,

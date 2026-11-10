@@ -182,7 +182,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const valid = (token: number) => alive.current && token === operation.current && !lifetime.current.signal.aborted && !scopeSignal.aborted;
   const acceptPreview = (value: ImportPreview) => {
     if (value.case_id !== target.caseId || (resume && value.import_id !== resume.import_id)) throw new Error('预览与当前案件导入记录不一致。');
-    setPreview(value); setMapping(value.mapping); setMode(value.mode); setDirty(false);
+    setPreview(value); setMapping(value.mapping); setMode(value.mode); setReferencePolicy(value.reference_policy === 'transaction-reference-v1'); setDirty(false);
     if (!selectionInitialized.current) { setMarked(value.self_accounts_in_file.map(account => account.account)); selectionInitialized.current = true; }
   };
   const poll = async (importId: string, token: number, signal = lifetime.current.signal) => {
@@ -219,7 +219,8 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
     const token = ++operation.current;
     setBusy(true); setError(''); setJob(null);
     try {
-      const value = await client.repreview(resume.import_id, { mode: resume.request?.mode ?? resume.mode, mapping: resume.request?.mapping ?? resume.mapping }, lifetime.current.signal);
+      const value = await client.repreview(resume.import_id, { mode: resume.request?.mode ?? resume.mode, mapping: resume.request?.mapping ?? resume.mapping,
+        ...(resume.request?.reference_policy !== undefined ? { reference_policy: resume.request.reference_policy } : {}) }, lifetime.current.signal);
       if (valid(token)) acceptPreview(value);
     } catch (reason) { if (valid(token)) setError((reason as Error).message); }
     finally { if (valid(token)) setBusy(false); }
@@ -253,7 +254,6 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
       const value = directory ? await client.previewDirectory!(files, lifetime.current.signal)
         : await client.preview(files[0], lifetime.current.signal);
       if (!valid(token)) return;
-      setReferencePolicy(false);
       acceptPreview(value);
       // Only the response to this new upload can authorize the one automatic
       // commit. Restored previews never restart a write on mount or retry.
@@ -269,7 +269,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
     setBusy(true); setError(''); setJob(null);
     try {
       const body = preview.feedback ? { mode: preview.mode, mapping: preview.mapping }
-        : { mode, mapping, ...(tableSummary && referencePolicy ? { reference_policy: 'transaction-reference-v1' as const } : {}) };
+        : { mode, mapping, ...(preview.reference_policy_available ? { reference_policy: referencePolicy ? 'transaction-reference-v1' as const : null } : {}) };
       const value = await client.repreview(preview.import_id, body, lifetime.current.signal);
       if (valid(token)) acceptPreview(value);
     }
@@ -366,10 +366,11 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
         </div>
       : <>
         <div className="file-summary"><strong>{preview.filename}</strong><span>{preview.feedback ? <>原始记录 {preview.feedback.record_total} 条 · 来源已接纳流水 {preview.feedback.accepted} 条 · 已配对冲正/撤销 {preview.feedback.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {preview.feedback.non_monetary ?? 0} 条 · 未计入资金流水 {unresolvedCount(preview.feedback)} 条 · 来源反馈 {preview.feedback.non_transaction} 条 · 辅助资料 {preview.feedback.auxiliary} 条</> : tableSummary ? <>来源记录 {tableSummary.record_total} 条 · 可靠识别流水 {tableSummary.accepted} 条 · 未计入资金流水 {tableSummary.unresolved} 条</> : <>{preview.stats.total} 行 · 可导入 {preview.stats.ok} 行 · 跳过 {preview.stats.skipped} 行</>}</span></div>
+        {!preview.feedback && preview.reference_policy_available && <div className="resume-summary reference-policy"><label><input type="checkbox" checked={referencePolicy} disabled={working || activeJob} onChange={event => { setReferencePolicy(event.target.checked); setDirty(true); }} />凭证号作为独立引用（不与交易流水号比较）</label><p className="muted">可保持默认并直接开始导入；勾选后请重新预览，凭证号将独立保留。</p></div>}
         {tableSummary && <TableSummary summary={tableSummary} uncertain={awaitingStatus} />}
         {resolution && <ResolutionSummary value={resolution} complete={false} />}
         {preview.feedback ? <FeedbackSummary feedback={preview.feedback} uncertain={awaitingStatus} /> : <><label className="mode-field">文件类型<select aria-label="流水文件类型" value={mode} disabled={working || activeJob} onChange={event => { const next = event.target.value as 'A' | 'B'; setMode(next); setMapping(value => Object.fromEntries(Object.entries(value).filter(([field]) => modeFields[next].has(field)))); setDirty(true); }}><option value="A">双边流水（付款方 → 收款方）</option><option value="B">单账户流水（本方与交易对手）</option></select></label>
-        <details className="mapping"><summary>{tableSummary ? '高级：调整解释' : '检查字段映射'} <span>{dirty ? '已修改，请重新预览' : '已自动识别，可调整'}</span></summary><div className="mapping-grid">{(mode === 'A' ? fieldsA : fieldsB).map(field => <label key={field}>{fieldNames[field]}<select aria-label={`映射${fieldNames[field]}`} value={mapping[field] || ''} disabled={working || activeJob} onChange={event => { setMapping(value => ({ ...value, [field]: event.target.value })); setDirty(true); }}><option value="">不使用</option>{preview.columns.map(column => <option key={column}>{column}</option>)}</select></label>)}</div>{tableSummary && <div className="reference-policy"><label><input type="checkbox" checked={referencePolicy} disabled={working || activeJob} onChange={event => { setReferencePolicy(event.target.checked); setDirty(true); }} />凭证号作为独立引用（不与交易流水号比较）</label><p className="muted">仅当回执出现「未计入资金流水」且原因是同一字段多个候选列不一致时使用；勾选后重新预览，确认可导入行数再提交。</p></div>}</details>
+        <details className="mapping"><summary>{tableSummary ? '高级：调整解释' : '检查字段映射'} <span>{dirty ? '已修改，请重新预览' : '已自动识别，可调整'}</span></summary><div className="mapping-grid">{(mode === 'A' ? fieldsA : fieldsB).map(field => <label key={field}>{fieldNames[field]}<select aria-label={`映射${fieldNames[field]}`} value={mapping[field] || ''} disabled={working || activeJob} onChange={event => { setMapping(value => ({ ...value, [field]: event.target.value })); setDirty(true); }}><option value="">不使用</option>{preview.columns.map(column => <option key={column}>{column}</option>)}</select></label>)}</div></details>
         {dirty && <button className="button secondary" onClick={() => void repreview()} disabled={working || activeJob}>按当前映射重新预览</button>}</>}
         <div className="preview-wrap"><table className="preview-table"><caption>规范化预览 · 前 {preview.preview.length} 行</caption><thead><tr>{preview.feedback && <th>来源文件／原始行</th>}<th>交易时间</th><th>付款方</th><th>收款方</th><th className="align-right">金额</th></tr></thead><tbody>{preview.preview.map((row, index) => <tr key={index}>{preview.feedback && <td>{row.source_member || '—'}<small>原始第 {row.source_row ?? '—'} 行 · 记录 {row.source_record_no ?? '—'}</small></td>}<td className="mono">{displayTime(row.trade_time)}</td><td>{row.payer_name || (preview.feedback ? row.payer_account ? '户名未提供' : '未知对手' : '—')}<small className="mono">{row.payer_account || (preview.feedback ? '账号缺失' : '')}</small></td><td>{row.payee_name || (preview.feedback ? row.payee_account ? '户名未提供' : '未知对手' : '—')}<small className="mono">{row.payee_account || (preview.feedback ? '账号缺失' : '')}</small></td><td className="align-right mono">{formatMoney(row.amount)} <small>{row.currency}</small></td></tr>)}</tbody></table></div>
         {preview.self_accounts_in_file.length > 0 && <fieldset className="main-accounts"><legend>标记本方主账号</legend>{preview.self_accounts_in_file.map(account => <label key={account.account}><input type="checkbox" checked={marked.includes(account.account)} disabled={working || activeJob} onChange={event => setMarked(value => event.target.checked ? [...value, account.account] : value.filter(item => item !== account.account))} />{account.name || account.account} <span className="mono">{account.account}</span></label>)}</fieldset>}
