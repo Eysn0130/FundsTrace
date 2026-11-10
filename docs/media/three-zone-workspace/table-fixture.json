@@ -1,0 +1,33 @@
+{
+  "kind": "deterministic synthetic UI fixture; no business records",
+  "baseGenerator": "scripts/preview_synthetic.py::graph_fixture_rows",
+  "arguments": {
+    "nodes": 7,
+    "shape": "hub",
+    "seed": 2026,
+    "isolated": false
+  },
+  "transform": {
+    "payer_name": "合成数据科技（深圳）有限公司 · 高密度表格验证",
+    "payee_name": "合成供应链管理（杭州）有限公司 · 非真实交易对手 {zero-based index}",
+    "accountFields": [
+      "payer_account",
+      "payee_account",
+      "self_account"
+    ],
+    "accountPrefix": "000000000000000000000000",
+    "summaryUnit": "合成测试：核对跨行汇款、完整账号、长摘要与精确金额；仅用于表格交互验证。",
+    "summaryRepetitions": 5
+  },
+  "expectations": {
+    "flows": 6,
+    "nodes": 7,
+    "largestAmount": "9999999999999999.99",
+    "currencies": [
+      "CNY",
+      "USD"
+    ],
+    "summaryCharacters": 180
+  },
+  "shortcutsAndSpacingFixture": "The same base generator without the long-field transform; seven nodes, six flows, seed 2026 hub"
+}

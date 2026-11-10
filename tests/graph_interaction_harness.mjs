@@ -1177,7 +1177,7 @@ test('graph interaction: repeated public fit repairs stale label offsets and pre
     const shape=item.getContainer().children.find(shape=>shape.name==='text-shape');
     const box=shape.getCanvasBBox(),body=item.getKeyShape().getCanvasBBox();
     assert.ok(Math.abs((box.minX+box.maxX-body.minX-body.maxX)/2)<1e-8);
-    assert.ok(Math.abs(box.minY-body.maxY-6)<1e-8);
+    assert.ok(Math.abs(box.minY-body.maxY-6*f.state.graph.getZoom())<1e-8);
     assert.equal(shape._fundsLabelOffset,undefined);
   }};
   assertAnchored();
@@ -1368,7 +1368,7 @@ test('clean graph interaction: hover zoom fit and history preserve manual node c
   const assertLabels=()=>{for(const item of f.state.graph.getNodes()){
     const label=f.text(item),box=label.getCanvasBBox(),body=item.getKeyShape().getCanvasBBox();
     assert.ok(Math.abs((box.minX+box.maxX-body.minX-body.maxX)/2)<1e-8,`${item.model.id} stays centered`);
-    assert.ok(Math.abs(box.minY-body.maxY-6)<1e-8,`${item.model.id} stays below the body by six screen pixels`);
+    assert.ok(Math.abs(box.minY-body.maxY-6*f.state.graph.getZoom())<1e-8,`${item.model.id} keeps its scaled lower gap`);
     assert.equal(label._fundsLabelOffset,undefined);assert.equal(f.shape(item,'text-bg-shape'),undefined);
     assert.equal(f.shape(item,'funds-label-leader'),undefined);
   }};
@@ -1693,7 +1693,7 @@ function contractScene(topology,options={}){
     const text=item.getContainer().children.find(shape=>shape.name==='text-shape');assert.ok(text,`${item.model.id} retains its full label`);
     const box=text.getCanvasBBox(),body=item.getKeyShape().getCanvasBBox();
     assert.ok(Math.abs((box.minX+box.maxX-body.minX-body.maxX)/2)<1e-7,`${item.model.id} is centered`);
-    assert.ok(Math.abs(box.minY-body.maxY-6)<1e-7,`${item.model.id} keeps a 6 CSS pixel lower gap`);
+    assert.ok(Math.abs(box.minY-body.maxY-6*f.state.graph.getZoom())<1e-7,`${item.model.id} keeps a six-world-unit lower gap`);
     assert.equal(item.getContainer().children.some(shape=>['text-bg-shape','funds-label-leader'].includes(shape.name)),false);
   }
     for(const item of f.state.graph.getEdges()){
@@ -2222,7 +2222,7 @@ test('layout pipeline fault: saving after fit restores camera fit baseline and a
   assert.ok(Math.abs(fittedZoom-fitZoom)>1e-7,'the fixture exercises a changed fit baseline before rollback');
   assert.deepEqual(f.geometry(),before);assert.deepEqual(f.camera,camera);assert.equal(f.state.graphView.fitZoom,fitZoom);
   assert.deepEqual(labels(),beforeLabels,'restored labels are drawn using the restored camera before any new user action');
-  for(const label of labels())assert.ok(Math.abs(label.box.minY-label.body.maxY-6)<1e-7,'rollback preserves the actual 6 CSS pixel node-label gap');
+  for(const label of labels())assert.ok(Math.abs(label.box.minY-label.body.maxY-6*f.state.graph.getZoom())<1e-7,'rollback preserves the scaled node-label gap');
   assert.equal(f.h.run('layoutJob'),null);assert.equal(f.history.status().busy,false);assert.equal(f.history.status().count,0);
 });
 
@@ -2240,7 +2240,7 @@ test('layout pipeline camera: engine footprints are independent of the current u
   }
   for(let i=0;i<small.edges.length;i++)for(const field of ['labelWidth','labelHeight'])
     assert.ok(Math.abs(small.edges[i][field]-large.edges[i][field])<1e-7,`relationship ${field} is independent of camera zoom`);
-  assert.ok(small.nodes.every(node=>node.gapWorld===6&&node.labelGap===6),'engine footprint and fixed screen gap are distinct canonical inputs');
+  assert.ok(small.nodes.every(node=>node.gapWorld===6&&node.labelGap===0),'the producer reserves a canonical world gap without fixed screen-space inflation');
   assert.equal(f.h.run('layoutJob'),null);assert.equal(f.history.status().count,0);
 });
 
@@ -2906,7 +2906,7 @@ test('graph label refresh contract: temporarily hidden admitted text restores it
   const point=item.getKeyShape().getPoint(.5),box=text.getBBox();
   assert.ok(Math.abs((box.minX+box.maxX)/2-point.x)<1e-7&&Math.abs((box.minY+box.maxY)/2-point.y)<1e-7);
   const body=node.getKeyShape().getCanvasBBox(),label=nodeText.getCanvasBBox();
-  assert.ok(Math.abs(label.minY-body.maxY-6)<1e-7);assert.ok(Math.abs(label.minX+label.maxX-body.minX-body.maxX)<1e-7);
+  assert.ok(Math.abs(label.minY-body.maxY-6*f.state.graph.getZoom())<1e-7);assert.ok(Math.abs(label.minX+label.maxX-body.minX-body.maxX)<1e-7);
   assert.equal(measurements,2,'a visibility repair retains the final real-geometry collision measurement');
   assert.equal([...item.getContainer().children,...node.getContainer().children].some(shape=>['text-bg-shape','funds-label-leader'].includes(shape.name)),false);
   f.applyLabels();assert.equal(item.getContainer().children.find(shape=>shape.name==='funds-edge-visible-path'),visible,'a later stable refresh retains the repaired path');

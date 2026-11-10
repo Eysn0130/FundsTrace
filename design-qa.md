@@ -1,3 +1,26 @@
+# 高密度流水表格、画布快捷键与缩放间距 · 2026-11-10
+
+final result: passed（本地源码与隔离合成 UI 范围）
+
+维护者确认“单击选行／定位，独立按钮上图或移出”。本轮保留七列和两种复选框语义，默认增加两行概览、溢出完整值、带下限的手动列宽；隐藏左侧统计及整段来源说明，增加画布删除快捷键，修正缩小时节点名称离本体过远。研究、四步审查、风险及具体交互见 [dense-flow-table.md](docs/dense-flow-table.md)。下文既有交付记录保留，早先对覆盖说明可见和固定屏幕间距的描述已被本轮替代。
+
+## 实际观察
+
+1. **读表。** [同一长字段合成输入修改前](docs/media/three-zone-workspace/table-02-long-before.png)约 344.72px／行，[两行概览](docs/media/three-zone-workspace/table-03-two-line.png)44px／行。双方 CSS 视口均为 853×1155；前图 IAB 82% 缩放捕获 700×947，后图 Chrome DPR 1 捕获 853×1155。不按截图像素推导列宽，不声称相机或背景逐像素一致。金额完整保留，舒展模式约 61.39px／行，摘要完整占两行。
+2. **值与行操作。** [完整值](docs/media/three-zone-workspace/table-04-full-value.png)含完整长户名、前缀零和复制按钮。单击仅选行／定位，追踪 6、历史 0；显式移出后追踪 5、源结果仍 6 行，画布撤销恢复 6。双击打开字符串 ID 的既有详情；实际鼠标调宽 112→160px，重载仍 160，恢复自动 140。该控件上的 Ctrl+Z 不撤销画布。
+3. **全览。** [1512×949 全览](docs/media/three-zone-workspace/table-06-overview.png)为原来的一张表、七列、六个两行数据行和完整金额。最终 scrollWidth/clientWidth 均为 1396，底部水平控件禁用。全览的完整值浮层可聚焦；Escape 只关闭值浮层，父全览保持；切案清空旧值。观察见 [dense-table-verification.json](docs/media/three-zone-workspace/dense-table-verification.json)。
+4. **画布。** 同一临时七节点／六笔短字段案件实际执行 Ctrl+A → Delete → Ctrl+Z，以及 ⌘A → Backspace → ⌘Z：均为选中 7 → 画布 0 → 恢复 7，原始表格一直为 6 行，移出仅记一步历史。[删除](docs/media/three-zone-workspace/keyboard-delete.png)、[恢复](docs/media/three-zone-workspace/keyboard-restored.png)和[缩小](docs/media/three-zone-workspace/labels-scaled-gap.png)配合 [逐步状态](docs/media/three-zone-workspace/shortcuts-spacing.json)使用；画面中的短暂操作 Toast 不作为当前成员数。77%→26% 七个静止倍率，每步 7 个名称，实心节点轮廓到文本的间距 4.617→1.546px，与 `6 × zoom` 一致。
+
+## 发现、修复与检查
+
+- 修正完整换行导致单行过高；两行截断保留原值，金额动态最小宽度；修正舒展行距摘要被固定高度裁掉。原“完整换行／完整单行”可选并保留宽行回收后的横滚包络。
+- 修正侧栏旧测量回调覆盖全览横滚、末列手柄制造 3px 空白横滚，以及 body 中完整值浮层被父模态设为 inert。浮层现在随原表格移动并在窗口捕获阶段先处理 Escape。行 ID 全程用字符串，覆盖超安全整数 ID。
+- 列宽手柄具备键盘、名称、最小／最大／当前宽度；复选框触点 24px，焦点在刷新后保持。完整值的键盘替代路径为 Enter 详情或完整文本模式；未验收屏幕阅读器／触屏。
+- 最终候选定向运行 table workspace、workspace session／drafts、canvas editor、graph selection、label collision／geometry、graph interaction、legacy navigation、workspace camera、ribbon commands、context workspace、ui dialogs：**14 passed in 48.25s**，1 条既有 Starlette/httpx 弃用警告。table 包装内为 59 个 Node 用例，不与包装数相加。代码只改 UI／合成回归；原 G6 vendor、数据／金额契约与 API 未改。
+- 来源覆盖缺口与冲突刷新回归证明两个左侧概括块持续 hidden；内部 DOM 和审计文本保留。原生输入、IME 229、长按重复、对话框、非画布删除、列宽控制撤销以及隐藏关联的移出均有行为回归。
+
+范围为隔离的合成数据和本机 Chrome／IAB。未读取业务预览实例、未做真实 59k 行导入或大表计时、Windows 原生 GUI／DPI、安装链、打包或发布；不据此宣称任意密度零重叠或完整可访问性合规。
+
 # 节点名称缺失修复 · 2026-11-10
 
 final result: passed

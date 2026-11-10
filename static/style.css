@@ -679,7 +679,7 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 @media (max-height: 600px) {
   #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 159px; min-height: 159px; }
 }
-.flow-table-tools { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 4px 0 3px; font-size: 12px; color: var(--text-primary); }
+.flow-table-tools { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 0 3px; font-size: 12px; color: var(--text-primary); }
 .flow-table-tools .result-info { flex: 1; min-width: 50px; overflow-wrap: anywhere; }
 .flow-table-tools select { height: 28px; padding: 2px 24px 2px 6px; font-size: 12px; }
 .flow-table-hint { flex: none; color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0 0 3px; }
@@ -724,6 +724,39 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 #flowTable tr[data-id]:focus-visible > td { background: var(--surface-raised); box-shadow: inset 0 1px var(--accent), inset 0 -1px var(--accent); }
 #flowTable tr[data-id]:has(.flow-ck:checked) > td { background: var(--selection-surface); }
 #flowTable .flow-ck { width: 16px; height: 16px; margin: 0; vertical-align: middle; accent-color: var(--accent); }
+#flowTable .flow-anchor { display: flex; align-items: center; justify-content: center; min-height: 24px; cursor: pointer; }
+#flowTable .flow-amount-value { display: inline-block; white-space: nowrap; }
+#flowTableScroll #flowTable td:nth-child(3), #flowTableScroll #flowTable td:nth-child(4),
+#flowTableScroll #flowTable th:nth-child(3), #flowTableScroll #flowTable th:nth-child(4),
+#flowTableScroll #flowTable td.sum, #flowTableScroll #flowTable th:nth-child(6) { min-width: 112px; max-width: none; }
+#flowTableScroll[data-flow-wrap="two-line"] #flowTable { table-layout: fixed; }
+#flowTableScroll[data-flow-wrap="two-line"] #flowTable .party-name,
+#flowTableScroll[data-flow-wrap="two-line"] #flowTable .mono,
+#flowTableScroll[data-flow-wrap="two-line"] #flowTable .flow-date,
+#flowTableScroll[data-flow-wrap="two-line"] #flowTable .flow-clock { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#flowTableScroll[data-flow-wrap="two-line"] #flowTable .flow-summary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal; }
+#flowTableScroll[data-flow-wrap="two-line"] #flowTable .source-ledger-note { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#flowTableScroll[data-flow-wrap="two-line"][data-flow-density="compact"] #flowTable td { height: 44px; vertical-align: middle; }
+#flowTable tr[data-membership="all"] > td { background: color-mix(in srgb, var(--accent) 9%, var(--surface-raised)); }
+#flowTable tr[data-membership="partial"] > td { background: color-mix(in srgb, var(--accent) 4%, var(--surface-raised)); }
+#flowTable tr[data-membership="partial"] .act-track { border-style: dashed; }
+#flowTable tr.flow-active > td { background: var(--selection-surface); box-shadow: inset 0 1px var(--accent), inset 0 -1px var(--accent); }
+#flowTable .flow-column-resize { position: absolute; top: 0; right: -4px; bottom: 0; z-index: 4; width: 10px; min-width: 0; min-height: 0; height: auto; padding: 0; border: 0; border-radius: 0; background: transparent; cursor: col-resize; touch-action: none; }
+#flowTable .flow-column-resize::after { content: ""; position: absolute; left: 4px; top: 20%; bottom: 20%; width: 1px; background: transparent; }
+#flowTable th:last-child .flow-column-resize { right: 0; }
+#flowTable .flow-column-resize:hover::after, #flowTable .flow-column-resize:focus-visible::after { background: var(--accent); }
+#flowTable .flow-column-resize:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+@media (pointer: coarse) {
+  #flowTable .flow-column-resize { width: 24px; right: -12px; }
+  #flowTable .flow-column-resize::after { left: 11px; }
+}
+.flow-table-tools > label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.flow-table-tools #flowTableDensity { width: 62px; min-width: 0; }
+.flow-table-tools #flowTableWrap { width: 84px; min-width: 0; }
+.flow-table-tools #btnFlowColumnsReset { width: 28px; min-width: 28px; height: 28px; min-height: 28px; }
+.flow-value-popover { position: fixed; inset: auto; margin: 0; z-index: 140; width: max-content; min-width: 180px; max-width: min(480px, calc(100vw - 24px)); padding: 12px; border: 1px solid var(--border-strong); border-radius: 8px; color: var(--text-primary); background: var(--surface-raised); box-shadow: var(--menu-shadow); }
+.flow-value-popover pre { max-height: min(280px, 45vh); overflow: auto; margin: 0; font: 12px/1.6 var(--font-family-ui); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.flow-value-popover .btn { display: block; margin: 8px 0 0 auto; }
 /* Mouse/keyboard density: preserve query fields and return chrome space to data. */
 @media (hover: hover) and (pointer: fine) {
   #workspace[data-workspace-view="standard"] #left { position: relative; }

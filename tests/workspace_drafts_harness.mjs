@@ -49,6 +49,14 @@ test('capture and every read isolate nested geometry, presentation, query and fo
   assert.equal(store.get(1, 0).query.account, '001234'); assert.equal(store.get(1, 0).positions.node.x, 7);
 });
 
+test('two-line table display remains a case-local draft without retaining row data', () => {
+  const store=create();
+  store.capture({caseId:'A',canvasId:'0'},{query:{wrap:'two-line',density:'compact',rows:[{amount:'PRIVATE_SYNTHETIC_FACT'}]}});
+  store.capture({caseId:'B',canvasId:'0'},{query:{wrap:'single'}});
+  assert.equal(store.get('A','0').query.wrap,'two-line');assert.equal(store.get('B','0').query.wrap,'single');
+  assert.equal(JSON.stringify(store.get('A','0')).includes('PRIVATE_SYNTHETIC_FACT'),false);
+});
+
 test('full graph and business fields cannot enter drafts even beside valid geometry and form inputs', () => {
   const store = create(), fact = 'SYNTHETIC_FACT_MUST_NOT_RETAIN';
   store.capture({ caseId: 'case', canvasId: 'canvas' }, {

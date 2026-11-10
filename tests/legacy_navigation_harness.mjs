@@ -695,6 +695,17 @@ for (const requested of ['paths','cycles','fast_flows','outliers','unrecognized'
 }
 
 
+test('sidebar summaries stay hidden when coverage gaps and conflicts refresh', () => {
+  const h=harness('app.js');
+  h.run(`state.stats={flows:12,accounts:3,import_coverage:{scope:'source_reported_flows',unresolved_records:2},
+    resolution:{conflicts:1},event_summary:{conflict_entries:1}};updateHeader()`);
+  assert.equal(h.element('#statLine').hidden,true);
+  assert.equal(h.element('#importCoverageNote').hidden,true);
+  assert.match(h.element('#importCoverageNote').textContent,/2 条/,'the underlying audit distinctions are not erased');
+  h.run('state.stats={flows:0,accounts:0};updateHeader()');
+  assert.equal(h.element('#statLine').hidden,true);assert.equal(h.element('#importCoverageNote').hidden,true);
+});
+
 test('G6 optimizes pan and zoom and restores labels at every supported resting zoom', () => {
   let configuration;
   class SyntheticGraph { constructor(options) { configuration = options; } on() {} get() { return null; } }
@@ -1915,7 +1926,7 @@ const paddedLabelBox = (bounds, padding) => ({ minX: bounds.minX-padding, minY: 
 const boxesIntersect = (a,b) => a.minX<=b.maxX && a.maxX>=b.minX && a.minY<=b.maxY && a.maxY>=b.minY;
 function assertAppliedLabelPlacements(h, { retainAll=false }={}) {
   const result=JSON.parse(JSON.stringify(h.run(`({
-    conflicts:state.graphView.policy.conflicts||0,gap:6*(state.graphView.exportLabelScale||1),
+    conflicts:state.graphView.policy.conflicts||0,gap:6*state.graph.getZoom(),
     bodies:[...state.graphView.nodeItems].map(([key,item])=>({key,bounds:graphNodeBodyBounds(item)})),
     placements:[...[...state.graphView.policy.nodePlacements].map(([key,p])=>({key,kind:'node',...p,
       required:state.graphSelection?.ids.has(key)||key===state.graphView.selectedAccount||key===state.graphView.hoveredAccount})),
@@ -1955,7 +1966,7 @@ function assertAppliedLabelPlacements(h, { retainAll=false }={}) {
         assert.ok(Math.abs((shape.bounds.minX+shape.bounds.maxX-shape.body.minX-shape.body.maxX)/2)<1e-8,
           `${placement.key} stays horizontally centered on its own node`);
         assert.ok(Math.abs(shape.bounds.minY-shape.body.maxY-result.gap)<1e-8,
-          `${placement.key} remains below the body by the fixed screen gap`);
+          `${placement.key} remains below the body by the scaled gap`);
       }
     }
   }
@@ -3433,7 +3444,7 @@ test('graph persistence: clipping indexes complete bottom-anchored text before a
   assert.ok(final.maxY>600&&base.maxY<480,'the complete multiline bottom label extends into the later viewport and its margin');
   assert.ok(included.some(bounds=>bounds&&bounds.maxY>=final.maxY),'clipIndex.include observes final anchored text bounds');
   const text=root.shapes.find(shape=>shape.get('name')==='text-shape');
-  assert.ok(Math.abs(text.getCanvasBBox().minY-body().maxY-6)<1e-8);
+  assert.ok(Math.abs(text.getCanvasBBox().minY-body().maxY-6*h.run('state.graph.getZoom()'))<1e-8);
   h.run('syntheticViewport={minX:0,minY:600,maxX:1000,maxY:1300};applyGraphViewport()');
   assert.equal(state.graphView.clipResult.nodeIds.has('SYN-HUB'),true,'visible multiline text keeps its offscreen node group drawable');
   assert.equal(group.get('visible'),true);

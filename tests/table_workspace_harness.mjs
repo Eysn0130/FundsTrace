@@ -25,9 +25,10 @@ const eventRow = (id=17, observation_ids=['17','18']) => ({...flow(id),observati
 // A small DOM with real ancestry, moved-node identity and capture/bubble order.
 // The frozen app's actual renderer, search parameters and table handlers run in
 // this harness; only HTML parsing and network/graph boundaries are synthetic.
-function harness({ entityInputs = false, geometry = false } = {}) {
+function harness({ entityInputs = false, geometry = false, columnStorage = null } = {}) {
   const byId = new Map(), ready = [], requests = [], graphCalls = [], membershipCalls = [], contextCalls = [], writes = [], windowListeners = new Map();
   const heights = new Map(), widths = new Map(), frames = [];
+  const clipboardWrites = [];
   const baselineWidths = [40, 86, 140, 140, 96, 126, 92];
   function measuredWidths() {
     const viewport = byId.get('flowTableScroll'), table = byId.get('flowTable');
@@ -42,6 +43,7 @@ function harness({ entityInputs = false, geometry = false } = {}) {
   let fetchFlows = async () => ({ page: 1, size: 50, total: 2, rows: [flow(1), flow(2)] });
   let graphRead = async () => {};
   const matches = (node, selector) => {
+    if (selector.includes(',')) return selector.split(',').some(part => matches(node, part.trim()));
     if (selector === '[inert]') return node.inert;
     if (selector.startsWith('#')) return node.id === selector.slice(1);
     if (selector.startsWith('.')) return node.classList.contains(selector.slice(1));
@@ -132,6 +134,7 @@ function harness({ entityInputs = false, geometry = false } = {}) {
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
     setAttribute(key, value) { this.attributes.set(key, String(value)); }
     getAttribute(key) { return this.attributes.get(key) ?? null; }
+    removeAttribute(key) { this.attributes.delete(key); }
     focus(options) { doc.activeElement = this; this.lastFocusOptions = options; }
     addEventListener(type, callback, options = false) {
       const list = this.listeners.get(type) || []; list.push({ callback, capture: options === true || !!options.capture }); this.listeners.set(type, list);
@@ -187,7 +190,7 @@ function harness({ entityInputs = false, geometry = false } = {}) {
   add(query, 'btnReset', 'button'); add(query, 'btnSearch', 'button');
   add(tab, 'flowCkAll', 'input'); add(tab, 'flowCkCount');
   const tools = add(tab, 'flowTools', 'div', 'flow-table-tools');
-  add(tools, 'resultInfo'); add(tools, 'btnFlowOverview', 'button');
+  add(tools, 'resultInfo'); add(tools, 'btnFlowOverview', 'button'); add(tools,'btnFlowColumnsReset','button');
   const density = add(tools, 'flowTableDensity', 'select'), wrap = add(tools, 'flowTableWrap', 'select');
   const viewport = add(tab, 'flowTableScroll');
   viewport.dataset.flowDensity = density.value = 'compact'; viewport.dataset.flowWrap = wrap.value = 'wrap';
@@ -227,8 +230,10 @@ function harness({ entityInputs = false, geometry = false } = {}) {
   };
   const sandbox = {
     window: { addEventListener(name, fn) { if (name === 'DOMContentLoaded') ready.push(fn); else { if(!windowListeners.has(name))windowListeners.set(name,[]);windowListeners.get(name).push(fn); } },
+      localStorage: columnStorage,
       FundsCanvasEditor: { membership, history: { status: () => ({ canUndo: false, canRedo: false, busy: false }) } } },
-    document: doc, state, URLSearchParams, console,
+    document: doc, state, URLSearchParams, console, setTimeout, clearTimeout, innerWidth:1000, innerHeight:700,
+    navigator: { clipboard: { writeText: async value => { clipboardWrites.push(value); } } },
     requestAnimationFrame(callback) { frames.push(callback); return frames.length; },
     $: selector => doc.querySelector(selector), $$: selector => doc.querySelectorAll(selector),
     fmtCount: String, fmtTime: String, flowTimeCell: String, moneyHtml: String,
@@ -266,7 +271,7 @@ function harness({ entityInputs = false, geometry = false } = {}) {
   vm.runInContext(section("  $('#flowTbody').addEventListener('click'", '  // 批量追踪'), context);
   vm.runInContext(source, context, { filename: 'table-workspace.js' });
   for (const callback of ready) callback();
-  return { context, state, doc, element, requests, graphCalls, membershipCalls, contextCalls, writes, pickerOptions, invalidated, heights, widths,
+  return { context, state, doc, element, requests, graphCalls, membershipCalls, contextCalls, writes, pickerOptions, invalidated, heights, widths, clipboardWrites,
     installEditorCommands() {
       const originalApi = sandbox.api;
       Object.assign(sandbox, {
@@ -303,6 +308,7 @@ function harness({ entityInputs = false, geometry = false } = {}) {
         for (const fn of windowListeners.get('fundstrace:workspace-resize') || []) fn({detail:{reason:'workspace-view',phase,view}});
       }
     },
+    windowKey(event) { for(const fn of windowListeners.get('keydown')||[])fn({preventDefault(){},stopImmediatePropagation(){},...event}); },
     rows: () => element('flowTbody').querySelectorAll('tr[data-id]'),
     box: id => element('flowTbody').querySelectorAll('.flow-ck').find(box => box.dataset.id === String(id)),
     search: (...args) => context.doSearch(...args),
@@ -314,6 +320,81 @@ function harness({ entityInputs = false, geometry = false } = {}) {
     toggleAnchor(id, checked) { const box = this.box(id); box.checked = checked; box.fire('change'); },
   };
 }
+
+test('single-click selects and locates without tracking; double-click and Enter open exact string IDs', async () => {
+  const f=harness(), located=[], flowId='9007199254740993';
+  f.network(async()=>({page:1,size:50,total:1,rows:[flow(flowId)]}));
+  f.locator({availability:()=>({visible:true}),previewFields:value=>{located.push(value)}});
+  await f.search();const row=f.rows()[0];
+  row.click();
+  assert.equal(row.getAttribute('aria-current'),'true');assert.deepEqual(f.contextCalls,[]);
+  assert.equal(located.length,1);assert.equal(located[0].exactAccount,flow(flowId).payer_account);
+  assert.equal(f.box(flowId).checked,false);assert.equal(f.membershipCalls.length,0);assert.equal(f.writes.length,0);
+  row.fire('keydown',{key:' ',ctrlKey:true});row.fire('keydown',{key:'Enter',metaKey:true});
+  assert.equal(f.box(flowId).checked,false);assert.deepEqual(f.contextCalls,[],'native modifier combinations are not row commands');
+  row.fire('click',{detail:2});row.fire('dblclick');
+  assert.deepEqual(f.contextCalls,[flowId]);assert.equal(located.length,1);
+  row.fire('keydown',{key:'Enter'});assert.deepEqual(f.contextCalls,[flowId,flowId]);
+  f.open();row.click();assert.equal(located.length,1,'overview does not pan the canvas hidden by its modal');
+  f.context.selectCase(2);row.click();assert.equal(located.length,1,'a removed old-case row cannot locate into a new case');
+});
+
+test('column resizing has minima, cancellation, keyboard control and separate saved sidebar and overview widths', async () => {
+  const saved=new Map(),storage={getItem:key=>saved.get(key)||null,setItem:(key,value)=>saved.set(key,value)};
+  const f=harness({columnStorage:storage});await f.search();
+  f.element('flowTableWrap').value='two-line';f.element('flowTableWrap').fire('change');f.drainFrames();
+  const table=f.element('flowTable'),headers=table.querySelectorAll('thead th');
+  headers.forEach((header,index)=>{header.getBoundingClientRect=()=>({width:parseFloat(table.querySelector('colgroup').children[index].style.width)||140})});
+  const handle=headers[2].querySelector('.flow-column-resize');
+  handle.fire('keydown',{key:'Home'});assert.equal(table.querySelector('colgroup').children[2].style.width,'112px');
+  handle.fire('keydown',{key:'ArrowRight'});assert.equal(table.querySelector('colgroup').children[2].style.width,'120px');
+  handle.fire('pointerdown',{button:0,clientX:300,pointerId:1});handle.fire('pointermove',{clientX:380});
+  assert.equal(table.querySelector('colgroup').children[2].style.width,'200px');
+  handle.fire('pointercancel');assert.equal(table.querySelector('colgroup').children[2].style.width,'120px');
+  handle.fire('pointerdown',{button:0,clientX:300,pointerId:1});handle.fire('pointermove',{clientX:380});handle.fire('pointerup');
+  const preferences=JSON.parse(saved.get('funds_flow_columns_v1'));
+  assert.equal(preferences['sidebar:compact:two-line'][2],200);
+  assert.ok(Object.values(preferences).every(widths=>widths.length===7&&widths.every(Number.isFinite)));
+  f.open();assert.notEqual(table.querySelector('colgroup').children[2].style.width,'200px');
+  f.close();assert.equal(table.querySelector('colgroup').children[2].style.width,'200px');
+  const g=harness({columnStorage:storage});await g.search();
+  g.element('flowTableWrap').value='two-line';g.element('flowTableWrap').fire('change');g.drainFrames();
+  assert.equal(g.element('flowTable').querySelector('colgroup').children[2].style.width,'200px');
+  f.element('btnFlowColumnsReset').click();
+  assert.equal(table.querySelector('colgroup').children[2].style.width,'140px');
+  assert.equal(JSON.parse(saved.get('funds_flow_columns_v1'))['sidebar:compact:two-line'],undefined);
+  assert.equal(f.membershipCalls.length,0);assert.equal(f.writes.length,0,'resizing never writes graph membership');
+});
+
+test('a pending text-mode geometry callback cannot restore sidebar offsets into overview', async () => {
+  const f=harness();await f.search();const viewport=f.element('flowTableScroll');viewport.scrollLeft=190;
+  f.element('flowTableWrap').value='single';f.element('flowTableWrap').fire('change');
+  f.open();assert.equal(viewport.scrollLeft,0);f.drainFrames();
+  assert.equal(viewport.scrollLeft,0,'the old sidebar callback does not write the new presentation slot');
+  f.close();assert.equal(viewport.scrollLeft,190);
+});
+
+test('overflow full-value popover copies original text and clears it on a case change', async () => {
+  const f=harness({geometry:true});await f.search();
+  const row=f.rows()[0],cell=f.doc.createElement('td'),span=f.doc.createElement('span');
+  const full='合成长名称 <literal>\n000000000000000000000000SYN-0001';
+  cell.setAttribute('title',full);span.className='party-name';span.textContent=full;cell.appendChild(span);row.insertBefore(cell,row.children[1]);
+  Object.defineProperty(span,'scrollWidth',{value:400});Object.defineProperty(span,'clientWidth',{value:60});
+  cell.getBoundingClientRect=()=>({left:100,top:200,bottom:240,width:60,height:40});
+  const overview=f.element('flowOverview');overview.className='modal';overview.getClientRects=()=>[1];
+  f.open();const panel=f.doc.querySelector('#flowValuePopover');
+  panel.getBoundingClientRect=()=>({width:280,height:120});span.fire('pointerover');
+  await new Promise(resolve=>setTimeout(resolve,330));
+  assert.equal(panel.hidden,false);assert.equal(panel.querySelector('pre').textContent,full);
+  span.fire('pointerout',{relatedTarget:null});span.fire('pointerover');
+  await new Promise(resolve=>setTimeout(resolve,180));assert.equal(panel.hidden,false,'returning to the value cancels a pending hide');
+  panel.querySelector('button').click();await flush();assert.deepEqual(f.clipboardWrites,[full]);
+  panel.querySelector('button').focus();f.windowKey({key:'Escape'});
+  assert.equal(panel.hidden,true);assert.equal(overview.style.display,'flex','Escape dismisses the value before its owning overview');
+  assert.equal(f.doc.activeElement===row,true);
+  span.fire('pointerover');await new Promise(resolve=>setTimeout(resolve,330));assert.equal(panel.hidden,false);
+  f.context.selectCase(2);assert.equal(panel.hidden,true);assert.equal(panel.querySelector('pre').textContent,'');
+});
 
 test('query disclosure keeps table tools, results and selection usable and restores internal focus', async () => {
   const f = harness(); await f.search(); f.toggleAnchor(1, true);
@@ -418,11 +499,13 @@ test('result refresh restores the focused row control or row without scrolling o
   }
 });
 
-test('a focused disappearing action falls back to its row and a disappearing row to the table region', async () => {
+test('a membership button retains focus after its label changes and a disappearing row falls back to the table region', async () => {
   for (const overview of [false, true]) {
     const f = harness(); await f.search(); if (overview) f.open();
-    f.rows()[0].querySelector('.act-track').focus(); f.state.tracked.add(1); await f.search();
-    assert.equal(f.doc.activeElement, f.rows()[0]);
+    f.rows()[0].querySelector('.act-track').focus(); f.state.tracked.add(1);
+    f.setStatus({confirmedIds:['1'],desiredIds:['1']}); await f.search();
+    assert.equal(f.doc.activeElement === f.rows()[0].querySelector('.act-track'), true);
+    assert.equal(f.doc.activeElement.textContent,'移出');
     f.box(1).focus(); f.network(async () => ({ page: 1, size: 50, total: 1, rows: [flow(2)] }));
     await f.search();
     assert.equal(f.doc.activeElement, f.element('flowTableScroll'));
@@ -719,7 +802,8 @@ test('a confirmed row is already tracked when only its other selected observatio
   const f = harness(); f.state.tracked = new Set([18]);
   f.setStatus({confirmedIds:['18'],desiredIds:['18']});
   f.render([eventRow()]);
-  assert.equal(!!f.rows()[0].querySelector('.act-track'), false);
+  assert.equal(f.rows()[0].querySelector('.act-track').textContent, '部分·移出');
+  assert.equal(f.rows()[0].querySelector('.act-track').getAttribute('aria-pressed'), 'mixed');
   assert.equal(f.rows()[0].querySelector('.membership-status').textContent, '已上图');
   f.open(); assert.equal(f.box(17).checked, true);
   f.box(17).checked = false; f.box(17).fire('change');
@@ -735,7 +819,7 @@ test('row tracking and bulk anchors send all selected observations while source 
   f.rows()[0].querySelector('.act-track').click(); await flush();
   assert.deepEqual(f.writes[0].desired.map(String), ['17','18']);
   f.rows()[0].querySelector('.act-ctx').click();
-  assert.deepEqual(f.contextCalls, [17]);
+  assert.deepEqual(f.contextCalls, ['17']);
   f.toggleAnchor(17,true); f.toggleAnchor(20,true);
   await f.element('btnBulkTrack').onclick();
   const bulk = f.writes.find(write => write.path === '/api/track/bulk');

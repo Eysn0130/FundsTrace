@@ -172,6 +172,9 @@ test('keyboard select-all includes offscreen graph nodes and excludes edges, for
   f.key({ ctrlKey: true, target: input }); assert.equal(f.api.ids.size, 0);
   const editable = f.document.createElement('div'); editable.setAttribute('contenteditable', 'true'); f.container.appendChild(editable);
   f.key({ metaKey: true, target: editable }); assert.equal(f.api.ids.size, 0);
+  for(const flags of [{isComposing:true},{keyCode:229},{repeat:true}]) {
+    f.key({ctrlKey:true,...flags});assert.equal(f.api.ids.size,0,'composition and held keys cannot select the graph');
+  }
   const modal = f.document.createElement('div'); modal.className = 'modal'; f.document.modals = [modal];
   f.key({ ctrlKey: true }); assert.equal(f.api.ids.size, 0); modal.style.display = 'none';
   const all = f.key({ metaKey: true }); assert.equal(all.prevented, true); assert.equal(f.api.ids.size, 12);
