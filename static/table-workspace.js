@@ -418,15 +418,17 @@
     if (name === 'selectCase') selectCase = wrapped; else activateCanvas = wrapped;
   }
   const originalLoadGraph = loadGraph;
-  loadGraph = async function (retry = true, context = caseContext()) {
+  loadGraph = async function (retry = true, context = caseContext(), { tableQuery = 'binding' } = {}) {
     // Imports and identity edits also reload this graph without changing case.
     entityPickers.forEach(picker => picker.invalidate());
     const result = await originalLoadGraph.call(this, retry, context);
     if (refreshBinding?.generation === binding && isCurrentCase(context) &&
         isCurrentCase(refreshBinding.context) && !state.graphLoading) {
       // Only the first successful graph read after a binding switch refreshes
-      // its empty table. Mutation refreshes retain their existing query owner.
-      refreshBinding = null; await doSearch(1);
+      // its empty table. Startup/case restoration own their final query after
+      // restoring inputs; ordinary callers retain this binding refresh.
+      refreshBinding = null;
+      if (tableQuery !== 'caller') await doSearch(1);
     }
     return result;
   };

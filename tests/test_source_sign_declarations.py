@@ -66,8 +66,9 @@ def test_statement_public_original_and_package_replay(client,database,make_case)
 
 
 @pytest.mark.parametrize("invalid_type", [False, True])
-def test_cached_formula_and_invalid_typed_cells_cannot_declare_source(monkeypatch, invalid_type):
-    rows = [HEAD, row('-12.34', STATEMENT), row('2', STATEMENT)]
+@pytest.mark.parametrize("earlier_note", ["", STATEMENT])
+def test_cached_formula_and_invalid_typed_cells_cannot_declare_source(monkeypatch, invalid_type, earlier_note):
+    rows = [HEAD, row('-12.34', earlier_note), row('2', STATEMENT)]
     rows[2][-1] = table_import._WorkbookValue(STATEMENT, '', not invalid_type, False, invalid_type)
     contracts = table_import._source_sign_contracts([{'path': 'synthetic.xlsx/Sheet1', 'rows': rows}], table_import.PRECISE_PROFILE)
     assert contracts['synthetic.xlsx/Sheet1']['error'] == 'invalid_direction'
@@ -85,3 +86,79 @@ def test_twenty_identical_source_statements_keep_public_financial_interpretation
     assert len(records)==20
     assert {x['source_row'] for x in records}==set(range(2,22))
     assert all(declarations.validate_proof(x['details'][declarations.DETAIL_FIELD]) for x in records)
+
+
+def test_plain_file_checks_each_transaction_region_once(monkeypatch):
+    calls = {"_later_header": 0, "_overlapping_header": 0}
+    def counted(name, original):
+        def observe(*args, **kwargs):
+            calls[name] += 1
+            return original(*args, **kwargs)
+        return observe
+    for name in calls:
+        monkeypatch.setattr(table_import, name, counted(name, getattr(table_import, name)))
+    values = [row('12.34', '合成普通备注', '出'), row('0.01', '合成尾行', '入')]
+    plan = parse(values)
+    assert [(x['amount'], x['payer_account'], x['payee_account']) for x in plan['rows']] == [
+        (Decimal('12.34'), 'SYN-A', 'SYN-B'), (Decimal('0.01'), 'SYN-B', 'SYN-A')]
+    assert len(plan['records']) == 2
+    assert all(declarations.DETAIL_FIELD not in x['details'] for x in plan['records'])
+    assert all(count <= len(values) for count in calls.values()), calls
+
+
+@pytest.mark.parametrize('rows', [
+    [[STATEMENT], HEAD, row('12.34', '', '出')],
+    [HEAD, row('12.34', '', '出', account=STATEMENT)],
+    [[*HEAD, '附加源列'], [*row('12.34', '', '出'), STATEMENT]],
+    [HEAD, row('-12.34', STATEMENT), HEAD, row('2.00', '')],
+    [HEAD, row('-12.34', STATEMENT), [*HEAD[:3], '交易金额(分)', *HEAD[4:]], row('200', '')],
+])
+def test_invalid_statement_position_or_later_region_still_blocks_flows(rows):
+    out = io.StringIO(newline=''); csv.writer(out).writerows(rows)
+    assert table_import.parse(out.getvalue().encode('utf-8-sig'), suffix='.csv')['rows'] == []
+
+
+@pytest.mark.parametrize('valid', [False, True])
+def test_statement_beyond_first_hundred_rows_is_checked_before_any_flow(valid):
+    values = [row('1.00', '', '入') for _ in range(149)] + [row('-12.34', '', '出')]
+    values.append(row('', STATEMENT if valid else '并非' + STATEMENT))
+    plan = parse(values)
+    if valid:
+        assert len(plan['rows']) == 150
+        assert sum(x['amount'] for x in plan['rows']) == Decimal('161.34')
+        assert all(declarations.validate_proof(x['details'][declarations.DETAIL_FIELD])
+                   for x in plan['records'][:150])
+    else:
+        assert plan['rows'] == []
+
+
+@pytest.mark.parametrize('note,metadata,expected', [
+    (STATEMENT, False, [('12.34', 'SYN-A', 'SYN-B'), ('2.00', 'SYN-B', 'SYN-A')]),
+    (STATEMENT.replace('本文件', '本表'), False, [('2.00', 'SYN-B', 'SYN-A')]),
+    ('并非' + STATEMENT, False, []),
+    (STATEMENT, True, []),
+])
+def test_all_sheets_supply_file_claims_and_invalid_claims(note, metadata, expected):
+    from openpyxl import Workbook
+    book = Workbook(); first = book.active
+    first.append(HEAD); first.append(row('-12.34', ''))
+    second = book.create_sheet('合成另一表')
+    second.append(['合成元数据'] if metadata else HEAD)
+    second.append([note] if metadata else row('2.00', note))
+    content = io.BytesIO(); book.save(content); book.close()
+    plan = table_import.parse(content.getvalue(), suffix='.xlsx')
+    assert [(x['amount'], x['payer_account'], x['payee_account']) for x in plan['rows']] == [
+        (Decimal(amount), payer, payee) for amount, payer, payee in expected]
+
+
+def test_unproved_sheet_iterator_and_cell_keep_original_processing():
+    sheets = [{'path': 'synthetic.csv', 'rows': [HEAD, row('-12.34', STATEMENT)]}]
+    contract = table_import._source_sign_contracts(iter(sheets), table_import.PRECISE_PROFILE)
+    assert contract['synthetic.csv']['negative'] == 'out'
+    class Unproved:
+        def __str__(self):
+            raise TypeError('synthetic original cell responsibility')
+    with pytest.raises(TypeError, match='synthetic original cell responsibility'):
+        table_import._source_sign_contracts([{'path': 'synthetic.csv', 'rows': [[Unproved()]]}], table_import.PRECISE_PROFILE)
+    with pytest.raises(KeyError, match='path'):
+        table_import._source_sign_contracts([{'rows': [HEAD]}], table_import.PRECISE_PROFILE)

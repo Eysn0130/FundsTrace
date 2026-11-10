@@ -79,7 +79,9 @@ describe('FundsPanel host isolation', () => {
     fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
     const input = screen.getByLabelText<HTMLInputElement>('选择流水文件'), area = input.labels![0];
     expect(area.htmlFor).toBe(input.id); expect(area.textContent).toContain('选择 CSV、Excel、ZIP 或 RAR');
-    expect(document.getElementById(input.getAttribute('aria-describedby')!)?.textContent).toBe('支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP／RAR');
+    const descriptions = input.getAttribute('aria-describedby')!.split(/\s+/).map(id => document.getElementById(id)?.textContent);
+    expect(descriptions).toEqual(['支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP／RAR',
+      '普通文件每次选择一个；批量独立文件请使用画布工作台的多文件导入。']);
     expect(input.accept).toBe('.csv,.tsv,.txt,.xlsx,.xls,.zip,.rar'); input.focus(); expect(document.activeElement).toBe(input);
     const file = new File(['synthetic'], '中文合成流水.csv', { type: 'text/csv' });
     fireEvent.change(input, { target: { files: [file] } });

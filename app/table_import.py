@@ -507,8 +507,10 @@ def _header_parts(value, profile=IDENTITY_PROFILE):
                 return _norm(malformed_slash[1]), None, _unit_token(malformed_slash[2])
         normalized = _unit_token(value)
         for unit in sorted(_UNIT, key=len, reverse=True):
+            if not normalized.endswith(unit):
+                continue
             base = _norm(normalized[:-len(unit)])
-            if normalized.endswith(unit) and base in money_headers:
+            if base in money_headers:
                 return base, _UNIT[unit], unit
         # A recognizable monetary declaration with an invalid unit must not
         # fall back to historical header normalization that deletes its signs.
@@ -708,7 +710,14 @@ def _strict_source_csv(text, profile):
     auxiliary |= {frozenset(names) for names in feedback_import.SCHEMAS.values()}
     choices = []
     damaged_recognized = False
+    absent_seen = False
     for delimiter in (",", "\t", ";", "|"):
+        # Absent separators produce identical quoted records and structure.
+        # Keep the first one, including its format choice and safety errors.
+        if delimiter not in text:
+            if absent_seen:
+                continue
+            absent_seen = True
         try:
             feedback_import._validate_csv_quotes(text, delimiter)
             rows = _collect_rows(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, strict=True))
@@ -725,7 +734,9 @@ def _strict_source_csv(text, profile):
         for row in rows[start + 1:]:
             if not row or not any(cell.strip() for cell in row):
                 continue
-            if not known_auxiliary:
+            # A same-width header cannot change this structural check. The
+            # parser independently interprets every region after CSV selection.
+            if len(row) != width and not known_auxiliary:
                 regional, _, _ = _locate_header([row], profile)
                 if regional is not None:
                     width = len(row)
@@ -803,6 +814,26 @@ def _csv(raw, suffix, profile=IDENTITY_PROFILE):
     except csv.Error:
         raise TableImportError("CSV引号或记录结构损坏，文件未接纳") from None
     return [{"path": "table.csv", "name": "", "rows": rows, "sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw), "encoding": encoding, "delimiter": delimiter}]
+
+
+class _DecodedCSV:
+    """One member's authoritative decode, consumed by its same-profile parser."""
+    def __init__(self, raw, suffix, profile):
+        if type(raw) is not bytes or suffix not in {".csv", ".tsv", ".txt"} or profile not in SOURCE_CONTRACT_PROFILES:
+            raise TableImportError("临时CSV解码仅用于来源合同成员")
+        self._raw, self._suffix, self._profile = raw, suffix, profile
+        self._sheets = _csv(raw, suffix, profile)
+        sheet = self._sheets[0]
+        self.header = sheet["rows"][0] if sheet["rows"] else []
+        self.encoding, self.delimiter = sheet["encoding"], sheet["delimiter"]
+
+    def take(self, raw, suffix, profile):
+        if (self._sheets is None or self._raw != raw
+                or self._suffix != suffix or self._profile != profile):
+            raise TableImportError("临时CSV解码与来源或规则不匹配")
+        sheets = self._sheets
+        self._raw = self._sheets = self.header = None
+        return sheets
 
 
 def _check_row(row, count):
@@ -2143,8 +2174,28 @@ def _declares_event_contract(sheets, profile):
     return False
 
 
+def _needs_sign_layouts(sheets):
+    if type(sheets) is not list:
+        return True
+    for sheet in sheets:
+        if (type(sheet) is not dict or type(sheet.get("path")) is not str
+                or type(sheet.get("rows")) is not list):
+            return True
+        for row in sheet["rows"]:
+            if type(row) is not list:
+                return True
+            for cell in row:
+                if type(cell) is _WorkbookValue:
+                    cell = _raw(cell)
+                if (type(cell) is not str and cell is not None) or table_sign_declarations.looks_like(cell):
+                    return True
+    return False
+
+
 def _source_sign_contracts(sheets, profile):
     if profile not in PRECISE_PROFILES:
+        return {}
+    if type(profile) is str and not _needs_sign_layouts(sheets):
         return {}
     layouts = []
     for sheet in sheets:
@@ -2169,7 +2220,7 @@ def _source_sign_contracts(sheets, profile):
 
 def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, voucher_reference=False,
           profile=None, _details_pool=None,
-          _defer_occurrence_binding=False, _retain_csv_format=False, _auto_event_profile=False):
+          _defer_occurrence_binding=False, _retain_csv_format=False, _auto_event_profile=False, _decoded_csv=None):
     if profile is None:
         profile = TIME_ROLE_XLS_PROFILE if suffix.lower() == ".xls" else PROFILE
     # New exact cross-field arithmetic is independent of ambient Decimal
@@ -2181,12 +2232,12 @@ def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vou
                           reference_policy=reference_policy, voucher_reference=voucher_reference,
                           profile=profile, details_pool=_details_pool,
                           defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format,
-                          auto_event_profile=_auto_event_profile)
+                          auto_event_profile=_auto_event_profile, decoded_csv=_decoded_csv)
     return _parse(source, suffix=suffix, mode=mode, mapping=mapping,
                   reference_policy=reference_policy, voucher_reference=voucher_reference,
                   profile=profile, details_pool=_details_pool,
                   defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format,
-                  auto_event_profile=_auto_event_profile)
+                  auto_event_profile=_auto_event_profile, decoded_csv=_decoded_csv)
 
 
 def _region_row_headers(headers, profile):
@@ -2204,7 +2255,7 @@ def _region_row_headers(headers, profile):
 
 def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, voucher_reference=False,
            profile=PROFILE, details_pool=None,
-           defer_occurrence_binding=False, retain_csv_format=False, auto_event_profile=False):
+           defer_occurrence_binding=False, retain_csv_format=False, auto_event_profile=False, decoded_csv=None):
     """Interpret every source record and return a write-free versioned plan."""
     suffix = suffix.lower()
     archive_member = ((profile in {ARCHIVE_MEMBER_PROFILE, GUARDED_ARCHIVE_PROFILE, PRECISE_ARCHIVE_PROFILE, REFERENCE_ROLE_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_ARCHIVE_PROFILE, TIME_ROLE_ARCHIVE_PROFILE, ZONED_ARCHIVE_PROFILE, SOURCE_CONTRACT_ARCHIVE_PROFILE, SOURCE_TEXT_ARCHIVE_PROFILE, BANK31_VARIANT_ARCHIVE_PROFILE, SOURCE_LEDGER_ARCHIVE_PROFILE, POSTING_PAIR_ARCHIVE_PROFILE, AUXILIARY_SCOPE_ARCHIVE_PROFILE, NATIVE_OBSERVATION_ARCHIVE_PROFILE, UNORIENTED_ARCHIVE_PROFILE, NATIVE31_ARCHIVE_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE} and suffix == ".csv"
@@ -2237,7 +2288,12 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
              or mode is not None or mapping is not None or reference_policy is not None)):
         raise TableImportError("事件合同自动识别仅用于普通表格的首次自动预览")
     raw = _bytes(source)
-    sheets = _excel(raw, suffix) if suffix in {".xlsx", ".xls"} else _csv(raw, suffix, profile)
+    if decoded_csv is not None:
+        if type(decoded_csv) is not _DecodedCSV:
+            raise TableImportError("临时CSV解码与来源或规则不匹配")
+        sheets = decoded_csv.take(raw, suffix, profile)
+    else:
+        sheets = _excel(raw, suffix) if suffix in {".xlsx", ".xls"} else _csv(raw, suffix, profile)
     if auto_event_profile and _declares_event_contract(sheets, profile):
         profile = (VOUCHER_REFERENCE_EVIDENCE_PROFILE if profile == VOUCHER_REFERENCE_PROFILE else
                    SOURCE_OBSERVATION_EVIDENCE_PROFILE if profile == SOURCE_OBSERVATION_PROFILE else

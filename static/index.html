@@ -653,17 +653,25 @@
       <div class="import-heading"><h2 id="importModalTitle">导入流水</h2><span id="impCaseTag" class="import-case"></span></div>
       <button class="btn icon-button" id="impClose" type="button" aria-label="关闭导入流水"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button>
     </header>
-    <ol class="import-steps" aria-label="导入进度">
+    <ol class="import-steps" id="impFlow" aria-label="导入进度">
       <li id="impFlowFile" data-state="current" aria-current="step"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span>文件</span></li>
       <li id="impFlowFields" data-state="pending"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span id="impFlowFieldsLabel">字段</span></li>
       <li id="impFlowConfirm" data-state="pending"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span id="impFlowConfirmLabel">确认</span></li>
     </ol>
+    <p id="impCurrentFile" class="muted" hidden></p>
     <div class="import-dialog-content" id="impContent">
+      <section class="import-queue" id="impQueue" hidden aria-labelledby="impQueueTitle">
+        <header><h3 id="impQueueTitle">多文件导入队列</h3><button class="btn small" id="impQueueStop" type="button">停止后续文件</button></header>
+        <p id="impQueueSummary" role="status" aria-live="polite"></p><p class="muted" id="impQueueReason"></p>
+        <ol id="impQueueList" aria-label="各文件处理状态"></ol>
+        <p class="muted">队列仅保留在当前页面。关闭或切换案件会停止后续文件；未上传的文件需重新选择，已上传任务可从本案导入记录恢复。</p>
+      </section>
       <div id="impStep1" class="import-file-stage">
         <img class="import-file-icon ui-icon" src="/static/ui-icons/upload.svg" alt="">
         <h3>选择文件或整个文件夹</h3><p class="muted">流水、账户和子账户资料一起导入 · CSV、TXT、TSV、Excel、ZIP 或 RAR · 导入到<span id="impCaseName">当前案件</span></p>
-        <label class="btn primary import-file-picker" for="impFile">选择文件<input type="file" id="impFile" accept=".csv,.txt,.tsv,.xlsx,.xls,.zip,.rar" aria-label="选择流水文件"></label>
+        <label class="btn primary import-file-picker" for="impFile">选择独立文件（可多选）<input type="file" id="impFile" multiple accept=".csv,.txt,.tsv,.xlsx,.xls,.zip,.rar" aria-label="选择流水文件"></label>
         <label class="btn import-file-picker" for="impDirectory">选择整个文件夹<input type="file" id="impDirectory" webkitdirectory multiple aria-label="选择整个文件夹"></label>
+        <p class="muted">多选文件按顺序独立处理；需要资料相互关联时，请选择整个文件夹，保留目录关系。</p>
       </div>
       <div class="pbar" id="impPbar" style="display:none"><div class="pfill" id="impPfill"></div><span class="ptext" id="impPtext">准备导入</span></div>
       <div id="impStep2" style="display:none">
@@ -747,7 +755,8 @@
 <script src="/static/feedback-workspace.js"></script>
 <script src="/static/app-navigation.js"></script>
 <script src="/static/ui-dialogs.js?v=export-workspace-1"></script>
-<script src="/static/workflow-ui.js?v=main-accounts-1"></script>
+<script src="/static/import-queue.js"></script>
+<script src="/static/workflow-ui.js?v=multi-import-1"></script>
 <script src="/static/import-workflow.js"></script>
 <script src="/static/canvas-investigation.js?v=canvas-open-fit-2"></script>
 <script src="/static/ribbon-commands.js?v=canvas-investigation-1"></script>

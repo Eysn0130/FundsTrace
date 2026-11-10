@@ -313,6 +313,217 @@ function harness({ entityInputs = false, geometry = false } = {}) {
   };
 }
 
+function lifecycleHarness({ canvas = 0 } = {}) {
+  const f = harness(), calls = [];
+  const batches = f.doc.createElement('div'); batches.id = 'tab-batches'; batches.style.display = 'none'; f.doc.body.appendChild(batches);
+  Object.assign(f.context, {
+    initWatermark() {}, bindUI() {}, installNeighborhood() {}, installNodeFinder() {}, initGraph() {}, installAnnotationDialog() {},
+    async loadCases() { f.context.selectCase(1); }, async refreshStats() {}, async applyPendingFocusEdge() {},
+    async refreshCanvasList() { if (canvas && f.state.canvasId !== canvas) f.context.activateCanvas(canvas); },
+    async caseRequest() { return { snapshot: { nodes: [], edges: [] } }; },
+    applyCanvasSnapshot() { calls.push('snapshot'); }, async loadBatches() {},
+    accountDataWrites: new Set(), nodeWrites: new Map(), pcState: { binding: null }, hasNodeDrafts: () => false,
+    toast: (...args) => calls.push(args), CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
+  });
+  f.context.window.dispatchEvent = event => calls.push(event.detail);
+  f.context.window.FundsWorkspaceSession = {
+    lastCanvas: () => canvas,
+    restore() {
+      calls.push('restore'); f.element('fKw').value = 'SYN-RESTORED';
+      f.drafts.restoreViewport({ rowId: '301', page: 3, offset: 0, scrollLeft: 0 });
+    },
+  };
+  vm.runInContext(section('async function openManagedCase(', 'function installCaseWorkspace('), f.context);
+  return { ...f, lifecycleCalls: calls, async start() {
+    let start;
+    const listen = f.context.window.addEventListener;
+    f.context.window.addEventListener = (_name, callback) => { start = callback; };
+    vm.runInContext(section("window.addEventListener('DOMContentLoaded', async () => {", 'async function refreshAll()'), f.context);
+    f.context.window.addEventListener = listen;
+    await start();
+  } };
+}
+
+function canvasLifecycleHarness() {
+  const f = lifecycleHarness();
+  for (const id of ['canvasSel', 'btnCanvasNew', 'btnCanvasClone', 'btnCanvasSave', 'btnCanvasRemove',
+    'btnCanvasRename', 'btnCanvasDel', 'btnCanvasMenuClone', 'btnCanvasActions']) {
+    const node = f.doc.createElement(id === 'canvasSel' ? 'select' : 'button'); node.id = id; f.doc.body.appendChild(node);
+  }
+  const select = f.doc.querySelector('#canvasSel');
+  let callbacks;
+  const actions = { status: () => ({ pending: false }), blocked: () => false,
+    sync: () => callbacks.onState({ pending: false }) };
+  Object.assign(f.context, { layoutJob: null, cancelAnnotationDrag: null, operationFeedbackChanged() {},
+    async refreshCanvasList() {} });
+  f.doc.addEventListener = () => {};
+  f.context.window.FundsCanvasWorkspace = { createView: () => ({ onState() {}, attach() {} }),
+    create(value) { callbacks = value; return actions; } };
+  f.context.window.FundsWorkspaceSession.removeCanvas = () => {};
+  vm.runInContext(section('function externalImportPending(', 'let graphRequestSequence'), f.context);
+  f.context.bindCanvases();
+  return { ...f, changeCanvas(id) {
+    select.value = String(id); select.selectedOptions = [{ textContent: 'Synthetic saved canvas' }];
+    return select.onchange({ target: select });
+  }, publishCanvas(action) {
+    return callbacks.publish(action, f.context.caseContext(), { canvas_id: 8, name: 'Synthetic new canvas' }, { nodes: [], edges: [] });
+  } };
+}
+
+for (const canvas of [0, 7]) test(`canvas selection ${canvas} owns one query after restoring filters and page`, async () => {
+  const f = canvasLifecycleHarness();
+  f.element('fTracked').checked = true;
+  if (!canvas) { f.state.canvasId = 7; f.state.canvasGeneration++; }
+  f.network(async params => ({ page: Number(params.get('page')), size: 50, total: 150, rows: [flow(301)] }));
+  await f.changeCanvas(canvas);
+  assert.equal(f.requests.length, 1);
+  const params = new URL(f.requests[0], 'http://synthetic.local').searchParams;
+  assert.equal(params.get('kw'), 'SYN-RESTORED'); assert.equal(params.get('page'), '3');
+  assert.equal(params.get('canvas_id') || '0', String(canvas));
+  assert.deepEqual(f.rows().map(row => row.dataset.id), ['301']);
+});
+
+for (const phase of ['snapshot', 'session']) test(`canvas restore ${phase} failure keeps current raw rows visible`, async () => {
+  const f = canvasLifecycleHarness();
+  if (phase === 'snapshot') f.context.applyCanvasSnapshot = () => { throw new Error('Synthetic invalid snapshot'); };
+  else f.context.window.FundsWorkspaceSession.restore = () => { throw new Error('Synthetic invalid saved query'); };
+  f.network(async () => ({ page: 1, size: 50, total: 1, rows: [flow(201)] }));
+  await f.changeCanvas(7);
+  assert.equal(f.requests.length, 1);
+  assert.deepEqual(f.rows().map(row => row.dataset.id), ['201']);
+  assert.match(f.lifecycleCalls.at(-1)[0], /画布未能载入/);
+});
+
+for (const phase of ['metadata', 'graph']) test(`stale canvas ${phase} read cannot query an A-B-A binding`, async () => {
+  const f = canvasLifecycleHarness(), pending = deferred();
+  if (phase === 'metadata') f.context.caseRequest = () => pending.promise;
+  else f.graph(() => pending.promise);
+  const opening = f.changeCanvas(7); await flush();
+  f.context.activateCanvas(8); f.context.activateCanvas(7);
+  pending.resolve({ snapshot: { nodes: [], edges: [] } }); await opening;
+  assert.equal(f.requests.length, 0);
+  assert.deepEqual(f.lifecycleCalls, []);
+});
+
+for (const action of ['delete', 'new', 'clone']) test(`canvas publish ${action} retains its query owner`, async () => {
+  const f = canvasLifecycleHarness(); f.state.canvasId = 7; f.state.canvasGeneration++;
+  f.element('fTracked').checked = true;
+  f.network(async params => ({ page: Number(params.get('page')), size: 50, total: 150, rows: [flow(301)] }));
+  await f.publishCanvas(action);
+  assert.equal(f.requests.length, 1);
+  const params = new URL(f.requests[0], 'http://synthetic.local').searchParams;
+  assert.equal(params.get('kw') || '', action === 'delete' ? 'SYN-RESTORED' : '');
+  assert.equal(params.get('page'), action === 'delete' ? '3' : '1');
+  assert.equal(params.get('canvas_id') || '0', action === 'delete' ? '0' : '8');
+  assert.equal(f.lifecycleCalls.includes('restore'), action === 'delete');
+});
+
+test('canvas delete restore failure still queries the current default canvas', async () => {
+  const f = canvasLifecycleHarness(); f.state.canvasId = 7; f.state.canvasGeneration++;
+  f.context.window.FundsWorkspaceSession.restore = () => { throw new Error('Synthetic invalid saved query'); };
+  f.network(async () => ({ page: 1, size: 50, total: 1, rows: [flow(201)] }));
+  await f.publishCanvas('delete');
+  assert.equal(f.requests.length, 1); assert.deepEqual(f.rows().map(row => row.dataset.id), ['201']);
+  assert.match(f.lifecycleCalls.at(-1)[0], /部分数据未刷新/);
+});
+
+for (const action of ['select', 'delete']) test(`stale final ${action} query cannot focus or notify a later A-B-A binding`, async () => {
+  const f = canvasLifecycleHarness(), pending = deferred();
+  f.context.applyPendingFocusEdge = () => { f.lifecycleCalls.push('focus'); };
+  f.network(() => pending.promise);
+  const opening = action === 'select' ? f.changeCanvas(7) : f.publishCanvas('delete');
+  await flush();
+  const current = f.state.canvasId;
+  f.context.activateCanvas(8); f.context.activateCanvas(current);
+  pending.resolve({ page: 1, size: 50, total: 1, rows: [flow(201)] }); await opening;
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.lifecycleCalls.includes('focus'), false);
+  assert.equal(f.lifecycleCalls.some(call => Array.isArray(call)), false);
+  assert.deepEqual(f.rows(), []);
+});
+
+test('actual startup owns one final page query after graph and canvas initialization', async () => {
+  const f = lifecycleHarness();
+  await f.start();
+  assert.equal(f.requests.length, 1);
+  assert.equal(new URL(f.requests[0], 'http://synthetic.local').searchParams.get('page'), '1');
+  assert.deepEqual(f.lifecycleCalls, ['ready']);
+  assert.deepEqual(f.rows().map(row => row.dataset.id), ['1', '2']);
+});
+
+for (const canvas of [0, 7]) test(`managed case with canvas ${canvas} queries only after restored filters and page`, async () => {
+  const f = lifecycleHarness({ canvas });
+  f.network(async params => ({ page: Number(params.get('page')), size: 50, total: 150,
+    rows: [flow(params.get('page') === '3' ? 301 : 1)] }));
+  assert.equal(await f.context.openManagedCase(2, f.context.caseContext()), true);
+  assert.equal(f.requests.length, 1);
+  const params = new URL(f.requests[0], 'http://synthetic.local').searchParams;
+  assert.equal(params.get('kw'), 'SYN-RESTORED'); assert.equal(params.get('page'), '3');
+  assert.deepEqual(f.rows().map(row => row.dataset.id), ['301']);
+  assert.deepEqual(f.lifecycleCalls, canvas ? ['snapshot', 'restore'] : ['restore']);
+});
+
+test('a real malformed saved snapshot still leaves current-case rows visible and reports the restore warning', async () => {
+  const f = lifecycleHarness({ canvas: 7 }), snapshot = { nodes: {} };
+  f.state.lastGraph = {}; f.context.resetGraphView = () => {};
+  f.context.newGraphPresentation = () => ({});
+  vm.runInContext(section('function applyCanvasSnapshot(', 'function scheduleCanvasOpeningFit('), f.context);
+  assert.throws(() => f.context.applyCanvasSnapshot(snapshot), /not iterable/);
+  f.context.caseRequest = async () => ({ snapshot });
+  f.network(async params => {
+    assert.equal(params.get('case_id'), '2');
+    return { page: 1, size: 50, total: 1, rows: [flow(201)] };
+  });
+  assert.equal(await f.context.openManagedCase(2, f.context.caseContext()), true);
+  assert.equal(f.requests.length, 1);
+  assert.deepEqual(f.rows().map(row => row.dataset.id), ['201']);
+  assert.equal(f.lifecycleCalls.length, 1);
+  assert.match(f.lifecycleCalls[0][0], /部分数据加载失败/); assert.equal(f.lifecycleCalls[0][1], 'warn');
+  assert.equal(f.lifecycleCalls[0][2].canvasId, 7);
+  assert.deepEqual(snapshot, { nodes: {} });
+  await f.context.loadGraph(); assert.equal(f.requests.length, 1);
+});
+
+test('startup focus failure retains a correct first page and rethrows the original error', async () => {
+  const f = lifecycleHarness(), failure = new Error('Synthetic focus restore failure');
+  f.context.applyPendingFocusEdge = async () => { throw failure; };
+  await assert.rejects(f.start(), error => error === failure);
+  assert.equal(f.requests.length, 1);
+  assert.deepEqual(f.rows().map(row => row.dataset.id), ['1', '2']);
+  assert.deepEqual(f.lifecycleCalls, ['failed']);
+});
+
+test('stale startup restore failure cannot query or consume a later A-B-A binding', async () => {
+  const f = lifecycleHarness(), pending = deferred(), failure = new Error('Synthetic stale focus failure');
+  f.context.applyPendingFocusEdge = () => pending.promise;
+  const opening = f.start(); await flush();
+  f.context.selectCase(2); f.context.selectCase(1);
+  pending.reject(failure); await assert.rejects(opening, error => error === failure);
+  assert.equal(f.requests.length, 0);
+  await f.context.loadGraph(); assert.equal(f.requests.length, 1);
+});
+
+test('failed caller-owned graph read leaves the binding refresh for a successful ordinary caller', async () => {
+  const f = harness(); f.context.activateCanvas(7);
+  f.graph(async () => { throw new Error('Synthetic graph read failure'); });
+  await assert.rejects(f.context.loadGraph(true, f.context.caseContext(), { tableQuery: 'caller' }), /Synthetic graph read failure/);
+  assert.equal(f.requests.length, 0);
+  f.graph(async () => {}); await f.context.loadGraph();
+  assert.equal(f.requests.length, 1);
+  await f.context.loadGraph(); assert.equal(f.requests.length, 1);
+});
+
+test('old caller-owned A-B-A graph completion cannot consume a fresh binding refresh', async () => {
+  const f = harness(), old = deferred();
+  f.context.selectCase(2); f.graph(() => old.promise);
+  const pending = f.context.loadGraph(true, f.context.caseContext(), { tableQuery: 'caller' });
+  f.context.selectCase(1); f.graph(async () => {});
+  old.resolve(); await pending;
+  assert.equal(f.requests.length, 0);
+  await f.context.loadGraph(); assert.equal(f.requests.length, 1);
+  await f.context.loadGraph(); assert.equal(f.requests.length, 1);
+});
+
 test('query disclosure keeps table tools, results and selection usable and restores internal focus', async () => {
   const f = harness(); await f.search(); f.toggleAnchor(1, true);
   f.element('fAccount').focus(); f.element('btnQueryToggle').click();

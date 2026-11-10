@@ -394,10 +394,11 @@ def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
                         # when its bytes resemble a recognized auxiliary CSV.
                         header, encoding = ([], None) if suffix == ".xls" else _header(payload)
                         delimiter = ","
+                        decoded_csv = None
                         if profile in table_import.SOURCE_CONTRACT_PROFILES and suffix in {".csv", ".tsv", ".txt"}:
-                            decoded = table_import._csv(payload, suffix, profile)[0]
-                            header = [cell.strip() for cell in decoded["rows"][0]] if decoded["rows"] else []
-                            encoding, delimiter = decoded["encoding"], decoded["delimiter"]
+                            decoded_csv = table_import._DecodedCSV(payload, suffix, profile)
+                            header = [cell.strip() for cell in decoded_csv.header]
+                            encoding, delimiter = decoded_csv.encoding, decoded_csv.delimiter
                         if (profile not in EVIDENCE_PROFILES and profile not in table_import.NATIVE_OBSERVATION_PROFILES
                                 and len(header) == len(feedback_import.COLUMNS)
                                 and frozenset(header) == frozenset(feedback_import.COLUMNS)):
@@ -421,6 +422,11 @@ def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
                             signature = frozenset(header)
                             role = role or next((name for name, names in feedback_import.SCHEMAS.items() if name != "transaction" and signature == frozenset(names)), None)
                             role = {"task": "manifest", "address": "client", "phone": "client"}.get(role, role)
+                        member_profile = (profile if profile in EVIDENCE_PROFILES or profile in {GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, ZONED_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_TEXT_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_LEDGER_PROFILE, POSTING_PAIR_PROFILE, AUXILIARY_SCOPE_PROFILE, NATIVE_OBSERVATION_PROFILE, UNORIENTED_PROFILE, NATIVE31_PROFILE, SOURCE_OBSERVATION_PROFILE} else
+                                          table_import.ARCHIVE_MEMBER_PROFILE if profile == HEADER_PROFILE
+                                          else table_import.IDENTITY_PROFILE)
+                        if role or member_profile != profile:
+                            decoded_csv = None
                         with localcontext() as context:
                             if profile in CANCELLATION_PROFILES:
                                 context.prec = max(context.prec, 50)
@@ -429,14 +435,13 @@ def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
                                                native_observations=native_observations, delimiter=delimiter) if role
                                     else table_import.parse(
                                         io.BytesIO(payload), suffix=suffix,
-                                        profile=(profile if profile in EVIDENCE_PROFILES or profile in {GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, ZONED_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_TEXT_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_LEDGER_PROFILE, POSTING_PAIR_PROFILE, AUXILIARY_SCOPE_PROFILE, NATIVE_OBSERVATION_PROFILE, UNORIENTED_PROFILE, NATIVE31_PROFILE, SOURCE_OBSERVATION_PROFILE} else
-                                                 table_import.ARCHIVE_MEMBER_PROFILE if profile == HEADER_PROFILE
-                                                 else table_import.IDENTITY_PROFILE),
+                                        profile=member_profile,
                                         reference_policy=(table_import.TRANSACTION_REFERENCE_POLICY
                                                           if profile in REFERENCE_PROFILES else None),
                                         _details_pool=details_pool,
                                         _defer_occurrence_binding=profile in EVIDENCE_PROFILES,
-                                        _retain_csv_format=profile in CANCELLATION_PROFILES and suffix == ".csv"))
+                                        _retain_csv_format=profile in CANCELLATION_PROFILES and suffix == ".csv",
+                                        _decoded_csv=decoded_csv))
                         try:
                             if profile in CANCELLATION_PROFILES and not role and suffix == ".csv":
                                 table_cancellations.apply(part, payload, allow_feedback28=profile in EVIDENCE_PROFILES or native_observations,

@@ -166,7 +166,7 @@ function harness() {
   add(document.body, 'nodeConfirm', 'dialog');
   add(document.body, 'photoCropModal').style.display = 'none';
   for (const id of ['graphContainer', 'ctxModal', 'ctxTrack', 'ctxTrackStatus', 'ctxTbody', 'ctxSuggest', 'btnImport', 'btnImport2', 'importModal',
-    'impPbar', 'impClose', 'impCancel', 'impFile', 'impRe', 'impCommit', 'impChangeFile', 'impMapping', 'impPreviewScroll', 'impHorizontalPosition',
+    'impPbar', 'impClose', 'impCancel', 'impQueue', 'impQueueStop', 'impFile', 'impRe', 'impCommit', 'impChangeFile', 'impMapping', 'impPreviewScroll', 'impHorizontalPosition',
     'impScrollLeft', 'impScrollRight', 'impPreviewTable', 'pcCircle', 'flowTbody', 'canvasSel', 'flowCkAll', 'caseSelect', 'analysisLink', 'batchList']) add(document.body, id);
   const requests = [], removals = [], contextOpens = [], notices = [];
   let network = async () => { throw new Error('Unexpected request'); }, remover = async () => false, scrollDisposals = 0;

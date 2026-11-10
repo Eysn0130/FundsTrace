@@ -146,7 +146,7 @@ function harness() {
   const track = add(modal, 'ctxTrack', 'button'); add(track, 'ctxTrackLabel'); add(modal, 'ctxClose', 'button'); add(modal, 'ctxCancel', 'button');
   const viewport = add(modal, 'ctxTableScroll'); const table = add(viewport, 'ctxTable', 'table'); add(table, 'ctxTbody', 'tbody');
   for (const id of ['ctxScrollLeft', 'ctxScrollRight', 'ctxHorizontalPosition']) add(modal, id, id === 'ctxHorizontalPosition' ? 'input' : 'button');
-  for (const id of ['btnCloseDrawer', 'drawer', 'drawerBody', 'btnImport', 'btnImport2', 'importModal', 'impPbar', 'impClose', 'impCancel',
+  for (const id of ['btnCloseDrawer', 'drawer', 'drawerBody', 'btnImport', 'btnImport2', 'importModal', 'impPbar', 'impClose', 'impCancel', 'impQueue', 'impQueueStop',
     'impFile', 'impRe', 'impCommit', 'impChangeFile', 'impMapping', 'impPreviewScroll', 'impHorizontalPosition', 'impScrollLeft', 'impScrollRight', 'impPreviewTable',
     'flowTbody', 'canvasSel', 'flowCkAll', 'caseSelect', 'analysisLink', 'batchList']) add(document.body, id);
   const requests = [], trackCalls = [], notices = [];
