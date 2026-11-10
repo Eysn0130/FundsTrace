@@ -94,3 +94,11 @@ def test_duplicate_label_stays_conservative():
     headers = COLUMNS + ("凭证号",)
     plan = parse([source_row()], headers=headers)
     assert not plan["rows"]
+
+
+def test_explicit_reference_policy_resolves_a_near_miss_layout():
+    headers = tuple(column for column in COLUMNS if column != "重点字样")
+    assert not parse([source_row()], headers=headers)["rows"]
+    plan = parse([source_row()], headers=headers, voucher_reference=True)
+    assert plan["rows"][0]["trade_no"] == "SYN-TRANSACTION"
+    assert plan["records"][0]["details"]["trade_no_basis"] == "source_transaction_id"

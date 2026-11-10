@@ -225,7 +225,7 @@ def _accounts(rows):
 
 
 def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=None, table_profile=None,
-           _auto_event_profile=False):
+           reference_policy=None, _auto_event_profile=False):
     # Never retain a previous large preview beside a newly parsed plan.
     import_preview_cache.discard()
     try:
@@ -236,7 +236,8 @@ def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=Non
                 raise table_import.TableImportError("RAR文件签名不符，整包未接纳")
             plan = (table_archive.parse(source, profile=table_profile, _stage=True, _operation_scopes=True) if table_profile in table_archive.SUPPORTED_PROFILES
                     else table_import.parse(source, suffix=suffix, mode=mode, mapping=mapping,
-                                            profile=table_profile,
+                                            profile=table_profile, reference_policy=reference_policy,
+                                            voucher_reference=reference_policy is not None,
                                             **({"_auto_event_profile": True} if _auto_event_profile else {})))
             try:
                 if plan["profile"] in evidence_resolution.PROFILES and "_plan_store" not in plan:
@@ -1040,10 +1041,13 @@ def _repreview(case_id, import_id, body, surface):
                                profile=_table_profile(session))
                 if overrides and _table_profile(session) in table_archive.SUPPORTED_PROFILES:
                     raise ServiceError(422, "invalid_mapping", "反馈包按成员独立校验，不能使用整包字段覆盖")
+            reference_policy = getattr(body, "reference_policy", None)
+            if reference_policy is not None and not is_table:
+                raise ServiceError(422, "invalid_reference_policy", "引用策略仅适用于表格流水来源")
             parsed = _parse(source, body.mode if not is_table or overrides else None,
                             body.mapping if not is_table or overrides else None, suffix=session["suffix"],
                             feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
-                            table_profile=_table_profile(session))
+                            table_profile=_table_profile(session), reference_policy=reference_policy)
         try:
             evidence_resolution.operation_context(parsed, session["sha256"])
             _bind_feedback_plan(session["case_id"], parsed)
@@ -1056,6 +1060,10 @@ def _repreview(case_id, import_id, body, surface):
             if is_table:
                 request = json.loads(session.get("request_json") or "{}")
                 request["_table_overrides"] = overrides
+                if reference_policy is None:
+                    request.pop("reference_policy", None)
+                else:
+                    request["reference_policy"] = reference_policy
                 db.x("update import_sessions set request_json=? where import_id=?", [_json(request), import_id])
             return _preview_result(session, parsed, legacy=surface == "legacy")
         finally:
@@ -1160,7 +1168,8 @@ def _run(import_id):
                     source, request["mode"] if not is_table or overrides else None,
                     request["mapping"] if not is_table or overrides else None, suffix=session["suffix"],
                     feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
-                    table_profile=_table_profile(session))
+                    table_profile=_table_profile(session),
+                    reference_policy=request.get("reference_policy") if is_table else None)
             evidence_resolution.operation_context(parsed, session["sha256"])
             _frame, sheet, mode, mapping, rows, stats = parsed
         plan = _frame.attrs.get("feedback_plan")
@@ -1296,6 +1305,9 @@ def _commit(case_id, import_id, body, surface):
                 request["_feedback_profile"] = _feedback_profile(session)
             if is_table:
                 request.update(_table_profile=_table_profile(session), _table_overrides=_table_overrides(session))
+                stored_policy = json.loads(session.get("request_json") or "{}").get("reference_policy")
+                if stored_policy is not None:
+                    request["reference_policy"] = stored_policy
             db.x("""update import_sessions set mode=?,mapping_json=?,request_json=?,stage='parsing',done=0,total=0,
                       result_json=null,error_code=null,attempt=attempt+1,owner_token=?,updated_at=?
                       where import_id=?""", [body.mode, _json(mapping), _json(request), OWNER_TOKEN, _now(), import_id])

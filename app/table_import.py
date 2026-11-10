@@ -1644,7 +1644,7 @@ def _interpret_candidates(row, candidates, mode, *, reference_policy=None, finan
     return _role_conflict(selected)
 
 
-def _region(headers, mode, mapping, *, strict, reference_policy=None, profile=IDENTITY_PROFILE):
+def _region(headers, mode, mapping, *, strict, reference_policy=None, voucher_reference=False, profile=IDENTITY_PROFILE):
     """Resolve labels against this region's positions, never an earlier region."""
     candidates = _candidates(headers, profile)
     header_names = tuple(_text(_header_value(header, profile)) for header in headers)
@@ -1804,7 +1804,24 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, profile=ID
                                or profile in EVIDENCE_PROFILES and len(headers) == len(UNIFORM_FEEDBACK_35_COLUMNS)
                                and signature == UNIFORM_FEEDBACK_35_COLUMNS
                                or uniform35_padding)
-    if (feedback39_reference_family or feedback_references or (reference_policy == TRANSACTION_REFERENCE_POLICY
+    reference_names = {_norm(_text(item.get("source_name", ""))) for item in candidates.get("trade_no", [])}
+    voucher_names = frozenset((_norm("凭证号"), _norm("凭证编号")))
+    explicit_reference_roles = (voucher_reference is True
+        and _norm("交易流水号") in reference_names and bool(reference_names & voucher_names))
+    if explicit_reference_roles:
+        # The caller asked for this layout explicitly (repreview), so role the
+        # references apart without inferring anything from cell values. The
+        # choice is recorded per row as trade_no_basis.
+        active_reference_policy = TRANSACTION_REFERENCE_POLICY
+        for item in candidates.get("trade_no", []):
+            name = _norm(_text(item.get("source_name", "")))
+            item["reference_role"] = ("source_transaction_id" if name == _norm("交易流水号")
+                                      else "source_slip_reference" if name == _norm("传票号")
+                                      else "source_log_reference" if name == _norm("日志号")
+                                      else "independent_voucher_reference")
+        current_mapping["trade_no"] = labels[next(item["index"] for item in candidates["trade_no"]
+                                                  if item.get("reference_role") == "source_transaction_id")]
+    elif (feedback39_reference_family or feedback_references or (reference_policy == TRANSACTION_REFERENCE_POLICY
             and closed_reference_family)
             or source_role in {"transaction_explicit", "transaction_query_only"} and not (mapping and "trade_no" in mapping)):
         active_reference_policy = TRANSACTION_REFERENCE_POLICY
@@ -2140,7 +2157,8 @@ def _source_sign_contracts(sheets, profile):
     return table_sign_declarations.compile_sources(layouts)
 
 
-def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=None, _details_pool=None,
+def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, voucher_reference=False,
+          profile=None, _details_pool=None,
           _defer_occurrence_binding=False, _retain_csv_format=False, _auto_event_profile=False):
     if profile is None:
         profile = TIME_ROLE_XLS_PROFILE if suffix.lower() == ".xls" else PROFILE
@@ -2150,11 +2168,13 @@ def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pro
         with localcontext() as context:
             context.prec = max(context.prec, 50)
             return _parse(source, suffix=suffix, mode=mode, mapping=mapping,
-                          reference_policy=reference_policy, profile=profile, details_pool=_details_pool,
+                          reference_policy=reference_policy, voucher_reference=voucher_reference,
+                          profile=profile, details_pool=_details_pool,
                           defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format,
                           auto_event_profile=_auto_event_profile)
     return _parse(source, suffix=suffix, mode=mode, mapping=mapping,
-                  reference_policy=reference_policy, profile=profile, details_pool=_details_pool,
+                  reference_policy=reference_policy, voucher_reference=voucher_reference,
+                  profile=profile, details_pool=_details_pool,
                   defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format,
                   auto_event_profile=_auto_event_profile)
 
@@ -2172,7 +2192,8 @@ def _region_row_headers(headers, profile):
     return names, feedback_names
 
 
-def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, profile=PROFILE, details_pool=None,
+def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, voucher_reference=False,
+           profile=PROFILE, details_pool=None,
            defer_occurrence_binding=False, retain_csv_format=False, auto_event_profile=False):
     """Interpret every source record and return a write-free versioned plan."""
     suffix = suffix.lower()
@@ -2239,7 +2260,8 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
         header_no, _, _ = _locate_header(raw_rows, profile)
         headers = raw_rows[header_no] if header_no is not None else []
         candidates, labels, actual_mode, current_mapping, region_error, active_reference_policy = _region(
-            headers, mode, mapping, strict=True, reference_policy=reference_policy, profile=profile)
+            headers, mode, mapping, strict=True, reference_policy=reference_policy,
+            voucher_reference=voucher_reference, profile=profile)
         source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
         header_names, feedback_header_names = _region_row_headers(headers, profile)
         if not selected and header_no is not None:
@@ -2292,7 +2314,8 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, pr
                 ambiguous_layouts.clear()
                 headers = row
                 candidates, labels, actual_mode, current_mapping, region_error, active_reference_policy = _region(
-                    headers, mode, mapping, strict=False, reference_policy=reference_policy, profile=profile)
+                    headers, mode, mapping, strict=False, reference_policy=reference_policy,
+                    voucher_reference=voucher_reference, profile=profile)
                 source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
                 header_names, feedback_header_names = _region_row_headers(headers, profile)
                 document["header_rows"].append(index)

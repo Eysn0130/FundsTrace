@@ -351,3 +351,65 @@ def test_new_envelope_rejects_unsafe_structure_before_writes(client, database, m
     response = client.post(f"/api/v1/cases/{cid}/imports/preview", files={"file": ("synthetic.zip", data)})
     assert response.status_code == 400
     assert database.q_raw("select count(*) n from import_sessions where case_id=?", [cid])[0]["n"] == 0
+
+
+def test_repreview_can_separate_voucher_reference_and_commit_keeps_it(client, database, make_case):
+    cid = make_case("Synthetic voucher reference choice")
+    content = ("交易账号,交易时间,交易金额,交易余额,收付标志,交易对手账卡号,对手户名,摘要说明,"
+               "交易流水号,凭证号,交易币种,交易是否成功\n"
+               "SYN-A,2026-01-02 03:04:05,12.34,100.00,出,SYN-B,Synthetic counter,x,SYN-T,6222001,CNY,01\n").encode()
+    view = preview(client, cid, content)
+    assert view["automatic"] is True
+    assert view["stats"]["accepted"] == 0 and view["table_summary"]["unresolved"] == 1
+    assert view["table_summary"]["reason_counts"] == {"conflicting_field": 1}
+
+    base = f"/api/v1/cases/{cid}/imports/{view['import_id']}"
+    response = client.post(base + "/preview", json={"mode": view["mode"], "mapping": view["mapping"],
+                                                    "reference_policy": "transaction-reference-v1"})
+    assert response.status_code == 200, response.text
+    resolved = response.json()
+    assert resolved["stats"]["accepted"] == 1 and resolved["table_summary"]["unresolved"] == 0
+    assert resolved["mapping"]["trade_no"] == "交易流水号"
+
+    job = complete(client, cid, resolved)
+    assert job["stage"] == "done" and job["result"]["ok"] == 1, job
+    flows = client.get(f"/api/v1/cases/{cid}/flows").json()["items"]
+    assert [row["trade_no"] for row in flows] == ["SYN-T"] and flows[0]["amount"] == "12.34"
+
+
+def test_reference_policy_is_a_no_op_without_a_voucher_column(client, database, make_case):
+    cid = make_case("Synthetic policy without voucher")
+    content = ("交易时间,付款方账号,收款方账号,交易金额,币种\n2026-01-01 10:00:00,SYN-A,SYN-B,1.00,CNY\n").encode()
+    view = preview(client, cid, content)
+    base = f"/api/v1/cases/{cid}/imports/{view['import_id']}"
+    response = client.post(base + "/preview", json={"mode": view["mode"], "mapping": view["mapping"],
+                                                    "reference_policy": "transaction-reference-v1"})
+    assert response.status_code == 200, response.text
+    same = response.json()
+    assert same["stats"]["accepted"] == view["stats"]["accepted"] == 1
+    assert same["mapping"] == view["mapping"]
+
+
+def test_complete39_reference_roles_survive_package_round_trip(client, database, make_case):
+    cid = make_case("Synthetic 39 column package")
+    headers = ("交易卡号,交易账号,主户名,开户人证件号码,交易日期,交易时间,交易净额,交易金额,交易余额,收付标志,"
+               "交易对手账卡号,现金标志,对手户名,是否调取,已调取账号对手身份,对手身份证号,对手开户银行,摘要说明,"
+               "交易币种,交易网点名称,交易发生地,交易是否成功,传票号,IP地址,MAC地址,对手交易余额,交易流水号,"
+               "日志号,凭证种类,凭证号,交易柜员号,备注,商户名称,交易类型,查询反馈结果原因,备用字段1,备用字段2,"
+               "备用字段3,重点字样")
+    rows = [",".join(["SYN-CARD", "SYN-A", "Synthetic own", "SYN-ID", "2026-01-02", "2026-01-02 03:04:05",
+                      "-12.34", "12.34", "100.00", "出", "SYN-B", "00", "Synthetic counter", "未调取", "",
+                      "", "Synthetic bank", "transfer", "CNY", "Synthetic branch", "", "01", "", "", "", "",
+                      "SYN-T", "", "4001", "SYN-CARD", "", "", "Synthetic merchant", "转账", "成功", "", "", "", ""])]
+    content = (headers + "\n" + "\n".join(rows) + "\n").encode()
+    view = preview(client, cid, content)
+    assert view["stats"]["accepted"] == 1 and view["table_summary"]["unresolved"] == 0
+    job = complete(client, cid, view)
+    assert job["result"]["ok"] == 1, job
+
+    package = client.get(f"/api/cases/{cid}/export")
+    assert package.status_code == 200, package.text
+    restored = client.post("/api/cases/import", files={"file": ("synthetic.fundcase", package.content)})
+    assert restored.status_code == 200, restored.text
+    flows = client.get(f"/api/v1/cases/{restored.json()['case_id']}/flows").json()["items"]
+    assert [(row["trade_no"], row["amount"]) for row in flows] == [("SYN-T", "12.34")]

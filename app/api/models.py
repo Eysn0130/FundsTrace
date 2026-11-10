@@ -350,6 +350,10 @@ class ImportPreview(ContractModel):
 class RepreviewRequest(ContractModel):
     mode: Literal["A", "B"]
     mapping: dict[str, str]
+    # Explicit caller choice for an uncataloged table layout: keep the source
+    # transaction id and the voucher as separate facts instead of rejecting
+    # every row whose voucher differs. Never inferred from cell values.
+    reference_policy: Literal["transaction-reference-v1"] | None = None
 
 
 class CommitRequest(RepreviewRequest):
