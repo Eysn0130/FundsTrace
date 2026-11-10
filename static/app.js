@@ -1057,7 +1057,7 @@ function installNodeFinder() {
     search: query => { nodeFinderWorkspace.open(); return nodeFinderWorkspace.search(query); }, locateNew: () => nodeFinderWorkspace.locateNew() });
   for (const event of ['funds:graph-metric', 'funds:main-accounts-state']) window.addEventListener(event, () => nodeFinderWorkspace.update());
 }
-function avoidGraphLabelCollisions(policy) {
+function avoidGraphLabelCollisions(policy, { clipToViewport = true } = {}) {
   const view=state.graphView;
   if(typeof FundsGraphLabels==='undefined')return policy;
   const candidates=[], bodies=graphScreenBodies();
@@ -1079,12 +1079,13 @@ function avoidGraphLabelCollisions(policy) {
   const width=view.exportDepth?(state.graph.get?.('width')||c.clientWidth):c.clientWidth;
   const height=view.exportDepth?(state.graph.get?.('height')||c.clientHeight):c.clientHeight;
   const selected=FundsGraphLabels.select(candidates,{obstacles:[...[...bodies].map(([key,bounds])=>({key,bounds})),...graphChromeObstacles(),...edgeObstacles],
+    retainCollisions:true,
     retainAll:view.labelMode==='all'||view.exportDepth>0,
-    viewport:width&&height?{minX:0,minY:0,maxX:width,maxY:height-(view.exportFooterHeight||0)}:null});
+    viewport:clipToViewport&&width&&height?{minX:0,minY:0,maxX:width,maxY:height-(view.exportFooterHeight||0)}:null});
   return {...policy,nodeIds:selected.nodeIds,edgeKeys:new Set(policy.edgeKeys),nodePlacements:selected.nodePlacements,
     edgePlacements:new Map(),collisions:selected.rejected,conflicts:selected.conflicts,unknownGeometry:selected.unknownGeometry};
 }
-function applyGraphLabels(paint = true) {
+function applyGraphLabels(paint = true, { clipToViewport = true } = {}) {
   const graph = state.graph, view = state.graphView;
   if (!graph || !view.index) return;
   const autoPaint=graph.get?.('autoPaint')!==false;
@@ -1114,7 +1115,7 @@ function applyGraphLabels(paint = true) {
   const requestedPolicy = FundsGraphView.labels(index, { zoom: (graph.getZoom?.() || 1) / view.fitZoom * 0.5,
     mode: view.exportDepth?'all':view.labelMode, selectedIds: new Set([...(state.graphSelection?.ids || []), ...(!view.exportDepth ? view.previewAccounts || [] : [])]), selectedAccount: view.selectedAccount, hoveredAccount: view.hoveredAccount,
     selectedEdge: view.selectedEdge, eligibleNodeIds: !view.exportDepth ? view.clipResult?.nodeIds : null });
-  view.policy=avoidGraphLabelCollisions(requestedPolicy);
+  view.policy=avoidGraphLabelCollisions(requestedPolicy,{clipToViewport});
   const update = (items, previous, desired, changedOnly=false) => {
     let geometryChanged=false;
     const keys = new Set([...previous, ...desired]);
@@ -1150,7 +1151,7 @@ function applyGraphLabels(paint = true) {
   const edgesChanged=update(view.edgeItems, view.labeledEdges, view.policy.edgeKeys);
   // New labels now have real G6 text/background bounds. Resolve any estimate
   // mismatch before painting; never repeatedly create rejected labels here.
-  const settled=nodesChanged||edgesChanged?avoidGraphLabelCollisions(requestedPolicy):view.policy;
+  const settled=nodesChanged||edgesChanged?avoidGraphLabelCollisions(requestedPolicy,{clipToViewport}):view.policy;
   update(view.nodeItems, view.policy.nodeIds, settled.nodeIds,true);
   update(view.edgeItems, view.policy.edgeKeys, settled.edgeKeys,true);
   view.policy=settled;
@@ -3320,7 +3321,9 @@ function fitGraph(cap = 1.6,{rebuild=false}={}) {
     // the old viewport's clipped membership. Otherwise a second Fit can shrink
     // the envelope again after long peripheral labels were removed by LOD.
     view.fitZoom=graph.getZoom();view.clipResult=null;
-    applyGraphLabels(false);
+    // Measure the admitted labels even when the previous pan put them outside
+    // the viewport. Normal clipping resumes after the camera reaches its fit.
+    applyGraphLabels(false,{clipToViewport:false});
     const width=container.clientWidth||900,height=container.clientHeight||600;
     const items=[...nodes,...graph.getEdges()],maxZoom=Math.min(4,cap),obstacles=graphChromeObstacles();
     for(const item of items)resetAutoLabelOffset(item);

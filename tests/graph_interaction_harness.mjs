@@ -1313,6 +1313,36 @@ function cleanLabelScene({ crossing=false }={}) {
   return {...f,edge,text,shape,facts,render(){f.h.run('renderGraph()')}};
 }
 
+test('graph interaction: auto fit measures offscreen identities before framing and is stable from a panned camera',()=>{
+  const cameras=[];
+  for(const initial of [{zoom:.3,x:-4000,y:200},{zoom:1.2,x:2000,y:-300}]) {
+    const f=cleanLabelScene(),graph=f.state.graph,container=f.h.element('#graphContainer');
+    container.clientWidth=700;container.clientHeight=650;
+    const camera={...initial};
+    graph.getPointByCanvas=(x,y)=>({x:(x-camera.x)/camera.zoom,y:(y-camera.y)/camera.zoom});
+    graph.getCanvasByPoint=(x,y)=>({x:x*camera.zoom+camera.x,y:y*camera.zoom+camera.y});
+    graph.getZoom=()=>camera.zoom;graph.zoomTo=zoom=>{camera.zoom=zoom};
+    graph.translate=(x,y)=>{camera.x+=x;camera.y+=y};
+    f.state.lastGraph.nodes.find(node=>node.account==='C').name='很长的合成账户名称'.repeat(8);
+    f.state.graphView.labelMode='auto';f.render();f.applyLabels();
+    assert.equal(graph.getNodes().every(item=>!f.text(item)),true,'the starting pan genuinely releases every offscreen identity');
+    const before=JSON.stringify({positions:f.state.positions,facts:f.state.lastGraph});
+    f.fitGraph();const first={...camera};cameras.push(first);
+    const check=()=>{for(const item of graph.getNodes()){
+      const text=f.text(item);assert.ok(text,`${item.model.id} has its canonical text after fit`);
+      assert.equal(text.attr('text'),item.model.fundsLabel);
+      const b=text.getCanvasBBox();
+      assert.ok(b.minX>=24-1e-6&&b.maxX<=676+1e-6&&b.minY>=24-1e-6&&b.maxY<=626+1e-6,
+        `${item.model.id} text is included in the fitted envelope: ${JSON.stringify(b)}`);
+    }};
+    check();
+    f.fitGraph();check();
+    for(const key of ['zoom','x','y'])assert.ok(Math.abs(camera[key]-first[key])<1e-6,`repeated fit preserves ${key}`);
+    assert.equal(JSON.stringify({positions:f.state.positions,facts:f.state.lastGraph}),before);
+  }
+  for(const key of ['zoom','x','y'])assert.ok(Math.abs(cameras[0][key]-cameras[1][key])<1e-6,`entry camera cannot change final ${key}`);
+});
+
 test('clean graph interaction: hover zoom fit and history preserve manual node coordinates and bottom labels',async()=>{
   const f=cleanLabelScene({crossing:true});f.render();
   const graph=f.state.graph;

@@ -1082,7 +1082,8 @@ test('an older graph retry cannot supersede a newer successful read', async () =
 test('G6 label visibility keeps canonical money intact through selection and hover', () => {
   const h = harness('app.js'); installSyntheticHub(h);
   assert.ok(h.run('state.graphView.policy.nodeIds.size')>0);
-  assert.ok(h.run('state.graphView.policy.nodeIds.size')<20,'overlapping screen labels are pruned within the policy cap');
+  assert.equal(h.run('state.graphView.policy.nodeIds.size'),20,'collisions retain identities inside the overview cap');
+  assert.ok(h.run('state.graphView.policy.conflicts')>0,'retained overlaps remain accounted for');
   assert.equal(h.run('state.graphView.policy.edgeKeys.size'), 0);
   assert.equal(h.run('state.graph.getEdges()[0].shapes.length'), 0);
   assert.equal(h.run('state.graph.getEdges()[0].getModel().label'), undefined);
@@ -1101,6 +1102,31 @@ test('G6 label visibility keeps canonical money intact through selection and hov
   assert.equal(h.run('state.graphView.policy.nodeIds.size'), 1000);
   assert.equal(h.run('state.graphView.policy.edgeKeys.size'), 999);
   assert.equal(h.run('state.graph.getEdges().every(item=>item.shapes.every(shape=>shape.visible))'), true);
+});
+
+test('zoom settling keeps seven canonical node names despite amount and identity overlaps without hover', () => {
+  const h=harness('app.js');installSyntheticHub(h,7);
+  h.run(`syntheticZoom=1;syntheticViewport={minX:0,minY:0,maxX:1000,maxY:700};
+    state.positions={'SYN-HUB':{x:400,y:220},'SYN-00000':{x:200,y:120},'SYN-00001':{x:650,y:120},
+      'SYN-00002':{x:200,y:400},'SYN-00003':{x:650,y:400},'SYN-00004':{x:350,y:500},'SYN-00005':{x:550,y:500}};
+    syntheticLabelBounds=model=>model.source?{minX:0,minY:0,maxX:850,maxY:650}:null;
+    state.graphView.labelMode='auto';renderGraph();
+    globalThis.identityCoordinates=JSON.stringify(state.graph.getNodes().map(item=>{
+      const m=item.getModel();return [m.id,m.x,m.y]}));`);
+  for(const zoom of [.8,.4,.25,1.1,.4,1]) {
+    h.run(`syntheticZoom=${zoom};syntheticViewport={minX:0,minY:0,maxX:1000/syntheticZoom,maxY:700/syntheticZoom};scheduleGraphLabels(true)`);
+    h.timers.findLast(timer=>timer.delay===140).callback();
+    assert.equal(h.run('state.graphView.policy.nodeIds.size'),7,`all seven identities survive at ${zoom}x`);
+    assert.equal(h.run(`state.graph.getNodes().every(item=>labelShapes(item).some(shape=>
+      shape.get('visible')===true&&shape.attr('text')===item.getModel().fundsLabel))`),true);
+    assert.ok(h.run('state.graphView.policy.conflicts')>0,'the fixture actually intersects admitted amount bounds');
+    assertAppliedLabelPlacements(h);
+    assert.equal(h.run(`JSON.stringify(state.graph.getNodes().map(item=>{
+      const m=item.getModel();return [m.id,m.x,m.y]}))===identityCoordinates`),true);
+  }
+  assert.equal(h.run('state.graphView.hoveredAccount'),null);
+  assert.equal(h.run('JSON.stringify(state.lastGraph)===originalGraphFacts'),true);
+  assert.equal(h.run('state.graph.getEdges()[0].getModel().fundsLabel'),'2笔·¥10,000,000,000,000,000.01\nUSD 0.01');
 });
 
 test('A-B-A case navigation resets neighborhood and rejects a stale label callback', () => {
@@ -1487,8 +1513,10 @@ for(const zoom of [.4,1,2]) test(`lazy node labels recover from rendered body en
   assertAppliedLabelPlacements(h);
   h.run(`state.graph.updateItem(state.graphView.nodeItems.get('SYN-00001'),atScreen(200,200+50*syntheticZoom));
     rebuildGraphViewport();applyGraphLabels();`);
-  assert.equal(h.run('state.graphView.policy.nodeIds.has("SYN-HUB")'),false,'a real neighboring node body still suppresses an overlapping optional label');
-  assert.equal(h.run('labelShapes(state.graphView.nodeItems.get("SYN-HUB")).length'),0);
+  assert.equal(h.run('state.graphView.policy.nodeIds.has("SYN-HUB")'),true,'a neighboring body cannot silently remove an admitted identity');
+  assert.equal(h.run('labelShapes(state.graphView.nodeItems.get("SYN-HUB")).length'),1);
+  assert.equal(h.run('state.graphView.policy.nodePlacements.get("SYN-HUB").conflicted'),true);
+  assertAppliedLabelPlacements(h);
   h.run(`state.graph.updateItem(state.graphView.nodeItems.get('SYN-00001'),atScreen(800,200));
     rebuildGraphViewport();applyGraphLabels();`);
   assert.deepEqual(visibleIds(),[...originalIds,'SYN-APPENDED'].sort(),'removing the real collision restores the label without hover');
@@ -1591,7 +1619,7 @@ for(const side of ['left','right','top','bottom']) test(`partially clipped ${sid
   assert.equal(h.run('JSON.stringify({positions:state.positions,x:boundaryLabel.getModel().x,y:boundaryLabel.getModel().y})===boundaryCoordinates'),true);
 });
 
-test('node label obstacles follow same-zoom live movement and shadow style changes without weakening real collisions',()=>{
+test('node label obstacles follow live movement and shadow changes while retaining and reporting identity conflicts',()=>{
   const h=harness('app.js');installSyntheticHub(h,3,{fixedScreenShadow:true});
   h.run(`syntheticZoom=1;syntheticViewport={minX:0,minY:0,maxX:1000,maxY:700};
     state.positions={'SYN-HUB':{x:200,y:150},'SYN-00000':{x:500,y:150},'SYN-00001':{x:800,y:150}};
@@ -1607,7 +1635,10 @@ test('node label obstacles follow same-zoom live movement and shadow style chang
     const label=labelShapes(state.graphView.nodeItems.get('SYN-HUB'))[0].getCanvasBBox();
     state.graph.updateItem(blocker,{x:200,y:(label.minY+label.maxY)/2});
     refreshGraphRoutesAndLabels();applyGraphLabels()`);
-  assert.equal(text('SYN-HUB'),0,'a neighboring node moved over the label suppresses its actual text at the same zoom');
+  assert.equal(text('SYN-HUB'),1,'a neighboring node cannot remove the actual identity text');
+  assert.equal(h.run('state.graphView.policy.nodePlacements.get("SYN-HUB").conflicted'),true);
+  assert.ok(h.run('state.graphView.policy.conflicts')>0);
+  assertAppliedLabelPlacements(h);
   h.run(`state.graph.updateItem(state.graphView.nodeItems.get('SYN-00001'),{x:800,y:150});
     refreshGraphRoutesAndLabels();applyGraphLabels()`);
   for(const id of ['SYN-HUB','SYN-00000','SYN-00001'])assert.equal(text(id),1,'moving the real blocker away restores ordinary text');
@@ -1900,7 +1931,11 @@ function assertAppliedLabelPlacements(h, { retainAll=false }={}) {
   assert.equal(result.conflicts,result.placements.filter(p=>p.bounds&&p.conflicted).length,'every retained conflict is counted');
   for(const placement of result.placements) {
     assert.ok(placement.bounds,`${placement.kind} ${placement.key} has measured placement geometry`);
-    if(placement.conflicted) assert.ok(retainAll||placement.required,`${placement.key} cannot silently retain an ordinary conflict`);
+    if(placement.conflicted) {
+      assert.ok(retainAll||placement.required||placement.kind==='node',`${placement.key} retains only an admitted identity or explicit override`);
+      if(!retainAll&&!placement.required) assert.ok(boxesIntersect(placement.bounds,{minX:0,minY:0,maxX:1000,maxY:700}),
+        `${placement.key} cannot retain a fully offscreen ordinary identity`);
+    }
     else {
       assert.ok(boxesIntersect(placement.bounds,{minX:0,minY:0,maxX:1000,maxY:700}),
         `${placement.key} intersects the actual viewport`);
@@ -1942,7 +1977,8 @@ test('screen label collisions preserve required focus, explicit all and image ex
     syntheticLabelBounds=()=>({minX:200,minY:200,maxX:300,maxY:240});renderGraph();`);
   const labelCount=()=>h.run('[...state.graph.getNodes(),...state.graph.getEdges()].filter(item=>labelShapes(item).length===1).length');
   const automatic=assertAppliedLabelPlacements(h);
-  assert.equal(automatic.placements.length,1,'coincident nodes retain the highest-priority anchored label in auto mode');
+  assert.equal(automatic.placements.length,3,'coincident nodes keep all identities admitted by small-graph auto mode');
+  assert.ok(automatic.conflicts>0,'overlap is recorded instead of silently deleting names');
   assert.ok(automatic.placements.every(placement=>placement.dx===0&&placement.dy===0),'collisions never move node text away from its bottom anchor');
   assert.equal(labelCount(),automatic.placements.length+2,'both edge labels remain at their own paths despite node collision decisions');
   assert.equal(h.run('state.graphView.policy.nodeIds.has("SYN-HUB")'),true,'main node wins ordinary priority');
