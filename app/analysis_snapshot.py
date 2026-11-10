@@ -13,7 +13,7 @@ from . import db
 
 # Bump when interpretation changes without a source write. Keep the persisted
 # case generation and existing 32-hex wire format; old exports must be refreshed.
-POLICY = "source-evidence-analysis-v4-precise-time-path-principal"
+POLICY = "source-evidence-analysis-v5-source-card-ownership"
 
 
 def invalidate(case_id):

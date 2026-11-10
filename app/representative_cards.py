@@ -54,35 +54,39 @@ def decorate(case_id, rows, *, source_sql, params=None, key="account"):
     candidates = defaultdict(list)
     for item in db.q_raw(query, query_params):
         candidates[item["entity_id"]].append(item)
-    # Not every import builds typed endpoints. Ordinary table sources still
-    # retain the posting's own card; it is a scoped display alias for the same
-    # account, never a new identity. Only entities without a confirmed
-    # endpoint card fall back to it.
+    # Source aliases retain every owner/card even when financial deduplication
+    # shares a flow. Only unambiguous, non-conflicting observations can supply
+    # a temporal fallback; all aliases remain available in scoped details.
     source_cards = {}
-    missing = [entity for entity in ids if entity not in candidates]
-    if missing:
-        fallback = f"with _card_source as materialized ({source_sql})" + """
-            select f.self_account entity_id, cast(f.id as varchar) id,
+    missing = set(ids) - candidates.keys()
+    fallback = f"with _card_source as materialized ({source_sql})" + """, _own_cards as (
+            select l.account entity_id, cast(f.id as varchar) id,
                    coalesce(f.trade_time_utc,f.trade_time) trade_time,
                    f.trade_time_utc is not null zoned, f.self_account, l.own_card card,
-                   list(distinct l.own_card) over (partition by f.self_account) all_cards
+                   l.display_eligible
             from _card_source f
-            join flow_source_cards l on l.case_id=f.case_id and l.flow_id=f.id
-            where f.case_id=? and f.self_account in (select unnest(?::varchar[]))
-              and coalesce(l.own_card,'')<>'' and l.own_card <> f.self_account
-            qualify trade_time is null and max(trade_time) over (partition by entity_id) is null
-                 or trade_time = max(trade_time) over (partition by entity_id)
+            join flow_source_card_aliases l on l.case_id=f.case_id and l.flow_id=f.id
+            where f.case_id=? and l.account in (select unnest(?::varchar[]))
+        ) select *,list(distinct card) over(partition by entity_id) all_cards,
+            display_eligible and (
+                count(distinct zoned) filter(where display_eligible) over(partition by entity_id)>1
+                or trade_time=max(trade_time) filter(where display_eligible) over(partition by entity_id)
+                or trade_time is null and max(trade_time) filter(where display_eligible) over(partition by entity_id) is null
+            ) source_candidate
+            from _own_cards
+            qualify source_candidate or row_number() over(partition by entity_id order by card,id)=1
             order by entity_id, card, id"""
-        if isinstance(params, dict):
-            fallback = fallback.replace(
-                "where f.case_id=? and f.self_account in (select unnest(?::varchar[]))",
-                "where f.case_id=$_own_case_id and f.self_account in (select unnest($_own_ids::varchar[]))")
-            fallback_params = {**params, "_own_case_id": case_id, "_own_ids": missing}
-        else:
-            fallback_params = [*(params or []), case_id, missing]
-        for item in db.q_raw(fallback, fallback_params):
+    if isinstance(params, dict):
+        fallback = fallback.replace(
+            "where f.case_id=? and l.account in (select unnest(?::varchar[]))",
+            "where f.case_id=$_own_case_id and l.account in (select unnest($_own_ids::varchar[]))")
+        fallback_params = {**params, "_own_case_id": case_id, "_own_ids": ids}
+    else:
+        fallback_params = [*(params or []), case_id, ids]
+    for item in db.q_raw(fallback, fallback_params):
+        if item["source_candidate"] and item["entity_id"] in missing:
             candidates[item["entity_id"]].append(item)
-            source_cards.setdefault(item["entity_id"], set()).update(item.get("all_cards") or ())
+        source_cards.setdefault(item["entity_id"], set()).update(item.get("all_cards") or ())
     selected = {}
     tied_owned_ids = {item["id"] for entity, items in candidates.items() if len({item["card"] for item in items}) > 1
                       and all(item["self_account"] == entity and item["trade_time"] is not None for item in items)
@@ -109,7 +113,7 @@ def decorate(case_id, rows, *, source_sql, params=None, key="account"):
         selected[entity] = {"display_account": chosen,
             "display_basis": "tied_transaction_cards" if tied else "transaction_card",
             "display_card_tied": tied,
-            "display_card_candidates": sorted(source_cards.get(entity) or cards),
+            "display_card_candidates": cards,
             "display_card_order": order}
     # Reliable relations were established during the identity replay. The full
     # cards list deliberately retains conflicting declarations for inspection.
@@ -121,7 +125,6 @@ def decorate(case_id, rows, *, source_sql, params=None, key="account"):
         entity = row.get(key)
         if entity in selected:
             row.update(selected[entity])
-            row["cards"] = sorted(set(row.get("cards") or []) | set(selected[entity]["display_card_candidates"]))
         elif entity in details:
             item = details[entity]
             reliable = item.get("reliable_cards", [])
@@ -129,4 +132,10 @@ def decorate(case_id, rows, *, source_sql, params=None, key="account"):
                        display_basis="associated_card" if reliable else "account_number",
                        display_card_tied=False, display_card_candidates=reliable,
                        display_card_order="association" if reliable else "none")
+        if source_cards.get(entity):
+            row["cards"] = sorted(set(row.get("cards") or []) | source_cards[entity])
+            if entity not in selected and row.get("display_basis") in (None, "account_number"):
+                row.update(display_account=row.get("account_number") or entity,
+                           display_basis="conflicting_transaction_cards", display_card_tied=True,
+                           display_card_candidates=sorted(source_cards[entity]), display_card_order="conflict")
     return rows

@@ -20,25 +20,18 @@ with flow_names as (
     join account_ids i on i.case_id=s.case_id and i.account=s.raw_account
     where s.case_id=? and s.account is not null and trim(s.account)<>''
 ), source_cards as (
-    select f.self_account as account, c.own_card as card,
-           coalesce(f.trade_time_utc, f.trade_time) as trade_time
+    select c.account, c.own_card as card
     from effective_visible_flows f
-    join flow_source_cards c on c.case_id=f.case_id and c.flow_id=f.id
-    where f.case_id=? and coalesce(c.own_card,'')<>'' and c.own_card<>f.self_account
-), latest_card as (
-    select account, card from (
-        select account, card,
-               row_number() over (partition by account order by trade_time desc nulls last) rn
-        from source_cards) where rn=1
+    join flow_source_card_aliases c on c.case_id=f.case_id and c.flow_id=f.id
+    where f.case_id=?
 ), eligible_accounts as (
     {source_sql}
 ), metadata as (
-    select a.account, coalesce(nullif(m.name,''), f.name, '') as name, i.id_no, lc.card as source_card
+    select a.account, coalesce(nullif(m.name,''), f.name, '') as name, i.id_no
     from eligible_accounts a
     left join flow_accounts f on f.account=a.account
     left join effective_account_ids i on i.case_id=? and i.account=a.account
     left join effective_main_accounts m on m.case_id=? and m.account=a.account
-    left join latest_card lc on lc.account=a.account
 ), search_fields as (
     select account, account as matched_text, 'account' as matched_field, 0 as field_order
     from metadata
@@ -67,7 +60,7 @@ with flow_names as (
         partition by account order by match_order, field_order, matched_text
     ) as field_rank from matches
 )
-select m.account, m.name, m.id_no, m.source_card, r.matched_field, r.matched_text
+select m.account, m.name, m.id_no, r.matched_field, r.matched_text
 from ranked r join metadata m on m.account=r.account
 where r.field_rank=1
 order by r.match_order, r.field_order, m.account
@@ -98,11 +91,6 @@ def suggest_accounts(case_id, q="", source="flows", page_size=30, offset=0):
         rows = db.q_raw(_CANDIDATES.format(source_sql=source_sql),
                         [cid] * 9 + [keyword] * 3 + [page_size + 1, offset])
         evidence_resolution.decorate_accounts(cid, rows)
-        for row in rows:
-            # The posting card is a display alias; the account stays the key.
-            if not row.get("display_account") and row.get("source_card"):
-                row["display_account"] = row["source_card"]
-            row.pop("source_card", None)
         result["items"] = rows[:page_size]
         result["has_more"] = len(rows) > page_size
         result["next_offset"] = offset + page_size if result["has_more"] else None

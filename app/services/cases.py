@@ -114,6 +114,8 @@ def flows(case_id, account, kw, page, page_size, granularity="events"):
         if account.strip():
             conditions.append("""(payer_account ilike ? or payee_account ilike ? or payer_display_account ilike ? or payee_display_account ilike ? or source_counter_account ilike ? or source_counter_id ilike ?
                 or self_account ilike ? or raw_self_account ilike ?
+                or exists (select 1 from flow_source_card_aliases c where c.case_id=effective_visible_flows.case_id
+                    and c.flow_id=effective_visible_flows.id and c.own_card ilike ?)
                 or exists (select 1 from resolution_entities e,
                     unnest(json_extract_string(e.details_json,'$.cards[*]')) card(value)
                     where e.case_id=effective_visible_flows.case_id
@@ -122,7 +124,7 @@ def flows(case_id, account, kw, page, page_size, granularity="events"):
                 or exists (select 1 from resolution_entities e where e.case_id=effective_visible_flows.case_id
                     and e.entity_id in (effective_visible_flows.payer_account,effective_visible_flows.payee_account,effective_visible_flows.self_account)
                     and e.account_number ilike ?))""")
-            params += [f"%{account.strip()}%"] * 10
+            params += [f"%{account.strip()}%"] * 11
         if kw.strip():
             conditions.append("(summary ilike ? or trade_no ilike ?)")
             params += [f"%{kw.strip()}%"] * 2
