@@ -1,6 +1,7 @@
 """Selected, evidence-bounded economic funds without changing source ledgers.
 
-Callers hold db._lock across selection, revision and projection. SQL inputs are
+Callers hold db._lock or a complete private read snapshot across selection,
+revision and projection. SQL inputs are
 trusted application queries returning original flow columns, including balance;
 they must not contain this module's reserved fact/observation column names.
 Representative IDs only make display stable: they confer no temporal ordering.
@@ -231,7 +232,7 @@ def decode_summary(aggregates):
 
 def summary(source_sql, params=None, *, observations=False, selected=False):
     """Aggregate a single selected case in SQL; return only small currency rows."""
-    with db._lock:
+    with db.read_lock():
         query = (source_summary_query(source_sql, canonical=selected)
                  if observations or selected else summary_query(source_sql))
         return (decode_source_summary if observations or selected else decode_summary)(db.q_raw(query, params))
@@ -253,7 +254,7 @@ def account_summaries(source_sql, params=None, *, observations=False, selected=F
     Grouping flags distinguish an absent key from a genuine null endpoint.
     Aggregation stays in DuckDB; no observation-sized Python list or cache.
     """
-    with db._lock:
+    with db.read_lock():
         keys = ("payer_account", "payee_account")
         groups = ((), ("payer_account",), ("payee_account",), keys)
         query = (source_summary_query(source_sql, keys, rollup_groups=groups, canonical=selected)

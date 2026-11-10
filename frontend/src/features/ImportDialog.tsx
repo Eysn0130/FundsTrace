@@ -248,6 +248,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
       const selected = read();
       const files = Array.isArray(selected) ? selected : await selected;
       if (!valid(token) || !files.length) return;
+      if (!directory && files.length > 1) throw new Error('当前工作台普通导入每次仅支持一个文件。批量独立文件请使用画布工作台的多文件导入；关联资料请选择整个文件夹。');
       if (directory && !client.previewDirectory) throw new Error('当前宿主尚未提供文件夹导入，请选择单个文件或反馈包。');
       const value = directory ? await client.previewDirectory!(files, lifetime.current.signal)
         : await client.preview(files[0], lifetime.current.signal);
@@ -351,10 +352,11 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
         : <div className="import-drop-area" onDragOver={event => { event.preventDefault(); }} onDrop={event => {
           event.preventDefault();
           if (working || activeJob) return;
+          const directory = Array.from(event.dataTransfer.items ?? []).some(item => item.webkitGetAsEntry?.()?.isDirectory);
           const dropped = captureDroppedFiles(event.dataTransfer);
-          void upload(() => dropped.read(lifetime.current.signal), dropped.directory);
+          void upload(() => dropped.read(lifetime.current.signal), directory);
         }}>
-          <label className="file-drop" htmlFor={fileId} aria-busy={working}><span className="upload-symbol">↑</span><strong>{busy ? '正在解析文件…' : '选择 CSV、Excel、ZIP 或 RAR'}</strong><span id={`${fileId}-hint`}>支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP／RAR</span><input id={fileId} aria-label="选择流水文件" aria-describedby={`${fileId}-hint`} type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,.zip,.rar" disabled={working} onChange={event => { const files = Array.from(event.target.files ?? []); void upload(() => files); }} /></label>
+          <label className="file-drop" htmlFor={fileId} aria-busy={working}><span className="upload-symbol">↑</span><strong>{busy ? '正在解析文件…' : '选择 CSV、Excel、ZIP 或 RAR'}</strong><span id={`${fileId}-hint`}>支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP／RAR</span><span id={`${fileId}-boundary`}>普通文件每次选择一个；批量独立文件请使用画布工作台的多文件导入。</span><input id={fileId} aria-label="选择流水文件" aria-describedby={`${fileId}-hint ${fileId}-boundary`} type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,.zip,.rar" disabled={working} onChange={event => { const files = Array.from(event.target.files ?? []); void upload(() => files); }} /></label>
           {client.previewDirectory && <div className="directory-picker"><label className="button secondary" htmlFor={directoryId}>选择整个文件夹<input id={directoryId} aria-label="选择整个文件夹" type="file" multiple ref={element => { element?.setAttribute('webkitdirectory', ''); }} disabled={working} onChange={event => { const files = Array.from(event.target.files ?? []); void upload(() => files, true); }} /></label><p>可将文件夹拖入此处。流水、账户和子账户资料一起导入，保留原始目录关系。</p></div>}
         </div>
       : <>

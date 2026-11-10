@@ -70,6 +70,10 @@ def query_condition(header):
             and not any(unicodedata.category(char) in {"Cc", "Cf"} for char in name))
 
 
+_QUERY_REQUIRED_SIGNATURE = _signature(
+    header for header in _TRANSACTION_QUERY_ONLY if not query_condition(header))
+
+
 def classify(headers, *, query_conditions=False):
     """Return a known table role, or ``None`` for any incomplete/unknown header.
 
@@ -90,8 +94,6 @@ def classify(headers, *, query_conditions=False):
     # labels. All 34 substantive columns, both annotations and their unique
     # positions must still exist; no partial/generic/auxiliary table qualifies.
     annotations = [name for name in names if query_condition(name)]
-    required = _signature(header for header in _TRANSACTION_QUERY_ONLY
-                          if not query_condition(header))
-    if len(annotations) == 2 and signature - set(annotations) == required:
+    if len(annotations) == 2 and signature - set(annotations) == _QUERY_REQUIRED_SIGNATURE:
         return "transaction_query_only"
     return None

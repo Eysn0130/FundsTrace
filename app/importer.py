@@ -659,7 +659,7 @@ def _row_key(r, default_currency=""):
     return key + ("explicit_offset", _tkey(r["trade_time_utc"]), r.get("trade_time_original"), r.get("trade_time_offset")) if r.get("trade_time_utc") is not None else key
 
 
-def _provenance_metadata(provenance, filename, mode, rows):
+def _provenance_metadata(provenance, filename, mode, rows, *, _row_refs=None):
     """Validate trusted parser metadata before any persistent write."""
     source = dict(provenance)
     from . import table_import, table_archive
@@ -714,6 +714,8 @@ def _provenance_metadata(provenance, filename, mode, rows):
             positions.add(position)
         else:
             positions[position] = True
+        if _row_refs is not None:
+            _row_refs.append(row)
     return source
 
 
@@ -725,10 +727,24 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                 standalone_csv_keys=None):
     """去重后分批入库（去重范围为当前案件内），progress_cb(done, total) 汇报进度。
     去重规则：所有导入列完全一致才判为重复——任一列（如余额、摘要、对手）不同均视为不同流水。"""
-    source = _provenance_metadata(provenance, filename, mode, rows) if provenance is not None else None
     from . import table_archive, table_import
     from . import evidence_resolution
     from .import_staging import StagedSequence
+    # Keep canonical objects alive until the unchanged requested rebuild.
+    validated_rows = None
+    if (type(rows) is StagedSequence and type(provenance) is dict
+            and type(standalone_csv_keys) is dict
+            and type(provenance.get("row_kind")) is str and provenance["row_kind"] == table_import.ROW_KIND
+            and type(provenance.get("parser_version")) is str
+            and provenance["parser_version"] in table_archive.SUPPORTED_PROFILES
+            and provenance["parser_version"] not in evidence_resolution.OCCURRENCE_PROFILES):
+        validated_rows = []
+    if provenance is None:
+        source = None
+    elif validated_rows is None:
+        source = _provenance_metadata(provenance, filename, mode, rows)
+    else:
+        source = _provenance_metadata(provenance, filename, mode, rows, _row_refs=validated_rows)
     if isinstance(rows, StagedSequence) and source is not None and source["parser_version"] in evidence_resolution.OCCURRENCE_PROFILES:
         if standalone_csv_keys is not None:
             raise ImportError("证据来源不接受历史CSV替代身份")
@@ -797,12 +813,16 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                     join flows v on v.case_id=r.case_id and v.id=f.flow_id
                     where r.case_id=? and r.disposition in ('imported','duplicate')
                     and s.parser_version in ({supported})
+                    and r.record_key in (select unnest(?::varchar[]))
                     order by case s.parser_version {precedence} else {len(archive_profiles)} end,
                       f.flow_id, r.record_no""")
-                parameters += [*archive_profiles, *table_profiles, *archive_profiles]
+                parameters += [*archive_profiles, *table_profiles]
             else:
                 query += " order by f.flow_id"
             requested = {row["_record_key"]: row for row in rows} if envelope else {}
+            validated_rows = None
+            if envelope:
+                parameters += [list(requested), *archive_profiles]
             reused_ids = set()
             cursor = con.execute(query, parameters)
             while candidates := cursor.fetchmany(1024):

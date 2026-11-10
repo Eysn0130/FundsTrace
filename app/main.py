@@ -318,12 +318,19 @@ def _legacy_import_result(operation, *args):
         raise HTTPException(error.status, error.message) from None
 
 
+def _legacy_preview_error(error):
+    return HTTPException(error.status, error.message, headers={
+        "X-FundsTrace-Import-Error-Code": error.code,
+        "X-FundsTrace-Import-Failure-Kind": getattr(error, "failure_kind", "unknown"),
+    })
+
+
 @app.post("/api/import/directory/preview")
 async def import_directory_preview(files: List[UploadFile] = File(...), case_id: int = Query(...)):
     try:
         return await import_service.upload_directory(case_id, files, surface="legacy")
     except ServiceError as error:
-        raise HTTPException(error.status, error.message) from error
+        raise _legacy_preview_error(error) from None
 
 
 @app.post("/api/import/preview")
@@ -331,7 +338,7 @@ async def import_preview(file: UploadFile = File(...), case_id: Optional[int] = 
     try:
         return await import_service.legacy_upload(file, case_id)
     except ServiceError as error:
-        raise HTTPException(error.status, error.message) from None
+        raise _legacy_preview_error(error) from None
 
 
 @app.post("/api/import/repreview")
@@ -478,22 +485,25 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         time_clause, time_params, time_filter_basis = transaction_time.window(tfrom, tto)
     except (ValueError, TypeError):
         raise HTTPException(422, "时间格式无效，或时间边界混用了来源壁钟与显式偏移") from None
-    if time_filter_basis == "utc" and not db.q_raw(
-            "select 1 from effective_visible_flows as flows where " + " and ".join(conds) + " and trade_time_utc is not null limit 1", params):
-        raise HTTPException(422, {"code": "time_basis_incomparable", "message": "当前范围没有可与UTC窗口比较的显式时区记录"})
-    if time_clause:
-        conds.append(time_clause)
-        params.extend(time_params)
-    where = "where " + " and ".join(conds)
-    # Keep the identity subqueries bound to the case-filtered effective rows.
-    with db._lock:
+    from . import analysis_snapshot
+    with analysis_snapshot.case_read_snapshot(case_id):
+        if time_filter_basis == "utc" and not db.q_raw(
+                "select 1 from effective_visible_flows as flows where " + " and ".join(conds) + " and trade_time_utc is not null limit 1", params):
+            raise HTTPException(422, {"code": "time_basis_incomparable", "message": "当前范围没有可与UTC窗口比较的显式时区记录"})
+        if time_clause:
+            conds.append(time_clause)
+            params.extend(time_params)
+        where = "where " + " and ".join(conds)
+        # Keep identity filters bound to this case and committed snapshot.
         from . import funds_projection
         if granularity not in {"events", "observations"}:
             raise HTTPException(422, "无效的明细粒度")
         source = f"select * from effective_visible_flows as flows {where}"
         prefix = funds_projection.cte(source, include_ids=True)
         relation = "selected_observations" if granularity == "observations" else "ordinary_facts"
-        total = db.q(prefix + f"select count(*) c from {relation}", params)[0]["c"]
+        count_source = f"select case_id,id,amount,currency,balance from ({source}) as visible_source"
+        count_prefix = funds_projection.cte(count_source)
+        total = db.q(count_prefix + f"select count(*) c from {relation}", params)[0]["c"]
         off = (page - 1) * size
         rows = db.q(prefix + f"select * from {relation} order by {transaction_time.sql_order()} limit ? offset ?",
                     params + [size, off])
@@ -511,8 +521,8 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         events = event_resolution.summary(case_id)
         from . import source_ledger
         source_ledger.decorate(case_id, rows)
-    return {"total": total, "page": page, "size": size, "rows": rows, "resolution": resolution,
-            "analysis_revision": revision, "case_event_summary": events, "funds": funds, "time_filter_basis": time_filter_basis, "time_ordering": "within_basis"}
+        return {"total": total, "page": page, "size": size, "rows": rows, "resolution": resolution,
+                "analysis_revision": revision, "case_event_summary": events, "funds": funds, "time_filter_basis": time_filter_basis, "time_ordering": "within_basis"}
 
 
 @app.get("/api/accounts/{account}/profile")
@@ -778,7 +788,8 @@ def unmark_main_account(body: MainAccountIn):
 
 @app.get("/api/graph")
 def graph(case_id: int, canvas_id: int = 0):
-    with db._lock:
+    from . import analysis_snapshot
+    with analysis_snapshot.case_read_snapshot(case_id):
         return _graph(case_id, canvas_id)
 
 
@@ -821,7 +832,8 @@ def _funds_directional(incoming, outgoing):
 @app.post("/api/graph/view")
 def graph_view(body: canvas_investigation.TimeInvestigationIn):
     """Read the active business view; viewport culling is never a scope input."""
-    with db._lock:
+    from . import analysis_snapshot
+    with analysis_snapshot.case_read_snapshot(body.case_id):
         require_case(body.case_id)
         _require_canvas(body.case_id, body.canvas_id)
         return _graph(body.case_id, body.canvas_id, body)

@@ -103,3 +103,20 @@ def test_auxiliary_balances_do_not_make_a_partial_transaction_schema():
 @pytest.mark.parametrize("headers", [[], [""], ["", " ", "\u3000"]])
 def test_empty_header_is_unknown(headers):
     assert classify(headers) is None
+
+
+def test_query_annotation_work_is_bounded_by_each_input_header(monkeypatch):
+    from app import table_source_roles
+    normalize, calls = table_source_roles._normalize, []
+    def observed(header):
+        calls.append(header)
+        return normalize(header)
+    monkeypatch.setattr(table_source_roles, "_normalize", observed)
+    for annotations in [("企业名称(查询条件)", "合成证照(查询条件)"),
+                        ("合成付款名（查询条件）", "合成标识(查询条件)")]:
+        headers = [*annotations, *TRANSACTION_QUERY_ONLY[2:]]
+        start = len(calls)
+        assert classify(headers, query_conditions=True) == "transaction_query_only"
+        assert len(calls) - start <= 2 * len(headers)
+        assert classify(headers) is None
+        assert classify([*headers, "额外来源字段"], query_conditions=True) is None
