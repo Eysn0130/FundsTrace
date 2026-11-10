@@ -160,7 +160,7 @@ def test_ready_v6_retains_xls_attachment_and_single_xls_uses_guarded_profile(cli
     single = make_case("Synthetic unchanged single XLS")
     response = client.post(f"/api/v1/cases/{single}/imports/preview", files={"file": ("synthetic.xls", data)})
     assert response.status_code == 200, response.text
-    assert response.json()["table_summary"]["profile"] == table_import.SOURCE_OBSERVATION_XLS_PROFILE == "funds-trace-table-v67"
+    assert response.json()["table_summary"]["profile"] == table_import.VOUCHER_REFERENCE_XLS_PROFILE == "funds-trace-table-v70"
     assert complete(client, single, response.json())["stage"] == "done"
     assert event_resolution.summary(single) is None
     with pytest.raises(table_import.TableImportError):

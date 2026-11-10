@@ -157,7 +157,7 @@ def test_mixed_parser_operations_do_not_change_profile_or_support(client, databa
     # Different original bytes may coexist under both profile contracts;
     # the existing same-original profile-switch rejection stays in force.
     before = database.q_raw('select source_id,flow_id from flow_sources where case_id=? order by all', [cid])
-    assert database.q_raw('select parser_version from import_sources where source_id=?', [ordinary['source_id']]) == [{'parser_version': 'funds-trace-table-v66'}]
+    assert database.q_raw('select parser_version from import_sources where source_id=?', [ordinary['source_id']]) == [{'parser_version': 'funds-trace-table-v69'}]
     removed, kept = (evidence, ordinary) if evidence_first else (ordinary, evidence)
     expected = {r['flow_id'] for r in before if r['source_id'] == kept['source_id']}
     assert client.delete(f"/api/batches/{removed['batch_id']}", params={'case_id': cid}).status_code == 200

@@ -449,6 +449,18 @@
             "title": "Mode",
             "type": "string"
           },
+          "reference_policy": {
+            "anyOf": [
+              {
+                "const": "transaction-reference-v1",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Policy"
+          },
           "self_accounts": {
             "items": {
               "type": "string"
@@ -1718,6 +1730,23 @@
             "title": "Preview",
             "type": "array"
           },
+          "reference_policy": {
+            "anyOf": [
+              {
+                "const": "transaction-reference-v1",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Policy"
+          },
+          "reference_policy_available": {
+            "default": false,
+            "title": "Reference Policy Available",
+            "type": "boolean"
+          },
           "resolution": {
             "anyOf": [
               {
@@ -2424,6 +2453,18 @@
             ],
             "title": "Mode",
             "type": "string"
+          },
+          "reference_policy": {
+            "anyOf": [
+              {
+                "const": "transaction-reference-v1",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Policy"
           }
         },
         "required": [

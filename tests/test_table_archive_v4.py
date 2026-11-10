@@ -111,7 +111,7 @@ def test_archive_member_optins_do_not_enter_standalone_or_advanced_inheritance()
             table_import.QUERY_OWNER_PROFILES, table_import.REGION_HEADER_PROFILES,
             table_import.REORDERED_TIME_PROFILES, table_import.CURRENCY_REGION_PROFILES):
         assert V4 not in collection
-    assert table_import.PROFILE == "funds-trace-table-v66"
+    assert table_import.PROFILE == "funds-trace-table-v69"
     assert table_import.XLS_PROFILE == "funds-trace-table-v18"
 
 

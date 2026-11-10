@@ -92,7 +92,7 @@ def test_fresh_single_file_contract_selects_current_profile_once_and_confirms_ev
     response = upload(client, cid, content, suffix)
     assert response.status_code == 200, response.text
     view = response.json()
-    assert view["table_summary"]["profile"] == table_import.SOURCE_OBSERVATION_EVIDENCE_PROFILE
+    assert view["table_summary"]["profile"] == table_import.VOUCHER_REFERENCE_EVIDENCE_PROFILE
     assert reads == [reader_name], "Profile admission must reuse the one decoded source"
     assert import_preview_cache._slot is not None
     if not reuse_preview:
@@ -112,7 +112,7 @@ def test_fresh_plain_table_with_ledger_fields_keeps_current_ordinary_profile(cli
     response = upload(client, cid, content, suffix)
     assert response.status_code == 200, response.text
     view = response.json()
-    assert view["table_summary"]["profile"] == table_import.SOURCE_OBSERVATION_PROFILE
+    assert view["table_summary"]["profile"] == table_import.VOUCHER_REFERENCE_PROFILE
     assert complete(client, cid, view)["stage"] == "done"
     assert event_resolution.summary(cid) is None
     assert all(event_resolution.DETAIL_FIELD not in notes for notes in source_notes(database, cid))
@@ -136,7 +136,7 @@ def test_contract_words_only_admit_unique_complete_real_headers(client, make_cas
         values = matrix(rows)
     response = upload(client, cid, payload([("Not a contract", values)], ".csv"), ".csv")
     assert response.status_code == 200, response.text
-    assert response.json()["table_summary"]["profile"] == table_import.SOURCE_OBSERVATION_PROFILE
+    assert response.json()["table_summary"]["profile"] == table_import.VOUCHER_REFERENCE_PROFILE
 
 
 @pytest.mark.parametrize("layout", ["later_region", "later_sheet"])
@@ -152,7 +152,7 @@ def test_later_real_contract_selects_one_profile_before_all_rows(client, databas
     response = upload(client, cid, payload(sheets, suffix), suffix)
     assert response.status_code == 200, response.text
     view = response.json()
-    assert view["table_summary"]["profile"] == table_import.SOURCE_OBSERVATION_EVIDENCE_PROFILE
+    assert view["table_summary"]["profile"] == table_import.VOUCHER_REFERENCE_EVIDENCE_PROFILE
     assert complete(client, cid, view)["stage"] == "done"
     notes = source_notes(database, cid)
     financial = [note for note in notes if "flow_sha256" in note]
@@ -208,7 +208,7 @@ def test_explicit_event_columns_do_not_override_current_xls_profile(client, data
     response = upload(client, cid, content, ".xls")
     assert response.status_code == 200, response.text
     view = response.json()
-    assert view["table_summary"]["profile"] == table_import.SOURCE_OBSERVATION_XLS_PROFILE
+    assert view["table_summary"]["profile"] == table_import.VOUCHER_REFERENCE_XLS_PROFILE
     assert complete(client, cid, view)["stage"] == "done"
     assert event_resolution.summary(cid) is None
     assert all(event_resolution.DETAIL_FIELD not in notes for notes in source_notes(database, cid))

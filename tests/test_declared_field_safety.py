@@ -69,7 +69,7 @@ def test_declaration_profiles_preserve_historical_replay_and_supported_clock():
     historical = table_import.parse(unknown, suffix=".csv", profile=table_import.CURRENCY_REGION_PROFILE)
     assert historical["rows"][0]["trade_time"].hour == 0
     current = table_import.parse(unknown, suffix=".csv")
-    assert current["profile"] == table_import.SOURCE_OBSERVATION_PROFILE and current["rows"] == []
+    assert current["profile"] == table_import.VOUCHER_REFERENCE_PROFILE and current["rows"] == []
     known = encoded(["交易日期(YYYYMMDD)", "交易时刻(HHmmss)", "本方账号", "对方账号", "收付标志", "交易金额"],
                     ["20260101", "100000", "SYN-A", "SYN-B", "出", "12.34"])
     assert table_import.parse(known, suffix=".csv")["rows"][0]["trade_time"].hour == 10

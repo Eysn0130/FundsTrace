@@ -6,6 +6,7 @@ fail closed. No plan is loaded or replayed after process restart.
 """
 import atexit
 import hashlib
+import json
 import os
 import stat
 import threading
@@ -77,7 +78,8 @@ def stamp(parsed):
 def key(session, profile, overrides):
     return tuple(session.get(field) for field in (
         "import_id", "case_id", "surface", "filename", "suffix", "sha256", "size_bytes",
-        "mode", "mapping_json", "columns_json")) + (profile, overrides)
+        "mode", "mapping_json", "columns_json")) + (profile, overrides,
+            json.loads(session.get("request_json") or "{}").get("reference_policy"))
 
 
 def discard(import_id=None):
