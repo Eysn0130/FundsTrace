@@ -133,7 +133,7 @@ async function assertSources(ready, dataDir, stored) {
     assert.equal(digest(await fs.readFile(file)), entry.sha256);
   }
 }
-function assertOriginalSnapshot(current, original, allowCoverageAddition = false) {
+function assertOriginalSnapshot(current, original, allowCoverageAddition = false, upgradedRevisions) {
   let comparable = current;
   if (allowCoverageAddition === true && !Object.hasOwn(original.stats, 'import_coverage')) {
     assert.ok(Object.hasOwn(current.stats, 'import_coverage'));
@@ -142,6 +142,16 @@ function assertOriginalSnapshot(current, original, allowCoverageAddition = false
       financial_interpretation_complete: true });
     comparable = { ...current, stats: { ...current.stats } };
     delete comparable.stats.import_coverage;
+  }
+  if (allowCoverageAddition === true && upgradedRevisions && original.stats.analysis_revision !== undefined) {
+    // A new analysis policy invalidates cached revisions without changing facts.
+    // Freeze each case's first upgraded revision and require it across all reopens.
+    assert.match(original.stats.analysis_revision, /^[0-9a-f]{32}$/);
+    assert.match(current.stats.analysis_revision, /^[0-9a-f]{32}$/);
+    const key = String(original.caseId);
+    if (!upgradedRevisions.has(key)) upgradedRevisions.set(key, current.stats.analysis_revision);
+    assert.equal(current.stats.analysis_revision, upgradedRevisions.get(key));
+    comparable = { ...comparable, stats: { ...comparable.stats, analysis_revision: original.stats.analysis_revision } };
   }
   assert.deepEqual(comparable, original);
 }
@@ -162,7 +172,8 @@ async function verifyOriginal(ready, stored, dataDir, allowCoverageAddition = fa
           totals: original.stats.amount_totals.map(({ currency, amount }) => ({ currency, amount: null, lower: '0.00', upper: amount })) }
       } };
     }
-    assertOriginalSnapshot(current, expected, allowCoverageAddition);
+    if (allowCoverageAddition) stored.upgradedAnalysisRevisions ||= new Map();
+    assertOriginalSnapshot(current, expected, allowCoverageAddition, stored.upgradedAnalysisRevisions);
   }
   const empty = await json(ready, `/api/v1/cases/${stored.emptyCaseId}/stats`); assert.equal(empty.flows, 0);
   await assertSources(ready, dataDir, stored);

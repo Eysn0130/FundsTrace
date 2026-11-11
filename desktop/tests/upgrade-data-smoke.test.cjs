@@ -82,6 +82,32 @@ test('explicit upgrade accepts only the exact new coverage and never modifies ei
   assert.deepEqual(old, oldBefore); assert.deepEqual(current, currentBefore);
 });
 
+test('an explicit policy upgrade freezes each new analysis revision while preserving every fact', () => {
+  const old = upgradedSnapshot(); old.stats.analysis_revision = 'a'.repeat(32);
+  const current = structuredClone(old); current.stats.analysis_revision = 'b'.repeat(32);
+  const before = structuredClone(current), revisions = new Map();
+  assert.throws(() => assertOriginalSnapshot(current, old, true));
+  assertOriginalSnapshot(current, old, true, revisions);
+  assert.equal(revisions.get(old.caseId), 'b'.repeat(32));
+  assertOriginalSnapshot(structuredClone(current), old, true, revisions);
+  for (const mutate of [
+    value => { value.stats.analysis_revision = 'c'.repeat(32); },
+    value => { value.stats.analysis_revision = 'invalid'; },
+    value => { value.rows[0].amount = '0.00'; },
+    value => { value.canvases[0].trackedIds = []; },
+    value => { value.stats.flows++; },
+  ]) {
+    const changed = structuredClone(current); mutate(changed);
+    assert.throws(() => assertOriginalSnapshot(changed, old, true, revisions));
+  }
+  const otherOld = structuredClone(old); otherOld.caseId = '3';
+  const other = structuredClone(otherOld); other.stats.analysis_revision = 'c'.repeat(32);
+  assertOriginalSnapshot(other, otherOld, true, revisions);
+  assert.equal(revisions.get('3'), 'c'.repeat(32));
+  assert.deepEqual(current, before);
+  assert.equal(old.stats.analysis_revision, 'a'.repeat(32));
+});
+
 for (const [name, change] of [
   ['missing', value => { delete value.stats.import_coverage; }],
   ['null', value => { value.stats.import_coverage = null; }],
