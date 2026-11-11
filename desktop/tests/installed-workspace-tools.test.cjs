@@ -21,8 +21,8 @@ function workspace({collapsed=false,slotLeft=56,width=1024,scale=1,scrolling=fal
       if(!this.scrollLocked&&!(this.restoreLocked&&this._scrollLeft>0&&left===0))this._scrollLeft=Math.max(0,Math.min(left,this.scrollWidth-this.clientWidth));}});
     nodes.set(id,value);if(parent?.children)parent.children.push(value);return value;
   };
-  const slotWidth=width-slotLeft,narrow=slotWidth<1200,stacked=slotWidth<720,headerHeight=stacked?56:34,
-    height=collapsed?(stacked?99:77):(stacked?129:narrow?107:127);
+  const slotWidth=width-slotLeft,narrow=slotWidth<1200,stacked=slotWidth<720,headerHeight=stacked?72:44,
+    height=collapsed?(stacked?115:87):(stacked?145:narrow?117:137);
   const slot=node('graphPage',box(slotLeft,0,slotWidth,688));
   const toolbar=node('editorToolbar',box(slotLeft,0,slotWidth*scale,height*scale),slot);
   toolbar.clientWidth=slotWidth;toolbar.style.height=String(height);toolbar.attributes={'data-ribbon-layout':stacked?'stacked':narrow?'narrow':'wide'};
@@ -55,7 +55,7 @@ function workspace({collapsed=false,slotLeft=56,width=1024,scale=1,scrolling=fal
   if(scrolling){const bar=collapsed?compact:panel;bar.scrollWidth=slotWidth+200;bar.clientHeight-=8;
     node('farAction',box(slotLeft+slotWidth+120,headerHeight+4,60,28),bar,true);}
   const table=node('flowTableScroll',box(slotLeft,250,560,400));table.style.overflowX='auto';table.tabIndex=0;
-  const document={tableColumns:7,duplicateScrollControls:[],querySelector:selector=>({'#editorToolbar':toolbar,'#editorToolbar .ribbon-tabbar':header,
+  const document={tableColumns:7,duplicateScrollControls:[node('flowHorizontalScroll',box(slotLeft,650,560,18))],querySelector:selector=>({'#editorToolbar':toolbar,'#editorToolbar .ribbon-tabbar':header,
     '#ribbonCompact':compact,'#flowTableScroll':table,'#canvasActions':menu}[selector]||null),
     querySelectorAll(selector){return {'#editorToolbar .ribbon-panel:not([hidden])':collapsed?[]:[panel],
       '#flowTable thead th':Array(this.tableColumns).fill({}),'.flow-horizontal-scroll':this.duplicateScrollControls}[selector]||[];},
@@ -73,9 +73,9 @@ async function toolsFixture(options) {
 }
 
 test('installed projection keeps full-size controls at both three-layout boundaries without legacy topbar scaling',async()=>{
-  const cases=[{slot:719,layout:'stacked',expanded:129,collapsed:99},
-    {slot:720,layout:'narrow',expanded:107,collapsed:77},{slot:817,layout:'narrow',expanded:107,collapsed:77},
-    {slot:1199,layout:'narrow',expanded:107,collapsed:77},{slot:1200,layout:'wide',expanded:127,collapsed:77}];
+  const cases=[{slot:719,layout:'stacked',expanded:145,collapsed:115},
+    {slot:720,layout:'narrow',expanded:117,collapsed:87},{slot:817,layout:'narrow',expanded:117,collapsed:87},
+    {slot:1199,layout:'narrow',expanded:117,collapsed:87},{slot:1200,layout:'wide',expanded:137,collapsed:87}];
   for(const expected of cases)for(const collapsed of [false,true]) {
     const fixture=await toolsFixture({width:expected.slot+56,collapsed}),value=fixture.read();
     assert.equal(value.layout,expected.layout);assert.equal(value.cssHeight,collapsed?expected.collapsed:expected.expanded);
@@ -154,11 +154,12 @@ test('row overflow, persistent commands, management fallback and the seven-colum
   assert.throws(()=>direct.check(direct.read()),/WORKSPACE_CANVAS_DIRECT_CONTROLS/);
   const menu=await toolsFixture();menu.nodes.delete('btnCanvasMenuClone');
   assert.throws(()=>menu.check(menu.read()),/WORKSPACE_CANVAS_MENU_COMMANDS/);
-  for(const fault of ['focus','columns','duplicate']) {
+  for(const fault of ['focus','columns','duplicate','missing-scroll']) {
     const fixture=await toolsFixture();
     if(fault==='focus')fixture.nodes.get('flowTableScroll').tabIndex=-1;
     if(fault==='columns')fixture.document.tableColumns=6;
     if(fault==='duplicate')fixture.document.duplicateScrollControls.push(fixture.nodes.get('flowTableScroll'));
+    if(fault==='missing-scroll')fixture.document.duplicateScrollControls=[];
     assert.throws(()=>fixture.check(fixture.read()),{code:'ERR_ASSERTION'});
   }
 });
@@ -232,7 +233,7 @@ test('inspection waits for settled height and unscaled slot width without waitin
     vm.runInContext(`${source.slice(start,end)};globalThis.inspect=inspect;`,context);
     if(clipping)await assert.rejects(context.inspect('synthetic',{tab:'common',collapsed:false}),/WORKSPACE_TOOLBAR_CLIPPED/);
     else await context.inspect('synthetic',{tab:'common',collapsed:false});
-    assert.equal(reads,2);assert.equal(samples.length,1);assert.equal(samples[0].cssHeight,107);
+    assert.equal(reads,2);assert.equal(samples.length,1);assert.equal(samples[0].cssHeight,117);
   }
 });
 

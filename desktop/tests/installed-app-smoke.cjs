@@ -282,7 +282,7 @@ function assertWorkspaceTools(value,{tab,collapsed}) {
     &&Math.abs(r.left-s.left)<=1&&Math.abs(r.right-s.right)<=1,'WORKSPACE_TOOLBAR_SLOT_CLIPPED');
   assert.ok(value.scale===1&&value.logicalWidth===value.slotClientWidth&&Math.abs(r.width-value.logicalWidth)<=1&&Math.abs(r.height-value.cssHeight)<=1,'WORKSPACE_TOOLBAR_SCALE');
   assert.equal(value.layout,stacked?'stacked':narrow?'narrow':'wide','WORKSPACE_TOOLBAR_LAYOUT');
-  assert.ok(Math.abs(value.cssHeight-(collapsed?(stacked?99:77):(stacked?129:narrow?107:127)))<.05,'WORKSPACE_TOOLBAR_HEIGHT');
+  assert.ok(Math.abs(value.cssHeight-(collapsed?(stacked?115:87):(stacked?145:narrow?117:137)))<.05,'WORKSPACE_TOOLBAR_HEIGHT');
   assert.equal(value.collapsed,collapsed);assert.equal(value.compactVisible,collapsed);
   assert.deepEqual(value.panels,collapsed?[]:[`ribbonPanel-${tab}`]);
   assert.deepEqual(value.bars.map(bar=>bar.id),['ribbon-tabbar',collapsed?'ribbonCompact':`ribbonPanel-${tab}`]);
@@ -296,7 +296,7 @@ function assertWorkspaceTools(value,{tab,collapsed}) {
   assert.equal(value.canvasMenuCommandsPresent,true,'WORKSPACE_CANVAS_MENU_COMMANDS');
   if(value.action){assert.equal(value.action.direction,'column');assert.equal(value.action.font,12);assert.ok(Math.abs(value.action.icon-(narrow?22:24))<.05);}
   assert.deepEqual(value.table,{columns:7,overflow:'auto',focusable:true});
-  assert.equal(value.duplicateScrollControls,0);
+  assert.equal(value.duplicateScrollControls,1,'WORKSPACE_TABLE_HORIZONTAL_CONTROL');
 }
 function installWorkspaceGraphEventObserver(key) {
   let api=null;
@@ -1041,7 +1041,7 @@ async function restorePresentationPreferences(snapshot) {
           value=await evaluate(`(${readWorkspaceTools.toString()})()`);
           return value.collapsed===expected.collapsed&&value.compactVisible===expected.collapsed
             &&value.panels.join(',')===(expected.collapsed?'':`ribbonPanel-${expected.tab}`)
-            &&Math.abs(value.cssHeight-(expected.collapsed?(value.slotClientWidth<720?99:77):(value.slotClientWidth<720?129:value.slotClientWidth<1200?107:127)))<.05
+            &&Math.abs(value.cssHeight-(expected.collapsed?(value.slotClientWidth<720?115:87):(value.slotClientWidth<720?145:value.slotClientWidth<1200?117:137)))<.05
             &&value.slotClientWidth>0&&value.logicalWidth===value.slotClientWidth
             &&value.layout===(value.slotClientWidth<720?'stacked':value.slotClientWidth<1200?'narrow':'wide')&&value.scale===1;
         },5000);
