@@ -440,9 +440,9 @@
     }
     if (!locate || open) return;
     const locator = window.FundsGraphLocator;
-    const accounts = [...new Set([row.payer_account, row.payee_account].filter(Boolean))]
-      .filter(account => locator?.availability?.(account)?.visible);
-    if (accounts.length) void locator.previewFields({ exactAccount: accounts[0], exactCounterparty: accounts[1] });
+    const binding = locator?.capture?.();
+    void locator?.previewFields?.({ exactAccount: row.payer_account, exactCounterparty: row.payee_account },
+      { binding, flowId: id(row.id), quiet: true });
   }
   function bindFullValues() {
     const viewport = $('#flowTableScroll'), panel = document.createElement('div'), text = document.createElement('pre'), copy = document.createElement('button');

@@ -1319,3 +1319,15 @@ Current-run browser evidence is in `minimap-smooth-navigation/merge-review/`. Ch
 5. **Collapse/restore — passed.** The52-frame sequence covers closing and reopening. At closure, expanded=false, aria-hidden=true, map tabindex=-1 and navigation=false immediately; the final expanded map is usable without reviving the previous movement. Existing keyboard help and reduced-motion behavior remain intact; no screen-reader acceptance is inferred from visual evidence.
 
 Final local source checks: geometry/navigation/camera/legacy integration274/274 passed; resource/shell Python9/9 passed with the existing Starlette/httpx deprecation warning; JavaScript syntax and whitespace checks passed. The required PR workflow supplies complete Python/G6, contract and vendor checks for its exact candidate; its results and final merge identity are recorded on that PR. No installer, tag, release, download feed or production data is changed.
+
+## 2026-11-11 · 流水行定位的标签同步与短暂强调
+
+基于 main `ab8db088` 的隔离分支，使用七节点／六笔 hub 合成预览复现。上下分栏中先定位流水 6，再切到流水 5：相机已把“合成节点 4”带进画布，标签策略仍等待结束回调。相机现在先同步视口裁剪、标签和选择层，再绘制该帧；同一公共行为回归在旧实现失败、修复后通过，包含减少动态效果的即时定位路径。
+
+- **标签复现与复验。** CSS 视口均为 700×947，每次读取 48 个 rAF 样本。按节点中心距上下边各留 20／50px 的可见条件，旧实现有 30 个样本节点 4 已入场而文字不存在，新实现为 0。两次画布分别高 430／423px，均覆盖该节点由完全离场到入场；这是渲染状态的功能复验，不作为同几何条件的速度或逐像素对比。
+- **行与图对应。** 到达后两个端点和精确流水 ID 对应的实际曲线路径轻亮一次，650ms 清除。快速点 6→5→6 仅留下 6 的两个细环及一条线；自身关系文本处保留空隙。减少动态效果时为静态描边；原生滚轮可直接接管并清除反馈。切换期间完整流水、追踪成员、节点位置、折点、标签比例、presentation、图选择及历史快照相等。异步过期、缺失关系、重建和相机变动另有行为回归。
+- **有限的大图对照。** 同 seed 的 1000 节点／999 关系，双方几何 SHA-256 相同、CSS 1561×878、画布 1505×388、起始 zoom 约 0.061983。三对串行定位观察的旧实现结束耗时为 635.6／594.0／574.4ms，候选为 524.2／478.9／430.6ms；未出现超时或本组测得的耗时回退。最大 rAF 间隔仍达约 114ms，不能据此宣称持续流畅、60 FPS 或普遍性能提升。
+
+实际浏览器使用独立临时库，未连接截图中的运行实例。浏览器尺寸和媒体模拟均已复原，大图预览已关闭。[实际强调截图](docs/media/row-canvas-focus/row-pulse.png)来自最终资源版本；[验证记录](docs/media/row-canvas-focus/verification.json)含采样、输入及资源指纹。截图只展示瞬时外观，动画时序另由 rAF 状态读取和确定性回归支持。
+
+最终定向检查：`pytest tests/test_graph_interaction.py tests/test_workspace_camera.py tests/test_table_workspace.py tests/test_graph_location.py tests/test_graph_viewport.py tests/test_graph_label_collision.py tests/test_graph_view_export.py tests/test_desktop_resources.py -q --tb=short`，**68 passed in 26.05s**，一个既有 Starlette/httpx 弃用警告。JavaScript 语法与 diff 空白检查通过。无 API、文件格式、G6 vendor 或依赖改动；这是源码 UI 修复，不是新的安装包、官网发布或 Windows 原生 GUI／DPI 验收。

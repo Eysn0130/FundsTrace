@@ -371,6 +371,15 @@ test('focus pans smoothly to the unoccluded local center with exact completion a
   h.api.resize(); near(h.screen(point.x, point.y).x, 740);
 });
 
+for (const reduced of [false, true]) test(`focus synchronizes frame contents before painting (reduced motion: ${reduced})`, async () => {
+  const h=focusHarness(),events=[];h.media.matches=reduced;
+  h.graph.paint=()=>events.push('paint');
+  const pending=h.api.focus({x:1400,y:900},{onFrame:()=>events.push('frame')});
+  if(!reduced){h.tick(0);h.tick(160);h.tick(320)}
+  assert.equal((await pending).ok,true);
+  assert.deepEqual(events,reduced?['frame','paint']:['frame','paint','frame','paint','frame','paint']);
+});
+
 test('focus keeps the node center clear of a top menu and minimap while reserving asymmetric text', async () => {
   const h = focusHarness({ width: 1000, height: 700 });
   const point = { x: 300, y: 100 }, obstacles = [

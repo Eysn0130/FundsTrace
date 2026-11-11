@@ -866,6 +866,11 @@ html[data-ft-theme="light"] {
 .graph-selection-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 2; }
 .graph-selection-halo { position: absolute; transform: translate(-50%, -50%); pointer-events: none; }
 .graph-locate-layer { z-index: 3; }
+.graph-flow-layer { color: var(--graph-selection); animation: graph-flow-emphasis 650ms ease-out both; }
+.graph-flow-layer > svg { position: absolute; inset: 0; overflow: hidden; }
+.graph-flow-node { border-color: currentColor !important; }
+@keyframes graph-flow-emphasis { 0% { opacity: 0; } 18%, 32% { opacity: .75; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .graph-flow-layer { animation: none; opacity: .6; } }
 .graph-locate-arrival { border-color: var(--focus-ring) !important; animation: graph-locate-arrival 600ms ease-out 2; }
 @keyframes graph-locate-arrival { from { transform: scale(1); opacity: 1; } to { transform: scale(1.22); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .graph-locate-arrival { animation: none; opacity: .85; } }

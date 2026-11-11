@@ -876,7 +876,7 @@ function graphFocusObstacles() {
   });
 }
 function captureGraphLocation() {
-  // Capture is called only for explicit account searches. Claim intent before
+  // Capture is called only for an explicit search or flow-row focus. Claim intent before
   // the request yields so an old animation/default Fit cannot outrank it.
   state.graphCamera?.cancelFocus?.('search');
   clearGraphLocateFeedback();
@@ -888,21 +888,69 @@ function clearGraphLocateFeedback() {
   clearTimeout(graphLocateFeedback.timer);
   graphLocateFeedback.layer.remove(); graphLocateFeedback = null;
 }
-function showGraphLocateFeedback(item) {
+function graphFlowItems(flowId) {
+  const graph = state.graph, id = String(flowId ?? '');
+  const edges = id ? (graph?.getEdges?.() || []).filter(item => {
+    const model = item.getModel();
+    return (model.data?.ids ?? model.ids ?? []).some(value => String(value) === id);
+  }) : [];
+  const accounts = new Set(edges.flatMap(item => [item.getModel().source, item.getModel().target]));
+  return { edges, nodes: [...accounts].filter(account => graphAccountAvailability(account).visible).map(account => graph.findById(account)) };
+}
+function showGraphLocateFeedback(items, { flowId } = {}) {
   clearGraphLocateFeedback();
-  const graph = state.graph, container = $('#graphContainer'), model = item?.getModel?.();
-  if (!model || !container?.appendChild || graph?.findById?.(model.id) !== item) return;
-  const point = graph.getCanvasByPoint(model.x, model.y), zoom = graph.getZoom?.() || 1;
-  const raw = Array.isArray(model.size) ? model.size : [model.size || 32, model.size || 32];
+  const graph = state.graph, container = $('#graphContainer'), flow = flowId != null;
+  const targets = (Array.isArray(items) ? items : [items]).filter(item => item?.getModel?.() && graph?.findById?.(item.getModel().id) === item);
+  if (!targets.length || !container?.appendChild) return;
+  const zoom = graph.getZoom?.() || 1;
   const layer = document.createElement('div'); layer.className = 'graph-selection-layer graph-locate-layer';
   layer.setAttribute('aria-hidden', 'true');
-  const halo = document.createElement('div'); halo.className = 'graph-selection-halo';
-  Object.assign(halo.style, { left: `${point.x}px`, top: `${point.y}px`,
-    width: `${Math.max(24, (raw[0] || 32) * zoom + 16)}px`, height: `${Math.max(24, (raw[1] || raw[0] || 32) * zoom + 16)}px` });
-  const ring = document.createElement('div'); ring.className = 'graph-selection-ring graph-locate-arrival';
-  halo.appendChild(ring); layer.appendChild(halo); container.appendChild(layer);
+  if (flow) {
+    layer.classList.add('graph-flow-layer'); layer.dataset.flowId = String(flowId);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', `0 0 ${container.clientWidth} ${container.clientHeight}`);
+    svg.setAttribute('width', '100%'); svg.setAttribute('height', '100%');
+    const defs = document.createElementNS(svg.namespaceURI, 'defs'), mask = document.createElementNS(svg.namespaceURI, 'mask');
+    mask.id = 'graph-flow-label-gap'; mask.setAttribute('maskUnits', 'userSpaceOnUse');
+    const rect = (box, fill) => {
+      const node = document.createElementNS(svg.namespaceURI, 'rect');
+      for (const [key, value] of Object.entries({ x: box.minX, y: box.minY, width: box.maxX - box.minX, height: box.maxY - box.minY, fill })) node.setAttribute(key, String(value));
+      mask.appendChild(node);
+    };
+    rect({ minX: 0, minY: 0, maxX: container.clientWidth, maxY: container.clientHeight }, 'white');
+    defs.appendChild(mask); svg.appendChild(defs);
+    const paths = document.createElementNS(svg.namespaceURI, 'g'); paths.setAttribute('mask', 'url(#graph-flow-label-gap)');
+    for (const item of graphFlowItems(flowId).edges) {
+      if (item.getContainer().get('visible') === false) continue;
+      const key = item.getKeyShape(), path = key.attr('path'), matrix = key.getTotalMatrix() || [1,0,0,0,1,0,0,0,1];
+      if (!path || matrix.length !== 9 || !matrix.every(Number.isFinite)) continue;
+      const line = document.createElementNS(svg.namespaceURI, 'path');
+      line.setAttribute('d', Array.isArray(path) ? path.map(segment => segment.join(' ')).join(' ') : path);
+      line.setAttribute('transform', `matrix(${[matrix[0],matrix[1],matrix[3],matrix[4],matrix[6],matrix[7]].join(' ')})`);
+      line.setAttribute('fill', 'none'); line.setAttribute('stroke', 'currentColor'); line.setAttribute('stroke-width', '2.5');
+      line.setAttribute('vector-effect', 'non-scaling-stroke'); line.setAttribute('stroke-linecap', 'round'); paths.appendChild(line);
+      for (const shape of item.getContainer().get('children')) {
+        if (shape.get('type') !== 'text' || shape.get('visible') === false) continue;
+        const box = shape.getCanvasBBox();
+        if (box && [box.minX,box.minY,box.maxX,box.maxY].every(Number.isFinite)) rect({ minX: box.minX - 3, minY: box.minY - 3, maxX: box.maxX + 3, maxY: box.maxY + 3 }, 'black');
+      }
+    }
+    svg.appendChild(paths); layer.appendChild(svg);
+  }
+  for (const item of targets) {
+    const model = item.getModel(), box = flow ? FundsGraphLabelGeometry.nodeBodyBounds(item) : null;
+    const point = box ? { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 } : graph.getCanvasByPoint(model.x, model.y);
+    const raw = Array.isArray(model.size) ? model.size : [model.size || 32, model.size || 32];
+    const halo = document.createElement('div'); halo.className = 'graph-selection-halo';
+    Object.assign(halo.style, { left: `${point.x}px`, top: `${point.y}px`,
+      width: `${flow && box ? box.maxX - box.minX + 8 : Math.max(24, (raw[0] || 32) * zoom + 16)}px`,
+      height: `${flow && box ? box.maxY - box.minY + 8 : Math.max(24, (raw[1] || raw[0] || 32) * zoom + 16)}px` });
+    const ring = document.createElement('div'); ring.className = 'graph-selection-ring ' + (flow ? 'graph-flow-node' : 'graph-locate-arrival');
+    halo.appendChild(ring); layer.appendChild(halo);
+  }
+  container.appendChild(layer);
   const feedback = { layer, timer: null }; graphLocateFeedback = feedback;
-  feedback.timer = setTimeout(() => { if (graphLocateFeedback === feedback) clearGraphLocateFeedback(); }, 1250);
+  feedback.timer = setTimeout(() => { if (graphLocateFeedback === feedback) clearGraphLocateFeedback(); }, flow ? 650 : 1250);
 }
 function currentGraphLocation(binding, camera = true) {
   return !!binding && isCurrentCase(binding.context) && binding.graph === state.graph && binding.view === state.graphView
@@ -922,7 +970,7 @@ function graphAccountAvailability(account) {
   const visible = tracked && !!state.graph?.findById?.(id) && (!state.graphView.index || state.graphView.index.nodeIds.has(id));
   return { visible, tracked, reason: visible ? '' : tracked ? '该账户不在当前显示范围；可调整邻域、关系筛选或账户显示条件' : '该账户尚未上图，请先追踪相关流水' };
 }
-async function focusGraphItems(items, { binding, maxZoom, preferredZoom, readingEnvelope = false, allowHistoryBusy = false } = {}) {
+async function focusGraphItems(items, { binding, maxZoom, preferredZoom, readingEnvelope = false, allowHistoryBusy = false, flowId } = {}) {
   const token = binding || captureGraphLocation(), reason = graphLocationBlocker(allowHistoryBusy);
   if (reason) return { ok: false, reason };
   if (!currentGraphLocation(token)) return { ok: false, reason: '定位已取消，画布或视角已变化' };
@@ -963,12 +1011,19 @@ async function focusGraphItems(items, { binding, maxZoom, preferredZoom, reading
   try { result = await state.graphCamera.focus({ x: point.x, y: point.y }, {
     bounds, obstacles: graphFocusObstacles(), maxZoom, preferredZoom, duration: 320,
     isCurrent: () => currentGraphLocation(token, false) && !graphLocationBlocker(allowHistoryBusy),
-    onFrame: () => { scheduleGraphViewport(); state.graphSelection?.refresh(); },
+    onFrame: () => {
+      // Newly revealed bodies and their lazy text belong to the same frame.
+      // Batch both before the camera paints, including an immediate focus.
+      const autoPaint = graph.get?.('autoPaint') !== false;
+      graph.setAutoPaint(false);
+      try { applyGraphViewport(); applyGraphLabels(false); state.graphSelection?.refresh(); }
+      finally { graph.setAutoPaint(autoPaint); }
+    },
     onFinish: () => { if (currentGraphLocation(token, false)) { scheduleGraphViewport(); scheduleGraphLabels(); state.graphSelection?.refresh(); } }
   }); } finally { if (activeGraphFocus === focus) activeGraphFocus = null; }
   if (!result.ok && view.previewAccounts === previews) { view.previewAccounts.clear(); scheduleGraphLabels(); }
-  if (result.ok && targets.length === 1 && currentGraphLocation(token, false) && view.previewAccounts === previews)
-    showGraphLocateFeedback(targets[0]);
+  if (result.ok && (flowId != null || targets.length === 1) && currentGraphLocation(token, false) && view.previewAccounts === previews)
+    showGraphLocateFeedback(targets, { flowId });
   const messages = { 'unavailable-space': '当前浮层遮挡了可用区域，请关闭部分浮层后定位', hidden: '页面已切换，定位已取消',
     superseded: '已改为定位最新搜索结果', resized: '画布尺寸已变化，定位已取消', 'camera-changed': '视角已由手动操作接管' };
   return result.ok ? result : { ok: false, reason: messages[result.reason] || '定位已取消，可再次搜索' };
@@ -979,11 +1034,12 @@ async function locateGraphAccount(account, { binding } = {}) {
   if (!available.visible) return { ok: false, reason: available.reason };
   return focusGraphItems([state.graph.findById(String(account))], { binding, preferredZoom: Math.max(.85, state.graph.getZoom?.() || 1) });
 }
-async function locateGraphFields(fields, { binding } = {}) {
+async function locateGraphFields(fields, { binding, flowId, quiet = false } = {}) {
   if (binding && !currentGraphLocation(binding)) return { ok: false, reason: '定位已取消，画布或视角已变化' };
   const tokens = Object.entries(fields || {}).filter(([, value]) => String(value ?? '').trim())
     .map(([kind, value]) => [kind, kind.startsWith('exact') ? String(value).trim() : String(value).trim().toLocaleLowerCase()]);
-  if (!tokens.length) return { ok: false, reason: '本次查询没有账户定位条件' };
+  const related = graphFlowItems(flowId).nodes;
+  if (!tokens.length && !related.length) return { ok: false, reason: '本次查询没有账户定位条件' };
   const nodes = state.lastGraph.nodes, matches = new Set();
   for (const [kind, query] of tokens) {
     if (kind === 'exactAccount' || kind === 'exactCounterparty') {
@@ -999,12 +1055,12 @@ async function locateGraphFields(fields, { binding } = {}) {
         || (['entity', 'counterparty'].includes(kind) && String(node.id_no || '').toLocaleLowerCase().includes(query)));
     for (const node of candidates) matches.add(String(node.account ?? node.id));
   }
-  const visible = [...matches].filter(id => graphAccountAvailability(id).visible);
+  const visible = related.length ? related.map(item => item.getModel().id) : [...matches].filter(id => graphAccountAvailability(id).visible);
   let result;
   if (!visible.length) result = { ok: false, reason: matches.size ? '匹配账户不在当前显示范围；查询结果已保留，可调整图内显示条件后定位' : '当前追踪图中没有匹配账户；查询结果已保留' };
   else if (visible.length > 100) result = { ok: false, reason: `当前画布匹配 ${fmtCount(visible.length)} 个账户，请补全账号或户名后定位` };
-  else result = await focusGraphItems(visible.map(id => state.graph.findById(id)), { binding, preferredZoom: Math.max(.85, state.graph.getZoom?.() || 1) });
-  if (!result.ok && (!binding || currentGraphLocation(binding, false))) toast(result.reason);
+  else result = await focusGraphItems(visible.map(id => state.graph.findById(id)), { binding, flowId, preferredZoom: Math.max(.85, state.graph.getZoom?.() || 1) });
+  if (!quiet && !result.ok && (!binding || currentGraphLocation(binding, false))) toast(result.reason);
   return result;
 }
 window.FundsGraphLocator = Object.freeze({ capture: captureGraphLocation, availability: graphAccountAvailability,
@@ -1631,6 +1687,7 @@ function initGraph() {
     getVisibilityBounds: () => graphWorkspaceBounds(false),
     getViewportObstacles: graphWorkspaceObstacles,
     onResize: ({ width, height }) => {
+      clearGraphLocateFeedback();
       if (layoutJob && (layoutJob.input?.width !== width || layoutJob.input?.height !== height)) layoutJob.invalidate?.();
       scheduleGraphViewport(); scheduleGraphLabels(); state.graphSelection?.refresh();
       paintWorkspaceResize(graph);
@@ -1639,6 +1696,9 @@ function initGraph() {
   const interruptCamera = () => interruptGraphCamera(graph);
   for(const type of ['pointerdown','wheel'])c.addEventListener(type,interruptCamera,{capture:true,passive:true});
   state.graphDisposers.push(()=>{for(const type of ['pointerdown','wheel'])c.removeEventListener(type,interruptCamera,true);});
+  const hideLocateFeedback = () => { if (document.hidden) clearGraphLocateFeedback(); };
+  document.addEventListener('visibilitychange', hideLocateFeedback);
+  state.graphDisposers.push(() => document.removeEventListener('visibilitychange', hideLocateFeedback));
   const resize = () => state.graphCamera?.resize();
   if (typeof ResizeObserver !== 'undefined') { state.graphResizeObserver = new ResizeObserver(resize); state.graphResizeObserver.observe(c); }
   else { state.graphResizeHandler = resize; window.addEventListener('resize', resize); }

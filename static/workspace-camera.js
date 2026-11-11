@@ -190,9 +190,10 @@
             // compensation; history must never apply this translation twice.
             graph.get('group').setMatrix(matrix);
             job.expected = matrix; expected = matrix;
-            graph.paint?.();
             settings.onFrame?.({ progress, point: { ...target }, zoom: zoom + (nextZoom - zoom) * eased,
               center: { ...fit.center } });
+            if (job.finished || focusJob !== job) return;
+            graph.paint?.();
           } catch (_) { finishFocus(job, { ok: false, reason: 'camera-error' }); return; }
           if (job.finished || focusJob !== job) return;
           if (progress === 1) finishFocus(job, { ok: true, reason: 'focused' });

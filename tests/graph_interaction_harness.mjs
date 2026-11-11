@@ -450,6 +450,60 @@ function nodeFinderAdapterScene() {
   return {...f,ports,get camera(){return f.camera},get historyCommands(){return f.historyCommands}};
 }
 
+function flowFeedbackScene() {
+  const f=graphLocatorScene(),doc=f.env.document,create=doc.createElement;
+  const attach=node=>{
+    const append=node.appendChild.bind(node);
+    node.appendChild=child=>{append(child);child.parentElement=node;return child};
+    node.remove=()=>{const siblings=node.parentElement?.children;if(siblings){const i=siblings.indexOf(node);if(i>=0)siblings.splice(i,1)}node.parentElement=null};
+    return node;
+  };
+  doc.createElement=kind=>{const node=attach(create(kind));node.tagName=String(kind).toUpperCase();return node};
+  doc.createElementNS=(ns,kind)=>Object.assign(doc.createElement(kind),{namespaceURI:ns});
+  const container=attach(f.h.element('#graphContainer'));
+  for(const item of f.graph.getEdges())item.getKeyShape().getTotalMatrix=()=>f.camera;
+  const layer=()=>container.children.find(node=>node.classList.contains('graph-flow-layer'));
+  const flatten=node=>node?[node,...node.children.flatMap(flatten)]:[];
+  return {...f,layer,flatten};
+}
+
+test('flow row cue follows exact string membership and the actual path without changing graph facts',async()=>{
+  const f=flowFeedbackScene(),before=f.snapshot(),flowId='9007199254740993';
+  const result=await f.locator.previewFields({exactAccount:'SYN-DISPLAY-ALIAS'},{binding:f.locator.capture(),flowId,quiet:true});
+  assert.equal(result.ok,true);assert.deepEqual([...f.state.graphView.previewAccounts].sort(),f.ids.slice(0,2).sort());
+  const layer=f.layer(),paths=f.flatten(layer).filter(node=>node.tagName==='PATH');
+  assert.equal(layer.dataset.flowId,flowId);assert.equal(paths.length,1);
+  assert.equal(layer.children.filter(node=>node.className==='graph-selection-halo').length,2);
+  assert.equal(paths[0].getAttribute('d'),f.graph.getEdges()[0].getKeyShape().attr('path').map(part=>part.join(' ')).join(' '));
+  assert.equal(f.snapshot(),before);assert.equal(f.historyCommands,0);assert.equal(f.h.requests.length,0);
+});
+
+test('a newer row replaces its cue and an earlier expiry cannot remove the new cue',async()=>{
+  const f=flowFeedbackScene();
+  await f.locator.previewFields({}, {binding:f.locator.capture(),flowId:'9007199254740993',quiet:true});
+  const first=f.layer(),old=f.h.timers.filter(timer=>timer.delay===650).at(-1);
+  await f.locator.previewFields({}, {binding:f.locator.capture(),flowId:'9007199254740994',quiet:true});
+  const second=f.layer();assert.notEqual(first,second);assert.equal(first.parentElement,null);
+  old.callback();assert.equal(f.layer(),second);
+  f.h.timers.filter(timer=>timer.delay===650).at(-1).callback();assert.equal(f.layer(),undefined);
+});
+
+test('a row absent from the graph cancels the earlier cue quietly and never flashes an unrelated link',async()=>{
+  const f=flowFeedbackScene(),before=f.snapshot();
+  await f.locator.previewFields({}, {binding:f.locator.capture(),flowId:'9007199254740993',quiet:true});
+  const result=await f.locator.previewFields({exactAccount:'SYN-NOT-TRACKED'}, {binding:f.locator.capture(),flowId:'9007199254740995',quiet:true});
+  assert.equal(result.ok,false);assert.equal(f.layer(),undefined);assert.equal(f.snapshot(),before);
+  assert.equal(f.historyCommands,0);assert.equal(f.h.requests.length,0);
+});
+
+test('graph rebuild and camera movement remove transient row cues',async()=>{
+  const f=flowFeedbackScene();
+  await f.locator.previewFields({}, {binding:f.locator.capture(),flowId:'9007199254740993',quiet:true});
+  assert.ok(f.layer());f.graph.emit('viewportchange',{action:'translate'});assert.equal(f.layer(),undefined);
+  await f.locator.previewFields({}, {binding:f.locator.capture(),flowId:'9007199254740993',quiet:true});
+  assert.ok(f.layer());f.h.run('renderGraph()');assert.equal(f.layer(),undefined);
+});
+
 test('node finder adapter: search scope includes offscreen members and preserves full account strings while excluding filtered accounts',()=>{
   const f=nodeFinderAdapterScene(),before=f.snapshot();
   f.state.graphView.clipResult={nodeIds:new Set([f.ids[2]]),edgeKeys:new Set()};
@@ -589,6 +643,22 @@ test('graph locator: exact account preserves leading zeroes and focuses without 
   assert.equal(f.camera[0],camera[0],'a fitting target retains the reading scale');
   assert.equal(f.snapshot(),before);assert.equal(f.historyCommands,0);assert.equal(f.h.requests.length,0);
   assert.equal(f.graph.findById('123'),undefined,'account identifiers never pass through numeric coercion');
+});
+
+test('graph locator: unrelated labels enter with their nodes during an intermediate camera frame',async()=>{
+  const f=graphLocatorScene();f.state.graphSelection.clear();f.state.graphView.labelMode='auto';
+  f.state.graphView.selectedAccount=null;f.h.run('applyGraphLabels()');
+  const before=f.snapshot(),other=f.ids[2];
+  assert.equal(f.state.graphView.labeledNodes.has(other),false,'the unrelated node begins outside the viewport');
+  f.state.graphCamera.focus=async(_point,options)=>{
+    f.graph.get('group').setMatrix([1,0,0,0,1,0,-1750,-1100,1]);
+    options.onFrame({progress:.5});
+    assert.ok(f.state.graphView.labeledNodes.has(other),'a visible node must not wait for camera completion to regain its text');
+    assert.ok(f.graph.findById(other).getModel().label);
+    options.onFinish({ok:true});return {ok:true};
+  };
+  assert.equal((await f.locator.previewAccount(f.ids[0],{binding:f.locator.capture()})).ok,true);
+  assert.equal(f.snapshot(),before);assert.equal(f.historyCommands,0);assert.equal(f.h.requests.length,0);
 });
 
 test('graph locator: an open right drawer is measured in page coordinates and excluded from the camera center',async()=>{

@@ -338,13 +338,14 @@ function harness({ entityInputs = false, geometry = false, columnStorage = null,
 }
 
 test('single-click selects and locates without tracking; double-click and Enter open exact string IDs', async () => {
-  const f=harness(), located=[], flowId='9007199254740993';
+  const f=harness(), located=[],options=[], flowId='9007199254740993';
   f.network(async()=>({page:1,size:50,total:1,rows:[flow(flowId)]}));
-  f.locator({availability:()=>({visible:true}),previewFields:value=>{located.push(value)}});
+  f.locator({capture:()=>({rowBinding:1}),availability:()=>({visible:true}),previewFields:(value,detail)=>{located.push(value);options.push(detail)}});
   await f.search();const row=f.rows()[0];
   row.click();
   assert.equal(row.getAttribute('aria-current'),'true');assert.deepEqual(f.contextCalls,[]);
   assert.equal(located.length,1);assert.equal(located[0].exactAccount,flow(flowId).payer_account);
+  assert.deepEqual(JSON.parse(JSON.stringify(options[0])),{binding:{rowBinding:1},flowId,quiet:true});
   assert.equal(f.box(flowId).checked,false);assert.equal(f.membershipCalls.length,0);assert.equal(f.writes.length,0);
   row.fire('keydown',{key:' ',ctrlKey:true});row.fire('keydown',{key:'Enter',metaKey:true});
   assert.equal(f.box(flowId).checked,false);assert.deepEqual(f.contextCalls,[],'native modifier combinations are not row commands');
