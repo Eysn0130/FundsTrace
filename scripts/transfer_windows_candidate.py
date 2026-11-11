@@ -25,6 +25,13 @@ else:
 
 REPO = "Eysn0130/FundsTrace"
 EVIDENCE_BRANCH = "codex/release-evidence"
+WINDOWS_RAR_RESOURCES = frozenset({
+    "resources/rar-decoder/win32-x64/manifest.json",
+    "resources/rar-decoder/win32-x64/7z.exe",
+    "resources/rar-decoder/win32-x64/7z.dll",
+    "resources/rar-decoder/LICENSE.txt",
+    "resources/rar-decoder/LGPL-2.1.txt",
+})
 GRAPH_CHECKS = (
     "installedGraphModulesLoaded", "installedCsvPreviewMapping", "installedCsvCommittedExact",
     "installedQueryExact", "installedFirstTrackExact", "installedSecondTrackVisible",
@@ -264,8 +271,12 @@ def verify_backend_resources(resources, source_file):
         assert not PurePosixPath(name).is_absolute() and ".." not in PurePosixPath(name).parts
         if name.startswith("frontend/dist/"):
             continue  # The Windows build verified these actual compiled resources, then installed them.
-        assert name in SOURCE_DOCUMENT_NAMES or name.startswith("static/")
-        assert sha in variants(source_file(name))
+        assert name in SOURCE_DOCUMENT_NAMES or name in WINDOWS_RAR_RESOURCES or name.startswith("static/")
+        content = source_file(name)
+        if name in WINDOWS_RAR_RESOURCES and name.endswith((".exe", ".dll")):
+            assert sha == hashlib.sha256(content).hexdigest()
+        else:
+            assert sha in variants(content)
         sources_checked += 1
     assert "static/graph-selection.js" in resources
     assert len(resources) == sources_checked + 3

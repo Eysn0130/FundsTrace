@@ -66,6 +66,55 @@ def test_backend_resource_transfer_preserves_historical_manifest():
     assert set(checked) == set(files)
 
 
+WINDOWS_RAR_FILES = {
+    'resources/rar-decoder/win32-x64/manifest.json': b'{"version":"26.05"}\n',
+    'resources/rar-decoder/win32-x64/7z.exe': b'MZ synthetic executable\r\n',
+    'resources/rar-decoder/win32-x64/7z.dll': b'MZ synthetic library\r\n',
+    'resources/rar-decoder/LICENSE.txt': b'Synthetic decoder license\n',
+    'resources/rar-decoder/LGPL-2.1.txt': b'Synthetic LGPL notice\n',
+}
+
+
+def test_backend_resource_transfer_accepts_and_reads_the_windows_decoder_bundle():
+    files, resources = backend_resources()
+    files.update(WINDOWS_RAR_FILES)
+    resources.update({name: hashlib.sha256(content).hexdigest() for name, content in WINDOWS_RAR_FILES.items()})
+    checked = []
+    def source_file(name):
+        checked.append(name)
+        return files[name]
+    assert transfer.verify_backend_resources(resources, source_file) == len(files)
+    assert set(checked) == set(files)
+
+
+@pytest.mark.parametrize('name', WINDOWS_RAR_FILES)
+def test_backend_resource_transfer_rejects_changed_decoder_bytes(name):
+    files, resources = backend_resources()
+    files.update(WINDOWS_RAR_FILES)
+    resources.update({path: hashlib.sha256(content).hexdigest() for path, content in WINDOWS_RAR_FILES.items()})
+    resources[name] = hashlib.sha256(files[name] + b'changed').hexdigest()
+    with pytest.raises(AssertionError):
+        transfer.verify_backend_resources(resources, files.__getitem__)
+
+
+@pytest.mark.parametrize('name', ['resources/rar-decoder/win32-x64/7z.exe', 'resources/rar-decoder/win32-x64/7z.dll'])
+def test_backend_resource_transfer_never_normalizes_decoder_binary_newlines(name):
+    files, resources = backend_resources()
+    files[name] = WINDOWS_RAR_FILES[name]
+    resources[name] = hashlib.sha256(files[name].replace(b'\r\n', b'\n')).hexdigest()
+    with pytest.raises(AssertionError):
+        transfer.verify_backend_resources(resources, files.__getitem__)
+
+
+def test_backend_resource_transfer_rejects_an_extra_decoder_file():
+    files, resources = backend_resources()
+    name = 'resources/rar-decoder/win32-x64/unreviewed.dll'
+    files[name] = b'Synthetic unreviewed binary'
+    resources[name] = hashlib.sha256(files[name]).hexdigest()
+    with pytest.raises(AssertionError):
+        transfer.verify_backend_resources(resources, files.__getitem__)
+
+
 @pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
 def test_backend_resource_transfer_checks_all_three_current_license_sources(newline):
     files, resources = backend_resources(licenses=BACKEND_LICENSES)
