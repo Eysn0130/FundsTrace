@@ -563,7 +563,7 @@ function newGraphView(labelMode) {
   const requested = labelMode || new URLSearchParams(window.location.search).get('label_mode');
   return { labelMode: ['auto', 'focus', 'all'].includes(requested) ? requested : 'auto',
     fullIndex: null, index: null, visibleIds: null, root: null, direction: 'both', remaining: 0,
-    selectedAccount: null, hoveredAccount: null, selectedEdge: null, previewAccounts: new Set(), policy: null,
+    selectedAccount: null, hoveredAccount: null, hoveredEdge: null, selectedEdge: null, previewAccounts: new Set(), policy: null,
     revision: 0, labelTimer: null, zoomSettling: false, fitZoom: 1, viewportFrame: null,
     clipIndex: null, clipped: new Set(), nodeItems: new Map(), edgeItems: new Map(),
     labeledNodes: new Set(), labeledEdges: new Set(), mutedEdges: new Set(), edgeDensityMode: false,
@@ -677,12 +677,22 @@ function denseEdgeStyle(muted) {
   // An opaque low-contrast stroke avoids alpha accumulation at dense crossings.
   return {stroke:muted?'#3f4854':'#7f8b99',lineWidth:muted?0.75:1.4,strokeOpacity:1,endArrow:muted?false:graphArrow()};
 }
+function graphInteractionEdgeStyle(model, muted) {
+  const style = graphRelationStyle(model, muted), view = state.graphView, key = edgeKey(model);
+  const selected = key === view.selectedEdge, hovered = key === view.hoveredEdge;
+  if (!view.exportDepth && (selected || hovered)) {
+    style.stroke = graphPalette().selection; style.strokeOpacity = selected ? 1 : .65;
+    if (style.endArrow) style.endArrow = { ...style.endArrow, fill: style.stroke };
+  }
+  return style;
+}
 function applyGraphEdgeDetail() {
   const view=state.graphView, graph=state.graph;
   if (!graph || !view.index) return;
   const dense=view.index.edgeKeys.size>1000 && view.labelMode!=='all' && !view.exportDepth;
   const focused=new Set();
   if(view.selectedEdge) focused.add(view.selectedEdge);
+  if(view.hoveredEdge) focused.add(view.hoveredEdge);
   const roots=[...new Set([view.selectedAccount,view.hoveredAccount])].filter(id=>view.index.incidentEdges.has(id));
   const adjacent=roots.map(id=>view.index.incidentEdges.get(id).values());
   // Share the budget between selection and hover, so a hub cannot starve the
@@ -745,12 +755,7 @@ function applyGraphTheme({ paint = true } = {}) {
       }
       FundsGraphPresentation.decorateLabel?.(item,effectiveGraphLabelStyle(kind,id));
       if (kind !== 'edge') continue;
-      const selected = view.selectedEdge === id;
-      const style = graphRelationStyle(model, view.mutedEdges.has(id));
-      if (selected) {
-        style.stroke = palette.selection;
-        if (style.endArrow) style.endArrow = { ...style.endArrow, fill: palette.selection };
-      }
+      const style = graphInteractionEdgeStyle(model, view.mutedEdges.has(id));
       // This helper retains the label cutout, hit path, manual positions and cached arrows.
       FundsGraphLabelGeometry.paintEdge(item, style);
       const styles = item.get?.('styles');
@@ -879,6 +884,7 @@ function captureGraphLocation() {
   // Capture is called only for an explicit search or flow-row focus. Claim intent before
   // the request yields so an old animation/default Fit cannot outrank it.
   state.graphCamera?.cancelFocus?.('search');
+  clearGraphHover();
   clearGraphLocateFeedback();
   return { context: caseContext(), graph: state.graph, view: state.graphView, revision: state.graphView.revision,
     intent: state.graphCamera?.getIntent?.(), matrix: JSON.stringify(state.graph?.get?.('group')?.getMatrix?.() || null) };
@@ -887,6 +893,7 @@ function clearGraphLocateFeedback() {
   if (!graphLocateFeedback) return;
   clearTimeout(graphLocateFeedback.timer);
   graphLocateFeedback.layer.remove(); graphLocateFeedback = null;
+  state.graphSelection?.setFeedbackTargets?.([]);
 }
 function graphFlowItems(flowId) {
   const graph = state.graph, id = String(flowId ?? '');
@@ -949,6 +956,7 @@ function showGraphLocateFeedback(items, { flowId } = {}) {
     halo.appendChild(ring); layer.appendChild(halo);
   }
   container.appendChild(layer);
+  state.graphSelection?.setFeedbackTargets?.(targets.map(item => item.getModel().id));
   const feedback = { layer, timer: null }; graphLocateFeedback = feedback;
   feedback.timer = setTimeout(() => { if (graphLocateFeedback === feedback) clearGraphLocateFeedback(); }, flow ? 650 : 1250);
 }
@@ -969,6 +977,30 @@ function graphAccountAvailability(account) {
   // A node clipped outside the viewport is still a visible member of the view.
   const visible = tracked && !!state.graph?.findById?.(id) && (!state.graphView.index || state.graphView.index.nodeIds.has(id));
   return { visible, tracked, reason: visible ? '' : tracked ? '该账户不在当前显示范围；可调整邻域、关系筛选或账户显示条件' : '该账户尚未上图，请先追踪相关流水' };
+}
+function clearGraphHover() {
+  const view = state.graphView, previous = view.hoveredEdge;
+  if (!view.hoveredAccount && !previous) return;
+  view.hoveredAccount = null; view.hoveredEdge = null;
+  state.graphSelection?.setHover?.([]);
+  $('#graphContainer').style.cursor = '';
+  const item = previous && view.edgeItems.get(previous);
+  if (item && !item.destroyed) syncGraphEdgeLabel(item);
+  scheduleGraphLabels();
+}
+function hoverGraphItem(kind, item) {
+  const graph = state.graph, view = state.graphView;
+  if (!item || item.destroyed) return;
+  const model = item.getModel(), member = kind === 'node' ? graph?.findById(model.id) : view.edgeItems.get(edgeKey(model));
+  if (member !== item || state.graphLoading || layoutJob
+    || view.exportDepth || state.graphSelection?.status?.().dragging || window.FundsCanvasEditor?.history?.status?.().busy) return;
+  clearGraphHover();
+  view.hoveredAccount = kind === 'node' ? model.id : null;
+  view.hoveredEdge = kind === 'edge' ? edgeKey(model) : null;
+  state.graphSelection?.setHover?.(kind === 'node' ? [model.id] : [model.source, model.target]);
+  $('#graphContainer').style.cursor = kind === 'node' ? 'grab' : 'pointer';
+  if (kind === 'edge') syncGraphEdgeLabel(item);
+  scheduleGraphLabels();
 }
 async function focusGraphItems(items, { binding, maxZoom, preferredZoom, readingEnvelope = false, allowHistoryBusy = false, flowId } = {}) {
   const token = binding || captureGraphLocation(), reason = graphLocationBlocker(allowHistoryBusy);
@@ -1122,9 +1154,11 @@ function avoidGraphLabelCollisions(policy, { clipToViewport = true } = {}) {
   if(typeof FundsGraphLabels==='undefined')return policy;
   const candidates=[], bodies=graphScreenBodies();
   const selectedIds=state.graphSelection?.ids||new Set();
+  const hoveredEdge=!view.exportDepth&&view.index.edgeByKey.get(view.hoveredEdge);
   for(const id of policy.nodeIds) {
     const item=view.nodeItems.get(id);if(!item)continue;
-    const required=selectedIds.has(id)||id===view.selectedAccount||id===view.hoveredAccount||!view.exportDepth&&view.previewAccounts?.has(id);
+    const required=selectedIds.has(id)||id===view.selectedAccount||id===view.hoveredAccount
+      ||id===hoveredEdge?.source||id===hoveredEdge?.target||!view.exportDepth&&view.previewAccounts?.has(id);
     const bounds=graphLabelBounds(item,'node');
     candidates.push({key:id,kind:'node',bounds,placements:bounds?[{dx:0,dy:0,bounds}]:[],required,
       priority:required?100:view.index.mainNodeIds.has(id)?70:20});
@@ -1174,7 +1208,7 @@ function applyGraphLabels(paint = true, { clipToViewport = true } = {}) {
   syncGraphEdgeLabels();
   const requestedPolicy = FundsGraphView.labels(index, { zoom: (graph.getZoom?.() || 1) / view.fitZoom * 0.5,
     mode: view.exportDepth?'all':view.labelMode, selectedIds: new Set([...(state.graphSelection?.ids || []), ...(!view.exportDepth ? view.previewAccounts || [] : [])]), selectedAccount: view.selectedAccount, hoveredAccount: view.hoveredAccount,
-    selectedEdge: view.selectedEdge, eligibleNodeIds: !view.exportDepth ? view.clipResult?.nodeIds : null });
+    selectedEdge: view.selectedEdge, hoveredEdge: !view.exportDepth ? view.hoveredEdge : null, eligibleNodeIds: !view.exportDepth ? view.clipResult?.nodeIds : null });
   view.policy=avoidGraphLabelCollisions(requestedPolicy,{clipToViewport});
   const update = (items, previous, desired, changedOnly=false) => {
     let geometryChanged=false;
@@ -1643,12 +1677,18 @@ function initGraph() {
     if (state.graph !== graph) return;
     syncMinimapNavigation();
     clearGraphLocateFeedback();
+    clearGraphHover();
     scheduleGraphViewport();
     if (event.action === 'zoom') scheduleGraphLabels(true);
   });
   graph.on('wheelzoom', () => graphMetric('viewport', { action: 'zoom' }));
-  graph.on('node:mouseenter', event => { state.graphView.hoveredAccount = event.item.getModel().id; scheduleGraphLabels(); });
-  graph.on('node:mouseleave', () => { state.graphView.hoveredAccount = null; scheduleGraphLabels(); });
+  graph.on('node:mouseenter', event => hoverGraphItem('node', event.item));
+  graph.on('edge:mouseenter', event => hoverGraphItem('edge', event.item));
+  graph.on('node:mouseleave', event => { if (state.graph === graph && !event.item?.destroyed && state.graphView.hoveredAccount === event.item?.getModel?.().id) clearGraphHover(); });
+  graph.on('edge:mouseleave', event => { if (state.graph === graph && event.item && !event.item.destroyed && state.graphView.hoveredEdge === edgeKey(event.item.getModel())) clearGraphHover(); });
+  const leaveGraph = () => { if (state.graph === graph) clearGraphHover(); };
+  c.addEventListener('pointerleave', leaveGraph);
+  state.graphDisposers.push(() => c.removeEventListener('pointerleave', leaveGraph));
   graph.on('node:dblclick', event => {
     const source = event.originalEvent || event;
     if (!source.ctrlKey && !source.metaKey) exploreNeighborhood(event.item.getModel().id);
@@ -1688,6 +1728,7 @@ function initGraph() {
     getViewportObstacles: graphWorkspaceObstacles,
     onResize: ({ width, height }) => {
       clearGraphLocateFeedback();
+      clearGraphHover();
       if (layoutJob && (layoutJob.input?.width !== width || layoutJob.input?.height !== height)) layoutJob.invalidate?.();
       scheduleGraphViewport(); scheduleGraphLabels(); state.graphSelection?.refresh();
       paintWorkspaceResize(graph);
@@ -1696,7 +1737,7 @@ function initGraph() {
   const interruptCamera = () => interruptGraphCamera(graph);
   for(const type of ['pointerdown','wheel'])c.addEventListener(type,interruptCamera,{capture:true,passive:true});
   state.graphDisposers.push(()=>{for(const type of ['pointerdown','wheel'])c.removeEventListener(type,interruptCamera,true);});
-  const hideLocateFeedback = () => { if (document.hidden) clearGraphLocateFeedback(); };
+  const hideLocateFeedback = () => { if (document.hidden) { clearGraphLocateFeedback(); clearGraphHover(); } };
   document.addEventListener('visibilitychange', hideLocateFeedback);
   state.graphDisposers.push(() => document.removeEventListener('visibilitychange', hideLocateFeedback));
   const resize = () => state.graphCamera?.resize();
@@ -1717,6 +1758,7 @@ function initGraphSelection(graph = state.graph, c = $('#graphContainer')) {
         scheduleGraphLabels(); updateGraphViewStatus();
       },
       onMoveStart: () => {
+        clearGraphHover();
         cancelGraphLayout(); captureEdgeLabelRatios();
         window.dispatchEvent(new CustomEvent('funds:selection-drag-start'));
       },
@@ -2171,9 +2213,7 @@ function syncGraphEdgeLabel(item,outline,anchorOverride) {
   const shape=item.getKeyShape(),anchor=anchorOverride||(path?ptAtRatio(path,ratio):shape?.getPoint?.(.5));
   const a=shape?.getPoint?.(.48),b=shape?.getPoint?.(.52);
   const horizontal=a&&b&&Math.abs(b.y-a.y)<=Math.abs(b.x-a.x)*.12;
-  const selected=key===view.selectedEdge&&!view.exportDepth;
-  const style=graphRelationStyle(model,view.mutedEdges.has(key));
-  if(selected){style.stroke=graphPalette().selection;if(style.endArrow)style.endArrow={...style.endArrow,fill:graphPalette().selection};}
+  const style=graphInteractionEdgeStyle(model,view.mutedEdges.has(key));
   outline=outline||(item.getContainer?.()?.get?.('children')||[]).find(s=>s.get('name')==='funds-edge-selection-outline');
   const result=FundsGraphLabelGeometry.placeEdge(item,{anchor,above:!manual&&graphHasSimpleGeometry()&&horizontal,
     gap:4,style,outline,visible:model.label!==undefined});
@@ -2984,6 +3024,7 @@ function edgeLabel(e) {
 
 function renderGraph(rebinding = null) {
   clearGraphLocateFeedback();
+  clearGraphHover();
   state.graphCamera?.resize();
   state.graphCamera?.cancelComposition?.();
   state.graphView.previewAccounts?.clear();
@@ -3855,18 +3896,12 @@ function refreshSelectedEdgeAppearance() {
     (item.getContainer?.()?.get?.('children')||[]).find(shape=>shape.get('name')==='funds-edge-selection-outline')?.hide?.();
     state.graph.setItemState(item,'selected',false);syncGraphEdgeLabel(item);return;
   }
-  const model=item.getModel(),base={...graphRelationStyle(model,false),stroke:graphPalette().selection},styles=item.get?.('styles')||{};
+  const model=item.getModel(),base=graphInteractionEdgeStyle(model,false),styles=item.get?.('styles')||{};
   item.set?.('styles',{...styles,selected:{...styles.selected,...base,shadowBlur:0,shadowColor:'transparent',
     'text-shape':{...styles.selected?.['text-shape'],fontWeight:effectiveGraphLabelStyle('edge',key).fontWeight}}});
-  const group=item.getContainer?.(),path=item.getKeyShape?.()?.attr?.('path');
-  let outline=(group?.get?.('children')||[]).find(shape=>shape.get('name')==='funds-edge-selection-outline');
-  if(path) {
-    const attrs={path,stroke:graphPalette().selection,lineWidth:base.lineWidth+5,opacity:.32,lineCap:'round',lineJoin:'round',fill:null};
-    if(outline){outline.attr(attrs);outline.show?.();}else outline=group?.addShape?.('path',{name:'funds-edge-selection-outline',capture:false,attrs});
-    outline?.toBack?.();
-  }
+  (item.getContainer?.()?.get?.('children')||[]).find(shape=>shape.get('name')==='funds-edge-selection-outline')?.remove?.();
   try{state.graph.setItemState(item,'selected',true);}catch(_){/* disposed */}
-  syncGraphEdgeLabel(item,outline);
+  syncGraphEdgeLabel(item);
 }
 function selectItem(item) {
   if (_selItem?.getModel?.().source || !state.graphSelection) {
@@ -5803,6 +5838,7 @@ function bindUI() {
     state.graphCamera?.cancelFocus?.('export');
     syncMinimapNavigation();
     try {
+      clearGraphLocateFeedback(); clearGraphHover();
       selection?.setVisualsVisible?.(false);
       for(const item of recent)graph.setItemState(item,'recent',false);
       const group=graph.get?.('group'),matrix=group?.getMatrix?.();

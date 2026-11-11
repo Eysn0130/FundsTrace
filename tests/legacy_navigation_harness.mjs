@@ -3179,7 +3179,8 @@ function installSamplingVisuals(h, visible=true, initialize=true) {
   }};
   const outline={visible,values:{},get(name){return name==='name'?'funds-edge-selection-outline':name==='visible'?this.visible:this.values[name]},
     attr(values){if(typeof values==='object')Object.assign(this.values,values);return this.values[values]},
-    hide(){this.visible=false},show(){this.visible=true},isVisible(){return this.visible}};
+    hide(){this.visible=false},show(){this.visible=true},isVisible(){return this.visible},
+    remove(){this.visible=false;this.removed=true;const shapes=graph.getEdges()[0].shapes;shapes.splice(shapes.indexOf(this),1)}};
   graph.getEdges()[0].shapes.push(outline);
   graph.getEdges()[0].getKeyShape=()=>({attr:name=>name==='path'?[['M',80,80],['L',88,80]]:undefined});
   state.graphView.selectedEdge='SYN-HUB=>SYN-00000';
@@ -3260,7 +3261,6 @@ for(const phase of ['success','sample-error','cancel','already-hidden','edge-hid
   test(`graph persistence: clean image sampling restores only its own visual state after ${phase}`,async()=>{
     const h=harness('app.js'),visible=phase!=='already-hidden',f=installSamplingVisuals(h,visible);
     if(phase==='edge-hidden')f.outline.visible=false;
-    const outlineVisible=f.outline.visible;
     const ids=[...f.selection.ids],recent=f.state.graph.getNodes()[0];
     if(phase==='sample-error')f.fail();
     h.element('#exportFmt').value='png';const pending=h.element('#btnExportPng').onclick();
@@ -3286,7 +3286,9 @@ for(const phase of ['success','sample-error','cancel','already-hidden','edge-hid
       assert.equal(recent.hasState('recent'),false);
     } else {
       assert.equal(f.selection.visible,visible,'the exact previous selection visibility is restored');
-      assert.equal(f.outline.visible,outlineVisible,'the exact previous edge-outline visibility is restored independently of node selection');
+      assert.equal(f.outline.removed,true,'the obsolete wide edge halo is removed instead of reviving a duplicate contour');
+      assert.equal(f.outline.visible,false);
+      assert.equal(f.state.graphView.selectedEdge,'SYN-HUB=>SYN-00000','the selected relationship itself is retained');
       assert.equal(recent.hasState('recent'),true,'recent state is restored after success, failure or cancellation');
     }
     assert.deepEqual([...f.selection.ids],ids);

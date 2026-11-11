@@ -26,6 +26,7 @@
     if (oldTabindex === null) container.setAttribute('tabindex', '0');
     const media = global.matchMedia?.('(prefers-reduced-motion: reduce)');
     const halos = new Map(), styled = new Map(), outlines = new Map(), graphEvents = [];
+    let hovered = new Set(), feedbackTargets = new Set();
     let nodes = new Map(), drag = null, destroyed = false, notifying = false, visualsVisible = true,
       suppressUntil = 0, commitCount = 0, lastCommitMs = 0;
 
@@ -39,7 +40,7 @@
     }
     function node(id) { return nodes.get(String(id)); }
     function focus() { try { container.focus?.({ preventScroll: true }); } catch (_) { container.focus?.(); } }
-    function motionAllowed() { return visualsVisible && !media?.matches && !document.hidden; }
+    function motionAllowed() { return visualsVisible && !drag?.started && !media?.matches && !document.hidden; }
     function modalOpen() {
       return [...(document.querySelectorAll?.('.modal, [role="dialog"], dialog[open]') || [])].some(element => {
         if (element.hidden || element.getAttribute?.('aria-hidden') === 'true' || element.style?.display === 'none') return false;
@@ -95,8 +96,8 @@
       let outline = outlines.get(item), changed = false;
       if (outline?.shape.destroyed) { outlines.delete(item); outline = null; }
       if (!outline) {
-        // The same static outer ring handles circles and Canvas images. It is
-        // independent of the role border and remains visible above ten selected.
+        // Role borders remain untouched. A single selection uses its DOM ring;
+        // multi-selection and hover use this static Canvas contour instead.
         const shape = item.getContainer?.()?.addShape?.('circle', { name: 'funds-selection-outline', capture: false,
           attrs: { x: 0, y: 0, r: radius, stroke: color, lineWidth: 2, fill: null, shadowBlur: 0 } });
         if (!shape) return false;
@@ -104,9 +105,14 @@
       }
       if (outline.radius !== radius) { outline.shape.attr?.({ r: radius }); outline.radius = radius; changed = true; }
       if (outline.color !== color) { outline.shape.attr?.({ stroke: color }); outline.color = color; changed = true; }
-      if (outline.visible !== visualsVisible) {
-        if (visualsVisible) outline.shape.show?.(); else outline.shape.hide?.();
-        outline.visible = visualsVisible; changed = true;
+      const selected = ids.has(itemId(item)), opacity = selected ? 1 : .5, lineWidth = selected ? 2 : 1.25;
+      if (outline.opacity !== opacity || outline.lineWidth !== lineWidth) {
+        outline.shape.attr?.({ opacity, lineWidth }); outline.opacity = opacity; outline.lineWidth = lineWidth; changed = true;
+      }
+      const visible = visualsVisible && !feedbackTargets.has(itemId(item)) && !(selected && ids.size === 1);
+      if (outline.visible !== visible) {
+        if (visible) outline.shape.show?.(); else outline.shape.hide?.();
+        outline.visible = visible; changed = true;
       }
       return changed;
     }
@@ -131,7 +137,7 @@
       for (const halo of halos.values()) {
         const ring = halo.firstElementChild;
         if (allowed && !ring.classList.contains('graph-selection-breathe')) {
-          // A shared wall-clock phase keeps separately selected rings in sync.
+          // Resuming the one active ring does not require a JavaScript timer.
           ring.style.animationDelay = `-${Date.now() % 1800}ms`;
           ring.classList.add('graph-selection-breathe');
         } else if (!allowed) ring.classList.remove('graph-selection-breathe');
@@ -151,17 +157,19 @@
         return;
       }
       let outlineChanged = false;
-      for (const [item] of outlines) if (!ids.has(itemId(item))) { removeOutline(item); outlineChanged = true; }
-      for (const id of ids) outlineChanged = syncOutline(node(id)) || outlineChanged;
+      const decorated = new Set([...ids, ...hovered]);
+      for (const [item] of outlines) if (!decorated.has(itemId(item))) { removeOutline(item); outlineChanged = true; }
+      for (const id of decorated) outlineChanged = syncOutline(node(id)) || outlineChanged;
       if (outlineChanged) graph.paint?.();
-      if (!visualsVisible || ids.size < 1 || ids.size > 10) { removeHalos(); return; }
+      if (!visualsVisible || ids.size !== 1 || feedbackTargets.has([...ids][0])) { removeHalos(); return; }
       const zoom = Math.abs(graph.getZoom?.() || 1), { width, height } = dimensions();
       for (const [id, halo] of halos) if (!ids.has(id)) { halo.remove(); halos.delete(id); }
       for (const id of ids) {
         const model = modelOf(node(id));
         if (!model || !finite(model.x) || !finite(model.y)) { halos.get(id)?.remove(); halos.delete(id); continue; }
         const point = project(model.x, model.y), size = sizeOf(model);
-        const w = Math.max(0.5, (size.width + 8) * zoom), h = Math.max(0.5, (size.height + 8) * zoom);
+        const diameter = (outlines.get(node(id))?.radius || Math.max(size.width, size.height) / 2 + 4) * 2;
+        const w = Math.max(0.5, diameter * zoom), h = w;
         if (!finite(point.x) || !finite(point.y) || point.x + w / 2 < 0 || point.y + h / 2 < 0 || point.x - w / 2 > width || point.y - h / 2 > height) {
           halos.get(id)?.remove(); halos.delete(id); continue;
         }
@@ -174,9 +182,16 @@
         }
         Object.assign(halo.style, { left: `${point.x}px`, top: `${point.y}px`, width: `${w}px`, height: `${h}px` });
         halo.firstElementChild.style.borderWidth = `${Math.max(0.5, Math.min(2, 1.5 * zoom))}px`;
-        halo.firstElementChild.style.setProperty?.('--graph-breathe-scale', String(1 + 4 / (Math.max(size.width, size.height) + 8)));
       }
       pauseMotion();
+    }
+    function setHover(values = []) {
+      if (!current()) return;
+      hovered = new Set([...asIds(values)].filter(id => nodes.has(id))); refresh();
+    }
+    function setFeedbackTargets(values = []) {
+      if (!current()) return;
+      feedbackTargets = asIds(values); refresh();
     }
     function setVisualsVisible(visible) {
       if (!current()) return false;
@@ -217,6 +232,7 @@
       cancelDrag(false);
       if (!current()) return;
       const next = asIds(nextIds), previous = new Set(ids);
+      hovered.clear(); feedbackTargets.clear();
       withPaint(() => {
         for (const item of styled.keys()) setSelected(item, false);
         // Refresh business-role styles between removing and restoring the
@@ -411,9 +427,9 @@
       global.removeEventListener?.('resize', refresh);
       if (oldTabindex === null) container.removeAttribute('tabindex');
       for (const item of outlines.keys()) removeOutline(item);
-      removeHalos(); layer.remove(); styled.clear(); nodes.clear(); ids.clear();
+      removeHalos(); layer.remove(); styled.clear(); nodes.clear(); ids.clear(); hovered.clear(); feedbackTargets.clear();
     }
-    return Object.freeze({ ids, select, clear, rebind, refresh, setVisualsVisible, destroy,
+    return Object.freeze({ ids, select, clear, rebind, refresh, setHover, setFeedbackTargets, setVisualsVisible, destroy,
       status: () => ({ count: ids.size, haloCount: halos.size, animatedCount: [...halos.values()].filter(halo => halo.firstElementChild.classList.contains('graph-selection-breathe')).length,
         outlineCount: outlines.size, visualsVisible,
         dragging: !!drag?.started, preview: !!drag?.preview, commitCount, lastCommitMs, destroyed }) });

@@ -467,6 +467,43 @@ function flowFeedbackScene() {
   return {...f,layer,flatten};
 }
 
+test('hover highlights only its current node or edge, retaining facts, encoded widths and selection',()=>{
+  const f=graphLocatorScene(),before=f.snapshot(),[a,b]=f.graph.getEdges(),key=a.getModel();
+  const ink=()=>a.getContainer().get('children').find(shape=>shape.get('name')==='funds-edge-visible-path')||a.getKeyShape();
+  const path=JSON.stringify(a.getKeyShape().attr('path')),width=ink().attr('lineWidth');
+  f.graph.emit('node:mouseenter',{item:f.graph.findById(f.ids[0])});
+  assert.equal(f.state.graphView.hoveredAccount,f.ids[0]);assert.equal(f.snapshot(),before);
+  f.graph.emit('edge:mouseenter',{item:a});
+  assert.equal(f.state.graphView.hoveredAccount,null);assert.equal(f.state.graphView.hoveredEdge,`${key.source}=>${key.target}`);
+  assert.equal(ink().attr('stroke'),f.h.run('graphPalette().selection'));
+  assert.equal(ink().attr('strokeOpacity'),.65);assert.equal(ink().attr('lineWidth'),width);
+  assert.equal(JSON.stringify(a.getKeyShape().attr('path')),path);assert.equal(f.snapshot(),before);
+  f.graph.emit('edge:mouseenter',{item:b});f.graph.emit('edge:mouseleave',{item:a});
+  assert.equal(f.state.graphView.hoveredEdge,`${b.getModel().source}=>${b.getModel().target}`,'late leave cannot clear a newer hover');
+  f.graph.emit('edge:mouseleave',{item:b});
+  assert.equal(f.state.graphView.hoveredEdge,null);assert.equal(ink().attr('stroke'),'#7f8b99');
+  assert.equal(f.snapshot(),before);assert.equal(f.h.requests.length,0);assert.equal(f.historyCommands,0);
+});
+
+test('row feedback temporarily replaces an overlapping selection contour',async()=>{
+  const f=flowFeedbackScene();f.state.graphSelection.select(f.ids[0]);
+  assert.equal(f.state.graphSelection.status().haloCount,0,'the selected node begins outside the viewport');
+  await f.locator.previewFields({}, {binding:f.locator.capture(),flowId:'9007199254740993',quiet:true});
+  assert.ok(f.layer());assert.equal(f.state.graphSelection.status().haloCount,0);
+  f.h.timers.filter(timer=>timer.delay===650).at(-1).callback();
+  assert.equal(f.state.graphSelection.status().haloCount,1,'expiry restores the sole selection contour');
+});
+
+test('hover is revoked on viewport changes, rebuild and export without clearing selection',()=>{
+  const f=graphLocatorScene(),before=f.snapshot(),item=f.graph.getEdges()[0];
+  f.graph.emit('edge:mouseenter',{item});f.graph.emit('viewportchange',{action:'translate'});
+  assert.equal(f.state.graphView.hoveredEdge,null);assert.equal(f.snapshot(),before);
+  f.graph.emit('edge:mouseenter',{item});f.h.run('renderGraph()');
+  assert.equal(f.state.graphView.hoveredEdge,null);assert.equal(f.snapshot(),before);
+  f.state.graphView.exportDepth=1;f.graph.emit('edge:mouseenter',{item:f.graph.getEdges()[0]});
+  assert.equal(f.state.graphView.hoveredEdge,null);assert.equal(f.snapshot(),before);
+});
+
 test('flow row cue follows exact string membership and the actual path without changing graph facts',async()=>{
   const f=flowFeedbackScene(),before=f.snapshot(),flowId='9007199254740993';
   const result=await f.locator.previewFields({exactAccount:'SYN-DISPLAY-ALIAS'},{binding:f.locator.capture(),flowId,quiet:true});
