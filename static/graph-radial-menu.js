@@ -8,12 +8,12 @@
  * Material You palette and DonutMenu surface rendering are adapted from Filee's
  * Services/MaterialYouPalette.cs and Controls/DonutMenu.cs (main 9ca14cd, 2026-11-10):
  * Surface slices at the donut opacity, SubtleBorder, Surface centre, 0.82 accent
- * hover, OnAccent hot labels, corner radius = Theme CornerRadius / 2, soft shadow
+ * hover, contrast-checked labels, softly rounded sector corners and soft shadow
  * and outward group chevron. The accent seed is FundsTrace's selected accent.
  *
  * Re-implemented for the FundsTrace G6 canvas: in-page overlay instead of a native
  * always-on-top window; node/edge context menu instead of an Explorer shell entry;
- * one optional group fan instead of flip/faces.
+ * a single action ring instead of flip/faces and nested groups.
  */
 (function (root) {
   'use strict';
@@ -28,11 +28,9 @@
 
   // ── tuning (Filee DonutMenu/DonutGeometry values unless noted) ──────────────
   const DEFAULT_RADIUS = 150;       // Filee DonutMenu default OuterRadius
-  const MIN_RADIUS = 150;
-  const MAX_RADIUS = 190;
   const INNER_RATIO = 0.42;
   const SLICE_GAP = 3;
-  const SLICE_CORNER = 9;           // theme CornerRadius 18 / 2, exactly DonutMenu.SliceCornerRadius
+  const SLICE_CORNER = 3;           // crisp sector edges from the selected reference, using Filee's rounded geometry
   const HOVER_POP = 7;
   const MARGIN = 14;
   const SUB_EXTRA = 59;             // Filee sub-ring outer 209 at R150
@@ -109,13 +107,13 @@
       start: o.onArc,
       steps: [
         { to: mirror(o.onArc), arc: r2, large: outerArc > Math.PI / 2, clockwise: true },
-        { to: mirror(o.onLine), arc: radius },
+        { to: mirror(o.onLine), arc: radius, clockwise: true },
         { to: mirror(i.onLine) },
-        { to: mirror(i.onArc), arc: radius },
+        { to: mirror(i.onArc), arc: radius, clockwise: true },
         { to: i.onArc, arc: r1, large: innerArc > Math.PI / 2, clockwise: false },
-        { to: i.onLine, arc: radius },
+        { to: i.onLine, arc: radius, clockwise: true },
         { to: o.onLine },
-        { to: o.onArc, arc: radius },
+        { to: o.onArc, arc: radius, clockwise: true },
       ],
     };
   }
@@ -361,6 +359,7 @@
     const s = appState();
     if (!s || !s.caseId || !s.graph) return false;
     if (s.graphLoading) return false;
+    if (s.graphView?.exportDepth || s.graphSelection?.status?.().dragging) return false;
     try { if (typeof layoutJob !== 'undefined' && layoutJob) return false; } catch (_) { /* not initialized */ }
     const history = root.FundsCanvasEditor?.history?.status?.();
     return !(history && history.busy);
@@ -378,7 +377,7 @@
   }
   function nodeName(item, model) {
     const data = model?.data || {};
-    return String(data.name || model?.name || model?.label || model?.account || model?.id || '账户');
+    return String(data.name || model?.name || data.display_account || model?.label || model?.account || model?.id || '账户');
   }
   function nodeAccount(model) {
     const data = model?.data || {};
@@ -389,8 +388,11 @@
     const data = model?.data || model || {};
     const source = String(model?.source ?? data.source ?? '');
     const target = String(model?.target ?? data.target ?? '');
-    const names = data.source_name || data.target_name ? `${data.source_name || source} → ${data.target_name || target}` : '';
-    return String(names || model?.label || (source && target ? `${source} → ${target}` : '资金关系'));
+    const label = (account, fallback) => {
+      const node = appState()?.lastGraph?.nodes?.find(node => String(node.account ?? node.id) === account);
+      return node?.name || node?.display_account || fallback || account;
+    };
+    return `${label(source, data.source_name)} → ${label(target, data.target_name)}`;
   }
   function edgeFlowIds(model) {
     const data = model?.data || model || {};
@@ -398,154 +400,58 @@
   }
 
   // ── menu models (content is deliberately a small table, easy to tune) ─────
-  function nodeMenu(item, multi) {
-    const model = item.getModel?.() || {};
-    if (multi) {
-      return {
-        kind: 'node',
-        title: `${selectionIds().length} 个账户`,
-        subtitle: '多选账户',
-        items: [
-          { id: 'fit', label: '适应选择', command: 'fitSelection' },
-          { id: 'pin', label: '固定布局', command: 'fixLayout' },
-          { id: 'unpin', label: '解除固定', command: 'unfixLayout' },
-          { id: 'hide', label: '隐藏选中', command: 'hideSelection' },
-          { id: 'only', label: '只看选中', command: 'showOnlySelection' },
-          { id: 'clear', label: '取消选择', command: 'clearSelection' },
-        ],
-      };
-    }
-    const id = String(model.id ?? '');
-    const s = appState();
-    const canContinue = !!(s?.graphView?.visibleIds && String(s.graphView.root) === id && Number(s.graphView.remaining) > 0);
+  function nodeMenu(item) {
+    const model = item.getModel();
+    const name = nodeName(item, model), account = nodeAccount(model);
     return {
-      kind: 'node',
-      title: truncate(nodeName(item, model), 10),
-      subtitle: nodeAccount(model) ? `账户 · ${nodeAccount(model)}` : '账户',
+      kind: 'node', title: truncate(name, 10), subtitle: account === name ? 'Esc 关闭' : account,
       items: [
-        { id: 'inspect', label: '详情', command: 'inspectSelection' },
-        { id: 'flows', label: '查流水', command: 'viewFlows' },
-        {
-          id: 'expand', label: '展开邻域', ariaLabel: '展开邻域', group: {
-            command: 'expandNeighborhood',
-            children: [
-              { id: 'both', label: '双向', ariaLabel: '双向展开邻域', value: 'both' },
-              { id: 'in', label: '转入', ariaLabel: '只看转入', value: 'in' },
-              { id: 'out', label: '转出', ariaLabel: '只看转出', value: 'out' },
-              ...(canContinue ? [{ id: 'more', label: '继续', ariaLabel: '继续展开当前中心', value: 'more' }] : []),
-            ],
-          },
-        },
-        { id: 'fit', label: '适应选择', command: 'fitSelection' },
-        { id: 'emphasize', label: '重点展示', command: 'emphasize' },
-        { id: 'annotate', label: '添加标注', command: 'annotateSelection' },
-        { id: 'hide', label: '隐藏选中', command: 'hideSelection' },
-        { id: 'only', label: '只看选中', command: 'showOnlySelection' },
-        { id: 'remove', label: '移出图谱', command: 'removeNodeFromCanvas', danger: true },
+        { id: 'inspect', label: '详情', command: 'inspectSelection', description: '查看此账户资料' },
+        { id: 'flows', label: '查看流水', command: 'viewFlows', description: '在查询区查看此账户流水' },
+        { id: 'annotate', label: '标注', command: 'annotateSelection', description: '为此账户添加画布标注' },
       ],
     };
   }
 
   function edgeMenu(item) {
-    const model = item.getModel?.() || {};
-    const selfLoop = String(model.source ?? '') === String(model.target ?? '');
-    let bold = false;
-    try {
-      const key = typeof edgeKey === 'function' ? edgeKey(model) : `${model.source}=>${model.target}`;
-      const style = appState()?.presentation?.edgeLabels?.[key] || {};
-      bold = style.fontWeight === 'bold' || style.fontWeight === '700';
-    } catch (_) { /* optional presentation state */ }
+    const model = item.getModel(), data = model.data || model, ids = edgeFlowIds(model);
+    const count = clamp(Math.floor(Number(doc.getElementById('bulkX')?.value) || 5), 1, 50);
+    const sourceOnly = data.kind === 'source_ledger';
+    const hint = ids.length > 1 ? '先选择锚点流水' : `最近 ${count} 笔`;
     return {
-      kind: 'edge',
-      title: truncate(edgeTitle(item, model), 12),
-      subtitle: '资金关系',
+      kind: 'edge', title: edgeTitle(item, model), subtitle: '资金流向',
       items: [
-        { id: 'inspect', label: '详情', command: 'inspectSelection' },
-        { id: 'source', label: '付款方', command: 'inspectEdgeEndpoint', value: 'source' },
-        { id: 'target', label: '收款方', command: 'inspectEdgeEndpoint', value: 'target' },
-        { id: 'fit', label: '适应选择', command: 'fitSelection' },
-        {
-          id: 'type', label: '线型', ariaLabel: '关系线型', group: {
-            command: 'edgeType',
-            children: [
-              { id: 'quadratic', label: '曲线', ariaLabel: '曲线', value: 'quadratic' },
-              { id: 'line', label: '直线', ariaLabel: '直线', value: 'line' },
-              { id: 'polyline', label: '折线', ariaLabel: '折线', value: 'polyline' },
-            ],
-          },
-          disabled: selfLoop,
-        },
-        { id: 'bold', label: bold ? '取消加粗' : '标签加粗', command: 'labelBold', value: !bold },
-        { id: 'remove', label: '移出该关系', command: 'removeEdgeFromCanvas', danger: true },
+        { id: 'inspect', label: '详情', command: 'inspectSelection', description: '查看此关系的流水明细' },
+        { id: 'source', label: '来源', command: 'traceEdge', value: 'source', disabled: sourceOnly || !ids.length,
+          description: sourceOnly ? '来源记账不能作为资金追踪锚点' : `付款方此前转入 · ${hint}` },
+        { id: 'target', label: '去向', command: 'traceEdge', value: 'target', disabled: sourceOnly || !ids.length,
+          description: sourceOnly ? '来源记账不能作为资金追踪锚点' : `收款方此后转出 · ${hint}` },
       ],
     };
   }
 
-  function canvasShell() {
-    try { return doc.getElementById('workspace')?.fundsWorkspaceShell || null; } catch (_) { return null; }
-  }
   function blankMenu() {
-    const shell = canvasShell();
-    const shellState = shell?.getState?.() || { view: 'standard', sidebarCollapsed: false };
-    const legend = doc.getElementById('legend');
-    const minimapToggle = doc.getElementById('btnMinimapToggle');
-    const minimapOn = minimapToggle?.getAttribute('aria-expanded') === 'true';
-    const view = ['standard', 'split', 'focus'].includes(shellState.view) ? shellState.view : 'standard';
-    const viewLabel = view === 'split' ? '切换标准' : '切换上下';
-    const viewSubtitle = view === 'split' ? '视图 · 上下' : view === 'focus' ? '视图 · 专注' : '视图 · 标准';
-    const undo = doc.getElementById('btnUndo');
-    const save = doc.getElementById('btnCanvasSave');
-    const exportButton = doc.getElementById('btnExportActions');
-    const relayout = doc.getElementById('btnRelayout');
-    const fit = doc.getElementById('btnFit');
-    const nodes = appState()?.graph?.getNodes?.().length || 0;
-    const unavailable = element => !element || !!element.disabled;
+    const unavailable = id => !doc.getElementById(id) || !!doc.getElementById(id).disabled;
     return {
-      kind: 'blank',
-      title: '画布',
-      subtitle: viewSubtitle,
+      kind: 'blank', title: '画布', subtitle: 'Esc 关闭',
       items: [
-        { id: 'selectAll', label: '全选', command: 'canvasAction', value: 'selectAll', disabled: nodes <= 0 },
-        { id: 'view', label: viewLabel, command: 'canvasAction', value: 'view' },
-        { id: 'legend', label: legend?.hidden ? '显示图例' : '隐藏图例', command: 'canvasAction', value: 'legend', disabled: !legend },
-        { id: 'minimap', label: minimapOn ? '隐藏缩略' : '显示缩略', command: 'canvasAction', value: 'minimap', disabled: !minimapToggle },
-        { id: 'sidebar', label: shellState.sidebarCollapsed ? '显示查询' : '隐藏查询', command: 'canvasAction', value: 'sidebar', disabled: !shell },
-        { id: 'fit', label: '适应画布', command: 'canvasAction', value: 'fit', disabled: unavailable(fit) },
-        { id: 'relayout', label: '重新布局', command: 'canvasAction', value: 'relayout', disabled: unavailable(relayout) },
-        { id: 'undo', label: '撤回', command: 'canvasAction', value: 'undo', disabled: unavailable(undo) },
-        { id: 'save', label: '保存画布', command: 'canvasAction', value: 'save', disabled: unavailable(save) },
-        { id: 'export', label: '导出', command: 'canvasAction', value: 'export', disabled: unavailable(exportButton) },
+        { id: 'selectAll', label: '全选', command: 'canvasAction', value: 'selectAll', disabled: !appState()?.graph?.getNodes?.().length,
+          description: '选中当前显示图谱的节点' },
+        { id: 'undo', label: '撤回', command: 'canvasAction', value: 'undo', disabled: unavailable('btnUndo'),
+          description: '撤销最近一次画布操作' },
+        { id: 'save', label: '保存', command: 'canvasAction', value: 'save', disabled: unavailable('btnCanvasSave'),
+          description: '保存当前画布' },
+        { id: 'export', label: '导出', command: 'canvasAction', value: 'export', disabled: unavailable('btnExportActions'),
+          description: '选择格式并导出当前画布' },
       ],
     };
   }
 
   function itemEnabled(spec, context) {
-    const { baseReady, blocked, kind, model, multi } = context;
-    if (!baseReady && kind !== 'blank') return false;
-    if (spec.disabled) return false;
-    const ids = selectionIds();
-    const cameraOk = () => {
-      try { return typeof graphCameraInteractionAllowed === 'function' ? !!graphCameraInteractionAllowed() : true; } catch (_) { return true; }
-    };
-    if (spec.group) {
-      if (kind === 'node' && blocked) return false;
-      return spec.group.children.length > 0;
-    }
-    if (spec.command === 'inspectSelection') {
-      const dragging = !!appState()?.graphSelection?.status?.().dragging;
-      return !dragging && (kind === 'edge' ? ids.length === 0 : ids.length === 1);
-    }
-    if (spec.command === 'viewFlows') return ids.length === 1;
-    if (spec.command === 'emphasize') return ids.length === 1;
+    if (!context.baseReady || spec.disabled) return false;
     if (spec.command === 'annotateSelection') {
-      try { return ids.length === 1 && (typeof annotationReady !== 'function' || annotationReady()); } catch (_) { return false; }
+      try { return typeof annotationReady !== 'function' || annotationReady(); } catch (_) { return false; }
     }
-    if (spec.command === 'fitSelection') return cameraOk();
-    if (spec.command === 'removeEdgeFromCanvas') return ids.length === 0 && edgeFlowIds(model).length > 0;
-    if (spec.command === 'removeNodeFromCanvas') return ids.length === 1;
-    if (spec.command === 'inspectEdgeEndpoint') return ids.length === 0;
-    if (spec.command === 'canvasAction') return !spec.disabled;
-    if (spec.command === 'fixLayout' || spec.command === 'unfixLayout' || spec.command === 'clearSelection' || spec.command === 'labelBold') return true;
     return true;
   }
 
@@ -563,23 +469,17 @@
     return el;
   }
   function placementBounds(container, side) {
-    const viewport = {
-      left: 8, top: 8,
-      right: Math.max(8, root.innerWidth - 8),
-      bottom: Math.max(8, root.innerHeight - 8),
-    };
-    let rect = null;
-    try { rect = container?.getBoundingClientRect?.() || null; } catch (_) { rect = null; }
+    const viewport = { left: 8, top: 8, right: Math.max(8, root.innerWidth - 8), bottom: Math.max(8, root.innerHeight - 8) };
+    const rect = container?.getBoundingClientRect?.();
     if (!rect || rect.width <= 0 || rect.height <= 0) return viewport;
-    const graph = { left: rect.left + 8, top: rect.top + 8, right: rect.right - 8, bottom: rect.bottom - 8 };
-    const widthFits = graph.right - graph.left >= side;
-    const heightFits = graph.bottom - graph.top >= side;
-    if (!widthFits && !heightFits) return viewport;
+    const graph = { left: Math.max(viewport.left, rect.left + 8), top: Math.max(viewport.top, rect.top + 8),
+      right: Math.min(viewport.right, rect.right - 8), bottom: Math.min(viewport.bottom, rect.bottom - 8) };
+    const widthFits = graph.right - graph.left >= side, heightFits = graph.bottom - graph.top >= side;
     return {
-      left: graph.left,
-      right: widthFits ? graph.right : Math.max(graph.right, graph.left + side),
-      top: graph.top,
-      bottom: heightFits ? graph.bottom : Math.max(graph.bottom, graph.top + side),
+      left: widthFits ? graph.left : viewport.left,
+      right: widthFits ? graph.right : viewport.right,
+      top: heightFits ? graph.top : Math.max(viewport.top, Math.min(graph.top, viewport.bottom - side)),
+      bottom: heightFits ? graph.bottom : viewport.bottom,
     };
   }
   function placeMenu(rootEl, anchor, side, container) {
@@ -598,11 +498,36 @@
   let serial = 0;
   let dismissal = null;
 
+  function clearDismissalShield() {
+    const shield = dismissal; dismissal = null; shield?.unbind?.();
+  }
+  function shieldDismissal(initial) {
+    clearDismissalShield();
+    const listeners = [], shield = {};
+    dismissal = shield;
+    const on = (target, type, handler) => {
+      target.addEventListener(type, handler, true); listeners.push([target, type, handler]);
+    };
+    shield.unbind = () => { for (const [target, type, handler] of listeners) target.removeEventListener(type, handler, true); };
+    // This lease belongs to the native pointer gesture, not to the 140ms menu
+    // fade. It also survives an immediate reduced-motion close.
+    const tail = event => {
+      if (dismissal !== shield) return;
+      if (initial.pointerId != null && event.pointerId != null && event.pointerId !== initial.pointerId) return;
+      if (event.type === 'pointercancel' || (event.type === 'click' && event.detail === 0)) { clearDismissalShield(); return; }
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (event.type === 'click' || event.type === 'contextmenu') clearDismissalShield();
+    };
+    for (const type of ['pointerup', 'mouseup', 'click', 'dblclick', 'contextmenu', 'pointercancel']) on(doc, type, tail);
+    on(doc, 'pointerdown', event => { if (event !== initial) clearDismissalShield(); });
+    on(root, 'blur', clearDismissalShield);
+  }
+
   function sideFor(radius, reserveSubRing = true) {
     return Math.ceil(2 * (radius + (reserveSubRing ? SUB_RING_SPACE : 0) + HOVER_POP + MARGIN));
   }
   function menuRadiusFor() {
-    return DEFAULT_RADIUS;
+    return Math.max(1, Math.min(DEFAULT_RADIUS, (Math.min(root.innerWidth, root.innerHeight) - 16) / 2 - HOVER_POP - MARGIN));
   }
   function groupMarkPath(center, radius, mid, scale = 1) {
     const inset = 7 * scale, depth = 4.5 * scale, halfWidth = 5 * scale;
@@ -616,17 +541,24 @@
 
   function hitTest(point) {
     if (!menu) return { kind: 'outside' };
-    const center = menu.center, inner = menu.inner, outer = menu.radius;
-    const d = Math.hypot(point.x - center.x, point.y - center.y);
-    if (d < inner) return { kind: 'hub' };
-    const group = menu.group;
-    if (group && group.open && group.expand.value > 0.02 && d >= group.subInner && d <= group.subOuter) {
-      const delta = wrapSigned(angleOf(center, point) - group.parentMid);
-      const sub = Math.floor(delta / group.subSpan + group.count / 2);
-      if (sub >= 0 && sub < group.count) return { kind: 'sub', index: group.index, sub };
+    const center = menu.center;
+    // Test the same per-slice transform used by rendering, including spring
+    // overshoot. The lifted outer edge remains clickable and gaps stay gaps.
+    const entries = [...menu.entries].sort((a, b) => Number(b.index === menu.activeIndex) - Number(a.index === menu.activeIndex));
+    for (const entry of entries) {
+      const open = clamp(menu.openVals[entry.index] ?? 0, 0, 1.2), hover = entry.hover.value;
+      const scale = (0.78 + .22 * open) * (1 + .025 * hover);
+      const rotation = (1 - Math.min(open, 1)) * -.12, cos = Math.cos(rotation), sin = Math.sin(rotation);
+      const x = point.x - center.x - Math.sin(entry.mid) * HOVER_POP * hover;
+      const y = point.y - center.y + Math.cos(entry.mid) * HOVER_POP * hover;
+      const base = { x: center.x + (x * cos + y * sin) / scale, y: center.y + (-x * sin + y * cos) / scale };
+      const d = distance(base, center), angle = angleOf(center, base);
+      const inside = entry.wedgeEl?.isPointInFill && root.DOMPoint
+        ? entry.wedgeEl.isPointInFill(new root.DOMPoint(base.x, base.y))
+        : d >= menu.inner && d <= menu.radius && Math.abs(wrapSigned(angle - entry.mid)) <= spanOf(menu.count) / 2 - SLICE_GAP / 2 / d;
+      if (inside) return { kind: 'segment', index: entry.index };
     }
-    if (d > outer + HOVER_POP) return { kind: 'outside' };
-    return { kind: 'segment', index: indexAt(angleOf(center, point), menu.count) };
+    return distance(point, center) < menu.inner ? { kind: 'hub' } : { kind: 'outside' };
   }
 
   function menuPoint(event) {
@@ -638,7 +570,7 @@
     if (!menu) return;
     const group = menu.group;
     menu.entries.forEach((entry, index) => {
-      entry.target = index === menu.activeIndex || (menu.activeSub >= 0 && group && index === group.index) ? 1 : 0;
+      entry.target = entry.enabled && (index === menu.activeIndex || (menu.activeSub >= 0 && group && index === group.index)) ? 1 : 0;
     });
     if (group) group.subEntries.forEach((entry, index) => { entry.target = index === menu.activeSub ? 1 : 0; });
     ensureLoop();
@@ -648,10 +580,13 @@
     if (!menu) return;
     const groupIndex = menu.group ? menu.group.index : -1;
     menu.entries.forEach((entry, index) => {
-      const active = index === menu.activeIndex || (menu.activeSub >= 0 && index === groupIndex);
+      const active = entry.enabled && (index === menu.activeIndex || (menu.activeSub >= 0 && index === groupIndex));
       entry.labelEl.classList.toggle('is-active', active);
       entry.sliceEl.classList.toggle('is-active', active);
+      entry.labelEl.tabIndex = active ? 0 : -1;
     });
+    const active = menu.entries[menu.activeIndex];
+    menu.hubSub.textContent = active?.spec.description || menu.spec.subtitle;
     if (menu.group) menu.group.subEntries.forEach((entry, index) => {
       entry.labelEl.classList.toggle('is-active', index === menu.activeSub);
       entry.sliceEl.classList.toggle('is-active', index === menu.activeSub);
@@ -722,25 +657,37 @@
     if (s.graph !== token.graph || s.graphView !== token.view) return false;
     if (!contextCurrent(token.context)) return false;
     if (token.revision !== s.graphView?.revision) return false;
+    if (token.item) {
+      if (token.item.destroyed) return false;
+      const model = token.item.getModel();
+      const member = token.kind === 'node' ? s.graph.findById(String(model.id))
+        : s.graphView.edgeItems.get(typeof edgeKey === 'function' ? edgeKey(model) : `${model.source}=>${model.target}`);
+      if (member !== token.item) return false;
+    }
     return true;
   }
   function requestCommand(command, value) {
-    if (!menu || !command) return;
+    if (!menu || menu.closing || !command || !ready()) return;
     const token = menu.binding;
     const detail = value === undefined ? { command } : { command, value };
     closeMenu(false, () => {
       if (!tokenCurrent(token)) return;
+      focusGraph();
+      if (token.item && typeof selectItem === 'function') {
+        selectItem(token.item);
+        if (token.kind === 'edge' && typeof refreshSelectedEdgeAppearance === 'function') refreshSelectedEdgeAppearance();
+      }
       try { doc.dispatchEvent(new root.CustomEvent('funds:ribbon-command', { detail })); } catch (_) { /* host missing */ }
     });
   }
   function activateGroupChild(entry) {
-    if (!entry || !entry.enabled) return;
+    if (!menu || menu.closing || !entry || !entry.enabled) return;
     const group = menu?.group;
     if (!group) return;
     requestCommand(group.spec.group.command, entry.spec.value);
   }
   function activateItem(entry) {
-    if (!entry || !entry.enabled) return;
+    if (!menu || menu.closing || !entry || !entry.enabled) return;
     if (entry.spec.group) { toggleGroup(); return; }
     requestCommand(entry.spec.command, entry.spec.value);
   }
@@ -761,6 +708,19 @@
         `translate(${fmt(ox)} ${fmt(oy)}) rotate(${fmt(rotate)}) scale(${fmt(scale)}) ` +
         `translate(${fmt(-center.x)} ${fmt(-center.y)})`);
       entry.accentEl.setAttribute('opacity', fmt(clamp(0.82 * hover, 0, 1)));
+      // Keep foreground and the animated state layer in the same frame. Switching
+      // to OnAccent at pointer-enter made dark text flash on a still-dark slice.
+      const palette = menu.palette, alpha = clamp(.82 * hover, 0, 1);
+      const background = { r: palette.surface.r + (palette.accent.r - palette.surface.r) * alpha,
+        g: palette.surface.g + (palette.accent.g - palette.surface.g) * alpha,
+        b: palette.surface.b + (palette.accent.b - palette.surface.b) * alpha };
+      let ink = !entry.enabled ? palette.textSecondary :
+        contrastRatio(background, palette.textPrimary) >= contrastRatio(background, palette.onAccent) ? palette.textPrimary : palette.onAccent;
+      if (entry.enabled && contrastRatio(background, ink) < 4.5) {
+        const white = { r: 255, g: 255, b: 255 }, black = { r: 0, g: 0, b: 0 };
+        ink = contrastRatio(background, white) >= contrastRatio(background, black) ? white : black;
+      }
+      entry.labelEl.style.color = cssColor(ink);
       entry.labelEl.style.opacity = fmt(clamp(open, 0, 1));
       entry.labelEl.style.transform = `translate(${fmt((1 - open) * (center.x - entry.base.x) + offset.x)}px, ` +
         `${fmt((1 - open) * (center.y - entry.base.y) + offset.y)}px) scale(${fmt(scale)})`;
@@ -818,7 +778,8 @@
     }
     if (menu.raf) return;
     menu.lastTs = 0;
-    menu.raf = root.requestAnimationFrame(frame);
+    const owner = menu;
+    menu.raf = root.requestAnimationFrame(timestamp => { if (menu === owner) frame(timestamp); });
   }
 
   function frame(timestamp) {
@@ -862,7 +823,8 @@
     }
     applyFrame();
     if (active || menu.openClock !== null) {
-      menu.raf = root.requestAnimationFrame(frame);
+      const owner = menu;
+      menu.raf = root.requestAnimationFrame(timestamp => { if (menu === owner) frame(timestamp); });
     } else {
       menu.lastTs = 0;
     }
@@ -878,6 +840,7 @@
     const rootEl = doc.createElement('div');
     rootEl.className = 'funds-radial';
     rootEl.setAttribute('role', 'menu');
+    rootEl.tabIndex = -1;
     rootEl.setAttribute('aria-label', spec.kind === 'edge' ? '关系操作' : spec.kind === 'blank' ? '画布操作' : '账户操作');
     rootEl.style.width = side + 'px';
     rootEl.style.height = side + 'px';
@@ -942,7 +905,7 @@
       const enabled = itemEnabled(item, { baseReady, blocked, kind: spec.kind, model: options.model });
       if (!enabled) sliceEl.classList.add('is-disabled');
       return {
-        spec: item, index, mid, base, sliceEl, accentEl: accent,
+        spec: item, index, mid, base, sliceEl, wedgeEl: wedge, accentEl: accent,
         enabled, hover: new Spring(0), target: 0,
       };
     });
@@ -997,6 +960,9 @@
         label.setAttribute('aria-expanded', 'false');
         label.classList.add('is-group');
         label.setAttribute('aria-label', entry.spec.ariaLabel || entry.spec.label);
+      label.setAttribute('aria-description', entry.spec.description || '');
+      label.title = entry.spec.description || '';
+      label.tabIndex = -1;
       }
       if (entry.spec.danger) label.classList.add('is-danger');
       if (!entry.enabled) { label.disabled = true; label.setAttribute('aria-disabled', 'true'); }
@@ -1047,7 +1013,13 @@
     hubEl.style.top = (center.y - hubSize / 2) + 'px';
     const hubTitle = doc.createElement('span');
     hubTitle.className = 'funds-radial-hub-title';
-    hubTitle.textContent = spec.title;
+    if (spec.kind === 'edge') {
+      hubTitle.classList.add('funds-radial-hub-parties');
+      const [source, ...target] = spec.title.split(' → ');
+      for (const text of [source, `→ ${target.join(' → ')}`]) {
+        const line = doc.createElement('span'); line.textContent = text; hubTitle.appendChild(line);
+      }
+    } else hubTitle.textContent = spec.title;
     const hubSub = doc.createElement('span');
     hubSub.className = 'funds-radial-hub-sub';
     hubSub.textContent = spec.subtitle;
@@ -1057,7 +1029,7 @@
 
     return {
       rootEl, svg, center, radius, inner, count, spec, shadowEl,
-      entries, group, hubEl,
+      entries, group, hubEl, hubSub, palette,
       openVals: entries.map(() => 0), closeFrom: entries.map(() => 0),
       openClock: 0, lastTs: 0, raf: 0, reduced: reducedMotion(),
       closing: false, onClosed: null, activeIndex: -1, activeSub: -1,
@@ -1077,44 +1049,22 @@
       listeners.length = 0;
       root.clearTimeout(menuState.expandTimer);
       root.clearTimeout(menuState.collapseTimer);
+      root.clearTimeout(menuState.focusTimer);
       if (menuState.raf) root.cancelAnimationFrame(menuState.raf);
       menuState.raf = 0;
     };
 
     const outside = event => {
-      if (!menu || event.target && menu.rootEl.contains(event.target)) return;
-      if (event.type === 'pointerdown' && event.button === 2) {
-        // Right-click elsewhere behaves like a native menu: close, then let the
-        // next contextmenu open its own menu (G6 node/edge or the system menu).
-        dismissal = null;
-        closeMenu(false);
-        return;
+      if (menu !== menuState || event.target && menuState.rootEl.contains(event.target)) return;
+      if (menuState.closing) { closeMenu(false); return; }
+      if (event.button === 2) {
+        clearDismissalShield(); closeMenu(false); return;
       }
-      const now = Date.now();
-      dismissal = { x: event.clientX || 0, y: event.clientY || 0, until: now + 2000 };
+      shieldDismissal(event);
       closeMenu(true, () => focusGraph());
-      event.preventDefault();
-      event.stopImmediatePropagation();
+      event.preventDefault(); event.stopImmediatePropagation();
     };
-    const suppressed = event => {
-      if (!dismissal) return false;
-      const now = Date.now();
-      const types = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu'];
-      if (now > dismissal.until) { dismissal = null; return false; }
-      if (!types.includes(event.type)) return false;
-      const samePlace = Math.hypot((event.clientX || 0) - dismissal.x, (event.clientY || 0) - dismissal.y) < 8;
-      const inGraph = !!event.target?.closest?.('#graphContainer,#graphMinimapPanel,#graphMinimap');
-      if (!samePlace && !inGraph) { dismissal = null; return false; }
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      if (event.type === 'click' || event.type === 'contextmenu' || event.type === 'pointercancel') dismissal = null;
-      return true;
-    };
-
     on(doc, 'pointerdown', outside, true);
-    for (const type of ['pointerup', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu']) {
-      on(doc, type, event => { if (suppressed(event)) return; }, true);
-    }
     const onKey = event => {
       if (!menu) return;
       if (event.key === 'Escape') {
@@ -1124,16 +1074,24 @@
       }
     };
     on(doc, 'keydown', onKey, true);
-    const closeFor = () => { if (menu) closeMenu(true); };
+    const closeFor = () => { if (menu === menuState) closeMenu(false); };
     on(doc, 'visibilitychange', () => { if (doc.hidden) closeFor(); });
     on(root, 'blur', closeFor);
     on(root, 'resize', closeFor);
-    on(doc, 'funds:graph-metric', event => { if (event.detail?.phase === 'reset') closeFor(); });
-    on(doc, 'funds:feedback-binding', closeFor);
-    on(doc, 'funds:selection-drag-start', closeFor);
-    on(doc, 'fundstrace:workspace-resize', closeFor);
+    on(root, 'funds:graph-metric', event => { if (event.detail?.phase === 'reset') closeFor(); });
+    on(root, 'funds:feedback-binding', closeFor);
+    on(root, 'funds:selection-drag-start', closeFor);
+    on(root, 'fundstrace:workspace-resize', closeFor);
     on(doc, 'funds:toolbar-menu-change', closeFor);
-    on(doc, 'funds-appearance-change', closeFor);
+    on(root, 'funds-appearance-change', closeFor);
+    if (reducedQuery?.addEventListener) on(reducedQuery, 'change', () => {
+      if (menu !== menuState) return;
+      menuState.reduced = reducedMotion();
+      if (menuState.raf) root.cancelAnimationFrame(menuState.raf);
+      menuState.raf = 0;
+      menuState.entries.forEach(entry => { entry.hover.velocity = 0; });
+      ensureLoop();
+    });
     return menuState;
   }
 
@@ -1148,30 +1106,22 @@
     menu.reduced = reducedMotion();
     bindGlobal(menu);
     applyFrame();
-
-    // Group sub-ring starts hidden; group interaction is only possible while open.
-    if (menu.group) menu.group.labelEls.forEach(el => { el.hidden = true; });
-
     doc.body.appendChild(menu.rootEl);
-    const focusables = menu.entries.filter(entry => entry.enabled).map(entry => entry.labelEl);
-    root.setTimeout(() => {
-      if (menu !== created) return;
-      focusables[0]?.focus?.({ preventScroll: true });
-    }, 0);
-    if (!menu.reduced) ensureLoop(); else ensureLoop();
+    if (options.keyboard) {
+      created.focusTimer = root.setTimeout(() => {
+        if (menu !== created || created.closing) return;
+        created.entries.find(entry => entry.enabled)?.labelEl.focus?.({ preventScroll: true });
+      }, 0);
+    } else menu.rootEl.focus?.({ preventScroll: true });
+    ensureLoop();
     return created;
   }
 
   function closeMenu(animate, onClosed) {
     if (!menu) { onClosed?.(); return; }
     const current = menu;
-    if (current.closing) {
-      if (onClosed) {
-        const previous = current.onClosed;
-        current.onClosed = () => { try { previous?.(); } finally { onClosed(); } };
-      }
-      return;
-    }
+    // Forced disposal must also win during a previous animated close. Drop its
+    // queued focus callback so it cannot steal focus from a replacement menu.
     if (!animate || current.reduced) {
       menu = null;
       current.unbind?.();
@@ -1179,6 +1129,7 @@
       onClosed?.();
       return;
     }
+    if (current.closing) return;
     current.closing = true;
     current.closeFrom = current.openVals.slice();
     current.openClock = 0;
@@ -1190,8 +1141,7 @@
 
   function finishClose() {
     if (!menu) return;
-    const current = menu;
-    const done = current.onClosed;
+    const current = menu, done = current.onClosed;
     menu = null;
     current.unbind?.();
     current.rootEl.remove();
@@ -1201,8 +1151,14 @@
   // ── interaction handlers ───────────────────────────────────────────────────
   function installMenuHandlers(menuState) {
     const rootEl = menuState.rootEl;
+    rootEl.addEventListener('focusin', event => {
+      if (menu !== menuState || menuState.closing) return;
+      const index = menuState.entries.findIndex(entry => entry.labelEl === event.target);
+      if (index >= 0) setActive(index);
+      else if (event.target === menuState.hubEl) setActive(-1);
+    });
     const keydown = event => {
-      if (!menu || menu !== menuState) return;
+      if (!menu || menu !== menuState || menuState.closing) return;
       if (event.key === 'Tab') {
         event.preventDefault();
         closeMenu(true, () => focusGraph());
@@ -1210,8 +1166,8 @@
       }
       if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
         if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
-          const target = event.target?.closest?.('.funds-radial-item');
-          if (target && !target.disabled) { event.preventDefault(); target.click(); }
+          const entry = menu.entries[menu.activeIndex];
+          if (entry?.enabled) { event.preventDefault(); activateItem(entry); }
         }
         return;
       }
@@ -1233,10 +1189,10 @@
         return;
       }
       const buttons = menu.entries.map(entry => entry.labelEl).filter(el => !el.disabled);
-      let index = buttons.indexOf(current);
-      if (index < 0) index = 0;
+      let index = buttons.indexOf(menu.entries[menu.activeIndex]?.labelEl || current);
       if (event.key === 'Home') index = 0;
       else if (event.key === 'End') index = buttons.length - 1;
+      else if (index < 0) index = ['ArrowRight', 'ArrowDown'].includes(event.key) ? 0 : buttons.length - 1;
       else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') index = (index + 1) % buttons.length;
       else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') index = (index - 1 + buttons.length) % buttons.length;
       buttons[index]?.focus?.({ preventScroll: true });
@@ -1276,7 +1232,7 @@
       // A right-click on the overlay's empty area dismisses the menu and consumes
       // the following contextmenu, so the user does not get a surprise native menu
       // when the node they meant to re-target sits under the open overlay.
-      dismissal = { x: event.clientX, y: event.clientY, until: Date.now() + 600 };
+      shieldDismissal(event);
       closeMenu(false);
       event.preventDefault();
       event.stopPropagation();
@@ -1285,69 +1241,33 @@
   }
 
   // ── G6 integration ─────────────────────────────────────────────────────────
-  function bindingFor(graph) {
+  function bindingFor(graph, item, kind) {
     const s = appState();
-    return { context: currentContext(), graph, view: s?.graphView, revision: s?.graphView?.revision };
+    return { context: currentContext(), graph, view: s?.graphView, revision: s?.graphView?.revision, item, kind };
   }
 
-  function openFromEvent({ graph, container, item, kind, event }) {
-    dismissal = null;
+  function openFromEvent({ graph, container, item, kind, event, keyboard = false }) {
+    clearDismissalShield();
     const s = appState();
-    if (!s || !container) return;
-    const context = currentContext();
-    if (!context) return;
-    const binding = bindingFor(graph);
+    if (!s || graph !== s.graph || !container || !ready()) return;
+    const binding = bindingFor(graph, item, kind);
+    if (!tokenCurrent(binding)) return;
+    // Both pointer and keyboard activation take ownership before measuring the
+    // anchor. No camera journey or old hover/arrival layer outlives this menu.
+    if (typeof interruptGraphCamera === 'function') interruptGraphCamera(graph);
+    else graph && s.graphCamera?.cancelFocus?.('context-menu');
+    if (typeof clearGraphHover === 'function') clearGraphHover();
+    if (typeof clearGraphLocateFeedback === 'function') clearGraphLocateFeedback();
     const rect = container.getBoundingClientRect();
-    const clientX = event.clientX ?? event.originalEvent?.clientX ?? rect.left;
-    const clientY = event.clientY ?? event.originalEvent?.clientY ?? rect.top;
-
-    if (kind === 'blank') {
-      const spec = blankMenu();
-      const created = openMenu({
-        spec, radius: DEFAULT_RADIUS, anchor: { x: clientX, y: clientY }, kind,
-        model: null, binding, graph, container, item: null,
-      });
-      installMenuHandlers(created);
-      return;
-    }
-
-    const model = item.getModel?.() || {};
-    let multi = false;
+    let anchor = { x: event.clientX ?? event.originalEvent?.clientX ?? rect.left,
+      y: event.clientY ?? event.originalEvent?.clientY ?? rect.top };
+    const model = item?.getModel?.() || null;
     if (kind === 'node') {
-      const ids = selectionIds();
-      multi = ids.length > 1 && ids.includes(String(model.id));
+      const projected = graph.getCanvasByPoint?.(model.x, model.y);
+      if (projected) anchor = { x: rect.left + projected.x, y: rect.top + projected.y };
     }
-
-    let anchor;
-    if (kind === 'node') {
-      const zoom = Number(graph.getZoom?.()) || 1;
-      const sizeValue = Array.isArray(model.size) ? Math.max(...model.size) : Number(model.size) || 32;
-      const projected = graph.getCanvasByPoint?.(Number(model.x), Number(model.y));
-      anchor = projected
-        ? { x: rect.left + projected.x, y: rect.top + projected.y }
-        : { x: clientX, y: clientY };
-      if (!multi) {
-        try { if (typeof selectItem === 'function') selectItem(item); } catch (_) { /* host state race */ }
-      }
-      const spec = nodeMenu(item, multi);
-      const radius = clamp(sizeValue / 2 * zoom + 42, MIN_RADIUS, MAX_RADIUS);
-      const created = openMenu({
-        spec, radius, anchor, kind, model, binding,
-        graph, container, item,
-      });
-      installMenuHandlers(created);
-      return;
-    }
-
-    try {
-      if (typeof selectItem === 'function') selectItem(item);
-      if (typeof refreshSelectedEdgeAppearance === 'function') refreshSelectedEdgeAppearance();
-    } catch (_) { /* host state race */ }
-    const spec = edgeMenu(item);
-    const created = openMenu({
-      spec, radius: DEFAULT_RADIUS, anchor: { x: clientX, y: clientY },
-      kind, model, binding, graph, container, item,
-    });
+    const spec = kind === 'node' ? nodeMenu(item) : kind === 'edge' ? edgeMenu(item) : blankMenu();
+    const created = openMenu({ spec, radius: menuRadiusFor(), anchor, kind, model, binding, graph, container, item, keyboard });
     installMenuHandlers(created);
   }
 
@@ -1384,7 +1304,7 @@
     }
     openFromEvent({
       graph, container, item, kind,
-      event: { clientX: anchor.x, clientY: anchor.y, originalEvent: null, preventDefault() {}, stopPropagation() {} },
+      event: { clientX: anchor.x, clientY: anchor.y, originalEvent: null, preventDefault() {}, stopPropagation() {} }, keyboard: true,
     });
     return true;
   }
@@ -1403,7 +1323,7 @@
       const kind = item ? (model.source ? 'edge' : 'node') : 'blank';
       openFromEvent({ graph, container, item: item || null, kind, event });
     };
-    const closeForChange = () => { if (menu) closeMenu(true); };
+    const closeForChange = () => { if (menu?.binding.graph === graph) closeMenu(false); };
     const onKeyboard = event => {
       if (disposed || event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
       const isContextKey = event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey);
@@ -1425,7 +1345,7 @@
       try { graph.off?.('node:dragstart', closeForChange); } catch (_) { /* gone */ }
       try { graph.off?.('edge:dragstart', closeForChange); } catch (_) { /* gone */ }
       try { container.removeEventListener('keydown', onKeyboard); } catch (_) { /* gone */ }
-      if (menu) closeMenu(false);
+      if (menu?.binding.graph === graph) closeMenu(false);
     };
   }
 
@@ -1455,7 +1375,7 @@
 
   root.FundsGraphRadialMenu = Object.freeze({
     attach,
-    close: () => closeMenu(false),
+    close: () => { clearDismissalShield(); closeMenu(false); },
     isOpen: () => !!menu,
     getState: () => menu ? {
       open: true, kind: menu.kind, count: menu.count,

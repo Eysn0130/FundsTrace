@@ -1,0 +1,69 @@
+{
+  "synthetic": true,
+  "rows": 12,
+  "markMainAccounts": [
+    "SYN-A",
+    "SYN-B"
+  ],
+  "x": 1,
+  "tradeNos": [
+    "SYN-SYN-A-SOURCE-A",
+    "SYN-SYN-A-AB-ONE",
+    "SYN-SYN-A-AX",
+    "SYN-SYN-A-SOURCE-A2",
+    "SYN-SYN-A-AB-TWO",
+    "SYN-SYN-B-AB-ONE",
+    "SYN-SYN-B-BC-ONE",
+    "SYN-SYN-B-AB-TWO",
+    "SYN-SYN-B-BC-TWO",
+    "SYN-SYN-B-FB",
+    "SYN-SYN-B-BY",
+    "SYN-SYN-D-UNRELATED"
+  ],
+  "singleSource": {
+    "anchor": "SYN-SYN-A-AX",
+    "picked": [
+      "SYN-SYN-A-SOURCE-A"
+    ],
+    "direction": "source"
+  },
+  "singleTarget": {
+    "anchor": "SYN-SYN-B-FB",
+    "picked": [
+      "SYN-SYN-B-BY"
+    ],
+    "direction": "target"
+  },
+  "aggregate": {
+    "accounts": [
+      "SYN-A",
+      "SYN-B"
+    ],
+    "rawRecords": [
+      "SYN-SYN-A-AB-ONE",
+      "SYN-SYN-B-AB-ONE",
+      "SYN-SYN-A-AB-TWO",
+      "SYN-SYN-B-AB-TWO"
+    ],
+    "expectedConfirmedEvents": 2
+  },
+  "hiddenReveal": {
+    "trackFirst": [
+      "SYN-SYN-A-AX",
+      "SYN-SYN-A-SOURCE-A",
+      "SYN-SYN-D-UNRELATED"
+    ],
+    "initialDisplay": "A outbound neighborhood (A/X)",
+    "action": "source on AX",
+    "expectedDisplayAccounts": [
+      "SYN-A",
+      "SYN-X",
+      "SYN-S"
+    ],
+    "unrelatedMustStayHidden": [
+      "SYN-D",
+      "SYN-E"
+    ]
+  },
+  "boundary": "Frozen intended inputs; import and browser results must be checked independently. This is book navigation, not proof of real-world money attribution."
+}

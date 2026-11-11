@@ -1,0 +1,13 @@
+﻿交易流水号,交易时间,付款账号,付款人开户行,收款账号,收款人开户行,本方账号,本方开户银行,交易金额,本笔交易后账面余额,交易币种,记账顺序号,参考号机构,参考号渠道,参考号业务域,跨账簿事件参考号
+SYN-SYN-A-SOURCE-A,2026-01-01 10:00:00,SYN-S,Synthetic bank,SYN-A,Synthetic bank,SYN-A,Synthetic bank,100.00,100.00,CNY,1,Synthetic issuer,Synthetic settlement,Synthetic radial trace 2026,SOURCE-A
+SYN-SYN-A-AB-ONE,2026-01-01 10:10:00,SYN-A,Synthetic bank,SYN-B,Synthetic bank,SYN-A,Synthetic bank,60.00,40.00,CNY,2,Synthetic issuer,Synthetic settlement,Synthetic radial trace 2026,AB-ONE
+SYN-SYN-A-AX,2026-01-01 10:15:00,SYN-A,Synthetic bank,SYN-X,Synthetic bank,SYN-A,Synthetic bank,40.00,0.00,CNY,3,Synthetic issuer,Synthetic settlement,Synthetic radial trace 2026,AX
+SYN-SYN-A-SOURCE-A2,2026-01-01 10:20:00,SYN-S,Synthetic bank,SYN-A,Synthetic bank,SYN-A,Synthetic bank,25.00,25.00,CNY,4,Synthetic issuer,Synthetic settlement,Synthetic radial trace 2026,SOURCE-A2
+SYN-SYN-A-AB-TWO,2026-01-01 10:30:00,SYN-A,Synthetic bank,SYN-B,Synthetic bank,SYN-A,Synthetic bank,25.00,0.00,CNY,5,Synthetic issuer,Synthetic settlement,Synthetic radial trace 2026,AB-TWO
+SYN-SYN-B-AB-ONE,2026-01-01 10:10:00,SYN-A,Synthetic bank,SYN-B,Synthetic bank,SYN-B,Synthetic bank,60.00,60.00,CNY,1,Synthetic issuer,Synthetic settlement,Synthetic radial trace 2026,AB-ONE
+SYN-SYN-B-BC-ONE,2026-01-01 10:11:00,SYN-B,Synthetic bank,SYN-C,Synthetic bank,SYN-B,Synthetic bank,60.00,0.00,CNY,2,Synthetic issuer,Synthetic settlement,Synthetic radial trace 2026,BC-ONE
+SYN-SYN-B-AB-TWO,2026-01-01 10:30:00,SYN-A,Synthetic bank,SYN-B,Synthetic bank,SYN-B,Synthetic bank,25.00,25.00,CNY,3,Synthetic issuer,Synthetic settlement,Synthetic radial trace 2026,AB-TWO
+SYN-SYN-B-BC-TWO,2026-01-01 10:31:00,SYN-B,Synthetic bank,SYN-C,Synthetic bank,SYN-B,Synthetic bank,25.00,0.00,CNY,4,Synthetic issuer,Synthetic settlement,Synthetic radial trace 2026,BC-TWO
+SYN-SYN-B-FB,2026-01-01 10:40:00,SYN-F,Synthetic bank,SYN-B,Synthetic bank,SYN-B,Synthetic bank,10.00,10.00,CNY,5,Synthetic issuer,Synthetic settlement,Synthetic radial trace 2026,FB
+SYN-SYN-B-BY,2026-01-01 10:41:00,SYN-B,Synthetic bank,SYN-Y,Synthetic bank,SYN-B,Synthetic bank,10.00,0.00,CNY,6,Synthetic issuer,Synthetic settlement,Synthetic radial trace 2026,BY
+SYN-SYN-D-UNRELATED,2026-01-01 10:05:00,SYN-D,Synthetic bank,SYN-E,Synthetic bank,SYN-D,Synthetic bank,5.00,0.00,CNY,1,Synthetic issuer,Synthetic settlement,Synthetic radial trace 2026,UNRELATED

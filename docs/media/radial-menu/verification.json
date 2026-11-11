@@ -1,0 +1,476 @@
+{
+  "recordedAt": "2026-11-11T16:08:01.484Z",
+  "fixture": "synthetic-book.csv",
+  "independentGold": "expected.json",
+  "baseMain": "6025087d38b2ebffe410ae21af596e5cf59c45fe",
+  "originalPr90": "5b87c6a9024e135707e0c8ca9179c583355017ec",
+  "environment": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+    "viewport": [
+      700,
+      947,
+      1.6399999856948853
+    ],
+    "theme": {
+      "ftTheme": "light",
+      "ftAccent": "violet",
+      "ftTranslucency": "false"
+    },
+    "menu": {
+      "open": true,
+      "kind": "edge",
+      "count": 3,
+      "active": 0,
+      "sub": -1,
+      "groupOpen": false
+    }
+  },
+  "sourceSha256": {
+    "static/graph-radial-menu.js": "1338bd8a92c9920dd3934800eeb08910bbae6c3f35ed584b5595814cc685d214",
+    "static/style.css": "92dba0ba9a7c26c1fe4d29bb86a19f6352a3856fb426fbe13881b7db918c9f15",
+    "static/app.js": "4ef6e817f4b13d1529182b835351641f13925ecadee5e5c387a07de1e5a4c52b",
+    "static/index.html": "625c80ea50c60b4c83c5b1b35395ee64dbfad823229296642d65227402c77a00",
+    "static/canvas-editor.js": "283677f4753fb46b6fa6f0355e7f0095a0d583341364103b7aef984b63a3f991",
+    "static/ribbon-commands.js": "ecd36777b5c5722fa6e812dd014d294815baa0103edf7706f95881786430e8ff",
+    "static/neighborhood.js": "3f97154b9d297a4e66c752dc6367872664f444409ba0c256a1546038c551b1eb",
+    "static/table-scroll.js": "e1a7ccde487b32185ff28054007a4ff21ffbe9274fed3a15471f6b75caeb9096",
+    "app/main.py": "00007b9f142f19c87135eceb6d96046b9eca1bb6959379750fd30051ccbd78fe"
+  },
+  "checks": {
+    "blankAll": {
+      "factsUnchanged": true,
+      "status": {
+        "animatedCount": 0,
+        "commitCount": 0,
+        "count": 5,
+        "destroyed": false,
+        "dragging": false,
+        "haloCount": 0,
+        "lastCommitMs": 0,
+        "outlineCount": 5,
+        "preview": false,
+        "visualsVisible": true
+      }
+    },
+    "nodeWhileMulti": {
+      "menu": {
+        "active": -1,
+        "count": 3,
+        "groupOpen": false,
+        "kind": "node",
+        "open": true,
+        "sub": -1
+      },
+      "selected": 5
+    },
+    "nodeDetails": {
+      "history": 0,
+      "selectedAccount": "SYN-A",
+      "selectedCount": 1
+    },
+    "nodeFlows": {
+      "hasDrawer": false,
+      "history": 0,
+      "rows": 5,
+      "total": 5
+    },
+    "annotation": {
+      "saved": true,
+      "historyEntries": 1,
+      "undoRestored": true
+    },
+    "hiddenSource": {
+      "before": {
+        "camera": "[1.6,0,0,0,1.6,0,-135.64042968750005,-7.03792572021473,1]",
+        "history": 1,
+        "positions": "{\"fte_95747fc249307ba7ab35c2ae844d5935\":{\"x\":422.2752685546875,\"y\":324.99999999999994},\"fte_cab563ece915f2c8555718caf33c1180\":{\"x\":676.8346923828126,\"y\":320.34999999999997},\"fte_5609500150436445c08530569a1ebdc7\":{\"x\":795.4255126953125,\"y\":320.34999999999997},\"fte_f06f45721b8e76c767d92d52c0fdd558\":{\"x\":552.7460693359376,\"y\":324.99999999999994},\"fte_19460b200b1176a9ac280f429baeb0bc\":{\"x\":284.5744873046875,\"y\":324.99999999999994}}",
+        "tracked": [
+          "13",
+          "15",
+          "24"
+        ],
+        "visible": [
+          "SYN-A",
+          "SYN-X"
+        ]
+      },
+      "after": {
+        "camera": "[1.6,0,0,0,1.6,0,-135.64042968750005,-7.03792572021473,1]",
+        "checkedAnchors": 0,
+        "focus": "graphContainer",
+        "history": 2,
+        "positions": "{\"fte_95747fc249307ba7ab35c2ae844d5935\":{\"x\":422.2752685546875,\"y\":324.99999999999994},\"fte_cab563ece915f2c8555718caf33c1180\":{\"x\":676.8346923828126,\"y\":320.34999999999997},\"fte_5609500150436445c08530569a1ebdc7\":{\"x\":795.4255126953125,\"y\":320.34999999999997},\"fte_f06f45721b8e76c767d92d52c0fdd558\":{\"x\":552.7460693359376,\"y\":324.99999999999994},\"fte_19460b200b1176a9ac280f429baeb0bc\":{\"x\":284.5744873046875,\"y\":324.99999999999994}}",
+        "tracked": [
+          "13",
+          "15",
+          "24"
+        ],
+        "visible": [
+          "SYN-A",
+          "SYN-S",
+          "SYN-X"
+        ]
+      },
+      "positionsUnchanged": true,
+      "cameraUnchanged": true,
+      "oneHistory": true,
+      "undo": {
+        "camera": "[1.6,0,0,0,1.6,0,-135.64042968750005,-7.03792572021473,1]",
+        "focus": "graphContainer",
+        "history": {
+          "busy": false,
+          "bytes": 21458,
+          "canRedo": true,
+          "canUndo": true,
+          "count": 2,
+          "limitReached": false,
+          "message": "",
+          "redoLabel": "追踪来源",
+          "undoLabel": "查看账号邻域"
+        },
+        "positions": "{\"fte_95747fc249307ba7ab35c2ae844d5935\":{\"x\":422.2752685546875,\"y\":324.99999999999994},\"fte_cab563ece915f2c8555718caf33c1180\":{\"x\":676.8346923828126,\"y\":320.34999999999997},\"fte_5609500150436445c08530569a1ebdc7\":{\"x\":795.4255126953125,\"y\":320.34999999999997},\"fte_f06f45721b8e76c767d92d52c0fdd558\":{\"x\":552.7460693359376,\"y\":324.99999999999994},\"fte_19460b200b1176a9ac280f429baeb0bc\":{\"x\":284.5744873046875,\"y\":324.99999999999994}}",
+        "tracked": [
+          "13",
+          "15",
+          "24"
+        ],
+        "visible": [
+          "SYN-A",
+          "SYN-X"
+        ],
+        "restored": true
+      }
+    },
+    "singleTarget": {
+      "before": {
+        "camera": "[1.6,0,0,0,1.6,0,-315.2505035400393,-200.60000000000002,1]",
+        "history": 0,
+        "ids": [
+          "34"
+        ],
+        "point": {
+          "x": 1018.9718773268154,
+          "y": 510.9002450295442
+        },
+        "positions": "{\"fte_6b18c4a4a190abc3598ac7002d878994\":{\"x\":601.6678955078125,\"y\":325},\"fte_0c8f65cf70034104f37e54fad3754d93\":{\"x\":472.1970947265625,\"y\":325}}",
+        "tracked": [
+          "34"
+        ]
+      },
+      "after": {
+        "camera": "[1.6,0,0,0,1.6,0,-315.2505035400393,-200.60000000000002,1]",
+        "focus": "graphContainer",
+        "history": 1,
+        "newBody": {
+          "bounds": {
+            "maxX": 803.0181292724608,
+            "maxY": 344.59999999999997,
+            "minX": 752.6181292724607,
+            "minY": 294.2
+          },
+          "inside": true,
+          "visible": true
+        },
+        "positions": "{\"fte_6b18c4a4a190abc3598ac7002d878994\":{\"x\":601.6678955078125,\"y\":325},\"fte_0c8f65cf70034104f37e54fad3754d93\":{\"x\":472.1970947265625,\"y\":325},\"fte_a2629c1f549a172f581aa4c6a7c565ce\":{\"x\":683.1678955078125,\"y\":325}}",
+        "tracked": [
+          "34",
+          "35"
+        ],
+        "visible": [
+          "SYN-B",
+          "SYN-F",
+          "SYN-Y"
+        ]
+      },
+      "exactIds": true,
+      "oldPositionsUnchanged": true,
+      "cameraUnchanged": true,
+      "oneHistory": true
+    },
+    "aggregateCancel": {
+      "initial": {
+        "checked": 0,
+        "history": 0,
+        "rawIds": [
+          "38",
+          "41",
+          "42",
+          "44"
+        ],
+        "rows": 2,
+        "submitDisabled": true,
+        "tracked": [
+          "38",
+          "41",
+          "42",
+          "44"
+        ]
+      },
+      "after": {
+        "focus": "graphContainer",
+        "history": 0,
+        "modal": false,
+        "tracked": [
+          "38",
+          "41",
+          "42",
+          "44"
+        ]
+      },
+      "unchanged": true
+    },
+    "aggregateSubmit": {
+      "before": {
+        "selected": [
+          "41",
+          "44"
+        ],
+        "tracked": [
+          "38",
+          "41",
+          "42",
+          "44"
+        ],
+        "history": 0,
+        "positions": "{\"fte_95747fc249307ba7ab35c2ae844d5935\":{\"x\":108.439599609375,\"y\":355.99999999999994},\"fte_6b18c4a4a190abc3598ac7002d878994\":{\"x\":247.560400390625,\"y\":355.99999999999994}}",
+        "camera": "[1.6,0,0,0,1.6,0,-106.80000000000007,-240.9120819091795,1]"
+      },
+      "after": {
+        "tracked": [
+          "38",
+          "40",
+          "41",
+          "42",
+          "44"
+        ],
+        "history": 1,
+        "positions": "{\"fte_95747fc249307ba7ab35c2ae844d5935\":{\"x\":108.439599609375,\"y\":355.99999999999994},\"fte_6b18c4a4a190abc3598ac7002d878994\":{\"x\":247.560400390625,\"y\":355.99999999999994},\"fte_19460b200b1176a9ac280f429baeb0bc\":{\"x\":26.939599609374994,\"y\":355.99999999999994}}",
+        "camera": "[1.6,0,0,0,1.6,0,-106.80000000000007,-240.9120819091795,1]",
+        "focus": "graphContainer",
+        "modal": false,
+        "visible": [
+          "SYN-A",
+          "SYN-B",
+          "SYN-S"
+        ]
+      },
+      "exactIds": true,
+      "oldPositionsUnchanged": true,
+      "cameraUnchanged": true,
+      "oneHistory": true
+    },
+    "nodeQueryAlias": {
+      "value": "SYN-A",
+      "exact": {
+        "exactAccount": "fte_95747fc249307ba7ab35c2ae844d5935",
+        "exactValue": "SYN-A"
+      },
+      "rows": 5,
+      "history": 1,
+      "modal": false
+    },
+    "blankSave": {
+      "opened": "另存为新画布",
+      "focused": "画布名称",
+      "confirmed": false
+    },
+    "blankExport": {
+      "format": "PNG",
+      "completed": true,
+      "path": "export-from-radial.png",
+      "inspected": true,
+      "menuIncluded": false
+    },
+    "keyboardAndReduced": {
+      "hoverThenArrowDown": "保存 → 导出",
+      "focused": "导出",
+      "dynamicMedia": "reduce",
+      "snappedAlphas": [
+        0,
+        0,
+        0,
+        0.82
+      ],
+      "settingsOpened": true
+    },
+    "narrowMenu": {
+      "size": [
+        390,
+        902,
+        0.8199999928474426
+      ],
+      "rect": {
+        "x": 39.99618911743164,
+        "y": 372.7134094238281,
+        "width": 341.9969482421875,
+        "height": 341.9969482421875,
+        "top": 372.7134094238281,
+        "right": 381.99313735961914,
+        "bottom": 714.7103576660156,
+        "left": 39.99618911743164
+      },
+      "focus": "全选",
+      "state": {
+        "open": true,
+        "kind": "blank",
+        "count": 4,
+        "active": 0,
+        "sub": -1,
+        "groupOpen": false
+      }
+    },
+    "escapeSettingsNormal": {
+      "opened": true
+    },
+    "presentation": {
+      "menus": {
+        "node": [
+          "详情",
+          "查看流水",
+          "标注"
+        ],
+        "edge": [
+          "详情",
+          "来源",
+          "去向"
+        ],
+        "blank": [
+          "全选",
+          "撤回",
+          "保存",
+          "导出"
+        ]
+      },
+      "finalTheme": "light-violet",
+      "finalViewport": [
+        700,
+        947,
+        1.6399999856948853
+      ],
+      "narrowGeometryOnly": {
+        "requested": [
+          320,
+          740
+        ],
+        "measured": [
+          390,
+          902,
+          0.8199999928474426
+        ],
+        "boundsInsideViewport": true,
+        "screenshotQualification": "excluded: IAB viewport screenshot pipeline changed capture size; no narrow visual acceptance claim"
+      },
+      "mediaOverrideReset": true,
+      "viewportOverrideReset": true
+    },
+    "limits": [
+      "Synthetic own-book fixtures only; setup used public APIs, not UI import acceptance.",
+      "No Windows/native installer/DPI/performance qualification.",
+      "No zero-overlap layout or general full-suite acceptance claim."
+    ]
+  },
+  "artifacts": {
+    "before-blank.png": {
+      "sha256": "b0a3003fb8e830e6d9edab292265f5b87a2c6706b0187804e5edbad7e927a795",
+      "bytes": 509121,
+      "pixelSize": [
+        2560,
+        1440
+      ]
+    },
+    "node-light.png": {
+      "sha256": "9689259e464963a5dac4631bc2073e33a76cdfec956ec27b10355372a837ea7b",
+      "bytes": 251956,
+      "pixelSize": [
+        1148,
+        1554
+      ]
+    },
+    "edge-source-light.png": {
+      "sha256": "7fbe0e1f433ec7c6ade056a310e6f1f572f8a877c4181d9d8c2c7cce473ed095",
+      "bytes": 232744,
+      "pixelSize": [
+        1148,
+        1554
+      ]
+    },
+    "canvas-light.png": {
+      "sha256": "020b0e24901e3e9c3eeb8e6623122dfb7b054af0e9e374ac3f715c617d35ed88",
+      "bytes": 255218,
+      "pixelSize": [
+        1148,
+        1554
+      ]
+    },
+    "canvas-dark.png": {
+      "sha256": "8bab756ea9414508853dbb3ef546425e222c4fb00246c881c1a0d4565ad1e226",
+      "bytes": 300061,
+      "pixelSize": [
+        1148,
+        1554
+      ]
+    },
+    "anchor-selection.png": {
+      "sha256": "0fe8edaec1e1bc64fff578604e68ac36ac97c879f471b048fa3a269e2f22fd84",
+      "bytes": 212574,
+      "pixelSize": [
+        1148,
+        1554
+      ]
+    },
+    "source-revealed.png": {
+      "sha256": "056a9e51b0c5c20174971a17da8e757145719e8778c51dc7404180c6df77579f",
+      "bytes": 347368,
+      "pixelSize": [
+        2560,
+        1440
+      ]
+    },
+    "target-extended.png": {
+      "sha256": "20aabfdfb85f7dc0e31e2ce6d653c1c5616fc4d36e524ddadec77ec243026415",
+      "bytes": 316875,
+      "pixelSize": [
+        2560,
+        1440
+      ]
+    },
+    "aggregate-traced.png": {
+      "sha256": "ea0857c3180641014d118d70165e37d39cd6d5eab695fc874d495b0cdcffc9a7",
+      "bytes": 235605,
+      "pixelSize": [
+        1148,
+        1554
+      ]
+    },
+    "export-from-radial.png": {
+      "sha256": "70227ac5e13f2a447b006c6a0851d8778c72c578f4656162964f62b51bedc2d2",
+      "bytes": 164884,
+      "pixelSize": [
+        1424,
+        3020
+      ]
+    },
+    "before-hover-frames.json": {
+      "sha256": "2ea04abe0468f3412069b3e18494e214f8e5be2b7c5a40607ee26fb4f7b350f8",
+      "bytes": 1780
+    },
+    "after-hover-frames.json": {
+      "sha256": "e3deb6af694cfacca44945b96f17e3edf394c3d87efdf01bcc5d12c22559315a",
+      "bytes": 3576
+    }
+  },
+  "comparison": {
+    "sourceImagePixels": [
+      706,
+      656
+    ],
+    "comparison": "Source reference and final implementation shown together; compare donut component, not application chrome. Three/four sectors and contextual copy intentionally differ from the reference eight formats.",
+    "finalVisualScreenshots": [
+      "edge-source-light.png",
+      "canvas-light.png",
+      "canvas-dark.png",
+      "anchor-selection.png"
+    ],
+    "responsiveLimit": "390x902 CSS menu geometry read inside viewport; overridden-viewport screenshot pipeline was unsuitable for visual acceptance. Only default-viewport captures qualify as visual evidence."
+  }
+}

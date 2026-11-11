@@ -1033,3 +1033,42 @@ test('conflicting source cards keep the account heading and explain the retained
   assert.match(details.textContent, /SYN-C1/); assert.match(details.textContent, /SYN-C2/);
   assert.equal(writes(h).length, 0);
 });
+
+test('node browse displays its public account and replaces stale exact-value tokens without leaking the entity key', async () => {
+  const h=harness(),account='fte_9007199254740993',display='0000000000000000123';
+  h.state.lastGraph.nodes=[graphNode(account,{display_account:display})];networkReady(h);await h.open(account);
+  for(const id of ['fAccount','fCounter']){
+    h.element(id).dataset.exactAccount='fte_stale';h.element(id).dataset.exactValue='SYN-STALE';
+  }
+  await h.element('ndBrowse').click();await flush();
+  assert.equal(h.element('fAccount').value,display);
+  assert.equal(h.element('fAccount').dataset.exactAccount,account);assert.equal(h.element('fAccount').dataset.exactValue,display);
+  assert.equal(h.element('fCounter').value,'');assert.equal(h.element('fCounter').dataset.exactValue,'');
+  h.run(section('function searchParams(page)', '\nasync function doSearch('));
+  let params=JSON.parse(h.run('JSON.stringify(Object.fromEntries(searchParams(1)))'));
+  assert.equal(params.account,account);assert.equal(params.account_exact,'1');assert.equal(params.entity,undefined);
+  h.element('fAccount').value=display+' edited';await h.element('fAccount').fire('input').completion;
+  params=JSON.parse(h.run('JSON.stringify(Object.fromEntries(searchParams(1)))'));
+  assert.equal(params.account,undefined);assert.equal(params.account_exact,undefined);assert.equal(params.entity,display+' edited');
+});
+
+for(const source of ['profile','graph']) test(`counterparty browse uses known ${source} display values and keeps both exact identities`,async()=>{
+  const h=harness(),account='fte_00000000000000000001',counter='fte_9007199254740993999';
+  const display='0000000000000000123',counterDisplay='0009007199254740993123456789';
+  h.state.lastGraph.nodes=[graphNode(account),graphNode(counter,source==='graph'?{account_number:counterDisplay}:{})];
+  networkReady(h,()=>profile({account_number:display,top_counterparties:[{acct:counter,name:'合成对手',
+    ...(source==='profile'?{display_account:counterDisplay}:{}),in_cnt:1,out_cnt:1,
+    in_totals:[{currency:'CNY',amount:'1.00'}],out_totals:[{currency:'CNY',amount:'2.00'}]}]}));
+  await h.open(account);
+  for(const id of ['fAccount','fCounter'])h.element(id).dataset.exactValue='SYN-OLD-VALUE';
+  await h.element('drawerBody').querySelector('[data-node-counter]').click();await flush();
+  assert.equal(h.element('fAccount').value,display);assert.equal(h.element('fCounter').value,counterDisplay);
+  assert.equal(h.element('fAccount').dataset.exactValue,display);assert.equal(h.element('fCounter').dataset.exactValue,counterDisplay);
+  h.run(section('function searchParams(page)', '\nasync function doSearch('));
+  let params=JSON.parse(h.run('JSON.stringify(Object.fromEntries(searchParams(1)))'));
+  assert.equal(params.account,account);assert.equal(params.counter,counter);
+  assert.equal(params.account_exact,'1');assert.equal(params.counter_exact,'1');
+  h.element('fCounter').value=counterDisplay+' changed';await h.element('fCounter').fire('input').completion;
+  params=JSON.parse(h.run('JSON.stringify(Object.fromEntries(searchParams(1)))'));
+  assert.equal(params.counter,counterDisplay+' changed');assert.equal(params.counter_exact,undefined);
+});

@@ -165,8 +165,14 @@ def test_bulk_tracking_returns_complete_canvas_set_for_compensation(client, data
     assert result["ok"] is True and result["tracked"] == 2 and result["anchors"] == 1
     assert result["skipped_not_main"] == []
     assert len(result["detail"]) == 1 and result["detail"][0]["picked"] == 1
+    assert result["detail"][0]["picked_ids"] == [str(next_flow)]
     assert tracked_ids(client, case_id, canvas_id) == result["tracked_ids"]
     assert tracked_ids(client, case_id, other_canvas) == [excluded]
+    repeated = client.post("/api/track/bulk", json={"case_id": case_id, "canvas_id": canvas_id,
+        "flow_ids": [str(anchor)], "direction": "target", "x": 1, "expected_ids": result["tracked_ids"]})
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["tracked_ids"] == result["tracked_ids"]
+    assert repeated.json()["detail"][0]["picked_ids"] == [str(next_flow)]
     assert restore(client, case_id, result["tracked_ids"], [unrelated], canvas_id=canvas_id).status_code == 200
     assert tracked_ids(client, case_id, canvas_id) == [unrelated]
 
@@ -186,4 +192,5 @@ def test_bulk_tracking_expected_set_rejects_stale_view_without_removing_concurre
     response = client.post("/api/track/bulk", json=payload)
     assert response.status_code == 200, response.text
     assert response.json()["tracked_ids"] == [original, concurrent, anchor]
+    assert response.json()["detail"][0]["picked_ids"] == []
     assert tracked_ids(client, case_id) == [original, concurrent, anchor]

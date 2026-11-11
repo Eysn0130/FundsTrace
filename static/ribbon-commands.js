@@ -254,6 +254,7 @@
     });
   }
   function executeCanvasAction(value) {
+    if (!ready() || state.graphSelection?.status?.().dragging) return false;
     const document_ = root.document;
     const byId = id => document_.getElementById(id);
     const shell = () => byId('workspace')?.fundsWorkspaceShell;
@@ -311,6 +312,10 @@
     const cameraCommand=['zoomIn','zoomOut','zoomReset','fitSelection','focusSelection','locateNew'].includes(command);
     if (!(cameraCommand?graphCameraInteractionAllowed():ready())) { sync(); return false; }
     const ids=selected(),edge=selectedEdge();
+    if (command === 'traceEdge') {
+      if (!inspectingAllowed() || !edge || !['source', 'target'].includes(value)) return false;
+      return traceEdgeDirection(edge, value);
+    }
     if(command==='expandNeighborhood'){
       if(ids.length!==1)return false;
       const id=ids[0],direction=['in','out','both'].includes(value)?value:'both';

@@ -114,6 +114,21 @@ class TrackIn(BaseModel):
     canvas_id: int = 0   # 目标画布（0 = 默认）
 
 
+class FlowSelectionIn(BaseModel):
+    case_id: int
+    canvas_id: int = 0
+    flow_ids: List[str] = Field(min_length=1)
+    page: int = Field(1, ge=1)
+    size: int = Field(50, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def valid_ids(self):
+        if any(not re.fullmatch(r"[1-9][0-9]*", value) or int(value) > 9223372036854775807
+               for value in self.flow_ids):
+            raise ValueError("流水 ID 必须是有效的整数字符串")
+        return self
+
+
 class TrackStateIn(BaseModel):
     case_id: int
     expected_ids: List[int]
@@ -529,6 +544,20 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         source_ledger.decorate(case_id, rows)
         return {"total": total, "page": page, "size": size, "rows": rows, "resolution": resolution,
                 "analysis_revision": revision, "case_event_summary": events, "funds": funds, "time_filter_basis": time_filter_basis, "time_ordering": "within_basis"}
+
+
+@app.post("/api/flows/by-ids")
+def selected_flow_rows(body: FlowSelectionIn):
+    """Page a frozen relationship without putting its complete ID set in a URL."""
+    with db._lock:
+        _require_canvas(body.case_id, body.canvas_id)
+        ids = _require_flows(body.case_id, body.flow_ids)
+        result = flows(case_id=body.case_id, ids=",".join(str(value) for value in ids),
+                       page=body.page, size=body.size, granularity="events")
+        for row in result["rows"]:
+            row["id"] = str(row["id"])
+            row["observation_ids"] = [str(value) for value in row["observation_ids"]]
+        return result
 
 
 @app.get("/api/accounts/{account}/profile")
@@ -1270,6 +1299,7 @@ def track_bulk(body: BulkTrackIn):
                 "account": acct,
                 "counter_kind": "in" if body.direction == "source" else "out",
                 "picked": picked,
+                "picked_ids": [str(row["id"]) for row in rows],
                 "is_main": acct in mains,
                 "ordering": {key: navigation[key] for key in ("status", "reasons")},
             })

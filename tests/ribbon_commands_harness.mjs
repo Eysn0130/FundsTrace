@@ -808,3 +808,22 @@ test('style reset clears annotations through its normal redraw and undo restores
   assert.equal(await f.editor.history.redo(),true);assert.deepEqual(clone(f.state.presentation.annotations),[]);
   assert.deepEqual(f.camera,camera);assert.equal(JSON.stringify(f.state.lastGraph),facts);assert.deepEqual([...f.state.tracked],tracked);
 });
+
+
+test('trace direction dispatches the selected relationship rather than a neighborhood filter',async()=>{
+  const f=harness();f.selectEdge('A=>B');
+  f.run('globalThis.traceCalls=[];traceEdgeDirection=(item,direction)=>{globalThis.traceCalls.push({item,direction});return true}');
+  assert.equal(await f.commands.execute('traceEdge','source'),true);
+  const call=f.run('traceCalls[0]');assert.equal(call.item,f.edges[0]);assert.equal(call.direction,'source');
+  assert.equal(f.state.graphView.visibleIds,null);assert.equal(f.editor.history.status().count,0);
+  assert.equal(await f.commands.execute('traceEdge','invalid'),false);
+});
+
+test('blank select-all action rechecks the history lock at execution',async()=>{
+  const f=harness();f.select(['A']);let release;
+  const gate=new Promise(resolve=>{release=resolve});
+  const pending=f.editor.history.run('Synthetic pending command',()=>gate);
+  assert.equal(await f.commands.execute('canvasAction','selectAll'),false);
+  assert.deepEqual([...f.state.graphSelection.ids],['A']);
+  release();await pending;
+});
