@@ -1,0 +1,181 @@
+{
+  "accent": "rgb(151, 179, 232)",
+  "samples": [
+    {
+      "accentOpacity": "0.046",
+      "active": true,
+      "text": "rgb(233, 234, 236)"
+    },
+    {
+      "accentOpacity": "0.091",
+      "active": true,
+      "text": "rgb(233, 234, 236)"
+    },
+    {
+      "accentOpacity": "0.143",
+      "active": true,
+      "text": "rgb(233, 234, 236)"
+    },
+    {
+      "accentOpacity": "0.201",
+      "active": true,
+      "text": "rgb(233, 234, 236)"
+    },
+    {
+      "accentOpacity": "0.263",
+      "active": true,
+      "text": "rgb(233, 234, 236)"
+    },
+    {
+      "accentOpacity": "0.327",
+      "active": true,
+      "text": "rgb(233, 234, 236)"
+    },
+    {
+      "accentOpacity": "0.392",
+      "active": true,
+      "text": "rgb(233, 234, 236)"
+    },
+    {
+      "accentOpacity": "0.454",
+      "active": true,
+      "text": "rgb(233, 234, 236)"
+    },
+    {
+      "accentOpacity": "0.516",
+      "active": true,
+      "text": "rgb(255, 255, 255)"
+    },
+    {
+      "accentOpacity": "0.573",
+      "active": true,
+      "text": "rgb(255, 255, 255)"
+    },
+    {
+      "accentOpacity": "0.627",
+      "active": true,
+      "text": "rgb(0, 0, 0)"
+    },
+    {
+      "accentOpacity": "0.675",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.72",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.758",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.793",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.822",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.845",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.863",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.881",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.892",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.9",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.905",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.907",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.907",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.905",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.902",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.897",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.892",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.885",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.879",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.872",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.865",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.858",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.852",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    },
+    {
+      "accentOpacity": "0.846",
+      "active": true,
+      "text": "rgb(22, 20, 26)"
+    }
+  ],
+  "surface": "rgb(29, 32, 38)"
+}

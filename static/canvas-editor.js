@@ -513,7 +513,39 @@
     history.invalidate();
     syncControls();
   }
-  window.FundsCanvasEditor = Object.freeze({ history, membership, command, syncControls, invalidateResolution, captureDisplay: () => { const {trackedIds, ...display} = capture(); return display; }, beginDisplayGesture, finishDisplayGesture });
+  function traceAnchors(values, { direction = 'target', x = $('#bulkX').value, binding } = {}) {
+    const ids = [...new Set(Array.from(values || [], String))];
+    const current = () => !binding || (isCurrentCase(binding.context) && state.graph === binding.graph
+      && state.graphView === binding.view && state.graphView.revision === binding.revision);
+    if (!current() || state.graphView.exportDepth || state.graphSelection?.status?.().dragging) return Promise.resolve(false);
+    if (!ids.length || ids.some(id => !/^[1-9]\d*$/.test(id)) || !['source', 'target'].includes(direction)) return Promise.resolve(false);
+    const count = Math.max(1, Math.min(50, Math.floor(Number(x) || 5)));
+    const dirLabel = direction === 'source' ? '来源' : '去向';
+    let confirmed = false;
+    return command(`追踪${dirLabel}`, async context => {
+      if (!current()) return;
+      const result = await mutateTracked(context, before => trackedWrite(context, () => api('/api/track/bulk', {
+        method: 'POST', ...jsonOpts({ case_id: context.caseId, canvas_id: context.canvasId || 0,
+          flow_ids: ids, direction, x: count, expected_ids: before }) })), result => {
+        const revealed = new Set([...ids, ...(result.detail || []).flatMap(item => item.picked_ids || [])].map(String));
+        // Keep the receipt's wire ID representation; never round a string ID.
+        state.justAdded = new Set(result.tracked_ids.filter(id => revealed.has(String(id)))); state.forceFit = false;
+      });
+      if (result && isCurrentCase(context)) {
+        confirmed = true;
+        const notMain = (result.skipped_not_main || []).length;
+        const uncertain = (result.detail || []).filter(item => item.ordering?.reasons?.length).length;
+        const zero = (result.detail || []).filter(item => item.picked === 0 && item.is_main && !item.ordering?.reasons?.length).length;
+        let message = `${dirLabel}追踪完成：已处理 ${result.anchors ?? ids.length} 条原始锚点记录`;
+        if (notMain) message += `；${notMain} 项锚点的${direction === 'source' ? '付款' : '收款'}方不是主账号，保留锚点但未延伸`;
+        if (zero) message += `；${zero} 项锚点在本方账单中无${dirLabel}候选`;
+        if (uncertain) message += `；${uncertain} 项锚点存在先后依据不足的记录，未按导入顺序选取`;
+        message += window.FundsFacts?.tracking?.(result.detail) || '';
+        toast(message);
+      }
+    }).then(ok => ok === true && confirmed);
+  }
+  window.FundsCanvasEditor = Object.freeze({ history, membership, command, traceAnchors, syncControls, invalidateResolution, captureDisplay: () => { const {trackedIds, ...display} = capture(); return display; }, beginDisplayGesture, finishDisplayGesture });
 
   const readGraph = loadGraph;
   loadGraph = async function (retry = true, context = caseContext()) {
@@ -652,26 +684,7 @@
       const ids = window.FundsTableDrafts?.selectedIds?.()
         ?? $$('#flowTbody .flow-ck').filter(node => node.checked).flatMap(flowObservationIds).map(String);
       if (!ids.length) { $('#flowCkCount').textContent = '请先勾选要追踪的流水'; $('#flowCkAll').focus(); return Promise.resolve(false); }
-      const direction = $('#bulkDir').value, x = Math.max(1, Math.min(50, Number($('#bulkX').value) || 5));
-      return command('批量追踪', async context => {
-        const result = await mutateTracked(context, before => trackedWrite(context, () => api('/api/track/bulk', { method: 'POST', ...jsonOpts({ case_id: context.caseId,
-          canvas_id: context.canvasId || 0, flow_ids: ids, direction, x, expected_ids: before }) })), result => {
-          const selected = new Set(ids.map(String));
-          state.justAdded = new Set(result.tracked_ids.filter(id => selected.has(String(id)))); state.forceFit = false;
-        });
-        if (result && isCurrentCase(context)) {
-          const dirLabel = direction === 'source' ? '来源' : '去向';
-          const notMain = (result.skipped_not_main || []).length;
-          const uncertain = (result.detail || []).filter(item => item.ordering?.reasons?.length).length;
-          const zero = (result.detail || []).filter(item => item.picked === 0 && item.is_main && !item.ordering?.reasons?.length).length;
-          let message = `批量追踪完成：${result.anchors} 条起点记录及其${dirLabel}记录共上图 ${result.tracked} 条`;
-          if (notMain) message += `；${notMain} 条起点记录被跳过（${dirLabel === '来源' ? '付款' : '收款'}方不是主账号，无法追踪）`;
-          if (zero) message += `；${zero} 条起点记录在本方账单中无${dirLabel}流水（仅上图了该记录）`;
-          if (uncertain) message += `；${uncertain} 条起点的部分同刻先后尚无依据，未按导入顺序选取`;
-          message += window.FundsFacts?.tracking?.(result.detail) || '';
-          toast(message);
-        }
-      });
+      return traceAnchors(ids, { direction: $('#bulkDir').value, x: $('#bulkX').value });
     };
     $('#btnClearGraph').onclick = async () => {
       const where = state.canvasName ? `画布「${state.canvasName}」` : '默认画布';

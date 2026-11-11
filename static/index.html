@@ -6,7 +6,7 @@
 <link rel="icon" href="/static/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" href="/static/favicon-32.png" sizes="32x32">
 <title>循迹 FundsTrace · 资金流水追踪与关联分析</title>
-<link rel="stylesheet" href="/static/style.css?v=graph-feedback-2">
+<link rel="stylesheet" href="/static/style.css?v=radial-trace-2">
 <link rel="stylesheet" href="/static/desktop-updates.css">
 <link rel="stylesheet" href="/static/navigation.css">
 <link rel="stylesheet" href="/static/appearance.css">
@@ -99,11 +99,11 @@
             <div class="ribbon-slot" data-ribbon-slot="relations"></div>
           </div>
           <span class="ribbon-group-label">图内条件 · 当前画布显示</span></div>
-        <div class="ribbon-group" role="group" aria-label="邻域追踪">
+        <div class="ribbon-group" role="group" aria-label="查看邻域">
           <div class="ribbon-group-body">
             <div class="ribbon-slot" data-ribbon-slot="neighborhood"></div>
           </div>
-          <span class="ribbon-group-label">邻域追踪</span></div>
+          <span class="ribbon-group-label">查看邻域</span></div>
         <div class="ribbon-group" role="group" aria-label="关系核查">
           <div class="ribbon-group-body">
             <button type="button" class="btn ribbon-action" data-ribbon-command="viewFlows" ><img class="ui-icon" src="/static/ui-icons/list.svg" alt=""><span>查流水</span></button>
@@ -253,16 +253,16 @@
         <button type="button" class="btn ribbon-action" data-ribbon-command="timeWindow"><img class="ui-icon" src="/static/ui-icons/calendar.svg" alt=""><span>时间窗口</span></button>
       </div>
       <div id="ribbonNeighborhood" class="ribbon-bundle" data-ribbon-bundle="neighborhood" data-ribbon-home="trace">
-        <button type="button" class="btn ribbon-action" id="btnNeighborActions" data-toolbar-menu="neighborPopover" data-toolbar-menu-kind="form" aria-controls="neighborPopover" aria-expanded="false" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/target.svg" alt=""><span>邻域追踪<img class="ui-icon toolbar-menu-chevron" src="/static/ui-icons/chevron-down.svg" alt=""></span></button>
+        <button type="button" class="btn ribbon-action" id="btnNeighborActions" data-toolbar-menu="neighborPopover" data-toolbar-menu-kind="form" aria-controls="neighborPopover" aria-expanded="false" aria-haspopup="dialog"><img class="ui-icon" src="/static/ui-icons/target.svg" alt=""><span>查看邻域<img class="ui-icon toolbar-menu-chevron" src="/static/ui-icons/chevron-down.svg" alt=""></span></button>
         <section id="neighborPopover" class="toolbar-menu neighborhood-popover" data-toolbar-panel="form" role="dialog" aria-labelledby="neighborTitle" aria-describedby="neighborScope" hidden inert>
-          <header class="neighborhood-head"><h2 id="neighborTitle">邻域追踪</h2><p id="neighborScope">当前画布 · 已追踪账户<span>每次最多展开 50 个一跳邻居</span></p><button type="button" class="btn neighborhood-close" id="btnNeighborClose" aria-label="关闭邻域追踪"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></header>
+          <header class="neighborhood-head"><h2 id="neighborTitle">查看已上图邻域</h2><p id="neighborScope">当前画布 · 已上图账户<span>仅改变显示范围，不新增追踪流水</span></p><button type="button" class="btn neighborhood-close" id="btnNeighborClose" aria-label="关闭查看邻域"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></header>
           <div class="neighborhood-body">
             <div class="neighborhood-draft"><h3>待应用条件</h3>
               <div class="neighborhood-field"><label for="neighborAccount">中心账号</label><div class="neighborhood-input"><div class="neighborhood-search"><input id="neighborAccount" placeholder="卡号 / 账号 / 户名" autocomplete="off" spellcheck="false" aria-describedby="neighborResolvedName neighborSearchCount neighborStatus"><button type="button" class="btn" id="btnNeighborSearch" aria-label="搜索并定位中心账户" title="搜索并定位中心账户"><img class="ui-icon" src="/static/ui-icons/search.svg" alt=""></button></div><p id="neighborResolvedName" class="neighborhood-resolved" hidden></p><p id="neighborSearchCount" class="neighborhood-hint" role="status" hidden></p><div id="neighborSearchResults" class="neighborhood-results" aria-label="匹配的中心账户" hidden></div></div></div>
-              <div class="neighborhood-field"><span id="neighborDirectionLabel">追踪方向</span><div class="neighborhood-input"><select id="neighborDirection" hidden aria-label="追踪方向"><option value="both">双向邻居</option><option value="in">转入来源</option><option value="out">转出去向</option></select><div class="neighborhood-directions" role="group" aria-labelledby="neighborDirectionLabel"><button type="button" id="neighborDirectionIn" aria-pressed="false"><img class="ui-icon" src="/static/ui-icons/arrow-back-up.svg" alt="">转入来源</button><button type="button" id="neighborDirectionBoth" aria-pressed="true"><img class="ui-icon" src="/static/ui-icons/swap.svg" alt="">双向邻居</button><button type="button" id="neighborDirectionOut" aria-pressed="false"><img class="ui-icon" src="/static/ui-icons/arrow-forward-up.svg" alt="">转出去向</button></div><p class="neighborhood-hint">从已追踪账户中查找一跳邻居，保留账户间关系</p></div></div>
+              <div class="neighborhood-field"><span id="neighborDirectionLabel">邻域显示方向</span><div class="neighborhood-input"><select id="neighborDirection" hidden aria-label="邻域显示方向"><option value="both">双向邻居</option><option value="in">转入关系</option><option value="out">转出关系</option></select><div class="neighborhood-directions" role="group" aria-labelledby="neighborDirectionLabel"><button type="button" id="neighborDirectionIn" aria-pressed="false"><img class="ui-icon" src="/static/ui-icons/arrow-back-up.svg" alt="">转入关系</button><button type="button" id="neighborDirectionBoth" aria-pressed="true"><img class="ui-icon" src="/static/ui-icons/swap.svg" alt="">双向邻居</button><button type="button" id="neighborDirectionOut" aria-pressed="false"><img class="ui-icon" src="/static/ui-icons/arrow-forward-up.svg" alt="">转出关系</button></div><p class="neighborhood-hint">只查看已上图的一跳关系，保留账户间关系</p></div></div>
               <div class="neighborhood-field neighborhood-preview"><span>预计结果</span><div class="neighborhood-input"><span id="neighborDraftState" data-state="draft">待选择</span><p><output id="neighborPreviewNodes">—</output> 个账户 <span aria-hidden="true">·</span> <output id="neighborPreviewEdges">—</output> 条关系</p></div></div>
             </div>
-            <aside class="neighborhood-current" aria-labelledby="neighborCurrentTitle"><h3 id="neighborCurrentTitle">当前邻域</h3><dl><div><dt>中心账号</dt><dd><p id="neighborAppliedAccount" class="neighborhood-account">尚未查看邻域</p><p id="neighborAppliedName" class="neighborhood-hint">当前显示完整追踪图</p></dd></div><div><dt>追踪方向</dt><dd id="neighborAppliedDirection">—</dd></div><div><dt>当前规模</dt><dd><p><output id="neighborAppliedNodes">0</output> 个账户 <span aria-hidden="true">·</span> <output id="neighborAppliedEdges">0</output> 条关系</p><p class="neighborhood-hint">已展开 <output id="neighborExpandedCount">0</output> 个邻居 <span aria-hidden="true">·</span> 剩余 <output id="neighborRemainingCount">0</output> 个</p></dd></div></dl><button type="button" class="btn" id="btnExpandNeighbors" disabled><img class="ui-icon" src="/static/ui-icons/network.svg" alt="">继续展开 50 个</button><p id="neighborExpandHint" class="neighborhood-hint">查看邻域后可继续展开</p></aside>
+            <aside class="neighborhood-current" aria-labelledby="neighborCurrentTitle"><h3 id="neighborCurrentTitle">当前邻域</h3><dl><div><dt>中心账号</dt><dd><p id="neighborAppliedAccount" class="neighborhood-account">尚未查看邻域</p><p id="neighborAppliedName" class="neighborhood-hint">当前显示完整追踪图</p></dd></div><div><dt>邻域显示方向</dt><dd id="neighborAppliedDirection">—</dd></div><div><dt>当前规模</dt><dd><p><output id="neighborAppliedNodes">0</output> 个账户 <span aria-hidden="true">·</span> <output id="neighborAppliedEdges">0</output> 条关系</p><p class="neighborhood-hint">已显示 <output id="neighborExpandedCount">0</output> 个邻居 <span aria-hidden="true">·</span> 剩余 <output id="neighborRemainingCount">0</output> 个</p></dd></div></dl><button type="button" class="btn" id="btnExpandNeighbors" disabled><img class="ui-icon" src="/static/ui-icons/network.svg" alt="">继续显示 50 个</button><p id="neighborExpandHint" class="neighborhood-hint">查看邻域后可继续显示</p></aside>
           </div>
           <footer class="neighborhood-footer"><output id="neighborStatus" role="status" aria-live="polite">输入完整账号，或搜索卡号、账号、户名</output><button type="button" class="btn primary" id="btnNeighborhood" disabled>查看邻域</button></footer>
         </section>
@@ -388,7 +388,7 @@
   <section id="canvasWrap">
     <div id="graphLayoutStatus" role="status" aria-live="polite" hidden></div>
     <div id="graphContainer" tabindex="0" role="region" aria-label="关系图谱" aria-describedby="graphSelectionHelp" aria-keyshortcuts="Control+a Meta+a Delete Backspace Control+z Meta+z"></div>
-    <span id="graphSelectionHelp" class="sr-only">单击选中节点或连线；Enter 查看详情；Ctrl 或 Command 点击多选，加 A 全选当前图谱；Delete 或 macOS 删除键从当前画布移出选中节点或连线，原始流水保留；Ctrl 或 Command 加 Z 撤销，加 Shift 和 Z 重做；拖动移动选中节点；双击节点展开邻域，双击连线折点删除折点；Escape 取消选择。</span>
+    <span id="graphSelectionHelp" class="sr-only">单击选中节点或连线；Enter 查看详情；Ctrl 或 Command 点击多选，加 A 全选当前图谱；Delete 或 macOS 删除键从当前画布移出选中节点或连线，原始流水保留；Ctrl 或 Command 加 Z 撤销，加 Shift 和 Z 重做；拖动移动选中节点；双击节点查看已上图邻域，双击连线折点删除折点；Escape 取消选择。</span>
     <div id="legend">
       <div class="graph-legend" aria-label="账户角色图例"><span class="lg" title="只转出（源头）"><i class="dot src"></i>源头</span><span class="lg"><i class="dot mid"></i>中转</span><span class="lg" title="只转入（沉淀）"><i class="dot sink"></i>沉淀</span><span class="lg"><i class="dot main"></i>主账号</span><span class="lg"><i class="dot samename"></i>同户名</span></div>
     </div>
@@ -736,7 +736,7 @@
 <script src="/static/case-workspace.js?v=case-management-1"></script>
 <script src="/static/toolbar-menu.js?v=relation-filter-1"></script>
 <script src="/static/relation-filter.js?v=1"></script>
-<script src="/static/neighborhood.js?v=1"></script>
+<script src="/static/neighborhood.js?v=radial-trace-2"></script>
 <script src="/static/entity-picker.js?v=1"></script>
 <script src="/static/entity-search.js?v=1"></script>
 <script src="/static/node-finder.js?v=1"></script>
@@ -747,9 +747,9 @@
 <script src="/static/main-accounts-view.js?v=neighborhood-search-1"></script>
 <script src="/static/workspace-drafts.js"></script>
 <script src="/static/principal-analysis.js?v=2"></script>
-<script src="/static/app.js?v=graph-feedback-2"></script>
+<script src="/static/app.js?v=radial-trace-2"></script>
 <script src="/static/canvas-history.js?v=1"></script>
-<script src="/static/canvas-editor.js?v=neighborhood-search-1"></script>
+<script src="/static/canvas-editor.js?v=radial-trace-2"></script>
 <script src="/static/table-workspace.js?v=row-canvas-focus-1"></script>
 <script src="/static/workspace-session.js"></script>
 <script src="/static/account-workspace.js"></script>
@@ -761,7 +761,8 @@
 <script src="/static/workflow-ui.js?v=multi-import-1"></script>
 <script src="/static/import-workflow.js"></script>
 <script src="/static/canvas-investigation.js?v=canvas-open-fit-2"></script>
-<script src="/static/ribbon-commands.js?v=canvas-investigation-1"></script>
+<script src="/static/ribbon-commands.js?v=radial-trace-2"></script>
+<script src="/static/graph-radial-menu.js?v=radial-trace-2"></script>
 <script src="/static/ribbon.js?v=canvas-investigation-1"></script>
 </body>
 </html>

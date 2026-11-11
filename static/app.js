@@ -570,6 +570,7 @@ function newGraphView(labelMode) {
     drawnNodes: 0, drawnEdges: 0, exportDepth: 0, amountWidths: null, recentNodeIds: new Set(), autoRoutes: {} };
 }
 function resetGraphView() {
+  closeEdgeTraceDialog(false);
   state.graphView.openingFit?.cancel();
   cancelAnnotationDrag?.(); closeAnnotationEditor();
   clearGraphLocateFeedback();
@@ -1413,7 +1414,8 @@ function installNeighborhood() {
     read: () => {
       const view = state.graphView;
       if (source !== state.lastGraph) {
-        source = state.lastGraph; accounts = source.nodes.map(node => ({ account: String(node.account ?? node.id), name: node.name || '' }));
+        source = state.lastGraph; accounts = source.nodes.map(node => ({ account: String(node.account ?? node.id), name: node.name || '',
+          displayAccount: node.display_account || node.account_number || String(node.account ?? node.id) }));
       }
       const index = view.fullIndex || FundsGraphView.createIndex(source);
       const adjacent = view.direction === 'in' ? index.incoming : view.direction === 'out' ? index.outgoing : index.neighbors;
@@ -3023,6 +3025,7 @@ function edgeLabel(e) {
 }
 
 function renderGraph(rebinding = null) {
+  closeEdgeTraceDialog(false);
   clearGraphLocateFeedback();
   clearGraphHover();
   state.graphCamera?.resize();
@@ -3884,6 +3887,7 @@ function cacheEdgeLabel(item) {
 let _selItem = null;
 let drawerSequence = 0;
 let edgeWorkspace = null;
+let edgeTraceSelection = null;
 function clearEdgeSelectionAppearance(item) {
   if(!item)return;
   (item.getContainer?.()?.get?.('children')||[]).find(shape=>shape.get('name')==='funds-edge-selection-outline')?.remove?.();
@@ -4111,7 +4115,7 @@ function renderNodeWorkspace(workspace) {
   const cardBasis = node.display_card_order === 'undated' ? '当前范围的明确交易卡号缺少时间，稳定选取一张代表卡。' : ({transaction_card: '代表卡取自当前范围最后一笔明确卡号的交易，不表示银行当前有效状态。', tied_transaction_cards: '同刻卡号缺少可比先后依据，稳定选取一张代表卡。', conflicting_transaction_cards: '当前范围的来源卡号存在冲突，已回退账号；卡号保留供检索和复核。', associated_card: '当前范围没有明确交易卡号，使用有依据的关联卡。'})[node.display_basis] || '';
   const avatar = photo ? `<img class="node-avatar" src="${esc(photo)}" alt="${esc(name)}的节点照片">` : '<span class="node-avatar node-avatar-empty"><img class="ui-icon" src="/static/ui-icons/user-search.svg" alt=""></span>';
   $('#drawerBody').innerHTML = `
-    <section class="node-identity"><div class="node-person">${avatar}<div><h2>${esc(name)}</h2><div class="mono">${esc(node.display_account || profile.display_account || node.account_number || profile.account_number || account)}</div>${(profile.cards || node.cards || []).length > 0 ? `<details><summary>账号与关联卡号</summary><p class="mono">原账号 ${esc(profile.account_number || node.account_number || '—')}</p><p>${esc(cardBasis)}</p><p class="mono">${(profile.cards || node.cards).map(esc).join('<br>')}</p>${(node.shared_accounts || []).length ? `<p>同卡其他账号</p><p class="mono">${node.shared_accounts.map(esc).join('<br>')}</p>` : ''}</details>` : ''}${profile.kind === 'subaccount' || node.kind === 'subaccount' ? `<p class="mono">子账户 ${esc(profile.account_number || node.account_number)}</p>` : ''}${profile.status === 'conflict' || node.status === 'conflict' ? '<p>卡账关系存在冲突，已保留来源声明</p>' : ''}${badge ? `<span class="node-badge">${esc(badge)}</span>` : ''}</div></div><div class="node-quick"><button class="btn small" id="ndBrowse" data-node-action type="button">查看流水</button><button class="btn small" id="ndNeighborhood" data-node-action type="button">展开邻域</button></div></section>
+    <section class="node-identity"><div class="node-person">${avatar}<div><h2>${esc(name)}</h2><div class="mono">${esc(node.display_account || profile.display_account || node.account_number || profile.account_number || account)}</div>${(profile.cards || node.cards || []).length > 0 ? `<details><summary>账号与关联卡号</summary><p class="mono">原账号 ${esc(profile.account_number || node.account_number || '—')}</p><p>${esc(cardBasis)}</p><p class="mono">${(profile.cards || node.cards).map(esc).join('<br>')}</p>${(node.shared_accounts || []).length ? `<p>同卡其他账号</p><p class="mono">${node.shared_accounts.map(esc).join('<br>')}</p>` : ''}</details>` : ''}${profile.kind === 'subaccount' || node.kind === 'subaccount' ? `<p class="mono">子账户 ${esc(profile.account_number || node.account_number)}</p>` : ''}${profile.status === 'conflict' || node.status === 'conflict' ? '<p>卡账关系存在冲突，已保留来源声明</p>' : ''}${badge ? `<span class="node-badge">${esc(badge)}</span>` : ''}</div></div><div class="node-quick"><button class="btn small" id="ndBrowse" data-node-action type="button">查看流水</button><button class="btn small" id="ndNeighborhood" data-node-action type="button">查看已上图邻域</button></div></section>
     <section class="node-section"><h3>身份资料</h3><div class="node-form-grid"><div><label for="ndIdInput">身份证号</label><div class="node-field"><input id="ndIdInput" placeholder="未填写" autocomplete="off" value="${esc(draft.idValue)}"><button class="btn small primary" id="ndIdSave" data-node-action type="button">保存</button></div></div><div class="node-photo"><span class="node-field-label">节点照片</span><div class="node-field">${photo ? `<img id="ndPhotoImg" class="node-photo-thumb" src="${esc(photo)}" alt="当前节点照片">` : ''}<span class="muted">${photo ? '已设置照片' : '未设置照片'}</span><input type="file" id="ndPhotoFile" accept=".jpg,.jpeg,.png,.webp,.bmp" hidden><button class="btn small" id="ndPhotoUp" data-node-action type="button">选择照片</button><button class="btn small icon-button" id="ndPhotoMore" data-node-action type="button" aria-label="照片操作" aria-haspopup="menu" aria-controls="nodePhotoMenu" aria-expanded="false"><img class="ui-icon" src="/static/ui-icons/dots.svg" alt=""></button></div></div></div></section>
     <section class="node-section"><h3>图谱显示</h3><div class="node-form-grid"><div><span class="node-field-label">主账号</span><div class="node-field"><span class="muted">${node.is_main === 1 ? '已标记' : '未标记'}</span><button class="btn small" id="ndToggleMain" data-node-action type="button">${node.is_main === 1 ? '取消主账号标记' : '设为主账号'}</button></div></div><div><label for="ndFocusScale">重点展示</label><div class="node-field"><select id="ndFocusScale"><option value="1">正常大小</option>${[1.5,2,2.5,3,3.5,4].map(value => `<option value="${value}" ${draft.focusValue === value ? 'selected' : ''}>放大 ${value} 倍</option>`).join('')}</select><button class="btn small primary" id="ndFocusApply" data-node-action type="button">应用</button></div></div></div></section>
     <section class="node-section node-statistics"><div class="node-section-head"><h3>交易统计</h3><div class="node-scope" role="group" aria-label="统计范围"><button id="ndScopeCase" class="btn small" type="button" aria-pressed="true">本案件</button><button id="ndScopeGraph" class="btn small" type="button" aria-pressed="false">当前图谱</button></div></div><div id="ndStats" class="node-stats"></div><p id="ndStatsScope" class="muted"></p></section>
@@ -4227,11 +4231,21 @@ function nodeRelatedIds(account) {
 }
 function browseNodeFlows(workspace, counter = '') {
   if (!nodeWorkspaceIsCurrent(workspace) || (nodeWrites.size > 0)) return;
-  const account = workspace.account; closeDrawer(false, { keepSelection: true }); switchTab('search');
+  const account = String(workspace.account), counterAccount = String(counter ?? '');
+  const node = workspace.node || {}, profile = workspace.profile || {};
+  const party = (profile.top_counterparties || []).find(value => String(value.acct) === counterAccount);
+  const counterNode = (state.lastGraph.nodes || []).find(value => String(value.account) === counterAccount);
+  const display = String(node.display_account || profile.display_account || node.account_number || profile.account_number || account).trim();
+  const counterDisplay = counterAccount ? String(party?.display_account || counterNode?.display_account
+    || party?.account_number || counterNode?.account_number || counterAccount).trim() : '';
+  closeDrawer(false, { keepSelection: true }); switchTab('search');
   $('#workspace')?.fundsWorkspaceShell?.setSidebarCollapsed(false);
   for (const id of ['#fAccount','#fName','#fCounter','#fKw','#fMin','#fMax','#fFrom','#fTo']) $(id).value = '';
-  $('#fTracked').checked = false; $('#fAccount').value = account; $('#fCounter').value = counter;
-  $('#fAccount').dataset.exactAccount = account; $('#fCounter').dataset.exactAccount = counter; doSearch(1);
+  $('#fTracked').checked = false;
+  for (const [id, canonical, value] of [['#fAccount', account, display], ['#fCounter', counterAccount, counterDisplay]]) {
+    const field = $(id); field.value = value; field.dataset.exactAccount = canonical; field.dataset.exactValue = value;
+  }
+  doSearch(1);
 }
 function openNodeMenu(workspace, element, trigger) {
   if (!nodeWorkspaceIsCurrent(workspace) || (nodeWrites.size > 0) || trigger.disabled) return;
@@ -4357,6 +4371,160 @@ function bindPhotoCrop() {
       syncNodeWorkspaceControls();
     }
   };
+}
+
+function edgeTraceCurrent(workspace) {
+  return !!workspace && workspace === edgeTraceSelection && !workspace.closed
+    && isCurrentCase(workspace.binding.context) && state.graph === workspace.binding.graph
+    && state.graphView === workspace.binding.view && state.graphView.revision === workspace.binding.revision
+    && state.graphView.edgeItems.get(workspace.key) === workspace.item;
+}
+function closeEdgeTraceDialog(restoreFocus = true) {
+  const workspace = edgeTraceSelection;
+  if (!workspace) return;
+  const owned = edgeTraceCurrent(workspace);
+  edgeTraceSelection = null; workspace.closed = true; workspace.abort?.abort();
+  workspace.scroll?.destroy();
+  workspace.selected.clear(); workspace.boxes = [];
+  workspace.dialog.close(); workspace.dialog.remove();
+  if (restoreFocus && owned) $('#graphContainer').focus?.({ preventScroll: true });
+}
+function syncEdgeTraceDialog(workspace) {
+  if (!edgeTraceCurrent(workspace)) return;
+  const busy = workspace.phase === 'loading' || workspace.phase === 'tracking';
+  workspace.dialog.setAttribute('aria-busy', String(busy));
+  workspace.cancel.disabled = workspace.phase === 'tracking';
+  workspace.submit.disabled = workspace.phase !== 'ready' || !workspace.selected.size;
+  workspace.submit.textContent = workspace.phase === 'tracking' ? '正在追踪…' : `追踪所选${workspace.direction === 'source' ? '来源' : '去向'}`;
+  workspace.prev.disabled = busy || workspace.page <= 1;
+  workspace.next.disabled = busy || workspace.page * 50 >= workspace.total;
+  workspace.retry.hidden = workspace.phase !== 'error';
+  const observations = new Set([...workspace.selected.values()].flat()).size;
+  workspace.count.textContent = `已选 ${workspace.selected.size} 笔流水${observations > workspace.selected.size ? ` · ${observations} 条账簿记录` : ''}`;
+  workspace.pageInfo.textContent = `第 ${workspace.page} / ${Math.max(1, Math.ceil(workspace.total / 50))} 页`;
+  for (const box of workspace.boxes) box.disabled = workspace.phase !== 'ready' || box.traceUnavailable;
+}
+function renderEdgeTraceRows(workspace, rows) {
+  if (!edgeTraceCurrent(workspace)) return;
+  const rendered = [], boxes = [];
+  for (const row of rows) {
+    const ids = [...new Set(flowObservationIds(row).map(String))];
+    if (!ids.length || ids.some(id => !workspace.allowed.has(id))) throw new Error('流水响应不属于当前关系，请关闭后重新打开。');
+    const key = ids.slice().sort().join(','), tr = document.createElement('tr');
+    const cell = document.createElement('td'), box = document.createElement('input');
+    box.type = 'checkbox'; box.checked = workspace.selected.has(key); box.traceUnavailable = !!row.source_ledger;
+    box.setAttribute('aria-label', `选择流水 ${fmtTime(row.trade_time)}，${row.payer_name || row.payer_display_account || row.payer_account || '付款方'}至${row.payee_name || row.payee_display_account || row.payee_account || '收款方'}`);
+    box.onchange = () => {
+      if (!edgeTraceCurrent(workspace) || workspace.phase !== 'ready' || box.traceUnavailable) return;
+      if (box.checked) workspace.selected.set(key, ids); else workspace.selected.delete(key);
+      syncEdgeTraceDialog(workspace);
+    };
+    cell.appendChild(box); tr.appendChild(cell);
+    const cells = [
+      esc(fmtTime(row.trade_time)),
+      `${esc(row.payer_name || '未提供户名')}<span class="mono">${esc(row.payer_display_account || row.payer_account || '—')}</span>`,
+      `${esc(row.payee_name || '未提供户名')}<span class="mono">${esc(row.payee_display_account || row.payee_account || '—')}</span>`,
+      moneyHtml(row.amount, row.currency),
+      esc(row.summary || '—') + (row.source_ledger ? '<span class="source-ledger-note">来源记账资金影响未确定或已抵销，不能追踪资金。</span>' : ''),
+    ];
+    for (const [index, html] of cells.entries()) {
+      const td = document.createElement('td'); td.innerHTML = html;
+      if (index === 3) td.className = 'amt';
+      tr.appendChild(td);
+    }
+    tr.onclick = event => {
+      if (event.target?.closest?.('input,button,a') || box.disabled || window.getSelection?.()?.toString()) return;
+      box.checked = !box.checked; box.onchange();
+    };
+    boxes.push(box); rendered.push(tr);
+  }
+  workspace.boxes = boxes; workspace.tbody.replaceChildren(...rendered);
+  workspace.scroll?.sync();
+  if (!rows.length) workspace.status.textContent = '当前关系没有可选的流水。';
+}
+async function loadEdgeTraceRows(workspace, page) {
+  if (!edgeTraceCurrent(workspace) || workspace.phase === 'tracking') return;
+  workspace.abort?.abort(); workspace.abort = new AbortController();
+  const sequence = ++workspace.sequence;
+  workspace.page = page; workspace.phase = 'loading'; workspace.status.textContent = '正在读取当前关系的流水…';
+  workspace.tbody.replaceChildren(); workspace.boxes = []; syncEdgeTraceDialog(workspace);
+  try {
+    const data = await api('/api/flows/by-ids', { method: 'POST', signal: workspace.abort.signal,
+      ...jsonOpts({ case_id: workspace.binding.context.caseId, canvas_id: workspace.binding.context.canvasId || 0,
+        flow_ids: workspace.ids, page, size: 50 }) });
+    if (!edgeTraceCurrent(workspace) || sequence !== workspace.sequence) return;
+    if (!Array.isArray(data.rows) || !Number.isSafeInteger(data.total) || data.total < 0) throw new Error('流水响应不完整，请重试。');
+    if (workspace.analysisRevision && workspace.analysisRevision !== data.analysis_revision) {
+      workspace.selected.clear(); throw new Error('案件数据已更新，请关闭后重新打开追踪。');
+    }
+    workspace.analysisRevision = data.analysis_revision;
+    workspace.total = data.total; workspace.status.textContent = '';
+    renderEdgeTraceRows(workspace, data.rows); workspace.phase = 'ready'; syncEdgeTraceDialog(workspace);
+  } catch (error) {
+    if (!edgeTraceCurrent(workspace) || sequence !== workspace.sequence) return;
+    workspace.phase = 'error'; workspace.status.textContent = String(error.message || '读取失败，请重试。').slice(0, 240);
+    workspace.tbody.replaceChildren(); workspace.boxes = []; syncEdgeTraceDialog(workspace);
+  }
+}
+async function traceEdgeDirection(item, direction) {
+  if (!['source', 'target'].includes(direction) || !item || item.destroyed || state.graphLoading || layoutJob
+    || state.graphView.exportDepth || state.graphSelection?.status?.().dragging
+    || window.FundsCanvasEditor?.history.status().busy) return false;
+  const model = item.getModel(), data = model.data || model, key = edgeKey(model);
+  if (state.graphView.edgeItems.get(key) !== item) return false;
+  if (data.kind === 'source_ledger') {
+    toast('来源记账的资金影响尚未确定或已抵销，不能据此追踪资金来源／去向。', 'warn'); return false;
+  }
+  const ids = [...new Set((data.ids || model.ids || []).map(String))];
+  if (!ids.length || ids.some(id => !/^[1-9]\d*$/.test(id))) {
+    toast('当前关系没有可追踪的原始流水。', 'warn'); return false;
+  }
+  const binding = { context: caseContext(), graph: state.graph, view: state.graphView, revision: state.graphView.revision };
+  const x = Math.max(1, Math.min(50, Math.floor(Number($('#bulkX').value) || 5)));
+  closeEdgeTraceDialog(false);
+  if (ids.length === 1) return window.FundsCanvasEditor?.traceAnchors(ids, { direction, x, binding }) ?? false;
+  const dialog = document.createElement('dialog'); dialog.className = 'modal trace-anchor-modal';
+  const partyLabel = account => {
+    const node = state.lastGraph.nodes.find(node => String(node.account ?? node.id) === String(account));
+    return [node?.name, node?.display_account || node?.account_number || String(account)].filter(Boolean).join(' · ');
+  };
+  dialog.setAttribute('aria-labelledby', 'traceAnchorTitle'); dialog.setAttribute('aria-describedby', 'traceAnchorHelp');
+  dialog.innerHTML = `<section class="modal-box trace-anchor-dialog"><h3 id="traceAnchorTitle">选择本次追踪${direction === 'source' ? '来源' : '去向'}的锚点流水</h3>
+    <p id="traceAnchorHelp">${direction === 'source' ? '按每笔付款方此前转入' : '按每笔收款方此后转出'}的流水延伸，最近 ${x} 笔。以本方账本、同币种和可靠先后为依据；同笔交易的多份账簿记录会一起提交。</p>
+    <p class="trace-anchor-parties">${esc(partyLabel(model.source))} → ${esc(partyLabel(model.target))}</p>
+    <div id="traceAnchorScroll" class="trace-anchor-table-scroll" tabindex="0" role="region" aria-label="当前关系的锚点流水，可水平滚动"><table class="tbl"><thead><tr><th scope="col"><span class="sr-only">选择</span></th><th scope="col">交易时间</th><th scope="col">付款方</th><th scope="col">收款方</th><th scope="col">金额</th><th scope="col">摘要</th></tr></thead><tbody></tbody></table></div>
+    <div class="flow-horizontal-scroll trace-anchor-horizontal-scroll" role="group" aria-label="锚点流水表格水平滚动"><button class="btn small" type="button" data-trace-left aria-label="锚点流水向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><input data-trace-position type="range" min="0" max="0" value="0" step="1" disabled aria-label="锚点流水水平位置" aria-controls="traceAnchorScroll"><button class="btn small" type="button" data-trace-right aria-label="锚点流水向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div>
+    <p data-trace-status role="status"></p><div class="trace-anchor-pages"><button class="btn" type="button" data-trace-prev>上一页</button><span data-trace-page></span><button class="btn" type="button" data-trace-next>下一页</button><button class="btn" type="button" data-trace-retry hidden>重新读取</button></div>
+    <div class="trace-anchor-actions"><span data-trace-count></span><button class="btn" type="button" data-trace-cancel>取消</button><button class="btn primary" type="button" data-trace-submit>追踪所选${direction === 'source' ? '来源' : '去向'}</button></div></section>`;
+  const workspace = edgeTraceSelection = { dialog, binding, item, key, ids, allowed: new Set(ids), direction, x,
+    sequence: 0, page: 1, total: 0, phase: 'loading', selected: new Map(), boxes: [], closed: false,
+    tbody: dialog.querySelector('tbody'), status: dialog.querySelector('[data-trace-status]'),
+    prev: dialog.querySelector('[data-trace-prev]'), next: dialog.querySelector('[data-trace-next]'),
+    pageInfo: dialog.querySelector('[data-trace-page]'), retry: dialog.querySelector('[data-trace-retry]'),
+    count: dialog.querySelector('[data-trace-count]'), cancel: dialog.querySelector('[data-trace-cancel]'),
+    submit: dialog.querySelector('[data-trace-submit]') };
+  workspace.cancel.onclick = () => { if (workspace.phase !== 'tracking') closeEdgeTraceDialog(); };
+  workspace.prev.onclick = () => { if (!workspace.prev.disabled) void loadEdgeTraceRows(workspace, workspace.page - 1); };
+  workspace.next.onclick = () => { if (!workspace.next.disabled) void loadEdgeTraceRows(workspace, workspace.page + 1); };
+  workspace.retry.onclick = () => { if (workspace.phase === 'error') void loadEdgeTraceRows(workspace, workspace.page); };
+  workspace.submit.onclick = async () => {
+    if (!edgeTraceCurrent(workspace) || workspace.phase !== 'ready' || !workspace.selected.size) return false;
+    const selected = [...new Set([...workspace.selected.values()].flat())];
+    workspace.phase = 'tracking'; workspace.status.textContent = '正在追踪，请稍候…'; syncEdgeTraceDialog(workspace);
+    const result = await window.FundsCanvasEditor.traceAnchors(selected, { direction, x, binding });
+    if (!edgeTraceCurrent(workspace)) return result;
+    if (result) closeEdgeTraceDialog();
+    else { workspace.phase = 'ready'; workspace.status.textContent = '本次追踪未完成，请核对提示后重试。'; syncEdgeTraceDialog(workspace); }
+    return result;
+  };
+  dialog.addEventListener('cancel', event => { event.preventDefault(); if (workspace.phase !== 'tracking') closeEdgeTraceDialog(); });
+  dialog.addEventListener('close', () => { if (edgeTraceSelection === workspace) closeEdgeTraceDialog(); });
+  dialog.onclick = event => { if (event.target === dialog && workspace.phase !== 'tracking') closeEdgeTraceDialog(); };
+  document.body.appendChild(dialog); dialog.style.display = 'flex'; dialog.showModal(); workspace.cancel.focus();
+  workspace.scroll = bindTableHorizontalScroll({ viewport: dialog.querySelector('.trace-anchor-table-scroll'),
+    range: dialog.querySelector('[data-trace-position]'), left: dialog.querySelector('[data-trace-left]'),
+    right: dialog.querySelector('[data-trace-right]'), table: dialog.querySelector('table') });
+  await loadEdgeTraceRows(workspace, 1); return true;
 }
 
 function edgeWorkspaceIsCurrent(workspace) {

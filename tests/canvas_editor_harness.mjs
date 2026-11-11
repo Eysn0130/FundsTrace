@@ -11,6 +11,7 @@ function deferred() { let resolve; const promise = new Promise(done => { resolve
 
 function editor({ relationships = [], navigation = false } = {}) {
   const h = harness('app.js'), env = h.run('globalThis'), state = h.run('state');
+  h.element('#bulkDir').value = 'target'; h.element('#bulkX').value = '5';
   const events = new Map(), elementEvents = new Map(), messages = [], searches = [], boxes = [1, 2].map(id => ({ dataset: { id: String(id) }, checked: true }));
   env.setTimeout = (callback, delay = 0) => setTimeout(callback, delay === 1500 ? 0 : delay); env.clearTimeout = clearTimeout;
   env.performance = { now: () => 0 };
@@ -784,9 +785,9 @@ test('bulk success feedback retains anchors, direction, skipped accounts and zer
         detail: [{ is_main: true, picked: 0 }, { is_main: false, picked: 0 }] });
     });
     assert.equal(await f.h.element('#btnBulkTrack').onclick(), true);
-    assert.ok(f.messages.some(item => item.message === `批量追踪完成：2 条起点记录及其${label}记录共上图 2 条`
-      + `；1 条起点记录被跳过（${party}方不是主账号，无法追踪）`
-      + `；1 条起点记录在本方账单中无${label}流水（仅上图了该记录）`));
+    assert.ok(f.messages.some(item => item.message === `${label}追踪完成：已处理 2 条原始锚点记录`
+      + `；1 项锚点的${party}方不是主账号，保留锚点但未延伸`
+      + `；1 项锚点在本方账单中无${label}候选`));
   }
 });
 
@@ -1457,4 +1458,51 @@ test('failed tracking render after a changed resolution cannot resurrect the pre
   assert.deepEqual([...f.state.tracked], [1]);
   assert.equal(f.state.graphView.visibleIds, null); assert.equal(f.state.presentation.onlyAccounts, null);
   assert.equal(f.history.status().count, 0);
+});
+
+
+test('shared trace reveals exactly returned neighbors already tracked outside the current view and is undoable', async () => {
+  const f=editor(),data={tracked_ids:[1,2,3],nodes:['SYN-A','SYN-B','SYN-C','SYN-D','SYN-E'].map(account=>({account})),
+    edges:[{source:'SYN-A',target:'SYN-B',ids:[1]},{source:'SYN-B',target:'SYN-C',ids:[2]},{source:'SYN-D',target:'SYN-E',ids:[3]}]};
+  f.state.lastGraph=data;f.state.tracked=new Set(data.tracked_ids);f.tracked.set('1:0',data.tracked_ids);
+  f.state.graphView.fullIndex=f.env.FundsGraphView.createIndex(data);
+  f.state.graphView.visibleIds=new Set(['SYN-A','SYN-B']);f.state.graphView.root='SYN-A';
+  f.env.renderGraph();const positions=JSON.stringify(f.state.positions),camera=JSON.stringify(f.matrix),boxes=f.boxes.map(box=>box.checked);
+  f.intercept((path,options)=>{
+    if(path==='/api/track/bulk'){
+      const body=JSON.parse(options.body);assert.deepEqual(body.flow_ids,['1']);assert.equal(body.direction,'target');assert.equal(body.x,5);
+      assert.deepEqual(body.expected_ids,[1,2,3]);
+      return response({tracked_ids:[1,2,3],anchors:1,detail:[{picked:1,picked_ids:['2'],is_main:true}]});
+    }
+    if(path.startsWith('/api/graph?'))return response(data);
+    return null;
+  });
+  assert.equal(await f.env.window.FundsCanvasEditor.traceAnchors(['1'],{direction:'target',x:5}),true);
+  assert.deepEqual([...f.state.graphView.visibleIds].sort(),['SYN-A','SYN-B','SYN-C']);
+  assert.equal(JSON.stringify(f.state.positions),positions);assert.equal(JSON.stringify(f.matrix),camera);
+  assert.deepEqual(f.boxes.map(box=>box.checked),boxes);assert.equal(f.history.status().count,1);
+  assert.equal(await f.h.element('#btnUndo').onclick(),true);
+  assert.deepEqual([...f.state.graphView.visibleIds].sort(),['SYN-A','SYN-B']);
+  assert.deepEqual([...f.state.tracked],[1,2,3]);
+});
+
+test('shared trace rejects an expired binding and suppresses rapid duplicate submits', async () => {
+  const f=editor(),api=f.env.window.FundsCanvasEditor;
+  const stale={context:f.h.run('caseContext()'),graph:f.state.graph,view:f.state.graphView,revision:f.state.graphView.revision};
+  f.state.graphView.revision++;
+  assert.equal(await api.traceAnchors(['2'],{direction:'target',binding:stale}),false);
+  f.state.graphView.exportDepth=1;
+  assert.equal(await api.traceAnchors(['2'],{direction:'target'}),false);
+  f.state.graphView.exportDepth=0;
+  assert.equal(f.h.requests.length,0);
+  const gate=deferred(),started=deferred();let writes=0;
+  f.intercept((path,options)=>{
+    if(path!=='/api/track/bulk')return null;
+    writes++;started.resolve();return gate.promise.then(()=>{
+      f.tracked.set('1:0',[1,2]);return response({tracked_ids:[1,2],anchors:1,detail:[{picked_ids:[],picked:0,is_main:true}]});
+    });
+  });
+  const first=api.traceAnchors(['2'],{direction:'source'});await started.promise;
+  assert.equal(await api.traceAnchors(['2'],{direction:'source'}),false);
+  gate.resolve();assert.equal(await first,true);assert.equal(writes,1);assert.equal(f.history.status().count,1);
 });

@@ -1,7 +1,7 @@
 /* Binding-scoped neighborhood drafts. The toolbar owns the floating surface. */
 (function (root) {
   'use strict';
-  const directions = { both: '双向邻居', in: '转入来源', out: '转出去向' };
+  const directions = { both: '双向邻居', in: '转入关系', out: '转出关系' };
   const copyApplied = value => ({ root: '', name: '', direction: 'both', nodes: 0, edges: 0, expanded: 0, remaining: 0, totalNeighbors: 0, ...value });
   const draftKey = value => JSON.stringify([value.account || '', value.direction]);
   const positive = value => /^\d+$/.test(String(value ?? '')) && /[1-9]/.test(String(value));
@@ -28,13 +28,23 @@
       for (const item of value?.accounts || []) {
         const account = String(item?.account ?? '').trim();
         if (!account || seen.has(account)) continue;
-        seen.add(account); all.push({ account, name: String(item.name || '') });
+        const display = String(item.displayAccount ?? account).trim();
+        const displayAccount = display === account && account.startsWith('fte_') ? '' : display;
+        seen.add(account); all.push({ account, displayAccount, name: String(item.name || '') });
       }
       return all;
     }
     function exactAccount(value = draft.account, current = snapshot) {
       const account = String(value).trim();
       return accounts(current).find(item => item.account === account) || null;
+    }
+    function exactInput(value) {
+      const account = String(value).trim(), all = accounts();
+      if (all.filter(item => item.displayAccount === account).length > 1) return null;
+      return all.find(item => item.account === account) || null;
+    }
+    function displayAccount(account) {
+      return exactAccount(account)?.displayAccount || (String(account).startsWith('fte_') ? '' : account);
     }
     function showCount(id, value, unit) {
       const node = el(id); if (!node) return;
@@ -48,14 +58,14 @@
       previewSerial += 1; searchSerial += 1; previewPending = false; searchPending = false; preview = null;
     }
     function writeDraft() {
-      field.value = draft.account; directionField.value = draft.direction;
+      field.value = selected ? selected.displayAccount : draft.account; directionField.value = draft.direction;
     }
     function renderResults() {
       const container = el('neighborSearchResults'); if (!container) return;
       const buttons = results.map(item => {
         const button = doc.createElement('button'); button.type = 'button'; button.className = 'neighborhood-result';
         const name = doc.createElement('span'); name.textContent = item.name || '未填写户名';
-        const account = doc.createElement('span'); account.textContent = item.account; account.className = 'neighborhood-account';
+        const account = doc.createElement('span'); account.textContent = item.displayAccount || '未提供账号'; account.className = 'neighborhood-account';
         button.replaceChildren(name, account); button.disabled = !!currentJob() || searchPending || !!busy();
         button.addEventListener('click', () => { void choose(item.account); }); return button;
       });
@@ -71,13 +81,13 @@
         if (button) { button.disabled = locked; button.setAttribute('aria-pressed', String(draft.direction === key)); }
       }
       const searchButton = el('btnNeighborSearch');
-      if (searchButton) { searchButton.disabled = locked || !draft.account.trim(); searchButton.setAttribute('aria-busy', String(searchPending)); }
+      if (searchButton) { searchButton.disabled = locked || !field.value.trim(); searchButton.setAttribute('aria-busy', String(searchPending)); }
       setText('neighborResolvedName', selected ? selected.name || '未填写户名' : '');
       el('neighborResolvedName').hidden = !selected;
       setText('neighborDraftState', job ? '正在应用' : dirty() ? '待应用' : applied.root ? '已应用' : '待选择');
       el('neighborDraftState').setAttribute('data-state', job ? 'working' : dirty() ? 'draft' : applied.root ? 'applied' : 'draft');
       showCount('neighborPreviewNodes', preview?.nodes, '个账户'); showCount('neighborPreviewEdges', preview?.edges, '条关系');
-      setText('neighborAppliedAccount', applied.root || '尚未查看邻域');
+      setText('neighborAppliedAccount', applied.root ? displayAccount(applied.root) || '未提供账号' : '尚未查看邻域');
       setText('neighborAppliedName', applied.root ? applied.name || '未填写户名' : '当前显示完整追踪图');
       setText('neighborAppliedDirection', applied.root ? directions[applied.direction] || directions.both : '—');
       showCount('neighborAppliedNodes', applied.nodes, '个账户'); showCount('neighborAppliedEdges', applied.edges, '条关系');
@@ -139,7 +149,9 @@
         draft = { account: applied.root, direction: applied.direction }; selected = exactAccount(applied.root);
         failure = ''; locateMessage = ''; results = []; searched = false; writeDraft();
       } else if (changedSource) {
-        cancelWork(); selected = exactAccount(draft.account); results = []; searched = false; failure = ''; locateMessage = '';
+        const resolved = selected?.account === draft.account;
+        cancelWork(); selected = resolved ? exactAccount(draft.account) : exactInput(draft.account); results = []; searched = false; failure = ''; locateMessage = '';
+        if (selected) field.value = selected.displayAccount;
       }
       if (shown && changedSource) void requestPreview(); else render();
       return getState();
@@ -153,8 +165,17 @@
     function input() {
       if (!shown || currentJob() || searchPending) return;
       if (options.read().binding !== binding) { update(); return; }
-      searchSerial += 1; draft = { account: field.value.trim(), direction: directionField.value in directions ? directionField.value : 'both' };
-      selected = exactAccount(); results = []; resultTotal = 0; searched = false; failure = ''; locateMessage = ''; void requestPreview();
+      searchSerial += 1;
+      const query = field.value.trim(); selected = exactInput(query);
+      draft = { account: selected?.account || query, direction: directionField.value in directions ? directionField.value : 'both' };
+      if (selected) field.value = selected.displayAccount;
+      results = []; resultTotal = 0; searched = false; failure = ''; locateMessage = ''; void requestPreview();
+    }
+    function changeDirection() {
+      if (!shown || currentJob() || searchPending) return;
+      if (options.read().binding !== binding) { update(); return; }
+      draft.direction = directionField.value in directions ? directionField.value : 'both';
+      failure = ''; locateMessage = ''; void requestPreview();
     }
     async function choose(account) {
       update();
@@ -162,7 +183,7 @@
       const found = exactAccount(account);
       if (!found) { failure = '该账户已不在当前追踪图，请重新搜索'; results = []; render(); return false; }
       const serial = ++searchSerial, opened = session, saved = stamp(snapshot);
-      selected = found; draft.account = found.account; field.value = found.account; results = []; searched = true;
+      selected = found; draft.account = found.account; field.value = found.displayAccount; results = []; searched = true;
       failure = ''; locateMessage = ''; searchPending = true; void requestPreview(); render();
       try {
         const result = await options.locate(found.account, binding);
@@ -181,9 +202,11 @@
       if (!shown || currentJob() || searchPending || busy()) return false;
       const query = field.value.trim(); draft.account = query; failure = ''; locateMessage = ''; searched = true; resultTotal = 0;
       if (!query) { selected = null; results = []; failure = '请输入卡号、账号或户名'; void requestPreview(); field.focus?.(); return false; }
-      const exact = exactAccount(query), needle = query.toLocaleLowerCase();
-      if (exact) return choose(exact.account);
-      const matches = accounts().filter(item => item.account.toLocaleLowerCase().includes(needle) || item.name.toLocaleLowerCase().includes(needle));
+      const all = accounts(), aliases = all.filter(item => item.displayAccount === query), exact = exactAccount(query), needle = query.toLocaleLowerCase();
+      if (aliases.length === 1) return choose(aliases[0].account);
+      if (!aliases.length && exact) return choose(exact.account);
+      const matches = aliases.length > 1 ? aliases : all.filter(item => item.displayAccount.toLocaleLowerCase().includes(needle)
+        || item.account.toLocaleLowerCase().includes(needle) || item.name.toLocaleLowerCase().includes(needle));
       if (matches.length === 1) return choose(matches[0].account);
       selected = null; results = matches.slice(0, 20); resultTotal = matches.length;
       if (!matches.length) failure = '当前画布的已追踪账户中没有匹配结果';
@@ -222,10 +245,10 @@
       if (event.detail?.menuId !== 'neighborPopover') return;
       if (event.detail.open) begin(); else { end(); update(); }
     });
-    field?.addEventListener('input', input); directionField?.addEventListener('change', input);
+    field?.addEventListener('input', input); directionField?.addEventListener('change', changeDirection);
     for (const key of Object.keys(directions)) el(`neighborDirection${key[0].toUpperCase()}${key.slice(1)}`)?.addEventListener('click', () => {
       if (!shown || currentJob() || searchPending || busy()) return;
-      directionField.value = key; input();
+      directionField.value = key; changeDirection();
     });
     panel?.addEventListener('keydown', event => {
       if (event.target !== field || event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;

@@ -12,6 +12,7 @@ const { launchConfig, HEADER } = require('../host-policy.cjs');
 const { startBackend } = require('../backend.cjs');
 
 const UNIQUE_ROWS = 20000, DUPLICATE_ROWS = 3, EXPECTED_TOTAL = '1240000.00';
+const REQUEST_TIMEOUT_MS = 15000, RECOVERY_TIMEOUT_MS = 180000, POLL_INTERVAL_MS = 200;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function syntheticCsv() {
@@ -40,6 +41,40 @@ function assertReceipt(job) {
   assert.match(job.result.batch_id, /^[1-9]\d*$/);
 }
 
+function recoveryTimeout() {
+  return Object.assign(new Error('TIMEOUT'), { name: 'TimeoutError' });
+}
+
+async function waitForRecoveredImport(read, { now = () => performance.now(), wait = delay, onReadTimeout } = {}) {
+  const deadline = now() + RECOVERY_TIMEOUT_MS;
+  while (true) {
+    const remaining = deadline - now();
+    if (remaining < 1) throw recoveryTimeout();
+    let value, timedOut = false;
+    try { value = await read(Math.floor(Math.min(REQUEST_TIMEOUT_MS, remaining))); }
+    catch (error) {
+      if (error?.name !== 'TimeoutError') throw error;
+      onReadTimeout?.();
+      timedOut = true;
+    }
+    if (now() > deadline) throw recoveryTimeout();
+    if (!timedOut) {
+      if (value.stage === 'done') { assertReceipt(value); return value.result; }
+      assert.notEqual(value.stage, 'error');
+    }
+    const left = deadline - now();
+    if (left < 1) throw recoveryTimeout();
+    await wait(Math.floor(Math.min(POLL_INTERVAL_MS, left)));
+  }
+}
+
+function failureDetails(error, elapsed) {
+  const names = ['Error', 'AssertionError', 'TimeoutError', 'AbortError', 'TypeError', 'SyntaxError',
+    'RangeError', 'ReferenceError', 'AggregateError', 'URIError', 'EvalError'];
+  return { errorName: names.includes(error?.name) ? error.name : 'UNCLASSIFIED',
+    elapsedMs: Number.isFinite(elapsed) ? Math.max(0, Math.round(elapsed)) : null };
+}
+
 async function bounded(promise, ms) {
   let timer;
   try { return await Promise.race([promise, new Promise((_, reject) => {
@@ -65,18 +100,25 @@ function argumentsOf(args) {
 
 async function main() {
   const report = { schemaVersion: 1, status: 'running', checks: {}, timings: {}, failedCheck: null,
+    pollingDiagnostics: { recoveredImportReadTimeouts: 0 },
     synthetic: { inputRows: UNIQUE_ROWS + DUPLICATE_ROWS, uniqueRows: UNIQUE_ROWS,
       duplicateRows: DUPLICATE_ROWS, expectedAmount: EXPECTED_TOTAL },
     limits: { windowsActionsNativeBackendOnly: true, installedBackendPublicHttp: true,
-      recoveryUiInteraction: false, defaultUserDataTouched: false } };
+      recoveryUiInteraction: false, defaultUserDataTouched: false,
+      recoveredImportRequestMaxMs: REQUEST_TIMEOUT_MS, recoveredImportTimeoutMs: RECOVERY_TIMEOUT_MS } };
   const owned = [];
   let stage = 'ciSyntheticRuntime', reportPath, reportOwned = false, runtime;
   async function check(name, action) {
     stage = name;
-    const start = performance.now(), result = await action();
-    report.checks[name] = true;
-    report.timings[name] = Math.round(performance.now() - start);
-    return result;
+    const start = performance.now();
+    try {
+      const result = await action(); report.checks[name] = true; return result;
+    } finally { report.timings[name] = Math.round(performance.now() - start); }
+  }
+  function fail(name, error, elapsed) {
+    report.status = 'failed'; report.failedCheck = name;
+    (report.failures ||= []).push({ check: name, ...failureDetails(error, elapsed) });
+    process.exitCode = 1;
   }
   function boot(config) {
     const instance = { child: null, done: false, exited: null, backend: null };
@@ -95,7 +137,7 @@ async function main() {
     await instance.backend.stop();
     assert.deepEqual(await bounded(instance.exited, 15000), { code: 0, signal: null });
   }
-  function request(ready, endpoint, options = {}, timeout = 15000) {
+  function request(ready, endpoint, options = {}, timeout = REQUEST_TIMEOUT_MS) {
     return fetch(`${ready.origin}${endpoint}`, { ...options, redirect: 'manual',
       headers: { [HEADER]: ready.token, ...options.headers }, signal: AbortSignal.timeout(timeout) });
   }
@@ -181,16 +223,10 @@ async function main() {
       assert.equal((await json(ready, `${base}/stats`)).flows, 0);
       assert.equal((await json(ready, `${importBase}/commit`, post(commitRequest))).started, true);
     });
-    const receipt = await check('recoveredImportCompleted', async () => {
-      const deadline = performance.now() + 180000;
-      while (performance.now() < deadline) {
-        const value = await json(ready, importBase);
-        if (value.stage === 'done') { assertReceipt(value); return value.result; }
-        assert.notEqual(value.stage, 'error');
-        await delay(200);
-      }
-      throw new Error('TIMEOUT');
-    });
+    const receipt = await check('recoveredImportCompleted', () =>
+      waitForRecoveredImport(timeout => json(ready, importBase, undefined, 200, timeout), {
+        onReadTimeout: () => { report.pollingDiagnostics.recoveredImportReadTimeouts++; },
+      }));
     async function verifyCommitted() {
       const stats = await json(ready, `${base}/stats`);
       assert.equal(stats.flows, UNIQUE_ROWS); assert.equal(stats.accounts, 2); assert.equal(stats.batches, 1);
@@ -225,22 +261,25 @@ async function main() {
     });
     await check('finalOwnedBackendClosed', () => stop(completed));
     report.status = 'passed';
-  } catch {
-    report.status = 'failed'; report.failedCheck = stage; process.exitCode = 1;
+  } catch (error) {
+    fail(stage, error, report.timings[stage]);
   } finally {
     for (const instance of owned) {
+      const start = performance.now();
       try {
         await instance.backend?.stop();
         if (instance.exited) await bounded(instance.exited, 15000);
-      } catch { report.status = 'failed'; report.failedCheck = 'ownedProcessCleanup'; process.exitCode = 1; }
+      } catch (error) { fail('ownedProcessCleanup', error, performance.now() - start); }
     }
     if (runtime && owned.every(instance => instance.done)) {
+      const start = performance.now();
       try { await fs.rm(runtime, { recursive: true, force: true }); }
-      catch { report.status = 'failed'; report.failedCheck = 'ownedRuntimeCleanup'; process.exitCode = 1; }
+      catch (error) { fail('ownedRuntimeCleanup', error, performance.now() - start); }
     }
     if (reportOwned) {
+      const start = performance.now();
       try { await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8'); }
-      catch { report.status = 'failed'; report.failedCheck = 'safeReport'; process.exitCode = 1; }
+      catch (error) { fail('safeReport', error, performance.now() - start); }
     }
     if (report.status === 'passed') process.stdout.write(`${JSON.stringify(report)}\n`);
     else process.stderr.write(`${report.failedCheck} failed.\n`);
@@ -248,4 +287,5 @@ async function main() {
 }
 
 if (require.main === module) void main();
-module.exports = { syntheticCsv, assertInterrupted, assertReceipt, argumentsOf };
+module.exports = { syntheticCsv, assertInterrupted, assertReceipt, argumentsOf,
+  waitForRecoveredImport, failureDetails, REQUEST_TIMEOUT_MS, RECOVERY_TIMEOUT_MS };

@@ -141,6 +141,7 @@ function harness({ legacyRevision = false } = {}) {
   vm.runInContext(section(app, 'async function openManagedCase(', 'function installCaseWorkspace('), context);
   vm.runInContext(section(app, 'async function refreshAll(', '/* ---------------- 线标注'), context);
   vm.runInContext(section(editor, '  function capture()', '  function syncControls()'), context);
+  vm.runInContext(section(editor, '  function traceAnchors(', '  window.FundsCanvasEditor ='), context);
   const exportLine = editor.split('\n').find(line => line.includes('window.FundsCanvasEditor ='));
   vm.runInContext(exportLine, context);
   vm.runInContext(source('table-workspace'), context);

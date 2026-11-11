@@ -20,6 +20,7 @@ def test_bulk_respects_explicit_order_independently_of_file_rows(client, make_ca
                                                 "direction": direction, "x": 5})
     assert result.status_code == 200, result.text
     assert result.json()["detail"][0]["picked"] == 0
+    assert result.json()["detail"][0]["picked_ids"] == []
     assert result.json()["tracked_ids"] == [int(anchor["id"])]
     context = client.get(f"/api/context/{anchor['id']}", params={"case_id": cid,
         "side": "payer" if direction == "source" else "payee"}).json()
@@ -40,6 +41,7 @@ def test_bulk_includes_proven_same_time_neighbor(client, make_case, reverse, dir
     result = client.post("/api/track/bulk", json={"case_id": cid, "flow_ids": [int(anchor["id"])],
                                                 "direction": direction, "x": 5}).json()
     assert result["detail"][0]["picked"] == 1
+    assert result["detail"][0]["picked_ids"] == [str(outgoing["id"] if direction == "target" else incoming["id"])]
     assert set(result["tracked_ids"]) == {int(incoming["id"]), int(outgoing["id"])}
 
 
@@ -75,6 +77,7 @@ def test_bulk_counter_observation_uses_only_confirmed_own_order_and_same_currenc
     result = client.post("/api/track/bulk", json={"case_id": cid, "flow_ids": [int(anchor["id"])],
                                                 "direction": "target"}).json()
     assert result["detail"][0]["picked"] == 1
+    assert result["detail"][0]["picked_ids"] == [str(outgoing["id"])]
     assert set(result["tracked_ids"]) == {int(anchor["id"]), int(outgoing["id"])}
 
 

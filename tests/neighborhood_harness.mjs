@@ -137,7 +137,7 @@ test('applying a canonical draft commits once and then reflects authoritative ap
   const h = harness(); await h.open(); h.input('000GRAPH-00003'); h.direction('out'); await flush();
   assert.equal(await h.controller.apply(), true); await flush();
   assert.deepEqual(h.commits, [{ binding: h.state.binding, draft: { account: '000GRAPH-00003', direction: 'out' } }]);
-  assert.equal(h.el('neighborAppliedAccount').textContent, '000GRAPH-00003'); assert.equal(h.el('neighborAppliedDirection').textContent, '转出去向');
+  assert.equal(h.el('neighborAppliedAccount').textContent, '000GRAPH-00003'); assert.equal(h.el('neighborAppliedDirection').textContent, '转出关系');
   assert.equal(h.el('neighborDraftState').textContent, '已应用'); assert.equal(await h.controller.apply(), false);
 });
 
@@ -231,4 +231,57 @@ test('no applied neighborhood keeps expansion disabled and does not fabricate ap
   const h = harness(); h.state.applied = { root: '', nodes: 5, edges: 4, remaining: 99 }; await h.open();
   assert.equal(h.el('neighborAppliedAccount').textContent, '尚未查看邻域'); assert.equal(h.el('neighborAppliedDirection').textContent, '—');
   assert.equal(h.el('btnExpandNeighbors').disabled, true); assert.equal(await h.controller.expand(), false);
+});
+
+test('display account search resolves an internal entity and shows its public account', async () => {
+  const h=harness(),account='fte_9007199254740993',displayAccount='0000000000000000123';
+  h.state.accounts.push({account,displayAccount,name:'合成别名账户'});await h.open();h.input(displayAccount);
+  assert.equal(await h.controller.search(),true);await flush();
+  assert.equal(h.locates[0].account,account);assert.equal(h.el('neighborAccount').value,displayAccount);
+  assert.equal(h.controller.getState().selected.account,account);assert.equal(h.controller.getState().selected.displayAccount,displayAccount);
+  h.direction('out');await flush();assert.equal(await h.controller.apply(),true);await flush();
+  assert.deepEqual(h.commits[0].draft,{account,direction:'out'});
+  assert.equal(h.el('neighborAppliedAccount').textContent,displayAccount);
+});
+
+test('duplicate display accounts require explicit choice and direction changes retain that exact entity', async () => {
+  const h=harness(),displayAccount='SYN-A',first='fte_00000000000000000001',second='fte_9007199254740993999';
+  h.state.accounts.push({account:first,displayAccount,name:'合成甲'}, {account:second,displayAccount,name:'合成乙'});
+  await h.open();h.input(displayAccount);assert.equal(await h.controller.search(),false);await flush();
+  assert.equal(h.locates.length,0);assert.equal(h.controller.getState().selected,null);
+  const candidates=h.el('neighborSearchResults').children;assert.equal(candidates.length,2);
+  assert.equal(candidates[0].children[1].textContent,displayAccount);assert.equal(candidates[1].children[1].textContent,displayAccount);
+  candidates[1].emit('click');await flush();assert.equal(h.locates[0].account,second);
+  h.direction('in');await flush();assert.equal(h.controller.getState().selected.account,second);
+  assert.equal(h.controller.getState().draft.account,second);assert.equal(h.el('neighborAccount').value,displayAccount);
+  h.state.revision++;h.controller.update();await flush();assert.equal(h.controller.getState().selected.account,second);
+  assert.equal(await h.controller.apply(),true);assert.deepEqual(h.commits[0].draft,{account:second,direction:'in'});
+});
+
+test('editing a resolved alias revokes its selection and preserves the new unapplied query', async () => {
+  const h=harness(),account='fte_9007199254740993';
+  h.state.accounts.push({account,displayAccount:'SYN-A',name:'合成甲'});await h.open();h.input('SYN-A');
+  await h.controller.search();await flush();assert.equal(h.controller.getState().selected.account,account);
+  h.input('SYN-pending');h.direction('out');await flush();
+  assert.equal(h.controller.getState().selected,null);assert.equal(h.el('btnNeighborhood').disabled,true);
+  h.state.revision++;h.controller.update();await flush();
+  assert.equal(h.el('neighborAccount').value,'SYN-pending');assert.equal(h.controller.getState().draft.account,'SYN-pending');
+  assert.equal(h.controller.getState().draft.direction,'out');assert.equal(h.commits.length,0);
+});
+
+test('an unavailable display account never presents an opaque entity key as an account', async () => {
+  const h=harness(),account='fte_0123456789abcdef';
+  h.state.accounts.push({account,displayAccount:account,name:'合成未提供账号'});
+  h.state.applied={...h.state.applied,root:account,name:'合成未提供账号'};await h.open();
+  assert.equal(h.el('neighborAppliedAccount').textContent,'未提供账号');
+  assert.equal(h.el('neighborAccount').value,'');assert.equal(h.controller.getState().selected.account,account);
+  assert.equal(h.el('btnNeighborSearch').disabled,true);
+});
+
+test('source refresh cannot resolve an ambiguous display alias through a matching legacy account key', async () => {
+  const h=harness();h.state.accounts=[{account:'00123',displayAccount:'00123',name:'合成旧账户'},
+    {account:'fte_00123',displayAccount:'00123',name:'合成另一账户'}];
+  h.state.applied={root:'',direction:'both'};await h.open();h.input('00123');await h.controller.search();await flush();
+  assert.equal(h.controller.getState().selected,null);h.state.revision++;h.controller.update();await flush();
+  assert.equal(h.controller.getState().selected,null);assert.equal(h.el('btnNeighborhood').disabled,true);
 });
