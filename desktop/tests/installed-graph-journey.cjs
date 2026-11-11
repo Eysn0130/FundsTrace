@@ -394,8 +394,10 @@ function assertAutomaticNodeLabel(snapshot, id) {
   const bounds = node.labelShape.bounds, viewport = snapshot.viewport;
   assert.ok(bounds && Object.values(bounds).every(Number.isFinite)
     && bounds.maxX > bounds.minX && bounds.maxY > bounds.minY);
-  assert.ok(bounds.minX >= 4 && bounds.maxX <= viewport.width - 4
-    && bounds.minY >= 4 && bounds.maxY <= viewport.height - 4);
+  assert.ok(bounds.minX >= 4);
+  assert.ok(bounds.maxX <= viewport.width - 4);
+  assert.ok(bounds.minY >= 4);
+  assert.ok(bounds.maxY <= viewport.height - 4);
   const intersects = other => other && bounds.minX <= other.maxX && bounds.maxX >= other.minX
     && bounds.minY <= other.maxY && bounds.maxY >= other.minY;
   // This leaf's label must have room in automatic mode. Requiring its actual
@@ -493,7 +495,7 @@ function assertAutomaticImportCompletion(receipt) {
   assert.equal(receipt.action, '完成'); assert.equal(receipt.title, '自动处理完成');
   assert.equal(receipt.status, '自动处理完成，全部记录已保存');
   assert.deepEqual(receipt.steps, ['complete', 'complete', 'complete']);
-  assert.equal(receipt.summary, '已保存 3 条记录 · 新增资金流水 3 笔 · 重复 0 笔 · 未计入资金流水 0 条 · 已配对冲正/撤销 0 条（双方均不计有效资金） · 无资金变动 0 条 · 非交易记录 0 条 · 辅助资料 0 条');
+  assert.equal(receipt.summary, '已保存 3 条记录 · 新增流水记录 3 条 · 重复 0 条 · 未计入资金流水 0 条 · 已配对冲正/撤销 0 条（双方均不计有效资金） · 无资金变动 0 条 · 非交易记录 0 条 · 辅助资料 0 条');
 }
 // Inspect the retained preview and visible completion separately; never mutate import state.
 const AUTOMATIC_IMPORT_PROBE = `(() => {
@@ -607,9 +609,20 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       // user's explicit framing action, without changing selection or members.
       step = 'graph-facts';
       await until(async () => {
-        try { assertTrackedGraph(await evaluate(GRAPH_PROBE), ids, count); return true; }
+        try {
+          const snapshot = await evaluate(GRAPH_PROBE);
+          assertTrackedGraph(snapshot, ids, count);
+          // A scoped view loads its own amounts asynchronously. Search its
+          // rendered members only after the requested projection has arrived.
+          assert.deepEqual(sorted(snapshot.renderedNodes.map(node => node.id)), sorted(visible));
+          return true;
+        }
         catch { return false; }
       }, 20000);
+      // Canvas restoration also refreshes the ledger and restores its scroll.
+      // Let that scroll finish before opening a menu dismissed by outside scrolls.
+      await until(() => evaluate(`document.querySelector('#flowTableScroll').getAttribute('aria-busy') !== 'true'`), 15000);
+      await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
       const selectionProbe = `({ nodes: [...state.graphSelection.ids].map(String).sort(), edge: state.graphView.selectedEdge })`;
       const selection = await evaluate(selectionProbe);
       step = 'finder-open';
@@ -742,6 +755,24 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
     await clickElement(`document.querySelector('#btnFit')`);
     await until(() => evaluate(`!layoutJob && state.graphView.viewportFrame == null
       && state.graphView.labelTimer == null && !state.graphView.zoomSettling`), 10000);
+    // Use a horizontal chain so the B–C edge text clears B’s node label.
+    // Leave enough room to clip A while B and C stay fully visible.
+    for (const [id, x, y] of [[ACCOUNTS[0], .15, .48], [ACCOUNTS[1], .52, .48], [ACCOUNTS[2], .79, .48]]) {
+      const gesture = await evaluate(`(() => {
+        const box = document.querySelector('#graphContainer').getBoundingClientRect();
+        const model = state.graph.findById(${JSON.stringify(id)}).getModel();
+        return { from: state.graph.getClientByPoint(model.x,model.y),
+          to: { x: box.left + box.width * ${x}, y: box.top + box.height * ${y} } };
+      })()`);
+      await pointerDrag(gesture.from, gesture.to);
+    }
+    const blank = await evaluate(`(() => {
+      const box = document.querySelector('#graphContainer').getBoundingClientRect();
+      return { x: box.left + box.width * .32, y: box.top + box.height * .15 };
+    })()`);
+    await pointerClick(blank);
+    await until(() => evaluate(`!state.graphSelection.ids.size && state.graphView.hoveredAccount === null
+      && state.graphView.viewportFrame == null && state.graphView.labelTimer == null`), 10000);
     const before = await evaluate(GRAPH_PROBE);
     assertGraph(before, ids, 2);
     for (const id of ACCOUNTS.slice(0, 3)) assertAutomaticNodeLabel(before, id);
@@ -766,7 +797,7 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
       const center = state.graph.getClientByPoint(model.x,model.y);
       const bounds = state.graph.getNodes().flatMap(node => node.getContainer().get('children')
         .map(shape => shape.getCanvasBBox?.())).filter(Boolean);
-      for (const [dx,dy] of [[0,-48],[0,48],[-48,0],[48,0],[0,-96],[0,96]]) {
+      for (const [dx,dy] of [[-48,0],[48,0],[0,-48],[0,48],[0,-96],[0,96]]) {
         const point = { x: Math.round(center.x + dx), y: Math.round(center.y + dy) };
         const x = point.x - box.left, y = point.y - box.top;
         if (x < 24 || x > box.width - 24 || y < 24 || y > box.height - 24
@@ -1234,7 +1265,7 @@ async function runInstalledGraphJourney({ cdp, page, evaluate, clickElement, unt
         savedTypes = await type('polyline'); await prompt('#btnCanvasSave', CANVAS);
         await until(() => evaluate(`(() => {
           const action = window.FundsCanvasActions?.status?.();
-          return [...document.querySelectorAll('#toasts .toast')].some(node => node.textContent.includes('形态已保存'))
+          return [...document.querySelectorAll('.ff-toast-stack:not([hidden]) .ff-toast[data-status=success] .ff-title')].some(node => node.textContent === '画布形态已保存')
             && action?.pending === false && action?.unknown === false;
         })()`), 10000);
         savedWorkspace = await annotation(savedAnnotation);

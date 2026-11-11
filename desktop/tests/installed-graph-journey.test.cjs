@@ -79,7 +79,7 @@ function automaticObservation() {
     ], mappingHidden: true,
     receipt: { open: true, busy: false, resultVisible: true, commitHidden: true, action: '完成',
       title: '自动处理完成', status: '自动处理完成，全部记录已保存', steps: ['complete', 'complete', 'complete'],
-      summary: '已保存 3 条记录 · 新增资金流水 3 笔 · 重复 0 笔 · 未计入资金流水 0 条 · 已配对冲正/撤销 0 条（双方均不计有效资金） · 无资金变动 0 条 · 非交易记录 0 条 · 辅助资料 0 条' } };
+      summary: '已保存 3 条记录 · 新增流水记录 3 条 · 重复 0 条 · 未计入资金流水 0 条 · 已配对冲正/撤销 0 条（双方均不计有效资金） · 无资金变动 0 条 · 非交易记录 0 条 · 辅助资料 0 条' } };
 }
 
 test('automatic acceptance checks every mapped transaction, exact total, source row and classified column', () => {
@@ -171,8 +171,8 @@ for (const [name, mutate] of [
 });
 
 test('automatic completion requires every exact saved, added and disposition count', () => {
-  for (const [from, to] of [['已保存 3 条记录', '已保存 2 条记录'], ['新增资金流水 3 笔', '新增资金流水 2 笔'],
-    ['重复 0 笔', '重复 1 笔'], ['未计入资金流水 0 条', '未计入资金流水 1 条'],
+  for (const [from, to] of [['已保存 3 条记录', '已保存 2 条记录'], ['新增流水记录 3 条', '新增流水记录 2 条'],
+    ['重复 0 条', '重复 1 条'], ['未计入资金流水 0 条', '未计入资金流水 1 条'],
     ['已配对冲正/撤销 0 条', '已配对冲正/撤销 1 条'], ['无资金变动 0 条', '无资金变动 1 条'],
     ['非交易记录 0 条', '非交易记录 1 条'], ['辅助资料 0 条', '辅助资料 1 条']]) {
     const receipt = automaticObservation().receipt; receipt.summary = receipt.summary.replace(from, to);
@@ -965,7 +965,7 @@ for (const newline of ['LF', 'CRLF']) test(`the exact clone and save predicates 
       let admitted, statusReads = 0;
       const context = vm.createContext({ CANVAS: cloneCanvas, state: { canvasId: 9, canvasName: cloneCanvas, graphLoading: false },
         window: { FundsCanvasActions: { status: () => { statusReads++; return action; } } },
-        document: { querySelectorAll: () => [{ textContent: '形态已保存' }] },
+        document: { querySelectorAll: selector => selector === '.ff-toast-stack:not([hidden]) .ff-toast[data-status=success] .ff-title' ? [{ textContent: '画布形态已保存' }] : [] },
         until: async (predicate, ms) => { assert.equal(ms, deadline); admitted = await predicate(); } });
       context.evaluate = expression => vm.runInContext(expression, context);
       const statement = newline === 'CRLF' ? match[0].replace(/\n/g, '\r\n') : match[0];
@@ -987,7 +987,7 @@ for (const newline of ['LF', 'CRLF']) test(`the real default and named restore s
   const context = vm.createContext({ assert, GRAPH_PROBE: 'SYN_WORKSPACE_PROBE', CANVAS: cloneCanvas, editedEdge: cloneKeys[0],
     defaultWorkspace, savedAnnotation: expectedAnnotation, flowIds: ['71', '72', '73'],
     state: { edgeTypes: { [cloneKeys[0]]: 'polyline' }, graphLoading: false, graphInited: true, graph: {}, graphSelection: {} }, window: { FundsCanvasActions: { status: () => ({ pending: false, unknown: false }) } },
-    document: { querySelectorAll: () => [{ textContent: '形态已保存' }] },
+    document: { querySelectorAll: selector => selector === '.ff-toast-stack:not([hidden]) .ff-toast[data-status=success] .ff-title' ? [{ textContent: '画布形态已保存' }] : [] },
     check: async (_name, action) => action(), type: async () => Object.fromEntries(cloneKeys.map(key => [key, 'polyline'])), prompt: async () => {},
     annotation: async () => { if (!target) savedReads++; return current; },
     positions: value => value.renderedNodes.map(node => [node.id, node.x, node.y]).sort((a, b) => a[0].localeCompare(b[0])),

@@ -4,6 +4,7 @@ import type { Case, CaseStats, Flow, FlowPage, ImportPreview, ImportJob, ImportS
 import { App } from './App';
 import { ApiError, type FundsApi } from './lib/api';
 import { WORKSPACE_CHANNEL } from './standalone/workspaceBridge';
+import * as feedbackModule from './feedback/Feedback';
 
 const cases: Case[] = [{ id: '1', name: '合成案件甲', created_at: null }, { id: '2', name: '合成案件乙', created_at: null }];
 const stats = (id: string): CaseStats => ({ case_id: id, flows: 1, accounts: 2, batches: 1, amount_total: '9999999999999999.99', currency: 'CNY', amount_totals: [{ currency: 'CNY', amount: '9999999999999999.99' }] });
@@ -790,6 +791,34 @@ describe('late local import transport replies', () => {
 
 
 describe('settled original import result observation', () => {
+  it('drops late nonterminal child feedback after settlement while forwarding the actual error receipt', async () => {
+    const createFeedback = feedbackModule.createFeedbackChannel;
+    let port: feedbackModule.FundsFeedbackPort | undefined;
+    const feedback = vi.spyOn(feedbackModule, 'createFeedbackChannel').mockImplementation(options => {
+      const channel = createFeedback(options); if (options.publish) port = channel.port; return channel;
+    });
+    const h = embeddedHost(), api = fakeApi(), receipt = deferred<ImportJob>();
+    api.commit = vi.fn(async () => { throw new Error('合成POST回执丢失'); });
+    api.job = vi.fn(() => receipt.promise);
+    try {
+      render(<App api={api} embedded />); h.bind(); await screen.findByRole('button', { name: '核对流水 SYN-1' });
+      await h.upload(); await h.answer('import-acquire'); await screen.findByText('合成POST回执丢失');
+      const requests = h.requests().length;
+      h.send({ type: 'feedback-import-settled', caseId: '1', generation: 1, importId: preview.import_id });
+      await waitFor(() => expect(api.job).toHaveBeenCalledOnce());
+      const before = h.messages.mock.calls.length;
+      for (const status of ['running', 'unknown'] as const) port!.task({ id: `import:${preview.import_id}`,
+        operation: 'import', importId: preview.import_id, status, title: '合成迟到状态' });
+      await act(async () => receipt.resolve({ ...completed, stage: 'error', error: '合成服务端确认失败', result: null }));
+      await screen.findByText('合成服务端确认失败');
+      const tasks = h.messages.mock.calls.slice(before).map(([message]) => message)
+        .filter(message => message.type === 'feedback' && message.event?.kind === 'task');
+      expect(tasks.some(message => message.event.status === 'error')).toBe(true);
+      expect(tasks.every(message => message.event.status === 'error')).toBe(true);
+      expect(api.commit).toHaveBeenCalledOnce(); expect(h.requests()).toHaveLength(requests);
+    } finally { feedback.mockRestore(); h.close(); }
+  });
+
   it.each(['done', 'error'] as const)('reads the real %s receipt into an already-open unknown dialog without another POST or release request', async stage => {
     const h = embeddedHost(), api = fakeApi();
     api.commit = vi.fn(async () => { throw new Error('合成POST回执丢失'); });

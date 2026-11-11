@@ -1160,13 +1160,18 @@ for (const key of ['Delete','Backspace']) test(`canvas Delete command (${key}) r
   const ids=new Set(['SYN-A','SYN-B']),selection={ids,rebind(next){ids.clear();for(const id of next)ids.add(id)},refresh(){},clear(){ids.clear()},destroy(){}};
   f.state.graphSelection=selection;
   const render=f.env.renderGraph;f.env.renderGraph=()=>{render();f.state.graphSelection=selection};
+  const settled=async()=>{
+    const deadline=Date.now()+2000;
+    do { await flush(); assert.ok(Date.now()<deadline,'canvas history command must settle'); }
+    while(f.history.status().busy);
+  };
   const count=f.history.status().count;let prevented=0;
   f.event('keydown',{key,target:f.h.element('#graphContainer'),preventDefault(){prevented++}});
-  await new Promise(resolve=>setTimeout(resolve,10));
+  await settled();
   assert.equal(prevented,1);assert.deepEqual(f.tracked.get('1:0'),[4]);
   assert.equal(f.history.status().count,count+1,'multi-selection and duplicate members form one undoable removal');
   f.event('keydown',{key:'z',ctrlKey:key==='Delete',metaKey:key==='Backspace',target:f.h.element('#graphContainer'),preventDefault(){}});
-  await new Promise(resolve=>setTimeout(resolve,10));
+  await settled();
   assert.deepEqual(f.tracked.get('1:0'),[1,2,3,4]);
   assert.equal(f.h.requests.some(r=>/^\/api\/(flows|imports|cases)/.test(r.path)&&r.options?.method==='DELETE'),false,
     'the canvas shortcut never calls source-data deletion endpoints');

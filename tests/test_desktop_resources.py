@@ -9,6 +9,62 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from scripts import build_desktop_backend as builder
 
 
+def test_direct_build_entry_resolves_its_source_package(tmp_path):
+    import subprocess
+    import sys
+    import textwrap
+
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    entry = scripts / "build_desktop_backend.py"
+    entry.write_bytes((builder.ROOT / "scripts/build_desktop_backend.py").read_bytes())
+    (tmp_path / "desktop_backend.py").touch()
+    package = tmp_path / "app"
+    package.mkdir()
+    (package / "__init__.py").touch()
+    (package / "rar_archive.py").write_text("def decoder_resources(): return []\n", encoding="utf-8")
+    probe = textwrap.dedent("""
+        import importlib.metadata, runpy, sys
+        namespace = runpy.run_path(sys.argv[1])
+        scope = namespace['main'].__globals__
+        scope['resource_files'] = lambda: []
+        scope['native_arch'] = lambda: 'x64'
+        importlib.metadata.version = lambda name: '6.22.3'
+        def reached_native_build(*args, **kwargs):
+            raise SystemExit(0)
+        scope['subprocess'].run = reached_native_build
+        scope['main']()
+    """)
+    result = subprocess.run([sys.executable, "-I", "-c", probe, str(entry)],
+                            cwd=scripts, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_feedback_modules_override_non_javascript_system_mime(tmp_path):
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    probe = textwrap.dedent("""
+        import mimetypes, sys
+        sys.path.insert(0, sys.argv[1])
+        mimetypes.add_type('application/octet-stream', '.mjs')
+        from app.main import app
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        for name in ('feedback-ui.mjs', 'feedback-core.mjs'):
+            response = client.get('/static/' + name)
+            assert response.status_code == 200
+            assert 'javascript' in response.headers['content-type'], response.headers['content-type']
+    """)
+    environment = {**os.environ, "FUND_DATA_DIR": str(tmp_path / "data"),
+                   "MPLCONFIGDIR": str(tmp_path / "matplotlib")}
+    result = subprocess.run([sys.executable, "-I", "-c", probe, str(builder.ROOT)],
+                            env=environment, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.skipif(__import__('sys').platform not in {'darwin', 'win32'}, reason='RAR decoder resources currently target macOS and Windows x64')
 def test_external_rar_decoder_copy_preserves_pinned_bytes_and_executable_mode(tmp_path, monkeypatch):
     import hashlib
