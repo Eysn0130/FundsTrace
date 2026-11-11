@@ -17,6 +17,17 @@ function star(size = 1000) {
       amount_totals: [{ currency: i % 2 ? 'USD' : 'CNY', amount: i % 2 ? '9999999999999999.99' : '0.01' }] })) };
 }
 
+test('a hovered relationship and the selected relationship retain bounded overview labels together',()=>{
+  const graph=star(1000),before=JSON.stringify(graph),index=view.createIndex(graph);
+  const selected=`ROOT=>${account(20)}`,hovered=`ROOT=>${account(999)}`;
+  const policy=view.labels(index,{zoom:.1,mode:'focus',selectedEdge:selected,hoveredEdge:hovered,
+    selectedIds:new Set(index.nodeIds)});
+  assert.ok(policy.edgeKeys.has(selected));assert.ok(policy.edgeKeys.has(hovered));
+  assert.ok(policy.nodeIds.has(account(20)));assert.ok(policy.nodeIds.has(account(999)));
+  assert.equal(policy.nodeIds.size,20);assert.equal(policy.edgeKeys.size,2);
+  assert.equal(JSON.stringify(graph),before);
+});
+
 test('one-hop expansion reports every hidden neighbor and adds deterministic batches', () => {
   const graph = star(), index = view.createIndex(graph), visible = new Set(['ROOT']);
   const first = view.neighborhood(index, 'ROOT', { limit: 50, visible });

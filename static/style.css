@@ -866,13 +866,18 @@ html[data-ft-theme="light"] {
 .graph-selection-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 2; }
 .graph-selection-halo { position: absolute; transform: translate(-50%, -50%); pointer-events: none; }
 .graph-locate-layer { z-index: 3; }
+.graph-flow-layer { color: var(--graph-selection); animation: graph-flow-emphasis 650ms ease-out both; }
+.graph-flow-layer > svg { position: absolute; inset: 0; overflow: hidden; }
+.graph-flow-node { border-color: currentColor !important; }
+@keyframes graph-flow-emphasis { 0% { opacity: 0; } 18%, 32% { opacity: .75; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .graph-flow-layer { animation: none; opacity: .6; } }
 .graph-locate-arrival { border-color: var(--focus-ring) !important; animation: graph-locate-arrival 600ms ease-out 2; }
 @keyframes graph-locate-arrival { from { transform: scale(1); opacity: 1; } to { transform: scale(1.22); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .graph-locate-arrival { animation: none; opacity: .85; } }
 .graph-selection-ring { display: block; width: 100%; height: 100%; box-sizing: border-box; border: 2px solid var(--graph-selection); border-radius: 50%; opacity: .8; }
 .graph-selection-ring.graph-selection-breathe { animation: graph-selection-breathe 1.8s ease-in-out infinite; }
 .graph-selection-preview { position: absolute; box-sizing: border-box; border: 1px dashed var(--graph-selection); background: var(--graph-selection-surface); color: var(--graph-preview-ink); font-size: 12px; padding: 6px; white-space: nowrap; }
-@keyframes graph-selection-breathe { 0%, 100% { transform: scale(1); opacity: .6; } 50% { transform: scale(var(--graph-breathe-scale, 1.08)); opacity: 1; } }
+@keyframes graph-selection-breathe { 0%, 100% { opacity: .6; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .graph-selection-ring.graph-selection-breathe { animation: none; } }
 .graph-tool-row, .tool-group { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0; max-width: 100%; }
 .graph-explorer { grid-area: 1 / 1; display: flex; align-items: center; padding: 12px 15px; gap: 8px; border-bottom: 1px solid var(--border); background: var(--surface-raised); }

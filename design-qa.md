@@ -1319,3 +1319,28 @@ Current-run browser evidence is in `minimap-smooth-navigation/merge-review/`. Ch
 5. **Collapse/restore — passed.** The52-frame sequence covers closing and reopening. At closure, expanded=false, aria-hidden=true, map tabindex=-1 and navigation=false immediately; the final expanded map is usable without reviving the previous movement. Existing keyboard help and reduced-motion behavior remain intact; no screen-reader acceptance is inferred from visual evidence.
 
 Final local source checks: geometry/navigation/camera/legacy integration274/274 passed; resource/shell Python9/9 passed with the existing Starlette/httpx deprecation warning; JavaScript syntax and whitespace checks passed. The required PR workflow supplies complete Python/G6, contract and vendor checks for its exact candidate; its results and final merge identity are recorded on that PR. No installer, tag, release, download feed or production data is changed.
+
+## 2026-11-11 · 流水行定位的标签同步与短暂强调
+
+基于 main `ab8db088` 的隔离分支，使用七节点／六笔 hub 合成预览复现。上下分栏中先定位流水 6，再切到流水 5：相机已把“合成节点 4”带进画布，标签策略仍等待结束回调。相机现在先同步视口裁剪、标签和选择层，再绘制该帧；同一公共行为回归在旧实现失败、修复后通过，包含减少动态效果的即时定位路径。
+
+- **标签复现与复验。** CSS 视口均为 700×947，每次读取 48 个 rAF 样本。按节点中心距上下边各留 20／50px 的可见条件，旧实现有 30 个样本节点 4 已入场而文字不存在，新实现为 0。两次画布分别高 430／423px，均覆盖该节点由完全离场到入场；这是渲染状态的功能复验，不作为同几何条件的速度或逐像素对比。
+- **行与图对应。** 到达后两个端点和精确流水 ID 对应的实际曲线路径轻亮一次，650ms 清除。快速点 6→5→6 仅留下 6 的两个细环及一条线；自身关系文本处保留空隙。减少动态效果时为静态描边；原生滚轮可直接接管并清除反馈。切换期间完整流水、追踪成员、节点位置、折点、标签比例、presentation、图选择及历史快照相等。异步过期、缺失关系、重建和相机变动另有行为回归。
+- **有限的大图对照。** 同 seed 的 1000 节点／999 关系，双方几何 SHA-256 相同、CSS 1561×878、画布 1505×388、起始 zoom 约 0.061983。三对串行定位观察的旧实现结束耗时为 635.6／594.0／574.4ms，候选为 524.2／478.9／430.6ms；未出现超时或本组测得的耗时回退。最大 rAF 间隔仍达约 114ms，不能据此宣称持续流畅、60 FPS 或普遍性能提升。
+
+实际浏览器使用独立临时库，未连接截图中的运行实例。浏览器尺寸和媒体模拟均已复原，大图预览已关闭。[实际强调截图](docs/media/row-canvas-focus/row-pulse.png)来自最终资源版本；[验证记录](docs/media/row-canvas-focus/verification.json)含采样、输入及资源指纹。截图只展示瞬时外观，动画时序另由 rAF 状态读取和确定性回归支持。
+
+最终定向检查：`pytest tests/test_graph_interaction.py tests/test_workspace_camera.py tests/test_table_workspace.py tests/test_graph_location.py tests/test_graph_viewport.py tests/test_graph_label_collision.py tests/test_graph_view_export.py tests/test_desktop_resources.py -q --tb=short`，**68 passed in 26.05s**，一个既有 Starlette/httpx 弃用警告。JavaScript 语法与 diff 空白检查通过。无 API、文件格式、G6 vendor 或依赖改动；这是源码 UI 修复，不是新的安装包、官网发布或 Windows 原生 GUI／DPI 验收。
+
+## 2026-11-11 · Hover、选择与定位反馈统一
+
+在上一节候选 `eaf353a` 上继续处理维护者指出的重复光圈。实际浏览器确认：单选同时有一个可见 G6 固定圈和一个 CSS 呼吸圈；旧控制器允许十个圈同时呼吸。此次复用原控制器、主题色和角色边框，给同一节点的轮廓明确归属。Hover 保持静态，单选只改变透明度，多选全部静态；不导入新版 G6 的 hover 行为或新增依赖。减少动态效果沿用 [W3C 的系统偏好处理原则](https://www.w3.org/WAI/WCAG22/Understanding/animation-from-interactions)，不据此宣称完整无障碍合规。
+
+1. **指向节点 — 已修正。** Hover 使用一个较轻的轮廓并优先显示标签，选中后由同一个单选视觉接管。[旧单选](docs/media/graph-feedback/02-before-selected.png)的固定圈＋呼吸圈，在[新单选](docs/media/graph-feedback/05-single-selected.png)中成为一个可见 DOM 圈、0 个可见 Canvas 选中圈。20 次只读 rAF/CSS 观察中，圈宽高始终约 30.593px、transform 为 none，只有透明度变化。[节点 hover](docs/media/graph-feedback/04-node-hover.png)不改变选择、相机或历史。
+2. **指向／选中连线 — 已修正。** [Hover](docs/media/graph-feedback/07-edge-hover.png)强调实际路径、箭头及两个端点，移开恢复；[选中](docs/media/graph-feedback/08-edge-selected.png)使用更明确的强调色，取消额外宽外描边。实际同一关系 hover／selected 的 strokeOpacity 为 .65／1，金额编码线宽均为 1.4px；保留路径与文字留缝。旧的 leave 事件不能清除新目标的 hover；选中关系与另一个 hover 关系在概览中最多保留两条关系标签，节点预算不扩张。
+3. **定位与选择交接 — 已修正。** 原 650ms 行反馈继续保留，重合节点的选中／hover 圈在反馈期间隐藏，结束恢复。实际选中端点 0 后定位流水 6：反馈层有两个端点圈，选择层 DOM 圈和可见 Canvas 圈均为 0；到期恢复一个单选圈。减少动态效果时仍只有一个静态圈、animation 为 none；媒体模拟已清除。拖拽、移出、视口、重建、隐藏及导出清理由对应事件路径和公共回归覆盖。
+4. **多选及大图 — 已验证范围内通过。** [两节点](docs/media/graph-feedback/06-multi-selected.png)、七节点及[千节点全选](docs/media/graph-feedback/09-1000-selected.png)的选择动画与 DOM 呼吸圈均为 0。千节点实测保留 1000 个静态 Canvas 轮廓；50 个以上拖动仍只移动一个预览框，预览期间坐标不变，松手一次提交、历史一条，撤销后位置 JSON 完全一致，Escape 后选择／轮廓均为 0。控制器自身记录的本次提交约 46.8ms，不是完整输入到显示延迟或普遍性能结论。另有 5000 节点公共回归验证静态全选、预览、一次提交、清理，以及 0 个控制器 RAF／定时器请求。
+
+上述截图均在本轮实际捕获并检查。七节点 CSS 视口为 700×947，千节点为 1561×878，使用相同 seed 2026 的独立临时 hub；前后截图的相机／Fit 状态不同，仅比较轮廓归属，不声称几何逐像素一致。[验证记录](docs/media/graph-feedback/verification.json)含实际状态、资源指纹及边界。Hover／选中／行定位前后，完整流水、追踪成员、位置、折点、比例、presentation 及历史未被这些纯视觉操作改变；群移本身允许改位置，撤销另行核对。换案与迟到回调采用公共回归证据，本轮浏览器的原生 select 键盘尝试没有实际切案，不冒认为已验收。全页 `document.getAnimations()` 也不是选择动画的隔离计量，清除后不作全页零动画结论。
+
+最终相关 Python 包装回归 **69 passed in 39.30s**（`test_graph_selection`、`test_graph_interaction`、`test_graph_view`、`test_graph_view_export`、`test_graph_viewport`、`test_graph_label_collision`、`test_graph_presentation`、`test_workspace_camera`、`test_canvas_editor`、`test_desktop_resources`），一个既有 Starlette/httpx 弃用警告；之后新增的 5000 全选用例单独 **1 passed**。原重复圈断言先在旧实现失败，再验证修复。保留当前绑定的角色／照片样式、金额宽度、拖动与撤销、PNG 采样清洁／错误／取消／过期恢复检查。源码 UI 交付，不包含新安装包、真实案件、Windows 原生 GUI／DPI或持续 FPS 验收。
