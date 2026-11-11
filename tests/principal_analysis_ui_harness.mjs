@@ -75,7 +75,7 @@ test('the actual edge label preserves ordinary confirmed and unresolved amounts'
   assert.match(app, /'currencies', 'funds', 'event_summary'/);
 });
 
-test('the existing case header and search result render only the authoritative primary amount', async () => {
+test('hidden header and query summaries preserve authoritative counts and source meaning', async () => {
   const elements = new Map();
   const element = selector => elements.get(selector) || elements.set(selector, {innerHTML:'',textContent:'',style:{},classList:{toggle(){}}}).get(selector);
   const exact = {status:'exact',count:{lower:1,upper:1},totals:[{currency:'CNY',amount:'100.00',lower:'100.00',upper:'100.00'}]};
@@ -90,20 +90,22 @@ test('the existing case header and search result render only the authoritative p
   vm.runInContext('updateHeader()',scope); await vm.runInContext('doSearch()',scope);
   assert.match(element('#statLine').innerHTML,/流水 <b>1 笔<\/b>/);
   assert.doesNotMatch(element('#statLine').innerHTML,/<b>2 笔<\/b>/);
-  assert.equal(element('#resultInfo').textContent,'共 1 条记录');
+  assert.equal(element('#resultInfo').textContent,'');
+  assert.equal(element('#resultInfo').hidden,true);
+  assert.equal(state.search.total,1);
   assert.equal(element('#importCoverageNote').hidden,true);
   state.stats.import_coverage={scope:'source_reported_flows',unresolved_records:1,cancelled_records:0,excluded_flows:0,non_monetary_records:0};
   vm.runInContext('updateHeader()',scope);
-  assert.equal(element('#importCoverageNote').hidden,false);
+  assert.equal(element('#importCoverageNote').hidden,true);
   assert.match(element('#importCoverageNote').textContent,/来源审计保留 1 条资金含义未确定/);
   assert.match(element('#importCoverageNote').textContent,/撤回后仍保留/);
   state.stats.import_coverage=null; state.stats.resolution={conflicts:1};
   vm.runInContext('updateHeader()',scope);
-  assert.equal(element('#importCoverageNote').hidden,false);
+  assert.equal(element('#importCoverageNote').hidden,true);
   assert.match(element('#importCoverageNote').textContent,/1 处冲突/);
   state.stats.resolution=null; state.stats.event_summary={conflict_entries:3};
   vm.runInContext('updateHeader()',scope);
-  assert.equal(element('#importCoverageNote').hidden,false);
+  assert.equal(element('#importCoverageNote').hidden,true);
   assert.match(element('#importCoverageNote').textContent,/3 条来源的同笔关联资料存在矛盾/);
   assert.match(element('#importCoverageNote').textContent,/导入记录中核对原行与原值/);
 });

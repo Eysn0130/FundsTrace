@@ -158,7 +158,7 @@ const shape = (item, name) => item.group.children.find(shape => shape.name === n
 function assertNodeBottom(item, message = 'node text remains centered below the actual body') {
   const body = item.getKeyShape().getBBox(), label = text(item), box = label.getBBox();
   near((box.minX + box.maxX) / 2, (body.minX + body.maxX) / 2);
-  near((box.minY - body.maxY) * graph.getZoom(), 6);
+  near((box.minY - body.maxY) * graph.getZoom(), 6 * graph.getZoom());
   assert.equal(bg(item), undefined, message);
   assert.equal(shape(item, 'funds-label-leader'), undefined, message);
   assert.equal(label.attr('stroke'), null); assert.equal(label.attr('lineWidth'), 0);
@@ -562,7 +562,7 @@ graph.drag('SYN-B',-20,-80);
 assert.deepEqual(plain(graph.edges[0].model.controlPoints),[{x:250,y:230}]);
 
 // Saved side/top offsets, font changes, photograph bounds and later zoom/fit
-// share the same measured six-screen-pixel anchor. No geometry/facts move.
+// share the same measured six-world-unit anchor. No geometry/facts move.
 const anchored = plain(oldData);
 anchored.nodes[0].label = '合成丙公司\nSYN-C003\n完整标签';
 anchored.nodes[0].size = 72;
@@ -581,7 +581,7 @@ for (const zoom of [0.4, 2, 1]) {
   for (const item of graph.nodes) assertNodeBottom(item, 'a subsequent drag callback retains the anchor');
 }
 graph.nextFitZoom = 0.73; graph.emit('node:dblclick', {});
-for (const item of graph.nodes) assertNodeBottom(item, 'fit-induced zoom retains six screen pixels');
+for (const item of graph.nodes) assertNodeBottom(item, 'fit-induced zoom retains the scaled six-unit gap');
 assert.deepEqual(graph.nodes.map(item => ({ id: item.model.id, x: item.model.x, y: item.model.y })), positionsBefore);
 assert.equal(graph.nodes[1].model.data.in_amt, '10000000000000000.01');
 

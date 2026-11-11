@@ -22,6 +22,13 @@ const flow = id => ({ id, trade_time: '2026-01-01 12:00:00', payer_name: 'Synthe
 
 const eventRow = (id=17, observation_ids=['17','18']) => ({...flow(id),observation_ids,granularity:'confirmed_event'});
 
+function assertQuietResult(f, total) {
+  assert.equal(f.state.search.total, total, 'pagination retains the authoritative total');
+  assert.equal(f.element('resultInfo').hidden, true, 'a successful result has no count or empty status slot');
+  assert.equal(f.element('resultInfo').textContent, '');
+  assert.equal(f.element('resultInfo').title, '');
+}
+
 // A small DOM with real ancestry, moved-node identity and capture/bubble order.
 // The frozen app's actual renderer, search parameters and table handlers run in
 // this harness; only HTML parsing and network/graph boundaries are synthetic.
@@ -607,6 +614,28 @@ test('old caller-owned A-B-A graph completion cannot consume a fresh binding ref
   await f.context.loadGraph(); assert.equal(f.requests.length, 1);
 });
 
+test('query status hides totals while keeping loading, failure and retry feedback visible', async () => {
+  const f = harness(); f.network(params => pageResult(Number(params.get('page')), 75));
+  await f.search(); assertQuietResult(f, 75);
+  const pending = deferred(); f.network(() => pending.promise);
+  await wheelEdge(f, 1);
+  assert.equal(f.element('resultInfo').hidden, false);
+  assert.equal(f.element('resultInfo').textContent, '正在读取…');
+  pending.reject(new Error('Synthetic continuation failure')); await flush();
+  assert.equal(f.element('resultInfo').hidden, false);
+  assert.equal(f.element('resultInfo').textContent, '续载失败');
+  assert.match(f.element('resultInfo').title, /Synthetic continuation failure/);
+  assert.equal(f.rows().length, 50); assert.equal(f.state.search.total, 75);
+  f.network(params => pageResult(Number(params.get('page')), 75));
+  await wheelEdge(f, 1); assertQuietResult(f, 75); assert.equal(f.rows().length, 75);
+  f.network(async () => { throw new Error('Synthetic query failure'); });
+  assert.equal(await f.search(), false);
+  assert.equal(f.element('resultInfo').hidden, false);
+  assert.equal(f.element('resultInfo').textContent, '查询失败 · 保留上次结果');
+  assert.equal(f.state.search.total, 75); assert.equal(f.rows().length, 75);
+  f.network(() => pageResult(1, 0)); await f.search(); assertQuietResult(f, 0);
+});
+
 test('query disclosure keeps table tools, results and selection usable and restores internal focus', async () => {
   const f = harness(); await f.search(); f.toggleAnchor(1, true);
   f.element('fAccount').focus(); f.element('btnQueryToggle').click();
@@ -614,7 +643,7 @@ test('query disclosure keeps table tools, results and selection usable and resto
   assert.equal(f.element('btnQueryToggle').getAttribute('aria-expanded'), 'false');
   assert.equal(f.doc.activeElement, f.element('btnQueryToggle'));
   assert.equal(f.element('flowTools').closest('[inert]'), null);
-  assert.equal(f.box(1).checked, true); assert.equal(f.element('resultInfo').textContent, '共 2 条记录');
+  assert.equal(f.box(1).checked, true); assertQuietResult(f, 2);
   f.open(); f.close(); f.element('btnQueryToggle').click();
   assert.equal(f.element('queryFields').inert, false);
   assert.equal(f.element('btnQueryToggle').getAttribute('aria-expanded'), 'true');
@@ -736,7 +765,7 @@ test('latest query wins, an explicit failure retains last results, and click-ent
   assert.equal(f.state.search.page, 2); assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
   f.network(async () => { throw new Error('Synthetic query failure'); });
   assert.equal(await f.search(), false); assert.deepEqual(f.rows().map(row => row.dataset.id), ['22']);
-  assert.equal(f.element('resultInfo').textContent, '查询失败 · 保留上次结果 · 共 2 条记录');
+  assert.equal(f.element('resultInfo').textContent, '查询失败 · 保留上次结果');
   f.element('fAccount').fire('keydown', { key: 'Enter' }); await flush();
   assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
 });
@@ -864,7 +893,7 @@ test('explicit date, amount and summary-only queries do not capture or interrupt
   await f.element('btnSearch').onclick();
   f.element('fMin').fire('keydown', { key: 'Enter' }); await flush();
   assert.deepEqual(calls, []); assert.equal(f.requests.length, 2);
-  assert.equal(f.element('resultInfo').textContent, '共 2 条记录');
+  assertQuietResult(f, 2);
 });
 
 test('full primary-reference keyword stays exact through button and Enter submission without a duplicate summary', async () => {
@@ -873,7 +902,7 @@ test('full primary-reference keyword stays exact through button and Enter submis
   f.element('fKw').value = number; f.element('fKw').fire('input');
   assert.equal(f.doc.querySelector('#querySummary'), null);
   assert.equal(f.requests.length, 1);
-  assert.equal(f.element('resultInfo').textContent, '共 2 条记录');
+  assertQuietResult(f, 2);
   f.network(async params => {
     assert.equal(params.get('kw'), number);
     return { page: 1, size: 50, total: 1, rows: [{ ...flow(17), trade_no: number }] };
@@ -881,11 +910,11 @@ test('full primary-reference keyword stays exact through button and Enter submis
   const icon = f.doc.createElement('img'); f.element('btnSearch').appendChild(icon);
   icon.click(); await flush();
   assert.equal(f.element('fKw').value, number);
-  assert.equal(f.element('resultInfo').textContent, '共 1 条记录');
+  assertQuietResult(f, 1);
   assert.deepEqual(f.rows().map(row => row.dataset.id), ['17']);
   f.element('fKw').fire('keydown', { key: 'Enter' }); await flush();
   assert.equal(new URL(f.requests.at(-1), 'http://synthetic.local').searchParams.get('kw'), number);
-  assert.equal(f.element('resultInfo').textContent, '共 1 条记录');
+  assertQuietResult(f, 1);
 });
 
 test('input changes during a query revoke its preview even when the original text is restored', async () => {
@@ -897,7 +926,7 @@ test('input changes during a query revoke its preview even when the original tex
   f.element('fAccount').value = '00001'; f.element('fAccount').fire('input');
   result.resolve({ page: 1, size: 50, total: 1, rows: [flow(1)] });
   assert.equal(await search, true); assert.deepEqual(previews, []);
-  assert.equal(f.element('resultInfo').textContent, '共 1 条记录');
+  assertQuietResult(f, 1);
 });
 
 test('programmatic draft changes also prevent preview and never substitute the newer input into the old request', async () => {
@@ -939,7 +968,7 @@ test('missing, throwing and rejected camera adapters cannot turn a successful qu
     { capture: () => ({}), async previewFields() { throw new Error('Synthetic preview failure'); } }]) {
     const f = harness(); f.locator(locator); f.element('fAccount').value = '00001';
     assert.equal(await f.search(1, { locate: true }), true);
-    assert.equal(f.element('resultInfo').textContent, '共 2 条记录'); assert.equal(f.rows().length, 2);
+    assertQuietResult(f, 2); assert.equal(f.rows().length, 2);
     assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
   }
 });
@@ -1100,15 +1129,12 @@ const exactFunds = {policy:'evidence-bounded-funds-v1',status:'exact',observatio
 const boundedFunds = {...exactFunds,status:'bounded',confirmed_event_count:0,unresolved_observation_count:2,
   count:{lower:0,upper:2},totals:[{currency:'CNY',amount:null,lower:'0.00',upper:'200.00'}]};
 
-test('actual query heading counts a confirmed pair once and has no further scroll page', async () => {
+test('a quiet query counts a confirmed pair once internally and has no further scroll page', async () => {
   const f = harness();
   f.network(async () => ({page:1,size:1,total:1,rows:[eventRow()],funds:exactFunds}));
   assert.equal(await f.search(),true);
   assert.equal(new URL(f.requests.at(-1),'http://synthetic.local').searchParams.get('granularity'),'events');
-  for (const key of ['resultInfo']) {
-    assert.match(f.element(key).textContent,/1 条记录/);
-    assert.doesNotMatch(f.element(key).textContent,/2 条记录|待核|事件/);
-  }
+  assertQuietResult(f, 1);
   assert.equal(f.state.search.total,1);
   const reads = f.requests.length; await wheelEdge(f, 1);
   assert.equal(f.requests.length, reads);
@@ -1118,20 +1144,18 @@ test('source counts remain exact across draft edits and a failed query', async (
   const f = harness();
   f.network(async () => ({page:1,size:50,total:2,rows:[flow(17),flow(18)],funds:boundedFunds}));
   await f.search();
-  const expected=/2 条记录$/;
-  assert.match(f.element('resultInfo').textContent,expected);
+  assertQuietResult(f, 2);
   const reads=f.requests.length;
   f.element('fAccount').value='SYN-DRAFT'; f.element('fAccount').fire('input');
   assert.equal(f.requests.length,reads);
   assert.equal(f.element('fAccount').value,'SYN-DRAFT');
-  assert.match(f.element('resultInfo').textContent,expected);
+  assertQuietResult(f, 2);
   f.network(async () => {throw new Error('Synthetic failed query');});
   assert.equal(await f.search(),false);
   assert.match(f.element('resultInfo').textContent,/查询失败 · 保留上次结果/);
-  for (const key of ['resultInfo']) {
-    assert.match(f.element(key).textContent,expected);
-    assert.doesNotMatch(f.element(key).textContent,/待核|事件/);
-  }
+  assert.equal(f.state.search.total, 2);
+  assert.equal(f.element('resultInfo').hidden, false);
+  assert.doesNotMatch(f.element('resultInfo').textContent,/条记录|待核|事件/);
 });
 
 test('canvas and case A-B-A invalidation revoke query funds and reject late old summaries', async () => {
@@ -1146,10 +1170,7 @@ test('canvas and case A-B-A invalidation revoke query funds and reject late old 
     await f.context.loadGraph();
     late.resolve({page:1,size:50,total:1,rows:[eventRow()],funds:exactFunds});
     assert.equal(await pending,false);
-    for (const key of ['resultInfo']) {
-      assert.match(f.element(key).textContent,/2 条记录$/);
-      assert.doesNotMatch(f.element(key).textContent,/CNY 100\.00/);
-    }
+    assertQuietResult(f, 2);
   }
 });
 
@@ -1277,7 +1298,7 @@ test('both continuation directions retain failed reads until a new boundary whee
     if (direction < 0) await wheelEdge(f, direction);
     else { const row = f.rows().at(-1); row.focus(); row.fire('keydown', { key: 'ArrowDown' }); await flush(); }
     assert.equal(f.requests.length, requests + 1); assert.equal(f.rows().length, 100);
-    assert.equal(f.element('resultInfo').textContent, '共 600 条记录'); assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
+    assertQuietResult(f, 600); assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
     assert.equal(Number(new URL(f.requests.at(-1), 'http://synthetic.local').searchParams.get('page')), failedPage);
   }
 });
@@ -1363,7 +1384,7 @@ test('the last loaded result never starts reads beyond the known end', async () 
   const f = harness({ geometry: true }); f.network(params => pageResult(Number(params.get('page')), 75)); await f.search();
   await wheelEdge(f, 1); assert.equal(f.rows().length, 75);
   const before = f.requests.length; await wheelEdge(f, 1); await wheelEdge(f, 1);
-  assert.equal(f.requests.length, before); assert.equal(f.element('resultInfo').textContent, '共 75 条记录');
+  assert.equal(f.requests.length, before); assertQuietResult(f, 75);
 });
 
 test('restored viewport page wins over legacy page state and a shrunken result clamps directly to its new last page', async () => {
@@ -1374,7 +1395,7 @@ test('restored viewport page wins over legacy page state and a shrunken result c
   assert.deepEqual(f.requests.slice(before).map(path => Number(new URL(path, 'http://synthetic.local').searchParams.get('page'))), [241, 1]);
   assert.equal(f.rows().length, 7); assert.equal(f.state.search.page, 1); assert.equal(f.state.search.total, 7);
   assert.equal(f.element('flowTableScroll').scrollLeft, 80); assert.equal(f.element('flowTableScroll').scrollTop, 0);
-  assert.equal(f.box(7).checked, true); assert.equal(f.element('resultInfo').textContent, '共 7 条记录');
+  assert.equal(f.box(7).checked, true); assertQuietResult(f, 7);
 });
 
 test('a clamp read is still revoked by a newer query or canvas binding', async () => {

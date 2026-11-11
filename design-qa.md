@@ -1,3 +1,11 @@
+# 结果总数隐藏与合并门槛修正 · 2026-11-10
+
+表格工具区不再显示“共 N 条记录”，包括侧栏、全览、查询失败和续载状态中的总数。成功查询的 `resultInfo` 隐藏且高度为 0；查询中／失败反馈与重试保留，内部权威总数仍用于分页和滚动边界。既有直接查询入口同步清空总数，避免另一调用方恢复该文本。
+
+新增公共查询回归先失败，修复后通过，覆盖 75 条合成结果的续载失败／重试、查询失败保留原行及 0 条结果。实际隔离浏览器核对初始 6 行、单标签页离线失败（旧行保留）、恢复、空结果和全览；成功状态均 hidden／0px，失败状态仍显示明确提示。见[截图](docs/media/three-zone-workspace/table-08-no-count.png)及[观察记录](docs/media/three-zone-workspace/result-status-verification.json)。截图为 IAB 实际 CSS 1561×878、DPR 约 1.64、2560×1440 捕获像素；查询表单保留查询按钮操作后的内部滚动位置。离线模拟已恢复，未操作业务预览实例。
+
+合并候选 `88e2d9d` 的全量 CI 记录为 6565 passed／3 failed／9 skipped／108 subtests passed。三个失败在本地独立复现：反馈导入与本金 UI 仍断言来源说明可见，HTML 图谱仍断言固定 6 屏幕像素。这些显示断言现按已确认的隐藏说明／同比间距规则同步；金额、来源含义、未知状态、旧案件回执、节点坐标与导出几何检查均保留。修复后 table workspace、feedback import UI、principal analysis UI、graph view export、workspace session 和 legacy navigation 共 **57 passed in 22.41s**，1 条既有 Starlette/httpx 弃用警告。远端全量 CI 的最终结果以 PR 对应 head 的检查为准；该本地记录不冒充全量通过。
+
 # 高密度流水表格、画布快捷键与缩放间距 · 2026-11-10
 
 final result: passed（本地源码与隔离合成 UI 范围）

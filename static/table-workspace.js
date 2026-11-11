@@ -425,11 +425,12 @@
   }
   function status(message, action = null, direction = 0) {
     $('#resultInfo').textContent = message; $('#resultInfo').title = message;
+    $('#resultInfo').hidden = !message;
     retry = action ? { run: action, direction } : null;
   }
   function resultStatus(value) {
     if (!value) return;
-    status(`共 ${fmtCount(value.total)} 条记录`);
+    status('');
   }
   function checkedResult(result, wanted) {
     if (!result || !Array.isArray(result.rows) || !Number.isSafeInteger(result.page) || result.page < 1
@@ -502,7 +503,7 @@
       if (previous && isCurrentCase(previous.context)) query = { ...previous, sequence, loading: null, failedPage: null };
       const saved = { parameters: new URLSearchParams(parameters), summary: requestedSummary, position };
       draft = summary() !== (applied || '全部流水');
-      status(rows.length ? `查询失败 · 保留上次结果 · 共 ${fmtCount(state.search.total)} 条记录` : '查询失败 · 请重试', () => search(page, { ...options, locate: false }, saved));
+      status(rows.length ? '查询失败 · 保留上次结果' : '查询失败 · 请重试', () => search(page, { ...options, locate: false }, saved));
       $('#resultInfo').title += '：' + String(error?.message || '请求未完成').slice(0, 300);
       return false;
     } finally {
@@ -521,7 +522,7 @@
     const parameters = new URLSearchParams(value.parameters); parameters.set('page', String(page));
     const flight = { page, promise: null };
     value.loading = flight; value.failedPage = null;
-    $('#flowTableScroll').setAttribute('aria-busy', 'true'); status(`共 ${fmtCount(value.total)} 条记录 · 正在读取…`);
+    $('#flowTableScroll').setAttribute('aria-busy', 'true'); status('正在读取…');
     flight.promise = (async () => {
       try {
         const result = checkedResult(await api('/api/flows?' + parameters), page);
@@ -547,7 +548,7 @@
       } catch (error) {
         if (!currentQuery(value)) return false;
         value.failedPage = page;
-        status(`共 ${fmtCount(value.total)} 条记录 · 续载失败`, () => loadNeighbor(direction, true), direction);
+        status('续载失败', () => loadNeighbor(direction, true), direction);
         $('#resultInfo').title += '：' + String(error?.message || '请求未完成').slice(0, 300);
         return false;
       } finally {

@@ -409,7 +409,7 @@ async function doSearch(page = 1) {
   state.search.page = r.page;
   state.search.total = r.total;
   renderFlows(r.rows);
-  $('#resultInfo').textContent = `共 ${fmtCount(r.total)} 条记录`;
+  $('#resultInfo').textContent = ''; $('#resultInfo').title = ''; $('#resultInfo').hidden = true;
 }
 
 function partyCell(name, acct) {

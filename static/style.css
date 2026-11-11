@@ -679,7 +679,7 @@ body.workspace-resizing-vertical { cursor: row-resize; }
 @media (max-height: 600px) {
   #workspace[data-workspace-view="standard"] #tab-search > #flowTableScroll { flex-basis: 159px; min-height: 159px; }
 }
-.flow-table-tools { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 0 3px; font-size: 12px; color: var(--text-primary); }
+.flow-table-tools { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; padding: 4px 0 3px; font-size: 12px; color: var(--text-primary); }
 .flow-table-tools .result-info { flex: 1; min-width: 50px; overflow-wrap: anywhere; }
 .flow-table-tools select { height: 28px; padding: 2px 24px 2px 6px; font-size: 12px; }
 .flow-table-hint { flex: none; color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0 0 3px; }

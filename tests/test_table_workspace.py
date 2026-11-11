@@ -42,6 +42,7 @@ def test_flow_table_keeps_native_viewport_and_a_keyboard_reachable_horizontal_fo
     assert 'query-stat-line' in page.controls['statLine']['class'].split()
     assert 'hidden' in page.controls['statLine']
     assert page.controls['importCoverageNote']['role'] == 'note'
+    assert 'hidden' in page.controls['resultInfo']
 
 
 def test_table_workspace_behavior():
