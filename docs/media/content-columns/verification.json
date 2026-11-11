@@ -1,0 +1,251 @@
+{
+  "before": {
+    "columnWidths": [
+      40,
+      92,
+      320,
+      320,
+      175,
+      694,
+      112
+    ],
+    "rows": 6,
+    "sidebarCollapsed": false,
+    "tableViewportWidth": 1753,
+    "tableWidth": 1753,
+    "toolbarCollapsed": false,
+    "view": "split",
+    "viewLabel": "上下分栏",
+    "viewport": [
+      1835,
+      947
+    ]
+  },
+  "after": {
+    "columnWidths": [
+      40,
+      88,
+      444,
+      444,
+      176,
+      442,
+      119
+    ],
+    "rows": 6,
+    "sidebarCollapsed": false,
+    "tableViewportWidth": 1753,
+    "tableWidth": 1753,
+    "toolbarCollapsed": false,
+    "view": "split",
+    "viewLabel": "上下分栏",
+    "viewport": [
+      1835,
+      947
+    ]
+  },
+  "comfortable": {
+    "columnWidths": [
+      40,
+      93,
+      438,
+      438,
+      188,
+      425,
+      131
+    ],
+    "rows": 6,
+    "sidebarCollapsed": false,
+    "tableViewportWidth": 1753,
+    "tableWidth": 1753,
+    "toolbarCollapsed": false,
+    "view": "split",
+    "viewLabel": "上下分栏",
+    "viewport": [
+      1835,
+      947
+    ]
+  },
+  "amountFit": [
+    {
+      "cellWidth": 188,
+      "text": "USD 0.20",
+      "width": 54.828125
+    },
+    {
+      "cellWidth": 188,
+      "text": "¥0.10",
+      "width": 33.796875
+    },
+    {
+      "cellWidth": 188,
+      "text": "¥0.01",
+      "width": 33.796875
+    },
+    {
+      "cellWidth": 188,
+      "text": "¥9,999,999,999,999,999.99",
+      "width": 164.9921875
+    },
+    {
+      "cellWidth": 188,
+      "text": "USD 0.20",
+      "width": 54.828125
+    },
+    {
+      "cellWidth": 188,
+      "text": "¥0.10",
+      "width": 33.796875
+    }
+  ],
+  "longFields": {
+    "columnWidths": [
+      40,
+      88,
+      468,
+      467,
+      176,
+      395,
+      119
+    ],
+    "rows": 6,
+    "sidebarCollapsed": false,
+    "tableViewportWidth": 1753,
+    "tableWidth": 1753,
+    "toolbarCollapsed": false,
+    "view": "split",
+    "viewLabel": "上下分栏",
+    "viewport": [
+      1835,
+      947
+    ]
+  },
+  "timeFit": [
+    {
+      "client": 72,
+      "scroll": 72,
+      "text": "2026-01-06"
+    },
+    {
+      "client": 72,
+      "scroll": 72,
+      "text": "10:05:00"
+    }
+  ],
+  "narrow": {
+    "columnWidths": [
+      40,
+      88,
+      275,
+      274,
+      176,
+      226,
+      119
+    ],
+    "rows": 6,
+    "sidebarCollapsed": false,
+    "tableViewportWidth": 1198,
+    "tableWidth": 1198,
+    "toolbarCollapsed": false,
+    "view": "split",
+    "viewLabel": "上下分栏",
+    "viewport": [
+      1280,
+      947
+    ]
+  },
+  "fullValue": {
+    "hasCompleteName": true,
+    "hasZeroPrefix": true,
+    "visible": true
+  },
+  "manual": {
+    "columnWidths": [
+      40,
+      88,
+      476,
+      467,
+      176,
+      395,
+      119
+    ],
+    "rows": 6,
+    "sidebarCollapsed": false,
+    "tableViewportWidth": 1753,
+    "tableWidth": 1761,
+    "toolbarCollapsed": false,
+    "view": "split",
+    "viewLabel": "上下分栏",
+    "viewport": [
+      1835,
+      947
+    ]
+  },
+  "restored": {
+    "columnWidths": [
+      40,
+      88,
+      468,
+      467,
+      176,
+      395,
+      119
+    ],
+    "rows": 6,
+    "sidebarCollapsed": false,
+    "tableViewportWidth": 1753,
+    "tableWidth": 1753,
+    "toolbarCollapsed": false,
+    "view": "split",
+    "viewLabel": "上下分栏",
+    "viewport": [
+      1835,
+      947
+    ]
+  },
+  "scope": "Disposable seven-node/six-flow synthetic hub; current loaded rows only; no business data",
+  "beforeCandidate": "84154d8",
+  "longFixture": {
+    "payerName": "合成跨区域技术服务与供应链管理有限公司 · 仅用于自动列宽验证",
+    "payeeName": "合成乙{index}",
+    "payerAndSelfAccountPrefixZeros": 24,
+    "summary": "合成备注"
+  },
+  "standardComfortable": {
+    "columnWidths": [
+      39.99618911743164,
+      92.9973373413086,
+      139.98666381835938,
+      139.98666381835938,
+      187.9954376220703,
+      159.99429321289062,
+      131.0499267578125
+    ],
+    "rows": 6,
+    "sidebarCollapsed": false,
+    "tableViewportWidth": 270,
+    "tableWidth": 892.0064697265625,
+    "toolbarCollapsed": false,
+    "view": "standard",
+    "viewLabel": "标准",
+    "viewport": [
+      700,
+      947
+    ]
+  },
+  "standardTimeFit": [
+    {
+      "client": 72,
+      "scroll": 72
+    },
+    {
+      "client": 72,
+      "scroll": 72
+    }
+  ],
+  "fontShorthandRegressionBefore": {
+    "font": "",
+    "numeric": "tabular-nums",
+    "dateClientWidth": 67,
+    "dateScrollWidth": 72
+  }
+}

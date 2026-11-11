@@ -23,6 +23,7 @@
   const columnDefaults = [40, 92, 140, 140, 160, 160, 112];
   const columnNames = ['锚点', '交易时间', '付款方', '收款方', '金额', '摘要', '操作'];
   const columnPreferenceKey = 'funds_flow_columns_v1';
+  const textMeasure = document.createElement('canvas').getContext?.('2d');
   let preferredColumns = {};
   try {
     const saved = JSON.parse(window.localStorage?.getItem(columnPreferenceKey) || '{}');
@@ -134,7 +135,7 @@
     // unchecked. Read anchors only before replacement, then restore them below.
     rendering = true;
     try { originalRender(values); } finally { rendering = false; }
-    minimumWidths(query, true); decorate();
+    minimumWidths(query, true); decorate(); measureColumnContents(query, true);
     if (focus) {
       const row = $$('#flowTbody tr[data-id]').find(item => item.dataset.id === focus.id);
       const target = focus.selector ? row?.querySelector(focus.selector) : row;
@@ -182,17 +183,83 @@
   }
   const columnProfile = () => `${open ? 'overview' : workspaceView === 'split' ? 'split' : 'sidebar'}:${columnMode()}`;
   const columnCacheKey = () => ((workspaceView === 'split' && !open) || $('#flowTableScroll').dataset.flowWrap === 'two-line') ? columnProfile() : columnMode();
+  function horizontalInsets(node, fallback = 10) {
+    const style = node && window.getComputedStyle?.(node);
+    return style ? Math.ceil(['paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth']
+      .reduce((sum, key) => sum + (parseFloat(style[key]) || 0), 2)) : fallback;
+  }
+  function displayTextWidth(value, node) {
+    const style = node && window.getComputedStyle?.(node);
+    // Numeric font variants can leave the CSSOM font shorthand empty.
+    if (textMeasure) textMeasure.font = style
+      ? `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}` : '12px sans-serif';
+    return Math.ceil(Math.max(0, ...String(value ?? '').split(/\r?\n/)
+      .map(line => textMeasure?.measureText(line)?.width ?? line.length * 7)));
+  }
+  function measureColumnContents(value = query, refresh = false) {
+    const density = $('#flowTableScroll').dataset.flowDensity;
+    const previous = value?.contentWidths?.get(density);
+    if (previous && !refresh) return previous;
+    const rowNodes = $$('#flowTbody tr[data-id]'), cells = rowNodes[0]?.children || [];
+    const inset = index => horizontalInsets(cells[index], density === 'comfortable' ? 22 : 10);
+    const widths = rows.length ? [...columnMinimums] : [...columnDefaults];
+    const text = (value, index, selector) => displayTextWidth(value, cells[index]?.querySelector(selector) || cells[index]);
+    for (const row of rows) {
+      const time = String(fmtTime(row.trade_time)).split(/\s+/);
+      widths[1] = Math.max(widths[1], ...time.map(part => text(part, 1, '.flow-clock') + inset(1)));
+      for (const [index, prefix] of [[2, 'payer'], [3, 'payee']]) widths[index] = Math.max(widths[index],
+        text(row[prefix + '_name'], index, '.party-name') + inset(index),
+        text(row[prefix + '_display_account'] || row[prefix + '_account'], index, '.mono') + inset(index));
+      widths[4] = Math.max(widths[4], text(FundsMoney.currency(row.amount, row.currency), 4, '.flow-amount-value') + inset(4));
+      widths[5] = Math.max(widths[5], Math.ceil(text(String(row.summary ?? '').replace(/\s+/g, ' '), 5, '.flow-summary') / 2) + inset(5));
+    }
+    for (const row of rowNodes) {
+      const actions = row.querySelector('.flow-row-actions');
+      const buttons = [...(actions?.querySelectorAll('button') || [])].filter(button => button.getClientRects?.().length);
+      if (!buttons.length) continue;
+      const buttonWidth = button => displayTextWidth(button.matches('.act-track') ? '部分·移出' : button.textContent, button)
+        + horizontalInsets(button, 12);
+      const gap = parseFloat(window.getComputedStyle?.(actions)?.gap) || 4;
+      widths[6] = Math.max(widths[6], buttons.reduce((sum, button) => sum + buttonWidth(button), 0) + gap * (buttons.length - 1) + inset(6));
+    }
+    const measured = widths.map((width, index) => Math.max(width, previous?.[index] || 0));
+    if (value) { value.contentWidths ||= new Map(); value.contentWidths.set(density, measured); }
+    return measured;
+  }
+  function automaticColumns(value) {
+    const minimums = minimumWidths(value), content = measureColumnContents(value), widths = [...minimums];
+    widths[1] = Math.max(minimums[1], Math.min(columnMaximums[1], content[1]));
+    widths[4] = Math.max(minimums[4], content[4]);
+    widths[6] = Math.max(minimums[6], Math.min(columnMaximums[6], content[6]));
+    const flexible = [2, 3, 5], party = Math.max(content[2], content[3]);
+    // Content guides preferred widths; spare room grows all three text columns.
+    const desired = [party, party, content[5]].map((width, index) => Math.max(minimums[flexible[index]], Math.min(420, width)));
+    const balanced = desired.map(width => Math.max(width, Math.max(...desired) * .8));
+    const needs = balanced.map((width, index) => width - minimums[flexible[index]]);
+    const fixed = widths[0] + widths[1] + widths[4] + widths[6];
+    const target = Math.max($('#flowTableScroll').clientWidth, fixed + flexible.reduce((sum, index) => sum + minimums[index], 0));
+    const extra = target - fixed - flexible.reduce((sum, index) => sum + minimums[index], 0);
+    const demand = needs.reduce((sum, width) => sum + width, 0);
+    flexible.forEach((column, index) => {
+      widths[column] += Math.floor((demand ? Math.min(extra, demand) * needs[index] / demand : 0)
+        + Math.max(0, extra - demand) / flexible.length);
+    });
+    let remainder = target - widths.reduce((sum, width) => sum + width, 0);
+    for (const column of flexible) if (remainder-- > 0) widths[column]++;
+    return widths;
+  }
   function minimumWidths(value = query, measure = false) {
     const result = [...columnMinimums];
     if (open) result[0] = 96;
     if (measure || !value?.amountWidth) {
       const amounts = [...$('#flowTable').querySelectorAll('.flow-amount-value')]
         .map(node => node.getBoundingClientRect?.()?.width || node.scrollWidth || 0);
-      const amount = Math.ceil(Math.max(0, ...amounts) + 10);
+      const amount = Math.ceil(Math.max(0, ...amounts));
       if (value) value.amountWidth = Math.max(value.amountWidth || 0, amount);
-      result[4] = Math.max(result[4], amount);
+      result[4] = Math.max(result[4], amount + horizontalInsets($('#flowTable').querySelector('.flow-amount-value')?.closest('td'), $('#flowTableScroll').dataset.flowDensity === 'comfortable' ? 22 : 10));
     }
-    result[4] = Math.max(result[4], value?.amountWidth || 0);
+    result[4] = Math.max(result[4], (value?.amountWidth || 0)
+      + horizontalInsets($('#flowTable').querySelector('.flow-amount-value')?.closest('td'), $('#flowTableScroll').dataset.flowDensity === 'comfortable' ? 22 : 10));
     if ($('#flowTableScroll').dataset.flowWrap !== 'two-line') {
       if (measure || !value?.timeWidth) {
         const clocks = [...$('#flowTable').querySelectorAll('.flow-date,.flow-clock')];
@@ -212,13 +279,18 @@
       }
       for (const index of [2,3,5]) result[index] = Math.max(result[index], value?.singleMinimums?.[index] || 0);
     }
+    if ($('#flowTableScroll').dataset.flowWrap === 'two-line') {
+      const content = value?.contentWidths?.get($('#flowTableScroll').dataset.flowDensity);
+      for (const index of [1, 4, 6]) if (content) result[index] = Math.max(result[index],
+        index === 4 ? content[index] : Math.min(columnMaximums[index], content[index]));
+    }
     return result;
   }
   function boundedWidths(widths, value = query) {
     const minimums = minimumWidths(value);
     const expandedWidth = open || workspaceView === 'split' ? $('#flowTableScroll').clientWidth : 0;
     return widths.map((width, index) => Math.max(minimums[index],
-      Math.min(Math.max(columnMaximums[index], minimums[index], index === 5 ? expandedWidth : 0), width)));
+      Math.min(Math.max(columnMaximums[index], minimums[index], [2, 3, 5].includes(index) ? expandedWidth : 0), width)));
   }
   function persistColumns() {
     try { window.localStorage?.setItem(columnPreferenceKey, JSON.stringify(preferredColumns)); }
@@ -229,7 +301,7 @@
     for (const handle of $$('#flowTable .flow-column-resize')) {
       const index = Number(handle.dataset.column);
       handle.setAttribute('aria-valuemin', String(minimums[index]));
-      const expandedWidth = index === 5 && (open || workspaceView === 'split') ? $('#flowTableScroll').clientWidth : 0;
+      const expandedWidth = [2, 3, 5].includes(index) && (open || workspaceView === 'split') ? $('#flowTableScroll').clientWidth : 0;
       handle.setAttribute('aria-valuemax', String(Math.max(columnMaximums[index], minimums[index], expandedWidth, Math.round(widths[index]))));
       handle.setAttribute('aria-valuenow', String(Math.round(widths[index])));
     }
@@ -255,22 +327,22 @@
     let sizes = preferred || value?.widths.get(columnCacheKey());
     const cols = columns();
     clearColumns();
-    if ($('#flowTableScroll').dataset.flowWrap === 'two-line'
+    const twoLine = $('#flowTableScroll').dataset.flowWrap === 'two-line';
+    if (twoLine) measureColumnContents(value);
+    if (twoLine
       && (!sizes || !preferred && (open || workspaceView === 'split'))) sizes = columnDefaults;
+    const automatic = !preferred && twoLine && (open || workspaceView === 'split');
+    if (automatic) sizes = automaticColumns(value);
     if (!sizes || !cols) return;
     const minimums = minimumWidths(value);
-    sizes = preferred || $('#flowTableScroll').dataset.flowWrap === 'two-line' ? boundedWidths(sizes, value)
+    if (!automatic) sizes = preferred || twoLine ? boundedWidths(sizes, value)
       : sizes.map((width, index) => Math.max(width, minimums[index]));
-    if ((open || workspaceView === 'split') && !preferred) {
-      if ($('#flowTableScroll').dataset.flowWrap === 'two-line') {
-        const party = Math.min(320, $('#flowTableScroll').clientWidth * .21);
-        sizes[2] = Math.max(sizes[2], party); sizes[3] = Math.max(sizes[3], party);
-      }
+    if ((open || workspaceView === 'split') && !preferred && !automatic) {
       sizes[5] += Math.max(0, $('#flowTableScroll').clientWidth - sizes.reduce((sum, width) => sum + width, 0));
     }
     sizes.forEach((width, index) => { cols[index].style.width = width + 'px'; cols[index].style.minWidth = width + 'px'; });
     $('#flowTable').style.minWidth = Math.max(sizes.reduce((sum, width) => sum + width, 0), parseFloat(tableMinWidth) || 0) + 'px';
-    if (preferred || $('#flowTableScroll').dataset.flowWrap === 'two-line') {
+    if (preferred || twoLine) {
       $('#flowTable').style.width = sizes.reduce((sum, width) => sum + width, 0) + 'px';
       $('#flowTable').style.tableLayout = 'fixed';
     }
@@ -289,7 +361,7 @@
   function bindColumnResizing() {
     const headers = [...$('#flowTable').querySelectorAll('thead th')];
     const measured = () => headers.map((node, index) => node.getBoundingClientRect?.()?.width || columnDefaults[index]);
-    const measure = document.createElement('canvas').getContext?.('2d');
+    const measure = textMeasure;
     const autoWidth = index => {
       if (measure) measure.font = window.getComputedStyle?.(headers[index])?.font || '12px sans-serif';
       const values = [columnNames[index], ...$$('#flowTbody tr[data-id]').map(row => {
