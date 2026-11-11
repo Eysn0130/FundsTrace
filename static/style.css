@@ -347,8 +347,7 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 @media (prefers-reduced-motion: reduce) { .data-tools-dialog[open], .data-tools-progress .ui-icon { animation: none !important; } }
 
 /* ---------- Four-tab ribbon and single-row compact tools ---------- */
-.workspace-toolbar { --ribbon-context-height: 44px; --ribbon-panel-height: 72px; position: relative; flex: 0 0 auto; min-width: 0; height: calc(var(--ribbon-context-height) + var(--ribbon-panel-height) + 1px); background: var(--surface); border-bottom: 1px solid var(--border); z-index: 21; transition: height var(--workspace-ease); }
-.workspace-toolbar:has(#ribbonPanel-common:not([hidden])) { --ribbon-panel-height: 52px; }
+.workspace-toolbar { --ribbon-context-height: 44px; --ribbon-panel-height: 92px; position: relative; flex: 0 0 auto; min-width: 0; height: calc(var(--ribbon-context-height) + var(--ribbon-panel-height) + 1px); background: var(--surface); border-bottom: 1px solid var(--border); z-index: 21; transition: height var(--workspace-ease); }
 /* Fit the slot without scaling text, controls or hit areas. */
 #topbar, .workspace-toolbar { width: var(--toolbar-fit-width, 100%); }
 #graphToolbar { height: 100%; min-width: 0; }
@@ -384,14 +383,14 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .ribbon-group:last-child { border-right: 0; }
 .ribbon-group-body, .ribbon-bundle, .ribbon-inline { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .ribbon-group-body { flex: 1; }
-.ribbon-group-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.ribbon-group-label { text-align: center; color: var(--muted); font-size: 11px; line-height: 14px; white-space: nowrap; }
 .ribbon-small-stack { display: grid; grid-auto-flow: column; grid-template-rows: repeat(2, auto); align-content: center; gap: 3px; }
 .ribbon-small-stack .ribbon-action { flex-direction: row; justify-content: flex-start; min-height: 26px; gap: 5px; padding: 1px 8px 1px 4px; }
 .ribbon-small-stack .ribbon-action .ui-icon { width: 18px; height: 18px; }
 .ribbon-small-stack .ribbon-planned { width: 5px; height: 5px; top: 5px; right: 4px; }
 .ribbon-slot { display: contents; }
-.ribbon-action { position: relative; flex-direction: row; gap: 6px; min-width: 32px; min-height: 32px; padding: 4px 6px; border-color: transparent; background: transparent; font-size: 13px; }
-.ribbon-action .ui-icon { width: 18px; height: 18px; }
+.ribbon-action { position: relative; flex-direction: column; gap: 4px; min-width: 49px; min-height: 56px; padding: 4px 6px; border-color: transparent; background: transparent; font-size: 12px; }
+.ribbon-action .ui-icon { width: 24px; height: 24px; }
 #editorToolbar .toolbar-menu-chevron { width: 12px; height: 12px; }
 .ribbon-action:hover:not(:disabled) { background: var(--surface-control-hover); border-color: var(--border-strong); }
 .ribbon-action[aria-pressed="true"] { background: var(--selection-surface); border-color: var(--accent); }
@@ -516,7 +515,7 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 #editorToolbar #graphToolbar #canvasSel { width: 130px; }
 #editorToolbar .ribbon-panel select { min-height: 28px; height: 28px; }
 /* The context row reflows inside its slot; commands keep their own scroller. */
-#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) { --ribbon-context-height: 72px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) { --ribbon-context-height: 72px; --ribbon-panel-height: 72px; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]).is-collapsed { height: calc(var(--ribbon-context-height) + 43px); }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-tabbar { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(80px,auto) 28px; grid-template-rows: 36px 36px; height: var(--ribbon-context-height); gap: 0 6px; align-items: center; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) #ribbonTabs { grid-area: 1 / 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
@@ -535,8 +534,8 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-group-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel { padding: 3px 8px 2px; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-group { padding-left: 4px; padding-right: 4px; }
-#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel .ribbon-action:not(.ribbon-type-button) { min-height: 32px; gap: 5px; padding: 3px 4px; }
-#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel .ribbon-action > .ui-icon { width: 18px; height: 18px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel .ribbon-action:not(.ribbon-type-button) { min-height: 52px; gap: 3px; padding: 3px 4px; }
+#editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel .ribbon-action > .ui-icon { width: 22px; height: 22px; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-panel .ribbon-small-stack .ribbon-action { min-height: 26px; padding: 1px 8px 1px 4px; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) .ribbon-stack { flex-direction: row; align-items: center; }
 #editorToolbar:is([data-ribbon-layout="narrow"],[data-ribbon-layout="stacked"]) :is(#edgeLabelGroup,#toolbarDisplayExtra) { flex-wrap: nowrap; max-width: none; }

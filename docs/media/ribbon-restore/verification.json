@@ -1,0 +1,428 @@
+{
+  "scope": "Seven-node/six-flow disposable synthetic G6 preview; renderer assets from this candidate; unchanged backend/build from accepted main tree",
+  "before": {
+    "viewportCSS": [
+      1561,
+      878
+    ],
+    "dpr": 1.64,
+    "layout": "wide",
+    "panel": "ribbonPanel-common",
+    "toolbarHeight": 96.999,
+    "panelHeight": 51.991,
+    "primaryActions": 19,
+    "columnActions": 0,
+    "iconWidths": [
+      17.997
+    ],
+    "iconToLabelGapRange": [
+      -18.998,
+      -18.998
+    ],
+    "maxHorizontalCenterDelta": 53.991896,
+    "groupCaptionHeights": [
+      0.991
+    ],
+    "captionHeight": 43.998,
+    "railWidth": 51.991
+  },
+  "wide": [
+    {
+      "viewportCSS": [
+        1561,
+        878
+      ],
+      "dpr": 1.64,
+      "layout": "wide",
+      "panel": "ribbonPanel-common",
+      "toolbarHeight": 136.995,
+      "panelHeight": 91.997,
+      "primaryActions": 19,
+      "columnActions": 19,
+      "iconWidths": [
+        24.0
+      ],
+      "iconToLabelGapRange": [
+        3.992,
+        3.992
+      ],
+      "maxHorizontalCenterDelta": 0.004772,
+      "groupCaptionHeights": [
+        13.996
+      ],
+      "captionHeight": 43.998,
+      "railWidth": 51.991
+    },
+    {
+      "viewportCSS": [
+        1561,
+        878
+      ],
+      "dpr": 1.64,
+      "layout": "wide",
+      "panel": "ribbonPanel-trace",
+      "toolbarHeight": 136.995,
+      "panelHeight": 91.997,
+      "primaryActions": 12,
+      "columnActions": 12,
+      "iconWidths": [
+        24.0
+      ],
+      "iconToLabelGapRange": [
+        3.992,
+        3.992
+      ],
+      "maxHorizontalCenterDelta": 0.004787,
+      "groupCaptionHeights": [
+        13.996
+      ],
+      "captionHeight": 43.998,
+      "railWidth": 51.991
+    },
+    {
+      "viewportCSS": [
+        1561,
+        878
+      ],
+      "dpr": 1.64,
+      "layout": "wide",
+      "panel": "ribbonPanel-style",
+      "toolbarHeight": 136.995,
+      "panelHeight": 91.997,
+      "primaryActions": 8,
+      "columnActions": 8,
+      "iconWidths": [
+        24.0
+      ],
+      "iconToLabelGapRange": [
+        3.992,
+        3.992
+      ],
+      "maxHorizontalCenterDelta": 0.004787,
+      "groupCaptionHeights": [
+        13.996
+      ],
+      "captionHeight": 43.998,
+      "railWidth": 51.991
+    },
+    {
+      "viewportCSS": [
+        1561,
+        878
+      ],
+      "dpr": 1.64,
+      "layout": "wide",
+      "panel": "ribbonPanel-view",
+      "toolbarHeight": 136.995,
+      "panelHeight": 91.997,
+      "primaryActions": 13,
+      "columnActions": 13,
+      "iconWidths": [
+        24.0
+      ],
+      "iconToLabelGapRange": [
+        3.992,
+        3.992
+      ],
+      "maxHorizontalCenterDelta": 0.004757,
+      "groupCaptionHeights": [
+        13.996
+      ],
+      "captionHeight": 43.998,
+      "railWidth": 51.991
+    }
+  ],
+  "responsive": [
+    {
+      "viewportCSS": [
+        1024,
+        902
+      ],
+      "dpr": 0.82,
+      "layout": "narrow",
+      "panel": "ribbonPanel-common",
+      "toolbarHeight": 116.997,
+      "panelHeight": 71.999,
+      "primaryActions": 17,
+      "columnActions": 17,
+      "iconWidths": [
+        21.999
+      ],
+      "iconToLabelGapRange": [
+        2.992,
+        2.992
+      ],
+      "maxHorizontalCenterDelta": 0.004804,
+      "groupCaptionHeights": [
+        0.991
+      ],
+      "captionHeight": 43.998,
+      "railWidth": 51.991
+    },
+    {
+      "viewportCSS": [
+        1024,
+        902
+      ],
+      "dpr": 0.82,
+      "layout": "narrow",
+      "panel": "ribbonPanel-trace",
+      "toolbarHeight": 116.997,
+      "panelHeight": 71.999,
+      "primaryActions": 12,
+      "columnActions": 12,
+      "iconWidths": [
+        21.999
+      ],
+      "iconToLabelGapRange": [
+        2.992,
+        2.992
+      ],
+      "maxHorizontalCenterDelta": 0.004796,
+      "groupCaptionHeights": [
+        0.991
+      ],
+      "captionHeight": 43.998,
+      "railWidth": 51.991
+    },
+    {
+      "viewportCSS": [
+        1024,
+        902
+      ],
+      "dpr": 0.82,
+      "layout": "narrow",
+      "panel": "ribbonPanel-style",
+      "toolbarHeight": 116.997,
+      "panelHeight": 71.999,
+      "primaryActions": 8,
+      "columnActions": 8,
+      "iconWidths": [
+        21.999
+      ],
+      "iconToLabelGapRange": [
+        2.992,
+        2.992
+      ],
+      "maxHorizontalCenterDelta": 0.004804,
+      "groupCaptionHeights": [
+        0.991
+      ],
+      "captionHeight": 43.998,
+      "railWidth": 51.991
+    },
+    {
+      "viewportCSS": [
+        1024,
+        902
+      ],
+      "dpr": 0.82,
+      "layout": "narrow",
+      "panel": "ribbonPanel-view",
+      "toolbarHeight": 116.997,
+      "panelHeight": 71.999,
+      "primaryActions": 13,
+      "columnActions": 13,
+      "iconWidths": [
+        21.999
+      ],
+      "iconToLabelGapRange": [
+        2.992,
+        2.992
+      ],
+      "maxHorizontalCenterDelta": 0.004773,
+      "groupCaptionHeights": [
+        0.991
+      ],
+      "captionHeight": 43.998,
+      "railWidth": 51.991
+    },
+    {
+      "viewportCSS": [
+        671,
+        902
+      ],
+      "dpr": 0.82,
+      "layout": "stacked",
+      "panel": "ribbonPanel-common",
+      "toolbarHeight": 144.998,
+      "panelHeight": 71.999,
+      "primaryActions": 17,
+      "columnActions": 17,
+      "iconWidths": [
+        21.999
+      ],
+      "iconToLabelGapRange": [
+        2.992,
+        2.992
+      ],
+      "maxHorizontalCenterDelta": 0.004804,
+      "groupCaptionHeights": [
+        0.991
+      ],
+      "captionHeight": 43.998,
+      "railWidth": 51.991
+    },
+    {
+      "viewportCSS": [
+        671,
+        902
+      ],
+      "dpr": 0.82,
+      "layout": "stacked",
+      "panel": "ribbonPanel-trace",
+      "toolbarHeight": 144.998,
+      "panelHeight": 71.999,
+      "primaryActions": 12,
+      "columnActions": 12,
+      "iconWidths": [
+        21.999
+      ],
+      "iconToLabelGapRange": [
+        2.992,
+        2.992
+      ],
+      "maxHorizontalCenterDelta": 0.004796,
+      "groupCaptionHeights": [
+        0.991
+      ],
+      "captionHeight": 43.998,
+      "railWidth": 51.991
+    },
+    {
+      "viewportCSS": [
+        671,
+        902
+      ],
+      "dpr": 0.82,
+      "layout": "stacked",
+      "panel": "ribbonPanel-style",
+      "toolbarHeight": 144.998,
+      "panelHeight": 71.999,
+      "primaryActions": 8,
+      "columnActions": 8,
+      "iconWidths": [
+        21.999
+      ],
+      "iconToLabelGapRange": [
+        2.992,
+        2.992
+      ],
+      "maxHorizontalCenterDelta": 0.004804,
+      "groupCaptionHeights": [
+        0.991
+      ],
+      "captionHeight": 43.998,
+      "railWidth": 51.991
+    },
+    {
+      "viewportCSS": [
+        671,
+        902
+      ],
+      "dpr": 0.82,
+      "layout": "stacked",
+      "panel": "ribbonPanel-view",
+      "toolbarHeight": 144.998,
+      "panelHeight": 71.999,
+      "primaryActions": 13,
+      "columnActions": 13,
+      "iconWidths": [
+        21.999
+      ],
+      "iconToLabelGapRange": [
+        2.992,
+        2.992
+      ],
+      "maxHorizontalCenterDelta": 0.004773,
+      "groupCaptionHeights": [
+        0.991
+      ],
+      "captionHeight": 43.998,
+      "railWidth": 51.991
+    }
+  ],
+  "compact": {
+    "actions": [
+      {
+        "direction": "row",
+        "id": "btnRelayout"
+      },
+      {
+        "direction": "row",
+        "id": "btnFit"
+      },
+      {
+        "direction": "row",
+        "id": "btnDisplayActions"
+      },
+      {
+        "direction": "row",
+        "id": "btnRelationFilter"
+      },
+      {
+        "direction": "row",
+        "id": "timeWindow"
+      },
+      {
+        "direction": "row",
+        "id": "btnNeighborActions"
+      },
+      {
+        "direction": "row",
+        "id": "btnGraphOverview"
+      },
+      {
+        "direction": "row",
+        "id": "viewFlows"
+      },
+      {
+        "direction": "row",
+        "id": "btnTextStyle"
+      },
+      {
+        "direction": "row",
+        "id": "btnEdgeStyle"
+      },
+      {
+        "direction": "row",
+        "id": "btnRibbonMore"
+      }
+    ],
+    "height": 114.9961929321289,
+    "layout": "stacked",
+    "saveCount": 1
+  },
+  "menu": {
+    "focus": "btnCanvasActions",
+    "menuClosed": true
+  },
+  "containmentFailures": [],
+  "captures": {
+    "before.png": {
+      "viewportCSS": [
+        1561,
+        878
+      ],
+      "capturePixels": [
+        2560,
+        1440
+      ]
+    },
+    "after-wide.png": {
+      "viewportCSS": [
+        1561,
+        878
+      ],
+      "capturePixels": [
+        2560,
+        1440
+      ]
+    }
+  },
+  "limits": [
+    "Synthetic seven-node/six-flow hub only",
+    "Responsive assertions use actual DOM bounds; the cropped narrow image is excluded",
+    "No Windows native GUI, installed-entry or release acceptance"
+  ]
+}
