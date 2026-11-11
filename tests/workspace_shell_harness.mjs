@@ -288,7 +288,18 @@ test('mount is idempotent and transition receipts contain chrome state only', ()
   assert.deepEqual(Object.keys(h.events.at(-1).detail).sort(), ['phase','reason','sidebarCollapsed','toolbarCollapsed','view']);
 });
 
-test('workspace modes keep independent session collapse choices and focus returns to the last non-focus mode', () => {
+test('standard and professional presets reapply their collapse state on entry and reselection', () => {
+  const h = harness();
+  h.shell.setSidebarCollapsed(true); h.shell.setToolbarCollapsed(true);
+  h.shell.setView('standard');
+  assert.deepEqual({ ...h.shell.getState() }, { view: 'standard', sidebarCollapsed: false, toolbarCollapsed: false });
+  h.shell.setView('focus');
+  h.shell.setSidebarCollapsed(false); h.shell.setToolbarCollapsed(false);
+  h.shell.setView('focus');
+  assert.deepEqual({ ...h.shell.getState() }, { view: 'focus', sidebarCollapsed: true, toolbarCollapsed: true });
+});
+
+test('workspace presets retain split choices and focus returns to the last non-focus mode', () => {
   const h = harness(), workspace = h.nodes.get('workspace');
   assert.deepEqual({ ...h.shell.getState() }, { view: 'standard', sidebarCollapsed: false, toolbarCollapsed: false });
   assert.equal(workspace.getAttribute('data-workspace-view'), 'standard');
@@ -301,11 +312,11 @@ test('workspace modes keep independent session collapse choices and focus return
   assert.deepEqual({ ...h.shell.getState() }, { view: 'split', sidebarCollapsed: false, toolbarCollapsed: false });
   h.shell.setToolbarCollapsed(true);
   h.shell.toggleFocus();
-  assert.deepEqual({ ...h.shell.getState() }, { view: 'focus', sidebarCollapsed: false, toolbarCollapsed: false });
+  assert.deepEqual({ ...h.shell.getState() }, { view: 'focus', sidebarCollapsed: true, toolbarCollapsed: true });
   h.shell.toggleFocus();
   assert.deepEqual({ ...h.shell.getState() }, { view: 'split', sidebarCollapsed: false, toolbarCollapsed: true });
   h.shell.setView('standard');
-  assert.deepEqual({ ...h.shell.getState() }, { view: 'standard', sidebarCollapsed: true, toolbarCollapsed: false });
+  assert.deepEqual({ ...h.shell.getState() }, { view: 'standard', sidebarCollapsed: false, toolbarCollapsed: false });
   h.shell.toggleFocus(); h.shell.toggleFocus();
   assert.equal(h.shell.getState().view, 'standard');
 });
@@ -356,7 +367,7 @@ test('view menu radio state follows the public API and menu selection restores i
   assert.equal(h.nodes.get('workspaceViewCurrent').textContent, '标准');
   h.shell.setView('focus');
   assert.deepEqual(options.map(option => option.getAttribute('aria-checked')), ['false', 'true', 'false']);
-  assert.equal(h.nodes.get('workspaceViewCurrent').textContent, '专注');
+  assert.equal(h.nodes.get('workspaceViewCurrent').textContent, '专业');
   h.doc.activeElement = options[2];
   options[2].fire('click');
   assert.equal(h.shell.getState().view, 'split');

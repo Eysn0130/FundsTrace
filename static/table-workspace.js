@@ -27,7 +27,7 @@
   try {
     const saved = JSON.parse(window.localStorage?.getItem(columnPreferenceKey) || '{}');
     for (const [key, widths] of Object.entries(saved)) {
-      if (/^(sidebar|overview):(compact|comfortable):(wrap|single|two-line)$/.test(key)
+      if (/^(sidebar|split|overview):(compact|comfortable):(wrap|single|two-line)$/.test(key)
         && Array.isArray(widths) && widths.length === 7 && widths.every(width => Number.isFinite(width) && width > 0)) preferredColumns[key] = widths;
     }
   } catch (_) { /* A damaged display preference does not affect query data. */ }
@@ -180,8 +180,8 @@
     return (viewport.dataset.flowDensity === 'comfortable' ? 'comfortable' : 'compact') + ':'
       + (['single','two-line'].includes(viewport.dataset.flowWrap) ? viewport.dataset.flowWrap : 'wrap');
   }
-  const columnProfile = () => `${open ? 'overview' : 'sidebar'}:${columnMode()}`;
-  const columnCacheKey = () => $('#flowTableScroll').dataset.flowWrap === 'two-line' ? columnProfile() : columnMode();
+  const columnProfile = () => `${open ? 'overview' : workspaceView === 'split' ? 'split' : 'sidebar'}:${columnMode()}`;
+  const columnCacheKey = () => ((workspaceView === 'split' && !open) || $('#flowTableScroll').dataset.flowWrap === 'two-line') ? columnProfile() : columnMode();
   function minimumWidths(value = query, measure = false) {
     const result = [...columnMinimums];
     if (open) result[0] = 96;
@@ -216,7 +216,9 @@
   }
   function boundedWidths(widths, value = query) {
     const minimums = minimumWidths(value);
-    return widths.map((width, index) => Math.max(minimums[index], Math.min(Math.max(columnMaximums[index], minimums[index]), width)));
+    const expandedWidth = open || workspaceView === 'split' ? $('#flowTableScroll').clientWidth : 0;
+    return widths.map((width, index) => Math.max(minimums[index],
+      Math.min(Math.max(columnMaximums[index], minimums[index], index === 5 ? expandedWidth : 0), width)));
   }
   function persistColumns() {
     try { window.localStorage?.setItem(columnPreferenceKey, JSON.stringify(preferredColumns)); }
@@ -227,7 +229,8 @@
     for (const handle of $$('#flowTable .flow-column-resize')) {
       const index = Number(handle.dataset.column);
       handle.setAttribute('aria-valuemin', String(minimums[index]));
-      handle.setAttribute('aria-valuemax', String(Math.max(columnMaximums[index], minimums[index])));
+      const expandedWidth = index === 5 && (open || workspaceView === 'split') ? $('#flowTableScroll').clientWidth : 0;
+      handle.setAttribute('aria-valuemax', String(Math.max(columnMaximums[index], minimums[index], expandedWidth, Math.round(widths[index]))));
       handle.setAttribute('aria-valuenow', String(Math.round(widths[index])));
     }
   }
@@ -252,12 +255,13 @@
     let sizes = preferred || value?.widths.get(columnCacheKey());
     const cols = columns();
     clearColumns();
-    if (!sizes && $('#flowTableScroll').dataset.flowWrap === 'two-line') sizes = columnDefaults;
+    if ($('#flowTableScroll').dataset.flowWrap === 'two-line'
+      && (!sizes || !preferred && (open || workspaceView === 'split'))) sizes = columnDefaults;
     if (!sizes || !cols) return;
     const minimums = minimumWidths(value);
     sizes = preferred || $('#flowTableScroll').dataset.flowWrap === 'two-line' ? boundedWidths(sizes, value)
       : sizes.map((width, index) => Math.max(width, minimums[index]));
-    if (open && !preferred) {
+    if ((open || workspaceView === 'split') && !preferred) {
       if ($('#flowTableScroll').dataset.flowWrap === 'two-line') {
         const party = Math.min(320, $('#flowTableScroll').clientWidth * .21);
         sizes[2] = Math.max(sizes[2], party); sizes[3] = Math.max(sizes[3], party);
@@ -279,7 +283,7 @@
     const measured = headers.map(node => node.getBoundingClientRect?.()?.width);
     if (!measured.every(width => Number.isFinite(width) && width > 0)) return;
     const key = columnCacheKey(), previous = value.widths.get(key) || [];
-    // Eight bounded width profiles, seven numbers each; no evicted row or text.
+    // Fourteen bounded width profiles, seven numbers each; no evicted row or text.
     value.widths.set(key, measured.map((width, index) => Math.max(width, previous[index] || 0)));
   }
   function bindColumnResizing() {
@@ -588,7 +592,7 @@
     if (!mounted || detail.reason !== 'workspace-view'
       || !['standard', 'focus', 'split'].includes(detail.view)) return;
     const viewport = $('#flowTableScroll');
-    if (detail.phase === 'prepare' && detail.view !== workspaceView) {
+    if (detail.phase === 'prepare') {
       // Wider slots and hidden panels clamp native scroll offsets. Capture
       // before the shell changes geometry, not after the browser has clamped.
       viewScrolls.set(workspaceView, open ? [...scrolls.sidebar] : [viewport.scrollLeft, viewport.scrollTop]);
@@ -711,11 +715,17 @@
       delete preferredColumns[columnProfile()]; persistColumns(); applyColumns(query); restorePosition(position);
     };
     if (typeof ResizeObserver === 'function') {
-      let hidden = $('#flowTableScroll').clientWidth === 0;
+      let previousWidth = $('#flowTableScroll').clientWidth;
       const observer = new ResizeObserver(() => {
-        const visible = $('#flowTableScroll').clientWidth > 0;
-        if (hidden && visible) { minimumWidths(query, true); applyColumns(query); }
-        hidden = !visible;
+        const width = $('#flowTableScroll').clientWidth;
+        if (width > 0 && width !== previousWidth && (!previousWidth
+          || (open || workspaceView === 'split') && !preferredColumns[columnProfile()])) {
+          const position = capturePosition();
+          hideFlowValue();
+          if (!previousWidth) minimumWidths(query, true);
+          applyColumns(query); restorePosition(position);
+        }
+        previousWidth = width;
       });
       observer.observe($('#flowTableScroll'));
     }
@@ -731,7 +741,7 @@
       else void loadNeighbor(direction, true);
     }, { passive: true });
     for (const selector of ['#flowTableDensity', '#flowTableWrap']) $(selector)?.addEventListener('change', () => {
-      const position = capturePosition(), context = caseContext(), epoch = request, value = query, wasOpen = open;
+      const position = capturePosition(), context = caseContext(), epoch = request, value = query, wasOpen = open, previousView = workspaceView;
       geometryPending++;
       if (value) { rememberColumns(value); value.horizontal.set(columnCacheKey(), position.scrollLeft); }
       // Remove the old mode's single-line constraints before the host applies
@@ -740,7 +750,7 @@
       const schedule = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : callback => setTimeout(callback, 0);
       schedule(() => {
         geometryPending = Math.max(0, geometryPending - 1);
-        if (epoch !== request || !isCurrentCase(context) || wasOpen !== open) return;
+        if (epoch !== request || !isCurrentCase(context) || wasOpen !== open || previousView !== workspaceView) return;
         applyColumns(value); rememberColumns(value); applyColumns(value);
         if (value?.horizontal.has(columnCacheKey())) position.scrollLeft = value.horizontal.get(columnCacheKey());
         restorePosition(position);
