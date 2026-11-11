@@ -1,3 +1,171 @@
+# 内容自适应与均衡列宽 · 2026-11-10
+
+维护者随后指出列宽仍不协调。两行概览的上下分栏／全览现按当前已加载内容、实际字体及单元格内边距测量；时间、金额、操作取合适宽度，两个账户列对称使用实际户名／显示账号需求，摘要按两行文字需求测量。文字列首选宽度有界且保持接近，余量由三列共同分配，替代此前摘要吸收全部余量的方案。手动偏好、完整金额、省略及全值入口保留；只缓存每档行距七个宽度数字，不缓存额外交易内容或读取未加载的全案。
+
+真实 Chrome CSS／捕获 1835×947 的[普通内容](docs/media/content-columns/balanced.png)七列为 **40／88／444／444／176／442／119px**，总宽 1753px；[混合长户名](docs/media/content-columns/long-fields.png)为 **40／88／468／467／176／395／119px**，同样填满 1753px。舒展行距时金额列 188px，巨额金额文字约 164.99px，保留内边距；实际还发现等宽数字导致 CSSOM `font` 简写为空，原错误回退使日期可用 67px／实际需 72px。改用实际字体各部分后，标准侧栏与宽表的日期可用／实际均为 72px，完整显示。详见[观察记录](docs/media/content-columns/verification.json)。
+
+1280px 窗口的长内容继续两行省略，悬停全值包含完整户名及前导零；手动增宽付款方 8px 后其余列保持，恢复自动回到内容分配。新增内容长短适配、文字列均衡、窄窗最小宽度、显示账号别名、超安全整数 ID／金额及空字体简写回归，均衡和字体问题先确认失败再修复；原源 ID、绑定、滚动和无写入断言保留。workspace session 的合成 DOM 同步补齐真实格式化函数及不存在金额节点返回 null，未弱化切案断言。
+
+最终 table workspace、workspace session、workspace shell、workspace camera、ribbon commands、ribbon、toolbar menu 定向 **16 passed in 5.19s**，1 条既有 Starlette/httpx 弃用警告；与下文前序检查有覆盖，不相加。截图仅用隔离的六笔合成流水，没有真实大表性能或 Windows 原生 GUI／DPI 结论，最新完整 CI 仍须对应 PR 当前 head。
+
+# 工作区预设与底部分栏表格宽度 · 2026-11-10
+
+按维护者标注修正两处行为：标准每次选择均展开顶部功能区与左侧查询区，专业每次选择均收起两者，重复选择当前项也生效；上下分栏保留既有布局与自身区域调整。显示名由专注统一为专业，内部 `focus` 标识与原命令绑定保留。手动展开／收起仍可使用，但不会改写标准／专业的预设。
+
+表格问题来自两行概览沿用侧栏固定列宽，扩展逻辑只覆盖全览，宽度观察也只处理从隐藏到可见。实际 IAB CSS 2238×1155 下，底部容器为 2157px，旧表仍约 859px。现为上下分栏独立分配自动列宽，窗口伸缩及查询刷新重新计算；与侧栏／全览的手动偏好隔离。摘要吸收自动剩余空间，调整另一列时不会被旧的 800px 侧栏上限压回；首列仍固定，完整金额及七列最小宽度保留。手动宽度可通过恢复自动重新填满。
+
+[修复后截图](docs/media/workspace-presets/split-filled.png)为真实 Chrome CSS／捕获 1835×947，表格宽度与可用区域均为 **1753px**。同一隔离七节点／六笔案件的[观察记录](docs/media/workspace-presets/verification.json)含 IAB 容器 2157→1626→2157px 的窗口伸缩，自动表格宽度逐次一致；付款方手动增加 8px 时摘要不缩，恢复自动与查询刷新后继续填满。标准／专业的首次及重复选择分别核对两个区域展开／收起。未操作原标注页的查询或事实，验证在另建的合成客户端进行；临时视口覆盖已恢复。
+
+新增预设重选、1600→1900px 自动填充、刷新后缩回、偏好隔离、同视图表格位置与迟到文本模式回调回归。预设重选、表格未填满、迟到回调 190px 覆盖 0px、摘要 1156px 被错误压到 800px 均有修复前失败证据。保留已有源 ID、金额、案件绑定、滚动、锚点和无写入断言；修复后 workspace shell、table workspace、workspace camera、ribbon、ribbon commands、workspace session、toolbar menu 共 **16 passed in 4.53s**，1 条既有 Starlette/httpx 弃用警告。该记录是合成 UI 和定向回归，不替代真实大表性能、Windows 原生 GUI／DPI、安装包或最新 head 全量 CI 结论。
+
+# 恢复原有纵向工具按钮 · 2026-11-10
+
+三层外壳改动同时把大工具按钮改成横排、将常用面板压到 52px，并隐藏了分组标题。按维护者纠正，恢复改动前的大按钮：24px 图标在上、12px 文字在下、最小高度 56px；窄槽位图标 22px、按钮 52px，宽窗分组标题恢复为 14px 行高。宽面板恢复 92px，移除常用页签单独压缩；保留当前上下文行和系统外壳尺寸，因此展开高度为 137／117／145px，而非早期 127／107／129px。双行小工具、折叠快捷带、四页签和原控件绑定沿用原设计。
+
+实际对照：[横排修复前](docs/media/ribbon-restore/before.png)、[纵向修复后](docs/media/ribbon-restore/after-wide.png)，均为 CSS 1561×878、IAB DPR 约 1.64、2560×1440 捕获像素的同一合成案件。只对工具区作布局比较，画布随槽位变化沿用已有调整逻辑，不声称图谱背景逐像素一致。详细观察见 [verification.json](docs/media/ribbon-restore/verification.json)。
+
+- CSS 宽槽位四页签的大按钮分别为 19／12／8／13 个，全部图标在文字上方、水平中心一致，文字位于按钮范围内；分组标题从约 1px 隐藏占位恢复为约 14px 可见行。
+- 实际 CSS 1024×902 和 671×902 各核对四个页签，均保持纵向大按钮，未发现标签裁切。临时视口覆盖已恢复；窄截图存在捕获裁切，未纳入验收图片。671px 槽位的折叠工具带实测约 115px，11 个图标文字快捷按钮仍为横排，保存控件保持唯一；画布管理菜单 Escape 后返回原触发按钮。
+- `scripts/test.py` 定向执行 ribbon、ribbon commands、workspace shell、workspace camera、toolbar menu：**13 passed in 0.91s**，1 条既有 Starlette/httpx 弃用警告。没有新增镜像 CSS 声明的测试，使用实际渲染矩形和已有命令／焦点／镜头回归验证。
+- 本次运行代码只改 `static/style.css`。预览使用独立临时数据库和受支持的合成 `--graph-assets` 指向完整候选静态目录，后端及已构建 React 来自内容一致的已接受 main；没有把预览覆盖参数加入生产配置。未使用业务数据、执行原生 Windows／DPI、安装链或发布验证。
+
+# 结果总数隐藏与合并门槛修正 · 2026-11-10
+
+表格工具区不再显示“共 N 条记录”，包括侧栏、全览、查询失败和续载状态中的总数。成功查询的 `resultInfo` 隐藏且高度为 0；查询中／失败反馈与重试保留，内部权威总数仍用于分页和滚动边界。既有直接查询入口同步清空总数，避免另一调用方恢复该文本。
+
+新增公共查询回归先失败，修复后通过，覆盖 75 条合成结果的续载失败／重试、查询失败保留原行及 0 条结果。实际隔离浏览器核对初始 6 行、单标签页离线失败（旧行保留）、恢复、空结果和全览；成功状态均 hidden／0px，失败状态仍显示明确提示。见[截图](docs/media/three-zone-workspace/table-08-no-count.png)及[观察记录](docs/media/three-zone-workspace/result-status-verification.json)。截图为 IAB 实际 CSS 1561×878、DPR 约 1.64、2560×1440 捕获像素；查询表单保留查询按钮操作后的内部滚动位置。离线模拟已恢复，未操作业务预览实例。
+
+合并候选 `88e2d9d` 的全量 CI 记录为 6565 passed／3 failed／9 skipped／108 subtests passed。三个失败在本地独立复现：反馈导入与本金 UI 仍断言来源说明可见，HTML 图谱仍断言固定 6 屏幕像素。这些显示断言现按已确认的隐藏说明／同比间距规则同步；金额、来源含义、未知状态、旧案件回执、节点坐标与导出几何检查均保留。修复后 table workspace、feedback import UI、principal analysis UI、graph view export、workspace session 和 legacy navigation 共 **57 passed in 22.41s**，1 条既有 Starlette/httpx 弃用警告。远端全量 CI 的最终结果以 PR 对应 head 的检查为准；该本地记录不冒充全量通过。
+
+# 高密度流水表格、画布快捷键与缩放间距 · 2026-11-10
+
+final result: passed（本地源码与隔离合成 UI 范围）
+
+最终接入 main `7388575` 后，两组同位置新增的表格测试均保留；产品代码自动合并，没有用一侧覆盖另一侧。原定向集合加账户／关系工作区和卡号显示查询公共回归为 **27 passed in 60.05s**，1 条既有弃用警告。全新合成进程再次核对的[全览截图](docs/media/three-zone-workspace/table-07-merged-overview.png)及[状态记录](docs/media/three-zone-workspace/post-main-merge.json)确认七列、六行 44px、无额外横滚及完整值焦点／Escape。下面的 14 项记录和其余截图是合并前 UI 候选 `f647e75` 的有效范围证据，不替代主分支新功能自身的验收。
+
+维护者确认“单击选行／定位，独立按钮上图或移出”。本轮保留七列和两种复选框语义，默认增加两行概览、溢出完整值、带下限的手动列宽；隐藏左侧统计及整段来源说明，增加画布删除快捷键，修正缩小时节点名称离本体过远。研究、四步审查、风险及具体交互见 [dense-flow-table.md](docs/dense-flow-table.md)。下文既有交付记录保留，早先对覆盖说明可见和固定屏幕间距的描述已被本轮替代。
+
+## 实际观察
+
+1. **读表。** [同一长字段合成输入修改前](docs/media/three-zone-workspace/table-02-long-before.png)约 344.72px／行，[两行概览](docs/media/three-zone-workspace/table-03-two-line.png)44px／行。双方 CSS 视口均为 853×1155；前图 IAB 82% 缩放捕获 700×947，后图 Chrome DPR 1 捕获 853×1155。不按截图像素推导列宽，不声称相机或背景逐像素一致。金额完整保留，舒展模式约 61.39px／行，摘要完整占两行。
+2. **值与行操作。** [完整值](docs/media/three-zone-workspace/table-04-full-value.png)含完整长户名、前缀零和复制按钮。单击仅选行／定位，追踪 6、历史 0；显式移出后追踪 5、源结果仍 6 行，画布撤销恢复 6。双击打开字符串 ID 的既有详情；实际鼠标调宽 112→160px，重载仍 160，恢复自动 140。该控件上的 Ctrl+Z 不撤销画布。
+3. **全览。** [1512×949 全览](docs/media/three-zone-workspace/table-06-overview.png)为原来的一张表、七列、六个两行数据行和完整金额。最终 scrollWidth/clientWidth 均为 1396，底部水平控件禁用。全览的完整值浮层可聚焦；Escape 只关闭值浮层，父全览保持；切案清空旧值。观察见 [dense-table-verification.json](docs/media/three-zone-workspace/dense-table-verification.json)。
+4. **画布。** 同一临时七节点／六笔短字段案件实际执行 Ctrl+A → Delete → Ctrl+Z，以及 ⌘A → Backspace → ⌘Z：均为选中 7 → 画布 0 → 恢复 7，原始表格一直为 6 行，移出仅记一步历史。[删除](docs/media/three-zone-workspace/keyboard-delete.png)、[恢复](docs/media/three-zone-workspace/keyboard-restored.png)和[缩小](docs/media/three-zone-workspace/labels-scaled-gap.png)配合 [逐步状态](docs/media/three-zone-workspace/shortcuts-spacing.json)使用；画面中的短暂操作 Toast 不作为当前成员数。77%→26% 七个静止倍率，每步 7 个名称，实心节点轮廓到文本的间距 4.617→1.546px，与 `6 × zoom` 一致。
+
+## 发现、修复与检查
+
+- 修正完整换行导致单行过高；两行截断保留原值，金额动态最小宽度；修正舒展行距摘要被固定高度裁掉。原“完整换行／完整单行”可选并保留宽行回收后的横滚包络。
+- 修正侧栏旧测量回调覆盖全览横滚、末列手柄制造 3px 空白横滚，以及 body 中完整值浮层被父模态设为 inert。浮层现在随原表格移动并在窗口捕获阶段先处理 Escape。行 ID 全程用字符串，覆盖超安全整数 ID。
+- 列宽手柄具备键盘、名称、最小／最大／当前宽度；复选框触点 24px，焦点在刷新后保持。完整值的键盘替代路径为 Enter 详情或完整文本模式；未验收屏幕阅读器／触屏。
+- 最终候选定向运行 table workspace、workspace session／drafts、canvas editor、graph selection、label collision／geometry、graph interaction、legacy navigation、workspace camera、ribbon commands、context workspace、ui dialogs：**14 passed in 48.25s**，1 条既有 Starlette/httpx 弃用警告。table 包装内为 59 个 Node 用例，不与包装数相加。代码只改 UI／合成回归；原 G6 vendor、数据／金额契约与 API 未改。
+- 来源覆盖缺口与冲突刷新回归证明两个左侧概括块持续 hidden；内部 DOM 和审计文本保留。原生输入、IME 229、长按重复、对话框、非画布删除、列宽控制撤销以及隐藏关联的移出均有行为回归。
+
+范围为隔离的合成数据和本机 Chrome／IAB。未读取业务预览实例、未做真实 59k 行导入或大表计时、Windows 原生 GUI／DPI、安装链、打包或发布；不据此宣称任意密度零重叠或完整可访问性合规。
+
+# 节点名称缺失修复 · 2026-11-10
+
+final result: passed
+
+范围扩展到维护者随后标注的节点名称缺失问题。真实截图对照：[修复前](docs/media/three-zone-workspace/labels-before.png)、[700×947 修复后](docs/media/three-zone-workspace/labels-fixed-narrow.png)、[1512×949 修复后](docs/media/three-zone-workspace/labels-fixed-wide.png)、[约 26% 缩放](docs/media/three-zone-workspace/labels-fixed-zoom-out.png)、[浅色](docs/media/three-zone-workspace/labels-fixed-light.png)。均为同一个隔离的 7 节点／6 笔合成案件，不含业务数据；实际只读 G6 核对及逐步观察摘要见 [node-label-verification.json](docs/media/three-zone-workspace/node-label-verification.json)。原浏览器输出保留了逐步倍率与数量，JSON 中摘要数字为这些观察值的转录，fit700 为实际读取的完整 shape 几何。
+
+## 根因与修复
+
+1. **P2，已修复：碰撞避让直接移除节点名称。** 实际 auto 模式已准入 7 个节点，但主节点和右侧节点的多行文字外接框与金额文字相交，经过避让仅余 5 个实际文字 shape。节点名称现保留用户标签模式已经准入、且与画布相交的规范全文；相交继续计数，节点下方居中及 6 屏幕像素间距不变。金额、节点位置和关系路径没有因本次修复移动或减少。纯选择器的两个独立回归在修改前失败、修改后通过。
+2. **P2，已修复：适应全图漏算旧视口外的长名称。** Fit 测量之前按旧视口删除文字，导致拟合仅计入节点形状，复位后文字仍可能越过边缘。Fit 测量阶段保留已准入的屏外文字，完成后恢复普通裁剪。新增公共行为回归先确认长名称越过右边界（maxX=715.275，画布宽 700），修复后全部文字进入 24px 边距，重复适应及两个不同进入相机得到相同结果，保存坐标和事实不变。
+
+## 已执行检查
+
+- 实际 700×947 浏览器自动模式：7/7 节点有可见且与 canonical 全文相同的 G6 文字，6 次缩小约 77%→26% 后再 6 次放大返回，每一步均为 7/7；原生滚轮缩放仍为 7/7。检查均在缩放收敛后进行，没有通过悬停临时强制名称。
+- 平移出屏时保留 6 个准入名称；返回全图后为 7/7。平移后适应、再次适应的倍率分别为 0.7694939449474252／0.7694939449474251，实际全部文字位于 24px 内边距内。空案件清为 0 节点／0 文字，返回后 7/7。
+- 切换仅关注邻域（无选择）为 0，全部标签为 7，返回自动分级为 7；这是用户模式的显式规则。宽屏和深浅色切换均为 7/7，browser error／warn 为空。
+- Python 定向运行 legacy navigation、graph view、label collision／geometry、graph interaction、graph viewport、workspace camera、minimap navigation：**8 passed**，1 条既有 Starlette/httpx 弃用警告。覆盖缩放后的延迟恢复、四边部分出屏／完全出屏返回、照片与阴影、懒创建、追加重绘、同倍率移动、模式和预算、旧案件回调撤销、长名称 Fit、规范金额、全量与显示范围导出。纯选择器为 22 个 Node 用例；未使用真实账户、照片或 Provider。
+- 原本断言“真实碰撞必须删掉名称”的应用级测试按新显示契约改为要求规范文字仍存在、相交被计数、锚点仍准确；通用选择器未开启新选项时的拒绝规则、屏外回收、几何未知拒绝及大图预算回归保留。没有删除失败用例或忽略失败。
+
+本次修复的是名称被删除和测量遗漏，密集图仍可能出现文字重叠；实际相交数有记录，不宣称任意密度零重叠。自动分级的 20／80／160 数量预算、仅关注邻域的选择规则以及屏外自然裁剪继续生效。本轮未执行性能基准、Windows 原生 GUI／DPI、安装链、打包或发布。下文保留此前外壳及标注交付记录。
+
+# 三层工作区后续密度与标注修正 · 2026-11-10
+
+final result: passed
+
+范围为已确认外壳基础上的缩略图／图例减半、默认查询区缩小 20%，以及四处浏览器标注。实际界面见 [深色](docs/media/three-zone-workspace/compact-dark.png)、[浅色](docs/media/three-zone-workspace/compact-light.png)、[700×947](docs/media/three-zone-workspace/compact-narrow.png)、[599×650](docs/media/three-zone-workspace/compact-small.png) 和 [七列全览](docs/media/three-zone-workspace/compact-overview.png)。截图均来自隔离合成案件；[compact-layout.json](docs/media/three-zone-workspace/compact-layout.json) 记录本轮实测，后文保留先前交付记录。
+
+## 本轮视觉与交互核对
+
+| 项目 | 结果 |
+| --- | --- |
+| 布局／间距 | 1512×949 下查询区从 514.078125px 改为 411.2578125px，即原宽度的 80%；700px 和 599px 窗口默认 288px。手动宽度仍保留。缩略图展开外框及占位从 272×226 改为 136×113，地图 131×80、卡片 136×85、胶囊 136×23、间距 5px；不是仅在原容器中缩小图片。 |
+| 字体／排版 | 原数据与工具字号保留；仅左下图例按要求整体缩为 50%，文字、圆点、内边距和背景一起缩放。700×947 下图例 142.5×18，与 136×113 缩略图区无交集。 |
+| 颜色／令牌 | 延续 #333333／#222222／#181818 三层；深浅主题下滚动条均可见，使用既有 muted、surface 和 focus 令牌。 |
+| 图像／图标 | Logo、导航选中块和四角尺寸沿用已确认版本；缩略图按钮和图标随整个控件减半，原位图坐标与点击／键盘／缩放操作保留。 |
+| 文案／内容 | 左侧概括行隐藏且空行高度为 0，内部 statLine 节点保留以兼容标题刷新；来源覆盖说明没有删除。七列、金额、原命令与业务语义保留。无更新时导航入口与占位均消失，设置中仍有手动检查更新入口。 |
+
+- 700×947 下首行复选框中心与单元格中心仅有 x=-0.5px、y=0.168px 的栅格／基线偏差；首列使用水平居中和垂直居中，长文本列继续顶部对齐。
+- 底部 18px 横向控件常驻。键盘 End 实测原生 scrollLeft、range 值和最大值均为 532，右按钮禁用；鼠标实际拖动后 scrollLeft 与 range 值均为 416。Home 可返回左端。
+- 全览移动原表格和原滚动控件，实际数量为 1 张表、7 个表头、1 个底部控件；关闭后 SYN-DRAFT 草稿和已选锚点恢复。完整金额包括 `¥9,999,999,999,999,999.99` 与 `USD 0.20`。宽屏上下分栏下 7 列全部容纳时，滚动条禁用，外层溢出为 0。
+- **发现并修复：短窗口新增底部控件挤出可视区。** 将短窗口的表格下限由 180 改为 159px，为 18px 控件与 3px 间距预留空间。599×650 下底部控件 y=621–639，工作区底部 y=646，完整可见，外层溢出为 0。缩略图与图例无交集。
+- 实际浏览器无桌面更新桥时，更新槽 display 为 none；关于页仍显示“检查更新”（浏览器环境禁用）。桌面控件合成测试覆盖 idle／checking／current／unavailable／无版本 error 隐藏，有版本 available／下载／待重启可见，已发现版本下载失败仍可重试；未发起真实检查、下载或安装。
+- 最终恢复深色，清空验证草稿及锚点，已重置临时视口覆盖；浏览器 error／warn 为空。
+
+## 本轮检查与边界
+
+- Python 定向运行 workspace shell、graph minimap、table workspace、workspace camera、minimap navigation、graph label collision、app navigation、account navigation、legacy navigation：**13 passed**，1 条既有 Starlette/httpx 弃用警告。其中 legacy harness 覆盖滚动同步、边界禁用、尺寸观察及重绑定；table harness 覆盖全览移动时保留同一条控件。
+- `node --test desktop/tests/update-capsule.test.cjs`：**5 passed**，只使用合成更新状态；原生 Main 更新桥及版本判断没有改变。
+- 其余原生标题／安装探针、前端构建与外观测试复用下面初始交付记录；本轮没有重新执行真实 macOS 安装或 Windows GUI／DPI、正式打包与发布。
+
+# 三层工作区与 Mac 本机参考尺寸 · 初始交付记录 · 2026-11-10
+
+final result: passed
+
+本次验收范围是已确认的三层中性灰工作区、系统栏尺度、Logo、导航选中块及内嵌四角。最终几何以维护者随后提供的 MacBook Pro 本机截图为准：44px 顶栏、52px 导航栏、36px 选中块、24px Logo、右／底 4px 外壳边和四角 12px 内圆角。它覆盖早期概念稿中的较大外壳尺寸。原图谱节点／连线绘制、金融数据、七列表格和全部功能入口沿用真实软件。
+
+## 视觉来源与密度
+
+- 配色／结构源真值：[确认稿](docs/media/three-zone-workspace/design.png)，1672×941 的生成设计图，仅作视觉参考，其账户、金额和图谱不是业务期望值。
+- 尺寸源真值：维护者提供的 3028×1898 Mac 本机截图。本机普通浏览器报告 Retina DPR 2；窗口内容宽 3024 图像像素，外围 4 像素黑边不计入界面。顶栏 88、导航 104、选中块 72、细边 8、内圆角半径约 24 图像像素，换算见 [测量记录](docs/media/three-zone-workspace/reference-measurements.json)。含私有聊天内容的参考原图没有随 PR 发布。
+- 最终实现：[深色](docs/media/three-zone-workspace/dark.png)、[浅色](docs/media/three-zone-workspace/light.png)、[全览](docs/media/three-zone-workspace/overview.png)，均为实际 1512×949 CSS 视口、1512×949 PNG，以一个图像像素对应一个 CSS 像素捕获。
+- [817×777](docs/media/three-zone-workspace/narrow.png) 与 [599×650](docs/media/three-zone-workspace/small.png) 是实际浏览器布局检查；小窗图保留了在筛选内部滚到查询按钮并成功查询后的状态。
+- [macOS 原生源码窗口](docs/media/three-zone-workspace/desktop.jpg) 为原始 JPEG 截图，2876×1618 图像像素、Retina 2 倍，检查本地标题层和工作区衔接；使用单独临时用户配置与临时数据库，截图为空案件。它不是 Windows 安装或 DPI 验收。
+- 已把确认稿、最终深色与原生窗口放在同一比较输入中检查整体结构；另打开 [640×230 局部](docs/media/three-zone-workspace/corner.png) 检查字体、Logo、导航块和内圆角。DOM 实测另见 [layout.json](docs/media/three-zone-workspace/layout.json)。Chrome 扩展有一次返回裁切缓冲，最终验收改用完整渲染视口截图；裁切帧未作为通过证据。
+
+## 五项表面核对
+
+| 项目 | 实现与结论 |
+| --- | --- |
+| 字体／排版 | 保留系统字体栈和真实流水的 12px 数据字号；标题为 14px，工具图标与文字横向排列。没有整体缩放界面或以缩小金额／账号来塞列。 |
+| 布局／间距 | 顶栏 44、导航 52、选中块 36；内嵌框四角 12，右／底细边 4。常用功能区 97px，其他功能区 117px，小槽位保持双行上下文。工具保留原生横滚。 |
+| 颜色／令牌 | DOM 实测系统顶栏／导航为 RGB 51，顶部／左侧功能区为 RGB 34，画布为 RGB 24，即 #333333／#222222／#181818。空画布同样使用画布色；重点色、浅色和半透明偏好仍有效，设置中的深色缩略预览同步为三层灰阶。 |
+| 图像／图标 | 复用项目批准的 PNG 品牌与本地 Tabler 图标，Logo 渲染框为 24×24。导航选中为重点色实心底、8px 圆角、白色图标，无左侧选中竖线。没有新增外部字体、依赖或替换 G6 渲染资产。 |
+| 文案／内容 | 保留真实软件的案件／画布、四功能页签、筛选、锚点、上图选择和七列表格语义。实际截图使用公开合成 fixture；没有把概念图的示例数据写入产品。 |
+
+1512×949 实测内嵌框为 x=52、y=44、right=1508、bottom=945，四角均 12px，外壳间距和颜色符合最终参考。查询区有完整本地横滚；全览中 `¥9,999,999,999,999,999.99` 与 `USD 0.20` 完整可见。
+
+## 迭代发现与修复
+
+1. **P2，已修复：窄画布图例与导航胶囊相交。** 817px 浏览器下，旧的图例宽度预算使其多行堆叠，而导航已被移到上方，出现交叠。小容器改为较宽图例并为导航保留 88px 底部距离。最终两框分别为图例 top=718／bottom=758、导航 top=639／bottom=685，无交集；见 narrow.png。更小槽位继续遵守既有导航控制器的隐藏／展开限制。
+2. **P2，已修复：空画布蒙层沿用功能区颜色。** 原生空案件首轮截图中右侧被 #222222 蒙层覆盖，第三层画布消失。将空态底色绑定到 `--graph-paper`；刷新后的原生截图显示独立的 #181818 画布。浅色仍取既有白色画布。
+3. **安装检查契约同步。** 独立安装探针原来要求 32 DIP、18px Logo、13px 标题字，会拒绝新候选。先用独立的 44／24／14 合成观察值确认旧探针失败，再同步原生客户区、截图条带、启动／最大化／缩放不变性及报告断言。几何保留原容差，字体限定为 14±0.1px；原拒绝条件全部保留，并补充拒绝旧尺寸的观察值，避免 1px 字体容差放过旧 13px。未执行真实安装链。
+
+最终没有未处理的本次范围 P0／P1／P2 发现。图谱的真实布局、交易角色与相机行为保留，生成概念图的节点位置和图标内容不作为替换依据。
+
+## 用户流程
+
+- 四个页签在宽屏及 817px 槽位均可切换，活动面板按钮／输入控件无纵向裁切；横向不足使用原控件的原生滚动。
+- 填入未提交的 SYN-DRAFT、勾选一个锚点，折叠筛选并在导入批次／查询之间切换，草稿与锚点保留；恢复后流水单元格内容不变。全览仍复用同一个七列表格。
+- 查询区和顶部工具可独立折叠；标准／上下分栏／专注切换后仍为同一张表、6 条合成记录。599px 小窗能滚到查询按钮并成功查询，外层无多余纵向滚动。
+- 浅色、重点色及半透明开关可预览／保存／取消；最终恢复深色蓝色、不透明。原生窗口已正常退出，所属服务同步停止；浏览器合成预览保留供维护者查看。
+- 浏览器 error／warn 日志为空。没有调用更新按钮、真实 Provider 或真实案件服务。
+
+## 检查与边界
+
+- Node 22.22.1；前端锁定安装与 `npm --prefix frontend run build` 通过，外观定向测试 17 passed。
+- Python 3.11 定向入口覆盖 workspace shell、ribbon、ribbon commands、table workspace、camera、资源边界及 minimap：22 passed，1 条既有 Starlette/httpx 弃用警告。新虚拟环境下载过慢，本机预览与定向测试使用既有只读 Python 环境，运行状态始终为隔离临时数据；没有声称新锁文件环境已完整安装。
+- `npm --prefix desktop test` 的 Node 合成检查以最终标题契约重新执行：462 passed、7 项平台相关 skipped、0 failed。安装探针单元通过不等于安装链通过。
+- 未修改 API、数据库、案件包格式、图谱业务事实或用户签名材料；没有运行真实包性能验证、Windows 原生 GUI／DPI、安装、正式打包或发布。
+
+实施核对：三层颜色、最新本机尺寸、四角及细边、完整金融表格、现有功能可达性、浅色偏好、桌面标题区与验证调用方均已覆盖。
+
+---
+
 # 画布顶栏与二级浮层精修 · 2026-10-26
 
 final result: passed
@@ -1151,3 +1319,28 @@ Current-run browser evidence is in `minimap-smooth-navigation/merge-review/`. Ch
 5. **Collapse/restore — passed.** The52-frame sequence covers closing and reopening. At closure, expanded=false, aria-hidden=true, map tabindex=-1 and navigation=false immediately; the final expanded map is usable without reviving the previous movement. Existing keyboard help and reduced-motion behavior remain intact; no screen-reader acceptance is inferred from visual evidence.
 
 Final local source checks: geometry/navigation/camera/legacy integration274/274 passed; resource/shell Python9/9 passed with the existing Starlette/httpx deprecation warning; JavaScript syntax and whitespace checks passed. The required PR workflow supplies complete Python/G6, contract and vendor checks for its exact candidate; its results and final merge identity are recorded on that PR. No installer, tag, release, download feed or production data is changed.
+
+## 2026-11-11 · 流水行定位的标签同步与短暂强调
+
+基于 main `ab8db088` 的隔离分支，使用七节点／六笔 hub 合成预览复现。上下分栏中先定位流水 6，再切到流水 5：相机已把“合成节点 4”带进画布，标签策略仍等待结束回调。相机现在先同步视口裁剪、标签和选择层，再绘制该帧；同一公共行为回归在旧实现失败、修复后通过，包含减少动态效果的即时定位路径。
+
+- **标签复现与复验。** CSS 视口均为 700×947，每次读取 48 个 rAF 样本。按节点中心距上下边各留 20／50px 的可见条件，旧实现有 30 个样本节点 4 已入场而文字不存在，新实现为 0。两次画布分别高 430／423px，均覆盖该节点由完全离场到入场；这是渲染状态的功能复验，不作为同几何条件的速度或逐像素对比。
+- **行与图对应。** 到达后两个端点和精确流水 ID 对应的实际曲线路径轻亮一次，650ms 清除。快速点 6→5→6 仅留下 6 的两个细环及一条线；自身关系文本处保留空隙。减少动态效果时为静态描边；原生滚轮可直接接管并清除反馈。切换期间完整流水、追踪成员、节点位置、折点、标签比例、presentation、图选择及历史快照相等。异步过期、缺失关系、重建和相机变动另有行为回归。
+- **有限的大图对照。** 同 seed 的 1000 节点／999 关系，双方几何 SHA-256 相同、CSS 1561×878、画布 1505×388、起始 zoom 约 0.061983。三对串行定位观察的旧实现结束耗时为 635.6／594.0／574.4ms，候选为 524.2／478.9／430.6ms；未出现超时或本组测得的耗时回退。最大 rAF 间隔仍达约 114ms，不能据此宣称持续流畅、60 FPS 或普遍性能提升。
+
+实际浏览器使用独立临时库，未连接截图中的运行实例。浏览器尺寸和媒体模拟均已复原，大图预览已关闭。[实际强调截图](docs/media/row-canvas-focus/row-pulse.png)来自最终资源版本；[验证记录](docs/media/row-canvas-focus/verification.json)含采样、输入及资源指纹。截图只展示瞬时外观，动画时序另由 rAF 状态读取和确定性回归支持。
+
+最终定向检查：`pytest tests/test_graph_interaction.py tests/test_workspace_camera.py tests/test_table_workspace.py tests/test_graph_location.py tests/test_graph_viewport.py tests/test_graph_label_collision.py tests/test_graph_view_export.py tests/test_desktop_resources.py -q --tb=short`，**68 passed in 26.05s**，一个既有 Starlette/httpx 弃用警告。JavaScript 语法与 diff 空白检查通过。无 API、文件格式、G6 vendor 或依赖改动；这是源码 UI 修复，不是新的安装包、官网发布或 Windows 原生 GUI／DPI 验收。
+
+## 2026-11-11 · Hover、选择与定位反馈统一
+
+在上一节候选 `eaf353a` 上继续处理维护者指出的重复光圈。实际浏览器确认：单选同时有一个可见 G6 固定圈和一个 CSS 呼吸圈；旧控制器允许十个圈同时呼吸。此次复用原控制器、主题色和角色边框，给同一节点的轮廓明确归属。Hover 保持静态，单选只改变透明度，多选全部静态；不导入新版 G6 的 hover 行为或新增依赖。减少动态效果沿用 [W3C 的系统偏好处理原则](https://www.w3.org/WAI/WCAG22/Understanding/animation-from-interactions)，不据此宣称完整无障碍合规。
+
+1. **指向节点 — 已修正。** Hover 使用一个较轻的轮廓并优先显示标签，选中后由同一个单选视觉接管。[旧单选](docs/media/graph-feedback/02-before-selected.png)的固定圈＋呼吸圈，在[新单选](docs/media/graph-feedback/05-single-selected.png)中成为一个可见 DOM 圈、0 个可见 Canvas 选中圈。20 次只读 rAF/CSS 观察中，圈宽高始终约 30.593px、transform 为 none，只有透明度变化。[节点 hover](docs/media/graph-feedback/04-node-hover.png)不改变选择、相机或历史。
+2. **指向／选中连线 — 已修正。** [Hover](docs/media/graph-feedback/07-edge-hover.png)强调实际路径、箭头及两个端点，移开恢复；[选中](docs/media/graph-feedback/08-edge-selected.png)使用更明确的强调色，取消额外宽外描边。实际同一关系 hover／selected 的 strokeOpacity 为 .65／1，金额编码线宽均为 1.4px；保留路径与文字留缝。旧的 leave 事件不能清除新目标的 hover；选中关系与另一个 hover 关系在概览中最多保留两条关系标签，节点预算不扩张。
+3. **定位与选择交接 — 已修正。** 原 650ms 行反馈继续保留，重合节点的选中／hover 圈在反馈期间隐藏，结束恢复。实际选中端点 0 后定位流水 6：反馈层有两个端点圈，选择层 DOM 圈和可见 Canvas 圈均为 0；到期恢复一个单选圈。减少动态效果时仍只有一个静态圈、animation 为 none；媒体模拟已清除。拖拽、移出、视口、重建、隐藏及导出清理由对应事件路径和公共回归覆盖。
+4. **多选及大图 — 已验证范围内通过。** [两节点](docs/media/graph-feedback/06-multi-selected.png)、七节点及[千节点全选](docs/media/graph-feedback/09-1000-selected.png)的选择动画与 DOM 呼吸圈均为 0。千节点实测保留 1000 个静态 Canvas 轮廓；50 个以上拖动仍只移动一个预览框，预览期间坐标不变，松手一次提交、历史一条，撤销后位置 JSON 完全一致，Escape 后选择／轮廓均为 0。控制器自身记录的本次提交约 46.8ms，不是完整输入到显示延迟或普遍性能结论。另有 5000 节点公共回归验证静态全选、预览、一次提交、清理，以及 0 个控制器 RAF／定时器请求。
+
+上述截图均在本轮实际捕获并检查。七节点 CSS 视口为 700×947，千节点为 1561×878，使用相同 seed 2026 的独立临时 hub；前后截图的相机／Fit 状态不同，仅比较轮廓归属，不声称几何逐像素一致。[验证记录](docs/media/graph-feedback/verification.json)含实际状态、资源指纹及边界。Hover／选中／行定位前后，完整流水、追踪成员、位置、折点、比例、presentation 及历史未被这些纯视觉操作改变；群移本身允许改位置，撤销另行核对。换案与迟到回调采用公共回归证据，本轮浏览器的原生 select 键盘尝试没有实际切案，不冒认为已验收。全页 `document.getAnimations()` 也不是选择动画的隔离计量，清除后不作全页零动画结论。
+
+最终相关 Python 包装回归 **69 passed in 39.30s**（`test_graph_selection`、`test_graph_interaction`、`test_graph_view`、`test_graph_view_export`、`test_graph_viewport`、`test_graph_label_collision`、`test_graph_presentation`、`test_workspace_camera`、`test_canvas_editor`、`test_desktop_resources`），一个既有 Starlette/httpx 弃用警告；之后新增的 5000 全选用例单独 **1 passed**。原重复圈断言先在旧实现失败，再验证修复。保留当前绑定的角色／照片样式、金额宽度、拖动与撤销、PNG 采样清洁／错误／取消／过期恢复检查。源码 UI 交付，不包含新安装包、真实案件、Windows 原生 GUI／DPI或持续 FPS 验收。

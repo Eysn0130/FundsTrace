@@ -1,0 +1,385 @@
+{
+  "scope": "Disposable synthetic seven-node/six-flow hub; long names, zero-prefixed accounts and repeated summaries; no business data",
+  "observations": {
+    "before": {
+      "headers": 7,
+      "resizeHandles": 0,
+      "rows": [
+        344.7218017578125,
+        344.7218017578125,
+        344.7218017578125,
+        344.7218017578125,
+        344.7218017578125,
+        344.7218017578125
+      ],
+      "viewport": [
+        853,
+        1155
+      ],
+      "wrap": "wrap"
+    },
+    "steps": [
+      {
+        "step": "initial",
+        "tracked": 6,
+        "nodes": 7,
+        "rows": 6,
+        "activeRows": [],
+        "history": {
+          "busy": false,
+          "canUndo": false,
+          "canRedo": false,
+          "undoLabel": "",
+          "redoLabel": "",
+          "count": 0,
+          "bytes": 0,
+          "message": "",
+          "limitReached": false
+        }
+      },
+      {
+        "step": "single-click",
+        "tracked": 6,
+        "nodes": 7,
+        "rows": 6,
+        "activeRows": [
+          "6"
+        ],
+        "history": {
+          "busy": false,
+          "canUndo": false,
+          "canRedo": false,
+          "undoLabel": "",
+          "redoLabel": "",
+          "count": 0,
+          "bytes": 0,
+          "message": "",
+          "limitReached": false
+        }
+      },
+      {
+        "step": "explicit-remove",
+        "tracked": 5,
+        "nodes": 6,
+        "rows": 6,
+        "activeRows": [
+          "6"
+        ],
+        "history": {
+          "busy": false,
+          "canUndo": true,
+          "canRedo": false,
+          "undoLabel": "移除流水",
+          "redoLabel": "",
+          "count": 1,
+          "bytes": 14614,
+          "message": "",
+          "limitReached": false
+        }
+      },
+      {
+        "step": "resize-control-undo-ignored",
+        "tracked": 5,
+        "nodes": 6,
+        "rows": 6,
+        "activeRows": [
+          "6"
+        ],
+        "history": {
+          "busy": false,
+          "canUndo": true,
+          "canRedo": false,
+          "undoLabel": "移除流水",
+          "redoLabel": "",
+          "count": 1,
+          "bytes": 14614,
+          "message": "",
+          "limitReached": false
+        }
+      },
+      {
+        "step": "canvas-undo-remove",
+        "tracked": 6,
+        "nodes": 7,
+        "rows": 6,
+        "activeRows": [
+          "6"
+        ],
+        "history": {
+          "busy": false,
+          "canUndo": false,
+          "canRedo": true,
+          "undoLabel": "",
+          "redoLabel": "移除流水",
+          "count": 1,
+          "bytes": 14614,
+          "message": "",
+          "limitReached": false
+        }
+      },
+      {
+        "step": "remove-before-add",
+        "tracked": 5,
+        "nodes": 6,
+        "rows": 6,
+        "activeRows": [
+          "6"
+        ],
+        "history": {
+          "busy": false,
+          "canUndo": true,
+          "canRedo": false,
+          "undoLabel": "移除流水",
+          "redoLabel": "",
+          "count": 1,
+          "bytes": 14614,
+          "message": "",
+          "limitReached": false
+        }
+      },
+      {
+        "step": "explicit-add",
+        "tracked": 6,
+        "nodes": 7,
+        "rows": 6,
+        "activeRows": [
+          "6"
+        ],
+        "history": {
+          "busy": false,
+          "canUndo": true,
+          "canRedo": false,
+          "undoLabel": "流水上图",
+          "redoLabel": "",
+          "count": 2,
+          "bytes": 29228,
+          "message": "",
+          "limitReached": false
+        }
+      }
+    ],
+    "resize": {
+      "browser": "Chrome",
+      "before": 112,
+      "after": 160,
+      "afterReload": 160,
+      "afterReset": 140
+    },
+    "tooltip": {
+      "box": {
+        "bottom": 734.390625,
+        "height": 104.390625,
+        "left": 193,
+        "right": 507.953125,
+        "top": 630,
+        "width": 314.953125,
+        "x": 193,
+        "y": 630
+      },
+      "hasEllipsis": false,
+      "text": "合成数据科技（深圳）有限公司 · 高密度表格验证\n000000000000000000000000000GRAPH-00000"
+    },
+    "detailState": {
+      "tracked": 6,
+      "history": 0,
+      "detailsOpen": "flex",
+      "anchorId": "6"
+    },
+    "persistedWidth": 160,
+    "resetWidth": 140,
+    "comfortable": {
+      "height": 61.390625,
+      "lineHeight": "19.2px",
+      "summaryHeight": 38.390625
+    },
+    "wrapHeight": 344.9375,
+    "single": {
+      "clientWidth": 269,
+      "scrollWidth": 3168
+    },
+    "compact": {
+      "headings": 7,
+      "money": [
+        {
+          "cellWidth": 175,
+          "text": "USD 0.20",
+          "width": 54.828125
+        },
+        {
+          "cellWidth": 175,
+          "text": "¥0.10",
+          "width": 33.796875
+        },
+        {
+          "cellWidth": 175,
+          "text": "¥0.01",
+          "width": 33.796875
+        },
+        {
+          "cellWidth": 175,
+          "text": "¥9,999,999,999,999,999.99",
+          "width": 164.9921875
+        },
+        {
+          "cellWidth": 175,
+          "text": "USD 0.20",
+          "width": 54.828125
+        },
+        {
+          "cellWidth": 175,
+          "text": "¥0.10",
+          "width": 33.796875
+        }
+      ],
+      "rowHeight": 44,
+      "toolbar": 44
+    },
+    "overviewScroll": {
+      "clientWidth": 1396,
+      "rangeDisabled": true,
+      "scrollWidth": 1396
+    },
+    "overviewTooltip": {
+      "length": 180,
+      "matchesFullSummary": true
+    },
+    "modalPopover": {
+      "fullSummary": true,
+      "scrollOverflow": 0,
+      "withinOverview": true
+    },
+    "modalEscape": {
+      "focus": "TR",
+      "overviewOpen": "flex",
+      "popoverHidden": true
+    },
+    "beforeCaseSwitch": {
+      "popover": true,
+      "text": "合成数据科技（深圳）有限公司 · 高密度表格验证\n000000000000000000000000000GRAPH-00000"
+    },
+    "caseSwitch": {
+      "case": "3",
+      "popoverHidden": true,
+      "popoverText": "",
+      "rows": 6
+    },
+    "overviewBeforeLastGripFix": {
+      "amounts": [
+        "USD 0.20",
+        "¥0.10",
+        "¥0.01",
+        "¥9,999,999,999,999,999.99",
+        "USD 0.20",
+        "¥0.10"
+      ],
+      "headers": [
+        "上图",
+        "交易时间",
+        "付款方",
+        "收款方",
+        "金额",
+        "摘要",
+        "操作"
+      ],
+      "rowHeights": [
+        44,
+        44,
+        44,
+        44,
+        44,
+        44
+      ],
+      "scrollWidth": 1399,
+      "tables": 1,
+      "viewport": 1396,
+      "widths": [
+        96,
+        92,
+        293.15625,
+        293.15625,
+        175,
+        334.6796875,
+        112.0078125
+      ]
+    },
+    "after": {
+      "browser": "Chrome",
+      "viewport": [
+        853,
+        1155
+      ],
+      "dpr": 1,
+      "wrap": "two-line",
+      "rowHeights": [
+        44,
+        44,
+        44,
+        44,
+        44,
+        44
+      ],
+      "headers": 7,
+      "resizeHandles": 6
+    }
+  },
+  "captures": {
+    "table-02-long-before.png": {
+      "browser": "IAB",
+      "viewportCSS": [
+        853,
+        1155
+      ],
+      "browserZoom": 0.82,
+      "capturePixels": [
+        700,
+        947
+      ],
+      "stage": "before dense-table changes"
+    },
+    "table-03-two-line.png": {
+      "browser": "Chrome",
+      "viewportCSS": [
+        853,
+        1155
+      ],
+      "dpr": 1,
+      "capturePixels": [
+        853,
+        1155
+      ],
+      "stage": "final source"
+    },
+    "table-04-full-value.png": {
+      "browser": "Chrome",
+      "viewportCSS": [
+        853,
+        1155
+      ],
+      "dpr": 1,
+      "capturePixels": [
+        853,
+        1155
+      ],
+      "stage": "final source"
+    },
+    "table-06-overview.png": {
+      "browser": "Chrome",
+      "viewportCSS": [
+        1512,
+        949
+      ],
+      "dpr": 1,
+      "capturePixels": [
+        1512,
+        949
+      ],
+      "stage": "final source after grip and modal-popover fixes"
+    }
+  },
+  "limits": [
+    "Synthetic six-row input only; no business instance accessed",
+    "Observations were collected during repair; overviewBeforeLastGripFix retains the diagnosed 3px defect, overviewScroll and modalPopover record its repair",
+    "No native Windows/DPI or large-table performance acceptance",
+    "Clipboard write asserted with a synthetic clipboard harness; user clipboard not read or changed"
+  ]
+}

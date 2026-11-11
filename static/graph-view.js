@@ -94,7 +94,7 @@
         level: 'detail', nodeCap: index.nodeIds.size, edgeCap: index.edgeKeys.size, budgetHiddenNodes: 0 };
     }
     const nodeCap = level === 'overview' ? 20 : level === 'names' ? 80 : 160;
-    const edgeCap = level === 'overview' ? 1 : level === 'names' ? 40 : 80;
+    let edgeCap = level === 'overview' ? 1 : level === 'names' ? 40 : 80;
     const nodeIds = new Set(), edgeKeys = new Set(), roots = [], rootIds = new Set();
     const selectedKey = typeof options.selectedEdge === 'string' ? options.selectedEdge
       : options.selectedEdge ? edgeKey(options.selectedEdge) : null;
@@ -107,6 +107,10 @@
     // stable roots without making a dense select-all create thousands of labels.
     addRoot(options.hoveredAccount);
     if (selectedEdge) { addRoot(selectedEdge.source); addRoot(selectedEdge.target); edgeKeys.add(selectedKey); }
+    const hoveredKey = typeof options.hoveredEdge === 'string' ? options.hoveredEdge : null;
+    const hoveredEdge = index.edgeByKey.get(hoveredKey);
+    if (hoveredEdge) { addRoot(hoveredEdge.source); addRoot(hoveredEdge.target); edgeKeys.add(hoveredKey); }
+    edgeCap = Math.max(edgeCap, edgeKeys.size);
     addRoot(options.selectedAccount);
     const selectedIds = options.selectedIds;
     if (selectedIds && typeof selectedIds !== 'string' && typeof selectedIds[Symbol.iterator] === 'function') {

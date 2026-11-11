@@ -1,0 +1,281 @@
+{
+  "date": "2026-11-11",
+  "fixture": "synthetic hub seed 2026",
+  "single": {
+    "caseId": 2,
+    "reduce": false,
+    "status": {
+      "animatedCount": 1,
+      "commitCount": 0,
+      "count": 1,
+      "destroyed": false,
+      "dragging": false,
+      "haloCount": 1,
+      "lastCommitMs": 0,
+      "outlineCount": 1,
+      "preview": false,
+      "visualsVisible": true
+    },
+    "viewport": [
+      700,
+      947
+    ],
+    "visibleCanvas": 0
+  },
+  "multi": {
+    "animations": 0,
+    "status": {
+      "animatedCount": 0,
+      "commitCount": 0,
+      "count": 2,
+      "destroyed": false,
+      "dragging": false,
+      "haloCount": 0,
+      "lastCommitMs": 0,
+      "outlineCount": 2,
+      "preview": false,
+      "visualsVisible": true
+    },
+    "visible": 2
+  },
+  "edgeHover": {
+    "hover": "000GRAPH-00000=>000GRAPH-00006",
+    "opacity": 0.65,
+    "status": {
+      "animatedCount": 0,
+      "commitCount": 0,
+      "count": 2,
+      "destroyed": false,
+      "dragging": false,
+      "haloCount": 0,
+      "lastCommitMs": 0,
+      "outlineCount": 4,
+      "preview": false,
+      "visualsVisible": true
+    },
+    "stroke": "#66d9ef",
+    "width": 1.4
+  },
+  "edgeSelected": {
+    "extraOutline": 0,
+    "opacity": 1,
+    "selected": "000GRAPH-00000=>000GRAPH-00006",
+    "width": 1.4
+  },
+  "reduced": {
+    "animation": "none",
+    "staticVisible": 0,
+    "status": {
+      "animatedCount": 0,
+      "commitCount": 0,
+      "count": 1,
+      "destroyed": false,
+      "dragging": false,
+      "haloCount": 1,
+      "lastCommitMs": 0,
+      "outlineCount": 1,
+      "preview": false,
+      "visualsVisible": true
+    }
+  },
+  "rowOverlap": {
+    "flow": "6",
+    "rowRings": 2,
+    "selection": {
+      "animatedCount": 0,
+      "commitCount": 0,
+      "count": 1,
+      "destroyed": false,
+      "dragging": false,
+      "haloCount": 0,
+      "lastCommitMs": 0,
+      "outlineCount": 1,
+      "preview": false,
+      "visualsVisible": true
+    },
+    "visibleStatic": 0
+  },
+  "rowRestore": {
+    "rowLayer": false,
+    "selection": {
+      "animatedCount": 1,
+      "commitCount": 0,
+      "count": 1,
+      "destroyed": false,
+      "dragging": false,
+      "haloCount": 1,
+      "lastCommitMs": 0,
+      "outlineCount": 1,
+      "preview": false,
+      "visualsVisible": true
+    }
+  },
+  "smallGroupUndo": {
+    "restored": true,
+    "history": {
+      "busy": false,
+      "bytes": 12846,
+      "canRedo": true,
+      "canUndo": false,
+      "count": 1,
+      "limitReached": false,
+      "message": "",
+      "redoLabel": "移动选中节点",
+      "undoLabel": ""
+    },
+    "selection": {
+      "animatedCount": 0,
+      "commitCount": 0,
+      "count": 2,
+      "destroyed": false,
+      "dragging": false,
+      "haloCount": 0,
+      "lastCommitMs": 0,
+      "outlineCount": 2,
+      "preview": false,
+      "visualsVisible": true
+    }
+  },
+  "allSeven": {
+    "breathing": 0,
+    "status": {
+      "animatedCount": 0,
+      "commitCount": 0,
+      "count": 7,
+      "destroyed": false,
+      "dragging": false,
+      "haloCount": 0,
+      "lastCommitMs": 0,
+      "outlineCount": 7,
+      "preview": false,
+      "visualsVisible": true
+    }
+  },
+  "thousand": {
+    "all": {
+      "animations": 0,
+      "domRings": 0,
+      "status": {
+        "animatedCount": 0,
+        "commitCount": 0,
+        "count": 1000,
+        "destroyed": false,
+        "dragging": false,
+        "haloCount": 0,
+        "lastCommitMs": 0,
+        "outlineCount": 1000,
+        "preview": false,
+        "visualsVisible": true
+      }
+    },
+    "preview": {
+      "status": {
+        "animatedCount": 0,
+        "commitCount": 0,
+        "count": 1000,
+        "destroyed": false,
+        "dragging": true,
+        "haloCount": 0,
+        "lastCommitMs": 0,
+        "outlineCount": 1000,
+        "preview": true,
+        "visualsVisible": true
+      },
+      "positionsUnchanged": true
+    },
+    "commit": {
+      "history": {
+        "busy": false,
+        "bytes": 1223646,
+        "canRedo": false,
+        "canUndo": true,
+        "count": 1,
+        "limitReached": false,
+        "message": "",
+        "redoLabel": "",
+        "undoLabel": "移动选中节点"
+      },
+      "selection": {
+        "animatedCount": 0,
+        "commitCount": 1,
+        "count": 1000,
+        "destroyed": false,
+        "dragging": false,
+        "haloCount": 0,
+        "lastCommitMs": 46.79999999701977,
+        "outlineCount": 1000,
+        "preview": false,
+        "visualsVisible": true
+      }
+    },
+    "undoRestored": true,
+    "clear": {
+      "animations": 350,
+      "rings": 0,
+      "status": {
+        "animatedCount": 0,
+        "commitCount": 0,
+        "count": 0,
+        "destroyed": false,
+        "dragging": false,
+        "haloCount": 0,
+        "lastCommitMs": 0,
+        "outlineCount": 0,
+        "preview": false,
+        "visualsVisible": true
+      }
+    },
+    "positionsSha256": "39cb20db95031fe8ce35433219ea8a8a1be190cde4e03b23be8081fca23e7db0"
+  },
+  "browserLimits": [
+    "case switching and late callbacks covered by behavior regressions; native select keyboard attempts did not switch cases in this browser",
+    "not a continuous-frame or native Windows benchmark",
+    "document.getAnimations is a whole-page measurement, not an isolated graph-selection count; no whole-page zero-animation claim"
+  ],
+  "base": "eaf353af6c8ca289bcf4165ded1c996a78d7aa30",
+  "sourceSha256": {
+    "static/app.js": "24343155d69d03f7d1e1853bd9007a823e3cae215790f2267cc69ac741f8f849",
+    "static/graph-selection.js": "be506a9641d69a9127ccec9d62c5922e75193cd8aa6ded3cc9d08c126a9ec917",
+    "static/graph-view.js": "d66eb91bc4acf7cbc5c894bd8c55b5eccb4b80fe4c29ad95acac998de9ea7765",
+    "static/style.css": "ec4f2172896b6ef0faf951e6d92717ca7c77e4fce083031a77ea88795fca19ca",
+    "static/index.html": "e45cf5324ec303fdfd79e3adc306961a91ca04919a62495b58419ffead677003"
+  },
+  "regressions": {
+    "pythonPassed": 69,
+    "seconds": 39.3,
+    "warning": "one existing Starlette/httpx deprecation",
+    "extraNodeCase": "5000 selected nodes stay static and group preview commits only once without animation work",
+    "extraNodePassed": 1,
+    "redGreen": "old single selection draws both a visible Canvas outline and a CSS breathing ring; new assertion failed before repair"
+  },
+  "motionObservation": {
+    "samples": 20,
+    "width": 30.592607498168945,
+    "height": 30.592607498168945,
+    "transform": "none",
+    "opacityRange": [
+      0.777165,
+      0.893459
+    ],
+    "note": "read-only CSS/rAF observation; no raster-frame or FPS claim"
+  },
+  "screenshots": {
+    "smallCss": [
+      700,
+      947
+    ],
+    "smallPixels": [
+      1148,
+      1554
+    ],
+    "largeCss": [
+      1561,
+      878
+    ],
+    "largePixels": [
+      2560,
+      1440
+    ],
+    "note": "same small viewport, different focus/Fit cameras; compare contour ownership, not world-to-screen position equality"
+  }
+}

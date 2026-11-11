@@ -1,0 +1,38 @@
+{
+  "baseMain": "738857504cfc192583b81466f8803e1270429a05",
+  "fixture": "seven-node/six-flow long-field synthetic hub",
+  "overview": {
+    "clientWidth": 1396,
+    "headers": [
+      "上图",
+      "交易时间",
+      "付款方",
+      "收款方",
+      "金额",
+      "摘要",
+      "操作"
+    ],
+    "rows": [
+      44,
+      44,
+      44,
+      44,
+      44,
+      44
+    ],
+    "scrollWidth": 1396,
+    "viewport": [
+      1512,
+      949
+    ]
+  },
+  "fullValue": {
+    "characters": 180,
+    "insideOverview": true
+  },
+  "escape": {
+    "focus": "TR",
+    "overviewOpen": "flex",
+    "popoverHidden": true
+  }
+}

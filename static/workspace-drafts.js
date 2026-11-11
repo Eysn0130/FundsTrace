@@ -62,7 +62,7 @@
     }
     if (['source', 'target'].includes(source.bulkDir)) result.bulkDir = source.bulkDir;
     if (['compact', 'comfortable'].includes(source.density)) result.density = source.density;
-    if (['single', 'wrap'].includes(source.wrap)) result.wrap = source.wrap;
+    if (['single', 'wrap', 'two-line'].includes(source.wrap)) result.wrap = source.wrap;
     return result;
   }
 

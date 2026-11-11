@@ -6,7 +6,7 @@ const { randomUUID } = require('node:crypto');
 const { HEADER } = require('./host-policy.cjs');
 const appearance = require('./appearance.cjs');
 
-const HEIGHT = 32;
+const HEIGHT = 44;
 const shellFile = path.join(__dirname, 'titlebar/index.html');
 const shellUrl = pathToFileURL(shellFile).href;
 const assetUrls = new Set(['titlebar/index.html', 'titlebar/style.css', 'titlebar/renderer.js', 'assets/icon.png']

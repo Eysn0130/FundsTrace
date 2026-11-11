@@ -44,7 +44,7 @@ function sample() {
   return { rawAmountTotals: [{ currency: 'CNY', amount: '1.23' }], tables: {
     batches: [{ id: '11', filename: 'ordinary', mode: 'A', rows_total: 1, rows_imported: 1, rows_skipped: 0, rows_dup: 0, imported_at: '2026-01-01T00:00:00' }],
     flows: [{ id: '91', batch_id: '11', trade_no: 'SYN', trade_time: '2026-01-01T10:00:00', payer_account: '000A', payee_account: '000B', amount: '1.23', balance: null, currency: 'CNY' }],
-    import_sources: [{ source_id: 'a', filename: 'ordinary', sha256: 'a'.repeat(64), parser_version: 'funds-trace-table-v17', mapping_json: '{}', imported_at: '2026-01-01T00:00:00' }],
+    import_sources: [{ source_id: 'a', filename: 'ordinary', sha256: 'a'.repeat(64), parser_version: 'funds-trace-table-v69', mapping_json: '{}', imported_at: '2026-01-01T00:00:00' }],
     import_members: [{ source_id: 'a', member_path: 'table.csv', sha256: 'a'.repeat(64) }],
     import_records: [{ source_id: 'a', record_no: 1, source_row: 2, member_path: 'table.csv', disposition: 'imported', reason_code: 'transaction_valid', details_json: '{}' }],
     flow_sources: [{ source_id: 'a', source_row: 1, flow_id: '91', disposition: 'imported' }],
@@ -115,7 +115,7 @@ test('actual CLI failure tail emits no passed summary', async () => {
 function fourSourcesFixture() {
   const files = ['formats.csv', 'formats.xlsx', 'formats.xls', 'formats.zip'];
   const inputs = new Map(files.map(file => [file, Buffer.from(`SYN fixed input ${file}`)]));
-  const profiles = ['funds-trace-table-v17', 'funds-trace-table-v17', 'funds-trace-table-v18', 'funds-trace-table-archive-v4'];
+  const profiles = ['funds-trace-table-v69', 'funds-trace-table-v69', 'funds-trace-table-v70', 'funds-trace-table-archive-v57'];
   const rows = [
     { id: '501', trade_no: 'SYN-F1', trade_time: '2026-01-01T10:00:00', payer_account: '000SYN-A', payee_account: '000SYN-B', amount: '123.45', currency: 'CNY', self_account: '000SYN-A', balance: null },
     { id: '502', trade_no: 'SYN-F2', trade_time: '2026-01-01T11:00:00', payer_account: '000SYN-B', payee_account: '000SYN-A', amount: '2.03', currency: 'CNY', self_account: '000SYN-A', balance: null },
@@ -172,7 +172,7 @@ for (const defect of ['missing-xls', 'duplicate-source', 'extra-source', 'wrong-
       }
     }
     if (defect === 'wrong-filename') tables.import_sources[2].filename = 'formats.csv';
-    if (defect === 'wrong-profile') tables.import_sources[2].parser_version = 'funds-trace-table-v17';
+    if (defect === 'wrong-profile') tables.import_sources[2].parser_version = 'funds-trace-table-v69';
     if (defect === 'wrong-bytes') tables.import_sources[2].size_bytes++;
     if (defect === 'wrong-sha') tables.import_sources[2].sha256 = 'f'.repeat(64);
     if (defect === 'record-duplicate') tables.import_records[8] = structuredClone(tables.import_records[6]);

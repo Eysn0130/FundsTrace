@@ -187,7 +187,7 @@ def test_public_suffixless_package_retains_source_and_replay_adds_zero(client, m
     source = package['tables']['import_sources'][0]
     assert source['filename'] == 'ordinary' and source['size_bytes'] == (fixture_dir / 'ordinary').stat().st_size
     assert source['sha256'] == hashlib.sha256((fixture_dir / 'ordinary').read_bytes()).hexdigest()
-    assert source['parser_version'] == 'funds-trace-table-v66'
+    assert source['parser_version'] == 'funds-trace-table-v69'
     assert package['tables']['import_records'][0]['member_path'] == 'table.csv'
     assert package['rawAmountTotals'] == [{'currency': 'USD', 'amount': '2.03'}]
     restored = client.post('/api/cases/import', files={'file': ('synthetic.fundcase', (tmp_path / 'synthetic.fundcase').read_bytes())})

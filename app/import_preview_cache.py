@@ -6,6 +6,7 @@ fail closed. No plan is loaded or replayed after process restart.
 """
 import atexit
 import hashlib
+import json
 import os
 import stat
 import threading
@@ -36,15 +37,21 @@ def stamp(parsed):
         return None
     store = plan["_plan_store"]
     sequences = ("records", "rows", "cancelled_rows", "cancellations")
-    if rows is not plan["rows"] or any(
-            not isinstance(plan.get(kind), import_staging.StagedSequence)
-            or plan[kind].store is not store for kind in sequences):
+    if rows is not plan.get("rows"):
         return None
+    for kind in sequences:
+        if kind not in plan:
+            if kind in ("records", "rows") or store._counts.get(kind, 0):
+                return None
+        elif (not isinstance(plan[kind], import_staging.StagedSequence)
+              or plan[kind].store is not store or plan[kind].kind != kind):
+            return None
     store.flush()
     store._con.commit()
     metadata = {key: value for key, value in plan.items()
                 if key not in (*sequences, "_plan_store", "_details_pool")}
-    metadata.update(_frame_columns=list(frame.columns), _sheet=sheet, _mode=mode, _mapping=mapping,
+    metadata.update(_present_sequences=tuple(kind for kind in sequences if kind in plan),
+                    _frame_columns=list(frame.columns), _sheet=sheet, _mode=mode, _mapping=mapping,
                     _stats=stats, _counts=store._counts, _ends=store._ends,
                     _member_details=store._member_details, _details_version=store._details_version,
                     _frame_attrs={key: value for key, value in frame.attrs.items() if key != "table_plan"})
@@ -71,7 +78,8 @@ def stamp(parsed):
 def key(session, profile, overrides):
     return tuple(session.get(field) for field in (
         "import_id", "case_id", "surface", "filename", "suffix", "sha256", "size_bytes",
-        "mode", "mapping_json", "columns_json")) + (profile, overrides)
+        "mode", "mapping_json", "columns_json")) + (profile, overrides,
+            json.loads(session.get("request_json") or "{}").get("reference_policy"))
 
 
 def discard(import_id=None):

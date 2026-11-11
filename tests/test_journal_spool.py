@@ -62,8 +62,10 @@ def request(client, cid, family, monkeypatch):
     return preview(client, cid, members)
 
 
-@pytest.mark.parametrize("family", ["feedback", "archive", "table", "legacy"])
-def test_spool_is_private_replayable_and_released_with_full_provenance(client, database, make_case, monkeypatch, family):
+@pytest.mark.parametrize("family,reuse_preview", [
+    ("feedback", False), ("archive", True), ("table", False), ("table", True), ("legacy", False),
+], ids=["feedback", "archive", "table-cache-miss", "table-cache-hit", "legacy"])
+def test_spool_is_private_replayable_and_released_with_full_provenance(client, database, make_case, monkeypatch, family, reuse_preview):
     cid = make_case("Synthetic private finalized journal")
     original, streams, expected = imports._JournalRecords, [], []
     owners = observe_plan_stores(monkeypatch)
@@ -93,14 +95,17 @@ def test_spool_is_private_replayable_and_released_with_full_provenance(client, d
             assert imports._json(list(records)) == frozen
     monkeypatch.setattr(imports, "_write_feedback_journal", replay)
     view = request(client, cid, family, monkeypatch)
-    if family == "archive":
+    if family in {"archive", "table"}:
         assert import_preview_cache._slot is not None
         assert import_preview_cache._slot[1][0].attrs["table_plan"]["_plan_store"] is owners[0][0]
+    if not reuse_preview:
+        import_preview_cache.discard(view["import_id"])
     job = complete(client, cid, view)
     assert job["stage"] == "done", job
     assert len(streams) == (1 if family == "feedback" else 0)
     assert len(staged_journals) == (1 if family in {"archive", "table"} else 0)
-    assert sum("records" in owner._counts for owner, _, _ in owners) == (1 if family == "archive" else 2 if family == "table" else 0)
+    expected_stores = (1 if reuse_preview else 2) if family in {"archive", "table"} else 0
+    assert sum("records" in owner._counts for owner, _, _ in owners) == expected_stores
     assert all(stream.closed for stream in streams)
     assert_plan_stores_closed(owners)
     assert_receipt(database, view["import_id"], job)
@@ -113,7 +118,10 @@ def test_spool_is_private_replayable_and_released_with_full_provenance(client, d
     assert database.q_raw("select count(*) n from effective_flows where case_id=?", [portable]) == database.q_raw(
         "select count(*) n from effective_flows where case_id=?", [cid])
     first_rows = database.q_raw("select * from flows where case_id=? order by id", [cid])
-    repeated = complete(client, cid, request(client, cid, family, monkeypatch))
+    repeated_view = request(client, cid, family, monkeypatch)
+    if not reuse_preview:
+        import_preview_cache.discard(repeated_view["import_id"])
+    repeated = complete(client, cid, repeated_view)
     assert repeated["stage"] == "done" and repeated["result"]["ok"] == 0
     assert repeated["result"].get("resolution") == job["result"].get("resolution")
     assert database.q_raw("select * from flows where case_id=? order by id", [cid]) == first_rows

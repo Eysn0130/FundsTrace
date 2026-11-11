@@ -161,7 +161,7 @@ test('narrow windows retain a readable sidebar width and a canvas edge', () => {
   const handle = h.nodes.get('workspaceSidebarResize');
   handle.fire('keydown', { key: 'ArrowRight' });
   assert.equal(h.nodes.get('workspace').style.getPropertyValue('--sidebar-width'), '346px');
-  assert.equal(handle.getAttribute('aria-valuemin'), '346');
+  assert.equal(handle.getAttribute('aria-valuemin'), '288');
   assert.equal(handle.getAttribute('aria-valuemax'), '346');
 });
 
@@ -237,12 +237,29 @@ test('restoring on a narrow viewport preserves the preferred width when it grows
 test('a width chosen in a tiny viewport stays readable when restored on a larger screen', () => {
   const preferences = storage({ fund_sidebar_width: '346' });
   const h = harness(1440, { localStorage: preferences });
-  assert.equal(h.nodes.get('left').getBoundingClientRect().width, 360);
+  assert.equal(h.nodes.get('left').getBoundingClientRect().width, 346);
   h.nodes.get('workspace').width = h.window.innerWidth = 390;
   h.windowEvents.fire('resize');
   assert.equal(h.nodes.get('left').getBoundingClientRect().width, 346);
   assert.equal(preferences.getItem('fund_sidebar_width'), '346');
   assert.equal(preferences.writes.length, 0);
+});
+
+test('keyboard resizing reaches the compact 288px floor and preserves it across viewport changes', () => {
+  const preferences = storage(), h = harness(1440, { localStorage: preferences });
+  const handle = h.nodes.get('workspaceSidebarResize');
+  for (let index = 0; index < 8; index++) handle.fire('keydown', { key: 'ArrowLeft', shiftKey: true });
+  assert.equal(h.nodes.get('left').getBoundingClientRect().width, 288);
+  assert.equal(handle.getAttribute('aria-valuemin'), '288');
+  assert.equal(handle.getAttribute('aria-valuenow'), '288');
+  assert.equal(preferences.getItem('fund_sidebar_width'), '288');
+  h.nodes.get('workspace').width = h.window.innerWidth = 390;
+  h.windowEvents.fire('resize');
+  assert.equal(h.nodes.get('left').getBoundingClientRect().width, 288);
+  h.nodes.get('workspace').width = h.window.innerWidth = 1440;
+  h.windowEvents.fire('resize');
+  assert.equal(h.nodes.get('left').getBoundingClientRect().width, 288);
+  assert.equal(preferences.getItem('fund_sidebar_width'), '288');
 });
 
 test('invalid saved widths and unavailable storage leave resizing usable', () => {
@@ -271,7 +288,18 @@ test('mount is idempotent and transition receipts contain chrome state only', ()
   assert.deepEqual(Object.keys(h.events.at(-1).detail).sort(), ['phase','reason','sidebarCollapsed','toolbarCollapsed','view']);
 });
 
-test('workspace modes keep independent session collapse choices and focus returns to the last non-focus mode', () => {
+test('standard and professional presets reapply their collapse state on entry and reselection', () => {
+  const h = harness();
+  h.shell.setSidebarCollapsed(true); h.shell.setToolbarCollapsed(true);
+  h.shell.setView('standard');
+  assert.deepEqual({ ...h.shell.getState() }, { view: 'standard', sidebarCollapsed: false, toolbarCollapsed: false });
+  h.shell.setView('focus');
+  h.shell.setSidebarCollapsed(false); h.shell.setToolbarCollapsed(false);
+  h.shell.setView('focus');
+  assert.deepEqual({ ...h.shell.getState() }, { view: 'focus', sidebarCollapsed: true, toolbarCollapsed: true });
+});
+
+test('workspace presets retain split choices and focus returns to the last non-focus mode', () => {
   const h = harness(), workspace = h.nodes.get('workspace');
   assert.deepEqual({ ...h.shell.getState() }, { view: 'standard', sidebarCollapsed: false, toolbarCollapsed: false });
   assert.equal(workspace.getAttribute('data-workspace-view'), 'standard');
@@ -284,11 +312,11 @@ test('workspace modes keep independent session collapse choices and focus return
   assert.deepEqual({ ...h.shell.getState() }, { view: 'split', sidebarCollapsed: false, toolbarCollapsed: false });
   h.shell.setToolbarCollapsed(true);
   h.shell.toggleFocus();
-  assert.deepEqual({ ...h.shell.getState() }, { view: 'focus', sidebarCollapsed: false, toolbarCollapsed: false });
+  assert.deepEqual({ ...h.shell.getState() }, { view: 'focus', sidebarCollapsed: true, toolbarCollapsed: true });
   h.shell.toggleFocus();
   assert.deepEqual({ ...h.shell.getState() }, { view: 'split', sidebarCollapsed: false, toolbarCollapsed: true });
   h.shell.setView('standard');
-  assert.deepEqual({ ...h.shell.getState() }, { view: 'standard', sidebarCollapsed: true, toolbarCollapsed: false });
+  assert.deepEqual({ ...h.shell.getState() }, { view: 'standard', sidebarCollapsed: false, toolbarCollapsed: false });
   h.shell.toggleFocus(); h.shell.toggleFocus();
   assert.equal(h.shell.getState().view, 'standard');
 });
@@ -339,7 +367,7 @@ test('view menu radio state follows the public API and menu selection restores i
   assert.equal(h.nodes.get('workspaceViewCurrent').textContent, '标准');
   h.shell.setView('focus');
   assert.deepEqual(options.map(option => option.getAttribute('aria-checked')), ['false', 'true', 'false']);
-  assert.equal(h.nodes.get('workspaceViewCurrent').textContent, '专注');
+  assert.equal(h.nodes.get('workspaceViewCurrent').textContent, '专业');
   h.doc.activeElement = options[2];
   options[2].fire('click');
   assert.equal(h.shell.getState().view, 'split');

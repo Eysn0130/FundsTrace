@@ -25,7 +25,7 @@ class FlowTableMarkup(HTMLParser):
             self.in_flow_table = False
 
 
-def test_flow_table_has_one_keyboard_reachable_native_scroll_viewport():
+def test_flow_table_keeps_native_viewport_and_a_keyboard_reachable_horizontal_footer():
     root = Path(__file__).resolve().parents[1]
     page = FlowTableMarkup()
     page.feed((root / 'static/index.html').read_text())
@@ -34,10 +34,15 @@ def test_flow_table_has_one_keyboard_reachable_native_scroll_viewport():
     assert viewport['tabindex'] == '0'
     assert viewport['role'] == 'region'
     assert page.columns == 7
-    assert not {'flowScrollLeft', 'flowHorizontalPosition', 'flowScrollRight'} & page.controls.keys()
+    assert page.controls['flowHorizontalPosition']['type'] == 'range'
+    assert page.controls['flowHorizontalPosition']['aria-controls'] == 'flowTableScroll'
+    assert page.controls['flowScrollLeft']['aria-label'] == '流水表格向左滚动'
+    assert page.controls['flowScrollRight']['aria-label'] == '流水表格向右滚动'
     assert not {'btnPrev', 'btnNext', 'pageInfo', 'btnFlowRetry', 'flowTableHint', 'querySummary'} & page.controls.keys()
     assert 'query-stat-line' in page.controls['statLine']['class'].split()
+    assert 'hidden' in page.controls['statLine']
     assert page.controls['importCoverageNote']['role'] == 'note'
+    assert 'hidden' in page.controls['resultInfo']
 
 
 def test_table_workspace_behavior():

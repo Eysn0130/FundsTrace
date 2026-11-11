@@ -108,7 +108,7 @@ for (const [kind, body, label, fontSize] of [
     assert.equal(result.mode, 'bottom');
     const box = f.text.getBBox();
     near((box.minX + box.maxX) / 2, (body.minX + body.maxX) / 2);
-    near((box.minY - body.maxY) * zoom, 6);
+    near((box.minY - body.maxY) * zoom, 6 * zoom);
     assert.deepEqual(result.bbox, { ...box, width: box.maxX - box.minX, height: box.maxY - box.minY });
     assert.deepEqual(geometry.placeNode(f.item, { zoom }), result, 'repeated paint passes cannot accumulate an offset');
     assert.equal(JSON.stringify(f.model), before, 'anchoring never changes node positions or exact facts');
@@ -128,11 +128,11 @@ test('node labels follow body resizing and zoom without retaining the old collis
     f.text.attr({ x: 150, y: -110 });
     geometry.placeNode(f.item, { zoom });
     const box = f.text.getBBox(); near((box.minX + box.maxX) / 2, 0);
-    near((box.minY - body.maxY) * zoom, 6);
+    near((box.minY - body.maxY) * zoom, 6 * zoom);
   }
 });
 
-test('node canvas shadows cannot consume the fixed six-screen-pixel text gap', () => {
+test('node canvas shadows do not push the scaled text gap away from the solid body', () => {
   const body = { minX: -18, minY: -18, maxX: 18, maxY: 18 };
   const f = nodeFixture('circle', body, '合成丙公司\nSYN-C003');
   f.key.attr({ shadowBlur: 5 });
@@ -145,9 +145,11 @@ test('node canvas shadows cannot consume the fixed six-screen-pixel text gap', (
       return { minX: box.minX - 5, minY: box.minY - 5, maxX: box.maxX + 5, maxY: box.maxY + 5 };
     };
     f.text.getCanvasBBox = () => project(f.text.getBBox());
+    f.key.getTotalMatrix = () => [zoom,0,0,0,zoom,0,170,230,1];
     const result = geometry.placeNode(f.item, { zoom });
-    const screenBody = f.key.getCanvasBBox(), screenText = f.text.getCanvasBBox();
-    near(screenText.minY - screenBody.maxY, 6);
+    const screenBody = project(f.key.getBBox()), screenText = f.text.getCanvasBBox();
+    assert.deepEqual(geometry.nodeBodyBounds(f.item),screenBody);
+    near(screenText.minY - screenBody.maxY, 6 * zoom);
     near((screenText.minX + screenText.maxX) / 2, (screenBody.minX + screenBody.maxX) / 2);
     assert.deepEqual(geometry.placeNode(f.item, { zoom }), result);
   }
@@ -674,7 +676,7 @@ test('already anchored nodes avoid every repeated mutation and remeasure only cu
   for(const change of [()=>{body.maxY=39},()=>f.text.attr({text:'更长名称\nSYN-C003\n新增标签',fontSize:24}),()=>f.text.attr({x:300,y:-100}),
     ()=>f.text.setMatrix([0,1,0,-1,0,0,0,0,1])]){
     change();calls.reset();const result=geometry.placeNode(f.item,{zoom:.4});assert.ok(calls.counts.writes>0);
-    near(result.bbox.minY-body.maxY,6/.4);near((result.bbox.minX+result.bbox.maxX)/2,0);
+    near(result.bbox.minY-body.maxY,6);near((result.bbox.minX+result.bbox.maxX)/2,0);
     assert.deepEqual(f.text.attr('matrix'),[1,0,0,0,1,0,0,0,1]);
     calls.reset();geometry.placeNode(f.item,{zoom:.4});assert.equal(calls.counts.writes,0);
   }

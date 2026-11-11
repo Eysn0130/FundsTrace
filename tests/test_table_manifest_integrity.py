@@ -1,4 +1,5 @@
 """Fault injection through the public workflow, with independent stored facts."""
+import copy
 from decimal import Decimal
 
 import pytest
@@ -10,6 +11,7 @@ from test_automatic_table_import import preview
 from test_feedback_import_api import complete
 from test_table_cancellation_lifecycle import paired_source
 from test_table_mapping_versions import profile_preview
+from test_table_write_integrity import csv_data, envelope, persisted, row
 
 
 def test_writer_cannot_mutate_its_input_to_change_the_readback_expectation(
@@ -115,3 +117,85 @@ def test_accepted_source_cannot_disappear_from_the_writer_input(client, database
     assert complete(client, cid, view)["stage"] == "done"
     assert database.q_raw("select amount from flows where case_id=? order by amount", [cid]) == [
         {"amount": Decimal("1.01")}, {"amount": Decimal("2.02")}]
+
+
+@pytest.mark.parametrize("damage", ["source_row", "digest", "encoding", "role", "row_key", "position"])
+def test_post_binding_csv_identity_mismatch_fails_before_writes_and_is_retryable(
+        client, database, make_case, monkeypatch, damage):
+    cid = make_case("Synthetic post-binding CSV identity")
+    view = preview(client, cid, envelope(csv_data([row()])), "synthetic.zip")
+    before = persisted(database)
+    bind, commit = imports._bind_table_plan, importer.commit_rows
+    writes = []
+
+    def corrupt(*args, **kwargs):
+        result = bind(*args, **kwargs)
+        parsed = args[1]
+        plan = parsed[0].attrs["table_plan"]
+        financial = parsed[4][0]
+        record = plan["records"][financial["_source_row"] - 1]
+        member = next(item for item in plan["members"] if item["member_path"] == record["member_path"])
+        if damage == "source_row":
+            record["source_row"] = 0
+        elif damage == "digest":
+            member["sha256"] = "0" * 64
+        elif damage == "encoding":
+            member["encoding"] = "invalid-encoding"
+        elif damage == "role":
+            member["role"] = "auxiliary"
+        elif damage == "row_key":
+            financial["_record_key"] = "SYN-WRONG-KEY"
+        else:
+            financial["_source_row"] = len(plan["records"]) + 1
+        return result
+
+    def observe(*args, **kwargs):
+        writes.append(True)
+        return commit(*args, **kwargs)
+
+    with monkeypatch.context() as context:
+        context.setattr(imports, "_bind_table_plan", corrupt)
+        context.setattr(importer, "commit_rows", observe)
+        failed = complete(client, cid, view)
+    assert failed["stage"] == "error" and failed["error_code"] == "import_integrity_failed"
+    assert writes == []
+    assert persisted(database) == before
+    assert complete(client, cid, view)["stage"] == "done"
+    assert database.q_raw("select trade_no,amount from flows where case_id=?", [cid]) == [
+        {"trade_no": "SYN-NEW", "amount": Decimal("123.45")}]
+
+
+@pytest.mark.parametrize("profile", [table_archive.REFERENCE_PROFILE, None], ids=["historical", "current"])
+def test_nonstaged_plan_retains_public_csv_identity_and_facts(
+        client, database, make_case, monkeypatch, profile):
+    from test_archive_profile_upgrade import source, transaction
+
+    cid = make_case("Synthetic nonstaged preparation")
+    _, payload = source([transaction("SYN-LIST", "SYN-LIST", "1.01")])
+    view = (preview(client, cid, payload, "synthetic.zip") if profile is None else
+            frozen_preview(client, cid, payload, monkeypatch, profile))
+    import_preview_cache.discard(view["import_id"])
+    parse = imports._parse
+    prepared = []
+
+    def in_memory(*args, **kwargs):
+        parsed = list(parse(*args, **kwargs))
+        plan = parsed[0].attrs["table_plan"]
+        for kind in ("records", "rows", "cancelled_rows", "cancellations"):
+            if kind in plan:
+                plan[kind] = copy.deepcopy(list(plan[kind]))
+        store = plan.pop("_plan_store", None)
+        if store is not None:
+            store.close()
+        parsed[4] = plan["rows"]
+        prepared.append(True)
+        return tuple(parsed)
+
+    with monkeypatch.context() as context:
+        context.setattr(imports, "_parse", in_memory)
+        job = complete(client, cid, view)
+    assert prepared == [True]
+    assert job["stage"] == "done", job
+    assert (job["result"]["ok"], job["result"]["rows_dup"]) == (1, 0)
+    assert database.q_raw("select trade_no,amount,payer_account,payee_account from flows where case_id=?", [cid]) == [
+        {"trade_no": "SYN-LIST", "amount": Decimal("1.01"), "payer_account": "SYN-OWN", "payee_account": "SYN-COUNTER"}]

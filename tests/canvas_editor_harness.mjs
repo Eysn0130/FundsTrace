@@ -31,6 +31,7 @@ function editor({ relationships = [], navigation = false } = {}) {
     }))];
   };
   const container = h.element('#graphContainer');
+  container.contains = node => node === container;
   container.addEventListener = (type, fn) => { if (!elementEvents.has(type)) elementEvents.set(type, []); elementEvents.get(type).push(fn); };
   h.run('globalThis.savedLoadGraph = loadGraph; globalThis.savedDoSearch = doSearch;');
   h.bindApp(); env.loadGraph = env.savedLoadGraph; env.doSearch = env.savedDoSearch;
@@ -1152,9 +1153,61 @@ test('custom graph gesture cancellation receives the original event during a bus
   gate.resolve(); await busy;
 });
 
+for (const key of ['Delete','Backspace']) test(`canvas Delete command (${key}) removes selected relationships once and supports keyboard undo`, async () => {
+  const f=editor({relationships:[{source:'SYN-A',target:'SYN-B',ids:[1,2]},{source:'SYN-A',target:'SYN-HIDDEN',ids:[2,3]},
+    {source:'SYN-C',target:'SYN-D',ids:[4]}]});
+  await f.h.run('trackFlows([2,3,4])');
+  const ids=new Set(['SYN-A','SYN-B']),selection={ids,rebind(next){ids.clear();for(const id of next)ids.add(id)},refresh(){},clear(){ids.clear()},destroy(){}};
+  f.state.graphSelection=selection;
+  const render=f.env.renderGraph;f.env.renderGraph=()=>{render();f.state.graphSelection=selection};
+  const settled=async()=>{
+    const deadline=Date.now()+2000;
+    do { await flush(); assert.ok(Date.now()<deadline,'canvas history command must settle'); }
+    while(f.history.status().busy);
+  };
+  const count=f.history.status().count;let prevented=0;
+  f.event('keydown',{key,target:f.h.element('#graphContainer'),preventDefault(){prevented++}});
+  await settled();
+  assert.equal(prevented,1);assert.deepEqual(f.tracked.get('1:0'),[4]);
+  assert.equal(f.history.status().count,count+1,'multi-selection and duplicate members form one undoable removal');
+  f.event('keydown',{key:'z',ctrlKey:key==='Delete',metaKey:key==='Backspace',target:f.h.element('#graphContainer'),preventDefault(){}});
+  await settled();
+  assert.deepEqual(f.tracked.get('1:0'),[1,2,3,4]);
+  assert.equal(f.h.requests.some(r=>/^\/api\/(flows|imports|cases)/.test(r.path)&&r.options?.method==='DELETE'),false,
+    'the canvas shortcut never calls source-data deletion endpoints');
+});
+
+test('canvas Delete is limited to the active canvas and ignores editing, composition, held keys and dialogs', async () => {
+  const f=editor({relationships:[{source:'SYN-A',target:'SYN-B',ids:[1]}]});
+  f.state.graphSelection={ids:new Set(['SYN-A']),status:()=>({}),clear(){},destroy(){}};
+  const canvas=f.h.element('#graphContainer');let prevented=0;
+  const send=event=>f.event('keydown',{key:'Delete',target:canvas,preventDefault(){prevented++},...event});
+  for(const event of [{target:{closest:()=>null}},{target:{closest:()=>({})}},
+    {isComposing:true},{keyCode:229},{repeat:true},{altKey:true},{ctrlKey:true},{metaKey:true},{shiftKey:true},{defaultPrevented:true}]) send(event);
+  const queryAll=f.env.document.querySelectorAll;
+  f.env.document.querySelectorAll=selector=>selector.includes('.modal')?[{open:true}]:queryAll(selector);
+  send({});f.env.document.querySelectorAll=queryAll;
+  await flush();assert.equal(prevented,0);assert.deepEqual(f.tracked.get('1:0'),[1]);assert.equal(f.history.status().count,0);
+});
+
+test('canvas Delete handles an edge selection through the same reversible membership command', async () => {
+  const f=editor({relationships:[{source:'SYN-A',target:'SYN-B',ids:[1]}]});
+  f.state.graphView.selectedEdge='SYN-A=>SYN-B';
+  f.event('keydown',{key:'Delete',target:f.h.element('#graphContainer'),preventDefault(){}});
+  await new Promise(resolve=>setTimeout(resolve,10));
+  assert.deepEqual(f.tracked.get('1:0'),[]);assert.equal(f.history.status().count,1);
+  await f.h.element('#btnUndo').onclick();assert.deepEqual(f.tracked.get('1:0'),[1]);
+});
+
 test('keyboard shortcuts skip native edit controls and active dialogs', async () => {
   const f = editor(); await f.h.run('trackFlows([2])');
   let prevented = 0;
+  for(const flags of [{isComposing:true},{keyCode:229},{repeat:true}]) {
+    f.event('keydown',{ctrlKey:true,key:'z',target:{closest:()=>null},preventDefault(){prevented++},...flags});
+  }
+  for(const control of ['.flow-column-resize','#btnFlowColumnsReset']) {
+    f.event('keydown',{ctrlKey:true,key:'z',target:{closest:selector=>selector.includes(control)?{}:null},preventDefault(){prevented++}});
+  }
   f.event('keydown', { ctrlKey: true, key: 'z', target: { closest: () => ({}) }, preventDefault() { prevented += 1; } });
   await flush(); assert.equal(prevented, 0); assert.equal(f.history.status().canUndo, true);
   const queryAll = f.env.document.querySelectorAll;

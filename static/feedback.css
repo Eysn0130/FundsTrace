@@ -75,3 +75,17 @@
 @media (prefers-reduced-motion: reduce) {
   .funds-feedback .ff-toast { animation: none; }
 }
+
+#importModal .import-queue { margin-bottom: 24px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; }
+#importModal .import-queue[hidden] { display: none; }
+#importModal .import-queue header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+#importModal .import-queue h3 { margin: 0; }
+#importModal .import-queue p { margin: 10px 0; font-size: 12px; line-height: 1.6; }
+#importModal .import-queue ol { max-height: 210px; overflow: auto; padding-left: 24px; margin: 12px 0; }
+#importModal .import-queue li { padding: 8px 0; overflow-wrap: anywhere; }
+#importModal .import-queue li strong { display: block; font-size: 13px; }
+#importModal .import-queue li span { font-size: 12px; color: var(--text2); }
+#importModal .import-queue li button { margin-left: 10px; }
+#importModal #impCurrentFile { margin: 8px 24px 0; font-size: 12px; overflow-wrap: anywhere; }
+#importModal .import-queue:not([hidden]) + .import-file-stage { padding: 8px; }
+#importModal .import-queue:not([hidden]) + .import-file-stage :is(.import-file-icon, h3, h3 + p) { display: none; }

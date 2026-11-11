@@ -156,7 +156,12 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
       } : createBrowserFundsActions(context, api) });
     currentBinding.current = binding;
     const feedbackBinding = { caseId: context.caseId, generation };
-    const feedback = createFeedbackChannel({ scope: feedbackBinding, signal: binding.session.signal, publish: embedded ? event => bridge.current?.publishFeedback(event, feedbackBinding) ?? false : undefined });
+    const feedback = createFeedbackChannel({ scope: feedbackBinding, signal: binding.session.signal, publish: embedded ? event => {
+      // Late child effects must not reopen a task already settled by its host.
+      if (event.kind === 'task' && event.operation === 'import' && event.importId && importSettled(event.importId)
+        && event.status !== 'success' && event.status !== 'error') return false;
+      return bridge.current?.publishFeedback(event, feedbackBinding) ?? false;
+    } : undefined });
     feedbackPort = feedback.port;
     setConnection({ binding, feedback, transport: api, actionsFactory: actionsForCase });
     return () => { binding.revoke(); feedback.dispose(); };

@@ -1,0 +1,322 @@
+{
+  "before": {
+    "columnWidths": [
+      39.99618911743164,
+      91.99695587158205,
+      139.98666381835938,
+      139.98666381835938,
+      175,
+      159.99429321289062,
+      112.04268646240234
+    ],
+    "rows": 6,
+    "sidebarCollapsed": false,
+    "tableViewportWidth": 619,
+    "tableWidth": 859.0034790039062,
+    "toolbarCollapsed": false,
+    "view": "split",
+    "viewLabel": "上下分栏",
+    "viewport": [
+      700,
+      947
+    ]
+  },
+  "after": [
+    {
+      "step": "standard-initial",
+      "columnWidths": [
+        39.99618911743164,
+        91.99695587158205,
+        139.98666381835938,
+        139.98666381835938,
+        175,
+        159.99429321289062,
+        112.04268646240234
+      ],
+      "rows": 6,
+      "sidebarCollapsed": false,
+      "tableViewportWidth": 430,
+      "tableWidth": 859.0034790039062,
+      "toolbarCollapsed": false,
+      "view": "standard",
+      "viewLabel": "标准",
+      "viewport": [
+        2238,
+        1155
+      ]
+    },
+    {
+      "step": "standard-reselected",
+      "columnWidths": [
+        39.99618911743164,
+        91.99695587158205,
+        139.98666381835938,
+        139.98666381835938,
+        175,
+        159.99429321289062,
+        112.04268646240234
+      ],
+      "rows": 6,
+      "sidebarCollapsed": false,
+      "tableViewportWidth": 430,
+      "tableWidth": 859.0034790039062,
+      "toolbarCollapsed": false,
+      "view": "standard",
+      "viewLabel": "标准",
+      "viewport": [
+        2238,
+        1155
+      ]
+    },
+    {
+      "step": "professional",
+      "columnWidths": [
+        39.99618911743164,
+        91.99695587158205,
+        139.98666381835938,
+        139.98666381835938,
+        175,
+        159.99429321289062,
+        112.04268646240234
+      ],
+      "rows": 6,
+      "sidebarCollapsed": true,
+      "tableViewportWidth": 0,
+      "tableWidth": 859.0034790039062,
+      "toolbarCollapsed": true,
+      "view": "focus",
+      "viewLabel": "专业",
+      "viewport": [
+        2238,
+        1155
+      ]
+    },
+    {
+      "step": "professional-reselected",
+      "columnWidths": [
+        39.99618911743164,
+        91.99695587158205,
+        139.98666381835938,
+        139.98666381835938,
+        175,
+        159.99429321289062,
+        112.04268646240234
+      ],
+      "rows": 6,
+      "sidebarCollapsed": true,
+      "tableViewportWidth": 0,
+      "tableWidth": 859.0034790039062,
+      "toolbarCollapsed": true,
+      "view": "focus",
+      "viewLabel": "专业",
+      "viewport": [
+        2238,
+        1155
+      ]
+    },
+    {
+      "step": "split-filled",
+      "columnWidths": [
+        39.99618911743164,
+        91.99695587158205,
+        319.99810791015625,
+        319.99810791015625,
+        175,
+        1097.999267578125,
+        112.00457763671876
+      ],
+      "rows": 6,
+      "sidebarCollapsed": false,
+      "tableViewportWidth": 2157,
+      "tableWidth": 2156.9931640625,
+      "toolbarCollapsed": false,
+      "view": "split",
+      "viewLabel": "上下分栏",
+      "viewport": [
+        2238,
+        1155
+      ]
+    },
+    {
+      "step": "stable-split",
+      "columnWidths": [
+        39.99618911743164,
+        91.99695587158205,
+        319.99810791015625,
+        319.99810791015625,
+        175,
+        1097.999267578125,
+        112.00457763671876
+      ],
+      "rows": 6,
+      "sidebarCollapsed": false,
+      "tableViewportWidth": 2157,
+      "tableWidth": 2156.9931640625,
+      "toolbarCollapsed": false,
+      "view": "split",
+      "viewLabel": "上下分栏",
+      "viewport": [
+        2238,
+        1155
+      ]
+    },
+    {
+      "step": "manual-payer-resize",
+      "columnWidths": [
+        39.99618911743164,
+        91.99695587158205,
+        327.99163818359375,
+        319.99810791015625,
+        175,
+        1097.999267578125,
+        112.01410675048828
+      ],
+      "rows": 6,
+      "sidebarCollapsed": false,
+      "tableViewportWidth": 2157,
+      "tableWidth": 2164.996337890625,
+      "toolbarCollapsed": false,
+      "view": "split",
+      "viewLabel": "上下分栏",
+      "viewport": [
+        2238,
+        1155
+      ]
+    },
+    {
+      "step": "window-shrunk",
+      "columnWidths": [
+        39.99618911743164,
+        91.99695587158205,
+        319.99810791015625,
+        319.99810791015625,
+        175,
+        566.9969482421875,
+        112.00457763671876
+      ],
+      "rows": 6,
+      "sidebarCollapsed": false,
+      "tableViewportWidth": 1626,
+      "tableWidth": 1625.9908447265625,
+      "toolbarCollapsed": false,
+      "view": "split",
+      "viewLabel": "上下分栏",
+      "viewport": [
+        1707,
+        1155
+      ]
+    },
+    {
+      "step": "window-grown",
+      "columnWidths": [
+        39.99618911743164,
+        91.99695587158205,
+        319.99810791015625,
+        319.99810791015625,
+        175,
+        1097.999267578125,
+        112.00457763671876
+      ],
+      "rows": 6,
+      "sidebarCollapsed": false,
+      "tableViewportWidth": 2157,
+      "tableWidth": 2156.9931640625,
+      "toolbarCollapsed": false,
+      "view": "split",
+      "viewLabel": "上下分栏",
+      "viewport": [
+        2238,
+        1155
+      ]
+    },
+    {
+      "step": "query-refreshed",
+      "columnWidths": [
+        39.99618911743164,
+        91.99695587158205,
+        319.99810791015625,
+        319.99810791015625,
+        175,
+        1097.999267578125,
+        112.00457763671876
+      ],
+      "rows": 6,
+      "sidebarCollapsed": false,
+      "tableViewportWidth": 2157,
+      "tableWidth": 2156.9931640625,
+      "toolbarCollapsed": false,
+      "view": "split",
+      "viewLabel": "上下分栏",
+      "viewport": [
+        2238,
+        1155
+      ]
+    }
+  ],
+  "beforeWide": {
+    "columnWidths": [
+      39.99618911743164,
+      91.99695587158205,
+      139.98666381835938,
+      139.98666381835938,
+      175,
+      159.99429321289062,
+      112.04268646240234
+    ],
+    "rows": 6,
+    "sidebarCollapsed": false,
+    "tableViewportWidth": 2157,
+    "tableWidth": 859.0034790039062,
+    "toolbarCollapsed": false,
+    "view": "split",
+    "viewLabel": "上下分栏",
+    "viewport": [
+      2238,
+      1155
+    ]
+  },
+  "chromeSplit": {
+    "columnWidths": [
+      40,
+      92,
+      320,
+      320,
+      175,
+      694,
+      112
+    ],
+    "rows": 6,
+    "sidebarCollapsed": false,
+    "tableViewportWidth": 1753,
+    "tableWidth": 1753,
+    "toolbarCollapsed": false,
+    "view": "split",
+    "viewLabel": "上下分栏",
+    "viewport": [
+      1835,
+      947
+    ]
+  },
+  "chromeProfessional": {
+    "columnWidths": [
+      40,
+      92,
+      140,
+      140,
+      175,
+      160,
+      112
+    ],
+    "rows": 6,
+    "sidebarCollapsed": true,
+    "tableViewportWidth": 0,
+    "tableWidth": 859,
+    "toolbarCollapsed": true,
+    "view": "focus",
+    "viewLabel": "专业",
+    "viewport": [
+      1835,
+      947
+    ]
+  }
+}

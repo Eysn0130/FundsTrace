@@ -172,6 +172,9 @@ test('keyboard select-all includes offscreen graph nodes and excludes edges, for
   f.key({ ctrlKey: true, target: input }); assert.equal(f.api.ids.size, 0);
   const editable = f.document.createElement('div'); editable.setAttribute('contenteditable', 'true'); f.container.appendChild(editable);
   f.key({ metaKey: true, target: editable }); assert.equal(f.api.ids.size, 0);
+  for(const flags of [{isComposing:true},{keyCode:229},{repeat:true}]) {
+    f.key({ctrlKey:true,...flags});assert.equal(f.api.ids.size,0,'composition and held keys cannot select the graph');
+  }
   const modal = f.document.createElement('div'); modal.className = 'modal'; f.document.modals = [modal];
   f.key({ ctrlKey: true }); assert.equal(f.api.ids.size, 0); modal.style.display = 'none';
   const all = f.key({ metaKey: true }); assert.equal(all.prevented, true); assert.equal(f.api.ids.size, 12);
@@ -179,27 +182,75 @@ test('keyboard select-all includes offscreen graph nodes and excludes edges, for
   assert.equal(f.key({ key: 'Escape' }).prevented, true); assert.equal(f.api.ids.size, 0);
 });
 
-test('ten selections breathe and eleven selections retain independent static Canvas rings', () => {
+test('only a single selection breathes; every multi-selection uses static Canvas rings', () => {
   const f = fixture();
+  f.api.select('SYN-0');
+  assert.equal(f.api.status().animatedCount, 1);
+  assert.equal(f.graph.nodes[0].getContainer().shapes[0].visible, false, 'the DOM ring replaces the static ring');
+  f.api.select('SYN-1', { toggle: true });
+  assert.equal(f.api.status().haloCount, 0);
+  assert.ok(f.graph.nodes.slice(0, 2).every(item => item.getContainer().shapes[0].visible));
+  f.api.clear();
   for (let i = 0; i < 10; i++) f.api.select(`SYN-${i}`, { toggle: true });
-  assert.equal(f.api.status().haloCount, 10); assert.equal(f.api.status().animatedCount, 10);
+  assert.equal(f.api.status().haloCount, 0); assert.equal(f.api.status().animatedCount, 0);
   f.api.select('SYN-10', { toggle: true });
   assert.equal(f.api.status().haloCount, 0); assert.equal(f.api.status().animatedCount, 0);
   assert.equal(f.container.children[0].children.length, 0); assert.equal(f.selected.size, 11);
   assert.equal(f.api.status().outlineCount, 11);
   assert.ok(f.graph.nodes.slice(0, 11).every(item => item.getContainer().shapes.length === 1 && item.attrs.stroke === '#ffd700'));
-  f.api.select('SYN-10', { toggle: true }); assert.equal(f.api.status().animatedCount, 10);
-  f.media.matches = true; f.media.emit('change'); assert.equal(f.api.status().animatedCount, 0); assert.equal(f.api.status().haloCount, 10);
-  f.media.matches = false; f.media.emit('change'); assert.equal(f.api.status().animatedCount, 10);
+  f.api.select('SYN-0'); assert.equal(f.api.status().animatedCount, 1);
+  f.media.matches = true; f.media.emit('change'); assert.equal(f.api.status().animatedCount, 0); assert.equal(f.api.status().haloCount, 1);
+  f.media.matches = false; f.media.emit('change'); assert.equal(f.api.status().animatedCount, 1);
   f.document.hidden = true; f.document.emit('visibilitychange'); assert.equal(f.api.status().animatedCount, 0);
+});
+
+test('hover is a single static outline and never adds another contour to selection', () => {
+  const f=fixture(2),facts=JSON.stringify(f.allModels),changes=f.changes.length;
+  f.api.setHover(['SYN-0']);
+  assert.equal(f.api.ids.size,0);assert.equal(f.api.status().haloCount,0);
+  assert.equal(f.graph.nodes[0].getContainer().shapes.length,1);
+  assert.equal(f.graph.nodes[0].getContainer().shapes[0].attrs.opacity,.5);
+  assert.equal(f.changes.length,changes);assert.equal(JSON.stringify(f.allModels),facts);
+  f.click(0);assert.equal(f.api.status().haloCount,1);
+  assert.equal(f.graph.nodes[0].getContainer().shapes.length,1);
+  assert.equal(f.graph.nodes[0].getContainer().shapes[0].visible,false);
+  f.api.setHover([]);assert.equal(f.api.ids.size,1);assert.equal(f.api.status().haloCount,1);
+  f.api.setHover(['SYN-1']);f.api.setHover([]);
+  assert.equal(f.graph.nodes[1].getContainer().shapes.length,0);
+});
+
+test('temporary arrival feedback owns overlapping contours and restores selection exactly once', () => {
+  const f=fixture(3);f.click(0);const before=f.changes.length;
+  f.api.setFeedbackTargets(['SYN-0','SYN-1']);
+  assert.equal(f.api.status().haloCount,0);assert.equal(f.graph.nodes[0].getContainer().shapes[0].visible,false);
+  f.api.setHover(['SYN-1']);assert.equal(f.graph.nodes[1].getContainer().shapes[0].visible,false);
+  f.api.setFeedbackTargets([]);assert.equal(f.api.status().haloCount,1);
+  assert.equal(f.graph.nodes[0].getContainer().shapes[0].visible,false);
+  assert.equal(f.graph.nodes[1].getContainer().shapes[0].visible,true);
+  assert.equal(f.changes.length,before);assert.deepEqual(sorted(f.api.ids),['SYN-0']);
+  f.api.setHover([]);f.api.destroy();assert.ok(f.graph.nodes.every(n=>!n.getContainer().shapes.length));
+});
+
+test('5000 selected nodes stay static and group preview commits only once without animation work',()=>{
+  const f=fixture(5000),facts=JSON.stringify(f.allModels.map(m=>m.data));
+  f.key({ctrlKey:true});
+  assert.equal(f.api.status().count,5000);assert.equal(f.api.status().outlineCount,5000);
+  assert.equal(f.api.status().haloCount,0);assert.equal(f.api.status().animatedCount,0);
+  const positions=JSON.stringify(f.allModels.map(m=>[m.x,m.y]));
+  f.down(0);f.pointer('mousemove');
+  assert.equal(f.api.status().preview,true);assert.equal(JSON.stringify(f.allModels.map(m=>[m.x,m.y])),positions);
+  f.pointer('mouseup');assert.equal(f.api.status().commitCount,1);assert.equal(f.metrics().geometryRefreshes,1);
+  assert.equal(JSON.stringify(f.allModels.map(m=>m.data)),facts);
+  assert.equal(f.metrics().frameRequests,0);assert.equal(f.metrics().timerRequests,0);
+  f.api.clear();assert.equal(f.api.status().outlineCount,0);assert.equal(f.api.status().haloCount,0);
 });
 
 test('halo follows node geometry and camera, clips offscreen, and never schedules per-frame scans', () => {
   const f = fixture(1); f.allModels[0].size = [80, 60]; f.click(0);
-  let halo = f.container.children[0].children[0]; assert.equal(halo.style.width, '88px'); assert.equal(halo.style.height, '68px'); assert.equal(halo.firstElementChild.style.borderWidth, '1.5px');
+  let halo = f.container.children[0].children[0]; assert.equal(halo.style.width, '86px'); assert.equal(halo.style.height, '86px'); assert.equal(halo.firstElementChild.style.borderWidth, '1.5px');
   const scans = f.metrics().nodeScans;
   f.camera(2, 100, 10); f.graph.emit('viewportchange');
-  halo = f.container.children[0].children[0]; assert.equal(halo.style.left, '220px'); assert.equal(halo.style.top, '130px'); assert.equal(halo.style.width, '176px'); assert.equal(halo.firstElementChild.style.borderWidth, '2px');
+  halo = f.container.children[0].children[0]; assert.equal(halo.style.left, '220px'); assert.equal(halo.style.top, '130px'); assert.equal(halo.style.width, '172px'); assert.equal(halo.firstElementChild.style.borderWidth, '2px');
   f.allModels[0].x = 10000; f.graph.emit('afterlayout'); assert.equal(f.api.status().haloCount, 0);
   f.allModels[0].x = 100; f.api.refresh(); assert.equal(f.api.status().haloCount, 1);
   assert.equal(f.metrics().nodeScans, scans); assert.equal(f.metrics().frameRequests, 0); assert.equal(f.metrics().timerRequests, 0);
@@ -533,8 +584,8 @@ test('export visual suspension preserves selection and notifications, then resto
   assert.equal(JSON.stringify(f.allModels), facts); assert.equal(f.api.status().commitCount, 0);
   f.allModels[0].size = 80; f.api.refresh();
   assert.equal(f.api.setVisualsVisible(true), true);
-  assert.equal(f.api.status().visualsVisible, true); assert.equal(f.api.status().haloCount, 2);
-  assert.equal(f.api.status().animatedCount, 2); assert.equal(layer.hidden, false);
+  assert.equal(f.api.status().visualsVisible, true); assert.equal(f.api.status().haloCount, 0);
+  assert.equal(f.api.status().animatedCount, 0); assert.equal(layer.hidden, false);
   const [outline] = f.graph.nodes[0].getContainer().shapes;
   assert.equal(outline.visible, true); assert.equal(outline.attrs.r, 43);
   assert.deepEqual(sorted(f.api.ids), ids); assert.equal(f.changes.length, notifications);
@@ -546,7 +597,8 @@ test('visual suspension survives item replacement but never restores revoked or 
   const replacement = f.makeItem({ ...f.allModels[0], size: 48 }); f.graph.nodes = [replacement]; f.api.rebind();
   assert.equal(oldItem.getContainer().shapes.length, 0);
   assert.equal(replacement.getContainer().shapes[0].visible, false);
-  assert.equal(f.api.setVisualsVisible(true), true); assert.equal(replacement.getContainer().shapes[0].visible, true);
+  assert.equal(f.api.setVisualsVisible(true), true); assert.equal(replacement.getContainer().shapes[0].visible, false);
+  assert.equal(f.api.status().haloCount, 1, 'the one DOM contour restores without a duplicate Canvas contour');
   f.api.setVisualsVisible(false); f.stale();
   assert.equal(f.api.setVisualsVisible(true), false); f.api.refresh();
   assert.equal(replacement.getContainer().shapes.length, 0); assert.equal(f.api.status().haloCount, 0);

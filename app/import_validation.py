@@ -8,6 +8,7 @@ import datetime as dt
 from decimal import Decimal, localcontext
 import hashlib
 import json
+import re
 
 from . import db, table_archive, table_cancellations, table_import
 
@@ -73,10 +74,30 @@ def _facts(row):
             _hash([_text(row.get("self_account")), _text(row.get("self_name"))]))
 
 
-def table_manifest(plan, rows):
-    """Freeze compact expected facts before the writer can mutate its input."""
+def _standalone_csv_key(record, members, position):
+    """Bind an archive record to the identity of the same standalone CSV."""
+    member = members[record["member_path"]]
+    source_row, digest = record["source_row"], member["sha256"]
+    if (record["record_no"] != position or record["disposition"] != "accepted"
+            or type(source_row) is not int or source_row <= 0
+            or member["role"] != "table"
+            or member["encoding"] not in ("utf-8-sig", "gb18030", "utf-16")
+            or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or record["record_key"] != table_import.record_key(record["member_path"], digest, source_row)):
+        raise IntegrityError("invalid archive CSV identity")
+    return table_import.record_key("table.csv", digest, source_row)
+
+
+def table_manifest(plan, rows, *, standalone_csv_keys=None):
+    """Freeze expected facts and optional CSV identities before the writer.
+
+    CSV keys are transient compatibility identities; the journal retains each
+    archive member's full path and original record key.
+    """
     if plan.get("_plan_store") is not None:
-        return _staged_manifest(plan, rows)
+        return _staged_manifest(plan, rows, standalone_csv_keys=standalone_csv_keys)
+    members = ({member["member_path"]: member for member in plan["members"]}
+               if standalone_csv_keys is not None else None)
     accepted = {}
     for number, record in enumerate(plan["records"], 1):
         if record["record_no"] != number:
@@ -91,6 +112,8 @@ def table_manifest(plan, rows):
                 or record["details"].get("flow_sha256") != table_import.flow_digest(row)):
             raise IntegrityError("accepted source facts disagree")
         manifest[position] = _facts(row)
+        if standalone_csv_keys is not None:
+            standalone_csv_keys[position] = _standalone_csv_key(record, members, position)
     if manifest.keys() != accepted.keys():
         raise IntegrityError("accepted source facts missing")
     if plan["profile"] in table_archive.CANCELLATION_PROFILES:
@@ -104,10 +127,9 @@ def table_manifest(plan, rows):
     return manifest
 
 
-def _staged_manifest(plan, rows):
-    from .import_staging import record_map
+def _staged_manifest(plan, rows, *, standalone_csv_keys=None):
+    from .import_staging import StagedSequence, record_map
     from itertools import groupby
-    records = record_map(plan)
     accepted = 0
 
     def checked_records():
@@ -137,14 +159,28 @@ def _staged_manifest(plan, rows):
         for _ in checked_records():
             pass
     manifest = plan["_plan_store"].mapping()
-    for row in rows:
-        position = row["_source_row"]
-        record = records.get(position)
-        if (record is None or record["disposition"] != "accepted" or position in manifest
-                or row["_record_key"] != record["record_key"]
-                or record["details"].get("flow_sha256") != table_import.flow_digest(row)):
-            raise IntegrityError("accepted source facts disagree")
-        manifest[position] = _facts(row)
+    members = ({member["member_path"]: member for member in plan["members"]}
+               if standalone_csv_keys is not None else None)
+    if isinstance(rows, StagedSequence) and isinstance(plan["records"], StagedSequence):
+        pairs = rows.with_records(plan["records"])
+    else:
+        records = record_map(plan)
+        pairs = ((row, records.get(row["_source_row"])) for row in rows)
+    try:
+        for row, record in pairs:
+            position = row["_source_row"]
+            if (record is None or record["disposition"] != "accepted" or position in manifest
+                    or row["_record_key"] != record["record_key"]
+                    or record["details"].get("flow_sha256") != table_import.flow_digest(row)):
+                raise IntegrityError("accepted source facts disagree")
+            manifest[position] = _facts(row)
+            if standalone_csv_keys is not None:
+                standalone_csv_keys[position] = _standalone_csv_key(record, members, position)
+    except IntegrityError:
+        raise
+    except (KeyError, ValueError) as error:
+        # The joined reader rejects broken source positions before yielding.
+        raise IntegrityError("accepted source facts disagree") from error
     if len(manifest) != accepted:
         raise IntegrityError("accepted source facts missing")
     return manifest

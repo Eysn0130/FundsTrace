@@ -36,7 +36,7 @@ UI_ICON_NAMES = (
     "target", "font-text", "home", "folder", "minimap-map", "minimap-minus", "minimap-plus",
 )
 STATIC_NAMES = (
-    "navigation.css", "appearance.css", "appearance.js", "analysis-link.js", "import-workflow.js",
+    "navigation.css", "appearance.css", "appearance.js", "analysis-link.js", "import-workflow.js", "import-queue.js",
     "workspace-drafts.js", "workspace-session.js", "account-workspace.js", "app-navigation.js",
     "feedback-core.mjs", "feedback-ui.mjs", "feedback-workspace.js", "feedback-dialogs.js", "feedback.css",
     "index.html", "analysis.html", "license.html", "license.js", "app.js",
@@ -121,6 +121,8 @@ def main() -> None:
         raise SystemExit("desktop_backend.py is missing")
     arch = native_arch()
     resources = resource_files()
+    # Direct script execution puts scripts/ on sys.path instead of the source root.
+    sys.path.insert(0, str(ROOT))
     from app.rar_archive import decoder_resources
     decoder_files = decoder_resources()
     resources.extend(decoder_files)

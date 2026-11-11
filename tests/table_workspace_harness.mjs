@@ -22,12 +22,22 @@ const flow = id => ({ id, trade_time: '2026-01-01 12:00:00', payer_name: 'Synthe
 
 const eventRow = (id=17, observation_ids=['17','18']) => ({...flow(id),observation_ids,granularity:'confirmed_event'});
 
+function assertQuietResult(f, total) {
+  assert.equal(f.state.search.total, total, 'pagination retains the authoritative total');
+  assert.equal(f.element('resultInfo').hidden, true, 'a successful result has no count or empty status slot');
+  assert.equal(f.element('resultInfo').textContent, '');
+  assert.equal(f.element('resultInfo').title, '');
+}
+
 // A small DOM with real ancestry, moved-node identity and capture/bubble order.
 // The frozen app's actual renderer, search parameters and table handlers run in
 // this harness; only HTML parsing and network/graph boundaries are synthetic.
-function harness({ entityInputs = false, geometry = false } = {}) {
+function harness({ entityInputs = false, geometry = false, columnStorage = null, resizeObserver = false, fontMeasure = false } = {}) {
   const byId = new Map(), ready = [], requests = [], graphCalls = [], membershipCalls = [], contextCalls = [], writes = [], windowListeners = new Map();
   const heights = new Map(), widths = new Map(), frames = [];
+  const clipboardWrites = [];
+  let tableViewportWidth = 360;
+  const resizeCallbacks = [];
   const baselineWidths = [40, 86, 140, 140, 96, 126, 92];
   function measuredWidths() {
     const viewport = byId.get('flowTableScroll'), table = byId.get('flowTable');
@@ -42,6 +52,7 @@ function harness({ entityInputs = false, geometry = false } = {}) {
   let fetchFlows = async () => ({ page: 1, size: 50, total: 2, rows: [flow(1), flow(2)] });
   let graphRead = async () => {};
   const matches = (node, selector) => {
+    if (selector.includes(',')) return selector.split(',').some(part => matches(node, part.trim()));
     if (selector === '[inert]') return node.inert;
     if (selector.startsWith('#')) return node.id === selector.slice(1);
     if (selector.startsWith('.')) return node.classList.contains(selector.slice(1));
@@ -69,7 +80,7 @@ function harness({ entityInputs = false, geometry = false } = {}) {
     set scrollLeft(value) {
       this._scrollLeft = geometry && this.id === 'flowTableScroll' ? Math.max(0, Math.min(Number(value) || 0, this.scrollWidth - this.clientWidth)) : value;
     }
-    get clientWidth() { return geometry && this.id === 'flowTableScroll' ? 360 : 0; }
+    get clientWidth() { return geometry && this.id === 'flowTableScroll' ? tableViewportWidth : 0; }
     get scrollWidth() { return geometry && this.id === 'flowTableScroll' ? measuredWidths().reduce((sum, width) => sum + width, 0) : 0; }
     get clientHeight() { return geometry && this.id === 'flowTableScroll' ? 120 : 0; }
     get scrollHeight() { return geometry && this.id === 'flowTableScroll' ? this.querySelectorAll('tr[data-id]').reduce((sum, row) => sum + (heights.get(row.dataset.id) || 40), 0) : 0; }
@@ -132,6 +143,7 @@ function harness({ entityInputs = false, geometry = false } = {}) {
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
     setAttribute(key, value) { this.attributes.set(key, String(value)); }
     getAttribute(key) { return this.attributes.get(key) ?? null; }
+    removeAttribute(key) { this.attributes.delete(key); }
     focus(options) { doc.activeElement = this; this.lastFocusOptions = options; }
     addEventListener(type, callback, options = false) {
       const list = this.listeners.get(type) || []; list.push({ callback, capture: options === true || !!options.capture }); this.listeners.set(type, list);
@@ -177,7 +189,11 @@ function harness({ entityInputs = false, geometry = false } = {}) {
   const element = id => byId.get(id);
   doc = { activeElement: null, body: new Element('body'),
     querySelector: selector => doc.body.querySelector(selector), querySelectorAll: selector => doc.body.querySelectorAll(selector),
-    createElement: kind => new Element(kind), createComment: () => new Element('#comment') };
+    createElement: kind => {
+      const node = new Element(kind);
+      if (fontMeasure && kind === 'canvas') node.getContext = () => ({font:'',measureText(value){return {width:value.length*(this.font.includes('BodyFont')?9:4)};}});
+      return node;
+    }, createComment: () => new Element('#comment') };
   const add = (parent, id, tag = 'div', className = '') => {
     const result = parent.appendChild(new Element(tag, id)); result.className = className; return result;
   };
@@ -187,13 +203,15 @@ function harness({ entityInputs = false, geometry = false } = {}) {
   add(query, 'btnReset', 'button'); add(query, 'btnSearch', 'button');
   add(tab, 'flowCkAll', 'input'); add(tab, 'flowCkCount');
   const tools = add(tab, 'flowTools', 'div', 'flow-table-tools');
-  add(tools, 'resultInfo'); add(tools, 'btnFlowOverview', 'button');
+  add(tools, 'resultInfo'); add(tools, 'btnFlowOverview', 'button'); add(tools,'btnFlowColumnsReset','button');
   const density = add(tools, 'flowTableDensity', 'select'), wrap = add(tools, 'flowTableWrap', 'select');
   const viewport = add(tab, 'flowTableScroll');
   viewport.dataset.flowDensity = density.value = 'compact'; viewport.dataset.flowWrap = wrap.value = 'wrap';
   density.onchange = () => { viewport.dataset.flowDensity = density.value; viewport.scrollLeft = viewport.scrollLeft; };
   wrap.onchange = () => { viewport.dataset.flowWrap = wrap.value; viewport.scrollLeft = viewport.scrollLeft; };
   const table = add(viewport, 'flowTable', 'table'), head = add(table, 'flowTableHead', 'thead'), heading = add(head, 'flowTableHeading', 'tr');
+  const horizontal = add(tab, 'flowHorizontalScroll', 'div', 'flow-horizontal-scroll');
+  add(horizontal, 'flowScrollLeft', 'button'); add(horizontal, 'flowHorizontalPosition', 'input'); add(horizontal, 'flowScrollRight', 'button');
   add(heading, 'flowSelectionHeader', 'th'); for (let column = 1; column < 7; column++) add(heading, 'flowHeader' + column, 'th');
   add(table, 'flowTbody', 'tbody');
   const overview = add(doc.body, 'flowOverview'); overview.style.display = 'none';
@@ -224,9 +242,13 @@ function harness({ entityInputs = false, geometry = false } = {}) {
     },
   };
   const sandbox = {
+    ...(resizeObserver ? { ResizeObserver: class { constructor(callback) { resizeCallbacks.push(callback); } observe() {} } } : {}),
     window: { addEventListener(name, fn) { if (name === 'DOMContentLoaded') ready.push(fn); else { if(!windowListeners.has(name))windowListeners.set(name,[]);windowListeners.get(name).push(fn); } },
+      ...(fontMeasure ? {getComputedStyle:()=>({font:'',fontStyle:'normal',fontWeight:'400',fontSize:'12px',fontFamily:'BodyFont',paddingLeft:'10px',paddingRight:'10px',borderLeftWidth:'0px',borderRightWidth:'0px'})} : {}),
+      localStorage: columnStorage,
       FundsCanvasEditor: { membership, history: { status: () => ({ canUndo: false, canRedo: false, busy: false }) } } },
-    document: doc, state, URLSearchParams, console,
+    document: doc, state, URLSearchParams, console, setTimeout, clearTimeout, innerWidth:1000, innerHeight:700,
+    navigator: { clipboard: { writeText: async value => { clipboardWrites.push(value); } } },
     requestAnimationFrame(callback) { frames.push(callback); return frames.length; },
     $: selector => doc.querySelector(selector), $$: selector => doc.querySelectorAll(selector),
     fmtCount: String, fmtTime: String, flowTimeCell: String, moneyHtml: String,
@@ -264,7 +286,7 @@ function harness({ entityInputs = false, geometry = false } = {}) {
   vm.runInContext(section("  $('#flowTbody').addEventListener('click'", '  // 批量追踪'), context);
   vm.runInContext(source, context, { filename: 'table-workspace.js' });
   for (const callback of ready) callback();
-  return { context, state, doc, element, requests, graphCalls, membershipCalls, contextCalls, writes, pickerOptions, invalidated, heights, widths,
+  return { context, state, doc, element, requests, graphCalls, membershipCalls, contextCalls, writes, pickerOptions, invalidated, heights, widths, clipboardWrites,
     installEditorCommands() {
       const originalApi = sandbox.api;
       Object.assign(sandbox, {
@@ -301,6 +323,8 @@ function harness({ entityInputs = false, geometry = false } = {}) {
         for (const fn of windowListeners.get('fundstrace:workspace-resize') || []) fn({detail:{reason:'workspace-view',phase,view}});
       }
     },
+    resizeTable(width) { tableViewportWidth = width; for (const callback of resizeCallbacks) callback(); },
+    windowKey(event) { for(const fn of windowListeners.get('keydown')||[])fn({preventDefault(){},stopImmediatePropagation(){},...event}); },
     rows: () => element('flowTbody').querySelectorAll('tr[data-id]'),
     box: id => element('flowTbody').querySelectorAll('.flow-ck').find(box => box.dataset.id === String(id)),
     search: (...args) => context.doSearch(...args),
@@ -313,6 +337,315 @@ function harness({ entityInputs = false, geometry = false } = {}) {
   };
 }
 
+test('single-click selects and locates without tracking; double-click and Enter open exact string IDs', async () => {
+  const f=harness(), located=[],options=[], flowId='9007199254740993';
+  f.network(async()=>({page:1,size:50,total:1,rows:[flow(flowId)]}));
+  f.locator({capture:()=>({rowBinding:1}),availability:()=>({visible:true}),previewFields:(value,detail)=>{located.push(value);options.push(detail)}});
+  await f.search();const row=f.rows()[0];
+  row.click();
+  assert.equal(row.getAttribute('aria-current'),'true');assert.deepEqual(f.contextCalls,[]);
+  assert.equal(located.length,1);assert.equal(located[0].exactAccount,flow(flowId).payer_account);
+  assert.deepEqual(JSON.parse(JSON.stringify(options[0])),{binding:{rowBinding:1},flowId,quiet:true});
+  assert.equal(f.box(flowId).checked,false);assert.equal(f.membershipCalls.length,0);assert.equal(f.writes.length,0);
+  row.fire('keydown',{key:' ',ctrlKey:true});row.fire('keydown',{key:'Enter',metaKey:true});
+  assert.equal(f.box(flowId).checked,false);assert.deepEqual(f.contextCalls,[],'native modifier combinations are not row commands');
+  row.fire('click',{detail:2});row.fire('dblclick');
+  assert.deepEqual(f.contextCalls,[flowId]);assert.equal(located.length,1);
+  row.fire('keydown',{key:'Enter'});assert.deepEqual(f.contextCalls,[flowId,flowId]);
+  f.open();row.click();assert.equal(located.length,1,'overview does not pan the canvas hidden by its modal');
+  f.context.selectCase(2);row.click();assert.equal(located.length,1,'a removed old-case row cannot locate into a new case');
+});
+
+test('column resizing has minima, cancellation, keyboard control and separate saved sidebar and overview widths', async () => {
+  const saved=new Map(),storage={getItem:key=>saved.get(key)||null,setItem:(key,value)=>saved.set(key,value)};
+  const f=harness({columnStorage:storage});await f.search();
+  f.element('flowTableWrap').value='two-line';f.element('flowTableWrap').fire('change');f.drainFrames();
+  const table=f.element('flowTable'),headers=table.querySelectorAll('thead th');
+  headers.forEach((header,index)=>{header.getBoundingClientRect=()=>({width:parseFloat(table.querySelector('colgroup').children[index].style.width)||140})});
+  const handle=headers[2].querySelector('.flow-column-resize');
+  handle.fire('keydown',{key:'Home'});assert.equal(table.querySelector('colgroup').children[2].style.width,'112px');
+  handle.fire('keydown',{key:'ArrowRight'});assert.equal(table.querySelector('colgroup').children[2].style.width,'120px');
+  handle.fire('pointerdown',{button:0,clientX:300,pointerId:1});handle.fire('pointermove',{clientX:380});
+  assert.equal(table.querySelector('colgroup').children[2].style.width,'200px');
+  handle.fire('pointercancel');assert.equal(table.querySelector('colgroup').children[2].style.width,'120px');
+  handle.fire('pointerdown',{button:0,clientX:300,pointerId:1});handle.fire('pointermove',{clientX:380});handle.fire('pointerup');
+  const preferences=JSON.parse(saved.get('funds_flow_columns_v1'));
+  assert.equal(preferences['sidebar:compact:two-line'][2],200);
+  assert.ok(Object.values(preferences).every(widths=>widths.length===7&&widths.every(Number.isFinite)));
+  f.open();assert.notEqual(table.querySelector('colgroup').children[2].style.width,'200px');
+  f.close();assert.equal(table.querySelector('colgroup').children[2].style.width,'200px');
+  const g=harness({columnStorage:storage});await g.search();
+  g.element('flowTableWrap').value='two-line';g.element('flowTableWrap').fire('change');g.drainFrames();
+  assert.equal(g.element('flowTable').querySelector('colgroup').children[2].style.width,'200px');
+  f.element('btnFlowColumnsReset').click();
+  assert.equal(table.querySelector('colgroup').children[2].style.width,'140px');
+  assert.equal(JSON.parse(saved.get('funds_flow_columns_v1'))['sidebar:compact:two-line'],undefined);
+  assert.equal(f.membershipCalls.length,0);assert.equal(f.writes.length,0,'resizing never writes graph membership');
+});
+
+test('a pending text-mode geometry callback cannot restore sidebar offsets into overview', async () => {
+  const f=harness();await f.search();const viewport=f.element('flowTableScroll');viewport.scrollLeft=190;
+  f.element('flowTableWrap').value='single';f.element('flowTableWrap').fire('change');
+  f.open();assert.equal(viewport.scrollLeft,0);f.drainFrames();
+  assert.equal(viewport.scrollLeft,0,'the old sidebar callback does not write the new presentation slot');
+  f.close();assert.equal(viewport.scrollLeft,190);
+});
+
+test('overflow full-value popover copies original text and clears it on a case change', async () => {
+  const f=harness({geometry:true});await f.search();
+  const row=f.rows()[0],cell=f.doc.createElement('td'),span=f.doc.createElement('span');
+  const full='合成长名称 <literal>\n000000000000000000000000SYN-0001';
+  cell.setAttribute('title',full);span.className='party-name';span.textContent=full;cell.appendChild(span);row.insertBefore(cell,row.children[1]);
+  Object.defineProperty(span,'scrollWidth',{value:400});Object.defineProperty(span,'clientWidth',{value:60});
+  cell.getBoundingClientRect=()=>({left:100,top:200,bottom:240,width:60,height:40});
+  const overview=f.element('flowOverview');overview.className='modal';overview.getClientRects=()=>[1];
+  f.open();const panel=f.doc.querySelector('#flowValuePopover');
+  panel.getBoundingClientRect=()=>({width:280,height:120});span.fire('pointerover');
+  await new Promise(resolve=>setTimeout(resolve,330));
+  assert.equal(panel.hidden,false);assert.equal(panel.querySelector('pre').textContent,full);
+  span.fire('pointerout',{relatedTarget:null});span.fire('pointerover');
+  await new Promise(resolve=>setTimeout(resolve,180));assert.equal(panel.hidden,false,'returning to the value cancels a pending hide');
+  panel.querySelector('button').click();await flush();assert.deepEqual(f.clipboardWrites,[full]);
+  panel.querySelector('button').focus();f.windowKey({key:'Escape'});
+  assert.equal(panel.hidden,true);assert.equal(overview.style.display,'flex','Escape dismisses the value before its owning overview');
+  assert.equal(f.doc.activeElement===row,true);
+  span.fire('pointerover');await new Promise(resolve=>setTimeout(resolve,330));assert.equal(panel.hidden,false);
+  f.context.selectCase(2);assert.equal(panel.hidden,true);assert.equal(panel.querySelector('pre').textContent,'');
+});
+
+function lifecycleHarness({ canvas = 0 } = {}) {
+  const f = harness(), calls = [];
+  const batches = f.doc.createElement('div'); batches.id = 'tab-batches'; batches.style.display = 'none'; f.doc.body.appendChild(batches);
+  Object.assign(f.context, {
+    initWatermark() {}, bindUI() {}, installNeighborhood() {}, installNodeFinder() {}, initGraph() {}, installAnnotationDialog() {},
+    async loadCases() { f.context.selectCase(1); }, async refreshStats() {}, async applyPendingFocusEdge() {},
+    async refreshCanvasList() { if (canvas && f.state.canvasId !== canvas) f.context.activateCanvas(canvas); },
+    async caseRequest() { return { snapshot: { nodes: [], edges: [] } }; },
+    applyCanvasSnapshot() { calls.push('snapshot'); }, async loadBatches() {},
+    accountDataWrites: new Set(), nodeWrites: new Map(), pcState: { binding: null }, hasNodeDrafts: () => false,
+    toast: (...args) => calls.push(args), CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
+  });
+  f.context.window.dispatchEvent = event => calls.push(event.detail);
+  f.context.window.FundsWorkspaceSession = {
+    lastCanvas: () => canvas,
+    restore() {
+      calls.push('restore'); f.element('fKw').value = 'SYN-RESTORED';
+      f.drafts.restoreViewport({ rowId: '301', page: 3, offset: 0, scrollLeft: 0 });
+    },
+  };
+  vm.runInContext(section('async function openManagedCase(', 'function installCaseWorkspace('), f.context);
+  return { ...f, lifecycleCalls: calls, async start() {
+    let start;
+    const listen = f.context.window.addEventListener;
+    f.context.window.addEventListener = (_name, callback) => { start = callback; };
+    vm.runInContext(section("window.addEventListener('DOMContentLoaded', async () => {", 'async function refreshAll()'), f.context);
+    f.context.window.addEventListener = listen;
+    await start();
+  } };
+}
+
+function canvasLifecycleHarness() {
+  const f = lifecycleHarness();
+  for (const id of ['canvasSel', 'btnCanvasNew', 'btnCanvasClone', 'btnCanvasSave', 'btnCanvasRemove',
+    'btnCanvasRename', 'btnCanvasDel', 'btnCanvasMenuClone', 'btnCanvasActions']) {
+    const node = f.doc.createElement(id === 'canvasSel' ? 'select' : 'button'); node.id = id; f.doc.body.appendChild(node);
+  }
+  const select = f.doc.querySelector('#canvasSel');
+  let callbacks;
+  const actions = { status: () => ({ pending: false }), blocked: () => false,
+    sync: () => callbacks.onState({ pending: false }) };
+  Object.assign(f.context, { layoutJob: null, cancelAnnotationDrag: null, operationFeedbackChanged() {},
+    async refreshCanvasList() {} });
+  f.doc.addEventListener = () => {};
+  f.context.window.FundsCanvasWorkspace = { createView: () => ({ onState() {}, attach() {} }),
+    create(value) { callbacks = value; return actions; } };
+  f.context.window.FundsWorkspaceSession.removeCanvas = () => {};
+  vm.runInContext(section('function externalImportPending(', 'let graphRequestSequence'), f.context);
+  f.context.bindCanvases();
+  return { ...f, changeCanvas(id) {
+    select.value = String(id); select.selectedOptions = [{ textContent: 'Synthetic saved canvas' }];
+    return select.onchange({ target: select });
+  }, publishCanvas(action) {
+    return callbacks.publish(action, f.context.caseContext(), { canvas_id: 8, name: 'Synthetic new canvas' }, { nodes: [], edges: [] });
+  } };
+}
+
+for (const canvas of [0, 7]) test(`canvas selection ${canvas} owns one query after restoring filters and page`, async () => {
+  const f = canvasLifecycleHarness();
+  f.element('fTracked').checked = true;
+  if (!canvas) { f.state.canvasId = 7; f.state.canvasGeneration++; }
+  f.network(async params => ({ page: Number(params.get('page')), size: 50, total: 150, rows: [flow(301)] }));
+  await f.changeCanvas(canvas);
+  assert.equal(f.requests.length, 1);
+  const params = new URL(f.requests[0], 'http://synthetic.local').searchParams;
+  assert.equal(params.get('kw'), 'SYN-RESTORED'); assert.equal(params.get('page'), '3');
+  assert.equal(params.get('canvas_id') || '0', String(canvas));
+  assert.deepEqual(f.rows().map(row => row.dataset.id), ['301']);
+});
+
+for (const phase of ['snapshot', 'session']) test(`canvas restore ${phase} failure keeps current raw rows visible`, async () => {
+  const f = canvasLifecycleHarness();
+  if (phase === 'snapshot') f.context.applyCanvasSnapshot = () => { throw new Error('Synthetic invalid snapshot'); };
+  else f.context.window.FundsWorkspaceSession.restore = () => { throw new Error('Synthetic invalid saved query'); };
+  f.network(async () => ({ page: 1, size: 50, total: 1, rows: [flow(201)] }));
+  await f.changeCanvas(7);
+  assert.equal(f.requests.length, 1);
+  assert.deepEqual(f.rows().map(row => row.dataset.id), ['201']);
+  assert.match(f.lifecycleCalls.at(-1)[0], /画布未能载入/);
+});
+
+for (const phase of ['metadata', 'graph']) test(`stale canvas ${phase} read cannot query an A-B-A binding`, async () => {
+  const f = canvasLifecycleHarness(), pending = deferred();
+  if (phase === 'metadata') f.context.caseRequest = () => pending.promise;
+  else f.graph(() => pending.promise);
+  const opening = f.changeCanvas(7); await flush();
+  f.context.activateCanvas(8); f.context.activateCanvas(7);
+  pending.resolve({ snapshot: { nodes: [], edges: [] } }); await opening;
+  assert.equal(f.requests.length, 0);
+  assert.deepEqual(f.lifecycleCalls, []);
+});
+
+for (const action of ['delete', 'new', 'clone']) test(`canvas publish ${action} retains its query owner`, async () => {
+  const f = canvasLifecycleHarness(); f.state.canvasId = 7; f.state.canvasGeneration++;
+  f.element('fTracked').checked = true;
+  f.network(async params => ({ page: Number(params.get('page')), size: 50, total: 150, rows: [flow(301)] }));
+  await f.publishCanvas(action);
+  assert.equal(f.requests.length, 1);
+  const params = new URL(f.requests[0], 'http://synthetic.local').searchParams;
+  assert.equal(params.get('kw') || '', action === 'delete' ? 'SYN-RESTORED' : '');
+  assert.equal(params.get('page'), action === 'delete' ? '3' : '1');
+  assert.equal(params.get('canvas_id') || '0', action === 'delete' ? '0' : '8');
+  assert.equal(f.lifecycleCalls.includes('restore'), action === 'delete');
+});
+
+test('canvas delete restore failure still queries the current default canvas', async () => {
+  const f = canvasLifecycleHarness(); f.state.canvasId = 7; f.state.canvasGeneration++;
+  f.context.window.FundsWorkspaceSession.restore = () => { throw new Error('Synthetic invalid saved query'); };
+  f.network(async () => ({ page: 1, size: 50, total: 1, rows: [flow(201)] }));
+  await f.publishCanvas('delete');
+  assert.equal(f.requests.length, 1); assert.deepEqual(f.rows().map(row => row.dataset.id), ['201']);
+  assert.match(f.lifecycleCalls.at(-1)[0], /部分数据未刷新/);
+});
+
+for (const action of ['select', 'delete']) test(`stale final ${action} query cannot focus or notify a later A-B-A binding`, async () => {
+  const f = canvasLifecycleHarness(), pending = deferred();
+  f.context.applyPendingFocusEdge = () => { f.lifecycleCalls.push('focus'); };
+  f.network(() => pending.promise);
+  const opening = action === 'select' ? f.changeCanvas(7) : f.publishCanvas('delete');
+  await flush();
+  const current = f.state.canvasId;
+  f.context.activateCanvas(8); f.context.activateCanvas(current);
+  pending.resolve({ page: 1, size: 50, total: 1, rows: [flow(201)] }); await opening;
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.lifecycleCalls.includes('focus'), false);
+  assert.equal(f.lifecycleCalls.some(call => Array.isArray(call)), false);
+  assert.deepEqual(f.rows(), []);
+});
+
+test('actual startup owns one final page query after graph and canvas initialization', async () => {
+  const f = lifecycleHarness();
+  await f.start();
+  assert.equal(f.requests.length, 1);
+  assert.equal(new URL(f.requests[0], 'http://synthetic.local').searchParams.get('page'), '1');
+  assert.deepEqual(f.lifecycleCalls, ['ready']);
+  assert.deepEqual(f.rows().map(row => row.dataset.id), ['1', '2']);
+});
+
+for (const canvas of [0, 7]) test(`managed case with canvas ${canvas} queries only after restored filters and page`, async () => {
+  const f = lifecycleHarness({ canvas });
+  f.network(async params => ({ page: Number(params.get('page')), size: 50, total: 150,
+    rows: [flow(params.get('page') === '3' ? 301 : 1)] }));
+  assert.equal(await f.context.openManagedCase(2, f.context.caseContext()), true);
+  assert.equal(f.requests.length, 1);
+  const params = new URL(f.requests[0], 'http://synthetic.local').searchParams;
+  assert.equal(params.get('kw'), 'SYN-RESTORED'); assert.equal(params.get('page'), '3');
+  assert.deepEqual(f.rows().map(row => row.dataset.id), ['301']);
+  assert.deepEqual(f.lifecycleCalls, canvas ? ['snapshot', 'restore'] : ['restore']);
+});
+
+test('a real malformed saved snapshot still leaves current-case rows visible and reports the restore warning', async () => {
+  const f = lifecycleHarness({ canvas: 7 }), snapshot = { nodes: {} };
+  f.state.lastGraph = {}; f.context.resetGraphView = () => {};
+  f.context.newGraphPresentation = () => ({});
+  vm.runInContext(section('function applyCanvasSnapshot(', 'function scheduleCanvasOpeningFit('), f.context);
+  assert.throws(() => f.context.applyCanvasSnapshot(snapshot), /not iterable/);
+  f.context.caseRequest = async () => ({ snapshot });
+  f.network(async params => {
+    assert.equal(params.get('case_id'), '2');
+    return { page: 1, size: 50, total: 1, rows: [flow(201)] };
+  });
+  assert.equal(await f.context.openManagedCase(2, f.context.caseContext()), true);
+  assert.equal(f.requests.length, 1);
+  assert.deepEqual(f.rows().map(row => row.dataset.id), ['201']);
+  assert.equal(f.lifecycleCalls.length, 1);
+  assert.match(f.lifecycleCalls[0][0], /部分数据加载失败/); assert.equal(f.lifecycleCalls[0][1], 'warn');
+  assert.equal(f.lifecycleCalls[0][2].canvasId, 7);
+  assert.deepEqual(snapshot, { nodes: {} });
+  await f.context.loadGraph(); assert.equal(f.requests.length, 1);
+});
+
+test('startup focus failure retains a correct first page and rethrows the original error', async () => {
+  const f = lifecycleHarness(), failure = new Error('Synthetic focus restore failure');
+  f.context.applyPendingFocusEdge = async () => { throw failure; };
+  await assert.rejects(f.start(), error => error === failure);
+  assert.equal(f.requests.length, 1);
+  assert.deepEqual(f.rows().map(row => row.dataset.id), ['1', '2']);
+  assert.deepEqual(f.lifecycleCalls, ['failed']);
+});
+
+test('stale startup restore failure cannot query or consume a later A-B-A binding', async () => {
+  const f = lifecycleHarness(), pending = deferred(), failure = new Error('Synthetic stale focus failure');
+  f.context.applyPendingFocusEdge = () => pending.promise;
+  const opening = f.start(); await flush();
+  f.context.selectCase(2); f.context.selectCase(1);
+  pending.reject(failure); await assert.rejects(opening, error => error === failure);
+  assert.equal(f.requests.length, 0);
+  await f.context.loadGraph(); assert.equal(f.requests.length, 1);
+});
+
+test('failed caller-owned graph read leaves the binding refresh for a successful ordinary caller', async () => {
+  const f = harness(); f.context.activateCanvas(7);
+  f.graph(async () => { throw new Error('Synthetic graph read failure'); });
+  await assert.rejects(f.context.loadGraph(true, f.context.caseContext(), { tableQuery: 'caller' }), /Synthetic graph read failure/);
+  assert.equal(f.requests.length, 0);
+  f.graph(async () => {}); await f.context.loadGraph();
+  assert.equal(f.requests.length, 1);
+  await f.context.loadGraph(); assert.equal(f.requests.length, 1);
+});
+
+test('old caller-owned A-B-A graph completion cannot consume a fresh binding refresh', async () => {
+  const f = harness(), old = deferred();
+  f.context.selectCase(2); f.graph(() => old.promise);
+  const pending = f.context.loadGraph(true, f.context.caseContext(), { tableQuery: 'caller' });
+  f.context.selectCase(1); f.graph(async () => {});
+  old.resolve(); await pending;
+  assert.equal(f.requests.length, 0);
+  await f.context.loadGraph(); assert.equal(f.requests.length, 1);
+  await f.context.loadGraph(); assert.equal(f.requests.length, 1);
+});
+
+test('query status hides totals while keeping loading, failure and retry feedback visible', async () => {
+  const f = harness(); f.network(params => pageResult(Number(params.get('page')), 75));
+  await f.search(); assertQuietResult(f, 75);
+  const pending = deferred(); f.network(() => pending.promise);
+  await wheelEdge(f, 1);
+  assert.equal(f.element('resultInfo').hidden, false);
+  assert.equal(f.element('resultInfo').textContent, '正在读取…');
+  pending.reject(new Error('Synthetic continuation failure')); await flush();
+  assert.equal(f.element('resultInfo').hidden, false);
+  assert.equal(f.element('resultInfo').textContent, '续载失败');
+  assert.match(f.element('resultInfo').title, /Synthetic continuation failure/);
+  assert.equal(f.rows().length, 50); assert.equal(f.state.search.total, 75);
+  f.network(params => pageResult(Number(params.get('page')), 75));
+  await wheelEdge(f, 1); assertQuietResult(f, 75); assert.equal(f.rows().length, 75);
+  f.network(async () => { throw new Error('Synthetic query failure'); });
+  assert.equal(await f.search(), false);
+  assert.equal(f.element('resultInfo').hidden, false);
+  assert.equal(f.element('resultInfo').textContent, '查询失败 · 保留上次结果');
+  assert.equal(f.state.search.total, 75); assert.equal(f.rows().length, 75);
+  f.network(() => pageResult(1, 0)); await f.search(); assertQuietResult(f, 0);
+});
+
 test('query disclosure keeps table tools, results and selection usable and restores internal focus', async () => {
   const f = harness(); await f.search(); f.toggleAnchor(1, true);
   f.element('fAccount').focus(); f.element('btnQueryToggle').click();
@@ -320,7 +653,7 @@ test('query disclosure keeps table tools, results and selection usable and resto
   assert.equal(f.element('btnQueryToggle').getAttribute('aria-expanded'), 'false');
   assert.equal(f.doc.activeElement, f.element('btnQueryToggle'));
   assert.equal(f.element('flowTools').closest('[inert]'), null);
-  assert.equal(f.box(1).checked, true); assert.equal(f.element('resultInfo').textContent, '共 2 条记录');
+  assert.equal(f.box(1).checked, true); assertQuietResult(f, 2);
   f.open(); f.close(); f.element('btnQueryToggle').click();
   assert.equal(f.element('queryFields').inert, false);
   assert.equal(f.element('btnQueryToggle').getAttribute('aria-expanded'), 'true');
@@ -345,11 +678,13 @@ test('overview moves the same table nodes and retains separate scroll positions 
   const f = harness(); await f.search(); f.toggleAnchor(1, true);
   f.setStatus({ confirmedIds: ['2'], desiredIds: ['2'] });
   const viewport = f.element('flowTableScroll'), table = f.element('flowTable'), row = f.rows()[0];
-  assert.equal(f.doc.querySelector('.flow-horizontal-scroll'), null, 'the flow table has only its native scroll viewport');
+  const horizontal = f.element('flowHorizontalScroll');
+  assert.equal(horizontal.parentElement, f.element('tab-search'));
   assert.equal(viewport.fire('keydown', { key: 'ArrowRight' }).defaultPrevented, false, 'native horizontal keys remain available');
   viewport.scrollLeft = 83; viewport.scrollTop = 41;
   f.open();
   assert.equal(viewport.parentElement, f.element('flowOverviewContent'));
+  assert.equal(horizontal.parentElement, viewport.parentElement, 'the same horizontal control follows its table into overview');
   assert.equal(f.element('flowTable'), table); assert.equal(f.rows()[0], row);
   assert.equal(viewport.scrollLeft, 0); assert.equal(viewport.scrollTop, 0);
   assert.equal(f.box(1).checked, false); assert.equal(f.box(2).checked, true);
@@ -357,11 +692,13 @@ test('overview moves the same table nodes and retains separate scroll positions 
   assert.equal(f.element('flowSelectionHeader').textContent, '上图');
   viewport.scrollLeft = 17; viewport.scrollTop = 200; f.close();
   assert.equal(viewport.parentElement, f.element('tab-search')); assert.equal(f.element('flowTable'), table);
+  assert.equal(horizontal.parentElement, viewport.parentElement);
   assert.equal(f.box(1).checked, true); assert.equal(f.box(2).checked, false);
   assert.equal(viewport.scrollLeft, 83); assert.equal(viewport.scrollTop, 41);
   assert.equal(f.doc.activeElement, f.element('btnFlowOverview'));
   f.open(); assert.equal(viewport.scrollLeft, 17); assert.equal(viewport.scrollTop, 200);
-  assert.equal(f.doc.querySelector('.flow-horizontal-scroll'), null, 'opening the overview does not add another scroll control');
+  assert.equal(f.doc.querySelectorAll('.flow-horizontal-scroll').length, 1, 'overview reuses the existing control without duplicate IDs');
+  assert.equal(f.element('flowHorizontalScroll'), horizontal);
   assert.equal(viewport.fire('keydown', { key: 'ArrowLeft' }).defaultPrevented, false);
 });
 
@@ -412,11 +749,13 @@ test('result refresh restores the focused row control or row without scrolling o
   }
 });
 
-test('a focused disappearing action falls back to its row and a disappearing row to the table region', async () => {
+test('a membership button retains focus after its label changes and a disappearing row falls back to the table region', async () => {
   for (const overview of [false, true]) {
     const f = harness(); await f.search(); if (overview) f.open();
-    f.rows()[0].querySelector('.act-track').focus(); f.state.tracked.add(1); await f.search();
-    assert.equal(f.doc.activeElement, f.rows()[0]);
+    f.rows()[0].querySelector('.act-track').focus(); f.state.tracked.add(1);
+    f.setStatus({confirmedIds:['1'],desiredIds:['1']}); await f.search();
+    assert.equal(f.doc.activeElement === f.rows()[0].querySelector('.act-track'), true);
+    assert.equal(f.doc.activeElement.textContent,'移出');
     f.box(1).focus(); f.network(async () => ({ page: 1, size: 50, total: 1, rows: [flow(2)] }));
     await f.search();
     assert.equal(f.doc.activeElement, f.element('flowTableScroll'));
@@ -436,7 +775,7 @@ test('latest query wins, an explicit failure retains last results, and click-ent
   assert.equal(f.state.search.page, 2); assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
   f.network(async () => { throw new Error('Synthetic query failure'); });
   assert.equal(await f.search(), false); assert.deepEqual(f.rows().map(row => row.dataset.id), ['22']);
-  assert.equal(f.element('resultInfo').textContent, '查询失败 · 保留上次结果 · 共 2 条记录');
+  assert.equal(f.element('resultInfo').textContent, '查询失败 · 保留上次结果');
   f.element('fAccount').fire('keydown', { key: 'Enter' }); await flush();
   assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
 });
@@ -564,7 +903,7 @@ test('explicit date, amount and summary-only queries do not capture or interrupt
   await f.element('btnSearch').onclick();
   f.element('fMin').fire('keydown', { key: 'Enter' }); await flush();
   assert.deepEqual(calls, []); assert.equal(f.requests.length, 2);
-  assert.equal(f.element('resultInfo').textContent, '共 2 条记录');
+  assertQuietResult(f, 2);
 });
 
 test('full primary-reference keyword stays exact through button and Enter submission without a duplicate summary', async () => {
@@ -573,7 +912,7 @@ test('full primary-reference keyword stays exact through button and Enter submis
   f.element('fKw').value = number; f.element('fKw').fire('input');
   assert.equal(f.doc.querySelector('#querySummary'), null);
   assert.equal(f.requests.length, 1);
-  assert.equal(f.element('resultInfo').textContent, '共 2 条记录');
+  assertQuietResult(f, 2);
   f.network(async params => {
     assert.equal(params.get('kw'), number);
     return { page: 1, size: 50, total: 1, rows: [{ ...flow(17), trade_no: number }] };
@@ -581,11 +920,11 @@ test('full primary-reference keyword stays exact through button and Enter submis
   const icon = f.doc.createElement('img'); f.element('btnSearch').appendChild(icon);
   icon.click(); await flush();
   assert.equal(f.element('fKw').value, number);
-  assert.equal(f.element('resultInfo').textContent, '共 1 条记录');
+  assertQuietResult(f, 1);
   assert.deepEqual(f.rows().map(row => row.dataset.id), ['17']);
   f.element('fKw').fire('keydown', { key: 'Enter' }); await flush();
   assert.equal(new URL(f.requests.at(-1), 'http://synthetic.local').searchParams.get('kw'), number);
-  assert.equal(f.element('resultInfo').textContent, '共 1 条记录');
+  assertQuietResult(f, 1);
 });
 
 test('input changes during a query revoke its preview even when the original text is restored', async () => {
@@ -597,7 +936,7 @@ test('input changes during a query revoke its preview even when the original tex
   f.element('fAccount').value = '00001'; f.element('fAccount').fire('input');
   result.resolve({ page: 1, size: 50, total: 1, rows: [flow(1)] });
   assert.equal(await search, true); assert.deepEqual(previews, []);
-  assert.equal(f.element('resultInfo').textContent, '共 1 条记录');
+  assertQuietResult(f, 1);
 });
 
 test('programmatic draft changes also prevent preview and never substitute the newer input into the old request', async () => {
@@ -639,11 +978,135 @@ test('missing, throwing and rejected camera adapters cannot turn a successful qu
     { capture: () => ({}), async previewFields() { throw new Error('Synthetic preview failure'); } }]) {
     const f = harness(); f.locator(locator); f.element('fAccount').value = '00001';
     assert.equal(await f.search(1, { locate: true }), true);
-    assert.equal(f.element('resultInfo').textContent, '共 2 条记录'); assert.equal(f.rows().length, 2);
+    assertQuietResult(f, 2); assert.equal(f.rows().length, 2);
     assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
   }
 });
 
+
+test('split automatic columns fill the resized bottom viewport and restore sidebar geometry without writes', async () => {
+  const f = harness({ geometry: true, resizeObserver: true }); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  const table = f.element('flowTable'), viewport = f.element('flowTableScroll'), rows = f.rows(), reads = f.requests.length;
+  const widths = () => table.querySelector('colgroup').children.map(col => parseFloat(col.style.width));
+  const sidebarWidths = widths();
+  f.toggleAnchor(1, true);
+  f.view('split', () => f.resizeTable(1600));
+  assert.equal(widths().reduce((sum, width) => sum + width, 0), 1600);
+  assert.equal(widths()[0], 40, 'the fixed anchor column does not absorb spare space');
+  f.resizeTable(1900);
+  assert.equal(widths().reduce((sum, width) => sum + width, 0), 1900);
+  for (const handle of table.querySelectorAll('.flow-column-resize')) {
+    assert.ok(Number(handle.getAttribute('aria-valuenow')) <= Number(handle.getAttribute('aria-valuemax')));
+  }
+  f.view('standard', () => f.resizeTable(360));
+  assert.deepEqual(widths(), sidebarWidths);
+  assert.equal(viewport, f.element('flowTableScroll')); assert.deepEqual(f.rows(), rows);
+  assert.equal(f.box(1).checked, true); assert.equal(f.requests.length, reads);
+  assert.equal(f.membershipCalls.length, 0); assert.equal(f.writes.length, 0);
+});
+
+test('automatic content columns stay balanced and adapt to loaded party names', async () => {
+  const f = harness({ geometry: true });
+  let current = { ...flow(1), payer_name: 'A', payer_account: '', payee_name: 'B', payee_account: '', summary: 'Short note' };
+  f.network(async () => ({ page: 1, size: 50, total: 1, rows: [current] })); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  f.view('split', () => f.resizeTable(1835));
+  const widths = () => f.element('flowTable').querySelector('colgroup').children.map(col => parseFloat(col.style.width));
+  const short = widths(), text = short.filter((_width, index) => [2, 3, 5].includes(index));
+  assert.ok(Math.max(...text) / Math.min(...text) < 1.4, 'short summaries do not absorb all spare width');
+  assert.ok(Math.abs(short[2] - short[3]) <= 1); assert.equal(short.reduce((sum, width) => sum + width, 0), 1835);
+  current = { ...current, payer_name: 'Long synthetic company '.repeat(8) };
+  await f.search(); const long = widths();
+  assert.ok(long[2] > short[2], 'content measurement gives longer parties more useful room');
+  assert.ok(long[5] < short[5]); assert.ok(Math.abs(long[2] - long[3]) <= 1);
+  f.resizeTable(420);
+  assert.ok(widths().reduce((sum, width) => sum + width, 0) > 420, 'small slots keep column minima and local scrolling');
+  assert.equal(f.rows().length, 1); assert.equal(f.membershipCalls.length, 0);
+});
+
+test('content measurement uses actual font parts when tabular-number font shorthand is empty', async () => {
+  const f = harness({ geometry: true, fontMeasure: true }); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  f.view('split', () => f.resizeTable(1835));
+  const timeWidth = parseFloat(f.element('flowTable').querySelector('colgroup').children[1].style.width);
+  assert.ok(timeWidth >= 112, 'the ten-character date needs 90px plus cell insets in the supplied font');
+  f.view('standard', () => f.resizeTable(360));
+  assert.ok(parseFloat(f.element('flowTable').querySelector('colgroup').children[1].style.width) >= 112);
+});
+
+test('content sizing follows displayed account aliases and keeps exact large amounts and IDs', async () => {
+  const f = harness({ geometry: true }), flowId = '9007199254740993';
+  let row = { ...flow(flowId), payer_name: 'A', payee_name: 'B', payer_account: 'INTERNAL-'.repeat(20),
+    payer_display_account: '000CARD-A', payee_display_account: '000CARD-B', summary: 'Short' };
+  f.network(async () => ({ page: 1, size: 50, total: 1, rows: [row] })); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  f.view('split', () => f.resizeTable(1835));
+  const cols = () => f.element('flowTable').querySelector('colgroup').children.map(col => parseFloat(col.style.width));
+  const initial = cols();
+  row = { ...row, payer_display_account: '000CARD-' + '9'.repeat(80) };
+  await f.search();
+  assert.ok(cols()[2] > initial[2], 'the display alias, rather than the longer internal identity, sets the content demand');
+  assert.ok(cols()[4] >= '¥9,999,999,999,999,999.99'.length * 7 + 10);
+  assert.equal(f.rows()[0].dataset.id, flowId); assert.equal(row.amount, '9999999999999999.99');
+  assert.equal(row.payer_account, 'INTERNAL-'.repeat(20)); assert.equal(f.membershipCalls.length, 0);
+});
+
+test('a refreshed split result can shrink its automatic columns back to the viewport', async () => {
+  const f = harness({ geometry: true, resizeObserver: true }); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  const table = f.element('flowTable');
+  f.view('split', () => f.resizeTable(1900)); await f.search(1, { refresh: true });
+  f.resizeTable(1600);
+  assert.equal(table.querySelector('colgroup').children.reduce((sum, col) => sum + parseFloat(col.style.width), 0), 1600);
+});
+
+test('split column preferences are independent of sidebar and overview preferences', async () => {
+  const saved = new Map(), storage = { getItem: key => saved.get(key) || null, setItem: (key, value) => saved.set(key, value) };
+  const f = harness({ geometry: true, columnStorage: storage }); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  const table = f.element('flowTable'), handle = table.querySelectorAll('thead th')[2].querySelector('.flow-column-resize');
+  const payerWidth = () => parseFloat(table.querySelector('colgroup').children[2].style.width);
+  handle.fire('keydown', { key: 'ArrowRight' }); const sidebarWidth = payerWidth();
+  f.view('split', () => f.resizeTable(1600));
+  assert.notEqual(payerWidth(), sidebarWidth);
+  handle.fire('keydown', { key: 'ArrowRight' }); const splitWidth = payerWidth();
+  const prefs = JSON.parse(saved.get('funds_flow_columns_v1'));
+  assert.equal(prefs['sidebar:compact:two-line'][2], sidebarWidth);
+  assert.equal(prefs['split:compact:two-line'][2], splitWidth);
+  f.view('standard', () => f.resizeTable(360)); assert.equal(payerWidth(), sidebarWidth);
+  f.view('split', () => f.resizeTable(1600)); assert.equal(payerWidth(), splitWidth);
+  f.element('btnFlowColumnsReset').click();
+  assert.equal(JSON.parse(saved.get('funds_flow_columns_v1'))['split:compact:two-line'], undefined);
+  f.view('standard', () => f.resizeTable(360)); assert.equal(payerWidth(), sidebarWidth);
+});
+
+test('resizing one split column preserves the already expanded summary width', async () => {
+  const f = harness({ geometry: true }); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  f.view('split', () => f.resizeTable(3600));
+  const table = f.element('flowTable'), cols = table.querySelector('colgroup').children;
+  const summaryWidth = cols[5].style.width;
+  assert.ok(parseFloat(summaryWidth) > 800);
+  table.querySelectorAll('thead th')[2].querySelector('.flow-column-resize').fire('keydown', { key: 'ArrowRight' });
+  assert.equal(cols[5].style.width, summaryWidth, 'an untouched flex allocation must not shrink to the old sidebar cap');
+  assert.equal(cols.reduce((sum, col) => sum + parseFloat(col.style.width), 0), 3608);
+});
+
+test('reselecting the current workspace preset keeps its current table position', async () => {
+  const f = harness(); await f.search(); const viewport = f.element('flowTableScroll');
+  viewport.scrollLeft = 190; viewport.scrollTop = 32;
+  f.view('standard');
+  assert.deepEqual([viewport.scrollLeft, viewport.scrollTop], [190, 32]);
+});
+
+test('a pending text mode callback cannot overwrite the split scroll position', async () => {
+  const f = harness({ geometry: true }); await f.search(); const viewport = f.element('flowTableScroll');
+  viewport.scrollLeft = 190;
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change');
+  f.view('split', () => f.resizeTable(600)); assert.equal(viewport.scrollLeft, 0);
+  f.drainFrames(); assert.equal(viewport.scrollLeft, 0);
+});
 
 test('workspace views retain one query/table and anchors, with independent filter disclosure and no writes', async () => {
   const f = harness(); await f.search(); f.toggleAnchor(1,true);
@@ -713,7 +1176,8 @@ test('a confirmed row is already tracked when only its other selected observatio
   const f = harness(); f.state.tracked = new Set([18]);
   f.setStatus({confirmedIds:['18'],desiredIds:['18']});
   f.render([eventRow()]);
-  assert.equal(!!f.rows()[0].querySelector('.act-track'), false);
+  assert.equal(f.rows()[0].querySelector('.act-track').textContent, '部分·移出');
+  assert.equal(f.rows()[0].querySelector('.act-track').getAttribute('aria-pressed'), 'mixed');
   assert.equal(f.rows()[0].querySelector('.membership-status').textContent, '已上图');
   f.open(); assert.equal(f.box(17).checked, true);
   f.box(17).checked = false; f.box(17).fire('change');
@@ -729,7 +1193,7 @@ test('row tracking and bulk anchors send all selected observations while source 
   f.rows()[0].querySelector('.act-track').click(); await flush();
   assert.deepEqual(f.writes[0].desired.map(String), ['17','18']);
   f.rows()[0].querySelector('.act-ctx').click();
-  assert.deepEqual(f.contextCalls, [17]);
+  assert.deepEqual(f.contextCalls, ['17']);
   f.toggleAnchor(17,true); f.toggleAnchor(20,true);
   await f.element('btnBulkTrack').onclick();
   const bulk = f.writes.find(write => write.path === '/api/track/bulk');
@@ -799,15 +1263,12 @@ const exactFunds = {policy:'evidence-bounded-funds-v1',status:'exact',observatio
 const boundedFunds = {...exactFunds,status:'bounded',confirmed_event_count:0,unresolved_observation_count:2,
   count:{lower:0,upper:2},totals:[{currency:'CNY',amount:null,lower:'0.00',upper:'200.00'}]};
 
-test('actual query heading counts a confirmed pair once and has no further scroll page', async () => {
+test('a quiet query counts a confirmed pair once internally and has no further scroll page', async () => {
   const f = harness();
   f.network(async () => ({page:1,size:1,total:1,rows:[eventRow()],funds:exactFunds}));
   assert.equal(await f.search(),true);
   assert.equal(new URL(f.requests.at(-1),'http://synthetic.local').searchParams.get('granularity'),'events');
-  for (const key of ['resultInfo']) {
-    assert.match(f.element(key).textContent,/1 条记录/);
-    assert.doesNotMatch(f.element(key).textContent,/2 条记录|待核|事件/);
-  }
+  assertQuietResult(f, 1);
   assert.equal(f.state.search.total,1);
   const reads = f.requests.length; await wheelEdge(f, 1);
   assert.equal(f.requests.length, reads);
@@ -817,20 +1278,18 @@ test('source counts remain exact across draft edits and a failed query', async (
   const f = harness();
   f.network(async () => ({page:1,size:50,total:2,rows:[flow(17),flow(18)],funds:boundedFunds}));
   await f.search();
-  const expected=/2 条记录$/;
-  assert.match(f.element('resultInfo').textContent,expected);
+  assertQuietResult(f, 2);
   const reads=f.requests.length;
   f.element('fAccount').value='SYN-DRAFT'; f.element('fAccount').fire('input');
   assert.equal(f.requests.length,reads);
   assert.equal(f.element('fAccount').value,'SYN-DRAFT');
-  assert.match(f.element('resultInfo').textContent,expected);
+  assertQuietResult(f, 2);
   f.network(async () => {throw new Error('Synthetic failed query');});
   assert.equal(await f.search(),false);
   assert.match(f.element('resultInfo').textContent,/查询失败 · 保留上次结果/);
-  for (const key of ['resultInfo']) {
-    assert.match(f.element(key).textContent,expected);
-    assert.doesNotMatch(f.element(key).textContent,/待核|事件/);
-  }
+  assert.equal(f.state.search.total, 2);
+  assert.equal(f.element('resultInfo').hidden, false);
+  assert.doesNotMatch(f.element('resultInfo').textContent,/条记录|待核|事件/);
 });
 
 test('canvas and case A-B-A invalidation revoke query funds and reject late old summaries', async () => {
@@ -845,10 +1304,7 @@ test('canvas and case A-B-A invalidation revoke query funds and reject late old 
     await f.context.loadGraph();
     late.resolve({page:1,size:50,total:1,rows:[eventRow()],funds:exactFunds});
     assert.equal(await pending,false);
-    for (const key of ['resultInfo']) {
-      assert.match(f.element(key).textContent,/2 条记录$/);
-      assert.doesNotMatch(f.element(key).textContent,/CNY 100\.00/);
-    }
+    assertQuietResult(f, 2);
   }
 });
 
@@ -976,7 +1432,7 @@ test('both continuation directions retain failed reads until a new boundary whee
     if (direction < 0) await wheelEdge(f, direction);
     else { const row = f.rows().at(-1); row.focus(); row.fire('keydown', { key: 'ArrowDown' }); await flush(); }
     assert.equal(f.requests.length, requests + 1); assert.equal(f.rows().length, 100);
-    assert.equal(f.element('resultInfo').textContent, '共 600 条记录'); assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
+    assertQuietResult(f, 600); assert.equal(f.element('flowTableScroll').getAttribute('aria-busy'), 'false');
     assert.equal(Number(new URL(f.requests.at(-1), 'http://synthetic.local').searchParams.get('page')), failedPage);
   }
 });
@@ -1062,7 +1518,7 @@ test('the last loaded result never starts reads beyond the known end', async () 
   const f = harness({ geometry: true }); f.network(params => pageResult(Number(params.get('page')), 75)); await f.search();
   await wheelEdge(f, 1); assert.equal(f.rows().length, 75);
   const before = f.requests.length; await wheelEdge(f, 1); await wheelEdge(f, 1);
-  assert.equal(f.requests.length, before); assert.equal(f.element('resultInfo').textContent, '共 75 条记录');
+  assert.equal(f.requests.length, before); assertQuietResult(f, 75);
 });
 
 test('restored viewport page wins over legacy page state and a shrunken result clamps directly to its new last page', async () => {
@@ -1073,7 +1529,7 @@ test('restored viewport page wins over legacy page state and a shrunken result c
   assert.deepEqual(f.requests.slice(before).map(path => Number(new URL(path, 'http://synthetic.local').searchParams.get('page'))), [241, 1]);
   assert.equal(f.rows().length, 7); assert.equal(f.state.search.page, 1); assert.equal(f.state.search.total, 7);
   assert.equal(f.element('flowTableScroll').scrollLeft, 80); assert.equal(f.element('flowTableScroll').scrollTop, 0);
-  assert.equal(f.box(7).checked, true); assert.equal(f.element('resultInfo').textContent, '共 7 条记录');
+  assert.equal(f.box(7).checked, true); assertQuietResult(f, 7);
 });
 
 test('a clamp read is still revoked by a newer query or canvas binding', async () => {

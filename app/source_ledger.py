@@ -12,6 +12,7 @@ UNORIENTED_POLICY = "source-ledger-unoriented-v1"
 SOURCE_OBSERVATION_POLICY = "source-ledger-unoriented-v2"
 FIELD = "source_ledger_evidence"
 MAX_BYTES = 8 * 1024 * 1024
+_COMMIT_CHUNK = 128
 FLOW_FIELDS = ("trade_no", "trade_time", "payer_name", "payer_account", "payer_bank", "payee_name",
                "payee_account", "payee_bank", "amount", "balance", "currency", "summary", "channel",
                "self_account", "self_name", "trade_time_utc", "trade_time_original", "trade_time_offset")
@@ -163,7 +164,35 @@ def install_source_views(connection):
         case_id bigint not null,flow_id bigint not null,primary key(case_id,flow_id))""")
     for column in ("counter_account", "counter_name", "counter_bank"):
         connection.execute(f"alter table source_ledger_index add column if not exists {column} varchar")
+    # Financial deduplication can link opposing own ledgers to one flow. Keep
+    # each source role/account and every card, rather than max(card) per flow.
+    columns = {row[0] for row in connection.execute("""select column_name from information_schema.columns
+        where table_schema='main' and table_name='flow_source_cards'""").fetchall()}
+    if columns and not {"role", "own_account"} <= columns:
+        connection.execute("drop table flow_source_cards")
+    connection.execute("""create table if not exists flow_source_cards (
+        case_id bigint not null,flow_id bigint not null,role varchar not null,
+        own_account varchar not null,own_card varchar not null,
+        primary key(case_id,flow_id,role,own_account,own_card))""")
     refresh_index(connection)
+    connection.execute("""create or replace view flow_source_card_aliases as
+        select c.*,coalesce(e.entity_id,c.own_account) account,
+            coalesce(e.card_state,'')<>'conflict' and
+              count(distinct c.own_card) over(partition by c.case_id,c.flow_id,c.role,c.own_account)=1 display_eligible
+        from flow_source_cards c join flows f on f.case_id=c.case_id and f.id=c.flow_id
+        left join resolved_endpoints e on e.case_id=c.case_id and e.flow_id=c.flow_id and e.role=c.role
+        where c.own_card<>c.own_account and c.own_account=case c.role
+            when 'payer' then f.payer_account when 'payee' then f.payee_account when 'self' then f.self_account end""")
+    # Aggregate before joining a flow reader: aliases must not multiply money
+    # rows. Multiple cards for one posting/owner have no preferred card.
+    connection.execute("""create or replace view flow_source_card_projection as
+        select c.case_id,c.flow_id,
+            min(c.own_card) filter(where c.role='payer') payer_card,
+            min(c.own_card) filter(where c.role='payee') payee_card,
+            case when count(distinct c.own_card) filter(where c.own_account=f.self_account)=1
+                then min(c.own_card) filter(where c.own_account=f.self_account) end self_card
+        from flow_source_card_aliases c join flows f on f.case_id=c.case_id and f.id=c.flow_id
+        where c.display_eligible group by c.case_id,c.flow_id""")
 
 
 def refresh_index(connection, case_id=None):
@@ -178,6 +207,24 @@ def refresh_index(connection, case_id=None):
           on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
         where (json_extract_string(r.ledger_evidence,'$.kind')='ledger' or r.disposition='cancelled')""" +
         (" and r.case_id=?" if case_id is not None else "") + " group by f.case_id,f.flow_id", parameters)
+    refresh_cards(connection, case_id)
+
+
+def refresh_cards(connection, case_id=None):
+    """Keep source-owned card aliases independently of financial deduplication."""
+    scope, parameters = (" where case_id=?", [case_id]) if case_id is not None else ("", [])
+    connection.execute("delete from flow_source_cards" + scope, parameters)
+    connection.execute("""insert into flow_source_cards(case_id,flow_id,role,own_account,own_card)
+        select distinct f.case_id,f.flow_id,
+            case json_extract_string(r.ledger_evidence,'$.direction') when 'out' then 'payer'
+                when 'in' then 'payee' else 'self' end,
+            json_extract_string(r.ledger_evidence,'$.row.self_account'),
+            json_extract_string(r.ledger_evidence,'$.own_card')
+        from source_ledger_records r join flow_sources f
+          on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
+        where nullif(json_extract_string(r.ledger_evidence,'$.own_card'),'') is not null
+          and nullif(json_extract_string(r.ledger_evidence,'$.row.self_account'),'') is not null""" +
+        (" and r.case_id=?" if case_id is not None else ""), parameters)
 
 
 def install_visible_view(connection, projection_sql):
@@ -187,12 +234,73 @@ def install_visible_view(connection, projection_sql):
         visible as (select * from financial union all select l.* from ledger l
             where not exists(select 1 from financial e where e.case_id=l.case_id and e.id=l.id))
         select f.*,coalesce(l.counter_account,'') source_counter_account,
-            coalesce(l.counter_name,'') source_counter_name,coalesce(l.counter_bank,'') source_counter_bank
-        from visible f left join source_ledger_index l on l.case_id=f.case_id and l.flow_id=f.id""")
+            coalesce(l.counter_name,'') source_counter_name,coalesce(l.counter_bank,'') source_counter_bank,
+            coalesce(c.self_card,'') source_own_card
+        from visible f left join source_ledger_index l on l.case_id=f.case_id and l.flow_id=f.id
+        left join flow_source_card_projection c on c.case_id=f.case_id and c.flow_id=f.id""")
     connection.execute("create or replace view effective_visible_flows as " +
         "select f.*,coalesce(e.entity_id,'') source_counter_id from (" +
         projection_sql.replace("from source_effective_flows f", "from source_visible_flows f") +
         ") f left join resolved_endpoints e on e.case_id=f.case_id and e.flow_id=f.id and e.role='counter'")
+
+
+def _commit_records(case_id, source_id, batch_id, records):
+    """Match and write one bounded set of distinct physical source positions."""
+    import pandas as pd
+    from . import table_import
+    supported = {item["source_row"] for item in db.q_raw("""select source_row from flow_sources
+        where case_id=? and source_id=? and source_row in (select unnest(?::bigint[]))""",
+        [case_id, source_id, [record["record_no"] for record, _ in records]])}
+    records = [(record, row) for record, row in records if record["record_no"] not in supported]
+    if not records:
+        return 0, 0
+    expected = {record["record_no"]: table_import.flow_digest(row) for record, row in records}
+    remaining = {record["record_no"]: record for record, _ in records}
+    matched, after = {}, None
+    # Exact source position is support identity. Bound candidate results too:
+    # one position may have arbitrarily many historical links or changed facts.
+    while remaining:
+        requested = list(remaining.values())
+        parameters = [[record[key] for record in requested]
+                      for key in ("record_no", "member_path", "member_sha256", "source_row")]
+        parameters.append(case_id)
+        condition = ""
+        if after is not None:
+            condition = " and (requested.record_no,f.id)>(?,?)"
+            parameters.extend(after)
+        parameters.append(_COMMIT_CHUNK)
+        candidates = db.q_raw("""select distinct requested.record_no matched_record_no,f.id,""" +
+            ",".join("f." + field for field in FLOW_FIELDS) + """
+            from (select unnest(?::bigint[]) record_no,unnest(?::varchar[]) member_path,
+                         unnest(?::varchar[]) member_sha256,unnest(?::bigint[]) source_row) requested
+            join import_records r on r.member_path=requested.member_path and r.source_row=requested.source_row
+            join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
+              and m.sha256=requested.member_sha256
+            join flow_sources s on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
+            join flows f on f.case_id=s.case_id and f.id=s.flow_id
+            where r.case_id=?""" + condition + " order by matched_record_no,f.id limit ?", parameters)
+        for prior in candidates:
+            number = prior["matched_record_no"]
+            if number in remaining and table_import.flow_digest(prior) == expected[number]:
+                matched[number] = prior["id"]
+                del remaining[number]
+        if len(candidates) < _COMMIT_CHUNK:
+            break
+        after = candidates[-1]["matched_record_no"], candidates[-1]["id"]
+    new = [(record, row) for record, row in records if record["record_no"] not in matched]
+    ids = db.q_raw("select nextval('flow_seq') id from range(?)", [len(new)]) if new else []
+    columns = ["id", "case_id", "batch_id", *FLOW_FIELDS]
+    if new:
+        data = [[item["id"], case_id, batch_id, *[row[key] for key in FLOW_FIELDS]]
+                for item, (_, row) in zip(ids, new)]
+        db.insert_dataframe("flows", pd.DataFrame(data, columns=columns, dtype=object), columns)
+    assigned = {record["record_no"]: item["id"] for item, (record, _) in zip(ids, new)}
+    columns = ["case_id", "source_id", "source_row", "flow_id", "disposition"]
+    data = [[case_id, source_id, record["record_no"],
+             matched.get(record["record_no"], assigned.get(record["record_no"])),
+             "duplicate" if record["record_no"] in matched else "imported"] for record, _ in records]
+    db.insert_dataframe("flow_sources", pd.DataFrame(data, columns=columns, dtype=object), columns)
+    return len(new), len(matched)
 
 
 def commit(case_id, source_id, batch_id):
@@ -201,41 +309,35 @@ def commit(case_id, source_id, batch_id):
         from source_ledger_records where case_id=? and source_id=? order by record_no""",
                        [case_id, source_id])
     added = duplicates = 0
+    pending, positions = [], set()
+    def publish():
+        nonlocal added, duplicates
+        if pending:
+            new, reused = _commit_records(case_id, source_id, batch_id, pending)
+            added += new
+            duplicates += reused
+            pending.clear()
+            positions.clear()
     for record in records:
-        evidence = validate(record.pop("ledger_evidence"))
+        try:
+            evidence = validate(record.pop("ledger_evidence"))
+        except (ValueError, TypeError, ArithmeticError):
+            # Preserve sequence consumption by the valid prefix; the caller's
+            # enclosing import transaction still rolls all its writes back.
+            publish()
+            raise
         if evidence["kind"] != "ledger" and record["disposition"] != "cancelled":
             continue
-        row = evidence["row"]
-        if db.q_raw("select 1 from flow_sources where case_id=? and source_id=? and source_row=?",
-                    [case_id, source_id, record["record_no"]]):
-            continue
-        # Exact source position is support identity. References, amounts and
-        # balances cannot merge two source ledger observations.
-        matches = db.q_raw("""select distinct f.id from import_records r
-            join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
-            join flow_sources s on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
-            join flows f on f.case_id=s.case_id and f.id=s.flow_id
-            where r.case_id=? and r.member_path=? and m.sha256=? and r.source_row=? order by f.id""",
-            [case_id, record["member_path"], record["member_sha256"], record["source_row"]])
-        fid = None
-        from . import table_import
-        expected = table_import.flow_digest(row)
-        for match in matches:
-            prior = db.q_raw("select * from flows where case_id=? and id=?", [case_id, match["id"]])[0]
-            if table_import.flow_digest(prior) == expected:
-                fid = prior["id"]
-                break
-        reused = fid is not None
-        if fid is None:
-            fid = db.q_raw("select nextval('flow_seq') id")[0]["id"]
-            columns = ",".join(FLOW_FIELDS)
-            db.x(f"insert into flows(id,case_id,batch_id,{columns}) values (?,?,?,{','.join('?' for _ in FLOW_FIELDS)})",
-                 [fid, case_id, batch_id, *[row[key] for key in FLOW_FIELDS]])
-            added += 1
-        else:
-            duplicates += 1
-        db.x("insert into flow_sources(case_id,source_id,source_row,flow_id,disposition) values (?,?,?,?,?)",
-             [case_id, source_id, record["record_no"], fid, "duplicate" if reused else "imported"])
+        position = record["member_path"], record["member_sha256"], record["source_row"]
+        if position in positions:
+            # Read a repeated position only after the earlier write is visible,
+            # using its actual persisted facts and the established digest.
+            publish()
+        pending.append((record, evidence["row"]))
+        positions.add(position)
+        if len(pending) == _COMMIT_CHUNK:
+            publish()
+    publish()
     refresh_index(db.con(), case_id)
     return {"added": added, "duplicates": duplicates}
 
