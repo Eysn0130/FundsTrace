@@ -289,9 +289,11 @@ function harness({ entityInputs = false, geometry = false, columnStorage = null,
   return { context, state, doc, element, requests, graphCalls, membershipCalls, contextCalls, writes, pickerOptions, invalidated, heights, widths, clipboardWrites,
     installEditorCommands() {
       const originalApi = sandbox.api;
+      vm.runInContext(section('function newGraphView(', 'function resetGraphView('), context);
+      state.graphView = sandbox.newGraphView('auto');
       Object.assign(sandbox, {
         toast() {}, closeDrawer() {}, jsonOpts: value => ({body:JSON.stringify(value)}),
-        command: (_label, action) => action(sandbox.caseContext()),
+        command: async (_label, action) => { await action(sandbox.caseContext()); return true; },
         mutateTracked: async (_binding, write, prepare) => { const value = await write([...state.tracked]); prepare?.(value); return value; },
         trackedWrite: (_binding, write) => write(),
         replaceTracked: async (binding, expected, desired) => {
@@ -305,6 +307,10 @@ function harness({ entityInputs = false, geometry = false, columnStorage = null,
           return {tracked_ids:body.flow_ids, anchors:body.flow_ids.length, tracked:body.flow_ids.length};
         },
       });
+      const traceStart = editor.indexOf('  function traceAnchors(');
+      const traceEnd = editor.indexOf('  window.FundsCanvasEditor =', traceStart);
+      assert.ok(traceStart >= 0 && traceEnd > traceStart);
+      vm.runInContext(editor.slice(traceStart, traceEnd), context);
       vm.runInContext(editor.slice(editor.indexOf('  function track(ids, remove)'), editor.indexOf('  const neighborhood =')), context);
       const bulkStart = editor.indexOf("    $('#btnBulkTrack').onclick = () => {");
       const bulkEnd = editor.indexOf("    $('#btnClearGraph').onclick =", bulkStart);
@@ -1195,7 +1201,7 @@ test('row tracking and bulk anchors send all selected observations while source 
   f.rows()[0].querySelector('.act-ctx').click();
   assert.deepEqual(f.contextCalls, ['17']);
   f.toggleAnchor(17,true); f.toggleAnchor(20,true);
-  await f.element('btnBulkTrack').onclick();
+  assert.equal(await f.element('btnBulkTrack').onclick(), true);
   const bulk = f.writes.find(write => write.path === '/api/track/bulk');
   assert.deepEqual(bulk.flow_ids.map(String), ['17','18','20']);
   assert.deepEqual(bulk.expected_ids, []);
