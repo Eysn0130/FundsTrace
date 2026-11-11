@@ -202,7 +202,7 @@
             <button type="button" class="btn ribbon-action" data-ribbon-command="toggleLegend" aria-pressed="true"><img class="ui-icon" src="/static/ui-icons/legend.svg" alt=""><span>图例</span></button>
             <button type="button" class="btn ribbon-action" id="btnMinimap" aria-pressed="true"><img class="ui-icon" src="/static/ui-icons/map.svg" alt=""><span>缩略图</span></button>
             <button type="button" class="btn ribbon-action" data-ribbon-command="toggleSidebar" aria-pressed="true"><img class="ui-icon" src="/static/ui-icons/search.svg" alt=""><span>查询区</span></button>
-            <button type="button" class="btn ribbon-action" data-ribbon-command="focusCanvas" ><img class="ui-icon" src="/static/ui-icons/focus.svg" alt=""><span>专注画布</span></button>
+            <button type="button" class="btn ribbon-action" data-ribbon-command="focusCanvas" ><img class="ui-icon" src="/static/ui-icons/focus.svg" alt=""><span>专业视图</span></button>
           </div>
           <span class="ribbon-group-label">工作区</span></div>
       </div>
@@ -315,8 +315,8 @@
   <button class="workspace-collapse" id="btnToolbarToggle" type="button" aria-label="收起顶部工具带" aria-expanded="true" aria-controls="graphToolbar" title="收起顶部工具带"><img class="ui-icon" src="/static/ui-icons/chevron-up.svg" alt=""></button>
 </section>
 <div id="workspaceViewMenu" class="toolbar-menu workspace-view-menu" role="menu" aria-label="工作区视图" hidden inert>
-  <button type="button" id="workspaceViewStandard" class="toolbar-menu-item workspace-view-option" role="menuitemradio" aria-checked="true" tabindex="-1" data-workspace-view="standard"><span class="workspace-view-copy"><strong>标准</strong><span>查询在左，画布在右</span></span><img class="ui-icon workspace-view-check" src="/static/ui-icons/check.svg" alt=""></button>
-  <button type="button" id="workspaceViewFocus" class="toolbar-menu-item workspace-view-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-workspace-view="focus"><span class="workspace-view-copy"><strong>专注</strong><span>收起查询和功能区，扩大画布</span></span><img class="ui-icon workspace-view-check" src="/static/ui-icons/check.svg" alt=""></button>
+  <button type="button" id="workspaceViewStandard" class="toolbar-menu-item workspace-view-option" role="menuitemradio" aria-checked="true" tabindex="-1" data-workspace-view="standard"><span class="workspace-view-copy"><strong>标准</strong><span>展开功能区和左侧查询，画布在右</span></span><img class="ui-icon workspace-view-check" src="/static/ui-icons/check.svg" alt=""></button>
+  <button type="button" id="workspaceViewFocus" class="toolbar-menu-item workspace-view-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-workspace-view="focus"><span class="workspace-view-copy"><strong>专业</strong><span>收起查询和功能区，扩大画布</span></span><img class="ui-icon workspace-view-check" src="/static/ui-icons/check.svg" alt=""></button>
   <button type="button" id="workspaceViewSplit" class="toolbar-menu-item workspace-view-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-workspace-view="split"><span class="workspace-view-copy"><strong>上下分栏</strong><span>画布在上，查询和流水在下</span></span><img class="ui-icon workspace-view-check" src="/static/ui-icons/check.svg" alt=""></button>
 </div>
 <main id="workspace" data-workspace-view="standard">

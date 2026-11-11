@@ -33,7 +33,7 @@ function harness({ legacyRevision = false } = {}) {
       contains: () => false, closest: () => null, focus() {}, addEventListener() {},
       append(...nodes) { this.children.push(...nodes); }, appendChild(node) { this.children.push(node); return node; },
       dispatchEvent(event) { this['on' + event.type]?.(event); }, click() { this.onclick?.({ currentTarget: this }); },
-      querySelector: () => ({ src: '', textContent: '', title: '', classList: { toggle() {} } }), querySelectorAll: () => [],
+      querySelector: selector => selector === '.flow-amount-value' ? null : ({ src: '', textContent: '', title: '', classList: { toggle() {} } }), querySelectorAll: () => [],
       get selectedOptions() { return [{ textContent: this.value === '0' ? '默认画布' : `Canvas ${this.value}` }]; },
     };
     Object.defineProperty(item, 'innerHTML', { set(value) { this.html = value; if (id === 'flowTbody' && !value) { boxes = []; tableRows = []; } }, get() { return this.html || ''; } });
@@ -128,6 +128,7 @@ function harness({ legacyRevision = false } = {}) {
   sandbox.caseRequest = sandbox.api;
   context = vm.createContext(sandbox);
   for (const name of ['money', 'principal-analysis', 'graph-relations', 'graph-presentation', 'workspace-drafts']) vm.runInContext(source(name), context);
+  vm.runInContext(app.split('\n').find(line => line.startsWith('function fmtTime(')), context);
   sandbox.window.FundsFacts = context.FundsFacts;
   sandbox.newGraphPresentation = value => sandbox.window.FundsGraphPresentation.create(value); state.presentation = sandbox.newGraphPresentation();
   vm.runInContext(section(app, 'function caseContext()', '/* ---------------- 初始化'), context);

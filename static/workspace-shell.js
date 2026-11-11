@@ -18,7 +18,7 @@
       focus: { sidebarCollapsed: true, toolbarCollapsed: true },
       split: { sidebarCollapsed: false, toolbarCollapsed: false },
     };
-    const viewLabels = { standard: '标准', focus: '专注', split: '上下分栏' };
+    const viewLabels = { standard: '标准', focus: '专业', split: '上下分栏' };
     const viewButton = doc.getElementById('btnWorkspaceView');
     const viewCurrent = doc.getElementById('workspaceViewCurrent');
     const viewOptions = {
@@ -95,14 +95,17 @@
     }
 
     function setView(view) {
-      if (!Object.prototype.hasOwnProperty.call(viewStates, view) || view === state.view) return;
+      if (!Object.prototype.hasOwnProperty.call(viewStates, view)) return;
+      const preset = viewStates[view];
+      if (view === state.view && state.sidebarCollapsed === preset.sidebarCollapsed
+        && state.toolbarCollapsed === preset.toolbarCollapsed) return;
       if (drag) endResize({ pointerId: drag.pointerId }, false);
       root.clearTimeout?.(sidebarEndTimer); sidebarEndTimer = null;
       sidebarTransitionActive = false;
       toolbarTransitionActive = false;
       if (view !== 'focus') previousView = view;
       state.view = view;
-      Object.assign(state, viewStates[view]);
+      Object.assign(state, preset);
       if (state.sidebarCollapsed && sidebar.contains(doc.activeElement)) sidebarToggle.focus();
       // A view change is chrome only; its receipt must never request sidebar construction.
       emitResize('workspace-view', 'prepare');
@@ -132,7 +135,7 @@
       if (drag) endResize({ pointerId: drag.pointerId }, false);
       if (collapsed && sidebar.contains(doc.activeElement)) sidebarToggle.focus();
       state.sidebarCollapsed = collapsed;
-      viewStates[state.view].sidebarCollapsed = collapsed;
+      if (state.view === 'split') viewStates.split.sidebarCollapsed = collapsed;
       // Camera reads the starting geometry before CSS changes the sidebar.
       emitResize('sidebar', 'prepare');
       sidebarTransitionActive = true;
@@ -154,7 +157,7 @@
       collapsed = Boolean(collapsed);
       if (collapsed === state.toolbarCollapsed) return;
       state.toolbarCollapsed = collapsed;
-      viewStates[state.view].toolbarCollapsed = collapsed;
+      if (state.view === 'split') viewStates.split.toolbarCollapsed = collapsed;
       toolbarTransitionActive = true;
       applyToolbarState();
       updateSidebarBounds('toolbar', false);

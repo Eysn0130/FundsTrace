@@ -32,10 +32,12 @@ function assertQuietResult(f, total) {
 // A small DOM with real ancestry, moved-node identity and capture/bubble order.
 // The frozen app's actual renderer, search parameters and table handlers run in
 // this harness; only HTML parsing and network/graph boundaries are synthetic.
-function harness({ entityInputs = false, geometry = false, columnStorage = null } = {}) {
+function harness({ entityInputs = false, geometry = false, columnStorage = null, resizeObserver = false, fontMeasure = false } = {}) {
   const byId = new Map(), ready = [], requests = [], graphCalls = [], membershipCalls = [], contextCalls = [], writes = [], windowListeners = new Map();
   const heights = new Map(), widths = new Map(), frames = [];
   const clipboardWrites = [];
+  let tableViewportWidth = 360;
+  const resizeCallbacks = [];
   const baselineWidths = [40, 86, 140, 140, 96, 126, 92];
   function measuredWidths() {
     const viewport = byId.get('flowTableScroll'), table = byId.get('flowTable');
@@ -78,7 +80,7 @@ function harness({ entityInputs = false, geometry = false, columnStorage = null 
     set scrollLeft(value) {
       this._scrollLeft = geometry && this.id === 'flowTableScroll' ? Math.max(0, Math.min(Number(value) || 0, this.scrollWidth - this.clientWidth)) : value;
     }
-    get clientWidth() { return geometry && this.id === 'flowTableScroll' ? 360 : 0; }
+    get clientWidth() { return geometry && this.id === 'flowTableScroll' ? tableViewportWidth : 0; }
     get scrollWidth() { return geometry && this.id === 'flowTableScroll' ? measuredWidths().reduce((sum, width) => sum + width, 0) : 0; }
     get clientHeight() { return geometry && this.id === 'flowTableScroll' ? 120 : 0; }
     get scrollHeight() { return geometry && this.id === 'flowTableScroll' ? this.querySelectorAll('tr[data-id]').reduce((sum, row) => sum + (heights.get(row.dataset.id) || 40), 0) : 0; }
@@ -187,7 +189,11 @@ function harness({ entityInputs = false, geometry = false, columnStorage = null 
   const element = id => byId.get(id);
   doc = { activeElement: null, body: new Element('body'),
     querySelector: selector => doc.body.querySelector(selector), querySelectorAll: selector => doc.body.querySelectorAll(selector),
-    createElement: kind => new Element(kind), createComment: () => new Element('#comment') };
+    createElement: kind => {
+      const node = new Element(kind);
+      if (fontMeasure && kind === 'canvas') node.getContext = () => ({font:'',measureText(value){return {width:value.length*(this.font.includes('BodyFont')?9:4)};}});
+      return node;
+    }, createComment: () => new Element('#comment') };
   const add = (parent, id, tag = 'div', className = '') => {
     const result = parent.appendChild(new Element(tag, id)); result.className = className; return result;
   };
@@ -236,7 +242,9 @@ function harness({ entityInputs = false, geometry = false, columnStorage = null 
     },
   };
   const sandbox = {
+    ...(resizeObserver ? { ResizeObserver: class { constructor(callback) { resizeCallbacks.push(callback); } observe() {} } } : {}),
     window: { addEventListener(name, fn) { if (name === 'DOMContentLoaded') ready.push(fn); else { if(!windowListeners.has(name))windowListeners.set(name,[]);windowListeners.get(name).push(fn); } },
+      ...(fontMeasure ? {getComputedStyle:()=>({font:'',fontStyle:'normal',fontWeight:'400',fontSize:'12px',fontFamily:'BodyFont',paddingLeft:'10px',paddingRight:'10px',borderLeftWidth:'0px',borderRightWidth:'0px'})} : {}),
       localStorage: columnStorage,
       FundsCanvasEditor: { membership, history: { status: () => ({ canUndo: false, canRedo: false, busy: false }) } } },
     document: doc, state, URLSearchParams, console, setTimeout, clearTimeout, innerWidth:1000, innerHeight:700,
@@ -315,6 +323,7 @@ function harness({ entityInputs = false, geometry = false, columnStorage = null 
         for (const fn of windowListeners.get('fundstrace:workspace-resize') || []) fn({detail:{reason:'workspace-view',phase,view}});
       }
     },
+    resizeTable(width) { tableViewportWidth = width; for (const callback of resizeCallbacks) callback(); },
     windowKey(event) { for(const fn of windowListeners.get('keydown')||[])fn({preventDefault(){},stopImmediatePropagation(){},...event}); },
     rows: () => element('flowTbody').querySelectorAll('tr[data-id]'),
     box: id => element('flowTbody').querySelectorAll('.flow-ck').find(box => box.dataset.id === String(id)),
@@ -973,6 +982,130 @@ test('missing, throwing and rejected camera adapters cannot turn a successful qu
   }
 });
 
+
+test('split automatic columns fill the resized bottom viewport and restore sidebar geometry without writes', async () => {
+  const f = harness({ geometry: true, resizeObserver: true }); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  const table = f.element('flowTable'), viewport = f.element('flowTableScroll'), rows = f.rows(), reads = f.requests.length;
+  const widths = () => table.querySelector('colgroup').children.map(col => parseFloat(col.style.width));
+  const sidebarWidths = widths();
+  f.toggleAnchor(1, true);
+  f.view('split', () => f.resizeTable(1600));
+  assert.equal(widths().reduce((sum, width) => sum + width, 0), 1600);
+  assert.equal(widths()[0], 40, 'the fixed anchor column does not absorb spare space');
+  f.resizeTable(1900);
+  assert.equal(widths().reduce((sum, width) => sum + width, 0), 1900);
+  for (const handle of table.querySelectorAll('.flow-column-resize')) {
+    assert.ok(Number(handle.getAttribute('aria-valuenow')) <= Number(handle.getAttribute('aria-valuemax')));
+  }
+  f.view('standard', () => f.resizeTable(360));
+  assert.deepEqual(widths(), sidebarWidths);
+  assert.equal(viewport, f.element('flowTableScroll')); assert.deepEqual(f.rows(), rows);
+  assert.equal(f.box(1).checked, true); assert.equal(f.requests.length, reads);
+  assert.equal(f.membershipCalls.length, 0); assert.equal(f.writes.length, 0);
+});
+
+test('automatic content columns stay balanced and adapt to loaded party names', async () => {
+  const f = harness({ geometry: true });
+  let current = { ...flow(1), payer_name: 'A', payer_account: '', payee_name: 'B', payee_account: '', summary: 'Short note' };
+  f.network(async () => ({ page: 1, size: 50, total: 1, rows: [current] })); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  f.view('split', () => f.resizeTable(1835));
+  const widths = () => f.element('flowTable').querySelector('colgroup').children.map(col => parseFloat(col.style.width));
+  const short = widths(), text = short.filter((_width, index) => [2, 3, 5].includes(index));
+  assert.ok(Math.max(...text) / Math.min(...text) < 1.4, 'short summaries do not absorb all spare width');
+  assert.ok(Math.abs(short[2] - short[3]) <= 1); assert.equal(short.reduce((sum, width) => sum + width, 0), 1835);
+  current = { ...current, payer_name: 'Long synthetic company '.repeat(8) };
+  await f.search(); const long = widths();
+  assert.ok(long[2] > short[2], 'content measurement gives longer parties more useful room');
+  assert.ok(long[5] < short[5]); assert.ok(Math.abs(long[2] - long[3]) <= 1);
+  f.resizeTable(420);
+  assert.ok(widths().reduce((sum, width) => sum + width, 0) > 420, 'small slots keep column minima and local scrolling');
+  assert.equal(f.rows().length, 1); assert.equal(f.membershipCalls.length, 0);
+});
+
+test('content measurement uses actual font parts when tabular-number font shorthand is empty', async () => {
+  const f = harness({ geometry: true, fontMeasure: true }); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  f.view('split', () => f.resizeTable(1835));
+  const timeWidth = parseFloat(f.element('flowTable').querySelector('colgroup').children[1].style.width);
+  assert.ok(timeWidth >= 112, 'the ten-character date needs 90px plus cell insets in the supplied font');
+  f.view('standard', () => f.resizeTable(360));
+  assert.ok(parseFloat(f.element('flowTable').querySelector('colgroup').children[1].style.width) >= 112);
+});
+
+test('content sizing follows displayed account aliases and keeps exact large amounts and IDs', async () => {
+  const f = harness({ geometry: true }), flowId = '9007199254740993';
+  let row = { ...flow(flowId), payer_name: 'A', payee_name: 'B', payer_account: 'INTERNAL-'.repeat(20),
+    payer_display_account: '000CARD-A', payee_display_account: '000CARD-B', summary: 'Short' };
+  f.network(async () => ({ page: 1, size: 50, total: 1, rows: [row] })); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  f.view('split', () => f.resizeTable(1835));
+  const cols = () => f.element('flowTable').querySelector('colgroup').children.map(col => parseFloat(col.style.width));
+  const initial = cols();
+  row = { ...row, payer_display_account: '000CARD-' + '9'.repeat(80) };
+  await f.search();
+  assert.ok(cols()[2] > initial[2], 'the display alias, rather than the longer internal identity, sets the content demand');
+  assert.ok(cols()[4] >= '¥9,999,999,999,999,999.99'.length * 7 + 10);
+  assert.equal(f.rows()[0].dataset.id, flowId); assert.equal(row.amount, '9999999999999999.99');
+  assert.equal(row.payer_account, 'INTERNAL-'.repeat(20)); assert.equal(f.membershipCalls.length, 0);
+});
+
+test('a refreshed split result can shrink its automatic columns back to the viewport', async () => {
+  const f = harness({ geometry: true, resizeObserver: true }); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  const table = f.element('flowTable');
+  f.view('split', () => f.resizeTable(1900)); await f.search(1, { refresh: true });
+  f.resizeTable(1600);
+  assert.equal(table.querySelector('colgroup').children.reduce((sum, col) => sum + parseFloat(col.style.width), 0), 1600);
+});
+
+test('split column preferences are independent of sidebar and overview preferences', async () => {
+  const saved = new Map(), storage = { getItem: key => saved.get(key) || null, setItem: (key, value) => saved.set(key, value) };
+  const f = harness({ geometry: true, columnStorage: storage }); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  const table = f.element('flowTable'), handle = table.querySelectorAll('thead th')[2].querySelector('.flow-column-resize');
+  const payerWidth = () => parseFloat(table.querySelector('colgroup').children[2].style.width);
+  handle.fire('keydown', { key: 'ArrowRight' }); const sidebarWidth = payerWidth();
+  f.view('split', () => f.resizeTable(1600));
+  assert.notEqual(payerWidth(), sidebarWidth);
+  handle.fire('keydown', { key: 'ArrowRight' }); const splitWidth = payerWidth();
+  const prefs = JSON.parse(saved.get('funds_flow_columns_v1'));
+  assert.equal(prefs['sidebar:compact:two-line'][2], sidebarWidth);
+  assert.equal(prefs['split:compact:two-line'][2], splitWidth);
+  f.view('standard', () => f.resizeTable(360)); assert.equal(payerWidth(), sidebarWidth);
+  f.view('split', () => f.resizeTable(1600)); assert.equal(payerWidth(), splitWidth);
+  f.element('btnFlowColumnsReset').click();
+  assert.equal(JSON.parse(saved.get('funds_flow_columns_v1'))['split:compact:two-line'], undefined);
+  f.view('standard', () => f.resizeTable(360)); assert.equal(payerWidth(), sidebarWidth);
+});
+
+test('resizing one split column preserves the already expanded summary width', async () => {
+  const f = harness({ geometry: true }); await f.search();
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change'); f.drainFrames();
+  f.view('split', () => f.resizeTable(3600));
+  const table = f.element('flowTable'), cols = table.querySelector('colgroup').children;
+  const summaryWidth = cols[5].style.width;
+  assert.ok(parseFloat(summaryWidth) > 800);
+  table.querySelectorAll('thead th')[2].querySelector('.flow-column-resize').fire('keydown', { key: 'ArrowRight' });
+  assert.equal(cols[5].style.width, summaryWidth, 'an untouched flex allocation must not shrink to the old sidebar cap');
+  assert.equal(cols.reduce((sum, col) => sum + parseFloat(col.style.width), 0), 3608);
+});
+
+test('reselecting the current workspace preset keeps its current table position', async () => {
+  const f = harness(); await f.search(); const viewport = f.element('flowTableScroll');
+  viewport.scrollLeft = 190; viewport.scrollTop = 32;
+  f.view('standard');
+  assert.deepEqual([viewport.scrollLeft, viewport.scrollTop], [190, 32]);
+});
+
+test('a pending text mode callback cannot overwrite the split scroll position', async () => {
+  const f = harness({ geometry: true }); await f.search(); const viewport = f.element('flowTableScroll');
+  viewport.scrollLeft = 190;
+  f.element('flowTableWrap').value = 'two-line'; f.element('flowTableWrap').fire('change');
+  f.view('split', () => f.resizeTable(600)); assert.equal(viewport.scrollLeft, 0);
+  f.drainFrames(); assert.equal(viewport.scrollLeft, 0);
+});
 
 test('workspace views retain one query/table and anchors, with independent filter disclosure and no writes', async () => {
   const f = harness(); await f.search(); f.toggleAnchor(1,true);
