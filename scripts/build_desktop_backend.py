@@ -120,6 +120,8 @@ def main() -> None:
         raise SystemExit("desktop_backend.py is missing")
     arch = native_arch()
     resources = resource_files()
+    # Direct script execution puts scripts/ on sys.path instead of the source root.
+    sys.path.insert(0, str(ROOT))
     from app.rar_archive import decoder_resources
     decoder_files = decoder_resources()
     resources.extend(decoder_files)

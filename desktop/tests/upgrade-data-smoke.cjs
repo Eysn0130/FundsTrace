@@ -146,8 +146,24 @@ function assertOriginalSnapshot(current, original, allowCoverageAddition = false
   assert.deepEqual(comparable, original);
 }
 async function verifyOriginal(ready, stored, dataDir, allowCoverageAddition = false) {
-  assertOriginalSnapshot(await capture(ready, stored.original.caseId), stored.original, allowCoverageAddition);
-  assertOriginalSnapshot(await capture(ready, stored.isolated.caseId), stored.isolated, allowCoverageAddition);
+  for (const original of [stored.original, stored.isolated]) {
+    const current = await capture(ready, original.caseId);
+    let expected = original;
+    if (allowCoverageAddition && !Object.hasOwn(original.stats, 'funds')) {
+      // The prior fixture records observations but no confirmed event or ledger evidence.
+      const observations = original.rows.length;
+      assert.match(current.stats.analysis_revision, /^[0-9a-f]{32}$/);
+      expected = { ...original, stats: { ...original.stats,
+        analysis_revision: current.stats.analysis_revision, statistics_policy: 'selected-transactions-v1',
+        resolution: null, resolution_revision: null, event_summary: null,
+        source_ledger: { count: 0, unknown_effect_count: 0, zero_count: 0, paired_count: 0 },
+        funds: { policy: 'evidence-bounded-funds-v1', status: 'bounded', observation_count: observations,
+          unresolved_observation_count: observations, confirmed_event_count: 0, count: { lower: 0, upper: observations },
+          totals: original.stats.amount_totals.map(({ currency, amount }) => ({ currency, amount: null, lower: '0.00', upper: amount })) }
+      } };
+    }
+    assertOriginalSnapshot(current, expected, allowCoverageAddition);
+  }
   const empty = await json(ready, `/api/v1/cases/${stored.emptyCaseId}/stats`); assert.equal(empty.flows, 0);
   await assertSources(ready, dataDir, stored);
 }
@@ -171,16 +187,25 @@ async function analysis(ready, imported) {
   stage = 'upgradedAnalysisPaths';
   const paths = await json(ready, '/api/analysis/paths', post({ case_id: caseId, src: NAMES[0], dst: NAMES[2], order: 'time' }));
   assert.deepEqual(paths.src_accounts, [ACCOUNTS[0]]); assert.deepEqual(paths.dst_accounts, [ACCOUNTS[2]]);
-  assert.deepEqual(paths.paths.map(item => ({ currency: item.currency, total: item.total, continuous: item.continuous })),
-    [{ currency: 'CNY', total: '10000000000000000.00', continuous: true }, { currency: 'USD', total: '50.30', continuous: true }]);
+  assert.equal(paths.paths.length, 2);
+  function assertObservationPath(item, edges, currency, amounts, total) {
+    assert.equal(item.currency, currency); assert.equal(item.continuous, true);
+    assert.equal(item.total, null); assert.equal(item.metric_basis, 'observation_clue');
+    assert.deepEqual(item.funds.count, { lower: 0, upper: amounts.length });
+    assert.deepEqual(item.funds.totals, [{ currency, amount: null, lower: '0.00', upper: total }]);
+    assert.deepEqual(edges.map(edge => edge.observation_amount), amounts);
+    assert.ok(edges.every(edge => edge.amount === null && edge.currency === currency));
+  }
+  assertObservationPath(paths.paths[0], paths.paths[0].path, 'CNY', MONEY.slice(0, 2), '10000000000000000.00');
+  assertObservationPath(paths.paths[1], paths.paths[1].path, 'USD', MONEY.slice(3), '50.30');
   checks.upgradedAnalysisPaths = true;
   stage = 'upgradedAnalysisCycles';
   const result = await json(ready, '/api/analysis/run', post({ case_id: caseId,
     params: { algorithms: ['cycles'], subjects: [NAMES[1]], cycle_max_len: 3 } }));
   assert.equal(result.cycles.count, 1);
   const cycle = result.cycles.cycles[0]; assert.deepEqual(cycle.accounts, ACCOUNTS);
-  assert.equal(cycle.currency, 'CNY'); assert.equal(cycle.total, '10000000000000000.02');
-  assert.deepEqual(cycle.edges.map(edge => edge.amount), MONEY.slice(0, 3)); checks.upgradedAnalysisCycles = true;
+  assertObservationPath(cycle, cycle.edges, 'CNY', MONEY.slice(0, 3), '10000000000000000.02');
+  checks.upgradedAnalysisCycles = true;
   stage = 'upgradedAtomicCanvas';
   const before = imported.canvases.length, flowIds = cycle.edges.map(edge => edge.id);
   const request = { case_id: caseId, name: CANVAS, flow_ids: flowIds, snapshot: canvasSnapshot(imported.rows) };
