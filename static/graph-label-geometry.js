@@ -207,17 +207,32 @@
       ? { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY } : null;
   }
 
+  function nodeBodyBounds(item, measuredBody) {
+    const shape = item?.getKeyShape?.(), matrix = shape?.getTotalMatrix?.();
+    if (!matrix || matrix.length !== 9 || !Array.from(matrix).every(finite)) return shape?.getCanvasBBox?.() || null;
+    const body = measuredBody || boxOf(shape);
+    if (!body) return null;
+    // Canvas bounds include a fixed-pixel blur. Anchor to the solid body and
+    // stroke instead, so its shadow cannot push a tiny node's name away.
+    const points = [[body.minX, body.minY], [body.minX, body.maxY], [body.maxX, body.minY], [body.maxX, body.maxY]]
+      .map(([x, y]) => ({ x: matrix[0] * x + matrix[3] * y + matrix[6], y: matrix[1] * x + matrix[4] * y + matrix[7] }));
+    return { minX: Math.min(...points.map(p => p.x)), maxX: Math.max(...points.map(p => p.x)),
+      minY: Math.min(...points.map(p => p.y)), maxY: Math.max(...points.map(p => p.y)) };
+  }
+
   function placeNode(item, options) {
     const config = options || {}, text = plain(item), body = boxOf(item?.getKeyShape?.());
     if (!text || !body) return { mode: 'none' };
     refreshFontBounds(text);
     const zoom = finite(config.zoom) && config.zoom !== 0 ? Math.abs(config.zoom) : 1;
-    const gap = finite(config.gap) ? Math.max(0, config.gap) : 6;
+    // The node and its name share a world-space gap, so zooming out does not
+    // leave a fixed screen-space moat around a shrinking label.
+    const gap = (finite(config.gap) ? Math.max(0, config.gap) : 6) * zoom;
     const x = (body.minX + body.maxX) / 2, y = body.maxY + gap / zoom;
     // Re-read current glyph/body envelopes rather than caching a node position:
     // photos, emphasis, shadows and external G6 writes can change independently.
     if (equal(matrixOf(text), identity()) && text.attr('textAlign') === 'center' && text.attr('textBaseline') === 'top') {
-      const current = boxOf(text), screenBody = item.getKeyShape()?.getCanvasBBox?.(), screenText = text.getCanvasBBox?.();
+      const current = boxOf(text), screenBody = nodeBodyBounds(item, body), screenText = text.getCanvasBBox?.();
       const close = (a, b) => finite(a) && finite(b) && Math.abs(a - b) < 1e-9;
       const anchored = screenBody && screenText
         ? close(screenText.minY - screenBody.maxY, gap) && close(screenText.minX + screenText.maxX, screenBody.minX + screenBody.maxX)
@@ -231,11 +246,11 @@
     // Measure the actual glyph envelope: multiline baselines, photos and node
     // emphasis sizes must all share the same single, screen-pixel anchor.
     attrs(text, { x: x + x - (measured.minX + measured.maxX) / 2, y: y + y - measured.minY });
-    const screenBody = item.getKeyShape()?.getCanvasBBox?.(), screenText = text.getCanvasBBox?.();
+    const screenBody = nodeBodyBounds(item, body), screenText = text.getCanvasBBox?.();
     if (screenBody && screenText && [screenBody.minX, screenBody.maxX, screenBody.maxY,
       screenText.minX, screenText.maxX, screenText.minY].every(finite)) {
-      // G6's canvas envelope also includes the node's visible shadow. Keep the
-      // gap outside that envelope instead of letting it consume text spacing.
+      // Keep the scaled gap below the current solid body, including local
+      // shape transforms, rather than below the shadow envelope.
       attrs(text, { x: text.attr('x') + ((screenBody.minX + screenBody.maxX - screenText.minX - screenText.maxX) / 2) / zoom,
         y: text.attr('y') + (screenBody.maxY + gap - screenText.minY) / zoom });
     }
@@ -462,5 +477,5 @@
   }
 
   return Object.freeze({ isSimpleGraph, compactControlPoint, measureText, clearTextMeasurements,
-    plain, placeNode, placeEdge, restoreEdge, paintEdge, syncArrows });
+    plain, nodeBodyBounds, placeNode, placeEdge, restoreEdge, paintEdge, syncArrows });
 });

@@ -93,7 +93,7 @@
   function update(status = history.status()) {
     const unavailable = status.busy || state.graphLoading || !state.caseId || !!layoutJob || !!gesture || mainAccountsBlocked();
     for (const [selector, available, label, name, shortcut] of [
-      ['#btnUndo', status.canUndo, status.undoLabel, '撤销', 'Ctrl+Z'], ['#btnRedo', status.canRedo, status.redoLabel, '重做', 'Ctrl+Shift+Z'],
+      ['#btnUndo', status.canUndo, status.undoLabel, '撤销', 'Ctrl+Z / ⌘Z'], ['#btnRedo', status.canRedo, status.redoLabel, '重做', 'Ctrl+Shift+Z / ⇧⌘Z'],
     ]) {
       const node = $(selector); if (!node) continue;
       node.disabled = unavailable || !available;
@@ -706,15 +706,30 @@
     window.addEventListener('funds:selection-drag-end', () => endGesture('移动选中节点'));
     window.addEventListener('funds:edge-drag-end', () => endGesture('调整连线或标注'));
     window.addEventListener('keydown', event => {
-      if (!homePageActive() || !(event.ctrlKey || event.metaKey) || event.altKey || event.defaultPrevented || window.FundsToolbarMenu?.isOpen()) return;
+      if (!homePageActive() || event.altKey || event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat || window.FundsToolbarMenu?.isOpen()) return;
       const target = event.target;
-      if (target?.closest?.('input,select,textarea,[contenteditable]:not([contenteditable="false"])')) return;
+      if (target?.closest?.('input,select,textarea,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="searchbox"],.flow-column-resize,#btnFlowColumnsReset')) return;
       if ($$('.modal,dialog,[role="dialog"]').some(node => node.open || (!node.hidden && node.style.display !== 'none' && node.getClientRects().length))) return;
+      const key = event.key.toLowerCase();
+      if ((key === 'delete' || key === 'backspace') && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+        if (!container.contains(target)) return;
+        event.preventDefault();
+        const nodes = state.graphSelection?.ids || new Set(), selectedEdge = state.graphView.selectedEdge, ids = new Set();
+        // A node removal includes its tracked relationships outside the current
+        // filter, matching the existing account drawer's removal command.
+        for (const edge of state.lastGraph.edges) {
+          if (nodes.has(edge.source) || nodes.has(edge.target) || edgeKey(edge) === selectedEdge) {
+            for (const id of edge.ids || []) ids.add(id);
+          }
+        }
+        if (ids.size) void untrackFlows([...ids]);
+        return;
+      }
+      if (!(event.ctrlKey || event.metaKey)) return;
       // 焦点在图谱容器上只是常见情形，不是必要条件：文档承诺"对话框关闭且焦点不在
       // 输入控件内"即可撤销。原先额外要求容器持有焦点，会让刚点过功能区或侧栏后
       // 按下的 Ctrl+Z 静默失效（例如双击进邻域后焦点落到按钮上就撤不回去）。
       // 文本编辑与打开的对话框仍由上面的两个判断保留原生键盘行为。
-      const key = event.key.toLowerCase();
       if (key !== 'z' && key !== 'y') return;
       event.preventDefault(); travel(key === 'y' || event.shiftKey);
     });

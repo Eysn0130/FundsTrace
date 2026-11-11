@@ -357,7 +357,6 @@
       if(algorithm && analysisLoaded) analysisFrame.contentWindow?.postMessage({channel,version,type:'algorithm',algorithm},location.origin);
     });
     document.querySelector('#navSettings').onclick=()=>window.FundsAppearance?.openSettings();
-    document.querySelector('#navUpdate').onclick=()=>window.FundsAppearance?.openSettings('about');
     if (window.FundsDesktopPreferences) document.querySelector('#browserCaption').hidden=true;
     const requested=new URL(location.href).searchParams.get('page');
     show(['cases','accounts','analysis'].includes(requested)?requested:'home');

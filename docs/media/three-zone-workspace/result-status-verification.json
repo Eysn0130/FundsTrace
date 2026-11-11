@@ -1,0 +1,65 @@
+{
+  "scope": "Fresh disposable six-flow synthetic instance; only this tab has network emulation",
+  "steps": [
+    {
+      "step": "initial",
+      "height": 0,
+      "hidden": true,
+      "rows": 6,
+      "text": "",
+      "title": "",
+      "viewport": [
+        1561,
+        878
+      ]
+    },
+    {
+      "step": "offline-query-failure",
+      "height": 19.99809455871582,
+      "hidden": false,
+      "rows": 6,
+      "text": "查询失败 · 保留上次结果",
+      "title": "查询失败 · 保留上次结果：Failed to fetch",
+      "viewport": [
+        1561,
+        878
+      ]
+    },
+    {
+      "step": "recovered",
+      "height": 0,
+      "hidden": true,
+      "rows": 6,
+      "text": "",
+      "title": "",
+      "viewport": [
+        1561,
+        878
+      ]
+    },
+    {
+      "step": "empty-result",
+      "height": 0,
+      "hidden": true,
+      "rows": 0,
+      "text": "",
+      "title": "",
+      "viewport": [
+        1561,
+        878
+      ]
+    },
+    {
+      "step": "overview",
+      "height": 0,
+      "hidden": true,
+      "rows": 6,
+      "text": "",
+      "title": "",
+      "viewport": [
+        1561,
+        878
+      ]
+    }
+  ]
+}

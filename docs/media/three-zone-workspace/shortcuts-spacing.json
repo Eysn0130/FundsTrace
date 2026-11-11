@@ -1,0 +1,205 @@
+{
+  "steps": [
+    {
+      "step": "Windows-controls-all",
+      "caseId": 2,
+      "loading": false,
+      "tracked": 6,
+      "nodes": 7,
+      "edges": 6,
+      "selected": 7,
+      "history": {
+        "busy": false,
+        "canUndo": false,
+        "canRedo": false,
+        "undoLabel": "",
+        "redoLabel": "",
+        "count": 0,
+        "bytes": 0,
+        "message": "",
+        "limitReached": false
+      },
+      "rows": 6
+    },
+    {
+      "step": "Windows-controls-removed",
+      "caseId": 2,
+      "loading": false,
+      "tracked": 0,
+      "nodes": 0,
+      "edges": 0,
+      "selected": 0,
+      "history": {
+        "busy": false,
+        "canUndo": true,
+        "canRedo": false,
+        "undoLabel": "移除流水",
+        "redoLabel": "",
+        "count": 1,
+        "bytes": 12554,
+        "message": "",
+        "limitReached": false
+      },
+      "rows": 6
+    },
+    {
+      "step": "Windows-controls-undo",
+      "caseId": 2,
+      "loading": false,
+      "tracked": 6,
+      "nodes": 7,
+      "edges": 6,
+      "selected": 0,
+      "history": {
+        "busy": false,
+        "canUndo": false,
+        "canRedo": true,
+        "undoLabel": "",
+        "redoLabel": "移除流水",
+        "count": 1,
+        "bytes": 12554,
+        "message": "",
+        "limitReached": false
+      },
+      "rows": 6
+    },
+    {
+      "step": "macOS-controls-all",
+      "caseId": 2,
+      "loading": false,
+      "tracked": 6,
+      "nodes": 7,
+      "edges": 6,
+      "selected": 7,
+      "history": {
+        "busy": false,
+        "canUndo": false,
+        "canRedo": true,
+        "undoLabel": "",
+        "redoLabel": "移除流水",
+        "count": 1,
+        "bytes": 12554,
+        "message": "",
+        "limitReached": false
+      },
+      "rows": 6
+    },
+    {
+      "step": "macOS-controls-removed",
+      "caseId": 2,
+      "loading": false,
+      "tracked": 0,
+      "nodes": 0,
+      "edges": 0,
+      "selected": 0,
+      "history": {
+        "busy": false,
+        "canUndo": true,
+        "canRedo": false,
+        "undoLabel": "移除流水",
+        "redoLabel": "",
+        "count": 1,
+        "bytes": 12554,
+        "message": "",
+        "limitReached": false
+      },
+      "rows": 6
+    },
+    {
+      "step": "macOS-controls-undo",
+      "caseId": 2,
+      "loading": false,
+      "tracked": 6,
+      "nodes": 7,
+      "edges": 6,
+      "selected": 0,
+      "history": {
+        "busy": false,
+        "canUndo": false,
+        "canRedo": true,
+        "undoLabel": "",
+        "redoLabel": "移除流水",
+        "count": 1,
+        "bytes": 12554,
+        "message": "",
+        "limitReached": false
+      },
+      "rows": 6
+    }
+  ],
+  "spacing": [
+    {
+      "zoom": 0.7694939449474251,
+      "names": 7,
+      "minimum": 4.616963669684537,
+      "maximum": 4.616963669684537,
+      "expected": 4.616963669684551,
+      "anchor": "solid node body and stroke; shadow excluded"
+    },
+    {
+      "zoom": 0.6412449541228542,
+      "names": 7,
+      "minimum": 3.8474697247370955,
+      "maximum": 3.8474697247371523,
+      "expected": 3.8474697247371252,
+      "anchor": "solid node body and stroke; shadow excluded"
+    },
+    {
+      "zoom": 0.5343707951023785,
+      "names": 7,
+      "minimum": 3.2062247706142557,
+      "maximum": 3.2062247706142557,
+      "expected": 3.206224770614271,
+      "anchor": "solid node body and stroke; shadow excluded"
+    },
+    {
+      "zoom": 0.44530899591864875,
+      "names": 7,
+      "minimum": 2.6718539755118513,
+      "maximum": 2.671853975511908,
+      "expected": 2.6718539755118926,
+      "anchor": "solid node body and stroke; shadow excluded"
+    },
+    {
+      "zoom": 0.3710908299322073,
+      "names": 7,
+      "minimum": 2.2265449795932,
+      "maximum": 2.226544979593257,
+      "expected": 2.226544979593244,
+      "anchor": "solid node body and stroke; shadow excluded"
+    },
+    {
+      "zoom": 0.30924235827683944,
+      "names": 7,
+      "minimum": 1.855454149661,
+      "maximum": 1.8554541496610568,
+      "expected": 1.8554541496610366,
+      "anchor": "solid node body and stroke; shadow excluded"
+    },
+    {
+      "zoom": 0.25770196523069955,
+      "names": 7,
+      "minimum": 1.5462117913841666,
+      "maximum": 1.5462117913842235,
+      "expected": 1.5462117913841973,
+      "anchor": "solid node body and stroke; shadow excluded"
+    }
+  ],
+  "coverage": [
+    {
+      "id": "statLine",
+      "hidden": true,
+      "display": "none",
+      "height": 0,
+      "textLength": 25
+    },
+    {
+      "id": "importCoverageNote",
+      "hidden": true,
+      "display": "none",
+      "height": 0,
+      "textLength": 260
+    }
+  ],
+  "console": []
+}

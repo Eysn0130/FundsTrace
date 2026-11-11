@@ -105,6 +105,12 @@
           placement = { ...option, conflicted: false }; break;
         }
       }
+      // An admitted identity may overlap at low zoom. Keep its visible anchor
+      // rather than deleting its text; fully offscreen ordinary labels still go.
+      if (!placement && options.retainCollisions === true) {
+        const option = placements.find(value => !viewport || intersects(value.bounds, viewport));
+        if (option) { placement = { ...option, conflicted: true }; conflicts += 1; }
+      }
       if (!placement && (candidate.required || options.retainAll === true || options.disabled === true)) {
         placement = placements.length ? { ...placements[0], conflicted: options.disabled !== true }
           : { bounds: null, dx: 0, dy: 0, index: -1, conflicted: true };

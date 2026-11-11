@@ -20,15 +20,18 @@ function harness({ legacyRevision = false } = {}) {
   let boxes = [], tableRows = [], matrix = [1, 0, 0, 0, 1, 0, 40, 60, 1], intent = 0, fitCalls = 0;
   const authorities = new Map(), flowAuthorities = new Map(), canvasLists = new Map();
   const attributes = () => new Map();
+  let created = 0;
   function element(id) {
     if (elements.has(id)) return elements.get(id);
     const attrs = attributes(), classes = new Set();
     const item = { id, value: '', checked: false, indeterminate: false, disabled: false, hidden: false, inert: false,
-      style: {}, dataset: {}, textContent: '', scrollLeft: 0, scrollTop: 0,
+      style: {}, dataset: {}, textContent: '', scrollLeft: 0, scrollTop: 0, children: [],
       classList: { contains: key => classes.has(key), add: key => classes.add(key), remove: key => classes.delete(key),
         toggle(key, on) { if (on) classes.add(key); else classes.delete(key); } },
       setAttribute(key, value) { attrs.set(key, String(value)); }, getAttribute: key => attrs.get(key) ?? null,
-      contains: () => false, closest: () => null, focus() {}, addEventListener() {}, appendChild() {},
+      removeAttribute(key) { attrs.delete(key); },
+      contains: () => false, closest: () => null, focus() {}, addEventListener() {},
+      append(...nodes) { this.children.push(...nodes); }, appendChild(node) { this.children.push(node); return node; },
       dispatchEvent(event) { this['on' + event.type]?.(event); }, click() { this.onclick?.({ currentTarget: this }); },
       querySelector: () => ({ src: '', textContent: '', title: '', classList: { toggle() {} } }), querySelectorAll: () => [],
       get selectedOptions() { return [{ textContent: this.value === '0' ? '默认画布' : `Canvas ${this.value}` }]; },
@@ -49,7 +52,7 @@ function harness({ legacyRevision = false } = {}) {
   const doc = { activeElement: body, body,
     querySelector: selector => selector.startsWith('#') ? element(selector.slice(1)) : element(selector),
     querySelectorAll: selector => selector === '[data-nav-page]' ? navItems : [],
-    createElement: () => element('created'), addEventListener() {},
+    createElement: () => element('created-' + created++), addEventListener() {},
   };
   const $ = selector => doc.querySelector(selector);
   const $$ = selector => selector === '#flowTbody .flow-ck' ? boxes : selector === '#flowTbody tr[data-id]' ? tableRows : [];
@@ -69,7 +72,7 @@ function harness({ legacyRevision = false } = {}) {
     getOffset: () => ({ x: 0, y: 0 }), getTransform: () => ({ scale: 1, x: 0, y: 0 }) };
   let context, canvasOptions;
   const history = { replaceState() {}, status: () => ({ busy: false, canUndo: false, canRedo: false }) };
-  const membership = { snapshot: () => ({ desiredIds: [], pendingIds: [], failures: {}, available: true }),
+  const membership = { snapshot: () => ({ confirmedIds: [...state.tracked], desiredIds: [...state.tracked], pendingIds: [], failures: {}, available: true }),
     subscribe(callback) { callback(); return () => {}; } };
   const sandbox = { state, document: doc, $, $$, URL, URLSearchParams, Event: class { constructor(type) { this.type = type; } },
     CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
@@ -94,7 +97,7 @@ function harness({ legacyRevision = false } = {}) {
     renderGraph() { state.graphView.revision++; state.graphView.edgeItems = new Map(state.lastGraph.edges.map(edge => [edge.source + '=>' + edge.target, edge])); },
     renderFlows(rows) {
       boxes = rows.map(row => ({ checked: false, disabled: false, dataset: { id: String(row.id) }, setAttribute() {} }));
-      tableRows = boxes.map((box, index) => ({ dataset: box.dataset, classList: { toggle() {} },
+      tableRows = boxes.map((box, index) => ({ dataset: box.dataset, children: [], setAttribute() {}, removeAttribute() {}, classList: { toggle() {} },
         getBoundingClientRect: () => ({ top: 134 + index * 40 - element('flowTableScroll').scrollTop, bottom: 174 + index * 40 - element('flowTableScroll').scrollTop, height: 40 }),
         querySelector: selector => selector === '.flow-ck' ? box : element('membership-' + box.dataset.id) }));
       context.syncFlowCkCount();

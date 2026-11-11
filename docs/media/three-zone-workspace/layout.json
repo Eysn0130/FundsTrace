@@ -1,0 +1,112 @@
+{
+  "canvas": {
+    "background": "rgb(24, 24, 24)",
+    "bottom": 945,
+    "height": 804,
+    "id": "canvasWrap",
+    "radii": [
+      "12px",
+      "0px",
+      "0px",
+      "0px"
+    ],
+    "right": 1508,
+    "width": 941.921875,
+    "x": 566.078125,
+    "y": 141
+  },
+  "caption": {
+    "background": "rgb(51, 51, 51)",
+    "bottom": 44,
+    "height": 44,
+    "id": "browserCaption",
+    "radii": [
+      "0px",
+      "0px",
+      "0px",
+      "0px"
+    ],
+    "right": 1512,
+    "width": 1512,
+    "x": 0,
+    "y": 0
+  },
+  "host": {
+    "background": "rgb(34, 34, 34)",
+    "bottom": 945,
+    "height": 901,
+    "id": "appPageHost",
+    "radii": [
+      "12px",
+      "12px",
+      "12px",
+      "12px"
+    ],
+    "right": 1508,
+    "width": 1456,
+    "x": 52,
+    "y": 44
+  },
+  "logo": 24,
+  "rail": {
+    "background": "rgb(51, 51, 51)",
+    "bottom": 949,
+    "height": 905,
+    "id": "appRail",
+    "radii": [
+      "0px",
+      "0px",
+      "0px",
+      "0px"
+    ],
+    "right": 52,
+    "width": 52,
+    "x": 0,
+    "y": 44
+  },
+  "rim": {
+    "bottom": 4,
+    "right": 4
+  },
+  "selection": {
+    "radius": "8px",
+    "size": 36
+  },
+  "sidebar": {
+    "background": "rgb(34, 34, 34)",
+    "bottom": 945,
+    "height": 804,
+    "id": "left",
+    "radii": [
+      "0px",
+      "0px",
+      "0px",
+      "0px"
+    ],
+    "right": 566.078125,
+    "width": 514.078125,
+    "x": 52,
+    "y": 141
+  },
+  "toolbar": {
+    "background": "rgb(34, 34, 34)",
+    "bottom": 141,
+    "height": 97,
+    "id": "editorToolbar",
+    "radii": [
+      "0px",
+      "0px",
+      "0px",
+      "0px"
+    ],
+    "right": 1508,
+    "width": 1456,
+    "x": 52,
+    "y": 44
+  },
+  "viewport": {
+    "dpr": 1,
+    "height": 949,
+    "width": 1512
+  }
+}

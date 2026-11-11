@@ -374,7 +374,7 @@
       focus(); clear();
     }
     function onKeyDown(event) {
-      if (!current() || event.defaultPrevented || event.isComposing || editing(event.target) || modalOpen()
+      if (!current() || event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat || editing(event.target) || modalOpen()
         || !container.contains(event.target || document.activeElement)) return;
       if (!interactive()) { stop(event); return; }
       if ((event.ctrlKey || event.metaKey) && !event.altKey && String(event.key).toLowerCase() === 'a') {

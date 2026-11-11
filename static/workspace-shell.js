@@ -167,7 +167,8 @@
       // retain at least a 44px edge with the external collapse control reachable.
       const canvasSpace = Math.min(200, Math.max(44, viewport - 360));
       const maximum = Math.max(0, Math.min(760, viewport - canvasSpace));
-      return { minimum: Math.min(360, maximum), maximum };
+      // Compact defaults may be 288px; keep the existing upper bound and saved widths.
+      return { minimum: Math.min(288, maximum), maximum };
     }
 
     function updateSidebarBounds(reason, notify = true) {

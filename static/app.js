@@ -358,12 +358,13 @@ function updateHeader() {
   const s = state.stats || {};
   const countLabel = s.flows == null && s.funds?.observation_count != null ? `来源观察 <b>${fmtCount(s.funds.observation_count)} 条</b>` : `流水 <b>${esc(fundsCount(s.funds, s.flows))}</b>`;
   const trackedLabel = state.lastGraph?.transaction_count === null && state.lastGraph?.funds ? `${fmtCount(state.lastGraph.funds.observation_count)} 条来源观察` : fundsCount(state.lastGraph?.funds, state.lastGraph?.transaction_count ?? state.tracked.size);
+  $('#statLine').hidden = true;
   $('#statLine').innerHTML =
     `${countLabel}${s.source_ledger?.count ? ` · 来源记账 <b>${fmtCount(s.source_ledger.count)} 条</b>` : ""} · 账户 <b>${fmtCount(s.accounts || 0)}</b> 个 · 已上图 <b>${esc(trackedLabel)}</b>${state.lastGraph?.source_ledger?.count ? ` · 来源记账已上图 ${fmtCount(state.lastGraph.source_ledger.count)} 条` : ""}`;
   const coverage = s.import_coverage, coverageNote = $('#importCoverageNote');
   const hasCoverageGaps = coverage?.scope === 'source_reported_flows' && [coverage?.unresolved_records, coverage?.cancelled_records, coverage?.excluded_flows, coverage?.non_monetary_records].some(value => value > 0);
   if (coverageNote) {
-    coverageNote.hidden = !hasCoverageGaps && !s.resolution?.conflicts && !s.event_summary?.conflict_entries;
+    coverageNote.hidden = true;
     $('#statLine').title = s.flows == null && s.funds?.observation_count != null ? '来源观察条数记录来源过账；同笔关系未确定，不能作为确定交易笔数或累计金额。原始时间与各自余额见来源核对。' : coverage?.scope === 'source_reported_flows' ? '原始金额展示合计；已确认同笔只计一次，其余来源逐条保留。经济事件结论见资金统计；原始来源行见案件与导入。' : '';
     const transactionScope = s.flows == null ? `当前有效交易笔数未确定${s.funds?.observation_count != null ? `；来源观察 ${fmtCount(s.funds.observation_count)} 条` : ''}。` : `当前流水 ${fundsCount(s.funds, s.flows)}（已确认同笔只计一次）。`;
     const amountScope = s.flows == null ? '同笔关系未确定，金额是否确定及其范围以当前资金统计为准，不代表结算净额。' : '展示合计保留原始金额；已确认同笔只计一次，其余来源逐条保留。经济事件结论见资金统计，不代表结算净额。';
@@ -408,7 +409,7 @@ async function doSearch(page = 1) {
   state.search.page = r.page;
   state.search.total = r.total;
   renderFlows(r.rows);
-  $('#resultInfo').textContent = `共 ${fmtCount(r.total)} 条记录`;
+  $('#resultInfo').textContent = ''; $('#resultInfo').title = ''; $('#resultInfo').hidden = true;
 }
 
 function partyCell(name, acct) {
@@ -423,7 +424,7 @@ function bindFlowTableView() {
   if (!viewport || !density || !wrap) return;
   const apply = () => {
     viewport.dataset.flowDensity = density.value === 'comfortable' ? 'comfortable' : 'compact';
-    viewport.dataset.flowWrap = wrap.value === 'single' ? 'single' : 'wrap';
+    viewport.dataset.flowWrap = ['single','two-line'].includes(wrap.value) ? wrap.value : 'wrap';
     syncFlowTableScroll();
   };
   density.onchange = apply;
@@ -465,17 +466,15 @@ function sourceLedgerHtml(row) {
 function renderFlows(rows) {
   const tracked = new Set([...state.tracked].map(String));
   $('#flowTbody').innerHTML = rows.length ? rows.map(r => `
-    <tr data-id="${esc(r.id)}" data-observation-ids="${esc(flowObservationIds(r).join(','))}" class="clickable" tabindex="0" aria-label="流水 ${esc(fmtTime(r.trade_time))}，Enter 查看详情，空格勾选">
-      <td><input type="checkbox" class="flow-ck" data-id="${esc(r.id)}" data-observation-ids="${esc(flowObservationIds(r).join(','))}"></td>
+    <tr data-id="${esc(r.id)}" data-observation-ids="${esc(flowObservationIds(r).join(','))}" class="clickable" tabindex="0" aria-label="流水 ${esc(fmtTime(r.trade_time))}，双击或 Enter 查看详情">
+      <td><label class="flow-anchor"><input type="checkbox" class="flow-ck" data-id="${esc(r.id)}" data-observation-ids="${esc(flowObservationIds(r).join(','))}"></label></td>
       <td title="${esc(fmtTime(r.trade_time))}">${flowTimeCell(r.trade_time)}</td>
-      <td>${partyCell(r.payer_name, r.payer_display_account || r.payer_account)}</td>
-      <td>${partyCell(r.payee_name, r.payee_display_account || r.payee_account)}</td>
-      <td class="amt">${moneyHtml(r.amount, r.currency)}${r.source_ledger ? sourceLedgerHtml(r) : ''}</td>
+      <td title="${esc([r.payer_name,r.payer_display_account || r.payer_account].filter(Boolean).join('\n'))}">${partyCell(r.payer_name, r.payer_display_account || r.payer_account)}</td>
+      <td title="${esc([r.payee_name,r.payee_display_account || r.payee_account].filter(Boolean).join('\n'))}">${partyCell(r.payee_name, r.payee_display_account || r.payee_account)}</td>
+      <td class="amt"><span class="flow-amount-value">${moneyHtml(r.amount, r.currency)}</span>${r.source_ledger ? sourceLedgerHtml(r) : ''}</td>
       <td class="sum" title="${esc(r.summary)}"><span class="flow-summary">${esc(r.summary || '')}</span></td>
       <td class="acts"><span class="flow-row-actions">
-        ${flowObservationIds(r).some(id => tracked.has(String(id)))
-          ? '<span class="tag on">已上图</span>'
-          : '<button class="btn tiny primary act-track">上图</button>'}
+        <button class="btn tiny${flowObservationIds(r).some(id => tracked.has(String(id))) ? '' : ' primary'} act-track">${flowObservationIds(r).some(id => tracked.has(String(id))) ? '移出' : '上图'}</button>
         <button class="btn tiny act-ctx" title="查看前后 X 条记录" aria-label="查看前后 X 条记录">前后</button>
       </span></td>
     </tr>`).join('')
@@ -798,9 +797,9 @@ function graphLabelBounds(item, kind, measured = true) {
     // Lazy labels must use the same rendered body and screen-space gap as
     // placeNode. Nominal size misses stroke/shadow/photo bounds and can make
     // an absent label collide with its own node forever, until hover forces it.
-    const body=graphNodeBodyBounds(item);
+    const body=FundsGraphLabelGeometry.nodeBodyBounds(item);
     if(!body)return null;
-    const x=(body.minX+body.maxX)/2, y=body.maxY+6*(state.graphView.exportLabelScale||1);
+    const x=(body.minX+body.maxX)/2, y=body.maxY+6*zoom;
     return {minX:x-width/2,minY:y,maxX:x+width/2,maxY:y+height};
   } else {
     const saved=state.edgeSnapshotLabels[edgeKey(m)], ratio=state.edgeLabelPos[edgeKey(m)];
@@ -942,15 +941,14 @@ async function focusGraphItems(items, { binding, maxZoom, preferredZoom, reading
   for (const item of targets) {
     let box;
     if (readingEnvelope) {
-      // An overview's temporary label displacement and six-screen-pixel gap
-      // must not become a giant world-space envelope during enlargement.
+      // An overview's temporary label displacement must not become a giant
+      // world-space envelope during enlargement.
       // Measure the full text at its intended reading scale, without moving
       // live geometry. Normal label placement runs again at the final zoom.
-      const model = item.getModel(), body = graphBodyWorld(item, inverse);
+      const model = item.getModel(), body = graphRouteWorldBounds(FundsGraphLabelGeometry.nodeBodyBounds(item),inverse) || graphBodyWorld(item, inverse);
       const text = graphTextSize(model.fundsLabel ?? model.label, effectiveGraphLabelStyle('node', model.id));
-      const zoom = Math.min(4, Math.max(.02, preferredZoom || graph.getZoom?.() || 1));
       box = { minX: Math.min(body.minX, model.x - text.width / 2), minY: body.minY,
-        maxX: Math.max(body.maxX, model.x + text.width / 2), maxY: body.maxY + 6 / zoom + text.height };
+        maxX: Math.max(body.maxX, model.x + text.width / 2), maxY: body.maxY + 6 + text.height };
     } else box = graphIndexedBounds(item, 'node', inverse) || graphBodyWorld(item, inverse);
     if (!box || !Object.values(box).every(Number.isFinite)) continue;
     if (!bounds) bounds = { ...box };
@@ -1063,7 +1061,7 @@ function installNodeFinder() {
     search: query => { nodeFinderWorkspace.open(); return nodeFinderWorkspace.search(query); }, locateNew: () => nodeFinderWorkspace.locateNew() });
   for (const event of ['funds:graph-metric', 'funds:main-accounts-state']) window.addEventListener(event, () => nodeFinderWorkspace.update());
 }
-function avoidGraphLabelCollisions(policy) {
+function avoidGraphLabelCollisions(policy, { clipToViewport = true } = {}) {
   const view=state.graphView;
   if(typeof FundsGraphLabels==='undefined')return policy;
   const candidates=[], bodies=graphScreenBodies();
@@ -1085,12 +1083,13 @@ function avoidGraphLabelCollisions(policy) {
   const width=view.exportDepth?(state.graph.get?.('width')||c.clientWidth):c.clientWidth;
   const height=view.exportDepth?(state.graph.get?.('height')||c.clientHeight):c.clientHeight;
   const selected=FundsGraphLabels.select(candidates,{obstacles:[...[...bodies].map(([key,bounds])=>({key,bounds})),...graphChromeObstacles(),...edgeObstacles],
+    retainCollisions:true,
     retainAll:view.labelMode==='all'||view.exportDepth>0,
-    viewport:width&&height?{minX:0,minY:0,maxX:width,maxY:height-(view.exportFooterHeight||0)}:null});
+    viewport:clipToViewport&&width&&height?{minX:0,minY:0,maxX:width,maxY:height-(view.exportFooterHeight||0)}:null});
   return {...policy,nodeIds:selected.nodeIds,edgeKeys:new Set(policy.edgeKeys),nodePlacements:selected.nodePlacements,
     edgePlacements:new Map(),collisions:selected.rejected,conflicts:selected.conflicts,unknownGeometry:selected.unknownGeometry};
 }
-function applyGraphLabels(paint = true) {
+function applyGraphLabels(paint = true, { clipToViewport = true } = {}) {
   const graph = state.graph, view = state.graphView;
   if (!graph || !view.index) return;
   const autoPaint=graph.get?.('autoPaint')!==false;
@@ -1115,12 +1114,12 @@ function applyGraphLabels(paint = true) {
   for(const item of [...view.nodeItems.values(),...view.edgeItems.values()]) {
     resetAutoLabelOffset(item); FundsGraphLabelGeometry.plain(item);
   }
-  for(const item of view.nodeItems.values()) FundsGraphLabelGeometry.placeNode(item,{zoom:graph.getZoom?.()||1,gap:6*(view.exportLabelScale||1)});
+  for(const item of view.nodeItems.values()) FundsGraphLabelGeometry.placeNode(item,{zoom:graph.getZoom?.()||1});
   syncGraphEdgeLabels();
   const requestedPolicy = FundsGraphView.labels(index, { zoom: (graph.getZoom?.() || 1) / view.fitZoom * 0.5,
     mode: view.exportDepth?'all':view.labelMode, selectedIds: new Set([...(state.graphSelection?.ids || []), ...(!view.exportDepth ? view.previewAccounts || [] : [])]), selectedAccount: view.selectedAccount, hoveredAccount: view.hoveredAccount,
     selectedEdge: view.selectedEdge, eligibleNodeIds: !view.exportDepth ? view.clipResult?.nodeIds : null });
-  view.policy=avoidGraphLabelCollisions(requestedPolicy);
+  view.policy=avoidGraphLabelCollisions(requestedPolicy,{clipToViewport});
   const update = (items, previous, desired, changedOnly=false) => {
     let geometryChanged=false;
     const keys = new Set([...previous, ...desired]);
@@ -1144,7 +1143,7 @@ function applyGraphLabels(paint = true) {
         visibilityChanged=setLabelShapes(item, true);
         if(recreated||membershipChanged||visibilityChanged) {
           FundsGraphLabelGeometry.plain(item);
-          if(items===view.nodeItems) FundsGraphLabelGeometry.placeNode(item,{zoom:graph.getZoom?.()||1,gap:6*(view.exportLabelScale||1)});
+          if(items===view.nodeItems) FundsGraphLabelGeometry.placeNode(item,{zoom:graph.getZoom?.()||1});
         }
       }
       if(items===view.edgeItems&&(recreated||membershipChanged||visibilityChanged)) syncGraphEdgeLabel(item);
@@ -1156,7 +1155,7 @@ function applyGraphLabels(paint = true) {
   const edgesChanged=update(view.edgeItems, view.labeledEdges, view.policy.edgeKeys);
   // New labels now have real G6 text/background bounds. Resolve any estimate
   // mismatch before painting; never repeatedly create rejected labels here.
-  const settled=nodesChanged||edgesChanged?avoidGraphLabelCollisions(requestedPolicy):view.policy;
+  const settled=nodesChanged||edgesChanged?avoidGraphLabelCollisions(requestedPolicy,{clipToViewport}):view.policy;
   update(view.nodeItems, view.policy.nodeIds, settled.nodeIds,true);
   update(view.edgeItems, view.policy.edgeKeys, settled.edgeKeys,true);
   view.policy=settled;
@@ -1905,8 +1904,8 @@ function graphRouteScene(eligibleKeys,{planner=true,quality:measureQuality=true}
     if(local&&[local.minX,local.minY,local.maxX,local.maxY].every(Number.isFinite)) {
       const corners=[[local.minX,local.minY],[local.minX,local.maxY],[local.maxX,local.minY],[local.maxX,local.maxY]];
       // Route obstacles are the solid key shape (including its stroke), not
-      // its screen-space blur. Keep the complete shadow envelope for label
-      // anchoring and fit. Total matrices also preserve local transforms.
+      // its screen-space blur. Fit still measures the complete group envelope;
+      // label anchors use the same solid shape. Total matrices retain transforms.
       const points=matrix&&matrix.length===9&&Array.from(matrix).every(Number.isFinite)&&unproject
         ?corners.map(([x,y])=>unproject(matrix[0]*x+matrix[3]*y+matrix[6],matrix[1]*x+matrix[4]*y+matrix[7]))
         :!shape?.getMatrix?.()?corners.map(([x,y])=>({x:p.x+x,y:p.y+y})):null;
@@ -3340,7 +3339,9 @@ function fitGraph(cap = 1.6,{rebuild=false}={}) {
     // the old viewport's clipped membership. Otherwise a second Fit can shrink
     // the envelope again after long peripheral labels were removed by LOD.
     view.fitZoom=graph.getZoom();view.clipResult=null;
-    applyGraphLabels(false);
+    // Measure the admitted labels even when the previous pan put them outside
+    // the viewport. Normal clipping resumes after the camera reaches its fit.
+    applyGraphLabels(false,{clipToViewport:false});
     const width=container.clientWidth||900,height=container.clientHeight||600;
     const items=[...nodes,...graph.getEdges()],maxZoom=Math.min(4,cap),obstacles=graphChromeObstacles();
     for(const item of items)resetAutoLabelOffset(item);
@@ -3363,7 +3364,7 @@ function fitGraph(cap = 1.6,{rebuild=false}={}) {
     const cameraFit=bounds=>bounds&&FundsGraphLayout.fitViewport({bounds,width,height,obstacles,maxZoom,minZoom:.02,padding});
     let bounds,fit;
     if(graph.getCanvasByPoint&&graph.translate&&graph.zoomTo) {
-      // A fixed screen gap changes its world footprint at each zoom. Start
+      // Screen-space shadows change their world footprint at each zoom. Start
       // from the same scale and settle the measured envelope in this command,
       // so repeated Fit cannot creep according to the previous camera.
       graph.zoomTo(maxZoom);
@@ -3432,8 +3433,6 @@ function graphBackgroundRoutingWorthwhile(input,candidateKind=input.kind) {
 function graphLayoutRouteInput(input,candidate,fit) {
   if(state.lastGraph.edges.length>1500||state.lastGraph.nodes.length>3000)return null;
   const points=new Map(candidate.result.nodes.map(n=>[n.id,n])),dimensions=new Map(input.nodes.map(n=>[n.id,n]));
-  const zoom=fit?Math.max(.02,Math.min(1.6,candidate.quality.fit.zoom)):Math.abs(state.graph.getZoom?.()||1);
-  const oldZoom=Math.abs(state.graph.getZoom?.()||1);
   const measured=new Map(graphRouteScene(undefined,{planner:false,quality:false}).nodes.map(n=>[n.id,n]));
   const nodes=[];
   for(const data of state.lastGraph.nodes) {
@@ -3444,7 +3443,7 @@ function graphLayoutRouteInput(input,candidate,fit) {
     const shift=(box,extra=0)=>({minX:box.minX+dx,maxX:box.maxX+dx,minY:box.minY+dy+extra,maxY:box.maxY+dy+extra});
     nodes.push({id:data.account,x:p.x,y:p.y,
       body:old?.body?shift(old.body):{minX:p.x-d.size/2,maxX:p.x+d.size/2,minY:p.y-d.size/2,maxY:p.y+d.size/2},
-      label:old?.label?shift(old.label,6/zoom-6/oldZoom):{minX:p.x-d.width/2,maxX:p.x+d.width/2,minY:p.y+d.size/2+6/zoom,maxY:p.y+d.size/2+6/zoom+height}});
+      label:old?.label?shift(old.label):{minX:p.x-d.width/2,maxX:p.x+d.width/2,minY:p.y+d.size/2+6,maxY:p.y+d.size/2+6+height}});
   }
   const byId=new Map(nodes.map(n=>[n.id,n])),simple=graphHasSimpleGeometry(byId);
   const edges=[];
@@ -3554,15 +3553,14 @@ async function relayout(fit = true, reserveLabels = false, previousLayout = stat
       const bodyWidth=body&&Number.isFinite(body.maxX-body.minX)?body.maxX-body.minX+shadow:modelSize;
       const bodyHeight=body&&Number.isFinite(body.maxY-body.minY)?body.maxY-body.minY+shadow:modelSize;
       // Engine geometry uses a canonical world-space footprint, independent
-      // of the user's current camera. The evaluator separately solves the
-      // fixed 6 CSS-pixel gap at the anticipated fit scale.
+      // of the user's current camera, including the six-world-unit label gap.
       const size=Math.max(modelSize,bodyWidth,bodyHeight),gapWorld=6;
       return {id:m.id,x:m.x,y:m.y,fixed:state.presentation.pinnedAccounts?.includes(m.id)===true,isMain:m.data?.is_main===1,
         size:reserveLabels?Math.max(size,graphLabelLayoutSize(node)):size,
         width:bounds?Math.max(size,(bounds.maxX-bounds.minX)/zoom):size,
         height:bounds?size+gapWorld+(bounds.maxY-bounds.minY)/zoom:size,
         offsetX:0,offsetY:bounds?(gapWorld+(bounds.maxY-bounds.minY)/zoom)/2:0,
-        fontSize:effectiveGraphLabelStyle('node',m.id).fontSize,labelGap:bounds?6:0,gapWorld:bounds?gapWorld:0};
+        fontSize:effectiveGraphLabelStyle('node',m.id).fontSize,labelGap:0,gapWorld:bounds?gapWorld:0};
     }),
     edges: graph.getEdges().map(edge => {
       const m=edge.getModel(),bounds=graphLabelBounds(edge,'edge',false);
@@ -5512,14 +5510,20 @@ function bindUI() {
   $('#flowTbody').addEventListener('click', e => {
     const tr = e.target.closest('tr[data-id]');
     if (!tr) return;
-    const id = Number(tr.dataset.id);
-    if (e.target.closest('.act-track')) { trackFlows(flowObservationIds(tr)); return; }
+    const id = tr.dataset.id;
+    const button=e.target.closest('.act-track');
+    if (button) {
+      if (button.disabled) return;
+      const ids=flowObservationIds(tr),tracked=new Set([...state.tracked].map(String));
+      void (ids.some(id=>tracked.has(String(id))) ? untrackFlows : trackFlows)(ids); return;
+    }
     openContext(id);
   });
   $('#flowTbody').addEventListener('keydown', event => {
+    if (event.isComposing || event.keyCode === 229 || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
     const row = event.target.closest('tr[data-id]');
     if (!row || event.target !== row) return;
-    if (event.key === 'Enter') { event.preventDefault(); openContext(Number(row.dataset.id)); }
+    if (event.key === 'Enter') { event.preventDefault(); openContext(row.dataset.id); }
     if (event.key === ' ') {
       event.preventDefault(); const checkbox = row.querySelector('.flow-ck');
       if (checkbox) { checkbox.checked = !checkbox.checked; syncFlowCkCount(); }

@@ -297,7 +297,7 @@ test('historical v1 review classifications remain visible as retained unresolved
   assert.equal(h.element('impCommit').textContent, '开始导入');
 });
 
-test('case totals retain the source interpretation note and discard statistics arriving after a case switch', async () => {
+test('hidden case summaries retain source interpretation and discard statistics arriving after a case switch', async () => {
   const nodes = new Map();
   const element = selector => {
     if (!nodes.has(selector)) nodes.set(selector, { hidden: true, textContent: '', innerHTML: '', style: {},
@@ -318,7 +318,7 @@ test('case totals retain the source interpretation note and discard statistics a
   pending({ flows: 80, accounts: 2, import_coverage: { scope: 'source_reported_flows', unresolved_records: 349, non_monetary_records: 233, cancelled_records: 4, excluded_flows: 2, financial_interpretation_complete: false } });
   await load;
   assert.equal(navigationSyncs, 1, 'current statistics refresh navigation through its separate owner');
-  assert.equal(element('#importCoverageNote').hidden, false);
+  assert.equal(element('#importCoverageNote').hidden, true);
   assert.match(element('#importCoverageNote').textContent, /当前流水 80 笔（已确认同笔只计一次）/);
   assert.match(element('#importCoverageNote').textContent, /来源审计保留 349 条资金含义未确定的条目/);
   assert.match(element('#importCoverageNote').textContent, /不代表结算净额/);
@@ -333,7 +333,7 @@ test('case totals retain the source interpretation note and discard statistics a
   assert.doesNotMatch(element('#statLine').innerHTML, /流水 <b>2/);
   assert.match(element('#statLine').title, /来源观察条数/);
   assert.doesNotMatch(element('#statLine').title, /展示合计保留原始金额/);
-  assert.equal(element('#importCoverageNote').hidden, false);
+  assert.equal(element('#importCoverageNote').hidden, true);
   assert.match(element('#importCoverageNote').textContent, /当前有效交易笔数未确定；来源观察 2 条/);
   assert.match(element('#importCoverageNote').textContent, /来源审计保留 1 条资金含义未确定的条目/);
   assert.match(element('#importCoverageNote').textContent, /同笔关系未确定，金额是否确定及其范围以当前资金统计为准/);
@@ -348,7 +348,7 @@ test('case totals retain the source interpretation note and discard statistics a
     state.stats.flows = flows;
     state.stats.funds.observation_count = flows;
     vm.runInContext('updateHeader()', context);
-    assert.equal(element('#importCoverageNote').hidden, false);
+    assert.equal(element('#importCoverageNote').hidden, true);
     assert.ok(element('#importCoverageNote').textContent.includes(`当前流水 ${flows} 笔（已确认同笔只计一次）`));
     assert.match(element('#importCoverageNote').textContent, /展示合计保留原始金额/);
     assert.doesNotMatch(element('#importCoverageNote').textContent, /笔数未确定|；来源观察/);

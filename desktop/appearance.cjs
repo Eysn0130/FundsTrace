@@ -13,7 +13,7 @@ function resolveAppearance(value, systemDark = true) {
 function colors(value) {
   return value.theme === 'light'
     ? { background: '#fcfcfb', caption: '#f4f3ef', foreground: '#292825' }
-    : { background: '#10171f', caption: '#151d27', foreground: '#cdd7e3' };
+    : { background: '#333333', caption: '#333333', foreground: '#eeeeee' };
 }
 
 module.exports = { CHANNEL, ARGUMENT, DEFAULT, readAppearance, resolveAppearance, colors };

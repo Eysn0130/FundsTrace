@@ -1,0 +1,33 @@
+{
+  "source": "Maintainer-provided MacBook Pro 14-inch screenshot, measured locally; private chat image is not published.",
+  "sourcePixels": [
+    3028,
+    1898
+  ],
+  "windowContentWidthPixels": 3024,
+  "density": 2,
+  "measurements": {
+    "captionHeight": {
+      "imagePixels": 88,
+      "logicalPixels": 44
+    },
+    "navigationWidth": {
+      "imagePixels": 104,
+      "logicalPixels": 52
+    },
+    "selectedButton": {
+      "imagePixels": 72,
+      "logicalPixels": 36
+    },
+    "rightBottomRim": {
+      "imagePixels": 8,
+      "logicalPixels": 4
+    },
+    "innerCornerRadius": {
+      "imagePixels": 24,
+      "logicalPixels": 12
+    }
+  },
+  "logoLogicalPixels": 24,
+  "selectionRadiusLogicalPixels": 8
+}

@@ -41,6 +41,33 @@ test('required labels may overlap each other and block ordinary labels regardles
   assert.deepEqual(ids(result), { nodes: ['required-low', 'ordinary-far'], edges: ['required-edge'], rejected: 1 });
 });
 
+test('retaining collisions preserves every admitted visible identity without shifting its anchor', () => {
+  const result = labels.select([
+    candidate('hub', box(124, 286, 235, 320)),
+    candidate('right', box(257, 234, 368, 268)),
+    candidate('overlapping-name', box(130, 290, 220, 318)),
+  ], { retainCollisions: true, viewport: box(0, 0, 356, 774), obstacles: [
+    { key: 'amount-to-lower', bounds: box(215, 292, 268, 304) },
+    { key: 'amount-to-right', bounds: box(223, 232, 276, 244) },
+  ] });
+  assert.deepEqual([...result.nodeIds].sort(), ['hub', 'overlapping-name', 'right']);
+  assert.equal(result.conflicts, 3);
+  for (const value of result.nodePlacements.values()) {
+    assert.equal(value.dx, 0); assert.equal(value.dy, 0);
+  }
+});
+
+test('retaining collisions still releases fully offscreen or unmeasurable ordinary labels', () => {
+  const result = labels.select([
+    candidate('partial', box(-10, 5, 10, 25)),
+    candidate('outside', box(-50, 5, -20, 25)),
+    candidate('unknown', null),
+  ], { retainCollisions: true, viewport: box(0, 0, 100, 100),
+    obstacles: [{ key: 'body', bounds: box(0, 0, 20, 30) }] });
+  assert.deepEqual([...result.nodeIds], ['partial']);
+  assert.equal(result.conflicts, 1); assert.equal(result.rejected, 2);
+});
+
 test('priority then key ordering is deterministic under input permutations and crosses label kinds', () => {
   const examples = [
     candidate('z', box(0, 0, 10, 10), { priority: 10 }),

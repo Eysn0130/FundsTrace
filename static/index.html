@@ -27,7 +27,7 @@
   <button type="button" id="navAccounts" data-nav-page="accounts" aria-label="账户与身份" title="账户与身份"><img src="/static/ui-icons/user-search.svg" alt=""></button>
   <button type="button" id="navAnalysis" data-nav-page="analysis" aria-label="全案分析" title="全案分析"><img src="/static/ui-icons/network.svg" alt=""></button>
   <div class="rail-spacer"></div>
-  <div class="rail-update-slot"><button type="button" id="navUpdate" class="rail-update" aria-label="更新" title="更新"><img src="/static/ui-icons/download.svg" alt=""></button><funds-desktop-update hidden></funds-desktop-update></div>
+  <div class="rail-update-slot"><funds-desktop-update hidden></funds-desktop-update></div>
   <button type="button" id="navSettings" aria-label="设置" title="设置"><img src="/static/ui-icons/settings.svg" alt=""></button>
 </nav>
 <div id="appPageHost"><div id="graphPage">
@@ -332,7 +332,7 @@
     <div id="tab-search" class="tab-body">
       <div class="query-disclosure-head">
         <button class="btn small query-toggle" id="btnQueryToggle" type="button" aria-expanded="true" aria-controls="queryFields"><img class="ui-icon" src="/static/ui-icons/chevron-up.svg" alt=""><span>筛选</span></button>
-        <span class="stats query-stat-line" id="statLine">加载中…</span>
+        <span class="stats query-stat-line" id="statLine" hidden></span>
         <p class="workflow-status" id="importCoverageNote" role="note" hidden></p>
       </div>
       <div class="query-disclosure" id="queryFields"><div class="query-controls">
@@ -362,17 +362,19 @@
         </div>
       </div>
       <div class="flow-table-tools" role="group" aria-label="流水表格显示">
-        <div class="result-info" id="resultInfo"></div>
+        <div class="result-info" id="resultInfo" hidden></div>
         <label for="flowTableDensity">行距</label><select id="flowTableDensity"><option value="compact">紧凑</option><option value="comfortable">舒展</option></select>
-        <label for="flowTableWrap">文本</label><select id="flowTableWrap"><option value="wrap">完整换行</option><option value="single">完整单行</option></select>
+        <label for="flowTableWrap">文本</label><select id="flowTableWrap"><option value="two-line">两行概览</option><option value="wrap">完整换行</option><option value="single">完整单行</option></select>
+        <button class="btn small icon-button" id="btnFlowColumnsReset" type="button" aria-label="恢复自动列宽" title="清除当前视图的手动列宽，恢复自动宽度"><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt=""></button>
         <button class="btn small icon-button" id="btnFlowOverview" type="button" aria-label="展开流水表" aria-haspopup="dialog" title="展开流水表 · 勾选即时上图"><img class="ui-icon" src="/static/ui-icons/arrows-maximize.svg" alt=""></button>
       </div>
-      <div class="tbl-wrap flow-table-scroll" id="flowTableScroll" data-flow-density="compact" data-flow-wrap="wrap" tabindex="0" role="region" aria-label="流水查询结果表格">
+      <div class="tbl-wrap flow-table-scroll" id="flowTableScroll" data-flow-density="compact" data-flow-wrap="two-line" tabindex="0" role="region" aria-label="流水查询结果表格">
         <table class="tbl" id="flowTable">
           <thead><tr><th scope="col" aria-label="追踪锚点" id="flowSelectionHeader"><span class="sr-only">锚点</span></th><th scope="col">交易<br>时间</th><th scope="col">付款方</th><th scope="col">收款方</th><th scope="col">金额</th><th scope="col">摘要</th><th scope="col">操作</th></tr></thead>
           <tbody id="flowTbody"></tbody>
         </table>
       </div>
+      <div class="flow-horizontal-scroll" id="flowHorizontalScroll" role="group" aria-label="流水表格水平滚动"><button class="btn small" id="flowScrollLeft" type="button" aria-label="流水表格向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><input id="flowHorizontalPosition" type="range" min="0" max="0" value="0" step="1" disabled aria-label="流水表格水平位置" aria-controls="flowTableScroll"><button class="btn small" id="flowScrollRight" type="button" aria-label="流水表格向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div>
     </div>
     <div id="tab-batches" class="tab-body" style="display:none">
       <header class="batch-heading"><div><h2>导入批次</h2><span id="batchCount" class="muted"></span></div><button class="btn primary" id="btnBatchImport" type="button"><img class="ui-icon" src="/static/ui-icons/upload.svg" alt="">导入流水</button></header>
@@ -385,8 +387,8 @@
 
   <section id="canvasWrap">
     <div id="graphLayoutStatus" role="status" aria-live="polite" hidden></div>
-    <div id="graphContainer" tabindex="0" role="region" aria-label="关系图谱" aria-describedby="graphSelectionHelp"></div>
-    <span id="graphSelectionHelp" class="sr-only">单击选中节点或连线；Enter 查看详情；Ctrl 或 Command 点击多选，Ctrl 或 Command 加 A 全选当前图谱；拖动移动选中节点；双击节点展开邻域，双击连线折点删除折点；Escape 取消选择。</span>
+    <div id="graphContainer" tabindex="0" role="region" aria-label="关系图谱" aria-describedby="graphSelectionHelp" aria-keyshortcuts="Control+a Meta+a Delete Backspace Control+z Meta+z"></div>
+    <span id="graphSelectionHelp" class="sr-only">单击选中节点或连线；Enter 查看详情；Ctrl 或 Command 点击多选，加 A 全选当前图谱；Delete 或 macOS 删除键从当前画布移出选中节点或连线，原始流水保留；Ctrl 或 Command 加 Z 撤销，加 Shift 和 Z 重做；拖动移动选中节点；双击节点展开邻域，双击连线折点删除折点；Escape 取消选择。</span>
     <div id="legend">
       <div class="graph-legend" aria-label="账户角色图例"><span class="lg" title="只转出（源头）"><i class="dot src"></i>源头</span><span class="lg"><i class="dot mid"></i>中转</span><span class="lg" title="只转入（沉淀）"><i class="dot sink"></i>沉淀</span><span class="lg"><i class="dot main"></i>主账号</span><span class="lg"><i class="dot samename"></i>同户名</span></div>
     </div>

@@ -43,7 +43,9 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 ## 启动显示与窗口尺寸
 
-[desktop/window-shell.cjs](../desktop/window-shell.cjs) 将每个窗口的本地标题层与业务 `WebContentsView` 分开：左侧18px批准图标、13px「循迹 FundsTrace」和菜单，固定32 DIP；Windows通过 `titleBarStyle: hidden` 和 `titleBarOverlay` 保留原生最小化、最大化／还原、关闭按钮，CSS按实际原生安全区避让，菜单单独设为不可拖动区域。标题层只允许本地四项资源，不拥有后端认证或业务IPC；业务、分析页与启动层均在下方32 DIP处开始，重载、业务缩放或页面切换不会替换、缩放标题层。桌面图谱隐藏原业务栏的重复品牌，浏览器版保留。Windows不再显示原生菜单条或通过Alt临时插入菜单高度；标题栏菜单保留文件、编辑、显示及更新命令，业务重载、缩放和全屏快捷键单独路由到对应内容。关闭时使用创建阶段保留的视图引用清理监听与业务／启动renderer，避免在closed事件后读取已销毁的原生窗口属性；归属后端继续沿用EOF关闭流程。[Electron原生标题栏](https://www.electronjs.org/docs/latest/tutorial/custom-title-bar)
+2026-11-10 三层工作区源码候选将本节标题区契约改为 44 DIP、24px 图标和 14px 标题字，并同步安装验证脚本的独立断言。导航栏为 52px，右／底外壳边为 4px；见 [本次设计验收](../design-qa.md)。这是源码与合成运行验证，历史安装包及其 32 DIP 证据原样保留；本次尚无新安装包、Windows 原生 GUI／DPI 或发布结论。
+
+[desktop/window-shell.cjs](../desktop/window-shell.cjs) 将每个窗口的本地标题层与业务 `WebContentsView` 分开：左侧24px批准图标、14px「循迹 FundsTrace」及被动预览标记，固定44 DIP；Windows通过 `titleBarStyle: hidden` 和 `titleBarOverlay` 保留原生最小化、最大化／还原、关闭按钮，CSS按实际原生安全区避让。标题层只允许本地四项资源，不拥有后端认证或业务IPC；业务、分析页与启动层均在下方44 DIP处开始，重载、业务缩放或页面切换不会替换、缩放标题层。桌面图谱隐藏原业务栏的重复品牌，浏览器版保留。Windows不再显示原生菜单条或通过Alt临时插入菜单高度；F10／macOS 菜单保留文件、编辑、显示等命令，业务重载、缩放和全屏快捷键单独路由到对应内容。关闭时使用创建阶段保留的视图引用清理监听与业务／启动renderer，避免在closed事件后读取已销毁的原生窗口属性；归属后端继续沿用EOF关闭流程。[Electron原生标题栏](https://www.electronjs.org/docs/latest/tutorial/custom-title-bar)
 
 [desktop/startup.cjs](../desktop/startup.cjs) 在业务窗口上方创建独立、透明的本地 `WebContentsView`：先显示启动层，再在下方准备后端与真实工作台。启动层使用独立受限 session，页面资源请求仅允许本地 `startup/index.html`、`startup/style.css`、`startup/renderer.js` 和 `assets/icon.png` 四项；不接收后端 origin、token 或业务数据，不使用截图或模拟案件。它保留 sandbox、contextIsolation 和 CSP，禁止联网、权限、下载及新窗口；[专用 preload](../desktop/startup/preload.cjs) 只接收就绪通知并报告淡出完成。完成或关窗时显式关闭该层的 `webContents`，避免仅移除 View 后残留 renderer。
 
@@ -53,7 +55,7 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 [窗口策略](../desktop/host-policy.cjs) 以 **1280×720 DIP** 为常规最小窗口，窗口比例可自由调整。默认创建尺寸上限仍为1440×940，空间充足时四周预留32 DIP；Windows缩放和任务栏使可用工作区不足时，窗口与最小值一并限制在该工作区内。移动到更大的工作区时恢复常规最小值，保留符合边界的用户尺寸和位置。坐标和尺寸直接使用Electron的DIP，不再乘除 `devicePixelRatio`。
 
-顶部保留原27px大图标、12px文字及分组顺序，1280宽时仅收紧留白。业务视口不足1280 CSS px时，只把案件操作栏和工具区整体等比适配；表格、画布及32 DIP原生标题栏不参与这层缩放。四个工具页与收起带均完整呈现，不依靠横向滚动访问命令；浮动工具弹层使用独立视口坐标。表格保留自身原生横向滚动，停用重复的范围滑条。启动层在扣除32 DIP标题区后的实际客户区居中；Logo通常保持原176px，仅在空间不足时按既有规则整体缩小。
+顶部保留原27px大图标、12px文字及分组顺序，1280宽时仅收紧留白。业务视口不足1280 CSS px时，只把案件操作栏和工具区整体等比适配；表格、画布及32 DIP原生标题栏不参与这层缩放。四个工具页与收起带均完整呈现，不依靠横向滚动访问命令；浮动工具弹层使用独立视口坐标。表格保留自身原生横向滚动，停用重复的范围滑条。启动层在扣除44 DIP标题区后的实际客户区居中；Logo通常保持原176px，仅在空间不足时按既有规则整体缩小。
 
 ## Windows 10／11 安装与启动边界
 
@@ -96,11 +98,11 @@ Windows x64／PowerShell 7、Node 22.22.1、uv 和 Python 3.11：
 
 安装版启动验证精确区分本地 ASAR 启动层和真实业务页。CI 仅在自己的合成安装进程中暂缓业务 renderer 执行，以检查等待画面；最长 45 秒且在成功、失败及清理路径恢复，不注入或伪造就绪通知。报告先记录环境的减少动态效果偏好，再仅对启动 renderer 仿真 `no-preference`，检查正常金属柔光、渐变及约 1100ms 淡出，不修改系统偏好或正式应用的无障碍行为。正式启动素材接受 1440×880、1302×604、960×580、960×440、683×284 客户区与 DPR 1／1.25／1.5／2 共 20 组仿真，核对固定 Logo、字标、加载区、居中、留白和整体缩放。随后恢复真实初始化，记录背景透明度、整组淡出及启动 renderer 的释放；有界 rAF 样本保留 P95／最大间隔，不以共享 CI 结果承诺用户冷启动耗时或持续 60 FPS。
 
-安装版另识别持久的本地标题层，核对32 DIP、原生 Window Controls Overlay 实际安全区、菜单与拖动命中，确认启动等待、淡出和工作台共享同一标题document。检查真实业务缩放／重载／页面切换后，标题字号和位置不变；分析新窗按唯一新增标题target识别，核对独立布局；关闭其标题层后，必须同时释放该分析内容和标题target，并保留主窗口两个target，以记录实际生命周期耦合。Electron不实现Chrome的 `Browser.getWindowForTarget`，检查不依赖该协议，也不将renderer target或相同尺寸当作原生HWND绑定。原生输入helper按已安装EXE/PID、前台窗口、WM_NCHITTEST和输入桌面约束执行SendInput，记录拖动、原生最小化／最大化／还原／关闭按钮及真实快捷键结果；分析窗关闭仅选择恰好两个归属窗口中已处于前台的一项，随后核对主窗保留和分析层释放。从最小化恢复明确记录为系统ShowWindow命令。缺少可交互桌面时记录unavailable，不能把CDP关窗、设置bounds或CSS仿真当作真实按钮操作通过。
+安装版另识别持久的本地标题层，核对44 DIP、原生 Window Controls Overlay 实际安全区、菜单与拖动命中，确认启动等待、淡出和工作台共享同一标题document。检查真实业务缩放／重载／页面切换后，标题字号和位置不变；分析新窗按唯一新增标题target识别，核对独立布局；关闭其标题层后，必须同时释放该分析内容和标题target，并保留主窗口两个target，以记录实际生命周期耦合。Electron不实现Chrome的 `Browser.getWindowForTarget`，检查不依赖该协议，也不将renderer target或相同尺寸当作原生HWND绑定。原生输入helper按已安装EXE/PID、前台窗口、WM_NCHITTEST和输入桌面约束执行SendInput，记录拖动、原生最小化／最大化／还原／关闭按钮及真实快捷键结果；分析窗关闭仅选择恰好两个归属窗口中已处于前台的一项，随后核对主窗保留和分析层释放。从最小化恢复明确记录为系统ShowWindow命令。缺少可交互桌面时记录unavailable，不能把CDP关窗、设置bounds或CSS仿真当作真实按钮操作通过。
 
 [原生窗口 helper](../scripts/test-windows-startup-window.ps1) 按安装 EXE 的 PID 和文件路径核对归属，读取真实窗口、客户区、显示器工作区、窗口 DPI 及最小跟踪尺寸，再调整并回读最小窗口。hidden/thickFrame普通恢复态的Electron逻辑边界与原始HWND外框不同：报告保留GetWindowRect和WM_GETMINMAXINFO原值，另按同次屏幕客户区的实测边距还原逻辑窗口／最小尺寸；Resize按该边距转换，最后以实际回读验收。DWM可见边界仅用于截图，不替代Electron逻辑尺寸。它不修改系统显示模式或缩放；20 组 CSS／DPR 仿真也不等同于 20 种 Windows 显示设置。`native-installed-app.startup-*.png` 包含启动 renderer 表面截图，以及交互桌面允许时的默认／最小原生窗口合成截图，随候选 SHA-256 清单保留；无法截取或未人工查看时不记录外观验收通过。暂缓业务执行的检查不作为正常冷启动性能数据。
 
-普通安装后生命周期还验证最大化偏好的保存与重开：先通过真实边框拖动建立非默认普通尺寸，再点击原生最大化按钮，等待已安装客户端自行保存普通尺寸和 `maximized:true`，关闭后重启。重启必须观察到原生最大化状态，客户区覆盖当前工作区，标题层仍为 32 DIP；随后原生还原，核对关闭前冻结的普通尺寸、位置及侧栏宽度。启动尺寸验收也支持预先保存的最大化状态：按保存的普通尺寸和当前工作区独立计算期望，验证最大化后先还原，再继续既有最小尺寸与还原检查。最大化时不套用普通窗口的 frame-inset 换算；状态变化、错误还原尺寸或输入不可用均不得报告通过。私有更新 fixture 保留其独立路径，不能冒充这条最大化记忆链。
+普通安装后生命周期还验证最大化偏好的保存与重开：先通过真实边框拖动建立非默认普通尺寸，再点击原生最大化按钮，等待已安装客户端自行保存普通尺寸和 `maximized:true`，关闭后重启。重启必须观察到原生最大化状态，客户区覆盖当前工作区，标题层仍为 44 DIP；随后原生还原，核对关闭前冻结的普通尺寸、位置及侧栏宽度。启动尺寸验收也支持预先保存的最大化状态：按保存的普通尺寸和当前工作区独立计算期望，验证最大化后先还原，再继续既有最小尺寸与还原检查。最大化时不套用普通窗口的 frame-inset 换算；状态变化、错误还原尺寸或输入不可用均不得报告通过。私有更新 fixture 保留其独立路径，不能冒充这条最大化记忆链。
 
 上述自动检查仍仅覆盖 Windows hosted runner。它不证明 Windows 10／11 任务栏最终外观、既有固定图标缓存、真实系统 DPI 或 SmartScreen；没有可用交互桌面时不能把这些项目记为通过。候选构建默认不创建 Tag 或 Release，未获发布授权时仅保留 Actions 产物，现有 Latest 和下载入口保持原版本。
 

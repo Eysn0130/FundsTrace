@@ -239,11 +239,11 @@ function assertNativeClientGeometry(native, viewport, priorInset) {
   const scale = native.scaleFactor;
   assert.ok(near(viewport.dpr, scale, .01), 'STARTUP_NATIVE_CLIENT_DPR');
   assert.ok(near(viewport.width, native.client.width / scale, 2), 'STARTUP_NATIVE_CLIENT_WIDTH');
-  // The persistent local caption owns exactly 32 DIP inside the Win32 client.
+  // The persistent local caption owns exactly 44 DIP inside the Win32 client.
   // OS resize borders stay outside this measurement; no native menu strip is
   // allowed to introduce a second inset above either WebContentsView.
   const inset = native.client.height / scale - viewport.height;
-  assert.ok(viewport.height > 0 && near(inset, 32, 2), 'STARTUP_NATIVE_CLIENT_CHROME');
+  assert.ok(viewport.height > 0 && near(inset, 44, 2), 'STARTUP_NATIVE_CLIENT_CHROME');
   if (priorInset !== undefined) assert.ok(near(inset, priorInset, 2), 'STARTUP_NATIVE_CLIENT_CHROME_CHANGED');
   return inset;
 }
