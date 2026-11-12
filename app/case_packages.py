@@ -56,6 +56,14 @@ _TYPES = {
 }
 _BIGINT_MIN, _BIGINT_MAX = -(2**63), 2**63 - 1
 
+# Package budgets do not select a parser version or authorize table truncation.
+MAX_PACKAGE_BYTES = 512 * 1024 * 1024
+MAX_PACKAGE_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024
+MAX_PACKAGE_MEMBER_BYTES = 512 * 1024 * 1024
+MAX_PACKAGE_META_BYTES = 1024 * 1024
+MAX_PACKAGE_MEMBERS = 10_000
+MAX_PACKAGE_ROWS = 10_000_000
+
 
 def photo_name(value):
     """A photo name is a portable basename, never a path supplied by an archive."""
@@ -885,22 +893,34 @@ def _table_cancellation_flow(details, flow, policy):
 
 def _validate_package(content, directory):
     """Validate and canonicalize every input before opening the database transaction."""
+    source = io.BytesIO(content) if isinstance(content, (bytes, bytearray, memoryview)) else content
+    source.seek(0, os.SEEK_END)
+    if source.tell() > MAX_PACKAGE_BYTES:
+        _invalid("压缩文件不能超过 512MiB")
+    source.seek(0)
     try:
-        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        with zipfile.ZipFile(source) as archive:
             infos = archive.infolist()
+            if (len(infos) > MAX_PACKAGE_MEMBERS
+                    or sum(item.file_size for item in infos) > MAX_PACKAGE_EXPANDED_BYTES):
+                _invalid("ZIP 成员数量或展开大小超出处理范围")
             names = [item.filename for item in infos]
             if len(set(names)) != len(names):
                 _invalid("ZIP 中有重复文件")
             allowed = {"meta.json", *(f"{t}.parquet" for t in _ALL_PKG_COLS)}
             for item in infos:
                 name = item.filename
+                limit = MAX_PACKAGE_META_BYTES if name == "meta.json" else MAX_PACKAGE_MEMBER_BYTES
+                if not 0 <= item.file_size <= limit:
+                    _invalid("ZIP 成员大小超出处理范围")
                 if name not in allowed and not (name.startswith("photos/") and photo_name(name[7:])):
                     _invalid("包含格式之外的文件或路径")
                 if item.is_dir() or item.flag_bits & 1 or (item.external_attr >> 16) & 0o170000 == 0o120000:
                     _invalid("不支持目录、加密文件或符号链接")
             if not {"meta.json", "flows.parquet"}.issubset(names):
                 _invalid("缺少 meta.json / flows.parquet")
-            meta = json.loads(archive.read("meta.json").decode("utf-8"))
+            with archive.open("meta.json") as member:
+                meta = json.loads(member.read(MAX_PACKAGE_META_BYTES + 1).decode("utf-8"))
             if not isinstance(meta, dict) or type(meta.get("format")) is not int or meta["format"] not in (1, 2, 3, 4, 5, 6, 7):
                 _invalid("不支持的格式版本")
             source_members = {f"{table}.parquet" for table in PROVENANCE_PKG_COLS} & set(names)
@@ -915,18 +935,27 @@ def _validate_package(content, directory):
                 _invalid("案件名无效")
             paths, photos = {}, {}
             for name in names:
+                if not (name.endswith(".parquet") or name.startswith("photos/")):
+                    continue
+                path = directory / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(name) as member, path.open("xb") as target:
+                    shutil.copyfileobj(member, target, 1024 * 1024)
                 if name.endswith(".parquet"):
-                    table = name[:-8]
-                    path = directory / name
-                    path.write_bytes(archive.read(name))
-                    paths[table] = path
-                elif name.startswith("photos/"):
-                    photos[name[7:]] = archive.read(name)
+                    paths[name[:-8]] = path
+                else:
+                    photos[name[7:]] = path
     except (zipfile.BadZipFile, UnicodeError, json.JSONDecodeError, RuntimeError, NotImplementedError, EOFError, zlib.error) as exc:
         _invalid(f"ZIP 或元数据损坏（{type(exc).__name__}）")
 
     try:
-        with duckdb.connect(config={"threads": 1}) as check:
+        with duckdb.connect(config={"threads": 1, "memory_limit": "256MiB",
+                                   "temp_directory": str(directory / "validation-spill"),
+                                   "max_temp_directory_size": "2GiB"}) as check:
+            rows = sum(check.execute("select num_rows from parquet_file_metadata(?)", [str(path)]).fetchone()[0]
+                       for path in paths.values())
+            if rows > MAX_PACKAGE_ROWS:
+                _invalid("Parquet 总行数超出处理范围")
             for table, path in paths.items():
                 cols = [c.strip() for c in (ZONED_FLOW_COLS if table == "flows" and meta["format"] == 7 else _ALL_PKG_COLS[table]).split(",")]
                 actual = [r[0] for r in check.execute("describe select * from read_parquet(?)", [str(path)]).fetchall()]
@@ -1109,7 +1138,7 @@ def _validate_package(content, directory):
                 check.table(table).write_parquet(str(path))
                 paths[table] = path
     except (duckdb.Error, ValueError, TypeError, OverflowError) as exc:
-        _invalid(f"Parquet 数据损坏或字段无效（{type(exc).__name__}）")
+        _invalid(f"Parquet 数据损坏、字段无效或超出处理预算（{type(exc).__name__}）")
     return meta["name"].strip(), paths, photos
 
 
@@ -1122,8 +1151,8 @@ def import_package(content):
         with tempfile.TemporaryDirectory(prefix=".fundcase-", dir=photo_root) as stage:
             staged = Path(stage) / "photos"
             staged.mkdir()
-            for filename, data in photos.items():
-                (staged / filename).write_bytes(data)
+            for filename, source in photos.items():
+                shutil.copyfile(source, staged / filename)
             destination = None
             moved = False
             try:

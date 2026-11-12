@@ -28,6 +28,7 @@ import duckdb
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, model_validator
 
 from . import db, importer, sample_data
@@ -1436,14 +1437,16 @@ async def account_ids_import(case_id: int = Form(...), file: UploadFile = File(.
     suffix = Path(file.filename or "").suffix.lower() or ".csv"
     if suffix == ".xls":
         raise HTTPException(400, "旧版 .xls 请另存为 .xlsx 后导入")
-    upload_dir = db.DATA_DIR / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    import_id = uuid.uuid4().hex[:12]
-    path = upload_dir / f"{import_id}{suffix}"
-    content = await file.read()
-    path.write_bytes(content)
+    content = await file.read(importer.ID_TABLE_MAX_BYTES + 1)
+    if len(content) > importer.ID_TABLE_MAX_BYTES:
+        raise HTTPException(400, "账号身份证表不能超过 16MiB")
     try:
-        pairs = importer.read_id_table(path)
+        upload_dir = db.DATA_DIR / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".identity-", dir=upload_dir) as tmp:
+            path = Path(tmp) / f"identities{suffix}"
+            path.write_bytes(content)
+            pairs = importer.read_id_table(path)
         rows, invalid, empty = [], 0, 0
         seen = set()
         for acct, idno in pairs:
@@ -1469,16 +1472,12 @@ async def account_ids_import(case_id: int = Form(...), file: UploadFile = File(.
         raise
     except Exception as e:
         raise HTTPException(400, f"解析失败：{e}")
-    finally:
-        try:
-            path.unlink()
-        except Exception:
-            pass
 
 
 # ---------------- 账号照片（节点头像） ----------------
 
 _PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+MAX_PHOTO_BYTES = 8 * 1024 * 1024
 
 
 def _photo_dir(case_id: int) -> Path:
@@ -1549,13 +1548,15 @@ async def account_photo_set(case_id: int = Form(...), account: str = Form(...),
     ext = Path(file.filename or "").suffix.lower()
     if ext not in _PHOTO_EXTS:
         raise HTTPException(400, "仅支持 jpg/png/webp/bmp 图片")
-    content = await file.read()
-    if len(content) > 8 * 1024 * 1024:
+    content = await file.read(MAX_PHOTO_BYTES + 1)
+    if len(content) > MAX_PHOTO_BYTES:
         raise HTTPException(400, "图片不能超过 8MB")
     from PIL import Image
     try:
-        img = Image.open(io.BytesIO(content))
-        img.verify()
+        with Image.open(io.BytesIO(content)) as img:
+            if Image.MAX_IMAGE_PIXELS is not None and img.width * img.height > Image.MAX_IMAGE_PIXELS:
+                raise ValueError("Image pixel budget exceeded")
+            img.verify()
     except Exception:
         raise HTTPException(400, "图片文件无效")
     crop_cx = min(1.0, max(0.0, crop_cx))
@@ -2213,8 +2214,8 @@ def export_case(case_id: int):
 
 @app.post("/api/cases/import")
 async def import_case(file: UploadFile = File(...)):
-    """Validate a format-1 package, then atomically import new IDs and photos."""
-    return import_package(await file.read())
+    """Validate a supported package, then atomically import new IDs and photos."""
+    return await run_in_threadpool(import_package, file.file)
 
 
 # Windows MIME registrations can classify ES modules as non-executable content.
