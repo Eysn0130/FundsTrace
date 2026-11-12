@@ -1,5 +1,7 @@
 # FundsTrace 独立桌面交付
 
+按任务阅读：[发布规则](#v01x-发布规则)、[安装与卸载](#安装升级与卸载)、[Windows 构建](#可重复-windows-构建与验证)说明现行入口与兼容约束；下方按日期／版本保留的候选记录只证明各自执行范围。历史包、旧失败和未执行项不随现行规则更新而改写。
+
 ## v0.1.x 发布规则
 
 FundsTrace v0.1.x 正常启动**无需公钥或授权码**。每个实际版本 Tag 对应 GitHub Release，附 Windows x64 NSIS `.exe`，从 [Releases](https://github.com/Eysn0130/FundsTrace/releases/latest) 下载并安装。原生构建与安装结果以对应版本的候选清单和发布报告为准；下方历史记录仅对应各自源码。安装包未签名，不能声称完成代码签名或 Windows 全面兼容验收。
@@ -159,11 +161,11 @@ transfer 使用独立、不可取消的并发组。若上传完成后正文更�
 
 ## 当前证据与尚未执行的边界
 
+本节按原观察日期解释“当前”，不代表接续候选已经复验。版本专属的 CI 和包内结果归入对应交付记录；现行构建要求见上方构建章节。
+
 2026-10-21 启动页与窗口尺寸源码候选：桌面 Node 回归共 104 项，其中 98 项通过、6 项跳过；Python 定向回归 6 项通过。macOS 上使用隔离合成状态实际启动源码 Electron，已进入真实工作台，并将原生窗口从 1440×809 调至 960×640。浏览器以候选启动素材核对 1440×880、960×580、960×440 和 683×284 客户区：前三组保持 176px Logo，最后一组整体缩小，均居中且保留至少 24px 留白；淡出中缩放不重置进度。这些结果只覆盖该源码候选，不代表 Windows 安装版、原生 DPI／跨屏或 Win10／11 实机验收；本轮未打包或发布，历史 Windows 报告不覆盖本次新增启动层。
 
 普通账户夹具显式绑定新建账户自己的 `LocalAppData`，并用一次性文件验证缓存基目录可写，避免带着调用者的环境访问其他用户的缓存目录。该准备只适用于 Windows Actions 新建的合成账户，随后仍由真实安装版创建和使用自己的更新缓存；失败时也由原账户清理私有临时文件，再移除测试 profile 和账户。
-
-v0.1.3 的 [PR CI](https://github.com/Eysn0130/FundsTrace/actions/runs/38845930019) 完成 Python／G6 394 项及108个子测试、React 38项和 Windows 桌面 Node 34项；[Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38845925970) 绑定源码 `2b8eda98bb6a3dae8c8fa0b91ade36a5e6342ef5`，完成59项定向Python、34项Node、55条资源和13项包内后端检查。维护者与普通账户各完成18项安装生命周期、46项实际EXE应用检查（内含27组CSS视口／DPR）、15项冻结后端导入中断恢复，普通账户另有11项环境和清理检查。旧版证据保留在各版本记录中。
 
 本机 macOS arm64，无 Win10／11 交互式主机。Server 2022 上真实非管理员账户、中文profile／安装路径、程序外网阻断、安装后renderer／单实例／退出及包内导入进程恢复已执行；Win10／11实际系统100%／150%／200% DPI与跨屏、密集表格字体、交互安装向导、原生保存／取消、运行中安装器关窗和安装版任务中断后的人工恢复仍为 **NOT_EXECUTED（Win10／11 实机）**。程序出站阻断不等于整台主机物理断网，CSS／DPR模拟不等于系统缩放验收。
 
@@ -171,7 +173,9 @@ v0.1.3 的 [PR CI](https://github.com/Eysn0130/FundsTrace/actions/runs/388459300
 
 ## v0.1.3 交付记录
 
-2026-10-15：[Release v0.1.3](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.3)、[PR #6](https://github.com/Eysn0130/FundsTrace/pull/6) 与上述 Windows Actions 绑定源码 `2b8eda98bb6a3dae8c8fa0b91ade36a5e6342ef5`。main 合并提交 `5660812a819d4c52d7a2b4ac355c5fbd27f85c54` 包含该候选且仓库tree完全一致，之后仅补发布说明；Tag固定成功构建的原SHA。
+2026-10-15：[Release v0.1.3](https://github.com/Eysn0130/FundsTrace/releases/tag/v0.1.3)、[PR #6](https://github.com/Eysn0130/FundsTrace/pull/6) 与本节 Windows Actions 绑定源码 `2b8eda98bb6a3dae8c8fa0b91ade36a5e6342ef5`。main 合并提交 `5660812a819d4c52d7a2b4ac355c5fbd27f85c54` 包含该候选且仓库tree完全一致，之后仅补发布说明；Tag固定成功构建的原SHA。
+
+v0.1.3 的 [PR CI](https://github.com/Eysn0130/FundsTrace/actions/runs/38845930019) 完成 Python／G6 394 项及108个子测试、React 38项和 Windows 桌面 Node 34项；[Windows Actions](https://github.com/Eysn0130/FundsTrace/actions/runs/38845925970) 绑定源码 `2b8eda98bb6a3dae8c8fa0b91ade36a5e6342ef5`，完成59项定向Python、34项Node、55条资源和13项包内后端检查。维护者与普通账户各完成18项安装生命周期、46项实际EXE应用检查（内含27组CSS视口／DPR）、15项冻结后端导入中断恢复，普通账户另有11项环境和清理检查。旧版证据保留在各版本记录中。
 
 - 修复G6重载／重开后的持久导入接续，以及导入历史跳转丢任务ID。恢复同案原件、映射与账号选项，保留显式空主账号选择；活动／完成任务只读进度，重新预览后仍须用户确认。没有新队列、依赖或数据格式，详见[导入生命周期](import-lifecycle.md)。
 - 初次上传先解析内存内容再写原件，新增两项真实进程退出回归；连同既有新库／升级库的写入中与回执后退出，共6项过程回归。不保证文件与数据库之间任意断电、迁移断电或磁盘损坏恢复。
@@ -263,6 +267,6 @@ Release除原生报告外，提供[普通账户证据ZIP](https://github.com/Eys
 
 ## 团队协作和 Analytix 接入
 
-新成员从 [CONTRIBUTING.md](../CONTRIBUTING.md) 的一个合成用例开始。短分支、小 PR、预先认领模块，避免多人同时编辑 `app/main.py`／`static/app.js`；实际协作者到位后按模块安排一位 reviewer 和必要检查，不增加固定双审／重复全套门槛。发布、Tag 和公开资产由维护者执行。
+新成员、分工、审核与发布权限统一见 [CONTRIBUTING.md](../CONTRIBUTING.md)，从其中一个合成用例开始；本页保留桌面与宿主专属边界。
 
 长期入口为 [共享 React 面板＋宿主 adapter](frontend-host-adaptation.md)。`funds-panel.v1` 仍是 UI port；浏览器 DTO 不是已获接受的 IPC／权限契约。保持一个 Core Harness、案件／快照 authority 及每个用例一个数据所有者，不把独立 Electron 或第二套数据库搬进 Analytix。侧栏由有效 contribution、Core enabled/available 和当前案件 session 派生；换案／重绑／撤销先清旧显示和回调，缺宿主能力不回退独立 HTTP。实施前重新核对真实 Host，见 [windows-and-plugin-plan.md](windows-and-plugin-plan.md)。
