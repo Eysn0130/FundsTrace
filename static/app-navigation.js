@@ -103,10 +103,12 @@
     canWrite:async context=>(!window.FundsImportWorkflow || await window.FundsImportWorkflow.canWrite(context)) && isCurrentCase(context,false),
     onState:()=>{window.FundsAppNavigation?.sync();syncNodeWorkspaceControls();window.FundsCanvasActions?.sync();window.dispatchEvent(new CustomEvent('funds:account-state'));},
     changed:()=>window.FundsAppNavigation?.accountsChanged(),
-    publish:async context=>{
+    publish:async (context,kind)=>{
       if (!isCurrentCase(context,false)) return;
       const binding=caseContext(); state.forceRebuild=true;
       await loadGraph(true,binding);
+      if (!isCurrentCase(binding)) return;
+      if (kind==='identity-set' && page==='home') await doSearch(state.search.page || 1,{refresh:true});
       if (isCurrentCase(binding)) window.FundsAppNavigation?.accountsChanged();
     },
   });
@@ -134,7 +136,7 @@
     if (analysisLoaded) analysisFrame.contentWindow?.postMessage({channel,version,...context(),surface:'analysis',active:page==='analysis'},location.origin);
     if (changed) { post({type:'cases-changed'}); if(analysisLoaded) analysisFrame.contentWindow?.postMessage({channel,version,type:'cases-changed'},location.origin); }
   }
-  function show(next) {
+  function show(next,{tableQuery='refresh'}={}) {
     if (!['home','cases','accounts','analysis'].includes(next)) return false;
     if (next !== page && page === 'home') window.FundsWorkspaceSession.capture();
     const returning = page !== 'home' && next === 'home';
@@ -154,7 +156,7 @@
     if (page === 'home') url.searchParams.delete('page'); else url.searchParams.set('page',page);
     history.replaceState(null,'',url);
     if (page === 'home') requestAnimationFrame(()=>{state.graphCamera?.resize?.();scheduleGraphViewport();scheduleGraphLabels();});
-    if (returning) void refreshAll().catch(()=>toast('部分数据刷新失败，请稍后重试','err'));
+    if (returning) void refreshAll({tableQuery}).catch(()=>toast('部分数据刷新失败，请稍后重试','err'));
     return true;
   }
   function valid(message) {
@@ -306,7 +308,7 @@
         else if (payload.action==='view-flows' && typeof payload.account==='string' && payload.account.trim()) {
           const value=await caseRequest('/api/account-registry/profile?'+new URLSearchParams({case_id:String(binding.caseId),account:payload.account}));
           if (!isCurrentCase(binding,false) || value.case_id!==String(binding.caseId) || value.account!==payload.account) throw new Error('案件或账户已变化，请重新选择');
-          show('home');
+          show('home',{tableQuery:'caller'});
           for (const id of ['fAccount','fName','fCounter','fKw','fMin','fMax','fFrom','fTo']) document.querySelector('#'+id).value='';
           document.querySelector('#fTracked').checked=false;
           document.querySelector('#fAccount').value=payload.account;

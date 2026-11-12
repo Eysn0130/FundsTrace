@@ -444,7 +444,7 @@ function lifecycleHarness({ canvas = 0 } = {}) {
     let start;
     const listen = f.context.window.addEventListener;
     f.context.window.addEventListener = (_name, callback) => { start = callback; };
-    vm.runInContext(section("window.addEventListener('DOMContentLoaded', async () => {", 'async function refreshAll()'), f.context);
+    vm.runInContext(section("window.addEventListener('DOMContentLoaded', async () => {", 'async function refreshAll('), f.context);
     f.context.window.addEventListener = listen;
     await start();
   } };
