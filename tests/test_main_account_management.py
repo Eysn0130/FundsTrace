@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from app import main
+from app.services import main_accounts
 from test_cases import insert_flow
 
 
@@ -243,7 +243,7 @@ def test_auto_recognition_is_atomic_if_later_account_write_fails(client, databas
     bid = batch(database, cid)
     for account in ("000-A", "000-B"):
         insert_flow(database, cid, flow_row, batch_id=bid, self_account=account)
-    original = main.mark_automatic
+    original = main_accounts.mark_automatic
     calls = []
     def fail_later(*args):
         result = original(*args)
@@ -251,7 +251,7 @@ def test_auto_recognition_is_atomic_if_later_account_write_fails(client, databas
         if len(calls) == 2:
             raise RuntimeError("Synthetic write failure")
         return result
-    monkeypatch.setattr(main, "mark_automatic", fail_later)
+    monkeypatch.setattr(main_accounts, "mark_automatic", fail_later)
     with pytest.raises(RuntimeError, match="Synthetic write failure"):
         client.post("/api/main-accounts/auto", json={"case_id": cid})
     assert len(calls) == 2

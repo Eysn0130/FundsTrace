@@ -1944,15 +1944,6 @@ body:has(.funds-radial) .graph-selection-breathe { animation-play-state: paused;
 }
 .funds-radial-accent { fill: var(--radial-accent); pointer-events: none; }
 .funds-radial-slice.is-danger .funds-radial-accent { fill: var(--radial-danger); }
-.funds-radial-subring { pointer-events: none; }
-.funds-radial-group-mark {
-  fill: none;
-  stroke: var(--radial-text-secondary);
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.funds-radial-slice.is-active .funds-radial-group-mark { stroke: var(--radial-on-accent); }
-.funds-radial-slice.is-disabled .funds-radial-group-mark { opacity: .5; }
 
 .funds-radial-item {
   position: absolute;
@@ -1984,12 +1975,6 @@ body:has(.funds-radial) .graph-selection-breathe { animation-play-state: paused;
 .funds-radial-item:focus-visible {
   outline: none;
 }
-.funds-radial-subitem {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--radial-text);
-}
-.funds-radial-subitem.is-active { color: var(--radial-on-accent); }
 
 .funds-radial-hub {
   position: absolute;

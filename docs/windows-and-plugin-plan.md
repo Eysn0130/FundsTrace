@@ -1,6 +1,6 @@
 # Windows 与 Analytix 插件入驻施工建议
 
-> **当前状态更新（2026-10-15）：** 用户现已授权独立桌面施工；Electron／Python sidecar 与原生 Windows x64 构建脚本已落地，当前结果见 [desktop-delivery.md](desktop-delivery.md)。下面保留上一阶段的研究与验收矩阵，“本轮不做 Electron”等表述为历史范围。Windows 构建／运行仍未完成，Analytix 未修改或接入。
+> **历史状态更新（2026-10-15）：** 当日已获独立桌面施工授权，Electron／Python sidecar 与原生 Windows x64 构建脚本已落地；该日 Windows 构建／运行尚未完成，Analytix 未修改或接入。以下研究与验收矩阵按当日范围保留，不代表当前状态或新任务授权；后续独立桌面结果见 [desktop-delivery.md](desktop-delivery.md)，真实 Host 接入前须重新核对。
 
 状态：Reference／后续施工建议。核对日期：2026-10-15。**本轮不做 Electron，不修改 Analytix，不安装、封包、签名或发布；本文件不证明桌面或插件已经可用。**
 

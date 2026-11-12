@@ -104,6 +104,7 @@ React 的“导入记录”提供任务进度、完成回执、继续导入和�
 | --- | --- |
 | `run.py`、`desktop_backend.py` | 根目录启动入口；后者是 Desktop 拥有的 Python sidecar，保持其认证、数据和进程归属 |
 | `app/main.py` | 应用组装与兼容业务 API |
+| `app/main_account_routes.py`、`app/services/main_accounts.py` | 主账号管理的 legacy HTTP／请求模型与完整用例；路由保留案件校验和事务，服务集中候选、自动识别及人工标记逻辑 |
 | `app/api/`、`app/services/` | v1 契约、案件查询，两套路由共用的持久导入用例 |
 | `app/db.py`、`app/paths.py` | 持久化事务和运行目录 |
 | `app/importer.py` | 流水识别、清洗、案件内去重、源行关联及既有事务写入适配；`commit_rows` 不是纯解析函数 |
