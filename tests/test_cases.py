@@ -216,12 +216,12 @@ def test_case_deletion_removes_every_case_table_and_photo_but_preserves_other_ca
 def test_import_photo_write_failure_cannot_create_partial_case(client, database, make_case, flow_row, monkeypatch):
     source = populated_case(database, make_case, flow_row)
     content = exported(client, source)
-    original = Path.write_bytes
-    def fail_photo(path, data):
-        if path.name == "avatar.png":
+    original = shutil.copyfile
+    def fail_photo(source, target, *args, **kwargs):
+        if Path(target).name == "avatar.png":
             raise OSError("synthetic photo write failure")
-        return original(path, data)
-    monkeypatch.setattr(Path, "write_bytes", fail_photo)
+        return original(source, target, *args, **kwargs)
+    monkeypatch.setattr(shutil, "copyfile", fail_photo)
     with pytest.raises(OSError, match="synthetic photo write failure"):
         import_package(client, content)
     assert len(database.q("select * from cases")) == 2

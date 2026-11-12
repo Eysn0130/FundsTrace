@@ -2,7 +2,9 @@
 from decimal import Decimal
 import io
 import json
+from pathlib import Path
 import re
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
@@ -12,6 +14,34 @@ import pytest
 from funds_assertions import unresolved_funds
 from app import importer
 from app.money import money_decimal, money_string
+
+
+def test_legacy_money_display_keeps_helper_roles_and_missing_fallback():
+    root = Path(__file__).resolve().parents[1]
+    script = r"""
+const assert = require('node:assert/strict');
+require('./static/money.js');
+const money = globalThis.FundsMoney;
+assert.equal(money.format(null, ''), '');
+assert.equal(money.format('', ''), '');
+assert.equal(money.format('0.00', ''), '0.00');
+assert.equal(money.format(1234), '1,234.00'); // Existing controlled integer fixtures.
+assert.equal(money.format(0.1), '金额格式错误');
+assert.equal(money.format(Number.MAX_SAFE_INTEGER + 1), '金额格式错误');
+assert.equal(money.cents('9999999999999999.99'), 999999999999999999n);
+assert.equal(money.cents('-0.01'), -1n);
+assert.throws(() => money.cents('0.001'), TypeError);
+assert.equal(money.count(1234), '1,234');
+assert.equal(money.currency('0.01'), '¥0.01');
+assert.equal(money.currency('1.20', ''), '未标注币种 1.20');
+assert.equal(money.totals([{amount: '0.01', currency: 'CNY'},
+                         {amount: '9999999999999999.99', currency: 'USD'}]),
+             '¥0.01\nUSD 9,999,999,999,999,999.99');
+assert.equal(money.totals([], null), '—');
+assert.equal(money.totals([], '0.00', 'USD'), 'USD 0.00');
+"""
+    result = subprocess.run(["node", "-e", script], cwd=root, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def seed(database, make_case, flow_row):

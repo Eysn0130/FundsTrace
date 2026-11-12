@@ -293,63 +293,104 @@ def _read_full(path, sep, hdr, enc):
     return frame
 
 
+ID_TABLE_MAX_BYTES = 16 * 1024 * 1024
+ID_TABLE_MAX_EXPANDED_BYTES = 64 * 1024 * 1024
+ID_TABLE_MAX_ROWS = 100_000
+ID_TABLE_MAX_COLUMNS = 256
+ID_TABLE_MAX_SHEETS = 256
+
+
 def read_id_table(path: Path):
-    """读取账号-身份证对照表（非流水表，不走流水表头嗅探）。
+    """Read the first identity table, with bounded input and row expansion.
 
-    自动定位「身份证/证件」与「账号类」同现的表头行；返回 [(账号, 证件号)]，
-    全程按文本读取，避免长账号被 Excel 转成科学计数法丢精度。
+    This is current user metadata, not a versioned transaction parser. Keep long
+    account strings and stop reading unrelated worksheets after the first match.
     """
-    suffix = path.suffix.lower()
-    sheets = []
-    if suffix in (".xlsx", ".xls"):
-        xs = pd.ExcelFile(path)
-        for sh in xs.sheet_names:
-            try:
-                sheets.append(xs.parse(sh, header=None, dtype=str))
-            except Exception:
-                continue
-    else:
-        last_err = None
-        for enc in ("utf-8-sig", "gbk", "gb18030", "utf-8", "utf-16"):
-            try:
-                sheets = [pd.read_csv(path, header=None, dtype=str, encoding=enc,
-                                      sep=None, engine="python")]
-                break
-            except Exception as e:
-                last_err = e
-        if not sheets:
-            raise ImportError(f"CSV 解析失败（{last_err}）")
+    if path.stat().st_size > ID_TABLE_MAX_BYTES:
+        raise ImportError("账号身份证表不能超过 16MiB")
 
-    def _cell(v):
-        if v is None or (isinstance(v, float) and math.isnan(v)):
+    def cell(value):
+        if value is None or isinstance(value, float) and math.isnan(value):
             return ""
-        return str(v).strip()
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value).strip()
 
-    for raw in sheets:
-        if raw is None or raw.empty or raw.shape[1] < 2:
-            continue
-        hdr_idx = None
-        for i in range(min(len(raw), 30)):
-            joined = "".join(_cell(v) for v in raw.iloc[i].tolist())
-            if (("身份" in joined or "证件" in joined)
-                    and any(w in joined for w in ("账号", "帐号", "卡号", "账户"))):
-                hdr_idx = i
-                break
-        if hdr_idx is None:
-            continue
-        header = [_cell(v) for v in raw.iloc[hdr_idx].tolist()]
-        data = raw.iloc[hdr_idx + 1:].copy()
-        data.columns = [h if h else f"col{j}" for j, h in enumerate(header)]
-        id_col = next((c for c in data.columns if ("身份" in c) or ("证件" in c)), None)
-        acct_col = next((c for c in data.columns
-                         if ("身份" not in c and "证件" not in c
-                             and any(w in c for w in ("账号", "帐号", "卡号", "账户")))), None)
-        if id_col is None or acct_col is None:
-            continue
-        out = []
-        for _, r in data.iterrows():
-            out.append((_cell(r[acct_col]), _cell(r[id_col])))
-        return out
+    def pairs(rows):
+        columns, result = None, []
+        for index, row in enumerate(rows):
+            if len(row) > ID_TABLE_MAX_COLUMNS:
+                raise ImportError("账号身份证表列数超出处理范围")
+            if columns is None:
+                if index >= 30:
+                    return None
+                header = [cell(value) for value in row]
+                joined = "".join(header)
+                if not (("身份" in joined or "证件" in joined)
+                        and any(word in joined for word in ("账号", "帐号", "卡号", "账户"))):
+                    continue
+                identity = next((i for i, name in enumerate(header) if "身份" in name or "证件" in name), None)
+                account = next((i for i, name in enumerate(header)
+                                if "身份" not in name and "证件" not in name
+                                and any(word in name for word in ("账号", "帐号", "卡号", "账户"))), None)
+                if identity is None or account is None:
+                    return None
+                columns = account, identity
+                continue
+            if len(result) >= ID_TABLE_MAX_ROWS:
+                raise ImportError("账号身份证表行数超出处理范围")
+            result.append(tuple(cell(row[i]) if i < len(row) else "" for i in columns))
+        return result if columns is not None else None
+
+    suffix = path.suffix.lower()
+    if suffix == ".xlsx":
+        import zipfile
+        from openpyxl import load_workbook
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+            if len(members) > 2048 or sum(item.file_size for item in members) > ID_TABLE_MAX_EXPANDED_BYTES:
+                raise ImportError("账号身份证工作簿展开大小超出处理范围")
+        workbook = load_workbook(path, read_only=True, data_only=True, keep_links=False)
+        try:
+            if len(workbook.worksheets) > ID_TABLE_MAX_SHEETS:
+                raise ImportError("账号身份证表工作表数量超出处理范围")
+            for sheet in workbook.worksheets:
+                sheet.reset_dimensions()
+                result = pairs(sheet.iter_rows(values_only=True))
+                if result is not None:
+                    return result
+        finally:
+            workbook.close()
+    elif suffix == ".xls":
+        # Retain the library's old XLS path; the current HTTP entry rejects XLS.
+        with pd.ExcelFile(path) as workbook:
+            if len(workbook.sheet_names) > ID_TABLE_MAX_SHEETS:
+                raise ImportError("账号身份证表工作表数量超出处理范围")
+            for sheet in workbook.sheet_names:
+                raw = workbook.parse(sheet, header=None, dtype=str, nrows=ID_TABLE_MAX_ROWS + 31)
+                result = pairs(raw.itertuples(index=False, name=None))
+                if result is not None:
+                    return result
+    else:
+        last_error = None
+        for encoding in ("utf-8-sig", "gbk", "gb18030", "utf-8", "utf-16"):
+            try:
+                with path.open(encoding=encoding, newline="") as source:
+                    sample = next((line for line in source if line.strip()), "")
+                    dialect = csv.Sniffer().sniff(sample)
+                    source.seek(0)
+                    rows = (row for row in csv.reader(source, dialect, strict=True)
+                            if row and not (len(row) == 1 and not row[0].strip()))
+                    result = pairs(rows)
+            except (UnicodeError, csv.Error) as exc:
+                last_error = exc
+                continue
+            if result is not None:
+                return result
+            last_error = None
+            break
+        if last_error is not None:
+            raise ImportError(f"CSV 解析失败（{last_error}）")
     raise ImportError("未找到包含「账号」与「身份证/证件号」的表头行")
 
 
