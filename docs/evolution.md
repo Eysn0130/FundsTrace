@@ -28,7 +28,25 @@ tests/、scripts/             tests/、scripts/、docs/
                              crates/              # 获准的完整 Rust 模块；采用另行验收
 ```
 
-先从 `main.py` 提取一个完整业务用例及必要调用方，避免只按行数切文件。数据库连接与事务仍由统一边界管理；UI 分组不复制数据语义。Python 模块用 `snake_case.py`、回归用 `test_<behavior>.py`；React 组件用 `PascalCase.tsx`，工具和功能文件用 `kebab-case.ts`，文档用 `kebab-case.md`，Rust crate 用 `snake_case`。避免 `utils2`、`final-new`、`patch_*`。按用途分离源码、合成样例、测试夹具、生成物和本地运行数据；旧文件名、环境变量及 `.fundcase` 格式保留到有兼容迁移证据时再调整。
+先从 `main.py` 提取一个完整业务用例及必要调用方，避免只按行数切文件。数据库连接与事务仍由统一边界管理；UI 分组不复制数据语义。按用途分离源码、合成样例、测试夹具、生成物和本地运行数据；旧文件名、环境变量及 `.fundcase` 格式保留到有兼容迁移证据时再调整。
+
+### 新文件命名与兼容例外
+
+新 Python 模块及新 Python 脚本用 `snake_case.py`，Python 回归用 `test_<behavior>.py`；新 React 组件用 `PascalCase.tsx`，新 TypeScript 工具和功能文件用 `kebab-case.ts`，对应测试跟随被测文件基名。一般新文档用 `kebab-case.md`，Rust crate 沿用 `snake_case`。其他语言及平台入口遵循既有工具约定，不将 Python 规则泛化为所有脚本。目录按职责组织，避免 `utils2`、`final-new`、`patch_*` 等按修复次数或临时状态命名功能源码。
+
+以下五个既有路径保留为明确的兼容例外：
+
+| 保留路径 | 原因 |
+| --- | --- |
+| [frontend/src/standalone/browserActions.ts](../frontend/src/standalone/browserActions.ts) | 已采用的浏览器动作模块路径。 |
+| [frontend/src/standalone/browserActions.test.ts](../frontend/src/standalone/browserActions.test.ts) | 跟随该模块基名的既有测试。 |
+| [frontend/src/standalone/workspaceBridge.ts](../frontend/src/standalone/workspaceBridge.ts) | 已采用的工作台桥接模块路径。 |
+| [frontend/src/standalone/workspaceBridge.test.ts](../frontend/src/standalone/workspaceBridge.test.ts) | 跟随该模块基名的既有测试。 |
+| [docs/brand/render-showcase-media.py](brand/render-showcase-media.py) | [品牌指南](brand/README.md) 已记录的本地 CLI，保留命令兼容。 |
+
+[.github/pull_request_template.md](../.github/pull_request_template.md) 是平台模板惯例，[docs/licensing.en.md](licensing.en.md) 是语言变体惯例，分别保留，不计入上表五个例外。例外仅限所列路径，不将整个 `standalone/` 放开为 camelCase，也不将所有 Python 工具放开为 kebab-case。
+
+当前不移动、重命名或增加 shim。后续确有迁移需求时，先列明实际消费者，再原子同步 imports、测试、HTML／资源、CLI 和文档引用；只有确认存在外部依赖时才评估最小兼容入口。
 
 ## 数据执行：先 SQL，再试 Polars，最后考虑 Rust
 

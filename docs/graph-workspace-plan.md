@@ -74,6 +74,16 @@
 | `ui-dialogs.js` | 模态背景inert、嵌套层级、Tab／Escape／还焦、真正遮罩手势、命名输入IME边界、推荐项与裁剪区域键盘操作、映射标签绑定 |
 | `workflow-ui.js` | 导入窗口会话与只读进度恢复、明细请求失效保护、详情抽屉操作反馈及焦点恢复；继续调用既有服务和渲染 |
 
+### 现有入口与包装次序
+
+以下登记以 `e8ddd699` 为基线的传统工作台现有接缝，不新增接口。相关脚本在 [index.html](../static/index.html) 中的相对装载顺序为 [app.js](../static/app.js) → [canvas-editor.js](../static/canvas-editor.js) → [table-workspace.js](../static/table-workspace.js) → [workspace-session.js](../static/workspace-session.js)。后加载的包装在外层；装载次序与调用进入次序要分别核对。
+
+`loadGraph` 最终签名是 `async (retry = true, context = caseContext(), { tableQuery = 'binding' } = {})`，由 table-workspace → canvas-editor → app 向内调用；workspace-session 不包装此入口。table-workspace 先使实体选择器失效，canvas-editor 等待同一案件／画布旧代已经发送的追踪写入结算，再复查当前绑定；app 按案件／画布绑定与请求序号读取并发布图。返回时 canvas-editor 只在绑定仍有效时发布 membership，table-workspace 再核对 `refreshBinding`、当前绑定及图已就绪，清除该次刷新标记并重查表格一次。`tableQuery = 'caller'` 把最终查询交给恢复查询条件的调用方负责。原函数当前返回 `Promise<void>`；包装保留返回结果、早退及等待语义，Promise 完成或早退都不是耐久写入成功回执。
+
+`selectCase(caseId)`／`activateCanvas(id)` 的当前包装都是同步函数：workspace-session 先 `capture()` 保存查询与编辑意图，table-workspace 再 `invalidate()` 清空旧表格和选择；canvas-editor 调用 app 原函数完成绑定切换，随后重置手势、membership 和 history；table-workspace 记录新 `refreshBinding`，最后 workspace-session 在内层返回后 `resetQuery()`。各层用原 `this` 和参数调用内层，并原样转发返回值，不改为异步等待。capture 必须发生在表格失效前，不能按脚本装载顺序倒置它。
+
+这些接缝共同保留 A–B–A 的代次检查、旧代已发送写入完成后再读、迟到结果失去发布资格及切换后单次表格重查边界。改动任一包装须连同相邻调用方核对；fixture、源码登记和旧浏览器记录均不替代新候选受影响用户流程的实际验证。下文历史尺寸、发布及验收记录仍只适用于其原候选和范围。
+
 局部图标取自本地锁定的Tabler Icons，许可见 [第三方通知](../THIRD_PARTY_NOTICES.md)。分析页保留独立脚本，向既有算法服务提交明确选中的算法和参数；本轮不新增分析算法。
 
 ## 工作区视图
