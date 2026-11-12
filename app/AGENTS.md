@@ -11,7 +11,7 @@
 | 事件与所选资金口径 | `event_resolution.py` 的 `rebuild`；`bank_posting_pairs.py`/`bank_single_postings.py` 的已登记来源合同；`funds_projection.py` 的 CTE/summary/from_rows | 同笔须按明确版本/作用域证据判断，通用流水号、凭证号、同秒同额不能代替证明。本地记账证明不宣称外部结算。观察金额、确认事件金额与未决范围各按返回 policy 表达，不能在调用方自行再去重。 |
 | 时序与条件本金 | `ledger_navigation.py`、`principal_ledger.py`、`principal_evidence.py`；计算核 `principal.py`/`principal_network.py`；编排 `principal_multihop.py` | 来源记账顺序不由导入 ID/代表 ID 推断。完整账簿区间独立于显示过滤；覆盖、期初、余额种类、透支/可用性、竞争分录及冲正缺证时保留未知、受限或不一致状态。仅在非空可行集的上下界一致时认定模型条件下确定份额，空可行集报告冲突。精确可行范围和 FIFO 分别标注，多跳用联合容量，不传播或相加独立上界。 |
 
-- `main.py`、`api/`、`analysis_routes.py`、`principal_routes.py` 适配 HTTP、请求/响应及既有业务入口；`services/` 编排完整用例；`db.py`/`paths.py` 管连接、事务和运行位置。保留兼容入口，不因文件较大先迁出一半职责，不预建 storage/domain 等空层。
+- `main.py` 组装应用；`api/`、`analysis_routes.py`、`principal_routes.py`、`main_account_routes.py` 适配各自 HTTP、请求/响应及既有业务入口；`services/` 编排完整用例；`db.py`/`paths.py` 管连接、事务和运行位置。主账号管理的候选、自动识别和人工标记集中在 `services/main_accounts.py`，其路由保留既有案件校验和事务；legacy `CaseIdIn` 由该路由模块定义并供 sample-data 复用，不能换成 v1 的字符串 ID 模型。保留兼容入口，不因文件较大先迁出一半职责，不预建 storage/domain 等空层。
 - 身份、事件、本金是不同推理层；取得某一层证据不自动满足下一层前提。原始 `flows`、来源日志与余额不被派生身份/事件结论覆盖；不能用事件余额代表任一账簿余额，或把交易额/中间份额相加当最终本金。
 - 复用现有锁/完整私有读快照，让选择、修订校验和投影同属一份事实；`funds_projection` 的 SQL 只接收应用持有的可信查询，保留其保留列约束。本金公共读取沿 `principal_routes`/既有用户动作绑定修订，不把请求者的勾选或余额吻合当来源证明。
 

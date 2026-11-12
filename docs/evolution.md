@@ -2,11 +2,11 @@
 
 本建议基于源码与公开一手资料；未读取业务数据。**先稳定资金数据契约、拆分职责和实测，再选择新技术。** 文件行数只能提示维护成本，不能证明 Python 是瓶颈。
 
-第二阶段已建立 v1 API、生成契约、合成性能基线及 React 案件／导入／核对试点；具体证据与限制见 [phase-two.md](phase-two.md)、[performance.md](performance.md)。下文的更大采样、图表联动、导出与宿主接入仍是后续验收目标；没有 Rust／Polars 重写，也没有接入 Analytix。未来整合路线见 [analytix-integration.md](analytix-integration.md)。
+第二阶段已建立 v1 API、生成契约、合成性能基线及 React 案件／导入／核对试点；具体证据与限制见 [phase-two.md](phase-two.md)、[performance.md](performance.md)。下文有关更大性能样本、完整 React 图谱／导出迁移和真实宿主接入仍属路线研究；已有 G6 图谱和导出继续维护。没有 Rust／Polars 重写，也没有接入 Analytix。未来整合路线见 [analytix-integration.md](analytix-integration.md)。
 
 ## 命名与目录
 
-保留仓库名 `funds-trace`，产品名统一为 **FundsTrace／资金流追踪**，描述为“本地资金流水追踪与案件分析工具”。相比 `fund-tracker`，它更明确表达流水追踪，减少与基金投资跟踪产品混淆。若以后需要独立品牌，可另行评估 `FlowTrace`；本次未核验商标、域名、应用商店或同名项目，不据此宣称名称可独占。原 `fund-tracker` 仅作受保护来源，不作为开发工作目录。
+保留仓库名 `funds-trace`，现行对外展示名为 **循迹 FundsTrace**，中文名“循迹”、英文名“FundsTrace”；定位、图标和素材统一见[品牌指南](brand/README.md)。原有技术标识、appId、升级身份和数据目录不随展示文案变更。早期备选品牌讨论不再作为当前命名路线，原态保留在 Git 历史。原 `fund-tracker` 仅作受保护来源，不作为开发工作目录。
 
 当前保持可运行入口，按真实职责逐步迁移；下列目标目录是路线，不要求一次创建所有空层级：
 
@@ -46,7 +46,21 @@ tests/、scripts/             tests/、scripts/、docs/
 
 [.github/pull_request_template.md](../.github/pull_request_template.md) 是平台模板惯例，[docs/licensing.en.md](licensing.en.md) 是语言变体惯例，分别保留，不计入上表五个例外。例外仅限所列路径，不将整个 `standalone/` 放开为 camelCase，也不将所有 Python 工具放开为 kebab-case。
 
-当前不移动、重命名或增加 shim。后续确有迁移需求时，先列明实际消费者，再原子同步 imports、测试、HTML／资源、CLI 和文档引用；只有确认存在外部依赖时才评估最小兼容入口。
+上述五个既有路径本轮保留，不为形式统一重命名或增加 shim。后续确有迁移需求时，先列明实际消费者，再原子同步 imports、测试、HTML／资源、CLI 和文档引用；只有确认存在外部依赖时才评估最小兼容入口。
+
+### 2026-11-12 治理处置
+
+本轮按职责和实际调用关系施工，不用文件行数规定拆分额度：
+
+| 区域 | 实际处置与维护入口 |
+| --- | --- |
+| 主账号管理 | 从 `main.py` 完整迁出七个入口；[main_account_routes.py](../app/main_account_routes.py) 保留 HTTP／模型／事务边界，[既有 main_accounts 服务](../app/services/main_accounts.py) 集中候选、自动识别和人工标记。其他金额／画像逻辑不随标题搬迁；OpenAPI 与公共行为保持。 |
+| 传统菜单 | 移除三个内建单层模型无法到达的分组子环、计时／动画／键盘分支及专属 CSS。单环模型、命令、几何、配色与既有调试输出保持，不预建可配置菜单层。 |
+| 图表生命周期 | 实际账户返回问题已按查询所有权和完整绑定修复；包装职责及组合回归见[工作区契约](graph-workspace-plan.md#现有入口与包装次序)。保留经典脚本组装，不再为目录整齐重写整链。 |
+| 解析／证据／本金大模块 | 保留冻结版本兼容与完整领域判断；[贡献指南](../CONTRIBUTING.md#来源基础与三类领域判断) 负责导航。只有具体用例证明职责或验证仍难集中时再提取，不把每个历史版本切成独立文件。 |
+| 命名与材料 | 保留上表五个兼容例外及平台／语言惯例；生成契约、锁文件、第三方代码和素材独立计量，不当作自有源码压缩。历史计划标明适用日期和后继正文，冻结验收记录不重写。 |
+
+日后修改只同步直接权威正文和受影响入口。源码变化连同实际调用方、资源装载及源码抽取式测试核对；当前实现、已执行检查和未来路线分别表达。
 
 ## 数据执行：先 SQL，再试 Polars，最后考虑 Rust
 

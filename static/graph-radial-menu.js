@@ -1,6 +1,6 @@
 /* FundsTrace canvas radial menu (node / edge context actions).
  *
- * Portions of the donut geometry, spring integrator, open/hover/group timing and
+ * Portions of the donut geometry, spring integrator, open/hover timing and
  * hit-testing rules are adapted from Filee (https://github.com/KnifeLemon/Filee),
  * Copyright (c) 2026 Myeonggu Kim (KnifeLemon) and Filee contributors, MIT.
  * See LICENSES/Filee-MIT.txt and THIRD_PARTY_NOTICES.md ("Filee radial donut menu").
@@ -8,8 +8,8 @@
  * Material You palette and DonutMenu surface rendering are adapted from Filee's
  * Services/MaterialYouPalette.cs and Controls/DonutMenu.cs (main 9ca14cd, 2026-11-10):
  * Surface slices at the donut opacity, SubtleBorder, Surface centre, 0.82 accent
- * hover, contrast-checked labels, softly rounded sector corners and soft shadow
- * and outward group chevron. The accent seed is FundsTrace's selected accent.
+ * hover, contrast-checked labels, softly rounded sector corners and soft shadow.
+ * The accent seed is FundsTrace's selected accent.
  *
  * Re-implemented for the FundsTrace G6 canvas: in-page overlay instead of a native
  * always-on-top window; node/edge context menu instead of an Explorer shell entry;
@@ -33,17 +33,10 @@
   const SLICE_CORNER = 3;           // crisp sector edges from the selected reference, using Filee's rounded geometry
   const HOVER_POP = 7;
   const MARGIN = 14;
-  const SUB_EXTRA = 59;             // Filee sub-ring outer 209 at R150
-  const SUB_PAD = 13;               // Filee sub-ring inner 163 at R150
-  const SUB_RING_SPACE = 62;        // Filee ReserveSubRing window space
   const OPEN_DURATION = 0.30;
   const OPEN_STAGGER = 0.012;
   const OPEN_STAGGER_CAP = 0.072;
   const CLOSE_DURATION = 0.14;
-  const GROUP_DWELL = 160;
-  const GROUP_COLLAPSE = 140;
-  const MIN_SUB_WIDTH = 44;
-  const SUB_OVERHANG = 0.25;
   const MIN_CORNER = 0.25;
 
   // ── geometry (ported from Filee DonutGeometry.cs) ──────────────────────────
@@ -159,13 +152,6 @@
       };
     }
     return outlineToPath(outline);
-  }
-
-  function subSpanFor(parentSpan, count, midRadius) {
-    if (count <= 0) return 0;
-    let span = parentSpan * (1 + 2 * SUB_OVERHANG) / count;
-    if (midRadius > 0) span = Math.max(span, MIN_SUB_WIDTH / midRadius);
-    return Math.min(span, TAU / count);
   }
 
   // ── spring / easing (ported from Filee DonutMenu.cs) ───────────────────────
@@ -364,9 +350,6 @@
     const history = root.FundsCanvasEditor?.history?.status?.();
     return !(history && history.busy);
   }
-  function neighborhoodBlocked() {
-    try { return typeof neighborhoodBlocker === 'function' ? !!neighborhoodBlocker() : false; } catch (_) { return false; }
-  }
   function selectionIds() {
     const s = appState();
     return s?.graphSelection ? [...s.graphSelection.ids] : [];
@@ -523,22 +506,12 @@
     on(root, 'blur', clearDismissalShield);
   }
 
-  function sideFor(radius, reserveSubRing = true) {
-    return Math.ceil(2 * (radius + (reserveSubRing ? SUB_RING_SPACE : 0) + HOVER_POP + MARGIN));
+  function sideFor(radius) {
+    return Math.ceil(2 * (radius + HOVER_POP + MARGIN));
   }
   function menuRadiusFor() {
     return Math.max(1, Math.min(DEFAULT_RADIUS, (Math.min(root.innerWidth, root.innerHeight) - 16) / 2 - HOVER_POP - MARGIN));
   }
-  function groupMarkPath(center, radius, mid, scale = 1) {
-    const inset = 7 * scale, depth = 4.5 * scale, halfWidth = 5 * scale;
-    const tip = pointAt(center, radius - inset, mid);
-    const back = radius - inset - depth;
-    const turn = halfWidth / Math.max(1, back);
-    const start = pointAt(center, back, mid - turn);
-    const end = pointAt(center, back, mid + turn);
-    return `M ${fmt(start.x)} ${fmt(start.y)} L ${fmt(tip.x)} ${fmt(tip.y)} L ${fmt(end.x)} ${fmt(end.y)}`;
-  }
-
   function hitTest(point) {
     if (!menu) return { kind: 'outside' };
     const center = menu.center;
@@ -568,86 +541,31 @@
 
   function refreshHoverTargets() {
     if (!menu) return;
-    const group = menu.group;
     menu.entries.forEach((entry, index) => {
-      entry.target = entry.enabled && (index === menu.activeIndex || (menu.activeSub >= 0 && group && index === group.index)) ? 1 : 0;
+      entry.target = entry.enabled && index === menu.activeIndex ? 1 : 0;
     });
-    if (group) group.subEntries.forEach((entry, index) => { entry.target = index === menu.activeSub ? 1 : 0; });
     ensureLoop();
   }
 
   function refreshActiveClasses() {
     if (!menu) return;
-    const groupIndex = menu.group ? menu.group.index : -1;
     menu.entries.forEach((entry, index) => {
-      const active = entry.enabled && (index === menu.activeIndex || (menu.activeSub >= 0 && index === groupIndex));
+      const active = entry.enabled && index === menu.activeIndex;
       entry.labelEl.classList.toggle('is-active', active);
       entry.sliceEl.classList.toggle('is-active', active);
       entry.labelEl.tabIndex = active ? 0 : -1;
     });
     const active = menu.entries[menu.activeIndex];
     menu.hubSub.textContent = active?.spec.description || menu.spec.subtitle;
-    if (menu.group) menu.group.subEntries.forEach((entry, index) => {
-      entry.labelEl.classList.toggle('is-active', index === menu.activeSub);
-      entry.sliceEl.classList.toggle('is-active', index === menu.activeSub);
-    });
   }
 
-  function setActive(index, sub = -1) {
+  function setActive(index) {
     if (!menu || menu.closing) return;
-    const changed = index !== menu.activeIndex || sub !== menu.activeSub;
+    const changed = index !== menu.activeIndex;
     if (!changed) return;
     menu.activeIndex = index;
-    menu.activeSub = sub;
     refreshHoverTargets();
     refreshActiveClasses();
-    const group = menu.group;
-    clearTimeout(menu.expandTimer);
-    clearTimeout(menu.collapseTimer);
-    if (!group) return;
-    if (sub >= 0) return;
-    if (index === group.index) {
-      if (!group.open) {
-        menu.expandTimer = root.setTimeout(() => {
-          if (!menu || menu.activeIndex !== group.index || menu.activeSub >= 0) return;
-          expandGroup();
-        }, GROUP_DWELL);
-      } else {
-        group.target = 1;
-        ensureLoop();
-      }
-    } else if (group.open) {
-      menu.collapseTimer = root.setTimeout(() => {
-        if (!menu || menu.activeSub >= 0 || menu.activeIndex === group.index) return;
-        collapseGroup();
-      }, GROUP_COLLAPSE);
-    }
-  }
-
-  function expandGroup() {
-    if (!menu || !menu.group) return;
-    const group = menu.group;
-    if (group.open) return;
-    group.open = true;
-    group.target = 1;
-    group.labelEls.forEach(el => { el.hidden = false; el.style.pointerEvents = 'auto'; });
-    menu.rootEl.classList.add('is-group-open');
-    ensureLoop();
-  }
-
-  function collapseGroup() {
-    if (!menu || !menu.group) return;
-    const group = menu.group;
-    group.open = false;
-    group.target = 0;
-    group.labelEls.forEach(el => { el.style.pointerEvents = 'none'; });
-    menu.rootEl.classList.remove('is-group-open');
-    ensureLoop();
-  }
-
-  function toggleGroup() {
-    if (!menu || !menu.group) return;
-    if (menu.group.open) collapseGroup(); else expandGroup();
   }
 
   // ── commands ───────────────────────────────────────────────────────────────
@@ -680,15 +598,8 @@
       try { doc.dispatchEvent(new root.CustomEvent('funds:ribbon-command', { detail })); } catch (_) { /* host missing */ }
     });
   }
-  function activateGroupChild(entry) {
-    if (!menu || menu.closing || !entry || !entry.enabled) return;
-    const group = menu?.group;
-    if (!group) return;
-    requestCommand(group.spec.group.command, entry.spec.value);
-  }
   function activateItem(entry) {
     if (!menu || menu.closing || !entry || !entry.enabled) return;
-    if (entry.spec.group) { toggleGroup(); return; }
     requestCommand(entry.spec.command, entry.spec.value);
   }
 
@@ -734,32 +645,6 @@
       menu.hubEl.style.transform = `scale(${fmt(hubScale)})`;
       if (menu.shadowEl) menu.shadowEl.style.opacity = fmt(clamp(openAverage, 0, 1));
     }
-
-    const group = menu.group;
-    if (group) {
-      const expand = clamp(group.expand.value, 0, 1.1);
-      group.visual.setAttribute('transform',
-        `translate(${fmt(group.anchor.x)} ${fmt(group.anchor.y)}) scale(${fmt(0.8 + 0.2 * expand)}) ` +
-        `translate(${fmt(-group.anchor.x)} ${fmt(-group.anchor.y)})`);
-      group.visual.style.opacity = fmt(clamp(expand, 0, 1));
-      const visible = group.open || expand > 0.005;
-      group.labelEls.forEach((el, index) => {
-        el.hidden = !visible;
-        const entry = group.subEntries[index];
-        const base = entry.base;
-        const scaledX = group.anchor.x + (base.x - group.anchor.x) * (0.8 + 0.2 * expand);
-        const scaledY = group.anchor.y + (base.y - group.anchor.y) * (0.8 + 0.2 * expand);
-        const hover = entry.hover.value;
-        const angle = entry.mid;
-        const offset = { x: Math.sin(angle) * HOVER_POP * hover, y: -Math.cos(angle) * HOVER_POP * hover };
-        const scale = (0.8 + 0.2 * expand) * (1 + hover * 0.025);
-        el.style.opacity = fmt(clamp(expand, 0, 1));
-        el.style.transform = `translate(${fmt(scaledX - base.x + offset.x)}px, ${fmt(scaledY - base.y + offset.y)}px) ` +
-          `scale(${fmt(scale)})`;
-        entry.sliceEl.setAttribute('opacity', fmt(clamp(expand, 0, 1)));
-        entry.accentEl.setAttribute('opacity', fmt(clamp(0.82 * hover, 0, 1)));
-      });
-    }
   }
 
   function ensureLoop() {
@@ -768,10 +653,6 @@
       menu.openClock = null;
       menu.openVals.fill(1);
       menu.entries.forEach(entry => { entry.hover.value = entry.target; });
-      if (menu.group) {
-        menu.group.expand.value = menu.group.target;
-        menu.group.labelEls.forEach(el => { el.hidden = menu.group.target <= 0; });
-      }
       applyFrame();
       if (menu.closing) finishClose();
       return;
@@ -813,14 +694,6 @@
     }
 
     for (const entry of menu.entries) active = entry.hover.step(entry.target, dt, 320, entry.target > 0.5 ? 20 : 36) || active;
-    const group = menu.group;
-    if (group) {
-      for (const entry of group.subEntries) active = entry.hover.step(entry.target, dt, 320, entry.target > 0.5 ? 20 : 36) || active;
-      active = group.expand.step(group.target, dt, 320, group.target > 0.5 ? 24 : 36) || active;
-      if (group.target <= 0 && group.expand.value <= 0.001) {
-        group.labelEls.forEach(el => { el.hidden = true; });
-      }
-    }
     applyFrame();
     if (active || menu.openClock !== null) {
       const owner = menu;
@@ -833,7 +706,7 @@
   // ── construction ───────────────────────────────────────────────────────────
   function createMenu(options) {
     const { spec, radius, anchor, container } = options;
-    const side = sideFor(radius, spec.items.some(item => item.group));
+    const side = sideFor(radius);
     const center = { x: side / 2, y: side / 2 };
     const count = spec.items.length;
     const inner = radius * INNER_RATIO;
@@ -876,74 +749,27 @@
       r: shadowRadius, fill: `url(#${shadowId})`, opacity: 0,
     });
     const sliceLayer = svgEl('g', { class: 'funds-radial-slices' });
-    const subLayer = svgEl('g', { class: 'funds-radial-subring' });
-    subLayer.style.opacity = '0';
-    svg.append(defs, shadowEl, sliceLayer, subLayer);
+    svg.append(defs, shadowEl, sliceLayer);
     rootEl.appendChild(svg);
 
     const baseReady = ready();
-    const blocked = neighborhoodBlocked();
     const entries = spec.items.map((item, index) => {
       const mid = midOf(index, count);
-      const base = pointAt(center, (inner + radius) / 2 - (item.group ? 3 : 0), mid);
+      const base = pointAt(center, (inner + radius) / 2, mid);
       const path = wedgePath(center, inner, radius, mid, spanOf(count), SLICE_GAP, SLICE_CORNER);
       const sliceEl = svgEl('g', { class: 'funds-radial-slice', 'data-index': index });
       if (item.danger) sliceEl.classList.add('is-danger');
-      if (item.group) sliceEl.classList.add('is-group-slice');
       const wedge = svgEl('path', { class: 'funds-radial-wedge', d: path });
       const accent = svgEl('path', { class: 'funds-radial-accent', d: path, opacity: 0 });
       sliceEl.append(wedge, accent);
-      if (item.group) {
-        const scale = radius / DEFAULT_RADIUS;
-        sliceEl.appendChild(svgEl('path', {
-          class: 'funds-radial-group-mark',
-          d: groupMarkPath(center, radius, mid, scale),
-          'stroke-width': fmt(1.6 * scale),
-        }));
-      }
       sliceLayer.appendChild(sliceEl);
-      const enabled = itemEnabled(item, { baseReady, blocked, kind: spec.kind, model: options.model });
+      const enabled = itemEnabled(item, { baseReady, kind: spec.kind, model: options.model });
       if (!enabled) sliceEl.classList.add('is-disabled');
       return {
         spec: item, index, mid, base, sliceEl, wedgeEl: wedge, accentEl: accent,
         enabled, hover: new Spring(0), target: 0,
       };
     });
-
-    const groupEntry = entries.find(entry => entry.spec.group);
-    let group = null;
-    if (groupEntry) {
-      const children = groupEntry.spec.group.children;
-      const subInner = radius + SUB_PAD;
-      const subOuter = radius + SUB_EXTRA;
-      const parentMid = groupEntry.mid;
-      const subMidRadius = (subInner + subOuter) / 2;
-      const subSpan = subSpanFor(spanOf(count), children.length, subMidRadius);
-      const anchorPoint = pointAt(center, subInner, parentMid);
-      const subEntries = children.map((child, index) => {
-        const mid = parentMid + (index - (children.length - 1) / 2) * subSpan;
-        const base = pointAt(center, subMidRadius, mid);
-        const path = wedgePath(center, subInner, subOuter, mid, subSpan, SLICE_GAP, SLICE_CORNER);
-        const sliceEl = svgEl('g', { class: 'funds-radial-slice funds-radial-subslice', 'data-index': index });
-        if (child.danger) sliceEl.classList.add('is-danger');
-        const wedge = svgEl('path', { class: 'funds-radial-wedge', d: path });
-        const accent = svgEl('path', { class: 'funds-radial-accent', d: path, opacity: 0 });
-        sliceEl.append(wedge, accent);
-        subLayer.appendChild(sliceEl);
-        const enabled = baseReady && (spec.kind === 'edge' || !blocked);
-        if (!enabled) sliceEl.classList.add('is-disabled');
-        return {
-          spec: child, index, mid, base, sliceEl, accentEl: accent,
-          enabled, hover: new Spring(0), target: 0,
-        };
-      });
-      group = {
-        index: groupEntry.index, spec: groupEntry.spec, parentMid, count: children.length,
-        subInner, subOuter, subSpan, anchor: anchorPoint, visual: subLayer,
-        expand: new Spring(0), target: 0, open: false,
-        subEntries, labelEls: [],
-      };
-    }
 
     const maxLabel = entries.reduce((max, entry) => Math.max(max, (entry.spec.label || '').length), 0);
     const labelWidth = clamp(maxLabel * 13 + 8, 54, 108);
@@ -955,15 +781,6 @@
     for (const entry of entries) {
       const label = buttonEl('funds-radial-item', entry.spec.label);
       label.setAttribute('role', 'menuitem');
-      if (entry.spec.group) {
-        label.setAttribute('aria-haspopup', 'menu');
-        label.setAttribute('aria-expanded', 'false');
-        label.classList.add('is-group');
-        label.setAttribute('aria-label', entry.spec.ariaLabel || entry.spec.label);
-      label.setAttribute('aria-description', entry.spec.description || '');
-      label.title = entry.spec.description || '';
-      label.tabIndex = -1;
-      }
       if (entry.spec.danger) label.classList.add('is-danger');
       if (!entry.enabled) { label.disabled = true; label.setAttribute('aria-disabled', 'true'); }
       label.style.left = (entry.base.x - labelWidth / 2) + 'px';
@@ -977,31 +794,6 @@
       });
       labelLayer.appendChild(label);
       entry.labelEl = label;
-    }
-
-    if (group) {
-      const subWidth = 42;
-      const subHeight = 27;
-      group.subEntries.forEach(entry => {
-        const label = buttonEl('funds-radial-item funds-radial-subitem', entry.spec.label);
-        label.setAttribute('role', 'menuitem');
-        label.setAttribute('aria-label', entry.spec.ariaLabel || entry.spec.label);
-        if (!entry.enabled) { label.disabled = true; label.setAttribute('aria-disabled', 'true'); }
-        label.hidden = true;
-        label.style.left = (entry.base.x - subWidth / 2) + 'px';
-        label.style.top = (entry.base.y - subHeight / 2) + 'px';
-        label.style.width = subWidth + 'px';
-        label.style.height = subHeight + 'px';
-        label.style.pointerEvents = 'none';
-        label.addEventListener('click', event => {
-          event.preventDefault();
-          event.stopPropagation();
-          activateGroupChild(entry);
-        });
-        labelLayer.appendChild(label);
-        entry.labelEl = label;
-        group.labelEls.push(label);
-      });
     }
 
     const hubSize = Math.max(64, 2 * inner - 12);
@@ -1029,11 +821,10 @@
 
     return {
       rootEl, svg, center, radius, inner, count, spec, shadowEl,
-      entries, group, hubEl, hubSub, palette,
+      entries, hubEl, hubSub, palette,
       openVals: entries.map(() => 0), closeFrom: entries.map(() => 0),
       openClock: 0, lastTs: 0, raf: 0, reduced: reducedMotion(),
-      closing: false, onClosed: null, activeIndex: -1, activeSub: -1,
-      expandTimer: 0, collapseTimer: 0,
+      closing: false, onClosed: null, activeIndex: -1,
       pointerId: null,
     };
   }
@@ -1047,8 +838,6 @@
     menuState.unbind = () => {
       for (const [target, type, handler, opts] of listeners) target.removeEventListener(type, handler, opts);
       listeners.length = 0;
-      root.clearTimeout(menuState.expandTimer);
-      root.clearTimeout(menuState.collapseTimer);
       root.clearTimeout(menuState.focusTimer);
       if (menuState.raf) root.cancelAnimationFrame(menuState.raf);
       menuState.raf = 0;
@@ -1172,22 +961,7 @@
         return;
       }
       event.preventDefault();
-      const group = menu.group;
       const current = doc.activeElement;
-      const subButtons = group ? group.labelEls.filter(el => !el.hidden && !el.disabled) : [];
-      const subIndex = subButtons.indexOf(current);
-      if (subIndex >= 0) {
-        const next = ['ArrowRight', 'ArrowDown', 'Home'].includes(event.key) ? subIndex + 1
-          : event.key === 'End' ? subButtons.length - 1 : subIndex - 1;
-        if (next >= 0 && next < subButtons.length) subButtons[next].focus({ preventScroll: true });
-        else if (next < 0) group.labelEls.find(el => el === menu.entries[group.index].labelEl)?.focus?.({ preventScroll: true });
-        return;
-      }
-      if (group && current === menu.entries[group.index].labelEl && event.key === 'ArrowRight') {
-        if (!group.open) expandGroup();
-        group.labelEls.find(el => !el.disabled)?.focus?.({ preventScroll: true });
-        return;
-      }
       const buttons = menu.entries.map(entry => entry.labelEl).filter(el => !el.disabled);
       let index = buttons.indexOf(menu.entries[menu.activeIndex]?.labelEl || current);
       if (event.key === 'Home') index = 0;
@@ -1206,7 +980,6 @@
       const hit = hitTest(point);
       if (hit.kind === 'hub') { closeMenu(true); return; }
       if (hit.kind === 'segment') { activateItem(menu.entries[hit.index]); return; }
-      if (hit.kind === 'sub') { activateGroupChild(menu.group.subEntries[hit.sub]); return; }
       closeMenu(true);
     };
     rootEl.addEventListener('click', click);
@@ -1215,17 +988,14 @@
       if (!menu || menu !== menuState || menuState.closing) return;
       const hit = hitTest(menuPoint(event));
       if (hit.kind === 'segment') {
-        if (hit.index === menu.group?.index && menu.activeSub < 0 && menu.activeIndex === hit.index) return;
-        setActive(hit.index, -1);
-      } else if (hit.kind === 'sub') {
-        setActive(hit.index, hit.sub);
+        setActive(hit.index);
       } else {
-        setActive(-1, -1);
+        setActive(-1);
       }
     };
     rootEl.addEventListener('pointermove', move);
     rootEl.addEventListener('pointerleave', () => {
-      if (menu && menu === menuState && !menuState.closing) setActive(-1, -1);
+      if (menu && menu === menuState && !menuState.closing) setActive(-1);
     });
     rootEl.addEventListener('pointerdown', event => {
       if (!menu || menu !== menuState || menuState.closing || event.button !== 2) return;
@@ -1379,8 +1149,8 @@
     isOpen: () => !!menu,
     getState: () => menu ? {
       open: true, kind: menu.kind, count: menu.count,
-      active: menu.activeIndex, sub: menu.activeSub,
-      groupOpen: !!menu.group?.open,
+      active: menu.activeIndex, sub: -1,
+      groupOpen: false,
     } : { open: false },
   });
 })(typeof window === 'undefined' ? globalThis : window);
