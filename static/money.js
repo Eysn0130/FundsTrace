@@ -11,10 +11,13 @@
   }
   function format(value, missing = '—') {
     if (value == null || value === '') return missing;
-    try {
-      const amount = cents(value), absolute = amount < 0n ? -amount : amount;
-      return `${amount < 0n ? '-' : ''}${String(absolute / 100n).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${String(absolute % 100n).padStart(2, '0')}`;
-    } catch (_) { return '金额格式错误'; }
+    if (typeof value === 'number' && Number.isSafeInteger(value)) value = String(value);
+    const match = typeof value === 'string' && /^([+-]?)(\d+)(?:\.(\d{1,2}))?$/.exec(value);
+    if (!match) return '金额格式错误';
+    const whole = match[2].replace(/^0+(?=\d)/, '');
+    const fraction = (match[3] || '').padEnd(2, '0');
+    const sign = match[1] === '-' && (whole !== '0' || fraction !== '00') ? '-' : '';
+    return `${sign}${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${fraction}`;
   }
   function count(value) {
     const text = String(value ?? 0);
