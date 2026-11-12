@@ -258,14 +258,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
-async function refreshAll() {
+async function refreshAll({ tableQuery = 'refresh' } = {}) {
   const context = caseContext();
   await refreshStats();
-  if (!isCurrentCase(context, false)) return;
-  await loadGraph();
-  if (!isCurrentCase(context, false)) return;
-  await doSearch(state.search.page || 1, { refresh: true });
-  if (!isCurrentCase(context, false)) return;
+  if (!isCurrentCase(context)) return;
+  await loadGraph(true, context, { tableQuery: 'caller' });
+  if (!isCurrentCase(context)) return;
+  if (tableQuery !== 'caller') await doSearch(state.search.page || 1, { refresh: true });
+  if (!isCurrentCase(context)) return;
   await loadBatches();
 }
 

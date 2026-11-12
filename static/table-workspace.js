@@ -12,7 +12,7 @@
   const viewPositions = new Map();
   const modePositions = { sidebar: null, overview: null };
   const MAX_PAGES = 5, PAGE_SIZE = 50;
-  let query = null, retry = null, restoredInputs = false, restoredViewport = null, programmaticScroll = null;
+  let query = null, pendingQuery = null, retry = null, restoredInputs = false, restoredViewport = null, programmaticScroll = null;
   let columnGroup = null, tableMinWidth = '';
   let lastScrollTop = 0, geometryPending = 0;
   let activeRowId = null, resizingColumn = null;
@@ -530,7 +530,14 @@
   // Every submitted query or authoritative refresh creates a new epoch. Scroll
   // reads use its frozen parameters, never the still-editable query draft.
   async function search(page = 1, options = {}, prepared = null) {
-    const context = caseContext(), generation = binding, sequence = ++request;
+    const context = caseContext(), generation = binding;
+    // A refresh follows the latest submitted query even before it has rows;
+    // the last successful query and the editable draft may both be different.
+    if (!prepared && options.refresh && !restoredInputs && pendingQuery?.binding === generation
+        && pendingQuery.sequence === request && isCurrentCase(pendingQuery.context)) {
+      prepared = pendingQuery; page = prepared.page;
+    }
+    const sequence = ++request;
     const previous = query;
     const restoring = restoredInputs;
     if (restoredViewport?.context && isCurrentCase(restoredViewport.context)) page = restoredViewport.page;
@@ -549,6 +556,9 @@
     let previewBinding;
     try { if (options?.locate === true && Object.values(preview).some(Boolean)) previewBinding = locator?.capture?.(); } catch (_) { /* Preview availability cannot reject a transaction query. */ }
     if (!context.caseId) return false;
+    const flight = { context, binding: generation, sequence, page, parameters: new URLSearchParams(parameters),
+      summary: requestedSummary, position };
+    pendingQuery = flight;
     if (mounted) { $('#flowTableScroll').setAttribute('aria-busy', 'true'); status('查询中…'); }
     try {
       parameters.set('granularity', 'events');
@@ -583,6 +593,7 @@
       $('#resultInfo').title += '：' + String(error?.message || '请求未完成').slice(0, 300);
       return false;
     } finally {
+      if (pendingQuery === flight) pendingQuery = null;
       if (generation === binding && sequence === request && mounted) $('#flowTableScroll').setAttribute('aria-busy', 'false');
     }
   }
@@ -721,7 +732,7 @@
     hideFlowValue(); activeRowId = null; resizingColumn = null;
     entityPickers.forEach(picker => picker.invalidate());
     for (const key of ['fAccount', 'fCounter']) if ($('#' + key)?.dataset) delete $('#' + key).dataset.exactAccount;
-    binding++; request++; rows = []; applied = ''; draft = false; query = null; retry = null;
+    binding++; request++; rows = []; applied = ''; draft = false; query = null; pendingQuery = null; retry = null;
     clearColumns();
     restoredInputs = false; restoredViewport = null; programmaticScroll = null; geometryPending = 0;
     setOpen(false, false); scrolls = { sidebar: [0, 0], overview: [0, 0] };
