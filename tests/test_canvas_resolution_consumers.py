@@ -8,7 +8,7 @@ from decimal import Decimal
 import openpyxl
 import pytest
 
-from app import evidence_resolution, main
+from app import analysis_snapshot, evidence_resolution, funds_projection, main
 from funds_assertions import unresolved_funds
 
 
@@ -141,7 +141,7 @@ def test_legacy_time_semantics_apply_the_same_evidence_bounded_policy(client, da
 
 @contextmanager
 def publish_at_read_boundary(database, mutate):
-    """Commit on a real second thread only where the reader releases its lock."""
+    """Start a real writer and wait for its commit unless the reader owns the lock."""
     reached, attempted, committed = threading.Event(), threading.Event(), threading.Event()
     errors = []
 
@@ -162,9 +162,8 @@ def publish_at_read_boundary(database, mutate):
     def boundary():
         reached.set()
         assert attempted.wait(5), "writer did not attempt its transaction"
-        # q/q_raw have released their own lock here. An endpoint-wide lock must
-        # keep the writer queued; without it the allowed interleaving commits
-        # before the endpoint starts its next real read.
+        # A shared reader queues the writer behind its lock. A private reader
+        # lets publication commit before the endpoint's next read.
         if not database._lock._is_owned():
             assert committed.wait(5), "unlocked publication did not complete"
 
@@ -194,6 +193,10 @@ def test_public_flow_query_keeps_count_rows_and_resolution_in_one_read(
         entity(database, cid, key, "SYN-ACCOUNT-" + suffix, "SYN-CARD-" + suffix)
     old_revision = revision(database, cid)
     identifier = flow(database, cid, payer, payee)
+    if read_boundary == "count":
+        # A populated case can keep its private snapshot while the writer
+        # commits between the narrow count/key read and the payload lookup.
+        analysis_snapshot.invalidate(cid)
 
     def mutate():
         database.x("update flows set amount=20.50 where case_id=? and id=?", [cid, identifier])
@@ -203,23 +206,38 @@ def test_public_flow_query_keeps_count_rows_and_resolution_in_one_read(
         database.x("update flows set amount=1.01 where case_id=? and id=?", [cid, added])
         publish_revision(database, cid, "b" * 64)
 
-    original_query, hits = database.q, []
+    original_query = database.q_raw
+    original_page = funds_projection.page_with_summary
+    hits = []
     with publish_at_read_boundary(database, mutate) as boundary:
-        def query(sql, params=None):
+        def pause_after_count(sql, params=None):
             result = original_query(sql, params)
-            prefix = "select count(*) c" if read_boundary == "count" else "select *"
-            if not hits and prefix + " from ordinary_facts" in sql:
-                hits.append(True)
+            if "_funds_page_keys as materialized" in sql:
+                assert database.in_read_snapshot() and not database._lock._is_owned()
+                hits.append("count")
                 boundary()
             return result
 
-        monkeypatch.setattr(database, "q", query)
+        def pause_after_rows(*args, **kwargs):
+            result = original_page(*args, **kwargs)
+            # The pager's lock has ended. The first request still has to keep
+            # the rows and the following metadata in the same protected read.
+            hits.append("rows")
+            boundary()
+            return result
+
+        if read_boundary == "count":
+            monkeypatch.setattr(database, "q_raw", pause_after_count)
+        else:
+            monkeypatch.setattr(funds_projection, "page_with_summary", pause_after_rows)
         response = client.get("/api/flows", params={"case_id": cid})
-    assert hits and response.status_code == 200, response.text
+    assert response.status_code == 200, response.text
+    assert hits == [read_boundary]
     value = response.json()
     assert value["total"] == 1
     assert [(row["id"], row["amount"], row["payer_account"], row["payer_display_account"])
             for row in value["rows"]] == [(identifier, "10.25", payer, "RAW-" + payer)]
+    assert value["funds"] == unresolved_funds(1, ("CNY", "10.25"))
     assert value["resolution"]["revision"] == old_revision
     assert evidence_resolution.summary(cid)["revision"] == "b" * 64
     assert database.q_raw("select count(*) n from flows where case_id=?", [cid])[0]["n"] == 2

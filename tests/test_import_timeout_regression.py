@@ -1,5 +1,5 @@
 """Public staged import keeps complete checks without redundant journal scans."""
-from collections import Counter
+from collections import defaultdict
 from decimal import Decimal
 
 import pytest
@@ -25,14 +25,16 @@ def test_public_staged_validation_reads_each_journal_once_per_phase(
     count = 260  # Cross the bounded decoded-cache window.
     cid, other = make_case("Synthetic scan cost"), make_case("Synthetic isolated case")
     before_other = snapshot(database, other)
-    scans, active = Counter(), []
-    iterate = import_staging.StagedSequence.__iter__
+    reads, active = defaultdict(list), []
+    track = import_staging.PlanStore._track
+    positions = list(range(1, count + 1))
 
-    def observed(sequence):
-        for item in iterate(sequence):
-            if active and sequence.kind == "records":
-                scans[active[-1]] += 1
-            yield item
+    def observed(store, kind, position, *args, **kwargs):
+        # Count fetched journal payloads before cache lookup, including the
+        # manifest's joined reader and the writer's plain iteration.
+        if active and kind == "records":
+            reads[active[-1]].append(position)
+        return track(store, kind, position, *args, **kwargs)
 
     def phase(name, function):
         def call(*args, **kwargs):
@@ -43,16 +45,16 @@ def test_public_staged_validation_reads_each_journal_once_per_phase(
                 active.pop()
         return call
 
-    monkeypatch.setattr(import_staging.StagedSequence, "__iter__", observed)
+    monkeypatch.setattr(import_staging.PlanStore, "_track", observed)
     monkeypatch.setattr(import_validation, "table_manifest", phase("manifest", import_validation.table_manifest))
     monkeypatch.setattr(imports, "_write_feedback_journal", phase("journal", imports._write_feedback_journal))
     for attempt in range(2):
-        scans.clear()
+        reads.clear()
         job = complete(client, cid, preview(client, cid, members(count), scope_bank=None))
         assert job["stage"] == "done", job
         assert job["result"]["ok"] == (count if attempt == 0 else 0)
         assert job["result"]["rows_dup"] == (0 if attempt == 0 else count)
-        assert scans == {"manifest": count, "journal": count}
+        assert reads == {"manifest": positions, "journal": positions}
         assert database.con().execute("select count(*),sum(amount),count(*) filter(where balance is null) from flows where case_id=?", [cid]).fetchone() == (
             count, Decimal("90071992547409.93") + Decimal("12.34") * (count - 1), count // 2)
         assert database.con().execute("select count(*) from flow_sources where case_id=?", [cid]).fetchone()[0] == (attempt + 1) * count
