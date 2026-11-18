@@ -76,16 +76,22 @@ NATIVE31_XLS_PROFILE = table_import.NATIVE31_XLS_ARCHIVE_PROFILE
 SOURCE_OBSERVATION_PROFILE = table_import.SOURCE_OBSERVATION_ARCHIVE_PROFILE
 SOURCE_OBSERVATION_EVIDENCE_PROFILE = table_import.SOURCE_OBSERVATION_EVIDENCE_ARCHIVE_PROFILE
 SOURCE_OBSERVATION_XLS_PROFILE = table_import.SOURCE_OBSERVATION_XLS_ARCHIVE_PROFILE
-EVIDENCE_PROFILES = frozenset((SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE, NATIVE31_EVIDENCE_PROFILE, NATIVE31_XLS_PROFILE, UNORIENTED_EVIDENCE_PROFILE, UNORIENTED_XLS_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, POSTING_PAIR_XLS_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, SOURCE_LEDGER_XLS_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, BANK31_VARIANT_XLS_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_TEXT_XLS_PROFILE, LEGACY_EVIDENCE_PROFILE, EVIDENCE_PROFILE, XLS_EVIDENCE_PROFILE,
+AUXILIARY_ROWS_PROFILE = table_import.AUXILIARY_ROWS_ARCHIVE_PROFILE
+AUXILIARY_ROWS_EVIDENCE_PROFILE = table_import.AUXILIARY_ROWS_EVIDENCE_ARCHIVE_PROFILE
+AUXILIARY_ROWS_XLS_PROFILE = table_import.AUXILIARY_ROWS_XLS_ARCHIVE_PROFILE
+BANK_SOURCE_PROFILE = table_import.BANK_SOURCE_ARCHIVE_PROFILE
+BANK_SOURCE_EVIDENCE_PROFILE = table_import.BANK_SOURCE_EVIDENCE_ARCHIVE_PROFILE
+BANK_SOURCE_XLS_PROFILE = table_import.BANK_SOURCE_XLS_ARCHIVE_PROFILE
+EVIDENCE_PROFILES = frozenset((BANK_SOURCE_EVIDENCE_PROFILE, BANK_SOURCE_XLS_PROFILE, AUXILIARY_ROWS_EVIDENCE_PROFILE, AUXILIARY_ROWS_XLS_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE, NATIVE31_EVIDENCE_PROFILE, NATIVE31_XLS_PROFILE, UNORIENTED_EVIDENCE_PROFILE, UNORIENTED_XLS_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, POSTING_PAIR_XLS_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, SOURCE_LEDGER_XLS_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, BANK31_VARIANT_XLS_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_TEXT_XLS_PROFILE, LEGACY_EVIDENCE_PROFILE, EVIDENCE_PROFILE, XLS_EVIDENCE_PROFILE,
                                MICROSECOND_PROFILE, MICROSECOND_XLS_PROFILE,
                                HEADER_WIDTH_PROFILE, HEADER_WIDTH_XLS_PROFILE,
                                GUARDED_EVIDENCE_PROFILE, GUARDED_XLS_PROFILE, PRECISE_EVIDENCE_PROFILE, PRECISE_XLS_PROFILE,
                                REFERENCE_ROLE_EVIDENCE_PROFILE, REFERENCE_ROLE_XLS_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_XLS_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, TIME_ROLE_XLS_PROFILE, ZONED_EVIDENCE_PROFILE, ZONED_XLS_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, SOURCE_CONTRACT_XLS_PROFILE))
-PROFILE = SOURCE_OBSERVATION_PROFILE
-CANCELLATION_PROFILES = frozenset((SOURCE_OBSERVATION_PROFILE, NATIVE31_PROFILE, UNORIENTED_PROFILE, NATIVE_OBSERVATION_PROFILE, AUXILIARY_SCOPE_PROFILE, POSTING_PAIR_PROFILE, SOURCE_LEDGER_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_TEXT_PROFILE, CANCELLATION_PROFILE, HEADER_PROFILE, GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, ZONED_PROFILE, SOURCE_CONTRACT_PROFILE, *EVIDENCE_PROFILES))
+PROFILE = BANK_SOURCE_PROFILE
+CANCELLATION_PROFILES = frozenset((BANK_SOURCE_PROFILE, AUXILIARY_ROWS_PROFILE, SOURCE_OBSERVATION_PROFILE, NATIVE31_PROFILE, UNORIENTED_PROFILE, NATIVE_OBSERVATION_PROFILE, AUXILIARY_SCOPE_PROFILE, POSTING_PAIR_PROFILE, SOURCE_LEDGER_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_TEXT_PROFILE, CANCELLATION_PROFILE, HEADER_PROFILE, GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, ZONED_PROFILE, SOURCE_CONTRACT_PROFILE, *EVIDENCE_PROFILES))
 SUPPORTED_PROFILES = frozenset((POSTING_PAIR_PROFILE, IDENTITY_PROFILE, REFERENCE_PROFILE, *CANCELLATION_PROFILES))
 # Explicit precedence: lexical ordering puts v10/v11 below v9.
-PROFILE_PRECEDENCE = (SOURCE_OBSERVATION_XLS_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_PROFILE, NATIVE31_XLS_PROFILE, NATIVE31_EVIDENCE_PROFILE, NATIVE31_PROFILE, UNORIENTED_XLS_PROFILE, UNORIENTED_EVIDENCE_PROFILE, UNORIENTED_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, NATIVE_OBSERVATION_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, AUXILIARY_SCOPE_PROFILE, POSTING_PAIR_XLS_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, POSTING_PAIR_PROFILE, SOURCE_LEDGER_XLS_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, SOURCE_LEDGER_PROFILE, BANK31_VARIANT_XLS_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_TEXT_XLS_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_TEXT_PROFILE, SOURCE_CONTRACT_XLS_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, SOURCE_CONTRACT_PROFILE, ZONED_XLS_PROFILE, ZONED_EVIDENCE_PROFILE, ZONED_PROFILE, TIME_ROLE_XLS_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, TIME_ROLE_PROFILE, OPTIONAL_REFERENCE_XLS_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_PROFILE,
+PROFILE_PRECEDENCE = (BANK_SOURCE_XLS_PROFILE, BANK_SOURCE_EVIDENCE_PROFILE, BANK_SOURCE_PROFILE, AUXILIARY_ROWS_XLS_PROFILE, AUXILIARY_ROWS_EVIDENCE_PROFILE, AUXILIARY_ROWS_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_PROFILE, NATIVE31_XLS_PROFILE, NATIVE31_EVIDENCE_PROFILE, NATIVE31_PROFILE, UNORIENTED_XLS_PROFILE, UNORIENTED_EVIDENCE_PROFILE, UNORIENTED_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, NATIVE_OBSERVATION_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, AUXILIARY_SCOPE_PROFILE, POSTING_PAIR_XLS_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, POSTING_PAIR_PROFILE, SOURCE_LEDGER_XLS_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, SOURCE_LEDGER_PROFILE, BANK31_VARIANT_XLS_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_TEXT_XLS_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_TEXT_PROFILE, SOURCE_CONTRACT_XLS_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, SOURCE_CONTRACT_PROFILE, ZONED_XLS_PROFILE, ZONED_EVIDENCE_PROFILE, ZONED_PROFILE, TIME_ROLE_XLS_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, TIME_ROLE_PROFILE, OPTIONAL_REFERENCE_XLS_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_PROFILE,
                       REFERENCE_ROLE_XLS_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, REFERENCE_ROLE_PROFILE,
                       PRECISE_XLS_PROFILE, PRECISE_EVIDENCE_PROFILE, PRECISE_PROFILE,
                       GUARDED_XLS_PROFILE, GUARDED_EVIDENCE_PROFILE, GUARDED_PROFILE,
@@ -126,6 +132,27 @@ def _header(payload):
         except (UnicodeError, csv.Error, StopIteration):
             continue
     return [], None
+
+
+def _auxiliary_role(header, profile):
+    """Keep strict CSV eligibility and the final archive role on one grammar."""
+    signature = frozenset(header)
+    known_auxiliary = signature in _AUXILIARY or any(
+        name != "transaction" and signature == frozenset(names)
+        for name, names in feedback_import.SCHEMAS.items())
+    native_observations = profile in table_import.NATIVE_OBSERVATION_PROFILES
+    source_auxiliary = (profile in table_import.SOURCE_CONTRACT_PROFILES
+        and signature in _SOURCE_AUXILIARY
+        and not (profile in table_import.AUXILIARY_SCOPE_PROFILES and known_auxiliary)
+        and not (native_observations and _SOURCE_AUXILIARY.get(signature) in {"account", "subaccount"}))
+    role = (_SOURCE_AUXILIARY.get(signature) if source_auxiliary else _AUXILIARY.get(signature)) if len(header) == len(set(header)) else None
+    if (profile in EVIDENCE_PROFILES or native_observations) and role is None:
+        if native_observations:
+            from . import evidence_resolution
+            role = evidence_resolution.classify_auxiliary(header, native_observations=True)
+        role = role or next((name for name, names in feedback_import.SCHEMAS.items() if name != "transaction" and signature == frozenset(names)), None)
+        role = {"task": "manifest", "address": "client", "phone": "client"}.get(role, role)
+    return role, source_auxiliary
 
 
 def should_parse(source, *, native_observations=False):
@@ -208,12 +235,12 @@ def evidence_profile(source):
     try:
         source.seek(0)
         if contains_xls(source):
-            return SOURCE_OBSERVATION_XLS_PROFILE
+            return BANK_SOURCE_XLS_PROFILE
     except (OSError, ValueError, zipfile.BadZipFile, RuntimeError):
         pass  # The normal parser owns archive validation and its public error.
     finally:
         source.seek(0)
-    return SOURCE_OBSERVATION_EVIDENCE_PROFILE
+    return BANK_SOURCE_EVIDENCE_PROFILE
 
 
 def _path(name):
@@ -267,7 +294,7 @@ def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
             "rows": [], "records": [], "members": [], "documents": [], "mapping_evidence": []}
     if profile in CANCELLATION_PROFILES:
         plan.update(cancelled_rows=[], cancellations=[])
-    if _stage and profile in EVIDENCE_PROFILES:
+    if _stage and (profile in EVIDENCE_PROFILES or profile in {SOURCE_OBSERVATION_PROFILE, AUXILIARY_ROWS_PROFILE, BANK_SOURCE_PROFILE}):
         from .import_staging import stage_plan
         stage_plan(plan)
     budget = {"members": 0, "bytes": 0}
@@ -306,11 +333,18 @@ def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
                     record["details"][field] = str(offset + int(record["details"][field]))
             if details_pool is not None and not isinstance(record["details"], PackedDetails):
                 record["details"] = details_pool.pack(record["details"])
-        from itertools import chain
-        for row in chain(part["rows"], part.get("cancelled_rows", [])):
-            record = part["records"][row["_source_row"] - 1]
-            row.update(_source_row=record["record_no"], _source_sheet="", _source_row_kind=table_import.ROW_KIND,
-                       _record_key=record["record_key"])
+        for kind in ("rows", "cancelled_rows"):
+            posting_records = {} if kind == "rows" and profile in table_import.SOURCE_CONTRACT_PROFILES else None
+            for row in part.get(kind, ()):
+                record = part["records"][row["_source_row"] - 1]
+                row.update(_source_row=record["record_no"], _source_sheet="", _source_row_kind=table_import.ROW_KIND,
+                           _record_key=record["record_key"])
+                if posting_records is not None and (repeat := row.get("_source_posting_repeat_key")):
+                    # This member's bytes are fixed and its path is unique in
+                    # the archive. Bind to the first retained position before
+                    # its rows are encoded into the staging store.
+                    key = record["member_path"], repeat
+                    row["_source_posting_record_key"] = posting_records.setdefault(key, record["record_key"])
         for member in part["members"]:
             member["member_path"] = prefix if member["member_path"] in {"table.csv", prefix} else f"{prefix}/{member['member_path']}"
         for field in ("documents", "mapping_evidence"):
@@ -405,24 +439,9 @@ def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
                             # Generic mapping cannot downgrade a verified profile's
                             # cancellation/identity semantics inside a new envelope.
                             raise table_import.TableImportError("新反馈包包含需使用原规则的旧版交易表，整包未接纳；未降级解释资金记录")
-                        signature = frozenset(header)
-                        known_auxiliary = signature in _AUXILIARY or any(
-                            name != "transaction" and signature == frozenset(names)
-                            for name, names in feedback_import.SCHEMAS.items())
                         native_observations = profile in table_import.NATIVE_OBSERVATION_PROFILES
-                        source_auxiliary = (profile in table_import.SOURCE_CONTRACT_PROFILES
-                            and signature in _SOURCE_AUXILIARY
-                            and not (profile in table_import.AUXILIARY_SCOPE_PROFILES and known_auxiliary)
-                            and not (native_observations and _SOURCE_AUXILIARY.get(signature) in {"account", "subaccount"}))
-                        role = (_SOURCE_AUXILIARY.get(frozenset(header)) if source_auxiliary else _AUXILIARY.get(frozenset(header))) if len(header) == len(set(header)) else None
-                        if (profile in EVIDENCE_PROFILES or native_observations) and role is None:
-                            if native_observations:
-                                from . import evidence_resolution
-                                role = evidence_resolution.classify_auxiliary(header, native_observations=True)
-                            signature = frozenset(header)
-                            role = role or next((name for name, names in feedback_import.SCHEMAS.items() if name != "transaction" and signature == frozenset(names)), None)
-                            role = {"task": "manifest", "address": "client", "phone": "client"}.get(role, role)
-                        member_profile = (profile if profile in EVIDENCE_PROFILES or profile in {GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, ZONED_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_TEXT_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_LEDGER_PROFILE, POSTING_PAIR_PROFILE, AUXILIARY_SCOPE_PROFILE, NATIVE_OBSERVATION_PROFILE, UNORIENTED_PROFILE, NATIVE31_PROFILE, SOURCE_OBSERVATION_PROFILE} else
+                        role, source_auxiliary = _auxiliary_role(header, profile)
+                        member_profile = (profile if profile in EVIDENCE_PROFILES or profile in {GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, ZONED_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_TEXT_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_LEDGER_PROFILE, POSTING_PAIR_PROFILE, AUXILIARY_SCOPE_PROFILE, NATIVE_OBSERVATION_PROFILE, UNORIENTED_PROFILE, NATIVE31_PROFILE, SOURCE_OBSERVATION_PROFILE, AUXILIARY_ROWS_PROFILE, BANK_SOURCE_PROFILE} else
                                           table_import.ARCHIVE_MEMBER_PROFILE if profile == HEADER_PROFILE
                                           else table_import.IDENTITY_PROFILE)
                         if role or member_profile != profile:
@@ -442,6 +461,8 @@ def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
                                         _defer_occurrence_binding=profile in EVIDENCE_PROFILES,
                                         _retain_csv_format=profile in CANCELLATION_PROFILES and suffix == ".csv",
                                         _decoded_csv=decoded_csv))
+                        if role and profile in table_import.AUXILIARY_ROWS_ARCHIVE_PROFILES:
+                            part["documents"][0]["columns"] = table_import._columns(header, profile)
                         try:
                             if profile in CANCELLATION_PROFILES and not role and suffix == ".csv":
                                 table_cancellations.apply(part, payload, allow_feedback28=profile in EVIDENCE_PROFILES or native_observations,
@@ -465,22 +486,14 @@ def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
             visit = None
         if not plan["members"]:
             raise table_import.TableImportError("反馈包没有可处理的数据成员")
-        if profile in table_import.SOURCE_CONTRACT_PROFILES:
-            from .import_staging import row_records
-            member_hashes = {member["member_path"]: member["sha256"] for member in plan["members"]}
-            posting_records = {}
-            for row, record in row_records(plan, kinds=("rows",)):
-                if row.get("_source_posting_repeat_key"):
-                    key = record["member_path"], member_hashes[record["member_path"]], row["_source_posting_repeat_key"]
-                    row["_source_posting_record_key"] = posting_records.setdefault(key, record["record_key"])
         if profile in CANCELLATION_PROFILES:
             plan["stats"] = statistics.result()
-            if profile in EVIDENCE_PROFILES or profile == SOURCE_OBSERVATION_PROFILE:
+            if profile in EVIDENCE_PROFILES or profile in {SOURCE_OBSERVATION_PROFILE, AUXILIARY_ROWS_PROFILE, BANK_SOURCE_PROFILE}:
                 from . import evidence_resolution
                 # Only the complete envelope knows final member positions and
                 # source families. Cancellation and merge need no early binding.
                 try:
-                    if profile == SOURCE_OBSERVATION_PROFILE:
+                    if profile in {SOURCE_OBSERVATION_PROFILE, AUXILIARY_ROWS_PROFILE, BANK_SOURCE_PROFILE}:
                         evidence_resolution.bind_families(plan)
                     elif _operation_scopes:
                         evidence_resolution.bind_occurrences(plan, operation_scopes=True)

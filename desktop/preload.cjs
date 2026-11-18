@@ -8,7 +8,7 @@ window.addEventListener('DOMContentLoaded', () => {
 window.addEventListener('funds-trace:workbench', event => {
   if (event.detail === 'ready' || event.detail === 'failed') ipcRenderer.send('funds-trace:workbench', event.detail);
 });
-// Sandboxed preload exposes no IPC primitive, token, file path or case payload.
+// Sandboxed preload exposes no generic IPC primitive, token or file path.
 const channel = 'funds-trace:preferences';
 const appearanceChannel = 'funds-trace:appearance';
 const appearanceListeners = new Set();
@@ -47,4 +47,10 @@ contextBridge.exposeInMainWorld('FundsDesktopUpdates', Object.freeze({
     ipcRenderer.on(updateChannel, listener);
     return () => ipcRenderer.removeListener(updateChannel, listener);
   },
+}));
+const sourceChannel = 'funds-trace:source-copy';
+contextBridge.exposeInMainWorld('FundsDesktopSources', Object.freeze({
+  prepare: ({ caseId, sourceId }) => ipcRenderer.invoke(sourceChannel, 'prepare', { caseId, sourceId }),
+  perform: ({ ticket, action }) => ipcRenderer.invoke(sourceChannel, 'perform', { ticket, action }),
+  release: ticket => ipcRenderer.invoke(sourceChannel, 'release', { ticket }),
 }));

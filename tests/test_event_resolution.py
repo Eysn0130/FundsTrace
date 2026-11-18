@@ -107,3 +107,116 @@ def test_excluded_reference_entries_do_not_make_effective_denominator_negative(d
         result = events.rebuild(cid)
     assert (result["observed_entries"], result["conflict_entries"], result["unknown_entries"], result["excluded_reference_entries"]) == (1, 1, 0, 1)
     assert result["confirmed_events"] == 0
+
+
+def test_rebuild_releases_proof_inputs_before_writing_projection(database, make_case, monkeypatch):
+    from weakref import ref
+    from app import bank_posting_pairs
+
+    class Observation(dict):
+        pass
+
+    cid = make_case("Synthetic projection lifetime")
+    database.x("insert into flows(id,case_id,amount,currency) values (1,?,100,'CNY')", [cid])
+    retained = []
+
+    def bank_rows(*args, **kwargs):
+        rows = [Observation(flow_id=1, effective=True), Observation(flow_id="1", effective=False),
+                Observation(flow_id=2, effective=False), Observation(flow_id=2, effective=False),
+                Observation(flow_id=None, effective=False)]
+        retained.extend(ref(row) for row in rows)
+        return [], [{"flow_id": "1", "event_id": None, "status": "conflict", "reason": "synthetic"},
+                    {"flow_id": "2", "event_id": None, "status": "conflict", "reason": "synthetic"}], rows
+
+    write = events._write_projection
+
+    def observed_write(*args):
+        assert len(retained) == 5 and all(item() is None for item in retained)
+        return write(*args)
+
+    monkeypatch.setattr(bank_posting_pairs, "has_sources", lambda case: True)
+    monkeypatch.setattr(bank_posting_pairs, "project", bank_rows)
+    monkeypatch.setattr(events, "_write_projection", observed_write)
+    with database.transaction():
+        result = events.rebuild(cid)
+    assert (result["reference_observations"], result["excluded_reference_entries"],
+            result["unresolved_reference_observations"], result["conflict_entries"], result["unknown_entries"]) == (5, 1, 1, 1, 0)
+
+
+def projection_fixture(literals):
+    observations = []
+    stamp = datetime(2036, 2, 3, 4, 5, 6, 123456)
+    for index, literal in enumerate(literals):
+        currency = ("CNY", "USD", "EUR")[index % 3]
+        evidence = json.loads(observed("1", "SYN-A")["evidence"])
+        evidence["reference"] = f"SYN-PROJECTION-{index:06d}"
+        for side, own in enumerate(("SYN-A", "SYN-B")):
+            fid = 9007199254740993 + index * 2 + side
+            observations.append(observed(str(fid), own, amount=Decimal(literal), currency=currency,
+                trade_time=stamp, evidence=json.dumps(evidence)))
+    resolved, memberships = events.resolve(observations)
+    return resolved, memberships, stamp
+
+
+def test_event_projection_default_decimal_scan_keeps_large_tail_exact(database, make_case):
+    from app import evidence_resolution
+    cid = make_case("SYN exact event Decimal scanner boundary")
+    literals = ["123456789.12"] * 4997 + ["1234567890.13", "9007199254740993.13", "9999999999999999.99"]
+    candidates, memberships, stamp = projection_fixture(literals)
+    sample = database.q_raw("select current_setting('pandas_analyze_sample') sample_size")[0]["sample_size"]
+    assert sample == 1000
+    assert len(literals) < evidence_resolution.WRITE_CHUNK
+    amounts = [(id(row["amount"]), row["amount"].as_tuple()) for row in candidates]
+    with database.transaction():
+        events._write_projection(cid, candidates, memberships)
+    stored = database.q_raw("select * from resolved_events where case_id=?", [cid])
+    assert len(stored) == len(literals)
+    expected_events = {row["event_id"]: row for row in candidates}
+    for row in stored:
+        candidate = expected_events[row["event_id"]]
+        reference = json.loads(row["evidence_json"])["reference"]
+        index = int(reference.rsplit("-", 1)[1])
+        assert type(row["amount"]) is Decimal
+        assert row["amount"].as_tuple() == Decimal(literals[index]).as_tuple()
+        assert row["currency"] == ("CNY", "USD", "EUR")[index % 3]
+        assert row["trade_time"] == stamp
+        assert row["payer_account"] == candidate["payer_account"] == "SYN-A"
+        assert row["payee_account"] == candidate["payee_account"] == "SYN-B"
+        assert row["evidence_json"] == candidate["evidence_json"]
+    members = database.q_raw("select flow_id,event_id,status from event_members where case_id=? order by flow_id", [cid])
+    assert [row["flow_id"] for row in members] == [9007199254740993 + index for index in range(len(literals) * 2)]
+    assert all(row["event_id"] in expected_events and row["status"] == "confirmed" for row in members)
+    assert [(id(row["amount"]), row["amount"].as_tuple()) for row in candidates] == amounts
+    assert all(type(row["amount"]) is Decimal for row in candidates)
+    assert database.q_raw("select current_setting('pandas_analyze_sample') sample_size") == [{"sample_size": sample}]
+
+
+def test_late_event_member_batch_failure_restores_previous_projection(database, make_case, monkeypatch):
+    from app import evidence_resolution
+    cid = make_case("SYN event projection late batch rollback")
+    literals = ["0.13", "1234567890.13", "9007199254740993.13", "9999999999999999.99", "7.53"]
+    candidates, memberships, _ = projection_fixture(literals)
+    old_candidates, old_memberships, _ = projection_fixture(["100.00"])
+    with database.transaction():
+        events._write_projection(cid, old_candidates, old_memberships)
+    before = {table: database.q_raw(f"select * from {table} where case_id=? order by 1,2", [cid])
+              for table in ("resolved_events", "event_members")}
+    # A small write chunk forces a late failure; scanner sampling is untouched.
+    monkeypatch.setattr(evidence_resolution, "WRITE_CHUNK", 2)
+    original_insert, batches = database.insert_dataframe, []
+
+    def fail_late(table, frame, columns):
+        batches.append((table, len(frame)))
+        if table == "event_members" and sum(name == table for name, _ in batches) == 2:
+            raise RuntimeError("SYN late event member batch")
+        return original_insert(table, frame, columns)
+
+    monkeypatch.setattr(database, "insert_dataframe", fail_late)
+    with pytest.raises(RuntimeError, match="SYN late event member batch"):
+        with database.transaction():
+            database.x("delete from event_members where case_id=?", [cid])
+            database.x("delete from resolved_events where case_id=?", [cid])
+            events._write_projection(cid, candidates, memberships)
+    assert batches == [("resolved_events", 2), ("resolved_events", 2), ("resolved_events", 1),
+                       ("event_members", 2), ("event_members", 2)]
+    assert {table: database.q_raw(f"select * from {table} where case_id=? order by 1,2", [cid]) for table in before} == before

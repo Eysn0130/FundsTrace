@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import zipfile
+from threading import get_ident
 
 import pytest
 
@@ -140,19 +141,20 @@ def test_nonempty_public_ledger_import_batches_database_round_trips(client, data
     cid = make_case("SYN ledger query budget")
     raw, _ = complex_source(8)
     query, commit = database.q_raw, source_ledger.commit
-    active, calls, results = False, [], []
+    worker_thread, calls, results = None, [], []
     def counted(sql, params=None):
-        if active:
+        # The status endpoint can query concurrently while the writer is active.
+        if get_ident() == worker_thread:
             calls.append(sql)
         return query(sql, params)
     def observed(*args):
-        nonlocal active
+        nonlocal worker_thread
         start = len(calls)
-        active = True
+        worker_thread = get_ident()
         try:
             result = commit(*args)
         finally:
-            active = False
+            worker_thread = None
         results.append((result, len(calls) - start))
         return result
     monkeypatch.setattr(database, "q_raw", counted)
@@ -160,7 +162,7 @@ def test_nonempty_public_ledger_import_batches_database_round_trips(client, data
     add_source(client, cid, raw, "source.zip")
     add_source(client, cid, raw, "source.zip")
     assert [result for result, _ in results] == [{"added": 24, "duplicates": 0}, {"added": 0, "duplicates": 24}]
-    assert all(count < 10 for _, count in results), results
+    assert all(0 < count < 10 for _, count in results), results
 
 
 def test_history_keeps_lowest_matching_id_after_many_changed_candidates(client, database, make_case, monkeypatch):

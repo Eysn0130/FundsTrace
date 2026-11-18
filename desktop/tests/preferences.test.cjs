@@ -118,7 +118,7 @@ test('sandbox preload exposes only the narrow preferences API', () => {
     window: { addEventListener() {} },
     require(name) {
       assert.equal(name, 'electron');
-      return { contextBridge: { exposeInMainWorld(name, value) { assert.ok(['FundsDesktopPreferences', 'FundsPreferences', 'FundsDesktopUpdates'].includes(name)); if (name === 'FundsDesktopPreferences') exposed = value; } },
+      return { contextBridge: { exposeInMainWorld(name, value) { assert.ok(['FundsDesktopPreferences', 'FundsPreferences', 'FundsDesktopUpdates', 'FundsDesktopSources'].includes(name)); if (name === 'FundsDesktopPreferences') exposed = value; } },
         ipcRenderer: { on() {}, sendSync(...args) { calls.push(args); return args[1] === 'get' ? '2' : true; } } };
     },
   });
@@ -126,6 +126,18 @@ test('sandbox preload exposes only the narrow preferences API', () => {
   assert.equal(Object.isFrozen(exposed), true);
   assert.equal(exposed.getItem('fund_case'), '2'); exposed.setItem('fund_case', 3); exposed.removeItem('fund_edge_label');
   assert.deepEqual(calls, [[CHANNEL, 'get', 'fund_case'], [CHANNEL, 'set', 'fund_case', '3'], [CHANNEL, 'remove', 'fund_edge_label']]);
+});
+
+test('source-copy preload forwards only IDs, action and opaque tickets, never renderer paths', async () => {
+  const exposed = new Map(), calls = [];
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../preload.cjs'), 'utf8'), {
+    window: { addEventListener() {} }, require: () => ({ contextBridge: { exposeInMainWorld: (name, value) => exposed.set(name, value) }, ipcRenderer: { on() {}, invoke: async (...args) => { calls.push(args); } } }),
+  });
+  const api = exposed.get('FundsDesktopSources');
+  assert.deepEqual(Object.keys(api), ['prepare','perform','release']); assert.equal(Object.isFrozen(api), true);
+  await api.prepare({caseId:'1',sourceId:'0123456789ab',path:'/untrusted',token:'never-forward'});
+  await api.perform({ticket:'opaque',action:'open',path:'/untrusted'}); await api.release('opaque');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['funds-trace:source-copy','prepare',{caseId:'1',sourceId:'0123456789ab'}],['funds-trace:source-copy','perform',{ticket:'opaque',action:'open'}],['funds-trace:source-copy','release',{ticket:'opaque'}]]);
 });
 
 test('business appearance subscriptions buffer committed values without exposing IPC events or other preferences', () => {

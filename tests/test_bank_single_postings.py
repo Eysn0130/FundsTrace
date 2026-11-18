@@ -1,6 +1,10 @@
 """Independent native31 booked movements, never settlement assertions."""
+from contextlib import contextmanager
+from copy import deepcopy
+from decimal import Decimal, localcontext
 import io
 import json
+import sys
 
 from openpyxl import load_workbook
 import pytest
@@ -67,6 +71,124 @@ def test_distinct_independently_balanced_postings_are_exact_and_keep_all_source_
     assert sum("current_bank_single_posting_proof" in row["details"] for row in report) == 2
 
 
+def test_public_rebuild_retains_utf8_single_proofs_and_writes_exact_text(client, database, make_case, monkeypatch):
+    from app import bank_posting_pairs, bank_single_postings, event_resolution
+    from test_automatic_table_import import preview
+    from test_bank_pair_scope_payload import legacy_projection
+    from test_folder_evidence import complete
+
+    cid = make_case("SYN retained single proof bytes")
+    rows = entries()
+    for row in rows[1:]:
+        row["交易流水号"] += "-合成"
+    raw = encoded(rows)
+    published, singleton_facts = [], []
+    write = event_resolution._write_projection
+    single, facts = bank_single_postings.project, bank_posting_pairs._facts
+
+    def observe_publication(case_id, events, memberships):
+        published.append({event["event_id"]: event["evidence_json"] for event in events})
+        return write(case_id, events, memberships)
+
+    def observe_facts(row):
+        singleton_facts.append(row["reference"])
+        return facts(row)
+
+    def observe_single(*args, **kwargs):
+        with monkeypatch.context() as observer:
+            observer.setattr(bank_posting_pairs, "_facts", observe_facts)
+            return single(*args, **kwargs)
+
+    monkeypatch.setattr(event_resolution, "_write_projection", observe_publication)
+    with monkeypatch.context() as observer:
+        observer.setattr(bank_single_postings, "project", observe_single)
+        add_source(client, cid, raw)
+    expected, expected_members, _ = legacy_projection(database, cid, monkeypatch)
+    proofs = {event["event_id"]: event["evidence_json"] for event in expected}
+    assert len(proofs) == 2 and all("合成" in proof for proof in proofs.values())
+    assert [tuple(type(proof) for proof in batch.values()) for batch in published] == [(bytes, bytes)]
+    assert published[0] == {event_id: proof.encode("utf-8") for event_id, proof in proofs.items()}
+    assert singleton_facts == []
+    current, members, _ = bank_posting_pairs.project(cid)
+    assert (current, members) == (expected, expected_members)
+    stored = database.q_raw("select event_id,evidence_json from resolved_events where case_id=?", [cid])
+    assert {row["event_id"]: row["evidence_json"] for row in stored} == proofs
+    assert database.q_raw("""select cast(flow_id as varchar) flow_id,event_id,status,reason,pending_group
+        from event_members where case_id=? order by cast(flow_id as varchar)""", [cid]) == expected_members
+
+    tables = ("flows", "flow_sources", "batches", "import_sources", "import_source_operations", "import_records",
+              "resolved_events", "event_members", "event_state")
+
+    def state():
+        return {table: database.q_raw(f"select * from {table} where case_id=? order by all", [cid]) for table in tables}
+
+    before = state()
+    repeat = preview(client, cid, raw, "repeat.csv")
+    insert, failures = database.insert_dataframe, []
+
+    def fail_after_members(table, frame, columns):
+        result = insert(table, frame, columns)
+        if table == "event_members":
+            failures.append(len(frame))
+            raise RuntimeError("Synthetic rollback after writing single proof membership")
+        return result
+
+    monkeypatch.setattr(database, "insert_dataframe", fail_after_members)
+    failed = complete(client, cid, repeat)
+    assert failed["stage"] == "error" and failed["result"] is None
+    assert len(failures) == 1 and failures[0] > 0
+    assert state() == before
+
+
+def test_public_single_proof_does_not_hold_self_only_keys_beside_prepared_books(client, make_case, monkeypatch):
+    from app import bank_single_postings
+
+    original, money = bank_single_postings.project, bank_single_postings.money_decimal
+    observed = {"calls": 0, "resident": 0, "decimal_calls": []}
+    active = None
+
+    def counted(value):
+        if active is not None:
+            active[0] += 1
+        return money(value)
+
+    def trace(frame, event, _):
+        if frame.f_code is not original.__code__:
+            return None
+        local = frame.f_locals
+        if "prepared" in local and "cross" in local:
+            seen, resident = set(), 0
+            for value in local.values():
+                if isinstance(value, dict) and id(value) not in seen:
+                    seen.add(id(value))
+                    resident += sum(isinstance(key, tuple) and len(key) == 4 and isinstance(key[3], Decimal)
+                                    for key in value)
+            observed["resident"] = max(observed["resident"], resident)
+        return trace
+
+    def project(*args, **kwargs):
+        nonlocal active
+        previous = sys.gettrace()
+        active = [0]
+        try:
+            sys.settrace(trace)
+            return original(*args, **kwargs)
+        finally:
+            sys.settrace(previous)
+            observed["calls"] += 1
+            observed["decimal_calls"].append(active[0])
+            active = None
+
+    monkeypatch.setattr(bank_single_postings, "project", project)
+    monkeypatch.setattr(bank_single_postings, "money_decimal", counted)
+    cid = make_case("SYN sparse single proof residency")
+    add_source(client, cid, encoded(entries()))
+    assert_exact(client, cid)
+    assert observed["calls"] > 0
+    assert observed["resident"] == 0
+    assert max(observed["decimal_calls"]) <= 13
+
+
 def test_duplicate_support_late_primary_conflict_and_withdrawal_recompute_singles(client, make_case):
     cid = make_case("SYN reversible single proof")
     raw = encoded(entries());view, _ = add_source(client, cid, raw)
@@ -89,6 +211,123 @@ def test_duplicate_support_late_primary_conflict_and_withdrawal_recompute_single
     restored = client.post("/api/cases/import", files={"file": ("singles.fundcase", package.content)})
     assert restored.status_code == 200, restored.text
     assert_exact(client, restored.json()["case_id"])
+
+
+@pytest.mark.parametrize("precision", [3, 28, 50])
+@pytest.mark.parametrize("conflict_field", [None, "state", "card_state"])
+def test_single_conflict_lookup_streams_case_ids_and_preserves_complete_proofs(
+        client, database, make_case, monkeypatch, conflict_field, precision):
+    from app import bank_posting_pairs, bank_single_postings
+    from test_bank_pair_scope_payload import exact_value, legacy_single_projection
+
+    cid, other = make_case("SYN streamed single conflicts"), make_case("SYN foreign single conflicts")
+    raw = encoded(entries())
+    add_source(client, cid, raw)
+    add_source(client, cid, raw)
+    ids = {row["trade_no"]: row["id"] for row in database.q_raw("select id,trade_no from flows where case_id=?", [cid])}
+    target, unaffected = ids["SYN-SINGLE-1"], ids["SYN-SINGLE-2"]
+    if conflict_field:
+        for role in ("payer", "payee"):
+            database.x("""insert or replace into resolved_endpoints(case_id,flow_id,role,entity_id,state,reason,card_state)
+                values (?,?,?,'SYN-CONFLICT',?,'synthetic',?)""", [cid, target, role,
+                "conflict" if conflict_field == "state" else "missing",
+                "conflict" if conflict_field == "card_state" else "missing"])
+    # A local endpoint outside the effective map and an identical foreign ID
+    # must not revoke either valid local proof. Multiple roles may conflict.
+    outside = 9_000_000_001
+    database.x("""insert into resolved_endpoints(case_id,flow_id,role,entity_id,state,reason,card_state)
+        values (?,?,'payer','SYN-OUTSIDE','conflict','synthetic','missing'),
+               (?,?,'payer','SYN-FOREIGN','resolved','synthetic','conflict')""", [cid, outside, other, unaffected])
+    original_project, original_query, original_rows = bank_single_postings.project, database.q_raw, database.raw_rows
+    observed = {"bindings": [], "bulk": 0, "streamed": []}
+
+    def conflict_query(query):
+        return "from resolved_endpoints" in query and "card_state='conflict'" in query
+
+    def query(sql, params=None):
+        if conflict_query(sql):
+            observed["bindings"].append(params)
+            observed["bulk"] += 1
+        return original_query(sql, params)
+
+    @contextmanager
+    def rows(sql, params=None):
+        with original_rows(sql, params) as stream:
+            if conflict_query(sql):
+                observed["bindings"].append(params)
+                def selected():
+                    for row in stream:
+                        assert set(row) == {"flow_id"}
+                        observed["streamed"].append(row["flow_id"])
+                        yield row
+                yield selected()
+            else:
+                yield stream
+
+    def compare(case_id, candidates, books, unlocated, effective, current, memberships, excluded):
+        assert outside not in {int(fid) for fid in effective}
+        assert sum(row["reference"] == "SYN-SINGLE-1" for row in candidates) == 2
+        before = exact_value(candidates)
+        expected_memberships = deepcopy(memberships)
+        with localcontext() as context:
+            context.prec = precision
+            expected = legacy_single_projection(case_id, candidates, books, unlocated, effective,
+                                                current, expected_memberships, excluded)
+            with monkeypatch.context() as lookup:
+                lookup.setattr(database, "q_raw", query)
+                lookup.setattr(database, "raw_rows", rows)
+                actual = original_project(case_id, candidates, books, unlocated, effective, current, memberships, excluded)
+        assert exact_value((actual, memberships)) == exact_value((expected, expected_memberships))
+        assert exact_value(candidates) == before
+        assert len(actual) == (1 if conflict_field else 2)
+        assert memberships[str(target)]["reason"] == ("single_posting_identity_conflict" if conflict_field
+                                                     else "single_posting_independent_balance_proof")
+        return actual
+
+    monkeypatch.setattr(bank_single_postings, "project", compare)
+    bank_posting_pairs.project(cid)
+    assert observed["bindings"] == [[cid]]
+    assert observed["bulk"] == 0
+    assert sorted(observed["streamed"]) == sorted([outside, *([target, target] if conflict_field else [])])
+
+
+@pytest.mark.parametrize("owners,observed,expected", [
+    (1, (), 0), (1, (1,), 0), (1, (2,), 2), (2, (2,), 0),
+    (2, (1,), 1), (3, (1,), 1), (3, (1, 2, 1), 3)])
+def test_sparse_cross_index_keeps_only_actual_opposite_owners(database, make_case, owners, observed, expected):
+    from app import bank_single_postings
+
+    cid = make_case("SYN sparse owner masks")
+    key = ('SYN-A', 'SYN-B', 'USD', Decimal('7.53'))
+    wanted = {key: owners}
+    books = {('SYN-book',): [
+        {'evidence': {'row': {'payer_account': 'SYN-A', 'payee_account': 'SYN-B',
+                              'self_account': 'SYN-A' if owner == 1 else 'SYN-B', 'currency': 'USD', 'amount': '7.53'},
+                      'signed_amount': '7.53'}} for owner in observed]}
+    result = bank_single_postings._cross_index(cid, books, {}, wanted)
+    assert result == ({key: expected} if expected else {})
+    assert wanted == {key: owners} and next(iter(wanted)) is key
+
+
+def test_sparse_cross_index_keeps_legacy_case_currency_amount_and_current_row_scope(
+        database, make_case, flow_row):
+    from app import bank_single_postings, importer
+
+    cid, other = make_case("SYN sparse legacy scope"), make_case("SYN foreign sparse legacy scope")
+    key = ('SYN-A', 'SYN-B', 'USD', Decimal('7.53'))
+    wanted = {key: 1}
+    def legacy(case_id, number, amount='7.53', currency='USD'):
+        importer.commit_rows('synthetic-legacy.csv', 'A', [flow_row(trade_no=number,
+            payer_account='SYN-A', payee_account='SYN-B', self_account='SYN-B',
+            amount=Decimal(amount), balance=None, currency=currency)], case_id=case_id)
+    legacy(other, 'SYN-FOREIGN')
+    legacy(cid, 'SYN-CURRENCY', currency='CNY')
+    legacy(cid, 'SYN-AMOUNT', amount='7.54')
+    assert bank_single_postings._cross_index(cid, {}, {}, wanted) == {}
+    legacy(cid, 'SYN-MATCH')
+    assert bank_single_postings._cross_index(cid, {}, {}, wanted) == {key: 2}
+    fid = database.q_raw("select id from flows where case_id=? and trade_no='SYN-MATCH'", [cid])[0]['id']
+    assert bank_single_postings._cross_index(cid, {}, {str(fid): {}}, wanted) == {}
 
 
 @pytest.mark.parametrize("change", ["missing_clock", "missing_amount", "same_target_time", "wrong_balance", "same_primary", "missing_bank"])
@@ -152,11 +391,22 @@ def test_late_different_primary_counterbook_candidate_revokes_without_merging(cl
     assert_exact(client, cid)
 
 
-def test_primary_reuse_across_counterparty_banks_cannot_confirm_singletons(client, database, make_case):
+def test_primary_reuse_across_counterparty_banks_cannot_confirm_singletons(client, database, make_case, monkeypatch):
+    from app import bank_single_postings
+
     cid = make_case("SYN global primary competition")
     rows = entries();rows[2]["交易流水号"] = rows[1]["交易流水号"];rows[2]["对手开户银行"] = "Synthetic different counter bank"
+    original, requested = bank_single_postings._cross_index, []
+    def observe(case_id, books, current, wanted):
+        requested.append(len(wanted))
+        return original(case_id, books, current, wanted)
+    monkeypatch.setattr(bank_single_postings, '_cross_index', observe)
     add_source(client, cid, encoded(rows))
     assert not database.q_raw("select * from resolved_events where case_id=?", [cid])
+    assert requested and requested == [0] * len(requested)
+    assert {row['reason'] for row in database.q_raw("""select m.reason from event_members m
+        join flows f on f.case_id=m.case_id and f.id=m.flow_id
+        where m.case_id=? and f.trade_no='SYN-SINGLE-1'""", [cid])} == {'single_posting_primary_reused'}
 
 
 def test_named_primary_with_tab_crlf_in_nonfinancial_other_family_revokes_singleton(client, make_case):

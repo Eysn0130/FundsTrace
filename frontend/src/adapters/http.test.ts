@@ -10,6 +10,63 @@ function transport(overrides: Partial<FundsApi> = {}): FundsApi {
 }
 
 describe('case-bound HTTP adapter', () => {
+  it('keeps old hosts without optional report reads or report export usable', () => {
+    const bound = createHttpFundsSession({ context: { caseId: '1', name: 'Synthetic' }, scopeKey: 'old-host', generation: 1, transport: transport() });
+    expect(bound.session.client.importFundsReport).toBeUndefined();
+    expect(bound.session.client.verifyImportSource).toBeUndefined();
+    expect(bound.session.client.importReportRecords).toBeUndefined();
+    expect(bound.session.actions!.downloadFundsReport).toBeUndefined();
+  });
+  it('binds report verification, rows and export to the selected case and forwards revisions unchanged', async () => {
+    const report = vi.fn(unused), verify = vi.fn(unused), records = vi.fn(unused), document = vi.fn(async () => {});
+    const context = { caseId: '1', name: 'Synthetic' };
+    const bound = createHttpFundsSession({ context, scopeKey: 'report', generation: 1, transport: transport({ importFundsReport: report, verifyImportSource: verify, importReportRecords: records }), actions: { downloadFundsReport: document } });
+    context.caseId = '2';
+    const query = { memberPath: 'data.csv', currency: 'CNY', account: '0009007199254740993', expectedRevision: '9007199254740993' };
+    for (const call of [() => bound.session.client.importFundsReport!('source', query), () => bound.session.client.verifyImportSource!('source', query), () => bound.session.client.importReportRecords!('source', { ...query, counterparty: '0002', direction: 'in' })]) await expect(call()).rejects.toThrow('Unexpected synthetic transport call');
+    expect(report).toHaveBeenCalledWith('1', 'source', query, expect.any(AbortSignal));
+    expect(verify).toHaveBeenCalledWith('1', 'source', query, expect.any(AbortSignal));
+    expect(records).toHaveBeenCalledWith('1', 'source', { ...query, counterparty: '0002', direction: 'in' }, expect.any(AbortSignal));
+    const source = { sourceId: 'source', filename: 'synthetic.html', ...query };
+    await bound.session.actions!.downloadFundsReport!(source);
+    expect(document).toHaveBeenCalledWith(source, expect.any(AbortSignal));
+    bound.revoke();
+    for (const call of [() => bound.session.client.importFundsReport!('source', query), () => bound.session.client.verifyImportSource!('source', query), () => bound.session.client.importReportRecords!('source', query), () => bound.session.actions!.downloadFundsReport!(source)]) await expect(call()).rejects.toMatchObject({ code: 'session_revoked' });
+    for (const method of [report, verify, records, document]) expect(method).toHaveBeenCalledOnce();
+  });
+  it('rejects a report reply from a revoked same-case binding even if its transport ignores cancellation', async () => {
+    type Report = Awaited<ReturnType<NonNullable<FundsApi['importFundsReport']>>>;
+    let finish!: (value: Report) => void, signal: AbortSignal | undefined;
+    const report = vi.fn((_case: string, _source: string, _query: unknown, combined?: AbortSignal) => { signal = combined; return new Promise<Report>(resolve => { finish = resolve; }); });
+    const context = { caseId: '1', name: 'Synthetic' }, query = { memberPath: 'data.csv' };
+    const old = createHttpFundsSession({ context, scopeKey: 'report', generation: 1, transport: transport({ importFundsReport: report }) });
+    const pending = old.session.client.importFundsReport!('source', query), rejected = expect(pending).rejects.toMatchObject({ code: 'session_revoked' });
+    old.revoke();
+    const next = createHttpFundsSession({ context, scopeKey: 'report', generation: 2, transport: transport({ importFundsReport: unused }) });
+    expect(next.session.signal.aborted).toBe(false); expect(signal?.aborted).toBe(true);
+    // Revocation must reject before a caller can consume any part of a late payload.
+    finish({ case_id: '1' } as Report); await rejected;
+    await expect(old.session.client.importFundsReport!('source', query)).rejects.toMatchObject({ code: 'session_revoked' });
+    expect(report).toHaveBeenCalledOnce();
+  });
+  it('rejects an already-aborted report read without revoking the current session', async () => {
+    const report = vi.fn(unused), controller = new AbortController(); controller.abort();
+    const bound = createHttpFundsSession({ context: { caseId: '1', name: 'Synthetic' }, scopeKey: 'report', generation: 1, transport: transport({ importFundsReport: report }) });
+    await expect(bound.session.client.importFundsReport!('source', { memberPath: 'data.csv' }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(report).not.toHaveBeenCalled(); expect(bound.session.signal.aborted).toBe(false);
+  });
+  it('revokes optional issue navigation including a transport that returns after cancellation',async()=>{
+    type Page=Awaited<ReturnType<NonNullable<FundsApi['importReview']>>>;
+    let finish!:(value:Page)=>void,signal:AbortSignal|undefined;
+    const method=vi.fn((_case:string,_source:string,_member:string,_query:unknown,combined?:AbortSignal)=>{signal=combined;return new Promise<Page>(resolve=>{finish=resolve;});});
+    const bound=createHttpFundsSession({context:{caseId:'1',name:'Synthetic'},scopeKey:'review',generation:1,transport:transport({importReview:method})});
+    const captured=bound.session.client.importReview!,query={view:'review' as const,page:1,issueIndex:2};
+    const pending=captured('SYN-SOURCE','table.csv',query),rejected=expect(pending).rejects.toMatchObject({code:'session_revoked'});
+    bound.revoke();expect(signal?.aborted).toBe(true);
+    finish({case_id:'1',source_id:'SYN-SOURCE',member_path:'table.csv',view:'review',counts:{all:0,review:0,accepted:0},items:[],page:1,page_size:50,total:0});await rejected;
+    await expect(captured('SYN-SOURCE','table.csv',query)).rejects.toMatchObject({code:'session_revoked'});
+    expect(method).toHaveBeenCalledOnce();
+  });
   it('binds optional source-record reads and revokes dispatched and captured calls', async () => {
     let finish!: (value: Awaited<ReturnType<NonNullable<FundsApi['importRecords']>>>) => void, signal: AbortSignal | undefined;
     const importRecords = vi.fn((_case: string, _source: string, _page = 1, combined?: AbortSignal) => {

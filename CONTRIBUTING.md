@@ -49,7 +49,7 @@ cd ..
 .venv/bin/python scripts/export_api_contract.py --check
 ```
 
-`build` 同时执行 TypeScript 类型检查和 Vite 编译。前端目录中的 `npm run dev` 通过 Vite 代理连接 `127.0.0.1` 的隔离 FastAPI，默认端口 8300；可在启动前将 `FUNDS_TRACE_DEV_API_PORT` 设为合成后端打印的端口，仅接受 1–65535 的本机端口。代理覆盖 G6 根页和 `/analysis`，独立导航使用相对路径；不要指向业务服务。
+`build` 同时执行 TypeScript 类型检查和 Vite 编译。前端目录中的 `npm run dev` 通过 Vite 代理连接 `127.0.0.1` 的隔离 FastAPI，默认端口 8300；可在启动前将 `FUNDS_TRACE_DEV_API_PORT` 设为合成后端打印的端口，仅接受 1–65535 的本机端口。代理覆盖 G6 根页和 `/analysis`，独立导航使用相对路径；不要指向业务服务。画布导入按 `/workspace/assets/` 代理加载同一份已构建的共享入口；修改导入组件后先重新执行 `npm --prefix frontend run build`，再刷新画布。
 
 ## 合成界面与本地启动
 

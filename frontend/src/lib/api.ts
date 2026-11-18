@@ -1,7 +1,8 @@
-import type { Case, CaseList, CaseStats, FlowPage, ImportPreview, ImportJob, ImportRecordPage, CommitRequest, RepreviewRequest, ImportSessionList, FlowSourceList, CleanupResult } from '../../../contracts/api-v1';
+import type { Case, CaseList, CaseStats, FlowPage, ImportPreview, ImportJob, ImportRecordPage, ImportReviewPage, ImportReport, ImportReportIntegrity, ImportReportRecords, ImportReportAccountOptions, CommitRequest, RepreviewRequest, ImportSessionList, FlowSourceList, CleanupResult } from '../../../contracts/api-v1';
+import type { FundsReportDownloadV1, FundsReportQueryV1, FundsReportRecordsQueryV1, FundsReportAccountQueryV1 } from '../panel/host';
 
 export class ApiError extends Error {
-  constructor(public code: string, message: string, public status?: number) { super(message); }
+  constructor(public code: string, message: string, public status?: number, public failureKind?: string) { super(message); }
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -12,12 +13,30 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError('network_error', '无法连接本地服务，请检查服务是否运行。');
   }
   const payload = await response.json().catch(() => null);
-  if (!response.ok) throw new ApiError(payload?.error?.code || 'request_failed', payload?.error?.message || '请求失败，请重试。', response.status);
+  if (!response.ok) throw new ApiError(payload?.error?.code || 'request_failed', payload?.error?.message || '请求失败，请重试。', response.status,
+    response.headers.get('X-FundsTrace-Import-Failure-Kind') || 'unknown');
   return payload as T;
 }
 
 const json = (body: unknown): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 const casePath = (id: string) => `/cases/${encodeURIComponent(id)}`;
+const reportQuery = (query: FundsReportQueryV1, pageSize: number) => { const params = new URLSearchParams({
+  member_path: query.memberPath, page: String(query.page ?? 1), page_size: String(pageSize),
+  ...(query.accountsPage !== undefined ? { accounts_page: String(query.accountsPage) } : {}),
+  ...(query.relationsPage !== undefined ? { relations_page: String(query.relationsPage) } : {}),
+  ...(query.currency !== undefined ? { currency: query.currency } : {}),
+  ...(query.account !== undefined ? { account: query.account } : {}),
+  ...(query.peerAccount !== undefined ? { peer_account: query.peerAccount } : {}),
+  ...(query.timelineGrain !== undefined ? { timeline_grain: query.timelineGrain } : {}),
+  ...(query.timelinePage !== undefined ? { timeline_page: String(query.timelinePage) } : {}),
+  ...(query.expectedRevision !== undefined ? { expected_revision: query.expectedRevision } : {}),
+  ...(query.timelineScope !== undefined ? { timeline_scope: query.timelineScope } : {}),
+  ...(query.timelineSearch !== undefined ? { timeline_search: query.timelineSearch } : {}),
+});
+  for (const account of query.timelineAccounts || []) params.append('timeline_accounts', account);
+  return params;
+};
+const reportPath = (id: string, sourceId: string) => `${casePath(id)}/imports/${encodeURIComponent(sourceId)}/report`;
 
 async function download(path: string, filename: string, signal?: AbortSignal): Promise<void> {
   const response = await fetch(`/api/v1${path}`, { signal });
@@ -57,15 +76,35 @@ export const api = {
     request<ImportJob>(`${casePath(id)}/imports/${encodeURIComponent(importId)}`, { signal }),
   imports: (id: string, signal?: AbortSignal, importId?: string) =>
     request<ImportSessionList>(`${casePath(id)}/imports?${importId === undefined ? 'limit=100' : 'import_id=' + encodeURIComponent(importId)}`, { signal }),
-  importRecords: (id: string, sourceId: string, page = 1, signal?: AbortSignal) =>
-    request<ImportRecordPage>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/records?page=${page}&page_size=50`, { signal }),
+  importRecords: (id: string, sourceId: string, page = 1, signal?: AbortSignal, memberPath?: string, sourceRow?: number) =>
+    request<ImportRecordPage>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/records?${new URLSearchParams({ page: String(page), page_size: '50', ...(memberPath !== undefined ? { member_path: memberPath, include_preview: 'true' } : {}), ...(sourceRow !== undefined ? { source_row: String(sourceRow) } : {}) })}`, { signal }),
+  importReview: (id: string, sourceId: string, memberPath: string, query: {view: ImportReviewPage['view']; page: number; issueIndex?: number}, signal?: AbortSignal) =>
+    request<ImportReviewPage>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/review?${new URLSearchParams({member_path:memberPath,view:query.view,page:String(query.page),page_size:'50',...(query.issueIndex !== undefined ? {issue_index:String(query.issueIndex)} : {})})}`, {signal}),
+  importFundsReport: (id: string, sourceId: string, query: FundsReportQueryV1, signal?: AbortSignal) =>
+    request<ImportReport>(`${reportPath(id, sourceId)}?${reportQuery(query, 20)}`, { signal }),
+  importReportAccounts: (id: string, sourceId: string, query: FundsReportAccountQueryV1, signal?: AbortSignal) =>
+    request<ImportReportAccountOptions>(`${reportPath(id,sourceId)}/accounts?${new URLSearchParams({member_path:query.memberPath,expected_revision:query.expectedRevision,currency:query.currency,search:query.search || '',page:String(query.page || 1),...(query.account !== undefined ? {account:query.account} : {})})}`,{signal}),
+  verifyImportSource: (id: string, sourceId: string, query: Readonly<{ memberPath: string; expectedRevision: string }>, signal?: AbortSignal) =>
+    request<ImportReportIntegrity>(`${reportPath(id, sourceId)}/verify?${new URLSearchParams({ member_path: query.memberPath, expected_revision: query.expectedRevision })}`, { method: 'POST', signal }),
+  importReportRecords: (id: string, sourceId: string, query: FundsReportRecordsQueryV1, signal?: AbortSignal) => {
+    const parameters = reportQuery(query, 50);
+    if (query.counterparty !== undefined) parameters.set('counterparty', query.counterparty);
+    if (query.direction !== undefined) parameters.set('direction', query.direction);
+    if (query.timeStart !== undefined) parameters.set('time_start', query.timeStart);
+    if (query.timeEnd !== undefined) parameters.set('time_end', query.timeEnd);
+    if (query.timeBasis !== undefined) parameters.set('time_basis', query.timeBasis);
+    return request<ImportReportRecords>(`${reportPath(id, sourceId)}/records?${parameters}`, { signal });
+  },
   sources: (id: string, flowId: string, page = 1, signal?: AbortSignal) =>
     request<FlowSourceList>(`${casePath(id)}/flows/${encodeURIComponent(flowId)}/sources?page=${page}&page_size=50`, { signal }),
   downloadSource: (id: string, sourceId: string, filename: string, signal?: AbortSignal): Promise<void> =>
     download(`${casePath(id)}/sources/${encodeURIComponent(sourceId)}/file`, filename, signal),
   downloadImportReport: (id: string, sourceId: string, filename: string, signal?: AbortSignal): Promise<void> =>
     download(`${casePath(id)}/sources/${encodeURIComponent(sourceId)}/report`, filename, signal),
+  downloadFundsReport: (id: string, source: FundsReportDownloadV1, signal?: AbortSignal): Promise<void> =>
+    download(`${reportPath(id, source.sourceId)}/document?${reportQuery(source, 20)}`, source.filename, signal),
   cleanup: (id: string, dryRun = true, signal?: AbortSignal) => request<CleanupResult>(`${casePath(id)}/imports/cleanup`, { ...json({ dry_run: dryRun }), signal }),
 };
 
-export type FundsApi = Omit<typeof api, 'previewDirectory' | 'importRecords'> & Partial<Pick<typeof api, 'previewDirectory' | 'importRecords'>>;
+type OptionalUseCase = 'previewDirectory' | 'importRecords' | 'importReview' | 'importFundsReport' | 'verifyImportSource' | 'importReportRecords' | 'importReportAccounts' | 'downloadFundsReport';
+export type FundsApi = Omit<typeof api, OptionalUseCase> & Partial<Pick<typeof api, OptionalUseCase>>;

@@ -1,5 +1,6 @@
 """Public synthetic folder-evidence loop; no private files or provider calls."""
 import csv
+import hashlib
 import io
 import json
 import time
@@ -8,8 +9,10 @@ from decimal import Decimal
 
 import pandas as pd
 import pytest
+from fastapi.testclient import TestClient
 
 from app import evidence_resolution, feedback_import, table_archive
+from app.main import app
 from app.services import imports
 
 
@@ -204,7 +207,7 @@ def test_ordinary_zip_large_manifest_uses_complete_bounded_csv_records(client, d
                ("accounts.csv", table("account", [account()])), ("manifest.csv", manifest)]
     view, receipt = accepted(client, cid, members, zipped=True, scope_bank=None)
     assert view["resolution"] and receipt["resolution"]["auxiliary_records"] == 701
-    assert database.q_raw("select parser_version from import_sources where case_id=?", [cid])[0]["parser_version"] == table_archive.SOURCE_OBSERVATION_EVIDENCE_PROFILE
+    assert database.q_raw("select parser_version from import_sources where case_id=?", [cid])[0]["parser_version"] == "funds-trace-table-archive-v64"
     row = client.get(f"/api/v1/cases/{cid}/flows").json()["items"][0]
     own = next(item for item in entities(client, cid)["entities"] if item["entity_id"] == row["payer_account"])
     assert own["bank"] == "Synthetic bank" and own["kind"] == "account"
@@ -556,6 +559,237 @@ def test_own_bank_role_does_not_leak_to_equal_counterparty_identifier(client, ma
     observation = json.loads(next(item["details"]["resolution_evidence"] for item in records if item["disposition"] == "imported"))
     assert observation["own_side"] == "payer"
     assert observation["endpoints"]["payee"]["bank"] == counter_bank
+
+
+def test_closed_native28_directory_preserves_normalized_direction_after_reopen(database, make_case):
+    cid = make_case("Synthetic closed native28 directions")
+    member = "SYN-REQUEST/Synthetic bank交易明细信息.csv"
+    inbound_codes = ("收入", "转入", "贷", "CR", "进", "入")
+    outbound_codes = ("出", "支出")
+    direction_codes = (*inbound_codes, *outbound_codes)
+    observations = [
+        (code, "10.25", f"SYN-DIR-{index}") for index, code in enumerate(direction_codes, 1)
+    ] + [
+        ("SYN-UNKNOWN", "10.25", "SYN-UNKNOWN"),
+        ("SYN-UNKNOWN", "0.00", "SYN-ZERO"),
+        ("收入", "-10.25", "SYN-NEGATIVE"),
+    ]
+    members = [
+        (member, table("transaction", [
+            transaction(**{"收付标志": code, "交易金额": amount, "交易流水号": reference})
+            for code, amount, reference in observations
+        ])),
+        ("manifest.csv", table("task", [{"请求单号": "SYN-REQUEST", "银行名称": "Synthetic bank"}])),
+    ]
+    flow_endpoints = {
+        reference: ("SYN-B", "SYN-A") if code in inbound_codes else ("SYN-A", "SYN-B")
+        for code, _, reference in observations[:len(direction_codes)]
+    }
+    with TestClient(app) as client:
+        view, receipt = accepted(client, cid, members, scope_bank=None)
+        profile = view["table_summary"]["profile"]
+        assert profile == "funds-trace-table-archive-v64"
+        assert receipt["table_summary"]["profile"] == profile
+        assert view["stats"]["currency_totals"] == {"CNY": "82.00"}
+        assert (receipt["ok"], receipt["rows_dup"]) == (8, 0)
+        assert {
+            row["trade_no"]: (row["payer_account"], row["payee_account"], row["amount"], row["currency"])
+            for row in view["preview"]
+        } == {ref: (*endpoints, "10.25", "CNY") for ref, endpoints in flow_endpoints.items()}
+    with database._lock:
+        database._con.close()
+        database._con = None
+    with TestClient(app) as reopened:
+        api = f"/api/v1/cases/{cid}"
+        task = f"{api}/imports/{view['import_id']}"
+        assert reopened.get(task).json()["result"] == receipt
+        source_report = reopened.get(f"{api}/sources/{receipt['source_id']}/report")
+        assert source_report.status_code == 200, source_report.text
+        source = source_report.json()
+        assert source["profile"] == profile
+        records = {row["source_row"]: row for row in source["items"] if row["member_path"] == member}
+        assert set(records) == set(range(2, 13))
+        resolution_facts = {}
+        for source_row, (code, _, reference) in enumerate(observations[:len(direction_codes)], 2):
+            record = records[source_row]
+            assert (record["disposition"], record["reason_code"]) == ("imported", "transaction_valid")
+            ledger = json.loads(record["details"]["source_ledger_evidence"])
+            direction = "in" if code in inbound_codes else "out"
+            payer, payee = flow_endpoints[reference]
+            assert (ledger["source_direction"], ledger["direction"]) == (code, direction)
+            assert (ledger["row"]["payer_account"], ledger["row"]["payee_account"]) == (payer, payee)
+            assert (ledger["row"]["amount"], ledger["row"]["currency"]) == ("10.25", "CNY")
+            assert record["details"]["occurrence_scope"] == "Synthetic bank"
+            identity = json.loads(record["details"]["resolution_evidence"])
+            sides = identity["endpoints"]
+            resolution_facts[code] = (identity["own_side"], sides["payer"]["account"], sides["payee"]["account"])
+        assert resolution_facts == {
+            code: ("payee", "SYN-B", "SYN-A") if code in inbound_codes else ("payer", "SYN-A", "SYN-B")
+            for code in direction_codes
+        }
+        ledger_controls = [
+            (10, "invalid_direction", "unknown", "unknown", None),
+            (11, "invalid_direction", "unknown", "no_movement", "0.00"),
+            (12, "cancellation_action_unproven", "in", "unknown", None),
+        ]
+        for source_row, reason, direction, _, _ in ledger_controls:
+            record = records[source_row]
+            assert (record["disposition"], record["reason_code"]) == ("unresolved", reason)
+            ledger = json.loads(record["details"]["source_ledger_evidence"])
+            assert (ledger["kind"], ledger["direction"]) == ("ledger", direction)
+            assert (ledger["row"]["amount"], ledger["row"]["currency"]) == (observations[source_row - 2][1], "CNY")
+            if direction == "unknown":
+                identity = json.loads(record["details"]["resolution_evidence"])
+                assert identity["own_side"] == ""
+                assert [identity["endpoints"][side]["account"] for side in ("payer", "payee", "self", "counter")] == [
+                    "", "", "SYN-A", "SYN-B",
+                ]
+
+        flows = reopened.get(f"{api}/flows")
+        assert flows.status_code == 200, flows.text
+        by_number = {row["trade_no"]: row for row in flows.json()["items"]}
+        registry = {entry["entity_id"]: (entry["account_number"], entry["bank"])
+                    for entry in entities(reopened, cid)["entities"]}
+        banks = {"SYN-A": "Synthetic bank", "SYN-B": "Synthetic other bank"}
+        for reference, endpoints in flow_endpoints.items():
+            row = by_number[reference]
+            assert (row["amount"], row["currency"]) == ("10.25", "CNY")
+            assert (row["raw_payer_account"], row["raw_payee_account"]) == endpoints
+            assert (registry[row["payer_account"]], registry[row["payee_account"]]) == tuple(
+                (account_number, banks[account_number]) for account_number in endpoints
+            )
+        for source_row, _, direction, effect, economic_amount in ledger_controls:
+            row = by_number[observations[source_row - 2][2]]
+            assert row["id"] == records[source_row]["flow_id"]
+            info = row["source_ledger"]
+            assert (info["direction"], info["economic_effect"], info["economic_amount"]) == (direction, effect, economic_amount)
+            if direction == "unknown":
+                assert row["payer_account"] == row["payee_account"] == ""
+
+        funds = reopened.get(f"{task}/report", params={"member_path": member})
+        assert funds.status_code == 200, funds.text
+        report = funds.json()
+        assert report["summary"] == {
+            "in_count": 6, "out_count": 2, "in_amount": "61.50", "out_amount": "20.50",
+            "net_amount": "41.00", "transaction_count": 8, "amount": "82.00",
+        }
+        assert report["accounts"]["total"] == report["relations"]["total"] == 1
+        relation = report["relations"]["items"][0]
+        assert (relation["account_number"], relation["counterparty_number"]) == ("SYN-A", "SYN-B")
+        drill = reopened.get(f"{task}/report/records", params={
+            "member_path": member, "expected_revision": report["analysis_revision"], "currency": "CNY",
+            "account": relation["account"], "counterparty": relation["counterparty"], "direction": "in",
+        })
+        assert drill.status_code == 200, drill.text
+        assert drill.json()["total"] == 6
+        assert [
+            (row["source_row"], row["preview"]["payer_account"], row["preview"]["payee_account"])
+            for row in drill.json()["items"]
+        ] == [(source_row, "SYN-B", "SYN-A") for source_row in range(2, 8)]
+
+
+def test_closed_native28_xls_archive_uses_the_validated_bank_direction(client, make_case):
+    from xls_fixtures import workbook
+
+    cid = make_case("Synthetic closed native28 BIFF8 direction")
+    member = "SYN-REQUEST/Synthetic bank交易明细信息.xls"
+    csv_data = table("transaction", [transaction(**{"收付标志": "CR"})])
+    matrix = list(csv.reader(io.StringIO(csv_data.decode("utf-8-sig"))))
+    members = [
+        (member, workbook([("SYN transactions", matrix)])),
+        ("manifest.csv", table("task", [{"请求单号": "SYN-REQUEST", "银行名称": "Synthetic bank"}])),
+    ]
+    view, receipt = accepted(client, cid, members, zipped=True, scope_bank=None)
+    assert (view["table_summary"]["profile"], receipt["ok"]) == ("funds-trace-table-archive-v65", 1)
+    response = client.get(f"/api/v1/cases/{cid}/imports/{view['import_id']}/records")
+    assert response.status_code == 200, response.text
+    record, = [row for row in response.json()["items"] if row["disposition"] == "imported"]
+    ledger = json.loads(record["details"]["source_ledger_evidence"])
+    identity = json.loads(record["details"]["resolution_evidence"])
+    assert (ledger["source_direction"], ledger["direction"], identity["own_side"]) == ("CR", "in", "payee")
+    assert [identity["endpoints"][side]["account"] for side in ("payer", "payee", "self")] == ["SYN-B", "SYN-A", "SYN-A"]
+
+
+def test_closed_native28_v61_ready_session_replays_frozen_direction_evidence(database, make_case, monkeypatch):
+    cid = make_case("Synthetic frozen native28 direction")
+    member = "SYN-REQUEST/Synthetic bank交易明细信息.csv"
+    members = [
+        (member, table("transaction", [transaction(**{"收付标志": "收入"})])),
+        ("manifest.csv", table("task", [{"请求单号": "SYN-REQUEST", "银行名称": "Synthetic bank"}])),
+    ]
+    old_profile = "funds-trace-table-archive-v61"
+    parse = imports._parse
+
+    def historical(*args, **options):
+        options["table_profile"] = old_profile
+        return parse(*args, **options)
+
+    with TestClient(app) as client, monkeypatch.context() as old:
+        old.setattr(imports, "_parse", historical)
+        view = preview(client, cid, members, scope_bank=None)
+    assert view["table_summary"]["profile"] == old_profile
+    api = f"/api/v1/cases/{cid}"
+    task = f"{api}/imports/{view['import_id']}"
+    with database._lock:
+        database._con.close()
+        database._con = None
+    with TestClient(app) as reopened:
+        refreshed = reopened.post(f"{task}/preview", json={"mode": view["mode"], "mapping": view["mapping"]})
+        assert refreshed.status_code == 200, refreshed.text
+        assert refreshed.json()["table_summary"] == view["table_summary"]
+        job = complete(reopened, cid, refreshed.json())
+        receipt = job["result"]
+        assert job["stage"] == "done" and receipt["ok"] == 1
+        assert receipt["table_summary"]["profile"] == old_profile
+        assert complete(reopened, cid, refreshed.json()) == job
+        source_url = f"{api}/sources/{receipt['source_id']}"
+        source = reopened.get(f"{source_url}/report")
+        assert source.status_code == 200, source.text
+        old_journal = source.json()
+        assert old_journal["profile"] == old_profile
+        record = next(row for row in old_journal["items"] if row["member_path"] == member)
+        assert (record["source_row"], record["disposition"]) == (2, "imported")
+        assert record["details"]["occurrence_scope"] == "Synthetic bank"
+        ledger = json.loads(record["details"]["source_ledger_evidence"])
+        assert (ledger["source_direction"], ledger["direction"]) == ("收入", "in")
+        assert (ledger["row"]["payer_account"], ledger["row"]["payee_account"]) == ("SYN-B", "SYN-A")
+        assert (ledger["row"]["amount"], ledger["row"]["currency"]) == ("10.25", "CNY")
+        identity = json.loads(record["details"]["resolution_evidence"])
+        assert (identity["own_side"], identity["endpoints"]["payer"]["account"],
+                identity["endpoints"]["payee"]["account"]) == ("payer", "SYN-A", "SYN-B")
+        original = reopened.get(f"{source_url}/file")
+        assert original.status_code == 200
+        assert hashlib.sha256(original.content).hexdigest() == old_journal["sha256"]
+
+        fresh_view, fresh_receipt = accepted(reopened, cid, members, scope_bank=None)
+        assert fresh_view["table_summary"]["profile"] == "funds-trace-table-archive-v64"
+        assert (fresh_receipt["ok"], fresh_receipt["rows_dup"]) == (0, 1)
+        assert reopened.get(f"{source_url}/report").json() == old_journal
+        current = reopened.get(f"{api}/imports/{fresh_view['import_id']}/records", params={"member_path": member})
+        assert current.status_code == 200, current.text
+        current_record, = current.json()["items"]
+        assert (current_record["disposition"], current_record["flow_id"], current_record["details"]["occurrence_scope"]) == (
+            "duplicate", record["flow_id"], "Synthetic bank",
+        )
+        assert entities(reopened, cid)["resolution"]["conflicts"] == 2
+        withdrawn = reopened.delete(f"/api/batches/{receipt['batch_id']}", params={"case_id": cid})
+        assert withdrawn.status_code == 200, withdrawn.text
+
+    with database._lock:
+        database._con.close()
+        database._con = None
+    with TestClient(app) as reopened:
+        assert reopened.get(task).json()["result"] == receipt
+        old_journal_after = reopened.get(f"{source_url}/report").json()
+        assert (old_journal_after["profile"], old_journal_after["sha256"]) == (old_profile, old_journal["sha256"])
+        assert reopened.get(f"{source_url}/file").content == original.content
+        flow, = reopened.get(f"{api}/flows").json()["items"]
+        assert (flow["id"], flow["amount"], flow["currency"]) == (record["flow_id"], "10.25", "CNY")
+        registry = entities(reopened, cid)
+        assert registry["resolution"]["conflicts"] == 0
+        labels = {item["entity_id"]: (item["account_number"], item["bank"]) for item in registry["entities"]}
+        assert labels[flow["payer_account"]] == ("SYN-B", "Synthetic other bank")
+        assert labels[flow["payee_account"]] == ("SYN-A", "Synthetic bank")
 
 
 def test_new_envelope_expanded_budget_is_versioned_and_checks_nested_bytes(monkeypatch):

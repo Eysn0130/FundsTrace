@@ -95,13 +95,6 @@
         down = false;
       });
     }
-    const mapping = document.querySelector('#impMapping');
-    new MutationObserver(() => {
-      for (const select of mapping.querySelectorAll('select[data-field]')) {
-        select.id = 'map-' + select.dataset.field;
-        const label = select.parentElement.querySelector('label'); if (label) label.htmlFor = select.id;
-      }
-    }).observe(mapping, { childList: true });
     const suggestions = document.querySelector('#ctxSuggest');
     new MutationObserver(() => {
       for (const item of suggestions.querySelectorAll('.sg-item')) {

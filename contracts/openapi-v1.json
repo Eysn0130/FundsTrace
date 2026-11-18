@@ -441,6 +441,18 @@
             ],
             "title": "Mark Accounts"
           },
+          "material_group_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{32}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Group Id"
+          },
           "mode": {
             "enum": [
               "A",
@@ -1618,6 +1630,13 @@
             "title": "Import Id",
             "type": "string"
           },
+          "member_results": {
+            "items": {
+              "$ref": "#/components/schemas/ImportMemberResult"
+            },
+            "title": "Member Results",
+            "type": "array"
+          },
           "message": {
             "title": "Message",
             "type": "string"
@@ -1668,6 +1687,73 @@
           "error"
         ],
         "title": "ImportJob",
+        "type": "object"
+      },
+      "ImportMemberResult": {
+        "additionalProperties": false,
+        "properties": {
+          "dispositions": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Dispositions",
+            "type": "object"
+          },
+          "member_path": {
+            "title": "Member Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "member_path",
+          "dispositions"
+        ],
+        "title": "ImportMemberResult",
+        "type": "object"
+      },
+      "ImportOriginalCell": {
+        "additionalProperties": false,
+        "properties": {
+          "column": {
+            "title": "Column",
+            "type": "integer"
+          },
+          "fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "header": {
+            "title": "Header",
+            "type": "string"
+          },
+          "kind": {
+            "default": "text",
+            "enum": [
+              "text",
+              "number",
+              "date",
+              "boolean",
+              "error",
+              "formula"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "column",
+          "header",
+          "value",
+          "fields"
+        ],
+        "title": "ImportOriginalCell",
         "type": "object"
       },
       "ImportPreview": {
@@ -1833,6 +1919,16 @@
             "title": "Member Path",
             "type": "string"
           },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreviewFlow"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "reason_code": {
             "title": "Reason Code",
             "type": "string"
@@ -1904,6 +2000,1321 @@
           "page_size"
         ],
         "title": "ImportRecordPage",
+        "type": "object"
+      },
+      "ImportReport": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account"
+          },
+          "accounts": {
+            "$ref": "#/components/schemas/ImportReportAccounts"
+          },
+          "analysis_revision": {
+            "title": "Analysis Revision",
+            "type": "string"
+          },
+          "case_id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Case Id",
+            "type": "string"
+          },
+          "currencies": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Currencies",
+            "type": "array"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "generated_at": {
+            "title": "Generated At",
+            "type": "string"
+          },
+          "integrity": {
+            "$ref": "#/components/schemas/ImportReportIntegrity"
+          },
+          "member_path": {
+            "title": "Member Path",
+            "type": "string"
+          },
+          "method_paragraphs": {
+            "items": {
+              "$ref": "#/components/schemas/ImportReportMethodParagraph"
+            },
+            "title": "Method Paragraphs",
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "overview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportReportOverview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "peer_account": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Peer Account"
+          },
+          "peer_selected_account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportReportAccount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "periods": {
+            "items": {
+              "$ref": "#/components/schemas/ImportReportPeriod"
+            },
+            "title": "Periods",
+            "type": "array"
+          },
+          "perspective": {
+            "enum": [
+              "own_ledger",
+              "transaction_endpoints"
+            ],
+            "title": "Perspective",
+            "type": "string"
+          },
+          "policy": {
+            "const": "import-member-funds-report-v1",
+            "title": "Policy",
+            "type": "string"
+          },
+          "quality": {
+            "$ref": "#/components/schemas/ImportReportQuality"
+          },
+          "relations": {
+            "$ref": "#/components/schemas/ImportReportRelations"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ImportReportScope"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ImportReportSummary"
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/ImportReportTimeBucket"
+            },
+            "title": "Timeline",
+            "type": "array"
+          },
+          "timeline_grain": {
+            "title": "Timeline Grain",
+            "type": "string"
+          },
+          "timeline_mode": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "day",
+              "month",
+              "year"
+            ],
+            "title": "Timeline Mode",
+            "type": "string"
+          },
+          "timeline_pagination": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportReportTimelinePage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timeline_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportReportTrendScope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "top_in": {
+            "items": {
+              "$ref": "#/components/schemas/ImportReportPeer"
+            },
+            "title": "Top In",
+            "type": "array"
+          },
+          "top_out": {
+            "items": {
+              "$ref": "#/components/schemas/ImportReportPeer"
+            },
+            "title": "Top Out",
+            "type": "array"
+          }
+        },
+        "required": [
+          "case_id",
+          "source_id",
+          "member_path",
+          "analysis_revision",
+          "policy",
+          "generated_at",
+          "scope",
+          "quality",
+          "perspective",
+          "currency",
+          "currencies",
+          "account",
+          "accounts",
+          "summary",
+          "top_in",
+          "top_out",
+          "timeline",
+          "timeline_grain",
+          "periods",
+          "relations",
+          "integrity",
+          "notes"
+        ],
+        "title": "ImportReport",
+        "type": "object"
+      },
+      "ImportReportAccount": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "title": "Account",
+            "type": "string"
+          },
+          "account_number": {
+            "title": "Account Number",
+            "type": "string"
+          },
+          "account_numbers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Account Numbers",
+            "type": "array"
+          },
+          "cards": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cards",
+            "type": "array"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "in_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Amount"
+          },
+          "in_count": {
+            "title": "In Count",
+            "type": "integer"
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Names",
+            "type": "array"
+          },
+          "net_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Amount"
+          },
+          "out_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Out Amount"
+          },
+          "out_count": {
+            "title": "Out Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "in_count",
+          "out_count",
+          "in_amount",
+          "out_amount",
+          "net_amount",
+          "account",
+          "account_number",
+          "account_numbers",
+          "names",
+          "cards",
+          "currency"
+        ],
+        "title": "ImportReportAccount",
+        "type": "object"
+      },
+      "ImportReportAccountChoice": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "title": "Account",
+            "type": "string"
+          },
+          "account_number": {
+            "title": "Account Number",
+            "type": "string"
+          },
+          "account_numbers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Account Numbers",
+            "type": "array"
+          },
+          "cards": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cards",
+            "type": "array"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Names",
+            "type": "array"
+          }
+        },
+        "required": [
+          "account",
+          "account_number",
+          "account_numbers",
+          "names",
+          "cards",
+          "currency"
+        ],
+        "title": "ImportReportAccountChoice",
+        "type": "object"
+      },
+      "ImportReportAccountOptions": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_revision": {
+            "title": "Analysis Revision",
+            "type": "string"
+          },
+          "case_id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Case Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImportReportAccountChoice"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "member_path": {
+            "title": "Member Path",
+            "type": "string"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "case_id",
+          "source_id",
+          "member_path",
+          "analysis_revision",
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "ImportReportAccountOptions",
+        "type": "object"
+      },
+      "ImportReportAccounts": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImportReportAccount"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "ImportReportAccounts",
+        "type": "object"
+      },
+      "ImportReportDirectional": {
+        "additionalProperties": false,
+        "properties": {
+          "in_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Amount"
+          },
+          "in_count": {
+            "title": "In Count",
+            "type": "integer"
+          },
+          "net_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Amount"
+          },
+          "out_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Out Amount"
+          },
+          "out_count": {
+            "title": "Out Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "in_count",
+          "out_count",
+          "in_amount",
+          "out_amount",
+          "net_amount"
+        ],
+        "title": "ImportReportDirectional",
+        "type": "object"
+      },
+      "ImportReportIntegrity": {
+        "additionalProperties": false,
+        "properties": {
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked At"
+          },
+          "expected_sha256": {
+            "title": "Expected Sha256",
+            "type": "string"
+          },
+          "object_name": {
+            "title": "Object Name",
+            "type": "string"
+          },
+          "observed_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed Sha256"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "registered",
+              "unavailable",
+              "match",
+              "mismatch"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "object_name",
+          "expected_sha256",
+          "observed_sha256",
+          "checked_at",
+          "size_bytes"
+        ],
+        "title": "ImportReportIntegrity",
+        "type": "object"
+      },
+      "ImportReportMethodParagraph": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "text"
+        ],
+        "title": "ImportReportMethodParagraph",
+        "type": "object"
+      },
+      "ImportReportOverview": {
+        "additionalProperties": false,
+        "properties": {
+          "account_count": {
+            "title": "Account Count",
+            "type": "integer"
+          },
+          "name_count": {
+            "title": "Name Count",
+            "type": "integer"
+          },
+          "number_count": {
+            "title": "Number Count",
+            "type": "integer"
+          },
+          "selected_account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportReportAccount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unnamed_account_count": {
+            "title": "Unnamed Account Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name_count",
+          "account_count",
+          "number_count",
+          "unnamed_account_count"
+        ],
+        "title": "ImportReportOverview",
+        "type": "object"
+      },
+      "ImportReportPeer": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "title": "Account",
+            "type": "string"
+          },
+          "account_number": {
+            "title": "Account Number",
+            "type": "string"
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Names",
+            "type": "array"
+          }
+        },
+        "required": [
+          "account",
+          "account_number",
+          "names",
+          "count",
+          "amount"
+        ],
+        "title": "ImportReportPeer",
+        "type": "object"
+      },
+      "ImportReportPeriod": {
+        "additionalProperties": false,
+        "properties": {
+          "first_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Time"
+          },
+          "last_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Time"
+          },
+          "time_basis": {
+            "enum": [
+              "utc",
+              "unqualified",
+              "mixed"
+            ],
+            "title": "Time Basis",
+            "type": "string"
+          }
+        },
+        "required": [
+          "first_time",
+          "last_time",
+          "time_basis"
+        ],
+        "title": "ImportReportPeriod",
+        "type": "object"
+      },
+      "ImportReportQuality": {
+        "additionalProperties": false,
+        "properties": {
+          "dispositions": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Dispositions",
+            "type": "object"
+          },
+          "linked_observations": {
+            "title": "Linked Observations",
+            "type": "integer"
+          },
+          "pending_observations": {
+            "title": "Pending Observations",
+            "type": "integer"
+          },
+          "selected_transactions": {
+            "title": "Selected Transactions",
+            "type": "integer"
+          },
+          "source_records": {
+            "title": "Source Records",
+            "type": "integer"
+          },
+          "unattributed_transactions": {
+            "title": "Unattributed Transactions",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "source_records",
+          "dispositions",
+          "linked_observations",
+          "selected_transactions",
+          "pending_observations",
+          "unattributed_transactions"
+        ],
+        "title": "ImportReportQuality",
+        "type": "object"
+      },
+      "ImportReportRecords": {
+        "additionalProperties": false,
+        "properties": {
+          "analysis_revision": {
+            "title": "Analysis Revision",
+            "type": "string"
+          },
+          "case_id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Case Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImportRecord"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "case_id",
+          "source_id",
+          "items",
+          "total",
+          "page",
+          "page_size",
+          "analysis_revision"
+        ],
+        "title": "ImportReportRecords",
+        "type": "object"
+      },
+      "ImportReportRelation": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "title": "Account",
+            "type": "string"
+          },
+          "account_number": {
+            "title": "Account Number",
+            "type": "string"
+          },
+          "counterparty": {
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "counterparty_number": {
+            "title": "Counterparty Number",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "first_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Time"
+          },
+          "in_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Amount"
+          },
+          "in_count": {
+            "title": "In Count",
+            "type": "integer"
+          },
+          "last_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Time"
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Names",
+            "type": "array"
+          },
+          "net_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Amount"
+          },
+          "out_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Out Amount"
+          },
+          "out_count": {
+            "title": "Out Count",
+            "type": "integer"
+          },
+          "time_basis": {
+            "enum": [
+              "utc",
+              "unqualified",
+              "mixed"
+            ],
+            "title": "Time Basis",
+            "type": "string"
+          }
+        },
+        "required": [
+          "first_time",
+          "last_time",
+          "time_basis",
+          "in_count",
+          "out_count",
+          "in_amount",
+          "out_amount",
+          "net_amount",
+          "account",
+          "counterparty",
+          "account_number",
+          "counterparty_number",
+          "names",
+          "currency"
+        ],
+        "title": "ImportReportRelation",
+        "type": "object"
+      },
+      "ImportReportRelations": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImportReportRelation"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "ImportReportRelations",
+        "type": "object"
+      },
+      "ImportReportScope": {
+        "additionalProperties": false,
+        "properties": {
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "imported_at": {
+            "title": "Imported At",
+            "type": "string"
+          },
+          "material_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Name"
+          },
+          "material_origin_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Origin Name"
+          },
+          "member_digest_kind": {
+            "enum": [
+              "bytes",
+              "worksheet_locator"
+            ],
+            "title": "Member Digest Kind",
+            "type": "string"
+          },
+          "member_path": {
+            "title": "Member Path",
+            "type": "string"
+          },
+          "member_role": {
+            "title": "Member Role",
+            "type": "string"
+          },
+          "member_sha256": {
+            "title": "Member Sha256",
+            "type": "string"
+          },
+          "member_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Member Size Bytes"
+          },
+          "parser_version": {
+            "title": "Parser Version",
+            "type": "string"
+          },
+          "source_record_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Record Total"
+          },
+          "source_sha256": {
+            "title": "Source Sha256",
+            "type": "string"
+          },
+          "source_size_bytes": {
+            "title": "Source Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filename",
+          "member_path",
+          "member_role",
+          "source_sha256",
+          "source_size_bytes",
+          "member_sha256",
+          "member_size_bytes",
+          "member_digest_kind",
+          "parser_version",
+          "imported_at"
+        ],
+        "title": "ImportReportScope",
+        "type": "object"
+      },
+      "ImportReportSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "in_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Amount"
+          },
+          "in_count": {
+            "title": "In Count",
+            "type": "integer"
+          },
+          "net_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Amount"
+          },
+          "out_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Out Amount"
+          },
+          "out_count": {
+            "title": "Out Count",
+            "type": "integer"
+          },
+          "transaction_count": {
+            "title": "Transaction Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "in_count",
+          "out_count",
+          "in_amount",
+          "out_amount",
+          "net_amount",
+          "transaction_count",
+          "amount"
+        ],
+        "title": "ImportReportSummary",
+        "type": "object"
+      },
+      "ImportReportTimeBucket": {
+        "additionalProperties": false,
+        "properties": {
+          "end": {
+            "title": "End",
+            "type": "string"
+          },
+          "has_records": {
+            "default": true,
+            "title": "Has Records",
+            "type": "boolean"
+          },
+          "in_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Amount"
+          },
+          "in_count": {
+            "title": "In Count",
+            "type": "integer"
+          },
+          "net_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Amount"
+          },
+          "out_amount": {
+            "anyOf": [
+              {
+                "pattern": "^-?[0-9]+\\.[0-9]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Out Amount"
+          },
+          "out_count": {
+            "title": "Out Count",
+            "type": "integer"
+          },
+          "start": {
+            "title": "Start",
+            "type": "string"
+          },
+          "time_basis": {
+            "enum": [
+              "utc",
+              "unqualified"
+            ],
+            "title": "Time Basis",
+            "type": "string"
+          },
+          "transaction_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transaction Count"
+          }
+        },
+        "required": [
+          "in_count",
+          "out_count",
+          "in_amount",
+          "out_amount",
+          "net_amount",
+          "start",
+          "end",
+          "time_basis"
+        ],
+        "title": "ImportReportTimeBucket",
+        "type": "object"
+      },
+      "ImportReportTimelinePage": {
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "ImportReportTimelinePage",
+        "type": "object"
+      },
+      "ImportReportTrendScope": {
+        "additionalProperties": false,
+        "properties": {
+          "account_count": {
+            "title": "Account Count",
+            "type": "integer"
+          },
+          "accounts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Accounts",
+            "type": "array"
+          },
+          "available_account_count": {
+            "title": "Available Account Count",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "all",
+              "selected",
+              "except"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "periods": {
+            "items": {
+              "$ref": "#/components/schemas/ImportReportPeriod"
+            },
+            "title": "Periods",
+            "type": "array"
+          },
+          "search": {
+            "default": "",
+            "title": "Search",
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ImportReportDirectional"
+          },
+          "undated_transactions": {
+            "title": "Undated Transactions",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mode",
+          "accounts",
+          "account_count",
+          "available_account_count",
+          "undated_transactions",
+          "summary",
+          "periods"
+        ],
+        "title": "ImportReportTrendScope",
         "type": "object"
       },
       "ImportResult": {
@@ -2022,6 +3433,217 @@
           "main_detected"
         ],
         "title": "ImportResult",
+        "type": "object"
+      },
+      "ImportReviewIssue": {
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "reason_code": {
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "record_no": {
+            "title": "Record No",
+            "type": "integer"
+          },
+          "source_row": {
+            "title": "Source Row",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "index",
+          "record_no",
+          "source_row",
+          "reason_code"
+        ],
+        "title": "ImportReviewIssue",
+        "type": "object"
+      },
+      "ImportReviewPage": {
+        "additionalProperties": false,
+        "properties": {
+          "case_id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Case Id",
+            "type": "string"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "issue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportReviewIssue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImportReviewRecord"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "member_path": {
+            "title": "Member Path",
+            "type": "string"
+          },
+          "original_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Error"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "view": {
+            "enum": [
+              "all",
+              "review",
+              "accepted"
+            ],
+            "title": "View",
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_id",
+          "source_id",
+          "member_path",
+          "view",
+          "counts",
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "ImportReviewPage",
+        "type": "object"
+      },
+      "ImportReviewRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "details": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Details",
+            "type": "object"
+          },
+          "disposition": {
+            "enum": [
+              "imported",
+              "duplicate",
+              "review",
+              "unresolved",
+              "non_monetary",
+              "cancelled",
+              "non_transaction",
+              "auxiliary",
+              "removed"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          },
+          "flow_id": {
+            "anyOf": [
+              {
+                "pattern": "^[1-9][0-9]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flow Id"
+          },
+          "member_path": {
+            "title": "Member Path",
+            "type": "string"
+          },
+          "original": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ImportOriginalCell"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreviewFlow"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason_code": {
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "record_key": {
+            "title": "Record Key",
+            "type": "string"
+          },
+          "record_no": {
+            "title": "Record No",
+            "type": "integer"
+          },
+          "source_row": {
+            "title": "Source Row",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "record_no",
+          "member_path",
+          "source_row",
+          "record_key",
+          "disposition",
+          "reason_code",
+          "details",
+          "flow_id"
+        ],
+        "title": "ImportReviewRecord",
         "type": "object"
       },
       "ImportSession": {
@@ -4429,6 +6051,52 @@
               ],
               "title": "Disposition"
             }
+          },
+          {
+            "in": "query",
+            "name": "member_path",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Member Path"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_preview",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Preview",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_row",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Row"
+            }
           }
         ],
         "responses": {
@@ -4514,6 +6182,1474 @@
           }
         },
         "summary": "Records",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/cases/{case_id}/imports/{source_id}/report": {
+      "get": {
+        "operationId": "v1_import_funds_report",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{12,32}$",
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "member_path",
+            "required": true,
+            "schema": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "title": "Member Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "currency",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Currency"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Account"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "accounts_page",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Accounts Page"
+            }
+          },
+          {
+            "in": "query",
+            "name": "relations_page",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Relations Page"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeline_grain",
+            "required": false,
+            "schema": {
+              "default": "auto",
+              "enum": [
+                "auto",
+                "day",
+                "month",
+                "year"
+              ],
+              "title": "Timeline Grain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeline_page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Timeline Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "peer_account",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Peer Account"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeline_scope",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "selected",
+                "except"
+              ],
+              "title": "Timeline Scope",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeline_accounts",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "title": "Timeline Accounts",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeline_search",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 200,
+              "title": "Timeline Search",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid file or request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Application is not activated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Case, session or source not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "HTTP method is not supported"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "State conflict or source unavailable"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid parameters or mapping"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Operation failed safely"
+          }
+        },
+        "summary": "Funds Report",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/cases/{case_id}/imports/{source_id}/report/accounts": {
+      "get": {
+        "operationId": "v1_import_funds_accounts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{12,32}$",
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "member_path",
+            "required": true,
+            "schema": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "title": "Member Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_revision",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Expected Revision",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "currency",
+            "required": true,
+            "schema": {
+              "maxLength": 16,
+              "title": "Currency",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Account"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 200,
+              "title": "Search",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportReportAccountOptions"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid file or request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Application is not activated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Case, session or source not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "HTTP method is not supported"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "State conflict or source unavailable"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid parameters or mapping"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Operation failed safely"
+          }
+        },
+        "summary": "Funds Account Options",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/cases/{case_id}/imports/{source_id}/report/document": {
+      "get": {
+        "operationId": "v1_import_funds_document",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{12,32}$",
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "member_path",
+            "required": true,
+            "schema": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "title": "Member Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_revision",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Expected Revision",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "currency",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Currency"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Account"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeline_grain",
+            "required": false,
+            "schema": {
+              "default": "auto",
+              "enum": [
+                "auto",
+                "day",
+                "month",
+                "year"
+              ],
+              "title": "Timeline Grain",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeline_page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Timeline Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "peer_account",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Peer Account"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeline_scope",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "selected",
+                "except"
+              ],
+              "title": "Timeline Scope",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeline_accounts",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "title": "Timeline Accounts",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeline_search",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 200,
+              "title": "Timeline Search",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "accounts_page",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Accounts Page"
+            }
+          },
+          {
+            "in": "query",
+            "name": "relations_page",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Relations Page"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Current-view member funds brief, bounded pages explicitly labeled"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid file or request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Application is not activated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Case, session or source not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "HTTP method is not supported"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "State conflict or source unavailable"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid parameters or mapping"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Operation failed safely"
+          }
+        },
+        "summary": "Funds Document",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/cases/{case_id}/imports/{source_id}/report/records": {
+      "get": {
+        "operationId": "v1_import_funds_records",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{12,32}$",
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "member_path",
+            "required": true,
+            "schema": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "title": "Member Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_revision",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Expected Revision",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "currency",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Currency"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Account"
+            }
+          },
+          {
+            "in": "query",
+            "name": "counterparty",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 4096,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Counterparty"
+            }
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "in",
+                    "out"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Direction"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeline_scope",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "selected",
+                "except"
+              ],
+              "title": "Timeline Scope",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeline_accounts",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "title": "Timeline Accounts",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 48,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Start"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 48,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_basis",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "utc",
+                    "unqualified"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Basis"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeline_search",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 200,
+              "title": "Timeline Search",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportReportRecords"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid file or request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Application is not activated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Case, session or source not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "HTTP method is not supported"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "State conflict or source unavailable"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid parameters or mapping"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Operation failed safely"
+          }
+        },
+        "summary": "Funds Records",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/cases/{case_id}/imports/{source_id}/report/verify": {
+      "post": {
+        "operationId": "v1_import_funds_verify",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{12,32}$",
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "member_path",
+            "required": true,
+            "schema": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "title": "Member Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_revision",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Expected Revision",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportReportIntegrity"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid file or request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Application is not activated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Case, session or source not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "HTTP method is not supported"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "State conflict or source unavailable"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid parameters or mapping"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Operation failed safely"
+          }
+        },
+        "summary": "Funds Verify",
+        "tags": [
+          "v1"
+        ]
+      }
+    },
+    "/api/v1/cases/{case_id}/imports/{source_id}/review": {
+      "get": {
+        "operationId": "v1_import_review",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{12,32}$",
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "member_path",
+            "required": true,
+            "schema": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "title": "Member Path",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "review",
+                "accepted"
+              ],
+              "title": "View",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 2147483647,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "issue_index",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Issue Index"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportReviewPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid file or request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Application is not activated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Case, session or source not found"
+          },
+          "405": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "HTTP method is not supported"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "State conflict or source unavailable"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid parameters or mapping"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Operation failed safely"
+          }
+        },
+        "summary": "Review",
         "tags": [
           "v1"
         ]

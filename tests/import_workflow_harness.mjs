@@ -78,6 +78,28 @@ test('failed acquisition removes only its reservation and rejects foreign or sta
   assert.equal(h.requests.length, 0); assert.equal(h.workflow.externalStatus(context).length, 0);
 });
 
+test('restoring a running task reserves the case without a POST and releases only its observed attempt', async () => {
+  const h = harness(); h.state({ stage: 'importing', attempt: 4 });
+  await h.workflow.observeExternal(context, importId);
+  assert.equal(await h.workflow.canWrite({ caseId: 1, generation: 3 }), false);
+  assert.equal(h.requests.length, 1);
+  h.state({ stage: 'done', attempt: 5 });
+  await assert.rejects(h.workflow.releaseExternal(context, importId, importId));
+  assert.equal(await h.workflow.canWrite(context), false);
+  h.state({ attempt: 4 });
+  await h.workflow.releaseExternal(context, importId, importId);
+  assert.equal(await h.workflow.canWrite(context), true);
+});
+
+test('an unreadable restored task remains reserved until independently read and settled', async () => {
+  const h = harness(); h.state({ networkError: true });
+  await assert.rejects(h.workflow.observeExternal(context, importId));
+  assert.equal(await h.workflow.canWrite(context), false);
+  h.state({ networkError: false, stage: 'done', attempt: 2 });
+  await h.workflow.releaseExternal(context, importId, importId);
+  assert.equal(await h.workflow.canWrite(context), true);
+});
+
 test('account unknown blocks both legacy writes and external acquisitions', async () => {
   const h = harness(); h.state({ blocked: true });
   assert.equal(await h.workflow.canWrite(context), false);

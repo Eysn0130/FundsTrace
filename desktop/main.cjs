@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, Menu, dialog, session, screen, ipcMain, nativeTheme } = require('electron');
+const { app, Menu, dialog, session, screen, ipcMain, nativeTheme, shell } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs/promises');
@@ -12,6 +12,7 @@ const updates = require('./updates.cjs');
 const { createStartup, waitForWorkbench } = require('./startup.cjs');
 const { createWindowShell, HEIGHT: TITLEBAR_HEIGHT } = require('./window-shell.cjs');
 const appearance = require('./appearance.cjs');
+const sourceCopies = require('./source-copies.cjs');
 const appIcon = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'icon.png');
 
 app.setName('FundsTrace');
@@ -19,6 +20,7 @@ app.setAppUserModelId('com.eysn.fundstrace');
 const synthetic = process.argv.includes('--synthetic');
 let backend, preparation, temporaryRoot, quitting = false, shutdownComplete = false, fatalShown = false;
 let updateService, installUpdate = false, updateTimer;
+let sourceCopyService;
 const owned = new Set();
 const windows = new Set();
 const shells = new Map();
@@ -41,6 +43,7 @@ else {
     void (async () => {
       try {
         await preparation?.catch(() => {});
+        await sourceCopyService?.dispose();
         const graceful = await backend?.stop();
         if (installUpdate && graceful !== true) {
           installUpdate = false;
@@ -337,6 +340,14 @@ else {
       if (!backend || quitting || primary.isDestroyed()) return;
       ({ origin, token } = await backend.ready);
       if (quitting || primary.isDestroyed()) return;
+      sourceCopyService = sourceCopies.sourceCopies({ origin, token, shell, app });
+      ipcMain.handle(sourceCopies.CHANNEL, (event, action, payload) => {
+        if (!updates.allowed(event, origin, owned) || quitting) throw new Error('文件操作不可用');
+        if (action === 'prepare') return sourceCopyService.prepare(event, payload);
+        if (action === 'perform') return sourceCopyService.perform(event, payload);
+        if (action === 'release') return sourceCopyService.release(event, payload?.ticket);
+        throw new Error('不支持此文件操作');
+      });
       ipcMain.on(CHANNEL, (event, operation, key, value) => {
         const result = preferenceRequest(preferences, event, origin, owned, operation, key, value);
         event.returnValue = result;

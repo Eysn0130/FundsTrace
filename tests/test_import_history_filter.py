@@ -1,4 +1,4 @@
-"""Ordinary envelope history is limited by complete current physical keys."""
+"""Ordinary history fetches only candidates for the current input."""
 from contextlib import contextmanager
 import csv
 import hashlib
@@ -45,13 +45,16 @@ def history_rows(monkeypatch, database):
         def fetchmany(self, count):
             rows = self.cursor.fetchmany(count); observed['rows'] += len(rows)
             return rows
+        def fetchall(self):
+            rows = self.cursor.fetchall(); observed['rows'] += len(rows)
+            return rows
         def __getattr__(self, name): return getattr(self.cursor, name)
     class Connection:
         def __init__(self, connection): self.connection = connection
         def execute(self, *args, **kwargs):
             result = self.connection.execute(*args, **kwargs)
             columns = [item[0] for item in result.description] if result.description else []
-            if columns[:3] == ['record_key', 'flow_id', 'trade_no']:
+            if columns[:3] == ['record_key', 'flow_id', 'trade_no'] or columns[:2] == ['id', 'trade_no']:
                 observed['queries'] += 1
                 return Cursor(result)
             return result
@@ -74,6 +77,78 @@ def test_public_unrelated_history_does_not_leave_the_database(client, database, 
         {'n': 41, 'amount': Decimal('41.00')}]
     assert observed['queries'] == 1
     assert observed['rows'] == 0
+
+
+@pytest.mark.parametrize('chunk', [4, 5, 50_000])
+def test_public_standalone_v69_history_is_bounded_and_keeps_exact_raw_supports(
+        client, database, make_case, monkeypatch, chunk):
+    from test_table_source_contracts import encoded_table
+
+    cid, other = make_case('Synthetic standalone history'), make_case('Synthetic foreign history')
+    headers = ['date', 'payer_account', 'payee_account', 'amount', '交易流水号', 'currency', '摘要']
+    payer = '000SYN-STANDALONE-HISTORY-A'
+    exact = ['2026-01-01 10:00:00', payer, '000SYN-STANDALONE-HISTORY-B', '1.01', '', 'CNY', 'Synthetic exact']
+    changed = ['2026-01-02 10:00:00', payer, '000SYN-STANDALONE-HISTORY-C', '2.03', 'SYN-CHANGED', 'USD', 'Synthetic new fact']
+    foreign = ['2026-01-03 10:00:00', payer, '000SYN-STANDALONE-HISTORY-D', '3.07', 'SYN-FOREIGN', 'EUR', 'Synthetic foreign case']
+    fresh = ['2026-01-04 10:00:00', payer, '000SYN-STANDALONE-HISTORY-E', '4.09', 'SYN-FRESH', 'CNY', 'Synthetic in-file repeat']
+
+    def upload(case_id, records, filename):
+        view = preview(client, case_id, encoded_table(headers, records, '.xlsx'), filename)
+        assert view['table_summary']['profile'] == 'funds-trace-table-v69'
+        job = complete(client, case_id, view)
+        assert job['stage'] == 'done', job
+        return view, job['result']
+
+    stock = [['2026-01-01', f'000SYN-STANDALONE-STOCK-{i}', '000SYN-STANDALONE-STOCK-B',
+              '1.00', f'SYN-STOCK-{i}', 'CNY', 'Synthetic unrelated'] for i in range(40)]
+    prior_changed = [*changed]
+    prior_changed[3], prior_changed[6] = '2.02', 'Synthetic old fact'
+    first, _ = upload(cid, [exact, prior_changed, *stock], 'synthetic-history.xlsx')
+    upload(other, [foreign], 'synthetic-other.xlsx')
+    low = database.q_raw('select id from flows where case_id=? and payee_account=?', [cid, exact[2]])[0]['id']
+    # Recreate two legacy exact supports. Neither source activity nor NULL vs
+    # empty trade number changes the original raw-flow history domain.
+    high = database.con().execute("select nextval('flow_seq')").fetchone()[0]
+    columns = [r[1] for r in database.con().execute("pragma table_info('flows')").fetchall() if r[1] != 'id']
+    fields = ','.join(columns)
+    database.con().execute(f'insert into flows(id,{fields}) select ?,{fields} from flows where case_id=? and id=?', [high, cid, low])
+    database.x('update flows set trade_no=null where case_id=? and id=?', [cid, low])
+    database.x('update import_source_operations set active=false where case_id=? and source_id=?', [cid, first['import_id']])
+    database.x('update evidence_sources set active=false where case_id=? and source_id=?', [cid, first['import_id']])
+
+    monkeypatch.setattr(importer, 'WRITE_CHUNK', chunk)
+    observed = history_rows(monkeypatch, database)
+    view, receipt = upload(cid, [exact, changed, foreign, fresh, fresh], 'synthetic-append.xlsx')
+    assert (receipt['ok'], receipt['rows_dup']) == (3, 2)
+    stored = database.q_raw('select id,amount,currency,summary from flows where case_id=? and id>? order by id', [cid, high])
+    assert [(r['amount'], r['currency'], r['summary']) for r in stored] == [
+        (Decimal('2.03'), 'USD', changed[6]), (Decimal('3.07'), 'EUR', foreign[6]), (Decimal('4.09'), 'CNY', fresh[6])]
+    ids = [r['id'] for r in stored]
+    assert database.q_raw('select source_row,flow_id,disposition from flow_sources where case_id=? and source_id=? order by source_row',
+                          [cid, view['import_id']]) == [
+        {'source_row': position, 'flow_id': fid, 'disposition': disposition}
+        for position, fid, disposition in zip(range(1, 6), [low, *ids, ids[-1]],
+                                              ['duplicate', 'imported', 'imported', 'imported', 'duplicate'])]
+    records = client.get(f"/api/v1/cases/{cid}/imports/{view['import_id']}/records").json()['items']
+    assert [(r['source_row'], r['flow_id'], r['disposition']) for r in records] == [
+        (position, str(fid), disposition) for position, fid, disposition in zip(range(2, 7), [low, *ids, ids[-1]],
+                                                   ['duplicate', 'imported', 'imported', 'imported', 'duplicate'])]
+    assert observed['queries'] == 1
+    assert observed['rows'] == 3
+
+
+@pytest.mark.parametrize('trade_no,added', [('123', 0), (None, 0), (False, 0), (0, 0), (123, 1)])
+def test_standalone_history_filter_preserves_scalar_python_equality(
+        database, make_case, flow_row, monkeypatch, trade_no, added):
+    cid = make_case('Synthetic scalar history comparison')
+    rows = [flow_row(trade_no=number, amount=Decimal('1.01'), balance=None) for number in ('', '123')]
+    importer.commit_rows('synthetic-legacy.csv', 'A', rows, case_id=cid)
+    observed = history_rows(monkeypatch, database)
+    result = importer.commit_rows('synthetic-scalar.csv', 'A',
+        [flow_row(trade_no=trade_no, amount=Decimal('1.01'), balance=None)], case_id=cid)
+    assert (result['ok'], result['rows_dup']) == (added, 1 - added)
+    assert database.q_raw('select count(*) n from flows where case_id=?', [cid]) == [{'n': 2 + added}]
+    assert observed['queries'] == 1 and observed['rows'] == (0 if added else 1)
 
 
 @pytest.mark.parametrize('variant,added,duplicates', [('same', 0, 5), ('partial', 1, 3), ('moved', 3, 0), ('container', 0, 5)])

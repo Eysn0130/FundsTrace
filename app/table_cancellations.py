@@ -377,21 +377,31 @@ def _decimal(value, *, optional=False):
 
 def validate_evidence(records):
     """Rebuild full-member indexes and verify closed, rooted proofs from notes."""
-    by_number, by_member = {}, defaultdict(list)
+    numbers, by_member = set(), defaultdict(list)
+    unmarked, unmarked_with_proof = set(), set()
     for record in records:
         number = _number(record["record_no"])
-        if number in by_number:
+        if number in numbers:
             raise ValueError("duplicate cancellation record number")
-        by_number[number] = record
-        by_member[record["member_path"]].append(record)
+        numbers.add(number)
+        member = record["member_path"]
+        marked = by_member[member]
+        notes = record["details"]
+        if notes.get("cancellation_policy") == POLICY:
+            marked.append(record)
+        else:
+            # Unmarked rows can invalidate the member's proof. Keep that
+            # fact without retaining their decoded details or tracked rows.
+            unmarked.add(member)
+            if notes.keys() & DETAILS_FIELDS or record["reason_code"] == "matched_cancellation":
+                unmarked_with_proof.add(member)
     result = []
-    for member_records in by_member.values():
-        marked = [record for record in member_records if record["details"].get("cancellation_policy") == POLICY]
+    for member, marked in by_member.items():
         if not marked:
-            if any(record["details"].keys() & DETAILS_FIELDS or record["reason_code"] == "matched_cancellation" for record in member_records):
+            if member in unmarked_with_proof:
                 raise ValueError("missing cancellation observations")
             continue
-        if len(marked) != len(member_records):
+        if member in unmarked:
             raise ValueError("incomplete cancellation observations")
         observations, has_roles = [], False
         for record in marked:

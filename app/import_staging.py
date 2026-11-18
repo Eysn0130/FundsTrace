@@ -759,6 +759,39 @@ class StagedSequence(Sequence):
         finally:
             cursor.close()
 
+    def journal_with_rows(self, rows):
+        """Read every journal entry and its possibly absent financial row."""
+        store = self.store
+        if self.kind != "records" or rows.store is not store or rows.kind != "rows":
+            raise ValueError("financial rows belong to another staged plan")
+        store.flush()
+        store.read_queries += 1
+        cursor = store._con.execute("""select j.position,j.payload,j.details_version,j.binding,
+                r.position,r.payload,r.details_version,r.binding
+            from items j left join items r on r.kind='rows' and r.number=j.position
+            where j.kind='records' order by j.position""")
+        matched_rows = 0
+        try:
+            for position, payload, version, binding, row_position, row_payload, row_version, row_binding in cursor:
+                store._check()
+                record = store._track("records", position, payload, version, binding)
+                if record["record_no"] != position:
+                    raise ValueError("non-consecutive staged source records")
+                row = None
+                if row_position is not None:
+                    matched_rows += 1
+                    row = store._track("rows", row_position, row_payload, row_version, row_binding)
+                    number = row["_source_row"]
+                    if type(number) is not int or number != position:
+                        raise ValueError("invalid staged source position")
+                yield record, row
+        finally:
+            cursor.close()
+        # The left join cannot see stray financial positions. Check the
+        # actual index count without reopening any of the staged payloads.
+        if matched_rows != store._con.execute("select count(*) from items where kind='rows'").fetchone()[0]:
+            raise ValueError("unlinked staged financial rows")
+
     def extend(self, values):
         store = self.store
         store.flush()

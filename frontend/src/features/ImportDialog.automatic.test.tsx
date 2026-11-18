@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, within, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ImportJob, ImportPreview, ImportRecordPage, ImportSession } from '../../../contracts/api-v1';
 import type { FundsCaseClientV1 } from '../panel/host';
@@ -42,22 +42,33 @@ const proofPage = (page = 1): ImportRecordPage => ({ case_id: '1', source_id: 'S
     reason_code: 'transaction_valid', flow_id: String(page), details: { event_reference_evidence: JSON.stringify({
       policy: 'scoped-event-reference-v1', reference: `SYN-P${page}`, issuer: 'SYN Issuer', channel: 'SYN Rail', business_scope: 'SYN Scope' }) } }] });
 function openRecords() {
+  const results = screen.queryByRole('button', { name: '查看处理结果' }); if (results) fireEvent.click(results);
   const detail = screen.getByText('来源记录与关联依据').closest('details')!;
   detail.open = true; fireEvent(detail, new Event('toggle'));
 }
 
+async function viewResults() {
+  const button = screen.queryByRole('button', { name: '查看处理结果' });
+  if (button) { await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false)); fireEvent.click(button); }
+}
+
 describe('automatic table import', () => {
-  it.each(['selection', 'drop'])('explicitly rejects ordinary multiple files from %s before any upload', async source => {
+  it.each(['selection', 'drop'])('processes ordinary multiple files from %s in one sequential workflow', async source => {
     const client = clientFor(), previewDirectory = vi.fn(async () => preview);
+    const oldJob = client.job;
+    client.preview = vi.fn(async file => ({ ...preview, filename: file.name, import_id: `SYN-${file.name}` }));
+    client.commit = vi.fn(async importId => ({ case_id: '1', import_id: importId, started: true }));
+    client.job = vi.fn(async importId => ({ ...await oldJob(importId), import_id: importId }));
     Object.assign(client, { previewDirectory });
     show(client);
     const files = [new File(['first'], 'first.csv'), new File(['second'], 'second.xlsx')];
     if (source === 'selection') fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files } });
     else fireEvent.drop(document.querySelector('.import-drop-area')!, { dataTransfer: { files, items: [] } });
-    expect((await screen.findByRole('alert')).textContent).toMatch(/每次.*一个文件/);
-    expect(client.preview).not.toHaveBeenCalled();
+    await waitFor(() => expect(client.job).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(client.preview).mock.calls.map(call => call[0])).toEqual(files);
+    expect(vi.mocked(client.commit).mock.calls.map(call => call[0])).toEqual(['SYN-first.csv', 'SYN-second.xlsx']);
     expect(previewDirectory).not.toHaveBeenCalled();
-    expect(client.commit).not.toHaveBeenCalled();
+    expect(screen.getAllByRole('treeitem')).toHaveLength(2);
   });
 
   it.each(['selection', 'drop'])('retains the complete-directory group from %s', async source => {
@@ -73,7 +84,7 @@ describe('automatic table import', () => {
       } };
       fireEvent.drop(document.querySelector('.import-drop-area')!, { dataTransfer: { files: [], items: [{ kind: 'file', getAsFile: () => null, webkitGetAsEntry: () => entry }] } });
     }
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(previewDirectory).toHaveBeenCalledOnce(); expect(client.preview).not.toHaveBeenCalled();
     const uploaded = previewDirectory.mock.calls[0] as unknown as [File[], AbortSignal];
     expect(uploaded[0].map(file => file.name)).toEqual(files.map(file => source === 'drop' ? `synthetic-folder/${file.name}` : file.name));
@@ -89,8 +100,8 @@ describe('automatic table import', () => {
             issuer: 'Synthetic Holdout Issuer', channel: 'Synthetic Holdout Rail', business_scope: 'Synthetic Holdout Transfers' }) } }] }));
     Object.assign(client, { importRecords: records });
     show(client, undefined, stored);
-    await screen.findByRole('heading', { name: '自动处理完成' });
-    expect(records).not.toHaveBeenCalled();
+    await screen.findByRole('status', { name: '导入完成' });
+    await waitFor(() => expect(records).toHaveBeenCalledOnce());
     openRecords();
     await screen.findByText('"SYN-HOLD-E1"');
     expect(screen.getByText(/同笔关联资料存在矛盾/)).toBeTruthy();
@@ -104,7 +115,7 @@ describe('automatic table import', () => {
   it('pages retained source records and rejects a mismatched case before displaying its evidence', async () => {
     const client = clientFor(), records = vi.fn(async (_source: string, page = 1) => page === 1 ? proofPage(1) : { ...proofPage(2), case_id: '2' });
     Object.assign(client, { importRecords: records });
-    show(client, undefined, session('done')); await screen.findByRole('heading', { name: '自动处理完成' }); openRecords();
+    show(client, undefined, session('done')); await screen.findByRole('status', { name: '导入完成' }); openRecords();
     await screen.findByText('"SYN-P1"');
     fireEvent.click(screen.getByRole('button', { name: '来源记录下一页' }));
     await screen.findByRole('alert');
@@ -119,8 +130,8 @@ describe('automatic table import', () => {
     const client = clientFor(), controller = new AbortController(); let finish!: (page: ImportRecordPage) => void, requestSignal: AbortSignal | undefined;
     const records = vi.fn((_source: string, _page: number, signal?: AbortSignal) => { requestSignal = signal; return new Promise<ImportRecordPage>(resolve => { finish = resolve; }); });
     Object.assign(client, { importRecords: records });
-    show(client, controller.signal, session('done')); await screen.findByRole('heading', { name: '自动处理完成' }); openRecords();
-    await waitFor(() => expect(records).toHaveBeenCalledOnce());
+    show(client, controller.signal, session('done')); await screen.findByRole('status', { name: '导入完成' }); openRecords();
+    await waitFor(() => expect(records).toHaveBeenCalledTimes(2));
     await act(async () => { controller.abort(); finish(proofPage()); });
     expect(requestSignal?.aborted).toBe(true);
     expect(screen.queryByText('"SYN-P1"')).toBeNull();
@@ -132,8 +143,8 @@ describe('automatic table import', () => {
     const oldRecords = vi.fn(() => new Promise<ImportRecordPage>(resolve => { finish = resolve; }));
     Object.assign(oldClient, { importRecords: oldRecords });
     Object.assign(nextClient, { binding: { caseId: '1', scopeKey: 'synthetic-auto', generation: 1 }, importRecords: vi.fn(async () => proofPage(2)) });
-    const view = show(oldClient, undefined, session('done')); await screen.findByRole('heading', { name: '自动处理完成' }); openRecords();
-    await waitFor(() => expect(oldRecords).toHaveBeenCalledOnce());
+    const view = show(oldClient, undefined, session('done')); await screen.findByRole('status', { name: '导入完成' }); openRecords();
+    await waitFor(() => expect(oldRecords).toHaveBeenCalledTimes(2));
     view.rerender(<ImportDialog target={{ caseId: '1', name: '合成案件' }} client={nextClient} scopeSignal={new AbortController().signal} resume={session('done')} onClose={vi.fn()} onImported={vi.fn()} />);
     await act(async () => { finish(proofPage(1)); });
     expect(screen.queryByText('"SYN-P1"')).toBeNull();
@@ -146,9 +157,11 @@ describe('automatic table import', () => {
       table_summary: { ...summary, accepted: 1, unresolved: 1 } } };
     const before = structuredClone(stored);
     show(client, undefined, stored);
-    await screen.findByRole('dialog', { name: '历史导入回执' });
-    expect(screen.getByText('导入当时结果；当前有效流水以案件统计为准')).toBeTruthy();
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('dialog', { name: '导入流水' });
+    expect(screen.queryByText('导入当时结果；当前有效流水以案件统计为准')).toBeNull();
+    await viewResults();
+    expect(screen.getByRole('columnheader', { name: '导入当时数量' })).toBeTruthy();
+    await screen.findByRole('status', { name: '导入完成' });
     expect(screen.getByText(/已保存 3 条记录 · 新增流水记录/).textContent).toContain('新增流水记录 1 条');
     expect(stored).toEqual(before);
     expect(client.commit).not.toHaveBeenCalled();
@@ -163,7 +176,7 @@ describe('automatic table import', () => {
     vi.mocked(client.job).mockResolvedValue({ case_id: '1', import_id: preview.import_id, stage: 'done', done: 3, total: 3,
       message: '完成', error: null, result: { ...result, resolution } });
     show(client); upload();
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     const reminder = screen.queryByLabelText('账户关联结果');
     if (conflicts) expect(reminder?.textContent).toContain('1 处资料冲突');
     else expect(reminder).toBeNull();
@@ -174,7 +187,7 @@ describe('automatic table import', () => {
     show(clientFor());
     const input = screen.getByLabelText('选择流水文件') as HTMLInputElement;
     expect(input.accept.split(',')).toEqual(['.csv', '.tsv', '.txt', '.xlsx', '.xls', '.zip', '.rar']);
-    expect(screen.getByText('支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP／RAR')).toBeTruthy();
+    expect(screen.getByText('Excel · CSV · ZIP · RAR')).toBeTruthy();
   });
 
   it('previews the same XLS File and completes one automatic commit without remapping', async () => {
@@ -184,13 +197,13 @@ describe('automatic table import', () => {
     vi.mocked(client.preview).mockResolvedValue(xlsPreview);
     show(client, undefined, undefined, imported);
     fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [file] } });
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(client.preview).toHaveBeenCalledOnce();
     expect(vi.mocked(client.preview).mock.calls[0][0]).toBe(file);
     expect(client.preview).toHaveBeenCalledWith(file, expect.any(AbortSignal));
     expect(client.commit).toHaveBeenCalledOnce();
     expect(client.commit).toHaveBeenCalledWith(xlsPreview.import_id, {
-      mode: xlsPreview.mode, mapping: xlsPreview.mapping, mark_accounts: [], self_accounts: [],
+      mode: xlsPreview.mode, mapping: xlsPreview.mapping, mark_accounts: [], self_accounts: [], material_group_id: expect.stringMatching(/^[a-f0-9]{32}$/),
     }, expect.any(AbortSignal));
     expect(client.repreview).not.toHaveBeenCalled();
     expect(client.job).toHaveBeenCalledOnce();
@@ -208,12 +221,12 @@ describe('automatic table import', () => {
     const retry = await screen.findByRole('button', { name: '重新查询进度' });
     expect(client.commit).toHaveBeenCalledOnce();
     expect(imported).not.toHaveBeenCalled();
-    expect((screen.getByLabelText('流水文件类型') as HTMLSelectElement).disabled).toBe(true);
-    expect((screen.getByLabelText('映射交易金额') as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.queryByLabelText('流水文件类型')).toBeNull();
+    expect(screen.queryByLabelText('映射交易金额')).toBeNull();
     expect(screen.queryByRole('button', { name: '开始导入' })).toBeNull();
     expect(client.job).toHaveBeenCalledTimes(failure === 'commit receipt lost' ? 0 : 1);
     fireEvent.click(retry);
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(client.commit).toHaveBeenCalledOnce();
     expect(client.repreview).not.toHaveBeenCalled();
     expect(client.job).toHaveBeenCalledTimes(failure === 'commit receipt lost' ? 1 : 2);
@@ -237,7 +250,7 @@ describe('automatic table import', () => {
     expect((screen.getByLabelText('流水文件类型') as HTMLSelectElement).disabled).toBe(false);
     expect(imported).not.toHaveBeenCalled();
     fireEvent.click(start);
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(client.commit).toHaveBeenCalledTimes(2);
     expect(imported).toHaveBeenCalledOnce();
   });
@@ -251,9 +264,9 @@ describe('automatic table import', () => {
     fireEvent.click(await screen.findByRole('button', { name: '重新查询进度' }));
     await screen.findByText(/合成未知404/);
     expect(screen.queryByRole('button', { name: '开始导入' })).toBeNull();
-    expect((screen.getByLabelText('映射交易金额') as HTMLSelectElement).disabled).toBe(true);
+    expect(screen.queryByLabelText('映射交易金额')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '重新查询进度' }));
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(client.commit).toHaveBeenCalledOnce();
     expect(client.job).toHaveBeenCalledTimes(2);
   });
@@ -287,7 +300,7 @@ describe('automatic table import', () => {
     await screen.findByText(/导入进度与当前案件不一致/);
     expect(screen.queryByRole('button', { name: '开始导入' })).toBeNull();
     expect(screen.getByRole('button', { name: '重新查询进度' })).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: '自动处理完成' })).toBeNull();
+    expect(screen.queryByRole('status', { name: '导入完成' })).toBeNull();
     expect(imported).not.toHaveBeenCalled();
     expect(client.commit).toHaveBeenCalledOnce();
   });
@@ -304,7 +317,7 @@ describe('automatic table import', () => {
     act(() => controller.abort());
     expect(vi.mocked(client.job).mock.calls[0][1]?.aborted).toBe(true);
     await act(async () => finish(done));
-    expect(screen.queryByRole('heading', { name: '自动处理完成' })).toBeNull();
+    expect(screen.queryByRole('status', { name: '导入完成' })).toBeNull();
     expect(imported).not.toHaveBeenCalled();
     expect(client.commit).toHaveBeenCalledOnce();
   });
@@ -316,7 +329,7 @@ describe('automatic table import', () => {
     const receipt = { ...result, ok: 1, table_summary: cancelled };
     const done = { ...session('done'), result: receipt };
     show(client, undefined, done);
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(screen.getByText(/已保存 3 条记录 · 新增流水记录/).textContent).toContain('新增流水记录 0 条');
     expect(screen.getByText(/本次保留来源流水记录 1 条，其中新增有效流水记录 0 条/)).toBeTruthy();
     expect(screen.getByText('本案有 1 条留存来源流水未计入有效统计。')).toBeTruthy();
@@ -337,7 +350,7 @@ describe('automatic table import', () => {
 
   it('automatically saves all-unresolved records once and refreshes analysis inputs despite zero added flows', async () => {
     const client = clientFor(), imported = vi.fn(); show(client, undefined, undefined, imported); upload();
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(client.commit).toHaveBeenCalledOnce(); expect(client.repreview).not.toHaveBeenCalled();
     expect(imported).toHaveBeenCalledOnce();
     expect(screen.getByText(/已保存 3 条记录 · 新增流水记录/).textContent).toContain('未计入资金流水 2 条');
@@ -359,7 +372,7 @@ describe('automatic table import', () => {
     expect(screen.queryByText(/流水号 ← (传票号|日志号)/)).toBeNull();
     expect(screen.queryByText(/source_slip_reference|source_log_reference|independent_voucher_type/)).toBeNull();
     expect(screen.getByText(/交易时间 ← 成交日期.*时间格式：DD\/MM\/YYYY.*明确的日期时间格式/).textContent).not.toContain('来源单位');
-    expect(screen.queryByText(/跳过|等待用户确认|逐条审核/)).toBeNull();
+    expect(within(screen.getByRole('status')).queryByText(/跳过|等待用户确认|逐条审核/)).toBeNull();
   });
 
   it('explains exact validation failures without confusing missing bank data with unsupported semantics', async () => {
@@ -379,7 +392,7 @@ describe('automatic table import', () => {
     client.job = vi.fn(async (): Promise<ImportJob> => ({ case_id: '1', import_id: preview.import_id, stage: 'done', done: 8, total: 8,
       message: '完成', error: null, result: { ...result, table_summary: source } }));
     show(client); upload();
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(client.commit).toHaveBeenCalledOnce();
     expect(screen.getByRole('status').textContent).toContain('新增流水记录 0 条');
     expect(screen.getByRole('status').textContent).toContain('未计入资金流水 8 条');
@@ -399,7 +412,7 @@ describe('automatic table import', () => {
     await waitFor(() => expect(client.repreview).toHaveBeenCalledTimes(2));
     expect(client.commit).not.toHaveBeenCalled();
     await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(start); await screen.findByRole('heading', { name: '自动处理完成' });
+    fireEvent.click(start); await screen.findByRole('status', { name: '导入完成' });
     expect(client.commit).toHaveBeenCalledOnce();
   });
 

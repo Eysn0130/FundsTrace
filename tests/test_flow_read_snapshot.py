@@ -1,5 +1,6 @@
 """Committed legacy flow reads stay coherent while the single writer is active."""
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 import json
@@ -84,7 +85,7 @@ def test_commit_between_count_and_payload_keeps_all_old_metadata(client, databas
 
     def pause_after_count(sql, params=None):
         result = original(sql, params)
-        if database.in_read_snapshot() and 'select count(*) c from ordinary_facts' in sql:
+        if database.in_read_snapshot() and '_funds_page_keys as materialized' in sql:
             counted.set()
             assert release.wait(4)
         return result
@@ -126,7 +127,7 @@ def test_case_delete_during_read_returns_old_case_then_404_and_package_restores(
 
     def paused(sql, params=None):
         result = original(sql, params)
-        if database.in_read_snapshot() and 'select count(*) c from ordinary_facts' in sql:
+        if database.in_read_snapshot() and '_funds_page_keys as materialized' in sql:
             entered.set()
             assert release.wait(4)
         return result
@@ -165,7 +166,7 @@ def test_missing_revision_initializes_under_writer_lock_before_reading(client, d
         return refresh(*args, **kwargs)
 
     def observe(sql, params=None):
-        if 'select count(*) c from ordinary_facts' in sql:
+        if '_funds_page_keys as materialized' in sql:
             reads.append(database.in_read_snapshot())
         return query(sql, params)
 
@@ -410,7 +411,7 @@ def test_single_reader_admission_waits_and_releases_after_success_or_exception(
 
     def paused(sql, params=None):
         result = query(sql, params)
-        if getattr(labels, 'value', '') == 'first' and 'select count(*) c from ordinary_facts' in sql:
+        if getattr(labels, 'value', '') == 'first' and '_funds_page_keys as materialized' in sql:
             entered.set()
             assert release.wait(5)
             if fail_first:
@@ -535,7 +536,12 @@ def test_actual_import_writer_keeps_unknown_signed_currency_and_source_rows_cohe
         finally:
             release.set()
             safety.cancel()
-        completed = client.get(base)
+        deadline = time.monotonic() + 5
+        while True:
+            completed = client.get(base)
+            if completed.status_code != 200 or completed.json()['stage'] in {'done', 'error'} or time.monotonic() >= deadline:
+                break
+            time.sleep(.01)
         assert completed.status_code == 200 and completed.json()['stage'] == 'done'
     after = client.get('/api/flows', params={'case_id': cid}).json()
     assert after['total'] == 6 and after['analysis_revision'] != before['analysis_revision']

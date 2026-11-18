@@ -11,7 +11,7 @@ function clientFor(): FundsCaseClientV1 {
     preview: vi.fn(), previewDirectory: vi.fn(async () => preview), repreview: vi.fn(),
     commit: vi.fn(async () => ({ case_id: '1', import_id: preview.import_id, started: true })),
     job: vi.fn(async (): Promise<ImportJob> => ({ case_id: '1', import_id: preview.import_id, stage: 'done', done: 1, total: 2,
-      message: '完成', error: null, result: null })), imports: vi.fn(), sources: vi.fn(), cleanup: vi.fn() };
+      message: '完成', error: null, result: { total: 2, ok: 1, skipped: 1, rows_dup: 0, batch_id: '1', bad_examples: [], self_accounts: [], self_accounts_count: 0, main_matched: [], accounts_in_batch: 0, main_detected: [] } })), imports: vi.fn(), sources: vi.fn(), cleanup: vi.fn() };
 }
 function show(client: FundsCaseClientV1, signal = new AbortController().signal) {
   return render(<ImportDialog target={{ caseId: '1', name: '合成目录案件' }} client={client} scopeSignal={signal}
@@ -31,12 +31,12 @@ describe('folder import', () => {
     const input = screen.getByLabelText('选择整个文件夹') as HTMLInputElement;
     expect(input.hasAttribute('webkitdirectory')).toBe(true);
     fireEvent.change(input, { target: { files: selected } });
-    await screen.findByRole('heading', { name: '流水已写入当前案件' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(client.previewDirectory).toHaveBeenCalledWith(selected, expect.any(AbortSignal));
     expect(vi.mocked(client.previewDirectory!).mock.calls[0][0][1]).toBe(selected[1]);
     expect(client.preview).not.toHaveBeenCalled();
     expect(client.commit).toHaveBeenCalledExactlyOnceWith(preview.import_id,
-      { mode: 'B', mapping: {}, mark_accounts: [], self_accounts: [] }, expect.any(AbortSignal));
+      { mode: 'B', mapping: {}, mark_accounts: [], self_accounts: [], material_group_id: expect.stringMatching(/^[a-f0-9]{32}$/) }, expect.any(AbortSignal));
   });
 
   it('does not submit a late directory preview after the case session is revoked', async () => {
@@ -47,7 +47,7 @@ describe('folder import', () => {
     await waitFor(() => expect(client.previewDirectory).toHaveBeenCalledOnce());
     act(() => controller.abort()); await act(async () => resolve(preview));
     expect(client.commit).not.toHaveBeenCalled();
-    expect(screen.queryByRole('heading', { name: '流水已写入当前案件' })).toBeNull();
+    expect(screen.queryByRole('status', { name: '导入完成' })).toBeNull();
   });
 
   it('keeps the folder action unavailable when an embedded host does not implement it', () => {

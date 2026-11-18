@@ -2555,26 +2555,6 @@ test('shared horizontal controls remeasure their own table and release events, q
   assert.equal(flow.viewport.scrollLeft,0);assert.equal(observers[2].disconnected,false);
 });
 
-test('import preview retains all thirteen normalized columns and complete text and decimal money', () => {
-  const h=harness('app.js');
-  const summary='合成预览摘要：完整保留交易来源、核查说明和编号 SYNTHETIC-PREVIEW-000000000000000001。';
-  h.run('renderImport')({filename:'synthetic-preview.xlsx',mode:'A',
-    columns:['time','from','to','amount','summary'],mapping:{trade_time:'time',payer_account:'from',payee_account:'to',amount:'amount',summary:'summary'},
-    stats:{total:1,ok:1,skipped:0},preview:[{trade_time:'2026-10-15 08:09:07',payer_name:'Synthetic payer',payer_account:'000012345678901234567890',
-      payee_name:'Synthetic payee',payee_account:'SYNTHETIC-PREVIEW-ACCOUNT-B',amount:'9999999999999999.99',currency:'USD',balance:'10000000000000000.01',
-      summary,trade_no:'SYNTHETIC-TRADE-000000000000000001',payer_bank:'Synthetic payer bank',payee_bank:'Synthetic payee bank',
-      channel:'Synthetic wire channel',self_account:'000098765432109876543210',self_name:'Synthetic main account'}]});
-  const head=h.element('#impPreviewHead').innerHTML,body=h.element('#impTbody').innerHTML;
-  assert.equal((head.match(/<th(?:\s|>)/g)||[]).length,13);
-  assert.equal((body.match(/<td(?:\s|>)/g)||[]).length,13);
-  for(const label of ['交易时间','付款方','收款方','金额','摘要','币种','余额','交易流水号','付款开户行','收款开户行','交易类型/渠道','本方账号','本方户名'])assert.ok(head.includes('>'+label+'</th>'),label);
-  for(const value of ['2026-10-15 08:09:07','000012345678901234567890','SYNTHETIC-PREVIEW-ACCOUNT-B',summary,
-    'SYNTHETIC-TRADE-000000000000000001','Synthetic payer bank','Synthetic payee bank','Synthetic wire channel','000098765432109876543210','Synthetic main account',
-    'USD 9,999,999,999,999,999.99','USD 10,000,000,000,000,000.01'])assert.ok(body.includes(value),value);
-  assert.equal(h.element('#impPreviewNote').textContent,'前 1 行 · 规范化后 · 13 列');
-  assert.equal(h.requests.length,0);
-});
-
 test('unknown direction source row shows original own account and amount without a transfer arrow', () => {
   const h = harness('app.js');
   h.run(`renderFlows([{id:91,trade_time:'2026-01-01 10:00:00',payer_account:'',payee_account:'',raw_self_account:'SYN-OWN',amount:'12.34',currency:'CNY',summary:'SYN source',source_ledger:{direction:'unknown',source_direction:'',self_account:'SYN-OWN',signed_amount:'12.34',economic_effect:'unknown',balance_change:{status:'unknown',difference:null}}}])`);

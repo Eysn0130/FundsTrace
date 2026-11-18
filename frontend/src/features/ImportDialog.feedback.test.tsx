@@ -37,16 +37,21 @@ function show(client: FundsCaseClientV1, options: { signal?: AbortSignal; resume
 }
 async function upload() {
   fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.zip', { type: 'application/zip' })] } });
-  await screen.findByText('银行反馈 ZIP · 已自动识别');
+  await viewResults(); await screen.findByText('银行反馈 ZIP · 已自动识别');
+}
+
+async function viewResults() {
+  const button = await screen.findByRole('button', { name: '查看处理结果' });
+  if (button) { await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false)); fireEvent.click(button); }
 }
 
 describe('bank feedback ZIP import dialog', () => {
   it('uses the same one-upload automatic commit for fixed bank feedback profiles', async () => {
     const client = clientFor({ ...preview, automatic: true } as ImportPreview);
     show(client); fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.zip')] } });
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(client.commit).toHaveBeenCalledOnce(); expect(client.repreview).not.toHaveBeenCalled();
-    expect(client.commit).toHaveBeenCalledWith('SYN-IMPORT', { mode: 'B', mapping: preview.mapping, mark_accounts: [], self_accounts: [] }, expect.any(AbortSignal));
+    expect(client.commit).toHaveBeenCalledWith('SYN-IMPORT', { mode: 'B', mapping: preview.mapping, mark_accounts: [], self_accounts: [], material_group_id: expect.stringMatching(/^[a-f0-9]{32}$/) }, expect.any(AbortSignal));
   });
   it('accepts ZIP and shows fixed mapping, exact currencies and original row metadata without inventing counterparties', async () => {
     const client = clientFor(); show(client);
@@ -59,10 +64,13 @@ describe('bank feedback ZIP import dialog', () => {
     expect(screen.getByText('0.03 USD')).toBeTruthy();
     expect(screen.getByText('收付方向无法识别：1 条')).toBeTruthy();
     expect(screen.queryByText('invalid_direction')).toBeNull();
-    expect(screen.getByText('原始第 2 行 · 记录 1')).toBeTruthy();
-    expect(screen.getByText('户名未提供')).toBeTruthy();
-    expect(screen.getByText('未知对手')).toBeTruthy();
-    expect(screen.getByText('账号缺失')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '返回数据预览' }));
+    const rawPreview = screen.getByRole('region', { name: '数据预览，可上下左右滚动' });
+    expect(within(rawPreview).getByRole('cell', { name: '2' }).getAttribute('title')).toContain('原始第 2 行 · 记录 1');
+    const cells = within(rawPreview).getAllByRole('row')[1].querySelectorAll('td');
+    expect(cells[3].textContent).toBe('—');
+    expect(cells[4].textContent).toBe(''); expect(cells[6].textContent).toBe(''); expect(cells[7].textContent).toBe('');
+    fireEvent.click(screen.getByRole('button', { name: '查看处理结果' }));
     expect(screen.getByText('冻结信息')).toBeTruthy();
     expect(screen.getByText(/来源已接纳流水金额合计.*非本次新增金额或净结算金额/)).toBeTruthy();
     expect(screen.getByText(/未计入资金流水的记录按规则保留来源和原因，无需逐条确认/)).toBeTruthy();
@@ -70,7 +78,7 @@ describe('bank feedback ZIP import dialog', () => {
     expect(screen.getByText('未计入记录的来源示例（前 1 条）').closest('details')?.open).toBe(false);
     expect(screen.queryByText(feedback.profile)).toBeNull();
     expect(screen.queryByText(/待复核|需复核|保存处置结果/)).toBeNull();
-    expect(screen.queryByText(/跳过/)).toBeNull();
+    expect(within(screen.getByText('银行反馈 ZIP · 已自动识别').closest('section')!).queryByText(/跳过/)).toBeNull();
     expect(client.repreview).not.toHaveBeenCalled();
   });
 
@@ -81,9 +89,9 @@ describe('bank feedback ZIP import dialog', () => {
     show(client, { actions: { downloadImportReport: report, downloadSource: original } }); await upload();
     const save = screen.getByRole('button', { name: '开始导入' });
     expect((save as HTMLButtonElement).disabled).toBe(false); fireEvent.click(save);
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(screen.queryByText('流水已写入当前案件')).toBeNull();
-    expect(screen.queryByText(/跳过/)).toBeNull();
+    expect(within(screen.getByRole('status')).queryByText(/跳过/)).toBeNull();
     expect(screen.getByText(/已保存 3 条记录 · 新增流水记录/)).toBeTruthy();
     expect(screen.getByText(/自动处理已完成，未计入资金流水的记录已保留来源和原因，无需逐条确认/)).toBeTruthy();
     expect(screen.queryByText(/待复核|需复核|保存处置结果/)).toBeNull();
@@ -92,7 +100,7 @@ describe('bank feedback ZIP import dialog', () => {
     await waitFor(() => expect((screen.getByRole('button', { name: '下载原始 ZIP' }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole('button', { name: '下载原始 ZIP' }));
     await waitFor(() => expect(original).toHaveBeenCalledWith({ sourceId: 'SYN-SOURCE', filename: 'synthetic.zip' }, expect.any(AbortSignal)));
-    expect(client.commit).toHaveBeenCalledWith('SYN-IMPORT', { mode: 'B', mapping: preview.mapping, mark_accounts: [], self_accounts: [] }, expect.any(AbortSignal));
+    expect(client.commit).toHaveBeenCalledWith('SYN-IMPORT', { mode: 'B', mapping: preview.mapping, mark_accounts: [], self_accounts: [], material_group_id: expect.stringMatching(/^[a-f0-9]{32}$/) }, expect.any(AbortSignal));
     expect(client.commit).toHaveBeenCalledOnce();
     expect(client.repreview).not.toHaveBeenCalled();
   });
@@ -109,7 +117,7 @@ describe('bank feedback ZIP import dialog', () => {
     expect(screen.queryByText(/留存来源流水未计入有效统计/)).toBeNull();
     const save = screen.getByRole('button', { name: '开始导入' });
     expect((save as HTMLButtonElement).disabled).toBe(false); fireEvent.click(save);
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     const status = screen.getByRole('status');
     expect(status.textContent).toContain('已保存 2 条记录 · 新增流水记录 0 条 · 重复 0 条');
     expect(status.textContent).toContain('已配对冲正/撤销 2 条（双方均不计有效资金）');
@@ -125,7 +133,7 @@ describe('bank feedback ZIP import dialog', () => {
       stage: 'done', source_state: 'retained', source_available: true, recoverable: false, created_at: '2026-01-01T00:00:00Z', expires_at: null,
       error_code: null, attempt: 1, request: null, result: result(summary, 0) };
     show(clientFor(), { resume: source });
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(screen.getByRole('status').textContent).toContain('新增流水记录 0 条');
     expect(screen.getByText('本案有 1 条留存来源流水未计入有效统计。')).toBeTruthy();
     expect(screen.getByText(/普通退款按来源记账方向与金额处理/)).toBeTruthy();
@@ -138,7 +146,8 @@ describe('bank feedback ZIP import dialog', () => {
     const controller = new AbortController(); let reject: (reason: Error) => void = () => {};
     const report = vi.fn((_source, signal?: AbortSignal) => new Promise<void>((_resolve, no) => { reject = no; expect(signal?.aborted).toBe(false); }));
     show(clientFor(), { signal: controller.signal, resume: source, actions: { downloadImportReport: report } });
-    expect((await screen.findByRole('button', { name: '下载原始 ZIP' }) as HTMLButtonElement).disabled).toBe(true);
+    await screen.findByRole('status', { name: '导入完成' }); await viewResults();
+    expect((screen.getByRole('button', { name: '下载原始 ZIP' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('宿主未提供原件下载能力。')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '下载完整处理报告（JSON）' }));
     await waitFor(() => expect(report).toHaveBeenCalledOnce());
@@ -153,7 +162,8 @@ describe('bank feedback ZIP import dialog', () => {
       stage: 'done', source_state: 'cleaned', source_available: false, recoverable: false, created_at: '2026-01-01T00:00:00Z', expires_at: null,
       error_code: null, attempt: 1, request: null, result: result() };
     show(clientFor(), { resume: source, actions: { downloadImportReport: vi.fn(async () => {}), downloadSource: vi.fn(async () => {}) } });
-    expect((await screen.findByRole('button', { name: '下载原始 ZIP' }) as HTMLButtonElement).disabled).toBe(true);
+    await screen.findByRole('status', { name: '导入完成' }); await viewResults();
+    expect((screen.getByRole('button', { name: '下载原始 ZIP' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: '下载完整处理报告（JSON）' }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByText('原始 ZIP 已不可用；处理报告仍可用于追溯。')).toBeTruthy();
   });
@@ -163,7 +173,7 @@ describe('bank feedback ZIP import dialog', () => {
     client.job = vi.fn(async (): Promise<ImportJob> => ({ case_id: '1', import_id: 'SYN-IMPORT', stage: 'done', done: 2, total: 2, message: '完成', error: null,
       result: { ...result(), ok: 0, rows_dup: 2 } }));
     show(client); await upload(); fireEvent.click(screen.getByRole('button', { name: '开始导入' }));
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     const status = screen.getByText(/已保存 6 条记录 · 新增流水记录/);
     expect(status.textContent).toContain('新增流水记录 0 条 · 重复 2 条');
     expect(status.textContent).toContain('无资金变动 1 条 · 未计入资金流水 1 条 · 来源反馈 1 条 · 辅助资料 1 条');

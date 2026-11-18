@@ -287,9 +287,3 @@ test('crop arrow keys move the selected center, Shift accelerates and bounds rem
   assert.equal(f.layouts(), 4);
   assert.equal(f.circle.fire('keydown', { key: 'Enter' }).defaultPrevented, false); assert.equal(f.layouts(), 4);
 });
-
-test('new import mapping fields bind their visible labels to the actual select controls', () => {
-  const f = harness(), field = f.add(f.mapping, 'div', 'mappingField'), label = f.add(field, 'label', 'mappingLabel');
-  const select = f.add(field, 'select', ''); select.dataset.field = 'payer_account'; f.flush();
-  assert.equal(select.id, 'map-payer_account'); assert.equal(label.htmlFor, 'map-payer_account');
-});

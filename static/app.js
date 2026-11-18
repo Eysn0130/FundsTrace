@@ -164,8 +164,7 @@ function selectCase(caseId) {
   state.forceFit = true;
   closeDrawer();
   $('#ctxModal').style.display = 'none';
-  $('#importModal').style.display = 'none';
-  $('#impCommit').disabled = false;
+  window.FundsUnifiedImport?.revoke();
   $('#flowTbody').innerHTML = '';
   resetBatchView();
   $('#canvasSel').innerHTML = '<option value="0">默认画布</option>';
@@ -4930,125 +4929,6 @@ function bindContextUI() {
   });
   contextTableScroll = bindTableHorizontalScroll({ viewport: $('#ctxTableScroll'), range: $('#ctxHorizontalPosition'),
     left: $('#ctxScrollLeft'), right: $('#ctxScrollRight'), table: $('#ctxTable') });
-}
-
-/* ---------------- 导入 ---------------- */
-const FIELD_LABELS = {
-  trade_no: '交易流水号', trade_time: '交易时间', _time2: '时间（时分秒列）',
-  payer_name: '付款户名', payer_account: '付款账号', payer_bank: '付款开户行',
-  payee_name: '收款户名', payee_account: '收款账号', payee_bank: '收款开户行',
-  self_name: '本方户名', self_account: '本方账号', counter_name: '对方户名',
-  counter_account: '对方账号', counter_bank: '对方开户行', direction: '收支标志',
-  income_amt: '收入金额列', expense_amt: '支出金额列', amount: '交易金额',
-  balance: '余额', currency: '币种', summary: '摘要', channel: '交易类型/渠道',
-};
-
-function importFieldRequirement(field, mode, mapping) {
-  const amounts = mapping.income_amt && mapping.expense_amt;
-  if (field === 'trade_time' || (field === 'self_account' && mode === 'B')) return { required: true, note: '必填' };
-  const pair = { payer_name: 'payer_account', payer_account: 'payer_name',
-    payee_name: 'payee_account', payee_account: 'payee_name', counter_name: 'counter_account', counter_account: 'counter_name' }[field];
-  if (pair) return { required: !mapping[pair], note: `与${FIELD_LABELS[pair]}二选一` };
-  if (field === 'amount') return { required: !amounts, note: mode === 'A' ? '必填' : '可用收入与支出列替代' };
-  if (field === 'direction') return { required: !amounts, note: '可用收入与支出列替代' };
-  if (field === 'income_amt' || field === 'expense_amt') return { required: !mapping.amount, note: '收入与支出列共同替代交易金额' };
-  return { required: false, note: '选填' };
-}
-
-function refreshImportMappingState() {
-  const { mode, mapping } = collectMapping();
-  $$('#impMapping select').forEach(select => {
-    const field = select.dataset.field, requirement = importFieldRequirement(field, mode, mapping);
-    const label = document.getElementById('map-label-' + field), note = document.getElementById('map-note-' + field);
-    const status = document.getElementById('map-state-' + field);
-    if (label) { label.classList.toggle('is-required', requirement.required); label.innerHTML = esc(FIELD_LABELS[field]) + (requirement.required ? '<span class="import-required" aria-hidden="true">*</span>' : ''); }
-    if (note) note.textContent = requirement.note;
-    if (status) { status.textContent = select.value ? '已映射' : requirement.required ? '待映射' : '未映射'; status.dataset.state = select.value ? 'mapped' : requirement.required ? 'missing' : 'optional'; }
-  });
-}
-
-function renderImport(r) {
-  const expanded = $('#impAdvanced')?.open || false;
-  $('#impStep1').style.display = 'none'; $('#impStep2').style.display = 'block';
-  $('#impMeta').innerHTML = `<b>${esc(r.filename)}</b><span class="muted"> · ${fmtCount(r.stats?.total || 0)} 行</span>`;
-  $$('input[name=impMode]').forEach(i => { i.checked = i.value === r.mode; });
-  const primary = r.mode === 'A'
-    ? ['trade_time', 'payer_name', 'payer_account', 'payee_name', 'payee_account', 'amount', 'currency']
-    : ['trade_time', 'self_account', 'counter_name', 'counter_account', 'direction', 'amount', 'income_amt', 'expense_amt'];
-  const fields = r.mode === 'A'
-    ? ['trade_no', 'trade_time', '_time2', 'self_account', 'payer_name', 'payer_account', 'payer_bank', 'payee_name', 'payee_account', 'payee_bank', 'amount', 'balance', 'currency', 'summary', 'channel']
-    : ['trade_no', 'trade_time', '_time2', 'self_name', 'self_account', 'counter_name', 'counter_account', 'counter_bank', 'direction', 'income_amt', 'expense_amt', 'amount', 'balance', 'currency', 'summary', 'channel'];
-  const sample = r.preview[0] || {};
-  const receives = sample.self_account && sample.payee_account === sample.self_account && sample.payer_account !== sample.self_account;
-  const sends = sample.self_account && sample.payer_account === sample.self_account && sample.payee_account !== sample.self_account;
-  const counterparty = receives ? 'payer' : sends ? 'payee' : null;
-  const examples = { ...sample };
-  if (r.mode === 'B' && counterparty) {
-    for (const key of ['name', 'account', 'bank']) examples['counter_' + key] ??= sample[counterparty + '_' + key];
-    examples.direction ??= receives ? '收入' : '支出';
-  }
-  const row = field => {
-    const requirement = importFieldRequirement(field, r.mode, r.mapping), mapped = r.mapping[field];
-    const value = field === 'amount' ? moneyHtml(sample.amount, sample.currency)
-      : field === 'balance' && sample.balance != null ? moneyHtml(sample.balance, sample.currency)
-        : esc(examples[field] ?? '—');
-    return `<tr data-field="${field}"><td><label id="map-label-${field}" class="import-field-label${requirement.required ? ' is-required' : ''}" for="map-${field}">${esc(FIELD_LABELS[field])}${requirement.required ? '<span class="import-required" aria-hidden="true">*</span>' : ''}</label><span class="import-requirement" id="map-note-${field}">${esc(requirement.note)}</span></td>
-      <td><select id="map-${field}" data-field="${field}" aria-describedby="map-note-${field}"><option value="">不使用</option>${r.columns.map(column => `<option value="${esc(column)}"${mapped === column ? ' selected' : ''}>${esc(column)}</option>`).join('')}</select></td>
-      <td class="import-map-example">${mapped ? value : '—'}</td><td><span id="map-state-${field}" class="import-map-state" data-state="${mapped ? 'mapped' : requirement.required ? 'missing' : 'optional'}">${mapped ? '已映射' : requirement.required ? '待映射' : '未映射'}</span></td></tr>`;
-  };
-  const table = list => `<div class="import-matrix-scroll"><table class="import-matrix"><thead><tr><th>字段</th><th>文件列</th><th>示例</th><th>状态</th></tr></thead><tbody>${list.map(row).join('')}</tbody></table></div>`;
-  const advanced = fields.filter(field => !primary.includes(field));
-  $('#impMapping').innerHTML = table(primary) + `<details class="import-advanced" id="impAdvanced"${expanded ? ' open' : ''}><summary>其他字段（${advanced.length}）</summary>${table(advanced)}</details>`;
-  const accounts = r.self_accounts_in_file || [];
-  $('#impMainSelWrap').style.display = accounts.length ? 'block' : 'none';
-  $('#impMainTitle').textContent = `本方主账号 · ${accounts.length} 个`;
-  $('#impMainSel').innerHTML = accounts.map(x => `<label class="mainsel"><input type="checkbox" class="mk-acct" value="${esc(x.account)}" checked>${esc(x.name || '未知户名')} <span class="mono">${esc(x.account)}</span>（${fmtCount(x.count)} 笔）</label>`).join('');
-  // Keep every normalized preview field available; horizontal movement uses the
-  // same controller as the workspace table, without querying or changing data.
-  const columns = [['trade_time', '交易时间'], ['payer', '付款方'], ['payee', '收款方'], ['amount', '金额'], ['summary', '摘要'],
-    ['currency', '币种'], ['balance', '余额'], ['trade_no', '交易流水号'], ['payer_bank', '付款开户行'],
-    ['payee_bank', '收款开户行'], ['channel', '交易类型/渠道'], ['self_account', '本方账号'], ['self_name', '本方户名']];
-  $('#impPreviewHead').innerHTML = `<tr>${columns.map(([key, label]) => `<th${key === 'amount' || key === 'balance' ? ' class="amt"' : ''}>${label}</th>`).join('')}</tr>`;
-  $('#impTbody').innerHTML = r.preview.map(value => `<tr>${columns.map(([key]) => {
-    let content;
-    if (key === 'payer' || key === 'payee') content = `${esc(value[key + '_name'] || '—')}<br><span class="mono">${esc(value[key + '_account'] || '—')}</span>`;
-    else if (key === 'trade_time') content = esc(fmtTime(value.trade_time));
-    else if (key === 'amount') content = moneyHtml(value.amount, value.currency);
-    else if (key === 'balance') content = value.balance == null ? '—' : moneyHtml(value.balance, value.currency);
-    else content = esc(value[key] || '—');
-    return `<td${key === 'amount' || key === 'balance' ? ' class="amt"' : ''}>${content}</td>`;
-  }).join('')}</tr>`).join('');
-  const stats = r.stats;
-  $('#impStats').textContent = `可导入 ${fmtCount(stats.ok)} 行 · 跳过 ${fmtCount(stats.skipped)} 行`;
-  $('#impPreviewNote').textContent = `前 ${r.preview.length} 行 · 规范化后 · ${columns.length} 列`;
-  $('#impBad').innerHTML = (stats.bad_examples || []).map(b => `<div class="warn">${esc(b.row)} — ${esc(b.reason)}</div>`).join('');
-}
-
-function collectMapping() {
-  const mode = ($$('input[name=impMode]').find(i => i.checked) || {}).value || (state.imp && state.imp.mode);
-  const mapping = {};
-  $$('#impMapping select').forEach(s => { if (s.value) mapping[s.dataset.field] = s.value; });
-  return { mode, mapping };
-}
-
-function setPbar(pct, text) {
-  $('#impPbar').classList.remove('indeterminate');
-  $('#impPbar').style.display = 'block';
-  $('#impPfill').style.width = Math.max(0, Math.min(100, pct * 100)) + '%';
-  $('#impPtext').textContent = text;
-}
-
-function setPbarBusy(text) {
-  // 上传完成后的不确定进度（服务器解析中）
-  $('#impPbar').classList.add('indeterminate');
-  $('#impPbar').style.display = 'block';
-  $('#impPfill').style.width = '38%';
-  $('#impPtext').textContent = text;
-}
-
-function hidePbar() {
-  $('#impPbar').style.display = 'none';
-  $('#impPbar').classList.remove('indeterminate');
 }
 
 async function loadBatches() {

@@ -17,6 +17,15 @@ function harness() {
 }
 
 describe('same-origin workspace bridge', () => {
+  it.each(['abort','dispose','rebind'] as const)('cancels the parent source-copy preparation on %s and ignores a late reply', async mode => {
+    const h = harness(), controller = new AbortController(); h.bind();
+    const pending = h.bridge.request('source-copy', { sourceId: '0123456789ab', action:'open' }, controller.signal);
+    const expected = expect(pending).rejects.toMatchObject({ name:'AbortError' }), request = h.lastMessage();
+    expect(typeof request.instanceId).toBe('string');
+    if (mode === 'abort') controller.abort(); else if (mode === 'dispose') h.bridge.dispose(); else h.bind('2', 2);
+    await expected; expect(h.lastMessage()).toMatchObject({type:'source-copy-cancel',requestId:request.requestId,caseId:'1',generation:1,instanceId:request.instanceId});
+    h.receive({type:'result',requestId:request.requestId,ok:true,icon:'data:image/png;base64,AA=='}); h.bridge.dispose();
+  });
   it('defaults an older host without navigationPending to an idle presentation', () => {
     const h = harness(); h.bind();
     expect(h.bridge.context).toMatchObject({ caseId: '1', generation: 1, navigationPending: false });

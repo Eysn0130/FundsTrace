@@ -186,17 +186,8 @@ def stats(case_id: int = 1):
         result["statistics_policy"] = funds_projection.SELECTION_POLICY
         from . import source_ledger
         result["source_ledger"] = source_ledger.summary(case_id)
-        result["accounts"] = db.q_raw(funds_projection.cte("select * from effective_flows where case_id=?") + """select count(distinct a) accounts from (
-            select payer_account a from ordinary_facts union all
-            select payee_account from ordinary_facts union all
-            select f.payer_account from effective_visible_flows f join source_ledger_index l
-              on l.case_id=f.case_id and l.flow_id=f.id where f.case_id=? union all
-            select f.payee_account from effective_visible_flows f join source_ledger_index l
-              on l.case_id=f.case_id and l.flow_id=f.id where f.case_id=? union all
-            select f.self_account from effective_visible_flows f join source_ledger_index l
-              on l.case_id=f.case_id and l.flow_id=f.id where f.case_id=? union all
-            select f.source_counter_id from effective_visible_flows f where f.case_id=?
-            ) where coalesce(a,'')<>''""", [case_id, case_id, case_id, case_id, case_id])[0]["accounts"]
+        from .services.cases import account_count
+        result["accounts"] = account_count(case_id)
         return result
 
 
@@ -512,14 +503,15 @@ def flows(account: str = "", name: str = "", counter: str = "", kw: str = "",
         if granularity not in {"events", "observations"}:
             raise HTTPException(422, "无效的明细粒度")
         source = f"select * from effective_visible_flows as flows {where}"
-        prefix = funds_projection.cte(source, include_ids=True)
-        relation = "selected_observations" if granularity == "observations" else "ordinary_facts"
-        count_source = f"select case_id,id,amount,currency,balance from ({source}) as visible_source"
-        count_prefix = funds_projection.cte(count_source)
-        total = db.q(count_prefix + f"select count(*) c from {relation}", params)[0]["c"]
         off = (page - 1) * size
-        rows = db.q(prefix + f"select * from {relation} order by {transaction_time.sql_order()} limit ? offset ?",
-                    params + [size, off])
+        rows, page_funds = funds_projection.page_with_summary(
+            source, params, size, off, observations=granularity == "observations", unique_source=True)
+        total = page_funds["observation_count"] if granularity == "observations" else page_funds["count"]["upper"]
+        # Match db.q's legacy wire conversion after the bounded raw lookup.
+        for row in rows:
+            if "trade_time" in row and row.get("trade_time_original"):
+                row.update(transaction_time.public(row))
+        rows = db.clean(rows)
         from . import source_ledger
         funds = funds_projection.summary(source_ledger.financial_source(source), params)
         resolution = evidence_resolution.summary(case_id)
@@ -1208,10 +1200,10 @@ def _context(flow_id, x, side, case_id):
     result["principal"] = principal_evidence.context_result(case_id, acct, f, financial_rows, own_entry=own)
     if side == "payer":
         from . import ledger_navigation
-        candidates = ledger_navigation.neighbors(case_id, acct, f, "source", x)
+        candidates = ledger_navigation.neighbors(case_id, acct, f, "source", x, own_entry=own)
         visible = {str(row["id"]) for row in rows}
         result["principal"] = principal_evidence.tracking_result(case_id, acct, f,
-            [row for row in candidates["rows"] if str(row["id"]) in visible], "source")
+            [row for row in candidates["rows"] if str(row["id"]) in visible], "source", own_entry=own)
     return result
 
 

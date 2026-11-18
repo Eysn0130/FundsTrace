@@ -4,9 +4,10 @@ import zipfile
 
 import pytest
 
-from app import table_import
+from app import import_preview_cache, table_import
+from test_automatic_table_import import preview as preview_table
 from test_feedback31_reference import payload
-from test_folder_evidence import accepted, account, table
+from test_folder_evidence import accepted, account, complete, table
 
 
 COLUMNS = tuple("姓名(查询条件) 证件号码(查询条件) 查询账号 查询卡号 交易类型 借贷标志 币种 交易金额 交易余额 交易时间 交易流水号 交易对方名称 交易对方账号 交易对方卡号 交易对方证件号码 交易对手余额 交易对方账号开户行 交易摘要 交易网点名称 交易网点代码 日志号 传票号 凭证种类 凭证号 终端号 交易是否成功 交易发生地 商户名称 商户号 IP地址 MAC地址 交易柜员号 备注 本方账号 本方卡号".split()) + ("Unnamed: 35", "Unnamed: 36")
@@ -20,6 +21,37 @@ def row(**changes):
             "借贷标志": "出", "币种": "CNY", "交易流水号": "SYN-PRIMARY", "凭证号": "SYN-VOUCHER",
             "交易是否成功": "1", "交易对方账号": "SYN-B", "交易对方卡号": "SYN-CB",
             "交易对方名称": "Synthetic counterparty", "交易对方账号开户行": "Synthetic other bank", **changes}
+
+
+@pytest.mark.parametrize("suffix,headers,predecessor,successor", [
+    ("csv", COLUMNS, table_import.VOUCHER_REFERENCE_PROFILE, table_import.BANK_SOURCE_PROFILE),
+    ("xlsx", SECOND_ORDER, table_import.VOUCHER_REFERENCE_PROFILE, table_import.BANK_SOURCE_PROFILE),
+    ("xls", COLUMNS, table_import.VOUCHER_REFERENCE_XLS_PROFILE, table_import.BANK_SOURCE_XLS_PROFILE),
+])
+def test_standalone_exact37_uses_source_reference_roles_without_changing_pinned_replay(client, make_case, suffix, headers, predecessor, successor):
+    rows = [row(), row(**{"交易流水号": "SYN-PADDING", "Unnamed: 35": "0"}),
+            row(**{"交易流水号": "SYN-QUERY", "本方账号": "", "本方卡号": ""})]
+    if suffix == "xls":
+        from xls_fixtures import workbook
+        raw = workbook([("Synthetic reference roles", [headers, *[[r.get(name, "") for name in headers] for r in rows]])])
+    else:
+        raw = payload(rows, headers, suffix)
+    legacy = table_import.parse(raw, suffix="." + suffix, profile=predecessor)
+    assert not legacy["rows"] and legacy["records"][0]["reason_code"] == "conflicting_field"
+    cid = make_case("Synthetic standalone uniform reference roles")
+    view = preview_table(client, cid, raw, "synthetic." + suffix)
+    assert view["automatic"] and view["stats"]["ok"] == 1
+    assert view["table_summary"]["profile"] == successor
+    import_preview_cache.discard(view["import_id"])
+    job = complete(client, cid, view)
+    assert job["stage"] == "done"
+    sid = job["result"]["source_id"]
+    base = f"/api/v1/cases/{cid}"
+    flow, = client.get(base + "/flows").json()["items"]
+    assert (flow["trade_no"], flow["raw_self_account"], flow["amount"]) == ("SYN-PRIMARY", "SYN-A", "12.34")
+    journal = client.get(base + f"/sources/{sid}/report").json()["items"]
+    assert [r["reason_code"] for r in journal] == ["transaction_valid", "conflicting_field", "missing_identity"]
+    assert client.get(base + f"/sources/{sid}/file").content == raw
 
 
 @pytest.mark.parametrize("headers", [COLUMNS, SECOND_ORDER])

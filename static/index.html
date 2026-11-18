@@ -13,6 +13,7 @@
 <link rel="stylesheet" href="/static/entity-picker.css">
 <link rel="stylesheet" href="/static/entity-search.css">
 <link rel="stylesheet" href="/static/feedback.css">
+<link rel="stylesheet" href="/static/import-workspace.css">
 <script type="module" src="/static/feedback-ui.mjs"></script>
 <script src="/static/appearance.js"></script>
 <script defer src="/static/desktop-updates.js"></script>
@@ -648,58 +649,6 @@
   </div>
 </div>
 
-<!-- Import task: shared field matrix, case-bound progress and persistent receipt. -->
-<div class="modal import-modal" id="importModal" style="display:none" aria-busy="false">
-  <section class="modal-box import-dialog">
-    <header class="import-dialog-head">
-      <div class="import-heading"><h2 id="importModalTitle">导入流水</h2><span id="impCaseTag" class="import-case"></span></div>
-      <button class="btn icon-button" id="impClose" type="button" aria-label="关闭导入流水"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button>
-    </header>
-    <ol class="import-steps" id="impFlow" aria-label="导入进度">
-      <li id="impFlowFile" data-state="current" aria-current="step"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span>文件</span></li>
-      <li id="impFlowFields" data-state="pending"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span id="impFlowFieldsLabel">字段</span></li>
-      <li id="impFlowConfirm" data-state="pending"><span class="import-step-marker" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><span id="impFlowConfirmLabel">确认</span></li>
-    </ol>
-    <p id="impCurrentFile" class="muted" hidden></p>
-    <div class="import-dialog-content" id="impContent">
-      <section class="import-queue" id="impQueue" hidden aria-labelledby="impQueueTitle">
-        <header><h3 id="impQueueTitle">多文件导入队列</h3><button class="btn small" id="impQueueStop" type="button">停止后续文件</button></header>
-        <p id="impQueueSummary" role="status" aria-live="polite"></p><p class="muted" id="impQueueReason"></p>
-        <ol id="impQueueList" aria-label="各文件处理状态"></ol>
-        <p class="muted">队列仅保留在当前页面。关闭或切换案件会停止后续文件；未上传的文件需重新选择，已上传任务可从本案导入记录恢复。</p>
-      </section>
-      <div id="impStep1" class="import-file-stage">
-        <img class="import-file-icon ui-icon" src="/static/ui-icons/upload.svg" alt="">
-        <h3>选择文件或整个文件夹</h3><p class="muted">流水、账户和子账户资料一起导入 · CSV、TXT、TSV、Excel、ZIP 或 RAR · 导入到<span id="impCaseName">当前案件</span></p>
-        <label class="btn primary import-file-picker" for="impFile">选择独立文件（可多选）<input type="file" id="impFile" multiple accept=".csv,.txt,.tsv,.xlsx,.xls,.zip,.rar" aria-label="选择流水文件"></label>
-        <label class="btn import-file-picker" for="impDirectory">选择整个文件夹<input type="file" id="impDirectory" webkitdirectory multiple aria-label="选择整个文件夹"></label>
-        <p class="muted">多选文件按顺序独立处理；需要资料相互关联时，请选择整个文件夹，保留目录关系。</p>
-      </div>
-      <div class="pbar" id="impPbar" style="display:none"><div class="pfill" id="impPfill"></div><span class="ptext" id="impPtext">准备导入</span></div>
-      <div id="impStep2" style="display:none">
-        <div class="import-file-toolbar"><div class="imp-meta" id="impMeta"></div><button class="btn import-change-file" id="impChangeFile" type="button">更换文件</button><fieldset class="imp-mode" id="impMode" aria-label="流水模式"><label><input type="radio" name="impMode" value="A">双边流水</label><label><input type="radio" name="impMode" value="B">单账户流水</label></fieldset></div>
-        <section class="import-mapping-section" id="impMappingSection" aria-labelledby="impMappingTitle"><h3 id="impMappingTitle">字段映射</h3><div id="impMapping"></div></section>
-        <section id="impFeedback" hidden aria-label="银行反馈包识别与处置汇总"></section>
-        <div class="import-account-options">
-          <div class="imp-selfline" id="impSelfLine"><label for="impSelfAccts">补充本方账号</label><input id="impSelfAccts" placeholder="可选，逗号分隔"></div>
-          <div id="impMainSelWrap" style="display:none"><div class="imp-cols-title" id="impMainTitle">本文件的本方账号</div><div id="impMainSel" class="mainsel-grid"></div></div>
-        </div>
-        <section class="import-preview-section" aria-labelledby="impPreviewTitle">
-          <div class="import-section-head"><h3 id="impPreviewTitle">数据预览</h3><span id="impPreviewNote" class="muted">前 8 行 · 规范化后</span></div>
-          <div class="tbl-wrap flow-table-scroll import-preview-scroll" id="impPreviewScroll" tabindex="0" role="region" aria-label="导入数据预览，可水平滚动"><table class="tbl import-preview-table" id="impPreviewTable"><thead id="impPreviewHead"></thead><tbody id="impTbody"></tbody></table></div>
-          <div class="flow-horizontal-scroll import-horizontal-scroll" role="group" aria-label="导入预览表格水平滚动">
-            <button class="btn small" id="impScrollLeft" type="button" aria-label="导入预览向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button>
-            <input id="impHorizontalPosition" type="range" min="0" max="0" value="0" step="1" disabled aria-label="导入预览水平位置" aria-controls="impPreviewScroll">
-            <button class="btn small" id="impScrollRight" type="button" aria-label="导入预览向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button>
-          </div><div id="impBad"></div>
-        </section>
-      </div>
-      <section class="import-result" id="impResult" hidden aria-labelledby="impResultTitle"><span class="import-result-mark" aria-hidden="true"><img src="/static/ui-icons/check.svg" alt=""></span><h3 id="impResultTitle">导入完成</h3><p id="impResultText"></p><div id="impResultFeedback" hidden></div><div id="impResultDownloads" hidden><button class="btn" id="impDownloadReport" type="button">下载完整处理报告（JSON）</button><button class="btn" id="impDownloadOriginal" type="button">下载原始 ZIP</button><p id="impDownloadStatus" role="status" aria-live="polite"></p></div></section>
-    </div>
-    <footer class="import-dialog-footer"><div class="import-footer-status"><span id="impStats"></span><span id="impFlowStatus" role="status" aria-live="polite"></span></div><div class="import-footer-actions"><button class="btn" id="impRe" type="button"><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt="">重新识别</button><button class="btn" id="impCancel" type="button">取消</button><button class="btn primary" id="impCommit" type="button">确认导入</button></div></footer>
-  </section>
-</div>
-
 <dialog id="investigationDialog" class="action-dialog investigation-dialog" aria-labelledby="investigationTitle">
   <header class="action-dialog-head"><h2 id="investigationTitle">画布研判</h2><button type="button" class="btn small" id="investigationClose" aria-label="关闭研判窗口">关闭</button></header>
   <p id="investigationContext" class="muted"></p>
@@ -757,7 +706,7 @@
 <script src="/static/feedback-workspace.js"></script>
 <script src="/static/app-navigation.js"></script>
 <script src="/static/ui-dialogs.js?v=export-workspace-1"></script>
-<script src="/static/import-queue.js"></script>
+<script src="/static/unified-import.js"></script>
 <script src="/static/workflow-ui.js?v=multi-import-1"></script>
 <script src="/static/import-workflow.js"></script>
 <script src="/static/canvas-investigation.js?v=canvas-open-fit-2"></script>

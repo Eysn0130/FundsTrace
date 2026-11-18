@@ -9,6 +9,16 @@ export function formatMoney(value: string | null | undefined): string {
   return `${sign}${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${fraction}`;
 }
 
+export function reportMoneyUnit(currency: string | null): string {
+  return currency === 'CNY' ? '元' : currency || '币种未明确';
+}
+
+export function formatReportMoney(value: string | null, currency: string | null): string {
+  const amount = formatMoney(value);
+  if (!value || !currency) return amount;
+  return currency === 'CNY' ? `${amount}元` : `${amount} ${currency}`;
+}
+
 export function displayTime(value: string | null): string {
   return value?.replace('T', ' ') || '—';
 }
@@ -16,5 +26,5 @@ export function displayTime(value: string | null): string {
 /** Operational timestamps carry UTC explicitly; do not reinterpret legacy times. */
 export function displayOperationalTime(value: string | null): string {
   const time = value?.replace('T', ' ').slice(0, 19) || '—';
-  return value?.endsWith('Z') ? `${time} UTC` : time;
+  return value?.endsWith('Z') || value?.endsWith('+00:00') ? `${time} UTC` : time;
 }

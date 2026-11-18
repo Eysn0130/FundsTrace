@@ -78,4 +78,4 @@ def test_declaration_profiles_preserve_historical_replay_and_supported_clock():
     historical_zip = table_archive.parse(io.BytesIO(zipped(conflicting)), profile=table_archive.HEADER_PROFILE)
     assert historical_zip["rows"][0]["amount"] == Decimal("1234")
     current_zip = table_archive.parse(io.BytesIO(zipped(conflicting)))
-    assert current_zip["profile"] == table_archive.SOURCE_OBSERVATION_PROFILE and current_zip["rows"] == []
+    assert current_zip["profile"] == table_archive.BANK_SOURCE_PROFILE and current_zip["rows"] == []

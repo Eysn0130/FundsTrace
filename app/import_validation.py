@@ -74,8 +74,8 @@ def _facts(row):
             _hash([_text(row.get("self_account")), _text(row.get("self_name"))]))
 
 
-def _standalone_csv_key(record, members, position):
-    """Bind an archive record to the identity of the same standalone CSV."""
+def _check_archive_csv_identity(record, members, position, standalone_csv_keys):
+    """Verify the physical archive occurrence and optionally collect a bridge key."""
     member = members[record["member_path"]]
     source_row, digest = record["source_row"], member["sha256"]
     if (record["record_no"] != position or record["disposition"] != "accepted"
@@ -85,19 +85,20 @@ def _standalone_csv_key(record, members, position):
             or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
             or record["record_key"] != table_import.record_key(record["member_path"], digest, source_row)):
         raise IntegrityError("invalid archive CSV identity")
-    return table_import.record_key("table.csv", digest, source_row)
+    if standalone_csv_keys is not None:
+        standalone_csv_keys[position] = table_import.record_key("table.csv", digest, source_row)
 
 
-def table_manifest(plan, rows, *, standalone_csv_keys=None):
+def table_manifest(plan, rows, *, verify_archive_csv=False, standalone_csv_keys=None):
     """Freeze expected facts and optional CSV identities before the writer.
 
     CSV keys are transient compatibility identities; the journal retains each
     archive member's full path and original record key.
     """
-    if plan.get("_plan_store") is not None:
-        return _staged_manifest(plan, rows, standalone_csv_keys=standalone_csv_keys)
     members = ({member["member_path"]: member for member in plan["members"]}
-               if standalone_csv_keys is not None else None)
+               if verify_archive_csv or standalone_csv_keys is not None else None)
+    if plan.get("_plan_store") is not None:
+        return _staged_manifest(plan, rows, members, standalone_csv_keys)
     accepted = {}
     for number, record in enumerate(plan["records"], 1):
         if record["record_no"] != number:
@@ -112,8 +113,8 @@ def table_manifest(plan, rows, *, standalone_csv_keys=None):
                 or record["details"].get("flow_sha256") != table_import.flow_digest(row)):
             raise IntegrityError("accepted source facts disagree")
         manifest[position] = _facts(row)
-        if standalone_csv_keys is not None:
-            standalone_csv_keys[position] = _standalone_csv_key(record, members, position)
+        if members is not None:
+            _check_archive_csv_identity(record, members, position, standalone_csv_keys)
     if manifest.keys() != accepted.keys():
         raise IntegrityError("accepted source facts missing")
     if plan["profile"] in table_archive.CANCELLATION_PROFILES:
@@ -127,61 +128,68 @@ def table_manifest(plan, rows, *, standalone_csv_keys=None):
     return manifest
 
 
-def _staged_manifest(plan, rows, *, standalone_csv_keys=None):
+def _staged_manifest(plan, rows, members, standalone_csv_keys):
     from .import_staging import StagedSequence, record_map
     from itertools import groupby
+    records = plan["records"]
+    joined = isinstance(rows, StagedSequence) and isinstance(records, StagedSequence)
+    manifest = plan["_plan_store"].mapping()
+
+    def keep(row, record):
+        position = row["_source_row"]
+        if (record is None or record["disposition"] != "accepted" or (not joined and position in manifest)
+                or row["_record_key"] != record["record_key"]
+                or record["details"].get("flow_sha256") != table_import.flow_digest(row)):
+            raise IntegrityError("accepted source facts disagree")
+        manifest[position] = _facts(row)
+        if members is not None:
+            _check_archive_csv_identity(record, members, position, standalone_csv_keys)
+
     accepted = 0
 
     def checked_records():
         nonlocal accepted
-        for number, record in enumerate(plan["records"], 1):
+        pairs = records.journal_with_rows(rows) if joined else ((record, None) for record in records)
+        for number, (record, row) in enumerate(pairs, 1):
             if record["record_no"] != number:
                 raise IntegrityError("non-consecutive source records")
-            accepted += record["disposition"] == "accepted"
+            is_accepted = record["disposition"] == "accepted"
+            accepted += is_accepted
+            if joined:
+                if is_accepted != (row is not None):
+                    raise IntegrityError("accepted source facts disagree")
+                if row is not None:
+                    keep(row, record)
             yield record
 
-    if plan["profile"] in table_archive.CANCELLATION_PROFILES:
-        # Archive merge emits each unique member contiguously. The cancellation
-        # contract is member-local; retain only one member's proof indexes and
-        # check sequence/counts on that same complete journal scan.
-        seen_members = set()
-        try:
+    try:
+        if plan["profile"] in table_archive.CANCELLATION_PROFILES:
+            # Cancellation evidence is member-local. Consume the entire
+            # journal, including rows that do not publish financial facts.
+            seen_members = set()
             for member, values in groupby(checked_records(), key=lambda item: item["member_path"]):
                 if member in seen_members:
-                    raise ValueError("non-contiguous staged member")
+                    raise IntegrityError("invalid cancellation evidence")
                 seen_members.add(member)
-                table_cancellations.validate_evidence(values)
-        except IntegrityError:
-            raise
-        except (ValueError, KeyError, TypeError) as error:
-            raise IntegrityError("invalid cancellation evidence") from error
-    else:
-        for _ in checked_records():
-            pass
-    manifest = plan["_plan_store"].mapping()
-    members = ({member["member_path"]: member for member in plan["members"]}
-               if standalone_csv_keys is not None else None)
-    if isinstance(rows, StagedSequence) and isinstance(plan["records"], StagedSequence):
-        pairs = rows.with_records(plan["records"])
-    else:
-        records = record_map(plan)
-        pairs = ((row, records.get(row["_source_row"])) for row in rows)
-    try:
-        for row, record in pairs:
-            position = row["_source_row"]
-            if (record is None or record["disposition"] != "accepted" or position in manifest
-                    or row["_record_key"] != record["record_key"]
-                    or record["details"].get("flow_sha256") != table_import.flow_digest(row)):
-                raise IntegrityError("accepted source facts disagree")
-            manifest[position] = _facts(row)
-            if standalone_csv_keys is not None:
-                standalone_csv_keys[position] = _standalone_csv_key(record, members, position)
+                try:
+                    table_cancellations.validate_evidence(values)
+                except IntegrityError:
+                    raise
+                except (ValueError, KeyError, TypeError) as error:
+                    raise IntegrityError("invalid cancellation evidence") from error
+        else:
+            for _ in checked_records():
+                pass
+        if not joined:
+            indexed = record_map(plan)
+            for row in rows:
+                keep(row, indexed.get(row["_source_row"]))
     except IntegrityError:
         raise
     except (KeyError, ValueError) as error:
         # The joined reader rejects broken source positions before yielding.
         raise IntegrityError("accepted source facts disagree") from error
-    if len(manifest) != accepted:
+    if len(manifest) != accepted or joined and accepted != len(rows):
         raise IntegrityError("accepted source facts missing")
     return manifest
 

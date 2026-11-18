@@ -42,6 +42,7 @@ describe('timestamp presentation', () => {
   it('labels UTC operational timestamps without applying the browser timezone', () => {
     expect(displayOperationalTime('2026-10-15T04:30:00Z')).toBe('2026-10-15 04:30:00 UTC');
     expect(displayOperationalTime('2026-10-15T04:30:00.123456Z')).toBe('2026-10-15 04:30:00 UTC');
+    expect(displayOperationalTime('2026-11-14T09:10:00.123456+00:00')).toBe('2026-11-14 09:10:00 UTC');
   });
 
   it('does not assign a timezone to legacy naive times or change transaction presentation', () => {

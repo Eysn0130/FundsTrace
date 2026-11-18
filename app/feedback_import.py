@@ -247,6 +247,15 @@ def _decode(payload, *, profile=PROFILE):
 def _validate_csv_quotes(text, delimiter=","):
     # csv.reader(strict=True) still permits a quote *inside* an unquoted
     # field.  Reject that RFC violation as well, before any record is admitted.
+    if '"' not in text:
+        # A newline in every complete half-limit window bounds every
+        # unquoted field, including the first and the trailing partial window.
+        # Search the string in C without copying or splitting source records.
+        window = max(1, MAX_FIELD_BYTES // 2)
+        if all(text.find("\n", start, start + window) >= 0
+               for start in range(0, len(text) - window + 1, window)):
+            return
+    separators = delimiter + "\r\n"
     state, field_chars = "start", 0
     for char in text:
         if state == "quoted":
@@ -258,11 +267,11 @@ def _validate_csv_quotes(text, delimiter=","):
             if char == '"':
                 state = "quoted"
                 field_chars += 1
-            elif char in delimiter + "\r\n":
+            elif char in separators:
                 state, field_chars = "start", 0
             else:
                 raise FeedbackImportError("invalid_csv")
-        elif char in delimiter + "\r\n":
+        elif char in separators:
             state, field_chars = "start", 0
         elif char == '"':
             if state != "start":

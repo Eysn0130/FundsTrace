@@ -16,11 +16,15 @@
 
 `FundsPanelHostV1` 持有版本和可为空的 session。session 包含 `{context: {caseId, name}, scopeKey, generation, signal, client, actions?}`；`client.binding` 的 `caseId/scopeKey/generation` 必须与其一致。每次重新绑定或权限撤销后的新授权，要更换 `scopeKey` 或增加 `generation`，不能用相同三元组复活旧闭包。
 
-案件 client 只暴露统计、流水分页、上传预览、重新预览、提交、任务查询、导入会话列表、流水来源和清理这几个用例。可选动作是 `openGraph`、`openLegacyImport`、`downloadSource({sourceId, filename})`；缺少动作时明确提示或禁用，不在面板内部拼接备用 URL。它不包含任意 SQL、文件路径、命令、Provider 或通用 IPC 入口。[完整类型](../frontend/src/panel/host.ts)
+案件 client 只暴露统计、流水分页、上传预览、重新预览、提交、任务查询、导入会话列表、流水来源和清理这几个用例。可选动作是 `openGraph`、`openLegacyImport`、`downloadSource({sourceId, filename})`、`downloadImportReport`、`downloadFundsReport` 和 `sourceCopy(sourceId, 'open' | 'reveal')`。缺少动作时禁用或省略对应命令，不在面板内部拼接备用 URL。它不包含任意 SQL、文件路径、命令、Provider 或通用 IPC 入口。[完整类型](../frontend/src/panel/host.ts)
+
+可选读取 `importReview(sourceId, memberPath, {view,page,issueIndex}, signal)` 提供已完成来源的同表筛选与问题定位；HTTP adapter与其它读取共用案件/会话撤销，面板再次核对响应案件、来源、成员和查看范围，换文件/案件立即撤下旧值。宿主缺少该能力时保留已有预览，不在面板拼接替代HTTP路径。原始单元格是独立应用内数据，不可据此授予Provider或受保护宿主显示权限。
 
 当前 `preview(file: File)` 是浏览器试点输入，不是可直接跨 Electron IPC 的文件合同。未来由宿主文件选择器获得批准的来源 handle，再通过专门 adapter 接入；不要把 renderer 传来的绝对路径当授权。现有 DTO 仍包含独立版原值，不能直接进入 Analytix 的共享 store、聊天、日志或 Provider。safe view model 与 Core protected display slot 尚未实现；不能因为 client 已按案件绑定，就宣称符合宿主隐私边界。[Analytix 边界研究](analytix-integration.md)
 
 `AbortSignal` 同样是 renderer 内协作接口，不应原样跨 preload／IPC。未来 adapter 需将文件和取消转换为宿主批准的来源 handle、操作 ID 与受限取消方法，main 对窗口、案件和代次重新核验。当前 UI 类型不替代这份序列化和权限合同。
+
+当前桌面 `sourceCopy` 只接收已登记的案件/来源 ID：Main 从自身精确 origin 读取验真原件，准备只读副本并返回不透明 ticket；会话再次确认仍有效后才派发系统打开/显示位置。嵌入入口的 `desktopSources` 仅表达能力，父层仍检查案件代次和文档 instance；关闭/撤销发 `source-copy-cancel`，迟到准备只能释放。Main 另验自身业务主 frame，preload 不传路径或 token。未具备物理成员提取能力的压缩包仅提供“另存所属压缩包”，不把父 ZIP 当成当前 Excel；操作详情见[桌面交付](desktop-delivery.md#导入原件的本机副本)。
 
 ## 生命周期与独立版兼容
 
@@ -52,7 +56,7 @@ HTTP adapter 捕获案件和绑定，组合每次请求的 `AbortSignal` 与 ses
 | 账户工作台 | [app.js](../static/app.js)、[main.py](../app/main.py)：主／同名账号、原始与图去重统计、TOP 对手、身份、照片上传裁剪、重点节点 | React 尚无账户抽屉和标注工作台；不能用流水详情替代这些能力。 |
 | 身份表与流水上下文 | [app.js](../static/app.js)、[main.py](../app/main.py)：身份模板／导入、账户账本、交易前后记录、疑似来源去向及选中上图 | 保留界面拥有这些入口，React 尚未迁移。 |
 | 分析与报告 | [analysis.js](../static/analysis.js)、[report.py](../app/report.py)：环路、快进快出、离群、路径结果及 HTML 报告 | 尚未迁入共享面板。原分析页若有控件但未进入实际请求，不能按控件存在宣称参数已生效；算法契约另作核对。 |
-| 导出 | [app.js](../static/app.js)、[main.py](../app/main.py)：追踪 XLSX／待调取账号、PNG／PDF／可拖 HTML 图谱和案件包 | React 目前只有来源下载动作；报告、图谱和业务导出仍需独立的宿主权限／保存合同。 |
+| 导出 | [app.js](../static/app.js)、[main.py](../app/main.py)：追踪 XLSX／待调取账号、PNG／PDF／可拖 HTML 图谱和案件包 | React 已接入来源下载和当前导入成员资金简报。图谱及其他业务导出仍由各自的宿主权限和保存合同约束。 |
 
 保留界面的 `prompt/confirm/alert`、`window.open` 下载及同源 `/api`／`/static` 假设不是桌面适配完成。尤其业务导出必须等真实生成／保存结果后再提示成功；保留界面的存在不能代替失败响应及取消验收。错案与迟到结果修复应覆盖账户抽屉、图谱、分析及报告各自的异步边界，不能只检查 React 表格。
 

@@ -37,6 +37,8 @@ archive-v4与普通文本CSV共享已验证冲正证明时，仅按同案件、�
 
 XLSX 金额、流水 ID 以文本单元格保存。Excel 只保留 15 位有效数字，不应为方便求和把大金额改回普通数值单元格。[Microsoft 说明](https://support.microsoft.com/en-us/excel/keeping-leading-zeros-and-large-numbers)。HTML 报告保留两位分位和币种，并内嵌安全转义的 `script#funds-trace-report-data` JSON（`funds-report.v1`），支持机器回读。图谱 HTML 快照保留精确源数据与标签。PNG/PDF 属视觉输出，不能作为机器回读账本。
 
+导入成员的当前视图HTML简报采用独立的 `script#funds-report-data`／`import-member-funds-report.v1`，保留精确字符串、币种空组、成员范围、两表页码和修订，不冒充上述全案报告格式或全部来源明细。数据与安全转义约束相同，具体字段和核验边界见[文件资金报告](import-lifecycle.md#文件资金报告)。
+
 回归涵盖相邻大金额分位、0.01/0.10/0.20、负余额、非法阈值、容差边界、币种/案件隔离、并发删改、缺失时间及 XLSX/案件包/图谱 HTML/报告 JSON 回读。入口为 `.venv/bin/python scripts/test.py`；React 构建、测试与版本化契约检查仍按根 AGENTS.md 执行。
 
 ## 有效流水与条件事件统计

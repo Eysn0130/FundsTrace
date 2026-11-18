@@ -176,7 +176,7 @@ function harness() {
   vm.runInContext(section('function esc(', 'function toast('), context);
   vm.runInContext(section('let pendingCanvasId = 0;', 'async function loadCases()'), context);
   vm.runInContext(section('function caseContext()', '/* ---------------- 初始化'), context);
-  vm.runInContext(section('const SYSTEM_ACCOUNT_NAMES =', '/* ---------------- 导入 ---------------- */'), context);
+  vm.runInContext(section('const SYSTEM_ACCOUNT_NAMES =', 'async function loadBatches()'), context);
   vm.runInContext('bindContextUI()', context);
   vm.runInContext(workflow, context);
   window.fire('DOMContentLoaded');

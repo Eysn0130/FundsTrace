@@ -4,19 +4,20 @@ export const WORKSPACE_CHANNEL = 'fundstrace:workspace' as const;
 export const WORKSPACE_VERSION = 1 as const;
 
 export type PendingImport = Readonly<{ importId: string; phase: 'pending' | 'unknown' }>;
-export type WorkspaceContext = Readonly<{ caseId: string; name: string; generation: number; retainedCaseIds: string[]; surface?: 'cases' | 'accounts'; active?: boolean; navigationPending?: boolean; unresolvedOperations?: UnresolvedAccountOperation[]; pendingImports?: PendingImport[] }>;
+export type WorkspaceContext = Readonly<{ caseId: string; name: string; generation: number; retainedCaseIds: string[]; surface?: 'cases' | 'accounts'; active?: boolean; desktopSources?: boolean; navigationPending?: boolean; unresolvedOperations?: UnresolvedAccountOperation[]; pendingImports?: PendingImport[] }>;
 type Requests = {
   'select-case': { caseId: string };
   'open-graph': Record<string, never>;
   'import-acquire': { importId: string };
   'import-release': { importId: string; jobId?: string; rejected?: boolean };
   'data-changed': Record<string, never>;
+  'source-copy': { sourceId: string; action: 'open' | 'reveal' };
   'case-action': { action: 'import' | 'export' | 'delete' };
   'account-action': { action: 'main-accounts' | 'import-identity' | 'download-template' } | { action: 'view-flows'; account: string } | { action: 'mutate'; mutation: AccountMutation } | { action: 'reconcile'; operationId: string };
 };
 export interface WorkspaceBridge {
   readonly context: WorkspaceContext | null;
-  request<A extends keyof Requests>(action: A, payload: Requests[A], signal?: AbortSignal): Promise<void>;
+  request<A extends keyof Requests>(action: A, payload: Requests[A], signal?: AbortSignal): Promise<A extends 'source-copy' ? { icon?: string } : void>;
   publishFeedback(event: FundsFeedbackEvent, binding?: Pick<WorkspaceContext, 'caseId' | 'generation'>): boolean;
   dispose(): void;
 }
@@ -29,6 +30,7 @@ function validContext(value: Record<string, unknown>): value is Record<string, u
     && Array.isArray(value.retainedCaseIds) && value.retainedCaseIds.every(identifier)
     && (value.surface === undefined || value.surface === 'cases' || value.surface === 'accounts')
     && (value.active === undefined || typeof value.active === 'boolean')
+    && (value.desktopSources === undefined || typeof value.desktopSources === 'boolean')
     && (!Object.prototype.hasOwnProperty.call(value, 'navigationPending') || typeof value.navigationPending === 'boolean')
     && (value.pendingImports === undefined || Array.isArray(value.pendingImports) && value.pendingImports.every(item => record(item) && identifier(item.importId) && ['pending', 'unknown'].includes(String(item.phase))))
     && (value.unresolvedOperations === undefined || Array.isArray(value.unresolvedOperations) && value.unresolvedOperations.every(item => record(item) && identifier(item.operationId) && identifier(item.account) && ['identity-set','photo-set','photo-clear','photo-crop','main-set'].includes(String(item.kind))));
@@ -51,7 +53,7 @@ export function createWorkspaceBridge({ onContext, onCasesChanged, onAccountsCha
   let sequence = 0;
   let disposed = false;
   let modalOpen = !!target.document?.querySelector('dialog[open]');
-  const pending = new Map<string, { context: WorkspaceContext; selectedCase?: string; resolve: () => void; reject: (error: Error) => void; cleanup: () => void }>();
+  const pending = new Map<string, { context: WorkspaceContext; selectedCase?: string; sourceCopy: boolean; resolve: (result?: { icon?: string }) => void; reject: (error: Error) => void; cleanup: () => void }>();
   const send = (message: Record<string, unknown>) => parent.postMessage({ channel: WORKSPACE_CHANNEL, version: WORKSPACE_VERSION, ...message }, origin);
   const sendModal = () => {
     if (!disposed && context) send({ type: 'feedback-modal', caseId: context.caseId, generation: context.generation, instanceId, open: modalOpen });
@@ -61,11 +63,11 @@ export function createWorkspaceBridge({ onContext, onCasesChanged, onAccountsCha
     if (disposed || !record(detail) || typeof detail.open !== 'boolean') return;
     modalOpen = detail.open; sendModal();
   };
-  const settle = (id: string, error?: Error) => {
+  const settle = (id: string, error?: Error, result?: { icon?: string }) => {
     const item = pending.get(id);
     if (!item) return;
     pending.delete(id); item.cleanup();
-    if (error) item.reject(error); else item.resolve();
+    if (error) { if (item.sourceCopy) send({ type:'source-copy-cancel', requestId:id, caseId:item.context.caseId, generation:item.context.generation, instanceId }); item.reject(error); } else item.resolve(result);
   };
   const receive = (event: MessageEvent) => {
     if (disposed || event.source !== parent || event.origin !== origin || !record(event.data)) return;
@@ -76,7 +78,7 @@ export function createWorkspaceBridge({ onContext, onCasesChanged, onAccountsCha
       if (modalOpen) sendModal();
     } else if (data.type === 'context' && validContext(data)) {
       if (context && (data.generation < context.generation || (data.generation === context.generation && (data.caseId !== context.caseId || data.name !== context.name)))) return;
-      const next = { caseId: data.caseId, name: data.name, generation: data.generation, retainedCaseIds: [...data.retainedCaseIds], surface: data.surface, active: data.active, navigationPending: Object.prototype.hasOwnProperty.call(data, 'navigationPending') && data.navigationPending === true, unresolvedOperations: data.unresolvedOperations?.map(item => ({...item})), pendingImports: data.pendingImports?.map(item => ({...item})) };
+      const next = { caseId: data.caseId, name: data.name, generation: data.generation, retainedCaseIds: [...data.retainedCaseIds], surface: data.surface, active: data.active, desktopSources: data.desktopSources === true, navigationPending: Object.prototype.hasOwnProperty.call(data, 'navigationPending') && data.navigationPending === true, unresolvedOperations: data.unresolvedOperations?.map(item => ({...item})), pendingImports: data.pendingImports?.map(item => ({...item})) };
       const changed = !context || next.generation !== context.generation || next.caseId !== context.caseId || next.name !== context.name;
       context = next;
       if (changed) {
@@ -88,7 +90,7 @@ export function createWorkspaceBridge({ onContext, onCasesChanged, onAccountsCha
       const item = pending.get(data.requestId);
       if (!item || item.context.caseId !== context?.caseId || item.context.generation !== context.generation) return;
       if (data.ok && item.selectedCase && item.selectedCase !== context.caseId) return; // The parent context, not an acknowledgement, selects a case.
-      settle(data.requestId, data.ok ? undefined : Object.assign(new Error(typeof data.error === 'string' ? data.error : '操作未完成，请重试。'), { code: typeof data.code === 'string' ? data.code : undefined, operationId: typeof data.operationId === 'string' ? data.operationId : undefined }));
+      settle(data.requestId, data.ok ? undefined : Object.assign(new Error(typeof data.error === 'string' ? data.error : '操作未完成，请重试。'), { code: typeof data.code === 'string' ? data.code : undefined, operationId: typeof data.operationId === 'string' ? data.operationId : undefined }), { icon: typeof data.icon === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(data.icon) ? data.icon : undefined });
     } else if (data.type === 'cases-changed') onCasesChanged();
     else if (data.type === 'accounts-changed' && data.caseId === context?.caseId && data.generation === context?.generation) onAccountsChanged?.();
     else if (data.type === 'data-changed' && data.caseId === context?.caseId && data.generation === context?.generation) onDataChanged?.();
@@ -111,12 +113,12 @@ export function createWorkspaceBridge({ onContext, onCasesChanged, onAccountsCha
       if (disposed || !context || signal?.aborted) return Promise.reject(abortError());
       const binding = context;
       const requestId = `workspace-${instanceId}-${++sequence}`;
-      return new Promise<void>((resolve, reject) => {
+      return new Promise<typeof action extends 'source-copy' ? { icon?: string } : void>((resolve, reject) => {
         const abort = () => settle(requestId, abortError());
-        pending.set(requestId, { context: binding, selectedCase: action === 'select-case' ? (payload as Requests['select-case']).caseId : undefined,
-          resolve, reject, cleanup: () => signal?.removeEventListener('abort', abort) });
+        pending.set(requestId, { context: binding, sourceCopy: action === 'source-copy', selectedCase: action === 'select-case' ? (payload as Requests['select-case']).caseId : undefined,
+          resolve: value => resolve((action === 'source-copy' ? value ?? {} : undefined) as typeof action extends 'source-copy' ? { icon?: string } : void), reject, cleanup: () => signal?.removeEventListener('abort', abort) });
         signal?.addEventListener('abort', abort, { once: true });
-        try { send({ type: 'request', requestId, caseId: binding.caseId, generation: binding.generation, action, payload }); }
+        try { send({ type: 'request', requestId, caseId: binding.caseId, generation: binding.generation, instanceId, action, payload }); }
         catch (error) { settle(requestId, error instanceof Error ? error : new Error('无法连接案件工作区。')); }
       });
     },

@@ -25,11 +25,14 @@ DETAIL_FIELD = "resolution_evidence"
 TABLE_PROFILE = "funds-trace-table-v20"
 ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
 FEEDBACK_PROFILE = "funds-trace-bank-feedback-v6"
-PROFILES = frozenset(("funds-trace-table-v69", "funds-trace-table-v70", "funds-trace-table-v71", "funds-trace-table-v66", "funds-trace-table-v67", "funds-trace-table-archive-v57", "funds-trace-table-v68", "funds-trace-table-archive-v58", "funds-trace-table-archive-v59", "funds-trace-table-v65","funds-trace-table-v62", "funds-trace-table-archive-v55","funds-trace-table-archive-v52", "funds-trace-table-archive-v56","funds-trace-table-archive-v53", "funds-trace-table-v59", "funds-trace-table-archive-v49", "funds-trace-table-archive-v50", TABLE_PROFILE, ARCHIVE_PROFILE, FEEDBACK_PROFILE, "funds-trace-table-v19", "funds-trace-table-archive-v5", "funds-trace-table-archive-v7", "funds-trace-table-archive-v8", "funds-trace-table-archive-v9", "funds-trace-table-archive-v10", "funds-trace-table-archive-v11", "funds-trace-table-v23", "funds-trace-table-archive-v13", "funds-trace-table-archive-v14", "funds-trace-table-v26", "funds-trace-table-v29", "funds-trace-table-v32", "funds-trace-table-v35", "funds-trace-table-v38", "funds-trace-table-v41", "funds-trace-table-v44", "funds-trace-table-v47", "funds-trace-table-v50", "funds-trace-table-v53", "funds-trace-table-v56", "funds-trace-table-archive-v46", "funds-trace-table-archive-v47", "funds-trace-table-archive-v43", "funds-trace-table-archive-v44", "funds-trace-table-archive-v40", "funds-trace-table-archive-v41", "funds-trace-table-archive-v37", "funds-trace-table-archive-v38", "funds-trace-table-archive-v34", "funds-trace-table-archive-v35", "funds-trace-table-archive-v31", "funds-trace-table-archive-v32", "funds-trace-table-archive-v28", "funds-trace-table-archive-v29", "funds-trace-table-archive-v25", "funds-trace-table-archive-v26", "funds-trace-table-archive-v16", "funds-trace-table-archive-v17", "funds-trace-table-archive-v19", "funds-trace-table-archive-v20", "funds-trace-table-archive-v22", "funds-trace-table-archive-v23", "funds-trace-bank-feedback-v8"))
+PROFILES = frozenset(("funds-trace-table-archive-v63", "funds-trace-table-archive-v64", "funds-trace-table-archive-v65",
+                     "funds-trace-table-v75", "funds-trace-table-v76", "funds-trace-table-v77",
+                     "funds-trace-table-archive-v60", "funds-trace-table-archive-v61", "funds-trace-table-archive-v62", "funds-trace-table-v69", "funds-trace-table-v72", "funds-trace-table-v70", "funds-trace-table-v73", "funds-trace-table-v71", "funds-trace-table-v74", "funds-trace-table-v66", "funds-trace-table-v67", "funds-trace-table-archive-v57", "funds-trace-table-v68", "funds-trace-table-archive-v58", "funds-trace-table-archive-v59", "funds-trace-table-v65","funds-trace-table-v62", "funds-trace-table-archive-v55","funds-trace-table-archive-v52", "funds-trace-table-archive-v56","funds-trace-table-archive-v53", "funds-trace-table-v59", "funds-trace-table-archive-v49", "funds-trace-table-archive-v50", TABLE_PROFILE, ARCHIVE_PROFILE, FEEDBACK_PROFILE, "funds-trace-table-v19", "funds-trace-table-archive-v5", "funds-trace-table-archive-v7", "funds-trace-table-archive-v8", "funds-trace-table-archive-v9", "funds-trace-table-archive-v10", "funds-trace-table-archive-v11", "funds-trace-table-v23", "funds-trace-table-archive-v13", "funds-trace-table-archive-v14", "funds-trace-table-v26", "funds-trace-table-v29", "funds-trace-table-v32", "funds-trace-table-v35", "funds-trace-table-v38", "funds-trace-table-v41", "funds-trace-table-v44", "funds-trace-table-v47", "funds-trace-table-v50", "funds-trace-table-v53", "funds-trace-table-v56", "funds-trace-table-archive-v46", "funds-trace-table-archive-v47", "funds-trace-table-archive-v43", "funds-trace-table-archive-v44", "funds-trace-table-archive-v40", "funds-trace-table-archive-v41", "funds-trace-table-archive-v37", "funds-trace-table-archive-v38", "funds-trace-table-archive-v34", "funds-trace-table-archive-v35", "funds-trace-table-archive-v31", "funds-trace-table-archive-v32", "funds-trace-table-archive-v28", "funds-trace-table-archive-v29", "funds-trace-table-archive-v25", "funds-trace-table-archive-v26", "funds-trace-table-archive-v16", "funds-trace-table-archive-v17", "funds-trace-table-archive-v19", "funds-trace-table-archive-v20", "funds-trace-table-archive-v22", "funds-trace-table-archive-v23", "funds-trace-bank-feedback-v8"))
 _PROFILE_SQL = ",".join("?" for _ in PROFILES)
 # Neutral source endpoints participate in identity replay without changing the
 # ordinary profiles' financial occurrence identity or historical CSV bridge.
-OCCURRENCE_PROFILES = PROFILES - {"funds-trace-table-v69", "funds-trace-table-v70", "funds-trace-table-v66", "funds-trace-table-v67", "funds-trace-table-archive-v57"}
+OCCURRENCE_PROFILES = PROFILES - {"funds-trace-table-archive-v63", "funds-trace-table-v75", "funds-trace-table-v76",
+                                  "funds-trace-table-v69", "funds-trace-table-v72", "funds-trace-table-v70", "funds-trace-table-v73", "funds-trace-table-v66", "funds-trace-table-v67", "funds-trace-table-archive-v57", "funds-trace-table-archive-v60"}
 _MAX_TEXT = 512
 WRITE_CHUNK = 50_000
 _ENDPOINT_ROLES = {role: role for role in ("payer", "payee", "self")}
@@ -1018,6 +1021,7 @@ class _PreviewEvidence:
         self.member_scopes = {m["member_path"]: m["sha256"] for m in plan["members"]}
         self.records = self.auxiliary_count = 0
         self.validated = False
+        self._positions = None
 
     def __iter__(self):
         return self._iterate(False)
@@ -1026,12 +1030,25 @@ class _PreviewEvidence:
         return self._iterate(True)
 
     def _iterate(self, auxiliary_only):
-        from .import_staging import auxiliary_records
+        from .import_staging import PLAN_CHUNK, StagedSequence, auxiliary_records
+        journal = self.plan["records"]
+        positions = [] if isinstance(journal, StagedSequence) and not auxiliary_only and not self.validated else None
+        if auxiliary_only:
+            entries = enumerate(auxiliary_records(self.plan))
+        elif self._positions is not None:
+            entries = ((index, journal[index]) for index in self._positions)
+        else:
+            entries = enumerate(journal)
         records = auxiliary = 0
-        for record in auxiliary_records(self.plan) if auxiliary_only else self.plan["records"]:
+        for index, record in entries:
             if (auxiliary_only and record["disposition"] != "auxiliary"
                     or DETAIL_FIELD not in record["details"]):
                 continue
+            if positions is not None:
+                if len(positions) == PLAN_CHUNK:
+                    positions = None
+                else:
+                    positions.append(index)
             data = (json.loads(record["details"][DETAIL_FIELD]) if self.validated and not auxiliary_only
                     else validate_evidence(record["details"][DETAIL_FIELD]))
             data["_member_path"] = record["member_path"]
@@ -1042,6 +1059,10 @@ class _PreviewEvidence:
                    record["record_no"] if record["disposition"] == "accepted" else None, data)
         if not auxiliary_only:
             self.records, self.auxiliary_count, self.validated = records, auxiliary, True
+            # Preview owns a read-only plan. Replay sparse identity evidence
+            # by position when even a page read per entry costs less than a scan.
+            if positions is not None and len(positions) * PLAN_CHUNK <= len(journal):
+                self._positions = positions
 
 
 def preview(plan):
@@ -1301,6 +1322,9 @@ class _ContextualEvidence:
         self.paired_roles = self._paired_roles() if isinstance(evidence, _CaseEvidence) else {}
 
     def _paired_roles(self):
+        # Typed endpoints need an explicit source declaration on both sides.
+        if not any(self.declarations.values()):
+            return {}
         from . import bank_posting_pairs
         pairs = bank_posting_pairs.source_role_pairs(self.evidence.case_id)
         if not pairs:

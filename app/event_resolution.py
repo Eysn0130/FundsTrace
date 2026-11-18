@@ -20,7 +20,8 @@ BANK_SUMMARY_POLICY = "scoped-source-postings-v5"
 LEDGER_POLICY = "explicit-ledger-fields-v1"
 DETAIL_FIELD = "event_reference_evidence"
 LEDGER_FIELD = "analysis_evidence"
-PROFILES = frozenset(("funds-trace-table-v71", "funds-trace-table-v68", "funds-trace-table-archive-v58", "funds-trace-table-archive-v59", "funds-trace-table-v65","funds-trace-table-v62", "funds-trace-table-archive-v55","funds-trace-table-archive-v52", "funds-trace-table-archive-v56","funds-trace-table-archive-v53", "funds-trace-table-v59", "funds-trace-table-archive-v49", "funds-trace-table-archive-v50", "funds-trace-table-v20", "funds-trace-table-archive-v6", "funds-trace-table-archive-v7", "funds-trace-table-archive-v8", "funds-trace-table-archive-v9", "funds-trace-table-archive-v10", "funds-trace-table-archive-v11", "funds-trace-table-v23", "funds-trace-table-archive-v13", "funds-trace-table-archive-v14", "funds-trace-table-v26", "funds-trace-table-v29", "funds-trace-table-v32", "funds-trace-table-v35", "funds-trace-table-v38", "funds-trace-table-v41", "funds-trace-table-v44", "funds-trace-table-v47", "funds-trace-table-v50", "funds-trace-table-v53", "funds-trace-table-v56", "funds-trace-table-archive-v46", "funds-trace-table-archive-v47", "funds-trace-table-archive-v43", "funds-trace-table-archive-v44", "funds-trace-table-archive-v40", "funds-trace-table-archive-v41", "funds-trace-table-archive-v37", "funds-trace-table-archive-v38", "funds-trace-table-archive-v34", "funds-trace-table-archive-v35", "funds-trace-table-archive-v31", "funds-trace-table-archive-v32", "funds-trace-table-archive-v28", "funds-trace-table-archive-v29", "funds-trace-table-archive-v25", "funds-trace-table-archive-v26", "funds-trace-table-archive-v16", "funds-trace-table-archive-v17", "funds-trace-table-archive-v19", "funds-trace-table-archive-v20", "funds-trace-table-archive-v22", "funds-trace-table-archive-v23"))
+PROFILES = frozenset(("funds-trace-table-archive-v64", "funds-trace-table-archive-v65", "funds-trace-table-v77",
+                     "funds-trace-table-archive-v61", "funds-trace-table-archive-v62", "funds-trace-table-v71", "funds-trace-table-v74", "funds-trace-table-v68", "funds-trace-table-archive-v58", "funds-trace-table-archive-v59", "funds-trace-table-v65","funds-trace-table-v62", "funds-trace-table-archive-v55","funds-trace-table-archive-v52", "funds-trace-table-archive-v56","funds-trace-table-archive-v53", "funds-trace-table-v59", "funds-trace-table-archive-v49", "funds-trace-table-archive-v50", "funds-trace-table-v20", "funds-trace-table-archive-v6", "funds-trace-table-archive-v7", "funds-trace-table-archive-v8", "funds-trace-table-archive-v9", "funds-trace-table-archive-v10", "funds-trace-table-archive-v11", "funds-trace-table-v23", "funds-trace-table-archive-v13", "funds-trace-table-archive-v14", "funds-trace-table-v26", "funds-trace-table-v29", "funds-trace-table-v32", "funds-trace-table-v35", "funds-trace-table-v38", "funds-trace-table-v41", "funds-trace-table-v44", "funds-trace-table-v47", "funds-trace-table-v50", "funds-trace-table-v53", "funds-trace-table-v56", "funds-trace-table-archive-v46", "funds-trace-table-archive-v47", "funds-trace-table-archive-v43", "funds-trace-table-archive-v44", "funds-trace-table-archive-v40", "funds-trace-table-archive-v41", "funds-trace-table-archive-v37", "funds-trace-table-archive-v38", "funds-trace-table-archive-v34", "funds-trace-table-archive-v35", "funds-trace-table-archive-v31", "funds-trace-table-archive-v32", "funds-trace-table-archive-v28", "funds-trace-table-archive-v29", "funds-trace-table-archive-v25", "funds-trace-table-archive-v26", "funds-trace-table-archive-v16", "funds-trace-table-archive-v17", "funds-trace-table-archive-v19", "funds-trace-table-archive-v20", "funds-trace-table-archive-v22", "funds-trace-table-archive-v23"))
 HEADERS = {"issuer": "参考号机构", "channel": "参考号渠道", "business_scope": "参考号业务域",
            "reference": "跨账簿事件参考号"}
 POST_BALANCE_HEADERS = frozenset(("交易后账面余额", "本笔交易后账面余额"))
@@ -233,15 +234,25 @@ def _full_rebuild(case_id):
         return None
     events, memberships = resolve(observations)
     bank_events, bank_members, bank_observations = (bank_posting_pairs.project(case_id,
-        excluded_ids=[member["flow_id"] for member in memberships])
+        excluded_ids=[member["flow_id"] for member in memberships], single_proof_bytes=True)
         if bank_sources else ([], [], []))
     events.extend(bank_events)
     memberships.extend(bank_members)
-    observations = [*observations, *bank_observations]
+    observations.extend(bank_observations)
+    has_bank_observations = bool(bank_observations)
+    del bank_events, bank_members, bank_observations
     effective_ids = {str(row["flow_id"]) for row in observations if row.get("effective") and row.get("flow_id") is not None}
+    excluded_ids = {str(row["flow_id"]) for row in observations if not row.get("effective") and row.get("flow_id") is not None}
+    excluded_ids.difference_update(effective_ids)
+    reference_count = len(observations)
+    unresolved_count = sum(row.get("flow_id") is None for row in observations)
+    # Projection writes need only events and memberships. Release the book
+    # evidence before constructing database batches.
+    del observations
     counts = db.q_raw("select count(*) n from effective_flows where case_id=?", [case_id])[0]["n"]
     confirmed = sum(row["status"] == "confirmed" for row in memberships)
     conflicted = sum(row["status"] == "conflict" and row["flow_id"] in effective_ids for row in memberships)
+    del effective_ids
     with localcontext() as context:
         context.prec = 50
         totals = defaultdict(lambda: Decimal(0))
@@ -249,13 +260,13 @@ def _full_rebuild(case_id):
             totals[event["currency"]] += event["amount"]
         result = {"policy": BANK_SUMMARY_POLICY if bank_sources else POLICY, "confirmed_events": len(events), "confirmed_entries": confirmed,
                   "conflict_entries": conflicted, "unknown_entries": counts - confirmed - conflicted,
-                  "observed_entries": counts, "reference_observations": len(observations),
-                  "excluded_reference_entries": len({str(row["flow_id"]) for row in observations if row.get("flow_id") is not None} - effective_ids),
-                  "unresolved_reference_observations": sum(row.get("flow_id") is None for row in observations),
+                  "observed_entries": counts, "reference_observations": reference_count,
+                  "excluded_reference_entries": len(excluded_ids),
+                  "unresolved_reference_observations": unresolved_count,
                   "confirmed_amount_totals": [{"currency": currency, "amount": format(amount, ".2f")} for currency, amount in sorted(totals.items())],
                   "complete_event_total": False,
                   "note": ("仅登记的明确作用域合同、完整双侧过账或独立账簿余额证明可确认；未证明记录保留。单笔与配对源过账均不证明外部结算或最终权属，确认金额不是全案经济事件总额。"
-                           if bank_observations else "仅明确作用域且双边唯一的来源声明可关联；未关联记录仍保留，已关联事件额不是全案经济事件总额。")}
+                           if has_bank_observations else "仅明确作用域且双边唯一的来源声明可关联；未关联记录仍保留，已关联事件额不是全案经济事件总额。")}
     db.x("delete from event_members where case_id=?", [case_id])
     db.x("delete from resolved_events where case_id=?", [case_id])
     _write_projection(case_id, events, memberships)
@@ -265,8 +276,15 @@ def _full_rebuild(case_id):
 def _write_projection(case_id, events, memberships):
     from .evidence_resolution import _insert_projection
     event_columns = ("case_id", "event_id", "payer_account", "payee_account", "currency", "amount", "trade_time", "evidence_json")
-    _insert_projection("resolved_events", list(event_columns),
-                       ([case_id, *[event[key] for key in event_columns[1:]]] for event in events))
+
+    def event_values():
+        for event in events:
+            amount, proof = event["amount"], event["evidence_json"]
+            yield [case_id, event["event_id"], event["payer_account"], event["payee_account"], event["currency"],
+                   format(amount, "f") if isinstance(amount, Decimal) else amount, event["trade_time"],
+                   proof.decode("utf-8") if type(proof) is bytes else proof]
+
+    _insert_projection("resolved_events", list(event_columns), event_values())
     _insert_projection("event_members", ["case_id", "flow_id", "event_id", "status", "reason", "pending_group"],
                        ([case_id, member["flow_id"], member["event_id"], member["status"], member["reason"], member.get("pending_group")] for member in memberships))
 

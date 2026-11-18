@@ -53,16 +53,18 @@ def read_snapshot():
     transaction, persistent connection or global optimizer change is used.
     """
     _require_snapshot_entry()
-    with _read_admission:
+    ready = _read_ready
+    if ready is None or ready[0] is not _con or ready[1] != DB_PATH:
+        con()  # Initialize before admission: writers acquire _lock first.
         ready = _read_ready
-        if ready is None or ready[0] is not _con or ready[1] != DB_PATH:
-            con()  # First initialization still owns the existing schema/write lock.
-            ready = _read_ready
-        if ready is None or ready[0] is not _con or ready[1] != DB_PATH:
-            raise RuntimeError("Database initialization has not completed")
+    if ready is None or ready[0] is not _con or ready[1] != DB_PATH:
+        raise RuntimeError("Database initialization has not completed")
+    with _read_admission:
+        if ready is not _read_ready or ready[0] is not _con or ready[1] != DB_PATH:
+            raise RuntimeError("Database binding changed while entering a read snapshot")
         reader = duckdb.connect(str(ready[1]))
         try:
-            if ready[0] is not _con or ready[1] != DB_PATH:
+            if ready is not _read_ready or ready[0] is not _con or ready[1] != DB_PATH:
                 raise RuntimeError("Database binding changed while opening a read snapshot")
             try:
                 reader.execute("begin transaction read only")
@@ -71,19 +73,20 @@ def read_snapshot():
                 # syntax. Close before waiting for the old shared connection lock.
                 unsupported, reader = reader, None
                 unsupported.close()
-            if reader is None:
-                with _lock:
-                    yield False
-            else:
+            if reader is not None:
                 _read_state.connection = reader
                 try:
                     yield True
                 finally:
                     _read_state.connection = None
                     reader.execute("rollback")
+                return
         finally:
             if reader is not None:
                 reader.close()
+    # The unsupported path must not wait for the writer while holding admission.
+    with _lock:
+        yield False
 
 
 class TransactionRollbackError(RuntimeError):
@@ -106,17 +109,21 @@ def import_transaction():
                 yield c
             return
         c = con()
-        previous = c.execute("select current_setting('disabled_optimizers')").fetchone()[0]
-        disabled = [value for value in previous.split(",") if value]
-        for name in ("join_order", "build_side_probe_side"):
-            if name not in disabled:
-                disabled.append(name)
-        c.execute("set disabled_optimizers=?", [",".join(disabled)])
+        # DuckDB's optimizer set is global to the instance. Mutate it only
+        # between complete private-reader lifetimes, not during optimization.
+        with _read_admission:
+            previous = c.execute("select current_setting('disabled_optimizers')").fetchone()[0]
+            disabled = [value for value in previous.split(",") if value]
+            for name in ("join_order", "build_side_probe_side"):
+                if name not in disabled:
+                    disabled.append(name)
+            c.execute("set disabled_optimizers=?", [",".join(disabled)])
         try:
             with transaction() as c:
                 yield c
         finally:
-            c.execute("set disabled_optimizers=?", [previous])
+            with _read_admission:
+                c.execute("set disabled_optimizers=?", [previous])
 
 
 @contextmanager
@@ -341,6 +348,18 @@ create table if not exists import_source_operations (
     case_id integer not null, source_id varchar not null, batch_id bigint, active boolean not null,
     primary key (case_id,source_id)
 );
+create table if not exists material_day_counters (
+    import_day varchar primary key, last_batch bigint not null
+);
+create table if not exists import_material_groups (
+    group_id varchar primary key, case_id integer not null,
+    import_day varchar not null, batch_no bigint not null, unique(import_day,batch_no)
+);
+create table if not exists import_materials (
+    case_id integer not null, source_id varchar primary key, group_id varchar not null,
+    file_no bigint not null, material_name varchar not null unique, origin_name varchar,
+    unique(group_id,file_no)
+);
 create table if not exists evidence_sources (
     case_id integer not null, source_id varchar not null, batch_id bigint, active boolean not null,
     primary key (case_id,source_id)
@@ -527,6 +546,19 @@ def con():
         if _con is None:
             candidate = duckdb.connect(str(DB_PATH))
             try:
+                # Bound per-thread analytical buffers on interactive desktops.
+                # Set the shared instance once, before publishing any reader;
+                # preserve lower engine settings instead of raising them.
+                if int(candidate.execute("select current_setting('threads')").fetchone()[0]) > 4:
+                    candidate.execute("set threads=4")
+                memory, unit = candidate.execute("select current_setting('memory_limit')").fetchone()[0].split()
+                units = {'byte': 1, 'bytes': 1, 'KiB': 1024, 'MiB': 1024**2,
+                         'GiB': 1024**3, 'TiB': 1024**4, 'PiB': 1024**5, 'EiB': 1024**6}
+                # The engine formats this value by truncating; equality must
+                # also set the cap. Leave room for Python and native vectors,
+                # which are outside DuckDB's buffer-manager budget.
+                if decimal.Decimal(memory) * units[unit] >= 1024**3:
+                    candidate.execute("set memory_limit='1GiB'")
                 candidate.execute("begin transaction")
                 for stmt in SCHEMA.strip().split(";"):
                     if stmt.strip():
@@ -806,6 +838,54 @@ def q_raw(sql, params=None):
         cols = [d[0] for d in cur.description] if cur.description else []
         rows = cur.fetchall()
     return [dict(zip(cols, row)) for row in rows]
+
+
+@contextmanager
+def raw_rows(sql, params=None):
+    """Read raw rows in bounded batches on the current transaction/snapshot.
+
+    Consume rows only inside this context, without other database operations;
+    its borrowed connection owns the active result until the context exits.
+    """
+    with read_lock():
+        reader = getattr(_read_state, "connection", None)
+        if reader is not None:
+            statements = reader.extract_statements(sql)
+            if len(statements) != 1 or str(statements[0].type) != "StatementType.SELECT":
+                raise RuntimeError("Only one SELECT is allowed in a read snapshot")
+        connection = reader if reader is not None else con()
+        cur = connection.execute(sql, params or [])
+        cols = [d[0] for d in cur.description] if cur.description else []
+        exhausted = False
+
+        def iterate():
+            nonlocal exhausted
+            while True:
+                batch = cur.fetchmany(1024)
+                if not batch:
+                    exhausted = True
+                    return
+                for row in batch:
+                    yield dict(zip(cols, row))
+                del row, batch
+
+        rows = iterate()
+        body_failed = False
+        try:
+            yield rows
+        except BaseException:
+            body_failed = True
+            raise
+        finally:
+            rows.close()
+            if not exhausted:
+                try:
+                    # Replace an abandoned result without closing the shared
+                    # connection or draining the rest into Python objects.
+                    connection.execute("select 1").fetchone()
+                except Exception:
+                    if not body_failed:
+                        raise
 
 
 def x(sql, params=None):

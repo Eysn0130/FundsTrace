@@ -225,7 +225,12 @@ SHELL_HOST_FILES = [
     "titlebar/renderer.js", "titlebar/preload.cjs", "startup/index.html", "startup/style.css",
     "startup/renderer.js", "startup/preload.cjs", "LICENSE",
 ]
-APPEARANCE_IMPORT = b"const appearance = require('./appearance.cjs');\n"
+MAIN_MODULE_IMPORTS = [
+    pytest.param("0.1.10", "appearance.cjs", b"const appearance = require('./appearance.cjs');\n",
+                 id="appearance"),
+    pytest.param("0.1.17", "source-copies.cjs", b"const sourceCopies = require('./source-copies.cjs');\n",
+                 id="source-copies"),
+]
 
 
 @pytest.fixture(scope="module")
@@ -247,19 +252,19 @@ process.stdout.write(JSON.stringify(files));
     paths = dict(json.loads(result.stdout))
     files = {name: (root / source).read_bytes() for name, source in paths.items()
              if name != "package.json"}
-    report = {"status": "passed", "version": "0.1.10", "checks": {"sourceHashes": True},
-              "hostFiles": {name: hashlib.sha256(content).hexdigest() for name, content in files.items()}}
     package = json.loads((root / "desktop/package.json").read_text(encoding="utf-8"))
+    report = {"status": "passed", "version": package["version"], "checks": {"sourceHashes": True},
+              "hostFiles": {name: hashlib.sha256(content).hexdigest() for name, content in files.items()}}
     return files, report, package, paths
 
 
 def test_transfer_accepts_actual_startup_shell_package_and_source_assets(current_host):
     files, report, package, paths = current_host
     assert paths["LICENSE"] == "LICENSE"
-    verify_host_report(report, "0.1.10", package, files.__getitem__)
+    verify_host_report(report, package["version"], package, files.__getitem__)
 
 
-@pytest.mark.parametrize("name", [*SHELL_HOST_FILES, "appearance.cjs"])
+@pytest.mark.parametrize("name", [*SHELL_HOST_FILES, "appearance.cjs", "source-copies.cjs"])
 @pytest.mark.parametrize("change", ["missing", "changed"])
 def test_transfer_rejects_missing_or_changed_startup_shell_source(current_host, name, change):
     files, original, package, _ = current_host
@@ -269,7 +274,7 @@ def test_transfer_rejects_missing_or_changed_startup_shell_source(current_host, 
     else:
         report["hostFiles"][name] = hashlib.sha256(files[name] + b"changed bytes").hexdigest()
     with pytest.raises(AssertionError):
-        verify_host_report(report, "0.1.10", package, files.__getitem__)
+        verify_host_report(report, package["version"], package, files.__getitem__)
 
 
 @pytest.mark.parametrize("name", ["other.cjs", "assets/unapproved.png"])
@@ -278,7 +283,7 @@ def test_startup_shell_host_rejects_unreviewed_extra_files(current_host, name):
     report = deepcopy(original)
     report["hostFiles"][name] = hashlib.sha256(b"unreviewed extra").hexdigest()
     with pytest.raises(AssertionError):
-        verify_host_report(report, "0.1.10", package, files.__getitem__)
+        verify_host_report(report, package["version"], package, files.__getitem__)
 
 
 def test_startup_shell_version_cannot_claim_the_old_brand_host():
@@ -287,37 +292,39 @@ def test_startup_shell_version_cannot_claim_the_old_brand_host():
         verify_host_report(report, "0.1.10", package, files.__getitem__)
 
 
-def test_transfer_preserves_same_version_startup_shell_without_appearance():
-    files, report, package = fixture(True, version="0.1.10", brand=True)
+@pytest.mark.parametrize(("version", "module", "main_import"), MAIN_MODULE_IMPORTS)
+def test_transfer_preserves_same_version_startup_shell_without_optional_module(version, module, main_import):
+    files, report, package = fixture(True, version=version, brand=True)
     for name in SHELL_HOST_FILES:
         files[name] = f"synthetic reviewed {name}\n".encode()
         report["hostFiles"][name] = hashlib.sha256(files[name]).hexdigest()
-    verify_host_report(report, "0.1.10", package, files.__getitem__)
+    verify_host_report(report, version, package, files.__getitem__)
 
-    # Neither an unreviewed report claim nor a commented import upgrades the
-    # exact reviewed source candidate's required host resource boundary.
-    report["hostFiles"]["appearance.cjs"] = hashlib.sha256(b"unreviewed appearance").hexdigest()
+    # A module requires an active import in the reviewed Main source.
+    files[module] = b"synthetic reviewed module\n"
+    report["hostFiles"][module] = hashlib.sha256(files[module]).hexdigest()
     with pytest.raises(AssertionError):
-        verify_host_report(report, "0.1.10", package, files.__getitem__)
-    files["main.cjs"] += b"// " + APPEARANCE_IMPORT
+        verify_host_report(report, version, package, files.__getitem__)
+    files["main.cjs"] += b"// " + main_import
     report["hostFiles"]["main.cjs"] = hashlib.sha256(files["main.cjs"]).hexdigest()
     with pytest.raises(AssertionError):
-        verify_host_report(report, "0.1.10", package, files.__getitem__)
+        verify_host_report(report, version, package, files.__getitem__)
 
 
 @pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
-def test_reviewed_main_source_requires_appearance_even_if_report_omits_it(newline):
-    files, report, package = fixture(True, version="0.1.10", brand=True)
+@pytest.mark.parametrize(("version", "module", "main_import"), MAIN_MODULE_IMPORTS)
+def test_reviewed_main_source_requires_optional_module_even_if_report_omits_it(version, module, main_import, newline):
+    files, report, package = fixture(True, version=version, brand=True)
     for name in SHELL_HOST_FILES:
         files[name] = f"synthetic reviewed {name}\n".encode()
         report["hostFiles"][name] = hashlib.sha256(files[name]).hexdigest()
-    files["main.cjs"] += APPEARANCE_IMPORT.replace(b"\n", newline)
+    files["main.cjs"] += main_import.replace(b"\n", newline)
     report["hostFiles"]["main.cjs"] = hashlib.sha256(files["main.cjs"]).hexdigest()
     with pytest.raises(AssertionError):
-        verify_host_report(report, "0.1.10", package, files.__getitem__)
-    files["appearance.cjs"] = b"synthetic reviewed appearance\n"
-    report["hostFiles"]["appearance.cjs"] = hashlib.sha256(files["appearance.cjs"]).hexdigest()
-    verify_host_report(report, "0.1.10", package, files.__getitem__)
+        verify_host_report(report, version, package, files.__getitem__)
+    files[module] = b"synthetic reviewed module\n"
+    report["hostFiles"][module] = hashlib.sha256(files[module]).hexdigest()
+    verify_host_report(report, version, package, files.__getitem__)
 
 
 @pytest.mark.parametrize("name", SHELL_HOST_FILES)
@@ -341,10 +348,11 @@ def test_transfer_reads_root_license_and_desktop_assets_from_candidate_commit(cu
         return files[name]
 
     monkeypatch.setattr(transfer.subprocess, "check_output", read_source)
-    verify_host_report(report, "0.1.10", package,
+    verify_host_report(report, package["version"], package,
                        lambda name: transfer.source_host_file(commit, name))
     assert ["git", "show", f"{commit}:LICENSE"] in requested
     assert ["git", "show", f"{commit}:desktop/startup.cjs"] in requested
+    assert ["git", "show", f"{commit}:desktop/source-copies.cjs"] in requested
 
 
 @pytest.mark.parametrize("name", ["assets/icon.png", "assets/icon.ico"])

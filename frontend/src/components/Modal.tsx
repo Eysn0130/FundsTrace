@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type DragEvent, type ReactNode } from 'react';
 
 function availableFocus(element: HTMLElement) {
   if (!element.isConnected || element.matches(':disabled,[aria-disabled="true"]')) return false;
@@ -11,8 +11,9 @@ function availableFocus(element: HTMLElement) {
   return true;
 }
 
-export function Modal({ title, children, onClose, busy = false }: { title: string; children: ReactNode; onClose: () => void; busy?: boolean }) {
+export function Modal({ title, children, onClose, busy = false, className = 'modal', onFileDrop, compact = false, dismissOutside = false, headerAction }: { title: string; children: ReactNode; onClose: () => void; busy?: boolean; className?: string; onFileDrop?: (event: DragEvent<HTMLElement>) => void; compact?: boolean; dismissOutside?: boolean; headerAction?: ReactNode }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const outsideDown = useRef(false);
   const titleId = useId();
   useEffect(() => {
     const element = dialog.current;
@@ -33,11 +34,16 @@ export function Modal({ title, children, onClose, busy = false }: { title: strin
       target?.focus({ preventScroll: true });
     };
   }, []);
-  return <dialog ref={dialog} className="modal" aria-labelledby={titleId} tabIndex={-1} onCancel={event => {
+  const hasFiles = (event: DragEvent) => Array.from(event.dataTransfer.types ?? []).includes('Files') || event.dataTransfer.files.length > 0 || Array.from(event.dataTransfer.items ?? []).some(item => item.kind === 'file');
+  return <dialog ref={dialog} className={className} aria-labelledby={titleId} tabIndex={-1}
+    onPointerDown={event => { outsideDown.current = event.target === event.currentTarget && (event.clientX < event.currentTarget.getBoundingClientRect().left || event.clientX > event.currentTarget.getBoundingClientRect().right || event.clientY < event.currentTarget.getBoundingClientRect().top || event.clientY > event.currentTarget.getBoundingClientRect().bottom); }}
+    onPointerUp={event => { const outside = outsideDown.current; outsideDown.current = false; const bounds = event.currentTarget.getBoundingClientRect(); if (dismissOutside && !busy && outside && event.target === event.currentTarget && (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom)) onClose(); }}
+    onDragOver={event => { if (onFileDrop && hasFiles(event)) event.preventDefault(); }}
+    onDrop={event => { if (onFileDrop && hasFiles(event)) onFileDrop(event); }} onCancel={event => {
     if (event.target !== event.currentTarget) return;
     event.preventDefault(); if (!busy) onClose();
   }}>
-    <header className="modal-heading"><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" disabled={busy} aria-label="关闭对话框" onClick={onClose}>×</button></header>
+    <header className={`modal-heading ${compact ? 'is-compact' : ''}`}><h2 id={titleId} className={compact ? 'ft-sr-only' : undefined}>{title}</h2>{headerAction}<button type="button" className="icon-button" disabled={busy} aria-label="关闭对话框" onClick={onClose}><img src="/static/ui-icons/x.svg" width="20" height="20" alt="" /></button></header>
     {children}
   </dialog>;
 }

@@ -21,6 +21,69 @@ def close_plan(plan):
             plan[key].close()
 
 
+@pytest.mark.parametrize("evidence_rows,full_scans", [(1, 1), (4, 2)])
+def test_read_only_preview_replays_sparse_evidence_positions(database, monkeypatch, evidence_rows, full_scans):
+    from app import evidence_resolution
+
+    data = archive([("transaction.csv", table("transaction", [
+        transaction(**{"交易流水号": f"SYN-PREVIEW-{i}"}) for i in range(evidence_rows)])),
+        ("other.csv", b"unrecognized\nSYN-auxiliary-1\nSYN-auxiliary-2\n")])
+    profile = table_archive.EVIDENCE_PROFILE
+    plain = table_archive.parse(io.BytesIO(data), profile=profile)
+    plan = table_archive.parse(io.BytesIO(data), profile=profile, _stage=True)
+    monkeypatch.setattr(staging, "PLAN_CHUNK", 2)
+    scans, iterate = [], staging.StagedSequence.__iter__
+
+    def observe(self):
+        if self is plan["records"]:
+            scans.append(self.kind)
+        yield from iterate(self)
+
+    monkeypatch.setattr(staging.StagedSequence, "__iter__", observe)
+    try:
+        expected = evidence_resolution.preview(plain)
+        assert expected["evidence_records"] == evidence_rows
+        assert evidence_resolution.preview(plan) == expected
+        assert scans == ["records"] * full_scans
+    finally:
+        close_plan(plan)
+        close_plan(plain)
+
+
+@pytest.mark.parametrize("damage", [None, "non_financial_tail", "orphan", "wrong_facts"])
+def test_manifest_reads_complete_journal_and_bound_rows_in_one_scan(database, damage):
+    from test_import_history_filter import data, package
+
+    raw = data("validation", 5)
+    plan = table_archive.parse(io.BytesIO(package([("rows.csv", raw),
+                                                ("tail.csv", b"unknown\nSYN-auxiliary\n")])), _stage=True)
+    try:
+        rows, records = plan["rows"], plan["records"]
+        if damage == "non_financial_tail":
+            tail = records[-1]
+            assert tail["disposition"] != "accepted"
+            tail["details"]["cancellation_role"] = "original"
+        elif damage == "orphan":
+            original_count = len(rows)
+            row = dict(rows[0], _source_row=len(records) + 1)
+            rows.append(row)
+            rows.store._counts["rows"] = original_count
+        elif damage == "wrong_facts":
+            rows[-1]["amount"] = Decimal("999.99")
+        else:
+            count = len(rows)
+            store = plan["_plan_store"]
+            before = store.read_queries
+            manifest = import_validation.table_manifest(plan, rows)
+            assert len(manifest) == count == 5
+            assert store.read_queries - before == 1
+            return
+        with pytest.raises(import_validation.IntegrityError):
+            import_validation.table_manifest(plan, rows)
+    finally:
+        close_plan(plan)
+
+
 @pytest.mark.parametrize("chunk", [1, 2, 128])
 def test_staged_archive_matches_every_in_memory_fact_and_late_update(database, monkeypatch, chunk):
     monkeypatch.setattr(staging, "PLAN_CHUNK", chunk)
@@ -349,12 +412,13 @@ def test_public_ordinary_writer_reuses_validated_row_objects(client, database, m
         result = original_commit(*args, **kwargs)
         observed["decodes"] = observed["store"].decode_calls-observed["before"]
         return result
+    cid, count = make_case("Synthetic validated row reuse with history"), 257
+    accepted(client, cid, package([("history.csv", data("unrelated-history"))]))
     monkeypatch.setattr(importer, "_provenance_metadata", metadata)
     monkeypatch.setattr(importer, "commit_rows", write)
-    cid, count = make_case("Synthetic validated row reuse"), 257
     _, receipt = accepted(client, cid, package([("rows.csv", data("reuse", count))]))
     assert (receipt["ok"], receipt["rows_dup"]) == (count, 0)
-    assert database.q_raw("select count(*) n,sum(amount) amount from flows where case_id=?", [cid]) == [{"n": count, "amount": Decimal(count)}]
+    assert database.q_raw("select count(*) n,sum(amount) amount from flows where case_id=?", [cid]) == [{"n": count + 1, "amount": Decimal(count + 1)}]
     assert observed["decodes"] <= count + staging.PLAN_CHUNK, observed["decodes"]
     assert observed["store"]._closed
 

@@ -359,6 +359,7 @@ class RepreviewRequest(ContractModel):
 
 
 class CommitRequest(RepreviewRequest):
+    material_group_id: str | None = Field(default=None,pattern=r'^[0-9a-f]{32}$')
     self_accounts: list[str] = Field(default_factory=list)
     mark_accounts: list[str] | None = None
 
@@ -394,6 +395,11 @@ class ImportResult(ContractModel):
     table_summary: TableSummary | None = None
 
 
+class ImportMemberResult(ContractModel):
+    member_path: str
+    dispositions: dict[str, int]
+
+
 class ImportJob(ContractModel):
     case_id: Identifier
     import_id: str
@@ -406,6 +412,7 @@ class ImportJob(ContractModel):
     error_code: str | None = None
     recoverable: bool = False
     source_available: bool = False
+    member_results: list[ImportMemberResult] = Field(default_factory=list)
 
 
 class ImportSession(ContractModel):
@@ -489,6 +496,7 @@ class ImportRecord(ContractModel):
     reason_code: str
     details: dict[str, str]
     flow_id: Identifier | None
+    preview: PreviewFlow | None = None
 
 
 class ImportRecordPage(ContractModel):
@@ -498,3 +506,223 @@ class ImportRecordPage(ContractModel):
     total: int
     page: int
     page_size: int
+
+
+class ImportOriginalCell(ContractModel):
+    column: int
+    header: str
+    value: str
+    fields: list[str]
+    kind: Literal['text', 'number', 'date', 'boolean', 'error', 'formula'] = 'text'
+
+
+class ImportReviewRecord(ImportRecord):
+    original: list[ImportOriginalCell] | None = None
+
+
+class ImportReviewIssue(ContractModel):
+    index: int
+    record_no: int
+    source_row: int
+    reason_code: str
+
+
+class ImportReviewPage(ContractModel):
+    case_id: Identifier
+    source_id: str
+    member_path: str
+    view: Literal['all', 'review', 'accepted']
+    counts: dict[str, int]
+    items: list[ImportReviewRecord]
+    total: int
+    page: int
+    page_size: int
+    issue: ImportReviewIssue | None = None
+    original_error: str | None = None
+
+
+class ImportReportIntegrity(ContractModel):
+    status: Literal['registered', 'unavailable', 'match', 'mismatch']
+    object_name: str
+    expected_sha256: str
+    observed_sha256: str | None
+    checked_at: str | None
+    size_bytes: int
+
+
+class ImportReportScope(ContractModel):
+    filename: str
+    member_path: str
+    member_role: str
+    source_sha256: str
+    source_size_bytes: int
+    member_sha256: str
+    member_size_bytes: int | None
+    member_digest_kind: Literal['bytes', 'worksheet_locator']
+    parser_version: str
+    imported_at: str
+    material_name: str | None = None
+    material_origin_name: str | None = None
+    source_record_total: int | None = None
+
+
+class ImportReportQuality(ContractModel):
+    source_records: int
+    dispositions: dict[str, int]
+    linked_observations: int
+    selected_transactions: int
+    pending_observations: int
+    unattributed_transactions: int
+
+
+class ImportReportDirectional(ContractModel):
+    in_count: int
+    out_count: int
+    in_amount: Amount | None
+    out_amount: Amount | None
+    net_amount: Amount | None
+
+
+class ImportReportSummary(ImportReportDirectional):
+    transaction_count: int
+    amount: Amount | None
+
+
+class ImportReportAccount(ImportReportDirectional):
+    account: str
+    account_number: str
+    account_numbers: list[str]
+    names: list[str]
+    cards: list[str]
+    currency: str
+
+
+class ImportReportAccounts(ContractModel):
+    items: list[ImportReportAccount]
+    total: int
+    page: int
+    page_size: int
+
+
+class ImportReportOverview(ContractModel):
+    name_count: int
+    account_count: int
+    number_count: int
+    unnamed_account_count: int
+    selected_account: ImportReportAccount | None = None
+
+
+class ImportReportTimelinePage(ContractModel):
+    total: int
+    page: int
+    page_size: int
+
+
+class ImportReportPeer(ContractModel):
+    account: str
+    account_number: str
+    names: list[str]
+    count: int
+    amount: Amount | None
+
+
+class ImportReportPeriod(ContractModel):
+    first_time: str | None
+    last_time: str | None
+    time_basis: Literal['utc', 'unqualified', 'mixed']
+
+
+class ImportReportTimeBucket(ImportReportDirectional):
+    start: str
+    end: str
+    time_basis: Literal['utc', 'unqualified']
+    has_records: bool = True
+    transaction_count: int | None = None
+
+
+class ImportReportTrendScope(ContractModel):
+    mode: Literal['all','selected','except']
+    accounts: list[str]
+    search: str = ''
+    account_count: int
+    available_account_count: int
+    undated_transactions: int
+    summary: ImportReportDirectional
+    periods: list[ImportReportPeriod]
+
+
+class ImportReportAccountChoice(ContractModel):
+    account: str
+    account_number: str
+    account_numbers: list[str]
+    names: list[str]
+    cards: list[str]
+    currency: str
+
+
+class ImportReportAccountOptions(ContractModel):
+    case_id: Identifier
+    source_id: str
+    member_path: str
+    analysis_revision: str
+    items: list[ImportReportAccountChoice]
+    total: int
+    page: int
+    page_size: int
+
+
+class ImportReportRelation(ImportReportDirectional, ImportReportPeriod):
+    account: str
+    counterparty: str
+    account_number: str
+    counterparty_number: str
+    names: list[str]
+    currency: str
+
+
+class ImportReportRelations(ContractModel):
+    items: list[ImportReportRelation]
+    total: int
+    page: int
+    page_size: int
+
+
+class ImportReportMethodParagraph(ContractModel):
+    title: str
+    text: str
+
+
+class ImportReport(ContractModel):
+    case_id: Identifier
+    source_id: str
+    member_path: str
+    analysis_revision: str
+    policy: Literal['import-member-funds-report-v1']
+    generated_at: str
+    scope: ImportReportScope
+    quality: ImportReportQuality
+    perspective: Literal['own_ledger', 'transaction_endpoints']
+    currency: str | None
+    currencies: list[str]
+    account: str | None
+    accounts: ImportReportAccounts
+    overview: ImportReportOverview | None = None
+    peer_account: str | None = None
+    peer_selected_account: ImportReportAccount | None = None
+    summary: ImportReportSummary
+    top_in: list[ImportReportPeer]
+    top_out: list[ImportReportPeer]
+    timeline: list[ImportReportTimeBucket]
+    timeline_grain: str
+    timeline_mode: Literal['auto','day','month','year'] = 'auto'
+    timeline_pagination: ImportReportTimelinePage | None = None
+    timeline_scope: ImportReportTrendScope | None = None
+    periods: list[ImportReportPeriod]
+    relations: ImportReportRelations
+    integrity: ImportReportIntegrity
+    notes: list[str]
+    method_paragraphs: list[ImportReportMethodParagraph] = Field(default_factory=list)
+
+
+class ImportReportRecords(ImportRecordPage):
+    analysis_revision: str

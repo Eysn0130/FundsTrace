@@ -1,9 +1,13 @@
 """Independent synthetic bank postings, including contradictions and revocation."""
 import csv
+from collections.abc import Mapping
+from copy import deepcopy
 from decimal import Decimal
 import hashlib
 import io
 import json
+import sys
+import weakref
 import zipfile
 
 from openpyxl import load_workbook
@@ -58,6 +62,65 @@ def tracked_graph(client, cid, rows):
     response = client.get("/api/graph", params={"case_id": cid})
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def test_retained_posting_row_budget_preserves_shared_books_and_public_proof(client, make_case, record_property):
+    from app import bank_posting_pairs
+
+    cid = make_case('SYN compact posting rows')
+    add_source(client, cid, encoded(entries()))
+    graph = tracked_graph(client, cid, targets(client, cid))
+    assert (graph['transaction_count'], graph['edges'][0]['total']) == (1, '37.41')
+    assert graph['funds']['status'] == 'exact' and graph['funds']['observation_count'] == 2
+    candidates, books, unlocated = bank_posting_pairs._inputs(cid)
+    kept = {id(row): row for row in candidates}
+    kept.update((id(row), row) for book in books.values() for row in book)
+    assert len(kept) == len(candidates) == sum(map(len, books.values())) == 4 and not unlocated
+    before = sum(sys.getsizeof(dict(row)) for row in kept.values())
+    after = sum(sys.getsizeof(row) for row in kept.values())
+    record_property('posting_row_storage', json.dumps({'rows': len(kept), 'before_bytes': before,
+                                                     'after_bytes': after}, sort_keys=True))
+    print(json.dumps({'rows': len(kept), 'before_bytes': before, 'after_bytes': after}, sort_keys=True))
+    assert before - after >= 272 * len(kept)
+
+
+def test_posting_row_keeps_optional_fields_key_order_and_mutable_aliases():
+    from app import bank_posting_pairs
+    class Text(str):
+        pass
+    class Source(dict):
+        pass
+    source = Source(source_id=Text('SYN-source'), record_no=0, member_path=Text('SYN.csv'), source_row=2,
+                    disposition=Text('unresolved'), parser_version=Text('SYN-profile'), member_sha256='a' * 64,
+                    flow_id=None, trade_no_basis=None)
+    expected = dict(source)
+    row = bank_posting_pairs._PostingRow(source)
+    assert isinstance(row, Mapping) and not isinstance(row, dict) and not hasattr(row, '__dict__')
+    assert list(row) == list(expected) and len(row) == len(expected)
+    missing = object()
+    assert row.get('effective', missing) is missing and row.get('flow_id', missing) is None
+    evidence, candidate, physical = {'row': {'SYN': []}}, (False, '', ''), {2}
+    values = dict(contract=None, evidence=evidence, _candidate=candidate)
+    row.update(values); expected.update(values)
+    assert row.pop('_candidate') is expected.pop('_candidate') is candidate
+    values = dict(position_path=None, _physical_rows=physical, authority=False, reference='', bank='', effective=False)
+    row.update(**values); expected.update(values)
+    assert list(row) == list(expected) and list(row.items()) == list(expected.items())
+    assert len(row) == len(expected) and all(row[key] is value for key, value in expected.items())
+    physical.add(3); evidence['row']['SYN'].append(None)
+    assert row['_physical_rows'] is physical and row['evidence'] is evidence
+    clone = deepcopy([row, {'book': row}])
+    assert clone[0] is clone[1]['book'] and dict(clone[0]) == expected
+    for key in ('missing', '_candidate', '_FIELDS', '_KEYS', '_ABSENT', '__class__'):
+        assert row.get(key, missing) is missing and row.pop(key, missing) is missing
+        with pytest.raises(KeyError): row[key]
+    with pytest.raises(KeyError): row['missing'] = None
+    assert row.pop('position_path') is None
+    assert 'position_path' not in row
+    with pytest.raises(KeyError): row.pop('position_path')
+    reference = weakref.ref(source)
+    del source
+    assert reference() is None
 
 
 @pytest.mark.parametrize("archive", [False, True], ids=["csv", "zip"])

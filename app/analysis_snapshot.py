@@ -18,9 +18,10 @@ from . import db
 POLICY = "source-evidence-analysis-v5-source-card-ownership"
 
 
-def invalidate(case_id):
-    from . import source_ledger
-    source_ledger.refresh_index(db.con(), case_id)
+def invalidate(case_id, *, refresh_source_index=True):
+    if refresh_source_index:
+        from . import source_ledger
+        source_ledger.refresh_index(db.con(), case_id)
     token = uuid4().hex
     db.x("insert into analysis_state(case_id,revision) values (?,?) "
          "on conflict(case_id) do update set revision=excluded.revision", [case_id, token])
@@ -50,19 +51,17 @@ def case_read_snapshot(case_id):
     private connection. Normal populated cases never acquire the writer lock.
     """
     db._require_snapshot_entry()
-    # Reentrant only for this entry calling the lower-level snapshot context.
-    # The gate covers connection open/close and the complete locked fallback.
-    with db._read_admission:
-        with db.read_snapshot() as active:
-            if not active:
-                with db.transaction():
-                    revision(case_id)
-                yield
-                return
-            if db.q_raw("select 1 from analysis_state where case_id=?", [case_id]):
-                yield
-                return
-        with db._lock:
+    with db.read_snapshot() as active:
+        if not active:
             with db.transaction():
                 revision(case_id)
             yield
+            return
+        if db.q_raw("select 1 from analysis_state where case_id=?", [case_id]):
+            yield
+            return
+    # Leave private-reader admission before waiting for initialization writes.
+    with db._lock:
+        with db.transaction():
+            revision(case_id)
+        yield

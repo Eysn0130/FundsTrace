@@ -1,6 +1,8 @@
 """Public discovery, source access and retention use one explicit case scope."""
+import csv
 from datetime import datetime
 import hashlib
+import io
 import time
 
 import pytest
@@ -15,9 +17,9 @@ CSV = ("合成报表\n\n交易时间,付款账号,收款账号,交易金额\n"
        "invalid,000SYN-A,000SYN-B,5.00\n").encode()
 
 
-def complete(client, cid, preview):
+def complete(client, cid, preview, **request):
     base = f"/api/v1/cases/{cid}/imports/{preview['import_id']}"
-    assert client.post(base + "/commit", json={"mode": preview["mode"], "mapping": preview["mapping"]}).status_code == 200
+    assert client.post(base + "/commit", json={"mode": preview["mode"], "mapping": preview["mapping"], **request}).status_code == 200
     for _ in range(400):
         response = client.get(base)
         assert response.status_code == 200, response.text
@@ -33,6 +35,102 @@ def upload(client, cid):
     response = client.post(f"/api/v1/cases/{cid}/imports/preview", files={"file": ("synthetic.csv", CSV)})
     assert response.status_code == 200, response.text
     return response.json()
+
+
+@pytest.mark.parametrize('occurrence', [False, True], ids=['ordinary-writer', 'staged-evidence-writer'])
+@pytest.mark.parametrize('marks,extra,selected', [
+    (None, [], [('000SYN-A', ''), ('000SYN-B', 'First B'), ('000SYN-C', 'Name C')]),
+    ([], [], []),
+    (['000SYN-C', '000SYN-A', '000SYN-B'], [], [('000SYN-C', 'Name C'), ('000SYN-A', ''), ('000SYN-B', 'First B')]),
+    (['000SYN-UNKNOWN', '000SYN-B', '000SYN-A'], ['000SYN-B', '000SYN-EXTRA', '000SYN-A'],
+     [('000SYN-UNKNOWN', ''), ('000SYN-B', 'First B'), ('000SYN-A', ''), ('000SYN-EXTRA', '')]),
+    (None, ['000SYN-C', '000SYN-EXTRA', '000SYN-B'],
+     [('000SYN-A', ''), ('000SYN-B', 'First B'), ('000SYN-C', 'Name C'), ('000SYN-EXTRA', '')]),
+], ids=['automatic', 'empty', 'manual-order', 'unknown-and-overlap', 'automatic-and-extra'])
+def test_public_main_marking_reuses_first_writer_declarations_without_source_reads(
+        client, database, make_case, monkeypatch, record_property, occurrence, marks, extra, selected):
+    from app.import_staging import StagedSequence
+
+    cid = make_case('Synthetic first main declarations')
+    headers = ['交易时间', '本方账号', '本方户名', '对方账号', '收付标志', '交易金额', '交易币种', '交易流水号']
+    owners = [('000SYN-A', ''), ('000SYN-B', ' First B '), ('000SYN-A', 'Later A'),
+              ('000SYN-B', 'Different B'), ('000SYN-C', ' Name C ')]
+    cells = [[f'2026-01-01 10:00:0{i}', account, name, '000SYN-COUNTER', '出', '1.01', 'CNY', f'SYN-{i}']
+             for i, (account, name) in enumerate(owners)]
+    if occurrence:
+        headers += ['参考号机构', '参考号渠道', '参考号业务域', '跨账簿事件参考号']
+        cells = [row + ['SYN issuer', 'SYN channel', 'SYN scope', f'SYN-event-{i}'] for i, row in enumerate(cells)]
+    cells.append(list(cells[0]))
+    buffer = io.StringIO(newline='')
+    csv.writer(buffer).writerows([headers, *cells])
+    content = buffer.getvalue().encode('utf-8-sig')
+    declarations = [{'account': account, 'name': name} for account, name in
+                    [('000SYN-A', ''), ('000SYN-B', 'First B'), ('000SYN-C', 'Name C')]]
+    phase = 'preview'
+    reads = {'preview': 0, 'commit': 0, 'mark_rows': 0, 'mark_queries': 0}
+    writer_receipts, staged_calls, mark_calls = [], [], []
+    iterate, write, staged, mark = StagedSequence.__iter__, importer.commit_rows, importer._commit_staged_evidence, imports._mark_mains
+
+    def counted_rows(self):
+        for row in iterate(self):
+            if self.kind == 'rows': reads[phase] += 1
+            yield row
+
+    def observed_write(*args, **kwargs):
+        result = write(*args, **kwargs)
+        writer_receipts.append(result['self_accounts'])
+        return result
+
+    def observed_staged(*args, **kwargs):
+        staged_calls.append(True)
+        return staged(*args, **kwargs)
+
+    class MarkRows:
+        def __init__(self, rows): self.rows = rows
+        def __iter__(self):
+            for row in self.rows:
+                reads['mark_rows'] += 1
+                yield row
+
+    def observed_mark(*args):
+        receipt = args[-2]
+        assert database._transaction_state.depth > 0
+        assert database.q_raw('select count(*) n from import_records where case_id=?', [cid])[0]['n'] == 6 * (len(mark_calls) + 1)
+        assert database.q_raw('select count(*) n from flow_sources where case_id=? and source_id=?', [cid, receipt['source_id']])[0]['n'] == 6
+        mark_calls.append(receipt['self_accounts'])
+        if len(args) == 4:
+            case, rows, receipt, request = args
+            store = rows.store if isinstance(rows, StagedSequence) else None
+            before = store.read_queries if store is not None else 0
+            result = mark(case, MarkRows(rows), receipt, request)
+            reads['mark_queries'] += store.read_queries - before if store is not None else 0
+            return result
+        return mark(*args)
+
+    monkeypatch.setattr(StagedSequence, '__iter__', counted_rows)
+    monkeypatch.setattr(importer, 'commit_rows', observed_write)
+    monkeypatch.setattr(importer, '_commit_staged_evidence', observed_staged)
+    monkeypatch.setattr(imports, '_mark_mains', observed_mark)
+    for attempt in range(2):
+        phase = 'preview'
+        response = client.post(f'/api/v1/cases/{cid}/imports/preview', files={'file': (f'synthetic-{attempt}.csv', content)})
+        assert response.status_code == 200, response.text
+        preview = response.json()
+        assert preview['table_summary']['profile'] == ('funds-trace-table-v71' if occurrence else 'funds-trace-table-v69')
+        assert len(mark_calls) == attempt
+        phase = 'commit'
+        job = complete(client, cid, preview, mark_accounts=marks, self_accounts=extra)
+        receipt = job['result']
+        assert receipt['self_accounts'] == declarations and receipt['self_accounts_count'] == 3
+        assert receipt['main_detected'] == [{'account': account, 'name': name} for account, name in selected]
+        assert (receipt['ok'], receipt['rows_dup']) == ((0, 6) if attempt else (6, 0) if occurrence else (5, 1))
+    assert writer_receipts == mark_calls == [declarations, declarations]
+    assert len(staged_calls) == (2 if occurrence else 0)
+    assert database.q_raw('select account,name,source from main_accounts where case_id=? order by account', [cid]) == [
+        {'account': account, 'name': name, 'source': 'auto'} for account, name in sorted(selected)]
+    record_property('main_source_reads', reads)
+    print({'writer': 'staged' if occurrence else 'ordinary', 'reads': reads})
+    assert reads['mark_rows'] == reads['mark_queries'] == 0
 
 
 def test_nonempty_session_discovery_and_paginated_sources_are_case_bound(client, database, make_case):

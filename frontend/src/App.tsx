@@ -153,6 +153,7 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
         ...createBrowserFundsActions(context, api),
         openGraph: signal => bridge.current?.request('open-graph', {}, signal),
         openLegacyImport: (_importId, signal) => bridge.current?.request('open-graph', {}, signal),
+        ...(hostContext?.desktopSources ? { sourceCopy: (sourceId: string, action: 'open' | 'reveal', signal?: AbortSignal) => ownBridge().request('source-copy', { sourceId, action }, signal) } : {}),
       } : createBrowserFundsActions(context, api) });
     currentBinding.current = binding;
     const feedbackBinding = { caseId: context.caseId, generation };
@@ -165,7 +166,7 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
     feedbackPort = feedback.port;
     setConnection({ binding, feedback, transport: api, actionsFactory: actionsForCase });
     return () => { binding.revoke(); feedback.dispose(); };
-  }, [api, selected?.id, selected?.name, generation, actionsForCase, embedded]);
+  }, [api, selected?.id, selected?.name, generation, actionsForCase, embedded, hostContext?.desktopSources]);
   const binding = connection?.binding;
   const session = connection?.transport === api && connection.actionsFactory === actionsForCase && binding?.session.context.caseId === selectedId && binding.session.context.name === selected?.name && binding.session.generation === generation ? binding.session : null;
   useEffect(() => {

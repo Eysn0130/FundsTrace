@@ -15,7 +15,7 @@ type SinglePostingProof = {
   balance_change: { before: string; after: string; difference: string; previous_source_row: number; basis: string };
 };
 
-export function SourceFieldEvidence({ details }: { details?: Record<string, string> }) {
+export function SourceFieldEvidence({ details, expanded = false }: { details?: Record<string, string>; expanded?: boolean }) {
   let times: { role: string; column: string; column_index: number; raw: string; wall_clock: string; offset: string | null; utc: string | null }[] = [];
   try {
     const value = JSON.parse(details?.source_time_evidence || 'null');
@@ -66,7 +66,7 @@ export function SourceFieldEvidence({ details }: { details?: Record<string, stri
   if (pendingPair || pendingSingle || conflict || incomparable) single = null;
   if (single || pendingPair || pendingSingle || conflict || incomparable) pair = null;
   if (!items.length && !declaration && !pair && !single && !pendingPair && !pendingSingle && !times.length && !details?.source_time_evidence_limited && !details?.source_field_evidence_limited && !conflict && !incomparable) return null;
-  return <details><summary>来源字段与校验依据</summary>{pendingPair && !singleContext && <p>双侧来源存在对应线索，关联依据不足；资金笔数和金额待核对。原流水、各自余额与资金范围保留。</p>}{pendingSingle && <p>独立过账证据尚不足；原始记录和余额保留，不据此确认资金交易笔数。</p>}{incomparable && <p>有区与未标时区的来源时间不可比较，尚不能确定是否同一笔；两份来源原值保留，累计金额待核对。</p>}{conflict && <p>{singleContext ? '当前过账证据存在矛盾，暂不计入有效资金统计；原始记录与原值保留。' : '同笔关联资料存在矛盾，暂不计入有效资金统计；原始记录与原值保留。'}</p>}<ul>{items.map((item, index) => <li key={index}>
+  return <details open={expanded}><summary>来源字段与校验依据</summary>{pendingPair && !singleContext && <p>双侧来源存在对应线索，关联依据不足；资金笔数和金额待核对。原流水、各自余额与资金范围保留。</p>}{pendingSingle && <p>独立过账证据尚不足；原始记录和余额保留，不据此确认资金交易笔数。</p>}{incomparable && <p>有区与未标时区的来源时间不可比较，尚不能确定是否同一笔；两份来源原值保留，累计金额待核对。</p>}{conflict && <p>{singleContext ? '当前过账证据存在矛盾，暂不计入有效资金统计；原始记录与原值保留。' : '同笔关联资料存在矛盾，暂不计入有效资金统计；原始记录与原值保留。'}</p>}<ul>{items.map((item, index) => <li key={index}>
     {roles[item.role] || item.role} · 第 {item.column_index} 列「{item.column}」 · 原值 <code>{JSON.stringify(item.raw)}</code>
   </li>)}</ul>{times.length > 0 && <><p>来源时间与角色；无偏移的时间不推定设备时区，同一瞬间不证明同笔交易。</p><ul>{times.map((item, index) => <li key={index}>
     {item.role === 'posting' ? '记账时间' : item.role === 'receipt' ? '受理时间' : item.role === 'settlement' ? '结算时间' : item.role === 'transaction' ? '交易时间' : '来源时间（角色未明确）'} · 第 {item.column_index} 列「{item.column}」 · 原值 <code>{JSON.stringify(item.raw)}</code>
