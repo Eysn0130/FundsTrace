@@ -155,7 +155,7 @@ def test_late_csv_damage_closes_staging_and_rejects_the_entire_public_batch(clie
 
 
 @pytest.mark.parametrize("profile", [table_import.IDENTITY_PROFILE, table_import.SOURCE_CONTRACT_PROFILE,
-                                     table_archive.PROFILE, table_archive.AUXILIARY_ROWS_EVIDENCE_PROFILE])
+                                     table_archive.PROFILE, table_archive.BANK_SOURCE_EVIDENCE_PROFILE])
 def test_header_search_skips_impossible_rows_and_retains_prefix_false_positives(monkeypatch, profile):
     candidates, calls = table_import._candidates, []
     late = ["date", "payer_account", "payee_account", "amount"]
@@ -214,7 +214,7 @@ def test_header_search_keeps_custom_profiles_rows_and_cells_on_the_original_path
 @pytest.mark.parametrize("profile", [table_import.IDENTITY_PROFILE, table_import.FINANCIAL_PROFILE,
                                      table_import.TIME_FORMAT_PROFILE, table_import.PRECISE_PROFILE,
                                      table_import.SOURCE_CONTRACT_PROFILE, table_import.PROFILE,
-                                     table_archive.PROFILE, table_archive.AUXILIARY_ROWS_EVIDENCE_PROFILE])
+                                     table_archive.PROFILE, table_archive.BANK_SOURCE_EVIDENCE_PROFILE])
 def test_time_name_hint_preserves_the_complete_current_vocabulary(profile):
     words = set().union(*(vocabulary.get("trade_time", set()) for vocabulary in (
         table_import._ALIASES, table_import._FINANCIAL_ALIASES, table_import._CONTRACT_ALIASES)))

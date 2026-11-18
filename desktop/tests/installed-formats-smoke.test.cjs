@@ -115,7 +115,7 @@ test('actual CLI failure tail emits no passed summary', async () => {
 function fourSourcesFixture() {
   const files = ['formats.csv', 'formats.xlsx', 'formats.xls', 'formats.zip'];
   const inputs = new Map(files.map(file => [file, Buffer.from(`SYN fixed input ${file}`)]));
-  const profiles = ['funds-trace-table-v69', 'funds-trace-table-v69', 'funds-trace-table-v70', 'funds-trace-table-archive-v60'];
+  const profiles = ['funds-trace-table-v69', 'funds-trace-table-v69', 'funds-trace-table-v70', 'funds-trace-table-archive-v63'];
   const rows = [
     { id: '501', trade_no: 'SYN-F1', trade_time: '2026-01-01T10:00:00', payer_account: '000SYN-A', payee_account: '000SYN-B', amount: '123.45', currency: 'CNY', self_account: '000SYN-A', balance: null },
     { id: '502', trade_no: 'SYN-F2', trade_time: '2026-01-01T11:00:00', payer_account: '000SYN-B', payee_account: '000SYN-A', amount: '2.03', currency: 'CNY', self_account: '000SYN-A', balance: null },

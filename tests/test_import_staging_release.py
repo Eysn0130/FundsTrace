@@ -3,8 +3,8 @@
 import pytest
 
 
-@pytest.mark.parametrize("branch,profile", [("ordinary", "funds-trace-table-archive-v60"),
-                                            ("evidence", "funds-trace-table-archive-v61")])
+@pytest.mark.parametrize("branch,profile", [("ordinary", "funds-trace-table-archive-v63"),
+                                            ("evidence", "funds-trace-table-archive-v64")])
 def test_verified_table_journal_releases_staging_before_ledger_read(client, database, make_case, monkeypatch, branch, profile):
     from app import import_validation, source_ledger
     from app.services import imports

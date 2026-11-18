@@ -24,9 +24,9 @@ def row(**changes):
 
 
 @pytest.mark.parametrize("suffix,headers,predecessor,successor", [
-    ("csv", COLUMNS, table_import.VOUCHER_REFERENCE_PROFILE, table_import.CLOSED_BANK_PROFILE),
-    ("xlsx", SECOND_ORDER, table_import.VOUCHER_REFERENCE_PROFILE, table_import.CLOSED_BANK_PROFILE),
-    ("xls", COLUMNS, table_import.VOUCHER_REFERENCE_XLS_PROFILE, table_import.CLOSED_BANK_XLS_PROFILE),
+    ("csv", COLUMNS, table_import.VOUCHER_REFERENCE_PROFILE, table_import.BANK_SOURCE_PROFILE),
+    ("xlsx", SECOND_ORDER, table_import.VOUCHER_REFERENCE_PROFILE, table_import.BANK_SOURCE_PROFILE),
+    ("xls", COLUMNS, table_import.VOUCHER_REFERENCE_XLS_PROFILE, table_import.BANK_SOURCE_XLS_PROFILE),
 ])
 def test_standalone_exact37_uses_source_reference_roles_without_changing_pinned_replay(client, make_case, suffix, headers, predecessor, successor):
     rows = [row(), row(**{"交易流水号": "SYN-PADDING", "Unnamed: 35": "0"}),

@@ -70,6 +70,55 @@ def imported(client, cid, content, archive):
 
 
 @pytest.mark.parametrize("archive", [False, True], ids=["csv", "zip"])
+@pytest.mark.parametrize("kind", ["drop-empty-ip", "empty-extra"])
+def test_blank_source_currency_in_bank31_variants_is_excluded_from_funds_and_report(client, make_case, archive, kind):
+    headers, source_row = csv.reader(io.StringIO(data(kind).decode("utf-8-sig")))
+    known = dict(zip(headers, source_row))
+    missing = {**known, "交易金额": "12.34", "交易币种": ""}
+    known.update({"交易流水号": "P002", "交易金额": "12.34", "交易币种": "JPY"})
+    stream = io.StringIO(newline="")
+    csv.writer(stream).writerows([headers, [missing[h] for h in headers], [known[h] for h in headers]])
+    content = stream.getvalue().encode("utf-8-sig")
+    if archive:
+        package = io.BytesIO()
+        with zipfile.ZipFile(package, "w") as output:
+            output.writestr("source.csv", content)
+        content = package.getvalue()
+
+    cid = make_case("SYN bank31 source currency")
+    view, job = imported(client, cid, content, archive)
+    base = f"/api/v1/cases/{cid}/imports/{view['import_id']}"
+    member = "source.csv" if archive else "table.csv"
+    page = client.get(f"/api/v1/cases/{cid}/flows").json()
+    records = client.get(base + "/records").json()["items"]
+    report_response = client.get(base + "/report", params={"member_path": member})
+    assert report_response.status_code == 200, report_response.text
+    report = report_response.json()
+    assert (view["stats"]["ok"], job["result"]["ok"]) == (1, 1)
+    assert [(r["source_row"], r["disposition"], r["reason_code"]) for r in records] == [
+        (2, "unresolved", "invalid_currency"), (3, "imported", "transaction_valid")]
+    assert records[0]["flow_id"] is None
+    assert [(row["trade_no"], row["currency"], row["amount"]) for row in page["items"]] == [("P002", "JPY", "12.34")]
+    assert report["summary"]["transaction_count"] == 1
+    assert report["summary"]["out_amount"] == "12.34"
+    assert report["quality"]["dispositions"] == {"imported": 1, "unresolved": 1}
+    assert client.get(f"/api/v1/cases/{cid}/sources/{view['import_id']}/file").content == content
+
+
+def test_manual_reference_selection_cannot_authorize_nonempty_bank31_extension(client, make_case):
+    cid = make_case("SYN bank31 occupied extension")
+    base = f"/api/v1/cases/{cid}/imports"
+    response = client.post(base + "/preview", files={"file": ("source.csv", data("nonempty-extra"))})
+    assert response.status_code == 200, response.text
+    view = response.json()
+    assert (view["table_summary"]["profile"], view["stats"]["ok"]) == ("funds-trace-table-v75", 0)
+    response = client.post(f"{base}/{view['import_id']}/preview", json={
+        "mode": view["mode"], "mapping": view["mapping"], "reference_policy": "transaction-reference-v1"})
+    assert response.status_code == 200, response.text
+    assert response.json()["stats"]["reason_counts"] == {"conflicting_field": 1}
+
+
+@pytest.mark.parametrize("archive", [False, True], ids=["csv", "zip"])
 @pytest.mark.parametrize("kind", EXPECTED)
 def test_public_bank31_variants_preserve_facts_sources_graph_and_export(client, make_case, archive, kind):
     count, total, reason = EXPECTED[kind]
@@ -154,9 +203,9 @@ def test_empty_ancillary_columns_are_optional_without_changing_transaction_roles
         "P001", "00000001", "00000002", "Synthetic", "SYN original summary")
 
 
-@pytest.mark.parametrize("suffix,archive,profile", [(".xlsx", False, "funds-trace-table-v69"),
-                                                  (".xls", False, "funds-trace-table-v70"),
-                                                  (".xls", True, "funds-trace-table-archive-v62")])
+@pytest.mark.parametrize("suffix,archive,profile", [(".xlsx", False, "funds-trace-table-v75"),
+                                                  (".xls", False, "funds-trace-table-v76"),
+                                                  (".xls", True, "funds-trace-table-archive-v65")])
 def test_bank31_optional_shape_reaches_current_workbook_entrypoints(client, make_case, suffix, archive, profile):
     from test_table_multisheet_append import encoded
     matrix = list(csv.reader(io.StringIO(data("drop-empty-ip").decode("utf-8-sig"))))

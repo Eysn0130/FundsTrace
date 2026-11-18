@@ -30,7 +30,7 @@ def test_current_cross_container_cancellation_keeps_signed_observations_and_with
     proofs = []
     for _ in range(2):
         view, job = add_source(client, cid, package, "proof.zip")
-        assert view["table_summary"]["profile"] == "funds-trace-table-archive-v60"
+        assert view["table_summary"]["profile"] == "funds-trace-table-archive-v63"
         assert job["result"]["table_summary"]["cancelled"] == 2
         proofs.append(job)
         page = client.get(f"/api/v1/cases/{cid}/flows").json()

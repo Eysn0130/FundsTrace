@@ -173,7 +173,7 @@ def test_closed_bank_sheet_preserves_declared_events_in_same_workbook(client, da
     response = upload(client, cid, content, ".xlsx")
     assert response.status_code == 200, response.text
     view = response.json()
-    assert view["table_summary"]["profile"] == table_import.CLOSED_BANK_EVIDENCE_PROFILE
+    assert view["table_summary"]["profile"] == table_import.BANK_SOURCE_EVIDENCE_PROFILE
     import_preview_cache.discard(view["import_id"])
     job = complete(client, cid, view)
     assert job["stage"] == "done" and job["result"]["ok"] == 3

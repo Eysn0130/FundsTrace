@@ -160,7 +160,7 @@ def test_native28_zero_identifier_and_currency_are_literal_source_fields(client,
     assert client.get(base + f"/sources/{job['result']['source_id']}/file").content == raw
 
 
-@pytest.mark.parametrize("kind,profile", [("csv", "funds-trace-table-v69"), ("zip", "funds-trace-table-archive-v60")])
+@pytest.mark.parametrize("kind,profile", [("csv", "funds-trace-table-v69"), ("zip", "funds-trace-table-archive-v63")])
 def test_public_native28_preview_decodes_each_ledger_observation_once(client, make_case, monkeypatch, kind, profile):
     cid = make_case("SYN source observation reuse")
     stamp = "2026-02-03T00:10:00.123456+08:00"
@@ -238,7 +238,7 @@ def test_full_closed31_auxiliary_variants_have_explicit_zip_scope(client, make_c
                ("manifest.csv", table("task", [{"请求单号": "SYN-REQUEST", "银行名称": "Synthetic bank"}]))]
     raw = archive(members)
     view, job = add_source(client, cid, raw, "complete.zip")
-    assert view["table_summary"]["profile"] == (table_archive.AUXILIARY_ROWS_EVIDENCE_PROFILE if bound else table_archive.PROFILE)
+    assert view["table_summary"]["profile"] == (table_archive.BANK_SOURCE_EVIDENCE_PROFILE if bound else table_archive.PROFILE)
     report = client.get(f"/api/v1/cases/{cid}/sources/{job['result']['source_id']}/report").json()["items"]
     assert len(report) == 4 and sum(item["disposition"] == "auxiliary" for item in report) == 3
     entities = client.get(f"/api/v1/cases/{cid}/resolution").json().get("entities", [])
