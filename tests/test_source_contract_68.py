@@ -97,9 +97,9 @@ def test_old_ready_source_session_keeps_its_version_and_receipt_after_text_upgra
 
 
 @pytest.mark.parametrize("suffix,archive,profile", [
-    (".xlsx", False, "funds-trace-table-v69"),
-    (".xls", False, "funds-trace-table-v70"),
-    (".xls", True, "funds-trace-table-archive-v59"),
+    (".xlsx", False, table_import.CLOSED_BANK_PROFILE),
+    (".xls", False, table_import.CLOSED_BANK_XLS_PROFILE),
+    (".xls", True, "funds-trace-table-archive-v62"),
 ])
 def test_source_text_version_routes_workbooks_without_merging_remark(client, make_case, suffix, archive, profile):
     from test_table_multisheet_append import encoded
@@ -211,6 +211,37 @@ def test_old_ready_source_and_new_explicit_reimport_keep_receipt_and_supports(cl
     assert client.get(f"/api/v1/cases/{cid}/flows").json()["total"] == 3
     assert client.delete(f"/api/batches/{second['result']['batch_id']}", params={"case_id": cid}).status_code == 200
     assert client.get(f"/api/v1/cases/{cid}/flows").json()["total"] == 0
+
+
+def test_staged_archive_binds_posting_repeats_at_their_rebased_member_positions(database, monkeypatch):
+    from app.import_staging import StagedSequence
+
+    data = payload()
+    inner, outer = io.BytesIO(), io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as archive:
+        archive.writestr("member.csv", data)
+    with zipfile.ZipFile(outer, "w") as archive:
+        archive.writestr("member.csv", data)
+        archive.writestr("nested.zip", inner.getvalue())
+    joined, read = [], StagedSequence.with_records
+
+    def observe(self, records, **kwargs):
+        joined.append(self.kind)
+        yield from read(self, records, **kwargs)
+
+    monkeypatch.setattr(StagedSequence, "with_records", observe)
+    plan = table_archive.parse(outer, _stage=True)
+    try:
+        rows, records = list(plan["rows"]), list(plan["records"])
+        assert [record["member_path"] for record in records] == ["member.csv"] * 4 + ["nested.zip/member.csv"] * 4
+        assert [row["_source_row"] for row in rows] == list(range(1, 9))
+        keys = [record["record_key"] for record in records]
+        assert len(set(keys)) == 8 and [row["_record_key"] for row in rows] == keys
+        assert [row["_source_posting_record_key"] for row in rows] == [
+            keys[0], keys[1], keys[0], keys[3], keys[4], keys[5], keys[4], keys[7]]
+        assert joined == []
+    finally:
+        plan["_plan_store"].close()
 
 
 def test_archive_posting_supports_repeat_and_restore_without_changing_positions(client, make_case):

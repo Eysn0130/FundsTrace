@@ -1,12 +1,15 @@
 """Synthetic native bank fields agree across ordinary user upload formats."""
+from collections import Counter
 import io
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from app import feedback_import, table_archive, table_import
+from test_automatic_table_import import preview
 from test_feedback31_reference import COLUMNS as COLUMNS31, payload, row as row31
-from test_folder_evidence import account, archive, table, transaction
+from test_folder_evidence import account, archive, complete, table, transaction
 from test_source_ledger import add_source
 from test_source_ledger_main_flags import graph, mark, track
 
@@ -98,6 +101,26 @@ def test_native28_old_reference_receipt_interpretation_is_preserved():
 
 
 @pytest.mark.parametrize("kind", ["csv", "zip"])
+def test_registered_native31_missing_currency_cannot_become_cny_funds(client, database, make_case, kind):
+    rows = [row31(**{"交易流水号": "SYN-NO-CURRENCY", "交易币种": ""}),
+            row31(**{"交易流水号": "SYN-NO-MOVEMENT", "交易金额": "0.00", "交易币种": ""}),
+            row31(**{"交易流水号": "SYN-DECLARED-JPY", "交易币种": "JPY"})]
+    raw, name = upload_bytes(rows, kind, COLUMNS31)
+    cid = make_case("Synthetic source currency required")
+    _, job = add_source(client, cid, raw, name)
+    base = f"/api/v1/cases/{cid}"
+    items = client.get(base + f"/sources/{job['result']['source_id']}/report").json()["items"]
+    assert [r["reason_code"] for r in items] == ["invalid_currency", "zero_amount", "transaction_valid"]
+    assert [r["disposition"] for r in items] == ["unresolved", "non_monetary", "imported"]
+    assert items[0]["flow_id"] is None
+    for record in items[:2]:
+        assert json.loads(record["details"]["source_ledger_evidence"])["row"]["currency"] == ""
+        assert record["details"]["currency_basis"] == "来源币种未明确，按原始记录保留"
+    flow, = database.q_raw("select trade_no,currency from source_effective_flows where case_id=?", [cid])
+    assert flow["trade_no"] == "SYN-DECLARED-JPY" and flow["currency"] == "JPY"
+
+
+@pytest.mark.parametrize("kind", ["csv", "zip"])
 def test_native28_zero_identifier_and_currency_are_literal_source_fields(client, make_case, kind):
     cid = make_case("SYN zero reference and separate currencies")
     rows = [transaction(**{"交易流水号": "0", "凭证号": "SYN-INDEPENDENT", "交易金额": "10.00", "交易币种": "CNY", "交易是否成功": "99"}),
@@ -137,6 +160,56 @@ def test_native28_zero_identifier_and_currency_are_literal_source_fields(client,
     assert client.get(base + f"/sources/{job['result']['source_id']}/file").content == raw
 
 
+@pytest.mark.parametrize("kind,profile", [("csv", "funds-trace-table-v69"), ("zip", "funds-trace-table-archive-v60")])
+def test_public_native28_preview_decodes_each_ledger_observation_once(client, make_case, monkeypatch, kind, profile):
+    cid = make_case("SYN source observation reuse")
+    stamp = "2026-02-03T00:10:00.123456+08:00"
+    raw, name = upload_bytes([
+        transaction(**{"交易流水号": "SYN-FINANCIAL", "交易时间": stamp}),
+        transaction(**{"交易流水号": "SYN-NEUTRAL", "收付标志": ""}),
+        transaction(**{"交易流水号": "SYN-NO-EVIDENCE", "交易金额": ""}),
+        {header: header for header in feedback_import.COLUMNS},
+        transaction(**{"交易流水号": "SYN-CONTEXT", "交易币种": ""}),
+    ], kind)
+    loads = Counter()
+
+    def decode(encoded):
+        value = json.loads(encoded)
+        if isinstance(value, dict) and value.get("policy") in {"source-ledger-observations-v1", "source-ledger-unoriented-v2"}:
+            loads[value["row"]["trade_no"]] += 1
+        return value
+
+    with monkeypatch.context() as parser:
+        parser.setattr(table_import, "json", SimpleNamespace(dumps=json.dumps, loads=decode))
+        view = preview(client, cid, raw, name)
+    assert view["table_summary"]["profile"] == profile
+    assert view["table_summary"]["documents"][0]["header_rows"] == [1, 5]
+    assert view["table_summary"]["currency_totals"] == {"CNY": "10.25"}
+
+    job = complete(client, cid, view)
+    assert job["stage"] == "done", job
+    report = client.get(f"/api/v1/cases/{cid}/sources/{job['result']['source_id']}/report")
+    assert report.status_code == 200, report.text
+    financial, neutral, no_evidence, header, context = report.json()["items"]
+    assert [record["reason_code"] for record in (financial, neutral, no_evidence, header, context)] == [
+        "transaction_valid", "missing_direction", "missing_amount", "repeated_header", "invalid_currency"]
+    posting = json.loads(financial["details"]["source_ledger_evidence"])
+    assert (posting["kind"], posting["direction"], posting["header_scope"]) == ("financial", "out", 1)
+    assert (posting["row"]["trade_time_utc"], posting["row"]["trade_time_original"], posting["row"]["trade_time_offset"]) == (
+        "2026-02-02 16:10:00.123456", stamp, "+08:00")
+    unknown = json.loads(neutral["details"]["source_ledger_evidence"])
+    assert (unknown["kind"], unknown["direction"], unknown["header_scope"]) == ("ledger", "unknown", 1)
+    identity = json.loads(neutral["details"]["resolution_evidence"])
+    assert identity["own_side"] == "" and identity["endpoints"]["counter"]["account"] == "SYN-B"
+    assert all(identity["endpoints"][side]["account"] == "" for side in ("payer", "payee"))
+    assert all("source_ledger_evidence" not in item["details"] and "resolution_evidence" not in item["details"]
+               for item in (no_evidence, header))
+    witness = json.loads(context["details"]["source_ledger_evidence"])
+    assert (witness["kind"], witness["direction"], witness["header_scope"]) == ("context", "out", 5)
+    assert "resolution_evidence" not in context["details"]
+    assert loads == {"SYN-FINANCIAL": 1, "SYN-NEUTRAL": 1, "SYN-CONTEXT": 1}
+
+
 def test_native28_reciprocal_balance_witnesses_do_not_authorize_posting_pair(client, make_case):
     cid = make_case("SYN native28 has no paired-postings authority")
     rows = [transaction(**{"交易账号": "SYN-A", "交易金额": "0.00", "交易余额": "100.00", "交易流水号": "SYN-BEFORE-A"}),
@@ -165,7 +238,7 @@ def test_full_closed31_auxiliary_variants_have_explicit_zip_scope(client, make_c
                ("manifest.csv", table("task", [{"请求单号": "SYN-REQUEST", "银行名称": "Synthetic bank"}]))]
     raw = archive(members)
     view, job = add_source(client, cid, raw, "complete.zip")
-    assert view["table_summary"]["profile"] == (table_archive.SOURCE_OBSERVATION_EVIDENCE_PROFILE if bound else table_archive.PROFILE)
+    assert view["table_summary"]["profile"] == (table_archive.AUXILIARY_ROWS_EVIDENCE_PROFILE if bound else table_archive.PROFILE)
     report = client.get(f"/api/v1/cases/{cid}/sources/{job['result']['source_id']}/report").json()["items"]
     assert len(report) == 4 and sum(item["disposition"] == "auxiliary" for item in report) == 3
     entities = client.get(f"/api/v1/cases/{cid}/resolution").json().get("entities", [])

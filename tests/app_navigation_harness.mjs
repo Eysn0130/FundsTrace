@@ -115,6 +115,31 @@ test('same-origin direct iframe request selects a verified case through the owni
   assert.ok(h.posts.every(item => item.targetOrigin === 'http://synthetic.local'));
 });
 
+for (const change of ['case','document','cancel']) test(`source-copy ${change} revocation prevents a late native open`, async () => {
+  const h = harness(), gate = deferred(), opened = [], released = [];
+  h.sandbox.window.FundsDesktopSources = { prepare: () => gate.promise, perform: async value => opened.push(value), release: async value => released.push(value) };
+  await h.ready();
+  const request = h.request({requestId:'source-request',instanceId:'workspace-document-1',action:'source-copy',payload:{sourceId:'0123456789ab',action:'open'}});
+  const pending = h.receive(request); await flush();
+  if (change === 'case') h.state.caseGeneration++;
+  else if (change === 'document') await h.ready('workspace-document-2');
+  else await h.receive({...request,type:'source-copy-cancel'});
+  gate.resolve({ticket:'opaque',icon:'data:image/png;base64,AA=='}); await pending;
+  assert.deepEqual(opened, []); assert.deepEqual(released, ['opaque']);
+  assert.equal(h.posts.find(item => item.message.type === 'result' && item.message.requestId === 'source-request').message.ok, false);
+});
+test('source-copy requires the current document and passes only registered IDs to native Main', async () => {
+  const h = harness(), prepared = [], opened = [];
+  h.sandbox.window.FundsDesktopSources = {prepare:async value => {prepared.push(plain(value));return {ticket:'opaque',icon:'data:image/png;base64,AA=='};},perform:async value=>opened.push(plain(value)),release:async()=>{}};
+  await h.ready();
+  const payload = {sourceId:'0123456789ab',action:'reveal',path:'/untrusted'};
+  await h.receive(h.request({requestId:'wrong-instance',instanceId:'old-document',action:'source-copy',payload}));
+  assert.deepEqual(prepared, []);
+  await h.receive(h.request({requestId:'source-valid',instanceId:'workspace-document-1',action:'source-copy',payload}));
+  assert.deepEqual(prepared, [{caseId:'1',sourceId:'0123456789ab'}]); assert.deepEqual(opened, [{ticket:'opaque',action:'reveal'}]);
+  assert.equal(h.posts.find(item=>item.message.requestId==='source-valid').message.icon,'data:image/png;base64,AA==');
+});
+
 test('bad origin/source/channel/version and unknown actions cannot execute host operations', async () => {
   const h = harness(); await h.ready();
   await h.receive(h.request({ requestId: 'bad-origin' }), { origin: 'https://untrusted.example' });
@@ -176,16 +201,99 @@ const replyFor = (h, id) => h.posts.findLast(item => item.message.type === 'resu
 const contexts = h => h.posts.filter(item => item.message.type === 'context').map(item => item.message);
 const trackPayload = { name: 'SYN tracked canvas', flow_ids: ['71'], snapshot: {} };
 
+for (const [action, button] of [['export', 'btnExportCase'], ['delete', 'btnDelCase']]) {
+  test(`embedded ${action} reads case stats before opening the existing dialog`, async () => {
+    const h = harness(), stats = deferred(), summaries = [];
+    h.state.caseId = 2;
+    h.navigation.show('cases'); await h.ready();
+    h.state.stats = { flows: 1, accounts: 2 };
+    let reads = 0;
+    h.sandbox.refreshStats = async () => { reads++; h.state.stats = await stats.promise; };
+    h.element(button).onclick = () => summaries.push(h.state.stats);
+    const id = `${action}-with-stats`;
+    const pending = h.receive(h.request({ requestId: id, action: 'case-action', payload: { action } })); await flush();
+    assert.equal(reads, 1);
+    assert.deepEqual(h.calls.dialog, []); assert.deepEqual(h.calls.click, []);
+    assert.equal(replyFor(h, id), undefined);
+    stats.resolve({ flows: 3, accounts: 4 }); await pending;
+    assert.deepEqual(h.calls.dialog, ['nav-cases']); assert.deepEqual(h.calls.click, [button]);
+    assert.deepEqual(summaries, [{ flows: 3, accounts: 4 }]);
+    assert.equal(replyFor(h, id).ok, true);
+    assert.equal(h.calls.refresh, 0); assert.deepEqual(h.calls.loads, []);
+  });
+}
+
+test('embedded case package import opens without loading current case stats', async () => {
+  const h = harness(); h.navigation.show('cases'); await h.ready();
+  h.sandbox.refreshStats = () => assert.fail('case package import needs no case stats');
+  await h.receive(h.request({ requestId: 'case-package', action: 'case-action', payload: { action: 'import' } }));
+  assert.deepEqual(h.calls.click, ['btnImportCase']);
+  assert.equal(replyFor(h, 'case-package').ok, true);
+});
+
+for (const change of ['binding change', 'page change', 'pending selection']) {
+  test(`embedded delete abandons the dialog when case stats return after a ${change}`, async () => {
+    const h = harness(), stats = deferred(), selection = deferred();
+    h.state.caseId = 2;
+    h.navigation.show('cases'); await h.ready(); h.sandbox.refreshStats = () => stats.promise;
+    const id = 'delete-away';
+    const pending = h.receive(h.request({ requestId: id, action: 'case-action', payload: { action: 'delete' } })); await flush();
+    let owner;
+    if (change === 'binding change') h.state.caseGeneration++;
+    else if (change === 'page change') h.navigation.show('analysis');
+    else {
+      h.caseRead(() => selection.promise);
+      owner = h.receive(h.request({ requestId: 'select-away', payload: { caseId: '1' } })); await flush();
+    }
+    stats.resolve(); await pending;
+    assert.deepEqual(h.calls.dialog, []); assert.deepEqual(h.calls.click, []);
+    assert.equal(replyFor(h, id).ok, false);
+    if (owner) { selection.resolve(h.state.cases); await owner; }
+  });
+}
+
+test('embedded data changes invalidate the current case and defer workbench reads until it returns', async () => {
+  const h = harness(), refresh = deferred();
+  h.navigation.show('analysis'); await h.ready('analysis-document-1', h.analysis);
+  h.navigation.show('cases'); await h.ready();
+  h.freshRead(async () => { await refresh.promise; h.state.graphFacts = 'fresh'; });
+  const change = { action: 'data-changed', payload: {} }, staleStart = h.posts.length;
+  const revision = contexts(h).at(-1).revision;
+  await h.receive(h.request({ ...change, requestId: 'stale-change', generation: 0 }));
+  assert.equal(replyFor(h, 'stale-change').ok, false);
+  assert.match(replyFor(h, 'stale-change').error, /案件已变化/);
+  assert.deepEqual(h.posts.slice(staleStart).map(({ message }) => message.type), ['result']);
+
+  const start = h.posts.length;
+  const pending = h.receive(h.request({ ...change, requestId: 'embedded-change' })); await flush();
+  assert.equal(h.calls.refresh, 0, 'the hidden workbench starts no refresh');
+  assert.deepEqual(h.posts.slice(start).filter(({ message }) => message.type === 'data-changed')
+    .map(({ target, message }) => [target, message.caseId, message.generation]), [['workspace', '1', 1], ['analysis', '1', 1]]);
+  assert.equal(contexts(h).at(-1).revision, revision + 1);
+  assert.equal(replyFor(h, 'embedded-change')?.ok, true);
+  await pending;
+
+  h.navigation.show('home'); h.navigation.show('home');
+  assert.equal(h.calls.refresh, 1);
+  assert.equal(h.state.graphFacts, 'initial');
+  refresh.resolve(); await flush();
+  assert.equal(h.state.graphFacts, 'fresh');
+  assert.equal(h.calls.refresh, 1);
+});
+
 test('a non-owner data refresh cannot unlock a pending selection, including an evicted reused request ID', async () => {
   for (const reuse of [false, true]) {
     const h = harness(), refresh = deferred(), selected = deferred(); await h.ready(); h.freshRead(() => refresh.promise);
     const id = reuse ? 'shared-id' : 'data-change', data = h.receive(h.request({ requestId: id, action: 'data-changed', payload: {} })); await flush();
+    assert.equal(h.calls.refresh, 1, 'the visible workbench refreshes immediately');
+    assert.equal(replyFor(h, id), undefined, 'the visible workbench waits for the refresh before acknowledging');
     if (reuse) for (let index = 0; index < 2049; index++) await h.receive(h.request({ requestId: `evict-${index}`, action: 'case-action', payload: { action: 'export' } }));
     h.caseRead(() => selected.promise);
     const ownerId = reuse ? id : 'select-owner', owner = h.receive(h.request({ requestId: ownerId })); await flush();
     await h.receive(h.request({ requestId: 'before-data-end', action: 'open-graph', payload: {} }));
     assert.equal(replyFor(h, 'before-data-end').ok, false); const start = h.posts.length;
     refresh.resolve(); await data;
+    assert.equal(replyFor(h, id).ok, true);
     await h.receive(h.request({ requestId: 'after-data-end', action: 'open-graph', payload: {} }));
     assert.equal(replyFor(h, 'after-data-end').ok, false, 'a request without this owner object cannot release the selection');
     assert.equal(h.calls.open.length, 0); assert.ok(h.posts.slice(start).filter(item => item.message.type === 'context').every(item => item.message.navigationPending === true));

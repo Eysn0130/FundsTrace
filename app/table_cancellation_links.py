@@ -179,17 +179,25 @@ def ctes(*, scoped=False):
         try_cast(json_extract_string(try_cast(r.details_json as json),'$.source_ledger_evidence') as json) history_ledger
       from a02_history_details r
       join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
+    ), a02_history_flow_sources as materialized (
+      select fs.* from flow_sources fs
+      join (select distinct case_id,source_id,record_no from a02_history_source_facts) wanted
+        on fs.case_id=wanted.case_id and fs.source_id=wanted.source_id and fs.source_row=wanted.record_no
     ), a02_history_links as materialized (
       select r.*,fs.flow_id linked_id
-      from flow_sources fs right join a02_history_source_facts r
+      from a02_history_flow_sources fs right join a02_history_source_facts r
         on fs.case_id=r.case_id and fs.source_id=r.source_id and fs.source_row=r.record_no
+    ), a02_history_flow_rows as materialized (
+      select f.* from flows f
+      join (select distinct case_id,linked_id from a02_history_links) wanted
+        on f.case_id=wanted.case_id and f.id=wanted.linked_id
     ), a02_history_facts as materialized (
       select r.*,f.id actual_id,
         f.amount<=0 and exists(select 1 from source_ledger_index l
           where l.case_id=f.case_id and l.flow_id=f.id) source_ledger_observation, {actual_ledger_fields},
         case when coalesce(f.self_account,'')='' then '' else sha256(f.self_account) end account_sha,
         case when coalesce(f.self_name,'')='' then '' else sha256(f.self_name) end name_sha
-      from flows f right join a02_history_links r on f.case_id=r.case_id and f.id=r.linked_id
+      from a02_history_flow_rows f right join a02_history_links r on f.case_id=r.case_id and f.id=r.linked_id
     ), a02_bad_roots as (
       select distinct case_id,proof_source_id,original_no,cancellation_no
       from a02_positions p

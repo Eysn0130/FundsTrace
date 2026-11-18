@@ -156,7 +156,7 @@ def test_empty_ancillary_columns_are_optional_without_changing_transaction_roles
 
 @pytest.mark.parametrize("suffix,archive,profile", [(".xlsx", False, "funds-trace-table-v69"),
                                                   (".xls", False, "funds-trace-table-v70"),
-                                                  (".xls", True, "funds-trace-table-archive-v59")])
+                                                  (".xls", True, "funds-trace-table-archive-v62")])
 def test_bank31_optional_shape_reaches_current_workbook_entrypoints(client, make_case, suffix, archive, profile):
     from test_table_multisheet_append import encoded
     matrix = list(csv.reader(io.StringIO(data("drop-empty-ip").decode("utf-8-sig"))))

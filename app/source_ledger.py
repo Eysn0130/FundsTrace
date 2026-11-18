@@ -1,8 +1,12 @@
 """Source ledger observations, distinct from economic transfer conclusions."""
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, localcontext
+import hashlib
 import json
+import os
+import tempfile
 
 from . import db
 from .money import money_decimal
@@ -149,12 +153,15 @@ def _profiles(*, unoriented=False, extended=False):
 def install_source_views(connection):
     from .table_cancellation_links import active_support_sql
     connection.execute(f"""create or replace view source_ledger_records as
+        with _ledger_active_sources as materialized (
+            select p.case_id,p.source_id,p.parser_version from import_sources p
+            where p.parser_version in ({_profiles()}) and {active_support_sql('p')}
+        )
         select r.*,json_extract_string(r.details_json,'$.{FIELD}') ledger_evidence,
             m.sha256 member_sha256
-        from import_records r join import_sources p on p.case_id=r.case_id and p.source_id=r.source_id
+        from import_records r join _ledger_active_sources p on p.case_id=r.case_id and p.source_id=r.source_id
         join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
-        where p.parser_version in ({_profiles()}) and {active_support_sql('p')}
-          and contains(r.details_json,'\"{FIELD}\"')
+        where contains(r.details_json,'\"{FIELD}\"')
           and json_extract_string(r.details_json,'$.{FIELD}') is not null
           and (json_extract_string(json_extract_string(r.details_json,'$.{FIELD}'),'$.policy')<>'{UNORIENTED_POLICY}'
                or p.parser_version in ({_profiles(unoriented=True)}))
@@ -195,36 +202,85 @@ def install_source_views(connection):
         where c.display_eligible group by c.case_id,c.flow_id""")
 
 
-def refresh_index(connection, case_id=None):
-    scope, parameters = (" where case_id=?", [case_id]) if case_id is not None else ("", [])
-    connection.execute("delete from source_ledger_index" + scope, parameters)
-    connection.execute("""insert into source_ledger_index(case_id,flow_id,counter_account,counter_name,counter_bank)
-        select f.case_id,f.flow_id,
-            max(json_extract_string(r.ledger_evidence,'$.counterparty.account')),
-            max(json_extract_string(r.ledger_evidence,'$.counterparty.name')),
-            max(json_extract_string(r.ledger_evidence,'$.counterparty.bank'))
-        from source_ledger_records r join flow_sources f
-          on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
-        where (json_extract_string(r.ledger_evidence,'$.kind')='ledger' or r.disposition='cancelled')""" +
-        (" and r.case_id=?" if case_id is not None else "") + " group by f.case_id,f.flow_id", parameters)
-    refresh_cards(connection, case_id)
+def _source_record_pages(connection, case_id, source_id=None):
+    if source_id is not None:
+        sources = [(case_id, source_id)]
+    else:
+        scope, parameters = (" where case_id=?", [case_id]) if case_id is not None else ("", [])
+        sources = connection.execute("select case_id,source_id from import_sources" + scope +
+                                     " order by case_id,source_id", parameters).fetchall()
+    for source_case, source_id in sources:
+        lower = None
+        while True:
+            record_nos = [row[0] for row in connection.execute("""select record_no from import_records
+                where case_id=? and source_id=? and (?::bigint is null or record_no>?::bigint)
+                order by record_no limit 4096""", [source_case, source_id, lower, lower]).fetchall()]
+            if not record_nos:
+                break
+            lower = record_nos[-1]
+            yield source_case, source_id, record_nos
 
 
-def refresh_cards(connection, case_id=None):
+def refresh_index(connection, case_id=None, source_id=None):
+    """Rebuild by default; a source scope only adds immutable source support."""
+    if source_id is None:
+        scope, parameters = (" where case_id=?", [case_id]) if case_id is not None else ("", [])
+        connection.execute("delete from source_ledger_index" + scope, parameters)
+    for source_case, record_source, record_nos in _source_record_pages(connection, case_id, source_id):
+        connection.execute("""insert into source_ledger_index(case_id,flow_id,counter_account,counter_name,counter_bank)
+            with _index_inputs as materialized (
+                select r.case_id,r.source_id,r.record_no,
+                    json_extract_string(r.ledger_evidence,'$.counterparty.account') counter_account,
+                    json_extract_string(r.ledger_evidence,'$.counterparty.name') counter_name,
+                    json_extract_string(r.ledger_evidence,'$.counterparty.bank') counter_bank
+                from source_ledger_records r
+                where r.case_id=? and r.source_id=?
+                  and r.record_no between ?::bigint and ?::bigint
+                  and r.record_no in (select unnest(?::bigint[]))
+                  and (json_extract_string(r.ledger_evidence,'$.kind')='ledger' or r.disposition='cancelled'))
+            select f.case_id,f.flow_id,max(r.counter_account),max(r.counter_name),max(r.counter_bank)
+            from _index_inputs r join flow_sources f
+              on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
+            where f.case_id=? and f.source_id=? and f.source_row between ?::bigint and ?::bigint
+            group by f.case_id,f.flow_id
+            on conflict(case_id,flow_id) do update set
+                counter_account=greatest(source_ledger_index.counter_account,excluded.counter_account),
+                counter_name=greatest(source_ledger_index.counter_name,excluded.counter_name),
+                counter_bank=greatest(source_ledger_index.counter_bank,excluded.counter_bank)""",
+            [source_case, record_source, record_nos[0], record_nos[-1], record_nos,
+             source_case, record_source, record_nos[0], record_nos[-1]])
+    refresh_cards(connection, case_id, source_id)
+
+
+def refresh_cards(connection, case_id=None, source_id=None):
     """Keep source-owned card aliases independently of financial deduplication."""
-    scope, parameters = (" where case_id=?", [case_id]) if case_id is not None else ("", [])
-    connection.execute("delete from flow_source_cards" + scope, parameters)
-    connection.execute("""insert into flow_source_cards(case_id,flow_id,role,own_account,own_card)
-        select distinct f.case_id,f.flow_id,
-            case json_extract_string(r.ledger_evidence,'$.direction') when 'out' then 'payer'
-                when 'in' then 'payee' else 'self' end,
-            json_extract_string(r.ledger_evidence,'$.row.self_account'),
-            json_extract_string(r.ledger_evidence,'$.own_card')
-        from source_ledger_records r join flow_sources f
-          on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
-        where nullif(json_extract_string(r.ledger_evidence,'$.own_card'),'') is not null
-          and nullif(json_extract_string(r.ledger_evidence,'$.row.self_account'),'') is not null""" +
-        (" and r.case_id=?" if case_id is not None else ""), parameters)
+    if source_id is None:
+        scope, parameters = (" where case_id=?", [case_id]) if case_id is not None else ("", [])
+        connection.execute("delete from flow_source_cards" + scope, parameters)
+    for source_case, record_source, record_nos in _source_record_pages(connection, case_id, source_id):
+        connection.execute("""insert into flow_source_cards(case_id,flow_id,role,own_account,own_card)
+            with _card_inputs as materialized (
+                select r.case_id,r.source_id,r.record_no,
+                    json_extract_string(r.ledger_evidence,'$.direction') direction,
+                    json_extract_string(r.ledger_evidence,'$.row.self_account') own_account,
+                    json_extract_string(r.ledger_evidence,'$.own_card') own_card
+                from source_ledger_records r
+                where r.case_id=? and r.source_id=?
+                  and r.record_no between ?::bigint and ?::bigint
+                  and r.record_no in (select unnest(?::bigint[])))
+            select distinct f.case_id,f.flow_id,
+                case r.direction when 'out' then 'payer'
+                    when 'in' then 'payee' else 'self' end,
+                r.own_account,r.own_card
+            from _card_inputs r join flow_sources f
+              on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
+            where nullif(r.own_card,'') is not null
+              and nullif(r.own_account,'') is not null
+              and f.case_id=? and f.source_id=?
+              and f.source_row between ?::bigint and ?::bigint
+            on conflict(case_id,flow_id,role,own_account,own_card) do nothing""",
+            [source_case, record_source, record_nos[0], record_nos[-1], record_nos,
+             source_case, record_source, record_nos[0], record_nos[-1]])
 
 
 def install_visible_view(connection, projection_sql):
@@ -303,11 +359,58 @@ def _commit_records(case_id, source_id, batch_id, records):
     return len(new), len(matched)
 
 
+@contextmanager
+def _commit_snapshot(case_id, source_id):
+    """Drain the transaction's shared cursor before source publication writes."""
+    from .import_staging import MAX_SPOOL_BYTES
+    from .import_validation import IntegrityError
+
+    with tempfile.TemporaryFile(mode="w+b", prefix="funds-trace-ledger-", dir=db.DATA_DIR) as stream:
+        if hasattr(os, "fchmod"):
+            os.fchmod(stream.fileno(), 0o600)
+        cursor = db.con().execute("""select record_no,member_path,member_sha256,source_row,disposition,ledger_evidence
+            from source_ledger_records where case_id=? and source_id=? order by record_no""",
+                                  [case_id, source_id])
+        columns = [column[0] for column in cursor.description]
+        digest, count, size = hashlib.sha256(), 0, 0
+        while batch := cursor.fetchmany(_COMMIT_CHUNK):
+            for values in batch:
+                encoded = (json.dumps(dict(zip(columns, values)), ensure_ascii=False,
+                                      separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+                size += len(encoded)
+                if size > MAX_SPOOL_BYTES:
+                    raise IntegrityError("source ledger snapshot exceeds temporary storage limit")
+                if stream.write(encoded) != len(encoded):
+                    raise IntegrityError("incomplete source ledger snapshot write")
+                digest.update(encoded)
+                count += 1
+        # No raw ledger value or fetched batch overlaps the decoded write batch.
+        values = encoded = None
+        stream.flush()
+        stream.seek(0)
+
+        def records():
+            actual, read = hashlib.sha256(), 0
+            for encoded in stream:
+                actual.update(encoded)
+                read += 1
+                if read > count:
+                    raise IntegrityError("incomplete source ledger snapshot")
+                try:
+                    record = json.loads(encoded)
+                except (UnicodeError, json.JSONDecodeError):
+                    raise IntegrityError("incomplete source ledger snapshot") from None
+                if not isinstance(record, dict) or record.keys() != set(columns):
+                    raise IntegrityError("incomplete source ledger snapshot")
+                yield record
+            if read != count or actual.digest() != digest.digest():
+                raise IntegrityError("incomplete source ledger snapshot")
+
+        yield records()
+
+
 def commit(case_id, source_id, batch_id):
     """Publish typed observations in the same transaction as their journal."""
-    records = db.q_raw("""select record_no,member_path,member_sha256,source_row,disposition,ledger_evidence
-        from source_ledger_records where case_id=? and source_id=? order by record_no""",
-                       [case_id, source_id])
     added = duplicates = 0
     pending, positions = [], set()
     def publish():
@@ -318,28 +421,99 @@ def commit(case_id, source_id, batch_id):
             duplicates += reused
             pending.clear()
             positions.clear()
-    for record in records:
-        try:
-            evidence = validate(record.pop("ledger_evidence"))
-        except (ValueError, TypeError, ArithmeticError):
-            # Preserve sequence consumption by the valid prefix; the caller's
-            # enclosing import transaction still rolls all its writes back.
-            publish()
-            raise
-        if evidence["kind"] != "ledger" and record["disposition"] != "cancelled":
-            continue
-        position = record["member_path"], record["member_sha256"], record["source_row"]
-        if position in positions:
-            # Read a repeated position only after the earlier write is visible,
-            # using its actual persisted facts and the established digest.
-            publish()
-        pending.append((record, evidence["row"]))
-        positions.add(position)
-        if len(pending) == _COMMIT_CHUNK:
-            publish()
+    with _commit_snapshot(case_id, source_id) as records:
+        for record in records:
+            try:
+                evidence = validate(record.pop("ledger_evidence"))
+            except (ValueError, TypeError, ArithmeticError):
+                # Preserve sequence consumption by the valid prefix; the caller's
+                # enclosing import transaction still rolls all its writes back.
+                publish()
+                raise
+            if evidence["kind"] != "ledger" and record["disposition"] != "cancelled":
+                continue
+            position = record["member_path"], record["member_sha256"], record["source_row"]
+            if position in positions:
+                # Read a repeated position only after the earlier write is visible,
+                # using its actual persisted facts and the established digest.
+                publish()
+            pending.append((record, evidence["row"]))
+            positions.add(position)
+            if len(pending) == _COMMIT_CHUNK:
+                publish()
     publish()
-    refresh_index(db.con(), case_id)
+    # The import writer registers one fresh source and only adds its links.
+    # Retirement, restoration and other mutations retain the full refresh path.
+    refresh_index(db.con(), case_id, source_id)
     return {"added": added, "duplicates": duplicates}
+
+
+@contextmanager
+def _record_pages(case_id, ids, *, members=(), originals=()):
+    """Validate full snapshots before retaining only source-read fields.
+
+    Every payload uses an exact source PK page; 4096 bounds rows, not bytes.
+    Yield only after its borrowed result is exhausted so consumers may query.
+    """
+    wanted, members, originals = set(ids), set(members), set(originals)
+    with db.read_lock():
+        connection = getattr(db._read_state, "connection", None)
+        if connection is None:
+            connection = db.con()
+
+        def iterate():
+            for source_case, source_id, record_nos in _source_record_pages(connection, case_id):
+                bounds = [source_case, source_id, record_nos[0], record_nos[-1], record_nos]
+                locations = db.q_raw("""select r.record_no,r.member_path,s.flow_id
+                    from import_records r left join (
+                        select case_id,source_id,source_row,flow_id from flow_sources
+                        where case_id=? and source_id=? and source_row between ?::bigint and ?::bigint
+                          and source_row in (select unnest(?::bigint[]))) s
+                      on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
+                    where r.case_id=? and r.source_id=? and r.record_no between ?::bigint and ?::bigint
+                      and r.record_no in (select unnest(?::bigint[]))""", [*bounds, *bounds])
+                selected = {row["record_no"] for row in locations if row["flow_id"] in wanted
+                            or (source_id, row["member_path"]) in members
+                            or (source_id, row["record_no"]) in originals}
+                numbers = [number for number in record_nos if number in selected]
+                if not numbers:
+                    continue
+                bounds = [source_case, source_id, numbers[0], numbers[-1], numbers]
+                rows = []
+                with db.raw_rows("""select r.case_id,r.source_id,r.record_no,r.member_path,r.source_row,
+                    r.disposition,r.reason_code,r.ledger_evidence,s.flow_id,
+                    case when r.disposition='cancelled' and r.reason_code='matched_cancellation'
+                        then json_object('cancellation_role',json_extract_string(r.details_json,'$.cancellation_role'),
+                            'paired_record_no',json_extract_string(r.details_json,'$.paired_record_no'))
+                        else '{}' end details_json
+                    from source_ledger_records r left join (
+                        select case_id,source_id,source_row,flow_id from flow_sources
+                        where case_id=? and source_id=? and source_row between ?::bigint and ?::bigint
+                          and source_row in (select unnest(?::bigint[]))) s
+                      on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
+                    where r.case_id=? and r.source_id=? and r.record_no between ?::bigint and ?::bigint
+                      and r.record_no in (select unnest(?::bigint[]))""", [*bounds, *bounds]) as raw:
+                    for row in raw:
+                        if (row["flow_id"] not in wanted and (source_id, row["member_path"]) not in members
+                                and (source_id, row["record_no"]) not in originals):
+                            continue
+                        evidence = validate(row.pop("ledger_evidence"))
+                        row["evidence"] = {key: evidence[key] for key in (
+                            "policy", "kind", "header_scope", "source_currency", "direction", "own_card",
+                            "signed_amount", "source_direction", "balance_before", "reported_status")}
+                        row["evidence"]["row"] = {key: evidence["row"][key] for key in (
+                            "self_account", "balance", "trade_time", "trade_time_utc")}
+                        if "counterparty" in evidence:
+                            row["evidence"]["counterparty"] = evidence["counterparty"]
+                        rows.append(row)
+                        del evidence
+                yield rows
+
+        pages = iterate()
+        try:
+            yield pages
+        finally:
+            pages.close()
 
 
 def _records(case_id, ids):
@@ -349,42 +523,26 @@ def _records(case_id, ids):
     incomparable clocks and equal-time competitors must still block a witness.
     Unoriented/same-entry observations need no preceding financial ledger.
     """
-    query = """select r.case_id,r.source_id,r.record_no,r.member_path,r.source_row,
-        r.disposition,r.reason_code,r.ledger_evidence,s.flow_id,
-        case when r.disposition='cancelled' and r.reason_code='matched_cancellation'
-            then json_object('cancellation_role',json_extract_string(r.details_json,'$.cancellation_role'),
-                'paired_record_no',json_extract_string(r.details_json,'$.paired_record_no'))
-            else '{}' end details_json
-        from source_ledger_records r left join flow_sources s
-        on s.case_id=r.case_id and s.source_id=r.source_id and s.source_row=r.record_no
-        where r.case_id=? and """
-    selected = "s.flow_id in (select unnest(?::bigint[]))"
-    order = " order by r.source_id,r.member_path,r.source_row"
-    rows = db.q_raw(query + selected + order, [case_id, ids])
-    members, originals = set(), set()
-    for row in rows:
-        evidence = row["evidence"] = validate(row.pop("ledger_evidence"))
-        if (evidence["direction"] != "unknown" and evidence["kind"] != "context"
-                and evidence["source_currency"] and evidence["row"]["balance"] is not None
-                and evidence["row"]["trade_time"] and evidence["balance_before"] is None):
-            members.add((row["source_id"], row["member_path"]))
-        if row["disposition"] == "cancelled" and row["reason_code"] == "matched_cancellation":
-            details = json.loads(row["details_json"])
-            if details["cancellation_role"] != "original":
-                originals.add((row["source_id"], int(details["paired_record_no"])))
-    if not members and not originals:
+    with db.read_lock():
+        with _record_pages(case_id, ids) as pages:
+            rows = [row for page in pages for row in page]
+        members, originals = set(), set()
+        for row in rows:
+            evidence = row["evidence"]
+            if (evidence["direction"] != "unknown" and evidence["kind"] != "context"
+                    and evidence["source_currency"] and evidence["row"]["balance"] is not None
+                    and evidence["row"]["trade_time"] and evidence["balance_before"] is None):
+                members.add((row["source_id"], row["member_path"]))
+            if row["disposition"] == "cancelled" and row["reason_code"] == "matched_cancellation":
+                details = json.loads(row["details_json"])
+                if details["cancellation_role"] != "original":
+                    originals.add((row["source_id"], int(details["paired_record_no"])))
+        if members or originals:
+            del rows
+            with _record_pages(case_id, ids, members=members, originals=originals) as pages:
+                rows = [row for page in pages for row in page]
+        rows.sort(key=lambda row: (row["source_id"], row["member_path"], row["source_row"]))
         return rows
-    members, originals = sorted(members), sorted(originals)
-    # Drop the seed snapshots before the larger context query materializes.
-    del rows
-    rows = db.q_raw(query + "(" + selected + """ or (r.source_id,r.member_path) in
-        (select unnest(?::varchar[]),unnest(?::varchar[])) or (r.source_id,r.record_no) in
-        (select unnest(?::varchar[]),unnest(?::bigint[])))""" + order,
-        [case_id, ids, [item[0] for item in members], [item[1] for item in members],
-         [item[0] for item in originals], [item[1] for item in originals]])
-    for row in rows:
-        row["evidence"] = validate(row.pop("ledger_evidence"))
-    return rows
 
 
 def _scope(record):
@@ -555,19 +713,72 @@ def selected_rows(case_id, *, canvas_id=None, account=None):
     return rows
 
 
+def _summary_counts(case_id, ids):
+    result = {"count": 0, "unknown_effect_count": 0, "zero_count": 0, "paired_count": 0}
+    if not ids:
+        return result, set()
+    first, originals = {}, set()
+    with _record_pages(case_id, ids) as pages:
+        for page in pages:
+            for row in page:
+                original = None
+                if row["disposition"] == "cancelled" and row["reason_code"] == "matched_cancellation":
+                    details = json.loads(row["details_json"])
+                    original = (row["source_id"], row["record_no"] if details["cancellation_role"] == "original"
+                                else int(details["paired_record_no"]))
+                    originals.add(original)
+                order = row["source_id"], row["member_path"], row["source_row"]
+                previous = first.get(row["flow_id"])
+                if previous is None or order < previous[0]:
+                    record = {key: row[key] for key in (
+                        "source_id", "record_no", "disposition", "reason_code", "details_json", "flow_id")}
+                    first[row["flow_id"]] = (order, money_decimal(row["evidence"]["signed_amount"]) == 0,
+                                             original, record)
+    original_records = defaultdict(list)
+    if originals:
+        with _record_pages(case_id, (), originals=originals) as pages:
+            for page in pages:
+                for row in page:
+                    original_records[row["source_id"], row["record_no"]].append(
+                        {key: row[key] for key in ("source_id", "record_no", "flow_id")})
+    for _, zero, original, record in first.values():
+        paired = _current_pair(case_id, record, original_records[original]) if original is not None else False
+        result["paired_count" if paired else "zero_count" if zero else "unknown_effect_count"] += 1
+    result["count"] = len(first)
+    return result, set(first)
+
+
 def summary(case_id, *, account=None, include_rows=False):
-    rows = selected_rows(case_id, account=account)
-    result = {"count": len(rows),
-              "unknown_effect_count": sum(row["source_ledger"]["economic_effect"] == "unknown" for row in rows),
-              "zero_count": sum(row["source_ledger"]["economic_effect"] == "no_movement" for row in rows),
-              "paired_count": sum(row["source_ledger"]["economic_effect"] == "paired_cancellation" for row in rows)}
-    if include_rows:
-        result["records"] = [{"id": str(row["id"]), "trade_no": row["trade_no"] or "",
-            "trade_time": str(row["trade_time"]), "amount": format(money_decimal(row["amount"]), ".2f"),
-            "currency": row["currency"] or "", "summary": row["summary"] or "",
-            "source_ledger": row["source_ledger"]} for row in rows[-50:]]
-        result["has_more"] = len(rows) > 50
-    return result
+    # Counts need source effects, not a balance neighborhood for every posting.
+    # Keep selection, current cancellation authority and optional full details
+    # in one lock or the caller's existing committed private snapshot.
+    with db.read_lock():
+        indexed = [row["flow_id"] for row in db.q_raw(
+            "select flow_id from source_ledger_index where case_id=?", [case_id])]
+        query = """select f.id from effective_visible_flows f where f.case_id=?
+            and f.id in (select unnest(?::bigint[]))"""
+        params = [case_id, indexed]
+        if account is not None:
+            query += " and (f.payer_account=? or f.payee_account=? or f.self_account=? or f.source_counter_id=?)"
+            params += [account] * 4
+        ids = [row["id"] for row in db.q_raw(query + " order by f.trade_time,f.id", params)] if indexed else []
+        # Retain the original independent effective-flow read boundary: joining
+        # both expanded views here can fail DuckDB's column-binding rewrite.
+        financial = {row["id"] for row in db.q_raw("""select id from source_effective_flows
+            where case_id=? and id in (select unnest(?::bigint[]))""", [case_id, ids])} if ids else set()
+        ids = [value for value in ids if value not in financial]
+        result, retained = _summary_counts(case_id, ids)
+        if include_rows:
+            tail = [value for value in ids if value in retained][-50:]
+            rows = db.q_raw("""select f.* from effective_visible_flows f where f.case_id=?
+                and f.id in (select unnest(?::bigint[])) order by f.trade_time,f.id""", [case_id, tail]) if tail else []
+            entries = information(case_id, tail)
+            result["records"] = [{"id": str(row["id"]), "trade_no": row["trade_no"] or "",
+                "trade_time": str(row["trade_time"]), "amount": format(money_decimal(row["amount"]), ".2f"),
+                "currency": row["currency"] or "", "summary": row["summary"] or "",
+                "source_ledger": entries[str(row["id"])]} for row in rows]
+            result["has_more"] = result["count"] > 50
+        return result
 
 
 def attach_graph(case_id, canvas_id, result, view=None):

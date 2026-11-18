@@ -764,8 +764,16 @@ def _csv_filename(filename):
     return isinstance(filename, str) and bool(filename) and Path(filename).suffix.lower() in (".csv", ".tsv", ".txt", "")
 
 
+def _flow_insert_values(row):
+    return (row["trade_no"], row["trade_time"], row["payer_name"], row["payer_account"], row.get("payer_bank") or "",
+            row["payee_name"], row["payee_account"], row.get("payee_bank") or "",
+            row["amount"], row.get("balance"), row.get("currency") or "CNY", row.get("summary") or "",
+            row.get("channel") or "", row.get("self_account") or "", row.get("self_name") or "",
+            row.get("trade_time_utc"), row.get("trade_time_original"), row.get("trade_time_offset"))
+
+
 def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, provenance=None,
-                standalone_csv_keys=None):
+                standalone_csv_keys=None, *, refresh_source_index=True):
     """去重后分批入库（去重范围为当前案件内），progress_cb(done, total) 汇报进度。
     去重规则：所有导入列完全一致才判为重复——任一列（如余额、摘要、对手）不同均视为不同流水。"""
     from . import table_archive, table_import
@@ -789,7 +797,8 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
     if isinstance(rows, StagedSequence) and source is not None and source["parser_version"] in evidence_resolution.OCCURRENCE_PROFILES:
         if standalone_csv_keys is not None:
             raise ImportError("证据来源不接受历史CSV替代身份")
-        return _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, source)
+        return _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, source,
+                                       refresh_source_index=refresh_source_index)
     if standalone_csv_keys is not None:
         if (source is None or source["row_kind"] != table_import.ROW_KIND
                 or source["parser_version"] not in table_archive.SUPPORTED_PROFILES
@@ -809,6 +818,7 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
         from . import evidence_resolution
         evidence_source = source is not None and source["parser_version"] in evidence_resolution.OCCURRENCE_PROFILES
         existing = {}
+        compact_insert = False
         if evidence_source:
             fields = [name.strip() for name in key_cols.split(",")] + ["self_account", "self_name"]
             profiles = sorted(evidence_resolution.OCCURRENCE_PROFILES)
@@ -830,6 +840,8 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
             # two source events are the same. Reuse only this exact member's
             # content/path/record identity; retain distinct source occurrences.
             envelope = source["row_kind"] == "table_record"
+            has_history = con.execute("select 1 from flows where case_id=? limit 1", [case_id]).fetchone() is not None
+            compact_insert = envelope and not has_history and type(rows) is StagedSequence
             query = """select r.record_key,f.flow_id from import_records r
                     join flow_sources f on f.case_id=r.case_id and f.source_id=r.source_id
                       and f.source_row=r.record_no
@@ -860,7 +872,7 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                 parameters += [*archive_profiles, *table_profiles]
             else:
                 query += " order by f.flow_id"
-            requested = {row["_record_key"]: row for row in rows} if envelope else {}
+            requested = {row["_record_key"]: row for row in rows} if envelope and has_history else {}
             validated_rows = None
             if envelope:
                 parameters += [list(requested), *archive_profiles]
@@ -881,7 +893,7 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                             continue
                     existing[key] = fid
                     reused_ids.add(fid)
-            if envelope and standalone_csv_keys:
+            if envelope and has_history and standalone_csv_keys:
                 # Reserve every exact archive match first. A fallback must
                 # never consume a flow needed by a later exact physical key.
                 pending = {}
@@ -930,13 +942,34 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                             existing[key] = fid
                             reused_ids.add(fid)
         else:
-            cursor = con.execute(f"select id,{key_cols} from flows where case_id = ? order by id", [case_id])
+            # Bound standalone history by the requested triples. The full
+            # Python fingerprint still decides every duplicate.
+            requested = set()
+            for row in rows:
+                key = tuple(row.get(field) or "" for field in ("trade_no", "payer_account", "payee_account"))
+                # Stored columns are VARCHAR. Coercing a truthy scalar
+                # would invent matches absent from _row_key equality.
+                if all(isinstance(value, str) for value in key):
+                    requested.add(key)
+            parameters = [[key[index] for key in requested] for index in range(3)] + [case_id]
+            del requested
+            cursor = con.execute(f"""select id,{key_cols} from flows semi join (
+                select unnest(?::varchar[]) wanted_trade_no,
+                       unnest(?::varchar[]) wanted_payer_account,
+                       unnest(?::varchar[]) wanted_payee_account
+                ) wanted on coalesce(flows.trade_no,'')=wanted.wanted_trade_no
+                  and coalesce(flows.payer_account,'')=wanted.wanted_payer_account
+                  and coalesce(flows.payee_account,'')=wanted.wanted_payee_account
+                where case_id = ? order by id""", parameters)
+            del parameters
             names = [column[0] for column in cursor.description]
-            for values in cursor.fetchall():
-                record = dict(zip(names, values))
-                existing.setdefault(_row_key(record), record["id"])
+            while candidates := cursor.fetchmany(1024):
+                for values in candidates:
+                    record = dict(zip(names, values))
+                    existing.setdefault(_row_key(record), record["id"])
 
         seen, final, references, dup = {}, [], [], 0
+        batch_accts = set()
         for r in rows:
             # Match the value insertion will persist, without reinterpreting
             # genuinely unknown currency values in an existing database.
@@ -948,7 +981,15 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                     references.append((r["_source_row"], k, "duplicate"))
                 continue
             seen[k] = len(final)
-            final.append(r)
+            if compact_insert:
+                # Keep insert values only. The staged row and its journal
+                # are independently replayed for write verification.
+                final.append(_flow_insert_values(r))
+                for account in (r["payer_account"], r["payee_account"]):
+                    if account:
+                        batch_accts.add(account)
+            else:
+                final.append(r)
             if source:
                 references.append((r["_source_row"], k, "imported"))
         if rows:
@@ -988,11 +1029,12 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
                     "payee_name", "payee_account", "payee_bank", "amount", "balance", "currency", "summary", "channel",
                     "self_account", "self_name", "trade_time_utc", "trade_time_original", "trade_time_offset"]
             for i in range(0, len(final), WRITE_CHUNK):
-                data = [[fid, case_id, batch_id, r["trade_no"], r["trade_time"], r["payer_name"], r["payer_account"], r.get("payer_bank") or "",
-                         r["payee_name"], r["payee_account"], r.get("payee_bank") or "",
-                         r["amount"], r.get("balance"), r.get("currency") or "CNY", r.get("summary") or "", r.get("channel") or "",
-                         r.get("self_account") or "", r.get("self_name") or "", r.get("trade_time_utc"), r.get("trade_time_original"), r.get("trade_time_offset")]
-                        for fid, r in zip(flow_ids[i:i + WRITE_CHUNK], final[i:i + WRITE_CHUNK])]
+                insert_values = final[i:i + WRITE_CHUNK]
+                if not compact_insert:
+                    insert_values = map(_flow_insert_values, insert_values)
+                data = [[fid, case_id, batch_id, *values]
+                        for fid, values in zip(flow_ids[i:i + WRITE_CHUNK], insert_values)]
+                del insert_values
                 df_ins = pd.DataFrame(data, columns=cols)
                 del data
                 df_ins["trade_time"] = pd.to_datetime(df_ins["trade_time"])
@@ -1031,18 +1073,18 @@ def commit_rows(filename, mode, rows, stats=None, progress_cb=None, case_id=1, p
         st["self_accounts"] = [{"account": a, "name": n} for a, n in self_map.items()]
         st["self_accounts_count"] = len(self_map)
         # 主账号匹配：本批次中出现、且已被标记为主账号的账号数（标记跟随账号，自动保持）
-        batch_accts = set()
-        for r in final:
-            if r.get("payer_account"):
-                batch_accts.add(r["payer_account"])
-            if r.get("payee_account"):
-                batch_accts.add(r["payee_account"])
+        if not compact_insert:
+            for r in final:
+                if r.get("payer_account"):
+                    batch_accts.add(r["payer_account"])
+                if r.get("payee_account"):
+                    batch_accts.add(r["payee_account"])
         if batch_accts:
             mains = {r["account"] for r in db.q("select account from main_accounts where case_id = ?", [case_id])}
             st["main_matched"] = sorted(batch_accts & mains)
             st["accounts_in_batch"] = len(batch_accts)
         from . import analysis_snapshot
-        analysis_snapshot.invalidate(case_id)
+        analysis_snapshot.invalidate(case_id, refresh_source_index=refresh_source_index)
         return st
 
 
@@ -1111,7 +1153,7 @@ class _StagedIdentityIndex:
             self.pending_bytes = 0
 
 
-def _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, source):
+def _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, source, *, refresh_source_index=True):
     """Bounded writer, retaining one source/batch and the caller's transaction."""
     from . import evidence_resolution, analysis_snapshot
     from .import_staging import PLAN_CHUNK_BYTES, _encode_value
@@ -1216,5 +1258,5 @@ def _commit_staged_evidence(filename, mode, rows, stats, progress_cb, case_id, s
             result.update(main_matched=sorted(batch_accounts & mains), accounts_in_batch=len(batch_accounts))
         if progress_cb:
             progress_cb(imported, imported)
-        analysis_snapshot.invalidate(case_id)
+        analysis_snapshot.invalidate(case_id, refresh_source_index=refresh_source_index)
         return result

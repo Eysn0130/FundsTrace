@@ -43,6 +43,12 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 下载使用原生保存对话框，处理取消／中断，拒绝任意远程 URL；服务生成成功和磁盘落盘完成分别处理，不自动打开下载 HTML。[DownloadItem](https://www.electronjs.org/docs/latest/api/download-item)
 
+## 导入原件的本机副本
+
+导入窗口对已留存的直接 CSV/TSV/TXT/Excel 文件提供“打开副本”和“显示副本位置”；浏览器仍使用原件下载。`source-copies.cjs` 的受限 IPC 只接受注册案件/来源 ID 和不透明 ticket，Main 复用原件验真下载接口，拒绝重定向、路径名、可执行类型及超过300MiB的流。文件在应用专属临时子目录中以只读权限创建，再由系统默认关联打开；图标来自该副本的系统文件关联，不将已安装的 WPS/Office 冒充默认程序。[shell](https://www.electronjs.org/docs/latest/api/shell)、[getFileIcon](https://www.electronjs.org/docs/latest/api/app#appgetfileiconpath-options)
+
+切换案件/文件、同案重绑定、关闭窗口或嵌入文档失效后，不再派发迟到的系统打开。尚未向外部应用/文件管理器暴露的副本会按本次操作清理；已明确打开或显示的副本作为用户导出的副本保留在系统临时目录，退出不猜测外部应用是否已关闭。它不代表用户最初选择的原件路径，外部修改不会自动回写或重新导入。压缩包成员当前只提供“另存所属压缩包”，没有实现成员物理提取；工作表不以XML大小冒充Excel大小。此能力不改变原件留存、解析规则或导入事务。
+
 ## 启动显示与窗口尺寸
 
 2026-11-10 三层工作区源码候选将本节标题区契约改为 44 DIP、24px 图标和 14px 标题字，并同步安装验证脚本的独立断言。导航栏为 52px，右／底外壳边为 4px；见 [本次设计验收](../design-qa.md)。这是源码与合成运行验证，历史安装包及其 32 DIP 证据原样保留；本次尚无新安装包、Windows 原生 GUI／DPI 或发布结论。

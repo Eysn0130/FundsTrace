@@ -11,32 +11,35 @@ from test_folder_evidence import accepted, account, complete, preview, table, tr
 from test_funds_projection import event, expected, flow, total
 
 
-@pytest.mark.parametrize('granularity,relation', [('observations', 'selected_observations'), ('events', 'ordinary_facts')])
+@pytest.mark.parametrize('granularity,relation', [('observations', 'selected_observations'), ('events', 'selected_facts')])
 def test_legacy_count_materializes_only_required_fact_columns(client, database, make_case, monkeypatch, granularity, relation):
     cid = make_case('Synthetic narrow count source')
     flow(database, cid, 1, '100.03'); flow(database, cid, 2, '100.03')
     event(database, cid, 'SYN-COUNT-EVENT', [1, 2], '100.03')
     analysis_snapshot.revision(cid)  # Exercise the populated private reader.
-    original, observed = database.q, []
+    original, observed = database.q_raw, []
     def inspect_count(sql, params=None):
-        ending = f'select count(*) c from {relation}'
-        if sql.endswith(ending):
-            prefix = sql[:-len(ending)]
-            sample = database.q_raw(prefix+'select to_json(s) payload from _funds_source s limit 1', params)[0]
+        if '_funds_page_keys as materialized' in sql:
+            prefix = sql.split(', _funds_grouped as', 1)[0]
+            sample = original(prefix+'select to_json(s) payload from _funds_source s limit 1', params[:-2])[0]
             observed.append((set(json.loads(sample['payload'])), sql))
         return original(sql, params)
-    monkeypatch.setattr(database, 'q', inspect_count)
+    monkeypatch.setattr(database, 'q_raw', inspect_count)
     response = client.get('/api/flows', params={'case_id': cid, 'granularity': granularity, 'size': 1})
     assert response.status_code == 200, response.text
     assert response.json()['total'] == (2 if granularity == 'observations' else 1)
     assert len(observed) == 1
     columns, sql = observed[0]
-    assert columns == {'case_id', 'id', 'amount', 'currency', 'balance'}
-    assert 'observation_ids' not in sql
+    assert columns == {'case_id', 'id', 'trade_time', 'trade_time_utc', 'amount', 'currency', 'balance'}
+    assert f'_funds_page_keys as materialized (select * from {relation}' in sql
+    assert 'observation_ids' not in sql.split(', _funds_grouped as', 1)[0]
+    if granularity == 'events':
+        assert 'from selected_observations s join _funds_page_keys p' in sql
 
 
 @pytest.mark.parametrize('granularity', ['observations', 'events'])
 def test_legacy_narrow_count_matches_wide_count_for_complete_filtered_pages(client, database, make_case, monkeypatch, granularity):
+    from test_legacy_flow_page import frozen_response
     cid, other = make_case('Synthetic narrow complete selection'), make_case('Synthetic foreign selection')
     for number, amount, currency in [(1, '100.03', 'CNY'), (2, '100.03', 'CNY'),
                                     (3, '100.03', 'CNY'), (4, None, None),
@@ -55,28 +58,14 @@ def test_legacy_narrow_count_matches_wide_count_for_complete_filtered_pages(clie
                   ({'kw': 'SYN-ONE-SIDE'}, [1], [1]), ({'kw': 'SYN-MISSING'}, [], []),
                   ({'account': 'SYN-A', 'account_exact': 'true'}, [7,6,5,3,2,1], [7,6,5,3,1]),
                   ({'tracked': 1, 'canvas_id': 7}, [4,2,1], [4,1])]
-    original = funds.cte
     for filters, observation_ids, event_ids in selections:
         ids = observation_ids if granularity == 'observations' else event_ids
         for page in [1, 3, 99]:
             query = {'case_id': cid, 'granularity': granularity, 'size': 2, 'page': page, **filters}
             response = client.get('/api/flows', params=query)
             assert response.status_code == 200, response.text
-            calls, wide_source = [], None
-            def previous_count(source, **kwargs):
-                nonlocal wide_source
-                calls.append(kwargs)
-                if len(calls) == 1:
-                    # The unmodified page CTE is the prior shared wide source.
-                    wide_source = source
-                elif len(calls) == 2:
-                    assert not kwargs.get('include_ids', False)
-                    return original(wide_source, include_ids=True)
-                return original(source, **kwargs)
-            with monkeypatch.context() as reference:
-                reference.setattr(funds, 'cte', previous_count)
-                before = client.get('/api/flows', params=query)
-            assert before.status_code == 200 and len(calls) >= 2
+            before = frozen_response(client, monkeypatch, query)
+            assert before.status_code == 200
             value = response.json()
             assert value == before.json()
             assert value['total'] == len(ids)

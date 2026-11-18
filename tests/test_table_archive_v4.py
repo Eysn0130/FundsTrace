@@ -77,11 +77,11 @@ def test_archive_v4_retains_overlapping_layouts_until_an_unmistakable_header():
 
 
 def test_archive_member_optins_do_not_enter_standalone_or_advanced_inheritance():
-    assert table_archive.PROFILE == "funds-trace-table-archive-v57"
+    assert table_archive.PROFILE == "funds-trace-table-archive-v60"
     assert table_import.ARCHIVE_MEMBER_PROFILE == V4
     assert table_archive.CANCELLATION_PROFILE == V3
     assert table_archive.CANCELLATION_PROFILES == {
-        *[f"funds-trace-table-archive-v{v}" for v in (30, 33, 36, 39, 42, 45, 48, 51, 54, 57)], V3, V4, table_archive.TIME_ROLE_PROFILE, table_archive.ZONED_PROFILE, table_archive.OPTIONAL_REFERENCE_PROFILE, table_archive.REFERENCE_ROLE_PROFILE, table_archive.GUARDED_PROFILE, table_archive.PRECISE_PROFILE, table_archive.LEGACY_EVIDENCE_PROFILE, table_archive.EVIDENCE_PROFILE, table_archive.XLS_EVIDENCE_PROFILE, *table_import.MICROSECOND_ARCHIVE_PROFILES}
+        *[f"funds-trace-table-archive-v{v}" for v in (30, 33, 36, 39, 42, 45, 48, 51, 54, 57, 60)], V3, V4, table_archive.TIME_ROLE_PROFILE, table_archive.ZONED_PROFILE, table_archive.OPTIONAL_REFERENCE_PROFILE, table_archive.REFERENCE_ROLE_PROFILE, table_archive.GUARDED_PROFILE, table_archive.PRECISE_PROFILE, table_archive.LEGACY_EVIDENCE_PROFILE, table_archive.EVIDENCE_PROFILE, table_archive.XLS_EVIDENCE_PROFILE, *table_import.MICROSECOND_ARCHIVE_PROFILES}
     assert V4 not in table_import.SUPPORTED_PROFILES
     assert table_import.CURRENCY_CODE_ALIAS_PROFILES == {
         table_import.CURRENCY_REGION_PROFILE, *table_import.SOURCE_CONTRACT_PROFILES, *table_import.STANDALONE_XLS_PROFILES, V4,

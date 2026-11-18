@@ -519,7 +519,7 @@ describe('FundsTrace case workspace', () => {
     await screen.findByRole('button', { name: '核对流水 SYN-1' });
     fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入流水' }));
     fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } });
-    await screen.findByText('synthetic.csv');
+    await screen.findByRole('heading', { name: 'synthetic.csv' });
     const select = screen.getByLabelText('映射付款账号');
     fireEvent.change(select, { target: { value: '收款账号' } });
     expect((screen.getByRole('button', { name: '确认导入' }) as HTMLButtonElement).disabled).toBe(true);
@@ -540,7 +540,7 @@ describe('FundsTrace case workspace', () => {
     await screen.findByRole('button', { name: '核对流水 SYN-1' });
     fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入流水' }));
     fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } });
-    await screen.findByText('synthetic.csv');
+    await screen.findByRole('heading', { name: 'synthetic.csv' });
     const next = initialMode === 'A' ? 'B' : 'A';
     fireEvent.change(screen.getByLabelText('流水文件类型'), { target: { value: next } });
     fireEvent.click(screen.getByRole('button', { name: '按当前映射重新预览' }));
@@ -559,7 +559,7 @@ describe('FundsTrace case workspace', () => {
     await screen.findByRole('button', { name: '核对流水 SYN-1' });
     fireEvent.click(within(screen.getByRole('main')).getByRole('button', { name: '导入流水' }));
     fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } });
-    await screen.findByText('synthetic.csv');
+    await screen.findByRole('heading', { name: 'synthetic.csv' });
     fireEvent.change(screen.getByLabelText('映射时间补充'), { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: '按当前映射重新预览' }));
     await waitFor(() => expect(repreview).toHaveBeenCalledWith('1', preview.import_id, expect.objectContaining({ mapping: expect.objectContaining({ _time2: '' }) }), expect.any(AbortSignal)));
@@ -630,8 +630,9 @@ describe('FundsTrace case workspace', () => {
     await screen.findByRole('button', { name: '核对流水 SYN-1' });
     fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
     fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.csv')] } });
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(commit).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: '查看处理结果' }));
     fireEvent.click(screen.getByRole('button', { name: '下载完整处理报告（JSON）' }));
     await waitFor(() => expect(report).toHaveBeenCalledWith('1', 'SYN-REPORT-SOURCE',
       'feedback-SYN-REPORT-SOURCE-dispositions.json', expect.any(AbortSignal)));

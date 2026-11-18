@@ -59,6 +59,26 @@ def create_case(name):
     return case_json(row)
 
 
+def account_count(case_id):
+    """Count the original ordinary/source account set in one read view."""
+    from app import funds_projection
+    with db.read_lock():
+        return raw_query(funds_projection.cte("select * from effective_flows where case_id=?") + """,
+            _stats_visible_accounts as materialized (
+                select case when l.flow_id is not null then f.payer_account end payer_account,
+                    case when l.flow_id is not null then f.payee_account end payee_account,
+                    case when l.flow_id is not null then f.self_account end self_account,
+                    f.source_counter_id
+                from effective_visible_flows f left join source_ledger_index l
+                  on l.case_id=f.case_id and l.flow_id=f.id where f.case_id=?
+            ) select count(distinct account) accounts from (
+                select unnest([payer_account,payee_account]) account from ordinary_facts
+                union all
+                select unnest([payer_account,payee_account,self_account,source_counter_id]) account
+                from _stats_visible_accounts
+            ) where coalesce(account,'')<>''""", [case_id, case_id])[0]["accounts"]
+
+
 def stats(case_id):
     from app import analysis_snapshot, evidence_resolution, event_resolution, funds_projection
     with db._lock:
@@ -76,17 +96,7 @@ def stats(case_id):
         row["flows"] = fields["cnt"]
         from app import source_ledger
         row["source_ledger"] = source_ledger.summary(cid)
-        row["accounts"] = raw_query(funds_projection.cte(source) + """select count(distinct account) accounts from (
-            select payer_account account from ordinary_facts union all
-            select payee_account from ordinary_facts union all
-            select f.payer_account from effective_visible_flows f join source_ledger_index l
-              on l.case_id=f.case_id and l.flow_id=f.id where f.case_id=? union all
-            select f.payee_account from effective_visible_flows f join source_ledger_index l
-              on l.case_id=f.case_id and l.flow_id=f.id where f.case_id=? union all
-            select f.self_account from effective_visible_flows f join source_ledger_index l
-              on l.case_id=f.case_id and l.flow_id=f.id where f.case_id=? union all
-            select f.source_counter_id from effective_visible_flows f where f.case_id=?
-            ) where coalesce(account,'')<>''""", [cid, cid, cid, cid, cid])[0]["accounts"]
+        row["accounts"] = account_count(cid)
         coverage = import_coverage(cid, known_excluded=row.pop("raw_flows") - funds["observation_count"] - source_ledger.nonpositive_count(cid))
         resolution = evidence_resolution.summary(cid)
         return {"case_id": case_id, "funds": funds, "event_summary": event_resolution.summary(cid),

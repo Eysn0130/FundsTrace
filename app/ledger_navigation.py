@@ -110,7 +110,7 @@ def own_anchor(case_id, account, anchor):
     return rows[0] if len(rows) == 1 else None
 
 
-def neighbors(case_id, account, anchor, direction, count):
+def neighbors(case_id, account, anchor, direction, count, *, own_entry=...):
     """Return nearest proved earlier credits/later debits on the own ledger.
 
     Entire timestamp groups are read before choosing a boundary. A stable ID
@@ -140,7 +140,7 @@ def neighbors(case_id, account, anchor, direction, count):
         row["trade_time"] = row.pop("_precise_time")
     if len(rows) > MAX_NEIGHBORS:
         return {"rows": [], "status": "limited", "reasons": ["neighbor_interval_resource_limit"]}
-    own = own_anchor(case_id, account, anchor)
+    own = own_anchor(case_id, account, anchor) if own_entry is ... else own_entry
     metadata = event_resolution.ledger_metadata(case_id, [row["id"] for row in rows] + ([own["id"]] if own else []))
     membership = {row["flow_id"]: row for row in event_resolution.members(case_id, [anchor["id"], *(r["id"] for r in rows)])}
     anchor_event = membership.get(str(anchor["id"]), {})

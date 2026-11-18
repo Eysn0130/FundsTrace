@@ -75,7 +75,7 @@ function statFacts(value) {
 function sourceKey(source) { return JSON.stringify([source.filename, source.sha256, source.parser_version || source.profile]); }
 function assertFourFormatSources(pkg, committed, inputs) {
   const filenames = ['formats.csv', 'formats.xlsx', 'formats.xls', 'formats.zip'];
-  const profiles = ['funds-trace-table-v69', 'funds-trace-table-v69', 'funds-trace-table-v70', 'funds-trace-table-archive-v57'];
+  const profiles = ['funds-trace-table-v69', 'funds-trace-table-v69', 'funds-trace-table-v70', 'funds-trace-table-archive-v60'];
   const tables = pkg.tables;
   assert.equal(committed.length, 4);
   assert.equal(new Set(committed.map(item => item.sourceId)).size, 4);
@@ -337,7 +337,7 @@ async function run(options) {
     for (const [index, file] of ['formats.csv', 'formats.xlsx', 'formats.xls', 'formats.zip'].entries()) {
       const { view, job } = await upload(ready, simple, file);
       assert.equal(job.result.ok, index === 0 ? 3 : 0); assert.equal(job.result.rows_dup, index === 0 ? 0 : 3);
-      assert.equal(view.table_summary.profile, file.endsWith('.xls') ? 'funds-trace-table-v70' : file.endsWith('.zip') ? 'funds-trace-table-archive-v57' : 'funds-trace-table-v69');
+      assert.equal(view.table_summary.profile, file.endsWith('.xls') ? 'funds-trace-table-v70' : file.endsWith('.zip') ? 'funds-trace-table-archive-v60' : 'funds-trace-table-v69');
       assert.equal(view.table_summary.unresolved, 0);
       fourFormatImports.push({ sourceId: view.import_id, filename: file, profile: view.table_summary.profile });
       assertMoney((await json(ready, `/api/v1/cases/${simple}/flows?page_size=200`)).items, SIMPLE);

@@ -227,7 +227,10 @@ def _source(session, *, snapshot=False):
 def _session(case_id, import_id, surface="v1", bind=False):
     if not isinstance(import_id, str) or not re.fullmatch(r"[0-9a-f]{32}", import_id):
         raise _missing()
-    with db.transaction():
+    # A progress request may own a committed read-only snapshot while the
+    # importer writes. Legacy binding still requires the writable transaction.
+    context = db.read_lock() if not bind and db.in_read_snapshot() else db.transaction()
+    with context:
         cid = _cid(case_id) if case_id is not None else None
         rows = db.q_raw("select * from import_sessions where import_id=? and surface=?", [import_id, surface])
         if not rows:
@@ -497,7 +500,7 @@ def _bind_archive_header_history(case_id, plan, rows, stats, source):
     def signature(row, default_currency=""):
         return (importer._row_key(row, default_currency=default_currency),
                 row.get("self_account") or "", row.get("self_name") or "")
-    header_profiles = (table_archive.HEADER_PROFILE, table_archive.GUARDED_PROFILE, table_archive.PRECISE_PROFILE, table_archive.REFERENCE_ROLE_PROFILE, table_archive.OPTIONAL_REFERENCE_PROFILE, table_archive.TIME_ROLE_PROFILE, table_archive.ZONED_PROFILE, table_archive.SOURCE_CONTRACT_PROFILE, table_archive.SOURCE_TEXT_PROFILE, table_archive.BANK31_VARIANT_PROFILE, table_archive.SOURCE_LEDGER_PROFILE, table_archive.POSTING_PAIR_PROFILE, table_archive.AUXILIARY_SCOPE_PROFILE, table_archive.NATIVE_OBSERVATION_PROFILE, table_archive.UNORIENTED_PROFILE, table_archive.NATIVE31_PROFILE, table_archive.SOURCE_OBSERVATION_PROFILE)
+    header_profiles = (table_archive.HEADER_PROFILE, table_archive.GUARDED_PROFILE, table_archive.PRECISE_PROFILE, table_archive.REFERENCE_ROLE_PROFILE, table_archive.OPTIONAL_REFERENCE_PROFILE, table_archive.TIME_ROLE_PROFILE, table_archive.ZONED_PROFILE, table_archive.SOURCE_CONTRACT_PROFILE, table_archive.SOURCE_TEXT_PROFILE, table_archive.BANK31_VARIANT_PROFILE, table_archive.SOURCE_LEDGER_PROFILE, table_archive.POSTING_PAIR_PROFILE, table_archive.AUXILIARY_SCOPE_PROFILE, table_archive.NATIVE_OBSERVATION_PROFILE, table_archive.UNORIENTED_PROFILE, table_archive.NATIVE31_PROFILE, table_archive.SOURCE_OBSERVATION_PROFILE, table_archive.AUXILIARY_ROWS_PROFILE)
     profiles = sorted(table_import.SUPPORTED_PROFILES | table_archive.SUPPORTED_PROFILES)
     digests = sorted({member["sha256"] for member in members.values()})
     cursor = db.con().execute(f"""
@@ -581,11 +584,8 @@ def _bind_table_history(case_id, plan, rows, stats):
     """
     if not rows:
         return
-    store = plan.get("_plan_store")
-    requested = store.mapping() if store is not None else {}
-    for row in rows:
-        record = plan["records"][row["_source_row"] - 1]
-        requested[record["member_path"], record["source_row"]] = row
+    records = plan["records"]
+    len(records)  # Preserve closed staged-record rejection without decoding.
     members = [(member["member_path"], member["sha256"]) for member in plan["members"]]
     wanted = ",".join("(?,?)" for _ in members)
     fields = table_import.STORED_FLOW_FIELDS
@@ -602,12 +602,21 @@ def _bind_table_history(case_id, plan, rows, stats):
         where r.case_id=? and (? in ({roles}) or i.parser_version in ({roles}))
         """, [value for member in members for value in member]
               + [case_id, plan["profile"], *role_profiles, *role_profiles])
+    batch = cursor.fetchmany(1024)
+    if not batch:
+        return
+    store = plan.get("_plan_store")
+    requested = store.mapping() if store is not None else {}
+    for row in rows:
+        record = records[row["_source_row"] - 1]
+        requested[record["member_path"], record["source_row"]] = row
     conflicting = store.mapping() if store is not None else set()
-    while batch := cursor.fetchmany(1024):
+    while batch:
         for path, position, *facts in batch:
             row = requested.get((path, position))
             if row is not None and importer._row_key(dict(zip(fields, facts))) != importer._row_key(row, default_currency="CNY"):
                 conflicting.add(row["_source_row"])
+        batch = cursor.fetchmany(1024)
     _table_history_conflicts(plan, rows, stats, conflicting)
 
 
@@ -1013,8 +1022,7 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
                          if suffix in {".zip", ".rar"} else table_import.VOUCHER_REFERENCE_XLS_PROFILE if suffix == ".xls" else table_import.VOUCHER_REFERENCE_EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
         parsed = _parse(source, suffix=suffix, table_profile=table_profile,
                         feedback_profile=feedback_import.MICROSECOND_EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None,
-                        _auto_event_profile=table_profile == table_import.PROFILE
-                        and suffix in {".csv", ".tsv", ".txt", ".xlsx"})
+                        _auto_event_profile=table_profile in table_import.CLOSED_BANK_SUCCESSORS)
         if cancelled.is_set():
             raise _PreviewCancelled()
         import_id = uuid.uuid4().hex
@@ -1210,14 +1218,10 @@ def _request(body, mapping):
             "mark_accounts": _account_values(getattr(body, "mark_accounts", None))}
 
 
-def _mark_mains(cid, rows, receipt, request):
-    row_self = {}
-    for row in rows:
-        account = (row.get("self_account") or "").strip()
-        if account:
-            row_self.setdefault(account, (row.get("self_name") or "").strip())
+def _mark_mains(cid, receipt, request):
+    row_self = {item["account"]: item.get("name") or "" for item in receipt.get("self_accounts", []) if item.get("account")}
     if request["mark_accounts"] is None:
-        mains = {item["account"]: item.get("name") or "" for item in receipt.get("self_accounts", []) if item.get("account")}
+        mains = row_self
     else:
         mains = {account: row_self.get(account, "") for account in request["mark_accounts"]}
     for account in request["self_accounts"]:
@@ -1280,16 +1284,20 @@ def _run(import_id):
                  [processed_total, _now(), import_id])
         # One shared transaction includes the receipt, provenance and account
         # changes. Restart can never observe durable rows without their receipt.
-        with db.import_transaction():
+        with db.import_transaction() as con:
             current = _session(session["case_id"], import_id, session["surface"])
             if current["owner_token"] != OWNER_TOKEN or current["stage"] != "importing":
                 return
             _bind_feedback_plan(session["case_id"], parsed)
             _bind_table_plan(session["case_id"], parsed, source=session)
-            standalone_keys = ({}
-                               if table_plan is not None and table_plan["profile"] in table_archive.SUPPORTED_PROFILES
-                               and table_plan["profile"] not in table_archive.EVIDENCE_PROFILES else None)
-            manifest = (import_validation.table_manifest(table_plan, rows, standalone_csv_keys=standalone_keys)
+            archive_csv = (table_plan is not None and table_plan["profile"] in table_archive.SUPPORTED_PROFILES
+                           and table_plan["profile"] not in table_archive.EVIDENCE_PROFILES)
+            standalone_keys = None
+            if archive_csv and con.execute(
+                    "select 1 from flows where case_id=? limit 1", [session["case_id"]]).fetchone() is not None:
+                standalone_keys = {}
+            manifest = (import_validation.table_manifest(table_plan, rows, verify_archive_csv=archive_csv,
+                                                         standalone_csv_keys=standalone_keys)
                         if table_plan is not None else None)
             provenance = {"source_id": import_id, "filename": session["filename"], "sha256": session["sha256"],
                           "size_bytes": session["size_bytes"], "mode": mode, "mapping": mapping,
@@ -1309,18 +1317,16 @@ def _run(import_id):
                     _close_staging(parsed)
             receipt = importer.commit_rows(session["filename"], mode, rows, stats,
                                            case_id=session["case_id"], provenance=provenance,
-                                           standalone_csv_keys=standalone_keys)
+                                           standalone_csv_keys=standalone_keys,
+                                           # Ledger publication below refreshes after raw-write verification.
+                                           refresh_source_index=not (plan is None and table_plan is not None
+                                               and table_plan["profile"] in table_import.SOURCE_LEDGER_PROFILES))
             receipt["source_id"] = import_id
             db.x("insert into import_source_operations(case_id,source_id,batch_id,active) values (?,?,?,true)",
                  [session["case_id"], import_id, receipt["batch_id"]])
-            main_rows = rows
             if provenance["parser_version"] in evidence_resolution.PROFILES:
                 db.x("insert into evidence_sources(case_id,source_id,batch_id,active) values (?,?,?,true)", [session["case_id"], import_id, receipt["batch_id"]])
             if provenance["parser_version"] in evidence_resolution.OCCURRENCE_PROFILES:
-                # Keep only the first self-name declaration needed later; the
-                # immutable manifest and full journal still verify every fact.
-                main_rows = [{"self_account": item["account"], "self_name": item.get("name") or ""}
-                             for item in receipt.get("self_accounts", [])]
                 receipt.update(summary_snapshot)
                 rows.clear()
                 (plan or table_plan).get("cancelled_rows", []).clear()
@@ -1335,10 +1341,19 @@ def _run(import_id):
             if table_plan is not None:
                 _write_feedback_journal(session["case_id"], import_id, table_plan)
                 import_validation.verify_table_write(session["case_id"], import_id, table_plan["profile"], manifest)
+                del manifest
+                if (provenance["parser_version"] in evidence_resolution.OCCURRENCE_PROFILES
+                        or ("_plan_store" in table_plan and table_plan["profile"] in table_import.SOURCE_LEDGER_PROFILES)):
+                    if "table_summary" not in receipt:
+                        receipt["table_summary"] = _table_summary(table_plan)
+                    # The ledger now reads the written journal in this transaction.
+                    # The receipt already holds the summary and main declarations.
+                    rows = []
+                    table_plan.update(rows=rows, records=[], cancelled_rows=[])
+                    _close_staging(parsed)
                 if table_plan["profile"] in table_import.SOURCE_LEDGER_PROFILES:
                     from app import source_ledger
                     receipt["source_ledger"] = source_ledger.commit(session["case_id"], import_id, receipt["batch_id"])
-                del manifest
                 if "table_summary" not in receipt:
                     receipt["table_summary"] = _table_summary(table_plan)
                 from app import source_ledger
@@ -1348,7 +1363,7 @@ def _run(import_id):
                         [session["case_id"], session["case_id"]])[0]["n"] - source_ledger.nonpositive_count(session["case_id"]),
                     effective_added=db.q_raw("select count(*) n from effective_flows where case_id=? and batch_id=?",
                                              [session["case_id"], receipt["batch_id"]])[0]["n"])
-            _mark_mains(session["case_id"], main_rows, receipt, request)
+            _mark_mains(session["case_id"], receipt, request)
             if provenance["parser_version"] in evidence_resolution.PROFILES:
                 # Provenance/write fidelity and the durable receipt summary are
                 # now fixed. Release parser staging before replaying the journal.
@@ -1362,6 +1377,8 @@ def _run(import_id):
             receipt["resolution"] = evidence_resolution.rebuild(session["case_id"])
             from .. import event_resolution
             event_resolution.rebuild(session["case_id"], changed_sources=[import_id])
+            from . import materials
+            materials.register(session['case_id'],import_id,request.get('material_group_id') or import_id)
             receipt = _receipt(receipt)
             db.x("""update import_sessions set stage='done',done=?,total=?,result_json=?,error_code=null,
                       updated_at=?,expires_at=? where import_id=? and owner_token=?""",
@@ -1384,6 +1401,8 @@ def _run(import_id):
 def _commit(case_id, import_id, body, surface):
     with db.transaction():
         session = _session(case_id, import_id, surface, bind=True)
+        from . import materials
+        material_group_id=materials.commit_group(session['case_id'],import_id,getattr(body,'material_group_id',None),session.get('request_json'))
         if session["stage"] in (*_active_stages, "done"):
             result = {"import_id": import_id, "started": False}
         else:
@@ -1403,6 +1422,7 @@ def _commit(case_id, import_id, body, surface):
             if session["suffix"] == ".zip" and not is_table and (body.mode != "B" or mapping != feedback_import.MAPPING):
                 raise ServiceError(422, "fixed_feedback_mapping", "资金反馈包的格式规则不可更改，请重新预览")
             request = _request(body, mapping)
+            request['material_group_id']=material_group_id
             if session["suffix"] == ".zip":
                 request["_feedback_profile"] = _feedback_profile(session)
             if is_table:
@@ -1451,17 +1471,28 @@ def _progress(case_id, import_id, surface):
     feedback = (result["result"] or {}).get("feedback")
     if stage == "done" and feedback:
         result["message"] = f"自动处理完成，全部 {feedback['record_total']} 条来源记录已保存"
+    if stage == "done" and (result["result"] or {}).get("source_id"):
+        # Read only committed journal facts. In-flight writes have no per-file
+        # completion receipt and must not be presented as successful imports.
+        members = {}
+        for row in db.q_raw("""select member_path,disposition,count(*) n from import_records
+                where case_id=? and source_id=? group by member_path,disposition order by member_path,disposition""",
+                [session["case_id"], result["result"]["source_id"]]):
+            members.setdefault(row["member_path"], {})[row["disposition"]] = row["n"]
+        result["member_results"] = [{"member_path": path, "dispositions": counts} for path, counts in members.items()]
     if surface == "v1":
         result["case_id"] = str(case_id)
     return result
 
 
 def progress(case_id, import_id):
-    return _progress(case_id, import_id, "v1")
+    with db.read_snapshot():
+        return _progress(case_id, import_id, "v1")
 
 
 def legacy_progress(import_id, case_id=None):
-    return _progress(case_id, import_id, "legacy")
+    with db.read_snapshot():
+        return _progress(case_id, import_id, "legacy")
 
 
 
@@ -1512,40 +1543,137 @@ def _journal_source(case_id, source_id):
     return cid, found[0]
 
 
-def _record_items(cid, source_id, *, disposition=None, limit=None, offset=0):
+def _record_items(cid, source_id, *, disposition=None, member_path=None, source_row=None, limit=None, offset=0, include_preview=False, record_nos=None):
     from .. import bank_single_postings
     where, params = "r.case_id=? and r.source_id=?", [cid, source_id]
     if disposition is not None:
         where += " and r.disposition=?"
         params.append(disposition)
+    if member_path is not None:
+        where += " and r.member_path=?"
+        params.append(member_path)
+    if source_row is not None:
+        where += " and r.source_row=?"
+        params.append(source_row)
+    if record_nos is not None:
+        where += ' and r.record_no in (select unnest(?::bigint[]))'
+        params.append(record_nos)
+        if record_nos:
+            where += ' and r.record_no between ?::bigint and ?::bigint'
+            params += [min(record_nos), max(record_nos)]
     paging = " limit ? offset ?" if limit is not None else ""
     if limit is not None:
         params += [limit, offset]
-    rows = db.q_raw(f"""select r.*,f.flow_id,m.status current_event_state,m.reason current_event_reason,m.pending_group current_pending_group,
-                        e.evidence_json current_single_proof from import_records r left join flow_sources f
+    rows = db.q_raw(f"""with _record_page as materialized (
+                        select r.* from import_records r where {where} order by r.record_no{paging}
+                        ) select r.*,f.flow_id,m.status current_event_state,m.reason current_event_reason,m.pending_group current_pending_group,
+                        e.evidence_json current_single_proof from _record_page r left join flow_sources f
                         on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
                         left join event_members m on m.case_id=f.case_id and m.flow_id=f.flow_id
-                        left join resolved_events e on e.case_id=m.case_id and e.event_id=m.event_id and m.status='confirmed'
+                        left join resolved_events e on e.case_id=m.case_id
+                            and e.event_id=case when m.status='confirmed' then m.event_id end
                             and json_extract_string(e.evidence_json,'$.policy')='{bank_single_postings.POLICY}'
-                        where {where} order by r.record_no{paging}""", params)
+                        order by r.record_no""", params)
+    # Only this already bounded page is projected. Original record values and
+    # frozen receipt counts remain in their existing provenance contracts.
+    flow_ids = list({row["flow_id"] for row in rows if row["flow_id"] is not None}) if include_preview else []
+    previews = ({row["id"]: preview_flow(row) for row in db.q_raw(
+        "select * from flows where case_id=? and id in (select unnest(?::bigint[]))", [cid, flow_ids])}
+        if flow_ids and limit is not None else {})
     return [{**{k: r[k] for k in ("record_no", "member_path", "source_row", "record_key", "disposition", "reason_code")},
              "details": {**json.loads(r["details_json"]),
                  **({bank_single_postings.PROOF_FIELD: r["current_single_proof"]} if r["current_single_proof"] else {}),
                  **({bank_single_postings.PENDING_FIELD if (r["current_event_reason"] or '').startswith('single_posting_') else "current_bank_posting_pair_pending": r["current_event_reason"]} if r["current_pending_group"] and r["current_event_state"] == "unknown" else {}),
                  **({"current_event_state": r["current_event_state"], "current_event_reason": r["current_event_reason"]} if (r["current_event_reason"] or '').startswith('single_posting_') else {}),
                  **({"current_event_state": "unknown", "current_event_reason": "time_basis_incomparable"} if r["current_event_reason"] == "time_basis_incomparable" else {"current_event_state": "conflict"} if r["current_event_state"] == "conflict" else {})},
-             "flow_id": str(r["flow_id"]) if r["flow_id"] is not None else None}
+             "flow_id": str(r["flow_id"]) if r["flow_id"] is not None else None,
+             **({"preview": {**previews[r["flow_id"]], "source_member": r["member_path"],
+                              "source_row": r["source_row"], "source_record_no": r["record_no"]}}
+                if r["flow_id"] in previews else {})}
             for r in rows]
 
 
-def list_records(case_id, source_id, page=1, page_size=100, disposition=None):
+def list_records(case_id, source_id, page=1, page_size=100, disposition=None, member_path=None, include_preview=False, source_row=None):
     with db._lock:
         cid, _ = _journal_source(case_id, source_id)
         condition, params = (" and disposition=?", [disposition]) if disposition is not None else ("", [])
+        if member_path is not None:
+            condition += " and member_path=?"
+            params.append(member_path)
+        if source_row is not None:
+            condition += " and source_row=?"
+            params.append(source_row)
         total = db.q_raw(f"select count(*) n from import_records where case_id=? and source_id=?{condition}",
                          [cid, source_id, *params])[0]["n"]
         return {"case_id": str(cid), "source_id": source_id, "total": total, "page": page, "page_size": page_size,
-                "items": _record_items(cid, source_id, disposition=disposition, limit=page_size, offset=(page - 1) * page_size)}
+                "items": _record_items(cid, source_id, disposition=disposition, member_path=member_path, source_row=source_row, include_preview=include_preview,
+                                       limit=page_size, offset=(page - 1) * page_size)}
+
+
+def review_records(case_id, source_id, member_path, view='all', page=1, page_size=50, issue_index=None):
+    """Page/filter frozen source rows; original bytes are a separate read-only view."""
+    from .. import import_originals
+    groups = {'all': None, 'review': ('review', 'unresolved'), 'accepted': ('imported', 'duplicate')}
+    with db._lock:
+        cid, source = _journal_source(case_id, source_id)
+        members = db.q_raw('select * from import_members where case_id=? and source_id=? and member_path=?', [cid, source_id, member_path])
+        if not members:
+            raise _missing()
+        if members[0]['role'] == 'attachment':
+            raise ServiceError(422, 'source_rows_unavailable', '附件原件已保留，内部数据行尚不能读取')
+        scope, params = 'case_id=? and source_id=? and member_path=?', [cid, source_id, member_path]
+        raw_counts = {row['disposition']: row['n'] for row in db.q_raw(
+            f'select disposition,count(*) n from import_records where {scope} group by disposition', params)}
+        counts = {name: sum(raw_counts.values()) if group is None else sum(raw_counts.get(key, 0) for key in group) for name, group in groups.items()}
+        group = groups[view]
+        where = scope + (' and disposition in (select unnest(?::varchar[]))' if group is not None else '')
+        filtered = [*params, list(group)] if group is not None else params
+        issue = None
+        if issue_index is not None and counts['review'] and view != 'accepted':
+            index = min(issue_index, counts['review'])
+            rows = db.q_raw(f"select record_no,source_row,reason_code from import_records where {scope} and disposition in ('review','unresolved') order by record_no limit 1 offset ?", [*params, index - 1])
+            issue = {'index': index, **rows[0]}
+            rank = db.q_raw(f'select count(*) n from import_records where {where} and record_no<=?', [*filtered, issue['record_no']])[0]['n']
+            page = (rank - 1) // page_size + 1
+        page = min(page, max(1, (counts[view] + page_size - 1) // page_size))
+        numbers = [row['record_no'] for row in db.q_raw(f'select record_no from import_records where {where} order by record_no limit ? offset ?', [*filtered, page_size, (page - 1) * page_size])]
+        items = _record_items(cid, source_id, record_nos=numbers, limit=page_size, include_preview=True)
+        for item in items:
+            item['original'] = None
+        sessions = db.q_raw('select * from import_sessions where case_id=? and import_id=?', [cid, source_id])
+        session = sessions[0] if sessions else None
+        receipt = json.loads(session['result_json'] or '{}') if session else {}
+        summary = receipt.get('table_summary') or {}
+        documents = [document for document in summary.get('documents', []) if document['member_path'] == member_path]
+        document = documents[0] if documents else {'header_row': 1} if source['parser_version'] in feedback_import.SUPPORTED_PROFILES else {}
+        evidence = [entry for entry in summary.get('mapping_evidence', []) if entry.get('member_path') == member_path]
+        if not evidence:
+            evidence = [{'field': field, 'column': column} for field, column in json.loads(source['mapping_json']).items()]
+        if source['parser_version'] in feedback_import.SUPPORTED_PROFILES:
+            # The closed feedback schema reads this status independently of its
+            # fixed financial MAPPING. This is display evidence, not a remap.
+            evidence.append({'field': 'status', 'column': '交易是否成功'})
+        # Verify/snapshot inside the owning scope; decoding holds no DB lock.
+        original_error, original = None, None
+        try:
+            if numbers:
+                original, _filename = get_source_file(cid, source_id)
+        except ServiceError as error:
+            if error.status not in (404, 409):
+                raise
+            original_error = '原件不可用，无法显示原始单元格'
+    if original is not None:
+        try:
+            with original:
+                cells = import_originals.read_cells(original, session['suffix'], members[0], document, evidence,
+                                                    {item['source_row'] for item in items}, source['parser_version'])
+            for item in items:
+                item['original'] = cells[item['source_row']]
+        except (OSError, ValueError, KeyError, IndexError, StopIteration, csv.Error, zipfile.BadZipFile, import_originals.ET.ParseError):
+            original_error = '原始单元格暂无法读取，请另存原件查看'
+    return {'case_id': str(cid), 'source_id': source_id, 'member_path': member_path, 'view': view,
+            'counts': counts, 'items': items, 'total': counts[view], 'page': page, 'page_size': page_size,
+            'issue': issue, 'original_error': original_error}
 
 
 def get_disposition_report(case_id, source_id):

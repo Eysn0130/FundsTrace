@@ -19,6 +19,8 @@ describe('import feedback state', () => {
     fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], preview.filename)] } });
     fireEvent.click(await screen.findByRole('button', { name: '确认导入' }));
     const alert = await screen.findByRole('alert'); expect(alert.className).toBe('warning-banner');
+    expect(document.querySelector('.ft-import-steps')?.getAttribute('data-outcome')).toBe('unknown');
+    expect(screen.getByRole('progressbar', {name:'导入处理进度，结果待核对'}).hasAttribute('value')).toBe(false);
     expect(document.querySelector('.error-banner')).toBeNull();
     expect(client.commit).toHaveBeenCalledOnce(); expect(client.job).not.toHaveBeenCalled();
     await waitFor(() => expect(feedback.task).toHaveBeenCalledWith(expect.objectContaining({ id: `import:${preview.import_id}`, importId: preview.import_id, status: 'unknown', announce: false })));
@@ -29,7 +31,7 @@ describe('import feedback state', () => {
     const reopened = render(<ImportDialog target={{ caseId: '1', name: '合成案件' }} client={client} scopeSignal={signal} resume={resume} onClose={close} onImported={vi.fn()} />);
     await waitFor(() => expect(client.job).toHaveBeenCalledWith(preview.import_id, expect.any(AbortSignal)));
     expect(client.commit).toHaveBeenCalledOnce(); expect(client.repreview).not.toHaveBeenCalled();
-    const progress = screen.getByRole('progressbar', { name: '流水导入进度' }); expect(progress.hasAttribute('value')).toBe(false);
+    const progress = screen.getByRole('progressbar', { name: '导入处理进度' }); expect(progress.getAttribute('value')).toBe('0');
     reopened.unmount();
   });
   it('labels an upload without a known total as indeterminate', async () => {
@@ -39,6 +41,7 @@ describe('import feedback state', () => {
     fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], preview.filename)] } });
     const progress = screen.getByRole('progressbar', { name: '文件上传与解析进度' });
     expect(progress.hasAttribute('value')).toBe(false); expect(progress.hasAttribute('max')).toBe(false);
+    expect(document.querySelector('.ft-entry-progress > .is-spinning')?.getAttribute('style')).toContain('import-loader.svg');
     await act(async () => resolve(preview)); view.unmount();
   });
 });

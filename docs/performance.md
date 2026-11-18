@@ -273,7 +273,7 @@ B1 原结果保留；后续轮次为控制交付空间，仅在计时结束后�
 | 来源重放与写入 | 仅排除可证没有顶层 typed 证据的严格字符串审计对象；在单次不变重建内复用有界来源范围。来源记账按最多 128 个不同物理位置批量匹配／写入，重复位置先发布前批；固定查询签名预计算，无声明的已物化文本矩阵省去布局预扫描。见 replay filter、range reuse、source ledger batch、source roles 与 source sign 回归。 |
 | 普通归档历史键 | 用已构造的 requested 键集合筛去无关历史；原 profile 优先级、最低匹配 ID、完整事实、self 和一次分配约束保持。见 `tests/test_import_history_filter.py`。 |
 | 流水与图读取 | `/api/flows`、GET `/api/graph` 和 POST `/api/graph/view` 共用单读者准入与请求私有只读事务，返回同一完整提交状态。缺代际初始化及不支持只读语法时走完整受锁路径；其它错误传播并释放资源。v1、其它读取、导出及写操作内部调用保留原锁边界。见 `tests/test_flow_read_snapshot.py`、`tests/test_graph_read_snapshot.py`。 |
-| 表格与桌面资源 | 启动、重开及画布恢复的最终查询归调用方，异常时仅为当前绑定补查。七列表格、精确金额和 G6 绘制策略保持；新 `static/import-queue.js` 已进入桌面后端资源白名单。见 table workspace harness 和 `tests/test_desktop_resources.py`。 |
+| 表格与桌面资源 | 启动、重开及画布恢复的最终查询归调用方，异常时仅为当前绑定补查。七列表格、精确金额和 G6 绘制策略保持；当时的 `static/import-queue.js` 后续由共享导入工作区替代；当前资源为 `unified-import.js`、`import-workspace.css` 及既有前端构建。见 table workspace harness 和 `tests/test_desktop_resources.py`。 |
 
 API 金额／ID 类型、数据库 schema、`.fundcase`、解析 profile、正常免激活启动和桌面管道认证未改变；不引入 Rust 或其它原生构建依赖。未知方向仍可查询，不能据此生成有向资金边；双边同笔与合法同额独立交易仍须分别保持 1 笔与 2 笔。
 
@@ -337,3 +337,17 @@ npm --prefix desktop test
 两项流水页 SQL 原型也因实测无收益或退步撤回，不叠加到最终实现。新的性能工作需要新的可验证瓶颈和代表负载；不能把 HTTP 预览、DuckDB 执行或必要资金校验全部当作可迁移的 Python CPU。迁移取舍见[演进建议](evolution.md#2026-11-06-渐进迁移调整)。
 
 上述源码／HTTP／macOS 源码 GUI 证据各自独立。它们不构成远端 `PR required`、Windows x64 离线加载、安装后 GUI／DPI、真实原包、所有银行格式或发行资格；提交、审阅、合并和发行按各自实际结果记录。
+
+## 2026-11-15：大来源与分页读取边界
+
+当前候选在共享数据库连接首次建立、开启 schema 事务前，将高于 4 的 DuckDB 线程数收敛为 4；更低的既有设置保留。同阶段将不低于 1GiB 的缓冲预算收敛为 1GiB，更低的既有预算保留。设置只在共享实例初始化时执行，不按每条查询改全局配置；缓冲预算之外还有 Python、原生向量等内存，不能将它视为整个进程的 RSS 上限，见 [DuckDB 1.5 资源管理](https://duckdb.org/docs/1.5/configuration/pragmas#memory-limit)。这些设置不构成跨机器的性能保证。
+
+来源记账先确定原有规则允许使用的来源，再关联成员记录，避免授权范围判断的中间关系携带整份来源说明。已校验的记账输入在同一导入事务内读取一次，分块写入有完整性校验的操作私有临时快照，读完后再发布；损坏、超额或后段校验失败仍回滚。日志校验完成后释放已经消费的解析计划，普通无历史导入不再预建整份历史比较索引；归档 envelope 在同一写事务内确认本案尚无流水时，也不构造历史请求行与历史匹配用的 CSV 事实签名。Manifest 仍完整生成并核验兼容身份；校验完成后才释放新案用不到的兼容映射，避免写入器为历史匹配驻留全部规范行。有历史时保留原匹配规则。字段、原始金额、未知项及历史解析版本不因这些资源调整而改变。
+
+流水分页对保证 `(case_id,id)` 唯一的来源先在 SQL 中计算原统计与有序页键，再用最多本页数量的精确标量键读取详情。两步保持在同一个数据库锁或既有请求私有快照内；空页保留统计而不读取详情，缺失、重复或错位详情拒绝返回。事件模式保留原确认事件合并、规范金额和来源 ID 列表，观察模式保留原观察金额；一般非唯一来源仍走原选择规则。不能用运行时键表的最小／最大 ID 范围代替精确页键。冲正／撤销的反向历史核验也先按完整来源键及案件／流水键收窄连接输入，保留原 RIGHT JOIN 的缺失行、NULL 扩展、多重性和连接后的字段校验，见 `tests/test_table_cancel_scope_payload.py`。
+
+时间依据不可比的待核对标志按当前选择内的案件与参考组预聚合，不再为没有参考编号的大分区执行过滤窗口；缺少计数组对应原过滤计数 0，原 SQL 空值逻辑保留。成员报告对来源记账详情显式绑定案件、原件及成员三个标量范围，避免动态连接扩大到同原件的其它成员；共享成员链接仅暂存报告需要的身份依据，避免保留整份审计说明。相关回归另见 `tests/test_funds_pending_group.py` 和 `tests/test_import_report_ledger_scope.py`。
+
+银行过账证明使用 `db.raw_rows` 分批消费同一事务或既有私有快照中的输入，先校验完整来源，再仅保留证明所需字段。原始记录和显示字段仍完整留存在来源日志中；历史竞争、无定位上下文、缺失链接和整本余额依据不因精简临时表示而删去。消费者必须在读取上下文内完成纯 Python 处理，退出后才执行下一条数据库语句，避免覆盖借用连接上的活动结果；提前退出释放结果，不关闭共享连接。相关回归见 `tests/test_db_raw_rows.py` 和 `tests/test_bank_pair_scope_payload.py`。
+
+导入进度读取使用既有已提交只读快照，写事务进行中可以返回上一个完整进度；不会暴露未提交的半批来源或提前宣告完成。DuckDB 的 `disabled_optimizers` 是实例级全局设置，导入的临时切换及恢复必须与私有读连接从打开至关闭的完整生命周期互斥。导入主体不占用此门，进度仍可并发读取；初始化、只读语法降级及缺少分析修订的降级路径，均不得持读准入门等待写锁。相关公共行为回归见 `tests/test_optimizer_read_fence.py`、`tests/test_import_progress_snapshot.py`、`tests/test_funds_page_payload.py`、`tests/test_db_thread_budget.py`、`tests/test_import_history_noop.py`、`tests/test_import_staging_release.py`、`tests/test_source_ledger_commit_snapshot.py`、`tests/test_source_ledger_scope_plan.py` 和 `tests/test_archive_fresh_history.py`。这些正确性回归不替代负载对应的独立性能观察；本轮未引入 Rust 扩展或新的原生构建依赖。

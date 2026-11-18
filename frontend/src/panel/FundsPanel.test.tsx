@@ -77,19 +77,19 @@ describe('FundsPanel host isolation', () => {
     render(<FundsPanel host={host(bound.value)} />);
     await screen.findByRole('button', { name: '核对流水 HOST-1' });
     fireEvent.click(screen.getByRole('button', { name: '导入流水' }));
-    const input = screen.getByLabelText<HTMLInputElement>('选择流水文件'), area = input.labels![0];
-    expect(area.htmlFor).toBe(input.id); expect(area.textContent).toContain('选择 CSV、Excel、ZIP 或 RAR');
+    const input = screen.getByLabelText<HTMLInputElement>('选择流水文件'), area = screen.getByRole('button', { name: '选择文件' });
+    const choose = vi.spyOn(input, 'click'); fireEvent.click(area); expect(choose).toHaveBeenCalledOnce();
     const descriptions = input.getAttribute('aria-describedby')!.split(/\s+/).map(id => document.getElementById(id)?.textContent);
-    expect(descriptions).toEqual(['支持 UTF-8／GBK CSV、XLSX、XLS 和已知格式的银行反馈 ZIP／RAR',
-      '普通文件每次选择一个；批量独立文件请使用画布工作台的多文件导入。']);
+    expect(descriptions).toEqual(['Excel · CSV · ZIP · RAR',
+      '多选文件顺序处理；需要资料相互关联时，请选择整个文件夹。']);
     expect(input.accept).toBe('.csv,.tsv,.txt,.xlsx,.xls,.zip,.rar'); input.focus(); expect(document.activeElement).toBe(input);
     const file = new File(['synthetic'], '中文合成流水.csv', { type: 'text/csv' });
     fireEvent.change(input, { target: { files: [file] } });
-    expect(input.disabled).toBe(true); expect(area.getAttribute('aria-busy')).toBe('true');
-    expect(area.textContent).toContain('正在解析文件…');
+    expect(input.disabled).toBe(true);
+    expect(screen.getByRole('progressbar', { name: '文件上传与解析进度' }).hasAttribute('value')).toBe(false);
     expect(bound.client.preview).toHaveBeenCalledWith(file, expect.any(AbortSignal));
     await act(async () => pending.reject(new Error('合成解析失败')));
-    expect(input.disabled).toBe(false); expect(area.getAttribute('aria-busy')).toBe('false');
+    expect(input.disabled).toBe(false); expect(screen.getByRole('alert').textContent).toContain('合成解析失败');
   });
 
   it('refreshes on reactivation and data revisions while retaining applied filters and unapplied drafts', async () => {
@@ -158,7 +158,7 @@ describe('FundsPanel host isolation', () => {
       rerender(<FundsPanel host={host(bound.value)} active={false} />);
       expect(container.querySelector('dialog[open]')).toBeNull();
       rerender(<FundsPanel host={host(bound.value)} active />);
-      expect(screen.queryByText('host-synthetic.csv')).not.toBeNull();
+      expect(screen.getByRole('heading', { name: 'host-synthetic.csv' })).toBeTruthy();
       expect((screen.getByLabelText('流水文件类型') as HTMLSelectElement).value).toBe('B');
       expect((screen.getByLabelText('映射本方账号') as HTMLSelectElement).value).toBe('付款账号');
       expect((screen.getByRole('checkbox', { name: /合成主账号/ }) as HTMLInputElement).checked).toBe(false);
@@ -258,7 +258,7 @@ describe('FundsPanel host isolation', () => {
         bad_examples: [], self_accounts: [], self_accounts_count: 0, main_matched: [], accounts_in_batch: 0, main_detected: [], table_summary: table } }));
     expect(screen.queryByRole('dialog')).toBeNull(); expect(statistics).toHaveBeenCalledOnce();
     rerender(<FundsPanel host={host(bound.value)} active />);
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     await waitFor(() => expect(statistics).toHaveBeenCalledTimes(2));
     expect(commit).toHaveBeenCalledOnce(); expect(job).toHaveBeenCalledOnce();
     expect(screen.getByText(/已保存 1 条记录 · 新增流水记录/).textContent).toContain('新增流水记录 0 条');

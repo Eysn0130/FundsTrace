@@ -51,13 +51,24 @@ export function createHttpFundsSession({ context, scopeKey, generation, transpor
   const previewDirectory = transport.previewDirectory;
   if (previewDirectory) client.previewDirectory = (files, signal) => run(signal, combined => previewDirectory(caseId, files, combined));
   const importRecords = transport.importRecords;
-  if (importRecords) client.importRecords = (sourceId, page = 1, signal) => run(signal, combined => importRecords(caseId, sourceId, page, combined));
+  if (importRecords) client.importRecords = (sourceId, page = 1, signal, memberPath, sourceRow) => run(signal, combined => sourceRow !== undefined
+    ? importRecords(caseId, sourceId, page, combined, memberPath, sourceRow) : memberPath === undefined
+      ? importRecords(caseId, sourceId, page, combined) : importRecords(caseId, sourceId, page, combined, memberPath));
+  const importReview = transport.importReview;
+  if (importReview) client.importReview = (sourceId, memberPath, query, signal) => run(signal, combined => importReview(caseId, sourceId, memberPath, query, combined));
+  const { importFundsReport, verifyImportSource, importReportRecords, importReportAccounts } = transport;
+  if (importFundsReport) client.importFundsReport = (sourceId, query, signal) => run(signal, combined => importFundsReport(caseId, sourceId, query, combined));
+  if (verifyImportSource) client.verifyImportSource = (sourceId, query, signal) => run(signal, combined => verifyImportSource(caseId, sourceId, query, combined));
+  if (importReportRecords) client.importReportRecords = (sourceId, query, signal) => run(signal, combined => importReportRecords(caseId, sourceId, query, combined));
+  if (importReportAccounts) client.importReportAccounts = (sourceId, query, signal) => run(signal, combined => importReportAccounts(caseId, sourceId, query, combined));
   const boundActions: FundsHostActionsV1 = {};
-  const { openGraph, openLegacyImport, downloadSource, downloadImportReport } = actions;
+  const { openGraph, openLegacyImport, downloadSource, downloadImportReport, downloadFundsReport, sourceCopy } = actions;
   if (openGraph) boundActions.openGraph = signal => run(signal, combined => openGraph(combined));
   if (openLegacyImport) boundActions.openLegacyImport = (importId, signal) => run(signal, combined => openLegacyImport(importId, combined));
   if (downloadSource) boundActions.downloadSource = (source, signal) => run(signal, combined => downloadSource(source, combined));
   if (downloadImportReport) boundActions.downloadImportReport = (source, signal) => run(signal, combined => downloadImportReport(source, combined));
+  if (downloadFundsReport) boundActions.downloadFundsReport = (source, signal) => run(signal, combined => downloadFundsReport(source, combined));
+  if (sourceCopy) boundActions.sourceCopy = (sourceId, action, signal) => run(signal, combined => sourceCopy(sourceId, action, combined));
   return {
     session: Object.freeze({ context: boundContext, scopeKey, generation, signal: lifetime.signal, client: Object.freeze(client), actions: Object.freeze(boundActions) }),
     revoke: () => lifetime.abort(),

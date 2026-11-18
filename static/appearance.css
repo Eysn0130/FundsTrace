@@ -14,6 +14,14 @@
   /* One shell, one functional L, one independent drawing surface. */
   --surface-base:#333333; --surface:#222222; --surface-rail:#333333; --surface-raised:#222222; --surface-input:#1c1c1c;
   --surface-control:#292929; --surface-control-hover:#313131; --surface-table-header:#262626;
+  /* Dense tables and importer share surfaces; the graph keeps its own palette. */
+  --funds-grid-body:#24231f; --funds-grid-header:#403c35; --funds-grid-line:#4b473f; --funds-grid-hover:#3b3832;
+  --funds-grid-selected:#303e5a; --funds-grid-text:#f2efe8; --funds-grid-muted:#b8b2a6;
+  --funds-grid-track:#1d1c1a; --funds-grid-thumb:#8a8377;
+  --funds-import-chrome:#2b2925; --funds-import-nav:#211f1c; --funds-import-inspector:#33312d;
+  --funds-import-fill:#3b5fd2; --funds-import-link:#9bb5ff; --funds-import-menu:#1d1d1c;
+  --funds-import-success:#86c577; --funds-import-danger:#ee786c; --funds-import-warning:#e8ba50;
+  --funds-import-tree-hover:#293346; --funds-import-tree-outline:#49618b;
   --surface-hover:color-mix(in srgb,var(--text-primary) 4%,var(--surface-raised));
   --border:#3a3a3a; --border-strong:#4a4a4a; --text-primary:#eeeeee; --muted:#b0b0b0; --text-subtle:#999999;
   --text-inverse:#fff; --accent:#367cff; --action-fill:#2e6ce6; --action-hover:#245ecb; --action-on:#fff;
@@ -43,6 +51,13 @@
   color-scheme:dark;
 }
 html[data-ft-theme="light"] {
+  --funds-grid-body:#fff; --funds-grid-header:#eae7df; --funds-grid-line:#cecbc3; --funds-grid-hover:#f0eee8;
+  --funds-grid-selected:#e6edfc; --funds-grid-text:#292825; --funds-grid-muted:#6b6961;
+  --funds-grid-track:#eae7df; --funds-grid-thumb:#807a6c;
+  --funds-import-chrome:#f5f3ed; --funds-import-nav:#ebe8e1; --funds-import-inspector:#fff;
+  --funds-import-fill:#3b5fd2; --funds-import-link:#225cbe; --funds-import-menu:#fff;
+  --funds-import-success:#166b4f; --funds-import-danger:#b63149; --funds-import-warning:#8a5b04;
+  --funds-import-tree-hover:#edf2fc; --funds-import-tree-outline:#6d8ac2;
   --surface-base:#fcfcfb; --surface:#f8f7f4; --surface-rail:#f4f3ef; --surface-raised:#fff; --surface-input:#fff;
   --surface-control:#f4f3ef; --surface-control-hover:#ebe9e3; --surface-table-header:#f7f6f2; --surface-hover:#f0efeb;
   --border:#e2e0da; --border-strong:#cecbc3; --text-primary:#292825; --muted:#6b6961; --text-subtle:#77746c;

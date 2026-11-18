@@ -113,7 +113,7 @@ def context_result(case_id, account, anchor, visible_rows, *, own_entry=...):
     return principal_ledger.calculate(case_id, request)
 
 
-def tracking_result(case_id, account, anchor, candidates, direction):
+def tracking_result(case_id, account, anchor, candidates, direction, *, own_entry=...):
     """Allocate only the anchor/candidates the existing action identifies.
 
     Reverse tracking labels each credit independently. It does not pick one
@@ -123,9 +123,9 @@ def tracking_result(case_id, account, anchor, candidates, direction):
     from . import analysis_snapshot, ledger_navigation
     revision = analysis_snapshot.revision(case_id)
     if direction == "target":
-        value = context_result(case_id, account, anchor, candidates)
+        value = context_result(case_id, account, anchor, candidates, own_entry=own_entry)
         return {**value, "revision": revision}
-    own = ledger_navigation.own_anchor(case_id, account, anchor)
+    own = ledger_navigation.own_anchor(case_id, account, anchor) if own_entry is ... else own_entry
     currency = anchor.get("currency") or ""
     sources = {str(row["id"]): row for row in candidates
                if row.get("self_account") == account and row.get("payee_account") == account

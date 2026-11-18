@@ -69,3 +69,25 @@ def test_nonheader_width_damage_is_still_rejected(profile, tail):
 def test_delimiter_ambiguity_and_damaged_quotes_still_reject(profile, raw, reason):
     with pytest.raises(tables.TableImportError, match=reason):
         parse(raw, profile)
+
+
+@pytest.mark.parametrize("text,error", [
+    ("\n" + "汉" * 6 + "\n" + "尾" * 3, None),
+    ("\r" + "汉" * 8 + "\r", None),
+    ("\n" + "汉" * 8 + "\n", None),
+    ("\n" + "汉" * 9 + "\n", "field_size"),
+    ("abc\n" + "汉" * 9, "field_size"),
+    ("a\u2028" * 5, "field_size"),
+    ('"汉\n汉\n汉\n汉\n汉"', "field_size"),
+    ('ok,row\nnext,un"quoted', "invalid_csv"),
+])
+def test_csv_quote_validation_bounds_complete_and_trailing_fields(monkeypatch, text, error):
+    from app import feedback_import
+
+    monkeypatch.setattr(feedback_import, "MAX_FIELD_BYTES", 8)
+    if error is None:
+        feedback_import._validate_csv_quotes(text)
+    else:
+        with pytest.raises(feedback_import.FeedbackImportError) as caught:
+            feedback_import._validate_csv_quotes(text)
+        assert caught.value.code == error

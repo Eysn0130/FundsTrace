@@ -69,6 +69,8 @@ def cte(source_sql, *, include_ids=False):
         case when fact_event_id is null then id end) observation_ids""" if include_ids else ""
     # Isolate joined source filters from DuckDB 1.5.6's window rewrite, whose
     # nullability analysis can miscast a BETWEEN expression.
+    # Count relevant reference groups before the wide observation projection;
+    # an absent group has the original filtered count of zero.
     return f"""with _funds_source as materialized ({source_sql}),
     _funds_selected as (
         select * from _funds_source
@@ -77,12 +79,16 @@ def cte(source_sql, *, include_ids=False):
         select c.case_id,c.flow_id,min(c.reference_key) reference_key
         from event_observation_cache c join _funds_selected s on s.case_id=c.case_id and s.id=c.flow_id
         group by c.case_id,c.flow_id
+    ), _funds_pending_groups as (
+        select p.case_id,p.reference_key,count(*) pending_count
+        from _funds_pending_references p join event_members m on m.case_id=p.case_id and m.flow_id=p.flow_id
+        where m.status='unknown' and m.reason='time_basis_incomparable'
+        group by p.case_id,p.reference_key
     ), selected_observations as (
         select s.*,
             case when m.status='unknown' and m.reason='time_basis_incomparable' then p.reference_key end fact_pending_reference,
             m.status='unknown' and m.reason='time_basis_incomparable' and
-                (p.reference_key is null or count(*) filter(where m.status='unknown' and m.reason='time_basis_incomparable')
-                    over(partition by s.case_id,p.reference_key)>1) fact_time_pending,
+                (p.reference_key is null or coalesce(g.pending_count,0)>1) fact_time_pending,
             m.status='unknown' and m.pending_group is not null fact_pair_pending,
             coalesce(json_extract_string(e.evidence_json,'$.policy')='{SINGLE_POSTING_POLICY}',false) fact_single_posting,
             case when m.status='confirmed' and e.event_id is not null
@@ -100,6 +106,7 @@ def cte(source_sql, *, include_ids=False):
         from _funds_selected s
         left join event_members m on m.case_id=s.case_id and m.flow_id=s.id
         left join _funds_pending_references p on p.case_id=s.case_id and p.flow_id=s.id
+        left join _funds_pending_groups g on g.case_id=s.case_id and g.reference_key=p.reference_key
         left join resolved_events e on e.case_id=m.case_id and e.event_id=m.event_id
     ), _funds_ranked as (
         select *,
@@ -193,26 +200,53 @@ def page_with_summary(source_sql, params, page_size, offset, *, observations=Fal
     from . import transaction_time
     order = transaction_time.sql_order() if unique_source else "trade_time desc nulls last,id desc"
     grouped, aggregate = _summary_parts()
-    if observations and unique_source:
+    if unique_source:
+        # Bind exact page keys as scalars before fetching payloads. A runtime
+        # join can project a whole ID range, including on an empty page.
         narrow = f"select case_id,id,trade_time,trade_time_utc,amount,currency,balance from ({source_sql}) _funds_input"
+        relation = "selected_observations" if observations else "selected_facts"
+        page_ids = "" if observations else """,
+            _funds_page_ids as materialized (
+                select s.case_id,s.fact_event_id,list(cast(s.id as varchar) order by s.id) observation_ids
+                from selected_observations s join _funds_page_keys p
+                    on s.case_id=p.case_id and s.fact_event_id=p.fact_event_id
+                where p.fact_status='confirmed'
+                group by s.case_id,s.fact_event_id
+            )"""
+        page_columns = "select * from _funds_page_keys" if observations else """
+            select p.*,
+                case when p.fact_status='confirmed' then i.observation_ids else [cast(p.id as varchar)] end observation_ids
+            from _funds_page_keys p
+            left join _funds_page_ids i on i.case_id=p.case_id and i.fact_event_id=p.fact_event_id"""
         query = cte(narrow) + grouped + f""",
             _funds_summary as ({aggregate}),
-            _funds_page_keys as materialized (select * from selected_observations
-                order by {order} limit ? offset ?),
-            _funds_payload as materialized (
-                select s.* from ({source_sql}) s join _funds_page_keys p
-                    on s.case_id=p.case_id and s.id=p.id
-            ), _funds_page as (
-                select s.*,p.fact_pending_reference,p.fact_time_pending,p.fact_pair_pending,p.fact_single_posting,
-                    p.fact_status,p.fact_event_id,p.fact_amount,p.fact_currency
-                from _funds_payload s join _funds_page_keys p
-                    on s.case_id=p.case_id and s.id=p.id
-            )
+            _funds_page_keys as materialized (select * from {relation}
+                order by {order} limit ? offset ?){page_ids},
+            _funds_page as ({page_columns})
             select (select list(p order by {order}) from _funds_page p) page,
                    (select list(s) from _funds_summary s) summary"""
-        with db._lock:
-            result = db.q_raw(query, [*params, page_size, offset, *params])[0]
-            return result["page"] or [], decode_summary(result["summary"])
+        with db.read_lock():
+            result = db.q_raw(query, [*params, page_size, offset])[0]
+            page, summary = result["page"] or [], decode_summary(result["summary"])
+            if not page:
+                return [], summary
+            keys = [(row["case_id"], row["id"]) for row in page]
+            predicate = " or ".join("(s.case_id=? and s.id=?)" for _ in keys)
+            payload = db.q_raw(f"select s.* from ({source_sql}) s where {predicate}",
+                               [*params, *[value for key in keys for value in key]])
+            indexed = {(row["case_id"], row["id"]): row for row in payload}
+            if len(payload) != len(page) or indexed.keys() != set(keys):
+                raise ValueError("funds page payload does not match selected keys")
+            fields = ("fact_pending_reference", "fact_time_pending", "fact_pair_pending", "fact_single_posting",
+                      "fact_status", "fact_event_id")
+            fields += (("fact_amount", "fact_currency") if observations else
+                       ("observation_count", "observation_ids", "observation_amount", "observation_currency",
+                        "observation_balance", "amount", "currency", "balance"))
+            excluded = () if observations else ("amount", "currency", "balance")
+            rows = [{**{key: value for key, value in indexed[row["case_id"], row["id"]].items()
+                         if key not in excluded},
+                     **{field: row[field] for field in fields}} for row in page]
+            return rows, summary
     relation = "selected_observations" if observations else "selected_facts"
     query = cte(source_sql, include_ids=not observations) + grouped + f""",
         _funds_summary as ({aggregate}),

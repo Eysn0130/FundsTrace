@@ -9,6 +9,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from scripts import build_desktop_backend as builder
 
 
+def test_dynamic_import_controls_are_in_the_packaged_icon_list():
+    required = {"dots", "copy", "file-plus", "folder", "info-circle", "grip-vertical", "chevron-left", "chevron-right", "import-circle-alert", "import-circle-filled"}
+    assert required <= set(builder.UI_ICON_NAMES)
+    for name in required:
+        assert (builder.ROOT / "static/ui-icons" / f"{name}.svg").is_file()
+
+
 def test_direct_build_entry_resolves_its_source_package(tmp_path):
     import subprocess
     import sys

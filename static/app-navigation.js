@@ -11,6 +11,7 @@
   const feedbackModals = { workspace: false, analysis: false };
   const applyFeedbackModal = () => window.FundsFeedback?.setModalBlocked?.(page === 'analysis' ? feedbackModals.analysis : ['cases','accounts'].includes(page) ? feedbackModals.workspace : false);
   const handled = new Set();
+  const sourceCopyRequests = new Map();
   const feedbackOperations = new Map();
   let layoutFeedback = null;
   window.addEventListener('funds:graph-metric', event => {
@@ -122,7 +123,7 @@
   }
   function context() {
     return {type:'context',surface,unresolvedOperations:accountActions?.operations(caseContext()) || [],caseId:String(state.caseId),name:state.cases.find(item=>String(item.id)===String(state.caseId))?.name || '当前案件',generation:state.caseGeneration,
-      pendingImports:window.FundsImportWorkflow?.externalStatus?.(caseContext()) || [], navigationPending:!!busyOwner, revision, active:page===surface, retainedCaseIds:window.FundsWorkspaceSession.retainedCaseIds()};
+      pendingImports:window.FundsImportWorkflow?.externalStatus?.(caseContext()) || [], desktopSources:!!window.FundsDesktopSources, navigationPending:!!busyOwner, revision, active:page===surface, retainedCaseIds:window.FundsWorkspaceSession.retainedCaseIds()};
   }
   function ensureFrames() {
     if (!state.caseId || !state.cases.length) return;
@@ -171,7 +172,10 @@
       const release = window.FundsImportWorkflow?.releaseExternal;
       if (typeof release !== 'function') throw new Error('导入回执核对尚未就绪');
       await release(context, id, id);
-      if (String(context.caseId) === String(state.caseId) && context.generation === state.caseGeneration) post({ type: 'feedback-import-settled', caseId: String(context.caseId), generation: context.generation, importId: id });
+      if (String(context.caseId) === String(state.caseId) && context.generation === state.caseGeneration) {
+        post({ type: 'feedback-import-settled', caseId: String(context.caseId), generation: context.generation, importId: id });
+        window.dispatchEvent(new CustomEvent('funds:import-settled', { detail: { caseId: String(context.caseId), generation: context.generation, importId: id } }));
+      }
     },
     changed: context => String(context.caseId) === String(state.caseId) && context.generation === state.caseGeneration ? dataChanged() : undefined,
     viewingImport: () => !frame.hidden,
@@ -207,6 +211,11 @@
     const fromAnalysis = event.source===analysisFrame.contentWindow;
     if (!fromAnalysis && event.source!==frame.contentWindow) return;
     const message = event.data;
+    if (message.type === 'source-copy-cancel') {
+      const request = sourceCopyRequests.get(message.requestId);
+      if (!fromAnalysis && request && request.instanceId === message.instanceId && request.caseId === message.caseId && request.generation === message.generation) request.cancelled = true;
+      return;
+    }
     if (message.type === 'feedback-modal') {
       const key = fromAnalysis ? 'analysis' : 'workspace';
       if (message.caseId !== String(state.caseId) || message.generation !== state.caseGeneration ||
@@ -244,13 +253,26 @@
       event.source?.postMessage({channel,version,type:'result',requestId:message.requestId,ok,...(error?{error}:{}),...details},location.origin);
     };
     if (message.caseId!==String(state.caseId) || message.generation!==state.caseGeneration) {reply(false,'案件已变化，请重新操作');return;}
-    if (!['select-case','open-graph','open-canvas','track-cycle','case-action','account-action','import-acquire','import-release','data-changed'].includes(message.action) || !message.payload || typeof message.payload!=='object') {reply(false,'不支持此操作');return;}
+    if (!['select-case','open-graph','open-canvas','track-cycle','case-action','account-action','import-acquire','import-release','data-changed','source-copy'].includes(message.action) || !message.payload || typeof message.payload!=='object') {reply(false,'不支持此操作');return;}
     if (fromAnalysis && !['select-case','open-graph','open-canvas','track-cycle'].includes(message.action)) {reply(false,'不支持此分析操作');return;}
     handled.add(message.requestId);
     if (handled.size > 2048) handled.delete(handled.values().next().value);
     if (busyOwner) { reply(false,'正在切换案件，请稍后操作'); return; }
     try {
-      if (message.action==='select-case') {
+      if (message.action==='source-copy') {
+        const native=window.FundsDesktopSources, binding=caseContext(), payload=message.payload;
+        if(!native || !feedbackInstances.workspace || message.instanceId!==feedbackInstances.workspace || typeof payload.sourceId!=='string' || !/^[a-f0-9]{12,32}$/.test(payload.sourceId) || !['open','reveal'].includes(payload.action)) throw new Error('文件操作不可用');
+        const request={instanceId:message.instanceId,caseId:message.caseId,generation:message.generation,cancelled:false};
+        sourceCopyRequests.set(message.requestId,request);
+        try {
+          const prepared=await native.prepare({caseId:String(binding.caseId),sourceId:payload.sourceId});
+          if(request.cancelled || !isCurrentCase(binding,false) || event.source!==frame.contentWindow || request.instanceId!==feedbackInstances.workspace) {await native.release(prepared.ticket);throw new Error('案件或窗口已变化，请重新选择');}
+          try {await native.perform({ticket:prepared.ticket,action:payload.action});}
+          catch(error) {await native.release(prepared.ticket);throw error;}
+          if(!isCurrentCase(binding,false)) throw new Error('案件已变化');
+          reply(true,null,{icon:prepared.icon});
+        } finally {sourceCopyRequests.delete(message.requestId);}
+      } else if (message.action==='select-case') {
         if (typeof message.payload.caseId!=='string') throw new Error('案件标识无效');
         acquire();
         const rows = await refreshManagedCases();
@@ -319,6 +341,13 @@
       } else {
         const action=message.payload.action;
         if (!['import','export','delete'].includes(action)) throw new Error('不支持此案件操作');
+        if (page !== 'home' && action !== 'import') {
+          const binding = caseContext(), actionPage = page;
+          await refreshStats();
+          if (!isCurrentCase(binding, false)) throw new Error('案件已变化，请重新操作');
+          if (page !== actionPage) throw new Error('页面已变化，请重新操作');
+          if (busyOwner) throw new Error('正在切换案件，请稍后操作');
+        }
         caseWorkspace.open(document.querySelector('[data-nav-page="cases"]'));
         document.querySelector({import:'#btnImportCase',export:'#btnExportCase',delete:'#btnDelCase'}[action]).click();
         reply(true);
@@ -329,9 +358,12 @@
   async function dataChanged() {
     revision++; sync(); post({type:'data-changed',caseId:String(state.caseId),generation:state.caseGeneration});
     if(analysisLoaded) analysisFrame.contentWindow?.postMessage({channel,version,type:'data-changed',caseId:String(state.caseId),generation:state.caseGeneration},location.origin);
-    await refreshAll();
+    if (page === 'home') await refreshAll();
   }
-  window.FundsAppNavigation=Object.freeze({show,sync,dataChanged,importBlocker:context=>accountReason(context || caseContext()),accountsChanged:()=>{sync();post({type:'accounts-changed',caseId:String(state.caseId),generation:state.caseGeneration});}});
+  window.FundsAppNavigation=Object.freeze({show,sync,dataChanged,importBlocker:context=>accountReason(context || caseContext()),
+    receiveImportFeedback:(context,event)=>String(context.caseId)===String(state.caseId)&&context.generation===state.caseGeneration
+      ? feedbackObserver?.receive(event,'canvas-import') ?? false : false,
+    accountsChanged:()=>{sync();post({type:'accounts-changed',caseId:String(state.caseId),generation:state.caseGeneration});}});
   window.addEventListener('DOMContentLoaded',()=>{
     syncFeedback();
     const positionFeedback = () => {

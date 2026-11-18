@@ -164,6 +164,25 @@ def test_later_real_contract_selects_one_profile_before_all_rows(client, databas
     assert funds["totals"] == [{"currency": "CNY", "amount": None, "lower": "100.00", "upper": "107.00"}]
 
 
+def test_closed_bank_sheet_preserves_declared_events_in_same_workbook(client, database, make_case):
+    from test_uniform37_reference import COLUMNS, row
+    bank_row = row()
+    content = payload([("Declared events", matrix([transaction("SYN-A"), transaction("SYN-B")])),
+                       ("Source references", [COLUMNS, [bank_row.get(name, "") for name in COLUMNS]])], ".xlsx")
+    cid = make_case("Synthetic closed sheet and event contract")
+    response = upload(client, cid, content, ".xlsx")
+    assert response.status_code == 200, response.text
+    view = response.json()
+    assert view["table_summary"]["profile"] == table_import.CLOSED_BANK_EVIDENCE_PROFILE
+    import_preview_cache.discard(view["import_id"])
+    job = complete(client, cid, view)
+    assert job["stage"] == "done" and job["result"]["ok"] == 3
+    notes = source_notes(database, cid)
+    assert sum(event_resolution.DETAIL_FIELD in note for note in notes) == 2
+    funds = client.get(f"/api/v1/cases/{cid}/stats").json()["funds"]
+    assert funds["confirmed_event_count"] == 1 and funds["observation_count"] == 3
+
+
 def historical_preview(client, cid, content, monkeypatch):
     parse = imports._parse
     def historical(*args, **kwargs):

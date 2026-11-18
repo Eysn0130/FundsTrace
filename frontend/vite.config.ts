@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
+import { fileURLToPath } from 'node:url';
 
 const apiPort = process.env.FUNDS_TRACE_DEV_API_PORT || '8300';
 if (!/^[0-9]{1,5}$/.test(apiPort) || Number(apiPort) < 1 || Number(apiPort) > 65535) {
@@ -13,6 +14,7 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     proxy: {
+      '/workspace/assets': backend,
       '/api': backend,
       '/static': backend,
       '/license': backend,
@@ -20,6 +22,10 @@ export default defineConfig({
       '^/analysis(?:\\?.*)?$': backend,
     },
   },
-  build: { target: 'es2022' },
+  build: { target: 'es2022', rollupOptions: {
+    preserveEntrySignatures: 'strict',
+    input: { main: fileURLToPath(new URL('./index.html', import.meta.url)), 'import-entry': fileURLToPath(new URL('./src/standalone/import-entry.tsx', import.meta.url)) },
+    output: { entryFileNames: chunk => chunk.name === 'import-entry' ? 'assets/import-entry.js' : 'assets/[name]-[hash].js' },
+  } },
   test: { environment: 'jsdom', globals: true, setupFiles: ['./src/test-setup.ts'] },
 });

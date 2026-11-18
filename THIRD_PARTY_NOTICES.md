@@ -16,7 +16,11 @@ The workspace uses 24 outline SVGs from `@tabler/icons` 3.35.0, downloaded from 
 
 The import workflow also retains the unmodified `check.svg` from Tabler Icons v3.35.0 (`icons/outline/check.svg`, https://github.com/tabler/tabler-icons/tree/v3.35.0), under the same MIT notice in `static/ui-icons/LICENSE`. It is a bundled local resource.
 
+The unified import workspace retains unmodified Tabler Icons v3.35.0 SVGs as `static/ui-icons/import-*.svg`: outline `circle`, `circle-dot`, `circle-minus`, `clock`, `loader-2`, and filled `circle-check`, `circle-x`, `alert-circle` and `circle` (the last two are retained as `import-circle-alert.svg` and `import-circle-filled.svg`). Source: https://github.com/tabler/tabler-icons/tree/v3.35.0/icons; MIT notice: `static/ui-icons/LICENSE`. They are bundled locally with no icon service or new runtime dependency.
+
 The import-batch table uses the unmodified `dots.svg` from the same Tabler Icons v3.35.0 source (`icons/outline/dots.svg`) under that MIT notice, bundled locally.
+
+The import file menu and resizable grids also bundle the unmodified outline `info-circle.svg` and `grip-vertical.svg` from Tabler Icons v3.35.0 (`icons/outline/`), with the same retained MIT notice.
 
 ## FundsTrace ribbon icons
 
@@ -103,3 +107,5 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+The colored `import-file-type-txt.svg`, `import-file-type-tsv.svg`, `import-file-type-generic.svg`, `import-file-type-xls.svg`, `import-file-type-csv.svg`, `import-file-type-pdf.svg` and `import-file-zip.svg` use artwork generated with the built-in Image Gen tool on 2026-11-13 and converted to SVG paths with VTracer 1.0.0a4. They do not embed bitmap data and are not part of the Tabler collection. Generation and conversion records are retained in the external implementation evidence directory. No VTracer or image-generation dependency is shipped in FundsTrace.

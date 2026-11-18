@@ -10,11 +10,12 @@ from urllib.parse import quote
 from fastapi.routing import APIRoute
 from starlette.exceptions import HTTPException
 
-from app.services import cases, imports
+from app.services import cases, imports, import_report
 from app import evidence_resolution
 from .models import (ApiError, Case, CaseCreate, CaseList, CaseStats, CommitRequest,
                      CommitStarted, FlowPage, ImportJob, ImportPreview, RepreviewRequest,
-                     ImportSessionList, CleanupRequest, CleanupResult, FlowSourceList, ImportRecordPage, ResolutionRegistry)
+                     ImportSessionList, CleanupRequest, CleanupResult, FlowSourceList, ImportRecordPage, ImportReviewPage, ResolutionRegistry)
+from .models import ImportReport, ImportReportIntegrity, ImportReportRecords, ImportReportAccountOptions
 
 
 def error_response(status, code, message):
@@ -50,7 +51,11 @@ class ContractRoute(APIRoute):
             try:
                 return await handler(request)
             except cases.ServiceError as error:
-                return error_response(error.status, error.code, error.message)
+                response = error_response(error.status, error.code, error.message)
+                response.headers["X-FundsTrace-Import-Failure-Kind"] = getattr(error, "failure_kind",
+                    "file" if error.code in {"unsupported_file_type", "file_too_large", "directory_file_count",
+                                             "unsafe_directory_path", "duplicate_directory_path"} else "unknown")
+                return response
             except RequestValidationError:
                 return error_response(422, "invalid_request", "请求参数无效，请检查案件、页码和必填字段")
             except HTTPException as error:
@@ -124,8 +129,70 @@ def sessions(case_id: CaseId, limit: int = Query(100, ge=1, le=200),
             operation_id="v1_import_records")
 def records(case_id: CaseId, source_id: ImportId, page: int = Query(1, ge=1, le=2_147_483_647),
             page_size: int = Query(100, ge=1, le=200),
-            disposition: Literal["imported", "duplicate", "review", "unresolved", "non_monetary", "cancelled", "non_transaction", "auxiliary", "removed"] | None = None):
-    return imports.list_records(case_id, source_id, page, page_size, disposition)
+            disposition: Literal["imported", "duplicate", "review", "unresolved", "non_monetary", "cancelled", "non_transaction", "auxiliary", "removed"] | None = None,
+            member_path: str | None = Query(None, min_length=1, max_length=4096), include_preview: bool = False,
+            source_row: int | None = Query(None, ge=1, le=2_147_483_647)):
+    return imports.list_records(case_id, source_id, page, page_size, disposition, member_path, include_preview, source_row)
+
+
+@router.get('/cases/{case_id}/imports/{source_id}/review', response_model=ImportReviewPage,
+            operation_id='v1_import_review')
+def review(case_id: CaseId, source_id: ImportId, member_path: str = Query(..., min_length=1, max_length=4096),
+           view: Literal['all', 'review', 'accepted'] = 'all', page: int = Query(1, ge=1, le=2_147_483_647),
+           page_size: int = Query(50, ge=1, le=50), issue_index: int | None = Query(None, ge=1, le=2_147_483_647)):
+    return imports.review_records(case_id, source_id, member_path, view, page, page_size, issue_index)
+
+
+@router.get('/cases/{case_id}/imports/{source_id}/report', response_model=ImportReport, operation_id='v1_import_funds_report')
+def funds_report(case_id: CaseId, source_id: ImportId, member_path: str = Query(...,min_length=1,max_length=4096),
+                 currency: str | None = Query(None,max_length=16), account: str | None = Query(None,max_length=4096),
+                 page: int = Query(1,ge=1,le=2_147_483_647), page_size: int = Query(20,ge=1,le=50),
+                 accounts_page: int | None = Query(None,ge=1,le=2_147_483_647),relations_page: int | None = Query(None,ge=1,le=2_147_483_647),
+                 timeline_grain: Literal['auto','day','month','year'] = 'auto',timeline_page: int = Query(1,ge=1,le=2_147_483_647),
+                 peer_account: str | None = Query(None,max_length=4096),
+                 timeline_scope: Literal['all','selected','except'] = 'all',timeline_accounts: list[str] = Query(default=[],max_length=200),
+                 timeline_search: str = Query('',max_length=200),
+                 expected_revision: str | None = Query(None,pattern=r'^[0-9a-f]{32}$')):
+    return import_report.report(case_id,source_id,member_path,currency,account,page,page_size,expected_revision,accounts_page,relations_page,timeline_grain,timeline_page,peer_account,timeline_scope,timeline_accounts,timeline_search)
+
+
+@router.get('/cases/{case_id}/imports/{source_id}/report/accounts',response_model=ImportReportAccountOptions,operation_id='v1_import_funds_accounts')
+def funds_account_options(case_id: CaseId,source_id: ImportId,member_path: str = Query(...,min_length=1,max_length=4096),
+                          expected_revision: str = Query(...,pattern=r'^[0-9a-f]{32}$'),currency: str = Query(...,max_length=16),
+                          account: str | None = Query(None,max_length=4096),search: str = Query('',max_length=200),
+                          page: int = Query(1,ge=1,le=2_147_483_647),page_size: int = Query(20,ge=1,le=50)):
+    return import_report.account_options(case_id,source_id,member_path,expected_revision,currency,account,search,page,page_size)
+
+
+@router.post('/cases/{case_id}/imports/{source_id}/report/verify',response_model=ImportReportIntegrity,operation_id='v1_import_funds_verify')
+def funds_verify(case_id: CaseId,source_id: ImportId,member_path: str = Query(...,min_length=1,max_length=4096),
+                 expected_revision: str = Query(...,pattern=r'^[0-9a-f]{32}$')):
+    return import_report.verify(case_id,source_id,member_path,expected_revision)
+
+
+@router.get('/cases/{case_id}/imports/{source_id}/report/records',response_model=ImportReportRecords,operation_id='v1_import_funds_records')
+def funds_records(case_id: CaseId,source_id: ImportId,member_path: str = Query(...,min_length=1,max_length=4096),
+                  expected_revision: str = Query(...,pattern=r'^[0-9a-f]{32}$'),currency: str | None = Query(None,max_length=16),
+                  account: str | None = Query(None,max_length=4096),counterparty: str | None = Query(None,max_length=4096),
+                  direction: Literal['in','out'] | None = None,page: int = Query(1,ge=1,le=2_147_483_647),page_size: int = Query(50,ge=1,le=50),
+                  timeline_scope: Literal['all','selected','except'] = 'all',timeline_accounts: list[str] = Query(default=[],max_length=200),
+                  time_start: str | None = Query(None,max_length=48),time_end: str | None = Query(None,max_length=48),time_basis: Literal['utc','unqualified'] | None = None,timeline_search: str = Query('',max_length=200)):
+    return import_report.records(case_id,source_id,member_path,expected_revision,currency,account,counterparty,direction,page,page_size,timeline_scope,timeline_accounts,time_start,time_end,time_basis,timeline_search)
+
+
+@router.get('/cases/{case_id}/imports/{source_id}/report/document',operation_id='v1_import_funds_document',
+            response_class=StreamingResponse,responses={200:{'description':'Current-view member funds brief, bounded pages explicitly labeled',
+                'content':{'text/html':{'schema':{'type':'string','format':'binary'}}}}})
+def funds_document(case_id: CaseId,source_id: ImportId,member_path: str = Query(...,min_length=1,max_length=4096),
+                   expected_revision: str = Query(...,pattern=r'^[0-9a-f]{32}$'),currency: str | None = Query(None,max_length=16),
+                   account: str | None = Query(None,max_length=4096),page: int = Query(1,ge=1,le=2_147_483_647),page_size: int = Query(20,ge=1,le=50),
+                   timeline_grain: Literal['auto','day','month','year'] = 'auto',timeline_page: int = Query(1,ge=1,le=2_147_483_647),
+                   peer_account: str | None = Query(None,max_length=4096),
+                   timeline_scope: Literal['all','selected','except'] = 'all',timeline_accounts: list[str] = Query(default=[],max_length=200),timeline_search: str = Query('',max_length=200),
+                   accounts_page: int | None = Query(None,ge=1,le=2_147_483_647),relations_page: int | None = Query(None,ge=1,le=2_147_483_647)):
+    content=import_report.document(case_id,source_id,member_path,expected_revision,currency=currency,account=account,page=page,page_size=page_size,accounts_page=accounts_page,relations_page=relations_page,
+        timeline_grain=timeline_grain,timeline_page=timeline_page,peer_account=peer_account,timeline_scope=timeline_scope,timeline_accounts=timeline_accounts,timeline_search=timeline_search)
+    return StreamingResponse(iter([content]),media_type='text/html; charset=utf-8',headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote('资金统计分析简报.html')})
 
 
 @router.get("/cases/{case_id}/sources/{source_id}/report", operation_id="v1_import_report",

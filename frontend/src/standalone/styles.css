@@ -2,6 +2,7 @@
 body { margin: 0; }
 
 .funds-trace.cases-workspace {
+  --ft-import-slot-width: 100vw;
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
   min-height: 100vh;
@@ -226,3 +227,6 @@ html[data-ft-theme="light"] .cases-workspace :is(.modal-heading, .modal-footer, 
 
 .cases-workspace .standalone-main > .warning-banner { margin: 15px 29px 0; }
 .cases-workspace .modal :is(.modal-heading, .modal-footer) { background: var(--modal-surface); color: var(--modal-text); }
+/* Align this app's embedded case dialog with the parent workbench viewport. */
+.embedded-workspace { --ft-import-x-shift: -24px; --ft-import-y-shift: -20px; }
+@media (max-width: 850px) { .embedded-workspace { --ft-import-x-shift: 0px; --ft-import-y-shift: 0px; } }

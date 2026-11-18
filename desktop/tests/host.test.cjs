@@ -153,7 +153,7 @@ test('health checks status, protocol and exact service using main-only authoriza
 test('distribution manifest prevents cross-platform packaging and includes host source and licenses', async t => {
   const builder = require('../electron-builder.cjs');
   assert.equal(builder.appId, 'com.eysn.fundstrace');
-  assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'startup.cjs', 'window-shell.cjs', 'appearance.cjs',
+  assert.deepEqual(builder.files, ['package.json', 'main.cjs', 'backend.cjs', 'host-policy.cjs', 'preferences.cjs', 'preload.cjs', 'updates.cjs', 'startup.cjs', 'window-shell.cjs', 'appearance.cjs', 'source-copies.cjs',
     'titlebar/index.html', 'titlebar/style.css', 'titlebar/renderer.js', 'titlebar/preload.cjs',
     'startup/index.html', 'startup/style.css', 'startup/renderer.js', 'startup/preload.cjs', 'assets/icon.png', 'assets/icon.ico',
     { from: path.resolve(__dirname, '../..'), to: '.', filter: ['LICENSE'] }]);
@@ -344,7 +344,8 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
     Menu: { buildFromTemplate: template => ({ template, popup: options => state.menuPopups.push({ template, options }) }),
       setApplicationMenu: menu => { state.applicationMenu = menu; state.applicationMenus.push(menu); } },
     dialog: { showErrorBox: (_title, message) => state.errors.push(message), showMessageBox: async () => ({ response: restartResponse }) } };
-  electron.ipcMain.handle = (name, handler) => { state.updateRequest = handler; };
+  state.ipcHandlers = new Map();
+  electron.ipcMain.handle = (name, handler) => { state.ipcHandlers.set(name, handler); if (name === 'funds-trace:updates') state.updateRequest = handler; };
   const policy = { ...require('../host-policy.cjs'), launchConfig: input => input };
   const filesystem = { mkdir, mkdtemp: async () => path.join(os.tmpdir(), 'FundsTrace owned temporary'),
     rm: async root => { state.removed.push(root); } };
@@ -353,6 +354,7 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
     if (name === 'electron') return electron;
     if (name === './host-policy.cjs') return policy;
     if (name === './appearance.cjs') return require('../appearance.cjs');
+    if (name === './source-copies.cjs') return require('../source-copies.cjs');
     if (name === './updates.cjs') return { ...require('../updates.cjs'), createUpdater: () => ({ updater, cancelCheck() {} }) };
     if (name === './window-shell.cjs') {
       const shell = require('../window-shell.cjs');
@@ -1068,4 +1070,15 @@ test('only successful appearance commits broadcast pure snapshots to owned windo
   assert.equal(request('get','fund_window_state'),null);
   assert.ok(!JSON.stringify([...win.messages,...second.messages]).includes('SYN_MAIN_ONLY_APPEARANCE_TOKEN'));
   second.close();win.close();await harness.flush();
+});
+
+test('source-copy IPC accepts only the owned business main frame at the exact backend page', async () => {
+  const h = mainHarness(); await h.flush(); h.ready.resolve({origin,token:'SYNTHETIC-MAIN-ONLY'}); await h.flush();
+  const win = h.state.windows[0], business = win.businessView.webContents, frame = business.mainFrame;
+  const request = h.state.ipcHandlers.get('funds-trace:source-copy'); assert.equal(typeof request, 'function');
+  for (const event of [{sender:win.webContents,senderFrame:win.webContents.mainFrame},{sender:business,senderFrame:{url:frame.url}},{sender:{id:999,isDestroyed:()=>false},senderFrame:frame}]) assert.throws(() => request(event,'release',{ticket:'none'}), /不可用/);
+  const before = frame.url; frame.url='https://untrusted.example/'; assert.throws(()=>request({sender:business,senderFrame:frame},'release',{ticket:'none'}),/不可用/); frame.url=before;
+  await request({sender:business,senderFrame:frame},'release',{ticket:'none'});
+  assert.throws(()=>request({sender:business,senderFrame:frame},'execute',{path:'/untrusted'}),/不支持/);
+  h.app.quit(); await h.flush(); assert.throws(()=>request({sender:business,senderFrame:frame},'release',{ticket:'none'}),/不可用/);
 });

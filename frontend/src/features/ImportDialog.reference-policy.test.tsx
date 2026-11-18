@@ -41,7 +41,7 @@ describe('table reference policy choice', () => {
     expect((checkbox as HTMLInputElement).checked).toBe(false);
     expect(client.commit).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '开始导入' }));
-    await screen.findByRole('heading', { name: '自动处理完成' });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(client.commit).toHaveBeenCalledOnce();
     expect(client.repreview).not.toHaveBeenCalled();
   });

@@ -356,3 +356,27 @@ def test_failed_negative_still_contributes_full_member_reference_observation():
     assert blocked["cancellations"] == []
     assert blocked["records"][2]["reason_code"] == "cancellation_reference_not_unique"
     assert (blocked["records"][3]["disposition"], blocked["records"][3]["reason_code"]) == ("non_transaction", "failed_transaction")
+@pytest.mark.parametrize("damaged", [False, True])
+def test_unmarked_members_release_records_but_validate_the_tail(damaged):
+    from weakref import ref
+    from app import table_cancellations as policy
+
+    class Record(dict):
+        pass
+
+    references = []
+
+    def journal():
+        for number in range(1, 65):
+            details = {"cancellation_role": "original"} if damaged and number == 64 else {}
+            item = Record(record_no=number, member_path="synthetic.csv", reason_code="accepted",
+                          disposition="accepted", details=details)
+            references.append(ref(item))
+            yield item
+            assert sum(value() is not None for value in references) <= 1
+
+    if damaged:
+        with pytest.raises(ValueError, match="missing cancellation observations"):
+            policy.validate_evidence(journal())
+    else:
+        assert policy.validate_evidence(journal()) == []

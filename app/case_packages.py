@@ -92,11 +92,19 @@ def export_package(case_id):
         has_resolution = bool(con.execute("select 1 from import_sources where case_id=? and parser_version in (" + ",".join("?" for _ in evidence_resolution.PROFILES) + ") limit 1", [case_id, *sorted(evidence_resolution.PROFILES)]).fetchone())
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
             has_operations = bool(con.execute("select 1 from import_source_operations where case_id=? limit 1", [case_id]).fetchone())
-            archive.writestr("meta.json", json.dumps({
+            metadata={
                 "name": case_name, "exported_at": datetime.datetime.now().isoformat(),
                 "format": 7 if has_zoned else 6 if has_operations else 5 if has_resolution else 4 if has_table_records else 3 if has_cancellation_rules else 2,
                 "source_files": "not_included",
-            }, ensure_ascii=False))
+            }
+            from .services import materials
+            material_metadata=materials.package_metadata(case_id)
+            if material_metadata is not None:
+                metadata['materials']=material_metadata
+            encoded_meta=json.dumps(metadata,ensure_ascii=False,separators=(',',':')).encode('utf-8')
+            if len(encoded_meta)>MAX_PACKAGE_META_BYTES:
+                raise HTTPException(409,'检材登记元数据超出案件包处理范围，无法生成完整案件包')
+            archive.writestr("meta.json",encoded_meta)
             has_journals = any(con.execute(f"select 1 from {table} where case_id=? limit 1", [case_id]).fetchone()
                                for table in JOURNAL_PKG_COLS)
             for table, cols in _ALL_PKG_COLS.items():
@@ -1108,6 +1116,9 @@ def _validate_package(content, directory):
                         _invalid("记录日志引用了不存在或不支持的来源")
                 _feedback_journals(check, paths)
                 _table_journals(check, paths)
+            from .services import materials
+            source_ids={r[0] for r in check.execute('select source_id from import_sources').fetchall()} if meta.get('materials') is not None and 'import_sources' in paths else set()
+            material_groups=materials.validate_package(meta.get('materials'),source_ids)
             if "batches" in paths and check.execute("select 1 from flows f left join batches b on f.batch_id=b.id where f.batch_id is not null and b.id is null limit 1").fetchone():
                 _invalid("流水引用了不存在的批次")
             if "tracked_flows" in paths:
@@ -1139,12 +1150,12 @@ def _validate_package(content, directory):
                 paths[table] = path
     except (duckdb.Error, ValueError, TypeError, OverflowError) as exc:
         _invalid(f"Parquet 数据损坏、字段无效或超出处理预算（{type(exc).__name__}）")
-    return meta["name"].strip(), paths, photos
+    return meta["name"].strip(), paths, photos, material_groups
 
 
 def import_package(content):
     with tempfile.TemporaryDirectory(prefix="fundcase-import-") as tmp:
-        name, paths, photos = _validate_package(content, Path(tmp))
+        name, paths, photos, material_groups = _validate_package(content, Path(tmp))
         photo_root = db.DATA_DIR / "photos"
         photo_root.mkdir(parents=True, exist_ok=True)
         # Stage on the destination filesystem; directory publication is one rename.
@@ -1203,6 +1214,10 @@ def import_package(content):
                             if table in paths:
                                 cols = [field.strip() for field in fields.split(",") if field.strip() != "source_id"]
                                 con.execute(f"insert into {table}(case_id,source_id,{','.join(cols)}) select ?,s.new_id,{','.join('p.'+field for field in cols)} from read_parquet(?) p join {mapping} s on p.source_id=s.old_id", [new_cid, str(paths[table])])
+                        if material_groups:
+                            from .services import materials
+                            source_mapping=dict(con.execute(f'select old_id,new_id from {mapping}').fetchall())
+                            materials.restore(new_cid,material_groups,source_mapping)
                     if "evidence_sources" in paths:
                         con.execute(f"""insert into evidence_sources(case_id,source_id,batch_id,active)
                             select ?,s.new_id,b.new_id,p.active from read_parquet(?) p
@@ -1258,7 +1273,7 @@ def delete_package_case(case_id):
                     shutil.rmtree(photo_dir)
                 deleted = con.execute("select count(*) from flows where case_id=?", [case_id]).fetchone()[0]
                 con.execute("insert into import_file_gc(import_id,suffix,sha256,delete_after) select import_id,suffix,sha256,current_timestamp at time zone 'UTC' from import_sessions where case_id=? and source_state='retained' on conflict(import_id) do nothing", [case_id])
-                for table in ("source_ledger_index", "flow_source_cards", "analysis_state", "event_projection_cache_state", "event_observation_cache", "event_state", "resolved_events", "event_members", "evidence_sources", "import_source_operations", "resolution_state", "resolution_revisions", "resolution_entities", "resolved_endpoints", "resolution_subject_aliases", "import_records", "import_members", "flow_sources", "import_sources", "import_sessions"):
+                for table in ("source_ledger_index", "flow_source_cards", "analysis_state", "event_projection_cache_state", "event_observation_cache", "event_state", "resolved_events", "event_members", "evidence_sources", "import_source_operations", "import_materials", "import_material_groups", "resolution_state", "resolution_revisions", "resolution_entities", "resolved_endpoints", "resolution_subject_aliases", "import_records", "import_members", "flow_sources", "import_sources", "import_sessions"):
                     con.execute(f"delete from {table} where case_id=?", [case_id])
                 for table in CASE_PKG_TABLES:
                     con.execute(f"delete from {table} where case_id=?", [case_id])
