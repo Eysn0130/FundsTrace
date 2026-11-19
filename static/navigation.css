@@ -6,14 +6,58 @@ body:has(> #browserCaption[hidden]) {--app-caption-height:0px}
 #browserCaption img {width:24px;height:24px}
 .preview-badge {font-size:10px;color:var(--muted);background:var(--surface-control);padding:2px 6px;border-radius:4px}
 #appShell {flex:1;display:flex;min-width:0;min-height:0;overflow:hidden;background:var(--surface-rail)}
-#appRail {width:var(--app-rail-width);flex:0 0 var(--app-rail-width);display:flex;flex-direction:column;align-items:center;gap:var(--space-8);padding:8px 0;background:var(--surface-rail)}
-#appRail button {width:36px;height:36px;flex:0 0 36px;border:0;border-radius:var(--control-radius);background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center}
-#appRail button:hover {background:var(--surface-hover)}
+#appRail {
+  --rail-ink:color-mix(in srgb,var(--text-primary) 60%,var(--muted));
+  --rail-hover:color-mix(in srgb,var(--text-primary) 10%,var(--surface-rail));
+  --rail-pressed:color-mix(in srgb,var(--surface-rail) 65%,var(--surface-input));
+  --rail-current-fill:color-mix(in srgb,var(--accent) 23%,var(--surface-rail));
+  --rail-current-ink:color-mix(in srgb,var(--accent-link) 65%,var(--text-primary));
+  --rail-motion:155ms;
+  --rail-press-motion:85ms;
+  width:var(--app-rail-width);flex:0 0 var(--app-rail-width);
+  display:flex;flex-direction:column;align-items:center;gap:var(--space-8);padding:8px 0;background:var(--surface-rail);
+}
+html[data-ft-theme="light"] #appRail {
+  --rail-pressed:color-mix(in srgb,var(--text-primary) 16%,var(--surface-rail));
+  --rail-current-fill:color-mix(in srgb,var(--accent) 13%,var(--surface-rail));
+  --rail-current-ink:var(--accent-link);
+}
+#appRail > button {
+  --rail-solid-opacity:0;
+  width:36px;height:36px;flex:0 0 36px;padding:0;border:0;border-radius:8px;
+  background:transparent;color:var(--rail-ink);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+}
 #appRail button:focus-visible {outline:var(--focus-width) solid var(--focus-ring);outline-offset:var(--focus-offset)}
-#appRail button[aria-current="page"] {background:var(--action-fill);border-radius:8px}
-#appRail button[aria-current="page"]:hover {background:var(--action-hover)}
-#appRail img {width:20px;height:20px;filter:var(--icon-filter)}
-#appRail button[aria-current="page"] img {filter:var(--icon-on-filter)}
+#appRail > button[aria-current="page"] {
+  --rail-solid-opacity:1;
+  background:var(--rail-current-fill);color:var(--rail-current-ink);
+}
+body:has(> #fundsAppearanceSettings[open]) #navSettings {
+  --rail-solid-opacity:1;
+  background:var(--rail-hover);color:var(--text-primary);
+}
+.app-rail-glyph {
+  display:grid;place-items:center;width:20px;height:20px;flex:none;pointer-events:none;
+}
+.app-rail-glyph > svg {
+  grid-area:1/1;width:100%;height:100%;opacity:calc(1 - var(--rail-solid-opacity));
+}
+.app-rail-glyph > .app-rail-solid {opacity:var(--rail-solid-opacity)}
+@media (hover:hover) {
+  #appRail > button:hover:not(:disabled,:active) {background:var(--rail-hover);color:var(--text-primary)}
+  #appRail > button[aria-current="page"]:hover:not(:disabled,:active) {
+    background:color-mix(in srgb,var(--rail-current-fill) 86%,var(--accent));
+    color:var(--rail-current-ink);
+  }
+}
+#appRail > button:active:not(:disabled) {background:var(--rail-pressed)}
+#appRail > button[aria-current="page"]:active:not(:disabled) {
+  background:color-mix(in srgb,var(--rail-current-fill) 70%,var(--rail-pressed));
+}
+@media (forced-colors:active) {
+  #appRail > button[aria-current="page"]:not(:focus-visible) {outline:1px solid Highlight;outline-offset:-2px}
+}
 .rail-spacer {flex:1}
 #appPageHost {position:relative;flex:1;min-width:0;min-height:0;margin:0 var(--app-page-inset) var(--app-page-inset) 0;border-radius:12px;background:var(--surface);overflow:hidden}
 .funds-trace.ft-import-mount {
@@ -60,15 +104,43 @@ html[data-ft-theme="light"] #graphPage .ribbon-tabbar {background:var(--surface-
 html[data-ft-theme="light"] #graphPage .ribbon-group {border-right-color:var(--border)}
 html[data-ft-theme="light"] #graphPage #left {border-right-color:var(--border)}
 #ribbonTabs [role="tab"][aria-selected="true"]:hover {background:var(--selection-surface)}
-#appRail :is([data-nav-page],#navAnalysis,#navSettings):not(:disabled),#ribbonTabs [role="tab"],#editorToolbar .btn:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {transition:background-color var(--motion-fast) var(--interaction-ease),border-color var(--motion-fast) var(--interaction-ease),color var(--motion-fast) var(--interaction-ease)}
+#ribbonTabs [role="tab"],#editorToolbar .btn:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {transition:background-color var(--motion-fast) var(--interaction-ease),border-color var(--motion-fast) var(--interaction-ease),color var(--motion-fast) var(--interaction-ease)}
 #editorToolbar .btn:is(:disabled,[aria-disabled="true"],[aria-busy="true"]) {transition:none}
-@media(prefers-reduced-motion:reduce) {#appRail :is([data-nav-page],#navAnalysis,#navSettings):not(:disabled),#ribbonTabs [role="tab"],#editorToolbar .btn:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {transition:none}}
+@media(prefers-reduced-motion:reduce) {#ribbonTabs [role="tab"],#editorToolbar .btn:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {transition:none}}
 
 .rail-update-slot{position:relative;width:38px;height:34px;flex:0 0 34px;display:flex;align-items:center;justify-content:center}
 .rail-update-slot:not(:has(funds-desktop-update:not([hidden]))){display:none}
 .rail-update-slot funds-desktop-update:not([hidden]){position:absolute;inset:2px 4px;width:30px;height:30px}
 #appRail .funds-update-capsule{width:30px;height:30px;min-height:30px;flex:0 0 30px;padding:0;border:0;border-radius:50%;background:var(--action-fill);color:var(--action-on)}
 #appRail .funds-update-capsule > span:last-child{position:absolute;overflow:hidden;clip-path:inset(50%);width:1px;height:1px}
-#appRail .funds-update-capsule:not([data-phase="downloading"]):not([data-phase="installing"])::before{content:"";width:17px;height:17px;background:var(--action-on);mask:url('/static/ui-icons/download.svg') center/contain no-repeat}
+#appRail .funds-update-capsule:not([data-phase="downloading"],[data-phase="installing"])::before {
+  content:"";width:17px;height:17px;background:currentColor;forced-color-adjust:none;
+  mask:url('/static/ui-icons/rail-update.svg') center/contain no-repeat;
+}
+@media (hover:hover) {
+  #appRail .funds-update-capsule:hover:not(:disabled,:active) {background:var(--action-hover)}
+}
+#appRail .funds-update-capsule:active:not(:disabled) {
+  background:color-mix(in srgb,var(--action-fill) 70%,var(--rail-pressed));
+}
+@media (prefers-reduced-motion:no-preference) {
+  #appRail button:not(:disabled) {
+    transition:background-color var(--rail-motion) var(--interaction-ease),color var(--rail-motion) var(--interaction-ease);
+  }
+  #appRail .app-rail-glyph,
+  #appRail .funds-update-capsule::before {transition:transform var(--rail-motion) var(--interaction-ease)}
+  #appRail .app-rail-glyph > svg {transition:opacity var(--rail-motion) var(--interaction-ease)}
+  #appRail button:active:not(:disabled) {transition-duration:var(--rail-press-motion)}
+  #appRail > button:active:not(:disabled) > .app-rail-glyph,
+  #appRail .funds-update-capsule:active:not(:disabled)::before {
+    transform:scale(.94);transition-duration:var(--rail-press-motion);
+  }
+}
+@media (hover:hover) and (prefers-reduced-motion:no-preference) {
+  #appRail > button:hover:not(:disabled,:active) > .app-rail-glyph,
+  #appRail .funds-update-capsule:hover:not(:disabled,:active)::before {
+    transform:translateY(-1px) scale(1.08);
+  }
+}
 html[data-ft-translucency="true"] .fta-settings::backdrop{backdrop-filter:blur(3px)}
 @media(prefers-reduced-transparency:reduce){html[data-ft-translucency="true"] .fta-settings::backdrop{backdrop-filter:none}}

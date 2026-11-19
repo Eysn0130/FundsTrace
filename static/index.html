@@ -23,13 +23,38 @@
 <header id="browserCaption"><img src="/static/favicon-32.png" alt=""><span>循迹 FundsTrace</span><span class="preview-badge">预览版</span></header>
 <div id="appShell">
 <nav id="appRail" aria-label="主导航">
-  <button type="button" data-nav-page="home" aria-label="主页" title="主页" aria-current="page"><img src="/static/ui-icons/home.svg" alt=""></button>
-  <button type="button" data-nav-page="cases" aria-label="案件与导入" title="案件与导入"><img src="/static/ui-icons/folder.svg" alt=""></button>
-  <button type="button" id="navAccounts" data-nav-page="accounts" aria-label="账户与身份" title="账户与身份"><img src="/static/ui-icons/user-search.svg" alt=""></button>
-  <button type="button" id="navAnalysis" data-nav-page="analysis" aria-label="全案分析" title="全案分析"><img src="/static/ui-icons/network.svg" alt=""></button>
+  <button type="button" data-nav-page="home" aria-label="主页" title="主页" aria-current="page">
+    <span class="app-rail-glyph" aria-hidden="true">
+      <svg viewBox="0 0 24 24" focusable="false"><use href="/static/ui-icons/rail-navigation.svg#home"></use></svg>
+      <svg class="app-rail-solid" viewBox="0 0 24 24" focusable="false"><use href="/static/ui-icons/rail-navigation.svg#home-solid"></use></svg>
+    </span>
+  </button>
+  <button type="button" data-nav-page="cases" aria-label="案件与导入" title="案件与导入">
+    <span class="app-rail-glyph" aria-hidden="true">
+      <svg viewBox="0 0 24 24" focusable="false"><use href="/static/ui-icons/rail-navigation.svg#cases"></use></svg>
+      <svg class="app-rail-solid" viewBox="0 0 24 24" focusable="false"><use href="/static/ui-icons/rail-navigation.svg#cases-solid"></use></svg>
+    </span>
+  </button>
+  <button type="button" id="navAccounts" data-nav-page="accounts" aria-label="账户与身份" title="账户与身份">
+    <span class="app-rail-glyph" aria-hidden="true">
+      <svg viewBox="0 0 24 24" focusable="false"><use href="/static/ui-icons/rail-navigation.svg#accounts"></use></svg>
+      <svg class="app-rail-solid" viewBox="0 0 24 24" focusable="false"><use href="/static/ui-icons/rail-navigation.svg#accounts-solid"></use></svg>
+    </span>
+  </button>
+  <button type="button" id="navAnalysis" data-nav-page="analysis" aria-label="全案分析" title="全案分析">
+    <span class="app-rail-glyph" aria-hidden="true">
+      <svg viewBox="0 0 24 24" focusable="false"><use href="/static/ui-icons/rail-navigation.svg#analysis"></use></svg>
+      <svg class="app-rail-solid" viewBox="0 0 24 24" focusable="false"><use href="/static/ui-icons/rail-navigation.svg#analysis-solid"></use></svg>
+    </span>
+  </button>
   <div class="rail-spacer"></div>
   <div class="rail-update-slot"><funds-desktop-update hidden></funds-desktop-update></div>
-  <button type="button" id="navSettings" aria-label="设置" title="设置"><img src="/static/ui-icons/settings.svg" alt=""></button>
+  <button type="button" id="navSettings" aria-label="设置" title="设置" aria-haspopup="dialog">
+    <span class="app-rail-glyph" aria-hidden="true">
+      <svg viewBox="0 0 24 24" focusable="false"><use href="/static/ui-icons/rail-navigation.svg#settings"></use></svg>
+      <svg class="app-rail-solid" viewBox="0 0 24 24" focusable="false"><use href="/static/ui-icons/rail-navigation.svg#settings-solid"></use></svg>
+    </span>
+  </button>
 </nav>
 <div id="appPageHost"><div id="graphPage">
 
