@@ -197,7 +197,8 @@ def flow_sources(case_id, flow_id, page=1, page_size=50):
                             join import_sources s on s.source_id=f.source_id and s.case_id=f.case_id
                             join flows original on original.case_id=f.case_id and original.id=f.flow_id
                             left join event_members em on em.case_id=f.case_id and em.flow_id=f.flow_id
-                            left join resolved_events ev on ev.case_id=em.case_id and ev.event_id=em.event_id and em.status='confirmed'
+                            left join resolved_events ev on ev.case_id=em.case_id
+                                and ev.event_id=case when em.status='confirmed' then em.event_id end
                             left join import_records r on r.case_id=f.case_id and r.source_id=f.source_id and r.record_no=f.source_row
                             where f.case_id=? and f.flow_id in (select flow_id from observed_ids)
                             order by s.imported_at,s.source_id,f.source_row,f.flow_id limit ? offset ?""",

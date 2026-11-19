@@ -9,6 +9,7 @@ import csv
 from contextlib import nullcontext
 from copy import deepcopy
 from decimal import Decimal, localcontext
+from functools import partial
 import hashlib
 import json
 import os
@@ -224,7 +225,7 @@ def _source(session, *, snapshot=False):
         raise
 
 
-def _session(case_id, import_id, surface="v1", bind=False):
+def _session(case_id, import_id, surface="v1", bind=False, *, allow_unbound=False):
     if not isinstance(import_id, str) or not re.fullmatch(r"[0-9a-f]{32}", import_id):
         raise _missing()
     # A progress request may own a committed read-only snapshot while the
@@ -240,7 +241,7 @@ def _session(case_id, import_id, surface="v1", bind=False):
             db.x("update import_sessions set case_id=?,updated_at=? where import_id=? and case_id is null",
                  [cid, _now(), import_id])
             row["case_id"] = cid
-        if row["case_id"] != cid:
+        if row["case_id"] != cid and not (allow_unbound and row["case_id"] is None and surface == "legacy"):
             raise _missing()
         return row
 
@@ -256,7 +257,7 @@ def _accounts(rows):
 
 
 def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=None, table_profile=None,
-           reference_policy=None, _auto_event_profile=False):
+           reference_policy=None, header_policy=None, _auto_event_profile=False):
     # Never retain a previous large preview beside a newly parsed plan.
     import_preview_cache.discard()
     try:
@@ -267,10 +268,12 @@ def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=Non
         if table_profile in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
             if suffix == ".rar" and not rar_archive.is_rar(source):
                 raise table_import.TableImportError("RAR文件签名不符，整包未接纳")
-            plan = (table_archive.parse(source, profile=table_profile, _stage=True, _operation_scopes=True) if table_profile in table_archive.SUPPORTED_PROFILES
+            header_args = {"_header_policy": header_policy} if header_policy is not None else {}
+            plan = (table_archive.parse(source, profile=table_profile, _stage=True, _operation_scopes=True, **header_args) if table_profile in table_archive.SUPPORTED_PROFILES
                     else table_import.parse(source, suffix=suffix, mode=mode, mapping=mapping,
                                             profile=table_profile,
                                             voucher_reference=reference_policy is not None,
+                                            **header_args,
                                             **({"_auto_event_profile": True} if _auto_event_profile else {})))
             try:
                 if plan["profile"] in evidence_resolution.PROFILES and "_plan_store" not in plan:
@@ -506,6 +509,8 @@ def _bind_archive_header_history(case_id, plan, rows, stats, source):
     cursor = db.con().execute(f"""
         select i.parser_version,i.filename,i.sheet,i.row_kind,i.sha256,
           r.member_path,m.sha256,m.role,m.encoding,r.source_row,r.disposition,r.reason_code,
+          s.flow_id,case when r.reason_code='invalid_currency'
+            then json_extract_string(r.details_json,'$.validation_issues') end,
           f.id,{','.join('f.' + field for field in fields)}
         from import_records r
         join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
@@ -531,10 +536,11 @@ def _bind_archive_header_history(case_id, plan, rows, stats, source):
     for _path, digest, position in exact_wanted:
         bridge_wanted[digest, position] = True
     exact, bridge, v4_exact, v4_bridge, blocked_exact, blocked_bridge = [store.mapping() if store is not None else {} for _ in range(6)]
+    missing_currency_exact = store.mapping() if store is not None else {}
     different = "conflicting historical interpretations"
     while batch:
         for (profile, filename, sheet, row_kind, source_sha, path, digest, role, encoding,
-             position, disposition, reason, fid, *facts) in batch:
+             position, disposition, reason, linked_flow, validation_issues, fid, *facts) in batch:
             prior_archive = profile in table_archive.SUPPORTED_PROFILES
             prior_ordinary = _ordinary_csv_member(profile,
                 {"filename": filename, "sheet": sheet, "row_kind": row_kind, "sha256": source_sha},
@@ -554,7 +560,12 @@ def _bind_archive_header_history(case_id, plan, rows, stats, source):
             if profile in header_profiles:
                 presence[key] = True
                 if disposition == "unresolved" and reason in ("ambiguous_region_header", "invalid_currency"):
-                    blocked[key] = True
+                    if (archive and prior_archive and plan["profile"] in table_import.BANK_AMOUNT_DEFAULT_PROFILES
+                            and profile in table_import.BANK_EXPLICIT_CURRENCY_PROFILES
+                            and linked_flow is None and reason == validation_issues == "invalid_currency"):
+                        missing_currency_exact[key] = True
+                    else:
+                        blocked[key] = True
             if fid is not None and disposition in ("imported", "duplicate"):
                 value = signature(dict(zip(fields, facts)))
                 history[key] = value if key not in history else history[key] if history[key] == value else different
@@ -569,7 +580,22 @@ def _bind_archive_header_history(case_id, plan, rows, stats, source):
         if not has_v4:
             continue
         value = signature(row, default_currency="CNY")
+        # Exact same member bytes, path and physical row. The new parser may
+        # supplement a former absence only after reading explicit blank cells.
+        historically_missing = physical in missing_currency_exact
+        if historically_missing:
+            details = record["details"]
+            fields_json = json.loads(details.get("source_field_evidence") or "[]")
+            currency_cells = [entry for entry in fields_json if entry.get("field") == "currency"]
+            basis = details.get("currency_basis")
+            proven = (basis == "银行交易明细币种空白，按规则使用CNY" and row.get("currency") == "CNY"
+                      or basis == "采用表头前的来源币种声明" and any(
+                          entry.get("field") == "currency_declaration" and entry.get("source_row")
+                          for entry in fields_json))
+            historically_missing = not (proven and currency_cells
+                and all(isinstance(entry.get("raw"), str) and not entry["raw"].strip() for entry in currency_cells))
         if (physical in blocked_exact or bridged in blocked_bridge
+                or historically_missing
                 or physical in exact and exact[physical] != value
                 or bridged in bridge and bridge[bridged] != value):
             conflicting.add(number)
@@ -850,6 +876,7 @@ def _table_summary(plan):
     unresolved = (records.select(disposition="unresolved") if isinstance(records, StagedSequence)
                   else (record for record in records if record["disposition"] == "unresolved"))
     return {"profile": plan["profile"], "record_total": len(plan["records"]),
+            **({"header_plan_sha256": plan["header_plan_sha256"]} if "header_plan_sha256" in plan else {}),
             "accepted": len(plan["rows"]),
             "cancelled": stats.get("cancelled", 0), "excluded_flows": 0, "effective_added": None,
             **{key: stats[key] for key in ("unresolved", "non_monetary", "non_transaction", "auxiliary", "reason_counts", "currency_totals")},
@@ -873,6 +900,37 @@ def _table_profile(session):
 
 def _table_overrides(session):
     return bool(json.loads(session.get("request_json") or "{}").get("_table_overrides", False))
+
+
+def _header_snapshot(session, profile, decisions):
+    from app.header_regions import VERSION
+
+    binding = {key: session[key] for key in ("case_id", "import_id", "sha256", "suffix", "surface")}
+    payload = {"version": VERSION, **binding, "profile": profile, "decisions": decisions}
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(encoded) > 256 * 1024:
+        raise ServiceError(422, "header_review_limit", "待识别的表头区域过多，请拆分原件后重新预览")
+    return {**payload, "sha256_plan": hashlib.sha256(encoded).hexdigest()}
+
+
+def _replay_headers(session, cancelled):
+    frozen = json.loads(session.get("request_json") or "{}").get("_header_plan")
+    if frozen is None:
+        return None
+    from app.header_regions import HeaderRegionPolicy
+
+    decisions = frozen.get("decisions") if isinstance(frozen, dict) else None
+    if not isinstance(decisions, list) or frozen != _header_snapshot(session, _table_profile(session), decisions):
+        raise import_validation.IntegrityError("frozen header interpretation has wrong binding")
+    return HeaderRegionPolicy(cancelled, replay=decisions)
+
+
+def _check_header_replay(policy, session, parsed):
+    if policy is not None:
+        frozen = json.loads(session["request_json"])["_header_plan"]
+        if policy.decisions != frozen["decisions"]:
+            raise import_validation.IntegrityError("frozen header interpretation did not match the original")
+        parsed[0].attrs["table_plan"]["header_plan_sha256"] = frozen["sha256_plan"]
 
 
 def _table_mapping(mode, mapping, columns, *, profile):
@@ -958,18 +1016,35 @@ class _PreviewCancelled(Exception):
     pass
 
 
-async def _execute_preview(operation, *args):
+async def _execute_preview(operation, *args, receive=None):
     # One admitted preview, with no queue of large parser plans or ZIP copies.
     # This also covers directory construction; it must not re-enter admission.
     if not _preview_lock.acquire(blocking=False):
         raise ServiceError(409, "preview_busy", "另一个文件正在预览，请等待完成后重试")
     cancelled = threading.Event()
+    model_cancelled = threading.Event() if receive is not None else cancelled
+    monitor = None
+
+    async def watch_disconnect():
+        # The upload handler already received the entire multipart body.
+        # Wait for the ASGI event rather than polling a cancelled receive.
+        while (await receive())["type"] != "http.disconnect":
+            pass
+        model_cancelled.set()
+
     try:
-        worker = asyncio.create_task(anyio.to_thread.run_sync(operation, cancelled, *args))
+        work = partial(operation, cancelled, *args)
+        if receive is not None:
+            monitor = asyncio.create_task(watch_disconnect())
+            work = partial(work, model_cancelled=model_cancelled)
+        worker = asyncio.create_task(anyio.to_thread.run_sync(work))
         try:
             return await asyncio.shield(worker)
+        except _PreviewCancelled:
+            raise ServiceError(499, "preview_cancelled", "预览已取消") from None
         except asyncio.CancelledError:
             cancelled.set()
+            model_cancelled.set()
             # FastAPI closes request UploadFiles when this call unwinds. Both
             # raw Task.cancel and AnyIO cancellation must wait for the worker.
             with anyio.CancelScope(shield=True):
@@ -984,7 +1059,13 @@ async def _execute_preview(operation, *args):
                 worker.exception()
             raise
     finally:
-        _preview_lock.release()
+        try:
+            if monitor is not None:
+                monitor.cancel()
+                with anyio.CancelScope(shield=True):
+                    await asyncio.gather(monitor, return_exceptions=True)
+        finally:
+            _preview_lock.release()
 
 
 def _upload_size(source):
@@ -994,7 +1075,7 @@ def _upload_size(source):
     return size
 
 
-def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence=False):
+def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence=False, *, model_cancelled=None):
     cid = _cid(case_id) if case_id is not None else None
     filename = Path((filename or "transactions.csv").replace("\\", "/")).name
     extension = Path(filename).suffix
@@ -1010,6 +1091,12 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
     # The request owns this seekable spool until the worker has returned.
     # Failed parsing never creates a retained original.
     parsed, created = None, False
+    policy = None
+    model_cancelled = cancelled if model_cancelled is None else model_cancelled
+
+    def interrupted_model():
+        return model_cancelled.is_set() and policy is not None and policy.attempted_inference
+
     try:
         if cancelled.is_set():
             raise _PreviewCancelled()
@@ -1020,10 +1107,13 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
         table_profile = (((archive_profile if resolve_evidence or archive_profile in table_archive.XLS_EVIDENCE_PROFILES else table_archive.PROFILE)
                           if suffix == ".rar" or table_archive.should_parse(source, native_observations=True) else None)
                          if suffix in {".zip", ".rar"} else table_import.VOUCHER_REFERENCE_XLS_PROFILE if suffix == ".xls" else table_import.VOUCHER_REFERENCE_EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
-        parsed = _parse(source, suffix=suffix, table_profile=table_profile,
+        if cid is not None and table_profile is not None:
+            from app.header_regions import HeaderRegionPolicy
+            policy = HeaderRegionPolicy(model_cancelled)
+        parsed = _parse(source, suffix=suffix, table_profile=table_profile, header_policy=policy,
                         feedback_profile=feedback_import.MICROSECOND_EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None,
                         _auto_event_profile=table_profile in table_import.CLOSED_BANK_SUCCESSORS)
-        if cancelled.is_set():
+        if cancelled.is_set() or interrupted_model():
             raise _PreviewCancelled()
         import_id = uuid.uuid4().hex
         directory = _directory(create=True)
@@ -1033,7 +1123,7 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
         with path.open("xb") as stream:
             created = True
             for block in iter(lambda: source.read(1024 * 1024), b""):
-                if cancelled.is_set():
+                if cancelled.is_set() or interrupted_model():
                     raise _PreviewCancelled()
                 size += len(block)
                 if size > _max_upload:
@@ -1042,24 +1132,35 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
                     raise OSError("Incomplete retained upload write")
                 digest.update(block)
         now = _now()
-        session = {"case_id": cid, "import_id": import_id, "filename": filename,
+        session = {"case_id": cid, "import_id": import_id, "filename": filename, "suffix": suffix, "surface": surface,
                    "sha256": digest.hexdigest()}
+        table_plan = parsed[0].attrs.get("table_plan")
+        if table_plan is not None:
+            request = {"_table_profile": table_plan["profile"]}
+            if policy is not None and policy.decisions:
+                frozen = _header_snapshot(session, table_plan["profile"], policy.decisions)
+                request["_header_plan"] = frozen
+                table_plan["header_plan_sha256"] = frozen["sha256_plan"]
+        else:
+            request = {"_feedback_profile": parsed[0].attrs["feedback_plan"]["profile"]} if suffix == ".zip" else None
+        session["request_json"] = _json(request) if request is not None else None
         evidence_resolution.operation_context(parsed, session["sha256"])
         pure_stamp = import_preview_cache.stamp(parsed)
         with db.transaction():
-            if cancelled.is_set():
+            if cancelled.is_set() or interrupted_model():
                 raise _PreviewCancelled()
             if cid is not None:
                 _cid(cid)
                 _bind_feedback_plan(cid, parsed)
                 _bind_table_plan(cid, parsed, source=session)
+            if cancelled.is_set() or interrupted_model():
+                raise _PreviewCancelled()
             db.x("""insert into import_sessions(import_id,case_id,surface,filename,suffix,sha256,size_bytes,
                       mode,mapping_json,columns_json,request_json,stage,created_at,updated_at,expires_at,source_state)
                     values (?,?,?,?,?,?,?,?,?,?,?,'ready',?,?,?,'retained')""",
                  [import_id, cid, surface, filename, suffix, session["sha256"], size,
                   parsed[2], _json(parsed[3]), _json(list(parsed[0].columns)),
-                  _json({"_table_profile": parsed[0].attrs["table_plan"]["profile"]}) if "table_plan" in parsed[0].attrs
-                  else _json({"_feedback_profile": parsed[0].attrs["feedback_plan"]["profile"]}) if suffix == ".zip" else None,
+                  session["request_json"],
                   now, now, now + dt.timedelta(days=7)])
             # Preview still consumes operation-private staging. A late disk
             # failure must roll back the ready session with its retained file.
@@ -1072,6 +1173,10 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
                         import_preview_cache.key(cache_session, _table_profile(cache_session), _table_overrides(cache_session)),
                         parsed, pure_stamp):
                     parsed = None  # The finite cache now owns this one original plan.
+            # Ordinary previews that reached registration stay recoverable.
+            # An interrupted optional inference may not publish a new session.
+            if interrupted_model():
+                raise _PreviewCancelled()
         result["automatic"] = not (result.get("reference_policy_available")
             and reference_choice_conflict)
         return result
@@ -1084,19 +1189,20 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
         _close_staging(parsed)
 
 
-async def _upload(case_id, file, surface, *, resolve_evidence=False):
-    return await _execute_preview(_upload_sync, case_id, file.file, file.filename, surface, resolve_evidence)
+async def _upload(case_id, file, surface, *, resolve_evidence=False, receive=None):
+    return await _execute_preview(_upload_sync, case_id, file.file, file.filename, surface, resolve_evidence,
+                                  receive=receive)
 
 
-async def upload(case_id, file):
-    return await _upload(case_id, file, "v1")
+async def upload(case_id, file, *, receive=None):
+    return await _upload(case_id, file, "v1", receive=receive)
 
 
-async def legacy_upload(file, case_id=None):
-    return await _upload(case_id, file, "legacy")
+async def legacy_upload(file, case_id=None, *, receive=None):
+    return await _upload(case_id, file, "legacy", receive=receive)
 
 
-def _directory_preview_sync(cancelled, case_id, files, surface):
+def _directory_preview_sync(cancelled, case_id, files, surface, *, model_cancelled=None):
     """Preserve relative paths/bytes in one registered original before preview.
 
     Starlette admits at most 1000 multipart files. Use the same explicit bound
@@ -1144,38 +1250,50 @@ def _directory_preview_sync(cancelled, case_id, files, surface):
                         if size > table_archive.MAX_MEMBER_BYTES or total > _max_upload:
                             raise ServiceError(400, "file_too_large", "目录原件累计超过300MB或单文件超过256MB，请分包上传")
                         target.write(block)
-        return _upload_sync(cancelled, case_id, source, "目录原件.zip", surface, True)
+        return _upload_sync(cancelled, case_id, source, "目录原件.zip", surface, True, model_cancelled=model_cancelled)
 
 
-async def upload_directory(case_id, files, *, surface="v1"):
-    return await _execute_preview(_directory_preview_sync, case_id, files, surface)
+async def upload_directory(case_id, files, *, surface="v1", receive=None):
+    return await _execute_preview(_directory_preview_sync, case_id, files, surface, receive=receive)
 
 
-def _repreview(case_id, import_id, body, surface):
+def _repreview_sync(cancelled, case_id, import_id, body, surface):
     with db.transaction():
-        session = _session(case_id, import_id, surface, bind=True)
+        session = _session(case_id, import_id, surface, allow_unbound=True)
         if session["stage"] in _active_stages or session["stage"] == "done":
             raise ServiceError(409, "import_already_started", "任务已开始或已完成，请查看导入进度")
-        import_preview_cache.discard(import_id)
+    import_preview_cache.discard(import_id)
+    profile = _table_profile(session)
+    is_table = profile in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
+    overrides = is_table and (_table_overrides(session) or body.mode != session["mode"]
+                              or body.mapping != json.loads(session["mapping_json"]))
+    if is_table:
+        _table_mapping(body.mode, body.mapping, json.loads(session["columns_json"]), profile=profile)
+        if overrides and profile in table_archive.SUPPORTED_PROFILES:
+            raise ServiceError(422, "invalid_mapping", "反馈包按成员独立校验，不能使用整包字段覆盖")
+    request = json.loads(session.get("request_json") or "{}")
+    reference_policy = (body.reference_policy if "reference_policy" in getattr(body, "model_fields_set", vars(body))
+                        else request.get("reference_policy"))
+    if reference_policy is not None and (surface != "v1" or profile not in table_import.VOUCHER_REFERENCE_PROFILES):
+        raise ServiceError(422, "invalid_reference_policy", "引用策略仅适用于新版单文件表格的 v1 预览")
+    parsed = None
+    try:
+        policy = _replay_headers(session, cancelled)
         with _source(session, snapshot=True) as source:
-            is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
-            overrides = is_table and (_table_overrides(session) or body.mode != session["mode"]
-                                      or body.mapping != json.loads(session["mapping_json"]))
-            if is_table:
-                _table_mapping(body.mode, body.mapping, json.loads(session["columns_json"]),
-                               profile=_table_profile(session))
-                if overrides and _table_profile(session) in table_archive.SUPPORTED_PROFILES:
-                    raise ServiceError(422, "invalid_mapping", "反馈包按成员独立校验，不能使用整包字段覆盖")
-            request = json.loads(session.get("request_json") or "{}")
-            reference_policy = (body.reference_policy if "reference_policy" in getattr(body, "model_fields_set", vars(body))
-                                else request.get("reference_policy"))
-            if reference_policy is not None and (surface != "v1" or _table_profile(session) not in table_import.VOUCHER_REFERENCE_PROFILES):
-                raise ServiceError(422, "invalid_reference_policy", "引用策略仅适用于新版单文件表格的 v1 预览")
             parsed = _parse(source, body.mode if not is_table or overrides else None,
                             body.mapping if not is_table or overrides else None, suffix=session["suffix"],
                             feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
-                            table_profile=_table_profile(session), reference_policy=reference_policy)
-        try:
+                            table_profile=profile, reference_policy=reference_policy, header_policy=policy)
+        if cancelled.is_set():
+            raise _PreviewCancelled()
+        _check_header_replay(policy, session, parsed)
+        with db.transaction():
+            current = _session(case_id, import_id, surface, allow_unbound=True)
+            if current != session:
+                raise ServiceError(409, "preview_changed", "导入状态已变化，请查看最新预览或任务进度")
+            if cancelled.is_set():
+                raise _PreviewCancelled()
+            session = _session(case_id, import_id, surface, bind=True)
             evidence_resolution.operation_context(parsed, session["sha256"])
             _bind_feedback_plan(session["case_id"], parsed)
             _bind_table_plan(session["case_id"], parsed, source=session)
@@ -1192,17 +1310,26 @@ def _repreview(case_id, import_id, body, surface):
                     request["reference_policy"] = reference_policy
                 db.x("update import_sessions set request_json=? where import_id=?", [_json(request), import_id])
                 session["request_json"] = _json(request)
-            return _preview_result(session, parsed, legacy=surface == "legacy")
-        finally:
-            _close_staging(parsed)
+            result = _preview_result(session, parsed, legacy=surface == "legacy")
+            if cancelled.is_set():
+                raise _PreviewCancelled()
+            return result
+    except import_validation.IntegrityError:
+        raise ServiceError(409, "header_plan_changed", "冻结表头解释无法核对，请重新上传原件") from None
+    finally:
+        _close_staging(parsed)
 
 
 def repreview(case_id, import_id, body):
-    return _repreview(case_id, import_id, body, "v1")
+    return _repreview_sync(threading.Event(), case_id, import_id, body, "v1")
 
 
 def legacy_repreview(body):
-    return _repreview(body.case_id, body.import_id, body, "legacy")
+    return _repreview_sync(threading.Event(), body.case_id, body.import_id, body, "legacy")
+
+
+async def preview_again(case_id, import_id, body, *, surface="v1"):
+    return await _execute_preview(_repreview_sync, case_id, import_id, body, surface)
 
 
 def _account_values(value):
@@ -1257,6 +1384,7 @@ def _run(import_id):
         request = json.loads(session["request_json"])
         is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
         overrides = _table_overrides(session)
+        policy = _replay_headers(session, threading.Event())
         with _source(session, snapshot=True) as source:
             try:
                 parsed = import_preview_cache.take(import_preview_cache.key(session, _table_profile(session), overrides))
@@ -1268,7 +1396,8 @@ def _run(import_id):
                     request["mapping"] if not is_table or overrides else None, suffix=session["suffix"],
                     feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
                     table_profile=_table_profile(session),
-                    reference_policy=request.get("reference_policy") if is_table else None)
+                    reference_policy=request.get("reference_policy") if is_table else None, header_policy=policy)
+                _check_header_replay(policy, session, parsed)
             evidence_resolution.operation_context(parsed, session["sha256"])
             _frame, sheet, mode, mapping, rows, stats = parsed
         plan = _frame.attrs.get("feedback_plan")
@@ -1427,6 +1556,8 @@ def _commit(case_id, import_id, body, surface):
                 request["_feedback_profile"] = _feedback_profile(session)
             if is_table:
                 request.update(_table_profile=_table_profile(session), _table_overrides=_table_overrides(session))
+                if "_header_plan" in (frozen_request := json.loads(session.get("request_json") or "{}")):
+                    request["_header_plan"] = frozen_request["_header_plan"]
                 if stored_policy is not None:
                     request["reference_policy"] = stored_policy
             db.x("""update import_sessions set mode=?,mapping_json=?,request_json=?,stage='parsing',done=0,total=0,
@@ -1708,7 +1839,7 @@ def list_records(case_id, source_id, page=1, page_size=100, disposition=None, me
                                        limit=page_size, offset=(page - 1) * page_size)}
 
 
-def review_records(case_id, source_id, member_path, view='all', page=1, page_size=50, issue_index=None):
+def review_records(case_id, source_id, member_path, view='all', page=1, page_size=50, issue_index=None, source_row=None):
     """Page/filter frozen source rows; original bytes are a separate read-only view."""
     from .. import import_originals
     groups = {'all': None, 'review': ('review', 'unresolved'), 'accepted': ('imported', 'duplicate')}
@@ -1727,7 +1858,15 @@ def review_records(case_id, source_id, member_path, view='all', page=1, page_siz
         where = scope + (' and disposition in (select unnest(?::varchar[]))' if group is not None else '')
         filtered = [*params, list(group)] if group is not None else params
         issue = None
-        if issue_index is not None and counts['review'] and view != 'accepted':
+        if source_row is not None:
+            matches = db.q_raw(f'select record_no from import_records where {where} and source_row=? order by record_no limit 2',
+                               [*filtered, source_row])
+            if len(matches) != 1:
+                raise _missing()
+            rank = db.q_raw(f'select count(*) n from import_records where {where} and record_no<=?',
+                            [*filtered, matches[0]['record_no']])[0]['n']
+            page = (rank - 1) // page_size + 1
+        elif issue_index is not None and counts['review'] and view != 'accepted':
             index = min(issue_index, counts['review'])
             rows = db.q_raw(f"select record_no,source_row,reason_code from import_records where {scope} and disposition in ('review','unresolved') order by record_no limit 1 offset ?", [*params, index - 1])
             issue = {'index': index, **rows[0]}
@@ -1745,7 +1884,7 @@ def review_records(case_id, source_id, member_path, view='all', page=1, page_siz
         documents = [document for document in summary.get('documents', []) if document['member_path'] == member_path]
         document = documents[0] if documents else {'header_row': 1} if source['parser_version'] in feedback_import.SUPPORTED_PROFILES else {}
         evidence = [entry for entry in summary.get('mapping_evidence', []) if entry.get('member_path') == member_path]
-        if not evidence:
+        if not evidence and not documents:
             evidence = [{'field': field, 'column': column} for field, column in json.loads(source['mapping_json']).items()]
         if source['parser_version'] in feedback_import.SUPPORTED_PROFILES:
             # The closed feedback schema reads this status independently of its

@@ -10,6 +10,7 @@ export type FundsReportQueryV1 = FundsTrendSelectionV1 & Readonly<{ memberPath: 
 export type FundsReportRecordsQueryV1 = FundsReportQueryV1 & Readonly<{ expectedRevision: string; counterparty?: string; direction?: 'in' | 'out'; timeStart?: string; timeEnd?: string; timeBasis?: 'utc' | 'unqualified' }>;
 export type FundsReportAccountQueryV1 = Readonly<{ memberPath: string; expectedRevision: string; currency: string; account?: string; search?: string; page?: number }>;
 export type FundsReportDownloadV1 = FundsReportQueryV1 & Readonly<{ sourceId: string; filename: string; expectedRevision: string }>;
+export type FundsImportReviewQueryV1 = Readonly<{ view: ImportReviewPage['view']; page: number; issueIndex?: number; sourceRow?: number }>;
 
 /** Case-bound use cases. File is a browser pilot input, not an IPC contract. */
 export interface FundsCaseClientV1 {
@@ -25,7 +26,7 @@ export interface FundsCaseClientV1 {
   withdrawImportSource?(sourceId: string, batchId: string, signal?: AbortSignal): Promise<WithdrawnImport>;
   imports(signal?: AbortSignal, importId?: string): Promise<ImportSessionList>;
   importRecords?(sourceId: string, page?: number, signal?: AbortSignal, memberPath?: string, sourceRow?: number): Promise<ImportRecordPage>;
-  importReview?(sourceId: string, memberPath: string, query: {view: ImportReviewPage['view']; page: number; issueIndex?: number}, signal?: AbortSignal): Promise<ImportReviewPage>;
+  importReview?(sourceId: string, memberPath: string, query: FundsImportReviewQueryV1, signal?: AbortSignal): Promise<ImportReviewPage>;
   importFundsReport?(sourceId: string, query: FundsReportQueryV1, signal?: AbortSignal): Promise<ImportReport>;
   verifyImportSource?(sourceId: string, query: Readonly<{ memberPath: string; expectedRevision: string }>, signal?: AbortSignal): Promise<ImportReportIntegrity>;
   importReportRecords?(sourceId: string, query: FundsReportRecordsQueryV1, signal?: AbortSignal): Promise<ImportReportRecords>;

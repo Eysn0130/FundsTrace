@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ImportReviewPage, ImportReviewRecord, ImportOriginalCell } from '../../../contracts/api-v1';
-import type { FundsCaseClientV1 } from '../panel/host';
+import type { FundsCaseClientV1, FundsImportReviewQueryV1 } from '../panel/host';
 import { linkAbortSignal } from '../panel/cancellation';
 import { feedbackReason } from './ImportDetails';
 import { ImportCellValue, ImportTable } from './ImportTable';
@@ -54,12 +54,12 @@ function cellIssueText(row: ImportReviewRecord, field: string, original?: Import
 }
 
 /** One source-bound table: full-file filters and server-located issue positions. */
-export function ImportReview({client,scopeSignal,sourceId,memberPath,reserveIssueBar,startInReview=false}: {
+export function ImportReview({client,scopeSignal,sourceId,memberPath,reserveIssueBar,startInReview=false,startSourceRow}: {
   client: FundsCaseClientV1; scopeSignal: AbortSignal; sourceId: string; memberPath: string; reserveIssueBar?: boolean;
-  startInReview?: boolean;
+  startInReview?: boolean; startSourceRow?: number;
 }) {
-  const [query,setQuery] = useState<{view:ImportReviewPage['view'];page:number;issueIndex?:number}>(
-    () => ({view:startInReview?'review':'all',page:1,issueIndex:1}));
+  const [query,setQuery] = useState<FundsImportReviewQueryV1>(() => startSourceRow === undefined
+    ? {view:startInReview?'review':'all',page:1,issueIndex:1} : {view:'all',page:1,sourceRow:startSourceRow});
   const [snapshot,setSnapshot] = useState<{client:FundsCaseClientV1;sourceId:string;memberPath:string;key:string;data:ImportReviewPage}>();
   const [failure,setFailure] = useState<{key:string;message:string}>(),[reload,setReload] = useState(0);
   const [popover,setPopover] = useState<{anchor:HTMLElement;value:string}>(), pinned = useRef(false), timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -68,6 +68,8 @@ export function ImportReview({client,scopeSignal,sourceId,memberPath,reserveIssu
   if(discovered.current.client!==client||discovered.current.sourceId!==sourceId||discovered.current.memberPath!==memberPath)discovered.current={client,sourceId,memberPath,cells:[]};
   const ownSnapshot = snapshot?.client===client && snapshot.sourceId===sourceId && snapshot.memberPath===memberPath && !scopeSignal.aborted ? snapshot : undefined;
   const data = ownSnapshot?.key===key ? ownSnapshot.data : undefined, counts=ownSnapshot?.data.counts;
+  const exactRecord = query.sourceRow === undefined ? undefined : data?.items.find(row => row.source_row === query.sourceRow)?.record_no;
+  const focusRecord = exactRecord ?? data?.issue?.record_no;
   const error = failure?.key===key ? failure.message : '';
   const issuePlaceholder = !counts && !error && reserveIssueBar;
   const hide = () => {clearTimeout(timer.current);pinned.current=false;setPopover(undefined);};
@@ -83,18 +85,22 @@ export function ImportReview({client,scopeSignal,sourceId,memberPath,reserveIssu
         || value.items.some(row=>row.member_path!==memberPath||!Number.isSafeInteger(row.record_no)||row.record_no<1||!Number.isSafeInteger(row.source_row)||row.source_row<1)
         || ['all','review','accepted'].some(name=>!Number.isSafeInteger(value.counts[name])||value.counts[name]<0)
         || value.counts.review+value.counts.accepted>value.counts.all || value.total!==value.counts[query.view]) throw new Error('来源记录与当前案件或文件不一致');
+      if (query.sourceRow !== undefined && (value.issue || value.items.filter(row => row.source_row === query.sourceRow).length !== 1)) {
+        throw new Error('来源记录与定位行不一致');
+      }
       setSnapshot({client,sourceId,memberPath,key,data:value});
     }).catch(reason=>{if(active&&!controller.signal.aborted&&reason.name!=='AbortError')setFailure({key,message:reason.message});});
     return ()=>{active=false;scopeSignal.removeEventListener('abort',revoke);unlink();controller.abort();};
   },[client,scopeSignal,sourceId,memberPath,key,reload]);
   useLayoutEffect(()=>{
-    if (!data?.issue || scopeSignal.aborted) return;
+    if (focusRecord === undefined || scopeSignal.aborted) return;
     let settled=0;
     const frame=requestAnimationFrame(()=>{settled=requestAnimationFrame(()=>{
       const viewport=section.current?.querySelector<HTMLElement>('.ft-review-scroll');
-      const row=section.current?.querySelector<HTMLElement>(`tr[data-record="${data.issue!.record_no}"]`);
+      const row=section.current?.querySelector<HTMLElement>(`tr[data-record="${focusRecord}"]`);
       if (!viewport||!row||scopeSignal.aborted) return;
-      const cell=row.querySelector<HTMLElement>('[data-problem="true"]')||row.children[0] as HTMLElement;
+      const cell = (exactRecord === undefined && row.querySelector<HTMLElement>('[data-problem="true"]') || row.children[0]) as HTMLElement;
+      if (exactRecord !== undefined) row.focus({ preventScroll: true });
       const bounds=viewport.getBoundingClientRect(),rect=cell.getBoundingClientRect();
       const header=viewport.querySelector('thead')?.getBoundingClientRect().height||32;
       const fixed=cell===row.children[0]?0:row.children[0].getBoundingClientRect().width;
@@ -104,14 +110,23 @@ export function ImportReview({client,scopeSignal,sourceId,memberPath,reserveIssu
         behavior:window.matchMedia?.('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
     });});
     return ()=>{cancelAnimationFrame(frame);cancelAnimationFrame(settled);};
-  },[data,scopeSignal]);
+  },[data,exactRecord,focusRecord,scopeSignal]);
   if(scopeSignal.aborted)return null;
   const covered=new Set(baseColumns.map(column=>column.field));covered.add('counter_name');covered.add('counter_account');
+  const coveredByBase = (cell: ImportOriginalCell) => cell.fields.some(field => covered.has(field));
   const knownColumns=discovered.current.cells;
-  for(const row of data?.items||[])for(const cell of row.original||[])if(!knownColumns.some(existing=>existing.column===cell.column&&existing.header===cell.header))knownColumns.push({...cell,value:''});
+  for (const row of data?.items || []) {
+    for (const cell of row.original || []) {
+      const index = knownColumns.findIndex(existing => existing.column === cell.column && existing.header === cell.header);
+      if (index < 0) knownColumns.push({...cell, value: ''});
+      else if (coveredByBase(knownColumns[index]) && !coveredByBase(cell)) {
+        knownColumns[index] = {...cell, value: ''};
+      }
+    }
+  }
   const sourceOnly=counts?.accepted===0&&knownColumns.length>0;
   const base=sourceOnly?[baseColumns[0]]:baseColumns;
-  const extras=sourceOnly?knownColumns:knownColumns.filter(cell=>!cell.fields.some(field=>covered.has(field)));
+  const extras=sourceOnly?knownColumns:knownColumns.filter(cell=>!coveredByBase(cell));
   const columns=[...base,...extras.map(cell=>({field:`original:${cell.column}:${cell.header}`,heading:sourceOnly?cell.header:`原始·${cell.header}`,width:180,index:-2}))];
   const setView=(view:ImportReviewPage['view'])=>{hide();setQuery({view,page:1,...(view!=='accepted'?{issueIndex:1}:{})});};
   const navigate=(delta:number)=>{
@@ -153,11 +168,13 @@ export function ImportReview({client,scopeSignal,sourceId,memberPath,reserveIssu
         </td></tr>)}
       {data?.items.map(row=>{
         const values=row.preview?previewCells(row.preview):null,problems=problemFields(row),bad=needsReview(row);
-        return <tr key={row.record_no} data-record={row.record_no} data-focused={row.record_no===data.issue?.record_no} data-review={bad||undefined}>
+        const located = row.record_no === exactRecord;
+        return <tr key={row.record_no} data-record={row.record_no} data-focused={row.record_no===focusRecord} data-review={bad||undefined}
+          tabIndex={located ? -1 : undefined} aria-label={located ? `原始第 ${row.source_row} 行` : undefined}>
           {columns.map((column,index)=>{
             if(index===0)return <td key="row" className="ft-review-row-number" data-fit-cell="true">{bad&&<button type="button" className="ft-row-issue" aria-label={`原始第 ${row.source_row} 行：${reasons(row).map(feedbackReason).join('；')}`} onPointerEnter={event=>show(event.currentTarget,row)} onFocus={event=>show(event.currentTarget,row)} onPointerLeave={leave} onBlur={event=>{delete event.currentTarget.dataset.ftValueDismissed;if(!(event.relatedTarget as HTMLElement|null)?.closest('.ft-value-popover'))hide();}} onClick={event=>show(event.currentTarget,row,true)}><ImportIcon name="import-circle-alert"/></button>}<ImportCellValue>{row.source_row}</ImportCellValue>{row.disposition==='duplicate'&&<span className="ft-row-disposition">重复</span>}{!bad&&!['imported','duplicate'].includes(row.disposition)&&<span className="ft-row-disposition">{row.disposition==='removed'?'已移除':'未计入'}</span>}</td>;
             if(!values&&!row.original)return index===1?<td key="unavailable" colSpan={columns.length-1}>原始单元格不可用</td>:null;
-            const original=column.index===-2?row.original?.find(cell=>cell.column===extras[index-base.length].column&&cell.header===extras[index-base.length].header):undefined;
+            const original=column.index===-2?row.original?.find(cell=>cell.column===extras[index-base.length].column&&cell.header===extras[index-base.length].header&&(sourceOnly||!coveredByBase(cell))):undefined;
             const value=column.index===-2?(original?cellText(original):'—'):column.index>=0&&values?values[column.index]:rawValue(row,column.field,column.heading);
             const problem=bad&&(original?original.fields.some(field=>problems.has(field)):problems.has(column.field));
             return <td key={column.field} data-problem={problem||undefined} data-fit-text={!values||column.index<0||undefined} className={!sourceOnly&&moneyColumns.includes(index)?'ft-money':undefined}><ImportCellValue fullValue={problem?cellIssueText(row,column.field,original):undefined}>{value}</ImportCellValue></td>;

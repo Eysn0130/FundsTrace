@@ -426,6 +426,11 @@ create table if not exists resolution_subject_aliases (
     case_id integer not null, raw_account varchar not null, account varchar not null,
     primary key (case_id, raw_account)
 );
+create table if not exists resolution_opening_holders (
+    case_id integer not null, card_number varchar not null, bank varchar not null, holder_name varchar not null,
+    source_id varchar not null, member_path varchar not null, source_row bigint not null, record_no bigint not null,
+    primary key (case_id, card_number, bank, holder_name)
+);
 
 create table if not exists import_file_gc (
     import_id varchar primary key,
