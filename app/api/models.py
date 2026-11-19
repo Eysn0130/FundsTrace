@@ -311,6 +311,7 @@ class FeedbackSummary(ContractModel):
 
 
 class TableSummary(ContractModel):
+    header_plan_sha256: str | None = None
     unsupported_attachments: int = 0
     non_business_attachments: int = 0
     profile: str

@@ -76,7 +76,11 @@ def test_one_envelope_binding_preserves_every_plan_value(monkeypatch, profile, k
     with monkeypatch.context() as old:
         old.setattr(table_import, "parse", eager_parser(table_import.parse))
         expected = frozen_plan(content, profile)
-    assert len(calls) == (1 if kind == "auxiliary-only" else 1 + sum(member["role"] == "table" for member in expected["members"]))
+    # New opening-account members use the sheet parser so it can retain
+    # original columns and reject a competing later financial header.
+    opening_members = {"auxiliary-only": 1, "omitted-bank": 1, "parent-child": 1, "nested": 3}
+    opening_calls = opening_members.get(kind, 0) if profile in table_import.BANK_AMOUNT_DEFAULT_PROFILES else 0
+    assert len(calls) == 1 + opening_calls + sum(member["role"] == "table" for member in expected["members"])
     assert actual == expected
     assert all(type(record["details"]) is dict for record in actual["records"])
     if kind in {"cancellation", "duplicate-bytes", "nested"}:

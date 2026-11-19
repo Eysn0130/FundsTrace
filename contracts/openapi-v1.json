@@ -4654,6 +4654,17 @@
             "title": "Excluded Flows",
             "type": "integer"
           },
+          "header_plan_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Header Plan Sha256"
+          },
           "mapping_evidence": {
             "items": {
               "additionalProperties": {
@@ -7670,6 +7681,24 @@
                 }
               ],
               "title": "Issue Index"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_row",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Row"
             }
           }
         ],

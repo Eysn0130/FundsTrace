@@ -603,7 +603,7 @@ def _table_journals(check, paths):
         left join flows v on v.id=f.flow_id where s.row_kind='table_record'
         order by r.source_id,r.record_no""")
     sequences, counts, evidence_records, known_facts, current_facts = {}, {}, {}, {}, {}
-    header_regions, previous_source_rows = {}, {}
+    header_regions, previous_source_rows, direction_regions = {}, {}, {}
     accepted = ("imported", "duplicate")
     dispositions = (*accepted, "unresolved", "non_monetary", "non_transaction", "auxiliary", "removed")
     while rows := cursor.fetchmany(1024):
@@ -633,6 +633,13 @@ def _table_journals(check, paths):
             # are retained with their own disposition. A sequence declaration
             # cannot move an entry into another table region during a replay.
             previous_row = previous_source_rows.get((source_id, path), 0)
+            region_key = source_id, path
+            codebook = direction_regions.get(region_key)
+            if codebook is not None:
+                if source_row > codebook["last_row"]:
+                    direction_regions.pop(region_key)
+                elif reason in {"repeated_header", "ambiguous_region_header"} or source_row == previous_row + 2:
+                    _invalid("方向码声明越过来源表头区域")
             if role == "table" and source_row == previous_row + 2:
                 header_regions[source_id, path] = source_row - 1
             if reason == "repeated_header":
@@ -645,6 +652,8 @@ def _table_journals(check, paths):
                 _invalid("自动表格语义元数据过大或无效")
             details = json.loads(details_json)
             detail_fields = table_import.DETAILS_FIELDS
+            if source_profiles[source_id] in table_import.BANK_AMOUNT_DEFAULT_PROFILES:
+                detail_fields |= table_import.BANK_AMOUNT_DETAILS_FIELDS
             if ledger_rule:
                 detail_fields |= {source_ledger.FIELD}
             if source_profiles[source_id] in bank_posting_pairs.PROFILES:
@@ -683,6 +692,13 @@ def _table_journals(check, paths):
                     _invalid("原始观察与解析版本不符")
                 if ledger_entry["header_scope"] != header_regions.get((source_id, path)):
                     _invalid("来源记账范围与来源表头不一致")
+                proof = ledger_entry.get(table_import.table_sign_declarations.DIRECTION_CODE_FIELD)
+                if proof is not None:
+                    if (source_profiles[source_id] not in table_import.DIRECTION_CODE_PROFILES
+                            or not proof["header_row"] < source_row <= proof["last_row"] <= row_count + 1
+                            or max(proof["direction_column"], proof["declaration_column"]) > table_import.MAX_COLUMNS
+                            or direction_regions.setdefault(region_key, proof) != proof):
+                        _invalid("方向码声明与来源区域或解析版本不一致")
                 if flow_id is not None and (ledger_entry["kind"] == "context"
                         or table_import.flow_digest(ledger_entry["row"]) != table_import.flow_digest(dict(zip(flow_fields, facts)))
                         or any(ledger_entry["row"][field] != dict(zip(flow_fields, facts)).get(field, "")
@@ -1299,7 +1315,7 @@ def delete_package_case(case_id):
                     shutil.rmtree(photo_dir)
                 deleted = con.execute("select count(*) from flows where case_id=?", [case_id]).fetchone()[0]
                 con.execute("insert into import_file_gc(import_id,suffix,sha256,delete_after) select import_id,suffix,sha256,current_timestamp at time zone 'UTC' from import_sessions where case_id=? and source_state='retained' on conflict(import_id) do nothing", [case_id])
-                for table in ("source_ledger_index", "flow_source_cards", "analysis_state", "event_projection_cache_state", "event_observation_cache", "event_state", "resolved_events", "event_members", "evidence_sources", "import_source_operations", "import_materials", "import_material_groups", "resolution_state", "resolution_revisions", "resolution_entities", "resolved_endpoints", "resolution_subject_aliases", "import_records", "import_members", "flow_sources", "import_sources", "import_sessions"):
+                for table in ("source_ledger_index", "flow_source_cards", "analysis_state", "event_projection_cache_state", "event_observation_cache", "event_state", "resolved_events", "event_members", "evidence_sources", "import_source_operations", "import_materials", "import_material_groups", "resolution_state", "resolution_revisions", "resolution_entities", "resolved_endpoints", "resolution_subject_aliases", "resolution_opening_holders", "import_records", "import_members", "flow_sources", "import_sources", "import_sessions"):
                     con.execute(f"delete from {table} where case_id=?", [case_id])
                 for table in CASE_PKG_TABLES:
                     con.execute(f"delete from {table} where case_id=?", [case_id])

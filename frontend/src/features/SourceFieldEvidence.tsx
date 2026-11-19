@@ -1,6 +1,6 @@
 const roles: Record<string, string> = {
   source_transaction_id: '主交易标识', independent_voucher_reference: '独立凭证', independent_voucher_type: '凭证种类', row_time_role_declaration: '本行来源的时间角色声明',
-  trade_no: '交易编号候选', amount: '交易金额', direction: '收支方向', summary: '摘要', remark: '备注',
+  trade_no: '交易编号候选', amount: '交易金额', amount_unit: '交易金额单位', currency: '币种', balance: '余额', balance_unit: '余额单位', direction: '收支方向', summary: '摘要', remark: '备注',
   source_slip_reference: '传票号', source_log_reference: '日志号',
   self_account: '本方账号', counter_account: '对手账号', account: '账号', card: '卡号',
 };
@@ -16,6 +16,13 @@ type SinglePostingProof = {
 };
 
 export function SourceFieldEvidence({ details, expanded = false }: { details?: Record<string, string>; expanded?: boolean }) {
+  let opening: { card: string; name: string } | undefined;
+  try {
+    const value = JSON.parse(details?.resolution_evidence || 'null');
+    if (value?.role === 'account' && typeof value.card === 'string' && value.card && typeof value.name === 'string' && value.name) {
+      opening = { card: value.card, name: value.name };
+    }
+  } catch { /* Historical records may omit the typed opening declaration. */ }
   let times: { role: string; column: string; column_index: number; raw: string; wall_clock: string; offset: string | null; utc: string | null }[] = [];
   try {
     const value = JSON.parse(details?.source_time_evidence || 'null');
@@ -63,12 +70,13 @@ export function SourceFieldEvidence({ details, expanded = false }: { details?: R
     || details?.current_event_state === 'unknown' && details?.current_event_reason?.startsWith('single_posting_'));
   const incomparable = details?.current_event_reason === 'time_basis_incomparable';
   const conflict = details?.current_event_state === 'conflict';
+  const currencyBasis = details?.currency_basis, amountUnitBasis = details?.amount_unit_basis;
   if (pendingPair || pendingSingle || conflict || incomparable) single = null;
   if (single || pendingPair || pendingSingle || conflict || incomparable) pair = null;
-  if (!items.length && !declaration && !pair && !single && !pendingPair && !pendingSingle && !times.length && !details?.source_time_evidence_limited && !details?.source_field_evidence_limited && !conflict && !incomparable) return null;
-  return <details open={expanded}><summary>来源字段与校验依据</summary>{pendingPair && !singleContext && <p>双侧来源存在对应线索，关联依据不足；资金笔数和金额待核对。原流水、各自余额与资金范围保留。</p>}{pendingSingle && <p>独立过账证据尚不足；原始记录和余额保留，不据此确认资金交易笔数。</p>}{incomparable && <p>有区与未标时区的来源时间不可比较，尚不能确定是否同一笔；两份来源原值保留，累计金额待核对。</p>}{conflict && <p>{singleContext ? '当前过账证据存在矛盾，暂不计入有效资金统计；原始记录与原值保留。' : '同笔关联资料存在矛盾，暂不计入有效资金统计；原始记录与原值保留。'}</p>}<ul>{items.map((item, index) => <li key={index}>
+  if (!items.length && !declaration && !pair && !single && !pendingPair && !pendingSingle && !times.length && !details?.source_time_evidence_limited && !details?.source_field_evidence_limited && !conflict && !incomparable && !currencyBasis && !amountUnitBasis && !opening) return null;
+  return <details open={expanded}><summary>来源字段与校验依据</summary>{opening && <dl><div><dt>来源卡号</dt><dd><code>{opening.card}</code></dd></div><div><dt>来源开户户名</dt><dd>{opening.name}</dd></div></dl>}{currencyBasis && <p>{currencyBasis}</p>}{amountUnitBasis && <p>{amountUnitBasis}</p>}{pendingPair && !singleContext && <p>双侧来源存在对应线索，关联依据不足；资金笔数和金额待核对。原流水、各自余额与资金范围保留。</p>}{pendingSingle && <p>独立过账证据尚不足；原始记录和余额保留，不据此确认资金交易笔数。</p>}{incomparable && <p>有区与未标时区的来源时间不可比较，尚不能确定是否同一笔；两份来源原值保留，累计金额待核对。</p>}{conflict && <p>{singleContext ? '当前过账证据存在矛盾，暂不计入有效资金统计；原始记录与原值保留。' : '同笔关联资料存在矛盾，暂不计入有效资金统计；原始记录与原值保留。'}</p>}{items.length > 0 && <ul>{items.map((item, index) => <li key={index}>
     {roles[item.role] || item.role} · 第 {item.column_index} 列「{item.column}」 · 原值 <code>{JSON.stringify(item.raw)}</code>
-  </li>)}</ul>{times.length > 0 && <><p>来源时间与角色；无偏移的时间不推定设备时区，同一瞬间不证明同笔交易。</p><ul>{times.map((item, index) => <li key={index}>
+  </li>)}</ul>}{times.length > 0 && <><p>来源时间与角色；无偏移的时间不推定设备时区，同一瞬间不证明同笔交易。</p><ul>{times.map((item, index) => <li key={index}>
     {item.role === 'posting' ? '记账时间' : item.role === 'receipt' ? '受理时间' : item.role === 'settlement' ? '结算时间' : item.role === 'transaction' ? '交易时间' : '来源时间（角色未明确）'} · 第 {item.column_index} 列「{item.column}」 · 原值 <code>{JSON.stringify(item.raw)}</code>
     {' · 壁钟 '}<code>{JSON.stringify(item.wall_clock)}</code>{' · 偏移 '}{item.offset === null ? '未提供' : <code>{item.offset}</code>}
     {' · UTC瞬间 '}{item.utc === null ? '未确定' : <code>{item.utc}</code>}

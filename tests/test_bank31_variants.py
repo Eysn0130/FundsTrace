@@ -73,7 +73,7 @@ def imported(client, cid, content, archive):
 
 @pytest.mark.parametrize("archive", [False, True], ids=["csv", "zip"])
 @pytest.mark.parametrize("kind", ["drop-empty-ip", "empty-extra"])
-def test_blank_source_currency_in_bank31_variants_is_excluded_from_funds_and_report(client, make_case, archive, kind):
+def test_blank_source_currency_in_bank31_variants_keeps_currency_totals_separate(client, make_case, archive, kind):
     headers, source_row = csv.reader(io.StringIO(data(kind).decode("utf-8-sig")))
     known = dict(zip(headers, source_row))
     missing = {**known, "交易金额": "12.34", "交易币种": ""}
@@ -96,14 +96,18 @@ def test_blank_source_currency_in_bank31_variants_is_excluded_from_funds_and_rep
     report_response = client.get(base + "/report", params={"member_path": member})
     assert report_response.status_code == 200, report_response.text
     report = report_response.json()
-    assert (view["stats"]["ok"], job["result"]["ok"]) == (1, 1)
+    assert (view["stats"]["ok"], job["result"]["ok"]) == (2, 2)
     assert [(r["source_row"], r["disposition"], r["reason_code"]) for r in records] == [
-        (2, "unresolved", "invalid_currency"), (3, "imported", "transaction_valid")]
-    assert records[0]["flow_id"] is None
-    assert [(row["trade_no"], row["currency"], row["amount"]) for row in page["items"]] == [("P002", "JPY", "12.34")]
-    assert report["summary"]["transaction_count"] == 1
-    assert report["summary"]["out_amount"] == "12.34"
-    assert report["quality"]["dispositions"] == {"imported": 1, "unresolved": 1}
+        (2, "imported", "transaction_valid"), (3, "imported", "transaction_valid")]
+    assert records[0]["flow_id"] is not None
+    assert {(row["trade_no"], row["currency"], row["amount"]) for row in page["items"]} == {
+        ("P001", "CNY", "12.34"), ("P002", "JPY", "12.34")}
+    assert set(report["currencies"]) == {"CNY", "JPY"}
+    for currency in ("CNY", "JPY"):
+        selected = client.get(base + "/report", params={"member_path": member, "currency": currency}).json()
+        assert selected["summary"]["transaction_count"] == 1
+        assert selected["summary"]["out_amount"] == "12.34"
+    assert report["quality"]["dispositions"] == {"imported": 2}
     assert client.get(f"/api/v1/cases/{cid}/sources/{view['import_id']}/file").content == content
 
 
@@ -113,7 +117,7 @@ def test_manual_reference_selection_cannot_authorize_nonempty_bank31_extension(c
     response = client.post(base + "/preview", files={"file": ("source.csv", data("nonempty-extra"))})
     assert response.status_code == 200, response.text
     view = response.json()
-    assert (view["table_summary"]["profile"], view["stats"]["ok"]) == ("funds-trace-table-v78", 0)
+    assert (view["table_summary"]["profile"], view["stats"]["ok"]) == ("funds-trace-table-v81", 0)
     response = client.post(f"{base}/{view['import_id']}/preview", json={
         "mode": view["mode"], "mapping": view["mapping"], "reference_policy": "transaction-reference-v1"})
     assert response.status_code == 200, response.text
@@ -180,12 +184,12 @@ def preview_extension_currency(client, cid, route):
 
 
 @pytest.mark.parametrize("route,profile", [
-    ("csv", "funds-trace-table-v78"),
-    ("xls", "funds-trace-table-v79"),
-    ("xlsx-evidence", "funds-trace-table-v80"),
-    ("zip", "funds-trace-table-archive-v66"),
-    ("directory", "funds-trace-table-archive-v67"),
-    ("xls-zip", "funds-trace-table-archive-v68"),
+    ("csv", "funds-trace-table-v81"),
+    ("xls", "funds-trace-table-v82"),
+    ("xlsx-evidence", "funds-trace-table-v83"),
+    ("zip", "funds-trace-table-archive-v69"),
+    ("directory", "funds-trace-table-archive-v70"),
+    ("xls-zip", "funds-trace-table-archive-v71"),
 ])
 def test_bank31_conflicting_extension_preserves_source_currency_after_repreview(client, make_case, route, profile):
     cid = make_case("SYN bank31 source currency with extension")
@@ -262,7 +266,7 @@ def test_frozen_bank31_extension_currency_survives_reopen_and_package(database, 
         assert client.get(old_url).json() == old_journal
         current_url = f"{case}/sources/{current['import_id']}/report"
         current_journal = client.get(current_url).json()
-        assert current_journal["profile"] == ("funds-trace-table-v78" if route == "csv" else "funds-trace-table-archive-v66")
+        assert current_journal["profile"] == ("funds-trace-table-v81" if route == "csv" else "funds-trace-table-archive-v69")
 
         journals = {journal["profile"]: journal for journal in (old_journal, current_journal)}
         for profile, journal in journals.items():
@@ -376,9 +380,9 @@ def test_empty_ancillary_columns_are_optional_without_changing_transaction_roles
         "P001", "00000001", "00000002", "Synthetic", "SYN original summary")
 
 
-@pytest.mark.parametrize("suffix,archive,profile", [(".xlsx", False, "funds-trace-table-v78"),
-                                                  (".xls", False, "funds-trace-table-v79"),
-                                                  (".xls", True, "funds-trace-table-archive-v68")])
+@pytest.mark.parametrize("suffix,archive,profile", [(".xlsx", False, "funds-trace-table-v81"),
+                                                  (".xls", False, "funds-trace-table-v82"),
+                                                  (".xls", True, "funds-trace-table-archive-v71")])
 def test_bank31_optional_shape_reaches_current_workbook_entrypoints(client, make_case, suffix, archive, profile):
     from test_table_multisheet_append import encoded
     matrix = list(csv.reader(io.StringIO(data("drop-empty-ip").decode("utf-8-sig"))))

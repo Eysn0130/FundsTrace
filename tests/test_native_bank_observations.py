@@ -101,7 +101,7 @@ def test_native28_old_reference_receipt_interpretation_is_preserved():
 
 
 @pytest.mark.parametrize("kind", ["csv", "zip"])
-def test_registered_native31_missing_currency_cannot_become_cny_funds(client, database, make_case, kind):
+def test_registered_native31_defaults_blank_currency_with_original_evidence(client, database, make_case, kind):
     rows = [row31(**{"交易流水号": "SYN-NO-CURRENCY", "交易币种": ""}),
             row31(**{"交易流水号": "SYN-NO-MOVEMENT", "交易金额": "0.00", "交易币种": ""}),
             row31(**{"交易流水号": "SYN-DECLARED-JPY", "交易币种": "JPY"})]
@@ -110,14 +110,15 @@ def test_registered_native31_missing_currency_cannot_become_cny_funds(client, da
     _, job = add_source(client, cid, raw, name)
     base = f"/api/v1/cases/{cid}"
     items = client.get(base + f"/sources/{job['result']['source_id']}/report").json()["items"]
-    assert [r["reason_code"] for r in items] == ["invalid_currency", "zero_amount", "transaction_valid"]
-    assert [r["disposition"] for r in items] == ["unresolved", "non_monetary", "imported"]
-    assert items[0]["flow_id"] is None
+    assert [r["reason_code"] for r in items] == ["transaction_valid", "zero_amount", "transaction_valid"]
+    assert [r["disposition"] for r in items] == ["imported", "non_monetary", "imported"]
+    assert items[0]["flow_id"] is not None
     for record in items[:2]:
-        assert json.loads(record["details"]["source_ledger_evidence"])["row"]["currency"] == ""
-        assert record["details"]["currency_basis"] == "来源币种未明确，按原始记录保留"
-    flow, = database.q_raw("select trade_no,currency from source_effective_flows where case_id=?", [cid])
-    assert flow["trade_no"] == "SYN-DECLARED-JPY" and flow["currency"] == "JPY"
+        assert json.loads(record["details"]["source_ledger_evidence"])["source_currency"] == ""
+        assert record["details"]["currency_basis"] == "银行交易明细币种空白，按规则使用CNY"
+    flows = database.q_raw("select trade_no,currency from source_effective_flows where case_id=?", [cid])
+    assert {(flow["trade_no"], flow["currency"]) for flow in flows} == {
+        ("SYN-NO-CURRENCY", "CNY"), ("SYN-DECLARED-JPY", "JPY")}
 
 
 @pytest.mark.parametrize("kind", ["csv", "zip"])
@@ -134,7 +135,7 @@ def test_native28_zero_identifier_and_currency_are_literal_source_fields(client,
     flows = client.get(base + "/flows", params={"granularity": "observations"}).json()["items"]
     assert {item["trade_no"]: (item["amount"], item["currency"]) for item in flows} == {
         "0": ("10.00", "CNY"), "SYN-USD": ("2.34", "USD"), "SYN-EUR": ("3.45", "EUR"),
-        "SYN-NO-DIR": ("7.00", "CNY")}
+        "SYN-NO-CCY": ("6.00", "CNY"), "SYN-NO-DIR": ("7.00", "CNY")}
     unknown = next(item for item in flows if item["trade_no"] == "SYN-NO-DIR")
     assert unknown["raw_self_account"] == "SYN-A"
     assert all(unknown[side + "_" + field] == "" for side in ("payer", "payee")
@@ -146,21 +147,21 @@ def test_native28_zero_identifier_and_currency_are_literal_source_fields(client,
     assert (info["economic_effect"], info["economic_amount"]) == ("unknown", None)
     records = client.get(base + f"/sources/{job['result']['source_id']}/report").json()["items"]
     assert records[0]["details"]["reported_status"] == "unknown"
-    assert records[3]["reason_code"] == "invalid_currency"
-    assert records[3]["disposition"] == "unresolved" and records[3]["flow_id"] is None
+    assert records[3]["reason_code"] == "transaction_valid"
+    assert records[3]["disposition"] == "imported" and records[3]["flow_id"] is not None
     assert records[4]["reason_code"] == "missing_direction"
-    assert json.loads(records[3]["details"]["source_ledger_evidence"])["row"]["currency"] == ""
+    assert json.loads(records[3]["details"]["source_ledger_evidence"])["source_currency"] == ""
     stats = client.get(base + "/stats").json()
     assert stats["amount_total"] is None
     assert {item["currency"]: item["amount"] for item in stats["amount_totals"]} == {
-        "CNY": "10.00", "USD": "2.34", "EUR": "3.45"}
+        "CNY": "16.00", "USD": "2.34", "EUR": "3.45"}
     track(client, cid, [unknown])
     result = graph(client, cid)
     assert result["edges"] == [] and result["transaction_count"] == 0
     assert client.get(base + f"/sources/{job['result']['source_id']}/file").content == raw
 
 
-@pytest.mark.parametrize("kind,profile", [("csv", "funds-trace-table-v69"), ("zip", "funds-trace-table-archive-v66")])
+@pytest.mark.parametrize("kind,profile", [("csv", "funds-trace-table-v81"), ("zip", "funds-trace-table-archive-v69")])
 def test_public_native28_preview_decodes_each_ledger_observation_once(client, make_case, monkeypatch, kind, profile):
     cid = make_case("SYN source observation reuse")
     stamp = "2026-02-03T00:10:00.123456+08:00"
@@ -169,7 +170,7 @@ def test_public_native28_preview_decodes_each_ledger_observation_once(client, ma
         transaction(**{"交易流水号": "SYN-NEUTRAL", "收付标志": ""}),
         transaction(**{"交易流水号": "SYN-NO-EVIDENCE", "交易金额": ""}),
         {header: header for header in feedback_import.COLUMNS},
-        transaction(**{"交易流水号": "SYN-CONTEXT", "交易币种": ""}),
+        transaction(**{"交易流水号": "SYN-CONTEXT", "交易币种": "SYN-INVALID-CURRENCY"}),
     ], kind)
     loads = Counter()
 

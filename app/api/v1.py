@@ -1,7 +1,7 @@
 """Stable v1 routes; the legacy /api endpoints remain independently mounted."""
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, File, Path, Query, UploadFile
+from fastapi import APIRouter, File, Path, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -149,8 +149,9 @@ def records(case_id: CaseId, source_id: ImportId, page: int = Query(1, ge=1, le=
             operation_id='v1_import_review')
 def review(case_id: CaseId, source_id: ImportId, member_path: str = Query(..., min_length=1, max_length=4096),
            view: Literal['all', 'review', 'accepted'] = 'all', page: int = Query(1, ge=1, le=2_147_483_647),
-           page_size: int = Query(50, ge=1, le=50), issue_index: int | None = Query(None, ge=1, le=2_147_483_647)):
-    return imports.review_records(case_id, source_id, member_path, view, page, page_size, issue_index)
+           page_size: int = Query(50, ge=1, le=50), issue_index: int | None = Query(None, ge=1, le=2_147_483_647),
+           source_row: int | None = Query(None, ge=1, le=2_147_483_647)):
+    return imports.review_records(case_id, source_id, member_path, view, page, page_size, issue_index, source_row)
 
 
 @router.get('/cases/{case_id}/imports/{source_id}/report', response_model=ImportReport, operation_id='v1_import_funds_report')
@@ -233,18 +234,18 @@ def resolution(case_id: CaseId):
 
 
 @router.post("/cases/{case_id}/imports/directory/preview", response_model=ImportPreview, operation_id="v1_directory_preview")
-async def directory_upload(case_id: CaseId, files: list[UploadFile] = File(...)):
-    return await imports.upload_directory(case_id, files)
+async def directory_upload(case_id: CaseId, request: Request, files: list[UploadFile] = File(...)):
+    return await imports.upload_directory(case_id, files, disconnected=request.is_disconnected)
 
 
 @router.post("/cases/{case_id}/imports/preview", response_model=ImportPreview, operation_id="v1_upload_preview")
-async def upload(case_id: CaseId, file: UploadFile = File(...)):
-    return await imports.upload(case_id, file)
+async def upload(case_id: CaseId, request: Request, file: UploadFile = File(...)):
+    return await imports.upload(case_id, file, disconnected=request.is_disconnected)
 
 
 @router.post("/cases/{case_id}/imports/{import_id}/preview", response_model=ImportPreview, operation_id="v1_repreview")
-def repreview(case_id: CaseId, import_id: ImportId, body: RepreviewRequest):
-    return imports.repreview(case_id, import_id, body)
+async def repreview(case_id: CaseId, import_id: ImportId, body: RepreviewRequest, request: Request):
+    return await imports.preview_again(case_id, import_id, body, disconnected=request.is_disconnected)
 
 
 @router.post("/cases/{case_id}/imports/{import_id}/commit", response_model=CommitStarted, operation_id="v1_commit_import")

@@ -44,6 +44,8 @@ describe('HTTP failure status', () => {
     const signal=new AbortController().signal;
     await api.importReview('1','SYN/source','nested/data.csv',{view:'review',page:2,issueIndex:5},signal);
     expect(fetcher).toHaveBeenCalledWith('/api/v1/cases/1/imports/SYN%2Fsource/review?member_path=nested%2Fdata.csv&view=review&page=2&page_size=50&issue_index=5',{signal});
+    await api.importReview('1', 'SYN/source', 'nested/data.csv', { view: 'all', page: 1, sourceRow: 105, issueIndex: 5 }, signal);
+    expect(fetcher).toHaveBeenLastCalledWith('/api/v1/cases/1/imports/SYN%2Fsource/review?member_path=nested%2Fdata.csv&view=all&page=1&page_size=50&source_row=105', { signal });
   });
   it('reads recent history and a known older receipt through the bound case', async () => {
     const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ case_id: '4', items: [] }) });

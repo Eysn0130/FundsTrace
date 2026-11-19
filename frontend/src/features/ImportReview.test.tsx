@@ -70,6 +70,13 @@ it('clears stale rows on a new member and discards late replies and revocation',
   act(()=>scope.abort());expect(screen.queryByRole('region',{name:'来源数据阅览'})).toBeNull();
 });
 
+it('rejects a source-row response with the same member but another physical row', async () => {
+  const own = client(); own.importReview = vi.fn(async () => ({ ...page(), issue: null }));
+  render(<ImportReview client={own} scopeSignal={new AbortController().signal} sourceId="SYN-SOURCE" memberPath="table.csv" startSourceRow={105} />);
+  expect((await screen.findByRole('alert')).textContent).toContain('来源记录与定位行不一致');
+  expect(screen.queryByText('原始坏日期')).toBeNull();
+});
+
 it('does not turn a missing original into zero values or classify normal exclusions as problems',async()=>{
   const own=client();own.importReview=vi.fn(async():Promise<ImportReviewPage>=>({...page(),counts:{all:3,review:0,accepted:2},issue:null,original_error:'原件不可用',items:[{...good,disposition:'duplicate',original:null},{...good,record_no:2,source_row:3,disposition:'non_monetary',original:null}],total:3}));
   render(<ImportReview client={own} scopeSignal={new AbortController().signal} sourceId="SYN-SOURCE" memberPath="table.csv"/>);
