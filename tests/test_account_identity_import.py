@@ -3,6 +3,8 @@ import io
 
 import pandas as pd
 import pytest
+from openpyxl import Workbook
+from openpyxl.styles import Font
 
 from app import main
 from test_cases import insert_flow
@@ -20,6 +22,14 @@ def identity_file(rows, extension="csv"):
 def upload(client, case_id, rows, extension="csv"):
     return client.post("/api/account-ids/import", data={"case_id": case_id}, files={
         "file": (f"synthetic-identities.{extension}", identity_file(rows, extension)),
+    })
+
+
+def upload_workbook(client, case_id, workbook):
+    output = io.BytesIO()
+    workbook.save(output)
+    return client.post("/api/account-ids/import", data={"case_id": case_id}, files={
+        "file": ("synthetic-identities.xlsx", output.getvalue()),
     })
 
 
@@ -112,6 +122,85 @@ def test_supported_text_and_xlsx_imports_preserve_leading_zeros_and_long_account
     assert response.status_code == 200, response.text
     assert response.json()["imported"] == 2
     assert identities(client, case_id) == dict(rows)
+    assert_uploads_clean(database)
+
+
+def test_workbook_skips_wide_notes_and_imports_first_matching_sheet(client, database, make_case):
+    case_id = make_case()
+    workbook = Workbook()
+    workbook.active.cell(row=1, column=257, value="合成说明")
+    first = workbook.create_sheet("第一份对照表")
+    first.append(["卡号", "身份证号"])
+    first.append(["SYN-FIRST", "111111111111111"])
+    second = workbook.create_sheet("第二份对照表")
+    second.append(["卡号", "身份证号"])
+    second.append(["SYN-SECOND", "222222222222222"])
+
+    response = upload_workbook(client, case_id, workbook)
+
+    assert response.status_code == 200, response.text
+    assert identities(client, case_id) == {"SYN-FIRST": "111111111111111"}
+    assert_uploads_clean(database)
+
+
+def test_workbook_keeps_last_supported_column_with_blank_styled_tail(client, database, make_case):
+    case_id = make_case()
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.cell(row=30, column=1, value="卡号")
+    sheet.cell(row=30, column=256, value="身份证号")
+    sheet.cell(row=30, column=257).font = Font(bold=True)
+    sheet.cell(row=31, column=1, value="00012345678901234567890")
+    sheet.cell(row=31, column=256, value="111111111111111")
+    sheet.cell(row=31, column=258).font = Font(bold=True)
+
+    response = upload_workbook(client, case_id, workbook)
+
+    assert response.status_code == 200, response.text
+    assert identities(client, case_id) == {"00012345678901234567890": "111111111111111"}
+    assert_uploads_clean(database)
+
+
+def test_workbook_rejects_first_matching_header_beyond_column_limit(client, database, make_case):
+    case_id = make_case()
+    workbook = Workbook()
+    first = workbook.active
+    first.cell(row=1, column=257, value="卡号")
+    first.cell(row=1, column=258, value="身份证号")
+    first.cell(row=2, column=257, value="SYN-FIRST")
+    first.cell(row=2, column=258, value="111111111111111")
+    second = workbook.create_sheet("第二份对照表")
+    second.append(["卡号", "身份证号"])
+    second.append(["SYN-SECOND", "222222222222222"])
+
+    response = upload_workbook(client, case_id, workbook)
+
+    assert response.status_code == 400, response.text
+    assert "列数" in response.json()["detail"]
+    assert identities(client, case_id) == {}
+    assert_uploads_clean(database)
+
+
+def test_workbook_treats_excel_errors_as_empty_and_keeps_the_same_text(client, database, make_case):
+    case_id = make_case()
+    save_identity(client, case_id, "SYN-KEEP", "333333333333333")
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["卡号", "身份证号"])
+    sheet.append(["#DIV/0!", "111111111111111"])
+    sheet.append(["#DIV/0!", "222222222222222"])
+    sheet["A3"].data_type = "s"
+    sheet.append(["SYN-KEEP", "#VALUE!"])
+    sheet.append(["SYN-INVALID", "#VALUE!"])
+    sheet["B5"].data_type = "s"
+
+    response = upload_workbook(client, case_id, workbook)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True, "imported": 1, "invalid": 1, "blank_account": 1}
+    assert identities(client, case_id) == {
+        "#DIV/0!": "222222222222222", "SYN-KEEP": "333333333333333",
+    }
     assert_uploads_clean(database)
 
 

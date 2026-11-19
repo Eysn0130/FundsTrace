@@ -77,6 +77,15 @@ def require_case(case_id):
     return row[0]
 
 
+def _parquet_row_count(con, path):
+    return con.execute("select num_rows from parquet_file_metadata(?)", [str(path)]).fetchone()[0]
+
+
+def _require_export_budget(within_limit, detail):
+    if not within_limit:
+        raise HTTPException(409, f"{detail}，无法生成可导入的案件包")
+
+
 def export_package(case_id):
     # The lock spans every table and photo read, so writers cannot split the snapshot.
     with tempfile.TemporaryDirectory(prefix="fundcase-export-") as tmp, db.transaction() as con:
@@ -104,9 +113,23 @@ def export_package(case_id):
             encoded_meta=json.dumps(metadata,ensure_ascii=False,separators=(',',':')).encode('utf-8')
             if len(encoded_meta)>MAX_PACKAGE_META_BYTES:
                 raise HTTPException(409,'检材登记元数据超出案件包处理范围，无法生成完整案件包')
+            expanded_bytes = len(encoded_meta)
             archive.writestr("meta.json",encoded_meta)
+
+            def write_member(path, name):
+                nonlocal expanded_bytes
+                size = path.stat().st_size
+                _require_export_budget(size <= MAX_PACKAGE_MEMBER_BYTES, "ZIP 成员大小超出处理范围")
+                expanded_bytes += size
+                _require_export_budget(len(archive.infolist()) < MAX_PACKAGE_MEMBERS, "ZIP 成员数量超出处理范围")
+                _require_export_budget(expanded_bytes <= MAX_PACKAGE_EXPANDED_BYTES, "ZIP 展开大小超出处理范围")
+                with path.open("rb") as source, archive.open(name, "w") as target:
+                    shutil.copyfileobj(source, target, 1024 * 1024)
+                _require_export_budget(buf.tell() <= MAX_PACKAGE_BYTES, "压缩文件不能超过 512MiB")
+
             has_journals = any(con.execute(f"select 1 from {table} where case_id=? limit 1", [case_id]).fetchone()
                                for table in JOURNAL_PKG_COLS)
+            rows = 0
             for table, cols in _ALL_PKG_COLS.items():
                 if table == "flows" and has_zoned:
                     cols = ZONED_FLOW_COLS
@@ -118,7 +141,9 @@ def export_package(case_id):
                     continue
                 path = Path(tmp) / f"{table}.parquet"
                 con.sql(f"select {cols} from {table} where case_id = ?", params=[case_id]).write_parquet(str(path))
-                archive.writestr(path.name, path.read_bytes())
+                rows += _parquet_row_count(con, path)
+                _require_export_budget(rows <= MAX_PACKAGE_ROWS, "Parquet 总行数超出处理范围")
+                write_member(path, path.name)
             written = set()
             for row in db.q("select fname from account_photos where case_id = ?", [case_id]):
                 name = row["fname"]
@@ -128,8 +153,10 @@ def export_package(case_id):
                 if not path.is_file() or path.is_symlink():
                     raise HTTPException(409, "案件照片文件缺失，无法生成完整案件包")
                 if name not in written:
-                    archive.writestr(f"photos/{name}", path.read_bytes())
+                    write_member(path, f"photos/{name}")
                     written.add(name)
+        # The central directory and end record also count toward the input limit.
+        _require_export_budget(buf.tell() <= MAX_PACKAGE_BYTES, "压缩文件不能超过 512MiB")
         return buf.getvalue(), case_name
 
 
@@ -960,8 +987,7 @@ def _validate_package(content, directory):
         with duckdb.connect(config={"threads": 1, "memory_limit": "256MiB",
                                    "temp_directory": str(directory / "validation-spill"),
                                    "max_temp_directory_size": "2GiB"}) as check:
-            rows = sum(check.execute("select num_rows from parquet_file_metadata(?)", [str(path)]).fetchone()[0]
-                       for path in paths.values())
+            rows = sum(_parquet_row_count(check, path) for path in paths.values())
             if rows > MAX_PACKAGE_ROWS:
                 _invalid("Parquet 总行数超出处理范围")
             for table, path in paths.items():

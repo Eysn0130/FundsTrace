@@ -3,6 +3,8 @@ import type { ImportItem } from './import-workflow.mjs';
 export interface ImportTreeNode {
   id: string; itemId: string; name: string; path: string; kind: 'file' | 'folder' | 'archive' | 'sheet';
   children: ImportTreeNode[]; memberPaths: string[]; fileCount: number; dispositions: Record<string, number>;
+  attachment?: boolean;
+  containsAttachments?: boolean;
   sizeBytes?: number;
   dataRows?: number;
 }
@@ -49,11 +51,17 @@ export function buildImportTree(items: ImportItem[]): ImportTreeNode[] {
     const outcomes = new Map((item.job?.member_results ?? []).map(row => [row.member_path, row.dispositions]));
     function finish(node: ImportTreeNode): number {
       if (node.kind === 'file' && node.children.length === 1 && node.children[0].kind === 'sheet') node.children = [];
+      const soleMember = node.memberPaths.length === 1 ? membersByPath.get(node.memberPaths[0]) : undefined;
+      if (!node.children.length && soleMember?.role === 'attachment') {
+        node.kind = 'file';
+        node.attachment = true;
+      }
       const descendants = node.children.reduce((total, child) => total + finish(child), 0);
       node.fileCount = node.kind === 'file' ? 1 : node.children.length ? descendants : node.kind === 'sheet' ? 1 : 0;
       for (const path of node.memberPaths) {
         const member = membersByPath.get(path);
-        if (member && member.role !== 'attachment') node.dataRows = (node.dataRows ?? 0) + member.row_count;
+        if (member?.role === 'attachment') node.containsAttachments = true;
+        else if (member) node.dataRows = (node.dataRows ?? 0) + member.row_count;
         for (const [key, count] of Object.entries(outcomes.get(path) ?? {})) {
           node.dispositions[key] = (node.dispositions[key] ?? 0) + count;
         }
@@ -62,10 +70,7 @@ export function buildImportTree(items: ImportItem[]): ImportTreeNode[] {
         node.sizeBytes = item.sizeBytes;
         if (!summary && node.kind === 'file') node.dataRows = item.job?.result?.total ?? item.preview?.stats.total;
       }
-      if (node.sizeBytes === undefined && node.kind === 'file' && node.memberPaths.length === 1) {
-        const member = membersByPath.get(node.memberPaths[0]);
-        if (member && !['xls', 'xlsx'].includes(member.encoding)) node.sizeBytes = member.size_bytes;
-      }
+      if (node.sizeBytes === undefined && node.kind === 'file' && soleMember && !['xls', 'xlsx'].includes(soleMember.encoding)) node.sizeBytes = soleMember.size_bytes;
       return node.fileCount;
     }
     finish(root);

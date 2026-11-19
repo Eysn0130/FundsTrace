@@ -65,7 +65,7 @@ export const mappingExplanation = (item: Record<string, string>) => [
   item.unit && ['amount', 'balance', 'income_amt', 'expense_amt'].includes(item.field) ? `来源单位：${item.unit}` : '', item.unit_factor && ['amount', 'balance', 'income_amt', 'expense_amt'].includes(item.field) ? `金额单位换算系数：${item.unit_factor}` : '',
   item.candidate_count ? `候选列：${item.candidate_count}` : '', mappingBasis[item.basis] || item.basis,
 ].filter(Boolean).join(' · ');
-const documentExplanation = (item: Record<string, unknown>) => [
+const documentExplanation = (item: Record<string, unknown>, isAttachment: boolean) => isAttachment ? `${String(item.member_path)} · 附件原件已保留` : [
   String(item.member_path || '来源表格'), item.sheet ? `工作表：${String(item.sheet)}` : '',
   item.header_row != null ? `表头第 ${String(item.header_row)} 行` : '未能唯一识别表头',
   item.row_count != null ? `来源记录 ${String(item.row_count)} 条` : '',
@@ -81,6 +81,7 @@ export function ResolutionSummary({ value, complete }: { value: NonNullable<Impo
 
 export function TableSummary({ summary, complete = false, uncertain = false }: { summary: TableSummaryData; complete?: boolean; uncertain?: boolean }) {
   const evidence = summary.mapping_evidence ?? [], documents = summary.documents ?? [], examples = summary.unresolved_examples ?? [];
+  const attachmentPaths = new Set(summary.members.filter(member => member.role === 'attachment').map(member => member.member_path));
   return <section className="resume-summary" aria-label="表格自动识别与全量校验汇总">
     <p><strong>表格自动识别 · 全量校验</strong></p>
     <p>来源记录 {summary.record_total} 条 · 可靠识别流水 {summary.accepted} 条 · 已配对冲正/撤销 {summary.cancelled ?? 0} 条（双方均不计有效资金） · 未计入资金流水 {summary.unresolved} 条 · 无资金变动 {summary.non_monetary} 条 · 非交易记录 {summary.non_transaction} 条 · 辅助资料 {summary.auxiliary} 条</p>
@@ -93,8 +94,11 @@ export function TableSummary({ summary, complete = false, uncertain = false }: {
     {Object.keys(summary.currency_totals).length > 0 && <><p>可靠识别流水金额合计（按币种，含重复；非本次新增金额或净结算金额）：</p><ul>{Object.entries(summary.currency_totals).map(([currency, amount]) => <li key={currency} className="mono">{formatMoney(amount)} {currency || '未标注币种'}</li>)}</ul></>}
     {evidence.length > 0 && <details open><summary>字段映射、金额单位与方向依据（共 {evidence.length} 项）</summary><ul>{evidence.slice(0, 50).map((item, index) => <li key={index}>{mappingExplanation(item)}</li>)}</ul>{evidence.length > 50 && <p>显示前50项，完整依据见处理报告。</p>}</details>}
     {Object.keys(summary.reason_counts).length > 0 && <details open><summary>全量校验与未计入原因</summary><ul>{Object.entries(summary.reason_counts).map(([reason, count]) => <li key={reason}>{feedbackReason(reason)}：{count} 条</li>)}</ul></details>}
-    {examples.length > 0 && <details><summary>未计入记录的来源位置</summary><ul>{examples.map((row, index) => <li key={index}>{row.member_path} · 原始第 {row.source_row} 行 · {feedbackReason(row.reason_code)}<SourceFieldEvidence details={row.details} /></li>)}</ul></details>}
-    {documents.length > 0 && <details><summary>已检查的来源文件与工作表（共 {documents.length} 项）</summary><ul>{documents.slice(0, 50).map((item, index) => <li key={index}>{documentExplanation(item)}</li>)}</ul>{documents.length > 50 && <p>显示前50项，完整清单见处理报告。</p>}</details>}
+    {examples.length > 0 && <details><summary>未计入记录的来源位置</summary><ul>{examples.map((row, index) => {
+      const attachment = attachmentPaths.has(row.member_path);
+      return <li key={index}>{row.member_path}{!attachment && ` · 原始第 ${row.source_row} 行`} · {feedbackReason(row.reason_code)}{!attachment && <SourceFieldEvidence details={row.details} />}</li>;
+    })}</ul></details>}
+    {documents.length > 0 && <details><summary>已检查的来源文件与工作表（共 {documents.length} 项）</summary><ul>{documents.slice(0, 50).map((item, index) => <li key={index}>{documentExplanation(item, attachmentPaths.has(String(item.member_path)))}</li>)}</ul>{documents.length > 50 && <p>显示前50项，完整清单见处理报告。</p>}</details>}
   </section>;
 }
 
