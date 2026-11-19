@@ -55,7 +55,7 @@ describe('file funds report', () => {
     vi.stubGlobal('navigator',{clipboard:{writeText:copy}});
     try {
       render(<ImportFundsReport {...props(client(data))}/>);
-      await screen.findByRole('heading',{name:'资金统计分析报告'});
+      await screen.findByRole('region',{name:'账户资金收支，可上下左右滚动'});
       expect(document.querySelectorAll('.ft-report-narrative')).toHaveLength(2);
       expect(document.querySelector('.ft-report-account-narrative')?.textContent).toBe(detail);
       fireEvent.click(screen.getByRole('button',{name:'复制统计说明'}));
@@ -92,7 +92,7 @@ describe('file funds report', () => {
     vi.stubGlobal('navigator', { clipboard: { writeText: copy } });
     try {
       render(<ImportFundsReport {...props(client(data))} />);
-      await screen.findByRole('heading', { name: '资金统计分析报告' });
+      await screen.findByRole('region', { name: '账户资金收支，可上下左右滚动' });
       expect(document.querySelector('.ft-report-narrative')?.textContent).toContain(`合计${amount}；出账1笔，金额未明确，收支差额未明确`);
       expect(document.querySelector('.ft-report-account-narrative')?.textContent).toContain(`进账1笔计${amount}，出账1笔，金额未明确`);
       for (const name of ['账户资金收支，可上下左右滚动', '账户往来关联，可上下左右滚动']) {
@@ -195,7 +195,7 @@ describe('file funds report', () => {
   });
   it('keeps exact cents, account identity, bounded rank count and truthful unverified hash', async () => {
     render(<ImportFundsReport {...props(client())} />);
-    await screen.findByRole('heading', { name: '资金统计分析报告' });
+    await screen.findByRole('region', { name: '账户资金收支，可上下左右滚动' });
     expect(reportNarrative(report())).toContain('9,999,999,999,999,999.99');
     expect(screen.getByText(/接收指纹已登记/)).toBeTruthy();
     expect(screen.queryByText('留存字节与登记指纹一致')).toBeNull();
@@ -278,8 +278,31 @@ describe('file funds report', () => {
   it('rejects scope mismatch and reports retry errors instead of stale amounts', async () => {
     render(<ImportFundsReport {...props(client(report({ member_path: 'another.csv' })))} />);
     await screen.findByRole('alert');
-    expect(screen.queryByRole('heading', { name: '资金统计分析报告' })).toBeNull();
+    expect(screen.queryByRole('region', { name: '账户资金收支，可上下左右滚动' })).toBeNull();
     expect(screen.getByRole('button', { name: '刷新报告' })).toBeTruthy();
+  });
+  it('keeps the report title and actions in place while waiting for the first valid report', async () => {
+    const value = client();
+    let resolve!: (data: ImportReport) => void;
+    value.importFundsReport = vi.fn(() => new Promise<ImportReport>(ready => { resolve = ready; }));
+    const downloadFundsReport = vi.fn().mockResolvedValue(undefined);
+    const reportProps = props(value);
+    render(<ImportFundsReport {...reportProps} actions={{ downloadFundsReport }} />);
+    const title = screen.getByRole('heading', { name: '资金统计分析报告' });
+    const exportButton = screen.getByRole<HTMLButtonElement>('button', { name: '导出简报' });
+    expect(exportButton.disabled).toBe(true);
+    expect(screen.getByRole('status').textContent).toBe('正在汇总本文件资金统计…');
+    expect(screen.queryByRole('region', { name: '账户资金收支，可上下左右滚动' })).toBeNull();
+    fireEvent.click(screen.getByRole('link', { name: '主要往来' }));
+    expect(reportProps.onChapter).toHaveBeenLastCalledWith('peers');
+
+    await act(async () => resolve(report()));
+    expect(screen.getByRole('heading', { name: '资金统计分析报告' })).toBe(title);
+    expect(screen.getByRole('button', { name: '导出简报' })).toBe(exportButton);
+    expect(exportButton.disabled).toBe(false);
+    expect(screen.queryByText('正在汇总本文件资金统计…')).toBeNull();
+    expect(screen.getByRole('region', { name: '账户资金收支，可上下左右滚动' })).toBeTruthy();
+    expect(reportProps.onChapter).toHaveBeenLastCalledWith('peers');
   });
   it('charts the supplied periods and preserves exact hover amounts with keyboard access', () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
@@ -407,7 +430,7 @@ describe('file funds report', () => {
   it('labels the full time-domain total while the chart switches domains independently',async()=>{
     vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue(null);
     const data=report({summary:{in_count:2,out_count:0,in_amount:'30.00',out_amount:'0.00',net_amount:'30.00',transaction_count:2,amount:'30.00'},periods:[{first_time:'2026-01-01 00:00:00',last_time:'2026-01-01 00:00:00',time_basis:'unqualified'},{first_time:'2026-01-01 00:00:00Z',last_time:'2026-01-01 00:00:00Z',time_basis:'utc'}],timeline_grain:'月',timeline:[{start:'2026-01-01 00:00:00',end:'2026-02-01 00:00:00',time_basis:'unqualified',in_amount:'10.00',out_amount:'0.00',net_amount:'10.00',in_count:1,out_count:0},{start:'2026-01-01 00:00:00Z',end:'2026-02-01 00:00:00Z',time_basis:'utc',in_amount:'20.00',out_amount:'0.00',net_amount:'20.00',in_count:1,out_count:0}]});
-    render(<ImportFundsReport {...props(client(data))}/>);await screen.findByRole('heading',{name:'资金统计分析报告'});
+    render(<ImportFundsReport {...props(client(data))}/>);await screen.findByRole('region',{name:'账户资金收支，可上下左右滚动'});
     expect(screen.queryByText(/全时间域合计/)).not.toBeNull();fireEvent.click(screen.getByRole('button',{name:'选择2026年1月'}));fireEvent.change(screen.getByRole('combobox',{name:'趋势时间域'}),{target:{value:'utc'}});
     expect(document.querySelector('.ft-report-chart-tip')).toBeNull();const table=screen.getByRole('region',{name:'时间变化明细'});expect(within(table).getAllByText('20.00',{exact:true})).toHaveLength(2);expect(within(table).queryByText('10.00',{exact:true})).toBeNull();expect(document.querySelector('.ft-trend-summary')?.textContent).toContain('30.00');
   });

@@ -3,6 +3,8 @@ import type { ImportItem } from './import-workflow.mjs';
 export interface ImportTreeNode {
   id: string; itemId: string; name: string; path: string; kind: 'file' | 'folder' | 'archive' | 'sheet';
   children: ImportTreeNode[]; memberPaths: string[]; fileCount: number; dispositions: Record<string, number>;
+  sizeBytes?: number;
+  dataRows?: number;
 }
 const extension = (name: string) => name.split('.').at(-1)?.toLowerCase();
 export function importIcon(name: string, kind?: ImportTreeNode['kind']) {
@@ -21,7 +23,9 @@ export function buildImportTree(items: ImportItem[]): ImportTreeNode[] {
     const sheetNames = new Map((tableSummary?.documents ?? []).filter(document => typeof document.sheet === 'string' && document.sheet)
       .map(document => [String(document.member_path), String(document.sheet)]));
     const lookup = new Map<string, ImportTreeNode>([['', root]]);
-    for (const member of summary?.members ?? []) {
+    const members = summary?.members ?? [];
+    const membersByPath = new Map(members.map(member => [member.member_path, member]));
+    for (const member of members) {
       const parts = root.kind === 'file' && ['table.csv', item.filename].includes(member.member_path) ? [] : member.member_path.split('/');
       if (root.kind === 'folder' && parts[0] === root.name) parts.shift();
       const sheetName = sheetNames.get(member.member_path);
@@ -47,7 +51,21 @@ export function buildImportTree(items: ImportItem[]): ImportTreeNode[] {
       if (node.kind === 'file' && node.children.length === 1 && node.children[0].kind === 'sheet') node.children = [];
       const descendants = node.children.reduce((total, child) => total + finish(child), 0);
       node.fileCount = node.kind === 'file' ? 1 : node.children.length ? descendants : node.kind === 'sheet' ? 1 : 0;
-      for (const path of node.memberPaths) for (const [key, count] of Object.entries(outcomes.get(path) ?? {})) node.dispositions[key] = (node.dispositions[key] ?? 0) + count;
+      for (const path of node.memberPaths) {
+        const member = membersByPath.get(path);
+        if (member && member.role !== 'attachment') node.dataRows = (node.dataRows ?? 0) + member.row_count;
+        for (const [key, count] of Object.entries(outcomes.get(path) ?? {})) {
+          node.dispositions[key] = (node.dispositions[key] ?? 0) + count;
+        }
+      }
+      if (node === root) {
+        node.sizeBytes = item.sizeBytes;
+        if (!summary && node.kind === 'file') node.dataRows = item.job?.result?.total ?? item.preview?.stats.total;
+      }
+      if (node.sizeBytes === undefined && node.kind === 'file' && node.memberPaths.length === 1) {
+        const member = membersByPath.get(node.memberPaths[0]);
+        if (member && !['xls', 'xlsx'].includes(member.encoding)) node.sizeBytes = member.size_bytes;
+      }
       return node.fileCount;
     }
     finish(root);

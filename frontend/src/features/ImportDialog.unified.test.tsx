@@ -27,44 +27,182 @@ function mount(client: FundsCaseClientV1, controller = new AbortController(), fi
   return { view, controller };
 }
 describe('the common import workspace', () => {
-  it('keeps return-to-preview enabled after selecting a failed file in report mode', async () => {
+  it('opens a failed file in preview and lets the footer show its failure result', async () => {
     const client = clientFor();
     client.importFundsReport = vi.fn<NonNullable<FundsCaseClientV1['importFundsReport']>>(() => new Promise(() => {}));
     client.preview = vi.fn().mockResolvedValueOnce(preview).mockRejectedValueOnce(Object.assign(new Error('合成损坏工作簿'), { status: 400, failureKind: 'file' }));
     mount(client, new AbortController(), [new File(['synthetic'], 'synthetic.zip'), new File(['broken'], 'broken.xlsx')]);
     await waitFor(() => expect(document.querySelector('.ft-file-counts')?.textContent).toContain('失败 1'));
     fireEvent.click(screen.getByRole('treeitem', { name: /a.csv/ }));
-    fireEvent.click(screen.getByRole('button', { name: '查看处理结果' }));
+    expect(screen.getByRole('button', { name: '返回数据预览' })).toBeTruthy();
     fireEvent.click(screen.getByRole('treeitem', { name: /broken.xlsx/ }));
-    const back = screen.getByRole('button', { name: '返回数据预览' });
-    expect((back as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(back);
+    expect(screen.getByRole('alert').textContent).toContain('合成损坏工作簿');
+    const showResult = screen.getByRole('button', { name: '查看处理结果' }) as HTMLButtonElement;
+    expect(showResult.disabled).toBe(false);
+    fireEvent.click(showResult);
+    expect(screen.getByText('此文件导入失败，没有可统计的资金记录。')).toBeTruthy();
+    expect(client.importFundsReport).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: '返回数据预览' }));
     expect(screen.getByRole('heading', { name: 'broken.xlsx' })).toBeTruthy();
     expect(document.querySelector('.ft-file-outcomes')?.textContent).toBe('导入失败');
     expect(screen.getByText('合成损坏工作簿')).toBeTruthy();
   });
-  it('switches only the right view and keeps report mode while inspecting another member', async () => {
+  it('opens the selected member by its own result and preserves manual view switching and the tree', async () => {
     const client = clientFor();
     client.importFundsReport = vi.fn<NonNullable<FundsCaseClientV1['importFundsReport']>>(() => new Promise(() => {}));
     mount(client); await screen.findByRole('status', { name: '导入完成' });
+    const dialog = screen.getByRole('dialog', { name: '导入流水' });
     const tree = screen.getByRole('tree'), aside = tree.closest('aside');
-    tree.scrollTop = 73;
-    fireEvent.click(screen.getByRole('button', { name: '查看处理结果' }));
+    const scroller = tree.closest('.ft-tree-scroll')!;
+    scroller.scrollTop = 73;
+    expect(dialog.classList.contains('is-result-view')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '折叠右侧详情' }));
+    fireEvent.click(within(tree).getByRole('treeitem', { name: /a\.csv/ }));
+    expect(screen.getByRole('dialog', { name: '导入流水' })).toBe(dialog);
+    expect(dialog.classList.contains('is-result-view')).toBe(true);
+    expect(screen.getByRole('button', { name: '折叠右侧详情' }).getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByRole('navigation', { name: '报告目录' })).toBeTruthy();
     expect(screen.getByRole('tree')).toBe(tree);
     expect(tree.closest('aside')).toBe(aside);
-    expect(tree.scrollTop).toBe(73);
+    expect(scroller.scrollTop).toBe(73);
+    await waitFor(() => expect(client.importFundsReport).toHaveBeenLastCalledWith(preview.import_id, { memberPath: 'folder/a.csv', page: 1 }, expect.any(AbortSignal)));
     fireEvent.click(screen.getByRole('treeitem', { name: /b.xlsx/ }));
+    expect(screen.queryByRole('navigation', { name: '报告目录' })).toBeNull();
+    expect(screen.getByRole('region', { name: '字段映射，可上下左右滚动' })).toBeTruthy();
+    expect(client.importFundsReport).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: '查看处理结果' }));
     expect(screen.getByRole('navigation', { name: '报告目录' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '返回数据预览' })).toBeTruthy();
     await waitFor(() => expect(client.importFundsReport).toHaveBeenLastCalledWith(preview.import_id, { memberPath: 'folder/b.xlsx', page: 1 }, expect.any(AbortSignal)));
     fireEvent.change(screen.getByRole('searchbox', { name: '搜索导入文件' }), { target: { value: 'b.xlsx' } });
     fireEvent.click(screen.getByRole('button', { name: '返回数据预览' }));
+    expect(dialog.classList.contains('is-result-view')).toBe(false);
     expect(screen.queryByRole('navigation', { name: '报告目录' })).toBeNull();
     expect(screen.getByRole('searchbox', { name: '搜索导入文件' }).getAttribute('value')).toBe('b.xlsx');
     expect(screen.getByRole('tree')).toBe(tree);
     expect(screen.getByRole('heading', { name: 'b.xlsx' })).toBeTruthy();
     expect(client.commit).toHaveBeenCalledOnce();
+  });
+  it.each<{ label: string; dispositions: Record<string, number>; resultView: boolean }>([
+    { label: 'confirmed duplicate', dispositions: { duplicate: 1 }, resultView: true },
+    { label: 'missing member disposition', dispositions: {}, resultView: false },
+  ])('routes a completed file with $label appropriately', async ({ dispositions, resultView }) => {
+    const client = clientFor(), job = client.job;
+    client.job = vi.fn(async (id, signal) => ({ ...await job(id, signal), member_results: [
+      { member_path: 'folder/a.csv', dispositions },
+    ] }));
+    client.importFundsReport = vi.fn<NonNullable<FundsCaseClientV1['importFundsReport']>>(() => new Promise(() => {}));
+    mount(client); await screen.findByRole('status', { name: '导入完成' });
+    fireEvent.click(screen.getByRole('treeitem', { name: /a\.csv/ }));
+    expect(screen.getByRole('dialog').classList.contains('is-result-view')).toBe(resultView);
+    expect(client.importFundsReport).toHaveBeenCalledTimes(resultView ? 1 : 0);
+  });
+  it.each([0, 1])('routes a legacy receipt with %i invalid rows', async skipped => {
+    const client = clientFor(), job = client.job;
+    client.preview = vi.fn(async () => ({ ...preview, filename: 'legacy.csv', table_summary: null }));
+    client.job = vi.fn(async (id, signal) => ({ ...await job(id, signal),
+      result: { ...result, total: 1 + skipped, skipped, table_summary: null }, member_results: [],
+    }));
+    client.importFundsReport = vi.fn<NonNullable<FundsCaseClientV1['importFundsReport']>>(() => new Promise(() => {}));
+    mount(client, new AbortController(), [new File(['synthetic'], 'legacy.csv')]);
+    await screen.findByRole('status', { name: '导入完成' });
+    fireEvent.click(screen.getByRole('treeitem', { name: /legacy\.csv/ }));
+    expect(screen.getByRole('dialog').classList.contains('is-result-view')).toBe(skipped === 0);
+    if (skipped === 0) expect(screen.getByRole('heading', { name: '导入回执' })).toBeTruthy();
+    expect(client.importFundsReport).not.toHaveBeenCalled();
+  });
+  it('keeps a parked report until a file is activated and cancels the old report when opening its review', async () => {
+    const client = clientFor();
+    const report = vi.fn<NonNullable<FundsCaseClientV1['importFundsReport']>>(() => new Promise(() => {}));
+    client.importFundsReport = report;
+    mount(client);
+    await screen.findByRole('status', { name: '导入完成' });
+    fireEvent.click(screen.getByRole('button', { name: '查看处理结果' }));
+    const catalog = screen.getByRole('navigation', { name: '报告目录' });
+    const tree = screen.getByRole('tree', { name: '导入文件' });
+    const toggle = screen.getByRole('button', { name: '折叠右侧详情' });
+    expect(toggle.closest('header')).toBe(screen.getByRole('searchbox', { name: '搜索导入文件' }).closest('header'));
+    const inspector = document.getElementById(toggle.getAttribute('aria-controls')!)!;
+    const original = report.mock.calls[0][2]!;
+
+    fireEvent.click(toggle);
+    expect(screen.getByRole('button', { name: '展开右侧详情' })).toBe(toggle);
+    expect(document.activeElement).toBe(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(inspector.hasAttribute('inert')).toBe(true);
+    expect(screen.queryByRole('navigation', { name: '报告目录' })).toBeNull();
+    const accepted = within(tree).getByRole('treeitem', { name: /a\.csv/, description: /数据大小 100 B，数据行数 1，处理摘要 1 条已导入/ });
+    expect(within(accepted).getByText('完成', { exact: true }).closest('[data-tone]')?.getAttribute('data-tone')).toBe('success');
+    expect(original.aborted).toBe(false);
+
+    fireEvent.click(toggle);
+    expect(inspector.hasAttribute('inert')).toBe(false);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('navigation', { name: '报告目录' })).toBe(catalog);
+    expect(screen.queryByRole('region', { name: '导入文件明细，可横向滚动' })).toBeNull();
+    expect(report).toHaveBeenCalledOnce();
+
+    fireEvent.click(toggle);
+    fireEvent.keyDown(within(tree).getByRole('treeitem', { name: /b\.xlsx/, description: /数据行数 1，处理摘要 1 条待核对 · 第 128 行 · 交易时间无效/ }), { key: 'Enter' });
+    expect(report).toHaveBeenCalledOnce();
+    expect(original.aborted).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('heading', { name: 'b.xlsx' })).toBeTruthy();
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('button', { name: '查看处理结果' }));
+    expect(report).toHaveBeenLastCalledWith(preview.import_id, { memberPath: 'folder/b.xlsx', page: 1 }, expect.any(AbortSignal));
+    expect(screen.getByRole('tree')).toBe(tree);
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('button', { name: '返回数据预览' }));
+    expect(screen.getByRole('heading', { name: 'b.xlsx' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '折叠右侧详情' })).toBe(toggle);
+    expect(client.commit).toHaveBeenCalledOnce();
+  });
+  it.each(['数据预览', '处理结果'])('only collapses %s after an intentional rightward release on the divider', async mode => {
+    const client = clientFor();
+    client.importFundsReport = vi.fn<NonNullable<FundsCaseClientV1['importFundsReport']>>(() => new Promise(() => {}));
+    mount(client);
+    await screen.findByRole('status', { name: '导入完成' });
+    if (mode === '处理结果') fireEvent.click(screen.getByRole('button', { name: '查看处理结果' }));
+    const tree = screen.getByRole('tree', { name: '导入文件' });
+    const toggle = screen.getByRole('button', { name: '折叠右侧详情' });
+    const divider = screen.getByTitle('向右拖动，松开折叠右侧详情');
+    const origin = { pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1, clientX: 240, clientY: 260 };
+    const press = () => fireEvent.pointerDown(divider, origin);
+    const move = (x: number, y = 0) => fireEvent.pointerMove(document.body, { ...origin, clientX: origin.clientX + x, clientY: origin.clientY + y });
+    const release = (x: number, y = 0) => fireEvent.pointerUp(document.body, { ...origin, buttons: 0, clientX: origin.clientX + x, clientY: origin.clientY + y });
+
+    fireEvent.pointerOver(divider);
+    for (const [x, y] of [[0, 0], [71, 0], [-90, 0], [90, 110]]) {
+      press(); move(x, y); release(x, y);
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    }
+    press(); move(90);
+    expect(divider.hasAttribute('data-armed')).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    move(12); release(12);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+    press(); move(90);
+    expect(fireEvent.keyDown(window, { key: 'Escape' })).toBe(false);
+    release(90);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    press(); move(90);
+    fireEvent.pointerCancel(document.body, origin);
+    release(90);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    press(); move(90);
+    fireEvent.pointerLeave(document.documentElement, origin);
+    release(90);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+    press(); move(72); release(72);
+    expect(screen.getByRole('button', { name: '展开右侧详情' })).toBe(toggle);
+    expect(document.activeElement).toBe(toggle);
+    expect(screen.getByRole('tree', { name: '导入文件' })).toBe(tree);
+    fireEvent.click(toggle);
+    expect(screen.getByRole('button', { name: mode === '处理结果' ? '返回数据预览' : '查看处理结果' })).toBeTruthy();
   });
   it('replaces issue cards and source-row jumps with the shared scoped review table when the host supports it',async()=>{
     const client=clientFor();
@@ -76,7 +214,72 @@ describe('the common import workspace', () => {
     await screen.findByText('合成坏日期');
     expect(document.querySelector('.ft-issues')).toBeNull();expect(screen.queryByRole('link',{name:'查看来源行'})).toBeNull();
     expect(screen.getByRole('group',{name:'来源记录筛选'})).toBeTruthy();
-    expect(client.importReview).toHaveBeenLastCalledWith(preview.import_id,'folder/b.xlsx',{view:'all',page:1,issueIndex:1},expect.any(AbortSignal));
+    expect(client.importReview).toHaveBeenLastCalledWith(preview.import_id,'folder/b.xlsx',{view:'review',page:1,issueIndex:1},expect.any(AbortSignal));
+    fireEvent.click(screen.getByRole('button', { name: '查看处理结果' }));
+    fireEvent.click(screen.getByRole('button', { name: '返回数据预览' }));
+    await screen.findByRole('button', { name: '待核对 1', pressed: true });
+  });
+  it('opens the selected member in the pending-only preview from the full-width processing summary', async () => {
+    const client = clientFor();
+    client.importFundsReport = vi.fn<NonNullable<FundsCaseClientV1['importFundsReport']>>(() => new Promise(() => {}));
+    client.importReview = vi.fn<NonNullable<FundsCaseClientV1['importReview']>>(async (sourceId, memberPath, query) => ({
+      case_id: '1', source_id: sourceId, member_path: memberPath, view: query.view,
+      counts: { all: 1, review: 1, accepted: 0 }, total: 1, page: 1, page_size: 50,
+      issue: { index: 1, record_no: 2, source_row: 128, reason_code: 'invalid_time' },
+      items: [{ record_no: 2, source_row: 128, member_path: memberPath, record_key: 'SYN-128', disposition: 'unresolved',
+        reason_code: 'invalid_time', details: {}, flow_id: null,
+        original: [{ column: 1, header: '成交日期', value: '合成无效日期', fields: ['trade_time'] }] }],
+    }));
+    mount(client);
+    await screen.findByRole('status', { name: '导入完成' });
+    fireEvent.click(screen.getByRole('button', { name: '查看处理结果' }));
+    fireEvent.click(screen.getByRole('button', { name: '折叠右侧详情' }));
+    const tree = screen.getByRole('tree', { name: '导入文件' });
+    const details = screen.getByRole('region', { name: '导入文件明细，可横向滚动' });
+    expect(within(details).getByText('数据大小', { exact: true })).toBeTruthy();
+    expect(within(details).queryByText('待核对', { exact: true })).toBeNull();
+    expect(within(details).getByText('导入时长', { exact: true })).toBeTruthy();
+    expect(within(tree).getByRole('treeitem', { name: /synthetic\.zip/, description: /数据大小 9 B，数据行数 2，处理摘要 1 条待核对/ })).toBeTruthy();
+    const row = within(tree).getByRole('treeitem', { name: /b\.xlsx/, description: /数据行数 1，处理摘要 1 条待核对 · 第 128 行 · 交易时间无效/ });
+    expect(within(row).getByText('完成', { exact: true })).toBeTruthy();
+    const review = within(row).getByRole('button', { name: /定位待核对/ });
+    expect(review.textContent).toBe('1 条待核对 · 第 128 行 · 交易时间无效');
+    fireEvent.click(review);
+
+    expect(screen.getByRole('tree', { name: '导入文件' })).toBe(tree);
+    expect(screen.getByRole('button', { name: '折叠右侧详情' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('button', { name: '查看处理结果' })).toBeTruthy();
+    await screen.findByText('合成无效日期');
+    expect(within(screen.getByRole('group', { name: '来源记录筛选' }))
+      .getByRole('button', { name: '待核对 1', pressed: true })).toBeTruthy();
+    expect(client.importReview).toHaveBeenLastCalledWith(preview.import_id, 'folder/b.xlsx',
+      { view: 'review', page: 1, issueIndex: 1 }, expect.any(AbortSignal));
+  });
+
+  it('shows measured durations only on original files and opens the saved failure reason', async ({ onTestFinished }) => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    onTestFinished(() => clock.mockRestore());
+    const client = clientFor();
+    client.preview = vi.fn().mockImplementationOnce(async () => { now += 1500; return preview; })
+      .mockImplementationOnce(async () => {
+        now += 23;
+        throw Object.assign(new Error('合成损坏工作簿'), { status: 400, failureKind: 'file' });
+      });
+    mount(client, new AbortController(), [new File(['synthetic'], 'synthetic.zip'), new File(['broken'], 'broken.xlsx')]);
+    await waitFor(() => expect(document.querySelector('.ft-file-counts')?.textContent).toContain('失败 1'));
+    fireEvent.click(screen.getByRole('button', { name: '折叠右侧详情' }));
+    const tree = within(screen.getByRole('tree', { name: '导入文件' }));
+    expect(tree.getByRole('treeitem', { name: /synthetic\.zip/, description: /导入时长 1\.5 s/ })).toBeTruthy();
+    expect(tree.getByRole('treeitem', { name: /b\.xlsx/, description: /导入时长 未单独计时/ })).toBeTruthy();
+    const failedRow = tree.getByRole('treeitem', { name: /broken\.xlsx/, description: /数据大小 6 B，数据行数 未记录，处理摘要 文件处理失败，导入时长 23 ms/ });
+    const failureStatus = within(failedRow).getByText('失败', { exact: true }).closest('[data-tone]');
+    expect(failureStatus?.classList.contains('ft-tree-terminal')).toBe(true);
+    expect(failureStatus?.getAttribute('data-tone')).toBe('danger');
+    fireEvent.click(within(failedRow).getByRole('button', { name: /查看原因/ }));
+    expect(screen.getByRole('heading', { name: 'broken.xlsx' })).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain('合成损坏工作簿');
+    expect(screen.getByRole('button', { name: '折叠右侧详情' })).toBeTruthy();
   });
   it('keeps one compact dialog through cancelled selection and grows only when actual content exists', async () => {
     const client = clientFor(); let finish!: (value: ImportPreview) => void;
@@ -138,7 +341,8 @@ describe('the common import workspace', () => {
     const client = clientFor(); mount(client); await screen.findByRole('status', { name: '导入完成' });
     expect(document.querySelector('.ft-result')).toBeNull();
     expect(document.querySelector('.ft-overall .ft-counts')).toBeNull();
-    expect(document.querySelector('.ft-import-files > .ft-section-heading > h3')?.textContent).toBe('导入文件');
+    const fileList = screen.getByRole('tree', { name: '导入文件' }).closest('aside')!;
+    expect(within(fileList).getByRole('heading', { name: '导入文件' })).toBeTruthy();
     expect(document.querySelector('.ft-file-counts')?.textContent).toBe('完成 2');
     expect((document.querySelector('.ft-result-data') as HTMLElement).hidden).toBe(true);
     expect((document.querySelector('.ft-full-summary') as HTMLElement).hidden).toBe(true);
@@ -237,8 +441,8 @@ describe('the common import workspace', () => {
     client.importRecords = records;
     const { controller } = mount(client); await screen.findByRole('status', { name: '导入完成' });
     fireEvent.click(screen.getByRole('treeitem', { name: /b.xlsx/ }));
-    await waitFor(() => expect(client.importRecords).toHaveBeenCalledWith(preview.import_id, 1, expect.any(AbortSignal), 'folder/b.xlsx'));
-    const signal = records.mock.calls[0][2]!;
+    await waitFor(() => expect(client.importRecords).toHaveBeenLastCalledWith(preview.import_id, 1, expect.any(AbortSignal), 'folder/b.xlsx', 128));
+    const signal = records.mock.lastCall![2]!;
     act(() => controller.abort()); expect(signal.aborted).toBe(true);
     await act(async () => finish({ case_id: '1', source_id: preview.import_id, total: 1, page: 1, page_size: 50,
       items: [{ record_no: 1, source_row: 128, member_path: 'folder/b.xlsx', record_key: 'synthetic', reason_code: 'invalid_time', disposition: 'unresolved', details: { source_field_evidence: '[]' }, flow_id: null }] }));

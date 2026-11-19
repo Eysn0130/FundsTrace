@@ -53,12 +53,14 @@ function loadedColumnWidth(table: HTMLTableElement, index: number, rowLimit = sa
 }
 
 /** The import grids share column, overflow and full-value behavior. */
-export function ImportTable({ headings, widths: initial, children, className, label, moneyColumns = noMoneyColumns, fillToSlot = false, resizable = true, autoSize = false, textMaxWidth = 360 }: {
-  headings: string[]; widths: number[]; children: ReactNode; className: string; label: string; moneyColumns?: number[]; fillToSlot?: boolean; resizable?: boolean; autoSize?: boolean; textMaxWidth?: number;
+export function ImportTable({ headings, widths: initial, children, className, label, moneyColumns = noMoneyColumns, fillToSlot = false, resizable = true, autoSize = false, textMaxWidth = 360, revealAfterFit = false }: {
+  headings: string[]; widths: number[]; children: ReactNode; className: string; label: string; moneyColumns?: number[]; fillToSlot?: boolean; resizable?: boolean; autoSize?: boolean; textMaxWidth?: number; revealAfterFit?: boolean;
 }) {
   const scroll = useRef<HTMLDivElement>(null), table = useRef<HTMLTableElement>(null);
   const range = useRef<HTMLInputElement>(null), left = useRef<HTMLButtonElement>(null), right = useRef<HTMLButtonElement>(null);
   const [widths, setWidths] = useState(initial), [value, setValue] = useState('');
+  const [firstFitReady, setFirstFitReady] = useState(false);
+  const firstFit = revealAfterFit ? firstFitReady ? 'ready' : autoSize ? 'sizing' : 'pending' : undefined;
   const previousHeadings = useRef(headings);
   const headingKey = JSON.stringify(headings);
   const [owner, setOwner] = useState<HTMLElement | null>(null), timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -115,7 +117,7 @@ export function ImportTable({ headings, widths: initial, children, className, la
     const signature = JSON.stringify(Array.from({ length: Math.min(rows.length, moneyColumns.length ? moneySampleLimit : sampleLimit) }, (_, row) => row < sampleLimit
       ? [...rows[row].cells].map(cell => cell.textContent)
       : moneyColumns.map(index => rows[row].cells[index]?.textContent)));
-    if (measured.current === signature) return;
+    if (measured.current === signature && (!revealAfterFit || firstFitReady)) return;
     const frame = requestAnimationFrame(() => {
       if (!table.current) return;
       const cap = Math.max(240, Math.min(360, (scroll.current?.clientWidth || 720) / 2));
@@ -126,9 +128,10 @@ export function ImportTable({ headings, widths: initial, children, className, la
         const next = current.map((width, index) => manuallySized.current.has(index) ? width : intrinsicWidths.current[index]);
         return fillToSlot ? fillColumnWidths(next, scroll.current?.clientWidth || 0, manuallySized.current) : next;
       });
+      if (revealAfterFit && !firstFitReady) setFirstFitReady(true);
     });
     return () => cancelAnimationFrame(frame);
-  }, [children, autoSize, headings, moneyColumns, textMaxWidth, fillToSlot]);
+  }, [children, autoSize, headings, moneyColumns, textMaxWidth, fillToSlot, revealAfterFit, firstFitReady]);
   const bounded = (width: number) => Math.min(Number.MAX_SAFE_INTEGER, Math.max(minimumManualWidth, Math.round(width)));
   const resize = (index: number, width: number) => { manuallySized.current.add(index); setWidths(current => {
     const next = current.map((value, i) => i === index ? bounded(width) : fillToSlot && autoSize && !manuallySized.current.has(i) ? intrinsicWidths.current[i] ?? value : value);
@@ -152,7 +155,7 @@ export function ImportTable({ headings, widths: initial, children, className, la
   }}
     onPointerOver={event => show(event.target)} onFocus={event => show(event.target)} onBlur={event => { if (!(event.relatedTarget as HTMLElement | null)?.closest('.ft-value-popover')) { delete (event.target as HTMLElement).dataset.ftValueDismissed; hide(); } }}
     onPointerOut={event => { if (!(event.relatedTarget as HTMLElement | null)?.closest('.ft-value-popover')) { delete (event.target as HTMLElement).dataset.ftValueDismissed; clearTimeout(timer.current); timer.current = setTimeout(hide, 160); } }}>
-    <table ref={table} className={`ft-data-grid ${resizable ? '' : 'ft-static-grid'}`} style={{ width: widths.reduce((sum, width) => sum + width, 0) }}><colgroup>{widths.map((width, index) => <col key={index} style={{ width }} />)}</colgroup><thead><tr>{headings.map((heading, index) => <th key={`${heading}:${index}`} scope="col"><span className="ft-cell-value">{heading}</span>{resizable && <button type="button" className="ft-column-resize" role="separator" aria-orientation="vertical" aria-label={`调整${heading}列宽`} aria-valuenow={widths[index]} aria-valuemin={minimumManualWidth} aria-valuemax={Number.MAX_SAFE_INTEGER} aria-valuetext={`${widths[index]} 像素`}
+    <table ref={table} className={`ft-data-grid ${resizable ? '' : 'ft-static-grid'}`} data-first-fit={firstFit} style={{ width: widths.reduce((sum, width) => sum + width, 0) }}><colgroup>{widths.map((width, index) => <col key={index} style={{ width }} />)}</colgroup><thead><tr>{headings.map((heading, index) => <th key={`${heading}:${index}`} scope="col"><span className="ft-cell-value">{heading}</span>{resizable && <button type="button" className="ft-column-resize" role="separator" aria-orientation="vertical" aria-label={`调整${heading}列宽`} aria-valuenow={widths[index]} aria-valuemin={minimumManualWidth} aria-valuemax={Number.MAX_SAFE_INTEGER} aria-valuetext={`${widths[index]} 像素`}
       onKeyDown={event => { if (['ArrowLeft','ArrowRight','Home'].includes(event.key) && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); hide(); resize(index, event.key === 'Home' ? minimumManualWidth : widths[index] + (event.key === 'ArrowLeft' ? -1 : 1) * (event.shiftKey ? 1 : 8)); } }}
       onDoubleClick={() => { const natural = loadedColumnWidth(table.current!, index, moneyColumns.includes(index) ? moneySampleLimit : sampleLimit); if (natural !== undefined) resize(index, natural); }}
       onPointerDown={event => {

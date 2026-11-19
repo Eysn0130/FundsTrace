@@ -26,10 +26,26 @@ it('keeps dotted folders as folders and sheets under the workbook inside an arch
   expect(book.name).toBe('book.xlsx'); expect(book.children).toHaveLength(2);
   expect(book.children[0].name).toBe('交易明细'); expect(book.children[0].memberPaths).toEqual(['folder.2026/book.xlsx/worksheets/0001']);
 });
+it('uses registered tabular rows and physical bytes at their own scope', () => {
+  const item = workbook(true), summary = item.preview!.table_summary!;
+  item.sizeBytes = 4096;
+  summary.members[0].row_count = 3;
+  summary.members[1].row_count = 7;
+  summary.members.push(
+    { member_path: 'folder.2026/flows.csv', role: 'table', sha256: '', size_bytes: 0, encoding: 'utf-8', row_count: 0 },
+    { member_path: 'folder.2026/scan.pdf', role: 'attachment', sha256: '', size_bytes: 100, encoding: 'binary', row_count: 1 },
+  );
+  const [root] = buildImportTree([item]), [book, csv, attachment] = root.children[0].children;
+  expect([root.sizeBytes, root.dataRows]).toEqual([4096, 10]);
+  expect([book.sizeBytes, book.dataRows]).toEqual([undefined, 10]);
+  expect(book.children.map(({ sizeBytes, dataRows }) => [sizeBytes, dataRows])).toEqual([[undefined, 3], [undefined, 7]]);
+  expect([csv.sizeBytes, csv.dataRows]).toEqual([0, 0]);
+  expect([attachment.sizeBytes, attachment.dataRows]).toEqual([100, undefined]);
+});
 it('uses real progress on its operation root and leaves unmeasured sheet progress indeterminate', () => {
   const item = workbook(); item.phase = 'polling';
   item.job = { case_id: '1', import_id: 'synthetic', stage: 'importing', done: 5, total: 10, message: '写入', result: null, error: null };
-  render(createElement(ImportTree, { roots: buildImportTree([item]), items: [item], onSelect: () => {} }));
+  render(createElement(ImportTree, { roots: buildImportTree([item]), items: [item], onOpen: () => {} }));
   expect(screen.getByRole('progressbar', { name: 'book.xlsx处理进度' }).getAttribute('value')).toBe('0.5');
   expect(screen.getByRole('progressbar', { name: '交易明细处理进度' }).hasAttribute('value')).toBe(false);
 });
@@ -49,7 +65,7 @@ it('opens a one-sheet Excel at the file level without losing its original member
 it('never labels an unconfirmed or rolled-back archive as completed', () => {
   for (const phase of ['ready','failed'] as const) {
     const item = workbook(true); item.phase = phase;
-    const view = render(createElement(ImportTree, { roots: buildImportTree([item]), items: [item], onSelect: () => {} }));
+    const view = render(createElement(ImportTree, { roots: buildImportTree([item]), items: [item], onOpen: () => {} }));
     expect(screen.getAllByRole('treeitem')[0].textContent).toContain(phase === 'ready' ? '待确认' : '失败');
     expect(screen.getAllByRole('treeitem')[0].textContent).not.toContain('已完成');
     view.unmount();
@@ -67,12 +83,12 @@ it('does not count a folder named like an Excel file as one physical workbook', 
 it('pauses uncertain tree progress without exposing the last observed percentage as a current value', () => {
   const item=workbook();item.phase='unknown';
   item.job={case_id:'1',import_id:'synthetic',stage:'importing',done:5,total:10,message:'写入',error:null,result:null};
-  const view=render(createElement(ImportTree,{roots:buildImportTree([item]),items:[item],onSelect:()=>{}}));
+  const view=render(createElement(ImportTree,{roots:buildImportTree([item]),items:[item],onOpen:()=>{}}));
   const progress=screen.getByRole('progressbar',{name:'book.xlsx处理进度'});
   expect(progress.hasAttribute('value')).toBe(false);
   expect(progress.closest('.ft-progress')?.querySelector('.ft-progress-fill')?.getAttribute('style')).toContain('scaleX(0.5)');
   item.phase='polling';item.queryingOnly=true;
-  view.rerender(createElement(ImportTree,{roots:buildImportTree([item]),items:[item],onSelect:()=>{}}));
+  view.rerender(createElement(ImportTree,{roots:buildImportTree([item]),items:[item],onOpen:()=>{}}));
   expect(screen.getByRole('progressbar',{name:'book.xlsx处理进度'}).hasAttribute('value')).toBe(false);
   expect(document.querySelector('.ft-tree-row .is-spinning')).toBeNull();
 });

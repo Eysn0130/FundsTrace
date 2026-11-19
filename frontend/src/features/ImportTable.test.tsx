@@ -123,9 +123,12 @@ it('fits the loaded content once, keeps manual widths independent and allows exp
   const headings=['行号','交易时间','金额','摘要'], widths=[96,238,220,240], money=[2], amount='1,234,567.89', summary='合成很长摘要'.repeat(35);
   const body=(time:string)=><tbody>{Array.from({length:50},(_,index)=><tr key={index}><td><ImportCellValue>{index+1}</ImportCellValue></td><td><ImportCellValue>{time}</ImportCellValue></td><td className="ft-money"><ImportCellValue>{amount}</ImportCellValue></td><td><ImportCellValue>{summary}</ImportCellValue></td></tr>)}</tbody>;
   try {
-    const view=render(<ImportTable autoSize headings={headings} widths={widths} moneyColumns={money} label="自适应预览" className="ft-preview-scroll">{body('2026-11-13 09:41:26')}</ImportTable>);
+    const view=render(<ImportTable autoSize revealAfterFit headings={headings} widths={widths} moneyColumns={money} label="自适应预览" className="ft-preview-scroll">{body('2026-11-13 09:41:26')}</ImportTable>);
+    const table=screen.getByRole('table');
     const handles=screen.getAllByRole('separator');
-    await waitFor(()=>expect(handles[2].getAttribute('aria-valuenow')).toBe(String(amount.length*10+35)));
+    expect(table.dataset.firstFit).toBe('sizing');
+    await waitFor(()=>expect(table.dataset.firstFit).toBe('ready'));
+    expect(handles[2].getAttribute('aria-valuenow')).toBe(String(amount.length*10+35));
     expect(handles[3].getAttribute('aria-valuenow')).toBe('360');
     expect(measurements).toBeLessThan(70); const measured=measurements, originalTimeWidth=Number(handles[1].getAttribute('aria-valuenow'));
     fireEvent.keyDown(handles[2],{key:'Home'}); expect(handles[2].getAttribute('aria-valuenow')).toBe('64');
@@ -135,7 +138,8 @@ it('fits the loaded content once, keeps manual widths independent and allows exp
     const explicitMeasurements=measurements; fireEvent.keyDown(handles[3],{key:'ArrowRight'});
     await act(async()=>new Promise(resolve=>setTimeout(resolve,40))); expect(measurements).toBe(explicitMeasurements);
     expect(explicitMeasurements).toBeGreaterThan(measured);
-    view.rerender(<ImportTable autoSize headings={headings} widths={widths} moneyColumns={money} label="自适应预览" className="ft-preview-scroll">{body('2026-11-13 09:41:26.123456')}</ImportTable>);
+    view.rerender(<ImportTable autoSize revealAfterFit headings={headings} widths={widths} moneyColumns={money} label="自适应预览" className="ft-preview-scroll">{body('2026-11-13 09:41:26.123456')}</ImportTable>);
+    expect(table.dataset.firstFit).toBe('ready');
     await waitFor(()=>expect(Number(handles[1].getAttribute('aria-valuenow'))).toBeGreaterThan(originalTimeWidth));
     expect(handles[2].getAttribute('aria-valuenow')).toBe('64'); expect(Number(handles[3].getAttribute('aria-valuenow'))).toBeGreaterThan(1200);
     expect(screen.getAllByText(amount)).toHaveLength(50);

@@ -53,12 +53,20 @@ it('opens the exact raw reason from the row icon and Escape only dismisses that 
 it('clears stale rows on a new member and discards late replies and revocation',async()=>{
   const own=client(),scope=new AbortController();let finish!:(value:ImportReviewPage)=>void;
   own.importReview=vi.fn(()=>new Promise<ImportReviewPage>(resolve=>{finish=resolve;}));
-  const view=render(<ImportReview client={own} scopeSignal={scope.signal} sourceId="SYN-SOURCE" memberPath="table.csv"/>);
+  const view=render(<ImportReview client={own} scopeSignal={scope.signal} sourceId="SYN-SOURCE" memberPath="table.csv" reserveIssueBar/>);
   const late=finish;
-  view.rerender(<ImportReview client={own} scopeSignal={scope.signal} sourceId="SYN-SOURCE" memberPath="second.csv"/>);
+  view.rerender(<ImportReview client={own} scopeSignal={scope.signal} sourceId="SYN-SOURCE" memberPath="second.csv" reserveIssueBar/>);
+  const grid=screen.getByRole('region',{name:'数据预览，可上下左右滚动'});
+  const issueBar=view.container.querySelector('.ft-review-navigation');
+  expect(issueBar?.getAttribute('aria-hidden')).toBe('true');
+  expect(screen.getByRole('status').textContent).toContain('正在读取来源记录…');
+  expect(screen.getByRole('button',{name:'全部 —'})).toBeTruthy();
   await act(async()=>late(page()));expect(screen.queryByText('原始坏日期')).toBeNull();
   await act(async()=>finish({...page(),member_path:'second.csv',items:page().items.map(row=>({...row,member_path:'second.csv'}))}));
   await screen.findByText('原始坏日期');
+  expect(screen.queryByRole('status')).toBeNull();
+  expect(screen.getByRole('region',{name:'数据预览，可上下左右滚动'})).toBe(grid);
+  expect(screen.getByRole('button',{name:'下一处待核对'}).closest('.ft-review-navigation')).toBe(issueBar);
   act(()=>scope.abort());expect(screen.queryByRole('region',{name:'来源数据阅览'})).toBeNull();
 });
 
