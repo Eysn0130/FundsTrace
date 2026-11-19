@@ -54,10 +54,12 @@ function cellIssueText(row: ImportReviewRecord, field: string, original?: Import
 }
 
 /** One source-bound table: full-file filters and server-located issue positions. */
-export function ImportReview({client,scopeSignal,sourceId,memberPath}: {
-  client: FundsCaseClientV1; scopeSignal: AbortSignal; sourceId: string; memberPath: string;
+export function ImportReview({client,scopeSignal,sourceId,memberPath,reserveIssueBar,startInReview=false}: {
+  client: FundsCaseClientV1; scopeSignal: AbortSignal; sourceId: string; memberPath: string; reserveIssueBar?: boolean;
+  startInReview?: boolean;
 }) {
-  const [query,setQuery] = useState<{view:ImportReviewPage['view'];page:number;issueIndex?:number}>({view:'all',page:1,issueIndex:1});
+  const [query,setQuery] = useState<{view:ImportReviewPage['view'];page:number;issueIndex?:number}>(
+    () => ({view:startInReview?'review':'all',page:1,issueIndex:1}));
   const [snapshot,setSnapshot] = useState<{client:FundsCaseClientV1;sourceId:string;memberPath:string;key:string;data:ImportReviewPage}>();
   const [failure,setFailure] = useState<{key:string;message:string}>(),[reload,setReload] = useState(0);
   const [popover,setPopover] = useState<{anchor:HTMLElement;value:string}>(), pinned = useRef(false), timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -67,6 +69,7 @@ export function ImportReview({client,scopeSignal,sourceId,memberPath}: {
   const ownSnapshot = snapshot?.client===client && snapshot.sourceId===sourceId && snapshot.memberPath===memberPath && !scopeSignal.aborted ? snapshot : undefined;
   const data = ownSnapshot?.key===key ? ownSnapshot.data : undefined, counts=ownSnapshot?.data.counts;
   const error = failure?.key===key ? failure.message : '';
+  const issuePlaceholder = !counts && !error && reserveIssueBar;
   const hide = () => {clearTimeout(timer.current);pinned.current=false;setPopover(undefined);};
   useEffect(()=>()=>clearTimeout(timer.current),[]);
   useEffect(()=>{
@@ -127,9 +130,27 @@ export function ImportReview({client,scopeSignal,sourceId,memberPath}: {
   const dismissRowHint=(target:EventTarget)=>{if((target as HTMLElement).closest('td:not(.ft-review-row-number)'))hide();};
   return <section ref={section} className="ft-preview-section ft-review-section" aria-label="来源数据阅览" onPointerOver={event=>dismissRowHint(event.target)} onFocus={event=>dismissRowHint(event.target)}>
     <div className="ft-section-heading ft-review-heading"><h4>数据预览</h4><div className="ft-review-filters" role="group" aria-label="来源记录筛选">{(['all','review','accepted'] as const).map(view=><button type="button" key={view} aria-pressed={query.view===view} onClick={()=>setView(view)}>{({all:'全部',review:'待核对',accepted:'已接纳'})[view]} <span>{counts?.[view]??'—'}</span></button>)}</div></div>
-    {(counts?.review||0)>0&&<div className="ft-review-navigation"><ImportIcon name="import-circle-alert"/><span className="ft-review-current">{selected?`原始第 ${selected.source_row} 行 · ${feedbackReason(selected.reason_code)}`:`待核对 ${counts!.review} 行`}</span><div className="ft-review-navigation-actions"><button type="button" className="icon-button" aria-label="上一处待核对" disabled={!data?.issue||data.issue.index<=1} onClick={()=>navigate(-1)}><ImportIcon name="chevron-left"/></button>{data?.issue&&<span aria-live="polite">{data.issue.index} / {counts!.review}</span>}<button type="button" className="icon-button" aria-label="下一处待核对" disabled={!data||data.issue?.index===counts!.review} onClick={()=>navigate(1)}><ImportIcon name="chevron-right"/></button></div></div>}
-    <ImportTable autoSize={!!data} className="ft-preview-scroll ft-review-scroll" label="数据预览，可上下左右滚动" headings={columns.map(column=>column.heading)} widths={columns.map(column=>column.width)} moneyColumns={sourceOnly?[]:moneyColumns}><tbody>
-      {!data&&<tr><td colSpan={columns.length} className="ft-review-message" role={error?'alert':'status'}>{error?<>{error}<button className="ft-text-button" onClick={()=>setReload(value=>value+1)}>重试</button></>:'正在读取来源记录…'}</td></tr>}
+    {(!!counts?.review || issuePlaceholder) && <div className="ft-review-navigation" aria-hidden={issuePlaceholder || undefined}>
+      {!!counts?.review && <>
+        <ImportIcon name="import-circle-alert"/>
+        <span className="ft-review-current">{selected ? `原始第 ${selected.source_row} 行 · ${feedbackReason(selected.reason_code)}` : `待核对 ${counts.review} 行`}</span>
+        <div className="ft-review-navigation-actions">
+          <button type="button" className="icon-button" aria-label="上一处待核对" disabled={!data?.issue || data.issue.index <= 1} onClick={()=>navigate(-1)}><ImportIcon name="chevron-left"/></button>
+          {data?.issue && <span aria-live="polite">{data.issue.index} / {counts.review}</span>}
+          <button type="button" className="icon-button" aria-label="下一处待核对" disabled={!data || data.issue?.index === counts.review} onClick={()=>navigate(1)}><ImportIcon name="chevron-right"/></button>
+        </div>
+      </>}
+    </div>}
+    <ImportTable autoSize={!!data} revealAfterFit className="ft-preview-scroll ft-review-scroll" label="数据预览，可上下左右滚动" headings={columns.map(column=>column.heading)} widths={columns.map(column=>column.width)} moneyColumns={sourceOnly?[]:moneyColumns}><tbody>
+      {!data && (error
+        ? <tr><td colSpan={columns.length} className="ft-review-message" role="alert">{error}<button className="ft-text-button" onClick={() => setReload(value => value + 1)}>重试</button></td></tr>
+        : <tr><td colSpan={columns.length} className="ft-review-message">
+          <div className="ft-review-pending ft-import-waiting" role="status">
+            正在读取来源记录…
+            <span aria-hidden="true" />
+            <span aria-hidden="true" />
+          </div>
+        </td></tr>)}
       {data?.items.map(row=>{
         const values=row.preview?previewCells(row.preview):null,problems=problemFields(row),bad=needsReview(row);
         return <tr key={row.record_no} data-record={row.record_no} data-focused={row.record_no===data.issue?.record_no} data-review={bad||undefined}>

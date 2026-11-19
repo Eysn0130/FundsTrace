@@ -28,3 +28,19 @@ export function displayOperationalTime(value: string | null): string {
   const time = value?.replace('T', ' ').slice(0, 19) || '—';
   return value?.endsWith('Z') || value?.endsWith('+00:00') ? `${time} UTC` : time;
 }
+
+export function formatFileSize(bytes: number | undefined): string {
+  if (bytes === undefined) return '—';
+  if (bytes < 1024) return `${bytes.toLocaleString('zh-CN')} B`;
+  const unit = bytes < 1024 * 1024 ? 'KB' : 'MB';
+  const scale = unit === 'KB' ? 1024 : 1024 * 1024;
+  return `${(bytes / scale).toLocaleString('zh-CN', { maximumFractionDigits: 1 })} ${unit}`;
+}
+
+export function formatImportDuration(milliseconds: number | undefined): string {
+  if (milliseconds === undefined) return '—';
+  const rounded = Math.round(milliseconds);
+  if (!rounded) return '<1 ms';
+  if (rounded < 1000) return `${rounded} ms`;
+  return `${(milliseconds / 1000).toLocaleString('zh-CN', { maximumFractionDigits: 1 })} s`;
+}

@@ -4,10 +4,11 @@ import { Modal } from '../components/Modal';
 import { useFeedback } from '../feedback/Feedback';
 import type { FundsCaseClientV1, FundsCaseContextV1, FundsHostActionsV1 } from '../panel/host';
 import { captureDroppedFiles } from '../lib/directory-files';
+import { formatFileSize, formatImportDuration } from '../lib/format';
 import { feedbackReason, unresolvedCount, ResolutionSummary, TableSummary, FeedbackSummary, ImportRecordEvidence } from './ImportDetails';
 import { createImportWorkflow, type ImportState, type ImportWorkflow, type ImportItem } from './import-workflow.mjs';
 import { buildImportTree, firstImportFile, importIcon, type ImportTreeNode } from './import-tree';
-import { ImportIcon, ImportProgress, ImportTree, importState } from './ImportTree';
+import { ImportIcon, ImportProgress, ImportTree, importState, type ImportTreeDestination } from './ImportTree';
 import { ImportDataPreview } from './ImportDataPreview';
 import { ImportStepper } from './ImportStepper';
 import { ImportReview } from './ImportReview';
@@ -37,6 +38,61 @@ function documentsFor(item: ImportItem, node: ImportTreeNode) {
 function knownDocumentTotal(documents: Record<string, unknown>[], key: string) {
   return documents.length && documents.every(document => typeof document[key] === 'number') ? documents.reduce((sum, document) => sum + (document[key] as number), 0).toLocaleString('zh-CN') : '—';
 }
+const inspectorCollapseDistance = 72;
+
+function ImportInspectorDivider({ onCollapse }: { onCollapse: () => void }) {
+  const cancelDrag = useRef<(() => void) | null>(null);
+  const collapse = useRef(onCollapse);
+  collapse.current = onCollapse;
+  useEffect(() => () => cancelDrag.current?.(), []);
+
+  return <div className="ft-inspector-divider" aria-hidden="true" title="向右拖动，松开折叠右侧详情"
+    onPointerDown={event => {
+      const { currentTarget: divider, pointerId, clientX, clientY } = event;
+      const doc = divider.ownerDocument, view = doc.defaultView;
+      if (!view || !event.isPrimary || event.button !== 0 || event.pointerType === 'touch' || cancelDrag.current) return;
+      event.preventDefault();
+      const lifetime = new AbortController();
+      const options = { capture: true, signal: lifetime.signal };
+      const cancel = () => {
+        cancelDrag.current = null;
+        lifetime.abort();
+        delete divider.dataset.dragging;
+        delete divider.dataset.armed;
+        divider.style.removeProperty('--ft-divider-offset');
+      };
+      const rightwardDistance = (point: PointerEvent) => {
+        const dx = point.clientX - clientX;
+        return dx >= 1.25 * Math.abs(point.clientY - clientY) ? dx : 0;
+      };
+      const cancelPointer = (point: PointerEvent) => { if (point.pointerId === pointerId) cancel(); };
+      cancelDrag.current = cancel;
+      divider.dataset.dragging = '';
+      // The embedding frame still receives move and release events after the pointer leaves the divider.
+      view.addEventListener('pointermove', point => {
+        if (point.pointerId !== pointerId) return;
+        if (!(point.buttons & 1)) { cancel(); return; }
+        const distance = rightwardDistance(point);
+        divider.style.setProperty('--ft-divider-offset', `${Math.min(distance, inspectorCollapseDistance)}px`);
+        divider.toggleAttribute('data-armed', distance >= inspectorCollapseDistance);
+      }, options);
+      view.addEventListener('pointerup', point => {
+        if (point.pointerId !== pointerId) return;
+        cancel();
+        if (point.button === 0 && rightwardDistance(point) >= inspectorCollapseDistance) collapse.current();
+      }, options);
+      view.addEventListener('pointercancel', cancelPointer, options);
+      doc.documentElement.addEventListener('pointerleave', cancelPointer, { signal: lifetime.signal });
+      view.addEventListener('blur', cancel, { signal: lifetime.signal });
+      view.addEventListener('keydown', key => {
+        if (key.key !== 'Escape') return;
+        key.preventDefault();
+        key.stopPropagation();
+        cancel();
+      }, options);
+    }} />;
+}
+
 export function ImportDialog({ target, client, scopeSignal, resume, actions, onClose, onImported, onOpenImport, settlementHint, active = true, surface = 'v1' }: {
   target: FundsCaseContextV1; client: FundsCaseClientV1; scopeSignal: AbortSignal; resume?: ImportSession; actions?: FundsHostActionsV1;
   onClose: () => void; onImported: () => void; onOpenImport?: (importId: string) => void;
@@ -45,24 +101,31 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const port = useFeedback(), callbacks = useRef({ onImported, onOpenImport, port }); callbacks.current = { onImported, onOpenImport, port };
   const [connection, setConnection] = useState<{ flow: ImportWorkflow; client: FundsCaseClientV1; signal: AbortSignal; caseId: string } | null>(null), [selectedId, setSelectedId] = useState<string>();
   const flow = connection?.client === client && connection.signal === scopeSignal && connection.caseId === target.caseId ? connection.flow : null;
-  const [recordFocus, setRecordFocus] = useState<{ itemId: string; memberPath: string; sourceRow: number; sequence: number }>();
+  const [recordFocus, setRecordFocus] = useState<{ itemId: string; memberPath: string; sourceRow?: number; sequence: number; review?: boolean }>();
   const [showResultDetails, setShowResultDetails] = useState(false);
+  const [collapsedInspector, setCollapsedInspector] = useState<{ retainedFile?: string } | null>(null);
+  const [showFileMetadata, setShowFileMetadata] = useState(false);
   const [reportChapter, setReportChapter] = useState<ImportReportChapter>('integrity');
   const [expandedFlow, setExpandedFlow] = useState<ImportWorkflow | null>(null), [query, setQuery] = useState('');
   const search = useRef<HTMLInputElement>(null);
+  const inspectorToggle = useRef<HTMLButtonElement>(null);
   const [downloading, setDownloading] = useState(''), [downloadError, setDownloadError] = useState(''), [dragging, setDragging] = useState(false);
   const [nativeIcon, setNativeIcon] = useState('');
   const fileActionLifetime = useRef(new AbortController());
-  const fileId = useId(), directoryId = useId();
+  const fileId = useId(), directoryId = useId(), inspectorId = useId();
   const fileInput = useRef<HTMLInputElement>(null), directoryInput = useRef<HTMLInputElement>(null);
   const handledSettlement = useRef(settlementHint?.sequence);
   const resultElement = useRef<HTMLElement>(null);
-  const inspectorElement = useRef<HTMLElement>(null);
+  const inspectorElement = useRef<HTMLDivElement>(null);
+  const focusInspector = useRef(false);
+  const body = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const value = createImportWorkflow({ target, client, signal: scopeSignal, resume, surface,
       onImported: () => callbacks.current.onImported(), onTask: task => callbacks.current.port.task({ ...task, announce: false,
         actions: callbacks.current.onOpenImport ? [{ id: 'open-import', label: task.status === 'success' ? '查看结果' : '查看进度', run: () => callbacks.current.onOpenImport?.(task.importId!) }] : [] }) });
-    setSelectedId(undefined); setRecordFocus(undefined); setShowResultDetails(false); setReportChapter('integrity'); setQuery(''); setConnection({ flow: value, client, signal: scopeSignal, caseId: target.caseId }); void value.start(); return value.dispose;
+    setSelectedId(undefined); setRecordFocus(undefined); setShowResultDetails(false); setReportChapter('integrity'); setQuery('');
+    setCollapsedInspector(null); setShowFileMetadata(false);
+    setConnection({ flow: value, client, signal: scopeSignal, caseId: target.caseId }); void value.start(); return value.dispose;
   }, [client, scopeSignal, target.caseId, resume?.import_id, surface]);
   const state = useSyncExternalStore(flow?.subscribe ?? idleSubscribe, flow?.snapshot ?? idleSnapshot, idleSnapshot);
   useLayoutEffect(() => { if (!active) flow?.stop('已离开导入进度；未启动文件未上传，已提交任务继续'); }, [active, flow]);
@@ -81,12 +144,47 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const root = roots.find(node => node.itemId === state.selectedId) ?? roots[0];
   const selected = findNode(roots, selectedId) ?? (root ? firstImportFile(root) : undefined);
   const item = state.items.find(value => value.id === selected?.itemId) ?? state.items[0];
+  const inspectorCollapsed = collapsedInspector !== null;
+  const keepInspector = !collapsedInspector || (!!selected && collapsedInspector.retainedFile === selected.id);
+  const toggleInspector = () => {
+    if (scopeSignal.aborted) return;
+    inspectorToggle.current?.focus({ preventScroll: true });
+    setCollapsedInspector(inspectorCollapsed ? null : { retainedFile: selected?.id });
+    if (!inspectorCollapsed) setShowFileMetadata(true);
+  };
+  useLayoutEffect(() => {
+    if (inspectorCollapsed || !showFileMetadata) return;
+    // Keep the wide rows clipped at their existing size until the divider returns.
+    const transition = body.current?.getAnimations?.().find(animation =>
+      'transitionProperty' in animation && animation.transitionProperty === 'grid-template-columns');
+    if (!transition) { setShowFileMetadata(false); return; }
+    let current = true;
+    const settle = () => { if (current) setShowFileMetadata(false); };
+    void transition.finished.then(settle, settle);
+    return () => { current = false; };
+  }, [inspectorCollapsed, showFileMetadata]);
+  const openFile = (node: ImportTreeNode, destination: ImportTreeDestination) => {
+    if (scopeSignal.aborted) return;
+    focusInspector.current = inspectorCollapsed;
+    setSelectedId(node.id); flow?.select(node.itemId);
+    setShowResultDetails(destination.kind === 'result'); setCollapsedInspector(null);
+    setRecordFocus(previous => destination.kind === 'review' ? {
+      itemId: node.itemId, memberPath: destination.memberPath, sourceRow: destination.sourceRow,
+      sequence: (previous?.sequence ?? 0) + 1, review: true,
+    } : undefined);
+  };
   useEffect(() => { const lifetime = new AbortController(); fileActionLifetime.current = lifetime; setDownloading(''); setDownloadError(''); return () => lifetime.abort(); }, [client, scopeSignal, selected?.id]);
   useLayoutEffect(() => {
     for (const element of [inspectorElement.current, ...inspectorElement.current?.querySelectorAll<HTMLElement>('.ft-mapping-scroll,.ft-preview-scroll') ?? []]) {
       if (element) { element.scrollTop = 0; element.scrollLeft = 0; }
     }
   }, [client, scopeSignal, item?.id, selected?.id]);
+  useLayoutEffect(() => {
+    const element = inspectorElement.current;
+    if (inspectorCollapsed || !focusInspector.current || !element) return;
+    focusInspector.current = false;
+    element.scrollTop = 0; element.scrollLeft = 0; element.focus({ preventScroll: true });
+  }, [inspectorCollapsed]);
   const preview = item?.preview, complete = item?.phase === 'done', result = item?.job?.result;
   const feedback = complete ? result?.feedback : preview?.feedback, summary = complete ? result?.table_summary : preview?.table_summary;
   const resolution = complete ? result?.resolution : preview?.resolution;
@@ -95,6 +193,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const queuePending = state.items.some(row => !['done', 'failed', 'skipped'].includes(row.phase));
   const processing = state.items.some(row => ['uploading', 'previewing', 'committing', 'polling'].includes(row.phase))
     || (state.reading || state.running) && (queuePending || state.items.length === 0);
+  const canShowResult = complete || item?.phase === 'failed' || (!!preview && (classified || !!resolution) && !processing);
   const allKnown = state.items.length > 0 && roots.every((node, index) => node.fileCount > 0 && (node.kind === 'file' || state.items[index].preview || state.items[index].job?.result));
   const totalFiles = roots.reduce((total, node) => total + (node.fileCount || 1), 0);
   const fileCounts = (phase: string) => roots.reduce((total, node, index) => total + (state.items[index].phase === phase ? node.fileCount || 1 : 0), 0);
@@ -123,13 +222,13 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const recognized = new Set(fieldRows.filter(row => row.entries.length > 0).map(row => row.column));
   const reviewMember = selected?.memberPaths.length===1 ? selected.memberPaths[0] : undefined;
   const reviewAvailable = !!(complete && classified && result?.source_id && reviewMember && client.importReview);
+  const reviewFocus = recordFocus?.review && recordFocus.itemId === item?.id && recordFocus.memberPath === reviewMember ? recordFocus : undefined;
   const counts = selected?.dispositions ?? {}, countsKnown = complete && (!selected?.memberPaths.length || item.job?.member_results !== undefined);
   const imported = counts.imported ?? (!selected?.memberPaths.length ? result?.ok : undefined), duplicates = counts.duplicate ?? (!selected?.memberPaths.length ? result?.rows_dup : undefined);
   const needsReview = (counts.unresolved ?? 0) + (counts.review ?? 0), others = Object.entries(counts).filter(([key]) => !['imported','duplicate','unresolved','review','removed'].includes(key)).reduce((sum, [, value]) => sum + value, 0);
   const physicalFile = containingFile(roots, selected?.id), fileDocuments = item && physicalFile ? documentsFor(item, physicalFile) : [];
   const member = summary?.members?.find(row => row.member_path === physicalFile?.path);
-  const sizeBytes = !physicalFile?.path ? item?.sizeBytes : member && !['xlsx','xls'].includes(member.encoding) && !/\.xlsx?$/i.test(physicalFile?.name || '') && physicalFile?.kind === 'file' ? member.size_bytes : undefined;
-  const sizeText = sizeBytes === undefined ? '—' : sizeBytes < 1024 ? `${sizeBytes} B` : `${(sizeBytes / (sizeBytes < 1024 * 1024 ? 1024 : 1024 * 1024)).toLocaleString('zh-CN', { maximumFractionDigits: 1 })} ${sizeBytes < 1024 * 1024 ? 'KB' : 'MB'}`;
+  const sizeText = formatFileSize(physicalFile ? physicalFile.sizeBytes : item?.sizeBytes);
   const directOriginal = !!item && !item.directory && !/\.(zip|rar)$/i.test(item.filename);
   useEffect(() => { setNativeIcon(''); }, [item?.id, selected?.id, client, scopeSignal]);
   const close = () => { flow?.stop('已关闭进度；未启动文件未上传，已提交任务继续处理'); onClose(); };
@@ -163,10 +262,22 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
             { label: selected?.path && /\.(zip|rar)$/i.test(item.filename) || item.directory ? '另存所属压缩包…' : '另存原件…', icon: 'file-plus', disabled: !result?.source_id || !actions?.downloadSource || !originalAvailable || !!downloading, run: () => void download('original') },
             ...(directOriginal && actions?.sourceCopy ? [{ label: '显示副本位置', icon: 'folder', disabled: !result?.source_id || !originalAvailable || !!downloading, run: () => void nativeCopy('reveal') }] : []),
             { label: '复制文件名', icon: 'copy', run: () => void copyFileName() },
-          ]} information={<dl className="ft-file-information">{selected?.kind === 'sheet' && physicalFile?.kind === 'file' && <><dt>范围</dt><dd>整份文件</dd></>}<dt>{item.directory && !selected?.path ? '所选文件合计' : '文件大小'}</dt><dd>{sizeText}</dd><dt>处理用时（本次）</dt><dd>{!physicalFile?.path && complete && item.processingMs !== undefined ? `${(item.processingMs / 1000).toLocaleString('zh-CN', { maximumFractionDigits: 1 })} s` : '—'}</dd><dt>原始行数</dt><dd>{knownDocumentTotal(fileDocuments, 'source_rows')}</dd><dt>数据记录</dt><dd>{fileDocuments.length ? knownDocumentTotal(fileDocuments, 'row_count') : summary && !physicalFile?.path ? summary.record_total.toLocaleString('zh-CN') : member?.row_count?.toLocaleString('zh-CN') ?? '—'}</dd></dl>} /></div>;
-  const fundsReportMode = showResultDetails && !!client.importFundsReport;
+          ]} information={<dl className="ft-file-information">{selected?.kind === 'sheet' && physicalFile?.kind === 'file' && <><dt>范围</dt><dd>整份文件</dd></>}<dt>{item.directory && !selected?.path ? '所选文件合计' : '文件大小'}</dt><dd>{sizeText}</dd><dt>处理用时（本次）</dt><dd>{formatImportDuration(!physicalFile?.path && (complete || item.phase === 'failed') ? item.processingMs : undefined)}</dd><dt>原始行数</dt><dd>{knownDocumentTotal(fileDocuments, 'source_rows')}</dd><dt>数据记录</dt><dd>{fileDocuments.length ? knownDocumentTotal(fileDocuments, 'row_count') : summary && !physicalFile?.path ? summary.record_total.toLocaleString('zh-CN') : member?.row_count?.toLocaleString('zh-CN') ?? '—'}</dd></dl>} /></div>;
+  const fundsReportMode = showResultDetails && !!client.importFundsReport
+    && (!complete || (inspectable && !!reviewMember && !!result?.source_id));
+  const inspectorToggleLabel = inspectorCollapsed ? '展开右侧详情' : '折叠右侧详情';
   if (!active || scopeSignal.aborted) return null;
-  return <Modal className={`ft-import-dialog ${expanded ? 'is-expanded' : 'is-entry'}`} title="导入流水" compact dismissOutside={!item && !state.reading} onClose={close} onFileDrop={modalDrop} headerAction={expanded && <div className="ft-file-search"><ImportIcon name="search" /><input ref={search} type="search" aria-label="搜索导入文件" placeholder="搜索文件…" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape' && query) { event.preventDefault(); event.stopPropagation(); setQuery(''); } }} /><kbd>Ctrl K</kbd></div>}>
+  return <Modal className={`ft-import-dialog ${expanded ? 'is-expanded' : 'is-entry'}${showResultDetails ? ' is-result-view' : ''}`} title="导入流水" compact dismissOutside={!item && !state.reading} onClose={close} onFileDrop={modalDrop}
+    headerAction={expanded && <>
+      <div className="ft-file-search"><ImportIcon name="search" /><input ref={search} type="search" aria-label="搜索导入文件" placeholder="搜索文件…" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape' && query) { event.preventDefault(); event.stopPropagation(); setQuery(''); } }} /><kbd>Ctrl K</kbd></div>
+      {item && <button ref={inspectorToggle} type="button" className="ft-inspector-toggle icon-button" aria-controls={inspectorId} aria-expanded={!inspectorCollapsed}
+        aria-label={inspectorToggleLabel} title={inspectorToggleLabel} onClick={toggleInspector}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true" focusable="false">
+          <rect x="3" y="5" width="18" height="14" rx="3" />
+          <path d={inspectorCollapsed ? 'M17 8.5v7' : 'M15 5v14'} />
+        </svg>
+      </button>}
+    </>}>
     {complete && <div className="ft-sr-only" role="status" aria-label="导入完成"><span>{classified ? '自动处理完成' : '流水已写入当前案件'}</span><p>{classified && <>已保存 {feedback?.record_total ?? summary?.record_total} 条记录 · </>}新增流水记录 {summary?.effective_added ?? result?.ok ?? 0} 条 · 重复 {result?.rows_dup ?? 0} 条 · {feedback ? <>已配对冲正/撤销 {feedback.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {feedback.non_monetary} 条 · 未计入资金流水 {unresolvedCount(feedback)} 条 · 来源反馈 {feedback.non_transaction} 条 · 辅助资料 {feedback.auxiliary} 条</> : summary ? <>未计入资金流水 {summary.unresolved} 条 · 已配对冲正/撤销 {summary.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {summary.non_monetary} 条 · 非交易记录 {summary.non_transaction} 条 · 辅助资料 {summary.auxiliary} 条</> : <>跳过 {result?.skipped ?? 0} 行</>}</p></div>}
     <input className="ft-file-input" ref={fileInput} id={fileId} aria-label="选择流水文件" aria-describedby={!item ? `${fileId}-hint ${fileId}-group` : undefined} tabIndex={-1} type="file" multiple accept=".csv,.tsv,.txt,.xlsx,.xls,.zip,.rar" disabled={state.reading || state.running} onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; upload(() => files); }} />
     {client.previewDirectory && <input className="ft-file-input" id={directoryId} tabIndex={-1} aria-label="选择整个文件夹" type="file" multiple ref={element => { directoryInput.current = element; element?.setAttribute('webkitdirectory', ''); }} disabled={state.reading || state.running} onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; upload(() => files, true); }} />}
@@ -178,9 +289,22 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
       const dropped = captureDroppedFiles(event.dataTransfer); upload(signal => dropped.read(signal), directory);
     }}><ImportIcon name={state.reading ? 'import-loader' : 'upload'} className={state.reading ? 'is-spinning' : ''} /><h3>{state.reading ? '正在读取所选文件…' : '拖入文件或文件夹'}</h3><p id={`${fileId}-hint`}>Excel · CSV · ZIP · RAR</p><div className="ft-file-actions"><button type="button" className="button primary" disabled={state.reading || state.running} onClick={() => fileInput.current?.click()}>选择文件</button>{client.previewDirectory && <button type="button" className="button secondary" disabled={state.reading || state.running} onClick={() => directoryInput.current?.click()}>选择文件夹</button>}</div><p id={`${fileId}-group`} className="ft-sr-only">多选文件顺序处理；需要资料相互关联时，请选择整个文件夹。</p></div>
       : !expanded && item ? <section className="ft-entry-progress"><ImportIcon name={busy ? 'import-loader' : unknown ? 'import-clock' : 'import-circle-x'} className={busy ? 'is-spinning' : ''} /><ImportFileName name={item.filename} /><p>{sizeText}</p><ImportProgress label={progressLabel} active={!!busy} />{item.error && <p className="ft-entry-error" role="alert">{item.error}</p>}{!busy && <div className="ft-file-actions">{unknown && item.importId ? <button className="button secondary" onClick={() => void flow?.query(item.id)}>重新查询进度</button> : !item.importId && <button type="button" className="button primary" onClick={() => fileInput.current?.click()}>重新选择文件</button>}</div>}</section>
-      : item && <div className="ft-import-body"><aside className="ft-import-files"><div className="ft-section-heading"><h3>导入文件</h3><div className="ft-counts ft-file-counts" aria-label="文件处理汇总">{fileSummary.map(({tone,label,count,icon})=><span key={label} data-tone={tone}><ImportIcon name={icon} />{label} {count ?? '—'}</span>)}</div>{state.running && state.items.length > 1 && !state.stopped && <button className="ft-text-button" onClick={() => flow?.stop()}>停止后续文件</button>}</div><ImportTree roots={roots} items={state.items} selectedId={selected?.id} query={query} onClearSearch={() => setQuery('')} onSelect={node => { setSelectedId(node.id); setRecordFocus(undefined); flow?.select(node.itemId); }} /></aside>
-        <section className={`ft-inspector ${fundsReportMode ? 'is-report' : ''}`} ref={inspectorElement} tabIndex={0} aria-label="文件识别与预览，可上下滚动">
-          {fundsReportMode ? complete && inspectable && reviewMember && result?.source_id ? <ImportFundsReport key={`${client.binding.scopeKey}:${client.binding.generation}:${result.source_id}:${reviewMember}`} client={client} scopeSignal={scopeSignal} sourceId={result.source_id} memberPath={reviewMember} header={fileHeading} actions={actions} chapter={reportChapter} onChapter={setReportChapter} /> : <div className="ft-report-unavailable">{fileHeading}<p>{!inspectable ? '选择文件或工作表，查看其资金统计报告。' : item.phase === 'failed' ? '此文件导入失败，没有可统计的资金记录。' : '此文件尚未完成导入，报告暂不可用。'}</p>{item.error && <p role="alert">{item.error}</p>}</div> : <>
+      : item && <div ref={body} className={`ft-import-body${inspectorCollapsed ? ' is-inspector-collapsed' : ''}${showFileMetadata ? ' has-file-metadata' : ''}`}>
+        <aside className="ft-import-files">
+          <div className="ft-import-files-content">
+            <ImportTree roots={roots} items={state.items} selectedId={selected?.id} query={query} onClearSearch={() => setQuery('')} onOpen={openFile}
+              canReview={!!client.importReview} canLocateSource={!!client.importRecords}
+              showMetadata={showFileMetadata} metadataActive={inspectorCollapsed} heading={<>
+                <h3>导入文件</h3><div className="ft-counts ft-file-counts" aria-label="文件处理汇总">{fileSummary.map(({tone,label,count,icon})=><span key={label} data-tone={tone}><ImportIcon name={icon} />{label} {count ?? '—'}</span>)}</div>
+                {state.running && state.items.length > 1 && !state.stopped && <button className="ft-text-button" onClick={() => flow?.stop()}>停止后续文件</button>}
+              </>} />
+          </div>
+        </aside>
+        {!inspectorCollapsed && !showFileMetadata && <ImportInspectorDivider onCollapse={toggleInspector} />}
+        <section id={inspectorId} className={`ft-inspector ${fundsReportMode ? 'is-report' : ''}`} aria-label="文件识别与预览，可上下滚动"
+          inert={inspectorCollapsed} aria-hidden={inspectorCollapsed || undefined}>
+          <div className="ft-inspector-content" ref={inspectorElement} tabIndex={0}>
+          {keepInspector && (fundsReportMode ? complete && inspectable && reviewMember && result?.source_id ? <ImportFundsReport key={`${client.binding.scopeKey}:${client.binding.generation}:${result.source_id}:${reviewMember}`} client={client} scopeSignal={scopeSignal} sourceId={result.source_id} memberPath={reviewMember} header={fileHeading} actions={actions} chapter={reportChapter} onChapter={setReportChapter} /> : <div className="ft-report-unavailable">{fileHeading}<p>{!inspectable ? '选择文件或工作表，查看其资金统计报告。' : item.phase === 'failed' ? '此文件导入失败，没有可统计的资金记录。' : '此文件尚未完成导入，报告暂不可用。'}</p>{item.error && <p role="alert">{item.error}</p>}</div> : <>
           {fileHeading}
 
 
@@ -194,7 +318,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
             {item.dirty && <button className="button secondary" onClick={() => void flow?.repreview(item.id)}>按当前映射重新预览</button>}
           </section>}
           {!reviewAvailable && !showResultDetails && inspectable && (selectedExamples.length > 0 || genericExamples.length > 0) && <section className="ft-issues"><div className="ft-section-heading"><h4>识别问题（{selectedExamples.length + genericExamples.length}）</h4></div>{selectedExamples.map((row, index) => <div key={index} className="ft-issue"><ImportIcon name="import-circle-x" /><span>原始第 {row.source_row} 行 · {feedbackReason(row.reason_code)}</span>{result?.source_id && <a href="#ft-source-records" onClick={event => { event.preventDefault(); setSelectedId(selected?.id); setShowResultDetails(false); setRecordFocus(previous => ({ itemId: item.id, memberPath: row.member_path, sourceRow: row.source_row, sequence: (previous?.sequence ?? 0) + 1 })); }}>查看来源行</a>}</div>)}{genericExamples.map((row, index) => <div key={`generic:${index}`} className="ft-issue"><ImportIcon name="import-circle-x" /><span>{row.source_row != null ? `原始第 ${row.source_row} 行` : row.row} · {feedbackReason(row.reason)}</span></div>)}</section>}
-          {!showResultDetails && inspectable && (result?.source_id ? <div id="ft-source-records">{reviewAvailable ? <ImportReview key={`${client.binding.scopeKey}:${client.binding.generation}:${item.id}:${selected?.id}`} client={client} scopeSignal={scopeSignal} sourceId={result.source_id} memberPath={reviewMember!} /> : <ImportRecordEvidence key={`${client.binding.scopeKey}:${client.binding.generation}:${item.id}:${selected?.id}:${recordFocus?.itemId === item.id ? recordFocus.sequence : 0}`} compact initialRows={samples} filename={selected?.name || item.filename} caseId={target.caseId} openPreview focusRow={recordFocus?.itemId === item.id && selected?.memberPaths.includes(recordFocus.memberPath) ? recordFocus.sourceRow : undefined} onClearFocus={() => setRecordFocus(undefined)} sourceId={result.source_id} memberPath={selected?.memberPaths.length === 1 ? selected.memberPaths[0] : undefined} client={client} scopeSignal={scopeSignal} />}</div> : preview && <ImportDataPreview rows={samples} filename={item.filename} feedback={!!feedback} />)}
+          {!showResultDetails && inspectable && (result?.source_id ? <div id="ft-source-records">{reviewAvailable ? <ImportReview key={`${client.binding.scopeKey}:${client.binding.generation}:${item.id}:${selected?.id}:${reviewFocus?.sequence ?? 0}`} client={client} scopeSignal={scopeSignal} sourceId={result.source_id} memberPath={reviewMember!} reserveIssueBar={countsKnown && needsReview > 0} startInReview={!!reviewFocus} /> : <ImportRecordEvidence key={`${client.binding.scopeKey}:${client.binding.generation}:${item.id}:${selected?.id}:${recordFocus?.itemId === item.id ? recordFocus.sequence : 0}`} compact initialRows={samples} filename={selected?.name || item.filename} caseId={target.caseId} openPreview focusRow={recordFocus?.itemId === item.id && selected?.memberPaths.includes(recordFocus.memberPath) ? recordFocus.sourceRow : undefined} onClearFocus={() => setRecordFocus(undefined)} sourceId={result.source_id} memberPath={selected?.memberPaths.length === 1 ? selected.memberPaths[0] : undefined} client={client} scopeSignal={scopeSignal} />}</div> : preview && <ImportDataPreview rows={samples} filename={item.filename} feedback={!!feedback} />)}
           {complete && <section hidden={!showResultDetails} className="ft-result-data" aria-label="处理结果" ref={resultElement}><h4>导入回执</h4><table><thead><tr><th>处理结果</th><th>{resume?.stage === 'done' ? '导入当时数量' : '数量'}</th></tr></thead><tbody><tr><td>新增流水记录</td><td>{summary?.effective_added ?? result?.ok ?? 0}</td></tr><tr><td>重复</td><td>{result?.rows_dup ?? 0}</td></tr><tr><td>未计入</td><td>{feedback ? unresolvedCount(feedback) : summary?.unresolved ?? result?.skipped ?? 0}</td></tr></tbody></table><p className="ft-receipt">批次 {result?.batch_id} · {item.filename}</p>
             {result?.source_id && inspectable && <ImportRecordEvidence caseId={target.caseId} sourceId={result.source_id} memberPath={selected?.memberPaths.length === 1 ? selected.memberPaths[0] : undefined} client={client} scopeSignal={scopeSignal} />}
           </section>}
@@ -204,8 +328,9 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
             {complete && classified && <div className="ft-downloads"><button className="button secondary" disabled={!result?.source_id || !actions?.downloadImportReport || !!downloading} onClick={() => void download('report')}>下载完整处理报告（JSON）</button><button className="button secondary" disabled={!result?.source_id || !actions?.downloadSource || !originalAvailable || !!downloading} onClick={() => void download('original')}>{feedback ? '下载原始 ZIP' : '下载原始文件'}</button>{(!actions?.downloadImportReport || !actions?.downloadSource) && <p>宿主未提供{!actions?.downloadImportReport ? '处理报告' : ''}{!actions?.downloadImportReport && !actions?.downloadSource ? '和' : ''}{!actions?.downloadSource ? '原件' : ''}下载能力。</p>}{!originalAvailable && <p>{feedback ? '原始 ZIP 已不可用' : '原始文件已不可用'}；处理报告仍可用于追溯。</p>}</div>}
           </details>}
           {downloadError && <p role="alert">{downloadError}</p>}
-          </>}
+          </>)}
+          </div>
         </section></div>}
-    {expanded && <footer className="ft-import-footer"><div className="ft-footer-actions">{(state.items.length > 0) && <button className="button primary" disabled={!showResultDetails && !complete && (!preview || !classified && !resolution || processing)} onClick={() => { setShowResultDetails(value => !value); setRecordFocus(undefined); }}>{showResultDetails ? '返回数据预览' : '查看处理结果'}</button>}<button className="button secondary" onClick={close}>{!queuePending ? '完成' : '关闭进度'}</button>{preview && !complete && !pending && !state.running && <button className="button primary" disabled={!!busy || state.running || item.dirty || !classified && preview.stats.ok === 0 || item.phase === 'failed'} onClick={() => void flow?.commit(item.id)}>{classified ? '开始导入' : '确认导入'}</button>}</div></footer>}
+    {expanded && <footer className="ft-import-footer"><div className="ft-footer-actions">{(state.items.length > 0) && <button className="button primary" disabled={!showResultDetails && !canShowResult} onClick={() => { setCollapsedInspector(null); setShowResultDetails(value => !value); }}>{showResultDetails ? '返回数据预览' : '查看处理结果'}</button>}<button className="button secondary" onClick={close}>{!queuePending ? '完成' : '关闭进度'}</button>{preview && !complete && !pending && !state.running && <button className="button primary" disabled={!!busy || state.running || item.dirty || !classified && preview.stats.ok === 0 || item.phase === 'failed'} onClick={() => void flow?.commit(item.id)}>{classified ? '开始导入' : '确认导入'}</button>}</div></footer>}
   </Modal>;
 }

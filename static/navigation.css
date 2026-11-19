@@ -1,10 +1,12 @@
 /* Shared application navigation. Keep the live graph at its original size while
    another page is in front, so hidden-page resizing cannot move its camera. */
-#browserCaption {height:44px;flex:0 0 44px;display:flex;align-items:center;gap:10px;padding:0 14px;background:var(--surface-rail);font-size:14px}
+body {--app-caption-height:44px;--app-rail-width:52px;--app-page-inset:4px}
+body:has(> #browserCaption[hidden]) {--app-caption-height:0px}
+#browserCaption {height:var(--app-caption-height);flex:0 0 var(--app-caption-height);display:flex;align-items:center;gap:10px;padding:0 14px;background:var(--surface-rail);font-size:14px}
 #browserCaption img {width:24px;height:24px}
 .preview-badge {font-size:10px;color:var(--muted);background:var(--surface-control);padding:2px 6px;border-radius:4px}
 #appShell {flex:1;display:flex;min-width:0;min-height:0;overflow:hidden;background:var(--surface-rail)}
-#appRail {width:52px;flex:0 0 52px;display:flex;flex-direction:column;align-items:center;gap:var(--space-8);padding:8px 0;background:var(--surface-rail)}
+#appRail {width:var(--app-rail-width);flex:0 0 var(--app-rail-width);display:flex;flex-direction:column;align-items:center;gap:var(--space-8);padding:8px 0;background:var(--surface-rail)}
 #appRail button {width:36px;height:36px;flex:0 0 36px;border:0;border-radius:var(--control-radius);background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center}
 #appRail button:hover {background:var(--surface-hover)}
 #appRail button:focus-visible {outline:var(--focus-width) solid var(--focus-ring);outline-offset:var(--focus-offset)}
@@ -13,7 +15,12 @@
 #appRail img {width:20px;height:20px;filter:var(--icon-filter)}
 #appRail button[aria-current="page"] img {filter:var(--icon-on-filter)}
 .rail-spacer {flex:1}
-#appPageHost {position:relative;flex:1;min-width:0;min-height:0;margin:0 4px 4px 0;border-radius:12px;background:var(--surface);overflow:hidden}
+#appPageHost {position:relative;flex:1;min-width:0;min-height:0;margin:0 var(--app-page-inset) var(--app-page-inset) 0;border-radius:12px;background:var(--surface);overflow:hidden}
+.funds-trace.ft-import-mount {
+  --ft-import-slot-inset:var(--app-caption-height) var(--app-page-inset) var(--app-page-inset) var(--app-rail-width);
+  --ft-import-slot-width:calc(100vw - var(--app-rail-width) - var(--app-page-inset));
+  --ft-import-slot-height:calc(100dvh - var(--app-caption-height) - var(--app-page-inset));
+}
 #graphPage {position:absolute;inset:0;display:flex;flex-direction:column;min-width:0;min-height:0}
 #graphPage.page-inactive {visibility:hidden;pointer-events:none}
 /* Override #drawer.open visibility while keeping its draft for return home. */
