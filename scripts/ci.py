@@ -10,6 +10,7 @@ import sys
 
 
 GROUPS = ("python", "react", "desktop")
+PYTHON_SHARD_OUTPUTS = {"shard_1": "success", "shard_2": "success", "shard_3": "success"}
 DOC_MEDIA = {
     ".avif", ".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".png", ".svg",
     ".webp", ".mp4", ".mov", ".webm", ".eot", ".otf", ".ttf", ".woff",
@@ -87,6 +88,8 @@ def check_gate(needs):
         actual = needs[group].get("result")
         if actual != expected:
             raise ValueError(f"{group} must be {expected}; got {actual!r}")
+    if outputs["python"] == "true" and needs["python"].get("outputs") != PYTHON_SHARD_OUTPUTS:
+        raise ValueError("all three Python shards must each report success")
 
 
 def main(argv=None):
