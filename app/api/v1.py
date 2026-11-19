@@ -235,17 +235,17 @@ def resolution(case_id: CaseId):
 
 @router.post("/cases/{case_id}/imports/directory/preview", response_model=ImportPreview, operation_id="v1_directory_preview")
 async def directory_upload(case_id: CaseId, request: Request, files: list[UploadFile] = File(...)):
-    return await imports.upload_directory(case_id, files, disconnected=request.is_disconnected)
+    return await imports.upload_directory(case_id, files, receive=request.receive)
 
 
 @router.post("/cases/{case_id}/imports/preview", response_model=ImportPreview, operation_id="v1_upload_preview")
 async def upload(case_id: CaseId, request: Request, file: UploadFile = File(...)):
-    return await imports.upload(case_id, file, disconnected=request.is_disconnected)
+    return await imports.upload(case_id, file, receive=request.receive)
 
 
 @router.post("/cases/{case_id}/imports/{import_id}/preview", response_model=ImportPreview, operation_id="v1_repreview")
-async def repreview(case_id: CaseId, import_id: ImportId, body: RepreviewRequest, request: Request):
-    return await imports.preview_again(case_id, import_id, body, disconnected=request.is_disconnected)
+async def repreview(case_id: CaseId, import_id: ImportId, body: RepreviewRequest):
+    return await imports.preview_again(case_id, import_id, body)
 
 
 @router.post("/cases/{case_id}/imports/{import_id}/commit", response_model=CommitStarted, operation_id="v1_commit_import")

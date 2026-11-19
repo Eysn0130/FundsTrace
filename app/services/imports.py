@@ -9,6 +9,7 @@ import csv
 from contextlib import nullcontext
 from copy import deepcopy
 from decimal import Decimal, localcontext
+from functools import partial
 import hashlib
 import json
 import os
@@ -1015,31 +1016,35 @@ class _PreviewCancelled(Exception):
     pass
 
 
-async def _execute_preview(operation, *args, disconnected=None):
+async def _execute_preview(operation, *args, receive=None):
     # One admitted preview, with no queue of large parser plans or ZIP copies.
     # This also covers directory construction; it must not re-enter admission.
     if not _preview_lock.acquire(blocking=False):
         raise ServiceError(409, "preview_busy", "另一个文件正在预览，请等待完成后重试")
     cancelled = threading.Event()
+    model_cancelled = threading.Event() if receive is not None else cancelled
     monitor = None
 
     async def watch_disconnect():
-        while not cancelled.is_set():
-            if await disconnected():
-                cancelled.set()
-                return
-            await asyncio.sleep(0.1)
+        # The upload handler already received the entire multipart body.
+        # Wait for the ASGI event rather than polling a cancelled receive.
+        while (await receive())["type"] != "http.disconnect":
+            pass
+        model_cancelled.set()
 
     try:
-        if disconnected is not None:
+        work = partial(operation, cancelled, *args)
+        if receive is not None:
             monitor = asyncio.create_task(watch_disconnect())
-        worker = asyncio.create_task(anyio.to_thread.run_sync(operation, cancelled, *args))
+            work = partial(work, model_cancelled=model_cancelled)
+        worker = asyncio.create_task(anyio.to_thread.run_sync(work))
         try:
             return await asyncio.shield(worker)
         except _PreviewCancelled:
             raise ServiceError(499, "preview_cancelled", "预览已取消") from None
         except asyncio.CancelledError:
             cancelled.set()
+            model_cancelled.set()
             # FastAPI closes request UploadFiles when this call unwinds. Both
             # raw Task.cancel and AnyIO cancellation must wait for the worker.
             with anyio.CancelScope(shield=True):
@@ -1054,9 +1059,13 @@ async def _execute_preview(operation, *args, disconnected=None):
                 worker.exception()
             raise
     finally:
-        if monitor is not None:
-            monitor.cancel()
-        _preview_lock.release()
+        try:
+            if monitor is not None:
+                monitor.cancel()
+                with anyio.CancelScope(shield=True):
+                    await asyncio.gather(monitor, return_exceptions=True)
+        finally:
+            _preview_lock.release()
 
 
 def _upload_size(source):
@@ -1066,7 +1075,7 @@ def _upload_size(source):
     return size
 
 
-def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence=False):
+def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence=False, *, model_cancelled=None):
     cid = _cid(case_id) if case_id is not None else None
     filename = Path((filename or "transactions.csv").replace("\\", "/")).name
     extension = Path(filename).suffix
@@ -1082,6 +1091,12 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
     # The request owns this seekable spool until the worker has returned.
     # Failed parsing never creates a retained original.
     parsed, created = None, False
+    policy = None
+    model_cancelled = cancelled if model_cancelled is None else model_cancelled
+
+    def interrupted_model():
+        return model_cancelled.is_set() and policy is not None and policy.attempted_inference
+
     try:
         if cancelled.is_set():
             raise _PreviewCancelled()
@@ -1092,14 +1107,13 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
         table_profile = (((archive_profile if resolve_evidence or archive_profile in table_archive.XLS_EVIDENCE_PROFILES else table_archive.PROFILE)
                           if suffix == ".rar" or table_archive.should_parse(source, native_observations=True) else None)
                          if suffix in {".zip", ".rar"} else table_import.VOUCHER_REFERENCE_XLS_PROFILE if suffix == ".xls" else table_import.VOUCHER_REFERENCE_EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
-        policy = None
         if cid is not None and table_profile is not None:
             from app.header_regions import HeaderRegionPolicy
-            policy = HeaderRegionPolicy(cancelled)
+            policy = HeaderRegionPolicy(model_cancelled)
         parsed = _parse(source, suffix=suffix, table_profile=table_profile, header_policy=policy,
                         feedback_profile=feedback_import.MICROSECOND_EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None,
                         _auto_event_profile=table_profile in table_import.CLOSED_BANK_SUCCESSORS)
-        if cancelled.is_set():
+        if cancelled.is_set() or interrupted_model():
             raise _PreviewCancelled()
         import_id = uuid.uuid4().hex
         directory = _directory(create=True)
@@ -1109,7 +1123,7 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
         with path.open("xb") as stream:
             created = True
             for block in iter(lambda: source.read(1024 * 1024), b""):
-                if cancelled.is_set():
+                if cancelled.is_set() or interrupted_model():
                     raise _PreviewCancelled()
                 size += len(block)
                 if size > _max_upload:
@@ -1133,12 +1147,14 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
         evidence_resolution.operation_context(parsed, session["sha256"])
         pure_stamp = import_preview_cache.stamp(parsed)
         with db.transaction():
-            if cancelled.is_set():
+            if cancelled.is_set() or interrupted_model():
                 raise _PreviewCancelled()
             if cid is not None:
                 _cid(cid)
                 _bind_feedback_plan(cid, parsed)
                 _bind_table_plan(cid, parsed, source=session)
+            if cancelled.is_set() or interrupted_model():
+                raise _PreviewCancelled()
             db.x("""insert into import_sessions(import_id,case_id,surface,filename,suffix,sha256,size_bytes,
                       mode,mapping_json,columns_json,request_json,stage,created_at,updated_at,expires_at,source_state)
                     values (?,?,?,?,?,?,?,?,?,?,?,'ready',?,?,?,'retained')""",
@@ -1151,14 +1167,16 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
             evidence_resolution.operation_context(parsed, session["sha256"])
             reference_choice_conflict = parsed[0].attrs.get("table_plan", {}).get("_reference_choice_conflict", False)
             result = _preview_result(session, parsed, legacy=surface == "legacy", preserve_staging=pure_stamp is not None)
-            if cancelled.is_set():
-                raise _PreviewCancelled()
             if pure_stamp is not None:
                 cache_session = db.q_raw("select * from import_sessions where import_id=?", [import_id])[0]
                 if import_preview_cache.retain(
                         import_preview_cache.key(cache_session, _table_profile(cache_session), _table_overrides(cache_session)),
                         parsed, pure_stamp):
                     parsed = None  # The finite cache now owns this one original plan.
+            # Ordinary previews that reached registration stay recoverable.
+            # An interrupted optional inference may not publish a new session.
+            if interrupted_model():
+                raise _PreviewCancelled()
         result["automatic"] = not (result.get("reference_policy_available")
             and reference_choice_conflict)
         return result
@@ -1171,20 +1189,20 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
         _close_staging(parsed)
 
 
-async def _upload(case_id, file, surface, *, resolve_evidence=False, disconnected=None):
+async def _upload(case_id, file, surface, *, resolve_evidence=False, receive=None):
     return await _execute_preview(_upload_sync, case_id, file.file, file.filename, surface, resolve_evidence,
-                                  disconnected=disconnected)
+                                  receive=receive)
 
 
-async def upload(case_id, file, *, disconnected=None):
-    return await _upload(case_id, file, "v1", disconnected=disconnected)
+async def upload(case_id, file, *, receive=None):
+    return await _upload(case_id, file, "v1", receive=receive)
 
 
-async def legacy_upload(file, case_id=None, *, disconnected=None):
-    return await _upload(case_id, file, "legacy", disconnected=disconnected)
+async def legacy_upload(file, case_id=None, *, receive=None):
+    return await _upload(case_id, file, "legacy", receive=receive)
 
 
-def _directory_preview_sync(cancelled, case_id, files, surface):
+def _directory_preview_sync(cancelled, case_id, files, surface, *, model_cancelled=None):
     """Preserve relative paths/bytes in one registered original before preview.
 
     Starlette admits at most 1000 multipart files. Use the same explicit bound
@@ -1232,11 +1250,11 @@ def _directory_preview_sync(cancelled, case_id, files, surface):
                         if size > table_archive.MAX_MEMBER_BYTES or total > _max_upload:
                             raise ServiceError(400, "file_too_large", "目录原件累计超过300MB或单文件超过256MB，请分包上传")
                         target.write(block)
-        return _upload_sync(cancelled, case_id, source, "目录原件.zip", surface, True)
+        return _upload_sync(cancelled, case_id, source, "目录原件.zip", surface, True, model_cancelled=model_cancelled)
 
 
-async def upload_directory(case_id, files, *, surface="v1", disconnected=None):
-    return await _execute_preview(_directory_preview_sync, case_id, files, surface, disconnected=disconnected)
+async def upload_directory(case_id, files, *, surface="v1", receive=None):
+    return await _execute_preview(_directory_preview_sync, case_id, files, surface, receive=receive)
 
 
 def _repreview_sync(cancelled, case_id, import_id, body, surface):
@@ -1310,8 +1328,8 @@ def legacy_repreview(body):
     return _repreview_sync(threading.Event(), body.case_id, body.import_id, body, "legacy")
 
 
-async def preview_again(case_id, import_id, body, *, surface="v1", disconnected=None):
-    return await _execute_preview(_repreview_sync, case_id, import_id, body, surface, disconnected=disconnected)
+async def preview_again(case_id, import_id, body, *, surface="v1"):
+    return await _execute_preview(_repreview_sync, case_id, import_id, body, surface)
 
 
 def _account_values(value):

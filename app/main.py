@@ -292,7 +292,7 @@ def _legacy_preview_error(error):
 @app.post("/api/import/directory/preview")
 async def import_directory_preview(request: Request, files: List[UploadFile] = File(...), case_id: int = Query(...)):
     try:
-        return await import_service.upload_directory(case_id, files, surface="legacy", disconnected=request.is_disconnected)
+        return await import_service.upload_directory(case_id, files, surface="legacy", receive=request.receive)
     except ServiceError as error:
         raise _legacy_preview_error(error) from None
 
@@ -300,16 +300,15 @@ async def import_directory_preview(request: Request, files: List[UploadFile] = F
 @app.post("/api/import/preview")
 async def import_preview(request: Request, file: UploadFile = File(...), case_id: Optional[int] = None):
     try:
-        return await import_service.legacy_upload(file, case_id, disconnected=request.is_disconnected)
+        return await import_service.legacy_upload(file, case_id, receive=request.receive)
     except ServiceError as error:
         raise _legacy_preview_error(error) from None
 
 
 @app.post("/api/import/repreview")
-async def repreview(body: RePreviewIn, request: Request):
+async def repreview(body: RePreviewIn):
     try:
-        return await import_service.preview_again(body.case_id, body.import_id, body, surface="legacy",
-                                                  disconnected=request.is_disconnected)
+        return await import_service.preview_again(body.case_id, body.import_id, body, surface="legacy")
     except ServiceError as error:
         raise _legacy_preview_error(error) from None
 

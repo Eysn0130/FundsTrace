@@ -225,6 +225,7 @@ class HeaderRegionPolicy:
     def __init__(self, cancelled, *, replay=None):
         self.cancelled = cancelled
         self.decisions = []
+        self.attempted_inference = False
         self._replay = replay
         self._requests = 0
         self._deadline = None
@@ -236,6 +237,8 @@ class HeaderRegionPolicy:
         if self._requests + 2 > MAX_MODEL_CALLS or self.cancelled.is_set() or now >= self._deadline:
             return []
         self._requests += 2
+        if header_model.configured():
+            self.attempted_inference = True
         reply = header_model.local_model.suggest(_prompt(observation), _RESULT_SCHEMA, self.cancelled,
                                                 min(self._deadline, now + header_model.REQUEST_SECONDS))
         if reply is None or self.cancelled.is_set():
