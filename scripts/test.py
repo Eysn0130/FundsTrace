@@ -1,4 +1,5 @@
 """Run the complete synthetic regression suite without using business state."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -26,6 +27,30 @@ def pytest_collection_modifyitems(config, items):
     if deselected:
         config.hook.pytest_deselected(items=deselected)
     items[:] = [item for item, path in by_path if path in selected]
+
+
+_epoch_outcomes = []
+
+
+def _write_probe(session, kind, rows):
+    terminal = session.config.pluginmanager.get_plugin("terminalreporter")
+    for offset in range(0, len(rows), 40):
+        terminal.write_line(f"FT_BENCH_{kind} " + json.dumps(rows[offset:offset+40], ensure_ascii=True))
+
+
+def pytest_collection_finish(session):
+    _write_probe(session, "COLLECTED", [item.nodeid for item in session.items])
+
+
+def pytest_runtest_logreport(report):
+    if report.when == "call" or report.outcome != "passed":
+        is_subtest = type(report).__name__.lower() == "subtestreport"
+        _epoch_outcomes.append([report.nodeid, report.when, report.outcome, is_subtest,
+                                hasattr(report, "wasxfail")])
+
+
+def pytest_sessionfinish(session, exitstatus):
+    _write_probe(session, "OUTCOMES", _epoch_outcomes)
 
 
 def main():

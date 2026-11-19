@@ -49,7 +49,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 3]
+        shard: [1, 2, 3]
     outputs:
       shard_1: ${{ steps.complete.outputs.shard_1 }}
       shard_2: ${{ steps.complete.outputs.shard_2 }}
@@ -74,8 +74,12 @@ jobs:
         # Each synthetic case can create a database. Keep failed cases for diagnosis.
         env:
           CI_SHARD: ${{ matrix.shard }}
-        # Temporary gate probe. Only the second shard fails by design.
-        run: test "$CI_SHARD" != 2
+        run: |
+          printf 'FT_BENCH checkout=%s image=%s version=%s\n' "$(git rev-parse HEAD)" "$ImageOS" "$ImageVersion"
+          sha256sum requirements-dev.lock
+          .venv/bin/python -V
+          .venv/bin/python -m pytest --version
+          .venv/bin/python scripts/test.py -v --tb=short -o tmp_path_retention_policy=failed --ci-shard "$CI_SHARD"
       - name: Check generated API and pinned G6
         if: matrix.shard == 1
         run: |
@@ -86,6 +90,41 @@ jobs:
         env:
           CI_SHARD: ${{ matrix.shard }}
         run: printf 'shard_%s=success\n' "$CI_SHARD" >> "$GITHUB_OUTPUT"
+
+  python_serial:
+    name: Python serial comparison
+    needs: plan
+    if: needs.plan.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.22.1'
+          package-manager-cache: false
+      - name: Install locked Python dependencies
+        run: |
+          python -m pip install --disable-pip-version-check uv==0.11.5
+          uv venv --python 3.11
+          uv pip sync --python .venv/bin/python --require-hashes requirements-dev.lock
+      - name: Run synthetic Python and G6 regressions
+        # Each synthetic case can create a database. Keep failed cases for diagnosis.
+        run: |
+          printf 'FT_BENCH checkout=%s image=%s version=%s\n' "$(git rev-parse HEAD)" "$ImageOS" "$ImageVersion"
+          sha256sum requirements-dev.lock
+          .venv/bin/python -V
+          .venv/bin/python -m pytest --version
+          .venv/bin/python scripts/test.py -v --tb=short -o tmp_path_retention_policy=failed
+      - name: Check generated API and pinned G6
+        run: |
+          .venv/bin/python scripts/export_api_contract.py --check
+          .venv/bin/python scripts/patch_g6_validation.py --check
 
   react:
     needs: plan
