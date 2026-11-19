@@ -1553,7 +1553,8 @@ def source_metadata(case_id, source_id):
         original = _registered_original(cid, source_id)
         batch_id = original["active_batch_id"]
         return {"case_id": str(cid), "source_id": source_id, "filename": original["filename"],
-                "sha256": original["sha256"], "size_bytes": original["size_bytes"], "registered_at": str(original["imported_at"]),
+                "sha256": original["sha256"], "size_bytes": original["size_bytes"],
+                "registered_at": original["imported_at"].isoformat(timespec="seconds") + "Z",
                 "material_name": original["material_name"], "source_available": _source_available(original),
                 "active_batch_id": str(batch_id) if batch_id is not None else None, "withdrawn": original["active"] is False}
 

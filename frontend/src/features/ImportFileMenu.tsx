@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { ImportSourceMetadata } from '../../../contracts/api-v1';
 import { useFeedback } from '../feedback/Feedback';
-import { formatFileSize, formatImportDuration } from '../lib/format';
+import { displayOperationalTime, formatFileSize, formatImportDuration } from '../lib/format';
 import type { FundsCaseClientV1, FundsHostActionsV1 } from '../panel/host';
 import { ImportIcon, importState } from './ImportTree';
 import type { ImportTreeNode } from './import-tree';
@@ -12,6 +12,7 @@ export type ImportMenuAnchor = {
   point?: { x: number; y: number };
   branch?: { open: boolean; toggle: () => void };
 };
+export type ImportFileAction = 'download' | 'open' | 'reveal';
 interface Command { label: string; icon: string; run: () => void; disabled?: boolean; danger?: boolean; stay?: boolean }
 
 function ImportActionPopover({ id, anchor, label, headingId, descriptionId, role = 'menu', placement, children, onClose }: {
@@ -29,16 +30,17 @@ function ImportActionPopover({ id, anchor, label, headingId, descriptionId, role
     const moved = (event: Event) => {
       if (!pop.contains(event.target as Node)) close.current(false);
     };
+    const resize = () => close.current();
     document.addEventListener('pointerdown', dismiss);
     document.addEventListener('focusin', dismiss);
     document.addEventListener('scroll', moved, true);
-    window.addEventListener('resize', moved);
+    window.addEventListener('resize', resize);
     return () => {
       pop.hidePopover?.();
       document.removeEventListener('pointerdown', dismiss);
       document.removeEventListener('focusin', dismiss);
       document.removeEventListener('scroll', moved, true);
-      window.removeEventListener('resize', moved);
+      window.removeEventListener('resize', resize);
     };
   }, [anchor]);
   useLayoutEffect(() => {
@@ -93,12 +95,13 @@ export function ImportAppendControl({ disabled, reading, onFiles, onDirectory }:
   </>;
 }
 
-export function ImportFileMenu({ id, anchor, node, original, physicalFile, item, client, actions, scopeSignal, writeBusy,
-  onClose, onView, onLocate, onRemove, onQuery, onWithdraw, documents }: {
+export function ImportFileMenu({ id, anchor, node, original, physicalFile, item, client, actions, scopeSignal, writeBusy, fileActionBusy,
+  onClose, onView, onLocate, onRemove, onQuery, onWithdraw, onFileAction, documents }: {
   id: string; anchor: ImportMenuAnchor; node: ImportTreeNode; original: ImportTreeNode; physicalFile: ImportTreeNode;
-  item: ImportItem; client: FundsCaseClientV1; actions?: FundsHostActionsV1; scopeSignal: AbortSignal; writeBusy: boolean;
+  item: ImportItem; client: FundsCaseClientV1; actions?: FundsHostActionsV1; scopeSignal: AbortSignal; writeBusy: boolean; fileActionBusy: boolean;
   onClose: (restoreFocus?: boolean) => void; onView: () => void; onLocate: () => void; onRemove: () => void;
-  onQuery: () => void; onWithdraw: (batchId: string) => Promise<void>; documents: Record<string, unknown>[];
+  onQuery: () => void; onWithdraw: (batchId: string) => Promise<void>;
+  onFileAction: (action: ImportFileAction, sourceId: string, filename: string) => void; documents: Record<string, unknown>[];
 }) {
   const port = useFeedback();
   const lifetime = useRef<AbortController | null>(null);
@@ -147,15 +150,7 @@ export function ImportFileMenu({ id, anchor, node, original, physicalFile, item,
       }
     })();
   };
-  const fileAction = (kind: 'download' | 'open' | 'reveal') => {
-    if (!sourceId || scopeSignal.aborted) return;
-    const signal = scopeSignal;
-    const work = kind === 'download' ? actions?.downloadSource?.({ sourceId, filename: sourceName }, signal)
-      : actions?.sourceCopy?.(sourceId, kind, signal);
-    void work?.catch(error => {
-      if (!signal.aborted) port.notify({ operation: 'import', severity: 'error', title: (error as Error).message });
-    });
-  };
+  const fileAction = (kind: ImportFileAction) => { if (sourceId) onFileAction(kind, sourceId, sourceName); };
   const confirm = async () => {
     if (!canWithdraw || writeBusy || deleting || !metadata?.active_batch_id) return;
     const signal = lifetime.current?.signal;
@@ -185,12 +180,12 @@ export function ImportFileMenu({ id, anchor, node, original, physicalFile, item,
   const file: Command[] = [
     ...(!isOriginal ? [{ label: '查看所属原件', icon: 'import-file-type-generic', run: onLocate }] : []),
     ...(nativeCopy ? [
-      { label: node.kind === 'sheet' ? '打开所属工作簿副本' : '打开原件副本', icon: 'external-open', disabled: !sourceAvailable, run: () => fileAction('open') },
-      { label: '显示副本位置', icon: 'folder', disabled: !sourceAvailable, run: () => fileAction('reveal') },
+      { label: node.kind === 'sheet' ? '打开所属工作簿副本' : '打开原件副本', icon: 'external-open', disabled: !sourceAvailable || fileActionBusy, run: () => fileAction('open') },
+      { label: '显示副本位置', icon: 'folder', disabled: !sourceAvailable || fileActionBusy, run: () => fileAction('reveal') },
     ] : []),
     ...(sourceId && actions?.downloadSource ? [{
       label: item.directory ? '另存目录留存 ZIP…' : isArchive ? isOriginal ? '另存压缩包…' : '另存所属压缩包…' : '另存原件…',
-      icon: 'download', disabled: !sourceAvailable, run: () => fileAction('download'),
+      icon: 'download', disabled: !sourceAvailable || fileActionBusy, run: () => fileAction('download'),
     }] : []),
     ...(!isOriginal ? [{ label: '复制原件文件名', icon: 'copy', run: () => copy(original.name, '原件文件名') }] : []),
     ...(metadata?.sha256 ? [{ label: '复制原件 SHA-256', icon: 'hash', run: () => copy(metadata.sha256, '原件 SHA-256') }] : []),
@@ -239,7 +234,7 @@ export function ImportFileMenu({ id, anchor, node, original, physicalFile, item,
           {!isOriginal && field('所属原件', metadata.filename)}
           {metadata.material_name && field('检材编号', metadata.material_name)}
           {field('原件 SHA-256', metadata.sha256)}
-          {field('登记时间（UTC）', metadata.registered_at)}
+          {field('登记时间', displayOperationalTime(metadata.registered_at))}
           {field('原件留存', metadata.source_available ? '已登记，可读取' : '原件暂不可读取')}
         </>}
       </dl>

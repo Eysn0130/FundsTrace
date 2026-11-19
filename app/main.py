@@ -264,7 +264,11 @@ def batches(case_id: int = 1):
 
 @app.delete("/api/batches/{batch_id}")
 def del_batch(batch_id: int, case_id: int = Query(...)):
-    return _legacy_import_result(import_service.withdraw_batch, case_id, batch_id)
+    try:
+        return import_service.withdraw_batch(case_id, batch_id)
+    except ServiceError as error:
+        detail = "案件不存在" if error.code == "case_not_found" else error.message
+        raise HTTPException(error.status, detail) from None
 
 
 def _legacy_import_result(operation, *args):

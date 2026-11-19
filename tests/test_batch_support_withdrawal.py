@@ -66,6 +66,9 @@ def test_source_menu_metadata_and_withdrawal_are_bound_to_the_registered_origina
     assert metadata["source_id"] == first["source_id"] and metadata["case_id"] == str(cid)
     assert metadata["size_bytes"] == len(original_bytes) and metadata["sha256"] == hashlib.sha256(original_bytes).hexdigest()
     assert metadata["source_available"] and metadata["material_name"].endswith("号检材")
+    flow_sources = client.get(f"/api/v1/cases/{cid}/flows/{tracked[0]}/sources").json()["items"]
+    registered = next(item for item in flow_sources if item["source_id"] == first["source_id"])
+    assert metadata["registered_at"] == registered["imported_at"] and metadata["registered_at"].endswith("Z")
     assert client.get(f"{foreign}/metadata").status_code == 404
     assert client.delete(f"{foreign}/operation", params={"expected_batch_id": first["batch_id"]}).status_code == 404
     assert client.delete(f"{path}/operation", params={"expected_batch_id": second["batch_id"]}).status_code == 409
@@ -119,6 +122,8 @@ def test_mixed_batch_and_cross_case_with_three_supports(client, database, make_c
     assert len(rows) == 3 and len(shared_ids) == 2
     assert client.post("/api/track", json={"case_id": cid, "flow_ids": [row["id"] for row in rows]}).status_code == 200
     other_before = client.get("/api/graph", params={"case_id": other}).json()
+    missing_case = client.delete(f"/api/batches/{first['batch_id']}", params={"case_id": 99999})
+    assert (missing_case.status_code, missing_case.json()) == (404, {"detail": "案件不存在"})
     assert client.delete(f"/api/batches/{first['batch_id']}", params={"case_id": other}).status_code == 404
     before = client.get("/api/graph", params={"case_id": cid}).json()
     assert client.delete(f"/api/batches/{first['batch_id']}", params={"case_id": cid}).status_code == 200

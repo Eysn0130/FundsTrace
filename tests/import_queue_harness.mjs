@@ -70,6 +70,146 @@ test('a known task with a lost receipt quarantines appended jobs until its origi
   assert.deepEqual(h.queue.snapshot().items.map(item => item.phase), ['done', 'skipped', 'done']);
 });
 
+for (const stage of ['error', 'not-started']) test(`the first submission stops the original queue when a settlement read confirms ${stage}`, async () => {
+  const oldRead = deferred(), confirmed = deferred();
+  let reads = 0;
+  const h = harness({ job: async id => {
+    if (id !== 'first.zip') return complete(id);
+    if (++reads === 1) return oldRead.promise;
+    await confirmed.promise;
+    if (stage === 'not-started') throw Object.assign(new Error('Synthetic not started'), { code: 'import_job_not_found' });
+    return { ...complete(id), stage: 'error', result: null };
+  } });
+  const first = h.queue.upload(() => files().slice(0, 1));
+  await tick();
+  await h.queue.append(() => files().slice(1, 2));
+  h.queue.settled('first.zip');
+  oldRead.resolve(complete('first.zip'));
+  await tick();
+  confirmed.resolve();
+  await first;
+  await tick();
+  assert.deepEqual(h.calls, ['first.zip']);
+  assert.deepEqual(h.queue.snapshot().items.map(item => item.phase), [stage === 'error' ? 'failed' : 'ready', 'skipped']);
+  assert.equal(h.queue.snapshot().stopped, true);
+});
+
+test('a lost settlement read stops existing work and holds only fresh appends for the original result', async () => {
+  const oldRead = deferred(), lost = deferred(), recoveryRead = deferred();
+  let reads = 0;
+  const h = harness({ job: async id => {
+    if (id === 'first.zip') {
+      if (++reads === 1) return oldRead.promise;
+      if (reads === 2) { await lost.promise; throw new Error('Synthetic lost settlement receipt'); }
+      if (reads === 3) return recoveryRead.promise;
+    }
+    return complete(id);
+  } });
+  const first = h.queue.upload(() => files().slice(0, 1));
+  await tick();
+  await h.queue.append(() => files().slice(1, 2));
+  h.queue.settled('first.zip');
+  oldRead.resolve(complete('first.zip'));
+  await tick();
+  lost.resolve();
+  await first;
+  await tick();
+  assert.deepEqual(h.queue.snapshot().items.map(item => item.phase), ['unknown', 'skipped']);
+  await h.queue.append(() => files().slice(2));
+  assert.deepEqual(h.calls, ['first.zip']);
+  const recovering = h.queue.query('1');
+  await tick();
+  h.queue.settled('first.zip');
+  await tick();
+  assert.deepEqual(h.calls, ['first.zip', 'third.xlsx']);
+  assert.deepEqual(h.queue.snapshot().items.map(item => item.phase), ['done', 'skipped', 'done']);
+  recoveryRead.resolve({ ...complete('first.zip'), stage: 'error', result: null });
+  await recovering;
+  assert.equal(h.queue.snapshot().items[0].phase, 'done');
+});
+
+test('a matching hint settles an unknown submission during another file’s repreview', async () => {
+  const mapping = deferred(), settlement = deferred(), commits = [], reads = [];
+  const h = harness({
+    preview: async file => { h.calls.push(file.name); return preview(file.name, file.name !== 'first.zip'); },
+    commit: async id => {
+      commits.push(id);
+      if (id === 'second.csv') throw new Error('Synthetic lost submit acknowledgement');
+      return { case_id: '1', import_id: id };
+    },
+    repreview: async id => { await mapping.promise; return preview(id, false); },
+    job: async id => {
+      reads.push(id);
+      if (id === 'second.csv') await settlement.promise;
+      return complete(id);
+    },
+  });
+  await h.queue.upload(files);
+  assert.deepEqual(h.queue.snapshot().items.map(item => item.phase), ['ready', 'unknown', 'skipped']);
+  const repreview = h.queue.repreview('1');
+  await h.queue.append(() => [{ name: 'fresh.csv', size: 1 }]);
+  h.queue.settled('second.csv');
+  h.queue.settled('second.csv');
+  await tick();
+  assert.deepEqual(reads, ['second.csv']);
+  settlement.resolve();
+  await tick();
+  assert.deepEqual(h.queue.snapshot().items.map(item => item.phase), ['previewing', 'done', 'skipped', 'queued']);
+  assert.deepEqual(h.calls, ['first.zip', 'second.csv']);
+  mapping.resolve();
+  await repreview;
+  assert.deepEqual(h.calls, ['first.zip', 'second.csv', 'fresh.csv']);
+  assert.deepEqual(commits, ['second.csv', 'fresh.csv']);
+  assert.deepEqual(h.queue.snapshot().items.map(item => item.phase), ['ready', 'done', 'skipped', 'done']);
+});
+
+test('matching settlement hints coalesce and release the queue without waiting for a superseded job read', async () => {
+  const oldRead = deferred(), commits = [];
+  let reads = 0, oldSignal;
+  const h = harness({
+    commit: async id => { commits.push(id); return { case_id: '1', import_id: id }; },
+    job: async (id, signal) => {
+      if (id === 'first.zip' && ++reads === 1) { oldSignal = signal; return oldRead.promise; }
+      return complete(id);
+    },
+  });
+  const first = h.queue.upload(() => files().slice(0, 1));
+  await tick();
+  await h.queue.append(() => files().slice(1, 2));
+  h.queue.settled('unrelated.zip');
+  h.queue.settled('first.zip');
+  h.queue.settled('first.zip');
+  await tick();
+  assert.deepEqual(h.queue.snapshot().items.map(item => item.phase), ['done', 'done']);
+  const receipt = h.queue.snapshot().items[0].job;
+  assert.equal(oldSignal.aborted, true);
+  assert.equal(reads, 2);
+  assert.deepEqual(commits, ['first.zip', 'second.csv']);
+  oldRead.resolve({ ...complete('first.zip'), stage: 'error', result: null });
+  await first;
+  await tick();
+  assert.equal(h.queue.snapshot().items[0].job, receipt);
+  assert.equal(h.queue.snapshot().dataVersion, 2);
+  assert.equal(h.queue.snapshot().stopped, false);
+});
+
+test('a delayed settlement hint leaves a ready preview and its repreview intact', async () => {
+  const mapping = deferred(), h = harness({
+    preview: async file => preview(file.name, false),
+    job: async () => { throw new Error('A ready preview has no submitted job'); },
+    repreview: async id => { await mapping.promise; return preview(id, false); },
+  });
+  await h.queue.upload(() => files().slice(0, 1));
+  const revised = h.queue.repreview('1');
+  h.queue.settled('first.zip');
+  assert.equal(h.queue.snapshot().items[0].phase, 'previewing');
+  mapping.resolve();
+  await revised;
+  h.queue.settled('first.zip');
+  assert.equal(h.queue.snapshot().items[0].phase, 'ready');
+  assert.equal(h.queue.snapshot().items[0].error, '');
+});
+
 test('a new append never restarts the automatic commit of files previously stopped during upload', async () => {
   const gate = deferred(), commits = [];
   const h = harness({ preview: async file => { if (file.name === 'first.zip') await gate.promise; return preview(file.name); },
@@ -122,10 +262,16 @@ test('stopping the queue lets a submitted operation settle without uploading lat
 
 test('case revocation clears displayed facts and ignores a late submitted receipt', async () => {
   const gate = deferred(); let writes = 0;
+  const signals = [];
   const h = harness({ commit: async id => { writes++; return { case_id: '1', import_id: id }; },
-    job: async id => { await gate.promise; return complete(id); } });
+    job: async (id, signal) => { signals.push(signal); await gate.promise; return complete(id); } });
   const pending = h.queue.upload(files); await tick();
+  h.queue.settled('first.zip'); await tick();
+  assert.equal(signals.length, 2);
   h.controller.abort(); gate.resolve(); await pending;
+  h.queue.settled('first.zip');
+  assert.ok(signals.every(signal => signal.aborted));
   assert.equal(writes, 1); assert.equal(h.calls.length, 1);
+  assert.equal(h.queue.snapshot().dataVersion, 0);
   assert.equal(h.queue.snapshot().items.length, 0);
 });

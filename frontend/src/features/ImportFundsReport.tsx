@@ -79,7 +79,8 @@ export function ImportFundsReport({ client, scopeSignal, sourceId, memberPath, h
   const requestQuery = queryVersion.current === dataVersion ? query : { ...query, expectedRevision: undefined };
   const navigateTarget = useRef<ImportReportChapter | undefined>(chapter), id = useId(), key = JSON.stringify([dataVersion, requestQuery]);
   const baseKey=JSON.stringify({...query,timelineScope:undefined,timelineAccounts:undefined,timelineSearch:undefined,timelineGrain:undefined,timelinePage:undefined,expectedRevision:undefined});
-  const data = snapshot?.client === client && (snapshot.key === key || snapshot.baseKey===baseKey && failure?.key!==key) && !scopeSignal.aborted ? snapshot.data : undefined;
+  const data = snapshot?.client === client && snapshot.version === dataVersion
+    && (snapshot.key === key || snapshot.baseKey===baseKey && failure?.key!==key) && !scopeSignal.aborted ? snapshot.data : undefined;
   const timeUpdating=!!data&&snapshot?.key!==key;
   const revealTables = !requestQuery.expectedRevision;
   const accountNarrative = data ? reportAccountNarrative(data) : '';
@@ -99,7 +100,7 @@ export function ImportFundsReport({ client, scopeSignal, sourceId, memberPath, h
     }).catch(reason => { if (active && !controller.signal.aborted) setFailure({ key, message: reason.message }); });
     return () => { active = false; scopeSignal.removeEventListener('abort', revoke); unlink(); controller.abort(); };
   }, [client, scopeSignal, sourceId, memberPath, key, baseKey, reload]);
-  useEffect(() => { setDrill(undefined); }, [dataVersion]);
+  useEffect(() => { setDrill(undefined); setActionError(''); }, [dataVersion]);
   const jump = (value: ImportReportChapter, smooth = true) => {
     const parent = content.current, section = sectionRefs.current.get(value);
     if (!parent || !section) {
@@ -115,7 +116,7 @@ export function ImportFundsReport({ client, scopeSignal, sourceId, memberPath, h
   useLayoutEffect(() => { if (data && navigateTarget.current) { jump(navigateTarget.current, false); navigateTarget.current = undefined; } }, [data]);
   useLayoutEffect(() => { if (drill) { const parent = content.current, element = drillElement.current; if (parent && element) parent.scrollTo?.({ top: Math.max(0, parent.scrollTop + element.getBoundingClientRect().top - parent.getBoundingClientRect().top - (parent.querySelector('.ft-inspector-title')?.getBoundingClientRect().height || 0) - 18), behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); } }, [drill]);
   const changeQuery = (patch: Partial<FundsReportQueryV1>, target = chapter) => {
-    if (!data || snapshot?.version !== dataVersion) return;
+    if (!data) return;
     navigateTarget.current = target; setDrill(undefined); setActionError('');
     queryVersion.current = dataVersion;
     setQuery(current => ({ ...current, ...patch, ...('account' in patch || 'currency' in patch ? {timelineScope:undefined,timelineAccounts:undefined,timelineSearch:undefined,timelinePage:1}:{}), expectedRevision: data.analysis_revision }));

@@ -1,6 +1,8 @@
 /* Shared import state for both entry points. Hosts own HTTP, leases and refresh. */
 export function createImportWorkflow(options) {
   const lifetime = new AbortController(), listeners = new Set();
+  const receiptChecks = new WeakMap();
+  const unconfirmed = '原任务未确认完成，后续文件未上传';
   let items = [], serial = 0, selectedId = null, reading = false, running = false, stopped = false, error = '', started = false;
   let intake = 0, dataVersion = 0, withdrawing = false;
   let snapshot;
@@ -49,19 +51,19 @@ export function createImportWorkflow(options) {
     }
     publish();
   }
-  async function pause() {
-    if (!alive()) return;
+  async function pause(signal) {
+    if (signal.aborted) return;
     await new Promise(resolve => {
-      const finish = () => { clearTimeout(timer); lifetime.signal.removeEventListener('abort', finish); resolve(); };
+      const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); };
       const timer = setTimeout(finish, 300);
-      lifetime.signal.addEventListener('abort', finish, { once: true });
+      signal.addEventListener('abort', finish, { once: true });
     });
   }
-  async function poll(item, token, queryingOnly = false) {
+  async function poll(item, token, queryingOnly, signal) {
     update(item, { phase: 'polling', error: '', loadingMembers: false, queryingOnly });
     try {
       while (current(item, token)) {
-        const job = await options.client.job(item.importId, lifetime.signal);
+        const job = await options.client.job(item.importId, signal);
         if (!current(item, token)) return;
         if (job.case_id !== options.target.caseId || job.import_id !== item.importId) throw new Error('导入进度与当前案件不一致。');
         item.job = job; item.error = ''; item.queryingOnly = false;
@@ -77,7 +79,7 @@ export function createImportWorkflow(options) {
           return;
         }
         if (job.stage === 'error') { update(item, { phase: 'failed', error: job.error || '导入失败，未完成写入。' }); task(item); return; }
-        publish(); task(item); await pause();
+        publish(); task(item); await pause(signal);
       }
     } catch (failure) {
       if (!current(item, token)) return;
@@ -85,7 +87,7 @@ export function createImportWorkflow(options) {
       else { update(item, { phase: 'unknown', queryingOnly: false, error: `进度暂无法确认：${failure.message}。请重新查询进度，确认前不会再次提交。` }); task(item); }
     }
   }
-  async function runCommit(item, token) {
+  async function runCommit(item, token, pollSignal) {
     if (!current(item, token)) return;
     const value = item.preview;
     update(item, { phase: 'committing', error: '', job: null }); task(item);
@@ -96,9 +98,36 @@ export function createImportWorkflow(options) {
         ...(item.materialGroupId ? { material_group_id: item.materialGroupId } : {}) }, lifetime.signal);
       if (!current(item, token)) return;
       if (result.case_id !== options.target.caseId || result.import_id !== item.importId) throw new Error('导入确认与当前案件不一致。');
-      await poll(item, token);
+      await poll(item, token, false, pollSignal);
     } catch (failure) {
       if (current(item, token)) { update(item, { phase: 'unknown', error: failure.message }); task(item); }
+    }
+  }
+  async function followImport(item, token, submitting = false) {
+    const controller = new AbortController();
+    const cancelRead = () => controller.abort();
+    lifetime.signal.addEventListener('abort', cancelRead, { once: true });
+    const queryingOnly = item.phase === 'unknown' || item.queryingOnly === true;
+    let settledToken;
+    const hint = new Promise(resolve => {
+      receiptChecks.set(item, () => {
+        if (settledToken !== undefined) return;
+        settledToken = ++item.request;
+        resolve();
+        cancelRead();
+      });
+    });
+    try {
+      const pending = submitting ? runCommit(item, token, controller.signal) : poll(item, token, queryingOnly, controller.signal);
+      // The hint transfers the read before either request can publish a stale receipt.
+      await Promise.race([pending, hint]);
+      if (settledToken !== undefined && current(item, settledToken)) {
+        await poll(item, settledToken, queryingOnly, lifetime.signal);
+      }
+      if (submitting && alive() && item.phase !== 'done') stop(unconfirmed);
+    } finally {
+      lifetime.signal.removeEventListener('abort', cancelRead);
+      receiptChecks.delete(item);
     }
   }
   async function drain() {
@@ -118,13 +147,13 @@ export function createImportWorkflow(options) {
           accept(item, value);
           // Only a fresh upload can authorize automatic submission. Repreview,
           // recovery and resuming a stopped queue never replay this decision.
-          if (value.automatic === true && !item.autoCancelled) await runCommit(item, token);
+          if (value.automatic === true && !item.autoCancelled) await followImport(item, token, true);
         } catch (failure) {
           if (!current(item, token)) return;
           const fileFailure = failure?.status === 400 && failure?.failureKind === 'file';
           update(item, { phase: fileFailure ? 'failed' : 'unknown', error: failure.message });
+          if (!fileFailure) stop(unconfirmed);
         }
-        if (item.phase === 'unknown' || item.phase === 'failed' && item.importId) stop('原任务结果待核对，后续文件未上传');
       }
     } finally { if (alive()) { running = false; publish(); } }
   }
@@ -171,8 +200,8 @@ export function createImportWorkflow(options) {
   }
   async function query(id) {
     const item = items.find(row => row.id === id);
-    if (!item || !alive() || withdrawing || items.some(active) || !item.importId) return;
-    await poll(item, ++item.request, item.phase === 'unknown');
+    if (!item || !alive() || withdrawing || items.some(active) || receiptChecks.has(item) || !item.importId) return;
+    await followImport(item, ++item.request);
     await drain();
   }
   async function start() {
@@ -277,14 +306,18 @@ export function createImportWorkflow(options) {
       if (!item || !alive() || running || withdrawing || item.phase !== 'ready' || item.dirty || !item.preview
         || !item.preview.feedback && !item.preview.table_summary && item.preview.stats.ok === 0
         || items.some(row => active(row) || row.phase === 'unknown')) return;
-      await runCommit(item, ++item.request);
-      if (item.phase === 'unknown' || item.phase === 'failed' && item.importId) stop('原任务结果待核对，后续文件未上传');
+      await followImport(item, ++item.request, true);
       await drain();
     },
     settled(importId) {
       const item = items.find(row => row.importId === importId);
-      if (!item || !alive() || ['done', 'failed'].includes(item.phase)) return;
-      void poll(item, ++item.request, item.phase === 'unknown' || item.queryingOnly === true).then(drain);
+      if (!item || !alive() || !['committing', 'polling', 'unknown'].includes(item.phase)) return;
+      const check = receiptChecks.get(item);
+      if (check) check();
+      else if (item.phase === 'unknown') {
+        // Another file's repreview can delay uploads without blocking this receipt read.
+        void poll(item, ++item.request, true, lifetime.signal).then(drain);
+      }
     },
   };
 }
