@@ -7,10 +7,11 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from scripts import ci
+from scripts import ci, test as regression
 
 
 GROUPS = ("python", "react", "desktop")
@@ -22,13 +23,34 @@ def flags(*groups):
 
 def needs_for(*groups):
     outputs = flags(*groups)
-    return {
+    needs = {
         "plan": {"result": "success", "outputs": outputs},
         **{
             group: {"result": "success" if group in groups else "skipped"}
             for group in GROUPS
         },
     }
+    if "python" in groups:
+        needs["python"]["outputs"] = {"shard_1": "success", "shard_2": "success", "shard_3": "success"}
+    return needs
+
+
+class ShardTests(unittest.TestCase):
+    def test_collected_files_are_assigned_once_without_reordering_items(self):
+        root = Path("synthetic-repo")
+        paths = tuple(root / "tests" / f"test_{name}.py" for name in "abcde")
+        order = [4, 0, 1, 0, 2, 3, 4]
+        items = [SimpleNamespace(path=paths[index], nodeid=f"test[{position}]")
+                 for position, index in enumerate(order)]
+        expected = {None: [0, 1, 2, 3, 4, 5, 6], 1: [1, 3, 5], 2: [0, 2, 6], 3: [4]}
+        for shard, positions in expected.items():
+            with self.subTest(shard=shard):
+                retained, deselected = list(items), []
+                config = SimpleNamespace(rootpath=root, getoption=lambda option: shard,
+                    hook=SimpleNamespace(pytest_deselected=lambda items: deselected.extend(items)))
+                regression.pytest_collection_modifyitems(config, retained)
+                self.assertEqual(retained, [items[position] for position in positions])
+                self.assertEqual(deselected, [item for item in items if item not in retained])
 
 
 class ClassificationTests(unittest.TestCase):
@@ -165,6 +187,18 @@ class GateTests(unittest.TestCase):
                 with self.subTest(group=group, result=result):
                     with self.assertRaises(ValueError):
                         ci.check_gate(needs)
+
+    def test_python_requires_success_from_each_shard(self):
+        for result in (None, "failure", "cancelled", "skipped"):
+            needs = needs_for("python")
+            shard_outputs = needs["python"]["outputs"]
+            if result is None:
+                shard_outputs.pop("shard_2")
+            else:
+                shard_outputs["shard_2"] = result
+            with self.subTest(result=result):
+                with self.assertRaisesRegex(ValueError, "all three Python shards"):
+                    ci.check_gate(needs)
 
     def test_unrelated_group_must_be_skipped(self):
         for group in GROUPS:

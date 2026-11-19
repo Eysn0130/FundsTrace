@@ -46,6 +46,14 @@ jobs:
     if: needs.plan.outputs.python == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    outputs:
+      shard_1: ${{ steps.complete.outputs.shard_1 }}
+      shard_2: ${{ steps.complete.outputs.shard_2 }}
+      shard_3: ${{ steps.complete.outputs.shard_3 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -64,11 +72,19 @@ jobs:
           uv pip sync --python .venv/bin/python --require-hashes requirements-dev.lock
       - name: Run synthetic Python and G6 regressions
         # Each synthetic case can create a database. Keep failed cases for diagnosis.
-        run: .venv/bin/python scripts/test.py -v --tb=short -o tmp_path_retention_policy=failed
+        env:
+          CI_SHARD: ${{ matrix.shard }}
+        run: .venv/bin/python scripts/test.py -v --tb=short -o tmp_path_retention_policy=failed --ci-shard "$CI_SHARD"
       - name: Check generated API and pinned G6
+        if: matrix.shard == 1
         run: |
           .venv/bin/python scripts/export_api_contract.py --check
           .venv/bin/python scripts/patch_g6_validation.py --check
+      - name: Confirm Python shard completed
+        id: complete
+        env:
+          CI_SHARD: ${{ matrix.shard }}
+        run: printf 'shard_%s=success\n' "$CI_SHARD" >> "$GITHUB_OUTPUT"
 
   react:
     needs: plan
