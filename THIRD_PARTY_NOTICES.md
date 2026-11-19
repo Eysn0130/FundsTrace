@@ -22,9 +22,11 @@ The import-batch table uses the unmodified `dots.svg` from the same Tabler Icons
 
 The import file menu and resizable grids also bundle the unmodified outline `info-circle.svg` and `grip-vertical.svg` from Tabler Icons v3.35.0 (`icons/outline/`), with the same retained MIT notice.
 
-## FundsTrace ribbon icons
+## FundsTrace ribbon and navigation icons
 
 The additional compact ribbon icons in `static/ui-icons/` (`network`, `selection`, `selection-clear`, `swap`, `list`, `group`, `link`, `layers`, `chart`, `route`, `play`, `star`, `shape`, `photo`, `align-left`, `align-top`, `distribute-vertical`, `lock`, `focus`, `zoom-out`, `zoom-in`, `zoom-reset`, `eye`, `eye-off`, `eye-restore`, `legend`, `map`, `calendar`, `target`, and `font-text`) were drawn for FundsTrace on 2026-10-16. Their recorded MIT license is retained in `LICENSES/MIT.txt`; they use the same 24px outline grammar as the retained Tabler controls. No external icon service or runtime dependency is used.
+
+The paired rail symbols in `static/ui-icons/rail-navigation.svg` and the update action in `static/ui-icons/rail-update.svg` were drawn for FundsTrace. The desktop backend bundles both SVG assets locally.
 
 ## Windows updater and release publisher
 

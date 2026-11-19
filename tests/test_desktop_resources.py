@@ -121,14 +121,20 @@ def test_resource_boundary_includes_runtime_html_scripts(tmp_path, monkeypatch):
 def test_all_retained_html_dependencies_are_packaged():
     from html.parser import HTMLParser
     from urllib.parse import unquote, urlsplit
+    from xml.etree.ElementTree import parse
 
     required = set()
+    svg_references = {}
 
     class Dependencies(HTMLParser):
         def handle_starttag(self, tag, attrs):
             for key, value in attrs:
                 if key in {"src", "href"} and value and value.startswith("/static/"):
-                    required.add(unquote(urlsplit(value).path.removeprefix("/static/")))
+                    url = urlsplit(value)
+                    path = unquote(url.path.removeprefix("/static/"))
+                    required.add(path)
+                    if tag == "use" and url.fragment:
+                        svg_references.setdefault(path, set()).add(unquote(url.fragment))
 
     for page in (builder.ROOT / "static").glob("*.html"):
         Dependencies().feed(page.read_text(encoding="utf-8"))
@@ -144,8 +150,14 @@ def test_all_retained_html_dependencies_are_packaged():
     for kernel in ("graph-layout.js", "graph-layout-quality.js", "graph-routing.js"):
         assert f"/static/{kernel}?v=" in worker
         required.add(kernel)
+    navigation_css = (builder.ROOT / "static" / "navigation.css").read_text(encoding="utf-8")
+    assert "/static/ui-icons/rail-update.svg" in navigation_css
+    required.add("ui-icons/rail-update.svg")
     assert required <= set(builder.STATIC_NAMES), f"Unpackaged UI dependencies: {required - set(builder.STATIC_NAMES)}"
     assert all((builder.ROOT / "static" / name).is_file() for name in required)
+    for path, fragments in svg_references.items():
+        ids = {element.get("id") for element in parse(builder.ROOT / "static" / path).iter()}
+        assert fragments <= ids, f"Missing SVG targets in {path}: {fragments - ids}"
 
 
 @pytest.mark.parametrize('tail,accepted', [
