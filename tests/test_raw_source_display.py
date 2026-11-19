@@ -30,6 +30,7 @@ def test_unknown_direction_keeps_known_counterparty_and_unmapped_code_as_source_
     base = f"/api/v1/cases/{cid}"
     receipt_url = base + f"/imports/{view['import_id']}"
     receipt = client.get(receipt_url).json()
+    assert receipt['withdrawn'] is False
     page = client.get(base + "/flows").json()
     assert page["total"] == 4
     assert {row["amount"] for row in page["items"]} == {"12.34", "0.02", "3.21", "0.00"}
@@ -70,7 +71,7 @@ def test_unknown_direction_keeps_known_counterparty_and_unmapped_code_as_source_
     assert client.get(f"/api/v1/cases/{restored.json()['case_id']}/flows").json()["total"] == 4
     assert client.delete(f"/api/batches/{job['result']['batch_id']}", params={"case_id": cid}).status_code == 200
     assert client.get(base + "/flows").json()["total"] == 0
-    assert client.get(receipt_url).json() == receipt
+    assert client.get(receipt_url).json() == {**receipt, 'withdrawn': True}
 
 
 @pytest.mark.parametrize('direction', ['出', '进'])
