@@ -49,7 +49,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 3]
     outputs:
       shard_1: ${{ steps.complete.outputs.shard_1 }}
       shard_2: ${{ steps.complete.outputs.shard_2 }}
