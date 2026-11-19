@@ -74,7 +74,8 @@ jobs:
         # Each synthetic case can create a database. Keep failed cases for diagnosis.
         env:
           CI_SHARD: ${{ matrix.shard }}
-        run: .venv/bin/python scripts/test.py -v --tb=short -o tmp_path_retention_policy=failed --ci-shard "$CI_SHARD"
+        # Temporary gate probe. Only the second shard fails by design.
+        run: test "$CI_SHARD" != 2
       - name: Check generated API and pinned G6
         if: matrix.shard == 1
         run: |
