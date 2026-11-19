@@ -250,7 +250,7 @@ main 要求 PR、稳定的 `PR required` 检查、同步最新 main 和解决阻
 
 | 检查组 | 自动验证及边界 |
 | --- | --- |
-| Python／G6 | 现有合成回归、API 生成契约和固定 G6 校验；Node 也安装在该组以运行旧界面 harness |
+| Python／G6 | 按收集到的测试文件分成三片执行全部合成回归，API 生成契约和固定 G6 校验由第一片执行。必需检查收齐三片的成功结果。每片均安装 Node 运行旧界面 harness |
 | React | 锁定依赖安装、包含类型检查的 build、前端测试；共享 API／契约变更同时验证调用方 |
 | Desktop | Windows 上的桌面 Node 检查，不下载 Electron；相关 sidecar／资源变更同时验证 Python。它不是包内或安装后验收 |
 
