@@ -4,24 +4,24 @@ import { Modal } from '../components/Modal';
 import { useFeedback } from '../feedback/Feedback';
 import type { FundsCaseClientV1, FundsCaseContextV1, FundsHostActionsV1 } from '../panel/host';
 import { captureDroppedFiles } from '../lib/directory-files';
-import { formatFileSize, formatImportDuration } from '../lib/format';
 import { feedbackReason, unresolvedCount, ResolutionSummary, TableSummary, FeedbackSummary, ImportRecordEvidence } from './ImportDetails';
 import { createImportWorkflow, type ImportState, type ImportWorkflow, type ImportItem } from './import-workflow.mjs';
 import { buildImportTree, firstImportFile, importIcon, type ImportTreeNode } from './import-tree';
-import { ImportIcon, ImportProgress, ImportTree, importState, type ImportTreeDestination } from './ImportTree';
+import { ImportIcon, ImportTree, importState, type ImportTreeDestination } from './ImportTree';
 import { ImportDataPreview } from './ImportDataPreview';
 import { ImportStepper } from './ImportStepper';
 import { ImportReview } from './ImportReview';
 import { ImportFundsReport, type ImportReportChapter } from './ImportFundsReport';
 import { fieldNames, fieldsA, fieldsB, modeFields, importFieldRequirement } from './import-fields';
 import { ImportFileName } from './ImportFileName';
-import { ImportFileMenu } from './ImportFileMenu';
+import { ImportAppendControl, ImportFileMenu, type ImportMenuAnchor } from './ImportFileMenu';
 import { ImportCellValue, ImportTable } from './ImportTable';
 
-const empty: ImportState = { items: [], selectedId: null, reading: false, running: false, stopped: false, error: '' };
+const empty: ImportState = { items: [], selectedId: null, reading: false, running: false, stopped: false, error: '', dataVersion: 0, withdrawing: false };
 const idleSnapshot = () => empty;
 const idleSubscribe = () => () => {};
 function findNode(nodes: ImportTreeNode[], id?: string): ImportTreeNode | undefined {
+  if (!id) return;
   for (const node of nodes) { if (node.id === id) return node; const found = findNode(node.children, id); if (found) return found; }
 }
 function containingFile(nodes: ImportTreeNode[], id?: string, parent?: ImportTreeNode): ImportTreeNode | undefined {
@@ -34,9 +34,6 @@ function containingFile(nodes: ImportTreeNode[], id?: string, parent?: ImportTre
 function documentsFor(item: ImportItem, node: ImportTreeNode) {
   const summary = item.job?.result?.table_summary ?? item.preview?.table_summary;
   return (summary?.documents ?? []).filter(document => !node.path || node.memberPaths.includes(String(document.member_path)));
-}
-function knownDocumentTotal(documents: Record<string, unknown>[], key: string) {
-  return documents.length && documents.every(document => typeof document[key] === 'number') ? documents.reduce((sum, document) => sum + (document[key] as number), 0).toLocaleString('zh-CN') : '—';
 }
 const inspectorCollapseDistance = 72;
 
@@ -93,9 +90,9 @@ function ImportInspectorDivider({ onCollapse }: { onCollapse: () => void }) {
     }} />;
 }
 
-export function ImportDialog({ target, client, scopeSignal, resume, actions, onClose, onImported, onOpenImport, settlementHint, active = true, surface = 'v1' }: {
+export function ImportDialog({ target, client, scopeSignal, resume, actions, onClose, onImported, onOpenImport, onOpenNewImport, settlementHint, active = true, surface = 'v1' }: {
   target: FundsCaseContextV1; client: FundsCaseClientV1; scopeSignal: AbortSignal; resume?: ImportSession; actions?: FundsHostActionsV1;
-  onClose: () => void; onImported: () => void; onOpenImport?: (importId: string) => void;
+  onClose: () => void; onImported: () => void; onOpenImport?: (importId: string) => void; onOpenNewImport?: () => void;
   settlementHint?: { importId: string; sequence: number }; active?: boolean; surface?: 'v1' | 'legacy';
 }) {
   const port = useFeedback(), callbacks = useRef({ onImported, onOpenImport, port }); callbacks.current = { onImported, onOpenImport, port };
@@ -110,7 +107,10 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const search = useRef<HTMLInputElement>(null);
   const inspectorToggle = useRef<HTMLButtonElement>(null);
   const [downloading, setDownloading] = useState(''), [downloadError, setDownloadError] = useState(''), [dragging, setDragging] = useState(false);
+  const fileDragDepth = useRef(0);
   const [nativeIcon, setNativeIcon] = useState('');
+  const [menu, setMenu] = useState<{ nodeId: string; anchor: ImportMenuAnchor }>();
+  const moreButton = useRef<HTMLButtonElement>(null), menuId = useId();
   const fileActionLifetime = useRef(new AbortController());
   const fileId = useId(), directoryId = useId(), inspectorId = useId();
   const fileInput = useRef<HTMLInputElement>(null), directoryInput = useRef<HTMLInputElement>(null);
@@ -124,7 +124,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
       onImported: () => callbacks.current.onImported(), onTask: task => callbacks.current.port.task({ ...task, announce: false,
         actions: callbacks.current.onOpenImport ? [{ id: 'open-import', label: task.status === 'success' ? '查看结果' : '查看进度', run: () => callbacks.current.onOpenImport?.(task.importId!) }] : [] }) });
     setSelectedId(undefined); setRecordFocus(undefined); setShowResultDetails(false); setReportChapter('integrity'); setQuery('');
-    setCollapsedInspector(null); setShowFileMetadata(false);
+    setCollapsedInspector(null); setShowFileMetadata(false); setMenu(undefined);
     setConnection({ flow: value, client, signal: scopeSignal, caseId: target.caseId }); void value.start(); return value.dispose;
   }, [client, scopeSignal, target.caseId, resume?.import_id, surface]);
   const state = useSyncExternalStore(flow?.subscribe ?? idleSubscribe, flow?.snapshot ?? idleSnapshot, idleSnapshot);
@@ -133,7 +133,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
     if (settlementHint && handledSettlement.current !== settlementHint.sequence) { handledSettlement.current = settlementHint.sequence; flow?.settled(settlementHint.importId); }
   }, [flow, settlementHint]);
   const roots = useMemo(() => buildImportTree(state.items), [state.items]);
-  const hasContent = !!resume || state.items.length > 1 || state.items.some(row => !!row.preview || !!row.job?.result);
+  const hasContent = !!resume || state.items.length > 0;
   const expanded = !!resume || hasContent || !!flow && expandedFlow === flow;
   useLayoutEffect(() => { if (hasContent && flow) setExpandedFlow(flow); }, [hasContent, flow]);
   useEffect(() => {
@@ -148,6 +148,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const keepInspector = !collapsedInspector || (!!selected && collapsedInspector.retainedFile === selected.id);
   const toggleInspector = () => {
     if (scopeSignal.aborted) return;
+    setMenu(undefined);
     inspectorToggle.current?.focus({ preventScroll: true });
     setCollapsedInspector(inspectorCollapsed ? null : { retainedFile: selected?.id });
     if (!inspectorCollapsed) setShowFileMetadata(true);
@@ -173,6 +174,11 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
       sequence: (previous?.sequence ?? 0) + 1, review: true,
     } : undefined);
   };
+  const openMenu = (node: ImportTreeNode, anchor: ImportMenuAnchor) => setMenu({ nodeId: node.id, anchor });
+  const closeMenu = (restoreFocus = true) => {
+    setMenu(undefined);
+    if (restoreFocus && menu?.anchor.trigger.isConnected) menu.anchor.trigger.focus({ preventScroll: true });
+  };
   useEffect(() => { const lifetime = new AbortController(); fileActionLifetime.current = lifetime; setDownloading(''); setDownloadError(''); return () => lifetime.abort(); }, [client, scopeSignal, selected?.id]);
   useLayoutEffect(() => {
     for (const element of [inspectorElement.current, ...inspectorElement.current?.querySelectorAll<HTMLElement>('.ft-mapping-scroll,.ft-preview-scroll') ?? []]) {
@@ -190,9 +196,8 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const resolution = complete ? result?.resolution : preview?.resolution;
   const classified = !!feedback || !!summary, busy = item && ['uploading', 'previewing', 'committing', 'polling'].includes(item.phase);
   const unknown = item?.phase === 'unknown' || !!item?.queryingOnly, pending = unknown || item?.phase === 'committing' || item?.phase === 'polling';
-  const queuePending = state.items.some(row => !['done', 'failed', 'skipped'].includes(row.phase));
-  const processing = state.items.some(row => ['uploading', 'previewing', 'committing', 'polling'].includes(row.phase))
-    || (state.reading || state.running) && (queuePending || state.items.length === 0);
+  const queuePending = state.reading || state.items.some(row => !['done', 'failed', 'skipped'].includes(row.phase));
+  const processing = state.items.some(row => ['uploading', 'previewing', 'committing', 'polling'].includes(row.phase)) || state.running;
   const canShowResult = complete || item?.phase === 'failed' || (!!preview && (classified || !!resolution) && !processing);
   const allKnown = state.items.length > 0 && roots.every((node, index) => node.fileCount > 0 && (node.kind === 'file' || state.items[index].preview || state.items[index].job?.result));
   const totalFiles = roots.reduce((total, node) => total + (node.fileCount || 1), 0);
@@ -205,7 +210,12 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
     { tone:'warning', label:'跳过', count:fileCounts('skipped'), icon:'import-circle-minus' },
     { tone:anyUnknown ? 'warning' : 'muted', label:anyUnknown ? '待核对' : '待处理', count:!queuePending ? 0 : allKnown ? totalFiles - processedFiles : undefined, icon:'import-clock' },
   ].filter(entry => entry.count !== 0);
-  const progressLabel = pending ? '流水导入进度' : '文件上传与解析进度';
+  const activeGroup = processing ? state.items.find(row => ['uploading', 'previewing', 'committing', 'polling'].includes(row.phase))?.materialGroupId : undefined;
+  const steps = activeGroup ? roots.filter((_, index) => state.items[index].materialGroupId === activeGroup) : roots;
+  const stepItems = activeGroup ? state.items.filter(row => row.materialGroupId === activeGroup) : state.items;
+  const stepTotal = steps.every((node, index) => node.fileCount > 0 && (node.kind === 'file' || stepItems[index].preview || stepItems[index].job?.result))
+    ? steps.reduce((total, node) => total + node.fileCount, 0) : undefined;
+  const stepConfirmed = steps.reduce((total, node, index) => total + (['done', 'failed', 'skipped'].includes(stepItems[index].phase) ? node.fileCount || 1 : 0), 0);
   const inspectable = !!selected && (selected.kind === 'sheet' || selected.kind === 'file' && selected.children.length === 0);
   const documents = item && selected && inspectable ? documentsFor(item, selected) : [];
   const evidence = inspectable ? (summary?.mapping_evidence ?? []).filter(row => !selected?.path || selected.memberPaths.includes(row.member_path)) : [];
@@ -213,7 +223,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const examples = summary?.unresolved_examples ?? [...(feedback?.unresolved_examples ?? []), ...(feedback?.review_examples ?? [])];
   const selectedExamples = examples.filter(row => !selected?.path || selected.memberPaths.includes(row.member_path));
   const genericExamples = !classified ? (complete ? result?.bad_examples : preview?.stats.bad_examples) ?? [] : [];
-  const originalAvailable = item?.resume?.source_available !== false;
+  const originalAvailable = item?.job?.source_available ?? item?.resume?.source_available ?? false;
   const readonly = item?.phase !== 'ready' || state.running || !!preview?.feedback;
   const columns = documents.flatMap(document => Array.isArray(document.columns) ? document.columns.filter((column): column is string => typeof column === 'string') : []);
   const distinctColumns = inspectable ? [...new Set(columns.length ? columns : classified ? [] : preview?.columns ?? [])] : [];
@@ -226,10 +236,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
   const counts = selected?.dispositions ?? {}, countsKnown = complete && (!selected?.memberPaths.length || item.job?.member_results !== undefined);
   const imported = counts.imported ?? (!selected?.memberPaths.length ? result?.ok : undefined), duplicates = counts.duplicate ?? (!selected?.memberPaths.length ? result?.rows_dup : undefined);
   const needsReview = (counts.unresolved ?? 0) + (counts.review ?? 0), others = Object.entries(counts).filter(([key]) => !['imported','duplicate','unresolved','review','removed'].includes(key)).reduce((sum, [, value]) => sum + value, 0);
-  const physicalFile = containingFile(roots, selected?.id), fileDocuments = item && physicalFile ? documentsFor(item, physicalFile) : [];
-  const member = summary?.members?.find(row => row.member_path === physicalFile?.path);
-  const sizeText = formatFileSize(physicalFile ? physicalFile.sizeBytes : item?.sizeBytes);
-  const directOriginal = !!item && !item.directory && !/\.(zip|rar)$/i.test(item.filename);
+  const directOriginal = !!item && !item.directory && /\.(csv|tsv|txt|xls|xlsx|pdf)$/i.test(item.filename);
   useEffect(() => { setNativeIcon(''); }, [item?.id, selected?.id, client, scopeSignal]);
   const close = () => { flow?.stop('已关闭进度；未启动文件未上传，已提交任务继续处理'); onClose(); };
   const download = async (kind: 'report' | 'original') => {
@@ -241,7 +248,6 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
     catch (failure) { if (!scopeSignal.aborted && !signal.aborted) setDownloadError((failure as Error).message); }
     finally { if (!scopeSignal.aborted && !signal.aborted) setDownloading(''); }
   };
-  const copyFileName = async () => { const signal = fileActionLifetime.current.signal; try { await navigator.clipboard.writeText(physicalFile?.name || item!.filename); } catch { if (!signal.aborted && !scopeSignal.aborted) setDownloadError('未能复制文件名，请重试。'); } };
   const nativeCopy = async (action: 'open' | 'reveal') => {
     if (!result?.source_id || !actions?.sourceCopy || downloading || !directOriginal) return;
     const signal = fileActionLifetime.current.signal;
@@ -250,20 +256,67 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
     catch (error) { if (!signal.aborted && !scopeSignal.aborted) setDownloadError((error as Error).message); }
     finally { if (!signal.aborted && !scopeSignal.aborted) setDownloading(''); }
   };
-  const upload = (read: (signal: AbortSignal) => File[] | Promise<File[]>, directory = false) => { setSelectedId(undefined); setShowResultDetails(false); void flow?.upload(read, directory); };
+  const canAppend = active && !resume && surface === 'v1';
+  const intakeAvailable = canAppend && !!flow && !state.reading && !state.withdrawing;
+  const receive = (read: (signal: AbortSignal) => File[] | Promise<File[]>, directory = false) => {
+    if (!intakeAvailable || scopeSignal.aborted) return;
+    if (expanded) void flow?.append(read, directory);
+    else void flow?.upload(read, directory);
+  };
+  const isFileDrag = (event: DragEvent<HTMLElement>) => Array.from(event.dataTransfer.types ?? []).includes('Files')
+    || Array.from(event.dataTransfer.items ?? []).some(entry => entry.kind === 'file') || !!event.dataTransfer.files?.length;
+  const resetFileDrag = () => { fileDragDepth.current = 0; setDragging(false); };
+  const dragEnter = (event: DragEvent<HTMLElement>) => {
+    if (!intakeAvailable || !isFileDrag(event)) return;
+    event.preventDefault();
+    fileDragDepth.current++;
+    setDragging(true);
+  };
+  const dragOver = (event: DragEvent<HTMLElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = intakeAvailable ? 'copy' : 'none';
+    if (intakeAvailable) setDragging(true);
+  };
+  const dragLeave = (event: DragEvent<HTMLElement>) => {
+    fileDragDepth.current = Math.max(0, fileDragDepth.current - 1);
+    const next = event.relatedTarget;
+    if (next instanceof Node ? !event.currentTarget.contains(next) : fileDragDepth.current === 0) resetFileDrag();
+  };
+  const dropFiles = (event: DragEvent<HTMLElement>) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault(); event.stopPropagation(); resetFileDrag();
+    if (!intakeAvailable) return;
+    const dropped = captureDroppedFiles(event.dataTransfer); receive(dropped.read, dropped.directory);
+  };
   const modalDrop = (event: DragEvent<HTMLElement>) => {
     if (event.defaultPrevented) return;
     event.preventDefault();
-    if (state.items.length || state.reading) { port.notify({ operation: 'import', severity: 'warning', title: '请先关闭当前进度，再选择下一批文件' }); return; }
-    const directory = Array.from(event.dataTransfer.items ?? []).some(entry => entry.webkitGetAsEntry?.()?.isDirectory);
-    const dropped = captureDroppedFiles(event.dataTransfer); upload(signal => dropped.read(signal), directory);
+    if (!expanded) dropFiles(event);
+    else resetFileDrag();
   };
-  const fileHeading = item && <div className="ft-inspector-title"><ImportIcon name={importIcon(selected?.name || item.filename, selected?.kind)} className="ft-file-icon" /><div className="ft-file-title-copy"><h3><ImportFileName name={selected?.name || item.filename} path={selected?.path} /></h3><div className="ft-file-outcomes" aria-label="当前文件导入结果">{countsKnown ? <><span>已导入 {(imported ?? 0).toLocaleString('zh-CN')} 行</span><span>重复 {(duplicates ?? 0).toLocaleString('zh-CN')} 行</span><span data-tone={needsReview ? 'warning' : undefined}>待核对 {needsReview.toLocaleString('zh-CN')} 行</span>{others > 0 && <span>未计入 {others.toLocaleString('zh-CN')} 行</span>}{counts.removed ? <span>已移除 {counts.removed.toLocaleString('zh-CN')} 行</span> : null}</> : <span>{busy ? '正在识别与核对' : item.phase === 'failed' ? '导入失败' : item.phase === 'skipped' ? '已跳过' : item.loadingMembers ? '读取回执中' : complete || unknown ? '处置待核对' : preview ? '预览待确认' : '等待识别'}</span>}</div></div>{directOriginal && actions?.sourceCopy && result?.source_id && originalAvailable && <button type="button" className="button secondary ft-open-copy" disabled={!!downloading} onClick={() => void nativeCopy('open')}><img src={nativeIcon || `/static/ui-icons/${importIcon(item.filename)}.svg`} width="18" height="18" alt="" />打开副本</button>}<ImportFileMenu key={`${item.id}:${selected?.id}`} commands={[
-            { label: selected?.path && /\.(zip|rar)$/i.test(item.filename) || item.directory ? '另存所属压缩包…' : '另存原件…', icon: 'file-plus', disabled: !result?.source_id || !actions?.downloadSource || !originalAvailable || !!downloading, run: () => void download('original') },
-            ...(directOriginal && actions?.sourceCopy ? [{ label: '显示副本位置', icon: 'folder', disabled: !result?.source_id || !originalAvailable || !!downloading, run: () => void nativeCopy('reveal') }] : []),
-            { label: '复制文件名', icon: 'copy', run: () => void copyFileName() },
-          ]} information={<dl className="ft-file-information">{selected?.kind === 'sheet' && physicalFile?.kind === 'file' && <><dt>范围</dt><dd>整份文件</dd></>}<dt>{item.directory && !selected?.path ? '所选文件合计' : '文件大小'}</dt><dd>{sizeText}</dd><dt>处理用时（本次）</dt><dd>{formatImportDuration(!physicalFile?.path && (complete || item.phase === 'failed') ? item.processingMs : undefined)}</dd><dt>原始行数</dt><dd>{knownDocumentTotal(fileDocuments, 'source_rows')}</dd><dt>数据记录</dt><dd>{fileDocuments.length ? knownDocumentTotal(fileDocuments, 'row_count') : summary && !physicalFile?.path ? summary.record_total.toLocaleString('zh-CN') : member?.row_count?.toLocaleString('zh-CN') ?? '—'}</dd></dl>} /></div>;
-  const fundsReportMode = showResultDetails && !!client.importFundsReport
+  const fileDropEvents = canAppend ? { onDragEnter: dragEnter, onDragOver: dragOver, onDragLeave: dragLeave, onDrop: dropFiles } : {};
+  const fileHeading = item && <div className="ft-inspector-title"><ImportIcon name={importIcon(selected?.name || item.filename, selected?.kind)} className="ft-file-icon" /><div className="ft-file-title-copy"><h3><ImportFileName name={selected?.name || item.filename} path={selected?.path} /></h3><div className="ft-file-outcomes" aria-label="当前文件导入结果">{item.job?.withdrawn ? <span>已撤回导入</span> : countsKnown ? <><span>已导入 {(imported ?? 0).toLocaleString('zh-CN')} 行</span><span>重复 {(duplicates ?? 0).toLocaleString('zh-CN')} 行</span><span data-tone={needsReview ? 'warning' : undefined}>待核对 {needsReview.toLocaleString('zh-CN')} 行</span>{others > 0 && <span>未计入 {others.toLocaleString('zh-CN')} 行</span>}{counts.removed ? <span>已移除 {counts.removed.toLocaleString('zh-CN')} 行</span> : null}</> : <span>{busy ? '正在识别与核对' : item.phase === 'failed' ? '导入失败' : item.phase === 'skipped' ? '已跳过' : item.loadingMembers ? '读取回执中' : complete || unknown ? '处置待核对' : preview ? '预览待确认' : '等待识别'}</span>}</div></div>{directOriginal && actions?.sourceCopy && result?.source_id && originalAvailable && <button type="button" className="button secondary ft-open-copy" disabled={!!downloading} onClick={() => void nativeCopy('open')}><img src={nativeIcon || `/static/ui-icons/${importIcon(item.filename)}.svg`} width="18" height="18" alt="" />打开副本</button>}{selected && <button ref={moreButton} type="button" className="ft-more icon-button" aria-label="文件操作" aria-haspopup="menu"
+      aria-expanded={menu?.anchor.trigger === moreButton.current && !!menu} aria-controls={menu ? menuId : undefined}
+      onClick={event => menu?.anchor.trigger === event.currentTarget ? closeMenu() : openMenu(selected, { trigger: event.currentTarget })}><ImportIcon name="dots" /></button>}</div>;
+  const menuNode = findNode(roots, menu?.nodeId);
+  const menuItem = state.items.find(row => row.id === menuNode?.itemId);
+  const menuRoot = roots.find(node => node.id === menuItem?.id);
+  const menuPhysical = menuNode && (containingFile(roots, menuNode.id) ?? menuNode);
+  const focusRow = (id?: string) => {
+    requestAnimationFrame(() => {
+      if (scopeSignal.aborted) return;
+      const rows = body.current?.querySelectorAll<HTMLElement>('[data-import-node]');
+      const row = rows && [...rows].find(element => element.dataset.importNode === id);
+      (row ?? fileInput.current?.closest('dialog')?.querySelector<HTMLButtonElement>('.ft-import-append > button'))?.focus({ preventScroll: true });
+      row?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    });
+  };
+  const focusAfterRemoval = (removedId: string) => {
+    const index = roots.findIndex(node => node.id === removedId);
+    focusRow(roots[index + 1]?.id ?? roots[index - 1]?.id);
+  };
+  const fundsReportMode = showResultDetails && !item?.job?.withdrawn && !!client.importFundsReport
     && (!complete || (inspectable && !!reviewMember && !!result?.source_id));
   const inspectorToggleLabel = inspectorCollapsed ? '展开右侧详情' : '折叠右侧详情';
   if (!active || scopeSignal.aborted) return null;
@@ -279,24 +332,19 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
       </button>}
     </>}>
     {complete && <div className="ft-sr-only" role="status" aria-label="导入完成"><span>{classified ? '自动处理完成' : '流水已写入当前案件'}</span><p>{classified && <>已保存 {feedback?.record_total ?? summary?.record_total} 条记录 · </>}新增流水记录 {summary?.effective_added ?? result?.ok ?? 0} 条 · 重复 {result?.rows_dup ?? 0} 条 · {feedback ? <>已配对冲正/撤销 {feedback.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {feedback.non_monetary} 条 · 未计入资金流水 {unresolvedCount(feedback)} 条 · 来源反馈 {feedback.non_transaction} 条 · 辅助资料 {feedback.auxiliary} 条</> : summary ? <>未计入资金流水 {summary.unresolved} 条 · 已配对冲正/撤销 {summary.cancelled ?? 0} 条（双方均不计有效资金） · 无资金变动 {summary.non_monetary} 条 · 非交易记录 {summary.non_transaction} 条 · 辅助资料 {summary.auxiliary} 条</> : <>跳过 {result?.skipped ?? 0} 行</>}</p></div>}
-    <input className="ft-file-input" ref={fileInput} id={fileId} aria-label="选择流水文件" aria-describedby={!item ? `${fileId}-hint ${fileId}-group` : undefined} tabIndex={-1} type="file" multiple accept=".csv,.tsv,.txt,.xlsx,.xls,.zip,.rar" disabled={state.reading || state.running} onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; upload(() => files); }} />
-    {client.previewDirectory && <input className="ft-file-input" id={directoryId} tabIndex={-1} aria-label="选择整个文件夹" type="file" multiple ref={element => { directoryInput.current = element; element?.setAttribute('webkitdirectory', ''); }} disabled={state.reading || state.running} onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; upload(() => files, true); }} />}
-    {expanded && <ImportStepper items={state.items} processing={processing} total={allKnown ? totalFiles : undefined} confirmed={processedFiles} animateCompletion={resume?.stage !== 'done'} />}
+    <input className="ft-file-input" ref={fileInput} id={fileId} aria-label="选择流水文件" aria-describedby={!expanded ? `${fileId}-hint ${fileId}-group` : undefined} tabIndex={-1} type="file" multiple accept=".csv,.tsv,.txt,.xlsx,.xls,.zip,.rar" disabled={!intakeAvailable} onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; receive(() => files); }} />
+    {client.previewDirectory && <input className="ft-file-input" id={directoryId} tabIndex={-1} aria-label="选择整个文件夹" type="file" multiple ref={element => { directoryInput.current = element; element?.setAttribute('webkitdirectory', ''); }} disabled={!intakeAvailable} onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; receive(() => files, true); }} />}
+    {expanded && !!state.items.length && <ImportStepper items={stepItems} processing={processing} total={stepTotal} confirmed={stepConfirmed} animateCompletion={resume?.stage !== 'done'} />}
     {state.error && <p className="error-banner" role="alert">{state.error}</p>}
-    {!expanded && !item ? <div className={`ft-drop-zone import-drop-area ${dragging ? 'is-dragging' : ''}`} onDragOver={event => { event.preventDefault(); setDragging(true); }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }} onDrop={event => {
-      event.preventDefault(); setDragging(false);
-      const directory = Array.from(event.dataTransfer.items ?? []).some(entry => entry.webkitGetAsEntry?.()?.isDirectory);
-      const dropped = captureDroppedFiles(event.dataTransfer); upload(signal => dropped.read(signal), directory);
-    }}><ImportIcon name={state.reading ? 'import-loader' : 'upload'} className={state.reading ? 'is-spinning' : ''} /><h3>{state.reading ? '正在读取所选文件…' : '拖入文件或文件夹'}</h3><p id={`${fileId}-hint`}>Excel · CSV · ZIP · RAR</p><div className="ft-file-actions"><button type="button" className="button primary" disabled={state.reading || state.running} onClick={() => fileInput.current?.click()}>选择文件</button>{client.previewDirectory && <button type="button" className="button secondary" disabled={state.reading || state.running} onClick={() => directoryInput.current?.click()}>选择文件夹</button>}</div><p id={`${fileId}-group`} className="ft-sr-only">多选文件顺序处理；需要资料相互关联时，请选择整个文件夹。</p></div>
-      : !expanded && item ? <section className="ft-entry-progress"><ImportIcon name={busy ? 'import-loader' : unknown ? 'import-clock' : 'import-circle-x'} className={busy ? 'is-spinning' : ''} /><ImportFileName name={item.filename} /><p>{sizeText}</p><ImportProgress label={progressLabel} active={!!busy} />{item.error && <p className="ft-entry-error" role="alert">{item.error}</p>}{!busy && <div className="ft-file-actions">{unknown && item.importId ? <button className="button secondary" onClick={() => void flow?.query(item.id)}>重新查询进度</button> : !item.importId && <button type="button" className="button primary" onClick={() => fileInput.current?.click()}>重新选择文件</button>}</div>}</section>
-      : item && <div ref={body} className={`ft-import-body${inspectorCollapsed ? ' is-inspector-collapsed' : ''}${showFileMetadata ? ' has-file-metadata' : ''}`}>
-        <aside className="ft-import-files">
+    {!expanded ? <div className={`ft-drop-zone import-drop-area ${dragging && intakeAvailable ? 'is-dragging' : ''}`} {...fileDropEvents}><ImportIcon name={state.reading ? 'import-loader' : 'upload'} className={state.reading ? 'is-spinning' : ''} /><h3>{state.reading ? '正在读取所选文件…' : '拖入文件或文件夹'}</h3><p id={`${fileId}-hint`}>Excel · CSV · ZIP · RAR</p><div className="ft-file-actions"><button type="button" className="button primary" disabled={!intakeAvailable} onClick={() => fileInput.current?.click()}>选择文件</button>{client.previewDirectory && <button type="button" className="button secondary" disabled={!intakeAvailable} onClick={() => directoryInput.current?.click()}>选择文件夹</button>}</div><p id={`${fileId}-group`} className="ft-sr-only">多选文件顺序处理；需要资料相互关联时，请选择整个文件夹。</p></div>
+      : item ? <div ref={body} className={`ft-import-body${inspectorCollapsed ? ' is-inspector-collapsed' : ''}${showFileMetadata ? ' has-file-metadata' : ''}`}>
+        <aside className="ft-import-files" data-append-drop={dragging && intakeAvailable || undefined} {...fileDropEvents}>
           <div className="ft-import-files-content">
-            <ImportTree roots={roots} items={state.items} selectedId={selected?.id} query={query} onClearSearch={() => setQuery('')} onOpen={openFile}
+            <ImportTree roots={roots} items={state.items} selectedId={selected?.id} query={query} onClearSearch={() => setQuery('')} onOpen={openFile} onContext={openMenu}
               canReview={!!client.importReview} canLocateSource={!!client.importRecords}
               showMetadata={showFileMetadata} metadataActive={inspectorCollapsed} heading={<>
                 <h3>导入文件</h3><div className="ft-counts ft-file-counts" aria-label="文件处理汇总">{fileSummary.map(({tone,label,count,icon})=><span key={label} data-tone={tone}><ImportIcon name={icon} />{label} {count ?? '—'}</span>)}</div>
-                {state.running && state.items.length > 1 && !state.stopped && <button className="ft-text-button" onClick={() => flow?.stop()}>停止后续文件</button>}
+                {state.items.some(row => row.phase === 'queued') && !state.stopped && <button className="ft-text-button" onClick={() => flow?.stop()}>停止后续文件</button>}
               </>} />
           </div>
         </aside>
@@ -304,11 +352,11 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
         <section id={inspectorId} className={`ft-inspector ${fundsReportMode ? 'is-report' : ''}`} aria-label="文件识别与预览，可上下滚动"
           inert={inspectorCollapsed} aria-hidden={inspectorCollapsed || undefined}>
           <div className="ft-inspector-content" ref={inspectorElement} tabIndex={0}>
-          {keepInspector && (fundsReportMode ? complete && inspectable && reviewMember && result?.source_id ? <ImportFundsReport key={`${client.binding.scopeKey}:${client.binding.generation}:${result.source_id}:${reviewMember}`} client={client} scopeSignal={scopeSignal} sourceId={result.source_id} memberPath={reviewMember} header={fileHeading} actions={actions} chapter={reportChapter} onChapter={setReportChapter} /> : <div className="ft-report-unavailable">{fileHeading}<p>{!inspectable ? '选择文件或工作表，查看其资金统计报告。' : item.phase === 'failed' ? '此文件导入失败，没有可统计的资金记录。' : '此文件尚未完成导入，报告暂不可用。'}</p>{item.error && <p role="alert">{item.error}</p>}</div> : <>
+          {keepInspector && (fundsReportMode ? complete && inspectable && reviewMember && result?.source_id ? <ImportFundsReport key={`${client.binding.scopeKey}:${client.binding.generation}:${result.source_id}:${reviewMember}`} client={client} scopeSignal={scopeSignal} sourceId={result.source_id} memberPath={reviewMember} dataVersion={state.dataVersion} header={fileHeading} actions={actions} chapter={reportChapter} onChapter={setReportChapter} /> : <div className="ft-report-unavailable">{fileHeading}<p>{!inspectable ? '选择文件或工作表，查看其资金统计报告。' : item.phase === 'failed' ? '此文件导入失败，没有可统计的资金记录。' : '此文件尚未完成导入，报告暂不可用。'}</p>{item.error && <p role="alert">{item.error}</p>}</div> : <>
           {fileHeading}
 
 
-          {item.error && <div className={unknown || complete || item.phase === 'skipped' ? 'warning-banner' : 'error-banner'} role="alert"><span>{item.error}</span>{!item.importId && !busy && <button type="button" className="button secondary" onClick={() => fileInput.current?.click()}>重新选择文件</button>}{unknown && <p>导入结果暂无法确认，请重新查询进度，确认前不会再次提交。</p>}{unknown && item.importId && <button className="button secondary" onClick={() => void flow?.query(item.id)}>重新查询进度</button>}{item.phase === 'failed' && item.importId && (item.preview || item.resume?.source_available) && item.job?.recoverable !== false && <button className="button secondary" onClick={() => void flow?.repreview(item.id)}>{item.preview ? '重新预览后重试' : '重试恢复预览'}</button>}</div>}
+          {item.error && <div className={unknown || complete || item.phase === 'skipped' ? 'warning-banner' : 'error-banner'} role="alert"><span>{item.error}</span>{unknown && <p>导入结果暂无法确认，请重新查询进度，确认前不会再次提交。</p>}{unknown && item.importId && <button className="button secondary" onClick={() => void flow?.query(item.id)}>重新查询进度</button>}{item.phase === 'failed' && item.importId && (item.preview || item.resume?.source_available) && item.job?.recoverable !== false && <button className="button secondary" onClick={() => void flow?.repreview(item.id)}>{item.preview ? '重新预览后重试' : '重试恢复预览'}</button>}</div>}
 
           {!showResultDetails && inspectable && (preview || mappingRows.length > 0) && <section className="ft-mapping-section"><div className="ft-section-heading"><h4>字段映射</h4><p className="ft-header-detection">{documents.length ? documents.map((document, index) => <span key={index}>{document.header_row != null ? `表头第 ${String(document.header_row)} 行` : '表头未能唯一识别'}{index < documents.length - 1 ? '；' : ''}</span>) : classified ? '表头未识别' : '表头行未确定'}{distinctColumns.length > 0 && <> · 已识别 {recognized.size} / {distinctColumns.length} 个字段</>}</p>{item.dirty && <span>映射已修改</span>}</div>
 
@@ -318,7 +366,7 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
             {item.dirty && <button className="button secondary" onClick={() => void flow?.repreview(item.id)}>按当前映射重新预览</button>}
           </section>}
           {!reviewAvailable && !showResultDetails && inspectable && (selectedExamples.length > 0 || genericExamples.length > 0) && <section className="ft-issues"><div className="ft-section-heading"><h4>识别问题（{selectedExamples.length + genericExamples.length}）</h4></div>{selectedExamples.map((row, index) => <div key={index} className="ft-issue"><ImportIcon name="import-circle-x" /><span>原始第 {row.source_row} 行 · {feedbackReason(row.reason_code)}</span>{result?.source_id && <a href="#ft-source-records" onClick={event => { event.preventDefault(); setSelectedId(selected?.id); setShowResultDetails(false); setRecordFocus(previous => ({ itemId: item.id, memberPath: row.member_path, sourceRow: row.source_row, sequence: (previous?.sequence ?? 0) + 1 })); }}>查看来源行</a>}</div>)}{genericExamples.map((row, index) => <div key={`generic:${index}`} className="ft-issue"><ImportIcon name="import-circle-x" /><span>{row.source_row != null ? `原始第 ${row.source_row} 行` : row.row} · {feedbackReason(row.reason)}</span></div>)}</section>}
-          {!showResultDetails && inspectable && (result?.source_id ? <div id="ft-source-records">{reviewAvailable ? <ImportReview key={`${client.binding.scopeKey}:${client.binding.generation}:${item.id}:${selected?.id}:${reviewFocus?.sequence ?? 0}`} client={client} scopeSignal={scopeSignal} sourceId={result.source_id} memberPath={reviewMember!} reserveIssueBar={countsKnown && needsReview > 0} startInReview={!!reviewFocus} /> : <ImportRecordEvidence key={`${client.binding.scopeKey}:${client.binding.generation}:${item.id}:${selected?.id}:${recordFocus?.itemId === item.id ? recordFocus.sequence : 0}`} compact initialRows={samples} filename={selected?.name || item.filename} caseId={target.caseId} openPreview focusRow={recordFocus?.itemId === item.id && selected?.memberPaths.includes(recordFocus.memberPath) ? recordFocus.sourceRow : undefined} onClearFocus={() => setRecordFocus(undefined)} sourceId={result.source_id} memberPath={selected?.memberPaths.length === 1 ? selected.memberPaths[0] : undefined} client={client} scopeSignal={scopeSignal} />}</div> : preview && <ImportDataPreview rows={samples} filename={item.filename} feedback={!!feedback} />)}
+          {!showResultDetails && inspectable && (result?.source_id ? <div id="ft-source-records">{reviewAvailable ? <ImportReview key={`${client.binding.scopeKey}:${client.binding.generation}:${item.id}:${selected?.id}:${reviewFocus?.sequence ?? 0}:${item.job?.withdrawn ?? false}`} client={client} scopeSignal={scopeSignal} sourceId={result.source_id} memberPath={reviewMember!} reserveIssueBar={countsKnown && needsReview > 0} startInReview={!!reviewFocus} /> : <ImportRecordEvidence key={`${client.binding.scopeKey}:${client.binding.generation}:${item.id}:${selected?.id}:${recordFocus?.itemId === item.id ? recordFocus.sequence : 0}`} compact initialRows={samples} filename={selected?.name || item.filename} caseId={target.caseId} openPreview focusRow={recordFocus?.itemId === item.id && selected?.memberPaths.includes(recordFocus.memberPath) ? recordFocus.sourceRow : undefined} onClearFocus={() => setRecordFocus(undefined)} sourceId={result.source_id} memberPath={selected?.memberPaths.length === 1 ? selected.memberPaths[0] : undefined} client={client} scopeSignal={scopeSignal} />}</div> : preview && <ImportDataPreview rows={samples} filename={item.filename} feedback={!!feedback} />)}
           {complete && <section hidden={!showResultDetails} className="ft-result-data" aria-label="处理结果" ref={resultElement}><h4>导入回执</h4><table><thead><tr><th>处理结果</th><th>{resume?.stage === 'done' ? '导入当时数量' : '数量'}</th></tr></thead><tbody><tr><td>新增流水记录</td><td>{summary?.effective_added ?? result?.ok ?? 0}</td></tr><tr><td>重复</td><td>{result?.rows_dup ?? 0}</td></tr><tr><td>未计入</td><td>{feedback ? unresolvedCount(feedback) : summary?.unresolved ?? result?.skipped ?? 0}</td></tr></tbody></table><p className="ft-receipt">批次 {result?.batch_id} · {item.filename}</p>
             {result?.source_id && inspectable && <ImportRecordEvidence caseId={target.caseId} sourceId={result.source_id} memberPath={selected?.memberPaths.length === 1 ? selected.memberPaths[0] : undefined} client={client} scopeSignal={scopeSignal} />}
           </section>}
@@ -330,7 +378,29 @@ export function ImportDialog({ target, client, scopeSignal, resume, actions, onC
           {downloadError && <p role="alert">{downloadError}</p>}
           </>)}
           </div>
-        </section></div>}
-    {expanded && <footer className="ft-import-footer"><div className="ft-footer-actions">{(state.items.length > 0) && <button className="button primary" disabled={!showResultDetails && !canShowResult} onClick={() => { setCollapsedInspector(null); setShowResultDetails(value => !value); }}>{showResultDetails ? '返回数据预览' : '查看处理结果'}</button>}<button className="button secondary" onClick={close}>{!queuePending ? '完成' : '关闭进度'}</button>{preview && !complete && !pending && !state.running && <button className="button primary" disabled={!!busy || state.running || item.dirty || !classified && preview.stats.ok === 0 || item.phase === 'failed'} onClick={() => void flow?.commit(item.id)}>{classified ? '开始导入' : '确认导入'}</button>}</div></footer>}
+        </section></div> : <div className={`ft-drop-zone ${dragging && intakeAvailable ? 'is-dragging' : ''}`} {...fileDropEvents}>
+          <p>暂无导入文件</p>{canAppend && <p>可拖入文件或文件夹</p>}
+        </div>}
+    {menu && menuNode && menuItem && menuRoot && menuPhysical && <ImportFileMenu key={menu.nodeId} id={menuId} anchor={menu.anchor}
+      item={menuItem} node={menuNode} original={menuRoot} physicalFile={menuPhysical} documents={documentsFor(menuItem, menuPhysical)}
+      client={client} scopeSignal={scopeSignal} actions={actions} onClose={closeMenu}
+      writeBusy={state.running || state.reading || state.withdrawing || state.items.some(row => !['done', 'ready', 'failed', 'skipped'].includes(row.phase))}
+      onView={() => openFile(menuNode, { kind: 'preview' })}
+      onLocate={() => { setQuery(''); openFile(menuRoot, { kind: 'preview' }); focusRow(menuRoot.id); }}
+      onRemove={() => {
+        if (flow?.remove(menuItem.id)) focusAfterRemoval(menuRoot.id);
+      }}
+      onQuery={() => void flow?.query(menuItem.id)} onWithdraw={async batchId => {
+        if (await flow?.withdraw(menuItem.id, batchId)) {
+          closeMenu(false);
+          focusAfterRemoval(menuRoot.id);
+          port.notify({ operation: 'import', severity: 'success', title: '已删除导入项' });
+        }
+      }} />}
+    {expanded && <footer className="ft-import-footer">
+      {canAppend && <div className="ft-import-append"><ImportAppendControl disabled={!intakeAvailable} reading={state.reading}
+        onFiles={() => fileInput.current?.click()} onDirectory={client.previewDirectory ? () => directoryInput.current?.click() : undefined} /></div>}
+      {!canAppend && resume && onOpenNewImport && <button type="button" className="button secondary" onClick={onOpenNewImport}><ImportIcon name="file-plus" />导入新资料</button>}
+      <div className="ft-footer-actions">{(state.items.length > 0) && <button className="button primary" disabled={!showResultDetails && !canShowResult} onClick={() => { setCollapsedInspector(null); setShowResultDetails(value => !value); }}>{showResultDetails ? '返回数据预览' : '查看处理结果'}</button>}<button className="button secondary" onClick={close}>{!queuePending ? '完成' : '关闭进度'}</button>{preview && !complete && !pending && !state.running && <button className="button primary" disabled={!!busy || state.running || state.withdrawing || item.dirty || !classified && preview.stats.ok === 0 || item.phase === 'failed'} onClick={() => void flow?.commit(item.id)}>{classified ? '开始导入' : '确认导入'}</button>}</div></footer>}
   </Modal>;
 }

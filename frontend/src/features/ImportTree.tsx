@@ -4,6 +4,7 @@ import type { ImportItem } from './import-workflow.mjs';
 import { filterImportTree, flattenImportTree, importIcon, type ImportTreeNode } from './import-tree';
 import { ImportFileName } from './ImportFileName';
 import { feedbackReason } from './ImportDetails';
+import type { ImportMenuAnchor } from './ImportFileMenu';
 
 export function ImportIcon({ name, className = '' }: { name: string; className?: string }) {
   if (name.startsWith('import-file-')) return <img className={`ft-icon ft-document-icon ${className}`} src={`/static/ui-icons/${name}.svg`} alt="" aria-hidden="true" draggable={false} />;
@@ -16,6 +17,7 @@ export function ImportProgress({ value, visualValue = value, label, active = fal
   </div>;
 }
 export function importState(item: ImportItem, node?: ImportTreeNode) {
+  if (item.job?.withdrawn) return { label: '已撤回', icon: 'import-circle-minus', tone: 'muted', active: false };
   if (item.phase === 'failed') return { label: '失败', icon: 'import-circle-x', tone: 'danger', active: false };
   if (item.phase === 'unknown' || item.queryingOnly) return { label: '结果待核对', icon: 'import-clock', tone: 'warning', active: false };
   if (item.phase === 'skipped') return { label: '跳过 · 未上传', icon: 'import-circle-minus', tone: 'muted', active: false };
@@ -27,7 +29,7 @@ export function importState(item: ImportItem, node?: ImportTreeNode) {
       icon: unresolved ? 'import-clock' : 'import-circle-check', tone: unresolved ? 'warning' : 'success', active: false };
   }
   if (item.phase === 'ready') return { label: '待确认', icon: 'import-clock', tone: 'accent', active: false };
-  if (item.phase === 'queued') return { label: '等待识别', icon: 'import-clock', tone: 'muted', active: false };
+  if (item.phase === 'queued') return { label: '排队中', icon: 'import-clock', tone: 'muted', active: false };
   return { label: item.phase === 'uploading' || item.phase === 'previewing' ? '识别中' : item.job?.stage === 'importing' ? '导入中' : '识别中', icon: 'import-loader', tone: 'accent', active: true };
 }
 const metadataHeadings = ['数据大小', '数据行数', '处理摘要', '导入时长'];
@@ -38,6 +40,7 @@ export type ImportTreeDestination = { kind: 'result' } | { kind: 'preview' } | {
 type ReviewMetadata = { summary?: string; tone?: 'warning' | 'danger'; destination?: ImportTreeDestination };
 
 function reviewMetadata(item: ImportItem, node: ImportTreeNode, canReview: boolean, canLocateSource: boolean): ReviewMetadata {
+  if (item.job?.withdrawn) return { summary: '导入已撤回', destination: { kind: 'preview' } };
   if (item.phase === 'failed') return { summary: '文件处理失败', tone: 'danger', destination: item.error ? { kind: 'preview' } : undefined };
   const receipt = item.phase === 'done' && !item.loadingMembers && !item.queryingOnly ? item.job?.result : undefined;
   const counts = receipt && item.job?.member_results !== undefined && node.memberPaths.length ? node.dispositions : undefined;
@@ -70,10 +73,11 @@ function reviewMetadata(item: ImportItem, node: ImportTreeNode, canReview: boole
     destination: confirmed && !pending ? { kind: 'result' } : undefined };
 }
 
-export function ImportTree({ roots, items, selectedId, onOpen, query = '', onClearSearch, heading,
+export function ImportTree({ roots, items, selectedId, onOpen, onContext, query = '', onClearSearch, heading,
   showMetadata = false, metadataActive = showMetadata, canReview = false, canLocateSource = false }: {
   roots: ImportTreeNode[]; items: ImportItem[]; selectedId?: string;
   onOpen: (node: ImportTreeNode, destination: ImportTreeDestination) => void;
+  onContext?: (node: ImportTreeNode, anchor: ImportMenuAnchor) => void;
   query?: string; onClearSearch?: () => void; heading?: ReactNode;
   showMetadata?: boolean; metadataActive?: boolean; canReview?: boolean; canLocateSource?: boolean;
 }) {
@@ -97,9 +101,18 @@ export function ImportTree({ roots, items, selectedId, onOpen, query = '', onCle
     setCollapsed(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   };
   const move = (id?: string) => { if (id) { setFocus(id); elements.current.get(id)?.focus(); elements.current.get(id)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }); } };
-  const keyboard = (event: KeyboardEvent, index: number) => {
+  const context = (node: ImportTreeNode, trigger: HTMLElement, point?: ImportMenuAnchor['point']) => {
+    if (!onContext) return;
+    trigger.focus({ preventScroll: true });
+    const branch = node.children.length && !query.trim() ? { open: !effectiveCollapsed.has(node.id), toggle: () => toggle(node.id) } : undefined;
+    onContext(node, { trigger, point, branch });
+  };
+  const keyboard = (event: KeyboardEvent<HTMLDivElement>, index: number) => {
     if (event.target !== event.currentTarget) return;
     const row = visible[index], node = row.node;
+    if (onContext && (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10')) {
+      event.preventDefault(); context(node, event.currentTarget); return;
+    }
     if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter', ' '].includes(event.key)) return;
     event.preventDefault();
     if (event.key === 'ArrowDown') move(visible[Math.min(index + 1, visible.length - 1)]?.node.id);
@@ -127,17 +140,19 @@ export function ImportTree({ roots, items, selectedId, onOpen, query = '', onCle
     const actionLabel = action?.kind === 'preview' ? '查看原因' : '定位待核对';
     const completed = item.phase === 'done' && (!node.memberPaths.length || !item.loadingMembers && item.job?.member_results !== undefined);
     const failed = item.phase === 'failed';
-    const showTerminal = metadata && (completed || failed);
+    const showTerminal = metadata && !item.job?.withdrawn && (completed || failed);
     const childCount = node.children.length ? (node.kind === 'file' ? `${node.children.length} 个工作表` : `${node.fileCount} 个文件`) : '';
     const groupStatus = node.kind === 'file' || item.phase === 'done' ? '' : ` · ${state.active ? '处理中' : state.label}`;
-    const stateText = childCount ? childCount + groupStatus
+    const stateText = item.job?.withdrawn ? state.label : childCount ? childCount + groupStatus
       : (node.kind === 'archive' || node.kind === 'folder') && !node.fileCount ? `— 个文件 · ${state.label}`
         : state.label.replace(/^完成 · 待核对 (\d+) 条$/, '$1 待核对').replace(/^已导入 /, '');
     return <div key={node.id} role="none"><div ref={element => { if (element) elements.current.set(node.id, element); else elements.current.delete(node.id); }}
       role="treeitem" aria-level={level} aria-selected={node.id === selectedId} aria-expanded={node.children.length ? isOpen : undefined} aria-describedby={metadataActive ? descriptionId : undefined}
+      aria-haspopup={onContext ? 'menu' : undefined} data-import-node={node.id}
       data-complete={item.phase === 'done' || undefined}
       tabIndex={node.id === focused ? 0 : -1} className={`ft-tree-row ${node.children.length ? 'is-branch' : 'is-leaf'}`} data-last={last} data-tone={state.tone} data-selected-descendant={!isOpen && descendants(node, selectedId) || undefined} style={{ '--tree-level': level, '--tree-indent': `${(level - 1) * 24 + (!node.children.length && level > 1 ? 24 : 0)}px`, '--tree-elbow': `${!node.children.length ? -32 : -8}px` } as CSSProperties}
-      onFocus={() => setFocus(node.id)} onKeyDown={event => keyboard(event, index)} onClick={() => node.children.length ? toggle(node.id) : openFile(node)}>
+      onFocus={() => setFocus(node.id)} onKeyDown={event => keyboard(event, index)} onClick={() => node.children.length ? toggle(node.id) : openFile(node)}
+      onContextMenu={onContext ? event => { event.preventDefault(); event.stopPropagation(); context(node, event.currentTarget, { x: event.clientX, y: event.clientY }); } : undefined}>
       {level > 1 && <span className="ft-tree-guides" aria-hidden="true"><span className="ft-tree-elbow" />{ancestorLines.slice(1).map((continues, ancestor) => continues ? <span key={ancestor} className="ft-tree-ancestor" style={{ left: `${ancestor * 24 + 16 - ((level - 1) * 24 + (!node.children.length ? 24 : 0))}px` }} /> : null)}</span>}
       <div className="ft-tree-line"><div className="ft-tree-label">{node.children.length ? <button type="button" className="ft-tree-toggle" tabIndex={-1} aria-label={`${isOpen ? '收起' : '展开'}${node.name}`} onClick={event => { event.stopPropagation(); toggle(node.id); }}><ImportIcon name="chevron-right" className={isOpen ? 'is-expanded' : ''} /></button> : node.kind === 'folder' || node.kind === 'archive' || level === 1 ? <span className="ft-tree-toggle" /> : null}
         <ImportIcon name={importIcon(node.name, node.kind)} className={`ft-file-icon ${node.kind === 'sheet' || /\.(xls|xlsx|csv)$/i.test(node.name) ? 'is-spreadsheet' : ''}`} />

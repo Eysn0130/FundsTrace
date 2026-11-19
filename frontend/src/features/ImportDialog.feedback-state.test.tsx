@@ -39,9 +39,10 @@ describe('import feedback state', () => {
     client.preview = vi.fn(() => new Promise<ImportPreview>(done => { resolve = done; }));
     const view = render(<ImportDialog target={{ caseId: '1', name: '合成案件' }} client={client} scopeSignal={new AbortController().signal} onClose={vi.fn()} onImported={vi.fn()} />);
     fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], preview.filename)] } });
-    const progress = screen.getByRole('progressbar', { name: '文件上传与解析进度' });
+    const row = screen.getByRole('treeitem', { name: new RegExp(preview.filename) });
+    const progress = row.querySelector('progress')!;
     expect(progress.hasAttribute('value')).toBe(false); expect(progress.hasAttribute('max')).toBe(false);
-    expect(document.querySelector('.ft-entry-progress > .is-spinning')?.getAttribute('style')).toContain('import-loader.svg');
+    expect(row.querySelector('.is-spinning')?.getAttribute('style')).toContain('import-loader.svg');
     await act(async () => resolve(preview)); view.unmount();
   });
 });

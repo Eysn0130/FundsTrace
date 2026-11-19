@@ -412,6 +412,7 @@ class ImportJob(ContractModel):
     error_code: str | None = None
     recoverable: bool = False
     source_available: bool = False
+    withdrawn: bool = False
     member_results: list[ImportMemberResult] = Field(default_factory=list)
 
 
@@ -437,6 +438,25 @@ class ImportSession(ContractModel):
 class ImportSessionList(ContractModel):
     case_id: Identifier
     items: list[ImportSession]
+
+
+class ImportSourceMetadata(ContractModel):
+    case_id: Identifier
+    source_id: str
+    filename: str
+    sha256: str
+    size_bytes: int
+    registered_at: str
+    material_name: str | None
+    source_available: bool
+    active_batch_id: Identifier | None
+    withdrawn: bool
+
+
+class WithdrawnImport(ContractModel):
+    case_id: Identifier
+    source_id: str
+    batch_id: Identifier
 
 
 class CleanupRequest(ContractModel):

@@ -23,7 +23,62 @@ test('one selection shares a material group and an appended selection gets a new
   const h=harness({commit:async(id,body)=>{groups.push(body.material_group_id);return {case_id:'1',import_id:id};}});
   await h.queue.upload(files);
   assert.equal(groups.length,3);assert.match(groups[0],/^[a-f0-9]{32}$/);assert.ok(groups.every(group=>group===groups[0]));
-  await h.queue.upload(()=>files().slice(0,1));assert.notEqual(groups[3],groups[0]);
+  const receipt = h.queue.snapshot().items[0].job;
+  await h.queue.append(()=>files().slice(0,1));assert.notEqual(groups[3],groups[0]);
+  assert.equal(h.queue.snapshot().items.length, 4);
+  assert.equal(h.queue.snapshot().items[0].job, receipt);
+});
+
+test('appending during a receipt wait adds visible work without shifting selection or submitting early', async () => {
+  const gate = deferred();
+  const h = harness({ job: async id => { if (id === 'first.zip') await gate.promise; return complete(id); } });
+  const first = h.queue.upload(() => files().slice(0, 1));
+  await tick();
+  await h.queue.append(() => files().slice(1));
+  assert.deepEqual(h.calls, ['first.zip']);
+  assert.deepEqual(h.queue.snapshot().items.map(item => item.phase), ['polling', 'queued', 'queued']);
+  assert.equal(h.queue.snapshot().selectedId, '1');
+  assert.equal(h.queue.remove('3'), true);
+  gate.resolve(); await first;
+  assert.deepEqual(h.calls, ['first.zip', 'second.csv']);
+  assert.deepEqual(h.queue.snapshot().items.map(item => item.phase), ['done', 'done']);
+});
+
+test('a directory finishing enumeration after the queue goes idle starts its own operation', async () => {
+  const job = deferred(), directory = deferred();
+  const h = harness({ job: async id => { if (id === 'first.zip') await job.promise; return complete(id); },
+    previewDirectory: async picked => { h.calls.push(...picked.map(file => file.name)); return preview('directory.zip'); } });
+  const first = h.queue.upload(() => files().slice(0, 1));
+  await tick(); const next = h.queue.append(() => directory.promise, true);
+  job.resolve(); await first;
+  assert.equal(h.queue.snapshot().reading, true);
+  assert.equal(h.queue.snapshot().running, false);
+  directory.resolve([{ name: 'data.csv', webkitRelativePath: 'folder/data.csv', size: 4 }]); await next;
+  assert.deepEqual(h.calls, ['first.zip', 'data.csv']);
+  assert.deepEqual(h.queue.snapshot().items.map(item => [item.filename, item.phase]), [['first.zip', 'done'], ['folder', 'done']]);
+});
+
+test('a known task with a lost receipt quarantines appended jobs until its original receipt is read', async () => {
+  let available = false;
+  const h = harness({ job: async id => { if (!available) throw new Error('Synthetic lost receipt'); return complete(id); } });
+  await h.queue.upload(() => files().slice(0, 2));
+  await h.queue.append(() => files().slice(2));
+  assert.deepEqual(h.queue.snapshot().items.map(item => item.phase), ['unknown', 'skipped', 'queued']);
+  assert.deepEqual(h.calls, ['first.zip']);
+  available = true; await h.queue.query('1');
+  assert.deepEqual(h.calls, ['first.zip', 'third.xlsx']);
+  assert.deepEqual(h.queue.snapshot().items.map(item => item.phase), ['done', 'skipped', 'done']);
+});
+
+test('a new append never restarts the automatic commit of files previously stopped during upload', async () => {
+  const gate = deferred(), commits = [];
+  const h = harness({ preview: async file => { if (file.name === 'first.zip') await gate.promise; return preview(file.name); },
+    commit: async id => { commits.push(id); return { case_id: '1', import_id: id }; } });
+  const first = h.queue.upload(() => files().slice(0, 2));
+  await tick(); h.queue.stop(); await h.queue.append(() => files().slice(2));
+  gate.resolve(); await first;
+  assert.deepEqual(commits, ['third.xlsx']);
+  assert.deepEqual(h.queue.snapshot().items.map(item => item.phase), ['ready', 'skipped', 'done']);
 });
 
 test('a complete receipt precedes the next upload; manual mapping does not block independent items', async () => {

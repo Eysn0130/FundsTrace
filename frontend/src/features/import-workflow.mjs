@@ -2,12 +2,13 @@
 export function createImportWorkflow(options) {
   const lifetime = new AbortController(), listeners = new Set();
   let items = [], serial = 0, selectedId = null, reading = false, running = false, stopped = false, error = '', started = false;
+  let intake = 0, dataVersion = 0, withdrawing = false;
   let snapshot;
   const alive = () => !lifetime.signal.aborted && !options.signal.aborted;
   const current = (item, token) => alive() && items.includes(item) && item.request === token;
   const active = item => ['uploading', 'previewing', 'committing', 'polling'].includes(item.phase);
   function publish() {
-    snapshot = { items: items.map(({ files, clockStart, timed, ...item }) => ({ ...item })), selectedId, reading, running, stopped, error };
+    snapshot = { items: items.map(({ files, clockStart, timed, autoCancelled, ...item }) => ({ ...item })), selectedId, reading, running, stopped, error, dataVersion, withdrawing };
     for (const listener of listeners) listener();
   }
   function task(item) {
@@ -40,8 +41,12 @@ export function createImportWorkflow(options) {
     update(item, { dirty: false, phase: 'ready', error: '' });
   }
   function stop(message = '已停止后续文件；已提交任务继续处理') {
+    intake++;
     stopped = true;
-    for (const item of items) if (item.phase === 'queued') { item.files = []; item.phase = 'skipped'; item.error = message; }
+    for (const item of items) {
+      if (item.phase === 'queued') { item.files = []; item.phase = 'skipped'; item.error = message; }
+      if (item.phase === 'uploading') item.autoCancelled = true;
+    }
     publish();
   }
   async function pause() {
@@ -62,6 +67,7 @@ export function createImportWorkflow(options) {
         item.job = job; item.error = ''; item.queryingOnly = false;
         if (job.stage === 'done') {
           if (!job.result || job.result.ok == null) throw new Error('导入完成回执不完整，请重新查询原任务。');
+          if (!item.notified) dataVersion++;
           update(item, { phase: 'done' }); task(item);
           if (!item.notified) {
             item.notified = true;
@@ -95,32 +101,24 @@ export function createImportWorkflow(options) {
       if (current(item, token)) { update(item, { phase: 'unknown', error: failure.message }); task(item); }
     }
   }
-  async function upload(read, directory = false) {
-    if (!alive() || reading || running || items.some(item => active(item) || item.phase === 'unknown' && item.importId)) return;
-    reading = true; stopped = false; error = ''; publish();
+  async function drain() {
+    if (!alive() || running || withdrawing || stopped || items.some(item => active(item) || item.phase === 'unknown') || !items.some(item => item.phase === 'queued')) return;
+    running = true;
     try {
-      const selection = read(lifetime.signal);
-      const files = Array.isArray(selection) ? selection : await selection;
-      if (!alive() || stopped || !files.length) return;
-      if (directory && !options.client.previewDirectory) throw new Error('当前宿主尚未提供文件夹导入，请选择单个文件或反馈包。');
-      const directoryPath = files[0].webkitRelativePath || files[0].name;
-      items = directory ? [makeItem(directoryPath.includes('/') ? directoryPath.split('/')[0] : '所选文件夹', files, true)]
-        : files.map(file => makeItem(file.name, [file]));
-      const materialGroupId = crypto.randomUUID().replaceAll('-', '');
-      for (const item of items) item.materialGroupId = materialGroupId;
-      selectedId = items[0].id; running = true; publish();
-      for (const item of items) {
-        if (!alive() || stopped) break;
+      while (alive() && !stopped) {
+        if (items.some(item => active(item) || item.phase === 'unknown')) break;
+        const item = items.find(row => row.phase === 'queued');
+        if (!item) break;
         const token = ++item.request, selected = item.files; item.files = [];
         update(item, { phase: 'uploading' });
         try {
-          const value = directory ? await options.client.previewDirectory(selected, lifetime.signal)
+          const value = item.directory ? await options.client.previewDirectory(selected, lifetime.signal)
             : await options.client.preview(selected[0], lifetime.signal);
           if (!current(item, token)) return;
           accept(item, value);
           // Only a fresh upload can authorize automatic submission. Repreview,
           // recovery and resuming a stopped queue never replay this decision.
-          if (value.automatic === true && !stopped) await runCommit(item, token);
+          if (value.automatic === true && !item.autoCancelled) await runCommit(item, token);
         } catch (failure) {
           if (!current(item, token)) return;
           const fileFailure = failure?.status === 400 && failure?.failureKind === 'file';
@@ -128,12 +126,36 @@ export function createImportWorkflow(options) {
         }
         if (item.phase === 'unknown' || item.phase === 'failed' && item.importId) stop('原任务结果待核对，后续文件未上传');
       }
-    } catch (failure) { if (alive()) { error = failure.message; publish(); } }
-    finally { if (alive()) { reading = false; running = false; publish(); } }
+    } finally { if (alive()) { running = false; publish(); } }
+  }
+  async function receive(read, directory, append) {
+    if (!alive() || reading || withdrawing || (!append && (running || items.some(item => active(item) || item.phase === 'unknown' && item.importId)))) return;
+    if (append && items.some(item => item.phase === 'unknown' && !item.importId)) {
+      error = '请先从导入记录核对未确认的文件，再追加资料。'; publish(); return;
+    }
+    const token = ++intake;
+    reading = true; error = ''; publish();
+    try {
+      const selection = read(lifetime.signal);
+      const files = Array.isArray(selection) ? selection : await selection;
+      if (!alive() || token !== intake || !files.length) return;
+      if (directory && !options.client.previewDirectory) throw new Error('当前宿主不支持文件夹导入，请选择文件或压缩包。');
+      const directoryPath = files[0].webkitRelativePath || files[0].name;
+      const accepted = directory ? [makeItem(directoryPath.includes('/') ? directoryPath.split('/')[0] : '所选文件夹', files, true)]
+        : files.map(file => makeItem(file.name, [file]));
+      const materialGroupId = crypto.randomUUID().replaceAll('-', '');
+      for (const item of accepted) item.materialGroupId = materialGroupId;
+      items = append ? [...items, ...accepted] : accepted;
+      if (!append || selectedId === null) selectedId = accepted[0].id;
+      // A fresh selection authorizes those files only. Previously skipped files stay skipped.
+      stopped = false;
+    } catch (failure) { if (alive() && token === intake) error = failure.message; }
+    finally { if (alive()) { reading = false; publish(); } }
+    await drain();
   }
   async function repreview(id) {
     const item = items.find(row => row.id === id);
-    if (!item || !alive() || running || active(item) || item.phase === 'unknown' || item.phase === 'done') return;
+    if (!item || !alive() || running || withdrawing || items.some(active) || item.phase === 'unknown' || item.phase === 'done') return;
     const token = ++item.request;
     item.timed = true; item.processingMs = 0; item.clockStart = null;
     update(item, { phase: 'previewing', error: '', job: null, dirty: true });
@@ -145,11 +167,13 @@ export function createImportWorkflow(options) {
       const value = await options.client.repreview(item.importId, body, lifetime.signal);
       if (current(item, token)) accept(item, value);
     } catch (failure) { if (current(item, token)) update(item, { phase: item.preview ? 'ready' : 'failed', error: failure.message }); }
+    await drain();
   }
   async function query(id) {
     const item = items.find(row => row.id === id);
-    if (!item || !alive() || active(item) || !item.importId) return;
+    if (!item || !alive() || withdrawing || items.some(active) || !item.importId) return;
     await poll(item, ++item.request, item.phase === 'unknown');
+    await drain();
   }
   async function start() {
     if (started || !alive()) return;
@@ -173,7 +197,7 @@ export function createImportWorkflow(options) {
         if (job.case_id !== options.target.caseId || job.import_id !== item.importId || job.stage !== 'done') throw new Error('历史任务的成员处置尚无法确认。');
         // Keep the original receipt; only the explicitly current member journal
         // is refreshed. A failed read cannot erase known durable completion.
-        update(item, { loadingMembers: false, job: { ...item.job, member_results: job.member_results } });
+        update(item, { loadingMembers: false, job: { ...item.job, member_results: job.member_results, withdrawn: job.withdrawn, source_available: job.source_available } });
       } catch {
         if (current(item, token)) update(item, { loadingMembers: false, error: '历史回执已保留，成员处置暂未读取，请稍后从导入记录重新打开。' });
       }
@@ -181,8 +205,43 @@ export function createImportWorkflow(options) {
     else if (source.source_available && (source.stage === 'ready' || source.recoverable)) await repreview(item.id);
     else update(item, { phase: 'failed', error: '原始上传文件不可用于恢复，请重新上传。' });
   }
+  function removeItem(item) {
+    const index = items.indexOf(item);
+    item.files = [];
+    items.splice(index, 1);
+    if (selectedId === item.id) selectedId = (items[index] ?? items[index - 1])?.id ?? null;
+    publish();
+  }
+  async function withdraw(id, batchId) {
+    if (!alive()) return false;
+    if (withdrawing || reading || running || items.some(row => active(row) || row.phase === 'queued' || row.phase === 'unknown')) {
+      throw new Error('请在导入结算后撤回。');
+    }
+    const item = items.find(row => row.id === id);
+    const receipt = item?.phase === 'done' && item.job?.result;
+    if (!receipt?.source_id || receipt.batch_id !== batchId || item.job.withdrawn || !options.client.withdrawImportSource) {
+      throw new Error('该原件的导入状态已变化，请重新核对文件信息。');
+    }
+    withdrawing = true; publish();
+    const token = ++item.request;
+    try {
+      const result = await options.client.withdrawImportSource(receipt.source_id, batchId, lifetime.signal);
+      if (!current(item, token)) return false;
+      if (result.case_id !== options.target.caseId || result.source_id !== receipt.source_id || result.batch_id !== batchId) {
+        throw new Error('撤回回执与当前原件不一致，请重新核对文件信息。');
+      }
+      dataVersion++;
+      removeItem(item);
+      try {
+        await options.onImported?.();
+      } catch {
+        if (alive()) error = '导入项已删除，案件数据暂未刷新。';
+      }
+      return alive();
+    } finally { if (alive()) { withdrawing = false; publish(); } }
+  }
   function dispose() {
-    lifetime.abort(); items = []; selectedId = null; reading = running = false; publish();
+    lifetime.abort(); items = []; selectedId = null; reading = running = withdrawing = false; publish();
     options.signal.removeEventListener('abort', dispose);
   }
   options.signal.addEventListener('abort', dispose, { once: true });
@@ -190,7 +249,15 @@ export function createImportWorkflow(options) {
   return {
     snapshot: () => snapshot,
     subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },
-    start, upload, stop, query, repreview, dispose,
+    start, stop, query, repreview, withdraw, dispose,
+    upload: (read, directory = false) => receive(read, directory, false),
+    append: (read, directory = false) => receive(read, directory, true),
+    remove(id) {
+      const item = items.find(row => row.id === id);
+      if (!alive() || withdrawing || !item || item.queryingOnly || !(['queued', 'ready', 'failed', 'skipped'].includes(item.phase) || item.phase === 'done' && item.job?.withdrawn)) return false;
+      removeItem(item);
+      return true;
+    },
     select(id) { if (alive() && items.some(item => item.id === id)) { selectedId = id; publish(); } },
     edit(id, change) {
       const item = items.find(row => row.id === id);
@@ -207,15 +274,17 @@ export function createImportWorkflow(options) {
     },
     async commit(id) {
       const item = items.find(row => row.id === id);
-      if (!item || !alive() || running || item.phase !== 'ready' || item.dirty || !item.preview
+      if (!item || !alive() || running || withdrawing || item.phase !== 'ready' || item.dirty || !item.preview
         || !item.preview.feedback && !item.preview.table_summary && item.preview.stats.ok === 0
         || items.some(row => active(row) || row.phase === 'unknown')) return;
       await runCommit(item, ++item.request);
+      if (item.phase === 'unknown' || item.phase === 'failed' && item.importId) stop('原任务结果待核对，后续文件未上传');
+      await drain();
     },
     settled(importId) {
       const item = items.find(row => row.importId === importId);
       if (!item || !alive() || ['done', 'failed'].includes(item.phase)) return;
-      void poll(item, ++item.request, item.phase === 'unknown' || item.queryingOnly === true);
+      void poll(item, ++item.request, item.phase === 'unknown' || item.queryingOnly === true).then(drain);
     },
   };
 }

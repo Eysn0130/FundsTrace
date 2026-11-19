@@ -25,6 +25,16 @@ describe('dropped directory enumeration', () => {
       { kind: 'file', getAsFile: () => null }], files: [] } as unknown as DataTransfer);
     await expect(drop.read(new AbortController().signal)).rejects.toThrow('部分目录项目无法读取');
   });
+  it('keeps loose files independent and explicitly rejects mixed roots', async () => {
+    const toEntry = (entry: FileSystemEntry) => ({ kind: 'file', webkitGetAsEntry: () => entry, getAsFile: () => null });
+    const sources = (entries: FileSystemEntry[]) => ({ items: entries.map(toEntry), files: [] } as unknown as DataTransfer);
+    const signal = new AbortController().signal;
+    const loose = captureDroppedFiles(sources([leaf('一.csv'), leaf('二.csv')]));
+    expect(loose.directory).toBe(false);
+    expect((await loose.read(signal)).map(file => file.name)).toEqual(['一.csv', '二.csv']);
+    const mixed = captureDroppedFiles(sources([leaf('一.csv'), directory('资料', [[leaf('二.csv')]])]));
+    await expect(mixed.read(signal)).rejects.toThrow('每次拖入一个文件夹');
+  });
   it('rejects a revoked selection and an empty directory before upload', async () => {
     const drop = captureDroppedFiles(transfer(directory('空目录', [[]])));
     await expect(drop.read(new AbortController().signal)).rejects.toThrow('没有可读取的文件');

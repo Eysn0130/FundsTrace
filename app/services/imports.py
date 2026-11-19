@@ -1474,10 +1474,14 @@ def _progress(case_id, import_id, surface):
     if stage == "done" and (result["result"] or {}).get("source_id"):
         # Read only committed journal facts. In-flight writes have no per-file
         # completion receipt and must not be presented as successful imports.
+        source_id = result["result"]["source_id"]
+        operations = db.q_raw("select active from import_source_operations where case_id=? and source_id=?",
+                              [session["case_id"], source_id])
+        result["withdrawn"] = bool(operations and not operations[0]["active"])
         members = {}
         for row in db.q_raw("""select member_path,disposition,count(*) n from import_records
                 where case_id=? and source_id=? group by member_path,disposition order by member_path,disposition""",
-                [session["case_id"], result["result"]["source_id"]]):
+                [session["case_id"], source_id]):
             members.setdefault(row["member_path"], {})[row["disposition"]] = row["n"]
         result["member_results"] = [{"member_path": path, "dispositions": counts} for path, counts in members.items()]
     if surface == "v1":
@@ -1524,6 +1528,99 @@ def source_is_available(case_id, source_id):
         return _source_available(_source_session(case_id, source_id))
     except ServiceError:
         return False
+
+
+def _registered_original(cid, source_id):
+    rows = db.q_raw("""select p.filename,p.sha256,p.size_bytes,p.imported_at,m.material_name,
+                s.import_id,s.source_state,s.suffix,b.id active_batch_id,o.active
+            from import_sources p
+            left join import_sessions s on s.case_id=p.case_id and s.import_id=p.source_id
+                and s.sha256=p.sha256 and s.size_bytes=p.size_bytes
+            left join import_materials m on m.case_id=p.case_id and m.source_id=p.source_id
+            left join import_source_operations o on o.case_id=p.case_id and o.source_id=p.source_id
+            left join batches b on b.case_id=p.case_id and b.id=o.batch_id and o.active
+                and s.stage='done' and cast(b.id as varchar)=json_extract_string(s.result_json,'$.batch_id')
+                and json_extract_string(s.result_json,'$.source_id')=p.source_id
+            where p.case_id=? and p.source_id=? and p.origin='upload'""", [cid, source_id])
+    if not rows:
+        raise _missing()
+    return rows[0]
+
+
+def source_metadata(case_id, source_id):
+    with db.read_snapshot():
+        cid = _cid(case_id)
+        original = _registered_original(cid, source_id)
+        batch_id = original["active_batch_id"]
+        return {"case_id": str(cid), "source_id": source_id, "filename": original["filename"],
+                "sha256": original["sha256"], "size_bytes": original["size_bytes"], "registered_at": str(original["imported_at"]),
+                "material_name": original["material_name"], "source_available": _source_available(original),
+                "active_batch_id": str(batch_id) if batch_id is not None else None, "withdrawn": original["active"] is False}
+
+
+def withdraw_source(case_id, source_id, expected_batch_id):
+    with db.transaction():
+        cid = _cid(case_id)
+        original = _registered_original(cid, source_id)
+        batch_id = original["active_batch_id"]
+        if batch_id is None or str(batch_id) != expected_batch_id:
+            raise ServiceError(409, "source_operation_changed", "该原件的导入状态已变化，请重新核对文件信息。")
+        if db.q_raw("select 1 from import_sessions where case_id=? and stage in ('parsing','importing') limit 1", [cid]):
+            raise ServiceError(409, "import_in_progress", "请在当前案件的导入结算后撤回。")
+        _withdraw_batch(cid, batch_id)
+        return {"case_id": str(cid), "source_id": source_id, "batch_id": str(batch_id)}
+
+
+def withdraw_batch(case_id, batch_id):
+    with db.transaction():
+        _withdraw_batch(_cid(case_id), batch_id)
+    return {"ok": True}
+
+
+def _withdraw_batch(case_id, batch_id):
+    if not db.q("select id from batches where id=? and case_id=?", [batch_id, case_id]):
+        raise ServiceError(404, "batch_not_found", "批次不存在")
+    changed_sources = [row["source_id"] for row in db.q_raw("""
+        select s.source_id from flow_sources s join flows f on f.id=s.flow_id and f.case_id=s.case_id
+          where s.case_id=? and f.batch_id=?
+        union select source_id from import_source_operations where case_id=? and batch_id=?
+        """, [case_id, batch_id, case_id, batch_id])]
+    # Withdraw this operation's support first. A retained source metadata
+    # row alone is not support: require a live operation and its flow link.
+    db.x("update import_source_operations set active=false where case_id=? and batch_id=?", [case_id, batch_id])
+    db.x("update evidence_sources set active=false where case_id=? and batch_id=?", [case_id, batch_id])
+    db.x("""update flows as f set batch_id=s.batch_id from (
+             select fs.flow_id,min(e.batch_id) batch_id from flow_sources fs
+             join import_source_operations e on e.case_id=fs.case_id and e.source_id=fs.source_id and e.active
+             join batches b on b.case_id=e.case_id and b.id=e.batch_id
+             where fs.case_id=? group by fs.flow_id
+             ) s where f.case_id=? and f.batch_id=? and f.id=s.flow_id""", [case_id, case_id, batch_id])
+    # batch_id is retained storage ownership, not the historical receipt.
+    # Unlinked legacy imports keep their existing deletion behavior; never
+    # infer another operation from filenames or resurrect removed facts.
+    db.x("delete from tracked_flows where case_id=? and flow_id in "
+         "(select id from flows where batch_id=? and case_id=?)", [case_id, batch_id, case_id])
+    from app import source_ledger
+    db.x("""update import_records set disposition='removed',reason_code='flow_deleted'
+             where case_id=? and not (
+                disposition in ('unresolved','non_monetary','cancelled')
+                and json_extract_string(details_json,'$.source_ledger_evidence') is not null
+                and source_id in (select source_id from import_sources where parser_version in (""" + source_ledger._profiles() + """)))
+             and (source_id,record_no) in
+             (select s.source_id,s.source_row from flow_sources s join flows f on f.id=s.flow_id and f.case_id=s.case_id
+              where s.case_id=? and (f.batch_id=? or s.source_id in
+                (select source_id from import_source_operations where case_id=? and batch_id=?)))""",
+         [case_id, case_id, batch_id, case_id, batch_id])
+    db.x("""delete from flow_sources where case_id=? and
+             (flow_id in (select id from flows where batch_id=? and case_id=?) or
+              source_id in (select source_id from import_source_operations where case_id=? and batch_id=?))""",
+         [case_id, batch_id, case_id, case_id, batch_id])
+    db.x("delete from flows where batch_id=? and case_id=?", [batch_id, case_id])
+    db.x("delete from batches where id=? and case_id=?", [batch_id, case_id])
+    evidence_resolution.rebuild(case_id)
+    from app import event_resolution, analysis_snapshot
+    event_resolution.rebuild(case_id, changed_sources=changed_sources)
+    analysis_snapshot.invalidate(case_id)
 
 
 def get_source_file(case_id, source_id):

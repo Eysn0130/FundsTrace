@@ -28,7 +28,8 @@
         acquire: (id, surface) => window.FundsImportWorkflow.acquireExternal(context, id, surface),
         release: (id, jobId, rejected) => window.FundsImportWorkflow.releaseExternal(context, id, jobId, rejected),
         changed: async () => { if (current(context)) await window.FundsAppNavigation.dataChanged(); },
-        feedback: event => feedback(context, event), close: () => { if (view === owner) { if (last && ['success', 'error'].includes(last.status)) last = null; revoke(); } } });
+        feedback: event => feedback(context, event), close: () => { if (view === owner) { if (last && ['success', 'error'].includes(last.status)) last = null; revoke(); } },
+        openNewImport: () => { if (view === owner && current(context)) void display(context); } });
     } catch (failure) {
       modulePromise = null;
       if (token === intent && current(context)) { revoke(); toast('导入界面加载失败，请重新打开：' + String(failure.message).slice(0, 160), 'err'); }

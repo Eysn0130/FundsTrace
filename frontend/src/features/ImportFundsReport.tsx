@@ -64,22 +64,24 @@ function Ranking({ title, rows, currency, direction, onSelect, interactive }: { 
 }
 
 /** File tree is outside this component. Both the outline and its scroll root belong to the right pane. */
-export function ImportFundsReport({ client, scopeSignal, sourceId, memberPath, header, actions, chapter, onChapter }: {
+export function ImportFundsReport({ client, scopeSignal, sourceId, memberPath, header, actions, chapter, onChapter, dataVersion = 0 }: {
   client: FundsCaseClientV1; scopeSignal: AbortSignal; sourceId: string; memberPath: string; header: ReactNode; actions?: FundsHostActionsV1;
-  chapter: ImportReportChapter; onChapter: (value: ImportReportChapter) => void;
+  chapter: ImportReportChapter; onChapter: (value: ImportReportChapter) => void; dataVersion?: number;
 }) {
   const [query, setQuery] = useState<FundsReportQueryV1>({ memberPath, page: 1 }), [reload, setReload] = useState(0);
   const [trendMode,setTrendMode]=useState<TrendMode>('combined');
-  const [snapshot, setSnapshot] = useState<{ client: FundsCaseClientV1; key: string; baseKey: string; data: ImportReport }>(), [failure, setFailure] = useState<{ key: string; message: string }>();
+  const [snapshot, setSnapshot] = useState<{ client: FundsCaseClientV1; key: string; baseKey: string; data: ImportReport; version: number }>(), [failure, setFailure] = useState<{ key: string; message: string }>();
   const [verification, setVerification] = useState<{ revision: string; value: ImportReportIntegrity }>(), [checking, setChecking] = useState(false);
   const [actionError, setActionError] = useState(''), [copyState, setCopyState] = useState(''), [exporting, setExporting] = useState(false);
   const [drill, setDrill] = useState<{ query: FundsReportRecordsQueryV1; label: string; anchor: HTMLElement | null }>();
   const content = useRef<HTMLDivElement>(null), drillElement = useRef<HTMLDivElement>(null), lifetime = useRef<AbortController>(new AbortController()), sectionRefs = useRef(new Map<string, HTMLElement>());
-  const navigateTarget = useRef<ImportReportChapter | undefined>(chapter), id = useId(), key = JSON.stringify(query);
+  const queryVersion = useRef(dataVersion);
+  const requestQuery = queryVersion.current === dataVersion ? query : { ...query, expectedRevision: undefined };
+  const navigateTarget = useRef<ImportReportChapter | undefined>(chapter), id = useId(), key = JSON.stringify([dataVersion, requestQuery]);
   const baseKey=JSON.stringify({...query,timelineScope:undefined,timelineAccounts:undefined,timelineSearch:undefined,timelineGrain:undefined,timelinePage:undefined,expectedRevision:undefined});
   const data = snapshot?.client === client && (snapshot.key === key || snapshot.baseKey===baseKey && failure?.key!==key) && !scopeSignal.aborted ? snapshot.data : undefined;
   const timeUpdating=!!data&&snapshot?.key!==key;
-  const revealTables = !query.expectedRevision;
+  const revealTables = !requestQuery.expectedRevision;
   const accountNarrative = data ? reportAccountNarrative(data) : '';
   const moneyUnit = reportMoneyUnit(data?.currency ?? null);
   const methodParagraphs = data?.method_paragraphs?.length ? data.method_paragraphs : data?.notes.map(text => ({ title: '', text })) || [];
@@ -90,13 +92,14 @@ export function ImportFundsReport({ client, scopeSignal, sourceId, memberPath, h
     setChecking(false); setExporting(false); setCopyState('');
     const revoke = () => { setSnapshot(undefined); setFailure(undefined); setDrill(undefined); };
     scopeSignal.addEventListener('abort', revoke, { once: true });
-    client.importFundsReport!(sourceId, query, controller.signal).then(value => {
+    client.importFundsReport!(sourceId, requestQuery, controller.signal).then(value => {
       if (!active || controller.signal.aborted) return;
-      if (value.case_id !== client.binding.caseId || value.source_id !== sourceId || value.member_path !== memberPath || query.expectedRevision && value.analysis_revision !== query.expectedRevision) throw new Error('报告范围或修订与当前文件不一致，请刷新');
-      setSnapshot({ client, key, baseKey, data: value }); setFailure(undefined);
+      if (value.case_id !== client.binding.caseId || value.source_id !== sourceId || value.member_path !== memberPath || requestQuery.expectedRevision && value.analysis_revision !== requestQuery.expectedRevision) throw new Error('报告范围或修订与当前文件不一致，请刷新');
+      setSnapshot({ client, key, baseKey, data: value, version: dataVersion }); setFailure(undefined);
     }).catch(reason => { if (active && !controller.signal.aborted) setFailure({ key, message: reason.message }); });
     return () => { active = false; scopeSignal.removeEventListener('abort', revoke); unlink(); controller.abort(); };
   }, [client, scopeSignal, sourceId, memberPath, key, baseKey, reload]);
+  useEffect(() => { setDrill(undefined); }, [dataVersion]);
   const jump = (value: ImportReportChapter, smooth = true) => {
     const parent = content.current, section = sectionRefs.current.get(value);
     if (!parent || !section) {
@@ -112,8 +115,9 @@ export function ImportFundsReport({ client, scopeSignal, sourceId, memberPath, h
   useLayoutEffect(() => { if (data && navigateTarget.current) { jump(navigateTarget.current, false); navigateTarget.current = undefined; } }, [data]);
   useLayoutEffect(() => { if (drill) { const parent = content.current, element = drillElement.current; if (parent && element) parent.scrollTo?.({ top: Math.max(0, parent.scrollTop + element.getBoundingClientRect().top - parent.getBoundingClientRect().top - (parent.querySelector('.ft-inspector-title')?.getBoundingClientRect().height || 0) - 18), behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); } }, [drill]);
   const changeQuery = (patch: Partial<FundsReportQueryV1>, target = chapter) => {
-    if (!data) return;
+    if (!data || snapshot?.version !== dataVersion) return;
     navigateTarget.current = target; setDrill(undefined); setActionError('');
+    queryVersion.current = dataVersion;
     setQuery(current => ({ ...current, ...patch, ...('account' in patch || 'currency' in patch ? {timelineScope:undefined,timelineAccounts:undefined,timelineSearch:undefined,timelinePage:1}:{}), expectedRevision: data.analysis_revision }));
   };
   const openRecords = (label: string, patch: Partial<FundsReportRecordsQueryV1> = {}) => {

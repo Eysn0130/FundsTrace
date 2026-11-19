@@ -1,4 +1,6 @@
 """Public batch withdrawal retains observations with another active source."""
+import hashlib
+
 import pytest
 
 from app import evidence_resolution, event_resolution
@@ -53,6 +55,37 @@ def test_last_support_controls_observations_graph_events_and_package(client, dat
     assert event_resolution.summary(other)["confirmed_events"] == 1
 
 
+def test_source_menu_metadata_and_withdrawal_are_bound_to_the_registered_original(client, make_case):
+    cid, other = make_case("Synthetic an original source"), make_case("Synthetic another case")
+    first, second, tracked = setup_pair(client, cid)
+    path = f"/api/v1/cases/{cid}/sources/{first['source_id']}"
+    foreign = f"/api/v1/cases/{other}/sources/{first['source_id']}"
+    original_bytes = client.get(f"{path}/file").content
+    metadata = client.get(f"{path}/metadata").json()
+    assert metadata["active_batch_id"] == first["batch_id"]
+    assert metadata["source_id"] == first["source_id"] and metadata["case_id"] == str(cid)
+    assert metadata["size_bytes"] == len(original_bytes) and metadata["sha256"] == hashlib.sha256(original_bytes).hexdigest()
+    assert metadata["source_available"] and metadata["material_name"].endswith("号检材")
+    assert client.get(f"{foreign}/metadata").status_code == 404
+    assert client.delete(f"{foreign}/operation", params={"expected_batch_id": first["batch_id"]}).status_code == 404
+    assert client.delete(f"{path}/operation", params={"expected_batch_id": second["batch_id"]}).status_code == 409
+    receipt_url = f"/api/v1/cases/{cid}/imports/{first['source_id']}"
+    receipt = client.get(receipt_url).json()["result"]
+
+    outcome = client.delete(f"{path}/operation", params={"expected_batch_id": first["batch_id"]})
+    assert outcome.json() == {"source_id": first["source_id"], "batch_id": first["batch_id"], "case_id": str(cid)}
+    latest = client.get(f"{path}/metadata").json()
+    assert latest == {**metadata, "withdrawn": True, "active_batch_id": None}
+    assert client.get(f"{path}/file").content == original_bytes
+    job = client.get(receipt_url).json()
+    assert job["withdrawn"] and job["result"] == receipt
+    assert all(member["dispositions"] == {"removed": 1} for member in job["member_results"])
+    assert client.delete(f"{path}/operation", params={"expected_batch_id": first["batch_id"]}).status_code == 409
+    graph = client.get("/api/graph", params={"case_id": cid}).json()
+    assert set(map(str, graph["tracked_ids"])) == set(map(str, tracked))
+    assert graph["funds"]["totals"][0]["amount"] == "100.00"
+
+
 def test_withdrawal_failure_rolls_back_support_ownership_and_graph(client, database, make_case, monkeypatch):
     cid = make_case("Synthetic atomic support withdrawal")
     first, _, _ = setup_pair(client, cid)
@@ -65,6 +98,10 @@ def test_withdrawal_failure_rolls_back_support_ownership_and_graph(client, datab
     monkeypatch.setattr(evidence_resolution, "rebuild", fail)
     with pytest.raises(RuntimeError, match="synthetic rebuild failure"):
         client.delete(f"/api/batches/{first['batch_id']}", params={"case_id": cid})
+    assert snapshot() == before
+    response = client.delete(f"/api/v1/cases/{cid}/sources/{first['source_id']}/operation",
+                             params={"expected_batch_id": first["batch_id"]})
+    assert response.status_code == 500
     assert snapshot() == before
 
 
