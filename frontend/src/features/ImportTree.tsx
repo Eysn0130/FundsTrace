@@ -25,6 +25,11 @@ export function importState(item: ImportItem, node?: ImportTreeNode) {
     if (item.loadingMembers && node?.memberPaths.length) return { label: '读取中', icon: 'import-loader', tone: 'muted', active: false };
     if (node?.memberPaths.length && item.job?.member_results === undefined) return { label: '成员处置待核对', icon: 'import-clock', tone: 'warning', active: false };
     const counts = node?.dispositions ?? {}, unresolved = (counts.unresolved ?? 0) + (counts.review ?? 0);
+    if (node?.attachment) {
+      const retained = !unresolved && counts.auxiliary;
+      return { label: retained ? '附件已保留' : '附件待核对', icon: retained ? 'import-circle-check' : 'import-clock',
+        tone: retained ? 'success' : 'warning', active: false };
+    }
     return { label: unresolved ? `完成 · 待核对 ${unresolved} 条` : counts.imported ? `已导入 ${counts.imported} 条` : counts.removed ? `已移除 ${counts.removed} 条` : counts.duplicate ? `重复 ${counts.duplicate} 条` : '处理完成',
       icon: unresolved ? 'import-clock' : 'import-circle-check', tone: unresolved ? 'warning' : 'success', active: false };
   }
@@ -46,6 +51,10 @@ function reviewMetadata(item: ImportItem, node: ImportTreeNode, canReview: boole
   const counts = receipt && item.job?.member_results !== undefined && node.memberPaths.length ? node.dispositions : undefined;
   const legacy = node.id === item.id && !node.memberPaths.length && !receipt?.table_summary && !receipt?.feedback ? receipt : undefined;
   const pending = counts ? (counts.unresolved ?? 0) + (counts.review ?? 0) : legacy?.skipped;
+  if (node.attachment) {
+    if (pending) return { tone: 'warning', summary: '附件格式未适配', destination: { kind: 'preview' } };
+    return counts?.auxiliary ? { summary: '非业务附件 · 原件已保留' } : {};
+  }
   const pendingSummary = pending ? `${countText(pending)} 条待核对` : '';
   if (pending && counts && !node.children.length) {
     const table = receipt?.table_summary, feedback = receipt?.feedback;

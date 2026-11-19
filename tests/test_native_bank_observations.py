@@ -160,7 +160,7 @@ def test_native28_zero_identifier_and_currency_are_literal_source_fields(client,
     assert client.get(base + f"/sources/{job['result']['source_id']}/file").content == raw
 
 
-@pytest.mark.parametrize("kind,profile", [("csv", "funds-trace-table-v69"), ("zip", "funds-trace-table-archive-v63")])
+@pytest.mark.parametrize("kind,profile", [("csv", "funds-trace-table-v69"), ("zip", "funds-trace-table-archive-v66")])
 def test_public_native28_preview_decodes_each_ledger_observation_once(client, make_case, monkeypatch, kind, profile):
     cid = make_case("SYN source observation reuse")
     stamp = "2026-02-03T00:10:00.123456+08:00"

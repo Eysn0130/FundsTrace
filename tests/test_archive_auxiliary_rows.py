@@ -63,9 +63,9 @@ def preview(client, cid, payload):
     return response.json()
 
 
-@pytest.mark.parametrize("branch,expected", [("ordinary", "funds-trace-table-archive-v63"),
-                                            ("evidence", "funds-trace-table-archive-v64"),
-                                            ("xls", "funds-trace-table-archive-v65")])
+@pytest.mark.parametrize("branch,expected", [("ordinary", "funds-trace-table-archive-v66"),
+                                            ("evidence", "funds-trace-table-archive-v67"),
+                                            ("xls", "funds-trace-table-archive-v68")])
 def test_public_auxiliary_width_dispositions_and_original_cells(client, database, make_case, branch, expected):
     cid = make_case("Synthetic auxiliary width")
     payload = source(branch)

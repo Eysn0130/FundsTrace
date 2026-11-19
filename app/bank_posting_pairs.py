@@ -21,7 +21,9 @@ POLICY = "bank-feedback31-paired-postings-v1"
 FIELD = "bank_posting_pair_evidence"
 PROOF_FIELD = "current_bank_posting_pair_proof"
 PENDING_FIELD = "current_bank_posting_pair_pending"
-PROFILES = frozenset(("funds-trace-table-archive-v63", "funds-trace-table-archive-v64", "funds-trace-table-archive-v65",
+PROFILES = frozenset(("funds-trace-table-archive-v66", "funds-trace-table-archive-v67", "funds-trace-table-archive-v68",
+                     "funds-trace-table-v78", "funds-trace-table-v79", "funds-trace-table-v80",
+                     "funds-trace-table-archive-v63", "funds-trace-table-archive-v64", "funds-trace-table-archive-v65",
                      "funds-trace-table-v75", "funds-trace-table-v76", "funds-trace-table-v77",
                      "funds-trace-table-archive-v60", "funds-trace-table-archive-v61", "funds-trace-table-archive-v62", "funds-trace-table-v69", "funds-trace-table-v72", "funds-trace-table-v70", "funds-trace-table-v73", "funds-trace-table-v71", "funds-trace-table-v74", "funds-trace-table-v66", "funds-trace-table-v67", "funds-trace-table-v68",
                      "funds-trace-table-archive-v57", "funds-trace-table-archive-v58", "funds-trace-table-archive-v59",

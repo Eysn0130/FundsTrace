@@ -13,7 +13,7 @@ from test_table_write_integrity import persisted
 from xls_fixtures import Cell, Error, workbook
 
 
-CURRENT_XLS = "funds-trace-table-archive-v65"
+CURRENT_XLS = "funds-trace-table-archive-v68"
 
 
 def payload(rows):
@@ -90,7 +90,7 @@ def test_new_flat_zip_xls_uses_current_xls_but_plain_csv_zip_uses_guarded_profil
     ordinary = make_case("Synthetic unchanged ordinary ZIP")
     plain = csv_rows([{"date": "2026-01-01", "payer_account": "SYN-A", "payee_account": "SYN-B", "amount": "12.34"}])
     view = preview(client, ordinary, [("ledger.csv", plain)], zipped=True, scope_bank=None)
-    assert view["table_summary"]["profile"] == table_archive.PROFILE == "funds-trace-table-archive-v63"
+    assert view["table_summary"]["profile"] == table_archive.PROFILE == "funds-trace-table-archive-v66"
     assert complete(client, ordinary, view)["result"]["ok"] == 1
     assert event_resolution.summary(ordinary) is None
 

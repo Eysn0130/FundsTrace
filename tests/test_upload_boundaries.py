@@ -1,6 +1,7 @@
 """Public upload budgets use tiny synthetic inputs, never large allocations."""
 import io
 from pathlib import Path
+import zipfile
 
 import pandas as pd
 import pytest
@@ -75,6 +76,46 @@ def test_case_package_budget_rejects_before_case_or_photo_publication(
     assert {p.relative_to(photo_root): p.read_bytes() for p in photo_root.rglob("*") if p.is_file()} == files_before
     assert not list(photo_root.glob(".fundcase-*"))
     assert temporary_paths and all(not Path(path).exists() for path in temporary_paths)
+
+
+@pytest.mark.parametrize("limit,detail", [("MAX_PACKAGE_BYTES", "压缩文件"),
+                                         ("MAX_PACKAGE_EXPANDED_BYTES", "展开大小"),
+                                         ("MAX_PACKAGE_MEMBER_BYTES", "成员大小"),
+                                         ("MAX_PACKAGE_MEMBERS", "成员数量"),
+                                         ("MAX_PACKAGE_META_BYTES", "元数据"),
+                                         ("MAX_PACKAGE_ROWS", "Parquet 总行数")])
+def test_case_export_rejects_packages_over_import_budget(
+        client, database, make_case, flow_row, monkeypatch, tmp_path, limit, detail):
+    cid = populated_case(database, make_case, flow_row)
+    photo = photo_bytes()
+    (database.DATA_DIR / "photos" / f"c{cid}" / "avatar.png").write_bytes(photo)
+    with zipfile.ZipFile(io.BytesIO(exported(client, cid))) as archive:
+        entries = archive.infolist()
+        budgets = {
+            "MAX_PACKAGE_BYTES": 1,
+            "MAX_PACKAGE_EXPANDED_BYTES": max(item.file_size for item in entries),
+            "MAX_PACKAGE_MEMBER_BYTES": 1,
+            "MAX_PACKAGE_MEMBERS": len(entries) - 1,
+            "MAX_PACKAGE_META_BYTES": 1,
+            "MAX_PACKAGE_ROWS": 2,  # Two flow rows fit before the other tables are added.
+        }
+    cases_before = database.q("select * from cases order by id")
+    rows_before = database.q("select * from flows where case_id=? order by id", [cid])
+    export_tmp = tmp_path / "export"
+    export_tmp.mkdir()
+    monkeypatch.setattr(case_packages.tempfile, "tempdir", str(export_tmp))
+    monkeypatch.setattr(case_packages, limit, budgets[limit])
+
+    response = client.get(f"/api/cases/{cid}/export")
+
+    assert response.status_code == 409, response.status_code
+    assert detail in response.json()["detail"]
+    assert "content-disposition" not in response.headers
+    assert database.q("select * from cases order by id") == cases_before
+    assert database.q("select * from flows where case_id=? order by id", [cid]) == rows_before
+    original = client.get("/api/account-photos/orig", params={"case_id": cid, "account": "SYN-A"})
+    assert original.status_code == 200 and original.content == photo
+    assert not list(export_tmp.iterdir())
 
 
 @pytest.mark.parametrize("budget,extension", [("ID_TABLE_MAX_BYTES", "csv"),

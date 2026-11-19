@@ -260,6 +260,62 @@ describe('the common import workspace', () => {
       { view: 'review', page: 1, issueIndex: 1 }, expect.any(AbortSignal));
   });
 
+  it('opens retained attachments with their coverage reason and original file actions', async () => {
+    const client = clientFor(), baseline = await client.job(preview.import_id);
+    const memberPath = 'folder/scan.pdf';
+    const attachmentSummary: NonNullable<ImportPreview['table_summary']> = { ...summary,
+      record_total: 3, unresolved: 2, unsupported_attachments: 1, reason_counts: { ...summary.reason_counts, unsupported_attachment: 1 },
+      members: [...summary.members, { member_path: memberPath, role: 'attachment', row_count: 1, size_bytes: 42, encoding: 'binary', sha256: 'b'.repeat(64) }],
+      documents: [...(summary.documents ?? []), { member_path: memberPath, role: 'attachment', row_count: 1 }],
+      unresolved_examples: [...(summary.unresolved_examples ?? []), { member_path: memberPath, source_row: 1, reason_code: 'unsupported_attachment' }],
+    };
+    client.previewDirectory = vi.fn(async () => ({ ...preview, table_summary: attachmentSummary }));
+    client.job = vi.fn(async () => ({ ...baseline, source_available: true, result: { ...result, table_summary: attachmentSummary },
+      member_results: [...baseline.member_results!, { member_path: memberPath, dispositions: { unresolved: 1 } }],
+    }));
+    client.importReview = vi.fn<NonNullable<FundsCaseClientV1['importReview']>>(() => new Promise(() => {}));
+    client.importFundsReport = vi.fn<NonNullable<FundsCaseClientV1['importFundsReport']>>(() => new Promise(() => {}));
+    const downloadSource = vi.fn(async () => {});
+    render(<ImportDialog client={client} scopeSignal={new AbortController().signal} actions={{ downloadSource }}
+      target={{ caseId: '1', name: '合成附件案件' }} onImported={vi.fn()} onClose={vi.fn()} />);
+    const files = ['a.csv', 'b.xlsx', 'scan.pdf'].map(name => {
+      const file = new File(['synthetic'], name);
+      Object.defineProperty(file, 'webkitRelativePath', { value: `folder/${name}` });
+      return file;
+    });
+    fireEvent.change(screen.getByLabelText('选择整个文件夹'), { target: { files } });
+    await screen.findByRole('status', { name: '导入完成' });
+    fireEvent.click(screen.getByRole('button', { name: '折叠右侧详情' }));
+    const attachment = within(screen.getByRole('tree')).getByRole('treeitem', { name: /scan\.pdf/ });
+    expect(attachment.getAttribute('aria-describedby')).toBeTruthy();
+    expect(attachment.textContent).not.toContain('第 1 行');
+    expect(within(attachment).queryByRole('button', { name: /定位待核对/ })).toBeNull();
+    expect(screen.getByRole('treeitem', { name: /scan\.pdf/, description: /数据大小 42 B，数据行数 未记录/ })).toBe(attachment);
+    fireEvent.keyDown(attachment, { key: 'Enter' });
+    const inspector = screen.getByRole('region', { name: '文件识别与预览，可上下滚动' });
+    expect(within(inspector).getByText('附件待核对')).toBeTruthy();
+    expect(within(inspector).getByText(/附件原件已保留，格式未适配/)).toBeTruthy();
+    expect(within(inspector).queryByRole('group', { name: '来源记录筛选' })).toBeNull();
+    expect(client.importReview).not.toHaveBeenCalledWith(expect.anything(), memberPath, expect.anything(), expect.anything());
+    expect((screen.getByRole('button', { name: '查看处理结果' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(inspector).getByRole('button', { name: '文件操作' }));
+    const menu = screen.getByRole('menu', { name: '文件操作' });
+    expect((within(menu).getByRole('menuitem', { name: '另存目录留存 ZIP…' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(within(menu).getByRole('menuitem', { name: '文件信息' }));
+    const info = screen.getByRole('dialog', { name: '文件信息' });
+    expect(within(info).getByText('数据记录').nextElementSibling?.textContent).toBe('—');
+    fireEvent.keyDown(info, { key: 'Escape' });
+    fireEvent.click(within(inspector).getByRole('button', { name: '文件操作' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '查看所属原件' }));
+    fireEvent.click(screen.getByRole('button', { name: '查看处理结果' }));
+    const examples = screen.getByText('未计入记录的来源位置').closest('details')!;
+    expect(within(examples).getByText(/folder\/scan\.pdf/).textContent).not.toContain('原始第 1 行');
+    expect(within(examples).getByText(/folder\/b\.xlsx · 原始第 128 行/)).toBeTruthy();
+    const documents = screen.getByText(/已检查的来源文件与工作表/).closest('details')!;
+    expect(within(documents).getByText(/folder\/scan\.pdf/).textContent).toBe('folder/scan.pdf · 附件原件已保留');
+    expect(within(inspector).getByText('待核对 2 项')).toBeTruthy();
+    expect(client.importFundsReport).not.toHaveBeenCalled();
+  });
   it('shows measured durations only on original files and opens the saved failure reason', async ({ onTestFinished }) => {
     let now = 0;
     const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);

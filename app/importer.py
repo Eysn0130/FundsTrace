@@ -317,30 +317,41 @@ def read_id_table(path: Path):
         return str(value).strip()
 
     def pairs(rows):
-        columns, result = None, []
-        for index, row in enumerate(rows):
+        rows = iter(rows)
+        for row in itertools.islice(rows, 30):
+            header = [cell(value) for value in row]
+            joined = "".join(header)
+            if not (("身份" in joined or "证件" in joined)
+                    and any(word in joined for word in ("账号", "帐号", "卡号", "账户"))):
+                continue
+            identity = next((i for i, name in enumerate(header) if "身份" in name or "证件" in name), None)
+            account = next((i for i, name in enumerate(header)
+                            if "身份" not in name and "证件" not in name
+                            and any(word in name for word in ("账号", "帐号", "卡号", "账户"))), None)
+            if identity is None or account is None:
+                return None
             if len(row) > ID_TABLE_MAX_COLUMNS:
                 raise ImportError("账号身份证表列数超出处理范围")
-            if columns is None:
-                if index >= 30:
-                    return None
-                header = [cell(value) for value in row]
-                joined = "".join(header)
-                if not (("身份" in joined or "证件" in joined)
-                        and any(word in joined for word in ("账号", "帐号", "卡号", "账户"))):
-                    continue
-                identity = next((i for i, name in enumerate(header) if "身份" in name or "证件" in name), None)
-                account = next((i for i, name in enumerate(header)
-                                if "身份" not in name and "证件" not in name
-                                and any(word in name for word in ("账号", "帐号", "卡号", "账户"))), None)
-                if identity is None or account is None:
-                    return None
-                columns = account, identity
-                continue
+            break
+        else:
+            return None
+
+        result = []
+        for row in rows:
+            if len(row) > ID_TABLE_MAX_COLUMNS:
+                raise ImportError("账号身份证表列数超出处理范围")
             if len(result) >= ID_TABLE_MAX_ROWS:
                 raise ImportError("账号身份证表行数超出处理范围")
-            result.append(tuple(cell(row[i]) if i < len(row) else "" for i in columns))
-        return result if columns is not None else None
+            result.append(tuple(cell(row[i]) if i < len(row) else "" for i in (account, identity)))
+        return result
+
+    def xlsx_rows(sheet):
+        for cells in sheet.iter_rows(values_only=False):
+            width = len(cells)
+            # Styled cells can extend a row without adding table data.
+            while width > ID_TABLE_MAX_COLUMNS and cells[width - 1].value in (None, ""):
+                width -= 1
+            yield tuple(None if item.data_type == "e" else item.value for item in cells[:width])
 
     suffix = path.suffix.lower()
     if suffix == ".xlsx":
@@ -356,7 +367,7 @@ def read_id_table(path: Path):
                 raise ImportError("账号身份证表工作表数量超出处理范围")
             for sheet in workbook.worksheets:
                 sheet.reset_dimensions()
-                result = pairs(sheet.iter_rows(values_only=True))
+                result = pairs(xlsx_rows(sheet))
                 if result is not None:
                     return result
         finally:
