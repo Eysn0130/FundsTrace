@@ -71,7 +71,7 @@ describe('FundsPanel host isolation', () => {
     expect(item.balance).toBeNull();
   });
 
-  it('keeps the Chinese file selection area associated with the native input and locks it during parsing', async () => {
+  it('keeps the Chinese file selection area and footer append associated with the native input', async () => {
     const pending = deferred<Awaited<ReturnType<FundsCaseClientV1['preview']>>>();
     const bound = session('1', 'upload-label', 0, { preview: vi.fn(() => pending.promise) });
     render(<FundsPanel host={host(bound.value)} />);
@@ -85,8 +85,11 @@ describe('FundsPanel host isolation', () => {
     expect(input.accept).toBe('.csv,.tsv,.txt,.xlsx,.xls,.zip,.rar'); input.focus(); expect(document.activeElement).toBe(input);
     const file = new File(['synthetic'], '中文合成流水.csv', { type: 'text/csv' });
     fireEvent.change(input, { target: { files: [file] } });
-    expect(input.disabled).toBe(true);
-    expect(screen.getByRole('progressbar', { name: '文件上传与解析进度' }).hasAttribute('value')).toBe(false);
+    expect(input.disabled).toBe(false);
+    const append = screen.getByRole('button', { name: '追加导入' });
+    expect(append.closest('footer')).toBe(screen.getByRole('button', { name: '查看处理结果' }).closest('footer'));
+    fireEvent.click(append); expect(choose).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('progressbar', { name: '中文合成流水.csv处理进度' }).hasAttribute('value')).toBe(false);
     expect(bound.client.preview).toHaveBeenCalledWith(file, expect.any(AbortSignal));
     await act(async () => pending.reject(new Error('合成解析失败')));
     expect(input.disabled).toBe(false); expect(screen.getByRole('alert').textContent).toContain('合成解析失败');

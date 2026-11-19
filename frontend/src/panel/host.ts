@@ -1,4 +1,4 @@
-import type { CaseStats, CleanupResult, CommitRequest, FlowPage, FlowSourceList, ImportJob, ImportPreview, ImportRecordPage, ImportReviewPage, ImportReport, ImportReportIntegrity, ImportReportRecords, ImportReportAccountOptions, ImportSessionList, RepreviewRequest } from '../../../contracts/api-v1';
+import type { CaseStats, CleanupResult, CommitRequest, FlowPage, FlowSourceList, ImportJob, ImportPreview, ImportSourceMetadata, ImportRecordPage, ImportReviewPage, ImportReport, ImportReportIntegrity, ImportReportRecords, ImportReportAccountOptions, ImportSessionList, RepreviewRequest, WithdrawnImport } from '../../../contracts/api-v1';
 
 export const FUNDS_PANEL_VERSION = 'funds-panel.v1' as const;
 
@@ -21,6 +21,8 @@ export interface FundsCaseClientV1 {
   repreview(importId: string, body: RepreviewRequest, signal?: AbortSignal): Promise<ImportPreview>;
   commit(importId: string, body: CommitRequest, signal?: AbortSignal): Promise<{ case_id: string; import_id: string; started: boolean }>;
   job(importId: string, signal?: AbortSignal): Promise<ImportJob>;
+  importSourceMetadata?(sourceId: string, signal?: AbortSignal): Promise<ImportSourceMetadata>;
+  withdrawImportSource?(sourceId: string, batchId: string, signal?: AbortSignal): Promise<WithdrawnImport>;
   imports(signal?: AbortSignal, importId?: string): Promise<ImportSessionList>;
   importRecords?(sourceId: string, page?: number, signal?: AbortSignal, memberPath?: string, sourceRow?: number): Promise<ImportRecordPage>;
   importReview?(sourceId: string, memberPath: string, query: {view: ImportReviewPage['view']; page: number; issueIndex?: number}, signal?: AbortSignal): Promise<ImportReviewPage>;

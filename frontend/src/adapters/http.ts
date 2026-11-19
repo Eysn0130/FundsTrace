@@ -50,6 +50,9 @@ export function createHttpFundsSession({ context, scopeKey, generation, transpor
   };
   const previewDirectory = transport.previewDirectory;
   if (previewDirectory) client.previewDirectory = (files, signal) => run(signal, combined => previewDirectory(caseId, files, combined));
+  const { importSourceMetadata, withdrawImportSource } = transport;
+  if (importSourceMetadata) client.importSourceMetadata = (sourceId, signal) => run(signal, combined => importSourceMetadata(caseId, sourceId, combined));
+  if (withdrawImportSource) client.withdrawImportSource = (sourceId, batchId, signal) => run(signal, combined => withdrawImportSource(caseId, sourceId, batchId, combined));
   const importRecords = transport.importRecords;
   if (importRecords) client.importRecords = (sourceId, page = 1, signal, memberPath, sourceRow) => run(signal, combined => sourceRow !== undefined
     ? importRecords(caseId, sourceId, page, combined, memberPath, sourceRow) : memberPath === undefined

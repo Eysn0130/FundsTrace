@@ -11,10 +11,13 @@ export interface ImportItem {
   materialGroupId?: string;
   sizeBytes?: number; processingMs?: number; loadingMembers?: boolean; queryingOnly?: boolean;
 }
-export interface ImportState { items: ImportItem[]; selectedId: string | null; reading: boolean; running: boolean; stopped: boolean; error: string }
+export interface ImportState { items: ImportItem[]; selectedId: string | null; reading: boolean; running: boolean; stopped: boolean; error: string; withdrawing: boolean; dataVersion: number }
 export interface ImportWorkflow {
   snapshot(): ImportState; subscribe(listener: () => void): () => void; start(): Promise<void>;
   upload(read: (signal: AbortSignal) => File[] | Promise<File[]>, directory?: boolean): Promise<void>;
+  append(read: (signal: AbortSignal) => File[] | Promise<File[]>, directory?: boolean): Promise<void>;
+  remove(id: string): boolean;
+  withdraw(id: string, batchId: string): Promise<boolean>;
   select(id: string): void; stop(message?: string): void; dispose(): void;
   edit(id: string, change: Partial<Pick<ImportItem, 'mode' | 'mapping' | 'marked' | 'selfAccounts' | 'selfAccountsText' | 'referencePolicy'>>): void;
   commit(id: string): Promise<void>; query(id: string): Promise<void>; repreview(id: string): Promise<void>; settled(importId: string): void;

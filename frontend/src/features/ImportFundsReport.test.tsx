@@ -243,6 +243,44 @@ describe('file funds report', () => {
     expect(screen.queryByRole('region', { name: '统计来源明细' })).toBeNull();
     expect(document.activeElement).toBe(rank); expect(scroll).toHaveBeenCalledOnce();
   });
+  it('keeps same-revision trend context and invalidates the entire old report on a new data version', async () => {
+    const original = report(), value = client(original);
+    let resolveTrend!: (data: ImportReport) => void, resolveRefresh!: (data: ImportReport) => void;
+    value.importFundsReport = vi.fn<NonNullable<FundsCaseClientV1['importFundsReport']>>()
+      .mockResolvedValueOnce(original)
+      .mockImplementationOnce(() => new Promise(resolve => { resolveTrend = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveRefresh = resolve; }));
+    value.verifyImportSource = vi.fn(async () => { throw new Error('旧修订复核失败'); });
+    const drill = vi.fn<NonNullable<FundsCaseClientV1['importReportRecords']>>(() => new Promise(() => {}));
+    value.importReportRecords = drill;
+    const downloadFundsReport = vi.fn(async () => {}), reportProps = { ...props(value), actions: { downloadFundsReport } };
+    const view = render(<ImportFundsReport {...reportProps} dataVersion={1} />);
+    const grain = await screen.findByRole<HTMLSelectElement>('combobox', { name: '时间粒度' });
+    fireEvent.change(grain, { target: { value: 'month' } });
+    expect(value.importFundsReport).toHaveBeenLastCalledWith('synthetic-source', expect.objectContaining({ expectedRevision: 'revision-7', timelineGrain: 'month' }), expect.any(AbortSignal));
+    expect(screen.getByText(/合计9,999,999,999,999,999.99元/)).toBeTruthy();
+    expect(grain.disabled).toBe(true);
+    await act(async () => resolveTrend({ ...original, timeline_mode: 'month' }));
+
+    fireEvent.click(screen.getByRole('button', { name: '复核留存' }));
+    expect(await screen.findByText('旧修订复核失败')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /进账来源第1/ }));
+    expect(drill).toHaveBeenCalledOnce();
+    const drillSignal = drill.mock.calls[0][2];
+    view.rerender(<ImportFundsReport {...reportProps} dataVersion={2} />);
+    expect(value.importFundsReport).toHaveBeenLastCalledWith('synthetic-source', expect.objectContaining({ expectedRevision: undefined, timelineGrain: 'month' }), expect.any(AbortSignal));
+    expect(screen.getByText('正在汇总本文件资金统计…')).toBeTruthy();
+    expect(screen.queryByText(/合计9,999,999,999,999,999.99元/)).toBeNull();
+    expect(screen.queryByRole('button', { name: '复核留存' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /进账来源第1/ })).toBeNull();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '导出简报' }).disabled).toBe(true);
+    expect(drillSignal?.aborted).toBe(true);
+
+    await act(async () => resolveRefresh(report({ analysis_revision: 'revision-8', summary: { ...original.summary, in_amount: '12.34' } })));
+    expect(screen.getByText(/合计12.34元/)).toBeTruthy();
+    expect(screen.queryByText('旧修订复核失败')).toBeNull();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '复核留存' }).disabled).toBe(false);
+  });
   it('preserves the unlabelled currency group in drilldown and export', async () => {
     const value = client(report({ currency: '', currencies: ['', 'CNY'] })), download = vi.fn(async () => {});
     value.importReportRecords = vi.fn(async (_source, query) => ({ case_id: value.binding.caseId, source_id: 'synthetic-source', analysis_revision: query.expectedRevision, items: [], total: 0, page: 1, page_size: 50 }));

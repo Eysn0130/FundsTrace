@@ -86,6 +86,8 @@ describe('bank feedback ZIP import dialog', () => {
     const summary = { ...feedback, record_total: 3, transaction_total: 3, accepted: 0, non_monetary: 0, unresolved: 3, non_transaction: 0, auxiliary: 0, currency_totals: {} };
     const value = { ...preview, feedback: summary, preview: [], stats: { total: 3, ok: 0, skipped: 3 } };
     const client = clientFor(value), report = vi.fn(async () => {}), original = vi.fn(async () => {});
+    const job = client.job;
+    client.job = async (...args) => ({ ...await job(...args), source_available: true });
     show(client, { actions: { downloadImportReport: report, downloadSource: original } }); await upload();
     const save = screen.getByRole('button', { name: '开始导入' });
     expect((save as HTMLButtonElement).disabled).toBe(false); fireEvent.click(save);

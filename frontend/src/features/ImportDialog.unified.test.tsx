@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { ImportJob, ImportPreview, ImportRecordPage } from '../../../contracts/api-v1';
-import type { FundsCaseClientV1 } from '../panel/host';
+import type { ImportJob, ImportPreview, ImportRecordPage, ImportSession } from '../../../contracts/api-v1';
+import type { FundsCaseClientV1, FundsHostActionsV1 } from '../panel/host';
 import { ImportDialog } from './ImportDialog';
 
 const summary: NonNullable<ImportPreview['table_summary']> = {
@@ -21,8 +21,8 @@ function clientFor(): FundsCaseClientV1 {
     job: vi.fn(async (): Promise<ImportJob> => ({ case_id: '1', import_id: preview.import_id, stage: 'done', done: 2, total: 2, result, error: null, message: '完成',
       member_results: [{ member_path: 'folder/a.csv', dispositions: { imported: 1 } }, { member_path: 'folder/b.xlsx', dispositions: { unresolved: 1 } }] })) };
 }
-function mount(client: FundsCaseClientV1, controller = new AbortController(), files = [new File(['synthetic'], 'synthetic.zip')]) {
-  const view = render(<ImportDialog client={client} scopeSignal={controller.signal} target={{ caseId: '1', name: '合成案件' }} onImported={vi.fn()} onClose={vi.fn()} />);
+function mount(client: FundsCaseClientV1, controller = new AbortController(), files = [new File(['synthetic'], 'synthetic.zip')], actions?: FundsHostActionsV1) {
+  const view = render(<ImportDialog client={client} scopeSignal={controller.signal} actions={actions} target={{ caseId: '1', name: '合成案件' }} onImported={vi.fn()} onClose={vi.fn()} />);
   fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files } });
   return { view, controller };
 }
@@ -46,6 +46,10 @@ describe('the common import workspace', () => {
     expect(screen.getByRole('heading', { name: 'broken.xlsx' })).toBeTruthy();
     expect(document.querySelector('.ft-file-outcomes')?.textContent).toBe('导入失败');
     expect(screen.getByText('合成损坏工作簿')).toBeTruthy();
+    fireEvent.contextMenu(screen.getByRole('treeitem', { name: /broken.xlsx/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '从列表移除' }));
+    expect(screen.queryByRole('treeitem', { name: /broken.xlsx/ })).toBeNull();
+    expect(screen.getByRole('treeitem', { name: /synthetic.zip/ })).toBeTruthy();
   });
   it('opens the selected member by its own result and preserves manual view switching and the tree', async () => {
     const client = clientFor();
@@ -293,8 +297,9 @@ describe('the common import workspace', () => {
     fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [] } });
     await act(async () => {}); expect(client.preview).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['synthetic'], 'synthetic.zip')] } });
-    expect(dialog.classList.contains('is-entry')).toBe(true);
-    expect(document.querySelector('.ft-entry-progress .is-spinning')).toBeTruthy();
+    expect(dialog.classList.contains('is-expanded')).toBe(true);
+    expect(document.querySelector('.ft-step-spinner')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '追加导入' }).closest('footer')).toBe(screen.getByRole('button', { name: '查看处理结果' }).closest('footer'));
     await act(async () => finish(preview));
     await screen.findByRole('status', { name: '导入完成' });
     expect(screen.getByRole('dialog', { name: '导入流水' })).toBe(dialog);
@@ -302,6 +307,207 @@ describe('the common import workspace', () => {
     expect(document.querySelector('.ft-step-connector[data-connector="2"] .ft-progress')?.classList.contains('is-complete')).toBe(true);
     expect(document.querySelector('.ft-step-connector[data-connector="2"] progress')?.getAttribute('value')).toBe('1');
     expect(document.querySelector('.ft-step-spinner')).toBeNull();
+  });
+  it('puts picker and dropped files straight into the existing tree and can remove an unstarted file', async () => {
+    const client = clientFor(); let finish!: (value: ImportJob) => void;
+    const job = await client.job(preview.import_id);
+    client.job = vi.fn().mockImplementationOnce(() => new Promise<ImportJob>(resolve => { finish = resolve; })).mockResolvedValue(job);
+    client.previewDirectory = vi.fn(async () => preview);
+    mount(client);
+    await waitFor(() => expect(client.job).toHaveBeenCalledOnce());
+    const tree = screen.getByRole('tree'), append = screen.getByRole('button', { name: '追加导入' });
+    const input = screen.getByLabelText<HTMLInputElement>('选择流水文件');
+    const directory = screen.getByLabelText<HTMLInputElement>('选择整个文件夹');
+    const choose = vi.spyOn(input, 'click'), chooseDirectory = vi.spyOn(directory, 'click');
+    expect(append.parentElement?.querySelectorAll(':scope > button')).toHaveLength(1);
+    fireEvent.keyDown(append, { key: 'ArrowDown' });
+    const choices = screen.getByRole('menu', { name: '追加导入方式' });
+    const chooseFiles = within(choices).getByRole('menuitem', { name: '选择文件…' });
+    const chooseFolder = within(choices).getByRole('menuitem', { name: '选择文件夹…' });
+    expect(document.activeElement).toBe(chooseFiles);
+    fireEvent.keyDown(chooseFiles, { key: 'ArrowDown' }); expect(document.activeElement).toBe(chooseFolder);
+    fireEvent.keyDown(chooseFolder, { key: 'Escape' }); expect(document.activeElement).toBe(append);
+    fireEvent.click(append); fireEvent.click(screen.getByRole('menuitem', { name: '选择文件夹…' }));
+    expect(chooseDirectory).toHaveBeenCalledOnce(); expect(choose).not.toHaveBeenCalled();
+    fireEvent.click(append); fireEvent.click(screen.getByRole('menuitem', { name: '选择文件…' }));
+    expect(choose).toHaveBeenCalledOnce();
+    fireEvent.change(input, { target: { files: [new File(['synthetic'], 'queued.csv')] } });
+    const queued = within(tree).getByRole('treeitem', { name: /queued.csv/ });
+    expect(queued.textContent).toContain('排队中');
+    fireEvent.keyDown(queued, { key: 'F10', shiftKey: true });
+    fireEvent.click(screen.getByRole('menuitem', { name: '移出待导入项' }));
+    expect(within(tree).queryByRole('treeitem', { name: /queued.csv/ })).toBeNull();
+    const dropped = new File(['synthetic'], 'already-accepted.csv'), second = new File(['synthetic'], 'second-drop.csv');
+    const dataTransfer = { types: ['Files'], files: [dropped, second], items: [], dropEffect: 'none' };
+    const aside = tree.closest('aside')!, child = within(tree).getByRole('treeitem', { name: /synthetic.zip/ });
+    fireEvent.dragOver(tree, { dataTransfer: { types: ['text/plain'], files: [], items: [] } });
+    expect(aside.hasAttribute('data-append-drop')).toBe(false);
+    fireEvent.dragEnter(tree, { dataTransfer }); fireEvent.dragEnter(child, { dataTransfer });
+    fireEvent.dragLeave(tree, { dataTransfer, relatedTarget: null });
+    expect(aside.getAttribute('data-append-drop')).toBe('true');
+    fireEvent.dragLeave(child, { dataTransfer, relatedTarget: null });
+    expect(aside.hasAttribute('data-append-drop')).toBe(false);
+    fireEvent.dragOver(tree, { dataTransfer }); expect(dataTransfer.dropEffect).toBe('copy');
+    fireEvent.drop(tree, { dataTransfer });
+    expect(aside.hasAttribute('data-append-drop')).toBe(false);
+    expect(await within(tree).findByRole('treeitem', { name: /already-accepted.csv/ })).toBeTruthy();
+    expect(within(tree).getByRole('treeitem', { name: /second-drop.csv/ })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'a.csv' })).toBeTruthy();
+    expect(client.preview).toHaveBeenCalledOnce();
+    await act(async () => finish(job));
+    await waitFor(() => expect(client.preview).toHaveBeenCalledTimes(3));
+    expect(client.preview).toHaveBeenNthCalledWith(2, dropped, expect.any(AbortSignal));
+    expect(client.preview).toHaveBeenLastCalledWith(second, expect.any(AbortSignal));
+    expect(screen.getByRole('tree')).toBe(tree);
+  });
+  it('keeps context scope on the clicked member and confirms deleting only the named registered archive', async () => {
+    const client = clientFor(), copy = vi.fn(async () => {}), baseline = await client.job(preview.import_id);
+    const sha = 'f'.repeat(64);
+    client.importSourceMetadata = vi.fn(async sourceId => ({ case_id: '1', source_id: sourceId, filename: 'synthetic.zip', size_bytes: 9,
+      sha256: sha, registered_at: '2026-11-13T10:01:01Z', material_name: '20261113-1-1号检材', source_available: true, active_batch_id: '1', withdrawn: false }));
+    client.withdrawImportSource = vi.fn(async (sourceId, batchId) => ({ case_id: '1', source_id: sourceId, batch_id: batchId }));
+    client.job = vi.fn().mockResolvedValue(baseline);
+    vi.stubGlobal('navigator', { clipboard: { writeText: copy } });
+    try {
+      mount(client); await screen.findByRole('status', { name: '导入完成' });
+      const child = screen.getByRole('treeitem', { name: /b.xlsx/ });
+      fireEvent.contextMenu(child, { clientX: 100, clientY: 120 });
+      expect(screen.getByRole('heading', { name: 'a.csv' })).toBeTruthy();
+      const menu = screen.getByRole('menu', { name: '文件操作' });
+      expect(within(within(menu).getByRole('group', { name: '当前节点' })).queryByRole('menuitem', { name: /删除/ })).toBeNull();
+      const originals = within(menu).getByRole('group', { name: '所属原件' });
+      fireEvent.click(await within(originals).findByRole('menuitem', { name: '复制原件 SHA-256' }));
+      expect(copy).toHaveBeenCalledWith(sha);
+      expect(document.activeElement).toBe(child);
+      fireEvent.contextMenu(child);
+      fireEvent.click(screen.getByRole('menuitem', { name: '文件信息' }));
+      const info = screen.getByRole('dialog', { name: '文件信息' });
+      expect(await within(info).findByText('2026-11-13 10:01:01 UTC')).toBeTruthy();
+      fireEvent.keyDown(info, { key: 'Escape' });
+      fireEvent.contextMenu(child);
+      fireEvent.click(await screen.findByRole('menuitem', { name: '删除所属压缩包…' }));
+      const originalConfirmation = screen.getByRole('dialog', {
+        name: '删除所属压缩包的导入？', description: /synthetic\.zip.*包含全部成员/,
+      });
+      fireEvent.click(within(originalConfirmation).getByRole('button', { name: '取消' }));
+      const root = screen.getByRole('treeitem', { name: /synthetic.zip/ });
+      fireEvent.keyDown(root, { key: 'F10', shiftKey: true });
+      fireEvent.click(await screen.findByRole('menuitem', { name: '删除压缩包…' }));
+      const confirmation = screen.getByRole('dialog', {
+        name: '删除整个压缩包的导入？', description: /synthetic\.zip.*20261113-1-1号检材.*有其他来源支持的流水会保留/,
+      });
+      expect(document.activeElement).toBe(within(confirmation).getByRole('button', { name: '取消' }));
+      expect(client.withdrawImportSource).not.toHaveBeenCalled();
+      fireEvent.click(within(confirmation).getByRole('button', { name: '删除导入' }));
+      await waitFor(() => expect(client.withdrawImportSource).toHaveBeenCalledWith(preview.import_id, '1', expect.any(AbortSignal)));
+      await waitFor(() => expect(screen.queryByRole('treeitem', { name: /synthetic.zip/ })).toBeNull());
+      expect(screen.getByText('暂无导入文件')).toBeTruthy();
+      expect(screen.getByRole('button', { name: '追加导入' })).toBeTruthy();
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it('completes a right-click action for its own original after the menu closes, then cancels it on file or window changes', async () => {
+    const client = clientFor(), otherId = 'abcdef0123456789';
+    client.preview = vi.fn(async file => ({ ...preview, filename: file.name,
+      import_id: file.name === 'selected.csv' ? preview.import_id : otherId, table_summary: null }));
+    client.commit = vi.fn(async importId => ({ case_id: '1', import_id: importId, started: true }));
+    client.job = vi.fn(async (importId): Promise<ImportJob> => ({ case_id: '1', import_id: importId, stage: 'done', done: 1, total: 1,
+      source_available: true, error: null, message: '完成', result: { ...result, source_id: importId, table_summary: null } }));
+    let finish!: (value: { icon: string }) => void;
+    const sourceCopy = vi.fn<NonNullable<FundsHostActionsV1['sourceCopy']>>(() => new Promise(resolve => { finish = resolve; }));
+    const downloadSource = vi.fn<NonNullable<FundsHostActionsV1['downloadSource']>>(() => new Promise(() => {}));
+    const controller = new AbortController();
+    const props = { client, scopeSignal: controller.signal, actions: { sourceCopy, downloadSource },
+      target: { caseId: '1', name: '合成案件' }, onImported: vi.fn(), onClose: vi.fn() };
+    const view = render(<ImportDialog {...props} />);
+    fireEvent.change(screen.getByLabelText('选择流水文件'), { target: { files: [new File(['a'], 'selected.csv'), new File(['b'], 'other.csv')] } });
+    await waitFor(() => expect(props.onImported).toHaveBeenCalledTimes(2));
+    const action = (row: RegExp, command: string) => {
+      fireEvent.contextMenu(screen.getByRole('treeitem', { name: row }));
+      fireEvent.click(screen.getByRole('menuitem', { name: command }));
+      expect(screen.queryByRole('menu', { name: '文件操作' })).toBeNull();
+    };
+    action(/other\.csv/, '打开原件副本');
+    expect(sourceCopy).toHaveBeenLastCalledWith(otherId, 'open', expect.any(AbortSignal));
+    expect(sourceCopy.mock.calls.at(-1)?.[2]?.aborted).toBe(false);
+    await act(async () => finish({ icon: 'data:image/png;base64,AA==' }));
+    expect(screen.getByRole('heading', { name: 'selected.csv' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '打开副本' }).querySelector('img')?.getAttribute('src')).toBe('/static/ui-icons/import-file-type-csv.svg');
+
+    action(/other\.csv/, '显示副本位置');
+    const reveal = sourceCopy.mock.calls.at(-1)?.[2];
+    expect(sourceCopy).toHaveBeenLastCalledWith(otherId, 'reveal', reveal);
+    fireEvent.click(screen.getByRole('treeitem', { name: /other\.csv/ }));
+    expect(reveal?.aborted).toBe(true);
+
+    action(/selected\.csv/, '另存原件…');
+    expect(downloadSource).toHaveBeenLastCalledWith({ sourceId: preview.import_id, filename: 'selected.csv' }, expect.any(AbortSignal));
+    const hidden = downloadSource.mock.calls.at(-1)?.[1];
+    view.rerender(<ImportDialog {...props} active={false} />);
+    expect(hidden?.aborted).toBe(true);
+    view.rerender(<ImportDialog {...props} />);
+    action(/other\.csv/, '另存原件…');
+    const closed = downloadSource.mock.calls.at(-1)?.[1];
+    fireEvent.click(screen.getByRole('button', { name: '关闭对话框' }));
+    expect(closed?.aborted).toBe(true);
+    expect(controller.signal.aborted).toBe(false);
+  });
+  it('drops a folder as one import and retains its row on a failed delete', async () => {
+    const client = clientFor(), file = new File(['synthetic'], '合成流水.csv'), folderId = '1234567890abcdef', batchId = '2';
+    const first = await client.job(preview.import_id);
+    const directoryReceipt = { ...first, import_id: folderId, result: { ...result, batch_id: batchId, source_id: folderId } };
+    client.previewDirectory = vi.fn(async () => ({ ...preview, import_id: folderId, filename: '合成文件夹.zip' }));
+    client.commit = vi.fn(async importId => ({ case_id: '1', import_id: importId, started: true }));
+    client.job = vi.fn(async importId => importId === folderId ? directoryReceipt : first);
+    client.importSourceMetadata = vi.fn(async sourceId => ({ case_id: '1', source_id: sourceId, filename: '合成文件夹.zip', size_bytes: 100,
+      sha256: 'f'.repeat(64), registered_at: '2026-11-13 10:01:01', material_name: null, source_available: true, active_batch_id: batchId, withdrawn: false }));
+    client.withdrawImportSource = vi.fn().mockRejectedValueOnce(new Error('合成删除失败')).mockResolvedValue({ case_id: '1', source_id: folderId, batch_id: batchId });
+    mount(client); await screen.findByRole('status', { name: '导入完成' });
+    const tree = screen.getByRole('tree');
+    const readEntries = vi.fn().mockImplementationOnce((done: (files: object[]) => void) => done([{
+      name: file.name, isFile: true, file: (loaded: (value: File) => void) => loaded(file),
+    }])).mockImplementation((done: (files: object[]) => void) => done([]));
+    const entry = { name: '合成文件夹', isDirectory: true, createReader: () => ({ readEntries }) };
+    const dataTransfer = { types: ['Files'], files: [], items: [{ kind: 'file', getAsFile: () => null, webkitGetAsEntry: () => entry }] };
+    fireEvent.dragEnter(tree, { dataTransfer });
+    expect(tree.closest('aside')?.hasAttribute('data-append-drop')).toBe(true);
+    fireEvent.drop(tree, { dataTransfer });
+    await waitFor(() => expect(client.previewDirectory).toHaveBeenCalledOnce());
+    expect(vi.mocked(client.previewDirectory).mock.calls[0][0].map(picked => picked.name)).toEqual(['合成文件夹/合成流水.csv']);
+    await waitFor(() => expect(client.job).toHaveBeenCalledWith(folderId, expect.any(AbortSignal)));
+    const folder = await within(tree).findByRole('treeitem', { name: /合成文件夹/ });
+    fireEvent.contextMenu(folder);
+    fireEvent.click(await screen.findByRole('menuitem', { name: '删除文件夹…' }));
+    const confirm = screen.getByRole('dialog', {
+      name: '删除整个文件夹的导入？', description: /合成文件夹.*原件、历史回执和有其他来源支持的流水会保留/,
+    });
+    fireEvent.click(within(confirm).getByRole('button', { name: '删除导入' }));
+    expect((await within(confirm).findByRole('alert')).textContent).toContain('合成删除失败');
+    expect(folder.isConnected).toBe(true);
+    fireEvent.click(within(confirm).getByRole('button', { name: '删除导入' }));
+    await waitFor(() => expect(within(tree).queryByRole('treeitem', { name: /合成文件夹/ })).toBeNull());
+    const remaining = within(tree).getByRole('treeitem', { name: /synthetic.zip/ });
+    await waitFor(() => expect(document.activeElement).toBe(remaining));
+    expect(client.withdrawImportSource).toHaveBeenLastCalledWith(folderId, batchId, expect.any(AbortSignal));
+  });
+  it.each(['导入新资料', '完成'])('focuses %s after withdrawing the only historical file', async button => {
+    const client = clientFor();
+    const resume: ImportSession = { case_id: '1', import_id: preview.import_id, filename: 'historical.csv', surface: 'v1',
+      mode: preview.mode, mapping: preview.mapping, stage: 'done', source_state: 'retained', source_available: true, recoverable: false,
+      created_at: '2026-11-13T10:01:01Z', expires_at: null, error_code: null, attempt: 1, request: null,
+      result: { ...result, table_summary: null } };
+    client.importSourceMetadata = vi.fn(async sourceId => ({ case_id: '1', source_id: sourceId, filename: resume.filename, size_bytes: 9,
+      sha256: 'f'.repeat(64), registered_at: resume.created_at, material_name: null, source_available: true, active_batch_id: '1', withdrawn: false }));
+    client.withdrawImportSource = vi.fn(async (sourceId, batchId) => ({ case_id: '1', source_id: sourceId, batch_id: batchId }));
+    render(<ImportDialog client={client} resume={resume} scopeSignal={new AbortController().signal} target={{ caseId: '1', name: '合成案件' }}
+      onImported={vi.fn()} onClose={vi.fn()} onOpenNewImport={button === '导入新资料' ? vi.fn() : undefined} />);
+    fireEvent.contextMenu(await screen.findByRole('treeitem', { name: /historical\.csv/ }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: '删除文件…' }));
+    const confirmation = screen.getByRole('dialog', { name: '删除文件的导入？' });
+    expect(document.activeElement).toBe(within(confirmation).getByRole('button', { name: '取消' }));
+    fireEvent.click(within(confirmation).getByRole('button', { name: '删除导入' }));
+    await screen.findByText('暂无导入文件');
+    const next = screen.getByRole('button', { name: button });
+    await waitFor(() => expect(document.activeElement).toBe(next));
   });
   it('filters complete names through ancestors without changing totals or the inspected file and restores folds when cleared', async () => {
     const client = clientFor(); mount(client); await screen.findByRole('status', { name: '导入完成' });
@@ -322,7 +528,8 @@ describe('the common import workspace', () => {
     expect(client.preview).toHaveBeenCalledOnce(); expect(client.commit).toHaveBeenCalledOnce();
   });
   it('keeps header metrics under mapping and hides file properties behind a keyboard menu', async () => {
-    mount(clientFor()); await screen.findByRole('status', { name: '导入完成' });
+    mount(clientFor(), undefined, undefined, { downloadSource: vi.fn() });
+    await screen.findByRole('status', { name: '导入完成' });
     expect(document.querySelector('.ft-file-outcomes')?.textContent).toBe('已导入 1 行重复 0 行待核对 0 行');
     expect(document.querySelector('.ft-mapping-section .ft-header-detection')?.textContent).toContain('表头第 1 行');
     expect(screen.queryByRole('dialog', { name: '文件信息' })).toBeNull();
@@ -336,6 +543,11 @@ describe('the common import workspace', () => {
     fireEvent.keyDown(info, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: '文件信息' })).toBeNull();
     expect(document.activeElement).toBe(menu); expect(screen.getByRole('dialog', { name: '导入流水' })).toBeTruthy();
+    fireEvent.click(menu);
+    expect(screen.getByRole('menu', { name: '文件操作' })).toBeTruthy();
+    fireEvent(window, new Event('resize'));
+    expect(screen.queryByRole('menu', { name: '文件操作' })).toBeNull();
+    expect(document.activeElement).toBe(menu);
   });
   it('keeps the reference inspector free of receipt cards and opens details only through the existing action', async () => {
     const client = clientFor(); mount(client); await screen.findByRole('status', { name: '导入完成' });
@@ -370,7 +582,7 @@ describe('the common import workspace', () => {
       render(<ImportDialog client={client} scopeSignal={new AbortController().signal} target={{caseId:'1',name:'合成案件'}} onImported={vi.fn()} onClose={vi.fn()} />);
       fireEvent.change(screen.getByLabelText('选择流水文件'),{target:{files:[new File(['synthetic'],'synthetic-book.xlsx')]}});
       await screen.findByRole('status',{name:'导入完成'}); expect(screen.getByRole('heading',{name:'流水明细'})).toBeTruthy();
-      fireEvent.click(screen.getByRole('button',{name:'文件操作'})); fireEvent.click(screen.getByRole('menuitem',{name:'复制文件名'})); await waitFor(()=>expect(copy).toHaveBeenCalledWith('synthetic-book.xlsx'));
+      fireEvent.click(screen.getByRole('button',{name:'文件操作'})); fireEvent.click(screen.getByRole('menuitem',{name:'复制原件文件名'})); await waitFor(()=>expect(copy).toHaveBeenCalledWith('synthetic-book.xlsx'));
       fireEvent.click(screen.getByRole('button',{name:'文件操作'})); fireEvent.click(screen.getByRole('menuitem',{name:'文件信息'}));
       const info=screen.getByRole('dialog',{name:'文件信息'}); expect(within(info).getByText('整份文件')).toBeTruthy();
       expect(within(info).getByText('文件大小').nextSibling?.textContent).toBe('9 B'); expect(within(info).getByText('原始行数').nextSibling?.textContent).toBe('4');
@@ -462,11 +674,10 @@ describe('the common import workspace', () => {
   it.each(['file', 'unknown'])('does not invent totals or active enumeration after a %s rejection', async kind => {
     const client = clientFor(); client.preview = vi.fn(async () => { throw Object.assign(new Error('合成压缩包损坏'), { status: 400, failureKind: kind }); });
     mount(client); await screen.findByRole('alert');
-    expect(document.querySelector('.ft-counts')).toBeNull();
-    expect(document.querySelector('.ft-import-dialog')?.classList.contains('is-entry')).toBe(true);
+    expect(screen.getByRole('treeitem', { name: /synthetic.zip/ }).textContent).toContain(kind === 'file' ? '失败' : '结果待核对');
     expect(screen.queryByText(/正在识别文件结构/)).toBeNull();
-    expect(document.querySelector('.ft-entry-progress progress')?.hasAttribute('value')).toBe(false);
-    expect(document.querySelector('.ft-entry-progress .is-spinning')).toBeNull();
+    expect(document.querySelector('.ft-step-connector[data-connector="2"] progress')?.hasAttribute('value')).toBe(false);
+    expect(document.querySelector('.ft-step-spinner')).toBeNull();
     expect(client.commit).not.toHaveBeenCalled();
   });
 });

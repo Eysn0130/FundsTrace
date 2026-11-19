@@ -107,7 +107,19 @@ export function App({ api = defaultApi, actionsForCase, embedded = new URLSearch
       setLocalImports(items => items.filter(item => item.caseId !== context.caseId || item.importId !== importId));
       setImportError(current => current?.caseId === context.caseId && current.importId === importId ? null : current);
     };
+    const withdrawImportSource = api.withdrawImportSource;
     const transport: FundsApi = embedded ? { ...api,
+      withdrawImportSource: withdrawImportSource ? async (caseId, sourceId, batchId, signal) => {
+        const result = await withdrawImportSource(caseId, sourceId, batchId, signal);
+        if (signal?.aborted || result.case_id !== caseId || result.source_id !== sourceId || result.batch_id !== batchId) return result;
+        try {
+          await ownBridge().request('data-changed', {}, signal);
+        } catch {
+          if (!signal?.aborted && isOwnContext()) feedbackPort?.notify({ id: `withdraw-refresh:${sourceId}`, operation: 'import',
+            severity: 'warning', title: '已撤回导入，案件刷新未完成' });
+        }
+        return result;
+      } : undefined,
       commit: async (caseId, importId, body, signal) => {
         await ownBridge().request('import-acquire', { importId }, signal);
         settledImports.current.delete(JSON.stringify([caseId, generation, importId]));

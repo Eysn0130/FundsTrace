@@ -34,6 +34,7 @@ UI_ICON_NAMES = (
     "align-top", "distribute-vertical", "lock", "focus", "zoom-out", "zoom-in",
     "zoom-reset", "eye", "eye-off", "eye-restore", "legend", "map", "calendar",
     "target", "font-text", "home", "folder", "minimap-map", "minimap-minus", "minimap-plus",
+    "folder-plus", "hash", "external-open", "withdraw-batch",
     "rail-navigation", "rail-update",
     "import-file-type-xls", "import-file-type-csv", "import-file-type-tsv", "import-file-type-txt", "import-file-type-generic", "import-file-type-pdf", "import-file-zip",
     "import-circle-check", "import-circle-x", "import-circle-alert", "import-circle-filled", "import-circle-minus", "import-circle", "import-circle-dot", "import-clock", "import-loader",

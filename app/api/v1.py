@@ -15,7 +15,7 @@ from app import evidence_resolution
 from .models import (ApiError, Case, CaseCreate, CaseList, CaseStats, CommitRequest,
                      CommitStarted, FlowPage, ImportJob, ImportPreview, RepreviewRequest,
                      ImportSessionList, CleanupRequest, CleanupResult, FlowSourceList, ImportRecordPage, ImportReviewPage, ResolutionRegistry)
-from .models import ImportReport, ImportReportIntegrity, ImportReportRecords, ImportReportAccountOptions
+from .models import ImportReport, ImportReportIntegrity, ImportReportRecords, ImportReportAccountOptions, ImportSourceMetadata, WithdrawnImport
 
 
 def error_response(status, code, message):
@@ -117,6 +117,16 @@ def source_file(case_id: CaseId, source_id: ImportId):
 
     return StreamingResponse(chunks(), media_type="application/octet-stream", background=BackgroundTask(source.close),
                              headers={"Cache-Control": "no-store", "Content-Disposition": f"attachment; filename*=utf-8''{quote(filename, safe='')}"})
+
+
+@router.get("/cases/{case_id}/sources/{source_id}/metadata", response_model=ImportSourceMetadata, operation_id="v1_source_metadata")
+def source_metadata(case_id: CaseId, source_id: ImportId):
+    return imports.source_metadata(case_id, source_id)
+
+
+@router.delete("/cases/{case_id}/sources/{source_id}/operation", response_model=WithdrawnImport, operation_id="v1_withdraw_source")
+def withdraw_source(case_id: CaseId, source_id: ImportId, expected_batch_id: str = Query(..., pattern=r"^[1-9][0-9]{0,18}$")):
+    return imports.withdraw_source(case_id, source_id, expected_batch_id)
 
 
 @router.get("/cases/{case_id}/imports", response_model=ImportSessionList, operation_id="v1_import_sessions")

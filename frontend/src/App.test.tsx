@@ -740,6 +740,83 @@ describe('parent-owned import feedback', () => {
   });
 });
 
+describe('embedded source withdrawal', () => {
+  const receipt = { case_id: '1', source_id: preview.import_id, batch_id: completed.result!.batch_id };
+
+  async function openConfirmation(h: ReturnType<typeof embeddedHost>, api: FundsApi) {
+    api.job = async () => ({ ...completed, result: { ...completed.result!, source_id: receipt.source_id } });
+    api.importSourceMetadata = async (caseId, sourceId) => ({
+      case_id: caseId, source_id: sourceId, filename: preview.filename, sha256: 'a'.repeat(64), size_bytes: 9,
+      registered_at: '2026-11-19T09:00:00Z', material_name: null, source_available: true, active_batch_id: receipt.batch_id, withdrawn: false,
+    });
+    render(<App api={api} embedded />); h.bind();
+    await screen.findByRole('button', { name: '核对流水 SYN-1' });
+    await h.upload();
+    await h.answer('import-acquire'); await h.answer('import-release'); await h.answer('data-changed');
+    const file = await screen.findByRole('treeitem', { name: /synthetic\.csv/ });
+    fireEvent.contextMenu(file, { clientX: 100, clientY: 120 });
+    fireEvent.click(await screen.findByRole('menuitem', { name: '删除文件…' }));
+    return { file, confirmation: screen.getByRole('dialog', { name: '删除文件的导入？' }) };
+  }
+
+  it.each([true, false])('notifies the current host once after withdrawal and removes the file when refresh acknowledgment is %s', async refreshed => {
+    const h = embeddedHost(), api = fakeApi();
+    const withdraw = vi.fn(async () => receipt);
+    api.withdrawImportSource = withdraw;
+    try {
+      const { file, confirmation } = await openConfirmation(h, api);
+      const before = h.requests().length;
+      fireEvent.click(within(confirmation).getByRole('button', { name: '删除导入' }));
+      await waitFor(() => expect(h.requests().slice(before)).toEqual([
+        expect.objectContaining({ action: 'data-changed', caseId: '1', generation: 1, payload: {} }),
+      ]));
+      await h.answer('data-changed', refreshed, refreshed ? undefined : '合成宿主刷新失败');
+      await waitFor(() => expect(file.isConnected).toBe(false));
+      expect(withdraw).toHaveBeenCalledOnce();
+      expect(withdraw).toHaveBeenCalledWith('1', receipt.source_id, receipt.batch_id, expect.any(AbortSignal));
+      expect(h.requests()).toHaveLength(before + 1);
+      const notices = h.messages.mock.calls.map(([message]) => message).filter(message =>
+        message.type === 'feedback' && message.event?.id === `withdraw-refresh:${receipt.source_id}`);
+      expect(notices).toEqual(refreshed ? [] : [expect.objectContaining({ caseId: '1', generation: 1,
+        event: expect.objectContaining({ kind: 'toast', title: '已撤回导入，案件刷新未完成', severity: 'warning' }) })]);
+    } finally { h.close(); }
+  });
+
+  it.each(['mismatched receipt', 'rejected withdrawal'])('does not refresh or remove the item after a %s', async outcome => {
+    const h = embeddedHost(), api = fakeApi();
+    api.withdrawImportSource = vi.fn(async () => {
+      if (outcome === 'rejected withdrawal') throw new ApiError('source_operation_changed', '该原件的导入状态已变化', 409);
+      return { ...receipt, batch_id: '99' };
+    });
+    try {
+      const { file, confirmation } = await openConfirmation(h, api);
+      const before = h.requests().length;
+      fireEvent.click(within(confirmation).getByRole('button', { name: '删除导入' }));
+      const alert = await within(confirmation).findByRole('alert');
+      expect(alert.textContent).toContain(outcome === 'rejected withdrawal' ? '该原件的导入状态已变化' : '撤回回执与当前原件不一致');
+      expect(file.isConnected).toBe(true);
+      expect(h.requests()).toHaveLength(before);
+    } finally { h.close(); }
+  });
+
+  it('drops a late withdrawal reply after a same-case rebind', async () => {
+    const h = embeddedHost(), api = fakeApi(), pending = deferred<typeof receipt>();
+    const withdraw = vi.fn((_caseId: string, _sourceId: string, _batchId: string, _signal?: AbortSignal) => pending.promise);
+    api.withdrawImportSource = withdraw;
+    try {
+      const { confirmation } = await openConfirmation(h, api);
+      const before = h.requests().length;
+      fireEvent.click(within(confirmation).getByRole('button', { name: '删除导入' }));
+      await waitFor(() => expect(withdraw).toHaveBeenCalledOnce());
+      h.bind({ generation: 2 });
+      expect(withdraw.mock.calls[0][3]?.aborted).toBe(true);
+      await act(async () => pending.resolve(receipt));
+      expect(h.requests()).toHaveLength(before);
+      expect(screen.queryByRole('dialog', { name: '删除文件的导入？' })).toBeNull();
+    } finally { h.close(); }
+  });
+});
+
 describe('verified parent import settlement', () => {
   it('clears only the original local unknown banner after a trusted current parent settlement without posting again', async () => {
     const h = embeddedHost(), api = fakeApi();

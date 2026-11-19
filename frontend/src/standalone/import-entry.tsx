@@ -11,7 +11,7 @@ interface CanvasImportOptions {
   caseId: string; name: string; generation: number; signal: AbortSignal; resume?: ImportSession;
   acquire(importId: string, surface: 'v1' | 'legacy'): Promise<void>;
   release(importId: string, jobId?: string, rejected?: boolean): Promise<void>;
-  changed(): Promise<void>; feedback(event: FundsFeedbackEvent): boolean; close(): void;
+  changed(): Promise<void>; feedback(event: FundsFeedbackEvent): boolean; close(): void; openNewImport?(): void;
 }
 function legacyApi(caseId: string): FundsApi {
   async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
@@ -32,6 +32,14 @@ export function mountImport(element: HTMLElement, options: CanvasImportOptions) 
   const surface = options.resume?.surface ?? 'v1', source = surface === 'legacy' ? legacyApi(options.caseId) : api;
   const notified = new Set<string>();
   const transport: FundsApi = { ...source,
+    withdrawImportSource: async (caseId, sourceId, batchId, signal) => {
+      const result = await api.withdrawImportSource(caseId, sourceId, batchId, signal);
+      if (!signal?.aborted) {
+        try { await options.changed(); }
+        catch { if (!signal?.aborted) options.feedback({ id: 'withdraw-refresh:' + sourceId, kind: 'toast', operation: 'import', severity: 'warning', title: '已撤回导入，案件列表刷新未完成' }); }
+      }
+      return result;
+    },
     commit: async (caseId, importId, body, signal) => {
       await options.acquire(importId, surface);
       try { return await source.commit(caseId, importId, body, signal); }
@@ -67,7 +75,7 @@ export function mountImport(element: HTMLElement, options: CanvasImportOptions) 
     const [hint, setHint] = useState<{ importId: string; sequence: number }>();
     settle = importId => setHint(value => ({ importId, sequence: (value?.sequence ?? 0) + 1 }));
     return <FeedbackProvider port={channel.port}><ImportDialog target={binding.session.context} client={binding.session.client} scopeSignal={binding.session.signal}
-      resume={options.resume} surface={surface} settlementHint={hint} actions={binding.session.actions} onClose={options.close} onImported={() => {}}
+      resume={options.resume} surface={surface} settlementHint={hint} actions={binding.session.actions} onClose={options.close} onOpenNewImport={options.openNewImport} onImported={() => {}}
       /></FeedbackProvider>;
   }
   root.render(<View />);

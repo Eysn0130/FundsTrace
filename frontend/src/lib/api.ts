@@ -1,4 +1,4 @@
-import type { Case, CaseList, CaseStats, FlowPage, ImportPreview, ImportJob, ImportRecordPage, ImportReviewPage, ImportReport, ImportReportIntegrity, ImportReportRecords, ImportReportAccountOptions, CommitRequest, RepreviewRequest, ImportSessionList, FlowSourceList, CleanupResult } from '../../../contracts/api-v1';
+import type { Case, CaseList, CaseStats, FlowPage, ImportPreview, ImportJob, ImportSourceMetadata, ImportRecordPage, ImportReviewPage, ImportReport, ImportReportIntegrity, ImportReportRecords, ImportReportAccountOptions, CommitRequest, RepreviewRequest, ImportSessionList, FlowSourceList, CleanupResult, WithdrawnImport } from '../../../contracts/api-v1';
 import type { FundsReportDownloadV1, FundsReportQueryV1, FundsReportRecordsQueryV1, FundsReportAccountQueryV1 } from '../panel/host';
 
 export class ApiError extends Error {
@@ -74,6 +74,10 @@ export const api = {
     request<{ case_id: string; import_id: string; started: boolean }>(`${casePath(id)}/imports/${encodeURIComponent(importId)}/commit`, { ...json(body), signal }),
   job: (id: string, importId: string, signal?: AbortSignal) =>
     request<ImportJob>(`${casePath(id)}/imports/${encodeURIComponent(importId)}`, { signal }),
+  importSourceMetadata: (id: string, sourceId: string, signal?: AbortSignal) =>
+    request<ImportSourceMetadata>(`${casePath(id)}/sources/${encodeURIComponent(sourceId)}/metadata`, { signal }),
+  withdrawImportSource: (id: string, sourceId: string, batchId: string, signal?: AbortSignal) =>
+    request<WithdrawnImport>(`${casePath(id)}/sources/${encodeURIComponent(sourceId)}/operation?${new URLSearchParams({ expected_batch_id: batchId })}`, { method: 'DELETE', signal }),
   imports: (id: string, signal?: AbortSignal, importId?: string) =>
     request<ImportSessionList>(`${casePath(id)}/imports?${importId === undefined ? 'limit=100' : 'import_id=' + encodeURIComponent(importId)}`, { signal }),
   importRecords: (id: string, sourceId: string, page = 1, signal?: AbortSignal, memberPath?: string, sourceRow?: number) =>
@@ -106,5 +110,5 @@ export const api = {
   cleanup: (id: string, dryRun = true, signal?: AbortSignal) => request<CleanupResult>(`${casePath(id)}/imports/cleanup`, { ...json({ dry_run: dryRun }), signal }),
 };
 
-type OptionalUseCase = 'previewDirectory' | 'importRecords' | 'importReview' | 'importFundsReport' | 'verifyImportSource' | 'importReportRecords' | 'importReportAccounts' | 'downloadFundsReport';
+type OptionalUseCase = 'previewDirectory' | 'importSourceMetadata' | 'withdrawImportSource' | 'importRecords' | 'importReview' | 'importFundsReport' | 'verifyImportSource' | 'importReportRecords' | 'importReportAccounts' | 'downloadFundsReport';
 export type FundsApi = Omit<typeof api, OptionalUseCase> & Partial<Pick<typeof api, OptionalUseCase>>;

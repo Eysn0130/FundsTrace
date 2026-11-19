@@ -3,7 +3,7 @@ export function captureDroppedFiles(transfer: DataTransfer): { directory: boolea
   const items = Array.from(transfer.items ?? []).filter(item => item.kind === 'file');
   const entries = items.map(item => ({ entry: item.webkitGetAsEntry?.(), file: item.getAsFile() }));
   const fallback = Array.from(transfer.files ?? []);
-  const directory = entries.some(item => item.entry?.isDirectory) || Math.max(entries.length, fallback.length) > 1;
+  const directory = entries.some(item => item.entry?.isDirectory);
   return { directory, async read(signal) {
     const files: File[] = [];
     const check = () => { if (signal.aborted) throw new DOMException('读取目录已中止。', 'AbortError'); };
@@ -26,6 +26,7 @@ export function captureDroppedFiles(transfer: DataTransfer): { directory: boolea
       } else throw new Error('目录包含无法读取的项目，请通过选择文件夹重新导入。');
     }
     check();
+    if (directory && entries.length !== 1) throw new Error('请分别追加文件和文件夹，每次拖入一个文件夹。');
     if (entries.length) {
       for (const item of entries) {
         if (item.entry) await visit(item.entry);
