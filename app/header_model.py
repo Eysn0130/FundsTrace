@@ -1,6 +1,7 @@
 """Two independent offline llama.cpp runs for a bounded header review."""
 
 import atexit
+import errno
 import hashlib
 import http.client
 import json
@@ -27,6 +28,11 @@ SERVER_BUILD = b"build 12548, commit f8caa5ea3"
 REQUEST_BYTES = 16 * 1024
 RESPONSE_BYTES = 64 * 1024
 REQUEST_SECONDS = 12
+_CHILD_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+class _RetryablePassError(Exception):
+    """The OS temporarily refused launch or an identified live child lost transport."""
 
 
 class _UnixConnection(http.client.HTTPConnection):
@@ -176,8 +182,14 @@ class LocalHeaderModel:
                        "--no-cache-prompt", "--reasoning", "off", "--parallel", "1",
                        "--threads", "3", "--ctx-size", "4096", "--log-disable"]
             child_env = {**env, "TMPDIR": str(directory), "TMP": str(directory), "TEMP": str(directory)}
-            self._process = subprocess.Popen(command, env=child_env, cwd=directory, stdin=subprocess.DEVNULL,
-                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                self._process = subprocess.Popen(command, env=child_env, cwd=directory, stdin=subprocess.DEVNULL,
+                                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                                 creationflags=_CHILD_FLAGS)
+            except OSError as error:
+                if error.errno == errno.EAGAIN:
+                    raise _RetryablePassError from error
+                raise
             # Verify the ephemeral alias before sending the prompt, including
             # on the Windows loopback transport with its temporary port.
             while _remaining(cancelled, deadline, 1) and self._process.poll() is None:
@@ -187,7 +199,12 @@ class LocalHeaderModel:
                     available = None
                 models = available.get("data") if isinstance(available, dict) else None
                 if isinstance(models, list) and any(isinstance(item, dict) and item.get("id") == alias for item in models):
-                    result = self._call(address, key, "/v1/chat/completions", body, cancelled, deadline)
+                    try:
+                        result = self._call(address, key, "/v1/chat/completions", body, cancelled, deadline)
+                    except ConnectionError as error:
+                        if self._process.poll() is None:
+                            raise _RetryablePassError from error
+                        return None
                     if result and _remaining(cancelled, deadline, 1):
                         return json.loads(result["choices"][0]["message"]["content"]), address
                     return None
@@ -222,7 +239,8 @@ class LocalHeaderModel:
             timeout = _remaining(cancelled, deadline, 3)
             if not timeout:
                 return None
-            version = subprocess.run([str(server), "--version"], env=env, capture_output=True, timeout=timeout)
+            version = subprocess.run([str(server), "--version"], env=env, capture_output=True, timeout=timeout,
+                                     creationflags=_CHILD_FLAGS)
             if version.returncode or SERVER_BUILD not in (version.stdout + version.stderr):
                 return None
             request = {
@@ -234,11 +252,20 @@ class LocalHeaderModel:
                 ],
                 "response_format": {"type": "json_schema", "json_schema": {"schema": schema}},
             }
-            results, previous = [], None
+            results, previous, retry_available = [], None, True
             for model, stamp in artifacts:
-                if not _remaining(cancelled, deadline, 1) or _file_stamp(model.stat()) != stamp:
+                while _remaining(cancelled, deadline, 1) and _file_stamp(model.stat()) == stamp:
+                    try:
+                        reply = self._run_pass(server, model, env, request, cancelled, deadline, previous)
+                    except _RetryablePassError:
+                        if not retry_available:
+                            return None
+                        retry_available = False
+                        cancelled.wait(_remaining(cancelled, deadline, 0.05))
+                    else:
+                        break
+                else:
                     return None
-                reply = self._run_pass(server, model, env, request, cancelled, deadline, previous)
                 if reply is None or not _remaining(cancelled, deadline, 1) or _file_stamp(model.stat()) != stamp:
                     return None
                 proposal, previous = reply

@@ -15,6 +15,8 @@ os.environ.pop("FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE", None)
 os.environ.pop("FUND_HEADER_LLAMA_SERVER", None)
 os.environ.pop("FUND_HEADER_MODEL", None)
 os.environ.pop("FUND_HEADER_REVIEW_MODEL", None)
+os.environ.pop("FUND_MINERU_EXECUTABLE", None)
+os.environ.pop("FUND_MINERU_MODEL_DIR", None)
 
 from app import db, license as licensing  # noqa: E402
 from app.main import app  # noqa: E402

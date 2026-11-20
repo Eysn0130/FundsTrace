@@ -256,7 +256,7 @@ def test_public_repreview_preserves_the_frozen_region(client, database, make_cas
 
 
 @pytest.mark.parametrize("suffix", [".csv", ".xlsx"])
-@pytest.mark.parametrize("other_column", ["duplicate", "wrong-role", "same-wrong-role", "invalid", "omitted", "matching"])
+@pytest.mark.parametrize("other_column", ["unavailable", "duplicate", "wrong-role", "same-wrong-role", "invalid", "omitted", "matching"])
 def test_public_unresolved_header_hints_never_change_funds(client, make_case, monkeypatch, suffix, other_column):
     cid = make_case("Synthetic optional header suggestions")
     base = f"/api/v1/cases/{cid}/imports"
@@ -270,13 +270,15 @@ def test_public_unresolved_header_hints_never_change_funds(client, make_case, mo
         "omitted": [],
         "matching": [valid],
     }
-    suggestions = [{"column_index": 2, "role": "payee_account"}]
+    suggestions = [] if other_column == "unavailable" else [{"column_index": 2, "role": "payee_account"}]
     if other_column == "matching":
         suggestions.append({"column_index": 3, "role": "payer_account"})
     calls = []
 
     def suggest(prompt, *_args):
         calls.append(prompt)
+        if other_column == "unavailable":
+            return None
         payee = {"column": 2, "role": "payee_account"}
         return (
             {"header_rows": [1, 2], "columns": [
@@ -304,7 +306,8 @@ def test_public_unresolved_header_hints_never_change_funds(client, make_case, mo
         "synthetic private header", "Synthetic private sheet", "synthetic-original", "SYN-PAY", "SYN-REC", "301"))
 
     expected = [{"header_row": 4, "header_rows": [3, 4], "status": "review",
-                 "reason": "ambiguous_source_header", "columns": [], "suggestions": suggestions}]
+                 "reason": "ambiguous_source_header", "columns": [],
+                 **({"suggestions": suggestions} if suggestions else {})}]
     url = f"{base}/{initial['import_id']}"
     import_preview_cache.discard()
     monkeypatch.setattr(header_model.local_model, "suggest", reject_call)

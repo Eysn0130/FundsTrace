@@ -28,7 +28,8 @@ export function buildImportTree(items: ImportItem[]): ImportTreeNode[] {
     const members = summary?.members ?? [];
     const membersByPath = new Map(members.map(member => [member.member_path, member]));
     for (const member of members) {
-      const parts = root.kind === 'file' && ['table.csv', item.filename].includes(member.member_path) ? [] : member.member_path.split('/');
+      const directMember = ['table.csv', item.filename].includes(member.member_path) || member.role === 'pdf' && members.length === 1;
+      const parts = root.kind === 'file' && directMember ? [] : member.member_path.split('/');
       if (root.kind === 'folder' && parts[0] === root.name) parts.shift();
       const sheetName = sheetNames.get(member.member_path);
       if (sheetName && parts.at(-2) === 'worksheets') parts.splice(-2, 1);

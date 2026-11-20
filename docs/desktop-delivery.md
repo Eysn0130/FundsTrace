@@ -43,6 +43,26 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 下载使用原生保存对话框，处理取消／中断，拒绝任意远程 URL；服务生成成功和磁盘落盘完成分别处理，不自动打开下载 HTML。[DownloadItem](https://www.electronjs.org/docs/latest/api/download-item)
 
+### 可选的本机导入工具
+
+普通桌面首次使用可直接导入已支持的确定性资料。需要本地表头辅助或 PDF 识别时，先在本机独立安装可信工具及模型，再把 UTF-8 的 `import-tools.json` 放在 FundsTrace 的用户目录，与 `preferences.json` 同级。Windows 为 `%APPDATA%\FundsTrace`，macOS 为 `~/Library/Application Support/FundsTrace`。保存后完整退出并重新打开应用。以下为 Windows 路径示例。
+
+```json
+{
+  "llamaServer": "C:/LocalTools/llama.cpp/llama-server.exe",
+  "primaryModel": "C:/LocalTools/models/Qwen3.5-0.8B-Q4_K_M.gguf",
+  "reviewModel": "C:/LocalTools/models/granite-4.0-h-1b-Q4_K_M.gguf",
+  "mineru": "C:/LocalTools/mineru/Scripts/mineru-kit.exe",
+  "mineruModelDir": "C:/LocalTools/mineru-models"
+}
+```
+
+- 表头辅助须同时填写前 3 项。后端按表头契约核对 llama.cpp b12548 和对应模型摘要，并在每对 12 秒、每份原件 30 秒的现有时限内运行。单对最多补一次已识别的临时启动故障或连接中断，任一模型无法完成时继续显示原件待核对项。[固定版本、摘要和独立 Python 启动](import-lifecycle.md#本地表头辅助)
+- MinerU 可单独填写。省略 `mineruModelDir` 时使用 Windows 的 `%USERPROFILE%\.mineru\models` 或 macOS 的 `~/.mineru/models`。显式目录须可访问。Windows 可执行项使用盘符绝对路径和 `.exe`。
+- Main 启动时读取最多 16 KiB 的配置，接受上述绝对路径。缺少或无效的条目使对应工具停用，应用照常打开。安装程序不提供工具或模型下载；外部同名环境变量不参与桌面选择。本地工具仅按导入功能的适用条件启动。
+
+普通 Electron 源码入口和已安装应用使用同一 Main 配置入口。独立 Python 启动按 [导入生命周期](import-lifecycle.md) 配置环境。源码运行、打包启动策略与真实 Windows 安装后的工具执行分别需要对应环境的验证。
+
 ## 导入原件的本机副本
 
 导入窗口对已留存的直接 CSV/TSV/TXT/Excel 文件提供“打开副本”和“显示副本位置”；浏览器仍使用原件下载。`source-copies.cjs` 的受限 IPC 只接受注册案件/来源 ID 和不透明 ticket，Main 复用原件验真下载接口，拒绝重定向、路径名、可执行类型及超过300MiB的流。文件在应用专属临时子目录中以只读权限创建，再由系统默认关联打开；图标来自该副本的系统文件关联，不将已安装的 WPS/Office 冒充默认程序。[shell](https://www.electronjs.org/docs/latest/api/shell)、[getFileIcon](https://www.electronjs.org/docs/latest/api/app#appgetfileiconpath-options)
