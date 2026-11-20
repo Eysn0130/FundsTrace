@@ -97,6 +97,86 @@ test('installed launch refuses missing/mismatched native bundles and synthetic m
   assert.throws(() => launchConfig({ ...input, synthetic: true }), /Synthetic/);
 });
 
+function importToolsFixture(t) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'funds-trace-tools-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const userData = path.join(directory, '用户配置'); fs.mkdirSync(userData);
+  const filename = path.join(userData, 'import-tools.json');
+  const toolSuffix = process.platform === 'win32' ? '.exe' : '';
+  const settings = { llamaServer: path.join(directory, 'llama-server' + toolSuffix),
+    primaryModel: path.join(directory, '主模型.gguf'), reviewModel: path.join(directory, '复核模型.gguf'),
+    mineru: path.join(directory, 'mineru' + toolSuffix) };
+  for (const artifact of Object.values(settings)) fs.writeFileSync(artifact, 'synthetic regular file', { mode: 0o700 });
+  const python = path.join(directory, 'python'); fs.writeFileSync(python, 'synthetic backend');
+  const input = { packaged: false, repoRoot: directory, python, dataDir: path.join(userData, 'data'), userData,
+    env: { FUND_HEADER_LLAMA_SERVER: 'spoofed', fund_header_model: 'spoofed',
+      FUND_HEADER_REVIEW_MODEL: 'spoofed', Fund_MinerU_Executable: 'spoofed',
+      fund_mineru_model_dir: 'spoofed', FUND_DATA_DIR: 'spoofed' } };
+  return { filename, settings, input };
+}
+
+function importToolsEnv({ env }) {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => /^fund_/i.test(key)));
+}
+
+test('Main launch enables only explicitly selected local tools in source and installed backend branches', t => {
+  const { filename, settings, input } = importToolsFixture(t);
+  const mineruModelDir = path.join(input.repoRoot, 'PDF 工件'); fs.mkdirSync(mineruModelDir);
+  fs.writeFileSync(filename, '\uFEFF' + JSON.stringify({ ...settings, mineruModelDir, FUND_PORT: '54321', shell: true }));
+  const real = filename => fs.realpathSync.native(filename);
+  const expected = { FUND_HEADER_LLAMA_SERVER: real(settings.llamaServer), FUND_HEADER_MODEL: real(settings.primaryModel),
+    FUND_HEADER_REVIEW_MODEL: real(settings.reviewModel), FUND_MINERU_EXECUTABLE: real(settings.mineru),
+    FUND_MINERU_MODEL_DIR: real(mineruModelDir) };
+  assert.deepEqual(importToolsEnv(launchConfig(input)), expected);
+  assert.deepEqual(importToolsEnv(launchConfig({ ...input, synthetic: true })), {});
+  const bundle = path.join(input.repoRoot, 'backend'); fs.mkdirSync(bundle);
+  fs.writeFileSync(path.join(bundle, 'build-manifest.json'), JSON.stringify({ protocol: 1, platform: 'win32', arch: 'x64' }));
+  fs.writeFileSync(path.join(bundle, 'funds-trace-backend.exe'), 'synthetic installed backend');
+  const installed = launchConfig({ ...input, packaged: true, resourcesPath: input.repoRoot, platform: 'win32', arch: 'x64' });
+  assert.equal(installed.command, path.join(bundle, 'funds-trace-backend.exe'));
+  assert.deepEqual(importToolsEnv(installed), expected);
+});
+
+test('absent, invalid and oversized tool settings allow normal startup and ignore inherited selections', t => {
+  const { filename, settings, input } = importToolsFixture(t);
+  assert.deepEqual(importToolsEnv(launchConfig(input)), {});
+  for (const raw of ['{', 'null', '[]', JSON.stringify(settings).padEnd(16 * 1024 + 1, ' '), JSON.stringify(input.env)]) {
+    fs.writeFileSync(filename, raw);
+    assert.equal(launchConfig(input).command, input.python);
+    assert.deepEqual(importToolsEnv(launchConfig(input)), {});
+  }
+});
+
+test('two model paths and a usable launcher are required together while MinerU is independent', t => {
+  const { filename, settings, input } = importToolsFixture(t);
+  const nonExecutable = path.join(input.repoRoot, process.platform === 'win32' ? 'llama-server.cmd' : 'llama-server-no-exec');
+  fs.writeFileSync(nonExecutable, 'synthetic non-executable', { mode: 0o600 });
+  const invalidPairs = [
+    { primaryModel: undefined },
+    { reviewModel: path.join(input.repoRoot, 'missing.gguf') },
+    { reviewModel: settings.primaryModel },
+    { reviewModel: input.repoRoot },
+    { reviewModel: false },
+    { llamaServer: nonExecutable },
+    { llamaServer: 'relative/llama-server' },
+    { llamaServer: 'https://example.invalid/llama-server' },
+    { llamaServer: String.raw`\\host.invalid\share\llama-server.exe` },
+  ];
+  for (const invalid of invalidPairs) {
+    fs.writeFileSync(filename, JSON.stringify({ ...settings, ...invalid }));
+    assert.deepEqual(importToolsEnv(launchConfig(input)), { FUND_MINERU_EXECUTABLE: fs.realpathSync.native(settings.mineru) });
+  }
+  for (const invalid of [{ mineru: undefined, mineruModelDir: input.repoRoot }, { mineru: nonExecutable },
+    { mineru: 'mineru' }, { mineruModelDir: 'models' }, { mineruModelDir: settings.primaryModel }]) {
+    fs.writeFileSync(filename, JSON.stringify({ ...settings, ...invalid }));
+    assert.deepEqual(importToolsEnv(launchConfig(input)), {
+      FUND_HEADER_LLAMA_SERVER: fs.realpathSync.native(settings.llamaServer),
+      FUND_HEADER_MODEL: fs.realpathSync.native(settings.primaryModel),
+      FUND_HEADER_REVIEW_MODEL: fs.realpathSync.native(settings.reviewModel),
+    });
+  }
+});
+
 function fakeChild() {
   const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
   child.kills = [];
@@ -371,14 +451,27 @@ function mainHarness({ mkdir = async () => {}, synthetic = false, updater, stopB
       removeItem: key => preferenceValues.delete(key),
     }) };
     if (name === 'node:fs/promises') return filesystem;
-    if (name === './backend.cjs') return { startBackend: (_config, options) => {
-      state.backendStarts++; state.backendOptions = options;
+    if (name === './backend.cjs') return { startBackend: (config, options) => {
+      state.backendStarts++; state.backendConfig = config; state.backendOptions = options;
       return { ready: ready.promise, stop: async () => { state.backendStops++; return await stopBackend(); } };
     } };
     return require(name);
   }, clearInterval, setInterval, setImmediate, setTimeout, clearTimeout, __dirname: path.resolve(__dirname, '..'), process: { argv: ['FundsTrace', ...(synthetic ? ['--synthetic'] : [])], env: {}, platform } });
   return { app, state, ready, screen, nativeTheme, ipcMain: electron.ipcMain, flush: async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); } };
 }
+
+test('Main supplies its own userData to normal launches and keeps synthetic runs isolated', async () => {
+  for (const synthetic of [false, true]) {
+    const h = mainHarness({ synthetic }); await h.flush();
+    assert.equal(h.state.backendStarts, 1);
+    assert.equal(h.state.backendConfig.userData, synthetic ? undefined : h.app.getPath('userData'));
+    assert.equal(h.state.backendConfig.dataDir, path.join(synthetic ? path.join(os.tmpdir(), 'FundsTrace owned temporary')
+      : h.app.getPath('userData'), 'data'));
+    h.ready.resolve({ origin, token: 'main-only-test-token' }); await h.flush();
+    h.state.windows[0].close(); await h.flush();
+    assert.deepEqual(h.state.errors, []);
+  }
+});
 
 test('Main uses the packaged brand asset for startup and analysis windows and the macOS dock', async () => {
   const builder = require('../electron-builder.cjs');

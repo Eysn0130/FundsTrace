@@ -994,6 +994,31 @@ test('account and counterparty primary fields remain distinct from conditional r
   assert.equal(data.in_cnt,13); assert.equal(data.out_cnt,12);
 });
 
+test('opening holders qualify only the display label, and source buttons belong to the current drawer instance', async () => {
+  const h = harness(); networkReady(h, () => profile());
+  const node = graphNode('SYN-A'), sourceId = '0123456789abcdef0123456789abcdef';
+  h.state.lastGraph.nodes = [node];
+  const source = { source_id: sourceId, member_path: '资料/开户.csv', source_row: 87 };
+  const original = node.name, navigated = [];
+  node.opening_holder = { status: 'supported', name: '合成甲', sources: [source] };
+  h.run('window.FundsUnifiedImport = {}').restore = (id, focus) => navigated.push({ id, ...focus });
+  assert.match(h.run('nodeLabel(state.lastGraph.nodes[0])'), /^★ 开户人 合成甲\n/);
+  assert.equal(node.name, original);
+  await h.open();
+  const [first] = h.element('drawerBody').querySelectorAll('[data-opening-source]');
+  assert.match(first.textContent, /资料\/开户.csv · 原始第 87 行/);
+  await first.click();
+  assert.deepEqual(navigated, [{ id: sourceId, memberPath: source.member_path, sourceRow: source.source_row }]);
+
+  node.opening_holder = { status: 'conflict', name: null, sources: [source, { ...source, source_row: 89 }] };
+  await h.open();
+  assert.match(h.element('drawerBody').textContent, /开户姓名存在冲突/);
+  assert.equal(h.element('drawerBody').querySelectorAll('[data-opening-source]').length, 2);
+  assert.match(h.run('nodeLabel(state.lastGraph.nodes[0])'), new RegExp(`^★ ${original}\\n`));
+  first.onclick();
+  assert.equal(navigated.length, 1);
+});
+
 test('a single associated card remains in the existing details while the sourced account is the heading', async () => {
   const h=harness();
   networkReady(h,()=>profile({account_number:'000SYN-ACCOUNT',display_account:'000SYN-CARD',cards:['000SYN-CARD']}));

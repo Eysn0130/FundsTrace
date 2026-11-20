@@ -80,9 +80,9 @@ describe('FundsPanel host isolation', () => {
     const input = screen.getByLabelText<HTMLInputElement>('选择流水文件'), area = screen.getByRole('button', { name: '选择文件' });
     const choose = vi.spyOn(input, 'click'); fireEvent.click(area); expect(choose).toHaveBeenCalledOnce();
     const descriptions = input.getAttribute('aria-describedby')!.split(/\s+/).map(id => document.getElementById(id)?.textContent);
-    expect(descriptions).toEqual(['Excel · CSV · ZIP · RAR',
+    expect(descriptions).toEqual(['Excel · CSV · ZIP · RAR · PDF',
       '多选文件顺序处理；需要资料相互关联时，请选择整个文件夹。']);
-    expect(input.accept).toBe('.csv,.tsv,.txt,.xlsx,.xls,.zip,.rar'); input.focus(); expect(document.activeElement).toBe(input);
+    expect(input.accept).toBe('.csv,.tsv,.txt,.xlsx,.xls,.zip,.rar,.pdf'); input.focus(); expect(document.activeElement).toBe(input);
     const file = new File(['synthetic'], '中文合成流水.csv', { type: 'text/csv' });
     fireEvent.change(input, { target: { files: [file] } });
     expect(input.disabled).toBe(false);

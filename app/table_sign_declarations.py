@@ -11,6 +11,16 @@ _PATTERN = re.compile(
     r"(本文件|本表)(交易金额|金额|amount)(负值|负数|正值|正数)表示本方(支出|收入),"
     r"绝对值为(万元|元|分);(负值|负数|正值|正数)表示本方(支出|收入)[。.]?")
 
+DIRECTION_CODE_FIELD = "direction_codebook"
+DIRECTION_CODE_VERSION = "source-direction-code-v1"
+DIRECTION_HEADERS = frozenset(("收付方向", "收付标志", "收付标识", "收支方向", "借贷方向"))
+DIRECTION_NOTE_HEADERS = frozenset(("备注", "说明", "方向说明", "收付方向说明", "收付方向码表"))
+_DIRECTION_LABEL = "|".join(sorted(DIRECTION_HEADERS))
+_DIRECTION_MENTION = re.compile(rf"(?:本表|本文件)(?:{_DIRECTION_LABEL}).*[01]")
+_DIRECTION_PATTERN = re.compile(
+    rf"本表({_DIRECTION_LABEL}):?([01])(?:为|表示)(?:本方)?(支出|收入),"
+    r"([01])(?:为|表示)(?:本方)?(支出|收入)[。.]?")
+
 
 def normalized(value):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value))
@@ -18,6 +28,39 @@ def normalized(value):
 
 def looks_like(value):
     return isinstance(value, str) and bool(re.search(r"(?:负值|负数|正值|正数).*(?:收入|支出)", value))
+
+
+def mentions_direction_codes(value):
+    return isinstance(value, str) and not value.isascii() and bool(_DIRECTION_MENTION.search(normalized(value)))
+
+
+def direction_codes(value, header):
+    """Accept a complete binary rule bound to the unique source direction column."""
+    if type(value) is not str or len(value) > 128:
+        return None
+    found = _DIRECTION_PATTERN.fullmatch(normalized(value))
+    if found is None:
+        return None
+    label, first, first_role, second, second_role = found.groups()
+    header = normalized(header)
+    if header not in DIRECTION_HEADERS or label not in {header, "收付方向"} or first == second or first_role == second_role:
+        return None
+    return {code: "in" if role == "收入" else "out" for code, role in ((first, first_role), (second, second_role))}
+
+
+def validate_direction_codes(proof):
+    if not isinstance(proof, dict) or set(proof) != {
+            "version", "header_row", "last_row", "direction_column", "direction_header", "declaration_row",
+            "declaration_column", "statement", "codes"} or proof["version"] != DIRECTION_CODE_VERSION:
+        return False
+    if (any(type(proof[field]) is not int or proof[field] < 1 for field in
+            ("header_row", "last_row", "direction_column", "declaration_row", "declaration_column"))
+            or not proof["header_row"] < proof["declaration_row"] <= proof["last_row"]
+            or proof["direction_column"] == proof["declaration_column"]
+            or type(proof["direction_header"]) is not str or len(proof["direction_header"]) > 64):
+        return False
+    codes = direction_codes(proof["statement"], proof["direction_header"])
+    return codes is not None and proof["codes"] == codes
 
 
 def parse(value):

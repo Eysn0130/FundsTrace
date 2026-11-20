@@ -5,10 +5,13 @@ import { api, ApiError, type FundsApi } from '../lib/api';
 import { createHttpFundsSession } from '../adapters/http';
 import { createBrowserFundsActions } from './browserActions';
 import { createFeedbackChannel, FeedbackProvider, type FundsFeedbackEvent } from '../feedback/Feedback';
-import { ImportDialog } from '../features/ImportDialog';
+import { ImportDialog, type ImportSourceFocus } from '../features/ImportDialog';
+import { ImportRecordEvidence } from '../features/ImportDetails';
+import { Modal } from '../components/Modal';
 
 interface CanvasImportOptions {
   caseId: string; name: string; generation: number; signal: AbortSignal; resume?: ImportSession;
+  sourceFocus?: ImportSourceFocus & { sourceId?: string };
   acquire(importId: string, surface: 'v1' | 'legacy'): Promise<void>;
   release(importId: string, jobId?: string, rejected?: boolean): Promise<void>;
   changed(): Promise<void>; feedback(event: FundsFeedbackEvent): boolean; close(): void; openNewImport?(): void;
@@ -74,8 +77,15 @@ export function mountImport(element: HTMLElement, options: CanvasImportOptions) 
   function View() {
     const [hint, setHint] = useState<{ importId: string; sequence: number }>();
     settle = importId => setHint(value => ({ importId, sequence: (value?.sequence ?? 0) + 1 }));
+    const { context, client, signal } = binding.session, focus = options.sourceFocus;
+    if (signal.aborted) return null;
+    if (!options.resume && focus?.sourceId) return <Modal title="开户来源" onClose={options.close}>
+      <p>原件不可用，可核对案件内保留的来源记录。</p>
+      <ImportRecordEvidence compact openPreview caseId={context.caseId} client={client} scopeSignal={signal}
+        sourceId={focus.sourceId} memberPath={focus.memberPath} focusRow={focus.sourceRow} />
+    </Modal>;
     return <FeedbackProvider port={channel.port}><ImportDialog target={binding.session.context} client={binding.session.client} scopeSignal={binding.session.signal}
-      resume={options.resume} surface={surface} settlementHint={hint} actions={binding.session.actions} onClose={options.close} onOpenNewImport={options.openNewImport} onImported={() => {}}
+      resume={options.resume} sourceFocus={options.sourceFocus} surface={surface} settlementHint={hint} actions={binding.session.actions} onClose={options.close} onOpenNewImport={options.openNewImport} onImported={() => {}}
       /></FeedbackProvider>;
   }
   root.render(<View />);

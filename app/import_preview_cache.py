@@ -76,10 +76,11 @@ def stamp(parsed):
 
 
 def key(session, profile, overrides):
+    request = json.loads(session.get("request_json") or "{}")
     return tuple(session.get(field) for field in (
         "import_id", "case_id", "surface", "filename", "suffix", "sha256", "size_bytes",
-        "mode", "mapping_json", "columns_json")) + (profile, overrides,
-            json.loads(session.get("request_json") or "{}").get("reference_policy"))
+        "mode", "mapping_json", "columns_json")) + (profile, overrides, request.get("reference_policy"),
+            (request.get("_header_plan") or {}).get("sha256_plan"))
 
 
 def discard(import_id=None):

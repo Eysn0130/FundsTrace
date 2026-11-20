@@ -207,7 +207,7 @@ def test_ordinary_zip_large_manifest_uses_complete_bounded_csv_records(client, d
                ("accounts.csv", table("account", [account()])), ("manifest.csv", manifest)]
     view, receipt = accepted(client, cid, members, zipped=True, scope_bank=None)
     assert view["resolution"] and receipt["resolution"]["auxiliary_records"] == 701
-    assert database.q_raw("select parser_version from import_sources where case_id=?", [cid])[0]["parser_version"] == "funds-trace-table-archive-v67"
+    assert database.q_raw("select parser_version from import_sources where case_id=?", [cid])[0]["parser_version"] == "funds-trace-table-archive-v70"
     row = client.get(f"/api/v1/cases/{cid}/flows").json()["items"][0]
     own = next(item for item in entities(client, cid)["entities"] if item["entity_id"] == row["payer_account"])
     assert own["bank"] == "Synthetic bank" and own["kind"] == "account"
@@ -588,7 +588,7 @@ def test_closed_native28_directory_preserves_normalized_direction_after_reopen(d
     with TestClient(app) as client:
         view, receipt = accepted(client, cid, members, scope_bank=None)
         profile = view["table_summary"]["profile"]
-        assert profile == "funds-trace-table-archive-v67"
+        assert profile == "funds-trace-table-archive-v70"
         assert receipt["table_summary"]["profile"] == profile
         assert view["stats"]["currency_totals"] == {"CNY": "82.00"}
         assert (receipt["ok"], receipt["rows_dup"]) == (8, 0)
@@ -700,7 +700,7 @@ def test_closed_native28_xls_archive_uses_the_validated_bank_direction(client, m
         ("manifest.csv", table("task", [{"请求单号": "SYN-REQUEST", "银行名称": "Synthetic bank"}])),
     ]
     view, receipt = accepted(client, cid, members, zipped=True, scope_bank=None)
-    assert (view["table_summary"]["profile"], receipt["ok"]) == ("funds-trace-table-archive-v68", 1)
+    assert (view["table_summary"]["profile"], receipt["ok"]) == ("funds-trace-table-archive-v71", 1)
     response = client.get(f"/api/v1/cases/{cid}/imports/{view['import_id']}/records")
     assert response.status_code == 200, response.text
     record, = [row for row in response.json()["items"] if row["disposition"] == "imported"]
@@ -762,7 +762,7 @@ def test_closed_native28_v61_ready_session_replays_frozen_direction_evidence(dat
         assert hashlib.sha256(original.content).hexdigest() == old_journal["sha256"]
 
         fresh_view, fresh_receipt = accepted(reopened, cid, members, scope_bank=None)
-        assert fresh_view["table_summary"]["profile"] == "funds-trace-table-archive-v67"
+        assert fresh_view["table_summary"]["profile"] == "funds-trace-table-archive-v70"
         assert (fresh_receipt["ok"], fresh_receipt["rows_dup"]) == (0, 1)
         assert reopened.get(f"{source_url}/report").json() == old_journal
         current = reopened.get(f"{api}/imports/{fresh_view['import_id']}/records", params={"member_path": member})
