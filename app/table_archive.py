@@ -85,7 +85,10 @@ BANK_SOURCE_XLS_PROFILE = table_import.BANK_SOURCE_XLS_ARCHIVE_PROFILE
 PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE = table_import.PREVIOUS_BANK_SOURCE_EVIDENCE_ARCHIVE_PROFILE
 PREVIOUS_BANK_SOURCE_XLS_PROFILE = table_import.PREVIOUS_BANK_SOURCE_XLS_ARCHIVE_PROFILE
 BANK_SOURCE_CSV_PROFILES = table_import.BANK_SOURCE_CSV_ARCHIVE_PROFILES
-EVIDENCE_PROFILES = frozenset((BANK_SOURCE_EVIDENCE_PROFILE, BANK_SOURCE_XLS_PROFILE, PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, PREVIOUS_BANK_SOURCE_XLS_PROFILE, AUXILIARY_ROWS_EVIDENCE_PROFILE, AUXILIARY_ROWS_XLS_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE, NATIVE31_EVIDENCE_PROFILE, NATIVE31_XLS_PROFILE, UNORIENTED_EVIDENCE_PROFILE, UNORIENTED_XLS_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, POSTING_PAIR_XLS_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, SOURCE_LEDGER_XLS_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, BANK31_VARIANT_XLS_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_TEXT_XLS_PROFILE, LEGACY_EVIDENCE_PROFILE, EVIDENCE_PROFILE, XLS_EVIDENCE_PROFILE,
+EXPLICIT_BANK_CURRENCY_EVIDENCE_PROFILES = (table_import.BANK_EXPLICIT_CURRENCY_EVIDENCE_ARCHIVE_PROFILE,
+                                           table_import.BANK_EXPLICIT_CURRENCY_XLS_ARCHIVE_PROFILE)
+EVIDENCE_PROFILES = frozenset((BANK_SOURCE_EVIDENCE_PROFILE, BANK_SOURCE_XLS_PROFILE,
+                             *EXPLICIT_BANK_CURRENCY_EVIDENCE_PROFILES, PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, PREVIOUS_BANK_SOURCE_XLS_PROFILE, AUXILIARY_ROWS_EVIDENCE_PROFILE, AUXILIARY_ROWS_XLS_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE, NATIVE31_EVIDENCE_PROFILE, NATIVE31_XLS_PROFILE, UNORIENTED_EVIDENCE_PROFILE, UNORIENTED_XLS_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, POSTING_PAIR_XLS_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, SOURCE_LEDGER_XLS_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, BANK31_VARIANT_XLS_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_TEXT_XLS_PROFILE, LEGACY_EVIDENCE_PROFILE, EVIDENCE_PROFILE, XLS_EVIDENCE_PROFILE,
                                MICROSECOND_PROFILE, MICROSECOND_XLS_PROFILE,
                                HEADER_WIDTH_PROFILE, HEADER_WIDTH_XLS_PROFILE,
                                GUARDED_EVIDENCE_PROFILE, GUARDED_XLS_PROFILE, PRECISE_EVIDENCE_PROFILE, PRECISE_XLS_PROFILE,
@@ -95,6 +98,9 @@ CANCELLATION_PROFILES = frozenset((*BANK_SOURCE_CSV_PROFILES, AUXILIARY_ROWS_PRO
 SUPPORTED_PROFILES = frozenset((POSTING_PAIR_PROFILE, IDENTITY_PROFILE, REFERENCE_PROFILE, *CANCELLATION_PROFILES))
 # Explicit precedence: lexical ordering puts v10/v11 below v9.
 PROFILE_PRECEDENCE = (BANK_SOURCE_XLS_PROFILE, BANK_SOURCE_EVIDENCE_PROFILE, BANK_SOURCE_PROFILE,
+                      table_import.BANK_EXPLICIT_CURRENCY_XLS_ARCHIVE_PROFILE,
+                      table_import.BANK_EXPLICIT_CURRENCY_EVIDENCE_ARCHIVE_PROFILE,
+                      table_import.BANK_EXPLICIT_CURRENCY_ARCHIVE_PROFILE,
                       PREVIOUS_BANK_SOURCE_XLS_PROFILE, PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE,
                       table_import.PREVIOUS_BANK_SOURCE_ARCHIVE_PROFILE, AUXILIARY_ROWS_XLS_PROFILE, AUXILIARY_ROWS_EVIDENCE_PROFILE, AUXILIARY_ROWS_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_PROFILE, NATIVE31_XLS_PROFILE, NATIVE31_EVIDENCE_PROFILE, NATIVE31_PROFILE, UNORIENTED_XLS_PROFILE, UNORIENTED_EVIDENCE_PROFILE, UNORIENTED_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, NATIVE_OBSERVATION_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, AUXILIARY_SCOPE_PROFILE, POSTING_PAIR_XLS_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, POSTING_PAIR_PROFILE, SOURCE_LEDGER_XLS_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, SOURCE_LEDGER_PROFILE, BANK31_VARIANT_XLS_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_TEXT_XLS_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_TEXT_PROFILE, SOURCE_CONTRACT_XLS_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, SOURCE_CONTRACT_PROFILE, ZONED_XLS_PROFILE, ZONED_EVIDENCE_PROFILE, ZONED_PROFILE, TIME_ROLE_XLS_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, TIME_ROLE_PROFILE, OPTIONAL_REFERENCE_XLS_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_PROFILE,
                       REFERENCE_ROLE_XLS_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, REFERENCE_ROLE_PROFILE,
@@ -141,6 +147,12 @@ def _header(payload):
 
 def _auxiliary_role(header, profile):
     """Keep strict CSV eligibility and the final archive role on one grammar."""
+    if profile in table_import.BANK_AMOUNT_DEFAULT_PROFILES:
+        from . import evidence_resolution
+        if evidence_resolution.is_opening_table(header):
+            # The sheet path also checks for a later financial header before
+            # admitting an opening table and retains its full source columns.
+            return None, False
     signature = frozenset(header)
     known_auxiliary = signature in _AUXILIARY or any(
         name != "transaction" and signature == frozenset(names)
@@ -173,6 +185,10 @@ def should_parse(source, *, native_observations=False):
                 if info.filename.lower().endswith(".csv") and not info.flag_bits & 1:
                     with archive.open(info) as stream:
                         header, _ = _header(stream.read(65536))
+                    if native_observations:
+                        from . import evidence_resolution
+                        if evidence_resolution.is_opening_table(header):
+                            return True
                     legacy = legacy or frozenset(header) == frozenset(feedback_import.COLUMNS)
                     ordinary = ordinary or bool(header and frozenset(header) not in {frozenset(value) for value in feedback_import.SCHEMAS.values()})
             if native_observations and legacy:
@@ -292,7 +308,7 @@ def _auxiliary(payload, path, header, encoding, role, *, evidence=False, native_
             "mapping_evidence": [], "columns": [], "mapping": {}, "mode": "B"}
 
 
-def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
+def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False, _header_policy=None):
     if profile not in SUPPORTED_PROFILES:
         raise table_import.TableImportError("不支持的反馈包解析规则")
     plan = {"profile": profile, "mode": "B", "mapping": {}, "columns": [], "sheet": "",
@@ -465,7 +481,8 @@ def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
                                         _details_pool=details_pool,
                                         _defer_occurrence_binding=profile in EVIDENCE_PROFILES,
                                         _retain_csv_format=profile in CANCELLATION_PROFILES and suffix == ".csv",
-                                        _decoded_csv=decoded_csv))
+                                        _decoded_csv=decoded_csv,
+                                        _header_policy=_header_policy, _header_member_prefix=path))
                         if role and profile in table_import.AUXILIARY_ROWS_ARCHIVE_PROFILES:
                             part["documents"][0]["columns"] = table_import._columns(header, profile)
                         try:

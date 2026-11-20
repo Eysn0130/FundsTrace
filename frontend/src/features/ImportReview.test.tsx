@@ -70,6 +70,13 @@ it('clears stale rows on a new member and discards late replies and revocation',
   act(()=>scope.abort());expect(screen.queryByRole('region',{name:'来源数据阅览'})).toBeNull();
 });
 
+it('rejects a source-row response with the same member but another physical row', async () => {
+  const own = client(); own.importReview = vi.fn(async () => ({ ...page(), issue: null }));
+  render(<ImportReview client={own} scopeSignal={new AbortController().signal} sourceId="SYN-SOURCE" memberPath="table.csv" startSourceRow={105} />);
+  expect((await screen.findByRole('alert')).textContent).toContain('来源记录与定位行不一致');
+  expect(screen.queryByText('原始坏日期')).toBeNull();
+});
+
 it('does not turn a missing original into zero values or classify normal exclusions as problems',async()=>{
   const own=client();own.importReview=vi.fn(async():Promise<ImportReviewPage>=>({...page(),counts:{all:3,review:0,accepted:2},issue:null,original_error:'原件不可用',items:[{...good,disposition:'duplicate',original:null},{...good,record_no:2,source_row:3,disposition:'non_monetary',original:null}],total:3}));
   render(<ImportReview client={own} scopeSignal={new AbortController().signal} sourceId="SYN-SOURCE" memberPath="table.csv"/>);
@@ -133,4 +140,31 @@ it('distinguishes an available empty source cell from an unavailable original',a
   act(()=>cell.focus());
   const popup=await screen.findByRole('dialog',{name:'完整内容'});
   expect(popup.textContent).toContain('原始值 · 交易时间：（空白）');expect(popup.textContent).not.toContain('原始值不可用');
+});
+
+it('shows PDF candidates as literal text with page and row positions', async () => {
+  const own = client();
+  const literal = '<img id="ocr-markup" src="not-a-source">';
+  const pdfRow: ImportReviewRecord = {
+    ...first,
+    member_path: 'document.pdf',
+    reason_code: 'pdf_candidate',
+    original: null,
+    details: { pdf_page: '2', pdf_table: '1', pdf_row: '3', pdf_candidate_cells: JSON.stringify(['9999999999999.99', literal]) },
+  };
+  own.importReview = vi.fn(async (): Promise<ImportReviewPage> => ({
+    ...page(),
+    member_path: 'document.pdf',
+    items: [pdfRow],
+    counts: { all: 1, review: 1, accepted: 0 },
+    total: 1,
+    issue: null,
+  }));
+  render(<ImportReview client={own} scopeSignal={new AbortController().signal}
+    sourceId="SYN-SOURCE" memberPath="document.pdf" pdf />);
+  expect(await screen.findByText(literal)).toBeTruthy();
+  expect(screen.getByText('9999999999999.99')).toBeTruthy();
+  expect(screen.getByRole('row', { name: '第 2 页 · 表 1 · 行 3' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: '已接纳 0' })).toBeTruthy();
+  expect(document.querySelector('#ocr-markup')).toBeNull();
 });

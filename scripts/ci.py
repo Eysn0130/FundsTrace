@@ -17,6 +17,8 @@ DOC_MEDIA = {
     ".woff2",
 }
 DESKTOP_INPUTS = {
+    "app/pdf_import.py", "app/windows_import_job.py",
+    "tests/test_pdf_import.py", "tests/test_windows_import_job.py",
     "desktop_backend.py", "desktop_synthetic.py", "requirements-desktop.in",
     "requirements-desktop.lock", "scripts/build_desktop_backend.py",
     "scripts/build-windows.ps1", "scripts/test-windows-installer.ps1",

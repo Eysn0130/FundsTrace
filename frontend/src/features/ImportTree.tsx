@@ -65,7 +65,7 @@ function reviewMetadata(item: ImportItem, node: ImportTreeNode, canReview: boole
       ...(table?.unresolved_examples ?? feedback?.unresolved_examples ?? []), ...(feedback?.review_examples ?? []),
     ].filter(row => row.member_path === memberPath).sort((left, right) => left.source_row - right.source_row)[0] : undefined;
     return {
-      tone: 'warning', summary: example ? `${pendingSummary} · 第 ${example.source_row} 行 · ${feedbackReason(example.reason_code)}` : pendingSummary,
+      tone: 'warning', summary: example ? `${pendingSummary} · ${table?.profile === 'pdf-review-v1' ? '' : `第 ${example.source_row} 行 · `}${feedbackReason(example.reason_code)}` : pendingSummary,
       destination: receipt?.source_id && memberPath && (canReview && !!(table || feedback) || canLocateSource && !!example)
         ? { kind: 'review', memberPath, sourceRow: example?.source_row } : undefined,
     };

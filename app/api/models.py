@@ -1,7 +1,7 @@
 """Explicit JSON models: identifiers and decimal amounts never use JS numbers."""
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
 
 Identifier = Annotated[str, Field(pattern=r"^[1-9][0-9]*$")]
@@ -311,6 +311,7 @@ class FeedbackSummary(ContractModel):
 
 
 class TableSummary(ContractModel):
+    header_plan_sha256: str | None = None
     unsupported_attachments: int = 0
     non_business_attachments: int = 0
     profile: str
@@ -329,6 +330,13 @@ class TableSummary(ContractModel):
     unresolved_examples: list[FeedbackExample] = Field(default_factory=list)
     documents: list[dict[str, Any]] = Field(default_factory=list)
     mapping_evidence: list[dict[str, str]] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def serialize_header_plan(self, handler):
+        summary = handler(self)
+        if self.header_plan_sha256 is None:
+            summary.pop("header_plan_sha256", None)
+        return summary
 
 
 class ImportPreview(ContractModel):
