@@ -9,8 +9,8 @@ const original = readFileSync(new URL('../static/unified-import.js', import.meta
 assert.equal(original.split("import('/workspace/assets/import-entry.js')").length, 2);
 const source = original.replace("import('/workspace/assets/import-entry.js')", 'loadImportModule()');
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
-function harness(url = 'http://synthetic.test/?case_id=1', loader) {
-  let context = { caseId: 1, generation: 1 }, replacement;
+function harness(url = 'http://synthetic.test/?case_id=1', loader, read) {
+  let context = { caseId: 1, generation: 1, canvasId: 0, canvasGeneration: 1 }, replacement;
   const mounted = [], elements = [], requests = [], warnings = [], listeners = new Map();
   const window = { location: { href: url }, history: { replaceState(_a, _b, location) { replacement = String(location); } },
     FundsAppNavigation: { receiveImportFeedback: () => true, dataChanged: async () => {} },
@@ -19,8 +19,12 @@ function harness(url = 'http://synthetic.test/?case_id=1', loader) {
   const sandbox = { window, URL, AbortController, state: { cases: [{ id: 1, name: '合成案件' }] },
     document: { createElement: () => ({ remove() { this.removed = true; } }), body: { append(value) { elements.push(value); } } },
     loadImportModule: loader || (async () => ({ mountImport(element, options) { mounted.push({ element, options }); return { dispose() {}, settled() {} }; } })),
-    caseContext: () => ({ ...context }), isCurrentCase: value => value.caseId === context.caseId && value.generation === context.generation,
-    toast: value => warnings.push(value), fetch: async path => { requests.push(path); return { ok: true, json: async () => ({ case_id: '1', items: [] }) }; } };
+    caseContext: () => ({ ...context }), isCurrentCase: (value, canvas) => value.caseId === context.caseId && value.generation === context.generation
+      && (!canvas || value.canvasId === context.canvasId && value.canvasGeneration === context.canvasGeneration),
+    toast: value => warnings.push(value), fetch: async (path, options) => {
+      requests.push(path);
+      return read ? read(path, options) : { ok: true, json: async () => ({ case_id: '1', items: [] }) };
+    } };
   vm.runInNewContext(source, sandbox);
   return { api: window.FundsUnifiedImport, mounted, elements, requests, warnings, listeners,
     replacement: () => replacement, switchCase(value) { context = value; listeners.get('funds:feedback-binding')?.(); } };
@@ -45,4 +49,40 @@ test('the canvas refuses to mount without a case and aborts its owner on page ex
   h.switchCase({ caseId: 1, generation: 3 }); await h.api.open();
   assert.equal(h.mounted.length, 1); assert.equal(h.mounted[0].options.signal.aborted, false);
   h.listeners.get('pagehide')(); assert.equal(h.mounted[0].options.signal.aborted, true);
+});
+
+const sourceId = '0123456789abcdef0123456789abcdef';
+const sourceFocus = { memberPath: '原始资料/开户.csv', sourceRow: 87 };
+const completed = () => ({ ok: true, json: async () => ({ case_id: '1', items: [
+  { case_id: '1', import_id: sourceId, stage: 'done', result: { source_id: sourceId } },
+] }) });
+
+test('an opening source navigates with its exact member and row in the bound case', async () => {
+  const h = harness(undefined, undefined, completed);
+  await h.api.restore(sourceId, sourceFocus);
+  assert.deepEqual(h.requests, [`/api/v1/cases/1/imports?import_id=${sourceId}`]);
+  assert.equal(h.mounted.length, 1);
+  assert.equal(h.mounted[0].options.resume.import_id, sourceId);
+  assert.deepEqual(h.mounted[0].options.sourceFocus, sourceFocus);
+  h.switchCase({ caseId: 1, generation: 1, canvasId: 2, canvasGeneration: 2 });
+  assert.equal(h.mounted[0].options.signal.aborted, true);
+});
+
+test('a same-case canvas change cancels the focused source read before a late reply can mount it', async () => {
+  const gate = deferred(); let signal;
+  const h = harness(undefined, undefined, (_path, options) => { signal = options.signal; return gate.promise; });
+  const read = h.api.restore(sourceId, sourceFocus);
+  h.switchCase({ caseId: 1, generation: 1, canvasId: 2, canvasGeneration: 2 });
+  assert.equal(signal.aborted, true);
+  gate.resolve(completed()); await read;
+  assert.equal(h.mounted.length, 0);
+  assert.equal(h.warnings.length, 0);
+});
+
+test('a source without a local session mounts the exact case-bound journal location', async () => {
+  const h = harness(); await h.api.restore(sourceId, sourceFocus);
+  assert.equal(h.mounted.length, 1);
+  assert.equal(h.mounted[0].options.resume, undefined);
+  assert.deepEqual({ ...h.mounted[0].options.sourceFocus }, { ...sourceFocus, sourceId });
+  assert.equal(h.warnings.length, 0);
 });

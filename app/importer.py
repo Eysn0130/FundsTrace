@@ -714,7 +714,7 @@ def _row_key(r, default_currency=""):
 def _provenance_metadata(provenance, filename, mode, rows, *, _row_refs=None):
     """Validate trusted parser metadata before any persistent write."""
     source = dict(provenance)
-    from . import table_import, table_archive
+    from . import pdf_import, table_import, table_archive
     table_source = (source.get("row_kind") == table_import.ROW_KIND
                     and source.get("parser_version") in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES))
     source.setdefault("row_kind", rows[0].get("_source_row_kind") if rows else "unknown")
@@ -730,8 +730,14 @@ def _provenance_metadata(provenance, filename, mode, rows, *, _row_refs=None):
             or type(source.get("size_bytes")) is not int or source["size_bytes"] < 0
             or source.get("mode") != mode or mode not in MODE_FIELDS
             or source.get("filename") != filename or not isinstance(filename, str) or not filename
-            or not isinstance(source.get("sheet"), str)
-            or source.get("row_kind") not in ("csv_record", "worksheet_row", "archive_record", "table_record", "unknown")
+            or not isinstance(source.get("sheet"), str)):
+        raise ImportError("来源元数据无效")
+    if source.get("parser_version") == pdf_import.PROFILE:
+        if rows or not pdf_import.valid_source(filename, source["size_bytes"], mode, mapping,
+                                               source["sheet"], source["row_kind"]):
+            raise ImportError("PDF 来源只能保存待核对候选")
+        return source
+    if (source.get("row_kind") not in ("csv_record", "worksheet_row", "archive_record", "table_record", "unknown")
             or (source.get("row_kind") == table_import.ROW_KIND) != table_source
             or (source.get("parser_version") in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)) != table_source
             or not isinstance(source.get("parser_version"), str) or not source["parser_version"]

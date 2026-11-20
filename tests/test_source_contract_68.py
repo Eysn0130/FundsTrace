@@ -99,7 +99,7 @@ def test_old_ready_source_session_keeps_its_version_and_receipt_after_text_upgra
 @pytest.mark.parametrize("suffix,archive,profile", [
     (".xlsx", False, table_import.BANK_SOURCE_PROFILE),
     (".xls", False, table_import.BANK_SOURCE_XLS_PROFILE),
-    (".xls", True, "funds-trace-table-archive-v68"),
+    (".xls", True, "funds-trace-table-archive-v71"),
 ])
 def test_source_text_version_routes_workbooks_without_merging_remark(client, make_case, suffix, archive, profile):
     from test_table_multisheet_append import encoded

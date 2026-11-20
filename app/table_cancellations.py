@@ -81,8 +81,8 @@ def _status(value):
         "text_success" if value in {"成功", "交易成功", "success", "succeeded"} else "other")
 
 
-def _observation(record, source, *, fractional_feedback=False):
-    money = {"factor": Decimal(1)}
+def _observation(record, source, *, fractional_feedback=False, signed_money_syntax=False):
+    money = {"factor": Decimal(1), "signed_money_syntax": signed_money_syntax}
     amount, _ = table_import._money(source["交易金额"], money)
     balance, _ = table_import._money(source["交易余额"], money)
     if fractional_feedback:
@@ -292,6 +292,7 @@ def apply(plan, payload, *, allow_feedback28=False, csv_format=None):
             refresh_stats(plan)
             return plan
     observations = []
+    signed_money_syntax = plan["profile"] in table_import.SIGNED_MONEY_PROFILES
     records = {record["source_row"]: record for record in plan["records"]}
     with _source_records(payload, csv_format, release_consumed=allow_feedback28) as source_records:
         first = next(source_records, None)
@@ -310,7 +311,8 @@ def apply(plan, payload, *, allow_feedback28=False, csv_format=None):
                 source = dict(zip(headers, (table_import._text(value) for value in cells)))
                 observation = _observation(
                     record, source, fractional_feedback=len(headers) == 28
-                    and plan["profile"] in table_import.MICROSECOND_ARCHIVE_PROFILES)
+                    and plan["profile"] in table_import.MICROSECOND_ARCHIVE_PROFILES,
+                    signed_money_syntax=signed_money_syntax)
                 observations.append(observation)
                 if not observation["scope"] and observation["movement"] not in {"header", "non_transaction", "zero"}:
                     eligible = False

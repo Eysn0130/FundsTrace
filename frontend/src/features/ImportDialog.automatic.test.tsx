@@ -186,8 +186,8 @@ describe('automatic table import', () => {
   it('keeps every existing file suffix and advertises XLS and RAR in the file picker', () => {
     show(clientFor());
     const input = screen.getByLabelText('选择流水文件') as HTMLInputElement;
-    expect(input.accept.split(',')).toEqual(['.csv', '.tsv', '.txt', '.xlsx', '.xls', '.zip', '.rar']);
-    expect(screen.getByText('Excel · CSV · ZIP · RAR')).toBeTruthy();
+    expect(input.accept.split(',')).toEqual(['.csv', '.tsv', '.txt', '.xlsx', '.xls', '.zip', '.rar', '.pdf']);
+    expect(screen.getByText('Excel · CSV · ZIP · RAR · PDF')).toBeTruthy();
   });
 
   it('previews the same XLS File and completes one automatic commit without remapping', async () => {

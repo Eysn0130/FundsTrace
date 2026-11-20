@@ -328,10 +328,17 @@ def read_cells(source, suffix, member, document, evidence, positions, profile):
     else:
         rows, kinds = read(source)
     result, size = {}, 0
-    bindings = {}
+    by_position, legacy_by_name = {}, {}
     for entry in evidence:
-        if entry.get('field') and entry['field'] not in bindings.setdefault(entry.get('column'), []):
-            bindings[entry.get('column')].append(entry['field'])
+        header_row, column_index = entry.get('header_row'), entry.get('column_index')
+        if header_row is not None and column_index is not None:
+            fields = by_position.setdefault((str(header_row), str(column_index)), [])
+        elif header_row is None and column_index is None:
+            fields = legacy_by_name.setdefault(entry.get('column'), [])
+        else:
+            continue
+        if entry.get('field') and entry['field'] not in fields:
+            fields.append(entry['field'])
     for number in positions:
         if number not in rows:
             raise ValueError('原始行与已登记位置不一致')
@@ -340,7 +347,8 @@ def read_cells(source, suffix, member, document, evidence, positions, profile):
         cells = []
         for index, value in enumerate(rows[number]):
             header = names[index] if index < len(names) else f'原始第{index + 1}列'
-            fields = bindings.get(header, [])
+            fields = (by_position.get((str(header_number), str(index + 1)), []) if by_position
+                      else legacy_by_name.get(header, []))
             size += len(value.encode('utf-8')) + len(header.encode('utf-8'))
             if len(value) > 16384 or size > MAX_PAGE_BYTES:
                 raise ValueError('原始页内容较大，请另存原件查看')

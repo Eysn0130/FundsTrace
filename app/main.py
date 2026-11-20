@@ -25,13 +25,14 @@ from typing import List, Literal, Optional
 
 import pandas as pd
 import duckdb
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, model_validator
 
 from . import db, importer, sample_data
+from .header_model import local_model as header_model
 from . import canvas_investigation, evidence_resolution
 from .case_packages import CASE_PKG_TABLES, CASE_PKG_COLS, delete_package_case, export_package, import_package, require_case, photo_name
 from . import license as lic
@@ -47,7 +48,10 @@ from .import_coverage import import_coverage
 @asynccontextmanager
 async def application_lifespan(application):
     import_service.recover_interrupted()
-    yield
+    try:
+        yield
+    finally:
+        await run_in_threadpool(header_model.close)
 
 
 app = FastAPI(title="FundsTrace", version="1.0.0", lifespan=application_lifespan)
@@ -286,24 +290,27 @@ def _legacy_preview_error(error):
 
 
 @app.post("/api/import/directory/preview")
-async def import_directory_preview(files: List[UploadFile] = File(...), case_id: int = Query(...)):
+async def import_directory_preview(request: Request, files: List[UploadFile] = File(...), case_id: int = Query(...)):
     try:
-        return await import_service.upload_directory(case_id, files, surface="legacy")
+        return await import_service.upload_directory(case_id, files, surface="legacy", receive=request.receive)
     except ServiceError as error:
         raise _legacy_preview_error(error) from None
 
 
 @app.post("/api/import/preview")
-async def import_preview(file: UploadFile = File(...), case_id: Optional[int] = None):
+async def import_preview(request: Request, file: UploadFile = File(...), case_id: Optional[int] = None):
     try:
-        return await import_service.legacy_upload(file, case_id)
+        return await import_service.legacy_upload(file, case_id, receive=request.receive)
     except ServiceError as error:
         raise _legacy_preview_error(error) from None
 
 
 @app.post("/api/import/repreview")
-def repreview(body: RePreviewIn):
-    return _legacy_import_result(import_service.legacy_repreview, body)
+async def repreview(body: RePreviewIn):
+    try:
+        return await import_service.preview_again(body.case_id, body.import_id, body, surface="legacy")
+    except ServiceError as error:
+        raise _legacy_preview_error(error) from None
 
 
 @app.post("/api/import/commit")

@@ -19,13 +19,17 @@ import unicodedata
 from . import db
 
 POLICY = "typed-account-evidence-v1"
-CARD_PROJECTION = "endpoint-cards-v4-scoped-order"
+CARD_PROJECTION = "endpoint-cards-v5-opening-holder"
+_PREVIOUS_CARD_PROJECTION = "endpoint-cards-v4-scoped-order"
 _SCOPED_EQUAL_REASON = "scoped_equal_account_card_declaration"
 DETAIL_FIELD = "resolution_evidence"
 TABLE_PROFILE = "funds-trace-table-v20"
 ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
 FEEDBACK_PROFILE = "funds-trace-bank-feedback-v6"
-PROFILES = frozenset(("funds-trace-table-archive-v66", "funds-trace-table-archive-v67", "funds-trace-table-archive-v68",
+PROFILES = frozenset(("funds-trace-table-archive-v69", "funds-trace-table-archive-v70", "funds-trace-table-archive-v71",
+                     "funds-trace-table-v81", "funds-trace-table-v82", "funds-trace-table-v83",
+                     "funds-trace-table-v84", "funds-trace-table-v85", "funds-trace-table-v86",
+                     "funds-trace-table-archive-v66", "funds-trace-table-archive-v67", "funds-trace-table-archive-v68",
                      "funds-trace-table-v78", "funds-trace-table-v79", "funds-trace-table-v80",
                      "funds-trace-table-archive-v63", "funds-trace-table-archive-v64", "funds-trace-table-archive-v65",
                      "funds-trace-table-v75", "funds-trace-table-v76", "funds-trace-table-v77",
@@ -33,7 +37,9 @@ PROFILES = frozenset(("funds-trace-table-archive-v66", "funds-trace-table-archiv
 _PROFILE_SQL = ",".join("?" for _ in PROFILES)
 # Neutral source endpoints participate in identity replay without changing the
 # ordinary profiles' financial occurrence identity or historical CSV bridge.
-OCCURRENCE_PROFILES = PROFILES - {"funds-trace-table-archive-v66", "funds-trace-table-v78", "funds-trace-table-v79",
+OCCURRENCE_PROFILES = PROFILES - {"funds-trace-table-archive-v69", "funds-trace-table-v81", "funds-trace-table-v82",
+                                  "funds-trace-table-v84", "funds-trace-table-v85",
+                                  "funds-trace-table-archive-v66", "funds-trace-table-v78", "funds-trace-table-v79",
                                   "funds-trace-table-archive-v63", "funds-trace-table-v75", "funds-trace-table-v76",
                                   "funds-trace-table-v69", "funds-trace-table-v72", "funds-trace-table-v70", "funds-trace-table-v73", "funds-trace-table-v66", "funds-trace-table-v67", "funds-trace-table-archive-v57", "funds-trace-table-archive-v60"}
 _MAX_TEXT = 512
@@ -76,6 +82,12 @@ def _field(headers, cells, names):
     return next(iter(values)) if len(values) == 1 else ""
 
 
+def _complete_card_number(value):
+    # Both sources must have declared a card field independently. Exclude a
+    # masked value or a numeric suffix as a display match, preserving it raw.
+    return isinstance(value, str) and 12 <= len(value) <= 19 and value.isascii() and value.isdecimal()
+
+
 _ACCOUNT = {"账号", "帐号", "交易账号", "开户账号", "账户号码"}
 _CARD = {"卡号", "交易卡号", "银行卡号"}
 _BANK = {"账号开户银行", "开户银行", "开户行", "银行名称", "本方开户银行", "本方开户行"}
@@ -83,6 +95,22 @@ _NAME = {"账户开户名称", "开户名称", "户名", "账户名称"}
 _CURRENCY = {"币种", "交易币种"}
 _PARENT = {"开户账号", "账卡号", "主账户账号"}
 _CHILD = {"子账户账号"}
+
+
+def is_opening_table(headers):
+    """Recognize a closed card-holder heading, independent of filenames."""
+    names = [header.strip() for header in headers]
+    while names and not names[-1]:
+        names.pop()
+    signature = frozenset(names)
+    if "" in signature or len(signature) != len(names) or not signature & _CARD or not signature & _NAME:
+        return False
+    if len(names) == 2:
+        return True
+    from . import feedback_import, table_archive
+    return (signature == frozenset(feedback_import.SCHEMAS["account"])
+            or table_archive._SOURCE_AUXILIARY.get(signature) == "account"
+            or table_archive._AUXILIARY.get(signature) == "account")
 
 
 def classify_auxiliary(headers, *, native_observations=False):
@@ -109,7 +137,7 @@ def classify_auxiliary(headers, *, native_observations=False):
     return None
 
 
-def auxiliary_evidence(headers, cells, role, *, native_observations=False):
+def auxiliary_evidence(headers, cells, role, *, native_observations=False, opening_only=False):
     from . import feedback_import, table_import
     signature = frozenset(header.strip() for header in headers)
     eligible = "yes" if signature in {frozenset(columns) for columns in feedback_import.SCHEMAS.values()} else "no"
@@ -131,10 +159,13 @@ def auxiliary_evidence(headers, cells, role, *, native_observations=False):
                  "currency": _field(headers, cells, _CURRENCY)}
     else:
         account, card = _field(headers, cells, _ACCOUNT), _field(headers, cells, _CARD)
+        name = _field(headers, cells, _NAME)
+        if opening_only and (account or not card or not name):
+            return None
         if not account and not card:
             return None
         value = {"role": role, "scope_eligible": eligible, "account": account, "card": card, "bank": bank,
-                 "name": _field(headers, cells, _NAME), "currency": _field(headers, cells, _CURRENCY)}
+                 "name": name, "currency": _field(headers, cells, _CURRENCY)}
     return _json(value)
 
 
@@ -331,7 +362,7 @@ _EVIDENCE_RANGES = f"""select r.source_id,min(r.record_no),max(r.record_no)
         and (r.disposition in ('auxiliary','imported','duplicate') or exists(
             select 1 from flow_sources fs join source_ledger_index l on l.case_id=fs.case_id and l.flow_id=fs.flow_id
             where fs.case_id=r.case_id and fs.source_id=r.source_id and fs.source_row=r.record_no))"""
-_EVIDENCE_QUERY = f"""select m.sha256,r.source_row,r.details_json,f.flow_id,r.member_path
+_EVIDENCE_QUERY = f"""select m.sha256,r.source_row,r.details_json,f.flow_id,r.member_path,r.record_no
         from import_records r join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join evidence_sources b on b.case_id=r.case_id and b.source_id=r.source_id and b.active
         join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
@@ -542,7 +573,7 @@ class _CaseEvidence:
                 cursor = db.con().execute(query, {"case_id": self.case_id, "source_id": source,
                     "first": first, "last": last, "profiles": sorted(PROFILES)})
                 rows = cursor.fetchall()
-                for source_id, position, details, flow_id, member_path in rows:
+                for member_sha, position, details, flow_id, member_path, record_no in rows:
                     metadata = json.loads(details)
                     value = metadata.get(DETAIL_FIELD)
                     if not value:
@@ -563,7 +594,9 @@ class _CaseEvidence:
                             validated[value] = None
                     data["_member_path"] = member_path
                     data["_family"] = metadata.get("evidence_family", "")
-                    namespace_key = (data["_family"], metadata.get("family_member_sha256", member_path), source_id)
+                    if data["role"] == "account" and _complete_card_number(data["card"]):
+                        data["_opening_location"] = (source, member_path, position, record_no)
+                    namespace_key = (data["_family"], metadata.get("family_member_sha256", member_path), member_sha)
                     if namespace_key not in namespaces:
                         namespaces[namespace_key] = hashlib.sha256(_json(namespace_key).encode()).hexdigest()
                     scope = namespaces[namespace_key]
@@ -587,7 +620,7 @@ def _load(case_id):
     return _CaseEvidence(case_id)
 
 
-def _compute(evidence, *, collect_endpoints=True, staging=None):
+def _compute(evidence, *, collect_endpoints=True, staging=None, opening_holders=None):
     """Replay all current declarations, so late conflicts revoke earlier links."""
     if isinstance(evidence, _CaseEvidence):
         evidence.staging = staging
@@ -599,6 +632,12 @@ def _compute(evidence, *, collect_endpoints=True, staging=None):
         source_conflicts += bool(data.get("_source_scope_conflict"))
         if data["role"] == "account":
             declarations.append((source_id, data))
+            location = data.get("_opening_location")
+            name = data["name"]
+            if (opening_holders is not None and location and not data["account"] and name
+                    and name.casefold() not in {"null", "none", "nan", "n/a"}
+                    and not data.get("_source_scope_conflict")):
+                opening_holders.setdefault((data["card"], data["bank"], name), location)
         elif data["role"] == "subaccount":
             parent_claims.append((source_id, data))
         elif data["role"] == "transaction":
@@ -846,8 +885,9 @@ def rebuild(case_id):
 
 
 def _rebuild(case_id, evidence, staging):
+    opening_holders = {}
     with evidence._fixed_ranges(staging) if isinstance(evidence, _CaseEvidence) else nullcontext():
-        entities, endpoints, conflicts, unresolved = _compute(evidence, staging=staging)
+        entities, endpoints, conflicts, unresolved = _compute(evidence, staging=staging, opening_holders=opening_holders)
     summary = {"policy": POLICY, "entities": len(entities),
                "resolved_endpoints": len(endpoints) - unresolved, "unresolved_endpoints": unresolved,
                "conflicts": conflicts,
@@ -860,16 +900,27 @@ def _rebuild(case_id, evidence, staging):
     subject_aliases = _subject_aliases(entities)
     # A revision identifies the entire immutable response, including evidence
     # counts that can change without changing the resolved entity projection.
-    revision = _hash_json([summary, entities, endpoints])
+    opening_rows = sorted((*key, *location) for key, location in opening_holders.items())
+    revision_basis = [summary, entities, endpoints]
+    decisions = {"entities": entities, "endpoints": endpoints}
+    if opening_rows:
+        revision_basis.append(opening_rows)
+        decisions["opening_holders"] = opening_rows
+    revision = _hash_json(revision_basis)
     summary["revision"] = revision
     # The caller holds the case-write transaction/lock. Reuse an immutable
     # revision already present; a new one needs no wide ON CONFLICT pipeline.
     retained = db.q_raw("select 1 from resolution_revisions where case_id=? and revision=?", [case_id, revision])
-    audit = nullcontext(None) if retained else _decision_snapshot({"entities": entities, "endpoints": endpoints})
+    audit = nullcontext(None) if retained else _decision_snapshot(decisions)
     with audit as snapshot:
         db.x("delete from resolved_endpoints where case_id=?", [case_id])
         db.x("delete from resolution_entities where case_id=?", [case_id])
         db.x("delete from resolution_subject_aliases where case_id=?", [case_id])
+        db.x("delete from resolution_opening_holders where case_id=?", [case_id])
+        if opening_rows:
+            _insert_projection("resolution_opening_holders", ["case_id", "card_number", "bank", "holder_name",
+                               "source_id", "member_path", "source_row", "record_no"],
+                               ([case_id, *row] for row in _consume_projection(opening_rows)))
         if entities:
             _insert_projection("resolution_entities", ["case_id", "entity_id", "kind", "account_number", "display_account", "bank", "details_json"],
                                ([case_id, item["entity_id"], item["kind"], item["account_number"], item["display_account"], item["bank"], _json(item)] for item in _consume_projection(entities)))
@@ -881,7 +932,7 @@ def _rebuild(case_id, evidence, staging):
                                ([case_id, alias, account] for alias, account in _consume_projection(subject_aliases)))
         # Release the Python projection before the engine loads its immutable
         # audit snapshot. The VARCHAR itself still scales with the case size.
-        del entities, endpoints, subject_aliases
+        del entities, endpoints, subject_aliases, opening_rows, opening_holders, revision_basis, decisions
         if snapshot is not None:
             inserted = db.q_raw("""insert into resolution_revisions(case_id,revision,summary_json,decisions_json)
                 select $case_id,$revision,$summary,
@@ -987,13 +1038,35 @@ def _subject_aliases(entities):
 
 def ensure_card_projection():
     """Upgrade derived endpoint/display state once when an old DB opens."""
-    stale = db.q_raw("""select s.case_id from resolution_state s
+    stale = db.q_raw("""select s.case_id,v.card_version from resolution_state s
         left join resolution_projection_versions v on v.case_id=s.case_id
         where coalesce(v.card_version,'')<>?""", [CARD_PROJECTION])
     if stale:
         with db.transaction():
+            previous = [row["case_id"] for row in stale if row["card_version"] == _PREVIOUS_CARD_PROJECTION]
+            candidates = set()
+            if previous:
+                # The previous version already has current role bindings.
+                # Replay only cases that can contain a new opening projection.
+                candidates = {row["case_id"] for row in db.q_raw(f"""with prior_auxiliary as (
+                    select r.case_id, try_cast(json_extract_string(try_cast(r.details_json as JSON),
+                        '$.{DETAIL_FIELD}') as JSON) claim
+                    from import_records r join evidence_sources s on s.case_id=r.case_id and s.source_id=r.source_id
+                    where r.case_id in (select unnest(?::integer[])) and s.active and r.disposition='auxiliary'
+                ) select distinct case_id from prior_auxiliary
+                  where json_extract_string(claim,'$.role')='account'
+                    and regexp_full_match(json_extract_string(claim,'$.card'), '[0-9]{{12,19}}')
+                    and (lower(json_extract_string(claim,'$.account')) in ('','null','none','nan','n/a')
+                         or not regexp_matches(json_extract_string(claim,'$.account'), '[0-9A-Za-z]'))
+                  union select case_id from resolution_opening_holders where case_id in (select unnest(?::integer[]))""",
+                    [previous, previous])}
+                ready = sorted(set(previous) - candidates)
+                if ready:
+                    db.x("update resolution_projection_versions set card_version=? where case_id in (select unnest(?::integer[]))",
+                         [CARD_PROJECTION, ready])
             for row in stale:
-                rebuild(row["case_id"])
+                if row["card_version"] != _PREVIOUS_CARD_PROJECTION or row["case_id"] in candidates:
+                    rebuild(row["case_id"])
         db.con().execute("checkpoint")
 
 
@@ -1087,6 +1160,81 @@ def _display_details(value):
     return item
 
 
+def _raw_card_observations(case_id, cards, source_sql, params):
+    """Confirm a standalone raw node from a retained, explicit card field."""
+    if isinstance(params, dict):
+        binds = {**params, "_opening_case_id": case_id, "_opening_cards": cards}
+        case_bind, card_bind = "$_opening_case_id", "$_opening_cards"
+    else:
+        binds = [*params, case_id, cards]
+        case_bind = card_bind = "?"
+    return db.q_raw(f"""with selected as materialized ({source_sql}), matching as (
+        select c.own_card,c.own_account,
+               case c.role when 'payer' then f.payer_account when 'payee' then f.payee_account else f.self_account end account,
+               case c.role when 'payer' then f.payer_bank when 'payee' then f.payee_bank else '' end bank
+        from selected f join flow_source_cards c on c.case_id=f.case_id and c.flow_id=f.id
+        where c.case_id={case_bind} and c.own_account in (select unnest({card_bind}::varchar[]))
+        qualify count(distinct c.own_card) over(partition by c.flow_id,c.role,c.own_account)=1
+    ) select distinct account,bank from matching where own_card=own_account and account=own_account""", binds)
+
+
+def _decorate_opening_holders(case_id, rows, key, source_sql, params):
+    candidates = []
+    for row in rows:
+        if row.get("status") == "conflict" or row.get("display_card_tied"):
+            continue
+        observed = row.get("display_basis") == "transaction_card" or row.get("kind") == "card"
+        number = row.get("display_account") or row.get(key)
+        if _complete_card_number(number) and (observed or not row.get("kind")):
+            candidates.append((row, number, observed))
+    if not candidates:
+        return
+    cards = sorted({number for _, number, _ in candidates})
+    claims, card_banks = defaultdict(list), defaultdict(set)
+    for claim in db.q_raw("""select card_number,bank,holder_name,source_id,member_path,source_row,record_no
+        from resolution_opening_holders where case_id=? and card_number in (select unnest(?::varchar[]))
+        order by card_number,member_path,source_row,source_id""", [case_id, cards]):
+        claims[claim["card_number"]].append(claim)
+        if claim["bank"]:
+            card_banks[claim["card_number"]].add(claim["bank"])
+    if not claims:
+        return
+    raw_cards = sorted({card for _, card, observed in candidates if not observed and card in claims})
+    raw_banks = defaultdict(set)
+    if raw_cards:
+        for observation in _raw_card_observations(case_id, raw_cards, source_sql, params):
+            card, bank = observation["account"], observation["bank"]
+            banks = raw_banks[card]
+            if bank:
+                banks.add(bank)
+                card_banks[card].add(bank)
+    # A missing institution may not choose between known banks. Include
+    # typed observations outside the current canvas/time selection as well.
+    institutions_needed = sorted({card for row, card, observed in candidates if card in claims
+                                  and (not observed or not row.get("bank") or any(not claim["bank"] for claim in claims[card]))})
+    if institutions_needed:
+        for item in db.q_raw("""select distinct p.endpoint_card,e.bank from resolved_endpoints p
+            join resolution_entities e on e.case_id=p.case_id and e.entity_id=p.entity_id
+            where p.case_id=? and p.endpoint_card in (select unnest(?::varchar[])) and e.bank<>''
+              and p.card_state<>'conflict'""", [case_id, institutions_needed]):
+            card_banks[item["endpoint_card"]].add(item["bank"])
+    for row, card, observed in candidates:
+        if card not in claims or not observed and card not in raw_banks:
+            continue
+        banks = raw_banks.get(card, ()) if not observed else ()
+        if len(banks) > 1:
+            continue
+        bank = row.get("bank") or next(iter(banks), "")
+        supports = [claim for claim in claims[card]
+                    if (claim["bank"] == bank if claim["bank"] and bank else len(card_banks[card]) <= 1)]
+        if supports:
+            names = {claim["holder_name"] for claim in supports}
+            row["opening_holder"] = {"status": "supported" if len(names) == 1 else "conflict",
+                "name": next(iter(names)) if len(names) == 1 else None,
+                "sources": [{field: claim[field] for field in ("source_id", "member_path", "source_row", "record_no")}
+                            for claim in supports[:20]]}
+
+
 def decorate_accounts(case_id, rows, *, key="account", source_sql=None, params=None):
     """Keep query keys opaque while exposing original display identifiers."""
     ids = sorted({row.get(key) for row in rows if row.get(key)})
@@ -1107,9 +1255,10 @@ def decorate_accounts(case_id, rows, *, key="account", source_sql=None, params=N
         if item and len(item["names"]) == 1 and not row.get("name"):
             row["name"] = item["names"][0]
     from . import representative_cards
-    rows = representative_cards.decorate(case_id, rows, key=key,
-        source_sql=source_sql or "select * from effective_flows where case_id=?",
-        params=[case_id] if source_sql is None else params)
+    if source_sql is None:
+        source_sql, params = "select * from effective_flows where case_id=?", [case_id]
+    rows = representative_cards.decorate(case_id, rows, key=key, source_sql=source_sql, params=params)
+    _decorate_opening_holders(case_id, rows, key, source_sql, params or [])
     for row in rows:
         # Only a card display alias needs the underlying account beside it.
         if row.get("display_account") and row.get("account") and row["display_account"] != row["account"]:

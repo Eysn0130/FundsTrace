@@ -1,5 +1,5 @@
 import type { Case, CaseList, CaseStats, FlowPage, ImportPreview, ImportJob, ImportSourceMetadata, ImportRecordPage, ImportReviewPage, ImportReport, ImportReportIntegrity, ImportReportRecords, ImportReportAccountOptions, CommitRequest, RepreviewRequest, ImportSessionList, FlowSourceList, CleanupResult, WithdrawnImport } from '../../../contracts/api-v1';
-import type { FundsReportDownloadV1, FundsReportQueryV1, FundsReportRecordsQueryV1, FundsReportAccountQueryV1 } from '../panel/host';
+import type { FundsImportReviewQueryV1, FundsReportDownloadV1, FundsReportQueryV1, FundsReportRecordsQueryV1, FundsReportAccountQueryV1 } from '../panel/host';
 
 export class ApiError extends Error {
   constructor(public code: string, message: string, public status?: number, public failureKind?: string) { super(message); }
@@ -82,8 +82,12 @@ export const api = {
     request<ImportSessionList>(`${casePath(id)}/imports?${importId === undefined ? 'limit=100' : 'import_id=' + encodeURIComponent(importId)}`, { signal }),
   importRecords: (id: string, sourceId: string, page = 1, signal?: AbortSignal, memberPath?: string, sourceRow?: number) =>
     request<ImportRecordPage>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/records?${new URLSearchParams({ page: String(page), page_size: '50', ...(memberPath !== undefined ? { member_path: memberPath, include_preview: 'true' } : {}), ...(sourceRow !== undefined ? { source_row: String(sourceRow) } : {}) })}`, { signal }),
-  importReview: (id: string, sourceId: string, memberPath: string, query: {view: ImportReviewPage['view']; page: number; issueIndex?: number}, signal?: AbortSignal) =>
-    request<ImportReviewPage>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/review?${new URLSearchParams({member_path:memberPath,view:query.view,page:String(query.page),page_size:'50',...(query.issueIndex !== undefined ? {issue_index:String(query.issueIndex)} : {})})}`, {signal}),
+  importReview: (id: string, sourceId: string, memberPath: string, query: FundsImportReviewQueryV1, signal?: AbortSignal) => {
+    const parameters = new URLSearchParams({ member_path: memberPath, view: query.view, page: String(query.page), page_size: '50' });
+    if (query.sourceRow !== undefined) parameters.set('source_row', String(query.sourceRow));
+    else if (query.issueIndex !== undefined) parameters.set('issue_index', String(query.issueIndex));
+    return request<ImportReviewPage>(`${casePath(id)}/imports/${encodeURIComponent(sourceId)}/review?${parameters}`, { signal });
+  },
   importFundsReport: (id: string, sourceId: string, query: FundsReportQueryV1, signal?: AbortSignal) =>
     request<ImportReport>(`${reportPath(id, sourceId)}?${reportQuery(query, 20)}`, { signal }),
   importReportAccounts: (id: string, sourceId: string, query: FundsReportAccountQueryV1, signal?: AbortSignal) =>
