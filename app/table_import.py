@@ -2576,7 +2576,8 @@ def _financial_regions(sheets, profile, *, header_version=None):
             leading = codebook_tier(index, row)
             return index + 1 if leading is not None else None
 
-        tier_probe = probe if header_version == header_regions.VERSION_V2 and profile in SIGNED_MONEY_SUCCESSORS else None
+        tier_probe = (probe if header_regions.supports_opaque_tiers(header_version)
+                      and profile in SIGNED_MONEY_SUCCESSORS else None)
         header_no, _, _ = _locate_header(rows, profile, region_probe=tier_probe)
         if header_no is None:
             continue
@@ -2907,6 +2908,56 @@ def _observe_header_region(row, following, index, profile, *, header_version=Non
     return observation, compatible if valid else None, parent_units, allow_suggestions
 
 
+def _source_shape(value):
+    raw = _header_source_cell(value)
+    if raw is False:
+        return "other"
+    if isinstance(raw, dt.date):
+        return "date"
+    token = _text(raw)
+    if not token:
+        return "empty"
+    if len(token) > 64:
+        return "other"
+    token = unicodedata.normalize("NFKC", token)
+    if token in {"0", "1"}:
+        return "binary_digit"
+    if token.isdecimal():
+        return "leading_zero" if token.startswith("0") else "digits"
+    if token[0] in "-+−" and token[1:].replace(".", "", 1).isdecimal():
+        return "signed_number"
+    if token.replace(".", "", 1).isdecimal():
+        return "decimal"
+    if token[0].isdecimal() and _time(token) is not None:
+        return "date"
+    if token.isalpha():
+        return "letters"
+    if all(character.isalnum() or character in "-_" for character in token):
+        if any(character.isalpha() for character in token) and any(character.isdecimal() for character in token):
+            return "alphanumeric"
+    return "other"
+
+
+def _sample_header_shapes(rows, start, headers, candidates, profile, version, columns):
+    """Summarize a contiguous, locally proved source region without returning any cell text."""
+    if not candidates:
+        return {}
+    shapes = {column: set() for column in columns}
+    end = min(len(rows), start + 24)
+    for index in range(start, end):
+        row = rows[index]
+        following = rows[index + 1] if index + 1 < len(rows) else None
+        if (len(row) != len(headers)
+                or _observe_header_region(row, following, index, profile, header_version=version) is not None
+                or _overlapping_header(row, candidates, profile) or _later_header(row, candidates, profile)
+                or not _dated_row_evidence(row, candidates, ())[0]):
+            break
+        for column, kinds in shapes.items():
+            if len(kinds) < header_regions.MAX_SHAPES_PER_COLUMN:
+                kinds.add(_source_shape(row[column - 1]))
+    return {column: tuple(sorted(kinds)) for column, kinds in shapes.items() if kinds - {"empty"}}
+
+
 def _header_region(row, following, index, sheet, profile, policy, prefix, *, active_candidates=None):
     observed = _observe_header_region(row, following, index, profile, header_version=policy.version,
                                       active_candidates=active_candidates)
@@ -2915,10 +2966,19 @@ def _header_region(row, following, index, sheet, profile, policy, prefix, *, act
     observation, verified, parent_units, allow_suggestions = observed
     path = (prefix if sheet["path"] == "table.csv" else f"{prefix}/{sheet['path']}") if prefix else sheet["path"]
     parents = (row, following) if observation.depth == 2 else (row,)
+
+    def source_shapes(columns):
+        headers = parents[-1]
+        candidates = _assisted_candidates(headers, _candidates(headers, profile), observation.proof(index + 1),
+                                          profile, parent_units)
+        return _sample_header_shapes(sheet["rows"], index + observation.depth, headers, candidates,
+                                     profile, policy.version, columns)
+
     decision = policy.decide(observation, valid=verified is not None, allow_suggestions=allow_suggestions,
                              path=path, sheet=sheet["name"],
                              member_sha256=sheet["sha256"], profile=profile, first_row=index + 1,
-                             raw_headers=[[_raw(cell) for cell in cells] for cells in parents])
+                             raw_headers=[[_raw(cell) for cell in cells] for cells in parents],
+                             source_shapes=source_shapes if allow_suggestions and verified is None else None)
     if decision["status"] == "verified" and parent_units:
         return {**decision, "_parent_units": parent_units}
     return decision

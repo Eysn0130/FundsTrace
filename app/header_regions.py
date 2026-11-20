@@ -1,7 +1,7 @@
 """Source-coordinate checks for optional local header proposals."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import re
@@ -13,12 +13,17 @@ from . import header_model
 
 VERSION_V1 = "funds-trace-header-regions-v1"
 VERSION_V2 = "funds-trace-header-regions-v2"
-VERSION = VERSION_V2
+VERSION_V3 = "funds-trace-header-regions-v3"
+VERSION = VERSION_V3
+SUPPORTED_VERSIONS = (VERSION_V1, VERSION_V2, VERSION_V3)
 MAX_DECISIONS = 64
 MAX_MODEL_CALLS = 8
 MAX_COLUMNS = 16
 MAX_SOURCE_COLUMNS = 256
 OPERATION_SECONDS = 30
+SOURCE_SHAPE_LABELS = frozenset({"empty", "binary_digit", "leading_zero", "digits", "letters", "alphanumeric",
+                                 "date", "signed_number", "decimal", "other"})
+MAX_SHAPES_PER_COLUMN = 5
 _TEXT = re.compile(r"[a-z\u3400-\u9fff][a-z\u3400-\u9fff /_()\[\]-]{0,63}\Z")
 _COMPOUND = re.compile(r"([^/()\[\]]+)(?:/([^/()\[\]]+)|\(([^/()\[\]]+)\)|\[([^/()\[\]]+)\])\Z")
 
@@ -60,6 +65,10 @@ _RESULT_SCHEMA = {"type": "object", "additionalProperties": False, "required": [
 
 def _normalize(value):
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def supports_opaque_tiers(version):
+    return version in (VERSION_V2, VERSION_V3)
 
 
 def _text_row(row, source_cell, *, layout_leaf=False, opaque=False):
@@ -185,7 +194,7 @@ def observe(row, following, source_cell, *, version=VERSION):
         leaves = _text_row(following, source_cell, layout_leaf=True) if tokens is not None else None
         if _leaf_shape(leaves) and (result := _two_tier(tokens, leaves)) is not None:
             return result
-        if version == VERSION_V2 and possible_tier_parent(row):
+        if supports_opaque_tiers(version) and possible_tier_parent(row):
             parents = tokens if tokens is not None else _text_row(row, source_cell, opaque=True)
             leaves = leaves if leaves is not None else _text_row(following, source_cell, opaque=True)
             if (result := _two_tier(parents, leaves, opaque=True)) is not None:
@@ -229,15 +238,30 @@ def _leaf_shape(tokens):
                  or any(token in _ACCOUNT_LEAVES for token in tokens) and any(token in _DIRECTIONS for token in tokens)))
 
 
-def _prompt(observation):
-    # Only unresolved columns and their closed public vocabulary leave the parser.
-    cells = [{"column": index, "header": [parent, leaf], "candidate_roles": _REVIEW_OPTIONS}
+def _prompt(observation, *, phase=None, shapes=None):
+    # Only scoped public vocabulary and enum-shaped evidence leave the parser.
+    options = list(reversed(_REVIEW_OPTIONS)) if phase == "recheck" else _REVIEW_OPTIONS
+    cells = [{"column": index, "header": [parent, leaf], "candidate_roles": options,
+              **({"source_shapes": shapes[index]} if shapes is not None else {})}
              for index, parent, leaf, _ in observation.review_columns]
+    payload = {"header_rows": list(range(1, observation.depth + 1)), "columns": cells}
+    guidance = ""
+    if phase is not None:
+        payload["phase"] = phase
+    if phase == "recheck":
+        unresolved = {index for index, *_ in observation.review_columns}
+        neighbors = [{"column": index, "role": role}
+                     for index, _, role, _ in observation.claims
+                     if index not in unresolved and (index - 1 in unresolved or index + 1 in unresolved)]
+        if neighbors:
+            payload["verified_neighbors"] = neighbors
+            guidance = "verified_neighbors 是原件表头已核验的相邻列，只用于辅助复核。"
+    elif phase == "shape":
+        guidance = "source_shapes 仅描述当前列的有限值形态，不能单凭形态分配角色。"
     return ("依同列标题词提出供人工核对的账号角色。payer_account 是付款方账号，payee_account 是收款方账号。"
             "仅从该列的 candidate_roles 选择。返回相对 header_rows 和需要核对的 column、role，"
-            "不确定的列可以省略。\n"
-            + json.dumps({"header_rows": list(range(1, observation.depth + 1)), "columns": cells},
-                         ensure_ascii=False, separators=(",", ":")))
+            "不确定的列可以省略。" + guidance + "\n"
+            + json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
 def _admitted_suggestions(values, observation, coordinate):
@@ -261,12 +285,22 @@ def _admitted_suggestions(values, observation, coordinate):
 
 def _proposal_suggestions(proposal, observation):
     if type(proposal) is not dict or set(proposal) != {"header_rows", "columns"}:
-        return []
-    tiers = proposal["header_rows"]
+        return None
+    tiers, columns = proposal["header_rows"], proposal["columns"]
     if (type(tiers) is not list or any(type(row) is not int for row in tiers)
-            or tiers != list(range(1, observation.depth + 1))):
-        return []
-    return _admitted_suggestions(proposal["columns"], observation, "column")
+            or tiers != list(range(1, observation.depth + 1)) or type(columns) is not list
+            or len(columns) > MAX_COLUMNS):
+        return None
+    return _admitted_suggestions(columns, observation, "column")
+
+
+def _scoped_source_shapes(values, columns):
+    if type(values) is not dict:
+        return {}
+    return {index: tuple(sorted(set(labels))) for index, labels in values.items()
+            if type(index) is int and index in columns and type(labels) is tuple
+            and 0 < len(labels) <= MAX_SHAPES_PER_COLUMN
+            and all(type(label) is str and label in SOURCE_SHAPE_LABELS for label in labels)}
 
 
 class HeaderRegionPolicy:
@@ -281,28 +315,64 @@ class HeaderRegionPolicy:
         self._requests = 0
         self._deadline = None
 
-    def _request_suggestions(self, observation):
+    def _pair_deadline(self):
         now = time.monotonic()
         if self._deadline is None:
             self._deadline = now + OPERATION_SECONDS
         if self._requests + 2 > MAX_MODEL_CALLS or self.cancelled.is_set() or now >= self._deadline:
-            return []
+            return None
+        return min(self._deadline, now + header_model.REQUEST_SECONDS)
+
+    def _request_pair(self, observation, *, phase=None, shapes=None):
+        deadline = self._pair_deadline()
+        if deadline is None:
+            return None
         self._requests += 2
         if header_model.configured():
             self.attempted_inference = True
-        reply = header_model.local_model.suggest(_prompt(observation), _RESULT_SCHEMA, self.cancelled,
-                                                min(self._deadline, now + header_model.REQUEST_SECONDS))
-        if reply is None or self.cancelled.is_set():
-            return []
+        reply = header_model.local_model.suggest(_prompt(observation, phase=phase, shapes=shapes), _RESULT_SCHEMA,
+                                                self.cancelled, deadline)
+        if (not isinstance(reply, (tuple, list)) or len(reply) != 2 or self.cancelled.is_set()
+                or time.monotonic() >= deadline):
+            return None
         first, second = (_proposal_suggestions(proposal, observation) for proposal in reply)
+        if first is None or second is None:
+            return None
         return [item for item in first if item in second]
 
-    def decide(self, observation, *, valid, allow_suggestions, path, sheet, member_sha256, profile, first_row, raw_headers):
+    def _request_suggestions(self, observation, source_shapes):
+        if self.version != VERSION_V3:
+            return self._request_pair(observation) or []
+        admitted = {}
+        unresolved = observation
+        for phase in ("headings", "recheck", "shape"):
+            shapes = None
+            if phase == "shape":
+                if source_shapes is None or self._pair_deadline() is None:
+                    break
+                columns = tuple(item[0] for item in unresolved.review_columns)
+                shapes = _scoped_source_shapes(source_shapes(columns), columns)
+                if not shapes:
+                    break
+                unresolved = replace(unresolved, review_columns=tuple(
+                    item for item in unresolved.review_columns if item[0] in shapes))
+            pair = self._request_pair(unresolved, phase=phase, shapes=shapes)
+            if pair is None:
+                break
+            admitted.update((item["column_index"], item) for item in pair)
+            pending = tuple(item for item in unresolved.review_columns if item[0] not in admitted)
+            if not pending:
+                break
+            unresolved = replace(unresolved, review_columns=pending)
+        return [] if self.cancelled.is_set() else [admitted[index] for index in sorted(admitted)]
+
+    def decide(self, observation, *, valid, allow_suggestions, path, sheet, member_sha256, profile, first_row, raw_headers,
+               source_shapes=None):
         last_row = first_row + observation.depth - 1
         decision = {"member_path": path, "sheet": sheet, "member_sha256": member_sha256, "profile": profile,
                     "header_row": last_row, "header_rows": list(range(first_row, last_row + 1)),
                     "header_sha256": hashlib.sha256(json.dumps(raw_headers, ensure_ascii=False,
-                        separators=(",", ":"), default=str if self.version == VERSION_V2 else None).encode()).hexdigest(),
+                        separators=(",", ":"), default=str if supports_opaque_tiers(self.version) else None).encode()).hexdigest(),
                     "status": "review", "reason": "ambiguous_source_header", "columns": []}
         if len(self.decisions) >= MAX_DECISIONS:
             return {**decision, "reason": "header_region_limit"}
@@ -311,7 +381,7 @@ class HeaderRegionPolicy:
         if valid:
             decision.update(status="verified", reason="source_header_verified", columns=observation.proof(first_row))
         elif allow_suggestions and 0 < len(observation.review_columns) <= MAX_COLUMNS:
-            suggestions = (self._request_suggestions(observation) if self._replay is None else
+            suggestions = (self._request_suggestions(observation, source_shapes) if self._replay is None else
                            _admitted_suggestions(expected.get("suggestions"), observation, "column_index"))
             if suggestions:
                 decision["suggestions"] = suggestions

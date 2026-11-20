@@ -935,11 +935,11 @@ def _replay_headers(session, cancelled):
     frozen = json.loads(session.get("request_json") or "{}").get("_header_plan")
     if frozen is None:
         return None
-    from app.header_regions import HeaderRegionPolicy, VERSION_V1, VERSION_V2
+    from app.header_regions import HeaderRegionPolicy, SUPPORTED_VERSIONS
 
     decisions = frozen.get("decisions") if isinstance(frozen, dict) else None
     version = frozen.get("version") if isinstance(frozen, dict) else None
-    if (version not in (VERSION_V1, VERSION_V2) or not isinstance(decisions, list)
+    if (version not in SUPPORTED_VERSIONS or not isinstance(decisions, list)
             or frozen != _header_snapshot(session, _table_profile(session), decisions, version)):
         raise import_validation.IntegrityError("frozen header interpretation has wrong binding")
     return HeaderRegionPolicy(cancelled, version=version, replay=decisions)

@@ -11,7 +11,7 @@ import pytest
 from app import db, header_model, header_regions, import_preview_cache
 from app.main import app
 from app.services import imports
-from test_header_regions import LEAVES, NEW_ROW, PARENTS, payload, reject_call
+from test_header_regions import KNOWN, KNOWN_ROW, LEAVES, NEW_ROW, PARENTS, payload, reject_call
 
 
 def preview(client, case, data, suffix=".csv"):
@@ -122,7 +122,7 @@ def test_old_ready_header_versions_keep_frozen_interpretation(client, make_case,
     for case, view, frozen_version, expected in (
             (old_case, old, "funds-trace-header-regions-v1" if known_header_plan else None,
              ("TWO-RECEIVES", "TWO-PAYS", "301.00")),
-            (new_case, new, "funds-trace-header-regions-v2", ("TWO-PAYS", "TWO-RECEIVES", "3.01"))):
+            (new_case, new, "funds-trace-header-regions-v3", ("TWO-PAYS", "TWO-RECEIVES", "3.01"))):
         iid = view["import_id"]
         stored = json.loads(db.q_raw("select request_json from import_sessions where import_id=?", [iid])[0]["request_json"])
         if frozen_version is None:
@@ -146,6 +146,49 @@ def test_old_ready_header_versions_keep_frozen_interpretation(client, make_case,
         actual = client.get(base + "/flows", params={"granularity": "observations"}).json()["items"]
         selected, = [row for row in actual if row["trade_time"].startswith("2026-01-02")]
         assert (selected["raw_payer_account"], selected["raw_payee_account"], selected["amount"]) == expected
+
+
+@pytest.mark.parametrize("version", [header_regions.VERSION_V1, header_regions.VERSION_V2], ids=["v1", "v2"])
+def test_frozen_old_suggestions_replay_without_a_model(client, make_case, monkeypatch, version):
+    case = make_case("Synthetic historical header hints")
+    policy = header_regions.HeaderRegionPolicy
+    parents = [*PARENTS]
+    parents[2] = "划出一方"
+    data = payload([KNOWN, KNOWN_ROW, parents, LEAVES, NEW_ROW])
+    calls = []
+
+    def propose(prompt, *_args):
+        calls.append(json.loads(prompt.splitlines()[-1]))
+        reply = {"header_rows": [1, 2], "columns": [{"column": 3, "role": "payer_account"}]}
+        return reply, reply
+
+    with monkeypatch.context() as historical:
+        historical.setattr(header_regions, "HeaderRegionPolicy", lambda cancelled: policy(cancelled, version=version))
+        historical.setattr(header_model.local_model, "suggest", propose)
+        view = preview(client, case, data)
+    assert len(calls) == 1 and "phase" not in calls[0]
+    table = view["table_summary"]
+    advice, = table["documents"][0]["header_assistance"]
+    assert advice["suggestions"] == [{"column_index": 3, "role": "payer_account"}] and advice["status"] == "review"
+    iid = view["import_id"]
+    request = json.loads(db.q_raw("select request_json from import_sessions where import_id=?", [iid])[0]["request_json"])
+    assert request["_header_plan"]["version"] == version
+    assert request["_header_plan"]["sha256_plan"] == table["header_plan_sha256"]
+    monkeypatch.setattr(header_model.local_model, "suggest", reject_call)
+    import_preview_cache.discard(iid)
+    with db._lock:
+        db._con.close()
+        db._con = None
+    url = f"/api/v1/cases/{case}/imports/{iid}"
+    body = {key: view[key] for key in ("mode", "mapping")}
+    replay = client.post(url + "/preview", json=body)
+    assert replay.status_code == 200 and replay.json()["table_summary"] == table, replay.text
+    assert client.post(url + "/commit", json=body).status_code == 200
+    job = done(client, url)
+    assert job["stage"] == "done" and job["result"]["ok"] == 1, job
+    durable = job["result"]["table_summary"]
+    assert durable["header_plan_sha256"] == table["header_plan_sha256"]
+    assert durable["documents"][0]["header_assistance"] == [advice]
 
 
 @pytest.mark.parametrize("when", ["connected", "before-model", "during-model", "before-publish"])

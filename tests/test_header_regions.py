@@ -2,6 +2,7 @@
 import csv
 from copy import deepcopy
 from decimal import Decimal
+from functools import partial
 import io
 import json
 import threading
@@ -258,6 +259,8 @@ def test_public_repreview_preserves_the_frozen_region(client, database, make_cas
 @pytest.mark.parametrize("suffix", [".csv", ".xlsx"])
 @pytest.mark.parametrize("other_column", ["unavailable", "duplicate", "wrong-role", "same-wrong-role", "invalid", "omitted", "matching"])
 def test_public_unresolved_header_hints_never_change_funds(client, make_case, monkeypatch, suffix, other_column):
+    monkeypatch.setattr(header_regions, "HeaderRegionPolicy",
+                        partial(header_regions.HeaderRegionPolicy, version=header_regions.VERSION_V2))
     cid = make_case("Synthetic optional header suggestions")
     base = f"/api/v1/cases/{cid}/imports"
     valid = {"column": 3, "role": "payer_account"}
@@ -331,6 +334,8 @@ def test_public_unresolved_header_hints_never_change_funds(client, make_case, mo
 
 @pytest.mark.parametrize("layout", ["review", "opaque-parent", "verified", "standalone"])
 def test_public_native_leaf_alias_respects_same_column_parent(client, make_case, monkeypatch, layout):
+    monkeypatch.setattr(header_regions, "HeaderRegionPolicy",
+                        partial(header_regions.HeaderRegionPolicy, version=header_regions.VERSION_V2))
     cid = make_case("Synthetic account role from two-tier header")
     base = f"/api/v1/cases/{cid}/imports"
     leaves = ["date", "account", "交易金额", "direction", "元", "对方账号"]
@@ -397,7 +402,7 @@ def test_one_original_uses_at_most_four_review_pairs(monkeypatch):
         return candidate, candidate
 
     monkeypatch.setattr(header_model.local_model, "suggest", suggest)
-    policy = header_regions.HeaderRegionPolicy(threading.Event())
+    policy = header_regions.HeaderRegionPolicy(threading.Event(), version=header_regions.VERSION_V2)
     plan = parse(payload([REVIEW_PARENTS, LEAVES, NEW_ROW] * 6), ".csv", policy)
     assert plan["rows"] == []
     assert len(calls) == 4
