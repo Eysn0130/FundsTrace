@@ -10,6 +10,7 @@ from app.services import imports
 from test_automatic_table_import import preview
 from test_feedback31_reference import COLUMNS, payload, row
 from test_folder_evidence import archive
+from test_header_regions import payload as header_payload, reject_call
 from test_import_lifecycle_api import complete
 from xls_fixtures import workbook as biff_workbook
 
@@ -169,6 +170,127 @@ def test_public_ordinary_codebook_selects_new_profile_and_keeps_old_replay(
     old_receipt = complete(client, legacy, frozen)["result"]
     assert old_receipt["table_summary"]["profile"] == old_profile
     assert old_receipt["ok"] == frozen["stats"]["ok"] == 0
+
+
+@pytest.mark.parametrize("kind,profile", [
+    ("csv", "funds-trace-table-v84"), ("xlsx", "funds-trace-table-v84"),
+    ("xls", "funds-trace-table-v85"), ("evidence", "funds-trace-table-v86"),
+])
+@pytest.mark.parametrize("statement,zero_in", [(OUT_FIRST, False), (IN_FIRST, True)], ids=["zero-out", "zero-in"])
+def test_public_compound_only_codebook_selects_profile_before_parsing(client, make_case, monkeypatch, kind, profile,
+                                                                    statement, zero_in):
+    from app import header_model
+
+    monkeypatch.setattr(header_model.local_model, "suggest", reject_call)
+    parent = ["交易", "本方", "对方", "本笔发生额", "类别", "标记"]
+    leaf = ["年月日", "账户标识", "账户标识", "分", "收付方向", "方向说明"]
+    values = [
+        ["2026-01-07", "DEMO-A", "DEMO-B", "301", "0", statement],
+        ["2026-01-08", "DEMO-A", "DEMO-B", "250", "1", ""],
+        ["2026-01-09", "DEMO-A", "DEMO-B", "900", "01", ""],
+    ]
+    if kind == "evidence":
+        parent += ["附注"] * 4
+        leaf += list(event_resolution.HEADERS.values())
+        values = [[*row, "SYN-Issuer", "SYN-Channel", "SYN-Scope", f"SYN-CODE-{i}"] for i, row in enumerate(values)]
+    suffix = ".csv" if kind == "evidence" else "." + kind
+    data = (biff_workbook([("Synthetic compound", [parent, leaf, *values])]) if kind == "xls"
+            else header_payload([parent, leaf, *values], suffix))
+    case = make_case("Synthetic compound codebook")
+    base = f"/api/v1/cases/{case}"
+    view = preview(client, case, data, "compound" + suffix)
+    assert view["table_summary"]["profile"] == profile
+    assert view["table_summary"]["currency_totals"] == {"CNY": "5.51"}
+    evidence = next(row for row in view["table_summary"]["mapping_evidence"] if row["field"] == "direction")
+    assert (evidence["header_row"], evidence["column_index"], evidence["direction_code_row"],
+            evidence["direction_code_column"]) == ("2", "5", "3", "6")
+    import_preview_cache.discard(view["import_id"])
+    refreshed = client.post(f"{base}/imports/{view['import_id']}/preview",
+                            json={"mode": view["mode"], "mapping": view["mapping"]})
+    assert refreshed.status_code == 200 and refreshed.json()["table_summary"] == view["table_summary"], refreshed.text
+    assert complete(client, case, refreshed.json())["result"]["ok"] == 2
+    actual = client.get(base + "/flows", params={"granularity": "observations"}).json()["items"]
+    for item in actual:
+        expected_out = (item["amount"] == "3.01") != zero_in
+        assert (item["raw_payer_account"], item["raw_payee_account"]) == (
+            ("DEMO-A", "DEMO-B") if expected_out else ("DEMO-B", "DEMO-A"))
+    assert {item["amount"] for item in actual} == {"3.01", "2.50"}
+    saved = [item for item in records(client, base, view) if item["source_row"] >= 3]
+    assert [(item["source_row"], item["reason_code"]) for item in saved] == [
+        (3, "transaction_valid"), (4, "transaction_valid"), (5, "invalid_direction")]
+    assert [json.loads(item["details"]["source_ledger_evidence"])["source_direction"] for item in saved[:2]] == ["0", "1"]
+    assert saved[2]["flow_id"] is None
+    member = view["table_summary"]["members"][0]["member_path"]
+    source_row = client.get(f"{base}/imports/{view['import_id']}/review",
+                            params={"member_path": member, "source_row": 5})
+    assert source_row.status_code == 200 and source_row.json()["original_error"] is None, source_row.text
+    unresolved = next(item for item in source_row.json()["items"] if item["source_row"] == 5)
+    assert next(cell["value"] for cell in unresolved["original"] if cell["column"] == 5) == "01"
+    assert client.get(f"{base}/sources/{view['import_id']}/file").content == data
+
+
+@pytest.mark.parametrize("note_label,statement", [
+    ("交易附记", ""), ("方向说明", ""), ("方向说明", "本表收付方向0为支出"),
+], ids=["ordinary-note", "empty-code-note", "incomplete-code-note"])
+def test_public_compound_event_columns_do_not_select_profile_from_code_note_title(client, make_case, monkeypatch,
+                                                                                  note_label, statement):
+    from app import header_model
+
+    monkeypatch.setattr(header_model.local_model, "suggest", reject_call)
+    data = header_payload([
+        ["交易", "本方", "对方", "本笔发生额", "类别", "标记", *(["附注"] * 4)],
+        ["年月日", "账户标识", "账户标识", "分", "收付方向", note_label, *event_resolution.HEADERS.values()],
+        ["2026-01-07", "ONE-A", "ONE-B", "301", "支出", statement, "SYN-Issuer", "SYN-Channel", "SYN-Scope", "SYN-REF"],
+    ])
+    case = make_case("Synthetic code note without complete source rule")
+    base = f"/api/v1/cases/{case}"
+    view = preview(client, case, data, "compound.csv")
+    assert view["table_summary"]["profile"] == "funds-trace-table-v69"
+    assert complete(client, case, view)["result"]["ok"] == 1
+    row, = client.get(base + "/flows", params={"granularity": "observations"}).json()["items"]
+    assert (row["raw_payer_account"], row["raw_payee_account"], row["amount"]) == ("ONE-A", "ONE-B", "3.01")
+    assert all(event_resolution.DETAIL_FIELD not in item["details"] for item in records(client, base, view))
+
+
+@pytest.mark.parametrize("late_disagreement", [False, True])
+def test_public_compound_codebook_respects_opaque_boundary_and_late_conflict(client, make_case, monkeypatch,
+                                                                            late_disagreement):
+    from app import header_model
+
+    monkeypatch.setattr(header_model.local_model, "suggest", reject_call)
+    parent = ["交易", "本方", "对方", "本笔发生额", "类别", "标记", "辅助"]
+    leaf = ["年月日", "账户标识", "账户标识", "分", "收付方向", "方向说明", "其他"]
+    data = header_payload([
+        parent, leaf,
+        ["2026-01-07", "ONE-A", "ONE-B", "301", "0", OUT_FIRST, ""],
+        ["2026-01-08", "ONE-A", "ONE-B", "15", "1", IN_FIRST if late_disagreement else "", ""],
+        [*parent[:-1], 4], [*leaf[:-1], "=1+1"],
+        ["2026-01-09", "TWO-A", "TWO-B", "250", "0", IN_FIRST, ""],
+    ], ".xlsx")
+    case = make_case("Synthetic independent codebook scopes")
+    base = f"/api/v1/cases/{case}"
+    view = preview(client, case, data, "scoped.xlsx")
+    assert view["table_summary"]["profile"] == "funds-trace-table-v84"
+    complete(client, case, view)
+    actual = client.get(base + "/flows", params={"granularity": "observations"}).json()["items"]
+    expected = {("TWO-B", "TWO-A", "2.50")}
+    if not late_disagreement:
+        expected.update({("ONE-A", "ONE-B", "3.01"), ("ONE-B", "ONE-A", "0.15")})
+    assert {(row["payer_account"], row["payee_account"], row["amount"]) for row in actual} == expected
+    by_row = {item["source_row"]: item for item in records(client, base, view)}
+    for number in (3, 4):
+        assert by_row[number]["reason_code"] == ("invalid_direction" if late_disagreement else "transaction_valid")
+    proof = json.loads(by_row[7]["details"]["source_ledger_evidence"])[table_sign_declarations.DIRECTION_CODE_FIELD]
+    assert (proof["header_row"], proof["declaration_row"], proof["last_row"]) == (6, 7, 7)
+    if not late_disagreement:
+        proof = json.loads(by_row[3]["details"]["source_ledger_evidence"])[table_sign_declarations.DIRECTION_CODE_FIELD]
+        assert (proof["header_row"], proof["declaration_row"], proof["last_row"]) == (2, 3, 4)
+    package = client.get(f"/api/cases/{case}/export")
+    reopened = client.post("/api/cases/import", files={"file": ("scoped.fundcase", package.content)})
+    assert reopened.status_code == 200, reopened.text
+    restored = client.get(f"/api/v1/cases/{reopened.json()['case_id']}/flows",
+                          params={"granularity": "observations"}).json()["items"]
+    assert {(row["raw_payer_account"], row["raw_payee_account"], row["amount"]) for row in restored} == expected
 
 
 def test_public_archive_without_registered_note_does_not_scan_transaction_values(client, make_case, monkeypatch):

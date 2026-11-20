@@ -2543,20 +2543,60 @@ def _append_auxiliary_sheet(plan, sheet, *, details_pool=None):
     return True
 
 
-def _financial_regions(sheets, profile):
+def _financial_regions(sheets, profile, *, header_version=None):
     """Use the interpreter's region guards on the already decoded source."""
     for sheet in sheets:
         rows = sheet["rows"]
-        header_no, _, _ = _locate_header(rows, profile)
+        leading = None
+        last_code_mentions = {}
+
+        def codebook_tier(index, row, active=None):
+            if index + 1 >= len(rows) or not header_regions.possible_tier_parent(row):
+                return None
+            following = rows[index + 1]
+            # Only registered note headings can bind the declared codebook.
+            # Keep the existing traversal and probe rare potential tiers.
+            if not any(type(cell) is str and cell.strip() in table_sign_declarations.DIRECTION_NOTE_HEADERS
+                       for cell in following):
+                return None
+            observed = _observe_header_region(row, following, index, profile, header_version=header_version,
+                                              active_candidates=active)
+            if observed is not None and observed[0].depth == 2:
+                candidates = observed[1]
+                # A complete codebook is the only new authority for this
+                # region to participate in automatic profile selection.
+                if (candidates and _shape(candidates, profile) == "B"
+                        and _region_direction_codes(rows, index + 2, following, candidates, profile,
+                                                    last_code_mentions, header_version=header_version) is not None):
+                    return candidates
+            return None
+
+        def probe(index, row):
+            nonlocal leading
+            leading = codebook_tier(index, row)
+            return index + 1 if leading is not None else None
+
+        tier_probe = probe if header_version == header_regions.VERSION_V2 and profile in SIGNED_MONEY_SUCCESSORS else None
+        header_no, _, _ = _locate_header(rows, profile, region_probe=tier_probe)
         if header_no is None:
             continue
-        candidates, *_ = _region(rows[header_no], None, None, strict=True, profile=profile)
+        if leading is None:
+            candidates, *_ = _region(rows[header_no], None, None, strict=True, profile=profile)
+        else:
+            candidates = leading
         if _shape(candidates, profile):
-            yield rows, header_no + 1, candidates
+            yield rows, header_no + 1, candidates, leading is not None
         ambiguous_layouts = {}
+        tier_leaf = header_no
         for index in range(header_no + 1, len(rows)):
             row = rows[index]
-            if not any(_cell_present(value) for value in row):
+            if index == tier_leaf or not any(_cell_present(value) for value in row):
+                continue
+            if tier_probe is not None and (compound := codebook_tier(index, row, candidates)) is not None:
+                tier_leaf = index + 1
+                ambiguous_layouts.clear()
+                candidates = compound
+                yield rows, tier_leaf + 1, candidates, True
                 continue
             if _overlapping_header(row, candidates, profile):
                 _remember_layout(ambiguous_layouts, candidates)
@@ -2566,14 +2606,14 @@ def _financial_regions(sheets, profile):
                 ambiguous_layouts.clear()
                 candidates, *_ = _region(row, None, None, strict=False, profile=profile)
                 if _shape(candidates, profile):
-                    yield rows, index + 1, candidates
+                    yield rows, index + 1, candidates, False
             elif ambiguous_layouts:
                 found = _candidates(row, profile)
                 if _shape(found, profile):
                     _remember_layout(ambiguous_layouts, found)
 
 
-def _declared_table_layouts(sheets, profile):
+def _declared_table_layouts(sheets, profile, *, header_version=None):
     from .event_resolution import HEADERS
 
     check_events = profile not in EVIDENCE_PROFILES and profile not in STANDALONE_XLS_PROFILES
@@ -2581,8 +2621,9 @@ def _declared_table_layouts(sheets, profile):
     check_codes = profile in SIGNED_MONEY_SUCCESSORS
     events = bank = codes = False
     active_rows, last_mentions = None, {}
-    for rows, header_row, candidates in _financial_regions(sheets, profile):
+    for rows, header_row, candidates, compound in _financial_regions(sheets, profile, header_version=header_version):
         headers = rows[header_row - 1]
+        codes |= compound
         if check_events and not events:
             names = [_text(value) for value in headers]
             events = all(names.count(name) == 1 for name in HEADERS.values())
@@ -2600,7 +2641,8 @@ def _declared_table_layouts(sheets, profile):
             if rows is not active_rows:
                 active_rows = rows
                 last_mentions.clear()
-            codes = _region_direction_codes(rows, header_row, headers, candidates, profile, last_mentions) is not None
+            codes = _region_direction_codes(rows, header_row, headers, candidates, profile, last_mentions,
+                                            header_version=header_version) is not None
         if (events or not check_events) and (bank or not check_bank):
             break
     if check_bank and not bank:
@@ -2644,7 +2686,7 @@ def _needs_sign_layouts(sheets):
     return False
 
 
-def _source_sign_contracts(sheets, profile, *, assisted_headers=False):
+def _source_sign_contracts(sheets, profile, *, header_version=None):
     if profile not in PRECISE_PROFILES:
         return {}
     if type(profile) is str and not _needs_sign_layouts(sheets):
@@ -2654,21 +2696,22 @@ def _source_sign_contracts(sheets, profile, *, assisted_headers=False):
         rows = sheet["rows"]
         leading = None
 
-        def observed(index, row):
+        def observed(index, row, active=None):
             next_row = rows[index + 1] if index + 1 < len(rows) else None
-            return _observe_header_region(row, next_row, index, profile)
+            return _observe_header_region(row, next_row, index, profile, header_version=header_version,
+                                          active_candidates=active)
 
         def probe(index, row):
             nonlocal leading
             leading = observed(index, row)
             return index + leading[0].depth - 1 if leading is not None else None
 
-        header_no, _, _ = _locate_header(rows, profile, region_probe=probe if assisted_headers else None)
+        header_no, _, _ = _locate_header(rows, profile, region_probe=probe if header_version is not None else None)
         headers = rows[header_no] if header_no is not None else []
         candidates = (leading[1] or {}) if leading is not None else _candidates(headers, profile)
         amount = candidates.get("amount", [])
         single_region = header_no is not None and (leading is None or bool(candidates)) and not any(
-            assisted_headers and observed(index, row) is not None
+            header_version is not None and observed(index, row, candidates) is not None
             or _later_header(row, candidates, profile) or _overlapping_header(row, candidates, profile)
             for index, row in enumerate(rows[header_no + 1:], header_no + 1))
         amount_header = ""
@@ -2781,10 +2824,47 @@ def _two_tier_units(parents, leaves, parent_candidates, leaf_candidates, first_r
     return inherited
 
 
-def _observe_header_region(row, following, index, profile):
-    observation = header_regions.observe(row, following, _header_source_cell)
+def _dated_row_evidence(row, candidates, tier_columns):
+    dates = {field: [item for item in candidates.get(field, ())
+                     if _header_source_cell(_value(row, item)) is not False]
+             for field in ("trade_time", "time_part")}
+    if not _financial_times(row, dates, []):
+        return False, False
+    money, _ = _financial_candidates(row, candidates)
+    if any(_header_source_cell(value := _value(row, item)) is not False and _money(value, item)[0] is not None
+           for field in ("amount", "income_amt", "expense_amt") for item in money.get(field, ())):
+        return True, False
+    for field in ("payer_account", "payee_account", "self_account", "self_card", "counter_account", "counter_card"):
+        for item in candidates.get(field, ()):
+            value = _header_source_cell(_value(row, item))
+            if item["index"] not in tier_columns and value is not False and _text(value):
+                return False, True
+    return False, False
+
+
+def _observe_header_region(row, following, index, profile, *, header_version=None, active_candidates=None):
+    observation = header_regions.observe(row, following, _header_source_cell,
+                                         version=header_version or header_regions.VERSION_V1)
     if observation is None:
         return None
+    if observation.opaque and active_candidates:
+        tier_columns = {item[0] - 1 for item in (*observation.claims, *observation.review_columns)}
+        competing_row = False
+        for source_row in (row, following):
+            dated_amount, dated_account = _dated_row_evidence(source_row, active_candidates, tier_columns)
+            if dated_amount:
+                # Both tiers must be free of existing dated monetary evidence,
+                # including zero amounts, before either can become a heading.
+                return None
+            competing_row |= dated_account
+        if competing_row:
+            core = _REGION_IDENTITIES | {"trade_time", "time_part", "direction", "status", "currency",
+                                         *table_financial.MONEY_FIELDS, *table_contracts.MONEY_FIELDS}
+            if any(item["index"] in tier_columns for field in core for item in active_candidates.get(field, ())):
+                return observation, None, None, False
+            # Heading-like words in extra columns do not replace an original
+            # dated party record whose amount is still unknown.
+            return None
     parent_candidates = _candidates(row, profile)
     headers = following if observation.depth == 2 else row
     native = _candidates(headers, profile) if observation.depth == 2 else parent_candidates
@@ -2804,7 +2884,7 @@ def _observe_header_region(row, following, index, profile):
         qualified_leaf = any(_text(row[column]) and header_regions._normalize(_text(headers[column]))
                              in header_regions._ACCOUNT_LEAVES for column in owner_columns)
     native_layout = parent_layout or (not qualified_leaf and leaf_layout)
-    if native_layout and parent_units == {}:
+    if native_layout and parent_units == {} and not (observation.opaque and observation.open_role):
         return None
     proof = observation.proof(first)
     compatible = (_assisted_candidates(headers, native, proof, profile, parent_units)
@@ -2827,8 +2907,9 @@ def _observe_header_region(row, following, index, profile):
     return observation, compatible if valid else None, parent_units, allow_suggestions
 
 
-def _header_region(row, following, index, sheet, profile, policy, prefix):
-    observed = _observe_header_region(row, following, index, profile)
+def _header_region(row, following, index, sheet, profile, policy, prefix, *, active_candidates=None):
+    observed = _observe_header_region(row, following, index, profile, header_version=policy.version,
+                                      active_candidates=active_candidates)
     if observed is None:
         return None
     observation, verified, parent_units, allow_suggestions = observed
@@ -2851,7 +2932,7 @@ def _last_direction_code_mention(rows, first, column):
     return -1
 
 
-def _region_direction_codes(rows, header_row, headers, candidates, profile, last_mentions):
+def _region_direction_codes(rows, header_row, headers, candidates, profile, last_mentions, *, header_version=None):
     """Collect the exact codebook within one source region, before reading movements."""
     roles = candidates.get("direction", [])
     if len(roles) != 1:
@@ -2880,7 +2961,8 @@ def _region_direction_codes(rows, header_row, headers, candidates, profile, last
     for index in range(header_row, len(rows)):
         row = rows[index]
         following = rows[index + 1] if index + 1 < len(rows) else None
-        if (_observe_header_region(row, following, index, profile) is not None
+        if (_observe_header_region(row, following, index, profile, header_version=header_version,
+                                   active_candidates=candidates) is not None
                 or _overlapping_header(row, candidates, profile) or _later_header(row, candidates, profile)):
             break
         last_row = index + 1
@@ -2958,7 +3040,8 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
         sheets = decoded_csv.take(raw, suffix, profile)
     else:
         sheets = _excel(raw, suffix) if suffix in {".xlsx", ".xls"} else _csv(raw, suffix, profile)
-    declares_events, closed_bank, declared_codes = (_declared_table_layouts(sheets, profile)
+    header_version = header_policy.version if header_policy is not None else None
+    declares_events, closed_bank, declared_codes = (_declared_table_layouts(sheets, profile, header_version=header_version)
                                                     if auto_event_profile else (False, False, False))
     if declares_events:
         profile = (VOUCHER_REFERENCE_EVIDENCE_PROFILE if profile == VOUCHER_REFERENCE_PROFILE else
@@ -2985,13 +3068,14 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
         profile = SIGNED_MONEY_SUCCESSORS[profile]
     if profile not in TIME_ROLE_PROFILES:
         header_policy = None
+        header_version = None
     plan = {"profile": profile, "mode": "B", "mapping": {}, "columns": [], "sheet": "workbook" if suffix in {".xlsx", ".xls"} else "", "rows": [], "records": [], "members": [], "documents": [], "mapping_evidence": []}
     if retain_csv_format:
         # The envelope's cancellation pass may replay this already validated
         # CSV with the exact selected format, without materializing cells again.
         # This operation-local hint never enters documents or persisted notes.
         plan["_csv_format"] = {key: sheets[0][key] for key in ("encoding", "delimiter")}
-    sign_contracts = _source_sign_contracts(sheets, profile, assisted_headers=header_policy is not None)
+    sign_contracts = _source_sign_contracts(sheets, profile, header_version=header_version)
     selected = False
 
     def resolve_region(headers, assistance, *, strict):
@@ -3019,9 +3103,10 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
         last_code_mentions = {}
         assistance = None
 
-        def assisted_header(index, row):
+        def assisted_header(index, row, active=None):
             following = raw_rows[index + 1] if index + 1 < len(raw_rows) else None
-            return _header_region(row, following, index, sheet, profile, header_policy, header_member_prefix)
+            return _header_region(row, following, index, sheet, profile, header_policy, header_member_prefix,
+                                  active_candidates=active)
 
         def probe(index, row):
             nonlocal assistance
@@ -3042,7 +3127,8 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                     if initial_row and any(item.get("bank_amount_defaults") for item in candidates.get("amount", []))
                     else None)
         _bind_bank_preamble(candidates, preamble, initial_row)
-        direction_codes = (_region_direction_codes(raw_rows, header_no + 1, headers, candidates, profile, last_code_mentions)
+        direction_codes = (_region_direction_codes(raw_rows, header_no + 1, headers, candidates, profile,
+                                                   last_code_mentions, header_version=header_version)
                            if profile in DIRECTION_CODE_PROFILES and header_no is not None and actual_mode == "B" else None)
         source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
         header_names, feedback_header_names = _region_row_headers(headers, profile)
@@ -3084,7 +3170,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
             result, own_side = None, ""
             observation = None
             in_header = assistance is not None and initial_row <= index <= assistance["header_row"]
-            proposed = (assisted_header(index - 1, row) if header_policy is not None and not in_header
+            proposed = (assisted_header(index - 1, row, candidates) if header_policy is not None and not in_header
                         and initial_row is not None and index > initial_row else None)
             if not any(_cell_present(value) for value in row):
                 disposition, reason = "non_transaction", "blank_record"
@@ -3121,7 +3207,8 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                     if not selected:
                         plan.update(mode=actual_mode or "B", mapping=current_mapping, columns=labels)
                         selected = True
-                direction_codes = (_region_direction_codes(raw_rows, region_row, headers, candidates, profile, last_code_mentions)
+                direction_codes = (_region_direction_codes(raw_rows, region_row, headers, candidates, profile,
+                                                           last_code_mentions, header_version=header_version)
                                    if profile in DIRECTION_CODE_PROFILES and actual_mode == "B" else None)
                 source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
                 header_names, feedback_header_names = _region_row_headers(headers, profile)

@@ -11,7 +11,9 @@ import unicodedata
 from . import header_model
 
 
-VERSION = "funds-trace-header-regions-v1"
+VERSION_V1 = "funds-trace-header-regions-v1"
+VERSION_V2 = "funds-trace-header-regions-v2"
+VERSION = VERSION_V2
 MAX_DECISIONS = 64
 MAX_MODEL_CALLS = 8
 MAX_COLUMNS = 16
@@ -31,6 +33,7 @@ _PARENTS = {
     "本笔发生额": "amount", "本笔发生额复核": "amount", "交易金额": "amount", "transaction amount": "amount",
     "账面余额": "balance", "交易余额": "balance", "book balance": "balance",
 }
+_PARENT_INITIALS = frozenset(first for name in _PARENTS for first in (name[0], name[0].upper()))
 _DATE_LEAVES = frozenset({"日期", "年月日", "日期时间", "时间", "date", "datetime", "time"})
 _ACCOUNT_LEAVES = frozenset({"账号", "帐号", "账户号", "账户标识", "account", "account identifier", "account number"})
 _UNITS = frozenset({"元", "分", "角", "人民币元", "千元", "万元", "yuan", "cent", "cents", "jiao"})
@@ -59,19 +62,22 @@ def _normalize(value):
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
-def _text_row(row, source_cell, *, layout_leaf=False):
+def _text_row(row, source_cell, *, layout_leaf=False, opaque=False):
     if row is None or not 3 <= len(row) <= MAX_SOURCE_COLUMNS:
         return None
     tokens = []
     for cell in row:
         value = source_cell(cell)
         if value is not None and type(value) is not str:
-            return None
+            if not opaque:
+                return None
+            tokens.append(None)
+            continue
         # An unrelated text heading can delimit the region without becoming
         # a role or a model input. Keep the early exit for data-like values.
         token = _normalize(value[:65]) if value else ""
         if token and not token[0].isalpha():
-            if not layout_leaf:
+            if not (layout_leaf or opaque):
                 return None
             tokens.append(None)
         else:
@@ -110,6 +116,7 @@ class HeaderObservation:
     open_role: bool
     anchors: frozenset
     review_columns: tuple = ()
+    opaque: bool = False
 
     def proof(self, first_row):
         last_row = first_row + self.depth - 1
@@ -119,29 +126,72 @@ class HeaderObservation:
                  **({"unit": unit} if unit else {})} for index, _, role, unit in self.claims]
 
 
-def observe(row, following, source_cell):
-    """Detect word-only headings using original, same-column coordinates."""
-    tokens = _text_row(row, source_cell)
-    if tokens is None:
+def _two_tier(tokens, leaves, *, opaque=False):
+    columns, review_columns, open_role = [], [], False
+    for index, (parent, leaf) in enumerate(zip(tokens, leaves), 1):
+        if claim := _pair(parent, leaf):
+            columns.append((index, (parent, leaf), *claim))
+        elif leaf in _DATE_LEAVES | _ACCOUNT_LEAVES | _UNITS or parent in _PARENTS:
+            open_role = True
+            if leaf in _ACCOUNT_LEAVES and (role := _REVIEW_ACCOUNT_ROLES.get(parent)):
+                review_columns.append((index, parent, leaf, role))
+    if opaque:
+        # Even a damaged key cell can define a boundary when other columns
+        # independently supply two kinds of same-column proof. The opaque
+        # value supplies no role. An incomplete region will be held for review.
+        parent_roles = {_PARENTS.get(token) for token in tokens}
+        leaf_terms = set(leaves)
+        roles = {role for _, _, role, _ in columns}
+        groups = ((_TIME_ROLES, _DATE_LEAVES), (_ACCOUNT_ROLES, _ACCOUNT_LEAVES), (_MONEY_ROLES, _UNITS))
+        if (not (None in tokens or None in leaves)
+                or not all(parent_roles & domain or leaf_terms & vocabulary for domain, vocabulary in groups)
+                or sum(bool(roles & domain) for domain, _ in groups) < 2):
+            return None
+    elif not any(tokens) or (None in leaves and len(columns) < 2):
         return None
+    return HeaderObservation(2, tuple(columns), open_role, frozenset(), tuple(review_columns), opaque)
+
+
+def possible_tier_parent(row):
+    """Avoid inspecting lower tiers or normalizing data cells without a source heading signal."""
+    if not 3 <= len(row) <= MAX_SOURCE_COLUMNS:
+        return False
+    for cell in row:
+        if type(cell) is not str or not 0 < len(cell) <= 64:
+            continue
+        first = cell[0]
+        if first.isspace():
+            first = cell.lstrip()[:1]
+        # ASCII and basic CJK initials need no compatibility normalization.
+        # Other short forms, such as fullwidth letters, use the same validator
+        # as the actual observation, without normalizing dates or amounts.
+        if not first or first.isdecimal() or (first not in _PARENT_INITIALS
+                                             and (first.isascii() or "\u3400" <= first <= "\u9fff")):
+            continue
+        if cell in _PARENTS or _normalize(cell) in _PARENTS:
+            return True
+    return False
+
+
+def observe(row, following, source_cell, *, version=VERSION):
+    """Detect source headings using original, same-column coordinates."""
+    tokens = _text_row(row, source_cell)
     # Two explicit tiers have date, account and denomination vocabulary at
     # fixed leaf coordinates. Empty or opaque parents can delimit the region
     # but cannot prove the roles of their leaves.
-    if following is not None and len(following) == len(tokens):
+    if row is not None and following is not None and len(following) == len(row):
         # Use the same-column pairs to identify the lower tier. Other cells
         # may have numbered labels and do not supply proposal evidence.
-        leaves = _text_row(following, source_cell, layout_leaf=True)
-        if _leaf_shape(leaves):
-            columns, review_columns, open_role = [], [], False
-            for index, (parent, leaf) in enumerate(zip(tokens, leaves), 1):
-                if claim := _pair(parent, leaf):
-                    columns.append((index, (parent, leaf), *claim))
-                elif leaf in _DATE_LEAVES | _ACCOUNT_LEAVES | _UNITS or parent in _PARENTS:
-                    open_role = True
-                    if leaf in _ACCOUNT_LEAVES and (role := _REVIEW_ACCOUNT_ROLES.get(parent)):
-                        review_columns.append((index, parent, leaf, role))
-            if any(tokens) and (None not in leaves or len(columns) >= 2):
-                return HeaderObservation(2, tuple(columns), open_role, frozenset(), tuple(review_columns))
+        leaves = _text_row(following, source_cell, layout_leaf=True) if tokens is not None else None
+        if _leaf_shape(leaves) and (result := _two_tier(tokens, leaves)) is not None:
+            return result
+        if version == VERSION_V2 and possible_tier_parent(row):
+            parents = tokens if tokens is not None else _text_row(row, source_cell, opaque=True)
+            leaves = leaves if leaves is not None else _text_row(following, source_cell, opaque=True)
+            if (result := _two_tier(parents, leaves, opaque=True)) is not None:
+                return result
+    if tokens is None:
+        return None
     if _leaf_shape(tokens):
         # Standalone generic leaves are still a boundary when every role is
         # unproved. In particular a blank preceding row supplies no parent.
@@ -222,8 +272,9 @@ def _proposal_suggestions(proposal, observation):
 class HeaderRegionPolicy:
     """Bounded decisions for one original; replay independently rechecks proof."""
 
-    def __init__(self, cancelled, *, replay=None):
+    def __init__(self, cancelled, *, version=VERSION, replay=None):
         self.cancelled = cancelled
+        self.version = version
         self.decisions = []
         self.attempted_inference = False
         self._replay = replay
@@ -251,7 +302,7 @@ class HeaderRegionPolicy:
         decision = {"member_path": path, "sheet": sheet, "member_sha256": member_sha256, "profile": profile,
                     "header_row": last_row, "header_rows": list(range(first_row, last_row + 1)),
                     "header_sha256": hashlib.sha256(json.dumps(raw_headers, ensure_ascii=False,
-                        separators=(",", ":")).encode()).hexdigest(),
+                        separators=(",", ":"), default=str if self.version == VERSION_V2 else None).encode()).hexdigest(),
                     "status": "review", "reason": "ambiguous_source_header", "columns": []}
         if len(self.decisions) >= MAX_DECISIONS:
             return {**decision, "reason": "header_region_limit"}

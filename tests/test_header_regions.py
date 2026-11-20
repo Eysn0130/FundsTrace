@@ -484,6 +484,167 @@ def test_public_unrelated_numbered_header_cannot_remove_the_regional_boundary(cl
     assert "suggestions" not in assistance
 
 
+TIERED_PARENT = ["交易", "收款方", "付款方", "本笔发生额", "辅助"]
+PADDED_TIERED_PARENT = [" 交易 ", " 收款方 ", " 付款方 ", " 本笔发生额 ", " 辅助 "]
+FULLWIDTH_TIERED_PARENT = ["ＴＲＡＮＳＡＣＴＩＯＮ", "ＰＡＹＥＥ", "ＰＡＹＥＲ", "ＴＲＡＮＳＡＣＴＩＯＮ　ＡＭＯＵＮＴ", "辅助"]
+
+
+@pytest.mark.parametrize("suffix,parent,lower", [
+    (".xlsx", TIERED_PARENT, 1),
+    (".xlsx", TIERED_PARENT, "=1+1"),
+    (".xlsx", TIERED_PARENT, "#DIV/0!"),
+    (".csv", [*TIERED_PARENT[:-1], "11"], "1"),
+    (".xlsx", PADDED_TIERED_PARENT, 1),
+    (".xlsx", FULLWIDTH_TIERED_PARENT, 1),
+], ids=["xlsx-number", "xlsx-formula", "xlsx-error", "csv-numbered-tiers", "xlsx-padded", "xlsx-fullwidth"])
+def test_public_opaque_auxiliary_header_keeps_new_direction_and_unit(client, make_case, monkeypatch, suffix, parent, lower):
+    case = make_case("Synthetic opaque auxiliary headings")
+    base = f"/api/v1/cases/{case}"
+    data = payload([
+        ["交易日期", "付款账号", "收款账号", "交易金额", "备注"],
+        ["2026-01-01", "ONE-A", "ONE-B", "1.00", ""],
+        parent,
+        ["年月日", "账户标识", "账户标识", "分", lower],
+        ["2026-01-02", "TWO-RECEIVES", "TWO-PAYS", "301", ""],
+    ], suffix)
+    monkeypatch.setattr(header_model.local_model, "suggest", reject_call)
+    response = client.post(base + "/imports/preview", files={"file": ("synthetic-tiered" + suffix, data)})
+    assert response.status_code == 200, response.text
+    view = response.json()
+    import_preview_cache.discard(view["import_id"])
+    receipt = complete(client, case, view)["result"]
+    expected = {("ONE-A", "ONE-B", "1.00"), ("TWO-PAYS", "TWO-RECEIVES", "3.01")}
+    assert {(row["payer_account"], row["payee_account"], row["amount"])
+            for row in client.get(base + "/flows", params={"granularity": "observations"}).json()["items"]} == expected
+    assert {(row["payer_account"], row["payee_account"], row["amount"]) for row in view["preview"]} == expected
+    assert receipt["table_summary"]["currency_totals"] == {"CNY": "4.01"}
+    evidence = [row for row in receipt["table_summary"]["mapping_evidence"]
+                if row["field"] == "amount" and row["header_row"] == "4"]
+    assert [(row["column_index"], row["parent_row"], row["source_row"], row["unit_factor"]) for row in evidence] == [
+        ("4", "3", "4", "0.01")]
+    assert client.get(f"{base}/sources/{view['import_id']}/file").content == data
+
+
+@pytest.mark.parametrize("parent,leaves", [
+    (["交易", "收款方", "付款方", "本笔发生额"], ["年月日", "账户标识", "=1+1", "分"]),
+    ([1, "收款方", "付款方", "本笔发生额"], ["年月日", "账户标识", "账户标识", "分"]),
+], ids=["opaque-key-leaf", "opaque-key-parent"])
+def test_public_opaque_critical_header_revokes_old_mapping_until_known_region(client, make_case, monkeypatch, parent, leaves):
+    case = make_case("Synthetic opaque critical heading")
+    base = f"/api/v1/cases/{case}"
+    heading = ["交易日期", "付款账号", "收款账号", "交易金额", "备注"]
+    data = payload([
+        heading,
+        ["2026-01-01", "ONE-A", "ONE-B", "1.00", ""],
+        [*parent, "辅助"],
+        [*leaves, 1],
+        ["2026-01-02", "TWO-RECEIVES", "TWO-PAYS", "301", ""],
+        heading,
+        ["2026-01-03", "THREE-A", "THREE-B", "2.00", ""],
+    ], ".xlsx")
+    monkeypatch.setattr(header_model.local_model, "suggest", reject_call)
+    response = client.post(base + "/imports/preview", files={"file": ("synthetic-unproven.xlsx", data)})
+    assert response.status_code == 200, response.text
+    view = response.json()
+    complete(client, case, view)
+    actual = client.get(base + "/flows", params={"granularity": "observations"}).json()["items"]
+    assert {(row["payer_account"], row["payee_account"], row["amount"]) for row in actual} == {
+        ("ONE-A", "ONE-B", "1.00"), ("THREE-A", "THREE-B", "2.00")}
+    rows = client.get(f"{base}/imports/{view['import_id']}/records").json()["items"]
+    assert [(row["source_row"], row["reason_code"], row["flow_id"]) for row in rows if 3 <= row["source_row"] <= 5] == [
+        (3, "ambiguous_region_header", None), (4, "ambiguous_region_header", None), (5, "ambiguous_region_header", None)]
+
+
+@pytest.mark.parametrize("headings", [TIERED_PARENT, PADDED_TIERED_PARENT, FULLWIDTH_TIERED_PARENT],
+                         ids=["plain", "padded", "fullwidth"])
+def test_public_heading_words_in_financial_rows_remain_ordinary(client, make_case, monkeypatch, headings):
+    case = make_case("Synthetic header words in ordinary transaction metadata")
+    base = f"/api/v1/cases/{case}"
+    data = payload([
+        ["交易日期", "付款账号", "收款账号", "交易金额", "附列甲", "附列乙", "附列丙", "附列丁"],
+        ["2026-01-01", "ONE-A", "ONE-B", "1.00", *headings[:-1]],
+        ["2026-01-02", "TWO-A", "TWO-B", "2.50", "年月日", "账户标识", "账户标识", "分"],
+    ])
+    monkeypatch.setattr(header_model.local_model, "suggest", reject_call)
+    response = client.post(base + "/imports/preview", files={"file": ("synthetic-ordinary.csv", data)})
+    assert response.status_code == 200, response.text
+    view = response.json()
+    assert "header_plan_sha256" not in view["table_summary"]
+    complete(client, case, view)
+    actual = client.get(base + "/flows", params={"granularity": "observations"}).json()["items"]
+    assert {(row["payer_account"], row["payee_account"], row["amount"]) for row in actual} == {
+        ("ONE-A", "ONE-B", "1.00"), ("TWO-A", "TWO-B", "2.50")}
+
+
+@pytest.mark.parametrize("parent_amount,leaf_amount", [
+    (None, "2.50"), (None, None), ("0", "2.50"), (None, "0"), ("7.00", "2.50"),
+], ids=["missing-parent", "both-missing", "zero-parent", "zero-leaf", "two-movements"])
+def test_public_opaque_words_in_extra_columns_cannot_replace_source_rows(client, make_case, monkeypatch,
+                                                                        parent_amount, leaf_amount):
+    case = make_case("Synthetic word-like metadata on dated records")
+    base = f"/api/v1/cases/{case}"
+    data = payload([
+        ["交易日期", "付款账号", "收款账号", "交易金额", "附列甲", "附列乙", "附列丙", "附列丁"],
+        ["2026-01-01", "A", "B", "1.00", "", "", "", ""],
+        ["2026-01-02", "C", "D", parent_amount, "交易", "收款方", "付款方", "本笔发生额"],
+        ["2026-01-03", "E", "F", leaf_amount, "年月日", "账户标识", "账户标识", "分"],
+        ["2026-01-04", "G", "H", "3.50", "2026-01-09", "X", "Y", "5000"],
+    ])
+    monkeypatch.setattr(header_model.local_model, "suggest", reject_call)
+    response = client.post(base + "/imports/preview", files={"file": ("synthetic-extra.csv", data)})
+    assert response.status_code == 200, response.text
+    view = response.json()
+    expected = {("A", "B", "1.00"), ("G", "H", "3.50")}
+    if parent_amount == "7.00":
+        expected.add(("C", "D", "7.00"))
+    if leaf_amount == "2.50":
+        expected.add(("E", "F", "2.50"))
+    assert {(row["payer_account"], row["payee_account"], row["amount"]) for row in view["preview"]} == expected
+    assert "header_plan_sha256" not in view["table_summary"]
+    import_preview_cache.discard(view["import_id"])
+    assert complete(client, case, view)["result"]["ok"] == len(expected)
+    actual = client.get(base + "/flows", params={"granularity": "observations"}).json()["items"]
+    assert {(row["payer_account"], row["payee_account"], row["amount"]) for row in actual} == expected
+    rows = client.get(f"{base}/imports/{view['import_id']}/records").json()["items"]
+    reasons = {None: "missing_amount", "0": "zero_amount", "7.00": "transaction_valid", "2.50": "transaction_valid"}
+    assert [(row["source_row"], row["reason_code"]) for row in rows] == [
+        (2, "transaction_valid"), (3, reasons[parent_amount]), (4, reasons[leaf_amount]), (5, "transaction_valid")]
+
+
+def test_public_competing_opaque_header_waits_for_clear_boundary(client, make_case, monkeypatch):
+    case = make_case("Synthetic partially competing header")
+    base = f"/api/v1/cases/{case}"
+    headings = ["交易日期", "付款账号", "收款账号", "交易金额", "附列甲", "附列乙", "附列丙", "附列丁"]
+    data = payload([
+        headings,
+        ["2026-01-01", "A", "B", "1.00", "", "", "", ""],
+        ["2026-01-02", "C", "付款方", "", "交易", "收款方", "本笔发生额", ""],
+        ["2026-01-03", "E", "账户标识", "", "年月日", "账户标识", "分", ""],
+        ["2026-01-04", "G", "Y", "3.50", "2026-01-09", "X", "5000", ""],
+        headings,
+        ["2026-01-05", "I", "J", "5.00", "", "", "", ""],
+    ])
+    monkeypatch.setattr(header_model.local_model, "suggest", reject_call)
+    response = client.post(base + "/imports/preview", files={"file": ("synthetic-competing.csv", data)})
+    assert response.status_code == 200, response.text
+    view = response.json()
+    expected = {("A", "B", "1.00"), ("I", "J", "5.00")}
+    assert {(row["payer_account"], row["payee_account"], row["amount"]) for row in view["preview"]} == expected
+    import_preview_cache.discard(view["import_id"])
+    assert complete(client, case, view)["result"]["ok"] == 2
+    rows = client.get(f"{base}/imports/{view['import_id']}/records").json()["items"]
+    assert [(row["source_row"], row["reason_code"], row["flow_id"]) for row in rows if 3 <= row["source_row"] <= 5] == [
+        (3, "ambiguous_region_header", None), (4, "ambiguous_region_header", None), (5, "ambiguous_region_header", None)]
+
+
+def test_tier_prefilter_skips_numeric_and_other_non_heading_cells(monkeypatch):
+    monkeypatch.setattr(header_regions, "_normalize", reject_call)
+    assert not header_regions.possible_tier_parent([
+        "2026-01-01", "0001234567", " １２３ ", " -301.00", 1, "张三", "USD",
+        "交易" + " " * 63,
+    ])
+
+
 @pytest.mark.parametrize("placement", ["first-region", "later-region", "only-region"])
 def test_public_sign_declaration_requires_a_single_proven_region(client, make_case, monkeypatch, placement):
     cid = make_case("Synthetic sign convention across regions")

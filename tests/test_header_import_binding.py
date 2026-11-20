@@ -1,5 +1,6 @@
 """Synthetic integration checks for frozen, case-bound header interpretations."""
 import asyncio
+import hashlib
 import json
 import threading
 import time
@@ -7,15 +8,15 @@ import time
 import httpx
 import pytest
 
-from app import db, header_model, import_preview_cache
+from app import db, header_model, header_regions, import_preview_cache
 from app.main import app
 from app.services import imports
 from test_header_regions import LEAVES, NEW_ROW, PARENTS, payload, reject_call
 
 
-def preview(client, case, data):
+def preview(client, case, data, suffix=".csv"):
     response = client.post(f"/api/v1/cases/{case}/imports/preview",
-                           files={"file": ("synthetic-regions.csv", data, "text/csv")})
+                           files={"file": ("synthetic-regions" + suffix, data)})
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -65,7 +66,8 @@ def test_verified_plan_repreviews_and_commits_without_inference(client, make_cas
     assert records["items"][0]["reason_code"] == "conflicting_amount"
 
 
-def test_plan_binding_changes_fail_closed_before_writing(client, make_case, monkeypatch):
+@pytest.mark.parametrize("change", ["member", "unknown-version"])
+def test_plan_binding_changes_fail_closed_before_writing(client, make_case, monkeypatch, change):
     case = make_case("Synthetic frozen proof")
     monkeypatch.setattr(header_model.local_model, "suggest", reject_call)
     view = preview(client, case, payload([PARENTS, LEAVES, NEW_ROW]))
@@ -73,7 +75,14 @@ def test_plan_binding_changes_fail_closed_before_writing(client, make_case, monk
     url = f"/api/v1/cases/{case}/imports/{iid}"
     body = {key: view[key] for key in ("mode", "mapping")}
     captured = json.loads(db.q_raw("select request_json from import_sessions where import_id=?", [iid])[0]["request_json"])
-    captured["_header_plan"]["decisions"][0]["member_path"] = "another.csv"
+    plan = captured["_header_plan"]
+    if change == "member":
+        plan["decisions"][0]["member_path"] = "another.csv"
+    else:
+        plan["version"] = "funds-trace-header-regions-unsupported"
+        plan.pop("sha256_plan")
+        plan["sha256_plan"] = hashlib.sha256(json.dumps(
+            plan, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
     db.x("update import_sessions set request_json=? where import_id=?", [json.dumps(captured), iid])
     assert client.post(url + "/preview", json=body).status_code == 409
     assert client.post(url + "/commit", json=body).status_code == 200
@@ -81,6 +90,62 @@ def test_plan_binding_changes_fail_closed_before_writing(client, make_case, monk
     assert (job["stage"], job["error_code"]) == ("error", "import_integrity_failed")
     assert db.q_raw("select count(*) n from flows where case_id=?", [case])[0]["n"] == 0
     assert db.q_raw("select count(*) n from import_sources where case_id=?", [case])[0]["n"] == 0
+
+
+@pytest.mark.parametrize("known_header_plan", [False, True], ids=["no-plan", "v1-plan"])
+def test_old_ready_header_versions_keep_frozen_interpretation(client, make_case, monkeypatch, known_header_plan):
+    monkeypatch.setattr(header_model.local_model, "suggest", reject_call)
+    old_case = make_case("Synthetic old ready")
+    new_case = make_case("Synthetic new ready")
+    rows = [
+        ["交易日期", "付款账号", "收款账号", "交易金额", "备注"],
+        ["2026-01-01", "ONE-A", "ONE-B", "1.00", ""],
+    ]
+    if known_header_plan:
+        rows.extend([
+            ["交易", "付款方", "收款方", "本笔发生额", "辅助"],
+            ["年月日", "账户标识", "账户标识", "元", "其他"],
+            ["2026-01-03", "KNOWN-A", "KNOWN-B", "4.00", ""],
+        ])
+    rows.extend([
+        ["交易", "收款方", "付款方", "本笔发生额", "辅助"],
+        ["年月日", "账户标识", "账户标识", "分", 1],
+        ["2026-01-02", "TWO-RECEIVES", "TWO-PAYS", "301", ""],
+    ])
+    data = payload(rows, ".xlsx")
+    policy = header_regions.HeaderRegionPolicy
+    with monkeypatch.context() as historical:
+        historical.setattr(header_regions, "HeaderRegionPolicy",
+                           lambda cancelled: policy(cancelled, version="funds-trace-header-regions-v1"))
+        old = preview(client, old_case, data, ".xlsx")
+    new = preview(client, new_case, data, ".xlsx")
+    for case, view, frozen_version, expected in (
+            (old_case, old, "funds-trace-header-regions-v1" if known_header_plan else None,
+             ("TWO-RECEIVES", "TWO-PAYS", "301.00")),
+            (new_case, new, "funds-trace-header-regions-v2", ("TWO-PAYS", "TWO-RECEIVES", "3.01"))):
+        iid = view["import_id"]
+        stored = json.loads(db.q_raw("select request_json from import_sessions where import_id=?", [iid])[0]["request_json"])
+        if frozen_version is None:
+            assert "_header_plan" not in stored and "header_plan_sha256" not in view["table_summary"]
+        else:
+            frozen = stored["_header_plan"]
+            assert frozen["version"] == frozen_version
+            encoded = json.dumps({key: value for key, value in frozen.items() if key != "sha256_plan"},
+                                 sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+            assert hashlib.sha256(encoded).hexdigest() == view["table_summary"]["header_plan_sha256"]
+        import_preview_cache.discard(iid)
+        base = f"/api/v1/cases/{case}"
+        url = f"{base}/imports/{iid}"
+        body = {key: view[key] for key in ("mode", "mapping")}
+        redone = client.post(url + "/preview", json=body)
+        assert redone.status_code == 200 and redone.json()["table_summary"] == view["table_summary"], redone.text
+        assert client.post(url + "/commit", json=body).status_code == 200
+        job = done(client, url)
+        assert job["stage"] == "done", job
+        assert job["result"]["table_summary"].get("header_plan_sha256") == view["table_summary"].get("header_plan_sha256")
+        actual = client.get(base + "/flows", params={"granularity": "observations"}).json()["items"]
+        selected, = [row for row in actual if row["trade_time"].startswith("2026-01-02")]
+        assert (selected["raw_payer_account"], selected["raw_payee_account"], selected["amount"]) == expected
 
 
 @pytest.mark.parametrize("when", ["connected", "before-model", "during-model", "before-publish"])

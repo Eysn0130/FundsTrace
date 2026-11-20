@@ -922,11 +922,9 @@ def _validate_pdf_request(body):
         raise ServiceError(422, "invalid_pdf_mapping", "PDF 候选仅供复核，不能设置流水映射或主账号")
 
 
-def _header_snapshot(session, profile, decisions):
-    from app.header_regions import VERSION
-
+def _header_snapshot(session, profile, decisions, version):
     binding = {key: session[key] for key in ("case_id", "import_id", "sha256", "suffix", "surface")}
-    payload = {"version": VERSION, **binding, "profile": profile, "decisions": decisions}
+    payload = {"version": version, **binding, "profile": profile, "decisions": decisions}
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
     if len(encoded) > 256 * 1024:
         raise ServiceError(422, "header_review_limit", "待识别的表头区域过多，请拆分原件后重新预览")
@@ -937,12 +935,14 @@ def _replay_headers(session, cancelled):
     frozen = json.loads(session.get("request_json") or "{}").get("_header_plan")
     if frozen is None:
         return None
-    from app.header_regions import HeaderRegionPolicy
+    from app.header_regions import HeaderRegionPolicy, VERSION_V1, VERSION_V2
 
     decisions = frozen.get("decisions") if isinstance(frozen, dict) else None
-    if not isinstance(decisions, list) or frozen != _header_snapshot(session, _table_profile(session), decisions):
+    version = frozen.get("version") if isinstance(frozen, dict) else None
+    if (version not in (VERSION_V1, VERSION_V2) or not isinstance(decisions, list)
+            or frozen != _header_snapshot(session, _table_profile(session), decisions, version)):
         raise import_validation.IntegrityError("frozen header interpretation has wrong binding")
-    return HeaderRegionPolicy(cancelled, replay=decisions)
+    return HeaderRegionPolicy(cancelled, version=version, replay=decisions)
 
 
 def _check_header_replay(policy, session, parsed):
@@ -1170,7 +1170,7 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
             if is_pdf:
                 request["_pdf_plan"] = pdf_plan
             if policy is not None and policy.decisions:
-                frozen = _header_snapshot(session, table_plan["profile"], policy.decisions)
+                frozen = _header_snapshot(session, table_plan["profile"], policy.decisions, policy.version)
                 request["_header_plan"] = frozen
                 table_plan["header_plan_sha256"] = frozen["sha256_plan"]
         else:
