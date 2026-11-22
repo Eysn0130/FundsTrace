@@ -207,7 +207,7 @@ def test_canvas_edge_opens_unanchored_and_uses_only_selected_direction_members(c
     reverse = next(edge for edge in current["edges"] if edge["total"] == "2100.00")
     payload = {"case_id": cid, "source": forward["source"], "target": forward["target"],
                "forward_ids": list(map(str, forward["ids"])), "reverse_ids": list(map(str, reverse["ids"])),
-               "analysis_revision": current["analysis_revision"]}
+               "analysis_revision": current["analysis_revision"], "membership_digest": current["membership_digest"]}
     response = client.post("/api/context/edge", json=payload)
     assert response.status_code == 200, response.text
     result = response.json()
@@ -242,5 +242,6 @@ def test_canvas_edge_opens_unanchored_and_uses_only_selected_direction_members(c
     # two directions are still tracked and source evidence has not changed.
     track(client, cid, [mirrors[0]])
     assert graph(client, cid)["analysis_revision"] == payload["analysis_revision"]
+    assert client.post("/api/context/edge", json=payload).status_code == 409
     stale = client.post("/api/context/summary", json={"case_id": cid, "flow_ids": []}, headers=headers)
     assert stale.status_code == 409

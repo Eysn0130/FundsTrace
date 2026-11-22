@@ -34,18 +34,18 @@ _VALID_FOR_SECONDS = 900
 _EDGE_RELATED_LIMIT = 500
 
 
-def _membership(case_id, canvas_id):
+def canvas_membership(case_id, canvas_id):
     return db.q_raw("""select sha256(coalesce(string_agg(flow_id::varchar,',' order by flow_id),''))
         as membership_digest from tracked_flows where case_id=? and canvas_id=?""",
         [case_id, canvas_id])[0]["membership_digest"]
 
 
-def _issue(case_id, canvas_id, anchor_id, revision, rows, forward, reverse, *, from_edge=False):
+def _issue(case_id, canvas_id, anchor_id, revision, rows, forward, reverse, *, membership=None):
     while len(_reviews) >= _MAX_OPEN:
         del _reviews[next(iter(_reviews))]
     token = uuid4().hex
     _reviews[token] = Review(case_id, canvas_id, anchor_id, revision, frozenset(rows),
-                             monotonic() + _VALID_FOR_SECONDS, _membership(case_id, canvas_id) if from_edge else None,
+                             monotonic() + _VALID_FOR_SECONDS, membership,
                              tuple(frozenset(row["id"] for row in direction) for direction in (forward, reverse)))
     return token
 
@@ -58,7 +58,7 @@ def _require(token, case_id, canvas_id, *, anchor_id=None):
         raise HTTPException(409, "核对窗口已失效，请重新打开核对")
     if analysis_snapshot.revision(case_id) != review.revision:
         raise HTTPException(409, "流水来源或关联已更新，请重新打开核对")
-    if review.canvas_membership is not None and _membership(case_id, canvas_id) != review.canvas_membership:
+    if review.canvas_membership is not None and canvas_membership(case_id, canvas_id) != review.canvas_membership:
         raise HTTPException(409, "图谱上的关系成员已更新，请重新打开核对")
     return review
 
@@ -399,6 +399,9 @@ def edge(body, context_reader, score):
     revision = analysis_snapshot.revision(case_id)
     if revision != body.analysis_revision:
         raise HTTPException(409, "图谱依据已更新，请刷新后核对")
+    membership = canvas_membership(case_id, canvas_id)
+    if membership != body.membership_digest:
+        raise HTTPException(409, "图谱上的关系成员已更新，请刷新后核对")
     forward = _edge_members(case_id, canvas_id, left, right, body.forward_ids)
     reverse = _edge_members(case_id, canvas_id, right, left, body.reverse_ids) if body.reverse_ids else []
     rows = {row["id"]: row for row in (*forward, *reverse)}
@@ -432,7 +435,7 @@ def edge(body, context_reader, score):
             suggestions = {key: [item for item in items if set(item["ids"]) <= eligible] for key, items in proposals.items()}
 
     cards = _cards(rows, left, right)
-    token = _issue(case_id, canvas_id, 0, revision, rows, front_money, back_money, from_edge=True)
+    token = _issue(case_id, canvas_id, 0, revision, rows, front_money, back_money, membership=membership)
     return {"anchor": {**forward[0], "id": None}, "analysis_revision": revision, "rows": _wire_rows(rows),
             "ordering": {"status": "partial" if limited else "ok", "reasons": ["edge_context_limit"] if limited else []},
             "suggestions": suggestions, "review": {"token": token, "kind": "edge", "reference": reference, "cards": cards,

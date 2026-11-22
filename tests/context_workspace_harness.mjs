@@ -153,7 +153,7 @@ function harness() {
   const requests = [], trackCalls = [], reviewWrites = [], notices = [];
   let network = async () => { throw new Error('Unexpected request'); }, tracker = async () => true;
   const state = { caseId: 1, caseGeneration: 1, canvasId: 0, canvasGeneration: 1, ctx: null, tracked: new Set([12]),
-    lastGraph: { nodes: [], edges: [], analysis_revision: 'a'.repeat(32) }, graphView: { revision: 0 }, search: { page: 1 }, cases: [{ id: 1, name: '合成甲案' }, { id: 2, name: '合成乙案' }] };
+    lastGraph: { nodes: [], edges: [], analysis_revision: 'a'.repeat(32), membership_digest: 'b'.repeat(64) }, graphView: { revision: 0 }, search: { page: 1 }, cases: [{ id: 1, name: '合成甲案' }, { id: 2, name: '合成乙案' }] };
   const window = new Element('#window'); window.appendChild(document.root);
   window.location = { href: 'http://synthetic.invalid/?case_id=1' }; window.history = { replaceState(_state, _title, url) { window.location.href = String(url); } };
   const fetch = async (path, options) => {
@@ -318,7 +318,7 @@ test('aggregate review starts with no anchor and disables direction modes until 
   data.anchor = { ...data.anchor, id: null };
   data.review.kind = 'edge';
   h.network(async () => data);
-  await h.run("openContext(null, {view: state.graphView, revision: 0, source: 'SYN-A', target: 'SYN-B', forward_ids: ['12'], reverse_ids: [], analysis_revision: state.lastGraph.analysis_revision})");
+  await h.run("openContext(null, {view: state.graphView, revision: 0, source: 'SYN-A', target: 'SYN-B', forward_ids: ['12'], reverse_ids: [], analysis_revision: state.lastGraph.analysis_revision, membership_digest: state.lastGraph.membership_digest})");
   assert.equal(h.requests[0].path, '/api/context/edge');
   assert.equal(h.state.ctx.flowId, null);
   assert.equal(h.element('ctxMode-source').disabled, true);

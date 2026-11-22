@@ -4699,7 +4699,8 @@ function bindEdgeWorkspaceUI() {
       closeEdgeMenu(false);
       void openContext(null, { view: workspace.view, revision: workspace.revision,
         source: workspace.source, target: workspace.target, forward_ids: workspace.ids.map(String),
-        reverse_ids: reverseIds.map(String), analysis_revision: state.lastGraph.analysis_revision });
+        reverse_ids: reverseIds.map(String), analysis_revision: state.lastGraph.analysis_revision,
+        membership_digest: state.lastGraph.membership_digest });
       return;
     }
     if (button.classList.contains('edge-more')) openEdgeMenu(button);
@@ -4738,7 +4739,7 @@ function contextIsCurrent(request, context) {
 function contextEdgeIsCurrent(request) {
   const edge = request.edge;
   return !edge || (edge.view === state.graphView && edge.revision === state.graphView.revision
-    && edge.analysis_revision === state.lastGraph.analysis_revision);
+    && edge.analysis_revision === state.lastGraph.analysis_revision && edge.membership_digest === state.lastGraph.membership_digest);
 }
 
 function contextQuery(context) {
@@ -4856,9 +4857,9 @@ async function loadContext() {
   let value;
   if (request.edge) {
     if (!contextEdgeIsCurrent(request)) throw new Error('图谱已更新，请重新打开追踪核对');
-    const { source, target, forward_ids, reverse_ids, analysis_revision } = request.edge;
+    const { source, target, forward_ids, reverse_ids, analysis_revision, membership_digest } = request.edge;
     value = await api('/api/context/edge', { method: 'POST', ...jsonOpts({
-      case_id: context.caseId, canvas_id: context.canvasId || 0, source, target, forward_ids, reverse_ids, analysis_revision,
+      case_id: context.caseId, canvas_id: context.canvasId || 0, source, target, forward_ids, reverse_ids, analysis_revision, membership_digest,
     }) });
   } else {
     value = await api(`/api/context/${encodeURIComponent(request.flowId)}?review=true&x=${request.x}&${contextQuery(context)}`);

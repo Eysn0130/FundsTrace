@@ -755,6 +755,7 @@ def _graph(case_id: int, canvas_id: int, view=None):
     current_resolution = evidence_resolution.summary(case_id)
     from . import source_ledger
     result = {"analysis_revision": analysis_snapshot.revision(case_id),
+            "membership_digest": trace_review.canvas_membership(case_id, canvas_id),
             "funds": rollups[(3, None, None)],
             "case_event_summary": event_resolution.summary(case_id),
             "resolution_revision": (current_resolution or {}).get("revision"), "resolution": current_resolution,
@@ -1110,6 +1111,7 @@ class EdgeReviewIn(BaseModel):
     forward_ids: list[Annotated[int, Field(gt=0, lt=2**63)]] = Field(min_length=1, max_length=1024)
     reverse_ids: list[Annotated[int, Field(gt=0, lt=2**63)]] = Field(default_factory=list, max_length=1024)
     analysis_revision: str = Field(pattern=r"^[0-9a-f]{32}$")
+    membership_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 @app.post("/api/context/edge")
