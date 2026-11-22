@@ -1743,11 +1743,14 @@ def review_records(case_id, source_id, member_path, view='all', page=1, page_siz
         receipt = json.loads(session['result_json'] or '{}') if session else {}
         summary = receipt.get('table_summary') or {}
         documents = [document for document in summary.get('documents', []) if document['member_path'] == member_path]
-        document = documents[0] if documents else {'header_row': 1} if source['parser_version'] in feedback_import.SUPPORTED_PROFILES else {}
+        feedback = source['parser_version'] in feedback_import.SUPPORTED_PROFILES
+        document = documents[0] if documents else {'header_row': 1} if feedback else {}
         evidence = [entry for entry in summary.get('mapping_evidence', []) if entry.get('member_path') == member_path]
-        if not evidence:
+        feedback_transaction = feedback and members[0]['role'] == 'transaction'
+        if (not summary.get('documents') and not summary.get('mapping_evidence')
+                and (feedback_transaction or members[0]['role'] == 'table')):
             evidence = [{'field': field, 'column': column} for field, column in json.loads(source['mapping_json']).items()]
-        if source['parser_version'] in feedback_import.SUPPORTED_PROFILES:
+        if feedback_transaction:
             # The closed feedback schema reads this status independently of its
             # fixed financial MAPPING. This is display evidence, not a remap.
             evidence.append({'field': 'status', 'column': '交易是否成功'})
