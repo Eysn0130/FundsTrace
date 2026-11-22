@@ -536,7 +536,7 @@ def _feedback_journals(check, paths):
         _invalid("反馈包处置与流水来源不一致")
 
 
-_TIERED_DETAILS = {table_tiered_headers.PROOF_FIELD, table_tiered_headers.BINDING_FIELD,
+_TIERED_DETAILS = {table_tiered_headers.PROOF_FIELD, table_tiered_headers.LEAF_PROOF_FIELD, table_tiered_headers.BINDING_FIELD,
                    table_sign_declarations.DIRECTION_CODE_FIELD, table_tiered_headers.CODE_ISSUE_FIELD,
                    table_tiered_headers.CODE_FIELD}
 
@@ -611,6 +611,13 @@ class _TieredJournal:
             return
         if table_tiered_headers.PROOF_FIELD in fields:
             _invalid("分层表头证明只能保存于父行")
+        if table_tiered_headers.LEAF_PROOF_FIELD in fields:
+            leaf = table_tiered_headers.checked_leaf_proof(details[table_tiered_headers.LEAF_PROOF_FIELD])
+            if (reason != "ambiguous_region_header" or disposition != "unresolved" or leaf is None
+                    or leaf["source_row"] != row or fields != {table_tiered_headers.LEAF_PROOF_FIELD}):
+                _invalid("无父标题的子表头与物理边界不一致")
+            self.has_evidence = True
+            fields.clear()
         if reason == "ambiguous_region_header":
             self._end_region(row - 1)
             self.ambiguous = True
@@ -820,7 +827,7 @@ def _table_journals(check, paths):
                 detail_fields |= {event_resolution.DETAIL_FIELD, event_resolution.LEDGER_FIELD}
             if (not isinstance(details, dict) or not set(details).issubset(detail_fields)
                     or any(not isinstance(value, str) or len(value.encode("utf-8")) > (
-                        source_ledger.MAX_BYTES if field == source_ledger.FIELD else 8192 if field == evidence_resolution.DETAIL_FIELD else table_tiered_headers.MAX_BYTES if field == table_tiered_headers.PROOF_FIELD else 2048 if field in {bank_posting_pairs.FIELD, event_resolution.DETAIL_FIELD, table_import.table_sign_declarations.DETAIL_FIELD, "source_field_evidence", "source_time_evidence"} else 1024)
+                        source_ledger.MAX_BYTES if field == source_ledger.FIELD else 8192 if field == evidence_resolution.DETAIL_FIELD else table_tiered_headers.MAX_BYTES if field in {table_tiered_headers.PROOF_FIELD, table_tiered_headers.LEAF_PROOF_FIELD} else 2048 if field in {bank_posting_pairs.FIELD, event_resolution.DETAIL_FIELD, table_import.table_sign_declarations.DETAIL_FIELD, "source_field_evidence", "source_time_evidence"} else 1024)
                            for field, value in details.items())):
                 _invalid("自动表格语义元数据无效")
             ledger_entry = None

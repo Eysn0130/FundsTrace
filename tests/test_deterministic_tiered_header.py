@@ -8,7 +8,7 @@ from openpyxl import Workbook
 import pytest
 import xlwt
 
-from app import table_tiered_headers as tiered
+from app import import_preview_cache, table_tiered_headers as tiered
 from test_feedback31_reference import COLUMNS, row as bank_record
 from test_feedback_import_api import complete
 
@@ -63,6 +63,93 @@ def _journal(client, case_id, view):
     response = client.get(f"{base}/records")
     assert response.status_code == 200, response.text
     return response.json()["items"]
+
+
+def _cold_repreview(client, case_id, view):
+    import_preview_cache.discard(view["import_id"])
+    base = f"/api/v1/cases/{case_id}/imports/{view['import_id']}"
+    response = client.post(f"{base}/preview", json={"mode": view["mode"], "mapping": view["mapping"]})
+    assert response.status_code == 200, response.text
+    assert response.json()["preview"] == view["preview"]
+    assert response.json()["table_summary"] == view["table_summary"]
+    import_preview_cache.discard(view["import_id"])
+
+
+def test_blank_proved_transaction_time_cannot_inherit_auxiliary_timestamp(client, make_case):
+    case_id = make_case("Synthetic blank verified transaction date")
+    parents = ("交易", "收款方", "付款方", "本笔发生额", "导出")
+    leaves = ("年月日", "账户标识", "账户标识", "分", "timestamp")
+    rows = [parents, leaves, ("", "SYN-REC", "SYN-PAY", "301", "2026-07-09"),
+            ("2026-07-08", "SYN-PAIR2-REC", "SYN-PAIR2-PAY", "301", "2026-07-09 14:10:20")]
+    view = _post(client, case_id, rows)
+    assert [(flow["source_row"], flow["amount"]) for flow in view["preview"]] == [(4, "3.01")]
+    assert view["preview"][0]["trade_time"].startswith("2026-07-08")
+    _cold_repreview(client, case_id, view)
+    assert [entry["reason_code"] for entry in _journal(client, case_id, view)] == [
+        tiered.PARENT_REASON, "unsupported_time_role", "transaction_valid"]
+    flows = client.get(f"/api/v1/cases/{case_id}/flows").json()["items"]
+    assert [row["payer_account"] for row in flows] == ["SYN-PAIR2-PAY"]
+
+
+@pytest.mark.parametrize("previous_tier", (False, True))
+def test_orphan_lower_header_stops_old_amount_party_and_direction_rules(client, make_case, previous_tier):
+    case_id = make_case("Synthetic orphan lower heading")
+    normal = ("交易日期", "付款方账号", "收款方账号", "交易金额")
+    prefix = [("交易", "付款方", "收款方", "本笔发生额"), ("年月日", "账户标识", "账户标识", "元")] if previous_tier else [normal]
+    rows = [*prefix, ("2026-01-01", "SYN-OLD-PAY", "SYN-OLD-REC", "10"), ("", "", "", ""),
+            ("年月日", "账户标识", "账户标识", "分"), ("2026-01-02", "SYN-NEW-REC", "SYN-NEW-PAY", "301"),
+            normal, ("2026-01-03", "SYN-LATER-PAY", "SYN-LATER-REC", "20")]
+    view = _post(client, case_id, rows)
+    assert view["table_summary"]["profile"] == tiered.PROFILE
+    assert [(row["payer_account"], row["amount"]) for row in view["preview"]] == [
+        ("SYN-OLD-PAY", "10.00"), ("SYN-LATER-PAY", "20.00")]
+    _cold_repreview(client, case_id, view)
+    journal = _journal(client, case_id, view)
+    assert [r["reason_code"] for r in journal[-4:]] == [
+        "ambiguous_region_header", "ambiguous_region_header", "repeated_header", "transaction_valid"]
+    exported = client.get(f"/api/cases/{case_id}/export")
+    assert exported.is_success, exported.text
+    restored = client.post("/api/cases/import", files={"file": ("synthetic.fundcase", exported.content)})
+    assert restored.is_success, restored.text
+    flows = client.get(f"/api/v1/cases/{restored.json()['case_id']}/flows").json()["items"]
+    assert {(flow["payer_account"], flow["amount"]) for flow in flows} == {
+        ("SYN-OLD-PAY", "10.00"), ("SYN-LATER-PAY", "20.00")}
+
+
+def test_orphan_lower_header_separates_late_direction_declarations(client, make_case):
+    case_id = make_case("Synthetic orphan codebook boundary")
+    rows = [PARENT_B, LEAF_B, _movement("2026-01-03", "0", OUT_FIRST),
+            ("",) * len(LEAF_B), LEAF_B, _movement("2026-01-04", "0", IN_FIRST),
+            PARENT_B, LEAF_B, _movement("2026-01-05", "0", IN_FIRST)]
+    view = _post(client, case_id, rows)
+    assert [(r["source_row"], r["payer_account"]) for r in view["preview"]] == [(3, "SYN-OWN"), (9, "SYN-PEER")]
+    records = {r["source_row"]: r for r in _journal(client, case_id, view)}
+    assert records[6]["reason_code"] == "ambiguous_region_header"
+    assert json.loads(records[3]["details"]["direction_codebook"])["last_row"] == 4
+    assert json.loads(records[9]["details"]["direction_codebook"])["header_row"] == 8
+    exported = client.get(f"/api/cases/{case_id}/export")
+    assert exported.is_success, exported.text
+    restored = client.post("/api/cases/import", files={"file": ("synthetic.fundcase", exported.content)})
+    assert restored.is_success, restored.text
+
+
+def test_orphan_preamble_never_replaces_the_native_statement_scope(client, make_case):
+    case_id = make_case("Synthetic orphan headings before native statement")
+    leaf = ("年月日", "账户标识", "账户标识", "分", *("",) * (len(COLUMNS) - 4))
+    data = bank_record()
+    view = _post(client, case_id, [leaf, leaf, COLUMNS, tuple(data.get(column, "") for column in COLUMNS)])
+    document, = view["table_summary"]["documents"]
+    assert document["header_rows"] == [1, 2, 3]
+    assert document["header_row"] == 3
+    assert view["table_summary"]["profile"] == tiered.BANK_PROFILE
+    _cold_repreview(client, case_id, view)
+    records = _journal(client, case_id, view)
+    assert records[-1]["disposition"] == "imported"
+    assert json.loads(records[-1]["details"]["source_ledger_evidence"])["header_scope"] == 3
+    exported = client.get(f"/api/cases/{case_id}/export")
+    assert exported.is_success, exported.text
+    restored = client.post("/api/cases/import", files={"file": ("synthetic.fundcase", exported.content)})
+    assert restored.is_success, restored.text
 
 
 @pytest.mark.parametrize(("suffix", "profile"), ((".csv", tiered.PROFILE), (".tsv", tiered.PROFILE),

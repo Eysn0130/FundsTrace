@@ -1349,6 +1349,8 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
         time_candidates = candidates
         if any("time_role" in item for field in ("trade_time", "time_part") for item in candidates.get(field, [])):
             time_candidates = {field: list(items) for field, items in candidates.items()}
+            named_tier_transaction = any(item.get("region_source_role") == "transaction_time"
+                                         for item in candidates.get("trade_time", ()))
             explicit_transaction = any(item.get("time_role") == "transaction" and _text(_value(row, item))
                 and (_time(_value(row, item)) is not None and not _date_only(_value(row, item))
                      or table_time_formats.source_time_value(_text(_value(row, item)))["basis"] == "explicit_offset")
@@ -1358,7 +1360,8 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
                 selected = []
                 for item in candidates.get(field, []):
                     value = _text(_value(row, item))
-                    if item.get("time_role") in {"posting", "receipt", "settlement"}:
+                    role = item.get("time_role")
+                    if role in {"posting", "receipt", "settlement"} or named_tier_transaction and role != "transaction":
                         posting |= bool(value)
                         continue
                     if explicit_transaction and item.get("time_role") == "unspecified" and not item.get("time_corroborates"):
@@ -2322,7 +2325,7 @@ def _financial_regions(sheets, profile, tiers_by_sheet=None):
     """Use the interpreter's region guards on the already decoded source."""
     for sheet in sheets:
         rows = sheet["rows"]
-        tiers = (tiers_by_sheet or {}).get(sheet["path"], {})
+        tiers, orphans = (tiers_by_sheet or {}).get(sheet["path"], ({}, {}))
         header_no, proof = _initial_region(rows, profile, tiers)
         if header_no is None:
             continue
@@ -2346,7 +2349,7 @@ def _financial_regions(sheets, profile, tiers_by_sheet=None):
                                                             tiered_proof=dict(proof))
                 if mode and error is None:
                     yield headers, candidates
-            elif _overlapping_header(row, candidates, profile):
+            elif _orphan_tier_boundary(row, orphans.get(index + 1), candidates) or _overlapping_header(row, candidates, profile):
                 _remember_layout(ambiguous_layouts, candidates)
                 _remember_layout(ambiguous_layouts, _candidates(row, profile))
             elif ((ambiguous_layouts and _unmistakable_header(row, profile, ambiguous_layouts))
@@ -2411,9 +2414,11 @@ def _source_sign_contracts(sheets, profile, tiers_by_sheet=None):
         headers = rows[header_no] if header_no is not None else []
         candidates = _candidates(headers, profile)
         amount = candidates.get("amount", [])
-        tiers = (tiers_by_sheet or {}).get(sheet["path"], {})
-        has_tier = header_no is not None and any(parent <= header_no + 1 or _tier_boundary(rows, parent, tiers, candidates)
-                                                  for parent in tiers)
+        tiers, orphans = (tiers_by_sheet or {}).get(sheet["path"], ({}, {}))
+        has_tier = header_no is not None and (any(parent <= header_no + 1 or _tier_boundary(rows, parent, tiers, candidates)
+                                                   for parent in tiers)
+            or any(index > header_no + 1 and _orphan_tier_boundary(rows[index - 1], proof, candidates)
+                   for index, proof in orphans.items()))
         single_region = header_no is not None and not any(
             _later_header(row, candidates, profile) or _overlapping_header(row, candidates, profile)
             for row in rows[header_no + 1:]) and not has_tier
@@ -2473,24 +2478,22 @@ def _literal_cell(value):
 
 
 def _potential_tiers(rows):
-    tiers = {}
-    for index in range(len(rows) - 1):
-        proof = table_tiered_headers.inspect(rows[index], rows[index + 1], index + 1, _literal_cell)
-        if proof is not None:
-            tiers[index + 1] = proof
-    return tiers
+    tiers, orphans = {}, {}
+    for index, row in enumerate(rows, 1):
+        following = rows[index] if index < len(rows) else None
+        if proof := table_tiered_headers.inspect(row, following, index, _literal_cell):
+            tiers[index] = proof
+        if proof := table_tiered_headers.leaf_proof(row, index, _literal_cell):
+            orphans[index] = proof
+    return tiers, orphans
 
 
-def _tier_boundary(rows, index, tiers, candidates):
-    proof = tiers.get(index)
-    if proof is None:
-        return None
+def _tier_overlap(rows, proof_indices, candidates):
     # A source row with time and money at the active physical positions
     # remains a transaction candidate, even if its auxiliary cells say 日期.
-    proof_indices = {claim[0] - 1 for claim in proof["columns"]}
     identity_columns = [item for field in _REGION_IDENTITIES for item in candidates.get(field, ())]
     dated_identity = False
-    for row in rows[index - 1:index + 1]:
+    for row in rows:
         financial, _ = _financial_candidates(row, candidates)
         dates = {field: [item for item in financial.get(field, ()) if _literal_cell(_value(row, item)) is not None]
                  for field in ("trade_time", "time_part")}
@@ -2500,17 +2503,34 @@ def _tier_boundary(rows, index, tiers, candidates):
                 _literal_cell(_value(row, item)) is not None and
                 _money(_value(row, item), item)[0] is not None
                 for field in ("amount", "income_amt", "expense_amt") for item in financial.get(field, [])):
-            return None
+            return "data"
         dated_identity |= any(item["index"] not in proof_indices and _text(_literal_cell(_value(row, item)))
                               for item in identity_columns)
     if dated_identity:
-        if not proof_indices.intersection(item["index"] for items in candidates.values() for item in items):
-            return None
-        return {**proof, "status": "ambiguous"}
-    return proof
+        return "competing" if proof_indices.intersection(
+            item["index"] for items in candidates.values() for item in items) else "data"
+    return "header"
 
 
-def _region_codebook(rows, header_row, headers, candidates, tiers, profile, last_mentions):
+def _tier_boundary(rows, index, tiers, candidates):
+    proof = tiers.get(index)
+    if proof is None:
+        return None
+    indices = {claim[0] - 1 for claim in proof["columns"]}
+    overlap = _tier_overlap(rows[index - 1:index + 1], indices, candidates)
+    if overlap == "data":
+        return None
+    return {**proof, "status": "ambiguous"} if overlap == "competing" else proof
+
+
+def _orphan_tier_boundary(row, proof, candidates):
+    if proof is None:
+        return None
+    indices = {claim[0] - 1 for claim in proof["columns"]}
+    return proof if _tier_overlap((row,), indices, candidates) != "data" else None
+
+
+def _region_codebook(rows, header_row, headers, candidates, tiers, orphans, profile, last_mentions):
     roles = candidates.get("direction", [])
     if len(roles) != 1:
         return None
@@ -2535,6 +2555,7 @@ def _region_codebook(rows, header_row, headers, candidates, tiers, profile, last
     for offset in range(header_row, end):
         row = rows[offset]
         if (_tier_boundary(rows, offset + 1, tiers, candidates)
+                or _orphan_tier_boundary(row, orphans.get(offset + 1), candidates)
                 or _overlapping_header(row, candidates, profile) or _later_header(row, candidates, profile)):
             end = offset
             break
@@ -2638,7 +2659,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
             if profile in EVIDENCE_PROFILES:
                 raw_rows.clear()
             continue
-        tiers = tiered_by_sheet.get(sheet["path"], {})
+        tiers, orphans = tiered_by_sheet.get(sheet["path"], ({}, {}))
         header_no, initial_tier = _initial_region(raw_rows, profile, tiers)
         headers = raw_rows[header_no] if header_no is not None else []
         candidates, labels, actual_mode, current_mapping, region_error, active_reference_policy = _region(
@@ -2647,7 +2668,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
         if initial_tier is not None:
             plan["profile"] = _TIERED_SUCCESSORS[profile]
         last_mentions = {}
-        direction_book = (_region_codebook(raw_rows, header_no + 1, headers, candidates, tiers, profile, last_mentions)
+        direction_book = (_region_codebook(raw_rows, header_no + 1, headers, candidates, tiers, orphans, profile, last_mentions)
                           if use_tiered and header_no is not None and region_error is None else None)
         if direction_book is not None:
             plan["profile"] = _TIERED_SUCCESSORS[profile]
@@ -2660,7 +2681,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
             selected = True
         plan["mapping_evidence"].extend(_region_evidence(headers, candidates, labels, sheet["path"],
                                                         header_no + 1 if header_no is not None else None, direction_book))
-        document = {"member_path": sheet["path"], "sheet": sheet["name"], "header_row": header_no + 1 if header_no is not None else None, "header_rows": [header_no + 1] if header_no is not None else [], "columns": labels, "mapping": current_mapping, "mode": actual_mode or "", "source_rows": len(raw_rows), "row_count": len(raw_rows) - (1 if header_no is not None else 0)}
+        document = {"member_path": sheet["path"], "sheet": sheet["name"], "header_row": header_no + 1 if header_no is not None else None, "header_rows": [], "columns": labels, "mapping": current_mapping, "mode": actual_mode or "", "source_rows": len(raw_rows), "row_count": len(raw_rows) - (1 if header_no is not None else 0)}
         if any(item.get("reference_profile") == BANK_FEEDBACK_28_REFERENCE_PROFILE for item in candidates.get("trade_no", [])):
             document.update(reference_profile=BANK_FEEDBACK_28_REFERENCE_PROFILE,
                             source_text_profile="bank-feedback28-summary-remark-v1")
@@ -2683,11 +2704,13 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
         for index, row in enumerate(raw_rows, start=1):
             tier_boundary = (_tier_boundary(raw_rows, index, tiers, candidates)
                              if header_no is not None and index > header_no + 1 and index != pending_leaf else None)
+            orphan_boundary = _orphan_tier_boundary(row, orphans.get(index), candidates) if index != pending_leaf else None
             if profile in EVIDENCE_PROFILES or profile in {SOURCE_OBSERVATION_ARCHIVE_PROFILE, AUXILIARY_ROWS_ARCHIVE_PROFILE, *BANK_SOURCE_CSV_ARCHIVE_PROFILES}:
                 # A source row is consumed once. Keep the active header object,
                 # but release processed cells as the immutable plan is built.
                 raw_rows[index - 1] = None
             if header_no is not None and index == header_no + 1:
+                document["header_rows"].append(index)
                 continue
             number = len(plan["records"]) + 1
             key = record_key(sheet["path"], sheet["sha256"], index)
@@ -2709,7 +2732,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                 header_names, feedback_header_names = _region_row_headers(headers, profile)
                 pending_leaf = index + 1
                 document["header_rows"].append(pending_leaf)
-                direction_book = (_region_codebook(raw_rows, pending_leaf, headers, candidates, tiers, profile, last_mentions)
+                direction_book = (_region_codebook(raw_rows, pending_leaf, headers, candidates, tiers, orphans, profile, last_mentions)
                                   if region_error is None else None)
                 plan["mapping_evidence"].extend(_region_evidence(headers, candidates, labels, sheet["path"], pending_leaf, direction_book))
                 recorded_code_issue = False
@@ -2719,13 +2742,25 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                 disposition, reason = "non_transaction", table_tiered_headers.PARENT_REASON
                 details[table_tiered_headers.PROOF_FIELD] = table_tiered_headers.encode(tier_boundary)
                 plan["profile"] = _TIERED_SUCCESSORS[profile]
+            elif orphan_boundary is not None:
+                disposition, reason = "unresolved", "ambiguous_region_header"
+                details.update(financial_effect="undetermined", validation_issues=reason)
+                details[table_tiered_headers.LEAF_PROOF_FIELD] = table_tiered_headers.encode(orphan_boundary)
+                document["header_rows"].append(index)
+                plan["profile"] = _TIERED_SUCCESSORS[profile]
+                if header_no is None or index > header_no + 1:
+                    _remember_layout(ambiguous_layouts, candidates)
+                    direction_book = None
+                    tier_binding = None
             elif not any(_cell_present(value) for value in row):
                 disposition, reason = "non_transaction", "blank_record"
             elif header_no is not None and index < header_no + 1:
                 disposition, reason = "auxiliary", "preamble"
             elif header_no is None:
-                disposition, reason = "unresolved", "unknown_table"
+                disposition, reason = "unresolved", "ambiguous_region_header" if ambiguous_layouts else "unknown_table"
                 details["financial_effect"] = "undetermined"
+                if ambiguous_layouts:
+                    details["validation_issues"] = reason
             elif _overlapping_header(row, candidates, profile):
                 _remember_layout(ambiguous_layouts, candidates)
                 _remember_layout(ambiguous_layouts, _candidates(row, profile))
@@ -2742,7 +2777,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                     voucher_reference=voucher_reference, profile=profile)
                 source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
                 header_names, feedback_header_names = _region_row_headers(headers, profile)
-                direction_book = (_region_codebook(raw_rows, index, headers, candidates, tiers, profile, last_mentions)
+                direction_book = (_region_codebook(raw_rows, index, headers, candidates, tiers, orphans, profile, last_mentions)
                                   if use_tiered and region_error is None else None)
                 if direction_book is not None:
                     plan["profile"] = _TIERED_SUCCESSORS[profile]

@@ -8,6 +8,7 @@ import unicodedata
 
 PARENT_REASON = "tiered_header_parent"
 PROOF_FIELD = "tiered_header_evidence"
+LEAF_PROOF_FIELD = "orphan_tier_evidence"
 BINDING_FIELD = "tiered_header_binding"
 CODE_FIELD = "source_direction_code"
 CODE_ISSUE_FIELD = "direction_codebook_issue"
@@ -44,11 +45,20 @@ _UNITS = {"元": "1", "人民币元": "1", "yuan": "1", "角": "0.1", "jiao": "0
 _DIRECTIONS = frozenset(("方向", "收付方向", "借贷方向", "收支方向", "收付标志", "direction"))
 _MONEY_LABEL = re.compile(r"([^()/\[\]]+)(?:\(([^()]+)\)|\[([^\[\]]+)\]|/([^/]+))\Z")
 _PARENT_INITIALS = frozenset(key[0] for key in _PARENTS)
+_LEAF_TERMS = {**dict.fromkeys(_DATES, "time"), **dict.fromkeys(_IDS, "account"),
+               **dict.fromkeys(_UNITS, "money"), **dict.fromkeys(_DIRECTIONS, "direction")}
+_LEAF_INITIALS = frozenset(key[0] for key in _LEAF_TERMS)
 
 
 def _token(value):
     return "" if type(value) is not str or len(value) > 64 else "".join(
         unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def _has_initial(value, initials):
+    if type(value) is not str or not value or len(value) > 64:
+        return False
+    return unicodedata.normalize("NFKC", value.lstrip()[:1]).casefold() in initials
 
 
 def _money_label(token):
@@ -117,10 +127,7 @@ def inspect(parent, leaf, parent_row, literal):
 
 
 def _possible_parent(value):
-    if type(value) is not str or not value or len(value) > 64:
-        return False
-    first = value.lstrip()[:1]
-    return unicodedata.normalize("NFKC", first).casefold() in _PARENT_INITIALS and _money_label(_token(value))[0] in _PARENTS
+    return _has_initial(value, _PARENT_INITIALS) and _money_label(_token(value))[0] in _PARENTS
 
 
 def _domain(role):
@@ -133,6 +140,50 @@ def encode(proof):
 
 def binding(proof):
     return hashlib.sha256(encode(proof).encode("utf-8")).hexdigest()
+
+
+def leaf_proof(row, source_row, literal):
+    """Recognize generic leaves as a boundary without assigning their roles."""
+    if not 4 <= len(row) <= MAX_WIDTH:
+        return None
+    witnesses = {"time": [], "account": [], "money": [], "direction": []}
+    for index, value in enumerate(row, 1):
+        value = literal(value)
+        if not _has_initial(value, _LEAF_INITIALS):
+            continue
+        role = _LEAF_TERMS.get(_token(value))
+        if role and len(witnesses[role]) < (2 if role == "account" else 1):
+            witnesses[role].append([index, value])
+    count = len(witnesses["account"])
+    if not (witnesses["time"] and witnesses["money"] and (count == 2 or count == 1 and witnesses["direction"])):
+        return None
+    columns = witnesses["time"] + witnesses["account"] + witnesses["money"]
+    if count == 1:
+        columns += witnesses["direction"]
+    return {"version": 1, "source_row": source_row, "width": len(row), "columns": sorted(columns)}
+
+
+def checked_leaf_proof(encoded):
+    try:
+        proof = json.loads(encoded)
+    except (ValueError, TypeError, RecursionError):
+        return None
+    if (type(proof) is not dict or set(proof) != {"version", "source_row", "width", "columns"}
+            or type(proof["version"]) is not int or proof["version"] != 1
+            or type(proof["source_row"]) is not int or proof["source_row"] < 1
+            or type(proof["width"]) is not int or not 4 <= proof["width"] <= MAX_WIDTH
+            or type(proof["columns"]) is not list or len(proof["columns"]) != 4):
+        return None
+    values = [None] * proof["width"]
+    for claim in proof["columns"]:
+        if type(claim) is not list or len(claim) != 2:
+            return None
+        index, value = claim
+        if (type(index) is not int or not 1 <= index <= len(values)
+                or values[index - 1] is not None or type(value) is not str):
+            return None
+        values[index - 1] = value
+    return proof if leaf_proof(values, proof["source_row"], lambda value: value) == proof and encode(proof) == encoded else None
 
 
 def checked_proof(encoded):
