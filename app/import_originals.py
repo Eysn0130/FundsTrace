@@ -5,6 +5,7 @@ Coordinates and headers come from the frozen journal/receipt, not a new parse.
 """
 import csv
 from bisect import bisect_right
+from collections import Counter
 import datetime as dt
 import hashlib
 import io
@@ -328,10 +329,26 @@ def read_cells(source, suffix, member, document, evidence, positions, profile):
     else:
         rows, kinds = read(source)
     result, size = {}, 0
-    bindings = {}
+    by_position, by_name = {}, {}
     for entry in evidence:
-        if entry.get('field') and entry['field'] not in bindings.setdefault(entry.get('column'), []):
-            bindings[entry.get('column')].append(entry['field'])
+        header_row, column = entry.get('header_row'), entry.get('column_index')
+        if header_row is not None and column is not None:
+            fields = by_position.setdefault((str(header_row), str(column)), [])
+        elif header_row is None and column is None:
+            fields = by_name.setdefault(entry.get('column'), [])
+        else:
+            continue
+        if entry.get('field') and entry['field'] not in fields:
+            fields.append(entry['field'])
+    # Historical name-only evidence can identify a column in a single
+    # recorded header, provided its display label occurs exactly once.
+    if by_name and not by_position and len(headers) == 1:
+        header_row, = headers
+        names = table_import._columns(rows.get(header_row, []), profile)
+        counts = Counter(names)
+        for index, name in enumerate(names, 1):
+            if counts[name] == 1 and name in by_name:
+                by_position[str(header_row), str(index)] = by_name[name]
     for number in positions:
         if number not in rows:
             raise ValueError('原始行与已登记位置不一致')
@@ -340,7 +357,7 @@ def read_cells(source, suffix, member, document, evidence, positions, profile):
         cells = []
         for index, value in enumerate(rows[number]):
             header = names[index] if index < len(names) else f'原始第{index + 1}列'
-            fields = bindings.get(header, [])
+            fields = by_position.get((str(header_number), str(index + 1)), [])
             size += len(value.encode('utf-8')) + len(header.encode('utf-8'))
             if len(value) > 16384 or size > MAX_PAGE_BYTES:
                 raise ValueError('原始页内容较大，请另存原件查看')
