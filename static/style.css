@@ -1452,6 +1452,7 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 .context-matches .sg-main .mono, .context-matches .sg-basis { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
 .context-matches .sg-score { position: absolute; inset-block-start: 8px; inset-inline-end: 8px; color: var(--money-text); font-size: 13px; font-variant-numeric: tabular-nums; }
 .context-matches .sg-score b { color: inherit; font-weight: 550; }
+.context-matches .sg-judgment { display: block; margin-top: 4px; color: var(--text-primary); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 .context-matches .sg-evidence { display: block; margin-top: 5px; color: var(--text-primary); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 .context-matches .sg-empty { padding: 10px 2px; color: var(--muted); font-size: 12px; }
 .context-score-note { padding: 4px 9px; color: var(--muted); font-size: 12px; max-height: 100px; overflow: auto; }

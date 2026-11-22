@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from .. import analysis_snapshot, db, event_resolution, feedback_import, funds_projection
 from .. import import_originals, ledger_navigation, principal_evidence, source_ledger, transaction_time
-from . import imports
+from . import imports, trace_group_evidence
 from .cases import ServiceError
 
 
@@ -179,10 +179,6 @@ def _outline(row, locator):
     }
 
 
-def _clocked(row):
-    return {**row, "trade_time": transaction_time.text(transaction_time.clock(row))}
-
-
 def _decorate_rows(case_id, rows, roles):
     locators = {entry["flow_id"]: entry for entry in _locators(case_id, rows)}
     _recorded_counter_columns(case_id, locators)
@@ -259,18 +255,45 @@ def _lines(case_id, forward, reverse):
             "totals": _line_totals(out, incoming)}
 
 
-def _basis(observed, role):
-    stamps = list(dict.fromkeys(transaction_time.text(row["trade_time"]) for row in observed))
-    # The same day can be read in the table. Keep explicit dates across days.
-    if all(stamp[10:11] in {" ", "T"} and stamp[:10] == stamps[0][:10] for stamp in stamps):
-        stamps = [stamp[11:16] if len(stamp) == 19 and stamp.endswith(":00") else stamp[11:] for stamp in stamps]
-    times = "、".join(stamps) if len(stamps) <= 2 else f"{stamps[0]} 至 {stamps[-1]}"
-    if role == "source":
-        return f"{times} 的 {len(observed)} 条入账在本方锚点之前，本金来源待核。"
-    return f"{times} 的 {len(observed)} 条出账在本方锚点之后，本金去向待核。"
+def _evidence_locations(case_id, evidence):
+    ids = {int(key) for item in evidence for key in item["evidence_row_ids"]}
+    locations = {}
+    for locator in _locators(case_id, ids) if ids else ():
+        source = locator["source_id"]
+        locations[str(locator["flow_id"])] = {
+            **{key: locator[key] for key in ("filename", "sheet", "member_path", "source_row")},
+            "download_url": (f"/api/v1/cases/{case_id}/sources/{source}/file"
+                             if imports.source_is_available(case_id, source) else None),
+        }
+    for item in evidence:
+        item["locations"] = [locations[key] for key in item["evidence_row_ids"] if key in locations]
 
 
-def read(case_id, canvas_id, anchor_id, count, first, context_reader, score, *, overview_reference=False):
+def _clues(case_id, account, anchors, rows, role):
+    if not rows:
+        return []
+    party = "payer" if role == "source" else "payee"
+    groups = {}
+    for row in rows:
+        groups.setdefault(row[party + "_account"], []).append(row)
+    interval = trace_group_evidence.prepare(case_id, account, [*anchors, *rows])
+    items = []
+    for counter, entries in groups.items():
+        incoming, outgoing = (entries, anchors) if role == "source" else (anchors, entries)
+        details = trace_group_evidence.evidence(account, incoming, outgoing, interval)
+        row = entries[0]
+        items.append({"account": counter, "display_account": row.get(party + "_display_account"),
+                      "name": row.get(party + "_name") or "", "ids": [str(entry["id"]) for entry in entries],
+                      "anchor_ids": [str(entry["id"]) for entry in anchors],
+                      "score": details["score"], "cnt": len(entries), "currency": details["currency"],
+                      "total": details["observed_in" if role == "source" else "observed_out"],
+                      "evidence": details})
+    ranked = sorted(items, key=lambda item: -(item["score"] or 0))[:10]
+    _evidence_locations(case_id, [item["evidence"] for item in ranked])
+    return ranked
+
+
+def read(case_id, canvas_id, anchor_id, count, first, context_reader, *, overview_reference=False):
     anchor = first["anchor"]
     by_side = {first["side"]: first}
     for side in ("payer", "payee"):
@@ -304,13 +327,7 @@ def read(case_id, canvas_id, anchor_id, count, first, context_reader, score, *, 
             roles.setdefault(row["id"], []).append(role)
         if not overview_reference:
             principal[role] = principal_evidence.tracking_result(case_id, account, own, matching, role, own_entry=own)
-        ranked = score([_clocked(row) for row in matching], _clocked(own), limit=10)[role + "s"]
-        for item in ranked:
-            ids = item["ids"]
-            observed = _ordered([rows[key] for key in ids])
-            display = observed[0].get(("payer" if role == "source" else "payee") + "_display_account")
-            suggestions[role + "s"].append({**item, "display_account": display, "ids": list(map(str, ids)),
-                                               "evidence": {"basis": _basis(observed, role)}})
+        suggestions[role + "s"] = _clues(case_id, account, [own], matching, role)
 
     if overview_reference:
         return suggestions
@@ -393,7 +410,32 @@ def _edge_pair_badges(case_id, rows):
                 row.setdefault("pair_badge", "pending")
 
 
-def edge(body, context_reader, score):
+def _aggregate_edge_clues(case_id, account, observations, event_count, role, visible):
+    direction = "out" if role == "source" else "in"
+    own = {}
+    for observation in observations:
+        row = (observation if observation.get("self_account") == account
+               else ledger_navigation.own_anchor(case_id, account, observation))
+        if not row or trace_group_evidence._direction(row, account) != direction:
+            return []
+        own[row["id"]] = row
+    anchors = list(own.values())
+    if (len(anchors) != event_count or any(transaction_time.clock(row) is None for row in anchors)
+            or len({transaction_time.basis(row) for row in anchors}) != 1
+            or len({row["currency"] for row in anchors}) != 1):
+        return []
+    # Overview clues are limited to original postings strictly before the
+    # first selected debit or strictly after the last selected credit.
+    before = role == "source"
+    boundary = (min if before else max)(anchors, key=transaction_time.clock)
+    clock = transaction_time.clock(boundary)
+    neighbors = ledger_navigation.neighbors(case_id, account, boundary, role, 50, own_entry=boundary)
+    rows = [row for row in neighbors["rows"] if row["id"] in visible and
+            (transaction_time.clock(row) < clock if before else transaction_time.clock(row) > clock)]
+    return _clues(case_id, account, anchors, rows, role)
+
+
+def edge(body, context_reader):
     """Read an unanchored view with amounts from the selected canvas edge IDs."""
     case_id, canvas_id, left, right = body.case_id, body.canvas_id, body.source, body.target
     revision = analysis_snapshot.revision(case_id)
@@ -424,6 +466,7 @@ def edge(body, context_reader, score):
     reference = None
     suggestions = {"sources": [], "targets": []}
     primary = directional_funds["forward"]
+    count = primary["count"]
     if not limited and primary["status"] == "exact" and primary["count"] == {"lower": 1, "upper": 1}:
         seed = forward[0]
         pair = event_resolution.review_pair(case_id, seed)
@@ -431,8 +474,12 @@ def edge(body, context_reader, score):
             reference = {key: seed.get(key) for key in ("trade_time", "amount", "currency")}
             from_case = context_reader(seed["id"], 50, "payer", case_id, for_review=True)
             eligible = set(map(str, rows))
-            proposals = read(case_id, canvas_id, seed["id"], 50, from_case, context_reader, score, overview_reference=True)
+            proposals = read(case_id, canvas_id, seed["id"], 50, from_case, context_reader, overview_reference=True)
             suggestions = {key: [item for item in items if set(item["ids"]) <= eligible] for key, items in proposals.items()}
+    elif (not limited and primary["status"] == "exact" and count["lower"] == count["upper"]
+          and 1 < count["lower"] <= 50 and len(forward) <= 100):
+        suggestions = {"sources": _aggregate_edge_clues(case_id, left, forward, count["lower"], "source", rows),
+                       "targets": _aggregate_edge_clues(case_id, right, forward, count["lower"], "target", rows)}
 
     cards = _cards(rows, left, right)
     token = _issue(case_id, canvas_id, 0, revision, rows, front_money, back_money, membership=membership)
@@ -454,6 +501,8 @@ def original(case_id, canvas_id, anchor_id, flow_id, token):
         visible_ids = [key for key in pair["candidate_ids"] if int(key) in review.flow_ids]
         pair = {**pair, "more": pair["more"] or len(visible_ids) < len(pair["candidate_ids"]),
                 "candidate_ids": visible_ids}
+        if "voucher_candidate_ids" in pair:
+            pair["voucher_candidate_ids"] = [key for key in pair["voucher_candidate_ids"] if int(key) in review.flow_ids]
         locators = _locators(case_id, [flow_id])
         if not locators:
             return {"pair": pair, "originals": [], "message": "这条流水没有已登记的原行位置。"}

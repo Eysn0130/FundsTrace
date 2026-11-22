@@ -214,7 +214,8 @@ function result(account = 'SYN-CURRENT') {
     review: { token: 'a'.repeat(32), pair: { status: 'unknown', candidate_ids: [] }, principal: { source: {
       status: 'unknown', assessment: [{ status: 'unknown', message: `合成来源证据-${account}` }],
       targets: [{ amount: '100.00', min: '0.00', max: '100.00', fifo: null }], currency: 'CNY' } } },
-    suggestions: { sources: [{ ids: ['11'], account: 'SYN-SOURCE', name: '合成来源', score: 88, evidence: { basis: '12:33:56 的 1 条流水是锚点前的候选入账。' } }],
+    suggestions: { sources: [{ ids: ['11'], account: 'SYN-SOURCE', name: '合成来源', score: 88, evidence: {
+      judgment: '已记录账面支持部分关联，实际本金归属待核。', basis: '12:33:56 的 1 条流水是锚点前的候选入账。' } }],
       targets: [{ ids: ['13'], account: 'SYN-TARGET', name: '合成去向', score: 62 }] } };
 }
 async function opened(h, data = result()) { h.network(async () => data); await h.open(); }
@@ -250,6 +251,9 @@ test('score click only highlights rows and shows evidence; checking manually con
   const h = harness(); await opened(h);
   assert.equal(h.element('ctxTrack').disabled, true); assert.equal(h.element('ctxSelected').textContent, '已选 0 条');
   const card = sourceCard(h); assert.ok(card); assert.equal(card.tagName, 'BUTTON');
+  assert.match(card.querySelector('.sg-score').textContent, /88/);
+  assert.equal(card.querySelector('.sg-judgment').textContent, '已记录账面支持部分关联，实际本金归属待核。');
+  assert.equal(card.querySelector('.sg-evidence').hidden, true);
   await card.click(); assert.equal(h.box(11).checked, false); assert.equal(h.box(13).checked, false);
   assert.equal(h.rows()[0].classList.contains('clue-row'), true);
   assert.equal(picked(card), true); assert.equal(h.element('ctxSelected').textContent, '已选 0 条'); assert.equal(h.element('ctxTrack').disabled, true);
@@ -261,6 +265,41 @@ test('score click only highlights rows and shows evidence; checking manually con
   await h.check(11, false);
   assert.equal(h.element('ctxTrack').disabled, true);
   assert.equal(h.requests.length, 1);
+});
+
+test('a filter that leaves only part of an existing clue hides its complete score and judgment', async () => {
+  const h = harness(), data = result();
+  data.suggestions.targets[0].ids = ['13', '14'];
+  data.suggestions.targets[0].evidence = { judgment: '完整组合可核对。', basis: '完整组合原行。' };
+  await opened(h, data);
+  assert.equal(h.cards().length, 2);
+  const target = () => h.cards().find(card => card.dataset.key === 'target-0');
+  assert.match(target().querySelector('.sg-score').textContent, /62/);
+  h.network(async () => ({}));
+  await h.change('ctxEnd', '2026-10-17');
+  assert.match(target().querySelector('.sg-score').textContent, /—/);
+  assert.doesNotMatch(target().querySelector('.sg-judgment').textContent, /完整组合/);
+  await target().click();
+  assert.equal(h.rows().filter(row => row.classList.contains('clue-row')).length, 1);
+  assert.equal(h.box(13).checked, false);
+  assert.equal(h.trackCalls.length, 0);
+});
+
+test('screening out an anchor hides the aggregate judgment while source mode alone keeps it', async () => {
+  const h = harness(), data = result();
+  data.suggestions.sources[0].anchor_ids = ['12', '14'];
+  await opened(h, data);
+  await h.mode('source');
+  assert.match(sourceCard(h).querySelector('.sg-score').textContent, /88/);
+  h.network(async () => ({}));
+  await h.change('ctxEnd', '2026-10-17');
+  const clue = sourceCard(h);
+  assert.match(clue.querySelector('.sg-score').textContent, /—/);
+  assert.doesNotMatch(clue.querySelector('.sg-judgment').textContent, /部分关联/);
+  await clue.click();
+  assert.equal(h.rows().filter(row => row.classList.contains('clue-row')).length, 1);
+  assert.equal(h.box(11).checked, false);
+  assert.equal(h.trackCalls.length, 0);
 });
 
 test('proved same-transaction sources stay together with their own balances and individual tracking IDs', async () => {
@@ -410,6 +449,10 @@ test('automatic source assessment uses the existing context read and keeps origi
   await h.mode('source');
   assert.equal(h.requests.length, 1, 'local filtering adds no analysis request');
   assert.match(h.element('ctxSuggest').textContent, /账面规则范围：—/);
+  h.network(async () => ({}));
+  await h.change('ctxEnd', '2026-10-17T12:34:30');
+  assert.equal(h.element('ctxSuggest').querySelector('.context-score-note'), null);
+  assert.doesNotMatch(h.element('ctxSuggest').textContent, /FIFO|条件范围/);
 });
 
 test('source detail uses the bound token, leaves checks intact and discards late raw content', async () => {

@@ -1100,7 +1100,7 @@ def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", c
         if review:
             _require_canvas(case_id, canvas_id)
         value = _context(flow_id, x, side, case_id, for_review=review)
-        return trace_review.read(case_id, canvas_id, flow_id, x, value, _context, _suggest_counterparties) if review else value
+        return trace_review.read(case_id, canvas_id, flow_id, x, value, _context) if review else value
 
 
 class EdgeReviewIn(BaseModel):
@@ -1118,7 +1118,7 @@ class EdgeReviewIn(BaseModel):
 def context_edge(body: EdgeReviewIn):
     with db._lock:
         _require_canvas(body.case_id, body.canvas_id)
-        return trace_review.edge(body, _context, _suggest_counterparties)
+        return trace_review.edge(body, _context)
 
 
 class ContextSummaryIn(BaseModel):
