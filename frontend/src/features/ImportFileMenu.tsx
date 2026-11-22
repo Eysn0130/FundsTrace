@@ -111,6 +111,7 @@ export function ImportFileMenu({ id, anchor, node, original, physicalFile, item,
   const [failure, setFailure] = useState('');
   const [deleting, setDeleting] = useState(false);
   const result = item.phase === 'done' ? item.job?.result : undefined, sourceId = result?.source_id;
+  const pdf = (result?.table_summary ?? item.preview?.table_summary)?.profile === 'pdf-review-v1';
   const isOriginal = node.id === original.id;
   const isArchive = item.directory || original.kind === 'archive';
   const member = !isOriginal && node.kind === 'file' && node.memberPaths.length === 1 ? (result?.table_summary ?? result?.feedback)?.members.find(
@@ -227,8 +228,8 @@ export function ImportFileMenu({ id, anchor, node, original, physicalFile, item,
         {node.kind === 'sheet' && physicalFile.kind === 'file' && field('范围', '整份文件')}
         {field(item.directory && isOriginal && !metadata ? '所选文件合计' : '文件大小', size)}
         {field('处理用时（本次）', formatImportDuration(isOriginal && ['done', 'failed'].includes(item.phase) ? item.processingMs : undefined))}
-        {field('原始行数', total('source_rows'))}
-        {field('数据记录', physicalFile.dataRows?.toLocaleString('zh-CN') ?? total('row_count'))}
+        {!pdf && field('原始行数', total('source_rows'))}
+        {!pdf && field('数据记录', physicalFile.dataRows?.toLocaleString('zh-CN') ?? total('row_count'))}
         {member?.sha256 && field('成员 SHA-256', member.sha256)}
         {metadata && <>
           {!isOriginal && field('所属原件', metadata.filename)}

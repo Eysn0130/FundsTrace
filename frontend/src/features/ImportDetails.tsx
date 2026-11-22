@@ -8,6 +8,15 @@ import { ImportDataPreview } from './ImportDataPreview';
 
 import { fieldNames } from './import-fields';
 const feedbackReasons: Record<string, string> = {
+  pdf_candidate: '请与 PDF 原件核对',
+  pdf_tool_unavailable: '本机 MinerU 不可用，已保留 PDF 原件',
+  pdf_input_limit: 'PDF 超出本机识别范围，已保留原件',
+  pdf_invalid: 'PDF 无法读取，已保留原件',
+  pdf_no_tables: '未识别到可核对的表格，已保留原件',
+  pdf_ocr_failed: 'PDF 识别失败，已保留原件',
+  pdf_ocr_timeout: 'PDF 识别超时，已保留原件',
+  pdf_result_invalid: 'PDF 识别结果无法校验，已保留原件',
+  pdf_result_limit: 'PDF 识别结果超出处理范围，已保留原件',
   unsupported_attachment: '附件原件已保留，格式未适配，内部记录数量与资金内容尚未解释', non_business_attachment: 'Finder元数据附件，原件保留，不生成资金流水',
     transaction_valid: '按来源方向与金额识别为资金流水', auxiliary_table: '辅助资料，未作为资金流水', feedback_only: '来源反馈，未包含资金流水',
   negative_reversal_text: '负数与冲正描述缺少一致的来源依据', negative_revocation_text: '负数与撤销描述缺少一致的来源依据',

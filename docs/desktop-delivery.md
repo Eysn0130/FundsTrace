@@ -65,6 +65,19 @@ Python 已移除产品许可门卫，`/api/license/info` 明确返回 `activatio
 
 顶部保留原27px大图标、12px文字及分组顺序，1280宽时仅收紧留白。业务视口不足1280 CSS px时，只把案件操作栏和工具区整体等比适配；表格、画布及32 DIP原生标题栏不参与这层缩放。四个工具页与收起带均完整呈现，不依靠横向滚动访问命令；浮动工具弹层使用独立视口坐标。表格保留自身原生横向滚动，停用重复的范围滑条。启动层在扣除44 DIP标题区后的实际客户区居中；Logo通常保持原176px，仅在空间不足时按既有规则整体缩小。
 
+### 可选的本机 PDF 识别
+
+如需识别 PDF 表格，先在本机准备 MinerU 和 ONNX 资产。在 FundsTrace 用户目录中，与 `preferences.json` 同级保存 UTF-8 的 `import-tools.json`。Windows 通常使用 `%APPDATA%\FundsTrace`，macOS 通常使用 `~/Library/Application Support/FundsTrace`。
+
+```json
+{
+  "mineru": "C:/LocalTools/mineru/Scripts/mineru-kit.exe",
+  "mineruModelDir": "C:/LocalTools/mineru-models"
+}
+```
+
+Main 启动时读取最多 16 KiB 的设置。使用本机绝对路径，Windows 可执行项须为盘符路径和 `.exe`。模型目录可省略，按当前系统用户的 `~/.mineru/models` 查找。缺少或写错配置时，应用继续启动，上传的 PDF 仍可登记原件。见[PDF 原件和候选](import-lifecycle.md#pdf-原件和候选)。
+
 ## Windows 10／11 安装与启动边界
 
 当前目标是 Windows 10／11 **x64**。锁定的 [Electron 44.7.2](https://github.com/electron/electron/blob/v44.7.2/README.md#platform-support) 支持 Windows 10 及以后，Electron 44 已移除 Windows 32 位；本仓库不发布 32 位或原生 ARM64 包，也不凭上游声明推断最低 Win10 build 或任意机器兼容。

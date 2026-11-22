@@ -28,7 +28,8 @@ export function buildImportTree(items: ImportItem[]): ImportTreeNode[] {
     const members = summary?.members ?? [];
     const membersByPath = new Map(members.map(member => [member.member_path, member]));
     for (const member of members) {
-      const parts = root.kind === 'file' && ['table.csv', item.filename].includes(member.member_path) ? [] : member.member_path.split('/');
+      const directMember = ['table.csv', item.filename].includes(member.member_path) || member.role === 'pdf' && members.length === 1;
+      const parts = root.kind === 'file' && directMember ? [] : member.member_path.split('/');
       if (root.kind === 'folder' && parts[0] === root.name) parts.shift();
       const sheetName = sheetNames.get(member.member_path);
       if (sheetName && parts.at(-2) === 'worksheets') parts.splice(-2, 1);
@@ -61,7 +62,7 @@ export function buildImportTree(items: ImportItem[]): ImportTreeNode[] {
       for (const path of node.memberPaths) {
         const member = membersByPath.get(path);
         if (member?.role === 'attachment') node.containsAttachments = true;
-        else if (member) node.dataRows = (node.dataRows ?? 0) + member.row_count;
+        else if (member && member.role !== 'pdf') node.dataRows = (node.dataRows ?? 0) + member.row_count;
         for (const [key, count] of Object.entries(outcomes.get(path) ?? {})) {
           node.dispositions[key] = (node.dispositions[key] ?? 0) + count;
         }

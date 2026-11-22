@@ -24,14 +24,14 @@ from itertools import islice
 import anyio
 
 from app import db, importer, feedback_import, table_import, table_archive, import_validation, evidence_resolution
-from app import import_preview_cache, rar_archive
+from app import import_preview_cache, pdf_import, rar_archive
 from .cases import ServiceError, preview_flow, require_case
 from .main_accounts import mark_automatic
 
 
 OWNER_TOKEN = uuid.uuid4().hex
 TABLE_PROFILE = table_import.PROFILE
-_extensions = {".csv", ".txt", ".tsv", ".xlsx", ".xls", ".zip", ".rar"}
+_extensions = {".csv", ".txt", ".tsv", ".xlsx", ".xls", ".zip", ".rar", ".pdf"}
 _max_upload = 300 * 1024 * 1024
 _preview_lock = threading.Lock()
 JOURNAL_CHUNK_RECORDS = 5_000
@@ -727,6 +727,8 @@ def _bind_shared_cancellation_plan_history(case_id, plan, stats):
 
 def _bind_table_plan(case_id, parsed, *, source=None):
     plan = parsed[0].attrs.get("table_plan")
+    if plan is not None and plan["profile"] == pdf_import.PROFILE:
+        return
     store = plan.get("_plan_store") if plan is not None else None
     with store.working_maps() if store is not None and case_id is not None else nullcontext():
         _bind_table_plan_history(case_id, parsed, source=source)
@@ -866,13 +868,31 @@ def _table_summary(plan):
 
 def _table_profile(session):
     profile = json.loads(session.get("request_json") or "{}").get("_table_profile", importer.PARSER_VERSION)
-    if profile not in (importer.PARSER_VERSION, *table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
+    if profile not in (importer.PARSER_VERSION, pdf_import.PROFILE,
+                       *table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
         raise ServiceError(400, "invalid_table_file", "来源解析规则不受支持，请重新上传预览")
     return profile
 
 
 def _table_overrides(session):
     return bool(json.loads(session.get("request_json") or "{}").get("_table_overrides", False))
+
+
+def _pdf_parsed(session, frozen):
+    try:
+        plan = pdf_import.replay(session, frozen)
+    except (ValueError, TypeError, KeyError) as error:
+        raise import_validation.IntegrityError("frozen PDF review changed") from error
+    frame = importer.pd.DataFrame()
+    frame.attrs.update(source_row_kind=pdf_import.ROW_KIND, table_plan=plan)
+    return frame, "", "B", {}, plan["rows"], dict(plan["stats"])
+
+
+def _validate_pdf_request(body):
+    if (body.mode != "B" or body.mapping or getattr(body, "reference_policy", None) is not None
+            or _account_values(getattr(body, "self_accounts", None))
+            or _account_values(getattr(body, "mark_accounts", None))):
+        raise ServiceError(422, "invalid_pdf_mapping", "PDF 候选仅供复核，不能设置流水映射或主账号")
 
 
 def _table_mapping(mode, mapping, columns, *, profile):
@@ -958,16 +978,28 @@ class _PreviewCancelled(Exception):
     pass
 
 
-async def _execute_preview(operation, *args):
+async def _execute_preview(operation, *args, receive=None):
     # One admitted preview, with no queue of large parser plans or ZIP copies.
     # This also covers directory construction; it must not re-enter admission.
     if not _preview_lock.acquire(blocking=False):
         raise ServiceError(409, "preview_busy", "另一个文件正在预览，请等待完成后重试")
     cancelled = threading.Event()
+    monitor = None
+
+    async def watch_disconnect():
+        # Multipart parsing has already consumed the request body.
+        while (await receive())["type"] != "http.disconnect":
+            pass
+        cancelled.set()
+
     try:
+        if receive is not None:
+            monitor = asyncio.create_task(watch_disconnect())
         worker = asyncio.create_task(anyio.to_thread.run_sync(operation, cancelled, *args))
         try:
             return await asyncio.shield(worker)
+        except _PreviewCancelled:
+            raise ServiceError(499, "preview_cancelled", "预览已取消") from None
         except asyncio.CancelledError:
             cancelled.set()
             # FastAPI closes request UploadFiles when this call unwinds. Both
@@ -984,7 +1016,13 @@ async def _execute_preview(operation, *args):
                 worker.exception()
             raise
     finally:
-        _preview_lock.release()
+        try:
+            if monitor is not None:
+                monitor.cancel()
+                with anyio.CancelScope(shield=True):
+                    await asyncio.gather(monitor, return_exceptions=True)
+        finally:
+            _preview_lock.release()
 
 
 def _upload_size(source):
@@ -1000,7 +1038,10 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
     extension = Path(filename).suffix
     suffix = extension.lower() or ".csv"
     if suffix not in _extensions:
-        raise ServiceError(400, "unsupported_file_type", "请上传 CSV、TXT、TSV、Excel、ZIP 或 RAR 文件")
+        raise ServiceError(400, "unsupported_file_type", "请上传 CSV、TXT、TSV、Excel、ZIP、RAR 或 PDF 文件")
+    is_pdf = suffix == ".pdf"
+    if is_pdf and cid is None:
+        raise ServiceError(422, "pdf_case_required", "请先选择案件，再上传 PDF")
     # Decide the parser before shortening the display name, and never remove
     # the real extension (including an unsupported one) by truncation.
     filename = (filename[:-len(extension)][:240 - len(extension)] + extension
@@ -1013,16 +1054,17 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
     try:
         if cancelled.is_set():
             raise _PreviewCancelled()
-        if suffix in {".zip", ".rar"}:
-            resolve_evidence = (resolve_evidence or evidence_resolution.complete_family(source)
-                                or evidence_resolution.declared_auxiliary_family(source))
-            archive_profile = table_archive.evidence_profile(source)
-        table_profile = (((archive_profile if resolve_evidence or archive_profile in table_archive.XLS_EVIDENCE_PROFILES else table_archive.PROFILE)
-                          if suffix == ".rar" or table_archive.should_parse(source, native_observations=True) else None)
-                         if suffix in {".zip", ".rar"} else table_import.VOUCHER_REFERENCE_XLS_PROFILE if suffix == ".xls" else table_import.VOUCHER_REFERENCE_EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
-        parsed = _parse(source, suffix=suffix, table_profile=table_profile,
-                        feedback_profile=feedback_import.MICROSECOND_EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None,
-                        _auto_event_profile=table_profile in table_import.CLOSED_BANK_SUCCESSORS)
+        if not is_pdf:
+            if suffix in {".zip", ".rar"}:
+                resolve_evidence = (resolve_evidence or evidence_resolution.complete_family(source)
+                                    or evidence_resolution.declared_auxiliary_family(source))
+                archive_profile = table_archive.evidence_profile(source)
+            table_profile = (((archive_profile if resolve_evidence or archive_profile in table_archive.XLS_EVIDENCE_PROFILES else table_archive.PROFILE)
+                              if suffix == ".rar" or table_archive.should_parse(source, native_observations=True) else None)
+                             if suffix in {".zip", ".rar"} else table_import.VOUCHER_REFERENCE_XLS_PROFILE if suffix == ".xls" else table_import.VOUCHER_REFERENCE_EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
+            parsed = _parse(source, suffix=suffix, table_profile=table_profile,
+                            feedback_profile=feedback_import.MICROSECOND_EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None,
+                            _auto_event_profile=table_profile in table_import.CLOSED_BANK_SUCCESSORS)
         if cancelled.is_set():
             raise _PreviewCancelled()
         import_id = uuid.uuid4().hex
@@ -1041,11 +1083,24 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
                 if stream.write(block) != len(block):
                     raise OSError("Incomplete retained upload write")
                 digest.update(block)
+        session = {"case_id": cid, "import_id": import_id, "filename": filename, "surface": surface,
+                   "suffix": suffix, "sha256": digest.hexdigest(), "size_bytes": size}
+        if is_pdf:
+            review = pdf_import.extract(source, size, session["sha256"], cancelled)
+            if cancelled.is_set():
+                raise _PreviewCancelled()
+            frozen = pdf_import.freeze(session, review)
+            parsed = _pdf_parsed(session, frozen)
+            request = {"_table_profile": pdf_import.PROFILE, "_pdf_plan": frozen}
+        elif "table_plan" in parsed[0].attrs:
+            request = {"_table_profile": parsed[0].attrs["table_plan"]["profile"]}
+        elif suffix == ".zip":
+            request = {"_feedback_profile": parsed[0].attrs["feedback_plan"]["profile"]}
+        else:
+            request = None
         now = _now()
-        session = {"case_id": cid, "import_id": import_id, "filename": filename,
-                   "sha256": digest.hexdigest()}
         evidence_resolution.operation_context(parsed, session["sha256"])
-        pure_stamp = import_preview_cache.stamp(parsed)
+        pure_stamp = None if is_pdf else import_preview_cache.stamp(parsed)
         with db.transaction():
             if cancelled.is_set():
                 raise _PreviewCancelled()
@@ -1058,8 +1113,7 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
                     values (?,?,?,?,?,?,?,?,?,?,?,'ready',?,?,?,'retained')""",
                  [import_id, cid, surface, filename, suffix, session["sha256"], size,
                   parsed[2], _json(parsed[3]), _json(list(parsed[0].columns)),
-                  _json({"_table_profile": parsed[0].attrs["table_plan"]["profile"]}) if "table_plan" in parsed[0].attrs
-                  else _json({"_feedback_profile": parsed[0].attrs["feedback_plan"]["profile"]}) if suffix == ".zip" else None,
+                  _json(request) if request is not None else None,
                   now, now, now + dt.timedelta(days=7)])
             # Preview still consumes operation-private staging. A late disk
             # failure must roll back the ready session with its retained file.
@@ -1072,6 +1126,8 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
                         import_preview_cache.key(cache_session, _table_profile(cache_session), _table_overrides(cache_session)),
                         parsed, pure_stamp):
                     parsed = None  # The finite cache now owns this one original plan.
+            if is_pdf and cancelled.is_set():
+                raise _PreviewCancelled()
         result["automatic"] = not (result.get("reference_policy_available")
             and reference_choice_conflict)
         return result
@@ -1084,16 +1140,18 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
         _close_staging(parsed)
 
 
-async def _upload(case_id, file, surface, *, resolve_evidence=False):
-    return await _execute_preview(_upload_sync, case_id, file.file, file.filename, surface, resolve_evidence)
+async def _upload(case_id, file, surface, *, resolve_evidence=False, receive=None):
+    pdf_upload = Path(file.filename or "").suffix.lower() == ".pdf"
+    return await _execute_preview(_upload_sync, case_id, file.file, file.filename, surface, resolve_evidence,
+                                  receive=receive if pdf_upload else None)
 
 
-async def upload(case_id, file):
-    return await _upload(case_id, file, "v1")
+async def upload(case_id, file, *, receive=None):
+    return await _upload(case_id, file, "v1", receive=receive)
 
 
-async def legacy_upload(file, case_id=None):
-    return await _upload(case_id, file, "legacy")
+async def legacy_upload(file, case_id=None, *, receive=None):
+    return await _upload(case_id, file, "legacy", receive=receive)
 
 
 def _directory_preview_sync(cancelled, case_id, files, surface):
@@ -1157,24 +1215,34 @@ def _repreview(case_id, import_id, body, surface):
         if session["stage"] in _active_stages or session["stage"] == "done":
             raise ServiceError(409, "import_already_started", "任务已开始或已完成，请查看导入进度")
         import_preview_cache.discard(import_id)
-        with _source(session, snapshot=True) as source:
-            is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
-            overrides = is_table and (_table_overrides(session) or body.mode != session["mode"]
-                                      or body.mapping != json.loads(session["mapping_json"]))
-            if is_table:
-                _table_mapping(body.mode, body.mapping, json.loads(session["columns_json"]),
-                               profile=_table_profile(session))
-                if overrides and _table_profile(session) in table_archive.SUPPORTED_PROFILES:
-                    raise ServiceError(422, "invalid_mapping", "反馈包按成员独立校验，不能使用整包字段覆盖")
-            request = json.loads(session.get("request_json") or "{}")
-            reference_policy = (body.reference_policy if "reference_policy" in getattr(body, "model_fields_set", vars(body))
-                                else request.get("reference_policy"))
-            if reference_policy is not None and (surface != "v1" or _table_profile(session) not in table_import.VOUCHER_REFERENCE_PROFILES):
-                raise ServiceError(422, "invalid_reference_policy", "引用策略仅适用于新版单文件表格的 v1 预览")
-            parsed = _parse(source, body.mode if not is_table or overrides else None,
-                            body.mapping if not is_table or overrides else None, suffix=session["suffix"],
-                            feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
-                            table_profile=_table_profile(session), reference_policy=reference_policy)
+        profile = _table_profile(session)
+        if profile == pdf_import.PROFILE:
+            _validate_pdf_request(body)
+        is_table = profile in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
+        overrides = is_table and (_table_overrides(session) or body.mode != session["mode"]
+                                  or body.mapping != json.loads(session["mapping_json"]))
+        if is_table:
+            _table_mapping(body.mode, body.mapping, json.loads(session["columns_json"]),
+                           profile=profile)
+            if overrides and profile in table_archive.SUPPORTED_PROFILES:
+                raise ServiceError(422, "invalid_mapping", "反馈包按成员独立校验，不能使用整包字段覆盖")
+        request = json.loads(session.get("request_json") or "{}")
+        reference_policy = (body.reference_policy if "reference_policy" in getattr(body, "model_fields_set", vars(body))
+                            else request.get("reference_policy"))
+        if reference_policy is not None and (surface != "v1" or profile not in table_import.VOUCHER_REFERENCE_PROFILES):
+            raise ServiceError(422, "invalid_reference_policy", "引用策略仅适用于新版单文件表格的 v1 预览")
+        if profile == pdf_import.PROFILE:
+            _source(session)
+            try:
+                parsed = _pdf_parsed(session, request.get("_pdf_plan"))
+            except import_validation.IntegrityError:
+                raise ServiceError(409, "pdf_plan_changed", "冻结 PDF 复核结果无法核对，请重新上传原件") from None
+        else:
+            with _source(session, snapshot=True) as source:
+                parsed = _parse(source, body.mode if not is_table or overrides else None,
+                                body.mapping if not is_table or overrides else None, suffix=session["suffix"],
+                                feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
+                                table_profile=profile, reference_policy=reference_policy)
         try:
             evidence_resolution.operation_context(parsed, session["sha256"])
             _bind_feedback_plan(session["case_id"], parsed)
@@ -1255,22 +1323,28 @@ def _run(import_id):
                 return
             session = found[0]
         request = json.loads(session["request_json"])
-        is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
-        overrides = _table_overrides(session)
-        with _source(session, snapshot=True) as source:
-            try:
-                parsed = import_preview_cache.take(import_preview_cache.key(session, _table_profile(session), overrides))
-            except (OSError, ValueError):
-                raise import_validation.IntegrityError("preview scratch failed integrity verification") from None
-            if parsed is None:
-                parsed = _parse(
-                    source, request["mode"] if not is_table or overrides else None,
-                    request["mapping"] if not is_table or overrides else None, suffix=session["suffix"],
-                    feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
-                    table_profile=_table_profile(session),
-                    reference_policy=request.get("reference_policy") if is_table else None)
-            evidence_resolution.operation_context(parsed, session["sha256"])
-            _frame, sheet, mode, mapping, rows, stats = parsed
+        profile = _table_profile(session)
+        is_pdf = profile == pdf_import.PROFILE
+        if is_pdf:
+            _source(session)
+            parsed = _pdf_parsed(session, request.get("_pdf_plan"))
+        else:
+            is_table = profile in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
+            overrides = _table_overrides(session)
+            with _source(session, snapshot=True) as source:
+                try:
+                    parsed = import_preview_cache.take(import_preview_cache.key(session, profile, overrides))
+                except (OSError, ValueError):
+                    raise import_validation.IntegrityError("preview scratch failed integrity verification") from None
+                if parsed is None:
+                    parsed = _parse(
+                        source, request["mode"] if not is_table or overrides else None,
+                        request["mapping"] if not is_table or overrides else None, suffix=session["suffix"],
+                        feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
+                        table_profile=profile,
+                        reference_policy=request.get("reference_policy") if is_table else None)
+        evidence_resolution.operation_context(parsed, session["sha256"])
+        _frame, sheet, mode, mapping, rows, stats = parsed
         plan = _frame.attrs.get("feedback_plan")
         table_plan = _frame.attrs.get("table_plan")
         if not rows and plan is None and table_plan is None:
@@ -1319,7 +1393,7 @@ def _run(import_id):
                                            case_id=session["case_id"], provenance=provenance,
                                            standalone_csv_keys=standalone_keys,
                                            # Ledger publication below refreshes after raw-write verification.
-                                           refresh_source_index=not (plan is None and table_plan is not None
+                                           refresh_source_index=not (is_pdf or plan is None and table_plan is not None
                                                and table_plan["profile"] in table_import.SOURCE_LEDGER_PROFILES))
             receipt["source_id"] = import_id
             db.x("insert into import_source_operations(case_id,source_id,batch_id,active) values (?,?,?,true)",
@@ -1356,14 +1430,18 @@ def _run(import_id):
                     receipt["source_ledger"] = source_ledger.commit(session["case_id"], import_id, receipt["batch_id"])
                 if "table_summary" not in receipt:
                     receipt["table_summary"] = _table_summary(table_plan)
-                from app import source_ledger
-                receipt["table_summary"].update(
-                    excluded_flows=db.q_raw("""select (select count(*) from flows where case_id=?) -
-                        (select count(*) from effective_flows where case_id=?) n""",
-                        [session["case_id"], session["case_id"]])[0]["n"] - source_ledger.nonpositive_count(session["case_id"]),
-                    effective_added=db.q_raw("select count(*) n from effective_flows where case_id=? and batch_id=?",
-                                             [session["case_id"], receipt["batch_id"]])[0]["n"])
-            _mark_mains(session["case_id"], receipt, request)
+                if is_pdf:
+                    receipt["table_summary"]["effective_added"] = 0
+                else:
+                    from app import source_ledger
+                    receipt["table_summary"].update(
+                        excluded_flows=db.q_raw("""select (select count(*) from flows where case_id=?) -
+                            (select count(*) from effective_flows where case_id=?) n""",
+                            [session["case_id"], session["case_id"]])[0]["n"] - source_ledger.nonpositive_count(session["case_id"]),
+                        effective_added=db.q_raw("select count(*) n from effective_flows where case_id=? and batch_id=?",
+                                                 [session["case_id"], receipt["batch_id"]])[0]["n"])
+            if not is_pdf:
+                _mark_mains(session["case_id"], receipt, request)
             if provenance["parser_version"] in evidence_resolution.PROFILES:
                 # Provenance/write fidelity and the durable receipt summary are
                 # now fixed. Release parser staging before replaying the journal.
@@ -1374,12 +1452,17 @@ def _run(import_id):
                     journal_records.close()
                     journal_records = None
                 _close_staging(parsed)
-            receipt["resolution"] = evidence_resolution.rebuild(session["case_id"])
-            from .. import event_resolution
-            event_resolution.rebuild(session["case_id"], changed_sources=[import_id])
+            if not is_pdf:
+                receipt["resolution"] = evidence_resolution.rebuild(session["case_id"])
+                from .. import event_resolution
+                event_resolution.rebuild(session["case_id"], changed_sources=[import_id])
             from . import materials
             materials.register(session['case_id'],import_id,request.get('material_group_id') or import_id)
             receipt = _receipt(receipt)
+            if is_pdf:
+                # The durable journal owns the candidates after publication.
+                request.pop("_pdf_plan", None)
+                db.x("update import_sessions set request_json=? where import_id=?", [_json(request), import_id])
             db.x("""update import_sessions set stage='done',done=?,total=?,result_json=?,error_code=null,
                       updated_at=?,expires_at=? where import_id=? and owner_token=?""",
                  [processed_total, processed_total, _json(receipt), _now(), _now() + dt.timedelta(days=30), import_id, OWNER_TOKEN])
@@ -1407,26 +1490,36 @@ def _commit(case_id, import_id, body, surface):
             result = {"import_id": import_id, "started": False}
         else:
             _source(session)
-            is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
-            stored_policy = json.loads(session.get("request_json") or "{}").get("reference_policy")
+            profile = _table_profile(session)
+            is_pdf = profile == pdf_import.PROFILE
+            if is_pdf:
+                _validate_pdf_request(body)
+            is_table = profile in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
+            frozen_request = json.loads(session.get("request_json") or "{}")
+            stored_policy = frozen_request.get("reference_policy")
             if "reference_policy" in getattr(body, "model_fields_set", vars(body)):
-                if body.reference_policy is not None and (surface != "v1" or _table_profile(session) not in table_import.VOUCHER_REFERENCE_PROFILES):
+                if body.reference_policy is not None and (surface != "v1" or profile not in table_import.VOUCHER_REFERENCE_PROFILES):
                     raise ServiceError(422, "invalid_reference_policy", "引用策略仅适用于新版单文件表格的 v1 预览")
                 if body.reference_policy != stored_policy:
                     raise ServiceError(409, "preview_changed", "引用策略与已校验预览不同，请先重新预览")
-            mapping = (_table_mapping(body.mode, body.mapping, json.loads(session["columns_json"] or "[]"),
-                                      profile=_table_profile(session)) if is_table
-                       else _mapping(body.mode, body.mapping, json.loads(session["columns_json"] or "[]")))
+            if is_pdf:
+                mapping = {}
+            else:
+                columns = json.loads(session["columns_json"] or "[]")
+                mapping = (_table_mapping(body.mode, body.mapping, columns, profile=profile) if is_table
+                           else _mapping(body.mode, body.mapping, columns))
             if is_table and (body.mode != session["mode"] or mapping != json.loads(session["mapping_json"])):
                 raise ServiceError(409, "preview_changed", "映射与已校验预览不同，请先重新预览")
             if session["suffix"] == ".zip" and not is_table and (body.mode != "B" or mapping != feedback_import.MAPPING):
                 raise ServiceError(422, "fixed_feedback_mapping", "资金反馈包的格式规则不可更改，请重新预览")
             request = _request(body, mapping)
             request['material_group_id']=material_group_id
+            if is_pdf:
+                request.update(_table_profile=profile, _pdf_plan=frozen_request.get("_pdf_plan"))
             if session["suffix"] == ".zip":
                 request["_feedback_profile"] = _feedback_profile(session)
             if is_table:
-                request.update(_table_profile=_table_profile(session), _table_overrides=_table_overrides(session))
+                request.update(_table_profile=profile, _table_overrides=_table_overrides(session))
                 if stored_policy is not None:
                     request["reference_policy"] = stored_policy
             db.x("""update import_sessions set mode=?,mapping_json=?,request_json=?,stage='parsing',done=0,total=0,
@@ -1630,12 +1723,15 @@ def get_source_file(case_id, source_id):
         return _source(session, snapshot=True), session["filename"]
 
 
-def _journal_source(case_id, source_id):
+def _journal_source(case_id, source_id, *, include_pdf=False):
     cid = _cid(case_id)
     if not isinstance(source_id, str) or not re.fullmatch(r"[0-9a-f]{12,32}", source_id):
         raise _missing()
-    found = db.q_raw("select * from import_sources where case_id=? and source_id=? and row_kind in ('archive_record','table_record')",
-                     [cid, source_id])
+    row_kinds = ["archive_record", "table_record"]
+    if include_pdf:
+        row_kinds.append(pdf_import.ROW_KIND)
+    found = db.q_raw("select * from import_sources where case_id=? and source_id=? and row_kind in (select unnest(?::varchar[]))",
+                     [cid, source_id, row_kinds])
     if not found:
         raise _missing()
     return cid, found[0]
@@ -1693,7 +1789,7 @@ def _record_items(cid, source_id, *, disposition=None, member_path=None, source_
 
 def list_records(case_id, source_id, page=1, page_size=100, disposition=None, member_path=None, include_preview=False, source_row=None):
     with db._lock:
-        cid, _ = _journal_source(case_id, source_id)
+        cid, _ = _journal_source(case_id, source_id, include_pdf=True)
         condition, params = (" and disposition=?", [disposition]) if disposition is not None else ("", [])
         if member_path is not None:
             condition += " and member_path=?"
@@ -1713,7 +1809,7 @@ def review_records(case_id, source_id, member_path, view='all', page=1, page_siz
     from .. import import_originals
     groups = {'all': None, 'review': ('review', 'unresolved'), 'accepted': ('imported', 'duplicate')}
     with db._lock:
-        cid, source = _journal_source(case_id, source_id)
+        cid, source = _journal_source(case_id, source_id, include_pdf=True)
         members = db.q_raw('select * from import_members where case_id=? and source_id=? and member_path=?', [cid, source_id, member_path])
         if not members:
             raise _missing()
@@ -1738,6 +1834,10 @@ def review_records(case_id, source_id, member_path, view='all', page=1, page_siz
         items = _record_items(cid, source_id, record_nos=numbers, limit=page_size, include_preview=True)
         for item in items:
             item['original'] = None
+        if source["parser_version"] == pdf_import.PROFILE:
+            return {'case_id': str(cid), 'source_id': source_id, 'member_path': member_path, 'view': view,
+                    'counts': counts, 'items': items, 'total': counts[view], 'page': page, 'page_size': page_size,
+                    'issue': issue, 'original_error': (None if source_is_available(cid, source_id) else "PDF 原件不可用")}
         sessions = db.q_raw('select * from import_sessions where case_id=? and import_id=?', [cid, source_id])
         session = sessions[0] if sessions else None
         receipt = json.loads(session['result_json'] or '{}') if session else {}
@@ -1779,7 +1879,7 @@ def get_disposition_report(case_id, source_id):
     stream = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b", dir=db.DATA_DIR)
     try:
         with db._lock:
-            cid, source = _journal_source(case_id, source_id)
+            cid, source = _journal_source(case_id, source_id, include_pdf=True)
             members = db.q_raw("""select member_path,role,sha256,size_bytes,encoding,row_count from import_members
                                     where case_id=? and source_id=? order by member_path""", [cid, source_id])
             metadata = {"case_id": str(cid), "source_id": source_id, "filename": source["filename"],
@@ -1805,7 +1905,7 @@ def get_disposition_report(case_id, source_id):
 
 def _source_references(source_id):
     profiles = sorted({*feedback_import.SUPPORTED_PROFILES, *table_import.SUPPORTED_PROFILES,
-                       *table_archive.SUPPORTED_PROFILES})
+                       *table_archive.SUPPORTED_PROFILES, pdf_import.PROFILE})
     placeholders = ",".join("?" for _ in profiles)
     return db.q_raw(f"""select (select count(*) from flow_sources where source_id=?) +
                          (select count(*) from import_records r join import_sources s

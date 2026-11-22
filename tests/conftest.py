@@ -12,6 +12,8 @@ os.environ["FUND_DATA_DIR"] = str(Path(_sandbox.name) / "data")
 os.environ["MPLCONFIGDIR"] = str(Path(_sandbox.name) / "matplotlib")
 os.environ["FUNDS_TRACE_LICENSE_SECRET"] = "synthetic-regression-key-not-for-use"
 os.environ.pop("FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE", None)
+os.environ.pop("FUND_MINERU_EXECUTABLE", None)
+os.environ.pop("FUND_MINERU_MODEL_DIR", None)
 
 from app import db, license as licensing  # noqa: E402
 from app.main import app  # noqa: E402
