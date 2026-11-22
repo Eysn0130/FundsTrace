@@ -16,7 +16,7 @@ from pathlib import Path
 import tempfile
 import unicodedata
 
-from . import db
+from . import db, table_tiered_headers
 
 POLICY = "typed-account-evidence-v1"
 CARD_PROJECTION = "endpoint-cards-v4-scoped-order"
@@ -30,12 +30,14 @@ PROFILES = frozenset(("funds-trace-table-archive-v66", "funds-trace-table-archiv
                      "funds-trace-table-archive-v63", "funds-trace-table-archive-v64", "funds-trace-table-archive-v65",
                      "funds-trace-table-v75", "funds-trace-table-v76", "funds-trace-table-v77",
                      "funds-trace-table-archive-v60", "funds-trace-table-archive-v61", "funds-trace-table-archive-v62", "funds-trace-table-v69", "funds-trace-table-v72", "funds-trace-table-v70", "funds-trace-table-v73", "funds-trace-table-v71", "funds-trace-table-v74", "funds-trace-table-v66", "funds-trace-table-v67", "funds-trace-table-archive-v57", "funds-trace-table-v68", "funds-trace-table-archive-v58", "funds-trace-table-archive-v59", "funds-trace-table-v65","funds-trace-table-v62", "funds-trace-table-archive-v55","funds-trace-table-archive-v52", "funds-trace-table-archive-v56","funds-trace-table-archive-v53", "funds-trace-table-v59", "funds-trace-table-archive-v49", "funds-trace-table-archive-v50", TABLE_PROFILE, ARCHIVE_PROFILE, FEEDBACK_PROFILE, "funds-trace-table-v19", "funds-trace-table-archive-v5", "funds-trace-table-archive-v7", "funds-trace-table-archive-v8", "funds-trace-table-archive-v9", "funds-trace-table-archive-v10", "funds-trace-table-archive-v11", "funds-trace-table-v23", "funds-trace-table-archive-v13", "funds-trace-table-archive-v14", "funds-trace-table-v26", "funds-trace-table-v29", "funds-trace-table-v32", "funds-trace-table-v35", "funds-trace-table-v38", "funds-trace-table-v41", "funds-trace-table-v44", "funds-trace-table-v47", "funds-trace-table-v50", "funds-trace-table-v53", "funds-trace-table-v56", "funds-trace-table-archive-v46", "funds-trace-table-archive-v47", "funds-trace-table-archive-v43", "funds-trace-table-archive-v44", "funds-trace-table-archive-v40", "funds-trace-table-archive-v41", "funds-trace-table-archive-v37", "funds-trace-table-archive-v38", "funds-trace-table-archive-v34", "funds-trace-table-archive-v35", "funds-trace-table-archive-v31", "funds-trace-table-archive-v32", "funds-trace-table-archive-v28", "funds-trace-table-archive-v29", "funds-trace-table-archive-v25", "funds-trace-table-archive-v26", "funds-trace-table-archive-v16", "funds-trace-table-archive-v17", "funds-trace-table-archive-v19", "funds-trace-table-archive-v20", "funds-trace-table-archive-v22", "funds-trace-table-archive-v23", "funds-trace-bank-feedback-v8"))
+PROFILES |= table_tiered_headers.PROFILES
 _PROFILE_SQL = ",".join("?" for _ in PROFILES)
 # Neutral source endpoints participate in identity replay without changing the
 # ordinary profiles' financial occurrence identity or historical CSV bridge.
 OCCURRENCE_PROFILES = PROFILES - {"funds-trace-table-archive-v66", "funds-trace-table-v78", "funds-trace-table-v79",
                                   "funds-trace-table-archive-v63", "funds-trace-table-v75", "funds-trace-table-v76",
-                                  "funds-trace-table-v69", "funds-trace-table-v72", "funds-trace-table-v70", "funds-trace-table-v73", "funds-trace-table-v66", "funds-trace-table-v67", "funds-trace-table-archive-v57", "funds-trace-table-archive-v60"}
+                                  "funds-trace-table-v69", "funds-trace-table-v72", "funds-trace-table-v70", "funds-trace-table-v73", "funds-trace-table-v66", "funds-trace-table-v67", "funds-trace-table-archive-v57", "funds-trace-table-archive-v60"} - (
+    table_tiered_headers.PROFILES - table_tiered_headers.OCCURRENCE_PROFILES)
 _MAX_TEXT = 512
 WRITE_CHUNK = 50_000
 _ENDPOINT_ROLES = {role: role for role in ("payer", "payee", "self")}
