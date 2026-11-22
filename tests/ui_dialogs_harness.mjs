@@ -265,16 +265,15 @@ test('native action dialog owns Escape when open instead of closing the underlyi
   assert.equal(event.defaultPrevented, false); assert.equal(f.closes.size, 0);
 });
 
-test('new recommendation items expose keyboard button semantics and Enter/Space invoke the existing click action', () => {
-  const f = harness(); const item = f.add(f.suggestions, 'div', 'syntheticSuggestion', 'sg-item');
+test('native clue buttons keep focus and native keyboard activation inside the modal', () => {
+  const f = harness(); const item = f.add(f.suggestions, 'button', 'syntheticSuggestion', 'sg-item');
   const label = f.add(item, 'span', 'syntheticSuggestionText', 'sg-main'); label.textContent = 'Synthetic source';
-  let selected = false; item.onclick = () => { selected = !selected; }; f.flush(); f.open(f.ctx);
-  assert.equal(item.tabIndex, 0); assert.equal(item.getAttribute('role'), 'button');
-  assert.equal(item.getAttribute('aria-label'), '勾选推荐流水：Synthetic source');
+  item.setAttribute('aria-pressed', 'false'); f.flush(); f.open(f.ctx);
+  assert.equal(item.tabIndex, 0); assert.equal(item.getAttribute('aria-pressed'), 'false');
   item.focus(); assert.equal(f.document.activeElement, item);
-  assert.equal(item.fire('keydown', { key: 'Enter' }).defaultPrevented, true); assert.equal(selected, true);
-  assert.equal(item.fire('keydown', { key: ' ' }).defaultPrevented, true); assert.equal(selected, false);
-  assert.equal(f.clicks.get('syntheticSuggestion'), 2);
+  assert.equal(item.fire('keydown', { key: 'Enter' }).defaultPrevented, false);
+  assert.equal(item.fire('keydown', { key: ' ' }).defaultPrevented, false);
+  assert.equal(f.clicks.has('syntheticSuggestion'), false);
 });
 
 test('crop arrow keys move the selected center, Shift accelerates and bounds remain within the image', () => {

@@ -21,11 +21,11 @@ import unicodedata
 import uuid
 from datetime import datetime as _dt
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Annotated, List, Literal, Optional
 
 import pandas as pd
 import duckdb
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -38,6 +38,7 @@ from . import license as lic
 from .services import imports as import_service
 from .services import accounts as account_service
 from .services import account_suggestions as account_suggestion_service
+from .services import trace_review
 from .services.cases import ServiceError
 from .api.models import FundsProjection
 from .main_account_routes import CaseIdIn, router as main_account_router
@@ -136,6 +137,7 @@ class TrackStateIn(BaseModel):
     expected_ids: List[int]
     desired_ids: List[int]
     canvas_id: int = 0
+    review_token: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{32}$")
 
 
 class CaseIn(BaseModel):
@@ -973,6 +975,8 @@ def restore_track_state(body: TrackStateIn):
             raise HTTPException(409, "画布追踪已变更，请刷新后重试")
         desired = set(_require_flows(body.case_id, body.desired_ids))
         removed, added = sorted(current - desired), sorted(desired - current)
+        if body.review_token is not None:
+            trace_review.verify_selection(body.review_token, body.case_id, body.canvas_id, removed, added)
         _require_flows(body.case_id, added, effective=True)
         _require_graphable(body.case_id, added)
         if removed:
@@ -1089,12 +1093,60 @@ def track_bulk(body: BulkTrackIn):
                 "detail": detail, "skipped_not_main": skipped_main, "tracked_ids": tracked_ids}
 
 @app.get("/api/context/{flow_id}")
-def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", case_id: int = 1):
+def context(flow_id: int, x: int = Query(5, ge=1, le=50), side: str = "payee", case_id: int = 1,
+            review: bool = False, canvas_id: int = 0):
     with db._lock:
-        return _context(flow_id, x, side, case_id)
+        if review:
+            _require_canvas(case_id, canvas_id)
+        value = _context(flow_id, x, side, case_id, for_review=review)
+        return trace_review.read(case_id, canvas_id, flow_id, x, value, _context, _suggest_counterparties) if review else value
 
 
-def _context(flow_id, x, side, case_id):
+class EdgeReviewIn(BaseModel):
+    case_id: int
+    canvas_id: int = 0
+    source: str = Field(min_length=1, max_length=512)
+    target: str = Field(min_length=1, max_length=512)
+    forward_ids: list[Annotated[int, Field(gt=0, lt=2**63)]] = Field(min_length=1, max_length=1024)
+    reverse_ids: list[Annotated[int, Field(gt=0, lt=2**63)]] = Field(default_factory=list, max_length=1024)
+    analysis_revision: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
+@app.post("/api/context/edge")
+def context_edge(body: EdgeReviewIn):
+    with db._lock:
+        _require_canvas(body.case_id, body.canvas_id)
+        return trace_review.edge(body, _context, _suggest_counterparties)
+
+
+class ContextSummaryIn(BaseModel):
+    case_id: int
+    canvas_id: int = 0
+    flow_ids: list[Annotated[int, Field(gt=0, lt=2**63)]] = Field(max_length=2548)
+
+
+@app.post("/api/context/summary")
+def context_summary(body: ContextSummaryIn,
+                    review_token: str = Header(alias="X-FundsTrace-Review", pattern=r"^[0-9a-f]{32}$")):
+    with db._lock:
+        return trace_review.summary(review_token, body.case_id, body.canvas_id, body.flow_ids)
+
+
+@app.get("/api/context/{anchor_id}/record/{flow_id}")
+def context_record(anchor_id: int, flow_id: int, case_id: int, canvas_id: int = 0,
+                   review_token: str = Header(alias="X-FundsTrace-Review", pattern=r"^[0-9a-f]{32}$")):
+    return trace_review.original(case_id, canvas_id, anchor_id, flow_id, review_token)
+
+
+@app.delete("/api/context/review")
+def close_context_review(case_id: int, canvas_id: int = 0,
+                         review_token: str = Header(alias="X-FundsTrace-Review", pattern=r"^[0-9a-f]{32}$")):
+    with db._lock:
+        trace_review.revoke(review_token, case_id, canvas_id)
+    return {"ok": True}
+
+
+def _context(flow_id, x, side, case_id, *, for_review=False):
     """某笔流水的交易对手在该账户流水中、位于本笔前后各 X 笔的流水（限当前案件）"""
     f = db.q("select *,cast(trade_time as varchar) _precise_time from effective_visible_flows where id = ? and case_id = ?", [flow_id, case_id])
     if not f:
@@ -1104,7 +1156,7 @@ def _context(flow_id, x, side, case_id):
     source_ledger.decorate(case_id, [f])
     precise = f.pop("_precise_time")
     f["trade_time"] = f.get("trade_time_original") or precise
-    if f.get("source_ledger") and not f.get(("payer" if side == "payer" else "payee") + "_account"):
+    if (for_review or f.get("source_ledger")) and not f.get(("payer" if side == "payer" else "payee") + "_account"):
         side = "payer" if f["payer_account"] else "payee"
     if side == "payer":
         acct = f["payer_account"]
@@ -1115,12 +1167,14 @@ def _context(flow_id, x, side, case_id):
         raise HTTPException(422, "该侧账号缺失，无法定位账户流水；原交易仍保留在明细中")
     from . import ledger_navigation
     own = ledger_navigation.own_anchor(case_id, acct, f)
-    window = ledger_navigation.context_window(case_id, acct, f, x, own_entry=own)
+    window = ledger_navigation.context_window(case_id, acct, (own or f) if for_review else f, x, own_entry=own)
     rows = window["rows"]
     source_ledger.decorate(case_id, rows)
     for row in rows:
         row["dir"] = "out" if row["payer_account"] == acct else "in"
         row["book"] = "self" if row["self_account"] == acct else "counter" if row["self_account"] else ""
+        if for_review and (not own or row["book"] != "self") and row.get("context_relation") in {"before", "after"}:
+            row["context_relation"] = "unordered"
     result = {"anchor": f, "side": side, "account": acct, **window}
     from . import analysis_snapshot
     result["analysis_revision"] = analysis_snapshot.revision(case_id)
@@ -1132,6 +1186,8 @@ def _context(flow_id, x, side, case_id):
         row["event_state"] = member.get("status", "unknown")
         row["event_id"] = member.get("event_id") if member.get("status") == "confirmed" else None
         row["context_group"] = "event:" + row["event_id"] if row["event_id"] else "record:" + str(row["id"])
+    if for_review:
+        return {**result, "_own_entry": own}
     displays = {}
     for row in rows:
         for role in ("payer","payee"):
@@ -1207,7 +1263,7 @@ def amt_is_close(ratio, lo, hi):
     return lo <= ratio <= hi
 
 
-def _suggest_counterparties(rows, anchor):
+def _suggest_counterparties(rows, anchor, *, limit=3):
     """在前后 X 笔候选中，按启发式规则推荐疑似来源 / 去向对手（可解释评分）"""
     try:
         at = _dt.fromisoformat(anchor["trade_time"])
@@ -1310,7 +1366,7 @@ def _suggest_counterparties(rows, anchor):
                     break
     sources.sort(key=lambda x: -x["score"])
     targets.sort(key=lambda x: -x["score"])
-    return db.clean({"sources": sources[:3], "targets": targets[:3]})
+    return db.clean({"sources": sources[:limit], "targets": targets[:limit]})
 
 
 # ---------------- 账号身份证 ----------------

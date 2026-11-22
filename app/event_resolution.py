@@ -503,6 +503,58 @@ def members(case_id, flow_ids=None):
     return [{**row, "flow_id": str(row["flow_id"])} for row in rows]
 
 
+def review_pair(case_id, anchor, *, limit=64):
+    """Read current event proof or bounded competitors for one observation.
+
+    Include registered peers even when their amounts or times disagree. A
+    same-time mirror without registered proof only explains an open question.
+    """
+    seed = members(case_id, [anchor["id"]])
+    member = seed[0] if seed else {}
+    if member.get("status") == "confirmed":
+        from . import bank_posting_pairs
+
+        rows = db.q_raw("""select m.flow_id,f.self_account from event_members m
+            join resolved_events e on e.case_id=m.case_id and e.event_id=m.event_id
+            join effective_flows f on f.case_id=m.case_id and f.id=m.flow_id
+            where m.case_id=? and m.event_id=? and m.status='confirmed'
+              and json_extract_string(e.evidence_json,'$.policy') in (?,?)
+              and f.self_account in (e.payer_account,e.payee_account) order by m.flow_id""",
+            [case_id, member["event_id"], POLICY, bank_posting_pairs.POLICY])
+        if len({row["self_account"] for row in rows}) == 2:
+            return {"status": "confirmed", "reason": member["reason"],
+                    "candidate_ids": [str(row["flow_id"]) for row in rows[:limit]],
+                    "more": len(rows) > limit}
+    stamp = transaction_time.clock(anchor)
+    clock_column = "trade_time_utc" if transaction_time.basis(anchor) == "utc" else "trade_time"
+    possible = db.q_raw(f"""with seed as (
+            select * from effective_visible_flows where case_id=? and id=?
+        ), candidates as (
+            select c.flow_id from event_observation_cache c join event_observation_cache a
+              on c.case_id=a.case_id and c.reference_key=a.reference_key
+              join seed on seed.case_id=a.case_id and seed.id=a.flow_id
+            union
+            select m.flow_id from event_members m join event_members a
+              on m.case_id=a.case_id and m.pending_group=a.pending_group
+              join seed on seed.case_id=a.case_id and seed.id=a.flow_id
+            union
+            select f.id from effective_visible_flows f join seed s on f.case_id=s.case_id
+              and f.payer_account=s.payer_account and f.payee_account=s.payee_account
+              and f.self_account<>s.self_account and f.currency=s.currency and f.amount=s.amount
+              and (f.trade_time_utc is null)=(s.trade_time_utc is null)
+              and f.{clock_column}=?
+              and s.self_account in (s.payer_account,s.payee_account)
+              and f.self_account in (s.payer_account,s.payee_account)
+        )
+        select f.id from candidates c join effective_visible_flows f on f.id=c.flow_id
+        where f.case_id=? and f.id<>? order by f.id limit ?""",
+        [case_id, anchor["id"], stamp, case_id, anchor["id"], limit + 1])
+    more = len(possible) > limit
+    return {"status": "conflict" if member.get("status") == "conflict" else "unknown",
+            "reason": member.get("reason") or "no_scoped_event_proof",
+            "candidate_ids": [str(row["id"]) for row in possible[:limit]], "more": more}
+
+
 def decorate_edges(case_id, edges):
     """Attach selected confirmed-event totals beside unchanged observations.
 

@@ -16,7 +16,7 @@ from pathlib import Path
 import tempfile
 import unicodedata
 
-from . import db
+from . import db, table_direction_recheck
 
 POLICY = "typed-account-evidence-v1"
 CARD_PROJECTION = "endpoint-cards-v4-scoped-order"
@@ -25,7 +25,7 @@ DETAIL_FIELD = "resolution_evidence"
 TABLE_PROFILE = "funds-trace-table-v20"
 ARCHIVE_PROFILE = "funds-trace-table-archive-v6"
 FEEDBACK_PROFILE = "funds-trace-bank-feedback-v6"
-PROFILES = frozenset(("funds-trace-table-archive-v66", "funds-trace-table-archive-v67", "funds-trace-table-archive-v68",
+PROFILES = frozenset((table_direction_recheck.PROFILE, "funds-trace-table-archive-v66", "funds-trace-table-archive-v67", "funds-trace-table-archive-v68",
                      "funds-trace-table-v78", "funds-trace-table-v79", "funds-trace-table-v80",
                      "funds-trace-table-archive-v63", "funds-trace-table-archive-v64", "funds-trace-table-archive-v65",
                      "funds-trace-table-v75", "funds-trace-table-v76", "funds-trace-table-v77",
@@ -33,7 +33,7 @@ PROFILES = frozenset(("funds-trace-table-archive-v66", "funds-trace-table-archiv
 _PROFILE_SQL = ",".join("?" for _ in PROFILES)
 # Neutral source endpoints participate in identity replay without changing the
 # ordinary profiles' financial occurrence identity or historical CSV bridge.
-OCCURRENCE_PROFILES = PROFILES - {"funds-trace-table-archive-v66", "funds-trace-table-v78", "funds-trace-table-v79",
+OCCURRENCE_PROFILES = PROFILES - {table_direction_recheck.PROFILE, "funds-trace-table-archive-v66", "funds-trace-table-v78", "funds-trace-table-v79",
                                   "funds-trace-table-archive-v63", "funds-trace-table-v75", "funds-trace-table-v76",
                                   "funds-trace-table-v69", "funds-trace-table-v72", "funds-trace-table-v70", "funds-trace-table-v73", "funds-trace-table-v66", "funds-trace-table-v67", "funds-trace-table-archive-v57", "funds-trace-table-archive-v60"}
 _MAX_TEXT = 512

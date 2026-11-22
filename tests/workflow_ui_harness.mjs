@@ -190,7 +190,7 @@ function harness(search = '') {
     fmtTime: String, esc: String, nodePhotoUrl: () => '', totalsHtml: () => '', moneyHtml: String,
     drawerSequence: 0, _selItem: null, edgeWorkspace: null, layoutJob: null,
     scheduleGraphLabels() {}, syncGraphEdgeLabel() {},
-    selectItem() {}, renderCtxRows: value => { contextRows.push(value); context.syncContextSelection(); }, renderSuggestions() {}, isSystemAccount: () => false,
+    selectItem() {}, renderContext: () => { contextRows.push(state.ctx.data); context.syncContextSelection(); },
     openPhotoCrop: (...args) => photoOpens.push(args),
     trackFlows: ids => tracker(ids),
     loadGraph: async () => { graphReads += 1; if (graphLoader) await graphLoader(); },
@@ -230,7 +230,7 @@ function harness(search = '') {
     ['let _selItem = null;', '/* ---------------- 交易上下文'],
     ['async function manageNodeMainAccount(', 'function installDataTools('],
     ['let contextTableScroll = null;', 'async function openContext('],
-    ['async function loadContext()', '/* ---------------- 智能推荐']]) {
+    ['async function loadContext()', 'function renderContext()']]) {
     vm.runInContext(app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start))), context);
   }
   // Existing workflow cases script an accepted confirmation. The dedicated
@@ -294,19 +294,22 @@ async function ready(h, id = 'SYN-IMPORT') {
   h.open(); const result = h.upload(`${id}.csv`); h.uploads.at(-1).finish(preview(id)); await result;
 }
 
-test('context side/window changes publish only the latest response', async () => {
+const ctxResponse = (account, rows = [], id = 17) => ({
+  anchor: { id, payee_name: account }, account, rows, review: { token: 'a'.repeat(32) },
+});
+
+test('context window changes publish only the latest response', async () => {
   const h = harness(), old = deferred(), latest = deferred();
-  h.state.ctx = { flowId: 17, side: 'payee', x: 5, autoSwitch: false, phase: 'ready', closed: false };
+  h.state.ctx = { flowId: 17, mode: 'all', x: 5, phase: 'ready', closed: false };
   h.element('ctxModal').style.display = 'flex';
-  h.network(path => path.includes('side=payee') ? old.promise : latest.promise);
+  h.network(path => path.includes('x=5&') ? old.promise : latest.promise);
   const first = h.run('loadContext()');
-  h.state.ctx.side = 'payer'; h.state.ctx.x = 9;
+  h.state.ctx.x = 9;
   const second = h.run('loadContext()');
-  const result = account => ({ anchor: { id: 17 }, account, total: 10, pos: 4, rows: [] });
-  latest.resolve(response(result('SYN-LATEST'))); await second;
-  old.resolve(response(result('SYN-OLD'))); await first;
+  latest.resolve(response(ctxResponse('SYN-LATEST'))); await second;
+  old.resolve(response(ctxResponse('SYN-OLD'))); await first;
   assert.deepEqual(h.contextRows.map(item => item.account), ['SYN-LATEST']);
-  assert.match(h.element('ctxPos').textContent, /付款方\s*[：·]\s*SYN-LATEST/);
+  assert.match(h.element('ctxAnchor').innerHTML, /SYN-LATEST/);
   assert.equal(h.state.ctx.x, 9);
 });
 
@@ -627,20 +630,20 @@ test('a graph-refresh focus marker cannot survive explicit close, another accoun
 });
 
 test('context read failures expose an explicit retry in the existing table', async () => {
-  const h = harness(); h.state.ctx = { flowId: 17, side: 'payee', x: 5, autoSwitch: false, phase: 'ready', closed: false };
+  const h = harness(); h.state.ctx = { flowId: 17, mode: 'all', x: 5, phase: 'ready', closed: false };
   h.element('ctxModal').style.display = 'flex'; h.network(() => response({}, 503));
   await h.run('loadContext()');
   const cell = h.element('ctxTbody').children[0].children[0];
   assert.match(cell.textContent, /加载失败/);
   assert.equal(cell.children[0].textContent, '重新加载明细');
-  h.network(() => response({ anchor: { id: 17 }, account: 'SYN-RETRY', total: 1, pos: 1, rows: [] }));
+  h.network(() => response(ctxResponse('SYN-RETRY')));
   await cell.children[0].onclick();
   assert.equal(h.contextRows.at(-1).account, 'SYN-RETRY');
   assert.equal(h.element('ctxTrack').disabled, true, 'a successful empty retry cannot enable tracking');
 });
 
 test('context selection stays open on a rejected/no-op tracking command and closes only after success', async () => {
-  const h = harness(); h.state.ctx = { flowId: 17, phase: 'ready', closed: false }; h.element('ctxModal').style.display = 'flex';
+  const h = harness(); h.state.ctx = { flowId: 17, mode: 'all', phase: 'ready', closed: false, data: ctxResponse('SYN-CURRENT', [{id: 17}]) }; h.element('ctxModal').style.display = 'flex';
   h.track(async () => false); await h.element('ctxTrack').onclick();
   assert.equal(h.element('ctxModal').style.display, 'flex');
   assert.equal(h.element('context-check').checked, true);
@@ -650,12 +653,12 @@ test('context selection stays open on a rejected/no-op tracking command and clos
 });
 
 test('late tracking completion does not close a newly selected context or a different canvas', async () => {
-  const h = harness(), tracking = deferred(); h.state.ctx = { flowId: 17, phase: 'ready', closed: false };
+  const h = harness(), tracking = deferred(); h.state.ctx = { flowId: 17, mode: 'all', phase: 'ready', closed: false, data: ctxResponse('SYN-CURRENT', [{id: 17}]) };
   h.element('ctxModal').style.display = 'flex'; h.track(() => tracking.promise);
   const first = h.element('ctxTrack').onclick();
   h.state.canvasId = 9; h.state.canvasGeneration += 1;
-  h.state.ctx = { flowId: 18, side: 'payer', x: 5, autoSwitch: false, phase: 'ready', closed: false };
-  h.network(() => response({ anchor: { id: 18 }, account: 'SYN-NEW', total: 1, pos: 1, rows: [{ id: 18 }] }));
+  h.state.ctx = { flowId: 18, mode: 'all', x: 5, phase: 'ready', closed: false };
+  h.network(() => response(ctxResponse('SYN-NEW', [{id: 18}], 18)));
   await h.run('loadContext()'); tracking.resolve(true); await first;
   assert.equal(h.element('ctxModal').style.display, 'flex');
   assert.equal(h.element('ctxTrack').disabled, false);

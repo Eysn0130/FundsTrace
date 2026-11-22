@@ -175,7 +175,7 @@
         if (!contextIsCurrent(selection, context)) return;
         selection.phase = 'error';
         const row = document.createElement('tr'), cell = document.createElement('td');
-        cell.colSpan = 8; cell.className = 'context-empty'; cell.textContent = '流水明细加载失败：' + text(error) + '。';
+        cell.colSpan = contextColumns; cell.className = 'context-empty'; cell.textContent = '流水明细加载失败：' + text(error) + '。';
         const retry = document.createElement('button');
         retry.type = 'button'; retry.className = 'btn small'; retry.textContent = '重新加载明细';
         retry.onclick = () => { if (contextIsCurrent(selection, context)) return loadContext(); };
@@ -189,14 +189,14 @@
     const status = $('#ctxTrackStatus');
     $('#ctxTrack').onclick = async () => {
       const selection = state.ctx, context = selection?.context || caseContext();
-      if (!contextIsCurrent(selection, context) || selection.phase !== 'ready' || selection.submission) return;
-      const ids = $$('#ctxTbody .ctx-ck').filter(node => node.checked && !node.disabled).map(node => Number(node.dataset.id));
+      if (!contextIsCurrent(selection, context) || selection.phase !== 'ready' || selection.detail || selection.submission) return;
+      const ids = $$('#ctxTbody .ctx-ck').filter(node => node.checked && !node.disabled).map(node => node.dataset.id);
       if (!ids.length) { syncContextSelection(); return; }
       const submission = selection.submission = {};
       const current = () => contextIsCurrent(selection, context) && selection.submission === submission;
       selection.phase = 'tracking'; status.textContent = '正在上图…'; syncContextSelection();
       try {
-        const applied = await trackFlows(ids);
+        const applied = await trackFlows(ids, { token: selection.data.review.token, current: () => current() && contextEdgeIsCurrent(selection) });
         if (!current()) return;
         if (applied === true) { closeContext(); }
         else status.textContent = '本次上图未完成，已保留勾选。请等待当前画布操作完成后重试。';

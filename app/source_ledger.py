@@ -8,7 +8,7 @@ import json
 import os
 import tempfile
 
-from . import db
+from . import db, table_direction_recheck
 from .money import money_decimal
 
 POLICY = "source-ledger-observations-v1"
@@ -77,10 +77,13 @@ def validate(encoded):
         raise ValueError("来源记账语义无效")
     value = json.loads(encoded)
     source_observation = isinstance(value, dict) and value.get("policy") == SOURCE_OBSERVATION_POLICY
+    has_direction_heading = isinstance(value, dict) and "direction_heading" in value
     fields = {"policy", "kind", "row", "signed_amount", "source_currency", "header_scope",
               "source_direction", "direction", "own_card", "reported_status", "issues", "balance_before"}
     if source_observation:
         fields.add("counterparty")
+    if has_direction_heading:
+        fields.add("direction_heading")
     if (not isinstance(value, dict) or set(value) != fields
             or value["policy"] not in {POLICY, UNORIENTED_POLICY, SOURCE_OBSERVATION_POLICY} or value["kind"] not in {"ledger", "financial", "context"}
             or type(value["header_scope"]) is not int or value["header_scope"] < 1
@@ -126,7 +129,11 @@ def validate(encoded):
     if unoriented and table_import._enum(value["source_direction"]) in table_import._IN | table_import._OUT:
         raise ValueError("已识别方向不能声明为未知")
     directions = table_import._IN if value["direction"] == "in" else table_import._OUT
-    if not unoriented and table_import._enum(value["source_direction"]) not in directions:
+    if has_direction_heading:
+        declared = table_direction_recheck.directions(value["direction_heading"]).get(value["source_direction"])
+        if value["policy"] != POLICY or value["kind"] != "financial" or value["direction"] != declared:
+            raise ValueError("来源收付标题与记账方向不一致")
+    elif not unoriented and table_import._enum(value["source_direction"]) not in directions:
         raise ValueError("来源标注方向不一致")
     if value["source_currency"] and value["source_currency"] not in table_import._ISO_CURRENCIES:
         raise ValueError("来源币种无效")

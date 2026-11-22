@@ -47,6 +47,7 @@
       path_candidate_resource_limit: '首末关系的候选记录超过本次计算上限，未任取其中几笔',
       path_account_resource_limit: '这条路径的内部账户超过本次计算上限',
       no_own_ledger_entries_in_window: '生效时间范围内没有可核算的本方账簿',
+      own_ledger_anchor_missing: '本方账簿缺少可核实的本笔锚点，先后与本金归属待核',
       source_candidate_resource_limit: '首段来源候选超过本次计算上限',
       posting_order_unknown: '同刻记账先后尚无可比来源依据',
       opening_balance_unknown: '首笔记录前的账面余额缺少依据',

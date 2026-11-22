@@ -24,7 +24,7 @@ from itertools import islice
 import anyio
 
 from app import db, importer, feedback_import, table_import, table_archive, import_validation, evidence_resolution
-from app import import_preview_cache, rar_archive
+from app import import_preview_cache, rar_archive, table_direction_recheck
 from .cases import ServiceError, preview_flow, require_case
 from .main_accounts import mark_automatic
 
@@ -860,7 +860,8 @@ def _table_summary(plan):
             "non_business_attachments": stats["reason_counts"].get("non_business_attachment", 0),
             "unresolved_examples": [{**{key: record[key] for key in ("member_path", "source_row", "reason_code")},
                                      "details": {key: value for key, value in record["details"].items()
-                                                 if key in table_import.FIELD_EVIDENCE_DETAILS | table_import.TIME_EVIDENCE_DETAILS | {"validation_issues"}}}
+                                                 if key in table_import.FIELD_EVIDENCE_DETAILS | table_import.TIME_EVIDENCE_DETAILS
+                                                 | {"validation_issues", table_direction_recheck.DETAIL_FIELD}}}
                                     for record in islice(unresolved, 10)]}
 
 

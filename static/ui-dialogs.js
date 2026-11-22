@@ -95,27 +95,6 @@
         down = false;
       });
     }
-    const suggestions = document.querySelector('#ctxSuggest');
-    new MutationObserver(() => {
-      for (const item of suggestions.querySelectorAll('.sg-item')) {
-        if (item.tagName === 'BUTTON') continue;
-        item.tabIndex = 0; item.setAttribute('role', 'button');
-        item.setAttribute('aria-label', `勾选推荐流水：${item.querySelector('.sg-main')?.textContent || ''}`);
-      }
-    }).observe(suggestions, { childList: true });
-    suggestions.addEventListener('keydown', event => {
-      if (event.target.matches('.sg-item') && event.target.tagName !== 'BUTTON' && ['Enter', ' '].includes(event.key)) {
-        event.preventDefault(); event.target.click();
-      }
-    });
-    const contextTabs = document.querySelector('#ctxTabs');
-    if (contextTabs) {
-      const syncTabs = () => contextTabs.querySelectorAll('.stab').forEach(button => {
-        button.setAttribute('aria-pressed', String(button.classList.contains('active')));
-      });
-      new MutationObserver(syncTabs).observe(contextTabs, { attributes: true, attributeFilter: ['class'], subtree: true });
-      syncTabs();
-    }
     document.querySelector('#pcCircle').addEventListener('keydown', event => {
       const delta = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
       if (!delta || pcState.binding?.busy) return;

@@ -311,7 +311,7 @@ function harness({ entityInputs = false, geometry = false, columnStorage = null,
       const traceEnd = editor.indexOf('  window.FundsCanvasEditor =', traceStart);
       assert.ok(traceStart >= 0 && traceEnd > traceStart);
       vm.runInContext(editor.slice(traceStart, traceEnd), context);
-      vm.runInContext(editor.slice(editor.indexOf('  function track(ids, remove)'), editor.indexOf('  const neighborhood =')), context);
+      vm.runInContext(editor.slice(editor.indexOf('  function track(ids, remove, review)'), editor.indexOf('  const neighborhood =')), context);
       const bulkStart = editor.indexOf("    $('#btnBulkTrack').onclick = () => {");
       const bulkEnd = editor.indexOf("    $('#btnClearGraph').onclick =", bulkStart);
       assert.ok(bulkStart >= 0 && bulkEnd > bulkStart);

@@ -17,7 +17,7 @@ import zlib
 import duckdb
 from fastapi import HTTPException
 
-from . import db, feedback_import, importer, evidence_resolution, import_attachments, event_resolution
+from . import db, feedback_import, importer, evidence_resolution, import_attachments, event_resolution, table_direction_recheck
 
 CASE_PKG_COLS = {
     "flows": "id, batch_id, trade_no, trade_time, payer_name, payer_account, payer_bank, "
@@ -651,6 +651,8 @@ def _table_journals(check, paths):
                 detail_fields |= {bank_posting_pairs.FIELD}
             if source_profiles[source_id] in table_import.PRECISE_PROFILES:
                 detail_fields |= {table_import.table_sign_declarations.DETAIL_FIELD}
+            if source_profiles[source_id] == table_direction_recheck.PROFILE:
+                detail_fields |= {table_direction_recheck.DETAIL_FIELD}
             if source_profiles[source_id] in table_import.REFERENCE_ROLE_PROFILES:
                 detail_fields |= table_import.FIELD_EVIDENCE_DETAILS
             if source_profiles[source_id] in table_import.TIME_ROLE_PROFILES:
@@ -714,6 +716,25 @@ def _table_journals(check, paths):
             if table_import.table_sign_declarations.DETAIL_FIELD in details:
                 if not table_import.table_sign_declarations.validate_proof(details[table_import.table_sign_declarations.DETAIL_FIELD]):
                     _invalid("金额符号来源声明无效")
+            has_direction_heading = ledger_entry is not None and "direction_heading" in ledger_entry
+            if table_direction_recheck.DETAIL_FIELD in details:
+                scope = header_regions.get((source_id, path))
+                try:
+                    review = table_direction_recheck.validate(details[table_direction_recheck.DETAIL_FIELD], scope)
+                except (ValueError, TypeError, KeyError, RecursionError):
+                    _invalid("收付方向复判依据无效")
+                verified = review["status"] == "verified"
+                historical_conflict = (reason == "conflicting_field" and details.get("counterparty_basis")
+                    in {table_import.HISTORY_CONFLICT_BASIS, table_import.ARCHIVE_HISTORY_CONFLICT_BASIS})
+                valid_disposition = (disposition in (*accepted, "removed") and verified
+                                     or disposition == "unresolved" and (not verified or historical_conflict))
+                if role != "table" or source_row <= scope or not valid_disposition or has_direction_heading != verified:
+                    _invalid("收付方向复判与来源处置不一致")
+                if verified and (ledger_entry["direction_heading"], ledger_entry["source_direction"], ledger_entry["direction"]) != (
+                        review["columns"][0]["column"], review["columns"][0]["raw"], review["direction"]):
+                    _invalid("收付方向复判与来源记账不一致")
+            elif has_direction_heading:
+                _invalid("来源收付标题缺少复判依据")
             if event_resolution.DETAIL_FIELD in details:
                 event_resolution.validate_reference(details[event_resolution.DETAIL_FIELD])
                 if role != "table" or disposition not in {"imported", "duplicate", "unresolved", "cancelled", "removed", "non_monetary"}:
