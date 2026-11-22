@@ -344,6 +344,57 @@ def test_generic_primary_field_and_nonreciprocal_parties_do_not_gain_bank_pair_a
         ("SYN-A", "SYN-B", "37.41"), ("SYN-C", "SYN-B", "37.41")}
 
 
+def test_flow_sources_uses_equality_join_and_keeps_proof_confirmed_only(client, database, make_case, monkeypatch):
+    cid = make_case("SYN source proof join")
+    add_source(client, cid, encoded(entries()))
+    observed = {row["balance"]: row["id"] for row in targets(client, cid)}
+    balances = ("962.59", "2037.41")
+    flow_ids = [observed[balance] for balance in balances]
+    url = f"/api/v1/cases/{cid}/flows/{flow_ids[1]}/sources"
+
+    def page(number):
+        response = client.get(url, params={"page": number, "page_size": 1})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert (body["page"], body["page_size"], body["total"]) == (number, 1, 2)
+        return body["items"]
+
+    original_query = database.q_raw
+    queries = []
+
+    def capture_page(sql, params=None):
+        if "current_event_proof" in sql:
+            queries.append((sql, params))
+        return original_query(sql, params)
+
+    with monkeypatch.context() as capture:
+        capture.setattr(database, "q_raw", capture_page)
+        debit, = page(1)
+    (sql, params), = queries
+    nodes = json.loads(original_query("explain (format json) " + sql, params)[0]["explain_value"])
+    while nodes:
+        node = nodes.pop()
+        assert node["name"] != "BLOCKWISE_NL_JOIN"
+        nodes.extend(node["children"])
+
+    credit, = page(2)
+    assert page(3) == []
+    for item, flow_id, balance in zip((debit, credit), flow_ids, balances):
+        assert (item["observation_flow_id"], item["observation_balance"]) == (flow_id, balance)
+        proof = json.loads(item["record_details"]["current_bank_posting_pair_proof"])
+        assert proof["policy"] == "bank-feedback31-paired-postings-v1"
+        assert proof["source_primary_reference"] == "SYN-PAIR"
+
+    # Retain the event IDs and proof so the join must check membership status.
+    database.x("""update event_members set status='unknown',reason='bank_pair_reference_reused',
+                  pending_group='SYN-pending' where case_id=? and flow_id in (?,?)""", [cid, *flow_ids])
+    for number, flow_id in enumerate(flow_ids, 1):
+        item, = page(number)
+        assert item["observation_flow_id"] == flow_id
+        assert item["record_details"]["current_bank_posting_pair_pending"] == "bank_pair_reference_reused"
+        assert "current_bank_posting_pair_proof" not in item["record_details"]
+
+
 def test_late_third_row_revokes_pair_outside_canvas_and_withdrawal_reassesses(client, make_case):
     cid = make_case("SYN mutable posting proof")
     add_source(client, cid, encoded(entries()))
