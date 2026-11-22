@@ -139,30 +139,33 @@ function harness() {
   document.root.appendChild(document.body); document.activeElement = document.body;
   const add = (parent, id, tag = 'div') => { const node = new Element(tag); node.id = id; parent.appendChild(node); return node; };
   const modal = add(document.body, 'ctxModal'); modal.style.display = 'none';
-  for (const id of ['ctxCaseName', 'ctxAnchor', 'ctxPos', 'ctxSelected', 'ctxTrackedCount', 'ctxTrackStatus', 'ctxSuggest']) add(modal, id);
+  for (const id of ['ctxCaseName', 'ctxAnchor', 'ctxPos', 'ctxTotal', 'ctxSelected', 'ctxTrackedCount', 'ctxTrackStatus', 'ctxSuggest', 'ctxBody', 'ctxDetail', 'ctxDetailContent']) add(modal, id);
+  add(modal, 'ctxDetailBack', 'button'); add(modal, 'ctxTraceThis', 'button');
   const tabs = add(modal, 'ctxTabs');
-  for (const side of ['payee', 'payer']) { const tab = add(tabs, `ctxSide-${side}`, 'button'); tab.className = 'stab'; tab.dataset.side = side; }
-  add(modal, 'ctxX', 'input').value = '5'; add(modal, 'ctxBook', 'select').value = 'all';
+  for (const mode of ['all', 'source', 'target']) { const tab = add(tabs, `ctxMode-${mode}`, 'button'); tab.className = 'stab'; tab.dataset.mode = mode; }
+  add(modal, 'ctxX', 'input').value = '5'; add(modal, 'ctxStart', 'input'); add(modal, 'ctxEnd', 'input');
   const track = add(modal, 'ctxTrack', 'button'); add(track, 'ctxTrackLabel'); add(modal, 'ctxClose', 'button'); add(modal, 'ctxCancel', 'button');
   const viewport = add(modal, 'ctxTableScroll'); const table = add(viewport, 'ctxTable', 'table'); add(table, 'ctxTbody', 'tbody');
   for (const id of ['ctxScrollLeft', 'ctxScrollRight', 'ctxHorizontalPosition']) add(modal, id, id === 'ctxHorizontalPosition' ? 'input' : 'button');
   for (const id of ['btnCloseDrawer', 'drawer', 'drawerBody', 'btnImport', 'btnImport2', 'importModal', 'impPbar', 'impClose', 'impCancel', 'impQueue', 'impQueueStop',
     'impFile', 'impRe', 'impCommit', 'impChangeFile', 'impMapping', 'impPreviewScroll', 'impHorizontalPosition', 'impScrollLeft', 'impScrollRight', 'impPreviewTable',
     'flowTbody', 'canvasSel', 'flowCkAll', 'caseSelect', 'analysisLink', 'batchList']) add(document.body, id);
-  const requests = [], trackCalls = [], notices = [];
+  const requests = [], trackCalls = [], reviewWrites = [], notices = [];
   let network = async () => { throw new Error('Unexpected request'); }, tracker = async () => true;
   const state = { caseId: 1, caseGeneration: 1, canvasId: 0, canvasGeneration: 1, ctx: null, tracked: new Set([12]),
-    lastGraph: { nodes: [], edges: [] }, graphView: { revision: 0 }, search: { page: 1 }, cases: [{ id: 1, name: '合成甲案' }, { id: 2, name: '合成乙案' }] };
+    lastGraph: { nodes: [], edges: [], analysis_revision: 'a'.repeat(32), membership_digest: 'b'.repeat(64) }, graphView: { revision: 0 }, search: { page: 1 }, cases: [{ id: 1, name: '合成甲案' }, { id: 2, name: '合成乙案' }] };
   const window = new Element('#window'); window.appendChild(document.root);
   window.location = { href: 'http://synthetic.invalid/?case_id=1' }; window.history = { replaceState(_state, _title, url) { window.location.href = String(url); } };
   const fetch = async (path, options) => {
-    requests.push({ path, options }); const value = await network(path, options);
+    requests.push({ path, options });
+    const value = options?.method === 'DELETE' ? { ok: true } : await network(path, options);
     return { ok: true, status: 200, json: async () => value, text: async () => JSON.stringify(value) };
   };
   const context = vm.createContext({ state, document, window, exportWorkspace: null, caseWorkspace: null, URL, Set, Map, Event, fetch,
     $: selector => document.querySelector(selector), $$: selector => document.querySelectorAll(selector),
     api: async (path, options) => (await fetch(path, options)).json(),
-    trackFlows: ids => { trackCalls.push([...ids]); return tracker(ids); },
+    jsonOpts: body => ({ headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) }),
+    trackFlows: (ids, guard) => { trackCalls.push([...ids]); reviewWrites.push(guard); return tracker(ids); },
     toast: (message, type) => notices.push({ message, type }),
     preferenceStorage: { setItem() {} }, cancelGraphLayout() {}, resetGraphView() {}, newGraphPresentation: () => ({}),
     revokePhotoCrop() {}, resetNodeWorkspace() {}, syncEdgeTypeControl() {}, closeDrawer() {}, syncFlowCkCount() {}, updateHeader() {}, resetBatchView() {},
@@ -176,22 +179,22 @@ function harness() {
   vm.runInContext(section('function esc(', 'function toast('), context);
   vm.runInContext(section('let pendingCanvasId = 0;', 'async function loadCases()'), context);
   vm.runInContext(section('function caseContext()', '/* ---------------- 初始化'), context);
-  vm.runInContext(section('const SYSTEM_ACCOUNT_NAMES =', 'async function loadBatches()'), context);
+  vm.runInContext(section('let contextTableScroll = null;', 'async function loadBatches()'), context);
   vm.runInContext('bindContextUI()', context);
   vm.runInContext(workflow, context);
   window.fire('DOMContentLoaded');
-  return { state, document, requests, trackCalls, notices, element: id => document.getElementById(id),
+  return { state, document, requests, trackCalls, reviewWrites, notices, element: id => document.getElementById(id),
     network(handler) { network = handler; }, track(handler) { tracker = handler; }, run(code) { return vm.runInContext(code, context); },
     open(id = 12) { return vm.runInContext(`openContext(${id})`, context); }, load() { return vm.runInContext('loadContext()', context); },
     close() { return document.getElementById('ctxClose').click(); }, selectCase(id) { return vm.runInContext(`selectCase(${id})`, context); },
-    rows() { return document.querySelectorAll('#ctxTbody tr').filter(row => row.querySelectorAll('td').length === 8); },
+    rows() { return document.querySelectorAll('#ctxTbody tr').filter(row => row.querySelectorAll('td').length === 14); },
     box(id) { return document.querySelector(`#ctxTbody .ctx-ck[data-id="${id}"]`); }, cards() { return document.querySelectorAll('#ctxSuggest .sg-item').filter(card => {
       for (let node = card; node; node = node.parentElement) if (node.hidden || node.style.display === 'none') return false;
       return true;
     }); },
     check(id, checked) { const box = this.box(id); assert.ok(box, `missing visible checkbox ${id}`); box.checked = checked; return box.fire('change').completion; },
     change(id, value) { const node = document.getElementById(id); node.value = value; return node.fire('change').completion; },
-    side(value) { return document.getElementById(`ctxSide-${value}`).click(); },
+    mode(value) { return document.getElementById(`ctxMode-${value}`).click(); },
     submit() { return document.getElementById('ctxTrack').click(); },
   };
 }
@@ -200,13 +203,19 @@ function result(account = 'SYN-CURRENT') {
   const flow = (id, rn, dir, book, extra = {}) => ({ id, rn, dir, book, trade_time: '2026-10-17 12:34:56',
     payer_name: '合成来款方', payer_account: 'SYN-PAYER', payee_name: '合成收款方', payee_account: 'SYN-PAYEE',
     self_account: book === 'self' ? (dir === 'in' ? 'SYN-PAYEE' : 'SYN-PAYER') : (dir === 'in' ? 'SYN-PAYER' : 'SYN-PAYEE'),
-    amount: '9007199254740993.07', currency: 'CNY', balance: null, summary: '合成交易摘要', ...extra });
-  const anchor = flow(12, 3, 'out', 'self');
-  return { account, anchor, total: 9, pos: 3, rows: [flow(11, 2, 'in', 'self', {trade_time: '2026-10-17 12:33:56'}), anchor,
-    flow(13, 4, 'out', 'counter', { balance: '-10000000000000.01', trade_time: '2026-10-17 12:35:56' }), flow(14, 5, 'out', 'self', {trade_time: '2026-10-17 12:36:56'})],
-    principal: { status: 'unknown', assessment: [{ status: 'unknown', message: `合成来源证据-${account}` }], targets: [{ amount: '100.00', min: '0.00', max: '100.00', fifo: null }], currency: 'CNY' },
-    suggestions: { sources: [{ ids: [11, 12, 99], account: 'SYN-SOURCE', name: '合成来源', score: 88, reasons: ['合成原因'], tags: ['拆分'] }],
-      targets: [{ ids: [13], account: 'SYN-TARGET', name: '合成去向', score: 62, reasons: ['合成去向原因'], tags: [] }] } };
+    amount: '9007199254740993.07', currency: 'CNY', balance: null, summary: '合成交易摘要',
+    review_fields: { account: 'SYN-PAYEE', name: '合成收款方', direction: dir === 'in' ? '贷' : '借' },
+    review_roles: [], ...extra });
+  const anchor = flow(12, 3, 'out', 'self', { context_relation: 'anchor', payee_name: account });
+  return { account, anchor, total: 9, pos: 3, rows: [
+    flow(11, 2, 'in', 'self', { trade_time: '2026-10-17 12:33:56', context_relation: 'before', review_roles: ['source'] }), anchor,
+    flow(13, 4, 'out', 'counter', { balance: '-10000000000000.01', trade_time: '2026-10-17 12:35:56', context_relation: 'after', review_roles: ['target'] }),
+    flow(14, 5, 'out', 'self', { trade_time: '2026-10-18 12:36:56', context_relation: 'after', review_roles: ['target'] })],
+    review: { token: 'a'.repeat(32), pair: { status: 'unknown', candidate_ids: [] }, principal: { source: {
+      status: 'unknown', assessment: [{ status: 'unknown', message: `合成来源证据-${account}` }],
+      targets: [{ amount: '100.00', min: '0.00', max: '100.00', fifo: null }], currency: 'CNY' } } },
+    suggestions: { sources: [{ ids: ['11'], account: 'SYN-SOURCE', name: '合成来源', score: 88, evidence: { basis: '12:33:56 的 1 条流水是锚点前的候选入账。' } }],
+      targets: [{ ids: ['13'], account: 'SYN-TARGET', name: '合成去向', score: 62 }] } };
 }
 async function opened(h, data = result()) { h.network(async () => data); await h.open(); }
 
@@ -221,32 +230,37 @@ const cells = row => row.querySelectorAll('td');
 const picked = card => card.getAttribute('aria-pressed') === 'true' || card.classList.contains('picked');
 const sourceCard = h => h.cards().find(card => (card.dataset.ids || '').split(',').includes('11'));
 
-test('context rows retain eight full columns, exact money, relative direction, attribution and tracked membership', async () => {
+test('context rows retain original column order, exact money, direction and tracked membership', async () => {
   const h = harness(), data = result(); data.rows[0].summary = '<img src=x onerror="SYN"> & "合成"';
   data.rows[0].payer_name = '<b>合成来款方</b>'; await opened(h, data);
   const rows = h.rows(); assert.equal(rows.length, 4);
-  for (const row of rows) assert.equal(cells(row).length, 8);
-  assert.match(cells(rows[0])[1].textContent, /之前/); assert.match(cells(rows[1])[1].textContent, /本笔|锚点/);
-  assert.match(cells(rows[2])[1].textContent, /之后/);
-  assert.match(cells(rows[0])[2].textContent, /转入|收入/); assert.match(cells(rows[0])[2].textContent, /收款方记录 · SYN-PAYEE/);
-  assert.match(cells(rows[2])[2].textContent, /转出|支出/); assert.match(cells(rows[2])[2].textContent, /收款方记录 · SYN-PAYEE/);
-  assert.match(cells(rows[0])[4].textContent, /9,007,199,254,740,993\.07/);
-  assert.equal(cells(rows[0])[5].textContent.trim(), '—'); assert.match(cells(rows[2])[5].textContent, /-10,000,000,000,000\.01/);
-  assert.equal(cells(rows[0])[7].textContent, data.rows[0].summary); assert.equal(h.element('ctxTbody').innerHTML.includes('<img src=x'), false);
+  for (const row of rows) assert.equal(cells(row).length, 14);
+  assert.match(cells(rows[0])[4].textContent, /之前/); assert.match(cells(rows[1])[4].textContent, /本笔/);
+  assert.match(cells(rows[2])[4].textContent, /之后/);
+  assert.equal(cells(rows[0])[2].textContent, 'SYN-PAYEE');
+  assert.equal(cells(rows[0])[5].textContent, '贷'); assert.equal(cells(rows[2])[5].textContent, '借');
+  assert.match(cells(rows[0])[6].textContent, /9,007,199,254,740,993\.07/);
+  assert.equal(cells(rows[0])[7].textContent.trim(), '—'); assert.match(cells(rows[2])[7].textContent, /-10,000,000,000,000\.01/);
+  assert.equal(cells(rows[0])[12].textContent, data.rows[0].summary); assert.equal(h.element('ctxTbody').innerHTML.includes('<img src=x'), false);
   assert.equal(h.element('ctxTbody').innerHTML.includes('<b>合成来款方</b>'), false);
   assert.equal(h.box(12), null); assert.match(rows[1].textContent, /已上图/); assert.equal(h.element('ctxTrackedCount').textContent, '已上图 1 条记录');
 });
 
-test('manual selection updates its count and CTA while recommendations stay synchronized', async () => {
+test('score click only highlights rows and shows evidence; checking manually controls the CTA', async () => {
   const h = harness(); await opened(h);
-  assert.equal(h.element('ctxTrack').disabled, true); assert.equal(h.element('ctxSelected').textContent, '已选 0 条记录');
+  assert.equal(h.element('ctxTrack').disabled, true); assert.equal(h.element('ctxSelected').textContent, '已选 0 条');
   const card = sourceCard(h); assert.ok(card); assert.equal(card.tagName, 'BUTTON');
-  await card.click(); assert.equal(h.box(11).checked, true); assert.equal(h.box(13).checked, false);
-  assert.equal(picked(card), true); assert.equal(h.element('ctxSelected').textContent, '已选 1 条记录'); assert.equal(h.element('ctxTrack').disabled, false);
-  await h.check(11, false); assert.equal(picked(card), false); assert.equal(h.element('ctxTrack').disabled, true);
+  await card.click(); assert.equal(h.box(11).checked, false); assert.equal(h.box(13).checked, false);
+  assert.equal(h.rows()[0].classList.contains('clue-row'), true);
+  assert.equal(picked(card), true); assert.equal(h.element('ctxSelected').textContent, '已选 0 条'); assert.equal(h.element('ctxTrack').disabled, true);
+  assert.equal(card.querySelector('.sg-evidence').hidden, false);
+  assert.match(card.querySelector('.sg-evidence').textContent, /12:33:56/);
   await h.check(11, true); assert.equal(picked(card), true);
-  await card.click(); assert.equal(h.box(11).checked, false); assert.equal(h.box(12), null);
+  await card.click(); assert.equal(h.box(11).checked, true); assert.equal(h.box(12), null);
+  assert.equal(picked(card), false); assert.equal(h.element('ctxTrack').disabled, false);
+  await h.check(11, false);
   assert.equal(h.element('ctxTrack').disabled, true);
+  assert.equal(h.requests.length, 1);
 });
 
 test('proved same-transaction sources stay together with their own balances and individual tracking IDs', async () => {
@@ -257,56 +271,83 @@ test('proved same-transaction sources stay together with their own balances and 
     event_id:'SYN-PROVED', event_state:'confirmed', context_group:'event:SYN-PROVED', context_relation:'same_transaction'};
   data.anchor=first; data.rows=[first,second]; data.total=2;
   await opened(h,data);
-  assert.match(h.element('ctxPos').textContent,/共 2 条来源记录/);
+  assert.match(h.element('ctxPos').textContent,/当前 2 条来源记录/);
   assert.doesNotMatch(h.element('ctxPos').textContent,/共 2 笔|第/);
-  assert.deepEqual(h.rows().map(row=>cells(row)[1].textContent),['本笔','本笔']);
-  assert.match(cells(h.rows()[0])[2].textContent,/付款方记录 · SYN-PAYER/);
-  assert.match(cells(h.rows()[1])[2].textContent,/收款方记录 · SYN-PAYEE/);
-  assert.equal(cells(h.rows()[0])[5].textContent,'¥50.00');
-  assert.equal(cells(h.rows()[1])[5].textContent,'¥200.00');
+  assert.deepEqual(h.rows().map(row=>cells(row)[4].querySelector('.context-ownership').textContent),['本笔','本笔']);
+  assert.equal(cells(h.rows()[0])[7].textContent,'¥50.00');
+  assert.equal(cells(h.rows()[1])[7].textContent,'¥200.00');
   assert.equal(h.box(12),null); assert.equal(h.box(13).dataset.id,'13');
   assert.equal(h.requests.length,1);
 });
 
 test('same-time unresolved sources never acquire a previous or next relation from their IDs', async () => {
   const h=harness(), data=result();
-  data.rows.forEach(row=>{row.trade_time=data.anchor.trade_time;});
+  data.rows.forEach(row=>{row.trade_time=data.anchor.trade_time; if (row !== data.anchor) row.context_relation = 'same_time';});
   await opened(h,data);
-  assert.deepEqual(h.rows().map(row=>cells(row)[1].textContent),['同时间','本笔','同时间','同时间']);
+  assert.deepEqual(h.rows().map(row=>cells(row)[4].querySelector('.context-ownership').textContent),['同时间','本笔','同时间','同时间']);
   assert.equal(h.rows().length,4);
   assert.equal(h.requests.length,1);
 });
 
-test('attribution filtering is local and removes recommendations with no current untracked candidates', async () => {
+test('direction filters rows locally and datetime only requests a bound monetary projection', async () => {
   const h = harness(); await opened(h); const reads = h.requests.length;
-  await h.change('ctxBook', 'self');
-  assert.equal(h.requests.length, reads); assert.equal(h.rows().length, 3); assert.equal(h.box(13), null);
-  assert.equal(h.cards().some(card => (card.dataset.ids || '').split(',').includes('13')), false);
-  await sourceCard(h).click(); assert.equal(h.box(11).checked, true); assert.equal(h.box(14).checked, false);
-  await h.change('ctxBook', 'counter');
-  assert.equal(h.rows().length, 1); assert.equal(h.box(11), null); assert.equal(sourceCard(h), undefined);
+  await h.mode('source');
+  assert.equal(h.requests.length, reads); assert.equal(h.rows().length, 1); assert.equal(h.box(13), null);
+  await sourceCard(h).click(); assert.equal(h.box(11).checked, false);
+  await h.check(11, true);
+  await h.mode('target');
+  assert.equal(h.rows().length, 2); assert.equal(h.box(11), null); assert.equal(sourceCard(h), undefined);
+  assert.equal(h.element('ctxTrack').disabled, true);
+  await h.change('ctxStart', '2026-10-18');
+  await h.change('ctxEnd', '2026-10-18');
+  assert.equal(h.rows().length, 1); assert.ok(h.box(14));
+  await h.change('ctxEnd', '2026-10-17');
+  assert.equal(h.rows().length, 0); assert.match(h.element('ctxPos').textContent, /起始时间不能晚于结束时间/);
+  const filtered = h.requests.slice(reads);
+  assert.equal(filtered.length, 2);
+  for (const item of filtered) {
+    assert.equal(item.path, '/api/context/summary');
+    assert.equal(item.options.headers['X-FundsTrace-Review'], h.state.ctx.data.review.token);
+    assert.deepEqual(JSON.parse(item.options.body).flow_ids, ['14']);
+  }
+  assert.equal(h.trackCalls.length, 0);
+});
+
+test('aggregate review starts with no anchor and disables direction modes until a row is chosen', async () => {
+  const h = harness(), data = result();
+  data.anchor = { ...data.anchor, id: null };
+  data.review.kind = 'edge';
+  h.network(async () => data);
+  await h.run("openContext(null, {view: state.graphView, revision: 0, source: 'SYN-A', target: 'SYN-B', forward_ids: ['12'], reverse_ids: [], analysis_revision: state.lastGraph.analysis_revision, membership_digest: state.lastGraph.membership_digest})");
+  assert.equal(h.requests[0].path, '/api/context/edge');
+  assert.equal(h.state.ctx.flowId, null);
+  assert.equal(h.element('ctxMode-source').disabled, true);
+  assert.equal(h.element('ctxMode-target').disabled, true);
+  assert.equal(h.element('ctxTotal').textContent, '共 4 条记录，');
+  await sourceCard(h).click();
+  assert.equal(h.box(11).checked, false);
   assert.equal(h.element('ctxTrack').disabled, true);
 });
 
-test('GET failure clears stale rows and offers an eight-column retry whose empty result keeps tracking disabled', async () => {
+test('GET failure clears stale rows and offers a wide-table retry with tracking disabled', async () => {
   const h = harness(); await opened(h); h.network(async () => { throw new Error('合成读取故障'); }); await h.load();
   assert.equal(h.state.ctx.phase, 'error'); assert.equal(h.box(11), null); assert.equal(h.cards().length, 0);
   assert.equal(h.element('ctxTrack').disabled, true);
   const cell = h.element('ctxTbody').querySelector('td'); assert.ok(cell);
-  assert.equal(cell.colSpan || Number(cell.getAttribute('colspan')), 8); assert.match(cell.textContent, /加载失败/);
+  assert.equal(cell.colSpan || Number(cell.getAttribute('colspan')), 14); assert.match(cell.textContent, /加载失败/);
   const retry = cell.querySelector('button'); assert.ok(retry);
   const empty = result('SYN-RETRY'); empty.rows = []; empty.suggestions = { sources: [], targets: [] };
   h.network(async () => empty); await retry.click(); await flush();
-  assert.equal(h.state.ctx.phase, 'ready'); assert.equal(h.element('ctxTrack').disabled, true); assert.match(h.element('ctxPos').textContent, /SYN-RETRY/);
+  assert.equal(h.state.ctx.phase, 'ready'); assert.equal(h.element('ctxTrack').disabled, true); assert.match(h.element('ctxAnchor').textContent, /SYN-RETRY/);
 });
 
-test('side and window requests publish only the latest response', async () => {
+test('overlapping window requests publish only the latest response', async () => {
   const h = harness(); await opened(h); const older = deferred(), newer = deferred(); let reads = 0;
   h.network(() => ++reads === 1 ? older.promise : newer.promise);
-  const first = h.side('payer'), second = h.change('ctxX', '9');
+  const first = h.change('ctxX', '7'), second = h.change('ctxX', '9');
   newer.resolve(result('SYN-NEW')); await second; older.resolve(result('SYN-OLD')); await first;
-  assert.match(h.element('ctxPos').textContent, /SYN-NEW/); assert.equal(h.element('ctxPos').textContent.includes('SYN-OLD'), false);
-  assert.equal(h.state.ctx.x, 9); assert.equal(h.state.ctx.side, 'payer');
+  assert.match(h.element('ctxAnchor').textContent, /SYN-NEW/); assert.equal(h.element('ctxAnchor').textContent.includes('SYN-OLD'), false);
+  assert.equal(h.state.ctx.x, 9);
 });
 
 test('close and reopen revoke both old GET responses and retained recommendation controls', async () => {
@@ -332,8 +373,10 @@ test('A-B-A and canvas navigation invalidate pending context responses', async (
 test('tracking locks conditions and selection, deduplicates submission and retains checks on a no-op', async () => {
   const h = harness(); await opened(h); await h.check(11, true); const tracking = deferred(); h.track(() => tracking.promise);
   const first = h.submit(), duplicate = h.run("$('#ctxTrack').onclick()"); await flush();
-  assert.equal(h.trackCalls.length, 1); assert.deepEqual(h.trackCalls[0], [11]); assert.equal(h.state.ctx.phase, 'tracking');
-  for (const id of ['ctxX', 'ctxBook', 'ctxSide-payee', 'ctxSide-payer', 'ctxTrack']) assert.equal(h.element(id).disabled, true, id);
+  assert.equal(h.trackCalls.length, 1); assert.deepEqual(h.trackCalls[0], ['11']); assert.equal(h.state.ctx.phase, 'tracking');
+  assert.equal(h.reviewWrites[0].token, h.state.ctx.data.review.token);
+  assert.equal(h.reviewWrites[0].current(), true);
+  for (const id of ['ctxX', 'ctxStart', 'ctxEnd', 'ctxMode-all', 'ctxMode-source', 'ctxMode-target', 'ctxTrack']) assert.equal(h.element(id).disabled, true, id);
   for (const box of h.element('ctxTbody').querySelectorAll('.ctx-ck')) assert.equal(box.disabled, true);
   for (const card of h.cards()) assert.equal(card.disabled, true);
   tracking.resolve(false); await Promise.all([first, duplicate]);
@@ -351,6 +394,7 @@ test('tracking errors preserve selection and only explicit success closes the co
 test('late tracking completion cannot close or unlock a reopened context session', async () => {
   const h = harness(); await opened(h); await h.check(11, true); const tracking = deferred(); h.track(() => tracking.promise);
   const pending = h.submit(); await h.close(); await opened(h, result('SYN-NEXT-SESSION'));
+  assert.equal(h.reviewWrites[0].current(), false);
   const current = h.state.ctx; tracking.resolve(true); await pending;
   assert.equal(h.state.ctx, current); assert.equal(h.element('ctxModal').style.display, 'flex'); assert.equal(h.element('ctxTrack').disabled, true);
   assert.equal(h.box(11).checked, false); assert.equal(h.state.ctx.phase, 'ready');
@@ -363,7 +407,27 @@ test('automatic source assessment uses the existing context read and keeps origi
   assert.match(h.element('ctxSuggest').textContent, /FIFO 证据不足/);
   assert.match(h.element('ctxSuggest').textContent, /88/);
   assert.match(h.rows()[2].textContent, /-10,000,000,000,000.01/);
-  await h.change('ctxBook', 'self');
+  await h.mode('source');
   assert.equal(h.requests.length, 1, 'local filtering adds no analysis request');
   assert.match(h.element('ctxSuggest').textContent, /账面规则范围：—/);
+});
+
+test('source detail uses the bound token, leaves checks intact and discards late raw content', async () => {
+  const h = harness(); await opened(h); await h.check(11, true);
+  const detail = deferred();
+  h.network(() => detail.promise);
+  const trigger = h.element('ctxTbody').querySelector('.ctx-record[data-id="11"]');
+  const loading = trigger.click();
+  await flush();
+  assert.equal(h.element('ctxDetail').hidden, false);
+  assert.equal(h.element('ctxTrack').disabled, true);
+  assert.match(h.requests.at(-1).path, /\/api\/context\/12\/record\/11/);
+  assert.equal(h.requests.at(-1).options.headers['X-FundsTrace-Review'], h.state.ctx.data.review.token);
+  await h.element('ctxDetailBack').click();
+  detail.resolve({ originals: [{filename: 'SYN-LATE', cells: []}] });
+  await loading;
+  assert.equal(h.element('ctxDetail').hidden, true);
+  assert.equal(h.element('ctxDetailContent').textContent, '');
+  assert.equal(h.box(11).checked, true);
+  assert.equal(h.element('ctxTrack').disabled, false);
 });

@@ -21,6 +21,7 @@ import zipfile
 from .importer import FIELD_SYNONYMS, _row_key
 from .table_mapping import identity_field
 from . import table_financial, table_contracts, table_time_formats, table_source_roles, table_sign_declarations
+from . import table_direction_recheck
 
 
 IDENTITY_PROFILE = "funds-trace-table-v5"
@@ -196,7 +197,7 @@ BANK_SOURCE_PROFILES = BANK_SOURCE_ARCHIVE_PROFILES | frozenset((
     PREVIOUS_BANK_SOURCE_PROFILE, PREVIOUS_BANK_SOURCE_XLS_PROFILE,
     PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, *CLOSED_BANK_SUCCESSORS.values()))
 VOUCHER_REFERENCE_PROFILES = frozenset((VOUCHER_REFERENCE_PROFILE, VOUCHER_REFERENCE_XLS_PROFILE,
-    VOUCHER_REFERENCE_EVIDENCE_PROFILE, *CLOSED_BANK_PROFILES))
+    VOUCHER_REFERENCE_EVIDENCE_PROFILE, table_direction_recheck.PROFILE, *CLOSED_BANK_PROFILES))
 SOURCE_OBSERVATION_PROFILES = frozenset((*AUXILIARY_ROWS_ARCHIVE_PROFILES, *VOUCHER_REFERENCE_PROFILES, SOURCE_OBSERVATION_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE,
     SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE,
     SOURCE_OBSERVATION_EVIDENCE_ARCHIVE_PROFILE, SOURCE_OBSERVATION_XLS_ARCHIVE_PROFILE))
@@ -249,7 +250,7 @@ EVENT_PROFILES = frozenset((BANK_SOURCE_EVIDENCE_PROFILE, PREVIOUS_BANK_SOURCE_E
 EVIDENCE_ARCHIVE_PROFILES = frozenset((LEGACY_EVIDENCE_ARCHIVE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, *MICROSECOND_ARCHIVE_PROFILES))
 EVIDENCE_PROFILES = frozenset((BANK_SOURCE_EVIDENCE_PROFILE, PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, CLOSED_BANK_EVIDENCE_PROFILE, VOUCHER_REFERENCE_EVIDENCE_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, NATIVE31_EVIDENCE_PROFILE, UNORIENTED_EVIDENCE_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, ZONED_EVIDENCE_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, LEGACY_EVIDENCE_PROFILE, *EVIDENCE_ARCHIVE_PROFILES, EVIDENCE_PROFILE, GUARDED_EVIDENCE_PROFILE, PRECISE_EVIDENCE_PROFILE))
 PROFILE = VOUCHER_REFERENCE_PROFILE
-CURRENCY_REGION_PROFILES = frozenset((*BANK_SOURCE_CSV_ARCHIVE_PROFILES, AUXILIARY_ROWS_ARCHIVE_PROFILE, BANK_SOURCE_PROFILE, PREVIOUS_BANK_SOURCE_PROFILE, CLOSED_BANK_PROFILE, VOUCHER_REFERENCE_PROFILE, SOURCE_OBSERVATION_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE, NATIVE31_PROFILE, NATIVE31_ARCHIVE_PROFILE, UNORIENTED_PROFILE, UNORIENTED_ARCHIVE_PROFILE, NATIVE_OBSERVATION_PROFILE, NATIVE_OBSERVATION_ARCHIVE_PROFILE, AUXILIARY_SCOPE_PROFILE, AUXILIARY_SCOPE_ARCHIVE_PROFILE, POSTING_PAIR_PROFILE, POSTING_PAIR_ARCHIVE_PROFILE, SOURCE_LEDGER_PROFILE, SOURCE_LEDGER_ARCHIVE_PROFILE, BANK31_VARIANT_PROFILE, BANK31_VARIANT_ARCHIVE_PROFILE, SOURCE_TEXT_PROFILE, SOURCE_TEXT_ARCHIVE_PROFILE, CURRENCY_REGION_PROFILE, *STANDALONE_XLS_PROFILES, GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, TIME_ROLE_ARCHIVE_PROFILE, ZONED_PROFILE, ZONED_ARCHIVE_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_CONTRACT_ARCHIVE_PROFILE,
+CURRENCY_REGION_PROFILES = frozenset((*BANK_SOURCE_CSV_ARCHIVE_PROFILES, AUXILIARY_ROWS_ARCHIVE_PROFILE, BANK_SOURCE_PROFILE, PREVIOUS_BANK_SOURCE_PROFILE, CLOSED_BANK_PROFILE, VOUCHER_REFERENCE_PROFILE, table_direction_recheck.PROFILE, SOURCE_OBSERVATION_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE, NATIVE31_PROFILE, NATIVE31_ARCHIVE_PROFILE, UNORIENTED_PROFILE, UNORIENTED_ARCHIVE_PROFILE, NATIVE_OBSERVATION_PROFILE, NATIVE_OBSERVATION_ARCHIVE_PROFILE, AUXILIARY_SCOPE_PROFILE, AUXILIARY_SCOPE_ARCHIVE_PROFILE, POSTING_PAIR_PROFILE, POSTING_PAIR_ARCHIVE_PROFILE, SOURCE_LEDGER_PROFILE, SOURCE_LEDGER_ARCHIVE_PROFILE, BANK31_VARIANT_PROFILE, BANK31_VARIANT_ARCHIVE_PROFILE, SOURCE_TEXT_PROFILE, SOURCE_TEXT_ARCHIVE_PROFILE, CURRENCY_REGION_PROFILE, *STANDALONE_XLS_PROFILES, GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, TIME_ROLE_ARCHIVE_PROFILE, ZONED_PROFILE, ZONED_ARCHIVE_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_CONTRACT_ARCHIVE_PROFILE,
                                      GUARDED_ARCHIVE_PROFILE, PRECISE_ARCHIVE_PROFILE, REFERENCE_ROLE_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_ARCHIVE_PROFILE, *EVIDENCE_PROFILES))
 CURRENCY_CODE_ALIAS_PROFILES = CURRENCY_REGION_PROFILES | {ARCHIVE_MEMBER_PROFILE}
 OVERLAPPING_HEADER_PROFILES = CURRENCY_REGION_PROFILES | {ARCHIVE_MEMBER_PROFILE}
@@ -928,13 +929,19 @@ def _excel(raw, suffix):
                 # Read the actual XML stream; producer dimensions may understate
                 # rows/columns and must not authorize silent source truncation.
                 sheet.reset_dimensions()
+                direction_error_cells = set()
 
                 def values():
-                    for cells in sheet.iter_rows(values_only=False):
+                    for row_no, cells in enumerate(sheet.iter_rows(values_only=False), 1):
                         row = []
-                        for cell in cells:
+                        for column_index, cell in enumerate(cells):
                             value = cell.value
-                            formula = getattr(cell, "data_type", "") == "f"
+                            cell_type = getattr(cell, "data_type", "")
+                            formula = cell_type == "f"
+                            if cell_type == "e" and table_direction_recheck.could_be_literal(value):
+                                # Preserve historical cell values while withholding
+                                # declaration authority from typed Excel errors.
+                                direction_error_cells.add((row_no, column_index))
                             if formula or isinstance(value, (int, float, dt.date, dt.time)):
                                 fmt = getattr(cell, "number_format", "General")
                                 date_only = (isinstance(value, dt.date) and not isinstance(value, dt.datetime)) or (isinstance(value, dt.datetime) and value.time() == dt.time() and is_datetime(fmt) == "date")
@@ -951,7 +958,8 @@ def _excel(raw, suffix):
                 count += len(rows)
                 path = f"worksheets/{index:04d}"
                 member_sha = hashlib.sha256(json.dumps([digest, index, sheet.title], ensure_ascii=False).encode()).hexdigest()
-                sheets.append({"path": path, "name": sheet.title, "rows": rows, "sha256": member_sha, "size": 0, "encoding": "xlsx", "delimiter": ""})
+                sheets.append({"path": path, "name": sheet.title, "rows": rows, "sha256": member_sha, "size": 0, "encoding": "xlsx", "delimiter": "",
+                               "direction_error_cells": direction_error_cells})
         finally:
             workbook.close()
         return sheets
@@ -1410,7 +1418,9 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
     direction_values = []
     for candidate in candidates.get("direction", []):
         value = _enum(_value(row, candidate))
-        if value in _IN:
+        if declared_direction := candidate.get("rechecked_direction"):
+            direction_values.append(declared_direction)
+        elif value in _IN:
             direction_values.append("in")
         elif value in _OUT:
             direction_values.append("out")
@@ -1660,6 +1670,101 @@ def _role_conflict(outcome):
     notes.update(financial_effect="undetermined", counterparty_basis=ROLE_CONFLICT_BASIS,
                  validation_issues=",".join(dict.fromkeys([primary, *issues, "conflicting_field"])))
     return None, "unresolved", primary, notes
+
+
+def _direction_declarations(headers, header_row, error_cells, enabled):
+    if not enabled:
+        return []
+    return [
+        (index, heading, table_direction_recheck.directions(heading)
+         if (header_row, index) not in error_cells else {})
+        for index, heading in enumerate(headers) if table_direction_recheck.is_heading(heading)
+    ]
+
+
+def _literal_direction_code(row, index, source_row, error_cells):
+    value = row[index]
+    return value if type(value) is str and (source_row, index) not in error_cells else None
+
+
+def _direct_direction_conflict(row, headers, candidates, declarations, *, own_side, source_row, error_cells):
+    opposite = {"payer": "in", "payee": "out"}.get(own_side)
+    if opposite is None:
+        return ()
+    for index, heading, codebook in declarations:
+        code = _literal_direction_code(row, index, source_row, error_cells)
+        if codebook.get(code) == opposite:
+            excerpts = [table_direction_recheck.column_excerpt(index, heading, code)]
+            for item in candidates.get("direction", ()):
+                original_index = item["index"]
+                original_code = _literal_direction_code(row, original_index, source_row, error_cells)
+                if _enum(original_code) in _IN | _OUT:
+                    excerpts.append(table_direction_recheck.column_excerpt(
+                        original_index, headers[original_index], original_code))
+                    break
+            return excerpts
+    return ()
+
+
+def _recheck_direction(row, headers, candidates, outcome, declarations, *, header_row,
+                       source_row, error_cells, interpreter, options):
+    """Check contradictory declarations and retry a sole missing direction."""
+    result, disposition, reason, details = outcome
+    if result is not None:
+        excerpts = _direct_direction_conflict(
+            row, headers, candidates, declarations, own_side=details.get("_resolved_own_side"),
+            source_row=source_row, error_cells=error_cells)
+        if not excerpts:
+            return outcome, ()
+        pending = dict(details)
+        for key in ("flow_sha256", "source_ledger_evidence", "_resolved_own_side"):
+            pending.pop(key, None)
+        pending.update(financial_effect="undetermined", direction_basis="undetermined",
+                       reason="同一表头区域的收付代码声明与本行已识别方向矛盾，未计入资金统计",
+                       validation_issues="conflicting_direction")
+        pending[table_direction_recheck.DETAIL_FIELD] = table_direction_recheck.serialize(
+            "conflicting_declaration", header_row, excerpts)
+        return (None, "unresolved", "conflicting_direction", pending), excerpts
+    if disposition != "unresolved":
+        return outcome, ()
+    issues = details.get("validation_issues", "").split(",")
+    if not {"missing_direction", "invalid_direction"}.intersection(issues):
+        return outcome, ()
+    index, heading, codebook = declarations[0]
+    code = _literal_direction_code(row, index, source_row, error_cells)
+    excerpts = [table_direction_recheck.column_excerpt(index, heading, code)]
+    direction = codebook.get(code)
+    if len(declarations) > 1 or candidates.get("direction"):
+        other_index = declarations[1][0] if len(declarations) > 1 else candidates["direction"][0]["index"]
+        other = _literal_direction_code(row, other_index, source_row, error_cells)
+        excerpts.append(table_direction_recheck.column_excerpt(other_index, headers[other_index], other))
+        status, review_reason = "conflicting_declaration", "conflicting_direction"
+    elif not codebook:
+        status, review_reason = "unsupported_declaration", "invalid_direction"
+    elif code is None:
+        status = "non_literal_code"
+        original = row[index]
+        review_reason = "formula_value" if isinstance(original, _WorkbookValue) and original.formula else "invalid_direction"
+    elif direction is None:
+        status, review_reason = "undeclared_code", "invalid_direction"
+    elif issues != ["missing_direction"]:
+        status, review_reason = "validation_failed", reason
+    else:
+        rechecked = {**candidates, "direction": [{"index": index, "source_name": heading, "rechecked_direction": direction}]}
+        retried_result, retried_disposition, retried_reason, retried_details = interpreter(row, rechecked, "B", **options)
+        if retried_disposition == "accepted" and retried_result is not None:
+            retried_details[table_direction_recheck.DETAIL_FIELD] = table_direction_recheck.serialize(
+                "verified", header_row, excerpts, direction)
+            return (retried_result, "accepted", retried_reason, retried_details), excerpts
+        status = "validation_failed"
+        review_reason = retried_reason if retried_disposition == "unresolved" else reason
+        issues.extend(retried_details.get("validation_issues", "").split(","))
+    if reason in {"missing_direction", "invalid_direction"}:
+        reason = review_reason
+    details = {**details,
+               "validation_issues": ",".join(dict.fromkeys(filter(None, [reason, review_reason, *issues]))),
+               table_direction_recheck.DETAIL_FIELD: table_direction_recheck.serialize(status, header_row, excerpts)}
+    return (None, "unresolved", reason, details), excerpts
 
 
 def _interpret_candidates(row, candidates, mode, *, reference_policy=None, financial=False, source_contract=None, source_roles=False, retain_endpoint_role=False, sign_contract=None, source_ledger=False):
@@ -2099,9 +2204,11 @@ def _region_evidence(headers, candidates, labels, path, header_row):
             for field, items in candidates.items() for item in items]
 
 
-def _row_field_evidence(headers, row, candidates, disposition):
+def _row_field_evidence(headers, row, candidates, disposition, direction_excerpts=()):
     """Bounded source excerpts for role checking; the retained original is complete."""
-    evidence, limited = [], False
+    evidence = [{"field": "direction", "role": "direction", **entry} for entry in direction_excerpts
+                if entry["column"] is not None and entry["raw"] is not None]
+    limited = len(evidence) != len(direction_excerpts)
     for field, items in candidates.items():
         if field not in {"trade_no", "voucher_type", "time_role_declaration"} and not any(item.get("source_text_role") for item in items) and not (disposition == "unresolved" and len(items) > 1):
             continue
@@ -2247,7 +2354,7 @@ def _declared_table_layouts(sheets, profile):
 
     check_events = profile not in EVIDENCE_PROFILES and profile not in STANDALONE_XLS_PROFILES
     check_bank = profile in CLOSED_BANK_SUCCESSORS
-    events = bank = False
+    events = bank = direction_recheck = False
     for headers, candidates in _financial_regions(sheets, profile):
         if check_events and not events:
             names = [_text(value) for value in headers]
@@ -2257,9 +2364,11 @@ def _declared_table_layouts(sheets, profile):
             bank = ((len(headers) == len(names) and names in (BANK_FEEDBACK_31_COLUMNS, UNIFORM_FEEDBACK_37_COLUMNS))
                     or any(item.get("reference_profile") == BANK_FEEDBACK_31_REFERENCE_PROFILE
                            for item in candidates.get("trade_no", [])))
+        if profile == VOUCHER_REFERENCE_PROFILE and not direction_recheck and _shape(candidates, profile) == "B":
+            direction_recheck = any(table_direction_recheck.is_heading(header) for header in headers)
         if (events or not check_events) and (bank or not check_bank):
             break
-    return events, bank
+    return events, bank, direction_recheck
 
 
 def _needs_sign_layouts(sheets):
@@ -2383,7 +2492,8 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
         sheets = decoded_csv.take(raw, suffix, profile)
     else:
         sheets = _excel(raw, suffix) if suffix in {".xlsx", ".xls"} else _csv(raw, suffix, profile)
-    declares_events, closed_bank = _declared_table_layouts(sheets, profile) if auto_event_profile else (False, False)
+    declares_events, closed_bank, direction_recheck = (
+        _declared_table_layouts(sheets, profile) if auto_event_profile else (False, False, False))
     if declares_events:
         profile = (VOUCHER_REFERENCE_EVIDENCE_PROFILE if profile == VOUCHER_REFERENCE_PROFILE else
                    SOURCE_OBSERVATION_EVIDENCE_PROFILE if profile == SOURCE_OBSERVATION_PROFILE else
@@ -2404,6 +2514,8 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                    GUARDED_EVIDENCE_PROFILE if profile == GUARDED_PROFILE else EVIDENCE_PROFILE)
     if closed_bank:
         profile = CLOSED_BANK_SUCCESSORS[profile]
+    if direction_recheck and profile == VOUCHER_REFERENCE_PROFILE:
+        profile = table_direction_recheck.PROFILE
     plan = {"profile": profile, "mode": "B", "mapping": {}, "columns": [], "sheet": "workbook" if suffix in {".xlsx", ".xls"} else "", "rows": [], "records": [], "members": [], "documents": [], "mapping_evidence": []}
     if retain_csv_format:
         # The envelope's cancellation pass may replay this already validated
@@ -2411,6 +2523,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
         # This operation-local hint never enters documents or persisted notes.
         plan["_csv_format"] = {key: sheets[0][key] for key in ("encoding", "delimiter")}
     sign_contracts = _source_sign_contracts(sheets, profile)
+    recheck_enabled = profile == table_direction_recheck.PROFILE and mode is None and mapping is None
     selected = False
     for sheet in sheets:
         raw_rows = sheet["rows"]
@@ -2425,6 +2538,9 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
             voucher_reference=voucher_reference, profile=profile)
         source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
         header_names, feedback_header_names = _region_row_headers(headers, profile)
+        direction_error_cells = sheet.get("direction_error_cells", ())
+        declarations = _direction_declarations(headers, None if header_no is None else header_no + 1,
+                                               direction_error_cells, recheck_enabled)
         if not selected and header_no is not None:
             plan.update(mode=actual_mode or "B", mapping=current_mapping, columns=labels)
             selected = True
@@ -2480,6 +2596,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                     voucher_reference=voucher_reference, profile=profile)
                 source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
                 header_names, feedback_header_names = _region_row_headers(headers, profile)
+                declarations = _direction_declarations(headers, index, direction_error_cells, recheck_enabled)
                 document["header_rows"].append(index)
                 plan["mapping_evidence"].extend(_region_evidence(headers, candidates, labels, sheet["path"], index))
                 disposition, reason = "non_transaction", "repeated_header"
@@ -2499,8 +2616,19 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                 interpreter = _interpret_candidates if profile in ROLE_PROFILES else _interpret
                 row_candidates, row_reference_policy = _typed_native_references(row, candidates, active_reference_policy)
                 row_candidates = _row_time_declaration(row, row_candidates)
-                result, disposition, reason, parsed_details = interpreter(
-                    row, row_candidates, actual_mode, reference_policy=row_reference_policy, financial=profile in FINANCIAL_PROFILES, source_contract=source_contract, source_roles=profile in SOURCE_ROLE_PROFILES, retain_endpoint_role=profile in EVIDENCE_PROFILES, sign_contract=sign_contracts.get(sheet["path"]), source_ledger=profile in SOURCE_LEDGER_PROFILES)
+                check_direction_declaration = bool(declarations) and actual_mode == "B"
+                options = {"reference_policy": row_reference_policy, "financial": profile in FINANCIAL_PROFILES,
+                           "source_contract": source_contract, "source_roles": profile in SOURCE_ROLE_PROFILES,
+                           "retain_endpoint_role": check_direction_declaration or profile in EVIDENCE_PROFILES,
+                           "sign_contract": sign_contracts.get(sheet["path"]),
+                           "source_ledger": profile in SOURCE_LEDGER_PROFILES}
+                outcome = interpreter(row, row_candidates, actual_mode, **options)
+                direction_excerpts = ()
+                if check_direction_declaration:
+                    outcome, direction_excerpts = _recheck_direction(
+                        row, headers, row_candidates, outcome, declarations, header_row=document["header_rows"][-1],
+                        source_row=index, error_cells=direction_error_cells, interpreter=interpreter, options=options)
+                result, disposition, reason, parsed_details = outcome
                 if (profile in VOUCHER_REFERENCE_PROFILES and row_reference_policy is None
                         and reason == "conflicting_field" and not plan.get("_reference_choice_conflict")):
                     # This only offers a preview choice. An unrelated identity
@@ -2523,6 +2651,8 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                     observation = json.loads(parsed_details["source_ledger_evidence"])
                     observation["header_scope"] = document["header_rows"][-1]
                     if result is not None:
+                        if direction_excerpts:
+                            observation["direction_heading"] = direction_excerpts[0]["column"]
                         for field in ("trade_time_utc", "trade_time_original", "trade_time_offset"):
                             value = result.get(field)
                             observation["row"][field] = value.isoformat(sep=" ") if isinstance(value, dt.datetime) else value
@@ -2551,7 +2681,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                         reason = "unsupported_timezone"
                         details["validation_issues"] = ",".join([reason, *[issue for issue in details.get("validation_issues", "").split(",") if issue and issue != "invalid_time"]])
                 if profile in REFERENCE_ROLE_PROFILES:
-                    details.update(_row_field_evidence(headers, row, row_candidates, disposition))
+                    details.update(_row_field_evidence(headers, row, row_candidates, disposition, direction_excerpts))
                 if source_contract:
                     details.update(source_contract.details())
                 if (profile in FINANCIAL_PROFILES and disposition == "unresolved"
@@ -2560,7 +2690,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                     details["validation_basis"] = FINANCIAL_CONFLICT_BASIS
             if source_contract and reason == "ambiguous_region_header":
                 details.update(source_contract.details())
-            details["reason"] = REASONS[reason]
+            details.setdefault("reason", REASONS[reason])
             if source_contract and reason == "missing_direction":
                 details["reason"] = ("缺少明确方向及同一笔交易的完整前后账面余额；普通相邻余额未证明连续性，"
                                      "不能补方向。该笔未计入资金统计和节点关系，收支及关联分析可能不完整")
@@ -2646,11 +2776,18 @@ def refresh_stats(plan):
     """Recount the shared plan after a transaction-bound history check."""
     counts = {key: 0 for key in ("accepted", "unresolved", "non_monetary", "non_transaction", "auxiliary")}
     reasons, examples, totals = {}, [], {}
+    recheck_counts = {}
     for record in plan["records"]:
         counts[record["disposition"]] += 1
         reasons[record["reason_code"]] = reasons.get(record["reason_code"], 0) + 1
         if record["disposition"] == "unresolved" and len(examples) < 3:
             examples.append({"row": "来源记录", "source_row": record["source_row"], "member_path": record["member_path"], "reason": record["details"].get("reason") or REASONS[record["reason_code"]]})
+        if plan["profile"] == table_direction_recheck.PROFILE and table_direction_recheck.DETAIL_FIELD in record["details"]:
+            review = recheck_counts.setdefault(record["member_path"], {"verified": 0, "pending": 0})
+            review["verified" if record["disposition"] == "accepted" else "pending"] += 1
+    for document in plan.get("documents", ()):
+        if document["member_path"] in recheck_counts:
+            document["direction_recheck"] = recheck_counts[document["member_path"]]
     for row in plan["rows"]:
         totals[row["currency"]] = totals.get(row["currency"], Decimal(0)) + row["amount"]
     plan["stats"] = {"total": len(plan["records"]), "ok": len(plan["rows"]), "skipped": len(plan["records"]) - len(plan["rows"]), "bad_examples": examples, **counts, "reason_counts": reasons, "currency_totals": {key: format(value, ".2f") for key, value in sorted(totals.items())}}

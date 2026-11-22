@@ -169,9 +169,12 @@
     trackedWrites.add(record);
     return record.promise.finally(() => { trackedWrites.delete(record); });
   }
-  const replaceTracked = (context, expected, desired) => trackedWrite(context, () => api('/api/track/state', { method: 'PUT',
-    ...jsonOpts({ case_id: context.caseId, canvas_id: context.canvasId || 0,
-      expected_ids: expected, desired_ids: desired }) }));
+  const replaceTracked = (context, expected, desired, review) => trackedWrite(context, () => {
+    if (review && !review.current()) throw new Error('核对窗口已失效，请重新打开核对。');
+    return api('/api/track/state', { method: 'PUT',
+      ...jsonOpts({ case_id: context.caseId, canvas_id: context.canvasId || 0,
+        expected_ids: expected, desired_ids: desired, ...(review ? { review_token: review.token } : {}) }) });
+  });
 
   function uncertain(context) {
     if (!isCurrentCase(context)) return;
@@ -579,7 +582,7 @@
     }).catch(error => { if (isCurrentCase(context)) toast(error.message || '画布操作失败', 'err'); return false; });
   }
 
-  function track(ids, remove) {
+  function track(ids, remove, review) {
     if (!ids?.length) { if (!remove) toast('未选择流水', 'err'); return Promise.resolve(false); }
     ids = [...ids];
     return command(remove ? '移除流水' : '流水上图', async context => {
@@ -590,15 +593,18 @@
           if (remove) desired.delete(key);
           else if (!desired.has(key)) desired.set(key, id);
         }
-        return replaceTracked(context, before, [...desired.values()].sort(order));
-      }, () => { if (!remove) { state.justAdded = new Set(ids); state.forceFit = false; } });
+        return replaceTracked(context, before, [...desired.values()].sort(order), review);
+      }, result => { if (!remove) {
+        const added = new Set(ids.map(String));
+        state.justAdded = new Set(result.tracked_ids.filter(id => added.has(String(id)))); state.forceFit = false;
+      } });
       if (result && isCurrentCase(context)) {
         if (remove) closeDrawer();
         toast(remove ? `已移除 ${ids.length} 条记录` : `已上图 ${ids.length} 条记录`);
       }
     });
   }
-  trackFlows = ids => track(ids, false);
+  trackFlows = (ids, review) => track(ids, false, review);
   untrackFlows = ids => track(ids, true);
   const neighborhood = exploreNeighborhood, overview = showGraphOverview;
   exploreNeighborhood = async (...args) => {

@@ -16,7 +16,8 @@ test('existing flow context requires no new principal action, dialog, or conditi
   assert.match(page, /id="ctxModal"/);
   assert.match(page, /id="ctxTrack"/);
   assert.doesNotMatch(source, /fetch\(|addEventListener\(|showModal\(|createElement\(/);
-  assert.match(app, /FundsFacts\?\.principal\(r\.principal\)/);
+  assert.match(app, /const principal = selection\.data\.review\.principal/);
+  assert.match(app, /Object\.values\(principal\)\.map\(value => window\.FundsFacts\?\.principal\(value\)\)/);
 });
 
 test('confirmed event has one primary amount; unresolved amount is not exact or zero', () => {

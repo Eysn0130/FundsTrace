@@ -615,24 +615,74 @@
 <input type="file" id="casePkgFile" accept=".fundcase,.zip" hidden>
 
 <!-- 交易上下文弹窗：对手在该笔交易前后的 X 笔流水 -->
-<div class="modal context-modal" id="ctxModal" style="display:none" aria-busy="false">
+<div class="modal context-modal" id="ctxModal" style="display:none" aria-busy="false" aria-describedby="ctxCaseName">
   <section class="modal-box context-dialog">
-    <header class="context-heading"><div><h2 id="ctxTitle">前后流水</h2><span class="muted" id="ctxCaseName"></span></div><button class="btn icon-button" id="ctxClose" type="button" aria-label="关闭前后流水"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button></header>
+    <header class="context-heading">
+      <h2 class="sr-only" id="ctxTitle">追踪核对</h2>
+      <span class="sr-only" id="ctxCaseName"></span>
+      <button class="btn icon-button" id="ctxClose" type="button" aria-label="关闭追踪核对" title="关闭"><img class="ui-icon" src="/static/ui-icons/x.svg" alt=""></button>
+    </header>
     <div class="context-anchor" id="ctxAnchor"></div>
-    <div class="context-body">
-      <section class="context-ledger" aria-label="前后流水明细">
+    <div class="context-body" id="ctxBody">
+      <section class="context-ledger" aria-label="追踪核对流水">
         <div class="context-controls">
-          <div class="side-tabs" id="ctxTabs" role="group" aria-label="账户视角"><button type="button" class="stab active" data-side="payee" aria-pressed="true">收款方视角</button><button type="button" class="stab" data-side="payer" aria-pressed="false">付款方视角</button></div>
-          <div class="context-window"><label for="ctxX">前后各</label><input id="ctxX" type="number" min="1" max="50" step="1" value="5"><span>条记录</span></div>
-          <div class="context-book"><label for="ctxBook">流水归属</label><select id="ctxBook"><option value="all">全部</option><option value="self">仅本方（锚点）流水</option><option value="counter">仅对手方流水</option></select></div>
-          <p class="context-position" id="ctxPos"></p>
+          <div class="side-tabs" id="ctxTabs" role="group" aria-label="追踪范围"><button type="button" class="stab active" data-mode="all" aria-pressed="true">全部</button><button type="button" class="stab" data-mode="source" aria-pressed="false">来源</button><button type="button" class="stab" data-mode="target" aria-pressed="false">去向</button></div>
+          <div class="context-dates" role="group" aria-label="交易时间区间">
+            <label class="context-date" data-empty="true"><input id="ctxStart" type="datetime-local" aria-label="起始时间"><span class="context-date-placeholder" aria-hidden="true">起始时间</span></label>
+            <span class="muted" aria-hidden="true">—</span>
+            <label class="context-date" data-empty="true"><input id="ctxEnd" type="datetime-local" aria-label="结束时间"><span class="context-date-placeholder" aria-hidden="true">结束时间</span></label>
+          </div>
+          <details class="context-range-size" hidden>
+            <summary>前后范围</summary>
+            <div class="context-range-panel"><label for="ctxX">前后各</label><input id="ctxX" type="number" min="1" max="50" step="1" value="5" aria-label="前后各几条记录"><span>条记录</span></div>
+          </details>
+          <div class="context-display-tools" role="group" aria-label="流水表格显示">
+            <select id="ctxDensity" aria-label="流水行距"><option value="compact">紧凑</option><option value="spacious">舒展</option></select>
+            <select id="ctxTextMode" aria-label="流水文字显示"><option value="overview">两行概览</option><option value="full">完整换行</option><option value="single">完整单行</option></select>
+            <button class="btn icon-button" id="ctxResetWidth" type="button" aria-label="恢复自动列宽" title="恢复自动列宽"><img class="ui-icon" src="/static/ui-icons/refresh.svg" alt=""></button>
+            <button class="btn icon-button" id="ctxExpand" type="button" aria-label="展开流水表" title="展开流水表" aria-pressed="false" aria-controls="ctxBody"><img class="ui-icon" src="/static/ui-icons/arrows-maximize.svg" alt=""></button>
+          </div>
+          <p class="context-position" id="ctxPos" role="status"></p>
         </div>
-        <div class="context-table-scroll" id="ctxTableScroll" tabindex="0" role="region" aria-label="前后流水表格，可水平滚动"><table class="tbl" id="ctxTable"><thead><tr><th scope="col"><span class="sr-only">选择或上图状态</span></th><th scope="col">相对</th><th scope="col">方向</th><th scope="col">时间</th><th scope="col" class="amt">金额</th><th scope="col" class="amt">该记录余额</th><th scope="col">对手方</th><th scope="col">摘要</th></tr></thead><tbody id="ctxTbody"></tbody></table></div>
+        <div class="context-table-scroll" id="ctxTableScroll" data-density="compact" data-text-mode="overview" tabindex="0" role="region" aria-label="原表列序，可水平滚动">
+          <table class="tbl" id="ctxTable">
+            <colgroup>
+              <col data-field="select"><col data-field="card"><col data-field="account" class="context-account-column"><col data-field="name">
+              <col data-field="time"><col data-field="direction"><col data-field="amount"><col data-field="balance">
+              <col data-field="counter-card"><col data-field="counter-account" class="context-account-column"><col data-field="counter-name">
+              <col data-field="remark"><col data-field="summary"><col data-field="actions">
+            </colgroup>
+            <thead><tr>
+              <th scope="col" data-field="select"><span class="sr-only">选择或上图状态</span></th>
+              <th scope="col" data-field="card">卡号<span class="context-overview-only context-column-sublabel">账号</span></th>
+              <th scope="col" data-field="account" class="context-account-column">账号</th>
+              <th scope="col" data-field="name">户名</th>
+              <th scope="col" data-field="time">交易时间</th>
+              <th scope="col" data-field="direction">借贷标识</th>
+              <th scope="col" data-field="amount" class="amt">交易金额</th>
+              <th scope="col" data-field="balance" class="amt">该记录余额</th>
+              <th scope="col" data-field="counter-card">对手卡号<span class="context-overview-only context-column-sublabel">对手账号</span></th>
+              <th scope="col" data-field="counter-account" class="context-account-column">对手账号</th>
+              <th scope="col" data-field="counter-name">对手户名</th>
+              <th scope="col" data-field="remark">备注</th>
+              <th scope="col" data-field="summary">摘要</th>
+              <th scope="col" data-field="actions">操作</th>
+            </tr></thead>
+            <tbody id="ctxTbody"></tbody>
+          </table>
+        </div>
         <div class="flow-horizontal-scroll context-horizontal-scroll" role="group" aria-label="前后流水表格水平滚动"><button class="btn small" id="ctxScrollLeft" type="button" aria-label="前后流水向左滚动"><img class="ui-icon" src="/static/ui-icons/chevron-left.svg" alt=""></button><input id="ctxHorizontalPosition" type="range" min="0" max="0" value="0" step="1" disabled aria-label="前后流水水平位置" aria-controls="ctxTableScroll"><button class="btn small" id="ctxScrollRight" type="button" aria-label="前后流水向右滚动"><img class="ui-icon" src="/static/ui-icons/chevron-right.svg" alt=""></button></div>
       </section>
-      <aside class="context-matches" aria-labelledby="ctxMatchesTitle"><h3 id="ctxMatchesTitle">匹配线索</h3><div id="ctxSuggest"></div><p class="context-score-note">评分仅供匹配参考</p></aside>
+      <aside class="context-matches" aria-label="匹配线索"><div id="ctxSuggest"></div></aside>
     </div>
-    <footer class="context-footer"><div class="context-selection"><span id="ctxSelected">已选 0 条记录</span><span class="muted" id="ctxTrackedCount">已上图 0 条记录</span><span id="ctxTrackStatus" class="workflow-status" role="status" aria-live="polite"></span></div><div class="context-actions"><button class="btn" id="ctxCancel" type="button">取消</button><button class="btn primary" id="ctxTrack" type="button" disabled><img class="ui-icon" src="/static/ui-icons/network.svg" alt=""><span id="ctxTrackLabel">加入图谱</span></button></div></footer>
+    <section class="context-detail" id="ctxDetail" hidden aria-labelledby="ctxDetailTitle">
+      <header><button class="btn small" id="ctxDetailBack" type="button">返回流水</button><h3 id="ctxDetailTitle">原始记录</h3><button class="btn small" id="ctxTraceThis" type="button">以此笔追踪</button></header>
+      <div id="ctxDetailContent" class="context-original" tabindex="0" role="region" aria-label="原件及原始字段"></div>
+    </section>
+    <footer class="context-footer">
+      <div class="context-selection"><span id="ctxTotal">共 0 条记录，</span><span id="ctxSelected">已选 0 条</span><span class="sr-only" id="ctxTrackedCount">已上图 0 条记录</span><span id="ctxTrackStatus" class="workflow-status" role="status" aria-live="polite"></span></div>
+      <div class="context-actions"><button class="btn" id="ctxCancel" type="button">取消</button><button class="btn primary" id="ctxTrack" type="button" disabled><span id="ctxTrackLabel">加入图谱</span></button></div>
+    </footer>
   </section>
 </div>
 
