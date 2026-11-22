@@ -18,6 +18,7 @@ import duckdb
 from fastapi import HTTPException
 
 from . import db, feedback_import, importer, evidence_resolution, import_attachments, event_resolution
+from . import table_sign_declarations, table_tiered_headers
 
 CASE_PKG_COLS = {
     "flows": "id, batch_id, trade_no, trade_time, payer_name, payer_account, payer_bank, "
@@ -535,6 +536,157 @@ def _feedback_journals(check, paths):
         _invalid("反馈包处置与流水来源不一致")
 
 
+_TIERED_DETAILS = {table_tiered_headers.PROOF_FIELD, table_tiered_headers.LEAF_PROOF_FIELD, table_tiered_headers.BINDING_FIELD,
+                   table_sign_declarations.DIRECTION_CODE_FIELD, table_tiered_headers.CODE_ISSUE_FIELD,
+                   table_tiered_headers.CODE_FIELD}
+
+
+class _TieredJournal:
+    """One member's physical regions, including declarations after the rows they govern."""
+
+    def __init__(self):
+        self.pending_parent = None
+        self.omitted_header = False
+        self.has_evidence = False
+        self._reset()
+
+    def _reset(self):
+        self.header = None
+        self.tier_binding = None
+        self.width = table_tiered_headers.MAX_WIDTH
+        self.tier_columns = ()
+        self.ambiguous = False
+        self.first_data = None
+        self.codebook = None
+        self.code_issue = False
+        self.code_meanings = {}
+
+    def _end_region(self, last):
+        if self.codebook is not None and self.codebook["last_row"] != last:
+            _invalid("方向码声明越过或未覆盖完整来源区域")
+        for code, meanings in self.code_meanings.items():
+            if self.codebook is None or meanings - {self.codebook["codes"][code]}:
+                _invalid("来源行方向码与本区域声明或流水方向不一致")
+        self._reset()
+
+    def _start_header(self, row):
+        self._end_region(row - 1)
+        self.header = row
+        if self.pending_parent is not None:
+            parent = self.pending_parent
+            if parent["parent_row"] + 1 != row:
+                _invalid("分层表头上下行不相邻")
+            self.ambiguous = parent["status"] == "ambiguous"
+            if not self.ambiguous:
+                self.tier_binding = table_tiered_headers.binding(parent)
+            self.width = parent["width"]
+            self.tier_columns = tuple(column[0] for column in parent["columns"])
+            self.pending_parent = None
+
+    def record(self, previous, row, reason, disposition, details, ledger, flow):
+        if row != previous + 1:
+            if row != previous + 2 or self.omitted_header:
+                _invalid("分层来源的物理记录次序或首表头缺口无效")
+            self.omitted_header = True
+            self._start_header(row - 1)
+        if reason == "repeated_header":
+            if not self.omitted_header:
+                _invalid("重复表头之前缺少原始首表头")
+            self._start_header(row)
+        elif self.pending_parent is not None:
+            _invalid("分层表头父行之后缺少已登记的子表头")
+
+        fields = _TIERED_DETAILS.intersection(details)
+        if reason == table_tiered_headers.PARENT_REASON:
+            try:
+                proof = table_tiered_headers.checked_proof(details.get(table_tiered_headers.PROOF_FIELD))
+            except RecursionError:
+                _invalid("分层表头证明超出结构范围")
+            if (proof is None or proof["parent_row"] != row or disposition != "non_transaction"
+                    or fields != {table_tiered_headers.PROOF_FIELD}):
+                _invalid("分层表头证明与物理父行不一致")
+            self._end_region(row - 1)
+            self.pending_parent = proof
+            self.has_evidence = True
+            return
+        if table_tiered_headers.PROOF_FIELD in fields:
+            _invalid("分层表头证明只能保存于父行")
+        if table_tiered_headers.LEAF_PROOF_FIELD in fields:
+            leaf = table_tiered_headers.checked_leaf_proof(details[table_tiered_headers.LEAF_PROOF_FIELD])
+            if (reason != "ambiguous_region_header" or disposition != "unresolved" or leaf is None
+                    or leaf["source_row"] != row or fields != {table_tiered_headers.LEAF_PROOF_FIELD}):
+                _invalid("无父标题的子表头与物理边界不一致")
+            self.has_evidence = True
+            fields.clear()
+        if reason == "ambiguous_region_header":
+            self._end_region(row - 1)
+            self.ambiguous = True
+        if reason in {"blank_record", "repeated_header", "ambiguous_region_header", "preamble"}:
+            if fields:
+                _invalid("空行、前言或表头边界不能承担来源解释依据")
+            return
+        effect_row = disposition in {"imported", "duplicate", "removed"}
+        if self.ambiguous and (effect_row or fields):
+            _invalid("模糊表头区域不能赋予流水或方向依据")
+        binding = details.get(table_tiered_headers.BINDING_FIELD)
+        if (binding is not None and binding != self.tier_binding
+                or effect_row and self.tier_binding is not None and binding is None):
+            _invalid("分层解释行与本区域的表头证明不一致")
+        if self.header is None:
+            if fields or effect_row:
+                _invalid("解释行缺少本成员的来源表头")
+            return
+        if self.first_data is None:
+            self.first_data = row
+        if table_tiered_headers.CODE_ISSUE_FIELD in fields:
+            if (details[table_tiered_headers.CODE_ISSUE_FIELD] not in {"invalid_direction", "conflicting_direction"}
+                    or self.first_data != row or self.codebook is not None):
+                _invalid("方向码问题不属于本区域首条解释记录")
+            self.code_issue = self.has_evidence = True
+        if table_sign_declarations.DIRECTION_CODE_FIELD in fields:
+            encoded = details[table_sign_declarations.DIRECTION_CODE_FIELD]
+            try:
+                proof = json.loads(encoded)
+            except (ValueError, RecursionError):
+                _invalid("方向码声明格式无效")
+            if (not table_sign_declarations.validate_direction_codes(proof)
+                    or table_tiered_headers.encode(proof) != encoded or self.codebook is not None or self.code_issue
+                    or proof["header_row"] != self.header or proof["declaration_row"] != row
+                    or max(proof["declaration_column"], proof["direction_column"]) > self.width
+                    or proof["declaration_column"] in self.tier_columns or proof["direction_column"] in self.tier_columns):
+                _invalid("方向码声明与本成员的物理来源区域不一致")
+            self.codebook = proof
+            self.has_evidence = True
+        if table_tiered_headers.CODE_FIELD in fields:
+            code = details[table_tiered_headers.CODE_FIELD]
+            if (code not in {"0", "1"} or self.code_issue or reason in {
+                    "row_width", "region_mapping_conflict", "unknown_table", "formula_value",
+                    "invalid_cell_type", "feedback_only", "failed_transaction"}):
+                _invalid("来源方向码无效或缺少可用声明")
+            meanings = self.code_meanings.setdefault(code, set())
+            if ledger is not None:
+                direction = ledger["direction"]
+                if direction not in {"in", "out"} or ledger["source_direction"] != ("收入" if direction == "in" else "支出"):
+                    _invalid("来源记账与翻译的方向码不一致")
+                meanings.add(direction)
+            # Deduplication does not include self_account. A prior import's
+            # owner cannot establish the direction of a separate observation.
+            if flow is not None and (ledger is not None or disposition == "imported") and flow["self_account"]:
+                pays = flow["self_account"] == flow["payer_account"]
+                receives = flow["self_account"] == flow["payee_account"]
+                if pays != receives:
+                    meanings.add("out" if pays else "in")
+
+    def finish(self, last):
+        # A final, initial leaf is legitimately absent from the journal even
+        # when there is no subsequent data row to reveal that single gap.
+        if self.pending_parent is not None:
+            if self.omitted_header or self.pending_parent["parent_row"] != last:
+                _invalid("分层表头父行之后缺少子表头")
+            self._start_header(last + 1)
+        self._end_region(last)
+
+
 def _table_journals(check, paths):
     """Validate automatic-table journals independently of bank-feedback rules."""
     tables = check.execute("select source_id,parser_version,imported_at from import_sources where row_kind='table_record'").fetchall()
@@ -554,7 +706,7 @@ def _table_journals(check, paths):
     members = check.execute("""select m.source_id,m.member_path,m.role,m.sha256,m.size_bytes,m.encoding,m.row_count
         from import_members m join import_sources s on s.source_id=m.source_id
         where s.row_kind='table_record'""").fetchall()
-    member_rows, by_source, xls_members = {}, {}, set()
+    member_rows, by_source, typed_members = {}, {}, set()
     for source_id, path, role, digest, size, encoding, count in members:
         if (not isinstance(path, str) or not path or len(path) > 65535
                 or "\\" in path or ":" in path
@@ -570,8 +722,8 @@ def _table_journals(check, paths):
                 or encoding == "xls" and source_profiles[source_id] in table_import.XLS_EVIDENCE_ARCHIVE_PROFILES
                    and not re.search(r"\.xls/worksheets/[0-9]{4}$", path, re.IGNORECASE)):
             _invalid("自动表格成员元数据无效")
-        if encoding == "xls":
-            xls_members.add((source_id, path))
+        if encoding == "xls" or encoding == "xlsx" and source_profiles[source_id] in table_import.TIERED_PROFILES:
+            typed_members.add((source_id, path))
         member_rows[source_id, path] = (role, digest, count)
         by_source.setdefault(source_id, []).append((size, count))
     if set(by_source) != {row[0] for row in tables}:
@@ -604,6 +756,7 @@ def _table_journals(check, paths):
         order by r.source_id,r.record_no""")
     sequences, counts, evidence_records, known_facts, current_facts = {}, {}, {}, {}, {}
     header_regions, previous_source_rows = {}, {}
+    tiered_members = {}
     accepted = ("imported", "duplicate")
     dispositions = (*accepted, "unresolved", "non_monetary", "non_transaction", "auxiliary", "removed")
     while rows := cursor.fetchmany(1024):
@@ -614,12 +767,17 @@ def _table_journals(check, paths):
             if member is None:
                 _invalid("自动表格记录引用了不存在的成员")
             role, member_digest, row_count = member
+            tiered = source_profiles[source_id] in table_import.TIERED_PROFILES
             cancellation_rule = source_profiles[source_id] in table_archive.CANCELLATION_PROFILES
             reason_codes = table_import.REASON_CODES | (frozenset(table_cancellations.REASONS)
                                                         if cancellation_rule else frozenset())
             if source_profiles[source_id] in evidence_resolution.PROFILES:
                 reason_codes |= frozenset(import_attachments.REASONS)
-            if (source_id, path) not in xls_members:
+            if tiered:
+                reason_codes |= {table_tiered_headers.PARENT_REASON}
+            else:
+                reason_codes -= {table_tiered_headers.PARENT_REASON}
+            if (source_id, path) not in typed_members:
                 reason_codes -= {"invalid_cell_type"}
             record_dispositions = (*dispositions, *(('cancelled',) if cancellation_rule else ()))
             if (number is None or number != sequences.get(source_id, 0) + 1
@@ -644,7 +802,8 @@ def _table_journals(check, paths):
             if not isinstance(details_json, str) or len(details_json.encode("utf-8")) > (source_ledger.MAX_BYTES + 8192 if ledger_rule else 8192):
                 _invalid("自动表格语义元数据过大或无效")
             details = json.loads(details_json)
-            detail_fields = table_import.DETAILS_FIELDS
+            detail_fields = (table_import.DETAILS_FIELDS | _TIERED_DETAILS if tiered and role == "table"
+                             else table_import.DETAILS_FIELDS - _TIERED_DETAILS)
             if ledger_rule:
                 detail_fields |= {source_ledger.FIELD}
             if source_profiles[source_id] in bank_posting_pairs.PROFILES:
@@ -668,7 +827,7 @@ def _table_journals(check, paths):
                 detail_fields |= {event_resolution.DETAIL_FIELD, event_resolution.LEDGER_FIELD}
             if (not isinstance(details, dict) or not set(details).issubset(detail_fields)
                     or any(not isinstance(value, str) or len(value.encode("utf-8")) > (
-                        source_ledger.MAX_BYTES if field == source_ledger.FIELD else 8192 if field == evidence_resolution.DETAIL_FIELD else 2048 if field in {bank_posting_pairs.FIELD, event_resolution.DETAIL_FIELD, table_import.table_sign_declarations.DETAIL_FIELD, "source_field_evidence", "source_time_evidence"} else 1024)
+                        source_ledger.MAX_BYTES if field == source_ledger.FIELD else 8192 if field == evidence_resolution.DETAIL_FIELD else table_tiered_headers.MAX_BYTES if field in {table_tiered_headers.PROOF_FIELD, table_tiered_headers.LEAF_PROOF_FIELD} else 2048 if field in {bank_posting_pairs.FIELD, event_resolution.DETAIL_FIELD, table_import.table_sign_declarations.DETAIL_FIELD, "source_field_evidence", "source_time_evidence"} else 1024)
                            for field, value in details.items())):
                 _invalid("自动表格语义元数据无效")
             ledger_entry = None
@@ -688,6 +847,12 @@ def _table_journals(check, paths):
                         or any(ledger_entry["row"][field] != dict(zip(flow_fields, facts)).get(field, "")
                                for field in ("self_account", "self_name"))):
                     _invalid("来源记账与保留原始分录不一致")
+            if tiered and role == "table":
+                region_key = (source_id, path)
+                if region_key not in tiered_members:
+                    tiered_members[region_key] = _TieredJournal()
+                tiered_members[region_key].record(previous_row, source_row, reason, disposition, details,
+                    ledger_entry, dict(zip(flow_fields, facts)) if flow_id is not None else None)
             if bank_posting_pairs.FIELD in details:
                 try:
                     pair_contract = bank_posting_pairs.validate(details[bank_posting_pairs.FIELD])
@@ -748,7 +913,8 @@ def _table_journals(check, paths):
             # contract they do carry; table members keep the full requirement.
             if (contract_rule and role != "attachment"
                     and (role != "auxiliary" or table_contracts.DETAILS_FIELDS.intersection(details))
-                    and not table_contracts.validate_details(details, disposition, reason)):
+                    and not table_contracts.validate_details(details, disposition,
+                        "repeated_header" if tiered and reason == table_tiered_headers.PARENT_REASON else reason)):
                 _invalid("自动表格来源契约元数据无效")
             if ("trade_no_basis" in details and details["trade_no_basis"] not in (
                     "source_transaction_id", "legacy_voucher_fallback", "none")):
@@ -766,7 +932,7 @@ def _table_journals(check, paths):
                     or (disposition == "cancelled") != (reason == "matched_cancellation")
                     or disposition == "non_monetary" and reason != "zero_amount"
                     or disposition == "non_transaction" and reason not in (
-                        "blank_record", "repeated_header", "feedback_only", "failed_transaction")
+                        "blank_record", "repeated_header", "feedback_only", "failed_transaction", table_tiered_headers.PARENT_REASON)
                     or disposition == "auxiliary" and reason not in ("preamble", "auxiliary_table", "non_business_attachment")
                     or disposition == "unresolved" and reason in (
                         "transaction_valid", "flow_deleted", "zero_amount", "blank_record",
@@ -850,6 +1016,14 @@ def _table_journals(check, paths):
                 })
     if any(counts.get(reference, 0) != values[2] for reference, values in member_rows.items()):
         _invalid("自动表格成员记录数不闭合")
+    supported_sources = set()
+    for key, journal in tiered_members.items():
+        journal.finish(previous_source_rows[key])
+        if journal.has_evidence:
+            supported_sources.add(key[0])
+    if any(profile in table_import.TIERED_PROFILES and source not in supported_sources
+           for source, profile in source_profiles.items()):
+        _invalid("新版表格来源缺少分层表头或方向码依据")
     for source_id, records in evidence_records.items():
         try:
             table_cancellations.validate_evidence(records)

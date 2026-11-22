@@ -14,7 +14,7 @@ import hashlib
 import json
 import unicodedata
 
-from . import db, source_ledger
+from . import db, source_ledger, table_tiered_headers
 from .money import money_decimal
 
 POLICY = "bank-feedback31-paired-postings-v1"
@@ -31,7 +31,7 @@ PROFILES = frozenset(("funds-trace-table-archive-v66", "funds-trace-table-archiv
                      "funds-trace-table-archive-v54","funds-trace-table-archive-v51", "funds-trace-table-archive-v55","funds-trace-table-archive-v52", "funds-trace-table-archive-v56","funds-trace-table-archive-v53", "funds-trace-table-v57", "funds-trace-table-v58", "funds-trace-table-v59",
                      "funds-trace-table-archive-v48", "funds-trace-table-archive-v49", "funds-trace-table-archive-v50", "funds-trace-table-v54", "funds-trace-table-v55", "funds-trace-table-v56",
                      "funds-trace-table-archive-v45", "funds-trace-table-archive-v46", "funds-trace-table-archive-v47", "funds-trace-table-v51", "funds-trace-table-v52", "funds-trace-table-v53",
-                     "funds-trace-table-archive-v42", "funds-trace-table-archive-v43", "funds-trace-table-archive-v44"))
+                     "funds-trace-table-archive-v42", "funds-trace-table-archive-v43", "funds-trace-table-archive-v44")) | table_tiered_headers.PROFILES
 
 
 class _CurrentFacts(Mapping):

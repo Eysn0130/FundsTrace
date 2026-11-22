@@ -20,7 +20,7 @@ import zipfile
 
 from .importer import FIELD_SYNONYMS, _row_key
 from .table_mapping import identity_field
-from . import table_financial, table_contracts, table_time_formats, table_source_roles, table_sign_declarations
+from . import table_financial, table_contracts, table_time_formats, table_source_roles, table_sign_declarations, table_tiered_headers
 
 
 IDENTITY_PROFILE = "funds-trace-table-v5"
@@ -181,6 +181,16 @@ PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE = "funds-trace-table-v77"
 BANK_SOURCE_PROFILE = "funds-trace-table-v78"
 BANK_SOURCE_XLS_PROFILE = "funds-trace-table-v79"
 BANK_SOURCE_EVIDENCE_PROFILE = "funds-trace-table-v80"
+_TIERED_SUCCESSORS = {
+    VOUCHER_REFERENCE_PROFILE: table_tiered_headers.PROFILE,
+    VOUCHER_REFERENCE_XLS_PROFILE: table_tiered_headers.XLS_PROFILE,
+    VOUCHER_REFERENCE_EVIDENCE_PROFILE: table_tiered_headers.EVIDENCE_PROFILE,
+    BANK_SOURCE_PROFILE: table_tiered_headers.BANK_PROFILE,
+    BANK_SOURCE_XLS_PROFILE: table_tiered_headers.BANK_XLS_PROFILE,
+    BANK_SOURCE_EVIDENCE_PROFILE: table_tiered_headers.BANK_EVIDENCE_PROFILE,
+}
+_TIERED_PREDECESSORS = {successor: base for base, successor in _TIERED_SUCCESSORS.items()}
+TIERED_PROFILES = table_tiered_headers.PROFILES
 CLOSED_BANK_SUCCESSORS = {
     VOUCHER_REFERENCE_PROFILE: BANK_SOURCE_PROFILE,
     VOUCHER_REFERENCE_XLS_PROFILE: BANK_SOURCE_XLS_PROFILE,
@@ -188,15 +198,19 @@ CLOSED_BANK_SUCCESSORS = {
 }
 CLOSED_BANK_PROFILES = frozenset((CLOSED_BANK_PROFILE, CLOSED_BANK_XLS_PROFILE, CLOSED_BANK_EVIDENCE_PROFILE,
                                   PREVIOUS_BANK_SOURCE_PROFILE, PREVIOUS_BANK_SOURCE_XLS_PROFILE,
-                                  PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, *CLOSED_BANK_SUCCESSORS.values()))
+                                  PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, *CLOSED_BANK_SUCCESSORS.values(),
+                                  table_tiered_headers.BANK_PROFILE, table_tiered_headers.BANK_XLS_PROFILE,
+                                  table_tiered_headers.BANK_EVIDENCE_PROFILE))
 BANK_SOURCE_CURRENCY_PROFILES = frozenset((
     BANK_SOURCE_ARCHIVE_PROFILE, BANK_SOURCE_EVIDENCE_ARCHIVE_PROFILE, BANK_SOURCE_XLS_ARCHIVE_PROFILE,
-    *CLOSED_BANK_SUCCESSORS.values()))
+    *CLOSED_BANK_SUCCESSORS.values(), table_tiered_headers.BANK_PROFILE, table_tiered_headers.BANK_XLS_PROFILE,
+    table_tiered_headers.BANK_EVIDENCE_PROFILE))
 BANK_SOURCE_PROFILES = BANK_SOURCE_ARCHIVE_PROFILES | frozenset((
     PREVIOUS_BANK_SOURCE_PROFILE, PREVIOUS_BANK_SOURCE_XLS_PROFILE,
-    PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, *CLOSED_BANK_SUCCESSORS.values()))
+    PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, *CLOSED_BANK_SUCCESSORS.values(),
+    table_tiered_headers.BANK_PROFILE, table_tiered_headers.BANK_XLS_PROFILE, table_tiered_headers.BANK_EVIDENCE_PROFILE))
 VOUCHER_REFERENCE_PROFILES = frozenset((VOUCHER_REFERENCE_PROFILE, VOUCHER_REFERENCE_XLS_PROFILE,
-    VOUCHER_REFERENCE_EVIDENCE_PROFILE, *CLOSED_BANK_PROFILES))
+    VOUCHER_REFERENCE_EVIDENCE_PROFILE, *CLOSED_BANK_PROFILES, *TIERED_PROFILES))
 SOURCE_OBSERVATION_PROFILES = frozenset((*AUXILIARY_ROWS_ARCHIVE_PROFILES, *VOUCHER_REFERENCE_PROFILES, SOURCE_OBSERVATION_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE,
     SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE,
     SOURCE_OBSERVATION_EVIDENCE_ARCHIVE_PROFILE, SOURCE_OBSERVATION_XLS_ARCHIVE_PROFILE))
@@ -243,13 +257,13 @@ MICROSECOND_ARCHIVE_PROFILES = frozenset((MICROSECOND_ARCHIVE_PROFILE, MICROSECO
                                          *HEADER_WIDTH_PROFILES))
 XLS_EVIDENCE_ARCHIVE_PROFILES = frozenset((BANK_SOURCE_XLS_ARCHIVE_PROFILE, PREVIOUS_BANK_SOURCE_XLS_ARCHIVE_PROFILE, AUXILIARY_ROWS_XLS_ARCHIVE_PROFILE, SOURCE_OBSERVATION_XLS_ARCHIVE_PROFILE, NATIVE31_XLS_ARCHIVE_PROFILE, UNORIENTED_XLS_ARCHIVE_PROFILE, NATIVE_OBSERVATION_XLS_ARCHIVE_PROFILE, AUXILIARY_SCOPE_XLS_ARCHIVE_PROFILE, POSTING_PAIR_XLS_ARCHIVE_PROFILE, SOURCE_LEDGER_XLS_ARCHIVE_PROFILE, BANK31_VARIANT_XLS_ARCHIVE_PROFILE, SOURCE_TEXT_XLS_ARCHIVE_PROFILE, SOURCE_CONTRACT_XLS_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, MICROSECOND_XLS_ARCHIVE_PROFILE,
                                          HEADER_WIDTH_XLS_ARCHIVE_PROFILE, GUARDED_XLS_ARCHIVE_PROFILE, PRECISE_XLS_ARCHIVE_PROFILE, REFERENCE_ROLE_XLS_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_XLS_ARCHIVE_PROFILE, TIME_ROLE_XLS_ARCHIVE_PROFILE, ZONED_XLS_ARCHIVE_PROFILE))
-STANDALONE_XLS_PROFILES = frozenset((BANK_SOURCE_XLS_PROFILE, PREVIOUS_BANK_SOURCE_XLS_PROFILE, CLOSED_BANK_XLS_PROFILE, VOUCHER_REFERENCE_XLS_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE, NATIVE31_XLS_PROFILE, UNORIENTED_XLS_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, POSTING_PAIR_XLS_PROFILE, SOURCE_LEDGER_XLS_PROFILE, BANK31_VARIANT_XLS_PROFILE, SOURCE_TEXT_XLS_PROFILE, SOURCE_CONTRACT_XLS_PROFILE, XLS_PROFILE, GUARDED_XLS_PROFILE, PRECISE_XLS_PROFILE, REFERENCE_ROLE_XLS_PROFILE, OPTIONAL_REFERENCE_XLS_PROFILE, TIME_ROLE_XLS_PROFILE, ZONED_XLS_PROFILE))
+STANDALONE_XLS_PROFILES = frozenset((table_tiered_headers.XLS_PROFILE, table_tiered_headers.BANK_XLS_PROFILE, BANK_SOURCE_XLS_PROFILE, PREVIOUS_BANK_SOURCE_XLS_PROFILE, CLOSED_BANK_XLS_PROFILE, VOUCHER_REFERENCE_XLS_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE, NATIVE31_XLS_PROFILE, UNORIENTED_XLS_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, POSTING_PAIR_XLS_PROFILE, SOURCE_LEDGER_XLS_PROFILE, BANK31_VARIANT_XLS_PROFILE, SOURCE_TEXT_XLS_PROFILE, SOURCE_CONTRACT_XLS_PROFILE, XLS_PROFILE, GUARDED_XLS_PROFILE, PRECISE_XLS_PROFILE, REFERENCE_ROLE_XLS_PROFILE, OPTIONAL_REFERENCE_XLS_PROFILE, TIME_ROLE_XLS_PROFILE, ZONED_XLS_PROFILE))
 XLS_READER_PROFILES = frozenset((*STANDALONE_XLS_PROFILES, *XLS_EVIDENCE_ARCHIVE_PROFILES))
-EVENT_PROFILES = frozenset((BANK_SOURCE_EVIDENCE_PROFILE, PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, CLOSED_BANK_EVIDENCE_PROFILE, VOUCHER_REFERENCE_EVIDENCE_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, NATIVE31_EVIDENCE_PROFILE, UNORIENTED_EVIDENCE_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, ZONED_EVIDENCE_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, EVIDENCE_PROFILE, GUARDED_EVIDENCE_PROFILE, PRECISE_EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, *MICROSECOND_ARCHIVE_PROFILES))
+EVENT_PROFILES = frozenset((*table_tiered_headers.OCCURRENCE_PROFILES, BANK_SOURCE_EVIDENCE_PROFILE, PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, CLOSED_BANK_EVIDENCE_PROFILE, VOUCHER_REFERENCE_EVIDENCE_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, NATIVE31_EVIDENCE_PROFILE, UNORIENTED_EVIDENCE_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, ZONED_EVIDENCE_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, EVIDENCE_PROFILE, GUARDED_EVIDENCE_PROFILE, PRECISE_EVIDENCE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, *MICROSECOND_ARCHIVE_PROFILES))
 EVIDENCE_ARCHIVE_PROFILES = frozenset((LEGACY_EVIDENCE_ARCHIVE_PROFILE, EVIDENCE_ARCHIVE_PROFILE, XLS_EVIDENCE_ARCHIVE_PROFILE, *MICROSECOND_ARCHIVE_PROFILES))
-EVIDENCE_PROFILES = frozenset((BANK_SOURCE_EVIDENCE_PROFILE, PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, CLOSED_BANK_EVIDENCE_PROFILE, VOUCHER_REFERENCE_EVIDENCE_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, NATIVE31_EVIDENCE_PROFILE, UNORIENTED_EVIDENCE_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, ZONED_EVIDENCE_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, LEGACY_EVIDENCE_PROFILE, *EVIDENCE_ARCHIVE_PROFILES, EVIDENCE_PROFILE, GUARDED_EVIDENCE_PROFILE, PRECISE_EVIDENCE_PROFILE))
+EVIDENCE_PROFILES = frozenset((*table_tiered_headers.OCCURRENCE_PROFILES, BANK_SOURCE_EVIDENCE_PROFILE, PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, CLOSED_BANK_EVIDENCE_PROFILE, VOUCHER_REFERENCE_EVIDENCE_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, NATIVE31_EVIDENCE_PROFILE, UNORIENTED_EVIDENCE_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, ZONED_EVIDENCE_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, LEGACY_EVIDENCE_PROFILE, *EVIDENCE_ARCHIVE_PROFILES, EVIDENCE_PROFILE, GUARDED_EVIDENCE_PROFILE, PRECISE_EVIDENCE_PROFILE))
 PROFILE = VOUCHER_REFERENCE_PROFILE
-CURRENCY_REGION_PROFILES = frozenset((*BANK_SOURCE_CSV_ARCHIVE_PROFILES, AUXILIARY_ROWS_ARCHIVE_PROFILE, BANK_SOURCE_PROFILE, PREVIOUS_BANK_SOURCE_PROFILE, CLOSED_BANK_PROFILE, VOUCHER_REFERENCE_PROFILE, SOURCE_OBSERVATION_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE, NATIVE31_PROFILE, NATIVE31_ARCHIVE_PROFILE, UNORIENTED_PROFILE, UNORIENTED_ARCHIVE_PROFILE, NATIVE_OBSERVATION_PROFILE, NATIVE_OBSERVATION_ARCHIVE_PROFILE, AUXILIARY_SCOPE_PROFILE, AUXILIARY_SCOPE_ARCHIVE_PROFILE, POSTING_PAIR_PROFILE, POSTING_PAIR_ARCHIVE_PROFILE, SOURCE_LEDGER_PROFILE, SOURCE_LEDGER_ARCHIVE_PROFILE, BANK31_VARIANT_PROFILE, BANK31_VARIANT_ARCHIVE_PROFILE, SOURCE_TEXT_PROFILE, SOURCE_TEXT_ARCHIVE_PROFILE, CURRENCY_REGION_PROFILE, *STANDALONE_XLS_PROFILES, GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, TIME_ROLE_ARCHIVE_PROFILE, ZONED_PROFILE, ZONED_ARCHIVE_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_CONTRACT_ARCHIVE_PROFILE,
+CURRENCY_REGION_PROFILES = frozenset((*TIERED_PROFILES, *BANK_SOURCE_CSV_ARCHIVE_PROFILES, AUXILIARY_ROWS_ARCHIVE_PROFILE, BANK_SOURCE_PROFILE, PREVIOUS_BANK_SOURCE_PROFILE, CLOSED_BANK_PROFILE, VOUCHER_REFERENCE_PROFILE, SOURCE_OBSERVATION_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE, NATIVE31_PROFILE, NATIVE31_ARCHIVE_PROFILE, UNORIENTED_PROFILE, UNORIENTED_ARCHIVE_PROFILE, NATIVE_OBSERVATION_PROFILE, NATIVE_OBSERVATION_ARCHIVE_PROFILE, AUXILIARY_SCOPE_PROFILE, AUXILIARY_SCOPE_ARCHIVE_PROFILE, POSTING_PAIR_PROFILE, POSTING_PAIR_ARCHIVE_PROFILE, SOURCE_LEDGER_PROFILE, SOURCE_LEDGER_ARCHIVE_PROFILE, BANK31_VARIANT_PROFILE, BANK31_VARIANT_ARCHIVE_PROFILE, SOURCE_TEXT_PROFILE, SOURCE_TEXT_ARCHIVE_PROFILE, CURRENCY_REGION_PROFILE, *STANDALONE_XLS_PROFILES, GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, TIME_ROLE_ARCHIVE_PROFILE, ZONED_PROFILE, ZONED_ARCHIVE_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_CONTRACT_ARCHIVE_PROFILE,
                                      GUARDED_ARCHIVE_PROFILE, PRECISE_ARCHIVE_PROFILE, REFERENCE_ROLE_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_ARCHIVE_PROFILE, *EVIDENCE_PROFILES))
 CURRENCY_CODE_ALIAS_PROFILES = CURRENCY_REGION_PROFILES | {ARCHIVE_MEMBER_PROFILE}
 OVERLAPPING_HEADER_PROFILES = CURRENCY_REGION_PROFILES | {ARCHIVE_MEMBER_PROFILE}
@@ -443,6 +457,7 @@ _CONTRACT_MONEY_HEADERS = frozenset(value for field in (*table_financial.MONEY_F
                                     for value in _CONTRACT_ALIASES.get(field, ()))
 FINANCIAL_MAPPING_FIELDS = frozenset((*_ALIASES, *_FINANCIAL_ALIASES))
 MAPPING_FIELDS = FINANCIAL_MAPPING_FIELDS | frozenset(_CONTRACT_ALIASES) | {"counter_card"}
+REASONS[table_tiered_headers.PARENT_REASON] = "两层表头的父标题行"
 REASON_CODES = frozenset(REASONS)
 DETAILS_FIELDS = frozenset({"sheet", "source_row", "financial_effect", "reason", "validation_issues", "validation_basis", "currency_basis", "counterparty_basis", "sign_convention", "flow_sha256", "source_account_column", "reported_status", "source_role"})
 REFERENCE_DETAILS_FIELDS = frozenset({"trade_no_basis"})
@@ -477,6 +492,10 @@ class _WorkbookValue:
     formula: bool = False
     date_only: bool = False
     invalid_type: bool = False
+
+
+class _XlsxError(str):
+    """An Excel error retains display text but supplies no tiered evidence."""
 
 
 def _raw(value):
@@ -906,7 +925,7 @@ def _collect_rows(iterator, *, previous_count=0):
     return rows
 
 
-def _excel(raw, suffix):
+def _excel(raw, suffix, *, mark_errors=False):
     if suffix == ".xls":
         from .table_xls import read_workbook
         return read_workbook(raw)
@@ -934,7 +953,10 @@ def _excel(raw, suffix):
                         row = []
                         for cell in cells:
                             value = cell.value
-                            formula = getattr(cell, "data_type", "") == "f"
+                            data_type = getattr(cell, "data_type", "")
+                            formula = data_type == "f"
+                            if mark_errors and data_type == "e" and isinstance(value, str):
+                                value = _XlsxError(value)
                             if formula or isinstance(value, (int, float, dt.date, dt.time)):
                                 fmt = getattr(cell, "number_format", "General")
                                 date_only = (isinstance(value, dt.date) and not isinstance(value, dt.datetime)) or (isinstance(value, dt.datetime) and value.time() == dt.time() and is_datetime(fmt) == "date")
@@ -1285,9 +1307,15 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
     critical_fields = set(candidates) - {"summary", "channel", "feedback_reason"}
     if any(isinstance(value := _value(row, item), _WorkbookValue) and value.formula for field in critical_fields for item in candidates[field]):
         return None, "unresolved", "formula_value", {"financial_effect": "undetermined", "validation_issues": "formula_value"}
-    if any(isinstance(value := _value(row, item), _WorkbookValue) and value.invalid_type
-           for field in critical_fields for item in candidates[field]):
-        return None, "unresolved", "invalid_cell_type", {"financial_effect": "undetermined", "validation_issues": "invalid_cell_type"}
+    for field in critical_fields:
+        for item in candidates[field]:
+            value = _value(row, item)
+            invalid_type = isinstance(value, _WorkbookValue) and value.invalid_type
+            if isinstance(value, _XlsxError):
+                invalid_type = any("region_parent_row" in candidate or "direction_code_context" in candidate
+                                   for items in candidates.values() for candidate in items)
+            if invalid_type:
+                return None, "unresolved", "invalid_cell_type", {"financial_effect": "undetermined", "validation_issues": "invalid_cell_type"}
     if (candidates.get("feedback_reason")
             and any(_text(_value(row, item)) for item in candidates["feedback_reason"])
             and not any(_text(_value(row, item)) for field in ("trade_time", "amount", "income_amt", "expense_amt", "direction") for item in candidates.get(field, []))):
@@ -1321,6 +1349,8 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
         time_candidates = candidates
         if any("time_role" in item for field in ("trade_time", "time_part") for item in candidates.get(field, [])):
             time_candidates = {field: list(items) for field, items in candidates.items()}
+            named_tier_transaction = any(item.get("region_source_role") == "transaction_time"
+                                         for item in candidates.get("trade_time", ()))
             explicit_transaction = any(item.get("time_role") == "transaction" and _text(_value(row, item))
                 and (_time(_value(row, item)) is not None and not _date_only(_value(row, item))
                      or table_time_formats.source_time_value(_text(_value(row, item)))["basis"] == "explicit_offset")
@@ -1330,7 +1360,8 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
                 selected = []
                 for item in candidates.get(field, []):
                     value = _text(_value(row, item))
-                    if item.get("time_role") in {"posting", "receipt", "settlement"}:
+                    role = item.get("time_role")
+                    if role in {"posting", "receipt", "settlement"} or named_tier_transaction and role != "transaction":
                         posting |= bool(value)
                         continue
                     if explicit_transaction and item.get("time_role") == "unspecified" and not item.get("time_corroborates"):
@@ -1409,8 +1440,17 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
         split_amount = Decimal("0.00")
     direction_values = []
     for candidate in candidates.get("direction", []):
-        value = _enum(_value(row, candidate))
-        if value in _IN:
+        raw_value = _value(row, candidate)
+        value = _enum(raw_value)
+        code_context = candidate.get("direction_code_context")
+        code = _source_direction_code(raw_value) if code_context else ""
+        if code_context and code in ("0", "1"):
+            if "error" in code_context:
+                issues.append(code_context["error"])
+            else:
+                direction_values.append(code_context["codes"][code])
+                notes[table_tiered_headers.CODE_FIELD] = code
+        elif value in _IN:
             direction_values.append("in")
         elif value in _OUT:
             direction_values.append("out")
@@ -1624,6 +1664,15 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
         from . import source_ledger as ledger
         raw_direction = next((_text(_value(row, item)) for item in candidates.get("direction", [])
                               if _text(_value(row, item))), "")
+        original_direction = next((str(_value(row, item)) for item in candidates.get("direction", [])
+                                   if _value(row, item) is not None), "")
+        if candidates.get("direction") and candidates["direction"][0].get("direction_code_context"):
+            source_value = _value(row, candidates["direction"][0])
+            original_direction = _source_direction_code(source_value) or _text(source_value)
+        if table_tiered_headers.CODE_FIELD in notes:
+            # The legacy ledger snapshot uses normalized direction words. The
+            # original code and its declaration remain in the source journal.
+            raw_direction = "收入" if explicit_direction == "in" else "支出"
         if (mode == "B" and amount == 0 and not direction and not raw_direction
                 and any(item.get("allow_unoriented") for item in candidates.get("direction", []))):
             issues.append("missing_direction")
@@ -1633,8 +1682,7 @@ def _interpret(row, candidates, mode, *, reference_policy=None, financial=False,
             issues=issues, signed=signed, mode=mode, reported_status=notes.get("reported_status"), before=before, zoned=zoned_fields,
             allow_unoriented=any(item.get("allow_unoriented") for item in candidates.get("direction", [])),
             allow_source_observation=any(item.get("allow_source_observation") for item in candidates.get("direction", [])),
-            original_direction=next((str(_value(row, item)) for item in candidates.get("direction", [])
-                                     if _value(row, item) is not None), ""))
+            original_direction=original_direction)
         if snapshot:
             notes[ledger.FIELD] = snapshot
     if issues:
@@ -1750,8 +1798,36 @@ def _interpret_candidates(row, candidates, mode, *, reference_policy=None, finan
     return _role_conflict(selected)
 
 
-def _region(headers, mode, mapping, *, strict, reference_policy=None, voucher_reference=False, profile=IDENTITY_PROFILE):
+def _tiered_candidates(candidates, proof, profile):
+    """Add exact same-column claims without turning generic leaves into roles."""
+    resolved = {field: list(items) for field, items in candidates.items()}
+    for index, field, role, unit, factor, _parent, leaf in table_tiered_headers.candidate_columns(proof):
+        for other_field, items in resolved.items():
+            for item in list(items):
+                if item["index"] != index:
+                    continue
+                if other_field == "self_account" and field.endswith("_account") and table_tiered_headers.generic_account(leaf):
+                    items.remove(item)
+                    continue
+                if other_field != field:
+                    return None
+                items.remove(item)
+        item = {"index": index, "factor": Decimal(factor), "unit": unit or "元/默认基础单位",
+                "unit_currency": "CNY" if unit == "人民币元" else "", "signed": False,
+                "basis": "verified_region_header", "region_parent_row": proof["parent_row"],
+                "region_source_role": role}
+        if field == "trade_time":
+            item.update(time_role="transaction" if role == "transaction_time" else "posting",
+                        zoned_time=profile in ZONED_PROFILES, time_corroborates=False)
+        resolved.setdefault(field, []).append(item)
+    return {field: sorted(items, key=lambda item: item["index"]) for field, items in resolved.items() if items}
+
+
+def _region(headers, mode, mapping, *, strict, reference_policy=None, voucher_reference=False,
+            profile=IDENTITY_PROFILE, tiered_proof=None):
     """Resolve labels against this region's positions, never an earlier region."""
+    if tiered_proof is not None:
+        headers = ["" if isinstance(header, _XlsxError) else header for header in headers]
     candidates = _candidates(headers, profile)
     header_names = tuple(_text(_header_value(header, profile)) for header in headers)
     signature = frozenset(header_names)
@@ -1840,6 +1916,18 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, voucher_re
                 candidates.setdefault("trade_no", []).append({"index": index, "source_name": _text(headers[index]),
                     "factor": Decimal(1), "unit": "元/默认基础单位", "signed": False, "reference_role": role})
     error = None
+    proved_columns = {}
+    if tiered_proof is not None:
+        tiered = (_tiered_candidates(candidates, tiered_proof, profile)
+                  if tiered_proof["status"] == "verified" else None)
+        has_transaction_time = tiered and any(item.get("time_role") != "posting" for item in tiered.get("trade_time", []))
+        if not has_transaction_time or not _shape(tiered, profile):
+            tiered_proof["status"] = "ambiguous"
+            error = "ambiguous_region_header"
+            candidates = {}
+        else:
+            candidates = tiered
+            proved_columns = {index: field for index, field, *_ in table_tiered_headers.candidate_columns(tiered_proof)}
     pinned_mapping = {}
     for field, column in (mapping or {}).items():
         if field not in (mapping_fields(profile) if profile in CONTRACT_PROFILES else FINANCIAL_MAPPING_FIELDS if profile == FINANCIAL_PROFILE else _ALIASES) or not isinstance(column, str):
@@ -1851,6 +1939,14 @@ def _region(headers, mode, mapping, *, strict, reference_policy=None, voucher_re
             error = "region_mapping_conflict"
             continue
         index = matches[0]
+        if proved_columns.get(index, field) != field or field in proved_columns.values() and proved_columns.get(index) != field:
+            if strict:
+                raise TableImportError("映射与原表两层表头的职责冲突")
+            error = "region_mapping_conflict"
+            continue
+        if index in proved_columns:
+            pinned_mapping[field] = column
+            continue
         if query_owner and table_source_roles.query_condition(_text(headers[index])):
             if strict:
                 raise TableImportError("查询条件注记不是交易事实字段")
@@ -2087,7 +2183,8 @@ def _unmistakable_header(row, profile, layouts):
     return True
 
 
-def _region_evidence(headers, candidates, labels, path, header_row):
+def _region_evidence(headers, candidates, labels, path, header_row, direction_book=None):
+    code_proof = direction_book.get("proof") if direction_book is not None else None
     return [{"field": "voucher_reference" if item.get("reference_role") == "independent_voucher_reference" else item.get("source_text_role", field),
              "column": labels[item["index"]], "column_index": item["index"] + 1,
              "unit": item["unit"], "unit_factor": str(item["factor"]) if item["factor"] is not None else "",
@@ -2095,7 +2192,11 @@ def _region_evidence(headers, candidates, labels, path, header_row):
                                  sum(other.get("source_text_role") == item["source_text_role"] for other in items) if "source_text_role" in item else len(items)),
              "basis": item.get("reference_role", item.get("source_text_role", item.get("basis", "exact_header_alias"))), "member_path": path,
              "header_row": header_row,
-             **({"time_format": item["time_format"]} if "time_format" in item else {})}
+             **({"time_format": item["time_format"]} if "time_format" in item else {}),
+             **({"parent_row": item["region_parent_row"], "source_role": item["region_source_role"]}
+                if "region_parent_row" in item else {}),
+             **({"direction_code_row": code_proof["declaration_row"],
+                 "direction_code_column": code_proof["declaration_column"]} if field == "direction" and code_proof else {})}
             for field, items in candidates.items() for item in items]
 
 
@@ -2212,22 +2313,43 @@ def _append_auxiliary_sheet(plan, sheet, *, details_pool=None):
     return True
 
 
-def _financial_regions(sheets, profile):
+def _initial_region(rows, profile, tiers):
+    header_no, _, _ = _locate_header(rows, profile)
+    parent = next(iter(tiers), None)
+    if parent is not None and (header_no is None or parent - 1 <= header_no):
+        return parent, tiers[parent]
+    return header_no, None
+
+
+def _financial_regions(sheets, profile, tiers_by_sheet=None):
     """Use the interpreter's region guards on the already decoded source."""
     for sheet in sheets:
         rows = sheet["rows"]
-        header_no, _, _ = _locate_header(rows, profile)
+        tiers, orphans = (tiers_by_sheet or {}).get(sheet["path"], ({}, {}))
+        header_no, proof = _initial_region(rows, profile, tiers)
         if header_no is None:
             continue
-        candidates, *_ = _region(rows[header_no], None, None, strict=True, profile=profile)
-        if _shape(candidates, profile):
+        candidates, _, mode, _, error, _ = _region(rows[header_no], None, None, strict=True, profile=profile,
+                                                    tiered_proof=dict(proof) if proof is not None else None)
+        if _shape(candidates, profile) and (proof is None or mode and error is None):
             yield rows[header_no], candidates
         ambiguous_layouts = {}
+        next_body = header_no + 1
         for index in range(header_no + 1, len(rows)):
+            if index < next_body:
+                continue
             row = rows[index]
             if not any(_cell_present(value) for value in row):
                 continue
-            if _overlapping_header(row, candidates, profile):
+            if proof := _tier_boundary(rows, index + 1, tiers, candidates):
+                ambiguous_layouts.clear()
+                headers = rows[index + 1]
+                next_body = index + 2
+                candidates, _, mode, _, error, _ = _region(headers, None, None, strict=False, profile=profile,
+                                                            tiered_proof=dict(proof))
+                if mode and error is None:
+                    yield headers, candidates
+            elif _orphan_tier_boundary(row, orphans.get(index + 1), candidates) or _overlapping_header(row, candidates, profile):
                 _remember_layout(ambiguous_layouts, candidates)
                 _remember_layout(ambiguous_layouts, _candidates(row, profile))
             elif ((ambiguous_layouts and _unmistakable_header(row, profile, ambiguous_layouts))
@@ -2242,15 +2364,15 @@ def _financial_regions(sheets, profile):
                     _remember_layout(ambiguous_layouts, found)
 
 
-def _declared_table_layouts(sheets, profile):
+def _declared_table_layouts(sheets, profile, tiers_by_sheet=None):
     from .event_resolution import HEADERS
 
     check_events = profile not in EVIDENCE_PROFILES and profile not in STANDALONE_XLS_PROFILES
     check_bank = profile in CLOSED_BANK_SUCCESSORS
     events = bank = False
-    for headers, candidates in _financial_regions(sheets, profile):
+    for headers, candidates in _financial_regions(sheets, profile, tiers_by_sheet):
         if check_events and not events:
-            names = [_text(value) for value in headers]
+            names = [_text(_literal_cell(value) if tiers_by_sheet else value) for value in headers]
             events = all(names.count(name) == 1 for name in HEADERS.values())
         if check_bank and not bank:
             names = frozenset(_text(_header_value(header, profile)) for header in headers)
@@ -2280,7 +2402,7 @@ def _needs_sign_layouts(sheets):
     return False
 
 
-def _source_sign_contracts(sheets, profile):
+def _source_sign_contracts(sheets, profile, tiers_by_sheet=None):
     if profile not in PRECISE_PROFILES:
         return {}
     if type(profile) is str and not _needs_sign_layouts(sheets):
@@ -2292,9 +2414,14 @@ def _source_sign_contracts(sheets, profile):
         headers = rows[header_no] if header_no is not None else []
         candidates = _candidates(headers, profile)
         amount = candidates.get("amount", [])
+        tiers, orphans = (tiers_by_sheet or {}).get(sheet["path"], ({}, {}))
+        has_tier = header_no is not None and (any(parent <= header_no + 1 or _tier_boundary(rows, parent, tiers, candidates)
+                                                   for parent in tiers)
+            or any(index > header_no + 1 and _orphan_tier_boundary(rows[index - 1], proof, candidates)
+                   for index, proof in orphans.items()))
         single_region = header_no is not None and not any(
             _later_header(row, candidates, profile) or _overlapping_header(row, candidates, profile)
-            for row in rows[header_no + 1:])
+            for row in rows[header_no + 1:]) and not has_tier
         layouts.append({"member": sheet["path"], "rows": [[_raw(cell) for cell in row] for row in rows],
                         "invalid_cells": {(r + 1, c + 1) for r, row in enumerate(rows) for c, cell in enumerate(row)
                                           if isinstance(cell, _WorkbookValue) and (cell.formula or cell.invalid_type)},
@@ -2308,7 +2435,8 @@ def _source_sign_contracts(sheets, profile):
 
 def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, voucher_reference=False,
           profile=None, _details_pool=None,
-          _defer_occurrence_binding=False, _retain_csv_format=False, _auto_event_profile=False, _decoded_csv=None):
+          _defer_occurrence_binding=False, _retain_csv_format=False, _auto_event_profile=False,
+          _detect_tiered=False, _decoded_csv=None):
     if profile is None:
         profile = TIME_ROLE_XLS_PROFILE if suffix.lower() == ".xls" else PROFILE
     # New exact cross-field arithmetic is independent of ambient Decimal
@@ -2320,12 +2448,12 @@ def parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vou
                           reference_policy=reference_policy, voucher_reference=voucher_reference,
                           profile=profile, details_pool=_details_pool,
                           defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format,
-                          auto_event_profile=_auto_event_profile, decoded_csv=_decoded_csv)
+                          auto_event_profile=_auto_event_profile, detect_tiered=_detect_tiered, decoded_csv=_decoded_csv)
     return _parse(source, suffix=suffix, mode=mode, mapping=mapping,
                   reference_policy=reference_policy, voucher_reference=voucher_reference,
                   profile=profile, details_pool=_details_pool,
                   defer_occurrence_binding=_defer_occurrence_binding, retain_csv_format=_retain_csv_format,
-                  auto_event_profile=_auto_event_profile, decoded_csv=_decoded_csv)
+                  auto_event_profile=_auto_event_profile, detect_tiered=_detect_tiered, decoded_csv=_decoded_csv)
 
 
 def _region_row_headers(headers, profile):
@@ -2341,11 +2469,122 @@ def _region_row_headers(headers, profile):
     return names, feedback_names
 
 
+def _literal_cell(value):
+    if isinstance(value, _XlsxError):
+        return None
+    if isinstance(value, _WorkbookValue) and (value.formula or value.invalid_type):
+        return None
+    return _raw(value)
+
+
+def _potential_tiers(rows):
+    tiers, orphans = {}, {}
+    for index, row in enumerate(rows, 1):
+        following = rows[index] if index < len(rows) else None
+        if proof := table_tiered_headers.inspect(row, following, index, _literal_cell):
+            tiers[index] = proof
+        if proof := table_tiered_headers.leaf_proof(row, index, _literal_cell):
+            orphans[index] = proof
+    return tiers, orphans
+
+
+def _tier_overlap(rows, proof_indices, candidates):
+    # A source row with time and money at the active physical positions
+    # remains a transaction candidate, even if its auxiliary cells say 日期.
+    identity_columns = [item for field in _REGION_IDENTITIES for item in candidates.get(field, ())]
+    dated_identity = False
+    for row in rows:
+        financial, _ = _financial_candidates(row, candidates)
+        dates = {field: [item for item in financial.get(field, ()) if _literal_cell(_value(row, item)) is not None]
+                 for field in ("trade_time", "time_part")}
+        if not _financial_times(row, dates, []):
+            continue
+        if any(
+                _literal_cell(_value(row, item)) is not None and
+                _money(_value(row, item), item)[0] is not None
+                for field in ("amount", "income_amt", "expense_amt") for item in financial.get(field, [])):
+            return "data"
+        dated_identity |= any(item["index"] not in proof_indices and _text(_literal_cell(_value(row, item)))
+                              for item in identity_columns)
+    if dated_identity:
+        return "competing" if proof_indices.intersection(
+            item["index"] for items in candidates.values() for item in items) else "data"
+    return "header"
+
+
+def _tier_boundary(rows, index, tiers, candidates):
+    proof = tiers.get(index)
+    if proof is None:
+        return None
+    indices = {claim[0] - 1 for claim in proof["columns"]}
+    overlap = _tier_overlap(rows[index - 1:index + 1], indices, candidates)
+    if overlap == "data":
+        return None
+    return {**proof, "status": "ambiguous"} if overlap == "competing" else proof
+
+
+def _orphan_tier_boundary(row, proof, candidates):
+    if proof is None:
+        return None
+    indices = {claim[0] - 1 for claim in proof["columns"]}
+    return proof if _tier_overlap((row,), indices, candidates) != "data" else None
+
+
+def _region_codebook(rows, header_row, headers, candidates, tiers, orphans, profile, last_mentions):
+    roles = candidates.get("direction", [])
+    if len(roles) != 1:
+        return None
+    column = roles[0]["index"]
+    label = _literal_cell(headers[column])
+    if (type(label) is not str or table_sign_declarations.normalized(label) not in table_sign_declarations.DIRECTION_HEADERS
+            or [item["index"] for item in _candidates(headers, profile).get("direction", [])] != [column]):
+        return None
+    note_columns = []
+    for note, heading in enumerate(headers):
+        if _literal_cell(heading) not in table_sign_declarations.DIRECTION_NOTE_HEADERS or note == column:
+            continue
+        if note not in last_mentions:
+            last_mentions[note] = next((position + 1 for position in range(len(rows) - 1, header_row - 1, -1)
+                                        if note < len(rows[position]) and table_sign_declarations.mentions_direction_codes(
+                                            _literal_cell(rows[position][note]))), 0)
+        if last_mentions[note] > header_row:
+            note_columns.append(note + 1)
+    if not note_columns:
+        return None
+    end = len(rows)
+    for offset in range(header_row, end):
+        row = rows[offset]
+        if (_tier_boundary(rows, offset + 1, tiers, candidates)
+                or _orphan_tier_boundary(row, orphans.get(offset + 1), candidates)
+                or _overlapping_header(row, candidates, profile) or _later_header(row, candidates, profile)):
+            end = offset
+            break
+    return table_sign_declarations.compile_direction_region(
+        rows, header_row=header_row, last_row=end, direction_column=column + 1, direction_header=label,
+        note_columns=note_columns, literal=_literal_cell, width=len(headers))
+
+
+def _source_direction_code(value):
+    raw = _literal_cell(value)
+    if type(raw) is str:
+        return raw
+    if type(raw) in (int, float) and raw in (0, 1) and isinstance(value, _WorkbookValue):
+        if value.number_format in {"General", "0"}:
+            return str(int(raw))
+        if re.fullmatch(r"0+", value.number_format):
+            return str(int(raw)).zfill(len(value.number_format))
+    return ""
+
+
 def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, voucher_reference=False,
            profile=PROFILE, details_pool=None,
-           defer_occurrence_binding=False, retain_csv_format=False, auto_event_profile=False, decoded_csv=None):
+           defer_occurrence_binding=False, retain_csv_format=False, auto_event_profile=False,
+           detect_tiered=False, decoded_csv=None):
     """Interpret every source record and return a write-free versioned plan."""
     suffix = suffix.lower()
+    pinned_tiered = profile in TIERED_PROFILES
+    profile = _TIERED_PREDECESSORS.get(profile, profile)
+    use_tiered = pinned_tiered or detect_tiered and profile in _TIERED_SUCCESSORS
     archive_member = ((profile in {ARCHIVE_MEMBER_PROFILE, GUARDED_ARCHIVE_PROFILE, PRECISE_ARCHIVE_PROFILE, REFERENCE_ROLE_ARCHIVE_PROFILE, OPTIONAL_REFERENCE_ARCHIVE_PROFILE, TIME_ROLE_ARCHIVE_PROFILE, ZONED_ARCHIVE_PROFILE, SOURCE_CONTRACT_ARCHIVE_PROFILE, SOURCE_TEXT_ARCHIVE_PROFILE, BANK31_VARIANT_ARCHIVE_PROFILE, SOURCE_LEDGER_ARCHIVE_PROFILE, POSTING_PAIR_ARCHIVE_PROFILE, AUXILIARY_SCOPE_ARCHIVE_PROFILE, NATIVE_OBSERVATION_ARCHIVE_PROFILE, UNORIENTED_ARCHIVE_PROFILE, NATIVE31_ARCHIVE_PROFILE, SOURCE_OBSERVATION_ARCHIVE_PROFILE, AUXILIARY_ROWS_ARCHIVE_PROFILE, *BANK_SOURCE_CSV_ARCHIVE_PROFILES} and suffix == ".csv"
                        or profile in EVIDENCE_ARCHIVE_PROFILES and suffix in {".csv", ".txt", ".tsv", ".xlsx"}
                        or profile in XLS_EVIDENCE_ARCHIVE_PROFILES and suffix == ".xls")
@@ -2382,8 +2621,10 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
             raise TableImportError("临时CSV解码与来源或规则不匹配")
         sheets = decoded_csv.take(raw, suffix, profile)
     else:
-        sheets = _excel(raw, suffix) if suffix in {".xlsx", ".xls"} else _csv(raw, suffix, profile)
-    declares_events, closed_bank = _declared_table_layouts(sheets, profile) if auto_event_profile else (False, False)
+        sheets = _excel(raw, suffix, mark_errors=use_tiered) if suffix in {".xlsx", ".xls"} else _csv(raw, suffix, profile)
+    tiered_by_sheet = {sheet["path"]: _potential_tiers(sheet["rows"]) for sheet in sheets} if use_tiered else {}
+    declares_events, closed_bank = (_declared_table_layouts(sheets, profile, tiered_by_sheet)
+                                   if auto_event_profile else (False, False))
     if declares_events:
         profile = (VOUCHER_REFERENCE_EVIDENCE_PROFILE if profile == VOUCHER_REFERENCE_PROFILE else
                    SOURCE_OBSERVATION_EVIDENCE_PROFILE if profile == SOURCE_OBSERVATION_PROFILE else
@@ -2410,7 +2651,7 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
         # CSV with the exact selected format, without materializing cells again.
         # This operation-local hint never enters documents or persisted notes.
         plan["_csv_format"] = {key: sheets[0][key] for key in ("encoding", "delimiter")}
-    sign_contracts = _source_sign_contracts(sheets, profile)
+    sign_contracts = _source_sign_contracts(sheets, profile, tiered_by_sheet)
     selected = False
     for sheet in sheets:
         raw_rows = sheet["rows"]
@@ -2418,18 +2659,29 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
             if profile in EVIDENCE_PROFILES:
                 raw_rows.clear()
             continue
-        header_no, _, _ = _locate_header(raw_rows, profile)
+        tiers, orphans = tiered_by_sheet.get(sheet["path"], ({}, {}))
+        header_no, initial_tier = _initial_region(raw_rows, profile, tiers)
         headers = raw_rows[header_no] if header_no is not None else []
         candidates, labels, actual_mode, current_mapping, region_error, active_reference_policy = _region(
             headers, mode, mapping, strict=True, reference_policy=reference_policy,
-            voucher_reference=voucher_reference, profile=profile)
+            voucher_reference=voucher_reference, profile=profile, tiered_proof=initial_tier)
+        if initial_tier is not None:
+            plan["profile"] = _TIERED_SUCCESSORS[profile]
+        last_mentions = {}
+        direction_book = (_region_codebook(raw_rows, header_no + 1, headers, candidates, tiers, orphans, profile, last_mentions)
+                          if use_tiered and header_no is not None and region_error is None else None)
+        if direction_book is not None:
+            plan["profile"] = _TIERED_SUCCESSORS[profile]
+        tier_binding = (table_tiered_headers.binding(initial_tier)
+                        if initial_tier is not None and initial_tier["status"] == "verified" else None)
         source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
         header_names, feedback_header_names = _region_row_headers(headers, profile)
         if not selected and header_no is not None:
             plan.update(mode=actual_mode or "B", mapping=current_mapping, columns=labels)
             selected = True
-        plan["mapping_evidence"].extend(_region_evidence(headers, candidates, labels, sheet["path"], header_no + 1 if header_no is not None else None))
-        document = {"member_path": sheet["path"], "sheet": sheet["name"], "header_row": header_no + 1 if header_no is not None else None, "header_rows": [header_no + 1] if header_no is not None else [], "columns": labels, "mapping": current_mapping, "mode": actual_mode or "", "source_rows": len(raw_rows), "row_count": len(raw_rows) - (1 if header_no is not None else 0)}
+        plan["mapping_evidence"].extend(_region_evidence(headers, candidates, labels, sheet["path"],
+                                                        header_no + 1 if header_no is not None else None, direction_book))
+        document = {"member_path": sheet["path"], "sheet": sheet["name"], "header_row": header_no + 1 if header_no is not None else None, "header_rows": [], "columns": labels, "mapping": current_mapping, "mode": actual_mode or "", "source_rows": len(raw_rows), "row_count": len(raw_rows) - (1 if header_no is not None else 0)}
         if any(item.get("reference_profile") == BANK_FEEDBACK_28_REFERENCE_PROFILE for item in candidates.get("trade_no", [])):
             document.update(reference_profile=BANK_FEEDBACK_28_REFERENCE_PROFILE,
                             source_text_profile="bank-feedback28-summary-remark-v1")
@@ -2447,30 +2699,75 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
         plan["documents"].append(document)
         member_count = 0
         ambiguous_layouts = {}
+        pending_leaf = None
+        recorded_code_issue = False
         for index, row in enumerate(raw_rows, start=1):
+            tier_boundary = (_tier_boundary(raw_rows, index, tiers, candidates)
+                             if header_no is not None and index > header_no + 1 and index != pending_leaf else None)
+            orphan_boundary = _orphan_tier_boundary(row, orphans.get(index), candidates) if index != pending_leaf else None
             if profile in EVIDENCE_PROFILES or profile in {SOURCE_OBSERVATION_ARCHIVE_PROFILE, AUXILIARY_ROWS_ARCHIVE_PROFILE, *BANK_SOURCE_CSV_ARCHIVE_PROFILES}:
                 # A source row is consumed once. Keep the active header object,
                 # but release processed cells as the immutable plan is built.
                 raw_rows[index - 1] = None
             if header_no is not None and index == header_no + 1:
+                document["header_rows"].append(index)
                 continue
             number = len(plan["records"]) + 1
             key = record_key(sheet["path"], sheet["sha256"], index)
             details = {"sheet": sheet["name"], "source_row": str(index), "financial_effect": "not_a_flow"}
             result, own_side = None, ""
             observation = None
-            if not any(_cell_present(value) for value in row):
+            if initial_tier is not None and index == initial_tier["parent_row"]:
+                disposition, reason = "non_transaction", table_tiered_headers.PARENT_REASON
+                details[table_tiered_headers.PROOF_FIELD] = table_tiered_headers.encode(initial_tier)
+            elif index == pending_leaf:
+                disposition, reason = "non_transaction", "repeated_header"
+                pending_leaf = None
+            elif tier_boundary is not None:
+                headers = raw_rows[index]
+                candidates, labels, actual_mode, current_mapping, region_error, active_reference_policy = _region(
+                    headers, mode, mapping, strict=False, reference_policy=reference_policy,
+                    voucher_reference=voucher_reference, profile=profile, tiered_proof=tier_boundary)
+                source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
+                header_names, feedback_header_names = _region_row_headers(headers, profile)
+                pending_leaf = index + 1
+                document["header_rows"].append(pending_leaf)
+                direction_book = (_region_codebook(raw_rows, pending_leaf, headers, candidates, tiers, orphans, profile, last_mentions)
+                                  if region_error is None else None)
+                plan["mapping_evidence"].extend(_region_evidence(headers, candidates, labels, sheet["path"], pending_leaf, direction_book))
+                recorded_code_issue = False
+                ambiguous_layouts.clear()
+                tier_binding = (table_tiered_headers.binding(tier_boundary)
+                                if tier_boundary["status"] == "verified" else None)
+                disposition, reason = "non_transaction", table_tiered_headers.PARENT_REASON
+                details[table_tiered_headers.PROOF_FIELD] = table_tiered_headers.encode(tier_boundary)
+                plan["profile"] = _TIERED_SUCCESSORS[profile]
+            elif orphan_boundary is not None:
+                disposition, reason = "unresolved", "ambiguous_region_header"
+                details.update(financial_effect="undetermined", validation_issues=reason)
+                details[table_tiered_headers.LEAF_PROOF_FIELD] = table_tiered_headers.encode(orphan_boundary)
+                document["header_rows"].append(index)
+                plan["profile"] = _TIERED_SUCCESSORS[profile]
+                if header_no is None or index > header_no + 1:
+                    _remember_layout(ambiguous_layouts, candidates)
+                    direction_book = None
+                    tier_binding = None
+            elif not any(_cell_present(value) for value in row):
                 disposition, reason = "non_transaction", "blank_record"
             elif header_no is not None and index < header_no + 1:
                 disposition, reason = "auxiliary", "preamble"
             elif header_no is None:
-                disposition, reason = "unresolved", "unknown_table"
+                disposition, reason = "unresolved", "ambiguous_region_header" if ambiguous_layouts else "unknown_table"
                 details["financial_effect"] = "undetermined"
+                if ambiguous_layouts:
+                    details["validation_issues"] = reason
             elif _overlapping_header(row, candidates, profile):
                 _remember_layout(ambiguous_layouts, candidates)
                 _remember_layout(ambiguous_layouts, _candidates(row, profile))
                 disposition, reason = "unresolved", "ambiguous_region_header"
                 details.update(financial_effect="undetermined", validation_issues=reason)
+                direction_book = None
+                tier_binding = None
             elif ((ambiguous_layouts and _unmistakable_header(row, profile, ambiguous_layouts))
                   or not ambiguous_layouts and _later_header(row, candidates, profile)):
                 ambiguous_layouts.clear()
@@ -2480,8 +2777,14 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                     voucher_reference=voucher_reference, profile=profile)
                 source_contract = table_contracts.compile_contract(candidates) if profile in CONTRACT_PROFILES else None
                 header_names, feedback_header_names = _region_row_headers(headers, profile)
+                direction_book = (_region_codebook(raw_rows, index, headers, candidates, tiers, orphans, profile, last_mentions)
+                                  if use_tiered and region_error is None else None)
+                if direction_book is not None:
+                    plan["profile"] = _TIERED_SUCCESSORS[profile]
+                recorded_code_issue = False
+                tier_binding = None
                 document["header_rows"].append(index)
-                plan["mapping_evidence"].extend(_region_evidence(headers, candidates, labels, sheet["path"], index))
+                plan["mapping_evidence"].extend(_region_evidence(headers, candidates, labels, sheet["path"], index, direction_book))
                 disposition, reason = "non_transaction", "repeated_header"
             elif ambiguous_layouts:
                 found = _candidates(row, profile)
@@ -2499,8 +2802,14 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                 interpreter = _interpret_candidates if profile in ROLE_PROFILES else _interpret
                 row_candidates, row_reference_policy = _typed_native_references(row, candidates, active_reference_policy)
                 row_candidates = _row_time_declaration(row, row_candidates)
+                if tier_binding is not None:
+                    details[table_tiered_headers.BINDING_FIELD] = tier_binding
+                if direction_book is not None:
+                    row_candidates = {**row_candidates, "direction": [
+                        {**row_candidates["direction"][0], "direction_code_context": direction_book}]}
                 result, disposition, reason, parsed_details = interpreter(
-                    row, row_candidates, actual_mode, reference_policy=row_reference_policy, financial=profile in FINANCIAL_PROFILES, source_contract=source_contract, source_roles=profile in SOURCE_ROLE_PROFILES, retain_endpoint_role=profile in EVIDENCE_PROFILES, sign_contract=sign_contracts.get(sheet["path"]), source_ledger=profile in SOURCE_LEDGER_PROFILES)
+                    row, row_candidates, actual_mode, reference_policy=row_reference_policy, financial=profile in FINANCIAL_PROFILES, source_contract=source_contract, source_roles=profile in SOURCE_ROLE_PROFILES, retain_endpoint_role=profile in EVIDENCE_PROFILES,
+                    sign_contract=sign_contracts.get(sheet["path"]), source_ledger=profile in SOURCE_LEDGER_PROFILES)
                 if (profile in VOUCHER_REFERENCE_PROFILES and row_reference_policy is None
                         and reason == "conflicting_field" and not plan.get("_reference_choice_conflict")):
                     # This only offers a preview choice. An unrelated identity
@@ -2556,8 +2865,17 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                     details.update(source_contract.details())
                 if (profile in FINANCIAL_PROFILES and disposition == "unresolved"
                         and FINANCIAL_VALIDATION_ISSUES.intersection(parsed_details.get("validation_issues", "").split(","))
-                        and any(item.get("basis") in {"explicit_financial_header", "explicit_source_contract", "explicit_time_format"} for items in candidates.values() for item in items)):
+                        and any(item.get("basis") in {"explicit_financial_header", "explicit_source_contract", "explicit_time_format", "verified_region_header"}
+                                for items in candidates.values() for item in items)):
                     details["validation_basis"] = FINANCIAL_CONFLICT_BASIS
+            if direction_book is not None:
+                declaration = direction_book.get("proof")
+                if declaration is not None and declaration["declaration_row"] == index:
+                    details[table_sign_declarations.DIRECTION_CODE_FIELD] = table_tiered_headers.encode(declaration)
+                elif (not recorded_code_issue and "error" in direction_book
+                      and reason not in {"blank_record", "preamble", "repeated_header", table_tiered_headers.PARENT_REASON}):
+                    details[table_tiered_headers.CODE_ISSUE_FIELD] = direction_book["error"]
+                    recorded_code_issue = True
             if source_contract and reason == "ambiguous_region_header":
                 details.update(source_contract.details())
             details["reason"] = REASONS[reason]
@@ -2633,6 +2951,8 @@ def _parse(source, *, suffix, mode=None, mapping=None, reference_policy=None, vo
                 plan["rows"].append(result)
             member_count += 1
         plan["members"].append({"member_path": sheet["path"], "role": "table", "sha256": sheet["sha256"], "size_bytes": sheet["size"], "encoding": sheet["encoding"], "row_count": member_count})
+    if pinned_tiered and plan["profile"] not in TIERED_PROFILES:
+        raise TableImportError("映射未保留已登记的两层表头或收付方向码依据，请重新预览")
     if not defer_occurrence_binding and profile in EVIDENCE_PROFILES | SOURCE_OBSERVATION_PROFILES:
         from . import evidence_resolution
         if profile in EVIDENCE_PROFILES:

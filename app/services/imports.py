@@ -256,7 +256,7 @@ def _accounts(rows):
 
 
 def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=None, table_profile=None,
-           reference_policy=None, _auto_event_profile=False):
+           reference_policy=None, _auto_event_profile=False, _detect_tiered=False):
     # Never retain a previous large preview beside a newly parsed plan.
     import_preview_cache.discard()
     try:
@@ -270,6 +270,7 @@ def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=Non
             plan = (table_archive.parse(source, profile=table_profile, _stage=True, _operation_scopes=True) if table_profile in table_archive.SUPPORTED_PROFILES
                     else table_import.parse(source, suffix=suffix, mode=mode, mapping=mapping,
                                             profile=table_profile,
+                                            _detect_tiered=_detect_tiered,
                                             voucher_reference=reference_policy is not None,
                                             **({"_auto_event_profile": True} if _auto_event_profile else {})))
             try:
@@ -865,7 +866,10 @@ def _table_summary(plan):
 
 
 def _table_profile(session):
-    profile = json.loads(session.get("request_json") or "{}").get("_table_profile", importer.PARSER_VERSION)
+    request = json.loads(session.get("request_json") or "{}")
+    if "_header_plan" in request:
+        raise ServiceError(400, "invalid_table_file", "来源表头规则不受支持，请重新上传预览")
+    profile = request.get("_table_profile", importer.PARSER_VERSION)
     if profile not in (importer.PARSER_VERSION, *table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
         raise ServiceError(400, "invalid_table_file", "来源解析规则不受支持，请重新上传预览")
     return profile
@@ -1022,7 +1026,8 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
                          if suffix in {".zip", ".rar"} else table_import.VOUCHER_REFERENCE_XLS_PROFILE if suffix == ".xls" else table_import.VOUCHER_REFERENCE_EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
         parsed = _parse(source, suffix=suffix, table_profile=table_profile,
                         feedback_profile=feedback_import.MICROSECOND_EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None,
-                        _auto_event_profile=table_profile in table_import.CLOSED_BANK_SUCCESSORS)
+                        _auto_event_profile=table_profile in table_import.CLOSED_BANK_SUCCESSORS,
+                        _detect_tiered=suffix in {".csv", ".tsv", ".txt", ".xlsx", ".xls"})
         if cancelled.is_set():
             raise _PreviewCancelled()
         import_id = uuid.uuid4().hex
