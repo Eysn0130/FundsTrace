@@ -71,6 +71,14 @@
         event.stopImmediatePropagation(); return;
       }
       if (event.key === 'Escape' && !event.isComposing) {
+        if (top.id === 'ctxModal') {
+          const disclosure = top.querySelector('#ctxAnchor details[open]');
+          if (disclosure) {
+            event.preventDefault(); event.stopImmediatePropagation();
+            disclosure.open = false; disclosure.querySelector('summary').focus();
+            return;
+          }
+        }
         event.preventDefault(); event.stopImmediatePropagation(); document.getElementById(closeIds[top.id])?.click(); return;
       }
       if (event.key !== 'Tab') return;

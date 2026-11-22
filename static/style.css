@@ -1223,6 +1223,28 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 .context-party > b { color: var(--text-primary); font-size: 14px; line-height: 20px; font-weight: 650; overflow-wrap: anywhere; }
 .context-party > .mono { font-size: 12px; overflow-wrap: anywhere; }
 .context-links { display: grid; gap: 9px; min-width: 0; }
+.context-relation-tools { display: grid; justify-items: stretch; gap: 4px; min-width: 0; }
+.context-relation-tools > button { justify-self: center; }
+.context-line-settings { position: relative; }
+.context-line-settings > summary { list-style: none; cursor: pointer; border-radius: 4px; }
+.context-line-settings > summary::-webkit-details-marker { display: none; }
+.context-line-caption { display: grid; gap: 1px; }
+.context-line-caption small { max-width: 100%; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.context-line-options {
+  position: absolute; z-index: 4; inset-block-start: calc(100% + 7px); inset-inline-start: 50%;
+  transform: translateX(-50%); width: min(238px, calc(100vw - 28px)); padding: 10px;
+  color: var(--text-primary); background: var(--surface-raised); border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius); box-shadow: 0 10px 26px var(--shadow-color); font-size: 12px;
+}
+.context-line-options fieldset { display: flex; flex-wrap: wrap; gap: 4px 9px; margin: 0 0 6px; padding: 3px 5px; border: 1px solid var(--border); }
+.context-line-options legend { color: var(--muted); }
+.context-line-options label { display: flex; align-items: center; gap: 4px; }
+.context-line-options select { margin: 2px 0; color: var(--text-primary); background: var(--context-control); }
+.context-line-totals { display: grid; margin: 5px 0 0; gap: 4px; }
+.context-line-totals div { display: flex; justify-content: space-between; gap: 6px; }
+.context-line-totals dd { margin: 0; color: var(--money-text); }
+.context-account-group + .context-account-group { margin-top: 4px; border-block-start: 1px solid var(--border); }
+.context-cardset-panel .context-account-filter { color: var(--text-primary); }
 .context-fund-line { display: flex; flex-direction: column; gap: 8px; min-width: 0; text-align: center; }
 .context-fund-line.reverse { flex-direction: column-reverse; }
 .context-fund-line b { color: var(--text-primary); font-size: 12px; line-height: 18px; font-weight: 500; overflow-wrap: anywhere; }

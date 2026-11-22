@@ -4692,6 +4692,10 @@ function bindEdgeWorkspaceUI() {
     if (button.id === 'edgeReview') {
       const reversed = workspace.view.index?.edgeByKey?.get(edgeKey({ source: workspace.target, target: workspace.source }));
       const reverseIds = workspace.source !== workspace.target && reversed?.kind !== 'source_ledger' ? reversed?.ids || [] : [];
+      if (workspace.ids.length > 1024 || reverseIds.length > 1024) {
+        toast('该关系超过单次核对上限，请先缩小画布筛选范围。');
+        return;
+      }
       closeEdgeMenu(false);
       void openContext(null, { view: workspace.view, revision: workspace.revision,
         source: workspace.source, target: workspace.target, forward_ids: workspace.ids.map(String),
@@ -4818,10 +4822,11 @@ function syncContextSelection() {
   contextTableScroll?.sync();
 }
 
-async function openContext(flowId, edge = null) {
+async function openContext(flowId, edge = null, parentEdge = null) {
   revokeContext(state.ctx?.context, state.ctx?.data?.review?.token);
   const x = Math.max(1, Math.min(50, Math.floor(Number($('#ctxX').value) || 5)));
-  state.ctx = { flowId, edge, x, mode: 'all', start: '', end: '', cards: { payer: new Set(), payee: new Set() },
+  state.ctx = { flowId, edge, parentEdge, x, mode: 'all', start: '', end: '', cards: { payer: new Set(), payee: new Set() },
+    lineOptions: { dual: true, time: false, remark: false, summary: false, format: 'short' },
     phase: 'loading', closed: false };
   $('#ctxX').value = x; $('#ctxStart').value = ''; $('#ctxEnd').value = '';
   $('#ctxCaseName').textContent = state.cases.find(item => item.id === state.caseId)?.name || `案件 ${state.caseId}`;
@@ -4867,14 +4872,28 @@ async function loadContext() {
   renderContext();
 }
 
-function contextFundsMarkup(directions) {
-  const line = (direction, description) => {
-    const funds = directions?.[direction];
-    return `<div class="context-fund-line ${direction}">
-      <b><span class="sr-only">${description}</span>${esc(window.FundsFacts?.displayCount(funds) || '笔数待核')} <span>${esc(window.FundsFacts?.displayTotals(funds) || '金额待核')}</span></b>
-      <span class="context-line" aria-hidden="true"></span></div>`;
+function contextLineTime(times, format) {
+  if (!times?.length) return '—';
+  const formatStamp = stamp => {
+    const text = fmtTime(stamp);
+    const iso = /^(\d{4})-(\d{2})-(\d{2})(.*)$/.exec(text);
+    if (!iso) return text;
+    return `${iso[1]}年${iso[2]}月${iso[3]}日${format === 'long' ? iso[4] : ''}`;
   };
-  return line('forward', '左侧至右侧') + line('reverse', '右侧至左侧');
+  return [...new Set(times.map(formatStamp))].join(' – ');
+}
+
+function contextFundsMarkup(directions, options = {}, aggregate = true) {
+  const line = (direction, description) => {
+    const funds = directions?.[direction], meta = directions?.annotations?.[direction];
+    const time = options.time ? `<small>${esc(contextLineTime(meta?.times, options.format))}</small>` : '';
+    const remark = options.remark ? `<small>备注 ${esc(meta?.remarks?.join(' / ') || '—')}</small>` : '';
+    const summary = options.summary ? `<small>摘要 ${esc(meta?.summaries?.join(' / ') || '—')}</small>` : '';
+    return `<span class="context-fund-line ${direction}">
+      <span class="context-line-caption"><b><span class="sr-only">${description}</span>${esc(window.FundsFacts?.displayCount(funds) || '笔数待核')} <span>${esc(window.FundsFacts?.displayTotals(funds) || '金额待核')}</span></b>
+      ${time}${remark}${summary}</span><span class="context-line" aria-hidden="true"></span></span>`;
+  };
+  return line('forward', '左侧至右侧') + (aggregate && options.dual !== false ? line('reverse', '右侧至左侧') : '');
 }
 
 function contextAccount(row, role) {
@@ -4882,19 +4901,57 @@ function contextAccount(row, role) {
 }
 
 function renderContextRelation(value) {
-  const a = value.anchor;
+  const a = value.anchor, selection = state.ctx;
+  selection.lineFunds = value.review.directional_funds;
   const side = role => {
     const cards = value.review.cards?.[role] || [];
+    const accounts = new Map();
+    for (const card of cards) {
+      if (!accounts.has(card.account)) accounts.set(card.account, []);
+      accounts.get(card.account).push(card);
+    }
+    const options = [...accounts].map(([account, members]) => `<div class="context-account-group">
+      ${account && members.length > 1 ? `<label class="context-account-filter"><input type="checkbox" data-context-account="${esc(members.map(item => item.id).join(','))}"><b>${esc(account)}</b></label>` : ''}
+      ${members.map(card => `<label><input type="checkbox" data-context-card value="${esc(card.id)}" data-label="${esc(card.card || card.account)}">
+        <span>${esc(card.card || card.account)}${card.card && card.account ? `<small>${esc(card.account)}</small>` : ''}</span></label>`).join('')}</div>`).join('');
     return `<div class="context-party ${role}"><span class="context-avatar" aria-hidden="true"></span>
       <b>${esc(a[role + '_name'] || '未提供户名')}</b>
       ${cards.length ? `<details class="context-cardset" data-side="${role}"><summary>卡号（合集）</summary>
         <div class="context-cardset-panel"><div class="context-card-tools">
           <button type="button" class="context-card-action" data-action="all">全选</button>
           <button type="button" class="context-card-action" data-action="clear">清除</button></div>
-        ${cards.map(card => `<label><input type="checkbox" value="${esc(card.id)}" data-label="${esc(card.card || card.account)}"><span>${esc(card.card || card.account)}${card.card && card.account ? `<small>${esc(card.account)}</small>` : ''}</span></label>`).join('')}</div></details>` :
+        ${options}</div></details>` :
         `<span class="mono">${esc(contextAccount(a, role))}</span>`}</div>`;
   };
-  $('#ctxAnchor').innerHTML = side('payer') + `<div class="context-links">${contextFundsMarkup(value.review.directional_funds)}</div>` + side('payee');
+  const aggregate = value.review.kind === 'edge';
+  $('#ctxAnchor').innerHTML = side('payer') + `<div class="context-relation-tools">
+    <details class="context-line-settings"><summary class="context-links" aria-label="关系线条设置">${contextFundsMarkup(selection.lineFunds, selection.lineOptions, aggregate)}</summary>
+      <div class="context-line-options">
+        ${aggregate ? `<fieldset><legend>连线方向</legend><label><input type="radio" name="ctx-lines-direction" data-line-option="dual" value="no">单向</label>
+          <label><input type="radio" name="ctx-lines-direction" data-line-option="dual" value="yes" checked>双向</label></fieldset>` : ''}
+        <fieldset><legend>连线显示内容</legend>
+          <label><input type="checkbox" data-line-option="time">时间</label>
+          <label><input type="checkbox" data-line-option="remark">备注</label>
+          <label><input type="checkbox" data-line-option="summary">摘要</label>
+          <select data-line-option="format" aria-label="时间格式" disabled><option value="short">短时间</option><option value="long">长时间</option></select>
+        </fieldset>
+        ${aggregate ? '<dl id="ctxLineTotals" class="context-line-totals"></dl>' : ''}
+      </div></details>
+    ${selection.parentEdge ? '<button type="button" class="context-card-action" id="ctxReturnEdge">返回汇总边</button>' : ''}</div>` + side('payee');
+  renderContextLines(selection);
+}
+
+function renderContextLines(selection) {
+  const links = $('#ctxAnchor .context-links');
+  if (!links) return;
+  const funds = selection.lineFunds;
+  links.innerHTML = contextFundsMarkup(funds, selection.lineOptions, selection.data.review.kind === 'edge');
+  const totals = $('#ctxLineTotals'), amount = funds?.totals;
+  if (totals) {
+    const direction = {forward:'左 → 右', reverse:'右 → 左', balanced:'持平'}[amount?.direction];
+    totals.innerHTML = `<div><dt>总额</dt><dd>${amount ? moneyHtml(amount.total, amount.currency) : '待核'}</dd></div>
+      <div><dt>净值</dt><dd>${amount ? esc(direction) + ' ' + moneyHtml(amount.net, amount.currency) : '待核'}</dd></div>`;
+  }
 }
 
 async function refreshContextFunds(selection) {
@@ -4904,14 +4961,15 @@ async function refreshContextFunds(selection) {
   const current = () => contextIsCurrent(selection, selection.context) && contextEdgeIsCurrent(selection)
     && selection.fundsRequest === sequence && links.isConnected;
   if (!selection.start && !selection.end && !Object.values(selection.cards || {}).some(items => items.size)) {
-    links.innerHTML = contextFundsMarkup(selection.data.review.directional_funds);
+    selection.lineFunds = selection.data.review.directional_funds;
+    renderContextLines(selection);
     return;
   }
+  selection.lineFunds = null;
+  renderContextLines(selection);
   if (contextRangeInvalid(selection.start, selection.end)) {
-    links.innerHTML = contextFundsMarkup(null);
     return;
   }
-  links.innerHTML = contextFundsMarkup(null);
   try {
     const { caseId, canvasId } = selection.context;
     const result = await api('/api/context/summary', {
@@ -4919,7 +4977,7 @@ async function refreshContextFunds(selection) {
       body: JSON.stringify({ case_id: caseId, canvas_id: canvasId || 0,
         flow_ids: visibleContextRows({ ...selection, mode: 'all' }).map(row => String(row.id)) }),
     });
-    if (current()) links.innerHTML = contextFundsMarkup(result);
+    if (current()) { selection.lineFunds = result; renderContextLines(selection); }
   } catch (_) {
     if (current()) $('#ctxTrackStatus').textContent = '连线范围暂无法核证，请重新打开核对。';
   }
@@ -5093,19 +5151,57 @@ function bindContextUI() {
   }
   function applyCards(group) {
     if (!editable() || !group) return;
-    const selected = [...group.querySelectorAll('input:checked')];
+    const selected = [...group.querySelectorAll('[data-context-card]:checked')];
     state.ctx.cards[group.dataset.side] = new Set(selected.map(input => input.value));
+    for (const input of group.querySelectorAll('[data-context-account]')) {
+      const ids = input.dataset.contextAccount.split(',');
+      const selectedCount = ids.filter(id => state.ctx.cards[group.dataset.side].has(id)).length;
+      input.checked = selectedCount === ids.length;
+      input.indeterminate = selectedCount > 0 && selectedCount < ids.length;
+    }
     group.querySelector('summary').textContent = selected.length === 1 ? selected[0].dataset.label
       : selected.length ? `已选 ${selected.length} 项` : '卡号（合集）';
     filter({}, true);
   }
-  $('#ctxAnchor').addEventListener('change', event => applyCards(event.target.closest?.('.context-cardset')));
+  const relation = $('#ctxAnchor');
+  relation.addEventListener('change', event => {
+    if (!editable()) return;
+    const input = event.target, field = input.dataset.lineOption;
+    if (field) {
+      const options = state.ctx.lineOptions;
+      options[field] = field === 'dual' ? input.value === 'yes' : field === 'format' ? input.value : input.checked;
+      relation.querySelector('[data-line-option="format"]').disabled = !options.time;
+      renderContextLines(state.ctx);
+      return;
+    }
+    const group = input.closest?.('.context-cardset');
+    if (input.dataset.contextAccount && group) {
+      const ids = new Set(input.dataset.contextAccount.split(','));
+      group.querySelectorAll('[data-context-card]').forEach(card => {
+        if (ids.has(card.value)) card.checked = input.checked;
+      });
+    }
+    if (group) applyCards(group);
+  });
   $('#ctxAnchor').addEventListener('click', event => {
+    if (event.target.closest?.('#ctxReturnEdge') && editable() && state.ctx.parentEdge) {
+      const edge = state.ctx.parentEdge;
+      if (!contextEdgeIsCurrent({ edge })) {
+        $('#ctxTrackStatus').textContent = '汇总边已更新，请从画布重新打开核对。';
+        return;
+      }
+      return openContext(null, edge);
+    }
     const action = event.target.closest?.('.context-card-action');
-    if (!action || !editable()) return;
+    if (!action?.dataset.action || !editable()) return;
     const group = action.closest('.context-cardset');
-    group.querySelectorAll('input').forEach(input => { input.checked = action.dataset.action === 'all'; });
+    group.querySelectorAll('[data-context-card]').forEach(input => { input.checked = action.dataset.action === 'all'; });
     applyCards(group);
+  });
+  $('#ctxModal').addEventListener('pointerdown', event => {
+    relation.querySelectorAll('details[open]').forEach(details => {
+      if (!details.contains(event.target)) details.open = false;
+    });
   });
   $('#ctxX').onchange = () => {
     if (!state.ctx || state.ctx.closed || state.ctx.phase === 'tracking') return;
@@ -5128,7 +5224,7 @@ function bindContextUI() {
     detail.button.focus({ preventScroll: true });
   };
   $('#ctxTraceThis').onclick = () => {
-    if (state.ctx?.detail && editable()) return openContext(state.ctx.detail.id);
+    if (state.ctx?.detail && editable()) return openContext(state.ctx.detail.id, null, state.ctx.edge || state.ctx.parentEdge);
   };
   contextTableScroll = bindTableHorizontalScroll({ viewport: $('#ctxTableScroll'), range: $('#ctxHorizontalPosition'),
     left: $('#ctxScrollLeft'), right: $('#ctxScrollRight'), table: $('#ctxTable') });

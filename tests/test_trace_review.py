@@ -216,6 +216,8 @@ def test_canvas_edge_opens_unanchored_and_uses_only_selected_direction_members(c
     funds = result["review"]["directional_funds"]
     assert funds["forward"]["totals"][0]["amount"] == "8000.00"
     assert funds["reverse"]["totals"][0]["amount"] == "2100.00"
+    assert funds["totals"] == {"currency": "CNY", "total": "10100.00", "net": "5900.00", "direction": "forward"}
+    assert funds["annotations"]["forward"]["times"][0].startswith("2026-01-02")
     assert all(row.get("context_relation") != "anchor" and not row["review_roles"] for row in result["rows"])
     assert not any(row["trade_no"] == "SYN-OUTSIDE" for row in result["rows"])
     mirrors = [row for row in result["rows"] if row.get("pair_badge") == "pending"]
@@ -236,6 +238,9 @@ def test_canvas_edge_opens_unanchored_and_uses_only_selected_direction_members(c
     assert len(original.json()["originals"]) == 1
     invalid = client.post("/api/context/edge", json={**payload, "forward_ids": [mirrors[0]["id"]]})
     assert invalid.status_code == 409
-    assert client.request("DELETE", "/api/track", json={"case_id": cid, "flow_ids": payload["forward_ids"]}).status_code == 200
+    # A new canvas member invalidates the frozen review even if the original
+    # two directions are still tracked and source evidence has not changed.
+    track(client, cid, [mirrors[0]])
+    assert graph(client, cid)["analysis_revision"] == payload["analysis_revision"]
     stale = client.post("/api/context/summary", json={"case_id": cid, "flow_ids": []}, headers=headers)
     assert stale.status_code == 409

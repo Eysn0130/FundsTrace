@@ -1,5 +1,6 @@
 """Case-bound review of postings, candidate provenance and manual selection."""
 from dataclasses import dataclass
+from decimal import Decimal
 import csv
 import json
 from time import monotonic
@@ -22,7 +23,7 @@ class Review:
     revision: str
     flow_ids: frozenset[int]
     expires: float
-    edge_ids: frozenset[int]
+    canvas_membership: str | None
     directions: tuple[frozenset[int], frozenset[int]]
 
 
@@ -33,12 +34,18 @@ _VALID_FOR_SECONDS = 900
 _EDGE_RELATED_LIMIT = 500
 
 
-def _issue(case_id, canvas_id, anchor_id, revision, rows, forward, reverse, *, edge_ids=()):
+def _membership(case_id, canvas_id):
+    return db.q_raw("""select sha256(coalesce(string_agg(flow_id::varchar,',' order by flow_id),''))
+        as membership_digest from tracked_flows where case_id=? and canvas_id=?""",
+        [case_id, canvas_id])[0]["membership_digest"]
+
+
+def _issue(case_id, canvas_id, anchor_id, revision, rows, forward, reverse, *, from_edge=False):
     while len(_reviews) >= _MAX_OPEN:
         del _reviews[next(iter(_reviews))]
     token = uuid4().hex
     _reviews[token] = Review(case_id, canvas_id, anchor_id, revision, frozenset(rows),
-                             monotonic() + _VALID_FOR_SECONDS, frozenset(edge_ids),
+                             monotonic() + _VALID_FOR_SECONDS, _membership(case_id, canvas_id) if from_edge else None,
                              tuple(frozenset(row["id"] for row in direction) for direction in (forward, reverse)))
     return token
 
@@ -51,12 +58,8 @@ def _require(token, case_id, canvas_id, *, anchor_id=None):
         raise HTTPException(409, "核对窗口已失效，请重新打开核对")
     if analysis_snapshot.revision(case_id) != review.revision:
         raise HTTPException(409, "流水来源或关联已更新，请重新打开核对")
-    if review.edge_ids:
-        tracked = db.q_raw("""select count(*) total from tracked_flows
-            where case_id=? and canvas_id=? and flow_id in (select unnest(?::bigint[]))""",
-            [case_id, canvas_id, list(review.edge_ids)])[0]["total"]
-        if tracked != len(review.edge_ids):
-            raise HTTPException(409, "图谱上的关系成员已更新，请重新打开核对")
+    if review.canvas_membership is not None and _membership(case_id, canvas_id) != review.canvas_membership:
+        raise HTTPException(409, "图谱上的关系成员已更新，请重新打开核对")
     return review
 
 
@@ -77,9 +80,12 @@ def summary(token, case_id, canvas_id, flow_ids):
     selected = set(flow_ids)
     if not selected <= review.flow_ids:
         raise HTTPException(409, "核对窗口外的流水不能加入连线统计")
-    return {name: funds_projection.summary("""select * from effective_flows
-        where case_id=? and id in (select unnest(?::bigint[]))""", [case_id, list(selected & direction)])
-        for name, direction in zip(("forward", "reverse"), review.directions, strict=True)}
+    records = db.q("""select * from effective_flows where case_id=? and id in (select unnest(?::bigint[]))""",
+                   [case_id, list(selected & (review.directions[0] | review.directions[1]))])
+    rows = {row["id"]: row for row in records}
+    _decorate_rows(case_id, rows, {})
+    return _lines(case_id, [row for row in records if row["id"] in review.directions[0]],
+                  [row for row in records if row["id"] in review.directions[1]])
 
 
 def _ordered(rows):
@@ -215,6 +221,44 @@ def _wire_rows(rows):
     return [{**row, "id": str(row["id"])} for row in _ordered(rows.values())]
 
 
+def _line_evidence(case_id, rows):
+    canonical, funds = funds_projection.from_rows(case_id, rows)
+    confirmed = {row["fact_event_id"] for row in canonical if row["fact_status"] == "confirmed"}
+    members = event_resolution.members(case_id, [row["id"] for row in rows]) if confirmed else []
+    ids = {member["flow_id"] for member in members if member["event_id"] in confirmed}
+    proved = _ordered([row for row in rows if str(row["id"]) in ids])
+    stamps = [transaction_time.text(row["trade_time"]) for row in proved if row.get("trade_time")]
+    # Do not place a date-only or unqualified observation ahead of a clock in
+    # a different basis. The source dates remain available in each record.
+    comparable = len({transaction_time.basis(row) for row in proved if row.get("trade_time")}) <= 1
+    notes = [row.get("review_fields", {}).get("remark") for row in proved]
+    summaries = [row.get("summary") for row in proved]
+    return funds, {"times": [stamps[0], stamps[-1]] if stamps and comparable else [],
+                   "remarks": list(dict.fromkeys(filter(None, notes)))[:6],
+                   "summaries": list(dict.fromkeys(filter(None, summaries)))[:6]}
+
+
+def _line_totals(forward, reverse):
+    if any(funds["status"] != "exact" or len(funds["totals"]) > 1 for funds in (forward, reverse)):
+        return None
+    totals = [item for funds in (forward, reverse) for item in funds["totals"]]
+    currencies = {item["currency"] for item in totals}
+    if len(currencies) != 1 or None in currencies or any(item["amount"] is None for item in totals):
+        return None
+    front = Decimal(forward["totals"][0]["amount"]) if forward["totals"] else Decimal(0)
+    back = Decimal(reverse["totals"][0]["amount"]) if reverse["totals"] else Decimal(0)
+    return {"currency": currencies.pop(), "total": f"{front + back:.2f}", "net": f"{abs(front - back):.2f}",
+            "direction": "forward" if front > back else "reverse" if front < back else "balanced"}
+
+
+def _lines(case_id, forward, reverse):
+    out, out_details = _line_evidence(case_id, forward)
+    incoming, in_details = _line_evidence(case_id, reverse)
+    return {"forward": out, "reverse": incoming,
+            "annotations": {"forward": out_details, "reverse": in_details},
+            "totals": _line_totals(out, incoming)}
+
+
 def _basis(observed, role):
     stamps = list(dict.fromkeys(transaction_time.text(row["trade_time"]) for row in observed))
     # The same day can be read in the table. Keep explicit dates across days.
@@ -303,15 +347,11 @@ def read(case_id, canvas_id, anchor_id, count, first, context_reader, score, *, 
     _decorate_rows(case_id, rows, roles)
     anchor["context_relation"] = "anchor"
 
-    # The two lines show a bounded relationship selection, with the same
-    # projection as other funds displays. Unknown/ranges survive aggregation.
     payer, payee = anchor.get("payer_account"), anchor.get("payee_account")
-    forward = [row for row in rows.values() if not row.get("source_ledger")
-               and (row.get("payer_account"), row.get("payee_account")) == (payer, payee)]
-    reverse = [row for row in rows.values() if payer != payee and not row.get("source_ledger")
-               and (row.get("payer_account"), row.get("payee_account")) == (payee, payer)]
-    directional_funds = {"forward": funds_projection.from_rows(case_id, forward)[1],
-                         "reverse": funds_projection.from_rows(case_id, reverse)[1]}
+    selected = {str(anchor_id), *(pair["candidate_ids"] if pair["status"] == "confirmed" else [])}
+    forward = [row for row in rows.values() if not row.get("source_ledger") and str(row["id"]) in selected]
+    reverse = []
+    directional_funds = _lines(case_id, forward, reverse)
 
     cards = _cards(rows, payer, payee)
     token = _issue(case_id, canvas_id, anchor_id, first["analysis_revision"], rows, forward, reverse)
@@ -376,8 +416,7 @@ def edge(body, context_reader, score):
     _edge_pair_badges(case_id, rows)
     front_money = [row for row in forward if not row.get("source_ledger")]
     back_money = [row for row in reverse if not row.get("source_ledger")]
-    directional_funds = {"forward": funds_projection.from_rows(case_id, front_money)[1],
-                         "reverse": funds_projection.from_rows(case_id, back_money)[1]}
+    directional_funds = _lines(case_id, front_money, back_money)
 
     reference = None
     suggestions = {"sources": [], "targets": []}
@@ -393,7 +432,7 @@ def edge(body, context_reader, score):
             suggestions = {key: [item for item in items if set(item["ids"]) <= eligible] for key, items in proposals.items()}
 
     cards = _cards(rows, left, right)
-    token = _issue(case_id, canvas_id, 0, revision, rows, front_money, back_money, edge_ids=edge_ids)
+    token = _issue(case_id, canvas_id, 0, revision, rows, front_money, back_money, from_edge=True)
     return {"anchor": {**forward[0], "id": None}, "analysis_revision": revision, "rows": _wire_rows(rows),
             "ordering": {"status": "partial" if limited else "ok", "reasons": ["edge_context_limit"] if limited else []},
             "suggestions": suggestions, "review": {"token": token, "kind": "edge", "reference": reference, "cards": cards,
