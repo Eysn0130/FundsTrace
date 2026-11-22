@@ -503,6 +503,34 @@ def members(case_id, flow_ids=None):
     return [{**row, "flow_id": str(row["flow_id"])} for row in rows]
 
 
+def _voucher_candidates(case_id, flow_id, limit):
+    """An explicitly typed voucher can find peers in its own source region."""
+    return db.q_raw(r"""with keys as (
+        select r.source_id, r.member_path,
+            json_extract_string(json_extract_string(r.details_json,'$.source_ledger_evidence'),'$.header_scope') region,
+            json_extract_string(cell,'$.column_index') column_no,
+            regexp_replace(json_extract_string(cell,'$.raw'),'^[\s\p{Zs}]+|[\s\p{Zs}]+$','','g') voucher
+        from flow_sources fs join import_records r
+          on r.case_id=fs.case_id and r.source_id=fs.source_id and r.record_no=fs.source_row
+        join evidence_sources active on active.case_id=r.case_id and active.source_id=r.source_id and active.active
+        cross join unnest(try_cast(json_extract_string(r.details_json,'$.source_field_evidence') as json[])) e(cell)
+        where fs.case_id=? and fs.flow_id=? and r.disposition in ('imported','duplicate')
+          and json_extract_string(cell,'$.role')='independent_voucher_reference'
+    )
+    select distinct f.id
+    from keys k join import_records r on r.case_id=? and r.source_id=k.source_id and r.member_path=k.member_path
+    join flow_sources fs on fs.case_id=r.case_id and fs.source_id=r.source_id and fs.source_row=r.record_no
+    join effective_visible_flows f on f.case_id=fs.case_id and f.id=fs.flow_id
+    cross join unnest(try_cast(json_extract_string(r.details_json,'$.source_field_evidence') as json[])) e(cell)
+    where r.disposition in ('imported','duplicate') and f.id<>? and k.region is not null and k.region<>''
+      and regexp_matches(k.voucher,'[\p{L}\p{N}]') and lower(k.voucher) not in ('0','null','none','nan','n/a')
+      and json_extract_string(json_extract_string(r.details_json,'$.source_ledger_evidence'),'$.header_scope')=k.region
+      and json_extract_string(cell,'$.role')='independent_voucher_reference'
+      and json_extract_string(cell,'$.column_index')=k.column_no
+      and regexp_replace(json_extract_string(cell,'$.raw'),'^[\s\p{Zs}]+|[\s\p{Zs}]+$','','g')=k.voucher
+    order by f.id limit ?""", [case_id, flow_id, case_id, flow_id, limit])
+
+
 def review_pair(case_id, anchor, *, limit=64):
     """Read current event proof or bounded competitors for one observation.
 
@@ -549,10 +577,13 @@ def review_pair(case_id, anchor, *, limit=64):
         select f.id from candidates c join effective_visible_flows f on f.id=c.flow_id
         where f.case_id=? and f.id<>? order by f.id limit ?""",
         [case_id, anchor["id"], stamp, case_id, anchor["id"], limit + 1])
-    more = len(possible) > limit
+    vouchers = {str(row["id"]) for row in _voucher_candidates(case_id, anchor["id"], limit + 1)}
+    ids = list(dict.fromkeys([*(str(row["id"]) for row in possible), *sorted(vouchers, key=int)]))
+    more = len(ids) > limit
     return {"status": "conflict" if member.get("status") == "conflict" else "unknown",
-            "reason": member.get("reason") or "no_scoped_event_proof",
-            "candidate_ids": [str(row["id"]) for row in possible[:limit]], "more": more}
+            "reason": member.get("reason") or ("voucher_candidate_only" if vouchers else "no_scoped_event_proof"),
+            "candidate_ids": ids[:limit], "voucher_candidate_ids": [key for key in ids[:limit] if key in vouchers],
+            "more": more}
 
 
 def decorate_edges(case_id, edges):

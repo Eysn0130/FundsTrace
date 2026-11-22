@@ -4818,7 +4818,8 @@ function syncContextSelection() {
     button.disabled = !ready;
     button.classList.toggle('picked', selected);
     button.setAttribute('aria-pressed', String(selected));
-    button.querySelector('.sg-evidence').hidden = !selected;
+    const evidence = button.querySelector('.sg-evidence');
+    if (evidence) evidence.hidden = !selected;
   });
   contextTableScroll?.sync();
 }
@@ -5018,30 +5019,41 @@ function renderContext() {
 function renderSuggestions(rows) {
   const wrap = $('#ctxSuggest'), selection = state.ctx, context = selection.context;
   const visible = new Set(rows.map(row => String(row.id))), suggestions = selection.data.suggestions || {};
+  const anchorScope = selection.mode === 'all' ? visible : new Set(
+    visibleContextRows({ ...selection, mode: 'all' }).map(row => String(row.id)));
+  const completeWindow = anchorScope.size === selection.data.rows.length;
   const ref = selection.data.review.reference;
+  const describeLocation = item => `${item.filename} · ${item.sheet || item.member_path} · 原行 ${item.source_row}`;
   const group = (role, title, note) => {
     const list = (suggestions[role + 's'] || []).map((item, index) => {
       const ids = (item.ids || []).map(String).filter(id => visible.has(id));
-      const basis = ids.length === item.ids.length ? item.evidence?.basis :
+      const complete = ids.length === item.ids.length && (item.anchor_ids || []).every(id => anchorScope.has(String(id)));
+      const judgment = complete ? item.evidence?.judgment || '现有证据仍需核对本金归属。' :
         ids.length ? `当前范围可定位 ${ids.length} 条关联流水，本金归属待核。` : '当前范围没有对应流水。';
+      const basis = complete ? item.evidence?.basis : '';
+      const locations = complete ? (item.evidence?.locations || []).slice(0, 2).map(describeLocation) : [];
       return `<div class="sg-entry"><button class="sg-item" type="button" data-key="${role}-${index}" data-ids="${esc(ids.join(','))}"
         aria-pressed="false"><span class="sg-main"><b>${esc(item.name || '未提供户名')}</b></span>
-        <span class="sg-score"><span class="sr-only">参考评分 </span><b>${esc(item.score ?? '—')}</b></span>
-        <span class="sg-basis">${role === 'source' ? '转入 ' : '转出 '}${esc(contextAccount(selection.data.anchor, role === 'source' ? 'payer' : 'payee'))}${item.cnt != null ? ` · ${fmtCount(item.cnt)} 条合计 ${moneyHtml(item.total, item.currency)}` : ''}</span>
-        <span class="sg-evidence" hidden>${esc(basis || '可回查高亮的原始记录。')}</span></button></div>`;
+        <span class="sg-score" title="账簿证据核对分"><span class="sr-only">证据评分 </span><b>${esc(complete ? item.score ?? '—' : '—')}</b></span>
+        <span class="sg-basis">${role === 'source' ? '转入 ' : '转出 '}${esc(contextAccount(selection.data.anchor, role === 'source' ? 'payer' : 'payee'))}${complete && item.total != null ? ` · ${fmtCount(item.cnt)} 条合计 ${moneyHtml(item.total, item.currency)}` : ''}</span>
+        <span class="sg-judgment">${esc(judgment)}</span>
+        <span class="sg-evidence" hidden>${esc(basis || '可回查高亮的原始记录。')}${locations.length ? `<br>${esc(locations.join('；'))}` : ''}</span></button></div>`;
     }).join('');
     return `<section class="sgroup"><h3 class="sg-title">${title}${note ? `<span>${note}</span>` : ''}</h3>
       <div class="sg-items" tabindex="0" role="region" aria-label="${title}列表">${list || `<p class="sg-empty">${selection.edge && !ref ? '在明细中选择「以此笔追踪」' : '暂无可定位线索'}</p>`}</div></section>`;
   };
   const principal = selection.data.review.principal || {};
-  const explanation = Object.values(principal).map(value => window.FundsFacts?.principal(value)).filter(Boolean);
-  const refLabel = ref ? `参考 ${esc(fmtTime(ref.trade_time).slice(11, 16))} · ${moneyHtml(ref.amount, ref.currency)}` : '';
+  // This assessment was calculated for the original review window. A local
+  // filter cannot narrow its amounts or evidence without a new calculation.
+  const explanation = completeWindow ? Object.values(principal).map(value => window.FundsFacts?.principal(value)).filter(Boolean) : [];
+  const refLabel = completeWindow && ref?.trade_time ? `参考 ${esc(fmtTime(ref.trade_time).slice(11, 16))} · ${moneyHtml(ref.amount, ref.currency)}` : '';
   wrap.innerHTML = group('source', '疑似来源', refLabel) + group('target', '疑似去向', '')
     + (explanation.length ? `<details class="context-score-note"><summary>账面条件及待核事项</summary>
       ${explanation.map(note => `<p>${esc(note).replaceAll('\n', '<br>')}</p>`).join('')}</details>` : '');
   wrap.querySelectorAll('.sg-item').forEach(button => {
     button.onclick = () => {
-      if (!contextIsCurrent(selection, context) || selection.phase !== 'ready' || !button.isConnected || button.disabled) return;
+      if (!contextIsCurrent(selection, context) || !contextEdgeIsCurrent(selection)
+        || selection.phase !== 'ready' || !button.isConnected || button.disabled) return;
       if (selection.clue?.key === button.dataset.key) selection.clue = null;
       else selection.clue = { key: button.dataset.key, ids: button.dataset.ids.split(',').filter(Boolean) };
       syncContextSelection();
@@ -5114,6 +5126,7 @@ async function openContextRecord(id, button) {
       unresolved_or_excluded_observation: '与参考号相关的原记录尚未完成核证',
       single_posting_independent_balance_proof: '仅有一侧的独立记账证据',
       no_scoped_event_proof: '缺少可验证的跨账簿凭据',
+      voucher_candidate_only: '同凭证号线索。请逐行核对时间口径、金额币种、双方账卡及收付角色，再排除其他配对。',
     };
     const rowDescription = contextRow ? `<p>${esc(contextRow.trade_time || '时间待核')} ·
       ${moneyHtml(contextRow.amount, contextRow.currency)} · 该记录余额 ${contextRow.balance == null ? '—' : moneyHtml(contextRow.balance, contextRow.currency)}</p>` : '';

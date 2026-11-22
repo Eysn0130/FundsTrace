@@ -2,7 +2,7 @@ name: Pull request checks
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, codex/decision-evidence-integration-20261121]
 
 permissions:
   contents: read

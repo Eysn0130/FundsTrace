@@ -5,7 +5,7 @@ assertions or matching balances. Only own observations carry the account balance
 Matched cancellation journals cannot reconstruct historical availability: fail
 closed until that history is supplied, rather than reading effective_flows.
 """
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from decimal import Decimal, localcontext
 from itertools import groupby
 import json
@@ -38,6 +38,33 @@ def _metadata(case_id, ids):
     return event_resolution.ledger_metadata(case_id, ids)
 
 
+def source_currency_gaps(case_id, account, ids=(), *, start=None, end=None):
+    """Read currency gaps from active source links, including historical tables."""
+    has_window = start is not None
+    zoned = has_window and start.tzinfo is not None
+    if zoned:
+        start, end = (value.astimezone(timezone.utc).replace(tzinfo=None) for value in (start, end))
+    # Historical ordinary tables may retain a CNY default without registering
+    # identity evidence. The operation and journal determine live support.
+    # An unqualified midnight can represent a date-only posting after start.
+    return db.q_raw("""select distinct f.id::varchar id, coalesce(f.trade_time_utc,f.trade_time) stamp,
+               case when f.trade_time_utc is not null then 'utc' else 'unqualified' end basis
+        from flows f
+        left join resolved_endpoints s on s.case_id=f.case_id and s.flow_id=f.id and s.role='self'
+        join flow_sources fs on fs.case_id=f.case_id and fs.flow_id=f.id
+        join import_records r on r.case_id=fs.case_id and r.source_id=fs.source_id and r.record_no=fs.source_row
+        left join import_source_operations op on op.case_id=r.case_id and op.source_id=r.source_id
+        where f.case_id=? and (f.id in (select unnest(?::bigint[])) or
+          (? and (f.self_account=? or s.entity_id=?) and
+            ((f.trade_time_utc is not null)<>? or coalesce(f.trade_time_utc,f.trade_time) between ? and ?
+             or (? and f.trade_time=date_trunc('day',?::timestamp))
+             or coalesce(f.trade_time_utc,f.trade_time) is null)))
+          and op.active is distinct from false and r.disposition in ('imported','duplicate')
+          and json_extract_string(r.details_json,'$.currency_basis') in (?,?)""",
+        [case_id, list(ids), has_window, account, account, zoned, start, end, has_window and not zoned, start,
+         "来源币种未明确，按原始记录保留", "沿用普通表格历史默认币种CNY；来源未提供币种"])
+
+
 def read(case_id, account, currency, start, end):
     """Require a resolved accounting identity whenever typed evidence exists.
 
@@ -61,6 +88,7 @@ def read(case_id, account, currency, start, end):
         return {"status": "unknown", "reasons": ["utc_interval_required"], "rows": []}
     if kinds["bare"] and (start.tzinfo is not None or end.tzinfo is not None):
         return {"status": "unknown", "reasons": ["unqualified_ledger_time"], "rows": []}
+    source_start, source_end = start, end
     if kinds["zoned"]:
         start, end = (value.astimezone(timezone.utc).replace(tzinfo=None) for value in (start, end))
     # Filter the narrow original ledger before identity joins. No graph or
@@ -89,6 +117,13 @@ def read(case_id, account, currency, start, end):
           and (f.self_account=? or s.entity_id=?) limit 1""",
         [case_id,list(UNKNOWN_CURRENCIES),start,end,account,account]):
         reasons.append("currency_evidence_unknown")
+    # When the last observed posting has only a possible date, an exact
+    # midnight query would omit currency gaps later on the same source day.
+    if (source_end.tzinfo is None and source_end.time() == time.min
+            and any(row["trade_time"] == end for row in rows)):
+        source_end = datetime.combine(source_end.date(), time.max)
+    if source_currency_gaps(case_id, account, start=source_start, end=source_end):
+        reasons.append("source_currency_unproved")
     if not rows:
         reasons.append("no_own_ledger_entries")
     if any(row["trade_time"] is None for row in rows):
@@ -147,6 +182,16 @@ def source_order(group, metadata):
     return None
 
 
+def has_day_only_order_conflict(rows):
+    """Historical bare midnight values can stand for any time that day."""
+    midnight, timed = set(), set()
+    for row in rows:
+        stamp = row["trade_time"]
+        if stamp is not None and row.get("trade_time_utc") is None:
+            (midnight if stamp.time() == time.min else timed).add(stamp.date())
+    return not midnight.isdisjoint(timed)
+
+
 def ordered(rows, opening, metadata, balance_kind, *, allow_inference=True):
     """Use proven source order or a unique no-overdraft/balance-feasible step.
 
@@ -154,6 +199,8 @@ def ordered(rows, opening, metadata, balance_kind, *, allow_inference=True):
     If several next entries remain possible we report unknown, not one ordering
     chosen from permutations. No combinatorial search is used in production.
     """
+    if has_day_only_order_conflict(rows):
+        return None, "boundary_date_precision_unknown"
     result, balance = [], opening
     for _, group in groupby(rows, key=lambda row: row["trade_time"]):
         pending = list(group)
