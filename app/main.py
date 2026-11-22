@@ -25,7 +25,7 @@ from typing import List, Literal, Optional
 
 import pandas as pd
 import duckdb
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -294,9 +294,9 @@ async def import_directory_preview(files: List[UploadFile] = File(...), case_id:
 
 
 @app.post("/api/import/preview")
-async def import_preview(file: UploadFile = File(...), case_id: Optional[int] = None):
+async def import_preview(request: Request, file: UploadFile = File(...), case_id: Optional[int] = None):
     try:
-        return await import_service.legacy_upload(file, case_id)
+        return await import_service.legacy_upload(file, case_id, receive=request.receive)
     except ServiceError as error:
         raise _legacy_preview_error(error) from None
 

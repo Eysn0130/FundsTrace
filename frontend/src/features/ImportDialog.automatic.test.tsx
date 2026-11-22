@@ -53,6 +53,28 @@ async function viewResults() {
 }
 
 describe('automatic table import', () => {
+  it('shows a PDF issue without inventing physical rows when the host only supplies record logs', async () => {
+    const filename = 'document.pdf', member_path = 'document.pdf';
+    const pdfSummary: NonNullable<ImportPreview['table_summary']> = { ...summary, profile: 'pdf-review-v1',
+      record_total: 1, unresolved: 1, non_monetary: 0, reason_counts: { pdf_tool_unavailable: 1 },
+      members: [{ member_path, row_count: 1, role: 'pdf', sha256: '0'.repeat(64), size_bytes: 45, encoding: 'binary' }],
+      documents: [{ member_path, role: 'pdf', pdf_status: 'pdf_tool_unavailable' }],
+      unresolved_examples: [{ member_path, source_row: 1, reason_code: 'pdf_tool_unavailable' }], mapping_evidence: [] };
+    const client = clientFor();
+    client.preview = vi.fn(async () => ({...preview, filename, table_summary: pdfSummary}));
+    const job = client.job;
+    client.job = vi.fn(async id => ({...await job(id), total: 1, result: {...result, total: 1, skipped: 1, table_summary: pdfSummary},
+      member_results: [{member_path, dispositions: {unresolved: 1}}]}));
+    client.importRecords = vi.fn(async () => proofPage(1));
+    show(client);
+    fireEvent.change(screen.getByLabelText('选择流水文件'), {target: {files: [new File(['synthetic'], filename)]}});
+    await screen.findByRole('status', {name: '导入完成'});
+    expect(screen.getAllByText(/本机 MinerU 不可用/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('link', {name: '查看来源行'})).toBeNull();
+    expect(screen.queryByText(/原始第 1 行/)).toBeNull();
+    expect(client.importRecords).not.toHaveBeenCalled();
+  });
+
   it.each(['selection', 'drop'])('processes ordinary multiple files from %s in one sequential workflow', async source => {
     const client = clientFor(), previewDirectory = vi.fn(async () => preview);
     const oldJob = client.job;
@@ -186,8 +208,8 @@ describe('automatic table import', () => {
   it('keeps every existing file suffix and advertises XLS and RAR in the file picker', () => {
     show(clientFor());
     const input = screen.getByLabelText('选择流水文件') as HTMLInputElement;
-    expect(input.accept.split(',')).toEqual(['.csv', '.tsv', '.txt', '.xlsx', '.xls', '.zip', '.rar']);
-    expect(screen.getByText('Excel · CSV · ZIP · RAR')).toBeTruthy();
+    expect(input.accept.split(',')).toEqual(['.csv', '.tsv', '.txt', '.xlsx', '.xls', '.zip', '.rar', '.pdf']);
+    expect(screen.getByText('Excel · CSV · ZIP · RAR · PDF')).toBeTruthy();
   });
 
   it('previews the same XLS File and completes one automatic commit without remapping', async () => {

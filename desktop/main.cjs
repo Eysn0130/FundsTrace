@@ -68,6 +68,7 @@ else {
     try {
       if (synthetic && app.isPackaged) throw new Error('Synthetic mode is unavailable in installed builds.');
       app.dock?.setIcon(appIcon);
+      const userData = synthetic ? undefined : app.getPath('userData');
       // A single Main-owned store prevents geometry and renderer preferences
       // overwriting one another. Disposable source mode never changes user settings.
       const transientPreferences = new Map();
@@ -75,7 +76,7 @@ else {
         getItem: key => transientPreferences.get(key) ?? null,
         setItem: (key, value) => { transientPreferences.set(key, value); return true; },
         removeItem: key => transientPreferences.delete(key),
-      } : preferenceStore(app.getPath('userData'));
+      } : preferenceStore(userData);
       const savedWindow = readWindowState(preferences.getItem('fund_window_state'));
       let origin, token;
       let startup;
@@ -330,10 +331,11 @@ else {
       preparation = (async () => {
         const dataDir = synthetic
           ? path.join(temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'funds-trace-desktop-')), 'data')
-          : path.join(app.getPath('userData'), 'data');
+          : path.join(userData, 'data');
         await fs.mkdir(dataDir, { recursive: true });
         if (quitting || primary.isDestroyed()) return;
-        const config = launchConfig({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, repoRoot: path.resolve(__dirname, '..'), python: process.env.FUNDS_TRACE_PYTHON, dataDir, synthetic });
+        const config = launchConfig({ packaged: app.isPackaged, resourcesPath: process.resourcesPath,
+          repoRoot: path.resolve(__dirname, '..'), python: process.env.FUNDS_TRACE_PYTHON, dataDir, userData, synthetic });
         backend = startBackend(config, { onExit: () => void fail('FundsTrace 数据服务已停止。请关闭后重新打开应用；未完成的任务会在下次启动时识别。') });
       })();
       await preparation;

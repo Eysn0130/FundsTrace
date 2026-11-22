@@ -1,7 +1,7 @@
 """Stable v1 routes; the legacy /api endpoints remain independently mounted."""
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, File, Path, Query, UploadFile
+from fastapi import APIRouter, File, Path, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -238,8 +238,8 @@ async def directory_upload(case_id: CaseId, files: list[UploadFile] = File(...))
 
 
 @router.post("/cases/{case_id}/imports/preview", response_model=ImportPreview, operation_id="v1_upload_preview")
-async def upload(case_id: CaseId, file: UploadFile = File(...)):
-    return await imports.upload(case_id, file)
+async def upload(case_id: CaseId, request: Request, file: UploadFile = File(...)):
+    return await imports.upload(case_id, file, receive=request.receive)
 
 
 @router.post("/cases/{case_id}/imports/{import_id}/preview", response_model=ImportPreview, operation_id="v1_repreview")

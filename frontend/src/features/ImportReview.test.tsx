@@ -134,3 +134,30 @@ it('distinguishes an available empty source cell from an unavailable original',a
   const popup=await screen.findByRole('dialog',{name:'完整内容'});
   expect(popup.textContent).toContain('原始值 · 交易时间：（空白）');expect(popup.textContent).not.toContain('原始值不可用');
 });
+
+it('shows PDF candidates as literal text with page and row positions', async () => {
+  const own = client();
+  const literal = '<img id="ocr-markup" src="not-a-source">';
+  const pdfRow: ImportReviewRecord = {
+    ...first,
+    member_path: 'document.pdf',
+    reason_code: 'pdf_candidate',
+    original: null,
+    details: { pdf_page: '2', pdf_table: '1', pdf_row: '3', pdf_candidate_cells: JSON.stringify(['9999999999999.99', literal]) },
+  };
+  own.importReview = vi.fn(async (): Promise<ImportReviewPage> => ({
+    ...page(),
+    member_path: 'document.pdf',
+    items: [pdfRow],
+    counts: { all: 1, review: 1, accepted: 0 },
+    total: 1,
+    issue: null,
+  }));
+  render(<ImportReview client={own} scopeSignal={new AbortController().signal}
+    sourceId="SYN-SOURCE" memberPath="document.pdf" pdf />);
+  expect(await screen.findByText(literal)).toBeTruthy();
+  expect(screen.getByText('9999999999999.99')).toBeTruthy();
+  expect(screen.getByRole('row', { name: '第 2 页 · 表 1 · 行 3' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: '已接纳 0' })).toBeTruthy();
+  expect(document.querySelector('#ocr-markup')).toBeNull();
+});

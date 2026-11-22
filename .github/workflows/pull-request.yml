@@ -125,6 +125,20 @@ jobs:
       - name: Install locked test dependencies without downloading Electron
         run: npm ci --ignore-scripts
       - run: npm test
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+      - name: Check Windows PDF process ownership and cleanup
+        working-directory: .
+        run: python -B -m unittest discover -s tests -p test_windows_import_job.py -v
+      - name: Install locked Python dependencies for PDF import checks
+        if: needs.plan.outputs.python == 'true'
+        working-directory: .
+        run: python -m pip install --disable-pip-version-check --require-hashes -r requirements-dev.lock
+      - name: Check Windows PDF preview and recovery
+        if: needs.plan.outputs.python == 'true'
+        working-directory: .
+        run: python -B scripts/test.py tests/test_pdf_import.py -q -o tmp_path_retention_policy=failed
       - name: Install isolated publisher dependencies
         run: npm ci --prefix ../scripts/release-publisher --ignore-scripts --no-audit --no-fund
       - name: Check publication failure and integrity behavior without cloud access

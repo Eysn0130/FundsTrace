@@ -58,6 +58,7 @@ function reviewMetadata(item: ImportItem, node: ImportTreeNode, canReview: boole
   const pendingSummary = pending ? `${countText(pending)} 条待核对` : '';
   if (pending && counts && !node.children.length) {
     const table = receipt?.table_summary, feedback = receipt?.feedback;
+    const pdf = table?.profile === 'pdf-review-v1';
     const memberPath = node.memberPaths.length === 1 ? node.memberPaths[0] : undefined;
     // The receipt stores a bounded set of examples. The scoped preview
     // independently locates the first issue still available for that member.
@@ -65,8 +66,8 @@ function reviewMetadata(item: ImportItem, node: ImportTreeNode, canReview: boole
       ...(table?.unresolved_examples ?? feedback?.unresolved_examples ?? []), ...(feedback?.review_examples ?? []),
     ].filter(row => row.member_path === memberPath).sort((left, right) => left.source_row - right.source_row)[0] : undefined;
     return {
-      tone: 'warning', summary: example ? `${pendingSummary} · 第 ${example.source_row} 行 · ${feedbackReason(example.reason_code)}` : pendingSummary,
-      destination: receipt?.source_id && memberPath && (canReview && !!(table || feedback) || canLocateSource && !!example)
+      tone: 'warning', summary: example ? `${pendingSummary} · ${pdf ? '' : `第 ${example.source_row} 行 · `}${feedbackReason(example.reason_code)}` : pendingSummary,
+      destination: receipt?.source_id && memberPath && (canReview && !!(table || feedback) || !pdf && canLocateSource && !!example)
         ? { kind: 'review', memberPath, sourceRow: example?.source_row } : undefined,
     };
   }

@@ -535,6 +535,52 @@ def _feedback_journals(check, paths):
         _invalid("反馈包处置与流水来源不一致")
 
 
+def _pdf_journals(check, paths):
+    """PDF candidates can restore only with their source-only operation."""
+    from . import pdf_import
+
+    sources = check.execute("select source_id,sha256,size_bytes from import_sources where parser_version=?",
+                            [pdf_import.PROFILE]).fetchall()
+    if not sources:
+        return
+    if not {*JOURNAL_PKG_COLS, "import_source_operations", "batches"}.issubset(paths):
+        _invalid("PDF 来源缺少复核日志或导入操作")
+    if check.execute("""select 1 from import_sources s
+        left join import_source_operations o on o.source_id=s.source_id
+        where s.parser_version=? and (o.source_id is null
+            or exists(select 1 from flow_sources f where f.source_id=s.source_id)
+            or exists(select 1 from flows f where o.active and f.batch_id=o.batch_id)
+            or exists(select 1 from import_source_operations p where o.active and p.active
+                      and p.batch_id=o.batch_id and p.source_id<>s.source_id)) limit 1""",
+                     [pdf_import.PROFILE]).fetchone():
+        _invalid("PDF 复核来源不能含流水或共用导入批次")
+    for source_id, digest, size in sources:
+        members = check.execute("""select member_path,role,sha256,size_bytes,encoding,row_count
+            from import_members where source_id=? limit 2""", [source_id]).fetchall()
+        if (len(members) != 1 or members[0][:5] != (pdf_import.MEMBER_PATH, "pdf", digest, size, "pdf")
+                or members[0][5] is None or not 1 <= members[0][5] <= pdf_import.MAX_ROWS):
+            _invalid("PDF 来源成员或校验值无效")
+        cursor = check.execute("""select record_no,member_path,source_row,record_key,disposition,reason_code,
+                case when octet_length(encode(details_json))<=? then details_json end
+            from import_records where source_id=? order by record_no limit ?""",
+                               [pdf_import.MAX_RECORD_BYTES, source_id, pdf_import.MAX_ROWS + 1])
+
+        def records():
+            while batch := cursor.fetchmany(64):
+                yield from batch
+
+        try:
+            count = pdf_import.validate_journal(digest, records())
+        except (ValueError, TypeError, RecursionError):
+            _invalid("PDF 候选位置或复核记录无效")
+        if (count != members[0][5] or check.execute("""select 1 from import_source_operations o
+            join batches b on b.id=o.batch_id where o.source_id=? and o.active
+            and (b.mode is distinct from 'B' or b.rows_total is distinct from ?
+                 or b.rows_skipped is distinct from ? or b.rows_imported is distinct from 0
+                 or b.rows_dup is distinct from 0)""", [source_id, count, count]).fetchone()):
+            _invalid("PDF 候选与导入批次计数不一致")
+
+
 def _table_journals(check, paths):
     """Validate automatic-table journals independently of bank-feedback rules."""
     tables = check.execute("select source_id,parser_version,imported_at from import_sources where row_kind='table_record'").fetchall()
@@ -1031,12 +1077,15 @@ def _validate_package(content, directory):
                     source_id, filename, sha256, size_bytes, mode, mapping_json, sheet, parser_version, row_kind, imported_at = record
                     mapping = json.loads(mapping_json) if isinstance(mapping_json, str) else None
                     suffix = Path(filename).suffix.lower() if isinstance(filename, str) else ""
-                    from . import table_import, table_archive
+                    from . import pdf_import, table_import, table_archive
+                    pdf_source = parser_version == pdf_import.PROFILE
                     table_source = (row_kind == "table_record" or parser_version in (
                         *table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES))
                     archive_source = (suffix == ".zip" or row_kind == "archive_record"
                                       or isinstance(parser_version, str) and parser_version.startswith("funds-trace-bank-feedback-"))
-                    if table_source:
+                    if pdf_source:
+                        source_format_valid = pdf_import.valid_source(filename, size_bytes, mode, mapping, sheet, row_kind)
+                    elif table_source:
                         # Uploads already default an empty suffix to CSV while
                         # preserving the original name. Admit only the exact
                         # single-text-member contract; full journal and fact
@@ -1081,7 +1130,7 @@ def _validate_package(content, directory):
                             or any(k not in (table_import.mapping_fields(parser_version) if table_source else
                                            (*importer.MODE_FIELDS.get(mode, []), "_time2", "self_account", "self_name"))
                                    or not isinstance(v, str) or not v.strip() for k, v in mapping.items())
-                            or (not table_source and not importer._validate(mapping, mode))
+                            or (not table_source and not pdf_source and not importer._validate(mapping, mode))
                             or not isinstance(sheet, str) or not isinstance(parser_version, str) or not parser_version
                             or not source_format_valid
                             or imported_at is None):
@@ -1138,10 +1187,11 @@ def _validate_package(content, directory):
                 _invalid("配对冲正规则须使用格式3保留完整语义")
             if "import_sources" in paths:
                 for table in JOURNAL_PKG_COLS:
-                    if table in paths and check.execute(f"select 1 from {table} j left join import_sources s on s.source_id=j.source_id where s.source_id is null or s.row_kind not in ('archive_record','table_record') limit 1").fetchone():
+                    if table in paths and check.execute(f"select 1 from {table} j left join import_sources s on s.source_id=j.source_id where s.source_id is null or s.row_kind not in ('archive_record','table_record','pdf_record') limit 1").fetchone():
                         _invalid("记录日志引用了不存在或不支持的来源")
                 _feedback_journals(check, paths)
                 _table_journals(check, paths)
+                _pdf_journals(check, paths)
             from .services import materials
             source_ids={r[0] for r in check.execute('select source_id from import_sources').fetchall()} if meta.get('materials') is not None and 'import_sources' in paths else set()
             material_groups=materials.validate_package(meta.get('materials'),source_ids)
