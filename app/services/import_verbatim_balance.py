@@ -233,4 +233,3 @@ def run(case_id, import_id, body, endpoints, grant, active):
     return {"state": "unavailable" if transport_failures else "rule" if choice else "pending",
             "reason": reason, "packet": packet, "first_calls": len(heads), "recheck_calls": rechecks,
             "source_balance_roles": [choice] if choice and not monetary and not transport_failures else []}
-

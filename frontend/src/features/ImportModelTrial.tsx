@@ -145,7 +145,7 @@ export function ImportModelTrial({ client, scopeSignal, importId, layout, member
     : sourceOnly && result?.state === 'proposal' ? '当前原列核证结果暂不可用。'
     : balance && result?.reason === 'balance_outside_mappable_layout' ? '当前表区仍按已有来源范围核对。'
     : balance && result?.reason === 'balance_not_proved' ? '原表暂未能独立核证本方余额栏，请回查账户及余额原列。'
-    : result?.state === 'rule' ? '规则已有依据。' 
+    : result?.state === 'rule' ? '规则已有依据。'
     : result?.state === 'proposal' ? '已核证原列和说明，待确认导入映射。'
     : result?.reason === 'source_role_conflict' ? '同一表区的字段用途有冲突，请核对原说明。'
     : result?.reason === 'field_note_wrong_header_row' ? '现有说明指向数据行，请补对应当前表头原列的说明。'
