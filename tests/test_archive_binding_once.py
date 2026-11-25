@@ -61,7 +61,13 @@ def frozen_plan(content, profile):
 @pytest.mark.parametrize("profile", sorted(table_archive.EVIDENCE_PROFILES))
 @pytest.mark.parametrize("kind", ["cancellation", "duplicate-bytes", "auxiliary-only", "omitted-bank", "parent-child", "nested"])
 def test_one_envelope_binding_preserves_every_plan_value(monkeypatch, profile, kind):
-    content = archive(members(kind))
+    leaves = members(kind)
+    trial = profile == table_archive.TRIAL_MEMBER_PROFILE
+    if trial:
+        from test_automatic_table_import import coded_bank_csv
+
+        leaves.append(("trial.csv", coded_bank_csv([("D:借", "-4.25", "95.88", "人民币", "10", "", "SYN-PEER")])))
+    content = archive(leaves)
     bind, calls = evidence_resolution.bind_occurrences, []
 
     def observe(plan):
@@ -76,7 +82,8 @@ def test_one_envelope_binding_preserves_every_plan_value(monkeypatch, profile, k
     with monkeypatch.context() as old:
         old.setattr(table_import, "parse", eager_parser(table_import.parse))
         expected = frozen_plan(content, profile)
-    assert len(calls) == (1 if kind == "auxiliary-only" else 1 + sum(member["role"] == "table" for member in expected["members"]))
+    ordinary_tables = sum(member["role"] == "table" for member in expected["members"]) - int(trial)
+    assert len(calls) == 1 + ordinary_tables
     assert actual == expected
     assert all(type(record["details"]) is dict for record in actual["records"])
     if kind in {"cancellation", "duplicate-bytes", "nested"}:
@@ -88,6 +95,12 @@ def test_one_envelope_binding_preserves_every_plan_value(monkeypatch, profile, k
         assert actual["rows"][0]["_occurrence_scope"] == ("" if historical_defect else "Synthetic bank")
     if kind == "omitted-bank":
         assert actual["rows"][0]["_occurrence_scope"] == ""
+
+
+def test_frozen_trial_envelope_requires_a_recognized_trial_leaf():
+    content = archive(members("cancellation"))
+    with pytest.raises(table_import.TableImportError, match="冻结解析版本"):
+        table_archive.parse(io.BytesIO(content), profile=table_archive.TRIAL_MEMBER_PROFILE)
 
 
 def test_standalone_parser_still_binds_and_cannot_defer_without_envelope():

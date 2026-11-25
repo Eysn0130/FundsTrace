@@ -182,7 +182,7 @@ def test_frozen_ready_profile_and_package_proof_are_checked_at_the_public_entry(
     content = csv_bytes(HEADER, row("X1", "101"))
     with monkeypatch.context() as frozen:
         # Create a ready session exactly as the predecessor did for this input.
-        frozen.setattr(table_import, "_declared_table_layouts", lambda *_: (False, False, False))
+        frozen.delitem(table_import.CLOSED_BANK_SUCCESSORS, table_import.VOUCHER_REFERENCE_PROFILE)
         old = preview(client, cid, content)
     assert old["table_summary"]["profile"] == "funds-trace-table-v69"
     import_preview_cache.discard()

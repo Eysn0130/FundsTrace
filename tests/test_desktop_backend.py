@@ -7,6 +7,7 @@ import queue
 import subprocess
 import sys
 import threading
+from types import SimpleNamespace
 import urllib.error
 import urllib.request
 
@@ -15,7 +16,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.testclient import TestClient
 import pytest
 
-from desktop_backend import DesktopBoundary, read_bootstrap
+import desktop_backend
+from desktop_backend import DesktopBoundary, read_bootstrap, read_reference_review_scope
 
 
 TOKEN = "a" * 64  # Public fixture, not a deployed runtime session.
@@ -53,6 +55,64 @@ def test_bootstrap_never_enables_synthetic_in_frozen_distribution(tmp_path, monk
         read_bootstrap(io.StringIO(json.dumps(data) + "\n"))
     with pytest.raises(ValueError):
         read_bootstrap(io.StringIO("x" * 4097))
+
+
+def test_model_trial_bootstrap_requires_an_isolated_source_runtime(tmp_path, monkeypatch):
+    data_dir = tmp_path / "funds-trace-model-trial-local" / "data"
+    base = {"protocol": 1, "token": TOKEN, "dataDir": str(data_dir), "synthetic": False}
+
+    def parse(**changes):
+        return read_bootstrap(io.StringIO(json.dumps({**base, **changes}) + "\n"))
+
+    assert "modelTrial" not in parse()
+    assert parse(modelTrial=None)["modelTrial"] is None
+    with pytest.raises(ValueError, match="isolated source profile"):
+        parse(modelTrial=None, dataDir=str(tmp_path / "production" / "data"))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    with pytest.raises(ValueError, match="isolated source profile"):
+        parse(modelTrial=None)
+
+
+def test_reference_review_scope_requires_private_mac_bootstrap(tmp_path, monkeypatch):
+    data_dir = tmp_path / "funds-trace-model-trial-local" / "data"
+    path = tmp_path / "scope.json"
+    base = {"protocol": 1, "token": TOKEN, "dataDir": str(data_dir), "synthetic": False,
+            "referenceReviewScopeFile": str(path)}
+
+    def parse(**changes):
+        return read_bootstrap(io.StringIO(json.dumps({**base, **changes}) + "\n"))
+
+    monkeypatch.setattr(desktop_backend, "sys", SimpleNamespace(platform="darwin"))
+    assert parse(modelTrial="{}")["referenceReviewScopeFile"] == str(path)
+    with pytest.raises(ValueError, match="private Mac model trial"):
+        parse()
+    with pytest.raises(ValueError, match="private Mac model trial"):
+        parse(modelTrial="{}", referenceReviewScopeFile="relative.json")
+    monkeypatch.setattr(desktop_backend.sys, "platform", "linux")
+    with pytest.raises(ValueError, match="private Mac model trial"):
+        parse(modelTrial="{}")
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS file ACL")
+def test_reference_review_scope_requires_owner_only_access_on_the_open_file(tmp_path):
+    path = tmp_path / "scope.json"
+    scope = {"case_id": 1, "source_sha256": "a" * 64, "member_path": "worksheets/0001", "rows": [2, 3, 4]}
+    path.write_text(json.dumps(scope), encoding="utf-8")
+    path.chmod(0o600)
+    assert read_reference_review_scope(path) == scope
+    subprocess.run(["/bin/chmod", "+a", "everyone allow read,write", str(path)], check=True, capture_output=True)
+    assert path.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(ValueError, match="extended ACL"):
+        read_reference_review_scope(path)
+    subprocess.run(["/bin/chmod", "-N", str(path)], check=True, capture_output=True)
+    assert read_reference_review_scope(path) == scope
+    path.chmod(0o644)
+    with pytest.raises(ValueError, match="private regular file"):
+        read_reference_review_scope(path)
+    link = tmp_path / "scope-link.json"
+    link.symlink_to(path)
+    with pytest.raises(OSError):
+        read_reference_review_scope(link)
 
 
 def test_desktop_front_door_rejects_missing_duplicate_cross_origin_and_wrong_host():

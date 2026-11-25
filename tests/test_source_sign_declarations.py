@@ -50,6 +50,56 @@ def test_unit_direction_owner_and_signed_header_conflicts():
     assert parse([row('0',STATEMENT)])['rows']==[]
     assert parse([row('-12.34','')])['rows']==[]
 
+
+def test_trial_does_not_extend_limited_sign_convention_to_another_leg(client, make_case, monkeypatch):
+    from test_three_workflow_intake import enable
+
+    limitation = "本表腿别甲为本方腿；腿别乙为对方腿；金额符号规则仅适用于甲。"
+    declaration = STATEMENT.replace("本文件", "本表")
+    values = [row("-8.40", declaration) + ["甲", "CNY", limitation],
+              row("15.30", "") + ["乙", "CNY", ""]]
+    content = raw(values, HEAD + ["腿别", "币种", "腿说明"])
+    case = make_case("Synthetic leg-specific sign convention")
+    enable(client, monkeypatch)
+    view = preview(client, case, content)
+    assert view["table_summary"]["profile"] == table_import.BANK_COMPONENT_TRIAL_PROFILE
+    assert view["table_summary"]["accepted"] == 1
+    assert view["table_summary"]["reason_counts"] == {"transaction_valid": 1, declarations.LEG_OUTSIDE: 1}
+    historical = table_import.parse(content, suffix=".csv", profile=table_import.BANK_TEMPLATE_TRIAL_PROFILE)
+    assert historical["rows"] == [] and historical["stats"]["reason_counts"] == {"invalid_direction": 2}
+    job = complete(client, case, view)
+    assert job["stage"] == "done" and job["result"]["ok"] == 1
+    base = f"/api/v1/cases/{case}"
+    assert client.get(base + f"/sources/{view['import_id']}/file").content == content
+    [posted] = client.get(base + "/flows?granularity=observations").json()["items"]
+    assert (posted["amount"], posted["payer_account"], posted["payee_account"]) == ("8.40", "SYN-A", "SYN-B")
+    records = client.get(base + f"/imports/{view['import_id']}/records").json()["items"]
+    assert records[-1]["reason_code"] == declarations.LEG_OUTSIDE and records[-1]["flow_id"] is None
+
+
+def test_scoped_source_proof_cannot_move_to_other_row_or_leg():
+    note = "本表腿别R1为本方腿；腿别Q7为对方腿；金额符号规则仅适用于R1。"
+    member = "table.csv"
+    layout = {"member": member, "header_row": 1, "single_region": True, "amount_header": "交易金额",
+              "note_indices": {4}, "leg_note_indices": {5}, "leg_column": 1, "currency_column": 3,
+              "rows": [["交易时间", "腿别", "交易金额", "币种", "备注", "腿说明"],
+                       ["2040-08-01 09:01:00", "R1", "6.22", "CNY", STATEMENT.replace("本文件", "本表"), note],
+                       ["2040-08-01 09:02:00", "Q7", "8.20", "CNY", "", ""]]}
+    legacy = declarations.compile_sources([layout], guard_scope_limits=True)
+    assert legacy[member] == {"error": "invalid_direction"}
+    selected = declarations.compile_sources([layout], scoped_legs=True)[member]
+    row_proof = declarations.contract_for_row(selected, layout["rows"][1], 2)["proof"]
+    assert declarations.validate_proof(row_proof, scoped_legs=True, member=member, source_row=2)
+    assert not declarations.validate_proof(row_proof, scoped_legs=True, member=member, source_row=3)
+    assert not declarations.validate_proof(row_proof, scoped_legs=True, member="other.csv", source_row=2)
+    assert not declarations.validate_proof(row_proof)
+    assert declarations.contract_for_row(selected, layout["rows"][2], 3) == {"error": declarations.LEG_OUTSIDE}
+    edited = layout["rows"][1].copy()
+    edited[3] = ""
+    assert declarations.contract_for_row(selected, edited, 2) == {"error": declarations.LEG_UNPROVED}
+    layout["rows"][1][-1] = note.replace("适用于R1", "适用于Q7")
+    assert declarations.compile_sources([layout], scoped_legs=True)[member] == {"error": "invalid_direction"}
+
 @pytest.mark.parametrize('profile',[table_import.CURRENCY_REGION_PROFILE,table_import.GUARDED_PROFILE,table_import.GUARDED_EVIDENCE_PROFILE])
 def test_historical_profiles_do_not_adopt_statement(profile):
     plan=parse([row('-12.34',STATEMENT)],profile=profile);assert plan['rows']==[]

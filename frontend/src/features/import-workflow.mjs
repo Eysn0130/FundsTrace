@@ -1,4 +1,9 @@
 /* Shared import state for both entry points. Hosts own HTTP, leases and refresh. */
+export function hasFixedPdfLayout(preview) {
+  const profile = preview?.table_summary?.profile;
+  return profile === 'pdf-review-v1' || profile === 'pdf-text-ledger-v1' || profile === 'pdf-text-observation-v1';
+}
+
 export function createImportWorkflow(options) {
   const lifetime = new AbortController(), listeners = new Set();
   const receiptChecks = new WeakMap();
@@ -40,7 +45,7 @@ export function createImportWorkflow(options) {
     item.importId = value.import_id; if (!item.directory) item.filename = value.filename; item.preview = value;
     item.mode = value.mode; item.mapping = { ...value.mapping }; item.mappingDrafts[value.mode] = item.mapping; item.referencePolicy = value.reference_policy === 'transaction-reference-v1';
     if (!item.selectionInitialized) { item.marked = value.self_accounts_in_file.map(account => account.account); item.selectionInitialized = true; }
-    update(item, { dirty: false, phase: 'ready', error: '' });
+    update(item, { dirty: false, phase: 'ready', error: '', referenceReview: undefined });
   }
   function stop(message = '已停止后续文件；已提交任务继续处理') {
     intake++;
@@ -90,11 +95,13 @@ export function createImportWorkflow(options) {
   async function runCommit(item, token, pollSignal) {
     if (!current(item, token)) return;
     const value = item.preview;
+    const fixedPdf = hasFixedPdfLayout(value);
     update(item, { phase: 'committing', error: '', job: null }); task(item);
     try {
       const result = await options.client.commit(item.importId, { mode: value.feedback ? value.mode : item.mode,
-        mapping: value.feedback ? value.mapping : item.mapping, mark_accounts: item.marked,
-        self_accounts: value.feedback ? [] : item.selfAccounts,
+        mapping: value.feedback || fixedPdf ? value.mapping : item.mapping, mark_accounts: fixedPdf ? [] : item.marked,
+        self_accounts: value.feedback || fixedPdf ? [] : item.selfAccounts,
+        ...(value.layout_review?.revision ? { ready_revision: value.layout_review.revision } : {}),
         ...(item.materialGroupId ? { material_group_id: item.materialGroupId } : {}) }, lifetime.signal);
       if (!current(item, token)) return;
       if (result.case_id !== options.target.caseId || result.import_id !== item.importId) throw new Error('导入确认与当前案件不一致。');
@@ -147,7 +154,7 @@ export function createImportWorkflow(options) {
           accept(item, value);
           // Only a fresh upload can authorize automatic submission. Repreview,
           // recovery and resuming a stopped queue never replay this decision.
-          if (value.automatic === true && !item.autoCancelled) await followImport(item, token, true);
+          if (value.automatic === true && !value.layout_model_trial && !item.autoCancelled) await followImport(item, token, true);
         } catch (failure) {
           if (!current(item, token)) return;
           const fileFailure = failure?.status === 400 && failure?.failureKind === 'file';
@@ -189,13 +196,49 @@ export function createImportWorkflow(options) {
     item.timed = true; item.processingMs = 0; item.clockStart = null;
     update(item, { phase: 'previewing', error: '', job: null, dirty: true });
     try {
+      const referenceChanged = item.preview?.reference_policy_available
+        && item.referencePolicy !== (item.preview.reference_policy === 'transaction-reference-v1');
       const body = { mode: item.preview?.feedback ? item.preview.mode : item.mode,
         mapping: item.preview?.feedback ? item.preview.mapping : item.mapping,
-        ...(item.preview?.reference_policy_available || item.resume?.request?.reference_policy !== undefined
-          ? { reference_policy: item.referencePolicy ? 'transaction-reference-v1' : null } : {}) };
+        ...(referenceChanged ? { reference_policy: item.referencePolicy ? 'transaction-reference-v1' : null } : {}) };
       const value = await options.client.repreview(item.importId, body, lifetime.signal);
       if (current(item, token)) accept(item, value);
     } catch (failure) { if (current(item, token)) update(item, { phase: item.preview ? 'ready' : 'failed', error: failure.message }); }
+    await drain();
+  }
+  async function reviewReference(id) {
+    const item = items.find(row => row.id === id);
+    const layout = item?.preview?.layout_review;
+    const member = layout?.members.length === 1 ? layout.members[0] : undefined;
+    if (!item || !alive() || running || withdrawing || items.some(active) || item.phase !== 'ready'
+      || item.dirty || item.referencePolicy || !item.preview?.reference_policy_available
+      || !member || member.header_rows.length !== 1 || !options.client.importReferenceTrial) return;
+    const token = ++item.request;
+    const request = { revision: layout.revision, member_path: member.member_path, header_row: member.header_rows[0] };
+    update(item, { phase: 'previewing', error: '', referenceReview: undefined });
+    try {
+      const result = await options.client.importReferenceTrial(item.importId, request, lifetime.signal);
+      if (!current(item, token)) return;
+      const { facts, selection, records } = result.packet;
+      if (facts.case_id !== options.target.caseId || facts.import_id !== item.importId
+        || facts.revision !== request.revision || facts.member_path !== request.member_path || facts.header_row !== request.header_row) {
+        throw new Error('编号核对范围已变化，请重新预览。');
+      }
+      const ready = result.prepared_preview;
+      if (result.state === 'proposal' && ready?.reference_policy === 'transaction-reference-v1'
+        && ready.layout_model_assisted && ready.automatic === false && selection?.choice === 'SEPARATE') {
+        const positions = selection.refs.map(ref => records.find(record => record.id === ref)?.locator.column);
+        if (positions.length !== 2 || !positions.every(column => Number.isInteger(column) && column > 0)
+          || positions[0] === positions[1]) throw new Error('编号引文不完整，请回查原表。');
+        accept(item, ready);
+        update(item, { referenceReview: { positions, message: '' } });
+      } else {
+        const message = result.state === 'unavailable' ? '本机辅助暂不可用，可直接核对原表。' : '编号关系仍待核，请查原表。';
+        update(item, { phase: 'ready', referenceReview: { message } });
+      }
+    } catch (failure) {
+      if (current(item, token)) update(item, { phase: 'ready', referenceReview: { message: failure.message } });
+    }
     await drain();
   }
   async function query(id) {
@@ -278,7 +321,7 @@ export function createImportWorkflow(options) {
   return {
     snapshot: () => snapshot,
     subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },
-    start, stop, query, repreview, withdraw, dispose,
+    start, stop, query, repreview, reviewReference, withdraw, dispose,
     upload: (read, directory = false) => receive(read, directory, false),
     append: (read, directory = false) => receive(read, directory, true),
     remove(id) {
@@ -288,6 +331,13 @@ export function createImportWorkflow(options) {
       return true;
     },
     select(id) { if (alive() && items.some(item => item.id === id)) { selectedId = id; publish(); } },
+    acceptAssisted(id, revision, value) {
+      const item = items.find(row => row.id === id);
+      if (!alive() || !item || item.phase !== 'ready' || item.dirty || item.preview?.layout_review?.revision !== revision
+        || !(value.source_balance_binding || value.layout_model_assisted || value.layout_applied && value.layout_rule_evidence)
+        || value.case_id !== options.target.caseId || value.import_id !== item.importId) return;
+      accept(item, value);
+    },
     edit(id, change) {
       const item = items.find(row => row.id === id);
       if (!item || !alive() || active(item) || item.phase !== 'ready' || running) return;
@@ -299,6 +349,7 @@ export function createImportWorkflow(options) {
       if (Object.hasOwn(change, 'selfAccountsText')) item.selfAccounts = change.selfAccountsText.split(/[,，;；\s]+/).filter(Boolean);
       else if (Object.hasOwn(change, 'selfAccounts')) item.selfAccountsText = change.selfAccounts.join(',');
       if (Object.keys(change).some(key => ['mapping', 'mode', 'referencePolicy'].includes(key))) item.dirty = true;
+      if (item.dirty) item.referenceReview = undefined;
       publish();
     },
     async commit(id) {

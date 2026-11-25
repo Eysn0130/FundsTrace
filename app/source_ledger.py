@@ -39,6 +39,9 @@ def capture(fields, *, amount, balance, currency, source_currency, stamp, direct
     unoriented = unoriented or source_observation
     if amount is None or not fields.get("self_account") or direction not in {"in", "out"} and not unoriented:
         return None
+    if not unoriented and fields["self_account"] != fields.get("payer_account" if direction == "out" else "payee_account"):
+        # The unresolved original stays in the import journal without a typed posting.
+        return None
     errors = set(issues)
     allowed = {"negative_amount", "unknown_status", "balance_amount_conflict", "balance_direction_conflict"}
     valid = stamp is not None and not (errors - allowed)
@@ -78,13 +81,17 @@ def validate(encoded):
     value = json.loads(encoded)
     source_observation = isinstance(value, dict) and value.get("policy") == SOURCE_OBSERVATION_POLICY
     has_direction_heading = isinstance(value, dict) and "direction_heading" in value
+    has_direction_literal = isinstance(value, dict) and "direction_literal" in value
     fields = {"policy", "kind", "row", "signed_amount", "source_currency", "header_scope",
               "source_direction", "direction", "own_card", "reported_status", "issues", "balance_before"}
     if source_observation:
         fields.add("counterparty")
     if has_direction_heading:
         fields.add("direction_heading")
+    if has_direction_literal:
+        fields.add("direction_literal")
     if (not isinstance(value, dict) or set(value) != fields
+            or has_direction_heading and has_direction_literal
             or value["policy"] not in {POLICY, UNORIENTED_POLICY, SOURCE_OBSERVATION_POLICY} or value["kind"] not in {"ledger", "financial", "context"}
             or type(value["header_scope"]) is not int or value["header_scope"] < 1
             or value["direction"] not in ({"unknown"} if value["policy"] in {UNORIENTED_POLICY, SOURCE_OBSERVATION_POLICY} else {"in", "out"}) or not isinstance(value["issues"], list)
@@ -133,6 +140,15 @@ def validate(encoded):
         declared = table_direction_recheck.directions(value["direction_heading"]).get(value["source_direction"])
         if value["policy"] != POLICY or value["kind"] != "financial" or value["direction"] != declared:
             raise ValueError("来源收付标题与记账方向不一致")
+    elif has_direction_literal:
+        proof = value["direction_literal"]
+        if (value["policy"] != POLICY or value["kind"] not in {"financial", "context"} or signed <= 0
+                or value["header_scope"] != 1 or value["direction"] != "in" or value["source_direction"] != "存款"
+                or not isinstance(proof, dict) or set(proof) != {"policy", "column", "column_index"}
+                or proof["policy"] != table_import.DEPOSIT_DIRECTION_POLICY
+                or not isinstance(proof["column"], str) or table_import._norm(proof["column"]) not in table_import.DEPOSIT_DIRECTION_HEADINGS
+                or type(proof["column_index"]) is not int or not 1 <= proof["column_index"] <= table_import.MAX_COLUMNS):
+            raise ValueError("来源存款字面与记账方向不一致")
     elif not unoriented and table_import._enum(value["source_direction"]) not in directions:
         raise ValueError("来源标注方向不一致")
     if value["source_currency"] and value["source_currency"] not in table_import._ISO_CURRENCIES:

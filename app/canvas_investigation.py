@@ -311,7 +311,7 @@ def _graph(rows, mirrors):
     return nodes, edges
 
 
-def time_projection(body):
+def time_projection(body, *, ledger_display=False):
     rows, selected, mirrors, summary = _load(body)
     original_ids = {flow_id for row in selected for flow_id in [row["id"], *mirrors.get(row["id"], [])]}
     references = _provenance(body.case_id, original_ids)
@@ -337,6 +337,8 @@ def time_projection(body):
     for row in eligible:
         if row["trade_time"] is not None and summary["time_basis"] != "mixed":
             timeline[row["trade_time"]].append(row)
+    ledger = (funds_projection.canvas_ledger_summary(
+        body.case_id, original_ids, transactions, summary["funds"]["observation_count"]) if ledger_display else None)
     return {
         "case_id": str(body.case_id), "canvas_id": str(body.canvas_id), "scope": body.scope,
         "window": {"start": _stamp(body.start), "end": _stamp(body.end), "include_undated": body.include_undated},
@@ -346,6 +348,7 @@ def time_projection(body):
                       **funds_projection.public_fields(funds_projection.summarize_rows(values))}
                      for stamp, values in sorted(timeline.items())],
         "complete": True, "limits": {"max_canvas_flows": MAX_FLOWS, "max_provenance": MAX_PROVENANCE},
+        **({"ledger_summary": ledger} if ledger else {}),
         **policy, "statistics_policy": funds_projection.SELECTION_POLICY, "transaction_count": len(eligible),
         "semantics": "selected_confirmed_events_and_unresolved_observations; explicit_utc_or_unqualified_wall_clock; inclusive_window",
     }

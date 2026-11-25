@@ -19,6 +19,7 @@ import zipfile
 import zlib
 
 from app.feedback_cancellations import CancellationIndex, Observation, PAIR_FIELDS, POLICY, cancellation_text
+from . import source_transaction_status
 
 
 # Rule changes must not give unchanged physical occurrences new identities.
@@ -100,7 +101,7 @@ REASON_CODES = frozenset({
     "negative_revocation_text", "negative_reversal_revocation_text", "negative_unknown",
     "missing_core", "invalid_amount", "amount_precision", "amount_overflow",
     "zero_amount", "invalid_direction", "invalid_time", "invalid_currency",
-    "unknown_status", "invalid_balance", "balance_precision", "balance_overflow",
+    "unknown_status", "failed_transaction", "invalid_balance", "balance_precision", "balance_overflow",
     "reversal_text_requires_review",
     "own_identity_conflict",
     "matched_cancellation",
@@ -112,6 +113,7 @@ DETAILS_FIELDS = frozenset({
     "source_account_column", "source_columns", "account_card_relation", "review_reasons",
     "own_identity_record", "own_identity_sha256",
     "financial_effect", "validation_issues", "canonical_amount",
+    source_transaction_status.DETAIL_FIELD,
     *CURRENCY_DETAILS_FIELDS,
     *PAIR_FIELDS,
 })
@@ -379,7 +381,7 @@ def _remember(details, key, value):
         details[key + "_length"] = str(len(value))
 
 
-def _transaction(source, profile=PROFILE):
+def _transaction(source, profile=PROFILE, *, transaction_status_policy=None):
     account, card = source["交易账号"], source["交易卡号"]
     own_account = account or card
     account_column = "交易账号" if account else "交易卡号" if card else ""
@@ -393,13 +395,19 @@ def _transaction(source, profile=PROFILE):
                "source_columns": ",".join(column for column in ("交易账号", "交易卡号") if source[column]),
                "account_card_relation": relation}
     _remember(details, "source_direction", source["收付标志"])
-    _remember(details, "reported_status", source["交易是否成功"])
+    reported_status = source[source_transaction_status.COLUMN]
+    _remember(details, "reported_status", reported_status)
     _remember(details, "signed_amount", source["交易金额"])
     feedback_only = not any((source["交易时间"], source["交易金额"], source["收付标志"]))
     if feedback_only and (profile != IDENTITY_PROFILE or not own_account):
         if profile != IDENTITY_PROFILE:
             details["financial_effect"] = "not_a_flow"
         return None, "non_transaction", "feedback_only", details, None
+    if transaction_status_policy:
+        details[source_transaction_status.DETAIL_FIELD] = transaction_status_policy
+        if source_transaction_status.explicitly_failed(reported_status):
+            details["financial_effect"] = "not_a_flow"
+            return None, "non_transaction", "failed_transaction", details, None
 
     currency = source["交易币种"]
     normalized_currency = currency_details(currency) if profile in CURRENCY_PROFILES else None
@@ -432,7 +440,7 @@ def _transaction(source, profile=PROFILE):
         reasons.append("invalid_currency")
     # These codes are reported source codes, not proof of settlement.  No
     # interpretation is assigned to an unknown or absent reported code.
-    if source["交易是否成功"] not in {"01", "1"}:
+    if transaction_status_policy is None and reported_status not in {"01", "1"}:
         reasons.append("unknown_status")
     if balance_reason:
         reasons.append(balance_reason)
@@ -486,15 +494,19 @@ def _cancellation_observation(source, record, profile=PROFILE):
     amount, amount_issue = _money(source["交易金额"], "amount")
     balance, balance_issue = _money(source["交易余额"], "balance")
     issues = record["details"].get("validation_issues", "").split(",")
-    eligible = (record["disposition"] == "unresolved" and len(issues) == 1
+    # Ordinary admission can retain observations with unknown codes. The
+    # dedicated cancellation policy still requires its established code on
+    # both transfer legs and cannot use an explicitly failed balance witness.
+    cancellation_status = source[source_transaction_status.COLUMN] in {"01", "1"}
+    eligible = (cancellation_status and record["disposition"] == "unresolved" and len(issues) == 1
                 and issues[0] in {"negative_reversal_text", "negative_revocation_text",
                                   "negative_reversal_revocation_text"}
                 and cancellation_text(source))
     return Observation(record["record_no"], scope, source["交易流水号"], _time(source["交易时间"], fractional=profile in MICROSECOND_PROFILES),
                        amount if amount_issue is None else None,
-                       balance if balance_issue is None else None,
+                       balance if balance_issue is None and record["reason_code"] != "failed_transaction" else None,
                        {"进": "in", "入": "in", "出": "out"}.get(source["收付标志"]),
-                       record["disposition"] == "accepted", eligible,
+                       record["disposition"] == "accepted" and cancellation_status, eligible,
                        record["disposition"] == "non_transaction")
 
 
@@ -573,7 +585,7 @@ def revoke_cancellation(plan, original_no):
     return bool(revoke_cancellations(plan, [original_no]))
 
 
-def parse(source, *, profile=PROFILE) -> dict:
+def parse(source, *, profile=PROFILE, transaction_status_policy=None) -> dict:
     """Parse a seekable binary ZIP, or reject the complete preview safely.
 
     Member order is the ZIP directory order.  CSV ``source_row`` counts logical
@@ -581,6 +593,9 @@ def parse(source, *, profile=PROFILE) -> dict:
     record globally.  Empty rows are records and must have the declared width.
     """
     if profile not in SUPPORTED_PROFILES:
+        raise FeedbackImportError("unknown_profile")
+    if transaction_status_policy is not None and (transaction_status_policy != source_transaction_status.POLICY
+            or profile not in MICROSECOND_PROFILES):
         raise FeedbackImportError("unknown_profile")
     if profile in EVIDENCE_PROFILES:
         # The outer original stays registered unchanged; the ephemeral reader
@@ -616,7 +631,8 @@ def parse(source, *, profile=PROFILE) -> dict:
                     context = row = None
                     if role == "transaction":
                         transaction_total += 1
-                        row, disposition, reason, details, context = _transaction(raw, profile)
+                        row, disposition, reason, details, context = _transaction(
+                            raw, profile, transaction_status_policy=transaction_status_policy)
                     else:
                         disposition, reason, details = "auxiliary", "auxiliary_table", {"role": role}
                         if role == "account":

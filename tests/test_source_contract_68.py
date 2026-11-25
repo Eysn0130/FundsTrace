@@ -43,6 +43,78 @@ def preview(client, cid, data, name="source.csv"):
     return result.json()
 
 
+def negative_source_rows():
+    cells = list(csv.reader(io.StringIO(payload().decode("utf-8-sig"), newline="")))
+    cells[2][HEADERS.index("交易金额")] = "-13.25"
+    cells[2][HEADERS.index("交易余额")] = "996.25"
+    return cells[:3]
+
+
+def test_trial_v78_csv_accepts_fresh_preview_with_only_a_negative_source_row(client, database, make_case, monkeypatch):
+    from test_table_multisheet_append import encoded
+
+    data = encoded([("SYN source", negative_source_rows())], ".csv")
+    with monkeypatch.context() as trial:
+        trial.setattr(client.app.state, "desktop_model_trial", (None,), raising=False)
+        automatic_case = make_case("SYN trial negative source observation")
+        automatic = preview(client, automatic_case, data)
+        assert automatic["table_summary"]["profile"] == table_import.BANK_SOURCE_PROFILE
+        assert automatic["table_summary"]["documents"][0]["header_rows"] == [1]
+        assert automatic["table_summary"]["reason_counts"] == {"transaction_valid": 1, "negative_amount": 1}
+        assert automatic["automatic"] is True and automatic["layout_model_trial"] is False
+        accepted = complete(client, automatic_case, automatic)
+
+    control_case = make_case("SYN same preview without trial")
+    control = preview(client, control_case, data)
+    for view in (automatic, control):
+        assert view["table_summary"]["accepted"] == view["table_summary"]["unresolved"] == 1
+    assert (automatic["mode"], automatic["mapping"]) == (control["mode"], control["mapping"])
+    confirmed = complete(client, control_case, control)
+
+    with database._lock:
+        database._con.close()
+        database._con = None
+        database.con()
+
+    evidence = []
+    for cid, view, receipt in ((automatic_case, automatic, accepted), (control_case, control, confirmed)):
+        assert receipt["stage"] == "done" and receipt["result"]["ok"] == 1, receipt
+        base = f"/api/v1/cases/{cid}"
+        source_id = view["import_id"]
+        response = client.get(f"{base}/imports/{source_id}/records", params={"source_row": 3})
+        assert response.status_code == 200, response.text
+        record, = response.json()["items"]
+        assert (record["disposition"], record["reason_code"]) == ("unresolved", "negative_amount")
+        assert record["flow_id"] is not None
+        ledger = json.loads(record["details"]["source_ledger_evidence"])
+        assert (ledger["kind"], ledger["signed_amount"]) == ("ledger", "-13.25")
+        evidence.append(ledger)
+        assert client.get(f"{base}/sources/{source_id}/file").content == data
+        financial = database.q_raw("select id from source_effective_flows where case_id=?", [cid])
+        assert len(financial) == 1 and financial[0]["id"] != int(record["flow_id"])
+    assert evidence[0] == evidence[1]
+
+
+@pytest.mark.parametrize("suffix", [".csv", ".xlsx"])
+def test_trial_v78_still_reviews_mixed_issues_or_workbook(client, make_case, monkeypatch, suffix):
+    from test_table_multisheet_append import encoded
+
+    monkeypatch.setattr(client.app.state, "desktop_model_trial", (None,), raising=False)
+    cid = make_case("SYN trial review boundaries")
+    cells = negative_source_rows()
+    reasons = {"transaction_valid": 1, "negative_amount": 1}
+    if suffix == ".csv":
+        third = list(csv.reader(io.StringIO(payload().decode("utf-8-sig"), newline="")))[-1]
+        third[HEADERS.index("交易金额")] = "SYN-UNKNOWN"
+        cells.append(third)
+        reasons["invalid_amount"] = 1
+    view = preview(client, cid, encoded([("SYN source", cells)], suffix), "source" + suffix)
+    assert view["table_summary"]["profile"] == table_import.BANK_SOURCE_PROFILE
+    assert view["table_summary"]["reason_counts"] == reasons
+    assert view["automatic"] is True and view["layout_model_trial"] is True
+    assert client.get(f"/api/v1/cases/{cid}/flows").json()["total"] == 0
+
+
 @pytest.mark.parametrize("summary", ['  SYN original, \"summary\"\nline  ', ""])
 @pytest.mark.parametrize("archive", [False, True])
 def test_closed_summary_is_its_own_source_column_and_remark_remains_evidence(client, make_case, summary, archive):
@@ -294,10 +366,21 @@ def test_current_source_profiles_keep_the_frozen_zoned_and_mixed_totals(client, 
 @pytest.mark.parametrize("profile", sorted(table_archive.SUPPORTED_PROFILES & table_import.SOURCE_CONTRACT_PROFILES))
 def test_archive_decodes_each_same_profile_csv_member_once(monkeypatch, profile):
     data = payload()
+    members = [("first.csv", data), ("second.csv", data)]
+    positions = [(name, row) for name, _ in members for row in range(2, 6)]
+    decode_profile = profile
+    trial = profile == table_archive.TRIAL_MEMBER_PROFILE
+    if trial:
+        from test_automatic_table_import import coded_bank_csv
+
+        members.append(("trial.csv", coded_bank_csv([("D:借", "-4.25", "95.88", "人民币", "10", "", "SYN-PEER")])))
+        positions.append(("trial.csv", 2))
+        # All leaves use the base decoder before selecting a qualified leaf's parser.
+        decode_profile = table_archive.BANK_SOURCE_EVIDENCE_PROFILE
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as package:
-        package.writestr("first.csv", data)
-        package.writestr("second.csv", data)
+        for name, content in members:
+            package.writestr(name, content)
     original, calls = table_import._csv, []
     def observed(raw, suffix, selected):
         calls.append((raw, suffix, selected))
@@ -306,10 +389,11 @@ def test_archive_decodes_each_same_profile_csv_member_once(monkeypatch, profile)
     plan = table_archive.parse(io.BytesIO(stream.getvalue()), profile=profile)
     try:
         # Equal bytes in separate members retain independent source records.
-        assert calls == [(data, ".csv", profile), (data, ".csv", profile)]
-        assert len(plan["records"]) == 8
-        assert [r["member_path"] for r in plan["records"]] == ["first.csv"] * 4 + ["second.csv"] * 4
-        assert [r["source_row"] for r in plan["records"]] == [2, 3, 4, 5] * 2
+        assert calls == [(content, ".csv", decode_profile) for _, content in members]
+        assert plan["profile"] == profile
+        assert [(r["member_path"], r["source_row"]) for r in plan["records"]] == positions
+        if trial:
+            assert plan["records"][-1]["details"][table_import.TRIAL_MEMBER_PROFILE_FIELD] == table_import.CODED_BANK_CSV_TRIAL_PROFILE
     finally:
         if plan.get("_details_pool") is not None:
             plan["_details_pool"].close()

@@ -6,11 +6,12 @@ import csv
 from decimal import Decimal, localcontext
 import hashlib
 import io
+import re
 from pathlib import PurePosixPath
 import stat
 import zipfile
 
-from . import feedback_import, table_import, table_cancellations, import_attachments, rar_archive
+from . import feedback_import, table_import, table_cancellations, import_attachments, pdf_text_observations, rar_archive
 
 
 IDENTITY_PROFILE = "funds-trace-table-archive-v1"
@@ -82,10 +83,11 @@ AUXILIARY_ROWS_XLS_PROFILE = table_import.AUXILIARY_ROWS_XLS_ARCHIVE_PROFILE
 BANK_SOURCE_PROFILE = table_import.BANK_SOURCE_ARCHIVE_PROFILE
 BANK_SOURCE_EVIDENCE_PROFILE = table_import.BANK_SOURCE_EVIDENCE_ARCHIVE_PROFILE
 BANK_SOURCE_XLS_PROFILE = table_import.BANK_SOURCE_XLS_ARCHIVE_PROFILE
+TRIAL_MEMBER_PROFILE = table_import.TRIAL_MEMBER_ARCHIVE_PROFILE
 PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE = table_import.PREVIOUS_BANK_SOURCE_EVIDENCE_ARCHIVE_PROFILE
 PREVIOUS_BANK_SOURCE_XLS_PROFILE = table_import.PREVIOUS_BANK_SOURCE_XLS_ARCHIVE_PROFILE
 BANK_SOURCE_CSV_PROFILES = table_import.BANK_SOURCE_CSV_ARCHIVE_PROFILES
-EVIDENCE_PROFILES = frozenset((BANK_SOURCE_EVIDENCE_PROFILE, BANK_SOURCE_XLS_PROFILE, PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, PREVIOUS_BANK_SOURCE_XLS_PROFILE, AUXILIARY_ROWS_EVIDENCE_PROFILE, AUXILIARY_ROWS_XLS_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE, NATIVE31_EVIDENCE_PROFILE, NATIVE31_XLS_PROFILE, UNORIENTED_EVIDENCE_PROFILE, UNORIENTED_XLS_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, POSTING_PAIR_XLS_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, SOURCE_LEDGER_XLS_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, BANK31_VARIANT_XLS_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_TEXT_XLS_PROFILE, LEGACY_EVIDENCE_PROFILE, EVIDENCE_PROFILE, XLS_EVIDENCE_PROFILE,
+EVIDENCE_PROFILES = frozenset((TRIAL_MEMBER_PROFILE, BANK_SOURCE_EVIDENCE_PROFILE, BANK_SOURCE_XLS_PROFILE, PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE, PREVIOUS_BANK_SOURCE_XLS_PROFILE, AUXILIARY_ROWS_EVIDENCE_PROFILE, AUXILIARY_ROWS_XLS_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE, NATIVE31_EVIDENCE_PROFILE, NATIVE31_XLS_PROFILE, UNORIENTED_EVIDENCE_PROFILE, UNORIENTED_XLS_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, POSTING_PAIR_XLS_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, SOURCE_LEDGER_XLS_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, BANK31_VARIANT_XLS_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_TEXT_XLS_PROFILE, LEGACY_EVIDENCE_PROFILE, EVIDENCE_PROFILE, XLS_EVIDENCE_PROFILE,
                                MICROSECOND_PROFILE, MICROSECOND_XLS_PROFILE,
                                HEADER_WIDTH_PROFILE, HEADER_WIDTH_XLS_PROFILE,
                                GUARDED_EVIDENCE_PROFILE, GUARDED_XLS_PROFILE, PRECISE_EVIDENCE_PROFILE, PRECISE_XLS_PROFILE,
@@ -94,7 +96,7 @@ PROFILE = BANK_SOURCE_PROFILE
 CANCELLATION_PROFILES = frozenset((*BANK_SOURCE_CSV_PROFILES, AUXILIARY_ROWS_PROFILE, SOURCE_OBSERVATION_PROFILE, NATIVE31_PROFILE, UNORIENTED_PROFILE, NATIVE_OBSERVATION_PROFILE, AUXILIARY_SCOPE_PROFILE, POSTING_PAIR_PROFILE, SOURCE_LEDGER_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_TEXT_PROFILE, CANCELLATION_PROFILE, HEADER_PROFILE, GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, ZONED_PROFILE, SOURCE_CONTRACT_PROFILE, *EVIDENCE_PROFILES))
 SUPPORTED_PROFILES = frozenset((POSTING_PAIR_PROFILE, IDENTITY_PROFILE, REFERENCE_PROFILE, *CANCELLATION_PROFILES))
 # Explicit precedence: lexical ordering puts v10/v11 below v9.
-PROFILE_PRECEDENCE = (BANK_SOURCE_XLS_PROFILE, BANK_SOURCE_EVIDENCE_PROFILE, BANK_SOURCE_PROFILE,
+PROFILE_PRECEDENCE = (TRIAL_MEMBER_PROFILE, BANK_SOURCE_XLS_PROFILE, BANK_SOURCE_EVIDENCE_PROFILE, BANK_SOURCE_PROFILE,
                       PREVIOUS_BANK_SOURCE_XLS_PROFILE, PREVIOUS_BANK_SOURCE_EVIDENCE_PROFILE,
                       table_import.PREVIOUS_BANK_SOURCE_ARCHIVE_PROFILE, AUXILIARY_ROWS_XLS_PROFILE, AUXILIARY_ROWS_EVIDENCE_PROFILE, AUXILIARY_ROWS_PROFILE, SOURCE_OBSERVATION_XLS_PROFILE, SOURCE_OBSERVATION_EVIDENCE_PROFILE, SOURCE_OBSERVATION_PROFILE, NATIVE31_XLS_PROFILE, NATIVE31_EVIDENCE_PROFILE, NATIVE31_PROFILE, UNORIENTED_XLS_PROFILE, UNORIENTED_EVIDENCE_PROFILE, UNORIENTED_PROFILE, NATIVE_OBSERVATION_XLS_PROFILE, NATIVE_OBSERVATION_EVIDENCE_PROFILE, NATIVE_OBSERVATION_PROFILE, AUXILIARY_SCOPE_XLS_PROFILE, AUXILIARY_SCOPE_EVIDENCE_PROFILE, AUXILIARY_SCOPE_PROFILE, POSTING_PAIR_XLS_PROFILE, POSTING_PAIR_EVIDENCE_PROFILE, POSTING_PAIR_PROFILE, SOURCE_LEDGER_XLS_PROFILE, SOURCE_LEDGER_EVIDENCE_PROFILE, SOURCE_LEDGER_PROFILE, BANK31_VARIANT_XLS_PROFILE, BANK31_VARIANT_EVIDENCE_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_TEXT_XLS_PROFILE, SOURCE_TEXT_EVIDENCE_PROFILE, SOURCE_TEXT_PROFILE, SOURCE_CONTRACT_XLS_PROFILE, SOURCE_CONTRACT_EVIDENCE_PROFILE, SOURCE_CONTRACT_PROFILE, ZONED_XLS_PROFILE, ZONED_EVIDENCE_PROFILE, ZONED_PROFILE, TIME_ROLE_XLS_PROFILE, TIME_ROLE_EVIDENCE_PROFILE, TIME_ROLE_PROFILE, OPTIONAL_REFERENCE_XLS_PROFILE, OPTIONAL_REFERENCE_EVIDENCE_PROFILE, OPTIONAL_REFERENCE_PROFILE,
                       REFERENCE_ROLE_XLS_PROFILE, REFERENCE_ROLE_EVIDENCE_PROFILE, REFERENCE_ROLE_PROFILE,
@@ -113,6 +115,29 @@ MAX_RECORDS = 1_000_000
 EVIDENCE_MAX_RECORDS = 2_000_000
 EVIDENCE_MAX_EXPANDED_BYTES = 1024 * 1024 * 1024
 MAX_DEPTH = 2
+MEMBER_RETENTION_POLICY = "archive-member-retention-v1"
+UNREADABLE_REASON = "intake_member_unreadable"
+RETENTION_DETAIL = "member_retention_policy"
+INTAKE_ROLE_DETAIL = "intake_material_role"
+INTAKE_DECLARED_ROLES = {"account": "account", "registry": "client", "address": "client",
+                         "phone": "client", "description": "description", "settlement_bridge": "description",
+                         "settlement_scope": "description", "event_reference_scope": "description",
+                         "ledger_registration": "client"}
+_DECLARED_SCHEMAS = {
+    ("名称", "证件类型", "证件号码", "开户账号", "开户机构", "适用期间"): ("account", 6),
+    ("登记主体", "证件类型", "证件号码", "登记编号"): ("registry", 4),
+    ("地址用途", "地址文本", "关联主体编号", "有效起日", "有效止日"): ("address", 4),
+    table_import.table_source_roles.DATED_ACCOUNT_REGISTRY: ("ledger_registration", 7),
+}
+_UNREADABLE_MEMBER_ERRORS = {
+    "CSV编码无法安全识别",
+    "CSV引号或记录结构损坏，文件未接纳",
+    "反馈包辅助CSV结构损坏，整包未接纳",
+    "CSV分隔符存在歧义，无法安全识别",
+    "CSV已识别表头与数据列数不一致，文件未接纳",
+    "Excel工作簿损坏、加密或格式不受支持",
+}
+
 
 _TRANSACTION = frozenset(table_import.BANK_FEEDBACK_32_COLUMNS)
 AUXILIARY_SCHEMAS = {
@@ -160,19 +185,29 @@ def _auxiliary_role(header, profile):
     return role, source_auxiliary
 
 
-def should_parse(source, *, native_observations=False):
+def should_parse(source, *, native_observations=False, retain_opaque=False):
     """Only the new envelope family opts in; historical flat profiles stay put."""
     try:
         source.seek(0)
         with rar_archive.open_archive(source) as archive:
             infos = archive.infolist()
+            leaves = [info for info in infos if not info.is_dir()]
+            if retain_opaque and leaves and (
+                    any(info.filename.lower().endswith(".pdf") for info in leaves)
+                    or not any(info.filename.lower().endswith(".csv") for info in leaves)):
+                return True
             if any(info.filename.lower().endswith((".xlsx", ".xls", ".txt", ".tsv")) for info in infos):
                 return True
             legacy, ordinary = False, False
             for info in infos:
                 if info.filename.lower().endswith(".csv") and not info.flag_bits & 1:
                     with archive.open(info) as stream:
-                        header, _ = _header(stream.read(65536))
+                        sample = stream.read(65536)
+                    if retain_opaque:
+                        from .services import trial_delayed_pair
+                        if trial_delayed_pair.declaration_header(sample):
+                            return True
+                    header, _ = _header(sample)
                     legacy = legacy or frozenset(header) == frozenset(feedback_import.COLUMNS)
                     ordinary = ordinary or bool(header and frozenset(header) not in {frozenset(value) for value in feedback_import.SCHEMAS.values()})
             if native_observations and legacy:
@@ -292,9 +327,194 @@ def _auxiliary(payload, path, header, encoding, role, *, evidence=False, native_
             "mapping_evidence": [], "columns": [], "mapping": {}, "mode": "B"}
 
 
-def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
+def _intake_aux_role(header, role):
+    for section in ("address", "phone"):
+        if frozenset(header) == frozenset(feedback_import.SCHEMAS[section]):
+            return section
+    return role
+
+
+def _declare_intake_role(part, role):
+    document = part["documents"][0]
+    document.update(intake_role=role, source_rows=document["row_count"] + 1)
+    for record in part["records"]:
+        record["details"][INTAKE_ROLE_DETAIL] = role
+
+
+def _settlement_intake(payload, path, declaration):
+    from .services import trial_delayed_pair
+
+    encoding, header = declaration
+    try:
+        trial_delayed_pair.read_declarations(payload)
+        part = _auxiliary(payload, path, header, "utf-8-sig", "description")
+    except (ValueError, csv.Error):
+        part = import_attachments.plan(payload, path)
+        part["records"][0].update(disposition="unresolved", reason_code=trial_delayed_pair.COVERAGE_REASON,
+            details={"source_role": "description", "source_row": "1", "sheet": "", "financial_effect": "undetermined",
+                     "reason": "清算对应表已保留。内容受损、作用域不完整或超出核证范围，请打开原件核对。"})
+        part["members"][0].update(role="auxiliary", encoding=encoding)
+        part["documents"][0].update(role="description", sheet="", header_row=1)
+    else:
+        for record in part["records"]:
+            if record["disposition"] == "auxiliary":
+                record["details"]["reason"] = "独立清算对应声明，供双侧原始过账核对"
+    _declare_intake_role(part, trial_delayed_pair.ROLE)
+    part["documents"][0].update(columns=table_import._columns(header), header_rows=[1],
+                                source_rows=max((row["source_row"] for row in part["records"]), default=1))
+    return part
+
+
+def _reference_scope_intake(payload, path, statement):
+    role, _, verified = statement
+    plan = import_attachments.plan(payload, path)
+    plan["records"][0].update(disposition="auxiliary", reason_code="auxiliary_table", details={
+        "source_role": "description", "source_row": "1", "sheet": "", "financial_effect": "not_a_flow",
+        "reason": ("跨账簿来源范围及时间口径声明" if verified
+                   else "已保留范围说明，尚缺可核证的完整作用范围、流水绑定或时间口径。"),
+    })
+    plan["members"][0].update(role="auxiliary", encoding="utf-8-sig")
+    plan["documents"][0].update(role="description", sheet="", header_row=None)
+    _declare_intake_role(plan, role)
+    return plan
+
+
+def _declared_intake_table(payload, path, header, encoding, delimiter):
+    declared = _DECLARED_SCHEMAS.get(tuple(header))
+    if declared is None or not encoding:
+        return None
+    role, required = declared
+    try:
+        reader = csv.reader(io.StringIO(payload.decode(encoding, errors="strict"), newline=""),
+                            delimiter=delimiter, strict=True)
+        next(reader)
+        for row in reader:
+            if len(row) != len(header) or not all(value.strip() for value in row[:required]):
+                return None
+            if role == "ledger_registration":
+                table_import.table_source_roles.dated_account_record(row)
+    except (ValueError, csv.Error, StopIteration):
+        return None
+    part = _auxiliary(payload, path, header, encoding, INTAKE_DECLARED_ROLES[role], delimiter=delimiter)
+    _declare_intake_role(part, role)
+    return part
+
+
+def _original_description(payload, path, lines):
+    part = import_attachments.plan(payload, path)
+    record = part["records"][0]
+    record.update(disposition="auxiliary", reason_code="auxiliary_table")
+    record["details"] = {"source_role": "description", "source_row": "1", "sheet": "",
+                         "financial_effect": "not_a_flow", "reason": "原文声明作用域的说明资料",
+                         INTAKE_ROLE_DETAIL: "description"}
+    part["members"][0].update(role="auxiliary", encoding="utf-8-sig")
+    part["documents"][0].update(role="description", sheet="", source_rows=len(lines), intake_role="description")
+    return part
+
+
+def _trial_narrative_note(payload, path):
+    from .services import trial_pair_decision, trial_trace_decision
+
+    if not (trial_trace_decision.intake_description(payload) or trial_pair_decision.intake_description(payload)):
+        return None
+    return _original_description(payload, path, payload.decode("utf-8-sig").splitlines())
+
+
+def _scoped_note(payload, path):
+    if len(payload) > 4096 or PurePosixPath(path).suffix.lower() != ".txt":
+        return None
+    try:
+        lines = payload.decode("utf-8-sig", errors="strict").splitlines()
+    except UnicodeError:
+        return None
+    if not 3 <= len(lines) <= 24 or lines[0] not in ("SYNTHETIC NOTES", "FIELD NOTES", "MATERIAL NOTES"):
+        return None
+    match = re.fullmatch(r"Scope: ([A-Za-z0-9][A-Za-z0-9_./-]{0,250}) only\.", lines[1])
+    if not match:
+        return None
+    try:
+        _path(match[1])
+    except table_import.TableImportError:
+        return None
+    return _original_description(payload, path, lines)
+
+
+def direct_intake_auxiliary(source, suffix, *, narrative_decisions=False):
+    """Recognize the same closed auxiliary declarations outside a directory."""
+    if suffix not in {".csv", ".tsv", ".txt"}:
+        return None
+    source.seek(0)
+    sample = source.read(65536)
+    source.seek(0)
+    from .services import trial_delayed_pair
+
+    profile = table_import.VOUCHER_REFERENCE_EVIDENCE_PROFILE
+    scope = trial_delayed_pair.scope_statement(sample) if suffix == ".txt" else None
+    if scope is not None:
+        payload = table_import._bytes(source)
+        statement = trial_delayed_pair.scope_statement(payload)
+        if statement is None:
+            source.seek(0)
+            return None
+        header = []
+        plan = _reference_scope_intake(payload, "table.txt", statement)
+    elif narrative_decisions and suffix == ".txt" and (plan := _trial_narrative_note(sample, "table.txt")) is not None:
+        header = []
+    elif settlement_header := trial_delayed_pair.declaration_header(sample):
+        _, header = settlement_header
+        plan = _settlement_intake(table_import._bytes(source), "table.csv", settlement_header)
+    else:
+        if suffix != ".csv":
+            return None
+        header, encoding = _header(sample)
+        role, source_auxiliary = _auxiliary_role(header, BANK_SOURCE_EVIDENCE_PROFILE)
+        if len(header) != len(set(header)) or (role is None and tuple(header) not in _DECLARED_SCHEMAS):
+            return None
+        payload = table_import._bytes(source)
+        if role is None:
+            plan = _declared_intake_table(payload, "table.csv", header, encoding, ",")
+            if plan is None:
+                source.seek(0)
+                return None
+        else:
+            plan = _auxiliary(payload, "table.csv", header, encoding, role,
+                              evidence=not source_auxiliary, native_observations=True)
+            intake_role = _intake_aux_role(header, role)
+            if intake_role != role:
+                _declare_intake_role(plan, intake_role)
+    document = plan["documents"][0]
+    document.update(columns=table_import._columns(header, profile), header_rows=[1] if header else [])
+    document.setdefault("source_rows", document["row_count"] + 1)
+    plan.update(profile=profile, sheet="")
+    from . import evidence_resolution
+    evidence_resolution.bind_families(plan)
+    table_cancellations.refresh_stats(plan)
+    return plan
+
+
+def _unreadable_member(payload, path):
+    part = import_attachments.plan(payload, path)
+    record = part["records"][0]
+    record.update(disposition="unresolved", reason_code=UNREADABLE_REASON)
+    record["details"].update(financial_effect="undetermined", reason="该成员无法安全读入，原件已保留")
+    record["details"][RETENTION_DETAIL] = MEMBER_RETENTION_POLICY
+    return part
+
+
+def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False, member_retention=None,
+          pdf_member_observations=False, narrative_decisions=False, _trial_members=False,
+          transaction_status_policy=None):
     if profile not in SUPPORTED_PROFILES:
         raise table_import.TableImportError("不支持的反馈包解析规则")
+    if transaction_status_policy is not None and (transaction_status_policy != table_import.TRANSACTION_STATUS_POLICY
+            or profile not in table_import.PRECISE_PROFILES):
+        raise table_import.TableImportError("不支持的交易状态解释规则")
+    if member_retention is not None and (member_retention != MEMBER_RETENTION_POLICY or profile not in EVIDENCE_PROFILES):
+        raise table_import.TableImportError("不支持的目录成员保全规则")
+    replay_trial = profile == TRIAL_MEMBER_PROFILE
+    trial_members = replay_trial or _trial_members and profile == BANK_SOURCE_EVIDENCE_PROFILE
+    if replay_trial:
+        profile = BANK_SOURCE_EVIDENCE_PROFILE
     plan = {"profile": profile, "mode": "B", "mapping": {}, "columns": [], "sheet": "",
             "rows": [], "records": [], "members": [], "documents": [], "mapping_evidence": []}
     if profile in CANCELLATION_PROFILES:
@@ -328,11 +548,16 @@ def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
         if offset + len(part["records"]) > record_limit:
             raise table_import.TableImportError("反馈包记录数超出安全处理范围")
         hashes = {member["member_path"]: member["sha256"] for member in part["members"]}
+        if part.get("profile") in table_import.TRIAL_TABLE_PROFILES:
+            family = prefix
+            plan["profile"] = TRIAL_MEMBER_PROFILE
         for record in part["records"]:
             old_path = record["member_path"]
             path = prefix if old_path in {"table.csv", prefix} else f"{prefix}/{old_path}"
             record.update(record_no=offset + record["record_no"], member_path=path,
                           record_key=table_import.record_key(path, hashes[old_path], record["source_row"]))
+            if part.get("profile") in table_import.TRIAL_TABLE_PROFILES:
+                record["details"][table_import.TRIAL_MEMBER_PROFILE_FIELD] = part["profile"]
             for field in ("paired_record_no", "cancellation_witness_record_no"):
                 if field in record["details"]:
                     record["details"][field] = str(offset + int(record["details"][field]))
@@ -425,55 +650,97 @@ def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
                         if depth >= MAX_DEPTH:
                             raise table_import.TableImportError("反馈包嵌套层数超出安全处理范围")
                         visit(io.BytesIO(payload), path, depth + 1)
+                    elif suffix == ".pdf" and pdf_member_observations and member_retention == MEMBER_RETENTION_POLICY:
+                        part = pdf_text_observations.archive_plan(payload, path) or import_attachments.plan(payload, path)
+                        merge(part, path, prefix)
                     elif suffix not in (".csv", ".tsv", ".txt", ".xlsx") and not (
                             suffix == ".xls" and profile in XLS_EVIDENCE_PROFILES):
                         merge(import_attachments.plan(payload, path), path, prefix)
                     else:
-                        # XLS always goes through the typed BIFF reader, even
-                        # when its bytes resemble a recognized auxiliary CSV.
-                        header, encoding = ([], None) if suffix == ".xls" else _header(payload)
-                        delimiter = ","
-                        decoded_csv = None
-                        if profile in table_import.SOURCE_CONTRACT_PROFILES and suffix in {".csv", ".tsv", ".txt"}:
-                            decoded_csv = table_import._DecodedCSV(payload, suffix, profile)
-                            header = [cell.strip() for cell in decoded_csv.header]
-                            encoding, delimiter = decoded_csv.encoding, decoded_csv.delimiter
-                        if (profile not in EVIDENCE_PROFILES and profile not in table_import.NATIVE_OBSERVATION_PROFILES
-                                and len(header) == len(feedback_import.COLUMNS)
-                                and frozenset(header) == frozenset(feedback_import.COLUMNS)):
-                            # Generic mapping cannot downgrade a verified profile's
-                            # cancellation/identity semantics inside a new envelope.
-                            raise table_import.TableImportError("新反馈包包含需使用原规则的旧版交易表，整包未接纳；未降级解释资金记录")
-                        native_observations = profile in table_import.NATIVE_OBSERVATION_PROFILES
-                        role, source_auxiliary = _auxiliary_role(header, profile)
-                        member_profile = (profile if profile in EVIDENCE_PROFILES or profile in {GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, ZONED_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_TEXT_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_LEDGER_PROFILE, POSTING_PAIR_PROFILE, AUXILIARY_SCOPE_PROFILE, NATIVE_OBSERVATION_PROFILE, UNORIENTED_PROFILE, NATIVE31_PROFILE, SOURCE_OBSERVATION_PROFILE, AUXILIARY_ROWS_PROFILE, *BANK_SOURCE_CSV_PROFILES} else
-                                          table_import.ARCHIVE_MEMBER_PROFILE if profile == HEADER_PROFILE
-                                          else table_import.IDENTITY_PROFILE)
-                        if role or member_profile != profile:
-                            decoded_csv = None
-                        with localcontext() as context:
-                            if profile in CANCELLATION_PROFILES:
-                                context.prec = max(context.prec, 50)
-                            working_pool()
-                            part = (_auxiliary(payload, path, header, encoding, role, evidence=profile in EVIDENCE_PROFILES and not source_auxiliary,
-                                               native_observations=native_observations, delimiter=delimiter) if role
-                                    else table_import.parse(
-                                        io.BytesIO(payload), suffix=suffix,
-                                        profile=member_profile,
-                                        reference_policy=(table_import.TRANSACTION_REFERENCE_POLICY
-                                                          if profile in REFERENCE_PROFILES else None),
-                                        _details_pool=details_pool,
-                                        _defer_occurrence_binding=profile in EVIDENCE_PROFILES,
-                                        _retain_csv_format=profile in CANCELLATION_PROFILES and suffix == ".csv",
-                                        _decoded_csv=decoded_csv))
-                        if role and profile in table_import.AUXILIARY_ROWS_ARCHIVE_PROFILES:
-                            part["documents"][0]["columns"] = table_import._columns(header, profile)
                         try:
-                            if profile in CANCELLATION_PROFILES and not role and suffix == ".csv":
-                                table_cancellations.apply(part, payload, allow_feedback28=profile in EVIDENCE_PROFILES or native_observations,
-                                                          csv_format=part.get("_csv_format"))
-                        finally:
-                            part.pop("_csv_format", None)
+                            if member_retention == MEMBER_RETENTION_POLICY and suffix in {".csv", ".tsv", ".txt"}:
+                                from .services import trial_delayed_pair
+                                if settlement_header := trial_delayed_pair.declaration_header(payload):
+                                    merge(_settlement_intake(payload, path, settlement_header), path, prefix)
+                                    payload = None
+                                    continue
+                                if suffix == ".txt" and (statement := trial_delayed_pair.scope_statement(payload)):
+                                    merge(_reference_scope_intake(payload, path, statement), path, prefix)
+                                    payload = None
+                                    continue
+                                if (narrative_decisions and suffix == ".txt"
+                                        and (description := _trial_narrative_note(payload, path)) is not None):
+                                    merge(description, path, prefix)
+                                    payload = None
+                                    continue
+                            # XLS always goes through the typed BIFF reader, even
+                            # when its bytes resemble a recognized auxiliary CSV.
+                            header, encoding = ([], None) if suffix == ".xls" else _header(payload)
+                            delimiter = ","
+                            decoded_csv = None
+                            if profile in table_import.SOURCE_CONTRACT_PROFILES and suffix in {".csv", ".tsv", ".txt"}:
+                                decoded_csv = table_import._DecodedCSV(payload, suffix, profile)
+                                header = [cell.strip() for cell in decoded_csv.header]
+                                encoding, delimiter = decoded_csv.encoding, decoded_csv.delimiter
+                            if (profile not in EVIDENCE_PROFILES and profile not in table_import.NATIVE_OBSERVATION_PROFILES
+                                    and len(header) == len(feedback_import.COLUMNS)
+                                    and frozenset(header) == frozenset(feedback_import.COLUMNS)):
+                                # Generic mapping cannot downgrade a verified profile's
+                                # cancellation/identity semantics inside a new envelope.
+                                raise table_import.TableImportError("新反馈包包含需使用原规则的旧版交易表，整包未接纳；未降级解释资金记录")
+                            native_observations = profile in table_import.NATIVE_OBSERVATION_PROFILES
+                            role, source_auxiliary = _auxiliary_role(header, profile)
+                            if member_retention == MEMBER_RETENTION_POLICY and len(header) != len(set(header)):
+                                role, source_auxiliary = None, False
+                            member_profile = (profile if profile in EVIDENCE_PROFILES or profile in {GUARDED_PROFILE, PRECISE_PROFILE, REFERENCE_ROLE_PROFILE, OPTIONAL_REFERENCE_PROFILE, TIME_ROLE_PROFILE, ZONED_PROFILE, SOURCE_CONTRACT_PROFILE, SOURCE_TEXT_PROFILE, BANK31_VARIANT_PROFILE, SOURCE_LEDGER_PROFILE, POSTING_PAIR_PROFILE, AUXILIARY_SCOPE_PROFILE, NATIVE_OBSERVATION_PROFILE, UNORIENTED_PROFILE, NATIVE31_PROFILE, SOURCE_OBSERVATION_PROFILE, AUXILIARY_ROWS_PROFILE, *BANK_SOURCE_CSV_PROFILES} else
+                                              table_import.ARCHIVE_MEMBER_PROFILE if profile == HEADER_PROFILE
+                                              else table_import.IDENTITY_PROFILE)
+                            if role or member_profile != profile:
+                                decoded_csv = None
+                            declared = None
+                            if member_retention == MEMBER_RETENTION_POLICY:
+                                declared = (_scoped_note(payload, path) if suffix == ".txt" else None)
+                                if declared is None and suffix in {".csv", ".tsv", ".txt"}:
+                                    declared = _declared_intake_table(payload, path, header, encoding, delimiter)
+                            if declared is not None:
+                                merge(declared, path, prefix)
+                                payload = None
+                                continue
+                            with localcontext() as context:
+                                if profile in CANCELLATION_PROFILES:
+                                    context.prec = max(context.prec, 50)
+                                working_pool()
+                                part = (_auxiliary(payload, path, header, encoding, role, evidence=profile in EVIDENCE_PROFILES and not source_auxiliary,
+                                                   native_observations=native_observations, delimiter=delimiter) if role
+                                        else table_import.parse(
+                                            io.BytesIO(payload), suffix=suffix,
+                                            profile=member_profile,
+                                            reference_policy=(table_import.TRANSACTION_REFERENCE_POLICY
+                                                              if profile in REFERENCE_PROFILES else None),
+                                            _details_pool=details_pool,
+                                            _defer_occurrence_binding=profile in EVIDENCE_PROFILES,
+                                            _retain_csv_format=profile in CANCELLATION_PROFILES and suffix == ".csv",
+                                            _decoded_csv=decoded_csv,
+                                            _trial_archive_member=trial_members and suffix in {".csv", ".xlsx"},
+                                            transaction_status_policy=transaction_status_policy))
+                            if role and profile in table_import.AUXILIARY_ROWS_ARCHIVE_PROFILES:
+                                part["documents"][0]["columns"] = table_import._columns(header, profile)
+                            if role and member_retention == MEMBER_RETENTION_POLICY:
+                                document = part["documents"][0]
+                                intake_role = _intake_aux_role(header, role)
+                                if intake_role != role:
+                                    _declare_intake_role(part, intake_role)
+                            try:
+                                if (profile in CANCELLATION_PROFILES and not role and suffix == ".csv"
+                                        and part.get("profile") not in table_import.TRIAL_TABLE_PROFILES):
+                                    table_cancellations.apply(part, payload, allow_feedback28=profile in EVIDENCE_PROFILES or native_observations,
+                                                              csv_format=part.get("_csv_format"))
+                            finally:
+                                part.pop("_csv_format", None)
+                        except table_import.TableImportError as error:
+                            if member_retention != MEMBER_RETENTION_POLICY or str(error) not in _UNREADABLE_MEMBER_ERRORS:
+                                raise
+                            part = _unreadable_member(payload, path)
                         merge(part, path, prefix)
                     payload = None
         except (zipfile.BadZipFile, RuntimeError, OSError, ValueError) as error:
@@ -491,6 +758,8 @@ def parse(source, profile=PROFILE, *, _stage=False, _operation_scopes=False):
             visit = None
         if not plan["members"]:
             raise table_import.TableImportError("反馈包没有可处理的数据成员")
+        if replay_trial and plan["profile"] != TRIAL_MEMBER_PROFILE:
+            raise table_import.TableImportError("目录叶成员与冻结解析版本不一致")
         if profile in CANCELLATION_PROFILES:
             plan["stats"] = statistics.result()
             if profile in EVIDENCE_PROFILES or profile in {SOURCE_OBSERVATION_PROFILE, AUXILIARY_ROWS_PROFILE, *BANK_SOURCE_CSV_PROFILES}:

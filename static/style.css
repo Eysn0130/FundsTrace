@@ -900,7 +900,8 @@ html[data-ft-theme="light"] {
 .dot.sink { background: #7ca6d5; }
 .dot.main { background: #e8c46a; }
 .dot.samename { background: #a79be0; }
-#graphLayoutStatus { grid-area: 1 / 1; position: absolute; top: 12px; left: 16px; z-index: 7; max-width: calc(100% - 32px); padding: 7px 10px; border: 1px solid var(--graph-rule); border-radius: 4px; background: var(--graph-status-surface); color: var(--graph-ink); font-size: 12px; pointer-events: none; }
+.graph-status-stack { grid-area: 1 / 1; position: absolute; top: 12px; left: 16px; z-index: 7; max-width: calc(100% - 32px); display: grid; justify-items: start; gap: 4px; pointer-events: none; }
+.graph-status-stack > :not(:empty) { padding: 7px 10px; border: 1px solid var(--graph-rule); border-radius: 4px; background: var(--graph-status-surface); color: var(--graph-ink); font-size: 12px; overflow-wrap: anywhere; }
 /* A quiet floating utility layer; palettes never change graph meaning. */
 #graphMinimapPanel {
   --mm-width: 136px; --mm-map-height: 85px; --mm-controls-height: 23px; --mm-gap: 5px;
@@ -1422,7 +1423,6 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
 
 .context-matches { min-width: 0; min-height: 0; border-inline-start: 1px solid var(--border); }
 #ctxSuggest { display: grid; grid-template-rows: repeat(2, minmax(0, 1fr)); height: 100%; }
-#ctxSuggest:has(> .context-score-note) { grid-template-rows: repeat(2, minmax(0, 1fr)) auto; }
 .context-matches .sgroup { display: flex; flex-direction: column; min-height: 0; padding: 10px 14px 12px; }
 .context-matches .sgroup + .sgroup { border-block-start: 1px solid var(--border-strong); }
 .context-matches .sg-title {
@@ -1435,9 +1435,10 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
   scrollbar-width: thin; scrollbar-color: transparent transparent;
 }
 .context-matches .sg-items:is(:hover, :focus-within) { scrollbar-color: var(--text-subtle) transparent; }
+.context-matches .sg-entry { border-block-end: 1px solid var(--context-rule); }
 .context-matches .sg-item {
   position: relative; display: block; width: 100%; padding: 8px 8px 8px 10px;
-  background: transparent; border: 1px solid transparent; border-block-end-color: var(--context-rule);
+  background: transparent; border: 1px solid transparent;
   color: var(--text-primary); text-align: left; font: inherit; cursor: pointer;
 }
 .context-matches .sg-item:hover:not(:disabled) { background: var(--surface-hover); }
@@ -1448,15 +1449,18 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
   border-radius: 4px; padding-inline-start: 8px; background: var(--selection-surface);
 }
 .context-matches .sg-main { display: block; min-width: 0; overflow-wrap: anywhere; }
-.context-matches .sg-main b { display: block; padding-inline-end: 32px; font-size: 13px; line-height: 18px; font-weight: 650; }
+.context-matches .sg-main b { display: block; padding-inline-end: 60px; font-size: 13px; line-height: 18px; font-weight: 650; }
 .context-matches .sg-main .mono, .context-matches .sg-basis { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
 .context-matches .sg-score { position: absolute; inset-block-start: 8px; inset-inline-end: 8px; color: var(--money-text); font-size: 13px; font-variant-numeric: tabular-nums; }
 .context-matches .sg-score b { color: inherit; font-weight: 550; }
-.context-matches .sg-judgment { display: block; margin-top: 4px; color: var(--text-primary); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.context-matches .sg-judgment { margin: 0; padding: 0 8px 8px 10px; color: var(--text-primary); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.context-matches .sg-judgment:empty { padding: 0; }
 .context-matches .sg-evidence { display: block; margin-top: 5px; color: var(--text-primary); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.context-matches .sg-field-receipt { display: block; margin-block-start: 4px; }
 .context-matches .sg-empty { padding: 10px 2px; color: var(--muted); font-size: 12px; }
-.context-score-note { padding: 4px 9px; color: var(--muted); font-size: 12px; max-height: 100px; overflow: auto; }
-.context-score-note p { margin: 5px 0; overflow-wrap: anywhere; }
+.context-review-actions { margin-block: 14px; }
+.context-review-actions label { margin-inline-end: 8px; }
+.context-review-actions p { overflow-wrap: anywhere; }
 .context-detail { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 14px 20px; border-block-start: 1px solid var(--border); }
 .context-detail header { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
 .context-original { overflow: auto; overscroll-behavior: contain; min-height: 0; }
@@ -1510,9 +1514,7 @@ html[data-ft-translucency="false"] #graphMinimapPopover, html[data-ft-translucen
   .context-body.is-expanded { grid-template-rows: minmax(0, 1fr); }
   .context-ledger { padding-inline-end: 0; }
   .context-matches { border-inline-start: 0; border-block-start: 1px solid var(--border); }
-  #ctxSuggest, #ctxSuggest:has(> .context-score-note) { grid-template: minmax(0, 1fr) / repeat(2, minmax(0, 1fr)); }
-  #ctxSuggest:has(> .context-score-note) { grid-template-rows: minmax(0, 1fr) auto; }
-  .context-score-note { grid-column: 1 / -1; max-height: 45px; }
+  #ctxSuggest { grid-template: minmax(0, 1fr) / repeat(2, minmax(0, 1fr)); }
   .context-matches .sgroup { padding-block: 3px; }
   .context-matches .sgroup + .sgroup { border-block-start: 0; border-inline-start: 1px solid var(--border); }
   .context-matches .sg-title { margin-bottom: 2px; font-size: 12px; }

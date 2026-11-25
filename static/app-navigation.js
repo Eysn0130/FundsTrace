@@ -356,6 +356,7 @@
     finally {release();}
   });
   async function dataChanged() {
+    resetTrialLedgerLookup(false);
     revision++; sync(); post({type:'data-changed',caseId:String(state.caseId),generation:state.caseGeneration});
     if(analysisLoaded) analysisFrame.contentWindow?.postMessage({channel,version,type:'data-changed',caseId:String(state.caseId),generation:state.caseGeneration},location.origin);
     if (page === 'home') await refreshAll();

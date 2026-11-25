@@ -17,7 +17,7 @@ import zlib
 import duckdb
 from fastapi import HTTPException
 
-from . import db, feedback_import, importer, evidence_resolution, import_attachments, event_resolution, table_direction_recheck
+from . import db, feedback_import, importer, evidence_resolution, import_attachments, event_resolution, table_direction_recheck, table_tiered_headers
 
 CASE_PKG_COLS = {
     "flows": "id, batch_id, trade_no, trade_time, payer_name, payer_account, payer_bank, "
@@ -264,7 +264,7 @@ def _feedback_amount(details, field="canonical_amount"):
 
 def _feedback_journals(check, paths):
     """Check the closed archive record ledger without needing the original ZIP."""
-    from . import feedback_import
+    from . import feedback_import, source_transaction_status
 
     archives = dict(check.execute(
         "select source_id,parser_version from import_sources where row_kind='archive_record'").fetchall())
@@ -332,7 +332,7 @@ def _feedback_journals(check, paths):
                 or (role == "transaction") == (disposition == "auxiliary")
                 or (disposition in ("imported", "duplicate") and reason != "transaction_valid")
                 or (disposition == "removed" and reason != "flow_deleted")
-                or (disposition == "non_transaction" and reason != "feedback_only")
+                or (disposition == "non_transaction" and reason not in {"feedback_only", "failed_transaction"})
                 or (disposition == "auxiliary" and reason != "auxiliary_table")
                 or (disposition == "non_monetary" and reason != "zero_amount")
                 or ((disposition == "cancelled") != (reason == "matched_cancellation"))
@@ -357,6 +357,19 @@ def _feedback_journals(check, paths):
             _invalid("身份证据逻辑来源指纹无效")
         if not isinstance(details, dict) or not set(details).issubset(detail_fields):
             _invalid("反馈包记录语义元数据无效")
+        literal_status_policy = source_transaction_status.DETAIL_FIELD in details
+        if literal_status_policy:
+            status = details.get("reported_status")
+            status_digest = {"reported_status_sha256", "reported_status_length"} & details.keys()
+            if (details[source_transaction_status.DETAIL_FIELD] != source_transaction_status.POLICY
+                    or archives[source_id] not in feedback_import.MICROSECOND_PROFILES
+                    or role != "transaction" or reason in {"feedback_only", "unknown_status"}
+                    or (status is None and status_digest != {"reported_status_sha256", "reported_status_length"})
+                    or (status is not None and (status_digest or
+                        source_transaction_status.explicitly_failed(status) != (reason == "failed_transaction")))):
+                _invalid("反馈包原报状态与处置不一致")
+        if reason == "failed_transaction" and (not literal_status_policy or disposition != "non_transaction"):
+            _invalid("反馈包失败交易不能产生财务流水")
         if disposition != "cancelled" and set(details) & cancellation_fields:
             _invalid("非配对排除记录不能声明冲正关联")
         for field, value in details.items():
@@ -376,7 +389,8 @@ def _feedback_journals(check, paths):
                 _invalid("反馈包事件语义无效")
             if field == "account_card_relation" and value not in ("both_present_equal", "both_present_distinct", "account_only", "card_only", "missing"):
                 _invalid("反馈包账号关系元数据无效")
-            if field in ("review_reasons", "validation_issues") and any(code not in feedback_import.REASON_CODES for code in value.split(",")):
+            if field in ("review_reasons", "validation_issues") and any(
+                    code == "failed_transaction" or code not in feedback_import.REASON_CODES for code in value.split(",")):
                 _invalid("反馈包待核查原因无效")
             if legacy and field == "review_reasons" and "own_identity_conflict" in value.split(","):
                 if disposition != "review" or reason != "own_identity_conflict":
@@ -409,7 +423,8 @@ def _feedback_journals(check, paths):
             if "canonical_amount" in details and (canonical_amount is None or role != "transaction"
                     or not re.fullmatch(r"-?(?:0|[1-9][0-9]*)\.[0-9]{2}", details["canonical_amount"])):
                 _invalid("反馈包规范金额无效")
-            if "signed_amount" in details and _feedback_amount(details, "signed_amount") != canonical_amount:
+            if (reason != "failed_transaction" and "signed_amount" in details
+                    and _feedback_amount(details, "signed_amount") != canonical_amount):
                 _invalid("反馈包规范金额与原始金额不一致")
             effect = ("source_reported" if disposition in ("imported", "duplicate", "removed") else
                       "analysis_excluded" if disposition == "cancelled" else
@@ -417,7 +432,7 @@ def _feedback_journals(check, paths):
                       "undetermined" if disposition == "unresolved" else "not_a_flow")
             if details.get("financial_effect", "not_a_flow" if role != "transaction" else None) != effect:
                 _invalid("反馈包财务影响与自动处置不一致")
-            if disposition == "non_transaction" and (
+            if reason == "feedback_only" and (
                     details.get("signed_amount") != "" or details.get("source_direction") != ""
                     or any(field in details for field in ("signed_amount_sha256", "signed_amount_length",
                                                           "source_direction_sha256", "source_direction_length",
@@ -431,7 +446,8 @@ def _feedback_journals(check, paths):
             if disposition == "unresolved" and (issues[0] != reason or canonical_amount == Decimal("0.00")):
                 _invalid("未解决记录须保留未确定的财务影响与原因")
             if disposition in ("imported", "duplicate", "removed") and (
-                    canonical_amount is None or canonical_amount <= 0 or details.get("reported_status") not in ("01", "1")
+                    canonical_amount is None or canonical_amount <= 0
+                    or not literal_status_policy and details.get("reported_status") not in ("01", "1")
                     or "validation_issues" in details):
                 _invalid("反馈包交易须保留正金额和明确的来源状态")
             if disposition in ("non_transaction", "auxiliary") and "canonical_amount" in details:
@@ -535,27 +551,307 @@ def _feedback_journals(check, paths):
         _invalid("反馈包处置与流水来源不一致")
 
 
+_TIERED_DETAILS = {table_tiered_headers.PROOF_FIELD, table_tiered_headers.LEAF_PROOF_FIELD,
+                   table_tiered_headers.BINDING_FIELD, table_tiered_headers.DIRECTION_BINDING_FIELD}
+
+
+class _TieredJournal:
+    """Recover one worksheet's regions from its ordered physical records."""
+
+    def __init__(self, member_digest, *, allow_groups=False):
+        self.member_digest = member_digest
+        self.allow_groups = allow_groups
+        self.parent = None
+        self.omitted_header = False
+        self.has_evidence = False
+        self.has_grouped_evidence = False
+        self._reset_region()
+
+    def _reset_region(self, header=None):
+        self.header = header
+        self.proof = None
+        self.binding = None
+        self.blocked = False
+
+    def _start_header(self, row):
+        self._reset_region(row)
+        if self.parent is not None:
+            if self.parent["parent_row"] + 1 != row:
+                _invalid("两层表头上下行不相邻")
+            self.proof, self.parent = self.parent, None
+            self.blocked = self.proof["status"] != "verified"
+            if not self.blocked:
+                self.binding = table_tiered_headers.binding(self.member_digest, self.proof)
+
+    def record(self, previous, row, reason, disposition, details):
+        if row != previous + 1:
+            if row != previous + 2 or self.omitted_header:
+                _invalid("分层来源的物理记录次序或首表头缺口无效")
+            self.omitted_header = True
+            self._start_header(row - 1)
+        if reason == "repeated_header":
+            if not self.omitted_header:
+                _invalid("重复表头之前缺少原始首表头")
+            self._start_header(row)
+        elif self.parent is not None:
+            _invalid("分层表头父行之后缺少子表头")
+
+        fields = _TIERED_DETAILS.intersection(details)
+        binding = details.get(table_tiered_headers.BINDING_FIELD)
+        if reason == table_tiered_headers.PARENT_REASON:
+            proof = table_tiered_headers.checked_proof(details.get(table_tiered_headers.PROOF_FIELD),
+                                                       version=None if self.allow_groups else 1)
+            if (proof is None or proof["parent_row"] != row or disposition != "non_transaction"
+                    or fields != {table_tiered_headers.PROOF_FIELD, table_tiered_headers.BINDING_FIELD}
+                    or binding != table_tiered_headers.binding(self.member_digest, proof)
+                    or table_direction_recheck.DETAIL_FIELD in details):
+                _invalid("分层表头证明与物理父行或列依据不一致")
+            self._reset_region()
+            self.parent, self.has_evidence = proof, True
+            self.has_grouped_evidence |= proof["version"] == 2
+            return
+        if table_tiered_headers.PROOF_FIELD in fields:
+            _invalid("分层表头证明只能保存于父行")
+
+        if table_tiered_headers.LEAF_PROOF_FIELD in fields:
+            orphan = table_tiered_headers.checked_leaf_proof(details[table_tiered_headers.LEAF_PROOF_FIELD])
+            if (orphan is None or orphan["source_row"] != row or reason != "ambiguous_region_header"
+                    or disposition != "unresolved"
+                    or fields != {table_tiered_headers.LEAF_PROOF_FIELD, table_tiered_headers.BINDING_FIELD}
+                    or binding != table_tiered_headers.binding(self.member_digest, orphan)):
+                _invalid("缺上层表头证明与物理位置不一致")
+            self.has_evidence = True
+            fields.clear()
+        directed = table_direction_recheck.DETAIL_FIELD in details
+        if reason == "ambiguous_region_header":
+            self._reset_region()
+            self.blocked = True
+        if reason in {"blank_record", "preamble", "ambiguous_region_header"}:
+            if fields or directed:
+                _invalid("来源边界或空行不能携带区域解释依据")
+            return
+
+        effect_row = disposition in {"imported", "duplicate", "removed", "non_monetary"}
+        if (self.blocked or self.header is None) and (effect_row or fields or directed):
+            _invalid("未证明表头的区域不能赋予流水或方向依据")
+        if (binding is not None and binding != self.binding
+                or self.binding is not None and (effect_row or directed or reason == "repeated_header") and binding is None):
+            _invalid("分层解释与本区域的表头或物理列证明不一致")
+        direction_binding = details.get(table_tiered_headers.DIRECTION_BINDING_FIELD)
+        if directed:
+            encoded = details[table_direction_recheck.DETAIL_FIELD]
+            if direction_binding != table_tiered_headers.binding(self.member_digest, [row, encoded]):
+                _invalid("收付复判证明与原物理行列不一致")
+        elif direction_binding is not None:
+            _invalid("收付复判缺少对应证明")
+
+    def finish(self, last_row):
+        if self.parent is not None:
+            if self.omitted_header or self.parent["parent_row"] != last_row:
+                _invalid("分层表头父行之后缺少子表头")
+            self._start_header(last_row + 1)
+
+
+def _pdf_journals(check, paths):
+    """PDF candidates can restore only with their source-only operation."""
+    from . import pdf_import, pdf_text_observations
+
+    profiles = {pdf_import.PROFILE: pdf_import, **dict.fromkeys(pdf_text_observations.PROFILES, pdf_text_observations)}
+    sources = check.execute("select source_id,sha256,size_bytes,parser_version from import_sources where parser_version in (?,?,?)",
+                            list(profiles)).fetchall()
+    if not sources:
+        return
+    if not {*JOURNAL_PKG_COLS, "import_source_operations", "batches"}.issubset(paths):
+        _invalid("PDF 来源缺少复核日志或导入操作")
+    if check.execute("""select 1 from import_sources s
+        left join import_source_operations o on o.source_id=s.source_id
+        where s.parser_version in (?,?,?) and (o.source_id is null
+            or exists(select 1 from flow_sources f where f.source_id=s.source_id)
+            or exists(select 1 from flows f where o.active and f.batch_id=o.batch_id)
+            or exists(select 1 from import_source_operations p where o.active and p.active
+                      and p.batch_id=o.batch_id and p.source_id<>s.source_id)) limit 1""",
+                     list(profiles)).fetchone():
+        _invalid("PDF 复核来源不能含流水或共用导入批次")
+    for source_id, digest, size, profile in sources:
+        reader = profiles[profile]
+        members = check.execute("""select member_path,role,sha256,size_bytes,encoding,row_count
+            from import_members where source_id=? limit 2""", [source_id]).fetchall()
+        if (len(members) != 1 or members[0][:5] != (pdf_import.MEMBER_PATH, "pdf", digest, size, "pdf")
+                or members[0][5] is None or not 1 <= members[0][5] <= reader.MAX_ROWS):
+            _invalid("PDF 来源成员或校验值无效")
+        cursor = check.execute("""select record_no,member_path,source_row,record_key,disposition,reason_code,
+                case when octet_length(encode(details_json))<=? then details_json end
+            from import_records where source_id=? order by record_no limit ?""",
+                               [reader.MAX_RECORD_BYTES, source_id, reader.MAX_ROWS + 1])
+
+        try:
+            if reader is pdf_import:
+                def records():
+                    while batch := cursor.fetchmany(64):
+                        yield from batch
+
+                count = reader.validate_journal(digest, records())
+            else:
+                rows = cursor.fetchall()
+                restored = reader.replay_journal([json.loads(row[-1]) for row in rows], digest, size,
+                                                 reader.MEMBER_PATH, profile=profile)
+                fields = ("record_no", "member_path", "source_row", "record_key", "disposition", "reason_code")
+                if any(row[:-1] != tuple(record[field] for field in fields)
+                       for row, record in zip(rows, restored["records"], strict=True)):
+                    raise ValueError("PDF observation journal position changed")
+                count = len(rows)
+        except (KeyError, ValueError, TypeError, AttributeError, ArithmeticError, RecursionError):
+            _invalid("PDF 候选位置或复核记录无效")
+        if (count != members[0][5] or check.execute("""select 1 from import_source_operations o
+            join batches b on b.id=o.batch_id where o.source_id=? and o.active
+            and (b.mode is distinct from 'B' or b.rows_total is distinct from ?
+                 or b.rows_skipped is distinct from ? or b.rows_imported is distinct from 0
+                 or b.rows_dup is distinct from 0)""", [source_id, count, count]).fetchone()):
+            _invalid("PDF 候选与导入批次计数不一致")
+
+
+
+def _pdf_text_journals(check, paths):
+    """Recover the frozen visible positions and reconciled PDF row facts."""
+    from . import import_validation, pdf_text_import
+
+    sources = check.execute("select source_id,sha256,size_bytes from import_sources where parser_version=?",
+                            [pdf_text_import.PROFILE]).fetchall()
+    if not sources:
+        return
+    if not {*JOURNAL_PKG_COLS, "flow_sources", "import_source_operations", "batches"}.issubset(paths):
+        _invalid("文本账簿 PDF 缺少原页或入库日志")
+    flow_fields = import_validation._STORED_FIELDS
+    for source_id, digest, size in sources:
+        members = check.execute("""select member_path,role,sha256,size_bytes,encoding,row_count
+            from import_members where source_id=? limit 2""", [source_id]).fetchall()
+        if (len(members) != 1 or members[0][:5] != (pdf_text_import.MEMBER_PATH, "pdf", digest, size, "pdf")
+                or members[0][5] is None or not 1 <= members[0][5] <= pdf_text_import.MAX_ROWS):
+            _invalid("文本账簿 PDF 的原页元数据无效")
+        count = members[0][5]
+        operations = check.execute("""select o.active,b.mode,b.rows_total from import_source_operations o
+            left join batches b on b.id=o.batch_id where o.source_id=?""", [source_id]).fetchall()
+        if len(operations) != 1 or operations[0][0] and operations[0][1:] != ("A", count):
+            _invalid("文本账簿 PDF 的入库操作无效")
+        active = operations[0][0]
+        rows = check.execute("""select r.record_no,r.member_path,r.source_row,r.record_key,r.disposition,r.reason_code,
+            case when octet_length(encode(r.details_json))<=2048 then r.details_json end,
+            l.flow_id,l.disposition,""" + ",".join("f." + field for field in flow_fields) + """
+            from import_records r left join flow_sources l on r.source_id=l.source_id and r.record_no=l.source_row
+            left join flows f on f.id=l.flow_id where r.source_id=? order by r.record_no limit ?""",
+            [source_id, pdf_text_import.MAX_ROWS + 1]).fetchall()
+        if len(rows) != count:
+            _invalid("文本账簿 PDF 的逐行证据不完整")
+        try:
+            plan = pdf_text_import.replay_journal([json.loads(row[6]) for row in rows], digest, size)
+        except (KeyError, ValueError, TypeError, ArithmeticError, RecursionError):
+            _invalid("文本账簿 PDF 的冻结原位或余额证据无效")
+        for stored, expected, facts in zip(rows, plan["records"], plan["rows"], strict=True):
+            number, member, position, key, disposition, reason, _, flow_id, link_disposition, *actual = stored
+            if (number, member, position, key) != tuple(expected[field] for field in (
+                    "record_no", "member_path", "source_row", "record_key")):
+                _invalid("文本账簿 PDF 的页行坐标不一致")
+            if disposition == "removed" and reason == "flow_deleted" and flow_id is None:
+                continue
+            if (not active or disposition not in ("imported", "duplicate") or reason != "transaction_valid"
+                    or flow_id is None or link_disposition != disposition):
+                _invalid("文本账簿 PDF 的来源链接无效")
+            try:
+                if import_validation._facts(dict(zip(flow_fields, actual))) != import_validation._facts(facts):
+                    _invalid("文本账簿 PDF 的金额或交易事实与原页不一致")
+            except (ValueError, TypeError, KeyError):
+                _invalid("文本账簿 PDF 的交易事实无效")
+
+
+def _verify_package_reference_fields(details, flow, source_id, known_columns, member_digest):
+    from . import table_import
+
+    actual = flow["trade_no"]
+    basis = details.get("trade_no_basis")
+    if basis not in {"source_transaction_id", "none"} or bool(actual) != (basis == "source_transaction_id"):
+        _invalid("已核编号用途不能以独立凭证回填交易号")
+    try:
+        fields = json.loads(details.get("source_field_evidence", "[]"))
+    except ValueError:
+        _invalid("编号用途缺少可信原列记录")
+    if not isinstance(fields, list) or any(not isinstance(item, dict) for item in fields):
+        _invalid("编号用途缺少可信原列记录")
+    allowed = {"source_transaction_id": {"交易流水号"}, "independent_voucher_reference": {"凭证号", "凭证编号"}}
+    columns, voucher = {}, None
+    for item in fields:
+        role, heading, index, raw = (item.get(name) for name in ("role", "column", "column_index", "raw"))
+        if not isinstance(role, str) or role not in allowed:
+            continue
+        if (role in columns or not isinstance(heading, str) or table_import._norm(heading) not in allowed[role]
+                or type(index) is not int or not 1 <= index <= 64 or index in columns.values()
+                or not isinstance(raw, str) or role == "source_transaction_id" and raw.strip() != (actual or "")):
+            _invalid("编号用途与原列角色或保留交易号不一致")
+        columns[role] = index
+        if role == "independent_voucher_reference":
+            voucher = raw.strip()
+    if occurrence := details.get(table_import.VERIFIED_REFERENCE_OCCURRENCE):
+        column, size, voucher_hash, _ = table_import.VERIFIED_REFERENCE_OCCURRENCE_FORMAT.fullmatch(occurrence).groups()
+        column, size = int(column), int(size)
+        canonical = table_import.flow_digest(flow)
+        if voucher is None and details.get("source_field_evidence_limited") == "true" and (
+                "source_transaction_id" in columns and column not in columns.values()):
+            # The bounded journal can omit a long original value. Its physical
+            # position, exact byte length and digest still bind this occurrence.
+            expected = table_import.verified_voucher_binding(member_digest, canonical, column, size, voucher_hash)
+            columns["independent_voucher_reference"] = column
+        else:
+            expected = (table_import.verified_voucher_occurrence(member_digest, canonical, column, voucher)
+                        if voucher and column == columns.get("independent_voucher_reference") else None)
+        if occurrence != expected:
+            _invalid("独立凭证记录与原凭证或流水事实不一致")
+    if columns.keys() != allowed.keys():
+        if details.get("source_field_evidence_limited") != "true":
+            _invalid("编号用途缺少主号或凭证原列")
+        return
+    positions = tuple(columns[role] for role in allowed)
+    if known_columns.setdefault(source_id, positions) != positions:
+        _invalid("同一原表的编号用途指向不同物理列")
+
+
 def _table_journals(check, paths):
     """Validate automatic-table journals independently of bank-feedback rules."""
-    tables = check.execute("select source_id,parser_version,imported_at from import_sources where row_kind='table_record'").fetchall()
+    tables = check.execute("select source_id,parser_version,imported_at,sha256 from import_sources where row_kind='table_record'").fetchall()
     if not tables:
         return
     if not set(JOURNAL_PKG_COLS).issubset(paths):
         _invalid("自动表格来源缺少成员与记录日志")
-    from . import table_import, table_archive, table_cancellations, table_contracts, source_ledger, bank_posting_pairs
-    source_profiles = {source_id: profile for source_id, profile, _time in tables}
-    source_times = {source_id: time for source_id, _profile, time in tables}
+    from . import table_import, table_archive, table_cancellations, table_contracts, source_ledger, bank_posting_pairs, source_transaction_status
+    from .services import trial_delayed_pair
+    from . import pdf_text_observations
+    source_profiles = {source_id: profile for source_id, profile, _time, _digest in tables}
+    source_times = {source_id: time for source_id, _profile, time, _digest in tables}
+    csv_tail_sources = {source_id: digest for source_id, profile, _time, digest in tables
+                        if profile == table_import.CSV_TAIL_SOURCE_PROFILE}
+    csv_tail_ordinary_sources = {source_id: digest for source_id, profile, _time, digest in tables
+                                 if profile in table_import.CSV_TAIL_ORDINARY_PROFILES}
+    csv_tail_geometry = {**csv_tail_sources, **csv_tail_ordinary_sources}
+    deposit_sources = {source_id: digest for source_id, profile, _time, digest in tables
+                       if profile == table_import.DEPOSIT_DIRECTION_TRIAL_PROFILE}
+    deposit_csv_sources = {source_id: digest for source_id, profile, _time, digest in tables
+                           if profile in table_import.DEPOSIT_CSV_TRIAL_PROFILES}
+    deposit_mappings = {source_id: json.loads(mapping)["direction"] for source_id, mapping in check.execute(
+        "select source_id,mapping_json from import_sources where parser_version=?",
+        [table_import.DEPOSIT_DIRECTION_TRIAL_PROFILE]).fetchall()} if deposit_sources else {}
+    reference_sources = {source_id: digest for source_id, profile, _time, digest in tables
+                         if profile in table_import.VERIFIED_REFERENCE_PROFILES}
+    tiered_sources = {source_id: digest for source_id, profile, _time, digest in tables if profile in table_import.TIERED_PROFILES}
     has_cancellation_profile = bool(table_archive.CANCELLATION_PROFILES.intersection(source_profiles.values()))
 
     for table, limit in (("import_members", table_archive.EVIDENCE_MAX_MEMBERS),
                          ("import_records", table_archive.EVIDENCE_MAX_RECORDS)):
         if check.execute(f"select 1 from {table} j join import_sources s on s.source_id=j.source_id where s.row_kind='table_record' group by j.source_id having count(*)>? limit 1", [limit]).fetchone():
             _invalid("自动表格日志总量超出限制")
-    members = check.execute("""select m.source_id,m.member_path,m.role,m.sha256,m.size_bytes,m.encoding,m.row_count
+    members = check.execute("""select m.source_id,m.member_path,m.role,m.sha256,m.size_bytes,m.encoding,m.row_count,s.size_bytes
         from import_members m join import_sources s on s.source_id=m.source_id
         where s.row_kind='table_record'""").fetchall()
-    member_rows, by_source, xls_members = {}, {}, set()
-    for source_id, path, role, digest, size, encoding, count in members:
+    member_rows, by_source, xls_members, tiered_members = {}, {}, set(), {}
+    pdf_member_sizes = {}
+    for source_id, path, role, digest, size, encoding, count, source_size in members:
         if (not isinstance(path, str) or not path or len(path) > 65535
                 or "\\" in path or ":" in path
                 or any(ord(char) < 32 or ord(char) == 127 for char in path)
@@ -572,7 +868,29 @@ def _table_journals(check, paths):
             _invalid("自动表格成员元数据无效")
         if encoding == "xls":
             xls_members.add((source_id, path))
+        if source_id in tiered_sources:
+            if encoding != "xlsx" or size != 0 or not re.fullmatch(r"worksheets/[0-9]{4}", path) or not 1 <= int(path[-4:]) <= table_import.MAX_SHEETS:
+                _invalid("两层表头只适用于已定位的 XLSX 工作表")
+            if role == "table":
+                tiered_members[source_id, path] = _TieredJournal(
+                    digest, allow_groups=source_profiles[source_id] == table_tiered_headers.GROUPED_PROFILE)
+        if source_id in csv_tail_geometry and (
+                path != "table.csv" or role != "table" or digest != csv_tail_geometry[source_id]
+                or encoding not in ("utf-8-sig", "gb18030", "utf-16")
+                or size != source_size or not 0 < size <= table_import.MAX_CSV_TAIL_SOURCE_BYTES
+                or not 2 <= count < table_import.MAX_CSV_TAIL_SOURCE_ROWS):
+            _invalid("末行缺格的CSV来源成员与已登记范围不一致")
+        if source_id in deposit_csv_sources and (
+                path != "table.csv" or role != "table" or digest != deposit_csv_sources[source_id]
+                or encoding not in ("utf-8-sig", "gb18030", "utf-16")
+                or size != source_size or not 0 < size <= table_import.MAX_DEPOSIT_DIRECTION_BYTES
+                or not (2 if source_id in deposit_sources else 1) <= count < table_import.MAX_DEPOSIT_DIRECTION_ROWS):
+            _invalid("存取款字面依据与来源成员不一致")
         member_rows[source_id, path] = (role, digest, count)
+        if Path(path).suffix.lower() == ".pdf":
+            if role != "attachment":
+                _invalid("归档 PDF 成员不能声明交易或辅助身份表")
+            pdf_member_sizes[source_id, path] = size
         by_source.setdefault(source_id, []).append((size, count))
     if set(by_source) != {row[0] for row in tables}:
         _invalid("自动表格来源与成员不一致")
@@ -603,7 +921,11 @@ def _table_journals(check, paths):
         left join flows v on v.id=f.flow_id where s.row_kind='table_record'
         order by r.source_id,r.record_no""")
     sequences, counts, evidence_records, known_facts, current_facts = {}, {}, {}, {}, {}
-    header_regions, previous_source_rows = {}, {}
+    header_regions, previous_source_rows, sheet_names = {}, {}, {}
+    deposit_positions, deposit_terms = {}, {}
+    reference_counts, reference_columns, reference_occurrences = {}, {}, {}
+    physical_layouts, field_description_sources, pdf_observations = {}, set(), {}
+    field_description_members, wrong_field_notes = set(), []
     accepted = ("imported", "duplicate")
     dispositions = (*accepted, "unresolved", "non_monetary", "non_transaction", "auxiliary", "removed")
     while rows := cursor.fetchmany(1024):
@@ -614,19 +936,38 @@ def _table_journals(check, paths):
             if member is None:
                 _invalid("自动表格记录引用了不存在的成员")
             role, member_digest, row_count = member
+            tiered_rule = source_id in tiered_sources
+            tiered_journal = tiered_members.get((source_id, path))
             cancellation_rule = source_profiles[source_id] in table_archive.CANCELLATION_PROFILES
             reason_codes = table_import.REASON_CODES | (frozenset(table_cancellations.REASONS)
                                                         if cancellation_rule else frozenset())
             if source_profiles[source_id] in evidence_resolution.PROFILES:
-                reason_codes |= frozenset(import_attachments.REASONS)
-            if (source_id, path) not in xls_members:
+                reason_codes |= frozenset(import_attachments.REASONS) | {table_archive.UNREADABLE_REASON}
+                if role == "auxiliary":
+                    reason_codes |= {trial_delayed_pair.COVERAGE_REASON}
+            pdf_observed = reason in pdf_text_observations.DISPOSITIONS
+            if pdf_observed:
+                reason_codes |= {reason}
+            if (source_id, path) not in xls_members and not tiered_rule:
                 reason_codes -= {"invalid_cell_type"}
+            if tiered_journal is None:
+                reason_codes -= {table_tiered_headers.PARENT_REASON}
             record_dispositions = (*dispositions, *(('cancelled',) if cancellation_rule else ()))
             if (number is None or number != sequences.get(source_id, 0) + 1
                     or source_row is None or not 0 < source_row <= row_count + 1
                     or disposition not in record_dispositions
                     or reason not in (*reason_codes, "flow_deleted")):
                 _invalid("自动表格记录位置或处置无效")
+            if source_id in csv_tail_sources:
+                if (source_row != number + 1 or flow_id is not None or (disposition, reason) not in {
+                        ("unresolved", table_import.CSV_TAIL_SOURCE_REASON), ("non_transaction", "blank_record")}):
+                    _invalid("末行缺格的CSV只能恢复原位置的来源记录")
+            elif reason == table_import.CSV_TAIL_SOURCE_REASON:
+                _invalid("末行缺格的CSV处置与来源规则不一致")
+            if reason == table_import.CSV_TAIL_INCOMPLETE_REASON and (
+                    source_profiles[source_id] not in table_import.CSV_TAIL_COMPLETE_ROW_PROFILES
+                    or disposition != "unresolved" or flow_id is not None):
+                _invalid("末行缺格记录的处置与来源规则不一致")
             sequences[source_id] = number
             counts[source_id, path] = counts.get((source_id, path), 0) + 1
             # The first header is the one omitted journal row; later headers
@@ -644,24 +985,59 @@ def _table_journals(check, paths):
             if not isinstance(details_json, str) or len(details_json.encode("utf-8")) > (source_ledger.MAX_BYTES + 8192 if ledger_rule else 8192):
                 _invalid("自动表格语义元数据过大或无效")
             details = json.loads(details_json)
+            if pdf_observed:
+                reference = source_id, path
+                rows_seen = pdf_observations.setdefault(reference, [])
+                size = pdf_member_sizes.get(reference, 0)
+                family_fields = {"evidence_family", "family_member_sha256"}
+                if (source_profiles[source_id] not in table_archive.EVIDENCE_PROFILES
+                        or not 0 < size <= pdf_text_observations.MAX_BYTES
+                        or not 1 <= row_count <= pdf_text_observations.MAX_ROWS
+                        or source_row != len(rows_seen) + 1 or source_row > row_count
+                        or disposition != pdf_text_observations.DISPOSITIONS[reason]
+                        or flow_id is not None or linked_disposition is not None
+                        or len(details_json.encode("utf-8")) > pdf_text_observations.MAX_RECORD_BYTES
+                        or not isinstance(details, dict)
+                        or (set(details) & family_fields) not in (set(), family_fields)
+                        or any(not isinstance(details[field], str) or not re.fullmatch(r"[0-9a-f]{64}", details[field])
+                               for field in family_fields if field in details)):
+                    _invalid("归档 PDF 来源观察位置或处置无效")
+                rows_seen.append((reason, {field: value for field, value in details.items() if field not in family_fields}))
+                continue
             detail_fields = table_import.DETAILS_FIELDS
+            if source_profiles[source_id] == table_archive.TRIAL_MEMBER_PROFILE:
+                detail_fields |= {table_import.TRIAL_MEMBER_PROFILE_FIELD}
+            if role == "auxiliary" and source_profiles[source_id] in (
+                *table_archive.EVIDENCE_PROFILES, table_import.VOUCHER_REFERENCE_EVIDENCE_PROFILE,
+            ):
+                detail_fields |= {table_archive.INTAKE_ROLE_DETAIL}
+            if reason == table_archive.UNREADABLE_REASON:
+                detail_fields |= {table_archive.RETENTION_DETAIL}
+            if source_profiles[source_id] in table_import.CONFIRMED_LAYOUT_PROFILES:
+                detail_fields |= {table_import.CONFIRMED_LAYOUT_FIELD, table_import.CONFIRMED_NOTE_FIELD}
             if ledger_rule:
                 detail_fields |= {source_ledger.FIELD}
             if source_profiles[source_id] in bank_posting_pairs.PROFILES:
                 detail_fields |= {bank_posting_pairs.FIELD}
             if source_profiles[source_id] in table_import.PRECISE_PROFILES:
                 detail_fields |= {table_import.table_sign_declarations.DETAIL_FIELD}
-            if source_profiles[source_id] == table_direction_recheck.PROFILE:
+            if source_profiles[source_id] == table_direction_recheck.PROFILE or tiered_journal is not None:
                 detail_fields |= {table_direction_recheck.DETAIL_FIELD}
+            if tiered_journal is not None:
+                detail_fields |= _TIERED_DETAILS
             if source_profiles[source_id] in table_import.REFERENCE_ROLE_PROFILES:
                 detail_fields |= table_import.FIELD_EVIDENCE_DETAILS
             if source_profiles[source_id] in table_import.TIME_ROLE_PROFILES:
                 detail_fields |= table_import.TIME_EVIDENCE_DETAILS
+            if source_profiles[source_id] == table_import.TRADE_CLOCK_PRECISION_TRIAL_PROFILE:
+                detail_fields |= {table_import.CORROBORATED_TRADE_CLOCK_FIELD}
             contract_rule = source_profiles[source_id] in table_import.CONTRACT_PROFILES
             if contract_rule:
                 detail_fields |= table_contracts.DETAILS_FIELDS
             if source_profiles[source_id] in table_archive.REFERENCE_PROFILES | table_import.SOURCE_ROLE_PROFILES:
                 detail_fields |= table_import.REFERENCE_DETAILS_FIELDS
+            if source_id in reference_sources:
+                detail_fields |= {table_import.VERIFIED_REFERENCE_DETAIL, table_import.VERIFIED_REFERENCE_OCCURRENCE}
             if cancellation_rule:
                 detail_fields |= table_cancellations.DETAILS_FIELDS
             if source_profiles[source_id] in evidence_resolution.PROFILES:
@@ -670,9 +1046,72 @@ def _table_journals(check, paths):
                 detail_fields |= {event_resolution.DETAIL_FIELD, event_resolution.LEDGER_FIELD}
             if (not isinstance(details, dict) or not set(details).issubset(detail_fields)
                     or any(not isinstance(value, str) or len(value.encode("utf-8")) > (
-                        source_ledger.MAX_BYTES if field == source_ledger.FIELD else 8192 if field == evidence_resolution.DETAIL_FIELD else 2048 if field in {bank_posting_pairs.FIELD, event_resolution.DETAIL_FIELD, table_import.table_sign_declarations.DETAIL_FIELD, "source_field_evidence", "source_time_evidence"} else 1024)
+                        source_ledger.MAX_BYTES if field == source_ledger.FIELD else
+                        table_tiered_headers.MAX_BYTES if field in _TIERED_DETAILS else
+                        8192 if field == evidence_resolution.DETAIL_FIELD else 2048 if field in {bank_posting_pairs.FIELD, event_resolution.DETAIL_FIELD, table_import.table_sign_declarations.DETAIL_FIELD, "source_field_evidence", "source_time_evidence"} else 1024)
                            for field, value in details.items())):
                 _invalid("自动表格语义元数据无效")
+            adopted_reference = details.get(table_import.VERIFIED_REFERENCE_DETAIL)
+            if (source_profiles[source_id] == table_import.CSV_TAIL_REFERENCE_PROFILE
+                    and (path != "table.csv" or disposition in {"imported", "duplicate"} and adopted_reference is None)):
+                _invalid("末行缺格的资金记录缺少同原表的编号用途核证")
+            if adopted_reference is not None:
+                source_digest = reference_sources[source_id]
+                workbook_title = details.get("sheet")
+                bound_member = (path == "table.csv" and member_digest == source_digest
+                                or path == "worksheets/0001" and bool(workbook_title)
+                                and member_digest == table_import.xlsx_member_digest(source_digest, 1, workbook_title))
+                if (adopted_reference != table_import.VERIFIED_REFERENCE_POLICY or role != "table"
+                        or len(by_source[source_id]) != 1 or not bound_member
+                        or header_regions.get((source_id, path)) != 1 or source_row != number + 1
+                        or source_row > 256 or details.get("trade_no_basis") == "legacy_voucher_fallback"):
+                    _invalid("编号用途与来源物理表区或交易号依据不一致")
+                reference_counts[source_id] = reference_counts.get(source_id, 0) + 1
+            if (occurrence := details.get(table_import.VERIFIED_REFERENCE_OCCURRENCE)) is not None and (
+                    adopted_reference is None or not table_import.VERIFIED_REFERENCE_OCCURRENCE_FORMAT.fullmatch(occurrence)
+                    or path != "worksheets/0001" or details.get("trade_no_basis") != "none"):
+                _invalid("独立凭证记录与空主号来源证明不一致")
+            if (leaf_profile := details.get(table_import.TRIAL_MEMBER_PROFILE_FIELD)) is not None:
+                workbook_path = table_import.archive_workbook_path(path)
+                leaf_is_workbook = bool(workbook_path and workbook_path.lower().endswith(".xlsx"))
+                if (leaf_profile not in table_import.TRIAL_TABLE_PROFILES
+                        or leaf_profile == table_import.TRADE_CLOCK_PRECISION_TRIAL_PROFILE
+                        or leaf_is_workbook != (leaf_profile in table_import.TRIAL_XLSX_PROFILES)
+                        or not leaf_is_workbook and not path.lower().endswith(".csv")):
+                    _invalid("目录叶成员来源规则与物理类型不一致")
+            if table_import.CONFIRMED_LAYOUT_FIELD in details:
+                if role != "table":
+                    _invalid("已确认物理映射必须属于交易表")
+                try:
+                    layout = table_import.validate_confirmed_layout_detail(
+                        details[table_import.CONFIRMED_LAYOUT_FIELD], header_regions.get((source_id, path)), source_row
+                    )
+                except (ValueError, TypeError):
+                    _invalid("已确认物理映射与来源位置不一致")
+                if disposition == "unresolved" and (
+                    layout["policy"] != table_import.CONFIRMED_LAYOUT_EVIDENCE_POLICY or flow_id is not None
+                    or not table_import.retained_split_conflict(disposition, reason, details)
+                ):
+                    _invalid("已确认物理映射的未决记录不符合受理规则")
+                regions = physical_layouts.setdefault((source_id, path), {})
+                header = layout["header_row"]
+                prior, seen = regions.get(header, (layout, 0))
+                if prior != layout:
+                    _invalid("同一表区的已确认物理映射不一致")
+                regions[header] = (layout, seen + 1)
+            if tiered_rule:
+                sheet_name = details.get("sheet")
+                reference = source_id, path
+                if reference not in sheet_names:
+                    if (not sheet_name or member_digest != table_import.xlsx_member_digest(
+                            tiered_sources[source_id], int(path[-4:]), sheet_name)):
+                        _invalid("分层表头不属于已登记工作表")
+                    sheet_names[reference] = sheet_name
+                if sheet_name != sheet_names[reference] or details.get("source_row") != str(source_row):
+                    _invalid("分层表头不属于已登记工作表或物理行")
+            if tiered_journal is not None:
+                tiered_journal.record(previous_row, source_row, reason, disposition, details)
+                header_regions[source_id, path] = tiered_journal.header
             ledger_entry = None
             if source_ledger.FIELD in details:
                 try:
@@ -690,6 +1129,29 @@ def _table_journals(check, paths):
                         or any(ledger_entry["row"][field] != dict(zip(flow_fields, facts)).get(field, "")
                                for field in ("self_account", "self_name"))):
                     _invalid("来源记账与保留原始分录不一致")
+            literal = ledger_entry.get("direction_literal") if ledger_entry is not None else None
+            if source_id in deposit_sources:
+                try:
+                    fields = json.loads(details.get("source_field_evidence", "[]"))
+                except (ValueError, RecursionError):
+                    _invalid("存取款字面缺少原列依据")
+                directions = [field for field in fields if isinstance(field, dict) and field.get("field") == "direction"] if isinstance(fields, list) else []
+                if role != "table" or source_row != number + 1 or header_regions.get((source_id, path)) != 1 or len(directions) != 1:
+                    _invalid("存取款字面缺少已登记的原行与方向列")
+                [direction] = directions
+                index, column, raw = (direction.get(field) for field in ("column_index", "column", "raw"))
+                if (direction.get("role") != "direction" or column != deposit_mappings[source_id]
+                        or type(index) is not int or not 1 <= index <= table_import.MAX_COLUMNS
+                        or raw not in ("存款", "取款") or deposit_positions.setdefault(source_id, (index, column)) != (index, column)
+                        or (flow_id is not None and ledger_entry is None)):
+                    _invalid("存取款字面与已登记方向列不一致")
+                if ledger_entry is not None and (raw != ledger_entry["source_direction"]
+                        or (raw == "存款") != (literal is not None)
+                        or literal is not None and (index, column) != (literal["column_index"], literal["column"])):
+                    _invalid("存取款字面方向与原行证据不一致")
+                deposit_terms.setdefault(source_id, set()).add(raw)
+            elif literal is not None:
+                _invalid("存款字面证据与来源解析版本不一致")
             if bank_posting_pairs.FIELD in details:
                 try:
                     pair_contract = bank_posting_pairs.validate(details[bank_posting_pairs.FIELD])
@@ -713,8 +1175,16 @@ def _table_journals(check, paths):
                     _invalid("银行双侧过账契约与来源事实不一致")
             if ("source_time_evidence" in details and not table_import.table_time_formats.validate_source_time_evidence(details["source_time_evidence"])):
                 _invalid("来源时间依据无效")
+            if table_import.CORROBORATED_TRADE_CLOCK_FIELD in details:
+                clock = details[table_import.CORROBORATED_TRADE_CLOCK_FIELD]
+                if (not table_import.validate_corroborated_trade_clock(clock, details.get("source_time_evidence"))
+                        or flow_id is not None and str(dict(zip(flow_fields, facts))["trade_time"]) != clock):
+                    _invalid("来源细时钟与保留时间依据不一致")
             if table_import.table_sign_declarations.DETAIL_FIELD in details:
-                if not table_import.table_sign_declarations.validate_proof(details[table_import.table_sign_declarations.DETAIL_FIELD]):
+                if not table_import.table_sign_declarations.validate_proof(
+                        details[table_import.table_sign_declarations.DETAIL_FIELD],
+                        scoped_legs=source_profiles[source_id] == table_import.BANK_COMPONENT_TRIAL_PROFILE,
+                        member=path, source_row=source_row):
                     _invalid("金额符号来源声明无效")
             has_direction_heading = ledger_entry is not None and "direction_heading" in ledger_entry
             if table_direction_recheck.DETAIL_FIELD in details:
@@ -730,6 +1200,11 @@ def _table_journals(check, paths):
                                      or disposition == "unresolved" and (not verified or historical_conflict))
                 if role != "table" or source_row <= scope or not valid_disposition or has_direction_heading != verified:
                     _invalid("收付方向复判与来源处置不一致")
+                if tiered_journal and tiered_journal.proof:
+                    tier_columns = {claim[0] for claim in tiered_journal.proof["columns"]}
+                    if any(column["column_index"] in tier_columns or column["column_index"] > tiered_journal.proof["width"]
+                           for column in review["columns"]):
+                        _invalid("收付复判列与分层表头已证明的列冲突")
                 if verified and (ledger_entry["direction_heading"], ledger_entry["source_direction"], ledger_entry["direction"]) != (
                         review["columns"][0]["column"], review["columns"][0]["raw"], review["direction"]):
                     _invalid("收付方向复判与来源记账不一致")
@@ -769,7 +1244,8 @@ def _table_journals(check, paths):
             # contract they do carry; table members keep the full requirement.
             if (contract_rule and role != "attachment"
                     and (role != "auxiliary" or table_contracts.DETAILS_FIELDS.intersection(details))
-                    and not table_contracts.validate_details(details, disposition, reason)):
+                    and not table_contracts.validate_details(details, disposition,
+                        "repeated_header" if reason == table_tiered_headers.PARENT_REASON else reason)):
                 _invalid("自动表格来源契约元数据无效")
             if ("trade_no_basis" in details and details["trade_no_basis"] not in (
                     "source_transaction_id", "legacy_voucher_fallback", "none")):
@@ -787,7 +1263,7 @@ def _table_journals(check, paths):
                     or (disposition == "cancelled") != (reason == "matched_cancellation")
                     or disposition == "non_monetary" and reason != "zero_amount"
                     or disposition == "non_transaction" and reason not in (
-                        "blank_record", "repeated_header", "feedback_only", "failed_transaction")
+                        "blank_record", "repeated_header", "feedback_only", "failed_transaction", table_tiered_headers.PARENT_REASON)
                     or disposition == "auxiliary" and reason not in ("preamble", "auxiliary_table", "non_business_attachment")
                     or disposition == "unresolved" and reason in (
                         "transaction_valid", "flow_deleted", "zero_amount", "blank_record",
@@ -799,16 +1275,62 @@ def _table_journals(check, paths):
                         *( ("unknown",) if source_profiles[source_id] in table_import.PRECISE_PROFILES else () ))
                     or details.get("reported_status") == "explicit_failure" and reason != "failed_transaction"):
                 _invalid("自动表格交易状态与处置不一致")
+            if source_transaction_status.DETAIL_FIELD in details and (
+                    details[source_transaction_status.DETAIL_FIELD] != source_transaction_status.POLICY
+                    or source_profiles[source_id] not in table_import.PRECISE_PROFILES
+                    or role != "table" or "reported_status" not in details):
+                _invalid("自动表格原报状态范围或规则无效")
             auxiliary_disposition = (disposition == "auxiliary" and reason == "auxiliary_table"
-                                     or disposition == "unresolved" and reason in ("row_width", "column_count_mismatch"))
+                                     or disposition == "unresolved" and reason in (
+                                         "row_width", "column_count_mismatch", trial_delayed_pair.COVERAGE_REASON))
+            wrong_scope = details.get(table_import.CONFIRMED_NOTE_FIELD)
+            if (wrong_scope is not None) != (reason == table_import.WRONG_FIELD_NOTE_ROW):
+                _invalid("字段说明错址记录缺少原引用位置")
+            if wrong_scope is not None:
+                if (role != "auxiliary" or details.get("source_role") != "field_description"
+                        or disposition != "unresolved" or flow_id is not None
+                        or details.get("validation_issues") != reason):
+                    _invalid("字段说明错址与来源处置不一致")
+                try:
+                    scope = table_import.validate_confirmed_note_scope(wrong_scope)
+                except (ValueError, TypeError):
+                    _invalid("字段说明错址的原引用位置无效")
+                wrong_field_notes.append((source_id, path, scope))
+                auxiliary_disposition = True
+            field_description = (role == "auxiliary" and details.get("source_role") == "field_description"
+                                 and source_profiles[source_id] in table_import.CONFIRMED_LAYOUT_PROFILES
+                                 and (disposition == "auxiliary" and reason == "auxiliary_table"
+                                      or wrong_scope is not None))
+            if field_description:
+                field_description_sources.add(source_id)
+                if wrong_scope is None:
+                    field_description_members.add((source_id, path))
             if role == "attachment":
                 expected = "non_business_attachment" if details.get("attachment_kind") == "finder_metadata" else "unsupported_attachment"
+                if reason == table_archive.UNREADABLE_REASON:
+                    if (source_profiles[source_id] not in table_archive.EVIDENCE_PROFILES
+                            or details.get(table_archive.RETENTION_DETAIL) != table_archive.MEMBER_RETENTION_POLICY
+                            or details.get("attachment_kind") not in (".csv", ".tsv", ".txt", ".xls", ".xlsx")):
+                        _invalid("不可读成员处置与来源版本不一致")
+                    expected = table_archive.UNREADABLE_REASON
                 if source_profiles[source_id] not in evidence_resolution.PROFILES or details.get("source_role") != "attachment" or reason != expected or disposition != ("auxiliary" if expected == "non_business_attachment" else "unresolved"):
                     _invalid("附件处置与保全记录不一致")
+            if reason == table_archive.UNREADABLE_REASON and role != "attachment":
+                _invalid("不可读记录必须对应原始附件")
+            intake_role = details.get(table_archive.INTAKE_ROLE_DETAIL)
+            if reason == trial_delayed_pair.COVERAGE_REASON and (
+                    intake_role != trial_delayed_pair.ROLE or disposition != "unresolved" or source_row != 1 or row_count != 1):
+                _invalid("清算对应表的覆盖缺口记录无效")
+            if (intake_role is not None and (not isinstance(intake_role, str)
+                    or intake_role not in table_archive.INTAKE_DECLARED_ROLES
+                    or table_archive.INTAKE_DECLARED_ROLES[intake_role] != details.get("source_role"))):
+                _invalid("材料声明用途与来源角色不符")
             if (role == "auxiliary" and not auxiliary_disposition
                     or role == "table" and reason == "auxiliary_table"
-                    or role == "auxiliary" and details.get("source_role") not in (
-                        "account", "client", "manifest", "subaccount", "freeze")
+                    or role == "auxiliary" and not field_description and details.get("source_role") not in (
+                        "account", "client", "manifest", "subaccount", "freeze",
+                        *(("description",) if intake_role in {"description", *trial_delayed_pair.DELAYED_ROLES,
+                                                              trial_delayed_pair.SAME_INSTANT_ROLE} else ()))
                     or role not in ("auxiliary", "attachment") and "source_role" in details):
                 _invalid("自动表格辅助来源角色不一致")
             issues = details.get("validation_issues")
@@ -854,6 +1376,10 @@ def _table_journals(check, paths):
                         or flow["trade_time"] is None
                         or digest != table_import.flow_digest(flow)):
                     _invalid("自动表格流水与来源规范事实不一致")
+                if adopted_reference is not None:
+                    _verify_package_reference_fields(details, flow, source_id, reference_columns, member_digest)
+                    if occurrence is not None and reference_occurrences.setdefault((source_id, flow_id), occurrence) != occurrence:
+                        _invalid("不同独立凭证记录不能链接为同一流水")
                 if has_cancellation_profile:
                     known_facts.setdefault(key, []).append((source_id, flow))
                 if cancellation_rule:
@@ -869,8 +1395,48 @@ def _table_journals(check, paths):
                     "record_key": key, "disposition": disposition,
                     "reason_code": reason, "details": details,
                 })
+    if any(deposit_terms.get(source_id) != {"存款", "取款"} for source_id in deposit_sources):
+        _invalid("存取款字面依据缺少同表区的原词对照")
+    if any(sequences[source_id] != count for source_id, count in reference_counts.items()):
+        _invalid("同一原表的编号用途未覆盖全部来源行")
+    physical_layout_sources = {source_id for source_id, _ in physical_layouts}
+    if not field_description_sources <= physical_layout_sources:
+        _invalid("字段说明缺少同原件的已确认物理表区")
+    for source_id, member_path, scope in wrong_field_notes:
+        target = physical_layouts.get((source_id, scope["member_path"]), {}).get(scope["header_row"])
+        if ((source_id, member_path) not in field_description_members or target is None
+                or target[0]["policy"] != scope["policy"] or scope["target_row"] > target[0]["last_row"]):
+            _invalid("字段说明错址不属于同原件已确认的数据区")
+    if any(reference[0] in physical_layout_sources and values[0] == "table" and reference not in physical_layouts
+           for reference, values in member_rows.items()):
+        _invalid("已确认原件存在未登记物理映射的交易表")
+    for member, regions in physical_layouts.items():
+        boundaries = sorted(regions)
+        for header, following in zip(boundaries, [*boundaries[1:], previous_source_rows[member] + 1]):
+            layout, count = regions[header]
+            if layout["last_row"] != following - 1 or count != following - header - 1:
+                _invalid("已确认物理映射的表区末行或来源行数不闭合")
     if any(counts.get(reference, 0) != values[2] for reference, values in member_rows.items()):
         _invalid("自动表格成员记录数不闭合")
+    for reference, observations in pdf_observations.items():
+        _, digest, count = member_rows[reference]
+        if len(observations) != count:
+            _invalid("归档 PDF 来源观察行数不闭合")
+        try:
+            restored = pdf_text_observations.replay_journal(
+                [details for _, details in observations], digest, pdf_member_sizes[reference], reference[1], archive=True)
+            if any(record["reason_code"] != reason for (reason, _), record in zip(observations, restored["records"], strict=True)):
+                raise ValueError("archive PDF observation reason changed")
+        except (KeyError, ValueError, TypeError, AttributeError, ArithmeticError, RecursionError):
+            _invalid("归档 PDF 来源观察原位无效")
+    proved_sources = set()
+    for (source_id, path), journal in tiered_members.items():
+        journal.finish(previous_source_rows.get((source_id, path), 0))
+        valid_proof = journal.has_grouped_evidence if journal.allow_groups else journal.has_evidence
+        if valid_proof:
+            proved_sources.add(source_id)
+    if proved_sources != set(tiered_sources):
+        _invalid("分层来源缺少实际表头边界证明")
     for source_id, records in evidence_records.items():
         try:
             table_cancellations.validate_evidence(records)
@@ -1052,12 +1618,18 @@ def _validate_package(content, directory):
                     source_id, filename, sha256, size_bytes, mode, mapping_json, sheet, parser_version, row_kind, imported_at = record
                     mapping = json.loads(mapping_json) if isinstance(mapping_json, str) else None
                     suffix = Path(filename).suffix.lower() if isinstance(filename, str) else ""
-                    from . import table_import, table_archive
+                    from . import pdf_import, pdf_text_import, pdf_text_observations, table_import, table_archive
+                    pdf_profiles = {pdf_import.PROFILE: pdf_import, pdf_text_import.PROFILE: pdf_text_import,
+                                    **dict.fromkeys(pdf_text_observations.PROFILES, pdf_text_observations)}
+                    pdf_source = parser_version in pdf_profiles
                     table_source = (row_kind == "table_record" or parser_version in (
                         *table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES))
                     archive_source = (suffix == ".zip" or row_kind == "archive_record"
                                       or isinstance(parser_version, str) and parser_version.startswith("funds-trace-bank-feedback-"))
-                    if table_source:
+                    if pdf_source:
+                        pdf_profile = pdf_profiles[parser_version]
+                        source_format_valid = pdf_profile.valid_source(filename, size_bytes, mode, mapping, sheet, row_kind)
+                    elif table_source:
                         # Uploads already default an empty suffix to CSV while
                         # preserving the original name. Admit only the exact
                         # single-text-member contract; full journal and fact
@@ -1076,6 +1648,9 @@ def _validate_package(content, directory):
                                                and text_members[0][3] == size_bytes
                                                and text_members[0][4] in ("utf-8-sig", "gb18030", "utf-16"))
                         source_format_valid = (row_kind == "table_record"
+                                               and (parser_version not in {table_tiered_headers.PROFILE, *table_import.TRIAL_XLSX_PROFILES}
+                                                    or suffix == ".xlsx")
+                                               and (parser_version != table_import.CODED_BANK_CSV_TRIAL_PROFILE or suffix == ".csv")
                                                and ((suffix in (".zip", ".rar") and parser_version in table_archive.SUPPORTED_PROFILES and sheet == ""
                                                      and (suffix == ".zip" or parser_version in table_import.NATIVE_OBSERVATION_PROFILES))
                                                     or (suffix in (".csv", ".tsv", ".txt", ".xlsx", ".xls")
@@ -1083,6 +1658,15 @@ def _validate_package(content, directory):
                                                         and (parser_version not in table_import.STANDALONE_XLS_PROFILES or suffix == ".xls")
                                                         and (suffix in (".xlsx", ".xls")) == bool(sheet))
                                                     or suffixless_text))
+                        if parser_version == table_import.CSV_TAIL_SOURCE_PROFILE:
+                            source_format_valid = (source_format_valid and mode == "B" and not mapping and not sheet
+                                                   and (suffix == ".csv" or suffixless_text))
+                        if parser_version in table_import.DEPOSIT_CSV_TRIAL_PROFILES:
+                            direction = mapping.get("direction") if isinstance(mapping, dict) else None
+                            source_format_valid = (source_format_valid and mode == "B" and not sheet
+                                                   and (suffix == ".csv" or suffixless_text)
+                                                   and isinstance(direction, str)
+                                                   and table_import._norm(direction) in table_import.DEPOSIT_DIRECTION_HEADINGS)
                     elif archive_source:
                         source_format_valid = (suffix == ".zip" and row_kind == "archive_record"
                                                and parser_version in feedback_import.SUPPORTED_PROFILES
@@ -1102,7 +1686,7 @@ def _validate_package(content, directory):
                             or any(k not in (table_import.mapping_fields(parser_version) if table_source else
                                            (*importer.MODE_FIELDS.get(mode, []), "_time2", "self_account", "self_name"))
                                    or not isinstance(v, str) or not v.strip() for k, v in mapping.items())
-                            or (not table_source and not importer._validate(mapping, mode))
+                            or (not table_source and not pdf_source and not importer._validate(mapping, mode))
                             or not isinstance(sheet, str) or not isinstance(parser_version, str) or not parser_version
                             or not source_format_valid
                             or imported_at is None):
@@ -1159,10 +1743,12 @@ def _validate_package(content, directory):
                 _invalid("配对冲正规则须使用格式3保留完整语义")
             if "import_sources" in paths:
                 for table in JOURNAL_PKG_COLS:
-                    if table in paths and check.execute(f"select 1 from {table} j left join import_sources s on s.source_id=j.source_id where s.source_id is null or s.row_kind not in ('archive_record','table_record') limit 1").fetchone():
+                    if table in paths and check.execute(f"select 1 from {table} j left join import_sources s on s.source_id=j.source_id where s.source_id is null or s.row_kind not in ('archive_record','table_record','pdf_record','pdf_text_record','pdf_observation_record') limit 1").fetchone():
                         _invalid("记录日志引用了不存在或不支持的来源")
                 _feedback_journals(check, paths)
                 _table_journals(check, paths)
+                _pdf_journals(check, paths)
+                _pdf_text_journals(check, paths)
             from .services import materials
             source_ids={r[0] for r in check.execute('select source_id from import_sources').fetchall()} if meta.get('materials') is not None and 'import_sources' in paths else set()
             material_groups=materials.validate_package(meta.get('materials'),source_ids)
@@ -1303,6 +1889,8 @@ def import_package(content):
 
 
 def delete_package_case(case_id):
+    from .services import trial_review_receipts
+
     if case_id == 1:
         raise HTTPException(400, "默认案件不可删除")
     # Keep a restorable copy until database commit. Failed file removal rolls back
@@ -1324,6 +1912,7 @@ def delete_package_case(case_id):
                     con.execute(f"delete from {table} where case_id=?", [case_id])
                 for table in CASE_PKG_TABLES:
                     con.execute(f"delete from {table} where case_id=?", [case_id])
+                trial_review_receipts.delete_case(case_id)
                 con.execute("delete from cases where id=?", [case_id])
         except BaseException:
             if had_photos:

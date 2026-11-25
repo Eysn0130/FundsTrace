@@ -14,7 +14,8 @@ function deferred() {
 
 function harness() {
   const callbacks = new Map(), elements = new Map(), posts = [], calls = { refreshCases: 0, open: [], capture: 0, refresh: 0, camera: 0, dialog: [], click: [], loads: [], withWrites: 0, writes: [], canvasLists: 0,
-    feedback: [], feedbackTasks: [], feedbackSync: 0, feedbackDispose: 0, feedbackBindings: [], feedbackDetached: [], modal: [] };
+    feedback: [], feedbackTasks: [], feedbackSync: 0, feedbackDispose: 0, feedbackBindings: [], feedbackDetached: [], modal: [],
+    ledgerResets: [] };
   let feedbackOptions;
   const origin = 'http://synthetic.local', state = { caseId: 1, caseGeneration: 1, canvasId: 0, canvasGeneration: 1,
     graphLoading: false, graphView: { exportDepth: 0 },
@@ -75,6 +76,7 @@ function harness() {
       await emit('funds:feedback-binding'); return caseOpen(id, context);
     },
     async refreshAll() { calls.refresh++; await freshRead(); },
+    resetTrialLedgerLookup(resetFields) { calls.ledgerResets.push(resetFields); },
     caseWorkspace: { open(trigger) { calls.dialog.push(trigger.id); }, status: () => ({ pending: false }) },
     exportWorkspace: { status: () => ({ pending: false }) }, batchView: { deleting: false }, accountDataWrites: new Set(), nodeWrites: new Map(),
     pcState: { binding: null }, nodeConfirmation: false, nodeWorkspace: { confirming: false }, cancelAnnotationDrag: false, layoutJob: null,
@@ -263,9 +265,11 @@ test('embedded data changes invalidate the current case and defer workbench read
   assert.equal(replyFor(h, 'stale-change').ok, false);
   assert.match(replyFor(h, 'stale-change').error, /案件已变化/);
   assert.deepEqual(h.posts.slice(staleStart).map(({ message }) => message.type), ['result']);
+  assert.deepEqual(h.calls.ledgerResets, []);
 
   const start = h.posts.length;
   const pending = h.receive(h.request({ ...change, requestId: 'embedded-change' })); await flush();
+  assert.deepEqual(h.calls.ledgerResets, [false], 'drop stale source results while preserving lookup inputs');
   assert.equal(h.calls.refresh, 0, 'the hidden workbench starts no refresh');
   assert.deepEqual(h.posts.slice(start).filter(({ message }) => message.type === 'data-changed')
     .map(({ target, message }) => [target, message.caseId, message.generation]), [['workspace', '1', 1], ['analysis', '1', 1]]);

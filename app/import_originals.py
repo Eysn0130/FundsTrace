@@ -16,6 +16,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 from contextlib import contextmanager
+from itertools import islice, pairwise
 
 from . import feedback_import, rar_archive, table_archive, table_import
 
@@ -67,6 +68,62 @@ def _unknown_csv_delimiter(wrapper):
     return next(iter(distinct.values()))
 
 
+def _balance_header_only(rows):
+    if len(rows) < 2:
+        return False
+    labels = [table_import._norm(value) for value in rows[0]]
+    own = [i for i, name in enumerate(labels, 1) if name in {"余额", "账面余额", "账户余额", "帐户余额"}]
+    available = [i for i, name in enumerate(labels, 1) if name == "可用余额"]
+    # Literal headings give positions even when the source body ends before
+    # both fields. This is only a layout read of the unclassified source.
+    if len(own) != 1 or len(available) != 1:
+        return False
+    first_balance = min(own[0], available[0])
+    return all(1 < len(row) < first_balance for row in rows[1:])
+
+
+def _layout_csv_delimiter(wrapper):
+    """Find a unique small rectangular window after a possible one-cell note."""
+    try:
+        exact = _unknown_csv_delimiter(wrapper)
+    except ValueError:
+        exact = None
+    if exact is not None:
+        wrapper.seek(0)
+        if any(len(row) > 1 for row in _csv_records(wrapper, exact)):
+            return exact
+
+    options = []
+    for delimiter in (',', '\t', ';', '|'):
+        wrapper.seek(0)
+        try:
+            if any(1 < len(left) == len(right) and any(left) and any(right)
+                   for left, right in pairwise(islice(_csv_records(wrapper, delimiter), 32))):
+                options.append(delimiter)
+        except csv.Error:
+            continue
+    if len(options) > 1:
+        raise ValueError('原始列分隔符存在歧义')
+    if options:
+        return options[0]
+
+    for delimiter in (',', '\t', ';', '|'):
+        wrapper.seek(0)
+        try:
+            sample = list(islice(_csv_records(wrapper, delimiter), 33))
+        except csv.Error:
+            continue
+        if len(sample) <= 32 and _balance_header_only([row for row in sample if any(row)]):
+            options.append(delimiter)
+    if len(options) > 1:
+        raise ValueError('原始列分隔符存在歧义')
+    if options:
+        return options[0]
+    if exact is not None:
+        return exact
+    raise ValueError('原始列结构不能唯一对应')
+
+
 @contextmanager
 def _member(source, path, depth=0):
     """Follow only the registered exact member, including closed nested archives."""
@@ -109,7 +166,7 @@ def _member(source, path, depth=0):
                 raise ValueError('无法定位已登记的原始成员')
 
 
-def _csv_rows(source, encoding, document, wanted, profile):
+def _csv_rows(source, encoding, document, wanted, profile, *, for_layout=False):
     if encoding not in {'utf-8-sig', 'utf-8', 'gb18030', 'gbk', 'utf-16'}:
         raise ValueError('来源编码未登记，无法读取原始单元格')
     csv.field_size_limit(max(csv.field_size_limit(), table_import.MAX_FIELD))
@@ -128,7 +185,9 @@ def _csv_rows(source, encoding, document, wanted, profile):
                 if table_import._columns(header, profile) == expected:
                     choices.append(delimiter)
         else:
-            if profile in table_import.SOURCE_CONTRACT_PROFILES:
+            if for_layout:
+                choices = [_layout_csv_delimiter(wrapper)]
+            elif profile in table_import.SOURCE_CONTRACT_PROFILES:
                 choices = [_unknown_csv_delimiter(wrapper)]
             elif profile in feedback_import.SUPPORTED_PROFILES:
                 choices = [',']
@@ -142,12 +201,13 @@ def _csv_rows(source, encoding, document, wanted, profile):
             raise ValueError('原始列结构不能与冻结表头唯一对应')
         wrapper.seek(0)
         result = {}
+        last_wanted = max(wanted)
         for number, row in enumerate(_csv_records(wrapper, choices[0]), 1):
             if number in wanted:
                 if len(row) > table_import.MAX_COLUMNS or any(len(value) > table_import.MAX_FIELD for value in row):
                     raise ValueError('原始单元格超出来源阅览范围')
                 result[number] = row
-            if number >= max(wanted):
+            if number >= last_wanted:
                 break
         return result
     finally:
@@ -303,11 +363,15 @@ def _scalar(value):
     return str(value)
 
 
-def read_cells(source, suffix, member, document, evidence, positions, profile):
+def read_cells(source, suffix, member, document, evidence, positions, profile, *, for_layout=False,
+               physical_presence=False):
     if not positions:
         return {}
+    by_position = profile in {table_import.table_tiered_headers.PROFILE, table_import.table_tiered_headers.GROUPED_PROFILE}
+    parents = set(document.get('tier_parent_rows', ())) if by_position else set()
     headers = sorted({n for n in [document.get('header_row'), *document.get('header_rows', [])] if isinstance(n, int) and n > 0})
-    selected_headers = {number: headers[bisect_right(headers, number) - 1] if bisect_right(headers, number) else None for number in positions}
+    selected_headers = {number: number if number in parents else
+                        headers[index - 1] if (index := bisect_right(headers, number)) else None for number in positions}
     wanted = set(positions) | {number for number in selected_headers.values() if number is not None}
     path = member['member_path']
     workbook = member['encoding'] in {'xlsx', 'xls'}
@@ -320,7 +384,7 @@ def read_cells(source, suffix, member, document, evidence, positions, profile):
                 raise ValueError('工作表坐标未登记')
             reader = _xlsx_rows if member['encoding'] == 'xlsx' else _xls_rows
             return reader(stream, int(match[1]), document.get('sheet', ''), wanted)
-        return _csv_rows(stream, member['encoding'], document, wanted, profile), {}
+        return _csv_rows(stream, member['encoding'], document, wanted, profile, for_layout=for_layout), {}
 
     if suffix in {'.zip', '.rar'}:
         with _member(source, physical) as stream:
@@ -330,8 +394,19 @@ def read_cells(source, suffix, member, document, evidence, positions, profile):
     result, size = {}, 0
     bindings = {}
     for entry in evidence:
-        if entry.get('field') and entry['field'] not in bindings.setdefault(entry.get('column'), []):
-            bindings[entry.get('column')].append(entry['field'])
+        if not (field := entry.get('field')):
+            continue
+        if by_position:
+            if not (column := entry.get('column_index')) or 'header_row' not in entry:
+                continue
+            rows_with_claims = [entry['header_row']]
+            if 'parent_row' in entry:
+                rows_with_claims.append(entry['parent_row'])
+            for row in rows_with_claims:
+                if field not in (fields := bindings.setdefault((row, column), [])):
+                    fields.append(field)
+        elif field not in (fields := bindings.setdefault(entry.get('column'), [])):
+            fields.append(field)
     for number in positions:
         if number not in rows:
             raise ValueError('原始行与已登记位置不一致')
@@ -340,10 +415,17 @@ def read_cells(source, suffix, member, document, evidence, positions, profile):
         cells = []
         for index, value in enumerate(rows[number]):
             header = names[index] if index < len(names) else f'原始第{index + 1}列'
-            fields = bindings.get(header, [])
+            key = (str(header_number), str(index + 1)) if by_position else header
+            fields = bindings.get(key, [])
             size += len(value.encode('utf-8')) + len(header.encode('utf-8'))
             if len(value) > 16384 or size > MAX_PAGE_BYTES:
                 raise ValueError('原始页内容较大，请另存原件查看')
-            cells.append({'column': index + 1, 'header': header, 'value': value, 'fields': fields, 'kind': kinds.get((number, index + 1), 'text')})
+            position = (number, index + 1)
+            cell = {'column': index + 1, 'header': header, 'value': value, 'fields': fields,
+                    'kind': kinds.get(position, 'text')}
+            if physical_presence:
+                # XLSX has physical cell records even for explicitly empty cells.
+                cell['present'] = member['encoding'] != 'xlsx' or position in kinds
+            cells.append(cell)
         result[number] = cells
     return result

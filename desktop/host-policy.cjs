@@ -42,9 +42,18 @@ function requestAllowed(url, origin, webContentsId, owned) {
 function downloadAllowed(url, origin) {
   return sameOrigin(url, origin) || url.startsWith(`blob:${origin}/`);
 }
-function launchConfig({ packaged, platform = process.platform, arch = process.arch, resourcesPath, repoRoot, python, dataDir, synthetic = false, env = process.env }) {
+function launchConfig({ packaged, platform = process.platform, arch = process.arch, resourcesPath, repoRoot, python, dataDir, synthetic = false, modelTrial = false, env = process.env }) {
   if (!path.isAbsolute(dataDir)) throw new Error('Data directory must be absolute');
   if (packaged && synthetic) throw new Error('Synthetic mode is not available in packaged applications');
+  if (modelTrial && (packaged || path.basename(dataDir) !== 'data' || !path.basename(path.dirname(dataDir)).startsWith('funds-trace-model-trial-')))
+    throw new Error('Model trial requires an isolated source profile');
+  const modelEndpoints = modelTrial ? env.FUNDS_TRACE_MODEL_ENDPOINTS || null : undefined;
+  if (modelEndpoints && Buffer.byteLength(modelEndpoints, 'utf8') > 2048) throw new Error('Invalid local model configuration');
+  const referenceScope = modelTrial ? env.FUNDS_TRACE_REFERENCE_REVIEW_SCOPE_FILE : undefined;
+  if (referenceScope !== undefined && (platform !== 'darwin' || !modelEndpoints
+      || typeof referenceScope !== 'string' || !path.isAbsolute(referenceScope)
+      || Buffer.byteLength(referenceScope, 'utf8') > 1024))
+    throw new Error('Reference review requires a private Mac model trial scope');
   let command, args, cwd;
   if (packaged) {
     const backendRoot = path.join(resourcesPath, 'backend');
@@ -59,13 +68,29 @@ function launchConfig({ packaged, platform = process.platform, arch = process.ar
   }
   if (!fs.statSync(command).isFile()) throw new Error('Backend executable is missing');
   const cleanEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('FUND_') && !key.startsWith('FUNDS_TRACE_') && !key.startsWith('PYTHON')));
-  if (!synthetic && env.FUNDS_TRACE_LICENSE_SECRET) cleanEnv.FUNDS_TRACE_LICENSE_SECRET = env.FUNDS_TRACE_LICENSE_SECRET;
-  if (!synthetic && env.FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE) {
+  const { FUND_MINERU_EXECUTABLE: mineru, FUND_MINERU_MODEL_DIR: models,
+    FUND_MINERU_REVIEW_TIMEOUT_SECONDS: timeout } = env;
+  if (modelTrial && (mineru || models || timeout !== undefined)) {
+    if (![mineru, models].every(value => typeof value === 'string' && path.isAbsolute(value)))
+      throw new Error('MinerU trial executable and model directory require absolute paths');
+    cleanEnv.FUND_MINERU_EXECUTABLE = mineru;
+    cleanEnv.FUND_MINERU_MODEL_DIR = models;
+    if (timeout !== undefined) {
+      const seconds = typeof timeout === 'string' ? Number(timeout) : NaN;
+      if (!Number.isInteger(seconds) || seconds < 90 || seconds > 900 || String(seconds) !== timeout)
+        throw new Error('MinerU trial timeout must be an ASCII integer from 90 to 900 seconds');
+      cleanEnv.FUND_MINERU_REVIEW_TIMEOUT_SECONDS = timeout;
+    }
+  }
+  if (!synthetic && !modelTrial && env.FUNDS_TRACE_LICENSE_SECRET) cleanEnv.FUNDS_TRACE_LICENSE_SECRET = env.FUNDS_TRACE_LICENSE_SECRET;
+  if (!synthetic && !modelTrial && env.FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE) {
     if (!path.isAbsolute(env.FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE)) throw new Error('License public key path must be absolute');
     cleanEnv.FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE = env.FUNDS_TRACE_LICENSE_PUBLIC_KEY_FILE;
   }
   cleanEnv.PYTHONNOUSERSITE = '1'; cleanEnv.PYTHONDONTWRITEBYTECODE = '1'; cleanEnv.PYTHONUNBUFFERED = '1'; cleanEnv.PYTHONUTF8 = '1';
-  return { command, args, cwd, env: cleanEnv, dataDir, synthetic };
+  return { command, args, cwd, env: cleanEnv, dataDir, synthetic,
+    ...(modelTrial ? { modelTrial: modelEndpoints } : {}),
+    ...(referenceScope === undefined ? {} : { referenceReviewScopeFile: referenceScope }) };
 }
 
 module.exports = { HEADER, windowBounds, sameOrigin, pageAllowed, popupKind, requestAllowed, downloadAllowed, launchConfig };

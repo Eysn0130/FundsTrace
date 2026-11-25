@@ -1,4 +1,6 @@
 """Public evidence assessment and separate explicitly conditioned model tests."""
+import pytest
+
 from app import principal_multihop
 from app.principal_routes import NetworkIn
 from test_event_import import csv_rows, transaction
@@ -74,6 +76,30 @@ def test_internal_pair_without_scoped_evidence_is_unknown(client,make_case):
     assert value["status"]=="unknown" and value["targets"]==[]
     assert value["reasons"] == ["internal_transfer_requires_confirmed_opposite_ledgers"]
     assert principal_multihop._calculate_conditioned(cid,NetworkIn.model_validate(request))["reasons"]==["internal_transfer_requires_confirmed_opposite_ledgers"]
+
+
+@pytest.mark.parametrize("linked", [True, False])
+def test_trial_network_reads_opposite_originals_and_keeps_unlinked_rows_open(client, make_case, monkeypatch, linked):
+    monkeypatch.setattr(client.app.state, "desktop_model_trial", (None,), raising=False)
+    cid = make_case()
+    request = imported_network(client, cid, references=linked)
+    response = client.post("/api/analysis/principal/network", json=request)
+    assert response.status_code == 200, response.text
+    value = response.json()
+    if linked:
+        assert value["status"] == "ok" and value["event_count"] == 3 and value["ledger_count"] == 4
+        [transfer] = value["internal_transfers"]
+        assert len(transfer["observations"]) == 2
+        assert len({row["flow_id"] for row in transfer["observations"]}) == 2
+        for row in transfer["observations"]:
+            [original] = client.get(row["record_url"]).json()["items"]
+            assert original["source_row"] == row["source_row"]
+    else:
+        assert value["status"] == "unknown" and value["targets"] == []
+        pending = value["internal_transfer_review"]
+        assert pending["reason"] == "opposite_rows_unlinked"
+        assert len(pending["opposite_flow_ids"]) == 1
+        assert pending["anchor_flow_id"] not in pending["opposite_flow_ids"]
 
 
 def test_request_boundary_and_openings_do_not_override_source_book_model(client,make_case):

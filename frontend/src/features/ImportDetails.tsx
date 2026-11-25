@@ -8,12 +8,27 @@ import { ImportDataPreview } from './ImportDataPreview';
 
 import { fieldNames } from './import-fields';
 const feedbackReasons: Record<string, string> = {
+  field_note_wrong_header_row: '说明指向数据行，请核对原表头位置',
+  signed_leg_outside_scope: '符号说明仅适用于本方腿，此行保留待核',
+  signed_leg_unproved: '本行的腿别、币种或符号作用范围待核',
+  pdf_candidate: '已提取候选行，仍需核对原页',
+  pdf_cell_quality_unavailable: 'MinerU 未提供可核对的单元格置信度，候选行待核',
+  pdf_result_limit: '提取结果超出页数、表格或大小限制，需核对原件',
+  pdf_result_invalid: '提取结果的页序或表格结构无法核验',
+  pdf_no_tables: '未识别到可回查的表格行',
+  pdf_page_role_unresolved: '本页未取得可核对的候选行',
+  pdf_book_scope_unproven: 'PDF 来源观察待核账簿归属',
+  pdf_repeated_page: '已核证的文档复制页，回查原页',
+  pdf_page_evidence_conflict: '页面证据不完整或互相矛盾',
+  pdf_row_evidence_conflict: '行证据不完整或互相矛盾',
   unsupported_attachment: '附件原件已保留，格式未适配，内部记录数量与资金内容尚未解释', non_business_attachment: 'Finder元数据附件，原件保留，不生成资金流水',
     transaction_valid: '按来源方向与金额识别为资金流水', auxiliary_table: '辅助资料，未作为资金流水', feedback_only: '来源反馈，未包含资金流水',
   negative_reversal_text: '负数与冲正描述缺少一致的来源依据', negative_revocation_text: '负数与撤销描述缺少一致的来源依据',
   negative_reversal_revocation_text: '负数与冲正及撤销描述缺少一致的来源依据', negative_unknown: '来源未明确负号含义',
   missing_core: '缺少形成资金流水必需的信息', invalid_amount: '交易金额格式无效', amount_precision: '交易金额超过分精度',
-  amount_overflow: '交易金额超出支持范围', zero_amount: '零金额，无资金变动', invalid_direction: '收付方向无法识别',
+  amount_overflow: '交易金额超出支持范围', zero_amount: '零金额，无资金变动', invalid_direction: '正式导入未识别收付标志',
+  csv_tail_source_only: '最后一条非空记录缺少原格，已保留材料。请核对原报表后重新上传。',
+  csv_tail_incomplete_record: '本行缺少尚未核明用途的尾部原格，可在来源记录中核对。',
   unsupported_time_role: '只有记账、受理等其他时间，未提供交易时间；未计入资金统计和资金图',
   unsupported_timezone: '显式偏移和UTC瞬间已保留；尚未进入资金统计、资金图或跨无区时间排序',
   invalid_time: '交易时间无效', invalid_currency: '币种无法识别', unknown_status: '交易状态含义缺少适用的来源依据',
@@ -35,7 +50,7 @@ const feedbackReasons: Record<string, string> = {
   unknown_table: '表格结构尚不能唯一识别', missing_time: '缺少形成资金流水必需的交易时间', conflicting_time: '多个时间字段不一致',
   missing_amount: '缺少形成资金流水必需的交易金额', conflicting_amount: '多个金额字段换算后不一致', unknown_unit: '金额单位不能唯一确定',
   negative_amount: '来源未明确负号含义', missing_direction: '缺少可确定的收支方向',
-  conflicting_direction: '方向与金额或收支分列矛盾', conflicting_income_expense: '收入与支出同时非零',
+  conflicting_direction: '收付方向依据相互矛盾', conflicting_income_expense: '收入与支出同时非零',
   missing_identity: '缺少必要的本方或双边身份', conflicting_field: '同一字段的多个候选列不一致',
   row_width: '来源记录列数与表头不同', column_count_mismatch: '来源记录列数与表头不同',
   blank_record: '空白记录，未作为交易', preamble: '表头前说明，未作为交易',
@@ -58,7 +73,7 @@ const feedbackRoles: Record<string, string> = { transaction: '交易明细', acc
 export const unresolvedCount = (feedback: NonNullable<ImportPreview['feedback']>) => (feedback.unresolved ?? 0) + (feedback.review ?? 0);
 
 const mappingRoleNames: Record<string, string> = { source_slip_reference: '传票号', source_log_reference: '日志号', independent_voucher_type: '凭证种类' };
-const mappingBasis: Record<string, string> = { exact_header_alias: '按完整表头别名识别并校验', source_transaction_id: '使用来源交易流水号', independent_voucher_reference: '凭证号为独立引用，不与交易流水号判冲突', independent_voucher_type: '保留来源凭证种类', source_slip_reference: '独立保留来源传票号', source_log_reference: '独立保留来源日志号', summary: '保留来源摘要原文', remark: '独立保留来源备注原文', explicit_time_format: '明确的日期时间格式' };
+const mappingBasis: Record<string, string> = { exact_header_alias: '按完整表头别名识别并校验', manual_override: '手动指定（已重预览）', source_transaction_id: '使用来源交易流水号', independent_voucher_reference: '凭证号为独立引用，不与交易流水号判冲突', independent_voucher_type: '保留来源凭证种类', source_slip_reference: '独立保留来源传票号', source_log_reference: '独立保留来源日志号', summary: '保留来源摘要原文', remark: '独立保留来源备注原文', explicit_time_format: '明确的日期时间格式' };
 export const mappingExplanation = (item: Record<string, string>) => [
   item.member_path, `${mappingRoleNames[item.basis] || fieldNames[item.field] || item.field || '字段'} ← ${item.column || '未识别'}`,
   item.time_format ? `时间格式：${item.time_format}` : '',
@@ -118,7 +133,7 @@ export function FeedbackSummary({ feedback, complete = false, uncertain = false 
   </section>;
 }
 
-export function ImportRecordEvidence({ caseId, sourceId, client, scopeSignal, memberPath, openPreview = false, focusRow, onClearFocus, compact = false, initialRows = [], filename = '' }: { caseId: string; sourceId: string; client: FundsCaseClientV1; scopeSignal: AbortSignal; memberPath?: string; openPreview?: boolean; focusRow?: number; onClearFocus?: () => void; compact?: boolean; initialRows?: PreviewFlow[]; filename?: string }) {
+export function ImportRecordEvidence({ caseId, sourceId, client, scopeSignal, memberPath, openPreview = false, focusRow, pdfPage, onClearFocus, compact = false, initialRows = [], filename = '' }: { caseId: string; sourceId: string; client: FundsCaseClientV1; scopeSignal: AbortSignal; memberPath?: string; openPreview?: boolean; focusRow?: number; pdfPage?: number; onClearFocus?: () => void; compact?: boolean; initialRows?: PreviewFlow[]; filename?: string }) {
   const [open, setOpen] = useState(false), [page, setPage] = useState(1), [reload, setReload] = useState(0);
   const [data, setData] = useState<ImportRecordPage | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(false);
   const recordsElement = useRef<HTMLDivElement>(null), recordPage = focusRow === undefined ? page : 1;
@@ -131,15 +146,21 @@ export function ImportRecordEvidence({ caseId, sourceId, client, scopeSignal, me
     const revoke = () => { setData(null); setOpen(false); };
     scopeSignal.addEventListener('abort', revoke, { once: true });
     setData(null); setError(''); setLoading(true);
-    (focusRow !== undefined ? client.importRecords(sourceId, 1, controller.signal, memberPath, focusRow) : memberPath === undefined ? client.importRecords(sourceId, recordPage, controller.signal) : client.importRecords(sourceId, recordPage, controller.signal, memberPath)).then(value => {
+    const records = pdfPage !== undefined ? client.importRecords(sourceId, recordPage, controller.signal, memberPath, focusRow, pdfPage)
+      : focusRow !== undefined ? client.importRecords(sourceId, 1, controller.signal, memberPath, focusRow)
+      : memberPath === undefined ? client.importRecords(sourceId, recordPage, controller.signal)
+      : client.importRecords(sourceId, recordPage, controller.signal, memberPath);
+    records.then(value => {
       if (!active || controller.signal.aborted) return;
       if (value.case_id !== caseId || value.source_id !== sourceId || memberPath !== undefined && value.items.some(item => item.member_path !== memberPath)
-        || focusRow !== undefined && value.items.some(item => item.source_row !== focusRow)) throw new Error('来源记录与当前案件、文件或定位行不一致。');
+        || focusRow !== undefined && value.items.some(item => item.source_row !== focusRow)
+        || pdfPage !== undefined && value.items.some(item => item.details.pdf_page !== String(pdfPage)))
+        throw new Error('来源记录与当前案件、文件或定位不一致。');
       setData(value);
     }).catch(reason => { if (active && !controller.signal.aborted && reason.name !== 'AbortError') setError(reason.message); })
       .finally(() => { if (active && !controller.signal.aborted) setLoading(false); });
     return () => { active = false; scopeSignal.removeEventListener('abort', revoke); unlink(); controller.abort(); };
-  }, [client, caseId, sourceId, scopeSignal, memberPath, recordPage, focusRow, open, reload]);
+  }, [client, caseId, sourceId, scopeSignal, memberPath, recordPage, focusRow, pdfPage, open, reload]);
   if (scopeSignal.aborted) return null;
   if (!client.importRecords) return compact ? <ImportDataPreview rows={initialRows} filename={filename} /> : null;
   if (compact && focusRow === undefined) return <>
@@ -147,14 +168,17 @@ export function ImportRecordEvidence({ caseId, sourceId, client, scopeSignal, me
     {error && <p role="alert">{error}<button className="ft-text-button" onClick={() => setReload(value => value + 1)}>重试</button></p>}
 
   </>;
-  return <details open={open} className={compact ? 'ft-focused-evidence' : undefined} onToggle={event => setOpen(event.currentTarget.open)}><summary>{compact ? '来源行' : '来源记录与关联依据'}</summary>
-    {!compact && <p>以下为当前保留的来源记录与关联资料，导入当时统计不变。</p>}
+  return <details open={open} className={compact ? 'ft-focused-evidence' : undefined} onToggle={event => setOpen(event.currentTarget.open)}><summary>{pdfPage !== undefined ? `第 ${pdfPage} 页原行与核证结果` : compact ? '来源行' : '来源记录与关联依据'}</summary>
+    {!compact && pdfPage === undefined && <p>以下为当前保留的来源记录与关联资料，导入当时统计不变。</p>}
     {focusRow !== undefined && <p className="ft-focused-row" role="status">{data?.items.length ? '已定位原始第' : '定位原始第'} {focusRow} 行{onClearFocus && <button className="ft-text-button" onClick={onClearFocus}>查看该文件全部来源记录</button>}</p>}
     {loading && <p role="status">正在加载来源记录…</p>}
     {error && <p role="alert">{error}<button onClick={() => setReload(value => value + 1)}>重试来源记录</button></p>}
     {data && data.items.some(row => row.preview) && <ImportDataPreview rows={data.items.flatMap(row => row.preview ? [row.preview] : [])}
       filename={memberPath || '当前来源'} heading="来源行数据预览" note="当前留存流水值 · 原始值与处置见下方" ariaLabel="来源行数据预览，可上下左右滚动" />}
-    {data && <div className="ft-record-scroll" ref={recordsElement} role="region" tabIndex={0} aria-label="来源记录预览，可上下左右滚动">{data.items.map(row => <article key={row.record_no} data-focused={row.source_row === focusRow}><p>{row.member_path} · 原始第 {row.source_row} 行 · {feedbackReason(row.reason_code)}</p><SourceFieldEvidence details={row.details} expanded={row.source_row === focusRow} /></article>)}</div>}
+    {data && <div className="ft-record-scroll" ref={recordsElement} role="region" tabIndex={0} aria-label="来源记录预览，可上下左右滚动">{data.items.map(row => <article key={row.record_no} data-focused={row.source_row === focusRow}>
+      <p>{row.member_path} · {pdfPage === undefined ? `原始第 ${row.source_row} 行` : `页内第 ${row.details.pdf_row} 条`} · {feedbackReason(row.reason_code)}</p>
+      <SourceFieldEvidence details={row.details} expanded={pdfPage !== undefined || row.source_row === focusRow} />
+    </article>)}</div>}
     {data && data.total === 0 && <p>未保留可查询的来源记录。</p>}
     {data && data.total > data.page_size && <div className="source-pagination"><button aria-label="来源记录上一页" disabled={loading || page <= 1} onClick={() => setPage(value => value - 1)}>上一页</button><span>第 {data.page} / {Math.ceil(data.total / data.page_size)} 页</span><button aria-label="来源记录下一页" disabled={loading || page * data.page_size >= data.total} onClick={() => setPage(value => value + 1)}>下一页</button></div>}
   </details>;

@@ -16,8 +16,6 @@ test('existing flow context requires no new principal action, dialog, or conditi
   assert.match(page, /id="ctxModal"/);
   assert.match(page, /id="ctxTrack"/);
   assert.doesNotMatch(source, /fetch\(|addEventListener\(|showModal\(|createElement\(/);
-  assert.match(app, /const principal = selection\.data\.review\.principal/);
-  assert.match(app, /Object\.values\(principal\)\.map\(value => window\.FundsFacts\?\.principal\(value\)\)/);
 });
 
 test('confirmed event has one primary amount; unresolved amount is not exact or zero', () => {
@@ -47,6 +45,8 @@ test('backend reasons and exact large ranges are presented without fabricating F
   assert.match(conditional,/账簿覆盖完整性未确定/);
   assert.match(conditional,/资金实际可用性未确定/);
   assert.doesNotMatch(conditional,/来源份额已.*确定/);
+  const unboundRecord = facts.principal({status:'unknown', reasons:['unresolved_source_records']});
+  assert.match(unboundRecord, /案内有尚未界定账簿或时段的来源记录/);
 });
 
 test('path principal detail explains first exit, independent sources and bounded omissions', () => {

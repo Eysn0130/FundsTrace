@@ -115,7 +115,7 @@ def test_suffixless_package_requires_a_closed_single_text_member_and_complete_jo
         "empty_records": ("import_records", "delete from entries"),
         "record_key": ("import_records", "update entries set record_key='" + "0" * 64 + "'"),
         "changed_flow": ("flows", "update entries set amount=amount+1"),
-        "future_profile": ("import_sources", "update entries set parser_version='funds-trace-table-v99'"),
+        "future_profile": ("import_sources", "update entries set parser_version='funds-trace-table-v9999'"),
         "legacy_kind": ("import_sources", "update entries set row_kind='csv_record',parser_version='legacy-csv'"),
     }
     if defect.startswith("missing_"):

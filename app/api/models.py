@@ -331,7 +331,325 @@ class TableSummary(ContractModel):
     mapping_evidence: list[dict[str, str]] = Field(default_factory=list)
 
 
+ReadyEvidenceRevision = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
+PhysicalPosition = Annotated[int, Field(strict=True, ge=1, le=2_147_483_647)]
+ReadyMember = Annotated[str, Field(min_length=1, max_length=4096)]
+LedgerColumnRole = Literal["self_account", "self_card", "self_name", "counter_account", "counter_card",
+                           "counter_name", "payer_account", "payer_name", "payee_account", "payee_name"]
+
+
+class ImportReadyScope(ContractModel):
+    member_path: ReadyMember
+    sheet: str
+    header_row: PhysicalPosition
+    header_rows: list[PhysicalPosition]
+    sample_rows: list[PhysicalPosition]
+
+
+class ImportReadyAccess(ContractModel):
+    revision: ReadyEvidenceRevision
+    all_regions_sampled: bool
+    scopes: list[ImportReadyScope]
+
+
+class ImportReadyReadRequest(ContractModel):
+    revision: ReadyEvidenceRevision
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    source_rows: list[PhysicalPosition] = Field(default_factory=list, max_length=4)
+    columns: list[PhysicalPosition] = Field(default_factory=list, max_length=16)
+
+
+class ImportReadyColumn(ContractModel):
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    column: PhysicalPosition
+
+
+class ImportReadyProposalBase(ContractModel):
+    revision: ReadyEvidenceRevision
+    field: LedgerColumnRole
+
+
+class ImportReadyCandidate(ImportReadyProposalBase):
+    action: Literal["CANDIDATE"]
+    candidate_columns: list[ImportReadyColumn] = Field(min_length=1, max_length=18)
+
+
+class ImportReadyDefer(ImportReadyProposalBase):
+    action: Literal["DEFER"]
+    candidate_columns: list[ImportReadyColumn] = Field(default_factory=list, max_length=18)
+
+
+ImportReadyProposalRequest = Annotated[ImportReadyCandidate | ImportReadyDefer, Field(discriminator="action")]
+
+
+class ImportReadyVerifyRequest(ContractModel):
+    revision: ReadyEvidenceRevision
+    field: LedgerColumnRole
+    claims: list[ImportReadyColumn] = Field(min_length=1, max_length=18)
+
+
+class ImportLayoutMember(ContractModel):
+    member_path: ReadyMember
+    sheet: str
+    source_rows: PhysicalPosition
+    header_rows: list[PhysicalPosition]
+
+
+class ImportLayoutAccess(ContractModel):
+    revision: ReadyEvidenceRevision
+    members: list[ImportLayoutMember]
+
+
+class ImportLayoutReadRequest(ContractModel):
+    revision: ReadyEvidenceRevision
+    member_path: ReadyMember
+    row_start: PhysicalPosition = 1
+    column_start: PhysicalPosition = 1
+
+
+class ImportColumnEvidenceRequest(ContractModel):
+    revision: ReadyEvidenceRevision
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    column_start: PhysicalPosition = 1
+    compare_columns: list[PhysicalPosition] = Field(default_factory=list, max_length=16)
+
+
+class ImportReferenceTrialRequest(ContractModel):
+    revision: ReadyEvidenceRevision
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+
+
+class ImportLayoutRegion(ContractModel):
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    last_row: PhysicalPosition
+    mode: Literal["A", "B"]
+    mapping: dict[str, PhysicalPosition] = Field(min_length=1, max_length=32)
+
+
+class ImportLayoutTrialRequest(ContractModel):
+    revision: ReadyEvidenceRevision
+    regions: list[ImportLayoutRegion] = Field(min_length=1, max_length=8)
+
+
+class ImportLayoutApplyRequest(ImportLayoutTrialRequest):
+    confirmed: Literal[True]
+
+
+AssistRef = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")]
+AssistDigest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+AssistFlowId = Annotated[str, Field(pattern=r"^[1-9][0-9]{0,18}$")]
+
+
+class AssistReply(ContractModel):
+    packet_sha256: AssistDigest
+    choice: AssistRef
+    refs: list[AssistRef] = Field(default_factory=list, max_length=6)
+    gap: AssistRef | None = None
+
+
+class ImportAssistanceRequest(ContractModel):
+    revision: ReadyEvidenceRevision
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    field: LedgerColumnRole
+    column_start: PhysicalPosition = 1
+    support_member_path: ReadyMember | None = None
+    prepare_layout: bool = False
+    reply: AssistReply | None = None
+
+
+class ImportPostingRoleTrialRequest(ContractModel):
+    revision: ReadyEvidenceRevision
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    field: Literal["own_direction_amount"]
+    decision_mode: Literal["single_qwen"] | None = None
+
+
+class ImportBalanceRoleClaim(ContractModel):
+    column: PhysicalPosition
+    source_row: PhysicalPosition
+    role: Literal["own_reported_balance", "available_balance", "peer_balance"]
+
+
+class ImportBalanceRoleTrialRequest(ContractModel):
+    revision: ReadyEvidenceRevision
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    field: Literal["balance"]
+    candidate: ImportBalanceRoleClaim | None = None
+
+
+class ImportBalanceBinding(ContractModel):
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    column: PhysicalPosition
+    source_rows: list[PhysicalPosition]
+    unit_factor: str
+    interpretation: Literal["own_reported_balance"]
+
+
+class ImportSourceBalanceRole(ContractModel):
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    column: PhysicalPosition
+    heading: str
+    source_rows: list[PhysicalPosition]
+    role: Literal["own_reported_balance", "available_balance"]
+    account_column: PhysicalPosition | None = None
+    card_column: PhysicalPosition | None = Field(default=None, exclude_if=lambda column: column is None)
+    subaccount_column: PhysicalPosition | None = None
+    unit_factor: str
+    book_balance_timing: Literal["unproved"]
+    financial_admission: Literal[False]
+
+
+ImportModelTrialRequest = Annotated[
+    ImportAssistanceRequest | ImportPostingRoleTrialRequest | ImportBalanceRoleTrialRequest, Field(discriminator="field")
+]
+
+
+class TrialTraceLookupRequest(ContractModel):
+    kind: Literal["card", "name"]
+    value: Annotated[str, Field(min_length=1, max_length=128)]
+    start: Annotated[str, Field(pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")]
+    end: Annotated[str, Field(pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")]
+
+
+class TrialTraceBinding(ContractModel):
+    lookup: TrialTraceLookupRequest
+    scope_id: AssistDigest
+
+
+class TrialTraceLookupSource(ContractModel):
+    source_id: str
+    member_path: ReadyMember
+    source_row: PhysicalPosition
+    sha256: AssistDigest
+    member_sha256: AssistDigest
+    valid_from: str
+    valid_until: str
+
+
+class TrialTraceLookupRow(ContractModel):
+    id: AssistFlowId
+    clock: str
+    amount: Amount
+    currency: str
+    direction: Literal["in", "out"]
+
+
+class TrialTraceChoice(ContractModel):
+    scope_id: AssistDigest
+    account: str
+    name: str
+    issuer: str
+    ledger_id: str | None
+    covers_period: bool
+    proofs: list[TrialTraceLookupSource]
+    rows: list[TrialTraceLookupRow]
+    more_rows: bool
+
+
+class TrialTraceObservationExample(ContractModel):
+    source_row: PhysicalPosition
+    card_suffix: str | None
+    flow_id: Identifier | None
+    account: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    clock: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    direction: Literal["in", "out"] | None = Field(default=None, exclude_if=lambda value: value is None)
+    card_equals_account: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class TrialTraceSourceObservation(ContractModel):
+    source_id: str
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    role: Literal["own_card", "query_name", "account_snapshot", "matching_card_account", "matching_registered_account"]
+    match_column: PhysicalPosition
+    card_column: PhysicalPosition
+    matching_rows: int
+    distinct_cards: int
+    rows_without_full_card: int
+    examples: list[TrialTraceObservationExample]
+    account_column: PhysicalPosition | None = Field(default=None, exclude_if=lambda value: value is None)
+    distinct_accounts: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    registration_columns: dict[str, PhysicalPosition] | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class TrialTraceSourceObservations(ContractModel):
+    checked_sources: int
+    complete: bool
+    matches: list[TrialTraceSourceObservation]
+
+
+class TrialTraceLookupResult(ContractModel):
+    case_id: Identifier
+    revision: str
+    status: Literal["found", "multiple_ledgers", "scope_limited", "evidence_missing", "period_unproved", "book_unavailable", "partial_card"]
+    coverage_complete: bool
+    choices: list[TrialTraceChoice]
+    source_observations: TrialTraceSourceObservations | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class ReviewAssistanceRequest(ContractModel):
+    kind: Literal["pair", "trace_source", "trace_target"]
+    review_token: ReadyEvidenceRevision
+    anchor_id: AssistFlowId | None = None
+    canvas_id: AssistFlowId | Literal["0"] | None = None
+    group_flow_id: AssistFlowId | None = None
+    group_flow_ids: list[AssistFlowId] = Field(default_factory=list, max_length=50)
+    source_flow_ids: list[AssistFlowId] = Field(default_factory=list, max_length=50)
+    target_flow_ids: list[AssistFlowId] = Field(default_factory=list, max_length=50)
+    ledger_binding: TrialTraceBinding | None = None
+    reply: AssistReply | None = None
+    explain: bool = False
+
+
+class ImportRuleNote(ContractModel):
+    member_path: ReadyMember
+    source_row: PhysicalPosition
+
+
+class ImportRuleRegion(ContractModel):
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    last_row: PhysicalPosition
+    column: PhysicalPosition
+    basis: Literal["scoped_own_account_alias", "source_role_statement"]
+    note: ImportRuleNote | None = None
+    definition: ImportRuleNote | None = Field(default=None, exclude_if=lambda definition: definition is None)
+
+
+class ImportRuleLayoutEvidence(ContractModel):
+    source_sha256: AssistDigest
+    regions: list[ImportRuleRegion]
+
+
+class ImportLayoutDecision(ImportRuleLayoutEvidence):
+    origin: Literal["rule", "model_assisted"]
+    packet_sha256: AssistDigest | None = None
+
+
+class ImportLayoutReviewIssue(ContractModel):
+    reason: Literal["use_code_wrong_scope", "use_code_missing_definition", "use_code_conflicting_definitions"]
+    code: str
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    last_row: PhysicalPosition
+    notes: list[ImportRuleNote]
+
+
+ReferencePolicyBasis = Literal["uniform35_source_header", "model_verified_source_columns", "rule_verified_source_columns"]
+
+
 class ImportPreview(ContractModel):
+    source_balance_binding: ImportBalanceBinding | None = Field(default=None, exclude_if=lambda binding: binding is None)
     resolution: ResolutionSummary | None = None
     case_id: Identifier
     import_id: str
@@ -345,8 +663,73 @@ class ImportPreview(ContractModel):
     feedback: FeedbackSummary | None = None
     table_summary: TableSummary | None = None
     automatic: bool = False
+    layout_model_assisted: bool = False
     reference_policy_available: bool = False
     reference_policy: Literal["transaction-reference-v1"] | None = None
+    reference_policy_basis: ReferencePolicyBasis | None = None
+    ready_evidence: ImportReadyAccess | None = None
+    layout_review: ImportLayoutAccess | None = None
+    layout_applied: bool = False
+    layout_model_trial: bool = False
+    layout_model_trial_conflict: bool = False
+    layout_rule_evidence: ImportRuleLayoutEvidence | None = None
+    layout_review_issue: ImportLayoutReviewIssue | None = Field(default=None, exclude_if=lambda issue: issue is None)
+
+
+class IntakeMaterial(ContractModel):
+    member_path: str
+    member_sha256: str
+    size_bytes: int
+    sheet: str | None = None
+    header_row: int | None = None
+    last_row: int | None = None
+    page: int | None = None
+    source_row: int | None = None
+    role: str
+    status: str
+    reason: str | None = None
+    next_action: str
+    row_count: int
+    accepted: int
+    auxiliary: int
+    unresolved: int
+    original_url: str | None = None
+    records_url: str | None = None
+
+
+class ImportSourceMoneyRole(ContractModel):
+    role: Literal["amount", "currency", "balance", "converted_cny", "converted_usd", "converted_unspecified",
+                  "transfer_in_amount", "transfer_out_amount", "other_amount", "other_currency"]
+    state: Literal["located", "absent", "unproved"]
+    column: PhysicalPosition | None = Field(default=None, exclude_if=lambda column: column is None)
+    unit_status: Literal["not_applicable", "not_declared", "declared", "unproved"]
+    declared_unit: Literal["YUAN", "CENT", "JIAO", "THOUSAND", "TEN_THOUSAND"] | None = Field(
+        default=None, exclude_if=lambda unit: unit is None)
+    unit_columns: list[PhysicalPosition] = Field(default_factory=list, exclude_if=lambda columns: not columns)
+    value_rows: list[PhysicalPosition] = Field(default_factory=list)
+    blank_rows: list[PhysicalPosition] = Field(default_factory=list)
+    missing_rows: list[PhysicalPosition] = Field(default_factory=list)
+
+
+class ImportSourceFieldNote(ContractModel):
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    columns: list[PhysicalPosition]
+    rows: list[PhysicalPosition] = Field(default_factory=list)
+    text: str
+    balance_role: ImportSourceBalanceRole | None = Field(default=None, exclude_if=lambda role: role is None)
+    money_role: ImportSourceMoneyRole | None = Field(default=None, exclude_if=lambda role: role is None)
+
+
+class IntakeReceipt(ContractModel):
+    version: str
+    case_id: Identifier
+    source_id: str
+    sha256: AssistDigest
+    stage: str
+    source_available: bool
+    items: list[IntakeMaterial]
+    source_field_notes: list[ImportSourceFieldNote] = Field(default_factory=list, exclude_if=lambda notes: not notes)
 
 
 class RepreviewRequest(ContractModel):
@@ -356,6 +739,7 @@ class RepreviewRequest(ContractModel):
     # transaction id and the voucher as separate facts instead of rejecting
     # every row whose voucher differs. Never inferred from cell values.
     reference_policy: Literal["transaction-reference-v1"] | None = None
+    ready_revision: ReadyEvidenceRevision | None = None
 
 
 class CommitRequest(RepreviewRequest):
@@ -393,6 +777,7 @@ class ImportResult(ContractModel):
     source_id: str | None = None
     feedback: FeedbackSummary | None = None
     table_summary: TableSummary | None = None
+    layout_decision: ImportLayoutDecision | None = Field(default=None, exclude_if=lambda decision: decision is None)
 
 
 class ImportMemberResult(ContractModel):
@@ -416,6 +801,10 @@ class ImportJob(ContractModel):
     member_results: list[ImportMemberResult] = Field(default_factory=list)
 
 
+class ImportSavedRequest(CommitRequest):
+    reference_policy_basis: ReferencePolicyBasis | None = None
+
+
 class ImportSession(ContractModel):
     case_id: Identifier
     import_id: str
@@ -431,7 +820,7 @@ class ImportSession(ContractModel):
     attempt: int
     source_available: bool
     recoverable: bool
-    request: CommitRequest | None
+    request: ImportSavedRequest | None
     result: ImportResult | None
 
 
@@ -536,8 +925,346 @@ class ImportOriginalCell(ContractModel):
     kind: Literal['text', 'number', 'date', 'boolean', 'error', 'formula'] = 'text'
 
 
+class ImportReadyBinding(ContractModel):
+    case_id: Identifier
+    import_id: str
+    sha256: str
+    revision: ReadyEvidenceRevision
+    parser_version: str
+
+
+class ImportReadySourceRow(ContractModel):
+    source_row: PhysicalPosition
+    cells: list[ImportOriginalCell]
+
+
+class ImportReadyEvidence(ImportReadyBinding):
+    scope: ImportReadyScope
+    headers: list[ImportReadySourceRow]
+    rows: list[ImportReadySourceRow]
+
+
+class ImportReadyProposal(ImportReadyBinding):
+    field: LedgerColumnRole
+    action: Literal["CANDIDATE", "DEFER"]
+    candidate_columns: list[ImportReadyColumn]
+    review_status: Literal["review_only"]
+
+
+class ImportReadyVerdict(ImportReadyBinding):
+    field: LedgerColumnRole
+    evidence_status: Literal["supported", "refuted", "insufficient"]
+    reason: Literal["registered_source_role", "document_number_column", "incompatible_source_role",
+                    "source_role_unproven", "incomplete_source_scope"]
+
+
+class ImportLayoutWindow(ImportReadyBinding):
+    member: ImportLayoutMember
+    row_start: PhysicalPosition
+    column_start: PhysicalPosition
+    rows: list[ImportReadySourceRow]
+    more_rows: bool
+    more_columns: bool
+
+
+class ImportColumnCoverage(ContractModel):
+    first_row: PhysicalPosition
+    last_row: PhysicalPosition
+    scanned_rows: int
+    complete: bool
+    reason: str | None
+
+
+class ImportColumnSample(ContractModel):
+    source_row: PhysicalPosition
+    kind: str
+    value: str | None
+    excerpt: bool
+
+
+class ImportColumnComparison(ContractModel):
+    column: PhysicalPosition
+    different: int
+    first_difference: PhysicalPosition | None
+    both_present: int
+    equal_present: int
+    missing_rows: int
+
+
+class ImportColumnProfile(ContractModel):
+    column: PhysicalPosition
+    heading: str | None
+    kinds: dict[str, int]
+    nonempty: int
+    leading_zero: int
+    length_counts: dict[str, int]
+    comparisons: list[ImportColumnComparison]
+    samples: list[ImportColumnSample]
+
+
+class ImportColumnEvidence(ImportReadyBinding):
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    coverage: ImportColumnCoverage
+    columns: list[ImportColumnProfile]
+
+
+class ImportLayoutTrialRow(ContractModel):
+    source_row: PhysicalPosition
+    disposition: Literal["accepted", "unresolved", "non_transaction", "non_monetary", "auxiliary"]
+    reason: str
+    preview: PreviewFlow | None = None
+
+
+class ImportLayoutTrialRegion(ContractModel):
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    rows: list[ImportLayoutTrialRow]
+
+
+class ImportLayoutTrial(ImportReadyBinding):
+    review_status: Literal["review_only"]
+    uncovered_present_rows: int
+    regions: list[ImportLayoutTrialRegion]
+
+
+class AssistRecord(ContractModel):
+    id: AssistRef
+    raw: dict[str, Any]
+    structured: dict[str, Any]
+    locator: dict[str, Any]
+
+
+class AssistCandidate(ContractModel):
+    id: AssistRef
+    description: str
+    refs: list[AssistRef]
+    refuted: bool = False
+
+
+class AssistGap(ContractModel):
+    id: AssistRef
+    description: str
+
+
+class AssistSelection(ContractModel):
+    status: Literal["review_only", "deferred"]
+    choice: AssistRef
+    refs: list[AssistRef]
+    gap: AssistRef | None
+
+
+class AssistancePacket(ContractModel):
+    domain: Literal["import", "pair", "trace"]
+    question: str
+    facts: dict[str, Any]
+    packet_sha256: AssistDigest
+    candidates: list[AssistCandidate]
+    records: list[AssistRecord]
+    gaps: list[AssistGap]
+    selection: AssistSelection | None = None
+
+
+class ModelTrialStatus(ContractModel):
+    enabled: bool
+    configured: bool
+
+
+class ImportTrialColumnCheck(ContractModel):
+    column_ref: AssistRef
+    finding: Literal["supported", "refuted", "unknown"]
+    note_ref: AssistRef | None = None
+
+
+class TrialBusinessReceipt(ContractModel):
+    receipt_id: AssistDigest
+    proposition: Literal["same_transaction", "conditional_range"]
+    status: Literal["accepted", "pending"]
+    reason: str
+    refs: list[AssistRef] = Field(default_factory=list)
+    evidence_window_truncated: bool = False
+    event_id: str | None = None
+    observations: int | None = None
+    currency: str | None = None
+    amount: Amount | None = None
+    lower: Amount | None = None
+    upper: Amount | None = None
+    ledger_rows: int | None = None
+
+
+class TrialReceiptSource(ContractModel):
+    source_id: str
+    sha256: AssistDigest
+
+
+class TrialReceiptOriginal(TrialReceiptSource):
+    member_path: ReadyMember
+    source_row: PhysicalPosition
+
+
+class TrialReceiptHistory(ContractModel):
+    case_id: Identifier
+    authority: Literal["historical"]
+    accepted_at: str
+    analysis_revision: str
+    scope_sha256: AssistDigest
+    receipt: TrialBusinessReceipt
+    originals: list[TrialReceiptOriginal]
+    source_proofs: list[TrialReceiptSource]
+
+
+class ImportHeaderRoleMatch(ContractModel):
+    column: PhysicalPosition
+    heading: str
+
+
+class ImportHeaderRole(ContractModel):
+    scope: Literal["source_header_only"]
+    field: Literal["counter_account", "counter_card", "counter_name"]
+    member_path: ReadyMember
+    header_row: PhysicalPosition
+    width: PhysicalPosition
+    matches: list[ImportHeaderRoleMatch]
+
+
+class ModelTrialResult(ContractModel):
+    state: Literal["rule", "pending", "proposal", "unavailable"]
+    reason: str
+    packet: AssistancePacket
+    first_calls: int
+    recheck_calls: int
+    column_checks: list[ImportTrialColumnCheck] = Field(default_factory=list)
+    receipt: TrialBusinessReceipt | None = None
+    prepared_preview: ImportPreview | None = None
+    explanation: str | None = None
+    explanation_calls: int = 0
+    explanation_model: Literal["qwen35-4b"] | None = None
+    header_role: ImportHeaderRole | None = Field(default=None, exclude_if=lambda role: role is None)
+    source_balance_roles: list[ImportSourceBalanceRole] = Field(default_factory=list, exclude_if=lambda roles: not roles)
+
+
 class ImportReviewRecord(ImportRecord):
     original: list[ImportOriginalCell] | None = None
+
+
+class ImportRowCompareRequest(ContractModel):
+    member_path: ReadyMember
+    record_nos: list[PhysicalPosition] = Field(min_length=2, max_length=2)
+
+
+class ImportRowComparisonPosition(ContractModel):
+    record_no: PhysicalPosition
+    source_row: PhysicalPosition
+    own_account_column: PhysicalPosition | None
+    direction_column: PhysicalPosition | None
+    direction: Literal["in", "out"] | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class ImportRowFieldDifference(ContractModel):
+    column: PhysicalPosition
+    heading: str
+
+
+class ImportRowReferenceCompetition(ContractModel):
+    column: PhysicalPosition
+    first_row: PhysicalPosition
+    last_row: PhysicalPosition
+    other_source_rows: list[PhysicalPosition]
+    other_count: int
+    selected_differences: list[ImportRowFieldDifference]
+
+
+class ImportRowObservationCorrespondence(ContractModel):
+    own_card_column: PhysicalPosition
+    counterparty_identifier_column: PhysicalPosition
+    reference_column: PhysicalPosition
+    status_column: PhysicalPosition
+    time_column: PhysicalPosition
+    amount_column: PhysicalPosition
+    currency_column: PhysicalPosition
+    source_reference_kind: Literal["ledger_log"] | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class ImportRowPostingComparison(ContractModel):
+    opposite_directions: bool
+    reciprocal_card_text: bool
+    same_recorded_clock: bool
+    same_currency: bool
+    same_amount: bool
+    same_reference: bool
+    reference_text_matches: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    reference_occurrences: list[int | None] = Field(min_length=2, max_length=2)
+    different_vouchers: bool = False
+    columns: dict[str, PhysicalPosition]
+
+
+class ImportRowAccountPairObservation(ContractModel):
+    source_row: PhysicalPosition
+    direction: Literal["in", "out"]
+    balance_witness_rows: list[PhysicalPosition]
+    whole_member_candidate_count: int
+
+
+class ImportRowAccountRegistrationMatch(ContractModel):
+    posting_source_row: PhysicalPosition
+    source_id: str
+    member_path: ReadyMember
+    source_row: PhysicalPosition
+    account_column: PhysicalPosition
+    card_column: PhysicalPosition
+    name_column: PhysicalPosition
+    document_column: PhysicalPosition
+    currency_column: PhysicalPosition
+    opening_column: PhysicalPosition
+    closing_column: PhysicalPosition
+    last_transaction_column: PhysicalPosition
+    branch_column: PhysicalPosition
+    balance_column: PhysicalPosition
+    available_column: PhysicalPosition
+    card_matches: bool | None
+    card_equals_account: bool
+    posting_card_present: bool
+    name_present: bool
+    document_present: bool
+
+
+class ImportRowAccountRegistrationContext(ContractModel):
+    matches: list[ImportRowAccountRegistrationMatch]
+    complete: bool
+    source_role_only: Literal[True]
+    different_name: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    different_document: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class ImportRowAccountPairLead(ContractModel):
+    kind: Literal["reciprocal_accounts"]
+    own_account_column: PhysicalPosition
+    counterparty_identifier_column: PhysicalPosition
+    balance_column: PhysicalPosition
+    empty_reference_columns: list[PhysicalPosition]
+    observations: list[ImportRowAccountPairObservation] = Field(min_length=2, max_length=2)
+    registration_context: ImportRowAccountRegistrationContext | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class ImportRowComparison(ContractModel):
+    case_id: Identifier
+    source_id: str
+    member_path: ReadyMember
+    scope: Literal["selected_source_rows"]
+    status: Literal["excluded", "pending"]
+    reason: Literal["same_ledger_same_direction", "different_ledger", "different_direction", "source_role_unproved",
+                    "different_amount_currency", "other_ledger_correspondence", "source_account_text_pending"]
+    rows: list[ImportRowComparisonPosition]
+    event_attribution: Literal["unknown"]
+    selected_reference_column: PhysicalPosition | None = Field(default=None, exclude_if=lambda value: value is None)
+    reference_competition: ImportRowReferenceCompetition | None = Field(default=None, exclude_if=lambda value: value is None)
+    observation_correspondence: ImportRowObservationCorrespondence | None = Field(
+        default=None, exclude_if=lambda value: value is None)
+    posting_comparison: ImportRowPostingComparison | None = Field(default=None, exclude_if=lambda value: value is None)
+    account_pair_lead: ImportRowAccountPairLead | None = Field(default=None, exclude_if=lambda value: value is None)
+    alternative_correspondences: Annotated[
+        list[Annotated[list[PhysicalPosition], Field(min_length=2, max_length=2)]], Field(min_length=2, max_length=2)
+    ] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class ImportReviewIssue(ContractModel):
@@ -547,6 +1274,40 @@ class ImportReviewIssue(ContractModel):
     reason_code: str
 
 
+class ImportSignedAmountRow(ContractModel):
+    source_row: PhysicalPosition
+    raw_amount: str
+    direction_marker: str
+
+
+class ImportSignedAmountGroup(ContractModel):
+    negative_rows: list[ImportSignedAmountRow]
+    positive_rows: list[ImportSignedAmountRow]
+    negative_count: int
+    positive_count: int
+    other_same_reference_count: int
+    own_account_missing: bool
+
+
+class ImportSignedAmountDirection(ContractModel):
+    marker: str
+    count: int
+
+
+class ImportSignedAmountReview(ContractModel):
+    case_id: Identifier
+    source_id: str
+    member_path: ReadyMember
+    negative_count: int
+    positive_count: int
+    zero_count: int
+    blank_count: int
+    unreadable_count: int
+    finer_than_cent_count: int
+    negative_bank_field_only_count: int
+    negative_directions: list[ImportSignedAmountDirection]
+    candidate_group_count: int
+    candidate_groups: list[ImportSignedAmountGroup]
 class ImportReviewPage(ContractModel):
     case_id: Identifier
     source_id: str

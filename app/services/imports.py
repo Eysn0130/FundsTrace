@@ -4,9 +4,10 @@ The database owns session state; disk filenames never grant access. A completed
 receipt is committed with its flows and remains readable after source cleanup.
 """
 import asyncio
+from bisect import bisect_right
 import datetime as dt
 import csv
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from copy import deepcopy
 from decimal import Decimal, localcontext
 import hashlib
@@ -20,17 +21,38 @@ import tempfile
 import uuid
 import zipfile
 from itertools import islice
+from urllib.parse import urlencode
 
 import anyio
 
 from app import db, importer, feedback_import, table_import, table_archive, import_validation, evidence_resolution
-from app import import_preview_cache, rar_archive, table_direction_recheck
+from app import import_preview_cache, pdf_import, pdf_text_import, pdf_text_observations, rar_archive, table_direction_recheck
+from app.table_mapping import ACCOUNT_CARD_FIELDS, document_number_header
 from .cases import ServiceError, preview_flow, require_case
+from . import import_ready_evidence
 from .main_accounts import mark_automatic
 
 
 OWNER_TOKEN = uuid.uuid4().hex
 TABLE_PROFILE = table_import.PROFILE
+_CONFIRMED_LAYOUT = "_confirmed_layout_v1"
+SOURCE_CURRENCY_INTERPRETATION_KEY = "_source_currency_interpretation"
+SOURCE_CURRENCY_INTERPRETATION_VERSION = 1
+_TRIAL_LAYOUT_DECISION = "_trial_layout_decision_v1"
+_INTAKE_POLICY = "intake-v1"
+_INTAKE_KEY = "_intake_policy"
+_INTAKE_ITEMS = "_intake_items_v1"
+_PDF_MEMBER_OBSERVATIONS = "_pdf_member_observations_v1"
+_NARRATIVE_DECISIONS = "_narrative_decisions_v1"
+_ACCOUNT_USE_CODE_TRIAL = "_account_use_code_trial_v1"
+_REFERENCE_COLUMNS_TRIAL = "_verified_reference_columns_v1"
+_TRANSACTION_STATUS_POLICY = "_transaction_status_policy"
+_REFERENCE_MODEL_BASIS = "model_verified_source_columns"
+_REFERENCE_RULE_BASIS = "rule_verified_source_columns"
+_PDF_TEXT_READERS = {
+    pdf_text_import.PROFILE: pdf_text_import, **dict.fromkeys(pdf_text_observations.PROFILES, pdf_text_observations),
+}
+_PDF_PROFILES = (pdf_import.PROFILE, *_PDF_TEXT_READERS)
 _extensions = {".csv", ".txt", ".tsv", ".xlsx", ".xls", ".zip", ".rar"}
 _max_upload = 300 * 1024 * 1024
 _preview_lock = threading.Lock()
@@ -40,9 +62,13 @@ _active_stages = ("parsing", "importing")
 _messages = {"parsing": "解析文件…", "importing": "写入流水…", "done": "导入完成",
              "error": "导入失败，请检查文件与列映射后重试", "ready": "等待确认导入"}
 _errors = {"import_interrupted": "上次导入被中断，未完成的数据已回滚，请确认后重试",
+           "pdf_observations_changed": "PDF 来源观察无法按预览重新核对，请重新预览保留的原件",
+           "layout_preview_changed": "已确认物理表区的案件来源发生变化，请上传原件重新核对",
            "source_changed": "上传文件校验失败，请重新上传文件",
+           "reference_original_active": "同一原件已有活动导入。请查看原回执或撤回旧导入后重新确认。",
            "source_missing": "上传文件已清理或不存在，请重新上传文件",
            "evidence_context_overlap": "相同原件的来源范围发生变化，无法安全衔接，未重复入账；请仅补辅助资料或在新案件导入完整目录",
+           "trial_occurrence_conflict": "原件与历史流水的来源关联存在冲突，已停止本次导入",
            "no_importable_rows": "没有可导入的数据行，请检查列映射",
            "import_integrity_failed": "入库一致性校验失败，本次写入已全部回滚；原有数据未改动，请重试或联系维护人员",
            "import_failed": _messages["error"]}
@@ -151,6 +177,12 @@ def _cid(case_id):
     return require_case(str(case_id))
 
 
+def _reject_document_number_mapping(mapping):
+    if any(field in ACCOUNT_CARD_FIELDS and document_number_header(table_import._norm(column))
+           for field, column in mapping.items()):
+        raise ServiceError(422, "invalid_mapping", "证件号码列不能映射为交易账号或卡号")
+
+
 def _mapping(mode, mapping, columns):
     if mode not in importer.MODE_FIELDS or not isinstance(mapping, dict):
         raise ServiceError(422, "invalid_mapping", "流水模式或列映射无效，请重新预览")
@@ -159,6 +191,7 @@ def _mapping(mode, mapping, columns):
            for key, column in mapping.items()):
         raise ServiceError(422, "invalid_mapping", "列映射包含未知字段或文件中不存在的列，请重新预览")
     result = {key: column for key, column in mapping.items() if column}
+    _reject_document_number_mapping(result)
     if not importer._validate(result, mode):
         raise ServiceError(422, "invalid_mapping", "列映射缺少交易时间、金额或交易双方，请补全后重新预览")
     return result
@@ -175,7 +208,7 @@ def _directory(create=False):
 
 
 def _path(import_id, suffix):
-    if not isinstance(import_id, str) or not re.fullmatch(r"[0-9a-f]{32}", import_id) or suffix not in _extensions:
+    if not isinstance(import_id, str) or not re.fullmatch(r"[0-9a-f]{32}", import_id) or suffix not in {*_extensions, ".pdf"}:
         raise _missing()
     return _directory() / f"{import_id}{suffix}"
 
@@ -256,9 +289,12 @@ def _accounts(rows):
 
 
 def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=None, table_profile=None,
-           reference_policy=None, _auto_event_profile=False):
+           reference_policy=None, verified_reference=None, _auto_event_profile=False, manual_mapping_evidence=False, confirmed_layout=None,
+           intake_policy=None, pdf_member_observations=False, narrative_decisions=False, trial_members=False,
+           transaction_status_policy=None):
     # Never retain a previous large preview beside a newly parsed plan.
     import_preview_cache.discard()
+    status_option = {"transaction_status_policy": transaction_status_policy} if transaction_status_policy else {}
     try:
         if reference_policy is not None and table_profile not in table_import.VOUCHER_REFERENCE_PROFILES:
             raise ServiceError(422, "invalid_reference_policy", "引用策略仅适用于新版单文件表格，请重新上传预览")
@@ -267,11 +303,30 @@ def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=Non
         if table_profile in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
             if suffix == ".rar" and not rar_archive.is_rar(source):
                 raise table_import.TableImportError("RAR文件签名不符，整包未接纳")
-            plan = (table_archive.parse(source, profile=table_profile, _stage=True, _operation_scopes=True) if table_profile in table_archive.SUPPORTED_PROFILES
-                    else table_import.parse(source, suffix=suffix, mode=mode, mapping=mapping,
-                                            profile=table_profile,
-                                            voucher_reference=reference_policy is not None,
-                                            **({"_auto_event_profile": True} if _auto_event_profile else {})))
+            plan = (table_archive.direct_intake_auxiliary(source, suffix, narrative_decisions=narrative_decisions)
+                    if intake_policy == _INTAKE_POLICY and not mapping and confirmed_layout is None else None)
+            if plan is None:
+                plan = (table_archive.parse(source, profile=table_profile, _stage=True, _operation_scopes=True,
+                                            member_retention=(table_archive.MEMBER_RETENTION_POLICY
+                                                              if intake_policy == _INTAKE_POLICY and table_profile in table_archive.EVIDENCE_PROFILES
+                                                              else None),
+                                            pdf_member_observations=pdf_member_observations,
+                                            _trial_members=trial_members,
+                                            narrative_decisions=narrative_decisions, **status_option) if table_profile in table_archive.SUPPORTED_PROFILES
+                        else table_import.parse(source, suffix=suffix, mode=mode, mapping=mapping,
+                                                profile=table_profile,
+                                                voucher_reference=reference_policy is not None,
+                                                _manual_mapping_evidence=manual_mapping_evidence,
+                                                _confirmed_layout=confirmed_layout,
+                                                _trial_xlsx=(intake_policy == _INTAKE_POLICY and _auto_event_profile
+                                                             and table_profile == table_import.VOUCHER_REFERENCE_PROFILE
+                                                             and suffix == ".xlsx"),
+                                                _trial_csv=(intake_policy == _INTAKE_POLICY and _auto_event_profile
+                                                            and table_profile == table_import.VOUCHER_REFERENCE_PROFILE
+                                                            and suffix == ".csv"),
+                                                **status_option,
+                                                **({"_verified_reference": verified_reference} if verified_reference is not None else {}),
+                                                **({"_auto_event_profile": True} if _auto_event_profile else {})))
             try:
                 if plan["profile"] in evidence_resolution.PROFILES and "_plan_store" not in plan:
                     from app.import_staging import stage_plan
@@ -293,7 +348,7 @@ def _parse(source, mode=None, mapping=None, *, suffix=None, feedback_profile=Non
         if suffix == ".zip":
             if mode is not None and (mode != "B" or mapping != feedback_import.MAPPING):
                 raise ServiceError(422, "fixed_feedback_mapping", "资金反馈包使用已验证的固定格式规则，请重新上传预览")
-            plan = feedback_import.parse(source, profile=feedback_profile or feedback_import.PROFILE)
+            plan = feedback_import.parse(source, profile=feedback_profile or feedback_import.PROFILE, **status_option)
             frame = importer.pd.DataFrame(columns=feedback_import.COLUMNS)
             frame.attrs.update(source_row_kind="archive_record", feedback_plan=plan)
             stats = dict(plan["stats"])
@@ -727,6 +782,8 @@ def _bind_shared_cancellation_plan_history(case_id, plan, stats):
 
 def _bind_table_plan(case_id, parsed, *, source=None):
     plan = parsed[0].attrs.get("table_plan")
+    if plan is not None and plan["profile"] in _PDF_PROFILES:
+        return
     store = plan.get("_plan_store") if plan is not None else None
     with store.working_maps() if store is not None and case_id is not None else nullcontext():
         _bind_table_plan_history(case_id, parsed, source=source)
@@ -741,6 +798,11 @@ def _bind_table_plan_history(case_id, parsed, *, source=None):
     frame, _sheet, _mode, _mapping, rows, stats = parsed
     plan = frame.attrs.get("table_plan")
     if case_id is not None:
+        if plan is not None:
+            if links := evidence_resolution.trial_occurrence_links(case_id, plan):
+                plan["_trial_occurrence_links"] = links
+            else:
+                plan.pop("_trial_occurrence_links", None)
         evidence_resolution.reject_historical_overlap(case_id, plan)
     if case_id is not None and plan is not None:
         _bind_archive_header_history(case_id, plan, rows, stats, source)
@@ -815,7 +877,11 @@ def _preview_result(session, parsed, legacy=False, *, preserve_staging=False):
     table_plan = frame.attrs.get("table_plan")
     if table_plan is not None:
         result["table_summary"] = _table_summary(table_plan)
-        result["reference_policy"] = json.loads(session.get("request_json") or "{}").get("reference_policy")
+        request = json.loads(session.get("request_json") or "{}")
+        result["reference_policy"] = request.get("reference_policy")
+        result["reference_policy_basis"] = request.get("reference_policy_basis")
+        if request.get(_REFERENCE_COLUMNS_TRIAL) and result["reference_policy_basis"] == _REFERENCE_MODEL_BASIS:
+            result["layout_model_assisted"] = True
         regions = {}
         for entry in table_plan["mapping_evidence"]:
             if entry["field"] == "trade_no" or result["reference_policy"] is not None and entry["field"] == "voucher_reference":
@@ -838,6 +904,8 @@ def _preview_result(session, parsed, legacy=False, *, preserve_staging=False):
         result["resolution"] = evidence_resolution.preview(active_plan)
     if not legacy:
         result["case_id"] = str(session["case_id"])
+        if _CONFIRMED_LAYOUT in json.loads(session.get("request_json") or "{}"):
+            result["layout_applied"] = True
     # Detach only the response metadata, never the parser's full rows/staging.
     # In-process callers must not mutate a sealed plan through this result.
     return deepcopy(result)
@@ -861,13 +929,107 @@ def _table_summary(plan):
             "unresolved_examples": [{**{key: record[key] for key in ("member_path", "source_row", "reason_code")},
                                      "details": {key: value for key, value in record["details"].items()
                                                  if key in table_import.FIELD_EVIDENCE_DETAILS | table_import.TIME_EVIDENCE_DETAILS
-                                                 | {"validation_issues", table_direction_recheck.DETAIL_FIELD}}}
+                                                 | {"validation_issues", table_direction_recheck.DETAIL_FIELD,
+                                                    table_import.table_tiered_headers.LEAF_PROOF_FIELD}
+                                                 or record["reason_code"] in pdf_text_observations.DISPOSITIONS
+                                                 and key in pdf_text_observations.DETAILS_FIELDS}}
                                     for record in islice(unresolved, 10)]}
+
+
+def _intake_materials(parsed):
+    plan = parsed[0].attrs.get("table_plan") or parsed[0].attrs.get("feedback_plan")
+    if plan is None:
+        return []
+    documents = {doc["member_path"]: doc for doc in plan.get("documents", ())}
+    metadata = {member["member_path"]: member for member in plan["members"]}
+    windows = {}
+    leaves = {}
+
+    def item(path, header=None, page=None, source_row=None):
+        key = path, header, page, source_row
+        if key not in leaves:
+            member = metadata[path]
+            doc = documents.get(path, {})
+            headers = windows.get(path, ())
+            following = bisect_right(headers, header) if header else 0
+            last = (headers[following] - 1 if header and following < len(headers) else
+                    doc.get("source_rows") if header else source_row)
+            leaves[key] = {
+                "member_path": path, "member_sha256": member["sha256"], "size_bytes": member["size_bytes"],
+                "sheet": doc.get("sheet") or None, "header_row": header, "last_row": last,
+                "page": page, "source_row": source_row,
+                "role": doc.get("intake_role") or doc.get("role") or member["role"],
+                "row_count": 0, "accepted": 0, "auxiliary": 0, "unresolved": 0,
+                "reason": None, "issue_reason": None,
+            }
+        return leaves[key]
+
+    for path, member in metadata.items():
+        doc = documents.get(path, {})
+        windows[path] = tuple(doc.get("header_rows") or ([doc["header_row"]] if doc.get("header_row") else []))
+        if member["role"] == "pdf":
+            for page in range(1, doc.get("pdf_total_pages", 0) + 1):
+                leaf = item(path, page=page)
+                leaf["reason"] = "pdf_page_role_unresolved"
+                leaf["unresolved"] = 1
+
+    for row in plan["records"]:
+        path, position = row["member_path"], row["source_row"]
+        detail = row["details"]
+        reason, disposition = row["reason_code"], row["disposition"]
+        headers = windows[path]
+        boundary = bisect_right(headers, position)
+        page = int(detail["pdf_page"]) if "pdf_page" in detail else None
+        note = reason == "preamble"
+        locator = item(path, headers[boundary - 1] if boundary and not note else None,
+                       page=page, source_row=position if note else None)
+        if note:
+            locator["role"] = "description"
+        if not locator["row_count"] and page is not None:
+            locator["unresolved"] = 0
+            locator["reason"] = None
+        locator["row_count"] += 1
+        locator["accepted"] += disposition in ("accepted", "imported", "duplicate")
+        locator["auxiliary"] += disposition == "auxiliary"
+        locator["unresolved"] += disposition in ("review", "unresolved")
+        if locator["reason"] is None:
+            locator["reason"] = reason
+        if disposition in ("review", "unresolved") and locator["issue_reason"] is None:
+            locator["issue_reason"] = reason
+
+    # A registered member remains browseable when it has no journal rows.
+    seen = {key[0] for key in leaves}
+    for path in metadata.keys() - seen:
+        item(path)
+    for leaf in leaves.values():
+        if leaf["role"] == "table":
+            leaf["role"] = "transaction" if leaf["accepted"] else "unknown"
+        if issue := leaf.pop("issue_reason"):
+            leaf["reason"] = issue
+    return sorted(leaves.values(), key=lambda leaf: (
+        leaf["member_path"], leaf["page"] or 0, leaf["header_row"] or leaf["source_row"] or 0))
+
+
+def _intake_outcome(item, stage, available):
+    role, reason = item["role"], item["reason"]
+    if reason == table_archive.UNREADABLE_REASON or reason in {"pdf_invalid", "pdf_ocr_failed", "pdf_ocr_timeout"}:
+        return "unreadable", "replace_or_retry"
+    if role in ("pdf", pdf_text_observations.ROLE):
+        return "review", "review_page" if item["page"] else "review_original" if available else "replace_original"
+    if item["unresolved"]:
+        if item["accepted"] or item["auxiliary"]:
+            return "partial", "review_rows"
+        return "review", "review_original" if role in ("unknown", "attachment") else "review_rows"
+    if item["accepted"]:
+        return ("imported", "review_rows") if stage == "done" else ("ready", "confirm_import")
+    if item["auxiliary"]:
+        return ("registered", "review_original") if stage == "done" else ("ready", "confirm_registration")
+    return "review", "review_original"
 
 
 def _table_profile(session):
     profile = json.loads(session.get("request_json") or "{}").get("_table_profile", importer.PARSER_VERSION)
-    if profile not in (importer.PARSER_VERSION, *table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
+    if profile not in (importer.PARSER_VERSION, *_PDF_PROFILES, *table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES):
         raise ServiceError(400, "invalid_table_file", "来源解析规则不受支持，请重新上传预览")
     return profile
 
@@ -876,12 +1038,66 @@ def _table_overrides(session):
     return bool(json.loads(session.get("request_json") or "{}").get("_table_overrides", False))
 
 
-def _table_mapping(mode, mapping, columns, *, profile):
+def _pdf_parsed(session, frozen):
+    try:
+        plan = pdf_import.replay(session, frozen)
+    except (ValueError, TypeError, KeyError) as error:
+        raise import_validation.IntegrityError("frozen PDF review changed") from error
+    frame = importer.pd.DataFrame()
+    frame.attrs.update(source_row_kind=pdf_import.ROW_KIND, table_plan=plan)
+    return frame, "", "B", {}, plan["rows"], dict(plan["stats"])
+
+
+def _read_pdf_text(source, size, digest, profile=None):
+    pages = pdf_text_import.read_pages(source, size, digest)
+    if profile in (None, pdf_text_import.PROFILE):
+        page = pages[0] if pages is not None and len(pages) == 1 else None
+        ledger = pdf_text_import.ledger_plan(page, digest, size)
+        if ledger is not None or profile == pdf_text_import.PROFILE:
+            return ledger
+    return pdf_text_observations.plan(pages, digest, size, profile=profile)
+
+
+def _pdf_text_parsed(plan, profile=None):
+    if plan is None:
+        if profile == pdf_text_import.PROFILE:
+            raise ServiceError(409, "source_changed", "PDF 原页无法按已登记的账面约束重新核证")
+        raise ServiceError(409, "pdf_observations_changed", _errors["pdf_observations_changed"])
+    frame = importer.pd.DataFrame()
+    frame.attrs.update(source_row_kind=_PDF_TEXT_READERS[plan["profile"]].ROW_KIND, table_plan=plan)
+    return frame, "", plan["mode"], {}, plan["rows"], dict(plan["stats"])
+
+
+def _validate_pdf_request(body, profile):
+    if (body.mode != ("A" if profile == pdf_text_import.PROFILE else "B") or body.mapping
+            or getattr(body, "reference_policy", None) is not None
+            or _account_values(getattr(body, "self_accounts", None))
+            or _account_values(getattr(body, "mark_accounts", None))):
+        raise ServiceError(422, "invalid_pdf_mapping", "PDF 原页规则不接受手工映射或主账号覆盖")
+
+
+def _validate_csv_tail_request(body, *, apply_physical_layout=False):
+    if (apply_physical_layout or body.mode != "B" or body.mapping
+            or getattr(body, "reference_policy", None) is not None
+            or _account_values(getattr(body, "self_accounts", None))
+            or _account_values(getattr(body, "mark_accounts", None))):
+        raise ServiceError(422, table_import.CSV_TAIL_SOURCE_REASON, "末行缺格的CSV仅可按原登记范围保留来源")
+
+
+def _reject_nonposting_amount_mapping(columns, mapping, profile):
+    if table_import.mapping_uses_nonposting_amount(columns, mapping, profile):
+        raise ServiceError(422, "invalid_mapping", "折算或转入转出相关金额原列不能用作原报金额、余额或来源币种")
+
+
+def _table_mapping(mode, mapping, columns, *, profile, reject_nonposting_amounts=False):
     fields = table_import.mapping_fields(profile)
     if (mode not in ("A", "B") or not isinstance(mapping, dict)
             or any(key not in fields or not isinstance(value, str)
                    or not value or value not in columns for key, value in mapping.items())):
         raise ServiceError(422, "invalid_mapping", "表格映射字段不存在或不明确，请重新预览")
+    _reject_document_number_mapping(mapping)
+    if reject_nonposting_amounts:
+        _reject_nonposting_amount_mapping(columns, mapping, profile)
     return dict(mapping)
 
 
@@ -959,16 +1175,28 @@ class _PreviewCancelled(Exception):
     pass
 
 
-async def _execute_preview(operation, *args):
+async def _execute_preview(operation, *args, receive=None):
     # One admitted preview, with no queue of large parser plans or ZIP copies.
     # This also covers directory construction; it must not re-enter admission.
     if not _preview_lock.acquire(blocking=False):
         raise ServiceError(409, "preview_busy", "另一个文件正在预览，请等待完成后重试")
     cancelled = threading.Event()
+    monitor = None
+
+    async def watch_disconnect():
+        # Multipart parsing has already consumed the request body.
+        while (await receive())["type"] != "http.disconnect":
+            pass
+        cancelled.set()
+
     try:
+        if receive is not None:
+            monitor = asyncio.create_task(watch_disconnect())
         worker = asyncio.create_task(anyio.to_thread.run_sync(operation, cancelled, *args))
         try:
             return await asyncio.shield(worker)
+        except _PreviewCancelled:
+            raise ServiceError(499, "preview_cancelled", "预览已取消") from None
         except asyncio.CancelledError:
             cancelled.set()
             # FastAPI closes request UploadFiles when this call unwinds. Both
@@ -985,7 +1213,13 @@ async def _execute_preview(operation, *args):
                 worker.exception()
             raise
     finally:
-        _preview_lock.release()
+        try:
+            if monitor is not None:
+                monitor.cancel()
+                with anyio.CancelScope(shield=True):
+                    await asyncio.gather(monitor, return_exceptions=True)
+        finally:
+            _preview_lock.release()
 
 
 def _upload_size(source):
@@ -995,35 +1229,65 @@ def _upload_size(source):
     return size
 
 
-def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence=False):
+def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence=False, intake_trial=False, *, trial_members=False):
     cid = _cid(case_id) if case_id is not None else None
     filename = Path((filename or "transactions.csv").replace("\\", "/")).name
     extension = Path(filename).suffix
     suffix = extension.lower() or ".csv"
-    if suffix not in _extensions:
+    is_pdf = suffix == ".pdf" and intake_trial and surface == "v1"
+    pdf_member_observations = intake_trial and suffix in {".zip", ".rar"}
+    if suffix not in _extensions and not is_pdf:
         raise ServiceError(400, "unsupported_file_type", "请上传 CSV、TXT、TSV、Excel、ZIP 或 RAR 文件")
+    if is_pdf and cid is None:
+        raise ServiceError(422, "pdf_case_required", "请先选择案件，再上传 PDF")
     # Decide the parser before shortening the display name, and never remove
     # the real extension (including an unsupported one) by truncation.
     filename = (filename[:-len(extension)][:240 - len(extension)] + extension
                 if extension else filename[:240])
-    if _upload_size(source) > _max_upload:
+    expected_size = _upload_size(source)
+    if expected_size > _max_upload:
         raise ServiceError(400, "file_too_large", "文件超过 300MB，请拆分后重新上传")
     # The request owns this seekable spool until the worker has returned.
     # Failed parsing never creates a retained original.
-    parsed, created = None, False
+    parsed, created, reference_basis = None, False, None
+    status_policy = table_import.TRANSACTION_STATUS_POLICY if surface == "v1" and intake_trial and not is_pdf else None
     try:
         if cancelled.is_set():
             raise _PreviewCancelled()
-        if suffix in {".zip", ".rar"}:
-            resolve_evidence = (resolve_evidence or evidence_resolution.complete_family(source)
-                                or evidence_resolution.declared_auxiliary_family(source))
-            archive_profile = table_archive.evidence_profile(source)
-        table_profile = (((archive_profile if resolve_evidence or archive_profile in table_archive.XLS_EVIDENCE_PROFILES else table_archive.PROFILE)
-                          if suffix == ".rar" or table_archive.should_parse(source, native_observations=True) else None)
-                         if suffix in {".zip", ".rar"} else table_import.VOUCHER_REFERENCE_XLS_PROFILE if suffix == ".xls" else table_import.VOUCHER_REFERENCE_EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
-        parsed = _parse(source, suffix=suffix, table_profile=table_profile,
-                        feedback_profile=feedback_import.MICROSECOND_EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None,
-                        _auto_event_profile=table_profile in table_import.CLOSED_BANK_SUCCESSORS)
+        if is_pdf:
+            expected_digest = hashlib.file_digest(source, "sha256").hexdigest()
+            source.seek(0)
+            text_plan = _read_pdf_text(source, expected_size, expected_digest)
+            if text_plan is None:
+                source.seek(0)
+                review = pdf_import.extract(source, expected_size, expected_digest, cancelled)
+                if review is None or cancelled.is_set():
+                    raise _PreviewCancelled()
+        else:
+            if suffix in {".zip", ".rar"}:
+                resolve_evidence = (resolve_evidence or intake_trial or evidence_resolution.complete_family(source)
+                                    or evidence_resolution.declared_auxiliary_family(source))
+                archive_profile = table_archive.evidence_profile(source)
+            table_profile = (((archive_profile if resolve_evidence or archive_profile in table_archive.XLS_EVIDENCE_PROFILES else table_archive.PROFILE)
+                              if suffix == ".rar" or table_archive.should_parse(source, native_observations=True, retain_opaque=intake_trial) else None)
+                             if suffix in {".zip", ".rar"} else table_import.VOUCHER_REFERENCE_XLS_PROFILE if suffix == ".xls" else table_import.VOUCHER_REFERENCE_EVIDENCE_PROFILE if resolve_evidence else TABLE_PROFILE)
+            parsed = _parse(source, suffix=suffix, table_profile=table_profile,
+                            feedback_profile=feedback_import.MICROSECOND_EVIDENCE_PROFILE if resolve_evidence and suffix == ".zip" and table_profile is None else None,
+                            _auto_event_profile=table_profile in table_import.CLOSED_BANK_SUCCESSORS,
+                            intake_policy=_INTAKE_POLICY if intake_trial else None,
+                            pdf_member_observations=pdf_member_observations, narrative_decisions=intake_trial,
+                            trial_members=trial_members, transaction_status_policy=status_policy)
+            if surface == "v1" and intake_trial and suffix == ".xlsx":
+                reference_basis = parsed[0].attrs.get("table_plan", {}).get("_reference_policy_basis")
+            if reference_basis is not None:
+                _close_staging(parsed)
+                parsed = None
+                if cancelled.is_set():
+                    raise _PreviewCancelled()
+                source.seek(0)
+                parsed = _parse(source, suffix=suffix, table_profile=table_import.VOUCHER_REFERENCE_PROFILE,
+                                reference_policy=table_import.TRANSACTION_REFERENCE_POLICY,
+                                intake_policy=_INTAKE_POLICY, narrative_decisions=True, transaction_status_policy=status_policy)
         if cancelled.is_set():
             raise _PreviewCancelled()
         import_id = uuid.uuid4().hex
@@ -1043,10 +1307,37 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
                     raise OSError("Incomplete retained upload write")
                 digest.update(block)
         now = _now()
-        session = {"case_id": cid, "import_id": import_id, "filename": filename,
-                   "sha256": digest.hexdigest()}
+        session = {"case_id": cid, "import_id": import_id, "filename": filename, "surface": surface,
+                   "suffix": suffix, "size_bytes": size, "sha256": digest.hexdigest()}
+        if is_pdf:
+            if size != expected_size or session["sha256"] != expected_digest:
+                raise ServiceError(409, "source_changed", "PDF 原件在预览期间发生变化")
+            if text_plan is not None:
+                parsed = _pdf_text_parsed(text_plan)
+                request = {"_table_profile": text_plan["profile"]}
+            else:
+                frozen = pdf_import.freeze(session, review)
+                parsed = _pdf_parsed(session, frozen)
+                request = {"_table_profile": pdf_import.PROFILE, "_pdf_plan": frozen}
+        elif "table_plan" in parsed[0].attrs:
+            request = {"_table_profile": parsed[0].attrs["table_plan"]["profile"],
+                       SOURCE_CURRENCY_INTERPRETATION_KEY: SOURCE_CURRENCY_INTERPRETATION_VERSION}
+        else:
+            request = {"_feedback_profile": parsed[0].attrs["feedback_plan"]["profile"]} if suffix == ".zip" else {}
+        if reference_basis is not None:
+            request.update(mode=parsed[2], mapping=parsed[3], reference_policy=table_import.TRANSACTION_REFERENCE_POLICY,
+                           reference_policy_basis=reference_basis)
+        if intake_trial:
+            request[_INTAKE_KEY] = _INTAKE_POLICY
+            request[_NARRATIVE_DECISIONS] = True
+            if suffix == ".xlsx":
+                request[_ACCOUNT_USE_CODE_TRIAL] = True
+        if status_policy:
+            request[_TRANSACTION_STATUS_POLICY] = status_policy
+        if pdf_member_observations:
+            request[_PDF_MEMBER_OBSERVATIONS] = True
         evidence_resolution.operation_context(parsed, session["sha256"])
-        pure_stamp = import_preview_cache.stamp(parsed)
+        pure_stamp = None if is_pdf else import_preview_cache.stamp(parsed)
         with db.transaction():
             if cancelled.is_set():
                 raise _PreviewCancelled()
@@ -1054,27 +1345,34 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
                 _cid(cid)
                 _bind_feedback_plan(cid, parsed)
                 _bind_table_plan(cid, parsed, source=session)
+            if intake_trial:
+                request[_INTAKE_ITEMS] = _intake_materials(parsed)
+            session["request_json"] = _json(request) if request else None
             db.x("""insert into import_sessions(import_id,case_id,surface,filename,suffix,sha256,size_bytes,
                       mode,mapping_json,columns_json,request_json,stage,created_at,updated_at,expires_at,source_state)
                     values (?,?,?,?,?,?,?,?,?,?,?,'ready',?,?,?,'retained')""",
                  [import_id, cid, surface, filename, suffix, session["sha256"], size,
                   parsed[2], _json(parsed[3]), _json(list(parsed[0].columns)),
-                  _json({"_table_profile": parsed[0].attrs["table_plan"]["profile"]}) if "table_plan" in parsed[0].attrs
-                  else _json({"_feedback_profile": parsed[0].attrs["feedback_plan"]["profile"]}) if suffix == ".zip" else None,
+                  session["request_json"],
                   now, now, now + dt.timedelta(days=7)])
             # Preview still consumes operation-private staging. A late disk
             # failure must roll back the ready session with its retained file.
             evidence_resolution.operation_context(parsed, session["sha256"])
             reference_choice_conflict = parsed[0].attrs.get("table_plan", {}).get("_reference_choice_conflict", False)
             result = _preview_result(session, parsed, legacy=surface == "legacy", preserve_staging=pure_stamp is not None)
+            if surface == "v1" and not is_pdf:
+                import_ready_evidence.remember_preview(import_id, result)
             if pure_stamp is not None:
                 cache_session = db.q_raw("select * from import_sessions where import_id=?", [import_id])[0]
                 if import_preview_cache.retain(
                         import_preview_cache.key(cache_session, _table_profile(cache_session), _table_overrides(cache_session)),
                         parsed, pure_stamp):
                     parsed = None  # The finite cache now owns this one original plan.
-        result["automatic"] = not (result.get("reference_policy_available")
-            and reference_choice_conflict)
+        deliberate_confirmation = (result.get("table_summary") or {}).get("profile") in {
+            table_import.CSV_TAIL_SOURCE_PROFILE, *table_import.CSV_TAIL_ORDINARY_PROFILES,
+            table_import.DEPOSIT_DIRECTION_TRIAL_PROFILE}
+        result["automatic"] = not deliberate_confirmation and reference_basis is None and not (
+            result.get("reference_policy_available") and reference_choice_conflict)
         return result
     except BaseException:
         if created:
@@ -1085,19 +1383,21 @@ def _upload_sync(cancelled, case_id, source, filename, surface, resolve_evidence
         _close_staging(parsed)
 
 
-async def _upload(case_id, file, surface, *, resolve_evidence=False):
-    return await _execute_preview(_upload_sync, case_id, file.file, file.filename, surface, resolve_evidence)
+async def _upload(case_id, file, surface, *, resolve_evidence=False, intake_trial=False, receive=None):
+    pdf = intake_trial and Path(file.filename or "").suffix.lower() == ".pdf"
+    return await _execute_preview(_upload_sync, case_id, file.file, file.filename, surface, resolve_evidence,
+                                  intake_trial, receive=receive if pdf else None)
 
 
-async def upload(case_id, file):
-    return await _upload(case_id, file, "v1")
+async def upload(case_id, file, *, intake_trial=False, receive=None):
+    return await _upload(case_id, file, "v1", intake_trial=intake_trial, receive=receive)
 
 
 async def legacy_upload(file, case_id=None):
     return await _upload(case_id, file, "legacy")
 
 
-def _directory_preview_sync(cancelled, case_id, files, surface):
+def _directory_preview_sync(cancelled, case_id, files, surface, intake_trial=False):
     """Preserve relative paths/bytes in one registered original before preview.
 
     Starlette admits at most 1000 multipart files. Use the same explicit bound
@@ -1145,61 +1445,250 @@ def _directory_preview_sync(cancelled, case_id, files, surface):
                         if size > table_archive.MAX_MEMBER_BYTES or total > _max_upload:
                             raise ServiceError(400, "file_too_large", "目录原件累计超过300MB或单文件超过256MB，请分包上传")
                         target.write(block)
-        return _upload_sync(cancelled, case_id, source, "目录原件.zip", surface, True)
+        return _upload_sync(cancelled, case_id, source, "目录原件.zip", surface, True, intake_trial, trial_members=intake_trial)
 
 
-async def upload_directory(case_id, files, *, surface="v1"):
-    return await _execute_preview(_directory_preview_sync, case_id, files, surface)
+async def upload_directory(case_id, files, *, surface="v1", intake_trial=False):
+    return await _execute_preview(_directory_preview_sync, case_id, files, surface, intake_trial)
 
 
-def _repreview(case_id, import_id, body, surface):
+def _reference_non_number_facts(rows):
+    return {row["_source_row"]: import_validation._facts({**row, "trade_no": ""}) for row in rows}
+
+
+def _before_reference_rule(source, session, request, proof):
+    baseline = _parse(source, suffix=session["suffix"], table_profile=_table_profile(session),
+                      intake_policy=request.get(_INTAKE_KEY),
+                      transaction_status_policy=request.get(_TRANSACTION_STATUS_POLICY),
+                      narrative_decisions=request.get(_NARRATIVE_DECISIONS) is True)
+    try:
+        plan = baseline[0].attrs["table_plan"]
+        if fallback_rows := proof.get("fallback_rows"):
+            expected = set(fallback_rows)
+            eligible = {record["record_no"] for record in plan["records"]
+                        if record["source_row"] in expected and record["disposition"] == "accepted"
+                        and record["details"].get("trade_no_basis") == "legacy_voucher_fallback"}
+            if len(eligible) != len(expected):
+                raise ServiceError(422, "reference_layout_not_admitted", "原件缺号与既有凭证填补的范围不符")
+            numbers = {row["_source_row"]: "" if row["_source_row"] in eligible else row["trade_no"]
+                       for row in baseline[4]}
+            return _reference_non_number_facts(baseline[4]), set(), numbers
+        disagreement_rows = set(proof["differing_rows"])
+        eligible = {record["record_no"] for record in plan["records"]
+                    if record["source_row"] in disagreement_rows and record["disposition"] == "unresolved"
+                    and record["reason_code"] == "conflicting_field"
+                    and record["details"].get("validation_issues") == "conflicting_field"}
+        return _reference_non_number_facts(baseline[4]), eligible, None
+    finally:
+        _close_staging(baseline)
+
+
+def _repreview(case_id, import_id, body, surface, *, apply_physical_layout=False, trial_roles=False,
+               trial_layout_decision=None, field_note_policy=None, reference_trial=None, reference_rule=False):
     with db.transaction():
         session = _session(case_id, import_id, surface, bind=True)
         if session["stage"] in _active_stages or session["stage"] == "done":
             raise ServiceError(409, "import_already_started", "任务已开始或已完成，请查看导入进度")
+        revision = body.revision if apply_physical_layout else getattr(body, "ready_revision", None)
+        if surface == "v1" and revision is not None:
+            import_ready_evidence.require_revision(session, revision)
+        profile = _table_profile(session)
+        request = json.loads(session.get("request_json") or "{}")
+        layout = request.get(_CONFIRMED_LAYOUT)
+        if profile == table_import.CSV_TAIL_SOURCE_PROFILE:
+            _validate_csv_tail_request(body, apply_physical_layout=apply_physical_layout)
+        if profile == table_import.CSV_TAIL_REFERENCE_PROFILE and (
+                apply_physical_layout or body.mode != session["mode"] or body.mapping != json.loads(session["mapping_json"])
+                or "reference_policy" in body.model_fields_set and reference_trial is None
+                and body.reference_policy != request.get("reference_policy")):
+            raise ServiceError(422, "invalid_reference_policy", "末行缺格的编号用途仅可按原列核证")
+        if profile in table_import.CSV_TAIL_ORDINARY_PROFILES and (
+                apply_physical_layout or body.mode != session["mode"] or body.mapping != json.loads(session["mapping_json"])
+                or getattr(body, "reference_policy", None) is not None):
+            raise ServiceError(422, "invalid_mapping", "末行缺格仅按已核证的原表字段办理")
+        if profile in table_import.DEPOSIT_CSV_TRIAL_PROFILES and (
+                apply_physical_layout or body.mode != "B" or body.mapping != json.loads(session["mapping_json"])
+                or getattr(body, "reference_policy", None) is not None):
+            raise ServiceError(422, "deposit_direction_fixed", "存取款方向仅按本次核证的原表范围办理")
+        if profile in _PDF_PROFILES:
+            if apply_physical_layout:
+                raise ServiceError(422, "invalid_pdf_mapping", "PDF 原页不使用表格布局映射")
+            _validate_pdf_request(body, profile)
+            if profile in _PDF_TEXT_READERS:
+                with _source(session, snapshot=True) as original:
+                    parsed = _pdf_text_parsed(
+                        _read_pdf_text(original, session["size_bytes"], session["sha256"], profile), profile)
+            else:
+                _source(session)
+                try:
+                    parsed = _pdf_parsed(session, request.get("_pdf_plan"))
+                except import_validation.IntegrityError:
+                    raise ServiceError(409, "pdf_plan_changed", "冻结 PDF 复核结果无法核对，请重新上传原件") from None
+            result = _preview_result(session, parsed, legacy=surface == "legacy")
+            if profile == pdf_text_observations.PAGE_PROFILE:
+                request[_INTAKE_ITEMS] = _intake_materials(parsed)
+                db.x("update import_sessions set request_json=? where import_id=?", [_json(request), import_id])
+            now = _now()
+            db.x("update import_sessions set stage='ready',error_code=null,updated_at=?,expires_at=? where import_id=?",
+                 [now, now + dt.timedelta(days=7), import_id])
+            db.x("delete from import_file_gc where import_id=?", [import_id])
+            result["automatic"] = True
+            return result
+        if apply_physical_layout:
+            prior_code_layout = layout if (trial_roles and layout and layout.get("field_notes_policy")
+                                           == table_import.table_source_roles.CODED_FIELD_NOTE_POLICY) else None
+            if prior_code_layout is not None:
+                field_note_policy = prior_code_layout["field_notes_policy"]
+                trial_layout_decision = request.get(_TRIAL_LAYOUT_DECISION)
+            layout = import_ready_evidence.confirmed_layout(
+                session, body, profile, scoped_notes=trial_roles,
+                evidence_layout=trial_roles and trial_layout_decision is not None,
+            )
+            if prior_code_layout is not None and layout["regions"] != prior_code_layout["regions"]:
+                raise ServiceError(409, "trial_source_role_conflict", "原件用途码已核定当前物理表区和本方原列")
+            if trial_roles and field_note_policy is not None:
+                layout["field_notes_policy"] = field_note_policy
+            if trial_roles:
+                from . import import_column_trial
+
+                if import_column_trial.mapping_conflict(session, layout["regions"]):
+                    raise ServiceError(409, "trial_source_role_conflict", "原件说明与所选物理列冲突，请调整映射")
+        elif layout and (revision is None or body.mode != session["mode"] or body.mapping != json.loads(session["mapping_json"])):
+            raise ServiceError(409, "preview_changed", "已确认物理表区须按同一预览使用或重新确认表区")
         import_preview_cache.discard(import_id)
         with _source(session, snapshot=True) as source:
-            is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
-            overrides = is_table and (_table_overrides(session) or body.mode != session["mode"]
-                                      or body.mapping != json.loads(session["mapping_json"]))
-            if is_table:
-                _table_mapping(body.mode, body.mapping, json.loads(session["columns_json"]),
-                               profile=_table_profile(session))
-                if overrides and _table_profile(session) in table_archive.SUPPORTED_PROFILES:
+            is_table = profile in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
+            overrides = bool(layout) or is_table and (_table_overrides(session) or body.mode != session["mode"]
+                                                     or body.mapping != json.loads(session["mapping_json"]))
+            if is_table and not layout:
+                columns = json.loads(session["columns_json"])
+                _table_mapping(body.mode, body.mapping, columns, profile=profile, reject_nonposting_amounts=True)
+                if overrides and profile in table_archive.SUPPORTED_PROFILES:
                     raise ServiceError(422, "invalid_mapping", "反馈包按成员独立校验，不能使用整包字段覆盖")
-            request = json.loads(session.get("request_json") or "{}")
-            reference_policy = (body.reference_policy if "reference_policy" in getattr(body, "model_fields_set", vars(body))
-                                else request.get("reference_policy"))
-            if reference_policy is not None and (surface != "v1" or _table_profile(session) not in table_import.VOUCHER_REFERENCE_PROFILES):
+                if (surface == "v1" and request.get(_INTAKE_KEY) == _INTAKE_POLICY
+                        and body.mapping != json.loads(session["mapping_json"])
+                        and table_import.mapping_contradicts_source_roles(columns, body.mapping, profile)):
+                    raise ServiceError(422, "invalid_mapping", "原表头已明确该列的其他职责，不能采用这项映射")
+            explicit_reference_policy = ("reference_policy" in getattr(body, "model_fields_set", vars(body))
+                                         and (profile != table_import.CSV_TAIL_REFERENCE_PROFILE or reference_trial is not None))
+            reference_policy = body.reference_policy if explicit_reference_policy else request.get("reference_policy")
+            if reference_policy is not None and (surface != "v1" or profile not in table_import.VOUCHER_REFERENCE_PROFILES):
                 raise ServiceError(422, "invalid_reference_policy", "引用策略仅适用于新版单文件表格的 v1 预览")
-            parsed = _parse(source, body.mode if not is_table or overrides else None,
-                            body.mapping if not is_table or overrides else None, suffix=session["suffix"],
+            clear_reference_trial = explicit_reference_policy or apply_physical_layout or overrides
+            reference_proof = reference_trial or (None if clear_reference_trial else request.get(_REFERENCE_COLUMNS_TRIAL))
+            if reference_proof is not None and _reference_history_conflicts(session, verified=True):
+                raise ServiceError(409, "reference_original_active", _errors["reference_original_active"])
+            if reference_rule:
+                prior_facts, eligible, expected_numbers = _before_reference_rule(source, session, request, reference_trial)
+                source.seek(0)
+            use_request_mapping = not layout and (not is_table or overrides)
+            parsed = _parse(source, body.mode if use_request_mapping else None,
+                            body.mapping if use_request_mapping else None, suffix=session["suffix"],
                             feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
-                            table_profile=_table_profile(session), reference_policy=reference_policy)
+                            table_profile=profile, reference_policy=reference_policy, verified_reference=reference_proof,
+                            manual_mapping_evidence=overrides, confirmed_layout=layout,
+                            intake_policy=request.get(_INTAKE_KEY),
+                            transaction_status_policy=request.get(_TRANSACTION_STATUS_POLICY),
+                            pdf_member_observations=request.get(_PDF_MEMBER_OBSERVATIONS) is True,
+                            narrative_decisions=request.get(_NARRATIVE_DECISIONS) is True)
         try:
+            if (reference_trial is not None and not (reference_rule and expected_numbers is not None)
+                    and parsed[5]["accepted"] <= reference_trial["previous_accepted"]):
+                raise ServiceError(422, "reference_layout_not_admitted", "分列试算未增加可采纳的原始交易记录")
             evidence_resolution.operation_context(parsed, session["sha256"])
             _bind_feedback_plan(session["case_id"], parsed)
             _bind_table_plan(session["case_id"], parsed, source=session)
+            if reference_rule:
+                selected_facts = _reference_non_number_facts(parsed[4])
+                additions = selected_facts.keys() - prior_facts.keys()
+                if expected_numbers is not None:
+                    facts_changed = (selected_facts != prior_facts or expected_numbers != {
+                        row["_source_row"]: row["trade_no"] for row in parsed[4]})
+                else:
+                    facts_changed = (len(prior_facts) != reference_trial["previous_accepted"]
+                                     or not additions or not additions <= eligible
+                                     or any(selected_facts.get(number) != facts for number, facts in prior_facts.items()))
+                if facts_changed:
+                    raise ServiceError(422, "reference_layout_not_admitted", "分列试算未能保全既有事实并解决编号冲突")
             now = _now()
             db.x("""update import_sessions set mode=?,mapping_json=?,columns_json=?,stage='ready',error_code=null,
                       updated_at=?,expires_at=? where import_id=?""",
                  [parsed[2], _json(parsed[3]), _json(list(parsed[0].columns)), now, now + dt.timedelta(days=7), import_id])
             db.x("delete from import_file_gc where import_id=?", [import_id])
             if is_table:
-                request.update(mode=parsed[2], mapping=parsed[3], _table_overrides=overrides)
+                request.update(mode=parsed[2], mapping=parsed[3], _table_overrides=overrides,
+                               _manual_mapping_evidence_v1=overrides)
+                request[SOURCE_CURRENCY_INTERPRETATION_KEY] = SOURCE_CURRENCY_INTERPRETATION_VERSION
+                if layout:
+                    plan = parsed[0].attrs["table_plan"]
+                    if not table_import.confirmed_plan_admissible(plan, layout["policy"]):
+                        raise ServiceError(409, "layout_preview_changed", "当前案件中存在来源冲突，请重新核对预览")
+                    request[_CONFIRMED_LAYOUT] = {
+                        **layout, "plan_sha256": plan["_confirmed_layout_sha256"],
+                        "bound_plan_sha256": table_import.confirmed_plan_sha256(plan),
+                    }
+                    if apply_physical_layout:
+                        request.pop(_TRIAL_LAYOUT_DECISION, None)
+                        if trial_layout_decision is not None:
+                            request[_TRIAL_LAYOUT_DECISION] = trial_layout_decision
                 if reference_policy is None:
                     request.pop("reference_policy", None)
                 else:
                     request["reference_policy"] = reference_policy
+                if explicit_reference_policy or apply_physical_layout:
+                    request.pop("reference_policy_basis", None)
+                if clear_reference_trial and request.pop(_REFERENCE_COLUMNS_TRIAL, None):
+                    request.pop("reference_policy_basis", None)
+                if reference_trial is not None:
+                    request["reference_policy_basis"] = _REFERENCE_RULE_BASIS if reference_rule else _REFERENCE_MODEL_BASIS
+                    request[_REFERENCE_COLUMNS_TRIAL] = reference_trial
+                if request.get(_INTAKE_KEY) == _INTAKE_POLICY:
+                    request[_INTAKE_ITEMS] = _intake_materials(parsed)
                 db.x("update import_sessions set request_json=? where import_id=?", [_json(request), import_id])
                 session["request_json"] = _json(request)
-            return _preview_result(session, parsed, legacy=surface == "legacy")
+            result = _preview_result(session, parsed, legacy=surface == "legacy")
+            if request.get(_TRIAL_LAYOUT_DECISION, {}).get("origin") == "model_assisted":
+                result["layout_model_assisted"] = True
+            if surface == "v1":
+                import_ready_evidence.remember_preview(import_id, result)
+            return result
         finally:
             _close_staging(parsed)
 
 
 def repreview(case_id, import_id, body):
     return _repreview(case_id, import_id, body, "v1")
+
+
+def _reference_history_conflicts(session, *, verified):
+    """Identical originals may repeat only under the same reference interpretation."""
+    return bool(db.q_raw("""select 1 from import_sources s join import_source_operations o
+        on o.case_id=s.case_id and o.source_id=s.source_id and o.active
+        left join import_sessions prior on prior.case_id=s.case_id and prior.import_id=s.source_id
+        where s.case_id=? and s.sha256=? and s.source_id<>? and s.parser_version<>?
+        and (coalesce(json_extract_string(prior.request_json, '$._verified_reference_columns_v1.policy')=?, false) <> ?
+          or prior.import_id is null and s.parser_version in (?,?) and exists (
+              select 1 from import_records r where r.case_id=s.case_id and r.source_id=s.source_id
+                and json_extract_string(r.details_json, '$.source_reference_policy')=?))
+        limit 1""", [session["case_id"], session["sha256"], session["import_id"], table_import.CSV_TAIL_SOURCE_PROFILE,
+                      table_import.VERIFIED_REFERENCE_POLICY, verified, *sorted(table_import.VERIFIED_REFERENCE_PROFILES),
+                      table_import.VERIFIED_REFERENCE_POLICY]))
+
+
+def prepare_reference_trial(case_id, import_id, revision, proof, *, rule=False):
+    from app.api.models import RepreviewRequest
+
+    session = _session(case_id, import_id)
+    body = RepreviewRequest(mode=session["mode"], mapping=json.loads(session["mapping_json"]),
+                            ready_revision=revision, reference_policy=table_import.TRANSACTION_REFERENCE_POLICY)
+    prepared = _repreview(case_id, import_id, body, "v1", reference_trial=proof, reference_rule=rule)
+    return {**prepared, "automatic": False}
+
+
+def apply_layout(case_id, import_id, body, *, trial_roles=False, trial_layout_decision=None,
+                 field_note_policy=None):
+    return _repreview(case_id, import_id, body, "v1", apply_physical_layout=True, trial_roles=trial_roles,
+                      trial_layout_decision=trial_layout_decision, field_note_policy=field_note_policy)
 
 
 def legacy_repreview(body):
@@ -1239,7 +1728,7 @@ def _receipt(raw):
             "bad_examples": raw.get("bad_examples", []), "self_accounts": raw.get("self_accounts", []),
             "self_accounts_count": raw.get("self_accounts_count", 0), "main_matched": raw.get("main_matched", []),
             "accounts_in_batch": raw.get("accounts_in_batch", 0), "main_detected": raw.get("main_detected", [])}
-    for key in ("feedback", "table_summary", "source_id", "resolution"):
+    for key in ("feedback", "table_summary", "source_id", "resolution", "layout_decision"):
         if key in raw:
             result[key] = raw[key]
     return result
@@ -1256,24 +1745,44 @@ def _run(import_id):
                 return
             session = found[0]
         request = json.loads(session["request_json"])
-        is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
+        layout = request.get(_CONFIRMED_LAYOUT)
+        profile = _table_profile(session)
+        is_pdf_review = profile == pdf_import.PROFILE
+        is_pdf_text = profile == pdf_text_import.PROFILE
+        is_pdf = profile in _PDF_PROFILES
+        pdf_source_only = is_pdf and not is_pdf_text
+        is_table = profile in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
         overrides = _table_overrides(session)
         with _source(session, snapshot=True) as source:
-            try:
-                parsed = import_preview_cache.take(import_preview_cache.key(session, _table_profile(session), overrides))
-            except (OSError, ValueError):
-                raise import_validation.IntegrityError("preview scratch failed integrity verification") from None
-            if parsed is None:
-                parsed = _parse(
-                    source, request["mode"] if not is_table or overrides else None,
-                    request["mapping"] if not is_table or overrides else None, suffix=session["suffix"],
-                    feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
-                    table_profile=_table_profile(session),
-                    reference_policy=request.get("reference_policy") if is_table else None)
+            if profile in _PDF_TEXT_READERS:
+                parsed = _pdf_text_parsed(_read_pdf_text(source, session["size_bytes"], session["sha256"], profile), profile)
+            elif is_pdf_review:
+                parsed = _pdf_parsed(session, request.get("_pdf_plan"))
+            else:
+                try:
+                    if layout is None and _REFERENCE_COLUMNS_TRIAL not in request:
+                        parsed = import_preview_cache.take(import_preview_cache.key(session, _table_profile(session), overrides))
+                except (OSError, ValueError):
+                    raise import_validation.IntegrityError("preview scratch failed integrity verification") from None
+                if parsed is None:
+                    parsed = _parse(
+                        source, request["mode"] if not is_table or overrides else None,
+                        request["mapping"] if not is_table or overrides else None, suffix=session["suffix"],
+                        feedback_profile=_feedback_profile(session) if session["suffix"] == ".zip" else None,
+                        table_profile=_table_profile(session),
+                        reference_policy=request.get("reference_policy") if is_table else None,
+                        verified_reference=request.get(_REFERENCE_COLUMNS_TRIAL),
+                        manual_mapping_evidence=bool(request.get("_manual_mapping_evidence_v1")), confirmed_layout=layout,
+                        intake_policy=request.get(_INTAKE_KEY),
+                        transaction_status_policy=request.get(_TRANSACTION_STATUS_POLICY),
+                        pdf_member_observations=request.get(_PDF_MEMBER_OBSERVATIONS) is True,
+                        narrative_decisions=request.get(_NARRATIVE_DECISIONS) is True)
             evidence_resolution.operation_context(parsed, session["sha256"])
             _frame, sheet, mode, mapping, rows, stats = parsed
         plan = _frame.attrs.get("feedback_plan")
         table_plan = _frame.attrs.get("table_plan")
+        if profile == table_import.CSV_TAIL_REFERENCE_PROFILE and rows and _REFERENCE_COLUMNS_TRIAL not in request:
+            raise ServiceError(422, "invalid_reference_policy", "请先核证末行缺格原表的编号用途")
         if not rows and plan is None and table_plan is None:
             raise ServiceError(422, "no_importable_rows", _errors["no_importable_rows"])
         with db.transaction():
@@ -1289,8 +1798,22 @@ def _run(import_id):
             current = _session(session["case_id"], import_id, session["surface"])
             if current["owner_token"] != OWNER_TOKEN or current["stage"] != "importing":
                 return
+            if profile in table_import.VERIFIED_REFERENCE_PROFILES and _reference_history_conflicts(
+                    session, verified=_REFERENCE_COLUMNS_TRIAL in request):
+                raise ServiceError(409, "reference_original_active", _errors["reference_original_active"])
             _bind_feedback_plan(session["case_id"], parsed)
             _bind_table_plan(session["case_id"], parsed, source=session)
+            if request.get(_INTAKE_KEY) == _INTAKE_POLICY:
+                materials_before = request.get(_INTAKE_ITEMS, [])
+                materials_after = _intake_materials(parsed)
+                if (profile == pdf_text_observations.PAGE_PROFILE or request.get(_PDF_MEMBER_OBSERVATIONS) is True) and (
+                    [item for item in materials_before if item["role"] == pdf_text_observations.ROLE]
+                    != [item for item in materials_after if item["role"] == pdf_text_observations.ROLE]
+                ):
+                    raise ServiceError(409, "pdf_observations_changed", _errors["pdf_observations_changed"])
+                request[_INTAKE_ITEMS] = materials_after
+            if layout and table_import.confirmed_plan_sha256(table_plan) != layout.get("bound_plan_sha256"):
+                raise ServiceError(409, "layout_preview_changed", "案件来源发生变化，请重新核对预览")
             archive_csv = (table_plan is not None and table_plan["profile"] in table_archive.SUPPORTED_PROFILES
                            and table_plan["profile"] not in table_archive.EVIDENCE_PROFILES)
             standalone_keys = None
@@ -1319,8 +1842,15 @@ def _run(import_id):
             receipt = importer.commit_rows(session["filename"], mode, rows, stats,
                                            case_id=session["case_id"], provenance=provenance,
                                            standalone_csv_keys=standalone_keys,
+                                           trial_occurrence_links=(table_plan or {}).get("_trial_occurrence_links"),
+                                           **({"verified_reference_rows": {
+                                               record["record_no"]: record["details"][table_import.VERIFIED_REFERENCE_OCCURRENCE]
+                                               for record in table_plan["records"]
+                                               if record["disposition"] == "accepted"
+                                               and table_import.VERIFIED_REFERENCE_OCCURRENCE in record["details"]
+                                           }} if request.get(_REFERENCE_COLUMNS_TRIAL, {}).get("fallback_rows") else {}),
                                            # Ledger publication below refreshes after raw-write verification.
-                                           refresh_source_index=not (plan is None and table_plan is not None
+                                           refresh_source_index=not (pdf_source_only or plan is None and table_plan is not None
                                                and table_plan["profile"] in table_import.SOURCE_LEDGER_PROFILES))
             receipt["source_id"] = import_id
             db.x("insert into import_source_operations(case_id,source_id,batch_id,active) values (?,?,?,true)",
@@ -1342,6 +1872,12 @@ def _run(import_id):
             if table_plan is not None:
                 _write_feedback_journal(session["case_id"], import_id, table_plan)
                 import_validation.verify_table_write(session["case_id"], import_id, table_plan["profile"], manifest)
+                if is_pdf_text:
+                    actual = db.q_raw("""select f.self_account from flows f join flow_sources s
+                        on f.case_id=s.case_id and f.id=s.flow_id where s.case_id=? and s.source_id=?
+                        order by s.source_row""", [session["case_id"], import_id])
+                    if [row["self_account"] for row in actual] != [row["self_account"] for row in rows]:
+                        raise import_validation.IntegrityError("PDF ledger own account changed")
                 del manifest
                 if (provenance["parser_version"] in evidence_resolution.OCCURRENCE_PROFILES
                         or ("_plan_store" in table_plan and table_plan["profile"] in table_import.SOURCE_LEDGER_PROFILES)):
@@ -1364,7 +1900,8 @@ def _run(import_id):
                         [session["case_id"], session["case_id"]])[0]["n"] - source_ledger.nonpositive_count(session["case_id"]),
                     effective_added=db.q_raw("select count(*) n from effective_flows where case_id=? and batch_id=?",
                                              [session["case_id"], receipt["batch_id"]])[0]["n"])
-            _mark_mains(session["case_id"], receipt, request)
+            if not is_pdf:
+                _mark_mains(session["case_id"], receipt, request)
             if provenance["parser_version"] in evidence_resolution.PROFILES:
                 # Provenance/write fidelity and the durable receipt summary are
                 # now fixed. Release parser staging before replaying the journal.
@@ -1375,12 +1912,19 @@ def _run(import_id):
                     journal_records.close()
                     journal_records = None
                 _close_staging(parsed)
-            receipt["resolution"] = evidence_resolution.rebuild(session["case_id"])
-            from .. import event_resolution
-            event_resolution.rebuild(session["case_id"], changed_sources=[import_id])
+            if not pdf_source_only:
+                receipt["resolution"] = evidence_resolution.rebuild(session["case_id"])
+                from .. import event_resolution
+                event_resolution.rebuild(session["case_id"], changed_sources=[import_id])
             from . import materials
             materials.register(session['case_id'],import_id,request.get('material_group_id') or import_id)
+            if receipt["ok"] and _TRIAL_LAYOUT_DECISION in request:
+                receipt["layout_decision"] = request[_TRIAL_LAYOUT_DECISION]
             receipt = _receipt(receipt)
+            if is_pdf:
+                request.pop("_pdf_plan", None)
+            if is_pdf or request.get(_INTAKE_KEY) == _INTAKE_POLICY:
+                db.x("update import_sessions set request_json=? where import_id=?", [_json(request), import_id])
             db.x("""update import_sessions set stage='done',done=?,total=?,result_json=?,error_code=null,
                       updated_at=?,expires_at=? where import_id=? and owner_token=?""",
                  [processed_total, processed_total, _json(receipt), _now(), _now() + dt.timedelta(days=30), import_id, OWNER_TOKEN])
@@ -1399,37 +1943,163 @@ def _run(import_id):
             journal_records.close()
 
 
-def _commit(case_id, import_id, body, surface):
+def _check_saved_layout_amount_roles(session, manifest, layout, profile):
+    """A previously ready physical selection may predate the amount-role check."""
+    members = {entry["scope"]["member_path"]: entry for entry in manifest.get("layout_members", ())}
+    with _source(session, snapshot=True) as snapshot:
+        for region in layout["regions"]:
+            entry = members.get(region["member_path"])
+            if entry is None:
+                raise ServiceError(409, "preview_changed", "已核证表区的物理范围已失效，请重新预览")
+            row = region["header_row"]
+            cells = import_ready_evidence._cells(snapshot, session, entry, {row}, profile, for_layout=True)[row]
+            columns = table_import._columns([cell["value"] for cell in cells], profile)
+            if any(not 1 <= column <= len(columns) for column in region["mapping"].values()):
+                raise ServiceError(409, "preview_changed", "已核证表区的物理范围已失效，请重新预览")
+            mapping = {field: columns[column - 1] for field, column in region["mapping"].items()}
+            _table_mapping(region["mode"], mapping, columns, profile=profile, reject_nonposting_amounts=True)
+
+
+def _needs_currency_repreview(session, stored, columns, profile):
+    if stored.get(SOURCE_CURRENCY_INTERPRETATION_KEY) == SOURCE_CURRENCY_INTERPRETATION_VERSION:
+        return False
+    # A legacy archive preview retained only the first member's mapping.
+    # Its original decisions cannot be recovered from that partial metadata.
+    if profile in table_archive.SUPPORTED_PROFILES:
+        return True
+    if profile not in table_import.CURRENCY_CODE_ALIAS_PROFILES:
+        return False
+    members = stored.get(import_ready_evidence._KEY, {}).get("layout_members", ())
+    if not members:
+        return True
+    new_headings = table_import.SOURCE_CURRENCY_HEADINGS - {"币种代码"}
+
+    def affected(headings):
+        return any(table_import._header_parts(heading, profile)[0] in new_headings for heading in headings)
+
+    if affected(table_import._mapping_headers(columns, profile)):
+        return True
+    later_headers = []
+    for entry in members:
+        document = entry["document"]
+        if affected(table_import._mapping_headers(document["columns"], profile)):
+            return True
+        later = set(entry["scope"]["header_rows"]) - {document["header_row"]}
+        if later:
+            later_headers.append((entry, later))
+    if later_headers:
+        with _source(session, snapshot=True) as snapshot:
+            for entry, rows in later_headers:
+                cells = import_ready_evidence._cells(snapshot, session, entry, rows, profile, for_layout=True)
+                if any(affected([cell["value"] for cell in header]) for header in cells.values()):
+                    return True
+    return False
+
+
+def _commit(case_id, import_id, body, surface, *, trial_roles=False):
     with db.transaction():
         session = _session(case_id, import_id, surface, bind=True)
-        from . import materials
+        revision = getattr(body, "ready_revision", None)
+        manifest = None
+        if surface == "v1" and session["stage"] not in (*_active_stages, "done") and revision is not None:
+            manifest = import_ready_evidence.require_revision(session, revision)
+        from . import import_source_money, materials
         material_group_id=materials.commit_group(session['case_id'],import_id,getattr(body,'material_group_id',None),session.get('request_json'))
         if session["stage"] in (*_active_stages, "done"):
             result = {"import_id": import_id, "started": False}
         else:
             _source(session)
-            is_table = _table_profile(session) in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
-            stored_policy = json.loads(session.get("request_json") or "{}").get("reference_policy")
+            if trial_roles:
+                from . import import_column_trial
+
+                if import_column_trial.mapping_conflict(session):
+                    raise ServiceError(409, "trial_source_role_conflict", "原件说明与已登记映射冲突，请核对原件并重新预览")
+            profile = _table_profile(session)
+            is_pdf = profile in _PDF_PROFILES
+            is_table = profile in (*table_import.SUPPORTED_PROFILES, *table_archive.SUPPORTED_PROFILES)
+            if is_pdf:
+                _validate_pdf_request(body, profile)
+            if profile == table_import.CSV_TAIL_SOURCE_PROFILE:
+                _validate_csv_tail_request(body)
+            stored = json.loads(session.get("request_json") or "{}")
+            if stored.get(_PDF_MEMBER_OBSERVATIONS) is True and (
+                _account_values(getattr(body, "self_accounts", None))
+                or _account_values(getattr(body, "mark_accounts", None))
+            ):
+                items = stored.get(_INTAKE_ITEMS, [])
+                if any(item["role"] == pdf_text_observations.ROLE for item in items) and not any(
+                    item["accepted"] for item in items
+                ):
+                    raise ServiceError(422, "invalid_pdf_mapping", "PDF 来源观察缺少账主依据，不能用于设置主账号")
+            stored_policy = stored.get("reference_policy")
+            if (profile == table_import.CSV_TAIL_REFERENCE_PROFILE and _REFERENCE_COLUMNS_TRIAL not in stored
+                    and any(item["accepted"] for item in stored.get(_INTAKE_ITEMS, ()))):
+                raise ServiceError(422, "invalid_reference_policy", "请先核证末行缺格原表的编号用途")
+            layout = stored.get(_CONFIRMED_LAYOUT)
+            if ((layout or _REFERENCE_COLUMNS_TRIAL in stored
+                    or surface == "v1" and stored.get(import_source_money.RECEIPT_KEY) or profile in {
+                    table_import.DEPOSIT_DIRECTION_TRIAL_PROFILE, *table_import.CSV_TAIL_ORDINARY_PROFILES})
+                    and revision is None):
+                raise ServiceError(409, "preview_changed", "提交已核证表区需要当前预览修订")
+            if profile in table_import.VERIFIED_REFERENCE_PROFILES and _reference_history_conflicts(
+                    session, verified=_REFERENCE_COLUMNS_TRIAL in stored):
+                raise ServiceError(409, "reference_original_active", _errors["reference_original_active"])
             if "reference_policy" in getattr(body, "model_fields_set", vars(body)):
                 if body.reference_policy is not None and (surface != "v1" or _table_profile(session) not in table_import.VOUCHER_REFERENCE_PROFILES):
                     raise ServiceError(422, "invalid_reference_policy", "引用策略仅适用于新版单文件表格的 v1 预览")
                 if body.reference_policy != stored_policy:
                     raise ServiceError(409, "preview_changed", "引用策略与已校验预览不同，请先重新预览")
-            mapping = (_table_mapping(body.mode, body.mapping, json.loads(session["columns_json"] or "[]"),
-                                      profile=_table_profile(session)) if is_table
-                       else _mapping(body.mode, body.mapping, json.loads(session["columns_json"] or "[]")))
+            columns = json.loads(session["columns_json"] or "[]")
+            if is_table and _needs_currency_repreview(session, stored, columns, profile):
+                raise ServiceError(409, "preview_changed", "来源币种表头的处理规则已更新，请重新预览确认")
+            mapping = ({} if is_pdf else _table_mapping(body.mode, body.mapping, columns, profile=profile) if is_table
+                       else _mapping(body.mode, body.mapping, columns))
             if is_table and (body.mode != session["mode"] or mapping != json.loads(session["mapping_json"])):
                 raise ServiceError(409, "preview_changed", "映射与已校验预览不同，请先重新预览")
+            if is_table:
+                _reject_nonposting_amount_mapping(columns, mapping, profile)
+                if layout:
+                    _check_saved_layout_amount_roles(session, manifest, layout, profile)
             if session["suffix"] == ".zip" and not is_table and (body.mode != "B" or mapping != feedback_import.MAPPING):
                 raise ServiceError(422, "fixed_feedback_mapping", "资金反馈包的格式规则不可更改，请重新预览")
             request = _request(body, mapping)
             request['material_group_id']=material_group_id
+            if SOURCE_CURRENCY_INTERPRETATION_KEY in stored:
+                request[SOURCE_CURRENCY_INTERPRETATION_KEY] = stored[SOURCE_CURRENCY_INTERPRETATION_KEY]
+            if stored.get(_INTAKE_KEY) == _INTAKE_POLICY:
+                request[_INTAKE_KEY] = _INTAKE_POLICY
+                request[_INTAKE_ITEMS] = stored.get(_INTAKE_ITEMS, [])
+                for key in (import_ready_evidence._SOURCE_BALANCE_ROLES, import_source_money.RECEIPT_KEY):
+                    if source_roles := stored.get(key):
+                        request[key] = source_roles
+            if stored.get(_PDF_MEMBER_OBSERVATIONS) is True:
+                request[_PDF_MEMBER_OBSERVATIONS] = True
+            if stored.get(_NARRATIVE_DECISIONS) is True:
+                request[_NARRATIVE_DECISIONS] = True
+            if stored.get(_ACCOUNT_USE_CODE_TRIAL) is True:
+                request[_ACCOUNT_USE_CODE_TRIAL] = True
+            if status_policy := stored.get(_TRANSACTION_STATUS_POLICY):
+                request[_TRANSACTION_STATUS_POLICY] = status_policy
+            if is_pdf:
+                request["_table_profile"] = profile
+                if profile == pdf_import.PROFILE:
+                    request["_pdf_plan"] = stored.get("_pdf_plan")
             if session["suffix"] == ".zip":
                 request["_feedback_profile"] = _feedback_profile(session)
             if is_table:
-                request.update(_table_profile=_table_profile(session), _table_overrides=_table_overrides(session))
+                overrides = _table_overrides(session)
+                request.update(_table_profile=_table_profile(session), _table_overrides=overrides,
+                               _manual_mapping_evidence_v1=overrides)
                 if stored_policy is not None:
                     request["reference_policy"] = stored_policy
+                    if "reference_policy_basis" in stored:
+                        request["reference_policy_basis"] = stored["reference_policy_basis"]
+                    if _REFERENCE_COLUMNS_TRIAL in stored:
+                        request[_REFERENCE_COLUMNS_TRIAL] = stored[_REFERENCE_COLUMNS_TRIAL]
+                if layout:
+                    request[_CONFIRMED_LAYOUT] = layout
+                    if _TRIAL_LAYOUT_DECISION in stored:
+                        request[_TRIAL_LAYOUT_DECISION] = stored[_TRIAL_LAYOUT_DECISION]
             db.x("""update import_sessions set mode=?,mapping_json=?,request_json=?,stage='parsing',done=0,total=0,
                       result_json=null,error_code=null,attempt=attempt+1,owner_token=?,updated_at=?
                       where import_id=?""", [body.mode, _json(mapping), _json(request), OWNER_TOKEN, _now(), import_id])
@@ -1450,8 +2120,8 @@ def _commit(case_id, import_id, body, surface):
     return result
 
 
-def commit(case_id, import_id, body):
-    return _commit(case_id, import_id, body, "v1")
+def commit(case_id, import_id, body, *, trial_roles=False):
+    return _commit(case_id, import_id, body, "v1", trial_roles=trial_roles)
 
 
 def legacy_commit(body):
@@ -1631,18 +2301,154 @@ def get_source_file(case_id, source_id):
         return _source(session, snapshot=True), session["filename"]
 
 
-def _journal_source(case_id, source_id):
+def _restored_intake(case_id, source_id):
+    cid, source = _journal_source(case_id, source_id, include_pdf=True)
+    if source["origin"] != "package":
+        raise _missing()
+    rows = db.q_raw("""select m.member_path,m.role,m.sha256,m.size_bytes,
+        coalesce(json_extract_string(r.details_json,'$.intake_material_role'),
+                 json_extract_string(r.details_json,'$.source_role')) source_role,
+        try_cast(json_extract_string(r.details_json,'$.pdf_page') as integer) page,
+        r.disposition,r.reason_code,count(r.record_no) n
+        from import_members m left join import_records r
+          on r.case_id=m.case_id and r.source_id=m.source_id and r.member_path=m.member_path
+        where m.case_id=? and m.source_id=? group by all order by m.member_path,page,r.reason_code""",
+        [cid, source_id])
+    leaves = {}
+    for row in rows:
+        path, page, disposition = row["member_path"], row["page"], row["disposition"]
+        item = leaves.setdefault((path, page), {
+            "member_path": path, "member_sha256": row["sha256"], "size_bytes": row["size_bytes"],
+            "sheet": None, "header_row": None, "last_row": None, "page": page, "source_row": None,
+            "row_count": 0, "accepted": 0, "auxiliary": 0, "unresolved": 0, "reason": row["reason_code"],
+            "role": row["source_role"] or row["role"],
+        })
+        item["row_count"] += row["n"]
+        item["accepted"] += row["n"] if disposition in ("imported", "duplicate") else 0
+        item["auxiliary"] += row["n"] if disposition == "auxiliary" else 0
+        if disposition in ("unresolved", "review"):
+            item["unresolved"] += row["n"]
+            item["reason"] = row["reason_code"]
+    stage = "done" if db.q_raw(
+        "select 1 from import_source_operations where case_id=? and source_id=? and active", [cid, source_id]
+    ) else "withdrawn"
+    items = []
+    for item in leaves.values():
+        if source["parser_version"] == pdf_text_import.PROFILE:
+            item["role"] = "transaction"
+        elif item["role"] == "table":
+            item["role"] = "transaction" if item["accepted"] else "unknown"
+        status, _ = _intake_outcome(item, stage, False)
+        query = urlencode({"member_path": item["member_path"]})
+        items.append({**item, "status": status if stage == "done" else "withdrawn",
+                      "next_action": "replace_original", "original_url": None,
+                      "records_url": f"/api/v1/cases/{cid}/imports/{source_id}/records?{query}"})
+    return {"version": _INTAKE_POLICY, "case_id": str(cid), "source_id": source_id,
+            "sha256": source["sha256"], "stage": stage, "source_available": False, "items": items}
+
+
+def intake(case_id, import_id):
+    """Display the current activity and original positions of an isolated intake."""
+    with db.read_snapshot():
+        try:
+            session = _session(case_id, import_id)
+        except ServiceError as error:
+            if error.code != "import_not_found":
+                raise
+            return _restored_intake(case_id, import_id)
+        request = json.loads(session["request_json"] or "{}")
+        if request.get(_INTAKE_KEY) != _INTAKE_POLICY:
+            raise ServiceError(404, "intake_not_registered", "这次导入没有材料分类记录")
+        stage = session["stage"]
+        if stage == "done" and not db.q_raw(
+            "select 1 from import_source_operations where case_id=? and source_id=? and active",
+            [session["case_id"], import_id],
+        ):
+            stage = "withdrawn"
+        available = _source_available(session)
+        base = f"/api/v1/cases/{session['case_id']}"
+        items = []
+        for item in request.get(_INTAKE_ITEMS, ()):
+            status, next_action = _intake_outcome(item, stage, available)
+            if stage == "withdrawn":
+                status = "withdrawn"
+            if stage == "error":
+                status, next_action = "error", "retry_import"
+            if not available:
+                next_action = "replace_original"
+            member_path = item["member_path"]
+            query = urlencode({"member_path": member_path})
+            page = item.get("page")
+            items.append({**item, "status": status, "next_action": next_action,
+                          "original_url": f"{base}/sources/{import_id}/member-file?{query}"
+                                          + (f"#page={page}" if page else "") if available else None,
+                          "records_url": f"{base}/imports/{import_id}/records?{query}"
+                                         + (f"&pdf_page={page}" if page else "") if stage == "done" else None})
+        result = {"version": _INTAKE_POLICY, "case_id": str(session["case_id"]), "source_id": import_id,
+                  "sha256": session["sha256"], "stage": stage, "source_available": available, "items": items}
+        if available and stage in {"ready", "done"}:
+            notes = import_ready_evidence.intake_source_field_notes(session, items)
+            if notes:
+                result["source_field_notes"] = notes
+        return result
+
+
+def get_source_member_file(case_id, source_id, member_path):
+    """Open only a known material position and verify any archive leaf bytes."""
+    from .. import import_originals
+
+    with db.read_snapshot():
+        session = _session(case_id, source_id)
+        request = json.loads(session["request_json"] or "{}")
+        if request.get(_INTAKE_KEY) != _INTAKE_POLICY:
+            raise _missing()
+        member = next((item for item in request.get(_INTAKE_ITEMS, ()) if item["member_path"] == member_path), None)
+        if member is None:
+            raise _missing()
+    original = _source(session, snapshot=True)
+    if session["suffix"] not in (".zip", ".rar"):
+        return original, session["filename"]
+    worksheet = (table_import.archive_workbook_path(member_path)
+                 if member.get("sheet") and member["size_bytes"] == 0 else None)
+    leaf_path = worksheet or member_path
+    with closing(original):
+        output = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b", dir=db.DATA_DIR)
+        try:
+            with import_originals._member(original, leaf_path) as leaf:
+                size, digest = 0, hashlib.sha256()
+                for block in iter(lambda: leaf.read(1024 * 1024), b""):
+                    size += len(block)
+                    digest.update(block)
+                    output.write(block)
+                # The digest-checked archive owns the exact workbook bytes. A
+                # worksheet's logical digest describes its cells, not that file.
+                if not worksheet and (size != member["size_bytes"] or digest.hexdigest() != member["member_sha256"]):
+                    raise ValueError("member digest changed")
+            output.seek(0)
+            return output, Path(leaf_path).name
+        except (OSError, ValueError, zipfile.BadZipFile):
+            output.close()
+            raise ServiceError(409, "source_changed", "材料成员无法按登记摘要回读") from None
+        except BaseException:
+            output.close()
+            raise
+
+
+def _journal_source(case_id, source_id, *, include_pdf=False):
     cid = _cid(case_id)
     if not isinstance(source_id, str) or not re.fullmatch(r"[0-9a-f]{12,32}", source_id):
         raise _missing()
-    found = db.q_raw("select * from import_sources where case_id=? and source_id=? and row_kind in ('archive_record','table_record')",
-                     [cid, source_id])
+    row_kinds = ["archive_record", "table_record"]
+    if include_pdf:
+        row_kinds.extend((pdf_import.ROW_KIND, pdf_text_import.ROW_KIND, pdf_text_observations.ROW_KIND))
+    found = db.q_raw("select * from import_sources where case_id=? and source_id=? and row_kind in (select unnest(?::varchar[]))",
+                     [cid, source_id, row_kinds])
     if not found:
         raise _missing()
     return cid, found[0]
 
 
-def _record_items(cid, source_id, *, disposition=None, member_path=None, source_row=None, limit=None, offset=0, include_preview=False, record_nos=None):
+def _record_items(cid, source_id, *, disposition=None, member_path=None, source_row=None, pdf_page=None, limit=None, offset=0, include_preview=False, record_nos=None):
     from .. import bank_single_postings
     where, params = "r.case_id=? and r.source_id=?", [cid, source_id]
     if disposition is not None:
@@ -1654,6 +2460,9 @@ def _record_items(cid, source_id, *, disposition=None, member_path=None, source_
     if source_row is not None:
         where += " and r.source_row=?"
         params.append(source_row)
+    if pdf_page is not None:
+        where += " and json_extract_string(r.details_json,'$.pdf_page')=?"
+        params.append(str(pdf_page))
     if record_nos is not None:
         where += ' and r.record_no in (select unnest(?::bigint[]))'
         params.append(record_nos)
@@ -1692,9 +2501,9 @@ def _record_items(cid, source_id, *, disposition=None, member_path=None, source_
             for r in rows]
 
 
-def list_records(case_id, source_id, page=1, page_size=100, disposition=None, member_path=None, include_preview=False, source_row=None):
+def list_records(case_id, source_id, page=1, page_size=100, disposition=None, member_path=None, include_preview=False, source_row=None, *, pdf_page=None):
     with db._lock:
-        cid, _ = _journal_source(case_id, source_id)
+        cid, _ = _journal_source(case_id, source_id, include_pdf=True)
         condition, params = (" and disposition=?", [disposition]) if disposition is not None else ("", [])
         if member_path is not None:
             condition += " and member_path=?"
@@ -1702,25 +2511,35 @@ def list_records(case_id, source_id, page=1, page_size=100, disposition=None, me
         if source_row is not None:
             condition += " and source_row=?"
             params.append(source_row)
+        if pdf_page is not None:
+            condition += " and json_extract_string(details_json,'$.pdf_page')=?"
+            params.append(str(pdf_page))
         total = db.q_raw(f"select count(*) n from import_records where case_id=? and source_id=?{condition}",
                          [cid, source_id, *params])[0]["n"]
         return {"case_id": str(cid), "source_id": source_id, "total": total, "page": page, "page_size": page_size,
-                "items": _record_items(cid, source_id, disposition=disposition, member_path=member_path, source_row=source_row, include_preview=include_preview,
+                "items": _record_items(cid, source_id, disposition=disposition, member_path=member_path, source_row=source_row, pdf_page=pdf_page, include_preview=include_preview,
                                        limit=page_size, offset=(page - 1) * page_size)}
 
 
 def review_records(case_id, source_id, member_path, view='all', page=1, page_size=50, issue_index=None):
     """Page/filter frozen source rows; original bytes are a separate read-only view."""
     from .. import import_originals
+    from . import import_layout_trial
+
     groups = {'all': None, 'review': ('review', 'unresolved'), 'accepted': ('imported', 'duplicate')}
     with db._lock:
-        cid, source = _journal_source(case_id, source_id)
+        cid, source = _journal_source(case_id, source_id, include_pdf=True)
         members = db.q_raw('select * from import_members where case_id=? and source_id=? and member_path=?', [cid, source_id, member_path])
         if not members:
             raise _missing()
-        if members[0]['role'] == 'attachment':
-            raise ServiceError(422, 'source_rows_unavailable', '附件原件已保留，内部数据行尚不能读取')
         scope, params = 'case_id=? and source_id=? and member_path=?', [cid, source_id, member_path]
+        pdf_observation_member = False
+        if members[0]['role'] == 'attachment':
+            pdf_observation_member = Path(member_path).suffix.lower() == ".pdf" and bool(db.q_raw(
+                f"select 1 from import_records where {scope} and reason_code in (select unnest(?::varchar[])) limit 1",
+                [*params, list(pdf_text_observations.DISPOSITIONS)]))
+            if not pdf_observation_member:
+                raise ServiceError(422, 'source_rows_unavailable', '附件原件已保留，内部数据行尚不能读取')
         raw_counts = {row['disposition']: row['n'] for row in db.q_raw(
             f'select disposition,count(*) n from import_records where {scope} group by disposition', params)}
         counts = {name: sum(raw_counts.values()) if group is None else sum(raw_counts.get(key, 0) for key in group) for name, group in groups.items()}
@@ -1738,13 +2557,38 @@ def review_records(case_id, source_id, member_path, view='all', page=1, page_siz
         numbers = [row['record_no'] for row in db.q_raw(f'select record_no from import_records where {where} order by record_no limit ? offset ?', [*filtered, page_size, (page - 1) * page_size])]
         items = _record_items(cid, source_id, record_nos=numbers, limit=page_size, include_preview=True)
         for item in items:
-            item['original'] = None
+            item['original'] = (pdf_text_observations.original_cells(item['details'])
+                                if item['reason_code'] in pdf_text_observations.DISPOSITIONS else None)
+        if source["parser_version"] in _PDF_PROFILES or pdf_observation_member:
+            try:
+                stream, _ = (get_source_member_file(cid, source_id, member_path) if pdf_observation_member
+                             else get_source_file(cid, source_id))
+                stream.close()
+                original_error = None
+            except ServiceError as error:
+                if error.status not in (404, 409):
+                    raise
+                original_error = "PDF 原件不可用"
+            return {"case_id": str(cid), "source_id": source_id, "member_path": member_path, "view": view,
+                    "counts": counts, "items": items, "total": counts[view], "page": page, "page_size": page_size,
+                    "issue": issue, "original_error": original_error}
         sessions = db.q_raw('select * from import_sessions where case_id=? and import_id=?', [cid, source_id])
         session = sessions[0] if sessions else None
         receipt = json.loads(session['result_json'] or '{}') if session else {}
         summary = receipt.get('table_summary') or {}
         documents = [document for document in summary.get('documents', []) if document['member_path'] == member_path]
         document = documents[0] if documents else {'header_row': 1} if source['parser_version'] in feedback_import.SUPPORTED_PROFILES else {}
+        request = json.loads(session["request_json"] or "{}") if session else {}
+        # Use the same raw-cell reader as the ready layout window for retained
+        # small, unclassified trial tables. Its short rows stay unpadded.
+        unclassified_trial_csv = (
+            session is not None and session["suffix"] == ".csv" and member_path == "table.csv"
+            and source["parser_version"] == table_import.VOUCHER_REFERENCE_PROFILE
+            and request.get(_INTAKE_KEY) == _INTAKE_POLICY and document.get("header_rows") == []
+            and set(summary.get("reason_counts", ())) == {"unknown_table"}
+            and 1 <= document.get("source_rows", 0) <= import_layout_trial._MAX_SOURCE_ROWS
+            and session["size_bytes"] <= import_layout_trial._MAX_FILE_BYTES
+        )
         evidence = [entry for entry in summary.get('mapping_evidence', []) if entry.get('member_path') == member_path]
         if not evidence:
             evidence = [{'field': field, 'column': column} for field, column in json.loads(source['mapping_json']).items()]
@@ -1765,7 +2609,8 @@ def review_records(case_id, source_id, member_path, view='all', page=1, page_siz
         try:
             with original:
                 cells = import_originals.read_cells(original, session['suffix'], members[0], document, evidence,
-                                                    {item['source_row'] for item in items}, source['parser_version'])
+                                                    {item['source_row'] for item in items}, source['parser_version'],
+                                                    for_layout=unclassified_trial_csv)
             for item in items:
                 item['original'] = cells[item['source_row']]
         except (OSError, ValueError, KeyError, IndexError, StopIteration, csv.Error, zipfile.BadZipFile, import_originals.ET.ParseError):
@@ -1780,7 +2625,7 @@ def get_disposition_report(case_id, source_id):
     stream = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b", dir=db.DATA_DIR)
     try:
         with db._lock:
-            cid, source = _journal_source(case_id, source_id)
+            cid, source = _journal_source(case_id, source_id, include_pdf=True)
             members = db.q_raw("""select member_path,role,sha256,size_bytes,encoding,row_count from import_members
                                     where case_id=? and source_id=? order by member_path""", [cid, source_id])
             metadata = {"case_id": str(cid), "source_id": source_id, "filename": source["filename"],
@@ -1805,6 +2650,8 @@ def get_disposition_report(case_id, source_id):
 
 
 def _source_references(source_id):
+    from . import trial_delayed_pair
+
     profiles = sorted({*feedback_import.SUPPORTED_PROFILES, *table_import.SUPPORTED_PROFILES,
                        *table_archive.SUPPORTED_PROFILES})
     placeholders = ",".join("?" for _ in profiles)
@@ -1812,8 +2659,12 @@ def _source_references(source_id):
                          (select count(*) from import_records r join import_sources s
                           on s.case_id=r.case_id and s.source_id=r.source_id where r.source_id=?
                           and (r.disposition not in ('non_transaction','auxiliary','removed')
-                               or s.parser_version not in ({placeholders}))) n""",
-                    [source_id, source_id, *profiles])[0]["n"]
+                               or s.parser_version not in ({placeholders})
+                               or (json_extract_string(r.details_json,'$.intake_material_role') in (?,?,?,?)
+                                   and exists (select 1 from import_source_operations o
+                                       where o.case_id=r.case_id and o.source_id=r.source_id and o.active)))) n""",
+                    [source_id, source_id, *profiles, *trial_delayed_pair.DELAYED_ROLES,
+                     trial_delayed_pair.SAME_INSTANT_ROLE, "ledger_registration"])[0]["n"]
 
 
 def list_sessions(case_id, limit=100, import_id=None):

@@ -4,7 +4,7 @@ from html import escape
 import json
 import re
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Literal
@@ -95,23 +95,25 @@ class NetworkIn(BaseModel):
         return self
 
 
-def calculate_network(body):
+def calculate_network(body, *, trial_originals=False):
     from . import principal_multihop
     with db._lock:
         revision = analysis_snapshot.revision(int(body.case_id),body.expected_revision)
-        return {"case_id":body.case_id,"revision":revision,**principal_multihop.calculate(int(body.case_id),body)}
+        return {"case_id": body.case_id, "revision": revision,
+                **principal_multihop.calculate(int(body.case_id), body, trial_originals=trial_originals)}
 
 
 @router.post("/network")
-def run_network(body: NetworkIn):
-    return calculate_network(body)
+def run_network(body: NetworkIn, request: Request):
+    return calculate_network(body, trial_originals=getattr(request.app.state, "desktop_model_trial", None) is not None)
 
 
 @router.post("/network/export")
-def export_network(body: NetworkIn):
+def export_network(body: NetworkIn, request: Request):
     if body.expected_revision is None:
         raise HTTPException(422,"导出须提供已分析结果的修订")
-    return export_snapshot(calculate_network(body))
+    return export_snapshot(calculate_network(
+        body, trial_originals=getattr(request.app.state, "desktop_model_trial", None) is not None))
 
 
 @router.post("/export")

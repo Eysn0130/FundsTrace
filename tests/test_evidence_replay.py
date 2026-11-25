@@ -1,12 +1,16 @@
 """The bounded DB replay must preserve the previous list-based decisions."""
+import csv
 import hashlib
+import io
 import json
 
 import pytest
 import duckdb
+from openpyxl import Workbook
 
 from app import evidence_resolution as e
-from test_folder_evidence import accepted, account, table, transaction
+from test_automatic_table_import import preview
+from test_folder_evidence import accepted, account, complete, table, transaction
 
 
 def list_load(database, cid):
@@ -19,15 +23,17 @@ def list_load(database, cid):
                 "funds-trace-table-archive-v9", "funds-trace-table-archive-v10",
                 "funds-trace-table-archive-v11", "funds-trace-bank-feedback-v6",
                 "funds-trace-bank-feedback-v8",
-                *[f"funds-trace-table-v{v}" for v in (41, 44, 47, 50, 53, 56, 59, 62, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 87)],
-                *[f"funds-trace-table-archive-v{v}" for v in (31, 32, 34, 35, 37, 38, 40, 41, 43, 44, 46, 47, 49, 50, 52, 53, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68)])
+                *[f"funds-trace-table-v{v}" for v in (41, 44, 47, 50, 53, 56, 59, 62, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 87, 94, 95, 96, 97, 98, 99, 100, 101, 102, 104, 105, 106, 107, 108)],
+                *[f"funds-trace-table-archive-v{v}" for v in (31, 32, 34, 35, 37, 38, 40, 41, 43, 44, 46, 47, 49, 50, 52, 53, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69)])
     assert e.PROFILES == frozenset(profiles)
     query = f"""select m.sha256,r.source_row,r.details_json,f.flow_id,r.member_path
         from import_records r join import_sources s on s.case_id=r.case_id and s.source_id=r.source_id
         join evidence_sources b on b.case_id=r.case_id and b.source_id=r.source_id and b.active
         join import_members m on m.case_id=r.case_id and m.source_id=r.source_id and m.member_path=r.member_path
         left join flow_sources f on f.case_id=r.case_id and f.source_id=r.source_id and f.source_row=r.record_no
-        where r.case_id=? and s.parser_version in ({','.join('?' for _ in profiles)}) and r.disposition in ('auxiliary','imported','duplicate')
+        left join source_ledger_index l on l.case_id=f.case_id and l.flow_id=f.flow_id
+        where r.case_id=? and s.parser_version in ({','.join('?' for _ in profiles)})
+        and (r.disposition in ('auxiliary','imported','duplicate') or l.flow_id is not null)
         order by r.source_id,r.record_no"""
     cursor = database.con().execute(query, [cid, *profiles])
     result, seen, namespaces = [], set(), {}
@@ -56,39 +62,141 @@ def decisions(database, cid):
     return result
 
 
+def assert_replay_agrees(database, cid, monkeypatch):
+    originals = {name: database.q_raw(f"select * from {name} where case_id=? order by all", [cid])
+                 for name in ("flows", "import_records", "flow_sources")}
+    with database.transaction():
+        with monkeypatch.context() as legacy:
+            legacy.setattr(e, "_load", lambda case_id: list_load(database, case_id))
+            expected_summary = e.rebuild(cid)
+        expected = decisions(database, cid)
+        revision = expected_summary["revision"]
+        database.x("delete from resolution_state where case_id=?", [cid])
+        database.x("delete from resolution_revisions where case_id=? and revision=?", [cid, revision])
+        actual_summary = e.rebuild(cid)
+        assert actual_summary == expected_summary
+        assert decisions(database, cid) == expected
+    for name, rows in originals.items():
+        assert database.q_raw(f"select * from {name} where case_id=? order by all", [cid]) == rows
+
+
 def test_db_replay_equals_list_across_repeats_late_conflict_unscoped_and_withdrawal(client, database, make_case, monkeypatch):
     cid = make_case("Synthetic bounded evidence replay")
-    def compare():
-        originals = {name: database.q_raw(f"select * from {name} where case_id=? order by all", [cid])
-                     for name in ("flows", "import_records", "flow_sources")}
-        with database.transaction():
-            with monkeypatch.context() as legacy:
-                legacy.setattr(e, "_load", lambda case_id: list_load(database, case_id))
-                expected_summary = e.rebuild(cid)
-            expected = decisions(database, cid)
-            revision = expected_summary["revision"]
-            database.x("delete from resolution_state where case_id=?", [cid])
-            database.x("delete from resolution_revisions where case_id=? and revision=?", [cid, revision])
-            actual_summary = e.rebuild(cid)
-            assert actual_summary == expected_summary
-            assert decisions(database, cid) == expected
-        for name, rows in originals.items():
-            assert database.q_raw(f"select * from {name} where case_id=? order by all", [cid]) == rows
     source = [("tx.csv", table("transaction", [transaction(**{"交易账号": ""})]))]
     accepted(client, cid, source)
-    compare()
+    assert_replay_agrees(database, cid, monkeypatch)
     accepted(client, cid, source)
-    compare()
+    assert_replay_agrees(database, cid, monkeypatch)
     _, auxiliary = accepted(client, cid, [("account.csv", table("account", [account()]))])
-    compare()
+    assert_replay_agrees(database, cid, monkeypatch)
     accepted(client, cid, [("unscoped.csv", table("transaction", [transaction(**{"交易流水号": "SYN-UNSCOPED"})]))], scope_bank=None)
-    compare()
+    assert_replay_agrees(database, cid, monkeypatch)
     _, conflict = accepted(client, cid, [("conflict.csv", table("account", [account(number="SYN-OTHER")]))])
-    compare()
+    assert_replay_agrees(database, cid, monkeypatch)
     assert client.delete(f"/api/batches/{conflict['batch_id']}", params={"case_id": cid}).status_code == 200
-    compare()
+    assert_replay_agrees(database, cid, monkeypatch)
     assert client.delete(f"/api/batches/{auxiliary['batch_id']}", params={"case_id": cid}).status_code == 200
-    compare()
+    assert_replay_agrees(database, cid, monkeypatch)
+
+
+def trial_replay_source(version):
+    native = table("transaction", [transaction(**{
+        "交易账号": "SYN-NEUTRAL-A", "交易卡号": "000SYN-NEUTRAL-CARD", "交易时间": "2046-04-14 08:00:00",
+        "收付标志": "", "交易流水号": "SYN-NEUTRAL-ROW", "交易对手账卡号": "SYN-NEUTRAL-PEER",
+    })]).decode("utf-8-sig")
+    if version == 99:
+        return "direction.csv", ("交易时间,本方账号,对方账号,交易金额,进出标志,交易币种\n"
+                                 "2046-04-15 08:01:00,SYN-99-SELF,SYN-99-PEER,7.25,进,CNY\n"
+                                 "2046-04-15 08:02:00,SYN-99-HOLD,SYN-99-PEER,7.25,02,CNY\n"
+                                 + native).encode()
+    if version == 101:
+        return "component.csv", ("交易时间,本方账号,对方账号,收付标志,交易金额,交易币种,交易对手信息\n"
+                                 "2046-04-15 08:01:00,SYN-101-SELF,000012300,出,7.25,CNY,户名：合成对手；账号：000012300\n"
+                                 "2046-04-15 08:02:00,SYN-101-HOLD,000012300,出,7.25,CNY,户名：合成对手；账号：000012301\n"
+                                 + native).encode()
+    assert version == 100
+    book = Workbook()
+    ledger = book.active
+    ledger.title = "Grouped"
+    ledger.append(["双方信息", None, "交易要素", None, None, "收支发生额(分)", None, "余额信息", None])
+    ledger.append(["本方账卡", "对方账卡", "交易日期", "时刻", "交易币种", "贷方", "借方", "账面余额", "可用余额"])
+    ledger.append(["000SYN-100-SELF", "000SYN-100-PEER", "2046-04-15", "08:01:00", "CNY", "725", "0", "90.00", "80.00"])
+    ledger.append(["000SYN-100-HOLD", "000SYN-100-PEER", "2046-04-15", "", "CNY", "725", "0", "90.00", "80.00"])
+    for bounds in ("A1:B1", "C1:E1", "F1:G1", "H1:I1"):
+        ledger.merge_cells(bounds)
+    neutral = book.create_sheet("Native observations")
+    for row in csv.reader(io.StringIO(native)):
+        neutral.append(row)
+    output = io.BytesIO()
+    book.save(output)
+    book.close()
+    return "grouped.xlsx", output.getvalue()
+
+
+@pytest.mark.parametrize(("version", "main", "neutral", "reason", "financial"), [
+    (99, ("table.csv", 2), ("table.csv", 5), "invalid_direction", ("SYN-99-PEER", "SYN-99-SELF", None)),
+    (100, ("worksheets/0001", 3), ("worksheets/0002", 2), "missing_time", ("000SYN-100-PEER", "000SYN-100-SELF", "90.00")),
+    (101, ("table.csv", 2), ("table.csv", 5), "conflicting_field", ("SYN-101-SELF", "000012300", None)),
+], ids=["v99", "v100", "v101"])
+def test_trial_profiles_replay_bound_neutral_observations_without_promoting_pending_rows(
+        client, database, make_case, monkeypatch, version, main, neutral, reason, financial):
+    monkeypatch.setattr(client.app.state, "desktop_model_trial", (None,), raising=False)
+    cid = make_case("Synthetic trial replay")
+    filename, raw = trial_replay_source(version)
+    view = preview(client, cid, raw, filename)
+    assert view["table_summary"]["profile"] == f"funds-trace-table-v{version}"
+    assert view["table_summary"]["accepted"] == 1
+    job = complete(client, cid, view)
+    assert job["stage"] == "done" and job["result"]["ok"] == 1
+    base = f"/api/v1/cases/{cid}"
+    source = view["import_id"]
+    source_url = f"{base}/sources/{source}"
+    journal = f"{base}/imports/{source}/records"
+    with database._lock:
+        database._con.close()
+        database._con = None
+    assert client.get(source_url + "/file").raise_for_status().content == raw
+    records = {(row["member_path"], row["source_row"]): row
+               for row in client.get(journal).raise_for_status().json()["items"]}
+    assert records[main]["disposition"] == "imported"
+    held = records[(main[0], main[1] + 1)]
+    assert (held["disposition"], held["reason_code"], held["flow_id"]) == ("unresolved", reason, None)
+    assert e.DETAIL_FIELD not in held["details"]
+    read_only = records[neutral]
+    assert (read_only["disposition"], read_only["reason_code"]) == ("unresolved", "missing_direction")
+    evidence = list(e._load(cid))
+    assert evidence == list_load(database, cid)
+    [(_, position, flow_id, row)] = evidence
+    assert (row["_member_path"], position, str(flow_id)) == (*neutral, read_only["flow_id"])
+    assert (row["role"], row["own_side"], row["scope_eligible"]) == ("transaction", "", "no")
+    assert row["_family"] == read_only["details"]["evidence_family"]
+    roles = row["endpoints"]
+    assert (roles["self"]["account"], roles["self"]["card"], roles["self"]["bank"]) == (
+        "SYN-NEUTRAL-A", "000SYN-NEUTRAL-CARD", "")
+    assert (roles["counter"]["account"], roles["counter"]["identifier_type"]) == ("SYN-NEUTRAL-PEER", "account_or_card")
+    assert not roles["payer"]["account"] and not roles["payee"]["account"]
+    page = client.get(base + "/flows?granularity=observations").raise_for_status().json()
+    [posted] = [item for item in page["items"] if item["source_ledger"] is None]
+    assert posted["id"] == records[main]["flow_id"] and posted["amount"] == "7.25"
+    assert (posted["payer_account"], posted["payee_account"], posted["balance"]) == financial
+    [observation] = [item for item in page["items"] if item["source_ledger"] is not None]
+    assert observation["id"] == str(flow_id) and observation["source_ledger"]["economic_amount"] is None
+    assert client.get(base + "/stats").raise_for_status().json()["amount_total"] == "7.25"
+    resolution = client.get(base + "/resolution").raise_for_status().json()
+    assert resolution["resolution"]["resolved_endpoints"] == 0
+    assert resolution["resolution"]["evidence_records"] == 1
+    assert {item["account_number"] for item in resolution["entities"]} == {"SYN-NEUTRAL-A", "SYN-NEUTRAL-PEER"}
+    assert_replay_agrees(database, cid, monkeypatch)
+
+    client.delete(source_url + "/operation", params={"expected_batch_id": job["result"]["batch_id"]}).raise_for_status()
+    assert list(e._load(cid)) == list_load(database, cid) == []
+    assert client.get(base + "/flows?granularity=observations").raise_for_status().json()["total"] == 0
+    assert client.get(base + "/resolution").raise_for_status().json()["entities"] == []
+    assert_replay_agrees(database, cid, monkeypatch)
+    retained = client.get(journal, params={"member_path": neutral[0], "source_row": neutral[1]}).raise_for_status().json()
+    [historical] = retained["items"]
+    assert historical["details"] == read_only["details"] and historical["flow_id"] is None
+    assert client.get(source_url + "/file").raise_for_status().content == raw
 
 
 @pytest.mark.parametrize("value", [

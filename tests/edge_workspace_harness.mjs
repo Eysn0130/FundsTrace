@@ -24,9 +24,12 @@ test('ordinary money labels retain known source values and omit missing legacy s
   assert.equal(context.edgeLabel({cnt:2,total:'288.00'}), '2笔·¥288.00');
   assert.equal(context.edgeLabel({cnt:2,total:'74.82',funds:{status:'bounded'},pending_observation_count:2}), '2笔·¥74.82');
   assert.equal(context.edgeLabel({cnt:null,total:null,pending_observation_count:2}), '');
+  const selected = {cnt:2,total:'74.82',source_observation_notice:{observation_count:2}};
+  assert.equal(context.edgeLabel(selected), '2笔（同笔待核）·原额合计¥74.82');
   context.state.edgeLabels = new Set();
   assert.equal(context.edgeLabel({cnt:null,total:null,pending_observation_count:1}), '');
   assert.equal(context.edgeLabel({cnt:1,total:'11.13'}), '1笔');
+  assert.equal(context.edgeLabel(selected), '2笔（同笔待核）');
 });
 
 // The DOM preserves real ancestry, detached-control identity and event order.
@@ -420,6 +423,16 @@ test('unresolved bilateral detail retains two original records and their known m
   assert.equal(h.run('edgeLabel(fixtureModel.data)'), '2笔·¥74.82');
   assert.equal(h.rows().length, 2);
   assert.match(h.element('edgeDisplayed').textContent, /2 \/ 2 条记录/);
+});
+
+test('selected reciprocal originals show the display count and label the sum as pending', async () => {
+  const h = harness(), model = edge('SYN-PAIR-PENDING', [17, 18]);
+  Object.assign(model.data, {cnt:2,total:'74.82',amount_totals:[{currency:'CNY',amount:'74.82'}],
+    source_observation_notice:{observation_count:2}});
+  await opened(h, model, [flow(17,{amount:'37.41'}),flow(18,{amount:'37.41'})], 2);
+  const facts = h.document.querySelector('.edge-facts').textContent;
+  assert.match(facts, /2 笔.*同笔待核，金额为所选原行合计.*74\.82/s);
+  assert.equal(h.rows().length, 2);
 });
 
 test('mixed confirmed and original detail uses its existing count and retains all three sources', async () => {

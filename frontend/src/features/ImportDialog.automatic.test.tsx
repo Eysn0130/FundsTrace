@@ -401,6 +401,24 @@ describe('automatic table import', () => {
     expect(screen.queryByText(/unrecognized_|待审核|无法导入|含义未确定|银行数据缺失/)).toBeNull();
   });
 
+  it.each(['funds-trace-table-v107', 'funds-trace-table-v108', 'funds-trace-table-v109'])(
+    'binds %s CSV confirmation to its current source preview', async profile => {
+    const client = clientFor();
+    const revision = 'a'.repeat(32);
+    const ready: ImportPreview = { ...preview, automatic: false, stats: { total: 3, ok: 3, skipped: 0 },
+      table_summary: { ...summary, profile, accepted: 3, unresolved: 0, non_monetary: 0 },
+      layout_review: { revision, members: [{ member_path: 'table.csv', sheet: '', source_rows: 4, header_rows: [1] }] } };
+    client.preview = vi.fn(async () => ready);
+    show(client); upload();
+    const start = await screen.findByRole('button', { name: '开始导入' });
+    expect(client.commit).not.toHaveBeenCalled();
+    fireEvent.click(start);
+    await screen.findByRole('status', { name: '导入完成' });
+    expect(client.commit).toHaveBeenCalledExactlyOnceWith(ready.import_id,
+      expect.objectContaining({ mode: ready.mode, mapping: ready.mapping, ready_revision: revision }),
+      expect.any(AbortSignal));
+  });
+
   it('never automatically commits a restored preview even if the response contains an automatic flag', async () => {
     const client = clientFor(); show(client, undefined, session('ready'));
     const start = await screen.findByRole('button', { name: '开始导入' });

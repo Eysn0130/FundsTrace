@@ -53,13 +53,20 @@
       boundary_date_precision_unknown: '存在仅能核实日期的流水，同一天的记账先后仍待核',
       opening_balance_unknown: '首笔记录前的账面余额缺少依据',
       internal_transfer_requires_confirmed_opposite_ledgers: '内部转账尚未由双方本方记录证实为同笔',
+      network_originals_unavailable: '本次跨账计算涉及的原件不能完整核回',
       internal_event_missing_own_entry: '内部转账缺少范围内双方本方记录',
-      unresolved_source_records: '存在资金含义未确定的原记录，无法确认完整竞争账簿',
+      unresolved_source_records: '案内有尚未界定账簿或时段的来源记录',
       currency_evidence_unknown: '相关记录币种未确定',
       source_currency_unproved: '原件未明确提供币种，历史默认值仍待核',
       ambiguous_own_entry_direction: '相关本方记录的收支方向尚未明确'
     };
-    for (const reason of value.reasons || []) reasons.push(reasonText[reason] || '部分账簿条件尚未满足，完整依据见本次结果');
+    for (const reason of value.reasons || []) {
+      if (reason === 'internal_transfer_requires_confirmed_opposite_ledgers' && value.internal_transfer_review?.reason === 'opposite_rows_unlinked') {
+        reasons.push('两侧账簿已有相符候选原行，仍缺能把它们绑定为同笔的跨账凭据');
+      } else {
+        reasons.push(reasonText[reason] || '部分账簿条件尚未满足，完整依据见本次结果');
+      }
+    }
     if (value.model_scope?.note) lines.push(value.model_scope.note);
     if (reasons.length) lines.push([...new Set(reasons)].join('；') + '。');
     for (const item of value.targets || []) {

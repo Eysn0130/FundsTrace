@@ -1,8 +1,15 @@
 """Read-only evidence for a group of credits and debits in one accounting ledger."""
 from datetime import time, timezone
 from itertools import groupby
+import json
 
-from .. import db, event_resolution, principal_ledger, transaction_time
+from .. import db, event_resolution, principal_ledger, table_import, transaction_time
+
+
+_CLOCK_COLUMNS = frozenset(map(table_import._norm, (
+    "交易时区", "交易时间时区", "时区", "时区偏移", "交易时区偏移", "交易UTC偏移", "UTC偏移",
+    "time zone", "transaction time zone", "UTC offset", "transaction UTC offset",
+)))
 
 
 def _positive_units(value):
@@ -19,11 +26,15 @@ def _money(value):
     return None if value is None else principal_ledger.money(value)
 
 
-def _direction(row, account):
+def _direction(row, account, *, proved_direction=None):
     payer, payee = row.get("payer_account"), row.get("payee_account")
-    if row.get("self_account") != account or not payer or not payee or payer == payee:
+    if not account or row.get("self_account") != account or payer == payee:
         return None
-    return "in" if payee == account else "out" if payer == account else None
+    if payee == account and (payer or proved_direction == "in"):
+        return "in"
+    if payer == account and (payee or proved_direction == "out"):
+        return "out"
+    return None
 
 
 def _ordered(rows, metadata):
@@ -64,7 +75,44 @@ def _other_ledger_balances(case_id, rows):
             for key, values in grouped.items() if len(values) == 1 for entry in values}
 
 
-def prepare(case_id, account, observations):
+def _shared_wall_clock_source(case_id, account, currency):
+    """A bare clock can order one ledger source, including all competing rows."""
+    books = db.q_raw("""with own_rows as (
+        select f.id from flows f
+        left join resolved_endpoints e on e.case_id=f.case_id and e.flow_id=f.id and e.role='self'
+        where f.case_id=? and (f.currency=? or lower(trim(coalesce(f.currency,''))) in (select unnest(?::varchar[])))
+          and (f.self_account=? or e.entity_id=?)
+    )
+    select s.source_id,r.member_path,
+           count(distinct f.id)=(select count(*) from own_rows) complete
+    from own_rows f
+    join flow_sources s on s.case_id=? and s.flow_id=f.id
+    join import_records r on r.case_id=s.case_id and r.source_id=s.source_id and r.record_no=s.source_row
+    join evidence_sources p on p.case_id=s.case_id and p.source_id=s.source_id and p.active
+    where r.disposition in ('imported','duplicate')
+    group by s.source_id,r.member_path""",
+        [case_id, currency, list(principal_ledger.UNKNOWN_CURRENCIES), account, account, case_id])
+    if not any(book["complete"] for book in books):
+        return False
+    members = {}
+    for book in books:
+        members.setdefault(book["source_id"], set()).add(book["member_path"])
+    for row in db.q_raw("""select import_id,columns_json,
+               json_extract(result_json,'$.table_summary.documents') documents
+        from import_sessions where case_id=? and import_id in (select unnest(?::varchar[]))""",
+        [case_id, list(members)]):
+        documents = json.loads(row["documents"] or "[]")
+        if documents:
+            headings = [heading for doc in documents if doc["member_path"] in members[row["import_id"]]
+                        for heading in doc["columns"]]
+        else:
+            headings = json.loads(row["columns_json"] or "[]")
+        if any(table_import._norm(heading) in _CLOCK_COLUMNS for heading in headings):
+            return False
+    return True
+
+
+def prepare(case_id, account, observations, *, strict_source_clock=False):
     stamps = [transaction_time.clock(row) for row in observations]
     currencies = {row.get("currency") or "" for row in observations}
     kinds = {transaction_time.basis(row) for row in observations}
@@ -86,8 +134,13 @@ def prepare(case_id, account, observations):
     result["currency_gaps"] = principal_ledger.source_currency_gaps(case_id, account, ids, start=start, end=end)
     if len(currencies) != 1 or next(iter(currencies)).strip().casefold() in principal_ledger.UNKNOWN_CURRENCIES:
         return {**result, "reasons": ["currency_evidence_unknown"]}
-    result.update(principal_ledger.read(case_id, account, currencies.pop(), start, end))
+    [currency] = currencies
+    result.update(principal_ledger.read(case_id, account, currency, start, end))
     result["metadata"] = event_resolution.ledger_metadata(case_id, [int(row["id"]) for row in result["rows"]])
+    if (strict_source_clock and kinds == {"unqualified"} and result["rows"]
+            and not _shared_wall_clock_source(case_id, account, currency)):
+        result["status"] = "unknown"
+        result["reasons"] = [*result["reasons"], "source_clock_scope_unproved"]
     return result
 
 
@@ -132,6 +185,44 @@ def _competing(rows, selected, unproved):
     return {key: {"count": entry["count"], "amount": _money(entry["units"])} for key, entry in result.items()}, unknown
 
 
+def selected_order_upper_bound(postings, currency):
+    """Capacity of the chosen postings if their reported clock orders availability."""
+    def clock(row):
+        return row["clock"]
+
+    ordered = sorted(postings, key=clock)
+    credits = [row for row in ordered if row["direction"] == "in"]
+    total_credit = available = joint_upper = 0
+    same_direction_ties = False
+    targets = []
+    for stamp, group in groupby(ordered, key=clock):
+        bucket = list(group)
+        side = bucket[0]["direction"]
+        if any(row["direction"] != side for row in bucket):
+            return None
+        same_direction_ties |= len(bucket) > 1
+        units = sum(row["units"] for row in bucket)
+        if side == "in":
+            total_credit += units
+            available += units
+            continue
+        # The debit group draws once from the shared capacity. Each target's
+        # separate upper bound is independent of any same-time display order.
+        used = min(available, units)
+        joint_upper += used
+        available -= used
+        later = sorted(credit["source_row"] for credit in credits if clock(credit) > stamp)
+        for row in sorted(bucket, key=lambda row: row["source_row"]):
+            targets.append({
+                "ref": f"F{row['flow_id']}", "source_row": row["source_row"],
+                "upper": _money(min(total_credit, row["units"])), "later_source_rows": later,
+            })
+    result = {"currency": currency, "joint_upper": _money(joint_upper), "targets": targets}
+    if same_direction_ties:
+        result["same_direction_ties"] = True
+    return result
+
+
 def _joint_share(rows, opening, sources, targets, *, maximize):
     """Extremize total group contribution in one reconciled recorded ledger."""
     tagged, other, total = 0, opening, 0
@@ -152,10 +243,12 @@ def _joint_share(rows, opening, sources, targets, *, maximize):
     return total
 
 
-def evidence(account, incoming, outgoing, interval):
+def evidence(account, incoming, outgoing, interval, *, retain_scope=False, proved_directions=None):
     selected = incoming + outgoing
     selected_ids = {str(row["id"]) for row in selected}
-    checks = {"ledger_roles": all(_direction(row, account) == side for side, items in (("in", incoming), ("out", outgoing))
+    proved_directions = proved_directions or {}
+    checks = {"ledger_roles": all(_direction(row, account, proved_direction=proved_directions.get(row["id"])) == side
+                                  for side, items in (("in", incoming), ("out", outgoing))
                                   for row in items)}
     currencies = {row.get("currency") or "" for row in selected}
     currency = next(iter(currencies)) if len(currencies) == 1 else ""
@@ -249,6 +342,8 @@ def evidence(account, incoming, outgoing, interval):
         share = f"所选入账合计比出账少 {currency} {_money(sum(outtake) - sum(intake))}。"
     if mixed_currency:
         judgment = "两侧币种不同，需要分别核对资金来源和去向。"
+    elif "source_clock_scope_unproved" in reasons:
+        judgment = "原件的交易时钟口径未核，区间与资金先后待核。"
     elif future_inputs:
         judgment = "所选出账早于入账，这组记录无法支持该资金关联。"
     elif joint is not None:
@@ -271,6 +366,7 @@ def evidence(account, incoming, outgoing, interval):
             "closing_balance": _money(closing) if checks["own_balance"] else None,
             "other_entries": competitors, "adjacent_balances": opposite,
             "conditional_group_share": joint, "evidence_row_ids": refs, "other_evidence_limited": len(values) > 6,
+            **({"_range_record_ids": [str(row["id"]) for row in rows]} if retain_scope and checks["interval_records"] else {}),
             "interval": {"start": transaction_time.text(start), "end": transaction_time.text(end),
                          "basis": time_basis},
             "reasons": reasons, "attribution_status": "unknown",
