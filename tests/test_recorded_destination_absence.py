@@ -1,4 +1,5 @@
 """Exercise source-scoped destinations through the ordinary card."""
+import csv
 from io import BytesIO
 
 import pytest
@@ -16,8 +17,9 @@ from test_api_v1 import poll
     ("2040-06-05,000101,000204,5.30,收,CNY", False, False),
     ("2040-06-04 07:00:00,000101,,5.30,付,CNY,-08:00", False, True),
 ])
+@pytest.mark.parametrize("carrier", ["csv", "xlsx"])
 def test_original_destination_absence_is_bound_to_the_complete_source(
-        client, make_case, monkeypatch, later, proved, with_timezone):
+        client, make_case, monkeypatch, later, proved, with_timezone, carrier):
     monkeypatch.setattr(client.app.state, "desktop_model_trial", (None,), raising=False)
     case = make_case()
     base = f"/api/v1/cases/{case}"
@@ -28,8 +30,23 @@ def test_original_destination_absence_is_bound_to_the_complete_source(
     ]
     if with_timezone:
         rows = [rows[0] + ",交易时区", rows[1] + ",", rows[2] + ","]
-    raw = ("\n".join([*rows, later]) + "\n").encode()
-    ready = client.post(base + "/imports/preview", files={"file": ("example.csv", raw)}).raise_for_status().json()
+    rows.append(later)
+    if carrier == "xlsx":
+        book = Workbook()
+        sheet = book.active
+        for cells in csv.reader(rows):
+            sheet.append(cells)
+        for number in range(2, sheet.max_row + 1):
+            sheet.cell(number, 9, "")
+        stream = BytesIO()
+        book.save(stream)
+        book.close()
+        raw = stream.getvalue()
+        member = "worksheets/0001"
+    else:
+        raw = ("\n".join(rows) + "\n").encode()
+        member = "table.csv"
+    ready = client.post(base + "/imports/preview", files={"file": (f"example.{carrier}", raw)}).raise_for_status().json()
     job = base + "/imports/" + ready["import_id"]
     submission = {"mode": ready["mode"], "mapping": ready["mapping"]}
     if ready.get("layout_review"):
@@ -37,13 +54,13 @@ def test_original_destination_absence_is_bound_to_the_complete_source(
     client.post(job + "/commit", json=submission).raise_for_status()
     batch = poll(client, case, ready["import_id"])["result"]["batch_id"]
     [anchor] = client.get(job + "/records", params={
-        "member_path": "table.csv", "source_row": 3,
+        "member_path": member, "source_row": 3,
     }).raise_for_status().json()["items"]
     request = {"case_id": case, "x": 1, "side": "payee", "review": True}
     card = client.get("/api/context/" + anchor["flow_id"], params=request).raise_for_status().json()
     actual = card["review"].get("recorded_destination_absence")
     if proved:
-        assert actual == {"member_path": "table.csv", "first_row": 2, "last_row": 4, "matching_rows": 3,
+        assert actual == {"member_path": member, "first_row": 2, "last_row": 4, "matching_rows": 3,
                           "anchor_row": 3, "clock_column": 1}
         assert card["review"]["principal"]["target"]["status"] == "unknown"
     else:
@@ -53,6 +70,46 @@ def test_original_destination_absence_is_bound_to_the_complete_source(
     old = client.get(f"/api/context/{anchor['flow_id']}/record/{anchor['flow_id']}",
                      params={"case_id": case}, headers={"X-FundsTrace-Review": card["review"]["token"]})
     assert old.status_code == 409
+
+
+@pytest.mark.parametrize(("day", "account", "currency", "proved"), [
+    ("2040-06-05 08:00:00", "000101", "CNY", False),
+    ("2040-06-04 08:00:30", "000101", "CNY", False),
+    ("2040-06-04 08:00:00", "000101", "CNY", True),
+    ("2040-06-05 08:00:00", "000102", "CNY", True),
+    ("2040-06-05 08:00:00", "000101", "USD", True),
+])
+def test_workbook_absence_checks_unresolved_rows_in_the_matching_time_window(
+        client, make_case, monkeypatch, day, account, currency, proved):
+    monkeypatch.setattr(client.app.state, "desktop_model_trial", (None,), raising=False)
+    case = make_case()
+    base = f"/api/v1/cases/{case}"
+    book = Workbook()
+    sheet = book.active
+    sheet.append(["交易时间", "本方账号", "对方账号", "交易金额", "收付标志", "币种", "支出金额"])
+    sheet.append(["2040-06-02 08:00:00", "000101", "000202", "16.30", "付", "CNY", "16.30"])
+    sheet.append(["2040-06-04 08:00:30", "000101", "000203", "23.25", "收", "CNY", ""])
+    sheet.append([day, account, "000204", "5.30", "收", currency, "5.30"])
+    raw = BytesIO()
+    book.save(raw)
+    book.close()
+    ready = client.post(base + "/imports/preview", files={
+        "file": ("example.xlsx", raw.getvalue()),
+    }).raise_for_status().json()
+    job = base + "/imports/" + ready["import_id"]
+    client.post(job + "/commit", json={"mode": ready["mode"], "mapping": ready["mapping"],
+                                      "ready_revision": ready["layout_review"]["revision"]}).raise_for_status()
+    assert poll(client, case, ready["import_id"])["result"]["ok"] == 2
+    records = client.get(job + "/records", params={
+        "member_path": "worksheets/0001",
+    }).raise_for_status().json()["items"]
+    by_position = {record["source_row"]: record for record in records}
+    assert by_position[4]["disposition"] == "unresolved"
+    assert by_position[4]["reason_code"] == "conflicting_direction"
+    card = client.get("/api/context/" + by_position[3]["flow_id"], params={
+        "case_id": case, "x": 1, "side": "payee", "review": True,
+    }).raise_for_status().json()
+    assert bool(card["review"].get("recorded_destination_absence")) is proved
 
 
 @pytest.mark.parametrize(("extra", "account", "subaccounts", "reported"), [

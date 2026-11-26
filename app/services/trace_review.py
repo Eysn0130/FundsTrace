@@ -757,11 +757,22 @@ def _recorded_destination_in_source(case_id, own, rows, *, allow_absence):
              "matching_rows": len(postings), "anchor_row": position, "clock_column": columns[-1] + 1}
     if workbook:
         reported = _reported_same_account_debit(case_id, own, locator, physical, candidates, postings, rows)
-        return {"reported_destination": {**scope, **reported}} if reported else {}
+        if reported:
+            return {"reported_destination": {**scope, **reported}}
+    if not allow_absence:
+        return {}
     # A debit within the anchor's reported second may have finer timing
     # than the source states. This card needs a strict earlier boundary.
-    if any(side == "out" and stamp.replace(microsecond=0) >= anchor_clock.replace(microsecond=0)
-           for stamp, side in postings.values()):
+    same_or_later = {number: side for number, (stamp, side) in postings.items()
+                     if stamp.replace(microsecond=0) >= anchor_clock.replace(microsecond=0)}
+    if "out" in same_or_later.values():
+        return {}
+    # The workbook journal can carry a conflict the literal direction cell
+    # alone cannot settle, for example a populated opposing amount column.
+    if workbook and db.q_raw("""select 1 from import_records
+        where case_id=? and source_id=? and member_path=? and disposition='unresolved'
+        and source_row in (select unnest(?::bigint[]))
+        limit 1""", [case_id, locator["source_id"], locator["member_path"], list(same_or_later)]):
         return {}
     return {"recorded_destination_absence": scope}
 
